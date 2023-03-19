@@ -41,6 +41,6 @@ pub fn build(b: *std.Build) void {
     // This will evaluate the `test` step rather than the default, which is "install".
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&main_tests.step);
-    const test_run = main_tests.run();
+    const test_run = b.addRunArtifact(main_tests);
     test_step.dependOn(&test_run.step);
 }
