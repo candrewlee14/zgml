@@ -4,23 +4,19 @@ const testing = std.testing;
 const assert = std.debug.assert;
 const builtin = @import("builtin");
 
-// const opts = @import("options");
+const opts = @import("options");
 
-// const c = @cImport({
-//     @cInclude("cblas.h");
-// });
-
-// const c = if (opts.use_blas) {
-//     switch (builtin.os.tag) {
-//         .linux, .windows => @cImport({
-//             @cInclude("cblas.h");
-//         }),
-//         .macos => @cImport({
-//             @cInclude("<Accelerate/Accelerate.h>");
-//         }),
-//         else => @compileError("Unsupported OS"),
-//     }
-// } else void;
+const c = if (opts.use_blas) {
+    switch (builtin.os.tag) {
+        .linux, .windows => @cImport({
+            @cInclude("cblas.h");
+        }),
+        .macos => @cImport({
+            @cInclude("<Accelerate/Accelerate.h>");
+        }),
+        else => @compileError("Unsupported OS"),
+    }
+} else void;
 
 const max_dims = 4;
 const max_nodes = 4096;
@@ -34,7 +30,7 @@ const Alloc = std.mem.Allocator;
 const tac = std.testing.allocator;
 
 pub fn Tensor(comptime T: type) type {
-    // @compileLog(opts.use_blas);
+    @compileLog(opts.use_blas);
     return struct {
         const Self = @This();
 
@@ -652,120 +648,6 @@ pub fn Tensor(comptime T: type) type {
                 }
             }
         }
-        // fn computeForwardMatMul(dst: *Self, src0: *Self, src1: *Self) void {
-        //     assert(max_dims == 4); //
-
-        //     const dst_ne0 = dst.ne[0];
-        //     const dst_ne1 = dst.ne[1];
-        //     const dst_ne2 = dst.ne[2];
-        //     const dst_ne3 = dst.ne[3];
-        //     const dst_strides0 = dst.strides[0];
-        //     const dst_strides1 = dst.strides[1];
-        //     const dst_strides2 = dst.strides[2];
-        //     const dst_strides3 = dst.strides[3];
-        //     const dst_ne = dst_ne0 * dst_ne1 * dst_ne2 * dst_ne3;
-        //     _ = dst_ne;
-
-        //     const src0_ne0 = src0.ne[0];
-        //     _ = src0_ne0;
-        //     const src0_ne1 = src0.ne[1];
-        //     const src0_ne2 = src0.ne[2];
-        //     const src0_ne3 = src0.ne[3];
-        //     const src0_strides0 = src0.strides[0];
-        //     const src0_strides1 = src0.strides[1];
-        //     const src0_strides2 = src0.strides[2];
-        //     _ = src0_strides2;
-        //     const src0_strides3 = src0.strides[3];
-        //     _ = src0_strides3;
-
-        //     const src1_ne0 = src1.ne[0];
-        //     const src1_ne1 = src1.ne[1];
-        //     const src1_ne2 = src1.ne[2];
-        //     _ = src1_ne2;
-        //     const src1_ne3 = src1.ne[3];
-        //     _ = src1_ne3;
-        //     const src1_strides0 = src1.strides[0];
-        //     _ = src1_strides0;
-        //     const src1_strides1 = src1.strides[1];
-        //     _ = src1_strides1;
-        //     const src1_strides2 = src1.strides[2];
-        //     const src1_strides3 = src1.strides[3];
-
-        //     // TODO: permuted src0 unsupported
-        //     assert(src0_strides0 == 1 or src0_strides1 == 1);
-
-        //     // dst cannot be transposed or permuted
-        //     assert(dst_strides0 == 1);
-        //     assert(dst_strides0 <= dst_strides1);
-        //     assert(dst_strides1 <= dst_strides2);
-        //     assert(dst_strides2 <= dst_strides3);
-
-        //     assert(dst_ne0 == src0_ne1);
-        //     assert(dst_ne1 == src1_ne1);
-        //     assert(dst_ne2 == src0_ne2);
-        //     assert(dst_ne3 == src0_ne3);
-
-        //     if (T == @TypeOf(f32) and dst.shouldUseBlasForMatMul(src0, src1)) {
-        //         for (0..src0_ne3) |src0_i3| {
-        //             for (0..src0_ne2) |src0_i2| {
-        //                 const x = src0.data.ptr;
-        //                 const y = src1.data[src0_i3 * src1_strides3 + src0_i2 * src1_strides2 ..].ptr;
-        //                 const d = dst.data[src0_i3 * dst_strides3 + src0_i2 * dst_strides2 ..].ptr;
-        //                 c.cblas_sgemm(
-        //                     c.CblasRowMajor,
-        //                     c.CblasNoTrans,
-        //                     c.CblasTrans,
-        //                     src1_ne1,
-        //                     src0_ne1,
-        //                     src1_ne0,
-        //                     @as(T, 1),
-        //                     y,
-        //                     src1_ne0,
-        //                     x,
-        //                     src1_ne0,
-        //                     @as(T, 0),
-        //                     d,
-        //                     src1_ne0,
-        //                 );
-        //             }
-        //         }
-        //     // TODO: find a better way to identify if src0 is transposed
-        //     } else if (src0_ne0 <= src0_ne1) {
-        //         // TODO: allow src1 to be transposed
-        //         assert(src1_strides0 == 1);
-        //         for (0..src0_ne3) |src0_i3| {
-        //             for (0..src0_ne2) |src0_i2| {
-        //                 // mat mul
-        //                 for (0..src1_ne1) |src1_i1| {
-        //                     for (0..src0_ne1) |src0_i1| {
-        //                         var sum: T = 0;
-        //                         for (0..src0_ne0) |src0_i0| {
-        //                             sum += src0.data[src0_i3 * src0_strides3 + src0_i2 * src0_strides2 + src0_i1 * src0_strides1 + src0_i0 * src0_strides0] *
-        //                                 src1.data[src0_i3 * src1_strides3 + src0_i2 * src1_strides2 + src1_i1 * src1_strides1 + src0_i0 * src1_strides0];
-        //                         }
-        //                         dst.data[src0_i3 * dst_strides3 + src0_i2 * dst_strides2 + src1_i1 * dst_strides1 + src0_i1 * dst_strides0] = sum;
-        //                     }
-        //                 }
-        //             }
-        //         }
-        //     } else {
-        //         for (0..src1_ne3) |src1_i3| {
-        //             for (0..src1_ne2) |src1_i2| {
-        //                 // mat mul where src0 is transposed
-        //                 for (0..src1_ne1) |src1_i1| {
-        //                     for (0..src0_ne1) |src0_i1| {
-        //                         var sum: T = 0;
-        //                         for (0..src0_ne0) |src0_i0| {
-        //                             sum += src0.data[src1_i3 * src0_strides3 + src1_i2 * src0_strides2 + src0_i1 * src0_strides1 + src0_i0 * src0_strides0] *
-        //                                 src1.data[src1_i3 * src1_strides3 + src1_i2 * src1_strides2 + src1_i1 * src1_strides1 + src0_i0 * src1_strides0];
-        //                         }
-        //                         dst.data[src1_i3 * dst_strides3 + src1_i2 * dst_strides2 + src1_i1 * dst_strides1 + src0_i1 * dst_strides0] = sum;
-        //                     }
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
 
         /// Sets all values in this tensor to `val`.
         /// Returns self for convenience.
