@@ -15,6 +15,11 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    const use_blas = b.option(bool, "use-blas", "use BLAS for matmuls") orelse false;
+    const opts_mod = b.addOptions();
+    opts_mod.addOption(bool, "use-blas", use_blas);
+
+
     const lib = b.addStaticLibrary(.{
         .name = "zgml",
         // In this case the main source file is merely a path, however, in more
@@ -23,6 +28,20 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    lib.linkLibC();
+    lib.addOptions("options", opts_mod);
+
+    const host = (std.zig.system.NativeTargetInfo.detect(lib.target) catch unreachable).target;
+
+    if (use_blas) {
+        switch (host.os.tag) {
+            .macos => {
+                lib.linkFramework("Accelerate");
+            },
+            else => {},
+        }
+    }
+
 
     // This declares intent for the library to be installed into the standard
     // location when the user invokes the "install" step (the default step when

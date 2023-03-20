@@ -2,9 +2,25 @@ const std = @import("std");
 const Op = @import("op.zig").Op;
 const testing = std.testing;
 const assert = std.debug.assert;
-const c = @cImport({
-    @cInclude("cblas.h");
-});
+const builtin = @import("builtin");
+
+// const opts = @import("options");
+
+// const c = @cImport({
+//     @cInclude("cblas.h");
+// });
+
+// const c = if (opts.use_blas) {
+//     switch (builtin.os.tag) {
+//         .linux, .windows => @cImport({
+//             @cInclude("cblas.h");
+//         }),
+//         .macos => @cImport({
+//             @cInclude("<Accelerate/Accelerate.h>");
+//         }),
+//         else => @compileError("Unsupported OS"),
+//     }
+// } else void;
 
 const max_dims = 4;
 const max_nodes = 4096;
@@ -18,12 +34,14 @@ const Alloc = std.mem.Allocator;
 const tac = std.testing.allocator;
 
 pub fn Tensor(comptime T: type) type {
+    // @compileLog(opts.use_blas);
     return struct {
         const Self = @This();
 
         /// Number of dimension
         n_dims: u8,
         /// Number of elements per axis
+        /// Format like col, row, batch, channel
         ne: [max_dims]usize,
         /// Stride per axis
         strides: [max_dims]usize,
@@ -43,6 +61,8 @@ pub fn Tensor(comptime T: type) type {
 
         /// Create a tensor.
         /// The sizes of each dimension are specified by `ne`.
+        /// The length of `ne` must be less than or equal to `max_dims`.
+        /// `ne` is in the format [col, row, batch, channel] when using all dimensions.
         /// The number of dimensions will be infered by `ne.len`.
         /// Must call `deinit` to free.
         pub fn init(alloc: Alloc, ne: []const usize) Alloc.Error!*Self {
@@ -263,17 +283,33 @@ pub fn Tensor(comptime T: type) type {
             // TODO: maybe store epsilon in src1?
             return try self.unaryOp(alloc, .norm, true);
         }
-        // self: m rows, n columns
-        // other: p rows, n columns (i.e. we transpose it internally)
-        // result is m columns, p rows
-        pub fn mulMat(self: *Self, alloc: Alloc, other: *Self) Alloc.Error!*Self {
-            assert(self.canMulMat(other));
+
+        pub fn matMul(self: *Self, trans_self: bool, alloc: Alloc, other: *Self, trans_other: bool) Alloc.Error!*Self {
+            assert(self.canMatMul(trans_self, other, trans_other));
             const is_node = self.grad != null or other.grad != null;
             assert(max_dims == 4); // Need to update this function if max_dims changes
-            // TODO: fix for other max_dims
-            const ne: [max_dims]usize = .{ self.ne[1], other.ne[1], self.ne[2], other.ne[3] };
+            
+            const ne: [max_dims]usize = lbl: {
+                if (trans_self) {
+                    if (trans_other) {
+                        // col, row
+                        break :lbl .{ other.ne[1], self.ne[0] , self.ne[2], other.ne[3] };
+                    } else {
+                        // col, col
+                        break :lbl .{ other.ne[0], self.ne[0], self.ne[2], other.ne[3] };
+                    }
+                } else {
+                    if (trans_other) {
+                        // row, row
+                        break :lbl .{ other.ne[1], self.ne[1], self.ne[2], other.ne[3] };
+                    } else {
+                        // row, col
+                        break :lbl .{ other.ne[0], self.ne[1], self.ne[2], other.ne[3] };
+                    }
+                }
+            };
             const res = try Self.init(alloc, ne[0..std.math.min(self.n_dims, other.n_dims)]);
-            res.op = .mul_mat;
+            res.op = if (trans_self) if (trans_other) .matmul_t0t1 else .matmul_t0 else if (trans_other) .matmul_t1 else .matmul;
             res.grad = if (is_node) try res.dupTensor(alloc) else null;
             res.src0 = self;
             res.src1 = other;
@@ -466,89 +502,270 @@ pub fn Tensor(comptime T: type) type {
         }
         fn shouldUseBlasForMatMul(dst: *Self, src0: *Self, src1: *Self) bool {
             return src0.isContiguous() and src1.isContiguous() and
-                (dst.ne[0] >= 32 and dst.ne[1] >= 32 and src1.ne[0]);
+                (dst.ne[0] >= 32 and dst.ne[1] >= 32 and src1.ne[0] >= 32);
         }
-        fn computeForwardMatMul(dst: *Self, src0: *Self, src1: *Self) void {
-            assert(max_dims == 4); //
-            // if (dst.shouldUseBlasForMatMul(src0, src1)) {
-            //    TODO: implement
-            // }
-            const dst_ne0 = dst.ne[0];
-            const dst_ne1 = dst.ne[1];
-            const dst_ne2 = dst.ne[2];
-            const dst_ne3 = dst.ne[3];
-            const dst_strides0 = dst.strides[0];
-            const dst_strides1 = dst.strides[1];
-            const dst_strides2 = dst.strides[2];
-            const dst_strides3 = dst.strides[3];
-            const dst_ne = dst_ne0 * dst_ne1 * dst_ne2 * dst_ne3;
-            _ = dst_ne;
+        fn computeForwardMatMul(dst: *Self, src0: *Self, comptime trans0: bool, src1: *Self, comptime trans1: bool) void {
+            assert(max_dims == 4); // must update this func if max_dims changes
 
-            const src0_ne0 = src0.ne[0];
-            _ = src0_ne0;
-            const src0_ne1 = src0.ne[1];
-            const src0_ne2 = src0.ne[2];
+            // dst is not transposed
+            assert(dst.strides[0] == 1);
+            assert(dst.strides[0] <= dst.strides[1]);
+            assert(dst.strides[1] <= dst.strides[2]);
+            assert(dst.strides[2] <= dst.strides[3]);
+
+            // src0 and src1 have same outer two dims
+            assert(src0.ne[3] == src1.ne[3]);
+            assert(src0.ne[2] == src1.ne[2]);
+
+            assert(dst.ne[2] == src0.ne[2]);
+            assert(dst.ne[3] == src0.ne[3]);
+
+            if (!trans0 and !trans1) {
+                // src0 and src1 can be matmul'd
+                // src0 cols match src1 rows
+                assert(src0.ne[0] == src1.ne[1]);
+                // dst rows match src0 cols
+                assert(dst.ne[1] == src0.ne[0]);
+                // dst cols match src1 rows
+                assert(dst.ne[0] == src1.ne[1]);
+            } else if (!trans0 and trans1) {
+                // src0 and transposed src1 can be matmul'd
+                // same number of cols
+                assert(src0.ne[0] == src1.ne[0]);
+                // dst rows match src0 rows
+                assert(dst.ne[1] == src0.ne[1]);
+                // dst cols match src1 rows
+                assert(dst.ne[0] == src1.ne[1]);
+            } else if (trans0 and !trans1) {
+                // transposed src0 and src1 can be matmul'd
+                // same number of rows
+                assert(src0.ne[1] == src1.ne[1]);
+                // dst rows match src0 cols
+                assert(dst.ne[1] == src0.ne[0]);
+                // dst cols match src1 cols
+                assert(dst.ne[0] == src1.ne[0]);
+            } else if (trans0 and trans1) {
+                // transposed src0 and transposed src1 can be matmul'd
+                // src0 rows match src1 cols
+                assert(src0.ne[1] == src1.ne[0]);
+                // dst rows match src0 cols
+                assert(dst.ne[1] == src0.ne[0]);
+                // dst cols match src1 rows
+                assert(dst.ne[0] == src1.ne[1]);
+            }
             const src0_ne3 = src0.ne[3];
-            const src0_strides0 = src0.strides[0];
-            const src0_strides1 = src0.strides[1];
-            const src0_strides2 = src0.strides[2];
-            _ = src0_strides2;
-            const src0_strides3 = src0.strides[3];
-            _ = src0_strides3;
+            const src0_ne2 = src0.ne[2];
+            const src0_ne1 = src0.ne[1];
+            const src0_ne0 = src0.ne[0];
 
-            const src1_ne0 = src1.ne[0];
             const src1_ne1 = src1.ne[1];
-            const src1_ne2 = src1.ne[2];
-            _ = src1_ne2;
-            const src1_ne3 = src1.ne[3];
-            _ = src1_ne3;
-            const src1_strides0 = src1.strides[0];
-            _ = src1_strides0;
-            const src1_strides1 = src1.strides[1];
-            _ = src1_strides1;
-            const src1_strides2 = src1.strides[2];
-            const src1_strides3 = src1.strides[3];
+            const src1_ne0 = src1.ne[0];
 
-            // TODO: permuted src0 unsupported
-            assert(src0_strides0 == 1 or src0_strides1 == 1);
-
-            // dst cannot be transposed or permuted
-            assert(dst_strides0 == 1);
-            assert(dst_strides0 <= dst_strides1);
-            assert(dst_strides1 <= dst_strides2);
-            assert(dst_strides2 <= dst_strides3);
-
-            assert(dst_ne0 == src0_ne1);
-            assert(dst_ne1 == src1_ne1);
-            assert(dst_ne2 == src0_ne2);
-            assert(dst_ne3 == src0_ne3);
-
-            if (T == @TypeOf(f32) and dst.shouldUseBlasForMatMul(src0, src1)) {
-                for (0..src0_ne3) |src0_i3| {
-                    for (0..src0_ne2) |src0_i2| {
-                        const x = src0.data.ptr;
-                        const y = src1.data[src0_i3 * src1_strides3 + src0_i2 * src1_strides2 ..].ptr;
-                        const d = dst.data[src0_i3 * dst_strides3 + src0_i2 * dst_strides2 ..].ptr;
-                        c.cblas_sgemm(
-                            c.CblasRowMajor,
-                            c.CblasNoTrans,
-                            c.CblasTrans,
-                            src1_ne1,
-                            src0_ne1,
-                            src1_ne0,
-                            @as(T, 1),
-                            y,
-                            src1_ne0,
-                            x,
-                            src1_ne0,
-                            @as(T, 0),
-                            d,
-                            src1_ne0,
-                        );
-                    }
+            for (0..src0_ne3) |src0_i3| {
+                for (0..src0_ne2) |src0_i2| {
+                    // mat mul
+                    if (!trans0 and !trans1) {
+                        for (0..src0_ne1) |src0_i1| { // row0
+                            for (0..src1_ne0) |src1_i0| { // col1
+                                var matmul_sum: f32 = 0;
+                                for (0..src0_ne0) |src0_i0| { // col0 == row1
+                                    const src0_i_v = @Vector(4, usize){src0_i0, src0_i1, src0_i2, src0_i3};
+                                    const src1_i_v = @Vector(4, usize){src1_i0, src0_i0, src0_i2, src0_i3};
+                                    const src0_stride_v : @Vector(4, usize) = src0.strides;
+                                    const src1_stride_v : @Vector(4, usize) = src1.strides;
+                                    const src0_i = @reduce(.Add, src0_i_v * src0_stride_v);
+                                    const src1_i = @reduce(.Add, src1_i_v * src1_stride_v);
+                                    matmul_sum += src0.data[src0_i] * src1.data[src1_i];
+                                }
+                                // dst col = col1
+                                // dst row = row0
+                                const dst_i_v = @Vector(4, usize){src1_i0, src0_i1, src0_i2, src0_i3};
+                                const dst_stride_v : @Vector(4, usize) = dst.strides;
+                                const dst_i = @reduce(.Add, dst_i_v * dst_stride_v);
+                                dst.data[dst_i] = matmul_sum;
+                            }
+                        }
+                    } else if (!trans0 and trans1) {
+                        for (0..src0_ne1) |src0_i1| { // row0
+                            for (0..src1_ne1) |src1_i1| { // row1
+                                var matmul_sum: f32 = 0;
+                                for (0..src0_ne0) |src0_i0| { // col0 == col1
+                                    const src0_i_v = @Vector(4, usize){src0_i0, src0_i1, src0_i2, src0_i3};
+                                    const src1_i_v = @Vector(4, usize){src0_i0, src1_i1, src0_i2, src0_i3}; // different row
+                                    const src0_stride_v : @Vector(4, usize) = src0.strides;
+                                    const src1_stride_v : @Vector(4, usize) = src1.strides;
+                                    const src0_i = @reduce(.Add, src0_i_v * src0_stride_v);
+                                    const src1_i = @reduce(.Add, src1_i_v * src1_stride_v);
+                                    matmul_sum += src0.data[src0_i] * src1.data[src1_i];
+                                }
+                                // dst col = row1
+                                // dst row = row0
+                                const dst_i_v = @Vector(4, usize){src1_i1, src0_i1, src0_i2, src0_i3};
+                                const dst_stride_v : @Vector(4, usize) = dst.strides;
+                                const dst_i = @reduce(.Add, dst_i_v * dst_stride_v);
+                                dst.data[dst_i] = matmul_sum;
+                            }
+                        }
+                    } else if (trans0 and !trans1) {
+                        for (0..src0_ne0) |src0_i0| { // cos0
+                            for (0..src1_ne0) |src1_i0| { // col1
+                                var matmul_sum: f32 = 0;
+                                for (0..src0_ne1) |src0_i1| { // row0 == row1
+                                    const src0_i_v = @Vector(4, usize){src0_i0, src0_i1, src0_i2, src0_i3};
+                                    const src1_i_v = @Vector(4, usize){src1_i0, src0_i1, src0_i2, src0_i3}; // different column
+                                    const src0_stride_v : @Vector(4, usize) = src0.strides;
+                                    const src1_stride_v : @Vector(4, usize) = src1.strides;
+                                    const src0_i = @reduce(.Add, src0_i_v * src0_stride_v);
+                                    const src1_i = @reduce(.Add, src1_i_v * src1_stride_v);
+                                    matmul_sum += src0.data[src0_i] * src1.data[src1_i];
+                                }
+                                // dst col = col1
+                                // dst row = col0
+                                const dst_i_v = @Vector(4, usize){src1_i0, src0_i0, src0_i2, src0_i3};
+                                const dst_stride_v : @Vector(4, usize) = dst.strides;
+                                const dst_i = @reduce(.Add, dst_i_v * dst_stride_v);
+                                dst.data[dst_i] = matmul_sum;
+                            }
+                        }
+                    } else if (trans0 and trans1) {
+                        for (0..src0_ne0) |src0_i0| { // col0
+                            for (0..src1_ne1) |src1_i1| { // row1
+                                var matmul_sum: f32 = 0;
+                                for (0..src0_ne1) |src0_i1| { // col1 == row0
+                                    const src0_i_v = @Vector(4, usize){src0_i0, src0_i1, src0_i2, src0_i3};
+                                    const src1_i_v = @Vector(4, usize){src0_i1, src1_i1, src0_i2, src0_i3};
+                                    const src0_stride_v : @Vector(4, usize) = src0.strides;
+                                    const src1_stride_v : @Vector(4, usize) = src1.strides;
+                                    const src0_i = @reduce(.Add, src0_i_v * src0_stride_v);
+                                    const src1_i = @reduce(.Add, src1_i_v * src1_stride_v);
+                                    matmul_sum += src0.data[src0_i] * src1.data[src1_i];
+                                }
+                                // dst col = row1
+                                // dst row = col0
+                                const dst_i_v = @Vector(4, usize){src1_i1, src0_i0, src0_i2, src0_i3};
+                                const dst_stride_v : @Vector(4, usize) = dst.strides;
+                                const dst_i = @reduce(.Add, dst_i_v * dst_stride_v);
+                                dst.data[dst_i] = matmul_sum;
+                            }
+                        }
+                    }    
                 }
             }
         }
+        // fn computeForwardMatMul(dst: *Self, src0: *Self, src1: *Self) void {
+        //     assert(max_dims == 4); //
+
+        //     const dst_ne0 = dst.ne[0];
+        //     const dst_ne1 = dst.ne[1];
+        //     const dst_ne2 = dst.ne[2];
+        //     const dst_ne3 = dst.ne[3];
+        //     const dst_strides0 = dst.strides[0];
+        //     const dst_strides1 = dst.strides[1];
+        //     const dst_strides2 = dst.strides[2];
+        //     const dst_strides3 = dst.strides[3];
+        //     const dst_ne = dst_ne0 * dst_ne1 * dst_ne2 * dst_ne3;
+        //     _ = dst_ne;
+
+        //     const src0_ne0 = src0.ne[0];
+        //     _ = src0_ne0;
+        //     const src0_ne1 = src0.ne[1];
+        //     const src0_ne2 = src0.ne[2];
+        //     const src0_ne3 = src0.ne[3];
+        //     const src0_strides0 = src0.strides[0];
+        //     const src0_strides1 = src0.strides[1];
+        //     const src0_strides2 = src0.strides[2];
+        //     _ = src0_strides2;
+        //     const src0_strides3 = src0.strides[3];
+        //     _ = src0_strides3;
+
+        //     const src1_ne0 = src1.ne[0];
+        //     const src1_ne1 = src1.ne[1];
+        //     const src1_ne2 = src1.ne[2];
+        //     _ = src1_ne2;
+        //     const src1_ne3 = src1.ne[3];
+        //     _ = src1_ne3;
+        //     const src1_strides0 = src1.strides[0];
+        //     _ = src1_strides0;
+        //     const src1_strides1 = src1.strides[1];
+        //     _ = src1_strides1;
+        //     const src1_strides2 = src1.strides[2];
+        //     const src1_strides3 = src1.strides[3];
+
+        //     // TODO: permuted src0 unsupported
+        //     assert(src0_strides0 == 1 or src0_strides1 == 1);
+
+        //     // dst cannot be transposed or permuted
+        //     assert(dst_strides0 == 1);
+        //     assert(dst_strides0 <= dst_strides1);
+        //     assert(dst_strides1 <= dst_strides2);
+        //     assert(dst_strides2 <= dst_strides3);
+
+        //     assert(dst_ne0 == src0_ne1);
+        //     assert(dst_ne1 == src1_ne1);
+        //     assert(dst_ne2 == src0_ne2);
+        //     assert(dst_ne3 == src0_ne3);
+
+        //     if (T == @TypeOf(f32) and dst.shouldUseBlasForMatMul(src0, src1)) {
+        //         for (0..src0_ne3) |src0_i3| {
+        //             for (0..src0_ne2) |src0_i2| {
+        //                 const x = src0.data.ptr;
+        //                 const y = src1.data[src0_i3 * src1_strides3 + src0_i2 * src1_strides2 ..].ptr;
+        //                 const d = dst.data[src0_i3 * dst_strides3 + src0_i2 * dst_strides2 ..].ptr;
+        //                 c.cblas_sgemm(
+        //                     c.CblasRowMajor,
+        //                     c.CblasNoTrans,
+        //                     c.CblasTrans,
+        //                     src1_ne1,
+        //                     src0_ne1,
+        //                     src1_ne0,
+        //                     @as(T, 1),
+        //                     y,
+        //                     src1_ne0,
+        //                     x,
+        //                     src1_ne0,
+        //                     @as(T, 0),
+        //                     d,
+        //                     src1_ne0,
+        //                 );
+        //             }
+        //         }
+        //     // TODO: find a better way to identify if src0 is transposed
+        //     } else if (src0_ne0 <= src0_ne1) {
+        //         // TODO: allow src1 to be transposed
+        //         assert(src1_strides0 == 1);
+        //         for (0..src0_ne3) |src0_i3| {
+        //             for (0..src0_ne2) |src0_i2| {
+        //                 // mat mul
+        //                 for (0..src1_ne1) |src1_i1| {
+        //                     for (0..src0_ne1) |src0_i1| {
+        //                         var sum: T = 0;
+        //                         for (0..src0_ne0) |src0_i0| {
+        //                             sum += src0.data[src0_i3 * src0_strides3 + src0_i2 * src0_strides2 + src0_i1 * src0_strides1 + src0_i0 * src0_strides0] *
+        //                                 src1.data[src0_i3 * src1_strides3 + src0_i2 * src1_strides2 + src1_i1 * src1_strides1 + src0_i0 * src1_strides0];
+        //                         }
+        //                         dst.data[src0_i3 * dst_strides3 + src0_i2 * dst_strides2 + src1_i1 * dst_strides1 + src0_i1 * dst_strides0] = sum;
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //     } else {
+        //         for (0..src1_ne3) |src1_i3| {
+        //             for (0..src1_ne2) |src1_i2| {
+        //                 // mat mul where src0 is transposed
+        //                 for (0..src1_ne1) |src1_i1| {
+        //                     for (0..src0_ne1) |src0_i1| {
+        //                         var sum: T = 0;
+        //                         for (0..src0_ne0) |src0_i0| {
+        //                             sum += src0.data[src1_i3 * src0_strides3 + src1_i2 * src0_strides2 + src0_i1 * src0_strides1 + src0_i0 * src0_strides0] *
+        //                                 src1.data[src1_i3 * src1_strides3 + src1_i2 * src1_strides2 + src1_i1 * src1_strides1 + src0_i0 * src1_strides0];
+        //                         }
+        //                         dst.data[src1_i3 * dst_strides3 + src1_i2 * dst_strides2 + src1_i1 * dst_strides1 + src0_i1 * dst_strides0] = sum;
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
 
         /// Sets all values in this tensor to `val`.
         /// Returns self for convenience.
@@ -589,12 +806,22 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// Returns if self can matmul with other.
-        /// If all dimensions but the 2nd are equal.
-        pub fn canMulMat(self: *Self, other: *Self) bool {
-            for (&self.ne, &other.ne, 0..) |selfNe, otherNe, i| {
-                if (i != 1 and selfNe != otherNe) return false;
-            }
-            return true;
+        pub fn canMatMul(self: *Self, transSelf: bool, other: *Self, transOther: bool) bool {
+            if (self.ne[3] != other.ne[3]) return false; // channels same
+            if (self.ne[2] != other.ne[2]) return false; // batch same
+            if (transSelf) {
+                if (transOther) {
+                    return self.ne[0] == other.ne[1];
+                } else {
+                    return self.ne[0] == other.ne[0];
+                }
+            } else {
+                if (transOther) {
+                    return self.ne[1] == other.ne[1];
+                } else {
+                    return self.ne[1] == other.ne[0];
+                }
+            }            
         }
 
         pub fn isContiguous(self: *Self) bool {
@@ -614,13 +841,23 @@ pub fn Tensor(comptime T: type) type {
             return true;
         }
 
+        /// Returns the element at the given coordinates.
+        /// Coordinates are given in the format [col, row, batch, channel] 
+        /// or [col, row, batch] or [col, row] or [col]
         pub fn get(self: *Self, coords: []const usize) T {
             assert(coords.len == self.n_dims);
             var idx: usize = 0;
-            for (coords, 0..) |coord, i| {
-                idx += coord * self.strides[i];
+            for (coords, self.strides[0..coords.len]) |coord, stride| {
+                idx += coord * stride;
             }
             return self.data[idx];
+        }
+
+        /// Print out a summary of this tensor.
+        pub fn print(self: *Self) void {
+            std.debug.print("----{*}----\n", .{self});
+            std.debug.print("shape: {any}\nstrides: {any}\ndata: {any}\n", .{self.ne, self.strides, self.data});
+            std.debug.print("--------------------------\n", .{});
         }
 
         pub fn isSameShape(self: *Self, other: *Self) bool {
@@ -659,8 +896,9 @@ test "tensor init" {
         defer tensor.deinit(tac);
         try testing.expectEqual(@as(usize, 6), tensor.nElems());
         const data = [_]f32{
-            1, 2, 3,
-            4, 5, 6,
+            1, 2, 
+            3, 4, 
+            5, 6,
         };
         std.mem.copy(f32, tensor.data, &data);
         try testing.expectEqual(@as(f32, 1), tensor.get(&.{ 0, 0 }));
@@ -733,4 +971,108 @@ test "tensor canRepeatTo" {
     }
 }
 
-test "tensor make graph" {}
+test "tensor compute matmul_t0" {
+    const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
+    defer t1.deinit(tac);
+    {
+        try testing.expectEqual(@as(usize, 6), t1.nElems());
+        const data = [_]f32{
+            1, 2, 
+            3, 4, 
+            5, 6,
+        };
+        std.mem.copy(f32, t1.data, &data);
+    }
+    const t2 = try Tensor(f32).init(tac, &.{ 2, 3 });
+    defer t2.deinit(tac);
+    try testing.expectEqual(@as(usize, 6), t2.nElems());
+    {
+        const data = [_]f32{
+            1, 2, 
+            3, 4, 
+            5, 6,
+        };
+        std.mem.copy(f32, t2.data, &data);
+    }
+    const dst = try t1.matMul(true, tac, t2, false);
+    defer dst.deinit(tac);
+
+    dst.computeForwardMatMul(t1, true, t2, false);
+
+    const expected = [_]f32{
+         35, 44,
+         44, 56,
+    };
+    const expected_slice : []const f32 = expected[0..];
+    try testing.expectEqualSlices(f32, expected_slice, dst.data);
+}
+
+
+test "tensor compute matmul_t1 2D" {
+    const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
+    defer t1.deinit(tac);
+    {
+        try testing.expectEqual(@as(usize, 6), t1.nElems());
+        const data = [_]f32{
+            1, 2, 
+            3, 4, 
+            5, 6,
+        };
+        std.mem.copy(f32, t1.data, &data);
+    }
+    const t2 = try Tensor(f32).init(tac, &.{ 2, 3 });
+    defer t2.deinit(tac);
+    try testing.expectEqual(@as(usize, 6), t2.nElems());
+    {
+        const data = [_]f32{
+            1, 2, 
+            3, 4, 
+            5, 6,
+        };
+        std.mem.copy(f32, t2.data, &data);
+    }
+    const dst = try t1.matMul(false, tac, t2, true);
+    defer dst.deinit(tac);
+
+    dst.computeForwardMatMul(t1, false, t2, true);
+
+    const expected = [_]f32{
+         5, 11, 17,
+        11, 25, 39,
+        17, 39, 61,
+    };
+    const expected_slice : []const f32 = expected[0..];
+    try testing.expectEqualSlices(f32, expected_slice, dst.data);
+}
+
+
+test "tensor compute matmul_t1 3D" {
+    const t1 = try Tensor(f32).init(tac, &.{ 2, 2, 2 });
+    defer t1.deinit(tac);
+    {
+        try testing.expectEqual(@as(usize, 8), t1.nElems());
+        const data = [_]f32{
+            1, 2, 
+            3, 4,
+            // 
+            5, 6,
+            7, 8,
+        };
+        std.mem.copy(f32, t1.data, &data);
+        try testing.expectEqual(@as(f32, 4), t1.get(&.{1, 1, 0}));
+        try testing.expectEqual(@as(f32, 7), t1.get(&.{0, 1, 1}));
+    }
+    const dst = try t1.matMul(false, tac, t1, true);
+    defer dst.deinit(tac);
+
+    dst.computeForwardMatMul(t1, false, t1, true);
+    const expected = [_]f32{
+        5, 11,
+        11, 25,
+        //
+        61, 83,
+        83, 113,
+    };
+    const expected_slice : []const f32 = expected[0..];
+    try testing.expectEqualSlices(f32, expected_slice, dst.data);
+}

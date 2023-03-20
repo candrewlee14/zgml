@@ -20,7 +20,10 @@ pub const Op = enum {
     gelu,
     norm,
     //
-    mul_mat,
+    matmul,
+    matmul_t0,
+    matmul_t1,
+    matmul_t0t1,
     //
     scale,
     cpy,
@@ -60,7 +63,11 @@ pub const Op = enum {
             .gelu => "gelu(x)",
             .norm => "norm(x)",
             //
-            .mul_mat => "X*Y",
+            .matmul => "X*Y",
+            .matmul_t0 => "XT*Y",
+            .matmul_t1 => "X*YT",
+            .matmul_t0t1 => "XT*YT",
+        
             //
             .scale => "x*v",
             .cpy => "x->y",
