@@ -4,19 +4,20 @@ const testing = std.testing;
 const assert = std.debug.assert;
 const builtin = @import("builtin");
 
-const opts = @import("options");
+const Opts = struct {
+    use_blas: bool = false,
+};
+// const opts = .{.use_blas = false};
+const opts = @import("zgml_options");
 
-const c = if (opts.use_blas) {
+const c = if (opts.use_blas)
     switch (builtin.os.tag) {
-        .linux, .windows => @cImport({
-            @cInclude("cblas.h");
-        }),
-        .macos => @cImport({
-            @cInclude("<Accelerate/Accelerate.h>");
-        }),
-        else => @compileError("Unsupported OS"),
+        .linux, .windows => @cImport(@cInclude("cblas.h")),
+        .macos => @cImport(@cInclude("Accelerate/Accelerate.h")),
+        else => @cImport(@compileError("Unsupported OS")),
     }
-} else void;
+else
+    void;
 
 const max_dims = 4;
 const max_nodes = 4096;
@@ -30,7 +31,6 @@ const Alloc = std.mem.Allocator;
 const tac = std.testing.allocator;
 
 pub fn Tensor(comptime T: type) type {
-    @compileLog(opts.use_blas);
     return struct {
         const Self = @This();
 
@@ -284,12 +284,12 @@ pub fn Tensor(comptime T: type) type {
             assert(self.canMatMul(trans_self, other, trans_other));
             const is_node = self.grad != null or other.grad != null;
             assert(max_dims == 4); // Need to update this function if max_dims changes
-            
+
             const ne: [max_dims]usize = lbl: {
                 if (trans_self) {
                     if (trans_other) {
                         // col, row
-                        break :lbl .{ other.ne[1], self.ne[0] , self.ne[2], other.ne[3] };
+                        break :lbl .{ other.ne[1], self.ne[0], self.ne[2], other.ne[3] };
                     } else {
                         // col, col
                         break :lbl .{ other.ne[0], self.ne[0], self.ne[2], other.ne[3] };
@@ -557,26 +557,52 @@ pub fn Tensor(comptime T: type) type {
             const src1_ne1 = src1.ne[1];
             const src1_ne0 = src1.ne[0];
 
+            const dst_ne0 = dst.ne[0];
+
+            const src0_ne1c = @intCast(c_int, src0_ne1);
+            const src0_ne0c = @intCast(c_int, src0_ne0);
+            const src1_ne1c = @intCast(c_int, src1_ne1);
+            const src1_ne0c = @intCast(c_int, src1_ne0);
+            const dst_ne0c = @intCast(c_int, dst_ne0);
+
             for (0..src0_ne3) |src0_i3| {
                 for (0..src0_ne2) |src0_i2| {
                     // mat mul
-                    if (!trans0 and !trans1) {
+                    if (opts.use_blas and T == f32) {
+                        // z = x * yT
+                        c.cblas_sgemm(
+                            c.CblasRowMajor,
+                            if (trans0) c.CblasTrans else c.CblasNoTrans,
+                            if (trans1) c.CblasTrans else c.CblasNoTrans,
+                            if (trans0) src0_ne0c else src0_ne1c, // dst rows
+                            if (trans1) src1_ne1c else src1_ne0c, // dst cols
+                            if (trans0) src0_ne1c else src0_ne0c, // src0 row/col == src1 row/col
+                            1.0, // alpha scaling factor
+                            &src0.data[src0_i3 * src0.strides[3] + src0_i2 * src0.strides[2]],
+                            src0_ne0c, // src0 first dim
+                            &src1.data[src0_i3 * src1.strides[3] + src0_i2 * src1.strides[2]],
+                            src1_ne0c, // src1 first dim
+                            0.0, // beta scaling factor
+                            &dst.data[src0_i3 * dst.strides[3] + src0_i2 * dst.strides[2]],
+                            dst_ne0c, // dst first dim
+                        );
+                    } else if (!trans0 and !trans1) {
                         for (0..src0_ne1) |src0_i1| { // row0
                             for (0..src1_ne0) |src1_i0| { // col1
                                 var matmul_sum: f32 = 0;
                                 for (0..src0_ne0) |src0_i0| { // col0 == row1
-                                    const src0_i_v = @Vector(4, usize){src0_i0, src0_i1, src0_i2, src0_i3};
-                                    const src1_i_v = @Vector(4, usize){src1_i0, src0_i0, src0_i2, src0_i3};
-                                    const src0_stride_v : @Vector(4, usize) = src0.strides;
-                                    const src1_stride_v : @Vector(4, usize) = src1.strides;
+                                    const src0_i_v = @Vector(4, usize){ src0_i0, src0_i1, src0_i2, src0_i3 };
+                                    const src1_i_v = @Vector(4, usize){ src1_i0, src0_i0, src0_i2, src0_i3 };
+                                    const src0_stride_v: @Vector(4, usize) = src0.strides;
+                                    const src1_stride_v: @Vector(4, usize) = src1.strides;
                                     const src0_i = @reduce(.Add, src0_i_v * src0_stride_v);
                                     const src1_i = @reduce(.Add, src1_i_v * src1_stride_v);
                                     matmul_sum += src0.data[src0_i] * src1.data[src1_i];
                                 }
                                 // dst col = col1
                                 // dst row = row0
-                                const dst_i_v = @Vector(4, usize){src1_i0, src0_i1, src0_i2, src0_i3};
-                                const dst_stride_v : @Vector(4, usize) = dst.strides;
+                                const dst_i_v = @Vector(4, usize){ src1_i0, src0_i1, src0_i2, src0_i3 };
+                                const dst_stride_v: @Vector(4, usize) = dst.strides;
                                 const dst_i = @reduce(.Add, dst_i_v * dst_stride_v);
                                 dst.data[dst_i] = matmul_sum;
                             }
@@ -586,18 +612,18 @@ pub fn Tensor(comptime T: type) type {
                             for (0..src1_ne1) |src1_i1| { // row1
                                 var matmul_sum: f32 = 0;
                                 for (0..src0_ne0) |src0_i0| { // col0 == col1
-                                    const src0_i_v = @Vector(4, usize){src0_i0, src0_i1, src0_i2, src0_i3};
-                                    const src1_i_v = @Vector(4, usize){src0_i0, src1_i1, src0_i2, src0_i3}; // different row
-                                    const src0_stride_v : @Vector(4, usize) = src0.strides;
-                                    const src1_stride_v : @Vector(4, usize) = src1.strides;
+                                    const src0_i_v = @Vector(4, usize){ src0_i0, src0_i1, src0_i2, src0_i3 };
+                                    const src1_i_v = @Vector(4, usize){ src0_i0, src1_i1, src0_i2, src0_i3 }; // different row
+                                    const src0_stride_v: @Vector(4, usize) = src0.strides;
+                                    const src1_stride_v: @Vector(4, usize) = src1.strides;
                                     const src0_i = @reduce(.Add, src0_i_v * src0_stride_v);
                                     const src1_i = @reduce(.Add, src1_i_v * src1_stride_v);
                                     matmul_sum += src0.data[src0_i] * src1.data[src1_i];
                                 }
                                 // dst col = row1
                                 // dst row = row0
-                                const dst_i_v = @Vector(4, usize){src1_i1, src0_i1, src0_i2, src0_i3};
-                                const dst_stride_v : @Vector(4, usize) = dst.strides;
+                                const dst_i_v = @Vector(4, usize){ src1_i1, src0_i1, src0_i2, src0_i3 };
+                                const dst_stride_v: @Vector(4, usize) = dst.strides;
                                 const dst_i = @reduce(.Add, dst_i_v * dst_stride_v);
                                 dst.data[dst_i] = matmul_sum;
                             }
@@ -607,18 +633,18 @@ pub fn Tensor(comptime T: type) type {
                             for (0..src1_ne0) |src1_i0| { // col1
                                 var matmul_sum: f32 = 0;
                                 for (0..src0_ne1) |src0_i1| { // row0 == row1
-                                    const src0_i_v = @Vector(4, usize){src0_i0, src0_i1, src0_i2, src0_i3};
-                                    const src1_i_v = @Vector(4, usize){src1_i0, src0_i1, src0_i2, src0_i3}; // different column
-                                    const src0_stride_v : @Vector(4, usize) = src0.strides;
-                                    const src1_stride_v : @Vector(4, usize) = src1.strides;
+                                    const src0_i_v = @Vector(4, usize){ src0_i0, src0_i1, src0_i2, src0_i3 };
+                                    const src1_i_v = @Vector(4, usize){ src1_i0, src0_i1, src0_i2, src0_i3 }; // different column
+                                    const src0_stride_v: @Vector(4, usize) = src0.strides;
+                                    const src1_stride_v: @Vector(4, usize) = src1.strides;
                                     const src0_i = @reduce(.Add, src0_i_v * src0_stride_v);
                                     const src1_i = @reduce(.Add, src1_i_v * src1_stride_v);
                                     matmul_sum += src0.data[src0_i] * src1.data[src1_i];
                                 }
                                 // dst col = col1
                                 // dst row = col0
-                                const dst_i_v = @Vector(4, usize){src1_i0, src0_i0, src0_i2, src0_i3};
-                                const dst_stride_v : @Vector(4, usize) = dst.strides;
+                                const dst_i_v = @Vector(4, usize){ src1_i0, src0_i0, src0_i2, src0_i3 };
+                                const dst_stride_v: @Vector(4, usize) = dst.strides;
                                 const dst_i = @reduce(.Add, dst_i_v * dst_stride_v);
                                 dst.data[dst_i] = matmul_sum;
                             }
@@ -628,23 +654,23 @@ pub fn Tensor(comptime T: type) type {
                             for (0..src1_ne1) |src1_i1| { // row1
                                 var matmul_sum: f32 = 0;
                                 for (0..src0_ne1) |src0_i1| { // col1 == row0
-                                    const src0_i_v = @Vector(4, usize){src0_i0, src0_i1, src0_i2, src0_i3};
-                                    const src1_i_v = @Vector(4, usize){src0_i1, src1_i1, src0_i2, src0_i3};
-                                    const src0_stride_v : @Vector(4, usize) = src0.strides;
-                                    const src1_stride_v : @Vector(4, usize) = src1.strides;
+                                    const src0_i_v = @Vector(4, usize){ src0_i0, src0_i1, src0_i2, src0_i3 };
+                                    const src1_i_v = @Vector(4, usize){ src0_i1, src1_i1, src0_i2, src0_i3 };
+                                    const src0_stride_v: @Vector(4, usize) = src0.strides;
+                                    const src1_stride_v: @Vector(4, usize) = src1.strides;
                                     const src0_i = @reduce(.Add, src0_i_v * src0_stride_v);
                                     const src1_i = @reduce(.Add, src1_i_v * src1_stride_v);
                                     matmul_sum += src0.data[src0_i] * src1.data[src1_i];
                                 }
                                 // dst col = row1
                                 // dst row = col0
-                                const dst_i_v = @Vector(4, usize){src1_i1, src0_i0, src0_i2, src0_i3};
-                                const dst_stride_v : @Vector(4, usize) = dst.strides;
+                                const dst_i_v = @Vector(4, usize){ src1_i1, src0_i0, src0_i2, src0_i3 };
+                                const dst_stride_v: @Vector(4, usize) = dst.strides;
                                 const dst_i = @reduce(.Add, dst_i_v * dst_stride_v);
                                 dst.data[dst_i] = matmul_sum;
                             }
                         }
-                    }    
+                    }
                 }
             }
         }
@@ -703,7 +729,7 @@ pub fn Tensor(comptime T: type) type {
                 } else {
                     return self.ne[1] == other.ne[0];
                 }
-            }            
+            }
         }
 
         pub fn isContiguous(self: *Self) bool {
@@ -724,7 +750,7 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// Returns the element at the given coordinates.
-        /// Coordinates are given in the format [col, row, batch, channel] 
+        /// Coordinates are given in the format [col, row, batch, channel]
         /// or [col, row, batch] or [col, row] or [col]
         pub fn get(self: *Self, coords: []const usize) T {
             assert(coords.len == self.n_dims);
@@ -738,7 +764,7 @@ pub fn Tensor(comptime T: type) type {
         /// Print out a summary of this tensor.
         pub fn print(self: *Self) void {
             std.debug.print("----{*}----\n", .{self});
-            std.debug.print("shape: {any}\nstrides: {any}\ndata: {any}\n", .{self.ne, self.strides, self.data});
+            std.debug.print("shape: {any}\nstrides: {any}\ndata: {any}\n", .{ self.ne, self.strides, self.data });
             std.debug.print("--------------------------\n", .{});
         }
 
@@ -778,8 +804,8 @@ test "tensor init" {
         defer tensor.deinit(tac);
         try testing.expectEqual(@as(usize, 6), tensor.nElems());
         const data = [_]f32{
-            1, 2, 
-            3, 4, 
+            1, 2,
+            3, 4,
             5, 6,
         };
         std.mem.copy(f32, tensor.data, &data);
@@ -859,8 +885,8 @@ test "tensor compute matmul_t0" {
     {
         try testing.expectEqual(@as(usize, 6), t1.nElems());
         const data = [_]f32{
-            1, 2, 
-            3, 4, 
+            1, 2,
+            3, 4,
             5, 6,
         };
         std.mem.copy(f32, t1.data, &data);
@@ -870,8 +896,8 @@ test "tensor compute matmul_t0" {
     try testing.expectEqual(@as(usize, 6), t2.nElems());
     {
         const data = [_]f32{
-            1, 2, 
-            3, 4, 
+            1, 2,
+            3, 4,
             5, 6,
         };
         std.mem.copy(f32, t2.data, &data);
@@ -882,13 +908,12 @@ test "tensor compute matmul_t0" {
     dst.computeForwardMatMul(t1, true, t2, false);
 
     const expected = [_]f32{
-         35, 44,
-         44, 56,
+        35, 44,
+        44, 56,
     };
-    const expected_slice : []const f32 = expected[0..];
+    const expected_slice: []const f32 = expected[0..];
     try testing.expectEqualSlices(f32, expected_slice, dst.data);
 }
-
 
 test "tensor compute matmul_t1 2D" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
@@ -896,8 +921,8 @@ test "tensor compute matmul_t1 2D" {
     {
         try testing.expectEqual(@as(usize, 6), t1.nElems());
         const data = [_]f32{
-            1, 2, 
-            3, 4, 
+            1, 2,
+            3, 4,
             5, 6,
         };
         std.mem.copy(f32, t1.data, &data);
@@ -907,8 +932,8 @@ test "tensor compute matmul_t1 2D" {
     try testing.expectEqual(@as(usize, 6), t2.nElems());
     {
         const data = [_]f32{
-            1, 2, 
-            3, 4, 
+            1, 2,
+            3, 4,
             5, 6,
         };
         std.mem.copy(f32, t2.data, &data);
@@ -919,14 +944,13 @@ test "tensor compute matmul_t1 2D" {
     dst.computeForwardMatMul(t1, false, t2, true);
 
     const expected = [_]f32{
-         5, 11, 17,
+        5,  11, 17,
         11, 25, 39,
         17, 39, 61,
     };
-    const expected_slice : []const f32 = expected[0..];
+    const expected_slice: []const f32 = expected[0..];
     try testing.expectEqualSlices(f32, expected_slice, dst.data);
 }
-
 
 test "tensor compute matmul_t1 3D" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 2, 2 });
@@ -934,27 +958,27 @@ test "tensor compute matmul_t1 3D" {
     {
         try testing.expectEqual(@as(usize, 8), t1.nElems());
         const data = [_]f32{
-            1, 2, 
+            1, 2,
             3, 4,
-            // 
+            //
             5, 6,
             7, 8,
         };
         std.mem.copy(f32, t1.data, &data);
-        try testing.expectEqual(@as(f32, 4), t1.get(&.{1, 1, 0}));
-        try testing.expectEqual(@as(f32, 7), t1.get(&.{0, 1, 1}));
+        try testing.expectEqual(@as(f32, 4), t1.get(&.{ 1, 1, 0 }));
+        try testing.expectEqual(@as(f32, 7), t1.get(&.{ 0, 1, 1 }));
     }
     const dst = try t1.matMul(false, tac, t1, true);
     defer dst.deinit(tac);
 
     dst.computeForwardMatMul(t1, false, t1, true);
     const expected = [_]f32{
-        5, 11,
+        5,  11,
         11, 25,
         //
         61, 83,
         83, 113,
     };
-    const expected_slice : []const f32 = expected[0..];
+    const expected_slice: []const f32 = expected[0..];
     try testing.expectEqualSlices(f32, expected_slice, dst.data);
 }

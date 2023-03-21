@@ -1,74 +1,125 @@
 const std = @import("std");
 
-// Although this function looks imperative, note that its job is to
-// declaratively construct a build graph that will be executed by an external
-// runner.
-pub fn build(b: *std.Build) void {
-    // Standard target options allows the person running `zig build` to choose
-    // what target to build for. Here we do not override the defaults, which
-    // means any target is allowed, and the default is native. Other options
-    // for restricting supported target set are available.
-    const target = b.standardTargetOptions(.{});
+pub const Options = struct {
+    use_blas: bool = false,
+};
 
-    // Standard optimization options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
-    // set a preferred release mode, allowing the user to decide how to optimize.
-    const optimize = b.standardOptimizeOption(.{});
-
-    const use_blas = b.option(bool, "use-blas", "use BLAS for matmuls") orelse false;
-    const opts_mod = b.addOptions();
-    opts_mod.addOption(bool, "use-blas", use_blas);
-
-
-    const lib = b.addStaticLibrary(.{
+pub fn module(b: *std.Build) *std.Build.Module {
+    return b.createModule(.{
         .name = "zgml",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
-        .root_source_file = .{ .path = "src/main.zig" },
-        .target = target,
-        .optimize = optimize,
+        .source_file = .{ .path = (comptime thisDir()) ++ "/src/zgml.zig" },
+        .dependencies = &.{
+            .{ .name = "zgml_options", .module = b.getModule("zgml_options") },
+        },
     });
-
-    // Creates a step for unit testing.
-    const main_tests = b.addTest(.{
-        .name = "zgml",
-        .root_source_file = .{ .path = "src/main.zig" },
-        .target = target,
-        .optimize = optimize,
-    });
-
-
-    lib.addOptions("options", opts_mod);
-    main_tests.addOptions("options", opts_mod);
-
-    if (use_blas) {
-        linkBlas(lib);
-        linkBlas(main_tests);
-    }
-
-
-    // This declares intent for the library to be installed into the standard
-    // location when the user invokes the "install" step (the default step when
-    // running `zig build`).
-    lib.install();
-
-    // This creates a build step. It will be visible in the `zig build --help` menu,
-    // and can be selected like this: `zig build test`
-    // This will evaluate the `test` step rather than the default, which is "install".
-    const test_step = b.step("test", "Run library tests");
-    test_step.dependOn(&main_tests.run().step);
 }
 
-fn linkBlas(step: *std.Build.CompileStep) void {
-    step.linkLibC();
-    const host = (std.zig.system.NativeTargetInfo.detect(step.target) catch unreachable).target;
-    switch (host.os.tag) {
-        .macos => {
-            step.linkFramework("Accelerate");
-        },
-        .linux => {
-            step.linkSystemLibrary("cblas");
-        },
-        else => @panic("Unsupported OS"),
+pub const Package = struct {
+    options: Options,
+    zgml: *std.build.Module,
+    zgml_options: *std.Build.Module,
+
+    pub fn link(pkg: Package, exe: *std.Build.CompileStep) void {
+        if (pkg.options.use_blas) {
+            const host = (std.zig.system.NativeTargetInfo.detect(exe.target) catch unreachable).target;
+            exe.linkLibC();
+            switch (host.os.tag) {
+                .windows => {
+                    exe.linkSystemLibrary("libopenblas");
+                },
+                .linux => {
+                    exe.linkSystemLibrary("openblas");
+                },
+                .macos => {
+                    // exe.addSystemLibrary("openblas");
+                    exe.linkFramework("Accelerate");
+                },
+                else => {
+                    @panic("Unsupported host OS");
+                },
+            }
+        }
     }
+};
+
+pub fn package(
+    b: *std.Build,
+    target: std.zig.CrossTarget,
+    optimize: std.builtin.Mode,
+    args: struct {
+        options: Options = .{},
+    },
+) Package {
+    _ = target;
+    _ = optimize;
+    const step = b.addOptions();
+    step.addOption(bool, "use_blas", args.options.use_blas);
+    const zgml_options = step.createModule();
+
+    const zgml = b.createModule(.{
+        .source_file = .{ .path = thisDir() ++ "/src/main.zig" },
+        .dependencies = &.{
+            .{ .name = "zgml_options", .module = zgml_options },
+        },
+    });
+    return .{
+        .options = args.options,
+        .zgml = zgml,
+        .zgml_options = zgml_options,
+    };
+}
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const use_blas = b.option(bool, "use-blas", "Use BLAS library") orelse false;
+
+    const test_step = b.step("test", "Run zgml tests");
+    test_step.dependOn(runTests(b, optimize, target, .{ .use_blas = use_blas }));
+
+    const benchmark_step = b.step("benchmark", "Run zgml benchmarks");
+    benchmark_step.dependOn(runBenchmarks(b, target, .{ .use_blas = use_blas }));
+}
+
+pub fn runTests(
+    b: *std.Build,
+    optimize: std.builtin.Mode,
+    target: std.zig.CrossTarget,
+    options: Options,
+) *std.Build.Step {
+    const test_exe = b.addTest(.{
+        .name = "zgml-tests",
+        .root_source_file = .{ .path = thisDir() ++ "/src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const zgml_pkg = package(b, target, optimize, .{ .options = options });
+    zgml_pkg.link(test_exe);
+    // std.debug.print("zgml_options: {any}\n", .{zgml_pkg.zgml_options});
+    test_exe.addModule("zgml_options", zgml_pkg.zgml_options);
+
+    return &test_exe.run().step;
+}
+
+pub fn runBenchmarks(
+    b: *std.Build,
+    target: std.zig.CrossTarget,
+    options: Options,
+) *std.Build.Step {
+    const exe = b.addExecutable(.{
+        .name = "zgml-benchmarks",
+        .root_source_file = .{ .path = thisDir() ++ "/src/benchmark.zig" },
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const zgml_pkg = package(b, target, .ReleaseFast, .{ .options = options });
+    zgml_pkg.link(exe);
+    exe.addModule("zgml", zgml_pkg.zgml);
+    return &exe.run().step;
+}
+
+inline fn thisDir() []const u8 {
+    return comptime std.fs.path.dirname(@src().file) orelse ".";
 }
