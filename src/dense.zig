@@ -154,21 +154,25 @@ pub fn Tensor(comptime T: type) type {
         pub fn dupInplace(self: *Self, alloc: Alloc) Alloc.Error!*Self {
             return try self.unaryOp(alloc, .dup, true);
         }
-        pub fn add(self: *Self, alloc: Alloc, other: *Self) Alloc.Error!*Self {
+        fn addImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) Alloc.Error!*Self {
             assert(self.isSameShape(other));
-            return try self.binaryOp(alloc, other, .add, false);
+            return try self.binaryOp(alloc, other, .add, inplace);
+        }
+        pub fn add(self: *Self, alloc: Alloc, other: *Self) Alloc.Error!*Self {
+            return try self.addImpl(alloc, other, false);
         }
         pub fn addInplace(self: *Self, alloc: Alloc, other: *Self) Alloc.Error!*Self {
+            return try self.addImpl(alloc, other, true);
+        }
+        fn subImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) Alloc.Error!*Self {
             assert(self.isSameShape(other));
-            return try self.binaryOp(alloc, other, .add, true);
+            return try self.binaryOp(alloc, other, .sub, inplace);
         }
         pub fn sub(self: *Self, alloc: Alloc, other: *Self) Alloc.Error!*Self {
-            assert(self.isSameShape(other));
-            return try self.binaryOp(alloc, other, .sub, false);
+            return try self.addImpl(alloc, other, false);
         }
         pub fn subInplace(self: *Self, alloc: Alloc, other: *Self) Alloc.Error!*Self {
-            assert(self.isSameShape(other));
-            return try self.binaryOp(alloc, other, .sub, true);
+            return try self.addImpl(alloc, other, true);
         }
         /// Element-wise multiply
         pub fn mul(self: *Self, alloc: Alloc, other: *Self) Alloc.Error!*Self {
@@ -388,7 +392,7 @@ pub fn Tensor(comptime T: type) type {
             assert(dst.nElems() == src0.nElems());
 
             if (src0.isContiguous()) {
-                std.mem.copy(T, &dst.data, &src0.data);
+                std.mem.copy(T, dst.data, src0.data);
                 return;
             }
             // TODO: implement non-contiguous dup
@@ -776,20 +780,225 @@ pub fn Tensor(comptime T: type) type {
             }
             return true;
         }
+        fn computeForward(tensor: *Tensor(T)) void {
+            const src0 = tensor.src0;
+            const src1 = tensor.src1;
+            switch (tensor.op) {
+                .none => {},
+                .dup => tensor.computeForwardDup(src0.?),
+                .add => tensor.computeForwardAdd(src0.?, src1.?),
+                .sub => tensor.computeForwardSub(src0.?, src1.?),
+                .mul => tensor.computeForwardMul(src0.?, src1.?),
+                .div => tensor.computeForwardDiv(src0.?, src1.?),
+                .sqr => tensor.computeForwardSqr(src0.?),
+                .sqrt => tensor.computeForwardSqrt(src0.?),
+                .sum => tensor.computeForwardSum(src0.?),
+                .mean => tensor.computeForwardMean(src0.?),
+                .repeat => tensor.computeForwardRepeat(src0.?),
+                .abs => tensor.computeForwardAbs(src0.?),
+                .sgn => tensor.computeForwardSgn(src0.?),
+                .neg => tensor.computeForwardNeg(src0.?),
+                .step => tensor.computeForwardStep(src0.?),
+                .relu => tensor.computeForwardReLu(src0.?),
+                .gelu => tensor.computeForwardGeLu(src0.?),
+                .norm => tensor.computeForwardNorm(src0.?),
+                //
+                .matmul => tensor.computeForwardMatMul(src0.?, false, src1.?, false),
+                .matmul_t0 => tensor.computeForwardMatMul(src0.?, true, src1.?, false),
+                .matmul_t1 => tensor.computeForwardMatMul(src0.?, false, src1.?, true),
+                .matmul_t0t1 => tensor.computeForwardMatMul(src0.?, true, src1.?, true),
+                //
+                // .scale => tensor.computeForwardScale(src0.?),
+                // .cpy => tensor.computeForwardCpy(src0.?),
+                // .reshape => tensor.computeForwardReshape(src0.?),
+                // .view => tensor.computeForwardView(src0.?),
+                // .permute => tensor.computeForwardPermute(src0.?),
+                // .transpose => tensor.computeForwardTranspose(src0.?),
+                // .get_rows,
+                // diag_max_inf,
+                // .soft_max,
+                // .rope,
+                else => @panic("Unimplemented forward OP"),
+            }
+        }
+        fn computeBackward(tensor: *Tensor(T), alloc: Alloc, inplace: bool) Alloc.Error!void {
+            const src0 = tensor.src0;
+            const src1 = tensor.src1;
+            switch (tensor.op) {
+                .none => {},
+                .dup => {
+                    if (src0.grad) |grad| {
+                        src0.grad = try grad.addImpl(alloc, tensor.grad.?, inplace);
+                    }
+                },
+                .add => {
+                    // std.debug.print("Look, I'm computing backward!");
+                    tensor.print();
+                    if (src0.grad) |*grad| {
+                        grad = try grad.addImpl(alloc, tensor.grad.?, inplace);
+                    }
+                    if (src1.grad) |*grad| {
+                        grad = try grad.addImpl(alloc, tensor.grad.?, inplace);
+                    }
+                },
+                .sub => {
+                    if (src0.grad) |*grad| {
+                        grad = try grad.addImpl(alloc, tensor.grad.?, inplace);
+                    }
+                    if (src1.grad) |*grad| {
+                        grad = try grad.subImpl(alloc, tensor.grad.?, inplace);
+                    }
+                },
+                .mul => {
+                    if (src0.grad) |*grad| {
+                        grad = try grad.addImpl(alloc, try grad.mul(src1, tensor.grad), inplace);
+                    }
+                    if (src1.grad) |*grad| {
+                        grad = try grad.addImpl(alloc, try grad.mul(src0, tensor.grad), inplace);
+                    }
+                },
+                // .div,
+                // .sqr,
+                // .sqrt,
+                // .sum,
+                // .mean,
+                // .repeat,
+                // .abs,
+                // .sgn,
+                // .neg,
+                // .step,
+                // .relu,
+                // .gelu,
+                // .norm,
+                // //
+                // .matmul,
+                // .matmul_t0,
+                // .matmul_t1,
+                // .matmul_t0t1,
+                // //
+                // .scale,
+                // .cpy,
+                // .reshape,
+                // .view,
+                // .permute,
+                // .transpose,
+                // .get_rows,
+                // // diag_max_inf,
+                // .soft_max,
+                // .rope,
+                else => {},
+            }
+        }
     };
 }
 
 pub fn ComputeGraph(comptime T: type) type {
     return struct {
-        n_nodes: usize,
-        n_leafs: usize,
-        n_threads: usize,
+        const Self = @This();
 
-        work_size: usize,
-        work: *Tensor(T),
-        nodes: [max_nodes]*Tensor(T),
-        grads: [max_nodes]*Tensor(T),
-        leafs: [max_nodes]*Tensor(T),
+        nodes: std.ArrayList(*Tensor(T)),
+        grads: std.ArrayList(?*Tensor(T)),
+        leaves: std.ArrayList(*Tensor(T)),
+
+        /// Set up resources for compute graph.
+        /// Must call `buildForward` (then optionally `buildBackward`) to be able to do computation.
+        pub fn init(alloc: Alloc) Self {
+            var graph: Self = .{
+                .nodes = std.ArrayList(*Tensor(T)).init(alloc),
+                .grads = std.ArrayList(?*Tensor(T)).init(alloc),
+                .leaves = std.ArrayList(*Tensor(T)).init(alloc),
+            };
+            return graph;
+        }
+        /// Clean up all the resources for this compute graph
+        pub fn deinit(self: *Self) void {
+            self.nodes.deinit();
+            self.grads.deinit();
+            self.leaves.deinit();
+        }
+
+        /// Build a graph where the provided tensor is the final output node
+        pub fn buildForward(self: *Self, tensor: *Tensor(T)) Alloc.Error!void {
+            const n_before = self.nodes.items.len;
+            try self.addParents(tensor);
+            // tensor should be last node
+            const n_change = self.nodes.items.len - n_before;
+            if (n_change > 0) assert(self.nodes.items[self.nodes.items.len - 1] == tensor);
+        }
+        /// Build a backward graph
+        pub fn buildBackward(self: *Self, alloc: Alloc, keep: bool) Alloc.Error!void {
+            assert(self.nodes.items.len > 0);
+            // if we are keeping the gradient graph,
+            // we have to detach the gradient nodes from the original graph
+            if (keep) {
+                for (self.nodes.items, self.grads.items) |node, grad| {
+                    if (node.grad) |node_grad| {
+                        node.grad = try node.dupTensor(alloc);
+                        // TODO: do we need to free something here?
+                        grad.?.* = node_grad.*;
+                    }
+                }
+            }
+            const nodes_len = self.nodes.items.len;
+            for (0..nodes_len) |j| {
+                const i = nodes_len - j - 1;
+                const node = self.nodes.items[i];
+
+                // because we detached the grad nodes from the original graph, we can afford inplace operations
+                if (node.grad != null) {
+                    // TODO: compute backward
+                    // FIXME
+                    // ggml_compute_backward(ctx, node, keep);
+                }
+            }
+            for (0..nodes_len) |j| {
+                const i = nodes_len - j - 1;
+                const node = self.nodes.items[i];
+                if (node.is_param) {
+                    assert(node.grad != null);
+                    // TODO: why?
+                    try self.buildForward(node.grad.?);
+                }
+            }
+        }
+        fn addParents(self: *Self, tensor: *Tensor(T)) Alloc.Error!void {
+            // std.debug.print("Visiting {*}\n", .{tensor});
+            // check if already visited
+            for (self.nodes.items) |node| {
+                if (tensor == node) {
+                    return;
+                }
+            }
+            for (self.leaves.items) |node| {
+                if (tensor == node) {
+                    return;
+                }
+            }
+            // visit parents
+            if (tensor.src0) |ts0| try self.addParents(ts0);
+            if (tensor.src1) |ts1| try self.addParents(ts1);
+            for (tensor.opt) |t_o| {
+                if (t_o) |t| {
+                    try self.addParents(t);
+                }
+            }
+            if (tensor.op == .none and tensor.grad == null) {
+                // is leaf
+                // std.debug.print("Appending {*} to leaves\n", .{tensor});
+                try self.leaves.append(tensor);
+            } else {
+                // std.debug.print("Appending {*} to nodes\n", .{tensor});
+                tensor.print();
+                try self.nodes.append(tensor);
+                try self.grads.append(tensor.grad);
+            }
+        }
+
+        pub fn compute(self: *Self) void {
+            for (self.nodes.items) |node| {
+                node.computeForward();
+            }
+        }
     };
 }
 
@@ -982,3 +1191,53 @@ test "tensor compute matmul_t1 3D" {
     const expected_slice: []const f32 = expected[0..];
     try testing.expectEqualSlices(f32, expected_slice, dst.data);
 }
+
+test "build compute graph - forward" {
+    const t0 = try Tensor(f32).init(tac, &.{1});
+    defer t0.deinit(tac);
+    t0.data[0] = 5;
+    const t1 = try Tensor(f32).init(tac, &.{1});
+    defer t1.deinit(tac);
+    t1.data[0] = 6;
+    const out = try t0.mul(tac, t1);
+    defer out.deinit(tac);
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    try g.buildForward(out);
+    try g.buildBackward(tac, true);
+    g.compute();
+    {
+        const expected = [_]f32{30};
+        try testing.expectEqualSlices(f32, &expected, out.data);
+    }
+}
+
+// test "build compute graph - backward" {
+//     const t0 = try Tensor(f32).init(tac, &.{1});
+//     try t0.setParam(tac);
+//     defer t0.deinit(tac);
+//     t0.data[0] = 5;
+//     const t1 = try Tensor(f32).init(tac, &.{1});
+//     try t1.setParam(tac);
+//     defer t1.deinit(tac);
+//     t1.data[0] = 6;
+//     const out = try t0.add(tac, t1);
+//     defer out.deinit(tac);
+//     var g = ComputeGraph(f32).init(tac);
+//     defer g.deinit();
+//     try g.buildForward(out);
+//     try g.buildBackward(tac, true);
+//     g.compute();
+//     {
+//         const expected = [_]f32{11};
+//         try testing.expectEqualSlices(f32, &expected, out.data);
+//     }
+//     {
+//         const expected = [_]f32{6};
+//         try testing.expectEqualSlices(f32, &expected, t0.grad.?.data);
+//     }
+//     {
+//         const expected = [_]f32{5};
+//         try testing.expectEqualSlices(f32, &expected, t1.grad.?.data);
+//     }
+// }
