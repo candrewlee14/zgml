@@ -78,8 +78,8 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run zgml tests");
     test_step.dependOn(runTests(b, optimize, target, .{ .use_blas = use_blas }));
 
-    const benchmark_step = b.step("benchmark", "Run zgml benchmarks");
-    benchmark_step.dependOn(runBenchmarks(b, target, .{ .use_blas = use_blas }));
+    // const benchmark_step = b.step("benchmark", "Run zgml benchmarks");
+    // benchmark_step.dependOn(runBenchmarks(b, target, .{ .use_blas = use_blas }));
 }
 
 pub fn runTests(
@@ -99,6 +99,7 @@ pub fn runTests(
     zgml_pkg.link(test_exe);
     // std.debug.print("zgml_options: {any}\n", .{zgml_pkg.zgml_options});
     test_exe.addModule("zgml_options", zgml_pkg.zgml_options);
+    test_exe.install();
 
     return &test_exe.run().step;
 }
@@ -117,6 +118,7 @@ pub fn runBenchmarks(
     const zgml_pkg = package(b, target, .ReleaseFast, .{ .options = options });
     zgml_pkg.link(exe);
     exe.addModule("zgml", zgml_pkg.zgml);
+    exe.install();
     return &exe.run().step;
 }
 
