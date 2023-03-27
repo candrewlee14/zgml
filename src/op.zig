@@ -43,7 +43,7 @@ pub const Op = enum {
     //
 
     pub fn symbol(self: *Self) []const u8 {
-        return switch (self) {
+        return switch (self.*) {
             .none => "none",
             .dup => "x",
             .add => "x+y",
@@ -67,7 +67,7 @@ pub const Op = enum {
             .matmul_t0 => "XT*Y",
             .matmul_t1 => "X*YT",
             .matmul_t0t1 => "XT*YT",
-        
+
             //
             .scale => "x*v",
             .cpy => "x->y",
