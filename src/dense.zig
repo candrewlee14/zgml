@@ -58,7 +58,8 @@ pub fn Tensor(comptime T: type) type {
         /// Create a tensor.
         /// The sizes of each dimension are specified by `ne`.
         /// The length of `ne` must be less than or equal to `max_dims`.
-        /// `ne` is in the format [col, row, batch, channel] when using all dimensions.
+        /// `ne` is in the format [#cols, #rows, batch, channel] when using all dimensions.
+        /// The number of columns is the number of elements in a row, thus the data is stored row-major.
         /// The number of dimensions will be infered by `ne.len`.
         /// Must call `deinit` to free.
         pub fn init(alloc: Alloc, ne: []const usize) Alloc.Error!*Self {
@@ -222,6 +223,7 @@ pub fn Tensor(comptime T: type) type {
             assert(!is_node); // TODO: implement backward
             var ne: [max_dims]usize = undefined;
             std.mem.copy(usize, &ne, &self.ne);
+            // #cols
             ne[0] = 1;
             const res = try Self.init(alloc, &ne);
             res.op = .mean;
@@ -292,30 +294,26 @@ pub fn Tensor(comptime T: type) type {
             const is_node = self.grad != null or other.grad != null;
             assert(max_dims == 4); // Need to update this function if max_dims changes
 
-            const ne: [max_dims]usize = lbl: {
-                if (trans_self) {
-                    if (trans_other) {
-                        // col, row
-                        break :lbl .{ other.ne[1], self.ne[0], self.ne[2], other.ne[3] };
-                    } else {
-                        // col, col
-                        break :lbl .{ other.ne[0], self.ne[0], self.ne[2], other.ne[3] };
-                    }
-                } else {
-                    if (trans_other) {
-                        // row, row
-                        break :lbl .{ other.ne[1], self.ne[1], self.ne[2], other.ne[3] };
-                    } else {
-                        // row, col
-                        break :lbl .{ other.ne[0], self.ne[1], self.ne[2], other.ne[3] };
-                    }
-                }
+            const out_ne: [max_dims]usize = lbl: {
+                break :lbl if (!trans_self and !trans_other)
+                    // out #cols = other #cols, out #rows = self #rows
+                    .{ other.ne[0], self.ne[1], self.ne[2], other.ne[3] }
+                else if (trans_self and !trans_other)
+                    // out #cols = other #cols, out #rows = self #cols
+                    .{ other.ne[0], self.ne[0], self.ne[2], other.ne[3] }
+                else if (!trans_self and trans_other)
+                    // out #cols = other #rows, out #rows = self #rows
+                    .{ other.ne[1], self.ne[1], self.ne[2], other.ne[3] }
+                else
+                    // out #cols = other #rows, out #rows = self #cols
+                    .{ other.ne[1], self.ne[0], self.ne[2], other.ne[3] };
             };
-            const res = try Self.init(alloc, ne[0..std.math.min(self.n_dims, other.n_dims)]);
+            const res = try Self.init(alloc, out_ne[0..std.math.min(self.n_dims, other.n_dims)]);
             res.op = if (trans_self) if (trans_other) .matmul_t0t1 else .matmul_t0 else if (trans_other) .matmul_t1 else .matmul;
             res.grad = if (is_node) try res.copyTensorShape(alloc) else null;
             res.src0 = self;
             res.src1 = other;
+            res.assertValidMatMulDims(self, trans_self, other, trans_other);
             return res;
         }
         pub fn scale(self: *Self, alloc: Alloc, other: *Self) Alloc.Error!*Self {
@@ -509,15 +507,7 @@ pub fn Tensor(comptime T: type) type {
             return src0.isContiguous() and src1.isContiguous() and
                 (dst.ne[0] >= 32 and dst.ne[1] >= 32 and src1.ne[0] >= 32);
         }
-        fn computeMatMul(dst: *Self, src0: *Self, comptime trans0: bool, src1: *Self, comptime trans1: bool) void {
-            assert(max_dims == 4); // must update this func if max_dims changes
-
-            // dst is not transposed
-            assert(dst.strides[0] == 1);
-            assert(dst.strides[0] <= dst.strides[1]);
-            assert(dst.strides[1] <= dst.strides[2]);
-            assert(dst.strides[2] <= dst.strides[3]);
-
+        fn assertValidMatMulDims(dst: *Self, src0: *Self, trans0: bool, src1: *Self, trans1: bool) void {
             // src0 and src1 have same outer two dims
             assert(src0.ne[3] == src1.ne[3]);
             assert(src0.ne[2] == src1.ne[2]);
@@ -527,37 +517,45 @@ pub fn Tensor(comptime T: type) type {
 
             if (!trans0 and !trans1) {
                 // src0 and src1 can be matmul'd
-                // src0 cols match src1 rows
+                // src0 #cols match src1 #rows
                 assert(src0.ne[0] == src1.ne[1]);
-                // dst rows match src0 cols
-                assert(dst.ne[1] == src0.ne[0]);
-                // dst cols match src1 rows
-                assert(dst.ne[0] == src1.ne[1]);
-            } else if (!trans0 and trans1) {
-                // src0 and transposed src1 can be matmul'd
-                // same number of cols
-                assert(src0.ne[0] == src1.ne[0]);
-                // dst rows match src0 rows
+                // dst #rows match src0 #rows
                 assert(dst.ne[1] == src0.ne[1]);
-                // dst cols match src1 rows
+                // dst #cols match src1 #cols
+                assert(dst.ne[0] == src1.ne[0]);
+            } else if (!trans0 and trans1) {
+                // same number of #cols (dot product of rows)
+                assert(src0.ne[0] == src1.ne[0]);
+                // dst #rows match src0 #rows
+                assert(dst.ne[1] == src0.ne[1]);
+                // dst #cols match src1 #rows
                 assert(dst.ne[0] == src1.ne[1]);
             } else if (trans0 and !trans1) {
-                // transposed src0 and src1 can be matmul'd
-                // same number of rows
+                // same #rows (dot product of columns)
                 assert(src0.ne[1] == src1.ne[1]);
-                // dst rows match src0 cols
+                // dst #rows match src0 #cols
                 assert(dst.ne[1] == src0.ne[0]);
-                // dst cols match src1 cols
+                // dst #cols match src1 #cols
                 assert(dst.ne[0] == src1.ne[0]);
             } else if (trans0 and trans1) {
                 // transposed src0 and transposed src1 can be matmul'd
-                // src0 rows match src1 cols
+                // src0 #rows match src1 #cols
                 assert(src0.ne[1] == src1.ne[0]);
-                // dst rows match src0 cols
+                // dst #rows match src0 #cols
                 assert(dst.ne[1] == src0.ne[0]);
-                // dst cols match src1 rows
+                // dst #cols match src1 #rows
                 assert(dst.ne[0] == src1.ne[1]);
             }
+        }
+        fn computeMatMul(dst: *Self, src0: *Self, comptime trans0: bool, src1: *Self, comptime trans1: bool) void {
+            assert(max_dims == 4); // must update this func if max_dims changes
+            dst.assertValidMatMulDims(src0, trans0, src1, trans1);
+            // dst is not transposed
+            assert(dst.strides[0] == 1);
+            assert(dst.strides[0] <= dst.strides[1]);
+            assert(dst.strides[1] <= dst.strides[2]);
+            assert(dst.strides[2] <= dst.strides[3]);
+
             const src0_ne3 = src0.ne[3];
             const src0_ne2 = src0.ne[2];
             const src0_ne1 = src0.ne[1];
@@ -726,18 +724,18 @@ pub fn Tensor(comptime T: type) type {
         pub fn canMatMul(self: *Self, transSelf: bool, other: *Self, transOther: bool) bool {
             if (self.ne[3] != other.ne[3]) return false; // channels same
             if (self.ne[2] != other.ne[2]) return false; // batch same
-            if (transSelf) {
-                if (transOther) {
-                    return self.ne[0] == other.ne[1];
-                } else {
-                    return self.ne[0] == other.ne[0];
-                }
+            if (!transSelf and !transOther) {
+                // self #cols == other #rows
+                return self.ne[0] == other.ne[1];
+            } else if (transSelf and !transOther) {
+                // self #rows == other #rows (column dot product)
+                return self.ne[1] == other.ne[1];
+            } else if (!transSelf and transOther) {
+                // self #cols == other #cols (row dot product)
+                return self.ne[0] == other.ne[0];
             } else {
-                if (transOther) {
-                    return self.ne[1] == other.ne[1];
-                } else {
-                    return self.ne[1] == other.ne[0];
-                }
+                // self #rows == other #cols
+                return self.ne[1] == other.ne[0];
             }
         }
 
@@ -759,8 +757,8 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// Returns the element at the given coordinates.
-        /// Coordinates are given in the format [col, row, batch, channel]
-        /// or [col, row, batch] or [col, row] or [col]
+        /// Coordinates are given in the format [col#, row#, batch#, channel#]
+        /// or [col#, row#, batch#] or [col#, row#] or [col#]
         pub fn get(self: *Self, coords: []const usize) T {
             assert(coords.len == self.n_dims);
             var idx: usize = 0;
@@ -1279,7 +1277,8 @@ test "build compute graph - forward matMul" {
         3, 4,
         5, 6,
     });
-    const out = try t1.matMul(true, tac, t1, false);
+    const intermed = try t1.matMul(true, tac, t1, false);
+    const out = try intermed.matMul(false, tac, t1, true);
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit(tac);
     try g.buildForward(out);
@@ -1293,6 +1292,13 @@ test "build compute graph - forward matMul" {
         const expected = [_]f32{
             35, 44,
             44, 56,
+        };
+        try testing.expectEqualSlices(f32, &expected, intermed.data);
+    }
+    {
+        const expected = [_]f32{
+            123, 281, 439, //
+            156, 356, 556,
         };
         try testing.expectEqualSlices(f32, &expected, out.data);
     }
