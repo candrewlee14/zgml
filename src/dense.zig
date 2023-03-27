@@ -108,6 +108,13 @@ pub fn Tensor(comptime T: type) type {
             return tensor;
         }
 
+        /// Set data of this tensor to elements of data parameter.
+        /// Number of elements must match.
+        pub fn setData(self: *Self, data: []const T) void {
+            assert(@as(usize, data.len) == self.nElems());
+            std.mem.copy(f32, self.data, data);
+        }
+
         /// Init a tensor with a single element `val`
         pub fn initScalar(alloc: Alloc, val: T) Alloc.Error!*Self {
             const tensor = try Self.init(alloc, &.{1});
@@ -136,10 +143,6 @@ pub fn Tensor(comptime T: type) type {
 
         fn binaryOp(self: *Self, alloc: Alloc, other: *Self, comptime op: Op, inplace: bool) Alloc.Error!*Self {
             var is_node: bool = !inplace and (self.grad != null or other.grad != null);
-            switch (op) {
-                // .mul, .div, .scale => assert(!is_node), // TODO: implement backward
-                else => {},
-            }
             const res: *Self = if (inplace) try self.view(alloc) else try self.copyTensorShape(alloc);
             res.op = op;
             res.grad = if (is_node) try self.copyTensorShape(alloc) else null;
@@ -216,7 +219,7 @@ pub fn Tensor(comptime T: type) type {
 
         pub fn mean(self: *Self, alloc: Alloc) Alloc.Error!*Self {
             const is_node: bool = self.grad != null;
-            assert(!is_node); // TODO: implement
+            assert(!is_node); // TODO: implement backward
             var ne: [max_dims]usize = undefined;
             std.mem.copy(usize, &ne, &self.ne);
             ne[0] = 1;
@@ -387,7 +390,7 @@ pub fn Tensor(comptime T: type) type {
             res.src1 = null;
             return res;
         }
-        fn computeForwardDup(dst: *Self, src0: *Self) void {
+        fn computeDup(dst: *Self, src0: *Self) void {
             assert(dst.isContiguous());
             assert(dst.nElems() == src0.nElems());
 
@@ -398,105 +401,106 @@ pub fn Tensor(comptime T: type) type {
             // TODO: implement non-contiguous dup
             @panic("Unimplemented forward dup for non-contiguous src");
         }
-        fn computeForwardAdd(dst: *Self, src0: *Self, src1: *Self) void {
+        fn computeAdd(dst: *Self, src0: *Self, src1: *Self) void {
             assert(dst.isSameShape(src0));
             assert(src0.isSameShape(src1));
             for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
                 // TODO: add together elements at same position accounting for strides
+                // TODO: this change needs to happen in all forward functions
                 dst_item.* = src0_item + src1_item;
             }
         }
-        fn computeForwardSub(dst: *Self, src0: *Self, src1: *Self) void {
+        fn computeSub(dst: *Self, src0: *Self, src1: *Self) void {
             assert(dst.isSameShape(src0));
             assert(src0.isSameShape(src1));
             for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
                 dst_item.* = src0_item - src1_item;
             }
         }
-        fn computeForwardMul(dst: *Self, src0: *Self, src1: *Self) void {
+        fn computeMul(dst: *Self, src0: *Self, src1: *Self) void {
             assert(dst.isSameShape(src0));
             assert(src0.isSameShape(src1));
             for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
                 dst_item.* = src0_item * src1_item;
             }
         }
-        fn computeForwardDiv(dst: *Self, src0: *Self, src1: *Self) void {
+        fn computeDiv(dst: *Self, src0: *Self, src1: *Self) void {
             assert(dst.isSameShape(src0));
             assert(src0.isSameShape(src1));
             for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
                 dst_item.* = src0_item / src1_item;
             }
         }
-        fn computeForwardSqr(dst: *Self, src0: *Self) void {
+        fn computeSqr(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             for (src0.data, dst.data) |src0_item, *dst_item| {
                 dst_item.* = src0_item * src0_item;
             }
         }
-        fn computeForwardSqrt(dst: *Self, src0: *Self) void {
+        fn computeSqrt(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             for (src0.data, dst.data) |src0_item, *dst_item| {
                 dst_item.* = std.math.sqrt(src0_item);
             }
         }
-        fn computeForwardSum(dst: *Self, src0: *Self) void {
+        fn computeSum(dst: *Self, src0: *Self) void {
             assert(dst.nElems() == 1);
             for (src0.data) |src0_item| {
                 dst.data[0] += src0_item;
             }
         }
-        fn computeForwardMean(dst: *Self, src0: *Self) void {
+        fn computeMean(dst: *Self, src0: *Self) void {
             _ = src0;
             _ = dst;
             @panic("not implemented");
         }
-        fn computeForwardRepeat(dst: *Self, src0: *Self) void {
+        fn computeRepeat(dst: *Self, src0: *Self) void {
             _ = src0;
             _ = dst;
             @panic("not implemented");
         }
-        fn computeForwardAbs(dst: *Self, src0: *Self) void {
+        fn computeAbs(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             for (src0.data, dst.data) |src0_item, *dst_item| {
                 dst_item.* = @fabs(src0_item);
             }
         }
-        fn computeForwardSgn(dst: *Self, src0: *Self) void {
+        fn computeSgn(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             for (src0.data, dst.data) |src0_item, *dst_item| {
                 dst_item.* = if (src0_item > 0) 1 else if (src0_item < 0) -1 else 0;
             }
         }
-        fn computeForwardNeg(dst: *Self, src0: *Self) void {
+        fn computeNeg(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             for (src0.data, dst.data) |src0_item, *dst_item| {
                 dst_item.* = -src0_item;
             }
         }
-        fn computeForwardStep(dst: *Self, src0: *Self) void {
+        fn computeStep(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             for (src0.data, dst.data) |src0_item, *dst_item| {
                 dst_item.* = if (src0_item > 0) 1 else 0;
             }
         }
-        fn computeForwardReLu(dst: *Self, src0: *Self) void {
+        fn computeReLu(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             for (src0.data, dst.data) |src0_item, *dst_item| {
                 dst_item.* = if (src0_item > 0) src0_item else 0;
             }
         }
-        fn computeForwardGeLu(dst: *Self, src0: *Self) void {
+        fn computeGeLu(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             for (src0.data, dst.data) |x, *dst_item| {
                 dst_item.* = 0.5 * x * (1 + std.math.tanh(SQRT_2_OVER_PI * x * (1 + GELU_COEF_A * x * x)));
             }
         }
-        fn computeForwardNorm(dst: *Self, src0: *Self) void {
+        fn computeNorm(dst: *Self, src0: *Self) void {
             _ = src0;
             _ = dst;
             @panic("Not implemented");
         }
-        fn computeForwardRMSNorm(dst: *Self, src0: *Self) void {
+        fn computeRMSNorm(dst: *Self, src0: *Self) void {
             _ = src0;
             _ = dst;
             @panic("Not implemented");
@@ -505,7 +509,7 @@ pub fn Tensor(comptime T: type) type {
             return src0.isContiguous() and src1.isContiguous() and
                 (dst.ne[0] >= 32 and dst.ne[1] >= 32 and src1.ne[0] >= 32);
         }
-        fn computeForwardMatMul(dst: *Self, src0: *Self, comptime trans0: bool, src1: *Self, comptime trans1: bool) void {
+        fn computeMatMul(dst: *Self, src0: *Self, comptime trans0: bool, src1: *Self, comptime trans1: bool) void {
             assert(max_dims == 4); // must update this func if max_dims changes
 
             // dst is not transposed
@@ -781,40 +785,40 @@ pub fn Tensor(comptime T: type) type {
             }
             return true;
         }
-        fn computeForward(tensor: *Tensor(T)) void {
+        fn compute(tensor: *Tensor(T)) void {
             const src0 = tensor.src0;
             const src1 = tensor.src1;
             switch (tensor.op) {
                 .none => {},
-                .dup => tensor.computeForwardDup(src0.?),
-                .add => tensor.computeForwardAdd(src0.?, src1.?),
-                .sub => tensor.computeForwardSub(src0.?, src1.?),
-                .mul => tensor.computeForwardMul(src0.?, src1.?),
-                .div => tensor.computeForwardDiv(src0.?, src1.?),
-                .sqr => tensor.computeForwardSqr(src0.?),
-                .sqrt => tensor.computeForwardSqrt(src0.?),
-                .sum => tensor.computeForwardSum(src0.?),
-                .mean => tensor.computeForwardMean(src0.?),
-                .repeat => tensor.computeForwardRepeat(src0.?),
-                .abs => tensor.computeForwardAbs(src0.?),
-                .sgn => tensor.computeForwardSgn(src0.?),
-                .neg => tensor.computeForwardNeg(src0.?),
-                .step => tensor.computeForwardStep(src0.?),
-                .relu => tensor.computeForwardReLu(src0.?),
-                .gelu => tensor.computeForwardGeLu(src0.?),
-                .norm => tensor.computeForwardNorm(src0.?),
+                .dup => tensor.computeDup(src0.?),
+                .add => tensor.computeAdd(src0.?, src1.?),
+                .sub => tensor.computeSub(src0.?, src1.?),
+                .mul => tensor.computeMul(src0.?, src1.?),
+                .div => tensor.computeDiv(src0.?, src1.?),
+                .sqr => tensor.computeSqr(src0.?),
+                .sqrt => tensor.computeSqrt(src0.?),
+                .sum => tensor.computeSum(src0.?),
+                .mean => tensor.computeMean(src0.?),
+                .repeat => tensor.computeRepeat(src0.?),
+                .abs => tensor.computeAbs(src0.?),
+                .sgn => tensor.computeSgn(src0.?),
+                .neg => tensor.computeNeg(src0.?),
+                .step => tensor.computeStep(src0.?),
+                .relu => tensor.computeReLu(src0.?),
+                .gelu => tensor.computeGeLu(src0.?),
+                .norm => tensor.computeNorm(src0.?),
                 //
-                .matmul => tensor.computeForwardMatMul(src0.?, false, src1.?, false),
-                .matmul_t0 => tensor.computeForwardMatMul(src0.?, true, src1.?, false),
-                .matmul_t1 => tensor.computeForwardMatMul(src0.?, false, src1.?, true),
-                .matmul_t0t1 => tensor.computeForwardMatMul(src0.?, true, src1.?, true),
+                .matmul => tensor.computeMatMul(src0.?, false, src1.?, false),
+                .matmul_t0 => tensor.computeMatMul(src0.?, true, src1.?, false),
+                .matmul_t1 => tensor.computeMatMul(src0.?, false, src1.?, true),
+                .matmul_t0t1 => tensor.computeMatMul(src0.?, true, src1.?, true),
                 //
-                // .scale => tensor.computeForwardScale(src0.?),
-                // .cpy => tensor.computeForwardCpy(src0.?),
-                // .reshape => tensor.computeForwardReshape(src0.?),
-                // .view => tensor.computeForwardView(src0.?),
-                // .permute => tensor.computeForwardPermute(src0.?),
-                // .transpose => tensor.computeForwardTranspose(src0.?),
+                // .scale => tensor.computeScale(src0.?),
+                // .cpy => tensor.computeCpy(src0.?),
+                // .reshape => tensor.computeReshape(src0.?),
+                // .view => tensor.computeView(src0.?),
+                // .permute => tensor.computePermute(src0.?),
+                // .transpose => tensor.computeTranspose(src0.?),
                 // .get_rows,
                 // diag_max_inf,
                 // .soft_max,
@@ -907,7 +911,7 @@ pub fn Tensor(comptime T: type) type {
                 // // diag_max_inf,
                 // .soft_max,
                 // .rope,
-                else => {},
+                else => @panic("Unimplemented backward OP"),
             }
         }
     };
@@ -977,7 +981,8 @@ pub fn ComputeGraph(comptime T: type) type {
                 for (self.nodes.items, self.grads.items) |node, grad| {
                     if (node.grad) |node_grad| {
                         node.grad = try node.copyTensorShape(alloc);
-                        // TODO: do we need to free something here?
+                        // if we are detaching the node, the user now owns the memory
+                        // so we don't need to free it
                         grad.?.* = node_grad.*;
                     }
                 }
@@ -989,10 +994,7 @@ pub fn ComputeGraph(comptime T: type) type {
 
                 // because we detached the grad nodes from the original graph, we can afford inplace operations
                 if (node.grad != null) {
-                    // TODO: compute backward
-                    // FIXME
                     try node.computeBackward(alloc, &self.scratch, keep);
-                    // ggml_compute_backward(ctx, node, keep);
                 }
             }
             for (0..nodes_len) |j| {
@@ -1000,7 +1002,6 @@ pub fn ComputeGraph(comptime T: type) type {
                 const node = self.nodes.items[i];
                 if (node.is_param) {
                     assert(node.grad != null);
-                    // TODO: why?
                     try self.buildForward(node.grad.?);
                 }
             }
@@ -1074,7 +1075,7 @@ pub fn ComputeGraph(comptime T: type) type {
 
         pub fn compute(self: *const Self) void {
             for (self.nodes.items) |node| {
-                node.computeForward();
+                node.compute();
             }
         }
     };
@@ -1169,96 +1170,81 @@ test "tensor canRepeatTo" {
 test "tensor compute matmul_t0" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
     defer t1.deinit(tac);
-    {
-        try testing.expectEqual(@as(usize, 6), t1.nElems());
-        const data = [_]f32{
-            1, 2,
-            3, 4,
-            5, 6,
-        };
-        std.mem.copy(f32, t1.data, &data);
-    }
+    t1.setData(&[_]f32{
+        1, 2,
+        3, 4,
+        5, 6,
+    });
+
     const t2 = try Tensor(f32).init(tac, &.{ 2, 3 });
     defer t2.deinit(tac);
-    try testing.expectEqual(@as(usize, 6), t2.nElems());
-    {
-        const data = [_]f32{
-            1, 2,
-            3, 4,
-            5, 6,
-        };
-        std.mem.copy(f32, t2.data, &data);
-    }
+    t2.setData(&[_]f32{
+        1, 2,
+        3, 4,
+        5, 6,
+    });
+
     const dst = try t1.matMul(true, tac, t2, false);
     defer dst.deinit(tac);
 
-    dst.computeForwardMatMul(t1, true, t2, false);
+    dst.computeMatMul(t1, true, t2, false);
 
     const expected = [_]f32{
         35, 44,
         44, 56,
     };
-    const expected_slice: []const f32 = expected[0..];
-    try testing.expectEqualSlices(f32, expected_slice, dst.data);
+    try testing.expectEqualSlices(f32, &expected, dst.data);
 }
 
 test "tensor compute matmul_t1 2D" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
+    t1.setData(&[_]f32{
+        1, 2,
+        3, 4,
+        5, 6,
+    });
     defer t1.deinit(tac);
-    {
-        try testing.expectEqual(@as(usize, 6), t1.nElems());
-        const data = [_]f32{
-            1, 2,
-            3, 4,
-            5, 6,
-        };
-        std.mem.copy(f32, t1.data, &data);
-    }
+
     const t2 = try Tensor(f32).init(tac, &.{ 2, 3 });
+    t2.setData(&[_]f32{
+        1, 2,
+        3, 4,
+        5, 6,
+    });
     defer t2.deinit(tac);
-    try testing.expectEqual(@as(usize, 6), t2.nElems());
-    {
-        const data = [_]f32{
-            1, 2,
-            3, 4,
-            5, 6,
-        };
-        std.mem.copy(f32, t2.data, &data);
-    }
+
     const dst = try t1.matMul(false, tac, t2, true);
     defer dst.deinit(tac);
 
-    dst.computeForwardMatMul(t1, false, t2, true);
+    dst.computeMatMul(t1, false, t2, true);
 
     const expected = [_]f32{
         5,  11, 17,
         11, 25, 39,
         17, 39, 61,
     };
-    const expected_slice: []const f32 = expected[0..];
-    try testing.expectEqualSlices(f32, expected_slice, dst.data);
+    try testing.expectEqualSlices(f32, &expected, dst.data);
 }
 
 test "tensor compute matmul_t1 3D" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 2, 2 });
     defer t1.deinit(tac);
-    {
-        try testing.expectEqual(@as(usize, 8), t1.nElems());
-        const data = [_]f32{
-            1, 2,
-            3, 4,
-            //
-            5, 6,
-            7, 8,
-        };
-        std.mem.copy(f32, t1.data, &data);
-        try testing.expectEqual(@as(f32, 4), t1.get(&.{ 1, 1, 0 }));
-        try testing.expectEqual(@as(f32, 7), t1.get(&.{ 0, 1, 1 }));
-    }
+    const data = [_]f32{
+        1, 2,
+        3, 4,
+        //
+        5, 6,
+        7, 8,
+    };
+    t1.setData(&data);
+
+    try testing.expectEqual(@as(f32, 4), t1.get(&.{ 1, 1, 0 }));
+    try testing.expectEqual(@as(f32, 7), t1.get(&.{ 0, 1, 1 }));
+
     const dst = try t1.matMul(false, tac, t1, true);
     defer dst.deinit(tac);
 
-    dst.computeForwardMatMul(t1, false, t1, true);
+    dst.computeMatMul(t1, false, t1, true);
     const expected = [_]f32{
         5,  11,
         11, 25,
@@ -1266,11 +1252,10 @@ test "tensor compute matmul_t1 3D" {
         61, 83,
         83, 113,
     };
-    const expected_slice: []const f32 = expected[0..];
-    try testing.expectEqualSlices(f32, expected_slice, dst.data);
+    try testing.expectEqualSlices(f32, &expected, dst.data);
 }
 
-test "build compute graph - forward" {
+test "build compute graph - forward mul" {
     const t0 = try Tensor(f32).init(tac, &.{1});
     t0.data[0] = 5;
     const t1 = try Tensor(f32).init(tac, &.{1});
@@ -1287,7 +1272,33 @@ test "build compute graph - forward" {
     }
 }
 
-test "build compute graph - forward 2" {
+test "build compute graph - forward matMul" {
+    const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
+    t1.setData(&[_]f32{
+        1, 2,
+        3, 4,
+        5, 6,
+    });
+    const out = try t1.matMul(true, tac, t1, false);
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit(tac);
+    try g.buildForward(out);
+    g.compute();
+    // {
+    //     const dotviz = try g.toGraphViz(tac);
+    //     defer dotviz.deinit();
+    //     std.debug.print("{s}\n", .{dotviz.items});
+    // }
+    {
+        const expected = [_]f32{
+            35, 44,
+            44, 56,
+        };
+        try testing.expectEqualSlices(f32, &expected, out.data);
+    }
+}
+
+test "build compute graph - forward mul & add" {
     const x = try Tensor(f32).initScalar(tac, 3);
     const w = try Tensor(f32).initScalar(tac, 2);
     try w.setParam(tac);
