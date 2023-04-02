@@ -893,11 +893,63 @@ pub fn Tensor(comptime T: type) type {
                 // .relu,
                 // .gelu,
                 // .norm,
-                // //
-                // .matmul,
-                // .matmul_t0,
-                // .matmul_t1,
-                // .matmul_t0t1,
+                //
+                .matmul => {
+                    const src0 = src0_o.?;
+                    const src1 = src1_o.?;
+                    if (src0.grad) |grad| {
+                        try addToScratchUniq(scratch, try tensor.grad.?.matMul(false, alloc, src1, true));
+                        src0.grad = try grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
+                        try addToScratchUniq(scratch, grad); // move the old one into scratch
+                    }
+                    if (src1.grad) |grad| {
+                        try addToScratchUniq(scratch, try src0.matMul(true, alloc, tensor.grad.?, false));
+                        src1.grad = try grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
+                        try addToScratchUniq(scratch, grad); // move the old one into scratch
+                    }
+                },
+                .matmul_t0 => {
+                    const src0 = src0_o.?;
+                    const src1 = src1_o.?;
+                    if (src0.grad) |grad| {
+                        try addToScratchUniq(scratch, try tensor.grad.?.matMul(false, alloc, src1, true));
+                        src0.grad = try grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
+                        try addToScratchUniq(scratch, grad); // move the old one into scratch
+                    }
+                    if (src1.grad) |grad| {
+                        try addToScratchUniq(scratch, try src0.matMul(false, alloc, tensor.grad.?, false));
+                        src1.grad = try grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
+                        try addToScratchUniq(scratch, grad); // move the old one into scratch
+                    }
+                },
+                .matmul_t1 => {
+                    const src0 = src0_o.?;
+                    const src1 = src1_o.?;
+                    if (src0.grad) |grad| {
+                        try addToScratchUniq(scratch, try tensor.grad.?.matMul(false, alloc, src1, false));
+                        src0.grad = try grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
+                        try addToScratchUniq(scratch, grad); // move the old one into scratch
+                    }
+                    if (src1.grad) |grad| {
+                        try addToScratchUniq(scratch, try src0.matMul(true, alloc, tensor.grad.?, false));
+                        src1.grad = try grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
+                        try addToScratchUniq(scratch, grad); // move the old one into scratch
+                    }
+                },
+                .matmul_t0t1 => {
+                    const src0 = src0_o.?;
+                    const src1 = src1_o.?;
+                    if (src0.grad) |grad| {
+                        try addToScratchUniq(scratch, try tensor.grad.?.matMul(true, alloc, src1, false));
+                        src0.grad = try grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
+                        try addToScratchUniq(scratch, grad); // move the old one into scratch
+                    }
+                    if (src1.grad) |grad| {
+                        try addToScratchUniq(scratch, try src0.matMul(false, alloc, tensor.grad.?, true));
+                        src1.grad = try grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
+                        try addToScratchUniq(scratch, grad); // move the old one into scratch
+                    }
+                },
                 // //
                 // .scale,
                 // .cpy,
@@ -1162,6 +1214,77 @@ test "tensor canRepeatTo" {
         const tensor2 = try Tensor(f32).init(tac, &.{ 2, 3, 5 });
         defer tensor2.deinit(tac);
         try testing.expectEqual(true, tensor1.canRepeatTo(tensor2));
+    }
+}
+
+test "tensor compute matmul" {
+    const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
+    defer t1.deinit(tac);
+    t1.setData(&[_]f32{
+        1, 2,
+        3, 4,
+        5, 6,
+    });
+
+    const t2 = try Tensor(f32).init(tac, &.{ 3, 2 });
+    defer t2.deinit(tac);
+    t2.setData(&[_]f32{
+        1, 2, 3,
+        4, 5, 6,
+    });
+
+    const dst = try t1.matMul(false, tac, t2, false);
+    defer dst.deinit(tac);
+
+    dst.computeMatMul(t1, false, t2, false);
+
+    const expected = [_]f32{
+        9,  12, 15,
+        19, 26, 33,
+        29, 40, 51,
+    };
+    try testing.expectEqualSlices(f32, &expected, dst.data);
+}
+
+test "tensor compute graph - matmul" {
+    const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
+    t1.setData(&[_]f32{
+        1, 2,
+        3, 4,
+        5, 6,
+    });
+    try t1.setParam(tac);
+
+    const t2 = try Tensor(f32).init(tac, &.{ 3, 2 });
+    t2.setData(&[_]f32{
+        1, 2, 3,
+        4, 5, 6,
+    });
+    // try t2.setParam(tac); // TODO: fix memleak
+
+    const dst = try t1.matMul(false, tac, t2, false);
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit(tac);
+    try g.buildForward(dst);
+    try g.buildBackward(tac, false);
+
+    _ = dst.grad.?.setAllScalar(1);
+    g.compute();
+    {
+        const expected = [_]f32{
+            9,  12, 15,
+            19, 26, 33,
+            29, 40, 51,
+        };
+        try testing.expectEqualSlices(f32, &expected, dst.data);
+    }
+    {
+        const expected = [_]f32{
+            6, 15,
+            6, 15,
+            6, 15,
+        };
+        try testing.expectEqualSlices(f32, &expected, t1.grad.?.data);
     }
 }
 
