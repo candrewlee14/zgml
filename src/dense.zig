@@ -122,6 +122,15 @@ pub fn Tensor(comptime T: type) type {
             return tensor.setAllScalar(val);
         }
 
+        // init values in the interval [0, 1)
+        pub fn initRand(alloc: Alloc, rng: *std.rand.Random, ne: []const usize) Alloc.Error!*Self {
+            const tensor = try Self.init(alloc, ne);
+            for (tensor.data) |*d| {
+                d.* = rng.float(T);
+            }
+            return tensor;
+        }
+
         /// Create a new tensor as a view of the current tensor's data
         pub fn view(self: *Self, alloc: Alloc) Alloc.Error!*Self {
             return try Self.initHelper(alloc, &self.ne, self.data);
@@ -173,10 +182,10 @@ pub fn Tensor(comptime T: type) type {
             return try self.binaryOp(alloc, other, .sub, inplace);
         }
         pub fn sub(self: *Self, alloc: Alloc, other: *Self) Alloc.Error!*Self {
-            return try self.addImpl(alloc, other, false);
+            return try self.subImpl(alloc, other, false);
         }
         pub fn subInplace(self: *Self, alloc: Alloc, other: *Self) Alloc.Error!*Self {
-            return try self.addImpl(alloc, other, true);
+            return try self.subImpl(alloc, other, true);
         }
         /// Element-wise multiply
         pub fn mul(self: *Self, alloc: Alloc, other: *Self) Alloc.Error!*Self {
@@ -416,17 +425,41 @@ pub fn Tensor(comptime T: type) type {
             }
         }
         fn computeMul(dst: *Self, src0: *Self, src1: *Self) void {
-            assert(dst.isSameShape(src0));
-            assert(src0.isSameShape(src1));
-            for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
-                dst_item.* = src0_item * src1_item;
+            if (src0.isScalar()) {
+                assert(dst.isSameShape(src1));
+                for (src1.data, dst.data) |src1_item, *dst_item| {
+                    dst_item.* = src0.data[0] * src1_item;
+                }
+            } else if (src1.isScalar()) {
+                assert(dst.isSameShape(src0));
+                for (src0.data, dst.data) |src0_item, *dst_item| {
+                    dst_item.* = src0_item * src1.data[0];
+                }
+            } else {
+                assert(dst.isSameShape(src0));
+                assert(src0.isSameShape(src1));
+                for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
+                    dst_item.* = src0_item * src1_item;
+                }
             }
         }
         fn computeDiv(dst: *Self, src0: *Self, src1: *Self) void {
-            assert(dst.isSameShape(src0));
-            assert(src0.isSameShape(src1));
-            for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
-                dst_item.* = src0_item / src1_item;
+            if (src0.isScalar()) {
+                assert(dst.isSameShape(src1));
+                for (src1.data, dst.data) |src1_item, *dst_item| {
+                    dst_item.* = src0.data[0] / src1_item;
+                }
+            } else if (src1.isScalar()) {
+                assert(dst.isSameShape(src0));
+                for (src0.data, dst.data) |src0_item, *dst_item| {
+                    dst_item.* = src0_item / src1.data[0];
+                }
+            } else {
+                assert(dst.isSameShape(src0));
+                assert(src0.isSameShape(src1));
+                for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
+                    dst_item.* = src0_item / src1_item;
+                }
             }
         }
         fn computeSqr(dst: *Self, src0: *Self) void {
@@ -830,7 +863,7 @@ pub fn Tensor(comptime T: type) type {
             }
             try scratch.append(tensor);
         }
-        fn computeBackward(tensor: *Tensor(T), alloc: Alloc, scratch: *std.ArrayList(*Tensor(T)), inplace: bool) Alloc.Error!void {
+        fn backward(tensor: *Tensor(T), alloc: Alloc, scratch: *std.ArrayList(*Tensor(T)), inplace: bool) Alloc.Error!void {
             const src0_o = tensor.src0;
             const src1_o = tensor.src1;
             switch (tensor.op) {
@@ -839,7 +872,6 @@ pub fn Tensor(comptime T: type) type {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
                         src0.grad = try grad.addImpl(alloc, tensor.grad.?, inplace);
-                        try addToScratchUniq(scratch, grad); // move the old one into scratch
                     }
                 },
                 .add => {
@@ -847,11 +879,9 @@ pub fn Tensor(comptime T: type) type {
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
                         src0.grad = try grad.addImpl(alloc, tensor.grad.?, inplace);
-                        try addToScratchUniq(scratch, grad); // move the old one into scratch
                     }
                     if (src1.grad) |grad| {
                         src1.grad = try grad.addImpl(alloc, tensor.grad.?, inplace);
-                        try addToScratchUniq(scratch, grad); // move the old one into scratch
                     }
                 },
                 .sub => {
@@ -859,29 +889,70 @@ pub fn Tensor(comptime T: type) type {
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
                         src0.grad = try grad.addImpl(alloc, tensor.grad.?, inplace);
-                        try addToScratchUniq(scratch, grad); // move the old one into scratch
                     }
                     if (src1.grad) |grad| {
                         src1.grad = try grad.subImpl(alloc, tensor.grad.?, inplace);
-                        try addToScratchUniq(scratch, grad); // move the old one into scratch
                     }
                 },
                 .mul => {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        try addToScratchUniq(scratch, try src1.mul(alloc, tensor.grad.?));
-                        src0.grad = try grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(scratch, grad); // move the old one into scratch
+                        const src1_x = try src1.mul(alloc, tensor.grad.?);
+                        // remove grad
+                        if (src1_x.grad) |gradp| {
+                            gradp.deinit(alloc);
+                            src1_x.grad = null;
+                        }
+                        src0.grad = try grad.addImpl(alloc, src1_x, inplace);
                     }
                     if (src1.grad) |grad| {
-                        try addToScratchUniq(scratch, try src0.mul(alloc, tensor.grad.?));
-                        src1.grad = try grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(scratch, grad); // move the old one into scratch
+                        const src0_x = try src0.mul(alloc, tensor.grad.?);
+                        // remove grad
+                        if (src0_x.grad) |gradp| {
+                            gradp.deinit(alloc);
+                            src0_x.grad = null;
+                        }
+                        src0.grad = try grad.addImpl(alloc, src0_x, inplace);
                     }
                 },
-                // .div,
-                // .sqr,
+                .div => {
+                    const src0 = src0_o.?;
+                    const src1 = src1_o.?;
+                    if (src0.grad) |grad| {
+                        const src1_x = try src1.div(alloc, tensor.grad.?);
+                        // remove grad
+                        if (src1_x.grad) |gradp| {
+                            gradp.deinit(alloc);
+                            src1_x.grad = null;
+                        }
+                        src0.grad = try grad.addImpl(alloc, src1_x, inplace);
+                    }
+                    if (src1.grad) |grad| {
+                        const src0_x = try src0.div(alloc, tensor.grad.?);
+                        // remove grad
+                        if (src0_x.grad) |gradp| {
+                            gradp.deinit(alloc);
+                            src0_x.grad = null;
+                        }
+                        src0.grad = try grad.addImpl(alloc, src0_x, inplace);
+                    }
+                },
+                .sqr => {
+                    const src0 = src0_o.?;
+                    if (src0.grad) |grad| {
+                        // src_grad = 2 * src * out_grad
+                        const t2 = try Self.initScalar(alloc, 2);
+                        const src0_2 = try src0.mul(alloc, t2);
+                        // remove grad
+                        if (src0_2.grad) |gradp| {
+                            gradp.deinit(alloc);
+                            src0_2.grad = null;
+                        }
+                        const src0_2_grad = try src0_2.mul(alloc, tensor.grad.?);
+                        src0.grad = try grad.addImpl(alloc, src0_2_grad, inplace);
+                    }
+                },
                 // .sqrt,
                 // .sum,
                 // .mean,
@@ -898,16 +969,25 @@ pub fn Tensor(comptime T: type) type {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        try addToScratchUniq(scratch, try tensor.grad.?.matMul(false, alloc, src1, true));
-                        src0.grad = try grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(scratch, grad); // move the old one into scratch
+                        const z = try tensor.grad.?.matMul(false, alloc, src1, true);
+                        // remove grad
+                        if (z.grad) |gradp| {
+                            gradp.deinit(alloc);
+                            z.grad = null;
+                        }
+                        src0.grad = try grad.addImpl(alloc, z, inplace);
                     }
                     if (src1.grad) |grad| {
-                        try addToScratchUniq(scratch, try src0.matMul(true, alloc, tensor.grad.?, false));
-                        src1.grad = try grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(scratch, grad); // move the old one into scratch
+                        const z = try src0.matMul(true, alloc, tensor.grad.?, false);
+                        // remove grad
+                        if (z.grad) |gradp| {
+                            gradp.deinit(alloc);
+                            z.grad = null;
+                        }
+                        src1.grad = try grad.addImpl(alloc, z, inplace);
                     }
                 },
+                // TODO: remove add to scratch
                 .matmul_t0 => {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
@@ -1027,16 +1107,16 @@ pub fn ComputeGraph(comptime T: type) type {
             assert(self.nodes.items.len > 0);
             // if we are keeping the gradient graph,
             // we have to detach the gradient nodes from the original graph
-            if (keep) {
-                for (self.nodes.items, self.grads.items) |node, grad| {
-                    if (node.grad) |node_grad| {
-                        node.grad = try node.copyTensorShape(alloc);
-                        // if we are detaching the node, the user now owns the memory
-                        // so we don't need to free it
-                        grad.?.* = node_grad.*;
-                    }
-                }
-            }
+            // if (keep) {
+            //     for (self.nodes.items, self.grads.items) |node, grad| {
+            //         if (node.grad) |node_grad| {
+            //             node.grad = try node.copyTensorShape(alloc);
+            //             // if we are detaching the node, the user now owns the memory
+            //             // so we don't need to free it
+            //             grad.?.* = node_grad.*;
+            //         }
+            //     }
+            // }
             const nodes_len = self.nodes.items.len;
             for (0..nodes_len) |j| {
                 const i = nodes_len - j - 1;
@@ -1044,7 +1124,7 @@ pub fn ComputeGraph(comptime T: type) type {
 
                 // because we detached the grad nodes from the original graph, we can afford inplace operations
                 if (node.grad != null) {
-                    try node.computeBackward(alloc, &self.scratch, keep);
+                    try node.backward(alloc, &self.scratch, keep);
                 }
             }
             for (0..nodes_len) |j| {
@@ -1094,7 +1174,7 @@ pub fn ComputeGraph(comptime T: type) type {
             const writer = str.writer();
             try writer.print("digraph G {{\n", .{});
             for (self.nodes.items) |node| {
-                try writer.print("  \"{*}\" [label=<<table><tr><td>\"{any}\"</td></tr><tr><td>{s}</td></tr></table>>];\n", .{ node, node.data, node.op.symbol() });
+                try writer.print("  \"{*}\" [shape=\"none\",label=<<table><tr><td>{s}</td></tr><tr><td>{any}</td></tr></table>>];\n", .{ node, node.op.symbol(), node.data });
                 if (node.src0) |src0| {
                     try writer.print("  \"{*}\" -> \"{*}\";\n", .{ src0, node });
                 }
@@ -1286,6 +1366,13 @@ test "tensor compute graph - matmul" {
         };
         try testing.expectEqualSlices(f32, &expected, t1.grad.?.data);
     }
+    // {
+    //     const expected = [_]f32{
+    //         9,  9,  9,
+    //         12, 12, 12,
+    //     };
+    //     try testing.expectEqualSlices(f32, &expected, t2.grad.?.data);
+    // }
 }
 
 test "tensor compute matmul_t0" {
@@ -1482,5 +1569,49 @@ test "build compute graph - backward" {
     {
         const expected = [_]f32{1};
         try testing.expectEqualSlices(f32, &expected, b.grad.?.data);
+    }
+}
+
+fn testF(x: *Tensor(f32)) Alloc.Error!*Tensor(f32) {
+    return try x.sqr(tac);
+}
+
+test "build compute graph - backward - testF" {
+    const x = try Tensor(f32).initScalar(tac, 3);
+    try x.setParam(tac);
+    const out = try testF(x);
+    // x^2
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit(tac);
+    try g.buildForward(out);
+    try g.buildBackward(tac, true);
+
+    _ = out.grad.?.setAllScalar(1);
+    g.compute();
+    {
+        const expected = [_]f32{9};
+        try testing.expectEqualSlices(f32, &expected, out.data);
+    }
+    {
+        const expected = [_]f32{6};
+        try testing.expectEqualSlices(f32, &expected, x.grad.?.data);
+    }
+    const iters = 10;
+    for (0..iters) |_| {
+        g.compute();
+    }
+    // {
+    //     const dotviz = try g.toGraphViz(tac);
+    //     defer dotviz.deinit();
+    //     std.debug.print("{s}\n", .{dotviz.items});
+    // }
+    {
+        const expected = [_]f32{9};
+        try testing.expectEqualSlices(f32, &expected, out.data);
+    }
+    // accumulated gradient
+    {
+        const expected = [_]f32{6 * (iters + 1)};
+        try testing.expectEqualSlices(f32, &expected, x.grad.?.data);
     }
 }
