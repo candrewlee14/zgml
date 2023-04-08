@@ -68,6 +68,15 @@ pub fn Tensor(comptime T: type) type {
             return try initHelper(alloc, ne, null);
         }
 
+        pub fn initArange(alloc: Alloc, ne: []const usize, start: T, end: T) Alloc.Error!*Self {
+            const tensor = try Self.init(alloc, ne);
+            const diff = (end - start) / @intToFloat(T, tensor.nElems());
+            for (tensor.data, 0..) |*d, i| {
+                d.* = start + diff * @intToFloat(T, i);
+            }
+            return tensor;
+        }
+
         /// Free this tensor and its owned resources
         pub fn deinit(self: *Self) void {
             if (self.data_owned) self.alloc.free(self.data);
@@ -144,7 +153,7 @@ pub fn Tensor(comptime T: type) type {
             return try Self.initHelper(self.alloc, &self.ne, null);
         }
 
-        fn unaryOp(self: *Self, comptime op: Op, inplace: bool) Alloc.Error!*Self {
+        fn unaryOp(self: *Self, op: Op, inplace: bool) Alloc.Error!*Self {
             const is_node: bool = !inplace and self.grad != null;
             const res = if (inplace) try self.view() else try self.copyTensorShape();
             res.op = op;
@@ -154,14 +163,20 @@ pub fn Tensor(comptime T: type) type {
             return res;
         }
 
-        fn binaryOp(self: *Self, other: *Self, comptime op: Op, inplace: bool) Alloc.Error!*Self {
+        fn binaryOp(self: *Self, other: *Self, op: Op, inplace: bool) Alloc.Error!*Self {
             // if (self.isScalar()) {
             //     return try other.binaryOp(alloc, self, op, inplace);
             // }
             var is_node: bool = !inplace and (self.grad != null or other.grad != null);
-            const res: *Self = if (inplace) try self.view() else try self.copyTensorShape();
+            const res: *Self = if (other.canRepeatTo(self))
+                (if (inplace) try self.view() else try self.copyTensorShape())
+            else
+                (if (inplace) try other.view() else try other.copyTensorShape());
             res.op = op;
-            res.grad = if (is_node) try self.copyTensorShape() else null;
+            res.grad = if (is_node)
+                (if (other.canRepeatTo(self)) try self.copyTensorShape() else try other.copyTensorShape())
+            else
+                null;
             res.src0 = self;
             res.src1 = other;
 
@@ -184,7 +199,6 @@ pub fn Tensor(comptime T: type) type {
             return try self.addImpl(other, true);
         }
         fn subImpl(self: *Self, other: *Self, inplace: bool) Alloc.Error!*Self {
-            assert(self.isSameShape(other));
             return try self.binaryOp(other, .sub, inplace);
         }
         pub fn sub(self: *Self, other: *Self) Alloc.Error!*Self {
@@ -414,11 +428,11 @@ pub fn Tensor(comptime T: type) type {
             @panic("Unimplemented forward dup for non-contiguous src");
         }
         fn computeAdd(dst: *Self, src0: *Self, src1: *Self) void {
+            // TODO: add together elements at same position accounting for strides
+            // TODO: this change needs to happen in all forward functions
             if (src0.isSameShape(src1)) {
                 assert(dst.isSameShape(src0));
                 for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
-                    // TODO: add together elements at same position accounting for strides
-                    // TODO: this change needs to happen in all forward functions
                     dst_item.* = src0_item + src1_item;
                 }
             } else if (src1.isScalar()) {
@@ -434,10 +448,25 @@ pub fn Tensor(comptime T: type) type {
             }
         }
         fn computeSub(dst: *Self, src0: *Self, src1: *Self) void {
-            assert(dst.isSameShape(src0));
-            assert(src0.isSameShape(src1));
-            for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
-                dst_item.* = src0_item - src1_item;
+            // TODO: add together elements at same position accounting for strides
+            // TODO: this change needs to happen in all forward functions
+            if (src0.isSameShape(src1)) {
+                assert(dst.isSameShape(src0));
+                for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
+                    dst_item.* = src0_item - src1_item;
+                }
+            } else if (src1.isScalar()) {
+                assert(dst.isSameShape(src0));
+                for (src0.data, dst.data) |src0_item, *dst_item| {
+                    dst_item.* = src0_item - src1.data[0];
+                }
+            } else if (src0.isScalar()) {
+                assert(dst.isSameShape(src1));
+                for (src1.data, dst.data) |src1_item, *dst_item| {
+                    dst_item.* = src0.data[0] - src1_item;
+                }
+            } else {
+                @panic("Unimplemented forward sub for src sizes");
             }
         }
         fn computeMul(dst: *Self, src0: *Self, src1: *Self) void {
@@ -497,9 +526,11 @@ pub fn Tensor(comptime T: type) type {
             }
         }
         fn computeMean(dst: *Self, src0: *Self) void {
-            _ = src0;
-            _ = dst;
-            @panic("not implemented");
+            assert(dst.nElems() == 1);
+            for (src0.data) |src0_item| {
+                dst.data[0] += src0_item;
+            }
+            dst.data[0] /= @intToFloat(T, src0.nElems());
         }
         fn computeRepeat(dst: *Self, src0: *Self) void {
             _ = src0;
@@ -887,13 +918,22 @@ pub fn Tensor(comptime T: type) type {
                 .dup => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
-                        src0.grad = try grad.addImpl(tensor.grad.?, inplace);
+                        const new_grad = try grad.addImpl(tensor.grad.?, inplace);
+                        assert(new_grad.hasSameShape(grad));
+                        src0.grad = new_grad;
                     }
                 },
                 .add => {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
+                        // TODO: since add can coerce shapes, we need to reduce back to the original shape if they are different
+                        // TODO: this is a problem for all ops that can coerce shapes
+                        // TODO: scalar + vector, for example, when added together, will have the same shape as the vector
+                        // TODO: if the scalar had a grad, the grad would now be the same shape as the vector
+                        // TODO: we need to reduce the grad back to the original shape of the scalar with average
+                        // TODO: Consider broadcastable ops: https://pytorch.org/docs/stable/notes/broadcasting.html
+                        // TODO: http://coldattic.info/post/116/
                         src0.grad = try grad.addImpl(tensor.grad.?, inplace);
                     }
                     if (src1.grad) |grad| {
@@ -1195,7 +1235,8 @@ pub fn ComputeGraph(comptime T: type) type {
             const writer = str.writer();
             try writer.print("digraph G {{\n", .{});
             for (self.nodes.items) |node| {
-                try writer.print("  \"{*}\" [shape=\"none\",label=<<table><tr><td>{s}</td></tr><tr><td>{any}</td></tr></table>>];\n", .{ node, node.op.symbol(), node.data });
+                // try writer.print("  \"{*}\" [shape=\"none\",label=<<table><tr><td>{s}</td></tr><tr><td>{any}</td></tr></table>>];\n", .{ node, node.op.symbol(), node.data });
+                try writer.print("  \"{*}\" [shape=\"none\",label=<<table><tr><td>{s}</td></tr><tr><td>{any}</td></tr></table>>];\n", .{ node, node.op.symbol(), node.ne });
                 if (node.src0) |src0| {
                     try writer.print("  \"{*}\" -> \"{*}\";\n", .{ src0, node });
                 }
@@ -1256,6 +1297,25 @@ test "tensor init" {
         const tensor = try Tensor(f32).init(tac, &.{ 5, 3, 2 });
         defer tensor.deinit();
         try testing.expectEqual(@as(usize, 30), tensor.nElems());
+    }
+}
+
+test "tensor initArange" {
+    {
+        const t = try Tensor(f32).initArange(tac, &.{20}, 0, 20);
+        defer t.deinit();
+        try testing.expectEqual(@as(usize, 20), t.nElems());
+        for (t.data, 0..) |v, i| {
+            try testing.expectEqual(@intToFloat(f32, i), v);
+        }
+    }
+    {
+        const t = try Tensor(f32).initArange(tac, &.{20}, 0, 10);
+        defer t.deinit();
+        try testing.expectEqual(@as(usize, 20), t.nElems());
+        for (t.data, 0..) |v, i| {
+            try testing.expectEqual(@intToFloat(f32, i) * 0.5, v);
+        }
     }
 }
 
@@ -1660,7 +1720,110 @@ test "build compute graph - backward - testSqrSumFunc" {
         try testing.expectEqualSlices(f32, &expected, out.data);
     }
     {
+        // 2 * xt
         const expected = [_]f32{ 6, 8, 20 };
         try testing.expectEqualSlices(f32, &expected, x.grad.?.data);
+    }
+}
+
+test "time speed equation test" {
+    {
+        const time = try Tensor(f32).initArange(tac, &.{20}, 0, 20);
+
+        const c0 = try Tensor(f32).initScalar(tac, 0.75);
+        const c1 = try Tensor(f32).initScalar(tac, 9.5);
+        const c2 = try Tensor(f32).initScalar(tac, 1);
+
+        const inner = try time.sub(c1);
+        const inner2 = try inner.sqr();
+        const inner3 = try inner2.mul(c0);
+        const speed = try inner3.add(c2);
+
+        var g = ComputeGraph(f32).init(tac);
+        defer g.deinit();
+        try g.buildForward(speed);
+        g.compute();
+
+        try testing.expectEqual(@as(usize, 20), time.nElems());
+        for (time.data, speed.data) |t, s| {
+            const t1 = t - 9.5;
+            try testing.expectEqual(0.75 * (t1 * t1) + 1, s);
+        }
+    }
+}
+
+fn mseFunc(x: *Tensor(f32), y: *Tensor(f32)) Alloc.Error!*Tensor(f32) {
+    const diff = try x.sub(y);
+    const diff2 = try diff.sqr();
+    return try diff2.sum(); // TODO: switch to mean
+}
+
+const QuadraticModel = struct {
+    const Self = @This();
+
+    params: [3]*Tensor(f32),
+    g: ComputeGraph(f32),
+    out: *Tensor(f32),
+    loss: *Tensor(f32),
+
+    fn build(alloc: Alloc, a: f32, b: f32, c1: f32, xs: *Tensor(f32), ys: *Tensor(f32)) !QuadraticModel {
+        var p = QuadraticModel{
+            .params = .{ try Tensor(f32).initScalar(alloc, a), try Tensor(f32).initScalar(alloc, b), try Tensor(f32).initScalar(alloc, c1) },
+            .g = ComputeGraph(f32).init(alloc),
+            .out = undefined,
+            .loss = undefined,
+        };
+        for (p.params) |param| {
+            try param.setParam();
+        }
+        const xsq = try xs.sqr();
+        const axsq = try p.params[0].mul(xsq);
+        const bx = try p.params[1].mul(xs);
+        const axsqPlusBx = try axsq.add(bx);
+
+        p.out = try axsqPlusBx.add(p.params[2]);
+        p.loss = try mseFunc(p.out, ys);
+        try p.g.buildForward(p.loss);
+        try p.g.buildBackward(true);
+        return p;
+    }
+
+    fn deinit(self: *Self) void {
+        self.g.deinit();
+        // for (self.params) |p| {
+        //     p.deinit();
+        // }
+    }
+
+    fn compute(self: *Self) void {
+        self.g.resetGrads();
+        self.g.compute();
+    }
+    fn step(self: *Self, lr: *Tensor(f32)) void {
+        for (self.params) |p| {
+            const g = p.grad.?;
+            g.computeMul(g, lr);
+            p.computeSub(p, g);
+        }
+    }
+};
+
+test "QuadraticModel" {
+    const time = try Tensor(f32).initArange(tac, &.{20}, 0, 20);
+    const speed = try Tensor(f32).initArange(tac, &.{20}, 5, 25);
+
+    var model = try QuadraticModel.build(tac, 0.01, 0.01, 0.01, time, speed);
+    defer model.deinit();
+    const lr = try Tensor(f32).initScalar(tac, 0.01);
+
+    for (0..10) |_| {
+        model.compute();
+        {
+            const dotviz = try model.g.toGraphViz();
+            defer dotviz.deinit();
+            std.debug.print("{s}\n", .{dotviz.items});
+        }
+        model.step(lr);
+        std.debug.print("loss: {d}\n", .{model.loss.data[0]});
     }
 }
