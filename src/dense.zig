@@ -854,6 +854,16 @@ pub fn Tensor(comptime T: type) type {
             std.debug.print("shape: {any}\nstrides: {any}\ndata: {any}\n", .{ self.ne, self.strides, self.data });
             std.debug.print("--------------------------\n", .{});
         }
+        /// Checks if two tensors are broadcastable.
+        /// More info here: https://pytorch.org/docs/stable/notes/broadcasting.html
+        pub fn isBroadcastable(self: *Self, other: *Self) bool {
+            for (self.ne, other.ne) |selfNe, otherNe| {
+                if (selfNe != otherNe and selfNe != 1 and otherNe != 1) {
+                    return false;
+                }
+            }
+            return true;
+        }
 
         pub fn isSameShape(self: *Self, other: *Self) bool {
             for (self.ne, other.ne) |selfNe, otherNe| {
@@ -919,7 +929,7 @@ pub fn Tensor(comptime T: type) type {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
                         const new_grad = try grad.addImpl(tensor.grad.?, inplace);
-                        assert(new_grad.hasSameShape(grad));
+                        assert(new_grad.isSameShape(grad));
                         src0.grad = new_grad;
                     }
                 },
