@@ -415,10 +415,10 @@ test "time speed equation test" {
         const c1 = try Tensor(f32).initScalar(tac, 9.5);
         const c2 = try Tensor(f32).initScalar(tac, 1);
 
-        const inner = try time.sub(c1);
+        const inner = try time.sub(try c1.repeatLike(time));
         const inner2 = try inner.sqr();
-        const inner3 = try inner2.mul(c0);
-        const speed = try inner3.add(c2);
+        const inner3 = try inner2.mul(try c0.repeatLike(inner2));
+        const speed = try inner3.add(try c2.repeatLike(inner3));
 
         var g = ComputeGraph(f32).init(tac);
         defer g.deinit();
