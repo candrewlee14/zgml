@@ -135,7 +135,17 @@ pub fn ComputeGraph(comptime T: type) type {
             try writer.print("digraph G {{\n", .{});
             for (self.nodes.items) |node| {
                 // try writer.print("  \"{*}\" [shape=\"none\",label=<<table><tr><td>{s}</td></tr><tr><td>{any}</td></tr></table>>];\n", .{ node, node.op.symbol(), node.data });
-                try writer.print("  \"{*}\" [shape=\"none\",label=<<table><tr><td>{s}</td></tr><tr><td>{any}</td></tr></table>>];\n", .{ node, node.op.symbol(), node.ne });
+                try writer.print("  \"{*}\" [shape=\"none\",label=<<table>", .{node});
+                if (node.op == .none) {
+                    try writer.print("<tr><td>{any}</td></tr>", .{node.data});
+                } else {
+                    try writer.print("<tr><td>{s}</td></tr>", .{node.op.symbol()});
+                }
+                if (node.name) |name| {
+                    try writer.print("<tr><td>{s}</td></tr>", .{name});
+                }
+                try writer.print("<tr><td>{any}</td></tr>", .{node.ne});
+                try writer.print("</table>>];\n", .{});
                 if (node.src0) |src0| {
                     try writer.print("  \"{*}\" -> \"{*}\";\n", .{ src0, node });
                 }
@@ -449,7 +459,13 @@ const QuadraticModel = struct {
 
     fn build(alloc: Alloc, a: f32, b: f32, c1: f32, xs: *Tensor(f32), ys: *Tensor(f32)) !QuadraticModel {
         var p = QuadraticModel{
-            .params = .{ try Tensor(f32).initScalar(alloc, a), try Tensor(f32).initScalar(alloc, b), try Tensor(f32).initScalar(alloc, c1) },
+            // zig fmt: off
+            .params = .{ 
+                try Tensor(f32).initScalar(alloc, a), 
+                try Tensor(f32).initScalar(alloc, b), 
+                try Tensor(f32).initScalar(alloc, c1) 
+            },
+            // zig fmt: on
             .g = ComputeGraph(f32).init(alloc),
             .out = undefined,
             .loss = undefined,
@@ -457,13 +473,19 @@ const QuadraticModel = struct {
         for (p.params) |param| {
             try param.setParam();
         }
-        const xsq = try xs.sqr();
-        const axsq = try p.params[0].mul(xsq);
-        const bx = try p.params[1].mul(xs);
-        const axsqPlusBx = try axsq.add(bx);
+        const xsq = try xs.sqr(); // x^2
+        xsq.name = "x^2";
+        const axsq = try xsq.mul(try p.params[0].repeatLike(xsq)); // a*x^2
+        axsq.name = "a*x^2";
+        const bx = try xs.mul(try p.params[1].repeatLike(xs)); // b*x
+        bx.name = "b*x";
+        const axsqPlusBx = try axsq.add(bx); // a*x^2 + b*x
+        axsqPlusBx.name = "a*x^2 + b*x";
 
-        p.out = try axsqPlusBx.add(p.params[2]);
+        p.out = try axsqPlusBx.add(try p.params[2].repeatLike(xs)); // a*x^2 + b*x + c
+        p.out.name = "a*x^2 + b*x + c";
         p.loss = try mseFunc(p.out, ys);
+        p.loss.name = "loss";
         try p.g.buildForward(p.loss);
         try p.g.buildBackward(true);
         return p;
@@ -471,6 +493,7 @@ const QuadraticModel = struct {
 
     fn deinit(self: *Self) void {
         self.g.deinit();
+
         // for (self.params) |p| {
         //     p.deinit();
         // }
@@ -480,6 +503,7 @@ const QuadraticModel = struct {
         self.g.resetGrads();
         self.g.compute();
     }
+
     fn step(self: *Self, lr: *Tensor(f32)) void {
         for (self.params) |p| {
             const g = p.grad.?;
@@ -490,22 +514,28 @@ const QuadraticModel = struct {
 };
 
 // TODO: fix for broadcast
-// test "QuadraticModel" {
-//     const time = try Tensor(f32).initArange(tac, &.{20}, 0, 20);
-//     const speed = try Tensor(f32).initArange(tac, &.{20}, 5, 25);
+test "QuadraticModel" {
+    const time = try Tensor(f32).initArange(tac, &.{20}, 0, 20);
+    const speed = try Tensor(f32).initArange(tac, &.{20}, 5, 25);
 
-//     var model = try QuadraticModel.build(tac, 0.01, 0.01, 0.01, time, speed);
-//     defer model.deinit();
-//     const lr = try Tensor(f32).initScalar(tac, 0.01);
+    var model = try QuadraticModel.build(tac, 0.01, 0.01, 0.01, time, speed);
+    {
+        const dotviz = try model.g.toGraphViz();
+        defer dotviz.deinit();
+        std.debug.print("{s}\n", .{dotviz.items});
+    }
+    defer model.deinit();
+    const lr = try Tensor(f32).initScalar(tac, 0.01);
+    defer lr.deinit();
 
-//     for (0..10) |_| {
-//         model.compute();
-//         {
-//             const dotviz = try model.g.toGraphViz();
-//             defer dotviz.deinit();
-//             std.debug.print("{s}\n", .{dotviz.items});
-//         }
-//         model.step(lr);
-//         std.debug.print("loss: {d}\n", .{model.loss.data[0]});
-//     }
-// }
+    for (0..10) |_| {
+        model.compute();
+        // {
+        //     const dotviz = try model.g.toGraphViz();
+        //     defer dotviz.deinit();
+        //     std.debug.print("{s}\n", .{dotviz.items});
+        // }
+        model.step(lr);
+        std.debug.print("loss: {d}\n", .{model.loss.data[0]});
+    }
+}

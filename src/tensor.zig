@@ -48,6 +48,8 @@ pub fn Tensor(comptime T: type) type {
         src0: ?*Self,
         src1: ?*Self,
         opt: [max_dims]?*Self,
+        /// Title of the tensor for debugging
+        name: ?[]const u8,
 
         /// Data of the tensor
         data: []T,
@@ -105,6 +107,7 @@ pub fn Tensor(comptime T: type) type {
                 .src0 = null,
                 .src1 = null,
                 .data = undefined,
+                .name = null,
                 .data_owned = data_buf == null,
                 .opt = .{null} ** max_opt,
                 .alloc = alloc,
