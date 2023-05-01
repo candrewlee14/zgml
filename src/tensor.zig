@@ -147,7 +147,12 @@ pub fn Tensor(comptime T: type) type {
 
         /// Create a new tensor as a view of the current tensor's data
         pub fn view(self: *Self) Alloc.Error!*Self {
-            return try Self.initHelper(self.alloc, &self.ne, self.data);
+            var t = try Self.initHelper(self.alloc, &self.ne, self.data);
+            t.op = .view;
+            t.src0 = self;
+            t.src1 = null;
+            t.grad = if (self.grad) |grad| try grad.view() else null;
+            return t;
         }
 
         /// Duplicate this tensor (with its shape) without preserving the data
@@ -227,9 +232,16 @@ pub fn Tensor(comptime T: type) type {
         pub fn sqrtInplace(self: *Self) Alloc.Error!*Self {
             return try self.unaryOp(.sqrt, true);
         }
-        pub fn sum(self: *Self) Alloc.Error!*Self {
+        /// Sum all elements of a tensor
+        pub fn sumAll(self: *Self) Alloc.Error!*Self {
+            return try sum(self, &.{1});
+        }
+        /// Sum elements of a tensor into the new shape defined by `ne`
+        pub fn sum(self: *Self, ne: []const usize) Alloc.Error!*Self {
+            assert(ne.len <= max_dims);
+            assert(canSumToShape(self, ne));
             const is_node: bool = self.grad != null;
-            const res = try Self.init(self.alloc, &.{1});
+            const res = try Self.init(self.alloc, ne);
             res.op = .sum;
             res.grad = if (is_node) try res.copyTensorShape() else null;
             res.src0 = self;
@@ -237,6 +249,44 @@ pub fn Tensor(comptime T: type) type {
             return res;
         }
 
+        pub fn sumInto(self: *Self, other: *Self) Alloc.Error!*Self {
+            assert(self.canSumTo(other));
+            const is_node: bool = self.grad != null;
+            if (self.isSameShape(other) and !is_node) return self;
+            const res = try other.view();
+            res.op = .sum;
+            res.grad = if (is_node) try res.copyTensorShape() else null;
+            res.src0 = self;
+            res.src1 = null;
+            return res;
+        }
+        fn repeatInto(self: *Self, other: *Self) Alloc.Error!*Self {
+            assert(self.canRepeatTo(other));
+            const is_node: bool = self.grad != null;
+            if (self.isSameShape(other) and !is_node) return self;
+            const res = try other.view();
+            res.op = .repeat;
+            res.grad = if (is_node) try res.copyTensorShape() else null;
+            res.src0 = self;
+            res.src1 = null;
+            return res;
+        }
+
+        pub fn repeat(self: *Self, ne: []usize) Alloc.Error!*Self {
+            assert(ne.len <= max_dims);
+            assert(self.canRepeatToShape(ne));
+            const is_node: bool = self.grad != null;
+            if (self.hasShape(ne) and !is_node) return self;
+            const res = try Self.init(self.alloc, ne);
+            res.op = .repeat;
+            res.grad = if (self.grad) |grad| try grad.repeat(ne) else null;
+            res.src0 = self;
+            res.src1 = null;
+            return res;
+        }
+        pub fn repeatLike(self: *Self, other: *Self) Alloc.Error!*Self {
+            return try repeat(self, &other.ne);
+        }
         pub fn mean(self: *Self) Alloc.Error!*Self {
             const is_node: bool = self.grad != null;
             assert(!is_node); // TODO: implement backward
@@ -248,19 +298,6 @@ pub fn Tensor(comptime T: type) type {
             res.op = .mean;
             res.grad = if (is_node) try res.copyTensorShape() else null;
             res.src0 = self;
-            res.src1 = null;
-            return res;
-        }
-        pub fn repeatLike(self: *Self, other: *Self) Alloc.Error!*Self {
-            assert(self.canRepeatTo(other));
-            const is_node: bool = self.grad != null;
-            if (self.isSameShape(other) and !is_node) return self;
-            const res = try Self.init(self.alloc, other.ne[0..other.n_dims]);
-            res.op = .repeat;
-            res.grad = if (is_node) try res.copyTensorShape() else null;
-            res.src0 = self;
-            // we don't use other for src1, since dst now has the same shape as other
-            // there's no need for src1
             res.src1 = null;
             return res;
         }
@@ -500,8 +537,31 @@ pub fn Tensor(comptime T: type) type {
                 }
             }
         }
+        // inverse-broadcast sum from src0 to dst
+        pub fn computeSum(dst: *Self, src0: *Self) void {
+            assert(max_dims == 4);
+            assert(src0.canSumTo(dst));
+            for (0..src0.ne[3]) |ne3| {
+                for (0..src0.ne[2]) |ne2| {
+                    for (0..src0.ne[1]) |ne1| {
+                        for (0..src0.ne[0]) |ne0| {
+                            const src0_nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
+                            const dst_nes = src0_nes % dst.ne;
+                            const src0_stride_v: @Vector(4, usize) = src0.strides;
+                            const dst_stride_v: @Vector(4, usize) = dst.strides;
+
+                            const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
+                            const dst_idx = @reduce(.Add, dst_nes * dst_stride_v);
+
+                            dst.data[dst_idx] += src0.data[src0_idx];
+                        }
+                    }
+                }
+            }
+        }
         // broadcast src0 to dst
         pub fn computeRepeat(dst: *Self, src0: *Self) void {
+            assert(max_dims == 4);
             assert(src0.canRepeatTo(dst));
             for (0..dst.ne[3]) |ne3| {
                 for (0..dst.ne[2]) |ne2| {
@@ -522,27 +582,6 @@ pub fn Tensor(comptime T: type) type {
             }
         }
 
-        fn backwardRepeat(dst: *Self, src0: *Self) void {
-            assert(src0.canRepeatTo(dst));
-            for (0..dst.ne[3]) |ne3| {
-                for (0..dst.ne[2]) |ne2| {
-                    for (0..dst.ne[1]) |ne1| {
-                        for (0..dst.ne[0]) |ne0| {
-                            const nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
-                            const src0_nes = nes % src0.ne;
-                            const src0_stride_v: @Vector(4, usize) = src0.strides;
-                            const dst_stride_v: @Vector(4, usize) = dst.strides;
-
-                            const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
-                            const dst_idx = @reduce(.Add, nes * dst_stride_v);
-
-                            src0.data[src0_idx] += dst.data[dst_idx];
-                        }
-                    }
-                }
-            }
-        }
-
         pub fn computeSqr(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             for (src0.data, dst.data) |src0_item, *dst_item| {
@@ -553,13 +592,6 @@ pub fn Tensor(comptime T: type) type {
             assert(dst.isSameShape(src0));
             for (src0.data, dst.data) |src0_item, *dst_item| {
                 dst_item.* = std.math.sqrt(src0_item);
-            }
-        }
-        pub fn computeSum(dst: *Self, src0: *Self) void {
-            // TODO: enable sum over different axes
-            assert(dst.nElems() == 1);
-            for (src0.data) |src0_item| {
-                dst.data[0] += src0_item;
             }
         }
         pub fn computeMean(dst: *Self, src0: *Self) void {
@@ -866,7 +898,25 @@ pub fn Tensor(comptime T: type) type {
         /// This is used for broadcasting.
         /// Unlike numpy, broadcasting works where each dimension in other is a multiple of the corresponding dimension in self.
         pub fn canRepeatTo(self: *Self, other: *Self) bool {
-            for (&self.ne, &other.ne) |selfNe, otherNe| {
+            return self.canRepeatToShape(&other.ne);
+        }
+        /// Returns if this tensor can be repeated to match the given shape.
+        /// This is used for broadcasting.
+        /// Unlike numpy, broadcasting works where each dimension in other is a multiple of the corresponding dimension in self.
+        pub fn canRepeatToShape(self: *Self, other_ne: []const usize) bool {
+            return shapeCanRepeatToShape(&self.ne, other_ne);
+        }
+        pub fn canSumTo(self: *Self, other: *Self) bool {
+            return self.canSumToShape(&other.ne);
+        }
+        /// Returns if this tensor can be summed to match the given shape.
+        /// This is the inverse of canRepeatToShape. It's the opposite of broadcasting.
+        pub fn canSumToShape(self: *Self, other_ne: []const usize) bool {
+            return shapeCanRepeatToShape(other_ne, &self.ne);
+        }
+        fn shapeCanRepeatToShape(self_ne: []const usize, other_ne: []const usize) bool {
+            for (self_ne, 0..) |selfNe, i| {
+                const otherNe = if (i < other_ne.len) other_ne[i] else 1;
                 if (otherNe % selfNe != 0) return false;
             }
             return true;
@@ -902,7 +952,11 @@ pub fn Tensor(comptime T: type) type {
         }
 
         pub fn isSameShape(self: *Self, other: *Self) bool {
-            for (self.ne, other.ne) |selfNe, otherNe| {
+            return self.hasShape(&other.ne);
+        }
+        pub fn hasShape(self: *Self, other_ne: []const usize) bool {
+            for (self.ne, 0..) |selfNe, i| {
+                const otherNe = if (i < other_ne.len) other_ne[i] else 1;
                 if (selfNe != otherNe) {
                     return false;
                 }
@@ -936,11 +990,11 @@ pub fn Tensor(comptime T: type) type {
                 .matmul_t0 => tensor.computeMatMul(src0.?, true, src1.?, false),
                 .matmul_t1 => tensor.computeMatMul(src0.?, false, src1.?, true),
                 .matmul_t0t1 => tensor.computeMatMul(src0.?, true, src1.?, true),
+                .view => {},
                 //
                 // .scale => tensor.computeScale(src0.?),
                 // .cpy => tensor.computeCpy(src0.?),
                 // .reshape => tensor.computeReshape(src0.?),
-                // .view => tensor.computeView(src0.?),
                 // .permute => tensor.computePermute(src0.?),
                 // .transpose => tensor.computeTranspose(src0.?),
                 // .get_rows,
@@ -960,7 +1014,7 @@ pub fn Tensor(comptime T: type) type {
             const src0_o = tensor.src0;
             const src1_o = tensor.src1;
             switch (tensor.op) {
-                .none => {},
+                .none, .view => {},
                 .dup => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
@@ -1015,7 +1069,7 @@ pub fn Tensor(comptime T: type) type {
                             gradp.deinit();
                             src0_x.grad = null;
                         }
-                        src0.grad = try grad.addImpl(src0_x, inplace);
+                        src1.grad = try grad.addImpl(src0_x, inplace);
                     }
                 },
                 .div => {
@@ -1044,7 +1098,7 @@ pub fn Tensor(comptime T: type) type {
                     const src0 = src0_o.?;
                     const t_grad = tensor.grad.?;
                     if (src0.grad) |grad| {
-                        t_grad.backwardRepeat(grad);
+                        src0.grad = try t_grad.sumInto(grad);
                     }
                 },
                 .sqr => {

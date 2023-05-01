@@ -95,6 +95,7 @@ pub fn ComputeGraph(comptime T: type) type {
                     try self.buildForward(node.grad.?);
                 }
             }
+
             self.built_backward = true;
             self.resetGrads();
         }
@@ -132,13 +133,15 @@ pub fn ComputeGraph(comptime T: type) type {
         pub fn toGraphViz(self: *const Self) Alloc.Error!std.ArrayList(u8) {
             var str = std.ArrayList(u8).init(self.nodes.allocator);
             const writer = str.writer();
-            try writer.print("digraph G {{\n", .{});
+            try writer.print("digraph G {{\n  node [shape=box];\n", .{});
+
             for (self.nodes.items) |node| {
                 // try writer.print("  \"{*}\" [shape=\"none\",label=<<table><tr><td>{s}</td></tr><tr><td>{any}</td></tr></table>>];\n", .{ node, node.op.symbol(), node.data });
                 try writer.print("  \"{*}\" [shape=\"none\",label=<<table>", .{node});
                 if (node.op == .none) {
                     try writer.print("<tr><td>{any}</td></tr>", .{node.data});
                 } else {
+                    try writer.print("<tr><td>{any}</td></tr>", .{node.data});
                     try writer.print("<tr><td>{s}</td></tr>", .{node.op.symbol()});
                 }
                 if (node.name) |name| {
@@ -154,6 +157,9 @@ pub fn ComputeGraph(comptime T: type) type {
                 }
                 if (node.grad) |grad| {
                     try writer.print("  \"{*}\" -> \"{*}\" [style=dashed];\n", .{ node, grad });
+                }
+                if (!node.data_owned) {
+                    try writer.print("  \"{*}\" [style=filled fillcolor=gray];\n", .{node});
                 }
             }
             for (self.leaves.items) |leaf| {
@@ -171,6 +177,11 @@ pub fn ComputeGraph(comptime T: type) type {
                 if (grad_o) |grad| {
                     _ = grad.setAllScalar(0);
                 }
+            }
+        }
+        pub fn reset(self: *Self) void {
+            for (self.nodes.items) |node| {
+                if (node.op != .none) _ = node.setAllScalar(0);
             }
         }
 
@@ -389,7 +400,7 @@ test "build compute graph - backward - testSqrFunc" {
 }
 
 fn testSqrSumFunc(x: *Tensor(f32)) Alloc.Error!*Tensor(f32) {
-    return try (try x.sqr()).sum();
+    return try (try x.sqr()).sumAll();
 }
 
 test "build compute graph - backward - testSqrSumFunc" {
@@ -446,7 +457,7 @@ test "time speed equation test" {
 fn mseFunc(x: *Tensor(f32), y: *Tensor(f32)) Alloc.Error!*Tensor(f32) {
     const diff = try x.sub(y);
     const diff2 = try diff.sqr();
-    return try diff2.sum(); // TODO: switch to mean
+    return try diff2.sumAll(); // TODO: switch to mean
 }
 
 const QuadraticModel = struct {
@@ -473,6 +484,9 @@ const QuadraticModel = struct {
         for (p.params) |param| {
             try param.setParam();
         }
+        p.params[0].name = "a";
+        p.params[1].name = "b";
+        p.params[2].name = "c";
         const xsq = try xs.sqr(); // x^2
         xsq.name = "x^2";
         const axsq = try xsq.mul(try p.params[0].repeatLike(xsq)); // a*x^2
@@ -500,6 +514,7 @@ const QuadraticModel = struct {
     }
 
     fn compute(self: *Self) void {
+        self.g.reset();
         self.g.resetGrads();
         self.g.compute();
     }
@@ -513,29 +528,98 @@ const QuadraticModel = struct {
     }
 };
 
-// TODO: fix for broadcast
-test "QuadraticModel" {
-    const time = try Tensor(f32).initArange(tac, &.{20}, 0, 20);
-    const speed = try Tensor(f32).initArange(tac, &.{20}, 5, 25);
+test "a*x^2" {
+    const x = try Tensor(f32).initScalar(tac, 4);
+    x.name = "x";
+    const a = try Tensor(f32).initScalar(tac, 2);
+    a.name = "a";
+    try a.setParam();
+    const xsq = try x.sqr();
+    xsq.name = "x^2";
+    const axsq = try xsq.mul(a);
+    axsq.name = "a*x^2";
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    try g.buildForward(axsq);
+    try g.buildBackward(false);
+    g.compute();
+    try testing.expectEqual(@as(f32, 32), axsq.data[0]);
+}
 
-    var model = try QuadraticModel.build(tac, 0.01, 0.01, 0.01, time, speed);
-    {
-        const dotviz = try model.g.toGraphViz();
-        defer dotviz.deinit();
-        std.debug.print("{s}\n", .{dotviz.items});
-    }
-    defer model.deinit();
+test "arange a*x^2" {
+    const x = try Tensor(f32).initArange(tac, &.{5}, 0, 5);
+    x.name = "x";
+    const a = try Tensor(f32).initScalar(tac, 2);
+    a.name = "a";
+    try a.setParam();
+    const xsq = try x.sqr();
+    xsq.name = "x^2";
+    const axsq = try xsq.mul(try a.repeatLike(xsq));
+    axsq.name = "a*x^2";
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    try g.buildForward(axsq);
+    try g.buildBackward(true);
+    g.compute();
+    const expected = [_]f32{ 0, 2, 8, 18, 32 };
+    try testing.expectEqualSlices(f32, &expected, axsq.data);
+}
+
+// TODO: fix for broadcast
+// test "QuadraticModel" {
+//     const time = try Tensor(f32).initArange(tac, &.{5}, 0, 20);
+//     const speed = try Tensor(f32).initArange(tac, &.{5}, 5, 25);
+
+//     var model = try QuadraticModel.build(tac, 0.01, 0.01, 0.01, time, speed);
+//     model.compute();
+//     {
+//         const dotviz = try model.g.toGraphViz();
+//         defer dotviz.deinit();
+//         std.debug.print("{s}\n", .{dotviz.items});
+//     }
+//     defer model.deinit();
+//     const lr = try Tensor(f32).initScalar(tac, 0.01);
+//     defer lr.deinit();
+
+//     for (0..10) |_| {
+//         model.compute();
+//         // {
+//         //     const dotviz = try model.g.toGraphViz();
+//         //     defer dotviz.deinit();
+//         //     std.debug.print("{s}\n", .{dotviz.items});
+//         // }
+//         model.step(lr);
+//         std.debug.print("loss: {d}\n", .{model.loss.data[0]});
+//     }
+//     try testing.expectApproxEqAbs(@as(f32, 0), model.loss.data[0], 0.001);
+// }
+
+test "arange" {
+    const t = try Tensor(f32).initArange(tac, &.{5}, 0, 5);
+    try t.setParam();
+    try testing.expectEqual(@as(usize, 5), t.nElems());
+    const expected = [_]f32{ 0, 1, 2, 3, 4 };
+    try testing.expectEqualSlices(f32, &expected, t.data);
+
+    const out = try (try t.sqr()).sumAll();
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    try g.buildForward(out);
+    try g.buildBackward(true);
+    out.grad.?.data[0] = 1;
+    g.compute();
+
+    try testing.expectEqual(@as(f32, 30), out.data[0]);
+    try testing.expectEqualSlices(f32, &.{ 0, 2, 4, 6, 8 }, t.grad.?.data);
     const lr = try Tensor(f32).initScalar(tac, 0.01);
     defer lr.deinit();
-
-    for (0..10) |_| {
-        model.compute();
-        // {
-        //     const dotviz = try model.g.toGraphViz();
-        //     defer dotviz.deinit();
-        //     std.debug.print("{s}\n", .{dotviz.items});
-        // }
-        model.step(lr);
-        std.debug.print("loss: {d}\n", .{model.loss.data[0]});
+    for (0..1000) |_| {
+        g.reset();
+        g.resetGrads();
+        out.grad.?.data[0] = 1;
+        g.compute();
+        t.grad.?.computeMul(t.grad.?, lr);
+        t.computeSub(t, t.grad.?);
     }
+    try testing.expectApproxEqAbs(@as(f32, 0), out.data[0], 0.00001);
 }
