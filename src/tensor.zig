@@ -1091,7 +1091,7 @@ pub fn Tensor(comptime T: type) type {
                             gradp.deinit();
                             src0_x.grad = null;
                         }
-                        src0.grad = try grad.addImpl(src0_x, inplace);
+                        src1.grad = try grad.addImpl(src0_x, inplace);
                     }
                 },
                 .repeat => {
