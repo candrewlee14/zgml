@@ -127,7 +127,7 @@ pub fn Tensor(comptime T: type) type {
         /// Number of elements must match.
         pub fn setData(self: *Self, data: []const T) void {
             assert(@as(usize, data.len) == self.nElems());
-            std.mem.copy(f32, self.data, data);
+            @memcpy(self.data, data);
         }
 
         /// Init a tensor with a single element `val`
@@ -291,7 +291,7 @@ pub fn Tensor(comptime T: type) type {
             const is_node: bool = self.grad != null;
             assert(!is_node); // TODO: implement backward
             var ne: [max_dims]usize = undefined;
-            std.mem.copy(usize, &ne, &self.ne);
+            @memcpy(&ne, &self.ne);
             // #cols
             ne[0] = 1;
             const res = try Self.init(self.alloc, &ne);
@@ -451,7 +451,7 @@ pub fn Tensor(comptime T: type) type {
             assert(dst.nElems() == src0.nElems());
 
             if (src0.isContiguous()) {
-                std.mem.copy(T, dst.data, src0.data);
+                @memcpy(dst.data, src0.data);
                 return;
             }
             // TODO: implement non-contiguous dup
@@ -830,7 +830,7 @@ pub fn Tensor(comptime T: type) type {
         /// Sets all values in this tensor to `val`.
         /// Returns self for convenience.
         pub fn setAllScalar(self: *Self, val: T) *Self {
-            std.mem.set(T, self.data, val);
+            @memset(self.data, val);
             return self;
         }
 
@@ -1229,7 +1229,7 @@ test "tensor init" {
             3, 4,
             5, 6,
         };
-        std.mem.copy(f32, tensor.data, &data);
+        @memcpy(tensor.data, &data);
         try testing.expectEqual(@as(f32, 1), tensor.get(&.{ 0, 0 }));
         try testing.expectEqual(@as(f32, 3), tensor.get(&.{ 0, 1 }));
         try testing.expectEqual(@as(f32, 6), tensor.get(&.{ 1, 2 }));
