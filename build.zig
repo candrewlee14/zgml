@@ -99,9 +99,9 @@ pub fn runTests(
     zgml_pkg.link(test_exe);
     // std.debug.print("zgml_options: {any}\n", .{zgml_pkg.zgml_options});
     test_exe.addModule("zgml_options", zgml_pkg.zgml_options);
-    test_exe.install();
+    b.installArtifact(test_exe);
 
-    return &test_exe.run().step;
+    return &b.addRunArtifact(test_exe).step;
 }
 
 pub fn runBenchmarks(
@@ -118,7 +118,7 @@ pub fn runBenchmarks(
     const zgml_pkg = package(b, target, .ReleaseFast, .{ .options = options });
     zgml_pkg.link(exe);
     exe.addModule("zgml", zgml_pkg.zgml);
-    exe.install();
+    b.installArtifact(exe);
     return &exe.run().step;
 }
 
