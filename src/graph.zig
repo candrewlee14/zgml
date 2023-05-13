@@ -454,80 +454,6 @@ test "time speed equation test" {
     }
 }
 
-fn mseFunc(x: *Tensor(f32), y: *Tensor(f32)) Alloc.Error!*Tensor(f32) {
-    const diff = try x.sub(y);
-    const diff2 = try diff.sqr();
-    return try diff2.sumAll(); // TODO: switch to mean
-}
-
-const QuadraticModel = struct {
-    const Self = @This();
-
-    params: [3]*Tensor(f32),
-    g: ComputeGraph(f32),
-    out: *Tensor(f32),
-    loss: *Tensor(f32),
-
-    fn build(alloc: Alloc, a: f32, b: f32, c1: f32, xs: *Tensor(f32), ys: *Tensor(f32)) !QuadraticModel {
-        var p = QuadraticModel{
-            // zig fmt: off
-            .params = .{ 
-                try Tensor(f32).initScalar(alloc, a), 
-                try Tensor(f32).initScalar(alloc, b), 
-                try Tensor(f32).initScalar(alloc, c1) 
-            },
-            // zig fmt: on
-            .g = ComputeGraph(f32).init(alloc),
-            .out = undefined,
-            .loss = undefined,
-        };
-        for (p.params) |param| {
-            try param.setParam();
-        }
-        p.params[0].name = "a";
-        p.params[1].name = "b";
-        p.params[2].name = "c";
-        const xsq = try xs.sqr(); // x^2
-        xsq.name = "x^2";
-        const axsq = try xsq.mul(try p.params[0].repeatLike(xsq)); // a*x^2
-        axsq.name = "a*x^2";
-        const bx = try xs.mul(try p.params[1].repeatLike(xs)); // b*x
-        bx.name = "b*x";
-        const axsqPlusBx = try axsq.add(bx); // a*x^2 + b*x
-        axsqPlusBx.name = "a*x^2 + b*x";
-
-        p.out = try axsqPlusBx.add(try p.params[2].repeatLike(xs)); // a*x^2 + b*x + c
-        p.out.name = "a*x^2 + b*x + c";
-        p.loss = try mseFunc(p.out, ys);
-        p.loss.name = "loss";
-        try p.g.buildForward(p.loss);
-        try p.g.buildBackward(true);
-        return p;
-    }
-
-    fn deinit(self: *Self) void {
-        self.g.deinit();
-
-        // for (self.params) |p| {
-        //     p.deinit();
-        // }
-    }
-
-    fn compute(self: *Self) void {
-        self.g.reset();
-        self.g.resetGrads();
-        self.g.compute();
-    }
-
-    fn step(self: *Self, lr: *Tensor(f32)) void {
-        for (self.params) |p| {
-            const g = p.grad.?;
-            g.computeMul(g, lr);
-            p.computeSub(p, g);
-        }
-    }
-};
-
 test "a*x^2" {
     const x = try Tensor(f32).initScalar(tac, 4);
     x.name = "x";
@@ -564,35 +490,6 @@ test "arange a*x^2" {
     const expected = [_]f32{ 0, 2, 8, 18, 32 };
     try testing.expectEqualSlices(f32, &expected, axsq.data);
 }
-
-// TODO: fix for broadcast
-// test "QuadraticModel" {
-//     const time = try Tensor(f32).initArange(tac, &.{5}, 0, 20);
-//     const speed = try Tensor(f32).initArange(tac, &.{5}, 5, 25);
-
-//     var model = try QuadraticModel.build(tac, 0.01, 0.01, 0.01, time, speed);
-//     model.compute();
-//     {
-//         const dotviz = try model.g.toGraphViz();
-//         defer dotviz.deinit();
-//         std.debug.print("{s}\n", .{dotviz.items});
-//     }
-//     defer model.deinit();
-//     const lr = try Tensor(f32).initScalar(tac, 0.01);
-//     defer lr.deinit();
-
-//     for (0..10) |_| {
-//         model.compute();
-//         // {
-//         //     const dotviz = try model.g.toGraphViz();
-//         //     defer dotviz.deinit();
-//         //     std.debug.print("{s}\n", .{dotviz.items});
-//         // }
-//         model.step(lr);
-//         std.debug.print("loss: {d}\n", .{model.loss.data[0]});
-//     }
-//     try testing.expectApproxEqAbs(@as(f32, 0), model.loss.data[0], 0.001);
-// }
 
 test "arange" {
     const t = try Tensor(f32).initArange(tac, &.{5}, 0, 5);

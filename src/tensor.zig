@@ -260,6 +260,31 @@ pub fn Tensor(comptime T: type) type {
             res.src1 = null;
             return res;
         }
+
+        pub fn mean(self: *Self, ne: []const usize) Alloc.Error!*Self {
+            assert(ne.len <= max_dims);
+            assert(canSumToShape(self, ne));
+            const is_node: bool = self.grad != null;
+            const res = try Self.init(self.alloc, ne);
+            res.op = .mean;
+            res.grad = if (is_node) try res.copyTensorShape() else null;
+            res.src0 = self;
+            res.src1 = null;
+            return res;
+        }
+
+        pub fn meanInto(self: *Self, other: *Self) Alloc.Error!*Self {
+            assert(self.canSumTo(other));
+            const is_node: bool = self.grad != null;
+            if (self.isSameShape(other) and !is_node) return self;
+            const res = try other.view();
+            res.op = .mean;
+            res.grad = if (is_node) try res.copyTensorShape() else null;
+            res.src0 = self;
+            res.src1 = null;
+            return res;
+        }
+
         fn repeatInto(self: *Self, other: *Self) Alloc.Error!*Self {
             assert(self.canRepeatTo(other));
             const is_node: bool = self.grad != null;
@@ -286,20 +311,6 @@ pub fn Tensor(comptime T: type) type {
         }
         pub fn repeatLike(self: *Self, other: *Self) Alloc.Error!*Self {
             return try repeat(self, &other.ne);
-        }
-        pub fn mean(self: *Self) Alloc.Error!*Self {
-            const is_node: bool = self.grad != null;
-            assert(!is_node); // TODO: implement backward
-            var ne: [max_dims]usize = undefined;
-            @memcpy(&ne, &self.ne);
-            // #cols
-            ne[0] = 1;
-            const res = try Self.init(self.alloc, &ne);
-            res.op = .mean;
-            res.grad = if (is_node) try res.copyTensorShape() else null;
-            res.src0 = self;
-            res.src1 = null;
-            return res;
         }
         pub fn abs(self: *Self) Alloc.Error!*Self {
             return try self.unaryOp(.abs, false);
@@ -537,6 +548,31 @@ pub fn Tensor(comptime T: type) type {
                 }
             }
         }
+        // inverse-broadcast mean from src0 to dst
+        pub fn computeMean(dst: *Self, src0: *Self) void {
+            assert(max_dims == 4);
+            assert(src0.canSumTo(dst));
+            const src0_ne_v: @Vector(4, usize) = src0.ne;
+            const div_elems = @intToFloat(T, @reduce(.Mul, src0_ne_v / dst.ne));
+
+            for (0..src0.ne[3]) |ne3| {
+                for (0..src0.ne[2]) |ne2| {
+                    for (0..src0.ne[1]) |ne1| {
+                        for (0..src0.ne[0]) |ne0| {
+                            const src0_nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
+                            const dst_nes = src0_nes % dst.ne;
+                            const src0_stride_v: @Vector(4, usize) = src0.strides;
+                            const dst_stride_v: @Vector(4, usize) = dst.strides;
+
+                            const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
+                            const dst_idx = @reduce(.Add, dst_nes * dst_stride_v);
+
+                            dst.data[dst_idx] += src0.data[src0_idx] / div_elems; // we divide every iteration to avoid overflow, rather than summing and dividing once at the end
+                        }
+                    }
+                }
+            }
+        }
         // inverse-broadcast sum from src0 to dst
         pub fn computeSum(dst: *Self, src0: *Self) void {
             assert(max_dims == 4);
@@ -593,14 +629,6 @@ pub fn Tensor(comptime T: type) type {
             for (src0.data, dst.data) |src0_item, *dst_item| {
                 dst_item.* = std.math.sqrt(src0_item);
             }
-        }
-        pub fn computeMean(dst: *Self, src0: *Self) void {
-            // TODO: enable mean over different axes
-            assert(dst.nElems() == 1);
-            for (src0.data) |src0_item| {
-                dst.data[0] += src0_item;
-            }
-            dst.data[0] /= @intToFloat(T, src0.nElems());
         }
         pub fn computeAbs(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
@@ -741,7 +769,7 @@ pub fn Tensor(comptime T: type) type {
                     } else if (!trans0 and !trans1) {
                         for (0..src0_ne1) |src0_i1| { // row0
                             for (0..src1_ne0) |src1_i0| { // col1
-                                var matmul_sum: f32 = 0;
+                                var matmul_sum: T = 0;
                                 for (0..src0_ne0) |src0_i0| { // col0 == row1
                                     const src0_i_v = @Vector(4, usize){ src0_i0, src0_i1, src0_i2, src0_i3 };
                                     const src1_i_v = @Vector(4, usize){ src1_i0, src0_i0, src0_i2, src0_i3 };
@@ -762,7 +790,7 @@ pub fn Tensor(comptime T: type) type {
                     } else if (!trans0 and trans1) {
                         for (0..src0_ne1) |src0_i1| { // row0
                             for (0..src1_ne1) |src1_i1| { // row1
-                                var matmul_sum: f32 = 0;
+                                var matmul_sum: T = 0;
                                 for (0..src0_ne0) |src0_i0| { // col0 == col1
                                     const src0_i_v = @Vector(4, usize){ src0_i0, src0_i1, src0_i2, src0_i3 };
                                     const src1_i_v = @Vector(4, usize){ src0_i0, src1_i1, src0_i2, src0_i3 }; // different row
@@ -783,7 +811,7 @@ pub fn Tensor(comptime T: type) type {
                     } else if (trans0 and !trans1) {
                         for (0..src0_ne0) |src0_i0| { // cos0
                             for (0..src1_ne0) |src1_i0| { // col1
-                                var matmul_sum: f32 = 0;
+                                var matmul_sum: T = 0;
                                 for (0..src0_ne1) |src0_i1| { // row0 == row1
                                     const src0_i_v = @Vector(4, usize){ src0_i0, src0_i1, src0_i2, src0_i3 };
                                     const src1_i_v = @Vector(4, usize){ src1_i0, src0_i1, src0_i2, src0_i3 }; // different column
@@ -804,7 +832,7 @@ pub fn Tensor(comptime T: type) type {
                     } else if (trans0 and trans1) {
                         for (0..src0_ne0) |src0_i0| { // col0
                             for (0..src1_ne1) |src1_i1| { // row1
-                                var matmul_sum: f32 = 0;
+                                var matmul_sum: T = 0;
                                 for (0..src0_ne1) |src0_i1| { // col1 == row0
                                     const src0_i_v = @Vector(4, usize){ src0_i0, src0_i1, src0_i2, src0_i3 };
                                     const src1_i_v = @Vector(4, usize){ src0_i1, src1_i1, src0_i2, src0_i3 };
@@ -1118,13 +1146,12 @@ pub fn Tensor(comptime T: type) type {
                     }
                 },
                 // .sqrt,
-                .sum => {
+                .sum, .mean => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
                         src0.grad = try grad.addImpl(try tensor.grad.?.repeatLike(grad), inplace);
                     }
                 },
-                // .mean,
                 // .abs,
                 // .sgn,
                 // .neg,
@@ -1219,7 +1246,7 @@ test "ref all decls" {
     _ = testing.refAllDeclsRecursive(Tensor(f32));
 }
 
-test "tensor init" {
+test "init" {
     {
         const tensor = try Tensor(f32).init(tac, &.{ 2, 3 });
         defer tensor.deinit();
@@ -1241,7 +1268,7 @@ test "tensor init" {
     }
 }
 
-test "tensor initArange" {
+test "initArange" {
     {
         const t = try Tensor(f32).initArange(tac, &.{20}, 0, 20);
         defer t.deinit();
@@ -1260,7 +1287,7 @@ test "tensor initArange" {
     }
 }
 
-test "tensor isMatrix" {
+test "isMatrix" {
     {
         const tensor = try Tensor(f32).init(tac, &.{ 2, 3 });
         defer tensor.deinit();
@@ -1275,7 +1302,7 @@ test "tensor isMatrix" {
     }
 }
 
-test "tensor isSameShape" {
+test "isSameShape" {
     {
         const tensor1 = try Tensor(f32).init(tac, &.{ 2, 3 });
         defer tensor1.deinit();
@@ -1295,7 +1322,7 @@ test "tensor isSameShape" {
     }
 }
 
-test "tensor canRepeatTo" {
+test "canRepeatTo" {
     {
         const tensor1 = try Tensor(f32).init(tac, &.{ 2, 3 });
         defer tensor1.deinit();
@@ -1319,7 +1346,27 @@ test "tensor canRepeatTo" {
     }
 }
 
-test "tensor compute matmul" {
+test "compute mean" {
+    const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
+    defer t1.deinit();
+    t1.setData(&[_]f32{
+        1, 2,
+        3, 4,
+        5, 6,
+    });
+
+    const dst = try t1.mean(&.{1});
+    defer dst.deinit();
+
+    dst.computeMean(t1);
+
+    const expected = [_]f32{3.5};
+    for (dst.data, 0..) |v, i| {
+        try testing.expectApproxEqAbs(expected[i], v, 1e-10);
+    }
+}
+
+test "compute matmul" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
     defer t1.deinit();
     t1.setData(&[_]f32{
@@ -1348,7 +1395,7 @@ test "tensor compute matmul" {
     try testing.expectEqualSlices(f32, &expected, dst.data);
 }
 
-test "tensor compute matmul_t0" {
+test "compute matmul_t0" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
     defer t1.deinit();
     t1.setData(&[_]f32{
@@ -1377,7 +1424,7 @@ test "tensor compute matmul_t0" {
     try testing.expectEqualSlices(f32, &expected, dst.data);
 }
 
-test "tensor compute matmul_t1 2D" {
+test "compute matmul_t1 2D" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
     t1.setData(&[_]f32{
         1, 2,
@@ -1407,7 +1454,7 @@ test "tensor compute matmul_t1 2D" {
     try testing.expectEqualSlices(f32, &expected, dst.data);
 }
 
-test "tensor compute matmul_t1 3D" {
+test "compute matmul_t1 3D" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 2, 2 });
     defer t1.deinit();
     const data = [_]f32{
