@@ -197,6 +197,8 @@ test "ref all decls" {
     _ = testing.refAllDeclsRecursive(ComputeGraph(f32));
 }
 
+//#region Tests
+
 test "tensor compute graph - matmul" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
     t1.setData(&[_]f32{
@@ -204,16 +206,15 @@ test "tensor compute graph - matmul" {
         3, 4,
         5, 6,
     });
-    try t1.setParam();
+    t1.setParam();
 
     const t2 = try Tensor(f32).init(tac, &.{ 3, 2 });
     t2.setData(&[_]f32{
         1, 2, 3,
         4, 5, 6,
     });
-    // try t2.setParam(); // TODO: fix memleak
 
-    const dst = try t1.matMul(false, t2, false);
+    const dst = t1.matMul(false, t2, false);
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     try g.buildForward(dst);
@@ -237,13 +238,6 @@ test "tensor compute graph - matmul" {
         };
         try testing.expectEqualSlices(f32, &expected, t1.grad.?.data);
     }
-    // {
-    //     const expected = [_]f32{
-    //         9,  9,  9,
-    //         12, 12, 12,
-    //     };
-    //     try testing.expectEqualSlices(f32, &expected, t2.grad.?.data);
-    // }
 }
 
 test "build compute graph - forward mul" {
@@ -251,7 +245,7 @@ test "build compute graph - forward mul" {
     t0.data[0] = 5;
     const t1 = try Tensor(f32).init(tac, &.{1});
     t1.data[0] = 6;
-    const out = try t0.mul(t1);
+    const out = t0.mul(t1);
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     try g.buildForward(out);
@@ -270,8 +264,8 @@ test "build compute graph - forward matMul" {
         3, 4,
         5, 6,
     });
-    const intermed = try t1.matMul(true, t1, false);
-    const out = try intermed.matMul(false, t1, true);
+    const intermed = t1.matMul(true, t1, false);
+    const out = intermed.matMul(false, t1, true);
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     try g.buildForward(out);
@@ -300,11 +294,11 @@ test "build compute graph - forward matMul" {
 test "build compute graph - forward mul & add" {
     const x = try Tensor(f32).initScalar(tac, 3);
     const w = try Tensor(f32).initScalar(tac, 2);
-    try w.setParam();
+    w.setParam();
     const b = try Tensor(f32).initScalar(tac, 5);
-    try b.setParam();
-    const intermed = try w.mul(x);
-    const out = try intermed.add(b);
+    b.setParam();
+    const intermed = w.mul(x);
+    const out = intermed.add(b);
     // w*x + b
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
@@ -324,11 +318,11 @@ test "build compute graph - forward mul & add" {
 test "build compute graph - backward" {
     const x = try Tensor(f32).initScalar(tac, 3);
     const w = try Tensor(f32).initScalar(tac, 2);
-    try w.setParam();
+    w.setParam();
     const b = try Tensor(f32).initScalar(tac, 5);
-    try b.setParam();
-    const intermed = try w.mul(x);
-    const out = try intermed.add(b);
+    b.setParam();
+    const intermed = w.mul(x);
+    const out = intermed.add(b);
     // w*x + b
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
@@ -355,14 +349,14 @@ test "build compute graph - backward" {
     }
 }
 
-fn testSqrFunc(x: *Tensor(f32)) Alloc.Error!*Tensor(f32) {
-    return try x.sqr();
+fn testSqrFunc(x: *Tensor(f32)) *Tensor(f32) {
+    return x.sqr();
 }
 
 test "build compute graph - backward - testSqrFunc" {
     const x = try Tensor(f32).initScalar(tac, 3);
-    try x.setParam();
-    const out = try testSqrFunc(x);
+    x.setParam();
+    const out = testSqrFunc(x);
     // x^2
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
@@ -399,16 +393,16 @@ test "build compute graph - backward - testSqrFunc" {
     }
 }
 
-fn testSqrSumFunc(x: *Tensor(f32)) Alloc.Error!*Tensor(f32) {
-    return try (try x.sqr()).sumAll();
+fn testSqrSumFunc(x: *Tensor(f32)) *Tensor(f32) {
+    return x.sqr().sumAll();
 }
 
 test "build compute graph - backward - testSqrSumFunc" {
     const x = try Tensor(f32).init(tac, &.{3});
     const data = [_]f32{ 3, 4, 10 };
     x.setData(&data);
-    try x.setParam();
-    const out = try testSqrSumFunc(x);
+    x.setParam();
+    const out = testSqrSumFunc(x);
     // x^2
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
@@ -430,16 +424,16 @@ test "build compute graph - backward - testSqrSumFunc" {
 
 test "time speed equation test" {
     {
-        const time = try Tensor(f32).initArange(tac, &.{20}, 0, 20);
+        const time = try Tensor(f32).initLinspace(tac, &.{20}, 0, 20);
 
         const c0 = try Tensor(f32).initScalar(tac, 0.75);
         const c1 = try Tensor(f32).initScalar(tac, 9.5);
         const c2 = try Tensor(f32).initScalar(tac, 1);
 
-        const inner = try time.sub(try c1.repeatLike(time));
-        const inner2 = try inner.sqr();
-        const inner3 = try inner2.mul(try c0.repeatLike(inner2));
-        const speed = try inner3.add(try c2.repeatLike(inner3));
+        const inner = time.sub(c1.repeatLike(time));
+        const inner2 = inner.sqr();
+        const inner3 = inner2.mul(c0.repeatLike(inner2));
+        const speed = inner3.add(c2.repeatLike(inner3));
 
         var g = ComputeGraph(f32).init(tac);
         defer g.deinit();
@@ -459,10 +453,10 @@ test "a*x^2" {
     x.name = "x";
     const a = try Tensor(f32).initScalar(tac, 2);
     a.name = "a";
-    try a.setParam();
-    const xsq = try x.sqr();
+    a.setParam();
+    const xsq = x.sqr();
     xsq.name = "x^2";
-    const axsq = try xsq.mul(a);
+    const axsq = xsq.mul(a);
     axsq.name = "a*x^2";
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
@@ -473,14 +467,14 @@ test "a*x^2" {
 }
 
 test "arange a*x^2" {
-    const x = try Tensor(f32).initArange(tac, &.{5}, 0, 5);
+    const x = try Tensor(f32).initLinspace(tac, &.{5}, 0, 5);
     x.name = "x";
     const a = try Tensor(f32).initScalar(tac, 2);
     a.name = "a";
-    try a.setParam();
-    const xsq = try x.sqr();
+    a.setParam();
+    const xsq = x.sqr();
     xsq.name = "x^2";
-    const axsq = try xsq.mul(try a.repeatLike(xsq));
+    const axsq = xsq.mul(a.repeatLike(xsq));
     axsq.name = "a*x^2";
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
@@ -492,13 +486,13 @@ test "arange a*x^2" {
 }
 
 test "arange" {
-    const t = try Tensor(f32).initArange(tac, &.{5}, 0, 5);
-    try t.setParam();
+    const t = try Tensor(f32).initLinspace(tac, &.{5}, 0, 5);
+    t.setParam();
     try testing.expectEqual(@as(usize, 5), t.nElems());
     const expected = [_]f32{ 0, 1, 2, 3, 4 };
     try testing.expectEqualSlices(f32, &expected, t.data);
 
-    const out = try (try t.sqr()).sumAll();
+    const out = t.sqr().sumAll();
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     try g.buildForward(out);
@@ -520,3 +514,5 @@ test "arange" {
     }
     try testing.expectApproxEqAbs(@as(f32, 0), out.data[0], 0.00001);
 }
+
+//#endregion

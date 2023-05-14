@@ -72,8 +72,8 @@ pub fn Model(comptime T: type) type {
 
         // TODO: uncomment when optimizer is implemented
         // test "linear model" {
-        //     const time = try Tensor(T).initArange(tac, &.{5}, 0, 20);
-        //     const speed = try Tensor(T).initArange(tac, &.{5}, 5, 25);
+        //     const time = try Tensor(T).initLinspace(tac, &.{5}, 0, 20);
+        //     const speed = try Tensor(T).initLinspace(tac, &.{5}, 5, 25);
 
         //     var model = try Model(T).build(tac, 2, 1, time, speed);
         //     defer model.deinit();
