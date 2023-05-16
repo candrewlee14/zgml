@@ -13,6 +13,7 @@ pub fn ComputeGraph(comptime T: type) type {
 
         built_forward: bool = false,
         built_backward: bool = false,
+        forward_node_count: usize = 0,
 
         nodes: std.ArrayList(*Tensor(T)),
         grads: std.ArrayList(?*Tensor(T)),
@@ -55,12 +56,16 @@ pub fn ComputeGraph(comptime T: type) type {
 
         /// Build a graph where the provided tensor is the final output node
         pub fn buildForward(self: *Self, tensor: *Tensor(T)) Alloc.Error!void {
+            try self.buildForwardHelper(tensor);
+            self.built_forward = true;
+            self.forward_node_count = self.nodes.items.len;
+        }
+        fn buildForwardHelper(self: *Self, tensor: *Tensor(T)) Alloc.Error!void {
             const n_before = self.nodes.items.len;
             try self.addParentsThenSelf(tensor);
             // tensor should be last node
             const n_change = self.nodes.items.len - n_before;
             if (n_change > 0) assert(self.nodes.items[self.nodes.items.len - 1] == tensor);
-            self.built_forward = true;
         }
         /// Build a backward graph
         pub fn buildBackward(self: *Self, keep: bool) Alloc.Error!void {
@@ -92,7 +97,7 @@ pub fn ComputeGraph(comptime T: type) type {
                 const node = self.nodes.items[i];
                 if (node.is_param) {
                     assert(node.grad != null);
-                    try self.buildForward(node.grad.?);
+                    try self.buildForwardHelper(node.grad.?);
                 }
             }
 
@@ -190,6 +195,11 @@ pub fn ComputeGraph(comptime T: type) type {
                 node.compute();
             }
         }
+        pub fn computeNoGrad(self: *const Self) void {
+            for (self.nodes.items[0..self.forward_node_count]) |node| {
+                node.compute();
+            }
+        }
     };
 }
 
@@ -254,6 +264,28 @@ test "build compute graph - forward mul" {
     {
         const expected = [_]f32{30};
         try testing.expectEqualSlices(f32, &expected, out.data);
+    }
+}
+
+test "build computeNoGrad graph - forward mul" {
+    const t0 = try Tensor(f32).init(tac, &.{1});
+    t0.data[0] = 5;
+    t0.setParam(); // set it, but don't use it
+    const t1 = try Tensor(f32).init(tac, &.{1});
+    t1.data[0] = 6;
+    const out = t0.mul(t1);
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    try g.buildForward(out);
+    try g.buildBackward(false);
+    const dummy_val: f32 = -23;
+    t0.grad.?.data[0] = dummy_val; // dummy value
+    g.computeNoGrad();
+    {
+        const expected = [_]f32{30};
+        try testing.expectEqualSlices(f32, &expected, out.data);
+        // t0.grad stays dummy value
+        try testing.expectEqual(dummy_val, t0.grad.?.data[0]);
     }
 }
 
