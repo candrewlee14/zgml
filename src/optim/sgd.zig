@@ -1,7 +1,11 @@
 const std = @import("std");
 const Tensor = @import("../tensor.zig").Tensor;
 const Alloc = std.mem.Allocator;
+const tac = std.testing.allocator;
+const models = @import("../models.zig");
 
+/// Stochastic Gradient Descent optimizer
+/// Uses momentum and mini-batches
 pub fn SGD(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -67,4 +71,22 @@ pub fn SGD(comptime T: type) type {
             }
         }
     };
+}
+
+test "optim - linear model with sgd optim" {
+    const T = f32;
+    const n = 100;
+    const time = try Tensor(T).initLinspace(tac, &.{n}, 0, 20);
+    const true_m: T = 13.5;
+    const speed = try Tensor(T).initLinspace(tac, &.{n}, 0, 20 * true_m);
+    defer time.deinit();
+    defer speed.deinit();
+
+    var model = try models.Linear(T).build(tac, 0, 0, time, speed, 5, 0.2);
+    defer model.deinit();
+
+    var optimizer = try SGD(T).init(tac, &model.params, 1, model.loss, 1e-3, 0.2);
+    defer optimizer.deinit();
+    model.train(10, 1, &optimizer);
+    try std.testing.expectApproxEqAbs(@as(T, true_m), model.params[0].data[0], 5e-1);
 }

@@ -24,7 +24,7 @@ pub fn Model(comptime T: type) type {
         out: *Tensor(T),
         loss: *Tensor(T),
 
-        fn build(alloc: Alloc, m: T, b: T, xs: *Tensor(T), ys: *Tensor(T), batch_size: usize, mu: T) !Self {
+        pub fn build(alloc: Alloc, m: T, b: T, xs: *Tensor(T), ys: *Tensor(T), batch_size: usize, mu: T) !Self {
             var p = Self{
                 // zig fmt: off
                 .params = .{ 
@@ -71,7 +71,7 @@ pub fn Model(comptime T: type) type {
             return p;
         }
 
-        fn deinit(self: *Self) void {
+        pub fn deinit(self: *Self) void {
             self.g.deinit();
             for (self.momentum) |mom| {
                 mom.deinit();
@@ -79,7 +79,7 @@ pub fn Model(comptime T: type) type {
             self.mu.deinit();
         }
 
-        fn compute(self: *Self) void {
+        pub fn compute(self: *Self) void {
             self.g.reset();
             self.g.resetGrads();
             if (self.loss.grad) |grad| _ = grad.setAllScalar(1);
