@@ -5,6 +5,7 @@ const Tensor = @import("../tensor.zig").Tensor;
 const ComputeGraph = @import("../graph.zig").ComputeGraph;
 const Alloc = std.mem.Allocator;
 const loss = @import("../loss.zig");
+const optim = @import("../optim.zig");
 
 pub fn Model(comptime T: type) type {
     return struct {
@@ -76,9 +77,6 @@ pub fn Model(comptime T: type) type {
                 mom.deinit();
             }
             self.mu.deinit();
-            // for (self.params) |p| {
-            //     p.deinit();
-            // }
         }
 
         fn compute(self: *Self) void {
@@ -88,28 +86,22 @@ pub fn Model(comptime T: type) type {
             self.g.compute();
         }
 
-        fn step(self: *Self, lr: *Tensor(T), cur_batch: usize) void {
-            // move set of xs into xsBatch
+        pub fn train(self: *Self, n_epochs: usize, batch_size: usize, optimizer: anytype) void {
             const n_elems = self.xsBatch.nElems();
-            @memcpy(self.xsBatch.data, self.xs.data[cur_batch * self.batch_size ..][0..n_elems]);
-            // move set of ys into ysBatch
-            @memcpy(self.ysBatch.data, self.ys.data[cur_batch * self.batch_size ..][0..n_elems]);
-            for (self.params, self.momentum) |p, mom| {
-                const p_grad = p.grad.?;
-                mom.computeMul(mom, self.mu); // multiply the momentum term by the momentum constant
-                p_grad.computeMul(p_grad, lr);
-                mom.computeAdd(mom, p_grad); // add the gradient term to the momentum term
-                p.computeSub(p, mom); // update the parameter by subtracting the momentum term
-            }
-            for (lr.data) |*lr_v| {
-                lr_v.* *= 0.99;
+            const n_batches = self.xs.nElems() / (n_elems * batch_size);
+            for (0..n_epochs) |_| {
+                for (0..n_batches) |b| {
+                    // move batch of xs & ys into batch data
+                    @memcpy(self.xsBatch.data, self.xs.data[b * self.batch_size ..][0..n_elems]);
+                    @memcpy(self.ysBatch.data, self.ys.data[b * self.batch_size ..][0..n_elems]);
+                    optimizer.zeroGrad();
+                    self.compute();
+                    optimizer.step();
+                }
             }
         }
 
-        // TODO: uncomment when optimizer is implemented
-        test "linear model" {
-            // const time = try Tensor(T).initLinspace(tac, &.{20}, 0, 20);
-            // const speed = try Tensor(T).initLinspace(tac, &.{20}, 5, 25);
+        test "linear model with sgd optim" {
             const n = 20;
             const time = try Tensor(T).initLinspace(tac, &.{n}, 0, 20);
             const true_m = 30;
@@ -120,20 +112,10 @@ pub fn Model(comptime T: type) type {
             var model = try Model(T).build(tac, 0, 0, time, speed, 1, 0.2);
             defer model.deinit();
 
-            const lr = try Tensor(T).initScalar(tac, 1e-3);
-            defer lr.deinit();
-
-            const n_batches = time.nElems() / model.batch_size;
-            for (0..10) |epoch| {
-                _ = epoch;
-                for (0..n_batches) |batch| {
-                    model.compute();
-                    model.step(lr, batch);
-                }
-            }
-            try testing.expectApproxEqAbs(@as(T, true_m), model.params[0].data[0], 10e-1);
-            // TODO: it's difficult to get this type of model to converge on a bias term, reproduced in pytorch with multiple optimizers
-            // try testing.expectApproxEqAbs(@as(T, 0), model.params[1].data[0], 1e-2);
+            var optimizer = try optim.sgd.SGD(T).init(tac, &model.params, 1, model.loss, 1e-3, 0.2);
+            defer optimizer.deinit();
+            model.train(10, 1, &optimizer);
+            try testing.expectApproxEqAbs(@as(T, true_m), model.params[0].data[0], 5e-1);
         }
     };
 }
