@@ -82,11 +82,11 @@ test "optim - linear model with sgd optim" {
     defer time.deinit();
     defer speed.deinit();
 
-    var model = try models.Linear(T).build(tac, 0, 0, time, speed, 5, 0.2);
+    var model = try models.Linear(T).build(tac, 0, 0, 5);
     defer model.deinit();
 
     var optimizer = try SGD(T).init(tac, &model.params, 1, model.loss, 1e-3, 0.2);
     defer optimizer.deinit();
-    model.train(10, 1, &optimizer);
+    model.train(time, speed, 10, 1, &optimizer);
     try std.testing.expectApproxEqAbs(@as(T, true_m), model.params[0].data[0], 5e-1);
 }
