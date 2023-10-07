@@ -224,7 +224,7 @@ test "tensor compute graph - matmul" {
         4, 5, 6,
     });
 
-    const dst = t1.matMul(false, t2, false);
+    const dst = t1.matMul(.n, t2, .n);
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     try g.buildForward(dst);
@@ -296,8 +296,8 @@ test "build compute graph - forward matMul" {
         3, 4,
         5, 6,
     });
-    const intermed = t1.matMul(true, t1, false);
-    const out = intermed.matMul(false, t1, true);
+    const intermed = t1.matMul(.T, t1, .n);
+    const out = intermed.matMul(.n, t1, .T);
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     try g.buildForward(out);
@@ -456,7 +456,7 @@ test "build compute graph - backward - testSqrSumFunc" {
 
 test "time speed equation test" {
     {
-        const time = try Tensor(f32).initLinspace(tac, &.{20}, 0, 20);
+        const time = try Tensor(f32).linspace(tac, 0, 20, &.{20});
 
         const c0 = try Tensor(f32).initScalar(tac, 0.75);
         const c1 = try Tensor(f32).initScalar(tac, 9.5);
@@ -499,7 +499,7 @@ test "a*x^2" {
 }
 
 test "arange a*x^2" {
-    const x = try Tensor(f32).initLinspace(tac, &.{5}, 0, 5);
+    const x = try Tensor(f32).arange(tac, 5);
     x.name = "x";
     const a = try Tensor(f32).initScalar(tac, 2);
     a.name = "a";
@@ -518,7 +518,7 @@ test "arange a*x^2" {
 }
 
 test "arange" {
-    const t = try Tensor(f32).initLinspace(tac, &.{5}, 0, 5);
+    const t = try Tensor(f32).arange(tac, 5);
     t.setParam();
     try testing.expectEqual(@as(usize, 5), t.nElems());
     const expected = [_]f32{ 0, 1, 2, 3, 4 };
@@ -545,6 +545,113 @@ test "arange" {
         t.computeSub(t, t.grad.?);
     }
     try testing.expectApproxEqAbs(@as(f32, 0), out.data[0], 0.00001);
+}
+
+// modeled after sgd.py
+test "manual SGD for mx + b" {
+    const T = f32;
+    var arena = std.heap.ArenaAllocator.init(tac);
+    defer arena.deinit();
+    const al = arena.allocator();
+
+    const true_m = try Tensor(T).initScalar(al, 3);
+    const true_b = try Tensor(T).initScalar(al, 4);
+
+    const m = try Tensor(T).initScalar(al, 0.1);
+    const b = try Tensor(T).initScalar(al, -0.1);
+
+    const xs = try Tensor(T).arange(al, 10);
+
+    // setup y = 3x+4
+    const ys = try Tensor(T).arange(al, 10);
+    ys.computeMul(ys, true_m);
+    ys.computeAdd(ys, true_b);
+    for (xs.data, ys.data) |x, y| {
+        try testing.expectEqual(3 * x + 4, y);
+    }
+
+    const lr = 0.03;
+    const iters = 1000;
+
+    // setup compute graph
+    const xi = try Tensor(T).initScalar(al, 0);
+    const yi = try Tensor(T).initScalar(al, 0);
+    const y_pred = xi.mul(m).add(b);
+    const two = try Tensor(T).initScalar(al, 2);
+    const y_diff = y_pred.sub(yi).mul(two);
+    const g_m = xi.mul(y_diff);
+    const g_b = y_diff;
+    var g = ComputeGraph(T).init(al);
+    const dummy_out = g_m.add(g_b);
+
+    try g.buildForward(dummy_out);
+    try g.buildBackward(false);
+
+    for (0..iters) |i| {
+        const idx = i % xs.nElems();
+        @memcpy(xi.data, xs.data[idx * xi.nElems() ..][0..1]);
+        @memcpy(yi.data, ys.data[idx * yi.nElems() ..][0..1]);
+        _ = g_m.setAllScalar(0);
+        _ = g_b.setAllScalar(0);
+        g.compute();
+        m.data[0] -= lr * g_m.data[0];
+        b.data[0] -= lr * g_b.data[0];
+    }
+    try std.testing.expectApproxEqAbs(@as(T, 3), m.data[0], 0.01);
+    try std.testing.expectApproxEqAbs(@as(T, 4), b.data[0], 0.01);
+}
+
+test "auto SGD for mx + b" {
+    const T = f32;
+    var arena = std.heap.ArenaAllocator.init(tac);
+    defer arena.deinit();
+    const al = arena.allocator();
+
+    const true_m = try Tensor(T).initScalar(al, 3);
+    const true_b = try Tensor(T).initScalar(al, 4);
+
+    const m = try Tensor(T).initScalar(al, 0.1);
+    m.setParam();
+    const b = try Tensor(T).initScalar(al, -0.1);
+    b.setParam();
+
+    const xs = try Tensor(T).arange(al, 10);
+
+    // setup y = 3x+4
+    const ys = try Tensor(T).arange(al, 10);
+    ys.computeMul(ys, true_m);
+    ys.computeAdd(ys, true_b);
+    for (xs.data, ys.data) |x, y| {
+        try testing.expectEqual(3 * x + 4, y);
+    }
+
+    const lr = 0.03;
+    const iters = 1000;
+
+    // setup compute graph
+    const xi = try Tensor(T).initScalar(al, 0);
+    const yi = try Tensor(T).initScalar(al, 0);
+    const y_pred = xi.mul(m).add(b);
+    const loss = y_pred.sub(yi).sqr();
+
+    var g = ComputeGraph(T).init(al);
+    try g.buildForward(loss);
+    try g.buildBackward(true);
+
+    for (0..iters) |i| {
+        g.resetGrads();
+        const idx = i % xs.nElems();
+        @memcpy(xi.data, xs.data[idx * xi.nElems() ..][0..1]);
+        @memcpy(yi.data, ys.data[idx * yi.nElems() ..][0..1]);
+        _ = loss.grad.?.setAllScalar(1);
+        _ = m.grad.?.setAllScalar(0);
+        _ = b.grad.?.setAllScalar(0);
+        g.compute();
+        m.data[0] -= lr * m.grad.?.data[0];
+        b.data[0] -= lr * b.grad.?.data[0];
+    }
+    try std.testing.expectApproxEqAbs(@as(T, 3), m.data[0], 0.01);
+    try std.testing.expectApproxEqAbs(@as(T, 4), b.data[0], 0.01);
 }
 
 //#endregion

@@ -20,6 +20,8 @@ pub fn Model(comptime T: type) type {
         out: *Tensor(T),
         loss: *Tensor(T),
 
+        /// Create a model
+        /// y = m*x + b
         pub fn build(alloc: Alloc, m: T, b: T, batch_size: usize) !Self {
             var p = Self{
                 // zig fmt: off
@@ -66,7 +68,6 @@ pub fn Model(comptime T: type) type {
         }
 
         pub fn compute(self: *Self) void {
-            self.g.reset();
             self.g.resetGrads();
             if (self.loss.grad) |grad| _ = grad.setAllScalar(1);
             self.g.compute();
@@ -90,9 +91,9 @@ pub fn Model(comptime T: type) type {
 
         test "linear model with sgd optim" {
             const n = 20;
-            const time = try Tensor(T).initLinspace(tac, &.{n}, 0, 20);
+            const time = try Tensor(T).linspace(tac, 0, 20, &.{n});
             const true_m = 30;
-            const speed = try Tensor(T).initLinspace(tac, &.{n}, 0, 20 * true_m);
+            const speed = try Tensor(T).linspace(tac, 0, 20 * true_m, &.{n});
             defer time.deinit();
             defer speed.deinit();
 

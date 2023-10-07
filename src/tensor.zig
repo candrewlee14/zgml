@@ -64,11 +64,35 @@ pub fn Tensor(comptime T: type) type {
             return try initHelper(alloc, ne, null);
         }
 
-        pub fn initLinspace(alloc: Alloc, ne: []const usize, start: T, end: T) Alloc.Error!*Self {
-            const tensor = try Self.init(alloc, ne);
-            const diff = (end - start) / @intToFloat(T, tensor.nElems());
+        pub fn zeros(alloc: Alloc, ne: []const usize) Alloc.Error!*Self {
+            var tensor = try init(alloc, ne);
+            @memset(tensor.data, 0);
+            return tensor;
+        }
+
+        pub fn ones(alloc: Alloc, ne: []const usize) Alloc.Error!*Self {
+            var tensor = try init(alloc, ne);
+            @memset(tensor.data, 1);
+            return tensor;
+        }
+        pub fn arange(alloc: Alloc, end: T) Alloc.Error!*Self {
+            return try arangeStep(alloc, 0, end, 1);
+        }
+
+        pub fn arangeStep(alloc: Alloc, start: T, end: T, step_sz: T) Alloc.Error!*Self {
+            const ne: usize = @intFromFloat(@trunc((end - start) / step_sz));
+            const tensor = try Self.init(alloc, &.{ne});
             for (tensor.data, 0..) |*d, i| {
-                d.* = start + diff * @intToFloat(T, i);
+                d.* = start + step_sz * @as(T, @floatFromInt(i));
+            }
+            return tensor;
+        }
+
+        pub fn linspace(alloc: Alloc, start: T, end: T, ne: []const usize) Alloc.Error!*Self {
+            const tensor = try Self.init(alloc, ne);
+            const diff = (end - start) / @as(T, @floatFromInt(tensor.nElems() - 1));
+            for (tensor.data, 0..) |*d, i| {
+                d.* = start + diff * @as(T, @floatFromInt(i));
             }
             return tensor;
         }
@@ -93,7 +117,7 @@ pub fn Tensor(comptime T: type) type {
             std.debug.assert(ne.len <= max_dims);
             const tensor: *Self = try alloc.create(Self);
             tensor.* = .{
-                .n_dims = @truncate(u8, ne.len),
+                .n_dims = @as(u8, @truncate(ne.len)),
                 .ne = .{1} ** max_dims,
                 .strides = .{0} ** max_dims,
                 .op = .none,
@@ -124,7 +148,7 @@ pub fn Tensor(comptime T: type) type {
             return tensor.setAllScalar(val);
         }
 
-        // init values in the interval [0, 1)
+        // init values evenly distributed in the interval [0, 1)
         pub fn initRand(alloc: Alloc, rng: *std.rand.Random, ne: []const usize) Alloc.Error!*Self {
             const tensor = try Self.init(alloc, ne);
             for (tensor.data) |*d| {
@@ -149,7 +173,7 @@ pub fn Tensor(comptime T: type) type {
 
         /// Duplicate this tensor (with its shape) without preserving the data
         pub fn copyTensorShape(self: *Self) *Self {
-            return Self.initHelper(self.alloc, &self.ne, null) catch unreachable;
+            return Self.initHelper(self.alloc, &self.ne, null) catch @panic("copyTensorShape: out of memory");
         }
 
         fn unaryOp(self: *Self, op: Op, inplace: bool) *Self {
@@ -350,8 +374,12 @@ pub fn Tensor(comptime T: type) type {
             return self.unaryOp(.norm, true);
         }
 
-        pub fn matMul(self: *Self, trans_self: bool, other: *Self, trans_other: bool) *Self {
-            assert(self.canMatMul(trans_self, other, trans_other));
+        const Transpose = enum(u1) { n = 0, T = 1 };
+
+        pub fn matMul(self: *Self, tr_self: Transpose, other: *Self, tr_other: Transpose) *Self {
+            assert(self.canMatMul(tr_self, other, tr_other));
+            const trans_self = tr_self == .T;
+            const trans_other = tr_other == .T;
             const is_node = self.grad != null or other.grad != null;
             assert(max_dims == 4); // Need to update this function if max_dims changes
 
@@ -369,12 +397,12 @@ pub fn Tensor(comptime T: type) type {
                     // out #cols = other #rows, out #rows = self #cols
                     .{ other.ne[1], self.ne[0], self.ne[2], other.ne[3] };
             };
-            const res = Self.init(self.alloc, out_ne[0..std.math.min(self.n_dims, other.n_dims)]) catch unreachable;
+            const res = Self.init(self.alloc, out_ne[0..@min(self.n_dims, other.n_dims)]) catch unreachable;
             res.op = if (trans_self) if (trans_other) .matmul_t0t1 else .matmul_t0 else if (trans_other) .matmul_t1 else .matmul;
             res.grad = if (is_node) res.copyTensorShape() else null;
             res.src0 = self;
             res.src1 = other;
-            res.assertValidMatMulDims(self, trans_self, other, trans_other);
+            res.assertValidMatMulDims(self, tr_self, other, tr_other);
             return res;
         }
         pub fn scale(self: *Self, other: *Self) *Self {
@@ -550,7 +578,7 @@ pub fn Tensor(comptime T: type) type {
             assert(max_dims == 4);
             assert(src0.canSumTo(dst));
             const src0_ne_v: @Vector(4, usize) = src0.ne;
-            const div_elems = @intToFloat(T, @reduce(.Mul, src0_ne_v / dst.ne));
+            const div_elems = @as(T, @floatFromInt(@reduce(.Mul, src0_ne_v / dst.ne)));
 
             for (0..src0.ne[3]) |ne3| {
                 for (0..src0.ne[2]) |ne2| {
@@ -677,7 +705,9 @@ pub fn Tensor(comptime T: type) type {
             return src0.isContiguous() and src1.isContiguous() and
                 (dst.ne[0] >= 32 and dst.ne[1] >= 32 and src1.ne[0] >= 32);
         }
-        fn assertValidMatMulDims(dst: *Self, src0: *Self, trans0: bool, src1: *Self, trans1: bool) void {
+        fn assertValidMatMulDims(dst: *Self, src0: *Self, tr0: Transpose, src1: *Self, tr1: Transpose) void {
+            const trans0 = tr0 == .T;
+            const trans1 = tr1 == .T;
             // src0 and src1 have same outer two dims
             assert(src0.ne[3] == src1.ne[3]);
             assert(src0.ne[2] == src1.ne[2]);
@@ -717,9 +747,11 @@ pub fn Tensor(comptime T: type) type {
                 assert(dst.ne[0] == src1.ne[1]);
             }
         }
-        pub fn computeMatMul(dst: *Self, src0: *Self, comptime trans0: bool, src1: *Self, comptime trans1: bool) void {
+        pub fn computeMatMul(dst: *Self, src0: *Self, comptime tr0: Transpose, src1: *Self, comptime tr1: Transpose) void {
             assert(max_dims == 4); // must update this func if max_dims changes
-            dst.assertValidMatMulDims(src0, trans0, src1, trans1);
+            const trans0 = tr0 == .T;
+            const trans1 = tr1 == .T;
+            dst.assertValidMatMulDims(src0, tr0, src1, tr1);
             // dst is not transposed
             assert(dst.strides[0] == 1);
             assert(dst.strides[0] <= dst.strides[1]);
@@ -736,11 +768,11 @@ pub fn Tensor(comptime T: type) type {
 
             const dst_ne0 = dst.ne[0];
 
-            const src0_ne1c = @intCast(c_int, src0_ne1);
-            const src0_ne0c = @intCast(c_int, src0_ne0);
-            const src1_ne1c = @intCast(c_int, src1_ne1);
-            const src1_ne0c = @intCast(c_int, src1_ne0);
-            const dst_ne0c = @intCast(c_int, dst_ne0);
+            const src0_ne1c: c_int = @intCast(src0_ne1);
+            const src0_ne0c: c_int = @intCast(src0_ne0);
+            const src1_ne1c: c_int = @intCast(src1_ne1);
+            const src1_ne0c: c_int = @intCast(src1_ne0);
+            const dst_ne0c: c_int = @intCast(dst_ne0);
 
             for (0..src0_ne3) |src0_i3| {
                 for (0..src0_ne2) |src0_i2| {
@@ -875,10 +907,10 @@ pub fn Tensor(comptime T: type) type {
                 .gelu => tensor.computeGeLu(src0.?),
                 .norm => tensor.computeNorm(src0.?),
                 //
-                .matmul => tensor.computeMatMul(src0.?, false, src1.?, false),
-                .matmul_t0 => tensor.computeMatMul(src0.?, true, src1.?, false),
-                .matmul_t1 => tensor.computeMatMul(src0.?, false, src1.?, true),
-                .matmul_t0t1 => tensor.computeMatMul(src0.?, true, src1.?, true),
+                .matmul => tensor.computeMatMul(src0.?, .n, src1.?, .n),
+                .matmul_t0 => tensor.computeMatMul(src0.?, .T, src1.?, .n),
+                .matmul_t1 => tensor.computeMatMul(src0.?, .n, src1.?, .T),
+                .matmul_t0t1 => tensor.computeMatMul(src0.?, .T, src1.?, .T),
                 .view => {},
                 //
                 // .scale => tensor.computeScale(src0.?),
@@ -944,16 +976,18 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// Returns if self can matmul with other.
-        pub fn canMatMul(self: *Self, transSelf: bool, other: *Self, transOther: bool) bool {
+        pub fn canMatMul(self: *Self, tr_self: Transpose, other: *Self, tr_other: Transpose) bool {
             if (self.ne[3] != other.ne[3]) return false; // channels same
             if (self.ne[2] != other.ne[2]) return false; // batch same
-            if (!transSelf and !transOther) {
+            const trans_self = tr_self == .T;
+            const trans_other = tr_other == .T;
+            if (!trans_self and !trans_other) {
                 // self #cols == other #rows
                 return self.ne[0] == other.ne[1];
-            } else if (transSelf and !transOther) {
+            } else if (trans_self and !trans_other) {
                 // self #rows == other #rows (column dot product)
                 return self.ne[1] == other.ne[1];
-            } else if (!transSelf and transOther) {
+            } else if (!trans_self and trans_other) {
                 // self #cols == other #cols (row dot product)
                 return self.ne[0] == other.ne[0];
             } else {
@@ -1178,7 +1212,7 @@ pub fn Tensor(comptime T: type) type {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        const z = tensor.grad.?.matMul(false, src1, true);
+                        const z = tensor.grad.?.matMul(.n, src1, .T);
                         // remove grad
                         if (z.grad) |gradp| {
                             gradp.deinit();
@@ -1187,7 +1221,7 @@ pub fn Tensor(comptime T: type) type {
                         src0.grad = grad.addImpl(z, inplace);
                     }
                     if (src1.grad) |grad| {
-                        const z = src0.matMul(true, tensor.grad.?, false);
+                        const z = src0.matMul(.T, tensor.grad.?, .n);
                         // remove grad
                         if (z.grad) |gradp| {
                             gradp.deinit();
@@ -1201,12 +1235,12 @@ pub fn Tensor(comptime T: type) type {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        try addToScratchUniq(scratch, tensor.grad.?.matMul(false, src1, true));
+                        try addToScratchUniq(scratch, tensor.grad.?.matMul(.n, src1, .T));
                         src0.grad = grad.addImpl(scratch.items[scratch.items.len - 1], inplace);
                         try addToScratchUniq(scratch, grad); // move the old one into scratch
                     }
                     if (src1.grad) |grad| {
-                        try addToScratchUniq(scratch, src0.matMul(false, tensor.grad.?, false));
+                        try addToScratchUniq(scratch, src0.matMul(.n, tensor.grad.?, .n));
                         src1.grad = grad.addImpl(scratch.items[scratch.items.len - 1], inplace);
                         try addToScratchUniq(scratch, grad); // move the old one into scratch
                     }
@@ -1215,12 +1249,12 @@ pub fn Tensor(comptime T: type) type {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        try addToScratchUniq(scratch, tensor.grad.?.matMul(false, src1, false));
+                        try addToScratchUniq(scratch, tensor.grad.?.matMul(.n, src1, .n));
                         src0.grad = grad.addImpl(scratch.items[scratch.items.len - 1], inplace);
                         try addToScratchUniq(scratch, grad); // move the old one into scratch
                     }
                     if (src1.grad) |grad| {
-                        try addToScratchUniq(scratch, src0.matMul(true, tensor.grad.?, false));
+                        try addToScratchUniq(scratch, src0.matMul(.T, tensor.grad.?, .n));
                         src1.grad = grad.addImpl(scratch.items[scratch.items.len - 1], inplace);
                         try addToScratchUniq(scratch, grad); // move the old one into scratch
                     }
@@ -1229,12 +1263,12 @@ pub fn Tensor(comptime T: type) type {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        try addToScratchUniq(scratch, tensor.grad.?.matMul(true, src1, false));
+                        try addToScratchUniq(scratch, tensor.grad.?.matMul(.T, src1, .n));
                         src0.grad = grad.addImpl(scratch.items[scratch.items.len - 1], inplace);
                         try addToScratchUniq(scratch, grad); // move the old one into scratch
                     }
                     if (src1.grad) |grad| {
-                        try addToScratchUniq(scratch, src0.matMul(false, tensor.grad.?, true));
+                        try addToScratchUniq(scratch, src0.matMul(.n, tensor.grad.?, .T));
                         src1.grad = grad.addImpl(scratch.items[scratch.items.len - 1], inplace);
                         try addToScratchUniq(scratch, grad); // move the old one into scratch
                     }
@@ -1250,7 +1284,10 @@ pub fn Tensor(comptime T: type) type {
                 // // diag_max_inf,
                 // .soft_max,
                 // .rope,
-                else => @panic("Unimplemented backward OP"),
+                else => |op| {
+                    std.debug.print("Unsupported op: {}\n", .{op});
+                    @panic("Unsupported op");
+                },
             }
         }
 
@@ -1288,21 +1325,38 @@ test "init" {
     }
 }
 
-test "initLinspace" {
+test "linspace" {
     {
-        const t = try Tensor(f32).initLinspace(tac, &.{20}, 0, 20);
+        const t = try Tensor(f32).linspace(tac, 0, 19, &.{20});
         defer t.deinit();
         try testing.expectEqual(@as(usize, 20), t.nElems());
         for (t.data, 0..) |v, i| {
-            try testing.expectEqual(@intToFloat(f32, i), v);
+            try testing.expectEqual(@as(f32, @floatFromInt(i)), v);
         }
     }
     {
-        const t = try Tensor(f32).initLinspace(tac, &.{20}, 0, 10);
+        // generated by numpy: np.linspace(5., 15., 14)
+        const exp_arr = [_]f32{
+            5.0,         5.76923077,  6.53846154,  7.30769231,  8.07692308,
+            8.84615385,  9.61538462,  10.38461538, 11.15384615, 11.92307692,
+            12.69230769, 13.46153846, 14.23076923, 15.0,
+        };
+        const t = try Tensor(f32).linspace(tac, 5, 15, &.{14});
+        defer t.deinit();
+        try testing.expectEqual(@as(usize, 14), t.nElems());
+        for (exp_arr, t.data) |exp, v| {
+            try testing.expectApproxEqAbs(exp, v, 0.001);
+        }
+    }
+}
+
+test "arange" {
+    {
+        const t = try Tensor(f32).arange(tac, 20);
         defer t.deinit();
         try testing.expectEqual(@as(usize, 20), t.nElems());
         for (t.data, 0..) |v, i| {
-            try testing.expectEqual(@intToFloat(f32, i) * 0.5, v);
+            try testing.expectEqual(@as(f32, @floatFromInt(i)), v);
         }
     }
 }
@@ -1410,10 +1464,10 @@ test "compute matmul" {
         4, 5, 6,
     });
 
-    const dst = t1.matMul(false, t2, false);
+    const dst = t1.matMul(.n, t2, .n);
     defer dst.deinit();
 
-    dst.computeMatMul(t1, false, t2, false);
+    dst.computeMatMul(t1, .n, t2, .n);
 
     const expected = [_]f32{
         9,  12, 15,
@@ -1440,10 +1494,10 @@ test "compute matmul_t0" {
         5, 6,
     });
 
-    const dst = t1.matMul(true, t2, false);
+    const dst = t1.matMul(.T, t2, .n);
     defer dst.deinit();
 
-    dst.computeMatMul(t1, true, t2, false);
+    dst.computeMatMul(t1, .T, t2, .n);
 
     const expected = [_]f32{
         35, 44,
@@ -1469,10 +1523,10 @@ test "compute matmul_t1 2D" {
     });
     defer t2.deinit();
 
-    const dst = t1.matMul(false, t2, true);
+    const dst = t1.matMul(.n, t2, .T);
     defer dst.deinit();
 
-    dst.computeMatMul(t1, false, t2, true);
+    dst.computeMatMul(t1, .n, t2, .T);
 
     const expected = [_]f32{
         5,  11, 17,
@@ -1497,10 +1551,10 @@ test "compute matmul_t1 3D" {
     try testing.expectEqual(@as(f32, 4), t1.get(&.{ 1, 1, 0 }));
     try testing.expectEqual(@as(f32, 7), t1.get(&.{ 0, 1, 1 }));
 
-    const dst = t1.matMul(false, t1, true);
+    const dst = t1.matMul(.n, t1, .T);
     defer dst.deinit();
 
-    dst.computeMatMul(t1, false, t1, true);
+    dst.computeMatMul(t1, .n, t1, .T);
     const expected = [_]f32{
         5,  11,
         11, 25,

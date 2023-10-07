@@ -76,9 +76,9 @@ pub fn SGD(comptime T: type) type {
 test "optim - linear model with sgd optim" {
     const T = f32;
     const n = 100;
-    const time = try Tensor(T).initLinspace(tac, &.{n}, 0, 20);
+    const time = try Tensor(T).linspace(tac, 0, 20, &.{n});
     const true_m: T = 13.5;
-    const speed = try Tensor(T).initLinspace(tac, &.{n}, 0, 20 * true_m);
+    const speed = try Tensor(T).linspace(tac, 0, 20 * true_m, &.{n});
     defer time.deinit();
     defer speed.deinit();
 
@@ -90,3 +90,26 @@ test "optim - linear model with sgd optim" {
     model.train(time, speed, 10, 1, &optimizer);
     try std.testing.expectApproxEqAbs(@as(T, true_m), model.params[0].data[0], 5e-1);
 }
+
+// TODO: get this to pass, bias should be found correctly
+//
+// test "optim linear model with sgd, y = 4x + 3" {
+//     const T = f32;
+//     const n = 100;
+//     const time = try Tensor(T).linspace(tac, 0, 20, &.{n});
+//     var speed = try Tensor(T).linspace(tac, 0, 20 * 4, &.{n});
+//     for (speed.data) |*d| {
+//         d.* += 3;
+//     }
+//     defer time.deinit();
+//     defer speed.deinit();
+//
+//     var model = try models.Linear(T).build(tac, -0.5, -0.5, 5);
+//     defer model.deinit();
+//
+//     var optimizer = try SGD(T).init(tac, &model.params, 1, model.loss, 1e-3, 0.2);
+//     defer optimizer.deinit();
+//     model.train(time, speed, 10, 1, &optimizer);
+//     try std.testing.expectApproxEqAbs(@as(T, 4), model.params[0].data[0], 5e-1);
+//     try std.testing.expectApproxEqAbs(@as(T, 3), model.params[1].data[0], 5e-1);
+// }

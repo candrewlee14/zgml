@@ -82,9 +82,9 @@ pub fn Model(comptime T: type) type {
 
         test "linear poly model with sgd optim" {
             const n = 20;
-            const time = try Tensor(T).initLinspace(tac, &.{n}, 0, 20);
+            const time = try Tensor(T).linspace(tac, 0, 20, &.{n});
             const true_m = 30;
-            const speed = try Tensor(T).initLinspace(tac, &.{n}, 0, 20 * true_m);
+            const speed = try Tensor(T).linspace(tac, 0, 20 * true_m, &.{n});
             defer time.deinit();
             defer speed.deinit();
 
