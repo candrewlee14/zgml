@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const tensorlib = @import("./tensor.zig");
+const tensorlib = @import("tensor.zig");
 const Tensor = tensorlib.Tensor;
 const assert = std.debug.assert;
 const testing = std.testing;
@@ -204,6 +204,7 @@ pub fn ComputeGraph(comptime T: type) type {
 }
 
 test "ref all decls" {
+    // runs tests for all declarations
     _ = testing.refAllDeclsRecursive(ComputeGraph(f32));
 }
 

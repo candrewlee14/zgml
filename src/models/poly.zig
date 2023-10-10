@@ -91,7 +91,8 @@ pub fn Model(comptime T: type) type {
             var model = try Model(T).build(tac, 1, 1);
             defer model.deinit();
 
-            var optimizer = try optim.sgd.SGD(T).init(tac, model.params.items, 1, model.loss, 1e-3, 0.2);
+            var optimizer: optim.sgd.SGD(T) = undefined;
+            try optimizer.init(tac, model.params.items, 1e-3, 0.2);
             defer optimizer.deinit();
             model.train(time, speed, 10, 1, &optimizer);
             try testing.expectApproxEqAbs(@as(T, true_m), model.params.items[1].data[0], 5e-1);

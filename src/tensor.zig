@@ -161,6 +161,17 @@ pub fn Tensor(comptime T: type) type {
 
         //#region Lazy Operations
 
+        /// Create a detached view of this tensor
+        /// This does not own the data, and will not use parent nodes in the graph
+        pub fn detachedView(self: *Self, alloc: Alloc) *Self {
+            var t = Self.initHelper(alloc, &self.ne, self.data) catch unreachable;
+            t.op = .none;
+            t.src0 = null;
+            t.src1 = null;
+            t.grad = if (self.grad) |grad| grad.detachedView(alloc) else null;
+            return t;
+        }
+
         /// Create a new tensor as a view of the current tensor's data
         pub fn view(self: *Self) *Self {
             var t = Self.initHelper(self.alloc, &self.ne, self.data) catch unreachable;

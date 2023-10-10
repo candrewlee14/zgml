@@ -3,6 +3,7 @@ const Tensor = @import("../tensor.zig").Tensor;
 const Alloc = std.mem.Allocator;
 const tac = std.testing.allocator;
 const models = @import("../models.zig");
+const graph = @import("../graph.zig");
 
 /// Stochastic Gradient Descent optimizer
 /// Uses momentum and mini-batches
@@ -10,59 +11,52 @@ pub fn SGD(comptime T: type) type {
     return struct {
         const Self = @This();
 
+        arena: std.heap.ArenaAllocator,
         params: []const *Tensor(T),
-        batch_size: usize,
         learning_rate: *Tensor(T),
-        momentum: std.ArrayList(*Tensor(T)),
-        lr_grad: std.ArrayList(*Tensor(T)),
+        momentum: []*Tensor(T),
         momentum_decay: *Tensor(T),
-        loss: *Tensor(T),
+        graphs: []graph.ComputeGraph(T),
 
         pub fn init(
+            self: *Self,
             alloc: Alloc,
             params: []const *Tensor(T),
-            batch_size: usize,
-            loss: *Tensor(T),
             learning_rate: T,
             momentum_decay: T,
-        ) Alloc.Error!Self {
-            var res = Self{
-                .batch_size = batch_size,
+        ) Alloc.Error!void {
+            var arena = std.heap.ArenaAllocator.init(alloc);
+            self.arena = arena;
+            const al = self.arena.allocator();
+            self.* = Self{
+                .arena = self.arena,
                 .params = params,
-                .learning_rate = try Tensor(T).initScalar(alloc, learning_rate),
-                .loss = loss,
-                .momentum = try std.ArrayList(*Tensor(T)).initCapacity(alloc, params.len),
-                .lr_grad = try std.ArrayList(*Tensor(T)).initCapacity(alloc, params.len),
-                .momentum_decay = try Tensor(T).initScalar(alloc, momentum_decay),
+                .learning_rate = try Tensor(T).initScalar(al, learning_rate),
+                .momentum = try al.alloc(*Tensor(T), params.len),
+                .momentum_decay = try Tensor(T).initScalar(al, momentum_decay),
+                .graphs = try al.alloc(graph.ComputeGraph(T), params.len),
             };
-            for (params) |param| {
-                const mo = try Tensor(T).init(alloc, &param.ne);
-                _ = mo.setAllScalar(0);
-                res.momentum.appendAssumeCapacity(mo);
+            for (params, 0..) |orig_param, i| {
+                var param = orig_param.detachedView(al);
+                var momentum = try Tensor(T).zeros(al, &orig_param.ne);
 
-                const lr_grad = try Tensor(T).init(alloc, &param.ne);
-                _ = lr_grad.setAllScalar(0);
-                res.lr_grad.appendAssumeCapacity(lr_grad);
+                momentum = momentum.mulInplace(self.momentum_decay);
+                momentum = momentum.subInplace(param.grad.?.mul(self.learning_rate));
+
+                param = param.addInplace(momentum);
+
+                self.momentum[i] = momentum;
+                self.graphs[i] = graph.ComputeGraph(T).init(al);
+                try self.graphs[i].buildForward(param);
             }
-            return res;
         }
         pub fn deinit(self: *Self) void {
-            self.learning_rate.deinit();
-            for (self.momentum.items, self.lr_grad.items) |mo, lrg| {
-                mo.deinit();
-                lrg.deinit();
-            }
-            self.momentum.deinit();
-            self.lr_grad.deinit();
-            self.momentum_decay.deinit();
+            self.arena.deinit();
         }
         // Must zero grad before calling step
         pub fn step(self: *Self) void {
-            for (self.params, self.momentum.items, self.lr_grad.items) |param, mo, lrg| {
-                mo.computeMul(mo, self.momentum_decay);
-                lrg.computeMul(param.grad.?, self.learning_rate);
-                mo.computeAdd(mo, lrg);
-                param.computeSub(param, mo);
+            for (self.graphs) |*g| {
+                g.computeNoGrad();
             }
         }
         pub fn zeroGrad(self: *Self) void {
@@ -84,8 +78,10 @@ test "optim - linear model with sgd optim" {
 
     var model = try models.Linear(T).build(tac, 0, 0, 5);
     defer model.deinit();
+    std.log.warn("Setup model\n", .{});
 
-    var optimizer = try SGD(T).init(tac, &model.params, 1, model.loss, 1e-3, 0.2);
+    var optimizer: SGD(T) = undefined;
+    try optimizer.init(tac, &model.params, 1e-3, 0.2);
     defer optimizer.deinit();
     model.train(time, speed, 10, 1, &optimizer);
     try std.testing.expectApproxEqAbs(@as(T, true_m), model.params[0].data[0], 5e-1);
@@ -107,7 +103,7 @@ test "optim - linear model with sgd optim" {
 //     var model = try models.Linear(T).build(tac, -0.5, -0.5, 5);
 //     defer model.deinit();
 //
-//     var optimizer = try SGD(T).init(tac, &model.params, 1, model.loss, 1e-3, 0.2);
+//     var optimizer = try SGD(T).init(tac, &model.params, 1e-3, 0.2);
 //     defer optimizer.deinit();
 //     model.train(time, speed, 10, 1, &optimizer);
 //     try std.testing.expectApproxEqAbs(@as(T, 4), model.params[0].data[0], 5e-1);
