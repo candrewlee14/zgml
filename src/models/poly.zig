@@ -22,9 +22,7 @@ pub fn Model(comptime T: type) type {
 
         pub fn build(alloc: Alloc, max_exp: usize, batch_size: usize) !Self {
             var res = Self{
-                // zig fmt: off
-                .params = try std.ArrayList(*Tensor(T)).initCapacity(alloc, max_exp+1),
-                // zig fmt: on
+                .params = try std.ArrayList(*Tensor(T)).initCapacity(alloc, max_exp + 1),
                 .xs_batch = try Tensor(T).init(alloc, &.{batch_size}),
                 .ys_batch = try Tensor(T).init(alloc, &.{batch_size}),
                 .g = ComputeGraph(T).init(alloc),
@@ -83,7 +81,7 @@ pub fn Model(comptime T: type) type {
         test "linear poly model with sgd optim" {
             const n = 20;
             const time = try Tensor(T).linspace(tac, 0, 20, &.{n});
-            const true_m = 30;
+            const true_m: T = 30;
             const speed = try Tensor(T).linspace(tac, 0, 20 * true_m, &.{n});
             defer time.deinit();
             defer speed.deinit();
@@ -91,11 +89,11 @@ pub fn Model(comptime T: type) type {
             var model = try Model(T).build(tac, 1, 1);
             defer model.deinit();
 
-            var optimizer: optim.sgd.SGD(T) = undefined;
+            var optimizer: optim.sgd.SGDMomentum(T) = undefined;
             try optimizer.init(tac, model.params.items, 1e-3, 0.2);
             defer optimizer.deinit();
             model.train(time, speed, 10, 1, &optimizer);
-            try testing.expectApproxEqAbs(@as(T, true_m), model.params.items[1].data[0], 5e-1);
+            try testing.expectApproxEqAbs(true_m, model.params.items[1].data[0], 5e-1);
         }
         // TODO: write more tests for higher polynomials
     };

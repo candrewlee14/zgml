@@ -15,6 +15,7 @@ pub fn Model(comptime T: type) type {
         batch_size: usize,
         xs_batch: *Tensor(T),
         ys_batch: *Tensor(T),
+        // TODO: refactor to store any number of params
         params: [2]*Tensor(T),
         g: ComputeGraph(T),
         out: *Tensor(T),
@@ -85,6 +86,9 @@ pub fn Model(comptime T: type) type {
                     optimizer.zeroGrad();
                     self.compute();
                     optimizer.step();
+                    // for (self.params, 0..) |param, p_i| {
+                    //     std.debug.print("{s} {d}: {} grad={}\n", .{ param.name orelse "", p_i, param.data[0], param.grad.?.data[0] });
+                    // }
                 }
             }
         }
@@ -92,7 +96,7 @@ pub fn Model(comptime T: type) type {
         test "linear model with sgd optim" {
             const n = 20;
             const time = try Tensor(T).linspace(tac, 0, 20, &.{n});
-            const true_m = 30;
+            const true_m: T = 30;
             const speed = try Tensor(T).linspace(tac, 0, 20 * true_m, &.{n});
             defer time.deinit();
             defer speed.deinit();
@@ -100,12 +104,12 @@ pub fn Model(comptime T: type) type {
             var model = try Model(T).build(tac, 0, 0, 1);
             defer model.deinit();
 
-            var optimizer: optim.sgd.SGD(T) = undefined;
+            var optimizer: optim.sgd.SGDMomentum(T) = undefined;
             try optimizer.init(tac, &model.params, 1e-3, 0.2);
             defer optimizer.deinit();
 
             model.train(time, speed, 10, 1, &optimizer);
-            try testing.expectApproxEqAbs(@as(T, true_m), model.params[0].data[0], 5e-1);
+            try testing.expectApproxEqAbs(true_m, model.params[0].data[0], 5e-1);
         }
     };
 }
