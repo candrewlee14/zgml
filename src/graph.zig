@@ -24,7 +24,7 @@ pub fn ComputeGraph(comptime T: type) type {
         /// Set up resources for compute graph.
         /// Must call `buildForward` (then optionally `buildBackward`) to be able to do computation.
         pub fn init(alloc: Alloc) Self {
-            var graph: Self = .{
+            const graph: Self = .{
                 .nodes = std.ArrayList(*Tensor(T)).init(alloc),
                 .grads = std.ArrayList(?*Tensor(T)).init(alloc),
                 .leaves = std.ArrayList(*Tensor(T)).init(alloc),

@@ -66,9 +66,11 @@ pub fn Tensor(comptime T: type) type {
 
         pub fn initLinspace(alloc: Alloc, ne: []const usize, start: T, end: T) Alloc.Error!*Self {
             const tensor = try Self.init(alloc, ne);
-            const diff = (end - start) / @intToFloat(T, tensor.nElems());
+            const denom: T = @floatFromInt(tensor.nElems());
+            const diff = (end - start) / denom;
             for (tensor.data, 0..) |*d, i| {
-                d.* = start + diff * @intToFloat(T, i);
+                const num: T = @floatFromInt(i);
+                d.* = start + diff * num;
             }
             return tensor;
         }
@@ -93,7 +95,7 @@ pub fn Tensor(comptime T: type) type {
             std.debug.assert(ne.len <= max_dims);
             const tensor: *Self = try alloc.create(Self);
             tensor.* = .{
-                .n_dims = @truncate(u8, ne.len),
+                .n_dims = @truncate(ne.len),
                 .ne = .{1} ** max_dims,
                 .strides = .{0} ** max_dims,
                 .op = .none,
@@ -164,7 +166,7 @@ pub fn Tensor(comptime T: type) type {
 
         fn binaryOp(self: *Self, other: *Self, op: Op, inplace: bool) *Self {
             assert(self.isSameShape(other));
-            var is_node: bool = !inplace and (self.grad != null or other.grad != null);
+            const is_node: bool = !inplace and (self.grad != null or other.grad != null);
             const res: *Self = if (inplace) self.view() else self.copyTensorShape();
             res.op = op;
             res.grad = if (is_node) self.copyTensorShape() else null;
@@ -369,7 +371,7 @@ pub fn Tensor(comptime T: type) type {
                     // out #cols = other #rows, out #rows = self #cols
                     .{ other.ne[1], self.ne[0], self.ne[2], other.ne[3] };
             };
-            const res = Self.init(self.alloc, out_ne[0..std.math.min(self.n_dims, other.n_dims)]) catch unreachable;
+            const res = Self.init(self.alloc, out_ne[0..@min(self.n_dims, other.n_dims)]) catch unreachable;
             res.op = if (trans_self) if (trans_other) .matmul_t0t1 else .matmul_t0 else if (trans_other) .matmul_t1 else .matmul;
             res.grad = if (is_node) res.copyTensorShape() else null;
             res.src0 = self;
@@ -550,7 +552,7 @@ pub fn Tensor(comptime T: type) type {
             assert(max_dims == 4);
             assert(src0.canSumTo(dst));
             const src0_ne_v: @Vector(4, usize) = src0.ne;
-            const div_elems = @intToFloat(T, @reduce(.Mul, src0_ne_v / dst.ne));
+            const div_elems: T = @floatFromInt(@reduce(.Mul, src0_ne_v / dst.ne));
 
             for (0..src0.ne[3]) |ne3| {
                 for (0..src0.ne[2]) |ne2| {
@@ -630,7 +632,7 @@ pub fn Tensor(comptime T: type) type {
         pub fn computeAbs(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             for (src0.data, dst.data) |src0_item, *dst_item| {
-                dst_item.* = @fabs(src0_item);
+                dst_item.* = @abs(src0_item);
             }
         }
         pub fn computeSgn(dst: *Self, src0: *Self) void {
@@ -736,11 +738,11 @@ pub fn Tensor(comptime T: type) type {
 
             const dst_ne0 = dst.ne[0];
 
-            const src0_ne1c = @intCast(c_int, src0_ne1);
-            const src0_ne0c = @intCast(c_int, src0_ne0);
-            const src1_ne1c = @intCast(c_int, src1_ne1);
-            const src1_ne0c = @intCast(c_int, src1_ne0);
-            const dst_ne0c = @intCast(c_int, dst_ne0);
+            const src0_ne1c: c_int = @intCast(src0_ne1);
+            const src0_ne0c: c_int = @intCast(src0_ne0);
+            const src1_ne1c: c_int = @intCast(src1_ne1);
+            const src1_ne0c: c_int = @intCast(src1_ne0);
+            const dst_ne0c: c_int = @intCast(dst_ne0);
 
             for (0..src0_ne3) |src0_i3| {
                 for (0..src0_ne2) |src0_i2| {
@@ -1294,7 +1296,7 @@ test "initLinspace" {
         defer t.deinit();
         try testing.expectEqual(@as(usize, 20), t.nElems());
         for (t.data, 0..) |v, i| {
-            try testing.expectEqual(@intToFloat(f32, i), v);
+            try testing.expectEqual(@as(f32, @floatFromInt(i)), v);
         }
     }
     {
@@ -1302,7 +1304,7 @@ test "initLinspace" {
         defer t.deinit();
         try testing.expectEqual(@as(usize, 20), t.nElems());
         for (t.data, 0..) |v, i| {
-            try testing.expectEqual(@intToFloat(f32, i) * 0.5, v);
+            try testing.expectEqual(@as(f32, @floatFromInt(i)) * 0.5, v);
         }
     }
 }
