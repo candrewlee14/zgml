@@ -753,3 +753,146 @@ test "compute matmul_t1 3D" {
 
     try testing.expectEqualSlices(f32, &.{ 5, 11, 11, 25, 61, 83, 83, 113 }, dst.data);
 }
+
+// Validate tiled matmul at various sizes against a naive reference.
+// Tests edge cases: sizes smaller than tile, non-divisible by tile_m/tile_n,
+// rectangular matrices, and sizes that exercise all tile paths.
+fn naiveMatMulRef(alloc: Alloc, M: usize, K: usize, N: usize, a: []const f32, b: []const f32) ![]f32 {
+    const dst = try alloc.alloc(f32, M * N);
+    for (0..M) |i| {
+        for (0..N) |j| {
+            var s: f32 = 0;
+            for (0..K) |ki| s += a[i * K + ki] * b[ki * N + j];
+            dst[i * N + j] = s;
+        }
+    }
+    return dst;
+}
+
+test "matmul edge cases - various sizes" {
+    // Sizes chosen to exercise: smaller than tile, not divisible by tile_m(6),
+    // not divisible by tile_n(16) or vec_size(8), large enough for full tiles.
+    const cases = [_][3]usize{
+        .{ 1, 1, 1 }, // scalar
+        .{ 3, 3, 3 }, // smaller than tile_m
+        .{ 5, 5, 5 }, // smaller than tile_m, not power of 2
+        .{ 7, 13, 5 }, // rectangular, M > tile_m, N < vec_size
+        .{ 6, 6, 6 }, // exactly tile_m
+        .{ 9, 9, 9 }, // just over tile_m, N > vec_size but < tile_n
+        .{ 13, 7, 17 }, // rectangular, N > tile_n, not aligned
+        .{ 16, 16, 16 }, // exactly 2*vec_size = tile_n
+        .{ 17, 17, 17 }, // just over tile_n
+        .{ 32, 32, 32 }, // multiple of everything
+        .{ 33, 65, 17 }, // large rectangular, nothing aligned
+    };
+
+    for (cases) |c| {
+        const M = c[0];
+        const K = c[1];
+        const N = c[2];
+
+        const t_a = try Tensor(f32).init(tac, &.{ K, M });
+        defer t_a.deinit(tac);
+        const t_b = try Tensor(f32).init(tac, &.{ N, K });
+        defer t_b.deinit(tac);
+
+        // Fill with deterministic data
+        var prng = std.Random.DefaultPrng.init(42 + M * 1000 + K * 100 + N);
+        for (t_a.data) |*v| v.* = prng.random().float(f32) * 2.0 - 1.0;
+        for (t_b.data) |*v| v.* = prng.random().float(f32) * 2.0 - 1.0;
+
+        const t_dst = t_a.matMul(tac, false, t_b, false);
+        defer t_dst.deinit(tac);
+        t_dst.computeMatMul(t_a, false, t_b, false);
+
+        const expected = try naiveMatMulRef(tac, M, K, N, t_a.data, t_b.data);
+        defer tac.free(expected);
+
+        for (expected, t_dst.data, 0..) |exp, got, i| {
+            if (@abs(exp - got) > 1e-3) {
+                std.debug.print("matmul {d}x{d}x{d}: mismatch at index {d}: expected {d}, got {d}\n", .{ M, K, N, i, exp, got });
+                return error.TestExpectedApproxEqAbs;
+            }
+        }
+    }
+}
+
+test "matmul edge cases - transposed" {
+    const M = 11;
+    const K = 9;
+    const N = 7;
+
+    const t_a = try Tensor(f32).init(tac, &.{ K, M });
+    defer t_a.deinit(tac);
+    const t_b = try Tensor(f32).init(tac, &.{ N, K });
+    defer t_b.deinit(tac);
+
+    var prng = std.Random.DefaultPrng.init(999);
+    for (t_a.data) |*v| v.* = prng.random().float(f32) * 2.0 - 1.0;
+    for (t_b.data) |*v| v.* = prng.random().float(f32) * 2.0 - 1.0;
+
+    // Test all 4 transpose variants
+    // t0: uses t_a as (K x M), transposed -> (M x K)
+    // For matMul(trans_self=true, ...) the "logical A" is t_a transposed = M x K
+    // So we need K rows, M cols in storage -> shape {M, K}
+    const t_at = try Tensor(f32).init(tac, &.{ M, K });
+    defer t_at.deinit(tac);
+    // Transpose t_a data manually: t_a is (K cols, M rows) row-major
+    // t_at should be (M cols, K rows) such that t_at^T = t_a logically
+    for (0..M) |i| {
+        for (0..K) |j| {
+            t_at.data[j * M + i] = t_a.data[i * K + j];
+        }
+    }
+
+    const t_bt = try Tensor(f32).init(tac, &.{ K, N });
+    defer t_bt.deinit(tac);
+    for (0..K) |i| {
+        for (0..N) |j| {
+            t_bt.data[j * K + i] = t_b.data[i * N + j];
+        }
+    }
+
+    // Reference: A(MxK) * B(KxN)
+    const expected = try naiveMatMulRef(tac, M, K, N, t_a.data, t_b.data);
+    defer tac.free(expected);
+
+    // Test t0: t_at^T * t_b (t_at is K x M in storage, transposed = M x K)
+    {
+        const dst = t_at.matMul(tac, true, t_b, false);
+        defer dst.deinit(tac);
+        dst.computeMatMul(t_at, true, t_b, false);
+        for (expected, dst.data, 0..) |exp, got, i| {
+            if (@abs(exp - got) > 1e-3) {
+                std.debug.print("matmul_t0 mismatch at {d}: {d} vs {d}\n", .{ i, exp, got });
+                return error.TestExpectedApproxEqAbs;
+            }
+        }
+    }
+
+    // Test t1: t_a * t_bt^T (t_bt is N x K in storage, transposed = K x N)
+    {
+        const dst = t_a.matMul(tac, false, t_bt, true);
+        defer dst.deinit(tac);
+        dst.computeMatMul(t_a, false, t_bt, true);
+        for (expected, dst.data, 0..) |exp, got, i| {
+            if (@abs(exp - got) > 1e-3) {
+                std.debug.print("matmul_t1 mismatch at {d}: {d} vs {d}\n", .{ i, exp, got });
+                return error.TestExpectedApproxEqAbs;
+            }
+        }
+    }
+
+    // Test t0t1: t_at^T * t_bt^T
+    {
+        const dst = t_at.matMul(tac, true, t_bt, true);
+        defer dst.deinit(tac);
+        dst.computeMatMul(t_at, true, t_bt, true);
+        for (expected, dst.data, 0..) |exp, got, i| {
+            if (@abs(exp - got) > 1e-3) {
+                std.debug.print("matmul_t0t1 mismatch at {d}: {d} vs {d}\n", .{ i, exp, got });
+                return error.TestExpectedApproxEqAbs;
+            }
+        }
+    }
+}

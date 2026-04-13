@@ -421,6 +421,15 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // Matrix multiplication  (tiled, K-blocked, SIMD-accumulated)
         // ---------------------------------------------------------------
 
+        /// Gather vec_size elements from data with stride, starting at offset.
+        fn gatherB(data: []const T, base: usize, stride: usize, offset: usize) Vec {
+            var v: [vec_size]T = undefined;
+            for (0..vec_size) |j| {
+                v[j] = data[base + (offset + j) * stride];
+            }
+            return v;
+        }
+
         fn shouldUseBlasForMatMul(dst: *Self, src0: *Self, src1: *Self) bool {
             return src0.isContiguous() and src1.isContiguous() and
                 (dst.ne[0] >= 32 and dst.ne[1] >= 32 and src1.ne[0] >= 32);
@@ -505,59 +514,86 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                         const b_base = src0_i3 * src1.strides[3] + src0_i2 * src1.strides[2];
                         const d_base = src0_i3 * dst.strides[3] + src0_i2 * dst.strides[2];
 
-                        const tile_n = vec_size;
-                        const tile_m = 8;
-                        const tile_k = 64;
-                        const b_contig = (b_n_stride == 1);
+                        // Micro-kernel tile sizes.
+                        // tile_m=6 x tile_n=2*vec_size gives 12 accumulator registers
+                        // + 2 for B vectors + 1 for A broadcast = 15, fits in 16 YMM regs.
+                        const tile_m = 6;
+                        const nr = 2; // number of vectors per N-tile
+                        const tile_n = nr * vec_size;
+                        const tile_k = 128;
 
                         var mi: usize = 0;
                         while (mi < M) : (mi += tile_m) {
                             const m_end = @min(mi + tile_m, M);
 
-                            // --- SIMD N-tiles ---
+                            // --- Wide SIMD N-tiles (2 vectors per row) ---
                             var ni: usize = 0;
                             while (ni + tile_n <= N) : (ni += tile_n) {
-                                var acc = [_]Vec{@as(Vec, @splat(0))} ** tile_m;
+                                // 2 accumulator vectors per M row
+                                var acc0 = [_]Vec{@as(Vec, @splat(0))} ** tile_m;
+                                var acc1 = [_]Vec{@as(Vec, @splat(0))} ** tile_m;
 
-                                // K-tiled accumulation
                                 var ki: usize = 0;
                                 while (ki < K) : (ki += tile_k) {
                                     const k_end = @min(ki + tile_k, K);
                                     for (ki..k_end) |k| {
-                                        const b_row_base = b_base + k * b_k_stride + ni * b_n_stride;
-                                        const b_vec: Vec = if (b_contig)
-                                            src1.data[b_row_base..][0..tile_n].*
-                                        else blk: {
-                                            var bv: [tile_n]T = undefined;
-                                            for (0..tile_n) |j| {
-                                                bv[j] = src1.data[b_row_base + j * b_n_stride];
-                                            }
-                                            break :blk bv;
-                                        };
+                                        // Load 2 vectors of B[k, ni..ni+tile_n]
+                                        const b_off = b_base + k * b_k_stride + ni * b_n_stride;
+                                        const b0: Vec = if (b_n_stride == 1)
+                                            src1.data[b_off..][0..vec_size].*
+                                        else
+                                            gatherB(src1.data, b_off, b_n_stride, 0);
+                                        const b1: Vec = if (b_n_stride == 1)
+                                            src1.data[(b_off + vec_size)..][0..vec_size].*
+                                        else
+                                            gatherB(src1.data, b_off, b_n_stride, vec_size);
+
                                         for (mi..m_end, 0..) |m, ml| {
-                                            const a_val = src0.data[a_base + m * a_m_stride + k * a_k_stride];
-                                            acc[ml] += @as(Vec, @splat(a_val)) * b_vec;
+                                            const av: Vec = @splat(src0.data[a_base + m * a_m_stride + k * a_k_stride]);
+                                            acc0[ml] = @mulAdd(Vec, av, b0, acc0[ml]);
+                                            acc1[ml] = @mulAdd(Vec, av, b1, acc1[ml]);
                                         }
                                     }
                                 }
 
                                 for (mi..m_end, 0..) |m, ml| {
-                                    const row_base = d_base + m * dst.strides[1] + ni;
-                                    dst.data[row_base..][0..tile_n].* = acc[ml];
+                                    const rb = d_base + m * dst.strides[1] + ni;
+                                    dst.data[rb..][0..vec_size].* = acc0[ml];
+                                    dst.data[(rb + vec_size)..][0..vec_size].* = acc1[ml];
                                 }
+                            }
+
+                            // --- Single-vector N-tiles (remainder) ---
+                            if (ni + vec_size <= N) {
+                                var acc = [_]Vec{@as(Vec, @splat(0))} ** tile_m;
+                                var ki: usize = 0;
+                                while (ki < K) : (ki += tile_k) {
+                                    const k_end = @min(ki + tile_k, K);
+                                    for (ki..k_end) |k| {
+                                        const b_off = b_base + k * b_k_stride + ni * b_n_stride;
+                                        const bv: Vec = if (b_n_stride == 1)
+                                            src1.data[b_off..][0..vec_size].*
+                                        else
+                                            gatherB(src1.data, b_off, b_n_stride, 0);
+                                        for (mi..m_end, 0..) |m, ml| {
+                                            const av: Vec = @splat(src0.data[a_base + m * a_m_stride + k * a_k_stride]);
+                                            acc[ml] = @mulAdd(Vec, av, bv, acc[ml]);
+                                        }
+                                    }
+                                }
+                                for (mi..m_end, 0..) |m, ml| {
+                                    const rb = d_base + m * dst.strides[1] + ni;
+                                    dst.data[rb..][0..vec_size].* = acc[ml];
+                                }
+                                ni += vec_size;
                             }
 
                             // --- Scalar tail for remaining N columns ---
                             while (ni < N) : (ni += 1) {
                                 for (mi..m_end) |m| {
                                     var s: T = 0;
-                                    var ki: usize = 0;
-                                    while (ki < K) : (ki += tile_k) {
-                                        const k_end = @min(ki + tile_k, K);
-                                        for (ki..k_end) |k| {
-                                            s += src0.data[a_base + m * a_m_stride + k * a_k_stride] *
-                                                src1.data[b_base + k * b_k_stride + ni * b_n_stride];
-                                        }
+                                    for (0..K) |k| {
+                                        s = @mulAdd(T, src0.data[a_base + m * a_m_stride + k * a_k_stride], src1.data[b_base + k * b_k_stride + ni * b_n_stride], s);
                                     }
                                     dst.data[d_base + m * dst.strides[1] + ni] = s;
                                 }
