@@ -113,21 +113,21 @@ pub fn main() !void {
     try w.interface.print("  Image size: {}x{}\n\n", .{ train_images.cols, train_images.rows });
 
     const batch_size: usize = 32;
-    const n_epochs: usize = 3;
+    const n_epochs: usize = 10;
     const train_batches = train_images.n / batch_size;
     const pixels_per_image = train_images.rows * train_images.cols;
 
-    try w.interface.print("Architecture: Conv(5x5, 1->32) -> BN -> ReLU -> MaxPool -> FC(4608->128) -> ReLU -> FC(128->10)\n", .{});
+    try w.interface.print("Architecture: Conv(5x5, 1->8) -> ReLU -> MaxPool(2x2) -> FC(1152->10)\n", .{});
     try w.interface.print("Optimizer: Adam (lr=1e-3)\n", .{});
     try w.interface.print("Batch size: {}, Epochs: {}\n\n", .{ batch_size, n_epochs });
     w.interface.flush() catch {};
 
-    // Build deep model with batch norm and hidden FC layer
-    var model = try ConvClassifier(f32).buildDeep(alloc, 28, 28, 32, 128, 10, batch_size);
+    // Simple model — fast and effective for MNIST
+    var model = try ConvClassifier(f32).build(alloc, 28, 28, 5, 8, 10, batch_size);
     defer model.deinit();
     try model.g.fusionPass();
 
-    // Adam optimizer
+    // Adam optimizer — converges faster than SGD
     const p = model.params();
     var sgd = try zgml.optim.adam.Adam(f32).init(alloc, p, .{ .lr = 1e-3 });
     defer sgd.deinit();
