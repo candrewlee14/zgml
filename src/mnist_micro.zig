@@ -44,11 +44,49 @@ pub fn main() !void {
 
     // Print fusion summary
     const summary = model.g.fusionSummary();
-    try w.interface.print("Graph: {} nodes ({} forward), {} fused regions\n\n", .{
+    try w.interface.print("Graph: {} nodes ({} forward), {} fused regions\n", .{
         summary.node_count,
         summary.forward_node_count,
         summary.fused_region_count,
     });
+    for (model.g.fused_chains.items, 0..) |chain, ci| {
+        try w.interface.print("  fused[{}] kind={s} output_idx={}\n", .{ ci, @tagName(chain.kind()), chain.output_idx });
+    }
+    // Dump canonical IR around scatter_add_view
+    {
+        var temp_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer temp_arena.deinit();
+        var pipeline = zgml.compiler.Pipeline(f32).init(temp_arena.allocator());
+        defer pipeline.deinit();
+        pipeline.lowerOneRoot(model.g.nodes.items[model.g.forward_node_count - 1]) catch {};
+        if (model.g.built_backward) {
+            for (model.g.nodes.items[0..model.g.forward_node_count]) |node| {
+                if (node.isParam()) {
+                    if (node.gradOrNull()) |grad| {
+                        pipeline.lowerOneRoot(grad) catch continue;
+                    }
+                }
+            }
+        }
+        pipeline.finalize() catch {};
+        const canon = &pipeline.canonical.?;
+        for (canon.values.items, 0..) |v, vi| {
+            if (v.expr == .scatter_add_view) {
+                const s = v.expr.scatter_add_view;
+                try w.interface.print("  canonical[{}] scatter_add_view grad={} view={} shape={}d\n", .{ vi, @intFromEnum(s.grad), @intFromEnum(s.view), v.shape.ndims });
+                // Print surrounding values
+                const start = if (vi > 10) vi - 10 else 0;
+                const end = @min(vi + 2, canon.values.items.len);
+                for (start..end) |j| {
+                    const cv = canon.values.items[j];
+                    try w.interface.print("    [{d:>3}] {s:<20} ndims={}\n", .{ j, @tagName(cv.expr), cv.shape.ndims });
+                }
+            }
+        }
+    }
+    try w.interface.print("\n", .{});
+    w.interface.flush() catch {};
+
 
     // Warmup
     for (0..warmup_iters) |_| {

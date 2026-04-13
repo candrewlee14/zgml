@@ -592,7 +592,43 @@ pub fn mapCompilerPattern(comptime T: type, forward_nodes: []const *Tensor(T), v
                 } },
             } });
         },
-        .conv2d_bwd_input, .conv2d_bwd_kernel => null,
+        .conv2d_bwd_input => |spec| blk: {
+            const output_grad = nodeForValueId(T, value_to_tensor, spec.output_grad) orelse break :blk null;
+            const kernel = nodeForValueId(T, value_to_tensor, spec.kernel) orelse break :blk null;
+            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse break :blk null;
+            const output_idx = indexOfNodeMaybe(T, forward_nodes, output) orelse break :blk null;
+            break :blk @as(?CompilerMappedPlan(T), .{ .start_idx = output_idx, .plan = .{
+                .output_idx = output_idx,
+                .payload = .{ .conv2d_bwd_input = .{
+                    .output_grad = output_grad,
+                    .kernel = kernel,
+                    .reshape_node = output, // unused by execution kernel
+                    .repeat_node = output, // unused by execution kernel
+                    .mul_node = output, // unused by execution kernel
+                    .output = output,
+                } },
+            } });
+        },
+        .conv2d_bwd_kernel => |spec| blk: {
+            const input = nodeForValueId(T, value_to_tensor, spec.input) orelse break :blk null;
+            const output_grad = nodeForValueId(T, value_to_tensor, spec.output_grad) orelse break :blk null;
+            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse break :blk null;
+            const output_idx = indexOfNodeMaybe(T, forward_nodes, output) orelse break :blk null;
+            // Walk backward from scatter to find earliest exclusive node.
+            // The scatter's source chain (reshape → broadcast → mul → scatter)
+            // starts right after the shared output_grad node.
+            break :blk @as(?CompilerMappedPlan(T), .{ .start_idx = output_idx, .plan = .{
+                .output_idx = output_idx,
+                .payload = .{ .conv2d_bwd_kernel = .{
+                    .input = input,
+                    .output_grad = output_grad,
+                    .reshape_node = output, // unused by execution kernel
+                    .repeat_node = output, // unused by execution kernel
+                    .mul_node = output, // unused by execution kernel
+                    .output = output,
+                } },
+            } });
+        },
         .linear, .linear_gelu, .linear_relu, .linear_residual, .matmul_residual => null,
     };
 }
@@ -631,22 +667,22 @@ fn applyOp(comptime T: type, comptime op: FusedOp, val: T, node: anytype, i: usi
         )),
         .add_src1 => blk: {
             const other = node.src1.?;
-            break :blk val + if (other.isScalar()) other.data[0] else other.data[i];
+            break :blk val + if (other.data.len <= 1) other.data[0] else other.data[i];
         },
         .add_src0 => blk: {
             const other = node.src0.?;
-            break :blk val + if (other.isScalar()) other.data[0] else other.data[i];
+            break :blk val + if (other.data.len <= 1) other.data[0] else other.data[i];
         },
         .mul_src1 => blk: {
             // sqr: src0 == src1, both operands are the chain value
             if (node.src0.? == node.src1.?) break :blk val * val;
             const other = node.src1.?;
-            break :blk val * if (other.isScalar()) other.data[0] else other.data[i];
+            break :blk val * if (other.data.len <= 1) other.data[0] else other.data[i];
         },
         .mul_src0 => blk: {
             if (node.src0.? == node.src1.?) break :blk val * val;
             const other = node.src0.?;
-            break :blk val * if (other.isScalar()) other.data[0] else other.data[i];
+            break :blk val * if (other.data.len <= 1) other.data[0] else other.data[i];
         },
     };
 }
@@ -656,7 +692,6 @@ fn applyOp(comptime T: type, comptime op: FusedOp, val: T, node: anytype, i: usi
 pub fn FusedKernel(comptime T: type, comptime ops: []const FusedOp) type {
     return struct {
         pub fn execute(nodes: []const *Tensor(T)) void {
-            std.debug.assert(nodes[0].source0().?.n_dims <= 4);
             const n_elems = nodes[nodes.len - 1].nElems();
             const input_data = nodes[0].source0().?.data;
 
@@ -675,7 +710,6 @@ pub fn FusedKernel(comptime T: type, comptime ops: []const FusedOp) type {
 /// Still one memory pass, but the inner loop has a runtime switch.
 pub fn executeFusedGeneric(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
     const nodes = plan.nodes;
-    std.debug.assert(nodes[0].source0().?.n_dims <= 4);
     const n_elems = nodes[nodes.len - 1].nElems();
     const input_data = plan.input.data;
 
@@ -696,12 +730,12 @@ pub fn executeFusedGeneric(comptime T: type, plan: ElementwiseFusionPlan(T)) voi
                 )),
                 .add => blk: {
                     const other = plan.otherOperand(node_idx).?;
-                    break :blk val + if (other.isScalar()) other.data[0] else other.data[i];
+                    break :blk val + if (other.data.len <= 1) other.data[0] else other.data[i];
                 },
                 .mul => blk: {
                     if (node.src0.? == node.src1.?) break :blk val * val;
                     const other = plan.otherOperand(node_idx).?;
-                    break :blk val * if (other.isScalar()) other.data[0] else other.data[i];
+                    break :blk val * if (other.data.len <= 1) other.data[0] else other.data[i];
                 },
                 else => unreachable,
             };
@@ -726,12 +760,17 @@ pub fn executeFusedChain(comptime T: type, plan: ElementwiseFusionPlan(T)) void 
 }
 
 pub fn isSafeElementwiseChain(comptime T: type, plan: ElementwiseFusionPlan(T)) bool {
+    // Fused kernel indexes data[i] linearly — requires all tensors to be contiguous.
+    if (!plan.input.isContiguous()) return false;
     var prev = plan.input;
+    const n_elems = plan.nodes[plan.nodes.len - 1].nElems();
     for (plan.nodes, 0..) |node, node_idx| {
         if (!node.isSameShape(prev)) return false;
+        if (!node.isContiguous()) return false;
         const other = plan.otherOperand(node_idx);
         if (other) |src| {
-            if (!src.isScalar() and src != prev and !src.isSameShape(prev)) return false;
+            // Must be scalar (1 elem) or contiguous with matching element count
+            if (src.data.len > 1 and (!src.isContiguous() or src.data.len < n_elems)) return false;
         }
         prev = node;
     }
@@ -1272,6 +1311,11 @@ fn findNodeAfter(comptime T: type, nodes: []const *Tensor(T), start_idx: usize, 
     }
     return null;
 }
+
+/// Walk backward through a tensor's source chain to find the earliest
+/// dependency that exists in the node list, bounded by the output index.
+/// Used to determine the start of a fused region that replaces an entire
+/// backward chain (e.g., conv2d backward: reshape → broadcast → mul → scatter).
 
 pub fn indexOfNodeMaybe(comptime T: type, nodes: []const *Tensor(T), needle: *Tensor(T)) ?usize {
     for (nodes, 0..) |node, i| {

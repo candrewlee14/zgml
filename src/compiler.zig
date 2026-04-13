@@ -845,6 +845,8 @@ pub const ExecutionPlan = struct {
 
 const kernel_pattern_priority = [_]KernelPatternKind{
     .conv2d,
+    .conv2d_bwd_kernel,
+    .conv2d_bwd_input,
     .max_pool2d,
     .linear_gelu,
     .linear_relu,
@@ -1932,6 +1934,136 @@ pub const CanonicalGraph = struct {
         };
     }
 
+    /// If the value is an add (gradient accumulation), return the other operand.
+    /// Backward graph uses add for gradient accumulation (grad += contribution).
+    /// This peels off one layer of accumulation to find the contribution.
+    fn peelAccumAdd(self: *const CanonicalGraph, id: ValueId) ValueId {
+        const val = self.value(id);
+        if (val.expr != .binary or val.expr.binary.op != .add) return id;
+        // Try rhs first (typical: grad.add(contribution) puts contribution on rhs)
+        const rhs_val = self.value(val.expr.binary.rhs);
+        if (rhs_val.expr != .binary or rhs_val.expr.binary.op != .add) return val.expr.binary.rhs;
+        // Otherwise try lhs
+        const lhs_val = self.value(val.expr.binary.lhs);
+        if (lhs_val.expr != .binary or lhs_val.expr.binary.op != .add) return val.expr.binary.lhs;
+        // Both sides are adds — recurse on rhs (deeper accumulation chain)
+        return self.peelAccumAdd(val.expr.binary.rhs);
+    }
+
+    /// Detect conv2d backward w.r.t. input gradient pattern:
+    ///   scatter_add_view(mul(broadcast_to(reshape(output_grad)), kernel_view), input_view)
+    /// With possible add-accumulation nodes interleaved.
+    pub fn detectConv2dBwdInput(self: *const CanonicalGraph, output_id: ValueId) ?Conv2dBwdInputSpec {
+        const output = self.value(output_id);
+        if (output.expr != .scatter_add_view) return null;
+
+        const scatter = output.expr.scatter_add_view;
+
+        // Walk through accumulation adds to find the mul
+        const mul_id = self.peelAccumAdd(scatter.grad);
+        const mul_val = self.value(mul_id);
+        if (mul_val.expr != .binary or mul_val.expr.binary.op != .mul) return null;
+
+        // Peel accumulation adds from mul operands.
+        const real_lhs_id = self.peelAccumAdd(mul_val.expr.binary.lhs);
+        const real_rhs_id = self.peelAccumAdd(mul_val.expr.binary.rhs);
+        const real_lhs = self.value(real_lhs_id);
+        const real_rhs = self.value(real_rhs_id);
+
+        // One side should be a broadcast (gradient path), other should be strided (kernel view).
+        const bcast_id = if (real_lhs.expr == .view and real_lhs.expr.view.kind == .broadcast) real_lhs_id
+            else if (real_rhs.expr == .view and real_rhs.expr.view.kind == .broadcast) real_rhs_id
+            else return null;
+
+        const kernel_view_id = if (bcast_id == real_lhs_id) real_rhs_id else real_lhs_id;
+        const kernel_view_val = self.value(kernel_view_id);
+
+        // kernel_view should be an as_strided view of a 4D kernel
+        if (kernel_view_val.expr != .view or kernel_view_val.expr.view.kind != .strided) return null;
+        const kernel_id = kernel_view_val.expr.view.input;
+        if (self.value(kernel_id).shape.ndims != 4) return null;
+
+        // Walk broadcast ← (add?) ← reshape ← output_grad (4D)
+        const bcast_val = self.value(bcast_id);
+        const bcast_inner = self.peelAccumAdd(bcast_val.expr.view.input);
+        const bcast_input = self.value(bcast_inner);
+
+        const output_grad_id = if (bcast_input.expr == .view and bcast_input.expr.view.kind == .reshape)
+            self.peelAccumAdd(bcast_input.expr.view.input)
+        else
+            bcast_inner;
+
+        if (self.value(output_grad_id).shape.ndims != 4) return null;
+
+        // The scatter's view should be an as_strided referencing the 4D input
+        const view_val = self.value(scatter.view);
+        if (view_val.expr != .view or view_val.expr.view.kind != .strided) return null;
+
+        return .{
+            .output_grad = output_grad_id,
+            .kernel = kernel_id,
+            .output = output_id,
+        };
+    }
+
+    /// Detect conv2d backward w.r.t. kernel gradient pattern:
+    ///   scatter_add_view(mul(broadcast_to(reshape(output_grad)), input_view), kernel_view)
+    /// With possible add-accumulation nodes interleaved.
+    pub fn detectConv2dBwdKernel(self: *const CanonicalGraph, output_id: ValueId) ?Conv2dBwdKernelSpec {
+        const output = self.value(output_id);
+        if (output.expr != .scatter_add_view) return null;
+
+        const scatter = output.expr.scatter_add_view;
+
+        // Walk through accumulation adds to find the mul
+        const mul_id = self.peelAccumAdd(scatter.grad);
+        const mul_val = self.value(mul_id);
+        if (mul_val.expr != .binary or mul_val.expr.binary.op != .mul) return null;
+        const lhs_id = mul_val.expr.binary.lhs;
+        const rhs_id = mul_val.expr.binary.rhs;
+
+        // Peel accumulation adds from mul operands.
+        const real_lhs_id = self.peelAccumAdd(lhs_id);
+        const real_rhs_id = self.peelAccumAdd(rhs_id);
+        const real_lhs = self.value(real_lhs_id);
+        const real_rhs = self.value(real_rhs_id);
+        const bcast_id = if (real_lhs.expr == .view and real_lhs.expr.view.kind == .broadcast) real_lhs_id
+            else if (real_rhs.expr == .view and real_rhs.expr.view.kind == .broadcast) real_rhs_id
+            else return null;
+
+        const input_view_id = if (bcast_id == real_lhs_id) real_rhs_id else real_lhs_id;
+        const input_view_val = self.value(input_view_id);
+
+        // input_view should be an as_strided view of a 4D input
+        if (input_view_val.expr != .view or input_view_val.expr.view.kind != .strided) return null;
+        const input_id = input_view_val.expr.view.input;
+        if (self.value(input_id).shape.ndims != 4) return null;
+
+        // Walk broadcast ← (add?) ← reshape ← output_grad (4D)
+        const bcast_val = self.value(bcast_id);
+        const bcast_inner = self.peelAccumAdd(bcast_val.expr.view.input);
+        const bcast_input = self.value(bcast_inner);
+
+        const output_grad_id = if (bcast_input.expr == .view and bcast_input.expr.view.kind == .reshape)
+            self.peelAccumAdd(bcast_input.expr.view.input)
+        else
+            bcast_inner;
+
+        if (self.value(output_grad_id).shape.ndims != 4) return null;
+
+        // The scatter's view should be an as_strided referencing the 4D kernel
+        const view_val = self.value(scatter.view);
+        if (view_val.expr != .view or view_val.expr.view.kind != .strided) return null;
+        const kernel_id = view_val.expr.view.input;
+        if (self.value(kernel_id).shape.ndims != 4) return null;
+
+        return .{
+            .input = input_id,
+            .output_grad = output_grad_id,
+            .output = output_id,
+        };
+    }
+
     pub fn detectMaxPool2d(self: *const CanonicalGraph, output_id: ValueId) ?MaxPool2dSpec {
         const output = self.value(output_id);
 
@@ -2011,8 +2143,9 @@ pub const CanonicalGraph = struct {
             .linear_residual => if (self.detectLinearResidual(output)) |spec| .{ .linear_residual = lowerLinearResidualKernelSpec(self, spec) orelse return null } else null,
             .matmul_residual => if (self.detectMatmulResidual(output)) |spec| .{ .matmul_residual = lowerMatmulResidualKernelSpec(self, spec) orelse return null } else null,
             .conv2d => if (self.detectConv2d(output)) |spec| .{ .conv2d = spec } else null,
-            .conv2d_bwd_input => null, // backward not yet supported in compiler IR
-            .conv2d_bwd_kernel => null, // backward not yet supported in compiler IR
+            .conv2d_bwd_input => if (self.detectConv2dBwdInput(output)) |spec| .{ .conv2d_bwd_input = spec } else null,
+            // TODO: mapping produces wrong results; keep detector, disable dispatch until mapping is fixed
+            .conv2d_bwd_kernel => null, //if (self.detectConv2dBwdKernel(output)) |spec| .{ .conv2d_bwd_kernel = spec } else null,
             .max_pool2d => if (self.detectMaxPool2d(output)) |spec| .{ .max_pool2d = spec } else null,
         };
     }
