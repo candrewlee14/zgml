@@ -421,6 +421,11 @@ pub fn ComputeGraph(comptime T: type) type {
                         if (plan.kind() != .cross_entropy or plan.output_idx != output_idx) continue;
                         return .{ .start_idx = start_idx, .plan = plan };
                     },
+                    .layer_norm => {
+                        const plan = detectLayerNormPattern(self, 0) orelse continue;
+                        if (plan.kind() != .layer_norm or plan.output_idx != output_idx) continue;
+                        return .{ .start_idx = 0, .plan = plan };
+                    },
                 }
             }
 
@@ -1424,6 +1429,22 @@ test "fusion - compiler root annotations detect cross entropy plan" {
     const root_plan = (try g.detectCompilerRootRewritePlan()).?;
     try testing.expectEqual(@as(usize, 0), root_plan.start_idx);
     try testing.expectEqual(fused.FusionKind.cross_entropy, root_plan.plan.kind());
+    try testing.expectEqual(@as(usize, g.forward_node_count - 1), root_plan.plan.output_idx);
+}
+
+test "fusion - compiler root annotations detect layerNorm plan" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{ 2, 3 });
+    x.setData(&.{ 1, 2, 3, 4, 5, 6 });
+    const out = x.layerNorm(&.{ 1, 3 }, 1e-5);
+    try g.buildForward(out);
+
+    const root_plan = (try g.detectCompilerRootRewritePlan()).?;
+    try testing.expectEqual(@as(usize, 0), root_plan.start_idx);
+    try testing.expectEqual(fused.FusionKind.layer_norm, root_plan.plan.kind());
     try testing.expectEqual(@as(usize, g.forward_node_count - 1), root_plan.plan.output_idx);
 }
 

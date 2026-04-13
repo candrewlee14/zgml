@@ -150,6 +150,20 @@ pub const CrossEntropySpec = struct {
     mean: ValueId,
 };
 
+pub const LayerNormSpec = struct {
+    input: ValueId,
+    sum: ValueId,
+    mean: ValueId,
+    centered: ValueId,
+    sqr: ValueId,
+    var_sum: ValueId,
+    variance: ValueId,
+    variance_plus_eps: ValueId,
+    sqrt_node: ValueId,
+    recip_node: ValueId,
+    output: ValueId,
+};
+
 pub const RmsNormSpec = struct {
     input: ValueId,
     sqr: ValueId,
@@ -164,12 +178,14 @@ pub const RewriteKind = enum {
     softmax,
     log_softmax,
     cross_entropy,
+    layer_norm,
 };
 
 pub const RewriteResult = union(RewriteKind) {
     softmax: SoftmaxSpec,
     log_softmax: LogSoftmaxSpec,
     cross_entropy: CrossEntropySpec,
+    layer_norm: LayerNormSpec,
 };
 
 pub const RewritePass = struct {
@@ -180,6 +196,7 @@ pub const RewritePass = struct {
             .softmax => if (graph.detectSoftmax(output)) |spec| .{ .softmax = spec } else null,
             .log_softmax => if (graph.detectLogSoftmax(output)) |spec| .{ .log_softmax = spec } else null,
             .cross_entropy => if (graph.detectCrossEntropy(output)) |spec| .{ .cross_entropy = spec } else null,
+            .layer_norm => if (graph.detectLayerNorm(output)) |spec| .{ .layer_norm = spec } else null,
         };
     }
 };
@@ -188,12 +205,14 @@ pub const CanonicalPatternKind = enum {
     softmax,
     log_softmax,
     cross_entropy,
+    layer_norm,
 };
 
 pub const CanonicalPattern = union(CanonicalPatternKind) {
     softmax: SoftmaxSpec,
     log_softmax: LogSoftmaxSpec,
     cross_entropy: CrossEntropySpec,
+    layer_norm: LayerNormSpec,
 };
 
 const SoftmaxOutputParts = struct {
@@ -492,11 +511,111 @@ pub const CanonicalGraph = struct {
         };
     }
 
+    pub fn detectLayerNorm(self: *const CanonicalGraph, output: ValueId) ?LayerNormSpec {
+        const out_v = self.value(output);
+        if (out_v.expr != .binary or out_v.expr.binary.op != .mul) return null;
+
+        const centered = out_v.expr.binary.lhs;
+        const rep_std_inv = out_v.expr.binary.rhs;
+        const rep_std_inv_v = self.value(rep_std_inv);
+        if (rep_std_inv_v.expr != .view or rep_std_inv_v.expr.view.kind != .broadcast) return null;
+
+        const recip_node = rep_std_inv_v.expr.view.input;
+        const recip_v = self.value(recip_node);
+        if (recip_v.expr != .unary or recip_v.expr.unary.op != .recip) return null;
+
+        const sqrt_node = recip_v.expr.unary.input;
+        const sqrt_v = self.value(sqrt_node);
+        if (sqrt_v.expr != .unary or sqrt_v.expr.unary.op != .sqrt) return null;
+
+        const variance_plus_eps = sqrt_v.expr.unary.input;
+        const variance_plus_eps_v = self.value(variance_plus_eps);
+        if (variance_plus_eps_v.expr != .binary or variance_plus_eps_v.expr.binary.op != .add) return null;
+
+        const variance = variance_plus_eps_v.expr.binary.lhs;
+        const eps_like = variance_plus_eps_v.expr.binary.rhs;
+        if (!isScalarBroadcastValue(self, eps_like)) return null;
+
+        const variance_v = self.value(variance);
+        const variance_scale = switch (variance_v.expr) {
+            .scale => |s| s,
+            .binary => |b| blk: {
+                if (b.op != .mul) return null;
+                if (isScalarBroadcastValue(self, b.rhs)) {
+                    break :blk ScaleSpec{ .input = b.lhs, .scalar = scalarSourceValueId(self, b.rhs) };
+                }
+                if (isScalarBroadcastValue(self, b.lhs)) {
+                    break :blk ScaleSpec{ .input = b.rhs, .scalar = scalarSourceValueId(self, b.lhs) };
+                }
+                return null;
+            },
+            else => return null,
+        };
+
+        const var_sum = variance_scale.input;
+        const var_sum_v = self.value(var_sum);
+        if (var_sum_v.expr != .reduce or var_sum_v.expr.reduce.op != .sum) return null;
+
+        const sqr = var_sum_v.expr.reduce.input;
+        const sqr_v = self.value(sqr);
+        if (sqr_v.expr != .binary or sqr_v.expr.binary.op != .mul) return null;
+        if (sqr_v.expr.binary.lhs != centered or sqr_v.expr.binary.rhs != centered) return null;
+
+        const centered_v = self.value(centered);
+        if (centered_v.expr != .binary or centered_v.expr.binary.op != .add) return null;
+
+        const input = centered_v.expr.binary.lhs;
+        const neg_rep_mean = centered_v.expr.binary.rhs;
+        const neg_rep_mean_v = self.value(neg_rep_mean);
+        if (neg_rep_mean_v.expr != .unary or neg_rep_mean_v.expr.unary.op != .neg) return null;
+
+        const rep_mean = neg_rep_mean_v.expr.unary.input;
+        const rep_mean_v = self.value(rep_mean);
+        if (rep_mean_v.expr != .view or rep_mean_v.expr.view.kind != .broadcast) return null;
+
+        const mean = rep_mean_v.expr.view.input;
+        const mean_v = self.value(mean);
+        const mean_scale = switch (mean_v.expr) {
+            .scale => |s| s,
+            .binary => |b| blk: {
+                if (b.op != .mul) return null;
+                if (isScalarBroadcastValue(self, b.rhs)) {
+                    break :blk ScaleSpec{ .input = b.lhs, .scalar = scalarSourceValueId(self, b.rhs) };
+                }
+                if (isScalarBroadcastValue(self, b.lhs)) {
+                    break :blk ScaleSpec{ .input = b.rhs, .scalar = scalarSourceValueId(self, b.lhs) };
+                }
+                return null;
+            },
+            else => return null,
+        };
+
+        const sum = mean_scale.input;
+        const sum_v = self.value(sum);
+        if (sum_v.expr != .reduce or sum_v.expr.reduce.op != .sum) return null;
+        if (sum_v.expr.reduce.input != input) return null;
+
+        return .{
+            .input = input,
+            .sum = sum,
+            .mean = mean,
+            .centered = centered,
+            .sqr = sqr,
+            .var_sum = var_sum,
+            .variance = variance,
+            .variance_plus_eps = variance_plus_eps,
+            .sqrt_node = sqrt_node,
+            .recip_node = recip_node,
+            .output = output,
+        };
+    }
+
     pub fn detectPattern(self: *const CanonicalGraph, kind: CanonicalPatternKind, output: ValueId) ?CanonicalPattern {
         return switch (kind) {
             .softmax => if (self.detectSoftmax(output)) |spec| .{ .softmax = spec } else null,
             .log_softmax => if (self.detectLogSoftmax(output)) |spec| .{ .log_softmax = spec } else null,
             .cross_entropy => if (self.detectCrossEntropy(output)) |spec| .{ .cross_entropy = spec } else null,
+            .layer_norm => if (self.detectLayerNorm(output)) |spec| .{ .layer_norm = spec } else null,
         };
     }
 
@@ -1205,6 +1324,39 @@ test "compiler - rewrite layer detects crossEntropy pattern" {
     try std.testing.expect(found_rewrite);
 }
 
+test "compiler - rewrite layer detects layerNorm pattern" {
+    const Tensor = tensorlib.Tensor(f32);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var x = try Tensor.init(a, &.{ 2, 3 });
+    x.setData(&.{ 1, 2, 3, 4, 5, 6 });
+
+    const y = x.layerNorm(&.{ 1, 3 }, 1e-5);
+
+    var lowering = Lowering(f32).init(std.testing.allocator);
+    defer lowering.deinit();
+    _ = try lowering.lowerRoot(y);
+
+    var canon = try lowering.graph.canonicalize(std.testing.allocator);
+    defer canon.deinit();
+
+    try std.testing.expect(canon.detectLayerNorm(@enumFromInt(canon.values.items.len - 1)) != null);
+
+    var rewrites = try canon.applyRewritePasses(@enumFromInt(canon.values.items.len - 1), std.testing.allocator);
+    defer rewrites.deinit(std.testing.allocator);
+
+    var found_rewrite = false;
+    for (rewrites.items) |r| {
+        if (r == .layer_norm) {
+            found_rewrite = true;
+        }
+    }
+    try std.testing.expect(found_rewrite);
+}
+
 test "compiler - detects rmsNorm canonical pattern" {
     const Tensor = tensorlib.Tensor(f32);
 
@@ -1378,4 +1530,32 @@ test "compiler - pipeline compiles crossEntropy graph end-to-end" {
     }
     try std.testing.expect(found);
     try std.testing.expect(pipeline.kernel.?.annotations.items[0].rewrite == .cross_entropy);
+}
+
+test "compiler - pipeline compiles layerNorm graph end-to-end" {
+    const Tensor = tensorlib.Tensor(f32);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var x = try Tensor.init(a, &.{ 2, 3 });
+    x.setData(&.{ 1, 2, 3, 4, 5, 6 });
+
+    const y = x.layerNorm(&.{ 1, 3 }, 1e-5);
+
+    var pipeline = Pipeline(f32).init(std.testing.allocator);
+    defer pipeline.deinit();
+    try pipeline.compile(y);
+
+    try std.testing.expect(pipeline.canonical != null);
+    try std.testing.expect(pipeline.kernel != null);
+    try std.testing.expect(pipeline.rewrites.items.len >= 1);
+    try std.testing.expectEqual(pipeline.rewrites.items.len, pipeline.kernel.?.annotations.items.len);
+
+    var found = false;
+    for (pipeline.rewrites.items) |r| {
+        if (r == .layer_norm) found = true;
+    }
+    try std.testing.expect(found);
+    try std.testing.expect(pipeline.kernel.?.annotations.items[0].rewrite == .layer_norm);
 }
