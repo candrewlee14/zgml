@@ -1,11 +1,22 @@
 //! Minimal transformer block: layerNorm → attention → residual → layerNorm → FFN → residual.
 //!
-//! This validates the full zgml stack: matmul, softmax, layerNorm, gelu, add.
-//! All ops decompose into primitives; backward works via the chain rule.
+//! Weights are stored as compile-time `Shaped` tensors — d_model and d_ff mismatches
+//! are caught at compile time. The `forward` method accepts either:
+//!
+//!   - `Shaped(T, .{d_model, seq_len})` — full compile-time shape checking of every
+//!     intermediate activation (matmul dims, broadcast, residual add, etc.)
+//!   - `*Tensor(T)` — runtime-flexible path for dynamic sequence lengths.
+//!
+//! Both paths share the same underlying tensor ops and produce identical results.
 //!
 //! ```
 //! const block = try TransformerBlock(f32, 4, 8).init(alloc);
-//! const out = block.forward(input); // input: [d_model, seq_len]
+//! // Comptime-checked (seq_len=3 baked into the type):
+//! const x = try Shaped(f32, .{4, 3}).init(alloc);
+//! const y = block.forward(x);   // → Shaped(f32, .{4, 3}), all shapes verified at comptime
+//! // Runtime-flexible:
+//! const t = try Tensor(f32).init(alloc, &.{4, seq_len});
+//! const u = block.forward(t);   // → *Tensor(f32), shapes checked at runtime
 //! ```
 
 const std = @import("std");
@@ -14,6 +25,9 @@ const tac = testing.allocator;
 const Tensor = @import("../tensor.zig").Tensor;
 const ComputeGraph = @import("../graph.zig").ComputeGraph;
 const Alloc = std.mem.Allocator;
+const shaped_mod = @import("../shaped.zig");
+const Shaped = shaped_mod.Shaped;
+const ShapedTensor = shaped_mod.ShapedTensor;
 
 /// A single transformer block with self-attention and a feed-forward network.
 ///
@@ -23,47 +37,48 @@ const Alloc = std.mem.Allocator;
 ///
 /// Where ffn(x) = gelu(x @ W1 + b1) @ W2 + b2
 pub fn TransformerBlock(comptime T: type, comptime d_model: usize, comptime d_ff: usize) type {
+    // Compile-time weight shape aliases
+    const WtShape = Shaped(T, .{ d_model, d_model });
+    const W1Shape = Shaped(T, .{ d_ff, d_model });
+    const B1Shape = Shaped(T, .{d_ff});
+    const W2Shape = Shaped(T, .{ d_model, d_ff });
+    const B2Shape = Shaped(T, .{d_model});
+
     return struct {
         const Self = @This();
 
-        // Attention weights: W_q, W_k, W_v, W_o all [d_model, d_model]
-        w_q: *Tensor(T),
-        w_k: *Tensor(T),
-        w_v: *Tensor(T),
-        w_o: *Tensor(T),
+        // Attention weights — shapes verified at compile time
+        w_q: WtShape,
+        w_k: WtShape,
+        w_v: WtShape,
+        w_o: WtShape,
 
         // FFN weights
-        w1: *Tensor(T), // [d_model, d_ff]
-        b1: *Tensor(T), // [d_ff]
-        w2: *Tensor(T), // [d_ff, d_model]
-        b2: *Tensor(T), // [d_model]
+        w1: W1Shape, // d_model → d_ff
+        b1: B1Shape,
+        w2: W2Shape, // d_ff → d_model
+        b2: B2Shape,
 
-        /// Initialize with small random-ish values (zeros for simplicity).
-        /// In practice you'd use proper initialization (Xavier, etc.)
         pub fn init(alloc: Alloc) !Self {
             var self: Self = undefined;
 
-            // Attention projections
-            self.w_q = try Tensor(T).init(alloc, &.{ d_model, d_model });
-            self.w_k = try Tensor(T).init(alloc, &.{ d_model, d_model });
-            self.w_v = try Tensor(T).init(alloc, &.{ d_model, d_model });
-            self.w_o = try Tensor(T).init(alloc, &.{ d_model, d_model });
-
-            // FFN: W1 maps d_model→d_ff, W2 maps d_ff→d_model
-            // Shape convention: ne = [cols, rows]. For X @ W: X.ne[0] == W.ne[1].
-            self.w1 = try Tensor(T).init(alloc, &.{ d_ff, d_model });
-            self.b1 = try Tensor(T).init(alloc, &.{d_ff});
-            self.w2 = try Tensor(T).init(alloc, &.{ d_model, d_ff });
-            self.b2 = try Tensor(T).init(alloc, &.{d_model});
+            self.w_q = try WtShape.init(alloc);
+            self.w_k = try WtShape.init(alloc);
+            self.w_v = try WtShape.init(alloc);
+            self.w_o = try WtShape.init(alloc);
+            self.w1 = try W1Shape.init(alloc);
+            self.b1 = try B1Shape.init(alloc);
+            self.w2 = try W2Shape.init(alloc);
+            self.b2 = try B2Shape.init(alloc);
 
             // Initialize with varied small values to break symmetry
-            for ([_]*Tensor(T){ self.w_q, self.w_k, self.w_v, self.w_o, self.w1, self.w2 }) |w| {
+            for ([_]*Tensor(T){ self.w_q.inner, self.w_k.inner, self.w_v.inner, self.w_o.inner, self.w1.inner, self.w2.inner }) |w| {
                 for (w.data, 0..) |*d, i| {
                     d.* = 0.01 * @as(T, @floatFromInt(i % 7 + 1)) * if (i % 3 == 0) @as(T, -1) else @as(T, 1);
                 }
                 w.setParam();
             }
-            for ([_]*Tensor(T){ self.b1, self.b2 }) |b| {
+            for ([_]*Tensor(T){ self.b1.inner, self.b2.inner }) |b| {
                 _ = b.setAllScalar(0);
                 b.setParam();
             }
@@ -71,51 +86,124 @@ pub fn TransformerBlock(comptime T: type, comptime d_model: usize, comptime d_ff
             return self;
         }
 
-        /// Forward pass: input shape [d_model, seq_len].
-        /// Returns output of the same shape.
-        pub fn forward(self: *const Self, x: *Tensor(T)) *Tensor(T) {
-            // --- Self-attention with pre-norm ---
-            const norm1 = x.layerNorm(&.{1}, 1e-5);
+        fn isShaped(comptime Input: type) bool {
+            return @typeInfo(Input) == .@"struct" and @hasDecl(Input, "static_shape");
+        }
 
-            // Project to Q, K, V: input @ W = [d_model, seq].matMul([d_model, d_model]) = [d_model, seq]
+        /// Determine the return type and validate input at compile time.
+        fn ForwardResult(comptime Input: type) type {
+            if (isShaped(Input)) {
+                // Shaped path: full compile-time validation
+                if (Input.element_type != T)
+                    @compileError("TransformerBlock(" ++ @typeName(T) ++ "): input element type is " ++ @typeName(Input.element_type) ++ ", expected " ++ @typeName(T));
+                if (Input.static_shape[0] != d_model)
+                    @compileError("TransformerBlock: input dimension 0 is " ++ std.fmt.comptimePrint("{}", .{Input.static_shape[0]}) ++ ", expected d_model=" ++ std.fmt.comptimePrint("{}", .{d_model}));
+                if (Input.static_ndims > 2)
+                    @compileError("TransformerBlock: input must be 2-D [d_model, seq_len], got " ++ std.fmt.comptimePrint("{}", .{Input.static_ndims}) ++ "-D");
+                return Input; // same shape in → same shape out
+            } else if (Input == *Tensor(T)) {
+                return *Tensor(T);
+            } else {
+                @compileError("TransformerBlock.forward: expected Shaped(" ++ @typeName(T) ++ ", .{" ++ std.fmt.comptimePrint("{}", .{d_model}) ++ ", seq_len}) or *Tensor(" ++ @typeName(T) ++ "), got " ++ @typeName(Input));
+            }
+        }
+
+        /// Forward pass. Accepts `Shaped` (comptime-checked) or `*Tensor(T)` (runtime-flexible).
+        pub fn forward(self: *const Self, x: anytype) ForwardResult(@TypeOf(x)) {
+            if (comptime isShaped(@TypeOf(x)))
+                return self.forwardShaped(x)
+            else
+                return self.forwardDynamic(x);
+        }
+
+        /// Runtime-flexible forward: input shape [d_model, seq_len] with dynamic seq_len.
+        fn forwardDynamic(self: *const Self, x: *Tensor(T)) *Tensor(T) {
+            // LayerNorm reduce shape: [1, seq] normalizes over d_model per position
+            var ln_reduce = [_]usize{ 1, x.ne[1] };
+
+            // --- Self-attention with pre-norm ---
+            const norm1 = x.layerNorm(&ln_reduce, 1e-5);
+
+            const q = norm1.matMul(false, self.w_q.inner, false);
+            const k = norm1.matMul(false, self.w_k.inner, false);
+            const v = norm1.matMul(false, self.w_v.inner, false);
+
+            // Scaled dot-product attention: softmax(Q @ K^T / sqrt(d_k)) @ V
+            const d_k: T = @floatFromInt(d_model);
+            const scores = q.matMul(false, k, true); // [d_model,seq] @ [d_model,seq]^T = [seq, seq]
+            const scaled = scores.scaleByVal(1.0 / @sqrt(d_k));
+            var sm_reduce = [_]usize{ 1, scores.ne[1] };
+            const attn_weights = scaled.softmax(&sm_reduce); // per-query softmax over keys
+            const attn_out = attn_weights.matMul(false, v, false); // [seq,seq] @ [d_model,seq] = [d_model,seq]
+            const projected = attn_out.matMul(false, self.w_o.inner, false);
+
+            const after_attn = x.add(projected);
+
+            // --- Feed-forward with pre-norm ---
+            const norm2 = after_attn.layerNorm(&ln_reduce, 1e-5);
+
+            const hidden = norm2.matMul(false, self.w1.inner, false);
+            const b1_rep = self.b1.inner.repeat(&hidden.ne);
+            const activated = hidden.add(b1_rep).gelu();
+
+            const ff_out = activated.matMul(false, self.w2.inner, false);
+            const b2_rep = self.b2.inner.repeat(&ff_out.ne);
+
+            return after_attn.add(ff_out.add(b2_rep));
+        }
+
+        /// Comptime-checked forward: every intermediate shape is validated at compile time.
+        fn forwardShaped(self: *const Self, x: anytype) @TypeOf(x) {
+            const seq_len = @TypeOf(x).static_shape[1];
+
+            // --- Self-attention with pre-norm ---
+            // LayerNorm over d_model per position: reduce to [1, seq_len]
+            const norm1 = x.layerNorm(.{ 1, seq_len }, 1e-5);
+
+            // Q, K, V projections: [d_model, seq] @ [d_model, d_model] = [d_model, seq]
             const q = norm1.matMul(false, self.w_q, false);
             const k = norm1.matMul(false, self.w_k, false);
             const v = norm1.matMul(false, self.w_v, false);
 
-            // Scaled dot-product attention: softmax(Q^T @ K / sqrt(d_k)) @ V^T
-            const d_k: T = @floatFromInt(d_model);
-            const scores = q.matMul(true, k, false); // [d_model,seq]^T @ [d_model,seq] = [seq, seq]
-            const scale_t = Tensor(T).initScalar(x.alloc.?, 1.0 / @sqrt(d_k)) catch unreachable;
-            const scaled = scores.mul(scale_t.repeatLike(scores));
-            const attn_weights = scaled.softmax(&.{1}); // softmax over columns
+            // Q @ K^T → [seq, seq] — dimensions checked at compile time
+            const scores = q.matMul(false, k, true);
+            const ScoresType = @TypeOf(scores);
 
-            // attn_out = V @ weights^T = [d_model, seq] @ [seq, seq] = [d_model, seq]
-            const attn_out = v.matMul(false, attn_weights, false);
+            // Scale by 1/sqrt(d_k)
+            const d_k: T = @floatFromInt(d_model);
+            const scale_val = 1.0 / @sqrt(d_k);
+            const scaled = ScoresType.fromTensor(scores.inner.scaleByVal(scale_val));
+
+            // Per-query softmax over keys
+            const attn_weights = scaled.softmax(.{ 1, seq_len });
+
+            // Weights @ V → [d_model, seq]
+            const attn_out = attn_weights.matMul(false, v, false);
             const projected = attn_out.matMul(false, self.w_o, false);
 
-            // Residual connection
             const after_attn = x.add(projected);
 
             // --- Feed-forward with pre-norm ---
-            const norm2 = after_attn.layerNorm(&.{1}, 1e-5);
+            const norm2 = after_attn.layerNorm(.{ 1, seq_len }, 1e-5);
 
-            // FFN: gelu(norm2 @ W1 + b1) @ W2 + b2
-            // norm2 [d_model, seq] @ W1 [d_model, d_ff] = [d_ff, seq]
+            // norm2 [d_model, seq] @ W1 [d_ff, d_model] = [d_ff, seq]
             const hidden = norm2.matMul(false, self.w1, false);
-            const b1_rep = self.b1.repeat(&hidden.ne);
+            const b1_rep = self.b1.repeat(.{ d_ff, seq_len });
             const activated = hidden.add(b1_rep).gelu();
 
-            // activated [d_ff, seq] @ W2 [d_ff, d_model] = [d_model, seq]
+            // activated [d_ff, seq] @ W2 [d_model, d_ff] = [d_model, seq]
             const ff_out = activated.matMul(false, self.w2, false);
-            const b2_rep = self.b2.repeat(&ff_out.ne);
+            const b2_rep = self.b2.repeat(.{ d_model, seq_len });
 
-            // Residual connection
             return after_attn.add(ff_out.add(b2_rep));
         }
 
-        /// Return all learnable parameters.
+        /// Return all learnable parameters (as runtime tensors for optimizer compatibility).
         pub fn params(self: *const Self) [8]*Tensor(T) {
-            return .{ self.w_q, self.w_k, self.w_v, self.w_o, self.w1, self.b1, self.w2, self.b2 };
+            return .{
+                self.w_q.inner, self.w_k.inner, self.w_v.inner, self.w_o.inner,
+                self.w1.inner,  self.b1.inner,  self.w2.inner,  self.b2.inner,
+            };
         }
     };
 }
@@ -124,7 +212,7 @@ pub fn TransformerBlock(comptime T: type, comptime d_model: usize, comptime d_ff
 // Tests
 // ---------------------------------------------------------------------------
 
-test "transformer block - forward produces valid output" {
+test "transformer block - forward produces valid output (dynamic)" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
@@ -142,14 +230,67 @@ test "transformer block - forward produces valid output" {
     try g.buildForward(output);
     g.compute();
 
-    // Output should be same shape as input
     try testing.expectEqual(@as(usize, 4), output.ne[0]);
     try testing.expectEqual(@as(usize, 3), output.ne[1]);
 
-    // Values should be finite
     for (output.data) |v| {
         try testing.expect(!std.math.isNan(v));
         try testing.expect(!std.math.isInf(v));
+    }
+}
+
+test "transformer block - forward produces valid output (shaped)" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const block = try TransformerBlock(f32, 4, 8).init(a);
+
+    const input = (try Shaped(f32, .{ 4, 3 }).init(a)).setData(
+        &[_]f32{ 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1 },
+    );
+
+    // Full comptime shape checking: output type is Shaped(f32, .{4, 3})
+    const output = block.forward(input);
+    comptime {
+        std.debug.assert(@TypeOf(output).static_shape[0] == 4);
+        std.debug.assert(@TypeOf(output).static_shape[1] == 3);
+    }
+
+    try g.buildForward(output.tensor());
+    g.compute();
+
+    for (output.tensor().data) |v| {
+        try testing.expect(!std.math.isNan(v));
+        try testing.expect(!std.math.isInf(v));
+    }
+}
+
+test "transformer block - shaped and dynamic produce same result" {
+    // Both paths should produce identical output for the same input
+    var g1 = ComputeGraph(f32).init(tac);
+    defer g1.deinit();
+    const a1 = g1.allocator();
+    const block1 = try TransformerBlock(f32, 4, 8).init(a1);
+    const data = [_]f32{ 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1 };
+
+    const input_shaped = (try Shaped(f32, .{ 4, 3 }).init(a1)).setData(&data);
+    const out_shaped = block1.forward(input_shaped);
+    try g1.buildForward(out_shaped.tensor());
+    g1.compute();
+
+    var g2 = ComputeGraph(f32).init(tac);
+    defer g2.deinit();
+    const a2 = g2.allocator();
+    const block2 = try TransformerBlock(f32, 4, 8).init(a2);
+    const input_dynamic = try Tensor(f32).init(a2, &.{ 4, 3 });
+    input_dynamic.setData(&data);
+    const out_dynamic = block2.forward(input_dynamic);
+    try g2.buildForward(out_dynamic);
+    g2.compute();
+
+    for (out_shaped.tensor().data, out_dynamic.data) |a, b| {
+        try testing.expectApproxEqAbs(a, b, 1e-6);
     }
 }
 
@@ -173,36 +314,26 @@ test "transformer block - backward produces non-zero gradients for all params" {
     _ = loss.grad.?.setAllScalar(1);
     g.compute();
 
-    // Every parameter must have finite gradients.
-    // Weight matrices should have non-zero gradients; bias terms may be zero
-    // when initialized to zero (since bias enters linearly, its gradient
-    // depends on the upstream signal which may vanish with uniform init).
-    const param_names = [_][]const u8{ "w_q", "w_k", "w_v", "w_o", "w1", "b1", "w2", "b2" };
     for (block.params(), 0..) |param, pi| {
-        _ = param_names[pi];
         var has_nonzero = false;
         for (param.grad.?.data) |v| {
             try testing.expect(!std.math.isNan(v));
             try testing.expect(!std.math.isInf(v));
             if (v != 0) has_nonzero = true;
         }
-        // Biases may legitimately have zero gradients with uniform weight init,
-        // but weight matrices should always have non-zero gradients.
-        if (pi < 4 or pi == 4 or pi == 6) { // w_q, w_k, w_v, w_o, w1, w2
+        // Weight matrices should always have non-zero gradients.
+        if (pi < 4 or pi == 4 or pi == 6) {
             try testing.expect(has_nonzero);
         }
     }
 }
 
 test "transformer block - residual connection preserves input contribution" {
-    // If we zero all weights, the residual should pass input through unchanged
-    // (layerNorm of zeros is zero, so attention and FFN contribute nothing)
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
 
     const block = try TransformerBlock(f32, 4, 8).init(a);
-    // Zero all weights (biases are already zero from init)
     for (block.params()) |param| {
         _ = param.setAllScalar(0);
     }
@@ -214,9 +345,6 @@ test "transformer block - residual connection preserves input contribution" {
     try g.buildForward(output);
     g.compute();
 
-    // With zero weights, attention and FFN produce zeros,
-    // so residuals just pass through the (layer-normed + zeroed) input.
-    // Output should be finite and same shape.
     try testing.expectEqual(@as(usize, 4), output.ne[0]);
     try testing.expectEqual(@as(usize, 3), output.ne[1]);
     for (output.data) |v| {
@@ -225,11 +353,8 @@ test "transformer block - residual connection preserves input contribution" {
 }
 
 test "transformer block - numerical gradient check on one parameter" {
-    // Verify backward gradient matches finite-difference approximation
-    // for a single weight element.
     const h: f32 = 1e-3;
 
-    // Forward pass with original weights
     var g1 = ComputeGraph(f32).init(tac);
     defer g1.deinit();
     const a1 = g1.allocator();
@@ -242,26 +367,24 @@ test "transformer block - numerical gradient check on one parameter" {
     try g1.buildBackward(false);
     _ = loss1.grad.?.setAllScalar(1);
     g1.compute();
-    const analytical_grad = block1.w_o.grad.?.data[0];
+    const analytical_grad = block1.w_o.inner.grad.?.data[0];
 
-    // Forward pass with w_o[0] + h
     var g2 = ComputeGraph(f32).init(tac);
     defer g2.deinit();
     const a2 = g2.allocator();
     const block2 = try TransformerBlock(f32, 4, 8).init(a2);
-    block2.w_o.data[0] += h;
+    block2.w_o.inner.data[0] += h;
     const input2 = try Tensor(f32).init(a2, &.{ 4, 3 });
     for (input2.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(i)) * 0.1;
     const loss_plus = block2.forward(input2).sumAll();
     try g2.buildForward(loss_plus);
     g2.compute();
 
-    // Forward pass with w_o[0] - h
     var g3 = ComputeGraph(f32).init(tac);
     defer g3.deinit();
     const a3 = g3.allocator();
     const block3 = try TransformerBlock(f32, 4, 8).init(a3);
-    block3.w_o.data[0] -= h;
+    block3.w_o.inner.data[0] -= h;
     const input3 = try Tensor(f32).init(a3, &.{ 4, 3 });
     for (input3.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(i)) * 0.1;
     const loss_minus = block3.forward(input3).sumAll();
@@ -271,3 +394,8 @@ test "transformer block - numerical gradient check on one parameter" {
     const numerical_grad = (loss_plus.data[0] - loss_minus.data[0]) / (2.0 * h);
     try testing.expectApproxEqAbs(numerical_grad, analytical_grad, 0.1);
 }
+
+
+
+
+

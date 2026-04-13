@@ -162,13 +162,61 @@ pub fn Tensor(comptime T: type) type {
             return self.index_data != null;
         }
 
+        pub fn source0(self: *const Self) ?*Self {
+            return self.src0;
+        }
+
+        pub fn source1(self: *const Self) ?*Self {
+            return self.src1;
+        }
+
+        pub fn setSources(self: *Self, src0: ?*Self, src1: ?*Self) void {
+            self.src0 = src0;
+            self.src1 = src1;
+        }
+
+        pub fn opTag(self: *const Self) Op {
+            return self.op;
+        }
+
+        pub fn setOp(self: *Self, op: Op) void {
+            self.op = op;
+        }
+
+        pub fn isOp(self: *const Self, op: Op) bool {
+            return self.op == op;
+        }
+
+        pub fn sourceIs(self: *const Self, which: enum { src0, src1 }, other: *Self) bool {
+            return switch (which) {
+                .src0 => self.src0 == other,
+                .src1 => self.src1 == other,
+            };
+        }
+
+        pub fn gradOrNull(self: *const Self) ?*Self {
+            return self.grad;
+        }
+
+        pub fn hasGrad(self: *const Self) bool {
+            return self.grad != null;
+        }
+
+        pub fn setGrad(self: *Self, grad: ?*Self) void {
+            self.grad = grad;
+        }
+
+        pub fn isLeaf(self: *const Self) bool {
+            return self.op == .none and self.grad == null;
+        }
+
         /// Free this tensor and its owned data.
         pub fn deinit(self: *Self) void {
             const al = self.alloc.?;
-            if (self.src0) |src0| {
+            if (self.source0()) |src0| {
                 if (src0.is_internal_aux) src0.deinit();
             }
-            if (self.src1) |src1| {
+            if (self.source1()) |src1| {
                 if (src1.is_internal_aux) src1.deinit();
             }
             if (self.index_owned) {
@@ -181,8 +229,8 @@ pub fn Tensor(comptime T: type) type {
         /// Mark this tensor as a learnable parameter, allocating a gradient tensor.
         pub fn setParam(self: *Self) void {
             self.is_param = true;
-            assert(self.grad == null);
-            self.grad = self.copyTensorShape();
+            assert(!self.hasGrad());
+            self.setGrad(self.copyTensorShape());
         }
 
         // ---------------------------------------------------------------
@@ -254,6 +302,7 @@ pub fn Tensor(comptime T: type) type {
         pub const pickRowsIdx = api.pickRowsIdx;
         pub const scale = api.scale;
         pub const scaleInplace = api.scaleInplace;
+        pub const scaleByVal = api.scaleByVal;
         pub const reshapeLike = api.reshapeLike;
         pub const reshape = api.reshape;
         pub const transpose = api.transpose;

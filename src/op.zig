@@ -64,8 +64,8 @@ pub const Op = enum {
     }
 
     /// Human-readable symbol for this operation, used in debug output and GraphViz export.
-    pub fn symbol(self: *Self) []const u8 {
-        return switch (self.*) {
+    pub fn symbol(self: Self) []const u8 {
+        return switch (self) {
             .none => "none",
             .view => "view(x)",
             .reshape => "reshape(x)",
