@@ -12,7 +12,6 @@ pub fn SGD(comptime T: type) type {
 
         alloc: Alloc,
         params: []const *Tensor(T),
-        batch_size: usize,
         learning_rate: *Tensor(T),
         momentum: std.ArrayList(*Tensor(T)),
         lr_grad: std.ArrayList(*Tensor(T)),
@@ -22,14 +21,12 @@ pub fn SGD(comptime T: type) type {
         pub fn init(
             alloc: Alloc,
             params: []const *Tensor(T),
-            batch_size: usize,
             loss: *Tensor(T),
             learning_rate: T,
             momentum_decay: T,
         ) Alloc.Error!Self {
             var res = Self{
                 .alloc = alloc,
-                .batch_size = batch_size,
                 .params = params,
                 .learning_rate = try Tensor(T).initScalar(alloc, learning_rate),
                 .loss = loss,
@@ -93,8 +90,8 @@ test "optim - linear model with sgd optim" {
     var model = try models.Linear(T).build(tac, 0, 0, 5);
     defer model.deinit();
 
-    var optimizer = try SGD(T).init(tac, &model.params, 1, model.loss, 1e-3, 0.2);
+    var optimizer = try SGD(T).init(tac, &model.params, model.loss, 1e-3, 0.2);
     defer optimizer.deinit();
-    model.train(time, speed, 10, 1, &optimizer);
+    model.train(time, speed, 10, &optimizer);
     try std.testing.expectApproxEqAbs(@as(T, true_m), model.params[0].data[0], 5e-1);
 }

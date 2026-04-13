@@ -456,6 +456,80 @@ pub fn Tensor(comptime T: type) type {
             return res;
         }
 
+        /// Gather rows from a 2-D matrix using indices stored in `indices`.
+        ///
+        /// `self` has shape `{width, rows}` and `indices` has shape `{n}`.
+        /// The result has shape `{width, n}`.
+        ///
+        /// Indices are currently read from `indices.data` and converted to `usize`.
+        /// For floating-point tensors, values must be exact non-negative integers.
+        pub fn gatherRows(self: *Self, alloc: Alloc, indices: *Self) *Self {
+            assert(self.isMatrix());
+            assert(indices.isVector());
+            const is_node = self.grad != null;
+            const res = Self.init(alloc, &.{ self.ne[0], indices.ne[0] }) catch unreachable;
+            res.op = .gather_rows;
+            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
+            res.src0 = self;
+            res.src1 = indices;
+            return res;
+        }
+
+        /// Scatter-add row updates into this matrix using `indices`.
+        ///
+        /// `self` has shape `{width, rows}`, `indices` has shape `{n}`, and
+        /// `updates` has shape `{width, n}`.
+        pub fn scatterAddRows(self: *Self, alloc: Alloc, indices: *Self, updates: *Self) *Self {
+            assert(self.isMatrix());
+            assert(indices.isVector());
+            assert(updates.isMatrix());
+            assert(updates.ne[0] == self.ne[0]);
+            assert(updates.ne[1] == indices.ne[0]);
+            const is_node = updates.grad != null;
+            const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
+            res.op = .scatter_add_rows;
+            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
+            res.src0 = updates;
+            res.src1 = indices;
+            return res;
+        }
+
+        /// Pick one value from each row of a matrix using `indices`.
+        ///
+        /// `self` has shape `{width, rows}` and `indices` has shape `{rows}`.
+        /// The result has shape `{rows}` where output[r] = self[indices[r], r].
+        pub fn pickRows(self: *Self, alloc: Alloc, indices: *Self) *Self {
+            assert(self.isMatrix());
+            assert(indices.isVector());
+            assert(indices.ne[0] == self.ne[1]);
+            const is_node = self.grad != null;
+            const res = Self.init(alloc, &.{indices.ne[0]}) catch unreachable;
+            res.op = .pick_rows;
+            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
+            res.src0 = self;
+            res.src1 = indices;
+            return res;
+        }
+
+        /// Scatter-add one value into each row of a matrix using `indices`.
+        ///
+        /// `self` has shape `{width, rows}`, `indices` has shape `{rows}`, and
+        /// `updates` has shape `{rows}`.
+        pub fn scatterAddPicks(self: *Self, alloc: Alloc, indices: *Self, updates: *Self) *Self {
+            assert(self.isMatrix());
+            assert(indices.isVector());
+            assert(updates.isVector());
+            assert(indices.ne[0] == self.ne[1]);
+            assert(updates.ne[0] == self.ne[1]);
+            const is_node = updates.grad != null;
+            const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
+            res.op = .scatter_add_picks;
+            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
+            res.src0 = updates;
+            res.src1 = indices;
+            return res;
+        }
+
         /// Scale by a scalar tensor. Decomposes to `mul(self, repeat(scalar))`.
         pub fn scale(self: *Self, alloc: Alloc, other: *Self) *Self {
             assert(other.isScalar());
@@ -537,6 +611,10 @@ pub fn Tensor(comptime T: type) type {
         pub const computeSum = fwd.computeSum;
         pub const computeMax = fwd.computeMax;
         pub const computeRepeat = fwd.computeRepeat;
+        pub const computeGatherRows = fwd.computeGatherRows;
+        pub const computeScatterAddRows = fwd.computeScatterAddRows;
+        pub const computePickRows = fwd.computePickRows;
+        pub const computeScatterAddPicks = fwd.computeScatterAddPicks;
         pub const computeTranspose = fwd.computeTranspose;
         pub const computeMatMul = fwd.computeMatMul;
         pub const computeMean = fwd.computeMean;
@@ -1162,4 +1240,111 @@ test "compute logSoftmax" {
     try testing.expectApproxEqAbs(@as(f32, 1) - log_denom, ls.data[0], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 2) - log_denom, ls.data[1], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 3) - log_denom, ls.data[2], 1e-6);
+}
+
+test "compute gatherRows" {
+    const table = try Tensor(f32).init(tac, &.{ 3, 4 });
+    defer table.deinit(tac);
+    table.setData(&.{
+        10, 11, 12,
+        20, 21, 22,
+        30, 31, 32,
+        40, 41, 42,
+    });
+
+    const indices = try Tensor(f32).init(tac, &.{3});
+    defer indices.deinit(tac);
+    indices.setData(&.{ 2, 0, 3 });
+
+    const out = table.gatherRows(tac, indices);
+    defer out.deinit(tac);
+    out.compute();
+
+    try testing.expectEqualSlices(f32, &.{
+        30, 31, 32,
+        10, 11, 12,
+        40, 41, 42,
+    }, out.data);
+}
+
+test "backward - gatherRows accumulates repeated indices" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const table = try Tensor(f32).init(a, &.{ 2, 4 });
+    table.setData(&.{
+        1, 2,
+        3, 4,
+        5, 6,
+        7, 8,
+    });
+    table.setParam(a);
+
+    const indices = try Tensor(f32).init(a, &.{3});
+    indices.setData(&.{ 1, 3, 1 });
+
+    const gathered = table.gatherRows(a, indices);
+    const out = gathered.sumAll(a);
+    try g.buildForward(out);
+    try g.buildBackward(false);
+    _ = out.grad.?.setAllScalar(1);
+    g.compute();
+
+    try testing.expectEqualSlices(f32, &.{
+        0, 0,
+        2, 2,
+        0, 0,
+        1, 1,
+    }, table.grad.?.data);
+}
+
+test "compute pickRows" {
+    const logits = try Tensor(f32).init(tac, &.{ 4, 3 });
+    defer logits.deinit(tac);
+    logits.setData(&.{
+        1, 2,  3,  4,
+        5, 6,  7,  8,
+        9, 10, 11, 12,
+    });
+
+    const indices = try Tensor(f32).init(tac, &.{3});
+    defer indices.deinit(tac);
+    indices.setData(&.{ 3, 0, 2 });
+
+    const picked = logits.pickRows(tac, indices);
+    defer picked.deinit(tac);
+    picked.compute();
+
+    try testing.expectEqualSlices(f32, &.{ 4, 5, 11 }, picked.data);
+}
+
+test "backward - pickRows" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const logits = try Tensor(f32).init(a, &.{ 4, 3 });
+    logits.setData(&.{
+        1, 2,  3,  4,
+        5, 6,  7,  8,
+        9, 10, 11, 12,
+    });
+    logits.setParam(a);
+
+    const indices = try Tensor(f32).init(a, &.{3});
+    indices.setData(&.{ 3, 0, 2 });
+
+    const picked = logits.pickRows(a, indices);
+    const out = picked.sumAll(a);
+    try g.buildForward(out);
+    try g.buildBackward(false);
+    _ = out.grad.?.setAllScalar(1);
+    g.compute();
+
+    try testing.expectEqualSlices(f32, &.{
+        0, 0, 0, 1,
+        1, 0, 0, 0,
+        0, 0, 1, 0,
+    }, logits.grad.?.data);
 }

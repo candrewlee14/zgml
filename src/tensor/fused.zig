@@ -23,6 +23,7 @@ pub const FusionKind = enum {
     elementwise_chain,
     softmax,
     log_softmax,
+    cross_entropy,
 };
 
 /// A runtime descriptor for a detected fused chain.
@@ -226,11 +227,40 @@ fn executeSoftmaxPlan(comptime T: type, nodes: []const *@import("../tensor.zig")
     }
 }
 
+fn executeCrossEntropyPlan(comptime T: type, nodes: []const *@import("../tensor.zig").Tensor(T)) void {
+    const logits = nodes[0].src0.?;
+    const targets = nodes[10].src1.?;
+
+    executeSoftmaxPlan(T, nodes[0..10], true);
+
+    const picked = nodes[10];
+    const neg_picked = nodes[11];
+    const sum_node = nodes[12];
+    const mean_node = nodes[13];
+
+    const batch = picked.ne[0];
+    var total: T = 0;
+    for (0..batch) |row| {
+        const class_idx = if (@typeInfo(T) == .float)
+            @as(usize, @intFromFloat(targets.data[row]))
+        else
+            @as(usize, @intCast(targets.data[row]));
+        std.debug.assert(class_idx < logits.ne[0]);
+        const val = nodes[9].data[row * nodes[9].strides[1] + class_idx];
+        picked.data[row] = val;
+        neg_picked.data[row] = -val;
+        total += -val;
+    }
+    sum_node.data[0] = total;
+    mean_node.data[0] = total * mean_node.src1.?.data[0];
+}
+
 pub fn executeFusionPlan(comptime T: type, plan: FusionPlan(T)) void {
     switch (plan.kind) {
         .elementwise_chain => executeFusedChain(T, plan.nodes),
         .softmax => executeSoftmaxPlan(T, plan.nodes, false),
         .log_softmax => executeSoftmaxPlan(T, plan.nodes, true),
+        .cross_entropy => executeCrossEntropyPlan(T, plan.nodes),
     }
 }
 

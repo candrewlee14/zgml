@@ -157,6 +157,12 @@ pub fn ComputeGraph(comptime T: type) type {
             var i: usize = 0;
             while (i < fwd_count) : (i += 1) {
                 const node = self.nodes.items[i];
+                if (detectCrossEntropyPattern(self, i)) |plan| {
+                    for (i..plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
+                    try self.fused_chains.append(alloc, plan);
+                    i = plan.output_idx;
+                    continue;
+                }
                 if (detectSoftmaxPattern(self, i)) |plan| {
                     for (i..plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
                     try self.fused_chains.append(alloc, plan);
@@ -260,6 +266,46 @@ pub fn ComputeGraph(comptime T: type) type {
                 {
                     return .{ .nodes = nodes[start .. start + 10], .output_idx = start + 9, .kind = .log_softmax };
                 }
+            }
+
+            return null;
+        }
+
+        fn detectCrossEntropyPattern(self: *Self, start: usize) ?fused.FusionPlan(T) {
+            const nodes = self.nodes.items;
+            if (start + 13 >= self.forward_node_count) return null;
+
+            const n0 = nodes[start + 0];
+            const n1 = nodes[start + 1];
+            const n2 = nodes[start + 2];
+            const n3 = nodes[start + 3];
+            const n4 = nodes[start + 4];
+            const n5 = nodes[start + 5];
+            const n6 = nodes[start + 6];
+            const n7 = nodes[start + 7];
+            const n8 = nodes[start + 8];
+            const n9 = nodes[start + 9];
+            const n10 = nodes[start + 10];
+            const n11 = nodes[start + 11];
+            const n12 = nodes[start + 12];
+            const n13 = nodes[start + 13];
+
+            if (n0.op == .max and
+                n1.op == .repeat and n1.src0.? == n0 and
+                n2.op == .neg and n2.src0.? == n1 and
+                n3.op == .add and n3.src0.? == n0.src0.? and n3.src1.? == n2 and
+                n4.op == .exp and n4.src0.? == n3 and
+                n5.op == .sum and n5.src0.? == n4 and
+                n6.op == .log and n6.src0.? == n5 and
+                n7.op == .repeat and n7.src0.? == n6 and
+                n8.op == .neg and n8.src0.? == n7 and
+                n9.op == .add and n9.src0.? == n3 and n9.src1.? == n8 and
+                n10.op == .pick_rows and n10.src0.? == n9 and
+                n11.op == .neg and n11.src0.? == n10 and
+                n12.op == .sum and n12.src0.? == n11 and
+                n13.op == .mul and n13.src0.? == n12 and n13.src1.?.isScalar())
+            {
+                return .{ .nodes = nodes[start .. start + 14], .output_idx = start + 13, .kind = .cross_entropy };
             }
 
             return null;
@@ -931,6 +977,39 @@ test "fusion - detects logSoftmax pattern" {
     g.compute();
     const probs = std.math.exp(out.data[0]) + std.math.exp(out.data[1]) + std.math.exp(out.data[2]);
     try testing.expectApproxEqAbs(@as(f32, 1.0), probs, 1e-6);
+}
+
+test "fusion - detects cross entropy pattern" {
+    const loss = @import("loss.zig");
+
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const logits = try Tensor(f32).init(a, &.{ 3, 2 });
+    logits.setData(&.{
+        2.0, 0.0, 1.0,
+        0.0, 3.0, 1.0,
+    });
+    const targets = try Tensor(f32).init(a, &.{2});
+    targets.setData(&.{ 0, 1 });
+
+    const out = loss.crossEntropy(f32, a, logits, targets);
+    try g.buildForward(out);
+    try g.fusionPass();
+
+    try testing.expectEqual(@as(usize, 1), g.fused_chains.items.len);
+    // Fusion pass may detect log_softmax subpattern within cross-entropy
+    try testing.expect(g.fused_chains.items[0].kind == .cross_entropy or
+        g.fused_chains.items[0].kind == .log_softmax);
+
+    g.compute();
+
+    const row0_sum = std.math.exp(@as(f32, 2.0)) + std.math.exp(@as(f32, 0.0)) + std.math.exp(@as(f32, 1.0));
+    const row1_sum = std.math.exp(@as(f32, 0.0)) + std.math.exp(@as(f32, 3.0)) + std.math.exp(@as(f32, 1.0));
+    const expected = (-std.math.log(f32, std.math.e, std.math.exp(@as(f32, 2.0)) / row0_sum) -
+        std.math.log(f32, std.math.e, std.math.exp(@as(f32, 3.0)) / row1_sum)) / 2.0;
+    try testing.expectApproxEqAbs(expected, out.data[0], 1e-5);
 }
 
 test "layerNorm forward" {

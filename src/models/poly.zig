@@ -17,7 +17,6 @@ pub fn Model(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        cur_batch: usize,
         batch_size: usize,
         xs_batch: *Tensor(T),
         ys_batch: *Tensor(T),
@@ -35,7 +34,6 @@ pub fn Model(comptime T: type) type {
                 .out = undefined,
                 .loss = undefined,
                 .batch_size = batch_size,
-                .cur_batch = 0,
             };
             const a = res.g.allocator();
             res.params = try std.ArrayList(*Tensor(T)).initCapacity(a, max_exp + 1);
@@ -72,9 +70,12 @@ pub fn Model(comptime T: type) type {
             self.g.compute();
         }
 
-        pub fn train(self: *Self, xs: *Tensor(T), ys: *Tensor(T), n_epochs: usize, batch_size: usize, optimizer: anytype) void {
+        pub fn train(self: *Self, xs: *Tensor(T), ys: *Tensor(T), n_epochs: usize, optimizer: anytype) void {
             const n_elems = self.xs_batch.nElems();
-            const n_batches = xs.nElems() / (n_elems * batch_size);
+            std.debug.assert(ys.nElems() == xs.nElems());
+            std.debug.assert(self.batch_size == n_elems);
+            std.debug.assert(xs.nElems() % self.batch_size == 0);
+            const n_batches = xs.nElems() / self.batch_size;
             for (0..n_epochs) |_| {
                 for (0..n_batches) |b_idx| {
                     @memcpy(self.xs_batch.data, xs.data[b_idx * self.batch_size ..][0..n_elems]);
@@ -97,9 +98,9 @@ pub fn Model(comptime T: type) type {
             var model = try Model(T).build(tac, 1, 1);
             defer model.deinit();
 
-            var optimizer = try optim.sgd.SGD(T).init(tac, model.params.items, 1, model.loss, 1e-3, 0.2);
+            var optimizer = try optim.sgd.SGD(T).init(tac, model.params.items, model.loss, 1e-3, 0.2);
             defer optimizer.deinit();
-            model.train(time, speed, 10, 1, &optimizer);
+            model.train(time, speed, 10, &optimizer);
             try testing.expectApproxEqAbs(@as(T, true_m), model.params.items[1].data[0], 5e-1);
         }
     };

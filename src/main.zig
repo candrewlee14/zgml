@@ -10,9 +10,11 @@ pub const ShapedTensor = shaped.ShapedTensor;
 
 pub const models = @import("models.zig");
 pub const optim = @import("optim.zig");
+pub const loss = @import("loss.zig");
 
 test "ref all decls" {
     _ = testing.refAllDeclsRecursive(models);
     _ = testing.refAllDeclsRecursive(optim);
+    _ = testing.refAllDeclsRecursive(loss);
     _ = @import("shaped.zig");
 }

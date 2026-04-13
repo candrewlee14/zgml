@@ -1,7 +1,8 @@
 //! Enumerates all primitive tensor operations supported by the computation graph.
 //!
-//! Higher-level ops (sub, sqr, div, relu, scale, mean) decompose into
-//! these primitives via the lazy API in `tensor.zig`.
+//! This enum is the graph IR. Keep it small and low-level; prefer expressing
+//! higher-level tensor APIs as compositions in `tensor.zig`, then fuse or
+//! rewrite those compositions later as an optimization step.
 //!
 //! Each variant has a forward compute implementation in `tensor/forward.zig`
 //! and (where implemented) a backward rule in `tensor/backward.zig`.
@@ -18,10 +19,13 @@ pub const Op = enum {
 
     // -- Element-wise binary --
     add,
+    sub,
     mul,
+    div,
 
     // -- Element-wise unary --
     neg,
+    relu,
     abs,
     sgn,
     step,
@@ -33,8 +37,13 @@ pub const Op = enum {
 
     // -- Reductions & broadcast --
     sum,
+    mean,
     max,
     repeat,
+    gather_rows,
+    scatter_add_rows,
+    pick_rows,
+    scatter_add_picks,
 
     // -- Matrix multiplication (4 transpose variants) --
     matmul,
@@ -45,7 +54,7 @@ pub const Op = enum {
     /// True if this op is elementwise (shape-preserving) and can participate in fusion.
     pub fn isFusible(self: Self) bool {
         return switch (self) {
-            .add, .mul, .neg, .abs, .sgn, .step, .sqrt, .recip, .exp, .log, .gelu => true,
+            .add, .sub, .mul, .div, .neg, .relu, .abs, .sgn, .step, .sqrt, .recip, .exp, .log, .gelu => true,
             else => false,
         };
     }
@@ -53,7 +62,7 @@ pub const Op = enum {
     /// True if this is a binary op (takes two operands).
     pub fn isBinary(self: Self) bool {
         return switch (self) {
-            .add, .mul => true,
+            .add, .sub, .mul, .div => true,
             else => false,
         };
     }
@@ -66,8 +75,11 @@ pub const Op = enum {
             .reshape => "reshape(x)",
             .transpose => "transpose(x)",
             .add => "x+y",
+            .sub => "x-y",
             .mul => "x*y",
+            .div => "x/y",
             .neg => "-x",
+            .relu => "relu(x)",
             .abs => "abs(x)",
             .sgn => "sgn(x)",
             .step => "step(x)",
@@ -77,8 +89,13 @@ pub const Op = enum {
             .log => "log(x)",
             .gelu => "gelu(x)",
             .sum => "Σx",
+            .mean => "mean(x)",
             .max => "max(x)",
             .repeat => "repeat(x)",
+            .gather_rows => "gather_rows(x)",
+            .scatter_add_rows => "scatter_add_rows(x)",
+            .pick_rows => "pick_rows(x)",
+            .scatter_add_picks => "scatter_add_picks(x)",
             .matmul => "X*Y",
             .matmul_t0 => "XT*Y",
             .matmul_t1 => "X*YT",

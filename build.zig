@@ -34,6 +34,16 @@ pub const Package = struct {
     }
 };
 
+fn linkBlas(target: std.Build.ResolvedTarget, exe: *std.Build.Step.Compile) void {
+    exe.linkLibC();
+    switch (target.result.os.tag) {
+        .windows => exe.linkSystemLibrary("libopenblas"),
+        .linux => exe.linkSystemLibrary("openblas"),
+        .macos => exe.linkFramework("Accelerate"),
+        else => @panic("Unsupported host OS"),
+    }
+}
+
 pub fn package(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -95,8 +105,7 @@ pub fn build(b: *std.Build) void {
         .root_module = bench_mod,
     });
     if (use_blas) {
-        bench_exe.linkLibC();
-        bench_exe.linkSystemLibrary("openblas");
+        linkBlas(target, bench_exe);
         bench_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     b.installArtifact(bench_exe);
@@ -130,8 +139,7 @@ pub fn runTests(
         .root_module = test_mod,
     });
     if (options.use_blas) {
-        test_exe.linkLibC();
-        test_exe.linkSystemLibrary("openblas");
+        linkBlas(target, test_exe);
         test_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     b.installArtifact(test_exe);

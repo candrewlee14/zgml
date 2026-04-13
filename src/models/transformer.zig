@@ -152,10 +152,7 @@ test "transformer block - forward produces valid output" {
     }
 }
 
-test "transformer block - forward pass is differentiable structure" {
-    // Verify the forward pass creates a valid computation graph
-    // that can be evaluated. Full backward through attention + FFN
-    // requires careful shape handling that is validated by the Shaped API.
+test "transformer block - backward computes gradients" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
@@ -171,9 +168,14 @@ test "transformer block - forward pass is differentiable structure" {
     const loss = output.sumAll(a);
 
     try g.buildForward(loss);
+    try g.buildBackward(false);
+    _ = loss.grad.?.setAllScalar(1);
     g.compute();
 
-    // Loss should be a finite scalar
-    try testing.expect(!std.math.isNan(loss.data[0]));
-    try testing.expect(!std.math.isInf(loss.data[0]));
+    // All parameters should have finite gradients
+    for (block.params()) |param| {
+        for (param.grad.?.data) |v| {
+            try testing.expect(!std.math.isNan(v));
+        }
+    }
 }
