@@ -42,21 +42,21 @@ pub fn SGD(comptime T: type) type {
                 _ = mo.setAllScalar(0);
                 res.momentum.appendAssumeCapacity(mo);
 
-                const lr_grad = try Tensor(T).init(alloc, &param.ne);
-                _ = lr_grad.setAllScalar(0);
-                res.lr_grad.appendAssumeCapacity(lr_grad);
+                const lr_grad_t = try Tensor(T).init(alloc, &param.ne);
+                _ = lr_grad_t.setAllScalar(0);
+                res.lr_grad.appendAssumeCapacity(lr_grad_t);
             }
             return res;
         }
         pub fn deinit(self: *Self) void {
-            self.learning_rate.deinit();
+            self.learning_rate.deinit(self.alloc);
             for (self.momentum.items, self.lr_grad.items) |mo, lrg| {
-                mo.deinit();
-                lrg.deinit();
+                mo.deinit(self.alloc);
+                lrg.deinit(self.alloc);
             }
             self.momentum.deinit(self.alloc);
             self.lr_grad.deinit(self.alloc);
-            self.momentum_decay.deinit();
+            self.momentum_decay.deinit(self.alloc);
         }
         // Must zero grad before calling step
         pub fn step(self: *Self) void {
@@ -81,8 +81,8 @@ test "optim - linear model with sgd optim" {
     const time = try Tensor(T).initLinspace(tac, &.{n}, 0, 20);
     const true_m: T = 13.5;
     const speed = try Tensor(T).initLinspace(tac, &.{n}, 0, 20 * true_m);
-    defer time.deinit();
-    defer speed.deinit();
+    defer time.deinit(tac);
+    defer speed.deinit(tac);
 
     var model = try models.Linear(T).build(tac, 0, 0, 5);
     defer model.deinit();

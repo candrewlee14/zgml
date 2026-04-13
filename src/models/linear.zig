@@ -20,32 +20,36 @@ pub fn Model(comptime T: type) type {
         out: *Tensor(T),
         loss: *Tensor(T),
 
-        pub fn build(alloc: Alloc, m: T, b: T, batch_size: usize) !Self {
+        pub fn build(backing_alloc: Alloc, m: T, b: T, batch_size: usize) !Self {
             var p = Self{
-                // zig fmt: off
-                .params = .{ 
-                    try Tensor(T).initScalar(alloc, m), 
-                    try Tensor(T).initScalar(alloc, b), 
-                },
-                // zig fmt: on
-                .xs_batch = try Tensor(T).init(alloc, &.{batch_size}),
-                .ys_batch = try Tensor(T).init(alloc, &.{batch_size}),
-                .g = ComputeGraph(T).init(alloc),
+                .g = ComputeGraph(T).init(backing_alloc),
+                .params = undefined,
+                .xs_batch = undefined,
+                .ys_batch = undefined,
                 .out = undefined,
                 .loss = undefined,
                 .batch_size = batch_size,
                 .cur_batch = 0,
             };
+            const a = p.g.allocator();
+            // zig fmt: off
+            p.params = .{
+                try Tensor(T).initScalar(a, m),
+                try Tensor(T).initScalar(a, b),
+            };
+            // zig fmt: on
+            p.xs_batch = try Tensor(T).init(a, &.{batch_size});
+            p.ys_batch = try Tensor(T).init(a, &.{batch_size});
             for (p.params) |param| {
-                param.setParam();
+                param.setParam(a);
             }
 
             var ne_batch: [1]usize = .{batch_size};
-            const repeated0 = p.params[0].repeat(ne_batch[0..]);
-            const mx = p.xs_batch.mul(repeated0);
-            const repeated1 = p.params[1].repeat(ne_batch[0..]);
-            p.out = mx.add(repeated1);
-            p.loss = loss.meanSqErr(T, p.out, p.ys_batch);
+            const repeated0 = p.params[0].repeat(a, ne_batch[0..]);
+            const mx = p.xs_batch.mul(a, repeated0);
+            const repeated1 = p.params[1].repeat(a, ne_batch[0..]);
+            p.out = mx.add(a, repeated1);
+            p.loss = loss.meanSqErr(T, a, p.out, p.ys_batch);
             { // for debugging
                 p.params[0].name = "m";
                 p.params[1].name = "b";
@@ -76,11 +80,9 @@ pub fn Model(comptime T: type) type {
             const n_elems = self.xs_batch.nElems();
             const n_batches = xs.nElems() / (n_elems * batch_size);
             for (0..n_epochs) |_| {
-                // TODO: write a random shuffle function for tensors
-                for (0..n_batches) |b| {
-                    // move batch of xs & ys into batch data
-                    @memcpy(self.xs_batch.data, xs.data[b * self.batch_size ..][0..n_elems]);
-                    @memcpy(self.ys_batch.data, ys.data[b * self.batch_size ..][0..n_elems]);
+                for (0..n_batches) |b_idx| {
+                    @memcpy(self.xs_batch.data, xs.data[b_idx * self.batch_size ..][0..n_elems]);
+                    @memcpy(self.ys_batch.data, ys.data[b_idx * self.batch_size ..][0..n_elems]);
                     optimizer.zeroGrad();
                     self.compute();
                     optimizer.step();
@@ -93,8 +95,8 @@ pub fn Model(comptime T: type) type {
             const time = try Tensor(T).initLinspace(tac, &.{n}, 0, 20);
             const true_m = 30;
             const speed = try Tensor(T).initLinspace(tac, &.{n}, 0, 20 * true_m);
-            defer time.deinit();
-            defer speed.deinit();
+            defer time.deinit(tac);
+            defer speed.deinit(tac);
 
             var model = try Model(T).build(tac, 0, 0, 1);
             defer model.deinit();

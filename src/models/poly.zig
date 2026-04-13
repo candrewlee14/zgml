@@ -11,7 +11,6 @@ pub fn Model(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        alloc: Alloc,
         cur_batch: usize,
         batch_size: usize,
         xs_batch: *Tensor(T),
@@ -21,32 +20,35 @@ pub fn Model(comptime T: type) type {
         out: *Tensor(T),
         loss: *Tensor(T),
 
-        pub fn build(alloc: Alloc, max_exp: usize, batch_size: usize) !Self {
+        pub fn build(backing_alloc: Alloc, max_exp: usize, batch_size: usize) !Self {
             var res = Self{
-                .alloc = alloc,
-                .params = try std.ArrayList(*Tensor(T)).initCapacity(alloc, max_exp + 1),
-                .xs_batch = try Tensor(T).init(alloc, &.{batch_size}),
-                .ys_batch = try Tensor(T).init(alloc, &.{batch_size}),
-                .g = ComputeGraph(T).init(alloc),
+                .g = ComputeGraph(T).init(backing_alloc),
+                .params = undefined,
+                .xs_batch = undefined,
+                .ys_batch = undefined,
                 .out = undefined,
                 .loss = undefined,
                 .batch_size = batch_size,
                 .cur_batch = 0,
             };
+            const a = res.g.allocator();
+            res.params = try std.ArrayList(*Tensor(T)).initCapacity(a, max_exp + 1);
+            res.xs_batch = try Tensor(T).init(a, &.{batch_size});
+            res.ys_batch = try Tensor(T).init(a, &.{batch_size});
             for (0..max_exp + 1) |_| {
-                const param = try Tensor(T).initScalar(alloc, 0);
-                param.setParam();
+                const param = try Tensor(T).initScalar(a, 0);
+                param.setParam(a);
                 res.params.appendAssumeCapacity(param);
             }
             // mul by xs_batch
-            var total = try Tensor(T).initScalar(alloc, 0);
-            var cur_term = try Tensor(T).initScalar(alloc, 1);
+            var total = try Tensor(T).initScalar(a, 0);
+            var cur_term = try Tensor(T).initScalar(a, 1);
             for (res.params.items, 0..) |param, i| {
-                total = total.add(cur_term.mul(param));
-                if (i < max_exp) cur_term = cur_term.mul(res.xs_batch);
+                total = total.add(a, cur_term.mul(a, param));
+                if (i < max_exp) cur_term = cur_term.mul(a, res.xs_batch);
             }
             res.out = total;
-            res.loss = loss.meanSqErr(T, res.out, res.ys_batch);
+            res.loss = loss.meanSqErr(T, a, res.out, res.ys_batch);
             res.loss.name = "loss";
             try res.g.buildForward(res.loss);
             try res.g.buildBackward(true);
@@ -55,7 +57,6 @@ pub fn Model(comptime T: type) type {
 
         pub fn deinit(self: *Self) void {
             self.g.deinit();
-            self.params.deinit(self.alloc);
         }
 
         pub fn compute(self: *Self) void {
@@ -69,10 +70,9 @@ pub fn Model(comptime T: type) type {
             const n_elems = self.xs_batch.nElems();
             const n_batches = xs.nElems() / (n_elems * batch_size);
             for (0..n_epochs) |_| {
-                for (0..n_batches) |b| {
-                    // move batch of xs & ys into batch data
-                    @memcpy(self.xs_batch.data, xs.data[b * self.batch_size ..][0..n_elems]);
-                    @memcpy(self.ys_batch.data, ys.data[b * self.batch_size ..][0..n_elems]);
+                for (0..n_batches) |b_idx| {
+                    @memcpy(self.xs_batch.data, xs.data[b_idx * self.batch_size ..][0..n_elems]);
+                    @memcpy(self.ys_batch.data, ys.data[b_idx * self.batch_size ..][0..n_elems]);
                     optimizer.zeroGrad();
                     self.compute();
                     optimizer.step();
@@ -85,8 +85,8 @@ pub fn Model(comptime T: type) type {
             const time = try Tensor(T).initLinspace(tac, &.{n}, 0, 20);
             const true_m = 30;
             const speed = try Tensor(T).initLinspace(tac, &.{n}, 0, 20 * true_m);
-            defer time.deinit();
-            defer speed.deinit();
+            defer time.deinit(tac);
+            defer speed.deinit(tac);
 
             var model = try Model(T).build(tac, 1, 1);
             defer model.deinit();
@@ -96,6 +96,5 @@ pub fn Model(comptime T: type) type {
             model.train(time, speed, 10, 1, &optimizer);
             try testing.expectApproxEqAbs(@as(T, true_m), model.params.items[1].data[0], 5e-1);
         }
-        // TODO: write more tests for higher polynomials
     };
 }
