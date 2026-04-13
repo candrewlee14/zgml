@@ -202,15 +202,12 @@ pub fn Tensor(comptime T: type) type {
             return self.addImpl(alloc, other, true);
         }
 
-        fn subImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
-            return self.binaryOp(alloc, other, .sub, inplace);
-        }
-        /// Element-wise subtraction.
+        /// Element-wise subtraction. Decomposes to `add(self, neg(other))`.
         pub fn sub(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.subImpl(alloc, other, false);
+            return self.add(alloc, other.neg(alloc));
         }
         pub fn subInplace(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.subImpl(alloc, other, true);
+            return self.addInplace(alloc, other.neg(alloc));
         }
 
         /// Element-wise multiplication.
@@ -221,17 +218,16 @@ pub fn Tensor(comptime T: type) type {
             return self.binaryOp(alloc, other, .mul, true);
         }
 
-        /// Element-wise division.
+        /// Element-wise division. Decomposes to `mul(self, recip(other))`.
         pub fn div(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.binaryOp(alloc, other, .div, false);
+            return self.mul(alloc, other.recip(alloc));
         }
         pub fn divInplace(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.binaryOp(alloc, other, .div, true);
+            return self.mulInplace(alloc, other.recip(alloc));
         }
 
-        /// Element-wise square.
-        pub fn sqr(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .sqr, false); }
-        pub fn sqrInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .sqr, true); }
+        /// Element-wise square. Decomposes to `mul(self, self)`.
+        pub fn sqr(self: *Self, alloc: Alloc) *Self { return self.mul(alloc, self); }
         /// Element-wise square root.
         pub fn sqrt(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .sqrt, false); }
         pub fn sqrtInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .sqrt, true); }
@@ -250,9 +246,12 @@ pub fn Tensor(comptime T: type) type {
         /// Element-wise step function (1 if positive, 0 otherwise).
         pub fn step(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .step, false); }
         pub fn stepInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .step, true); }
-        /// Element-wise ReLU: max(0, x).
-        pub fn relu(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .relu, false); }
-        pub fn reluInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .relu, true); }
+        /// Element-wise ReLU: max(0, x). Decomposes to `mul(self, step(self))`.
+        pub fn relu(self: *Self, alloc: Alloc) *Self {
+            const mask = self.step(alloc);
+            mask.grad = null; // step is non-differentiable; prevent backward panic
+            return self.mul(alloc, mask);
+        }
         /// Element-wise GeLU approximation.
         pub fn gelu(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .gelu, false); }
         pub fn geluInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .gelu, true); }
@@ -292,28 +291,19 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// Mean (reduce) elements into the given target shape.
+        /// Decomposes to `sum(self, ne) * (1 / count)`.
         pub fn mean(self: *Self, alloc: Alloc, ne: []const usize) *Self {
-            assert(ne.len <= max_dims);
-            assert(canSumToShape(self, ne));
-            const is_node: bool = self.grad != null;
-            const res = Self.init(alloc, ne) catch unreachable;
-            res.op = .mean;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = null;
-            return res;
+            const s = self.sum(alloc, ne);
+            const count: T = @floatFromInt(self.nElems() / s.nElems());
+            const inv_count = Self.initScalar(alloc, 1.0 / count) catch unreachable;
+            return s.mul(alloc, inv_count.repeatLike(alloc, s));
         }
 
         pub fn meanInto(self: *Self, alloc: Alloc, other: *Self) *Self {
-            assert(self.canSumTo(other));
-            const is_node: bool = self.grad != null;
-            if (self.isSameShape(other) and !is_node) return self;
-            const res = other.view(alloc);
-            res.op = .mean;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = null;
-            return res;
+            const s = self.sumInto(alloc, other);
+            const count: T = @floatFromInt(self.nElems() / s.nElems());
+            const inv_count = Self.initScalar(alloc, 1.0 / count) catch unreachable;
+            return s.mul(alloc, inv_count.repeatLike(alloc, s));
         }
 
         fn repeatInto(self: *Self, alloc: Alloc, other: *Self) *Self {
@@ -373,14 +363,14 @@ pub fn Tensor(comptime T: type) type {
             return res;
         }
 
-        /// Scale by a scalar tensor.
+        /// Scale by a scalar tensor. Decomposes to `mul(self, repeat(scalar))`.
         pub fn scale(self: *Self, alloc: Alloc, other: *Self) *Self {
             assert(other.isScalar());
-            return self.binaryOp(alloc, other, .scale, false);
+            return self.mul(alloc, other.repeatLike(alloc, self));
         }
         pub fn scaleInplace(self: *Self, alloc: Alloc, other: *Self) *Self {
             assert(other.isScalar());
-            return self.binaryOp(alloc, other, .scale, true);
+            return self.mulInplace(alloc, other.repeatLike(alloc, self));
         }
 
         fn cpyImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
@@ -724,13 +714,18 @@ test "canRepeatTo" {
 }
 
 test "compute mean" {
-    const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
-    defer t1.deinit(tac);
+    // mean decomposes into a subgraph, so use ComputeGraph to evaluate
+    const ComputeGraph = @import("graph.zig").ComputeGraph;
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const t1 = try Tensor(f32).init(a, &.{ 2, 3 });
     t1.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
 
-    const dst = t1.mean(tac, &.{1});
-    defer dst.deinit(tac);
-    dst.computeMean(t1);
+    const dst = t1.mean(a, &.{1});
+    try g.buildForward(dst);
+    g.compute();
 
     try testing.expectApproxEqAbs(@as(f32, 3.5), dst.data[0], 1e-10);
 }
