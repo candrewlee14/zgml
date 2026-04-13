@@ -126,26 +126,14 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return self.add(aux(other.neg()));
         }
 
-        pub fn subInplace(self: *Self, other: *Self) *Self {
-            return self.addInplace(aux(other.neg()));
-        }
-
         /// Element-wise multiplication.
         pub fn mul(self: *Self, other: *Self) *Self {
             return binaryOp(self, other, .mul, false);
         }
 
-        pub fn mulInplace(self: *Self, other: *Self) *Self {
-            return binaryOp(self, other, .mul, true);
-        }
-
         /// Element-wise division. Decomposes to `mul(self, recip(other))`.
         pub fn div(self: *Self, other: *Self) *Self {
             return self.mul(aux(other.recip()));
-        }
-
-        pub fn divInplace(self: *Self, other: *Self) *Self {
-            return self.mulInplace(aux(other.recip()));
         }
 
         /// Element-wise square. Decomposes to `mul(self, self)`.
@@ -160,58 +148,30 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn sqrt(self: *Self) *Self {
             return unaryOp(self, .sqrt, false);
         }
-        pub fn sqrtInplace(self: *Self) *Self {
-            return unaryOp(self, .sqrt, true);
-        }
         pub fn recip(self: *Self) *Self {
             return unaryOp(self, .recip, false);
-        }
-        pub fn recipInplace(self: *Self) *Self {
-            return unaryOp(self, .recip, true);
         }
         pub fn exp(self: *Self) *Self {
             return unaryOp(self, .exp, false);
         }
-        pub fn expInplace(self: *Self) *Self {
-            return unaryOp(self, .exp, true);
-        }
         pub fn log(self: *Self) *Self {
             return unaryOp(self, .log, false);
-        }
-        pub fn logInplace(self: *Self) *Self {
-            return unaryOp(self, .log, true);
         }
         pub fn abs(self: *Self) *Self {
             return unaryOp(self, .abs, false);
         }
-        pub fn absInplace(self: *Self) *Self {
-            return unaryOp(self, .abs, true);
-        }
         pub fn sgn(self: *Self) *Self {
             return unaryOp(self, .sgn, false);
-        }
-        pub fn sgnInplace(self: *Self) *Self {
-            return unaryOp(self, .sgn, true);
         }
         pub fn neg(self: *Self) *Self {
             return unaryOp(self, .neg, false);
         }
-        pub fn negInplace(self: *Self) *Self {
-            return unaryOp(self, .neg, true);
-        }
         pub fn step(self: *Self) *Self {
             return unaryOp(self, .step, false);
-        }
-        pub fn stepInplace(self: *Self) *Self {
-            return unaryOp(self, .step, true);
         }
         pub fn gelu(self: *Self) *Self {
             return unaryOp(self, .gelu, false);
         }
-        pub fn geluInplace(self: *Self) *Self {
-            return unaryOp(self, .gelu, true);
-        }
-
         /// Element-wise ReLU: max(0, x). Decomposes to `mul(self, step(self))`.
         pub fn relu(self: *Self) *Self {
             const mask = aux(self.step());
@@ -403,11 +363,6 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return self.mul(aux(other.repeatLike(self)));
         }
 
-        pub fn scaleInplace(self: *Self, other: *Self) *Self {
-            assert(other.isScalar());
-            return self.mulInplace(aux(other.repeatLike(self)));
-        }
-
         /// Scale every element by a scalar value.
         pub fn scaleByVal(self: *Self, val: T) *Self {
             return self.mul(scalarRepeatLike(self, val, self));
@@ -433,7 +388,8 @@ pub fn Api(comptime Self: type, comptime T: type) type {
                 break :blk dims;
             };
             const res = Self.init(alloc, out_ne[0..@min(self.n_dims, other.n_dims)]) catch unreachable;
-            res.op = if (trans_self) if (trans_other) .matmul_t0t1 else .matmul_t0 else if (trans_other) .matmul_t1 else .matmul;
+            res.op = .matmul;
+            res.matmul_flags = .{ .trans0 = trans_self, .trans1 = trans_other };
             res.grad = if (is_node) res.copyTensorShape() else null;
             res.src0 = self;
             res.src1 = other;
@@ -702,20 +658,28 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return prod.sum(&.{ out_w, out_h, 1, 1, 1, c_out, batch }).reshape(&.{ out_w, out_h, c_out, batch });
         }
 
-        /// 2×2 max pooling with stride 2.
+        /// 2×2 max pooling with stride 2. Composite op.
+        /// Decomposes to strided view of 2×2 windows → max reduction → reshape.
         /// self: input  [W, H, C, N]  (W and H must be even)
         /// result:      [W/2, H/2, C, N]
         pub fn maxPool2d(self: *Self) *Self {
-            const alloc = a(self);
             assert(self.n_dims == 4);
             assert(self.ne[0] % 2 == 0);
             assert(self.ne[1] % 2 == 0);
-            const is_node = self.grad != null;
-            const res = Self.init(alloc, &.{ self.ne[0] / 2, self.ne[1] / 2, self.ne[2], self.ne[3] }) catch unreachable;
-            res.op = .max_pool2d;
-            res.grad = if (is_node) res.copyTensorShape() else null;
-            res.src0 = self;
-            return res;
+            const out_w = self.ne[0] / 2;
+            const out_h = self.ne[1] / 2;
+            const C = self.ne[2];
+            const N = self.ne[3];
+
+            // Create strided view of 2x2 windows: [out_w, out_h, 2, 2, C, N]
+            const windows = aux(self.asStrided(
+                &.{ out_w, out_h, 2, 2, C, N },
+                &.{ self.strides[0] * 2, self.strides[1] * 2, self.strides[0], self.strides[1], self.strides[2], self.strides[3] },
+                0,
+            ));
+
+            // Reduce max over the 2x2 window dims (dims 2,3): [out_w, out_h, 1, 1, C, N]
+            return windows.max(&.{ out_w, out_h, 1, 1, C, N }).reshape(&.{ out_w, out_h, C, N });
         }
 
         pub fn gatherRowsIdx(self: *Self, indices: anytype) *Self {

@@ -186,14 +186,6 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
             return .{ .inner = self.inner.log() };
         }
 
-        pub fn sgn(self: Self) Self {
-            return .{ .inner = self.inner.sgn() };
-        }
-
-        pub fn step(self: Self) Self {
-            return .{ .inner = self.inner.step() };
-        }
-
         pub fn gelu(self: Self) Self {
             return .{ .inner = self.inner.gelu() };
         }

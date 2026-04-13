@@ -488,11 +488,6 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             @panic("Unimplemented forward dup for non-contiguous src");
         }
 
-        pub fn computeSqr(dst: *Self, src0: *const Self) void {
-            assert(dst.isSameShape(src0));
-            simdMapUnary(T, src0.data, dst.data, sqrVec, sqrScalar);
-        }
-
         pub fn computeSqrt(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
             simdMapUnary(T, src0.data, dst.data, sqrtVec, sqrtScalar);
@@ -562,22 +557,6 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
             while (i < len) : (i += 1) {
                 dst.data[i] = if (src0.data[i] > 0) 1 else 0;
-            }
-        }
-
-        /// Element-wise ReLU: max(0, x).  Uses @select for branchless SIMD.
-        pub fn computeRelu(dst: *Self, src0: *const Self) void {
-            assert(dst.isSameShape(src0));
-            const zero: Vec = @splat(0);
-            const len = src0.data.len;
-            var i: usize = 0;
-            while (i + vec_size <= len) : (i += vec_size) {
-                const v: Vec = src0.data[i..][0..vec_size].*;
-                dst.data[i..][0..vec_size].* = @select(T, v > zero, v, zero);
-            }
-            while (i < len) : (i += 1) {
-                const s = src0.data[i];
-                dst.data[i] = if (s > 0) s else 0;
             }
         }
 
@@ -752,34 +731,6 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // ---------------------------------------------------------------
         // Reduction / broadcast ops (stride-indexed, not SIMD'd)
         // ---------------------------------------------------------------
-
-        pub fn computeMean(dst: *Self, src0: *const Self) void {
-            assert(src0.canSumTo(dst));
-            if (src0.n_dims > 4 or dst.n_dims > 4) {
-                const div_elems: T = @floatFromInt(src0.nElems() / dst.nElems());
-                computeReduceGeneric(Self, T, dst, src0, .sum, div_elems);
-                return;
-            }
-            const src0_ne_v = first4(src0.ne);
-            const div_elems: T = @floatFromInt(@reduce(.Mul, src0_ne_v / first4(dst.ne)));
-
-            for (0..src0.ne[3]) |ne3| {
-                for (0..src0.ne[2]) |ne2| {
-                    for (0..src0.ne[1]) |ne1| {
-                        for (0..src0.ne[0]) |ne0| {
-                            const src0_nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
-                            const dst_ne_v = first4(dst.ne);
-                            const dst_nes = src0_nes % dst_ne_v;
-                            const src0_stride_v = first4(src0.strides);
-                            const dst_stride_v = first4(dst.strides);
-                            const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
-                            const dst_idx = @reduce(.Add, dst_nes * dst_stride_v);
-                            dst.data[dst_idx] += src0.data[src0_idx] / div_elems;
-                        }
-                    }
-                }
-            }
-        }
 
         pub fn computeSum(dst: *Self, src0: *const Self) void {
             assert(src0.canSumTo(dst));
@@ -1045,39 +996,6 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // Dispatch
         // ---------------------------------------------------------------
 
-        /// 2×2 max pooling with stride 2.
-        pub fn computeMaxPool2d(dst: *Self, input: *const Self) void {
-            const in_w = input.ne[0];
-            const out_w = dst.ne[0];
-            const out_h = dst.ne[1];
-            const channels = dst.ne[2];
-            const batch = dst.ne[3];
-
-            const in_stride_h = in_w;
-            const in_stride_c = in_w * input.ne[1];
-            const in_stride_n = in_stride_c * channels;
-            const out_stride_h = out_w;
-            const out_stride_c = out_w * out_h;
-            const out_stride_n = out_stride_c * channels;
-
-            for (0..batch) |n| {
-                for (0..channels) |ch| {
-                    for (0..out_h) |oy| {
-                        for (0..out_w) |ox| {
-                            const ix = ox * 2;
-                            const iy = oy * 2;
-                            const base = ix + iy * in_stride_h + ch * in_stride_c + n * in_stride_n;
-                            var m = input.data[base];
-                            m = @max(m, input.data[base + 1]);
-                            m = @max(m, input.data[base + in_stride_h]);
-                            m = @max(m, input.data[base + in_stride_h + 1]);
-                            dst.data[ox + oy * out_stride_h + ch * out_stride_c + n * out_stride_n] = m;
-                        }
-                    }
-                }
-            }
-        }
-
         pub fn compute(tensor: *Self) void {
             const src0 = tensor.src0;
             const src1 = tensor.src1;
@@ -1102,11 +1020,14 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .scatter_add_rows => tensor.computeScatterAddRows(src0.?, src1.?),
                 .pick_rows => tensor.computePickRows(src0.?, src1.?),
                 .scatter_add_picks => tensor.computeScatterAddPicks(src0.?, src1.?),
-                .max_pool2d => tensor.computeMaxPool2d(src0.?),
-                .matmul => tensor.computeMatMul(src0.?, false, src1.?, false),
-                .matmul_t0 => tensor.computeMatMul(src0.?, true, src1.?, false),
-                .matmul_t1 => tensor.computeMatMul(src0.?, false, src1.?, true),
-                .matmul_t0t1 => tensor.computeMatMul(src0.?, true, src1.?, true),
+                .matmul => {
+                    const flags = tensor.matmul_flags;
+                    if (flags.trans0) {
+                        if (flags.trans1) tensor.computeMatMul(src0.?, true, src1.?, true) else tensor.computeMatMul(src0.?, true, src1.?, false);
+                    } else {
+                        if (flags.trans1) tensor.computeMatMul(src0.?, false, src1.?, true) else tensor.computeMatMul(src0.?, false, src1.?, false);
+                    }
+                },
             }
         }
     };

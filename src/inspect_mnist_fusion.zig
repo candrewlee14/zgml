@@ -41,7 +41,6 @@ pub fn main() !void {
     try g.buildBackward(true);
     try g.fusionPass();
 
-    std.debug.print("match bwd kernel @86 = {}\n", .{g.debugMatchesConv2dBwdKernelAt(86)});
 
     var op_counts = std.AutoHashMap(Op, usize).init(alloc);
     defer op_counts.deinit();

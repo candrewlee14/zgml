@@ -55,6 +55,28 @@ pub fn uniform(comptime T: type, tensor: *Tensor(T), low: T, high: T, seed: u64)
     }
 }
 
+/// Argmax over rows: for each column (sample), find the row index with the largest value.
+///
+/// `logits` has shape `{n_classes, batch}`. Writes one predicted class index per sample
+/// into `preds[0..batch]`.
+pub fn argmax(comptime T: type, logits: *const Tensor(T), preds: []usize) void {
+    const n_classes = logits.ne[0];
+    const batch = logits.ne[1];
+    std.debug.assert(preds.len >= batch);
+    for (0..batch) |s| {
+        var best_class: usize = 0;
+        var best_val: T = logits.data[s * n_classes];
+        for (1..n_classes) |c| {
+            const val = logits.data[s * n_classes + c];
+            if (val > best_val) {
+                best_val = val;
+                best_class = c;
+            }
+        }
+        preds[s] = best_class;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Generic training loops
 // ---------------------------------------------------------------------------

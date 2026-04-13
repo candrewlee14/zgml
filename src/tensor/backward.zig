@@ -165,7 +165,7 @@ pub fn Ops(comptime Self: type) type {
                     const src0 = src0_o.?;
                     if (src0.gradOrNull()) |grad| {
                         const half = try Self.initScalar(alloc, 0.5);
-                        const half_rep = half.repeatLike(src0);
+                        const half_rep = half.broadcastTo(src0.ne[0..src0.n_dims]);
                         const inv_2sqrt = half_rep.div(tensor);
                         stripGrad(inv_2sqrt);
                         const contribution = inv_2sqrt.mul(out_grad);
@@ -219,23 +219,25 @@ pub fn Ops(comptime Self: type) type {
                 .sum => {
                     const src0 = src0_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        src0.setGrad(accumGrad(grad, out_grad.repeatLike(grad), inplace));
+                        const expanded = out_grad.broadcastTo(grad.ne[0..grad.n_dims]);
+                        stripGrad(expanded);
+                        src0.setGrad(accumGrad(grad, expanded, inplace));
                     }
                 },
 
                 .max => {
                     const src0 = src0_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const repeated_max = tensor.repeatLike(src0);
+                        const repeated_max = tensor.broadcastTo(src0.ne[0..src0.n_dims]);
                         stripGrad(repeated_max);
                         const diff = src0.sub(repeated_max);
                         stripGrad(diff);
                         const one = try Self.initScalar(alloc, 1);
                         const zero_mask = diff.abs().step();
                         stripGrad(zero_mask);
-                        const mask = one.repeatLike(src0).sub(zero_mask);
+                        const mask = one.broadcastTo(src0.ne[0..src0.n_dims]).sub(zero_mask);
                         stripGrad(mask);
-                        const expanded_out_grad = out_grad.repeatLike(src0);
+                        const expanded_out_grad = out_grad.broadcastTo(src0.ne[0..src0.n_dims]);
                         stripGrad(expanded_out_grad);
                         const contribution = mask.mul(expanded_out_grad);
                         stripGrad(contribution);
@@ -267,114 +269,40 @@ pub fn Ops(comptime Self: type) type {
 
                 .scatter_add_picks => {},
 
-                // d/d(A) [A @ B] = out_grad @ B^T
-                // d/d(B) [A @ B] = A^T @ out_grad
+                // Matmul backward: dispatch based on transpose flags.
+                // For fwd C = op(A) @ op(B) where op is identity or transpose:
+                //   no trans:  d/dA = G @ B^T,      d/dB = A^T @ G
+                //   trans0:    d/dA = B @ G^T,       d/dB = A @ G
+                //   trans1:    d/dA = G @ B,         d/dB = G^T @ A
+                //   trans0t1:  d/dA = B^T @ G^T,     d/dB = G^T @ A^T
                 .matmul => {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
+                    const t0 = tensor.matmul_flags.trans0;
+                    const t1 = tensor.matmul_flags.trans1;
                     if (src0.gradOrNull()) |grad| {
-                        const z = out_grad.matMul(false, src1, true);
+                        const z = if (!t0 and !t1)
+                            out_grad.matMul(false, src1, true)
+                        else if (t0 and !t1)
+                            src1.matMul(false, out_grad, true)
+                        else if (!t0 and t1)
+                            out_grad.matMul(false, src1, false)
+                        else
+                            src1.matMul(true, out_grad, true);
                         stripGrad(z);
                         src0.setGrad(accumGrad(grad, z, inplace));
                     }
                     if (src1.gradOrNull()) |grad| {
-                        const z = src0.matMul(true, out_grad, false);
+                        const z = if (!t0 and !t1)
+                            src0.matMul(true, out_grad, false)
+                        else if (t0 and !t1)
+                            src0.matMul(false, out_grad, false)
+                        else if (!t0 and t1)
+                            out_grad.matMul(true, src0, false)
+                        else
+                            out_grad.matMul(true, src0, true);
                         stripGrad(z);
                         src1.setGrad(accumGrad(grad, z, inplace));
-                    }
-                },
-                .matmul_t0 => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.gradOrNull()) |grad| {
-                        const z = src1.matMul(false, out_grad, true);
-                        stripGrad(z);
-                        src0.setGrad(accumGrad(grad, z, inplace));
-                    }
-                    if (src1.gradOrNull()) |grad| {
-                        const z = src0.matMul(false, out_grad, false);
-                        stripGrad(z);
-                        src1.setGrad(accumGrad(grad, z, inplace));
-                    }
-                },
-                .matmul_t1 => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.gradOrNull()) |grad| {
-                        const z = out_grad.matMul(false, src1, false);
-                        stripGrad(z);
-                        src0.setGrad(accumGrad(grad, z, inplace));
-                    }
-                    if (src1.gradOrNull()) |grad| {
-                        const z = out_grad.matMul(true, src0, false);
-                        stripGrad(z);
-                        src1.setGrad(accumGrad(grad, z, inplace));
-                    }
-                },
-                .matmul_t0t1 => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.gradOrNull()) |grad| {
-                        const z = src1.matMul(true, out_grad, true);
-                        stripGrad(z);
-                        src0.setGrad(accumGrad(grad, z, inplace));
-                    }
-                    if (src1.gradOrNull()) |grad| {
-                        const z = out_grad.matMul(true, src0, true);
-                        stripGrad(z);
-                        src1.setGrad(accumGrad(grad, z, inplace));
-                    }
-                },
-
-                // max_pool2d backward: route gradient to the max element in each 2x2 window
-                .max_pool2d => {
-                    const input = src0_o.?;
-                    if (input.gradOrNull()) |grad| {
-                        const in_w = input.ne[0];
-                        const out_w = tensor.ne[0];
-                        const out_h = tensor.ne[1];
-                        const channels = tensor.ne[2];
-                        const batch = tensor.ne[3];
-                        const in_s_h = in_w;
-                        const in_s_c = in_w * input.ne[1];
-                        const in_s_n = in_s_c * channels;
-                        const o_s_h = out_w;
-                        const o_s_c = out_w * out_h;
-                        const o_s_n = o_s_c * channels;
-
-                        const gi = try Self.init(alloc, grad.ne[0..grad.n_dims]);
-                        @memset(gi.data, 0);
-                        for (0..batch) |n| {
-                            for (0..channels) |ch| {
-                                for (0..out_h) |oy| {
-                                    for (0..out_w) |ox| {
-                                        const ix = ox * 2;
-                                        const iy = oy * 2;
-                                        const base = ix + iy * in_s_h + ch * in_s_c + n * in_s_n;
-                                        // Find which of the 4 elements was max
-                                        var max_val = input.data[base];
-                                        var max_idx = base;
-                                        const idx1 = base + 1;
-                                        if (input.data[idx1] > max_val) {
-                                            max_val = input.data[idx1];
-                                            max_idx = idx1;
-                                        }
-                                        const idx2 = base + in_s_h;
-                                        if (input.data[idx2] > max_val) {
-                                            max_val = input.data[idx2];
-                                            max_idx = idx2;
-                                        }
-                                        const idx3 = base + in_s_h + 1;
-                                        if (input.data[idx3] > max_val) {
-                                            max_idx = idx3;
-                                        }
-                                        gi.data[max_idx] += out_grad.data[ox + oy * o_s_h + ch * o_s_c + n * o_s_n];
-                                    }
-                                }
-                            }
-                        }
-                        stripGrad(gi);
-                        input.setGrad(accumGrad(grad, gi, inplace));
                     }
                 },
 

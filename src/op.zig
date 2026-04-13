@@ -45,14 +45,8 @@ pub const Op = enum {
     scatter_add_picks,
     scatter_add_view,
 
-    // -- Convolution & pooling --
-    max_pool2d,
-
-    // -- Matrix multiplication (4 transpose variants) --
+    // -- Matrix multiplication --
     matmul,
-    matmul_t0,
-    matmul_t1,
-    matmul_t0t1,
 
     /// True if this op is elementwise (shape-preserving) and can participate in fusion.
     pub fn isFusible(self: Self) bool {
@@ -99,11 +93,7 @@ pub const Op = enum {
             .pick_rows => "pick_rows(x)",
             .scatter_add_picks => "scatter_add_picks(x)",
             .scatter_add_view => "scatter_add_view(x)",
-            .max_pool2d => "maxpool2d(x)",
             .matmul => "X*Y",
-            .matmul_t0 => "XT*Y",
-            .matmul_t1 => "X*YT",
-            .matmul_t0t1 => "XT*YT",
         };
     }
 };

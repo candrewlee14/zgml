@@ -24,10 +24,9 @@ pub fn SGD(comptime T: type) type {
 
         alloc: Alloc,
         params: []const *Tensor(T),
-        learning_rate: *Tensor(T),
+        lr: T,
         momentum: std.ArrayList(*Tensor(T)),
-        lr_grad: std.ArrayList(*Tensor(T)),
-        momentum_decay: *Tensor(T),
+        decay: T,
 
         pub fn init(
             alloc: Alloc,
@@ -37,31 +36,22 @@ pub fn SGD(comptime T: type) type {
             var res = Self{
                 .alloc = alloc,
                 .params = params,
-                .learning_rate = try Tensor(T).initScalar(alloc, @floatCast(config.lr)),
+                .lr = @floatCast(config.lr),
                 .momentum = try std.ArrayList(*Tensor(T)).initCapacity(alloc, params.len),
-                .lr_grad = try std.ArrayList(*Tensor(T)).initCapacity(alloc, params.len),
-                .momentum_decay = try Tensor(T).initScalar(alloc, @floatCast(config.momentum)),
+                .decay = @floatCast(config.momentum),
             };
             for (params) |param| {
                 const mo = try Tensor(T).init(alloc, &param.ne);
                 _ = mo.setAllScalar(0);
                 res.momentum.appendAssumeCapacity(mo);
-
-                const lr_grad_t = try Tensor(T).init(alloc, &param.ne);
-                _ = lr_grad_t.setAllScalar(0);
-                res.lr_grad.appendAssumeCapacity(lr_grad_t);
             }
             return res;
         }
         pub fn deinit(self: *Self) void {
-            self.learning_rate.deinit();
-            for (self.momentum.items, self.lr_grad.items) |mo, lrg| {
+            for (self.momentum.items) |mo| {
                 mo.deinit();
-                lrg.deinit();
             }
             self.momentum.deinit(self.alloc);
-            self.lr_grad.deinit(self.alloc);
-            self.momentum_decay.deinit();
         }
         /// Perform one optimization step.
         ///
@@ -71,11 +61,12 @@ pub fn SGD(comptime T: type) type {
         ///
         /// Call `zeroGrad()` before the next forward pass.
         pub fn step(self: *Self) void {
-            for (self.params, self.momentum.items, self.lr_grad.items) |param, mo, lrg| {
-                mo.computeMul(mo, self.momentum_decay);
-                lrg.computeMul(param.grad.?, self.learning_rate);
-                mo.computeAdd(mo, lrg);
-                param.computeSub(param, mo);
+            for (self.params, self.momentum.items) |param, mo| {
+                const grad_data = param.grad.?.data;
+                for (mo.data, param.data, grad_data) |*m, *p, g| {
+                    m.* = m.* * self.decay + g * self.lr;
+                    p.* -= m.*;
+                }
             }
         }
         pub fn zeroGrad(self: *Self) void {

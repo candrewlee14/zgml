@@ -41,6 +41,8 @@ pub fn Tensor(comptime T: type) type {
         storage_offset: usize,
         /// The operation that produced this tensor (`.none` for user-created tensors).
         op: Op,
+        /// Transpose flags for matmul ops (ignored for other ops).
+        matmul_flags: packed struct { trans0: bool = false, trans1: bool = false } = .{},
         /// Whether this tensor is a learnable parameter.
         is_param: bool,
         /// Gradient tensor, populated during backward pass. Only present for parameters
@@ -285,31 +287,19 @@ pub fn Tensor(comptime T: type) type {
         pub const add = api.add;
         pub const addInplace = api.addInplace;
         pub const sub = api.sub;
-        pub const subInplace = api.subInplace;
         pub const mul = api.mul;
-        pub const mulInplace = api.mulInplace;
         pub const div = api.div;
-        pub const divInplace = api.divInplace;
         pub const sqr = api.sqr;
         pub const sqrt = api.sqrt;
-        pub const sqrtInplace = api.sqrtInplace;
         pub const recip = api.recip;
-        pub const recipInplace = api.recipInplace;
         pub const exp = api.exp;
-        pub const expInplace = api.expInplace;
         pub const log = api.log;
-        pub const logInplace = api.logInplace;
         pub const abs = api.abs;
-        pub const absInplace = api.absInplace;
-        pub const sgn = api.sgn;
-        pub const sgnInplace = api.sgnInplace;
+        pub const sgn = api.sgn; // Internal: used by backward pass only
         pub const neg = api.neg;
-        pub const negInplace = api.negInplace;
-        pub const step = api.step;
-        pub const stepInplace = api.stepInplace;
+        pub const step = api.step; // Internal: used by backward pass only
         pub const relu = api.relu;
         pub const gelu = api.gelu;
-        pub const geluInplace = api.geluInplace;
         pub const sumAll = api.sumAll;
         pub const maxAll = api.maxAll;
         pub const sum = api.sum;
@@ -330,14 +320,13 @@ pub fn Tensor(comptime T: type) type {
         pub const mmT = api.mmT;
         pub const TmmT = api.TmmT;
         pub const gatherRows = api.gatherRows;
-        pub const scatterAddRows = api.scatterAddRows;
+        pub const scatterAddRows = api.scatterAddRows; // Internal: used by backward pass only
         pub const pickRows = api.pickRows;
-        pub const scatterAddPicks = api.scatterAddPicks;
+        pub const scatterAddPicks = api.scatterAddPicks; // Internal: used by backward pass only
         pub const gatherRowsIdx = api.gatherRowsIdx;
         pub const pickRowsIdx = api.pickRowsIdx;
         pub const addBias = api.addBias;
         pub const scale = api.scale;
-        pub const scaleInplace = api.scaleInplace;
         pub const scaleByVal = api.scaleByVal;
         pub const conv2d = api.conv2d;
         pub const maxPool2d = api.maxPool2d;
@@ -347,7 +336,7 @@ pub fn Tensor(comptime T: type) type {
         pub const transpose = api.transpose;
         pub const permute = api.permute;
         pub const asStrided = api.asStrided;
-        pub const scatterAddView = api.scatterAddView;
+        pub const scatterAddView = api.scatterAddView; // Internal: used by backward pass only
         pub const broadcastTo = api.broadcastTo;
         pub const slidingWindow2d = api.slidingWindow2d;
 
@@ -381,11 +370,7 @@ pub fn Tensor(comptime T: type) type {
         pub const computePickRows = fwd.computePickRows;
         pub const computeScatterAddPicks = fwd.computeScatterAddPicks;
         pub const computeTranspose = fwd.computeTranspose;
-        pub const computeMaxPool2d = fwd.computeMaxPool2d;
         pub const computeMatMul = fwd.computeMatMul;
-        pub const computeMean = fwd.computeMean;
-        pub const computeSqr = fwd.computeSqr;
-        pub const computeRelu = fwd.computeRelu;
         pub const assertValidMatMulDims = fwd.assertValidMatMulDims;
 
         // ---------------------------------------------------------------

@@ -1,7 +1,7 @@
 //! Convolutional classifier: CNN for image classification.
 //!
-//! Architecture: Conv(3x3) → ReLU → MaxPool(2x2) → Flatten → FC → Softmax
-//! Demonstrates conv2d and max_pool2d ops with cross-entropy loss.
+//! Architecture: Conv(KxK) → ReLU → MaxPool(2x2) → Flatten → FC → Softmax
+//! Demonstrates conv2d and max_pool2d (decomposed) ops with cross-entropy loss.
 
 const std = @import("std");
 const testing = std.testing;
@@ -31,6 +31,7 @@ pub fn Model(comptime T: type) type {
             backing_alloc: Alloc,
             in_w: usize,
             in_h: usize,
+            kernel_size: usize,
             n_filters: usize,
             n_classes: usize,
             batch_size: usize,
@@ -38,10 +39,12 @@ pub fn Model(comptime T: type) type {
             var g = ComputeGraph(T).init(backing_alloc);
             const a = g.allocator();
 
-            const conv_k = try g.param(&.{ 3, 3, 1, n_filters });
+            const conv_k = try g.param(&.{ kernel_size, kernel_size, 1, n_filters });
             const conv_b = try g.param(&.{n_filters});
-            const pool_w = (in_w - 2) / 2;
-            const pool_h = (in_h - 2) / 2;
+            const conv_w = in_w - kernel_size + 1;
+            const conv_h = in_h - kernel_size + 1;
+            const pool_w = conv_w / 2;
+            const pool_h = conv_h / 2;
             const flat_dim = pool_w * pool_h * n_filters;
             const fc_w = try g.param(&.{ n_classes, flat_dim });
             const fc_b = try g.param(&.{n_classes});
@@ -81,21 +84,7 @@ pub fn Model(comptime T: type) type {
         }
 
         pub fn predict(self: *const Self, preds: []usize) void {
-            const n_classes = self.logits.ne[0];
-            const batch = self.logits.ne[1];
-            std.debug.assert(preds.len >= batch);
-            for (0..batch) |s| {
-                var best_class: usize = 0;
-                var best_val: T = self.logits.data[s * n_classes];
-                for (1..n_classes) |c| {
-                    const val = self.logits.data[s * n_classes + c];
-                    if (val > best_val) {
-                        best_val = val;
-                        best_class = c;
-                    }
-                }
-                preds[s] = best_class;
-            }
+            nn.argmax(T, self.logits, preds);
         }
 
         test "conv classifier learns synthetic patterns" {
@@ -127,7 +116,7 @@ pub fn Model(comptime T: type) type {
             defer ys.deinit();
             ys.setData(&.{ 0, 0, 1, 1, 2, 2, 3, 3 });
 
-            var model = try Model(T).build(tac, in_w, in_h, n_filters, n_classes, n_samples);
+            var model = try Model(T).build(tac, in_w, in_h, 3, n_filters, n_classes, n_samples);
             defer model.deinit();
 
             @memcpy(model.xs_batch.data, xs.data);

@@ -71,6 +71,7 @@ pub const Strides = struct {
 pub const UnaryOp = enum {
     neg,
     abs,
+    sgn,
     step,
     sqrt,
     recip,
@@ -82,6 +83,7 @@ pub const UnaryOp = enum {
         return switch (op) {
             .neg => .neg,
             .abs => .abs,
+            .sgn => .sgn,
             .step => .step,
             .sqrt => .sqrt,
             .recip => .recip,
@@ -293,6 +295,44 @@ pub const MatmulResidualKernelSpec = struct {
     output: ValueId,
 };
 
+pub const Conv2dSpec = struct {
+    input: ValueId,
+    kernel: ValueId,
+    input_view: ValueId,
+    kernel_view: ValueId,
+    mul_node: ValueId,
+    sum_node: ValueId,
+    reshape_node: ValueId,
+    bias: ?ValueId = null,
+    bias_add: ?ValueId = null,
+    activation: ?ValueId = null,
+    output: ValueId,
+};
+
+pub const Conv2dBwdInputSpec = struct {
+    output_grad: ValueId,
+    kernel: ValueId,
+    output: ValueId,
+};
+
+pub const Conv2dBwdKernelSpec = struct {
+    input: ValueId,
+    output_grad: ValueId,
+    output: ValueId,
+};
+
+pub const MaxPool2dSpec = struct {
+    input: ValueId,
+    strided: ValueId,
+    max_node: ValueId,
+    output: ValueId,
+};
+
+pub const Conv2dKernelSpec = Conv2dSpec;
+pub const Conv2dBwdInputKernelSpec = Conv2dBwdInputSpec;
+pub const Conv2dBwdKernelKernelSpec = Conv2dBwdKernelSpec;
+pub const MaxPool2dKernelSpec = MaxPool2dSpec;
+
 /// Executable high-level kernel regions discovered from canonical IR.
 ///
 /// These are intentionally richer than primitive tensor ops and intentionally
@@ -308,6 +348,10 @@ pub const KernelPatternKind = enum {
     linear_relu,
     linear_residual,
     matmul_residual,
+    conv2d,
+    conv2d_bwd_input,
+    conv2d_bwd_kernel,
+    max_pool2d,
 };
 
 /// Typed payloads for compiler-selected fused regions.
@@ -326,6 +370,10 @@ pub const KernelPattern = union(KernelPatternKind) {
     linear_relu: LinearReluKernelSpec,
     linear_residual: LinearResidualKernelSpec,
     matmul_residual: MatmulResidualKernelSpec,
+    conv2d: Conv2dKernelSpec,
+    conv2d_bwd_input: Conv2dBwdInputKernelSpec,
+    conv2d_bwd_kernel: Conv2dBwdKernelKernelSpec,
+    max_pool2d: MaxPool2dKernelSpec,
 
     pub fn output(self: @This()) ValueId {
         return switch (self) {
@@ -338,6 +386,10 @@ pub const KernelPattern = union(KernelPatternKind) {
             .linear_relu => |spec| spec.output,
             .linear_residual => |spec| spec.output,
             .matmul_residual => |spec| spec.output,
+            .conv2d => |spec| spec.output,
+            .conv2d_bwd_input => |spec| spec.output,
+            .conv2d_bwd_kernel => |spec| spec.output,
+            .max_pool2d => |spec| spec.output,
         };
     }
 
@@ -415,6 +467,27 @@ pub const KernelPattern = union(KernelPatternKind) {
                 claimed[@intFromEnum(spec.matmul)] = true;
                 claimed[@intFromEnum(spec.output)] = true;
             },
+            .conv2d => |spec| {
+                claimed[@intFromEnum(spec.input_view)] = true;
+                claimed[@intFromEnum(spec.kernel_view)] = true;
+                claimed[@intFromEnum(spec.mul_node)] = true;
+                claimed[@intFromEnum(spec.sum_node)] = true;
+                claimed[@intFromEnum(spec.reshape_node)] = true;
+                if (spec.bias_add) |b| claimed[@intFromEnum(b)] = true;
+                if (spec.activation) |a| claimed[@intFromEnum(a)] = true;
+                claimed[@intFromEnum(spec.output)] = true;
+            },
+            .conv2d_bwd_input => |spec| {
+                claimed[@intFromEnum(spec.output)] = true;
+            },
+            .conv2d_bwd_kernel => |spec| {
+                claimed[@intFromEnum(spec.output)] = true;
+            },
+            .max_pool2d => |spec| {
+                claimed[@intFromEnum(spec.strided)] = true;
+                claimed[@intFromEnum(spec.max_node)] = true;
+                claimed[@intFromEnum(spec.output)] = true;
+            },
         }
     }
 
@@ -484,6 +557,19 @@ pub const KernelPattern = union(KernelPatternKind) {
             },
             .matmul_residual => |spec| claimed[@intFromEnum(spec.matmul)] or
                 claimed[@intFromEnum(spec.output)],
+            .conv2d => |spec| claimed[@intFromEnum(spec.input_view)] or
+                claimed[@intFromEnum(spec.kernel_view)] or
+                claimed[@intFromEnum(spec.mul_node)] or
+                claimed[@intFromEnum(spec.sum_node)] or
+                claimed[@intFromEnum(spec.reshape_node)] or
+                (if (spec.bias_add) |b| claimed[@intFromEnum(b)] else false) or
+                (if (spec.activation) |a| claimed[@intFromEnum(a)] else false) or
+                claimed[@intFromEnum(spec.output)],
+            .conv2d_bwd_input => |spec| claimed[@intFromEnum(spec.output)],
+            .conv2d_bwd_kernel => |spec| claimed[@intFromEnum(spec.output)],
+            .max_pool2d => |spec| claimed[@intFromEnum(spec.strided)] or
+                claimed[@intFromEnum(spec.max_node)] or
+                claimed[@intFromEnum(spec.output)],
         };
     }
 };
@@ -503,13 +589,39 @@ pub const MaterializationKind = enum {
     materialized,
 };
 
+pub const ScheduleRegionKind = enum {
+    elementwise,
+};
+
+/// Schedule-owned fused regions.
+///
+/// These are intentionally distinct from `KernelPattern`: semantic patterns stay
+/// compiler-owned, while generic same-shape elementwise fusion lives at the
+/// schedule layer where execution policy and materialization are decided.
+pub const ElementwiseRegion = struct {
+    input: ValueId,
+    nodes: []const ValueId,
+};
+
+pub const ScheduleRegion = union(ScheduleRegionKind) {
+    elementwise: ElementwiseRegion,
+
+    pub fn output(self: @This()) ValueId {
+        return switch (self) {
+            .elementwise => |region| region.nodes[region.nodes.len - 1],
+        };
+    }
+};
+
 /// A scheduled execution step.
 ///
 /// v1 supports two kinds only:
-/// - `kernel_pattern` for compiler-selected fused regions
+/// - `kernel_pattern` for compiler-selected semantic fused regions
+/// - `schedule_region` for schedule-owned generic fused regions
 /// - `generic` for uncovered canonical values that still need execution
 pub const ScheduleStepKind = enum {
     kernel_pattern,
+    schedule_region,
     generic,
 };
 
@@ -518,6 +630,10 @@ pub const ScheduleStep = union(ScheduleStepKind) {
         output: ValueId,
         pattern_index: usize,
     },
+    schedule_region: struct {
+        output: ValueId,
+        region_index: usize,
+    },
     generic: struct {
         output: ValueId,
     },
@@ -525,6 +641,7 @@ pub const ScheduleStep = union(ScheduleStepKind) {
     pub fn output(self: @This()) ValueId {
         return switch (self) {
             .kernel_pattern => |step| step.output,
+            .schedule_region => |step| step.output,
             .generic => |step| step.output,
         };
     }
@@ -533,6 +650,7 @@ pub const ScheduleStep = union(ScheduleStepKind) {
 pub const SchedulePlan = struct {
     alloc: Alloc,
     materialization: std.ArrayList(MaterializationKind),
+    regions: std.ArrayList(ScheduleRegion),
     steps: std.ArrayList(ScheduleStep),
     outputs: std.ArrayList(ValueId),
 
@@ -540,13 +658,20 @@ pub const SchedulePlan = struct {
         return .{
             .alloc = alloc,
             .materialization = .{},
+            .regions = .{},
             .steps = .{},
             .outputs = .{},
         };
     }
 
     pub fn deinit(self: *SchedulePlan) void {
+        for (self.regions.items) |region| {
+            switch (region) {
+                .elementwise => |payload| self.alloc.free(payload.nodes),
+            }
+        }
         self.materialization.deinit(self.alloc);
+        self.regions.deinit(self.alloc);
         self.steps.deinit(self.alloc);
         self.outputs.deinit(self.alloc);
     }
@@ -556,6 +681,12 @@ pub const SchedulePlan = struct {
         for (self.steps.items, 0..) |step, idx| {
             switch (step) {
                 .kernel_pattern => |s| try writer.print("  step[{d}] pattern output=v{d} pattern_index={d}\n", .{ idx, @intFromEnum(s.output), s.pattern_index }),
+                .schedule_region => |s| {
+                    const region = self.regions.items[s.region_index];
+                    switch (region) {
+                        .elementwise => |payload| try writer.print("  step[{d}] region kind=elementwise output=v{d} nodes={d}\n", .{ idx, @intFromEnum(s.output), payload.nodes.len }),
+                    }
+                },
                 .generic => |s| try writer.print("  step[{d}] generic output=v{d}\n", .{ idx, @intFromEnum(s.output) }),
             }
         }
@@ -570,6 +701,7 @@ pub const SchedulePlan = struct {
     /// Design goals for v1:
     /// - keep fused-region boundaries explicit
     /// - mark pattern internals virtual and outputs materialized
+    /// - keep generic elementwise fusion owned by the schedule layer
     /// - preserve a simple topological walk for uncovered generic values
     /// - avoid backend or profitability policy here
     pub fn build(alloc: Alloc, graph: *const CanonicalGraph, kernel: *const KernelPlan) !SchedulePlan {
@@ -587,23 +719,52 @@ pub const SchedulePlan = struct {
         defer alloc.free(covered_values);
         @memset(covered_values, false);
 
+        const pattern_steps = try alloc.alloc(?usize, graph.values.items.len);
+        defer alloc.free(pattern_steps);
+        for (pattern_steps) |*entry| entry.* = null;
+
+        const region_steps = try alloc.alloc(?usize, graph.values.items.len);
+        defer alloc.free(region_steps);
+        for (region_steps) |*entry| entry.* = null;
+
         for (kernel.patterns.items, 0..) |record, pattern_index| {
             const output = record.output;
             const output_idx = @intFromEnum(output);
             covered_outputs[output_idx] = true;
-
-            try schedule.steps.append(alloc, .{ .kernel_pattern = .{
-                .output = output,
-                .pattern_index = pattern_index,
-            } });
+            pattern_steps[output_idx] = pattern_index;
 
             try markPatternVirtuals(&schedule, record.pattern);
             record.pattern.markCovered(covered_values);
             schedule.materialization.items[output_idx] = .materialized;
         }
 
+        try buildScheduleRegions(&schedule, alloc, graph, covered_values, covered_outputs);
+        for (schedule.regions.items, 0..) |region, region_index| {
+            const output = region.output();
+            const output_idx = @intFromEnum(output);
+            covered_outputs[output_idx] = true;
+            region_steps[output_idx] = region_index;
+            try markRegionVirtuals(&schedule, region);
+            markRegionCovered(covered_values, region);
+            schedule.materialization.items[output_idx] = .materialized;
+        }
+
         for (graph.values.items) |value| {
             const idx = @intFromEnum(value.id);
+            if (pattern_steps[idx]) |pattern_index| {
+                try schedule.steps.append(alloc, .{ .kernel_pattern = .{
+                    .output = value.id,
+                    .pattern_index = pattern_index,
+                } });
+                continue;
+            }
+            if (region_steps[idx]) |region_index| {
+                try schedule.steps.append(alloc, .{ .schedule_region = .{
+                    .output = value.id,
+                    .region_index = region_index,
+                } });
+                continue;
+            }
             if (covered_outputs[idx]) continue;
             if (covered_values[idx]) continue;
             if (!isGenericSchedulableExpr(value.expr)) continue;
@@ -619,7 +780,72 @@ pub const SchedulePlan = struct {
     }
 };
 
+pub const ExecutionStepKind = enum {
+    kernel_pattern,
+    schedule_region,
+    generic,
+};
+
+pub const ExecutionStep = union(ExecutionStepKind) {
+    kernel_pattern: struct {
+        pattern_index: usize,
+        output: ValueId,
+    },
+    schedule_region: struct {
+        region_index: usize,
+        output: ValueId,
+    },
+    generic: struct {
+        output: ValueId,
+    },
+};
+
+/// Runtime-facing execution plan lowered from `SchedulePlan`.
+///
+/// Unlike `SchedulePlan`, this form is intentionally close to execution:
+/// it is just an ordered list of executable steps. Execution policy stays data-
+/// driven, while the executor itself can remain simple and mostly branch-free.
+pub const ExecutionPlan = struct {
+    alloc: Alloc,
+    steps: std.ArrayList(ExecutionStep),
+    outputs: std.ArrayList(ValueId),
+
+    pub fn init(alloc: Alloc) ExecutionPlan {
+        return .{ .alloc = alloc, .steps = .{}, .outputs = .{} };
+    }
+
+    pub fn deinit(self: *ExecutionPlan) void {
+        self.steps.deinit(self.alloc);
+        self.outputs.deinit(self.alloc);
+    }
+
+    pub fn build(alloc: Alloc, schedule: *const SchedulePlan) !ExecutionPlan {
+        var plan = ExecutionPlan.init(alloc);
+        errdefer plan.deinit();
+
+        for (schedule.steps.items) |step| {
+            switch (step) {
+                .kernel_pattern => |s| try plan.steps.append(alloc, .{ .kernel_pattern = .{
+                    .pattern_index = s.pattern_index,
+                    .output = s.output,
+                } }),
+                .schedule_region => |s| try plan.steps.append(alloc, .{ .schedule_region = .{
+                    .region_index = s.region_index,
+                    .output = s.output,
+                } }),
+                .generic => |s| try plan.steps.append(alloc, .{ .generic = .{ .output = s.output } }),
+            }
+        }
+        for (schedule.outputs.items) |output| {
+            try plan.outputs.append(alloc, output);
+        }
+        return plan;
+    }
+};
+
 const kernel_pattern_priority = [_]KernelPatternKind{
+    .conv2d,
+    .max_pool2d,
     .linear_gelu,
     .linear_relu,
     .linear_residual,
@@ -697,6 +923,44 @@ fn markPatternVirtuals(schedule: *SchedulePlan, pattern: KernelPattern) !void {
         .matmul_residual => |spec| {
             markVirtual(materialization, spec.matmul);
         },
+        .conv2d => |spec| {
+            markVirtual(materialization, spec.input_view);
+            markVirtual(materialization, spec.kernel_view);
+            markVirtual(materialization, spec.mul_node);
+            markVirtual(materialization, spec.sum_node);
+            markVirtual(materialization, spec.reshape_node);
+            if (spec.bias_add) |b| markVirtual(materialization, b);
+            if (spec.activation) |a| markVirtual(materialization, a);
+        },
+        .conv2d_bwd_input => {},
+        .conv2d_bwd_kernel => {},
+        .max_pool2d => |spec| {
+            markVirtual(materialization, spec.strided);
+            markVirtual(materialization, spec.max_node);
+        },
+    }
+}
+
+fn markRegionVirtuals(schedule: *SchedulePlan, region: ScheduleRegion) !void {
+    switch (region) {
+        .elementwise => |payload| {
+            if (payload.nodes.len == 0) return;
+            const materialization = schedule.materialization.items;
+            for (payload.nodes[0 .. payload.nodes.len - 1]) |node| {
+                markVirtual(materialization, node);
+            }
+        },
+    }
+}
+
+fn markRegionCovered(covered: []bool, region: ScheduleRegion) void {
+    switch (region) {
+        .elementwise => |payload| {
+            if (payload.nodes.len == 0) return;
+            for (payload.nodes[0 .. payload.nodes.len - 1]) |node| {
+                covered[@intFromEnum(node)] = true;
+            }
+        },
     }
 }
 
@@ -705,6 +969,261 @@ fn isGenericSchedulableExpr(expr: CanonicalExpr) bool {
         .input, .constant => false,
         else => true,
     };
+}
+
+fn buildScheduleRegions(
+    schedule: *SchedulePlan,
+    alloc: Alloc,
+    graph: *const CanonicalGraph,
+    claimed_values: []const bool,
+    claimed_outputs: []const bool,
+) !void {
+    const use_count = try buildCanonicalUseCount(alloc, graph);
+    defer alloc.free(use_count);
+
+    const region_claimed = try alloc.alloc(bool, graph.values.items.len);
+    defer alloc.free(region_claimed);
+    @memset(region_claimed, false);
+
+    for (graph.values.items) |value| {
+        const idx = @intFromEnum(value.id);
+        if (claimed_values[idx] or claimed_outputs[idx] or region_claimed[idx]) continue;
+
+        const region = try detectElementwiseScheduleRegion(alloc, graph, use_count, claimed_values, region_claimed, value.id) orelse continue;
+        errdefer alloc.free(region.nodes);
+
+        if (region.nodes.len < 2) {
+            alloc.free(region.nodes);
+            continue;
+        }
+
+        for (region.nodes) |node| {
+            region_claimed[@intFromEnum(node)] = true;
+        }
+        try schedule.regions.append(alloc, .{ .elementwise = region });
+    }
+}
+
+fn buildCanonicalUseCount(alloc: Alloc, graph: *const CanonicalGraph) ![]u32 {
+    const use_count = try alloc.alloc(u32, graph.values.items.len);
+    @memset(use_count, 0);
+
+    for (graph.values.items) |value| {
+        countExprUses(use_count, value.expr);
+    }
+    return use_count;
+}
+
+fn countExprUses(use_count: []u32, expr: CanonicalExpr) void {
+    switch (expr) {
+        .input, .constant => {},
+        .unary => |u| use_count[@intFromEnum(u.input)] += 1,
+        .binary => |b| {
+            use_count[@intFromEnum(b.lhs)] += 1;
+            use_count[@intFromEnum(b.rhs)] += 1;
+        },
+        .reduce => |r| use_count[@intFromEnum(r.input)] += 1,
+        .scale => |s| {
+            use_count[@intFromEnum(s.input)] += 1;
+            use_count[@intFromEnum(s.scalar)] += 1;
+        },
+        .view => |v| use_count[@intFromEnum(v.input)] += 1,
+        .gather => |g| {
+            use_count[@intFromEnum(g.table)] += 1;
+            use_count[@intFromEnum(g.indices)] += 1;
+        },
+        .scatter_add => |s| {
+            use_count[@intFromEnum(s.indices)] += 1;
+            use_count[@intFromEnum(s.updates)] += 1;
+        },
+        .scatter_add_view => |s| {
+            use_count[@intFromEnum(s.grad)] += 1;
+            use_count[@intFromEnum(s.view)] += 1;
+        },
+        .matmul => |m| {
+            use_count[@intFromEnum(m.lhs)] += 1;
+            use_count[@intFromEnum(m.rhs)] += 1;
+        },
+    }
+}
+
+const ElementwiseNodeInfo = struct {
+    input: ValueId,
+};
+
+fn isCommutativeFusibleBinaryOp(op: BinaryOp) bool {
+    return switch (op) {
+        .add, .mul => true,
+    };
+}
+
+fn detectElementwiseScheduleRegion(
+    alloc: Alloc,
+    graph: *const CanonicalGraph,
+    use_count: []const u32,
+    claimed_values: []const bool,
+    region_claimed: []const bool,
+    start: ValueId,
+) !?ElementwiseRegion {
+    const start_info = elementwiseNodeInfo(graph, start, null) orelse return null;
+    if (hasElementwiseProducer(graph, start)) return null;
+
+    var nodes = std.ArrayList(ValueId){};
+    defer nodes.deinit(alloc);
+    try nodes.append(alloc, start);
+
+    var current = start;
+    while (use_count[@intFromEnum(current)] == 1) {
+        const next = findSingleUserValue(graph, current, claimed_values, region_claimed) orelse break;
+        if (elementwiseNodeInfo(graph, next, current) == null) break;
+        try nodes.append(alloc, next);
+        current = next;
+    }
+
+    if (nodes.items.len < 2) return null;
+
+    return .{
+        .input = start_info.input,
+        .nodes = try alloc.dupe(ValueId, nodes.items),
+    };
+}
+
+fn hasElementwiseProducer(graph: *const CanonicalGraph, id: ValueId) bool {
+    const value = graph.value(id);
+    return switch (value.expr) {
+        .unary => |u| elementwiseNodeInfo(graph, u.input, null) != null,
+        .binary => |b| blk: {
+            const lhs = graph.value(b.lhs);
+            const rhs = graph.value(b.rhs);
+            if (shapesEqual(value.shape, lhs.shape) and elementwiseNodeInfo(graph, b.lhs, null) != null) break :blk true;
+            if (isCommutativeFusibleBinaryOp(b.op) and shapesEqual(value.shape, rhs.shape) and elementwiseNodeInfo(graph, b.rhs, null) != null) break :blk true;
+            break :blk false;
+        },
+        .scale => |s| elementwiseNodeInfo(graph, s.input, null) != null,
+        else => false,
+    };
+}
+
+fn findSingleUserValue(
+    graph: *const CanonicalGraph,
+    needle: ValueId,
+    claimed_values: []const bool,
+    region_claimed: []const bool,
+) ?ValueId {
+    var found: ?ValueId = null;
+    var idx: usize = @intFromEnum(needle) + 1;
+    while (idx < graph.values.items.len) : (idx += 1) {
+        if (claimed_values[idx] or region_claimed[idx]) continue;
+        const value = graph.values.items[idx];
+        if (!exprUsesValue(value.expr, needle)) continue;
+        if (found != null) return null;
+        found = value.id;
+    }
+    return found;
+}
+
+/// Returns the ValueId inputs of an expression, packed into a fixed-size array.
+/// Unused slots are null. Callers iterate until the first null.
+fn exprInputs(expr: CanonicalExpr) [2]?ValueId {
+    return switch (expr) {
+        .input, .constant => .{ null, null },
+        .unary => |u| .{ u.input, null },
+        .binary => |b| .{ b.lhs, b.rhs },
+        .reduce => |r| .{ r.input, null },
+        .scale => |s| .{ s.input, s.scalar },
+        .view => |v| .{ v.input, null },
+        .gather => |g| .{ g.table, g.indices },
+        .scatter_add => |s| .{ s.indices, s.updates },
+        .scatter_add_view => |s| .{ s.grad, s.view },
+        .matmul => |m| .{ m.lhs, m.rhs },
+    };
+}
+
+/// Remap all ValueId references in an expression using the given table.
+/// Axes are duped into the destination graph's storage.
+fn remapExpr(dst: *CanonicalGraph, expr: CanonicalExpr, remap: []const ValueId) !CanonicalExpr {
+    return switch (expr) {
+        .input, .constant => expr,
+        .unary => |u| .{ .unary = .{ .op = u.op, .input = remap[@intFromEnum(u.input)] } },
+        .binary => |b| .{ .binary = .{ .op = b.op, .lhs = remap[@intFromEnum(b.lhs)], .rhs = remap[@intFromEnum(b.rhs)] } },
+        .reduce => |r| .{ .reduce = .{ .op = r.op, .input = remap[@intFromEnum(r.input)], .axes = try dst.dupeAxes(r.axes) } },
+        .scale => |s| .{ .scale = .{ .input = remap[@intFromEnum(s.input)], .scalar = remap[@intFromEnum(s.scalar)] } },
+        .view => |v| .{ .view = .{ .kind = v.kind, .input = remap[@intFromEnum(v.input)], .shape = v.shape, .strides = v.strides } },
+        .gather => |g| .{ .gather = .{ .table = remap[@intFromEnum(g.table)], .indices = remap[@intFromEnum(g.indices)], .axis = g.axis } },
+        .scatter_add => |s| .{ .scatter_add = .{ .dst_shape = s.dst_shape, .indices = remap[@intFromEnum(s.indices)], .updates = remap[@intFromEnum(s.updates)], .axis = s.axis } },
+        .scatter_add_view => |s| .{ .scatter_add_view = .{ .grad = remap[@intFromEnum(s.grad)], .view = remap[@intFromEnum(s.view)] } },
+        .matmul => |m| .{ .matmul = .{ .lhs = remap[@intFromEnum(m.lhs)], .rhs = remap[@intFromEnum(m.rhs)], .transpose_lhs = m.transpose_lhs, .transpose_rhs = m.transpose_rhs } },
+    };
+}
+
+fn exprUsesValue(expr: CanonicalExpr, needle: ValueId) bool {
+    return switch (expr) {
+        .input, .constant => false,
+        .unary => |u| u.input == needle,
+        .binary => |b| b.lhs == needle or b.rhs == needle,
+        .reduce => |r| r.input == needle,
+        .scale => |s| s.input == needle or s.scalar == needle,
+        .view => |v| v.input == needle,
+        .gather => |g| g.table == needle or g.indices == needle,
+        .scatter_add => |s| s.indices == needle or s.updates == needle,
+        .scatter_add_view => |s| s.grad == needle or s.view == needle,
+        .matmul => |m| m.lhs == needle or m.rhs == needle,
+    };
+}
+
+fn elementwiseNodeInfo(graph: *const CanonicalGraph, id: ValueId, expected_input: ?ValueId) ?ElementwiseNodeInfo {
+    const value = graph.value(id);
+    return switch (value.expr) {
+        .unary => |u| blk: {
+            if (!isFusibleUnaryOp(u.op)) return null;
+            if (!shapesEqual(value.shape, graph.value(u.input).shape)) return null;
+            if (expected_input) |expected| {
+                if (u.input != expected) return null;
+            }
+            break :blk .{ .input = u.input };
+        },
+        .binary => |b| blk: {
+            if (!isFusibleBinaryOp(b.op)) return null;
+            const lhs = graph.value(b.lhs);
+            const rhs = graph.value(b.rhs);
+            const lhs_matches = shapesEqual(value.shape, lhs.shape) and (rhs.shape.nElems() == 1 or shapesEqual(rhs.shape, lhs.shape));
+            const rhs_matches = shapesEqual(value.shape, rhs.shape) and (lhs.shape.nElems() == 1 or shapesEqual(lhs.shape, rhs.shape));
+            if (expected_input) |expected| {
+                if (lhs_matches and b.lhs == expected) break :blk .{ .input = b.lhs };
+                if (isCommutativeFusibleBinaryOp(b.op) and rhs_matches and b.rhs == expected) break :blk .{ .input = b.rhs };
+                return null;
+            }
+            if (lhs_matches) break :blk .{ .input = b.lhs };
+            if (isCommutativeFusibleBinaryOp(b.op) and rhs_matches) break :blk .{ .input = b.rhs };
+            return null;
+        },
+        .scale => |s| blk: {
+            if (!shapesEqual(value.shape, graph.value(s.input).shape)) return null;
+            if (graph.value(s.scalar).shape.nElems() != 1) return null;
+            if (expected_input) |expected| {
+                if (s.input != expected) return null;
+            }
+            break :blk .{ .input = s.input };
+        },
+        else => null,
+    };
+}
+
+fn isFusibleUnaryOp(op: UnaryOp) bool {
+    return switch (op) {
+        .neg, .abs, .sgn, .step, .sqrt, .recip, .exp, .log, .gelu => true,
+    };
+}
+
+fn isFusibleBinaryOp(op: BinaryOp) bool {
+    return switch (op) {
+        .add, .mul => true,
+    };
+}
+
+fn shapesEqual(lhs: Shape, rhs: Shape) bool {
+    if (lhs.ndims != rhs.ndims) return false;
+    return std.mem.eql(usize, lhs.dims[0..lhs.ndims], rhs.dims[0..rhs.ndims]);
 }
 
 pub const RmsNormSpec = struct {
@@ -767,6 +1286,7 @@ pub const ViewKind = enum {
     reshape,
     transpose,
     broadcast,
+    strided,
 };
 
 pub const ViewSpec = struct {
@@ -802,6 +1322,11 @@ pub const ScatterAddSpec = struct {
     axis: Axis,
 };
 
+pub const ScatterAddViewSpec = struct {
+    grad: ValueId,
+    view: ValueId,
+};
+
 pub const CanonicalExpr = union(enum) {
     input,
     constant,
@@ -812,6 +1337,7 @@ pub const CanonicalExpr = union(enum) {
     view: ViewSpec,
     gather: GatherSpec,
     scatter_add: ScatterAddSpec,
+    scatter_add_view: ScatterAddViewSpec,
     matmul: MatmulSpec,
 };
 
@@ -826,15 +1352,27 @@ pub const CanonicalGraph = struct {
     alloc: std.mem.Allocator,
     values: std.ArrayList(CanonicalValue),
     reduction_axes_storage: std.ArrayList([]Axis),
+    /// Maps source (pre-DCE) ValueIds to canonical (post-DCE) ValueIds.
+    /// null entry means the value was eliminated. Only populated when DCE
+    /// actually removes values; otherwise null (identity mapping).
+    source_remap: ?[]const ?ValueId = null,
 
     pub fn init(alloc: std.mem.Allocator) CanonicalGraph {
         return .{ .alloc = alloc, .values = .{}, .reduction_axes_storage = .{} };
     }
 
     pub fn deinit(self: *CanonicalGraph) void {
+        if (self.source_remap) |remap| self.alloc.free(remap);
         for (self.reduction_axes_storage.items) |axes| self.alloc.free(axes);
         self.reduction_axes_storage.deinit(self.alloc);
         self.values.deinit(self.alloc);
+    }
+
+    /// Translate a source (pre-DCE) ValueId to its canonical (post-DCE) ValueId.
+    /// Returns the input unchanged if no remap is active.
+    pub fn remapSourceValue(self: *const CanonicalGraph, source_id: ValueId) ?ValueId {
+        const remap = self.source_remap orelse return source_id;
+        return remap[@intFromEnum(source_id)];
     }
 
     pub fn addValue(self: *CanonicalGraph, dtype: DType, shape: Shape, expr: CanonicalExpr) !ValueId {
@@ -854,13 +1392,100 @@ pub const CanonicalGraph = struct {
     }
 
     pub fn canonicalize(self: *const CanonicalGraph, alloc: Alloc) !CanonicalGraph {
+        var canonicalized = CanonicalGraph.init(alloc);
+        errdefer canonicalized.deinit();
+
+        for (self.values.items) |item| {
+            const expr = try canonicalizeExpr(self, &canonicalized, item);
+            _ = try canonicalized.addValue(item.dtype, item.shape, expr);
+        }
+
+        return canonicalized;
+    }
+
+    /// Remove values with no consumers that aren't the output (last value).
+    /// Returns a new compacted graph with remapped ValueIds.
+    pub fn eliminateDeadValues(self: *const CanonicalGraph, alloc: Alloc) !CanonicalGraph {
+        const len = self.values.items.len;
+        if (len == 0) return CanonicalGraph.init(alloc);
+
+        // Compute use counts.
+        const use_counts = try alloc.alloc(u32, len);
+        defer alloc.free(use_counts);
+        @memset(use_counts, 0);
+
+        for (self.values.items) |v| {
+            for (exprInputs(v.expr)) |maybe_id| {
+                const id = maybe_id orelse break;
+                use_counts[@intFromEnum(id)] += 1;
+            }
+        }
+
+        // Mark liveness. The output (last value) always survives.
+        const live = try alloc.alloc(bool, len);
+        defer alloc.free(live);
+        @memset(live, true);
+
+        const output_idx = len - 1;
+        // Walk backwards, killing dead values and propagating.
+        var i: usize = output_idx;
+        while (true) {
+            if (i != output_idx and use_counts[i] == 0) {
+                live[i] = false;
+                for (exprInputs(self.values.items[i].expr)) |maybe_id| {
+                    const id = maybe_id orelse break;
+                    use_counts[@intFromEnum(id)] -= 1;
+                }
+            }
+            if (i == 0) break;
+            i -= 1;
+        }
+
+        // If nothing was eliminated, clone as-is.
+        var any_dead = false;
+        for (live) |l| {
+            if (!l) {
+                any_dead = true;
+                break;
+            }
+        }
+        if (!any_dead) {
+            var out = CanonicalGraph.init(alloc);
+            errdefer out.deinit();
+            for (self.values.items) |v| {
+                const expr = if (v.expr == .reduce)
+                    CanonicalExpr{ .reduce = .{
+                        .op = v.expr.reduce.op,
+                        .input = v.expr.reduce.input,
+                        .axes = try out.dupeAxes(v.expr.reduce.axes),
+                    } }
+                else
+                    v.expr;
+                _ = try out.addValue(v.dtype, v.shape, expr);
+            }
+            return out;
+        }
+
+        // Build remap table and compact graph.
+        const remap = try alloc.alloc(ValueId, len);
+        defer alloc.free(remap);
+
         var out = CanonicalGraph.init(alloc);
         errdefer out.deinit();
 
-        for (self.values.items) |item| {
-            const expr = try canonicalizeExpr(self, &out, item);
-            _ = try out.addValue(item.dtype, item.shape, expr);
+        for (self.values.items, 0..) |v, idx| {
+            if (!live[idx]) continue;
+            const expr = try remapExpr(&out, v.expr, remap);
+            remap[idx] = try out.addValue(v.dtype, v.shape, expr);
         }
+
+        // Store source_remap so downstream can translate source ValueIds.
+        const source_remap = try alloc.alloc(?ValueId, len);
+        for (0..len) |idx| {
+            source_remap[idx] = if (live[idx]) remap[idx] else null;
+        }
+        out.source_remap = source_remap;
+
         return out;
     }
 
@@ -1257,6 +1882,88 @@ pub const CanonicalGraph = struct {
         return null;
     }
 
+    pub fn detectConv2d(self: *const CanonicalGraph, output_id: ValueId) ?Conv2dSpec {
+        const output = self.value(output_id);
+
+        // Output should be a reshape back to 4D
+        if (output.expr != .view or output.expr.view.kind != .reshape) return null;
+        if (output.shape.ndims != 4) return null;
+        const reshape_input = output.expr.view.input;
+
+        // The reshape input should be a sum reduction
+        const sum_val = self.value(reshape_input);
+        if (sum_val.expr != .reduce or sum_val.expr.reduce.op != .sum) return null;
+
+        // The sum input should be a mul
+        const mul_id = sum_val.expr.reduce.input;
+        const mul_val = self.value(mul_id);
+        if (mul_val.expr != .binary or mul_val.expr.binary.op != .mul) return null;
+
+        // Both mul inputs should be strided views
+        const lhs_id = mul_val.expr.binary.lhs;
+        const rhs_id = mul_val.expr.binary.rhs;
+        const lhs = self.value(lhs_id);
+        const rhs = self.value(rhs_id);
+
+        if (lhs.expr != .view or lhs.expr.view.kind != .strided) return null;
+        if (rhs.expr != .view or rhs.expr.view.kind != .strided) return null;
+
+        // Strided views should be 7D (conv2d decomposition)
+        if (lhs.shape.ndims != 7) return null;
+        if (rhs.shape.ndims != 7) return null;
+
+        // Determine which is input view and which is kernel view
+        const input_id = lhs.expr.view.input;
+        const kernel_id = rhs.expr.view.input;
+
+        // Both sources should be 4D
+        if (self.value(input_id).shape.ndims != 4) return null;
+        if (self.value(kernel_id).shape.ndims != 4) return null;
+
+        return .{
+            .input = input_id,
+            .kernel = kernel_id,
+            .input_view = lhs_id,
+            .kernel_view = rhs_id,
+            .mul_node = mul_id,
+            .sum_node = reshape_input,
+            .reshape_node = output_id,
+            .output = output_id,
+        };
+    }
+
+    pub fn detectMaxPool2d(self: *const CanonicalGraph, output_id: ValueId) ?MaxPool2dSpec {
+        const output = self.value(output_id);
+
+        // Output should be a reshape
+        if (output.expr != .view or output.expr.view.kind != .reshape) return null;
+        // Output should be 4D
+        if (output.shape.ndims != 4) return null;
+
+        const max_id = output.expr.view.input;
+        const max_val = self.value(max_id);
+        if (max_val.expr != .reduce or max_val.expr.reduce.op != .max) return null;
+
+        const strided_id = max_val.expr.reduce.input;
+        const strided_val = self.value(strided_id);
+        if (strided_val.expr != .view or strided_val.expr.view.kind != .strided) return null;
+
+        // Strided view should be 6D
+        if (strided_val.shape.ndims != 6) return null;
+        // Window dims should be 2x2
+        if (strided_val.shape.dims[2] != 2 or strided_val.shape.dims[3] != 2) return null;
+
+        const input_id = strided_val.expr.view.input;
+        if (self.value(input_id).shape.ndims != 4) return null;
+
+        return .{
+            .input = input_id,
+            .strided = strided_id,
+            .max_node = max_id,
+            .output = output_id,
+        };
+    }
+
     pub fn detectPattern(self: *const CanonicalGraph, kind: CanonicalPatternKind, output: ValueId) ?CanonicalPattern {
         return switch (kind) {
             .softmax => if (self.detectSoftmax(output)) |spec| .{ .softmax = spec } else null,
@@ -1291,7 +1998,8 @@ pub const CanonicalGraph = struct {
         return out;
     }
 
-    pub fn detectKernelPattern(self: *const CanonicalGraph, kind: KernelPatternKind, output: ValueId) ?KernelPattern {
+    pub fn detectKernelPattern(self: *const CanonicalGraph, kind: KernelPatternKind, output: ValueId, alloc: Alloc) !?KernelPattern {
+        _ = alloc;
         return switch (kind) {
             .softmax => if (self.detectSoftmax(output)) |spec| .{ .softmax = lowerSoftmaxKernelSpec(self, spec) orelse return null } else null,
             .log_softmax => if (self.detectLogSoftmax(output)) |spec| .{ .log_softmax = lowerLogSoftmaxKernelSpec(self, spec) orelse return null } else null,
@@ -1302,6 +2010,10 @@ pub const CanonicalGraph = struct {
             .linear_relu => if (self.detectLinearRelu(output)) |spec| .{ .linear_relu = lowerLinearReluKernelSpec(self, spec) orelse return null } else null,
             .linear_residual => if (self.detectLinearResidual(output)) |spec| .{ .linear_residual = lowerLinearResidualKernelSpec(self, spec) orelse return null } else null,
             .matmul_residual => if (self.detectMatmulResidual(output)) |spec| .{ .matmul_residual = lowerMatmulResidualKernelSpec(self, spec) orelse return null } else null,
+            .conv2d => if (self.detectConv2d(output)) |spec| .{ .conv2d = spec } else null,
+            .conv2d_bwd_input => null, // backward not yet supported in compiler IR
+            .conv2d_bwd_kernel => null, // backward not yet supported in compiler IR
+            .max_pool2d => if (self.detectMaxPool2d(output)) |spec| .{ .max_pool2d = spec } else null,
         };
     }
 
@@ -1319,7 +2031,7 @@ pub const CanonicalGraph = struct {
             const output: ValueId = @enumFromInt(idx);
             const pattern = blk: {
                 inline for (kernel_pattern_priority) |kind| {
-                    if (self.detectKernelPattern(kind, output)) |p| {
+                    if (try self.detectKernelPattern(kind, output, alloc)) |p| {
                         if (!p.overlapsClaimed(claimed)) break :blk p;
                     }
                 }
@@ -1343,6 +2055,7 @@ pub const KernelExpr = union(enum) {
     broadcast: ViewSpec,
     gather: GatherSpec,
     scatter_add: ScatterAddSpec,
+    scatter_add_view: ScatterAddViewSpec,
     matmul: MatmulSpec,
 };
 
@@ -1400,6 +2113,7 @@ pub const KernelPlan = struct {
                 .view => |v| KernelExpr{ .broadcast = v },
                 .gather => |g| KernelExpr{ .gather = g },
                 .scatter_add => |s| KernelExpr{ .scatter_add = s },
+                .scatter_add_view => |s| KernelExpr{ .scatter_add_view = s },
                 .matmul => |m| KernelExpr{ .matmul = m },
             };
 
@@ -1444,6 +2158,7 @@ pub fn Pipeline(comptime T: type) type {
         rewrites: std.ArrayList(RewriteResult),
         kernel: ?KernelPlan = null,
         schedule: ?SchedulePlan = null,
+        execution: ?ExecutionPlan = null,
 
         pub fn init(alloc: Alloc) Self {
             return .{
@@ -1454,6 +2169,7 @@ pub fn Pipeline(comptime T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            if (self.execution) |*e| e.deinit();
             if (self.schedule) |*s| s.deinit();
             if (self.kernel) |*k| k.deinit();
             if (self.canonical) |*c| c.deinit();
@@ -1461,16 +2177,17 @@ pub fn Pipeline(comptime T: type) type {
             self.lowering.deinit();
         }
 
-        /// Run the current compiler pipeline end-to-end.
-        ///
-        /// Current stages:
-        /// - lower tensor graph to canonical IR
-        /// - canonicalize and detect rewrite-layer patterns
-        /// - lower to kernel plan and collect typed kernel patterns
-        /// - build a minimal schedule/materialization plan
-        pub fn compile(self: *Self, root: *const Tensor) (Alloc.Error || error{UnsupportedOp})!void {
+        /// Lower a single root tensor into the canonical IR graph.
+        /// The lowering memo prevents re-lowering already-seen tensors,
+        /// so calling this multiple times with different roots is efficient.
+        pub fn lowerOneRoot(self: *Self, root: *const Tensor) (Alloc.Error || error{UnsupportedOp})!void {
             _ = try self.lowering.lowerRoot(root);
+        }
 
+        /// Run post-lowering pipeline stages: canonicalize, rewrite, kernel
+        /// plan, schedule, and execution plan. Call after all roots have been
+        /// lowered via `lowerOneRoot`.
+        pub fn finalize(self: *Self) Alloc.Error!void {
             self.canonical = try self.lowering.graph.canonicalize(self.alloc);
             errdefer if (self.canonical) |*c| c.deinit();
 
@@ -1482,6 +2199,19 @@ pub fn Pipeline(comptime T: type) type {
             try self.kernel.?.addRewriteAnnotations(self.alloc, output, self.rewrites.items);
             try self.kernel.?.buildPatterns(self.alloc, &self.canonical.?);
             self.schedule = try SchedulePlan.build(self.alloc, &self.canonical.?, &self.kernel.?);
+            self.execution = try ExecutionPlan.build(self.alloc, &self.schedule.?);
+        }
+
+        /// Run the current compiler pipeline end-to-end.
+        ///
+        /// Current stages:
+        /// - lower tensor graph to canonical IR
+        /// - canonicalize and detect rewrite-layer patterns
+        /// - lower to kernel plan and collect typed kernel patterns
+        /// - build a minimal schedule/materialization plan
+        pub fn compile(self: *Self, root: *const Tensor) (Alloc.Error || error{UnsupportedOp})!void {
+            try self.lowerOneRoot(root);
+            try self.finalize();
         }
     };
 }
@@ -1752,6 +2482,24 @@ pub fn Lowering(comptime T: type) type {
                     .shape = Shape.fromTensor(T, tensor),
                     .strides = .{ .values = tensor.strides },
                 } },
+                .broadcast_to => .{ .view = .{
+                    .kind = .broadcast,
+                    .input = try self.lowerTensor(tensor.source0().?),
+                    .shape = Shape.fromTensor(T, tensor),
+                    .strides = .{ .values = tensor.strides },
+                } },
+                .permute => .{ .view = .{
+                    .kind = .transpose,
+                    .input = try self.lowerTensor(tensor.source0().?),
+                    .shape = Shape.fromTensor(T, tensor),
+                    .strides = .{ .values = tensor.strides },
+                } },
+                .as_strided => .{ .view = .{
+                    .kind = .strided,
+                    .input = try self.lowerTensor(tensor.source0().?),
+                    .shape = Shape.fromTensor(T, tensor),
+                    .strides = .{ .values = tensor.strides },
+                } },
                 .gather_rows => .{ .gather = .{
                     .table = try self.lowerTensor(tensor.source0().?),
                     .indices = try self.lowerTensor(tensor.source1().?),
@@ -1777,22 +2525,12 @@ pub fn Lowering(comptime T: type) type {
                 .matmul => .{ .matmul = .{
                     .lhs = try self.lowerTensor(tensor.source0().?),
                     .rhs = try self.lowerTensor(tensor.source1().?),
+                    .transpose_lhs = tensor.matmul_flags.trans0,
+                    .transpose_rhs = tensor.matmul_flags.trans1,
                 } },
-                .matmul_t0 => .{ .matmul = .{
-                    .lhs = try self.lowerTensor(tensor.source0().?),
-                    .rhs = try self.lowerTensor(tensor.source1().?),
-                    .transpose_lhs = true,
-                } },
-                .matmul_t1 => .{ .matmul = .{
-                    .lhs = try self.lowerTensor(tensor.source0().?),
-                    .rhs = try self.lowerTensor(tensor.source1().?),
-                    .transpose_rhs = true,
-                } },
-                .matmul_t0t1 => .{ .matmul = .{
-                    .lhs = try self.lowerTensor(tensor.source0().?),
-                    .rhs = try self.lowerTensor(tensor.source1().?),
-                    .transpose_lhs = true,
-                    .transpose_rhs = true,
+                .scatter_add_view => .{ .scatter_add_view = .{
+                    .grad = try self.lowerTensor(tensor.source0().?),
+                    .view = try self.lowerTensor(tensor.source1().?),
                 } },
                 else => return error.UnsupportedOp,
             };
@@ -1819,7 +2557,7 @@ fn inferReductionAxes(alloc: Alloc, src: anytype, dst: anytype) ![]Axis {
 
 fn canonicalizeExpr(src_graph: *const CanonicalGraph, dst_graph: *CanonicalGraph, value: CanonicalValue) !CanonicalExpr {
     return switch (value.expr) {
-        .input, .constant, .gather, .scatter_add, .matmul, .scale => value.expr,
+        .input, .constant, .gather, .scatter_add, .scatter_add_view, .matmul, .scale => value.expr,
         .unary => |u| .{ .unary = .{ .op = u.op, .input = u.input } },
         .reduce => |r| .{ .reduce = .{ .op = r.op, .input = r.input, .axes = try canonicalizeAxes(dst_graph, r.axes) } },
         .view => |v| canonicalizeView(src_graph, v),
@@ -2051,9 +2789,10 @@ test "compiler - canonicalize scale from mul broadcast scalar" {
     var canon = try graph.canonicalize(std.testing.allocator);
     defer canon.deinit();
 
-    try std.testing.expect(canon.values.items[3].expr == .scale);
-    try std.testing.expectEqual(input, canon.values.items[3].expr.scale.input);
-    try std.testing.expectEqual(scalar, canon.values.items[3].expr.scale.scalar);
+    const out = canon.values.items[canon.values.items.len - 1];
+    try std.testing.expect(out.expr == .scale);
+    try std.testing.expectEqual(input, out.expr.scale.input);
+    try std.testing.expectEqual(scalar, out.expr.scale.scalar);
 }
 
 test "compiler - canonicalize nested reshape views" {
@@ -2077,9 +2816,10 @@ test "compiler - canonicalize nested reshape views" {
     var canon = try graph.canonicalize(std.testing.allocator);
     defer canon.deinit();
 
-    try std.testing.expect(canon.values.items[2].expr == .view);
-    try std.testing.expectEqual(input, canon.values.items[2].expr.view.input);
-    try std.testing.expectEqual(ViewKind.reshape, canon.values.items[2].expr.view.kind);
+    const out = canon.values.items[canon.values.items.len - 1];
+    try std.testing.expect(out.expr == .view);
+    try std.testing.expectEqual(input, out.expr.view.input);
+    try std.testing.expectEqual(ViewKind.reshape, out.expr.view.kind);
 }
 
 test "compiler - canonicalize identity reshape to input" {
@@ -2094,10 +2834,18 @@ test "compiler - canonicalize identity reshape to input" {
         .strides = null,
     } });
 
-    var canon = try graph.canonicalize(std.testing.allocator);
+    var canonicalized = try graph.canonicalize(std.testing.allocator);
+    defer canonicalized.deinit();
+
+    // Canonicalization rewrites the identity reshape to its input's expression.
+    try std.testing.expect(canonicalized.values.items[1].expr == .input);
+
+    // After DCE the dead original input is removed.
+    var canon = try canonicalized.eliminateDeadValues(std.testing.allocator);
     defer canon.deinit();
 
-    try std.testing.expect(canon.values.items[1].expr == .input);
+    try std.testing.expectEqual(@as(usize, 1), canon.values.items.len);
+    try std.testing.expect(canon.values.items[0].expr == .input);
 }
 
 test "compiler - canonicalize transpose then reshape back to source shape" {
@@ -2118,12 +2866,23 @@ test "compiler - canonicalize transpose then reshape back to source shape" {
         .strides = null,
     } });
 
-    var canon = try graph.canonicalize(std.testing.allocator);
+    var canonicalized = try graph.canonicalize(std.testing.allocator);
+    defer canonicalized.deinit();
+
+    // Canonicalization rewrites reshape(transpose(x)) back to transpose(x).
+    const out_pre = canonicalized.values.items[canonicalized.values.items.len - 1];
+    try std.testing.expect(out_pre.expr == .view);
+    try std.testing.expectEqual(ViewKind.transpose, out_pre.expr.view.kind);
+
+    // After DCE the dead intermediate transpose is removed, compacting to 2 values.
+    var canon = try canonicalized.eliminateDeadValues(std.testing.allocator);
     defer canon.deinit();
 
-    try std.testing.expect(canon.values.items[2].expr == .view);
-    try std.testing.expectEqual(ViewKind.transpose, canon.values.items[2].expr.view.kind);
-    try std.testing.expectEqual(input, canon.values.items[2].expr.view.input);
+    try std.testing.expectEqual(@as(usize, 2), canon.values.items.len);
+    const out = canon.values.items[canon.values.items.len - 1];
+    try std.testing.expect(out.expr == .view);
+    try std.testing.expectEqual(ViewKind.transpose, out.expr.view.kind);
+    try std.testing.expect(canon.values.items[@intFromEnum(out.expr.view.input)].expr == .input);
 }
 
 test "compiler - canonicalize reduction axes order and duplicates" {
@@ -2904,6 +3663,76 @@ test "compiler - schedule plan emits generic steps for uncovered values" {
     try std.testing.expectEqual(@as(usize, 1), pipeline.schedule.?.outputs.items.len);
 }
 
+test "compiler - schedule plan builds generic elementwise regions" {
+    const Tensor = tensorlib.Tensor(f32);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var x = try Tensor.init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+
+    const y = x.exp().log();
+
+    var pipeline = Pipeline(f32).init(std.testing.allocator);
+    defer pipeline.deinit();
+    try pipeline.compile(y);
+
+    try std.testing.expect(pipeline.schedule != null);
+    try std.testing.expectEqual(@as(usize, 1), pipeline.schedule.?.regions.items.len);
+    try std.testing.expectEqual(@as(usize, 1), pipeline.schedule.?.steps.items.len);
+    try std.testing.expect(pipeline.schedule.?.steps.items[0] == .schedule_region);
+
+    const region = pipeline.schedule.?.regions.items[0].elementwise;
+    try std.testing.expectEqual(@as(usize, 2), region.nodes.len);
+    try std.testing.expectEqual(MaterializationKind.virtual, pipeline.schedule.?.materialization.items[@intFromEnum(region.nodes[0])]);
+    try std.testing.expectEqual(MaterializationKind.materialized, pipeline.schedule.?.materialization.items[@intFromEnum(region.nodes[1])]);
+}
+
+test "compiler - schedule regions start at boundaries, not mid-chain" {
+    var graph = CanonicalGraph.init(std.testing.allocator);
+    defer graph.deinit();
+
+    const input = try graph.addValue(.f32, Shape.init(&.{3}), .input);
+    const expv = try graph.addValue(.f32, Shape.init(&.{3}), .{ .unary = .{ .op = .exp, .input = input } });
+    _ = try graph.addValue(.f32, Shape.init(&.{3}), .{ .unary = .{ .op = .log, .input = expv } });
+
+    var kernel = try KernelPlan.lowerFromCanonical(std.testing.allocator, &graph);
+    defer kernel.deinit();
+    try kernel.buildPatterns(std.testing.allocator, &graph);
+
+    var schedule = try SchedulePlan.build(std.testing.allocator, &graph, &kernel);
+    defer schedule.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), schedule.regions.items.len);
+    try std.testing.expectEqual(@as(usize, 2), schedule.regions.items[0].elementwise.nodes.len);
+}
+
+test "compiler - schedule regions allow swapped commutative continuation" {
+    var graph = CanonicalGraph.init(std.testing.allocator);
+    defer graph.deinit();
+
+    const scalar = try graph.addValue(.f32, Shape.init(&.{1}), .constant);
+    const input = try graph.addValue(.f32, Shape.init(&.{3}), .input);
+    const expv = try graph.addValue(.f32, Shape.init(&.{3}), .{ .unary = .{ .op = .exp, .input = input } });
+    const addv = try graph.addValue(.f32, Shape.init(&.{3}), .{ .binary = .{ .op = .add, .lhs = scalar, .rhs = expv } });
+    _ = try graph.addValue(.f32, Shape.init(&.{3}), .{ .unary = .{ .op = .log, .input = addv } });
+
+    var kernel = try KernelPlan.lowerFromCanonical(std.testing.allocator, &graph);
+    defer kernel.deinit();
+    try kernel.buildPatterns(std.testing.allocator, &graph);
+
+    var schedule = try SchedulePlan.build(std.testing.allocator, &graph, &kernel);
+    defer schedule.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), schedule.regions.items.len);
+    const region = schedule.regions.items[0].elementwise;
+    try std.testing.expectEqual(input, region.input);
+    try std.testing.expectEqual(@as(usize, 3), region.nodes.len);
+    try std.testing.expectEqual(expv, region.nodes[0]);
+    try std.testing.expectEqual(addv, region.nodes[1]);
+}
+
 test "compiler - schedule report reflects kernel and generic steps" {
     const Tensor = tensorlib.Tensor(f32);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2926,6 +3755,27 @@ test "compiler - schedule report reflects kernel and generic steps" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "schedule steps=") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "pattern output=") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "generic output=") != null);
+}
+
+test "compiler - schedule report reflects schedule regions" {
+    const Tensor = tensorlib.Tensor(f32);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var x = try Tensor.init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+    const y = x.exp().log();
+
+    var pipeline = Pipeline(f32).init(std.testing.allocator);
+    defer pipeline.deinit();
+    try pipeline.compile(y);
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    try pipeline.schedule.?.writeReport(buf.writer(std.testing.allocator));
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "region kind=elementwise") != null);
 }
 
 test "compiler - transformer ffn schedule contains linear epilogue pattern" {

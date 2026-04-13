@@ -139,6 +139,30 @@ pub fn build(b: *std.Build) void {
 
     const mnist_step = b.step("mnist-bench", "Build and run MNIST CNN training benchmark");
     mnist_step.dependOn(&b.addRunArtifact(mnist_exe).step);
+
+    // MNIST micro-benchmark — isolates the training hotloop
+    const zgml_micro_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+    const micro_mod = b.createModule(.{
+        .root_source_file = b.path("src/mnist_micro.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "zgml", .module = zgml_micro_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_micro_pkg.zgml_options },
+        },
+    });
+    const micro_exe = b.addExecutable(.{
+        .name = "mnist-micro",
+        .root_module = micro_mod,
+    });
+    if (use_blas) {
+        linkBlas(target, micro_exe);
+        micro_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    b.installArtifact(micro_exe);
+
+    const micro_step = b.step("mnist-micro", "Build and run MNIST CNN training micro-benchmark");
+    micro_step.dependOn(&b.addRunArtifact(micro_exe).step);
 }
 
 pub fn runTests(

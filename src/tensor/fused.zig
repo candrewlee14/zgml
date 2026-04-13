@@ -5,8 +5,9 @@
 //! over the op slice is fully unrolled by the compiler — the resulting
 //! machine code is equivalent to a hand-written fused function.
 //!
-//! For chains detected at runtime, `executeFusedChain` dispatches to the
-//! correct comptime-specialized kernel via bounded `inline for` lookup.
+//! Schedule-owned elementwise regions reuse `executeFusedChain`, which
+//! dispatches to the correct comptime-specialized kernel via bounded
+//! `inline for` lookup.
 
 const std = @import("std");
 const compiler = @import("../compiler.zig");
@@ -17,9 +18,37 @@ const forward = @import("forward.zig");
 const GELU_COEF_A: comptime_float = 0.044715;
 const SQRT_2_OVER_PI: comptime_float = @sqrt(2.0 / std.math.pi);
 
+const FusedOp = enum {
+    neg,
+    abs,
+    sgn,
+    step,
+    sqrt,
+    recip,
+    exp,
+    log,
+    gelu,
+    add_src1,
+    add_src0,
+    mul_src1,
+    mul_src0,
+};
+
 /// All ops that can participate in a fused chain.
-pub const fusible_ops = [_]Op{
-    .neg, .abs, .sgn, .step, .sqrt, .recip, .exp, .log, .gelu, .add, .mul,
+pub const fusible_ops = [_]FusedOp{
+    .neg,
+    .abs,
+    .sgn,
+    .step,
+    .sqrt,
+    .recip,
+    .exp,
+    .log,
+    .gelu,
+    .add_src1,
+    .add_src0,
+    .mul_src1,
+    .mul_src0,
 };
 
 pub const FusionKind = enum {
@@ -27,19 +56,38 @@ pub const FusionKind = enum {
     conv2d,
     conv2d_bwd_input,
     conv2d_bwd_kernel,
+    max_pool2d,
     softmax,
     log_softmax,
     cross_entropy,
     layer_norm,
 };
 
-pub fn ElementwiseChainPlan(comptime T: type) type {
+pub const BinaryOperandRole = enum {
+    src0,
+    src1,
+};
+
+pub fn ElementwiseFusionPlan(comptime T: type) type {
     return struct {
         input: *Tensor(T),
         nodes: []const *Tensor(T),
+        other_operand_roles: []const BinaryOperandRole = &.{},
 
         pub fn output(self: @This()) *Tensor(T) {
             return self.nodes[self.nodes.len - 1];
+        }
+
+        pub fn otherOperandRole(self: @This(), idx: usize) BinaryOperandRole {
+            return if (idx < self.other_operand_roles.len) self.other_operand_roles[idx] else .src1;
+        }
+
+        pub fn otherOperand(self: @This(), idx: usize) ?*Tensor(T) {
+            if (idx >= self.nodes.len) return null;
+            return switch (self.otherOperandRole(idx)) {
+                .src0 => self.nodes[idx].source0(),
+                .src1 => self.nodes[idx].source1(),
+            };
         }
     };
 }
@@ -71,6 +119,7 @@ pub fn Conv2dPlan(comptime T: type) type {
         mul_node: *Tensor(T),
         sum_node: *Tensor(T),
         output: *Tensor(T),
+        scratch: ?[]T = null, // pre-allocated im2col buffer [K, N]
     };
 }
 
@@ -82,6 +131,7 @@ pub fn Conv2dBwdInputPlan(comptime T: type) type {
         repeat_node: *Tensor(T),
         mul_node: *Tensor(T),
         output: *Tensor(T),
+        scratch: ?[]T = null, // pre-allocated col buffer [K, N]
     };
 }
 
@@ -92,6 +142,16 @@ pub fn Conv2dBwdKernelPlan(comptime T: type) type {
         reshape_node: *Tensor(T),
         repeat_node: *Tensor(T),
         mul_node: *Tensor(T),
+        output: *Tensor(T),
+        scratch: ?[]T = null, // pre-allocated im2col buffer [K, N*batch]
+    };
+}
+
+pub fn MaxPool2dPlan(comptime T: type) type {
+    return struct {
+        input: *Tensor(T),
+        strided: *Tensor(T),
+        max_node: *Tensor(T),
         output: *Tensor(T),
     };
 }
@@ -145,10 +205,11 @@ pub fn LayerNormPlan(comptime T: type) type {
 
 pub fn FusionPayload(comptime T: type) type {
     return union(FusionKind) {
-        elementwise_chain: ElementwiseChainPlan(T),
+        elementwise_chain: ElementwiseFusionPlan(T),
         conv2d: Conv2dPlan(T),
         conv2d_bwd_input: Conv2dBwdInputPlan(T),
         conv2d_bwd_kernel: Conv2dBwdKernelPlan(T),
+        max_pool2d: MaxPool2dPlan(T),
         softmax: SoftmaxPlan(T),
         log_softmax: LogSoftmaxPlan(T),
         cross_entropy: CrossEntropyPlan(T),
@@ -165,7 +226,57 @@ pub fn FusionPlan(comptime T: type) type {
         pub fn kind(self: @This()) FusionKind {
             return std.meta.activeTag(self.payload);
         }
+
+        /// Pre-allocate scratch buffers from the given arena so execution
+        /// doesn't hit page_allocator (mmap/munmap) on every call.
+        pub fn allocScratchBuffers(self: *@This(), alloc: std.mem.Allocator) !void {
+            switch (self.payload) {
+                .conv2d => |*p| {
+                    const d = Conv2dDims(T).fromForward(p.*);
+                    const NB = d.N * d.batch;
+                    // im2col [K, NB] + matmul temp [c_out, NB]
+                    p.scratch = try alloc.alloc(T, (d.K + d.c_out) * NB);
+                },
+                .conv2d_bwd_input => |*p| {
+                    const d = Conv2dDims(T).fromBwdInput(p.*);
+                    p.scratch = try alloc.alloc(T, d.K * d.N);
+                },
+                .conv2d_bwd_kernel => |*p| {
+                    const d = Conv2dDims(T).fromBwdKernel(p.*);
+                    // Batched: [K, N*batch] — one im2col for all samples
+                    p.scratch = try alloc.alloc(T, d.K * d.N * d.batch);
+                },
+                else => {},
+            }
+        }
     };
+}
+
+pub fn cloneFusionPlan(comptime T: type, alloc: std.mem.Allocator, plan: FusionPlan(T)) !FusionPlan(T) {
+    return switch (plan.payload) {
+        .elementwise_chain => |elementwise| .{
+            .output_idx = plan.output_idx,
+            .payload = .{ .elementwise_chain = .{
+                .input = elementwise.input,
+                .nodes = try alloc.dupe(*Tensor(T), elementwise.nodes),
+                .other_operand_roles = if (elementwise.other_operand_roles.len == 0)
+                    &.{}
+                else
+                    try alloc.dupe(BinaryOperandRole, elementwise.other_operand_roles),
+            } },
+        },
+        else => plan,
+    };
+}
+
+pub fn deinitFusionPlan(comptime T: type, alloc: std.mem.Allocator, plan: FusionPlan(T)) void {
+    switch (plan.payload) {
+        .elementwise_chain => |elementwise| {
+            alloc.free(elementwise.nodes);
+            if (elementwise.other_operand_roles.len != 0) alloc.free(elementwise.other_operand_roles);
+        },
+        else => {},
+    }
 }
 
 /// Validate that a softmax-family plan's intermediate nodes have consistent shapes.
@@ -206,10 +317,76 @@ pub fn CompilerMappedPlan(comptime T: type) type {
     };
 }
 
+fn mappedElementwiseRegion(comptime T: type, alloc: std.mem.Allocator, forward_nodes: []const *Tensor(T), value_to_tensor: []const ?*Tensor(T), region: compiler.ElementwiseRegion) ?CompilerMappedPlan(T) {
+    if (region.nodes.len == 0) return null;
+
+    const input = nodeForValueId(T, value_to_tensor, region.input) orelse return null;
+    const mapped_nodes = alloc.alloc(*Tensor(T), region.nodes.len) catch return null;
+    errdefer alloc.free(mapped_nodes);
+
+    for (region.nodes, 0..) |id, i| {
+        const node = nodeForValueId(T, value_to_tensor, id) orelse return null;
+        mapped_nodes[i] = node;
+    }
+    const other_operand_roles = buildElementwiseOtherOperandRoles(T, alloc, input, mapped_nodes) orelse return null;
+    errdefer if (other_operand_roles.len != 0) alloc.free(other_operand_roles);
+
+    const start_idx = indexOfNodeMaybe(T, forward_nodes, mapped_nodes[0]) orelse return null;
+    const output_idx = indexOfNodeMaybe(T, forward_nodes, mapped_nodes[mapped_nodes.len - 1]) orelse return null;
+    for (mapped_nodes, 0..) |node, i| {
+        if ((indexOfNodeMaybe(T, forward_nodes, node) orelse return null) != start_idx + i) return null;
+    }
+    return .{ .start_idx = start_idx, .plan = .{
+        .output_idx = output_idx,
+        .payload = .{ .elementwise_chain = .{
+            .input = input,
+            .nodes = mapped_nodes,
+            .other_operand_roles = other_operand_roles,
+        } },
+    } };
+}
+
+fn isCommutativeElementwiseBinaryNode(node: anytype) bool {
+    return node.op == .add or node.op == .mul;
+}
+
+fn detectOtherOperandRole(chain_input: anytype, node: anytype) BinaryOperandRole {
+    if (node.op.isBinary() and node.source0() != null and node.source1() != null and isCommutativeElementwiseBinaryNode(node) and node.source1() == chain_input and node.source0() != chain_input) {
+        return .src0;
+    }
+    return .src1;
+}
+
+fn buildElementwiseOtherOperandRoles(comptime T: type, alloc: std.mem.Allocator, input: *Tensor(T), nodes: []const *Tensor(T)) ?[]const BinaryOperandRole {
+    const roles = alloc.alloc(BinaryOperandRole, nodes.len) catch return null;
+    errdefer alloc.free(roles);
+
+    var has_non_default_role = false;
+    var chain_input = input;
+    for (nodes, 0..) |node, idx| {
+        const role = detectOtherOperandRole(chain_input, node);
+        roles[idx] = role;
+        has_non_default_role = has_non_default_role or role != .src1;
+        chain_input = node;
+    }
+
+    if (!has_non_default_role) {
+        alloc.free(roles);
+        return &.{};
+    }
+    return roles;
+}
+
 fn nodeForValueId(comptime T: type, value_to_tensor: []const ?*Tensor(T), id: compiler.ValueId) ?*Tensor(T) {
     const idx = @intFromEnum(id);
     if (idx >= value_to_tensor.len) return null;
     return value_to_tensor[idx];
+}
+
+pub fn mapCompilerRegion(comptime T: type, alloc: std.mem.Allocator, forward_nodes: []const *Tensor(T), value_to_tensor: []const ?*Tensor(T), region: compiler.ScheduleRegion) ?CompilerMappedPlan(T) {
+    return switch (region) {
+        .elementwise => |payload| mappedElementwiseRegion(T, alloc, forward_nodes, value_to_tensor, payload),
+    };
 }
 
 pub fn mapCompilerPattern(comptime T: type, forward_nodes: []const *Tensor(T), value_to_tensor: []const ?*Tensor(T), pattern: compiler.KernelPattern) ?CompilerMappedPlan(T) {
@@ -365,12 +542,81 @@ pub fn mapCompilerPattern(comptime T: type, forward_nodes: []const *Tensor(T), v
                 .payload = .{ .layer_norm = ln_plan },
             } };
         },
+        .conv2d => |spec| blk: {
+            const input = nodeForValueId(T, value_to_tensor, spec.input) orelse break :blk null;
+            const kernel = nodeForValueId(T, value_to_tensor, spec.kernel) orelse break :blk null;
+            const input_view = nodeForValueId(T, value_to_tensor, spec.input_view) orelse break :blk null;
+            const kernel_view = nodeForValueId(T, value_to_tensor, spec.kernel_view) orelse break :blk null;
+            const mul_node = nodeForValueId(T, value_to_tensor, spec.mul_node) orelse break :blk null;
+            const sum_node = nodeForValueId(T, value_to_tensor, spec.sum_node) orelse break :blk null;
+            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse break :blk null;
+            const bias = if (spec.bias) |b| nodeForValueId(T, value_to_tensor, b) else null;
+            const bias_node = if (spec.bias_add) |b| nodeForValueId(T, value_to_tensor, b) else null;
+            const activation = if (spec.activation) |a| nodeForValueId(T, value_to_tensor, a) else null;
+
+            const start_idx = indexOfNode(T, forward_nodes, input_view);
+            const output_idx = indexOfNode(T, forward_nodes, output);
+
+            break :blk @as(?CompilerMappedPlan(T), .{ .start_idx = start_idx, .plan = .{
+                .output_idx = output_idx,
+                .payload = .{ .conv2d = .{
+                    .input = input,
+                    .kernel = kernel,
+                    .input_view = input_view,
+                    .kernel_view = kernel_view,
+                    .bias = bias,
+                    .bias_node = bias_node,
+                    .activation = activation,
+                    .mul_node = mul_node,
+                    .sum_node = sum_node,
+                    .output = output,
+                } },
+            } });
+        },
+        .max_pool2d => |spec| blk: {
+            const input = nodeForValueId(T, value_to_tensor, spec.input) orelse break :blk null;
+            const strided = nodeForValueId(T, value_to_tensor, spec.strided) orelse break :blk null;
+            const max_node = nodeForValueId(T, value_to_tensor, spec.max_node) orelse break :blk null;
+            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse break :blk null;
+
+            const start_idx = indexOfNode(T, forward_nodes, strided);
+            const output_idx = indexOfNode(T, forward_nodes, output);
+
+            break :blk @as(?CompilerMappedPlan(T), .{ .start_idx = start_idx, .plan = .{
+                .output_idx = output_idx,
+                .payload = .{ .max_pool2d = .{
+                    .input = input,
+                    .strided = strided,
+                    .max_node = max_node,
+                    .output = output,
+                } },
+            } });
+        },
+        .conv2d_bwd_input, .conv2d_bwd_kernel => null,
         .linear, .linear_gelu, .linear_relu, .linear_residual, .matmul_residual => null,
     };
 }
 
+fn fusedOpForNode(comptime T: type, plan: ElementwiseFusionPlan(T), idx: usize) ?FusedOp {
+    const node = plan.nodes[idx];
+    return switch (node.op) {
+        .neg => .neg,
+        .abs => .abs,
+        .sgn => .sgn,
+        .step => .step,
+        .sqrt => .sqrt,
+        .recip => .recip,
+        .exp => .exp,
+        .log => .log,
+        .gelu => .gelu,
+        .add => if (plan.otherOperandRole(idx) == .src0) .add_src0 else .add_src1,
+        .mul => if (plan.otherOperandRole(idx) == .src0) .mul_src0 else .mul_src1,
+        else => null,
+    };
+}
+
 /// Apply a single op to a value. Comptime-dispatched — no runtime branching.
-fn applyOp(comptime T: type, comptime op: Op, val: T, node: anytype, i: usize) T {
+fn applyOp(comptime T: type, comptime op: FusedOp, val: T, node: anytype, i: usize) T {
     return switch (op) {
         .neg => -val,
         .abs => @abs(val),
@@ -383,23 +629,31 @@ fn applyOp(comptime T: type, comptime op: Op, val: T, node: anytype, i: usize) T
         .gelu => 0.5 * val * (1.0 + std.math.tanh(
             @as(T, SQRT_2_OVER_PI) * val * (1.0 + @as(T, GELU_COEF_A) * val * val),
         )),
-        .add => blk: {
-            const src1 = node.src1.?;
-            break :blk val + if (src1.isScalar()) src1.data[0] else src1.data[i];
+        .add_src1 => blk: {
+            const other = node.src1.?;
+            break :blk val + if (other.isScalar()) other.data[0] else other.data[i];
         },
-        .mul => blk: {
+        .add_src0 => blk: {
+            const other = node.src0.?;
+            break :blk val + if (other.isScalar()) other.data[0] else other.data[i];
+        },
+        .mul_src1 => blk: {
             // sqr: src0 == src1, both operands are the chain value
             if (node.src0.? == node.src1.?) break :blk val * val;
-            const src1 = node.src1.?;
-            break :blk val * if (src1.isScalar()) src1.data[0] else src1.data[i];
+            const other = node.src1.?;
+            break :blk val * if (other.isScalar()) other.data[0] else other.data[i];
         },
-        else => unreachable,
+        .mul_src0 => blk: {
+            if (node.src0.? == node.src1.?) break :blk val * val;
+            const other = node.src0.?;
+            break :blk val * if (other.isScalar()) other.data[0] else other.data[i];
+        },
     };
 }
 
 /// A comptime-specialized fused kernel for a known op sequence.
 /// The `inline for` is fully unrolled — the inner loop has zero branches.
-pub fn FusedKernel(comptime T: type, comptime ops: []const Op) type {
+pub fn FusedKernel(comptime T: type, comptime ops: []const FusedOp) type {
     return struct {
         pub fn execute(nodes: []const *Tensor(T)) void {
             std.debug.assert(nodes[0].source0().?.n_dims <= 4);
@@ -419,14 +673,15 @@ pub fn FusedKernel(comptime T: type, comptime ops: []const Op) type {
 
 /// Runtime interpreter fallback for chains longer than the comptime dispatch limit.
 /// Still one memory pass, but the inner loop has a runtime switch.
-pub fn executeFusedGeneric(comptime T: type, nodes: []const *Tensor(T)) void {
+pub fn executeFusedGeneric(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
+    const nodes = plan.nodes;
     std.debug.assert(nodes[0].source0().?.n_dims <= 4);
     const n_elems = nodes[nodes.len - 1].nElems();
-    const input_data = nodes[0].source0().?.data;
+    const input_data = plan.input.data;
 
     for (0..n_elems) |i| {
         var val: T = input_data[i];
-        for (nodes) |node| {
+        for (nodes, 0..) |node, node_idx| {
             val = switch (node.op) {
                 .neg => -val,
                 .abs => @abs(val),
@@ -440,13 +695,13 @@ pub fn executeFusedGeneric(comptime T: type, nodes: []const *Tensor(T)) void {
                     @as(T, SQRT_2_OVER_PI) * val * (1.0 + @as(T, GELU_COEF_A) * val * val),
                 )),
                 .add => blk: {
-                    const src1 = node.src1.?;
-                    break :blk val + if (src1.isScalar()) src1.data[0] else src1.data[i];
+                    const other = plan.otherOperand(node_idx).?;
+                    break :blk val + if (other.isScalar()) other.data[0] else other.data[i];
                 },
                 .mul => blk: {
                     if (node.src0.? == node.src1.?) break :blk val * val;
-                    const src1 = node.src1.?;
-                    break :blk val * if (src1.isScalar()) src1.data[0] else src1.data[i];
+                    const other = plan.otherOperand(node_idx).?;
+                    break :blk val * if (other.isScalar()) other.data[0] else other.data[i];
                 },
                 else => unreachable,
             };
@@ -458,12 +713,29 @@ pub fn executeFusedGeneric(comptime T: type, nodes: []const *Tensor(T)) void {
 /// Dispatch a fused chain to a comptime-specialized kernel.
 /// For chains of length 2-3, enumerates all fusible op combinations
 /// at comptime. Falls back to the generic interpreter for longer chains.
-pub fn executeFusedChain(comptime T: type, plan: ElementwiseChainPlan(T)) void {
-    switch (plan.nodes.len) {
-        2 => executeFused2(T, plan.nodes),
-        3 => executeFused3(T, plan.nodes),
-        else => executeFusedGeneric(T, plan.nodes),
+pub fn executeFusedChain(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
+    if (!isSafeElementwiseChain(T, plan)) {
+        for (plan.nodes) |node| node.compute();
+        return;
     }
+    switch (plan.nodes.len) {
+        2 => executeFused2(T, plan),
+        3 => executeFused3(T, plan),
+        else => executeFusedGeneric(T, plan),
+    }
+}
+
+pub fn isSafeElementwiseChain(comptime T: type, plan: ElementwiseFusionPlan(T)) bool {
+    var prev = plan.input;
+    for (plan.nodes, 0..) |node, node_idx| {
+        if (!node.isSameShape(prev)) return false;
+        const other = plan.otherOperand(node_idx);
+        if (other) |src| {
+            if (!src.isScalar() and src != prev and !src.isSameShape(prev)) return false;
+        }
+        prev = node;
+    }
+    return true;
 }
 
 fn offset4(strides: [@import("../tensor.zig").max_dims]usize, c0: usize, c1: usize, c2: usize, c3: usize) usize {
@@ -564,6 +836,42 @@ fn executeSoftmaxPlan(comptime T: type, plan: SoftmaxPlan(T)) void {
 }
 
 // ---------------------------------------------------------------------------
+// MaxPool2d execution
+// ---------------------------------------------------------------------------
+
+fn executeMaxPool2d(comptime T: type, plan: MaxPool2dPlan(T)) void {
+    const input = plan.input;
+    const dst = plan.output;
+    const in_w = input.ne[0];
+    const out_w = dst.ne[0];
+    const out_h = dst.ne[1];
+    const channels = dst.ne[2];
+    const batch = dst.ne[3];
+    const in_stride_h = in_w;
+    const in_stride_c = in_w * input.ne[1];
+    const in_stride_n = in_stride_c * channels;
+    const out_stride_h = out_w;
+    const out_stride_c = out_w * out_h;
+    const out_stride_n = out_stride_c * channels;
+    for (0..batch) |n| {
+        for (0..channels) |ch| {
+            for (0..out_h) |oy| {
+                for (0..out_w) |ox| {
+                    const ix = ox * 2;
+                    const iy = oy * 2;
+                    const base = ix + iy * in_stride_h + ch * in_stride_c + n * in_stride_n;
+                    var val = input.data[base];
+                    val = @max(val, input.data[base + 1]);
+                    val = @max(val, input.data[base + in_stride_h]);
+                    val = @max(val, input.data[base + in_stride_h + 1]);
+                    dst.data[ox + oy * out_stride_h + ch * out_stride_c + n * out_stride_n] = val;
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Conv2d shared helpers: im2col, col2im, geometry
 // ---------------------------------------------------------------------------
 
@@ -627,16 +935,19 @@ fn Conv2dDims(comptime T: type) type {
 }
 
 /// Extract sliding-window patches into a column matrix.
-/// col_buf layout: [K, N] row-major, where K = kw*kh*c_in, N = out_w*out_h.
-/// col_buf[k * N + col] = input[ox+kx, oy+ky, ic, n]
+///
+/// Writes to col_buf with row stride `col_stride` (number of columns per row).
+/// For non-batched use: col_stride = N, col_offset = 0.
+/// For batched use:     col_stride = N*batch, col_offset = n*N.
+///
+/// col_buf[k * col_stride + col_offset + col] = input[ox+kx, oy+ky, ic, n]
 ///   k = kx + ky*kw + ic*kw*kh,  col = ox + oy*out_w
-fn im2col(comptime T: type, d: Conv2dDims(T), col_buf: []T, n: usize) void {
+fn im2col(comptime T: type, d: Conv2dDims(T), col_buf: []T, n: usize, col_stride: usize, col_offset: usize) void {
     if (d.input_strides[0] == 1) {
-        // Fast path: input is contiguous along width — memcpy whole rows.
         for (0..d.c_in) |ic| {
             for (0..d.kh) |ky| {
                 for (0..d.kw) |kx| {
-                    const row = (kx + ky * d.kw + ic * d.kw * d.kh) * d.N;
+                    const row = (kx + ky * d.kw + ic * d.kw * d.kh) * col_stride + col_offset;
                     for (0..d.out_h) |oy| {
                         const src = kx + (oy + ky) * d.in_w + ic * d.input_strides[2] + n * d.input_strides[3];
                         @memcpy(col_buf[row + oy * d.out_w ..][0..d.out_w], d.input_data[src..][0..d.out_w]);
@@ -648,7 +959,7 @@ fn im2col(comptime T: type, d: Conv2dDims(T), col_buf: []T, n: usize) void {
         for (0..d.c_in) |ic| {
             for (0..d.kh) |ky| {
                 for (0..d.kw) |kx| {
-                    const row = (kx + ky * d.kw + ic * d.kw * d.kh) * d.N;
+                    const row = (kx + ky * d.kw + ic * d.kw * d.kh) * col_stride + col_offset;
                     for (0..d.out_h) |oy| {
                         for (0..d.out_w) |ox| {
                             col_buf[row + oy * d.out_w + ox] = d.input_data[
@@ -717,27 +1028,62 @@ fn freeScratch(comptime T: type, buf: []T) void {
 
 fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
     const d = Conv2dDims(T).fromForward(plan);
-    const col_buf = allocScratch(T, d.K * d.N) orelse {
+    const NB = d.N * d.batch;
+    const total_scratch = (d.K + d.c_out) * NB;
+    const scratch = plan.scratch orelse allocScratch(T, total_scratch) orelse {
         conv2dNaive(T, d, plan.output.data);
         return;
     };
-    defer freeScratch(T, col_buf);
+    defer if (plan.scratch == null) freeScratch(T, scratch);
 
-    const mm = forward.selectMatMulKernel(T);
+    const col_buf = scratch[0 .. d.K * NB];
+    const mm_temp = scratch[d.K * NB ..][0 .. d.c_out * NB];
+
+    // 1. Batched im2col: all samples into [K, N*batch].
     for (0..d.batch) |n| {
-        im2col(T, d, col_buf, n);
-        // kernel[c_out, K] @ col_buf[K, N] → output[c_out, N]
-        mm(plan.output.data, d.kernel_data, col_buf, d.c_out, d.N, d.K, d.K, 1, d.N, 1, 0, 0, n * d.N * d.c_out, d.N);
+        im2col(T, d, col_buf, n, NB, n * d.N);
+    }
 
-        if (plan.bias != null or plan.activation != null) {
-            for (0..d.c_out) |oc| {
-                for (0..d.N) |col| {
-                    const idx = n * d.N * d.c_out + oc * d.N + col;
-                    var val = plan.output.data[idx];
-                    if (plan.bias) |bias| val += bias.data[oc];
-                    if (plan.activation != null) val = if (val > 0) val else 0;
-                    plan.output.data[idx] = val;
+    // 2. Single matmul: kernel[c_out, K] @ col_buf[K, NB] → mm_temp[c_out, NB]
+    const mm = forward.selectMatMulKernel(T);
+    mm(mm_temp, d.kernel_data, col_buf.ptr[0..col_buf.len], d.c_out, NB, d.K, d.K, 1, NB, 1, 0, 0, 0, NB);
+
+    // 3. Rearrange [c_out, NB] → [batch, c_out, N] with fused bias + activation.
+    const output = plan.output.data;
+    if (plan.bias) |bias| {
+        if (plan.activation != null) {
+            for (0..d.batch) |n| {
+                for (0..d.c_out) |oc| {
+                    const b = bias.data[oc];
+                    const src = mm_temp[oc * NB + n * d.N ..][0..d.N];
+                    const dst = output[n * d.N * d.c_out + oc * d.N ..][0..d.N];
+                    for (dst, src) |*dv, sv| dv.* = @max(sv + b, 0);
                 }
+            }
+        } else {
+            for (0..d.batch) |n| {
+                for (0..d.c_out) |oc| {
+                    const b = bias.data[oc];
+                    const src = mm_temp[oc * NB + n * d.N ..][0..d.N];
+                    const dst = output[n * d.N * d.c_out + oc * d.N ..][0..d.N];
+                    for (dst, src) |*dv, sv| dv.* = sv + b;
+                }
+            }
+        }
+    } else if (plan.activation != null) {
+        for (0..d.batch) |n| {
+            for (0..d.c_out) |oc| {
+                const src = mm_temp[oc * NB + n * d.N ..][0..d.N];
+                const dst = output[n * d.N * d.c_out + oc * d.N ..][0..d.N];
+                for (dst, src) |*dv, sv| dv.* = @max(sv, 0);
+            }
+        }
+    } else {
+        for (0..d.batch) |n| {
+            for (0..d.c_out) |oc| {
+                const src = mm_temp[oc * NB + n * d.N ..][0..d.N];
+                const dst = output[n * d.N * d.c_out + oc * d.N ..][0..d.N];
+                @memcpy(dst, src);
             }
         }
     }
@@ -745,11 +1091,11 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
 
 fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T)) void {
     const d = Conv2dDims(T).fromBwdInput(plan);
-    const col_buf = allocScratch(T, d.K * d.N) orelse {
+    const col_buf = plan.scratch orelse allocScratch(T, d.K * d.N) orelse {
         conv2dBwdInputNaive(T, d, plan);
         return;
     };
-    defer freeScratch(T, col_buf);
+    defer if (plan.scratch == null) freeScratch(T, col_buf);
 
     const mm = forward.selectMatMulKernel(T);
     @memset(plan.output.data, 0);
@@ -763,22 +1109,40 @@ fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T)) void
 
 fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T)) void {
     const d = Conv2dDims(T).fromBwdKernel(plan);
-    const buf = allocScratch(T, d.K * d.N + d.c_out * d.K) orelse {
+    const NB = d.N * d.batch; // total spatial × batch columns
+
+    const col_buf = plan.scratch orelse allocScratch(T, d.K * NB) orelse {
         conv2dBwdKernelNaive(T, d, plan);
         return;
     };
-    defer freeScratch(T, buf);
-    const col_buf = buf[0 .. d.K * d.N];
-    const temp = buf[d.K * d.N ..][0 .. d.c_out * d.K];
+    defer if (plan.scratch == null) freeScratch(T, col_buf);
 
-    const mm = forward.selectMatMulKernel(T);
-    @memset(plan.output.data, 0);
-
+    // Build batched im2col: [K, N*batch] — all samples concatenated.
     for (0..d.batch) |n| {
-        im2col(T, d, col_buf, n);
-        // out_grad_n[c_out, N] @ col_buf^T[N, K] → temp[c_out, K]
-        mm(temp, plan.output_grad.data, col_buf, d.c_out, d.K, d.N, d.N, 1, 1, d.N, n * d.N * d.c_out, 0, 0, d.K);
-        for (0..d.c_out * d.K) |i| plan.output.data[i] += temp[i];
+        im2col(T, d, col_buf, n, NB, n * d.N);
+    }
+
+    // Single matmul: out_grad[c_out, N*batch] @ col_all^T[N*batch, K] → output[c_out, K]
+    // out_grad is [out_w, out_h, c_out, batch] contiguous = [c_out, N*batch] row-major
+    //   with a_m_stride = NB (one row per output channel, spanning all batches)
+    //   WRONG — out_grad layout is [out_w, out_h, c_out, batch] = interleaved by batch.
+    //   Within out_grad, channel oc's data is NOT contiguous across batches.
+    //   So we still need per-batch matmul, but without the temp+accumulate pattern:
+    //   First batch overwrites output, subsequent batches accumulate.
+    const mm = forward.selectMatMulKernel(T);
+
+    // First batch: write directly to output (no zeroing + accumulate needed)
+    mm(plan.output.data, plan.output_grad.data, col_buf, d.c_out, d.K, d.N, d.N, 1, 1, d.N, 0, 0, 0, d.K);
+
+    // Remaining batches: matmul into temp region at end of col_buf, then accumulate.
+    // Reuse the last [c_out * K] elements of col_buf as temp (they've already been read).
+    if (d.batch > 1) {
+        const temp_off = d.K * NB - d.c_out * d.K;
+        const temp = col_buf[temp_off..][0 .. d.c_out * d.K];
+        for (1..d.batch) |n| {
+            mm(temp, plan.output_grad.data, col_buf, d.c_out, d.K, d.N, d.N, 1, 1, d.N, n * d.N * d.c_out, n * d.N, 0, d.K);
+            for (0..d.c_out * d.K) |j| plan.output.data[j] += temp[j];
+        }
     }
 }
 
@@ -1003,6 +1367,7 @@ pub fn executeFusionPlan(comptime T: type, plan: FusionPlan(T)) void {
         .conv2d => |conv2d_plan| executeConv2dPlan(T, conv2d_plan),
         .conv2d_bwd_input => |conv2d_plan| executeConv2dBwdInputPlan(T, conv2d_plan),
         .conv2d_bwd_kernel => |conv2d_plan| executeConv2dBwdKernelPlan(T, conv2d_plan),
+        .max_pool2d => |pool_plan| executeMaxPool2d(T, pool_plan),
         .softmax => |softmax_plan| executeSoftmaxPlan(T, softmax_plan),
         .log_softmax => |log_softmax_plan| executeLogSoftmaxPlan(T, log_softmax_plan),
         .cross_entropy => |cross_entropy_plan| executeCrossEntropyPlan(T, cross_entropy_plan),
@@ -1010,29 +1375,123 @@ pub fn executeFusionPlan(comptime T: type, plan: FusionPlan(T)) void {
     }
 }
 
-fn executeFused2(comptime T: type, nodes: []const *Tensor(T)) void {
-    inline for (fusible_ops) |op0| {
-        inline for (fusible_ops) |op1| {
-            if (nodes[0].op == op0 and nodes[1].op == op1) {
-                FusedKernel(T, &.{ op0, op1 }).execute(nodes);
+fn executeFused2(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
+    const nodes = plan.nodes;
+    const node_op0 = fusedOpForNode(T, plan, 0) orelse {
+        executeFusedGeneric(T, plan);
+        return;
+    };
+    const node_op1 = fusedOpForNode(T, plan, 1) orelse {
+        executeFusedGeneric(T, plan);
+        return;
+    };
+    inline for (fusible_ops) |candidate0| {
+        inline for (fusible_ops) |candidate1| {
+            if (node_op0 == candidate0 and node_op1 == candidate1) {
+                FusedKernel(T, &.{ candidate0, candidate1 }).execute(nodes);
                 return;
             }
         }
     }
-    executeFusedGeneric(T, nodes);
+    executeFusedGeneric(T, plan);
 }
 
-fn executeFused3(comptime T: type, nodes: []const *Tensor(T)) void {
+fn executeFused3(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
     @setEvalBranchQuota(20000);
-    inline for (fusible_ops) |op0| {
-        inline for (fusible_ops) |op1| {
-            inline for (fusible_ops) |op2| {
-                if (nodes[0].op == op0 and nodes[1].op == op1 and nodes[2].op == op2) {
-                    FusedKernel(T, &.{ op0, op1, op2 }).execute(nodes);
+    const nodes = plan.nodes;
+    const node_op0 = fusedOpForNode(T, plan, 0) orelse {
+        executeFusedGeneric(T, plan);
+        return;
+    };
+    const node_op1 = fusedOpForNode(T, plan, 1) orelse {
+        executeFusedGeneric(T, plan);
+        return;
+    };
+    const node_op2 = fusedOpForNode(T, plan, 2) orelse {
+        executeFusedGeneric(T, plan);
+        return;
+    };
+    inline for (fusible_ops) |candidate0| {
+        inline for (fusible_ops) |candidate1| {
+            inline for (fusible_ops) |candidate2| {
+                if (node_op0 == candidate0 and node_op1 == candidate1 and node_op2 == candidate2) {
+                    FusedKernel(T, &.{ candidate0, candidate1, candidate2 }).execute(nodes);
                     return;
                 }
             }
         }
     }
-    executeFusedGeneric(T, nodes);
+    executeFusedGeneric(T, plan);
+}
+
+test "fused - specialized swapped commutative 2-op chain matches generic" {
+    const T = f32;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const input_fused = try Tensor(T).init(a, &.{3});
+    input_fused.setData(&.{ 1, 2, 3 });
+    const scalar_fused = try Tensor(T).initScalar(a, 2);
+    const exp_fused = input_fused.exp();
+    const add_fused = scalar_fused.repeatLike(exp_fused).add(exp_fused);
+
+    const input_generic = try Tensor(T).init(a, &.{3});
+    input_generic.setData(&.{ 1, 2, 3 });
+    const scalar_generic = try Tensor(T).initScalar(a, 2);
+    const exp_generic = input_generic.exp();
+    const add_generic = scalar_generic.repeatLike(exp_generic).add(exp_generic);
+
+    const fused_plan = ElementwiseFusionPlan(T){
+        .input = input_fused,
+        .nodes = &.{ exp_fused, add_fused },
+        .other_operand_roles = &.{ .src1, .src0 },
+    };
+    const generic_plan = ElementwiseFusionPlan(T){
+        .input = input_generic,
+        .nodes = &.{ exp_generic, add_generic },
+        .other_operand_roles = &.{ .src1, .src0 },
+    };
+
+    executeFused2(T, fused_plan);
+    executeFusedGeneric(T, generic_plan);
+
+    try std.testing.expectEqualSlices(T, add_generic.data, add_fused.data);
+}
+
+test "fused - specialized swapped commutative 3-op chain matches generic" {
+    const T = f32;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const input_fused = try Tensor(T).init(a, &.{3});
+    input_fused.setData(&.{ 1, 2, 3 });
+    const scalar_fused = try Tensor(T).initScalar(a, 2);
+    const exp_fused = input_fused.exp();
+    const add_fused = scalar_fused.repeatLike(exp_fused).add(exp_fused);
+    const log_fused = add_fused.log();
+
+    const input_generic = try Tensor(T).init(a, &.{3});
+    input_generic.setData(&.{ 1, 2, 3 });
+    const scalar_generic = try Tensor(T).initScalar(a, 2);
+    const exp_generic = input_generic.exp();
+    const add_generic = scalar_generic.repeatLike(exp_generic).add(exp_generic);
+    const log_generic = add_generic.log();
+
+    const fused_plan = ElementwiseFusionPlan(T){
+        .input = input_fused,
+        .nodes = &.{ exp_fused, add_fused, log_fused },
+        .other_operand_roles = &.{ .src1, .src0, .src1 },
+    };
+    const generic_plan = ElementwiseFusionPlan(T){
+        .input = input_generic,
+        .nodes = &.{ exp_generic, add_generic, log_generic },
+        .other_operand_roles = &.{ .src1, .src0, .src1 },
+    };
+
+    executeFused3(T, fused_plan);
+    executeFusedGeneric(T, generic_plan);
+
+    try std.testing.expectEqualSlices(T, log_generic.data, log_fused.data);
 }
