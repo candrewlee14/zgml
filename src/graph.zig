@@ -230,7 +230,7 @@ pub fn ComputeGraph(comptime T: type) type {
                 if (self.fused_skip.items[idx]) continue;
                 if (detectConv2dBwdPlan(node, idx)) |plan| {
                     try self.fused_chains.append(alloc, plan);
-                    self.markBwdConvSkip(node, idx, &ptr_to_idx, use_count);
+                    self.markBwdConvSkip(plan, idx, &ptr_to_idx, use_count);
                 }
             }
 
@@ -454,27 +454,16 @@ pub fn ComputeGraph(comptime T: type) type {
         /// The chain is: scatter ← [add?] ← mul ← [add?] ← broadcast ← [add?] ← reshape
         /// We skip each node that has exactly one consumer (safe to remove).
         /// Nodes shared with other backward branches (use_count > 1) are kept.
-        fn markBwdConvSkip(self: *Self, _: *Tensor(T), scatter_idx: usize, ptr_to_idx: *const std.AutoHashMap(*Tensor(T), usize), use_count: []const u16) void {
+        fn markBwdConvSkip(self: *Self, plan: fused.FusionPlan(T), scatter_idx: usize, ptr_to_idx: *const std.AutoHashMap(*Tensor(T), usize), use_count: []const u16) void {
             self.fused_skip.items[scatter_idx] = true;
 
-            // The plan stores mul_node, repeat_node, reshape_node directly.
-            // Skip each if it has a single consumer, plus any intermediate add nodes.
-            const scatter = self.nodes.items[scatter_idx];
-            const plan_nodes = switch (scatter.opTag()) {
-                .scatter_add_view => blk: {
-                    // Extract the plan nodes from the detector's result.
-                    // We stored them in the fused plan but we can also re-derive:
-                    // scatter.src0 → [add?] → mul → src0/src1 → [add?] → broadcast → src0 → [add?] → reshape
-                    const mul_node = findPastAdd(scatter.source0() orelse return, .mul) orelse return;
-                    const bcast = findPastAdd(mul_node.source0() orelse return, .broadcast_to) orelse
-                        findPastAdd(mul_node.source1() orelse return, .broadcast_to) orelse return;
-                    const reshape = findPastAdd(bcast.source0() orelse return, .reshape) orelse return;
-                    break :blk [3]*Tensor(T){ mul_node, bcast, reshape };
-                },
+            // The plan already stores the intermediate nodes — use them directly.
+            const plan_nodes: [3]*Tensor(T) = switch (plan.payload) {
+                .conv2d_bwd_kernel => |p| .{ p.mul_node, p.repeat_node, p.reshape_node },
+                .conv2d_bwd_input => |p| .{ p.mul_node, p.repeat_node, p.reshape_node },
                 else => return,
             };
 
-            // Skip each plan node and any intermediate add nodes between them.
             for (plan_nodes) |node| {
                 if (trySkipNode(self, node, ptr_to_idx, use_count)) {
                     trySkipAddConsumer(self, node, use_count);
@@ -490,14 +479,11 @@ pub fn ComputeGraph(comptime T: type) type {
             return true;
         }
 
-        /// If `node` is consumed by an add that also has use_count == 1, skip the add too.
-        /// This handles gradient accumulation add nodes: add(old_grad, contribution).
+        /// If `node` is consumed by a gradient-accumulation add with use_count <= 1, skip it too.
         fn trySkipAddConsumer(self: *Self, node: *Tensor(T), use_count: []const u16) void {
-            // Search nodes for an add that consumes `node` and has use_count == 1.
-            for (self.nodes.items, 0..) |n, idx| {
+            for (self.nodes.items[self.forward_node_count..], self.forward_node_count..) |n, idx| {
                 if (n.opTag() != .add) continue;
-                const is_src = (n.source0() == node) or (n.source1() == node);
-                if (is_src and use_count[idx] <= 1) {
+                if ((n.source0() == node or n.source1() == node) and use_count[idx] <= 1) {
                     self.fused_skip.items[idx] = true;
                     return;
                 }
