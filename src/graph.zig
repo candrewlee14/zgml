@@ -115,11 +115,6 @@ pub fn ComputeGraph(comptime T: type) type {
             // visit parents
             if (tensor.src0) |ts0| try self.addParentsThenSelf(ts0);
             if (tensor.src1) |ts1| try self.addParentsThenSelf(ts1);
-            for (tensor.opt) |t_o| {
-                if (t_o) |t| {
-                    try self.addParentsThenSelf(t);
-                }
-            }
             if (tensor.op == .none and tensor.grad == null) {
                 // is leaf
                 try self.leaves.append(alloc, tensor);

@@ -224,7 +224,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         /// Element-wise ReLU: max(0, x).  Uses @select for branchless SIMD.
-        pub fn computeReLu(dst: *Self, src0: *Self) void {
+        pub fn computeRelu(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             const zero: Vec = @splat(0);
             const len = src0.data.len;
@@ -240,7 +240,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         /// Element-wise GeLU approximation (scalar — tanh not yet vectorized).
-        pub fn computeGeLu(dst: *Self, src0: *Self) void {
+        pub fn computeGelu(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             for (src0.data, dst.data) |x, *d| {
                 d.* = 0.5 * x * (1 + std.math.tanh(SQRT_2_OVER_PI * x * (1 + GELU_COEF_A * x * x)));
@@ -593,8 +593,8 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .sgn => tensor.computeSgn(src0.?),
                 .neg => tensor.computeNeg(src0.?),
                 .step => tensor.computeStep(src0.?),
-                .relu => tensor.computeReLu(src0.?),
-                .gelu => tensor.computeGeLu(src0.?),
+                .relu => tensor.computeRelu(src0.?),
+                .gelu => tensor.computeGelu(src0.?),
                 .norm => tensor.computeNorm(src0.?),
                 .matmul => tensor.computeMatMul(src0.?, false, src1.?, false),
                 .matmul_t0 => tensor.computeMatMul(src0.?, true, src1.?, false),

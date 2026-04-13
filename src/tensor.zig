@@ -13,7 +13,6 @@ const Op = @import("op.zig").Op;
 
 /// Maximum number of dimensions a tensor can have.
 pub const max_dims = 4;
-const max_opt = 4;
 
 /// Generic tensor parameterized on element type `T` (typically `f32` or `f64`).
 ///
@@ -29,7 +28,7 @@ pub fn Tensor(comptime T: type) type {
 
         // -- delegation to split-out implementations --
         const fwd = @import("tensor/forward.zig").Ops(Self, T);
-        const bwd = @import("tensor/backward.zig").Ops(Self, T);
+        const bwd = @import("tensor/backward.zig").Ops(Self);
 
         /// Number of dimensions (1–4).
         n_dims: u8,
@@ -48,8 +47,6 @@ pub fn Tensor(comptime T: type) type {
         src0: ?*Self,
         /// Second source tensor (right operand for binary ops).
         src1: ?*Self,
-        /// Optional auxiliary source tensors.
-        opt: [max_dims]?*Self,
         /// Debug label for visualization.
         name: ?[]const u8,
         /// Raw element data.
@@ -111,7 +108,6 @@ pub fn Tensor(comptime T: type) type {
                 .data = undefined,
                 .name = null,
                 .data_owned = data_buf == null,
-                .opt = .{null} ** max_opt,
             };
             for (ne, 0..) |shape_item, i| {
                 tensor.ne[i] = shape_item;
@@ -139,6 +135,15 @@ pub fn Tensor(comptime T: type) type {
 
         // ---------------------------------------------------------------
         // Lazy graph-building operations
+        //
+        // These methods build the computation graph without performing any math.
+        // They allocate new tensor nodes via `catch unreachable` — this is
+        // intentional: lazy ops are designed to be infallible so they can be
+        // composed fluently (e.g. `x.sub(a, y).sqr(a).mean(a, &.{1})`).
+        //
+        // When used with a ComputeGraph's arena allocator, allocation failure
+        // is not expected. If you need fallible allocation, use the `init*`
+        // family directly.
         // ---------------------------------------------------------------
 
         /// Create a view of this tensor's data (shared memory, no copy).
@@ -185,7 +190,7 @@ pub fn Tensor(comptime T: type) type {
             return self.unaryOp(alloc, .dup, true);
         }
 
-        pub fn addImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
+        fn addImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
             assert(self.isSameShape(other));
             return self.binaryOp(alloc, other, .add, inplace);
         }
@@ -197,7 +202,7 @@ pub fn Tensor(comptime T: type) type {
             return self.addImpl(alloc, other, true);
         }
 
-        pub fn subImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
+        fn subImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
             return self.binaryOp(alloc, other, .sub, inplace);
         }
         /// Element-wise subtraction.
@@ -412,7 +417,7 @@ pub fn Tensor(comptime T: type) type {
         pub fn reshape(self: *Self, alloc: Alloc, ne: []const usize) *Self {
             assert(self.isContiguous());
             const neProd = lbl: {
-                var prod: usize = 0;
+                var prod: usize = 1;
                 for (ne) |item| prod *= item;
                 break :lbl prod;
             };
@@ -461,8 +466,8 @@ pub fn Tensor(comptime T: type) type {
         pub const computeSgn = fwd.computeSgn;
         pub const computeNeg = fwd.computeNeg;
         pub const computeStep = fwd.computeStep;
-        pub const computeReLu = fwd.computeReLu;
-        pub const computeGeLu = fwd.computeGeLu;
+        pub const computeRelu = fwd.computeRelu;
+        pub const computeGelu = fwd.computeGelu;
         pub const computeNorm = fwd.computeNorm;
         pub const computeRMSNorm = fwd.computeRMSNorm;
         pub const computeMatMul = fwd.computeMatMul;
