@@ -31,7 +31,7 @@ pub fn main() !void {
     // Fusion report
     var stderr_buf: [4096]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
-    try model.g.dumpFusionReport(&stderr_writer.interface);
+    try model.g.dumpReport(&stderr_writer.interface, .{ .include_nodes = true, .include_execution = true });
     try stderr_writer.interface.flush();
 
     // Timing
@@ -39,17 +39,11 @@ pub fn main() !void {
     _ = model.ys_batch.setAllScalar(0);
     if (model.loss.grad) |grad| _ = grad.setAllScalar(1);
 
-    var timer = try std.time.Timer.start();
-    model.g.compute();
-    const first_ns = timer.read();
-    timer.reset();
-    model.g.reset();
-    model.g.resetGrads();
-    if (model.loss.grad) |grad| _ = grad.setAllScalar(1);
-    model.g.compute();
-    const second_ns = timer.read();
-    std.debug.print("compute1_ms={d:.3} compute2_ms={d:.3}\n", .{
-        @as(f64, @floatFromInt(first_ns)) / 1e6,
-        @as(f64, @floatFromInt(second_ns)) / 1e6,
-    });
+    const first = try model.g.profileExecution(.{ .loss_grad = model.loss.grad });
+    const second = try model.g.profileExecution(.{ .loss_grad = model.loss.grad });
+    std.debug.print("first run\n", .{});
+    try first.dump(&stderr_writer.interface);
+    std.debug.print("second run\n", .{});
+    try second.dump(&stderr_writer.interface);
+    try stderr_writer.interface.flush();
 }

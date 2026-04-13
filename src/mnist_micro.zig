@@ -42,16 +42,8 @@ pub fn main() !void {
     try w.interface.print("\nMNIST CNN Micro-Benchmark (batch_size={})\n", .{batch_size});
     try w.interface.print("==========================================\n\n", .{});
 
-    // Print fusion summary
-    const summary = model.g.fusionSummary();
-    try w.interface.print("Graph: {} nodes ({} forward), {} fused regions\n", .{
-        summary.node_count,
-        summary.forward_node_count,
-        summary.fused_region_count,
-    });
-    for (model.g.fused_chains.items, 0..) |chain, ci| {
-        try w.interface.print("  fused[{}] kind={s} output_idx={}\n", .{ ci, @tagName(chain.kind()), chain.output_idx });
-    }
+    // Print graph and fusion summary
+    try model.g.dumpReport(&w.interface, .{ .include_nodes = false, .include_execution = true });
     // Dump canonical IR around scatter_add_view
     {
         var temp_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -97,42 +89,52 @@ pub fn main() !void {
     }
 
     // Benchmark with phase breakdown
-    const Phase = struct { setup: u64, forward: u64, backward: u64, optim: u64, total: u64 };
+    const Phase = struct {
+        reset: u64,
+        reset_grads: u64,
+        seed_loss_grad: u64,
+        forward: u64,
+        backward: u64,
+        optim: u64,
+        total: u64,
+    };
     var times: [bench_iters]Phase = undefined;
-    var timer = try std.time.Timer.start();
 
     for (&times) |*t| {
-        timer.reset();
-        model.g.reset();
-        model.g.resetGrads();
-        if (model.loss.grad) |grad| _ = grad.setAllScalar(1);
-        t.setup = timer.read();
+        const profile = try model.g.profileExecution(.{ .loss_grad = model.loss.grad });
+        t.reset = profile.reset_ns;
+        t.reset_grads = profile.reset_grads_ns;
+        t.seed_loss_grad = profile.seed_loss_grad_ns;
+        t.forward = profile.forward_ns;
+        t.backward = profile.backward_ns;
 
-        timer.reset();
-        model.g.computeNoGrad();
-        t.forward = timer.read();
-
-        timer.reset();
-        model.g.computeBackward();
-        t.backward = timer.read();
-
+        var timer = try std.time.Timer.start();
         timer.reset();
         sgd.step();
         t.optim = timer.read();
 
-        t.total = t.setup + t.forward + t.backward + t.optim;
+        t.total = profile.total_ns + t.optim;
     }
 
     // Stats
     var totals: [bench_iters]u64 = undefined;
+    var reset_times: [bench_iters]u64 = undefined;
+    var reset_grad_times: [bench_iters]u64 = undefined;
+    var seed_times: [bench_iters]u64 = undefined;
     var fwd_times: [bench_iters]u64 = undefined;
     var bwd_times: [bench_iters]u64 = undefined;
     for (0..bench_iters) |i| {
         totals[i] = times[i].total;
+        reset_times[i] = times[i].reset;
+        reset_grad_times[i] = times[i].reset_grads;
+        seed_times[i] = times[i].seed_loss_grad;
         fwd_times[i] = times[i].forward;
         bwd_times[i] = times[i].backward;
     }
     std.mem.sort(u64, &totals, {}, std.sort.asc(u64));
+    std.mem.sort(u64, &reset_times, {}, std.sort.asc(u64));
+    std.mem.sort(u64, &reset_grad_times, {}, std.sort.asc(u64));
+    std.mem.sort(u64, &seed_times, {}, std.sort.asc(u64));
     std.mem.sort(u64, &fwd_times, {}, std.sort.asc(u64));
     std.mem.sort(u64, &bwd_times, {}, std.sort.asc(u64));
 
@@ -146,6 +148,15 @@ pub fn main() !void {
     try w.interface.print("Results ({} iterations, {} warmup):\n", .{ bench_iters, warmup_iters });
     try w.interface.print("  total:    min={d:>7.2}  p50={d:>7.2}  p90={d:>7.2}  p99={d:>7.2}  mean={d:>7.2} ms\n", .{
         ns_to_ms(totals[0]), ns_to_ms(p50), ns_to_ms(p90), ns_to_ms(p99), ns_to_ms(total_sum / bench_iters),
+    });
+    try w.interface.print("  reset:    min={d:>7.2}  p50={d:>7.2} ms\n", .{
+        ns_to_ms(reset_times[0]), ns_to_ms(reset_times[bench_iters / 2]),
+    });
+    try w.interface.print("  zeroGrad: min={d:>7.2}  p50={d:>7.2} ms\n", .{
+        ns_to_ms(reset_grad_times[0]), ns_to_ms(reset_grad_times[bench_iters / 2]),
+    });
+    try w.interface.print("  seedLoss: min={d:>7.2}  p50={d:>7.2} ms\n", .{
+        ns_to_ms(seed_times[0]), ns_to_ms(seed_times[bench_iters / 2]),
     });
     try w.interface.print("  forward:  min={d:>7.2}  p50={d:>7.2} ms\n", .{
         ns_to_ms(fwd_times[0]), ns_to_ms(fwd_times[bench_iters / 2]),

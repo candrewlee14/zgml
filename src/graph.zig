@@ -583,31 +583,420 @@ pub fn ComputeGraph(comptime T: type) type {
             node_count: usize,
             forward_node_count: usize,
             fused_region_count: usize,
+            leaf_count: usize,
+            param_count: usize,
+            aux_count: usize,
         };
 
         pub fn fusionSummary(self: *const Self) FusionSummary {
+            var param_count: usize = 0;
+            var aux_count: usize = 0;
+            for (self.nodes.items[0..self.forward_node_count]) |node| {
+                if (node.isParam()) param_count += 1;
+                if (node.isInternalAux()) aux_count += 1;
+            }
             return .{
                 .node_count = self.nodes.items.len,
                 .forward_node_count = self.forward_node_count,
                 .fused_region_count = self.fused_chains.items.len,
+                .leaf_count = self.leaves.items.len,
+                .param_count = param_count,
+                .aux_count = aux_count,
+            };
+        }
+
+        pub const ReportOptions = struct {
+            include_nodes: bool = true,
+            include_execution: bool = true,
+        };
+
+        pub const ExecutionPlanSummary = struct {
+            forward_step_count: usize,
+            backward_step_count: usize,
+        };
+
+        pub const NodePhase = enum {
+            forward,
+            backward,
+
+            fn label(self: @This()) []const u8 {
+                return switch (self) {
+                    .forward => "fwd",
+                    .backward => "bwd",
+                };
+            }
+        };
+
+        pub const NodeExecutionKind = enum {
+            node,
+            fused_internal,
+            fused_output,
+
+            fn label(self: @This()) []const u8 {
+                return switch (self) {
+                    .node => "node",
+                    .fused_internal => "fused internal",
+                    .fused_output => "fused output",
+                };
+            }
+        };
+
+        pub const NodeDisposition = enum {
+            covered_by_fused_region,
+            fused_region_output,
+            non_fusible_primitive,
+            fusible_terminal,
+            binary_operand_not_directly_indexable,
+            consumer_chain_not_linear,
+            consumer_changes_shape,
+            consumer_binary_operand_not_directly_indexable,
+            multiple_consumers_prevent_chain_fusion,
+            fusible_pending_schedule,
+            fusible_isolated,
+
+            fn description(self: @This()) []const u8 {
+                return switch (self) {
+                    .covered_by_fused_region => "covered by fused region",
+                    .fused_region_output => "region output",
+                    .non_fusible_primitive => "non-fusible primitive",
+                    .fusible_terminal => "fusible but terminal",
+                    .binary_operand_not_directly_indexable => "binary operand is not directly indexable",
+                    .consumer_chain_not_linear => "consumer chain is not linear",
+                    .consumer_changes_shape => "consumer changes shape",
+                    .consumer_binary_operand_not_directly_indexable => "consumer binary operand is not directly indexable",
+                    .multiple_consumers_prevent_chain_fusion => "multiple consumers prevent chain fusion",
+                    .fusible_pending_schedule => "fusible but chain candidate depends on later scheduling",
+                    .fusible_isolated => "fusible but isolated",
+                };
+            }
+        };
+
+        pub const TensorRef = union(enum) {
+            node: usize,
+            leaf,
+            external,
+
+            fn render(self: @This(), writer: anytype) !void {
+                switch (self) {
+                    .node => |idx| try writer.print("node[{}]", .{idx}),
+                    .leaf => try writer.writeAll("leaf"),
+                    .external => try writer.writeAll("external"),
+                }
+            }
+        };
+
+        pub const NodeReport = struct {
+            index: usize,
+            phase: NodePhase,
+            execution_kind: NodeExecutionKind,
+            disposition: NodeDisposition,
+            fusion_region: ?usize,
+            op: Op,
+            n_dims: usize,
+            shape: [tensorlib.max_dims]usize,
+            elem_count: usize,
+            src0: ?TensorRef,
+            src1: ?TensorRef,
+            has_grad: bool,
+            is_param: bool,
+            is_aux: bool,
+            owns_data: bool,
+
+            pub fn render(self: @This(), writer: anytype) !void {
+                try writer.print(
+                    "node[{d}] phase={s} exec={s} op={s} shape={any} elems={} ",
+                    .{
+                        self.index,
+                        self.phase.label(),
+                        self.execution_kind.label(),
+                        @tagName(self.op),
+                        self.shape[0..self.n_dims],
+                        self.elem_count,
+                    },
+                );
+                try writer.writeAll("src0=");
+                if (self.src0) |src0| {
+                    try src0.render(writer);
+                } else {
+                    try writer.writeAll("none");
+                }
+                try writer.writeAll(" src1=");
+                if (self.src1) |src1| {
+                    try src1.render(writer);
+                } else {
+                    try writer.writeAll("none");
+                }
+                try writer.print(
+                    " grad={any} param={any} aux={any} owns_data={any} note={s}\n",
+                    .{
+                        self.has_grad,
+                        self.is_param,
+                        self.is_aux,
+                        self.owns_data,
+                        self.disposition.description(),
+                    },
+                );
+            }
+        };
+
+        pub const FusionRegionDetail = union(fused.FusionKind) {
+            elementwise_chain: struct {
+                input: TensorRef,
+                chain_len: usize,
+            },
+            conv2d: struct {
+                input: TensorRef,
+                kernel: TensorRef,
+                has_bias: bool,
+                has_activation: bool,
+            },
+            conv2d_bwd_input: struct {
+                kernel: TensorRef,
+            },
+            conv2d_bwd_kernel: struct {
+                input: TensorRef,
+            },
+            max_pool2d: struct {
+                input: TensorRef,
+            },
+            softmax: struct {
+                input: TensorRef,
+            },
+            log_softmax: struct {
+                input: TensorRef,
+            },
+            cross_entropy: struct {
+                logits: TensorRef,
+                targets: TensorRef,
+            },
+            layer_norm: struct {
+                input: TensorRef,
+            },
+
+            fn render(self: @This(), writer: anytype, output_idx: usize) !void {
+                switch (self) {
+                    .elementwise_chain => |payload| {
+                        try writer.writeAll("  input=");
+                        try payload.input.render(writer);
+                        try writer.print(" chain_len={} output=node[{}]\n", .{ payload.chain_len, output_idx });
+                    },
+                    .conv2d => |payload| {
+                        try writer.writeAll("  conv input=");
+                        try payload.input.render(writer);
+                        try writer.writeAll(" kernel=");
+                        try payload.kernel.render(writer);
+                        try writer.print(" bias={} activation={} output=node[{}]\n", .{ payload.has_bias, payload.has_activation, output_idx });
+                    },
+                    .conv2d_bwd_input => |payload| {
+                        try writer.writeAll("  backward input_grad kernel=");
+                        try payload.kernel.render(writer);
+                        try writer.print(" output=node[{}]\n", .{output_idx});
+                    },
+                    .conv2d_bwd_kernel => |payload| {
+                        try writer.writeAll("  backward kernel_grad input=");
+                        try payload.input.render(writer);
+                        try writer.print(" output=node[{}]\n", .{output_idx});
+                    },
+                    .max_pool2d => |payload| {
+                        try writer.writeAll("  max_pool input=");
+                        try payload.input.render(writer);
+                        try writer.print(" output=node[{}]\n", .{output_idx});
+                    },
+                    .softmax => |payload| {
+                        try writer.writeAll("  softmax input=");
+                        try payload.input.render(writer);
+                        try writer.print(" output=node[{}]\n", .{output_idx});
+                    },
+                    .log_softmax => |payload| {
+                        try writer.writeAll("  log_softmax input=");
+                        try payload.input.render(writer);
+                        try writer.print(" output=node[{}]\n", .{output_idx});
+                    },
+                    .cross_entropy => |payload| {
+                        try writer.writeAll("  cross_entropy logits=");
+                        try payload.logits.render(writer);
+                        try writer.writeAll(" targets=");
+                        try payload.targets.render(writer);
+                        try writer.print(" output=node[{}]\n", .{output_idx});
+                    },
+                    .layer_norm => |payload| {
+                        try writer.writeAll("  layer_norm input=");
+                        try payload.input.render(writer);
+                        try writer.print(" output=node[{}]\n", .{output_idx});
+                    },
+                }
+            }
+        };
+
+        pub const FusionRegionReport = struct {
+            region_index: usize,
+            kind: fused.FusionKind,
+            start_idx: usize,
+            output_idx: usize,
+            detail: FusionRegionDetail,
+
+            pub fn render(self: @This(), writer: anytype) !void {
+                try writer.print("fused[{d}] kind={s} range={}..{}\n", .{ self.region_index, @tagName(self.kind), self.start_idx, self.output_idx });
+                try self.detail.render(writer, self.output_idx);
+            }
+        };
+
+        pub const GraphReport = struct {
+            alloc: Alloc,
+            summary: FusionSummary,
+            execution: ?ExecutionPlanSummary,
+            fused_regions: []FusionRegionReport,
+            nodes: []NodeReport,
+
+            pub fn deinit(self: *@This()) void {
+                self.alloc.free(self.fused_regions);
+                self.alloc.free(self.nodes);
+                self.* = undefined;
+            }
+
+            pub fn render(self: *const @This(), writer: anytype) !void {
+                try writer.print("graph nodes={} forward_nodes={} backward_nodes={} leaves={} params={} aux={} fused_regions={}\n", .{
+                    self.summary.node_count,
+                    self.summary.forward_node_count,
+                    self.summary.node_count - self.summary.forward_node_count,
+                    self.summary.leaf_count,
+                    self.summary.param_count,
+                    self.summary.aux_count,
+                    self.summary.fused_region_count,
+                });
+
+                for (self.fused_regions) |region| {
+                    try region.render(writer);
+                }
+
+                if (self.execution) |execution| {
+                    try writer.print("execution forward_steps={} backward_steps={}\n", .{ execution.forward_step_count, execution.backward_step_count });
+                }
+
+                for (self.nodes) |node| {
+                    try node.render(writer);
+                }
+            }
+        };
+
+        pub const ExecutionProfileOptions = struct {
+            reset: bool = true,
+            reset_grads: bool = true,
+            loss_grad: ?*Tensor(T) = null,
+            forward_only: bool = false,
+        };
+
+        pub const ExecutionProfile = struct {
+            reset_ns: u64 = 0,
+            reset_grads_ns: u64 = 0,
+            seed_loss_grad_ns: u64 = 0,
+            forward_ns: u64 = 0,
+            backward_ns: u64 = 0,
+            total_ns: u64 = 0,
+            node_count: usize = 0,
+            forward_node_count: usize = 0,
+            fused_region_count: usize = 0,
+            forward_step_count: usize = 0,
+            backward_step_count: usize = 0,
+
+            pub fn render(self: @This(), writer: anytype) !void {
+                try writer.print(
+                    "profile nodes={} forward_nodes={} fused_regions={} forward_steps={} backward_steps={}\n",
+                    .{ self.node_count, self.forward_node_count, self.fused_region_count, self.forward_step_count, self.backward_step_count },
+                );
+                try writer.print(
+                    "  reset={d:.3}ms reset_grads={d:.3}ms seed_loss_grad={d:.3}ms forward={d:.3}ms backward={d:.3}ms total={d:.3}ms\n",
+                    .{
+                        nsToMs(self.reset_ns),
+                        nsToMs(self.reset_grads_ns),
+                        nsToMs(self.seed_loss_grad_ns),
+                        nsToMs(self.forward_ns),
+                        nsToMs(self.backward_ns),
+                        nsToMs(self.total_ns),
+                    },
+                );
+            }
+
+            pub fn dump(self: @This(), writer: anytype) !void {
+                try self.render(writer);
+            }
+        };
+
+        pub fn buildReport(self: *const Self, alloc: Alloc, options: ReportOptions) Alloc.Error!GraphReport {
+            const fused_regions = try alloc.alloc(FusionRegionReport, self.fused_chains.items.len);
+            errdefer alloc.free(fused_regions);
+            for (self.fused_chains.items, 0..) |plan, i| {
+                fused_regions[i] = self.buildFusionRegionReport(i, plan);
+            }
+
+            const nodes = if (options.include_nodes)
+                try alloc.alloc(NodeReport, self.nodes.items.len)
+            else
+                try alloc.alloc(NodeReport, 0);
+            errdefer alloc.free(nodes);
+
+            if (options.include_nodes) {
+                for (self.nodes.items, 0..) |node, i| {
+                    nodes[i] = self.buildNodeReport(i, node, fused_regions);
+                }
+            }
+
+            return .{
+                .alloc = alloc,
+                .summary = self.fusionSummary(),
+                .execution = if (options.include_execution) .{
+                    .forward_step_count = self.stepCount(true),
+                    .backward_step_count = self.stepCount(false),
+                } else null,
+                .fused_regions = fused_regions,
+                .nodes = nodes,
             };
         }
 
         pub fn dumpFusionReport(self: *const Self, writer: anytype) !void {
-            const summary = self.fusionSummary();
-            try writer.print("nodes total={} forward={} fused_regions={}\n", .{
-                summary.node_count,
-                summary.forward_node_count,
-                summary.fused_region_count,
-            });
+            return self.dumpReport(writer, .{});
+        }
 
-            for (self.fused_chains.items, 0..) |plan, i| {
-                try writer.print("fused[{d}] kind={s} output_idx={}\n", .{ i, @tagName(plan.kind()), plan.output_idx });
+        pub fn dumpReport(self: *const Self, writer: anytype, options: ReportOptions) !void {
+            var report = try self.buildReport(std.heap.page_allocator, options);
+            defer report.deinit();
+            try report.render(writer);
+        }
+
+        pub fn profileExecution(self: *Self, options: ExecutionProfileOptions) !ExecutionProfile {
+            var timer = try std.time.Timer.start();
+            var profile = ExecutionProfile{
+                .node_count = self.nodes.items.len,
+                .forward_node_count = self.forward_node_count,
+                .fused_region_count = self.fused_chains.items.len,
+                .forward_step_count = self.stepCount(true),
+                .backward_step_count = self.stepCount(false),
+            };
+
+            timer.reset();
+            if (options.reset) self.reset();
+            profile.reset_ns = timer.read();
+
+            timer.reset();
+            if (options.reset_grads) self.resetGrads();
+            profile.reset_grads_ns = timer.read();
+
+            timer.reset();
+            if (options.loss_grad) |grad| _ = grad.setAllScalar(1);
+            profile.seed_loss_grad_ns = timer.read();
+
+            timer.reset();
+            self.computeNoGrad();
+            profile.forward_ns = timer.read();
+
+            if (!options.forward_only) {
+                timer.reset();
+                self.computeBackward();
+                profile.backward_ns = timer.read();
             }
 
-            for (self.nodes.items, 0..) |node, i| {
-                try writer.print("node[{d}] {s} shape={any}\n", .{ i, @tagName(node.opTag()), node.ne[0..node.n_dims] });
-            }
+            profile.total_ns = profile.reset_ns + profile.reset_grads_ns + profile.seed_loss_grad_ns + profile.forward_ns + profile.backward_ns;
+            return profile;
         }
 
         pub fn dumpTensorLineage(self: *const Self, writer: anytype, needle: *Tensor(T)) !void {
@@ -636,6 +1025,158 @@ pub fn ComputeGraph(comptime T: type) type {
                 try writer.print("node[{d}] {s} shape={any}\n", .{ node_idx, @tagName(src.opTag()), src.ne[0..src.n_dims] });
                 try self.dumpTensorLineageRecur(writer, src, depth + 1, visited);
             }
+        }
+
+        fn nsToMs(ns: u64) f64 {
+            return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
+        }
+
+        fn stepCount(self: *const Self, comptime forward_only: bool) usize {
+            if (forward_only) {
+                return if (self.forward_execution_steps.items.len != 0) self.forward_execution_steps.items.len else self.forward_node_count;
+            }
+            return if (self.execution_steps.items.len != 0)
+                self.execution_steps.items.len - self.stepCount(true)
+            else if (self.nodes.items.len >= self.forward_node_count)
+                self.nodes.items.len - self.forward_node_count
+            else
+                0;
+        }
+
+        fn fusionStartIdx(self: *const Self, plan: fused.FusionPlan(T)) usize {
+            return fused.indexOfNodeMaybe(T, self.nodes.items, self.fusionAnchorNode(plan) orelse return plan.output_idx) orelse plan.output_idx;
+        }
+
+        fn fusionAnchorNode(_: *const Self, plan: fused.FusionPlan(T)) ?*Tensor(T) {
+            return switch (plan.payload) {
+                .elementwise_chain => |payload| payload.nodes[0],
+                .conv2d => |payload| payload.input_view,
+                .conv2d_bwd_input => |payload| payload.output,
+                .conv2d_bwd_kernel => |payload| payload.output,
+                .max_pool2d => |payload| payload.strided,
+                .softmax => |payload| payload.max_node,
+                .log_softmax => |payload| payload.max_node,
+                .cross_entropy => |payload| payload.log_softmax.max_node,
+                .layer_norm => |payload| payload.sum_node,
+            };
+        }
+
+        fn fusionCoverageAt(idx: usize, fused_regions: []const FusionRegionReport) ?struct { region_idx: usize, is_output: bool } {
+            for (fused_regions) |region| {
+                if (idx < region.start_idx or idx > region.output_idx) continue;
+                return .{ .region_idx = region.region_index, .is_output = idx == region.output_idx };
+            }
+            return null;
+        }
+
+        fn buildFusionRegionReport(self: *const Self, region_index: usize, plan: fused.FusionPlan(T)) FusionRegionReport {
+            return .{
+                .region_index = region_index,
+                .kind = plan.kind(),
+                .start_idx = self.fusionStartIdx(plan),
+                .output_idx = plan.output_idx,
+                .detail = switch (plan.payload) {
+                    .elementwise_chain => |payload| .{ .elementwise_chain = .{
+                        .input = self.tensorRef(payload.input),
+                        .chain_len = payload.nodes.len,
+                    } },
+                    .conv2d => |payload| .{ .conv2d = .{
+                        .input = self.tensorRef(payload.input),
+                        .kernel = self.tensorRef(payload.kernel),
+                        .has_bias = payload.bias != null,
+                        .has_activation = payload.activation != null,
+                    } },
+                    .conv2d_bwd_input => |payload| .{ .conv2d_bwd_input = .{
+                        .kernel = self.tensorRef(payload.kernel),
+                    } },
+                    .conv2d_bwd_kernel => |payload| .{ .conv2d_bwd_kernel = .{
+                        .input = self.tensorRef(payload.input),
+                    } },
+                    .max_pool2d => |payload| .{ .max_pool2d = .{
+                        .input = self.tensorRef(payload.input),
+                    } },
+                    .softmax => |payload| .{ .softmax = .{
+                        .input = self.tensorRef(payload.input),
+                    } },
+                    .log_softmax => |payload| .{ .log_softmax = .{
+                        .input = self.tensorRef(payload.input),
+                    } },
+                    .cross_entropy => |payload| .{ .cross_entropy = .{
+                        .logits = self.tensorRef(payload.log_softmax.input),
+                        .targets = self.tensorRef(payload.targets),
+                    } },
+                    .layer_norm => |payload| .{ .layer_norm = .{
+                        .input = self.tensorRef(payload.input),
+                    } },
+                },
+            };
+        }
+
+        fn buildNodeReport(self: *const Self, idx: usize, node: *Tensor(T), fused_regions: []const FusionRegionReport) NodeReport {
+            const coverage = fusionCoverageAt(idx, fused_regions);
+            const execution_kind: NodeExecutionKind = if (coverage) |c|
+                if (c.is_output) .fused_output else .fused_internal
+            else
+                .node;
+            const disposition: NodeDisposition = if (coverage) |c|
+                if (c.is_output) .fused_region_output else .covered_by_fused_region
+            else
+                self.nodeDisposition(idx, node);
+
+            return .{
+                .index = idx,
+                .phase = if (idx < self.forward_node_count) .forward else .backward,
+                .execution_kind = execution_kind,
+                .disposition = disposition,
+                .fusion_region = if (coverage) |c| c.region_idx else null,
+                .op = node.opTag(),
+                .n_dims = node.n_dims,
+                .shape = node.ne,
+                .elem_count = node.nElems(),
+                .src0 = if (node.source0()) |src| self.tensorRef(src) else null,
+                .src1 = if (node.source1()) |src| self.tensorRef(src) else null,
+                .has_grad = node.hasGrad(),
+                .is_param = node.isParam(),
+                .is_aux = node.isInternalAux(),
+                .owns_data = node.ownsData(),
+            };
+        }
+
+        fn tensorRef(self: *const Self, node_ptr: *Tensor(T)) TensorRef {
+            if (fused.indexOfNodeMaybe(T, self.nodes.items, node_ptr)) |idx| return .{ .node = idx };
+            for (self.leaves.items) |leaf| {
+                if (leaf == node_ptr) return .leaf;
+            }
+            return .external;
+        }
+
+        fn nodeDisposition(self: *const Self, idx: usize, node: *Tensor(T)) NodeDisposition {
+            if (!node.opTag().isFusible()) return .non_fusible_primitive;
+            if (idx + 1 >= self.nodes.items.len) return .fusible_terminal;
+
+            if (node.source1()) |src1| {
+                if (!src1.isScalar() and !(node.isSameShape(src1) and src1.isContiguous() and src1.data.len == node.nElems())) {
+                    return .binary_operand_not_directly_indexable;
+                }
+            }
+
+            const next = self.nodes.items[idx + 1];
+            if (next.opTag().isFusible()) {
+                if (next.source0() != node) return .consumer_chain_not_linear;
+                if (!next.isSameShape(node)) return .consumer_changes_shape;
+                if (next.source1()) |src1| {
+                    if (!src1.isScalar() and !(next.isSameShape(src1) and src1.isContiguous() and src1.data.len == next.nElems())) {
+                        return .consumer_binary_operand_not_directly_indexable;
+                    }
+                }
+                var uses: usize = 0;
+                for (self.nodes.items) |candidate| {
+                    if (candidate.source0() == node or candidate.source1() == node) uses += 1;
+                    if (uses > 1) return .multiple_consumers_prevent_chain_fusion;
+                }
+                return .fusible_pending_schedule;
+            }
+            return .fusible_isolated;
         }
 
         fn detectCompilerRootRewritePlan(self: *const Self) Alloc.Error!?CompilerPlan {
@@ -1830,12 +2371,41 @@ test "fusion report reflects built graph" {
     const summary = g.fusionSummary();
     try testing.expect(summary.node_count >= summary.forward_node_count);
     try testing.expect(summary.fused_region_count > 0);
+    try testing.expect(summary.leaf_count > 0);
 
     var buf = std.ArrayList(u8){};
     defer buf.deinit(tac);
     try g.dumpFusionReport(buf.writer(tac));
     try testing.expect(std.mem.indexOf(u8, buf.items, "fused[") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "node[") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "forward_steps=") != null);
+}
+
+test "profile execution reports phase timings" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{3});
+    const y = try Tensor(f32).init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+    y.setData(&.{ 3, 2, 1 });
+    x.setParam();
+    const loss_node = x.add(y).sumAll();
+    try g.buildForward(loss_node);
+    try g.buildBackward(false);
+    try g.fusionPass();
+
+    const profile = try g.profileExecution(.{ .loss_grad = loss_node.grad });
+    try testing.expect(profile.total_ns >= profile.forward_ns + profile.backward_ns);
+    try testing.expect(profile.node_count == g.nodes.items.len);
+    try testing.expect(profile.forward_step_count > 0);
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(tac);
+    try profile.dump(buf.writer(tac));
+    try testing.expect(std.mem.indexOf(u8, buf.items, "profile nodes=") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "forward=") != null);
 }
 
 test "tensor lineage reports reachable node chain" {
