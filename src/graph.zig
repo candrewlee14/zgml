@@ -35,7 +35,7 @@ pub fn ComputeGraph(comptime T: type) type {
         scratch: std.ArrayList(*Tensor(T)),
 
         /// Fusion state — populated by `fusionPass()`.
-        fused_chains: std.ArrayList(fused.FusedChain(T)),
+        fused_chains: std.ArrayList(fused.FusionPlan(T)),
         /// Per-node flag: true means this node is part of a fused chain
         /// and should be skipped during normal compute iteration.
         fused_skip: std.ArrayList(bool),
@@ -122,6 +122,9 @@ pub fn ComputeGraph(comptime T: type) type {
             const fwd_count = self.forward_node_count;
             if (fwd_count < 2) return;
 
+            self.fused_chains.clearRetainingCapacity();
+            self.fused_skip.clearRetainingCapacity();
+
             // Build use-count: how many forward nodes read each node's output
             const use_count = try alloc.alloc(u16, fwd_count);
             @memset(use_count, 0);
@@ -129,12 +132,18 @@ pub fn ComputeGraph(comptime T: type) type {
             for (self.nodes.items[0..fwd_count]) |node| {
                 if (node.src0) |src| {
                     for (self.nodes.items[0..fwd_count], 0..) |n, j| {
-                        if (n == src) { use_count[j] += 1; break; }
+                        if (n == src) {
+                            use_count[j] += 1;
+                            break;
+                        }
                     }
                 }
                 if (node.src1) |src| {
                     for (self.nodes.items[0..fwd_count], 0..) |n, j| {
-                        if (n == src) { use_count[j] += 1; break; }
+                        if (n == src) {
+                            use_count[j] += 1;
+                            break;
+                        }
                     }
                 }
             }
@@ -148,6 +157,12 @@ pub fn ComputeGraph(comptime T: type) type {
             var i: usize = 0;
             while (i < fwd_count) : (i += 1) {
                 const node = self.nodes.items[i];
+                if (detectSoftmaxPattern(self, i)) |plan| {
+                    for (i..plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
+                    try self.fused_chains.append(alloc, plan);
+                    i = plan.output_idx;
+                    continue;
+                }
                 if (!node.op.isFusible()) continue;
                 if (self.fused_skip.items[i]) continue;
 
@@ -185,10 +200,69 @@ pub fn ComputeGraph(comptime T: type) type {
                 try self.fused_chains.append(alloc, .{
                     .nodes = chain_nodes,
                     .output_idx = chain_end,
+                    .kind = .elementwise_chain,
                 });
 
                 i = chain_end; // skip past the chain
             }
+        }
+
+        fn detectSoftmaxPattern(self: *Self, start: usize) ?fused.FusionPlan(T) {
+            const nodes = self.nodes.items;
+
+            if (start + 8 < self.forward_node_count) {
+                const n0 = nodes[start + 0];
+                const n1 = nodes[start + 1];
+                const n2 = nodes[start + 2];
+                const n3 = nodes[start + 3];
+                const n4 = nodes[start + 4];
+                const n5 = nodes[start + 5];
+                const n6 = nodes[start + 6];
+                const n7 = nodes[start + 7];
+                const n8 = nodes[start + 8];
+
+                if (n0.op == .max and
+                    n1.op == .repeat and n1.src0.? == n0 and
+                    n2.op == .neg and n2.src0.? == n1 and
+                    n3.op == .add and n3.src0.? == n0.src0.? and n3.src1.? == n2 and
+                    n4.op == .exp and n4.src0.? == n3 and
+                    n5.op == .sum and n5.src0.? == n4 and
+                    n6.op == .repeat and n6.src0.? == n5 and
+                    n7.op == .recip and n7.src0.? == n6 and
+                    n8.op == .mul and n8.src0.? == n4 and n8.src1.? == n7)
+                {
+                    return .{ .nodes = nodes[start .. start + 9], .output_idx = start + 8, .kind = .softmax };
+                }
+            }
+
+            if (start + 9 < self.forward_node_count) {
+                const n0 = nodes[start + 0];
+                const n1 = nodes[start + 1];
+                const n2 = nodes[start + 2];
+                const n3 = nodes[start + 3];
+                const n4 = nodes[start + 4];
+                const n5 = nodes[start + 5];
+                const n6 = nodes[start + 6];
+                const n7 = nodes[start + 7];
+                const n8 = nodes[start + 8];
+                const n9 = nodes[start + 9];
+
+                if (n0.op == .max and
+                    n1.op == .repeat and n1.src0.? == n0 and
+                    n2.op == .neg and n2.src0.? == n1 and
+                    n3.op == .add and n3.src0.? == n0.src0.? and n3.src1.? == n2 and
+                    n4.op == .exp and n4.src0.? == n3 and
+                    n5.op == .sum and n5.src0.? == n4 and
+                    n6.op == .log and n6.src0.? == n5 and
+                    n7.op == .repeat and n7.src0.? == n6 and
+                    n8.op == .neg and n8.src0.? == n7 and
+                    n9.op == .add and n9.src0.? == n3 and n9.src1.? == n8)
+                {
+                    return .{ .nodes = nodes[start .. start + 10], .output_idx = start + 9, .kind = .log_softmax };
+                }
+            }
+
+            return null;
         }
 
         fn addParentsThenSelf(self: *Self, tensor: *Tensor(T)) Alloc.Error!void {
@@ -286,7 +360,7 @@ pub fn ComputeGraph(comptime T: type) type {
                     if (next_chain < self.fused_chains.items.len and
                         self.fused_chains.items[next_chain].output_idx == i)
                     {
-                        fused.executeFusedChain(T, self.fused_chains.items[next_chain].nodes);
+                        fused.executeFusionPlan(T, self.fused_chains.items[next_chain]);
                         next_chain += 1;
                     }
                     continue;
@@ -308,7 +382,7 @@ pub fn ComputeGraph(comptime T: type) type {
                     if (next_chain < self.fused_chains.items.len and
                         self.fused_chains.items[next_chain].output_idx == i)
                     {
-                        fused.executeFusedChain(T, self.fused_chains.items[next_chain].nodes);
+                        fused.executeFusionPlan(T, self.fused_chains.items[next_chain]);
                         next_chain += 1;
                     }
                     continue;
@@ -820,6 +894,62 @@ test "fusion - chain detection skips non-fusible ops" {
     try testing.expectEqual(@as(usize, 0), g.fused_chains.items.len);
     g.compute();
     try testing.expectApproxEqAbs(@as(f32, -21.0), out.data[0], 1e-6);
+}
+
+test "fusion - detects softmax pattern" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+    const out = x.softmax(a, &.{1});
+    try g.buildForward(out);
+    try g.fusionPass();
+
+    try testing.expectEqual(@as(usize, 1), g.fused_chains.items.len);
+    try testing.expectEqual(fused.FusionKind.softmax, g.fused_chains.items[0].kind);
+
+    g.compute();
+    try testing.expectApproxEqAbs(@as(f32, 1.0), out.data[0] + out.data[1] + out.data[2], 1e-6);
+}
+
+test "fusion - detects logSoftmax pattern" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+    const out = x.logSoftmax(a, &.{1});
+    try g.buildForward(out);
+    try g.fusionPass();
+
+    try testing.expectEqual(@as(usize, 1), g.fused_chains.items.len);
+    try testing.expectEqual(fused.FusionKind.log_softmax, g.fused_chains.items[0].kind);
+
+    g.compute();
+    const probs = std.math.exp(out.data[0]) + std.math.exp(out.data[1]) + std.math.exp(out.data[2]);
+    try testing.expectApproxEqAbs(@as(f32, 1.0), probs, 1e-6);
+}
+
+test "layerNorm forward" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{4});
+    x.setData(&.{ 1, 2, 3, 4 });
+    // mean=2.5, var=1.25, result = (x - 2.5) / sqrt(1.25 + 1e-5)
+    const out = x.layerNorm(a, &.{1}, 1e-5);
+    try g.buildForward(out);
+    g.compute();
+
+    const std_dev = @sqrt(@as(f32, 1.25) + 1e-5);
+    try testing.expectApproxEqAbs((1.0 - 2.5) / std_dev, out.data[0], 1e-4);
+    try testing.expectApproxEqAbs((2.0 - 2.5) / std_dev, out.data[1], 1e-4);
+    try testing.expectApproxEqAbs((3.0 - 2.5) / std_dev, out.data[2], 1e-4);
+    try testing.expectApproxEqAbs((4.0 - 2.5) / std_dev, out.data[3], 1e-4);
 }
 
 //#endregion

@@ -381,6 +381,17 @@ pub fn Tensor(comptime T: type) type {
             return shifted.sub(alloc, log_norm.repeatLike(alloc, shifted));
         }
 
+        /// Layer normalization: `(x - mean) / sqrt(var + eps)`.
+        /// Normalizes over dimensions reduced to `ne`. Fully decomposed into primitives.
+        pub fn layerNorm(self: *Self, alloc: Alloc, ne: []const usize, eps: T) *Self {
+            const mu = self.mean(alloc, ne);
+            const centered = self.sub(alloc, mu.repeatLike(alloc, self));
+            const variance = centered.sqr(alloc).mean(alloc, ne);
+            const eps_t = Self.initScalar(alloc, eps) catch unreachable;
+            const std_inv = variance.add(alloc, eps_t.repeatLike(alloc, variance)).sqrt(alloc).recip(alloc);
+            return centered.mul(alloc, std_inv.repeatLike(alloc, centered));
+        }
+
         pub fn meanInto(self: *Self, alloc: Alloc, other: *Self) *Self {
             const s = self.sumInto(alloc, other);
             const count: T = @floatFromInt(self.nElems() / s.nElems());

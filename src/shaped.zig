@@ -172,6 +172,14 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
             return .{ .inner = self.inner.recip(alloc) };
         }
 
+        pub fn exp(self: Self, alloc: Alloc) Self {
+            return .{ .inner = self.inner.exp(alloc) };
+        }
+
+        pub fn log(self: Self, alloc: Alloc) Self {
+            return .{ .inner = self.inner.log(alloc) };
+        }
+
         pub fn sgn(self: Self, alloc: Alloc) Self {
             return .{ .inner = self.inner.sgn(alloc) };
         }
@@ -226,6 +234,11 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
             return .{ .inner = self.inner.sumAll(alloc) };
         }
 
+        /// Max-reduce all elements to a scalar.
+        pub fn maxAll(self: Self, alloc: Alloc) ShapedTensor(T, normalizeShape(.{1})) {
+            return .{ .inner = self.inner.maxAll(alloc) };
+        }
+
         /// Sum (reduce) to a target shape. Each dim of target must divide self's dim.
         pub fn sum(self: Self, alloc: Alloc, comptime target: anytype) ShapedTensor(T, normalizeShape(target)) {
             const target_shape = comptime normalizeShape(target);
@@ -248,6 +261,53 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
             }
             var ne = target_shape;
             return .{ .inner = self.inner.mean(alloc, &ne) };
+        }
+
+        /// Max-reduce to a target shape.
+        pub fn max(self: Self, alloc: Alloc, comptime target: anytype) ShapedTensor(T, normalizeShape(target)) {
+            const target_shape = comptime normalizeShape(target);
+            comptime {
+                for (shape, target_shape) |s, t| {
+                    if (s % t != 0) @compileError("max: target shape dimension does not divide source");
+                }
+            }
+            var ne = target_shape;
+            return .{ .inner = self.inner.max(alloc, &ne) };
+        }
+
+        pub fn softmax(self: Self, alloc: Alloc, comptime target: anytype) ShapedTensor(T, shape) {
+            const target_shape = comptime normalizeShape(target);
+            comptime {
+                for (shape, target_shape) |s, t| {
+                    if (s % t != 0) @compileError("softmax: target shape dimension does not divide source");
+                }
+            }
+            var ne = target_shape;
+            return .{ .inner = self.inner.softmax(alloc, &ne) };
+        }
+
+        pub fn logSoftmax(self: Self, alloc: Alloc, comptime target: anytype) ShapedTensor(T, shape) {
+            const target_shape = comptime normalizeShape(target);
+            comptime {
+                for (shape, target_shape) |s, t| {
+                    if (s % t != 0) @compileError("logSoftmax: target shape dimension does not divide source");
+                }
+            }
+            var ne = target_shape;
+            return .{ .inner = self.inner.logSoftmax(alloc, &ne) };
+        }
+
+        /// Layer normalization: `(x - mean) / sqrt(var + eps)`.
+        /// Normalizes over dimensions reduced to `target`.
+        pub fn layerNorm(self: Self, alloc: Alloc, comptime target: anytype, eps: T) Self {
+            const target_shape = comptime normalizeShape(target);
+            comptime {
+                for (shape, target_shape) |s, t| {
+                    if (s % t != 0) @compileError("layerNorm: target shape dimension does not divide source");
+                }
+            }
+            var ne = target_shape;
+            return .{ .inner = self.inner.layerNorm(alloc, &ne, eps) };
         }
 
         /// Broadcast to a larger shape. Each dim of self must divide target's dim.
@@ -365,6 +425,21 @@ test "shaped - sum and repeat" {
     comptime std.debug.assert(@TypeOf(r).static_shape[1] == 3);
 }
 
+test "shaped - softmax shape preserved" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = (try Shaped(f32, .{3}).init(a)).setData(&.{ 1, 2, 3 });
+    const y = x.softmax(a, .{1});
+    comptime std.debug.assert(@TypeOf(y).static_shape[0] == 3);
+
+    try g.buildForward(y.tensor());
+    g.compute();
+
+    try testing.expectApproxEqAbs(@as(f32, 1.0), y.tensor().data[0] + y.tensor().data[1] + y.tensor().data[2], 1e-6);
+}
+
 test "shaped - reshape" {
     var arena = std.heap.ArenaAllocator.init(tac);
     defer arena.deinit();
@@ -456,7 +531,9 @@ test "map2 - fused result feeds into graph" {
 
     // Eager: fused double
     const doubled = try x.map(a, struct {
-        fn f(xi: f32) f32 { return xi * 2; }
+        fn f(xi: f32) f32 {
+            return xi * 2;
+        }
     }.f);
 
     // Feed into lazy graph for sum
