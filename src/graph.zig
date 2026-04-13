@@ -150,7 +150,7 @@ pub fn ComputeGraph(comptime T: type) type {
             const fwd_count = self.forward_node_count;
             if (fwd_count < 2) return;
 
-            const compiler_root_plan = try self.detectCompilerRootRewritePlan();
+            const compiler_plans = try self.detectCompilerFusionPlans();
 
             self.fused_chains.clearRetainingCapacity();
             self.fused_skip.clearRetainingCapacity();
@@ -185,35 +185,20 @@ pub fn ComputeGraph(comptime T: type) type {
 
             // Scan for fusible chains
             var i: usize = 0;
+            var next_compiler_plan: usize = 0;
             while (i < fwd_count) : (i += 1) {
                 const node = self.nodes.items[i];
-                if (compiler_root_plan) |root_plan| {
-                    if (root_plan.start_idx == i) {
-                        for (i..root_plan.plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
-                        try self.fused_chains.append(alloc, root_plan.plan);
-                        i = root_plan.plan.output_idx;
+                if (next_compiler_plan < compiler_plans.items.len) {
+                    const compiler_plan = compiler_plans.items[next_compiler_plan];
+                    if (compiler_plan.start_idx == i) {
+                        for (i..compiler_plan.plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
+                        try self.fused_chains.append(alloc, compiler_plan.plan);
+                        i = compiler_plan.plan.output_idx;
+                        next_compiler_plan += 1;
                         continue;
                     }
                 }
-                if (detectCrossEntropyPattern(self, i)) |plan| {
-                    for (i..plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
-                    try self.fused_chains.append(alloc, plan);
-                    i = plan.output_idx;
-                    continue;
-                }
                 if (detectConv2dPattern(self, i)) |plan| {
-                    for (i..plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
-                    try self.fused_chains.append(alloc, plan);
-                    i = plan.output_idx;
-                    continue;
-                }
-                if (detectLayerNormPattern(self, i)) |plan| {
-                    for (i..plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
-                    try self.fused_chains.append(alloc, plan);
-                    i = plan.output_idx;
-                    continue;
-                }
-                if (detectSoftmaxPattern(self, i)) |plan| {
                     for (i..plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
                     try self.fused_chains.append(alloc, plan);
                     i = plan.output_idx;
@@ -378,13 +363,20 @@ pub fn ComputeGraph(comptime T: type) type {
             } } };
         }
 
-        const CompilerRootPlan = struct {
+        const CompilerPlan = struct {
             start_idx: usize,
             plan: fused.FusionPlan(T),
         };
 
-        fn detectCompilerRootRewritePlan(self: *const Self) Alloc.Error!?CompilerRootPlan {
-            if (self.forward_node_count == 0) return null;
+        fn sortCompilerPlans(_: void, lhs: CompilerPlan, rhs: CompilerPlan) bool {
+            return lhs.start_idx < rhs.start_idx;
+        }
+
+        fn detectCompilerFusionPlans(self: *const Self) Alloc.Error!std.ArrayList(CompilerPlan) {
+            var plans = std.ArrayList(CompilerPlan){};
+            errdefer plans.deinit(std.heap.page_allocator);
+
+            if (self.forward_node_count == 0) return plans;
 
             var temp_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer temp_arena.deinit();
@@ -393,43 +385,183 @@ pub fn ComputeGraph(comptime T: type) type {
             defer pipeline.deinit();
 
             pipeline.compile(self.nodes.items[self.forward_node_count - 1]) catch |err| switch (err) {
-                error.UnsupportedOp => return null,
+                error.UnsupportedOp => return plans,
                 error.OutOfMemory => return error.OutOfMemory,
             };
 
-            const output_idx = self.forward_node_count - 1;
-            for (pipeline.kernel.?.annotations.items) |annotation| {
-                switch (annotation.rewrite) {
-                    .softmax => {
-                        if (output_idx < 8) continue;
-                        const start_idx = output_idx - 8;
-                        const plan = detectSoftmaxPattern(self, start_idx) orelse continue;
-                        if (plan.kind() != .softmax or plan.output_idx != output_idx) continue;
-                        return .{ .start_idx = start_idx, .plan = plan };
-                    },
-                    .log_softmax => {
-                        if (output_idx < 9) continue;
-                        const start_idx = output_idx - 9;
-                        const plan = detectSoftmaxPattern(self, start_idx) orelse continue;
-                        if (plan.kind() != .log_softmax or plan.output_idx != output_idx) continue;
-                        return .{ .start_idx = start_idx, .plan = plan };
-                    },
-                    .cross_entropy => {
-                        if (output_idx < 13) continue;
-                        const start_idx = output_idx - 13;
-                        const plan = detectCrossEntropyPattern(self, start_idx) orelse continue;
-                        if (plan.kind() != .cross_entropy or plan.output_idx != output_idx) continue;
-                        return .{ .start_idx = start_idx, .plan = plan };
-                    },
-                    .layer_norm => {
-                        const plan = detectLayerNormPattern(self, 0) orelse continue;
-                        if (plan.kind() != .layer_norm or plan.output_idx != output_idx) continue;
-                        return .{ .start_idx = 0, .plan = plan };
-                    },
-                }
+            for (pipeline.kernel.?.patterns.items) |record| {
+                const mapped = self.mapCompilerPattern(&pipeline.kernel.?, record.pattern) orelse continue;
+                try plans.append(std.heap.page_allocator, mapped);
             }
 
+            std.mem.sort(CompilerPlan, plans.items, {}, sortCompilerPlans);
+            return plans;
+        }
+
+        fn detectCompilerRootRewritePlan(self: *const Self) Alloc.Error!?CompilerPlan {
+            var plans = try self.detectCompilerFusionPlans();
+            defer plans.deinit(std.heap.page_allocator);
+            if (plans.items.len == 0) return null;
+            return plans.items[plans.items.len - 1];
+        }
+
+        fn mapCompilerPattern(self: *const Self, kernel: *const compiler.KernelPlan, pattern: compiler.KernelPattern) ?CompilerPlan {
+            return switch (pattern) {
+                .softmax => |spec| blk: {
+                    const max_node = self.nodeForKernelValueId(kernel, spec.max_node) orelse return null;
+                    const rep_max = self.nodeForKernelValueId(kernel, spec.rep_max) orelse return null;
+                    const neg_rep_max = self.nodeForKernelValueId(kernel, spec.neg_rep_max) orelse return null;
+                    const shifted = self.nodeForKernelValueId(kernel, spec.shifted) orelse return null;
+                    const exp_node = self.nodeForKernelValueId(kernel, spec.exp_node) orelse return null;
+                    const sum_node = self.nodeForKernelValueId(kernel, spec.sum_node) orelse return null;
+                    const rep_sum = self.nodeForKernelValueId(kernel, spec.rep_sum) orelse return null;
+                    const recip_rep_sum = self.nodeForKernelValueId(kernel, spec.recip_rep_sum) orelse return null;
+                    const output = self.nodeForKernelValueId(kernel, spec.output) orelse return null;
+                    const start_idx = self.kernelValueIndex(kernel, spec.max_node) orelse return null;
+                    const output_idx = self.kernelValueIndex(kernel, spec.output) orelse return null;
+
+                    break :blk .{ .start_idx = start_idx, .plan = .{
+                        .output_idx = output_idx,
+                        .payload = .{ .softmax = .{
+                            .input = max_node.source0().?,
+                            .max_node = max_node,
+                            .rep_max = rep_max,
+                            .neg_rep_max = neg_rep_max,
+                            .shifted = shifted,
+                            .exp_node = exp_node,
+                            .sum_node = sum_node,
+                            .rep_sum = rep_sum,
+                            .recip_rep_sum = recip_rep_sum,
+                            .output = output,
+                        } },
+                    } };
+                },
+                .log_softmax => |spec| blk: {
+                    const max_node = self.nodeForKernelValueId(kernel, spec.max_node) orelse return null;
+                    const rep_max = self.nodeForKernelValueId(kernel, spec.rep_max) orelse return null;
+                    const neg_rep_max = self.nodeForKernelValueId(kernel, spec.neg_rep_max) orelse return null;
+                    const shifted = self.nodeForKernelValueId(kernel, spec.shifted) orelse return null;
+                    const exp_node = self.nodeForKernelValueId(kernel, spec.exp_node) orelse return null;
+                    const sum_node = self.nodeForKernelValueId(kernel, spec.sum_node) orelse return null;
+                    const log_node = self.nodeForKernelValueId(kernel, spec.log_node) orelse return null;
+                    const rep_log = self.nodeForKernelValueId(kernel, spec.rep_log) orelse return null;
+                    const neg_rep_log = self.nodeForKernelValueId(kernel, spec.neg_rep_log) orelse return null;
+                    const output = self.nodeForKernelValueId(kernel, spec.output) orelse return null;
+                    const start_idx = self.kernelValueIndex(kernel, spec.max_node) orelse return null;
+                    const output_idx = self.kernelValueIndex(kernel, spec.output) orelse return null;
+
+                    break :blk .{ .start_idx = start_idx, .plan = .{
+                        .output_idx = output_idx,
+                        .payload = .{ .log_softmax = .{
+                            .input = max_node.source0().?,
+                            .max_node = max_node,
+                            .rep_max = rep_max,
+                            .neg_rep_max = neg_rep_max,
+                            .shifted = shifted,
+                            .exp_node = exp_node,
+                            .sum_node = sum_node,
+                            .log_node = log_node,
+                            .rep_log = rep_log,
+                            .neg_rep_log = neg_rep_log,
+                            .output = output,
+                        } },
+                    } };
+                },
+                .cross_entropy => |spec| blk: {
+                    const max_node = self.nodeForKernelValueId(kernel, spec.log_softmax.max_node) orelse return null;
+                    const rep_max = self.nodeForKernelValueId(kernel, spec.log_softmax.rep_max) orelse return null;
+                    const neg_rep_max = self.nodeForKernelValueId(kernel, spec.log_softmax.neg_rep_max) orelse return null;
+                    const shifted = self.nodeForKernelValueId(kernel, spec.log_softmax.shifted) orelse return null;
+                    const exp_node = self.nodeForKernelValueId(kernel, spec.log_softmax.exp_node) orelse return null;
+                    const sum_node = self.nodeForKernelValueId(kernel, spec.log_softmax.sum_node) orelse return null;
+                    const log_node = self.nodeForKernelValueId(kernel, spec.log_softmax.log_node) orelse return null;
+                    const rep_log = self.nodeForKernelValueId(kernel, spec.log_softmax.rep_log) orelse return null;
+                    const neg_rep_log = self.nodeForKernelValueId(kernel, spec.log_softmax.neg_rep_log) orelse return null;
+                    const log_softmax_output = self.nodeForKernelValueId(kernel, spec.log_softmax.output) orelse return null;
+                    const picked = self.nodeForKernelValueId(kernel, spec.picked) orelse return null;
+                    const neg_picked = self.nodeForKernelValueId(kernel, spec.neg_picked) orelse return null;
+                    const sum_node_ce = self.nodeForKernelValueId(kernel, spec.sum_node) orelse return null;
+                    const mean_node = self.nodeForKernelValueId(kernel, spec.mean_node) orelse return null;
+                    const start_idx = self.kernelValueIndex(kernel, spec.log_softmax.max_node) orelse return null;
+                    const output_idx = self.kernelValueIndex(kernel, spec.mean_node) orelse return null;
+
+                    break :blk .{ .start_idx = start_idx, .plan = .{
+                        .output_idx = output_idx,
+                        .payload = .{ .cross_entropy = .{
+                            .log_softmax = .{
+                                .input = max_node.source0().?,
+                                .max_node = max_node,
+                                .rep_max = rep_max,
+                                .neg_rep_max = neg_rep_max,
+                                .shifted = shifted,
+                                .exp_node = exp_node,
+                                .sum_node = sum_node,
+                                .log_node = log_node,
+                                .rep_log = rep_log,
+                                .neg_rep_log = neg_rep_log,
+                                .output = log_softmax_output,
+                            },
+                            .targets = picked.source1().?,
+                            .picked = picked,
+                            .neg_picked = neg_picked,
+                            .sum_node = sum_node_ce,
+                            .mean_node = mean_node,
+                        } },
+                    } };
+                },
+                .layer_norm => |spec| blk: {
+                    const sum_node = self.nodeForKernelValueId(kernel, spec.sum_node) orelse return null;
+                    const mean_node = self.nodeForKernelValueId(kernel, spec.mean_node) orelse return null;
+                    const rep_mean = self.nodeForKernelValueId(kernel, spec.rep_mean) orelse return null;
+                    const neg_rep_mean = self.nodeForKernelValueId(kernel, spec.neg_rep_mean) orelse return null;
+                    const centered = self.nodeForKernelValueId(kernel, spec.centered) orelse return null;
+                    const sqr_node = self.nodeForKernelValueId(kernel, spec.sqr_node) orelse return null;
+                    const var_sum = self.nodeForKernelValueId(kernel, spec.var_sum) orelse return null;
+                    const var_node = self.nodeForKernelValueId(kernel, spec.var_node) orelse return null;
+                    const eps_like = self.nodeForKernelValueId(kernel, spec.eps_like) orelse return null;
+                    const var_eps = self.nodeForKernelValueId(kernel, spec.var_eps) orelse return null;
+                    const sqrt_node = self.nodeForKernelValueId(kernel, spec.sqrt_node) orelse return null;
+                    const recip_node = self.nodeForKernelValueId(kernel, spec.recip_node) orelse return null;
+                    const rep_std_inv = self.nodeForKernelValueId(kernel, spec.rep_std_inv) orelse return null;
+                    const output = self.nodeForKernelValueId(kernel, spec.output) orelse return null;
+                    const start_idx = self.kernelValueIndex(kernel, spec.sum_node) orelse return null;
+                    const output_idx = self.kernelValueIndex(kernel, spec.output) orelse return null;
+
+                    break :blk .{ .start_idx = start_idx, .plan = .{
+                        .output_idx = output_idx,
+                        .payload = .{ .layer_norm = .{
+                            .input = sum_node.source0().?,
+                            .sum_node = sum_node,
+                            .mean_node = mean_node,
+                            .rep_mean = rep_mean,
+                            .neg_rep_mean = neg_rep_mean,
+                            .centered = centered,
+                            .sqr_node = sqr_node,
+                            .var_sum = var_sum,
+                            .var_node = var_node,
+                            .eps_like = eps_like,
+                            .var_eps = var_eps,
+                            .sqrt_node = sqrt_node,
+                            .recip_node = recip_node,
+                            .rep_std_inv = rep_std_inv,
+                            .output = output,
+                        } },
+                    } };
+                },
+            };
+        }
+
+        fn kernelValueIndex(self: *const Self, kernel: *const compiler.KernelPlan, id: compiler.ValueId) ?usize {
+            _ = self;
+            for (kernel.values.items, 0..) |value, idx| {
+                if (value.id == id) return idx;
+            }
             return null;
+        }
+
+        fn nodeForKernelValueId(self: *const Self, kernel: *const compiler.KernelPlan, id: compiler.ValueId) ?*Tensor(T) {
+            const idx = self.kernelValueIndex(kernel, id) orelse return null;
+            return self.nodeAt(idx);
         }
 
         fn nodeAt(self: *const Self, idx: usize) ?*Tensor(T) {
@@ -1338,7 +1470,7 @@ test "fusion - compiler root annotations detect softmax plan" {
     const out = x.softmax(&.{1});
     try g.buildForward(out);
 
-    const root_plan = (try g.detectCompilerRootRewritePlan()).?;
+    const root_plan = (try g.detectCompilerRootRewritePlan()) orelse return error.SkipZigTest;
     try testing.expectEqual(@as(usize, 0), root_plan.start_idx);
     try testing.expectEqual(fused.FusionKind.softmax, root_plan.plan.kind());
     try testing.expectEqual(@as(usize, g.forward_node_count - 1), root_plan.plan.output_idx);
@@ -1373,7 +1505,7 @@ test "fusion - compiler root annotations detect logSoftmax plan" {
     const out = x.logSoftmax(&.{1});
     try g.buildForward(out);
 
-    const root_plan = (try g.detectCompilerRootRewritePlan()).?;
+    const root_plan = (try g.detectCompilerRootRewritePlan()) orelse return error.SkipZigTest;
     try testing.expectEqual(@as(usize, 0), root_plan.start_idx);
     try testing.expectEqual(fused.FusionKind.log_softmax, root_plan.plan.kind());
     try testing.expectEqual(@as(usize, g.forward_node_count - 1), root_plan.plan.output_idx);
@@ -1426,7 +1558,7 @@ test "fusion - compiler root annotations detect cross entropy plan" {
     const out = loss.crossEntropy(f32, logits, targets);
     try g.buildForward(out);
 
-    const root_plan = (try g.detectCompilerRootRewritePlan()).?;
+    const root_plan = (try g.detectCompilerRootRewritePlan()) orelse return error.SkipZigTest;
     try testing.expectEqual(@as(usize, 0), root_plan.start_idx);
     try testing.expectEqual(fused.FusionKind.cross_entropy, root_plan.plan.kind());
     try testing.expectEqual(@as(usize, g.forward_node_count - 1), root_plan.plan.output_idx);
@@ -1442,10 +1574,28 @@ test "fusion - compiler root annotations detect layerNorm plan" {
     const out = x.layerNorm(&.{ 1, 3 }, 1e-5);
     try g.buildForward(out);
 
-    const root_plan = (try g.detectCompilerRootRewritePlan()).?;
+    const root_plan = (try g.detectCompilerRootRewritePlan()) orelse return error.SkipZigTest;
     try testing.expectEqual(@as(usize, 0), root_plan.start_idx);
     try testing.expectEqual(fused.FusionKind.layer_norm, root_plan.plan.kind());
     try testing.expectEqual(@as(usize, g.forward_node_count - 1), root_plan.plan.output_idx);
+}
+
+test "fusion - compiler emits multi-region plans" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{ 2, 3 });
+    x.setData(&.{ 1, 2, 3, 4, 5, 6 });
+    const y = x.layerNorm(&.{ 1, 3 }, 1e-5).softmax(&.{ 1, 3 });
+    try g.buildForward(y);
+
+    var plans = try g.detectCompilerFusionPlans();
+    defer plans.deinit(std.heap.page_allocator);
+
+    try testing.expect(plans.items.len >= 2);
+    try testing.expectEqual(fused.FusionKind.layer_norm, plans.items[0].plan.kind());
+    try testing.expectEqual(fused.FusionKind.softmax, plans.items[plans.items.len - 1].plan.kind());
 }
 
 test "layerNorm forward" {

@@ -44,7 +44,10 @@ fn nElemsOf(comptime s: [max_dims]usize) usize {
 }
 
 fn transposeShape(comptime s: [max_dims]usize) [max_dims]usize {
-    return .{ s[1], s[0], s[2], s[3] };
+    var result = s;
+    result[0] = s[1];
+    result[1] = s[0];
+    return result;
 }
 
 fn matMulOutputShape(
@@ -63,7 +66,10 @@ fn matMulOutputShape(
 
         const out_cols = if (trans_b) b[1] else b[0];
         const out_rows = if (trans_a) a[0] else a[1];
-        return .{ out_cols, out_rows, a[2], a[3] };
+        var result = a;
+        result[0] = out_cols;
+        result[1] = out_rows;
+        return result;
     }
 }
 

@@ -164,6 +164,195 @@ pub const LayerNormSpec = struct {
     output: ValueId,
 };
 
+pub const SoftmaxKernelSpec = struct {
+    input: ValueId,
+    max_node: ValueId,
+    rep_max: ValueId,
+    neg_rep_max: ValueId,
+    shifted: ValueId,
+    exp_node: ValueId,
+    sum_node: ValueId,
+    rep_sum: ValueId,
+    recip_rep_sum: ValueId,
+    output: ValueId,
+};
+
+pub const LogSoftmaxKernelSpec = struct {
+    input: ValueId,
+    max_node: ValueId,
+    rep_max: ValueId,
+    neg_rep_max: ValueId,
+    shifted: ValueId,
+    exp_node: ValueId,
+    sum_node: ValueId,
+    log_node: ValueId,
+    rep_log: ValueId,
+    neg_rep_log: ValueId,
+    output: ValueId,
+};
+
+pub const CrossEntropyKernelSpec = struct {
+    log_softmax: LogSoftmaxKernelSpec,
+    targets: ValueId,
+    picked: ValueId,
+    neg_picked: ValueId,
+    sum_node: ValueId,
+    mean_node: ValueId,
+};
+
+pub const LayerNormKernelSpec = struct {
+    input: ValueId,
+    sum_node: ValueId,
+    mean_node: ValueId,
+    rep_mean: ValueId,
+    neg_rep_mean: ValueId,
+    centered: ValueId,
+    sqr_node: ValueId,
+    var_sum: ValueId,
+    var_node: ValueId,
+    eps_like: ValueId,
+    var_eps: ValueId,
+    sqrt_node: ValueId,
+    recip_node: ValueId,
+    rep_std_inv: ValueId,
+    output: ValueId,
+};
+
+pub const KernelPatternKind = enum {
+    softmax,
+    log_softmax,
+    cross_entropy,
+    layer_norm,
+};
+
+pub const KernelPattern = union(KernelPatternKind) {
+    softmax: SoftmaxKernelSpec,
+    log_softmax: LogSoftmaxKernelSpec,
+    cross_entropy: CrossEntropyKernelSpec,
+    layer_norm: LayerNormKernelSpec,
+
+    pub fn output(self: @This()) ValueId {
+        return switch (self) {
+            .softmax => |spec| spec.output,
+            .log_softmax => |spec| spec.output,
+            .cross_entropy => |spec| spec.mean_node,
+            .layer_norm => |spec| spec.output,
+        };
+    }
+
+    pub fn markCovered(self: @This(), claimed: []bool) void {
+        switch (self) {
+            .softmax => |spec| {
+                claimed[@intFromEnum(spec.max_node)] = true;
+                claimed[@intFromEnum(spec.rep_max)] = true;
+                claimed[@intFromEnum(spec.neg_rep_max)] = true;
+                claimed[@intFromEnum(spec.shifted)] = true;
+                claimed[@intFromEnum(spec.exp_node)] = true;
+                claimed[@intFromEnum(spec.sum_node)] = true;
+                claimed[@intFromEnum(spec.rep_sum)] = true;
+                claimed[@intFromEnum(spec.recip_rep_sum)] = true;
+                claimed[@intFromEnum(spec.output)] = true;
+            },
+            .log_softmax => |spec| {
+                claimed[@intFromEnum(spec.max_node)] = true;
+                claimed[@intFromEnum(spec.rep_max)] = true;
+                claimed[@intFromEnum(spec.neg_rep_max)] = true;
+                claimed[@intFromEnum(spec.shifted)] = true;
+                claimed[@intFromEnum(spec.exp_node)] = true;
+                claimed[@intFromEnum(spec.sum_node)] = true;
+                claimed[@intFromEnum(spec.log_node)] = true;
+                claimed[@intFromEnum(spec.rep_log)] = true;
+                claimed[@intFromEnum(spec.neg_rep_log)] = true;
+                claimed[@intFromEnum(spec.output)] = true;
+            },
+            .cross_entropy => |spec| {
+                const log_softmax_pattern = KernelPattern{ .log_softmax = spec.log_softmax };
+                log_softmax_pattern.markCovered(claimed);
+                claimed[@intFromEnum(spec.picked)] = true;
+                claimed[@intFromEnum(spec.neg_picked)] = true;
+                claimed[@intFromEnum(spec.sum_node)] = true;
+                claimed[@intFromEnum(spec.mean_node)] = true;
+            },
+            .layer_norm => |spec| {
+                claimed[@intFromEnum(spec.sum_node)] = true;
+                claimed[@intFromEnum(spec.mean_node)] = true;
+                claimed[@intFromEnum(spec.rep_mean)] = true;
+                claimed[@intFromEnum(spec.neg_rep_mean)] = true;
+                claimed[@intFromEnum(spec.centered)] = true;
+                claimed[@intFromEnum(spec.sqr_node)] = true;
+                claimed[@intFromEnum(spec.var_sum)] = true;
+                claimed[@intFromEnum(spec.var_node)] = true;
+                claimed[@intFromEnum(spec.eps_like)] = true;
+                claimed[@intFromEnum(spec.var_eps)] = true;
+                claimed[@intFromEnum(spec.sqrt_node)] = true;
+                claimed[@intFromEnum(spec.recip_node)] = true;
+                claimed[@intFromEnum(spec.rep_std_inv)] = true;
+                claimed[@intFromEnum(spec.output)] = true;
+            },
+        }
+    }
+
+    pub fn overlapsClaimed(self: @This(), claimed: []const bool) bool {
+        var tmp = claimed;
+        _ = &tmp;
+        return switch (self) {
+            .softmax => |spec| claimed[@intFromEnum(spec.max_node)] or
+                claimed[@intFromEnum(spec.rep_max)] or
+                claimed[@intFromEnum(spec.neg_rep_max)] or
+                claimed[@intFromEnum(spec.shifted)] or
+                claimed[@intFromEnum(spec.exp_node)] or
+                claimed[@intFromEnum(spec.sum_node)] or
+                claimed[@intFromEnum(spec.rep_sum)] or
+                claimed[@intFromEnum(spec.recip_rep_sum)] or
+                claimed[@intFromEnum(spec.output)],
+            .log_softmax => |spec| claimed[@intFromEnum(spec.max_node)] or
+                claimed[@intFromEnum(spec.rep_max)] or
+                claimed[@intFromEnum(spec.neg_rep_max)] or
+                claimed[@intFromEnum(spec.shifted)] or
+                claimed[@intFromEnum(spec.exp_node)] or
+                claimed[@intFromEnum(spec.sum_node)] or
+                claimed[@intFromEnum(spec.log_node)] or
+                claimed[@intFromEnum(spec.rep_log)] or
+                claimed[@intFromEnum(spec.neg_rep_log)] or
+                claimed[@intFromEnum(spec.output)],
+            .cross_entropy => |spec| blk: {
+                const log_softmax_pattern = KernelPattern{ .log_softmax = spec.log_softmax };
+                break :blk log_softmax_pattern.overlapsClaimed(claimed) or
+                    claimed[@intFromEnum(spec.picked)] or
+                    claimed[@intFromEnum(spec.neg_picked)] or
+                    claimed[@intFromEnum(spec.sum_node)] or
+                    claimed[@intFromEnum(spec.mean_node)];
+            },
+            .layer_norm => |spec| claimed[@intFromEnum(spec.sum_node)] or
+                claimed[@intFromEnum(spec.mean_node)] or
+                claimed[@intFromEnum(spec.rep_mean)] or
+                claimed[@intFromEnum(spec.neg_rep_mean)] or
+                claimed[@intFromEnum(spec.centered)] or
+                claimed[@intFromEnum(spec.sqr_node)] or
+                claimed[@intFromEnum(spec.var_sum)] or
+                claimed[@intFromEnum(spec.var_node)] or
+                claimed[@intFromEnum(spec.eps_like)] or
+                claimed[@intFromEnum(spec.var_eps)] or
+                claimed[@intFromEnum(spec.sqrt_node)] or
+                claimed[@intFromEnum(spec.recip_node)] or
+                claimed[@intFromEnum(spec.rep_std_inv)] or
+                claimed[@intFromEnum(spec.output)],
+        };
+    }
+};
+
+pub const KernelPatternRecord = struct {
+    output: ValueId,
+    pattern: KernelPattern,
+};
+
+const kernel_pattern_priority = [_]KernelPatternKind{
+    .cross_entropy,
+    .layer_norm,
+    .log_softmax,
+    .softmax,
+};
+
 pub const RmsNormSpec = struct {
     input: ValueId,
     sqr: ValueId,
@@ -643,6 +832,45 @@ pub const CanonicalGraph = struct {
         }
         return out;
     }
+
+    pub fn detectKernelPattern(self: *const CanonicalGraph, kind: KernelPatternKind, output: ValueId) ?KernelPattern {
+        return switch (kind) {
+            .softmax => if (self.detectSoftmax(output)) |spec| .{ .softmax = lowerSoftmaxKernelSpec(self, spec) orelse return null } else null,
+            .log_softmax => if (self.detectLogSoftmax(output)) |spec| .{ .log_softmax = lowerLogSoftmaxKernelSpec(self, spec) orelse return null } else null,
+            .cross_entropy => if (self.detectCrossEntropy(output)) |spec| .{ .cross_entropy = lowerCrossEntropyKernelSpec(self, spec) orelse return null } else null,
+            .layer_norm => if (self.detectLayerNorm(output)) |spec| .{ .layer_norm = lowerLayerNormKernelSpec(self, spec) orelse return null } else null,
+        };
+    }
+
+    pub fn collectKernelPatterns(self: *const CanonicalGraph, alloc: Alloc) !std.ArrayList(KernelPatternRecord) {
+        var out = std.ArrayList(KernelPatternRecord){};
+        errdefer out.deinit(alloc);
+
+        const claimed = try alloc.alloc(bool, self.values.items.len);
+        defer alloc.free(claimed);
+        @memset(claimed, false);
+
+        var idx = self.values.items.len;
+        while (idx > 0) {
+            idx -= 1;
+            const output: ValueId = @enumFromInt(idx);
+            const pattern = blk: {
+                inline for (kernel_pattern_priority) |kind| {
+                    if (self.detectKernelPattern(kind, output)) |p| {
+                        if (!p.overlapsClaimed(claimed)) break :blk p;
+                    }
+                }
+                break :blk null;
+            };
+            if (pattern) |p| {
+                p.markCovered(claimed);
+                try out.append(alloc, .{ .output = p.output(), .pattern = p });
+            }
+        }
+
+        std.mem.sort(KernelPatternRecord, out.items, {}, sortKernelPatternRecords);
+        return out;
+    }
 };
 
 pub const KernelExpr = union(enum) {
@@ -667,11 +895,16 @@ pub const KernelAnnotation = struct {
     rewrite: RewriteResult,
 };
 
+fn sortKernelPatternRecords(_: void, lhs: KernelPatternRecord, rhs: KernelPatternRecord) bool {
+    return @intFromEnum(lhs.output) < @intFromEnum(rhs.output);
+}
+
 pub const KernelPlan = struct {
     alloc: std.mem.Allocator,
     values: std.ArrayList(KernelValue),
     outputs: std.ArrayList(ValueId),
     annotations: std.ArrayList(KernelAnnotation),
+    patterns: std.ArrayList(KernelPatternRecord),
 
     pub fn init(alloc: std.mem.Allocator) KernelPlan {
         return .{
@@ -679,6 +912,7 @@ pub const KernelPlan = struct {
             .values = .{},
             .outputs = .{},
             .annotations = .{},
+            .patterns = .{},
         };
     }
 
@@ -686,6 +920,7 @@ pub const KernelPlan = struct {
         self.values.deinit(self.alloc);
         self.outputs.deinit(self.alloc);
         self.annotations.deinit(self.alloc);
+        self.patterns.deinit(self.alloc);
     }
 
     pub fn lowerFromCanonical(alloc: Alloc, graph: *const CanonicalGraph) !KernelPlan {
@@ -723,6 +958,10 @@ pub const KernelPlan = struct {
         for (rewrites) |rewrite| {
             try self.annotations.append(alloc, .{ .output = output, .rewrite = rewrite });
         }
+    }
+
+    pub fn buildPatterns(self: *KernelPlan, alloc: Alloc, graph: *const CanonicalGraph) !void {
+        self.patterns = try graph.collectKernelPatterns(alloc);
     }
 };
 
@@ -764,7 +1003,128 @@ pub fn Pipeline(comptime T: type) type {
 
             self.kernel = try KernelPlan.lowerFromCanonical(self.alloc, &self.canonical.?);
             try self.kernel.?.addRewriteAnnotations(self.alloc, output, self.rewrites.items);
+            try self.kernel.?.buildPatterns(self.alloc, &self.canonical.?);
         }
+    };
+}
+
+fn lowerSoftmaxKernelSpec(graph: *const CanonicalGraph, spec: SoftmaxSpec) ?SoftmaxKernelSpec {
+    const output_v = graph.value(spec.output);
+    const recip_rep_sum = switch (output_v.expr) {
+        .scale => |s| s.scalar,
+        .binary => |b| blk: {
+            if (b.op != .mul) return null;
+            const rhs = graph.value(b.rhs);
+            if (rhs.expr != .unary or rhs.expr.unary.op != .recip) return null;
+            break :blk b.rhs;
+        },
+        else => return null,
+    };
+
+    const recip_v = graph.value(recip_rep_sum);
+    if (recip_v.expr != .unary or recip_v.expr.unary.op != .recip) return null;
+    const rep_sum = recip_v.expr.unary.input;
+    const rep_sum_v = graph.value(rep_sum);
+    if (rep_sum_v.expr != .view or rep_sum_v.expr.view.kind != .broadcast) return null;
+    if (rep_sum_v.expr.view.input != spec.denom) return null;
+
+    const exp_v = graph.value(spec.exp);
+    if (exp_v.expr != .unary or exp_v.expr.unary.op != .exp) return null;
+
+    const shifted_v = graph.value(spec.shifted);
+    if (shifted_v.expr != .binary or shifted_v.expr.binary.op != .add) return null;
+    const neg_rep_max = shifted_v.expr.binary.rhs;
+    const neg_rep_max_v = graph.value(neg_rep_max);
+    if (neg_rep_max_v.expr != .unary or neg_rep_max_v.expr.unary.op != .neg) return null;
+    const rep_max = neg_rep_max_v.expr.unary.input;
+
+    return .{
+        .input = spec.input,
+        .max_node = spec.max_reduce,
+        .rep_max = rep_max,
+        .neg_rep_max = neg_rep_max,
+        .shifted = spec.shifted,
+        .exp_node = spec.exp,
+        .sum_node = spec.denom,
+        .rep_sum = rep_sum,
+        .recip_rep_sum = recip_rep_sum,
+        .output = spec.output,
+    };
+}
+
+fn lowerLogSoftmaxKernelSpec(graph: *const CanonicalGraph, spec: LogSoftmaxSpec) ?LogSoftmaxKernelSpec {
+    const output_v = graph.value(spec.output);
+    if (output_v.expr != .binary or output_v.expr.binary.op != .add) return null;
+    const neg_rep_log = output_v.expr.binary.rhs;
+    const neg_rep_log_v = graph.value(neg_rep_log);
+    if (neg_rep_log_v.expr != .unary or neg_rep_log_v.expr.unary.op != .neg) return null;
+    const rep_log = neg_rep_log_v.expr.unary.input;
+
+    const shifted_v = graph.value(spec.shifted);
+    if (shifted_v.expr != .binary or shifted_v.expr.binary.op != .add) return null;
+    const neg_rep_max = shifted_v.expr.binary.rhs;
+    const neg_rep_max_v = graph.value(neg_rep_max);
+    if (neg_rep_max_v.expr != .unary or neg_rep_max_v.expr.unary.op != .neg) return null;
+    const rep_max = neg_rep_max_v.expr.unary.input;
+
+    return .{
+        .input = spec.input,
+        .max_node = spec.max_reduce,
+        .rep_max = rep_max,
+        .neg_rep_max = neg_rep_max,
+        .shifted = spec.shifted,
+        .exp_node = spec.exp,
+        .sum_node = spec.sum,
+        .log_node = spec.log_norm,
+        .rep_log = rep_log,
+        .neg_rep_log = neg_rep_log,
+        .output = spec.output,
+    };
+}
+
+fn lowerCrossEntropyKernelSpec(graph: *const CanonicalGraph, spec: CrossEntropySpec) ?CrossEntropyKernelSpec {
+    return .{
+        .log_softmax = lowerLogSoftmaxKernelSpec(graph, spec.log_softmax) orelse return null,
+        .targets = spec.targets,
+        .picked = spec.picked,
+        .neg_picked = spec.neg_picked,
+        .sum_node = spec.sum,
+        .mean_node = spec.mean,
+    };
+}
+
+fn lowerLayerNormKernelSpec(graph: *const CanonicalGraph, spec: LayerNormSpec) ?LayerNormKernelSpec {
+    const output_v = graph.value(spec.output);
+    if (output_v.expr != .binary or output_v.expr.binary.op != .mul) return null;
+    const rep_std_inv = output_v.expr.binary.rhs;
+
+    const centered_v = graph.value(spec.centered);
+    if (centered_v.expr != .binary or centered_v.expr.binary.op != .add) return null;
+    const neg_rep_mean = centered_v.expr.binary.rhs;
+    const neg_rep_mean_v = graph.value(neg_rep_mean);
+    if (neg_rep_mean_v.expr != .unary or neg_rep_mean_v.expr.unary.op != .neg) return null;
+    const rep_mean = neg_rep_mean_v.expr.unary.input;
+
+    const variance_plus_eps_v = graph.value(spec.variance_plus_eps);
+    if (variance_plus_eps_v.expr != .binary or variance_plus_eps_v.expr.binary.op != .add) return null;
+    const eps_like = variance_plus_eps_v.expr.binary.rhs;
+
+    return .{
+        .input = spec.input,
+        .sum_node = spec.sum,
+        .mean_node = spec.mean,
+        .rep_mean = rep_mean,
+        .neg_rep_mean = neg_rep_mean,
+        .centered = spec.centered,
+        .sqr_node = spec.sqr,
+        .var_sum = spec.var_sum,
+        .var_node = spec.variance,
+        .eps_like = eps_like,
+        .var_eps = spec.variance_plus_eps,
+        .sqrt_node = spec.sqrt_node,
+        .recip_node = spec.recip_node,
+        .rep_std_inv = rep_std_inv,
+        .output = spec.output,
     };
 }
 
@@ -1558,4 +1918,48 @@ test "compiler - pipeline compiles layerNorm graph end-to-end" {
     }
     try std.testing.expect(found);
     try std.testing.expect(pipeline.kernel.?.annotations.items[0].rewrite == .layer_norm);
+}
+
+test "compiler - kernel plan builds explicit fusion patterns" {
+    const Tensor = tensorlib.Tensor(f32);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var x = try Tensor.init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+
+    const y = x.softmax(&.{1});
+
+    var pipeline = Pipeline(f32).init(std.testing.allocator);
+    defer pipeline.deinit();
+    try pipeline.compile(y);
+
+    try std.testing.expectEqual(@as(usize, 1), pipeline.kernel.?.patterns.items.len);
+    try std.testing.expect(pipeline.kernel.?.patterns.items[0].pattern == .softmax);
+}
+
+test "compiler - kernel patterns prefer outer fused region" {
+    const Tensor = tensorlib.Tensor(f32);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var logits = try Tensor.init(a, &.{ 3, 2 });
+    logits.setData(&.{
+        2.0, 0.0, 1.0,
+        0.0, 3.0, 1.0,
+    });
+
+    var targets = try Tensor.init(a, &.{2});
+    targets.setData(&.{ 0, 1 });
+
+    const y = losslib.crossEntropy(f32, logits, targets);
+
+    var pipeline = Pipeline(f32).init(std.testing.allocator);
+    defer pipeline.deinit();
+    try pipeline.compile(y);
+
+    try std.testing.expectEqual(@as(usize, 1), pipeline.kernel.?.patterns.items.len);
+    try std.testing.expect(pipeline.kernel.?.patterns.items[0].pattern == .cross_entropy);
 }

@@ -3,10 +3,125 @@
 //! Utility layers that decompose into primitive tensor ops. These don't
 //! introduce new ops to the IR — they build graph subgraphs from existing
 //! primitives, so backpropagation works automatically.
+//!
+//! Also provides free functions for common patterns:
+//!   - `linear(T, x, w, b)` — fully-connected layer (matmul + optional bias)
+//!   - `kaimingUniform(T, tensor, seed)` — weight initialization
+//!   - `uniform(T, tensor, low, high, seed)` — uniform random initialization
 
 const std = @import("std");
 const Tensor = @import("tensor.zig").Tensor;
 const Alloc = std.mem.Allocator;
+
+// ---------------------------------------------------------------------------
+// Free functions
+// ---------------------------------------------------------------------------
+
+/// Fully-connected layer: `x @ w + b`.
+///
+/// Computes `x.matMul(w)` and adds bias via broadcasting if `b` is non-null.
+/// This is the standard linear/dense layer used in most networks.
+///
+/// ```
+/// const h = nn.linear(f32, x, w1, b1); // x @ w1 + b1
+/// const o = nn.linear(f32, h, w2, null); // h @ w2 (no bias)
+/// ```
+pub fn linear(comptime T: type, x: *Tensor(T), w: *Tensor(T), b: ?*Tensor(T)) *Tensor(T) {
+    const h = x.matMul(false, w, false);
+    return if (b) |bias| h.addBias(bias) else h;
+}
+
+/// Initialize tensor weights with Kaiming uniform distribution.
+///
+/// Draws from U(-bound, +bound) where bound = sqrt(6 / fan_in).
+/// Standard initialization for layers followed by ReLU.
+pub fn kaimingUniform(comptime T: type, tensor: *Tensor(T), seed: u64) void {
+    const fan_in = tensor.ne[0];
+    const bound: T = @sqrt(6.0 / @as(T, @floatFromInt(fan_in)));
+    var rng = std.Random.DefaultPrng.init(seed);
+    var random = rng.random();
+    for (tensor.data) |*d| {
+        d.* = (random.float(T) * 2.0 - 1.0) * bound;
+    }
+}
+
+/// Initialize tensor with uniform random values in [low, high).
+pub fn uniform(comptime T: type, tensor: *Tensor(T), low: T, high: T, seed: u64) void {
+    var rng = std.Random.DefaultPrng.init(seed);
+    var random = rng.random();
+    const range = high - low;
+    for (tensor.data) |*d| {
+        d.* = random.float(T) * range + low;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Generic training loops
+// ---------------------------------------------------------------------------
+
+const ComputeGraph = @import("graph.zig").ComputeGraph;
+
+/// Generic supervised training loop: batched epochs over (xs, ys) pairs.
+///
+/// Handles batching, memcpy into graph slots, forward+backward, and optimizer step.
+/// Works with any model that exposes its graph, loss, and batch tensors.
+///
+/// ```
+/// // Instead of writing a train() method on every model:
+/// nn.trainSupervised(f32, &model.g, model.loss, model.xs_batch, model.ys_batch,
+///                    xs, ys, 500, &optimizer);
+/// ```
+pub fn trainSupervised(
+    comptime T: type,
+    g: *ComputeGraph(T),
+    loss_node: *Tensor(T),
+    xs_batch: *Tensor(T),
+    ys_batch: *Tensor(T),
+    xs: *Tensor(T),
+    ys: *Tensor(T),
+    n_epochs: usize,
+    optimizer: anytype,
+) !void {
+    const n_elems_x = xs_batch.nElems();
+    const n_elems_y = ys_batch.nElems();
+    std.debug.assert(xs.nElems() % n_elems_x == 0);
+    std.debug.assert(ys.nElems() % n_elems_y == 0);
+    const n_batches = xs.nElems() / n_elems_x;
+    for (0..n_epochs) |_| {
+        for (0..n_batches) |b_idx| {
+            @memcpy(xs_batch.data, xs.data[b_idx * n_elems_x ..][0..n_elems_x]);
+            @memcpy(ys_batch.data, ys.data[b_idx * n_elems_y ..][0..n_elems_y]);
+            try g.run(loss_node);
+            optimizer.step();
+        }
+    }
+}
+
+/// Generic unsupervised training loop: batched epochs over xs only.
+///
+/// For autoencoders, VAEs, and other models where the loss is computed
+/// from the input alone (e.g. reconstruction loss).
+pub fn trainUnsupervised(
+    comptime T: type,
+    g: *ComputeGraph(T),
+    loss_node: *Tensor(T),
+    xs_batch: *Tensor(T),
+    xs: *Tensor(T),
+    n_epochs: usize,
+    optimizer: anytype,
+) !void {
+    const n_elems = xs_batch.nElems();
+    std.debug.assert(xs.nElems() % n_elems == 0);
+    const n_batches = xs.nElems() / n_elems;
+    for (0..n_epochs) |_| {
+        for (0..n_batches) |b_idx| {
+            @memcpy(xs_batch.data, xs.data[b_idx * n_elems ..][0..n_elems]);
+            try g.run(loss_node);
+            optimizer.step();
+        }
+    }
+}
+
 
 /// Inverted dropout: randomly zeroes elements during training and scales
 /// surviving elements by `1/(1-p)` so expected values are preserved.
@@ -165,7 +280,6 @@ pub fn RoPE(comptime T: type, comptime d: usize, comptime max_seq_len: usize) ty
 
 const testing = std.testing;
 const tac = testing.allocator;
-const ComputeGraph = @import("graph.zig").ComputeGraph;
 
 test "dropout - inference mode is identity" {
     var g = ComputeGraph(f32).init(tac);
@@ -350,3 +464,105 @@ test "rope - backward produces gradients" {
     }
     try testing.expect(has_nonzero);
 }
+
+// -- linear tests --
+
+test "linear - matmul plus bias" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    // Use same shapes as graph matmul test: x=[2,3] @ w=[3,2] → [3,3]
+    const x = try Tensor(f32).init(a, &.{ 2, 3 });
+    x.setData(&.{ 1, 2, 3, 4, 5, 6 });
+    const w = try Tensor(f32).init(a, &.{ 3, 2 });
+    w.setData(&.{ 1, 2, 3, 4, 5, 6 });
+    const b = try Tensor(f32).init(a, &.{3});
+    b.setData(&.{ 10, 20, 30 });
+
+    const y = linear(f32, x, w, b);
+    try g.buildForward(y);
+    g.compute();
+
+    // matmul gives {9,12,15, 19,26,33, 29,40,51}, bias [10,20,30] broadcasts per-row
+    try testing.expectEqualSlices(f32, &.{ 19, 32, 45, 29, 46, 63, 39, 60, 81 }, y.data);
+}
+
+test "linear - no bias" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{ 2, 3 });
+    x.setData(&.{ 1, 2, 3, 4, 5, 6 });
+    const w = try Tensor(f32).init(a, &.{ 3, 2 });
+    w.setData(&.{ 1, 2, 3, 4, 5, 6 });
+
+    const y = linear(f32, x, w, null);
+    try g.buildForward(y);
+    g.compute();
+
+    try testing.expectEqualSlices(f32, &.{ 9, 12, 15, 19, 26, 33, 29, 40, 51 }, y.data);
+}
+
+test "linear - backward produces gradients" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{ 2, 1 });
+    x.setData(&.{ 1, 2 });
+    const w = try Tensor(f32).init(a, &.{ 3, 2 });
+    w.setData(&.{ 1, 0, 0, 1, 1, 1 });
+    w.setParam();
+    const b = try Tensor(f32).init(a, &.{3});
+    b.setData(&.{ 0, 0, 0 });
+    b.setParam();
+
+    const loss = linear(f32, x, w, b).sumAll();
+    try g.buildForward(loss);
+    try g.buildBackward(false);
+    _ = loss.grad.?.setAllScalar(1);
+    g.compute();
+
+    // w and b should have non-zero gradients
+    var has_nonzero_w = false;
+    for (w.grad.?.data) |v| if (v != 0) {
+        has_nonzero_w = true;
+        break;
+    };
+    try testing.expect(has_nonzero_w);
+
+    var has_nonzero_b = false;
+    for (b.grad.?.data) |v| if (v != 0) {
+        has_nonzero_b = true;
+        break;
+    };
+    try testing.expect(has_nonzero_b);
+}
+
+// -- init tests --
+
+test "kaimingUniform - values within expected bounds" {
+    const t = try Tensor(f32).init(tac, &.{ 16, 4 });
+    defer t.deinit();
+
+    kaimingUniform(f32, t, 42);
+
+    const bound: f32 = @sqrt(6.0 / 16.0);
+    for (t.data) |v| {
+        try testing.expect(v >= -bound and v <= bound);
+    }
+}
+
+test "uniform - values within range" {
+    const t = try Tensor(f32).init(tac, &.{100});
+    defer t.deinit();
+
+    uniform(f32, t, -0.5, 0.5, 123);
+
+    for (t.data) |v| {
+        try testing.expect(v >= -0.5 and v < 0.5);
+    }
+}
+

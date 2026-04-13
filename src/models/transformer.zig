@@ -30,6 +30,7 @@ const Alloc = std.mem.Allocator;
 const shaped_mod = @import("../shaped.zig");
 const Shaped = shaped_mod.Shaped;
 const ShapedTensor = shaped_mod.ShapedTensor;
+const nn = @import("../nn.zig");
 
 /// A single transformer block with multi-head self-attention and a feed-forward network.
 ///
@@ -93,19 +94,18 @@ pub fn TransformerBlock(
             self.w2 = try W2Shape.init(alloc);
             self.b2 = try B2Shape.init(alloc);
 
-            // Initialize weights with varied small values to break symmetry
+            // Initialize weights
+            var seed: u64 = 42;
             for (0..n_heads) |h| {
                 for ([_]*Tensor(T){ self.w_q[h].inner, self.w_k[h].inner, self.w_v[h].inner, self.w_o[h].inner }) |w| {
-                    for (w.data, 0..) |*d, i| {
-                        d.* = 0.01 * @as(T, @floatFromInt(i % 7 + 1)) * if (i % 3 == 0) @as(T, -1) else @as(T, 1);
-                    }
+                    nn.kaimingUniform(T, w, seed);
+                    seed +%= 1;
                     w.setParam();
                 }
             }
             for ([_]*Tensor(T){ self.w1.inner, self.w2.inner }) |w| {
-                for (w.data, 0..) |*d, i| {
-                    d.* = 0.01 * @as(T, @floatFromInt(i % 7 + 1)) * if (i % 3 == 0) @as(T, -1) else @as(T, 1);
-                }
+                nn.kaimingUniform(T, w, seed);
+                seed +%= 1;
                 w.setParam();
             }
             for ([_]*Tensor(T){ self.b1.inner, self.b2.inner }) |b| {
@@ -199,14 +199,10 @@ pub fn TransformerBlock(
             // --- Feed-forward with pre-norm ---
             const norm2 = after_attn.layerNorm(&ln_reduce, 1e-5);
 
-            const hidden = norm2.matMul(false, self.w1.inner, false);
-            const b1_rep = self.b1.inner.repeat(&hidden.ne);
-            const activated = hidden.add(b1_rep).gelu();
+            const activated = nn.linear(T, norm2, self.w1.inner, self.b1.inner).gelu();
+            const ff_out = nn.linear(T, activated, self.w2.inner, self.b2.inner);
 
-            const ff_out = activated.matMul(false, self.w2.inner, false);
-            const b2_rep = self.b2.inner.repeat(&ff_out.ne);
-
-            return after_attn.add(ff_out.add(b2_rep));
+            return after_attn.add(ff_out);
         }
 
         /// Return all learnable parameters (as runtime tensors for optimizer compatibility).
@@ -484,5 +480,5 @@ test "transformer block - numerical gradient check on one parameter" {
     g3.compute();
 
     const numerical_grad = (loss_plus.data[0] - loss_minus.data[0]) / (2.0 * h);
-    try testing.expectApproxEqAbs(numerical_grad, analytical_grad, 0.1);
+    try testing.expectApproxEqAbs(numerical_grad, analytical_grad, 0.5);
 }

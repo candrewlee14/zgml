@@ -44,7 +44,7 @@ pub fn Ops(comptime Self: type) type {
             switch (tensor.opTag()) {
                 .none => {},
 
-                .view, .reshape, .broadcast_to => {
+                .reshape, .broadcast_to => {
                     const src0 = src0_o.?;
                     if (src0.gradOrNull()) |grad| {
                         const contribution = if (tensor.opTag() == .broadcast_to)
@@ -56,18 +56,32 @@ pub fn Ops(comptime Self: type) type {
                     }
                 },
 
-                .transpose, .permute => {
+                .transpose => {
                     const src0 = src0_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const contribution = if (tensor.opTag() == .transpose)
-                            out_grad.transpose()
-                        else blk: {
-                            const axes = tensor.source1().?.index_data.?;
-                            var inv: [8]usize = [_]usize{0} ** 8;
-                            var i: usize = 0;
-                            while (i < tensor.n_dims) : (i += 1) inv[axes[i]] = i;
-                            break :blk out_grad.permute(inv[0..tensor.n_dims]);
-                        };
+                        const contribution = out_grad.transpose();
+                        stripGrad(contribution);
+                        src0.setGrad(accumGrad(grad, contribution, inplace));
+                    }
+                },
+
+                .permute => {
+                    const src0 = src0_o.?;
+                    if (src0.gradOrNull()) |grad| {
+                        const axes = tensor.source1().?.index_data.?;
+                        var inv: [8]usize = [_]usize{0} ** 8;
+                        var i: usize = 0;
+                        while (i < tensor.n_dims) : (i += 1) inv[axes[i]] = i;
+                        const contribution = out_grad.permute(inv[0..out_grad.n_dims]);
+                        stripGrad(contribution);
+                        src0.setGrad(accumGrad(grad, contribution, inplace));
+                    }
+                },
+
+                .view => {
+                    const src0 = src0_o.?;
+                    if (src0.gradOrNull()) |grad| {
+                        const contribution = out_grad.reshapeLike(grad);
                         stripGrad(contribution);
                         src0.setGrad(accumGrad(grad, contribution, inplace));
                     }
@@ -76,41 +90,30 @@ pub fn Ops(comptime Self: type) type {
                 .as_strided => {
                     const src0 = src0_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const contribution = try Self.init(alloc, grad.ne[0..grad.n_dims]);
-                        @memset(contribution.data, 0);
-
-                        var coords: [8]usize = [_]usize{0} ** 8;
-                        while (true) {
-                            var src_idx = tensor.storage_offset;
-                            var i: usize = 0;
-                            while (i < tensor.n_dims) : (i += 1) src_idx += coords[i] * tensor.strides[i];
-
-                            var out_idx: usize = out_grad.storage_offset;
-                            i = 0;
-                            while (i < out_grad.n_dims) : (i += 1) out_idx += coords[i] * out_grad.strides[i];
-                            contribution.data[src_idx] += out_grad.data[out_idx];
-
-                            var axis: usize = 0;
-                            while (axis < tensor.n_dims) : (axis += 1) {
-                                coords[axis] += 1;
-                                if (coords[axis] < tensor.ne[axis]) break;
-                                coords[axis] = 0;
-                            }
-                            if (axis == tensor.n_dims) break;
-                        }
+                        const contribution = out_grad.scatterAddView(tensor);
 
                         stripGrad(contribution);
                         src0.setGrad(accumGrad(grad, contribution, inplace));
                     }
                 },
 
+                .scatter_add_view => {},
+
                 // d/d(src0) [src0 + src1] = out_grad
                 // d/d(src1) [src0 + src1] = out_grad
                 .add => {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
-                    if (src0.gradOrNull()) |grad| src0.setGrad(accumGrad(grad, out_grad, inplace));
-                    if (src1.gradOrNull()) |grad| src1.setGrad(accumGrad(grad, out_grad, inplace));
+                    if (src0.gradOrNull()) |grad| {
+                        const contribution = if (out_grad.isSameShape(grad)) out_grad else out_grad.sumInto(grad);
+                        stripGrad(contribution);
+                        src0.setGrad(accumGrad(grad, contribution, inplace));
+                    }
+                    if (src1.gradOrNull()) |grad| {
+                        const contribution = if (out_grad.isSameShape(grad)) out_grad else out_grad.sumInto(grad);
+                        stripGrad(contribution);
+                        src1.setGrad(accumGrad(grad, contribution, inplace));
+                    }
                 },
 
                 // d/d(src0) [src0 * src1] = src1 * out_grad
@@ -119,12 +122,16 @@ pub fn Ops(comptime Self: type) type {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const contribution = src1.mul(out_grad);
+                        const raw = src1.mul(out_grad);
+                        stripGrad(raw);
+                        const contribution = if (raw.isSameShape(grad)) raw else raw.sumInto(grad);
                         stripGrad(contribution);
                         src0.setGrad(accumGrad(grad, contribution, inplace));
                     }
                     if (src1.gradOrNull()) |grad| {
-                        const contribution = src0.mul(out_grad);
+                        const raw = src0.mul(out_grad);
+                        stripGrad(raw);
+                        const contribution = if (raw.isSameShape(grad)) raw else raw.sumInto(grad);
                         stripGrad(contribution);
                         src1.setGrad(accumGrad(grad, contribution, inplace));
                     }
@@ -318,19 +325,6 @@ pub fn Ops(comptime Self: type) type {
                         src1.setGrad(accumGrad(grad, z, inplace));
                     }
                 },
-
-                // im2col backward: scatter-add via col2im
-                .im2col => {
-                    const input = src0_o.?;
-                    const kernel_for_shape = src1_o.?;
-                    if (input.gradOrNull()) |grad| {
-                        const contribution = out_grad.col2im(kernel_for_shape, input.ne);
-                        stripGrad(contribution);
-                        input.setGrad(accumGrad(grad, contribution, inplace));
-                    }
-                },
-
-                .col2im => {}, // leaf of backward chain, no further propagation
 
                 // max_pool2d backward: route gradient to the max element in each 2x2 window
                 .max_pool2d => {

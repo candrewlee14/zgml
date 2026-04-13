@@ -119,8 +119,7 @@ test "embedding - forward produces valid output" {
 
     const output = embed.forward(indices);
 
-    try g.buildForward(output);
-    g.compute();
+    try g.infer(output);
 
     try testing.expectEqual(@as(usize, 4), output.ne[0]); // d_model
     try testing.expectEqual(@as(usize, 3), output.ne[1]); // seq_len
@@ -143,8 +142,7 @@ test "embedding - positional encoding varies by position" {
 
     const output = embed.forward(indices);
 
-    try g.buildForward(output);
-    g.compute();
+    try g.infer(output);
 
     // Positions 0 and 1 should differ (because pos encoding differs)
     var any_diff = false;
@@ -165,13 +163,9 @@ test "embedding - backward produces gradients for token embeddings" {
     const embed = try Embedding(f32, 10, 4, 8).init(a);
     const indices = try Tensor(f32).initIndexVectorCopy(a, &.{ 1, 4 });
 
-    const output = embed.forward(indices);
-    const loss = output.sumAll();
+    const loss = embed.forward(indices).sumAll();
 
-    try g.buildForward(loss);
-    try g.buildBackward(false);
-    _ = loss.grad.?.setAllScalar(1);
-    g.compute();
+    try g.run(loss);
 
     // Token embedding should have gradients
     const grad = embed.token_embed.inner.grad.?;

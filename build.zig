@@ -115,6 +115,30 @@ pub fn build(b: *std.Build) void {
 
     const bench_step = b.step("bench", "Build and run zgml benchmarks");
     bench_step.dependOn(&b.addRunArtifact(bench_exe).step);
+
+    // MNIST benchmark — always built with ReleaseFast
+    const zgml_mnist_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+    const mnist_mod = b.createModule(.{
+        .root_source_file = b.path("src/mnist_bench.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "zgml", .module = zgml_mnist_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_mnist_pkg.zgml_options },
+        },
+    });
+    const mnist_exe = b.addExecutable(.{
+        .name = "mnist-bench",
+        .root_module = mnist_mod,
+    });
+    if (use_blas) {
+        linkBlas(target, mnist_exe);
+        mnist_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    b.installArtifact(mnist_exe);
+
+    const mnist_step = b.step("mnist-bench", "Build and run MNIST CNN training benchmark");
+    mnist_step.dependOn(&b.addRunArtifact(mnist_exe).step);
 }
 
 pub fn runTests(

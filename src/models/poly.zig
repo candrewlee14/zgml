@@ -6,85 +6,56 @@ const tac = testing.allocator;
 const Tensor = @import("../tensor.zig").Tensor;
 const ComputeGraph = @import("../graph.zig").ComputeGraph;
 const Alloc = std.mem.Allocator;
-const loss = @import("../loss.zig");
+const loss_mod = @import("../loss.zig");
 const optim = @import("../optim.zig");
+const nn = @import("../nn.zig");
 
 /// A polynomial model with `max_exp + 1` learnable coefficients.
-///
-/// Owns a `ComputeGraph` internally. Call `build` to construct the graph,
-/// then `train` to run mini-batch SGD.
 pub fn Model(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        batch_size: usize,
         xs_batch: *Tensor(T),
         ys_batch: *Tensor(T),
-        params: std.ArrayList(*Tensor(T)),
-        g: ComputeGraph(T),
+        coeffs: std.ArrayList(*Tensor(T)),
         out: *Tensor(T),
         loss: *Tensor(T),
+        g: ComputeGraph(T),
 
         pub fn build(backing_alloc: Alloc, max_exp: usize, batch_size: usize) !Self {
-            var res = Self{
-                .g = ComputeGraph(T).init(backing_alloc),
-                .params = undefined,
-                .xs_batch = undefined,
-                .ys_batch = undefined,
-                .out = undefined,
-                .loss = undefined,
-                .batch_size = batch_size,
-            };
-            const a = res.g.allocator();
-            res.params = try std.ArrayList(*Tensor(T)).initCapacity(a, max_exp + 1);
-            res.xs_batch = try Tensor(T).init(a, &.{batch_size});
-            res.ys_batch = try Tensor(T).init(a, &.{batch_size});
+            var g = ComputeGraph(T).init(backing_alloc);
+            const a = g.allocator();
+
+            var coeffs = try std.ArrayList(*Tensor(T)).initCapacity(a, max_exp + 1);
+            const xs_batch = try Tensor(T).init(a, &.{batch_size});
+            const ys_batch = try Tensor(T).init(a, &.{batch_size});
+
             for (0..max_exp + 1) |_| {
                 const param = try Tensor(T).initScalar(a, 0);
                 param.setParam();
-                res.params.appendAssumeCapacity(param);
+                coeffs.appendAssumeCapacity(param);
             }
-            // mul by xs_batch
+
             var total = try Tensor(T).initScalar(a, 0);
             var cur_term = try Tensor(T).initScalar(a, 1);
-            for (res.params.items, 0..) |param, i| {
+            for (coeffs.items, 0..) |param, i| {
                 total = total.add(cur_term.mul(param));
-                if (i < max_exp) cur_term = cur_term.mul(res.xs_batch);
+                if (i < max_exp) cur_term = cur_term.mul(xs_batch);
             }
-            res.out = total;
-            res.loss = loss.meanSqErr(T, res.out, res.ys_batch);
-            res.loss.name = "loss";
-            try res.g.buildForward(res.loss);
-            try res.g.buildBackward(true);
-            return res;
+
+            const loss = loss_mod.meanSqErr(T, total, ys_batch);
+            try g.buildForward(loss);
+            try g.buildBackward(true);
+
+            return .{
+                .xs_batch = xs_batch, .ys_batch = ys_batch,
+                .coeffs = coeffs, .out = total,
+                .loss = loss, .g = g,
+            };
         }
 
         pub fn deinit(self: *Self) void {
             self.g.deinit();
-        }
-
-        pub fn compute(self: *Self) void {
-            self.g.reset();
-            self.g.resetGrads();
-            if (self.loss.grad) |grad| _ = grad.setAllScalar(1);
-            self.g.compute();
-        }
-
-        pub fn train(self: *Self, xs: *Tensor(T), ys: *Tensor(T), n_epochs: usize, optimizer: anytype) void {
-            const n_elems = self.xs_batch.nElems();
-            std.debug.assert(ys.nElems() == xs.nElems());
-            std.debug.assert(self.batch_size == n_elems);
-            std.debug.assert(xs.nElems() % self.batch_size == 0);
-            const n_batches = xs.nElems() / self.batch_size;
-            for (0..n_epochs) |_| {
-                for (0..n_batches) |b_idx| {
-                    @memcpy(self.xs_batch.data, xs.data[b_idx * self.batch_size ..][0..n_elems]);
-                    @memcpy(self.ys_batch.data, ys.data[b_idx * self.batch_size ..][0..n_elems]);
-                    optimizer.zeroGrad();
-                    self.compute();
-                    optimizer.step();
-                }
-            }
         }
 
         test "linear poly model with sgd optim" {
@@ -98,10 +69,10 @@ pub fn Model(comptime T: type) type {
             var model = try Model(T).build(tac, 1, 1);
             defer model.deinit();
 
-            var optimizer = try optim.sgd.SGD(T).init(tac, model.params.items, model.loss, 1e-3, 0.2);
+            var optimizer = try optim.sgd.SGD(T).init(tac, model.coeffs.items, .{ .lr = 1e-3, .momentum = 0.2 });
             defer optimizer.deinit();
-            model.train(time, speed, 10, &optimizer);
-            try testing.expectApproxEqAbs(@as(T, true_m), model.params.items[1].data[0], 5e-1);
+            try nn.trainSupervised(T, &model.g, model.loss, model.xs_batch, model.ys_batch, time, speed, 10, &optimizer);
+            try testing.expectApproxEqAbs(@as(T, true_m), model.coeffs.items[1].data[0], 5e-1);
         }
     };
 }

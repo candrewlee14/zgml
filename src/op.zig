@@ -43,10 +43,9 @@ pub const Op = enum {
     scatter_add_rows,
     pick_rows,
     scatter_add_picks,
+    scatter_add_view,
 
     // -- Convolution & pooling --
-    im2col,
-    col2im,
     max_pool2d,
 
     // -- Matrix multiplication (4 transpose variants) --
@@ -99,8 +98,7 @@ pub const Op = enum {
             .scatter_add_rows => "scatter_add_rows(x)",
             .pick_rows => "pick_rows(x)",
             .scatter_add_picks => "scatter_add_picks(x)",
-            .im2col => "im2col(x)",
-            .col2im => "col2im(x)",
+            .scatter_add_view => "scatter_add_view(x)",
             .max_pool2d => "maxpool2d(x)",
             .matmul => "X*Y",
             .matmul_t0 => "XT*Y",

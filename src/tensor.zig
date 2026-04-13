@@ -107,9 +107,16 @@ pub fn Tensor(comptime T: type) type {
 
         pub fn initHelper(alloc: Alloc, ne: []const usize, data_buf: ?[]T) Alloc.Error!*Self {
             std.debug.assert(ne.len <= max_dims);
+            // When passed the full max_dims-length array (e.g. from &tensor.ne),
+            // trim trailing 1s to get the effective dimensionality.
+            // For shorter slices, the caller explicitly chose the dimension count.
+            var effective_dims: u8 = @truncate(ne.len);
+            if (ne.len == max_dims) {
+                while (effective_dims > 1 and ne[effective_dims - 1] == 1) effective_dims -= 1;
+            }
             const tensor: *Self = try alloc.create(Self);
             tensor.* = .{
-                .n_dims = @truncate(ne.len),
+                .n_dims = effective_dims,
                 .ne = .{1} ** max_dims,
                 .strides = .{0} ** max_dims,
                 .storage_offset = 0,
@@ -224,10 +231,18 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// Free this tensor and its owned data.
-        /// Also frees the gradient tensor if one was allocated by `setParam()`.
+        /// Also frees the gradient tensor if this is a standalone parameter
+        /// (allocated via `setParam()` outside a ComputeGraph arena).
         pub fn deinit(self: *Self) void {
             const al = self.alloc.?;
-            if (self.grad) |g| g.deinit();
+            // Only free grad for params we own — in graph contexts, the arena
+            // handles cleanup. Grad tensors from buildBackward may have shared
+            // references, so we only free the simple case (param with no sources).
+            if (self.is_param) {
+                if (self.grad) |g| {
+                    if (g.op == .none) g.deinit();
+                }
+            }
             if (self.source0()) |src0| {
                 if (src0.is_internal_aux) src0.deinit();
             }
@@ -324,15 +339,15 @@ pub fn Tensor(comptime T: type) type {
         pub const scale = api.scale;
         pub const scaleInplace = api.scaleInplace;
         pub const scaleByVal = api.scaleByVal;
-        pub const im2col = api.im2col;
-        pub const col2im = api.col2im;
         pub const conv2d = api.conv2d;
         pub const maxPool2d = api.maxPool2d;
+        pub const contiguous = api.contiguous;
         pub const reshapeLike = api.reshapeLike;
         pub const reshape = api.reshape;
         pub const transpose = api.transpose;
         pub const permute = api.permute;
         pub const asStrided = api.asStrided;
+        pub const scatterAddView = api.scatterAddView;
         pub const broadcastTo = api.broadcastTo;
         pub const slidingWindow2d = api.slidingWindow2d;
 
@@ -366,8 +381,6 @@ pub fn Tensor(comptime T: type) type {
         pub const computePickRows = fwd.computePickRows;
         pub const computeScatterAddPicks = fwd.computeScatterAddPicks;
         pub const computeTranspose = fwd.computeTranspose;
-        pub const computeIm2col = fwd.computeIm2col;
-        pub const computeCol2im = fwd.computeCol2im;
         pub const computeMaxPool2d = fwd.computeMaxPool2d;
         pub const computeMatMul = fwd.computeMatMul;
         pub const computeMean = fwd.computeMean;
@@ -495,8 +508,11 @@ pub fn Tensor(comptime T: type) type {
 
         /// True if self and other have compatible shapes for broadcasting (numpy-style).
         pub fn isBroadcastable(self: *const Self, other: *const Self) bool {
-            for (self.ne, other.ne) |selfNe, otherNe| {
-                if (selfNe != otherNe and selfNe != 1 and otherNe != 1) return false;
+            const nd = @max(self.n_dims, other.n_dims);
+            for (0..nd) |i| {
+                const self_ne = if (i < self.n_dims) self.ne[i] else 1;
+                const other_ne = if (i < other.n_dims) other.ne[i] else 1;
+                if (self_ne != other_ne and self_ne != 1 and other_ne != 1) return false;
             }
             return true;
         }
@@ -661,6 +677,59 @@ test "slidingWindow2d exposes overlapping patches" {
     try testing.expectEqual(@as(f32, 4), w.get(&.{ 0, 0, 0, 1, 0, 0 }));
     try testing.expectEqual(@as(f32, 5), w.get(&.{ 0, 0, 1, 1, 0, 0 }));
     try testing.expectEqual(@as(f32, 10), w.get(&.{ 1, 1, 1, 1, 0, 0 }));
+}
+
+test "compute conv2d composite view path" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{ 2, 2, 1, 1 });
+    x.setData(&.{
+        1, 2,
+        3, 4,
+    });
+    const k = try Tensor(f32).init(a, &.{ 1, 1, 1, 1 });
+    k.setData(&.{
+        2,
+    });
+
+    const y = x.conv2d(k);
+    try g.buildForward(y);
+    g.compute();
+
+    try testing.expectEqualSlices(f32, &.{ 2, 4, 6, 8 }, y.data);
+}
+
+test "backward conv2d composite view path" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{ 2, 2, 1, 1 });
+    x.setData(&.{
+        1, 2,
+        3, 4,
+    });
+    x.setParam();
+
+    const k = try Tensor(f32).init(a, &.{ 1, 1, 1, 1 });
+    k.setData(&.{
+        3,
+    });
+    k.setParam();
+
+    const out = x.conv2d(k).sumAll();
+    try g.buildForward(out);
+    try g.buildBackward(false);
+    _ = out.grad.?.setAllScalar(1);
+    g.compute();
+
+    try testing.expectApproxEqAbs(@as(f32, 3), x.grad.?.data[0], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 3), x.grad.?.data[1], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 3), x.grad.?.data[2], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 3), x.grad.?.data[3], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 10), k.grad.?.data[0], 1e-5);
 }
 
 test "isMatrix" {

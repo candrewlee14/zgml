@@ -28,6 +28,7 @@ const Shaped = shaped_mod.Shaped;
 
 const TransformerBlock = @import("transformer.zig").TransformerBlock;
 const Embedding = @import("embedding.zig").Embedding;
+const nn = @import("../nn.zig");
 
 pub const GPTConfig = struct {
     vocab_size: usize,
@@ -74,11 +75,7 @@ pub fn GPT(comptime T: type, comptime config: GPTConfig) type {
             }
 
             self.out_proj = try OutProjShape.init(alloc);
-            // Initialize output projection
-            const scale: T = 0.02;
-            for (self.out_proj.inner.data, 0..) |*d, i| {
-                d.* = scale * @as(T, @floatFromInt(i % 7 + 1)) * if (i % 3 == 0) @as(T, -1) else @as(T, 1);
-            }
+            nn.kaimingUniform(T, self.out_proj.inner, 99);
             self.out_proj.inner.setParam();
 
             return self;
@@ -157,8 +154,7 @@ test "GPT - forward produces valid logits" {
     const indices = try Tensor(f32).initIndexVectorCopy(a, &.{ 0, 3, 1 });
     const logits = model.forward(indices);
 
-    try g.buildForward(logits);
-    g.compute();
+    try g.infer(logits);
 
     // Output should be [vocab_size=8, seq_len=3]
     try testing.expectEqual(@as(usize, 8), logits.ne[0]);
@@ -185,15 +181,10 @@ test "GPT - backward produces gradients" {
     }).init(a);
 
     const indices = try Tensor(f32).initIndexVectorCopy(a, &.{ 2, 5 });
-    const logits = model.forward(indices);
-    const loss = logits.sumAll();
+    const loss = model.forward(indices).sumAll();
 
-    try g.buildForward(loss);
-    try g.buildBackward(false);
-    _ = loss.grad.?.setAllScalar(1);
-    g.compute();
+    try g.run(loss);
 
-    // All weight params should have finite gradients
     for (model.params()) |param| {
         if (param.grad) |grad| {
             for (grad.data) |v| {
