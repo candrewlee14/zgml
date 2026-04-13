@@ -358,6 +358,49 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
         pub fn map2(self: Self, alloc: Alloc, other: Self, comptime f: fn (T, T) T) Alloc.Error!Self {
             return .{ .inner = try self.inner.map2(alloc, other.inner, f) };
         }
+
+        // -- High-level composite operations --------------------------------
+
+        /// Scaled dot-product attention: `softmax(Q @ K^T / sqrt(d_k)) @ V`.
+        ///
+        /// Q, K, V must have shape [d_k, seq_len]. The output has the same shape as V.
+        /// d_k (the key dimension) is taken from Q's first dimension and used for scaling.
+        ///
+        /// All dimensions are validated at compile time.
+        pub fn attention(
+            q: Self,
+            alloc: Alloc,
+            k: anytype,
+            v: anytype,
+        ) ShapedTensor(T, matMulOutputShape(
+            matMulOutputShape(shape, false, @TypeOf(k).static_shape, true),
+            false,
+            @TypeOf(v).static_shape,
+            false,
+        )) {
+            const d_k: T = @floatFromInt(shape[0]);
+            // Q @ K^T → [seq_q, seq_k]
+            const scores = q.matMul(alloc, false, k, true);
+            // Scale by 1/sqrt(d_k)
+            const ScoresType = @TypeOf(scores);
+            const scale_val = 1.0 / @sqrt(d_k);
+            const scale_tensor = ScoresType.fromTensor(
+                (Tensor(T).initScalar(alloc, scale_val) catch unreachable)
+                    .repeatLike(alloc, scores.inner),
+            );
+            const scaled = scores.mul(alloc, scale_tensor);
+            // Softmax over the last key dimension (reduce to one column)
+            const softmax_ne = comptime blk: {
+                var ne = ScoresType.static_shape;
+                ne[0] = 1;
+                break :blk ne;
+            };
+            const weights = ShapedTensor(T, ScoresType.static_shape).fromTensor(
+                scaled.inner.softmax(alloc, &softmax_ne),
+            );
+            // Weights @ V → same shape as V
+            return weights.matMul(alloc, false, v, false);
+        }
     };
 }
 
@@ -543,4 +586,32 @@ test "map2 - fused result feeds into graph" {
 
     // 2+3+4 doubled = 18
     try testing.expectApproxEqAbs(@as(f32, 18.0), out.tensor().data[0], 1e-6);
+}
+
+test "shaped - attention" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    // Q, K, V all [d_k=2, seq=3]
+    const Q = (try Shaped(f32, .{ 2, 3 }).init(a)).setData(&.{ 1, 0, 0, 1, 1, 1 });
+    const K = (try Shaped(f32, .{ 2, 3 }).init(a)).setData(&.{ 1, 0, 0, 1, 1, 1 });
+    const V = (try Shaped(f32, .{ 2, 3 }).init(a)).setData(&.{ 1, 2, 3, 4, 5, 6 });
+
+    // attention output should be [d_k=2, seq=3] (same as V)
+    const out = Q.attention(a, K, V);
+    comptime {
+        std.debug.assert(@TypeOf(out).static_shape[0] == 2);
+        std.debug.assert(@TypeOf(out).static_shape[1] == 3);
+    }
+
+    try g.buildForward(out.tensor());
+    g.compute();
+
+    // Verify output is valid (weighted combination of V rows)
+    // Each output value should be finite and reasonable
+    for (out.tensor().data) |v| {
+        try testing.expect(!std.math.isNan(v));
+        try testing.expect(!std.math.isInf(v));
+    }
 }
