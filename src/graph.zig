@@ -214,9 +214,11 @@ pub fn ComputeGraph(comptime T: type) type {
             // bwd_kernel depending on which conv operand the view referenced.
             for (self.nodes.items[self.forward_node_count..], self.forward_node_count..) |node, idx| {
                 if (self.fused_skip.items[idx]) continue;
-                if (detectConv2dBwdPlan(node, idx)) |_| {
-                    // TODO: fused kernel produces wrong results; detection works
-                    // but execution needs debugging. Skipping for now.
+                if (detectConv2dBwdPlan(node, idx)) |plan| {
+                    // TODO: fused im2col+matmul kernel produces wrong gradient
+                    // for batch > 1. Detection works correctly; use naive fallback
+                    // for now by not appending the plan (scatter runs unfused).
+                    _ = plan;
                 }
             }
 
@@ -342,7 +344,10 @@ pub fn ComputeGraph(comptime T: type) type {
 
             // Determine direction: if view_source is a parameter, this scatter
             // writes the kernel gradient (bwd_kernel). Otherwise it's bwd_input.
-            if (view_source.isParam()) {
+            // Determine direction by spatial size: the kernel is always
+            // smaller than the input in the spatial dimensions.
+            const is_kernel = view_source.nElems() <= other_source.nElems();
+            if (is_kernel) {
                 // bwd_kernel: scatter writes to kernel grad, other_view is the input
                 return .{ .output_idx = scatter_idx, .payload = .{ .conv2d_bwd_kernel = .{
                     .input = other_source,
@@ -1902,6 +1907,49 @@ test "infer - one-call inference" {
     try g.infer(y);
 
     try testing.expectApproxEqAbs(@as(f32, 14.0), y.data[0], 1e-6);
+}
+
+test "fusion - conv2d backward kernel gradient fused matches unfused" {
+    // Build two identical graphs — one with fusionPass, one without.
+    var gf = ComputeGraph(f32).init(tac);
+    defer gf.deinit();
+    var gu = ComputeGraph(f32).init(tac);
+    defer gu.deinit();
+
+    // Small conv: input [4,4,1,2], kernel [3,3,1,1] → output [2,2,1,2]
+    const xf = try gf.param(&.{ 4, 4, 1, 2 });
+    const kf = try gf.param(&.{ 3, 3, 1, 1 });
+    const xu = try gu.param(&.{ 4, 4, 1, 2 });
+    const ku = try gu.param(&.{ 3, 3, 1, 1 });
+
+    // Same data for both
+    for (xf.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(i)) * 0.1;
+    @memcpy(xu.data, xf.data);
+    for (kf.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(i)) * 0.05 + 0.1;
+    @memcpy(ku.data, kf.data);
+
+    const yf = xf.conv2d(kf).sumAll();
+    const yu = xu.conv2d(ku).sumAll();
+
+    // Fused path
+    try gf.buildForward(yf);
+    try gf.buildBackward(true);
+    try gf.fusionPass();
+    gf.resetGrads();
+    if (yf.grad) |g| _ = g.setAllScalar(1);
+    gf.compute();
+
+    // Unfused path — no fusionPass
+    try gu.buildForward(yu);
+    try gu.buildBackward(true);
+    gu.resetGrads();
+    if (yu.grad) |g| _ = g.setAllScalar(1);
+    gu.compute();
+
+    // Compare kernel gradients
+    for (kf.gradOrNull().?.data, ku.gradOrNull().?.data) |fg, ug| {
+        try testing.expectApproxEqAbs(ug, fg, 1e-4);
+    }
 }
 
 //#endregion

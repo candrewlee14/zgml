@@ -1148,7 +1148,7 @@ fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T)) void
 
 fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T)) void {
     const d = Conv2dDims(T).fromBwdKernel(plan);
-    const NB = d.N * d.batch; // total spatial × batch columns
+    const NB = d.N * d.batch;
 
     const col_buf = plan.scratch orelse allocScratch(T, d.K * NB) orelse {
         conv2dBwdKernelNaive(T, d, plan);
@@ -1161,23 +1161,21 @@ fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T)) vo
         im2col(T, d, col_buf, n, NB, n * d.N);
     }
 
-    // Single matmul: out_grad[c_out, N*batch] @ col_all^T[N*batch, K] → output[c_out, K]
-    // out_grad is [out_w, out_h, c_out, batch] contiguous = [c_out, N*batch] row-major
-    //   with a_m_stride = NB (one row per output channel, spanning all batches)
-    //   WRONG — out_grad layout is [out_w, out_h, c_out, batch] = interleaved by batch.
-    //   Within out_grad, channel oc's data is NOT contiguous across batches.
-    //   So we still need per-batch matmul, but without the temp+accumulate pattern:
-    //   First batch overwrites output, subsequent batches accumulate.
+    // Per-batch matmul: out_grad_n[c_out, N] @ col_n^T[N, K] → accumulate into output[c_out, K].
+    // Layout is [out_w, out_h, c_out, batch] — channels are interleaved with batches,
+    // so we can't do a single batched matmul.
     const mm = forward.selectMatMulKernel(T);
 
-    // First batch: write directly to output (no zeroing + accumulate needed)
+    // First batch: write directly to output.
     mm(plan.output.data, plan.output_grad.data, col_buf, d.c_out, d.K, d.N, d.N, 1, 1, d.N, 0, 0, 0, d.K);
 
-    // Remaining batches: matmul into temp region at end of col_buf, then accumulate.
-    // Reuse the last [c_out * K] elements of col_buf as temp (they've already been read).
+    // Remaining batches: matmul into temp, then accumulate.
     if (d.batch > 1) {
-        const temp_off = d.K * NB - d.c_out * d.K;
-        const temp = col_buf[temp_off..][0 .. d.c_out * d.K];
+        const temp = allocScratch(T, d.c_out * d.K) orelse {
+            conv2dBwdKernelNaive(T, d, plan);
+            return;
+        };
+        defer freeScratch(T, temp);
         for (1..d.batch) |n| {
             mm(temp, plan.output_grad.data, col_buf, d.c_out, d.K, d.N, d.N, 1, 1, d.N, n * d.N * d.c_out, n * d.N, 0, d.K);
             for (0..d.c_out * d.K) |j| plan.output.data[j] += temp[j];
