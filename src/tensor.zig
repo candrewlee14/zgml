@@ -1,6 +1,6 @@
 //! Core tensor type for the zgml machine learning library.
 //!
-//! A `Tensor` is a multi-dimensional array (up to 4 dimensions) that supports
+//! A `Tensor` is a multi-dimensional array (up to `max_dims` dimensions) that supports
 //! lazy computation graph construction, forward evaluation, and reverse-mode
 //! automatic differentiation.
 
@@ -12,7 +12,7 @@ const Alloc = std.mem.Allocator;
 const Op = @import("op.zig").Op;
 
 /// Maximum number of dimensions a tensor can have.
-pub const max_dims = 4;
+pub const max_dims = 8;
 
 /// Generic tensor parameterized on element type `T` (typically `f32` or `f64`).
 ///
@@ -31,12 +31,14 @@ pub fn Tensor(comptime T: type) type {
         const fwd = @import("tensor/forward.zig").Ops(Self, T);
         const bwd = @import("tensor/backward.zig").Ops(Self);
 
-        /// Number of dimensions (1–4).
+        /// Number of logical dimensions.
         n_dims: u8,
-        /// Number of elements per axis, in [cols, rows, batch, channel] order.
+        /// Number of elements per axis.
         ne: [max_dims]usize,
         /// Memory stride per axis.
         strides: [max_dims]usize,
+        /// Base element offset into the underlying storage.
+        storage_offset: usize,
         /// The operation that produced this tensor (`.none` for user-created tensors).
         op: Op,
         /// Whether this tensor is a learnable parameter.
@@ -71,8 +73,7 @@ pub fn Tensor(comptime T: type) type {
 
         /// Create a tensor with the given shape.
         ///
-        /// `ne` specifies the size of each dimension in [cols, rows, batch, channel]
-        /// order. The number of dimensions is inferred from `ne.len` (max 4).
+        /// The number of dimensions is inferred from `ne.len`.
         pub fn init(alloc: Alloc, ne: []const usize) Alloc.Error!*Self {
             return try initHelper(alloc, ne, null);
         }
@@ -111,6 +112,7 @@ pub fn Tensor(comptime T: type) type {
                 .n_dims = @truncate(ne.len),
                 .ne = .{1} ** max_dims,
                 .strides = .{0} ** max_dims,
+                .storage_offset = 0,
                 .op = .none,
                 .is_param = false,
                 .grad = null,
@@ -140,8 +142,19 @@ pub fn Tensor(comptime T: type) type {
             const tensor: *Self = try alloc.create(Self);
             tensor.* = .{
                 .n_dims = 1,
-                .ne = .{ idx.len, 1, 1, 1 },
-                .strides = .{ 1, idx.len, idx.len, idx.len },
+                .ne = blk: {
+                    var dims: [max_dims]usize = [_]usize{1} ** max_dims;
+                    dims[0] = idx.len;
+                    break :blk dims;
+                },
+                .strides = blk: {
+                    var strides: [max_dims]usize = [_]usize{0} ** max_dims;
+                    strides[0] = 1;
+                    var i: usize = 1;
+                    while (i < max_dims) : (i += 1) strides[i] = idx.len;
+                    break :blk strides;
+                },
+                .storage_offset = 0,
                 .op = .none,
                 .is_param = false,
                 .grad = null,
@@ -211,8 +224,10 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// Free this tensor and its owned data.
+        /// Also frees the gradient tensor if one was allocated by `setParam()`.
         pub fn deinit(self: *Self) void {
             const al = self.alloc.?;
+            if (self.grad) |g| g.deinit();
             if (self.source0()) |src0| {
                 if (src0.is_internal_aux) src0.deinit();
             }
@@ -305,16 +320,21 @@ pub fn Tensor(comptime T: type) type {
         pub const scatterAddPicks = api.scatterAddPicks;
         pub const gatherRowsIdx = api.gatherRowsIdx;
         pub const pickRowsIdx = api.pickRowsIdx;
+        pub const addBias = api.addBias;
         pub const scale = api.scale;
         pub const scaleInplace = api.scaleInplace;
         pub const scaleByVal = api.scaleByVal;
+        pub const im2col = api.im2col;
+        pub const col2im = api.col2im;
         pub const conv2d = api.conv2d;
-        pub const conv2dBwdInput = api.conv2dBwdInput;
-        pub const conv2dBwdKernel = api.conv2dBwdKernel;
         pub const maxPool2d = api.maxPool2d;
         pub const reshapeLike = api.reshapeLike;
         pub const reshape = api.reshape;
         pub const transpose = api.transpose;
+        pub const permute = api.permute;
+        pub const asStrided = api.asStrided;
+        pub const broadcastTo = api.broadcastTo;
+        pub const slidingWindow2d = api.slidingWindow2d;
 
         // ---------------------------------------------------------------
         // Forward compute — delegated to tensor/forward.zig
@@ -346,7 +366,8 @@ pub fn Tensor(comptime T: type) type {
         pub const computePickRows = fwd.computePickRows;
         pub const computeScatterAddPicks = fwd.computeScatterAddPicks;
         pub const computeTranspose = fwd.computeTranspose;
-        pub const computeConv2d = fwd.computeConv2d;
+        pub const computeIm2col = fwd.computeIm2col;
+        pub const computeCol2im = fwd.computeCol2im;
         pub const computeMaxPool2d = fwd.computeMaxPool2d;
         pub const computeMatMul = fwd.computeMatMul;
         pub const computeMean = fwd.computeMean;
@@ -409,8 +430,10 @@ pub fn Tensor(comptime T: type) type {
 
         /// True if self can be matrix-multiplied with `other`, accounting for transpositions.
         pub fn canMatMul(self: *const Self, transSelf: bool, other: *const Self, transOther: bool) bool {
-            if (self.ne[3] != other.ne[3]) return false;
-            if (self.ne[2] != other.ne[2]) return false;
+            var i: usize = 2;
+            while (i < max_dims) : (i += 1) {
+                if (self.ne[i] != other.ne[i]) return false;
+            }
             if (!transSelf and !transOther) return self.ne[0] == other.ne[1];
             if (transSelf and !transOther) return self.ne[1] == other.ne[1];
             if (!transSelf and transOther) return self.ne[0] == other.ne[0];
@@ -419,6 +442,7 @@ pub fn Tensor(comptime T: type) type {
 
         /// True if data is laid out contiguously in memory (no stride gaps).
         pub fn isContiguous(self: *const Self) bool {
+            if (self.storage_offset != 0) return false;
             if (self.strides[0] != 1) return false;
             for (1..max_dims) |i| {
                 if (self.strides[i] != self.strides[i - 1] * self.ne[i - 1]) return false;
@@ -455,7 +479,7 @@ pub fn Tensor(comptime T: type) type {
         /// Access the element at the given multi-dimensional coordinates.
         pub fn get(self: *const Self, coords: []const usize) T {
             assert(coords.len == self.n_dims);
-            var idx: usize = 0;
+            var idx: usize = self.storage_offset;
             for (coords, self.strides[0..coords.len]) |coord, stride| {
                 idx += coord * stride;
             }
@@ -588,6 +612,55 @@ test "reshape" {
     try testing.expectEqual(@as(usize, 2), r.ne[1]);
     // data is shared (view), so values match
     try testing.expectEqualSlices(f32, &.{ 1, 2, 3, 4, 5, 6 }, r.data);
+}
+
+test "permute view preserves logical indexing" {
+    const t = try Tensor(f32).init(tac, &.{ 2, 3, 4 });
+    defer t.deinit();
+    for (t.data, 0..) |*d, i| d.* = @floatFromInt(i);
+
+    const p = t.permute(&.{ 2, 0, 1 });
+    defer p.deinit();
+
+    try testing.expectEqual(@as(u8, 3), p.n_dims);
+    try testing.expectEqual(@as(usize, 4), p.ne[0]);
+    try testing.expectEqual(@as(usize, 2), p.ne[1]);
+    try testing.expectEqual(@as(usize, 3), p.ne[2]);
+    try testing.expectEqual(t.get(&.{ 1, 2, 3 }), p.get(&.{ 3, 1, 2 }));
+}
+
+test "broadcastTo creates zero-stride view" {
+    const t = try Tensor(f32).init(tac, &.{ 1, 3 });
+    defer t.deinit();
+    t.setData(&.{ 10, 20, 30 });
+
+    const b = t.broadcastTo(&.{ 2, 3 });
+    defer b.deinit();
+
+    try testing.expectEqual(@as(usize, 0), b.strides[0]);
+    try testing.expectEqual(@as(f32, 10), b.get(&.{ 0, 0 }));
+    try testing.expectEqual(@as(f32, 10), b.get(&.{ 1, 0 }));
+    try testing.expectEqual(@as(f32, 30), b.get(&.{ 1, 2 }));
+}
+
+test "slidingWindow2d exposes overlapping patches" {
+    const t = try Tensor(f32).init(tac, &.{ 4, 4, 1, 1 });
+    defer t.deinit();
+    for (t.data, 0..) |*d, i| d.* = @floatFromInt(i);
+
+    const w = t.slidingWindow2d(2, 2);
+    defer w.deinit();
+
+    try testing.expectEqual(@as(u8, 6), w.n_dims);
+    try testing.expectEqual(@as(usize, 3), w.ne[0]);
+    try testing.expectEqual(@as(usize, 3), w.ne[1]);
+    try testing.expectEqual(@as(usize, 2), w.ne[2]);
+    try testing.expectEqual(@as(usize, 2), w.ne[3]);
+    try testing.expectEqual(@as(f32, 0), w.get(&.{ 0, 0, 0, 0, 0, 0 }));
+    try testing.expectEqual(@as(f32, 1), w.get(&.{ 0, 0, 1, 0, 0, 0 }));
+    try testing.expectEqual(@as(f32, 4), w.get(&.{ 0, 0, 0, 1, 0, 0 }));
+    try testing.expectEqual(@as(f32, 5), w.get(&.{ 0, 0, 1, 1, 0, 0 }));
+    try testing.expectEqual(@as(f32, 10), w.get(&.{ 1, 1, 1, 1, 0, 0 }));
 }
 
 test "isMatrix" {

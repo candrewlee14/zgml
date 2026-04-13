@@ -16,6 +16,9 @@ pub const Op = enum {
     view,
     reshape,
     transpose,
+    permute,
+    as_strided,
+    broadcast_to,
 
     // -- Element-wise binary --
     add,
@@ -40,6 +43,11 @@ pub const Op = enum {
     scatter_add_rows,
     pick_rows,
     scatter_add_picks,
+
+    // -- Convolution & pooling --
+    im2col,
+    col2im,
+    max_pool2d,
 
     // -- Matrix multiplication (4 transpose variants) --
     matmul,
@@ -70,6 +78,9 @@ pub const Op = enum {
             .view => "view(x)",
             .reshape => "reshape(x)",
             .transpose => "transpose(x)",
+            .permute => "permute(x)",
+            .as_strided => "as_strided(x)",
+            .broadcast_to => "broadcast_to(x)",
             .add => "x+y",
             .mul => "x*y",
             .neg => "-x",
@@ -88,6 +99,9 @@ pub const Op = enum {
             .scatter_add_rows => "scatter_add_rows(x)",
             .pick_rows => "pick_rows(x)",
             .scatter_add_picks => "scatter_add_picks(x)",
+            .im2col => "im2col(x)",
+            .col2im => "col2im(x)",
+            .max_pool2d => "maxpool2d(x)",
             .matmul => "X*Y",
             .matmul_t0 => "XT*Y",
             .matmul_t1 => "X*YT",

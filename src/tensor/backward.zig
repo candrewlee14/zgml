@@ -44,19 +44,61 @@ pub fn Ops(comptime Self: type) type {
             switch (tensor.opTag()) {
                 .none => {},
 
-                .view, .reshape => {
+                .view, .reshape, .broadcast_to => {
                     const src0 = src0_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const contribution = out_grad.reshapeLike(grad);
+                        const contribution = if (tensor.opTag() == .broadcast_to)
+                            out_grad.sumInto(grad)
+                        else
+                            out_grad.reshapeLike(grad);
                         stripGrad(contribution);
                         src0.setGrad(accumGrad(grad, contribution, inplace));
                     }
                 },
 
-                .transpose => {
+                .transpose, .permute => {
                     const src0 = src0_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const contribution = out_grad.transpose();
+                        const contribution = if (tensor.opTag() == .transpose)
+                            out_grad.transpose()
+                        else blk: {
+                            const axes = tensor.source1().?.index_data.?;
+                            var inv: [8]usize = [_]usize{0} ** 8;
+                            var i: usize = 0;
+                            while (i < tensor.n_dims) : (i += 1) inv[axes[i]] = i;
+                            break :blk out_grad.permute(inv[0..tensor.n_dims]);
+                        };
+                        stripGrad(contribution);
+                        src0.setGrad(accumGrad(grad, contribution, inplace));
+                    }
+                },
+
+                .as_strided => {
+                    const src0 = src0_o.?;
+                    if (src0.gradOrNull()) |grad| {
+                        const contribution = try Self.init(alloc, grad.ne[0..grad.n_dims]);
+                        @memset(contribution.data, 0);
+
+                        var coords: [8]usize = [_]usize{0} ** 8;
+                        while (true) {
+                            var src_idx = tensor.storage_offset;
+                            var i: usize = 0;
+                            while (i < tensor.n_dims) : (i += 1) src_idx += coords[i] * tensor.strides[i];
+
+                            var out_idx: usize = out_grad.storage_offset;
+                            i = 0;
+                            while (i < out_grad.n_dims) : (i += 1) out_idx += coords[i] * out_grad.strides[i];
+                            contribution.data[src_idx] += out_grad.data[out_idx];
+
+                            var axis: usize = 0;
+                            while (axis < tensor.n_dims) : (axis += 1) {
+                                coords[axis] += 1;
+                                if (coords[axis] < tensor.ne[axis]) break;
+                                coords[axis] = 0;
+                            }
+                            if (axis == tensor.n_dims) break;
+                        }
+
                         stripGrad(contribution);
                         src0.setGrad(accumGrad(grad, contribution, inplace));
                     }
@@ -274,6 +316,71 @@ pub fn Ops(comptime Self: type) type {
                         const z = out_grad.matMul(true, src0, true);
                         stripGrad(z);
                         src1.setGrad(accumGrad(grad, z, inplace));
+                    }
+                },
+
+                // im2col backward: scatter-add via col2im
+                .im2col => {
+                    const input = src0_o.?;
+                    const kernel_for_shape = src1_o.?;
+                    if (input.gradOrNull()) |grad| {
+                        const contribution = out_grad.col2im(kernel_for_shape, input.ne);
+                        stripGrad(contribution);
+                        input.setGrad(accumGrad(grad, contribution, inplace));
+                    }
+                },
+
+                .col2im => {}, // leaf of backward chain, no further propagation
+
+                // max_pool2d backward: route gradient to the max element in each 2x2 window
+                .max_pool2d => {
+                    const input = src0_o.?;
+                    if (input.gradOrNull()) |grad| {
+                        const in_w = input.ne[0];
+                        const out_w = tensor.ne[0];
+                        const out_h = tensor.ne[1];
+                        const channels = tensor.ne[2];
+                        const batch = tensor.ne[3];
+                        const in_s_h = in_w;
+                        const in_s_c = in_w * input.ne[1];
+                        const in_s_n = in_s_c * channels;
+                        const o_s_h = out_w;
+                        const o_s_c = out_w * out_h;
+                        const o_s_n = o_s_c * channels;
+
+                        const gi = try Self.init(alloc, grad.ne[0..grad.n_dims]);
+                        @memset(gi.data, 0);
+                        for (0..batch) |n| {
+                            for (0..channels) |ch| {
+                                for (0..out_h) |oy| {
+                                    for (0..out_w) |ox| {
+                                        const ix = ox * 2;
+                                        const iy = oy * 2;
+                                        const base = ix + iy * in_s_h + ch * in_s_c + n * in_s_n;
+                                        // Find which of the 4 elements was max
+                                        var max_val = input.data[base];
+                                        var max_idx = base;
+                                        const idx1 = base + 1;
+                                        if (input.data[idx1] > max_val) {
+                                            max_val = input.data[idx1];
+                                            max_idx = idx1;
+                                        }
+                                        const idx2 = base + in_s_h;
+                                        if (input.data[idx2] > max_val) {
+                                            max_val = input.data[idx2];
+                                            max_idx = idx2;
+                                        }
+                                        const idx3 = base + in_s_h + 1;
+                                        if (input.data[idx3] > max_val) {
+                                            max_idx = idx3;
+                                        }
+                                        gi.data[max_idx] += out_grad.data[ox + oy * o_s_h + ch * o_s_c + n * o_s_n];
+                                    }
+                                }
+                            }
+                        }
+                        stripGrad(gi);
+                        input.setGrad(accumGrad(grad, gi, inplace));
                     }
                 },
 

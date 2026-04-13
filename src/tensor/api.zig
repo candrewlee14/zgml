@@ -51,16 +51,31 @@ pub fn Api(comptime Self: type, comptime T: type) type {
 
         pub fn view(self: *Self) *Self {
             const alloc = a(self);
-            var t = Self.initHelper(alloc, &self.ne, self.data) catch unreachable;
+            var t = Self.initHelper(alloc, self.ne[0..self.n_dims], self.data) catch unreachable;
             t.op = .view;
             t.src0 = self;
             t.src1 = null;
+            t.strides = self.strides;
+            t.storage_offset = self.storage_offset;
             t.grad = if (self.grad) |grad| grad.view() else null;
             return t;
         }
 
         pub fn copyTensorShape(self: *Self) *Self {
-            return Self.initHelper(a(self), &self.ne, null) catch unreachable;
+            return Self.initHelper(a(self), self.ne[0..self.n_dims], null) catch unreachable;
+        }
+
+        fn structuralView(self: *Self, ne: []const usize, strides: [max_dims]usize, storage_offset: usize, op: Op) *Self {
+            const alloc = a(self);
+            const is_node = self.grad != null;
+            const res = Self.initHelper(alloc, ne, self.data) catch unreachable;
+            res.op = op;
+            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.src0 = self;
+            res.src1 = null;
+            res.strides = strides;
+            res.storage_offset = storage_offset;
+            return res;
         }
 
         fn unaryOp(self: *Self, op: Op, inplace: bool) *Self {
@@ -299,6 +314,25 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return repeat(self, &other.ne);
         }
 
+        pub fn broadcastTo(self: *Self, ne: []const usize) *Self {
+            assert(ne.len <= max_dims);
+            assert(self.canRepeatToShape(ne));
+
+            var out_strides = self.strides;
+            for (0..ne.len) |i| {
+                const src_dim = if (i < self.n_dims) self.ne[i] else 1;
+                if (src_dim == ne[i]) {
+                    if (i >= self.n_dims) out_strides[i] = 0;
+                } else {
+                    assert(src_dim == 1);
+                    out_strides[i] = 0;
+                }
+            }
+            var i = ne.len;
+            while (i < max_dims) : (i += 1) out_strides[i] = 0;
+            return structuralView(self, ne, out_strides, self.storage_offset, .broadcast_to);
+        }
+
         // ---------------------------------------------------------------
         // Composite ops
         // ---------------------------------------------------------------
@@ -383,17 +417,15 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const alloc = a(self);
             assert(self.canMatMul(trans_self, other, trans_other));
             const is_node = self.grad != null or other.grad != null;
-            assert(max_dims == 4);
+            assert(max_dims >= 4);
 
-            const out_ne: [max_dims]usize = lbl: {
-                break :lbl if (!trans_self and !trans_other)
-                    .{ other.ne[0], self.ne[1], self.ne[2], other.ne[3] }
-                else if (trans_self and !trans_other)
-                    .{ other.ne[0], self.ne[0], self.ne[2], other.ne[3] }
-                else if (!trans_self and trans_other)
-                    .{ other.ne[1], self.ne[1], self.ne[2], other.ne[3] }
-                else
-                    .{ other.ne[1], self.ne[0], self.ne[2], other.ne[3] };
+            const out_ne: [max_dims]usize = blk: {
+                var dims: [max_dims]usize = [_]usize{1} ** max_dims;
+                dims[0] = if (trans_other) other.ne[1] else other.ne[0];
+                dims[1] = if (trans_self) self.ne[0] else self.ne[1];
+                var i: usize = 2;
+                while (i < max_dims) : (i += 1) dims[i] = self.ne[i];
+                break :blk dims;
             };
             const res = Self.init(alloc, out_ne[0..@min(self.n_dims, other.n_dims)]) catch unreachable;
             res.op = if (trans_self) if (trans_other) .matmul_t0t1 else .matmul_t0 else if (trans_other) .matmul_t1 else .matmul;
@@ -426,20 +458,17 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         // ---------------------------------------------------------------
 
         pub fn reshapeLike(self: *Self, other: *Self) *Self {
-            const alloc = a(self);
             assert(self.isContiguous());
             assert(other.isContiguous());
             assert(self.nElems() == other.nElems());
-            const is_node = (self.grad != null or other.grad != null);
-            const res = Self.initHelper(alloc, other.ne[0..other.n_dims], self.data) catch unreachable;
-            res.op = .reshape;
-            res.grad = if (is_node) res.copyTensorShape() else null;
-            res.src0 = self;
-            return res;
+            var strides: [max_dims]usize = [_]usize{0} ** max_dims;
+            strides[0] = 1;
+            var i: usize = 1;
+            while (i < max_dims) : (i += 1) strides[i] = strides[i - 1] * (if (i - 1 < other.n_dims) other.ne[i - 1] else 1);
+            return structuralView(self, other.ne[0..other.n_dims], strides, self.storage_offset, .reshape);
         }
 
         pub fn reshape(self: *Self, ne: []const usize) *Self {
-            const alloc = a(self);
             assert(self.isContiguous());
             const ne_prod = blk: {
                 var prod: usize = 1;
@@ -447,24 +476,61 @@ pub fn Api(comptime Self: type, comptime T: type) type {
                 break :blk prod;
             };
             assert(self.nElems() == ne_prod);
-            const is_node = self.grad != null;
-            const res = Self.initHelper(alloc, ne, self.data) catch unreachable;
-            res.op = .reshape;
-            res.grad = if (is_node) res.copyTensorShape() else null;
-            res.src0 = self;
-            return res;
+            var strides: [max_dims]usize = [_]usize{0} ** max_dims;
+            strides[0] = 1;
+            var i: usize = 1;
+            while (i < max_dims) : (i += 1) strides[i] = strides[i - 1] * (if (i - 1 < ne.len) ne[i - 1] else 1);
+            return structuralView(self, ne, strides, self.storage_offset, .reshape);
         }
 
         /// Transpose the first two dimensions.
         pub fn transpose(self: *Self) *Self {
-            const alloc = a(self);
-            const is_node = self.grad != null;
-            const out_ne = [max_dims]usize{ self.ne[1], self.ne[0], self.ne[2], self.ne[3] };
-            const res = Self.init(alloc, out_ne[0..self.n_dims]) catch unreachable;
-            res.op = .transpose;
-            res.grad = if (is_node) res.copyTensorShape() else null;
-            res.src0 = self;
+            var axes = [_]usize{0} ** max_dims;
+            var i: usize = 0;
+            while (i < max_dims) : (i += 1) axes[i] = i;
+            axes[0] = 1;
+            axes[1] = 0;
+            return self.permute(axes[0..self.n_dims]);
+        }
+
+        pub fn permute(self: *Self, axes: []const usize) *Self {
+            assert(axes.len == self.n_dims);
+            var seen = [_]bool{false} ** max_dims;
+            var out_ne = [_]usize{1} ** max_dims;
+            var out_strides = [_]usize{0} ** max_dims;
+            for (axes, 0..) |axis, i| {
+                assert(axis < self.n_dims);
+                assert(!seen[axis]);
+                seen[axis] = true;
+                out_ne[i] = self.ne[axis];
+                out_strides[i] = self.strides[axis];
+            }
+            const res = structuralView(self, out_ne[0..axes.len], out_strides, self.storage_offset, .permute);
+            const axes_tensor = Self.initIndexVectorCopy(a(self), axes) catch unreachable;
+            axes_tensor.is_internal_aux = true;
+            res.src1 = axes_tensor;
             return res;
+        }
+
+        pub fn asStrided(self: *Self, ne: []const usize, strides: []const usize, storage_offset: usize) *Self {
+            assert(ne.len <= max_dims);
+            assert(ne.len == strides.len);
+            var out_strides = [_]usize{0} ** max_dims;
+            for (strides, 0..) |stride, i| out_strides[i] = stride;
+            return structuralView(self, ne, out_strides, self.storage_offset + storage_offset, .as_strided);
+        }
+
+        pub fn slidingWindow2d(self: *Self, kw: usize, kh: usize) *Self {
+            assert(self.n_dims == 4);
+            assert(kw <= self.ne[0]);
+            assert(kh <= self.ne[1]);
+            const out_w = self.ne[0] - kw + 1;
+            const out_h = self.ne[1] - kh + 1;
+            return self.asStrided(
+                &.{ out_w, out_h, kw, kh, self.ne[2], self.ne[3] },
+                &.{ self.strides[0], self.strides[1], self.strides[0], self.strides[1], self.strides[2], self.strides[3] },
+                0,
+            );
         }
 
         // ---------------------------------------------------------------
@@ -538,28 +604,82 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         // Convolution & pooling
         // ---------------------------------------------------------------
 
-        /// 2D convolution (valid, stride 1, no padding).
+        /// im2col: extract sliding-window patches into columns.
+        /// self: input [W, H, C_in, N], kernel: used only for shape (kW, kH).
+        /// result: [spatial, patch_len, 1, N] where spatial = outW*outH, patch_len = kW*kH*C_in.
+        pub fn im2col(self: *Self, kernel: *Self) *Self {
+            const alloc = a(self);
+            assert(self.n_dims == 4);
+            assert(kernel.n_dims == 4);
+            assert(self.ne[2] == kernel.ne[2]);
+            const kw = kernel.ne[0];
+            const kh = kernel.ne[1];
+            const c_in = kernel.ne[2];
+            const out_w = self.ne[0] - kw + 1;
+            const out_h = self.ne[1] - kh + 1;
+            const spatial = out_w * out_h;
+            const patch_len = kw * kh * c_in;
+            const batch = self.ne[3];
+            const is_node = self.grad != null;
+            const res = Self.init(alloc, &.{ spatial, patch_len, 1, batch }) catch unreachable;
+            res.op = .im2col;
+            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.src0 = self;
+            res.src1 = kernel; // for shape info only
+            return res;
+        }
+
+        /// col2im: scatter-add columns back to image layout (backward of im2col).
+        /// self: grad_col [spatial, patch_len, 1, N], kernel: for shape info.
+        /// result: [W, H, C_in, N]
+        pub fn col2im(self: *Self, kernel: *Self, input_ne: [max_dims]usize) *Self {
+            const alloc = a(self);
+            const res = Self.init(alloc, input_ne[0..4]) catch unreachable;
+            res.op = .col2im;
+            res.src0 = self;
+            res.src1 = kernel;
+            return res;
+        }
+
+        /// 2D convolution (valid, stride 1, no padding). Composite op.
+        /// Decomposes to: im2col → reshape kernel → repeat → matMul → reshape.
         /// self: input  [W, H, C_in, N]
         /// kernel:      [kW, kH, C_in, C_out]
         /// result:      [W-kW+1, H-kH+1, C_out, N]
         pub fn conv2d(self: *Self, kernel: *Self) *Self {
-            const alloc = a(self);
             assert(self.n_dims == 4);
             assert(kernel.n_dims == 4);
-            assert(self.ne[2] == kernel.ne[2]); // C_in must match
-            assert(self.ne[0] >= kernel.ne[0]); // W >= kW
-            assert(self.ne[1] >= kernel.ne[1]); // H >= kH
-            const out_w = self.ne[0] - kernel.ne[0] + 1;
-            const out_h = self.ne[1] - kernel.ne[1] + 1;
-            const out_c = kernel.ne[3]; // C_out
-            const batch = self.ne[3]; // N
-            const is_node = self.grad != null or kernel.grad != null;
-            const res = Self.init(alloc, &.{ out_w, out_h, out_c, batch }) catch unreachable;
-            res.op = .conv2d;
-            res.grad = if (is_node) res.copyTensorShape() else null;
-            res.src0 = self;
-            res.src1 = kernel;
-            return res;
+            assert(self.ne[2] == kernel.ne[2]);
+            const kw = kernel.ne[0];
+            const kh = kernel.ne[1];
+            const c_in = kernel.ne[2];
+            const c_out = kernel.ne[3];
+            const out_w = self.ne[0] - kw + 1;
+            const out_h = self.ne[1] - kh + 1;
+            const batch = self.ne[3];
+            const patch_len = kw * kh * c_in;
+            const spatial = out_w * out_h;
+
+            // 1. Extract patches: [spatial, patch_len, 1, N]
+            const col = self.im2col(kernel);
+
+            // 2. Reshape kernel to 2D: [patch_len, C_out]
+            const kernel_2d = kernel.reshape(&.{ patch_len, c_out });
+
+            // 3. Repeat kernel for batch dim: [patch_len, C_out, 1, N]
+            var rep_ne: [max_dims]usize = [_]usize{1} ** max_dims;
+            rep_ne[0] = patch_len;
+            rep_ne[1] = c_out;
+            rep_ne[2] = 1;
+            rep_ne[3] = batch;
+            const kernel_rep = kernel_2d.repeat(rep_ne[0..4]);
+
+            // 4. Batched matmul: [spatial, C_out, 1, N]
+            const result = kernel_rep.matMul(false, col, false);
+
+            // 5. Reshape to image layout: [out_W, out_H, C_out, N]
+            _ = spatial;
+            return result.reshape(&.{ out_w, out_h, c_out, batch });
         }
 
         /// 2×2 max pooling with stride 2.
@@ -575,30 +695,6 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             res.op = .max_pool2d;
             res.grad = if (is_node) res.copyTensorShape() else null;
             res.src0 = self;
-            return res;
-        }
-
-        /// Internal: backward of conv2d w.r.t. input.
-        /// self: out_grad [W_out, H_out, C_out, N], kernel: [kW, kH, C_in, C_out]
-        /// result: input_grad [W_out+kW-1, H_out+kH-1, C_in, N]
-        pub fn conv2dBwdInput(self: *Self, kernel: *Self, in_ne: [max_dims]usize) *Self {
-            const alloc = a(self);
-            const res = Self.init(alloc, in_ne[0..4]) catch unreachable;
-            res.op = .conv2d_bwd_input;
-            res.src0 = self; // out_grad
-            res.src1 = kernel;
-            return res;
-        }
-
-        /// Internal: backward of conv2d w.r.t. kernel.
-        /// self: out_grad [W_out, H_out, C_out, N], input: original input [W, H, C_in, N]
-        /// result: kernel_grad [kW, kH, C_in, C_out]
-        pub fn conv2dBwdKernel(self: *Self, input: *Self, k_ne: [max_dims]usize) *Self {
-            const alloc = a(self);
-            const res = Self.init(alloc, k_ne[0..4]) catch unreachable;
-            res.op = .conv2d_bwd_kernel;
-            res.src0 = self; // out_grad
-            res.src1 = input;
             return res;
         }
 

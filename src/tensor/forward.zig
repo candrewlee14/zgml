@@ -29,7 +29,7 @@ else
 
 const cpuinfo = @import("cpuinfo.zig");
 
-const max_dims = 4;
+const max_dims = @import("../tensor.zig").max_dims;
 /// Coefficient for the GeLU tanh approximation.
 const GELU_COEF_A: comptime_float = 0.044715;
 /// √(2/π), computed from std.math.pi.
@@ -117,6 +117,36 @@ fn simdMapBinary(
 
 fn elemOffset(strides: [max_dims]usize, c0: usize, c1: usize, c2: usize, c3: usize) usize {
     return c0 * strides[0] + c1 * strides[1] + c2 * strides[2] + c3 * strides[3];
+}
+
+fn first4(arr: [max_dims]usize) @Vector(4, usize) {
+    return @Vector(4, usize){ arr[0], arr[1], arr[2], arr[3] };
+}
+
+fn nextCoord(coords: []usize, shape: []const usize) bool {
+    var axis: usize = 0;
+    while (axis < shape.len) : (axis += 1) {
+        coords[axis] += 1;
+        if (coords[axis] < shape[axis]) return true;
+        coords[axis] = 0;
+    }
+    return false;
+}
+
+fn offsetFor(comptime Self: type, tensor: *const Self, coords: []const usize) usize {
+    var idx = tensor.storage_offset;
+    for (coords, 0..) |coord, i| idx += coord * tensor.strides[i];
+    return idx;
+}
+
+fn computeStructuralDup(comptime Self: type, dst: *Self, src0: *const Self) void {
+    if (dst.nElems() == 0) return;
+    var coords: [max_dims]usize = [_]usize{0} ** max_dims;
+    while (true) {
+        const idx = offsetFor(Self, dst, coords[0..dst.n_dims]);
+        dst.data[idx] = src0.data[offsetFor(Self, src0, coords[0..src0.n_dims])];
+        if (!nextCoord(coords[0..dst.n_dims], dst.ne[0..dst.n_dims])) break;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -514,6 +544,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
                     simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, addVec, addScalar);
                 } else {
+                    if (dst.n_dims > 4) @panic("Unimplemented forward add for ndim > 4");
                     for (0..dst.ne[3]) |d3| {
                         for (0..dst.ne[2]) |d2| {
                             for (0..dst.ne[1]) |d1| {
@@ -542,6 +573,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
                     simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, subVec, subScalar);
                 } else {
+                    if (dst.n_dims > 4) @panic("Unimplemented forward sub for ndim > 4");
                     for (0..dst.ne[3]) |d3| {
                         for (0..dst.ne[2]) |d2| {
                             for (0..dst.ne[1]) |d1| {
@@ -579,6 +611,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
                     simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, mulVec, mulScalar);
                 } else {
+                    if (dst.n_dims > 4) @panic("Unimplemented forward mul for ndim > 4");
                     for (0..dst.ne[3]) |d3| {
                         for (0..dst.ne[2]) |d2| {
                             for (0..dst.ne[1]) |d1| {
@@ -608,6 +641,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
                     simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, divVec, divScalar);
                 } else {
+                    if (dst.n_dims > 4) @panic("Unimplemented forward div for ndim > 4");
                     for (0..dst.ne[3]) |d3| {
                         for (0..dst.ne[2]) |d2| {
                             for (0..dst.ne[1]) |d1| {
@@ -629,20 +663,20 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // ---------------------------------------------------------------
 
         pub fn computeMean(dst: *Self, src0: *const Self) void {
-            assert(max_dims == 4);
+            assert(max_dims >= 4);
             assert(src0.canSumTo(dst));
-            const src0_ne_v: @Vector(4, usize) = src0.ne;
-            const div_elems: T = @floatFromInt(@reduce(.Mul, src0_ne_v / dst.ne));
+            const src0_ne_v = first4(src0.ne);
+            const div_elems: T = @floatFromInt(@reduce(.Mul, src0_ne_v / first4(dst.ne)));
 
             for (0..src0.ne[3]) |ne3| {
                 for (0..src0.ne[2]) |ne2| {
                     for (0..src0.ne[1]) |ne1| {
                         for (0..src0.ne[0]) |ne0| {
                             const src0_nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
-                            const dst_ne_v: @Vector(4, usize) = dst.ne;
+                            const dst_ne_v = first4(dst.ne);
                             const dst_nes = src0_nes % dst_ne_v;
-                            const src0_stride_v: @Vector(4, usize) = src0.strides;
-                            const dst_stride_v: @Vector(4, usize) = dst.strides;
+                            const src0_stride_v = first4(src0.strides);
+                            const dst_stride_v = first4(dst.strides);
                             const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
                             const dst_idx = @reduce(.Add, dst_nes * dst_stride_v);
                             dst.data[dst_idx] += src0.data[src0_idx] / div_elems;
@@ -653,7 +687,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         pub fn computeSum(dst: *Self, src0: *const Self) void {
-            assert(max_dims == 4);
+            assert(max_dims >= 4);
             assert(src0.canSumTo(dst));
             @memset(dst.data, 0);
             for (0..src0.ne[3]) |ne3| {
@@ -661,10 +695,10 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                     for (0..src0.ne[1]) |ne1| {
                         for (0..src0.ne[0]) |ne0| {
                             const src0_nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
-                            const dst_ne_v: @Vector(4, usize) = dst.ne;
+                            const dst_ne_v = first4(dst.ne);
                             const dst_nes = src0_nes % dst_ne_v;
-                            const src0_stride_v: @Vector(4, usize) = src0.strides;
-                            const dst_stride_v: @Vector(4, usize) = dst.strides;
+                            const src0_stride_v = first4(src0.strides);
+                            const dst_stride_v = first4(dst.strides);
                             const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
                             const dst_idx = @reduce(.Add, dst_nes * dst_stride_v);
                             dst.data[dst_idx] += src0.data[src0_idx];
@@ -675,7 +709,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         pub fn computeMax(dst: *Self, src0: *const Self) void {
-            assert(max_dims == 4);
+            assert(max_dims >= 4);
             assert(src0.canSumTo(dst));
             @memset(dst.data, -std.math.inf(T));
             for (0..src0.ne[3]) |ne3| {
@@ -683,10 +717,10 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                     for (0..src0.ne[1]) |ne1| {
                         for (0..src0.ne[0]) |ne0| {
                             const src0_nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
-                            const dst_ne_v: @Vector(4, usize) = dst.ne;
+                            const dst_ne_v = first4(dst.ne);
                             const dst_nes = src0_nes % dst_ne_v;
-                            const src0_stride_v: @Vector(4, usize) = src0.strides;
-                            const dst_stride_v: @Vector(4, usize) = dst.strides;
+                            const src0_stride_v = first4(src0.strides);
+                            const dst_stride_v = first4(dst.strides);
                             const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
                             const dst_idx = @reduce(.Add, dst_nes * dst_stride_v);
                             dst.data[dst_idx] = @max(dst.data[dst_idx], src0.data[src0_idx]);
@@ -697,17 +731,17 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         pub fn computeRepeat(dst: *Self, src0: *const Self) void {
-            assert(max_dims == 4);
+            assert(max_dims >= 4);
             assert(src0.canRepeatTo(dst));
             for (0..dst.ne[3]) |ne3| {
                 for (0..dst.ne[2]) |ne2| {
                     for (0..dst.ne[1]) |ne1| {
                         for (0..dst.ne[0]) |ne0| {
                             const nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
-                            const src0_ne_v: @Vector(4, usize) = src0.ne;
+                            const src0_ne_v = first4(src0.ne);
                             const src0_nes = nes % src0_ne_v;
-                            const src0_stride_v: @Vector(4, usize) = src0.strides;
-                            const dst_stride_v: @Vector(4, usize) = dst.strides;
+                            const src0_stride_v = first4(src0.strides);
+                            const dst_stride_v = first4(dst.strides);
                             const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
                             const dst_idx = @reduce(.Add, nes * dst_stride_v);
                             dst.data[dst_idx] = src0.data[src0_idx];
@@ -842,7 +876,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         pub fn computeMatMul(dst: *Self, src0: *const Self, comptime trans0: bool, src1: *const Self, comptime trans1: bool) void {
-            assert(max_dims == 4);
+            assert(max_dims >= 4);
             dst.assertValidMatMulDims(src0, trans0, src1, trans1);
             assert(dst.strides[0] == 1);
             assert(dst.strides[0] <= dst.strides[1]);
@@ -907,13 +941,119 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // Dispatch
         // ---------------------------------------------------------------
 
-        /// Dispatch forward computation for this tensor's primitive op.
+        /// im2col: extract sliding-window patches into a column matrix.
+        /// input [W, H, C_in, N] → dst [spatial, patch_len, 1, N]
+        /// where spatial = outW*outH, patch_len = kW*kH*C_in.
+        /// Kernel tensor (src1) is used only for shape (kW, kH).
+        pub fn computeIm2col(dst: *Self, input: *const Self, kernel: *const Self) void {
+            const in_w = input.ne[0];
+            const in_h = input.ne[1];
+            const kw = kernel.ne[0];
+            const kh = kernel.ne[1];
+            const c_in = kernel.ne[2];
+            const out_w = in_w - kw + 1;
+            const out_h = in_h - kh + 1;
+            const spatial = out_w * out_h;
+            const patch_len = kw * kh * c_in;
+            const batch = input.ne[3];
+
+            // dst layout: [spatial, patch_len, 1, N]
+            // dst.data[s + p * spatial + n * spatial * patch_len]
+            for (0..batch) |n| {
+                const in_base = n * in_w * in_h * c_in;
+                const dst_base = n * spatial * patch_len;
+                for (0..out_h) |oy| {
+                    for (0..out_w) |ox| {
+                        const s = oy * out_w + ox;
+                        for (0..c_in) |ic| {
+                            for (0..kh) |ky| {
+                                for (0..kw) |kx| {
+                                    const p = kx + ky * kw + ic * kw * kh;
+                                    dst.data[dst_base + s + p * spatial] =
+                                        input.data[in_base + (ox + kx) + (oy + ky) * in_w + ic * in_w * in_h];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /// col2im: scatter-add columns back to image layout (backward of im2col).
+        /// src0: grad_col [spatial, patch_len, 1, N], src1: kernel (for kW, kH shape).
+        /// dst: input_grad [W, H, C_in, N]
+        pub fn computeCol2im(dst: *Self, grad_col: *const Self, kernel: *const Self) void {
+            const in_w = dst.ne[0];
+            const in_h = dst.ne[1];
+            const kw = kernel.ne[0];
+            const kh = kernel.ne[1];
+            const c_in = kernel.ne[2];
+            const out_w = in_w - kw + 1;
+            const out_h = in_h - kh + 1;
+            const spatial = out_w * out_h;
+            const patch_len = kw * kh * c_in;
+            const batch = dst.ne[3];
+
+            @memset(dst.data, 0);
+
+            for (0..batch) |n| {
+                const gc_base = n * spatial * patch_len;
+                const dst_base = n * in_w * in_h * c_in;
+                for (0..out_h) |oy| {
+                    for (0..out_w) |ox| {
+                        const s = oy * out_w + ox;
+                        for (0..c_in) |ic| {
+                            for (0..kh) |ky| {
+                                for (0..kw) |kx| {
+                                    const p = kx + ky * kw + ic * kw * kh;
+                                    dst.data[dst_base + (ox + kx) + (oy + ky) * in_w + ic * in_w * in_h] +=
+                                        grad_col.data[gc_base + s + p * spatial];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /// 2×2 max pooling with stride 2.
+        pub fn computeMaxPool2d(dst: *Self, input: *const Self) void {
+            const in_w = input.ne[0];
+            const out_w = dst.ne[0];
+            const out_h = dst.ne[1];
+            const channels = dst.ne[2];
+            const batch = dst.ne[3];
+
+            const in_stride_h = in_w;
+            const in_stride_c = in_w * input.ne[1];
+            const in_stride_n = in_stride_c * channels;
+            const out_stride_h = out_w;
+            const out_stride_c = out_w * out_h;
+            const out_stride_n = out_stride_c * channels;
+
+            for (0..batch) |n| {
+                for (0..channels) |ch| {
+                    for (0..out_h) |oy| {
+                        for (0..out_w) |ox| {
+                            const ix = ox * 2;
+                            const iy = oy * 2;
+                            const base = ix + iy * in_stride_h + ch * in_stride_c + n * in_stride_n;
+                            var m = input.data[base];
+                            m = @max(m, input.data[base + 1]);
+                            m = @max(m, input.data[base + in_stride_h]);
+                            m = @max(m, input.data[base + in_stride_h + 1]);
+                            dst.data[ox + oy * out_stride_h + ch * out_stride_c + n * out_stride_n] = m;
+                        }
+                    }
+                }
+            }
+        }
+
         pub fn compute(tensor: *Self) void {
             const src0 = tensor.src0;
             const src1 = tensor.src1;
             switch (tensor.op) {
-                .none, .view, .reshape => {},
-                .transpose => tensor.computeTranspose(src0.?),
+                .none, .view, .reshape, .transpose, .permute, .as_strided, .broadcast_to => {},
                 .add => tensor.computeAdd(src0.?, src1.?),
                 .mul => tensor.computeMul(src0.?, src1.?),
                 .neg => tensor.computeNeg(src0.?),
@@ -932,6 +1072,9 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .scatter_add_rows => tensor.computeScatterAddRows(src0.?, src1.?),
                 .pick_rows => tensor.computePickRows(src0.?, src1.?),
                 .scatter_add_picks => tensor.computeScatterAddPicks(src0.?, src1.?),
+                .im2col => tensor.computeIm2col(src0.?, src1.?),
+                .col2im => tensor.computeCol2im(src0.?, src1.?),
+                .max_pool2d => tensor.computeMaxPool2d(src0.?),
                 .matmul => tensor.computeMatMul(src0.?, false, src1.?, false),
                 .matmul_t0 => tensor.computeMatMul(src0.?, true, src1.?, false),
                 .matmul_t1 => tensor.computeMatMul(src0.?, false, src1.?, true),

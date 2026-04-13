@@ -156,6 +156,7 @@ fn applyOp(comptime T: type, comptime op: Op, val: T, node: anytype, i: usize) T
 pub fn FusedKernel(comptime T: type, comptime ops: []const Op) type {
     return struct {
         pub fn execute(nodes: []const *Tensor(T)) void {
+            std.debug.assert(nodes[0].source0().?.n_dims <= 4);
             const n_elems = nodes[nodes.len - 1].nElems();
             const input_data = nodes[0].source0().?.data;
 
@@ -173,6 +174,7 @@ pub fn FusedKernel(comptime T: type, comptime ops: []const Op) type {
 /// Runtime interpreter fallback for chains longer than the comptime dispatch limit.
 /// Still one memory pass, but the inner loop has a runtime switch.
 pub fn executeFusedGeneric(comptime T: type, nodes: []const *Tensor(T)) void {
+    std.debug.assert(nodes[0].source0().?.n_dims <= 4);
     const n_elems = nodes[nodes.len - 1].nElems();
     const input_data = nodes[0].source0().?.data;
 
@@ -218,7 +220,7 @@ pub fn executeFusedChain(comptime T: type, plan: ElementwiseChainPlan(T)) void {
     }
 }
 
-fn offset4(strides: [4]usize, c0: usize, c1: usize, c2: usize, c3: usize) usize {
+fn offset4(strides: [@import("../tensor.zig").max_dims]usize, c0: usize, c1: usize, c2: usize, c3: usize) usize {
     return c0 * strides[0] + c1 * strides[1] + c2 * strides[2] + c3 * strides[3];
 }
 
