@@ -572,34 +572,27 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // Dispatch
         // ---------------------------------------------------------------
 
+        /// Dispatch forward computation for this tensor's primitive op.
         pub fn compute(tensor: *Self) void {
             const src0 = tensor.src0;
             const src1 = tensor.src1;
             switch (tensor.op) {
-                .none, .view => {},
-                .dup => tensor.computeDup(src0.?),
+                .none, .view, .reshape, .transpose => {},
                 .add => tensor.computeAdd(src0.?, src1.?),
-                .sub => tensor.computeSub(src0.?, src1.?),
                 .mul => tensor.computeMul(src0.?, src1.?),
-                .div => tensor.computeDiv(src0.?, src1.?),
-                .repeat => tensor.computeRepeat(src0.?),
-                .sqr => tensor.computeSqr(src0.?),
-                .sqrt => tensor.computeSqrt(src0.?),
-                .recip => tensor.computeRecip(src0.?),
-                .sum => tensor.computeSum(src0.?),
-                .mean => tensor.computeMean(src0.?),
+                .neg => tensor.computeNeg(src0.?),
                 .abs => tensor.computeAbs(src0.?),
                 .sgn => tensor.computeSgn(src0.?),
-                .neg => tensor.computeNeg(src0.?),
                 .step => tensor.computeStep(src0.?),
-                .relu => tensor.computeRelu(src0.?),
+                .sqrt => tensor.computeSqrt(src0.?),
+                .recip => tensor.computeRecip(src0.?),
                 .gelu => tensor.computeGelu(src0.?),
-                .norm => tensor.computeNorm(src0.?),
+                .sum => tensor.computeSum(src0.?),
+                .repeat => tensor.computeRepeat(src0.?),
                 .matmul => tensor.computeMatMul(src0.?, false, src1.?, false),
                 .matmul_t0 => tensor.computeMatMul(src0.?, true, src1.?, false),
                 .matmul_t1 => tensor.computeMatMul(src0.?, false, src1.?, true),
                 .matmul_t0t1 => tensor.computeMatMul(src0.?, true, src1.?, true),
-                else => @panic("Unimplemented forward OP"),
             }
         }
     };

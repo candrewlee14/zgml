@@ -1,8 +1,8 @@
-//! Backward (reverse-mode autodiff) implementations for tensor operations.
+//! Backward (reverse-mode autodiff) implementations for primitive tensor operations.
 //!
-//! Given a tensor produced by an operation, `backward` propagates gradients
-//! from the output back through to the source tensors. Each operation has a
-//! corresponding gradient rule.
+//! Only primitive ops need backward rules here. Decomposed ops (sub, sqr, div,
+//! relu, scale, mean) get their gradients automatically through the chain rule
+//! on the primitives they decompose into.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -16,18 +16,10 @@ pub fn Ops(comptime Self: type) type {
             return if (inplace) grad.addInplace(alloc, contribution) else grad.add(alloc, contribution);
         }
 
-        /// Same as accumGrad but for subtraction.
-        fn accumGradSub(grad: *Self, alloc: Alloc, contribution: *Self, inplace: bool) *Self {
-            return if (inplace) grad.subInplace(alloc, contribution) else grad.sub(alloc, contribution);
-        }
-
         /// Remove the gradient from an intermediate tensor created during backward.
-        /// These intermediates shouldn't track their own gradients.
         fn stripGrad(tensor: *Self, alloc: Alloc) void {
-            if (tensor.grad) |gradp| {
-                gradp.deinit(alloc);
-                tensor.grad = null;
-            }
+            _ = alloc;
+            tensor.grad = null;
         }
 
         fn addToScratchUniq(alloc: Alloc, scratch: *std.ArrayList(*Self), tensor: *Self) Alloc.Error!void {
@@ -37,27 +29,14 @@ pub fn Ops(comptime Self: type) type {
             try scratch.append(alloc, tensor);
         }
 
-        /// Propagate gradients backward through the operation that created this tensor.
-        ///
-        /// For each source tensor with a gradient, accumulates the contribution from
-        /// this tensor's gradient according to the chain rule. When `inplace` is true,
-        /// gradient tensors may be modified in-place for efficiency.
+        /// Propagate gradients backward through the primitive op that created this tensor.
         pub fn backward(tensor: *Self, alloc: Alloc, scratch: *std.ArrayList(*Self), inplace: bool) Alloc.Error!void {
             const src0_o = tensor.src0;
             const src1_o = tensor.src1;
             const out_grad = tensor.grad.?;
 
             switch (tensor.op) {
-                .none, .view => {},
-
-                .dup => {
-                    const src0 = src0_o.?;
-                    if (src0.grad) |grad| {
-                        const new_grad = accumGrad(grad, alloc, out_grad, inplace);
-                        assert(new_grad.isSameShape(grad));
-                        src0.grad = new_grad;
-                    }
-                },
+                .none, .view, .reshape, .transpose => {},
 
                 // d/d(src0) [src0 + src1] = out_grad
                 // d/d(src1) [src0 + src1] = out_grad
@@ -66,15 +45,6 @@ pub fn Ops(comptime Self: type) type {
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| src0.grad = accumGrad(grad, alloc, out_grad, inplace);
                     if (src1.grad) |grad| src1.grad = accumGrad(grad, alloc, out_grad, inplace);
-                },
-
-                // d/d(src0) [src0 - src1] = out_grad
-                // d/d(src1) [src0 - src1] = -out_grad
-                .sub => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.grad) |grad| src0.grad = accumGrad(grad, alloc, out_grad, inplace);
-                    if (src1.grad) |grad| src1.grad = accumGradSub(grad, alloc, out_grad, inplace);
                 },
 
                 // d/d(src0) [src0 * src1] = src1 * out_grad
@@ -94,69 +64,13 @@ pub fn Ops(comptime Self: type) type {
                     }
                 },
 
-                // d/d(src0) [src0 / src1] = out_grad / src1
-                // d/d(src1) [src0 / src1] = -src0 * out_grad / src1^2
-                .div => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.grad) |grad| {
-                        const contribution = src1.div(alloc, out_grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
-                    }
-                    if (src1.grad) |grad| {
-                        const contribution = src0.div(alloc, out_grad);
-                        stripGrad(contribution, alloc);
-                        src1.grad = accumGrad(grad, alloc, contribution, inplace);
-                    }
-                },
-
-                // d/d(src0) [repeat(src0)] = sum(out_grad) back to src0's shape
-                .repeat => {
+                // d/d(src0) [-src0] = -out_grad
+                .neg => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
-                        src0.grad = out_grad.sumInto(alloc, grad);
-                    }
-                },
-
-                // d/d(src0) [src0^2] = 2 * src0 * out_grad
-                .sqr => {
-                    const src0 = src0_o.?;
-                    if (src0.grad) |grad| {
-                        const two = try Self.initScalar(alloc, 2);
-                        const two_rep = two.repeatLike(alloc, src0);
-                        const src0_x2 = src0.mul(alloc, two_rep);
-                        stripGrad(src0_x2, alloc);
-                        const contribution = src0_x2.mul(alloc, out_grad);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
-                    }
-                },
-
-                // d/d(src0) [sqrt(src0)] = out_grad / (2 * sqrt(src0))
-                .sqrt => {
-                    const src0 = src0_o.?;
-                    if (src0.grad) |grad| {
-                        const half = try Self.initScalar(alloc, 0.5);
-                        const half_rep = half.repeatLike(alloc, src0);
-                        // dst already holds sqrt(src0) from forward pass
-                        const inv_2sqrt = half_rep.div(alloc, tensor);
-                        stripGrad(inv_2sqrt, alloc);
-                        const contribution = inv_2sqrt.mul(alloc, out_grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
-                    }
-                },
-
-                // d/d(src0) [1/src0] = -1/src0^2 * out_grad
-                // Since tensor already holds 1/src0 from forward, use -tensor^2
-                .recip => {
-                    const src0 = src0_o.?;
-                    if (src0.grad) |grad| {
-                        const neg_recip_sq = tensor.mul(alloc, tensor).neg(alloc);
-                        stripGrad(neg_recip_sq, alloc);
-                        const contribution = neg_recip_sq.mul(alloc, out_grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const neg_grad = out_grad.neg(alloc);
+                        stripGrad(neg_grad, alloc);
+                        src0.grad = accumGrad(grad, alloc, neg_grad, inplace);
                     }
                 },
 
@@ -172,30 +86,44 @@ pub fn Ops(comptime Self: type) type {
                     }
                 },
 
-                // d/d(src0) [-src0] = -out_grad
-                .neg => {
+                // d/d(src0) [sqrt(src0)] = 0.5 / sqrt(src0) * out_grad
+                // tensor already holds sqrt(src0) from the forward pass
+                .sqrt => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
-                        const neg_grad = out_grad.neg(alloc);
-                        stripGrad(neg_grad, alloc);
-                        src0.grad = accumGrad(grad, alloc, neg_grad, inplace);
-                    }
-                },
-
-                // d/d(src0) [relu(src0)] = step(src0) * out_grad
-                .relu => {
-                    const src0 = src0_o.?;
-                    if (src0.grad) |grad| {
-                        const mask = src0.step(alloc);
-                        stripGrad(mask, alloc);
-                        const contribution = mask.mul(alloc, out_grad);
+                        const half = try Self.initScalar(alloc, 0.5);
+                        const half_rep = half.repeatLike(alloc, src0);
+                        const inv_2sqrt = half_rep.div(alloc, tensor);
+                        stripGrad(inv_2sqrt, alloc);
+                        const contribution = inv_2sqrt.mul(alloc, out_grad);
                         stripGrad(contribution, alloc);
                         src0.grad = accumGrad(grad, alloc, contribution, inplace);
                     }
                 },
 
-                // Gradient of sum/mean broadcasts back to source shape
-                .sum, .mean => {
+                // d/d(src0) [1/src0] = -1/src0^2 * out_grad
+                // tensor already holds 1/src0 from the forward pass
+                .recip => {
+                    const src0 = src0_o.?;
+                    if (src0.grad) |grad| {
+                        const neg_recip_sq = tensor.mul(alloc, tensor).neg(alloc);
+                        stripGrad(neg_recip_sq, alloc);
+                        const contribution = neg_recip_sq.mul(alloc, out_grad);
+                        stripGrad(contribution, alloc);
+                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                    }
+                },
+
+                // d/d(src0) [repeat(src0)] = sum(out_grad) back to src0's shape
+                .repeat => {
+                    const src0 = src0_o.?;
+                    if (src0.grad) |grad| {
+                        src0.grad = out_grad.sumInto(alloc, grad);
+                    }
+                },
+
+                // Gradient of sum broadcasts back to source shape
+                .sum => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
                         src0.grad = accumGrad(grad, alloc, out_grad.repeatLike(alloc, grad), inplace);
@@ -260,7 +188,10 @@ pub fn Ops(comptime Self: type) type {
                         try addToScratchUniq(alloc, scratch, grad);
                     }
                 },
-                else => @panic("Unimplemented backward OP"),
+
+                // sgn, step, gelu: not differentiable / not yet implemented
+                .sgn, .step => {},
+                .gelu => @panic("gelu backward not yet implemented"),
             }
         }
     };

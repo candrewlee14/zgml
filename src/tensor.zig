@@ -182,14 +182,6 @@ pub fn Tensor(comptime T: type) type {
             return res;
         }
 
-        /// Duplicate this tensor.
-        pub fn dup(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .dup, false);
-        }
-        pub fn dupInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .dup, true);
-        }
-
         fn addImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
             assert(self.isSameShape(other));
             return self.binaryOp(alloc, other, .add, inplace);
@@ -255,9 +247,6 @@ pub fn Tensor(comptime T: type) type {
         /// Element-wise GeLU approximation.
         pub fn gelu(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .gelu, false); }
         pub fn geluInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .gelu, true); }
-        /// Row-wise normalization.
-        pub fn norm(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .norm, false); }
-        pub fn normInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .norm, true); }
 
         /// Sum all elements into a scalar.
         pub fn sumAll(self: *Self, alloc: Alloc) *Self {
@@ -373,24 +362,6 @@ pub fn Tensor(comptime T: type) type {
             return self.mulInplace(alloc, other.repeatLike(alloc, self));
         }
 
-        fn cpyImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
-            assert(self.nElems() == other.nElems());
-            const is_node = !inplace and (self.grad != null or other.grad != null);
-            assert(!is_node);
-            const res = if (is_node) other.copyTensorShape(alloc) else other.view(alloc);
-            res.op = .cpy;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = other;
-            return res;
-        }
-        pub fn cpyTo(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.cpyImpl(alloc, other, true);
-        }
-        pub fn cpyInplaceTo(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.cpyImpl(alloc, other, true);
-        }
-
         /// Reshape this tensor's data to match `other`'s shape.
         pub fn reshapeLike(self: *Self, alloc: Alloc, other: *Self) *Self {
             assert(self.isContiguous());
@@ -445,28 +416,29 @@ pub fn Tensor(comptime T: type) type {
         // Forward compute — delegated to tensor/forward.zig
         // ---------------------------------------------------------------
 
-        pub const computeDup = fwd.computeDup;
+        /// Dispatch forward computation for this tensor's op.
+        pub const compute = fwd.compute;
+
+        // Primitive forward compute functions (used by dispatch and available for
+        // direct imperative use, e.g. in optimizer step functions).
         pub const computeAdd = fwd.computeAdd;
-        pub const computeSub = fwd.computeSub;
         pub const computeMul = fwd.computeMul;
+        pub const computeSub = fwd.computeSub;
         pub const computeDiv = fwd.computeDiv;
-        pub const computeMean = fwd.computeMean;
-        pub const computeSum = fwd.computeSum;
-        pub const computeRepeat = fwd.computeRepeat;
-        pub const computeSqr = fwd.computeSqr;
-        pub const computeSqrt = fwd.computeSqrt;
-        pub const computeRecip = fwd.computeRecip;
+        pub const computeNeg = fwd.computeNeg;
         pub const computeAbs = fwd.computeAbs;
         pub const computeSgn = fwd.computeSgn;
-        pub const computeNeg = fwd.computeNeg;
         pub const computeStep = fwd.computeStep;
-        pub const computeRelu = fwd.computeRelu;
+        pub const computeSqrt = fwd.computeSqrt;
+        pub const computeRecip = fwd.computeRecip;
         pub const computeGelu = fwd.computeGelu;
-        pub const computeNorm = fwd.computeNorm;
-        pub const computeRMSNorm = fwd.computeRMSNorm;
+        pub const computeSum = fwd.computeSum;
+        pub const computeRepeat = fwd.computeRepeat;
         pub const computeMatMul = fwd.computeMatMul;
+        pub const computeMean = fwd.computeMean;
+        pub const computeSqr = fwd.computeSqr;
+        pub const computeRelu = fwd.computeRelu;
         pub const assertValidMatMulDims = fwd.assertValidMatMulDims;
-        pub const compute = fwd.compute;
 
         // ---------------------------------------------------------------
         // Backward — delegated to tensor/backward.zig
