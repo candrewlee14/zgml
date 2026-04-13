@@ -21,7 +21,9 @@ const tac = std.testing.allocator;
 /// Manages forward and backward passes over a tensor computation graph.
 ///
 /// All tensors should be allocated from `allocator()` so that `deinit()`
-/// can free them in bulk via the arena.
+/// can free them in bulk via the arena. Graph discovery uses a visited set,
+/// so shared subgraphs are recorded once even when reachable through multiple
+/// parent paths.
 pub fn ComputeGraph(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -30,13 +32,12 @@ pub fn ComputeGraph(comptime T: type) type {
         built_backward: bool = false,
         built_fusion: bool = false,
         forward_node_count: usize = 0,
-        compiler_exec: ?compiler.Pipeline(T) = null,
-        compiler_value_to_tensor: ?[]const ?*Tensor(T) = null,
 
         arena: std.heap.ArenaAllocator,
         nodes: std.ArrayList(*Tensor(T)),
         grads: std.ArrayList(?*Tensor(T)),
         leaves: std.ArrayList(*Tensor(T)),
+        visited_nodes: std.AutoHashMapUnmanaged(*Tensor(T), void),
         scratch: std.ArrayList(*Tensor(T)),
 
         /// Fusion state — populated by `fusionPass()`.
@@ -60,6 +61,7 @@ pub fn ComputeGraph(comptime T: type) type {
                 .nodes = .{},
                 .grads = .{},
                 .leaves = .{},
+                .visited_nodes = .empty,
                 .scratch = .{},
                 .fused_chains = .{},
                 .fused_skip = .{},
@@ -106,16 +108,16 @@ pub fn ComputeGraph(comptime T: type) type {
             self.fused_skip.deinit(alloc);
             self.execution_steps.deinit(alloc);
             self.forward_execution_steps.deinit(alloc);
-            if (self.compiler_exec) |*p| p.deinit();
-            if (self.compiler_value_to_tensor) |mapping| alloc.free(mapping);
             self.nodes.deinit(alloc);
             self.grads.deinit(alloc);
             self.leaves.deinit(alloc);
+            self.visited_nodes.deinit(alloc);
             self.scratch.deinit(alloc);
             self.arena.deinit();
         }
 
-        /// Build a graph where the provided tensor is the final output node
+        /// Build a graph where the provided tensor is the final output node.
+        /// Shared subgraphs are deduplicated during the traversal.
         pub fn buildForward(self: *Self, root: *Tensor(T)) Alloc.Error!void {
             try self.buildForwardHelper(root);
             self.built_forward = true;
@@ -146,7 +148,7 @@ pub fn ComputeGraph(comptime T: type) type {
             for (0..nodes_len) |j| {
                 const i = nodes_len - j - 1;
                 const node = self.nodes.items[i];
-                if (node.is_param) {
+                if (node.isParam()) {
                     assert(node.hasGrad());
                     try self.buildForwardHelper(node.gradOrNull().?);
                 }
@@ -168,7 +170,6 @@ pub fn ComputeGraph(comptime T: type) type {
             const node_count = self.nodes.items.len;
             if (node_count < 2) return;
 
-            try self.ensureCompilerExecutionPlan();
             var compiler_plans = try self.detectCompilerFusionPlansWithAlloc(alloc);
             defer self.deinitCompilerPlans(alloc, &compiler_plans);
 
@@ -218,15 +219,16 @@ pub fn ComputeGraph(comptime T: type) type {
             }
 
             // Detect elementwise chains (covers both forward and backward)
-            if (false) {
+            {
                 var i: usize = 0;
                 while (i < node_count) : (i += 1) {
                     const node = self.nodes.items[i];
                     if (!node.opTag().isFusible()) continue;
                     if (self.fused_skip.items[i]) continue;
-                    // For binary ops, non-chain source must be scalar or same-shaped.
+                    // For binary ops, non-chain source must be scalar or
+                    // same-shaped AND contiguous (fused kernel indexes data[i] directly).
                     if (node.source1()) |src1| {
-                        if (!src1.isScalar() and !node.isSameShape(src1)) continue;
+                        if (!src1.isScalar() and !(node.isSameShape(src1) and src1.isContiguous() and src1.data.len == node.nElems())) continue;
                     }
 
                     const chain_start = i;
@@ -244,7 +246,7 @@ pub fn ComputeGraph(comptime T: type) type {
                             // For binary ops, the non-chain source must be scalar
                             // or same-shaped to be safely indexable in the fused kernel.
                             const binary_ok = if (next.source1()) |src1|
-                                (src1.isScalar() or next.isSameShape(src1))
+                                (src1.isScalar() or (next.isSameShape(src1) and src1.isContiguous() and src1.data.len == next.nElems()))
                             else
                                 true;
                             if (fusible and binary_ok) {
@@ -314,16 +316,16 @@ pub fn ComputeGraph(comptime T: type) type {
             var pipeline = compiler.Pipeline(T).init(temp_arena.allocator());
             defer pipeline.deinit();
 
-            // Step 1: Lower forward root
+            // Lower forward root
             pipeline.lowerOneRoot(self.nodes.items[self.forward_node_count - 1]) catch |err| switch (err) {
                 error.UnsupportedOp => return plans,
                 error.OutOfMemory => return error.OutOfMemory,
             };
 
-            // Step 2: Lower backward roots (parameter gradients)
+            // Lower backward roots (parameter gradients)
             if (self.built_backward) {
                 for (self.nodes.items[0..self.forward_node_count]) |node| {
-                    if (node.is_param) {
+                    if (node.isParam()) {
                         if (node.gradOrNull()) |grad| {
                             pipeline.lowerOneRoot(grad) catch |err| switch (err) {
                                 error.UnsupportedOp => continue,
@@ -334,29 +336,30 @@ pub fn ComputeGraph(comptime T: type) type {
                 }
             }
 
-            // Step 3: Run the rest of the compiler pipeline
+            // Run post-lowering pipeline stages
             pipeline.finalize() catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
             };
 
             const value_to_tensor = try self.buildValueToTensorMap(temp_arena.allocator(), &pipeline.lowering, &pipeline.canonical.?);
-
             const all_nodes = self.nodes.items;
 
             for (pipeline.schedule.?.steps.items) |step| {
                 const mapped = switch (step) {
-                    .kernel_pattern => |s| fused.mapCompilerPattern(T, all_nodes, value_to_tensor, pipeline.kernel.?.patterns.items[s.pattern_index].pattern),
+                    .kernel_pattern => |s| fused.mapCompilerPattern(T, self.nodes.items, value_to_tensor, pipeline.kernel.?.patterns.items[s.pattern_index].pattern),
                     else => null,
                 } orelse continue;
-                if (!isElementwiseChainSafe(mapped.plan)) continue;
                 try plans.append(plan_alloc, fromMappedPlan(mapped));
             }
 
+            // Schedule-owned elementwise regions (forward-only — backward
+            // chains use the simpler graph-level chain detector instead).
             for (pipeline.schedule.?.steps.items) |step| {
                 const mapped = switch (step) {
                     .schedule_region => |s| fused.mapCompilerRegion(T, plan_alloc, all_nodes, value_to_tensor, pipeline.schedule.?.regions.items[s.region_index]),
                     else => null,
                 } orelse continue;
+                if (mapped.start_idx >= self.forward_node_count) continue;
                 if (compilerPlanOverlaps(plans.items, mapped.start_idx, mapped.plan.output_idx)) continue;
                 if (!isElementwiseChainSafe(mapped.plan)) continue;
                 try plans.append(plan_alloc, fromMappedPlan(mapped));
@@ -375,9 +378,10 @@ pub fn ComputeGraph(comptime T: type) type {
         }
 
         /// Validate that every binary op in an elementwise chain has a
-        /// non-chain operand that is either scalar or same-shaped as the
-        /// output. This guards against broadcast operands that would cause
-        /// out-of-bounds accesses in the fused kernel.
+        /// non-chain operand that is either scalar or a same-shaped contiguous
+        /// buffer with one element per output position. This guards against
+        /// broadcast operands that would cause out-of-bounds accesses in the
+        /// fused kernel.
         fn isElementwiseChainSafe(plan: fused.FusionPlan(T)) bool {
             const chain = switch (plan.payload) {
                 .elementwise_chain => |c| c,
@@ -385,7 +389,14 @@ pub fn ComputeGraph(comptime T: type) type {
             };
             for (chain.nodes, 0..) |node, idx| {
                 const other = chain.otherOperand(idx) orelse continue;
-                if (!other.isScalar() and !node.isSameShape(other)) return false;
+                if (!other.isScalar() and !(node.isSameShape(other) and other.isContiguous() and other.data.len == node.nElems())) {
+                    return false;
+                }
+            }
+            for (chain.nodes) |node| {
+                if (node.data.len != chain.input.nElems()) {
+                    return false;
+                }
             }
             return true;
         }
@@ -487,24 +498,12 @@ pub fn ComputeGraph(comptime T: type) type {
             return mapping;
         }
 
-        fn nodeAt(self: *const Self, idx: usize) ?*Tensor(T) {
-            if (idx >= self.forward_node_count) return null;
-            return self.nodes.items[idx];
-        }
-
         fn addParentsThenSelf(self: *Self, cur: *Tensor(T)) Alloc.Error!void {
             const alloc = self.arena.allocator();
-            // check if already visited
-            for (self.nodes.items) |item| {
-                if (cur == item) {
-                    return;
-                }
-            }
-            for (self.leaves.items) |item| {
-                if (cur == item) {
-                    return;
-                }
-            }
+            const visited = try self.visited_nodes.getOrPut(alloc, cur);
+            if (visited.found_existing) return;
+            errdefer _ = self.visited_nodes.remove(cur);
+            visited.value_ptr.* = {};
             // visit parents
             if (cur.source0()) |ts0| try self.addParentsThenSelf(ts0);
             if (cur.source1()) |ts1| try self.addParentsThenSelf(ts1);
@@ -543,7 +542,7 @@ pub fn ComputeGraph(comptime T: type) type {
                 if (node.gradOrNull()) |grad| {
                     try writer.print("  \"{*}\" -> \"{*}\" [style=dashed];\n", .{ node, grad });
                 }
-                if (!node.data_owned) {
+                if (!node.ownsData()) {
                     try writer.print("  \"{*}\" [style=filled fillcolor=gray];\n", .{node});
                 }
             }
@@ -569,7 +568,7 @@ pub fn ComputeGraph(comptime T: type) type {
         /// since zeroing them would corrupt the source tensor's values.
         pub fn reset(self: *Self) void {
             for (self.nodes.items) |node| {
-                if (node.opTag() != .none and node.data_owned) {
+                if (node.opTag() != .none and node.ownsData()) {
                     _ = node.setAllScalar(0);
                 }
             }
@@ -640,19 +639,6 @@ pub fn ComputeGraph(comptime T: type) type {
             self.computeNoGrad();
         }
 
-        fn ensureCompilerExecutionPlan(self: *Self) Alloc.Error!void {
-            if (self.compiler_exec != null) return;
-            if (self.forward_node_count == 0) return;
-
-            var pipeline = compiler.Pipeline(T).init(self.arena.allocator());
-            pipeline.compile(self.nodes.items[self.forward_node_count - 1]) catch |err| switch (err) {
-                error.UnsupportedOp => return,
-                error.OutOfMemory => return error.OutOfMemory,
-            };
-            self.compiler_exec = pipeline;
-            self.compiler_value_to_tensor = try self.buildValueToTensorMapFromPipeline(&self.compiler_exec.?);
-        }
-
         fn executeGraphPlan(self: *const Self, steps: []const ExecutionStep) void {
             for (steps) |step| {
                 switch (step) {
@@ -660,18 +646,6 @@ pub fn ComputeGraph(comptime T: type) type {
                     .node => |node| node.compute(),
                 }
             }
-        }
-
-        fn buildValueToTensorMapFromPipeline(self: *Self, pipeline: *const compiler.Pipeline(T)) Alloc.Error![]const ?*Tensor(T) {
-            const len = pipeline.canonical.?.values.items.len;
-            const mapping = try (@constCast(&self.arena)).allocator().alloc(?*Tensor(T), len);
-            @memset(mapping, null);
-            var it = pipeline.lowering.memo.iterator();
-            while (it.next()) |entry| {
-                const canonical_id = pipeline.canonical.?.remapSourceValue(entry.value_ptr.*) orelse continue;
-                mapping[@intFromEnum(canonical_id)] = @constCast(entry.key_ptr.*);
-            }
-            return mapping;
         }
 
         fn buildExecutionSteps(self: *Self, alloc: Alloc, limit: usize, out: *std.ArrayList(ExecutionStep)) Alloc.Error!void {
@@ -695,10 +669,6 @@ pub fn ComputeGraph(comptime T: type) type {
             self.forward_execution_steps.clearRetainingCapacity();
             self.deinitFusedChains();
             self.fused_skip.clearRetainingCapacity();
-            if (self.compiler_exec) |*p| p.deinit();
-            self.compiler_exec = null;
-            if (self.compiler_value_to_tensor) |mapping| self.arena.allocator().free(mapping);
-            self.compiler_value_to_tensor = null;
         }
 
         fn deinitFusedChains(self: *Self) void {
@@ -800,6 +770,21 @@ test "build computeNoGrad graph - forward mul" {
         try testing.expectEqualSlices(f32, &expected, out.data);
         try testing.expectEqual(dummy_val, t0.grad.?.data[0]);
     }
+}
+
+test "build compute graph avoids duplicate visits across shared subgraphs" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).initScalar(a, 3);
+    const shared = x.sqr();
+    const out = shared.add(shared);
+
+    try g.buildForward(out);
+
+    try testing.expectEqual(@as(usize, 2), g.nodes.items.len);
+    try testing.expectEqual(@as(usize, 1), g.leaves.items.len);
 }
 
 test "build compute graph - forward matMul" {
@@ -1500,8 +1485,7 @@ test "compute uses compiler execution plan for softmax" {
 
     try g.buildForward(y);
     try g.fusionPass();
-    try testing.expect(g.compiler_exec != null);
-    try testing.expect(g.compiler_exec.?.execution != null);
+    try testing.expect(g.fused_chains.items.len > 0);
 
     g.computeNoGrad();
     try testing.expectApproxEqAbs(@as(f32, 0.09003057), y.data[0], 1e-5);
@@ -1530,7 +1514,6 @@ test "compute uses schedule-owned elementwise fusion" {
     try gu.buildForward(yu);
     try gf.fusionPass();
 
-    try testing.expect(gf.compiler_exec != null);
     try testing.expectEqual(@as(usize, 1), gf.fused_chains.items.len);
     try testing.expectEqual(fused.FusionKind.elementwise_chain, gf.fused_chains.items[0].kind());
 
@@ -1584,7 +1567,6 @@ test "compute uses swapped commutative schedule-owned elementwise fusion" {
     try gu.buildForward(yu);
     try gf.fusionPass();
 
-    try testing.expect(gf.compiler_exec != null);
     try testing.expectEqual(@as(usize, 1), gf.fused_chains.items.len);
     try testing.expectEqual(fused.FusionKind.elementwise_chain, gf.fused_chains.items[0].kind());
     try testing.expectEqual(fused.BinaryOperandRole.src0, gf.fused_chains.items[0].payload.elementwise_chain.otherOperandRole(1));

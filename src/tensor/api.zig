@@ -34,15 +34,14 @@ pub fn Api(comptime Self: type, comptime T: type) type {
 
         fn scalarRepeatLike(self: *Self, val: T, other: *Self) *Self {
             const scalar = Self.initScalar(a(self), val) catch unreachable;
-            scalar.is_internal_aux = true;
+            _ = scalar.markInternalAux();
             const repeated = scalar.repeatLike(other);
-            repeated.is_internal_aux = true;
+            _ = repeated.markInternalAux();
             return repeated;
         }
 
         fn aux(node: *Self) *Self {
-            node.is_internal_aux = true;
-            return node;
+            return node.markInternalAux();
         }
 
         // ---------------------------------------------------------------
@@ -493,7 +492,6 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             }
             const res = structuralView(self, out_ne[0..axes.len], out_strides, self.storage_offset, .permute);
             const axes_tensor = Self.initIndexVectorCopy(a(self), axes) catch unreachable;
-            axes_tensor.is_internal_aux = true;
             res.src1 = axes_tensor;
             return res;
         }

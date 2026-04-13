@@ -20,11 +20,67 @@ pub const max_dims = 8;
 /// `mul`, `matMul`) record the operation without computing it — the actual math
 /// runs when `compute()` is called (usually via `ComputeGraph`).
 ///
+/// The runtime layout deliberately keeps hot execution metadata (`ne`, `strides`,
+/// `storage_offset`, `op`, `data`) separate from colder lifecycle bookkeeping
+/// (`role`, data/index ownership, auxiliary index payloads).
+///
 /// Tensors that are marked as parameters (via `setParam`) track gradients for
 /// use with optimizers.
 pub fn Tensor(comptime T: type) type {
     return struct {
         const Self = @This();
+
+        pub const MatMulFlags = packed struct {
+            trans0: bool = false,
+            trans1: bool = false,
+        };
+
+        /// Coarse tensor role used by lifecycle code.
+        ///
+        /// Invariants:
+        /// - `.parameter` tensors are user-visible trainable leaves created via `setParam()`.
+        /// - `.internal_aux` tensors are helper nodes owned by a parent edge and reclaimed
+        ///   by that parent during `deinit()`.
+        /// - All other tensors use `.plain`.
+        pub const Role = enum {
+            plain,
+            parameter,
+            internal_aux,
+        };
+
+        pub const Ownership = enum(u1) {
+            borrowed,
+            owned,
+        };
+
+        pub const IndexState = struct {
+            data: ?[]usize = null,
+            ownership: Ownership = .borrowed,
+
+            pub fn has(self: IndexState) bool {
+                return self.data != null;
+            }
+
+            pub fn owns(self: IndexState) bool {
+                return self.ownership == .owned;
+            }
+        };
+
+        /// Colder bookkeeping kept separate from the hot shape/op/data fields.
+        ///
+        /// Invariants:
+        /// - `data_ownership` applies only to `.data`.
+        /// - `index` ownership applies only when `index.data != null`.
+        /// - `role` is the single source of truth for parameter vs internal-aux lifetime.
+        pub const Bookkeeping = struct {
+            role: Role = .plain,
+            data_ownership: Ownership = .owned,
+            index: IndexState = .{},
+
+            pub fn ownsData(self: Bookkeeping) bool {
+                return self.data_ownership == .owned;
+            }
+        };
 
         // -- delegation to split-out implementations --
         const api = @import("tensor/api.zig").Api(Self, T);
@@ -42,9 +98,7 @@ pub fn Tensor(comptime T: type) type {
         /// The operation that produced this tensor (`.none` for user-created tensors).
         op: Op,
         /// Transpose flags for matmul ops (ignored for other ops).
-        matmul_flags: packed struct { trans0: bool = false, trans1: bool = false } = .{},
-        /// Whether this tensor is a learnable parameter.
-        is_param: bool,
+        matmul_flags: MatMulFlags = .{},
         /// Gradient tensor, populated during backward pass. Only present for parameters
         /// and intermediate nodes that contribute to a parameter's gradient.
         grad: ?*Self,
@@ -54,16 +108,10 @@ pub fn Tensor(comptime T: type) type {
         src1: ?*Self,
         /// Debug label for visualization.
         name: ?[]const u8,
-        /// True when this tensor exists only as an internal helper attached to another tensor.
-        is_internal_aux: bool = false,
-        /// Optional typed index buffer used by indexing ops.
-        index_data: ?[]usize = null,
-        /// Whether `index_data` is owned by this tensor.
-        index_owned: bool = false,
         /// Raw element data.
         data: []T,
-        /// Whether this tensor owns (and should free) its data slice.
-        data_owned: bool,
+        /// Colder ownership and role bookkeeping.
+        bookkeeping: Bookkeeping,
         /// Allocator for creating intermediate tensors during lazy ops.
         /// Set automatically by `init` / graph creation so callers don't need
         /// to pass an allocator to every operation.
@@ -123,16 +171,12 @@ pub fn Tensor(comptime T: type) type {
                 .strides = .{0} ** max_dims,
                 .storage_offset = 0,
                 .op = .none,
-                .is_param = false,
                 .grad = null,
                 .src0 = null,
                 .src1 = null,
-                .data = undefined,
                 .name = null,
-                .is_internal_aux = false,
-                .index_data = null,
-                .index_owned = false,
-                .data_owned = data_buf == null,
+                .data = undefined,
+                .bookkeeping = .{ .data_ownership = if (data_buf == null) .owned else .borrowed },
                 .alloc = alloc,
             };
             for (ne, 0..) |shape_item, i| {
@@ -165,23 +209,30 @@ pub fn Tensor(comptime T: type) type {
                 },
                 .storage_offset = 0,
                 .op = .none,
-                .is_param = false,
                 .grad = null,
                 .src0 = null,
                 .src1 = null,
                 .name = null,
-                .is_internal_aux = true,
-                .index_data = try alloc.dupe(usize, idx),
-                .index_owned = true,
                 .data = &.{},
-                .data_owned = false,
+                .bookkeeping = .{
+                    .role = .internal_aux,
+                    .data_ownership = .borrowed,
+                    .index = .{
+                        .data = try alloc.dupe(usize, idx),
+                        .ownership = .owned,
+                    },
+                },
                 .alloc = alloc,
             };
             return tensor;
         }
 
         pub fn hasIndexBuffer(self: *const Self) bool {
-            return self.index_data != null;
+            return self.bookkeeping.index.has();
+        }
+
+        pub fn indexData(self: *const Self) ?[]const usize {
+            return self.bookkeeping.index.data;
         }
 
         pub fn source0(self: *const Self) ?*Self {
@@ -228,39 +279,66 @@ pub fn Tensor(comptime T: type) type {
             self.grad = grad;
         }
 
+        pub fn isParam(self: *const Self) bool {
+            return self.bookkeeping.role == .parameter;
+        }
+
+        pub fn isInternalAux(self: *const Self) bool {
+            return self.bookkeeping.role == .internal_aux;
+        }
+
+        pub fn markInternalAux(self: *Self) *Self {
+            self.bookkeeping.role = .internal_aux;
+            return self;
+        }
+
+        pub fn ownsData(self: *const Self) bool {
+            return self.bookkeeping.ownsData();
+        }
+
+        pub fn ownsIndexData(self: *const Self) bool {
+            return self.bookkeeping.index.owns();
+        }
+
+        fn ownsStandaloneParamGrad(self: *const Self) bool {
+            return self.isParam() and self.grad != null and self.grad.?.op == .none;
+        }
+
         pub fn isLeaf(self: *const Self) bool {
             return self.op == .none and self.grad == null;
         }
 
         /// Free this tensor and its owned data.
-        /// Also frees the gradient tensor if this is a standalone parameter
-        /// (allocated via `setParam()` outside a ComputeGraph arena).
+        ///
+        /// Ownership rules:
+        /// - views and structural aliases borrow `.data`
+        /// - internal aux tensors are edge-owned helpers reclaimed here
+        /// - standalone parameter grads are freed here, while graph-owned grads
+        ///   are usually released by `ComputeGraph` arena teardown
         pub fn deinit(self: *Self) void {
             const al = self.alloc.?;
             // Only free grad for params we own — in graph contexts, the arena
             // handles cleanup. Grad tensors from buildBackward may have shared
             // references, so we only free the simple case (param with no sources).
-            if (self.is_param) {
-                if (self.grad) |g| {
-                    if (g.op == .none) g.deinit();
-                }
+            if (self.ownsStandaloneParamGrad()) {
+                self.grad.?.deinit();
             }
             if (self.source0()) |src0| {
-                if (src0.is_internal_aux) src0.deinit();
+                if (src0.isInternalAux()) src0.deinit();
             }
             if (self.source1()) |src1| {
-                if (src1.is_internal_aux) src1.deinit();
+                if (src1.isInternalAux()) src1.deinit();
             }
-            if (self.index_owned) {
-                if (self.index_data) |idx| al.free(idx);
+            if (self.ownsIndexData()) {
+                if (self.bookkeeping.index.data) |idx| al.free(idx);
             }
-            if (self.data_owned) al.free(self.data);
+            if (self.ownsData()) al.free(self.data);
             al.destroy(self);
         }
 
         /// Mark this tensor as a learnable parameter, allocating a gradient tensor.
         pub fn setParam(self: *Self) void {
-            self.is_param = true;
+            self.bookkeeping.role = .parameter;
             assert(!self.hasGrad());
             self.setGrad(self.copyTensorShape());
         }

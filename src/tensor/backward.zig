@@ -68,7 +68,7 @@ pub fn Ops(comptime Self: type) type {
                 .permute => {
                     const src0 = src0_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const axes = tensor.source1().?.index_data.?;
+                        const axes = tensor.source1().?.indexData().?;
                         var inv: [8]usize = [_]usize{0} ** 8;
                         var i: usize = 0;
                         while (i < tensor.n_dims) : (i += 1) inv[axes[i]] = i;

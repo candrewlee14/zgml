@@ -21,7 +21,7 @@ g.compute();
 
 ## Features
 
-**Small primitive IR.** 17 ops. Everything else (softmax, layerNorm, ReLU, sub, div, ...) decomposes into primitives. Backward rules come for free through the chain rule.
+**Small primitive IR.** A compact set of structural, elementwise, reduction, indexing, and matmul ops. Everything else (softmax, layerNorm, ReLU, sub, div, ...) decomposes into primitives. Backward rules come for free through the chain rule.
 
 **Zero-noise API.** Tensors carry their allocator. No `alloc` parameter on ops:
 ```zig
@@ -59,13 +59,13 @@ const sq_err = try pred.map2(target, struct {
 
 ```
 src/
-  tensor.zig          Tensor struct, init, utilities
+  tensor.zig          Tensor struct, shape/view metadata, ownership bookkeeping
   tensor/
     api.zig           Lazy graph-building ops (add, mul, softmax, ...)
     forward.zig       SIMD forward compute implementations
     backward.zig      Reverse-mode autodiff rules
     fused.zig         Comptime-generated fused kernels
-  graph.zig           ComputeGraph, arena allocator, fusion pass
+  graph.zig           ComputeGraph, arena allocator, graph build, fusion pass
   shaped.zig          Compile-time shape-tracked tensor wrapper
   op.zig              Primitive operation enum (17 ops)
   loss.zig            Loss functions (MSE, cross-entropy)
@@ -81,21 +81,32 @@ src/
 
 The graph IR is deliberately small:
 
-- `op.zig` defines the primitive operations (17 total)
+- `op.zig` defines the primitive operations and is the source of truth for the current IR surface
 - `tensor/api.zig` provides the user-facing API, which is richer — higher-level ops decompose into primitives
 - Fusion and graph rewrites happen after graph construction as optimization passes
 
 This keeps the core easy to reason about: the graph stays small, backward rules stay attached to a compact primitive set, user-facing APIs are ergonomic, and performance work happens in fusion passes without bloating the IR.
 
+Tensor runtime state is split into two broad parts:
+
+- hot shape/view metadata (`ne`, `strides`, `storage_offset`, `op`, `data`)
+- colder bookkeeping (`role`, data/index ownership, auxiliary index payloads)
+
+That split keeps the common execution path simple while still making aliasing and cleanup rules explicit.
+
+Graph construction uses a visited set while walking parent links, so shared subgraphs are recorded once instead of being rediscovered via repeated linear scans.
+
 ### Primitives
 
-| Category | Ops |
-|----------|-----|
-| Structural | `none`, `view`, `reshape`, `transpose` |
-| Binary | `add`, `mul` |
-| Unary | `neg`, `abs`, `sgn`, `step`, `sqrt`, `recip`, `exp`, `log`, `gelu` |
-| Reduction | `sum`, `max`, `repeat` |
-| MatMul | `matmul`, `matmul_t0`, `matmul_t1`, `matmul_t0t1` |
+The primitive IR is organized into a few stable categories:
+
+- structural/view ops
+- elementwise unary and binary ops
+- reductions and repeat/broadcast helpers
+- indexing and scatter/gather ops
+- matrix multiplication
+
+For the exact current primitive set, see `src/op.zig`.
 
 ### Sugar (decomposed into primitives)
 

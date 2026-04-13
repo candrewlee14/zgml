@@ -449,7 +449,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         fn indexAt(indices: *const Self, i: usize) usize {
-            if (indices.index_data) |idx| return idx[i];
+            if (indices.indexData()) |idx| return idx[i];
             return indexFromValue(indices.data[i]);
         }
 
