@@ -27,6 +27,8 @@ pub const Op = enum {
     step,
     sqrt,
     recip,
+    exp,
+    log,
     gelu,
 
     // -- Reductions & broadcast --
@@ -38,6 +40,22 @@ pub const Op = enum {
     matmul_t0,
     matmul_t1,
     matmul_t0t1,
+
+    /// True if this op is elementwise (shape-preserving) and can participate in fusion.
+    pub fn isFusible(self: Self) bool {
+        return switch (self) {
+            .add, .mul, .neg, .abs, .sgn, .step, .sqrt, .recip, .exp, .log, .gelu => true,
+            else => false,
+        };
+    }
+
+    /// True if this is a binary op (takes two operands).
+    pub fn isBinary(self: Self) bool {
+        return switch (self) {
+            .add, .mul => true,
+            else => false,
+        };
+    }
 
     /// Human-readable symbol for this operation, used in debug output and GraphViz export.
     pub fn symbol(self: *Self) []const u8 {
@@ -54,6 +72,8 @@ pub const Op = enum {
             .step => "step(x)",
             .sqrt => "√x",
             .recip => "1/x",
+            .exp => "exp(x)",
+            .log => "log(x)",
             .gelu => "gelu(x)",
             .sum => "Σx",
             .repeat => "repeat(x)",

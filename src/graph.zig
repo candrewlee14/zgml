@@ -9,6 +9,8 @@ const std = @import("std");
 
 const tensorlib = @import("./tensor.zig");
 const Tensor = tensorlib.Tensor;
+const Op = @import("op.zig").Op;
+const fused = @import("tensor/fused.zig");
 const assert = std.debug.assert;
 const testing = std.testing;
 const Alloc = std.mem.Allocator;
@@ -30,8 +32,13 @@ pub fn ComputeGraph(comptime T: type) type {
         nodes: std.ArrayList(*Tensor(T)),
         grads: std.ArrayList(?*Tensor(T)),
         leaves: std.ArrayList(*Tensor(T)),
-
         scratch: std.ArrayList(*Tensor(T)),
+
+        /// Fusion state — populated by `fusionPass()`.
+        fused_chains: std.ArrayList(fused.FusedChain(T)),
+        /// Per-node flag: true means this node is part of a fused chain
+        /// and should be skipped during normal compute iteration.
+        fused_skip: std.ArrayList(bool),
 
         /// Set up resources for compute graph.
         /// Must call `buildForward` (then optionally `buildBackward`) to be able to do computation.
@@ -42,6 +49,8 @@ pub fn ComputeGraph(comptime T: type) type {
                 .grads = .{},
                 .leaves = .{},
                 .scratch = .{},
+                .fused_chains = .{},
+                .fused_skip = .{},
             };
         }
 
@@ -53,6 +62,8 @@ pub fn ComputeGraph(comptime T: type) type {
         /// Clean up all the resources for this compute graph
         pub fn deinit(self: *Self) void {
             const alloc = self.arena.allocator();
+            self.fused_chains.deinit(alloc);
+            self.fused_skip.deinit(alloc);
             self.nodes.deinit(alloc);
             self.grads.deinit(alloc);
             self.leaves.deinit(alloc);
@@ -99,6 +110,87 @@ pub fn ComputeGraph(comptime T: type) type {
             self.built_backward = true;
             self.resetGrads();
         }
+
+        /// Detect chains of fusible elementwise ops in the forward graph
+        /// and prepare comptime-specialized kernels for them.
+        ///
+        /// Call after `buildForward()` (and optionally after `buildBackward()`).
+        /// Fusion only affects the forward pass — backward still uses
+        /// the original nodes and their stored intermediate values.
+        pub fn fusionPass(self: *Self) Alloc.Error!void {
+            const alloc = self.arena.allocator();
+            const fwd_count = self.forward_node_count;
+            if (fwd_count < 2) return;
+
+            // Build use-count: how many forward nodes read each node's output
+            const use_count = try alloc.alloc(u16, fwd_count);
+            @memset(use_count, 0);
+
+            for (self.nodes.items[0..fwd_count]) |node| {
+                if (node.src0) |src| {
+                    for (self.nodes.items[0..fwd_count], 0..) |n, j| {
+                        if (n == src) { use_count[j] += 1; break; }
+                    }
+                }
+                if (node.src1) |src| {
+                    for (self.nodes.items[0..fwd_count], 0..) |n, j| {
+                        if (n == src) { use_count[j] += 1; break; }
+                    }
+                }
+            }
+
+            // Initialize skip bitmap
+            self.fused_skip = try std.ArrayList(bool).initCapacity(alloc, fwd_count);
+            self.fused_skip.items.len = fwd_count;
+            @memset(self.fused_skip.items, false);
+
+            // Scan for fusible chains
+            var i: usize = 0;
+            while (i < fwd_count) : (i += 1) {
+                const node = self.nodes.items[i];
+                if (!node.op.isFusible()) continue;
+                if (self.fused_skip.items[i]) continue;
+
+                // Start a chain from this node
+                const chain_start = i;
+                var chain_end = i; // inclusive
+
+                // Extend forward: look for the next node that reads chain_end via src0
+                var extending = true;
+                while (extending) {
+                    extending = false;
+                    if (chain_end + 1 < fwd_count) {
+                        const next = self.nodes.items[chain_end + 1];
+                        if (next.op.isFusible() and
+                            next.src0.? == self.nodes.items[chain_end] and
+                            next.isSameShape(self.nodes.items[chain_end]) and
+                            use_count[chain_end] == 1)
+                        {
+                            chain_end += 1;
+                            extending = true;
+                        }
+                    }
+                }
+
+                const chain_len = chain_end - chain_start + 1;
+                if (chain_len < 2) continue;
+
+                // Record the fused chain
+                const chain_nodes = try alloc.alloc(*Tensor(T), chain_len);
+                for (chain_start..chain_end + 1, 0..) |idx, k| {
+                    chain_nodes[k] = self.nodes.items[idx];
+                    self.fused_skip.items[idx] = true;
+                }
+
+                try self.fused_chains.append(alloc, .{
+                    .nodes = chain_nodes,
+                    .output_idx = chain_end,
+                });
+
+                i = chain_end; // skip past the chain
+            }
+        }
+
         fn addParentsThenSelf(self: *Self, tensor: *Tensor(T)) Alloc.Error!void {
             const alloc = self.arena.allocator();
             // check if already visited
@@ -177,13 +269,50 @@ pub fn ComputeGraph(comptime T: type) type {
             }
         }
 
+        /// Execute the forward pass over all nodes.
+        /// If `fusionPass()` was called, fused chains execute as single-pass
+        /// comptime-specialized kernels.
         pub fn compute(self: *const Self) void {
-            for (self.nodes.items) |node| {
+            if (self.fused_chains.items.len == 0) {
+                for (self.nodes.items) |node| {
+                    node.compute();
+                }
+                return;
+            }
+            var next_chain: usize = 0;
+            for (self.nodes.items, 0..) |node, i| {
+                if (i < self.fused_skip.items.len and self.fused_skip.items[i]) {
+                    // When we reach a chain's output node, execute the fused kernel
+                    if (next_chain < self.fused_chains.items.len and
+                        self.fused_chains.items[next_chain].output_idx == i)
+                    {
+                        fused.executeFusedChain(T, self.fused_chains.items[next_chain].nodes);
+                        next_chain += 1;
+                    }
+                    continue;
+                }
                 node.compute();
             }
         }
+
         pub fn computeNoGrad(self: *const Self) void {
-            for (self.nodes.items[0..self.forward_node_count]) |node| {
+            if (self.fused_chains.items.len == 0) {
+                for (self.nodes.items[0..self.forward_node_count]) |node| {
+                    node.compute();
+                }
+                return;
+            }
+            var next_chain: usize = 0;
+            for (self.nodes.items[0..self.forward_node_count], 0..) |node, i| {
+                if (i < self.fused_skip.items.len and self.fused_skip.items[i]) {
+                    if (next_chain < self.fused_chains.items.len and
+                        self.fused_chains.items[next_chain].output_idx == i)
+                    {
+                        fused.executeFusedChain(T, self.fused_chains.items[next_chain].nodes);
+                        next_chain += 1;
+                    }
+                    continue;
+                }
                 node.compute();
             }
         }
@@ -623,6 +752,74 @@ test "backward - recip" {
     try testing.expectApproxEqAbs(@as(f32, 0.25), out.data[0], 1e-6);
     // f'(4) = -1/16 = -0.0625
     try testing.expectApproxEqAbs(@as(f32, -0.0625), x.grad.?.data[0], 1e-6);
+}
+
+test "fusion - fused compute matches unfused" {
+    // Compute x.sub(y).sqr() both with and without fusion, verify identical results
+    var g1 = ComputeGraph(f32).init(tac);
+    defer g1.deinit();
+    const a1 = g1.allocator();
+    const x1 = try Tensor(f32).init(a1, &.{4});
+    x1.setData(&.{ 1, 2, 3, 4 });
+    const y1 = try Tensor(f32).init(a1, &.{4});
+    y1.setData(&.{ 4, 3, 2, 1 });
+    const out1 = x1.sub(a1, y1).sqr(a1);
+    try g1.buildForward(out1);
+    g1.compute();
+
+    var g2 = ComputeGraph(f32).init(tac);
+    defer g2.deinit();
+    const a2 = g2.allocator();
+    const x2 = try Tensor(f32).init(a2, &.{4});
+    x2.setData(&.{ 1, 2, 3, 4 });
+    const y2 = try Tensor(f32).init(a2, &.{4});
+    y2.setData(&.{ 4, 3, 2, 1 });
+    const out2 = x2.sub(a2, y2).sqr(a2);
+    try g2.buildForward(out2);
+    try g2.fusionPass();
+    g2.compute();
+
+    for (out1.data, out2.data) |v1, v2| {
+        try testing.expectApproxEqAbs(v1, v2, 1e-6);
+    }
+    try testing.expectEqualSlices(f32, &.{ 9, 1, 1, 9 }, out2.data);
+}
+
+test "fusion - backward works after fusion" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).initScalar(a, 3);
+    x.setParam(a);
+    const y = try Tensor(f32).initScalar(a, 2);
+    const out = x.mul(a, y).neg(a); // mul -> neg: fusible chain of 2
+    try g.buildForward(out);
+    try g.fusionPass();
+    try g.buildBackward(false);
+    _ = out.grad.?.setAllScalar(1);
+    g.compute();
+
+    // f(x) = -(x * 2) = -2x, f'(x) = -2
+    try testing.expectApproxEqAbs(@as(f32, -6.0), out.data[0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, -2.0), x.grad.?.data[0], 1e-6);
+}
+
+test "fusion - chain detection skips non-fusible ops" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{ 2, 3 });
+    x.setData(&.{ 1, 2, 3, 4, 5, 6 });
+    // neg -> sumAll: neg is fusible but sum breaks the chain
+    const out = x.neg(a).sumAll(a);
+    try g.buildForward(out);
+    try g.fusionPass();
+
+    try testing.expectEqual(@as(usize, 0), g.fused_chains.items.len);
+    g.compute();
+    try testing.expectApproxEqAbs(@as(f32, -21.0), out.data[0], 1e-6);
 }
 
 //#endregion
