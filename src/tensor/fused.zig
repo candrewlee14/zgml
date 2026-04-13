@@ -562,111 +562,180 @@ fn executeSoftmaxPlan(comptime T: type, plan: SoftmaxPlan(T)) void {
     executeSoftmaxPlanBase(T, plan, false);
 }
 
-fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
-    _ = plan.input_view;
-    _ = plan.kernel_view;
-    _ = plan.mul_node;
+// ---------------------------------------------------------------------------
+// Conv2d shared helpers: im2col, col2im, geometry
+// ---------------------------------------------------------------------------
 
-    const input = plan.input;
-    const kernel = plan.kernel;
-    const output = plan.output;
+/// Shared dimension info for conv2d forward and backward.
+fn Conv2dDims(comptime T: type) type {
+    const max_dims = @import("../tensor.zig").max_dims;
+    return struct {
+        kw: usize,
+        kh: usize,
+        c_in: usize,
+        c_out: usize,
+        out_w: usize,
+        out_h: usize,
+        in_w: usize,
+        batch: usize,
+        K: usize, // kw * kh * c_in (patch size / inner matmul dim)
+        N: usize, // out_w * out_h  (spatial positions)
 
-    const out_w = output.ne[0];
-    const out_h = output.ne[1];
-    const c_out = output.ne[2];
-    const batch = output.ne[3];
-    const kw = kernel.ne[0];
-    const kh = kernel.ne[1];
-    const c_in = kernel.ne[2];
-    const in_w = input.ne[0];
+        input_data: []const T,
+        input_strides: [max_dims]usize,
+        kernel_data: []const T,
 
-    const K = kw * kh * c_in; // rows of im2col / inner dimension
-    const N = out_w * out_h; // cols of im2col / spatial positions
+        fn fromForward(plan: Conv2dPlan(T)) @This() {
+            return init(plan.input.data, plan.input.strides, plan.kernel, plan.output);
+        }
 
-    // im2col scratch buffer [K, N] — one batch element at a time.
-    const col_buf = std.heap.page_allocator.alloc(T, K * N) catch {
-        executeConv2dNaive(T, plan);
-        return;
+        fn fromBwdInput(plan: Conv2dBwdInputPlan(T)) @This() {
+            return init(plan.output.data, plan.output.strides, plan.kernel, plan.output_grad);
+        }
+
+        fn fromBwdKernel(plan: Conv2dBwdKernelPlan(T)) @This() {
+            return init(plan.input.data, plan.input.strides, plan.output, plan.output_grad);
+        }
+
+        fn init(
+            input_data: []const T,
+            input_strides: [max_dims]usize,
+            kernel: *const Tensor(T),
+            out_ref: *const Tensor(T),
+        ) @This() {
+            const kw = kernel.ne[0];
+            const kh = kernel.ne[1];
+            const c_in = kernel.ne[2];
+            return .{
+                .kw = kw,
+                .kh = kh,
+                .c_in = c_in,
+                .c_out = out_ref.ne[2],
+                .out_w = out_ref.ne[0],
+                .out_h = out_ref.ne[1],
+                .in_w = input_strides[1], // for contiguous layout, strides[1] == in_w
+                .batch = out_ref.ne[3],
+                .K = kw * kh * c_in,
+                .N = out_ref.ne[0] * out_ref.ne[1],
+                .input_data = input_data,
+                .input_strides = input_strides,
+                .kernel_data = kernel.data,
+            };
+        }
     };
-    defer std.heap.page_allocator.free(col_buf);
+}
 
-    // Kernel layout: [kw, kh, c_in, c_out] contiguous.
-    // As [c_out, K] matrix: row oc at offset oc*K, elements contiguous.
-    // a_m_stride = K, a_k_stride = 1.
-
-    // Output layout: [out_w, out_h, c_out, batch] contiguous.
-    // Per batch slice is [c_out, N] at offset n*N*c_out with row stride N.
-    // This matches the matmul's natural output layout.
-
-    const matmul = forward.selectMatMulKernel(T);
-    const contiguous_x = (input.strides[0] == 1);
-
-    for (0..batch) |n| {
-        // --- Build im2col column matrix ---
-        // col_buf[k, col] = input[ox+kx, oy+ky, ic, n]
-        // where k = kx + ky*kw + ic*kw*kh, col = ox + oy*out_w
-        if (contiguous_x) {
-            // Fast path: memcpy entire rows of out_w elements.
-            for (0..c_in) |ic| {
-                for (0..kh) |ky| {
-                    for (0..kw) |kx| {
-                        const k = kx + ky * kw + ic * kw * kh;
-                        const row_off = k * N;
-                        for (0..out_h) |oy| {
-                            const src = kx + (oy + ky) * in_w + ic * input.strides[2] + n * input.strides[3];
-                            const dst = row_off + oy * out_w;
-                            @memcpy(col_buf[dst..][0..out_w], input.data[src..][0..out_w]);
-                        }
+/// Extract sliding-window patches into a column matrix.
+/// col_buf layout: [K, N] row-major, where K = kw*kh*c_in, N = out_w*out_h.
+/// col_buf[k * N + col] = input[ox+kx, oy+ky, ic, n]
+///   k = kx + ky*kw + ic*kw*kh,  col = ox + oy*out_w
+fn im2col(comptime T: type, d: Conv2dDims(T), col_buf: []T, n: usize) void {
+    if (d.input_strides[0] == 1) {
+        // Fast path: input is contiguous along width — memcpy whole rows.
+        for (0..d.c_in) |ic| {
+            for (0..d.kh) |ky| {
+                for (0..d.kw) |kx| {
+                    const row = (kx + ky * d.kw + ic * d.kw * d.kh) * d.N;
+                    for (0..d.out_h) |oy| {
+                        const src = kx + (oy + ky) * d.in_w + ic * d.input_strides[2] + n * d.input_strides[3];
+                        @memcpy(col_buf[row + oy * d.out_w ..][0..d.out_w], d.input_data[src..][0..d.out_w]);
                     }
                 }
             }
-        } else {
-            for (0..c_in) |ic| {
-                for (0..kh) |ky| {
-                    for (0..kw) |kx| {
-                        const k = kx + ky * kw + ic * kw * kh;
-                        const row_off = k * N;
-                        for (0..out_h) |oy| {
-                            for (0..out_w) |ox| {
-                                col_buf[row_off + oy * out_w + ox] = input.data[
-                                    (ox + kx) * input.strides[0] +
-                                        (oy + ky) * input.strides[1] +
-                                        ic * input.strides[2] +
-                                        n * input.strides[3]
-                                ];
-                            }
+        }
+    } else {
+        for (0..d.c_in) |ic| {
+            for (0..d.kh) |ky| {
+                for (0..d.kw) |kx| {
+                    const row = (kx + ky * d.kw + ic * d.kw * d.kh) * d.N;
+                    for (0..d.out_h) |oy| {
+                        for (0..d.out_w) |ox| {
+                            col_buf[row + oy * d.out_w + ox] = d.input_data[
+                                (ox + kx) * d.input_strides[0] +
+                                    (oy + ky) * d.input_strides[1] +
+                                    ic * d.input_strides[2] +
+                                    n * d.input_strides[3]
+                            ];
                         }
                     }
                 }
             }
         }
+    }
+}
 
-        // --- Matmul: kernel[c_out, K] @ col_buf[K, N] → output[c_out, N] ---
-        matmul(
-            output.data, // dst
-            kernel.data, // A = kernel as [c_out, K]
-            col_buf, // B = im2col  [K, N]
-            c_out, // M
-            N, // N
-            K, // K
-            K, // a_m_stride (kernel row stride = kw*kh*c_in)
-            1, // a_k_stride
-            N, // b_k_stride (col_buf row stride)
-            1, // b_n_stride
-            0, // a_base
-            0, // b_base
-            n * N * c_out, // d_base (batch offset into output)
-            N, // d_row_stride
-        );
+/// Scatter-add columns back to image layout (inverse of im2col).
+/// Accumulates col_buf[K, N] into dst_data at the positions that im2col would read from.
+fn col2im(comptime T: type, d: Conv2dDims(T), dst_data: []T, dst_strides: [@import("../tensor.zig").max_dims]usize, col_buf: []const T, n: usize) void {
+    if (dst_strides[0] == 1) {
+        for (0..d.c_in) |ic| {
+            for (0..d.kh) |ky| {
+                for (0..d.kw) |kx| {
+                    const row = (kx + ky * d.kw + ic * d.kw * d.kh) * d.N;
+                    for (0..d.out_h) |oy| {
+                        const dst_base = kx + (oy + ky) * d.in_w + ic * dst_strides[2] + n * dst_strides[3];
+                        const src_base = row + oy * d.out_w;
+                        for (0..d.out_w) |ox| {
+                            dst_data[dst_base + ox] += col_buf[src_base + ox];
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        for (0..d.c_in) |ic| {
+            for (0..d.kh) |ky| {
+                for (0..d.kw) |kx| {
+                    const row = (kx + ky * d.kw + ic * d.kw * d.kh) * d.N;
+                    for (0..d.out_h) |oy| {
+                        for (0..d.out_w) |ox| {
+                            dst_data[
+                                (ox + kx) * dst_strides[0] + (oy + ky) * dst_strides[1] +
+                                    ic * dst_strides[2] + n * dst_strides[3]
+                            ] += col_buf[row + oy * d.out_w + ox];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Allocate scratch from page_allocator, returning null on failure.
+fn allocScratch(comptime T: type, len: usize) ?[]T {
+    return std.heap.page_allocator.alloc(T, len) catch null;
+}
+
+fn freeScratch(comptime T: type, buf: []T) void {
+    std.heap.page_allocator.free(buf);
+}
+
+// ---------------------------------------------------------------------------
+// Conv2d execution: forward, backward-input, backward-kernel
+// ---------------------------------------------------------------------------
+
+fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
+    const d = Conv2dDims(T).fromForward(plan);
+    const col_buf = allocScratch(T, d.K * d.N) orelse {
+        conv2dNaive(T, d, plan.output.data);
+        return;
+    };
+    defer freeScratch(T, col_buf);
+
+    const mm = forward.selectMatMulKernel(T);
+    for (0..d.batch) |n| {
+        im2col(T, d, col_buf, n);
+        // kernel[c_out, K] @ col_buf[K, N] → output[c_out, N]
+        mm(plan.output.data, d.kernel_data, col_buf, d.c_out, d.N, d.K, d.K, 1, d.N, 1, 0, 0, n * d.N * d.c_out, d.N);
 
         if (plan.bias != null or plan.activation != null) {
-            for (0..c_out) |oc| {
-                for (0..N) |col| {
-                    const out_idx = n * N * c_out + oc * N + col;
-                    var val = output.data[out_idx];
+            for (0..d.c_out) |oc| {
+                for (0..d.N) |col| {
+                    const idx = n * d.N * d.c_out + oc * d.N + col;
+                    var val = plan.output.data[idx];
                     if (plan.bias) |bias| val += bias.data[oc];
                     if (plan.activation != null) val = if (val > 0) val else 0;
-                    output.data[out_idx] = val;
+                    plan.output.data[idx] = val;
                 }
             }
         }
@@ -674,293 +743,110 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
 }
 
 fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T)) void {
-    _ = plan.reshape_node;
-    _ = plan.repeat_node;
-    _ = plan.mul_node;
-
-    const out_grad = plan.output_grad;
-    const kernel = plan.kernel;
-    const output = plan.output;
-
-    const out_w = out_grad.ne[0];
-    const out_h = out_grad.ne[1];
-    const c_out = out_grad.ne[2];
-    const batch = out_grad.ne[3];
-    const kw = kernel.ne[0];
-    const kh = kernel.ne[1];
-    const c_in = kernel.ne[2];
-    const in_w = output.ne[0];
-
-    const K = kw * kh * c_in;
-    const N = out_w * out_h;
-
-    // col_buf [K, N] — result of kernel^T @ out_grad per batch, then col2im to scatter.
-    const col_buf = std.heap.page_allocator.alloc(T, K * N) catch {
-        executeConv2dBwdInputNaive(T, plan);
+    const d = Conv2dDims(T).fromBwdInput(plan);
+    const col_buf = allocScratch(T, d.K * d.N) orelse {
+        conv2dBwdInputNaive(T, d, plan);
         return;
     };
-    defer std.heap.page_allocator.free(col_buf);
+    defer freeScratch(T, col_buf);
 
-    const matmul = forward.selectMatMulKernel(T);
-    @memset(output.data, 0);
+    const mm = forward.selectMatMulKernel(T);
+    @memset(plan.output.data, 0);
 
-    for (0..batch) |n| {
+    for (0..d.batch) |n| {
         // kernel^T[K, c_out] @ out_grad_n[c_out, N] → col_buf[K, N]
-        // kernel is [c_out, K] row-major, so transposed: a_m_stride=1, a_k_stride=K
-        // out_grad_n is [c_out, N] at offset n*N*c_out, row stride N
-        matmul(
-            col_buf,
-            kernel.data,
-            out_grad.data,
-            K, // M
-            N, // N
-            c_out, // K (inner)
-            1, // a_m_stride (transposed kernel: step across rows = 1)
-            K, // a_k_stride (transposed kernel: step across cols = K)
-            N, // b_k_stride (out_grad row stride)
-            1, // b_n_stride
-            0, // a_base
-            n * N * c_out, // b_base
-            0, // d_base
-            N, // d_row_stride
-        );
-
-        // col2im: scatter col_buf[K, N] back to output (input gradient)
-        if (output.strides[0] == 1) {
-            for (0..c_in) |ic| {
-                for (0..kh) |ky| {
-                    for (0..kw) |kx| {
-                        const k = kx + ky * kw + ic * kw * kh;
-                        const row_off = k * N;
-                        for (0..out_h) |oy| {
-                            const dst_base = kx + (oy + ky) * in_w + ic * output.strides[2] + n * output.strides[3];
-                            const src_base = row_off + oy * out_w;
-                            for (0..out_w) |ox| {
-                                output.data[dst_base + ox] += col_buf[src_base + ox];
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            for (0..c_in) |ic| {
-                for (0..kh) |ky| {
-                    for (0..kw) |kx| {
-                        const k = kx + ky * kw + ic * kw * kh;
-                        const row_off = k * N;
-                        for (0..out_h) |oy| {
-                            for (0..out_w) |ox| {
-                                output.data[(ox + kx) * output.strides[0] +
-                                    (oy + ky) * output.strides[1] +
-                                    ic * output.strides[2] +
-                                    n * output.strides[3]] += col_buf[row_off + oy * out_w + ox];
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        mm(col_buf, d.kernel_data, plan.output_grad.data, d.K, d.N, d.c_out, 1, d.K, d.N, 1, 0, n * d.N * d.c_out, 0, d.N);
+        col2im(T, d, plan.output.data, plan.output.strides, col_buf, n);
     }
 }
 
 fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T)) void {
-    _ = plan.reshape_node;
-    _ = plan.repeat_node;
-    _ = plan.mul_node;
-
-    const input = plan.input;
-    const out_grad = plan.output_grad;
-    const output = plan.output;
-
-    const out_w = out_grad.ne[0];
-    const out_h = out_grad.ne[1];
-    const c_out = out_grad.ne[2];
-    const batch = out_grad.ne[3];
-    const kw = output.ne[0];
-    const kh = output.ne[1];
-    const c_in = output.ne[2];
-    const in_w = input.ne[0];
-
-    const K = kw * kh * c_in;
-    const N = out_w * out_h;
-
-    // im2col scratch [K, N] + temp kernel grad [c_out, K]
-    const buf = std.heap.page_allocator.alloc(T, K * N + c_out * K) catch {
-        executeConv2dBwdKernelNaive(T, plan);
+    const d = Conv2dDims(T).fromBwdKernel(plan);
+    const buf = allocScratch(T, d.K * d.N + d.c_out * d.K) orelse {
+        conv2dBwdKernelNaive(T, d, plan);
         return;
     };
-    defer std.heap.page_allocator.free(buf);
-    const col_buf = buf[0 .. K * N];
-    const temp_grad = buf[K * N ..][0 .. c_out * K];
+    defer freeScratch(T, buf);
+    const col_buf = buf[0 .. d.K * d.N];
+    const temp = buf[d.K * d.N ..][0 .. d.c_out * d.K];
 
-    const matmul = forward.selectMatMulKernel(T);
-    @memset(output.data, 0);
-    const contiguous_x = (input.strides[0] == 1);
+    const mm = forward.selectMatMulKernel(T);
+    @memset(plan.output.data, 0);
 
-    for (0..batch) |n| {
-        // Build im2col (same as forward)
-        if (contiguous_x) {
-            for (0..c_in) |ic| {
-                for (0..kh) |ky| {
-                    for (0..kw) |kx| {
-                        const k = kx + ky * kw + ic * kw * kh;
-                        const row_off = k * N;
-                        for (0..out_h) |oy| {
-                            const src = kx + (oy + ky) * in_w + ic * input.strides[2] + n * input.strides[3];
-                            const dst = row_off + oy * out_w;
-                            @memcpy(col_buf[dst..][0..out_w], input.data[src..][0..out_w]);
-                        }
-                    }
-                }
-            }
-        } else {
-            for (0..c_in) |ic| {
-                for (0..kh) |ky| {
-                    for (0..kw) |kx| {
-                        const k = kx + ky * kw + ic * kw * kh;
-                        const row_off = k * N;
-                        for (0..out_h) |oy| {
-                            for (0..out_w) |ox| {
-                                col_buf[row_off + oy * out_w + ox] = input.data[(ox + kx) * input.strides[0] +
-                                    (oy + ky) * input.strides[1] +
-                                    ic * input.strides[2] +
-                                    n * input.strides[3]];
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // out_grad_n[c_out, N] @ im2col^T[N, K] → temp_grad[c_out, K]
-        // im2col is [K, N] row-major. Reading as B^T[N, K]: b_k_stride=1, b_n_stride=N.
-        matmul(
-            temp_grad,
-            out_grad.data,
-            col_buf,
-            c_out, // M
-            K, // N (output cols = kernel elements)
-            N, // K (inner = spatial positions)
-            N, // a_m_stride (out_grad row stride)
-            1, // a_k_stride
-            1, // b_k_stride (im2col transposed: step along spatial)
-            N, // b_n_stride (im2col transposed: step to next kernel elem)
-            n * N * c_out, // a_base
-            0, // b_base
-            0, // d_base
-            K, // d_row_stride
-        );
-
-        // Accumulate into kernel gradient
-        for (0..c_out * K) |i| {
-            output.data[i] += temp_grad[i];
-        }
+    for (0..d.batch) |n| {
+        im2col(T, d, col_buf, n);
+        // out_grad_n[c_out, N] @ col_buf^T[N, K] → temp[c_out, K]
+        mm(temp, plan.output_grad.data, col_buf, d.c_out, d.K, d.N, d.N, 1, 1, d.N, n * d.N * d.c_out, 0, 0, d.K);
+        for (0..d.c_out * d.K) |i| plan.output.data[i] += temp[i];
     }
 }
 
-fn executeConv2dBwdInputNaive(comptime T: type, plan: Conv2dBwdInputPlan(T)) void {
-    const out_grad = plan.output_grad;
-    const kernel = plan.kernel;
-    const output = plan.output;
-    const out_w = out_grad.ne[0];
-    const out_h = out_grad.ne[1];
-    const c_out = out_grad.ne[2];
-    const batch = out_grad.ne[3];
-    const kw = kernel.ne[0];
-    const kh = kernel.ne[1];
-    const c_in = kernel.ne[2];
+// ---------------------------------------------------------------------------
+// Naive fallbacks (allocation failure only)
+// ---------------------------------------------------------------------------
 
-    @memset(output.data, 0);
-    for (0..batch) |n| {
-        for (0..c_out) |oc| {
-            for (0..out_h) |oy| {
-                for (0..out_w) |ox| {
-                    const grad_val = out_grad.data[ox * out_grad.strides[0] + oy * out_grad.strides[1] + oc * out_grad.strides[2] + n * out_grad.strides[3]];
-                    for (0..c_in) |ic| {
-                        for (0..kh) |ky| {
-                            for (0..kw) |kx| {
-                                output.data[(ox + kx) * output.strides[0] + (oy + ky) * output.strides[1] + ic * output.strides[2] + n * output.strides[3]] +=
-                                    grad_val * kernel.data[kx * kernel.strides[0] + ky * kernel.strides[1] + ic * kernel.strides[2] + oc * kernel.strides[3]];
+fn conv2dNaive(comptime T: type, d: Conv2dDims(T), output_data: []T) void {
+    for (0..d.batch) |n| {
+        for (0..d.c_out) |oc| {
+            for (0..d.out_h) |oy| {
+                for (0..d.out_w) |ox| {
+                    var acc: T = 0;
+                    for (0..d.c_in) |ic| {
+                        for (0..d.kh) |ky| {
+                            for (0..d.kw) |kx| {
+                                acc += d.input_data[(ox + kx) * d.input_strides[0] + (oy + ky) * d.input_strides[1] + ic * d.input_strides[2] + n * d.input_strides[3]] *
+                                    d.kernel_data[kx + ky * d.kw + ic * d.kw * d.kh + oc * d.K];
                             }
                         }
                     }
+                    output_data[ox + oy * d.out_w + oc * d.N + n * d.N * d.c_out] = acc;
                 }
             }
         }
     }
 }
 
-fn executeConv2dBwdKernelNaive(comptime T: type, plan: Conv2dBwdKernelPlan(T)) void {
-    const input = plan.input;
+fn conv2dBwdInputNaive(comptime T: type, d: Conv2dDims(T), plan: Conv2dBwdInputPlan(T)) void {
     const out_grad = plan.output_grad;
     const output = plan.output;
-    const out_w = out_grad.ne[0];
-    const out_h = out_grad.ne[1];
-    const c_out = out_grad.ne[2];
-    const batch = out_grad.ne[3];
-    const kw = output.ne[0];
-    const kh = output.ne[1];
-    const c_in = output.ne[2];
-
     @memset(output.data, 0);
-    for (0..c_out) |oc| {
-        for (0..c_in) |ic| {
-            for (0..kh) |ky| {
-                for (0..kw) |kx| {
-                    var acc: T = 0;
-                    for (0..batch) |n| {
-                        for (0..out_h) |oy| {
-                            for (0..out_w) |ox| {
-                                acc += input.data[(ox + kx) * input.strides[0] + (oy + ky) * input.strides[1] + ic * input.strides[2] + n * input.strides[3]] *
-                                    out_grad.data[ox * out_grad.strides[0] + oy * out_grad.strides[1] + oc * out_grad.strides[2] + n * out_grad.strides[3]];
+    for (0..d.batch) |n| {
+        for (0..d.c_out) |oc| {
+            for (0..d.out_h) |oy| {
+                for (0..d.out_w) |ox| {
+                    const g = out_grad.data[offset4(out_grad.strides, ox, oy, oc, n)];
+                    for (0..d.c_in) |ic| {
+                        for (0..d.kh) |ky| {
+                            for (0..d.kw) |kx| {
+                                output.data[offset4(output.strides, ox + kx, oy + ky, ic, n)] +=
+                                    g * d.kernel_data[kx + ky * d.kw + ic * d.kw * d.kh + oc * d.K];
                             }
                         }
                     }
-                    output.data[kx * output.strides[0] + ky * output.strides[1] + ic * output.strides[2] + oc * output.strides[3]] = acc;
                 }
             }
         }
     }
 }
 
-/// Fallback naive conv2d if scratch allocation fails.
-fn executeConv2dNaive(comptime T: type, plan: Conv2dPlan(T)) void {
-    const input = plan.input;
-    const kernel = plan.kernel;
+fn conv2dBwdKernelNaive(comptime T: type, d: Conv2dDims(T), plan: Conv2dBwdKernelPlan(T)) void {
+    const out_grad = plan.output_grad;
     const output = plan.output;
-
-    const out_w = output.ne[0];
-    const out_h = output.ne[1];
-    const c_out = output.ne[2];
-    const batch = output.ne[3];
-    const kw = kernel.ne[0];
-    const kh = kernel.ne[1];
-    const c_in = kernel.ne[2];
-
-    for (0..batch) |n| {
-        for (0..c_out) |oc| {
-            for (0..out_h) |oy| {
-                for (0..out_w) |ox| {
+    @memset(output.data, 0);
+    for (0..d.c_out) |oc| {
+        for (0..d.c_in) |ic| {
+            for (0..d.kh) |ky| {
+                for (0..d.kw) |kx| {
                     var acc: T = 0;
-                    for (0..c_in) |ic| {
-                        for (0..kh) |ky| {
-                            for (0..kw) |kx| {
-                                acc += input.data[
-                                    (ox + kx) * input.strides[0] +
-                                        (oy + ky) * input.strides[1] +
-                                        ic * input.strides[2] +
-                                        n * input.strides[3]
-                                ] *
-                                    kernel.data[
-                                        kx * kernel.strides[0] +
-                                            ky * kernel.strides[1] +
-                                            ic * kernel.strides[2] +
-                                            oc * kernel.strides[3]
-                                    ];
+                    for (0..d.batch) |n| {
+                        for (0..d.out_h) |oy| {
+                            for (0..d.out_w) |ox| {
+                                acc += d.input_data[(ox + kx) * d.input_strides[0] + (oy + ky) * d.input_strides[1] + ic * d.input_strides[2] + n * d.input_strides[3]] *
+                                    out_grad.data[offset4(out_grad.strides, ox, oy, oc, n)];
                             }
                         }
                     }
-                    output.data[ox + oy * out_w + oc * out_w * out_h + n * out_w * out_h * c_out] = acc;
+                    output.data[offset4(output.strides, kx, ky, ic, oc)] = acc;
                 }
             }
         }
@@ -1022,11 +908,15 @@ fn findNodeAfter(comptime T: type, nodes: []const *Tensor(T), start_idx: usize, 
     return null;
 }
 
-fn indexOfNode(comptime T: type, nodes: []const *Tensor(T), needle: *Tensor(T)) usize {
+pub fn indexOfNodeMaybe(comptime T: type, nodes: []const *Tensor(T), needle: *Tensor(T)) ?usize {
     for (nodes, 0..) |node, i| {
         if (node == needle) return i;
     }
-    unreachable;
+    return null;
+}
+
+fn indexOfNode(comptime T: type, nodes: []const *Tensor(T), needle: *Tensor(T)) usize {
+    return indexOfNodeMaybe(T, nodes, needle) orelse unreachable;
 }
 
 fn executeLayerNormPlan(comptime T: type, plan: LayerNormPlan(T)) void {
