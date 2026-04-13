@@ -89,7 +89,6 @@ pub fn main() !void {
 
     // Warmup
     for (0..warmup_iters) |_| {
-        sgd.zeroGrad();
         model.g.reset();
         model.g.resetGrads();
         if (model.loss.grad) |grad| _ = grad.setAllScalar(1);
@@ -104,7 +103,6 @@ pub fn main() !void {
 
     for (&times) |*t| {
         timer.reset();
-        sgd.zeroGrad();
         model.g.reset();
         model.g.resetGrads();
         if (model.loss.grad) |grad| _ = grad.setAllScalar(1);

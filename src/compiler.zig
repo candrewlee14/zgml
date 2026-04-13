@@ -1841,6 +1841,24 @@ pub const CanonicalGraph = struct {
         return null;
     }
 
+    fn detectReluInput(self: *const CanonicalGraph, output: ValueId) ?ValueId {
+        const out_v = self.value(output);
+        if (out_v.expr != .binary or out_v.expr.binary.op != .mul) return null;
+
+        const lhs = out_v.expr.binary.lhs;
+        const rhs = out_v.expr.binary.rhs;
+        const lhs_v = self.value(lhs);
+        const rhs_v = self.value(rhs);
+
+        if (rhs_v.expr == .unary and rhs_v.expr.unary.op == .step and rhs_v.expr.unary.input == lhs) {
+            return lhs;
+        }
+        if (lhs_v.expr == .unary and lhs_v.expr.unary.op == .step and lhs_v.expr.unary.input == rhs) {
+            return rhs;
+        }
+        return null;
+    }
+
     pub fn detectLinearResidual(self: *const CanonicalGraph, output: ValueId) ?LinearResidualSpec {
         const out_v = self.value(output);
         if (out_v.expr != .binary or out_v.expr.binary.op != .add) return null;
@@ -1885,7 +1903,35 @@ pub const CanonicalGraph = struct {
     }
 
     pub fn detectConv2d(self: *const CanonicalGraph, output_id: ValueId) ?Conv2dSpec {
-        const output = self.value(output_id);
+        var core_output_id = output_id;
+        var bias: ?ValueId = null;
+        var bias_add: ?ValueId = null;
+        var activation: ?ValueId = null;
+
+        if (self.detectReluInput(core_output_id)) |relu_input| {
+            activation = core_output_id;
+            core_output_id = relu_input;
+        }
+
+        const maybe_bias_add = self.value(core_output_id);
+        if (maybe_bias_add.expr == .binary and maybe_bias_add.expr.binary.op == .add) {
+            const lhs = maybe_bias_add.expr.binary.lhs;
+            const rhs = maybe_bias_add.expr.binary.rhs;
+            const lhs_v = self.value(lhs);
+            const rhs_v = self.value(rhs);
+
+            if (lhs_v.expr == .view and lhs_v.expr.view.kind == .broadcast and !isScalarBroadcastValue(self, lhs)) {
+                bias = lhs_v.expr.view.input;
+                bias_add = core_output_id;
+                core_output_id = rhs;
+            } else if (rhs_v.expr == .view and rhs_v.expr.view.kind == .broadcast and !isScalarBroadcastValue(self, rhs)) {
+                bias = rhs_v.expr.view.input;
+                bias_add = core_output_id;
+                core_output_id = lhs;
+            }
+        }
+
+        const output = self.value(core_output_id);
 
         // Output should be a reshape back to 4D
         if (output.expr != .view or output.expr.view.kind != .reshape) return null;
@@ -1929,7 +1975,10 @@ pub const CanonicalGraph = struct {
             .kernel_view = rhs_id,
             .mul_node = mul_id,
             .sum_node = reshape_input,
-            .reshape_node = output_id,
+            .reshape_node = core_output_id,
+            .bias = bias,
+            .bias_add = bias_add,
+            .activation = activation,
             .output = output_id,
         };
     }
@@ -1971,9 +2020,7 @@ pub const CanonicalGraph = struct {
         const real_rhs = self.value(real_rhs_id);
 
         // One side should be a broadcast (gradient path), other should be strided (kernel view).
-        const bcast_id = if (real_lhs.expr == .view and real_lhs.expr.view.kind == .broadcast) real_lhs_id
-            else if (real_rhs.expr == .view and real_rhs.expr.view.kind == .broadcast) real_rhs_id
-            else return null;
+        const bcast_id = if (real_lhs.expr == .view and real_lhs.expr.view.kind == .broadcast) real_lhs_id else if (real_rhs.expr == .view and real_rhs.expr.view.kind == .broadcast) real_rhs_id else return null;
 
         const kernel_view_id = if (bcast_id == real_lhs_id) real_rhs_id else real_lhs_id;
         const kernel_view_val = self.value(kernel_view_id);
@@ -2027,9 +2074,7 @@ pub const CanonicalGraph = struct {
         const real_rhs_id = self.peelAccumAdd(rhs_id);
         const real_lhs = self.value(real_lhs_id);
         const real_rhs = self.value(real_rhs_id);
-        const bcast_id = if (real_lhs.expr == .view and real_lhs.expr.view.kind == .broadcast) real_lhs_id
-            else if (real_rhs.expr == .view and real_rhs.expr.view.kind == .broadcast) real_rhs_id
-            else return null;
+        const bcast_id = if (real_lhs.expr == .view and real_lhs.expr.view.kind == .broadcast) real_lhs_id else if (real_rhs.expr == .view and real_rhs.expr.view.kind == .broadcast) real_rhs_id else return null;
 
         const input_view_id = if (bcast_id == real_lhs_id) real_rhs_id else real_lhs_id;
         const input_view_val = self.value(input_view_id);

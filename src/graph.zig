@@ -383,8 +383,12 @@ pub fn ComputeGraph(comptime T: type) type {
         fn findPastAdd(start: *Tensor(T), target_op: Op) ?*Tensor(T) {
             if (start.opTag() == target_op) return start;
             if (start.opTag() != .add) return null;
-            if (start.source0()) |s| { if (s.opTag() == target_op) return s; }
-            if (start.source1()) |s| { if (s.opTag() == target_op) return s; }
+            if (start.source0()) |s| {
+                if (s.opTag() == target_op) return s;
+            }
+            if (start.source1()) |s| {
+                if (s.opTag() == target_op) return s;
+            }
             return null;
         }
 
@@ -1409,6 +1413,30 @@ test "fusion - detects conv2d composite pattern" {
     try testing.expect(found);
 }
 
+test "fusion - detects conv2d bias relu composite pattern" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{ 6, 6, 1, 2 });
+    const k = try Tensor(f32).init(a, &.{ 3, 3, 1, 4 });
+    const b = try Tensor(f32).init(a, &.{4});
+    const conv = x.conv2d(k);
+    const b4 = b.reshape(&.{ 1, 1, 4, 1 });
+    const y = conv.add(b4.repeat(conv.ne[0..conv.n_dims])).relu();
+    try g.buildForward(y);
+    try g.fusionPass();
+
+    var found = false;
+    for (g.fused_chains.items) |plan| {
+        if (plan.kind() == .conv2d) {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
 test "fusion - conv2d fused matches unfused" {
     var gf = ComputeGraph(f32).init(tac);
     defer gf.deinit();
@@ -1430,6 +1458,48 @@ test "fusion - conv2d fused matches unfused" {
 
     const yf = xf.conv2d(kf);
     const yu = xu.conv2d(ku);
+    try gf.buildForward(yf);
+    try gu.buildForward(yu);
+    try gf.fusionPass();
+
+    gf.compute();
+    gu.compute();
+
+    for (yf.data, yu.data) |a_out, b_out| {
+        try testing.expectApproxEqAbs(a_out, b_out, 1e-5);
+    }
+}
+
+test "fusion - conv2d bias relu fused matches unfused" {
+    var gf = ComputeGraph(f32).init(tac);
+    defer gf.deinit();
+    var gu = ComputeGraph(f32).init(tac);
+    defer gu.deinit();
+
+    const af = gf.allocator();
+    const au = gu.allocator();
+
+    const xf = try Tensor(f32).init(af, &.{ 5, 5, 1, 1 });
+    const xu = try Tensor(f32).init(au, &.{ 5, 5, 1, 1 });
+    for (xf.data, 0..) |*d, i| d.* = @floatFromInt(i + 1);
+    @memcpy(xu.data, xf.data);
+
+    const kf = try Tensor(f32).init(af, &.{ 3, 3, 1, 2 });
+    const ku = try Tensor(f32).init(au, &.{ 3, 3, 1, 2 });
+    for (kf.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(@as(i32, @intCast(i % 5)) - 2));
+    @memcpy(ku.data, kf.data);
+
+    const bf = try Tensor(f32).init(af, &.{2});
+    const bu = try Tensor(f32).init(au, &.{2});
+    bf.setData(&.{ -1.5, 0.5 });
+    bu.setData(&.{ -1.5, 0.5 });
+
+    const convf = xf.conv2d(kf);
+    const convu = xu.conv2d(ku);
+    const bff = bf.reshape(&.{ 1, 1, 2, 1 });
+    const bfu = bu.reshape(&.{ 1, 1, 2, 1 });
+    const yf = convf.add(bff.repeat(convf.ne[0..convf.n_dims])).relu();
+    const yu = convu.add(bfu.repeat(convu.ne[0..convu.n_dims])).relu();
     try gf.buildForward(yf);
     try gu.buildForward(yu);
     try gf.fusionPass();

@@ -159,7 +159,6 @@ pub fn main() !void {
             const lbl_off = batch_idx * batch_size;
             @memcpy(model.ys_batch.data, train_labels.data[lbl_off..][0..batch_size]);
 
-            sgd.zeroGrad();
             model.g.reset();
             model.g.resetGrads();
             if (model.loss.grad) |grad| _ = grad.setAllScalar(1);
