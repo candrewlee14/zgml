@@ -514,36 +514,34 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                         const b_base = src0_i3 * src1.strides[3] + src0_i2 * src1.strides[2];
                         const d_base = src0_i3 * dst.strides[3] + src0_i2 * dst.strides[2];
 
-                        // Micro-kernel tile sizes.
-                        // tile_m=6 x tile_n=2*vec_size gives 12 accumulator registers
-                        // + 2 for B vectors + 1 for A broadcast = 15, fits in 16 YMM regs.
-                        const tile_m = 6;
-                        const nr = 2; // number of vectors per N-tile
-                        const tile_n = nr * vec_size;
-                        const tile_k = 128;
+                        // Micro-kernel: mr rows x 2*vec_size columns.
+                        // 12 accumulator regs + 2 B + 1 A broadcast = 15, fits in 16 YMM.
+                        // kc sized for L1 cache (~32KB working set).
+                        const mr = 6;
+                        const nr = 2 * vec_size; // 16 for f32
+                        const kc = 128;
+                        const b_contig = (b_n_stride == 1);
 
                         var mi: usize = 0;
-                        while (mi < M) : (mi += tile_m) {
-                            const m_end = @min(mi + tile_m, M);
+                        while (mi < M) : (mi += mr) {
+                            const m_end = @min(mi + mr, M);
 
-                            // --- Wide SIMD N-tiles (2 vectors per row) ---
+                            // --- Wide tiles (2 vectors per row) ---
                             var ni: usize = 0;
-                            while (ni + tile_n <= N) : (ni += tile_n) {
-                                // 2 accumulator vectors per M row
-                                var acc0 = [_]Vec{@as(Vec, @splat(0))} ** tile_m;
-                                var acc1 = [_]Vec{@as(Vec, @splat(0))} ** tile_m;
+                            while (ni + nr <= N) : (ni += nr) {
+                                var acc0 = [_]Vec{@as(Vec, @splat(0))} ** mr;
+                                var acc1 = [_]Vec{@as(Vec, @splat(0))} ** mr;
 
                                 var ki: usize = 0;
-                                while (ki < K) : (ki += tile_k) {
-                                    const k_end = @min(ki + tile_k, K);
+                                while (ki < K) : (ki += kc) {
+                                    const k_end = @min(ki + kc, K);
                                     for (ki..k_end) |k| {
-                                        // Load 2 vectors of B[k, ni..ni+tile_n]
                                         const b_off = b_base + k * b_k_stride + ni * b_n_stride;
-                                        const b0: Vec = if (b_n_stride == 1)
+                                        const b0: Vec = if (b_contig)
                                             src1.data[b_off..][0..vec_size].*
                                         else
                                             gatherB(src1.data, b_off, b_n_stride, 0);
-                                        const b1: Vec = if (b_n_stride == 1)
+                                        const b1: Vec = if (b_contig)
                                             src1.data[(b_off + vec_size)..][0..vec_size].*
                                         else
                                             gatherB(src1.data, b_off, b_n_stride, vec_size);
@@ -563,15 +561,15 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                                 }
                             }
 
-                            // --- Single-vector N-tiles (remainder) ---
+                            // --- Single-vector remainder ---
                             if (ni + vec_size <= N) {
-                                var acc = [_]Vec{@as(Vec, @splat(0))} ** tile_m;
+                                var acc = [_]Vec{@as(Vec, @splat(0))} ** mr;
                                 var ki: usize = 0;
-                                while (ki < K) : (ki += tile_k) {
-                                    const k_end = @min(ki + tile_k, K);
+                                while (ki < K) : (ki += kc) {
+                                    const k_end = @min(ki + kc, K);
                                     for (ki..k_end) |k| {
                                         const b_off = b_base + k * b_k_stride + ni * b_n_stride;
-                                        const bv: Vec = if (b_n_stride == 1)
+                                        const bv: Vec = if (b_contig)
                                             src1.data[b_off..][0..vec_size].*
                                         else
                                             gatherB(src1.data, b_off, b_n_stride, 0);
@@ -588,7 +586,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                                 ni += vec_size;
                             }
 
-                            // --- Scalar tail for remaining N columns ---
+                            // --- Scalar tail ---
                             while (ni < N) : (ni += 1) {
                                 for (mi..m_end) |m| {
                                     var s: T = 0;
