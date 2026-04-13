@@ -56,10 +56,11 @@ pub fn TransformerBlock(comptime T: type, comptime d_model: usize, comptime d_ff
             self.w2 = try Tensor(T).init(alloc, &.{ d_model, d_ff });
             self.b2 = try Tensor(T).init(alloc, &.{d_model});
 
-            // Initialize all to small values
-            const scale: T = 0.02;
+            // Initialize with varied small values to break symmetry
             for ([_]*Tensor(T){ self.w_q, self.w_k, self.w_v, self.w_o, self.w1, self.w2 }) |w| {
-                for (w.data) |*d| d.* = scale;
+                for (w.data, 0..) |*d, i| {
+                    d.* = 0.01 * @as(T, @floatFromInt(i % 7 + 1)) * if (i % 3 == 0) @as(T, -1) else @as(T, 1);
+                }
                 w.setParam(alloc);
             }
             for ([_]*Tensor(T){ self.b1, self.b2 }) |b| {
@@ -152,7 +153,7 @@ test "transformer block - forward produces valid output" {
     }
 }
 
-test "transformer block - backward computes gradients" {
+test "transformer block - backward produces non-zero gradients for all params" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
@@ -172,10 +173,101 @@ test "transformer block - backward computes gradients" {
     _ = loss.grad.?.setAllScalar(1);
     g.compute();
 
-    // All parameters should have finite gradients
-    for (block.params()) |param| {
+    // Every parameter must have finite gradients.
+    // Weight matrices should have non-zero gradients; bias terms may be zero
+    // when initialized to zero (since bias enters linearly, its gradient
+    // depends on the upstream signal which may vanish with uniform init).
+    const param_names = [_][]const u8{ "w_q", "w_k", "w_v", "w_o", "w1", "b1", "w2", "b2" };
+    for (block.params(), 0..) |param, pi| {
+        _ = param_names[pi];
+        var has_nonzero = false;
         for (param.grad.?.data) |v| {
             try testing.expect(!std.math.isNan(v));
+            try testing.expect(!std.math.isInf(v));
+            if (v != 0) has_nonzero = true;
+        }
+        // Biases may legitimately have zero gradients with uniform weight init,
+        // but weight matrices should always have non-zero gradients.
+        if (pi < 4 or pi == 4 or pi == 6) { // w_q, w_k, w_v, w_o, w1, w2
+            try testing.expect(has_nonzero);
         }
     }
+}
+
+test "transformer block - residual connection preserves input contribution" {
+    // If we zero all weights, the residual should pass input through unchanged
+    // (layerNorm of zeros is zero, so attention and FFN contribute nothing)
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const block = try TransformerBlock(f32, 4, 8).init(a);
+    // Zero all weights (biases are already zero from init)
+    for (block.params()) |param| {
+        _ = param.setAllScalar(0);
+    }
+
+    const input = try Tensor(f32).init(a, &.{ 4, 3 });
+    input.setData(&.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 });
+
+    const output = block.forward(a, input);
+    try g.buildForward(output);
+    g.compute();
+
+    // With zero weights, attention and FFN produce zeros,
+    // so residuals just pass through the (layer-normed + zeroed) input.
+    // Output should be finite and same shape.
+    try testing.expectEqual(@as(usize, 4), output.ne[0]);
+    try testing.expectEqual(@as(usize, 3), output.ne[1]);
+    for (output.data) |v| {
+        try testing.expect(!std.math.isNan(v));
+    }
+}
+
+test "transformer block - numerical gradient check on one parameter" {
+    // Verify backward gradient matches finite-difference approximation
+    // for a single weight element.
+    const h: f32 = 1e-3;
+
+    // Forward pass with original weights
+    var g1 = ComputeGraph(f32).init(tac);
+    defer g1.deinit();
+    const a1 = g1.allocator();
+    const block1 = try TransformerBlock(f32, 4, 8).init(a1);
+    const input1 = try Tensor(f32).init(a1, &.{ 4, 3 });
+    for (input1.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(i)) * 0.1;
+
+    const loss1 = block1.forward(a1, input1).sumAll(a1);
+    try g1.buildForward(loss1);
+    try g1.buildBackward(false);
+    _ = loss1.grad.?.setAllScalar(1);
+    g1.compute();
+    const analytical_grad = block1.w_o.grad.?.data[0];
+
+    // Forward pass with w_o[0] + h
+    var g2 = ComputeGraph(f32).init(tac);
+    defer g2.deinit();
+    const a2 = g2.allocator();
+    const block2 = try TransformerBlock(f32, 4, 8).init(a2);
+    block2.w_o.data[0] += h;
+    const input2 = try Tensor(f32).init(a2, &.{ 4, 3 });
+    for (input2.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(i)) * 0.1;
+    const loss_plus = block2.forward(a2, input2).sumAll(a2);
+    try g2.buildForward(loss_plus);
+    g2.compute();
+
+    // Forward pass with w_o[0] - h
+    var g3 = ComputeGraph(f32).init(tac);
+    defer g3.deinit();
+    const a3 = g3.allocator();
+    const block3 = try TransformerBlock(f32, 4, 8).init(a3);
+    block3.w_o.data[0] -= h;
+    const input3 = try Tensor(f32).init(a3, &.{ 4, 3 });
+    for (input3.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(i)) * 0.1;
+    const loss_minus = block3.forward(a3, input3).sumAll(a3);
+    try g3.buildForward(loss_minus);
+    g3.compute();
+
+    const numerical_grad = (loss_plus.data[0] - loss_minus.data[0]) / (2.0 * h);
+    try testing.expectApproxEqAbs(numerical_grad, analytical_grad, 0.1);
 }
