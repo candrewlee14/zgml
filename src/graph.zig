@@ -606,4 +606,23 @@ test "backward - relu" {
     try testing.expectEqualSlices(f32, &.{ 0, 0, 1, 1 }, x.grad.?.data);
 }
 
+test "backward - recip" {
+    // f(x) = 1/x, f'(x) = -1/x^2
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).initScalar(a, 4);
+    x.setParam(a);
+    const out = x.recip(a);
+    try g.buildForward(out);
+    try g.buildBackward(false);
+    _ = out.grad.?.setAllScalar(1);
+    g.compute();
+
+    try testing.expectApproxEqAbs(@as(f32, 0.25), out.data[0], 1e-6);
+    // f'(4) = -1/16 = -0.0625
+    try testing.expectApproxEqAbs(@as(f32, -0.0625), x.grad.?.data[0], 1e-6);
+}
+
 //#endregion

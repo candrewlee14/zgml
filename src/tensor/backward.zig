@@ -147,6 +147,19 @@ pub fn Ops(comptime Self: type) type {
                     }
                 },
 
+                // d/d(src0) [1/src0] = -1/src0^2 * out_grad
+                // Since tensor already holds 1/src0 from forward, use -tensor^2
+                .recip => {
+                    const src0 = src0_o.?;
+                    if (src0.grad) |grad| {
+                        const neg_recip_sq = tensor.mul(alloc, tensor).neg(alloc);
+                        stripGrad(neg_recip_sq, alloc);
+                        const contribution = neg_recip_sq.mul(alloc, out_grad);
+                        stripGrad(contribution, alloc);
+                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                    }
+                },
+
                 // d/d(src0) [abs(src0)] = sgn(src0) * out_grad
                 .abs => {
                     const src0 = src0_o.?;

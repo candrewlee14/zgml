@@ -235,6 +235,9 @@ pub fn Tensor(comptime T: type) type {
         /// Element-wise square root.
         pub fn sqrt(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .sqrt, false); }
         pub fn sqrtInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .sqrt, true); }
+        /// Element-wise reciprocal: 1/x.
+        pub fn recip(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .recip, false); }
+        pub fn recipInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .recip, true); }
         /// Element-wise absolute value.
         pub fn abs(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .abs, false); }
         pub fn absInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .abs, true); }
@@ -462,6 +465,7 @@ pub fn Tensor(comptime T: type) type {
         pub const computeRepeat = fwd.computeRepeat;
         pub const computeSqr = fwd.computeSqr;
         pub const computeSqrt = fwd.computeSqrt;
+        pub const computeRecip = fwd.computeRecip;
         pub const computeAbs = fwd.computeAbs;
         pub const computeSgn = fwd.computeSgn;
         pub const computeNeg = fwd.computeNeg;

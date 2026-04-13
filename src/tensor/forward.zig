@@ -126,6 +126,10 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         fn sqrtVec(v: Vec) Vec { return @sqrt(v); }
         fn absVec(v: Vec) Vec { return @abs(v); }
         fn negVec(v: Vec) Vec { return -v; }
+        fn recipVec(v: Vec) Vec {
+            const one: Vec = @splat(@as(T, 1.0));
+            return one / v;
+        }
 
         // -- Scalar map functions ----------------------------------------
 
@@ -137,6 +141,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         fn sqrtScalar(x: T) T { return std.math.sqrt(x); }
         fn absScalar(x: T) T { return @abs(x); }
         fn negScalar(x: T) T { return -x; }
+        fn recipScalar(x: T) T { return 1.0 / x; }
 
         // -- Vectorized tanh (3,3) Pade approximant ----------------------
 
@@ -181,6 +186,12 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         pub fn computeSqrt(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             simdMapUnary(T, src0.data, dst.data, sqrtVec, sqrtScalar);
+        }
+
+        /// Element-wise reciprocal: dst[i] = 1 / src0[i].
+        pub fn computeRecip(dst: *Self, src0: *Self) void {
+            assert(dst.isSameShape(src0));
+            simdMapUnary(T, src0.data, dst.data, recipVec, recipScalar);
         }
 
         pub fn computeAbs(dst: *Self, src0: *Self) void {
@@ -574,6 +585,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .repeat => tensor.computeRepeat(src0.?),
                 .sqr => tensor.computeSqr(src0.?),
                 .sqrt => tensor.computeSqrt(src0.?),
+                .recip => tensor.computeRecip(src0.?),
                 .sum => tensor.computeSum(src0.?),
                 .mean => tensor.computeMean(src0.?),
                 .abs => tensor.computeAbs(src0.?),
