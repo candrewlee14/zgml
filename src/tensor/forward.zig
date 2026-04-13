@@ -123,6 +123,73 @@ fn first4(arr: [max_dims]usize) @Vector(4, usize) {
     return @Vector(4, usize){ arr[0], arr[1], arr[2], arr[3] };
 }
 
+/// SIMD contiguous reduction: sum src into dst using chunk-based accumulation.
+///
+/// `chunk` is the number of contiguous source elements that map to the same
+/// destination element (product of leading reduced dimensions). Each chunk
+/// is SIMD-reduced horizontally, then accumulated into the correct dst slot.
+///
+/// For [W,H,C,N] → [1,1,C,1]: chunk = W*H = 576. Each group of 576
+/// contiguous elements sums into one of C channel bins.
+fn simdReduceSum(comptime T: type, src: []const T, dst: []T, dst_len: usize, chunk: usize) void {
+    const vec_size = comptime simdVecSize(T);
+    const Vec = @Vector(vec_size, T);
+
+    @memset(dst, 0);
+    const num_chunks = src.len / chunk;
+
+    if (chunk >= vec_size) {
+        // SIMD horizontal sum per chunk.
+        for (0..num_chunks) |ci| {
+            const base = ci * chunk;
+            var vacc: Vec = @splat(0);
+            var j: usize = 0;
+            while (j + vec_size <= chunk) : (j += vec_size) {
+                vacc += src[base + j ..][0..vec_size].*;
+            }
+            var acc: T = @reduce(.Add, vacc);
+            while (j < chunk) : (j += 1) acc += src[base + j];
+            dst[ci % dst_len] += acc;
+        }
+    } else {
+        // Chunk too small for SIMD — scalar accumulation.
+        for (0..num_chunks) |ci| {
+            const base = ci * chunk;
+            var acc: T = 0;
+            for (0..chunk) |j| acc += src[base + j];
+            dst[ci % dst_len] += acc;
+        }
+    }
+}
+
+/// SIMD contiguous broadcast: expand src into dst using chunk-based tiling.
+///
+/// `chunk` is the number of contiguous dst elements filled from the same
+/// src element (product of leading broadcast dimensions).
+///
+/// For [1,1,C,1] → [W,H,C,N]: chunk = W*H. Each src[c] fills W*H
+/// contiguous destination elements.
+fn simdBroadcastRepeat(comptime T: type, src: []const T, dst: []T, src_len: usize, chunk: usize) void {
+    const dst_len = dst.len;
+    const num_chunks = dst_len / chunk;
+
+    if (chunk == 1) {
+        // No leading broadcast dims — just tile src cyclically.
+        if (src_len == 1) {
+            @memset(dst, src[0]);
+        } else {
+            for (dst, 0..) |*d, i| d.* = src[i % src_len];
+        }
+    } else {
+        // Fill chunk contiguous elements from each src value.
+        for (0..num_chunks) |ci| {
+            const base = ci * chunk;
+            const val = src[ci % src_len];
+            @memset(dst[base..][0..chunk], val);
+        }
+    }
+}
+
 fn nextCoord(coords: []usize, shape: []const usize) bool {
     var axis: usize = 0;
     while (axis < shape.len) : (axis += 1) {
@@ -738,6 +805,18 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 computeReduceGeneric(Self, T, dst, src0, .sum, null);
                 return;
             }
+            // Fast path: contiguous source and destination.
+            if (src0.isContiguous() and dst.isContiguous()) {
+                // Chunk = product of leading reduced dimensions.
+                // For [W,H,C,N] → [1,1,C,1]: chunk = W*H (576 contiguous elements per channel).
+                var chunk: usize = 1;
+                for (0..src0.n_dims) |d| {
+                    if (d < dst.n_dims and dst.ne[d] > 1) break;
+                    chunk *= src0.ne[d];
+                }
+                simdReduceSum(T, src0.data, dst.data, dst.nElems(), chunk);
+                return;
+            }
             @memset(dst.data, 0);
             for (0..src0.ne[3]) |ne3| {
                 for (0..src0.ne[2]) |ne2| {
@@ -786,6 +865,16 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             assert(src0.canRepeatTo(dst));
             if (dst.n_dims > 4 or src0.n_dims > 4) {
                 computeRepeatGeneric(Self, dst, src0);
+                return;
+            }
+            // Fast path: contiguous tensors.
+            if (src0.isContiguous() and dst.isContiguous()) {
+                var chunk: usize = 1;
+                for (0..dst.n_dims) |d| {
+                    if (d < src0.n_dims and src0.ne[d] > 1) break;
+                    chunk *= dst.ne[d];
+                }
+                simdBroadcastRepeat(T, src0.data, dst.data, src0.nElems(), chunk);
                 return;
             }
             for (0..dst.ne[3]) |ne3| {

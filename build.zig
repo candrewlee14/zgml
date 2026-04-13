@@ -182,6 +182,25 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(prof_exe);
     const prof_step = b.step("profile-bwd", "Profile backward pass per-op timing");
     prof_step.dependOn(&b.addRunArtifact(prof_exe).step);
+
+    // Reduction microbenchmark
+    const zgml_rbench_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+    const rbench_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench_reduce.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "zgml", .module = zgml_rbench_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_rbench_pkg.zgml_options },
+        },
+    });
+    const rbench_exe = b.addExecutable(.{
+        .name = "bench-reduce",
+        .root_module = rbench_mod,
+    });
+    b.installArtifact(rbench_exe);
+    const rbench_step = b.step("bench-reduce", "Benchmark reduction and broadcast ops");
+    rbench_step.dependOn(&b.addRunArtifact(rbench_exe).step);
 }
 
 pub fn runTests(
