@@ -296,6 +296,19 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
             return .{ .inner = self.inner.logSoftmax(&ne) };
         }
 
+        /// RMS normalization: `x / sqrt(mean(x²) + eps)`.
+        /// Normalizes over dimensions reduced to `target`.
+        pub fn rmsNorm(self: Self, comptime target: anytype, eps: T) Self {
+            const target_shape = comptime normalizeShape(target);
+            comptime {
+                for (shape, target_shape) |s, t| {
+                    if (s % t != 0) @compileError("rmsNorm: target shape dimension does not divide source");
+                }
+            }
+            var ne = target_shape;
+            return .{ .inner = self.inner.rmsNorm(&ne, eps) };
+        }
+
         /// Layer normalization: `(x - mean) / sqrt(var + eps)`.
         /// Normalizes over dimensions reduced to `target`.
         pub fn layerNorm(self: Self, comptime target: anytype, eps: T) Self {
@@ -523,6 +536,47 @@ test "shaped - backward through graph" {
 
     // d/dx[sum(x^2)] = 2x
     try testing.expectEqualSlices(f32, &.{ 2, 4, 6 }, x.tensor().grad.?.data);
+}
+
+test "shaped - rmsNorm" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    // [3, 2] tensor, normalize over dim 0 (reduce to [1, 2])
+    const x = (try Shaped(f32, .{ 3, 2 }).init(a)).setData(&.{ 1, 2, 3, 4, 5, 6 });
+    const y = x.rmsNorm(.{ 1, 2 }, 1e-5);
+    comptime std.debug.assert(@TypeOf(y).static_shape[0] == 3);
+    comptime std.debug.assert(@TypeOf(y).static_shape[1] == 2);
+
+    try g.buildForward(y.tensor());
+    g.compute();
+
+    // Output should be finite and have unit RMS (approx)
+    for (y.tensor().data) |v| {
+        try testing.expect(!std.math.isNan(v));
+        try testing.expect(!std.math.isInf(v));
+    }
+}
+
+test "shaped - rmsNorm backward" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = (try Shaped(f32, .{4}).init(a)).setData(&.{ 1, 2, 3, 4 }).setParam();
+    const y = x.rmsNorm(.{1}, 1e-5);
+    const loss = y.sumAll();
+
+    try g.buildForward(loss.tensor());
+    try g.buildBackward(false);
+    _ = loss.tensor().grad.?.setAllScalar(1);
+    g.compute();
+
+    for (x.tensor().grad.?.data) |v| {
+        try testing.expect(!std.math.isNan(v));
+        try testing.expect(!std.math.isInf(v));
+    }
 }
 
 test "map - unary fusion" {

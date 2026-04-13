@@ -4,6 +4,7 @@ pub const Tensor = @import("tensor.zig").Tensor;
 pub const IndexTensor = @import("index.zig").IndexTensor;
 pub const max_dims = @import("tensor.zig").max_dims;
 pub const ComputeGraph = @import("graph.zig").ComputeGraph;
+pub const compiler = @import("compiler.zig");
 
 pub const shaped = @import("shaped.zig");
 pub const Shaped = shaped.Shaped;
@@ -12,11 +13,16 @@ pub const ShapedTensor = shaped.ShapedTensor;
 pub const models = @import("models.zig");
 pub const optim = @import("optim.zig");
 pub const loss = @import("loss.zig");
+pub const nn = @import("nn.zig");
+pub const checkpoint = @import("checkpoint.zig");
 
 test "ref all decls" {
     _ = testing.refAllDeclsRecursive(models);
     _ = testing.refAllDeclsRecursive(optim);
     _ = testing.refAllDeclsRecursive(loss);
+    _ = @import("nn.zig");
+    _ = @import("checkpoint.zig");
+    _ = @import("compiler.zig");
     _ = @import("index.zig");
     _ = @import("shaped.zig");
 }

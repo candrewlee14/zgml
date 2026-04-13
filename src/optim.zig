@@ -1,5 +1,6 @@
 const std = @import("std");
 pub const sgd = @import("optim/sgd.zig");
+pub const adam = @import("optim/adam.zig");
 
 fn implementsOptimizer(comptime Optimizer: type) bool {
     return std.meta.hasFn(Optimizer, "init") and
@@ -10,5 +11,10 @@ fn implementsOptimizer(comptime Optimizer: type) bool {
 
 test "sgd impls optim" {
     const Optimizer = sgd.SGD(f32);
+    try std.testing.expect(implementsOptimizer(Optimizer));
+}
+
+test "adam impls optim" {
+    const Optimizer = adam.Adam(f32);
     try std.testing.expect(implementsOptimizer(Optimizer));
 }

@@ -289,11 +289,16 @@ pub fn Tensor(comptime T: type) type {
         pub const mean = api.mean;
         pub const softmax = api.softmax;
         pub const logSoftmax = api.logSoftmax;
+        pub const rmsNorm = api.rmsNorm;
         pub const layerNorm = api.layerNorm;
         pub const meanInto = api.meanInto;
         pub const repeat = api.repeat;
         pub const repeatLike = api.repeatLike;
         pub const matMul = api.matMul;
+        pub const mm = api.mm;
+        pub const Tmm = api.Tmm;
+        pub const mmT = api.mmT;
+        pub const TmmT = api.TmmT;
         pub const gatherRows = api.gatherRows;
         pub const scatterAddRows = api.scatterAddRows;
         pub const pickRows = api.pickRows;
@@ -303,6 +308,10 @@ pub fn Tensor(comptime T: type) type {
         pub const scale = api.scale;
         pub const scaleInplace = api.scaleInplace;
         pub const scaleByVal = api.scaleByVal;
+        pub const conv2d = api.conv2d;
+        pub const conv2dBwdInput = api.conv2dBwdInput;
+        pub const conv2dBwdKernel = api.conv2dBwdKernel;
+        pub const maxPool2d = api.maxPool2d;
         pub const reshapeLike = api.reshapeLike;
         pub const reshape = api.reshape;
         pub const transpose = api.transpose;
@@ -337,6 +346,8 @@ pub fn Tensor(comptime T: type) type {
         pub const computePickRows = fwd.computePickRows;
         pub const computeScatterAddPicks = fwd.computeScatterAddPicks;
         pub const computeTranspose = fwd.computeTranspose;
+        pub const computeConv2d = fwd.computeConv2d;
+        pub const computeMaxPool2d = fwd.computeMaxPool2d;
         pub const computeMatMul = fwd.computeMatMul;
         pub const computeMean = fwd.computeMean;
         pub const computeSqr = fwd.computeSqr;

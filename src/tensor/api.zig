@@ -32,6 +32,19 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return Self.initIndexVectorCopy(a(self), vals) catch unreachable;
         }
 
+        fn scalarRepeatLike(self: *Self, val: T, other: *Self) *Self {
+            const scalar = Self.initScalar(a(self), val) catch unreachable;
+            scalar.is_internal_aux = true;
+            const repeated = scalar.repeatLike(other);
+            repeated.is_internal_aux = true;
+            return repeated;
+        }
+
+        fn aux(node: *Self) *Self {
+            node.is_internal_aux = true;
+            return node;
+        }
+
         // ---------------------------------------------------------------
         // Internal helpers
         // ---------------------------------------------------------------
@@ -90,11 +103,11 @@ pub fn Api(comptime Self: type, comptime T: type) type {
 
         /// Element-wise subtraction. Decomposes to `add(self, neg(other))`.
         pub fn sub(self: *Self, other: *Self) *Self {
-            return self.add(other.neg());
+            return self.add(aux(other.neg()));
         }
 
         pub fn subInplace(self: *Self, other: *Self) *Self {
-            return self.addInplace(other.neg());
+            return self.addInplace(aux(other.neg()));
         }
 
         /// Element-wise multiplication.
@@ -108,11 +121,11 @@ pub fn Api(comptime Self: type, comptime T: type) type {
 
         /// Element-wise division. Decomposes to `mul(self, recip(other))`.
         pub fn div(self: *Self, other: *Self) *Self {
-            return self.mul(other.recip());
+            return self.mul(aux(other.recip()));
         }
 
         pub fn divInplace(self: *Self, other: *Self) *Self {
-            return self.mulInplace(other.recip());
+            return self.mulInplace(aux(other.recip()));
         }
 
         /// Element-wise square. Decomposes to `mul(self, self)`.
@@ -181,7 +194,7 @@ pub fn Api(comptime Self: type, comptime T: type) type {
 
         /// Element-wise ReLU: max(0, x). Decomposes to `mul(self, step(self))`.
         pub fn relu(self: *Self) *Self {
-            const mask = self.step();
+            const mask = aux(self.step());
             mask.grad = null;
             return self.mul(mask);
         }
@@ -252,19 +265,15 @@ pub fn Api(comptime Self: type, comptime T: type) type {
 
         /// Mean (reduce). Decomposes to `sum * (1/count)`.
         pub fn mean(self: *Self, ne: []const usize) *Self {
-            const alloc = a(self);
-            const s = self.sum(ne);
+            const s = aux(self.sum(ne));
             const count: T = @floatFromInt(self.nElems() / s.nElems());
-            const inv_count = Self.initScalar(alloc, 1.0 / count) catch unreachable;
-            return s.mul(inv_count.repeatLike(s));
+            return s.mul(scalarRepeatLike(self, 1.0 / count, s));
         }
 
         pub fn meanInto(self: *Self, other: *Self) *Self {
-            const alloc = a(self);
-            const s = self.sumInto(other);
+            const s = aux(self.sumInto(other));
             const count: T = @floatFromInt(self.nElems() / s.nElems());
-            const inv_count = Self.initScalar(alloc, 1.0 / count) catch unreachable;
-            return s.mul(inv_count.repeatLike(s));
+            return s.mul(scalarRepeatLike(self, 1.0 / count, s));
         }
 
         // ---------------------------------------------------------------
@@ -296,53 +305,73 @@ pub fn Api(comptime Self: type, comptime T: type) type {
 
         /// Numerically stable softmax.
         pub fn softmax(self: *Self, ne: []const usize) *Self {
-            const max_t = self.max(ne);
-            const shifted = self.sub(max_t.repeatLike(self));
-            const exps = shifted.exp();
-            const denom = exps.sum(ne);
-            return exps.div(denom.repeatLike(exps));
+            const max_t = aux(self.max(ne));
+            const rep_max = aux(max_t.repeatLike(self));
+            const shifted = aux(self.sub(rep_max));
+            const exps = aux(shifted.exp());
+            const denom = aux(exps.sum(ne));
+            const rep_denom = aux(denom.repeatLike(exps));
+            return exps.div(rep_denom);
         }
 
         /// Numerically stable log-softmax.
         pub fn logSoftmax(self: *Self, ne: []const usize) *Self {
-            const max_t = self.max(ne);
-            const shifted = self.sub(max_t.repeatLike(self));
-            const exps = shifted.exp();
-            const log_norm = exps.sum(ne).log();
-            return shifted.sub(log_norm.repeatLike(shifted));
+            const max_t = aux(self.max(ne));
+            const rep_max = aux(max_t.repeatLike(self));
+            const shifted = aux(self.sub(rep_max));
+            const exps = aux(shifted.exp());
+            const sum_t = aux(exps.sum(ne));
+            const log_norm = aux(sum_t.log());
+            const rep_log = aux(log_norm.repeatLike(shifted));
+            return shifted.sub(rep_log);
+        }
+
+        /// RMS normalization: `x / sqrt(mean(x²) + eps)`.
+        ///
+        /// Simpler than layerNorm (no mean subtraction). Used in LLaMA, Gemma, etc.
+        /// Decomposes to: sqr -> mean -> add(eps) -> sqrt -> recip -> mul.
+        pub fn rmsNorm(self: *Self, ne: []const usize, eps: T) *Self {
+            const sq = aux(self.sqr());
+            const ms = aux(sq.mean(ne));
+            const ms_eps = aux(ms.add(scalarRepeatLike(self, eps, ms)));
+            const ms_sqrt = aux(ms_eps.sqrt());
+            const rms_inv = aux(ms_sqrt.recip());
+            const rep_rms_inv = aux(rms_inv.repeatLike(self));
+            return self.mul(rep_rms_inv);
         }
 
         /// Layer normalization: `(x - mean) / sqrt(var + eps)`.
         pub fn layerNorm(self: *Self, ne: []const usize, eps: T) *Self {
-            const alloc = a(self);
-            const mu = self.mean(ne);
-            const centered = self.sub(mu.repeatLike(self));
-            const variance = centered.sqr().mean(ne);
-            const eps_t = Self.initScalar(alloc, eps) catch unreachable;
-            const std_inv = variance.add(eps_t.repeatLike(variance)).sqrt().recip();
-            return centered.mul(std_inv.repeatLike(centered));
+            const mu = aux(self.mean(ne));
+            const rep_mu = aux(mu.repeatLike(self));
+            const centered = aux(self.sub(rep_mu));
+            const centered_sq = aux(centered.sqr());
+            const variance = aux(centered_sq.mean(ne));
+            const var_eps = aux(variance.add(scalarRepeatLike(self, eps, variance)));
+            const var_sqrt = aux(var_eps.sqrt());
+            const std_inv = aux(var_sqrt.recip());
+            const rep_std_inv = aux(std_inv.repeatLike(centered));
+            return centered.mul(rep_std_inv);
         }
 
         /// Add a lower-dimensional bias tensor, auto-broadcasting to self's shape.
         pub fn addBias(self: *Self, bias: *Self) *Self {
-            return self.add(bias.repeatLike(self));
+            return self.add(aux(bias.repeatLike(self)));
         }
 
         pub fn scale(self: *Self, other: *Self) *Self {
             assert(other.isScalar());
-            return self.mul(other.repeatLike(self));
+            return self.mul(aux(other.repeatLike(self)));
         }
 
         pub fn scaleInplace(self: *Self, other: *Self) *Self {
             assert(other.isScalar());
-            return self.mulInplace(other.repeatLike(self));
+            return self.mulInplace(aux(other.repeatLike(self)));
         }
 
         /// Scale every element by a scalar value.
         pub fn scaleByVal(self: *Self, val: T) *Self {
-            const alloc = a(self);
-            const s = Self.initScalar(alloc, val) catch unreachable;
-            return self.mul(s.repeatLike(self));
+            return self.mul(scalarRepeatLike(self, val, self));
         }
 
         // ---------------------------------------------------------------
@@ -502,6 +531,74 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             res.grad = if (is_node) res.copyTensorShape() else null;
             res.src0 = updates;
             res.src1 = indices;
+            return res;
+        }
+
+        // ---------------------------------------------------------------
+        // Convolution & pooling
+        // ---------------------------------------------------------------
+
+        /// 2D convolution (valid, stride 1, no padding).
+        /// self: input  [W, H, C_in, N]
+        /// kernel:      [kW, kH, C_in, C_out]
+        /// result:      [W-kW+1, H-kH+1, C_out, N]
+        pub fn conv2d(self: *Self, kernel: *Self) *Self {
+            const alloc = a(self);
+            assert(self.n_dims == 4);
+            assert(kernel.n_dims == 4);
+            assert(self.ne[2] == kernel.ne[2]); // C_in must match
+            assert(self.ne[0] >= kernel.ne[0]); // W >= kW
+            assert(self.ne[1] >= kernel.ne[1]); // H >= kH
+            const out_w = self.ne[0] - kernel.ne[0] + 1;
+            const out_h = self.ne[1] - kernel.ne[1] + 1;
+            const out_c = kernel.ne[3]; // C_out
+            const batch = self.ne[3]; // N
+            const is_node = self.grad != null or kernel.grad != null;
+            const res = Self.init(alloc, &.{ out_w, out_h, out_c, batch }) catch unreachable;
+            res.op = .conv2d;
+            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.src0 = self;
+            res.src1 = kernel;
+            return res;
+        }
+
+        /// 2×2 max pooling with stride 2.
+        /// self: input  [W, H, C, N]  (W and H must be even)
+        /// result:      [W/2, H/2, C, N]
+        pub fn maxPool2d(self: *Self) *Self {
+            const alloc = a(self);
+            assert(self.n_dims == 4);
+            assert(self.ne[0] % 2 == 0);
+            assert(self.ne[1] % 2 == 0);
+            const is_node = self.grad != null;
+            const res = Self.init(alloc, &.{ self.ne[0] / 2, self.ne[1] / 2, self.ne[2], self.ne[3] }) catch unreachable;
+            res.op = .max_pool2d;
+            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.src0 = self;
+            return res;
+        }
+
+        /// Internal: backward of conv2d w.r.t. input.
+        /// self: out_grad [W_out, H_out, C_out, N], kernel: [kW, kH, C_in, C_out]
+        /// result: input_grad [W_out+kW-1, H_out+kH-1, C_in, N]
+        pub fn conv2dBwdInput(self: *Self, kernel: *Self, in_ne: [max_dims]usize) *Self {
+            const alloc = a(self);
+            const res = Self.init(alloc, in_ne[0..4]) catch unreachable;
+            res.op = .conv2d_bwd_input;
+            res.src0 = self; // out_grad
+            res.src1 = kernel;
+            return res;
+        }
+
+        /// Internal: backward of conv2d w.r.t. kernel.
+        /// self: out_grad [W_out, H_out, C_out, N], input: original input [W, H, C_in, N]
+        /// result: kernel_grad [kW, kH, C_in, C_out]
+        pub fn conv2dBwdKernel(self: *Self, input: *Self, k_ne: [max_dims]usize) *Self {
+            const alloc = a(self);
+            const res = Self.init(alloc, k_ne[0..4]) catch unreachable;
+            res.op = .conv2d_bwd_kernel;
+            res.src0 = self; // out_grad
+            res.src1 = input;
             return res;
         }
 
