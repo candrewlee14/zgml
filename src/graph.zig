@@ -301,6 +301,61 @@ pub fn ComputeGraph(comptime T: type) type {
                 }
             }.lessThan);
 
+            // Dead code elimination: remove backward nodes whose outputs
+            // are never read. Recompute use_count excluding fused_skip nodes,
+            // then iteratively mark zero-consumer nodes as dead.
+            {
+                // Identify live roots — nodes read externally that DCE must preserve:
+                // 1. Parameter gradients (read by optimizer)
+                // 2. Tensors referenced by fused plans (read by fused kernels)
+                var live_roots = std.AutoHashMapUnmanaged(*Tensor(T), void).empty;
+                for (self.nodes.items[0..self.forward_node_count]) |node| {
+                    if (node.isParam()) {
+                        if (node.gradOrNull()) |grad| {
+                            try live_roots.put(alloc, grad, {});
+                        }
+                    }
+                }
+                for (self.fused_chains.items) |chain| {
+                    for (chain.liveRefs()) |ref| {
+                        try live_roots.put(alloc, ref, {});
+                    }
+                }
+                defer live_roots.deinit(alloc);
+
+                // Recompute effective use_count (excluding fused_skip consumers)
+                @memset(use_count, 0);
+                for (self.nodes.items, 0..) |node, i| {
+                    if (i < self.fused_skip.items.len and self.fused_skip.items[i]) continue;
+                    if (node.source0()) |src| {
+                        if (ptr_to_idx.get(src)) |j| use_count[j] += 1;
+                    }
+                    if (node.source1()) |src| {
+                        if (ptr_to_idx.get(src)) |j| use_count[j] += 1;
+                    }
+                }
+
+                // Iteratively eliminate dead nodes
+                var changed = true;
+                while (changed) {
+                    changed = false;
+                    for (self.nodes.items[self.forward_node_count..], self.forward_node_count..) |node, idx| {
+                        if (self.fused_skip.items[idx]) continue;
+                        if (use_count[idx] > 0) continue;
+                        if (live_roots.contains(node)) continue;
+                        self.fused_skip.items[idx] = true;
+                        // Decrement sources' use_count (may cascade)
+                        if (node.source0()) |src| {
+                            if (ptr_to_idx.get(src)) |j| use_count[j] -= 1;
+                        }
+                        if (node.source1()) |src| {
+                            if (ptr_to_idx.get(src)) |j| use_count[j] -= 1;
+                        }
+                        changed = true;
+                    }
+                }
+            }
+
             // Pre-allocate scratch buffers from the arena so conv2d plans
             // don't hit mmap/munmap on every execution.
             for (self.fused_chains.items) |*chain| {

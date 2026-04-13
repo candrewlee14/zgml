@@ -227,6 +227,17 @@ pub fn FusionPlan(comptime T: type) type {
             return std.meta.activeTag(self.payload);
         }
 
+        /// Return tensors that fused kernels read from at execution time.
+        /// DCE must not eliminate these even if they have no graph consumers.
+        pub fn liveRefs(self: @This()) []const *Tensor(T) {
+            return switch (self.payload) {
+                .conv2d_bwd_kernel => |p| &.{ p.input, p.output_grad },
+                .conv2d_bwd_input => |p| &.{ p.output_grad, p.kernel },
+                .elementwise_chain => |p| &.{p.input},
+                else => &.{},
+            };
+        }
+
         /// Pre-allocate scratch buffers from the given arena so execution
         /// doesn't hit page_allocator (mmap/munmap) on every call.
         pub fn allocScratchBuffers(self: *@This(), alloc: std.mem.Allocator) !void {
