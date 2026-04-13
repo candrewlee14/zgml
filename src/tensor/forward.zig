@@ -700,6 +700,28 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
+        /// Transpose the first two dimensions, copying data into contiguous layout.
+        /// dst shape is [src.ne[1], src.ne[0], ...] with standard strides.
+        pub fn computeTranspose(dst: *Self, src0: *Self) void {
+            assert(dst.ne[0] == src0.ne[1]);
+            assert(dst.ne[1] == src0.ne[0]);
+            const cols = src0.ne[0];
+            const rows = src0.ne[1];
+            for (0..src0.ne[3]) |d3| {
+                for (0..src0.ne[2]) |d2| {
+                    const src_batch = d3 * src0.strides[3] + d2 * src0.strides[2];
+                    const dst_batch = d3 * dst.strides[3] + d2 * dst.strides[2];
+                    for (0..rows) |row| {
+                        for (0..cols) |col| {
+                            // src[col, row] → dst[row, col]
+                            dst.data[dst_batch + row * dst.strides[0] + col * dst.strides[1]] =
+                                src0.data[src_batch + col * src0.strides[0] + row * src0.strides[1]];
+                        }
+                    }
+                }
+            }
+        }
+
         // ---------------------------------------------------------------
         // Matrix multiplication  (runtime-dispatched SIMD width)
         // ---------------------------------------------------------------
@@ -800,7 +822,8 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             const src0 = tensor.src0;
             const src1 = tensor.src1;
             switch (tensor.op) {
-                .none, .view, .reshape, .transpose => {},
+                .none, .view, .reshape => {},
+                .transpose => tensor.computeTranspose(src0.?),
                 .add => tensor.computeAdd(src0.?, src1.?),
                 .mul => tensor.computeMul(src0.?, src1.?),
                 .neg => tensor.computeNeg(src0.?),
