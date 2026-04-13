@@ -45,15 +45,15 @@ pub fn Model(comptime T: type) type {
             p.xs_batch = try Tensor(T).init(a, &.{batch_size});
             p.ys_batch = try Tensor(T).init(a, &.{batch_size});
             for (p.params) |param| {
-                param.setParam(a);
+                param.setParam();
             }
 
             var ne_batch: [1]usize = .{batch_size};
-            const repeated0 = p.params[0].repeat(a, ne_batch[0..]);
-            const mx = p.xs_batch.mul(a, repeated0);
-            const repeated1 = p.params[1].repeat(a, ne_batch[0..]);
-            p.out = mx.add(a, repeated1);
-            p.loss = loss.meanSqErr(T, a, p.out, p.ys_batch);
+            const repeated0 = p.params[0].repeat(ne_batch[0..]);
+            const mx = p.xs_batch.mul(repeated0);
+            const repeated1 = p.params[1].repeat(ne_batch[0..]);
+            p.out = mx.add(repeated1);
+            p.loss = loss.meanSqErr(T, p.out, p.ys_batch);
             { // for debugging
                 p.params[0].name = "m";
                 p.params[1].name = "b";
@@ -102,8 +102,8 @@ pub fn Model(comptime T: type) type {
             const time = try Tensor(T).initLinspace(tac, &.{n}, 0, 20);
             const true_m = 30;
             const speed = try Tensor(T).initLinspace(tac, &.{n}, 0, 20 * true_m);
-            defer time.deinit(tac);
-            defer speed.deinit(tac);
+            defer time.deinit();
+            defer speed.deinit();
 
             var model = try Model(T).build(tac, 0, 0, 1);
             defer model.deinit();

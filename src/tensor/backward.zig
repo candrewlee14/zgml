@@ -16,14 +16,13 @@ const SQRT_2_OVER_PI: comptime_float = @sqrt(2.0 / std.math.pi);
 /// Backward operations parameterized on the tensor type.
 pub fn Ops(comptime Self: type) type {
     return struct {
-        /// Accumulate `contribution` into `grad`, either in-place or by creating a new node.
-        fn accumGrad(grad: *Self, alloc: Alloc, contribution: *Self, inplace: bool) *Self {
-            return if (inplace) grad.addInplace(alloc, contribution) else grad.add(alloc, contribution);
+        /// Accumulate `contribution` into `grad`.
+        fn accumGrad(grad: *Self, contribution: *Self, inplace: bool) *Self {
+            return if (inplace) grad.addInplace(contribution) else grad.add(contribution);
         }
 
         /// Remove the gradient from an intermediate tensor created during backward.
-        fn stripGrad(tensor: *Self, alloc: Alloc) void {
-            _ = alloc;
+        fn stripGrad(tensor: *Self) void {
             tensor.grad = null;
         }
 
@@ -35,6 +34,7 @@ pub fn Ops(comptime Self: type) type {
         }
 
         /// Propagate gradients backward through the primitive op that created this tensor.
+        /// `alloc` is used only for scratch list management, not for tensor ops.
         pub fn backward(tensor: *Self, alloc: Alloc, scratch: *std.ArrayList(*Self), inplace: bool) Alloc.Error!void {
             _ = scratch;
             const src0_o = tensor.src0;
@@ -47,18 +47,18 @@ pub fn Ops(comptime Self: type) type {
                 .view, .reshape => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
-                        const contribution = out_grad.reshapeLike(alloc, grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const contribution = out_grad.reshapeLike(grad);
+                        stripGrad(contribution);
+                        src0.grad = accumGrad(grad, contribution, inplace);
                     }
                 },
 
                 .transpose => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
-                        const contribution = out_grad.transpose(alloc);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const contribution = out_grad.transpose();
+                        stripGrad(contribution);
+                        src0.grad = accumGrad(grad, contribution, inplace);
                     }
                 },
 
@@ -67,19 +67,8 @@ pub fn Ops(comptime Self: type) type {
                 .add => {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
-                    if (src0.grad) |grad| src0.grad = accumGrad(grad, alloc, out_grad, inplace);
-                    if (src1.grad) |grad| src1.grad = accumGrad(grad, alloc, out_grad, inplace);
-                },
-
-                .sub => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.grad) |grad| src0.grad = accumGrad(grad, alloc, out_grad, inplace);
-                    if (src1.grad) |grad| {
-                        const contribution = out_grad.neg(alloc);
-                        stripGrad(contribution, alloc);
-                        src1.grad = accumGrad(grad, alloc, contribution, inplace);
-                    }
+                    if (src0.grad) |grad| src0.grad = accumGrad(grad, out_grad, inplace);
+                    if (src1.grad) |grad| src1.grad = accumGrad(grad, out_grad, inplace);
                 },
 
                 // d/d(src0) [src0 * src1] = src1 * out_grad
@@ -88,33 +77,14 @@ pub fn Ops(comptime Self: type) type {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        const contribution = src1.mul(alloc, out_grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const contribution = src1.mul(out_grad);
+                        stripGrad(contribution);
+                        src0.grad = accumGrad(grad, contribution, inplace);
                     }
                     if (src1.grad) |grad| {
-                        const contribution = src0.mul(alloc, out_grad);
-                        stripGrad(contribution, alloc);
-                        src1.grad = accumGrad(grad, alloc, contribution, inplace);
-                    }
-                },
-
-                .div => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.grad) |grad| {
-                        const contribution = out_grad.div(alloc, src1);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
-                    }
-                    if (src1.grad) |grad| {
-                        const numer = src0.mul(alloc, out_grad).neg(alloc);
-                        stripGrad(numer, alloc);
-                        const denom = src1.mul(alloc, src1);
-                        stripGrad(denom, alloc);
-                        const contribution = numer.div(alloc, denom);
-                        stripGrad(contribution, alloc);
-                        src1.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const contribution = src0.mul(out_grad);
+                        stripGrad(contribution);
+                        src1.grad = accumGrad(grad, contribution, inplace);
                     }
                 },
 
@@ -122,20 +92,9 @@ pub fn Ops(comptime Self: type) type {
                 .neg => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
-                        const neg_grad = out_grad.neg(alloc);
-                        stripGrad(neg_grad, alloc);
-                        src0.grad = accumGrad(grad, alloc, neg_grad, inplace);
-                    }
-                },
-
-                .relu => {
-                    const src0 = src0_o.?;
-                    if (src0.grad) |grad| {
-                        const mask = src0.step(alloc);
-                        stripGrad(mask, alloc);
-                        const contribution = mask.mul(alloc, out_grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const neg_grad = out_grad.neg();
+                        stripGrad(neg_grad);
+                        src0.grad = accumGrad(grad, neg_grad, inplace);
                     }
                 },
 
@@ -143,11 +102,11 @@ pub fn Ops(comptime Self: type) type {
                 .abs => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
-                        const sign = src0.sgn(alloc);
-                        stripGrad(sign, alloc);
-                        const contribution = sign.mul(alloc, out_grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const sign = src0.sgn();
+                        stripGrad(sign);
+                        const contribution = sign.mul(out_grad);
+                        stripGrad(contribution);
+                        src0.grad = accumGrad(grad, contribution, inplace);
                     }
                 },
 
@@ -157,12 +116,12 @@ pub fn Ops(comptime Self: type) type {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
                         const half = try Self.initScalar(alloc, 0.5);
-                        const half_rep = half.repeatLike(alloc, src0);
-                        const inv_2sqrt = half_rep.div(alloc, tensor);
-                        stripGrad(inv_2sqrt, alloc);
-                        const contribution = inv_2sqrt.mul(alloc, out_grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const half_rep = half.repeatLike(src0);
+                        const inv_2sqrt = half_rep.div(tensor);
+                        stripGrad(inv_2sqrt);
+                        const contribution = inv_2sqrt.mul(out_grad);
+                        stripGrad(contribution);
+                        src0.grad = accumGrad(grad, contribution, inplace);
                     }
                 },
 
@@ -171,11 +130,11 @@ pub fn Ops(comptime Self: type) type {
                 .recip => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
-                        const neg_recip_sq = tensor.mul(alloc, tensor).neg(alloc);
-                        stripGrad(neg_recip_sq, alloc);
-                        const contribution = neg_recip_sq.mul(alloc, out_grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const neg_recip_sq = tensor.mul(tensor).neg();
+                        stripGrad(neg_recip_sq);
+                        const contribution = neg_recip_sq.mul(out_grad);
+                        stripGrad(contribution);
+                        src0.grad = accumGrad(grad, contribution, inplace);
                     }
                 },
 
@@ -183,9 +142,9 @@ pub fn Ops(comptime Self: type) type {
                 .exp => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
-                        const contribution = tensor.mul(alloc, out_grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const contribution = tensor.mul(out_grad);
+                        stripGrad(contribution);
+                        src0.grad = accumGrad(grad, contribution, inplace);
                     }
                 },
 
@@ -193,9 +152,9 @@ pub fn Ops(comptime Self: type) type {
                 .log => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
-                        const contribution = out_grad.div(alloc, src0);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const contribution = out_grad.div(src0);
+                        stripGrad(contribution);
+                        src0.grad = accumGrad(grad, contribution, inplace);
                     }
                 },
 
@@ -203,7 +162,7 @@ pub fn Ops(comptime Self: type) type {
                 .repeat => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
-                        src0.grad = out_grad.sumInto(alloc, grad);
+                        src0.grad = out_grad.sumInto(grad);
                     }
                 },
 
@@ -211,40 +170,27 @@ pub fn Ops(comptime Self: type) type {
                 .sum => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
-                        src0.grad = accumGrad(grad, alloc, out_grad.repeatLike(alloc, grad), inplace);
-                    }
-                },
-
-                .mean => {
-                    const src0 = src0_o.?;
-                    if (src0.grad) |grad| {
-                        const count: f64 = @floatFromInt(src0.nElems() / tensor.nElems());
-                        const inv_count = try Self.initScalar(alloc, @as(@TypeOf(src0.data[0]), @floatCast(1.0 / count)));
-                        const expanded = out_grad.repeatLike(alloc, grad);
-                        stripGrad(expanded, alloc);
-                        const contribution = expanded.mul(alloc, inv_count.repeatLike(alloc, expanded));
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        src0.grad = accumGrad(grad, out_grad.repeatLike(grad), inplace);
                     }
                 },
 
                 .max => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
-                        const repeated_max = tensor.repeatLike(alloc, src0);
-                        stripGrad(repeated_max, alloc);
-                        const diff = src0.sub(alloc, repeated_max);
-                        stripGrad(diff, alloc);
+                        const repeated_max = tensor.repeatLike(src0);
+                        stripGrad(repeated_max);
+                        const diff = src0.sub(repeated_max);
+                        stripGrad(diff);
                         const one = try Self.initScalar(alloc, 1);
-                        const zero_mask = diff.abs(alloc).step(alloc);
-                        stripGrad(zero_mask, alloc);
-                        const mask = one.repeatLike(alloc, src0).sub(alloc, zero_mask);
-                        stripGrad(mask, alloc);
-                        const expanded_out_grad = out_grad.repeatLike(alloc, src0);
-                        stripGrad(expanded_out_grad, alloc);
-                        const contribution = mask.mul(alloc, expanded_out_grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const zero_mask = diff.abs().step();
+                        stripGrad(zero_mask);
+                        const mask = one.repeatLike(src0).sub(zero_mask);
+                        stripGrad(mask);
+                        const expanded_out_grad = out_grad.repeatLike(src0);
+                        stripGrad(expanded_out_grad);
+                        const contribution = mask.mul(expanded_out_grad);
+                        stripGrad(contribution);
+                        src0.grad = accumGrad(grad, contribution, inplace);
                     }
                 },
 
@@ -252,9 +198,9 @@ pub fn Ops(comptime Self: type) type {
                     const src0 = src0_o.?;
                     const indices = src1_o.?;
                     if (src0.grad) |grad| {
-                        const contribution = grad.scatterAddRows(alloc, indices, out_grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const contribution = grad.scatterAddRows(indices, out_grad);
+                        stripGrad(contribution);
+                        src0.grad = accumGrad(grad, contribution, inplace);
                     }
                 },
 
@@ -264,9 +210,9 @@ pub fn Ops(comptime Self: type) type {
                     const src0 = src0_o.?;
                     const indices = src1_o.?;
                     if (src0.grad) |grad| {
-                        const contribution = grad.scatterAddPicks(alloc, indices, out_grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const contribution = grad.scatterAddPicks(indices, out_grad);
+                        stripGrad(contribution);
+                        src0.grad = accumGrad(grad, contribution, inplace);
                     }
                 },
 
@@ -278,56 +224,56 @@ pub fn Ops(comptime Self: type) type {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        const z = out_grad.matMul(alloc, false, src1, true);
-                        stripGrad(z, alloc);
-                        src0.grad = accumGrad(grad, alloc, z, inplace);
+                        const z = out_grad.matMul(false, src1, true);
+                        stripGrad(z);
+                        src0.grad = accumGrad(grad, z, inplace);
                     }
                     if (src1.grad) |grad| {
-                        const z = src0.matMul(alloc, true, out_grad, false);
-                        stripGrad(z, alloc);
-                        src1.grad = accumGrad(grad, alloc, z, inplace);
+                        const z = src0.matMul(true, out_grad, false);
+                        stripGrad(z);
+                        src1.grad = accumGrad(grad, z, inplace);
                     }
                 },
                 .matmul_t0 => {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        const z = src1.matMul(alloc, false, out_grad, true);
-                        stripGrad(z, alloc);
-                        src0.grad = accumGrad(grad, alloc, z, inplace);
+                        const z = src1.matMul(false, out_grad, true);
+                        stripGrad(z);
+                        src0.grad = accumGrad(grad, z, inplace);
                     }
                     if (src1.grad) |grad| {
-                        const z = src0.matMul(alloc, false, out_grad, false);
-                        stripGrad(z, alloc);
-                        src1.grad = accumGrad(grad, alloc, z, inplace);
+                        const z = src0.matMul(false, out_grad, false);
+                        stripGrad(z);
+                        src1.grad = accumGrad(grad, z, inplace);
                     }
                 },
                 .matmul_t1 => {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        const z = out_grad.matMul(alloc, false, src1, false);
-                        stripGrad(z, alloc);
-                        src0.grad = accumGrad(grad, alloc, z, inplace);
+                        const z = out_grad.matMul(false, src1, false);
+                        stripGrad(z);
+                        src0.grad = accumGrad(grad, z, inplace);
                     }
                     if (src1.grad) |grad| {
-                        const z = out_grad.matMul(alloc, true, src0, false);
-                        stripGrad(z, alloc);
-                        src1.grad = accumGrad(grad, alloc, z, inplace);
+                        const z = out_grad.matMul(true, src0, false);
+                        stripGrad(z);
+                        src1.grad = accumGrad(grad, z, inplace);
                     }
                 },
                 .matmul_t0t1 => {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        const z = src1.matMul(alloc, true, out_grad, true);
-                        stripGrad(z, alloc);
-                        src0.grad = accumGrad(grad, alloc, z, inplace);
+                        const z = src1.matMul(true, out_grad, true);
+                        stripGrad(z);
+                        src0.grad = accumGrad(grad, z, inplace);
                     }
                     if (src1.grad) |grad| {
-                        const z = out_grad.matMul(alloc, true, src0, true);
-                        stripGrad(z, alloc);
-                        src1.grad = accumGrad(grad, alloc, z, inplace);
+                        const z = out_grad.matMul(true, src0, true);
+                        stripGrad(z);
+                        src1.grad = accumGrad(grad, z, inplace);
                     }
                 },
 
@@ -339,7 +285,7 @@ pub fn Ops(comptime Self: type) type {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
                         const ElemType = @TypeOf(src0.data[0]);
-                        const gelu_grad = try src0.map(alloc, struct {
+                        const gelu_grad = try src0.map(struct {
                             fn f(x: ElemType) ElemType {
                                 const coef: ElemType = GELU_COEF_A;
                                 const s2pi: ElemType = SQRT_2_OVER_PI;
@@ -351,9 +297,9 @@ pub fn Ops(comptime Self: type) type {
                                 return 0.5 * (1.0 + tanh_a) + 0.5 * x * sech2_a * da;
                             }
                         }.f);
-                        const contribution = gelu_grad.mul(alloc, out_grad);
-                        stripGrad(contribution, alloc);
-                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                        const contribution = gelu_grad.mul(out_grad);
+                        stripGrad(contribution);
+                        src0.grad = accumGrad(grad, contribution, inplace);
                     }
                 },
             }

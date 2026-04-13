@@ -213,7 +213,7 @@ pub fn ComputeGraph(comptime T: type) type {
             }
         }
 
-        fn detectSoftmaxPattern(self: *Self, start: usize) ?fused.FusionPlan(T) {
+        fn detectSoftmaxPattern(self: *const Self, start: usize) ?fused.FusionPlan(T) {
             const nodes = self.nodes.items;
 
             if (start + 8 < self.forward_node_count) {
@@ -271,7 +271,50 @@ pub fn ComputeGraph(comptime T: type) type {
             return null;
         }
 
-        fn detectCrossEntropyPattern(self: *Self, start: usize) ?fused.FusionPlan(T) {
+        fn nodeAt(self: *const Self, idx: usize) ?*Tensor(T) {
+            if (idx >= self.forward_node_count) return null;
+            return self.nodes.items[idx];
+        }
+
+        fn matchOp(node: ?*Tensor(T), op: Op) ?*Tensor(T) {
+            const n = node orelse return null;
+            return if (n.op == op) n else null;
+        }
+
+        fn matchUnary(node: ?*Tensor(T), op: Op, src0: *Tensor(T)) ?*Tensor(T) {
+            const n = matchOp(node, op) orelse return null;
+            return if (n.src0.? == src0) n else null;
+        }
+
+        fn matchBinary(node: ?*Tensor(T), op: Op, src0: *Tensor(T), src1: *Tensor(T)) ?*Tensor(T) {
+            const n = matchOp(node, op) orelse return null;
+            return if (n.src0.? == src0 and n.src1.? == src1) n else null;
+        }
+
+        fn matchBinaryScalarRhs(node: ?*Tensor(T), op: Op, src0: *Tensor(T)) ?*Tensor(T) {
+            const n = matchOp(node, op) orelse return null;
+            if (n.src0.? != src0) return null;
+            return if (n.src1.?.isScalar()) n else null;
+        }
+
+        fn findNextUser(self: *const Self, start: usize, src: *Tensor(T), op: Op) ?struct { idx: usize, node: *Tensor(T) } {
+            var i = start;
+            while (i < self.forward_node_count) : (i += 1) {
+                const node = self.nodes.items[i];
+                if (node.op != op) continue;
+                if (node.src0 == src or node.src1 == src) return .{ .idx = i, .node = node };
+            }
+            return null;
+        }
+
+        fn matchScalarBroadcast(node: ?*Tensor(T)) ?*Tensor(T) {
+            const n = node orelse return null;
+            if (n.isScalar()) return n;
+            if (n.op == .repeat and n.src0.?.isScalar()) return n;
+            return null;
+        }
+
+        fn detectCrossEntropyPattern(self: *const Self, start: usize) ?fused.FusionPlan(T) {
             const nodes = self.nodes.items;
             if (start + 13 >= self.forward_node_count) return null;
 
@@ -309,6 +352,36 @@ pub fn ComputeGraph(comptime T: type) type {
             }
 
             return null;
+        }
+
+        fn detectLayerNormPattern(self: *const Self, start: usize) ?fused.FusionPlan(T) {
+            const n0 = matchOp(self.nodeAt(start), .sum) orelse return null;
+            const n1 = findNextUser(self, start + 1, n0, .mul) orelse return null;
+            if (matchScalarBroadcast(n1.node.src1) == null) return null;
+
+            const n2 = findNextUser(self, n1.idx + 1, n1.node, .repeat) orelse return null;
+            const n3 = findNextUser(self, n2.idx + 1, n2.node, .neg) orelse return null;
+            const n4 = findNextUser(self, n3.idx + 1, n3.node, .add) orelse return null;
+            if (n4.node.src0.? != n0.src0.?) return null;
+
+            const n5 = findNextUser(self, n4.idx + 1, n4.node, .mul) orelse return null;
+            if (n5.node.src0.? != n4.node or n5.node.src1.? != n4.node) return null;
+
+            const n6 = findNextUser(self, n5.idx + 1, n5.node, .sum) orelse return null;
+            const n7 = findNextUser(self, n6.idx + 1, n6.node, .mul) orelse return null;
+            if (matchScalarBroadcast(n7.node.src1) == null) return null;
+
+            const n8 = findNextUser(self, n7.idx + 1, n7.node, .add) orelse return null;
+            if (n8.node.src0.? != n7.node) return null;
+            _ = matchScalarBroadcast(n8.node.src1.?) orelse return null;
+
+            const n9 = findNextUser(self, n8.idx + 1, n8.node, .sqrt) orelse return null;
+            const n10 = findNextUser(self, n9.idx + 1, n9.node, .recip) orelse return null;
+            const n11 = findNextUser(self, n10.idx + 1, n10.node, .repeat) orelse return null;
+            const n12 = findNextUser(self, n11.idx + 1, n11.node, .mul) orelse return null;
+            if (n12.node.src0.? != n4.node and n12.node.src1.? != n4.node) return null;
+
+            return .{ .nodes = self.nodes.items[start .. n12.idx + 1], .output_idx = n12.idx, .kind = .layer_norm };
         }
 
         fn addParentsThenSelf(self: *Self, tensor: *Tensor(T)) Alloc.Error!void {
@@ -456,7 +529,7 @@ test "tensor compute graph - matmul" {
         3, 4,
         5, 6,
     });
-    t1.setParam(a);
+    t1.setParam();
 
     const t2 = try Tensor(f32).init(a, &.{ 3, 2 });
     t2.setData(&[_]f32{
@@ -464,7 +537,7 @@ test "tensor compute graph - matmul" {
         4, 5, 6,
     });
 
-    const dst = t1.matMul(a, false, t2, false);
+    const dst = t1.matMul(false, t2, false);
     try g.buildForward(dst);
     try g.buildBackward(false);
 
@@ -497,7 +570,7 @@ test "build compute graph - forward mul" {
     t0.data[0] = 5;
     const t1 = try Tensor(f32).init(a, &.{1});
     t1.data[0] = 6;
-    const out = t0.mul(a, t1);
+    const out = t0.mul(t1);
     try g.buildForward(out);
     try g.buildBackward(false);
     g.compute();
@@ -514,10 +587,10 @@ test "build computeNoGrad graph - forward mul" {
 
     const t0 = try Tensor(f32).init(a, &.{1});
     t0.data[0] = 5;
-    t0.setParam(a);
+    t0.setParam();
     const t1 = try Tensor(f32).init(a, &.{1});
     t1.data[0] = 6;
-    const out = t0.mul(a, t1);
+    const out = t0.mul(t1);
     try g.buildForward(out);
     try g.buildBackward(false);
     const dummy_val: f32 = -23;
@@ -541,8 +614,8 @@ test "build compute graph - forward matMul" {
         3, 4,
         5, 6,
     });
-    const intermed = t1.matMul(a, true, t1, false);
-    const out = intermed.matMul(a, false, t1, true);
+    const intermed = t1.matMul(true, t1, false);
+    const out = intermed.matMul(false, t1, true);
     try g.buildForward(out);
     g.compute();
     {
@@ -568,11 +641,11 @@ test "build compute graph - forward mul & add" {
 
     const x = try Tensor(f32).initScalar(a, 3);
     const w = try Tensor(f32).initScalar(a, 2);
-    w.setParam(a);
+    w.setParam();
     const b = try Tensor(f32).initScalar(a, 5);
-    b.setParam(a);
-    const intermed = w.mul(a, x);
-    const out = intermed.add(a, b);
+    b.setParam();
+    const intermed = w.mul(x);
+    const out = intermed.add(b);
     try g.buildForward(out);
     g.compute();
     {
@@ -588,11 +661,11 @@ test "build compute graph - backward" {
 
     const x = try Tensor(f32).initScalar(a, 3);
     const w = try Tensor(f32).initScalar(a, 2);
-    w.setParam(a);
+    w.setParam();
     const b = try Tensor(f32).initScalar(a, 5);
-    b.setParam(a);
-    const intermed = w.mul(a, x);
-    const out = intermed.add(a, b);
+    b.setParam();
+    const intermed = w.mul(x);
+    const out = intermed.add(b);
     try g.buildForward(out);
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);
@@ -612,7 +685,8 @@ test "build compute graph - backward" {
 }
 
 fn testSqrFunc(alloc: Alloc, x: *Tensor(f32)) *Tensor(f32) {
-    return x.sqr(alloc);
+    _ = alloc;
+    return x.sqr();
 }
 
 test "build compute graph - backward - testSqrFunc" {
@@ -621,7 +695,7 @@ test "build compute graph - backward - testSqrFunc" {
     const a = g.allocator();
 
     const x = try Tensor(f32).initScalar(a, 3);
-    x.setParam(a);
+    x.setParam();
     const out = testSqrFunc(a, x);
     try g.buildForward(out);
     try g.buildBackward(true);
@@ -652,7 +726,8 @@ test "build compute graph - backward - testSqrFunc" {
 }
 
 fn testSqrSumFunc(alloc: Alloc, x: *Tensor(f32)) *Tensor(f32) {
-    return x.sqr(alloc).sumAll(alloc);
+    _ = alloc;
+    return x.sqr().sumAll();
 }
 
 test "build compute graph - backward - testSqrSumFunc" {
@@ -663,7 +738,7 @@ test "build compute graph - backward - testSqrSumFunc" {
     const x = try Tensor(f32).init(a, &.{3});
     const data = [_]f32{ 3, 4, 10 };
     x.setData(&data);
-    x.setParam(a);
+    x.setParam();
     const out = testSqrSumFunc(a, x);
     try g.buildForward(out);
     try g.buildBackward(true);
@@ -691,10 +766,10 @@ test "time speed equation test" {
     const c1 = try Tensor(f32).initScalar(a, 9.5);
     const c2 = try Tensor(f32).initScalar(a, 1);
 
-    const inner = time.sub(a, c1.repeatLike(a, time));
-    const inner2 = inner.sqr(a);
-    const inner3 = inner2.mul(a, c0.repeatLike(a, inner2));
-    const speed = inner3.add(a, c2.repeatLike(a, inner3));
+    const inner = time.sub(c1.repeatLike(time));
+    const inner2 = inner.sqr();
+    const inner3 = inner2.mul(c0.repeatLike(inner2));
+    const speed = inner3.add(c2.repeatLike(inner3));
 
     try g.buildForward(speed);
     g.compute();
@@ -715,10 +790,10 @@ test "a*x^2" {
     x.name = "x";
     const coeff = try Tensor(f32).initScalar(a, 2);
     coeff.name = "a";
-    coeff.setParam(a);
-    const xsq = x.sqr(a);
+    coeff.setParam();
+    const xsq = x.sqr();
     xsq.name = "x^2";
-    const axsq = xsq.mul(a, coeff);
+    const axsq = xsq.mul(coeff);
     axsq.name = "a*x^2";
     try g.buildForward(axsq);
     try g.buildBackward(false);
@@ -735,10 +810,10 @@ test "arange a*x^2" {
     x.name = "x";
     const coeff = try Tensor(f32).initScalar(a, 2);
     coeff.name = "a";
-    coeff.setParam(a);
-    const xsq = x.sqr(a);
+    coeff.setParam();
+    const xsq = x.sqr();
     xsq.name = "x^2";
-    const axsq = xsq.mul(a, coeff.repeatLike(a, xsq));
+    const axsq = xsq.mul(coeff.repeatLike(xsq));
     axsq.name = "a*x^2";
     try g.buildForward(axsq);
     try g.buildBackward(true);
@@ -753,12 +828,12 @@ test "arange" {
     const a = g.allocator();
 
     const t = try Tensor(f32).initLinspace(a, &.{5}, 0, 5);
-    t.setParam(a);
+    t.setParam();
     try testing.expectEqual(@as(usize, 5), t.nElems());
     const expected = [_]f32{ 0, 1, 2, 3, 4 };
     try testing.expectEqualSlices(f32, &expected, t.data);
 
-    const out = t.sqr(a).sumAll(a);
+    const out = t.sqr().sumAll();
     try g.buildForward(out);
     try g.buildBackward(true);
     out.grad.?.data[0] = 1;
@@ -785,8 +860,8 @@ test "backward - sqrt" {
     const a = g.allocator();
 
     const x = try Tensor(f32).initScalar(a, 4);
-    x.setParam(a);
-    const out = x.sqrt(a);
+    x.setParam();
+    const out = x.sqrt();
     try g.buildForward(out);
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);
@@ -805,8 +880,8 @@ test "backward - abs" {
 
     const x = try Tensor(f32).init(a, &.{3});
     x.setData(&[_]f32{ -3, 0, 5 });
-    x.setParam(a);
-    const out = x.abs(a).sumAll(a);
+    x.setParam();
+    const out = x.abs().sumAll();
     try g.buildForward(out);
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);
@@ -823,8 +898,8 @@ test "backward - neg" {
     const a = g.allocator();
 
     const x = try Tensor(f32).initScalar(a, 7);
-    x.setParam(a);
-    const out = x.neg(a);
+    x.setParam();
+    const out = x.neg();
     try g.buildForward(out);
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);
@@ -842,8 +917,8 @@ test "backward - relu" {
 
     const x = try Tensor(f32).init(a, &.{4});
     x.setData(&[_]f32{ -2, 0, 3, 5 });
-    x.setParam(a);
-    const out = x.relu(a).sumAll(a);
+    x.setParam();
+    const out = x.relu().sumAll();
     try g.buildForward(out);
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);
@@ -862,8 +937,8 @@ test "backward - recip" {
     const a = g.allocator();
 
     const x = try Tensor(f32).initScalar(a, 4);
-    x.setParam(a);
-    const out = x.recip(a);
+    x.setParam();
+    const out = x.recip();
     try g.buildForward(out);
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);
@@ -883,7 +958,7 @@ test "fusion - fused compute matches unfused" {
     x1.setData(&.{ 1, 2, 3, 4 });
     const y1 = try Tensor(f32).init(a1, &.{4});
     y1.setData(&.{ 4, 3, 2, 1 });
-    const out1 = x1.sub(a1, y1).sqr(a1);
+    const out1 = x1.sub(y1).sqr();
     try g1.buildForward(out1);
     g1.compute();
 
@@ -894,7 +969,7 @@ test "fusion - fused compute matches unfused" {
     x2.setData(&.{ 1, 2, 3, 4 });
     const y2 = try Tensor(f32).init(a2, &.{4});
     y2.setData(&.{ 4, 3, 2, 1 });
-    const out2 = x2.sub(a2, y2).sqr(a2);
+    const out2 = x2.sub(y2).sqr();
     try g2.buildForward(out2);
     try g2.fusionPass();
     g2.compute();
@@ -911,9 +986,9 @@ test "fusion - backward works after fusion" {
     const a = g.allocator();
 
     const x = try Tensor(f32).initScalar(a, 3);
-    x.setParam(a);
+    x.setParam();
     const y = try Tensor(f32).initScalar(a, 2);
-    const out = x.mul(a, y).neg(a); // mul -> neg: fusible chain of 2
+    const out = x.mul(y).neg(); // mul -> neg: fusible chain of 2
     try g.buildForward(out);
     try g.fusionPass();
     try g.buildBackward(false);
@@ -933,7 +1008,7 @@ test "fusion - chain detection skips non-fusible ops" {
     const x = try Tensor(f32).init(a, &.{ 2, 3 });
     x.setData(&.{ 1, 2, 3, 4, 5, 6 });
     // neg -> sumAll: neg is fusible but sum breaks the chain
-    const out = x.neg(a).sumAll(a);
+    const out = x.neg().sumAll();
     try g.buildForward(out);
     try g.fusionPass();
 
@@ -949,7 +1024,7 @@ test "fusion - detects softmax pattern" {
 
     const x = try Tensor(f32).init(a, &.{3});
     x.setData(&.{ 1, 2, 3 });
-    const out = x.softmax(a, &.{1});
+    const out = x.softmax(&.{1});
     try g.buildForward(out);
     try g.fusionPass();
 
@@ -967,7 +1042,7 @@ test "fusion - detects logSoftmax pattern" {
 
     const x = try Tensor(f32).init(a, &.{3});
     x.setData(&.{ 1, 2, 3 });
-    const out = x.logSoftmax(a, &.{1});
+    const out = x.logSoftmax(&.{1});
     try g.buildForward(out);
     try g.fusionPass();
 
@@ -994,7 +1069,7 @@ test "fusion - detects cross entropy pattern" {
     const targets = try Tensor(f32).init(a, &.{2});
     targets.setData(&.{ 0, 1 });
 
-    const out = loss.crossEntropy(f32, a, logits, targets);
+    const out = loss.crossEntropy(f32, logits, targets);
     try g.buildForward(out);
     try g.fusionPass();
 
@@ -1020,7 +1095,7 @@ test "layerNorm forward" {
     const x = try Tensor(f32).init(a, &.{4});
     x.setData(&.{ 1, 2, 3, 4 });
     // mean=2.5, var=1.25, result = (x - 2.5) / sqrt(1.25 + 1e-5)
-    const out = x.layerNorm(a, &.{1}, 1e-5);
+    const out = x.layerNorm(&.{1}, 1e-5);
     try g.buildForward(out);
     g.compute();
 
@@ -1039,8 +1114,8 @@ test "backward - gelu" {
 
     const x = try Tensor(f32).init(a, &.{3});
     x.setData(&.{ -1.0, 0.0, 1.5 });
-    x.setParam(a);
-    const out = x.gelu(a).sumAll(a);
+    x.setParam();
+    const out = x.gelu().sumAll();
     try g.buildForward(out);
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);

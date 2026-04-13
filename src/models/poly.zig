@@ -41,18 +41,18 @@ pub fn Model(comptime T: type) type {
             res.ys_batch = try Tensor(T).init(a, &.{batch_size});
             for (0..max_exp + 1) |_| {
                 const param = try Tensor(T).initScalar(a, 0);
-                param.setParam(a);
+                param.setParam();
                 res.params.appendAssumeCapacity(param);
             }
             // mul by xs_batch
             var total = try Tensor(T).initScalar(a, 0);
             var cur_term = try Tensor(T).initScalar(a, 1);
             for (res.params.items, 0..) |param, i| {
-                total = total.add(a, cur_term.mul(a, param));
-                if (i < max_exp) cur_term = cur_term.mul(a, res.xs_batch);
+                total = total.add(cur_term.mul(param));
+                if (i < max_exp) cur_term = cur_term.mul(res.xs_batch);
             }
             res.out = total;
-            res.loss = loss.meanSqErr(T, a, res.out, res.ys_batch);
+            res.loss = loss.meanSqErr(T, res.out, res.ys_batch);
             res.loss.name = "loss";
             try res.g.buildForward(res.loss);
             try res.g.buildBackward(true);
@@ -92,8 +92,8 @@ pub fn Model(comptime T: type) type {
             const time = try Tensor(T).initLinspace(tac, &.{n}, 0, 20);
             const true_m = 30;
             const speed = try Tensor(T).initLinspace(tac, &.{n}, 0, 20 * true_m);
-            defer time.deinit(tac);
-            defer speed.deinit(tac);
+            defer time.deinit();
+            defer speed.deinit();
 
             var model = try Model(T).build(tac, 1, 1);
             defer model.deinit();

@@ -112,21 +112,20 @@ fn benchElementwise(alloc: std.mem.Allocator, w: *IoWriter) !void {
         for (buf_b) |*v| v.* = prng.random().float(f32) * 2.0 - 1.0;
 
         const t_a = try Tensor(f32).init(alloc, &.{n});
-        defer t_a.deinit(alloc);
+        defer t_a.deinit();
         const t_b = try Tensor(f32).init(alloc, &.{n});
-        defer t_b.deinit(alloc);
+        defer t_b.deinit();
         @memcpy(t_a.data, buf_a);
         @memcpy(t_b.data, buf_b);
 
-        const t_add = t_a.add(alloc, t_b);
-        defer t_add.deinit(alloc);
-        const t_mul = t_a.mul(alloc, t_b);
-        defer t_mul.deinit(alloc);
-        const t_relu = t_a.relu(alloc);
-        defer t_relu.deinit(alloc);
-        const t_gelu = t_a.gelu(alloc);
-        defer t_gelu.deinit(alloc);
-
+        const t_add = t_a.add(t_b);
+        defer t_add.deinit();
+        const t_mul = t_a.mul(t_b);
+        defer t_mul.deinit();
+        const t_relu = t_a.relu();
+        defer t_relu.deinit();
+        const t_gelu = t_a.gelu();
+        defer t_gelu.deinit();
 
         {
             const naive = runBench(naiveAdd, .{ buf_dst, buf_a, buf_b });
@@ -181,15 +180,14 @@ fn benchMatMul(alloc: std.mem.Allocator, w: *IoWriter) !void {
         for (buf_b) |*v| v.* = prng.random().float(f32) * 2.0 - 1.0;
 
         const t_a = try Tensor(f32).init(alloc, &.{ dim, dim });
-        defer t_a.deinit(alloc);
+        defer t_a.deinit();
         const t_b = try Tensor(f32).init(alloc, &.{ dim, dim });
-        defer t_b.deinit(alloc);
+        defer t_b.deinit();
         @memcpy(t_a.data, buf_a);
         @memcpy(t_b.data, buf_b);
 
-        const t_dst = t_a.matMul(alloc, false, t_b, false);
-        defer t_dst.deinit(alloc);
-
+        const t_dst = t_a.matMul(false, t_b, false);
+        defer t_dst.deinit();
 
         const flops: f64 = 2.0 * @as(f64, @floatFromInt(dim)) * @as(f64, @floatFromInt(dim)) * @as(f64, @floatFromInt(dim));
 

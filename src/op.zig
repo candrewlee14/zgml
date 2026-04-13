@@ -19,13 +19,10 @@ pub const Op = enum {
 
     // -- Element-wise binary --
     add,
-    sub,
     mul,
-    div,
 
     // -- Element-wise unary --
     neg,
-    relu,
     abs,
     sgn,
     step,
@@ -37,7 +34,6 @@ pub const Op = enum {
 
     // -- Reductions & broadcast --
     sum,
-    mean,
     max,
     repeat,
     gather_rows,
@@ -54,7 +50,7 @@ pub const Op = enum {
     /// True if this op is elementwise (shape-preserving) and can participate in fusion.
     pub fn isFusible(self: Self) bool {
         return switch (self) {
-            .add, .sub, .mul, .div, .neg, .relu, .abs, .sgn, .step, .sqrt, .recip, .exp, .log, .gelu => true,
+            .add, .mul, .neg, .abs, .sgn, .step, .sqrt, .recip, .exp, .log, .gelu => true,
             else => false,
         };
     }
@@ -62,7 +58,7 @@ pub const Op = enum {
     /// True if this is a binary op (takes two operands).
     pub fn isBinary(self: Self) bool {
         return switch (self) {
-            .add, .sub, .mul, .div => true,
+            .add, .mul => true,
             else => false,
         };
     }
@@ -75,11 +71,8 @@ pub const Op = enum {
             .reshape => "reshape(x)",
             .transpose => "transpose(x)",
             .add => "x+y",
-            .sub => "x-y",
             .mul => "x*y",
-            .div => "x/y",
             .neg => "-x",
-            .relu => "relu(x)",
             .abs => "abs(x)",
             .sgn => "sgn(x)",
             .step => "step(x)",
@@ -89,7 +82,6 @@ pub const Op = enum {
             .log => "log(x)",
             .gelu => "gelu(x)",
             .sum => "Σx",
-            .mean => "mean(x)",
             .max => "max(x)",
             .repeat => "repeat(x)",
             .gather_rows => "gather_rows(x)",

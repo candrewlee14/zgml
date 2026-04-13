@@ -339,6 +339,11 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             return @intCast(v);
         }
 
+        fn indexAt(indices: *const Self, i: usize) usize {
+            if (indices.index_data) |idx| return idx[i];
+            return indexFromValue(indices.data[i]);
+        }
+
         // -- Vectorized tanh (3,3) Pade approximant ----------------------
 
         fn tanhApprox(x: Vec) Vec {
@@ -364,7 +369,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // ---------------------------------------------------------------
 
         /// Copy src0 into dst. Both must be contiguous and same size.
-        pub fn computeDup(dst: *Self, src0: *Self) void {
+        pub fn computeDup(dst: *Self, src0: *const Self) void {
             assert(dst.isContiguous());
             assert(dst.nElems() == src0.nElems());
             if (src0.isContiguous()) {
@@ -374,23 +379,23 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             @panic("Unimplemented forward dup for non-contiguous src");
         }
 
-        pub fn computeSqr(dst: *Self, src0: *Self) void {
+        pub fn computeSqr(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
             simdMapUnary(T, src0.data, dst.data, sqrVec, sqrScalar);
         }
 
-        pub fn computeSqrt(dst: *Self, src0: *Self) void {
+        pub fn computeSqrt(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
             simdMapUnary(T, src0.data, dst.data, sqrtVec, sqrtScalar);
         }
 
         /// Element-wise reciprocal: dst[i] = 1 / src0[i].
-        pub fn computeRecip(dst: *Self, src0: *Self) void {
+        pub fn computeRecip(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
             simdMapUnary(T, src0.data, dst.data, recipVec, recipScalar);
         }
 
-        pub fn computeExp(dst: *Self, src0: *Self) void {
+        pub fn computeExp(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
             var i: usize = 0;
             while (i < src0.data.len) : (i += 1) {
@@ -398,7 +403,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        pub fn computeLog(dst: *Self, src0: *Self) void {
+        pub fn computeLog(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
             var i: usize = 0;
             while (i < src0.data.len) : (i += 1) {
@@ -406,18 +411,18 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        pub fn computeAbs(dst: *Self, src0: *Self) void {
+        pub fn computeAbs(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
             simdMapUnary(T, src0.data, dst.data, absVec, absScalar);
         }
 
-        pub fn computeNeg(dst: *Self, src0: *Self) void {
+        pub fn computeNeg(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
             simdMapUnary(T, src0.data, dst.data, negVec, negScalar);
         }
 
         /// Element-wise sign: -1, 0, or 1.  Uses @select for branchless SIMD.
-        pub fn computeSgn(dst: *Self, src0: *Self) void {
+        pub fn computeSgn(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
             const zero: Vec = @splat(0);
             const one: Vec = @splat(1);
@@ -436,7 +441,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         /// Element-wise step function: 1 if positive, 0 otherwise.
-        pub fn computeStep(dst: *Self, src0: *Self) void {
+        pub fn computeStep(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
             const zero: Vec = @splat(0);
             const one: Vec = @splat(1);
@@ -452,7 +457,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         /// Element-wise ReLU: max(0, x).  Uses @select for branchless SIMD.
-        pub fn computeRelu(dst: *Self, src0: *Self) void {
+        pub fn computeRelu(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
             const zero: Vec = @splat(0);
             const len = src0.data.len;
@@ -468,7 +473,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         /// Element-wise GeLU with vectorized tanh approximation.
-        pub fn computeGelu(dst: *Self, src0: *Self) void {
+        pub fn computeGelu(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
             const half: Vec = @splat(@as(T, 0.5));
             const one: Vec = @splat(@as(T, 1.0));
@@ -487,13 +492,13 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        pub fn computeNorm(dst: *Self, src0: *Self) void {
+        pub fn computeNorm(dst: *Self, src0: *const Self) void {
             _ = src0;
             _ = dst;
             @panic("Not implemented");
         }
 
-        pub fn computeRMSNorm(dst: *Self, src0: *Self) void {
+        pub fn computeRMSNorm(dst: *Self, src0: *const Self) void {
             _ = src0;
             _ = dst;
             @panic("Not implemented");
@@ -503,7 +508,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // Element-wise binary ops (with scalar broadcasting)
         // ---------------------------------------------------------------
 
-        pub fn computeAdd(dst: *Self, src0: *Self, src1: *Self) void {
+        pub fn computeAdd(dst: *Self, src0: *const Self, src1: *const Self) void {
             if (src0.isSameShape(src1)) {
                 assert(dst.isSameShape(src0));
                 if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
@@ -531,7 +536,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        pub fn computeSub(dst: *Self, src0: *Self, src1: *Self) void {
+        pub fn computeSub(dst: *Self, src0: *const Self, src1: *const Self) void {
             if (src0.isSameShape(src1)) {
                 assert(dst.isSameShape(src0));
                 if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
@@ -561,7 +566,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        pub fn computeMul(dst: *Self, src0: *Self, src1: *Self) void {
+        pub fn computeMul(dst: *Self, src0: *const Self, src1: *const Self) void {
             if (src0.isScalar()) {
                 assert(dst.isSameShape(src1));
                 simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, mulVec, mulScalar);
@@ -590,7 +595,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        pub fn computeDiv(dst: *Self, src0: *Self, src1: *Self) void {
+        pub fn computeDiv(dst: *Self, src0: *const Self, src1: *const Self) void {
             if (src0.isScalar()) {
                 assert(dst.isSameShape(src1));
                 simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, divVec, divScalar);
@@ -623,7 +628,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // Reduction / broadcast ops (stride-indexed, not SIMD'd)
         // ---------------------------------------------------------------
 
-        pub fn computeMean(dst: *Self, src0: *Self) void {
+        pub fn computeMean(dst: *Self, src0: *const Self) void {
             assert(max_dims == 4);
             assert(src0.canSumTo(dst));
             const src0_ne_v: @Vector(4, usize) = src0.ne;
@@ -647,7 +652,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        pub fn computeSum(dst: *Self, src0: *Self) void {
+        pub fn computeSum(dst: *Self, src0: *const Self) void {
             assert(max_dims == 4);
             assert(src0.canSumTo(dst));
             @memset(dst.data, 0);
@@ -669,7 +674,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        pub fn computeMax(dst: *Self, src0: *Self) void {
+        pub fn computeMax(dst: *Self, src0: *const Self) void {
             assert(max_dims == 4);
             assert(src0.canSumTo(dst));
             @memset(dst.data, -std.math.inf(T));
@@ -691,7 +696,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        pub fn computeRepeat(dst: *Self, src0: *Self) void {
+        pub fn computeRepeat(dst: *Self, src0: *const Self) void {
             assert(max_dims == 4);
             assert(src0.canRepeatTo(dst));
             for (0..dst.ne[3]) |ne3| {
@@ -712,7 +717,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        pub fn computeGatherRows(dst: *Self, src0: *Self, indices: *Self) void {
+        pub fn computeGatherRows(dst: *Self, src0: *const Self, indices: *const Self) void {
             assert(src0.isMatrix());
             assert(indices.isVector());
             assert(dst.ne[0] == src0.ne[0]);
@@ -722,7 +727,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             const rows = src0.ne[1];
             const count = indices.ne[0];
             for (0..count) |out_row| {
-                const src_row = indexFromValue(indices.data[out_row]);
+                const src_row = indexAt(indices, out_row);
                 assert(src_row < rows);
                 const src_off = src_row * src0.strides[1];
                 const dst_off = out_row * dst.strides[1];
@@ -730,7 +735,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        pub fn computeScatterAddRows(dst: *Self, updates: *Self, indices: *Self) void {
+        pub fn computeScatterAddRows(dst: *Self, updates: *const Self, indices: *const Self) void {
             assert(dst.isMatrix());
             assert(updates.isMatrix());
             assert(indices.isVector());
@@ -742,7 +747,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             const count = indices.ne[0];
             @memset(dst.data, 0);
             for (0..count) |update_row| {
-                const dst_row = indexFromValue(indices.data[update_row]);
+                const dst_row = indexAt(indices, update_row);
                 assert(dst_row < rows);
                 const upd_off = update_row * updates.strides[1];
                 const dst_off = dst_row * dst.strides[1];
@@ -752,7 +757,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        pub fn computePickRows(dst: *Self, src0: *Self, indices: *Self) void {
+        pub fn computePickRows(dst: *Self, src0: *const Self, indices: *const Self) void {
             assert(src0.isMatrix());
             assert(indices.isVector());
             assert(dst.isVector());
@@ -762,13 +767,13 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             const width = src0.ne[0];
             const rows = src0.ne[1];
             for (0..rows) |row| {
-                const col = indexFromValue(indices.data[row]);
+                const col = indexAt(indices, row);
                 assert(col < width);
                 dst.data[row] = src0.data[row * src0.strides[1] + col];
             }
         }
 
-        pub fn computeScatterAddPicks(dst: *Self, updates: *Self, indices: *Self) void {
+        pub fn computeScatterAddPicks(dst: *Self, updates: *const Self, indices: *const Self) void {
             assert(dst.isMatrix());
             assert(updates.isVector());
             assert(indices.isVector());
@@ -779,7 +784,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             const rows = dst.ne[1];
             @memset(dst.data, 0);
             for (0..rows) |row| {
-                const col = indexFromValue(indices.data[row]);
+                const col = indexAt(indices, row);
                 assert(col < width);
                 dst.data[row * dst.strides[1] + col] += updates.data[row];
             }
@@ -787,7 +792,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
 
         /// Transpose the first two dimensions, copying data into contiguous layout.
         /// dst shape is [src.ne[1], src.ne[0], ...] with standard strides.
-        pub fn computeTranspose(dst: *Self, src0: *Self) void {
+        pub fn computeTranspose(dst: *Self, src0: *const Self) void {
             assert(dst.ne[0] == src0.ne[1]);
             assert(dst.ne[1] == src0.ne[0]);
             const cols = src0.ne[0];
@@ -811,7 +816,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // Matrix multiplication  (runtime-dispatched SIMD width)
         // ---------------------------------------------------------------
 
-        pub fn assertValidMatMulDims(dst: *Self, src0: *Self, trans0: bool, src1: *Self, trans1: bool) void {
+        pub fn assertValidMatMulDims(dst: *const Self, src0: *const Self, trans0: bool, src1: *const Self, trans1: bool) void {
             assert(src0.ne[3] == src1.ne[3]);
             assert(src0.ne[2] == src1.ne[2]);
             assert(dst.ne[2] == src0.ne[2]);
@@ -836,7 +841,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        pub fn computeMatMul(dst: *Self, src0: *Self, comptime trans0: bool, src1: *Self, comptime trans1: bool) void {
+        pub fn computeMatMul(dst: *Self, src0: *const Self, comptime trans0: bool, src1: *const Self, comptime trans1: bool) void {
             assert(max_dims == 4);
             dst.assertValidMatMulDims(src0, trans0, src1, trans1);
             assert(dst.strides[0] == 1);
@@ -931,10 +936,6 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .matmul_t0 => tensor.computeMatMul(src0.?, true, src1.?, false),
                 .matmul_t1 => tensor.computeMatMul(src0.?, false, src1.?, true),
                 .matmul_t0t1 => tensor.computeMatMul(src0.?, true, src1.?, true),
-                .sub => tensor.computeSub(src0.?, src1.?),
-                .div => tensor.computeDiv(src0.?, src1.?),
-                .relu => tensor.computeRelu(src0.?),
-                .mean => tensor.computeMean(src0.?),
             }
         }
     };

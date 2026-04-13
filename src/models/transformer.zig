@@ -5,7 +5,7 @@
 //!
 //! ```
 //! const block = try TransformerBlock(f32, 4, 8).init(alloc);
-//! const out = block.forward(alloc, input); // input: [d_model, seq_len]
+//! const out = block.forward(input); // input: [d_model, seq_len]
 //! ```
 
 const std = @import("std");
@@ -61,11 +61,11 @@ pub fn TransformerBlock(comptime T: type, comptime d_model: usize, comptime d_ff
                 for (w.data, 0..) |*d, i| {
                     d.* = 0.01 * @as(T, @floatFromInt(i % 7 + 1)) * if (i % 3 == 0) @as(T, -1) else @as(T, 1);
                 }
-                w.setParam(alloc);
+                w.setParam();
             }
             for ([_]*Tensor(T){ self.b1, self.b2 }) |b| {
                 _ = b.setAllScalar(0);
-                b.setParam(alloc);
+                b.setParam();
             }
 
             return self;
@@ -73,44 +73,44 @@ pub fn TransformerBlock(comptime T: type, comptime d_model: usize, comptime d_ff
 
         /// Forward pass: input shape [d_model, seq_len].
         /// Returns output of the same shape.
-        pub fn forward(self: *const Self, alloc: Alloc, x: *Tensor(T)) *Tensor(T) {
+        pub fn forward(self: *const Self, x: *Tensor(T)) *Tensor(T) {
             // --- Self-attention with pre-norm ---
-            const norm1 = x.layerNorm(alloc, &.{1}, 1e-5);
+            const norm1 = x.layerNorm(&.{1}, 1e-5);
 
             // Project to Q, K, V: input @ W = [d_model, seq].matMul([d_model, d_model]) = [d_model, seq]
-            const q = norm1.matMul(alloc, false, self.w_q, false);
-            const k = norm1.matMul(alloc, false, self.w_k, false);
-            const v = norm1.matMul(alloc, false, self.w_v, false);
+            const q = norm1.matMul(false, self.w_q, false);
+            const k = norm1.matMul(false, self.w_k, false);
+            const v = norm1.matMul(false, self.w_v, false);
 
             // Scaled dot-product attention: softmax(Q^T @ K / sqrt(d_k)) @ V^T
             const d_k: T = @floatFromInt(d_model);
-            const scores = q.matMul(alloc, true, k, false); // [d_model,seq]^T @ [d_model,seq] = [seq, seq]
-            const scale_t = Tensor(T).initScalar(alloc, 1.0 / @sqrt(d_k)) catch unreachable;
-            const scaled = scores.mul(alloc, scale_t.repeatLike(alloc, scores));
-            const attn_weights = scaled.softmax(alloc, &.{1}); // softmax over columns
+            const scores = q.matMul(true, k, false); // [d_model,seq]^T @ [d_model,seq] = [seq, seq]
+            const scale_t = Tensor(T).initScalar(x.alloc.?, 1.0 / @sqrt(d_k)) catch unreachable;
+            const scaled = scores.mul(scale_t.repeatLike(scores));
+            const attn_weights = scaled.softmax(&.{1}); // softmax over columns
 
             // attn_out = V @ weights^T = [d_model, seq] @ [seq, seq] = [d_model, seq]
-            const attn_out = v.matMul(alloc, false, attn_weights, false);
-            const projected = attn_out.matMul(alloc, false, self.w_o, false);
+            const attn_out = v.matMul(false, attn_weights, false);
+            const projected = attn_out.matMul(false, self.w_o, false);
 
             // Residual connection
-            const after_attn = x.add(alloc, projected);
+            const after_attn = x.add(projected);
 
             // --- Feed-forward with pre-norm ---
-            const norm2 = after_attn.layerNorm(alloc, &.{1}, 1e-5);
+            const norm2 = after_attn.layerNorm(&.{1}, 1e-5);
 
             // FFN: gelu(norm2 @ W1 + b1) @ W2 + b2
             // norm2 [d_model, seq] @ W1 [d_model, d_ff] = [d_ff, seq]
-            const hidden = norm2.matMul(alloc, false, self.w1, false);
-            const b1_rep = self.b1.repeat(alloc, &hidden.ne);
-            const activated = hidden.add(alloc, b1_rep).gelu(alloc);
+            const hidden = norm2.matMul(false, self.w1, false);
+            const b1_rep = self.b1.repeat(&hidden.ne);
+            const activated = hidden.add(b1_rep).gelu();
 
             // activated [d_ff, seq] @ W2 [d_ff, d_model] = [d_model, seq]
-            const ff_out = activated.matMul(alloc, false, self.w2, false);
-            const b2_rep = self.b2.repeat(alloc, &ff_out.ne);
+            const ff_out = activated.matMul(false, self.w2, false);
+            const b2_rep = self.b2.repeat(&ff_out.ne);
 
             // Residual connection
-            return after_attn.add(alloc, ff_out.add(alloc, b2_rep));
+            return after_attn.add(ff_out.add(b2_rep));
         }
 
         /// Return all learnable parameters.
@@ -137,7 +137,7 @@ test "transformer block - forward produces valid output" {
         d.* = @as(f32, @floatFromInt(i)) * 0.1;
     }
 
-    const output = block.forward(a, input);
+    const output = block.forward(input);
 
     try g.buildForward(output);
     g.compute();
@@ -165,8 +165,8 @@ test "transformer block - backward produces non-zero gradients for all params" {
         d.* = @as(f32, @floatFromInt(i)) * 0.1;
     }
 
-    const output = block.forward(a, input);
-    const loss = output.sumAll(a);
+    const output = block.forward(input);
+    const loss = output.sumAll();
 
     try g.buildForward(loss);
     try g.buildBackward(false);
@@ -210,7 +210,7 @@ test "transformer block - residual connection preserves input contribution" {
     const input = try Tensor(f32).init(a, &.{ 4, 3 });
     input.setData(&.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 });
 
-    const output = block.forward(a, input);
+    const output = block.forward(input);
     try g.buildForward(output);
     g.compute();
 
@@ -237,7 +237,7 @@ test "transformer block - numerical gradient check on one parameter" {
     const input1 = try Tensor(f32).init(a1, &.{ 4, 3 });
     for (input1.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(i)) * 0.1;
 
-    const loss1 = block1.forward(a1, input1).sumAll(a1);
+    const loss1 = block1.forward(input1).sumAll();
     try g1.buildForward(loss1);
     try g1.buildBackward(false);
     _ = loss1.grad.?.setAllScalar(1);
@@ -252,7 +252,7 @@ test "transformer block - numerical gradient check on one parameter" {
     block2.w_o.data[0] += h;
     const input2 = try Tensor(f32).init(a2, &.{ 4, 3 });
     for (input2.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(i)) * 0.1;
-    const loss_plus = block2.forward(a2, input2).sumAll(a2);
+    const loss_plus = block2.forward(input2).sumAll();
     try g2.buildForward(loss_plus);
     g2.compute();
 
@@ -264,7 +264,7 @@ test "transformer block - numerical gradient check on one parameter" {
     block3.w_o.data[0] -= h;
     const input3 = try Tensor(f32).init(a3, &.{ 4, 3 });
     for (input3.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(i)) * 0.1;
-    const loss_minus = block3.forward(a3, input3).sumAll(a3);
+    const loss_minus = block3.forward(input3).sumAll();
     try g3.buildForward(loss_minus);
     g3.compute();
 

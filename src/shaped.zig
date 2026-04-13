@@ -8,8 +8,8 @@
 //! const S = @import("shaped.zig").Shaped;
 //! const W = try S(f32, .{4, 3}).init(alloc);
 //! const x = try S(f32, .{4, 1}).init(alloc);
-//! const y = W.matMul(alloc, true, x, false);  // → Shaped(f32, .{3, 1})
-//! // const bad = W.matMul(alloc, false, x, false);  // compile error!
+//! const y = W.matMul(true, x, false);  // → Shaped(f32, .{3, 1})
+//! // const bad = W.matMul(false, x, false);  // compile error!
 //! ```
 
 const std = @import("std");
@@ -134,80 +134,80 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
         }
 
         /// Mark as a learnable parameter (allocates gradient).
-        pub fn setParam(self: Self, alloc: Alloc) Self {
-            self.inner.setParam(alloc);
+        pub fn setParam(self: Self) Self {
+            self.inner.setParam();
             return self;
         }
 
         /// Free this tensor.
-        pub fn deinit(self: Self, alloc: Alloc) void {
-            self.inner.deinit(alloc);
+        pub fn deinit(self: Self) void {
+            self.inner.deinit();
         }
 
         // -- Shape-preserving elementwise ops ------------------------------
 
         /// Element-wise addition. Both operands must have the same (static) shape.
-        pub fn add(self: Self, alloc: Alloc, other: Self) Self {
-            return .{ .inner = self.inner.add(alloc, other.inner) };
+        pub fn add(self: Self, other: Self) Self {
+            return .{ .inner = self.inner.add(other.inner) };
         }
 
         /// Element-wise multiplication.
-        pub fn mul(self: Self, alloc: Alloc, other: Self) Self {
-            return .{ .inner = self.inner.mul(alloc, other.inner) };
+        pub fn mul(self: Self, other: Self) Self {
+            return .{ .inner = self.inner.mul(other.inner) };
         }
 
-        pub fn neg(self: Self, alloc: Alloc) Self {
-            return .{ .inner = self.inner.neg(alloc) };
+        pub fn neg(self: Self) Self {
+            return .{ .inner = self.inner.neg() };
         }
 
-        pub fn sqrt(self: Self, alloc: Alloc) Self {
-            return .{ .inner = self.inner.sqrt(alloc) };
+        pub fn sqrt(self: Self) Self {
+            return .{ .inner = self.inner.sqrt() };
         }
 
-        pub fn abs(self: Self, alloc: Alloc) Self {
-            return .{ .inner = self.inner.abs(alloc) };
+        pub fn abs(self: Self) Self {
+            return .{ .inner = self.inner.abs() };
         }
 
-        pub fn recip(self: Self, alloc: Alloc) Self {
-            return .{ .inner = self.inner.recip(alloc) };
+        pub fn recip(self: Self) Self {
+            return .{ .inner = self.inner.recip() };
         }
 
-        pub fn exp(self: Self, alloc: Alloc) Self {
-            return .{ .inner = self.inner.exp(alloc) };
+        pub fn exp(self: Self) Self {
+            return .{ .inner = self.inner.exp() };
         }
 
-        pub fn log(self: Self, alloc: Alloc) Self {
-            return .{ .inner = self.inner.log(alloc) };
+        pub fn log(self: Self) Self {
+            return .{ .inner = self.inner.log() };
         }
 
-        pub fn sgn(self: Self, alloc: Alloc) Self {
-            return .{ .inner = self.inner.sgn(alloc) };
+        pub fn sgn(self: Self) Self {
+            return .{ .inner = self.inner.sgn() };
         }
 
-        pub fn step(self: Self, alloc: Alloc) Self {
-            return .{ .inner = self.inner.step(alloc) };
+        pub fn step(self: Self) Self {
+            return .{ .inner = self.inner.step() };
         }
 
-        pub fn gelu(self: Self, alloc: Alloc) Self {
-            return .{ .inner = self.inner.gelu(alloc) };
+        pub fn gelu(self: Self) Self {
+            return .{ .inner = self.inner.gelu() };
         }
 
         // -- Sugar (decomposed, shape-preserving) --------------------------
 
-        pub fn sub(self: Self, alloc: Alloc, other: Self) Self {
-            return .{ .inner = self.inner.sub(alloc, other.inner) };
+        pub fn sub(self: Self, other: Self) Self {
+            return .{ .inner = self.inner.sub(other.inner) };
         }
 
-        pub fn div(self: Self, alloc: Alloc, other: Self) Self {
-            return .{ .inner = self.inner.div(alloc, other.inner) };
+        pub fn div(self: Self, other: Self) Self {
+            return .{ .inner = self.inner.div(other.inner) };
         }
 
-        pub fn sqr(self: Self, alloc: Alloc) Self {
-            return .{ .inner = self.inner.sqr(alloc) };
+        pub fn sqr(self: Self) Self {
+            return .{ .inner = self.inner.sqr() };
         }
 
-        pub fn relu(self: Self, alloc: Alloc) Self {
-            return .{ .inner = self.inner.relu(alloc) };
+        pub fn relu(self: Self) Self {
+            return .{ .inner = self.inner.relu() };
         }
 
         // -- Shape-changing ops --------------------------------------------
@@ -217,30 +217,29 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
         /// ```
         /// const W = Shaped(f32, .{4, 3});  // 4 cols, 3 rows
         /// const x = Shaped(f32, .{4, 1});  // 4 cols, 1 row
-        /// const y = W.matMul(alloc, true, x, false);  // → Shaped(f32, .{3, 1})
+        /// const y = W.matMul(true, x, false);  // → Shaped(f32, .{3, 1})
         /// ```
         pub fn matMul(
             self: Self,
-            alloc: Alloc,
             comptime trans_self: bool,
             other: anytype,
             comptime trans_other: bool,
         ) ShapedTensor(T, matMulOutputShape(shape, trans_self, @TypeOf(other).static_shape, trans_other)) {
-            return .{ .inner = self.inner.matMul(alloc, trans_self, other.inner, trans_other) };
+            return .{ .inner = self.inner.matMul(trans_self, other.inner, trans_other) };
         }
 
         /// Sum all elements to a scalar.
-        pub fn sumAll(self: Self, alloc: Alloc) ShapedTensor(T, normalizeShape(.{1})) {
-            return .{ .inner = self.inner.sumAll(alloc) };
+        pub fn sumAll(self: Self) ShapedTensor(T, normalizeShape(.{1})) {
+            return .{ .inner = self.inner.sumAll() };
         }
 
         /// Max-reduce all elements to a scalar.
-        pub fn maxAll(self: Self, alloc: Alloc) ShapedTensor(T, normalizeShape(.{1})) {
-            return .{ .inner = self.inner.maxAll(alloc) };
+        pub fn maxAll(self: Self) ShapedTensor(T, normalizeShape(.{1})) {
+            return .{ .inner = self.inner.maxAll() };
         }
 
         /// Sum (reduce) to a target shape. Each dim of target must divide self's dim.
-        pub fn sum(self: Self, alloc: Alloc, comptime target: anytype) ShapedTensor(T, normalizeShape(target)) {
+        pub fn sum(self: Self, comptime target: anytype) ShapedTensor(T, normalizeShape(target)) {
             const target_shape = comptime normalizeShape(target);
             comptime {
                 for (shape, target_shape) |s, t| {
@@ -248,11 +247,11 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
                 }
             }
             var ne = target_shape;
-            return .{ .inner = self.inner.sum(alloc, &ne) };
+            return .{ .inner = self.inner.sum(&ne) };
         }
 
         /// Mean (reduce) to a target shape.
-        pub fn mean(self: Self, alloc: Alloc, comptime target: anytype) ShapedTensor(T, normalizeShape(target)) {
+        pub fn mean(self: Self, comptime target: anytype) ShapedTensor(T, normalizeShape(target)) {
             const target_shape = comptime normalizeShape(target);
             comptime {
                 for (shape, target_shape) |s, t| {
@@ -260,11 +259,11 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
                 }
             }
             var ne = target_shape;
-            return .{ .inner = self.inner.mean(alloc, &ne) };
+            return .{ .inner = self.inner.mean(&ne) };
         }
 
         /// Max-reduce to a target shape.
-        pub fn max(self: Self, alloc: Alloc, comptime target: anytype) ShapedTensor(T, normalizeShape(target)) {
+        pub fn max(self: Self, comptime target: anytype) ShapedTensor(T, normalizeShape(target)) {
             const target_shape = comptime normalizeShape(target);
             comptime {
                 for (shape, target_shape) |s, t| {
@@ -272,10 +271,10 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
                 }
             }
             var ne = target_shape;
-            return .{ .inner = self.inner.max(alloc, &ne) };
+            return .{ .inner = self.inner.max(&ne) };
         }
 
-        pub fn softmax(self: Self, alloc: Alloc, comptime target: anytype) ShapedTensor(T, shape) {
+        pub fn softmax(self: Self, comptime target: anytype) ShapedTensor(T, shape) {
             const target_shape = comptime normalizeShape(target);
             comptime {
                 for (shape, target_shape) |s, t| {
@@ -283,10 +282,10 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
                 }
             }
             var ne = target_shape;
-            return .{ .inner = self.inner.softmax(alloc, &ne) };
+            return .{ .inner = self.inner.softmax(&ne) };
         }
 
-        pub fn logSoftmax(self: Self, alloc: Alloc, comptime target: anytype) ShapedTensor(T, shape) {
+        pub fn logSoftmax(self: Self, comptime target: anytype) ShapedTensor(T, shape) {
             const target_shape = comptime normalizeShape(target);
             comptime {
                 for (shape, target_shape) |s, t| {
@@ -294,12 +293,12 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
                 }
             }
             var ne = target_shape;
-            return .{ .inner = self.inner.logSoftmax(alloc, &ne) };
+            return .{ .inner = self.inner.logSoftmax(&ne) };
         }
 
         /// Layer normalization: `(x - mean) / sqrt(var + eps)`.
         /// Normalizes over dimensions reduced to `target`.
-        pub fn layerNorm(self: Self, alloc: Alloc, comptime target: anytype, eps: T) Self {
+        pub fn layerNorm(self: Self, comptime target: anytype, eps: T) Self {
             const target_shape = comptime normalizeShape(target);
             comptime {
                 for (shape, target_shape) |s, t| {
@@ -307,11 +306,11 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
                 }
             }
             var ne = target_shape;
-            return .{ .inner = self.inner.layerNorm(alloc, &ne, eps) };
+            return .{ .inner = self.inner.layerNorm(&ne, eps) };
         }
 
         /// Broadcast to a larger shape. Each dim of self must divide target's dim.
-        pub fn repeat(self: Self, alloc: Alloc, comptime target: anytype) ShapedTensor(T, normalizeShape(target)) {
+        pub fn repeat(self: Self, comptime target: anytype) ShapedTensor(T, normalizeShape(target)) {
             const target_shape = comptime normalizeShape(target);
             comptime {
                 for (shape, target_shape) |s, t| {
@@ -319,28 +318,28 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
                 }
             }
             var ne = target_shape;
-            return .{ .inner = self.inner.repeat(alloc, &ne) };
+            return .{ .inner = self.inner.repeat(&ne) };
         }
 
         /// Broadcast to match another shaped tensor's shape.
-        pub fn repeatLike(self: Self, alloc: Alloc, comptime Other: type) ShapedTensor(T, Other.static_shape) {
-            return self.repeat(alloc, Other.static_shape);
+        pub fn repeatLike(self: Self, comptime Other: type) ShapedTensor(T, Other.static_shape) {
+            return self.repeat(Other.static_shape);
         }
 
         /// Reshape to a new shape with the same total elements.
-        pub fn reshape(self: Self, alloc: Alloc, comptime new_dims: anytype) ShapedTensor(T, normalizeShape(new_dims)) {
+        pub fn reshape(self: Self, comptime new_dims: anytype) ShapedTensor(T, normalizeShape(new_dims)) {
             const new_shape = comptime normalizeShape(new_dims);
             comptime {
                 if (nElemsOf(shape) != nElemsOf(new_shape))
                     @compileError("reshape: element count mismatch");
             }
             var ne = new_shape;
-            return .{ .inner = self.inner.reshape(alloc, &ne) };
+            return .{ .inner = self.inner.reshape(&ne) };
         }
 
         /// Transpose the first two dimensions.
-        pub fn transpose(self: Self, alloc: Alloc) ShapedTensor(T, transposeShape(shape)) {
-            return .{ .inner = self.inner.transpose(alloc) };
+        pub fn transpose(self: Self) ShapedTensor(T, transposeShape(shape)) {
+            return .{ .inner = self.inner.transpose() };
         }
 
         // -- Fused elementwise operations ----------------------------------
@@ -350,13 +349,13 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
         // auto-vectorized by LLVM in release builds.
 
         /// Apply a unary function element-wise: `dst[i] = f(self[i])`.
-        pub fn map(self: Self, alloc: Alloc, comptime f: fn (T) T) Alloc.Error!Self {
-            return .{ .inner = try self.inner.map(alloc, f) };
+        pub fn map(self: Self, comptime f: fn (T) T) Alloc.Error!Self {
+            return .{ .inner = try self.inner.map(f) };
         }
 
         /// Apply a binary function element-wise: `dst[i] = f(self[i], other[i])`.
-        pub fn map2(self: Self, alloc: Alloc, other: Self, comptime f: fn (T, T) T) Alloc.Error!Self {
-            return .{ .inner = try self.inner.map2(alloc, other.inner, f) };
+        pub fn map2(self: Self, other: Self, comptime f: fn (T, T) T) Alloc.Error!Self {
+            return .{ .inner = try self.inner.map2(other.inner, f) };
         }
 
         // -- High-level composite operations --------------------------------
@@ -369,7 +368,6 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
         /// All dimensions are validated at compile time.
         pub fn attention(
             q: Self,
-            alloc: Alloc,
             k: anytype,
             v: anytype,
         ) ShapedTensor(T, matMulOutputShape(
@@ -380,15 +378,15 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
         )) {
             const d_k: T = @floatFromInt(shape[0]);
             // Q @ K^T → [seq_q, seq_k]
-            const scores = q.matMul(alloc, false, k, true);
+            const scores = q.matMul(false, k, true);
             // Scale by 1/sqrt(d_k)
             const ScoresType = @TypeOf(scores);
             const scale_val = 1.0 / @sqrt(d_k);
             const scale_tensor = ScoresType.fromTensor(
-                (Tensor(T).initScalar(alloc, scale_val) catch unreachable)
-                    .repeatLike(alloc, scores.inner),
+                (Tensor(T).initScalar(q.inner.alloc.?, scale_val) catch unreachable)
+                    .repeatLike(scores.inner),
             );
-            const scaled = scores.mul(alloc, scale_tensor);
+            const scaled = scores.mul(scale_tensor);
             // Softmax over the last key dimension (reduce to one column)
             const softmax_ne = comptime blk: {
                 var ne = ScoresType.static_shape;
@@ -396,10 +394,10 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
                 break :blk ne;
             };
             const weights = ShapedTensor(T, ScoresType.static_shape).fromTensor(
-                scaled.inner.softmax(alloc, &softmax_ne),
+                scaled.inner.softmax(&softmax_ne),
             );
             // Weights @ V → same shape as V
-            return weights.matMul(alloc, false, v, false);
+            return weights.matMul(false, v, false);
         }
     };
 }
@@ -419,7 +417,7 @@ test "shaped - init and basic ops" {
 
     const x = (try Shaped(f32, .{3}).init(a)).setAllScalar(2);
     const y = (try Shaped(f32, .{3}).init(a)).setAllScalar(3);
-    const z = x.add(a, y);
+    const z = x.add(y);
     z.tensor().compute();
 
     try testing.expectEqualSlices(f32, &.{ 5, 5, 5 }, z.tensor().data);
@@ -435,7 +433,7 @@ test "shaped - matmul shape inference" {
     const A = (try Shaped(f32, .{ 2, 3 }).init(a)).setData(&.{ 1, 2, 3, 4, 5, 6 });
     const B = (try Shaped(f32, .{ 3, 2 }).init(a)).setData(&.{ 1, 2, 3, 4, 5, 6 });
 
-    const C = A.matMul(a, false, B, false);
+    const C = A.matMul(false, B, false);
 
     // Verify the type carries the right shape
     comptime {
@@ -459,11 +457,11 @@ test "shaped - sum and repeat" {
     const x = (try Shaped(f32, .{ 2, 3 }).init(a)).setData(&.{ 1, 2, 3, 4, 5, 6 });
 
     // Sum to scalar
-    const s = x.sumAll(a);
+    const s = x.sumAll();
     comptime std.debug.assert(@TypeOf(s).static_shape[0] == 1);
 
     // Repeat scalar back
-    const r = s.repeat(a, .{ 2, 3 });
+    const r = s.repeat(.{ 2, 3 });
     comptime std.debug.assert(@TypeOf(r).static_shape[0] == 2);
     comptime std.debug.assert(@TypeOf(r).static_shape[1] == 3);
 }
@@ -474,7 +472,7 @@ test "shaped - softmax shape preserved" {
     const a = g.allocator();
 
     const x = (try Shaped(f32, .{3}).init(a)).setData(&.{ 1, 2, 3 });
-    const y = x.softmax(a, .{1});
+    const y = x.softmax(.{1});
     comptime std.debug.assert(@TypeOf(y).static_shape[0] == 3);
 
     try g.buildForward(y.tensor());
@@ -489,7 +487,7 @@ test "shaped - reshape" {
     const a = arena.allocator();
 
     const x = try Shaped(f32, .{ 2, 3 }).init(a);
-    const y = x.reshape(a, .{ 3, 2 });
+    const y = x.reshape(.{ 3, 2 });
     comptime {
         std.debug.assert(@TypeOf(y).static_nelems == 6);
         std.debug.assert(@TypeOf(y).static_shape[0] == 3);
@@ -503,7 +501,7 @@ test "shaped - transpose" {
     const a = arena.allocator();
 
     const x = try Shaped(f32, .{ 2, 3 }).init(a);
-    const y = x.transpose(a);
+    const y = x.transpose();
     comptime {
         std.debug.assert(@TypeOf(y).static_shape[0] == 3);
         std.debug.assert(@TypeOf(y).static_shape[1] == 2);
@@ -515,8 +513,8 @@ test "shaped - backward through graph" {
     defer g.deinit();
     const a = g.allocator();
 
-    const x = (try Shaped(f32, .{3}).init(a)).setData(&.{ 1, 2, 3 }).setParam(a);
-    const loss = x.sqr(a).sumAll(a);
+    const x = (try Shaped(f32, .{3}).init(a)).setData(&.{ 1, 2, 3 }).setParam();
+    const loss = x.sqr().sumAll();
 
     try g.buildForward(loss.tensor());
     try g.buildBackward(false);
@@ -535,7 +533,7 @@ test "map - unary fusion" {
     const x = (try Shaped(f32, .{4}).init(a)).setData(&.{ 1, 4, 9, 16 });
 
     // Fused: sqrt then negate — one pass, zero intermediates
-    const y = try x.map(a, struct {
+    const y = try x.map(struct {
         fn f(xi: f32) f32 {
             return -std.math.sqrt(xi);
         }
@@ -553,7 +551,7 @@ test "map2 - binary fusion (sub+sqr = MSE kernel)" {
     const target = (try Shaped(f32, .{4}).init(a)).setData(&.{ 1, 3, 3, 6 });
 
     // Fused (pred - target)^2 — one pass
-    const sq_err = try pred.map2(a, target, struct {
+    const sq_err = try pred.map2(target, struct {
         fn f(p: f32, t: f32) f32 {
             const d = p - t;
             return d * d;
@@ -573,14 +571,14 @@ test "map2 - fused result feeds into graph" {
     const x = (try Shaped(f32, .{3}).init(a)).setData(&.{ 2, 3, 4 });
 
     // Eager: fused double
-    const doubled = try x.map(a, struct {
+    const doubled = try x.map(struct {
         fn f(xi: f32) f32 {
             return xi * 2;
         }
     }.f);
 
     // Feed into lazy graph for sum
-    const out = doubled.sumAll(a);
+    const out = doubled.sumAll();
     try g.buildForward(out.tensor());
     g.compute();
 
@@ -599,7 +597,7 @@ test "shaped - attention" {
     const V = (try Shaped(f32, .{ 2, 3 }).init(a)).setData(&.{ 1, 2, 3, 4, 5, 6 });
 
     // attention output should be [d_k=2, seq=3] (same as V)
-    const out = Q.attention(a, K, V);
+    const out = Q.attention(K, V);
     comptime {
         std.debug.assert(@TypeOf(out).static_shape[0] == 2);
         std.debug.assert(@TypeOf(out).static_shape[1] == 3);

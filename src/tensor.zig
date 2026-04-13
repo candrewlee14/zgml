@@ -27,6 +27,7 @@ pub fn Tensor(comptime T: type) type {
         const Self = @This();
 
         // -- delegation to split-out implementations --
+        const api = @import("tensor/api.zig").Api(Self, T);
         const fwd = @import("tensor/forward.zig").Ops(Self, T);
         const bwd = @import("tensor/backward.zig").Ops(Self);
 
@@ -49,10 +50,20 @@ pub fn Tensor(comptime T: type) type {
         src1: ?*Self,
         /// Debug label for visualization.
         name: ?[]const u8,
+        /// True when this tensor exists only as an internal helper attached to another tensor.
+        is_internal_aux: bool = false,
+        /// Optional typed index buffer used by indexing ops.
+        index_data: ?[]usize = null,
+        /// Whether `index_data` is owned by this tensor.
+        index_owned: bool = false,
         /// Raw element data.
         data: []T,
         /// Whether this tensor owns (and should free) its data slice.
         data_owned: bool,
+        /// Allocator for creating intermediate tensors during lazy ops.
+        /// Set automatically by `init` / graph creation so callers don't need
+        /// to pass an allocator to every operation.
+        alloc: ?Alloc = null,
 
         // ---------------------------------------------------------------
         // Initialization
@@ -93,7 +104,7 @@ pub fn Tensor(comptime T: type) type {
             return tensor;
         }
 
-        fn initHelper(alloc: Alloc, ne: []const usize, data_buf: ?[]T) Alloc.Error!*Self {
+        pub fn initHelper(alloc: Alloc, ne: []const usize, data_buf: ?[]T) Alloc.Error!*Self {
             std.debug.assert(ne.len <= max_dims);
             const tensor: *Self = try alloc.create(Self);
             tensor.* = .{
@@ -107,7 +118,11 @@ pub fn Tensor(comptime T: type) type {
                 .src1 = null,
                 .data = undefined,
                 .name = null,
+                .is_internal_aux = false,
+                .index_data = null,
+                .index_owned = false,
                 .data_owned = data_buf == null,
+                .alloc = alloc,
             };
             for (ne, 0..) |shape_item, i| {
                 tensor.ne[i] = shape_item;
@@ -120,17 +135,54 @@ pub fn Tensor(comptime T: type) type {
             return tensor;
         }
 
+        /// Create an internal auxiliary 1-D index carrier backed by typed usize indices.
+        pub fn initIndexVectorCopy(alloc: Alloc, idx: []const usize) Alloc.Error!*Self {
+            const tensor: *Self = try alloc.create(Self);
+            tensor.* = .{
+                .n_dims = 1,
+                .ne = .{ idx.len, 1, 1, 1 },
+                .strides = .{ 1, idx.len, idx.len, idx.len },
+                .op = .none,
+                .is_param = false,
+                .grad = null,
+                .src0 = null,
+                .src1 = null,
+                .name = null,
+                .is_internal_aux = true,
+                .index_data = try alloc.dupe(usize, idx),
+                .index_owned = true,
+                .data = &.{},
+                .data_owned = false,
+                .alloc = alloc,
+            };
+            return tensor;
+        }
+
+        pub fn hasIndexBuffer(self: *const Self) bool {
+            return self.index_data != null;
+        }
+
         /// Free this tensor and its owned data.
-        pub fn deinit(self: *Self, alloc: Alloc) void {
-            if (self.data_owned) alloc.free(self.data);
-            alloc.destroy(self);
+        pub fn deinit(self: *Self) void {
+            const al = self.alloc.?;
+            if (self.src0) |src0| {
+                if (src0.is_internal_aux) src0.deinit();
+            }
+            if (self.src1) |src1| {
+                if (src1.is_internal_aux) src1.deinit();
+            }
+            if (self.index_owned) {
+                if (self.index_data) |idx| al.free(idx);
+            }
+            if (self.data_owned) al.free(self.data);
+            al.destroy(self);
         }
 
         /// Mark this tensor as a learnable parameter, allocating a gradient tensor.
-        pub fn setParam(self: *Self, alloc: Alloc) void {
+        pub fn setParam(self: *Self) void {
             self.is_param = true;
             assert(self.grad == null);
-            self.grad = self.copyTensorShape(alloc);
+            self.grad = self.copyTensorShape();
         }
 
         // ---------------------------------------------------------------
@@ -139,452 +191,72 @@ pub fn Tensor(comptime T: type) type {
         // These methods build the computation graph without performing any math.
         // They allocate new tensor nodes via `catch unreachable` — this is
         // intentional: lazy ops are designed to be infallible so they can be
-        // composed fluently (e.g. `x.sub(a, y).sqr(a).mean(a, &.{1})`).
+        // composed fluently (e.g. `x.sub(y).sqr().mean(&.{1})`).
         //
         // When used with a ComputeGraph's arena allocator, allocation failure
         // is not expected. If you need fallible allocation, use the `init*`
         // family directly.
         // ---------------------------------------------------------------
 
-        /// Create a view of this tensor's data (shared memory, no copy).
-        pub fn view(self: *Self, alloc: Alloc) *Self {
-            var t = Self.initHelper(alloc, &self.ne, self.data) catch unreachable;
-            t.op = .view;
-            t.src0 = self;
-            t.src1 = null;
-            t.grad = if (self.grad) |grad| grad.view(alloc) else null;
-            return t;
+        fn repeatInto(self: *Self, other: *Self) *Self {
+            return api.repeatInto(self, other);
         }
 
-        /// Allocate a new tensor with the same shape but uninitialized data.
-        pub fn copyTensorShape(self: *Self, alloc: Alloc) *Self {
-            return Self.initHelper(alloc, &self.ne, null) catch unreachable;
-        }
+        pub const view = api.view;
+        pub const copyTensorShape = api.copyTensorShape;
+        pub const add = api.add;
+        pub const addInplace = api.addInplace;
+        pub const sub = api.sub;
+        pub const subInplace = api.subInplace;
+        pub const mul = api.mul;
+        pub const mulInplace = api.mulInplace;
+        pub const div = api.div;
+        pub const divInplace = api.divInplace;
+        pub const sqr = api.sqr;
+        pub const sqrt = api.sqrt;
+        pub const sqrtInplace = api.sqrtInplace;
+        pub const recip = api.recip;
+        pub const recipInplace = api.recipInplace;
+        pub const exp = api.exp;
+        pub const expInplace = api.expInplace;
+        pub const log = api.log;
+        pub const logInplace = api.logInplace;
+        pub const abs = api.abs;
+        pub const absInplace = api.absInplace;
+        pub const sgn = api.sgn;
+        pub const sgnInplace = api.sgnInplace;
+        pub const neg = api.neg;
+        pub const negInplace = api.negInplace;
+        pub const step = api.step;
+        pub const stepInplace = api.stepInplace;
+        pub const relu = api.relu;
+        pub const gelu = api.gelu;
+        pub const geluInplace = api.geluInplace;
+        pub const sumAll = api.sumAll;
+        pub const maxAll = api.maxAll;
+        pub const sum = api.sum;
+        pub const max = api.max;
 
-        fn unaryOp(self: *Self, alloc: Alloc, op: Op, inplace: bool) *Self {
-            const is_node: bool = !inplace and self.grad != null;
-            const res = if (inplace) self.view(alloc) else self.copyTensorShape(alloc);
-            res.op = op;
-            res.grad = if (is_node) self.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = null;
-            return res;
-        }
-
-        fn binaryOp(self: *Self, alloc: Alloc, other: *Self, op: Op, inplace: bool) *Self {
-            assert(self.isSameShape(other));
-            const is_node: bool = !inplace and (self.grad != null or other.grad != null);
-            const res: *Self = if (inplace) self.view(alloc) else self.copyTensorShape(alloc);
-            res.op = op;
-            res.grad = if (is_node) self.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = other;
-            return res;
-        }
-
-        fn addImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
-            assert(self.isSameShape(other));
-            return self.binaryOp(alloc, other, .add, inplace);
-        }
-        /// Element-wise addition.
-        pub fn add(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.addImpl(alloc, other, false);
-        }
-        pub fn addInplace(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.addImpl(alloc, other, true);
-        }
-
-        /// Element-wise subtraction. Decomposes to `add(self, neg(other))`.
-        pub fn sub(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.add(alloc, other.neg(alloc));
-        }
-        pub fn subInplace(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.addInplace(alloc, other.neg(alloc));
-        }
-
-        /// Element-wise multiplication.
-        pub fn mul(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.binaryOp(alloc, other, .mul, false);
-        }
-        pub fn mulInplace(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.binaryOp(alloc, other, .mul, true);
-        }
-
-        /// Element-wise division. Decomposes to `mul(self, recip(other))`.
-        pub fn div(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.mul(alloc, other.recip(alloc));
-        }
-        pub fn divInplace(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return self.mulInplace(alloc, other.recip(alloc));
-        }
-
-        /// Element-wise square. Decomposes to `mul(self, self)`.
-        pub fn sqr(self: *Self, alloc: Alloc) *Self {
-            return self.mul(alloc, self);
-        }
-        /// Element-wise square root.
-        pub fn sqrt(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .sqrt, false);
-        }
-        pub fn sqrtInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .sqrt, true);
-        }
-        /// Element-wise reciprocal: 1/x.
-        pub fn recip(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .recip, false);
-        }
-        pub fn recipInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .recip, true);
-        }
-        /// Element-wise exponential.
-        pub fn exp(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .exp, false);
-        }
-        pub fn expInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .exp, true);
-        }
-        /// Element-wise natural logarithm.
-        pub fn log(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .log, false);
-        }
-        pub fn logInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .log, true);
-        }
-        /// Element-wise absolute value.
-        pub fn abs(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .abs, false);
-        }
-        pub fn absInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .abs, true);
-        }
-        /// Element-wise sign (-1, 0, or 1).
-        pub fn sgn(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .sgn, false);
-        }
-        pub fn sgnInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .sgn, true);
-        }
-        /// Element-wise negation.
-        pub fn neg(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .neg, false);
-        }
-        pub fn negInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .neg, true);
-        }
-        /// Element-wise step function (1 if positive, 0 otherwise).
-        pub fn step(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .step, false);
-        }
-        pub fn stepInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .step, true);
-        }
-        /// Element-wise ReLU: max(0, x). Decomposes to `mul(self, step(self))`.
-        pub fn relu(self: *Self, alloc: Alloc) *Self {
-            const mask = self.step(alloc);
-            mask.grad = null; // step is non-differentiable; prevent backward panic
-            return self.mul(alloc, mask);
-        }
-        /// Element-wise GeLU approximation.
-        pub fn gelu(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .gelu, false);
-        }
-        pub fn geluInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .gelu, true);
-        }
-
-        /// Sum all elements into a scalar.
-        pub fn sumAll(self: *Self, alloc: Alloc) *Self {
-            return sum(self, alloc, &.{1});
-        }
-
-        /// Max-reduce all elements into a scalar.
-        pub fn maxAll(self: *Self, alloc: Alloc) *Self {
-            return max(self, alloc, &.{1});
-        }
-
-        /// Sum (reduce) elements into the given target shape `ne`.
-        pub fn sum(self: *Self, alloc: Alloc, ne: []const usize) *Self {
-            assert(ne.len <= max_dims);
-            assert(canSumToShape(self, ne));
-            const is_node: bool = self.grad != null;
-            const res = Self.init(alloc, ne) catch unreachable;
-            res.op = .sum;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = null;
-            return res;
-        }
-
-        /// Max-reduce elements into the given target shape `ne`.
-        pub fn max(self: *Self, alloc: Alloc, ne: []const usize) *Self {
-            assert(ne.len <= max_dims);
-            assert(canSumToShape(self, ne));
-            const is_node: bool = self.grad != null;
-            const res = Self.init(alloc, ne) catch unreachable;
-            res.op = .max;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = null;
-            return res;
-        }
-
-        /// Max-reduce into another tensor's shape.
-        pub fn maxInto(self: *Self, alloc: Alloc, other: *Self) *Self {
-            assert(self.canSumTo(other));
-            const is_node: bool = self.grad != null;
-            if (self.isSameShape(other) and !is_node) return self;
-            const res = other.view(alloc);
-            res.op = .max;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = null;
-            return res;
-        }
-
-        /// Sum into another tensor's shape (inverse of repeat).
-        pub fn sumInto(self: *Self, alloc: Alloc, other: *Self) *Self {
-            assert(self.canSumTo(other));
-            const is_node: bool = self.grad != null;
-            if (self.isSameShape(other) and !is_node) return self;
-            const res = other.view(alloc);
-            res.op = .sum;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = null;
-            return res;
-        }
-
-        /// Mean (reduce) elements into the given target shape.
-        /// Decomposes to `sum(self, ne) * (1 / count)`.
-        pub fn mean(self: *Self, alloc: Alloc, ne: []const usize) *Self {
-            const s = self.sum(alloc, ne);
-            const count: T = @floatFromInt(self.nElems() / s.nElems());
-            const inv_count = Self.initScalar(alloc, 1.0 / count) catch unreachable;
-            return s.mul(alloc, inv_count.repeatLike(alloc, s));
-        }
-
-        /// Numerically stable softmax to the given reduction shape.
-        pub fn softmax(self: *Self, alloc: Alloc, ne: []const usize) *Self {
-            const max_t = self.max(alloc, ne);
-            const shifted = self.sub(alloc, max_t.repeatLike(alloc, self));
-            const exps = shifted.exp(alloc);
-            const denom = exps.sum(alloc, ne);
-            return exps.div(alloc, denom.repeatLike(alloc, exps));
-        }
-
-        /// Numerically stable log-softmax to the given reduction shape.
-        pub fn logSoftmax(self: *Self, alloc: Alloc, ne: []const usize) *Self {
-            const max_t = self.max(alloc, ne);
-            const shifted = self.sub(alloc, max_t.repeatLike(alloc, self));
-            const exps = shifted.exp(alloc);
-            const log_norm = exps.sum(alloc, ne).log(alloc);
-            return shifted.sub(alloc, log_norm.repeatLike(alloc, shifted));
-        }
-
-        /// Layer normalization: `(x - mean) / sqrt(var + eps)`.
-        /// Normalizes over dimensions reduced to `ne`. Fully decomposed into primitives.
-        pub fn layerNorm(self: *Self, alloc: Alloc, ne: []const usize, eps: T) *Self {
-            const mu = self.mean(alloc, ne);
-            const centered = self.sub(alloc, mu.repeatLike(alloc, self));
-            const variance = centered.sqr(alloc).mean(alloc, ne);
-            const eps_t = Self.initScalar(alloc, eps) catch unreachable;
-            const std_inv = variance.add(alloc, eps_t.repeatLike(alloc, variance)).sqrt(alloc).recip(alloc);
-            return centered.mul(alloc, std_inv.repeatLike(alloc, centered));
-        }
-
-        pub fn meanInto(self: *Self, alloc: Alloc, other: *Self) *Self {
-            const s = self.sumInto(alloc, other);
-            const count: T = @floatFromInt(self.nElems() / s.nElems());
-            const inv_count = Self.initScalar(alloc, 1.0 / count) catch unreachable;
-            return s.mul(alloc, inv_count.repeatLike(alloc, s));
-        }
-
-        fn repeatInto(self: *Self, alloc: Alloc, other: *Self) *Self {
-            assert(self.canRepeatTo(other));
-            const is_node: bool = self.grad != null;
-            if (self.isSameShape(other) and !is_node) return self;
-            const res = other.view(alloc);
-            res.op = .repeat;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = null;
-            return res;
-        }
-
-        /// Broadcast (repeat) this tensor to the given shape.
-        /// Each dimension in `ne` must be a multiple of the corresponding dimension in self.
-        pub fn repeat(self: *Self, alloc: Alloc, ne: []usize) *Self {
-            assert(ne.len <= max_dims);
-            assert(self.canRepeatToShape(ne));
-            const is_node: bool = self.grad != null;
-            if (self.hasShape(ne) and !is_node) return self;
-            const res = Self.init(alloc, ne) catch unreachable;
-            res.op = .repeat;
-            res.grad = if (self.grad) |grad| grad.repeat(alloc, ne) else null;
-            res.src0 = self;
-            res.src1 = null;
-            return res;
-        }
-
-        /// Broadcast this tensor to match `other`'s shape.
-        pub fn repeatLike(self: *Self, alloc: Alloc, other: *Self) *Self {
-            return repeat(self, alloc, &other.ne);
-        }
-
-        /// Matrix multiplication with optional transposition of either operand.
-        pub fn matMul(self: *Self, alloc: Alloc, trans_self: bool, other: *Self, trans_other: bool) *Self {
-            assert(self.canMatMul(trans_self, other, trans_other));
-            const is_node = self.grad != null or other.grad != null;
-            assert(max_dims == 4);
-
-            const out_ne: [max_dims]usize = lbl: {
-                break :lbl if (!trans_self and !trans_other)
-                    .{ other.ne[0], self.ne[1], self.ne[2], other.ne[3] }
-                else if (trans_self and !trans_other)
-                    .{ other.ne[0], self.ne[0], self.ne[2], other.ne[3] }
-                else if (!trans_self and trans_other)
-                    .{ other.ne[1], self.ne[1], self.ne[2], other.ne[3] }
-                else
-                    .{ other.ne[1], self.ne[0], self.ne[2], other.ne[3] };
-            };
-            const res = Self.init(alloc, out_ne[0..@min(self.n_dims, other.n_dims)]) catch unreachable;
-            res.op = if (trans_self) if (trans_other) .matmul_t0t1 else .matmul_t0 else if (trans_other) .matmul_t1 else .matmul;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = other;
-            res.assertValidMatMulDims(self, trans_self, other, trans_other);
-            return res;
-        }
-
-        /// Gather rows from a 2-D matrix using indices stored in `indices`.
-        ///
-        /// `self` has shape `{width, rows}` and `indices` has shape `{n}`.
-        /// The result has shape `{width, n}`.
-        ///
-        /// Indices are currently read from `indices.data` and converted to `usize`.
-        /// For floating-point tensors, values must be exact non-negative integers.
-        pub fn gatherRows(self: *Self, alloc: Alloc, indices: *Self) *Self {
-            assert(self.isMatrix());
-            assert(indices.isVector());
-            const is_node = self.grad != null;
-            const res = Self.init(alloc, &.{ self.ne[0], indices.ne[0] }) catch unreachable;
-            res.op = .gather_rows;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = indices;
-            return res;
-        }
-
-        /// Scatter-add row updates into this matrix using `indices`.
-        ///
-        /// `self` has shape `{width, rows}`, `indices` has shape `{n}`, and
-        /// `updates` has shape `{width, n}`.
-        pub fn scatterAddRows(self: *Self, alloc: Alloc, indices: *Self, updates: *Self) *Self {
-            assert(self.isMatrix());
-            assert(indices.isVector());
-            assert(updates.isMatrix());
-            assert(updates.ne[0] == self.ne[0]);
-            assert(updates.ne[1] == indices.ne[0]);
-            const is_node = updates.grad != null;
-            const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
-            res.op = .scatter_add_rows;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = updates;
-            res.src1 = indices;
-            return res;
-        }
-
-        /// Pick one value from each row of a matrix using `indices`.
-        ///
-        /// `self` has shape `{width, rows}` and `indices` has shape `{rows}`.
-        /// The result has shape `{rows}` where output[r] = self[indices[r], r].
-        pub fn pickRows(self: *Self, alloc: Alloc, indices: *Self) *Self {
-            assert(self.isMatrix());
-            assert(indices.isVector());
-            assert(indices.ne[0] == self.ne[1]);
-            const is_node = self.grad != null;
-            const res = Self.init(alloc, &.{indices.ne[0]}) catch unreachable;
-            res.op = .pick_rows;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = indices;
-            return res;
-        }
-
-        /// Scatter-add one value into each row of a matrix using `indices`.
-        ///
-        /// `self` has shape `{width, rows}`, `indices` has shape `{rows}`, and
-        /// `updates` has shape `{rows}`.
-        pub fn scatterAddPicks(self: *Self, alloc: Alloc, indices: *Self, updates: *Self) *Self {
-            assert(self.isMatrix());
-            assert(indices.isVector());
-            assert(updates.isVector());
-            assert(indices.ne[0] == self.ne[1]);
-            assert(updates.ne[0] == self.ne[1]);
-            const is_node = updates.grad != null;
-            const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
-            res.op = .scatter_add_picks;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = updates;
-            res.src1 = indices;
-            return res;
-        }
-
-        /// Scale by a scalar tensor. Decomposes to `mul(self, repeat(scalar))`.
-        pub fn scale(self: *Self, alloc: Alloc, other: *Self) *Self {
-            assert(other.isScalar());
-            return self.mul(alloc, other.repeatLike(alloc, self));
-        }
-        pub fn scaleInplace(self: *Self, alloc: Alloc, other: *Self) *Self {
-            assert(other.isScalar());
-            return self.mulInplace(alloc, other.repeatLike(alloc, self));
-        }
-
-        /// Reshape this tensor's data to match `other`'s shape.
-        pub fn reshapeLike(self: *Self, alloc: Alloc, other: *Self) *Self {
-            assert(self.isContiguous());
-            assert(other.isContiguous());
-            assert(self.nElems() == other.nElems());
-            const is_node = (self.grad != null or other.grad != null);
-            const res = Self.initHelper(alloc, other.ne[0..other.n_dims], self.data) catch unreachable;
-            res.op = .reshape;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = null;
-            return res;
-        }
-
-        /// Reshape this tensor to a new shape (must have same total elements).
-        pub fn reshape(self: *Self, alloc: Alloc, ne: []const usize) *Self {
-            assert(self.isContiguous());
-            const neProd = lbl: {
-                var prod: usize = 1;
-                for (ne) |item| prod *= item;
-                break :lbl prod;
-            };
-            assert(self.nElems() == neProd);
-            const is_node = self.grad != null;
-            const res = Self.initHelper(alloc, ne, self.data) catch unreachable;
-            res.op = .reshape;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = null;
-            return res;
-        }
-
-        /// Transpose the first two dimensions (swap rows and columns).
-        /// Transpose the first two dimensions (swap rows and columns).
-        /// Produces a contiguous result with data copied in transposed order.
-        pub fn transpose(self: *Self, alloc: Alloc) *Self {
-            const is_node = self.grad != null;
-            const out_ne = [max_dims]usize{ self.ne[1], self.ne[0], self.ne[2], self.ne[3] };
-            const res = Self.init(alloc, out_ne[0..self.n_dims]) catch unreachable;
-            res.op = .transpose;
-            res.grad = if (is_node) res.copyTensorShape(alloc) else null;
-            res.src0 = self;
-            res.src1 = null;
-            return res;
-        }
+        pub const sumInto = api.sumInto;
+        pub const mean = api.mean;
+        pub const softmax = api.softmax;
+        pub const logSoftmax = api.logSoftmax;
+        pub const layerNorm = api.layerNorm;
+        pub const meanInto = api.meanInto;
+        pub const repeat = api.repeat;
+        pub const repeatLike = api.repeatLike;
+        pub const matMul = api.matMul;
+        pub const gatherRows = api.gatherRows;
+        pub const scatterAddRows = api.scatterAddRows;
+        pub const pickRows = api.pickRows;
+        pub const scatterAddPicks = api.scatterAddPicks;
+        pub const gatherRowsIdx = api.gatherRowsIdx;
+        pub const pickRowsIdx = api.pickRowsIdx;
+        pub const scale = api.scale;
+        pub const scaleInplace = api.scaleInplace;
+        pub const reshapeLike = api.reshapeLike;
+        pub const reshape = api.reshape;
+        pub const transpose = api.transpose;
 
         // ---------------------------------------------------------------
         // Forward compute — delegated to tensor/forward.zig
@@ -645,14 +317,14 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// Total number of elements across all dimensions.
-        pub fn nElems(self: *Self) usize {
+        pub fn nElems(self: *const Self) usize {
             var res: usize = 1;
             for (&self.ne) |shape_item| res *= shape_item;
             return res;
         }
 
         /// True if this tensor is a single scalar value (all dims == 1).
-        pub fn isScalar(self: *Self) bool {
+        pub fn isScalar(self: *const Self) bool {
             for (self.ne[0..]) |s| {
                 if (s != 1) return false;
             }
@@ -660,7 +332,7 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// True if this is a 1-D vector (dims 1+ are all 1).
-        pub fn isVector(self: *Self) bool {
+        pub fn isVector(self: *const Self) bool {
             for (self.ne[1..]) |s| {
                 if (s != 1) return false;
             }
@@ -668,7 +340,7 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// True if this is a 2-D matrix (dims 2+ are all 1).
-        pub fn isMatrix(self: *Self) bool {
+        pub fn isMatrix(self: *const Self) bool {
             for (self.ne[2..]) |s| {
                 if (s != 1) return false;
             }
@@ -676,7 +348,7 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// True if self can be matrix-multiplied with `other`, accounting for transpositions.
-        pub fn canMatMul(self: *Self, transSelf: bool, other: *Self, transOther: bool) bool {
+        pub fn canMatMul(self: *const Self, transSelf: bool, other: *const Self, transOther: bool) bool {
             if (self.ne[3] != other.ne[3]) return false;
             if (self.ne[2] != other.ne[2]) return false;
             if (!transSelf and !transOther) return self.ne[0] == other.ne[1];
@@ -686,7 +358,7 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// True if data is laid out contiguously in memory (no stride gaps).
-        pub fn isContiguous(self: *Self) bool {
+        pub fn isContiguous(self: *const Self) bool {
             if (self.strides[0] != 1) return false;
             for (1..max_dims) |i| {
                 if (self.strides[i] != self.strides[i - 1] * self.ne[i - 1]) return false;
@@ -695,20 +367,20 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// True if self can be broadcast (repeated) to match `other`'s shape.
-        pub fn canRepeatTo(self: *Self, other: *Self) bool {
+        pub fn canRepeatTo(self: *const Self, other: *const Self) bool {
             return self.canRepeatToShape(&other.ne);
         }
 
-        pub fn canRepeatToShape(self: *Self, other_ne: []const usize) bool {
+        pub fn canRepeatToShape(self: *const Self, other_ne: []const usize) bool {
             return shapeCanRepeatToShape(&self.ne, other_ne);
         }
 
         /// True if self can be reduced (summed) down to `other`'s shape.
-        pub fn canSumTo(self: *Self, other: *Self) bool {
+        pub fn canSumTo(self: *const Self, other: *const Self) bool {
             return self.canSumToShape(&other.ne);
         }
 
-        pub fn canSumToShape(self: *Self, other_ne: []const usize) bool {
+        pub fn canSumToShape(self: *const Self, other_ne: []const usize) bool {
             return shapeCanRepeatToShape(other_ne, &self.ne);
         }
 
@@ -721,7 +393,7 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// Access the element at the given multi-dimensional coordinates.
-        pub fn get(self: *Self, coords: []const usize) T {
+        pub fn get(self: *const Self, coords: []const usize) T {
             assert(coords.len == self.n_dims);
             var idx: usize = 0;
             for (coords, self.strides[0..coords.len]) |coord, stride| {
@@ -731,14 +403,14 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// Print a debug summary of this tensor.
-        pub fn print(self: *Self) void {
+        pub fn print(self: *const Self) void {
             std.debug.print("----{*}----\n", .{self});
             std.debug.print("shape: {any}\nstrides: {any}\ndata: {any}\n", .{ self.ne, self.strides, self.data });
             std.debug.print("--------------------------\n", .{});
         }
 
         /// True if self and other have compatible shapes for broadcasting (numpy-style).
-        pub fn isBroadcastable(self: *Self, other: *Self) bool {
+        pub fn isBroadcastable(self: *const Self, other: *const Self) bool {
             for (self.ne, other.ne) |selfNe, otherNe| {
                 if (selfNe != otherNe and selfNe != 1 and otherNe != 1) return false;
             }
@@ -746,11 +418,11 @@ pub fn Tensor(comptime T: type) type {
         }
 
         /// True if self and other have identical shapes.
-        pub fn isSameShape(self: *Self, other: *Self) bool {
+        pub fn isSameShape(self: *const Self, other: *const Self) bool {
             return self.hasShape(&other.ne);
         }
 
-        pub fn hasShape(self: *Self, other_ne: []const usize) bool {
+        pub fn hasShape(self: *const Self, other_ne: []const usize) bool {
             for (self.ne, 0..) |selfNe, i| {
                 const otherNe = if (i < other_ne.len) other_ne[i] else 1;
                 if (selfNe != otherNe) return false;
@@ -771,8 +443,8 @@ pub fn Tensor(comptime T: type) type {
 
         /// Apply a unary function element-wise: `dst[i] = f(self[i])`.
         /// Computes eagerly — no graph node is created.
-        pub fn map(self: *Self, alloc: Alloc, comptime f: fn (T) T) Alloc.Error!*Self {
-            const dst = try Self.init(alloc, self.ne[0..self.n_dims]);
+        pub fn map(self: *Self, comptime f: fn (T) T) Alloc.Error!*Self {
+            const dst = try Self.init(self.alloc.?, self.ne[0..self.n_dims]);
             for (self.data, dst.data) |x, *d| {
                 d.* = f(x);
             }
@@ -781,11 +453,11 @@ pub fn Tensor(comptime T: type) type {
 
         /// Apply a binary function element-wise: `dst[i] = f(self[i], other[i])`.
         /// Both tensors must have the same shape. Computes eagerly.
-        pub fn map2(self: *Self, alloc: Alloc, other: *Self, comptime f: fn (T, T) T) Alloc.Error!*Self {
+        pub fn map2(self: *Self, other: *Self, comptime f: fn (T, T) T) Alloc.Error!*Self {
             assert(self.isSameShape(other));
-            const dst = try Self.init(alloc, self.ne[0..self.n_dims]);
-            for (self.data, other.data, dst.data) |a, b, *d| {
-                d.* = f(a, b);
+            const dst = try Self.init(self.alloc.?, self.ne[0..self.n_dims]);
+            for (self.data, other.data, dst.data) |aa, b, *d| {
+                d.* = f(aa, b);
             }
             return dst;
         }
@@ -808,7 +480,7 @@ test "ref all decls" {
 test "init" {
     {
         const tensor = try Tensor(f32).init(tac, &.{ 2, 3 });
-        defer tensor.deinit(tac);
+        defer tensor.deinit();
         try testing.expectEqual(@as(usize, 6), tensor.nElems());
         const data = [_]f32{ 1, 2, 3, 4, 5, 6 };
         @memcpy(tensor.data, &data);
@@ -818,7 +490,7 @@ test "init" {
     }
     {
         const tensor = try Tensor(f32).init(tac, &.{ 5, 3, 2 });
-        defer tensor.deinit(tac);
+        defer tensor.deinit();
         try testing.expectEqual(@as(usize, 30), tensor.nElems());
     }
 }
@@ -826,7 +498,7 @@ test "init" {
 test "initLinspace" {
     {
         const t = try Tensor(f32).initLinspace(tac, &.{20}, 0, 20);
-        defer t.deinit(tac);
+        defer t.deinit();
         try testing.expectEqual(@as(usize, 20), t.nElems());
         for (t.data, 0..) |v, i| {
             try testing.expectEqual(@as(f32, @floatFromInt(i)), v);
@@ -834,7 +506,7 @@ test "initLinspace" {
     }
     {
         const t = try Tensor(f32).initLinspace(tac, &.{20}, 0, 10);
-        defer t.deinit(tac);
+        defer t.deinit();
         try testing.expectEqual(@as(usize, 20), t.nElems());
         for (t.data, 0..) |v, i| {
             try testing.expectEqual(@as(f32, @floatFromInt(i)) * 0.5, v);
@@ -844,11 +516,11 @@ test "initLinspace" {
 
 test "reshape" {
     const t = try Tensor(f32).init(tac, &.{ 2, 3 });
-    defer t.deinit(tac);
+    defer t.deinit();
     t.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
 
-    const r = t.reshape(tac, &.{ 3, 2 });
-    defer r.deinit(tac);
+    const r = t.reshape(&.{ 3, 2 });
+    defer r.deinit();
 
     try testing.expectEqual(@as(usize, 6), r.nElems());
     try testing.expectEqual(@as(u8, 2), r.n_dims);
@@ -861,12 +533,12 @@ test "reshape" {
 test "isMatrix" {
     {
         const tensor = try Tensor(f32).init(tac, &.{ 2, 3 });
-        defer tensor.deinit(tac);
+        defer tensor.deinit();
         try testing.expectEqual(true, tensor.isMatrix());
     }
     {
         const tensor = try Tensor(f32).init(tac, &.{ 2, 3, 4 });
-        defer tensor.deinit(tac);
+        defer tensor.deinit();
         try testing.expectEqual(false, tensor.isMatrix());
     }
 }
@@ -874,17 +546,17 @@ test "isMatrix" {
 test "isSameShape" {
     {
         const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
-        defer t1.deinit(tac);
+        defer t1.deinit();
         const t2 = try Tensor(f32).init(tac, &.{ 3, 2 });
-        defer t2.deinit(tac);
+        defer t2.deinit();
         try testing.expectEqual(false, t1.isSameShape(t2));
         try testing.expectEqual(true, t1.isSameShape(t1));
     }
     {
         const t1 = try Tensor(f32).init(tac, &.{ 2, 4, 3 });
-        defer t1.deinit(tac);
-        const t2 = t1.view(tac);
-        defer t2.deinit(tac);
+        defer t1.deinit();
+        const t2 = t1.view();
+        defer t2.deinit();
         try testing.expectEqual(true, t1.isSameShape(t2));
     }
 }
@@ -892,16 +564,16 @@ test "isSameShape" {
 test "canRepeatTo" {
     {
         const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
-        defer t1.deinit(tac);
+        defer t1.deinit();
         const t2 = try Tensor(f32).init(tac, &.{ 3, 2 });
-        defer t2.deinit(tac);
+        defer t2.deinit();
         try testing.expectEqual(false, t1.canRepeatTo(t2));
     }
     {
         const t1 = try Tensor(f32).init(tac, &.{ 2, 4, 3 });
-        defer t1.deinit(tac);
+        defer t1.deinit();
         const t2 = try Tensor(f32).init(tac, &.{ 4, 16, 9 });
-        defer t2.deinit(tac);
+        defer t2.deinit();
         try testing.expectEqual(true, t1.canRepeatTo(t2));
     }
 }
@@ -915,7 +587,7 @@ test "compute mean" {
     const t1 = try Tensor(f32).init(a, &.{ 2, 3 });
     t1.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
 
-    const dst = t1.mean(a, &.{1});
+    const dst = t1.mean(&.{1});
     try g.buildForward(dst);
     g.compute();
 
@@ -924,15 +596,15 @@ test "compute mean" {
 
 test "compute matmul" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
-    defer t1.deinit(tac);
+    defer t1.deinit();
     t1.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
 
     const t2 = try Tensor(f32).init(tac, &.{ 3, 2 });
-    defer t2.deinit(tac);
+    defer t2.deinit();
     t2.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
 
-    const dst = t1.matMul(tac, false, t2, false);
-    defer dst.deinit(tac);
+    const dst = t1.matMul(false, t2, false);
+    defer dst.deinit();
     dst.computeMatMul(t1, false, t2, false);
 
     try testing.expectEqualSlices(f32, &.{ 9, 12, 15, 19, 26, 33, 29, 40, 51 }, dst.data);
@@ -940,11 +612,11 @@ test "compute matmul" {
 
 test "compute matmul_t0" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
-    defer t1.deinit(tac);
+    defer t1.deinit();
     t1.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
 
-    const dst = t1.matMul(tac, true, t1, false);
-    defer dst.deinit(tac);
+    const dst = t1.matMul(true, t1, false);
+    defer dst.deinit();
     dst.computeMatMul(t1, true, t1, false);
 
     try testing.expectEqualSlices(f32, &.{ 35, 44, 44, 56 }, dst.data);
@@ -952,11 +624,11 @@ test "compute matmul_t0" {
 
 test "compute matmul_t1 2D" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
-    defer t1.deinit(tac);
+    defer t1.deinit();
     t1.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
 
-    const dst = t1.matMul(tac, false, t1, true);
-    defer dst.deinit(tac);
+    const dst = t1.matMul(false, t1, true);
+    defer dst.deinit();
     dst.computeMatMul(t1, false, t1, true);
 
     try testing.expectEqualSlices(f32, &.{ 5, 11, 17, 11, 25, 39, 17, 39, 61 }, dst.data);
@@ -964,11 +636,11 @@ test "compute matmul_t1 2D" {
 
 test "compute matmul_t1 3D" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 2, 2 });
-    defer t1.deinit(tac);
+    defer t1.deinit();
     t1.setData(&[_]f32{ 1, 2, 3, 4, 5, 6, 7, 8 });
 
-    const dst = t1.matMul(tac, false, t1, true);
-    defer dst.deinit(tac);
+    const dst = t1.matMul(false, t1, true);
+    defer dst.deinit();
     dst.computeMatMul(t1, false, t1, true);
 
     try testing.expectEqualSlices(f32, &.{ 5, 11, 11, 25, 61, 83, 83, 113 }, dst.data);
@@ -1012,17 +684,17 @@ test "matmul edge cases - various sizes" {
         const N = c[2];
 
         const t_a = try Tensor(f32).init(tac, &.{ K, M });
-        defer t_a.deinit(tac);
+        defer t_a.deinit();
         const t_b = try Tensor(f32).init(tac, &.{ N, K });
-        defer t_b.deinit(tac);
+        defer t_b.deinit();
 
         // Fill with deterministic data
         var prng = std.Random.DefaultPrng.init(42 + M * 1000 + K * 100 + N);
         for (t_a.data) |*v| v.* = prng.random().float(f32) * 2.0 - 1.0;
         for (t_b.data) |*v| v.* = prng.random().float(f32) * 2.0 - 1.0;
 
-        const t_dst = t_a.matMul(tac, false, t_b, false);
-        defer t_dst.deinit(tac);
+        const t_dst = t_a.matMul(false, t_b, false);
+        defer t_dst.deinit();
         t_dst.computeMatMul(t_a, false, t_b, false);
 
         const expected = try naiveMatMulRef(tac, M, K, N, t_a.data, t_b.data);
@@ -1043,9 +715,9 @@ test "matmul edge cases - transposed" {
     const N = 7;
 
     const t_a = try Tensor(f32).init(tac, &.{ K, M });
-    defer t_a.deinit(tac);
+    defer t_a.deinit();
     const t_b = try Tensor(f32).init(tac, &.{ N, K });
-    defer t_b.deinit(tac);
+    defer t_b.deinit();
 
     var prng = std.Random.DefaultPrng.init(999);
     for (t_a.data) |*v| v.* = prng.random().float(f32) * 2.0 - 1.0;
@@ -1056,7 +728,7 @@ test "matmul edge cases - transposed" {
     // For matMul(trans_self=true, ...) the "logical A" is t_a transposed = M x K
     // So we need K rows, M cols in storage -> shape {M, K}
     const t_at = try Tensor(f32).init(tac, &.{ M, K });
-    defer t_at.deinit(tac);
+    defer t_at.deinit();
     // Transpose t_a data manually: t_a is (K cols, M rows) row-major
     // t_at should be (M cols, K rows) such that t_at^T = t_a logically
     for (0..M) |i| {
@@ -1066,7 +738,7 @@ test "matmul edge cases - transposed" {
     }
 
     const t_bt = try Tensor(f32).init(tac, &.{ K, N });
-    defer t_bt.deinit(tac);
+    defer t_bt.deinit();
     for (0..K) |i| {
         for (0..N) |j| {
             t_bt.data[j * K + i] = t_b.data[i * N + j];
@@ -1079,8 +751,8 @@ test "matmul edge cases - transposed" {
 
     // Test t0: t_at^T * t_b (t_at is K x M in storage, transposed = M x K)
     {
-        const dst = t_at.matMul(tac, true, t_b, false);
-        defer dst.deinit(tac);
+        const dst = t_at.matMul(true, t_b, false);
+        defer dst.deinit();
         dst.computeMatMul(t_at, true, t_b, false);
         for (expected, dst.data, 0..) |exp, got, i| {
             if (@abs(exp - got) > 1e-3) {
@@ -1092,8 +764,8 @@ test "matmul edge cases - transposed" {
 
     // Test t1: t_a * t_bt^T (t_bt is N x K in storage, transposed = K x N)
     {
-        const dst = t_a.matMul(tac, false, t_bt, true);
-        defer dst.deinit(tac);
+        const dst = t_a.matMul(false, t_bt, true);
+        defer dst.deinit();
         dst.computeMatMul(t_a, false, t_bt, true);
         for (expected, dst.data, 0..) |exp, got, i| {
             if (@abs(exp - got) > 1e-3) {
@@ -1105,8 +777,8 @@ test "matmul edge cases - transposed" {
 
     // Test t0t1: t_at^T * t_bt^T
     {
-        const dst = t_at.matMul(tac, true, t_bt, true);
-        defer dst.deinit(tac);
+        const dst = t_at.matMul(true, t_bt, true);
+        defer dst.deinit();
         dst.computeMatMul(t_at, true, t_bt, true);
         for (expected, dst.data, 0..) |exp, got, i| {
             if (@abs(exp - got) > 1e-3) {
@@ -1123,8 +795,8 @@ test "backward - exp" {
     const a = g.allocator();
 
     const x = try Tensor(f32).initScalar(a, 1.5);
-    x.setParam(a);
-    const out = x.exp(a);
+    x.setParam();
+    const out = x.exp();
     try g.buildForward(out);
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);
@@ -1141,8 +813,8 @@ test "backward - log" {
     const a = g.allocator();
 
     const x = try Tensor(f32).initScalar(a, 4.0);
-    x.setParam(a);
-    const out = x.log(a);
+    x.setParam();
+    const out = x.log();
     try g.buildForward(out);
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);
@@ -1159,9 +831,9 @@ test "backward - reshape" {
 
     const x = try Tensor(f32).init(a, &.{ 2, 3 });
     x.setData(&.{ 1, 2, 3, 4, 5, 6 });
-    x.setParam(a);
-    const reshaped = x.reshape(a, &.{ 3, 2 });
-    const out = reshaped.sumAll(a);
+    x.setParam();
+    const reshaped = x.reshape(&.{ 3, 2 });
+    const out = reshaped.sumAll();
     try g.buildForward(out);
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);
@@ -1177,11 +849,11 @@ test "backward - transpose" {
 
     const x = try Tensor(f32).init(a, &.{ 2, 3 });
     x.setData(&.{ 1, 2, 3, 4, 5, 6 });
-    x.setParam(a);
-    const transposed = x.transpose(a);
+    x.setParam();
+    const transposed = x.transpose();
     const weights = try Tensor(f32).init(a, &.{ 3, 2 });
     weights.setData(&.{ 1, 2, 3, 4, 5, 6 });
-    const out = transposed.mul(a, weights).sumAll(a);
+    const out = transposed.mul(weights).sumAll();
     try g.buildForward(out);
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);
@@ -1192,11 +864,11 @@ test "backward - transpose" {
 
 test "compute max reduction" {
     const t = try Tensor(f32).init(tac, &.{ 2, 3 });
-    defer t.deinit(tac);
+    defer t.deinit();
     t.setData(&.{ 1, 5, 2, 4, 3, 6 });
 
-    const dst = t.max(tac, &.{ 1, 3 });
-    defer dst.deinit(tac);
+    const dst = t.max(&.{ 1, 3 });
+    defer dst.deinit();
     dst.compute();
 
     try testing.expectEqualSlices(f32, &.{ 5, 4, 6 }, dst.data);
@@ -1209,7 +881,7 @@ test "compute softmax" {
 
     const t = try Tensor(f32).init(a, &.{3});
     t.setData(&.{ 1, 2, 3 });
-    const s = t.softmax(a, &.{1});
+    const s = t.softmax(&.{1});
     try g.buildForward(s);
     g.compute();
 
@@ -1229,7 +901,7 @@ test "compute logSoftmax" {
 
     const t = try Tensor(f32).init(a, &.{3});
     t.setData(&.{ 1, 2, 3 });
-    const ls = t.logSoftmax(a, &.{1});
+    const ls = t.logSoftmax(&.{1});
     try g.buildForward(ls);
     g.compute();
 
@@ -1244,7 +916,7 @@ test "compute logSoftmax" {
 
 test "compute gatherRows" {
     const table = try Tensor(f32).init(tac, &.{ 3, 4 });
-    defer table.deinit(tac);
+    defer table.deinit();
     table.setData(&.{
         10, 11, 12,
         20, 21, 22,
@@ -1253,11 +925,11 @@ test "compute gatherRows" {
     });
 
     const indices = try Tensor(f32).init(tac, &.{3});
-    defer indices.deinit(tac);
+    defer indices.deinit();
     indices.setData(&.{ 2, 0, 3 });
 
-    const out = table.gatherRows(tac, indices);
-    defer out.deinit(tac);
+    const out = table.gatherRows(indices);
+    defer out.deinit();
     out.compute();
 
     try testing.expectEqualSlices(f32, &.{
@@ -1279,13 +951,13 @@ test "backward - gatherRows accumulates repeated indices" {
         5, 6,
         7, 8,
     });
-    table.setParam(a);
+    table.setParam();
 
     const indices = try Tensor(f32).init(a, &.{3});
     indices.setData(&.{ 1, 3, 1 });
 
-    const gathered = table.gatherRows(a, indices);
-    const out = gathered.sumAll(a);
+    const gathered = table.gatherRows(indices);
+    const out = gathered.sumAll();
     try g.buildForward(out);
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);
@@ -1301,7 +973,7 @@ test "backward - gatherRows accumulates repeated indices" {
 
 test "compute pickRows" {
     const logits = try Tensor(f32).init(tac, &.{ 4, 3 });
-    defer logits.deinit(tac);
+    defer logits.deinit();
     logits.setData(&.{
         1, 2,  3,  4,
         5, 6,  7,  8,
@@ -1309,11 +981,11 @@ test "compute pickRows" {
     });
 
     const indices = try Tensor(f32).init(tac, &.{3});
-    defer indices.deinit(tac);
+    defer indices.deinit();
     indices.setData(&.{ 3, 0, 2 });
 
-    const picked = logits.pickRows(tac, indices);
-    defer picked.deinit(tac);
+    const picked = logits.pickRows(indices);
+    defer picked.deinit();
     picked.compute();
 
     try testing.expectEqualSlices(f32, &.{ 4, 5, 11 }, picked.data);
@@ -1330,13 +1002,13 @@ test "backward - pickRows" {
         5, 6,  7,  8,
         9, 10, 11, 12,
     });
-    logits.setParam(a);
+    logits.setParam();
 
     const indices = try Tensor(f32).init(a, &.{3});
     indices.setData(&.{ 3, 0, 2 });
 
-    const picked = logits.pickRows(a, indices);
-    const out = picked.sumAll(a);
+    const picked = logits.pickRows(indices);
+    const out = picked.sumAll();
     try g.buildForward(out);
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);
@@ -1347,4 +1019,79 @@ test "backward - pickRows" {
         1, 0, 0, 0,
         0, 0, 1, 0,
     }, logits.grad.?.data);
+}
+
+test "compute gatherRowsIdx" {
+    const IndexTensor = @import("index.zig").IndexTensor;
+
+    const table = try Tensor(f32).init(tac, &.{ 2, 4 });
+    defer table.deinit();
+    table.setData(&.{
+        1, 2,
+        3, 4,
+        5, 6,
+        7, 8,
+    });
+
+    const indices = try IndexTensor(i32).initCopy(tac, &.{ 3, 1 });
+    defer indices.deinit(tac);
+
+    const out = table.gatherRowsIdx(indices);
+    defer out.deinit();
+    out.compute();
+
+    try testing.expectEqualSlices(f32, &.{ 7, 8, 3, 4 }, out.data);
+}
+
+test "compute pickRowsIdx" {
+    const IndexTensor = @import("index.zig").IndexTensor;
+
+    const logits = try Tensor(f32).init(tac, &.{ 4, 3 });
+    defer logits.deinit();
+    logits.setData(&.{
+        1, 2,  3,  4,
+        5, 6,  7,  8,
+        9, 10, 11, 12,
+    });
+
+    const indices = try IndexTensor(i32).initCopy(tac, &.{ 3, 0, 2 });
+    defer indices.deinit(tac);
+
+    const out = logits.pickRowsIdx(indices);
+    defer out.deinit();
+    out.compute();
+
+    try testing.expectEqualSlices(f32, &.{ 4, 5, 11 }, out.data);
+}
+
+test "backward - gatherRowsIdx accumulates repeated indices" {
+    const IndexTensor = @import("index.zig").IndexTensor;
+
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const table = try Tensor(f32).init(a, &.{ 2, 4 });
+    table.setData(&.{
+        1, 2,
+        3, 4,
+        5, 6,
+        7, 8,
+    });
+    table.setParam();
+
+    const indices = try IndexTensor(i32).initCopy(a, &.{ 1, 3, 1 });
+    const gathered = table.gatherRowsIdx(indices);
+    const out = gathered.sumAll();
+    try g.buildForward(out);
+    try g.buildBackward(false);
+    _ = out.grad.?.setAllScalar(1);
+    g.compute();
+
+    try testing.expectEqualSlices(f32, &.{
+        0, 0,
+        2, 2,
+        0, 0,
+        1, 1,
+    }, table.grad.?.data);
 }

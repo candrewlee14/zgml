@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 pub const Tensor = @import("tensor.zig").Tensor;
+pub const IndexTensor = @import("index.zig").IndexTensor;
 pub const max_dims = @import("tensor.zig").max_dims;
 pub const ComputeGraph = @import("graph.zig").ComputeGraph;
 
@@ -16,5 +17,6 @@ test "ref all decls" {
     _ = testing.refAllDeclsRecursive(models);
     _ = testing.refAllDeclsRecursive(optim);
     _ = testing.refAllDeclsRecursive(loss);
+    _ = @import("index.zig");
     _ = @import("shaped.zig");
 }
