@@ -569,6 +569,38 @@ pub fn Tensor(comptime T: type) type {
             }
             return true;
         }
+
+        // ---------------------------------------------------------------
+        // Fused elementwise operations
+        //
+        // `map` and `map2` apply a user-provided function element-wise in a
+        // single pass over memory. No intermediate tensors are allocated.
+        // The result is an eagerly-computed leaf tensor (.op = .none).
+        //
+        // LLVM auto-vectorizes the loop in ReleaseFast builds. For explicit
+        // SIMD control, use the compute* functions in tensor/forward.zig.
+        // ---------------------------------------------------------------
+
+        /// Apply a unary function element-wise: `dst[i] = f(self[i])`.
+        /// Computes eagerly — no graph node is created.
+        pub fn map(self: *Self, alloc: Alloc, comptime f: fn (T) T) Alloc.Error!*Self {
+            const dst = try Self.init(alloc, self.ne[0..self.n_dims]);
+            for (self.data, dst.data) |x, *d| {
+                d.* = f(x);
+            }
+            return dst;
+        }
+
+        /// Apply a binary function element-wise: `dst[i] = f(self[i], other[i])`.
+        /// Both tensors must have the same shape. Computes eagerly.
+        pub fn map2(self: *Self, alloc: Alloc, other: *Self, comptime f: fn (T, T) T) Alloc.Error!*Self {
+            assert(self.isSameShape(other));
+            const dst = try Self.init(alloc, self.ne[0..self.n_dims]);
+            for (self.data, other.data, dst.data) |a, b, *d| {
+                d.* = f(a, b);
+            }
+            return dst;
+        }
     };
 }
 

@@ -282,6 +282,22 @@ pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
         pub fn transpose(self: Self, alloc: Alloc) ShapedTensor(T, transposeShape(shape)) {
             return .{ .inner = self.inner.transpose(alloc) };
         }
+
+        // -- Fused elementwise operations ----------------------------------
+        //
+        // Apply a user-provided function in a single pass over memory.
+        // No intermediate tensors, no graph nodes — just one loop,
+        // auto-vectorized by LLVM in release builds.
+
+        /// Apply a unary function element-wise: `dst[i] = f(self[i])`.
+        pub fn map(self: Self, alloc: Alloc, comptime f: fn (T) T) Alloc.Error!Self {
+            return .{ .inner = try self.inner.map(alloc, f) };
+        }
+
+        /// Apply a binary function element-wise: `dst[i] = f(self[i], other[i])`.
+        pub fn map2(self: Self, alloc: Alloc, other: Self, comptime f: fn (T, T) T) Alloc.Error!Self {
+            return .{ .inner = try self.inner.map2(alloc, other.inner, f) };
+        }
     };
 }
 
@@ -391,4 +407,63 @@ test "shaped - backward through graph" {
 
     // d/dx[sum(x^2)] = 2x
     try testing.expectEqualSlices(f32, &.{ 2, 4, 6 }, x.tensor().grad.?.data);
+}
+
+test "map - unary fusion" {
+    var arena = std.heap.ArenaAllocator.init(tac);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const x = (try Shaped(f32, .{4}).init(a)).setData(&.{ 1, 4, 9, 16 });
+
+    // Fused: sqrt then negate — one pass, zero intermediates
+    const y = try x.map(a, struct {
+        fn f(xi: f32) f32 {
+            return -std.math.sqrt(xi);
+        }
+    }.f);
+
+    try testing.expectEqualSlices(f32, &.{ -1, -2, -3, -4 }, y.tensor().data);
+}
+
+test "map2 - binary fusion (sub+sqr = MSE kernel)" {
+    var arena = std.heap.ArenaAllocator.init(tac);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const pred = (try Shaped(f32, .{4}).init(a)).setData(&.{ 1, 2, 3, 4 });
+    const target = (try Shaped(f32, .{4}).init(a)).setData(&.{ 1, 3, 3, 6 });
+
+    // Fused (pred - target)^2 — one pass
+    const sq_err = try pred.map2(a, target, struct {
+        fn f(p: f32, t: f32) f32 {
+            const d = p - t;
+            return d * d;
+        }
+    }.f);
+
+    // (0)^2, (−1)^2, (0)^2, (−2)^2 = 0, 1, 0, 4
+    try testing.expectEqualSlices(f32, &.{ 0, 1, 0, 4 }, sq_err.tensor().data);
+}
+
+test "map2 - fused result feeds into graph" {
+    // Verify a map2 result (eager) can feed into the lazy graph for autodiff
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = (try Shaped(f32, .{3}).init(a)).setData(&.{ 2, 3, 4 });
+
+    // Eager: fused double
+    const doubled = try x.map(a, struct {
+        fn f(xi: f32) f32 { return xi * 2; }
+    }.f);
+
+    // Feed into lazy graph for sum
+    const out = doubled.sumAll(a);
+    try g.buildForward(out.tensor());
+    g.compute();
+
+    // 2+3+4 doubled = 18
+    try testing.expectApproxEqAbs(@as(f32, 18.0), out.tensor().data[0], 1e-6);
 }
