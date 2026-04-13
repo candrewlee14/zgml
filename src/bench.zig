@@ -7,6 +7,8 @@ const std = @import("std");
 const zgml = @import("zgml");
 const Tensor = zgml.Tensor;
 const IoWriter = std.io.Writer;
+const opts = @import("zgml_options");
+const use_blas = opts.use_blas;
 
 // ---------------------------------------------------------------------------
 // Naive baselines (scalar, no SIMD, bounds-check-free)
@@ -217,14 +219,19 @@ pub fn main() !void {
     var file_writer = stdout_file.writer(&buf);
     var w = &file_writer.interface;
 
-    try w.print("\nzgml benchmark suite\n", .{});
-    try w.print("====================\n\n", .{});
+    try w.print("\nzgml benchmark suite", .{});
+    if (use_blas) try w.print(" [BLAS enabled]", .{});
+    try w.print("\n====================\n\n", .{});
 
     try w.print("Element-wise operations (SIMD vs naive scalar)\n", .{});
     try w.print("-----------------------------------------------\n", .{});
     try benchElementwise(alloc, w);
 
-    try w.print("\nMatrix multiplication (tiled SIMD vs naive triple-loop)\n", .{});
+    if (use_blas) {
+        try w.print("\nMatrix multiplication (OpenBLAS vs naive triple-loop)\n", .{});
+    } else {
+        try w.print("\nMatrix multiplication (tiled SIMD vs naive triple-loop)\n", .{});
+    }
     try w.print("-------------------------------------------------------\n", .{});
     try benchMatMul(alloc, w);
 

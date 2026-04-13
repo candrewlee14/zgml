@@ -53,7 +53,12 @@ pub fn package(
         .imports = &.{
             .{ .name = "zgml_options", .module = zgml_options },
         },
+        .link_libc = if (args.options.use_blas) true else null,
     });
+
+    if (args.options.use_blas) {
+        zgml.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
 
     return .{
         .target = target,
@@ -74,22 +79,32 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run zgml tests");
     test_step.dependOn(runTests(b, optimize, target, .{ .use_blas = use_blas }));
 
-    // Benchmark step — always built with ReleaseFast
-    const bench_step = b.step("bench", "Run zgml benchmarks");
-    const zgml_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+    // Benchmark — always built with ReleaseFast
+    const zgml_bench_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
     const bench_mod = b.createModule(.{
         .root_source_file = b.path("src/bench.zig"),
         .target = target,
         .optimize = .ReleaseFast,
         .imports = &.{
-            .{ .name = "zgml", .module = zgml_pkg.zgml },
-            .{ .name = "zgml_options", .module = zgml_pkg.zgml_options },
+            .{ .name = "zgml", .module = zgml_bench_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_bench_pkg.zgml_options },
         },
     });
     const bench_exe = b.addExecutable(.{
         .name = "zgml-bench",
         .root_module = bench_mod,
     });
+    if (use_blas) {
+        bench_exe.linkLibC();
+        bench_exe.linkSystemLibrary("openblas");
+        bench_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    b.installArtifact(bench_exe);
+
+    const bench_build_step = b.step("bench-build", "Build zgml benchmarks");
+    bench_build_step.dependOn(&bench_exe.step);
+
+    const bench_step = b.step("bench", "Build and run zgml benchmarks");
     bench_step.dependOn(&b.addRunArtifact(bench_exe).step);
 }
 
@@ -114,6 +129,11 @@ pub fn runTests(
         .name = "zgml-tests",
         .root_module = test_mod,
     });
+    if (options.use_blas) {
+        test_exe.linkLibC();
+        test_exe.linkSystemLibrary("openblas");
+        test_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
     b.installArtifact(test_exe);
 
     return &b.addRunArtifact(test_exe).step;
