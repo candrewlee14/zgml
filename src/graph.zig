@@ -10,6 +10,7 @@ const std = @import("std");
 const tensorlib = @import("./tensor.zig");
 const Tensor = tensorlib.Tensor;
 const Op = @import("op.zig").Op;
+const loss = @import("loss.zig");
 const fused = @import("tensor/fused.zig");
 const assert = std.debug.assert;
 const testing = std.testing;
@@ -59,6 +60,32 @@ pub fn ComputeGraph(comptime T: type) type {
             return self.arena.allocator();
         }
 
+        // ---------------------------------------------------------------
+        // Tensor creation helpers
+        // ---------------------------------------------------------------
+
+        /// Create a tensor within this graph.
+        pub fn tensor(self: *Self, ne: []const usize) !*Tensor(T) {
+            return try Tensor(T).init(self.arena.allocator(), ne);
+        }
+
+        /// Create a tensor and mark it as a learnable parameter.
+        pub fn param(self: *Self, ne: []const usize) !*Tensor(T) {
+            const t = try Tensor(T).init(self.arena.allocator(), ne);
+            t.setParam();
+            return t;
+        }
+
+        /// Create a scalar (1-element) tensor.
+        pub fn scalar(self: *Self, val: T) !*Tensor(T) {
+            return try Tensor(T).initScalar(self.arena.allocator(), val);
+        }
+
+        /// Create a tensor filled with evenly spaced values.
+        pub fn linspace(self: *Self, ne: []const usize, start: T, end: T) !*Tensor(T) {
+            return try Tensor(T).initLinspace(self.arena.allocator(), ne, start, end);
+        }
+
         /// Clean up all the resources for this compute graph
         pub fn deinit(self: *Self) void {
             const alloc = self.arena.allocator();
@@ -72,17 +99,17 @@ pub fn ComputeGraph(comptime T: type) type {
         }
 
         /// Build a graph where the provided tensor is the final output node
-        pub fn buildForward(self: *Self, tensor: *Tensor(T)) Alloc.Error!void {
-            try self.buildForwardHelper(tensor);
+        pub fn buildForward(self: *Self, root: *Tensor(T)) Alloc.Error!void {
+            try self.buildForwardHelper(root);
             self.built_forward = true;
             self.forward_node_count = self.nodes.items.len;
         }
-        fn buildForwardHelper(self: *Self, tensor: *Tensor(T)) Alloc.Error!void {
+        fn buildForwardHelper(self: *Self, root_node: *Tensor(T)) Alloc.Error!void {
             const n_before = self.nodes.items.len;
-            try self.addParentsThenSelf(tensor);
-            // tensor should be last node
+            try self.addParentsThenSelf(root_node);
+            // node should be last node
             const n_change = self.nodes.items.len - n_before;
-            if (n_change > 0) assert(self.nodes.items[self.nodes.items.len - 1] == tensor);
+            if (n_change > 0) assert(self.nodes.items[self.nodes.items.len - 1] == root_node);
         }
         /// Build a backward graph
         pub fn buildBackward(self: *Self, keep: bool) Alloc.Error!void {
@@ -94,7 +121,7 @@ pub fn ComputeGraph(comptime T: type) type {
                 const node = self.nodes.items[i];
 
                 // because we detached the grad nodes from the original graph, we can afford inplace operations
-                if (node.grad != null) {
+                if (node.hasGrad()) {
                     try node.backward(alloc, &self.scratch, keep);
                 }
             }
@@ -102,8 +129,8 @@ pub fn ComputeGraph(comptime T: type) type {
                 const i = nodes_len - j - 1;
                 const node = self.nodes.items[i];
                 if (node.is_param) {
-                    assert(node.grad != null);
-                    try self.buildForwardHelper(node.grad.?);
+                    assert(node.hasGrad());
+                    try self.buildForwardHelper(node.gradOrNull().?);
                 }
             }
 
@@ -130,7 +157,7 @@ pub fn ComputeGraph(comptime T: type) type {
             @memset(use_count, 0);
 
             for (self.nodes.items[0..fwd_count]) |node| {
-                if (node.src0) |src| {
+                if (node.source0()) |src| {
                     for (self.nodes.items[0..fwd_count], 0..) |n, j| {
                         if (n == src) {
                             use_count[j] += 1;
@@ -138,7 +165,7 @@ pub fn ComputeGraph(comptime T: type) type {
                         }
                     }
                 }
-                if (node.src1) |src| {
+                if (node.source1()) |src| {
                     for (self.nodes.items[0..fwd_count], 0..) |n, j| {
                         if (n == src) {
                             use_count[j] += 1;
@@ -163,13 +190,19 @@ pub fn ComputeGraph(comptime T: type) type {
                     i = plan.output_idx;
                     continue;
                 }
+                if (detectLayerNormPattern(self, i)) |plan| {
+                    for (i..plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
+                    try self.fused_chains.append(alloc, plan);
+                    i = plan.output_idx;
+                    continue;
+                }
                 if (detectSoftmaxPattern(self, i)) |plan| {
                     for (i..plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
                     try self.fused_chains.append(alloc, plan);
                     i = plan.output_idx;
                     continue;
                 }
-                if (!node.op.isFusible()) continue;
+                if (!node.opTag().isFusible()) continue;
                 if (self.fused_skip.items[i]) continue;
 
                 // Start a chain from this node
@@ -182,8 +215,8 @@ pub fn ComputeGraph(comptime T: type) type {
                     extending = false;
                     if (chain_end + 1 < fwd_count) {
                         const next = self.nodes.items[chain_end + 1];
-                        if (next.op.isFusible() and
-                            next.src0.? == self.nodes.items[chain_end] and
+                        if (next.opTag().isFusible() and
+                            next.source0().? == self.nodes.items[chain_end] and
                             next.isSameShape(self.nodes.items[chain_end]) and
                             use_count[chain_end] == 1)
                         {
@@ -227,15 +260,15 @@ pub fn ComputeGraph(comptime T: type) type {
                 const n7 = nodes[start + 7];
                 const n8 = nodes[start + 8];
 
-                if (n0.op == .max and
-                    n1.op == .repeat and n1.src0.? == n0 and
-                    n2.op == .neg and n2.src0.? == n1 and
-                    n3.op == .add and n3.src0.? == n0.src0.? and n3.src1.? == n2 and
-                    n4.op == .exp and n4.src0.? == n3 and
-                    n5.op == .sum and n5.src0.? == n4 and
-                    n6.op == .repeat and n6.src0.? == n5 and
-                    n7.op == .recip and n7.src0.? == n6 and
-                    n8.op == .mul and n8.src0.? == n4 and n8.src1.? == n7)
+                if (n0.isOp(.max) and
+                    n1.isOp(.repeat) and n1.sourceIs(.src0, n0) and
+                    n2.isOp(.neg) and n2.sourceIs(.src0, n1) and
+                    n3.isOp(.add) and n3.source0().? == n0.source0().? and n3.sourceIs(.src1, n2) and
+                    n4.isOp(.exp) and n4.sourceIs(.src0, n3) and
+                    n5.isOp(.sum) and n5.sourceIs(.src0, n4) and
+                    n6.isOp(.repeat) and n6.sourceIs(.src0, n5) and
+                    n7.isOp(.recip) and n7.sourceIs(.src0, n6) and
+                    n8.isOp(.mul) and n8.sourceIs(.src0, n4) and n8.sourceIs(.src1, n7))
                 {
                     return .{ .nodes = nodes[start .. start + 9], .output_idx = start + 8, .kind = .softmax };
                 }
@@ -253,16 +286,16 @@ pub fn ComputeGraph(comptime T: type) type {
                 const n8 = nodes[start + 8];
                 const n9 = nodes[start + 9];
 
-                if (n0.op == .max and
-                    n1.op == .repeat and n1.src0.? == n0 and
-                    n2.op == .neg and n2.src0.? == n1 and
-                    n3.op == .add and n3.src0.? == n0.src0.? and n3.src1.? == n2 and
-                    n4.op == .exp and n4.src0.? == n3 and
-                    n5.op == .sum and n5.src0.? == n4 and
-                    n6.op == .log and n6.src0.? == n5 and
-                    n7.op == .repeat and n7.src0.? == n6 and
-                    n8.op == .neg and n8.src0.? == n7 and
-                    n9.op == .add and n9.src0.? == n3 and n9.src1.? == n8)
+                if (n0.isOp(.max) and
+                    n1.isOp(.repeat) and n1.sourceIs(.src0, n0) and
+                    n2.isOp(.neg) and n2.sourceIs(.src0, n1) and
+                    n3.isOp(.add) and n3.source0().? == n0.source0().? and n3.sourceIs(.src1, n2) and
+                    n4.isOp(.exp) and n4.sourceIs(.src0, n3) and
+                    n5.isOp(.sum) and n5.sourceIs(.src0, n4) and
+                    n6.isOp(.log) and n6.sourceIs(.src0, n5) and
+                    n7.isOp(.repeat) and n7.sourceIs(.src0, n6) and
+                    n8.isOp(.neg) and n8.sourceIs(.src0, n7) and
+                    n9.isOp(.add) and n9.source0().? == n3 and n9.sourceIs(.src1, n8))
                 {
                     return .{ .nodes = nodes[start .. start + 10], .output_idx = start + 9, .kind = .log_softmax };
                 }
@@ -278,31 +311,31 @@ pub fn ComputeGraph(comptime T: type) type {
 
         fn matchOp(node: ?*Tensor(T), op: Op) ?*Tensor(T) {
             const n = node orelse return null;
-            return if (n.op == op) n else null;
+            return if (n.opTag() == op) n else null;
         }
 
         fn matchUnary(node: ?*Tensor(T), op: Op, src0: *Tensor(T)) ?*Tensor(T) {
             const n = matchOp(node, op) orelse return null;
-            return if (n.src0.? == src0) n else null;
+            return if (n.source0().? == src0) n else null;
         }
 
         fn matchBinary(node: ?*Tensor(T), op: Op, src0: *Tensor(T), src1: *Tensor(T)) ?*Tensor(T) {
             const n = matchOp(node, op) orelse return null;
-            return if (n.src0.? == src0 and n.src1.? == src1) n else null;
+            return if (n.source0().? == src0 and n.source1().? == src1) n else null;
         }
 
         fn matchBinaryScalarRhs(node: ?*Tensor(T), op: Op, src0: *Tensor(T)) ?*Tensor(T) {
             const n = matchOp(node, op) orelse return null;
-            if (n.src0.? != src0) return null;
-            return if (n.src1.?.isScalar()) n else null;
+            if (n.source0().? != src0) return null;
+            return if (n.source1().?.isScalar()) n else null;
         }
 
         fn findNextUser(self: *const Self, start: usize, src: *Tensor(T), op: Op) ?struct { idx: usize, node: *Tensor(T) } {
             var i = start;
             while (i < self.forward_node_count) : (i += 1) {
                 const node = self.nodes.items[i];
-                if (node.op != op) continue;
-                if (node.src0 == src or node.src1 == src) return .{ .idx = i, .node = node };
+                if (node.opTag() != op) continue;
+                if (node.source0() == src or node.source1() == src) return .{ .idx = i, .node = node };
             }
             return null;
         }
@@ -310,7 +343,7 @@ pub fn ComputeGraph(comptime T: type) type {
         fn matchScalarBroadcast(node: ?*Tensor(T)) ?*Tensor(T) {
             const n = node orelse return null;
             if (n.isScalar()) return n;
-            if (n.op == .repeat and n.src0.?.isScalar()) return n;
+            if (n.opTag() == .repeat and n.source0().?.isScalar()) return n;
             return null;
         }
 
@@ -333,20 +366,20 @@ pub fn ComputeGraph(comptime T: type) type {
             const n12 = nodes[start + 12];
             const n13 = nodes[start + 13];
 
-            if (n0.op == .max and
-                n1.op == .repeat and n1.src0.? == n0 and
-                n2.op == .neg and n2.src0.? == n1 and
-                n3.op == .add and n3.src0.? == n0.src0.? and n3.src1.? == n2 and
-                n4.op == .exp and n4.src0.? == n3 and
-                n5.op == .sum and n5.src0.? == n4 and
-                n6.op == .log and n6.src0.? == n5 and
-                n7.op == .repeat and n7.src0.? == n6 and
-                n8.op == .neg and n8.src0.? == n7 and
-                n9.op == .add and n9.src0.? == n3 and n9.src1.? == n8 and
-                n10.op == .pick_rows and n10.src0.? == n9 and
-                n11.op == .neg and n11.src0.? == n10 and
-                n12.op == .sum and n12.src0.? == n11 and
-                n13.op == .mul and n13.src0.? == n12 and n13.src1.?.isScalar())
+            if (n0.isOp(.max) and
+                n1.isOp(.repeat) and n1.sourceIs(.src0, n0) and
+                n2.isOp(.neg) and n2.sourceIs(.src0, n1) and
+                n3.isOp(.add) and n3.source0().? == n0.source0().? and n3.sourceIs(.src1, n2) and
+                n4.isOp(.exp) and n4.sourceIs(.src0, n3) and
+                n5.isOp(.sum) and n5.sourceIs(.src0, n4) and
+                n6.isOp(.log) and n6.sourceIs(.src0, n5) and
+                n7.isOp(.repeat) and n7.sourceIs(.src0, n6) and
+                n8.isOp(.neg) and n8.sourceIs(.src0, n7) and
+                n9.isOp(.add) and n9.source0().? == n3 and n9.sourceIs(.src1, n8) and
+                n10.isOp(.pick_rows) and n10.sourceIs(.src0, n9) and
+                n11.isOp(.neg) and n11.sourceIs(.src0, n10) and
+                n12.isOp(.sum) and n12.sourceIs(.src0, n11) and
+                n13.isOp(.mul) and n13.sourceIs(.src0, n12) and n13.source1().?.isScalar())
             {
                 return .{ .nodes = nodes[start .. start + 14], .output_idx = start + 13, .kind = .cross_entropy };
             }
@@ -357,55 +390,57 @@ pub fn ComputeGraph(comptime T: type) type {
         fn detectLayerNormPattern(self: *const Self, start: usize) ?fused.FusionPlan(T) {
             const n0 = matchOp(self.nodeAt(start), .sum) orelse return null;
             const n1 = findNextUser(self, start + 1, n0, .mul) orelse return null;
-            if (matchScalarBroadcast(n1.node.src1) == null) return null;
+            if (matchScalarBroadcast(n1.node.source1()) == null) return null;
 
             const n2 = findNextUser(self, n1.idx + 1, n1.node, .repeat) orelse return null;
             const n3 = findNextUser(self, n2.idx + 1, n2.node, .neg) orelse return null;
             const n4 = findNextUser(self, n3.idx + 1, n3.node, .add) orelse return null;
-            if (n4.node.src0.? != n0.src0.?) return null;
+            if (n4.node.source0().? != n0.source0().?) return null;
 
             const n5 = findNextUser(self, n4.idx + 1, n4.node, .mul) orelse return null;
-            if (n5.node.src0.? != n4.node or n5.node.src1.? != n4.node) return null;
+            if (n5.node.source0().? != n4.node or n5.node.source1().? != n4.node) return null;
 
             const n6 = findNextUser(self, n5.idx + 1, n5.node, .sum) orelse return null;
             const n7 = findNextUser(self, n6.idx + 1, n6.node, .mul) orelse return null;
-            if (matchScalarBroadcast(n7.node.src1) == null) return null;
+            if (matchScalarBroadcast(n7.node.source1()) == null) return null;
 
             const n8 = findNextUser(self, n7.idx + 1, n7.node, .add) orelse return null;
-            if (n8.node.src0.? != n7.node) return null;
-            _ = matchScalarBroadcast(n8.node.src1.?) orelse return null;
+            const eps_like = matchScalarBroadcast(n8.node.source1()) orelse return null;
+            if (n8.node.source0().? != n7.node) return null;
+            if (eps_like.opTag() != .repeat) return null;
 
             const n9 = findNextUser(self, n8.idx + 1, n8.node, .sqrt) orelse return null;
             const n10 = findNextUser(self, n9.idx + 1, n9.node, .recip) orelse return null;
             const n11 = findNextUser(self, n10.idx + 1, n10.node, .repeat) orelse return null;
             const n12 = findNextUser(self, n11.idx + 1, n11.node, .mul) orelse return null;
-            if (n12.node.src0.? != n4.node and n12.node.src1.? != n4.node) return null;
+            if (n12.node.source0().? != n4.node and n12.node.source1().? != n4.node) return null;
 
-            return .{ .nodes = self.nodes.items[start .. n12.idx + 1], .output_idx = n12.idx, .kind = .layer_norm };
+            if (n12.idx != start + 13) return null;
+            return .{ .nodes = self.nodes.items[start .. start + 14], .output_idx = start + 13, .kind = .layer_norm };
         }
 
-        fn addParentsThenSelf(self: *Self, tensor: *Tensor(T)) Alloc.Error!void {
+        fn addParentsThenSelf(self: *Self, cur: *Tensor(T)) Alloc.Error!void {
             const alloc = self.arena.allocator();
             // check if already visited
-            for (self.nodes.items) |node| {
-                if (tensor == node) {
+            for (self.nodes.items) |item| {
+                if (cur == item) {
                     return;
                 }
             }
-            for (self.leaves.items) |node| {
-                if (tensor == node) {
+            for (self.leaves.items) |item| {
+                if (cur == item) {
                     return;
                 }
             }
             // visit parents
-            if (tensor.src0) |ts0| try self.addParentsThenSelf(ts0);
-            if (tensor.src1) |ts1| try self.addParentsThenSelf(ts1);
-            if (tensor.op == .none and tensor.grad == null) {
+            if (cur.source0()) |ts0| try self.addParentsThenSelf(ts0);
+            if (cur.source1()) |ts1| try self.addParentsThenSelf(ts1);
+            if (cur.isLeaf()) {
                 // is leaf
-                try self.leaves.append(alloc, tensor);
+                try self.leaves.append(alloc, cur);
             } else {
-                try self.nodes.append(alloc, tensor);
-                try self.grads.append(alloc, tensor.grad);
+                try self.nodes.append(alloc, cur);
+                try self.grads.append(alloc, cur.gradOrNull());
             }
         }
         pub fn toGraphViz(self: *const Self, alloc: Alloc) Alloc.Error!std.ArrayList(u8) {
@@ -415,24 +450,24 @@ pub fn ComputeGraph(comptime T: type) type {
 
             for (self.nodes.items) |node| {
                 try writer.print("  \"{*}\" [shape=\"none\",label=<<table>", .{node});
-                if (node.op == .none) {
+                if (node.opTag() == .none) {
                     try writer.print("<tr><td>{any}</td></tr>", .{node.data});
                 } else {
                     try writer.print("<tr><td>{any}</td></tr>", .{node.data});
-                    try writer.print("<tr><td>{s}</td></tr>", .{node.op.symbol()});
+                    try writer.print("<tr><td>{s}</td></tr>", .{node.opTag().symbol()});
                 }
                 if (node.name) |name| {
                     try writer.print("<tr><td>{s}</td></tr>", .{name});
                 }
                 try writer.print("<tr><td>{any}</td></tr>", .{node.ne});
                 try writer.print("</table>>];\n", .{});
-                if (node.src0) |src0| {
+                if (node.source0()) |src0| {
                     try writer.print("  \"{*}\" -> \"{*}\";\n", .{ src0, node });
                 }
-                if (node.src1) |src1| {
+                if (node.source1()) |src1| {
                     try writer.print("  \"{*}\" -> \"{*}\";\n", .{ src1, node });
                 }
-                if (node.grad) |grad| {
+                if (node.gradOrNull()) |grad| {
                     try writer.print("  \"{*}\" -> \"{*}\" [style=dashed];\n", .{ node, grad });
                 }
                 if (!node.data_owned) {
@@ -458,7 +493,7 @@ pub fn ComputeGraph(comptime T: type) type {
         }
         pub fn reset(self: *Self) void {
             for (self.nodes.items) |node| {
-                if (node.op != .none) _ = node.setAllScalar(0);
+                if (node.opTag() != .none) _ = node.setAllScalar(0);
             }
         }
 
@@ -1055,8 +1090,6 @@ test "fusion - detects logSoftmax pattern" {
 }
 
 test "fusion - detects cross entropy pattern" {
-    const loss = @import("loss.zig");
-
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
@@ -1104,6 +1137,88 @@ test "layerNorm forward" {
     try testing.expectApproxEqAbs((2.0 - 2.5) / std_dev, out.data[1], 1e-4);
     try testing.expectApproxEqAbs((3.0 - 2.5) / std_dev, out.data[2], 1e-4);
     try testing.expectApproxEqAbs((4.0 - 2.5) / std_dev, out.data[3], 1e-4);
+}
+
+test "fusion - detects layerNorm pattern" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{4});
+    x.setData(&.{ 1, 2, 3, 4 });
+    const out = x.layerNorm(&.{1}, 1e-5);
+    try g.buildForward(out);
+    try g.fusionPass();
+
+    var found = false;
+    for (g.fused_chains.items) |plan| {
+        if (plan.kind == .layer_norm) found = true;
+    }
+    try testing.expect(found);
+
+    g.compute();
+    const std_dev = @sqrt(@as(f32, 1.25) + 1e-5);
+    try testing.expectApproxEqAbs((1.0 - 2.5) / std_dev, out.data[0], 1e-4);
+}
+
+test "fusion - layerNorm fused matches unfused 1D" {
+    var gf = ComputeGraph(f32).init(tac);
+    defer gf.deinit();
+    var gu = ComputeGraph(f32).init(tac);
+    defer gu.deinit();
+
+    const af = gf.allocator();
+    const au = gu.allocator();
+
+    const xf = try Tensor(f32).init(af, &.{4});
+    xf.setData(&.{ 1, 2, 3, 4 });
+    const xu = try Tensor(f32).init(au, &.{4});
+    xu.setData(&.{ 1, 2, 3, 4 });
+
+    const yf = xf.layerNorm(&.{1}, 1e-5);
+    const yu = xu.layerNorm(&.{1}, 1e-5);
+
+    try gf.buildForward(yf);
+    try gu.buildForward(yu);
+    try gf.fusionPass();
+    gf.compute();
+    gu.compute();
+
+    for (yf.data, yu.data) |a_out, b_out| {
+        try testing.expectApproxEqAbs(a_out, b_out, 1e-5);
+    }
+}
+
+test "fusion - layerNorm fused matches unfused 2D" {
+    var gf = ComputeGraph(f32).init(tac);
+    defer gf.deinit();
+    var gu = ComputeGraph(f32).init(tac);
+    defer gu.deinit();
+
+    const af = gf.allocator();
+    const au = gu.allocator();
+
+    const xf = try Tensor(f32).init(af, &.{ 2, 3 });
+    xf.setData(&.{ 1, 2, 3, 4, 5, 6 });
+    const xu = try Tensor(f32).init(au, &.{ 2, 3 });
+    xu.setData(&.{ 1, 2, 3, 4, 5, 6 });
+
+    const yf = xf.layerNorm(&.{ 1, 3 }, 1e-5);
+    const yu = xu.layerNorm(&.{ 1, 3 }, 1e-5);
+
+    try gf.buildForward(yf);
+    try gu.buildForward(yu);
+    try gf.fusionPass();
+    gf.compute();
+    gu.compute();
+
+    for (yf.data, yu.data) |a_out, b_out| {
+        try testing.expectApproxEqAbs(a_out, b_out, 1e-5);
+    }
+}
+
+test "fusion - layerNorm plan kind is linked" {
+    try testing.expectEqual(fused.FusionKind.layer_norm, .layer_norm);
 }
 
 test "backward - gelu" {
