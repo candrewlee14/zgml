@@ -117,19 +117,19 @@ pub fn main() !void {
     const train_batches = train_images.n / batch_size;
     const pixels_per_image = train_images.rows * train_images.cols;
 
-    try w.interface.print("Architecture: Conv(5x5, 1->8) -> ReLU -> MaxPool(2x2) -> FC(1152->10)\n", .{});
-    try w.interface.print("Optimizer: SGD (lr=0.01, momentum=0.9)\n", .{});
+    try w.interface.print("Architecture: Conv(5x5, 1->32) -> BN -> ReLU -> MaxPool -> FC(4608->128) -> ReLU -> FC(128->10)\n", .{});
+    try w.interface.print("Optimizer: Adam (lr=1e-3)\n", .{});
     try w.interface.print("Batch size: {}, Epochs: {}\n\n", .{ batch_size, n_epochs });
     w.interface.flush() catch {};
 
-    // Build model using the generic conv classifier template
-    var model = try ConvClassifier(f32).build(alloc, 28, 28, 5, 8, 10, batch_size);
+    // Build deep model with batch norm and hidden FC layer
+    var model = try ConvClassifier(f32).buildDeep(alloc, 28, 28, 32, 128, 10, batch_size);
     defer model.deinit();
     try model.g.fusionPass();
 
-    // SGD optimizer
+    // Adam optimizer
     const p = model.params();
-    var sgd = try zgml.optim.sgd.SGD(f32).init(alloc, &p, .{ .lr = 0.01, .momentum = 0.9 });
+    var sgd = try zgml.optim.adam.Adam(f32).init(alloc, p, .{ .lr = 1e-3 });
     defer sgd.deinit();
 
     // Batch index array for shuffling

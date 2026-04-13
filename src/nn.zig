@@ -31,6 +31,30 @@ pub fn linear(comptime T: type, x: *Tensor(T), w: *Tensor(T), b: ?*Tensor(T)) *T
     return if (b) |bias| h.addBias(bias) else h;
 }
 
+/// Batch normalization for 4D tensors [W, H, C, N].
+///
+/// Normalizes per-channel across the spatial and batch dimensions,
+/// then applies learnable scale (gamma) and shift (beta).
+/// Uses the same composed-primitive approach as layerNorm.
+///
+/// ```
+/// const bn_g = try g.param(&.{n_filters}); // gamma (scale)
+/// const bn_b = try g.param(&.{n_filters}); // beta (shift)
+/// // init gamma=1, beta=0
+/// const y = nn.batchNorm2d(f32, conv_out, bn_g, bn_b, 1e-5);
+/// ```
+pub fn batchNorm2d(comptime T: type, x: *Tensor(T), gamma: *Tensor(T), beta: *Tensor(T), eps: T) *Tensor(T) {
+    std.debug.assert(x.n_dims == 4);
+    const C = x.ne[2];
+    // Normalize per-channel: reduce over W, H, N → [1, 1, C, 1]
+    const normalized = x.layerNorm(&.{ 1, 1, C, 1 }, eps);
+    // Scale and shift with learnable parameters
+    const g4 = gamma.reshape(&.{ 1, 1, C, 1 });
+    const b4 = beta.reshape(&.{ 1, 1, C, 1 });
+    var out_ne = [_]usize{ x.ne[0], x.ne[1], x.ne[2], x.ne[3] };
+    return normalized.mul(g4.repeat(out_ne[0..])).add(b4.repeat(out_ne[0..]));
+}
+
 /// Initialize tensor weights with Kaiming uniform distribution.
 ///
 /// Draws from U(-bound, +bound) where bound = sqrt(6 / fan_in).

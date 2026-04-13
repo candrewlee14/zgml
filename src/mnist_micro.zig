@@ -26,7 +26,7 @@ pub fn main() !void {
     try model.g.fusionPass();
 
     const p = model.params();
-    var sgd = try zgml.optim.sgd.SGD(f32).init(alloc, &p, .{ .lr = 0.01, .momentum = 0.9 });
+    var sgd = try zgml.optim.sgd.SGD(f32).init(alloc, p, .{ .lr = 0.01, .momentum = 0.9 });
     defer sgd.deinit();
 
     // Fill with deterministic synthetic data
