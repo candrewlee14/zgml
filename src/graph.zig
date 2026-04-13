@@ -199,12 +199,25 @@ pub fn ComputeGraph(comptime T: type) type {
                 }
             }
 
-            // Build O(N) use-count map for elementwise chain detection
+            // Build node → index map (used by backward conv detection and elementwise chains)
             var ptr_to_idx = std.AutoHashMap(*Tensor(T), usize).init(alloc);
             defer ptr_to_idx.deinit();
             try ptr_to_idx.ensureTotalCapacity(@intCast(node_count));
             for (self.nodes.items, 0..) |node, idx| {
                 ptr_to_idx.putAssumeCapacity(node, idx);
+            }
+
+            // Detect backward conv2d patterns directly on the tensor graph.
+            // scatter_add_view nodes in the backward pass are produced by the
+            // backward rule for as_strided. When the as_strided came from a
+            // conv2d decomposition, the scatter implements either bwd_input or
+            // bwd_kernel depending on which conv operand the view referenced.
+            for (self.nodes.items[self.forward_node_count..], self.forward_node_count..) |node, idx| {
+                if (self.fused_skip.items[idx]) continue;
+                if (detectConv2dBwdPlan(node, idx)) |_| {
+                    // TODO: fused kernel produces wrong results; detection works
+                    // but execution needs debugging. Skipping for now.
+                }
             }
 
             const use_count = try alloc.alloc(u16, node_count);
@@ -285,6 +298,88 @@ pub fn ComputeGraph(comptime T: type) type {
 
             try self.buildExecutionSteps(alloc, node_count, &self.execution_steps);
             try self.buildExecutionSteps(alloc, self.forward_node_count, &self.forward_execution_steps);
+        }
+
+        /// Detect conv2d backward pattern from a scatter_add_view node.
+        ///
+        /// The backward rule for `as_strided` produces `out_grad.scatterAddView(view)`.
+        /// For conv2d decompositions, the view (scatter.src1) is a 7D as_strided of a 4D
+        /// tensor. We walk the gradient chain (scatter.src0) to find the mul and broadcast
+        /// nodes, then determine direction based on whether the view's source is a
+        /// parameter (bwd_kernel: gradient w.r.t. kernel) or not (bwd_input).
+        ///
+        /// The gradient chain has add-accumulation nodes interleaved. We use `findPastAdd`
+        /// to look through exactly one level of add on each step.
+        fn detectConv2dBwdPlan(scatter: *Tensor(T), scatter_idx: usize) ?fused.FusionPlan(T) {
+            if (scatter.opTag() != .scatter_add_view) return null;
+
+            // scatter.src1 must be an as_strided view of a 4D tensor (from forward conv2d)
+            const view = scatter.source1() orelse return null;
+            if (view.opTag() != .as_strided) return null;
+            const view_source = view.source0() orelse return null;
+            if (view_source.n_dims != 4) return null;
+            // Conv2d decomposition uses 7D views
+            if (view.n_dims != 7) return null;
+
+            // Walk gradient chain: scatter.src0 → [add] → mul
+            const mul_node = findPastAdd(scatter.source0() orelse return null, .mul) orelse return null;
+
+            // mul has two operands (each possibly behind one add):
+            //   - a broadcast_to (gradient path from output_grad)
+            //   - an as_strided (the other conv2d operand from forward)
+            const bcast = findPastAdd(mul_node.source0() orelse return null, .broadcast_to) orelse
+                findPastAdd(mul_node.source1() orelse return null, .broadcast_to) orelse return null;
+
+            const other_view = findPastAdd(mul_node.source0() orelse return null, .as_strided) orelse
+                findPastAdd(mul_node.source1() orelse return null, .as_strided) orelse return null;
+            const other_source = other_view.source0() orelse return null;
+            if (other_source.n_dims != 4) return null;
+
+            // Walk broadcast → [add] → reshape → output_grad (4D)
+            const reshape = findPastAdd(bcast.source0() orelse return null, .reshape) orelse return null;
+            const output_grad = reshape.source0() orelse return null;
+            if (output_grad.n_dims != 4) return null;
+
+            // Determine direction: if view_source is a parameter, this scatter
+            // writes the kernel gradient (bwd_kernel). Otherwise it's bwd_input.
+            if (view_source.isParam()) {
+                // bwd_kernel: scatter writes to kernel grad, other_view is the input
+                return .{ .output_idx = scatter_idx, .payload = .{ .conv2d_bwd_kernel = .{
+                    .input = other_source,
+                    .output_grad = output_grad,
+                    .reshape_node = reshape,
+                    .repeat_node = bcast,
+                    .mul_node = mul_node,
+                    .output = scatter,
+                } } };
+            } else {
+                // bwd_input: scatter writes to input grad, other_view is the kernel
+                return .{ .output_idx = scatter_idx, .payload = .{ .conv2d_bwd_input = .{
+                    .output_grad = output_grad,
+                    .kernel = other_source,
+                    .reshape_node = reshape,
+                    .repeat_node = bcast,
+                    .mul_node = mul_node,
+                    .output = scatter,
+                } } };
+            }
+        }
+
+        /// Look through one level of add-accumulation to find a node with the target op.
+        fn findPastAdd(start: *Tensor(T), target_op: Op) ?*Tensor(T) {
+            if (start.opTag() == target_op) return start;
+            if (start.opTag() != .add) return null;
+            if (start.source0()) |s| { if (s.opTag() == target_op) return s; }
+            if (start.source1()) |s| { if (s.opTag() == target_op) return s; }
+            return null;
+        }
+
+        /// Mark the scatter_add_view node as skipped. The fused kernel
+        /// replaces the scatter computation; intermediate backward nodes
+        /// (reshape, broadcast, mul) still run but their results are unused
+        /// by the fused kernel.
+        fn markBwdConvSkip(self: *Self, _: *Tensor(T), scatter_idx: usize, _: *const std.AutoHashMap(*Tensor(T), usize)) void {
+            self.fused_skip.items[scatter_idx] = true;
         }
 
         const CompilerPlan = struct {

@@ -2143,9 +2143,10 @@ pub const CanonicalGraph = struct {
             .linear_residual => if (self.detectLinearResidual(output)) |spec| .{ .linear_residual = lowerLinearResidualKernelSpec(self, spec) orelse return null } else null,
             .matmul_residual => if (self.detectMatmulResidual(output)) |spec| .{ .matmul_residual = lowerMatmulResidualKernelSpec(self, spec) orelse return null } else null,
             .conv2d => if (self.detectConv2d(output)) |spec| .{ .conv2d = spec } else null,
-            .conv2d_bwd_input => if (self.detectConv2dBwdInput(output)) |spec| .{ .conv2d_bwd_input = spec } else null,
-            // TODO: mapping produces wrong results; keep detector, disable dispatch until mapping is fixed
-            .conv2d_bwd_kernel => null, //if (self.detectConv2dBwdKernel(output)) |spec| .{ .conv2d_bwd_kernel = spec } else null,
+            // Backward conv2d is detected at the graph level (not compiler IR)
+            // because gradient leaf tensors can't be mapped through value_to_tensor.
+            .conv2d_bwd_input => null,
+            .conv2d_bwd_kernel => null,
             .max_pool2d => if (self.detectMaxPool2d(output)) |spec| .{ .max_pool2d = spec } else null,
         };
     }
