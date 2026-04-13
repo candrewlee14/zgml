@@ -1,0 +1,394 @@
+//! Compile-time shape-tracked tensor wrapper.
+//!
+//! `Shaped(T, .{cols, rows, ...})` wraps a runtime `Tensor(T)` but carries its
+//! shape in the type system. Shape mismatches (wrong matmul dims, incompatible
+//! broadcast, etc.) become compile errors instead of runtime panics.
+//!
+//! ```
+//! const S = @import("shaped.zig").Shaped;
+//! const W = try S(f32, .{4, 3}).init(alloc);
+//! const x = try S(f32, .{4, 1}).init(alloc);
+//! const y = W.matMul(alloc, true, x, false);  // → Shaped(f32, .{3, 1})
+//! // const bad = W.matMul(alloc, false, x, false);  // compile error!
+//! ```
+
+const std = @import("std");
+const Alloc = std.mem.Allocator;
+const tensorlib = @import("tensor.zig");
+const Tensor = tensorlib.Tensor;
+pub const max_dims = tensorlib.max_dims;
+
+// ---------------------------------------------------------------------------
+// Comptime shape helpers
+// ---------------------------------------------------------------------------
+
+/// Normalize a shape tuple (e.g. `.{3, 4}`) into a full `[max_dims]usize` array
+/// padded with 1s.
+pub fn normalizeShape(comptime ne: anytype) [max_dims]usize {
+    comptime {
+        var result = [_]usize{1} ** max_dims;
+        const fields = @typeInfo(@TypeOf(ne)).@"struct".fields;
+        for (fields, 0..) |f, i| {
+            result[i] = @field(ne, f.name);
+        }
+        return result;
+    }
+}
+
+fn nElemsOf(comptime s: [max_dims]usize) usize {
+    comptime {
+        var n: usize = 1;
+        for (s) |d| n *= d;
+        return n;
+    }
+}
+
+fn transposeShape(comptime s: [max_dims]usize) [max_dims]usize {
+    return .{ s[1], s[0], s[2], s[3] };
+}
+
+fn matMulOutputShape(
+    comptime a: [max_dims]usize,
+    comptime trans_a: bool,
+    comptime b: [max_dims]usize,
+    comptime trans_b: bool,
+) [max_dims]usize {
+    comptime {
+        const a_inner = if (trans_a) a[1] else a[0];
+        const b_inner = if (trans_b) b[0] else b[1];
+        if (a_inner != b_inner)
+            @compileError("matMul: inner dimensions don't match");
+        if (a[2] != b[2]) @compileError("matMul: batch dimension mismatch");
+        if (a[3] != b[3]) @compileError("matMul: channel dimension mismatch");
+
+        const out_cols = if (trans_b) b[1] else b[0];
+        const out_rows = if (trans_a) a[0] else a[1];
+        return .{ out_cols, out_rows, a[2], a[3] };
+    }
+}
+
+/// Number of dimensions (ignoring trailing 1s).
+fn ndims(comptime s: [max_dims]usize) u8 {
+    comptime {
+        var n: u8 = max_dims;
+        while (n > 1 and s[n - 1] == 1) n -= 1;
+        return n;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shaped tensor
+// ---------------------------------------------------------------------------
+
+/// Convenience alias: `Shaped(f32, .{3, 4})` is a compile-time-tracked 3x4 f32 tensor.
+pub fn Shaped(comptime T: type, comptime dims: anytype) type {
+    return ShapedTensor(T, normalizeShape(dims));
+}
+
+/// A tensor whose shape is part of the type. Wraps `*Tensor(T)` and delegates
+/// all compute, but validates shape compatibility at compile time.
+pub fn ShapedTensor(comptime T: type, comptime shape: [max_dims]usize) type {
+    return struct {
+        const Self = @This();
+
+        pub const element_type = T;
+        pub const static_shape = shape;
+        pub const static_ndims = ndims(shape);
+        pub const static_nelems = nElemsOf(shape);
+
+        inner: *Tensor(T),
+
+        // -- Construction --------------------------------------------------
+
+        /// Allocate a new zero-initialized shaped tensor.
+        pub fn init(alloc: Alloc) Alloc.Error!Self {
+            return .{ .inner = try Tensor(T).init(alloc, &shape) };
+        }
+
+        /// Create a shaped tensor filled with evenly spaced values.
+        pub fn initLinspace(alloc: Alloc, start: T, end: T) Alloc.Error!Self {
+            return .{ .inner = try Tensor(T).initLinspace(alloc, &shape, start, end) };
+        }
+
+        /// Wrap an existing runtime tensor (asserts shape match in debug builds).
+        pub fn fromTensor(t: *Tensor(T)) Self {
+            std.debug.assert(t.hasShape(&shape));
+            return .{ .inner = t };
+        }
+
+        /// Unwrap to the underlying runtime tensor.
+        pub fn tensor(self: Self) *Tensor(T) {
+            return self.inner;
+        }
+
+        /// Set all elements to `val`.
+        pub fn setAllScalar(self: Self, val: T) Self {
+            _ = self.inner.setAllScalar(val);
+            return self;
+        }
+
+        /// Set data from a slice.
+        pub fn setData(self: Self, data: []const T) Self {
+            self.inner.setData(data);
+            return self;
+        }
+
+        /// Mark as a learnable parameter (allocates gradient).
+        pub fn setParam(self: Self, alloc: Alloc) Self {
+            self.inner.setParam(alloc);
+            return self;
+        }
+
+        /// Free this tensor.
+        pub fn deinit(self: Self, alloc: Alloc) void {
+            self.inner.deinit(alloc);
+        }
+
+        // -- Shape-preserving elementwise ops ------------------------------
+
+        /// Element-wise addition. Both operands must have the same (static) shape.
+        pub fn add(self: Self, alloc: Alloc, other: Self) Self {
+            return .{ .inner = self.inner.add(alloc, other.inner) };
+        }
+
+        /// Element-wise multiplication.
+        pub fn mul(self: Self, alloc: Alloc, other: Self) Self {
+            return .{ .inner = self.inner.mul(alloc, other.inner) };
+        }
+
+        pub fn neg(self: Self, alloc: Alloc) Self {
+            return .{ .inner = self.inner.neg(alloc) };
+        }
+
+        pub fn sqrt(self: Self, alloc: Alloc) Self {
+            return .{ .inner = self.inner.sqrt(alloc) };
+        }
+
+        pub fn abs(self: Self, alloc: Alloc) Self {
+            return .{ .inner = self.inner.abs(alloc) };
+        }
+
+        pub fn recip(self: Self, alloc: Alloc) Self {
+            return .{ .inner = self.inner.recip(alloc) };
+        }
+
+        pub fn sgn(self: Self, alloc: Alloc) Self {
+            return .{ .inner = self.inner.sgn(alloc) };
+        }
+
+        pub fn step(self: Self, alloc: Alloc) Self {
+            return .{ .inner = self.inner.step(alloc) };
+        }
+
+        pub fn gelu(self: Self, alloc: Alloc) Self {
+            return .{ .inner = self.inner.gelu(alloc) };
+        }
+
+        // -- Sugar (decomposed, shape-preserving) --------------------------
+
+        pub fn sub(self: Self, alloc: Alloc, other: Self) Self {
+            return .{ .inner = self.inner.sub(alloc, other.inner) };
+        }
+
+        pub fn div(self: Self, alloc: Alloc, other: Self) Self {
+            return .{ .inner = self.inner.div(alloc, other.inner) };
+        }
+
+        pub fn sqr(self: Self, alloc: Alloc) Self {
+            return .{ .inner = self.inner.sqr(alloc) };
+        }
+
+        pub fn relu(self: Self, alloc: Alloc) Self {
+            return .{ .inner = self.inner.relu(alloc) };
+        }
+
+        // -- Shape-changing ops --------------------------------------------
+
+        /// Matrix multiply with compile-time shape inference.
+        ///
+        /// ```
+        /// const W = Shaped(f32, .{4, 3});  // 4 cols, 3 rows
+        /// const x = Shaped(f32, .{4, 1});  // 4 cols, 1 row
+        /// const y = W.matMul(alloc, true, x, false);  // → Shaped(f32, .{3, 1})
+        /// ```
+        pub fn matMul(
+            self: Self,
+            alloc: Alloc,
+            comptime trans_self: bool,
+            other: anytype,
+            comptime trans_other: bool,
+        ) ShapedTensor(T, matMulOutputShape(shape, trans_self, @TypeOf(other).static_shape, trans_other)) {
+            return .{ .inner = self.inner.matMul(alloc, trans_self, other.inner, trans_other) };
+        }
+
+        /// Sum all elements to a scalar.
+        pub fn sumAll(self: Self, alloc: Alloc) ShapedTensor(T, normalizeShape(.{1})) {
+            return .{ .inner = self.inner.sumAll(alloc) };
+        }
+
+        /// Sum (reduce) to a target shape. Each dim of target must divide self's dim.
+        pub fn sum(self: Self, alloc: Alloc, comptime target: anytype) ShapedTensor(T, normalizeShape(target)) {
+            const target_shape = comptime normalizeShape(target);
+            comptime {
+                for (shape, target_shape) |s, t| {
+                    if (s % t != 0) @compileError("sum: target shape dimension does not divide source");
+                }
+            }
+            var ne = target_shape;
+            return .{ .inner = self.inner.sum(alloc, &ne) };
+        }
+
+        /// Mean (reduce) to a target shape.
+        pub fn mean(self: Self, alloc: Alloc, comptime target: anytype) ShapedTensor(T, normalizeShape(target)) {
+            const target_shape = comptime normalizeShape(target);
+            comptime {
+                for (shape, target_shape) |s, t| {
+                    if (s % t != 0) @compileError("mean: target shape dimension does not divide source");
+                }
+            }
+            var ne = target_shape;
+            return .{ .inner = self.inner.mean(alloc, &ne) };
+        }
+
+        /// Broadcast to a larger shape. Each dim of self must divide target's dim.
+        pub fn repeat(self: Self, alloc: Alloc, comptime target: anytype) ShapedTensor(T, normalizeShape(target)) {
+            const target_shape = comptime normalizeShape(target);
+            comptime {
+                for (shape, target_shape) |s, t| {
+                    if (t % s != 0) @compileError("repeat: source dimension does not divide target");
+                }
+            }
+            var ne = target_shape;
+            return .{ .inner = self.inner.repeat(alloc, &ne) };
+        }
+
+        /// Broadcast to match another shaped tensor's shape.
+        pub fn repeatLike(self: Self, alloc: Alloc, comptime Other: type) ShapedTensor(T, Other.static_shape) {
+            return self.repeat(alloc, Other.static_shape);
+        }
+
+        /// Reshape to a new shape with the same total elements.
+        pub fn reshape(self: Self, alloc: Alloc, comptime new_dims: anytype) ShapedTensor(T, normalizeShape(new_dims)) {
+            const new_shape = comptime normalizeShape(new_dims);
+            comptime {
+                if (nElemsOf(shape) != nElemsOf(new_shape))
+                    @compileError("reshape: element count mismatch");
+            }
+            var ne = new_shape;
+            return .{ .inner = self.inner.reshape(alloc, &ne) };
+        }
+
+        /// Transpose the first two dimensions.
+        pub fn transpose(self: Self, alloc: Alloc) ShapedTensor(T, transposeShape(shape)) {
+            return .{ .inner = self.inner.transpose(alloc) };
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+const tac = testing.allocator;
+const ComputeGraph = @import("graph.zig").ComputeGraph;
+
+test "shaped - init and basic ops" {
+    var arena = std.heap.ArenaAllocator.init(tac);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const x = (try Shaped(f32, .{3}).init(a)).setAllScalar(2);
+    const y = (try Shaped(f32, .{3}).init(a)).setAllScalar(3);
+    const z = x.add(a, y);
+    z.tensor().compute();
+
+    try testing.expectEqualSlices(f32, &.{ 5, 5, 5 }, z.tensor().data);
+}
+
+test "shaped - matmul shape inference" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    // A: [2, 3] (2 cols, 3 rows), B: [3, 2] (3 cols, 2 rows)
+    // A @ B: inner = A.ne[0](2) == B.ne[1](2) ✓. Output: [B.ne[0](3), A.ne[1](3)] = [3, 3]
+    const A = (try Shaped(f32, .{ 2, 3 }).init(a)).setData(&.{ 1, 2, 3, 4, 5, 6 });
+    const B = (try Shaped(f32, .{ 3, 2 }).init(a)).setData(&.{ 1, 2, 3, 4, 5, 6 });
+
+    const C = A.matMul(a, false, B, false);
+
+    // Verify the type carries the right shape
+    comptime {
+        const out_shape = @TypeOf(C).static_shape;
+        std.debug.assert(out_shape[0] == 3); // cols
+        std.debug.assert(out_shape[1] == 3); // rows
+    }
+
+    try g.buildForward(C.tensor());
+    g.compute();
+
+    // Same matmul we tested before: [2,3] @ [3,2] → [3,3]
+    try testing.expectEqualSlices(f32, &.{ 9, 12, 15, 19, 26, 33, 29, 40, 51 }, C.tensor().data);
+}
+
+test "shaped - sum and repeat" {
+    var arena = std.heap.ArenaAllocator.init(tac);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const x = (try Shaped(f32, .{ 2, 3 }).init(a)).setData(&.{ 1, 2, 3, 4, 5, 6 });
+
+    // Sum to scalar
+    const s = x.sumAll(a);
+    comptime std.debug.assert(@TypeOf(s).static_shape[0] == 1);
+
+    // Repeat scalar back
+    const r = s.repeat(a, .{ 2, 3 });
+    comptime std.debug.assert(@TypeOf(r).static_shape[0] == 2);
+    comptime std.debug.assert(@TypeOf(r).static_shape[1] == 3);
+}
+
+test "shaped - reshape" {
+    var arena = std.heap.ArenaAllocator.init(tac);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const x = try Shaped(f32, .{ 2, 3 }).init(a);
+    const y = x.reshape(a, .{ 3, 2 });
+    comptime {
+        std.debug.assert(@TypeOf(y).static_nelems == 6);
+        std.debug.assert(@TypeOf(y).static_shape[0] == 3);
+        std.debug.assert(@TypeOf(y).static_shape[1] == 2);
+    }
+}
+
+test "shaped - transpose" {
+    var arena = std.heap.ArenaAllocator.init(tac);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const x = try Shaped(f32, .{ 2, 3 }).init(a);
+    const y = x.transpose(a);
+    comptime {
+        std.debug.assert(@TypeOf(y).static_shape[0] == 3);
+        std.debug.assert(@TypeOf(y).static_shape[1] == 2);
+    }
+}
+
+test "shaped - backward through graph" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = (try Shaped(f32, .{3}).init(a)).setData(&.{ 1, 2, 3 }).setParam(a);
+    const loss = x.sqr(a).sumAll(a);
+
+    try g.buildForward(loss.tensor());
+    try g.buildBackward(false);
+    _ = loss.tensor().grad.?.setAllScalar(1);
+    g.compute();
+
+    // d/dx[sum(x^2)] = 2x
+    try testing.expectEqualSlices(f32, &.{ 2, 4, 6 }, x.tensor().grad.?.data);
+}
