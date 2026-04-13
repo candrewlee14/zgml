@@ -36,7 +36,25 @@ pub fn Ops(comptime Self: type) type {
             const out_grad = tensor.grad.?;
 
             switch (tensor.op) {
-                .none, .view, .reshape, .transpose => {},
+                .none => {},
+
+                .view, .reshape => {
+                    const src0 = src0_o.?;
+                    if (src0.grad) |grad| {
+                        const contribution = out_grad.reshapeLike(alloc, grad);
+                        stripGrad(contribution, alloc);
+                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                    }
+                },
+
+                .transpose => {
+                    const src0 = src0_o.?;
+                    if (src0.grad) |grad| {
+                        const contribution = out_grad.transpose(alloc);
+                        stripGrad(contribution, alloc);
+                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                    }
+                },
 
                 // d/d(src0) [src0 + src1] = out_grad
                 // d/d(src1) [src0 + src1] = out_grad
@@ -114,6 +132,26 @@ pub fn Ops(comptime Self: type) type {
                     }
                 },
 
+                // d/d(src0) [exp(src0)] = exp(src0) * out_grad
+                .exp => {
+                    const src0 = src0_o.?;
+                    if (src0.grad) |grad| {
+                        const contribution = tensor.mul(alloc, out_grad);
+                        stripGrad(contribution, alloc);
+                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                    }
+                },
+
+                // d/d(src0) [log(src0)] = out_grad / src0
+                .log => {
+                    const src0 = src0_o.?;
+                    if (src0.grad) |grad| {
+                        const contribution = out_grad.div(alloc, src0);
+                        stripGrad(contribution, alloc);
+                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                    }
+                },
+
                 // d/d(src0) [repeat(src0)] = sum(out_grad) back to src0's shape
                 .repeat => {
                     const src0 = src0_o.?;
@@ -127,6 +165,26 @@ pub fn Ops(comptime Self: type) type {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
                         src0.grad = accumGrad(grad, alloc, out_grad.repeatLike(alloc, grad), inplace);
+                    }
+                },
+
+                .max => {
+                    const src0 = src0_o.?;
+                    if (src0.grad) |grad| {
+                        const repeated_max = tensor.repeatLike(alloc, src0);
+                        stripGrad(repeated_max, alloc);
+                        const diff = src0.sub(alloc, repeated_max);
+                        stripGrad(diff, alloc);
+                        const one = try Self.initScalar(alloc, 1);
+                        const zero_mask = diff.abs(alloc).step(alloc);
+                        stripGrad(zero_mask, alloc);
+                        const mask = one.repeatLike(alloc, src0).sub(alloc, zero_mask);
+                        stripGrad(mask, alloc);
+                        const expanded_out_grad = out_grad.repeatLike(alloc, src0);
+                        stripGrad(expanded_out_grad, alloc);
+                        const contribution = mask.mul(alloc, expanded_out_grad);
+                        stripGrad(contribution, alloc);
+                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
                     }
                 },
 

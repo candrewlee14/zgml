@@ -33,6 +33,7 @@ pub const Op = enum {
 
     // -- Reductions & broadcast --
     sum,
+    max,
     repeat,
 
     // -- Matrix multiplication (4 transpose variants) --
@@ -76,6 +77,7 @@ pub const Op = enum {
             .log => "log(x)",
             .gelu => "gelu(x)",
             .sum => "Σx",
+            .max => "max(x)",
             .repeat => "repeat(x)",
             .matmul => "X*Y",
             .matmul_t0 => "XT*Y",
