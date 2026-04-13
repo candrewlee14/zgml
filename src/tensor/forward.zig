@@ -149,6 +149,85 @@ fn computeStructuralDup(comptime Self: type, dst: *Self, src0: *const Self) void
     }
 }
 
+fn computeBinaryGeneric(comptime Self: type, comptime Tt: type, dst: *Self, src0: *const Self, src1: *const Self, comptime f: fn (Tt, Tt) Tt) void {
+    var coords: [max_dims]usize = [_]usize{0} ** max_dims;
+    var lhs_coords: [max_dims]usize = [_]usize{0} ** max_dims;
+    var rhs_coords: [max_dims]usize = [_]usize{0} ** max_dims;
+    while (true) {
+        const idx = offsetFor(Self, dst, coords[0..dst.n_dims]);
+        var i: usize = 0;
+        while (i < dst.n_dims) : (i += 1) {
+            lhs_coords[i] = if (i < src0.n_dims and src0.ne[i] != 1) coords[i] else 0;
+            rhs_coords[i] = if (i < src1.n_dims and src1.ne[i] != 1) coords[i] else 0;
+        }
+        dst.data[idx] = f(
+            src0.data[offsetFor(Self, src0, lhs_coords[0..src0.n_dims])],
+            src1.data[offsetFor(Self, src1, rhs_coords[0..src1.n_dims])],
+        );
+        if (!nextCoord(coords[0..dst.n_dims], dst.ne[0..dst.n_dims])) break;
+    }
+}
+
+fn computeReduceGeneric(comptime Self: type, comptime Tt: type, dst: *Self, src0: *const Self, comptime op: enum { sum, max }, mean_divisor: ?Tt) void {
+    switch (op) {
+        .sum => @memset(dst.data, 0),
+        .max => @memset(dst.data, -std.math.inf(Tt)),
+    }
+
+    var src_coords: [max_dims]usize = [_]usize{0} ** max_dims;
+    var dst_coords: [max_dims]usize = [_]usize{0} ** max_dims;
+    while (true) {
+        @memset(&dst_coords, 0);
+        var i: usize = 0;
+        while (i < src0.n_dims) : (i += 1) {
+            if (i < dst.n_dims) dst_coords[i] = src_coords[i] % dst.ne[i];
+        }
+        const src_idx = offsetFor(Self, src0, src_coords[0..src0.n_dims]);
+        const dst_idx = offsetFor(Self, dst, dst_coords[0..dst.n_dims]);
+        switch (op) {
+            .sum => dst.data[dst_idx] += if (mean_divisor) |div| src0.data[src_idx] / div else src0.data[src_idx],
+            .max => dst.data[dst_idx] = @max(dst.data[dst_idx], src0.data[src_idx]),
+        }
+        if (!nextCoord(src_coords[0..src0.n_dims], src0.ne[0..src0.n_dims])) break;
+    }
+}
+
+fn computeRepeatGeneric(comptime Self: type, dst: *Self, src0: *const Self) void {
+    var dst_coords: [max_dims]usize = [_]usize{0} ** max_dims;
+    var src_coords: [max_dims]usize = [_]usize{0} ** max_dims;
+    while (true) {
+        @memset(&src_coords, 0);
+        var i: usize = 0;
+        while (i < dst.n_dims) : (i += 1) {
+            if (i < src0.n_dims) src_coords[i] = dst_coords[i] % src0.ne[i];
+        }
+        const src_idx = offsetFor(Self, src0, src_coords[0..src0.n_dims]);
+        const dst_idx = offsetFor(Self, dst, dst_coords[0..dst.n_dims]);
+        dst.data[dst_idx] = src0.data[src_idx];
+        if (!nextCoord(dst_coords[0..dst.n_dims], dst.ne[0..dst.n_dims])) break;
+    }
+}
+
+fn computeScatterAddView(comptime Self: type, dst: *Self, grad_view: *const Self, view_tensor: *const Self) void {
+    const base = view_tensor.source0().?;
+    std.debug.assert(dst.n_dims == base.n_dims);
+    std.debug.assert(dst.hasShape(base.ne[0..base.n_dims]));
+    @memset(dst.data, 0);
+    var coords: [max_dims]usize = [_]usize{0} ** max_dims;
+    while (true) {
+        var src_idx: usize = view_tensor.storage_offset;
+        var i: usize = 0;
+        while (i < view_tensor.n_dims) : (i += 1) src_idx += coords[i] * view_tensor.strides[i];
+
+        var out_idx: usize = grad_view.storage_offset;
+        i = 0;
+        while (i < grad_view.n_dims) : (i += 1) out_idx += coords[i] * grad_view.strides[i];
+        dst.data[src_idx] += grad_view.data[out_idx];
+
+        if (!nextCoord(coords[0..grad_view.n_dims], grad_view.ne[0..grad_view.n_dims])) break;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Multi-width tiled matmul micro-kernel
 // ---------------------------------------------------------------------------
@@ -259,13 +338,13 @@ fn gatherVec(comptime T: type, comptime vl: comptime_int, data: []const T, base:
 }
 
 /// Matmul function signature for runtime dispatch.
-fn MatMulFnType(comptime T: type) type {
+pub fn MatMulFnType(comptime T: type) type {
     return *const fn ([]T, []const T, []const T, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize) void;
 }
 
 /// Select the best matmul kernel at runtime based on CPU SIMD capabilities.
 /// Cached after first call.
-fn selectMatMulKernel(comptime T: type) MatMulFnType(T) {
+pub fn selectMatMulKernel(comptime T: type) MatMulFnType(T) {
     const State = struct {
         var cached: MatMulFnType(T) = undefined;
         var initialized: bool = false;
@@ -539,12 +618,14 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // ---------------------------------------------------------------
 
         pub fn computeAdd(dst: *Self, src0: *const Self, src1: *const Self) void {
-            if (src0.isSameShape(src1)) {
-                assert(dst.isSameShape(src0));
+            if (src0.isSameShape(src1) and dst.isSameShape(src0)) {
                 if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
                     simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, addVec, addScalar);
                 } else {
-                    if (dst.n_dims > 4) @panic("Unimplemented forward add for ndim > 4");
+                    if (dst.n_dims > 4) {
+                        computeBinaryGeneric(Self, T, dst, src0, src1, addScalar);
+                        return;
+                    }
                     for (0..dst.ne[3]) |d3| {
                         for (0..dst.ne[2]) |d2| {
                             for (0..dst.ne[1]) |d1| {
@@ -558,22 +639,26 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                         }
                     }
                 }
-            } else if (src1.isScalar()) {
+            } else if (src1.isScalar() and dst.isSameShape(src0)) {
                 assert(dst.isSameShape(src0));
                 simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, addVec, addScalar);
-            } else if (src0.isScalar()) {
+            } else if (src0.isScalar() and dst.isSameShape(src1)) {
                 assert(dst.isSameShape(src1));
                 simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, addVec, addScalar);
+            } else {
+                computeBinaryGeneric(Self, T, dst, src0, src1, addScalar);
             }
         }
 
         pub fn computeSub(dst: *Self, src0: *const Self, src1: *const Self) void {
-            if (src0.isSameShape(src1)) {
-                assert(dst.isSameShape(src0));
+            if (src0.isSameShape(src1) and dst.isSameShape(src0)) {
                 if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
                     simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, subVec, subScalar);
                 } else {
-                    if (dst.n_dims > 4) @panic("Unimplemented forward sub for ndim > 4");
+                    if (dst.n_dims > 4) {
+                        computeBinaryGeneric(Self, T, dst, src0, src1, subScalar);
+                        return;
+                    }
                     for (0..dst.ne[3]) |d3| {
                         for (0..dst.ne[2]) |d2| {
                             for (0..dst.ne[1]) |d1| {
@@ -587,14 +672,14 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                         }
                     }
                 }
-            } else if (src1.isScalar()) {
+            } else if (src1.isScalar() and dst.isSameShape(src0)) {
                 assert(dst.isSameShape(src0));
                 simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, subVec, subScalar);
-            } else if (src0.isScalar()) {
+            } else if (src0.isScalar() and dst.isSameShape(src1)) {
                 assert(dst.isSameShape(src1));
                 simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, subVec, subScalar);
             } else {
-                @panic("Unimplemented forward sub for src sizes");
+                computeBinaryGeneric(Self, T, dst, src0, src1, subScalar);
             }
         }
 
@@ -606,12 +691,15 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 assert(dst.isSameShape(src0));
                 simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, mulVec, mulScalar);
             } else {
-                assert(dst.isSameShape(src0));
-                assert(src0.isSameShape(src1));
+                assert(dst.isBroadcastable(src0));
+                assert(src0.isBroadcastable(src1));
                 if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
                     simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, mulVec, mulScalar);
                 } else {
-                    if (dst.n_dims > 4) @panic("Unimplemented forward mul for ndim > 4");
+                    if (dst.n_dims > 4 or !dst.isSameShape(src0) or !src0.isSameShape(src1)) {
+                        computeBinaryGeneric(Self, T, dst, src0, src1, mulScalar);
+                        return;
+                    }
                     for (0..dst.ne[3]) |d3| {
                         for (0..dst.ne[2]) |d2| {
                             for (0..dst.ne[1]) |d1| {
@@ -636,12 +724,15 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 assert(dst.isSameShape(src0));
                 simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, divVec, divScalar);
             } else {
-                assert(dst.isSameShape(src0));
-                assert(src0.isSameShape(src1));
+                assert(dst.isBroadcastable(src0));
+                assert(src0.isBroadcastable(src1));
                 if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
                     simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, divVec, divScalar);
                 } else {
-                    if (dst.n_dims > 4) @panic("Unimplemented forward div for ndim > 4");
+                    if (dst.n_dims > 4 or !dst.isSameShape(src0) or !src0.isSameShape(src1)) {
+                        computeBinaryGeneric(Self, T, dst, src0, src1, divScalar);
+                        return;
+                    }
                     for (0..dst.ne[3]) |d3| {
                         for (0..dst.ne[2]) |d2| {
                             for (0..dst.ne[1]) |d1| {
@@ -663,8 +754,12 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // ---------------------------------------------------------------
 
         pub fn computeMean(dst: *Self, src0: *const Self) void {
-            assert(max_dims >= 4);
             assert(src0.canSumTo(dst));
+            if (src0.n_dims > 4 or dst.n_dims > 4) {
+                const div_elems: T = @floatFromInt(src0.nElems() / dst.nElems());
+                computeReduceGeneric(Self, T, dst, src0, .sum, div_elems);
+                return;
+            }
             const src0_ne_v = first4(src0.ne);
             const div_elems: T = @floatFromInt(@reduce(.Mul, src0_ne_v / first4(dst.ne)));
 
@@ -687,8 +782,11 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         pub fn computeSum(dst: *Self, src0: *const Self) void {
-            assert(max_dims >= 4);
             assert(src0.canSumTo(dst));
+            if (src0.n_dims > 4 or dst.n_dims > 4) {
+                computeReduceGeneric(Self, T, dst, src0, .sum, null);
+                return;
+            }
             @memset(dst.data, 0);
             for (0..src0.ne[3]) |ne3| {
                 for (0..src0.ne[2]) |ne2| {
@@ -709,8 +807,11 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         pub fn computeMax(dst: *Self, src0: *const Self) void {
-            assert(max_dims >= 4);
             assert(src0.canSumTo(dst));
+            if (src0.n_dims > 4 or dst.n_dims > 4) {
+                computeReduceGeneric(Self, T, dst, src0, .max, null);
+                return;
+            }
             @memset(dst.data, -std.math.inf(T));
             for (0..src0.ne[3]) |ne3| {
                 for (0..src0.ne[2]) |ne2| {
@@ -731,8 +832,11 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         pub fn computeRepeat(dst: *Self, src0: *const Self) void {
-            assert(max_dims >= 4);
             assert(src0.canRepeatTo(dst));
+            if (dst.n_dims > 4 or src0.n_dims > 4) {
+                computeRepeatGeneric(Self, dst, src0);
+                return;
+            }
             for (0..dst.ne[3]) |ne3| {
                 for (0..dst.ne[2]) |ne2| {
                     for (0..dst.ne[1]) |ne1| {
@@ -941,81 +1045,6 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // Dispatch
         // ---------------------------------------------------------------
 
-        /// im2col: extract sliding-window patches into a column matrix.
-        /// input [W, H, C_in, N] → dst [spatial, patch_len, 1, N]
-        /// where spatial = outW*outH, patch_len = kW*kH*C_in.
-        /// Kernel tensor (src1) is used only for shape (kW, kH).
-        pub fn computeIm2col(dst: *Self, input: *const Self, kernel: *const Self) void {
-            const in_w = input.ne[0];
-            const in_h = input.ne[1];
-            const kw = kernel.ne[0];
-            const kh = kernel.ne[1];
-            const c_in = kernel.ne[2];
-            const out_w = in_w - kw + 1;
-            const out_h = in_h - kh + 1;
-            const spatial = out_w * out_h;
-            const patch_len = kw * kh * c_in;
-            const batch = input.ne[3];
-
-            // dst layout: [spatial, patch_len, 1, N]
-            // dst.data[s + p * spatial + n * spatial * patch_len]
-            for (0..batch) |n| {
-                const in_base = n * in_w * in_h * c_in;
-                const dst_base = n * spatial * patch_len;
-                for (0..out_h) |oy| {
-                    for (0..out_w) |ox| {
-                        const s = oy * out_w + ox;
-                        for (0..c_in) |ic| {
-                            for (0..kh) |ky| {
-                                for (0..kw) |kx| {
-                                    const p = kx + ky * kw + ic * kw * kh;
-                                    dst.data[dst_base + s + p * spatial] =
-                                        input.data[in_base + (ox + kx) + (oy + ky) * in_w + ic * in_w * in_h];
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        /// col2im: scatter-add columns back to image layout (backward of im2col).
-        /// src0: grad_col [spatial, patch_len, 1, N], src1: kernel (for kW, kH shape).
-        /// dst: input_grad [W, H, C_in, N]
-        pub fn computeCol2im(dst: *Self, grad_col: *const Self, kernel: *const Self) void {
-            const in_w = dst.ne[0];
-            const in_h = dst.ne[1];
-            const kw = kernel.ne[0];
-            const kh = kernel.ne[1];
-            const c_in = kernel.ne[2];
-            const out_w = in_w - kw + 1;
-            const out_h = in_h - kh + 1;
-            const spatial = out_w * out_h;
-            const patch_len = kw * kh * c_in;
-            const batch = dst.ne[3];
-
-            @memset(dst.data, 0);
-
-            for (0..batch) |n| {
-                const gc_base = n * spatial * patch_len;
-                const dst_base = n * in_w * in_h * c_in;
-                for (0..out_h) |oy| {
-                    for (0..out_w) |ox| {
-                        const s = oy * out_w + ox;
-                        for (0..c_in) |ic| {
-                            for (0..kh) |ky| {
-                                for (0..kw) |kx| {
-                                    const p = kx + ky * kw + ic * kw * kh;
-                                    dst.data[dst_base + (ox + kx) + (oy + ky) * in_w + ic * in_w * in_h] +=
-                                        grad_col.data[gc_base + s + p * spatial];
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         /// 2×2 max pooling with stride 2.
         pub fn computeMaxPool2d(dst: *Self, input: *const Self) void {
             const in_w = input.ne[0];
@@ -1054,6 +1083,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             const src1 = tensor.src1;
             switch (tensor.op) {
                 .none, .view, .reshape, .transpose, .permute, .as_strided, .broadcast_to => {},
+                .scatter_add_view => computeScatterAddView(Self, tensor, src0.?, src1.?),
                 .add => tensor.computeAdd(src0.?, src1.?),
                 .mul => tensor.computeMul(src0.?, src1.?),
                 .neg => tensor.computeNeg(src0.?),
@@ -1072,8 +1102,6 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .scatter_add_rows => tensor.computeScatterAddRows(src0.?, src1.?),
                 .pick_rows => tensor.computePickRows(src0.?, src1.?),
                 .scatter_add_picks => tensor.computeScatterAddPicks(src0.?, src1.?),
-                .im2col => tensor.computeIm2col(src0.?, src1.?),
-                .col2im => tensor.computeCol2im(src0.?, src1.?),
                 .max_pool2d => tensor.computeMaxPool2d(src0.?),
                 .matmul => tensor.computeMatMul(src0.?, false, src1.?, false),
                 .matmul_t0 => tensor.computeMatMul(src0.?, true, src1.?, false),

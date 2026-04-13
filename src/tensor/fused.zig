@@ -11,6 +11,7 @@
 const std = @import("std");
 const Op = @import("../op.zig").Op;
 const Tensor = @import("../tensor.zig").Tensor;
+const forward = @import("forward.zig");
 
 const GELU_COEF_A: comptime_float = 0.044715;
 const SQRT_2_OVER_PI: comptime_float = @sqrt(2.0 / std.math.pi);
@@ -22,6 +23,7 @@ pub const fusible_ops = [_]Op{
 
 pub const FusionKind = enum {
     elementwise_chain,
+    conv2d,
     softmax,
     log_softmax,
     cross_entropy,
@@ -50,6 +52,18 @@ pub fn SoftmaxPlan(comptime T: type) type {
         sum_node: *Tensor(T),
         rep_sum: *Tensor(T),
         recip_rep_sum: *Tensor(T),
+        output: *Tensor(T),
+    };
+}
+
+pub fn Conv2dPlan(comptime T: type) type {
+    return struct {
+        input: *Tensor(T),
+        kernel: *Tensor(T),
+        input_view: *Tensor(T),
+        kernel_view: *Tensor(T),
+        mul_node: *Tensor(T),
+        sum_node: *Tensor(T),
         output: *Tensor(T),
     };
 }
@@ -104,6 +118,7 @@ pub fn LayerNormPlan(comptime T: type) type {
 pub fn FusionPayload(comptime T: type) type {
     return union(FusionKind) {
         elementwise_chain: ElementwiseChainPlan(T),
+        conv2d: Conv2dPlan(T),
         softmax: SoftmaxPlan(T),
         log_softmax: LogSoftmaxPlan(T),
         cross_entropy: CrossEntropyPlan(T),
@@ -317,6 +332,143 @@ fn executeSoftmaxPlan(comptime T: type, plan: SoftmaxPlan(T)) void {
     executeSoftmaxPlanBase(T, plan, false);
 }
 
+fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
+    _ = plan.input_view;
+    _ = plan.kernel_view;
+    _ = plan.mul_node;
+
+    const input = plan.input;
+    const kernel = plan.kernel;
+    const output = plan.output;
+
+    const out_w = output.ne[0];
+    const out_h = output.ne[1];
+    const c_out = output.ne[2];
+    const batch = output.ne[3];
+    const kw = kernel.ne[0];
+    const kh = kernel.ne[1];
+    const c_in = kernel.ne[2];
+    const in_w = input.ne[0];
+
+    const K = kw * kh * c_in; // rows of im2col / inner dimension
+    const N = out_w * out_h; // cols of im2col / spatial positions
+
+    // im2col scratch buffer [K, N] — one batch element at a time.
+    const col_buf = std.heap.page_allocator.alloc(T, K * N) catch {
+        executeConv2dNaive(T, plan);
+        return;
+    };
+    defer std.heap.page_allocator.free(col_buf);
+
+    // Kernel layout: [kw, kh, c_in, c_out] contiguous.
+    // As [c_out, K] matrix: row oc at offset oc*K, elements contiguous.
+    // a_m_stride = K, a_k_stride = 1.
+
+    // Output layout: [out_w, out_h, c_out, batch] contiguous.
+    // Per batch slice is [c_out, N] at offset n*N*c_out with row stride N.
+    // This matches the matmul's natural output layout.
+
+    const matmul = forward.selectMatMulKernel(T);
+    const contiguous_x = (input.strides[0] == 1);
+
+    for (0..batch) |n| {
+        // --- Build im2col column matrix ---
+        // col_buf[k, col] = input[ox+kx, oy+ky, ic, n]
+        // where k = kx + ky*kw + ic*kw*kh, col = ox + oy*out_w
+        if (contiguous_x) {
+            // Fast path: memcpy entire rows of out_w elements.
+            for (0..c_in) |ic| {
+                for (0..kh) |ky| {
+                    for (0..kw) |kx| {
+                        const k = kx + ky * kw + ic * kw * kh;
+                        const row_off = k * N;
+                        for (0..out_h) |oy| {
+                            const src = kx + (oy + ky) * in_w + ic * input.strides[2] + n * input.strides[3];
+                            const dst = row_off + oy * out_w;
+                            @memcpy(col_buf[dst..][0..out_w], input.data[src..][0..out_w]);
+                        }
+                    }
+                }
+            }
+        } else {
+            for (0..c_in) |ic| {
+                for (0..kh) |ky| {
+                    for (0..kw) |kx| {
+                        const k = kx + ky * kw + ic * kw * kh;
+                        const row_off = k * N;
+                        for (0..out_h) |oy| {
+                            for (0..out_w) |ox| {
+                                col_buf[row_off + oy * out_w + ox] = input.data[(ox + kx) * input.strides[0] +
+                                    (oy + ky) * input.strides[1] +
+                                    ic * input.strides[2] +
+                                    n * input.strides[3]];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Matmul: kernel[c_out, K] @ col_buf[K, N] → output[c_out, N] ---
+        matmul(
+            output.data, // dst
+            kernel.data, // A = kernel as [c_out, K]
+            col_buf, // B = im2col  [K, N]
+            c_out, // M
+            N, // N
+            K, // K
+            K, // a_m_stride (kernel row stride = kw*kh*c_in)
+            1, // a_k_stride
+            N, // b_k_stride (col_buf row stride)
+            1, // b_n_stride
+            0, // a_base
+            0, // b_base
+            n * N * c_out, // d_base (batch offset into output)
+            N, // d_row_stride
+        );
+    }
+}
+
+/// Fallback naive conv2d if scratch allocation fails.
+fn executeConv2dNaive(comptime T: type, plan: Conv2dPlan(T)) void {
+    const input = plan.input;
+    const kernel = plan.kernel;
+    const output = plan.output;
+
+    const out_w = output.ne[0];
+    const out_h = output.ne[1];
+    const c_out = output.ne[2];
+    const batch = output.ne[3];
+    const kw = kernel.ne[0];
+    const kh = kernel.ne[1];
+    const c_in = kernel.ne[2];
+
+    for (0..batch) |n| {
+        for (0..c_out) |oc| {
+            for (0..out_h) |oy| {
+                for (0..out_w) |ox| {
+                    var acc: T = 0;
+                    for (0..c_in) |ic| {
+                        for (0..kh) |ky| {
+                            for (0..kw) |kx| {
+                                acc += input.data[(ox + kx) * input.strides[0] +
+                                    (oy + ky) * input.strides[1] +
+                                    ic * input.strides[2] +
+                                    n * input.strides[3]] *
+                                    kernel.data[kx * kernel.strides[0] +
+                                    ky * kernel.strides[1] +
+                                    ic * kernel.strides[2] +
+                                    oc * kernel.strides[3]];
+                            }
+                        }
+                    }
+                    output.data[ox + oy * out_w + oc * out_w * out_h + n * out_w * out_h * c_out] = acc;
+                }
+            }
+        }
+    }
+}
+
 fn executeLogSoftmaxPlan(comptime T: type, plan: LogSoftmaxPlan(T)) void {
     executeSoftmaxPlanBase(T, plan, true);
 }
@@ -459,6 +611,7 @@ fn executeLayerNormPlan(comptime T: type, plan: LayerNormPlan(T)) void {
 pub fn executeFusionPlan(comptime T: type, plan: FusionPlan(T)) void {
     switch (plan.payload) {
         .elementwise_chain => |chain_plan| executeFusedChain(T, chain_plan),
+        .conv2d => |conv2d_plan| executeConv2dPlan(T, conv2d_plan),
         .softmax => |softmax_plan| executeSoftmaxPlan(T, softmax_plan),
         .log_softmax => |log_softmax_plan| executeLogSoftmaxPlan(T, log_softmax_plan),
         .cross_entropy => |cross_entropy_plan| executeCrossEntropyPlan(T, cross_entropy_plan),
