@@ -5,6 +5,7 @@
 //! The `compute` dispatcher routes based on `tensor.op`.
 //!
 //! Element-wise ops use portable SIMD via Zig's @Vector for throughput.
+//! Matrix multiplication uses cache-friendly tiling with SIMD accumulation.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -25,6 +26,10 @@ const max_dims = 4;
 const GELU_COEF_A = 0.044715;
 const SQRT_2_OVER_PI = 0.79788456080286535587989211986876;
 
+// ---------------------------------------------------------------------------
+// SIMD primitives
+// ---------------------------------------------------------------------------
+
 /// Returns the optimal SIMD vector width (in lanes) for type T.
 /// Targets 256-bit vectors (e.g. AVX2), minimum 4 lanes.
 /// LLVM will split wider vectors automatically on narrower hardware.
@@ -33,120 +38,129 @@ fn simdVecSize(comptime T: type) comptime_int {
     return if (lanes >= 4) lanes else 4;
 }
 
-/// Process contiguous data with a SIMD unary operation.
-/// Returns the index where SIMD processing stopped; caller handles the tail.
-fn simdUnaryLoop(
+/// Apply a unary SIMD operation across contiguous data, including the scalar tail.
+fn simdMapUnary(
     comptime T: type,
     src: []const T,
     dst: []T,
-    comptime mapFn: fn (@Vector(simdVecSize(T), T)) @Vector(simdVecSize(T), T),
-) usize {
+    comptime vecFn: fn (@Vector(simdVecSize(T), T)) @Vector(simdVecSize(T), T),
+    comptime scalarFn: fn (T) T,
+) void {
     const vec_size = comptime simdVecSize(T);
     const len = src.len;
     var i: usize = 0;
     while (i + vec_size <= len) : (i += vec_size) {
         const v: @Vector(vec_size, T) = src[i..][0..vec_size].*;
-        dst[i..][0..vec_size].* = mapFn(v);
+        dst[i..][0..vec_size].* = vecFn(v);
     }
-    return i;
+    while (i < len) : (i += 1) {
+        dst[i] = scalarFn(src[i]);
+    }
 }
 
-/// Process contiguous data with a SIMD binary operation.
-/// Returns the index where SIMD processing stopped; caller handles the tail.
-fn simdBinaryLoop(
+/// How the two operands of a binary op are supplied.
+const BinaryMode = enum { vec_vec, scalar_lhs, scalar_rhs };
+
+/// Apply a binary SIMD operation across contiguous data, including the scalar tail.
+/// In `scalar_lhs` / `scalar_rhs` mode the scalar operand is taken from index 0
+/// of the corresponding slice and broadcast across every lane.
+fn simdMapBinary(
     comptime T: type,
-    src0: []const T,
-    src1: []const T,
+    comptime mode: BinaryMode,
+    lhs: []const T,
+    rhs: []const T,
     dst: []T,
-    comptime mapFn: fn (@Vector(simdVecSize(T), T), @Vector(simdVecSize(T), T)) @Vector(simdVecSize(T), T),
-) usize {
+    comptime vecFn: fn (@Vector(simdVecSize(T), T), @Vector(simdVecSize(T), T)) @Vector(simdVecSize(T), T),
+    comptime scalarFn: fn (T, T) T,
+) void {
     const vec_size = comptime simdVecSize(T);
-    const len = src0.len;
+    const len = dst.len;
+
     var i: usize = 0;
-    while (i + vec_size <= len) : (i += vec_size) {
-        const v0: @Vector(vec_size, T) = src0[i..][0..vec_size].*;
-        const v1: @Vector(vec_size, T) = src1[i..][0..vec_size].*;
-        dst[i..][0..vec_size].* = mapFn(v0, v1);
+    switch (mode) {
+        .vec_vec => {
+            while (i + vec_size <= len) : (i += vec_size) {
+                const vl: @Vector(vec_size, T) = lhs[i..][0..vec_size].*;
+                const vr: @Vector(vec_size, T) = rhs[i..][0..vec_size].*;
+                dst[i..][0..vec_size].* = vecFn(vl, vr);
+            }
+            while (i < len) : (i += 1) dst[i] = scalarFn(lhs[i], rhs[i]);
+        },
+        .scalar_lhs => {
+            const sv: @Vector(vec_size, T) = @splat(lhs[0]);
+            const s = lhs[0];
+            while (i + vec_size <= len) : (i += vec_size) {
+                const vr: @Vector(vec_size, T) = rhs[i..][0..vec_size].*;
+                dst[i..][0..vec_size].* = vecFn(sv, vr);
+            }
+            while (i < len) : (i += 1) dst[i] = scalarFn(s, rhs[i]);
+        },
+        .scalar_rhs => {
+            const sv: @Vector(vec_size, T) = @splat(rhs[0]);
+            const s = rhs[0];
+            while (i + vec_size <= len) : (i += vec_size) {
+                const vl: @Vector(vec_size, T) = lhs[i..][0..vec_size].*;
+                dst[i..][0..vec_size].* = vecFn(vl, sv);
+            }
+            while (i < len) : (i += 1) dst[i] = scalarFn(lhs[i], s);
+        },
     }
-    return i;
 }
 
-/// SIMD scalar-broadcast loop: apply `op(src[i], scalar)` across the source.
-/// Returns the index where SIMD processing stopped.
-fn simdScalarRhsLoop(
-    comptime T: type,
-    src: []const T,
-    scalar: T,
-    dst: []T,
-    comptime mapFn: fn (@Vector(simdVecSize(T), T), @Vector(simdVecSize(T), T)) @Vector(simdVecSize(T), T),
-) usize {
-    const vec_size = comptime simdVecSize(T);
-    const sv: @Vector(vec_size, T) = @splat(scalar);
-    const len = src.len;
-    var i: usize = 0;
-    while (i + vec_size <= len) : (i += vec_size) {
-        const v: @Vector(vec_size, T) = src[i..][0..vec_size].*;
-        dst[i..][0..vec_size].* = mapFn(v, sv);
-    }
-    return i;
-}
+// ---------------------------------------------------------------------------
+// Forward compute operations parameterized on the tensor type
+// ---------------------------------------------------------------------------
 
-/// SIMD scalar-broadcast loop: apply `op(scalar, src[i])` across the source.
-/// Returns the index where SIMD processing stopped.
-fn simdScalarLhsLoop(
-    comptime T: type,
-    scalar: T,
-    src: []const T,
-    dst: []T,
-    comptime mapFn: fn (@Vector(simdVecSize(T), T), @Vector(simdVecSize(T), T)) @Vector(simdVecSize(T), T),
-) usize {
-    const vec_size = comptime simdVecSize(T);
-    const sv: @Vector(vec_size, T) = @splat(scalar);
-    const len = src.len;
-    var i: usize = 0;
-    while (i + vec_size <= len) : (i += vec_size) {
-        const v: @Vector(vec_size, T) = src[i..][0..vec_size].*;
-        dst[i..][0..vec_size].* = mapFn(sv, v);
-    }
-    return i;
-}
-
-/// Forward compute operations parameterized on the tensor type.
 pub fn Ops(comptime Self: type, comptime T: type) type {
     const vec_size = comptime simdVecSize(T);
     const Vec = @Vector(vec_size, T);
 
     return struct {
-        // -- SIMD map functions for use with the loop helpers --
+        // -- Vector map functions ----------------------------------------
 
-        fn addVec(a: Vec, b: Vec) Vec {
-            return a + b;
-        }
-        fn subVec(a: Vec, b: Vec) Vec {
-            return a - b;
-        }
-        fn mulVec(a: Vec, b: Vec) Vec {
-            return a * b;
-        }
-        fn divVec(a: Vec, b: Vec) Vec {
-            return a / b;
-        }
-        fn sqrVec(v: Vec) Vec {
-            return v * v;
-        }
-        fn sqrtVec(v: Vec) Vec {
-            return @sqrt(v);
-        }
-        fn absVec(v: Vec) Vec {
-            return @abs(v);
-        }
-        fn negVec(v: Vec) Vec {
-            return -v;
+        fn addVec(a: Vec, b: Vec) Vec { return a + b; }
+        fn subVec(a: Vec, b: Vec) Vec { return a - b; }
+        fn mulVec(a: Vec, b: Vec) Vec { return a * b; }
+        fn divVec(a: Vec, b: Vec) Vec { return a / b; }
+        fn sqrVec(v: Vec) Vec { return v * v; }
+        fn sqrtVec(v: Vec) Vec { return @sqrt(v); }
+        fn absVec(v: Vec) Vec { return @abs(v); }
+        fn negVec(v: Vec) Vec { return -v; }
+
+        // -- Scalar map functions ----------------------------------------
+
+        fn addScalar(a: T, b: T) T { return a + b; }
+        fn subScalar(a: T, b: T) T { return a - b; }
+        fn mulScalar(a: T, b: T) T { return a * b; }
+        fn divScalar(a: T, b: T) T { return a / b; }
+        fn sqrScalar(x: T) T { return x * x; }
+        fn sqrtScalar(x: T) T { return std.math.sqrt(x); }
+        fn absScalar(x: T) T { return @abs(x); }
+        fn negScalar(x: T) T { return -x; }
+
+        // -- Vectorized tanh (3,3) Pade approximant ----------------------
+
+        fn tanhApprox(x: Vec) Vec {
+            const lo: Vec = @splat(@as(T, -4.97));
+            const hi: Vec = @splat(@as(T, 4.97));
+            const xc = @min(@max(x, lo), hi);
+            const x2 = xc * xc;
+            const x4 = x2 * x2;
+            const x6 = x4 * x2;
+            const c135135: Vec = @splat(@as(T, 135135.0));
+            const c17325: Vec = @splat(@as(T, 17325.0));
+            const c378: Vec = @splat(@as(T, 378.0));
+            const c62370: Vec = @splat(@as(T, 62370.0));
+            const c3150: Vec = @splat(@as(T, 3150.0));
+            const c28: Vec = @splat(@as(T, 28.0));
+            const num = xc * (c135135 + c17325 * x2 + c378 * x4 + x6);
+            const den = c135135 + c62370 * x2 + c3150 * x4 + c28 * x6;
+            return num / den;
         }
 
-        // -----------------------------------------------------------
+        // ---------------------------------------------------------------
         // Element-wise unary ops
-        // -----------------------------------------------------------
+        // ---------------------------------------------------------------
 
         /// Copy src0 into dst. Both must be contiguous and same size.
         pub fn computeDup(dst: *Self, src0: *Self) void {
@@ -159,35 +173,27 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             @panic("Unimplemented forward dup for non-contiguous src");
         }
 
-        /// Element-wise square: dst[i] = src0[i]^2
         pub fn computeSqr(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
-            const i = simdUnaryLoop(T, src0.data, dst.data, sqrVec);
-            for (src0.data[i..], dst.data[i..]) |s, *d| d.* = s * s;
+            simdMapUnary(T, src0.data, dst.data, sqrVec, sqrScalar);
         }
 
-        /// Element-wise square root.
         pub fn computeSqrt(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
-            const i = simdUnaryLoop(T, src0.data, dst.data, sqrtVec);
-            for (src0.data[i..], dst.data[i..]) |s, *d| d.* = std.math.sqrt(s);
+            simdMapUnary(T, src0.data, dst.data, sqrtVec, sqrtScalar);
         }
 
-        /// Element-wise absolute value.
         pub fn computeAbs(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
-            const i = simdUnaryLoop(T, src0.data, dst.data, absVec);
-            for (src0.data[i..], dst.data[i..]) |s, *d| d.* = @abs(s);
+            simdMapUnary(T, src0.data, dst.data, absVec, absScalar);
         }
 
-        /// Element-wise negation.
         pub fn computeNeg(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
-            const i = simdUnaryLoop(T, src0.data, dst.data, negVec);
-            for (src0.data[i..], dst.data[i..]) |s, *d| d.* = -s;
+            simdMapUnary(T, src0.data, dst.data, negVec, negScalar);
         }
 
-        /// Element-wise sign: returns -1, 0, or 1.  Uses @select for branchless SIMD.
+        /// Element-wise sign: -1, 0, or 1.  Uses @select for branchless SIMD.
         pub fn computeSgn(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
             const zero: Vec = @splat(0);
@@ -197,9 +203,8 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             var i: usize = 0;
             while (i + vec_size <= len) : (i += vec_size) {
                 const v: Vec = src0.data[i..][0..vec_size].*;
-                const pos = @select(T, v > zero, one, zero);
-                const neg = @select(T, v < zero, neg_one, zero);
-                dst.data[i..][0..vec_size].* = pos + neg;
+                dst.data[i..][0..vec_size].* = @select(T, v > zero, one, zero) +
+                    @select(T, v < zero, neg_one, zero);
             }
             while (i < len) : (i += 1) {
                 const s = src0.data[i];
@@ -239,11 +244,23 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        /// Element-wise GeLU approximation (scalar — tanh not yet vectorized).
+        /// Element-wise GeLU with vectorized tanh approximation.
         pub fn computeGelu(dst: *Self, src0: *Self) void {
             assert(dst.isSameShape(src0));
-            for (src0.data, dst.data) |x, *d| {
-                d.* = 0.5 * x * (1 + std.math.tanh(SQRT_2_OVER_PI * x * (1 + GELU_COEF_A * x * x)));
+            const half: Vec = @splat(@as(T, 0.5));
+            const one: Vec = @splat(@as(T, 1.0));
+            const coef_a: Vec = @splat(@as(T, GELU_COEF_A));
+            const s2op: Vec = @splat(@as(T, SQRT_2_OVER_PI));
+            const len = src0.data.len;
+            var i: usize = 0;
+            while (i + vec_size <= len) : (i += vec_size) {
+                const x: Vec = src0.data[i..][0..vec_size].*;
+                const inner = s2op * x * (one + coef_a * x * x);
+                dst.data[i..][0..vec_size].* = half * x * (one + tanhApprox(inner));
+            }
+            while (i < len) : (i += 1) {
+                const x = src0.data[i];
+                dst.data[i] = 0.5 * x * (1.0 + std.math.tanh(SQRT_2_OVER_PI * x * (1.0 + GELU_COEF_A * x * x)));
             }
         }
 
@@ -259,88 +276,70 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             @panic("Not implemented");
         }
 
-        // -----------------------------------------------------------
+        // ---------------------------------------------------------------
         // Element-wise binary ops (with scalar broadcasting)
-        // -----------------------------------------------------------
+        // ---------------------------------------------------------------
 
-        /// Element-wise addition. Supports same-shape and scalar broadcasting.
         pub fn computeAdd(dst: *Self, src0: *Self, src1: *Self) void {
             if (src0.isSameShape(src1)) {
                 assert(dst.isSameShape(src0));
-                const i = simdBinaryLoop(T, src0.data, src1.data, dst.data, addVec);
-                for (src0.data[i..], src1.data[i..], dst.data[i..]) |a, b, *d| d.* = a + b;
+                simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, addVec, addScalar);
             } else if (src1.isScalar()) {
                 assert(dst.isSameShape(src0));
-                const i = simdScalarRhsLoop(T, src0.data, src1.data[0], dst.data, addVec);
-                for (src0.data[i..], dst.data[i..]) |a, *d| d.* = a + src1.data[0];
+                simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, addVec, addScalar);
             } else if (src0.isScalar()) {
                 assert(dst.isSameShape(src1));
-                const i = simdScalarLhsLoop(T, src0.data[0], src1.data, dst.data, addVec);
-                for (src1.data[i..], dst.data[i..]) |b, *d| d.* = src0.data[0] + b;
+                simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, addVec, addScalar);
             }
         }
 
-        /// Element-wise subtraction. Supports same-shape and scalar broadcasting.
         pub fn computeSub(dst: *Self, src0: *Self, src1: *Self) void {
             if (src0.isSameShape(src1)) {
                 assert(dst.isSameShape(src0));
-                const i = simdBinaryLoop(T, src0.data, src1.data, dst.data, subVec);
-                for (src0.data[i..], src1.data[i..], dst.data[i..]) |a, b, *d| d.* = a - b;
+                simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, subVec, subScalar);
             } else if (src1.isScalar()) {
                 assert(dst.isSameShape(src0));
-                const i = simdScalarRhsLoop(T, src0.data, src1.data[0], dst.data, subVec);
-                for (src0.data[i..], dst.data[i..]) |a, *d| d.* = a - src1.data[0];
+                simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, subVec, subScalar);
             } else if (src0.isScalar()) {
                 assert(dst.isSameShape(src1));
-                const i = simdScalarLhsLoop(T, src0.data[0], src1.data, dst.data, subVec);
-                for (src1.data[i..], dst.data[i..]) |b, *d| d.* = src0.data[0] - b;
+                simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, subVec, subScalar);
             } else {
                 @panic("Unimplemented forward sub for src sizes");
             }
         }
 
-        /// Element-wise multiplication. Supports same-shape and scalar broadcasting.
         pub fn computeMul(dst: *Self, src0: *Self, src1: *Self) void {
             if (src0.isScalar()) {
                 assert(dst.isSameShape(src1));
-                const i = simdScalarLhsLoop(T, src0.data[0], src1.data, dst.data, mulVec);
-                for (src1.data[i..], dst.data[i..]) |b, *d| d.* = src0.data[0] * b;
+                simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, mulVec, mulScalar);
             } else if (src1.isScalar()) {
                 assert(dst.isSameShape(src0));
-                const i = simdScalarRhsLoop(T, src0.data, src1.data[0], dst.data, mulVec);
-                for (src0.data[i..], dst.data[i..]) |a, *d| d.* = a * src1.data[0];
+                simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, mulVec, mulScalar);
             } else {
                 assert(dst.isSameShape(src0));
                 assert(src0.isSameShape(src1));
-                const i = simdBinaryLoop(T, src0.data, src1.data, dst.data, mulVec);
-                for (src0.data[i..], src1.data[i..], dst.data[i..]) |a, b, *d| d.* = a * b;
+                simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, mulVec, mulScalar);
             }
         }
 
-        /// Element-wise division. Supports same-shape and scalar broadcasting.
         pub fn computeDiv(dst: *Self, src0: *Self, src1: *Self) void {
             if (src0.isScalar()) {
                 assert(dst.isSameShape(src1));
-                const i = simdScalarLhsLoop(T, src0.data[0], src1.data, dst.data, divVec);
-                for (src1.data[i..], dst.data[i..]) |b, *d| d.* = src0.data[0] / b;
+                simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, divVec, divScalar);
             } else if (src1.isScalar()) {
                 assert(dst.isSameShape(src0));
-                const i = simdScalarRhsLoop(T, src0.data, src1.data[0], dst.data, divVec);
-                for (src0.data[i..], dst.data[i..]) |a, *d| d.* = a / src1.data[0];
+                simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, divVec, divScalar);
             } else {
                 assert(dst.isSameShape(src0));
                 assert(src0.isSameShape(src1));
-                const i = simdBinaryLoop(T, src0.data, src1.data, dst.data, divVec);
-                for (src0.data[i..], src1.data[i..], dst.data[i..]) |a, b, *d| d.* = a / b;
+                simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, divVec, divScalar);
             }
         }
 
-        // -----------------------------------------------------------
+        // ---------------------------------------------------------------
         // Reduction / broadcast ops (stride-indexed, not SIMD'd)
-        // -----------------------------------------------------------
+        // ---------------------------------------------------------------
 
-        /// Inverse-broadcast mean: average src0 elements into dst's smaller shape.
-        /// Divides each contribution to avoid overflow.
         pub fn computeMean(dst: *Self, src0: *Self) void {
             assert(max_dims == 4);
             assert(src0.canSumTo(dst));
@@ -356,10 +355,8 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                             const dst_nes = src0_nes % dst_ne_v;
                             const src0_stride_v: @Vector(4, usize) = src0.strides;
                             const dst_stride_v: @Vector(4, usize) = dst.strides;
-
                             const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
                             const dst_idx = @reduce(.Add, dst_nes * dst_stride_v);
-
                             dst.data[dst_idx] += src0.data[src0_idx] / div_elems;
                         }
                     }
@@ -367,7 +364,6 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        /// Inverse-broadcast sum: accumulate src0 elements into dst's smaller shape.
         pub fn computeSum(dst: *Self, src0: *Self) void {
             assert(max_dims == 4);
             assert(src0.canSumTo(dst));
@@ -380,10 +376,8 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                             const dst_nes = src0_nes % dst_ne_v;
                             const src0_stride_v: @Vector(4, usize) = src0.strides;
                             const dst_stride_v: @Vector(4, usize) = dst.strides;
-
                             const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
                             const dst_idx = @reduce(.Add, dst_nes * dst_stride_v);
-
                             dst.data[dst_idx] += src0.data[src0_idx];
                         }
                     }
@@ -391,7 +385,6 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        /// Broadcast src0 into dst's larger shape by repeating elements.
         pub fn computeRepeat(dst: *Self, src0: *Self) void {
             assert(max_dims == 4);
             assert(src0.canRepeatTo(dst));
@@ -404,10 +397,8 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                             const src0_nes = nes % src0_ne_v;
                             const src0_stride_v: @Vector(4, usize) = src0.strides;
                             const dst_stride_v: @Vector(4, usize) = dst.strides;
-
                             const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
                             const dst_idx = @reduce(.Add, nes * dst_stride_v);
-
                             dst.data[dst_idx] = src0.data[src0_idx];
                         }
                     }
@@ -415,16 +406,15 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        // -----------------------------------------------------------
-        // Matrix multiplication
-        // -----------------------------------------------------------
+        // ---------------------------------------------------------------
+        // Matrix multiplication  (tiled, K-blocked, SIMD-accumulated)
+        // ---------------------------------------------------------------
 
         fn shouldUseBlasForMatMul(dst: *Self, src0: *Self, src1: *Self) bool {
             return src0.isContiguous() and src1.isContiguous() and
                 (dst.ne[0] >= 32 and dst.ne[1] >= 32 and src1.ne[0] >= 32);
         }
 
-        /// Validate that dimension constraints for matrix multiplication are satisfied.
         pub fn assertValidMatMulDims(dst: *Self, src0: *Self, trans0: bool, src1: *Self, trans1: bool) void {
             assert(src0.ne[3] == src1.ne[3]);
             assert(src0.ne[2] == src1.ne[2]);
@@ -450,8 +440,6 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        /// Matrix multiplication with optional transposition of either operand.
-        /// Supports BLAS acceleration when enabled and operands are f32.
         pub fn computeMatMul(dst: *Self, src0: *Self, comptime trans0: bool, src1: *Self, comptime trans1: bool) void {
             assert(max_dims == 4);
             dst.assertValidMatMulDims(src0, trans0, src1, trans1);
@@ -493,15 +481,10 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                             dst_ne0c,
                         );
                     } else {
-                        // Tiled matmul with SIMD accumulation.
-                        //
-                        // Determine M, N, K and index strides based on transpose flags.
-                        // Since trans0/trans1 are comptime, unused branches are eliminated.
-                        const M = if (trans0) src0_ne0 else src0_ne1; // dst rows
-                        const N = if (trans1) src1_ne1 else src1_ne0; // dst cols
-                        const K = if (trans0) src0_ne1 else src0_ne0; // contraction dim
+                        const M = if (trans0) src0_ne0 else src0_ne1;
+                        const N = if (trans1) src1_ne1 else src1_ne0;
+                        const K = if (trans0) src0_ne1 else src0_ne0;
 
-                        // Strides for walking A[m, k] and B[k, n]:
                         const a_m_stride = if (trans0) src0.strides[0] else src0.strides[1];
                         const a_k_stride = if (trans0) src0.strides[1] else src0.strides[0];
                         const b_n_stride = if (trans1) src1.strides[1] else src1.strides[0];
@@ -513,56 +496,57 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
 
                         const tile_n = vec_size;
                         const tile_m = 8;
+                        const tile_k = 64;
+                        const b_contig = (b_n_stride == 1);
 
-                        // Process full N-tiles with SIMD
                         var mi: usize = 0;
                         while (mi < M) : (mi += tile_m) {
                             const m_end = @min(mi + tile_m, M);
 
+                            // --- SIMD N-tiles ---
                             var ni: usize = 0;
                             while (ni + tile_n <= N) : (ni += tile_n) {
-                                // Accumulator: one vector per row of the tile
-                                var acc: [tile_m]Vec = @splat(@as(Vec, @splat(0)));
+                                var acc = [_]Vec{@as(Vec, @splat(0))} ** tile_m;
 
-                                // Can we do a contiguous vector load on B's N-dimension?
-                                const b_contig = (b_n_stride == 1);
-
-                                for (0..K) |k| {
-                                    // Load a vector of B[k, ni..ni+tile_n]
-                                    const b_row_base = b_base + k * b_k_stride + ni * b_n_stride;
-                                    const b_vec: Vec = if (b_contig)
-                                        src1.data[b_row_base..][0..tile_n].*
-                                    else blk: {
-                                        var bv: [tile_n]T = undefined;
-                                        for (0..tile_n) |j| {
-                                            bv[j] = src1.data[b_row_base + j * b_n_stride];
+                                // K-tiled accumulation
+                                var ki: usize = 0;
+                                while (ki < K) : (ki += tile_k) {
+                                    const k_end = @min(ki + tile_k, K);
+                                    for (ki..k_end) |k| {
+                                        const b_row_base = b_base + k * b_k_stride + ni * b_n_stride;
+                                        const b_vec: Vec = if (b_contig)
+                                            src1.data[b_row_base..][0..tile_n].*
+                                        else blk: {
+                                            var bv: [tile_n]T = undefined;
+                                            for (0..tile_n) |j| {
+                                                bv[j] = src1.data[b_row_base + j * b_n_stride];
+                                            }
+                                            break :blk bv;
+                                        };
+                                        for (mi..m_end, 0..) |m, ml| {
+                                            const a_val = src0.data[a_base + m * a_m_stride + k * a_k_stride];
+                                            acc[ml] += @as(Vec, @splat(a_val)) * b_vec;
                                         }
-                                        break :blk bv;
-                                    };
-
-                                    // Broadcast each A element and multiply-accumulate
-                                    for (mi..m_end, 0..) |m, mi_local| {
-                                        const a_val = src0.data[a_base + m * a_m_stride + k * a_k_stride];
-                                        const a_vec: Vec = @splat(a_val);
-                                        acc[mi_local] += a_vec * b_vec;
                                     }
                                 }
 
-                                // Write tile to dst
-                                for (mi..m_end, 0..) |m, mi_local| {
+                                for (mi..m_end, 0..) |m, ml| {
                                     const row_base = d_base + m * dst.strides[1] + ni;
-                                    dst.data[row_base..][0..tile_n].* = acc[mi_local];
+                                    dst.data[row_base..][0..tile_n].* = acc[ml];
                                 }
                             }
 
-                            // Scalar tail for remaining N columns
+                            // --- Scalar tail for remaining N columns ---
                             while (ni < N) : (ni += 1) {
                                 for (mi..m_end) |m| {
                                     var s: T = 0;
-                                    for (0..K) |k| {
-                                        const a_val = src0.data[a_base + m * a_m_stride + k * a_k_stride];
-                                        const b_val = src1.data[b_base + k * b_k_stride + ni * b_n_stride];
-                                        s += a_val * b_val;
+                                    var ki: usize = 0;
+                                    while (ki < K) : (ki += tile_k) {
+                                        const k_end = @min(ki + tile_k, K);
+                                        for (ki..k_end) |k| {
+                                            s += src0.data[a_base + m * a_m_stride + k * a_k_stride] *
+                                                src1.data[b_base + k * b_k_stride + ni * b_n_stride];
+                                        }
                                     }
                                     dst.data[d_base + m * dst.strides[1] + ni] = s;
                                 }
@@ -573,7 +557,10 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
-        /// Dispatch forward computation based on the tensor's operation.
+        // ---------------------------------------------------------------
+        // Dispatch
+        // ---------------------------------------------------------------
+
         pub fn compute(tensor: *Self) void {
             const src0 = tensor.src0;
             const src1 = tensor.src1;

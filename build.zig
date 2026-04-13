@@ -73,6 +73,24 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run zgml tests");
     test_step.dependOn(runTests(b, optimize, target, .{ .use_blas = use_blas }));
+
+    // Benchmark step — always built with ReleaseFast
+    const bench_step = b.step("bench", "Run zgml benchmarks");
+    const zgml_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "zgml", .module = zgml_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_pkg.zgml_options },
+        },
+    });
+    const bench_exe = b.addExecutable(.{
+        .name = "zgml-bench",
+        .root_module = bench_mod,
+    });
+    bench_step.dependOn(&b.addRunArtifact(bench_exe).step);
 }
 
 pub fn runTests(
