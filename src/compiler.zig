@@ -1,6 +1,7 @@
 const std = @import("std");
 const Op = @import("op.zig").Op;
 const tensorlib = @import("tensor.zig");
+const losslib = @import("loss.zig");
 const max_dims = tensorlib.max_dims;
 const Alloc = std.mem.Allocator;
 
@@ -162,11 +163,13 @@ pub const RmsNormSpec = struct {
 pub const RewriteKind = enum {
     softmax,
     log_softmax,
+    cross_entropy,
 };
 
 pub const RewriteResult = union(RewriteKind) {
     softmax: SoftmaxSpec,
     log_softmax: LogSoftmaxSpec,
+    cross_entropy: CrossEntropySpec,
 };
 
 pub const RewritePass = struct {
@@ -176,6 +179,7 @@ pub const RewritePass = struct {
         return switch (self.kind) {
             .softmax => if (graph.detectSoftmax(output)) |spec| .{ .softmax = spec } else null,
             .log_softmax => if (graph.detectLogSoftmax(output)) |spec| .{ .log_softmax = spec } else null,
+            .cross_entropy => if (graph.detectCrossEntropy(output)) |spec| .{ .cross_entropy = spec } else null,
         };
     }
 };
@@ -398,10 +402,23 @@ pub const CanonicalGraph = struct {
 
     pub fn detectCrossEntropy(self: *const CanonicalGraph, output: ValueId) ?CrossEntropySpec {
         const out_v = self.value(output);
-        if (out_v.expr != .scale) return null;
+        const scaled = switch (out_v.expr) {
+            .scale => |s| s,
+            .binary => |b| blk: {
+                if (b.op != .mul) return null;
+                if (isScalarBroadcastValue(self, b.rhs)) {
+                    break :blk ScaleSpec{ .input = b.lhs, .scalar = scalarSourceValueId(self, b.rhs) };
+                }
+                if (isScalarBroadcastValue(self, b.lhs)) {
+                    break :blk ScaleSpec{ .input = b.rhs, .scalar = scalarSourceValueId(self, b.lhs) };
+                }
+                return null;
+            },
+            else => return null,
+        };
 
-        const sum = out_v.expr.scale.input;
-        const scale_scalar = out_v.expr.scale.scalar;
+        const sum = scaled.input;
+        const scale_scalar = scaled.scalar;
         const sum_v = self.value(sum);
         if (sum_v.expr != .reduce or sum_v.expr.reduce.op != .sum) return null;
 
@@ -526,22 +543,30 @@ pub const KernelValue = struct {
     expr: KernelExpr,
 };
 
+pub const KernelAnnotation = struct {
+    output: ValueId,
+    rewrite: RewriteResult,
+};
+
 pub const KernelPlan = struct {
     alloc: std.mem.Allocator,
     values: std.ArrayList(KernelValue),
     outputs: std.ArrayList(ValueId),
+    annotations: std.ArrayList(KernelAnnotation),
 
     pub fn init(alloc: std.mem.Allocator) KernelPlan {
         return .{
             .alloc = alloc,
             .values = .{},
             .outputs = .{},
+            .annotations = .{},
         };
     }
 
     pub fn deinit(self: *KernelPlan) void {
         self.values.deinit(self.alloc);
         self.outputs.deinit(self.alloc);
+        self.annotations.deinit(self.alloc);
     }
 
     pub fn lowerFromCanonical(alloc: Alloc, graph: *const CanonicalGraph) !KernelPlan {
@@ -574,7 +599,55 @@ pub const KernelPlan = struct {
         }
         return plan;
     }
+
+    pub fn addRewriteAnnotations(self: *KernelPlan, alloc: Alloc, output: ValueId, rewrites: []const RewriteResult) !void {
+        for (rewrites) |rewrite| {
+            try self.annotations.append(alloc, .{ .output = output, .rewrite = rewrite });
+        }
+    }
 };
+
+pub fn Pipeline(comptime T: type) type {
+    const Tensor = tensorlib.Tensor(T);
+    return struct {
+        const Self = @This();
+
+        alloc: Alloc,
+        lowering: Lowering(T),
+        canonical: ?CanonicalGraph = null,
+        rewrites: std.ArrayList(RewriteResult),
+        kernel: ?KernelPlan = null,
+
+        pub fn init(alloc: Alloc) Self {
+            return .{
+                .alloc = alloc,
+                .lowering = Lowering(T).init(alloc),
+                .rewrites = .{},
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            if (self.kernel) |*k| k.deinit();
+            if (self.canonical) |*c| c.deinit();
+            self.rewrites.deinit(self.alloc);
+            self.lowering.deinit();
+        }
+
+        pub fn compile(self: *Self, root: *const Tensor) (Alloc.Error || error{UnsupportedOp})!void {
+            _ = try self.lowering.lowerRoot(root);
+
+            self.canonical = try self.lowering.graph.canonicalize(self.alloc);
+            errdefer if (self.canonical) |*c| c.deinit();
+
+            const output: ValueId = @enumFromInt(self.canonical.?.values.items.len - 1);
+            self.rewrites = try self.canonical.?.applyRewritePasses(output, self.alloc);
+            errdefer self.rewrites.deinit(self.alloc);
+
+            self.kernel = try KernelPlan.lowerFromCanonical(self.alloc, &self.canonical.?);
+            try self.kernel.?.addRewriteAnnotations(self.alloc, output, self.rewrites.items);
+        }
+    };
+}
 
 pub fn Lowering(comptime T: type) type {
     const Tensor = tensorlib.Tensor(T);
@@ -792,8 +865,8 @@ fn canonicalizeBinary(src_graph: *const CanonicalGraph, binary: BinarySpec) Cano
 
 fn isScalarBroadcastValue(graph: *const CanonicalGraph, id: ValueId) bool {
     const value = graph.value(id);
+    if (value.shape.nElems() == 1) return true;
     return switch (value.expr) {
-        .constant => value.shape.nElems() == 1,
         .view => |v| v.kind == .broadcast and graph.value(v.input).shape.nElems() == 1,
         else => false,
     };
@@ -801,8 +874,8 @@ fn isScalarBroadcastValue(graph: *const CanonicalGraph, id: ValueId) bool {
 
 fn scalarSourceValueId(graph: *const CanonicalGraph, id: ValueId) ValueId {
     const value = graph.value(id);
+    if (value.shape.nElems() == 1) return id;
     return switch (value.expr) {
-        .constant => id,
         .view => |v| v.input,
         else => unreachable,
     };
@@ -814,7 +887,7 @@ test "compiler - shape helpers" {
     try std.testing.expectEqual(@as(usize, 24), shape.nElems());
 
     const strides = Strides.contiguous(shape);
-    try std.testing.expectEqualSlices(usize, &.{ 1, 2, 6, 24 }, &strides.values);
+    try std.testing.expectEqualSlices(usize, &.{ 1, 2, 6, 24, 24, 24, 24, 24 }, &strides.values);
 }
 
 test "compiler - canonical graph append" {
@@ -1118,7 +1191,18 @@ test "compiler - rewrite layer detects crossEntropy pattern" {
     var canon = try lowering.graph.canonicalize(std.testing.allocator);
     defer canon.deinit();
 
-    try std.testing.expect(canon.detectCrossEntropy(@enumFromInt(canon.values.items.len - 1)) == null);
+    try std.testing.expect(canon.detectCrossEntropy(@enumFromInt(canon.values.items.len - 1)) != null);
+
+    var rewrites = try canon.applyRewritePasses(@enumFromInt(canon.values.items.len - 1), std.testing.allocator);
+    defer rewrites.deinit(std.testing.allocator);
+
+    var found_rewrite = false;
+    for (rewrites.items) |r| {
+        if (r == .cross_entropy) {
+            found_rewrite = true;
+        }
+    }
+    try std.testing.expect(found_rewrite);
 }
 
 test "compiler - detects rmsNorm canonical pattern" {
@@ -1204,4 +1288,94 @@ test "compiler - lower canonical graph to kernel plan" {
     try std.testing.expectEqual(@as(usize, 1), plan.values.items.len);
     try std.testing.expect(plan.values.items[0].expr == .zip);
     try std.testing.expectEqual(@as(usize, 1), plan.outputs.items.len);
+}
+
+test "compiler - pipeline compiles softmax graph end-to-end" {
+    const Tensor = tensorlib.Tensor(f32);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var x = try Tensor.init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+
+    const y = x.softmax(&.{1});
+
+    var pipeline = Pipeline(f32).init(std.testing.allocator);
+    defer pipeline.deinit();
+    try pipeline.compile(y);
+
+    try std.testing.expect(pipeline.canonical != null);
+    try std.testing.expect(pipeline.kernel != null);
+    try std.testing.expect(pipeline.rewrites.items.len >= 1);
+    try std.testing.expectEqual(pipeline.rewrites.items.len, pipeline.kernel.?.annotations.items.len);
+
+    var found = false;
+    for (pipeline.rewrites.items) |r| {
+        if (r == .softmax) found = true;
+    }
+    try std.testing.expect(found);
+    try std.testing.expect(pipeline.kernel.?.annotations.items[0].rewrite == .softmax);
+}
+
+test "compiler - pipeline compiles logSoftmax graph end-to-end" {
+    const Tensor = tensorlib.Tensor(f32);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var x = try Tensor.init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+
+    const y = x.logSoftmax(&.{1});
+
+    var pipeline = Pipeline(f32).init(std.testing.allocator);
+    defer pipeline.deinit();
+    try pipeline.compile(y);
+
+    try std.testing.expect(pipeline.canonical != null);
+    try std.testing.expect(pipeline.kernel != null);
+    try std.testing.expect(pipeline.rewrites.items.len >= 1);
+    try std.testing.expectEqual(pipeline.rewrites.items.len, pipeline.kernel.?.annotations.items.len);
+
+    var found = false;
+    for (pipeline.rewrites.items) |r| {
+        if (r == .log_softmax) found = true;
+    }
+    try std.testing.expect(found);
+    try std.testing.expect(pipeline.kernel.?.annotations.items[0].rewrite == .log_softmax);
+}
+
+test "compiler - pipeline compiles crossEntropy graph end-to-end" {
+    const Tensor = tensorlib.Tensor(f32);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var logits = try Tensor.init(a, &.{ 3, 2 });
+    logits.setData(&.{
+        2.0, 0.0, 1.0,
+        0.0, 3.0, 1.0,
+    });
+
+    var targets = try Tensor.init(a, &.{2});
+    targets.setData(&.{ 0, 1 });
+
+    const y = losslib.crossEntropy(f32, logits, targets);
+
+    var pipeline = Pipeline(f32).init(std.testing.allocator);
+    defer pipeline.deinit();
+    try pipeline.compile(y);
+
+    try std.testing.expect(pipeline.canonical != null);
+    try std.testing.expect(pipeline.kernel != null);
+    try std.testing.expect(pipeline.rewrites.items.len >= 1);
+    try std.testing.expectEqual(pipeline.rewrites.items.len, pipeline.kernel.?.annotations.items.len);
+
+    var found = false;
+    for (pipeline.rewrites.items) |r| {
+        if (r == .cross_entropy) found = true;
+    }
+    try std.testing.expect(found);
+    try std.testing.expect(pipeline.kernel.?.annotations.items[0].rewrite == .cross_entropy);
 }

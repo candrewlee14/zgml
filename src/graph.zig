@@ -11,6 +11,7 @@ const tensorlib = @import("./tensor.zig");
 const Tensor = tensorlib.Tensor;
 const Op = @import("op.zig").Op;
 const loss = @import("loss.zig");
+const compiler = @import("compiler.zig");
 const fused = @import("tensor/fused.zig");
 const assert = std.debug.assert;
 const testing = std.testing;
@@ -149,6 +150,8 @@ pub fn ComputeGraph(comptime T: type) type {
             const fwd_count = self.forward_node_count;
             if (fwd_count < 2) return;
 
+            const compiler_root_plan = try self.detectCompilerRootRewritePlan();
+
             self.fused_chains.clearRetainingCapacity();
             self.fused_skip.clearRetainingCapacity();
 
@@ -184,7 +187,21 @@ pub fn ComputeGraph(comptime T: type) type {
             var i: usize = 0;
             while (i < fwd_count) : (i += 1) {
                 const node = self.nodes.items[i];
+                if (compiler_root_plan) |root_plan| {
+                    if (root_plan.start_idx == i) {
+                        for (i..root_plan.plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
+                        try self.fused_chains.append(alloc, root_plan.plan);
+                        i = root_plan.plan.output_idx;
+                        continue;
+                    }
+                }
                 if (detectCrossEntropyPattern(self, i)) |plan| {
+                    for (i..plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
+                    try self.fused_chains.append(alloc, plan);
+                    i = plan.output_idx;
+                    continue;
+                }
+                if (detectConv2dPattern(self, i)) |plan| {
                     for (i..plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
                     try self.fused_chains.append(alloc, plan);
                     i = plan.output_idx;
@@ -323,6 +340,87 @@ pub fn ComputeGraph(comptime T: type) type {
                         .neg_rep_log = n8,
                         .output = n9,
                     } } };
+                }
+            }
+
+            return null;
+        }
+
+        fn detectConv2dPattern(self: *const Self, start: usize) ?fused.FusionPlan(T) {
+            if (start + 3 >= self.forward_node_count) return null;
+
+            const input_view = self.nodes.items[start + 0];
+            const kernel_view = self.nodes.items[start + 1];
+            const mul_node = self.nodes.items[start + 2];
+            const sum_node = self.nodes.items[start + 3];
+            const output = if (start + 4 < self.forward_node_count) self.nodes.items[start + 4] else null;
+
+            if (!input_view.isOp(.as_strided)) return null;
+            if (!kernel_view.isOp(.as_strided)) return null;
+            if (!mul_node.isOp(.mul)) return null;
+            if (!sum_node.isOp(.sum)) return null;
+            if (mul_node.source0().? != input_view or mul_node.source1().? != kernel_view) return null;
+            if (sum_node.source0().? != mul_node) return null;
+
+            const input = input_view.source0().?;
+            const kernel = kernel_view.source0().?;
+            if (input.n_dims != 4 or kernel.n_dims != 4) return null;
+            if (output == null or !output.?.isOp(.reshape) or output.?.source0().? != sum_node) return null;
+
+            return .{ .output_idx = start + 4, .payload = .{ .conv2d = .{
+                .input = input,
+                .kernel = kernel,
+                .input_view = input_view,
+                .kernel_view = kernel_view,
+                .mul_node = mul_node,
+                .sum_node = sum_node,
+                .output = output.?,
+            } } };
+        }
+
+        const CompilerRootPlan = struct {
+            start_idx: usize,
+            plan: fused.FusionPlan(T),
+        };
+
+        fn detectCompilerRootRewritePlan(self: *const Self) Alloc.Error!?CompilerRootPlan {
+            if (self.forward_node_count == 0) return null;
+
+            var temp_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer temp_arena.deinit();
+
+            var pipeline = compiler.Pipeline(T).init(temp_arena.allocator());
+            defer pipeline.deinit();
+
+            pipeline.compile(self.nodes.items[self.forward_node_count - 1]) catch |err| switch (err) {
+                error.UnsupportedOp => return null,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+
+            const output_idx = self.forward_node_count - 1;
+            for (pipeline.kernel.?.annotations.items) |annotation| {
+                switch (annotation.rewrite) {
+                    .softmax => {
+                        if (output_idx < 8) continue;
+                        const start_idx = output_idx - 8;
+                        const plan = detectSoftmaxPattern(self, start_idx) orelse continue;
+                        if (plan.kind() != .softmax or plan.output_idx != output_idx) continue;
+                        return .{ .start_idx = start_idx, .plan = plan };
+                    },
+                    .log_softmax => {
+                        if (output_idx < 9) continue;
+                        const start_idx = output_idx - 9;
+                        const plan = detectSoftmaxPattern(self, start_idx) orelse continue;
+                        if (plan.kind() != .log_softmax or plan.output_idx != output_idx) continue;
+                        return .{ .start_idx = start_idx, .plan = plan };
+                    },
+                    .cross_entropy => {
+                        if (output_idx < 13) continue;
+                        const start_idx = output_idx - 13;
+                        const plan = detectCrossEntropyPattern(self, start_idx) orelse continue;
+                        if (plan.kind() != .cross_entropy or plan.output_idx != output_idx) continue;
+                        return .{ .start_idx = start_idx, .plan = plan };
+                    },
                 }
             }
 
@@ -549,9 +647,14 @@ pub fn ComputeGraph(comptime T: type) type {
                 }
             }
         }
+        /// Zero all intermediate node data to prepare for recomputation.
+        /// Skips nodes that alias another tensor's data (e.g. reshape/view),
+        /// since zeroing them would corrupt the source tensor's values.
         pub fn reset(self: *Self) void {
             for (self.nodes.items) |node| {
-                if (node.opTag() != .none) _ = node.setAllScalar(0);
+                if (node.opTag() != .none and node.data_owned) {
+                    _ = node.setAllScalar(0);
+                }
             }
         }
 
@@ -601,6 +704,44 @@ pub fn ComputeGraph(comptime T: type) type {
                 }
                 node.compute();
             }
+        }
+
+        // ---------------------------------------------------------------
+        // High-level convenience methods
+        // ---------------------------------------------------------------
+
+        /// One-call training step: build graph (once), reset, seed loss gradient, compute.
+        ///
+        /// First call builds forward and backward graphs. Subsequent calls
+        /// reuse the graph and just reset + compute.
+        ///
+        /// ```
+        /// const loss = model.forward(x);
+        /// try g.run(loss);        // forward + backward in one call
+        /// optimizer.step();
+        /// optimizer.zeroGrad();
+        /// ```
+        pub fn run(self: *Self, loss_node: *Tensor(T)) !void {
+            if (!self.built_forward) try self.buildForward(loss_node);
+            if (!self.built_backward) try self.buildBackward(false);
+            self.reset();
+            self.resetGrads();
+            if (loss_node.grad) |grad| _ = grad.setAllScalar(1);
+            self.compute();
+        }
+
+        /// One-call inference: build forward graph (once), reset, compute forward only.
+        ///
+        /// Skips backward pass and gradient computation.
+        ///
+        /// ```
+        /// const output = model.forward(x);
+        /// try g.infer(output);
+        /// ```
+        pub fn infer(self: *Self, output: *Tensor(T)) !void {
+            if (!self.built_forward) try self.buildForward(output);
+            self.reset();
+            self.computeNoGrad();
         }
     };
 }
@@ -1128,6 +1269,76 @@ test "fusion - detects softmax pattern" {
     try testing.expectApproxEqAbs(@as(f32, 1.0), out.data[0] + out.data[1] + out.data[2], 1e-6);
 }
 
+test "fusion - detects conv2d composite pattern" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{ 6, 6, 1, 2 });
+    const k = try Tensor(f32).init(a, &.{ 3, 3, 1, 4 });
+    const y = x.conv2d(k);
+    try g.buildForward(y);
+    try g.fusionPass();
+
+    var found = false;
+    for (g.fused_chains.items) |plan| {
+        if (plan.kind() == .conv2d) {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "fusion - conv2d fused matches unfused" {
+    var gf = ComputeGraph(f32).init(tac);
+    defer gf.deinit();
+    var gu = ComputeGraph(f32).init(tac);
+    defer gu.deinit();
+
+    const af = gf.allocator();
+    const au = gu.allocator();
+
+    const xf = try Tensor(f32).init(af, &.{ 5, 5, 1, 1 });
+    const xu = try Tensor(f32).init(au, &.{ 5, 5, 1, 1 });
+    for (xf.data, 0..) |*d, i| d.* = @floatFromInt(i + 1);
+    @memcpy(xu.data, xf.data);
+
+    const kf = try Tensor(f32).init(af, &.{ 3, 3, 1, 2 });
+    const ku = try Tensor(f32).init(au, &.{ 3, 3, 1, 2 });
+    for (kf.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(@as(i32, @intCast(i % 5)) - 2));
+    @memcpy(ku.data, kf.data);
+
+    const yf = xf.conv2d(kf);
+    const yu = xu.conv2d(ku);
+    try gf.buildForward(yf);
+    try gu.buildForward(yu);
+    try gf.fusionPass();
+
+    gf.compute();
+    gu.compute();
+
+    for (yf.data, yu.data) |a_out, b_out| {
+        try testing.expectApproxEqAbs(a_out, b_out, 1e-5);
+    }
+}
+
+test "fusion - compiler root annotations detect softmax plan" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+    const out = x.softmax(&.{1});
+    try g.buildForward(out);
+
+    const root_plan = (try g.detectCompilerRootRewritePlan()).?;
+    try testing.expectEqual(@as(usize, 0), root_plan.start_idx);
+    try testing.expectEqual(fused.FusionKind.softmax, root_plan.plan.kind());
+    try testing.expectEqual(@as(usize, g.forward_node_count - 1), root_plan.plan.output_idx);
+}
+
 test "fusion - detects logSoftmax pattern" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
@@ -1145,6 +1356,22 @@ test "fusion - detects logSoftmax pattern" {
     g.compute();
     const probs = std.math.exp(out.data[0]) + std.math.exp(out.data[1]) + std.math.exp(out.data[2]);
     try testing.expectApproxEqAbs(@as(f32, 1.0), probs, 1e-6);
+}
+
+test "fusion - compiler root annotations detect logSoftmax plan" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+    const out = x.logSoftmax(&.{1});
+    try g.buildForward(out);
+
+    const root_plan = (try g.detectCompilerRootRewritePlan()).?;
+    try testing.expectEqual(@as(usize, 0), root_plan.start_idx);
+    try testing.expectEqual(fused.FusionKind.log_softmax, root_plan.plan.kind());
+    try testing.expectEqual(@as(usize, g.forward_node_count - 1), root_plan.plan.output_idx);
 }
 
 test "fusion - detects cross entropy pattern" {
@@ -1176,6 +1403,28 @@ test "fusion - detects cross entropy pattern" {
     const expected = (-std.math.log(f32, std.math.e, std.math.exp(@as(f32, 2.0)) / row0_sum) -
         std.math.log(f32, std.math.e, std.math.exp(@as(f32, 3.0)) / row1_sum)) / 2.0;
     try testing.expectApproxEqAbs(expected, out.data[0], 1e-5);
+}
+
+test "fusion - compiler root annotations detect cross entropy plan" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const logits = try Tensor(f32).init(a, &.{ 3, 2 });
+    logits.setData(&.{
+        2.0, 0.0, 1.0,
+        0.0, 3.0, 1.0,
+    });
+    const targets = try Tensor(f32).init(a, &.{2});
+    targets.setData(&.{ 0, 1 });
+
+    const out = loss.crossEntropy(f32, logits, targets);
+    try g.buildForward(out);
+
+    const root_plan = (try g.detectCompilerRootRewritePlan()).?;
+    try testing.expectEqual(@as(usize, 0), root_plan.start_idx);
+    try testing.expectEqual(fused.FusionKind.cross_entropy, root_plan.plan.kind());
+    try testing.expectEqual(@as(usize, g.forward_node_count - 1), root_plan.plan.output_idx);
 }
 
 test "layerNorm forward" {
@@ -1310,6 +1559,74 @@ test "backward - gelu" {
 fn geluScalar(x: f32) f32 {
     const a = 0.79788456080286535587989211986876 * x * (1.0 + 0.044715 * x * x);
     return 0.5 * x * (1.0 + std.math.tanh(a));
+}
+
+test "reset preserves param data through reshape" {
+    // Regression: g.reset() must not zero data shared via reshape with params.
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const param = try Tensor(f32).init(a, &.{ 2, 3 });
+    param.setData(&.{ 1, 2, 3, 4, 5, 6 });
+    param.setParam();
+
+    // Reshape shares data buffer with param
+    const reshaped = param.reshape(&.{6});
+    const out = reshaped.sumAll();
+    try g.buildForward(out);
+    try g.buildBackward(false);
+    _ = out.grad.?.setAllScalar(1);
+
+    g.compute();
+    try testing.expectApproxEqAbs(@as(f32, 21), out.data[0], 1e-5);
+
+    // After reset + recompute, param data must survive
+    g.reset();
+    g.compute();
+    try testing.expectApproxEqAbs(@as(f32, 21), out.data[0], 1e-5);
+
+    // Param data must still be intact
+    try testing.expectApproxEqAbs(@as(f32, 1), param.data[0], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 6), param.data[5], 1e-5);
+}
+
+test "run - one-call training step" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+    x.setParam();
+
+    const loss_node = x.sqr().sumAll();
+
+    // First call builds forward+backward, computes, and seeds grad
+    try g.run(loss_node);
+
+    // d/dx[sum(x^2)] = 2x
+    try testing.expectEqualSlices(f32, &.{ 2, 4, 6 }, x.grad.?.data);
+
+    // Second call reuses graph
+    x.setData(&.{ 4, 5, 6 });
+    try g.run(loss_node);
+    try testing.expectEqualSlices(f32, &.{ 8, 10, 12 }, x.grad.?.data);
+}
+
+test "infer - one-call inference" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+
+    const y = x.sqr().sumAll();
+
+    try g.infer(y);
+
+    try testing.expectApproxEqAbs(@as(f32, 14.0), y.data[0], 1e-6);
 }
 
 //#endregion
