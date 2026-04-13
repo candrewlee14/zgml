@@ -215,10 +215,8 @@ pub fn ComputeGraph(comptime T: type) type {
             for (self.nodes.items[self.forward_node_count..], self.forward_node_count..) |node, idx| {
                 if (self.fused_skip.items[idx]) continue;
                 if (detectConv2dBwdPlan(node, idx)) |plan| {
-                    // TODO: fused im2col+matmul kernel produces wrong gradient
-                    // for batch > 1. Detection works correctly; use naive fallback
-                    // for now by not appending the plan (scatter runs unfused).
-                    _ = plan;
+                    try self.fused_chains.append(alloc, plan);
+                    self.markBwdConvSkip(node, idx, &ptr_to_idx);
                 }
             }
 
@@ -291,6 +289,14 @@ pub fn ComputeGraph(comptime T: type) type {
                     i = chain_end;
                 }
             }
+
+            // Sort fused chains by output_idx — buildExecutionSteps scans
+            // linearly and requires sorted order to match chains correctly.
+            std.mem.sortUnstable(fused.FusionPlan(T), self.fused_chains.items, {}, struct {
+                fn lessThan(_: void, a: fused.FusionPlan(T), b: fused.FusionPlan(T)) bool {
+                    return a.output_idx < b.output_idx;
+                }
+            }.lessThan);
 
             // Pre-allocate scratch buffers from the arena so conv2d plans
             // don't hit mmap/munmap on every execution.
@@ -691,6 +697,17 @@ pub fn ComputeGraph(comptime T: type) type {
                 return;
             }
             self.executeGraphPlan(self.forward_execution_steps.items);
+        }
+
+        /// Execute only the backward portion of the graph (nodes after forward_node_count).
+        /// Uses fused execution plans when available.
+        pub fn computeBackward(self: *const Self) void {
+            if (self.execution_steps.items.len == 0) {
+                for (self.nodes.items[self.forward_node_count..]) |node| node.compute();
+                return;
+            }
+            // Backward steps are everything after the forward execution steps.
+            self.executeGraphPlan(self.execution_steps.items[self.forward_execution_steps.items.len..]);
         }
 
         // ---------------------------------------------------------------
@@ -1948,6 +1965,48 @@ test "fusion - conv2d backward kernel gradient fused matches unfused" {
 
     // Compare kernel gradients
     for (kf.gradOrNull().?.data, ku.gradOrNull().?.data) |fg, ug| {
+        try testing.expectApproxEqAbs(ug, fg, 1e-4);
+    }
+}
+
+test "fusion - conv2d backward gradients fused matches unfused (multi-filter)" {
+    // Larger test: input [8,8,1,8], kernel [3,3,1,4] — matches conv classifier dims.
+    // Verifies both kernel and input gradients.
+    var gf = ComputeGraph(f32).init(tac);
+    defer gf.deinit();
+    var gu = ComputeGraph(f32).init(tac);
+    defer gu.deinit();
+
+    const xf = try gf.param(&.{ 8, 8, 1, 8 });
+    const kf = try gf.param(&.{ 3, 3, 1, 4 });
+    const xu = try gu.param(&.{ 8, 8, 1, 8 });
+    const ku = try gu.param(&.{ 3, 3, 1, 4 });
+
+    for (xf.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 37)) * 0.1 - 1.5;
+    @memcpy(xu.data, xf.data);
+    for (kf.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(i)) * 0.05 + 0.1;
+    @memcpy(ku.data, kf.data);
+
+    const yf = xf.conv2d(kf).sumAll();
+    const yu = xu.conv2d(ku).sumAll();
+
+    try gf.buildForward(yf);
+    try gf.buildBackward(true);
+    try gf.fusionPass();
+    gf.resetGrads();
+    if (yf.grad) |g| _ = g.setAllScalar(1);
+    gf.compute();
+
+    try gu.buildForward(yu);
+    try gu.buildBackward(true);
+    gu.resetGrads();
+    if (yu.grad) |g| _ = g.setAllScalar(1);
+    gu.compute();
+
+    for (kf.gradOrNull().?.data, ku.gradOrNull().?.data) |fg, ug| {
+        try testing.expectApproxEqAbs(ug, fg, 1e-4);
+    }
+    for (xf.gradOrNull().?.data, xu.gradOrNull().?.data) |fg, ug| {
         try testing.expectApproxEqAbs(ug, fg, 1e-4);
     }
 }

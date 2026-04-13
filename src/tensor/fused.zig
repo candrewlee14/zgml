@@ -1167,7 +1167,8 @@ fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T)) vo
     const mm = forward.selectMatMulKernel(T);
 
     // First batch: write directly to output.
-    mm(plan.output.data, plan.output_grad.data, col_buf, d.c_out, d.K, d.N, d.N, 1, 1, d.N, 0, 0, 0, d.K);
+    // col_buf layout is [K, NB] — rows have stride NB, not N.
+    mm(plan.output.data, plan.output_grad.data, col_buf, d.c_out, d.K, d.N, d.N, 1, 1, NB, 0, 0, 0, d.K);
 
     // Remaining batches: matmul into temp, then accumulate.
     if (d.batch > 1) {
@@ -1177,7 +1178,7 @@ fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T)) vo
         };
         defer freeScratch(T, temp);
         for (1..d.batch) |n| {
-            mm(temp, plan.output_grad.data, col_buf, d.c_out, d.K, d.N, d.N, 1, 1, d.N, n * d.N * d.c_out, n * d.N, 0, d.K);
+            mm(temp, plan.output_grad.data, col_buf, d.c_out, d.K, d.N, d.N, 1, 1, NB, n * d.N * d.c_out, n * d.N, 0, d.K);
             for (0..d.c_out * d.K) |j| plan.output.data[j] += temp[j];
         }
     }

@@ -65,7 +65,7 @@ pub fn Model(comptime T: type) type {
 
             const loss = loss_mod.crossEntropy(T, logits, ys_batch);
             try g.buildForward(loss);
-            try g.buildBackward(true);
+            try g.buildBackward(false);
 
             return .{
                 .conv_k = conv_k, .conv_b = conv_b,

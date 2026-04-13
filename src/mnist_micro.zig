@@ -87,7 +87,6 @@ pub fn main() !void {
     try w.interface.print("\n", .{});
     w.interface.flush() catch {};
 
-
     // Warmup
     for (0..warmup_iters) |_| {
         sgd.zeroGrad();
@@ -116,7 +115,7 @@ pub fn main() !void {
         t.forward = timer.read();
 
         timer.reset();
-        for (model.g.nodes.items[model.g.forward_node_count..]) |node| node.compute();
+        model.g.computeBackward();
         t.backward = timer.read();
 
         timer.reset();
