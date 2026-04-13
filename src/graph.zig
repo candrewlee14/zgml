@@ -1269,9 +1269,13 @@ pub fn ComputeGraph(comptime T: type) type {
         /// Zero all intermediate node data to prepare for recomputation.
         /// Skips nodes that alias another tensor's data (e.g. reshape/view),
         /// since zeroing them would corrupt the source tensor's values.
+        /// Zero all intermediate node data to prepare for recomputation.
+        /// Skips fused_skip nodes (their data is never read) and nodes
+        /// that alias another tensor's data (e.g. reshape/view).
         pub fn reset(self: *Self) void {
-            for (self.nodes.items) |node| {
+            for (self.nodes.items, 0..) |node, i| {
                 if (node.opTag() != .none and node.ownsData()) {
+                    if (i < self.fused_skip.items.len and self.fused_skip.items[i]) continue;
                     _ = node.setAllScalar(0);
                 }
             }

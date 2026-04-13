@@ -20,13 +20,13 @@ pub fn main() !void {
     const warmup_iters: usize = 5;
     const bench_iters: usize = 100;
 
-    // Build model: Conv(5x5, 1->8) -> ReLU -> MaxPool(2x2) -> FC(1152->10)
-    var model = try ConvClassifier(f32).build(alloc, 28, 28, 5, 8, 10, batch_size);
+    // Deep model: Conv(5x5, 1->32) -> BN -> ReLU -> MaxPool -> FC(4608->128) -> ReLU -> FC(128->10)
+    var model = try ConvClassifier(f32).buildDeep(alloc, 28, 28, 32, 128, 10, batch_size);
     defer model.deinit();
     try model.g.fusionPass();
 
     const p = model.params();
-    var sgd = try zgml.optim.sgd.SGD(f32).init(alloc, p, .{ .lr = 0.01, .momentum = 0.9 });
+    var sgd = try zgml.optim.adam.Adam(f32).init(alloc, p, .{ .lr = 1e-3 });
     defer sgd.deinit();
 
     // Fill with deterministic synthetic data
