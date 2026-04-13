@@ -127,7 +127,7 @@ pub fn Tensor(comptime T: type) type {
         }
 
         // init values in the interval [0, 1)
-        pub fn initRand(alloc: Alloc, rng: *std.rand.Random, ne: []const usize) Alloc.Error!*Self {
+        pub fn initRand(alloc: Alloc, rng: *std.Random, ne: []const usize) Alloc.Error!*Self {
             const tensor = try Self.init(alloc, ne);
             for (tensor.data) |*d| {
                 d.* = rng.float(T);
@@ -559,7 +559,8 @@ pub fn Tensor(comptime T: type) type {
                     for (0..src0.ne[1]) |ne1| {
                         for (0..src0.ne[0]) |ne0| {
                             const src0_nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
-                            const dst_nes = src0_nes % dst.ne;
+                            const dst_ne_v: @Vector(4, usize) = dst.ne;
+                            const dst_nes = src0_nes % dst_ne_v;
                             const src0_stride_v: @Vector(4, usize) = src0.strides;
                             const dst_stride_v: @Vector(4, usize) = dst.strides;
 
@@ -581,7 +582,8 @@ pub fn Tensor(comptime T: type) type {
                     for (0..src0.ne[1]) |ne1| {
                         for (0..src0.ne[0]) |ne0| {
                             const src0_nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
-                            const dst_nes = src0_nes % dst.ne;
+                            const dst_ne_v: @Vector(4, usize) = dst.ne;
+                            const dst_nes = src0_nes % dst_ne_v;
                             const src0_stride_v: @Vector(4, usize) = src0.strides;
                             const dst_stride_v: @Vector(4, usize) = dst.strides;
 
@@ -603,7 +605,8 @@ pub fn Tensor(comptime T: type) type {
                     for (0..dst.ne[1]) |ne1| {
                         for (0..dst.ne[0]) |ne0| {
                             const nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
-                            const src0_nes = nes % src0.ne;
+                            const src0_ne_v2: @Vector(4, usize) = src0.ne;
+                            const src0_nes = nes % src0_ne_v2;
                             const src0_stride_v: @Vector(4, usize) = src0.strides;
                             const dst_stride_v: @Vector(4, usize) = dst.strides;
 
@@ -1052,7 +1055,7 @@ pub fn Tensor(comptime T: type) type {
             for (scratch.items) |item| {
                 if (item == tensor) return;
             }
-            try scratch.append(tensor);
+            try scratch.append(tensor.alloc, tensor);
         }
         pub fn backward(tensor: *Tensor(T), scratch: *std.ArrayList(*Tensor(T)), inplace: bool) Alloc.Error!void {
             const src0_o = tensor.src0;

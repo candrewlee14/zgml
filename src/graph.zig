@@ -15,6 +15,7 @@ pub fn ComputeGraph(comptime T: type) type {
         built_backward: bool = false,
         forward_node_count: usize = 0,
 
+        alloc: Alloc,
         nodes: std.ArrayList(*Tensor(T)),
         grads: std.ArrayList(?*Tensor(T)),
         leaves: std.ArrayList(*Tensor(T)),
@@ -25,10 +26,11 @@ pub fn ComputeGraph(comptime T: type) type {
         /// Must call `buildForward` (then optionally `buildBackward`) to be able to do computation.
         pub fn init(alloc: Alloc) Self {
             const graph: Self = .{
-                .nodes = std.ArrayList(*Tensor(T)).init(alloc),
-                .grads = std.ArrayList(?*Tensor(T)).init(alloc),
-                .leaves = std.ArrayList(*Tensor(T)).init(alloc),
-                .scratch = std.ArrayList(*Tensor(T)).init(alloc),
+                .alloc = alloc,
+                .nodes = .{},
+                .grads = .{},
+                .leaves = .{},
+                .scratch = .{},
             };
             return graph;
         }
@@ -37,21 +39,21 @@ pub fn ComputeGraph(comptime T: type) type {
             for (self.nodes.items) |t| {
                 t.deinit();
             }
-            self.nodes.deinit();
+            self.nodes.deinit(self.alloc);
             if (!self.built_backward) {
                 for (self.grads.items) |grad_o| {
                     if (grad_o) |grad| grad.deinit();
                 }
             }
-            self.grads.deinit();
+            self.grads.deinit(self.alloc);
             for (self.leaves.items) |t| {
                 t.deinit();
             }
-            self.leaves.deinit();
+            self.leaves.deinit(self.alloc);
             // for (self.scratch.items) |t| {
             //     t.deinit();
             // }
-            self.scratch.deinit();
+            self.scratch.deinit(self.alloc);
         }
 
         /// Build a graph where the provided tensor is the final output node
@@ -70,18 +72,6 @@ pub fn ComputeGraph(comptime T: type) type {
         /// Build a backward graph
         pub fn buildBackward(self: *Self, keep: bool) Alloc.Error!void {
             assert(self.nodes.items.len > 0);
-            // if we are keeping the gradient graph,
-            // we have to detach the gradient nodes from the original graph
-            // if (keep) {
-            //     for (self.nodes.items, self.grads.items) |node, grad| {
-            //         if (node.grad) |node_grad| {
-            //             node.grad = try node.copyTensorShape(alloc);
-            //             // if we are detaching the node, the user now owns the memory
-            //             // so we don't need to free it
-            //             grad.?.* = node_grad.*;
-            //         }
-            //     }
-            // }
             const nodes_len = self.nodes.items.len;
             for (0..nodes_len) |j| {
                 const i = nodes_len - j - 1;
@@ -105,7 +95,6 @@ pub fn ComputeGraph(comptime T: type) type {
             self.resetGrads();
         }
         fn addParentsThenSelf(self: *Self, tensor: *Tensor(T)) Alloc.Error!void {
-            // std.debug.print("Visiting {*}\n", .{tensor});
             // check if already visited
             for (self.nodes.items) |node| {
                 if (tensor == node) {
@@ -127,21 +116,18 @@ pub fn ComputeGraph(comptime T: type) type {
             }
             if (tensor.op == .none and tensor.grad == null) {
                 // is leaf
-                // std.debug.print("Appending {*} to leaves\n", .{tensor});
-                try self.leaves.append(tensor);
+                try self.leaves.append(self.alloc, tensor);
             } else {
-                // std.debug.print("Appending {*} to nodes\n", .{tensor});
-                try self.nodes.append(tensor);
-                try self.grads.append(tensor.grad);
+                try self.nodes.append(self.alloc, tensor);
+                try self.grads.append(self.alloc, tensor.grad);
             }
         }
         pub fn toGraphViz(self: *const Self) Alloc.Error!std.ArrayList(u8) {
-            var str = std.ArrayList(u8).init(self.nodes.allocator);
-            const writer = str.writer();
+            var str = std.ArrayList(u8){};
+            const writer = str.writer(self.alloc);
             try writer.print("digraph G {{\n  node [shape=box];\n", .{});
 
             for (self.nodes.items) |node| {
-                // try writer.print("  \"{*}\" [shape=\"none\",label=<<table><tr><td>{s}</td></tr><tr><td>{any}</td></tr></table>>];\n", .{ node, node.op.symbol(), node.data });
                 try writer.print("  \"{*}\" [shape=\"none\",label=<<table>", .{node});
                 if (node.op == .none) {
                     try writer.print("<tr><td>{any}</td></tr>", .{node.data});
@@ -302,11 +288,6 @@ test "build compute graph - forward matMul" {
     defer g.deinit();
     try g.buildForward(out);
     g.compute();
-    // {
-    //     const dotviz = try g.toGraphViz();
-    //     defer dotviz.deinit();
-    //     std.debug.print("{s}\n", .{dotviz.items});
-    // }
     {
         const expected = [_]f32{
             35, 44,
@@ -336,11 +317,6 @@ test "build compute graph - forward mul & add" {
     defer g.deinit();
     try g.buildForward(out);
     g.compute();
-    // {
-    //     const dotviz = try g.toGraphViz();
-    //     defer dotviz.deinit();
-    //     std.debug.print("{s}\n", .{dotviz.items});
-    // }
     {
         const expected = [_]f32{11};
         try testing.expectEqualSlices(f32, &expected, out.data);
@@ -362,11 +338,6 @@ test "build compute graph - backward" {
     try g.buildBackward(false);
     _ = out.grad.?.setAllScalar(1);
     g.compute();
-    // {
-    //     const dotviz = try g.toGraphViz();
-    //     defer dotviz.deinit();
-    //     std.debug.print("{s}\n", .{dotviz.items});
-    // }
     {
         const expected = [_]f32{11};
         try testing.expectEqualSlices(f32, &expected, out.data);
@@ -409,11 +380,6 @@ test "build compute graph - backward - testSqrFunc" {
     for (0..iters) |_| {
         g.compute();
     }
-    // {
-    //     const dotviz = try g.toGraphViz();
-    //     defer dotviz.deinit();
-    //     std.debug.print("{s}\n", .{dotviz.items});
-    // }
     {
         const expected = [_]f32{9};
         try testing.expectEqualSlices(f32, &expected, out.data);

@@ -4,15 +4,6 @@ pub const Options = struct {
     use_blas: bool = false,
 };
 
-pub fn module(b: *std.Build) *std.Build.Module {
-    return b.addModule("zgml", .{
-        .root_source_file = .{ .path = (comptime thisDir()) ++ "/src/zgml.zig" },
-        .dependencies = &.{
-            .{ .name = "zgml_options", .module = b.getModule("zgml_options") },
-        },
-    });
-}
-
 pub const Package = struct {
     target: std.Build.ResolvedTarget,
     options: Options,
@@ -33,7 +24,6 @@ pub const Package = struct {
                     exe.linkSystemLibrary("openblas");
                 },
                 .macos => {
-                    // exe.addSystemLibrary("openblas");
                     exe.linkFramework("Accelerate");
                 },
                 else => {
@@ -47,7 +37,7 @@ pub const Package = struct {
 pub fn package(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.Mode,
+    optimize: std.builtin.OptimizeMode,
     args: struct {
         options: Options = .{},
     },
@@ -59,7 +49,7 @@ pub fn package(
     const zgml_options = step.createModule();
 
     const zgml = b.addModule("zgml", .{
-        .root_source_file = .{ .path = thisDir() ++ "/src/main.zig" },
+        .root_source_file = b.path("src/main.zig"),
         .imports = &.{
             .{ .name = "zgml_options", .module = zgml_options },
         },
@@ -83,50 +73,30 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run zgml tests");
     test_step.dependOn(runTests(b, optimize, target, .{ .use_blas = use_blas }));
-
-    // const benchmark_step = b.step("benchmark", "Run zgml benchmarks");
-    // benchmark_step.dependOn(runBenchmarks(b, target, .{ .use_blas = use_blas }));
 }
 
 pub fn runTests(
     b: *std.Build,
-    optimize: std.builtin.Mode,
+    optimize: std.builtin.OptimizeMode,
     target: std.Build.ResolvedTarget,
     options: Options,
 ) *std.Build.Step {
-    const test_exe = b.addTest(.{
-        .name = "zgml-tests",
-        .root_source_file = .{ .path = thisDir() ++ "/src/main.zig" },
+    const zgml_pkg = package(b, target, optimize, .{ .options = options });
+
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zgml_options", .module = zgml_pkg.zgml_options },
+        },
     });
 
-    const zgml_pkg = package(b, target, optimize, .{ .options = options });
-    zgml_pkg.link(test_exe);
-    test_exe.root_module.addImport("zgml_options", zgml_pkg.zgml_options);
+    const test_exe = b.addTest(.{
+        .name = "zgml-tests",
+        .root_module = test_mod,
+    });
     b.installArtifact(test_exe);
 
     return &b.addRunArtifact(test_exe).step;
-}
-
-pub fn runBenchmarks(
-    b: *std.Build,
-    target: std.zig.CrossTarget,
-    options: Options,
-) *std.Build.Step {
-    const exe = b.addExecutable(.{
-        .name = "zgml-benchmarks",
-        .root_source_file = .{ .path = thisDir() ++ "/src/benchmark.zig" },
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-    const zgml_pkg = package(b, target, .ReleaseFast, .{ .options = options });
-    zgml_pkg.link(exe);
-    exe.addModule("zgml", zgml_pkg.zgml);
-    b.installArtifact(exe);
-    return &exe.run().step;
-}
-
-inline fn thisDir() []const u8 {
-    return comptime std.fs.path.dirname(@src().file) orelse ".";
 }

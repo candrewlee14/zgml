@@ -11,6 +11,7 @@ pub fn Model(comptime T: type) type {
     return struct {
         const Self = @This();
 
+        alloc: Alloc,
         cur_batch: usize,
         batch_size: usize,
         xs_batch: *Tensor(T),
@@ -22,9 +23,8 @@ pub fn Model(comptime T: type) type {
 
         pub fn build(alloc: Alloc, max_exp: usize, batch_size: usize) !Self {
             var res = Self{
-                // zig fmt: off
-                .params = try std.ArrayList(*Tensor(T)).initCapacity(alloc, max_exp+1),
-                // zig fmt: on
+                .alloc = alloc,
+                .params = try std.ArrayList(*Tensor(T)).initCapacity(alloc, max_exp + 1),
                 .xs_batch = try Tensor(T).init(alloc, &.{batch_size}),
                 .ys_batch = try Tensor(T).init(alloc, &.{batch_size}),
                 .g = ComputeGraph(T).init(alloc),
@@ -36,7 +36,7 @@ pub fn Model(comptime T: type) type {
             for (0..max_exp + 1) |_| {
                 const param = try Tensor(T).initScalar(alloc, 0);
                 param.setParam();
-                try res.params.append(param);
+                res.params.appendAssumeCapacity(param);
             }
             // mul by xs_batch
             var total = try Tensor(T).initScalar(alloc, 0);
@@ -55,7 +55,7 @@ pub fn Model(comptime T: type) type {
 
         pub fn deinit(self: *Self) void {
             self.g.deinit();
-            self.params.deinit();
+            self.params.deinit(self.alloc);
         }
 
         pub fn compute(self: *Self) void {

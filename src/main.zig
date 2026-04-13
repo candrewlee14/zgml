@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-pub usingnamespace @import("tensor.zig");
-pub usingnamespace @import("graph.zig");
+pub const Tensor = @import("tensor.zig").Tensor;
+pub const ComputeGraph = @import("graph.zig").ComputeGraph;
 
 pub const models = @import("models.zig");
 pub const optim = @import("optim.zig");

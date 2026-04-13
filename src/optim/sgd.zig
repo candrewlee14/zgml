@@ -10,6 +10,7 @@ pub fn SGD(comptime T: type) type {
     return struct {
         const Self = @This();
 
+        alloc: Alloc,
         params: []const *Tensor(T),
         batch_size: usize,
         learning_rate: *Tensor(T),
@@ -27,6 +28,7 @@ pub fn SGD(comptime T: type) type {
             momentum_decay: T,
         ) Alloc.Error!Self {
             var res = Self{
+                .alloc = alloc,
                 .batch_size = batch_size,
                 .params = params,
                 .learning_rate = try Tensor(T).initScalar(alloc, learning_rate),
@@ -52,8 +54,8 @@ pub fn SGD(comptime T: type) type {
                 mo.deinit();
                 lrg.deinit();
             }
-            self.momentum.deinit();
-            self.lr_grad.deinit();
+            self.momentum.deinit(self.alloc);
+            self.lr_grad.deinit(self.alloc);
             self.momentum_decay.deinit();
         }
         // Must zero grad before calling step
