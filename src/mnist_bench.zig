@@ -122,13 +122,13 @@ const CnnMnist = struct {
         // Forward
         const conv_out = self.xs_batch.conv2d(k1); // [24, 24, 8, batch]
         const b1_4d = b1.reshape(&.{ 1, 1, 8, 1 });
-        const b1_rep = b1_4d.repeat(&conv_out.ne);
-        const act1 = conv_out.add(b1_rep).relu();
+        const b1_bc = b1_4d.broadcastTo(conv_out.ne[0..conv_out.n_dims]);
+        const act1 = conv_out.add(b1_bc).relu();
         const pool1 = act1.maxPool2d(); // [12, 12, 8, batch]
         const flat = pool1.reshape(&.{ 12 * 12 * 8, batch_size });
         const fc_out = flat.matMul(false, fc_w, false);
-        const fb_rep = fc_b.repeat(&fc_out.ne);
-        self.logits = fc_out.add(fb_rep);
+        const fb_bc = fc_b.broadcastTo(fc_out.ne[0..fc_out.n_dims]);
+        self.logits = fc_out.add(fb_bc);
         self.loss_tensor = loss_mod.crossEntropy(f32, self.logits, self.ys_batch);
 
         try self.g.buildForward(self.loss_tensor);

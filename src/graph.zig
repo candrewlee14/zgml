@@ -28,6 +28,7 @@ pub fn ComputeGraph(comptime T: type) type {
 
         built_forward: bool = false,
         built_backward: bool = false,
+        built_fusion: bool = false,
         forward_node_count: usize = 0,
 
         arena: std.heap.ArenaAllocator,
@@ -204,6 +205,18 @@ pub fn ComputeGraph(comptime T: type) type {
                     i = plan.output_idx;
                     continue;
                 }
+                if (detectConv2dBwdInputPattern(self, i)) |plan| {
+                    for (i..plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
+                    try self.fused_chains.append(alloc, plan);
+                    i = plan.output_idx;
+                    continue;
+                }
+                if (detectConv2dBwdKernelPattern(self, i)) |plan| {
+                    for (i..plan.output_idx + 1) |idx| self.fused_skip.items[idx] = true;
+                    try self.fused_chains.append(alloc, plan);
+                    i = plan.output_idx;
+                    continue;
+                }
                 if (!node.opTag().isFusible()) continue;
                 if (self.fused_skip.items[i]) continue;
 
@@ -250,87 +263,6 @@ pub fn ComputeGraph(comptime T: type) type {
             }
         }
 
-        fn detectSoftmaxPattern(self: *const Self, start: usize) ?fused.FusionPlan(T) {
-            const nodes = self.nodes.items;
-
-            if (start + 8 < self.forward_node_count) {
-                const n0 = nodes[start + 0];
-                const n1 = nodes[start + 1];
-                const n2 = nodes[start + 2];
-                const n3 = nodes[start + 3];
-                const n4 = nodes[start + 4];
-                const n5 = nodes[start + 5];
-                const n6 = nodes[start + 6];
-                const n7 = nodes[start + 7];
-                const n8 = nodes[start + 8];
-
-                if (n0.isOp(.max) and
-                    n1.isOp(.repeat) and n1.sourceIs(.src0, n0) and
-                    n2.isOp(.neg) and n2.sourceIs(.src0, n1) and
-                    n3.isOp(.add) and n3.source0().? == n0.source0().? and n3.sourceIs(.src1, n2) and
-                    n4.isOp(.exp) and n4.sourceIs(.src0, n3) and
-                    n5.isOp(.sum) and n5.sourceIs(.src0, n4) and
-                    n6.isOp(.repeat) and n6.sourceIs(.src0, n5) and
-                    n7.isOp(.recip) and n7.sourceIs(.src0, n6) and
-                    n8.isOp(.mul) and n8.sourceIs(.src0, n4) and n8.sourceIs(.src1, n7))
-                {
-                    return .{ .output_idx = start + 8, .payload = .{ .softmax = .{
-                        .input = n0.source0().?,
-                        .max_node = n0,
-                        .rep_max = n1,
-                        .neg_rep_max = n2,
-                        .shifted = n3,
-                        .exp_node = n4,
-                        .sum_node = n5,
-                        .rep_sum = n6,
-                        .recip_rep_sum = n7,
-                        .output = n8,
-                    } } };
-                }
-            }
-
-            if (start + 9 < self.forward_node_count) {
-                const n0 = nodes[start + 0];
-                const n1 = nodes[start + 1];
-                const n2 = nodes[start + 2];
-                const n3 = nodes[start + 3];
-                const n4 = nodes[start + 4];
-                const n5 = nodes[start + 5];
-                const n6 = nodes[start + 6];
-                const n7 = nodes[start + 7];
-                const n8 = nodes[start + 8];
-                const n9 = nodes[start + 9];
-
-                if (n0.isOp(.max) and
-                    n1.isOp(.repeat) and n1.sourceIs(.src0, n0) and
-                    n2.isOp(.neg) and n2.sourceIs(.src0, n1) and
-                    n3.isOp(.add) and n3.source0().? == n0.source0().? and n3.sourceIs(.src1, n2) and
-                    n4.isOp(.exp) and n4.sourceIs(.src0, n3) and
-                    n5.isOp(.sum) and n5.sourceIs(.src0, n4) and
-                    n6.isOp(.log) and n6.sourceIs(.src0, n5) and
-                    n7.isOp(.repeat) and n7.sourceIs(.src0, n6) and
-                    n8.isOp(.neg) and n8.sourceIs(.src0, n7) and
-                    n9.isOp(.add) and n9.source0().? == n3 and n9.sourceIs(.src1, n8))
-                {
-                    return .{ .output_idx = start + 9, .payload = .{ .log_softmax = .{
-                        .input = n0.source0().?,
-                        .max_node = n0,
-                        .rep_max = n1,
-                        .neg_rep_max = n2,
-                        .shifted = n3,
-                        .exp_node = n4,
-                        .sum_node = n5,
-                        .log_node = n6,
-                        .rep_log = n7,
-                        .neg_rep_log = n8,
-                        .output = n9,
-                    } } };
-                }
-            }
-
-            return null;
-        }
-
         fn detectConv2dPattern(self: *const Self, start: usize) ?fused.FusionPlan(T) {
             if (start + 3 >= self.forward_node_count) return null;
 
@@ -338,7 +270,9 @@ pub fn ComputeGraph(comptime T: type) type {
             const kernel_view = self.nodes.items[start + 1];
             const mul_node = self.nodes.items[start + 2];
             const sum_node = self.nodes.items[start + 3];
-            const output = if (start + 4 < self.forward_node_count) self.nodes.items[start + 4] else null;
+            const maybe_reshape = if (start + 4 < self.forward_node_count) self.nodes.items[start + 4] else null;
+            const maybe_bias = if (start + 5 < self.forward_node_count) self.nodes.items[start + 5] else null;
+            const maybe_relu = if (start + 6 < self.forward_node_count) self.nodes.items[start + 6] else null;
 
             if (!input_view.isOp(.as_strided)) return null;
             if (!kernel_view.isOp(.as_strided)) return null;
@@ -350,16 +284,108 @@ pub fn ComputeGraph(comptime T: type) type {
             const input = input_view.source0().?;
             const kernel = kernel_view.source0().?;
             if (input.n_dims != 4 or kernel.n_dims != 4) return null;
-            if (output == null or !output.?.isOp(.reshape) or output.?.source0().? != sum_node) return null;
+            if (maybe_reshape == null or !maybe_reshape.?.isOp(.reshape) or maybe_reshape.?.source0().? != sum_node) return null;
 
-            return .{ .output_idx = start + 4, .payload = .{ .conv2d = .{
+            var output = maybe_reshape.?;
+            var bias: ?*Tensor(T) = null;
+            var bias_node: ?*Tensor(T) = null;
+            var activation: bool = false;
+            var output_idx = start + 4;
+
+            if (maybe_bias) |add_node| {
+                if (add_node.isOp(.add) and add_node.source0().? == output and add_node.source1().?.isOp(.broadcast_to)) {
+                    const bcast = add_node.source1().?;
+                    const bsrc = bcast.source0().?;
+                    if (bsrc.isOp(.reshape) and bsrc.source0().?.n_dims == 1) {
+                        bias = bsrc.source0().?;
+                        bias_node = add_node;
+                        output = add_node;
+                        output_idx = start + 5;
+                        if (maybe_relu) |relu_node| {
+                            if (relu_node.isOp(.mul) and relu_node.source0().? == add_node and relu_node.source1().?.isOp(.step) and relu_node.source1().?.source0().? == add_node) {
+                                activation = true;
+                                output = relu_node;
+                                output_idx = start + 6;
+                            }
+                        }
+                    }
+                }
+            }
+
+            return .{ .output_idx = output_idx, .payload = .{ .conv2d = .{
                 .input = input,
                 .kernel = kernel,
                 .input_view = input_view,
                 .kernel_view = kernel_view,
+                .bias = bias,
+                .bias_node = bias_node,
+                .activation = if (activation) output else null,
                 .mul_node = mul_node,
                 .sum_node = sum_node,
-                .output = output.?,
+                .output = output,
+            } } };
+        }
+
+        fn detectConv2dBwdInputPattern(self: *const Self, start: usize) ?fused.FusionPlan(T) {
+            if (start + 4 >= self.nodes.items.len) return null;
+            const reshape = self.nodes.items[start + 0];
+            const broadcast = self.nodes.items[start + 1];
+            const mul = self.nodes.items[start + 2];
+            const sum = self.nodes.items[start + 3];
+            const scatter = self.nodes.items[start + 4];
+
+            if (!reshape.isOp(.reshape)) return null;
+            if (!broadcast.isOp(.broadcast_to)) return null;
+            if (!mul.isOp(.mul)) return null;
+            if (!sum.isOp(.sum)) return null;
+            if (!scatter.isOp(.scatter_add_view)) return null;
+            if (broadcast.source0().? != reshape) return null;
+            if (mul.source0().? != broadcast) return null;
+            if (sum.source0().? != mul) return null;
+            if (scatter.source0().? != sum) return null;
+
+            const out_grad = reshape.source0().?;
+            const kernel_view = mul.source1().?;
+            if (!kernel_view.isOp(.as_strided)) return null;
+            const kernel = kernel_view.source0().?;
+
+            return .{ .output_idx = start + 4, .payload = .{ .conv2d_bwd_input = .{
+                .output_grad = out_grad,
+                .kernel = kernel,
+                .reshape_node = reshape,
+                .repeat_node = broadcast,
+                .mul_node = mul,
+                .output = scatter,
+            } } };
+        }
+
+        fn detectConv2dBwdKernelPattern(self: *const Self, start: usize) ?fused.FusionPlan(T) {
+            if (start + 3 >= self.nodes.items.len) return null;
+            const reshape = self.nodes.items[start + 0];
+            const broadcast = self.nodes.items[start + 1];
+            const mul = self.nodes.items[start + 2];
+            const sum = self.nodes.items[start + 3];
+
+            if (!reshape.isOp(.reshape)) return null;
+            if (!broadcast.isOp(.broadcast_to)) return null;
+            if (!mul.isOp(.mul)) return null;
+            if (!sum.isOp(.sum)) return null;
+            if (broadcast.source0().? != reshape) return null;
+            if (mul.source0().? != broadcast) return null;
+            if (sum.source0().? != mul) return null;
+
+            const out_grad = reshape.source0().?;
+            const input_view = mul.source1().?;
+            if (!input_view.isOp(.as_strided)) return null;
+            const input = input_view.source0().?;
+
+            return .{ .output_idx = start + 3, .payload = .{ .conv2d_bwd_kernel = .{
+                .input = input,
+                .output_grad = out_grad,
+                .reshape_node = reshape,
+                .repeat_node = broadcast,
+                .mul_node = mul,
+                .output = sum,
             } } };
         }
 
@@ -367,6 +393,10 @@ pub fn ComputeGraph(comptime T: type) type {
             start_idx: usize,
             plan: fused.FusionPlan(T),
         };
+
+        fn fromMappedPlan(mapped: fused.CompilerMappedPlan(T)) CompilerPlan {
+            return .{ .start_idx = mapped.start_idx, .plan = mapped.plan };
+        }
 
         fn sortCompilerPlans(_: void, lhs: CompilerPlan, rhs: CompilerPlan) bool {
             return lhs.start_idx < rhs.start_idx;
@@ -389,9 +419,11 @@ pub fn ComputeGraph(comptime T: type) type {
                 error.OutOfMemory => return error.OutOfMemory,
             };
 
+            const value_to_tensor = try self.buildValueToTensorMap(temp_arena.allocator(), &pipeline.lowering);
+
             for (pipeline.kernel.?.patterns.items) |record| {
-                const mapped = self.mapCompilerPattern(&pipeline.kernel.?, record.pattern) orelse continue;
-                try plans.append(std.heap.page_allocator, mapped);
+                const mapped = fused.mapCompilerPattern(T, self.nodes.items[0..self.forward_node_count], value_to_tensor, record.pattern) orelse continue;
+                try plans.append(std.heap.page_allocator, fromMappedPlan(mapped));
             }
 
             std.mem.sort(CompilerPlan, plans.items, {}, sortCompilerPlans);
@@ -405,311 +437,23 @@ pub fn ComputeGraph(comptime T: type) type {
             return plans.items[plans.items.len - 1];
         }
 
-        fn mapCompilerPattern(self: *const Self, kernel: *const compiler.KernelPlan, pattern: compiler.KernelPattern) ?CompilerPlan {
-            return switch (pattern) {
-                .softmax => |spec| blk: {
-                    const max_node = self.nodeForKernelValueId(kernel, spec.max_node) orelse return null;
-                    const rep_max = self.nodeForKernelValueId(kernel, spec.rep_max) orelse return null;
-                    const neg_rep_max = self.nodeForKernelValueId(kernel, spec.neg_rep_max) orelse return null;
-                    const shifted = self.nodeForKernelValueId(kernel, spec.shifted) orelse return null;
-                    const exp_node = self.nodeForKernelValueId(kernel, spec.exp_node) orelse return null;
-                    const sum_node = self.nodeForKernelValueId(kernel, spec.sum_node) orelse return null;
-                    const rep_sum = self.nodeForKernelValueId(kernel, spec.rep_sum) orelse return null;
-                    const recip_rep_sum = self.nodeForKernelValueId(kernel, spec.recip_rep_sum) orelse return null;
-                    const output = self.nodeForKernelValueId(kernel, spec.output) orelse return null;
-                    const start_idx = self.kernelValueIndex(kernel, spec.max_node) orelse return null;
-                    const output_idx = self.kernelValueIndex(kernel, spec.output) orelse return null;
+        fn buildValueToTensorMap(self: *const Self, alloc: Alloc, lowering: *const compiler.Lowering(T)) Alloc.Error![]const ?*Tensor(T) {
+            const len = lowering.graph.values.items.len;
+            const mapping = try alloc.alloc(?*Tensor(T), len);
+            @memset(mapping, null);
 
-                    break :blk .{ .start_idx = start_idx, .plan = .{
-                        .output_idx = output_idx,
-                        .payload = .{ .softmax = .{
-                            .input = max_node.source0().?,
-                            .max_node = max_node,
-                            .rep_max = rep_max,
-                            .neg_rep_max = neg_rep_max,
-                            .shifted = shifted,
-                            .exp_node = exp_node,
-                            .sum_node = sum_node,
-                            .rep_sum = rep_sum,
-                            .recip_rep_sum = recip_rep_sum,
-                            .output = output,
-                        } },
-                    } };
-                },
-                .log_softmax => |spec| blk: {
-                    const max_node = self.nodeForKernelValueId(kernel, spec.max_node) orelse return null;
-                    const rep_max = self.nodeForKernelValueId(kernel, spec.rep_max) orelse return null;
-                    const neg_rep_max = self.nodeForKernelValueId(kernel, spec.neg_rep_max) orelse return null;
-                    const shifted = self.nodeForKernelValueId(kernel, spec.shifted) orelse return null;
-                    const exp_node = self.nodeForKernelValueId(kernel, spec.exp_node) orelse return null;
-                    const sum_node = self.nodeForKernelValueId(kernel, spec.sum_node) orelse return null;
-                    const log_node = self.nodeForKernelValueId(kernel, spec.log_node) orelse return null;
-                    const rep_log = self.nodeForKernelValueId(kernel, spec.rep_log) orelse return null;
-                    const neg_rep_log = self.nodeForKernelValueId(kernel, spec.neg_rep_log) orelse return null;
-                    const output = self.nodeForKernelValueId(kernel, spec.output) orelse return null;
-                    const start_idx = self.kernelValueIndex(kernel, spec.max_node) orelse return null;
-                    const output_idx = self.kernelValueIndex(kernel, spec.output) orelse return null;
-
-                    break :blk .{ .start_idx = start_idx, .plan = .{
-                        .output_idx = output_idx,
-                        .payload = .{ .log_softmax = .{
-                            .input = max_node.source0().?,
-                            .max_node = max_node,
-                            .rep_max = rep_max,
-                            .neg_rep_max = neg_rep_max,
-                            .shifted = shifted,
-                            .exp_node = exp_node,
-                            .sum_node = sum_node,
-                            .log_node = log_node,
-                            .rep_log = rep_log,
-                            .neg_rep_log = neg_rep_log,
-                            .output = output,
-                        } },
-                    } };
-                },
-                .cross_entropy => |spec| blk: {
-                    const max_node = self.nodeForKernelValueId(kernel, spec.log_softmax.max_node) orelse return null;
-                    const rep_max = self.nodeForKernelValueId(kernel, spec.log_softmax.rep_max) orelse return null;
-                    const neg_rep_max = self.nodeForKernelValueId(kernel, spec.log_softmax.neg_rep_max) orelse return null;
-                    const shifted = self.nodeForKernelValueId(kernel, spec.log_softmax.shifted) orelse return null;
-                    const exp_node = self.nodeForKernelValueId(kernel, spec.log_softmax.exp_node) orelse return null;
-                    const sum_node = self.nodeForKernelValueId(kernel, spec.log_softmax.sum_node) orelse return null;
-                    const log_node = self.nodeForKernelValueId(kernel, spec.log_softmax.log_node) orelse return null;
-                    const rep_log = self.nodeForKernelValueId(kernel, spec.log_softmax.rep_log) orelse return null;
-                    const neg_rep_log = self.nodeForKernelValueId(kernel, spec.log_softmax.neg_rep_log) orelse return null;
-                    const log_softmax_output = self.nodeForKernelValueId(kernel, spec.log_softmax.output) orelse return null;
-                    const picked = self.nodeForKernelValueId(kernel, spec.picked) orelse return null;
-                    const neg_picked = self.nodeForKernelValueId(kernel, spec.neg_picked) orelse return null;
-                    const sum_node_ce = self.nodeForKernelValueId(kernel, spec.sum_node) orelse return null;
-                    const mean_node = self.nodeForKernelValueId(kernel, spec.mean_node) orelse return null;
-                    const start_idx = self.kernelValueIndex(kernel, spec.log_softmax.max_node) orelse return null;
-                    const output_idx = self.kernelValueIndex(kernel, spec.mean_node) orelse return null;
-
-                    break :blk .{ .start_idx = start_idx, .plan = .{
-                        .output_idx = output_idx,
-                        .payload = .{ .cross_entropy = .{
-                            .log_softmax = .{
-                                .input = max_node.source0().?,
-                                .max_node = max_node,
-                                .rep_max = rep_max,
-                                .neg_rep_max = neg_rep_max,
-                                .shifted = shifted,
-                                .exp_node = exp_node,
-                                .sum_node = sum_node,
-                                .log_node = log_node,
-                                .rep_log = rep_log,
-                                .neg_rep_log = neg_rep_log,
-                                .output = log_softmax_output,
-                            },
-                            .targets = picked.source1().?,
-                            .picked = picked,
-                            .neg_picked = neg_picked,
-                            .sum_node = sum_node_ce,
-                            .mean_node = mean_node,
-                        } },
-                    } };
-                },
-                .layer_norm => |spec| blk: {
-                    const sum_node = self.nodeForKernelValueId(kernel, spec.sum_node) orelse return null;
-                    const mean_node = self.nodeForKernelValueId(kernel, spec.mean_node) orelse return null;
-                    const rep_mean = self.nodeForKernelValueId(kernel, spec.rep_mean) orelse return null;
-                    const neg_rep_mean = self.nodeForKernelValueId(kernel, spec.neg_rep_mean) orelse return null;
-                    const centered = self.nodeForKernelValueId(kernel, spec.centered) orelse return null;
-                    const sqr_node = self.nodeForKernelValueId(kernel, spec.sqr_node) orelse return null;
-                    const var_sum = self.nodeForKernelValueId(kernel, spec.var_sum) orelse return null;
-                    const var_node = self.nodeForKernelValueId(kernel, spec.var_node) orelse return null;
-                    const eps_like = self.nodeForKernelValueId(kernel, spec.eps_like) orelse return null;
-                    const var_eps = self.nodeForKernelValueId(kernel, spec.var_eps) orelse return null;
-                    const sqrt_node = self.nodeForKernelValueId(kernel, spec.sqrt_node) orelse return null;
-                    const recip_node = self.nodeForKernelValueId(kernel, spec.recip_node) orelse return null;
-                    const rep_std_inv = self.nodeForKernelValueId(kernel, spec.rep_std_inv) orelse return null;
-                    const output = self.nodeForKernelValueId(kernel, spec.output) orelse return null;
-                    const start_idx = self.kernelValueIndex(kernel, spec.sum_node) orelse return null;
-                    const output_idx = self.kernelValueIndex(kernel, spec.output) orelse return null;
-
-                    break :blk .{ .start_idx = start_idx, .plan = .{
-                        .output_idx = output_idx,
-                        .payload = .{ .layer_norm = .{
-                            .input = sum_node.source0().?,
-                            .sum_node = sum_node,
-                            .mean_node = mean_node,
-                            .rep_mean = rep_mean,
-                            .neg_rep_mean = neg_rep_mean,
-                            .centered = centered,
-                            .sqr_node = sqr_node,
-                            .var_sum = var_sum,
-                            .var_node = var_node,
-                            .eps_like = eps_like,
-                            .var_eps = var_eps,
-                            .sqrt_node = sqrt_node,
-                            .recip_node = recip_node,
-                            .rep_std_inv = rep_std_inv,
-                            .output = output,
-                        } },
-                    } };
-                },
-            };
-        }
-
-        fn kernelValueIndex(self: *const Self, kernel: *const compiler.KernelPlan, id: compiler.ValueId) ?usize {
-            _ = self;
-            for (kernel.values.items, 0..) |value, idx| {
-                if (value.id == id) return idx;
+            var it = lowering.memo.iterator();
+            while (it.next()) |entry| {
+                mapping[@intFromEnum(entry.value_ptr.*)] = @constCast(entry.key_ptr.*);
             }
-            return null;
-        }
 
-        fn nodeForKernelValueId(self: *const Self, kernel: *const compiler.KernelPlan, id: compiler.ValueId) ?*Tensor(T) {
-            const idx = self.kernelValueIndex(kernel, id) orelse return null;
-            return self.nodeAt(idx);
+            _ = self;
+            return mapping;
         }
 
         fn nodeAt(self: *const Self, idx: usize) ?*Tensor(T) {
             if (idx >= self.forward_node_count) return null;
             return self.nodes.items[idx];
-        }
-
-        fn matchOp(node: ?*Tensor(T), op: Op) ?*Tensor(T) {
-            const n = node orelse return null;
-            return if (n.opTag() == op) n else null;
-        }
-
-        fn matchUnary(node: ?*Tensor(T), op: Op, src0: *Tensor(T)) ?*Tensor(T) {
-            const n = matchOp(node, op) orelse return null;
-            return if (n.source0().? == src0) n else null;
-        }
-
-        fn matchBinary(node: ?*Tensor(T), op: Op, src0: *Tensor(T), src1: *Tensor(T)) ?*Tensor(T) {
-            const n = matchOp(node, op) orelse return null;
-            return if (n.source0().? == src0 and n.source1().? == src1) n else null;
-        }
-
-        fn matchBinaryScalarRhs(node: ?*Tensor(T), op: Op, src0: *Tensor(T)) ?*Tensor(T) {
-            const n = matchOp(node, op) orelse return null;
-            if (n.source0().? != src0) return null;
-            return if (n.source1().?.isScalar()) n else null;
-        }
-
-        fn findNextUser(self: *const Self, start: usize, src: *Tensor(T), op: Op) ?struct { idx: usize, node: *Tensor(T) } {
-            var i = start;
-            while (i < self.forward_node_count) : (i += 1) {
-                const node = self.nodes.items[i];
-                if (node.opTag() != op) continue;
-                if (node.source0() == src or node.source1() == src) return .{ .idx = i, .node = node };
-            }
-            return null;
-        }
-
-        fn matchScalarBroadcast(node: ?*Tensor(T)) ?*Tensor(T) {
-            const n = node orelse return null;
-            if (n.isScalar()) return n;
-            if (n.opTag() == .repeat and n.source0().?.isScalar()) return n;
-            return null;
-        }
-
-        fn detectCrossEntropyPattern(self: *const Self, start: usize) ?fused.FusionPlan(T) {
-            const nodes = self.nodes.items;
-            if (start + 13 >= self.forward_node_count) return null;
-
-            const n0 = nodes[start + 0];
-            const n1 = nodes[start + 1];
-            const n2 = nodes[start + 2];
-            const n3 = nodes[start + 3];
-            const n4 = nodes[start + 4];
-            const n5 = nodes[start + 5];
-            const n6 = nodes[start + 6];
-            const n7 = nodes[start + 7];
-            const n8 = nodes[start + 8];
-            const n9 = nodes[start + 9];
-            const n10 = nodes[start + 10];
-            const n11 = nodes[start + 11];
-            const n12 = nodes[start + 12];
-            const n13 = nodes[start + 13];
-
-            if (n0.isOp(.max) and
-                n1.isOp(.repeat) and n1.sourceIs(.src0, n0) and
-                n2.isOp(.neg) and n2.sourceIs(.src0, n1) and
-                n3.isOp(.add) and n3.source0().? == n0.source0().? and n3.sourceIs(.src1, n2) and
-                n4.isOp(.exp) and n4.sourceIs(.src0, n3) and
-                n5.isOp(.sum) and n5.sourceIs(.src0, n4) and
-                n6.isOp(.log) and n6.sourceIs(.src0, n5) and
-                n7.isOp(.repeat) and n7.sourceIs(.src0, n6) and
-                n8.isOp(.neg) and n8.sourceIs(.src0, n7) and
-                n9.isOp(.add) and n9.source0().? == n3 and n9.sourceIs(.src1, n8) and
-                n10.isOp(.pick_rows) and n10.sourceIs(.src0, n9) and
-                n11.isOp(.neg) and n11.sourceIs(.src0, n10) and
-                n12.isOp(.sum) and n12.sourceIs(.src0, n11) and
-                n13.isOp(.mul) and n13.sourceIs(.src0, n12) and n13.source1().?.isScalar())
-            {
-                return .{ .output_idx = start + 13, .payload = .{ .cross_entropy = .{
-                    .log_softmax = .{
-                        .input = n0.source0().?,
-                        .max_node = n0,
-                        .rep_max = n1,
-                        .neg_rep_max = n2,
-                        .shifted = n3,
-                        .exp_node = n4,
-                        .sum_node = n5,
-                        .log_node = n6,
-                        .rep_log = n7,
-                        .neg_rep_log = n8,
-                        .output = n9,
-                    },
-                    .targets = n10.source1().?,
-                    .picked = n10,
-                    .neg_picked = n11,
-                    .sum_node = n12,
-                    .mean_node = n13,
-                } } };
-            }
-
-            return null;
-        }
-
-        fn detectLayerNormPattern(self: *const Self, start: usize) ?fused.FusionPlan(T) {
-            const n0 = matchOp(self.nodeAt(start), .sum) orelse return null;
-            const n1 = findNextUser(self, start + 1, n0, .mul) orelse return null;
-            if (matchScalarBroadcast(n1.node.source1()) == null) return null;
-
-            const n2 = findNextUser(self, n1.idx + 1, n1.node, .repeat) orelse return null;
-            const n3 = findNextUser(self, n2.idx + 1, n2.node, .neg) orelse return null;
-            const n4 = findNextUser(self, n3.idx + 1, n3.node, .add) orelse return null;
-            if (n4.node.source0().? != n0.source0().?) return null;
-
-            const n5 = findNextUser(self, n4.idx + 1, n4.node, .mul) orelse return null;
-            if (n5.node.source0().? != n4.node or n5.node.source1().? != n4.node) return null;
-
-            const n6 = findNextUser(self, n5.idx + 1, n5.node, .sum) orelse return null;
-            const n7 = findNextUser(self, n6.idx + 1, n6.node, .mul) orelse return null;
-            if (matchScalarBroadcast(n7.node.source1()) == null) return null;
-
-            const n8 = findNextUser(self, n7.idx + 1, n7.node, .add) orelse return null;
-            const eps_like = matchScalarBroadcast(n8.node.source1()) orelse return null;
-            if (n8.node.source0().? != n7.node) return null;
-
-            const n9 = findNextUser(self, n8.idx + 1, n8.node, .sqrt) orelse return null;
-            const n10 = findNextUser(self, n9.idx + 1, n9.node, .recip) orelse return null;
-            const n11 = findNextUser(self, n10.idx + 1, n10.node, .repeat) orelse return null;
-            const n12 = findNextUser(self, n11.idx + 1, n11.node, .mul) orelse return null;
-            if (n12.node.source0().? != n4.node and n12.node.source1().? != n4.node) return null;
-
-            return .{ .output_idx = n12.idx, .payload = .{ .layer_norm = .{
-                .input = n0.source0().?,
-                .sum_node = n0,
-                .mean_node = n1.node,
-                .rep_mean = n2.node,
-                .neg_rep_mean = n3.node,
-                .centered = n4.node,
-                .sqr_node = n5.node,
-                .var_sum = n6.node,
-                .var_node = n7.node,
-                .eps_like = eps_like,
-                .var_eps = n8.node,
-                .sqrt_node = n9.node,
-                .recip_node = n10.node,
-                .rep_std_inv = n11.node,
-                .output = n12.node,
-            } } };
         }
 
         fn addParentsThenSelf(self: *Self, cur: *Tensor(T)) Alloc.Error!void {
@@ -861,6 +605,10 @@ pub fn ComputeGraph(comptime T: type) type {
         pub fn run(self: *Self, loss_node: *Tensor(T)) !void {
             if (!self.built_forward) try self.buildForward(loss_node);
             if (!self.built_backward) try self.buildBackward(false);
+            if (!self.built_fusion) {
+                try self.fusionPass();
+                self.built_fusion = true;
+            }
             self.reset();
             self.resetGrads();
             if (loss_node.grad) |grad| _ = grad.setAllScalar(1);
@@ -877,6 +625,10 @@ pub fn ComputeGraph(comptime T: type) type {
         /// ```
         pub fn infer(self: *Self, output: *Tensor(T)) !void {
             if (!self.built_forward) try self.buildForward(output);
+            if (!self.built_fusion) {
+                try self.fusionPass();
+                self.built_fusion = true;
+            }
             self.reset();
             self.computeNoGrad();
         }
@@ -1388,7 +1140,7 @@ test "fusion - chain detection skips non-fusible ops" {
     try testing.expectApproxEqAbs(@as(f32, -21.0), out.data[0], 1e-6);
 }
 
-test "fusion - detects softmax pattern" {
+test "fusion - compiler selects softmax region" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
@@ -1460,7 +1212,53 @@ test "fusion - conv2d fused matches unfused" {
     }
 }
 
-test "fusion - compiler root annotations detect softmax plan" {
+test "fusion - conv2d backward fused matches unfused" {
+    var gf = ComputeGraph(f32).init(tac);
+    defer gf.deinit();
+    var gu = ComputeGraph(f32).init(tac);
+    defer gu.deinit();
+
+    const af = gf.allocator();
+    const au = gu.allocator();
+
+    const xf = try Tensor(f32).init(af, &.{ 4, 4, 1, 1 });
+    const xu = try Tensor(f32).init(au, &.{ 4, 4, 1, 1 });
+    for (xf.data, 0..) |*d, i| d.* = @floatFromInt(i + 1);
+    @memcpy(xu.data, xf.data);
+    xf.setParam();
+    xu.setParam();
+
+    const kf = try Tensor(f32).init(af, &.{ 2, 2, 1, 2 });
+    const ku = try Tensor(f32).init(au, &.{ 2, 2, 1, 2 });
+    for (kf.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(@as(i32, @intCast(i % 4)) - 1));
+    @memcpy(ku.data, kf.data);
+    kf.setParam();
+    ku.setParam();
+
+    const yf = xf.conv2d(kf).sumAll();
+    const yu = xu.conv2d(ku).sumAll();
+
+    try gf.buildForward(yf);
+    try gf.buildBackward(false);
+    try gf.fusionPass();
+    _ = yf.grad.?.setAllScalar(1);
+
+    try gu.buildForward(yu);
+    try gu.buildBackward(false);
+    _ = yu.grad.?.setAllScalar(1);
+
+    gf.compute();
+    gu.compute();
+
+    for (xf.grad.?.data, xu.grad.?.data) |a_out, b_out| {
+        try testing.expectApproxEqAbs(a_out, b_out, 1e-5);
+    }
+    for (kf.grad.?.data, ku.grad.?.data) |a_out, b_out| {
+        try testing.expectApproxEqAbs(a_out, b_out, 1e-5);
+    }
+}
+
+test "fusion - compiler root plan maps softmax" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
@@ -1476,7 +1274,7 @@ test "fusion - compiler root annotations detect softmax plan" {
     try testing.expectEqual(@as(usize, g.forward_node_count - 1), root_plan.plan.output_idx);
 }
 
-test "fusion - detects logSoftmax pattern" {
+test "fusion - compiler selects logSoftmax region" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
@@ -1495,7 +1293,7 @@ test "fusion - detects logSoftmax pattern" {
     try testing.expectApproxEqAbs(@as(f32, 1.0), probs, 1e-6);
 }
 
-test "fusion - compiler root annotations detect logSoftmax plan" {
+test "fusion - compiler root plan maps logSoftmax" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
@@ -1511,7 +1309,7 @@ test "fusion - compiler root annotations detect logSoftmax plan" {
     try testing.expectEqual(@as(usize, g.forward_node_count - 1), root_plan.plan.output_idx);
 }
 
-test "fusion - detects cross entropy pattern" {
+test "fusion - compiler selects cross entropy region" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
@@ -1529,9 +1327,7 @@ test "fusion - detects cross entropy pattern" {
     try g.fusionPass();
 
     try testing.expectEqual(@as(usize, 1), g.fused_chains.items.len);
-    // Fusion pass may detect log_softmax subpattern within cross-entropy
-    try testing.expect(g.fused_chains.items[0].kind() == .cross_entropy or
-        g.fused_chains.items[0].kind() == .log_softmax);
+    try testing.expectEqual(fused.FusionKind.cross_entropy, g.fused_chains.items[0].kind());
 
     g.compute();
 
@@ -1542,7 +1338,7 @@ test "fusion - detects cross entropy pattern" {
     try testing.expectApproxEqAbs(expected, out.data[0], 1e-5);
 }
 
-test "fusion - compiler root annotations detect cross entropy plan" {
+test "fusion - compiler root plan maps cross entropy" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
@@ -1564,7 +1360,7 @@ test "fusion - compiler root annotations detect cross entropy plan" {
     try testing.expectEqual(@as(usize, g.forward_node_count - 1), root_plan.plan.output_idx);
 }
 
-test "fusion - compiler root annotations detect layerNorm plan" {
+test "fusion - compiler root plan maps layerNorm" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
@@ -1617,7 +1413,7 @@ test "layerNorm forward" {
     try testing.expectApproxEqAbs((4.0 - 2.5) / std_dev, out.data[3], 1e-4);
 }
 
-test "fusion - detects layerNorm pattern" {
+test "fusion - compiler selects layerNorm region" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
@@ -1628,17 +1424,8 @@ test "fusion - detects layerNorm pattern" {
     try g.buildForward(y);
     try g.fusionPass();
 
-    var kinds = [_]fused.FusionKind{ .elementwise_chain, .elementwise_chain, .elementwise_chain };
-    const n = @min(g.fused_chains.items.len, kinds.len);
-    for (g.fused_chains.items[0..n], 0..) |plan, i| kinds[i] = plan.kind();
-
-    const has_layer_norm = blk: {
-        for (g.fused_chains.items) |plan| {
-            if (plan.kind() == .layer_norm) break :blk true;
-        }
-        break :blk false;
-    };
-    try testing.expect(has_layer_norm);
+    try testing.expectEqual(@as(usize, 1), g.fused_chains.items.len);
+    try testing.expectEqual(fused.FusionKind.layer_norm, g.fused_chains.items[0].kind());
 }
 
 test "fusion - layerNorm fused matches unfused 1D" {

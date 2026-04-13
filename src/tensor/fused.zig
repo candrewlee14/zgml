@@ -9,6 +9,7 @@
 //! correct comptime-specialized kernel via bounded `inline for` lookup.
 
 const std = @import("std");
+const compiler = @import("../compiler.zig");
 const Op = @import("../op.zig").Op;
 const Tensor = @import("../tensor.zig").Tensor;
 const forward = @import("forward.zig");
@@ -24,6 +25,8 @@ pub const fusible_ops = [_]Op{
 pub const FusionKind = enum {
     elementwise_chain,
     conv2d,
+    conv2d_bwd_input,
+    conv2d_bwd_kernel,
     softmax,
     log_softmax,
     cross_entropy,
@@ -62,8 +65,33 @@ pub fn Conv2dPlan(comptime T: type) type {
         kernel: *Tensor(T),
         input_view: *Tensor(T),
         kernel_view: *Tensor(T),
+        bias: ?*Tensor(T),
+        bias_node: ?*Tensor(T),
+        activation: ?*Tensor(T),
         mul_node: *Tensor(T),
         sum_node: *Tensor(T),
+        output: *Tensor(T),
+    };
+}
+
+pub fn Conv2dBwdInputPlan(comptime T: type) type {
+    return struct {
+        output_grad: *Tensor(T),
+        kernel: *Tensor(T),
+        reshape_node: *Tensor(T),
+        repeat_node: *Tensor(T),
+        mul_node: *Tensor(T),
+        output: *Tensor(T),
+    };
+}
+
+pub fn Conv2dBwdKernelPlan(comptime T: type) type {
+    return struct {
+        input: *Tensor(T),
+        output_grad: *Tensor(T),
+        reshape_node: *Tensor(T),
+        repeat_node: *Tensor(T),
+        mul_node: *Tensor(T),
         output: *Tensor(T),
     };
 }
@@ -119,6 +147,8 @@ pub fn FusionPayload(comptime T: type) type {
     return union(FusionKind) {
         elementwise_chain: ElementwiseChainPlan(T),
         conv2d: Conv2dPlan(T),
+        conv2d_bwd_input: Conv2dBwdInputPlan(T),
+        conv2d_bwd_kernel: Conv2dBwdKernelPlan(T),
         softmax: SoftmaxPlan(T),
         log_softmax: LogSoftmaxPlan(T),
         cross_entropy: CrossEntropyPlan(T),
@@ -135,6 +165,206 @@ pub fn FusionPlan(comptime T: type) type {
         pub fn kind(self: @This()) FusionKind {
             return std.meta.activeTag(self.payload);
         }
+    };
+}
+
+/// Validate that a softmax-family plan's intermediate nodes have consistent shapes.
+/// The execution kernel iterates over input dimensions and indexes into all
+/// full-sized intermediates — if any have a different shape, we'd go OOB.
+fn validateSoftmaxPlan(comptime T: type, plan: SoftmaxPlan(T)) bool {
+    const input = plan.input;
+    const full_nodes = [_]*Tensor(T){ plan.rep_max, plan.neg_rep_max, plan.shifted, plan.exp_node, plan.output };
+    for (full_nodes) |node| {
+        if (!node.isSameShape(input)) return false;
+    }
+    return true;
+}
+
+fn validateLogSoftmaxPlan(comptime T: type, plan: LogSoftmaxPlan(T)) bool {
+    const input = plan.input;
+    const full_nodes = [_]*Tensor(T){ plan.rep_max, plan.neg_rep_max, plan.shifted, plan.exp_node, plan.rep_log, plan.neg_rep_log, plan.output };
+    for (full_nodes) |node| {
+        if (!node.isSameShape(input)) return false;
+    }
+    return true;
+}
+
+fn validateLayerNormPlan(comptime T: type, plan: LayerNormPlan(T)) bool {
+    if (plan.mean_node.source1() == null or plan.var_node.source1() == null) return false;
+    const input = plan.input;
+    const full_nodes = [_]*Tensor(T){ plan.rep_mean, plan.neg_rep_mean, plan.centered, plan.sqr_node, plan.rep_std_inv, plan.output };
+    for (full_nodes) |node| {
+        if (!node.isSameShape(input)) return false;
+    }
+    return true;
+}
+
+pub fn CompilerMappedPlan(comptime T: type) type {
+    return struct {
+        start_idx: usize,
+        plan: FusionPlan(T),
+    };
+}
+
+fn nodeForValueId(comptime T: type, value_to_tensor: []const ?*Tensor(T), id: compiler.ValueId) ?*Tensor(T) {
+    const idx = @intFromEnum(id);
+    if (idx >= value_to_tensor.len) return null;
+    return value_to_tensor[idx];
+}
+
+pub fn mapCompilerPattern(comptime T: type, forward_nodes: []const *Tensor(T), value_to_tensor: []const ?*Tensor(T), pattern: compiler.KernelPattern) ?CompilerMappedPlan(T) {
+    return switch (pattern) {
+        .softmax => |spec| blk: {
+            const max_node = nodeForValueId(T, value_to_tensor, spec.max_node) orelse return null;
+            const rep_max = nodeForValueId(T, value_to_tensor, spec.rep_max) orelse return null;
+            const neg_rep_max = nodeForValueId(T, value_to_tensor, spec.neg_rep_max) orelse return null;
+            const shifted = nodeForValueId(T, value_to_tensor, spec.shifted) orelse return null;
+            const exp_node = nodeForValueId(T, value_to_tensor, spec.exp_node) orelse return null;
+            const sum_node = nodeForValueId(T, value_to_tensor, spec.sum_node) orelse return null;
+            const rep_sum = nodeForValueId(T, value_to_tensor, spec.rep_sum) orelse return null;
+            const recip_rep_sum = nodeForValueId(T, value_to_tensor, spec.recip_rep_sum) orelse return null;
+            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse return null;
+            const start_idx = indexOfNode(T, forward_nodes, max_node);
+            const output_idx = indexOfNode(T, forward_nodes, output);
+
+            const softmax_plan = SoftmaxPlan(T){
+                .input = max_node.source0().?,
+                .max_node = max_node,
+                .rep_max = rep_max,
+                .neg_rep_max = neg_rep_max,
+                .shifted = shifted,
+                .exp_node = exp_node,
+                .sum_node = sum_node,
+                .rep_sum = rep_sum,
+                .recip_rep_sum = recip_rep_sum,
+                .output = output,
+            };
+            if (!validateSoftmaxPlan(T, softmax_plan)) return null;
+            break :blk .{ .start_idx = start_idx, .plan = .{
+                .output_idx = output_idx,
+                .payload = .{ .softmax = softmax_plan },
+            } };
+        },
+        .log_softmax => |spec| blk: {
+            const max_node = nodeForValueId(T, value_to_tensor, spec.max_node) orelse return null;
+            const rep_max = nodeForValueId(T, value_to_tensor, spec.rep_max) orelse return null;
+            const neg_rep_max = nodeForValueId(T, value_to_tensor, spec.neg_rep_max) orelse return null;
+            const shifted = nodeForValueId(T, value_to_tensor, spec.shifted) orelse return null;
+            const exp_node = nodeForValueId(T, value_to_tensor, spec.exp_node) orelse return null;
+            const sum_node = nodeForValueId(T, value_to_tensor, spec.sum_node) orelse return null;
+            const log_node = nodeForValueId(T, value_to_tensor, spec.log_node) orelse return null;
+            const rep_log = nodeForValueId(T, value_to_tensor, spec.rep_log) orelse return null;
+            const neg_rep_log = nodeForValueId(T, value_to_tensor, spec.neg_rep_log) orelse return null;
+            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse return null;
+            const start_idx = indexOfNode(T, forward_nodes, max_node);
+            const output_idx = indexOfNode(T, forward_nodes, output);
+
+            const log_softmax_plan = LogSoftmaxPlan(T){
+                .input = max_node.source0().?,
+                .max_node = max_node,
+                .rep_max = rep_max,
+                .neg_rep_max = neg_rep_max,
+                .shifted = shifted,
+                .exp_node = exp_node,
+                .sum_node = sum_node,
+                .log_node = log_node,
+                .rep_log = rep_log,
+                .neg_rep_log = neg_rep_log,
+                .output = output,
+            };
+            if (!validateLogSoftmaxPlan(T, log_softmax_plan)) return null;
+            break :blk .{ .start_idx = start_idx, .plan = .{
+                .output_idx = output_idx,
+                .payload = .{ .log_softmax = log_softmax_plan },
+            } };
+        },
+        .cross_entropy => |spec| blk: {
+            const max_node = nodeForValueId(T, value_to_tensor, spec.log_softmax.max_node) orelse return null;
+            const rep_max = nodeForValueId(T, value_to_tensor, spec.log_softmax.rep_max) orelse return null;
+            const neg_rep_max = nodeForValueId(T, value_to_tensor, spec.log_softmax.neg_rep_max) orelse return null;
+            const shifted = nodeForValueId(T, value_to_tensor, spec.log_softmax.shifted) orelse return null;
+            const exp_node = nodeForValueId(T, value_to_tensor, spec.log_softmax.exp_node) orelse return null;
+            const sum_node = nodeForValueId(T, value_to_tensor, spec.log_softmax.sum_node) orelse return null;
+            const log_node = nodeForValueId(T, value_to_tensor, spec.log_softmax.log_node) orelse return null;
+            const rep_log = nodeForValueId(T, value_to_tensor, spec.log_softmax.rep_log) orelse return null;
+            const neg_rep_log = nodeForValueId(T, value_to_tensor, spec.log_softmax.neg_rep_log) orelse return null;
+            const log_softmax_output = nodeForValueId(T, value_to_tensor, spec.log_softmax.output) orelse return null;
+            const picked = nodeForValueId(T, value_to_tensor, spec.picked) orelse return null;
+            const neg_picked = nodeForValueId(T, value_to_tensor, spec.neg_picked) orelse return null;
+            const sum_node_ce = nodeForValueId(T, value_to_tensor, spec.sum_node) orelse return null;
+            const mean_node = nodeForValueId(T, value_to_tensor, spec.mean_node) orelse return null;
+            const start_idx = indexOfNode(T, forward_nodes, max_node);
+            const output_idx = indexOfNode(T, forward_nodes, mean_node);
+
+            const inner_log_softmax = LogSoftmaxPlan(T){
+                .input = max_node.source0().?,
+                .max_node = max_node,
+                .rep_max = rep_max,
+                .neg_rep_max = neg_rep_max,
+                .shifted = shifted,
+                .exp_node = exp_node,
+                .sum_node = sum_node,
+                .log_node = log_node,
+                .rep_log = rep_log,
+                .neg_rep_log = neg_rep_log,
+                .output = log_softmax_output,
+            };
+            if (!validateLogSoftmaxPlan(T, inner_log_softmax)) return null;
+            if (picked.source1() == null or mean_node.source1() == null) return null;
+            break :blk .{ .start_idx = start_idx, .plan = .{
+                .output_idx = output_idx,
+                .payload = .{ .cross_entropy = .{
+                    .log_softmax = inner_log_softmax,
+                    .targets = picked.source1().?,
+                    .picked = picked,
+                    .neg_picked = neg_picked,
+                    .sum_node = sum_node_ce,
+                    .mean_node = mean_node,
+                } },
+            } };
+        },
+        .layer_norm => |spec| blk: {
+            const sum_node = nodeForValueId(T, value_to_tensor, spec.sum_node) orelse return null;
+            const mean_node = nodeForValueId(T, value_to_tensor, spec.mean_node) orelse return null;
+            const rep_mean = nodeForValueId(T, value_to_tensor, spec.rep_mean) orelse return null;
+            const neg_rep_mean = nodeForValueId(T, value_to_tensor, spec.neg_rep_mean) orelse return null;
+            const centered = nodeForValueId(T, value_to_tensor, spec.centered) orelse return null;
+            const sqr_node = nodeForValueId(T, value_to_tensor, spec.sqr_node) orelse return null;
+            const var_sum = nodeForValueId(T, value_to_tensor, spec.var_sum) orelse return null;
+            const var_node = nodeForValueId(T, value_to_tensor, spec.var_node) orelse return null;
+            const eps_like = nodeForValueId(T, value_to_tensor, spec.eps_like) orelse return null;
+            const var_eps = nodeForValueId(T, value_to_tensor, spec.var_eps) orelse return null;
+            const sqrt_node = nodeForValueId(T, value_to_tensor, spec.sqrt_node) orelse return null;
+            const recip_node = nodeForValueId(T, value_to_tensor, spec.recip_node) orelse return null;
+            const rep_std_inv = nodeForValueId(T, value_to_tensor, spec.rep_std_inv) orelse return null;
+            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse return null;
+            const start_idx = indexOfNode(T, forward_nodes, sum_node);
+            const output_idx = indexOfNode(T, forward_nodes, output);
+
+            if (sum_node.source0() == null) return null;
+            const ln_plan = LayerNormPlan(T){
+                .input = sum_node.source0().?,
+                .sum_node = sum_node,
+                .mean_node = mean_node,
+                .rep_mean = rep_mean,
+                .neg_rep_mean = neg_rep_mean,
+                .centered = centered,
+                .sqr_node = sqr_node,
+                .var_sum = var_sum,
+                .var_node = var_node,
+                .eps_like = eps_like,
+                .var_eps = var_eps,
+                .sqrt_node = sqrt_node,
+                .recip_node = recip_node,
+                .rep_std_inv = rep_std_inv,
+                .output = output,
+            };
+            if (!validateLayerNormPlan(T, ln_plan)) return null;
+            break :blk .{ .start_idx = start_idx, .plan = .{
+                .output_idx = output_idx,
+                .payload = .{ .layer_norm = ln_plan },
+            } };
+        },
     };
 }
 
@@ -398,10 +628,12 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
                         const row_off = k * N;
                         for (0..out_h) |oy| {
                             for (0..out_w) |ox| {
-                                col_buf[row_off + oy * out_w + ox] = input.data[(ox + kx) * input.strides[0] +
-                                    (oy + ky) * input.strides[1] +
-                                    ic * input.strides[2] +
-                                    n * input.strides[3]];
+                                col_buf[row_off + oy * out_w + ox] = input.data[
+                                    (ox + kx) * input.strides[0] +
+                                        (oy + ky) * input.strides[1] +
+                                        ic * input.strides[2] +
+                                        n * input.strides[3]
+                                ];
                             }
                         }
                     }
@@ -426,6 +658,106 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
             n * N * c_out, // d_base (batch offset into output)
             N, // d_row_stride
         );
+
+        if (plan.bias != null or plan.activation != null) {
+            for (0..c_out) |oc| {
+                for (0..N) |col| {
+                    const out_idx = n * N * c_out + oc * N + col;
+                    var val = output.data[out_idx];
+                    if (plan.bias) |bias| val += bias.data[oc];
+                    if (plan.activation != null) val = if (val > 0) val else 0;
+                    output.data[out_idx] = val;
+                }
+            }
+        }
+    }
+}
+
+fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T)) void {
+    _ = plan.reshape_node;
+    _ = plan.repeat_node;
+    _ = plan.mul_node;
+
+    const out_grad = plan.output_grad;
+    const kernel = plan.kernel;
+    const output = plan.output;
+
+    const out_w = out_grad.ne[0];
+    const out_h = out_grad.ne[1];
+    const c_out = out_grad.ne[2];
+    const batch = out_grad.ne[3];
+    const kw = kernel.ne[0];
+    const kh = kernel.ne[1];
+    const c_in = kernel.ne[2];
+
+    @memset(output.data, 0);
+    for (0..batch) |n| {
+        for (0..c_out) |oc| {
+            for (0..out_h) |oy| {
+                for (0..out_w) |ox| {
+                    const grad_idx = ox * out_grad.strides[0] + oy * out_grad.strides[1] + oc * out_grad.strides[2] + n * out_grad.strides[3];
+                    const grad_val = out_grad.data[grad_idx];
+                    for (0..c_in) |ic| {
+                        for (0..kh) |ky| {
+                            for (0..kw) |kx| {
+                                const out_idx = (ox + kx) * output.strides[0] +
+                                    (oy + ky) * output.strides[1] +
+                                    ic * output.strides[2] +
+                                    n * output.strides[3];
+                                const kernel_idx = kx * kernel.strides[0] +
+                                    ky * kernel.strides[1] +
+                                    ic * kernel.strides[2] +
+                                    oc * kernel.strides[3];
+                                output.data[out_idx] += grad_val * kernel.data[kernel_idx];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T)) void {
+    _ = plan.reshape_node;
+    _ = plan.repeat_node;
+    _ = plan.mul_node;
+
+    const input = plan.input;
+    const out_grad = plan.output_grad;
+    const output = plan.output;
+
+    const out_w = out_grad.ne[0];
+    const out_h = out_grad.ne[1];
+    const c_out = out_grad.ne[2];
+    const batch = out_grad.ne[3];
+    const kw = output.ne[0];
+    const kh = output.ne[1];
+    const c_in = output.ne[2];
+
+    @memset(output.data, 0);
+    for (0..c_out) |oc| {
+        for (0..c_in) |ic| {
+            for (0..kh) |ky| {
+                for (0..kw) |kx| {
+                    var acc: T = 0;
+                    for (0..batch) |n| {
+                        for (0..out_h) |oy| {
+                            for (0..out_w) |ox| {
+                                const input_idx = (ox + kx) * input.strides[0] +
+                                    (oy + ky) * input.strides[1] +
+                                    ic * input.strides[2] +
+                                    n * input.strides[3];
+                                const grad_idx = ox * out_grad.strides[0] + oy * out_grad.strides[1] + oc * out_grad.strides[2] + n * out_grad.strides[3];
+                                acc += input.data[input_idx] * out_grad.data[grad_idx];
+                            }
+                        }
+                    }
+                    const out_idx = kx * output.strides[0] + ky * output.strides[1] + ic * output.strides[2] + oc * output.strides[3];
+                    output.data[out_idx] = acc;
+                }
+            }
+        }
     }
 }
 
@@ -451,14 +783,18 @@ fn executeConv2dNaive(comptime T: type, plan: Conv2dPlan(T)) void {
                     for (0..c_in) |ic| {
                         for (0..kh) |ky| {
                             for (0..kw) |kx| {
-                                acc += input.data[(ox + kx) * input.strides[0] +
-                                    (oy + ky) * input.strides[1] +
-                                    ic * input.strides[2] +
-                                    n * input.strides[3]] *
-                                    kernel.data[kx * kernel.strides[0] +
-                                    ky * kernel.strides[1] +
-                                    ic * kernel.strides[2] +
-                                    oc * kernel.strides[3]];
+                                acc += input.data[
+                                    (ox + kx) * input.strides[0] +
+                                        (oy + ky) * input.strides[1] +
+                                        ic * input.strides[2] +
+                                        n * input.strides[3]
+                                ] *
+                                    kernel.data[
+                                        kx * kernel.strides[0] +
+                                            ky * kernel.strides[1] +
+                                            ic * kernel.strides[2] +
+                                            oc * kernel.strides[3]
+                                    ];
                             }
                         }
                     }
@@ -612,6 +948,8 @@ pub fn executeFusionPlan(comptime T: type, plan: FusionPlan(T)) void {
     switch (plan.payload) {
         .elementwise_chain => |chain_plan| executeFusedChain(T, chain_plan),
         .conv2d => |conv2d_plan| executeConv2dPlan(T, conv2d_plan),
+        .conv2d_bwd_input => |conv2d_plan| executeConv2dBwdInputPlan(T, conv2d_plan),
+        .conv2d_bwd_kernel => |conv2d_plan| executeConv2dBwdKernelPlan(T, conv2d_plan),
         .softmax => |softmax_plan| executeSoftmaxPlan(T, softmax_plan),
         .log_softmax => |log_softmax_plan| executeLogSoftmaxPlan(T, log_softmax_plan),
         .cross_entropy => |cross_entropy_plan| executeCrossEntropyPlan(T, cross_entropy_plan),
