@@ -689,26 +689,71 @@ fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T)) void
     const kw = kernel.ne[0];
     const kh = kernel.ne[1];
     const c_in = kernel.ne[2];
+    const in_w = output.ne[0];
 
+    const K = kw * kh * c_in;
+    const N = out_w * out_h;
+
+    // col_buf [K, N] — result of kernel^T @ out_grad per batch, then col2im to scatter.
+    const col_buf = std.heap.page_allocator.alloc(T, K * N) catch {
+        executeConv2dBwdInputNaive(T, plan);
+        return;
+    };
+    defer std.heap.page_allocator.free(col_buf);
+
+    const matmul = forward.selectMatMulKernel(T);
     @memset(output.data, 0);
+
     for (0..batch) |n| {
-        for (0..c_out) |oc| {
-            for (0..out_h) |oy| {
-                for (0..out_w) |ox| {
-                    const grad_idx = ox * out_grad.strides[0] + oy * out_grad.strides[1] + oc * out_grad.strides[2] + n * out_grad.strides[3];
-                    const grad_val = out_grad.data[grad_idx];
-                    for (0..c_in) |ic| {
-                        for (0..kh) |ky| {
-                            for (0..kw) |kx| {
-                                const out_idx = (ox + kx) * output.strides[0] +
+        // kernel^T[K, c_out] @ out_grad_n[c_out, N] → col_buf[K, N]
+        // kernel is [c_out, K] row-major, so transposed: a_m_stride=1, a_k_stride=K
+        // out_grad_n is [c_out, N] at offset n*N*c_out, row stride N
+        matmul(
+            col_buf,
+            kernel.data,
+            out_grad.data,
+            K, // M
+            N, // N
+            c_out, // K (inner)
+            1, // a_m_stride (transposed kernel: step across rows = 1)
+            K, // a_k_stride (transposed kernel: step across cols = K)
+            N, // b_k_stride (out_grad row stride)
+            1, // b_n_stride
+            0, // a_base
+            n * N * c_out, // b_base
+            0, // d_base
+            N, // d_row_stride
+        );
+
+        // col2im: scatter col_buf[K, N] back to output (input gradient)
+        if (output.strides[0] == 1) {
+            for (0..c_in) |ic| {
+                for (0..kh) |ky| {
+                    for (0..kw) |kx| {
+                        const k = kx + ky * kw + ic * kw * kh;
+                        const row_off = k * N;
+                        for (0..out_h) |oy| {
+                            const dst_base = kx + (oy + ky) * in_w + ic * output.strides[2] + n * output.strides[3];
+                            const src_base = row_off + oy * out_w;
+                            for (0..out_w) |ox| {
+                                output.data[dst_base + ox] += col_buf[src_base + ox];
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            for (0..c_in) |ic| {
+                for (0..kh) |ky| {
+                    for (0..kw) |kx| {
+                        const k = kx + ky * kw + ic * kw * kh;
+                        const row_off = k * N;
+                        for (0..out_h) |oy| {
+                            for (0..out_w) |ox| {
+                                output.data[(ox + kx) * output.strides[0] +
                                     (oy + ky) * output.strides[1] +
                                     ic * output.strides[2] +
-                                    n * output.strides[3];
-                                const kernel_idx = kx * kernel.strides[0] +
-                                    ky * kernel.strides[1] +
-                                    ic * kernel.strides[2] +
-                                    oc * kernel.strides[3];
-                                output.data[out_idx] += grad_val * kernel.data[kernel_idx];
+                                    n * output.strides[3]] += col_buf[row_off + oy * out_w + ox];
                             }
                         }
                     }
@@ -734,6 +779,128 @@ fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T)) vo
     const kw = output.ne[0];
     const kh = output.ne[1];
     const c_in = output.ne[2];
+    const in_w = input.ne[0];
+
+    const K = kw * kh * c_in;
+    const N = out_w * out_h;
+
+    // im2col scratch [K, N] + temp kernel grad [c_out, K]
+    const buf = std.heap.page_allocator.alloc(T, K * N + c_out * K) catch {
+        executeConv2dBwdKernelNaive(T, plan);
+        return;
+    };
+    defer std.heap.page_allocator.free(buf);
+    const col_buf = buf[0 .. K * N];
+    const temp_grad = buf[K * N ..][0 .. c_out * K];
+
+    const matmul = forward.selectMatMulKernel(T);
+    @memset(output.data, 0);
+    const contiguous_x = (input.strides[0] == 1);
+
+    for (0..batch) |n| {
+        // Build im2col (same as forward)
+        if (contiguous_x) {
+            for (0..c_in) |ic| {
+                for (0..kh) |ky| {
+                    for (0..kw) |kx| {
+                        const k = kx + ky * kw + ic * kw * kh;
+                        const row_off = k * N;
+                        for (0..out_h) |oy| {
+                            const src = kx + (oy + ky) * in_w + ic * input.strides[2] + n * input.strides[3];
+                            const dst = row_off + oy * out_w;
+                            @memcpy(col_buf[dst..][0..out_w], input.data[src..][0..out_w]);
+                        }
+                    }
+                }
+            }
+        } else {
+            for (0..c_in) |ic| {
+                for (0..kh) |ky| {
+                    for (0..kw) |kx| {
+                        const k = kx + ky * kw + ic * kw * kh;
+                        const row_off = k * N;
+                        for (0..out_h) |oy| {
+                            for (0..out_w) |ox| {
+                                col_buf[row_off + oy * out_w + ox] = input.data[(ox + kx) * input.strides[0] +
+                                    (oy + ky) * input.strides[1] +
+                                    ic * input.strides[2] +
+                                    n * input.strides[3]];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // out_grad_n[c_out, N] @ im2col^T[N, K] → temp_grad[c_out, K]
+        // im2col is [K, N] row-major. Reading as B^T[N, K]: b_k_stride=1, b_n_stride=N.
+        matmul(
+            temp_grad,
+            out_grad.data,
+            col_buf,
+            c_out, // M
+            K, // N (output cols = kernel elements)
+            N, // K (inner = spatial positions)
+            N, // a_m_stride (out_grad row stride)
+            1, // a_k_stride
+            1, // b_k_stride (im2col transposed: step along spatial)
+            N, // b_n_stride (im2col transposed: step to next kernel elem)
+            n * N * c_out, // a_base
+            0, // b_base
+            0, // d_base
+            K, // d_row_stride
+        );
+
+        // Accumulate into kernel gradient
+        for (0..c_out * K) |i| {
+            output.data[i] += temp_grad[i];
+        }
+    }
+}
+
+fn executeConv2dBwdInputNaive(comptime T: type, plan: Conv2dBwdInputPlan(T)) void {
+    const out_grad = plan.output_grad;
+    const kernel = plan.kernel;
+    const output = plan.output;
+    const out_w = out_grad.ne[0];
+    const out_h = out_grad.ne[1];
+    const c_out = out_grad.ne[2];
+    const batch = out_grad.ne[3];
+    const kw = kernel.ne[0];
+    const kh = kernel.ne[1];
+    const c_in = kernel.ne[2];
+
+    @memset(output.data, 0);
+    for (0..batch) |n| {
+        for (0..c_out) |oc| {
+            for (0..out_h) |oy| {
+                for (0..out_w) |ox| {
+                    const grad_val = out_grad.data[ox * out_grad.strides[0] + oy * out_grad.strides[1] + oc * out_grad.strides[2] + n * out_grad.strides[3]];
+                    for (0..c_in) |ic| {
+                        for (0..kh) |ky| {
+                            for (0..kw) |kx| {
+                                output.data[(ox + kx) * output.strides[0] + (oy + ky) * output.strides[1] + ic * output.strides[2] + n * output.strides[3]] +=
+                                    grad_val * kernel.data[kx * kernel.strides[0] + ky * kernel.strides[1] + ic * kernel.strides[2] + oc * kernel.strides[3]];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn executeConv2dBwdKernelNaive(comptime T: type, plan: Conv2dBwdKernelPlan(T)) void {
+    const input = plan.input;
+    const out_grad = plan.output_grad;
+    const output = plan.output;
+    const out_w = out_grad.ne[0];
+    const out_h = out_grad.ne[1];
+    const c_out = out_grad.ne[2];
+    const batch = out_grad.ne[3];
+    const kw = output.ne[0];
+    const kh = output.ne[1];
+    const c_in = output.ne[2];
 
     @memset(output.data, 0);
     for (0..c_out) |oc| {
@@ -744,17 +911,12 @@ fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T)) vo
                     for (0..batch) |n| {
                         for (0..out_h) |oy| {
                             for (0..out_w) |ox| {
-                                const input_idx = (ox + kx) * input.strides[0] +
-                                    (oy + ky) * input.strides[1] +
-                                    ic * input.strides[2] +
-                                    n * input.strides[3];
-                                const grad_idx = ox * out_grad.strides[0] + oy * out_grad.strides[1] + oc * out_grad.strides[2] + n * out_grad.strides[3];
-                                acc += input.data[input_idx] * out_grad.data[grad_idx];
+                                acc += input.data[(ox + kx) * input.strides[0] + (oy + ky) * input.strides[1] + ic * input.strides[2] + n * input.strides[3]] *
+                                    out_grad.data[ox * out_grad.strides[0] + oy * out_grad.strides[1] + oc * out_grad.strides[2] + n * out_grad.strides[3]];
                             }
                         }
                     }
-                    const out_idx = kx * output.strides[0] + ky * output.strides[1] + ic * output.strides[2] + oc * output.strides[3];
-                    output.data[out_idx] = acc;
+                    output.data[kx * output.strides[0] + ky * output.strides[1] + ic * output.strides[2] + oc * output.strides[3]] = acc;
                 }
             }
         }
