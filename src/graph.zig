@@ -952,4 +952,35 @@ test "layerNorm forward" {
     try testing.expectApproxEqAbs((4.0 - 2.5) / std_dev, out.data[3], 1e-4);
 }
 
+test "backward - gelu" {
+    // Numerical gradient check: (gelu(x+h) - gelu(x-h)) / 2h ≈ gelu'(x)
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{3});
+    x.setData(&.{ -1.0, 0.0, 1.5 });
+    x.setParam(a);
+    const out = x.gelu(a).sumAll(a);
+    try g.buildForward(out);
+    try g.buildBackward(false);
+    _ = out.grad.?.setAllScalar(1);
+    g.compute();
+
+    // Compute expected gradients numerically
+    const h: f32 = 1e-4;
+    const test_vals = [_]f32{ -1.0, 0.0, 1.5 };
+    for (test_vals, 0..) |xv, i| {
+        const gelu_plus = geluScalar(xv + h);
+        const gelu_minus = geluScalar(xv - h);
+        const numerical_grad = (gelu_plus - gelu_minus) / (2.0 * h);
+        try testing.expectApproxEqAbs(numerical_grad, x.grad.?.data[i], 1e-3);
+    }
+}
+
+fn geluScalar(x: f32) f32 {
+    const a = 0.79788456080286535587989211986876 * x * (1.0 + 0.044715 * x * x);
+    return 0.5 * x * (1.0 + std.math.tanh(a));
+}
+
 //#endregion

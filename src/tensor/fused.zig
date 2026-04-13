@@ -12,7 +12,7 @@ const std = @import("std");
 const Op = @import("../op.zig").Op;
 
 const GELU_COEF_A: comptime_float = 0.044715;
-const SQRT_2_OVER_PI: comptime_float = 0.79788456080286535587989211986876;
+const SQRT_2_OVER_PI: comptime_float = @sqrt(2.0 / std.math.pi);
 
 /// All ops that can participate in a fused chain.
 pub const fusible_ops = [_]Op{

@@ -8,6 +8,11 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Alloc = std.mem.Allocator;
 
+/// Coefficient for the GeLU tanh approximation: `gelu(x) ≈ 0.5x(1 + tanh(√(2/π) · x · (1 + Ax²)))`.
+const GELU_COEF_A: comptime_float = 0.044715;
+/// √(2/π), used in the GeLU approximation.
+const SQRT_2_OVER_PI: comptime_float = @sqrt(2.0 / std.math.pi);
+
 /// Backward operations parameterized on the tensor type.
 pub fn Ops(comptime Self: type) type {
     return struct {
@@ -188,6 +193,18 @@ pub fn Ops(comptime Self: type) type {
                     }
                 },
 
+                .gather_rows => {
+                    const src0 = src0_o.?;
+                    const indices = src1_o.?;
+                    if (src0.grad) |grad| {
+                        const contribution = grad.scatterAddRows(alloc, indices, out_grad);
+                        stripGrad(contribution, alloc);
+                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                    }
+                },
+
+                .scatter_add_rows => {},
+
                 // d/d(A) [A @ B] = out_grad @ B^T
                 // d/d(B) [A @ B] = A^T @ out_grad
                 .matmul => {
@@ -247,9 +264,31 @@ pub fn Ops(comptime Self: type) type {
                     }
                 },
 
-                // sgn, step, gelu: not differentiable / not yet implemented
-                .sgn, .step => {},
-                .gelu => @panic("gelu backward not yet implemented"),
+                .sgn, .step => {}, // non-differentiable
+
+                // d/dx[gelu(x)] = 0.5*(1+tanh(a)) + 0.5*x*sech²(a)*a'
+                // where a = sqrt(2/π)*x*(1 + 0.044715*x²), a' = sqrt(2/π)*(1 + 3*0.044715*x²)
+                .gelu => {
+                    const src0 = src0_o.?;
+                    if (src0.grad) |grad| {
+                        const ElemType = @TypeOf(src0.data[0]);
+                        const gelu_grad = try src0.map(alloc, struct {
+                            fn f(x: ElemType) ElemType {
+                                const coef: ElemType = GELU_COEF_A;
+                                const s2pi: ElemType = SQRT_2_OVER_PI;
+                                const x2 = x * x;
+                                const a = s2pi * x * (1.0 + coef * x2);
+                                const tanh_a = std.math.tanh(a);
+                                const sech2_a = 1.0 - tanh_a * tanh_a;
+                                const da = s2pi * (1.0 + 3.0 * coef * x2);
+                                return 0.5 * (1.0 + tanh_a) + 0.5 * x * sech2_a * da;
+                            }
+                        }.f);
+                        const contribution = gelu_grad.mul(alloc, out_grad);
+                        stripGrad(contribution, alloc);
+                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                    }
+                },
             }
         }
     };

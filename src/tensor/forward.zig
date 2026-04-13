@@ -30,8 +30,10 @@ else
 const cpuinfo = @import("cpuinfo.zig");
 
 const max_dims = 4;
-const GELU_COEF_A = 0.044715;
-const SQRT_2_OVER_PI = 0.79788456080286535587989211986876;
+/// Coefficient for the GeLU tanh approximation.
+const GELU_COEF_A: comptime_float = 0.044715;
+/// √(2/π), computed from std.math.pi.
+const SQRT_2_OVER_PI: comptime_float = @sqrt(2.0 / std.math.pi);
 
 // ---------------------------------------------------------------------------
 // SIMD primitives
@@ -325,6 +327,16 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
         fn logScalar(x: T) T {
             return std.math.log(T, std.math.e, x);
+        }
+
+        fn indexFromValue(v: T) usize {
+            if (@typeInfo(T) == .float) {
+                assert(v >= 0);
+                const iv: usize = @intFromFloat(v);
+                assert(@as(T, @floatFromInt(iv)) == v);
+                return iv;
+            }
+            return @intCast(v);
         }
 
         // -- Vectorized tanh (3,3) Pade approximant ----------------------
@@ -700,6 +712,46 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
+        pub fn computeGatherRows(dst: *Self, src0: *Self, indices: *Self) void {
+            assert(src0.isMatrix());
+            assert(indices.isVector());
+            assert(dst.ne[0] == src0.ne[0]);
+            assert(dst.ne[1] == indices.ne[0]);
+
+            const width = src0.ne[0];
+            const rows = src0.ne[1];
+            const count = indices.ne[0];
+            for (0..count) |out_row| {
+                const src_row = indexFromValue(indices.data[out_row]);
+                assert(src_row < rows);
+                const src_off = src_row * src0.strides[1];
+                const dst_off = out_row * dst.strides[1];
+                @memcpy(dst.data[dst_off .. dst_off + width], src0.data[src_off .. src_off + width]);
+            }
+        }
+
+        pub fn computeScatterAddRows(dst: *Self, updates: *Self, indices: *Self) void {
+            assert(dst.isMatrix());
+            assert(updates.isMatrix());
+            assert(indices.isVector());
+            assert(updates.ne[0] == dst.ne[0]);
+            assert(updates.ne[1] == indices.ne[0]);
+
+            const width = dst.ne[0];
+            const rows = dst.ne[1];
+            const count = indices.ne[0];
+            @memset(dst.data, 0);
+            for (0..count) |update_row| {
+                const dst_row = indexFromValue(indices.data[update_row]);
+                assert(dst_row < rows);
+                const upd_off = update_row * updates.strides[1];
+                const dst_off = dst_row * dst.strides[1];
+                for (0..width) |col| {
+                    dst.data[dst_off + col] += updates.data[upd_off + col];
+                }
+            }
+        }
+
         /// Transpose the first two dimensions, copying data into contiguous layout.
         /// dst shape is [src.ne[1], src.ne[0], ...] with standard strides.
         pub fn computeTranspose(dst: *Self, src0: *Self) void {
@@ -838,6 +890,8 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .sum => tensor.computeSum(src0.?),
                 .max => tensor.computeMax(src0.?),
                 .repeat => tensor.computeRepeat(src0.?),
+                .gather_rows => tensor.computeGatherRows(src0.?, src1.?),
+                .scatter_add_rows => tensor.computeScatterAddRows(src0.?, src1.?),
                 .matmul => tensor.computeMatMul(src0.?, false, src1.?, false),
                 .matmul_t0 => tensor.computeMatMul(src0.?, true, src1.?, false),
                 .matmul_t1 => tensor.computeMatMul(src0.?, false, src1.?, true),
