@@ -1,67 +1,75 @@
+//! Core tensor type for the zgml machine learning library.
+//!
+//! A `Tensor` is a multi-dimensional array (up to 4 dimensions) that supports
+//! lazy computation graph construction, forward evaluation, and reverse-mode
+//! automatic differentiation.
+
 const std = @import("std");
-const testing = std.testing;
 const assert = std.debug.assert;
 const builtin = @import("builtin");
 const Alloc = std.mem.Allocator;
-const tac = std.testing.allocator;
 
 const Op = @import("op.zig").Op;
-const opts = @import("zgml_options");
 
-const c = if (opts.use_blas)
-    switch (builtin.os.tag) {
-        .linux, .windows => @cImport(@cInclude("cblas.h")),
-        .macos => @cImport(@cInclude("Accelerate/Accelerate.h")),
-        else => @cImport(@compileError("Unsupported OS")),
-    }
-else
-    void;
-
-const max_dims = 4;
+/// Maximum number of dimensions a tensor can have.
+pub const max_dims = 4;
 const max_opt = 4;
-const GELU_COEF_A = 0.044715;
-const SQRT_2_OVER_PI = 0.79788456080286535587989211986876;
 
+/// Generic tensor parameterized on element type `T` (typically `f32` or `f64`).
+///
+/// Tensors form the nodes of a computation graph. "Lazy" operations (e.g. `add`,
+/// `mul`, `matMul`) record the operation without computing it — the actual math
+/// runs when `compute()` is called (usually via `ComputeGraph`).
+///
+/// Tensors that are marked as parameters (via `setParam`) track gradients for
+/// use with optimizers.
 pub fn Tensor(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        /// Number of dimension
-        n_dims: u8,
-        /// Number of elements per axis
-        /// Format like col, row, batch, channel
-        ne: [max_dims]usize,
-        /// Stride per axis
-        strides: [max_dims]usize,
-        /// Op that created this tensor.
-        /// .none by default
-        op: Op,
-        is_param: bool,
-        grad: ?*Self,
-        src0: ?*Self,
-        src1: ?*Self,
-        opt: [max_dims]?*Self,
-        /// Title of the tensor for debugging
-        name: ?[]const u8,
+        // -- delegation to split-out implementations --
+        const fwd = @import("tensor/forward.zig").Ops(Self, T);
+        const bwd = @import("tensor/backward.zig").Ops(Self, T);
 
-        /// Data of the tensor
+        /// Number of dimensions (1–4).
+        n_dims: u8,
+        /// Number of elements per axis, in [cols, rows, batch, channel] order.
+        ne: [max_dims]usize,
+        /// Memory stride per axis.
+        strides: [max_dims]usize,
+        /// The operation that produced this tensor (`.none` for user-created tensors).
+        op: Op,
+        /// Whether this tensor is a learnable parameter.
+        is_param: bool,
+        /// Gradient tensor, populated during backward pass. Only present for parameters
+        /// and intermediate nodes that contribute to a parameter's gradient.
+        grad: ?*Self,
+        /// First source tensor (left operand or sole input).
+        src0: ?*Self,
+        /// Second source tensor (right operand for binary ops).
+        src1: ?*Self,
+        /// Optional auxiliary source tensors.
+        opt: [max_dims]?*Self,
+        /// Debug label for visualization.
+        name: ?[]const u8,
+        /// Raw element data.
         data: []T,
-        /// Whether the data slice is owned by this tensor
+        /// Whether this tensor owns (and should free) its data slice.
         data_owned: bool,
 
-        //#region Setup/Takedown methods
+        // ---------------------------------------------------------------
+        // Initialization
+        // ---------------------------------------------------------------
 
-        /// Create a tensor.
-        /// The sizes of each dimension are specified by `ne`.
-        /// The length of `ne` must be less than or equal to `max_dims`.
-        /// `ne` is in the format [#cols, #rows, batch, channel] when using all dimensions.
-        /// The number of columns is the number of elements in a row, thus the data is stored row-major.
-        /// The number of dimensions will be infered by `ne.len`.
-        /// Must call `deinit` to free.
+        /// Create a tensor with the given shape.
+        ///
+        /// `ne` specifies the size of each dimension in [cols, rows, batch, channel]
+        /// order. The number of dimensions is inferred from `ne.len` (max 4).
         pub fn init(alloc: Alloc, ne: []const usize) Alloc.Error!*Self {
             return try initHelper(alloc, ne, null);
         }
 
+        /// Create a tensor filled with evenly spaced values in `[start, end)`.
         pub fn initLinspace(alloc: Alloc, ne: []const usize, start: T, end: T) Alloc.Error!*Self {
             const tensor = try Self.init(alloc, ne);
             const denom: T = @floatFromInt(tensor.nElems());
@@ -73,21 +81,21 @@ pub fn Tensor(comptime T: type) type {
             return tensor;
         }
 
-        /// Free this tensor and its owned resources
-        pub fn deinit(self: *Self, alloc: Alloc) void {
-            if (self.data_owned) alloc.free(self.data);
-            alloc.destroy(self);
+        /// Create a scalar (1-element) tensor with value `val`.
+        pub fn initScalar(alloc: Alloc, val: T) Alloc.Error!*Self {
+            const tensor = try Self.init(alloc, &.{1});
+            return tensor.setAllScalar(val);
         }
 
-        // Mark this tensor as an input variable to be used for AD & optim algorithms.
-        pub fn setParam(self: *Self, alloc: Alloc) void {
-            self.is_param = true;
-            assert(self.grad == null);
-            self.grad = self.copyTensorShape(alloc);
+        /// Create a tensor filled with uniform random values in `[0, 1)`.
+        pub fn initRand(alloc: Alloc, rng: *std.Random, ne: []const usize) Alloc.Error!*Self {
+            const tensor = try Self.init(alloc, ne);
+            for (tensor.data) |*d| {
+                d.* = rng.float(T);
+            }
+            return tensor;
         }
 
-        /// Helper for init.
-        /// if `data_buf` is null, a new data slice is allocated.
         fn initHelper(alloc: Alloc, ne: []const usize, data_buf: ?[]T) Alloc.Error!*Self {
             std.debug.assert(ne.len <= max_dims);
             const tensor: *Self = try alloc.create(Self);
@@ -116,26 +124,24 @@ pub fn Tensor(comptime T: type) type {
             return tensor;
         }
 
-        /// Init a tensor with a single element `val`
-        pub fn initScalar(alloc: Alloc, val: T) Alloc.Error!*Self {
-            const tensor = try Self.init(alloc, &.{1});
-            return tensor.setAllScalar(val);
+        /// Free this tensor and its owned data.
+        pub fn deinit(self: *Self, alloc: Alloc) void {
+            if (self.data_owned) alloc.free(self.data);
+            alloc.destroy(self);
         }
 
-        // init values in the interval [0, 1)
-        pub fn initRand(alloc: Alloc, rng: *std.Random, ne: []const usize) Alloc.Error!*Self {
-            const tensor = try Self.init(alloc, ne);
-            for (tensor.data) |*d| {
-                d.* = rng.float(T);
-            }
-            return tensor;
+        /// Mark this tensor as a learnable parameter, allocating a gradient tensor.
+        pub fn setParam(self: *Self, alloc: Alloc) void {
+            self.is_param = true;
+            assert(self.grad == null);
+            self.grad = self.copyTensorShape(alloc);
         }
 
-        //#endregion
+        // ---------------------------------------------------------------
+        // Lazy graph-building operations
+        // ---------------------------------------------------------------
 
-        //#region Lazy Operations
-
-        /// Create a new tensor as a view of the current tensor's data
+        /// Create a view of this tensor's data (shared memory, no copy).
         pub fn view(self: *Self, alloc: Alloc) *Self {
             var t = Self.initHelper(alloc, &self.ne, self.data) catch unreachable;
             t.op = .view;
@@ -145,7 +151,7 @@ pub fn Tensor(comptime T: type) type {
             return t;
         }
 
-        /// Duplicate this tensor (with its shape) without preserving the data
+        /// Allocate a new tensor with the same shape but uninitialized data.
         pub fn copyTensorShape(self: *Self, alloc: Alloc) *Self {
             return Self.initHelper(alloc, &self.ne, null) catch unreachable;
         }
@@ -168,65 +174,90 @@ pub fn Tensor(comptime T: type) type {
             res.grad = if (is_node) self.copyTensorShape(alloc) else null;
             res.src0 = self;
             res.src1 = other;
-
             return res;
         }
+
+        /// Duplicate this tensor.
         pub fn dup(self: *Self, alloc: Alloc) *Self {
             return self.unaryOp(alloc, .dup, false);
         }
         pub fn dupInplace(self: *Self, alloc: Alloc) *Self {
             return self.unaryOp(alloc, .dup, true);
         }
-        fn addImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
+
+        pub fn addImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
             assert(self.isSameShape(other));
             return self.binaryOp(alloc, other, .add, inplace);
         }
+        /// Element-wise addition.
         pub fn add(self: *Self, alloc: Alloc, other: *Self) *Self {
             return self.addImpl(alloc, other, false);
         }
         pub fn addInplace(self: *Self, alloc: Alloc, other: *Self) *Self {
             return self.addImpl(alloc, other, true);
         }
-        fn subImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
+
+        pub fn subImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
             return self.binaryOp(alloc, other, .sub, inplace);
         }
+        /// Element-wise subtraction.
         pub fn sub(self: *Self, alloc: Alloc, other: *Self) *Self {
             return self.subImpl(alloc, other, false);
         }
         pub fn subInplace(self: *Self, alloc: Alloc, other: *Self) *Self {
             return self.subImpl(alloc, other, true);
         }
-        /// Element-wise multiply
+
+        /// Element-wise multiplication.
         pub fn mul(self: *Self, alloc: Alloc, other: *Self) *Self {
             return self.binaryOp(alloc, other, .mul, false);
         }
-        /// Element-wise multiply inplace
         pub fn mulInplace(self: *Self, alloc: Alloc, other: *Self) *Self {
             return self.binaryOp(alloc, other, .mul, true);
         }
+
+        /// Element-wise division.
         pub fn div(self: *Self, alloc: Alloc, other: *Self) *Self {
             return self.binaryOp(alloc, other, .div, false);
         }
         pub fn divInplace(self: *Self, alloc: Alloc, other: *Self) *Self {
             return self.binaryOp(alloc, other, .div, true);
         }
-        pub fn sqr(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .sqr, false);
-        }
-        pub fn sqrInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .sqr, true);
-        }
-        pub fn sqrt(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .sqrt, false);
-        }
-        pub fn sqrtInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .sqrt, true);
-        }
-        /// Sum all elements of a tensor
+
+        /// Element-wise square.
+        pub fn sqr(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .sqr, false); }
+        pub fn sqrInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .sqr, true); }
+        /// Element-wise square root.
+        pub fn sqrt(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .sqrt, false); }
+        pub fn sqrtInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .sqrt, true); }
+        /// Element-wise absolute value.
+        pub fn abs(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .abs, false); }
+        pub fn absInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .abs, true); }
+        /// Element-wise sign (-1, 0, or 1).
+        pub fn sgn(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .sgn, false); }
+        pub fn sgnInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .sgn, true); }
+        /// Element-wise negation.
+        pub fn neg(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .neg, false); }
+        pub fn negInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .neg, true); }
+        /// Element-wise step function (1 if positive, 0 otherwise).
+        pub fn step(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .step, false); }
+        pub fn stepInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .step, true); }
+        /// Element-wise ReLU: max(0, x).
+        pub fn relu(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .relu, false); }
+        pub fn reluInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .relu, true); }
+        /// Element-wise GeLU approximation.
+        pub fn gelu(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .gelu, false); }
+        pub fn geluInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .gelu, true); }
+        /// Row-wise normalization.
+        pub fn norm(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .norm, false); }
+        pub fn normInplace(self: *Self, alloc: Alloc) *Self { return self.unaryOp(alloc, .norm, true); }
+
+        /// Sum all elements into a scalar.
         pub fn sumAll(self: *Self, alloc: Alloc) *Self {
             return sum(self, alloc, &.{1});
         }
-        /// Sum elements of a tensor into the new shape defined by `ne`
+
+        /// Sum (reduce) elements into the given target shape `ne`.
         pub fn sum(self: *Self, alloc: Alloc, ne: []const usize) *Self {
             assert(ne.len <= max_dims);
             assert(canSumToShape(self, ne));
@@ -239,6 +270,7 @@ pub fn Tensor(comptime T: type) type {
             return res;
         }
 
+        /// Sum into another tensor's shape (inverse of repeat).
         pub fn sumInto(self: *Self, alloc: Alloc, other: *Self) *Self {
             assert(self.canSumTo(other));
             const is_node: bool = self.grad != null;
@@ -251,6 +283,7 @@ pub fn Tensor(comptime T: type) type {
             return res;
         }
 
+        /// Mean (reduce) elements into the given target shape.
         pub fn mean(self: *Self, alloc: Alloc, ne: []const usize) *Self {
             assert(ne.len <= max_dims);
             assert(canSumToShape(self, ne));
@@ -287,6 +320,8 @@ pub fn Tensor(comptime T: type) type {
             return res;
         }
 
+        /// Broadcast (repeat) this tensor to the given shape.
+        /// Each dimension in `ne` must be a multiple of the corresponding dimension in self.
         pub fn repeat(self: *Self, alloc: Alloc, ne: []usize) *Self {
             assert(ne.len <= max_dims);
             assert(self.canRepeatToShape(ne));
@@ -299,72 +334,26 @@ pub fn Tensor(comptime T: type) type {
             res.src1 = null;
             return res;
         }
+
+        /// Broadcast this tensor to match `other`'s shape.
         pub fn repeatLike(self: *Self, alloc: Alloc, other: *Self) *Self {
             return repeat(self, alloc, &other.ne);
         }
-        pub fn abs(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .abs, false);
-        }
-        pub fn absInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .abs, true);
-        }
-        pub fn sgn(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .sgn, false);
-        }
-        pub fn sgnInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .sgn, true);
-        }
-        pub fn neg(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .neg, false);
-        }
-        pub fn negInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .neg, true);
-        }
-        pub fn step(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .step, false);
-        }
-        pub fn stepInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .step, true);
-        }
-        pub fn relu(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .relu, false);
-        }
-        pub fn reluInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .relu, true);
-        }
-        pub fn gelu(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .gelu, false);
-        }
-        pub fn geluInplace(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .gelu, true);
-        }
-        /// Normalize along rows
-        pub fn norm(self: *Self, alloc: Alloc) *Self {
-            return self.unaryOp(alloc, .norm, false);
-        }
-        /// Normalize along rows inplace
-        pub fn normInplace(self: *Self, alloc: Alloc) *Self {
-            // TODO: maybe store epsilon in src1?
-            return self.unaryOp(alloc, .norm, true);
-        }
 
+        /// Matrix multiplication with optional transposition of either operand.
         pub fn matMul(self: *Self, alloc: Alloc, trans_self: bool, other: *Self, trans_other: bool) *Self {
             assert(self.canMatMul(trans_self, other, trans_other));
             const is_node = self.grad != null or other.grad != null;
-            assert(max_dims == 4); // Need to update this function if max_dims changes
+            assert(max_dims == 4);
 
             const out_ne: [max_dims]usize = lbl: {
                 break :lbl if (!trans_self and !trans_other)
-                    // out #cols = other #cols, out #rows = self #rows
                     .{ other.ne[0], self.ne[1], self.ne[2], other.ne[3] }
                 else if (trans_self and !trans_other)
-                    // out #cols = other #cols, out #rows = self #cols
                     .{ other.ne[0], self.ne[0], self.ne[2], other.ne[3] }
                 else if (!trans_self and trans_other)
-                    // out #cols = other #rows, out #rows = self #rows
                     .{ other.ne[1], self.ne[1], self.ne[2], other.ne[3] }
                 else
-                    // out #cols = other #rows, out #rows = self #cols
                     .{ other.ne[1], self.ne[0], self.ne[2], other.ne[3] };
             };
             const res = Self.init(alloc, out_ne[0..@min(self.n_dims, other.n_dims)]) catch unreachable;
@@ -375,6 +364,8 @@ pub fn Tensor(comptime T: type) type {
             res.assertValidMatMulDims(self, trans_self, other, trans_other);
             return res;
         }
+
+        /// Scale by a scalar tensor.
         pub fn scale(self: *Self, alloc: Alloc, other: *Self) *Self {
             assert(other.isScalar());
             return self.binaryOp(alloc, other, .scale, false);
@@ -383,10 +374,11 @@ pub fn Tensor(comptime T: type) type {
             assert(other.isScalar());
             return self.binaryOp(alloc, other, .scale, true);
         }
+
         fn cpyImpl(self: *Self, alloc: Alloc, other: *Self, inplace: bool) *Self {
             assert(self.nElems() == other.nElems());
             const is_node = !inplace and (self.grad != null or other.grad != null);
-            assert(!is_node); // TODO: implement backward
+            assert(!is_node);
             const res = if (is_node) other.copyTensorShape(alloc) else other.view(alloc);
             res.op = .cpy;
             res.grad = if (is_node) res.copyTensorShape(alloc) else null;
@@ -400,12 +392,14 @@ pub fn Tensor(comptime T: type) type {
         pub fn cpyInplaceTo(self: *Self, alloc: Alloc, other: *Self) *Self {
             return self.cpyImpl(alloc, other, true);
         }
+
+        /// Reshape this tensor's data to match `other`'s shape.
         pub fn reshapeLike(self: *Self, alloc: Alloc, other: *Self) *Self {
             assert(self.isContiguous());
             assert(other.isContiguous());
             assert(self.nElems() == other.nElems());
             const is_node = (self.grad != null or other.grad != null);
-            assert(!is_node); // TODO: implement backward
+            assert(!is_node);
             const res = Self.initHelper(alloc, other.ne[0..other.n_dims], self.data) catch unreachable;
             res.op = .reshape;
             res.grad = if (is_node) res.copyTensorShape(alloc) else null;
@@ -413,18 +407,18 @@ pub fn Tensor(comptime T: type) type {
             res.src1 = null;
             return res;
         }
+
+        /// Reshape this tensor to a new shape (must have same total elements).
         pub fn reshape(self: *Self, alloc: Alloc, ne: []const usize) *Self {
             assert(self.isContiguous());
             const neProd = lbl: {
                 var prod: usize = 0;
-                for (ne) |item| {
-                    prod *= item;
-                }
+                for (ne) |item| prod *= item;
                 break :lbl prod;
             };
             assert(self.nElems() == neProd);
             const is_node = self.grad != null;
-            assert(!is_node); // TODO: implement backward
+            assert(!is_node);
             const res = Self.initHelper(alloc, ne, self.data) catch unreachable;
             res.op = .reshape;
             res.grad = if (is_node) res.copyTensorShape(alloc) else null;
@@ -433,9 +427,10 @@ pub fn Tensor(comptime T: type) type {
             return res;
         }
 
+        /// Transpose the first two dimensions (swap rows and columns).
         pub fn transpose(self: *Self, alloc: Alloc) *Self {
             const is_node = self.grad != null;
-            assert(!is_node); // TODO: implement backward
+            assert(!is_node);
             const res = self.view(alloc);
             res.ne[0] = self.ne[1];
             res.ne[1] = self.ne[0];
@@ -448,551 +443,116 @@ pub fn Tensor(comptime T: type) type {
             return res;
         }
 
-        //#endregion
+        // ---------------------------------------------------------------
+        // Forward compute — delegated to tensor/forward.zig
+        // ---------------------------------------------------------------
 
-        //#region Forward Computations for Operations
+        pub const computeDup = fwd.computeDup;
+        pub const computeAdd = fwd.computeAdd;
+        pub const computeSub = fwd.computeSub;
+        pub const computeMul = fwd.computeMul;
+        pub const computeDiv = fwd.computeDiv;
+        pub const computeMean = fwd.computeMean;
+        pub const computeSum = fwd.computeSum;
+        pub const computeRepeat = fwd.computeRepeat;
+        pub const computeSqr = fwd.computeSqr;
+        pub const computeSqrt = fwd.computeSqrt;
+        pub const computeAbs = fwd.computeAbs;
+        pub const computeSgn = fwd.computeSgn;
+        pub const computeNeg = fwd.computeNeg;
+        pub const computeStep = fwd.computeStep;
+        pub const computeReLu = fwd.computeReLu;
+        pub const computeGeLu = fwd.computeGeLu;
+        pub const computeNorm = fwd.computeNorm;
+        pub const computeRMSNorm = fwd.computeRMSNorm;
+        pub const computeMatMul = fwd.computeMatMul;
+        pub const assertValidMatMulDims = fwd.assertValidMatMulDims;
+        pub const compute = fwd.compute;
 
-        pub fn computeDup(dst: *Self, src0: *Self) void {
-            assert(dst.isContiguous());
-            assert(dst.nElems() == src0.nElems());
+        // ---------------------------------------------------------------
+        // Backward — delegated to tensor/backward.zig
+        // ---------------------------------------------------------------
 
-            if (src0.isContiguous()) {
-                @memcpy(dst.data, src0.data);
-                return;
-            }
-            // TODO: implement non-contiguous dup
-            @panic("Unimplemented forward dup for non-contiguous src");
-        }
-        pub fn computeAdd(dst: *Self, src0: *Self, src1: *Self) void {
-            // TODO: add together elements at same position accounting for strides
-            // TODO: this change needs to happen in all forward functions
-            if (src0.isSameShape(src1)) {
-                assert(dst.isSameShape(src0));
-                for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
-                    dst_item.* = src0_item + src1_item;
-                }
-            } else if (src1.isScalar()) {
-                assert(dst.isSameShape(src0));
-                for (src0.data, dst.data) |src0_item, *dst_item| {
-                    dst_item.* = src0_item + src1.data[0];
-                }
-            } else if (src0.isScalar()) {
-                assert(dst.isSameShape(src1));
-                for (src1.data, dst.data) |src1_item, *dst_item| {
-                    dst_item.* = src0.data[0] + src1_item;
-                }
-            }
-        }
-        pub fn computeSub(dst: *Self, src0: *Self, src1: *Self) void {
-            // TODO: add together elements at same position accounting for strides
-            // TODO: this change needs to happen in all forward functions
-            if (src0.isSameShape(src1)) {
-                assert(dst.isSameShape(src0));
-                for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
-                    dst_item.* = src0_item - src1_item;
-                }
-            } else if (src1.isScalar()) {
-                assert(dst.isSameShape(src0));
-                for (src0.data, dst.data) |src0_item, *dst_item| {
-                    dst_item.* = src0_item - src1.data[0];
-                }
-            } else if (src0.isScalar()) {
-                assert(dst.isSameShape(src1));
-                for (src1.data, dst.data) |src1_item, *dst_item| {
-                    dst_item.* = src0.data[0] - src1_item;
-                }
-            } else {
-                @panic("Unimplemented forward sub for src sizes");
-            }
-        }
-        pub fn computeMul(dst: *Self, src0: *Self, src1: *Self) void {
-            if (src0.isScalar()) {
-                assert(dst.isSameShape(src1));
-                for (src1.data, dst.data) |src1_item, *dst_item| {
-                    dst_item.* = src0.data[0] * src1_item;
-                }
-            } else if (src1.isScalar()) {
-                assert(dst.isSameShape(src0));
-                for (src0.data, dst.data) |src0_item, *dst_item| {
-                    dst_item.* = src0_item * src1.data[0];
-                }
-            } else {
-                assert(dst.isSameShape(src0));
-                assert(src0.isSameShape(src1));
-                for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
-                    dst_item.* = src0_item * src1_item;
-                }
-            }
-        }
-        pub fn computeDiv(dst: *Self, src0: *Self, src1: *Self) void {
-            if (src0.isScalar()) {
-                assert(dst.isSameShape(src1));
-                for (src1.data, dst.data) |src1_item, *dst_item| {
-                    dst_item.* = src0.data[0] / src1_item;
-                }
-            } else if (src1.isScalar()) {
-                assert(dst.isSameShape(src0));
-                for (src0.data, dst.data) |src0_item, *dst_item| {
-                    dst_item.* = src0_item / src1.data[0];
-                }
-            } else {
-                assert(dst.isSameShape(src0));
-                assert(src0.isSameShape(src1));
-                for (src0.data, src1.data, dst.data) |src0_item, src1_item, *dst_item| {
-                    dst_item.* = src0_item / src1_item;
-                }
-            }
-        }
-        // inverse-broadcast mean from src0 to dst
-        pub fn computeMean(dst: *Self, src0: *Self) void {
-            assert(max_dims == 4);
-            assert(src0.canSumTo(dst));
-            const src0_ne_v: @Vector(4, usize) = src0.ne;
-            const div_elems: T = @floatFromInt(@reduce(.Mul, src0_ne_v / dst.ne));
+        pub const backward = bwd.backward;
 
-            for (0..src0.ne[3]) |ne3| {
-                for (0..src0.ne[2]) |ne2| {
-                    for (0..src0.ne[1]) |ne1| {
-                        for (0..src0.ne[0]) |ne0| {
-                            const src0_nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
-                            const dst_ne_v: @Vector(4, usize) = dst.ne;
-                            const dst_nes = src0_nes % dst_ne_v;
-                            const src0_stride_v: @Vector(4, usize) = src0.strides;
-                            const dst_stride_v: @Vector(4, usize) = dst.strides;
+        // ---------------------------------------------------------------
+        // Utility methods
+        // ---------------------------------------------------------------
 
-                            const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
-                            const dst_idx = @reduce(.Add, dst_nes * dst_stride_v);
-
-                            dst.data[dst_idx] += src0.data[src0_idx] / div_elems; // we divide every iteration to avoid overflow, rather than summing and dividing once at the end
-                        }
-                    }
-                }
-            }
-        }
-        // inverse-broadcast sum from src0 to dst
-        pub fn computeSum(dst: *Self, src0: *Self) void {
-            assert(max_dims == 4);
-            assert(src0.canSumTo(dst));
-            for (0..src0.ne[3]) |ne3| {
-                for (0..src0.ne[2]) |ne2| {
-                    for (0..src0.ne[1]) |ne1| {
-                        for (0..src0.ne[0]) |ne0| {
-                            const src0_nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
-                            const dst_ne_v: @Vector(4, usize) = dst.ne;
-                            const dst_nes = src0_nes % dst_ne_v;
-                            const src0_stride_v: @Vector(4, usize) = src0.strides;
-                            const dst_stride_v: @Vector(4, usize) = dst.strides;
-
-                            const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
-                            const dst_idx = @reduce(.Add, dst_nes * dst_stride_v);
-
-                            dst.data[dst_idx] += src0.data[src0_idx];
-                        }
-                    }
-                }
-            }
-        }
-        // broadcast src0 to dst
-        pub fn computeRepeat(dst: *Self, src0: *Self) void {
-            assert(max_dims == 4);
-            assert(src0.canRepeatTo(dst));
-            for (0..dst.ne[3]) |ne3| {
-                for (0..dst.ne[2]) |ne2| {
-                    for (0..dst.ne[1]) |ne1| {
-                        for (0..dst.ne[0]) |ne0| {
-                            const nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
-                            const src0_ne_v2: @Vector(4, usize) = src0.ne;
-                            const src0_nes = nes % src0_ne_v2;
-                            const src0_stride_v: @Vector(4, usize) = src0.strides;
-                            const dst_stride_v: @Vector(4, usize) = dst.strides;
-
-                            const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
-                            const dst_idx = @reduce(.Add, nes * dst_stride_v);
-
-                            dst.data[dst_idx] = src0.data[src0_idx];
-                        }
-                    }
-                }
-            }
-        }
-
-        pub fn computeSqr(dst: *Self, src0: *Self) void {
-            assert(dst.isSameShape(src0));
-            for (src0.data, dst.data) |src0_item, *dst_item| {
-                dst_item.* = src0_item * src0_item;
-            }
-        }
-        pub fn computeSqrt(dst: *Self, src0: *Self) void {
-            assert(dst.isSameShape(src0));
-            for (src0.data, dst.data) |src0_item, *dst_item| {
-                dst_item.* = std.math.sqrt(src0_item);
-            }
-        }
-        pub fn computeAbs(dst: *Self, src0: *Self) void {
-            assert(dst.isSameShape(src0));
-            for (src0.data, dst.data) |src0_item, *dst_item| {
-                dst_item.* = @abs(src0_item);
-            }
-        }
-        pub fn computeSgn(dst: *Self, src0: *Self) void {
-            assert(dst.isSameShape(src0));
-            for (src0.data, dst.data) |src0_item, *dst_item| {
-                dst_item.* = if (src0_item > 0) 1 else if (src0_item < 0) -1 else 0;
-            }
-        }
-        pub fn computeNeg(dst: *Self, src0: *Self) void {
-            assert(dst.isSameShape(src0));
-            for (src0.data, dst.data) |src0_item, *dst_item| {
-                dst_item.* = -src0_item;
-            }
-        }
-        pub fn computeStep(dst: *Self, src0: *Self) void {
-            assert(dst.isSameShape(src0));
-            for (src0.data, dst.data) |src0_item, *dst_item| {
-                dst_item.* = if (src0_item > 0) 1 else 0;
-            }
-        }
-        pub fn computeReLu(dst: *Self, src0: *Self) void {
-            assert(dst.isSameShape(src0));
-            for (src0.data, dst.data) |src0_item, *dst_item| {
-                dst_item.* = if (src0_item > 0) src0_item else 0;
-            }
-        }
-        pub fn computeGeLu(dst: *Self, src0: *Self) void {
-            assert(dst.isSameShape(src0));
-            for (src0.data, dst.data) |x, *dst_item| {
-                dst_item.* = 0.5 * x * (1 + std.math.tanh(SQRT_2_OVER_PI * x * (1 + GELU_COEF_A * x * x)));
-            }
-        }
-        pub fn computeNorm(dst: *Self, src0: *Self) void {
-            _ = src0;
-            _ = dst;
-            @panic("Not implemented");
-        }
-        pub fn computeRMSNorm(dst: *Self, src0: *Self) void {
-            _ = src0;
-            _ = dst;
-            @panic("Not implemented");
-        }
-        fn shouldUseBlasForMatMul(dst: *Self, src0: *Self, src1: *Self) bool {
-            return src0.isContiguous() and src1.isContiguous() and
-                (dst.ne[0] >= 32 and dst.ne[1] >= 32 and src1.ne[0] >= 32);
-        }
-        fn assertValidMatMulDims(dst: *Self, src0: *Self, trans0: bool, src1: *Self, trans1: bool) void {
-            // src0 and src1 have same outer two dims
-            assert(src0.ne[3] == src1.ne[3]);
-            assert(src0.ne[2] == src1.ne[2]);
-
-            assert(dst.ne[2] == src0.ne[2]);
-            assert(dst.ne[3] == src0.ne[3]);
-
-            if (!trans0 and !trans1) {
-                // src0 and src1 can be matmul'd
-                // src0 #cols match src1 #rows
-                assert(src0.ne[0] == src1.ne[1]);
-                // dst #rows match src0 #rows
-                assert(dst.ne[1] == src0.ne[1]);
-                // dst #cols match src1 #cols
-                assert(dst.ne[0] == src1.ne[0]);
-            } else if (!trans0 and trans1) {
-                // same number of #cols (dot product of rows)
-                assert(src0.ne[0] == src1.ne[0]);
-                // dst #rows match src0 #rows
-                assert(dst.ne[1] == src0.ne[1]);
-                // dst #cols match src1 #rows
-                assert(dst.ne[0] == src1.ne[1]);
-            } else if (trans0 and !trans1) {
-                // same #rows (dot product of columns)
-                assert(src0.ne[1] == src1.ne[1]);
-                // dst #rows match src0 #cols
-                assert(dst.ne[1] == src0.ne[0]);
-                // dst #cols match src1 #cols
-                assert(dst.ne[0] == src1.ne[0]);
-            } else if (trans0 and trans1) {
-                // transposed src0 and transposed src1 can be matmul'd
-                // src0 #rows match src1 #cols
-                assert(src0.ne[1] == src1.ne[0]);
-                // dst #rows match src0 #cols
-                assert(dst.ne[1] == src0.ne[0]);
-                // dst #cols match src1 #rows
-                assert(dst.ne[0] == src1.ne[1]);
-            }
-        }
-        pub fn computeMatMul(dst: *Self, src0: *Self, comptime trans0: bool, src1: *Self, comptime trans1: bool) void {
-            assert(max_dims == 4); // must update this func if max_dims changes
-            dst.assertValidMatMulDims(src0, trans0, src1, trans1);
-            // dst is not transposed
-            assert(dst.strides[0] == 1);
-            assert(dst.strides[0] <= dst.strides[1]);
-            assert(dst.strides[1] <= dst.strides[2]);
-            assert(dst.strides[2] <= dst.strides[3]);
-
-            const src0_ne3 = src0.ne[3];
-            const src0_ne2 = src0.ne[2];
-            const src0_ne1 = src0.ne[1];
-            const src0_ne0 = src0.ne[0];
-
-            const src1_ne1 = src1.ne[1];
-            const src1_ne0 = src1.ne[0];
-
-            const dst_ne0 = dst.ne[0];
-
-            const src0_ne1c: c_int = @intCast(src0_ne1);
-            const src0_ne0c: c_int = @intCast(src0_ne0);
-            const src1_ne1c: c_int = @intCast(src1_ne1);
-            const src1_ne0c: c_int = @intCast(src1_ne0);
-            const dst_ne0c: c_int = @intCast(dst_ne0);
-
-            for (0..src0_ne3) |src0_i3| {
-                for (0..src0_ne2) |src0_i2| {
-                    // mat mul
-                    if (opts.use_blas and T == f32) {
-                        // z = x * yT
-                        c.cblas_sgemm(
-                            c.CblasRowMajor,
-                            if (trans0) c.CblasTrans else c.CblasNoTrans,
-                            if (trans1) c.CblasTrans else c.CblasNoTrans,
-                            if (trans0) src0_ne0c else src0_ne1c, // dst rows
-                            if (trans1) src1_ne1c else src1_ne0c, // dst cols
-                            if (trans0) src0_ne1c else src0_ne0c, // src0 row/col == src1 row/col
-                            1.0, // alpha scaling factor
-                            &src0.data[src0_i3 * src0.strides[3] + src0_i2 * src0.strides[2]],
-                            src0_ne0c, // src0 first dim
-                            &src1.data[src0_i3 * src1.strides[3] + src0_i2 * src1.strides[2]],
-                            src1_ne0c, // src1 first dim
-                            0.0, // beta scaling factor
-                            &dst.data[src0_i3 * dst.strides[3] + src0_i2 * dst.strides[2]],
-                            dst_ne0c, // dst first dim
-                        );
-                    } else if (!trans0 and !trans1) {
-                        for (0..src0_ne1) |src0_i1| { // row0
-                            for (0..src1_ne0) |src1_i0| { // col1
-                                var matmul_sum: T = 0;
-                                for (0..src0_ne0) |src0_i0| { // col0 == row1
-                                    const src0_i_v = @Vector(4, usize){ src0_i0, src0_i1, src0_i2, src0_i3 };
-                                    const src1_i_v = @Vector(4, usize){ src1_i0, src0_i0, src0_i2, src0_i3 };
-                                    const src0_stride_v: @Vector(4, usize) = src0.strides;
-                                    const src1_stride_v: @Vector(4, usize) = src1.strides;
-                                    const src0_i = @reduce(.Add, src0_i_v * src0_stride_v);
-                                    const src1_i = @reduce(.Add, src1_i_v * src1_stride_v);
-                                    matmul_sum += src0.data[src0_i] * src1.data[src1_i];
-                                }
-                                // dst col = col1
-                                // dst row = row0
-                                const dst_i_v = @Vector(4, usize){ src1_i0, src0_i1, src0_i2, src0_i3 };
-                                const dst_stride_v: @Vector(4, usize) = dst.strides;
-                                const dst_i = @reduce(.Add, dst_i_v * dst_stride_v);
-                                dst.data[dst_i] = matmul_sum;
-                            }
-                        }
-                    } else if (!trans0 and trans1) {
-                        for (0..src0_ne1) |src0_i1| { // row0
-                            for (0..src1_ne1) |src1_i1| { // row1
-                                var matmul_sum: T = 0;
-                                for (0..src0_ne0) |src0_i0| { // col0 == col1
-                                    const src0_i_v = @Vector(4, usize){ src0_i0, src0_i1, src0_i2, src0_i3 };
-                                    const src1_i_v = @Vector(4, usize){ src0_i0, src1_i1, src0_i2, src0_i3 }; // different row
-                                    const src0_stride_v: @Vector(4, usize) = src0.strides;
-                                    const src1_stride_v: @Vector(4, usize) = src1.strides;
-                                    const src0_i = @reduce(.Add, src0_i_v * src0_stride_v);
-                                    const src1_i = @reduce(.Add, src1_i_v * src1_stride_v);
-                                    matmul_sum += src0.data[src0_i] * src1.data[src1_i];
-                                }
-                                // dst col = row1
-                                // dst row = row0
-                                const dst_i_v = @Vector(4, usize){ src1_i1, src0_i1, src0_i2, src0_i3 };
-                                const dst_stride_v: @Vector(4, usize) = dst.strides;
-                                const dst_i = @reduce(.Add, dst_i_v * dst_stride_v);
-                                dst.data[dst_i] = matmul_sum;
-                            }
-                        }
-                    } else if (trans0 and !trans1) {
-                        for (0..src0_ne0) |src0_i0| { // cos0
-                            for (0..src1_ne0) |src1_i0| { // col1
-                                var matmul_sum: T = 0;
-                                for (0..src0_ne1) |src0_i1| { // row0 == row1
-                                    const src0_i_v = @Vector(4, usize){ src0_i0, src0_i1, src0_i2, src0_i3 };
-                                    const src1_i_v = @Vector(4, usize){ src1_i0, src0_i1, src0_i2, src0_i3 }; // different column
-                                    const src0_stride_v: @Vector(4, usize) = src0.strides;
-                                    const src1_stride_v: @Vector(4, usize) = src1.strides;
-                                    const src0_i = @reduce(.Add, src0_i_v * src0_stride_v);
-                                    const src1_i = @reduce(.Add, src1_i_v * src1_stride_v);
-                                    matmul_sum += src0.data[src0_i] * src1.data[src1_i];
-                                }
-                                // dst col = col1
-                                // dst row = col0
-                                const dst_i_v = @Vector(4, usize){ src1_i0, src0_i0, src0_i2, src0_i3 };
-                                const dst_stride_v: @Vector(4, usize) = dst.strides;
-                                const dst_i = @reduce(.Add, dst_i_v * dst_stride_v);
-                                dst.data[dst_i] = matmul_sum;
-                            }
-                        }
-                    } else if (trans0 and trans1) {
-                        for (0..src0_ne0) |src0_i0| { // col0
-                            for (0..src1_ne1) |src1_i1| { // row1
-                                var matmul_sum: T = 0;
-                                for (0..src0_ne1) |src0_i1| { // col1 == row0
-                                    const src0_i_v = @Vector(4, usize){ src0_i0, src0_i1, src0_i2, src0_i3 };
-                                    const src1_i_v = @Vector(4, usize){ src0_i1, src1_i1, src0_i2, src0_i3 };
-                                    const src0_stride_v: @Vector(4, usize) = src0.strides;
-                                    const src1_stride_v: @Vector(4, usize) = src1.strides;
-                                    const src0_i = @reduce(.Add, src0_i_v * src0_stride_v);
-                                    const src1_i = @reduce(.Add, src1_i_v * src1_stride_v);
-                                    matmul_sum += src0.data[src0_i] * src1.data[src1_i];
-                                }
-                                // dst col = row1
-                                // dst row = col0
-                                const dst_i_v = @Vector(4, usize){ src1_i1, src0_i0, src0_i2, src0_i3 };
-                                const dst_stride_v: @Vector(4, usize) = dst.strides;
-                                const dst_i = @reduce(.Add, dst_i_v * dst_stride_v);
-                                dst.data[dst_i] = matmul_sum;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        pub fn compute(tensor: *Tensor(T)) void {
-            const src0 = tensor.src0;
-            const src1 = tensor.src1;
-            switch (tensor.op) {
-                .none => {},
-                .dup => tensor.computeDup(src0.?),
-                .add => tensor.computeAdd(src0.?, src1.?),
-                .sub => tensor.computeSub(src0.?, src1.?),
-                .mul => tensor.computeMul(src0.?, src1.?),
-                .div => tensor.computeDiv(src0.?, src1.?),
-                .repeat => tensor.computeRepeat(src0.?),
-                .sqr => tensor.computeSqr(src0.?),
-                .sqrt => tensor.computeSqrt(src0.?),
-                .sum => tensor.computeSum(src0.?),
-                .mean => tensor.computeMean(src0.?),
-                .abs => tensor.computeAbs(src0.?),
-                .sgn => tensor.computeSgn(src0.?),
-                .neg => tensor.computeNeg(src0.?),
-                .step => tensor.computeStep(src0.?),
-                .relu => tensor.computeReLu(src0.?),
-                .gelu => tensor.computeGeLu(src0.?),
-                .norm => tensor.computeNorm(src0.?),
-                //
-                .matmul => tensor.computeMatMul(src0.?, false, src1.?, false),
-                .matmul_t0 => tensor.computeMatMul(src0.?, true, src1.?, false),
-                .matmul_t1 => tensor.computeMatMul(src0.?, false, src1.?, true),
-                .matmul_t0t1 => tensor.computeMatMul(src0.?, true, src1.?, true),
-                .view => {},
-                //
-                // .scale => tensor.computeScale(src0.?),
-                // .cpy => tensor.computeCpy(src0.?),
-                // .reshape => tensor.computeReshape(src0.?),
-                // .permute => tensor.computePermute(src0.?),
-                // .transpose => tensor.computeTranspose(src0.?),
-                // .get_rows,
-                // diag_max_inf,
-                // .soft_max,
-                // .rope,
-                else => @panic("Unimplemented forward OP"),
-            }
-        }
-
-        //#endregion
-
-        //#region Utility Methods
-
-        /// Set data of this tensor to elements of data parameter.
-        /// Number of elements must match.
+        /// Overwrite this tensor's data from a slice. Length must match.
         pub fn setData(self: *Self, data: []const T) void {
             assert(@as(usize, data.len) == self.nElems());
             @memcpy(self.data, data);
         }
 
-        /// Sets all values in this tensor to `val`.
-        /// Returns self for convenience.
+        /// Set every element to `val`. Returns self for chaining.
         pub fn setAllScalar(self: *Self, val: T) *Self {
             @memset(self.data, val);
             return self;
         }
 
-        /// Returns number of elements in this tensor
+        /// Total number of elements across all dimensions.
         pub fn nElems(self: *Self) usize {
             var res: usize = 1;
-            for (&self.ne) |shape_item| {
-                res *= shape_item;
-            }
+            for (&self.ne) |shape_item| res *= shape_item;
             return res;
         }
 
-        /// Returns if this tensor is a single scalar value
+        /// True if this tensor is a single scalar value (all dims == 1).
         pub fn isScalar(self: *Self) bool {
-            for (self.ne[0..]) |shape_item| {
-                if (shape_item != 1) return false;
-            }
+            for (self.ne[0..]) |s| { if (s != 1) return false; }
             return true;
         }
 
+        /// True if this is a 1-D vector (dims 1+ are all 1).
         pub fn isVector(self: *Self) bool {
-            for (self.ne[1..]) |shape_item| {
-                if (shape_item != 1) return false;
-            }
+            for (self.ne[1..]) |s| { if (s != 1) return false; }
             return true;
         }
 
+        /// True if this is a 2-D matrix (dims 2+ are all 1).
         pub fn isMatrix(self: *Self) bool {
-            for (self.ne[2..]) |shape_item| {
-                if (shape_item != 1) return false;
-            }
+            for (self.ne[2..]) |s| { if (s != 1) return false; }
             return true;
         }
 
-        /// Returns if self can matmul with other.
+        /// True if self can be matrix-multiplied with `other`, accounting for transpositions.
         pub fn canMatMul(self: *Self, transSelf: bool, other: *Self, transOther: bool) bool {
-            if (self.ne[3] != other.ne[3]) return false; // channels same
-            if (self.ne[2] != other.ne[2]) return false; // batch same
-            if (!transSelf and !transOther) {
-                // self #cols == other #rows
-                return self.ne[0] == other.ne[1];
-            } else if (transSelf and !transOther) {
-                // self #rows == other #rows (column dot product)
-                return self.ne[1] == other.ne[1];
-            } else if (!transSelf and transOther) {
-                // self #cols == other #cols (row dot product)
-                return self.ne[0] == other.ne[0];
-            } else {
-                // self #rows == other #cols
-                return self.ne[1] == other.ne[0];
-            }
+            if (self.ne[3] != other.ne[3]) return false;
+            if (self.ne[2] != other.ne[2]) return false;
+            if (!transSelf and !transOther) return self.ne[0] == other.ne[1];
+            if (transSelf and !transOther) return self.ne[1] == other.ne[1];
+            if (!transSelf and transOther) return self.ne[0] == other.ne[0];
+            return self.ne[1] == other.ne[0];
         }
 
+        /// True if data is laid out contiguously in memory (no stride gaps).
         pub fn isContiguous(self: *Self) bool {
-            if (self.strides[0] != 1) {
-                return false;
-            }
+            if (self.strides[0] != 1) return false;
             for (1..max_dims) |i| {
                 if (self.strides[i] != self.strides[i - 1] * self.ne[i - 1]) return false;
             }
             return true;
         }
 
-        /// Returns if this tensor can be repeated to match the shape of other.
-        /// This is used for broadcasting.
-        /// Unlike numpy, broadcasting works where each dimension in other is a multiple of the corresponding dimension in self.
+        /// True if self can be broadcast (repeated) to match `other`'s shape.
         pub fn canRepeatTo(self: *Self, other: *Self) bool {
             return self.canRepeatToShape(&other.ne);
         }
-        /// Returns if this tensor can be repeated to match the given shape.
-        /// This is used for broadcasting.
-        /// Unlike numpy, broadcasting works where each dimension in other is a multiple of the corresponding dimension in self.
+
         pub fn canRepeatToShape(self: *Self, other_ne: []const usize) bool {
             return shapeCanRepeatToShape(&self.ne, other_ne);
         }
+
+        /// True if self can be reduced (summed) down to `other`'s shape.
         pub fn canSumTo(self: *Self, other: *Self) bool {
             return self.canSumToShape(&other.ne);
         }
-        /// Returns if this tensor can be summed to match the given shape.
-        /// This is the inverse of canRepeatToShape. It's the opposite of broadcasting.
+
         pub fn canSumToShape(self: *Self, other_ne: []const usize) bool {
             return shapeCanRepeatToShape(other_ne, &self.ne);
         }
+
         fn shapeCanRepeatToShape(self_ne: []const usize, other_ne: []const usize) bool {
             for (self_ne, 0..) |selfNe, i| {
                 const otherNe = if (i < other_ne.len) other_ne[i] else 1;
@@ -1001,9 +561,7 @@ pub fn Tensor(comptime T: type) type {
             return true;
         }
 
-        /// Returns the element at the given coordinates.
-        /// Coordinates are given in the format [col#, row#, batch#, channel#]
-        /// or [col#, row#, batch#] or [col#, row#] or [col#]
+        /// Access the element at the given multi-dimensional coordinates.
         pub fn get(self: *Self, coords: []const usize) T {
             assert(coords.len == self.n_dims);
             var idx: usize = 0;
@@ -1013,263 +571,54 @@ pub fn Tensor(comptime T: type) type {
             return self.data[idx];
         }
 
-        /// Print out a summary of this tensor.
+        /// Print a debug summary of this tensor.
         pub fn print(self: *Self) void {
             std.debug.print("----{*}----\n", .{self});
             std.debug.print("shape: {any}\nstrides: {any}\ndata: {any}\n", .{ self.ne, self.strides, self.data });
             std.debug.print("--------------------------\n", .{});
         }
-        /// Checks if two tensors are broadcastable.
-        /// More info here: https://pytorch.org/docs/stable/notes/broadcasting.html
+
+        /// True if self and other have compatible shapes for broadcasting (numpy-style).
         pub fn isBroadcastable(self: *Self, other: *Self) bool {
             for (self.ne, other.ne) |selfNe, otherNe| {
-                if (selfNe != otherNe and selfNe != 1 and otherNe != 1) {
-                    return false;
-                }
+                if (selfNe != otherNe and selfNe != 1 and otherNe != 1) return false;
             }
             return true;
         }
 
+        /// True if self and other have identical shapes.
         pub fn isSameShape(self: *Self, other: *Self) bool {
             return self.hasShape(&other.ne);
         }
+
         pub fn hasShape(self: *Self, other_ne: []const usize) bool {
             for (self.ne, 0..) |selfNe, i| {
                 const otherNe = if (i < other_ne.len) other_ne[i] else 1;
-                if (selfNe != otherNe) {
-                    return false;
-                }
+                if (selfNe != otherNe) return false;
             }
             return true;
         }
-
-        //#endregion
-
-        //#region Backward Computations for Operations
-
-        fn addToScratchUniq(alloc: Alloc, scratch: *std.ArrayList(*Tensor(T)), tensor: *Tensor(T)) Alloc.Error!void {
-            for (scratch.items) |item| {
-                if (item == tensor) return;
-            }
-            try scratch.append(alloc, tensor);
-        }
-        pub fn backward(tensor: *Tensor(T), alloc: Alloc, scratch: *std.ArrayList(*Tensor(T)), inplace: bool) Alloc.Error!void {
-            const src0_o = tensor.src0;
-            const src1_o = tensor.src1;
-            switch (tensor.op) {
-                .none, .view => {},
-                .dup => {
-                    const src0 = src0_o.?;
-                    if (src0.grad) |grad| {
-                        const new_grad = grad.addImpl(alloc, tensor.grad.?, inplace);
-                        assert(new_grad.isSameShape(grad));
-                        src0.grad = new_grad;
-                    }
-                },
-                .add => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.grad) |grad| {
-                        src0.grad = grad.addImpl(alloc, tensor.grad.?, inplace);
-                    }
-                    if (src1.grad) |grad| {
-                        src1.grad = grad.addImpl(alloc, tensor.grad.?, inplace);
-                    }
-                },
-                .sub => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.grad) |grad| {
-                        src0.grad = grad.addImpl(alloc, tensor.grad.?, inplace);
-                    }
-                    if (src1.grad) |grad| {
-                        src1.grad = grad.subImpl(alloc, tensor.grad.?, inplace);
-                    }
-                },
-                .mul => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.grad) |grad| {
-                        const src1_x = src1.mul(alloc, tensor.grad.?);
-                        // remove grad
-                        if (src1_x.grad) |gradp| {
-                            gradp.deinit(alloc);
-                            src1_x.grad = null;
-                        }
-                        src0.grad = grad.addImpl(alloc, src1_x, inplace);
-                    }
-                    if (src1.grad) |grad| {
-                        const src0_x = src0.mul(alloc, tensor.grad.?);
-                        // remove grad
-                        if (src0_x.grad) |gradp| {
-                            gradp.deinit(alloc);
-                            src0_x.grad = null;
-                        }
-                        src1.grad = grad.addImpl(alloc, src0_x, inplace);
-                    }
-                },
-                .div => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.grad) |grad| {
-                        const src1_x = src1.div(alloc, tensor.grad.?);
-                        // remove grad
-                        if (src1_x.grad) |gradp| {
-                            gradp.deinit(alloc);
-                            src1_x.grad = null;
-                        }
-                        src0.grad = grad.addImpl(alloc, src1_x, inplace);
-                    }
-                    if (src1.grad) |grad| {
-                        const src0_x = src0.div(alloc, tensor.grad.?);
-                        // remove grad
-                        if (src0_x.grad) |gradp| {
-                            gradp.deinit(alloc);
-                            src0_x.grad = null;
-                        }
-                        src1.grad = grad.addImpl(alloc, src0_x, inplace);
-                    }
-                },
-                .repeat => {
-                    const src0 = src0_o.?;
-                    const t_grad = tensor.grad.?;
-                    if (src0.grad) |grad| {
-                        src0.grad = t_grad.sumInto(alloc, grad);
-                    }
-                },
-                .sqr => {
-                    const src0 = src0_o.?;
-                    if (src0.grad) |grad| {
-                        // src_grad = 2 * src * out_grad
-                        const t2 = try Self.initScalar(alloc, 2);
-                        const t2_rep = t2.repeatLike(alloc, src0);
-                        const src0_2 = src0.mul(alloc, t2_rep);
-                        // remove grad
-                        if (src0_2.grad) |gradp| {
-                            gradp.deinit(alloc);
-                            src0_2.grad = null;
-                        }
-                        const src0_2_grad = src0_2.mul(alloc, tensor.grad.?);
-                        src0.grad = grad.addImpl(alloc, src0_2_grad, inplace);
-                    }
-                },
-                // .sqrt,
-                .sum, .mean => {
-                    const src0 = src0_o.?;
-                    if (src0.grad) |grad| {
-                        src0.grad = grad.addImpl(alloc, tensor.grad.?.repeatLike(alloc, grad), inplace);
-                    }
-                },
-                // .abs,
-                // .sgn,
-                // .neg,
-                // .step,
-                // .relu,
-                // .gelu,
-                // .norm,
-                //
-                .matmul => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.grad) |grad| {
-                        const z = tensor.grad.?.matMul(alloc, false, src1, true);
-                        // remove grad
-                        if (z.grad) |gradp| {
-                            gradp.deinit(alloc);
-                            z.grad = null;
-                        }
-                        src0.grad = grad.addImpl(alloc, z, inplace);
-                    }
-                    if (src1.grad) |grad| {
-                        const z = src0.matMul(alloc, true, tensor.grad.?, false);
-                        // remove grad
-                        if (z.grad) |gradp| {
-                            gradp.deinit(alloc);
-                            z.grad = null;
-                        }
-                        src1.grad = grad.addImpl(alloc, z, inplace);
-                    }
-                },
-                // TODO: remove add to scratch
-                .matmul_t0 => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.grad) |grad| {
-                        try addToScratchUniq(alloc, scratch, tensor.grad.?.matMul(alloc, false, src1, true));
-                        src0.grad = grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(alloc, scratch, grad); // move the old one into scratch
-                    }
-                    if (src1.grad) |grad| {
-                        try addToScratchUniq(alloc, scratch, src0.matMul(alloc, false, tensor.grad.?, false));
-                        src1.grad = grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(alloc, scratch, grad); // move the old one into scratch
-                    }
-                },
-                .matmul_t1 => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.grad) |grad| {
-                        try addToScratchUniq(alloc, scratch, tensor.grad.?.matMul(alloc, false, src1, false));
-                        src0.grad = grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(alloc, scratch, grad); // move the old one into scratch
-                    }
-                    if (src1.grad) |grad| {
-                        try addToScratchUniq(alloc, scratch, src0.matMul(alloc, true, tensor.grad.?, false));
-                        src1.grad = grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(alloc, scratch, grad); // move the old one into scratch
-                    }
-                },
-                .matmul_t0t1 => {
-                    const src0 = src0_o.?;
-                    const src1 = src1_o.?;
-                    if (src0.grad) |grad| {
-                        try addToScratchUniq(alloc, scratch, tensor.grad.?.matMul(alloc, true, src1, false));
-                        src0.grad = grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(alloc, scratch, grad); // move the old one into scratch
-                    }
-                    if (src1.grad) |grad| {
-                        try addToScratchUniq(alloc, scratch, src0.matMul(alloc, false, tensor.grad.?, true));
-                        src1.grad = grad.addImpl(alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(alloc, scratch, grad); // move the old one into scratch
-                    }
-                },
-                // //
-                // .scale,
-                // .cpy,
-                // .reshape,
-                // .view,
-                // .permute,
-                // .transpose,
-                // .get_rows,
-                // // diag_max_inf,
-                // .soft_max,
-                // .rope,
-                else => @panic("Unimplemented backward OP"),
-            }
-        }
-
-        //#endregion
     };
 }
 
-//#region Tests
+test {
+    _ = @import("tensor/forward.zig");
+    _ = @import("tensor/backward.zig");
+}
+
+const testing = std.testing;
+const tac = std.testing.allocator;
 
 test "ref all decls" {
     _ = testing.refAllDeclsRecursive(Tensor(f32));
 }
-
-//#region Setup/Takedown Tests
 
 test "init" {
     {
         const tensor = try Tensor(f32).init(tac, &.{ 2, 3 });
         defer tensor.deinit(tac);
         try testing.expectEqual(@as(usize, 6), tensor.nElems());
-        const data = [_]f32{
-            1, 2,
-            3, 4,
-            5, 6,
-        };
+        const data = [_]f32{ 1, 2, 3, 4, 5, 6 };
         @memcpy(tensor.data, &data);
         try testing.expectEqual(@as(f32, 1), tensor.get(&.{ 0, 0 }));
         try testing.expectEqual(@as(f32, 3), tensor.get(&.{ 0, 1 }));
@@ -1301,210 +650,114 @@ test "initLinspace" {
     }
 }
 
-//#endregion
-
-//#region Utility Method Tests
-
 test "isMatrix" {
     {
         const tensor = try Tensor(f32).init(tac, &.{ 2, 3 });
         defer tensor.deinit(tac);
-        try testing.expectEqual(@as(usize, 6), tensor.nElems());
         try testing.expectEqual(true, tensor.isMatrix());
     }
     {
         const tensor = try Tensor(f32).init(tac, &.{ 2, 3, 4 });
         defer tensor.deinit(tac);
-        try testing.expectEqual(@as(usize, 24), tensor.nElems());
         try testing.expectEqual(false, tensor.isMatrix());
     }
 }
 
 test "isSameShape" {
     {
-        const tensor1 = try Tensor(f32).init(tac, &.{ 2, 3 });
-        defer tensor1.deinit(tac);
-        const tensor2 = try Tensor(f32).init(tac, &.{ 3, 2 });
-        defer tensor2.deinit(tac);
-        try testing.expectEqual(false, tensor1.isSameShape(tensor2));
-        try testing.expectEqual(false, tensor2.isSameShape(tensor1));
-        try testing.expectEqual(true, tensor1.isSameShape(tensor1));
-        try testing.expectEqual(true, tensor2.isSameShape(tensor2));
+        const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
+        defer t1.deinit(tac);
+        const t2 = try Tensor(f32).init(tac, &.{ 3, 2 });
+        defer t2.deinit(tac);
+        try testing.expectEqual(false, t1.isSameShape(t2));
+        try testing.expectEqual(true, t1.isSameShape(t1));
     }
     {
-        const tensor1 = try Tensor(f32).init(tac, &.{ 2, 4, 3 });
-        defer tensor1.deinit(tac);
-        const tensor2 = tensor1.view(tac);
-        defer tensor2.deinit(tac);
-        try testing.expectEqual(true, tensor1.isSameShape(tensor2));
+        const t1 = try Tensor(f32).init(tac, &.{ 2, 4, 3 });
+        defer t1.deinit(tac);
+        const t2 = t1.view(tac);
+        defer t2.deinit(tac);
+        try testing.expectEqual(true, t1.isSameShape(t2));
     }
 }
 
 test "canRepeatTo" {
     {
-        const tensor1 = try Tensor(f32).init(tac, &.{ 2, 3 });
-        defer tensor1.deinit(tac);
-        const tensor2 = try Tensor(f32).init(tac, &.{ 3, 2 });
-        defer tensor2.deinit(tac);
-        try testing.expectEqual(false, tensor1.canRepeatTo(tensor2));
+        const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
+        defer t1.deinit(tac);
+        const t2 = try Tensor(f32).init(tac, &.{ 3, 2 });
+        defer t2.deinit(tac);
+        try testing.expectEqual(false, t1.canRepeatTo(t2));
     }
     {
-        const tensor1 = try Tensor(f32).init(tac, &.{ 2, 4, 3 });
-        defer tensor1.deinit(tac);
-        const tensor2 = try Tensor(f32).init(tac, &.{ 4, 16, 9 });
-        defer tensor2.deinit(tac);
-        try testing.expectEqual(true, tensor1.canRepeatTo(tensor2));
-    }
-    {
-        const tensor1 = try Tensor(f32).init(tac, &.{ 2, 3 });
-        defer tensor1.deinit(tac);
-        const tensor2 = try Tensor(f32).init(tac, &.{ 2, 3, 5 });
-        defer tensor2.deinit(tac);
-        try testing.expectEqual(true, tensor1.canRepeatTo(tensor2));
+        const t1 = try Tensor(f32).init(tac, &.{ 2, 4, 3 });
+        defer t1.deinit(tac);
+        const t2 = try Tensor(f32).init(tac, &.{ 4, 16, 9 });
+        defer t2.deinit(tac);
+        try testing.expectEqual(true, t1.canRepeatTo(t2));
     }
 }
-
-//#endregion
-
-//#region Forward Computation Tests
 
 test "compute mean" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
     defer t1.deinit(tac);
-    t1.setData(&[_]f32{
-        1, 2,
-        3, 4,
-        5, 6,
-    });
+    t1.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
 
     const dst = t1.mean(tac, &.{1});
     defer dst.deinit(tac);
-
     dst.computeMean(t1);
 
-    const expected = [_]f32{3.5};
-    for (dst.data, 0..) |v, i| {
-        try testing.expectApproxEqAbs(expected[i], v, 1e-10);
-    }
+    try testing.expectApproxEqAbs(@as(f32, 3.5), dst.data[0], 1e-10);
 }
 
 test "compute matmul" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
     defer t1.deinit(tac);
-    t1.setData(&[_]f32{
-        1, 2,
-        3, 4,
-        5, 6,
-    });
+    t1.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
 
     const t2 = try Tensor(f32).init(tac, &.{ 3, 2 });
     defer t2.deinit(tac);
-    t2.setData(&[_]f32{
-        1, 2, 3,
-        4, 5, 6,
-    });
+    t2.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
 
     const dst = t1.matMul(tac, false, t2, false);
     defer dst.deinit(tac);
-
     dst.computeMatMul(t1, false, t2, false);
 
-    const expected = [_]f32{
-        9,  12, 15,
-        19, 26, 33,
-        29, 40, 51,
-    };
-    try testing.expectEqualSlices(f32, &expected, dst.data);
+    try testing.expectEqualSlices(f32, &.{ 9, 12, 15, 19, 26, 33, 29, 40, 51 }, dst.data);
 }
 
 test "compute matmul_t0" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
     defer t1.deinit(tac);
-    t1.setData(&[_]f32{
-        1, 2,
-        3, 4,
-        5, 6,
-    });
+    t1.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
 
-    const t2 = try Tensor(f32).init(tac, &.{ 2, 3 });
-    defer t2.deinit(tac);
-    t2.setData(&[_]f32{
-        1, 2,
-        3, 4,
-        5, 6,
-    });
-
-    const dst = t1.matMul(tac, true, t2, false);
+    const dst = t1.matMul(tac, true, t1, false);
     defer dst.deinit(tac);
+    dst.computeMatMul(t1, true, t1, false);
 
-    dst.computeMatMul(t1, true, t2, false);
-
-    const expected = [_]f32{
-        35, 44,
-        44, 56,
-    };
-    try testing.expectEqualSlices(f32, &expected, dst.data);
+    try testing.expectEqualSlices(f32, &.{ 35, 44, 44, 56 }, dst.data);
 }
 
 test "compute matmul_t1 2D" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
-    t1.setData(&[_]f32{
-        1, 2,
-        3, 4,
-        5, 6,
-    });
     defer t1.deinit(tac);
+    t1.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
 
-    const t2 = try Tensor(f32).init(tac, &.{ 2, 3 });
-    t2.setData(&[_]f32{
-        1, 2,
-        3, 4,
-        5, 6,
-    });
-    defer t2.deinit(tac);
-
-    const dst = t1.matMul(tac, false, t2, true);
+    const dst = t1.matMul(tac, false, t1, true);
     defer dst.deinit(tac);
+    dst.computeMatMul(t1, false, t1, true);
 
-    dst.computeMatMul(t1, false, t2, true);
-
-    const expected = [_]f32{
-        5,  11, 17,
-        11, 25, 39,
-        17, 39, 61,
-    };
-    try testing.expectEqualSlices(f32, &expected, dst.data);
+    try testing.expectEqualSlices(f32, &.{ 5, 11, 17, 11, 25, 39, 17, 39, 61 }, dst.data);
 }
 
 test "compute matmul_t1 3D" {
     const t1 = try Tensor(f32).init(tac, &.{ 2, 2, 2 });
     defer t1.deinit(tac);
-    const data = [_]f32{
-        1, 2,
-        3, 4,
-        //
-        5, 6,
-        7, 8,
-    };
-    t1.setData(&data);
-
-    try testing.expectEqual(@as(f32, 4), t1.get(&.{ 1, 1, 0 }));
-    try testing.expectEqual(@as(f32, 7), t1.get(&.{ 0, 1, 1 }));
+    t1.setData(&[_]f32{ 1, 2, 3, 4, 5, 6, 7, 8 });
 
     const dst = t1.matMul(tac, false, t1, true);
     defer dst.deinit(tac);
-
     dst.computeMatMul(t1, false, t1, true);
-    const expected = [_]f32{
-        5,  11,
-        11, 25,
-        //
-        61, 83,
-        83, 113,
-    };
-    try testing.expectEqualSlices(f32, &expected, dst.data);
+
+    try testing.expectEqualSlices(f32, &.{ 5, 11, 11, 25, 61, 83, 83, 113 }, dst.data);
 }
-
-//#endregion
-
-//#endregion

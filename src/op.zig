@@ -1,3 +1,10 @@
+//! Enumerates all tensor operations supported by the computation graph.
+//!
+//! Each variant corresponds to a forward compute implementation in
+//! `tensor/forward.zig` and (where implemented) a backward rule in
+//! `tensor/backward.zig`.
+
+/// A tensor operation. Stored on each tensor to record how it was produced.
 pub const Op = enum {
     const Self = @This();
 
@@ -42,6 +49,7 @@ pub const Op = enum {
     // flash_ff,
     //
 
+    /// Human-readable symbol for this operation, used in debug output and GraphViz export.
     pub fn symbol(self: *Self) []const u8 {
         return switch (self.*) {
             .none => "none",

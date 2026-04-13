@@ -58,7 +58,13 @@ pub fn SGD(comptime T: type) type {
             self.lr_grad.deinit(self.alloc);
             self.momentum_decay.deinit(self.alloc);
         }
-        // Must zero grad before calling step
+        /// Perform one optimization step.
+        ///
+        /// Update rule with momentum:
+        ///   momentum = momentum * decay + grad * lr
+        ///   param   -= momentum
+        ///
+        /// Call `zeroGrad()` before the next forward pass.
         pub fn step(self: *Self) void {
             for (self.params, self.momentum.items, self.lr_grad.items) |param, mo, lrg| {
                 mo.computeMul(mo, self.momentum_decay);

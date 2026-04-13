@@ -1,3 +1,5 @@
+//! Polynomial regression model: `y = c0 + c1*x + c2*x^2 + ... + cn*x^n`.
+
 const std = @import("std");
 const testing = std.testing;
 const tac = testing.allocator;
@@ -7,6 +9,10 @@ const Alloc = std.mem.Allocator;
 const loss = @import("../loss.zig");
 const optim = @import("../optim.zig");
 
+/// A polynomial model with `max_exp + 1` learnable coefficients.
+///
+/// Owns a `ComputeGraph` internally. Call `build` to construct the graph,
+/// then `train` to run mini-batch SGD.
 pub fn Model(comptime T: type) type {
     return struct {
         const Self = @This();

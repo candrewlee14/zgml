@@ -1,3 +1,10 @@
+//! Computation graph for automatic differentiation.
+//!
+//! A `ComputeGraph` owns an arena allocator and manages the lifecycle of all
+//! tensors created within it. Call `allocator()` to get the arena for tensor
+//! creation, then `buildForward` / `buildBackward` to wire up the graph.
+//! A single `deinit()` frees everything.
+
 const std = @import("std");
 
 const tensorlib = @import("./tensor.zig");
@@ -7,6 +14,10 @@ const testing = std.testing;
 const Alloc = std.mem.Allocator;
 const tac = std.testing.allocator;
 
+/// Manages forward and backward passes over a tensor computation graph.
+///
+/// All tensors should be allocated from `allocator()` so that `deinit()`
+/// can free them in bulk via the arena.
 pub fn ComputeGraph(comptime T: type) type {
     return struct {
         const Self = @This();
