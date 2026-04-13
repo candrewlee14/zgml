@@ -140,29 +140,29 @@ pub fn ComputeGraph(comptime T: type) type {
             self.resetGrads();
         }
 
-        /// Detect chains of fusible elementwise ops in the forward graph
+        /// Detect chains of fusible elementwise ops in the built graph
         /// and prepare comptime-specialized kernels for them.
         ///
         /// Call after `buildForward()` (and optionally after `buildBackward()`).
-        /// Fusion only affects the forward pass — backward still uses
-        /// the original nodes and their stored intermediate values.
+        /// Lowering applies to the full executable graph, so backward regions
+        /// can be fused too once they have been built.
         pub fn fusionPass(self: *Self) Alloc.Error!void {
             const alloc = self.arena.allocator();
-            const fwd_count = self.forward_node_count;
-            if (fwd_count < 2) return;
+            const node_count = self.nodes.items.len;
+            if (node_count < 2) return;
 
             const compiler_plans = try self.detectCompilerFusionPlans();
 
             self.fused_chains.clearRetainingCapacity();
             self.fused_skip.clearRetainingCapacity();
 
-            // Build use-count: how many forward nodes read each node's output
-            const use_count = try alloc.alloc(u16, fwd_count);
+            // Build use-count: how many graph nodes read each node's output
+            const use_count = try alloc.alloc(u16, node_count);
             @memset(use_count, 0);
 
-            for (self.nodes.items[0..fwd_count]) |node| {
+            for (self.nodes.items) |node| {
                 if (node.source0()) |src| {
-                    for (self.nodes.items[0..fwd_count], 0..) |n, j| {
+                    for (self.nodes.items, 0..) |n, j| {
                         if (n == src) {
                             use_count[j] += 1;
                             break;
@@ -170,7 +170,7 @@ pub fn ComputeGraph(comptime T: type) type {
                     }
                 }
                 if (node.source1()) |src| {
-                    for (self.nodes.items[0..fwd_count], 0..) |n, j| {
+                    for (self.nodes.items, 0..) |n, j| {
                         if (n == src) {
                             use_count[j] += 1;
                             break;
@@ -180,14 +180,14 @@ pub fn ComputeGraph(comptime T: type) type {
             }
 
             // Initialize skip bitmap
-            self.fused_skip = try std.ArrayList(bool).initCapacity(alloc, fwd_count);
-            self.fused_skip.items.len = fwd_count;
+            self.fused_skip = try std.ArrayList(bool).initCapacity(alloc, node_count);
+            self.fused_skip.items.len = node_count;
             @memset(self.fused_skip.items, false);
 
             // Scan for fusible chains
             var i: usize = 0;
             var next_compiler_plan: usize = 0;
-            while (i < fwd_count) : (i += 1) {
+            while (i < node_count) : (i += 1) {
                 const node = self.nodes.items[i];
                 if (next_compiler_plan < compiler_plans.items.len) {
                     const compiler_plan = compiler_plans.items[next_compiler_plan];
@@ -228,7 +228,7 @@ pub fn ComputeGraph(comptime T: type) type {
                 var extending = true;
                 while (extending) {
                     extending = false;
-                    if (chain_end + 1 < fwd_count) {
+                    if (chain_end + 1 < node_count) {
                         const next = self.nodes.items[chain_end + 1];
                         if (next.opTag().isFusible() and
                             next.source0().? == self.nodes.items[chain_end] and
@@ -263,51 +263,122 @@ pub fn ComputeGraph(comptime T: type) type {
             }
         }
 
+        const NodeRef = struct {
+            idx: usize,
+            node: *Tensor(T),
+        };
+
+        const RegionMatcher = struct {
+            graph: *const Self,
+
+            fn refAt(self: @This(), idx: usize) ?NodeRef {
+                if (idx >= self.graph.nodes.items.len) return null;
+                return .{ .idx = idx, .node = self.graph.nodes.items[idx] };
+            }
+
+            fn indexOf(self: @This(), node: *Tensor(T)) ?usize {
+                return fused.indexOfNodeMaybe(T, self.graph.nodes.items, node);
+            }
+
+            fn userOf(self: @This(), start_idx: usize, src: *Tensor(T), op: Op) ?NodeRef {
+                var i = start_idx;
+                while (i < self.graph.nodes.items.len) : (i += 1) {
+                    const node = self.graph.nodes.items[i];
+                    if (!node.isOp(op)) continue;
+                    if (node.source0() == src or node.source1() == src) return .{ .idx = i, .node = node };
+                }
+                return null;
+            }
+
+            fn source0Of(self: @This(), start_idx: usize, src0: *Tensor(T), op: Op) ?NodeRef {
+                var i = start_idx;
+                while (i < self.graph.nodes.items.len) : (i += 1) {
+                    const node = self.graph.nodes.items[i];
+                    if (!node.isOp(op)) continue;
+                    if (node.source0() == src0) return .{ .idx = i, .node = node };
+                }
+                return null;
+            }
+
+            fn otherInput(_: @This(), node: *Tensor(T), known: *Tensor(T)) ?*Tensor(T) {
+                if (node.source0() == known) return node.source1();
+                if (node.source1() == known) return node.source0();
+                return null;
+            }
+
+            fn throughAccumAdd(self: @This(), start_idx: usize, base: NodeRef) NodeRef {
+                var i = start_idx;
+                while (i < self.graph.nodes.items.len) : (i += 1) {
+                    const node = self.graph.nodes.items[i];
+                    if (!node.isOp(.add)) continue;
+                    if (node.source0() == base.node or node.source1() == base.node) return .{ .idx = i, .node = node };
+                }
+                return base;
+            }
+
+            fn biasAddAfter(self: @This(), start_idx: usize, src: *Tensor(T)) ?NodeRef {
+                var i = start_idx;
+                while (i < self.graph.nodes.items.len) : (i += 1) {
+                    const node = self.graph.nodes.items[i];
+                    if (!node.isOp(.add)) continue;
+                    const rhs = self.otherInput(node, src) orelse continue;
+                    if (rhs.isOp(.broadcast_to)) return .{ .idx = i, .node = node };
+                }
+                return null;
+            }
+
+            fn reluAfter(self: @This(), start_idx: usize, src: *Tensor(T)) ?NodeRef {
+                var i = start_idx;
+                while (i < self.graph.nodes.items.len) : (i += 1) {
+                    const node = self.graph.nodes.items[i];
+                    if (!node.isOp(.mul)) continue;
+                    const rhs = self.otherInput(node, src) orelse continue;
+                    if (rhs.isOp(.step) and rhs.source0() == src) return .{ .idx = i, .node = node };
+                }
+                return null;
+            }
+        };
+
         fn detectConv2dPattern(self: *const Self, start: usize) ?fused.FusionPlan(T) {
-            if (start + 3 >= self.forward_node_count) return null;
-
-            const input_view = self.nodes.items[start + 0];
-            const kernel_view = self.nodes.items[start + 1];
-            const mul_node = self.nodes.items[start + 2];
-            const sum_node = self.nodes.items[start + 3];
-            const maybe_reshape = if (start + 4 < self.forward_node_count) self.nodes.items[start + 4] else null;
-            const maybe_bias = if (start + 5 < self.forward_node_count) self.nodes.items[start + 5] else null;
-            const maybe_relu = if (start + 6 < self.forward_node_count) self.nodes.items[start + 6] else null;
-
+            const m = RegionMatcher{ .graph = self };
+            const input_ref = m.refAt(start) orelse return null;
+            const input_view = input_ref.node;
             if (!input_view.isOp(.as_strided)) return null;
+
+            const mul_ref = m.userOf(start + 1, input_view, .mul) orelse return null;
+            const mul_node = mul_ref.node;
+
+            const kernel_view = m.otherInput(mul_node, input_view) orelse return null;
             if (!kernel_view.isOp(.as_strided)) return null;
-            if (!mul_node.isOp(.mul)) return null;
-            if (!sum_node.isOp(.sum)) return null;
-            if (mul_node.source0().? != input_view or mul_node.source1().? != kernel_view) return null;
-            if (sum_node.source0().? != mul_node) return null;
+
+            const sum_ref = m.source0Of(start + 1, mul_node, .sum) orelse return null;
+            const reshape_ref = m.source0Of(start + 1, sum_ref.node, .reshape) orelse return null;
+            const reshape_node = reshape_ref.node;
 
             const input = input_view.source0().?;
             const kernel = kernel_view.source0().?;
             if (input.n_dims != 4 or kernel.n_dims != 4) return null;
-            if (maybe_reshape == null or !maybe_reshape.?.isOp(.reshape) or maybe_reshape.?.source0().? != sum_node) return null;
 
-            var output = maybe_reshape.?;
+            var output = reshape_node;
             var bias: ?*Tensor(T) = null;
             var bias_node: ?*Tensor(T) = null;
             var activation: bool = false;
-            var output_idx = start + 4;
+            var output_idx = reshape_ref.idx;
 
-            if (maybe_bias) |add_node| {
-                if (add_node.isOp(.add) and add_node.source0().? == output and add_node.source1().?.isOp(.broadcast_to)) {
-                    const bcast = add_node.source1().?;
-                    const bsrc = bcast.source0().?;
-                    if (bsrc.isOp(.reshape) and bsrc.source0().?.n_dims == 1) {
-                        bias = bsrc.source0().?;
-                        bias_node = add_node;
-                        output = add_node;
-                        output_idx = start + 5;
-                        if (maybe_relu) |relu_node| {
-                            if (relu_node.isOp(.mul) and relu_node.source0().? == add_node and relu_node.source1().?.isOp(.step) and relu_node.source1().?.source0().? == add_node) {
-                                activation = true;
-                                output = relu_node;
-                                output_idx = start + 6;
-                            }
-                        }
+            if (m.biasAddAfter(output_idx + 1, output)) |add_ref| {
+                const add_node = add_ref.node;
+                const bcast = m.otherInput(add_node, output) orelse return null;
+                const bsrc = bcast.source0().?;
+                if (bsrc.isOp(.reshape) and bsrc.source0().?.n_dims == 1) {
+                    bias = bsrc.source0().?;
+                    bias_node = add_node;
+                    output = add_node;
+                    output_idx = add_ref.idx;
+                    if (m.reluAfter(output_idx + 1, add_node)) |relu_ref| {
+                        const relu_node = relu_ref.node;
+                        activation = true;
+                        output = relu_node;
+                        output_idx = relu_ref.idx;
                     }
                 }
             }
@@ -321,7 +392,7 @@ pub fn ComputeGraph(comptime T: type) type {
                 .bias_node = bias_node,
                 .activation = if (activation) output else null,
                 .mul_node = mul_node,
-                .sum_node = sum_node,
+                .sum_node = sum_ref.node,
                 .output = output,
             } } };
         }
@@ -360,32 +431,45 @@ pub fn ComputeGraph(comptime T: type) type {
         }
 
         fn detectConv2dBwdKernelPattern(self: *const Self, start: usize) ?fused.FusionPlan(T) {
-            if (start + 3 >= self.nodes.items.len) return null;
-            const reshape = self.nodes.items[start + 0];
-            const broadcast = self.nodes.items[start + 1];
-            const mul = self.nodes.items[start + 2];
-            const sum = self.nodes.items[start + 3];
-
+            const m = RegionMatcher{ .graph = self };
+            const reshape_ref = m.refAt(start) orelse return null;
+            const reshape = reshape_ref.node;
             if (!reshape.isOp(.reshape)) return null;
-            if (!broadcast.isOp(.broadcast_to)) return null;
-            if (!mul.isOp(.mul)) return null;
-            if (!sum.isOp(.sum)) return null;
-            if (broadcast.source0().? != reshape) return null;
-            if (mul.source0().? != broadcast) return null;
-            if (sum.source0().? != mul) return null;
-
             const out_grad = reshape.source0().?;
-            const input_view = mul.source1().?;
+            if (out_grad.n_dims != 4) return null;
+
+            var grad_ref = m.throughAccumAdd(start + 1, reshape_ref);
+            const repeat_ref = m.source0Of(grad_ref.idx + 1, grad_ref.node, .repeat) orelse return null;
+            grad_ref = m.throughAccumAdd(repeat_ref.idx + 1, repeat_ref);
+
+            const mul_ref = m.userOf(grad_ref.idx + 1, grad_ref.node, .mul) orelse return null;
+            const mul = mul_ref.node;
+            const input_view = m.otherInput(mul, grad_ref.node) orelse return null;
             if (!input_view.isOp(.as_strided)) return null;
             const input = input_view.source0().?;
 
-            return .{ .output_idx = start + 3, .payload = .{ .conv2d_bwd_kernel = .{
+            grad_ref = m.throughAccumAdd(mul_ref.idx + 1, mul_ref);
+            const scatter_ref = m.userOf(grad_ref.idx + 1, grad_ref.node, .scatter_add_view) orelse return null;
+            const scatter = scatter_ref.node;
+            if (scatter.source0().? != grad_ref.node) return null;
+            const kernel_view = scatter.source1().?;
+            if (!kernel_view.isOp(.as_strided)) return null;
+            const kernel = kernel_view.source0().?;
+            if (kernel.n_dims != 4) return null;
+
+            if (repeat_ref.node.n_dims != 7 or input_view.n_dims != 7 or kernel_view.n_dims != 7) return null;
+            if (repeat_ref.node.ne[0] != out_grad.ne[0] or repeat_ref.node.ne[1] != out_grad.ne[1] or repeat_ref.node.ne[5] != out_grad.ne[2] or repeat_ref.node.ne[6] != out_grad.ne[3]) return null;
+            if (input_view.ne[0] != out_grad.ne[0] or input_view.ne[1] != out_grad.ne[1] or input_view.ne[5] != out_grad.ne[2] or input_view.ne[6] != out_grad.ne[3]) return null;
+            if (kernel_view.ne[0] != out_grad.ne[0] or kernel_view.ne[1] != out_grad.ne[1] or kernel_view.ne[5] != out_grad.ne[2] or kernel_view.ne[6] != out_grad.ne[3]) return null;
+            if (scatter.ne[0] != kernel.ne[0] or scatter.ne[1] != kernel.ne[1] or scatter.ne[2] != kernel.ne[2] or scatter.ne[3] != kernel.ne[3]) return null;
+
+            return .{ .output_idx = scatter_ref.idx, .payload = .{ .conv2d_bwd_kernel = .{
                 .input = input,
                 .output_grad = out_grad,
                 .reshape_node = reshape,
-                .repeat_node = broadcast,
+                .repeat_node = repeat_ref.node,
                 .mul_node = mul,
-                .output = sum,
+                .output = scatter,
             } } };
         }
 
@@ -428,6 +512,78 @@ pub fn ComputeGraph(comptime T: type) type {
 
             std.mem.sort(CompilerPlan, plans.items, {}, sortCompilerPlans);
             return plans;
+        }
+
+        fn nextFusedChainAtOrAfter(self: *const Self, start: usize, limit: usize) ?usize {
+            for (self.fused_chains.items, 0..) |plan, i| {
+                if (plan.output_idx < start) continue;
+                if (plan.output_idx >= limit) return null;
+                return i;
+            }
+            return null;
+        }
+
+        pub const FusionSummary = struct {
+            node_count: usize,
+            forward_node_count: usize,
+            fused_region_count: usize,
+        };
+
+        pub fn fusionSummary(self: *const Self) FusionSummary {
+            return .{
+                .node_count = self.nodes.items.len,
+                .forward_node_count = self.forward_node_count,
+                .fused_region_count = self.fused_chains.items.len,
+            };
+        }
+
+        pub fn dumpFusionReport(self: *const Self, writer: anytype) !void {
+            const summary = self.fusionSummary();
+            try writer.print("nodes total={} forward={} fused_regions={}\n", .{
+                summary.node_count,
+                summary.forward_node_count,
+                summary.fused_region_count,
+            });
+
+            for (self.fused_chains.items, 0..) |plan, i| {
+                try writer.print("fused[{d}] kind={s} output_idx={}\n", .{ i, @tagName(plan.kind()), plan.output_idx });
+            }
+
+            for (self.nodes.items, 0..) |node, i| {
+                try writer.print("node[{d}] {s} shape={any}\n", .{ i, @tagName(node.opTag()), node.ne[0..node.n_dims] });
+            }
+        }
+
+        pub fn dumpTensorLineage(self: *const Self, writer: anytype, needle: *Tensor(T)) !void {
+            const idx = fused.indexOfNodeMaybe(T, self.nodes.items, needle) orelse {
+                try writer.print("tensor not found in graph\n", .{});
+                return;
+            };
+            try writer.print("lineage for node[{d}] {s} shape={any}\n", .{ idx, @tagName(needle.opTag()), needle.ne[0..needle.n_dims] });
+
+            var visited = std.AutoHashMap(*Tensor(T), void).init(std.heap.page_allocator);
+            defer visited.deinit();
+            try self.dumpTensorLineageRecur(writer, needle, 1, &visited);
+        }
+
+        pub fn debugMatchesConv2dBwdKernelAt(self: *const Self, start: usize) bool {
+            return detectConv2dBwdKernelPattern(self, start) != null;
+        }
+
+        fn dumpTensorLineageRecur(self: *const Self, writer: anytype, node: *Tensor(T), depth: usize, visited: *std.AutoHashMap(*Tensor(T), void)) !void {
+            const gop = try visited.getOrPut(node);
+            if (gop.found_existing) return;
+            gop.value_ptr.* = {};
+
+            const srcs = [_]?*Tensor(T){ node.source0(), node.source1() };
+            for (srcs) |src_o| {
+                const src = src_o orelse continue;
+                const node_idx = fused.indexOfNodeMaybe(T, self.nodes.items, src) orelse continue;
+                var j: usize = 0;
+                while (j < depth * 2) : (j += 1) try writer.writeByte(' ');
+                try writer.print("node[{d}] {s} shape={any}\n", .{ node_idx, @tagName(src.opTag()), src.ne[0..src.n_dims] });
+                try self.dumpTensorLineageRecur(writer, src, depth + 1, visited);
+            }
         }
 
         fn detectCompilerRootRewritePlan(self: *const Self) Alloc.Error!?CompilerPlan {
@@ -572,14 +728,14 @@ pub fn ComputeGraph(comptime T: type) type {
                 }
                 return;
             }
-            var next_chain: usize = 0;
+            var next_chain: usize = self.nextFusedChainAtOrAfter(0, self.forward_node_count) orelse self.fused_chains.items.len;
             for (self.nodes.items[0..self.forward_node_count], 0..) |node, i| {
                 if (i < self.fused_skip.items.len and self.fused_skip.items[i]) {
                     if (next_chain < self.fused_chains.items.len and
                         self.fused_chains.items[next_chain].output_idx == i)
                     {
                         fused.executeFusionPlan(T, self.fused_chains.items[next_chain]);
-                        next_chain += 1;
+                        next_chain = self.nextFusedChainAtOrAfter(i + 1, self.forward_node_count) orelse self.fused_chains.items.len;
                     }
                     continue;
                 }
@@ -1392,6 +1548,45 @@ test "fusion - compiler emits multi-region plans" {
     try testing.expect(plans.items.len >= 2);
     try testing.expectEqual(fused.FusionKind.layer_norm, plans.items[0].plan.kind());
     try testing.expectEqual(fused.FusionKind.softmax, plans.items[plans.items.len - 1].plan.kind());
+}
+
+test "fusion report reflects built graph" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{ 6, 6, 1, 1 });
+    const k = try Tensor(f32).init(a, &.{ 3, 3, 1, 2 });
+    const y = x.conv2d(k).sumAll();
+    try g.buildForward(y);
+    try g.fusionPass();
+
+    const summary = g.fusionSummary();
+    try testing.expect(summary.node_count >= summary.forward_node_count);
+    try testing.expect(summary.fused_region_count > 0);
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(tac);
+    try g.dumpFusionReport(buf.writer(tac));
+    try testing.expect(std.mem.indexOf(u8, buf.items, "fused[") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "node[") != null);
+}
+
+test "tensor lineage reports reachable node chain" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{ 4, 4, 1, 1 });
+    const k = try Tensor(f32).init(a, &.{ 2, 2, 1, 1 });
+    const y = x.conv2d(k).sumAll();
+    try g.buildForward(y);
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(tac);
+    try g.dumpTensorLineage(buf.writer(tac), y);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "lineage for node[") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "sum") != null);
 }
 
 test "layerNorm forward" {

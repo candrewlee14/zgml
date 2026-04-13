@@ -365,6 +365,7 @@ pub fn mapCompilerPattern(comptime T: type, forward_nodes: []const *Tensor(T), v
                 .payload = .{ .layer_norm = ln_plan },
             } };
         },
+        .linear, .linear_gelu, .linear_relu, .linear_residual, .matmul_residual => null,
     };
 }
 

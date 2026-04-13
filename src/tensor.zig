@@ -443,14 +443,15 @@ pub fn Tensor(comptime T: type) type {
 
         /// True if self can be matrix-multiplied with `other`, accounting for transpositions.
         pub fn canMatMul(self: *const Self, transSelf: bool, other: *const Self, transOther: bool) bool {
+            const self_contract = if (transSelf) self.ne[1] else self.ne[0];
+            const other_contract = if (transOther) other.ne[0] else other.ne[1];
+            if (self_contract != other_contract) return false;
+
             var i: usize = 2;
             while (i < max_dims) : (i += 1) {
                 if (self.ne[i] != other.ne[i]) return false;
             }
-            if (!transSelf and !transOther) return self.ne[0] == other.ne[1];
-            if (transSelf and !transOther) return self.ne[1] == other.ne[1];
-            if (!transSelf and transOther) return self.ne[0] == other.ne[0];
-            return self.ne[1] == other.ne[0];
+            return true;
         }
 
         /// True if data is laid out contiguously in memory (no stride gaps).
