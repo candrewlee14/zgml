@@ -655,6 +655,22 @@ test "initLinspace" {
     }
 }
 
+test "reshape" {
+    const t = try Tensor(f32).init(tac, &.{ 2, 3 });
+    defer t.deinit(tac);
+    t.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
+
+    const r = t.reshape(tac, &.{ 3, 2 });
+    defer r.deinit(tac);
+
+    try testing.expectEqual(@as(usize, 6), r.nElems());
+    try testing.expectEqual(@as(u8, 2), r.n_dims);
+    try testing.expectEqual(@as(usize, 3), r.ne[0]);
+    try testing.expectEqual(@as(usize, 2), r.ne[1]);
+    // data is shared (view), so values match
+    try testing.expectEqualSlices(f32, &.{ 1, 2, 3, 4, 5, 6 }, r.data);
+}
+
 test "isMatrix" {
     {
         const tensor = try Tensor(f32).init(tac, &.{ 2, 3 });

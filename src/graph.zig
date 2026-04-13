@@ -529,4 +529,81 @@ test "arange" {
     try testing.expectApproxEqAbs(@as(f32, 0), out.data[0], 0.00001);
 }
 
+test "backward - sqrt" {
+    // f(x) = sqrt(x), f'(x) = 0.5 / sqrt(x)
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).initScalar(a, 4);
+    x.setParam(a);
+    const out = x.sqrt(a);
+    try g.buildForward(out);
+    try g.buildBackward(false);
+    _ = out.grad.?.setAllScalar(1);
+    g.compute();
+
+    try testing.expectApproxEqAbs(@as(f32, 2.0), out.data[0], 1e-6);
+    // f'(4) = 0.5 / sqrt(4) = 0.25
+    try testing.expectApproxEqAbs(@as(f32, 0.25), x.grad.?.data[0], 1e-6);
+}
+
+test "backward - abs" {
+    // f(x) = abs(x), f'(x) = sgn(x)
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{3});
+    x.setData(&[_]f32{ -3, 0, 5 });
+    x.setParam(a);
+    const out = x.abs(a).sumAll(a);
+    try g.buildForward(out);
+    try g.buildBackward(false);
+    _ = out.grad.?.setAllScalar(1);
+    g.compute();
+
+    try testing.expectApproxEqAbs(@as(f32, 8.0), out.data[0], 1e-6);
+    try testing.expectEqualSlices(f32, &.{ -1, 0, 1 }, x.grad.?.data);
+}
+
+test "backward - neg" {
+    // f(x) = -x, f'(x) = -1
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).initScalar(a, 7);
+    x.setParam(a);
+    const out = x.neg(a);
+    try g.buildForward(out);
+    try g.buildBackward(false);
+    _ = out.grad.?.setAllScalar(1);
+    g.compute();
+
+    try testing.expectApproxEqAbs(@as(f32, -7.0), out.data[0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, -1.0), x.grad.?.data[0], 1e-6);
+}
+
+test "backward - relu" {
+    // f(x) = relu(x), f'(x) = step(x)
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{4});
+    x.setData(&[_]f32{ -2, 0, 3, 5 });
+    x.setParam(a);
+    const out = x.relu(a).sumAll(a);
+    try g.buildForward(out);
+    try g.buildBackward(false);
+    _ = out.grad.?.setAllScalar(1);
+    g.compute();
+
+    // relu(-2)=0, relu(0)=0, relu(3)=3, relu(5)=5 → sum=8
+    try testing.expectApproxEqAbs(@as(f32, 8.0), out.data[0], 1e-6);
+    // gradients: step(-2)=0, step(0)=0, step(3)=1, step(5)=1
+    try testing.expectEqualSlices(f32, &.{ 0, 0, 1, 1 }, x.grad.?.data);
+}
+
 //#endregion
