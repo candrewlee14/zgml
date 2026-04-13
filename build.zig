@@ -163,6 +163,25 @@ pub fn build(b: *std.Build) void {
 
     const micro_step = b.step("mnist-micro", "Build and run MNIST CNN training micro-benchmark");
     micro_step.dependOn(&b.addRunArtifact(micro_exe).step);
+
+    // Per-op backward profiler
+    const zgml_prof_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+    const prof_mod = b.createModule(.{
+        .root_source_file = b.path("src/profile_backward.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "zgml", .module = zgml_prof_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_prof_pkg.zgml_options },
+        },
+    });
+    const prof_exe = b.addExecutable(.{
+        .name = "profile-bwd",
+        .root_module = prof_mod,
+    });
+    b.installArtifact(prof_exe);
+    const prof_step = b.step("profile-bwd", "Profile backward pass per-op timing");
+    prof_step.dependOn(&b.addRunArtifact(prof_exe).step);
 }
 
 pub fn runTests(
