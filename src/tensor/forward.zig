@@ -752,6 +752,39 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
+        pub fn computePickRows(dst: *Self, src0: *Self, indices: *Self) void {
+            assert(src0.isMatrix());
+            assert(indices.isVector());
+            assert(dst.isVector());
+            assert(indices.ne[0] == src0.ne[1]);
+            assert(dst.ne[0] == src0.ne[1]);
+
+            const width = src0.ne[0];
+            const rows = src0.ne[1];
+            for (0..rows) |row| {
+                const col = indexFromValue(indices.data[row]);
+                assert(col < width);
+                dst.data[row] = src0.data[row * src0.strides[1] + col];
+            }
+        }
+
+        pub fn computeScatterAddPicks(dst: *Self, updates: *Self, indices: *Self) void {
+            assert(dst.isMatrix());
+            assert(updates.isVector());
+            assert(indices.isVector());
+            assert(indices.ne[0] == dst.ne[1]);
+            assert(updates.ne[0] == dst.ne[1]);
+
+            const width = dst.ne[0];
+            const rows = dst.ne[1];
+            @memset(dst.data, 0);
+            for (0..rows) |row| {
+                const col = indexFromValue(indices.data[row]);
+                assert(col < width);
+                dst.data[row * dst.strides[1] + col] += updates.data[row];
+            }
+        }
+
         /// Transpose the first two dimensions, copying data into contiguous layout.
         /// dst shape is [src.ne[1], src.ne[0], ...] with standard strides.
         pub fn computeTranspose(dst: *Self, src0: *Self) void {
@@ -892,10 +925,16 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .repeat => tensor.computeRepeat(src0.?),
                 .gather_rows => tensor.computeGatherRows(src0.?, src1.?),
                 .scatter_add_rows => tensor.computeScatterAddRows(src0.?, src1.?),
+                .pick_rows => tensor.computePickRows(src0.?, src1.?),
+                .scatter_add_picks => tensor.computeScatterAddPicks(src0.?, src1.?),
                 .matmul => tensor.computeMatMul(src0.?, false, src1.?, false),
                 .matmul_t0 => tensor.computeMatMul(src0.?, true, src1.?, false),
                 .matmul_t1 => tensor.computeMatMul(src0.?, false, src1.?, true),
                 .matmul_t0t1 => tensor.computeMatMul(src0.?, true, src1.?, true),
+                .sub => tensor.computeSub(src0.?, src1.?),
+                .div => tensor.computeDiv(src0.?, src1.?),
+                .relu => tensor.computeRelu(src0.?),
+                .mean => tensor.computeMean(src0.?),
             }
         }
     };

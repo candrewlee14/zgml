@@ -36,6 +36,7 @@ pub fn Ops(comptime Self: type) type {
 
         /// Propagate gradients backward through the primitive op that created this tensor.
         pub fn backward(tensor: *Self, alloc: Alloc, scratch: *std.ArrayList(*Self), inplace: bool) Alloc.Error!void {
+            _ = scratch;
             const src0_o = tensor.src0;
             const src1_o = tensor.src1;
             const out_grad = tensor.grad.?;
@@ -70,6 +71,17 @@ pub fn Ops(comptime Self: type) type {
                     if (src1.grad) |grad| src1.grad = accumGrad(grad, alloc, out_grad, inplace);
                 },
 
+                .sub => {
+                    const src0 = src0_o.?;
+                    const src1 = src1_o.?;
+                    if (src0.grad) |grad| src0.grad = accumGrad(grad, alloc, out_grad, inplace);
+                    if (src1.grad) |grad| {
+                        const contribution = out_grad.neg(alloc);
+                        stripGrad(contribution, alloc);
+                        src1.grad = accumGrad(grad, alloc, contribution, inplace);
+                    }
+                },
+
                 // d/d(src0) [src0 * src1] = src1 * out_grad
                 // d/d(src1) [src0 * src1] = src0 * out_grad
                 .mul => {
@@ -87,6 +99,25 @@ pub fn Ops(comptime Self: type) type {
                     }
                 },
 
+                .div => {
+                    const src0 = src0_o.?;
+                    const src1 = src1_o.?;
+                    if (src0.grad) |grad| {
+                        const contribution = out_grad.div(alloc, src1);
+                        stripGrad(contribution, alloc);
+                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                    }
+                    if (src1.grad) |grad| {
+                        const numer = src0.mul(alloc, out_grad).neg(alloc);
+                        stripGrad(numer, alloc);
+                        const denom = src1.mul(alloc, src1);
+                        stripGrad(denom, alloc);
+                        const contribution = numer.div(alloc, denom);
+                        stripGrad(contribution, alloc);
+                        src1.grad = accumGrad(grad, alloc, contribution, inplace);
+                    }
+                },
+
                 // d/d(src0) [-src0] = -out_grad
                 .neg => {
                     const src0 = src0_o.?;
@@ -94,6 +125,17 @@ pub fn Ops(comptime Self: type) type {
                         const neg_grad = out_grad.neg(alloc);
                         stripGrad(neg_grad, alloc);
                         src0.grad = accumGrad(grad, alloc, neg_grad, inplace);
+                    }
+                },
+
+                .relu => {
+                    const src0 = src0_o.?;
+                    if (src0.grad) |grad| {
+                        const mask = src0.step(alloc);
+                        stripGrad(mask, alloc);
+                        const contribution = mask.mul(alloc, out_grad);
+                        stripGrad(contribution, alloc);
+                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
                     }
                 },
 
@@ -173,6 +215,19 @@ pub fn Ops(comptime Self: type) type {
                     }
                 },
 
+                .mean => {
+                    const src0 = src0_o.?;
+                    if (src0.grad) |grad| {
+                        const count: f64 = @floatFromInt(src0.nElems() / tensor.nElems());
+                        const inv_count = try Self.initScalar(alloc, @as(@TypeOf(src0.data[0]), @floatCast(1.0 / count)));
+                        const expanded = out_grad.repeatLike(alloc, grad);
+                        stripGrad(expanded, alloc);
+                        const contribution = expanded.mul(alloc, inv_count.repeatLike(alloc, expanded));
+                        stripGrad(contribution, alloc);
+                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                    }
+                },
+
                 .max => {
                     const src0 = src0_o.?;
                     if (src0.grad) |grad| {
@@ -205,6 +260,18 @@ pub fn Ops(comptime Self: type) type {
 
                 .scatter_add_rows => {},
 
+                .pick_rows => {
+                    const src0 = src0_o.?;
+                    const indices = src1_o.?;
+                    if (src0.grad) |grad| {
+                        const contribution = grad.scatterAddPicks(alloc, indices, out_grad);
+                        stripGrad(contribution, alloc);
+                        src0.grad = accumGrad(grad, alloc, contribution, inplace);
+                    }
+                },
+
+                .scatter_add_picks => {},
+
                 // d/d(A) [A @ B] = out_grad @ B^T
                 // d/d(B) [A @ B] = A^T @ out_grad
                 .matmul => {
@@ -225,42 +292,42 @@ pub fn Ops(comptime Self: type) type {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        try addToScratchUniq(alloc, scratch, out_grad.matMul(alloc, false, src1, true));
-                        src0.grad = accumGrad(grad, alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(alloc, scratch, grad);
+                        const z = src1.matMul(alloc, false, out_grad, true);
+                        stripGrad(z, alloc);
+                        src0.grad = accumGrad(grad, alloc, z, inplace);
                     }
                     if (src1.grad) |grad| {
-                        try addToScratchUniq(alloc, scratch, src0.matMul(alloc, false, out_grad, false));
-                        src1.grad = accumGrad(grad, alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(alloc, scratch, grad);
+                        const z = src0.matMul(alloc, false, out_grad, false);
+                        stripGrad(z, alloc);
+                        src1.grad = accumGrad(grad, alloc, z, inplace);
                     }
                 },
                 .matmul_t1 => {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        try addToScratchUniq(alloc, scratch, out_grad.matMul(alloc, false, src1, false));
-                        src0.grad = accumGrad(grad, alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(alloc, scratch, grad);
+                        const z = out_grad.matMul(alloc, false, src1, false);
+                        stripGrad(z, alloc);
+                        src0.grad = accumGrad(grad, alloc, z, inplace);
                     }
                     if (src1.grad) |grad| {
-                        try addToScratchUniq(alloc, scratch, src0.matMul(alloc, true, out_grad, false));
-                        src1.grad = accumGrad(grad, alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(alloc, scratch, grad);
+                        const z = out_grad.matMul(alloc, true, src0, false);
+                        stripGrad(z, alloc);
+                        src1.grad = accumGrad(grad, alloc, z, inplace);
                     }
                 },
                 .matmul_t0t1 => {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.grad) |grad| {
-                        try addToScratchUniq(alloc, scratch, out_grad.matMul(alloc, true, src1, false));
-                        src0.grad = accumGrad(grad, alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(alloc, scratch, grad);
+                        const z = src1.matMul(alloc, true, out_grad, true);
+                        stripGrad(z, alloc);
+                        src0.grad = accumGrad(grad, alloc, z, inplace);
                     }
                     if (src1.grad) |grad| {
-                        try addToScratchUniq(alloc, scratch, src0.matMul(alloc, false, out_grad, true));
-                        src1.grad = accumGrad(grad, alloc, scratch.items[scratch.items.len - 1], inplace);
-                        try addToScratchUniq(alloc, scratch, grad);
+                        const z = out_grad.matMul(alloc, true, src0, true);
+                        stripGrad(z, alloc);
+                        src1.grad = accumGrad(grad, alloc, z, inplace);
                     }
                 },
 
