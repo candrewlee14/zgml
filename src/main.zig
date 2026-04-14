@@ -15,6 +15,7 @@ pub const loss = @import("loss.zig");
 pub const nn = @import("nn.zig");
 pub const checkpoint = @import("checkpoint.zig");
 pub const comptime_model = @import("comptime_model.zig");
+pub const quant = @import("quant.zig");
 
 test "ref all decls" {
     _ = testing.refAllDeclsRecursive(models);
@@ -25,4 +26,5 @@ test "ref all decls" {
     _ = @import("index.zig");
     _ = @import("shaped.zig");
     _ = @import("comptime_model.zig");
+    _ = @import("quant.zig");
 }
