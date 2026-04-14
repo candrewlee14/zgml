@@ -1,0 +1,29 @@
+src/data/mnist.zig
+  ac0c77479bd3ad7b 1-116
+src/data.zig
+  ac0c77479bd3ad7b 1-22
+src/data/dataloader.zig
+  ac0c77479bd3ad7b 1-269
+src/main.zig
+  ac0c77479bd3ad7b 23,37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "d71961a0b629532af5dc7358f1c7d2f2261493c0",
+  "prompts": {
+    "ac0c77479bd3ad7b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0f927dd3-245c-4f42-b2a1-18312aac8ea3",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 719,
+      "total_deletions": 310,
+      "accepted_lines": 409,
+      "overriden_lines": 0
+    }
+  }
+}
