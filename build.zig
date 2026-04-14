@@ -205,6 +205,29 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(rbench_exe);
     const rbench_step = b.step("bench-reduce", "Benchmark reduction and broadcast ops");
     rbench_step.dependOn(&b.addRunArtifact(rbench_exe).step);
+
+    // Text generation binary
+    const zgml_gen_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+    const gen_mod = b.createModule(.{
+        .root_source_file = b.path("scripts/generate.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "zgml", .module = zgml_gen_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_gen_pkg.zgml_options },
+        },
+    });
+    const gen_exe = b.addExecutable(.{
+        .name = "generate",
+        .root_module = gen_mod,
+    });
+    if (use_blas) {
+        linkBlas(target, gen_exe);
+        gen_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    b.installArtifact(gen_exe);
+    const gen_step = b.step("generate", "Build text generation binary");
+    gen_step.dependOn(&b.addInstallArtifact(gen_exe, .{}).step);
 }
 
 pub fn runTests(
