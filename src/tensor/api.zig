@@ -677,6 +677,31 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return res;
         }
 
+        /// View rows [start, end) of a 2D tensor.  Returns a strided view
+        /// — no data copy.  The result has stride `[1, original_rows]` so
+        /// matmul and other strided ops work correctly.
+        ///
+        /// self: [rows, cols]
+        /// Returns: [end - start, cols]
+        pub fn sliceRows(self: *Self, start: usize, end: usize) *Self {
+            assert(self.n_dims >= 2);
+            assert(end > start);
+            assert(end <= self.ne[0]);
+            const alloc = a(self);
+            const new_rows = end - start;
+            // Point data to the first element of the sliced row range.
+            const res = Self.initHelper(alloc, &.{ new_rows, self.ne[1] }, self.data[start..]) catch unreachable;
+            res.op = .as_strided;
+            res.src0 = self;
+            // Inherit parent's strides — the row slice is non-contiguous
+            // when new_rows < original rows.
+            res.strides[0] = self.strides[0];
+            res.strides[1] = self.strides[1];
+            res.storage_offset = 0;
+            res.bookkeeping.data_ownership = .borrowed;
+            return res;
+        }
+
         // ---------------------------------------------------------------
         // Convolution & pooling
         // ---------------------------------------------------------------

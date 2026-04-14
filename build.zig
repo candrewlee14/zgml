@@ -92,6 +92,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run zgml tests");
     test_step.dependOn(runTests(b, optimize, target, .{ .use_blas = use_blas }));
+    test_step.dependOn(runInferenceTests(b, optimize, target, .{ .use_blas = use_blas }));
 
     // Benchmark — always built with ReleaseFast
     const zgml_bench_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
@@ -206,6 +207,25 @@ pub fn build(b: *std.Build) void {
     const rbench_step = b.step("bench-reduce", "Benchmark reduction and broadcast ops");
     rbench_step.dependOn(&b.addRunArtifact(rbench_exe).step);
 
+    // Inference benchmark
+    {
+        const pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+        const mod = b.createModule(.{
+            .root_source_file = b.path("bench/inference.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "zgml", .module = pkg.zgml },
+                .{ .name = "zgml_options", .module = pkg.zgml_options },
+            },
+        });
+        const exe = b.addExecutable(.{ .name = "bench-inference", .root_module = mod });
+        if (use_blas) { linkBlas(target, exe); exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" }); }
+        b.installArtifact(exe);
+        const step = b.step("bench-inference", "Benchmark inference session (f32 vs int8)");
+        step.dependOn(&b.addRunArtifact(exe).step);
+    }
+
     // Text generation binary
     const zgml_gen_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
     const gen_mod = b.createModule(.{
@@ -301,6 +321,35 @@ pub fn runTests(
         test_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     b.installArtifact(test_exe);
+
+    return &b.addRunArtifact(test_exe).step;
+}
+
+fn runInferenceTests(
+    b: *std.Build,
+    optimize: std.builtin.OptimizeMode,
+    target: std.Build.ResolvedTarget,
+    options: Options,
+) *std.Build.Step {
+    const zgml_pkg = package(b, target, optimize, .{ .options = options });
+
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/inference.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zgml_options", .module = zgml_pkg.zgml_options },
+        },
+    });
+
+    const test_exe = b.addTest(.{
+        .name = "zgml-inference-tests",
+        .root_module = test_mod,
+    });
+    if (options.use_blas) {
+        linkBlas(target, test_exe);
+        test_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
 
     return &b.addRunArtifact(test_exe).step;
 }

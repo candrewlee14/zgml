@@ -135,40 +135,61 @@ pub fn GPT(comptime T: type, comptime config: GPTConfig) type {
 
         /// Cached forward for autoregressive generation (O(1) per token).
         ///
-        /// Processes a single token at position `pos` using KV caches.
-        /// On first call (pos=0), also prefills the cache. For generation,
-        /// call with each new token sequentially: pos=0,1,2,...
-        ///
-        /// `token_id`: vocabulary index of the new token.
-        /// `pos`: current sequence position.
-        /// `alloc`: allocator for intermediate tensors.
-        /// `k_caches`/`v_caches`: per-layer, per-head [d_head, max_seq] tensors.
-        ///
+        /// `k_caches`/`v_caches`: packed per-layer [d_model, max_seq] tensors.
         /// Returns logits [vocab_size, 1].
         pub fn forwardCached(
             self: *const Self,
             alloc: Alloc,
             token_id: usize,
             pos: usize,
-            k_caches: [config.n_layers][config.n_heads]*Tensor(T),
-            v_caches: [config.n_layers][config.n_heads]*Tensor(T),
+            k_caches: [config.n_layers]*Tensor(T),
+            v_caches: [config.n_layers]*Tensor(T),
         ) *Tensor(T) {
-            // 1. Single-token embedding at position
             var x = self.embed.forwardAt(alloc, token_id, pos);
-
-            // 2. Transformer blocks with KV caches
             for (0..config.n_layers) |i| {
                 x = self.blocks[i].forwardCached(x, k_caches[i], v_caches[i], pos);
             }
 
-            // 3. Final layer norm (single token: reduce over [1,1])
             var ln_reduce = [_]usize{ 1, 1 };
             x = x.layerNorm(&ln_reduce, 1e-5);
             if (config.learnable_ln) {
                 x = x.mul(self.ln_f_gamma.inner.repeatLike(x)).addBias(self.ln_f_beta.inner);
             }
 
-            // 4. Output projection: [d_model, 1] -> [vocab_size, 1]
+            if (config.tied_lm_head) {
+                return x.matMul(false, self.embed.token_embed.inner, true);
+            } else {
+                return x.matMul(false, self.out_proj.inner, false);
+            }
+        }
+
+        /// Frozen cached forward for persistent inference plans.
+        ///
+        /// Like `forwardCached`, but attends over the full KV cache with an
+        /// explicit mask.  All shapes are position-independent, so the graph
+        /// can be built once and re-executed.
+        ///
+        /// `x`: [d_model, 1] — token embedding + positional encoding.
+        /// `attn_mask`: [max_seq_len, 1] — 0 for valid, -inf for masked.
+        pub fn forwardCachedFrozen(
+            self: *const Self,
+            x_in: *Tensor(T),
+            k_caches: [config.n_layers]*Tensor(T),
+            v_caches: [config.n_layers]*Tensor(T),
+            pos: usize,
+            attn_mask: *Tensor(T),
+        ) *Tensor(T) {
+            var x = x_in;
+            for (0..config.n_layers) |i| {
+                x = self.blocks[i].forwardCachedFrozen(x, k_caches[i], v_caches[i], pos, attn_mask);
+            }
+
+            var ln_reduce = [_]usize{ 1, 1 };
+            x = x.layerNorm(&ln_reduce, 1e-5);
+            if (config.learnable_ln) {
+                x = x.mul(self.ln_f_gamma.inner.repeatLike(x)).addBias(self.ln_f_beta.inner);
+            }
+
             if (config.tied_lm_head) {
                 return x.matMul(false, self.embed.token_embed.inner, true);
             } else {
@@ -290,22 +311,16 @@ test "GPT - cached forward produces valid logits" {
         .n_layers = 2,
         .max_seq_len = 16,
     };
-    const Model = GPT(f32, cfg);
-    const model = try Model.init(a);
+    const model = try GPT(f32, cfg).init(a);
 
-    const d_head = cfg.d_model / cfg.n_heads;
-
-    // Allocate KV caches: [n_layers][n_heads] of [d_head, max_seq]
-    var k_caches: [cfg.n_layers][cfg.n_heads]*Tensor(f32) = undefined;
-    var v_caches: [cfg.n_layers][cfg.n_heads]*Tensor(f32) = undefined;
+    // Packed per-layer KV caches: [d_model, max_seq]
+    var k_caches: [cfg.n_layers]*Tensor(f32) = undefined;
+    var v_caches: [cfg.n_layers]*Tensor(f32) = undefined;
     for (0..cfg.n_layers) |l| {
-        for (0..cfg.n_heads) |h| {
-            k_caches[l][h] = try Tensor(f32).init(a, &.{ d_head, cfg.max_seq_len });
-            v_caches[l][h] = try Tensor(f32).init(a, &.{ d_head, cfg.max_seq_len });
-        }
+        k_caches[l] = try Tensor(f32).init(a, &.{ cfg.d_model, cfg.max_seq_len });
+        v_caches[l] = try Tensor(f32).init(a, &.{ cfg.d_model, cfg.max_seq_len });
     }
 
-    // Run 3 tokens through cached forward
     const tokens = [_]usize{ 0, 3, 1 };
     for (tokens, 0..) |tok, pos| {
         const logits = model.forwardCached(a, tok, pos, k_caches, v_caches);
@@ -318,7 +333,6 @@ test "GPT - cached forward produces valid logits" {
             try testing.expect(!std.math.isInf(v));
         }
 
-        // Reset graph for next step (KV caches persist in tensor data)
         g.built_forward = false;
         g.nodes.clearRetainingCapacity();
         g.visited_nodes = .empty;
@@ -326,8 +340,6 @@ test "GPT - cached forward produces valid logits" {
 }
 
 test "GPT - cached forward is consistent across steps" {
-    // Verify that running the same prompt through cached forward twice
-    // (with reset cache) produces identical results.
     const cfg = GPTConfig{
         .vocab_size = 8,
         .d_model = 4,
@@ -337,7 +349,6 @@ test "GPT - cached forward is consistent across steps" {
         .max_seq_len = 16,
     };
     const Model = GPT(f32, cfg);
-    const d_head = cfg.d_model / cfg.n_heads;
     const tokens = [_]usize{ 2, 5, 0 };
 
     // Run 1
@@ -346,12 +357,12 @@ test "GPT - cached forward is consistent across steps" {
     const a1 = g1.allocator();
     const model = try Model.init(a1);
 
-    var k1: [cfg.n_layers][cfg.n_heads]*Tensor(f32) = undefined;
-    var v1: [cfg.n_layers][cfg.n_heads]*Tensor(f32) = undefined;
-    for (0..cfg.n_layers) |l| for (0..cfg.n_heads) |h| {
-        k1[l][h] = try Tensor(f32).init(a1, &.{ d_head, cfg.max_seq_len });
-        v1[l][h] = try Tensor(f32).init(a1, &.{ d_head, cfg.max_seq_len });
-    };
+    var k1: [cfg.n_layers]*Tensor(f32) = undefined;
+    var v1: [cfg.n_layers]*Tensor(f32) = undefined;
+    for (0..cfg.n_layers) |l| {
+        k1[l] = try Tensor(f32).init(a1, &.{ cfg.d_model, cfg.max_seq_len });
+        v1[l] = try Tensor(f32).init(a1, &.{ cfg.d_model, cfg.max_seq_len });
+    }
 
     var logits1: *Tensor(f32) = undefined;
     for (tokens, 0..) |tok, pos| {
@@ -369,12 +380,12 @@ test "GPT - cached forward is consistent across steps" {
     const model2 = try Model.init(a2);
     for (model.params(), model2.params()) |src, dst| @memcpy(dst.data, src.data);
 
-    var k2: [cfg.n_layers][cfg.n_heads]*Tensor(f32) = undefined;
-    var v2: [cfg.n_layers][cfg.n_heads]*Tensor(f32) = undefined;
-    for (0..cfg.n_layers) |l| for (0..cfg.n_heads) |h| {
-        k2[l][h] = try Tensor(f32).init(a2, &.{ d_head, cfg.max_seq_len });
-        v2[l][h] = try Tensor(f32).init(a2, &.{ d_head, cfg.max_seq_len });
-    };
+    var k2: [cfg.n_layers]*Tensor(f32) = undefined;
+    var v2: [cfg.n_layers]*Tensor(f32) = undefined;
+    for (0..cfg.n_layers) |l| {
+        k2[l] = try Tensor(f32).init(a2, &.{ cfg.d_model, cfg.max_seq_len });
+        v2[l] = try Tensor(f32).init(a2, &.{ cfg.d_model, cfg.max_seq_len });
+    }
 
     var logits2: *Tensor(f32) = undefined;
     for (tokens, 0..) |tok, pos| {
@@ -385,7 +396,6 @@ test "GPT - cached forward is consistent across steps" {
         g2.visited_nodes = .empty;
     }
 
-    // Same weights + same tokens → identical logits
     for (logits1.data[0..cfg.vocab_size], logits2.data[0..cfg.vocab_size]) |a, b| {
         try testing.expectApproxEqAbs(a, b, 1e-5);
     }
@@ -406,6 +416,6 @@ test "GPT - param count is correct" {
     }).init(a);
 
     const p = model.params();
-    // 1 (embed) + 2 * (4*2 + 4) (blocks) + 1 (out_proj) = 1 + 24 + 1 = 26
-    try testing.expectEqual(@as(usize, 26), p.len);
+    // 1 (embed) + 2 * (2 + 4) (blocks: w_qkv + w_o + FFN) + 1 (out_proj) = 1 + 12 + 1 = 14
+    try testing.expectEqual(@as(usize, 14), p.len);
 }
