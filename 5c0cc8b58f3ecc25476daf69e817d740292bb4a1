@@ -1,0 +1,55 @@
+build.zig
+  f220f28ac1cbbf08 89
+  0a80f2ddfa378da6 209-231
+src/tensor/fused.zig
+  f220f28ac1cbbf08 263-265,269-271,356-399,413-428,430-440,442-445,457-458,460-475,478,485-486,488-489,491-493,495-546,621-622,638-639,657-658,663,666,952-956,961,976,1006-1011,1035,1081-1083,1087,1089-1100,1102-1104,1106-1107,1109,1116,1118,1122,1124-1127,1132-1138,1141-1145
+src/tensor.zig
+  f220f28ac1cbbf08 494-502,532,535-541,549-557
+benchmarks/op_bench_pytorch.py
+  0a80f2ddfa378da6 1-179
+src/tensor/forward.zig
+  f220f28ac1cbbf08 14,215-222,241-294,296,559-608,845-850,852,854-864,873-874,895-899,902-906,913-924,928-933,935,943-947,950-954,958-959
+src/graph.zig
+  f220f28ac1cbbf08 846-1064
+  0a80f2ddfa378da6 715-845
+src/main.zig
+  0a80f2ddfa378da6 7
+benchmarks/op_bench.zig
+  0a80f2ddfa378da6 1-105,107,109-127,134-168
+  f220f28ac1cbbf08 106,108,128-133
+benchmarks/mnist_pytorch.py
+  f220f28ac1cbbf08 1-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "5c0cc8b58f3ecc25476daf69e817d740292bb4a1",
+  "prompts": {
+    "0a80f2ddfa378da6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b98e81c-7849-4ca4-b187-bdae3604a0c8",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 896,
+      "total_deletions": 293,
+      "accepted_lines": 494,
+      "overriden_lines": 0
+    },
+    "f220f28ac1cbbf08": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "127b28d5-3c60-4529-8383-bded4b43bbeb",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 1184,
+      "total_deletions": 687,
+      "accepted_lines": 779,
+      "overriden_lines": 0
+    }
+  }
+}
