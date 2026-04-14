@@ -93,6 +93,16 @@ pub fn main() !void {
         .max_seq_len = 256,
     };
 
+    // GPT-2 124M scale (d=768, 12 layers, 12 heads).
+    const gpt2 = GPTConfig{
+        .vocab_size = 4096, // reduced from 50257 to keep memory reasonable
+        .d_model = 768,
+        .n_heads = 12,
+        .d_ff = 3072,
+        .n_layers = 12,
+        .max_seq_len = 256,
+    };
+
     // --- Small ---
     try w.interface.print("Small (d=64, L=4, H=4):\n", .{});
     try runBenchmark("CPU f32   ", small, false, null, &w.interface);
@@ -107,6 +117,14 @@ pub fn main() !void {
     try runBenchmark("CPU int8  ", medium, true, null, &w.interface);
     if (metal) |be| {
         try runBenchmark("Metal int8", medium, true, be, &w.interface);
+    }
+
+    // --- GPT-2 scale ---
+    try w.interface.print("\nGPT-2 scale (d=768, L=12, H=12):\n", .{});
+    try runBenchmark("CPU f32   ", gpt2, false, null, &w.interface);
+    try runBenchmark("CPU int8  ", gpt2, true, null, &w.interface);
+    if (metal) |be| {
+        try runBenchmark("Metal int8", gpt2, true, be, &w.interface);
     }
 
     try w.interface.print("\n", .{});
