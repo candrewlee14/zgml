@@ -70,6 +70,14 @@ pub fn QuantizedWeight(comptime T: type) type {
             };
         }
 
+        /// Quantize from a col-major 2D Tensor.
+        ///
+        /// Col-major [ne0, ne1] has the same flat layout as row-major [ne1, ne0].
+        /// The quantized weight stores [K=ne1, N=ne0] for matmul dispatch.
+        pub fn fromTensor(alloc: std.mem.Allocator, tensor: anytype, block_size: usize) !Self {
+            return fromSlice(alloc, tensor.data, tensor.ne[1], tensor.ne[0], block_size);
+        }
+
         pub fn deinit(self: Self, alloc: std.mem.Allocator) void {
             alloc.free(self.data);
             alloc.free(self.scales);

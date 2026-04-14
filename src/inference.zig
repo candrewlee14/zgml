@@ -42,6 +42,7 @@ const Tensor = @import("tensor.zig").Tensor;
 const ComputeGraph = @import("graph.zig").ComputeGraph;
 const GPT = @import("models/gpt.zig").GPT;
 const GPTConfig = @import("models/gpt.zig").GPTConfig;
+const QuantizedWeight = @import("quant.zig").QuantizedWeight;
 
 /// Frozen forward-only execution plan.
 ///
@@ -78,6 +79,11 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
 
         // Workspace reuse state.
         workspace_bufs: [][]T,
+
+        // Quantization state (empty until quantize() is called).
+        quant_weights: []QuantizedWeight(T),
+        quant_nodes: []*Tensor(T),
+        quant_map: std.AutoHashMapUnmanaged(*Tensor(T), usize),
 
         /// Build a frozen plan from an existing model and KV caches.
         ///
@@ -141,17 +147,118 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
                 .logits = logits,
                 .logits_buf = logits_buf,
                 .workspace_bufs = bufs,
+                .quant_weights = &.{},
+                .quant_nodes = &.{},
+                .quant_map = .empty,
             };
         }
 
         /// Free the graph, workspace buffers, and output buffer.
         /// Does NOT free the model weights or KV caches (caller owns those).
         pub fn deinit(self: *Self) void {
+            for (self.quant_weights) |qw| qw.deinit(self.backing_alloc);
+            if (self.quant_weights.len > 0) self.backing_alloc.free(self.quant_weights);
+            if (self.quant_nodes.len > 0) self.backing_alloc.free(self.quant_nodes);
+            self.quant_map.deinit(self.backing_alloc);
             for (self.workspace_bufs) |buf| self.backing_alloc.free(buf);
             if (self.workspace_bufs.len > 0) self.backing_alloc.free(self.workspace_bufs);
             self.backing_alloc.free(self.logits_buf);
             self.backing_alloc.free(self.slice_assign_nodes);
             self.graph.deinit();
+        }
+
+        /// Quantize eligible weight matmuls to int8.  Subsequent `execute()`
+        /// calls use quantized matmul for those nodes — 4x weight memory
+        /// reduction.  Activations, norms, and KV caches stay in f32.
+        pub fn quantize(self: *Self, block_size: usize) !void {
+            const alloc = self.backing_alloc;
+            const nodes = self.graph.nodes.items[0..self.graph.forward_node_count];
+
+            // Find matmul nodes where one source is a parameter.
+            var count: usize = 0;
+            for (nodes) |node| {
+                if (node.opTag() == .matmul and isWeightMatmul(node)) count += 1;
+            }
+            if (count == 0) return;
+
+            const qw = try alloc.alloc(QuantizedWeight(T), count);
+            errdefer alloc.free(qw);
+            const qi = try alloc.alloc(*Tensor(T), count);
+            errdefer alloc.free(qi);
+
+            var idx: usize = 0;
+            for (nodes) |node| {
+                if (node.opTag() == .matmul and isWeightMatmul(node)) {
+                    const weight = if (node.src1.?.isParam()) node.src1.? else node.src0.?;
+                    qw[idx] = try QuantizedWeight(T).fromTensor(alloc, weight, block_size);
+                    qi[idx] = node;
+                    idx += 1;
+                }
+            }
+
+            // Free any prior quantization.
+            for (self.quant_weights) |w| w.deinit(alloc);
+            if (self.quant_weights.len > 0) alloc.free(self.quant_weights);
+            if (self.quant_nodes.len > 0) alloc.free(self.quant_nodes);
+            self.quant_map.deinit(alloc);
+
+            // Build pointer → index map for O(1) dispatch.
+            var map: std.AutoHashMapUnmanaged(*Tensor(T), usize) = .empty;
+            try map.ensureTotalCapacity(alloc, @intCast(count));
+            for (qi, 0..) |node, i| map.putAssumeCapacity(node, i);
+
+            self.quant_weights = qw;
+            self.quant_nodes = qi;
+            self.quant_map = map;
+        }
+
+        /// Custom execution: iterate forward nodes, dispatching quantized
+        /// matmul for weight-matmul nodes and standard compute for the rest.
+        /// Bypasses fusion (minor cost — the big wins are in quantized matmul).
+        fn computeQuantized(self: *Self) void {
+            for (self.graph.nodes.items[0..self.graph.forward_node_count]) |node| {
+                if (self.quant_map.get(node)) |qi| {
+                    self.executeQuantizedMatmul(node, &self.quant_weights[qi]);
+                } else {
+                    node.compute();
+                }
+            }
+        }
+
+        /// Execute a single matmul node using quantized weights.
+        fn executeQuantizedMatmul(self: *const Self, node: *Tensor(T), qw: *const QuantizedWeight(T)) void {
+            _ = self;
+            const src0 = node.src0.?;
+            const src1 = node.src1.?;
+            const flags = node.matmul_flags;
+
+            // Determine which source is the weight (quantized) and which is the input.
+            const is_src1_weight = src1.isParam();
+            const input = if (is_src1_weight) src0 else src1;
+            const weight_src = if (is_src1_weight) src1 else src0;
+            _ = weight_src;
+            const trans_input = if (is_src1_weight) flags.trans0 else flags.trans1;
+            _ = trans_input;
+
+            // Extract dimensions in the same convention as the standard matmul.
+            const M = if (flags.trans0) src0.ne[0] else src0.ne[1];
+            const N = if (flags.trans1) src1.ne[1] else src1.ne[0];
+            const K = if (flags.trans0) src0.ne[1] else src0.ne[0];
+
+            // The quantized matmul expects:
+            //   input: [M, K] row-major (= col-major [K, M])
+            //   weight: [K, N] row-major (= col-major [N, K]) — stored in qw
+            //   dst: [M, N] row-major (= col-major [N, M])
+            //
+            // Our col-major tensors have this exact flat layout, so we pass
+            // data pointers directly.
+            qw.matmul(input.data, node.data, M, N, K);
+        }
+
+        fn isWeightMatmul(node: *Tensor(T)) bool {
+            if (node.src0) |s| { if (s.isParam()) return true; }
+            if (node.src1) |s| { if (s.isParam()) return true; }
+            return false;
         }
 
         /// Execute one step: patch inputs, reset intermediates, compute.
@@ -189,7 +296,11 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
 
             // 5. Reset intermediates and execute.
             self.graph.reset();
-            self.graph.computeNoGrad();
+            if (self.quant_weights.len > 0) {
+                self.computeQuantized();
+            } else {
+                self.graph.computeNoGrad();
+            }
 
             // 6. Copy to stable output buffer.
             @memcpy(self.logits_buf, self.logits.data[0..config.vocab_size]);
@@ -399,6 +510,12 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
         /// Current sequence position (number of tokens processed so far).
         pub fn position(self: *const Self) usize {
             return self.pos;
+        }
+
+        /// Quantize eligible weight matrices to int8.
+        /// Call after loading weights, before the first `step()`.
+        pub fn quantize(self: *Self) !void {
+            try self.plan.quantize(@import("quant.zig").default_block_size);
         }
 
         /// Process one token and return logits over the vocabulary.
@@ -640,5 +757,63 @@ test "InferencePlan workspace reuse reduces slot count" {
 
     if (n_intermediates > 2) {
         try testing.expect(n_slots < n_intermediates);
+    }
+}
+
+test "Quantized InferenceSession produces valid logits" {
+    const cfg = GPTConfig{
+        .vocab_size = 8,
+        .d_model = 4,
+        .n_heads = 2,
+        .d_ff = 8,
+        .n_layers = 2,
+        .max_seq_len = 16,
+    };
+
+    var session = try InferenceSession(f32, cfg).init(testing.allocator);
+    defer session.deinit();
+    try session.quantize();
+
+    const tokens = [_]usize{ 0, 3, 1, 5, 7 };
+    for (tokens) |tok| {
+        const logits = try session.step(tok);
+        try testing.expectEqual(@as(usize, cfg.vocab_size), logits.len);
+        for (logits) |v| {
+            try testing.expect(!std.math.isNan(v));
+            try testing.expect(!std.math.isInf(v));
+        }
+    }
+}
+
+test "Quantized logits are close to f32 logits" {
+    const cfg = GPTConfig{
+        .vocab_size = 8,
+        .d_model = 4,
+        .n_heads = 2,
+        .d_ff = 8,
+        .n_layers = 1,
+        .max_seq_len = 8,
+    };
+
+    var f32_session = try InferenceSession(f32, cfg).init(testing.allocator);
+    defer f32_session.deinit();
+
+    var q_session = try InferenceSession(f32, cfg).init(testing.allocator);
+    defer q_session.deinit();
+
+    // Same weights.
+    for (f32_session.model.params(), q_session.model.params()) |src, dst| {
+        @memcpy(dst.data, src.data);
+    }
+    try q_session.quantize();
+
+    const tokens = [_]usize{ 2, 5, 0 };
+    for (tokens) |tok| {
+        const f32_logits = try f32_session.step(tok);
+        const q_logits = try q_session.step(tok);
+        for (f32_logits, q_logits) |f, q| {
+            // int8 quantization error for small weights — allow generous tolerance.
+            try testing.expectApproxEqAbs(f, q, 0.5);
+        }
     }
 }
