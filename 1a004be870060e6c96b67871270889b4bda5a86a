@@ -1,0 +1,23 @@
+benchmarks/metal_bench.zig
+  dfd5433e08229ae6 22-37,39-51,53-54,56,58,92,95-102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "1a004be870060e6c96b67871270889b4bda5a86a",
+  "prompts": {
+    "dfd5433e08229ae6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4ba0dc3-34c0-45d9-a884-69e70ecea226",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 210,
+      "total_deletions": 204,
+      "accepted_lines": 139,
+      "overriden_lines": 0
+    }
+  }
+}
