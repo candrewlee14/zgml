@@ -176,6 +176,40 @@ pub fn GPT(comptime T: type, comptime config: GPTConfig) type {
             }
         }
 
+        /// Frozen cached forward for persistent inference plans.
+        ///
+        /// Like `forwardCached`, but takes a pre-built input embedding and
+        /// an explicit attention mask.  All shapes are position-independent,
+        /// so the graph can be built once and re-executed.
+        ///
+        /// `x`: [d_model, 1] — token embedding + positional encoding.
+        /// `attn_mask`: [max_seq_len, 1] — 0 for valid, -inf for masked.
+        pub fn forwardCachedFrozen(
+            self: *const Self,
+            x_in: *Tensor(T),
+            k_caches: [config.n_layers][config.n_heads]*Tensor(T),
+            v_caches: [config.n_layers][config.n_heads]*Tensor(T),
+            pos: usize,
+            attn_mask: *Tensor(T),
+        ) *Tensor(T) {
+            var x = x_in;
+            for (0..config.n_layers) |i| {
+                x = self.blocks[i].forwardCachedFrozen(x, k_caches[i], v_caches[i], pos, attn_mask);
+            }
+
+            var ln_reduce = [_]usize{ 1, 1 };
+            x = x.layerNorm(&ln_reduce, 1e-5);
+            if (config.learnable_ln) {
+                x = x.mul(self.ln_f_gamma.inner.repeatLike(x)).addBias(self.ln_f_beta.inner);
+            }
+
+            if (config.tied_lm_head) {
+                return x.matMul(false, self.embed.token_embed.inner, true);
+            } else {
+                return x.matMul(false, self.out_proj.inner, false);
+            }
+        }
+
         /// Return all learnable parameters.
         pub fn params(self: *const Self) [total_params]*Tensor(T) {
             var result: [total_params]*Tensor(T) = undefined;

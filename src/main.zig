@@ -18,6 +18,7 @@ pub const comptime_model = @import("comptime_model.zig");
 pub const quant = @import("quant.zig");
 pub const safetensors = @import("safetensors.zig");
 pub const tokenizer = @import("tokenizer.zig");
+pub const inference = @import("inference.zig");
 
 test "ref all decls" {
     _ = testing.refAllDeclsRecursive(models);

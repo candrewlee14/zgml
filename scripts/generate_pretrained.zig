@@ -1,7 +1,8 @@
 //! Generate text from a pretrained HuggingFace GPT-Neo model.
 //!
-//! Loads weights from safetensors, tokenizes a prompt with GPT-2 BPE,
-//! and generates tokens using KV-cached inference (O(1) per new token).
+//! Loads weights from safetensors into an InferenceSession, tokenizes
+//! a prompt with GPT-2 BPE, and generates tokens with zero per-step
+//! allocation.
 //!
 //! Build: zig build generate-pretrained
 //! Run:   ./zig-out/bin/generate-pretrained data/tinystories/model.safetensors \
@@ -25,9 +26,7 @@ const config = zgml.models.GPTConfig{
     .tied_lm_head = true,
 };
 
-const Model = zgml.models.GPT(f32, config);
-const d_head = config.d_model / config.n_heads;
-const n_kv = config.n_layers * config.n_heads;
+const Session = zgml.inference.InferenceSession(f32, config);
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -55,7 +54,7 @@ pub fn main() !void {
     const merges_path = args[3];
     const prompt = if (args.len > 4) args[4] else "Once upon a time";
 
-    // Load tokenizer
+    // Load tokenizer.
     var tok = try zgml.tokenizer.GPT2Tokenizer.init(alloc, vocab_path, merges_path);
     defer tok.deinit();
 
@@ -67,92 +66,46 @@ pub fn main() !void {
         return;
     }
 
-    // Load model weights
+    // Create session, then load weights into it via safetensors.
+    // The loader needs a temporary ComputeGraph to parse the file, but
+    // writes directly into the session's persistent model tensors.
+    var session = try Session.init(alloc);
+    defer session.deinit();
+
     var sf = try zgml.safetensors.SafetensorsFile.open(alloc, model_path);
     defer sf.deinit();
-
-    var load_g = ComputeGraph(f32).init(alloc);
-    const load_model = try Model.init(load_g.allocator());
-    try zgml.models.gpt_loader.loadGPTNeo(f32, config, &load_model, &sf);
-
-    const load_params = load_model.params();
-    var weight_data: [load_params.len][]f32 = undefined;
-    for (load_params, 0..) |p, i| {
-        weight_data[i] = try alloc.alloc(f32, p.nElems());
-        @memcpy(weight_data[i], p.data);
-    }
-    load_g.deinit();
-    defer for (&weight_data) |d| alloc.free(d);
+    try zgml.models.gpt_loader.loadGPTNeo(f32, config, &session.model, &sf);
 
     try stderr.interface.print("Loaded {s} ({d} tokens)\n", .{ prompt, prompt_ids.len });
     stderr.interface.flush() catch {};
 
-    // Persistent KV cache buffers
-    var k_bufs: [n_kv][]f32 = undefined;
-    var v_bufs: [n_kv][]f32 = undefined;
-    for (0..n_kv) |i| {
-        k_bufs[i] = try alloc.alloc(f32, d_head * config.max_seq_len);
-        v_bufs[i] = try alloc.alloc(f32, d_head * config.max_seq_len);
-        @memset(k_bufs[i], 0);
-        @memset(v_bufs[i], 0);
-    }
-    defer for (0..n_kv) |i| {
-        alloc.free(k_bufs[i]);
-        alloc.free(v_bufs[i]);
-    };
-
     try stdout.interface.writeAll(prompt);
     stdout.interface.flush() catch {};
 
-    var pos: usize = 0;
     var next_token: usize = @intCast(prompt_ids[0]);
     var prompt_idx: usize = 0;
+    var gen_tokens: usize = 0;
+
+    const t_start = std.time.nanoTimestamp();
 
     for (0..prompt_ids.len + 200) |_| {
-        var g = ComputeGraph(f32).init(alloc);
-        defer g.deinit();
-        const a = g.allocator();
+        const logits = try session.step(next_token);
 
-        const model = try Model.init(a);
-        for (model.params(), weight_data) |param, wd| @memcpy(param.data, wd);
-
-        var k_caches: [config.n_layers][config.n_heads]*Tensor(f32) = undefined;
-        var v_caches: [config.n_layers][config.n_heads]*Tensor(f32) = undefined;
-        for (0..config.n_layers) |l| {
-            for (0..config.n_heads) |h| {
-                const idx = l * config.n_heads + h;
-                k_caches[l][h] = try Tensor(f32).init(a, &.{ d_head, config.max_seq_len });
-                v_caches[l][h] = try Tensor(f32).init(a, &.{ d_head, config.max_seq_len });
-                @memcpy(k_caches[l][h].data, k_bufs[idx]);
-                @memcpy(v_caches[l][h].data, v_bufs[idx]);
-            }
-        }
-
-        const logits = model.forwardCached(a, next_token, pos, k_caches, v_caches);
-        try g.infer(logits);
-
-        for (0..config.n_layers) |l| {
-            for (0..config.n_heads) |h| {
-                const idx = l * config.n_heads + h;
-                @memcpy(k_bufs[idx], k_caches[l][h].data);
-                @memcpy(v_bufs[idx], v_caches[l][h].data);
-            }
-        }
-        pos += 1;
-
-        // Prefill prompt
+        // Prefill prompt.
         if (prompt_idx + 1 < prompt_ids.len) {
             prompt_idx += 1;
             next_token = @intCast(prompt_ids[prompt_idx]);
             continue;
         }
 
-        // Greedy decode
+        gen_tokens += 1;
+
+        // Greedy decode.
         var best: u32 = 0;
-        var best_val = logits.data[0];
+        var best_val = logits[0];
         for (1..config.vocab_size) |i| {
-            if (logits.data[i] > best_val) {
-                best_val = logits.data[i];
+            if (logits[i] > best_val) {
+                best_val = logits[i];
                 best = @intCast(i);
             }
         }
@@ -162,10 +115,23 @@ pub fn main() !void {
         try stdout.interface.writeAll(token_text);
         stdout.interface.flush() catch {};
 
-        if (best == 50256 or pos >= config.max_seq_len) break;
+        if (best == 50256 or session.position() >= config.max_seq_len) break;
         next_token = @intCast(best);
     }
 
+    const t_end = std.time.nanoTimestamp();
+    const elapsed_ms: f64 = @as(f64, @floatFromInt(t_end - t_start)) / 1_000_000.0;
+    const total_tokens = session.position();
+    const toks_per_sec: f64 = if (elapsed_ms > 0)
+        @as(f64, @floatFromInt(total_tokens)) / (elapsed_ms / 1000.0)
+    else
+        0;
+
     try stdout.interface.writeByte('\n');
     stdout.interface.flush() catch {};
+    try stderr.interface.print(
+        "{d} tokens in {d:.1}ms ({d:.1} tok/s, {d} prefill + {d} generated)\n",
+        .{ total_tokens, elapsed_ms, toks_per_sec, total_tokens - gen_tokens, gen_tokens },
+    );
+    stderr.interface.flush() catch {};
 }

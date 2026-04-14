@@ -345,6 +345,65 @@ pub fn TransformerBlock(
             return after_attn.add(ff_out);
         }
 
+        /// Frozen cached forward for persistent inference plans.
+        ///
+        /// Like `forwardCached`, but attends over the full KV cache with an
+        /// explicit mask instead of slicing to `pos+1`.  All tensor shapes
+        /// are position-independent, so the computation graph can be built
+        /// once and re-executed across positions.
+        ///
+        /// `attn_mask`: [cache_cols, 1] — 0 for valid positions, -inf for masked.
+        pub fn forwardCachedFrozen(
+            self: *const Self,
+            x: *Tensor(T),
+            k_caches: [n_heads]*Tensor(T),
+            v_caches: [n_heads]*Tensor(T),
+            pos: usize,
+            attn_mask: *Tensor(T),
+        ) *Tensor(T) {
+            var ln_reduce = [_]usize{ 1, 1 };
+            const norm1 = self.applyLayerNorm(x, &ln_reduce, .ln1);
+
+            var attn_sum: ?*Tensor(T) = null;
+            for (0..n_heads) |h| {
+                var q = norm1.matMul(false, self.w_q[h].inner, false);
+                var k_new = norm1.matMul(false, self.w_k[h].inner, false);
+                var v_new = norm1.matMul(false, self.w_v[h].inner, false);
+
+                if (attn_bias) {
+                    q = q.addBias(self.b_q[h].inner);
+                    k_new = k_new.addBias(self.b_k[h].inner);
+                    v_new = v_new.addBias(self.b_v[h].inner);
+                }
+
+                // Write new K/V into cache at current position
+                const k_updated = k_caches[h].sliceAssign(k_new, pos);
+                const v_updated = v_caches[h].sliceAssign(v_new, pos);
+
+                // Attend over full cache — shapes are position-independent
+                const scores = q.matMul(false, k_updated, true);
+                const dk: T = @floatFromInt(d_head);
+                const scaled = scores.scaleByVal(1.0 / @sqrt(dk));
+                const masked = scaled.add(attn_mask);
+                var sm_reduce = [_]usize{ 1, 1 };
+                const weights = masked.softmax(&sm_reduce);
+                const attn_out = weights.matMul(false, v_updated, false);
+                const projected = attn_out.matMul(false, self.w_o[h].inner, false);
+                attn_sum = if (attn_sum) |acc| acc.add(projected) else projected;
+            }
+
+            if (attn_bias) {
+                attn_sum = attn_sum.?.addBias(self.b_o.inner);
+            }
+
+            const after_attn = x.add(attn_sum.?);
+            var ln2_reduce = [_]usize{ 1, 1 };
+            const norm2 = self.applyLayerNorm(after_attn, &ln2_reduce, .ln2);
+            const activated = nn.linear(T, norm2, self.w1.inner, self.b1.inner).gelu();
+            const ff_out = nn.linear(T, activated, self.w2.inner, self.b2.inner);
+            return after_attn.add(ff_out);
+        }
+
         /// Return all learnable parameters (as runtime tensors for optimizer compatibility).
         pub const n_block_params = 4 * n_heads + 4 +
             (if (learnable_ln) 4 else 0) +
