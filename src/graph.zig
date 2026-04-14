@@ -231,6 +231,9 @@ pub fn ComputeGraph(comptime T: type) type {
                 if (detectConv2dBwdPlan(node, idx)) |plan| {
                     try self.fused_chains.append(alloc, plan);
                     self.markBwdConvSkip(plan, idx, &ptr_to_idx, use_count);
+                } else if (detectMaxPool2dBwdPlan(node, idx)) |plan| {
+                    try self.fused_chains.append(alloc, plan);
+                    self.markBwdSkipChain(node, idx, &ptr_to_idx, use_count);
                 }
             }
 
@@ -487,6 +490,71 @@ pub fn ComputeGraph(comptime T: type) type {
                     self.fused_skip.items[idx] = true;
                     return;
                 }
+            }
+        }
+
+        /// Detect maxPool2d backward pattern from a scatter_add_view node.
+        ///
+        /// MaxPool forward: as_strided(input) → max → reshape → output
+        /// MaxPool backward scatter has a 6D view (the pool window view).
+        /// Unlike conv2d (7D), maxPool uses 6D: [out_w, out_h, 2, 2, C, N].
+        /// The backward chain: mask ops → scatter_add_view.
+        ///
+        /// The fused kernel: for each 2x2 window, find argmax in forward
+        /// input and scatter the gradient there directly.
+        fn detectMaxPool2dBwdPlan(scatter: *Tensor(T), scatter_idx: usize) ?fused.FusionPlan(T) {
+            if (scatter.opTag() != .scatter_add_view) return null;
+
+            // scatter.src1 must be a 6D as_strided view of a 4D tensor
+            const view = scatter.source1() orelse return null;
+            if (view.opTag() != .as_strided) return null;
+            if (view.n_dims != 6) return null;
+            const input = view.source0() orelse return null;
+            if (input.n_dims != 4) return null;
+
+            // Verify pool window shape: dims 2,3 should be 2x2
+            if (view.ne[2] != 2 or view.ne[3] != 2) return null;
+
+            // Walk backward from scatter.src0 through the mask chain to find
+            // the output gradient. The chain is: mul(mask, expanded_grad).
+            // The expanded_grad is a broadcast_to of the pool output gradient.
+            const mul_node = findPastAdd(scatter.source0() orelse return null, .mul) orelse return null;
+
+            // One operand of mul is the mask, the other is the broadcast grad.
+            // The broadcast grad has a 6D broadcast_to.
+            const bcast = findOp(mul_node, .broadcast_to) orelse return null;
+
+            // Walk broadcast → [add?] → reshape → output_grad (4D)
+            const reshape = findPastAdd(bcast.source0() orelse return null, .reshape) orelse return null;
+            const output_grad = reshape.source0() orelse return null;
+            if (output_grad.n_dims != 4) return null;
+
+            return .{ .output_idx = scatter_idx, .payload = .{ .max_pool2d_bwd = .{
+                .input = input,
+                .output_grad = output_grad,
+                .output = scatter,
+            } } };
+        }
+
+        /// Find a node with target_op in either source of a binary node (or the node itself).
+        fn findOp(node: *Tensor(T), target_op: Op) ?*Tensor(T) {
+            if (node.source0()) |s| if (s.opTag() == target_op) return s;
+            if (node.source1()) |s| if (s.opTag() == target_op) return s;
+            return null;
+        }
+
+        /// Generic backward chain skip: mark the scatter and all upstream
+        /// single-consumer nodes as fused_skip. Stops at nodes with
+        /// use_count > 1 (shared with other branches).
+        fn markBwdSkipChain(self: *Self, _: *Tensor(T), scatter_idx: usize, ptr_to_idx: *const std.AutoHashMap(*Tensor(T), usize), use_count: []const u16) void {
+            self.fused_skip.items[scatter_idx] = true;
+            // Walk src0 chain (the gradient data path), skipping single-consumer nodes.
+            var cur = self.nodes.items[scatter_idx].source0() orelse return;
+            while (true) {
+                const idx = ptr_to_idx.get(cur) orelse break;
+                if (use_count[idx] > 1) break;
+                self.fused_skip.items[idx] = true;
+                cur = cur.source0() orelse break;
             }
         }
 
@@ -800,6 +868,9 @@ pub fn ComputeGraph(comptime T: type) type {
             max_pool2d: struct {
                 input: TensorRef,
             },
+            max_pool2d_bwd: struct {
+                input: TensorRef,
+            },
             softmax: struct {
                 input: TensorRef,
             },
@@ -840,6 +911,11 @@ pub fn ComputeGraph(comptime T: type) type {
                     },
                     .max_pool2d => |payload| {
                         try writer.writeAll("  max_pool input=");
+                        try payload.input.render(writer);
+                        try writer.print(" output=node[{}]\n", .{output_idx});
+                    },
+                    .max_pool2d_bwd => |payload| {
+                        try writer.writeAll("  backward pool_grad input=");
                         try payload.input.render(writer);
                         try writer.print(" output=node[{}]\n", .{output_idx});
                     },
@@ -1095,6 +1171,7 @@ pub fn ComputeGraph(comptime T: type) type {
                 .conv2d_bwd_input => |payload| payload.output,
                 .conv2d_bwd_kernel => |payload| payload.output,
                 .max_pool2d => |payload| payload.strided,
+                .max_pool2d_bwd => |payload| payload.output,
                 .softmax => |payload| payload.max_node,
                 .log_softmax => |payload| payload.max_node,
                 .cross_entropy => |payload| payload.log_softmax.max_node,
@@ -1134,6 +1211,9 @@ pub fn ComputeGraph(comptime T: type) type {
                         .input = self.tensorRef(payload.input),
                     } },
                     .max_pool2d => |payload| .{ .max_pool2d = .{
+                        .input = self.tensorRef(payload.input),
+                    } },
+                    .max_pool2d_bwd => |payload| .{ .max_pool2d_bwd = .{
                         .input = self.tensorRef(payload.input),
                     } },
                     .softmax => |payload| .{ .softmax = .{

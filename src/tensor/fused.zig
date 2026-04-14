@@ -57,6 +57,7 @@ pub const FusionKind = enum {
     conv2d_bwd_input,
     conv2d_bwd_kernel,
     max_pool2d,
+    max_pool2d_bwd,
     softmax,
     log_softmax,
     cross_entropy,
@@ -156,6 +157,14 @@ pub fn MaxPool2dPlan(comptime T: type) type {
     };
 }
 
+pub fn MaxPool2dBwdPlan(comptime T: type) type {
+    return struct {
+        input: *Tensor(T), // forward input [in_w, in_h, C, N]
+        output_grad: *Tensor(T), // gradient of pool output [out_w, out_h, C, N]
+        output: *Tensor(T), // gradient of pool input (scatter target) [in_w, in_h, C, N]
+    };
+}
+
 pub fn LogSoftmaxPlan(comptime T: type) type {
     return struct {
         input: *Tensor(T),
@@ -210,6 +219,7 @@ pub fn FusionPayload(comptime T: type) type {
         conv2d_bwd_input: Conv2dBwdInputPlan(T),
         conv2d_bwd_kernel: Conv2dBwdKernelPlan(T),
         max_pool2d: MaxPool2dPlan(T),
+        max_pool2d_bwd: MaxPool2dBwdPlan(T),
         softmax: SoftmaxPlan(T),
         log_softmax: LogSoftmaxPlan(T),
         cross_entropy: CrossEntropyPlan(T),
@@ -233,6 +243,7 @@ pub fn FusionPlan(comptime T: type) type {
             return switch (self.payload) {
                 .conv2d_bwd_kernel => |p| &.{ p.input, p.output_grad },
                 .conv2d_bwd_input => |p| &.{ p.output_grad, p.kernel },
+                .max_pool2d_bwd => |p| &.{ p.input, p.output_grad },
                 .elementwise_chain => |p| &.{p.input},
                 else => &.{},
             };
@@ -852,6 +863,47 @@ fn executeSoftmaxPlan(comptime T: type, plan: SoftmaxPlan(T)) void {
 // MaxPool2d execution
 // ---------------------------------------------------------------------------
 
+fn executeMaxPool2dBwd(comptime T: type, plan: MaxPool2dBwdPlan(T)) void {
+    const input = plan.input;
+    const out_grad = plan.output_grad;
+    const dst = plan.output;
+    const in_w = input.ne[0];
+    const out_w = out_grad.ne[0];
+    const out_h = out_grad.ne[1];
+    const channels = out_grad.ne[2];
+    const batch = out_grad.ne[3];
+    const in_stride_h = in_w;
+    const in_stride_c = in_w * input.ne[1];
+    const in_stride_n = in_stride_c * channels;
+    const out_stride_h = out_w;
+    const out_stride_c = out_w * out_h;
+    const out_stride_n = out_stride_c * channels;
+    @memset(dst.data, 0);
+    for (0..batch) |n| {
+        for (0..channels) |ch| {
+            for (0..out_h) |oy| {
+                for (0..out_w) |ox| {
+                    const ix = ox * 2;
+                    const iy = oy * 2;
+                    const base = ix + iy * in_stride_h + ch * in_stride_c + n * in_stride_n;
+                    // Find argmax in 2x2 window
+                    var best = base;
+                    var val = input.data[base];
+                    const offsets = [_]usize{ 1, in_stride_h, in_stride_h + 1 };
+                    for (offsets) |off| {
+                        if (input.data[base + off] > val) {
+                            val = input.data[base + off];
+                            best = base + off;
+                        }
+                    }
+                    // Scatter gradient to argmax position
+                    dst.data[best] += out_grad.data[ox + oy * out_stride_h + ch * out_stride_c + n * out_stride_n];
+                }
+            }
+        }
+    }
+}
+
 fn executeMaxPool2d(comptime T: type, plan: MaxPool2dPlan(T)) void {
     const input = plan.input;
     const dst = plan.output;
@@ -1385,6 +1437,7 @@ pub fn executeFusionPlan(comptime T: type, plan: FusionPlan(T)) void {
         .conv2d_bwd_input => |conv2d_plan| executeConv2dBwdInputPlan(T, conv2d_plan),
         .conv2d_bwd_kernel => |conv2d_plan| executeConv2dBwdKernelPlan(T, conv2d_plan),
         .max_pool2d => |pool_plan| executeMaxPool2d(T, pool_plan),
+        .max_pool2d_bwd => |pool_plan| executeMaxPool2dBwd(T, pool_plan),
         .softmax => |softmax_plan| executeSoftmaxPlan(T, softmax_plan),
         .log_softmax => |log_softmax_plan| executeLogSoftmaxPlan(T, log_softmax_plan),
         .cross_entropy => |cross_entropy_plan| executeCrossEntropyPlan(T, cross_entropy_plan),
