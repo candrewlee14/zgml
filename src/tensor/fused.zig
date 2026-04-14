@@ -10,7 +10,6 @@
 //! `inline for` lookup.
 
 const std = @import("std");
-const compiler = @import("../compiler.zig");
 const Op = @import("../op.zig").Op;
 const Tensor = @import("../tensor.zig").Tensor;
 const forward = @import("forward.zig");
@@ -332,291 +331,6 @@ pub fn validateLayerNormPlan(comptime T: type, plan: LayerNormPlan(T)) bool {
     return true;
 }
 
-pub fn CompilerMappedPlan(comptime T: type) type {
-    return struct {
-        start_idx: usize,
-        plan: FusionPlan(T),
-    };
-}
-
-fn mappedElementwiseRegion(comptime T: type, alloc: std.mem.Allocator, forward_nodes: []const *Tensor(T), value_to_tensor: []const ?*Tensor(T), region: compiler.ElementwiseRegion) ?CompilerMappedPlan(T) {
-    if (region.nodes.len == 0) return null;
-
-    const input = nodeForValueId(T, value_to_tensor, region.input) orelse return null;
-    const mapped_nodes = alloc.alloc(*Tensor(T), region.nodes.len) catch return null;
-    errdefer alloc.free(mapped_nodes);
-
-    for (region.nodes, 0..) |id, i| {
-        const node = nodeForValueId(T, value_to_tensor, id) orelse return null;
-        mapped_nodes[i] = node;
-    }
-    const other_operand_roles = buildElementwiseOtherOperandRoles(T, alloc, input, mapped_nodes) orelse return null;
-    errdefer if (other_operand_roles.len != 0) alloc.free(other_operand_roles);
-
-    const start_idx = indexOfNodeMaybe(T, forward_nodes, mapped_nodes[0]) orelse return null;
-    const output_idx = indexOfNodeMaybe(T, forward_nodes, mapped_nodes[mapped_nodes.len - 1]) orelse return null;
-    for (mapped_nodes, 0..) |node, i| {
-        if ((indexOfNodeMaybe(T, forward_nodes, node) orelse return null) != start_idx + i) return null;
-    }
-    return .{ .start_idx = start_idx, .plan = .{
-        .output_idx = output_idx,
-        .payload = .{ .elementwise_chain = .{
-            .input = input,
-            .nodes = mapped_nodes,
-            .other_operand_roles = other_operand_roles,
-        } },
-    } };
-}
-
-fn isCommutativeElementwiseBinaryNode(node: anytype) bool {
-    return node.op == .add or node.op == .mul;
-}
-
-fn detectOtherOperandRole(chain_input: anytype, node: anytype) BinaryOperandRole {
-    if (node.op.isBinary() and node.source0() != null and node.source1() != null and isCommutativeElementwiseBinaryNode(node) and node.source1() == chain_input and node.source0() != chain_input) {
-        return .src0;
-    }
-    return .src1;
-}
-
-fn buildElementwiseOtherOperandRoles(comptime T: type, alloc: std.mem.Allocator, input: *Tensor(T), nodes: []const *Tensor(T)) ?[]const BinaryOperandRole {
-    const roles = alloc.alloc(BinaryOperandRole, nodes.len) catch return null;
-    errdefer alloc.free(roles);
-
-    var has_non_default_role = false;
-    var chain_input = input;
-    for (nodes, 0..) |node, idx| {
-        const role = detectOtherOperandRole(chain_input, node);
-        roles[idx] = role;
-        has_non_default_role = has_non_default_role or role != .src1;
-        chain_input = node;
-    }
-
-    if (!has_non_default_role) {
-        alloc.free(roles);
-        return &.{};
-    }
-    return roles;
-}
-
-fn nodeForValueId(comptime T: type, value_to_tensor: []const ?*Tensor(T), id: compiler.ValueId) ?*Tensor(T) {
-    const idx = @intFromEnum(id);
-    if (idx >= value_to_tensor.len) return null;
-    return value_to_tensor[idx];
-}
-
-pub fn mapCompilerRegion(comptime T: type, alloc: std.mem.Allocator, forward_nodes: []const *Tensor(T), value_to_tensor: []const ?*Tensor(T), region: compiler.ScheduleRegion) ?CompilerMappedPlan(T) {
-    return switch (region) {
-        .elementwise => |payload| mappedElementwiseRegion(T, alloc, forward_nodes, value_to_tensor, payload),
-    };
-}
-
-pub fn mapCompilerPattern(comptime T: type, forward_nodes: []const *Tensor(T), value_to_tensor: []const ?*Tensor(T), pattern: compiler.KernelPattern) ?CompilerMappedPlan(T) {
-    return switch (pattern) {
-        .softmax => |spec| blk: {
-            const max_node = nodeForValueId(T, value_to_tensor, spec.max_node) orelse return null;
-            const rep_max = nodeForValueId(T, value_to_tensor, spec.rep_max) orelse return null;
-            const neg_rep_max = nodeForValueId(T, value_to_tensor, spec.neg_rep_max) orelse return null;
-            const shifted = nodeForValueId(T, value_to_tensor, spec.shifted) orelse return null;
-            const exp_node = nodeForValueId(T, value_to_tensor, spec.exp_node) orelse return null;
-            const sum_node = nodeForValueId(T, value_to_tensor, spec.sum_node) orelse return null;
-            const rep_sum = nodeForValueId(T, value_to_tensor, spec.rep_sum) orelse return null;
-            const recip_rep_sum = nodeForValueId(T, value_to_tensor, spec.recip_rep_sum) orelse return null;
-            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse return null;
-            const start_idx = indexOfNode(T, forward_nodes, max_node);
-            const output_idx = indexOfNode(T, forward_nodes, output);
-
-            const softmax_plan = SoftmaxPlan(T){
-                .input = max_node.source0().?,
-                .max_node = max_node,
-                .rep_max = rep_max,
-                .neg_rep_max = neg_rep_max,
-                .shifted = shifted,
-                .exp_node = exp_node,
-                .sum_node = sum_node,
-                .rep_sum = rep_sum,
-                .recip_rep_sum = recip_rep_sum,
-                .output = output,
-            };
-            if (!validateSoftmaxPlan(T, softmax_plan)) return null;
-            break :blk .{ .start_idx = start_idx, .plan = .{
-                .output_idx = output_idx,
-                .payload = .{ .softmax = softmax_plan },
-            } };
-        },
-        .log_softmax => |spec| blk: {
-            const max_node = nodeForValueId(T, value_to_tensor, spec.max_node) orelse return null;
-            const rep_max = nodeForValueId(T, value_to_tensor, spec.rep_max) orelse return null;
-            const neg_rep_max = nodeForValueId(T, value_to_tensor, spec.neg_rep_max) orelse return null;
-            const shifted = nodeForValueId(T, value_to_tensor, spec.shifted) orelse return null;
-            const exp_node = nodeForValueId(T, value_to_tensor, spec.exp_node) orelse return null;
-            const sum_node = nodeForValueId(T, value_to_tensor, spec.sum_node) orelse return null;
-            const log_node = nodeForValueId(T, value_to_tensor, spec.log_node) orelse return null;
-            const rep_log = nodeForValueId(T, value_to_tensor, spec.rep_log) orelse return null;
-            const neg_rep_log = nodeForValueId(T, value_to_tensor, spec.neg_rep_log) orelse return null;
-            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse return null;
-            const start_idx = indexOfNode(T, forward_nodes, max_node);
-            const output_idx = indexOfNode(T, forward_nodes, output);
-
-            const log_softmax_plan = LogSoftmaxPlan(T){
-                .input = max_node.source0().?,
-                .max_node = max_node,
-                .rep_max = rep_max,
-                .neg_rep_max = neg_rep_max,
-                .shifted = shifted,
-                .exp_node = exp_node,
-                .sum_node = sum_node,
-                .log_node = log_node,
-                .rep_log = rep_log,
-                .neg_rep_log = neg_rep_log,
-                .output = output,
-            };
-            if (!validateLogSoftmaxPlan(T, log_softmax_plan)) return null;
-            break :blk .{ .start_idx = start_idx, .plan = .{
-                .output_idx = output_idx,
-                .payload = .{ .log_softmax = log_softmax_plan },
-            } };
-        },
-        .cross_entropy => |spec| blk: {
-            const max_node = nodeForValueId(T, value_to_tensor, spec.log_softmax.max_node) orelse return null;
-            const rep_max = nodeForValueId(T, value_to_tensor, spec.log_softmax.rep_max) orelse return null;
-            const neg_rep_max = nodeForValueId(T, value_to_tensor, spec.log_softmax.neg_rep_max) orelse return null;
-            const shifted = nodeForValueId(T, value_to_tensor, spec.log_softmax.shifted) orelse return null;
-            const exp_node = nodeForValueId(T, value_to_tensor, spec.log_softmax.exp_node) orelse return null;
-            const sum_node = nodeForValueId(T, value_to_tensor, spec.log_softmax.sum_node) orelse return null;
-            const log_node = nodeForValueId(T, value_to_tensor, spec.log_softmax.log_node) orelse return null;
-            const rep_log = nodeForValueId(T, value_to_tensor, spec.log_softmax.rep_log) orelse return null;
-            const neg_rep_log = nodeForValueId(T, value_to_tensor, spec.log_softmax.neg_rep_log) orelse return null;
-            const log_softmax_output = nodeForValueId(T, value_to_tensor, spec.log_softmax.output) orelse return null;
-            const picked = nodeForValueId(T, value_to_tensor, spec.picked) orelse return null;
-            const neg_picked = nodeForValueId(T, value_to_tensor, spec.neg_picked) orelse return null;
-            const sum_node_ce = nodeForValueId(T, value_to_tensor, spec.sum_node) orelse return null;
-            const mean_node = nodeForValueId(T, value_to_tensor, spec.mean_node) orelse return null;
-            const start_idx = indexOfNode(T, forward_nodes, max_node);
-            const output_idx = indexOfNode(T, forward_nodes, mean_node);
-
-            const inner_log_softmax = LogSoftmaxPlan(T){
-                .input = max_node.source0().?,
-                .max_node = max_node,
-                .rep_max = rep_max,
-                .neg_rep_max = neg_rep_max,
-                .shifted = shifted,
-                .exp_node = exp_node,
-                .sum_node = sum_node,
-                .log_node = log_node,
-                .rep_log = rep_log,
-                .neg_rep_log = neg_rep_log,
-                .output = log_softmax_output,
-            };
-            if (!validateLogSoftmaxPlan(T, inner_log_softmax)) return null;
-            if (picked.source1() == null or mean_node.source1() == null) return null;
-            break :blk .{ .start_idx = start_idx, .plan = .{
-                .output_idx = output_idx,
-                .payload = .{ .cross_entropy = .{
-                    .log_softmax = inner_log_softmax,
-                    .targets = picked.source1().?,
-                    .picked = picked,
-                    .neg_picked = neg_picked,
-                    .sum_node = sum_node_ce,
-                    .mean_node = mean_node,
-                } },
-            } };
-        },
-        .layer_norm => |spec| blk: {
-            const sum_node = nodeForValueId(T, value_to_tensor, spec.sum_node) orelse return null;
-            const mean_node = nodeForValueId(T, value_to_tensor, spec.mean_node) orelse return null;
-            const rep_mean = nodeForValueId(T, value_to_tensor, spec.rep_mean) orelse return null;
-            const neg_rep_mean = nodeForValueId(T, value_to_tensor, spec.neg_rep_mean) orelse return null;
-            const centered = nodeForValueId(T, value_to_tensor, spec.centered) orelse return null;
-            const sqr_node = nodeForValueId(T, value_to_tensor, spec.sqr_node) orelse return null;
-            const var_sum = nodeForValueId(T, value_to_tensor, spec.var_sum) orelse return null;
-            const var_node = nodeForValueId(T, value_to_tensor, spec.var_node) orelse return null;
-            const eps_like = nodeForValueId(T, value_to_tensor, spec.eps_like) orelse return null;
-            const var_eps = nodeForValueId(T, value_to_tensor, spec.var_eps) orelse return null;
-            const sqrt_node = nodeForValueId(T, value_to_tensor, spec.sqrt_node) orelse return null;
-            const recip_node = nodeForValueId(T, value_to_tensor, spec.recip_node) orelse return null;
-            const rep_std_inv = nodeForValueId(T, value_to_tensor, spec.rep_std_inv) orelse return null;
-            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse return null;
-            const start_idx = indexOfNode(T, forward_nodes, sum_node);
-            const output_idx = indexOfNode(T, forward_nodes, output);
-
-            if (sum_node.source0() == null) return null;
-            const ln_plan = LayerNormPlan(T){
-                .input = sum_node.source0().?,
-                .sum_node = sum_node,
-                .mean_node = mean_node,
-                .rep_mean = rep_mean,
-                .neg_rep_mean = neg_rep_mean,
-                .centered = centered,
-                .sqr_node = sqr_node,
-                .var_sum = var_sum,
-                .var_node = var_node,
-                .eps_like = eps_like,
-                .var_eps = var_eps,
-                .sqrt_node = sqrt_node,
-                .recip_node = recip_node,
-                .rep_std_inv = rep_std_inv,
-                .output = output,
-            };
-            if (!validateLayerNormPlan(T, ln_plan)) return null;
-            break :blk .{ .start_idx = start_idx, .plan = .{
-                .output_idx = output_idx,
-                .payload = .{ .layer_norm = ln_plan },
-            } };
-        },
-        .conv2d => |spec| blk: {
-            const input = nodeForValueId(T, value_to_tensor, spec.input) orelse break :blk null;
-            const kernel = nodeForValueId(T, value_to_tensor, spec.kernel) orelse break :blk null;
-            const input_view = nodeForValueId(T, value_to_tensor, spec.input_view) orelse break :blk null;
-            const kernel_view = nodeForValueId(T, value_to_tensor, spec.kernel_view) orelse break :blk null;
-            const mul_node = nodeForValueId(T, value_to_tensor, spec.mul_node) orelse break :blk null;
-            const sum_node = nodeForValueId(T, value_to_tensor, spec.sum_node) orelse break :blk null;
-            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse break :blk null;
-            const bias = if (spec.bias) |b| nodeForValueId(T, value_to_tensor, b) else null;
-            const bias_node = if (spec.bias_add) |b| nodeForValueId(T, value_to_tensor, b) else null;
-            const activation = if (spec.activation) |a| nodeForValueId(T, value_to_tensor, a) else null;
-
-            const start_idx = indexOfNode(T, forward_nodes, input_view);
-            const output_idx = indexOfNode(T, forward_nodes, output);
-
-            break :blk @as(?CompilerMappedPlan(T), .{ .start_idx = start_idx, .plan = .{
-                .output_idx = output_idx,
-                .payload = .{ .conv2d = .{
-                    .input = input,
-                    .kernel = kernel,
-                    .input_view = input_view,
-                    .kernel_view = kernel_view,
-                    .bias = bias,
-                    .bias_node = bias_node,
-                    .activation = activation,
-                    .mul_node = mul_node,
-                    .sum_node = sum_node,
-                    .output = output,
-                } },
-            } });
-        },
-        .max_pool2d => |spec| blk: {
-            const input = nodeForValueId(T, value_to_tensor, spec.input) orelse break :blk null;
-            const strided = nodeForValueId(T, value_to_tensor, spec.strided) orelse break :blk null;
-            const max_node = nodeForValueId(T, value_to_tensor, spec.max_node) orelse break :blk null;
-            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse break :blk null;
-
-            const start_idx = indexOfNode(T, forward_nodes, strided);
-            const output_idx = indexOfNode(T, forward_nodes, output);
-
-            break :blk @as(?CompilerMappedPlan(T), .{ .start_idx = start_idx, .plan = .{
-                .output_idx = output_idx,
-                .payload = .{ .max_pool2d = .{
-                    .input = input,
-                    .strided = strided,
-                    .max_node = max_node,
-                    .output = output,
-                } },
-            } });
-        },
-        .linear, .linear_gelu, .linear_relu, .linear_residual, .matmul_residual => null,
-    };
-}
 
 fn fusedOpForNode(comptime T: type, plan: ElementwiseFusionPlan(T), idx: usize) ?FusedOp {
     const node = plan.nodes[idx];
@@ -730,8 +444,11 @@ pub fn executeFusedGeneric(comptime T: type, plan: ElementwiseFusionPlan(T)) voi
 }
 
 /// Dispatch a fused chain to a comptime-specialized kernel.
-/// For chains of length 2-3, enumerates all fusible op combinations
-/// at comptime. Falls back to the generic interpreter for longer chains.
+///
+/// Length 2-3: enumerates all op combinations at comptime (169 / 2197 kernels)
+///             producing zero-branch inner loops.
+/// Length 4+: single-pass generic interpreter (one runtime switch per op per element).
+///            Memory-bound for large tensors, so branch overhead is negligible.
 pub fn executeFusedChain(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
     if (!isSafeElementwiseChain(T, plan)) {
         for (plan.nodes) |node| node.compute();
@@ -742,6 +459,38 @@ pub fn executeFusedChain(comptime T: type, plan: ElementwiseFusionPlan(T)) void 
         3 => executeFused3(T, plan),
         else => executeFusedGeneric(T, plan),
     }
+}
+
+fn executeFused2(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
+    const op0 = fusedOpForNode(T, plan, 0) orelse return executeFusedGeneric(T, plan);
+    const op1 = fusedOpForNode(T, plan, 1) orelse return executeFusedGeneric(T, plan);
+    inline for (fusible_ops) |c0| {
+        inline for (fusible_ops) |c1| {
+            if (op0 == c0 and op1 == c1) {
+                FusedKernel(T, &.{ c0, c1 }).execute(plan.nodes);
+                return;
+            }
+        }
+    }
+    executeFusedGeneric(T, plan);
+}
+
+fn executeFused3(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
+    @setEvalBranchQuota(20000);
+    const op0 = fusedOpForNode(T, plan, 0) orelse return executeFusedGeneric(T, plan);
+    const op1 = fusedOpForNode(T, plan, 1) orelse return executeFusedGeneric(T, plan);
+    const op2 = fusedOpForNode(T, plan, 2) orelse return executeFusedGeneric(T, plan);
+    inline for (fusible_ops) |c0| {
+        inline for (fusible_ops) |c1| {
+            inline for (fusible_ops) |c2| {
+                if (op0 == c0 and op1 == c1 and op2 == c2) {
+                    FusedKernel(T, &.{ c0, c1, c2 }).execute(plan.nodes);
+                    return;
+                }
+            }
+        }
+    }
+    executeFusedGeneric(T, plan);
 }
 
 pub fn isSafeElementwiseChain(comptime T: type, plan: ElementwiseFusionPlan(T)) bool {
@@ -1445,54 +1194,6 @@ pub fn executeFusionPlan(comptime T: type, plan: FusionPlan(T)) void {
     }
 }
 
-fn executeFused2(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
-    const nodes = plan.nodes;
-    const node_op0 = fusedOpForNode(T, plan, 0) orelse {
-        executeFusedGeneric(T, plan);
-        return;
-    };
-    const node_op1 = fusedOpForNode(T, plan, 1) orelse {
-        executeFusedGeneric(T, plan);
-        return;
-    };
-    inline for (fusible_ops) |candidate0| {
-        inline for (fusible_ops) |candidate1| {
-            if (node_op0 == candidate0 and node_op1 == candidate1) {
-                FusedKernel(T, &.{ candidate0, candidate1 }).execute(nodes);
-                return;
-            }
-        }
-    }
-    executeFusedGeneric(T, plan);
-}
-
-fn executeFused3(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
-    @setEvalBranchQuota(20000);
-    const nodes = plan.nodes;
-    const node_op0 = fusedOpForNode(T, plan, 0) orelse {
-        executeFusedGeneric(T, plan);
-        return;
-    };
-    const node_op1 = fusedOpForNode(T, plan, 1) orelse {
-        executeFusedGeneric(T, plan);
-        return;
-    };
-    const node_op2 = fusedOpForNode(T, plan, 2) orelse {
-        executeFusedGeneric(T, plan);
-        return;
-    };
-    inline for (fusible_ops) |candidate0| {
-        inline for (fusible_ops) |candidate1| {
-            inline for (fusible_ops) |candidate2| {
-                if (node_op0 == candidate0 and node_op1 == candidate1 and node_op2 == candidate2) {
-                    FusedKernel(T, &.{ candidate0, candidate1, candidate2 }).execute(nodes);
-                    return;
-                }
-            }
-        }
-    }
-    executeFusedGeneric(T, plan);
-}
 
 test "fused - specialized swapped commutative 2-op chain matches generic" {
     const T = f32;
@@ -1523,7 +1224,7 @@ test "fused - specialized swapped commutative 2-op chain matches generic" {
         .other_operand_roles = &.{ .src1, .src0 },
     };
 
-    executeFused2(T, fused_plan);
+    executeFusedChain(T, fused_plan);
     executeFusedGeneric(T, generic_plan);
 
     try std.testing.expectEqualSlices(T, add_generic.data, add_fused.data);
@@ -1560,7 +1261,7 @@ test "fused - specialized swapped commutative 3-op chain matches generic" {
         .other_operand_roles = &.{ .src1, .src0, .src1 },
     };
 
-    executeFused3(T, fused_plan);
+    executeFusedChain(T, fused_plan);
     executeFusedGeneric(T, generic_plan);
 
     try std.testing.expectEqualSlices(T, log_generic.data, log_fused.data);
