@@ -157,9 +157,6 @@ pub fn main() !void {
 
     const metal: ?Backend = if (maybe_metal) |*mb| mb.backend() else null;
 
-    // CPU compiled backend.
-    var cpu_be = CpuBackend.init(std.heap.page_allocator);
-    const cpu_compiled: Backend = cpu_be.backend();
 
     const small = GPTConfig{
         .vocab_size = 256,
@@ -191,33 +188,27 @@ pub fn main() !void {
 
     // --- Small ---
     try w.interface.print("Small (d=64, L=4, H=4):\n", .{});
-    try runBenchmark("CPU interp", small, false, null, &w.interface);
-    try runBenchmark("CPU compil", small, false, cpu_compiled, &w.interface);
-    try runBenchmark("CPU q8 int", small, true, null, &w.interface);
-    try runBenchmark("CPU q8 cmp", small, true, cpu_compiled, &w.interface);
+    try runBenchmark("CPU f32   ", small, false, null, &w.interface);
+    try runBenchmark("CPU int8  ", small, true, null, &w.interface);
     if (metal) |be| {
-        try runBenchmark("Metal q8  ", small, true, be, &w.interface);
+        try runBenchmark("Metal int8", small, true, be, &w.interface);
     }
 
     // --- Medium ---
     try w.interface.print("\nMedium (d=128, L=6, H=8):\n", .{});
-    try runBenchmark("CPU interp", medium, false, null, &w.interface);
-    try runBenchmark("CPU compil", medium, false, cpu_compiled, &w.interface);
-    try runBenchmark("CPU q8 int", medium, true, null, &w.interface);
-    try runBenchmark("CPU q8 cmp", medium, true, cpu_compiled, &w.interface);
+    try runBenchmark("CPU f32   ", medium, false, null, &w.interface);
+    try runBenchmark("CPU int8  ", medium, true, null, &w.interface);
     if (metal) |be| {
-        try runBenchmark("Metal q8  ", medium, true, be, &w.interface);
+        try runBenchmark("Metal int8", medium, true, be, &w.interface);
     }
 
     // --- GPT-2 scale ---
     try w.interface.print("\nGPT-2 scale (d=768, L=12, H=12):\n", .{});
     try diagnoseGraph(gpt2, &w.interface);
-    try runBenchmark("CPU interp", gpt2, false, null, &w.interface);
-    try runBenchmark("CPU compil", gpt2, false, cpu_compiled, &w.interface);
-    try runBenchmark("CPU q8 int", gpt2, true, null, &w.interface);
-    try runBenchmark("CPU q8 cmp", gpt2, true, cpu_compiled, &w.interface);
+    try runBenchmark("CPU f32   ", gpt2, false, null, &w.interface);
+    try runBenchmark("CPU int8  ", gpt2, true, null, &w.interface);
     if (metal) |be| {
-        try runBenchmark("Metal q8  ", gpt2, true, be, &w.interface);
+        try runBenchmark("Metal int8", gpt2, true, be, &w.interface);
     }
 
     try w.interface.print("\n", .{});

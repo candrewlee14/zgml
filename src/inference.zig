@@ -242,9 +242,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
                 self.compiled_handle = null;
             }
             if (self.graph.backend) |be| {
-                if (be.caps().device_buffers) {
-                    try self.compileDeviceProgram(be);
-                }
+                try self.compileDeviceProgram(be);
             }
         }
 
@@ -258,17 +256,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             }
             for (self.graph.nodes.items[0..self.graph.forward_node_count]) |node| {
                 if (self.quant_map.get(node)) |qi| {
-                    const weight = &self.quant_weights[qi];
-                    if (!backend_mod.tryQuantizedMatMul(T, self.graph.backend, .{
-                        .dst = node.data,
-                        .input = if (node.src1.?.isParam()) node.src0.?.data else node.src1.?.data,
-                        .weight = backend_mod.quantizedWeightViewF32(weight.*),
-                        .M = if (node.matmul_flags.trans0) node.src0.?.ne[0] else node.src0.?.ne[1],
-                        .N = if (node.matmul_flags.trans1) node.src1.?.ne[1] else node.src1.?.ne[0],
-                        .K = if (node.matmul_flags.trans0) node.src0.?.ne[1] else node.src0.?.ne[0],
-                    })) {
-                        executeQuantizedMatmul(node, weight);
-                    }
+                    executeQuantizedMatmul(node, &self.quant_weights[qi]);
                 } else {
                     self.graph.executeNode(node, null);
                 }

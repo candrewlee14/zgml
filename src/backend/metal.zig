@@ -403,7 +403,6 @@ pub const MetalBackend = struct {
             .vtable = &vtable,
             .name_str = "metal",
             .device_type = .metal,
-            .capabilities = .{ .device_buffers = true },
         };
     }
 };
@@ -414,7 +413,7 @@ fn getState(ctx: *anyopaque) *MetalBackend {
     return @ptrCast(@alignCast(ctx));
 }
 
-// Host kernel dispatch — delegate to BLAS (same as CPU backend).
+// Host kernel dispatch — delegate to BLAS.
 fn denseMatMulF32(_: *anyopaque, spec: backend_mod.DenseMatMulSpecF32) bool {
     const forward = @import("../tensor/forward.zig");
     const g = spec.geom;
@@ -422,61 +421,21 @@ fn denseMatMulF32(_: *anyopaque, spec: backend_mod.DenseMatMulSpecF32) bool {
     return true;
 }
 
-fn quantizedMatMulF32(_: *anyopaque, spec: backend_mod.QuantizedMatMulSpecF32) bool {
-    if (spec.weight.rows != spec.K or spec.weight.cols != spec.N) return false;
-    const quant = @import("../quant.zig");
-    const Weight = quant.QuantizedWeight(f32);
-    const weight = Weight{
-        .data = spec.weight.data,
-        .scales = spec.weight.scales,
-        .rows = spec.weight.rows,
-        .cols = spec.weight.cols,
-        .block_size = spec.weight.block_size,
-    };
-    weight.matmul(spec.input, spec.dst, spec.M, spec.N, spec.K);
-    return true;
-}
-
-// Buffer management — shared memory, so upload/download are memcpy.
-fn allocBuffer(ctx: *anyopaque, size: usize) ?backend_mod.DeviceBuffer {
-    const self = getState(ctx);
-    const buf = c.mtl_create_buffer(self.device, size) orelse return null;
-    return .{ .ptr = buf, .size = size };
-}
-
-fn freeBuffer(_: *anyopaque, buf: backend_mod.DeviceBuffer) void {
-    c.mtl_release(buf.ptr);
-}
-
-fn uploadFn(_: *anyopaque, dst: backend_mod.DeviceBuffer, dst_byte_offset: usize, src: []const u8) void {
-    const ptr: [*]u8 = @ptrCast(c.mtl_buffer_contents(dst.ptr));
-    @memcpy(ptr[dst_byte_offset..][0..src.len], src);
-}
-
-fn downloadFn(ctx: *anyopaque, dst: []u8, src: backend_mod.DeviceBuffer, src_byte_offset: usize) void {
-    const self = getState(ctx);
-    self.flushCommands();
-    const ptr: [*]const u8 = @ptrCast(c.mtl_buffer_contents(src.ptr));
-    @memcpy(dst, ptr[src_byte_offset..][0..dst.len]);
-}
-
-fn syncFn(ctx: *anyopaque) void {
-    const self = getState(ctx);
-    self.flushCommands();
-}
-
 // ── Compiled program execution ────────────────────────────────────
+
+/// Opaque handle to a Metal buffer + size.
+const DeviceBuffer = struct { ptr: *anyopaque, size: usize };
 
 /// Device-resident quantized weight (data + scales as Metal buffers).
 const DeviceQWeight = struct {
-    data: backend_mod.DeviceBuffer,
-    scales: backend_mod.DeviceBuffer,
+    data: DeviceBuffer,
+    scales: DeviceBuffer,
     block_size: usize,
 };
 
 const CompiledProgram = struct {
     backend: *MetalBackend,
-    device_bufs: []backend_mod.DeviceBuffer,
+    device_bufs: []DeviceBuffer,
     qweight_views: []DeviceQWeight,
     ops: []const backend_mod.DeviceOp,
     alloc: std.mem.Allocator,
@@ -614,7 +573,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
     const alloc = std.heap.page_allocator;
 
     // Allocate device buffers.
-    const device_bufs = alloc.alloc(backend_mod.DeviceBuffer, program.n_buffers) catch return null;
+    const device_bufs = alloc.alloc(DeviceBuffer, program.n_buffers) catch return null;
     for (device_bufs, program.buffer_sizes) |*buf, size| {
         buf.* = .{ .ptr = c.mtl_create_buffer(self.device, size * @sizeOf(f32)) orelse return null, .size = size * @sizeOf(f32) };
     }
@@ -629,12 +588,12 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
     // Upload quantized weights.
     const qweight_views = alloc.alloc(DeviceQWeight, program.qweights.len) catch return null;
     for (program.qweights, 0..) |qw, i| {
-        const data_buf: backend_mod.DeviceBuffer = .{ .ptr = c.mtl_create_buffer(self.device, qw.data.len) orelse return null, .size = qw.data.len };
+        const data_buf: DeviceBuffer = .{ .ptr = c.mtl_create_buffer(self.device, qw.data.len) orelse return null, .size = qw.data.len };
         const data_ptr: [*]u8 = @ptrCast(c.mtl_buffer_contents(data_buf.ptr));
         const i8_as_u8: [*]const u8 = @ptrCast(qw.data.ptr);
         @memcpy(data_ptr[0..qw.data.len], i8_as_u8[0..qw.data.len]);
 
-        const scales_buf: backend_mod.DeviceBuffer = .{ .ptr = c.mtl_create_buffer(self.device, qw.scales.len * @sizeOf(f32)) orelse return null, .size = qw.scales.len * @sizeOf(f32) };
+        const scales_buf: DeviceBuffer = .{ .ptr = c.mtl_create_buffer(self.device, qw.scales.len * @sizeOf(f32)) orelse return null, .size = qw.scales.len * @sizeOf(f32) };
         const scales_ptr: [*]u8 = @ptrCast(c.mtl_buffer_contents(scales_buf.ptr));
         @memcpy(scales_ptr[0 .. qw.scales.len * @sizeOf(f32)], std.mem.sliceAsBytes(qw.scales));
 
@@ -664,38 +623,12 @@ fn freeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle) void
 
 const vtable = backend_mod.Backend.VTable{
     .dense_matmul_f32 = denseMatMulF32,
-    .quantized_matmul_f32 = quantizedMatMulF32,
-    .alloc_buffer = allocBuffer,
-    .free_buffer = freeBuffer,
-    .upload = uploadFn,
-    .download = downloadFn,
-    .sync = syncFn,
     .compile_program = compileProgramFn,
     .execute_program = executeProgramFn,
     .free_program = freeProgramFn,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────
-
-test "metal backend init and device buffer round-trip" {
-    var metal = MetalBackend.init() catch |err| switch (err) {
-        error.MetalNotAvailable => return, // skip on non-Metal systems
-        else => return err,
-    };
-    defer metal.deinit();
-    const be = metal.backend();
-
-    const buf = be.allocSlice(f32, 4) orelse return error.OutOfMemory;
-    defer be.freeBuffer(buf);
-
-    const src = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
-    be.uploadSlice(f32, buf, 0, &src);
-
-    var dst: [4]f32 = undefined;
-    be.downloadSlice(f32, &dst, buf, 0);
-
-    try std.testing.expectEqualSlices(f32, &src, &dst);
-}
 
 test "metal backend compiled program matmul" {
     var metal = MetalBackend.init() catch |err| switch (err) {
