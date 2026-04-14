@@ -36,7 +36,7 @@ const SQRT_2_OVER_PI: comptime_float = @sqrt(2.0 / std.math.pi);
 
 /// Returns the default SIMD vector width (in lanes) for type T.
 /// Used for element-wise ops. Targets 256-bit (conservative portable default).
-fn simdVecSize(comptime T: type) comptime_int {
+pub fn simdVecSize(comptime T: type) comptime_int {
     const lanes = 32 / @sizeOf(T);
     return if (lanes >= 4) lanes else 4;
 }

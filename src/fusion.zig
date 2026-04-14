@@ -60,10 +60,17 @@ pub fn FusionDetector(comptime T: type) type {
         // =================================================================
 
         pub fn detect(self: *Self, alloc: std.mem.Allocator) !void {
-            // Forward high-level patterns (largest subgraphs first)
-            for (self.nodes[0..self.forward_node_count], 0..) |node, idx| {
-                if (self.fused_skip[idx]) continue;
-                _ = try self.tryForwardPattern(alloc, node, idx);
+            // Forward high-level patterns: scan high-to-low (maximal munch).
+            // The graph is topologically ordered, so composed patterns like
+            // relu(bias(conv(x))) always have higher output indices than their
+            // sub-patterns. Scanning in reverse ensures the widest match wins.
+            {
+                var idx: usize = self.forward_node_count;
+                while (idx > 0) {
+                    idx -= 1;
+                    if (self.fused_skip[idx]) continue;
+                    _ = try self.tryForwardPattern(alloc, self.nodes[idx], idx);
+                }
             }
 
             // Backward patterns (conv2d, maxpool2d)
@@ -238,8 +245,10 @@ pub fn FusionDetector(comptime T: type) type {
         fn detectConv2dForward(self: *Self, node: *Tensor(T), idx: usize) ?FusionPlan(T) {
             var core = node;
             var activation: ?*Tensor(T) = null;
+            var step_node: ?*Tensor(T) = null;
             var bias: ?*Tensor(T) = null;
             var bias_node: ?*Tensor(T) = null;
+            var bias_add: ?*Tensor(T) = null;
 
             // Peel optional relu: mul(x, step(x))
             if (core.opTag() == .mul) {
@@ -247,9 +256,11 @@ pub fn FusionDetector(comptime T: type) type {
                 const s1 = core.source1() orelse return null;
                 if (s1.opTag() == .step and s1.source0() == s0) {
                     activation = core;
+                    step_node = s1;
                     core = s0;
                 } else if (s0.opTag() == .step and s0.source0() == s1) {
                     activation = core;
+                    step_node = s0;
                     core = s1;
                 }
             }
@@ -264,6 +275,7 @@ pub fn FusionDetector(comptime T: type) type {
                 if (bias_side) |bs| {
                     const other = if (bs == s1) s0 else s1;
                     if (other.opTag() == .reshape) {
+                        bias_add = core;
                         bias = bs.source0();
                         bias_node = bs;
                         core = other;
@@ -272,6 +284,8 @@ pub fn FusionDetector(comptime T: type) type {
             }
 
             if (core.opTag() != .reshape or core.n_dims != 4) return null;
+            // Guard: skip if core was already claimed by another fusion plan.
+            if (self.ptr_to_idx.get(core)) |ci| { if (self.fused_skip[ci]) return null; }
             const sum_node = expect(core.source0(), .sum) orelse return null;
             const mul_node = expect(sum_node.source0(), .mul) orelse return null;
             const input_view = expect(mul_node.source0(), .as_strided) orelse return null;
@@ -283,7 +297,8 @@ pub fn FusionDetector(comptime T: type) type {
 
             self.markNodes(&.{ input_view, kernel_view, mul_node, sum_node, core, node });
             if (bias_node) |bn| self.markNodes(&.{bn});
-            if (activation) |act| if (act != node) self.markNodes(&.{act});
+            if (bias_add) |ba| self.markNodes(&.{ba});
+            if (step_node) |sn| self.markNodes(&.{sn});
 
             return .{ .output_idx = idx, .payload = .{ .conv2d = .{
                 .input = input, .kernel = kernel, .input_view = input_view,

@@ -1037,42 +1037,39 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
 
     // 3. Rearrange [c_out, NB] → [batch, c_out, N] with fused bias + activation.
     const output = plan.output.data;
-    if (plan.bias) |bias| {
-        if (plan.activation != null) {
-            for (0..d.batch) |n| {
-                for (0..d.c_out) |oc| {
-                    const b = bias.data[oc];
-                    const src = mm_temp[oc * NB + n * d.N ..][0..d.N];
-                    const dst = output[n * d.N * d.c_out + oc * d.N ..][0..d.N];
-                    for (dst, src) |*dv, sv| dv.* = @max(sv + b, 0);
-                }
-            }
-        } else {
-            for (0..d.batch) |n| {
-                for (0..d.c_out) |oc| {
-                    const b = bias.data[oc];
-                    const src = mm_temp[oc * NB + n * d.N ..][0..d.N];
-                    const dst = output[n * d.N * d.c_out + oc * d.N ..][0..d.N];
-                    for (dst, src) |*dv, sv| dv.* = sv + b;
-                }
-            }
-        }
-    } else if (plan.activation != null) {
-        for (0..d.batch) |n| {
-            for (0..d.c_out) |oc| {
-                const src = mm_temp[oc * NB + n * d.N ..][0..d.N];
-                const dst = output[n * d.N * d.c_out + oc * d.N ..][0..d.N];
-                for (dst, src) |*dv, sv| dv.* = @max(sv, 0);
-            }
-        }
-    } else {
-        for (0..d.batch) |n| {
-            for (0..d.c_out) |oc| {
-                const src = mm_temp[oc * NB + n * d.N ..][0..d.N];
-                const dst = output[n * d.N * d.c_out + oc * d.N ..][0..d.N];
+    const has_bias = plan.bias != null;
+    const has_relu = plan.activation != null;
+    for (0..d.batch) |n| {
+        for (0..d.c_out) |oc| {
+            const src = mm_temp[oc * NB + n * d.N ..][0..d.N];
+            const dst = output[n * d.N * d.c_out + oc * d.N ..][0..d.N];
+            if (has_bias or has_relu) {
+                const b = if (plan.bias) |bv| bv.data[oc] else 0;
+                if (has_relu) rearrangeSimd(T, dst, src, b, true) else rearrangeSimd(T, dst, src, b, false);
+            } else {
                 @memcpy(dst, src);
             }
         }
+    }
+}
+
+/// SIMD copy with fused bias add + optional ReLU.
+fn rearrangeSimd(comptime T: type, dst: []T, src: []const T, bias: T, comptime relu: bool) void {
+    const vl = comptime forward.simdVecSize(T);
+    const V = @Vector(vl, T);
+    const bv: V = @splat(bias);
+    const len = dst.len;
+
+    var i: usize = 0;
+    while (i + vl <= len) : (i += vl) {
+        var v: V = src[i..][0..vl].* + bv;
+        if (relu) v = @max(v, @as(V, @splat(0)));
+        dst[i..][0..vl].* = v;
+    }
+    while (i < len) : (i += 1) {
+        var v = src[i] + bias;
+        if (relu) v = @max(v, 0);
+        dst[i] = v;
     }
 }
 
