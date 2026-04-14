@@ -235,6 +235,7 @@ pub fn TransformerBlock(
         // ---------------------------------------------------------------
 
         /// Cached forward.  KV caches are packed `[d_model, max_seq]` per layer.
+        /// Attention window grows with `pos` (variable shapes — not freezable).
         pub fn forwardCached(
             self: *const Self,
             x: *Tensor(T),
@@ -246,7 +247,6 @@ pub fn TransformerBlock(
             const norm1 = self.applyLayerNorm(x, &ln_reduce, .ln1);
             const qkv = self.projectQkv(norm1);
 
-            // Write all heads' K/V into packed cache at once (contiguous).
             const k_all = qkv.sliceRows(d_model, 2 * d_model);
             const v_all = qkv.sliceRows(2 * d_model, 3 * d_model);
             const k_updated = k_cache.sliceAssign(k_all, pos);
@@ -272,7 +272,7 @@ pub fn TransformerBlock(
             return self.ffn(after_attn, &ln_reduce);
         }
 
-        /// Frozen cached forward — fixed shapes for persistent inference plans.
+        /// Frozen cached forward — all shapes position-independent (freezable).
         /// `attn_mask`: [cache_cols, 1] — 0 for valid positions, -inf for masked.
         pub fn forwardCachedFrozen(
             self: *const Self,

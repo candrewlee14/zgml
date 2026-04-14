@@ -10,8 +10,6 @@
 
 const std = @import("std");
 const zgml = @import("zgml");
-const Tensor = zgml.Tensor;
-const ComputeGraph = zgml.ComputeGraph;
 
 const config = zgml.models.GPTConfig{
     .vocab_size = 50257,
