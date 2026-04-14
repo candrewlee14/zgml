@@ -187,7 +187,7 @@ const shader_source =
     \\    }
     \\}
     \\
-    \\// ── Generic compute kernels ──────────────────────────────
+    \\// ── Unified compute kernel ──────────────────────────────
     \\
     \\struct ComputeParams {
     \\    uint op;
@@ -197,12 +197,13 @@ const shader_source =
     \\    uint4 src1_ne;   uint4 src1_strides;   uint src1_offset;
     \\};
     \\
-    \\// Op enum values (must match op.zig exactly):
+    \\// Op codes — elementwise match op.zig values directly:
     \\//   add=7 mul=8 neg=9 sqrt=13 recip=14 exp=15 gelu=17
     \\//   sum=18 max=19 repeat=20 slice_assign=27
+    \\// Fused ops use codes 100+:
+    \\//   fused_softmax=100 fused_layernorm=101
     \\
-    \\// Elementwise: contiguous fast path, one thread per element.
-    \\kernel void elementwise_f32(
+    \\kernel void compute_f32(
     \\    device const float* src0 [[buffer(0)]],
     \\    device const float* src1 [[buffer(1)]],
     \\    device float* dst        [[buffer(2)]],
@@ -210,122 +211,89 @@ const shader_source =
     \\    uint gid [[thread_position_in_grid]]
     \\) {
     \\    if (gid >= p.n_elements) return;
-    \\    float a = src0[p.src0_offset + gid];
     \\    switch (p.op) {
-    \\        case 7:  dst[p.dst_offset + gid] = a + src1[p.src1_offset + gid]; break;
-    \\        case 8:  dst[p.dst_offset + gid] = a * src1[p.src1_offset + gid]; break;
-    \\        case 9:  dst[p.dst_offset + gid] = -a; break;
-    \\        case 13: dst[p.dst_offset + gid] = sqrt(a); break;
-    \\        case 14: dst[p.dst_offset + gid] = 1.0f / a; break;
-    \\        case 15: dst[p.dst_offset + gid] = exp(a); break;
+    \\        // ── Elementwise (one thread per element) ──
+    \\        case 7:  dst[p.dst_offset + gid] = src0[p.src0_offset + gid] + src1[p.src1_offset + gid]; break;
+    \\        case 8:  dst[p.dst_offset + gid] = src0[p.src0_offset + gid] * src1[p.src1_offset + gid]; break;
+    \\        case 9:  dst[p.dst_offset + gid] = -src0[p.src0_offset + gid]; break;
+    \\        case 13: dst[p.dst_offset + gid] = sqrt(src0[p.src0_offset + gid]); break;
+    \\        case 14: dst[p.dst_offset + gid] = 1.0f / src0[p.src0_offset + gid]; break;
+    \\        case 15: dst[p.dst_offset + gid] = exp(src0[p.src0_offset + gid]); break;
     \\        case 17: {
+    \\            float a = src0[p.src0_offset + gid];
     \\            float c = 0.7978845608f * (a + 0.044715f * a * a * a);
     \\            dst[p.dst_offset + gid] = 0.5f * a * (1.0f + precise::tanh(c));
     \\            break;
     \\        }
+    \\        // ── Reduce: sum(18) or max(19), one thread per output ──
+    \\        case 18: case 19: {
+    \\            uint reduce_size = p.src0_ne[0];
+    \\            uint src_base = p.src0_offset + gid * reduce_size;
+    \\            float val = (p.op == 19) ? -INFINITY : 0.0f;
+    \\            for (uint k = 0; k < reduce_size; k++) {
+    \\                float v = src0[src_base + k];
+    \\                if (p.op == 18) val += v; else val = max(val, v);
+    \\            }
+    \\            dst[p.dst_offset + gid] = val;
+    \\            break;
+    \\        }
+    \\        // ── Repeat: broadcast via modular indexing ──
+    \\        case 20: {
+    \\            uint idx = gid;
+    \\            uint src_idx = p.src0_offset;
+    \\            for (int d = 3; d >= 0; d--) {
+    \\                uint ud = uint(d);
+    \\                uint coord = idx / p.dst_strides[ud];
+    \\                idx %= p.dst_strides[ud];
+    \\                src_idx += (coord % p.src0_ne[ud]) * p.src0_strides[ud];
+    \\            }
+    \\            dst[p.dst_offset + gid] = src0[src_idx];
+    \\            break;
+    \\        }
+    \\        // ── Slice assign: strided copy ──
+    \\        case 27: {
+    \\            dst[p.dst_offset + gid * p.dst_strides[0]] = src0[p.src0_offset + gid * p.src0_strides[0]];
+    \\            break;
+    \\        }
+    \\        // ── Fused softmax: one thread per row ──
+    \\        // n_elements = rows, src0_ne[0] = cols
+    \\        case 100: {
+    \\            uint cols = p.src0_ne[0];
+    \\            uint src_base = p.src0_offset + gid * cols;
+    \\            uint dst_base = p.dst_offset + gid * cols;
+    \\            float m = -INFINITY;
+    \\            for (uint j = 0; j < cols; j++) m = max(m, src0[src_base + j]);
+    \\            float s = 0.0f;
+    \\            for (uint j = 0; j < cols; j++) {
+    \\                float e = exp(src0[src_base + j] - m);
+    \\                dst[dst_base + j] = e;
+    \\                s += e;
+    \\            }
+    \\            float inv = 1.0f / s;
+    \\            for (uint j = 0; j < cols; j++) dst[dst_base + j] *= inv;
+    \\            break;
+    \\        }
+    \\        // ── Fused layer norm: one thread per row ──
+    \\        // n_elements = rows, src0_ne[0] = cols
+    \\        case 101: {
+    \\            uint cols = p.src0_ne[0];
+    \\            uint base = p.src0_offset + gid * cols;
+    \\            uint dbase = p.dst_offset + gid * cols;
+    \\            float mu = 0.0f;
+    \\            for (uint j = 0; j < cols; j++) mu += src0[base + j];
+    \\            mu /= float(cols);
+    \\            float v = 0.0f;
+    \\            for (uint j = 0; j < cols; j++) {
+    \\                float d = src0[base + j] - mu;
+    \\                v += d * d;
+    \\            }
+    \\            float inv_std = 1.0f / sqrt(v / float(cols) + 1e-5f);
+    \\            for (uint j = 0; j < cols; j++)
+    \\                dst[dbase + j] = (src0[base + j] - mu) * inv_std;
+    \\            break;
+    \\        }
     \\        default: break;
     \\    }
-    \\}
-    \\
-    \\// Reduce: sum or max along innermost contiguous dimension.
-    \\kernel void reduce_f32(
-    \\    device const float* src [[buffer(0)]],
-    \\    device float* dst       [[buffer(1)]],
-    \\    constant ComputeParams& p [[buffer(3)]],
-    \\    uint gid [[thread_position_in_grid]]
-    \\) {
-    \\    if (gid >= p.n_elements) return;
-    \\    uint reduce_size = p.src0_ne[0];
-    \\    uint src_base = p.src0_offset + gid * reduce_size;
-    \\    float val = (p.op == 19) ? -INFINITY : 0.0f; // 19=max, 18=sum
-    \\    for (uint k = 0; k < reduce_size; k++) {
-    \\        float v = src[src_base + k];
-    \\        if (p.op == 18) val += v;
-    \\        else val = max(val, v);
-    \\    }
-    \\    dst[p.dst_offset + gid] = val;
-    \\}
-    \\
-    \\// Repeat: broadcast src to dst shape via modular indexing.
-    \\kernel void repeat_f32(
-    \\    device const float* src [[buffer(0)]],
-    \\    device float* dst       [[buffer(1)]],
-    \\    constant ComputeParams& p [[buffer(3)]],
-    \\    uint gid [[thread_position_in_grid]]
-    \\) {
-    \\    if (gid >= p.n_elements) return;
-    \\    uint idx = gid;
-    \\    uint src_idx = p.src0_offset;
-    \\    for (int d = 3; d >= 0; d--) {
-    \\        uint ud = uint(d);
-    \\        uint coord = idx / p.dst_strides[ud];
-    \\        idx %= p.dst_strides[ud];
-    \\        src_idx += (coord % p.src0_ne[ud]) * p.src0_strides[ud];
-    \\    }
-    \\    dst[p.dst_offset + gid] = src[src_idx];
-    \\}
-    \\
-    \\// Slice assign: write column into KV cache at dst_offset.
-    \\kernel void slice_assign_f32(
-    \\    device const float* src [[buffer(0)]],
-    \\    device float* dst       [[buffer(1)]],
-    \\    constant ComputeParams& p [[buffer(3)]],
-    \\    uint gid [[thread_position_in_grid]]
-    \\) {
-    \\    if (gid >= p.n_elements) return;
-    \\    dst[p.dst_offset + gid * p.dst_strides[0]] = src[p.src0_offset + gid * p.src0_strides[0]];
-    \\}
-    \\
-    \\// ── Fused kernels ────────────────────────────────────────
-    \\
-    \\struct FusedParams { uint rows; uint cols; uint src_offset; uint dst_offset; };
-    \\
-    \\// Fused softmax: max → shift → exp → sum → normalize. One thread per row.
-    \\kernel void fused_softmax_f32(
-    \\    device const float* src [[buffer(0)]],
-    \\    device float* dst       [[buffer(1)]],
-    \\    constant FusedParams& p [[buffer(2)]],
-    \\    uint rid [[thread_position_in_grid]]
-    \\) {
-    \\    if (rid >= p.rows) return;
-    \\    uint src_base = p.src_offset + rid * p.cols;
-    \\    uint dst_base = p.dst_offset + rid * p.cols;
-    \\    float m = -INFINITY;
-    \\    for (uint j = 0; j < p.cols; j++) m = max(m, src[src_base + j]);
-    \\    float s = 0.0f;
-    \\    for (uint j = 0; j < p.cols; j++) {
-    \\        float e = exp(src[src_base + j] - m);
-    \\        dst[dst_base + j] = e;
-    \\        s += e;
-    \\    }
-    \\    float inv = 1.0f / s;
-    \\    for (uint j = 0; j < p.cols; j++) dst[dst_base + j] *= inv;
-    \\}
-    \\
-    \\// Fused layer norm: mean → center → var → normalize → scale + shift.
-    \\// One thread per row. gamma at buffer(2), beta at buffer(3).
-    \\kernel void fused_layernorm_f32(
-    \\    device const float* src   [[buffer(0)]],
-    \\    device float* dst         [[buffer(1)]],
-    \\    device const float* gamma [[buffer(2)]],
-    \\    device const float* beta  [[buffer(3)]],
-    \\    constant FusedParams& p   [[buffer(4)]],
-    \\    uint rid [[thread_position_in_grid]]
-    \\) {
-    \\    if (rid >= p.rows) return;
-    \\    uint base = p.src_offset + rid * p.cols;
-    \\    uint dbase = p.dst_offset + rid * p.cols;
-    \\    float mu = 0.0f;
-    \\    for (uint j = 0; j < p.cols; j++) mu += src[base + j];
-    \\    mu /= float(p.cols);
-    \\    float v = 0.0f;
-    \\    for (uint j = 0; j < p.cols; j++) {
-    \\        float d = src[base + j] - mu;
-    \\        v += d * d;
-    \\    }
-    \\    float inv_std = 1.0f / sqrt(v / float(p.cols) + 1e-5f);
-    \\    for (uint j = 0; j < p.cols; j++)
-    \\        dst[dbase + j] = (src[base + j] - mu) * inv_std * gamma[j] + beta[j];
     \\}
 ;
 
@@ -352,13 +320,6 @@ const QMatMulParams = extern struct {
     block_size: u32,
 };
 
-const FusedParams = extern struct {
-    rows: u32,
-    cols: u32,
-    src_offset: u32,
-    dst_offset: u32,
-};
-
 const ComputeParams = extern struct {
     op: u32,
     n_elements: u32,
@@ -380,12 +341,7 @@ pub const MetalBackend = struct {
     queue: *anyopaque,
     matmul_pipeline: *anyopaque,
     qmatmul_pipeline: *anyopaque,
-    elementwise_pipeline: *anyopaque,
-    reduce_pipeline: *anyopaque,
-    repeat_pipeline: *anyopaque,
-    slice_assign_pipeline: *anyopaque,
-    fused_softmax_pipeline: *anyopaque,
-    fused_layernorm_pipeline: *anyopaque,
+    compute_pipeline: *anyopaque,
     library: *anyopaque,
     active_commands: ?*anyopaque = null,
 
@@ -403,41 +359,21 @@ pub const MetalBackend = struct {
         errdefer c.mtl_release(matmul_pipeline);
         const qmatmul_pipeline = c.mtl_create_pipeline(device, library, "qmatmul_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(qmatmul_pipeline);
-        const elementwise_pipeline = c.mtl_create_pipeline(device, library, "elementwise_f32") orelse return error.PipelineCreateFailed;
-        errdefer c.mtl_release(elementwise_pipeline);
-        const reduce_pipeline = c.mtl_create_pipeline(device, library, "reduce_f32") orelse return error.PipelineCreateFailed;
-        errdefer c.mtl_release(reduce_pipeline);
-        const repeat_pipeline = c.mtl_create_pipeline(device, library, "repeat_f32") orelse return error.PipelineCreateFailed;
-        errdefer c.mtl_release(repeat_pipeline);
-        const slice_assign_pipeline = c.mtl_create_pipeline(device, library, "slice_assign_f32") orelse return error.PipelineCreateFailed;
-        errdefer c.mtl_release(slice_assign_pipeline);
-        const fused_softmax_pipeline = c.mtl_create_pipeline(device, library, "fused_softmax_f32") orelse return error.PipelineCreateFailed;
-        errdefer c.mtl_release(fused_softmax_pipeline);
-        const fused_layernorm_pipeline = c.mtl_create_pipeline(device, library, "fused_layernorm_f32") orelse return error.PipelineCreateFailed;
+        const compute_pipeline = c.mtl_create_pipeline(device, library, "compute_f32") orelse return error.PipelineCreateFailed;
 
         return .{
             .device = device,
             .queue = queue,
             .matmul_pipeline = matmul_pipeline,
             .qmatmul_pipeline = qmatmul_pipeline,
-            .elementwise_pipeline = elementwise_pipeline,
-            .reduce_pipeline = reduce_pipeline,
-            .repeat_pipeline = repeat_pipeline,
-            .slice_assign_pipeline = slice_assign_pipeline,
-            .fused_softmax_pipeline = fused_softmax_pipeline,
-            .fused_layernorm_pipeline = fused_layernorm_pipeline,
+            .compute_pipeline = compute_pipeline,
             .library = library,
         };
     }
 
     pub fn deinit(self: *MetalBackend) void {
         self.flushCommands();
-        c.mtl_release(self.fused_layernorm_pipeline);
-        c.mtl_release(self.fused_softmax_pipeline);
-        c.mtl_release(self.slice_assign_pipeline);
-        c.mtl_release(self.repeat_pipeline);
-        c.mtl_release(self.reduce_pipeline);
-        c.mtl_release(self.elementwise_pipeline);
+        c.mtl_release(self.compute_pipeline);
         c.mtl_release(self.qmatmul_pipeline);
         c.mtl_release(self.matmul_pipeline);
         c.mtl_release(self.library);
@@ -531,10 +467,17 @@ fn syncFn(ctx: *anyopaque) void {
 
 // ── Compiled program execution ────────────────────────────────────
 
+/// Device-resident quantized weight (data + scales as Metal buffers).
+const DeviceQWeight = struct {
+    data: backend_mod.DeviceBuffer,
+    scales: backend_mod.DeviceBuffer,
+    block_size: usize,
+};
+
 const CompiledProgram = struct {
     backend: *MetalBackend,
     device_bufs: []backend_mod.DeviceBuffer,
-    qweight_views: []backend_mod.DeviceQuantizedWeightView,
+    qweight_views: []DeviceQWeight,
     ops: []const backend_mod.DeviceOp,
     alloc: std.mem.Allocator,
 
@@ -593,10 +536,10 @@ const CompiledProgram = struct {
                 c.mtl_encode_dispatch(cmds, be.qmatmul_pipeline, @ptrCast(&bufs), 4, &params, @sizeOf(QMatMulParams), 4, grid_x, grid_y, 128, 1);
             },
             .elementwise => |e| {
-                const pipeline = switch (e.op) {
-                    .add, .mul, .neg, .exp, .sqrt, .recip, .gelu => be.elementwise_pipeline,
+                switch (e.op) {
+                    .add, .mul, .neg, .exp, .sqrt, .recip, .gelu => {},
                     else => return,
-                };
+                }
                 const params = ComputeParams{
                     .op = @intFromEnum(e.op), .n_elements = e.n,
                     .dst_ne = .{ 0, 0, 0, 0 }, .dst_strides = .{ 0, 0, 0, 0 }, .dst_offset = e.dst_offset,
@@ -605,19 +548,29 @@ const CompiledProgram = struct {
                 };
                 var bufs = [_]?*anyopaque{ self.device_bufs[e.src0].ptr, self.device_bufs[e.src1].ptr, self.device_bufs[e.dst].ptr };
                 const grid: u32 = (e.n + 255) / 256;
-                c.mtl_encode_dispatch(cmds, pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, 256, 1);
+                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, 256, 1);
             },
             .softmax => |s| {
-                const params = FusedParams{ .rows = s.rows, .cols = s.cols, .src_offset = s.src_offset, .dst_offset = s.dst_offset };
-                var bufs = [_]?*anyopaque{ self.device_bufs[s.src].ptr, self.device_bufs[s.dst].ptr };
+                const params = ComputeParams{
+                    .op = 100, .n_elements = s.rows,
+                    .dst_ne = .{ 0, 0, 0, 0 }, .dst_strides = .{ 0, 0, 0, 0 }, .dst_offset = s.dst_offset,
+                    .src0_ne = .{ s.cols, 0, 0, 0 }, .src0_strides = .{ 0, 0, 0, 0 }, .src0_offset = s.src_offset,
+                    .src1_ne = .{ 0, 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
+                };
+                var bufs = [_]?*anyopaque{ self.device_bufs[s.src].ptr, self.device_bufs[s.src].ptr, self.device_bufs[s.dst].ptr };
                 const grid: u32 = (s.rows + 255) / 256;
-                c.mtl_encode_dispatch(cmds, be.fused_softmax_pipeline, @ptrCast(&bufs), 2, &params, @sizeOf(FusedParams), 2, grid, 1, @min(s.rows, 256), 1);
+                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, @min(s.rows, 256), 1);
             },
             .layernorm => |l| {
-                const params = FusedParams{ .rows = l.rows, .cols = l.cols, .src_offset = l.src_offset, .dst_offset = l.dst_offset };
-                var bufs = [_]?*anyopaque{ self.device_bufs[l.src].ptr, self.device_bufs[l.dst].ptr, self.device_bufs[l.src].ptr, self.device_bufs[l.src].ptr };
+                const params = ComputeParams{
+                    .op = 101, .n_elements = l.rows,
+                    .dst_ne = .{ 0, 0, 0, 0 }, .dst_strides = .{ 0, 0, 0, 0 }, .dst_offset = l.dst_offset,
+                    .src0_ne = .{ l.cols, 0, 0, 0 }, .src0_strides = .{ 0, 0, 0, 0 }, .src0_offset = l.src_offset,
+                    .src1_ne = .{ 0, 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
+                };
+                var bufs = [_]?*anyopaque{ self.device_bufs[l.src].ptr, self.device_bufs[l.src].ptr, self.device_bufs[l.dst].ptr };
                 const grid: u32 = (l.rows + 255) / 256;
-                c.mtl_encode_dispatch(cmds, be.fused_layernorm_pipeline, @ptrCast(&bufs), 4, &params, @sizeOf(FusedParams), 4, grid, 1, @min(l.rows, 256), 1);
+                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, @min(l.rows, 256), 1);
             },
             .reduce => |r| {
                 const params = ComputeParams{
@@ -626,9 +579,9 @@ const CompiledProgram = struct {
                     .src0_ne = .{ r.reduce_size, 0, 0, 0 }, .src0_strides = .{ 0, 0, 0, 0 }, .src0_offset = r.src_offset,
                     .src1_ne = .{ 0, 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
                 };
-                var bufs = [_]?*anyopaque{ self.device_bufs[r.src].ptr, self.device_bufs[r.dst].ptr };
+                var bufs = [_]?*anyopaque{ self.device_bufs[r.src].ptr, self.device_bufs[r.dst].ptr, self.device_bufs[r.dst].ptr };
                 const grid: u32 = (r.n_out + 255) / 256;
-                c.mtl_encode_dispatch(cmds, be.reduce_pipeline, @ptrCast(&bufs), 2, &params, @sizeOf(ComputeParams), 3, grid, 1, 256, 1);
+                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, 256, 1);
             },
             .repeat => |rp| {
                 const params = ComputeParams{
@@ -637,9 +590,9 @@ const CompiledProgram = struct {
                     .src0_ne = rp.src_ne, .src0_strides = rp.src_strides, .src0_offset = rp.src_offset,
                     .src1_ne = .{ 0, 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
                 };
-                var bufs = [_]?*anyopaque{ self.device_bufs[rp.src].ptr, self.device_bufs[rp.dst].ptr };
+                var bufs = [_]?*anyopaque{ self.device_bufs[rp.src].ptr, self.device_bufs[rp.src].ptr, self.device_bufs[rp.dst].ptr };
                 const grid: u32 = (rp.n + 255) / 256;
-                c.mtl_encode_dispatch(cmds, be.repeat_pipeline, @ptrCast(&bufs), 2, &params, @sizeOf(ComputeParams), 3, grid, 1, 256, 1);
+                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, 256, 1);
             },
             .slice_assign => |sa| {
                 const params = ComputeParams{
@@ -648,9 +601,9 @@ const CompiledProgram = struct {
                     .src0_ne = .{ 0, 0, 0, 0 }, .src0_strides = .{ sa.src_stride, 0, 0, 0 }, .src0_offset = sa.src_offset,
                     .src1_ne = .{ 0, 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
                 };
-                var bufs = [_]?*anyopaque{ self.device_bufs[sa.src].ptr, self.device_bufs[sa.dst].ptr };
+                var bufs = [_]?*anyopaque{ self.device_bufs[sa.src].ptr, self.device_bufs[sa.src].ptr, self.device_bufs[sa.dst].ptr };
                 const grid: u32 = (sa.n + 255) / 256;
-                c.mtl_encode_dispatch(cmds, be.slice_assign_pipeline, @ptrCast(&bufs), 2, &params, @sizeOf(ComputeParams), 3, grid, 1, 256, 1);
+                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, 256, 1);
             },
         }
     }
@@ -674,7 +627,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
     }
 
     // Upload quantized weights.
-    const qweight_views = alloc.alloc(backend_mod.DeviceQuantizedWeightView, program.qweights.len) catch return null;
+    const qweight_views = alloc.alloc(DeviceQWeight, program.qweights.len) catch return null;
     for (program.qweights, 0..) |qw, i| {
         const data_buf: backend_mod.DeviceBuffer = .{ .ptr = c.mtl_create_buffer(self.device, qw.data.len) orelse return null, .size = qw.data.len };
         const data_ptr: [*]u8 = @ptrCast(c.mtl_buffer_contents(data_buf.ptr));
@@ -685,7 +638,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         const scales_ptr: [*]u8 = @ptrCast(c.mtl_buffer_contents(scales_buf.ptr));
         @memcpy(scales_ptr[0 .. qw.scales.len * @sizeOf(f32)], std.mem.sliceAsBytes(qw.scales));
 
-        qweight_views[i] = .{ .data = data_buf, .scales = scales_buf, .rows = qw.rows, .cols = qw.cols, .block_size = qw.block_size };
+        qweight_views[i] = .{ .data = data_buf, .scales = scales_buf, .block_size = qw.block_size };
     }
 
     const compiled = alloc.create(CompiledProgram) catch return null;

@@ -74,32 +74,6 @@ pub const DeviceBuffer = struct {
     size: usize, // bytes
 };
 
-// ── Device kernel specs ────────────────────────────────────────────
-
-pub const DeviceMatMulSpecF32 = struct {
-    dst: DeviceBuffer,
-    a: DeviceBuffer,
-    b: DeviceBuffer,
-    geom: MatMulGeometry,
-};
-
-pub const DeviceQuantizedWeightView = struct {
-    data: DeviceBuffer,
-    scales: DeviceBuffer,
-    rows: usize,
-    cols: usize,
-    block_size: usize,
-};
-
-pub const DeviceQuantizedMatMulSpecF32 = struct {
-    dst: DeviceBuffer,
-    input: DeviceBuffer,
-    weight: DeviceQuantizedWeightView,
-    M: usize,
-    N: usize,
-    K: usize,
-};
-
 // ── Compiled device programs ───────────────────────────────────────
 
 pub const Op = @import("op.zig").Op;
