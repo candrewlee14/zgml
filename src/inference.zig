@@ -87,8 +87,8 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
         /// referenced, not copied).
         pub fn init(
             model: *const Model,
-            k_caches: [config.n_layers][config.n_heads]*Tensor(T),
-            v_caches: [config.n_layers][config.n_heads]*Tensor(T),
+            k_caches: [config.n_layers]*Tensor(T),
+            v_caches: [config.n_layers]*Tensor(T),
             backing_alloc: std.mem.Allocator,
         ) !Self {
             var graph = ComputeGraph(T).init(backing_alloc);
@@ -231,13 +231,29 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
                 }
             }
 
+            // Mark tensors that are parents of views — their data buffers
+            // must not be relocated because child views hold raw pointers
+            // into them.
+            const is_view_parent = try alloc.alloc(bool, nodes.len);
+            defer alloc.free(is_view_parent);
+            @memset(is_view_parent, false);
+            for (nodes) |node| {
+                const op = node.opTag();
+                if (op == .as_strided or op == .view) {
+                    if (node.src0) |parent| {
+                        if (ptr_to_idx.get(parent)) |idx| is_view_parent[idx] = true;
+                    }
+                }
+            }
+
             // Identify workspace-eligible nodes: intermediate, owned data,
-            // not fused-skip.
+            // not a view parent, not fused-skip.
             const eligible = try alloc.alloc(bool, nodes.len);
             defer alloc.free(eligible);
             for (nodes, 0..) |node, i| {
                 eligible[i] = node.opTag() != .none and
                     node.ownsData() and
+                    !is_view_parent[i] and
                     !(i < graph.fused_skip.items.len and graph.fused_skip.items[i]);
             }
 
@@ -315,7 +331,6 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
 pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
     const Model = GPT(T, config);
     const Plan = InferencePlan(T, config);
-    const d_head = config.d_model / config.n_heads;
 
     return struct {
         const Self = @This();
@@ -323,8 +338,8 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
         backing_alloc: std.mem.Allocator,
         arena: std.heap.ArenaAllocator,
         model: Model,
-        k_caches: [config.n_layers][config.n_heads]*Tensor(T),
-        v_caches: [config.n_layers][config.n_heads]*Tensor(T),
+        k_caches: [config.n_layers]*Tensor(T),
+        v_caches: [config.n_layers]*Tensor(T),
         plan: Plan,
         pos: usize,
 
@@ -342,15 +357,13 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
 
             const model = try Model.init(a);
 
-            var k_caches: [config.n_layers][config.n_heads]*Tensor(T) = undefined;
-            var v_caches: [config.n_layers][config.n_heads]*Tensor(T) = undefined;
+            var k_caches: [config.n_layers]*Tensor(T) = undefined;
+            var v_caches: [config.n_layers]*Tensor(T) = undefined;
             for (0..config.n_layers) |l| {
-                for (0..config.n_heads) |h| {
-                    k_caches[l][h] = try Tensor(T).init(a, &.{ d_head, config.max_seq_len });
-                    v_caches[l][h] = try Tensor(T).init(a, &.{ d_head, config.max_seq_len });
-                    @memset(k_caches[l][h].data, 0);
-                    @memset(v_caches[l][h].data, 0);
-                }
+                k_caches[l] = try Tensor(T).init(a, &.{ config.d_model, config.max_seq_len });
+                v_caches[l] = try Tensor(T).init(a, &.{ config.d_model, config.max_seq_len });
+                @memset(k_caches[l].data, 0);
+                @memset(v_caches[l].data, 0);
             }
 
             var plan = try Plan.init(&model, k_caches, v_caches, backing_alloc);
@@ -378,10 +391,8 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
         pub fn reset(self: *Self) void {
             self.pos = 0;
             for (0..config.n_layers) |l| {
-                for (0..config.n_heads) |h| {
-                    @memset(self.k_caches[l][h].data, 0);
-                    @memset(self.v_caches[l][h].data, 0);
-                }
+                @memset(self.k_caches[l].data, 0);
+                @memset(self.v_caches[l].data, 0);
             }
         }
 
@@ -411,7 +422,6 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
 /// and fallback.  Prefer `InferenceSession` for production use.
 pub fn GPTDecodeSession(comptime T: type, comptime config: GPTConfig) type {
     const Model = GPT(T, config);
-    const d_head = config.d_model / config.n_heads;
 
     return struct {
         const Self = @This();
@@ -419,8 +429,8 @@ pub fn GPTDecodeSession(comptime T: type, comptime config: GPTConfig) type {
         backing_alloc: std.mem.Allocator,
         arena: std.heap.ArenaAllocator,
         model: Model,
-        k_caches: [config.n_layers][config.n_heads]*Tensor(T),
-        v_caches: [config.n_layers][config.n_heads]*Tensor(T),
+        k_caches: [config.n_layers]*Tensor(T),
+        v_caches: [config.n_layers]*Tensor(T),
         logits_buf: []T,
         pos: usize,
 
@@ -431,15 +441,13 @@ pub fn GPTDecodeSession(comptime T: type, comptime config: GPTConfig) type {
 
             const model = try Model.init(a);
 
-            var k_caches: [config.n_layers][config.n_heads]*Tensor(T) = undefined;
-            var v_caches: [config.n_layers][config.n_heads]*Tensor(T) = undefined;
+            var k_caches: [config.n_layers]*Tensor(T) = undefined;
+            var v_caches: [config.n_layers]*Tensor(T) = undefined;
             for (0..config.n_layers) |l| {
-                for (0..config.n_heads) |h| {
-                    k_caches[l][h] = try Tensor(T).init(a, &.{ d_head, config.max_seq_len });
-                    v_caches[l][h] = try Tensor(T).init(a, &.{ d_head, config.max_seq_len });
-                    @memset(k_caches[l][h].data, 0);
-                    @memset(v_caches[l][h].data, 0);
-                }
+                k_caches[l] = try Tensor(T).init(a, &.{ config.d_model, config.max_seq_len });
+                v_caches[l] = try Tensor(T).init(a, &.{ config.d_model, config.max_seq_len });
+                @memset(k_caches[l].data, 0);
+                @memset(v_caches[l].data, 0);
             }
 
             const logits_buf = try a.alloc(T, config.vocab_size);
@@ -462,10 +470,8 @@ pub fn GPTDecodeSession(comptime T: type, comptime config: GPTConfig) type {
         pub fn reset(self: *Self) void {
             self.pos = 0;
             for (0..config.n_layers) |l| {
-                for (0..config.n_heads) |h| {
-                    @memset(self.k_caches[l][h].data, 0);
-                    @memset(self.v_caches[l][h].data, 0);
-                }
+                @memset(self.k_caches[l].data, 0);
+                @memset(self.v_caches[l].data, 0);
             }
         }
 
@@ -528,7 +534,6 @@ test "InferenceSession matches manual forward" {
         .max_seq_len = 16,
     };
     const Model = GPT(f32, cfg);
-    const d_head = cfg.d_model / cfg.n_heads;
 
     var session = try InferenceSession(f32, cfg).init(testing.allocator);
     defer session.deinit();
@@ -540,14 +545,14 @@ test "InferenceSession matches manual forward" {
     const ref_model = try Model.init(ra);
     for (session.model.params(), ref_model.params()) |src, dst| @memcpy(dst.data, src.data);
 
-    var ref_k: [cfg.n_layers][cfg.n_heads]*Tensor(f32) = undefined;
-    var ref_v: [cfg.n_layers][cfg.n_heads]*Tensor(f32) = undefined;
-    for (0..cfg.n_layers) |l| for (0..cfg.n_heads) |h| {
-        ref_k[l][h] = try Tensor(f32).init(ra, &.{ d_head, cfg.max_seq_len });
-        ref_v[l][h] = try Tensor(f32).init(ra, &.{ d_head, cfg.max_seq_len });
-        @memset(ref_k[l][h].data, 0);
-        @memset(ref_v[l][h].data, 0);
-    };
+    var ref_k: [cfg.n_layers]*Tensor(f32) = undefined;
+    var ref_v: [cfg.n_layers]*Tensor(f32) = undefined;
+    for (0..cfg.n_layers) |l| {
+        ref_k[l] = try Tensor(f32).init(ra, &.{ cfg.d_model, cfg.max_seq_len });
+        ref_v[l] = try Tensor(f32).init(ra, &.{ cfg.d_model, cfg.max_seq_len });
+        @memset(ref_k[l].data, 0);
+        @memset(ref_v[l].data, 0);
+    }
 
     // Build a reference attn mask in the ref arena.
     const ref_mask = try Tensor(f32).init(ra, &.{ cfg.max_seq_len, 1 });
