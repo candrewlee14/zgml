@@ -1,0 +1,29 @@
+src/inference.zig
+  dfd5433e08229ae6 300
+src/graph.zig
+  dfd5433e08229ae6 1425-1430
+src/backend/cpu.zig
+  dfd5433e08229ae6 30-32,228,275
+src/backend.zig
+  dfd5433e08229ae6 108-111,133,137,141,175-182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "5b8a1c1f56c0ea04c6afe23508e973366bc93344",
+  "prompts": {
+    "dfd5433e08229ae6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4ba0dc3-34c0-45d9-a884-69e70ecea226",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 27,
+      "total_deletions": 28,
+      "accepted_lines": 27,
+      "overriden_lines": 0
+    }
+  }
+}
