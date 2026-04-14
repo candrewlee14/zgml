@@ -19,40 +19,43 @@ fn benchDenseMatMul(
     K: usize,
     writer: anytype,
 ) !void {
-    const max_elems = @max(M * K, @max(K * N, M * N));
-    const fill = try std.heap.page_allocator.alloc(f32, max_elems);
-    defer std.heap.page_allocator.free(fill);
-    @memset(fill, 1.0);
+    // Build a single-matmul program.
+    const a_data = try std.heap.page_allocator.alloc(f32, M * K);
+    defer std.heap.page_allocator.free(a_data);
+    @memset(a_data, 1.0);
+    const b_data = try std.heap.page_allocator.alloc(f32, K * N);
+    defer std.heap.page_allocator.free(b_data);
+    @memset(b_data, 1.0);
 
-    const a_buf = be.allocSlice(f32, M * K) orelse return error.OutOfMemory;
-    defer be.freeBuffer(a_buf);
-    const b_buf = be.allocSlice(f32, K * N) orelse return error.OutOfMemory;
-    defer be.freeBuffer(b_buf);
-    const dst_buf = be.allocSlice(f32, M * N) orelse return error.OutOfMemory;
-    defer be.freeBuffer(dst_buf);
-
-    be.uploadSlice(f32, a_buf, 0, fill[0 .. M * K]);
-    be.uploadSlice(f32, b_buf, 0, fill[0 .. K * N]);
-
-    const spec = backend_mod.DeviceMatMulSpecF32{
-        .dst = dst_buf,
-        .a = a_buf,
-        .b = b_buf,
-        .geom = .{
-            .M = M, .N = N, .K = K,
-            .a_row_stride = K, .a_col_stride = 1,
-            .b_row_stride = N, .b_col_stride = 1,
-            .a_offset = 0, .b_offset = 0,
-            .dst_offset = 0, .dst_row_stride = N,
-        },
+    const ops = [_]backend_mod.DeviceOp{.{ .matmul = .{
+        .dst = 2, .a = 0, .b = 1,
+        .geom = .{ .M = M, .N = N, .K = K, .a_row_stride = K, .a_col_stride = 1, .b_row_stride = N, .b_col_stride = 1, .a_offset = 0, .b_offset = 0, .dst_offset = 0, .dst_row_stride = N },
+    } }};
+    const buf_sizes = [_]usize{ M * K, K * N, M * N };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(a_data.ptr), .size = @intCast(M * K * 4) },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(b_data.ptr), .size = @intCast(K * N * 4) },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 3,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
     };
 
-    for (0..WARMUP) |_| _ = be.deviceMatMul(spec);
-    be.sync();
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
 
+    const dst = try std.heap.page_allocator.alloc(f32, M * N);
+    defer std.heap.page_allocator.free(dst);
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 2, .host_ptr = @ptrCast(dst.ptr), .size = @intCast(M * N * 4) }};
+
+    // Warmup
+    for (0..WARMUP) |_| be.executeProgram(handle, &.{}, &out);
+
+    // Timed
     var timer = try std.time.Timer.start();
-    for (0..ITERS) |_| _ = be.deviceMatMul(spec);
-    be.sync();
+    for (0..ITERS) |_| be.executeProgram(handle, &.{}, &out);
     const elapsed_ns = timer.read();
 
     const per_iter_us = @as(f64, @floatFromInt(elapsed_ns)) / 1000.0 / @as(f64, @floatFromInt(ITERS));
@@ -84,16 +87,19 @@ pub fn main() !void {
     const metal = metal_be.backend();
 
     const sizes = [_][3]usize{
-        .{ 64, 64, 64 },
-        .{ 128, 128, 128 },
-        .{ 256, 256, 256 },
-        .{ 512, 512, 512 },
         .{ 1024, 1024, 1024 },
         .{ 2048, 2048, 2048 },
-        // Inference-shaped: 1 token, large model dims
+        // Batch=1 inference
         .{ 1, 768, 768 },
-        .{ 1, 2048, 768 },
         .{ 1, 768, 3072 },
+        // Batched inference / prefill
+        .{ 8, 768, 768 },
+        .{ 8, 768, 3072 },
+        .{ 32, 768, 768 },
+        .{ 32, 768, 3072 },
+        .{ 128, 768, 768 },
+        .{ 128, 768, 3072 },
+        .{ 512, 768, 768 },
     };
 
     for (sizes) |s| {
