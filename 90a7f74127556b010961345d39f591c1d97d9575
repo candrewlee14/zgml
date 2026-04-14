@@ -1,0 +1,23 @@
+benchmarks/metal_inference_bench.zig
+  dfd5433e08229ae6 96-105,122-127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "90a7f74127556b010961345d39f591c1d97d9575",
+  "prompts": {
+    "dfd5433e08229ae6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4ba0dc3-34c0-45d9-a884-69e70ecea226",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 18,
+      "total_deletions": 0,
+      "accepted_lines": 18,
+      "overriden_lines": 0
+    }
+  }
+}
