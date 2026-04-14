@@ -62,8 +62,8 @@ pub fn main() !void {
 
     const params = model.params();
     const n_samples = corpus.len - seq_len - 1;
-    const lr: f32 = 0.001;
-    const n_epochs = 50;
+    const lr: f32 = 0.003;
+    const n_epochs = 500;
 
     try w.interface.print("Corpus: {} bytes, {} samples\n\n", .{ corpus.len, n_samples });
     w.interface.flush() catch {};
@@ -98,7 +98,7 @@ pub fn main() !void {
         }
 
         const avg_loss = total_loss / @as(f32, @floatFromInt(n_samples));
-        if (epoch % 5 == 0 or epoch == n_epochs - 1) {
+        if (epoch % 50 == 0 or epoch == n_epochs - 1) {
             try w.interface.print("epoch {d:>3}: loss={d:.4}\n", .{ epoch + 1, avg_loss });
             w.interface.flush() catch {};
         }
