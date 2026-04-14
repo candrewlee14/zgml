@@ -23,6 +23,7 @@ pub const quant = @import("quant.zig");
 pub const safetensors = @import("safetensors.zig");
 pub const tokenizer = @import("tokenizer.zig");
 pub const inference = @import("inference.zig");
+pub const device_inference = @import("device_inference.zig");
 pub const data = @import("data.zig");
 
 test "ref all decls" {
