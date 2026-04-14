@@ -391,10 +391,12 @@ fn applyOp(comptime T: type, comptime op: FusedOp, val: T, node: anytype, i: usi
 pub fn FusedKernel(comptime T: type, comptime ops: []const FusedOp) type {
     return struct {
         pub fn execute(nodes: []const *Tensor(T)) void {
-            const n_elems = nodes[nodes.len - 1].nElems();
-            const input_data = nodes[0].source0().?.data;
+            executeRange(nodes, 0, nodes[nodes.len - 1].nElems());
+        }
 
-            for (0..n_elems) |i| {
+        pub fn executeRange(nodes: []const *Tensor(T), start: usize, end: usize) void {
+            const input_data = nodes[0].source0().?.data;
+            for (start..end) |i| {
                 var val: T = input_data[i];
                 inline for (ops, 0..) |op, k| {
                     val = applyOp(T, op, val, nodes[k], i);
@@ -405,14 +407,13 @@ pub fn FusedKernel(comptime T: type, comptime ops: []const FusedOp) type {
     };
 }
 
-/// Runtime interpreter fallback for chains longer than the comptime dispatch limit.
-/// Still one memory pass, but the inner loop has a runtime switch.
-pub fn executeFusedGeneric(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
+/// Runtime interpreter for a range of elements. Used by both the generic
+/// fallback and the parallel executor.
+fn executeFusedGenericRange(comptime T: type, plan: ElementwiseFusionPlan(T), start: usize, end: usize) void {
     const nodes = plan.nodes;
-    const n_elems = nodes[nodes.len - 1].nElems();
     const input_data = plan.input.data;
 
-    for (0..n_elems) |i| {
+    for (start..end) |i| {
         var val: T = input_data[i];
         for (nodes, 0..) |node, node_idx| {
             val = switch (node.op) {
@@ -441,6 +442,48 @@ pub fn executeFusedGeneric(comptime T: type, plan: ElementwiseFusionPlan(T)) voi
             node.data[i] = val;
         }
     }
+}
+
+/// Parallel elementwise chain execution. Splits the element range across threads.
+pub fn executeFusedChainParallel(comptime T: type, plan: ElementwiseFusionPlan(T), pool: *std.Thread.Pool) void {
+    if (!isSafeElementwiseChain(T, plan)) {
+        for (plan.nodes) |node| node.compute();
+        return;
+    }
+
+    const n_elems = plan.nodes[plan.nodes.len - 1].nElems();
+    const min_chunk = 1024; // below this, not worth threading
+    const n_workers = pool.threads.len + 1;
+
+    if (n_elems < min_chunk * 2 or n_workers <= 1) {
+        executeFusedChain(T, plan);
+        return;
+    }
+
+    const chunk = @max(min_chunk, (n_elems + n_workers - 1) / n_workers);
+    var wg = std.Thread.WaitGroup{};
+    var start: usize = chunk;
+    while (start < n_elems) {
+        const s = start;
+        const e = @min(start + chunk, n_elems);
+        pool.spawnWg(&wg, struct {
+            fn run(p: ElementwiseFusionPlan(T), cs: usize, ce: usize) void {
+                executeFusedGenericRange(T, p, cs, ce);
+            }
+        }.run, .{ plan, s, e });
+        start = e;
+    }
+
+    // Caller thread does the first chunk (comptime-specialized when possible)
+    executeFusedGenericRange(T, plan, 0, @min(chunk, n_elems));
+    wg.wait();
+}
+
+/// Runtime interpreter fallback for chains longer than the comptime dispatch limit.
+/// Still one memory pass, but the inner loop has a runtime switch.
+pub fn executeFusedGeneric(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
+    const n_elems = plan.nodes[plan.nodes.len - 1].nElems();
+    executeFusedGenericRange(T, plan, 0, n_elems);
 }
 
 /// Dispatch a fused chain to a comptime-specialized kernel.
@@ -827,13 +870,19 @@ fn col2im(comptime T: type, d: Conv2dDims(T), dst_data: []T, dst_strides: [@impo
     }
 }
 
-/// Allocate scratch from page_allocator, returning null on failure.
+/// Allocate scratch memory, returning null on failure.
+/// Uses page_allocator on native targets; falls back to wasm_allocator on WASM.
+const scratch_allocator = switch (@import("builtin").cpu.arch) {
+    .wasm32, .wasm64 => std.heap.wasm_allocator,
+    else => std.heap.page_allocator,
+};
+
 fn allocScratch(comptime T: type, len: usize) ?[]T {
-    return std.heap.page_allocator.alloc(T, len) catch null;
+    return scratch_allocator.alloc(T, len) catch null;
 }
 
 fn freeScratch(comptime T: type, buf: []T) void {
-    std.heap.page_allocator.free(buf);
+    scratch_allocator.free(buf);
 }
 
 // ---------------------------------------------------------------------------

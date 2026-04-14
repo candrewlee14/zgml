@@ -327,12 +327,34 @@ fn TiledMatMul(comptime T: type, comptime vl: comptime_int) type {
             d_base: usize,
             d_row_stride: usize,
         ) void {
+            runRange(dst_data, src0_data, src1_data, 0, M, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, d_row_stride);
+        }
+
+        /// Execute matmul for a subset of M-rows [m_start, m_limit).
+        /// Thread-safe: each thread gets a disjoint row range.
+        pub fn runRange(
+            dst_data: []T,
+            src0_data: []const T,
+            src1_data: []const T,
+            m_start: usize,
+            m_limit: usize,
+            N: usize,
+            K: usize,
+            a_m_stride: usize,
+            a_k_stride: usize,
+            b_k_stride: usize,
+            b_n_stride: usize,
+            a_base: usize,
+            b_base: usize,
+            d_base: usize,
+            d_row_stride: usize,
+        ) void {
             const nr = 2 * vl;
             const b_contig = (b_n_stride == 1);
 
-            var mi: usize = 0;
-            while (mi < M) : (mi += mr) {
-                const m_end = @min(mi + mr, M);
+            var mi: usize = m_start;
+            while (mi < m_limit) : (mi += mr) {
+                const m_end = @min(mi + mr, m_limit);
 
                 var ni: usize = 0;
                 // --- Wide tiles (2 vectors per row) ---
@@ -407,6 +429,29 @@ fn gatherVec(comptime T: type, comptime vl: comptime_int, data: []const T, base:
 /// Matmul function signature for runtime dispatch.
 pub fn MatMulFnType(comptime T: type) type {
     return *const fn ([]T, []const T, []const T, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize) void;
+}
+
+/// Matmul range function signature — operates on [m_start, m_limit) rows.
+pub fn MatMulRangeFnType(comptime T: type) type {
+    return *const fn ([]T, []const T, []const T, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize) void;
+}
+
+pub fn selectMatMulRangeKernel(comptime T: type) MatMulRangeFnType(T) {
+    const State = struct {
+        var cached: MatMulRangeFnType(T) = undefined;
+        var initialized: bool = false;
+    };
+    if (State.initialized) return State.cached;
+
+    const width = cpuinfo.detectSimdWidth();
+    const lanes = @as(usize, @intFromEnum(width)) / @sizeOf(T);
+
+    State.cached = if (lanes >= 16)
+        &TiledMatMul(T, 16).runRange
+    else
+        &TiledMatMul(T, 8).runRange;
+    State.initialized = true;
+    return State.cached;
 }
 
 /// Select the best matmul kernel at runtime based on CPU SIMD capabilities.
@@ -1076,6 +1121,52 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                         const b_base = src0_i3 * src1.strides[3] + src0_i2 * src1.strides[2];
                         const d_base = src0_i3 * dst.strides[3] + src0_i2 * dst.strides[2];
                         kernel(dst.data, src0.data, src1.data, M, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1]);
+                    }
+                }
+            }
+        }
+
+        /// Parallel matmul: splits M-rows across threads for each batch.
+        pub fn computeMatMulParallel(dst: *Self, src0: *const Self, comptime trans0: bool, src1: *const Self, comptime trans1: bool, pool: *std.Thread.Pool) void {
+            dst.assertValidMatMulDims(src0, trans0, src1, trans1);
+            assert(dst.strides[0] == 1);
+
+            const M = if (trans0) src0.ne[0] else src0.ne[1];
+            const N = if (trans1) src1.ne[1] else src1.ne[0];
+            const K = if (trans0) src0.ne[1] else src0.ne[0];
+            const a_m_stride = if (trans0) src0.strides[0] else src0.strides[1];
+            const a_k_stride = if (trans0) src0.strides[1] else src0.strides[0];
+            const b_n_stride = if (trans1) src1.strides[1] else src1.strides[0];
+            const b_k_stride = if (trans1) src1.strides[0] else src1.strides[1];
+            const kernel = selectMatMulRangeKernel(T);
+
+            const n_workers = pool.threads.len + 1;
+            const min_rows_per_thread = 4; // don't split below this
+
+            for (0..src0.ne[3]) |b3| {
+                for (0..src0.ne[2]) |b2| {
+                    const a_base = b3 * src0.strides[3] + b2 * src0.strides[2];
+                    const b_base = b3 * src1.strides[3] + b2 * src1.strides[2];
+                    const d_base = b3 * dst.strides[3] + b2 * dst.strides[2];
+
+                    if (M < min_rows_per_thread * 2 or n_workers <= 1) {
+                        kernel(dst.data, src0.data, src1.data, 0, M, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1]);
+                    } else {
+                        const chunk = @max(min_rows_per_thread, (M + n_workers - 1) / n_workers);
+                        var wg = std.Thread.WaitGroup{};
+                        var m_start: usize = chunk;
+                        while (m_start < M) {
+                            const m_end = @min(m_start + chunk, M);
+                            pool.spawnWg(&wg, struct {
+                                fn work(d: []T, s0: []const T, s1: []const T, ms: usize, me: usize, n: usize, k: usize, am: usize, ak: usize, bk: usize, bn: usize, ab: usize, bb: usize, db: usize, dr: usize, kfn: MatMulRangeFnType(T)) void {
+                                    kfn(d, s0, s1, ms, me, n, k, am, ak, bk, bn, ab, bb, db, dr);
+                                }
+                            }.work, .{ dst.data, src0.data, src1.data, m_start, m_end, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1], kernel });
+                            m_start += chunk;
+                        }
+                        // Caller does first chunk
+                        kernel(dst.data, src0.data, src1.data, 0, @min(chunk, M), N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1]);
+                        wg.wait();
                     }
                 }
             }

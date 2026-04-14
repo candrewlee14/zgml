@@ -34,9 +34,15 @@ pub fn optimalVecSize(comptime T: type) usize {
 // x86/x86_64: CPUID-based detection
 // ---------------------------------------------------------------------------
 
+/// x86-specific helpers are only defined when compiling for x86/x86_64.
+/// On other architectures these are unreachable stubs so the inline asm
+/// is never analyzed by the compiler.
+const is_x86 = builtin.cpu.arch == .x86_64 or builtin.cpu.arch == .x86;
+
 const CpuidResult = struct { eax: u32, ebx: u32, ecx: u32, edx: u32 };
 
 fn cpuid(leaf: u32, subleaf: u32) CpuidResult {
+    if (comptime !is_x86) unreachable;
     var eax: u32 = undefined;
     var ebx: u32 = undefined;
     var ecx: u32 = undefined;
@@ -53,6 +59,7 @@ fn cpuid(leaf: u32, subleaf: u32) CpuidResult {
 }
 
 fn getXcr0() u32 {
+    if (comptime !is_x86) unreachable;
     var eax: u32 = undefined;
     var edx: u32 = undefined;
     asm volatile ("xgetbv"
@@ -65,6 +72,7 @@ fn getXcr0() u32 {
 }
 
 fn detectX86() SimdWidth {
+    if (comptime !is_x86) return .sse; // conservative fallback
     const leaf1 = cpuid(1, 0);
 
     // Check OSXSAVE (ECX bit 27) — required for AVX/AVX-512 state saving

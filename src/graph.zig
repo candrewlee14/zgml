@@ -13,6 +13,7 @@ const Op = @import("op.zig").Op;
 const loss = @import("loss.zig");
 const fusion = @import("fusion.zig");
 const fused = @import("tensor/fused.zig");
+const threading = @import("threading.zig");
 const assert = std.debug.assert;
 const testing = std.testing;
 const Alloc = std.mem.Allocator;
@@ -48,6 +49,10 @@ pub fn ComputeGraph(comptime T: type) type {
         fused_skip: std.ArrayList(bool),
         execution_steps: std.ArrayList(ExecutionStep),
         forward_execution_steps: std.ArrayList(ExecutionStep),
+
+        /// Optional thread pool for parallel matmul and elementwise ops.
+        /// Null by default (single-threaded). Call `enableThreading()` to activate.
+        thread_pool: ?std.Thread.Pool = null,
 
         const ExecutionStep = union(enum) {
             fusion: usize,
@@ -104,6 +109,7 @@ pub fn ComputeGraph(comptime T: type) type {
 
         /// Clean up all the resources for this compute graph
         pub fn deinit(self: *Self) void {
+            if (self.thread_pool) |*tp| tp.deinit();
             const alloc = self.arena.allocator();
             self.deinitFusedChains();
             self.fused_skip.deinit(alloc);
@@ -115,6 +121,18 @@ pub fn ComputeGraph(comptime T: type) type {
             self.visited_nodes.deinit(alloc);
             self.scratch.deinit(alloc);
             self.arena.deinit();
+        }
+
+        /// Enable multi-threaded execution for matmul and elementwise ops.
+        /// Uses all available CPU cores. Safe to call multiple times (no-op if already enabled).
+        pub fn enableThreading(self: *Self) !void {
+            if (self.thread_pool != null) return;
+            var pool: std.Thread.Pool = undefined;
+            try pool.init(.{
+                .allocator = std.heap.page_allocator,
+                .track_ids = false,
+            });
+            self.thread_pool = pool;
         }
 
         /// Build a graph where the provided tensor is the final output node.
@@ -654,7 +672,7 @@ pub fn ComputeGraph(comptime T: type) type {
         }
 
         pub fn dumpReport(self: *const Self, writer: anytype, options: ReportOptions) !void {
-            var report = try self.buildReport(std.heap.page_allocator, options);
+            var report = try self.buildReport(self.arena.child_allocator, options);
             defer report.deinit();
             try report.render(writer);
         }
@@ -702,7 +720,7 @@ pub fn ComputeGraph(comptime T: type) type {
             };
             try writer.print("lineage for node[{d}] {s} shape={any}\n", .{ idx, @tagName(needle.opTag()), needle.ne[0..needle.n_dims] });
 
-            var visited = std.AutoHashMap(*Tensor(T), void).init(std.heap.page_allocator);
+            var visited = std.AutoHashMap(*Tensor(T), void).init(self.arena.child_allocator);
             defer visited.deinit();
             try self.dumpTensorLineageRecur(writer, needle, 1, &visited);
         }
@@ -1038,10 +1056,31 @@ pub fn ComputeGraph(comptime T: type) type {
         }
 
         fn executeGraphPlan(self: *const Self, steps: []const ExecutionStep) void {
+            const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
             for (steps) |step| {
                 switch (step) {
-                    .fusion => |idx| fused.executeFusionPlan(T, self.fused_chains.items[idx]),
-                    .node => |node| node.compute(),
+                    .fusion => |idx| {
+                        const plan = self.fused_chains.items[idx];
+                        if (pool != null and plan.kind() == .elementwise_chain) {
+                            fused.executeFusedChainParallel(T, plan.payload.elementwise_chain, pool.?);
+                        } else {
+                            fused.executeFusionPlan(T, plan);
+                        }
+                    },
+                    .node => |node| {
+                        if (pool != null and node.opTag() == .matmul) {
+                            const flags = node.matmul_flags;
+                            const s0 = node.src0.?;
+                            const s1 = node.src1.?;
+                            if (flags.trans0) {
+                                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, true, s1, true, pool.?) else Tensor(T).computeMatMulParallel(node, s0, true, s1, false, pool.?);
+                            } else {
+                                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, false, s1, true, pool.?) else Tensor(T).computeMatMulParallel(node, s0, false, s1, false, pool.?);
+                            }
+                        } else {
+                            node.compute();
+                        }
+                    },
                 }
             }
         }
@@ -2386,6 +2425,37 @@ test "fusion - conv2d backward gradients fused matches unfused (multi-filter)" {
     }
     for (xf.gradOrNull().?.data, xu.gradOrNull().?.data) |fg, ug| {
         try testing.expectApproxEqAbs(ug, fg, 1e-4);
+    }
+}
+
+test "threaded compute matches single-threaded" {
+    var gs = ComputeGraph(f32).init(tac);
+    defer gs.deinit();
+    var gt = ComputeGraph(f32).init(tac);
+    defer gt.deinit();
+    try gt.enableThreading();
+
+    const xs = try Tensor(f32).init(gs.allocator(), &.{256});
+    const xt = try Tensor(f32).init(gt.allocator(), &.{256});
+    for (xs.data, xt.data, 0..) |*a, *b, i| {
+        const v: f32 = @floatFromInt(i);
+        a.* = v * 0.01;
+        b.* = v * 0.01;
+    }
+
+    const ys = xs.exp().neg().add(xs.gelu());
+    const yt = xt.exp().neg().add(xt.gelu());
+
+    try gs.buildForward(ys);
+    try gs.fusionPass();
+    gs.computeNoGrad();
+
+    try gt.buildForward(yt);
+    try gt.fusionPass();
+    gt.computeNoGrad();
+
+    for (ys.data, yt.data) |sv, tv| {
+        try testing.expectApproxEqAbs(sv, tv, 1e-6);
     }
 }
 

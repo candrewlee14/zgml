@@ -449,6 +449,7 @@ pub fn Tensor(comptime T: type) type {
         pub const computeScatterAddPicks = fwd.computeScatterAddPicks;
         pub const computeTranspose = fwd.computeTranspose;
         pub const computeMatMul = fwd.computeMatMul;
+        pub const computeMatMulParallel = fwd.computeMatMulParallel;
         pub const assertValidMatMulDims = fwd.assertValidMatMulDims;
 
         // ---------------------------------------------------------------

@@ -26,8 +26,11 @@ pub const Package = struct {
                 .macos => {
                     exe.linkFramework("Accelerate");
                 },
+                .freestanding => {
+                    // WASM/freestanding targets cannot use BLAS — ignore silently.
+                },
                 else => {
-                    @panic("Unsupported host OS");
+                    @panic("Unsupported host OS for BLAS linking");
                 },
             }
         }
@@ -40,7 +43,8 @@ fn linkBlas(target: std.Build.ResolvedTarget, exe: *std.Build.Step.Compile) void
         .windows => exe.linkSystemLibrary("libopenblas"),
         .linux => exe.linkSystemLibrary("openblas"),
         .macos => exe.linkFramework("Accelerate"),
-        else => @panic("Unsupported host OS"),
+        .freestanding => {}, // WASM/freestanding — no BLAS available
+        else => @panic("Unsupported host OS for BLAS linking"),
     }
 }
 
