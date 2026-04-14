@@ -197,12 +197,11 @@ const shader_source =
     \\    uint4 src1_ne;   uint4 src1_strides;   uint src1_offset;
     \\};
     \\
-    \\// Op codes matching zgml Op enum order:
-    \\//  4=add, 5=mul, 7=neg, 13=exp, 14=sqrt, 15=recip, 16=gelu
-    \\// (see op.zig for authoritative mapping)
+    \\// Op enum values (must match op.zig exactly):
+    \\//   add=7 mul=8 neg=9 sqrt=13 recip=14 exp=15 gelu=17
+    \\//   sum=18 max=19 repeat=20 slice_assign=27
     \\
-    \\// Elementwise: handles add, mul, neg, exp, sqrt, recip, gelu.
-    \\// Contiguous fast path: all operands indexed linearly.
+    \\// Elementwise: contiguous fast path, one thread per element.
     \\kernel void elementwise_f32(
     \\    device const float* src0 [[buffer(0)]],
     \\    device const float* src1 [[buffer(1)]],
@@ -213,13 +212,13 @@ const shader_source =
     \\    if (gid >= p.n_elements) return;
     \\    float a = src0[p.src0_offset + gid];
     \\    switch (p.op) {
-    \\        case 4:  dst[p.dst_offset + gid] = a + src1[p.src1_offset + gid]; break;
-    \\        case 5:  dst[p.dst_offset + gid] = a * src1[p.src1_offset + gid]; break;
-    \\        case 7:  dst[p.dst_offset + gid] = -a; break;
-    \\        case 13: dst[p.dst_offset + gid] = exp(a); break;
-    \\        case 14: dst[p.dst_offset + gid] = sqrt(a); break;
-    \\        case 15: dst[p.dst_offset + gid] = 1.0f / a; break;
-    \\        case 16: {
+    \\        case 7:  dst[p.dst_offset + gid] = a + src1[p.src1_offset + gid]; break;
+    \\        case 8:  dst[p.dst_offset + gid] = a * src1[p.src1_offset + gid]; break;
+    \\        case 9:  dst[p.dst_offset + gid] = -a; break;
+    \\        case 13: dst[p.dst_offset + gid] = sqrt(a); break;
+    \\        case 14: dst[p.dst_offset + gid] = 1.0f / a; break;
+    \\        case 15: dst[p.dst_offset + gid] = exp(a); break;
+    \\        case 17: {
     \\            float c = 0.7978845608f * (a + 0.044715f * a * a * a);
     \\            dst[p.dst_offset + gid] = 0.5f * a * (1.0f + precise::tanh(c));
     \\            break;
@@ -228,8 +227,7 @@ const shader_source =
     \\    }
     \\}
     \\
-    \\// Reduce: sum or max along the innermost contiguous dimension.
-    \\// Each thread produces one output element by looping over the reduce dim.
+    \\// Reduce: sum or max along innermost contiguous dimension.
     \\kernel void reduce_f32(
     \\    device const float* src [[buffer(0)]],
     \\    device float* dst       [[buffer(1)]],
@@ -239,17 +237,16 @@ const shader_source =
     \\    if (gid >= p.n_elements) return;
     \\    uint reduce_size = p.src0_ne[0];
     \\    uint src_base = p.src0_offset + gid * reduce_size;
-    \\    float val = (p.op == 18) ? -INFINITY : 0.0f; // 18=max, 17=sum
+    \\    float val = (p.op == 19) ? -INFINITY : 0.0f; // 19=max, 18=sum
     \\    for (uint k = 0; k < reduce_size; k++) {
     \\        float v = src[src_base + k];
-    \\        if (p.op == 17) val += v;
+    \\        if (p.op == 18) val += v;
     \\        else val = max(val, v);
     \\    }
     \\    dst[p.dst_offset + gid] = val;
     \\}
     \\
-    \\// Repeat: broadcast src to dst shape. Maps dst linear index back
-    \\// to src via modular arithmetic on each dimension.
+    \\// Repeat: broadcast src to dst shape via modular indexing.
     \\kernel void repeat_f32(
     \\    device const float* src [[buffer(0)]],
     \\    device float* dst       [[buffer(1)]],
@@ -259,16 +256,16 @@ const shader_source =
     \\    if (gid >= p.n_elements) return;
     \\    uint idx = gid;
     \\    uint src_idx = p.src0_offset;
-    \\    for (uint d = 3; d < 4; d--) { // 3,2,1,0 (wraps to max uint)
-    \\        uint coord = idx / p.dst_strides[d];
-    \\        idx %= p.dst_strides[d];
-    \\        src_idx += (coord % p.src0_ne[d]) * p.src0_strides[d];
+    \\    for (int d = 3; d >= 0; d--) {
+    \\        uint ud = uint(d);
+    \\        uint coord = idx / p.dst_strides[ud];
+    \\        idx %= p.dst_strides[ud];
+    \\        src_idx += (coord % p.src0_ne[ud]) * p.src0_strides[ud];
     \\    }
     \\    dst[p.dst_offset + gid] = src[src_idx];
     \\}
     \\
-    \\// Slice assign: write src0 into dst at position dst_offset.
-    \\// Used for KV cache column writes.
+    \\// Slice assign: write column into KV cache at dst_offset.
     \\kernel void slice_assign_f32(
     \\    device const float* src [[buffer(0)]],
     \\    device float* dst       [[buffer(1)]],
@@ -276,8 +273,6 @@ const shader_source =
     \\    uint gid [[thread_position_in_grid]]
     \\) {
     \\    if (gid >= p.n_elements) return;
-    \\    // src is [ne0, 1] column, dst is [ne0, seq_len] matrix.
-    \\    // Write at column = dst_offset / dst_strides[1], row = gid.
     \\    dst[p.dst_offset + gid * p.dst_strides[0]] = src[p.src0_offset + gid * p.src0_strides[0]];
     \\}
 ;
