@@ -603,43 +603,6 @@ pub fn mapCompilerPattern(comptime T: type, forward_nodes: []const *Tensor(T), v
                 } },
             } });
         },
-        .conv2d_bwd_input => |spec| blk: {
-            const output_grad = nodeForValueId(T, value_to_tensor, spec.output_grad) orelse break :blk null;
-            const kernel = nodeForValueId(T, value_to_tensor, spec.kernel) orelse break :blk null;
-            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse break :blk null;
-            const output_idx = indexOfNodeMaybe(T, forward_nodes, output) orelse break :blk null;
-            break :blk @as(?CompilerMappedPlan(T), .{ .start_idx = output_idx, .plan = .{
-                .output_idx = output_idx,
-                .payload = .{ .conv2d_bwd_input = .{
-                    .output_grad = output_grad,
-                    .kernel = kernel,
-                    .reshape_node = output, // unused by execution kernel
-                    .repeat_node = output, // unused by execution kernel
-                    .mul_node = output, // unused by execution kernel
-                    .output = output,
-                } },
-            } });
-        },
-        .conv2d_bwd_kernel => |spec| blk: {
-            const input = nodeForValueId(T, value_to_tensor, spec.input) orelse break :blk null;
-            const output_grad = nodeForValueId(T, value_to_tensor, spec.output_grad) orelse break :blk null;
-            const output = nodeForValueId(T, value_to_tensor, spec.output) orelse break :blk null;
-            const output_idx = indexOfNodeMaybe(T, forward_nodes, output) orelse break :blk null;
-            // Walk backward from scatter to find earliest exclusive node.
-            // The scatter's source chain (reshape → broadcast → mul → scatter)
-            // starts right after the shared output_grad node.
-            break :blk @as(?CompilerMappedPlan(T), .{ .start_idx = output_idx, .plan = .{
-                .output_idx = output_idx,
-                .payload = .{ .conv2d_bwd_kernel = .{
-                    .input = input,
-                    .output_grad = output_grad,
-                    .reshape_node = output, // unused by execution kernel
-                    .repeat_node = output, // unused by execution kernel
-                    .mul_node = output, // unused by execution kernel
-                    .output = output,
-                } },
-            } });
-        },
         .linear, .linear_gelu, .linear_relu, .linear_residual, .matmul_residual => null,
     };
 }
