@@ -295,6 +295,27 @@ fn computeScatterAddView(comptime Self: type, dst: *Self, grad_view: *const Self
     }
 }
 
+/// Slice assign: write src (a column/slice) into dst at a position.
+/// The result tensor's data aliases dst's data.
+///
+/// Layout: dst is [rows, cols], src is [rows, 1] or [rows].
+/// Position (column index) is stored in result.storage_offset.
+/// After execution, dst[:, pos] = src[:].
+fn computeSliceAssign(comptime Self: type, result: *Self, src: *const Self, dst: *Self) void {
+    const rows = dst.ne[0];
+    const cols = dst.ne[1];
+    const pos = result.storage_offset;
+    std.debug.assert(pos < cols);
+    std.debug.assert(src.nElems() >= rows);
+
+    // Write src into column `pos` of dst
+    for (0..rows) |r| {
+        dst.data[r * cols + pos] = src.data[r];
+    }
+    // Result aliases dst's data
+    result.data = dst.data;
+}
+
 // ---------------------------------------------------------------------------
 // Multi-width tiled matmul micro-kernel
 // ---------------------------------------------------------------------------
@@ -1200,6 +1221,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .scatter_add_rows => tensor.computeScatterAddRows(src0.?, src1.?),
                 .pick_rows => tensor.computePickRows(src0.?, src1.?),
                 .scatter_add_picks => tensor.computeScatterAddPicks(src0.?, src1.?),
+                .slice_assign => computeSliceAssign(Self, tensor, src0.?, src1.?),
                 .matmul => {
                     const flags = tensor.matmul_flags;
                     if (flags.trans0) {

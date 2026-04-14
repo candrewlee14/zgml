@@ -269,6 +269,9 @@ pub fn Ops(comptime Self: type) type {
 
                 .scatter_add_picks => {},
 
+                // Slice assign: inference-only, no gradient needed
+                .slice_assign => {},
+
                 // Matmul backward: dispatch based on transpose flags.
                 // For fwd C = op(A) @ op(B) where op is identity or transpose:
                 //   no trans:  d/dA = G @ B^T,      d/dB = A^T @ G

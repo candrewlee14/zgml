@@ -634,6 +634,51 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         }
 
         // ---------------------------------------------------------------
+        // Slice operations (for KV cache and general indexing)
+        // ---------------------------------------------------------------
+
+        /// Write `src` into column `pos` of `self`. Returns a node whose
+        /// data aliases self's data (the modified buffer).
+        ///
+        /// self: [rows, cols]  (the destination, e.g. KV cache)
+        /// src:  [rows, 1] or [rows]  (data to write)
+        /// pos:  column index
+        pub fn sliceAssign(self: *Self, src: *Self, pos: usize) *Self {
+            const alloc = a(self);
+            assert(self.n_dims >= 2);
+            assert(pos < self.ne[1]);
+            assert(src.ne[0] == self.ne[0]);
+            const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
+            res.op = .slice_assign;
+            res.storage_offset = pos;
+            res.grad = null; // inference-only
+            res.src0 = src;
+            res.src1 = self;
+            res.data = self.data; // result aliases destination
+            return res;
+        }
+
+        /// View columns [start, end) of a 2D tensor. Returns a view with
+        /// adjusted shape — no data copy.
+        ///
+        /// self: [rows, cols]
+        /// Returns: [rows, end - start]
+        pub fn sliceColumns(self: *Self, start: usize, end: usize) *Self {
+            assert(self.n_dims >= 2);
+            assert(end > start);
+            assert(end <= self.ne[1]);
+            const alloc = a(self);
+            const new_cols = end - start;
+            const res = Self.init(alloc, &.{ self.ne[0], new_cols }) catch unreachable;
+            res.op = .view;
+            res.src0 = self;
+            // Point data to the start column: data[start * rows ..]
+            res.data = self.data[start * self.ne[0] ..][0 .. new_cols * self.ne[0]];
+            res.bookkeeping.data_ownership = .borrowed;
+            return res;
+        }
+
+        // ---------------------------------------------------------------
         // Convolution & pooling
         // ---------------------------------------------------------------
 

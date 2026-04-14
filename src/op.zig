@@ -45,6 +45,9 @@ pub const Op = enum {
     scatter_add_picks,
     scatter_add_view,
 
+    // -- Slice --
+    slice_assign, // write src0 into src1 at a position (mutates src1)
+
     // -- Matrix multiplication --
     matmul,
 
@@ -93,6 +96,7 @@ pub const Op = enum {
             .pick_rows => "pick_rows(x)",
             .scatter_add_picks => "scatter_add_picks(x)",
             .scatter_add_view => "scatter_add_view(x)",
+            .slice_assign => "x[pos]=y",
             .matmul => "X*Y",
         };
     }
