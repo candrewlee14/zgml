@@ -96,6 +96,29 @@ pub fn Embedding(comptime T: type, comptime vocab_size: usize, comptime d_model:
             return tok_embed.add(pos_enc.repeatLike(tok_embed));
         }
 
+        /// Single-token forward at an arbitrary position (for KV-cached generation).
+        ///
+        /// Returns [d_model, 1]: token embedding + positional encoding at `pos`.
+        pub fn forwardAt(self: *const Self, alloc: Alloc, token_id: usize, pos: usize) *Tensor(T) {
+            std.debug.assert(token_id < vocab_size);
+            std.debug.assert(pos < max_seq_len);
+
+            // Token embedding: column `token_id` from [d_model, vocab_size]
+            const tok = Tensor(T).init(alloc, &.{ d_model, 1 }) catch unreachable;
+            const tok_data = self.token_embed.inner.data;
+            for (0..d_model) |i| {
+                tok.data[i] = tok_data[token_id * d_model + i];
+            }
+
+            // Positional encoding at position `pos`
+            const pe = Tensor(T).init(alloc, &.{ d_model, 1 }) catch unreachable;
+            for (0..d_model) |i| {
+                pe.data[i] = self.pos_encode.data[pos * d_model + i];
+            }
+
+            return tok.add(pe);
+        }
+
         /// Return all learnable parameters.
         pub fn params(self: *const Self) [1]*Tensor(T) {
             return .{self.token_embed.inner};
@@ -153,6 +176,31 @@ test "embedding - positional encoding varies by position" {
         }
     }
     try testing.expect(any_diff);
+}
+
+test "embedding - forwardAt matches forward for single token" {
+    // Full forward with 3 tokens
+    var g1 = ComputeGraph(f32).init(tac);
+    defer g1.deinit();
+    const a1 = g1.allocator();
+    const embed1 = try Embedding(f32, 10, 4, 8).init(a1);
+    const indices = try Tensor(f32).initIndexVectorCopy(a1, &.{ 2, 5, 0 });
+    const full_out = embed1.forward(indices);
+    try g1.infer(full_out);
+
+    // forwardAt for token 5 at position 1 (separate graph, same weights)
+    var g2 = ComputeGraph(f32).init(tac);
+    defer g2.deinit();
+    const a2 = g2.allocator();
+    const embed2 = try Embedding(f32, 10, 4, 8).init(a2);
+    // Copy weights
+    @memcpy(embed2.token_embed.inner.data, embed1.token_embed.inner.data);
+    const single = embed2.forwardAt(a2, 5, 1);
+    try g2.infer(single);
+
+    for (0..4) |i| {
+        try testing.expectApproxEqAbs(full_out.data[1 * 4 + i], single.data[i], 1e-6);
+    }
 }
 
 test "embedding - backward produces gradients for token embeddings" {

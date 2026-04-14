@@ -17,7 +17,6 @@ pub const checkpoint = @import("checkpoint.zig");
 pub const comptime_model = @import("comptime_model.zig");
 pub const quant = @import("quant.zig");
 pub const safetensors = @import("safetensors.zig");
-pub const kv_cache = @import("kv_cache.zig");
 
 test "ref all decls" {
     _ = testing.refAllDeclsRecursive(models);
@@ -30,5 +29,4 @@ test "ref all decls" {
     _ = @import("comptime_model.zig");
     _ = @import("quant.zig");
     _ = @import("safetensors.zig");
-    _ = @import("kv_cache.zig");
 }

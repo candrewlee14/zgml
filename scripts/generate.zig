@@ -1,7 +1,8 @@
-//! Text generation with weight caching.
+//! Text generation with KV cache.
 //!
-//! Loads model weights once, rebuilds graph per step but avoids disk I/O.
-//! KV cache integration is TODO — currently reprocesses full sequence each step.
+//! Loads model weights once, then generates tokens one at a time using
+//! cached key/value tensors — O(1) per token instead of reprocessing
+//! the full sequence.
 //!
 //! Build: zig build generate
 //! Run:   ./zig-out/bin/generate model.bin "The "
@@ -22,6 +23,7 @@ const config = zgml.models.GPTConfig{
 };
 
 const GPT = zgml.models.GPT(f32, config);
+const d_head = config.d_model / config.n_heads;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -48,7 +50,7 @@ pub fn main() !void {
     var stdout_buf: [4096]u8 = undefined;
     var stdout = stdout_file.writer(&stdout_buf);
 
-    // Load weights once into persistent buffers
+    // Load weights into temporary graph, copy to owned buffers
     var load_g = ComputeGraph(f32).init(alloc);
     const load_model = try GPT.init(load_g.allocator());
     const load_params = load_model.params();
@@ -57,8 +59,6 @@ pub fn main() !void {
         stderr.interface.flush() catch {};
         return;
     };
-
-    // Copy weight data to GPA-owned buffers
     var weight_data: [load_params.len][]f32 = undefined;
     for (load_params, 0..) |p, i| {
         weight_data[i] = try alloc.alloc(f32, p.nElems());
@@ -67,37 +67,75 @@ pub fn main() !void {
     load_g.deinit();
     defer for (&weight_data) |d| alloc.free(d);
 
-    // Build token sequence
-    var tokens = std.ArrayList(usize){};
-    defer tokens.deinit(alloc);
-    for (prompt) |byte| try tokens.append(alloc, byte);
-
     try stdout.interface.writeAll(prompt);
     stdout.interface.flush() catch {};
 
-    // Generate
-    const max_new = 200;
-    for (0..max_new) |_| {
-        // Fresh graph per step (weight copy, no disk I/O)
+    // Generate token by token using a fresh graph per step.
+    // Model weights are copied in, KV cache data persists in alloc-owned buffers.
+    var kv_bufs: [2 * config.n_layers * config.n_heads][]f32 = undefined;
+    for (&kv_bufs) |*buf| {
+        buf.* = try alloc.alloc(f32, d_head * config.max_seq_len);
+        @memset(buf.*, 0);
+    }
+    defer for (&kv_bufs) |buf| alloc.free(buf);
+
+    var pos: usize = 0;
+    var next_token: usize = prompt[0]; // start with first prompt byte
+    var in_prompt = true;
+    var prompt_idx: usize = 0;
+
+    const max_tokens = prompt.len + 200;
+    for (0..max_tokens) |_| {
         var g = ComputeGraph(f32).init(alloc);
         defer g.deinit();
         const a = g.allocator();
 
+        // Build model and copy weights
         const model = try GPT.init(a);
         const params = model.params();
         for (params, weight_data) |p, wd| @memcpy(p.data, wd);
 
-        const seq_len = @min(tokens.items.len, config.max_seq_len);
-        const indices = try Tensor(f32).initIndexVectorCopy(a, tokens.items[tokens.items.len - seq_len ..]);
-        const logits = model.forward(indices);
+        // Build KV caches and copy persistent data in
+        var k_caches: [config.n_layers][config.n_heads]*Tensor(f32) = undefined;
+        var v_caches: [config.n_layers][config.n_heads]*Tensor(f32) = undefined;
+        for (0..config.n_layers) |l| {
+            for (0..config.n_heads) |h| {
+                const idx = l * config.n_heads + h;
+                k_caches[l][h] = try Tensor(f32).init(a, &.{ d_head, config.max_seq_len });
+                v_caches[l][h] = try Tensor(f32).init(a, &.{ d_head, config.max_seq_len });
+                @memcpy(k_caches[l][h].data, kv_bufs[idx]);
+                @memcpy(v_caches[l][h].data, kv_bufs[config.n_layers * config.n_heads + idx]);
+            }
+        }
+
+        const logits = model.forwardCached(a, next_token, pos, k_caches, v_caches);
         try g.infer(logits);
 
-        // Greedy argmax on last position
+        // Copy KV cache data back out
+        for (0..config.n_layers) |l| {
+            for (0..config.n_heads) |h| {
+                const idx = l * config.n_heads + h;
+                @memcpy(kv_bufs[idx], k_caches[l][h].data);
+                @memcpy(kv_bufs[config.n_layers * config.n_heads + idx], v_caches[l][h].data);
+            }
+        }
+        pos += 1;
+
+        // During prompt prefill, advance through prompt tokens
+        if (in_prompt) {
+            prompt_idx += 1;
+            if (prompt_idx < prompt.len) {
+                next_token = prompt[prompt_idx];
+                continue;
+            }
+            in_prompt = false;
+        }
+
+        // Greedy argmax
         const vs = config.vocab_size;
-        const last_logits = logits.data[(seq_len - 1) * vs ..][0..vs];
         var best: usize = 0;
-        var best_val = last_logits[0];
-        for (last_logits[1..], 1..) |v, i| {
+        var best_val = logits.data[0];
+        for (logits.data[1..vs], 1..) |v, i| {
             if (v > best_val) { best_val = v; best = i; }
         }
 
@@ -105,8 +143,8 @@ pub fn main() !void {
             try stdout.interface.writeByte(@intCast(best));
             stdout.interface.flush() catch {};
         }
-        try tokens.append(alloc, best);
-        if (best == '\n' or best == 0) break;
+        if (best == '\n' or best == 0 or pos >= config.max_seq_len) break;
+        next_token = best;
     }
     try stdout.interface.writeByte('\n');
     stdout.interface.flush() catch {};
