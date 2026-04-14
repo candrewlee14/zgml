@@ -100,6 +100,29 @@ pub const DeviceQuantizedMatMulSpecF32 = struct {
     K: usize,
 };
 
+// ── Generic device compute ─────────────────────────────────────────
+
+pub const Op = @import("op.zig").Op;
+
+/// Describes one operand (dst, src0, or src1) for generic device compute.
+pub const TensorDesc = struct {
+    buf: DeviceBuffer,
+    offset: u32,
+    ne: [4]u32,
+    strides: [4]u32,
+};
+
+/// Generic device compute spec — handles all non-matmul ops.
+/// The backend dispatches based on `op` to elementwise, reduce,
+/// broadcast, or scatter kernels internally.
+pub const DeviceComputeSpec = struct {
+    op: Op,
+    dst: TensorDesc,
+    src0: TensorDesc,
+    src1: TensorDesc,
+    n_elements: u32,
+};
+
 // ── Backend ────────────────────────────────────────────────────────
 
 pub const Backend = struct {
@@ -125,6 +148,7 @@ pub const Backend = struct {
         // Device kernel dispatch — returns true if handled.
         device_matmul_f32: *const fn (ctx: *anyopaque, spec: DeviceMatMulSpecF32) bool,
         device_quantized_matmul_f32: *const fn (ctx: *anyopaque, spec: DeviceQuantizedMatMulSpecF32) bool,
+        device_compute: *const fn (ctx: *anyopaque, spec: DeviceComputeSpec) bool,
     };
 
     // ── Convenience methods ────────────────────────────────────
@@ -179,6 +203,10 @@ pub const Backend = struct {
 
     pub fn deviceQuantizedMatMul(self: Backend, spec: DeviceQuantizedMatMulSpecF32) bool {
         return self.vtable.device_quantized_matmul_f32(self.ctx, spec);
+    }
+
+    pub fn deviceCompute(self: Backend, spec: DeviceComputeSpec) bool {
+        return self.vtable.device_compute(self.ctx, spec);
     }
 };
 

@@ -186,6 +186,100 @@ const shader_source =
     \\            output[cr * p.N + cc] = tC[i];
     \\    }
     \\}
+    \\
+    \\// ── Generic compute kernels ──────────────────────────────
+    \\
+    \\struct ComputeParams {
+    \\    uint op;
+    \\    uint n_elements;
+    \\    uint4 dst_ne;    uint4 dst_strides;   uint dst_offset;
+    \\    uint4 src0_ne;   uint4 src0_strides;   uint src0_offset;
+    \\    uint4 src1_ne;   uint4 src1_strides;   uint src1_offset;
+    \\};
+    \\
+    \\// Op codes matching zgml Op enum order:
+    \\//  4=add, 5=mul, 7=neg, 13=exp, 14=sqrt, 15=recip, 16=gelu
+    \\// (see op.zig for authoritative mapping)
+    \\
+    \\// Elementwise: handles add, mul, neg, exp, sqrt, recip, gelu.
+    \\// Contiguous fast path: all operands indexed linearly.
+    \\kernel void elementwise_f32(
+    \\    device const float* src0 [[buffer(0)]],
+    \\    device const float* src1 [[buffer(1)]],
+    \\    device float* dst        [[buffer(2)]],
+    \\    constant ComputeParams& p [[buffer(3)]],
+    \\    uint gid [[thread_position_in_grid]]
+    \\) {
+    \\    if (gid >= p.n_elements) return;
+    \\    float a = src0[p.src0_offset + gid];
+    \\    switch (p.op) {
+    \\        case 4:  dst[p.dst_offset + gid] = a + src1[p.src1_offset + gid]; break;
+    \\        case 5:  dst[p.dst_offset + gid] = a * src1[p.src1_offset + gid]; break;
+    \\        case 7:  dst[p.dst_offset + gid] = -a; break;
+    \\        case 13: dst[p.dst_offset + gid] = exp(a); break;
+    \\        case 14: dst[p.dst_offset + gid] = sqrt(a); break;
+    \\        case 15: dst[p.dst_offset + gid] = 1.0f / a; break;
+    \\        case 16: {
+    \\            float c = 0.7978845608f * (a + 0.044715f * a * a * a);
+    \\            dst[p.dst_offset + gid] = 0.5f * a * (1.0f + precise::tanh(c));
+    \\            break;
+    \\        }
+    \\        default: break;
+    \\    }
+    \\}
+    \\
+    \\// Reduce: sum or max along the innermost contiguous dimension.
+    \\// Each thread produces one output element by looping over the reduce dim.
+    \\kernel void reduce_f32(
+    \\    device const float* src [[buffer(0)]],
+    \\    device float* dst       [[buffer(1)]],
+    \\    constant ComputeParams& p [[buffer(3)]],
+    \\    uint gid [[thread_position_in_grid]]
+    \\) {
+    \\    if (gid >= p.n_elements) return;
+    \\    uint reduce_size = p.src0_ne[0];
+    \\    uint src_base = p.src0_offset + gid * reduce_size;
+    \\    float val = (p.op == 18) ? -INFINITY : 0.0f; // 18=max, 17=sum
+    \\    for (uint k = 0; k < reduce_size; k++) {
+    \\        float v = src[src_base + k];
+    \\        if (p.op == 17) val += v;
+    \\        else val = max(val, v);
+    \\    }
+    \\    dst[p.dst_offset + gid] = val;
+    \\}
+    \\
+    \\// Repeat: broadcast src to dst shape. Maps dst linear index back
+    \\// to src via modular arithmetic on each dimension.
+    \\kernel void repeat_f32(
+    \\    device const float* src [[buffer(0)]],
+    \\    device float* dst       [[buffer(1)]],
+    \\    constant ComputeParams& p [[buffer(3)]],
+    \\    uint gid [[thread_position_in_grid]]
+    \\) {
+    \\    if (gid >= p.n_elements) return;
+    \\    uint idx = gid;
+    \\    uint src_idx = p.src0_offset;
+    \\    for (uint d = 3; d < 4; d--) { // 3,2,1,0 (wraps to max uint)
+    \\        uint coord = idx / p.dst_strides[d];
+    \\        idx %= p.dst_strides[d];
+    \\        src_idx += (coord % p.src0_ne[d]) * p.src0_strides[d];
+    \\    }
+    \\    dst[p.dst_offset + gid] = src[src_idx];
+    \\}
+    \\
+    \\// Slice assign: write src0 into dst at position dst_offset.
+    \\// Used for KV cache column writes.
+    \\kernel void slice_assign_f32(
+    \\    device const float* src [[buffer(0)]],
+    \\    device float* dst       [[buffer(1)]],
+    \\    constant ComputeParams& p [[buffer(3)]],
+    \\    uint gid [[thread_position_in_grid]]
+    \\) {
+    \\    if (gid >= p.n_elements) return;
+    \\    // src is [ne0, 1] column, dst is [ne0, seq_len] matrix.
+    \\    // Write at column = dst_offset / dst_strides[1], row = gid.
+    \\    dst[p.dst_offset + gid * p.dst_strides[0]] = src[p.src0_offset + gid * p.src0_strides[0]];
+    \\}
 ;
 
 // ── Kernel param structs (must match MSL layout) ──────────────────
@@ -211,6 +305,20 @@ const QMatMulParams = extern struct {
     block_size: u32,
 };
 
+const ComputeParams = extern struct {
+    op: u32,
+    n_elements: u32,
+    dst_ne: [4]u32,
+    dst_strides: [4]u32,
+    dst_offset: u32,
+    src0_ne: [4]u32,
+    src0_strides: [4]u32,
+    src0_offset: u32,
+    src1_ne: [4]u32,
+    src1_strides: [4]u32,
+    src1_offset: u32,
+};
+
 // ── MetalBackend ──────────────────────────────────────────────────
 
 pub const MetalBackend = struct {
@@ -218,6 +326,10 @@ pub const MetalBackend = struct {
     queue: *anyopaque,
     matmul_pipeline: *anyopaque,
     qmatmul_pipeline: *anyopaque,
+    elementwise_pipeline: *anyopaque,
+    reduce_pipeline: *anyopaque,
+    repeat_pipeline: *anyopaque,
+    slice_assign_pipeline: *anyopaque,
     library: *anyopaque,
     active_commands: ?*anyopaque = null,
 
@@ -233,20 +345,35 @@ pub const MetalBackend = struct {
 
         const matmul_pipeline = c.mtl_create_pipeline(device, library, "matmul_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(matmul_pipeline);
-
         const qmatmul_pipeline = c.mtl_create_pipeline(device, library, "qmatmul_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(qmatmul_pipeline);
+        const elementwise_pipeline = c.mtl_create_pipeline(device, library, "elementwise_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(elementwise_pipeline);
+        const reduce_pipeline = c.mtl_create_pipeline(device, library, "reduce_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(reduce_pipeline);
+        const repeat_pipeline = c.mtl_create_pipeline(device, library, "repeat_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(repeat_pipeline);
+        const slice_assign_pipeline = c.mtl_create_pipeline(device, library, "slice_assign_f32") orelse return error.PipelineCreateFailed;
 
         return .{
             .device = device,
             .queue = queue,
             .matmul_pipeline = matmul_pipeline,
             .qmatmul_pipeline = qmatmul_pipeline,
+            .elementwise_pipeline = elementwise_pipeline,
+            .reduce_pipeline = reduce_pipeline,
+            .repeat_pipeline = repeat_pipeline,
+            .slice_assign_pipeline = slice_assign_pipeline,
             .library = library,
         };
     }
 
     pub fn deinit(self: *MetalBackend) void {
         self.flushCommands();
+        c.mtl_release(self.slice_assign_pipeline);
+        c.mtl_release(self.repeat_pipeline);
+        c.mtl_release(self.reduce_pipeline);
+        c.mtl_release(self.elementwise_pipeline);
         c.mtl_release(self.qmatmul_pipeline);
         c.mtl_release(self.matmul_pipeline);
         c.mtl_release(self.library);
@@ -386,6 +513,53 @@ fn deviceQuantizedMatMulF32(ctx: *anyopaque, spec: backend_mod.DeviceQuantizedMa
     return true;
 }
 
+fn deviceComputeF32(ctx: *anyopaque, spec: backend_mod.DeviceComputeSpec) bool {
+    const self = getState(ctx);
+    const op = spec.op;
+
+    // Choose pipeline based on op category.
+    const pipeline = switch (op) {
+        .add, .mul, .neg, .exp, .sqrt, .recip, .gelu => self.elementwise_pipeline,
+        .sum, .max => self.reduce_pipeline,
+        .repeat => self.repeat_pipeline,
+        .slice_assign => self.slice_assign_pipeline,
+        else => return false, // unsupported op
+    };
+
+    const params = ComputeParams{
+        .op = @intFromEnum(op),
+        .n_elements = spec.n_elements,
+        .dst_ne = spec.dst.ne,
+        .dst_strides = spec.dst.strides,
+        .dst_offset = spec.dst.offset,
+        .src0_ne = spec.src0.ne,
+        .src0_strides = spec.src0.strides,
+        .src0_offset = spec.src0.offset,
+        .src1_ne = spec.src1.ne,
+        .src1_strides = spec.src1.strides,
+        .src1_offset = spec.src1.offset,
+    };
+
+    // Elementwise/repeat/slice_assign: one thread per output element.
+    // Reduce: one thread per output element (loops over reduce dim).
+    var bufs: [3]?*anyopaque = undefined;
+    var n_bufs: u32 = 2;
+    if (op == .sum or op == .max or op == .repeat or op == .slice_assign) {
+        bufs = .{ spec.src0.buf.ptr, spec.dst.buf.ptr, null };
+    } else {
+        bufs = .{ spec.src0.buf.ptr, spec.src1.buf.ptr, spec.dst.buf.ptr };
+        n_bufs = 3;
+    }
+
+    const n = spec.n_elements;
+    const threads: u32 = 256;
+    const grid: u32 = (n + threads - 1) / threads;
+
+    const cmds = self.ensureCommands();
+    c.mtl_encode_dispatch(cmds, pipeline, @ptrCast(&bufs), n_bufs, &params, @sizeOf(ComputeParams), 3, grid, 1, threads, 1);
+    return true;
+}
+
 const vtable = backend_mod.Backend.VTable{
     .dense_matmul_f32 = denseMatMulF32,
     .quantized_matmul_f32 = quantizedMatMulF32,
@@ -396,6 +570,7 @@ const vtable = backend_mod.Backend.VTable{
     .sync = syncFn,
     .device_matmul_f32 = deviceMatMulF32,
     .device_quantized_matmul_f32 = deviceQuantizedMatMulF32,
+    .device_compute = deviceComputeF32,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────
