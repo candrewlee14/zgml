@@ -1422,7 +1422,12 @@ pub fn ComputeGraph(comptime T: type) type {
             }
         }
 
-        /// Execute a single node, routing matmul through backend or thread pool when available.
+        /// Execute a single node, routing matmul through the best available path.
+        ///
+        /// Priority: backend > thread pool > single-threaded compute.
+        /// When a backend is set it owns matmul execution entirely (the backend
+        /// may use BLAS/GPU threading internally). The thread pool is a
+        /// framework-level parallelism strategy for when no backend is attached.
         pub fn executeNode(self: *const Self, node: *Tensor(T), pool: ?*std.Thread.Pool) void {
             if (node.opTag() == .matmul) {
                 const flags = node.matmul_flags;

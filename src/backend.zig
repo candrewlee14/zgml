@@ -105,13 +105,12 @@ pub const DeviceQuantizedMatMulSpecF32 = struct {
 pub const Backend = struct {
     ctx: *anyopaque,
     vtable: *const VTable,
+    /// Static identity — set once at construction, never changes.
+    name_str: []const u8,
+    device_type: Device,
+    capabilities: BackendCaps,
 
     pub const VTable = struct {
-        // Identity
-        name: *const fn (ctx: *anyopaque) []const u8,
-        device: *const fn (ctx: *anyopaque) Device,
-        caps: *const fn (ctx: *anyopaque) BackendCaps,
-
         // Host kernel dispatch — returns true if handled.
         dense_matmul_f32: *const fn (ctx: *anyopaque, spec: DenseMatMulSpecF32) bool,
         quantized_matmul_f32: *const fn (ctx: *anyopaque, spec: QuantizedMatMulSpecF32) bool,
@@ -131,15 +130,15 @@ pub const Backend = struct {
     // ── Convenience methods ────────────────────────────────────
 
     pub fn name(self: Backend) []const u8 {
-        return self.vtable.name(self.ctx);
+        return self.name_str;
     }
 
     pub fn device(self: Backend) Device {
-        return self.vtable.device(self.ctx);
+        return self.device_type;
     }
 
     pub fn caps(self: Backend) BackendCaps {
-        return self.vtable.caps(self.ctx);
+        return self.capabilities;
     }
 
     pub fn allocBuffer(self: Backend, size: usize) ?DeviceBuffer {
@@ -172,6 +171,14 @@ pub const Backend = struct {
 
     pub fn sync(self: Backend) void {
         self.vtable.sync(self.ctx);
+    }
+
+    pub fn deviceMatMul(self: Backend, spec: DeviceMatMulSpecF32) bool {
+        return self.vtable.device_matmul_f32(self.ctx, spec);
+    }
+
+    pub fn deviceQuantizedMatMul(self: Backend, spec: DeviceQuantizedMatMulSpecF32) bool {
+        return self.vtable.device_quantized_matmul_f32(self.ctx, spec);
     }
 };
 

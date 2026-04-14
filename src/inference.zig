@@ -297,7 +297,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
                     be.uploadSlice(T, ds.input_staging, 0, input.data[0 .. M * K]);
 
                     // Dispatch device quantized matmul.
-                    _ = be.vtable.device_quantized_matmul_f32(be.ctx, .{
+                    _ = be.deviceQuantizedMatMul(.{
                         .dst = ds.output_staging,
                         .input = ds.input_staging,
                         .weight = ds.weight_views[qi],

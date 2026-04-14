@@ -27,6 +27,9 @@ pub const CpuBackend = struct {
         return .{
             .ctx = @ptrCast(self),
             .vtable = &vtable,
+            .name_str = "cpu",
+            .device_type = .cpu,
+            .capabilities = .{ .device_buffers = self.alloc != null },
         };
     }
 };
@@ -35,19 +38,6 @@ pub const CpuBackend = struct {
 
 fn getState(ctx: *anyopaque) *CpuBackend {
     return @ptrCast(@alignCast(ctx));
-}
-
-fn nameFn(_: *anyopaque) []const u8 {
-    return "cpu";
-}
-
-fn deviceFn(_: *anyopaque) backend_mod.Device {
-    return .cpu;
-}
-
-fn capsFn(ctx: *anyopaque) backend_mod.BackendCaps {
-    const self = getState(ctx);
-    return .{ .device_buffers = self.alloc != null };
 }
 
 // ── Host kernel dispatch ───────────────────────────────────────────
@@ -141,9 +131,6 @@ fn deviceQuantizedMatMulF32(_: *anyopaque, spec: backend_mod.DeviceQuantizedMatM
 // ── VTable ─────────────────────────────────────────────────────────
 
 const vtable = backend_mod.Backend.VTable{
-    .name = nameFn,
-    .device = deviceFn,
-    .caps = capsFn,
     .dense_matmul_f32 = denseMatMulF32,
     .quantized_matmul_f32 = quantizedMatMulF32,
     .alloc_buffer = allocBuffer,
@@ -238,7 +225,7 @@ test "cpu backend device dense matmul" {
     be.uploadSlice(f32, a_buf, 0, &a_data);
     be.uploadSlice(f32, b_buf, 0, &b_data);
 
-    const ok = be.vtable.device_matmul_f32(be.ctx, .{
+    const ok = be.deviceMatMul(.{
         .dst = dst_buf,
         .a = a_buf,
         .b = b_buf,
@@ -285,7 +272,7 @@ test "cpu backend device quantized matmul" {
     const dst_buf = be.allocSlice(f32, 4) orelse return error.OutOfMemory;
     defer be.freeBuffer(dst_buf);
 
-    const ok = be.vtable.device_quantized_matmul_f32(be.ctx, .{
+    const ok = be.deviceQuantizedMatMul(.{
         .dst = dst_buf,
         .input = input_buf,
         .weight = .{
