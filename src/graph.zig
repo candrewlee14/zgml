@@ -712,6 +712,356 @@ pub fn ComputeGraph(comptime T: type) type {
             return profile;
         }
 
+        // ---------------------------------------------------------------
+        // Per-node profiling
+        // ---------------------------------------------------------------
+
+        /// Timing for a single op tag, aggregated across all nodes that share it.
+        pub const OpBucket = struct {
+            tag: Op,
+            fwd_count: u64 = 0,
+            bwd_count: u64 = 0,
+            fwd_ns: u64 = 0,
+            bwd_ns: u64 = 0,
+        };
+
+        /// Result of `profileNodes`: per-op timing for one iteration.
+        pub const NodeProfile = struct {
+            buckets: []OpBucket,
+            fwd_total_ns: u64 = 0,
+            bwd_total_ns: u64 = 0,
+            alloc: Alloc,
+
+            pub fn deinit(self: *NodeProfile) void {
+                self.alloc.free(self.buckets);
+            }
+
+            /// Print a table sorted by total time descending.
+            pub fn render(self: *const NodeProfile, writer: anytype) !void {
+                // Copy and sort by total descending
+                const a = self.alloc;
+                const sorted = try a.alloc(OpBucket, self.buckets.len);
+                defer a.free(sorted);
+                var n: usize = 0;
+                for (self.buckets) |b| {
+                    if (b.fwd_ns > 0 or b.bwd_ns > 0) {
+                        sorted[n] = b;
+                        n += 1;
+                    }
+                }
+                const active = sorted[0..n];
+                std.mem.sortUnstable(OpBucket, active, {}, struct {
+                    fn lessThan(_: void, a_: OpBucket, b_: OpBucket) bool {
+                        return (a_.fwd_ns + a_.bwd_ns) > (b_.fwd_ns + b_.bwd_ns);
+                    }
+                }.lessThan);
+
+                const total_ns = self.fwd_total_ns + self.bwd_total_ns;
+                const total_f: f64 = @floatFromInt(@max(total_ns, 1));
+
+                try writer.print("{s:<22} {s:>6} {s:>10} {s:>6} {s:>10} {s:>10} {s:>6}\n", .{
+                    "op", "fwd_n", "fwd_us", "bwd_n", "bwd_us", "total_us", "pct",
+                });
+                try writer.print("{s:-<22} {s:->6} {s:->10} {s:->6} {s:->10} {s:->10} {s:->6}\n", .{
+                    "", "", "", "", "", "", "",
+                });
+
+                for (active) |b| {
+                    const fwd_us = @as(f64, @floatFromInt(b.fwd_ns)) / 1_000.0;
+                    const bwd_us = @as(f64, @floatFromInt(b.bwd_ns)) / 1_000.0;
+                    const total_us = fwd_us + bwd_us;
+                    const pct = @as(f64, @floatFromInt(b.fwd_ns + b.bwd_ns)) / total_f * 100.0;
+                    try writer.print("{s:<22} {d:>6} {d:>10.1} {d:>6} {d:>10.1} {d:>10.1} {d:>5.1}%\n", .{
+                        @tagName(b.tag), b.fwd_count, fwd_us, b.bwd_count, bwd_us, total_us, pct,
+                    });
+                }
+
+                try writer.print("{s:-<22} {s:->6} {s:->10} {s:->6} {s:->10} {s:->10} {s:->6}\n", .{
+                    "", "", "", "", "", "", "",
+                });
+                try writer.print("{s:<22} {s:>6} {d:>10.1} {s:>6} {d:>10.1} {d:>10.1}\n", .{
+                    "TOTAL", "",
+                    @as(f64, @floatFromInt(self.fwd_total_ns)) / 1_000.0, "",
+                    @as(f64, @floatFromInt(self.bwd_total_ns)) / 1_000.0,
+                    @as(f64, @floatFromInt(total_ns)) / 1_000.0,
+                });
+            }
+        };
+
+        /// Profile every node individually, grouping by op tag.
+        /// Runs one forward + backward pass, timing each node.
+        /// Caller must call `reset()`/`resetGrads()` beforehand.
+        /// Call `deinit()` on the result when done.
+        pub fn profileNodes(self: *Self, alloc_: Alloc, options: struct {
+            loss_grad: ?*Tensor(T) = null,
+            forward_only: bool = false,
+        }) !NodeProfile {
+            // One bucket per Op variant
+            const op_count = @typeInfo(Op).@"enum".fields.len;
+            const buckets = try alloc_.alloc(OpBucket, op_count);
+            for (buckets, 0..) |*b, i| {
+                b.* = .{ .tag = @enumFromInt(i) };
+            }
+
+            var fwd_total_ns: u64 = 0;
+            var bwd_total_ns: u64 = 0;
+
+            // Forward: time each node individually
+            const fwd_nodes = self.nodes.items[0..self.forward_node_count];
+            for (fwd_nodes) |node| {
+                const idx: usize = @intFromEnum(node.opTag());
+                var timer = try std.time.Timer.start();
+                timer.reset();
+                node.compute();
+                const elapsed = timer.read();
+                buckets[idx].fwd_count += 1;
+                buckets[idx].fwd_ns += elapsed;
+                fwd_total_ns += elapsed;
+            }
+
+            // Backward: time each node individually
+            if (!options.forward_only) {
+                if (options.loss_grad) |grad| _ = grad.setAllScalar(1);
+                const bwd_nodes = self.nodes.items[self.forward_node_count..];
+                for (bwd_nodes) |node| {
+                    const idx: usize = @intFromEnum(node.opTag());
+                    var timer = try std.time.Timer.start();
+                    timer.reset();
+                    node.compute();
+                    const elapsed = timer.read();
+                    buckets[idx].bwd_count += 1;
+                    buckets[idx].bwd_ns += elapsed;
+                    bwd_total_ns += elapsed;
+                }
+            }
+
+            return .{
+                .buckets = buckets,
+                .fwd_total_ns = fwd_total_ns,
+                .bwd_total_ns = bwd_total_ns,
+                .alloc = alloc_,
+            };
+        }
+
+        // ---------------------------------------------------------------
+        // Per-step profiling (works with fusion enabled)
+        // ---------------------------------------------------------------
+
+        /// Label for an execution step — either a fused region kind or a single-node op.
+        pub const StepKind = union(enum) {
+            fusion: fused.FusionKind,
+            node: Op,
+
+            pub fn name(self: @This()) []const u8 {
+                return switch (self) {
+                    .fusion => |k| @tagName(k),
+                    .node => |op| @tagName(op),
+                };
+            }
+        };
+
+        /// Compact tensor layout descriptor for profiling output.
+        pub const TensorLayout = struct {
+            n_dims: u8,
+            ne: [tensorlib.max_dims]usize,
+            strides: [tensorlib.max_dims]usize,
+            storage_offset: usize,
+            dense: bool,
+            contiguous: bool,
+
+            pub fn from(t: *const Tensor(T)) TensorLayout {
+                return .{
+                    .n_dims = @intCast(t.n_dims),
+                    .ne = t.ne,
+                    .strides = t.strides,
+                    .storage_offset = t.storage_offset,
+                    .dense = t.isDenseLayout(),
+                    .contiguous = t.isContiguous(),
+                };
+            }
+
+            pub fn render(self: @This(), writer: anytype) !void {
+                try writer.print("shape={any} strides={any}", .{
+                    self.ne[0..self.n_dims], self.strides[0..self.n_dims],
+                });
+                if (self.storage_offset != 0) try writer.print(" off={}", .{self.storage_offset});
+                if (self.contiguous) {
+                    try writer.print(" [contiguous]", .{});
+                } else if (self.dense) {
+                    try writer.print(" [dense+offset]", .{});
+                } else {
+                    try writer.print(" [strided]", .{});
+                }
+            }
+        };
+
+        /// Timing for a single execution step.
+        pub const StepEntry = struct {
+            kind: StepKind,
+            ns: u64,
+            n_elements: usize,
+            /// Layout of the output tensor (dst). Null for fused regions.
+            dst_layout: ?TensorLayout = null,
+            /// Layout of src0 (if applicable).
+            src0_layout: ?TensorLayout = null,
+            /// Layout of src1 (if applicable).
+            src1_layout: ?TensorLayout = null,
+        };
+
+        /// Result of `profileSteps`: per-step timing for forward and backward.
+        pub const StepProfile = struct {
+            forward: []StepEntry,
+            backward: []StepEntry,
+            alloc: Alloc,
+
+            pub fn deinit(self: *StepProfile) void {
+                self.alloc.free(self.forward);
+                self.alloc.free(self.backward);
+            }
+
+            pub fn render(self: *const StepProfile, writer: anytype) !void {
+                try self.renderPhase(writer, "FORWARD", self.forward, false);
+                try self.renderPhase(writer, "BACKWARD", self.backward, false);
+            }
+
+            /// Like render() but includes tensor shape/stride detail for slow steps.
+            pub fn renderDetailed(self: *const StepProfile, writer: anytype, min_us: f64) !void {
+                try self.renderPhase(writer, "FORWARD", self.forward, false);
+                try self.renderPhase(writer, "BACKWARD", self.backward, true);
+                // Show detail for slow backward steps
+                try writer.print("DETAIL (backward steps > {d:.0} us)\n", .{min_us});
+                try writer.print("{s:-<70}\n", .{""});
+                for (self.backward, 0..) |e, idx| {
+                    const us = @as(f64, @floatFromInt(e.ns)) / 1_000.0;
+                    if (us < min_us) continue;
+                    try writer.print("  step[{d}] {s} {d:.1} us ({d} elems)\n", .{ idx, e.kind.name(), us, e.n_elements });
+                    if (e.dst_layout) |l| {
+                        try writer.print("    dst: ", .{});
+                        try l.render(writer);
+                        try writer.print("\n", .{});
+                    }
+                    if (e.src0_layout) |l| {
+                        try writer.print("    src0: ", .{});
+                        try l.render(writer);
+                        try writer.print("\n", .{});
+                    }
+                    if (e.src1_layout) |l| {
+                        try writer.print("    src1: ", .{});
+                        try l.render(writer);
+                        try writer.print("\n", .{});
+                    }
+                }
+                try writer.print("\n", .{});
+            }
+
+            fn renderPhase(self: *const StepProfile, writer: anytype, label: []const u8, entries: []const StepEntry, comptime _: bool) !void {
+                if (entries.len == 0) return;
+
+                // Sort by time descending (copy first)
+                const sorted = try self.alloc.alloc(StepEntry, entries.len);
+                defer self.alloc.free(sorted);
+                @memcpy(sorted, entries);
+                std.mem.sortUnstable(StepEntry, sorted, {}, struct {
+                    fn lessThan(_: void, a: StepEntry, b: StepEntry) bool {
+                        return a.ns > b.ns;
+                    }
+                }.lessThan);
+
+                var total_ns: u64 = 0;
+                for (entries) |e| total_ns += e.ns;
+                const total_f: f64 = @floatFromInt(@max(total_ns, 1));
+
+                try writer.print("{s} steps ({d} total, {d:.1} us)\n", .{
+                    label, entries.len, @as(f64, @floatFromInt(total_ns)) / 1_000.0,
+                });
+                try writer.print("{s:<24} {s:>10} {s:>10} {s:>6}\n", .{ "step", "us", "elements", "pct" });
+                try writer.print("{s:-<24} {s:->10} {s:->10} {s:->6}\n", .{ "", "", "", "" });
+
+                for (sorted) |e| {
+                    const us = @as(f64, @floatFromInt(e.ns)) / 1_000.0;
+                    const pct = @as(f64, @floatFromInt(e.ns)) / total_f * 100.0;
+                    try writer.print("{s:<24} {d:>10.1} {d:>10} {d:>5.1}%\n", .{
+                        e.kind.name(), us, e.n_elements, pct,
+                    });
+                }
+                try writer.print("\n", .{});
+            }
+        };
+
+        /// Profile each execution step individually (works with fusion).
+        /// Returns per-step timing for forward and backward passes.
+        pub fn profileSteps(self: *Self, alloc_: Alloc, options: ExecutionProfileOptions) !StepProfile {
+            if (options.reset) self.reset();
+            if (options.reset_grads) self.resetGrads();
+            if (options.loss_grad) |grad| _ = grad.setAllScalar(1);
+
+            const fwd_steps = self.forward_execution_steps.items;
+            const all_steps = self.execution_steps.items;
+            const bwd_steps = if (all_steps.len > fwd_steps.len) all_steps[fwd_steps.len..] else &[_]ExecutionStep{};
+
+            const forward = try alloc_.alloc(StepEntry, fwd_steps.len);
+            errdefer alloc_.free(forward);
+            self.timeSteps(fwd_steps, forward);
+
+            const backward = if (!options.forward_only) blk: {
+                const b = try alloc_.alloc(StepEntry, bwd_steps.len);
+                self.timeSteps(bwd_steps, b);
+                break :blk b;
+            } else try alloc_.alloc(StepEntry, 0);
+
+            return .{ .forward = forward, .backward = backward, .alloc = alloc_ };
+        }
+
+        fn timeSteps(self: *const Self, steps: []const ExecutionStep, out: []StepEntry) void {
+            const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
+            var timer = std.time.Timer.start() catch @panic("timer");
+            for (steps, 0..) |step, i| {
+                timer.reset();
+                switch (step) {
+                    .fusion => |idx| {
+                        const plan = self.fused_chains.items[idx];
+                        if (pool != null and plan.kind() == .elementwise_chain) {
+                            fused.executeFusedChainParallel(T, plan.payload.elementwise_chain, pool.?);
+                        } else {
+                            fused.executeFusionPlan(T, plan);
+                        }
+                        const elapsed = timer.read();
+                        const out_node = self.nodes.items[plan.output_idx];
+                        out[i] = .{
+                            .kind = .{ .fusion = plan.kind() },
+                            .ns = elapsed,
+                            .n_elements = out_node.nElems(),
+                            .dst_layout = TensorLayout.from(out_node),
+                            .src0_layout = if (out_node.src0) |s| TensorLayout.from(s) else null,
+                        };
+                    },
+                    .node => |node| {
+                        if (pool != null and node.opTag() == .matmul) {
+                            const flags = node.matmul_flags;
+                            const s0 = node.src0.?;
+                            const s1 = node.src1.?;
+                            if (flags.trans0) {
+                                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, true, s1, true, pool.?) else Tensor(T).computeMatMulParallel(node, s0, true, s1, false, pool.?);
+                            } else {
+                                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, false, s1, true, pool.?) else Tensor(T).computeMatMulParallel(node, s0, false, s1, false, pool.?);
+                            }
+                        } else {
+                            node.compute();
+                        }
+                        const elapsed = timer.read();
+                        out[i] = .{
+                            .kind = .{ .node = node.opTag() },
+                            .ns = elapsed,
+                            .n_elements = node.nElems(),
+                            .dst_layout = TensorLayout.from(node),
+                            .src0_layout = if (node.src0) |s| TensorLayout.from(s) else null,
+                            .src1_layout = if (node.src1) |s| TensorLayout.from(s) else null,
+                        };
+                    },
+                }
+            }
+        }
+
         pub fn dumpTensorLineage(self: *const Self, writer: anytype, needle: *Tensor(T)) !void {
             const idx = fused.indexOfNodeMaybe(T, self.nodes.items, needle) orelse {
                 try writer.print("tensor not found in graph\n", .{});

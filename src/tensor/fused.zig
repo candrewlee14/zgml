@@ -260,12 +260,15 @@ pub fn FusionPlan(comptime T: type) type {
                 },
                 .conv2d_bwd_input => |*p| {
                     const d = Conv2dDims(T).fromBwdInput(p.*);
-                    p.scratch = try alloc.alloc(T, d.K * d.N);
+                    const NB = d.N * d.batch;
+                    // Batched: col_buf[K, NB] + rearranged grad[c_out, NB]
+                    p.scratch = try alloc.alloc(T, (d.K + d.c_out) * NB);
                 },
                 .conv2d_bwd_kernel => |*p| {
                     const d = Conv2dDims(T).fromBwdKernel(p.*);
-                    // Batched: [K, N*batch] — one im2col for all samples
-                    p.scratch = try alloc.alloc(T, d.K * d.N * d.batch);
+                    const NB = d.N * d.batch;
+                    // Batched: col_buf[K, NB] + rearranged grad[c_out, NB]
+                    p.scratch = try alloc.alloc(T, (d.K + d.c_out) * NB);
                 },
                 else => {},
             }
@@ -350,7 +353,50 @@ fn fusedOpForNode(comptime T: type, plan: ElementwiseFusionPlan(T), idx: usize) 
     };
 }
 
-/// Apply a single op to a value. Comptime-dispatched — no runtime branching.
+// ---------------------------------------------------------------------------
+// SIMD + stride helpers
+// ---------------------------------------------------------------------------
+
+/// SIMD vector width (in lanes) for type T. Targets 256-bit.
+fn vecSize(comptime T: type) comptime_int {
+    const lanes = 32 / @sizeOf(T);
+    return if (lanes >= 4) lanes else 4;
+}
+
+const max_dims = @import("../tensor.zig").max_dims;
+
+/// Advance an N-dimensional coordinate by 1, returning false when done.
+inline fn nextCoord(coords: []usize, shape: []const usize) bool {
+    var d: usize = 0;
+    while (d < coords.len) : (d += 1) {
+        coords[d] += 1;
+        if (coords[d] < shape[d]) return true;
+        coords[d] = 0;
+    }
+    return false;
+}
+
+/// Compute strided offset for a set of coordinates.
+inline fn stridedOffset(strides: []const usize, coords: []const usize, base: usize) usize {
+    var off: usize = base;
+    for (strides, coords) |s, c| off += s * c;
+    return off;
+}
+
+/// Load one scalar element from a chain "other" operand.
+inline fn loadOther(comptime T: type, other: anytype, i: usize) T {
+    return if (other.nElems() <= 1) other.data[other.storage_offset] else other.data[i + other.storage_offset];
+}
+
+/// Load a SIMD vector from a chain "other" operand: splat if scalar, load if dense.
+inline fn loadOtherVec(comptime T: type, comptime V: comptime_int, other: anytype, i: usize) @Vector(V, T) {
+    return if (other.nElems() <= 1)
+        @splat(other.data[other.storage_offset])
+    else
+        other.data[i + other.storage_offset ..][0..V].*;
+}
+
+/// Apply a single op to a scalar value. Comptime-dispatched — no runtime branching.
 fn applyOp(comptime T: type, comptime op: FusedOp, val: T, node: anytype, i: usize) T {
     return switch (op) {
         .neg => -val,
@@ -364,25 +410,39 @@ fn applyOp(comptime T: type, comptime op: FusedOp, val: T, node: anytype, i: usi
         .gelu => 0.5 * val * (1.0 + std.math.tanh(
             @as(T, SQRT_2_OVER_PI) * val * (1.0 + @as(T, GELU_COEF_A) * val * val),
         )),
-        .add_src1 => blk: {
-            const other = node.src1.?;
-            break :blk val + if (other.data.len <= 1) other.data[0] else other.data[i];
+        .add_src1 => val + loadOther(T, node.src1.?, i),
+        .add_src0 => val + loadOther(T, node.src0.?, i),
+        .mul_src1 => if (node.src0.? == node.src1.?) val * val else val * loadOther(T, node.src1.?, i),
+        .mul_src0 => if (node.src0.? == node.src1.?) val * val else val * loadOther(T, node.src0.?, i),
+    };
+}
+
+/// Apply a single op to a SIMD vector. Comptime-dispatched — no runtime branching.
+fn applyOpVec(comptime T: type, comptime V: comptime_int, comptime op: FusedOp, val: @Vector(V, T), node: anytype, i: usize) @Vector(V, T) {
+    const VecT = @Vector(V, T);
+    return switch (op) {
+        .neg => -val,
+        .abs => @abs(val),
+        .sgn => blk: {
+            const zero: VecT = @splat(0);
+            break :blk @select(T, val > zero, @as(VecT, @splat(@as(T, 1))), @select(T, val < zero, @as(VecT, @splat(@as(T, -1))), zero));
         },
-        .add_src0 => blk: {
-            const other = node.src0.?;
-            break :blk val + if (other.data.len <= 1) other.data[0] else other.data[i];
+        .step => @select(T, val > @as(VecT, @splat(@as(T, 0))), @as(VecT, @splat(@as(T, 1))), @as(VecT, @splat(@as(T, 0)))),
+        .sqrt => @sqrt(val),
+        .recip => @as(VecT, @splat(@as(T, 1))) / val,
+        .exp => @exp(val),
+        .log => @log(val),
+        .gelu => blk: {
+            const one: VecT = @splat(@as(T, 1));
+            const two: VecT = @splat(@as(T, 2));
+            const inner = @as(VecT, @splat(@as(T, SQRT_2_OVER_PI))) * val * (one + @as(VecT, @splat(@as(T, GELU_COEF_A))) * val * val);
+            const e2 = @exp(two * inner);
+            break :blk @as(VecT, @splat(@as(T, 0.5))) * val * (one + (e2 - one) / (e2 + one));
         },
-        .mul_src1 => blk: {
-            // sqr: src0 == src1, both operands are the chain value
-            if (node.src0.? == node.src1.?) break :blk val * val;
-            const other = node.src1.?;
-            break :blk val * if (other.data.len <= 1) other.data[0] else other.data[i];
-        },
-        .mul_src0 => blk: {
-            if (node.src0.? == node.src1.?) break :blk val * val;
-            const other = node.src0.?;
-            break :blk val * if (other.data.len <= 1) other.data[0] else other.data[i];
-        },
+        .add_src1 => val + loadOtherVec(T, V, node.src1.?, i),
+        .add_src0 => val + loadOtherVec(T, V, node.src0.?, i),
+        .mul_src1 => if (node.src0.? == node.src1.?) val * val else val * loadOtherVec(T, V, node.src1.?, i),
+        .mul_src0 => if (node.src0.? == node.src1.?) val * val else val * loadOtherVec(T, V, node.src0.?, i),
     };
 }
 
@@ -394,52 +454,96 @@ pub fn FusedKernel(comptime T: type, comptime ops: []const FusedOp) type {
             executeRange(nodes, 0, nodes[nodes.len - 1].nElems());
         }
 
+        /// SIMD-vectorized execution for dense (contiguous) inputs only.
+        /// Non-dense inputs must be handled by the generic interpreter.
         pub fn executeRange(nodes: []const *Tensor(T), start: usize, end: usize) void {
-            const input_data = nodes[0].source0().?.data;
-            for (start..end) |i| {
-                var val: T = input_data[i];
+            const V = comptime vecSize(T);
+            const VecT = @Vector(V, T);
+            const input = nodes[0].source0().?;
+            const input_data = input.data;
+            const input_off = input.storage_offset;
+
+            var i: usize = start;
+            while (i + V <= end) : (i += V) {
+                var val: VecT = input_data[i + input_off ..][0..V].*;
+                inline for (ops, 0..) |op, k| {
+                    val = applyOpVec(T, V, op, val, nodes[k], i);
+                    nodes[k].data[i + nodes[k].storage_offset ..][0..V].* = val;
+                }
+            }
+            while (i < end) : (i += 1) {
+                var val: T = input_data[i + input_off];
                 inline for (ops, 0..) |op, k| {
                     val = applyOp(T, op, val, nodes[k], i);
-                    nodes[k].data[i] = val;
+                    nodes[k].data[i + nodes[k].storage_offset] = val;
                 }
             }
         }
     };
 }
 
-/// Runtime interpreter for a range of elements. Used by both the generic
-/// fallback and the parallel executor.
+/// Runtime interpreter for a range of elements. Uses SIMD for the main loop
+/// with a scalar tail. Used by both the generic fallback and parallel executor.
 fn executeFusedGenericRange(comptime T: type, plan: ElementwiseFusionPlan(T), start: usize, end: usize) void {
+    const V = comptime vecSize(T);
+    const VecT = @Vector(V, T);
     const nodes = plan.nodes;
-    const input_data = plan.input.data;
+    const input = plan.input;
+    const input_data = input.data;
+    const input_dense = input.isDenseLayout();
 
-    for (start..end) |i| {
-        var val: T = input_data[i];
-        for (nodes, 0..) |node, node_idx| {
-            val = switch (node.op) {
-                .neg => -val,
-                .abs => @abs(val),
-                .sgn => if (val > 0) 1 else if (val < 0) @as(T, -1) else 0,
-                .step => if (val > 0) @as(T, 1) else 0,
-                .sqrt => @sqrt(val),
-                .recip => 1.0 / val,
-                .exp => @exp(val),
-                .log => @log(val),
-                .gelu => 0.5 * val * (1.0 + std.math.tanh(
-                    @as(T, SQRT_2_OVER_PI) * val * (1.0 + @as(T, GELU_COEF_A) * val * val),
-                )),
-                .add => blk: {
-                    const other = plan.otherOperand(node_idx).?;
-                    break :blk val + if (other.data.len <= 1) other.data[0] else other.data[i];
-                },
-                .mul => blk: {
-                    if (node.src0.? == node.src1.?) break :blk val * val;
-                    const other = plan.otherOperand(node_idx).?;
-                    break :blk val * if (other.data.len <= 1) other.data[0] else other.data[i];
-                },
-                else => unreachable,
-            };
-            node.data[i] = val;
+    if (input_dense) {
+        const input_off = input.storage_offset;
+        var i: usize = start;
+        while (i + V <= end) : (i += V) {
+            var val: VecT = input_data[i + input_off ..][0..V].*;
+            for (nodes, 0..) |node, node_idx| {
+                const fop = fusedOpForNode(T, plan, node_idx).?;
+                inline for (fusible_ops) |c| if (fop == c) { val = applyOpVec(T, V, c, val, node, i); };
+                node.data[i + node.storage_offset ..][0..V].* = val;
+            }
+        }
+        while (i < end) : (i += 1) {
+            var val: T = input_data[i + input_off];
+            for (nodes, 0..) |node, node_idx| {
+                const fop = fusedOpForNode(T, plan, node_idx).?;
+                inline for (fusible_ops) |c| if (fop == c) { val = applyOp(T, c, val, node, i); };
+                node.data[i + node.storage_offset] = val;
+            }
+        }
+    } else {
+        // Non-dense input: coordinate-based gather, SIMD for chain ops.
+        const n_dims = input.n_dims;
+        var coords: [max_dims]usize = [_]usize{0} ** max_dims;
+        if (start > 0) {
+            var remaining = start;
+            var d: usize = 0;
+            while (d < n_dims) : (d += 1) {
+                coords[d] = remaining % input.ne[d];
+                remaining /= input.ne[d];
+            }
+        }
+        var i: usize = start;
+        while (i + V <= end) : (i += V) {
+            var val: VecT = undefined;
+            inline for (0..V) |lane| {
+                val[lane] = input_data[stridedOffset(input.strides[0..n_dims], coords[0..n_dims], input.storage_offset)];
+                _ = nextCoord(coords[0..n_dims], input.ne[0..n_dims]);
+            }
+            for (nodes, 0..) |node, node_idx| {
+                const fop = fusedOpForNode(T, plan, node_idx).?;
+                inline for (fusible_ops) |c| if (fop == c) { val = applyOpVec(T, V, c, val, node, i); };
+                node.data[i + node.storage_offset ..][0..V].* = val;
+            }
+        }
+        while (i < end) : (i += 1) {
+            var val: T = input_data[stridedOffset(input.strides[0..n_dims], coords[0..n_dims], input.storage_offset)];
+            _ = nextCoord(coords[0..n_dims], input.ne[0..n_dims]);
+            for (nodes, 0..) |node, node_idx| {
+                const fop = fusedOpForNode(T, plan, node_idx).?;
+                inline for (fusible_ops) |c| if (fop == c) { val = applyOp(T, c, val, node, i); };
+                node.data[i + node.storage_offset] = val;
+            }
         }
     }
 }
@@ -514,6 +618,8 @@ pub fn executeFusedChain(comptime T: type, plan: ElementwiseFusionPlan(T)) void 
 }
 
 fn executeFused2(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
+    // Comptime-specialized kernels require dense input for linear SIMD access.
+    if (!plan.input.isDenseLayout()) return executeFusedGeneric(T, plan);
     const op0 = fusedOpForNode(T, plan, 0) orelse return executeFusedGeneric(T, plan);
     const op1 = fusedOpForNode(T, plan, 1) orelse return executeFusedGeneric(T, plan);
     inline for (fusible_ops) |c0| {
@@ -529,6 +635,8 @@ fn executeFused2(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
 
 fn executeFused3(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
     @setEvalBranchQuota(20000);
+    // Comptime-specialized kernels require dense input for linear SIMD access.
+    if (!plan.input.isDenseLayout()) return executeFusedGeneric(T, plan);
     const op0 = fusedOpForNode(T, plan, 0) orelse return executeFusedGeneric(T, plan);
     const op1 = fusedOpForNode(T, plan, 1) orelse return executeFusedGeneric(T, plan);
     const op2 = fusedOpForNode(T, plan, 2) orelse return executeFusedGeneric(T, plan);
@@ -546,17 +654,16 @@ fn executeFused3(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
 }
 
 pub fn isSafeElementwiseChain(comptime T: type, plan: ElementwiseFusionPlan(T)) bool {
-    // Fused kernel indexes data[i] linearly — requires all tensors to be contiguous.
-    if (!plan.input.isContiguous()) return false;
+    // Chain nodes and other operands are indexed linearly and must be dense.
+    // The input may be non-dense (permuted strides); execution handles it.
     var prev = plan.input;
     const n_elems = plan.nodes[plan.nodes.len - 1].nElems();
     for (plan.nodes, 0..) |node, node_idx| {
         if (!node.isSameShape(prev)) return false;
-        if (!node.isContiguous()) return false;
+        if (!node.isDenseLayout()) return false;
         const other = plan.otherOperand(node_idx);
         if (other) |src| {
-            // Must be scalar (1 elem) or contiguous with matching element count
-            if (src.data.len > 1 and (!src.isContiguous() or src.data.len < n_elems)) return false;
+            if (src.nElems() > 1 and (!src.isDenseLayout() or src.nElems() < n_elems)) return false;
         }
         prev = node;
     }
@@ -743,7 +850,6 @@ fn executeMaxPool2d(comptime T: type, plan: MaxPool2dPlan(T)) void {
 
 /// Shared dimension info for conv2d forward and backward.
 fn Conv2dDims(comptime T: type) type {
-    const max_dims = @import("../tensor.zig").max_dims;
     return struct {
         kw: usize,
         kh: usize,
@@ -843,13 +949,16 @@ fn im2col(comptime T: type, d: Conv2dDims(T), col_buf: []T, n: usize, col_stride
 }
 
 /// Scatter-add columns back to image layout (inverse of im2col).
-/// Accumulates col_buf[K, N] into dst_data at the positions that im2col would read from.
-fn col2im(comptime T: type, d: Conv2dDims(T), dst_data: []T, dst_strides: [@import("../tensor.zig").max_dims]usize, col_buf: []const T, n: usize) void {
+/// Accumulates col_buf into dst_data at the positions that im2col would read from.
+///
+/// col_stride: number of columns per row in col_buf (N for non-batched, N*batch for batched).
+/// col_offset: column offset within each row (0 for non-batched, n*N for batched).
+fn col2im(comptime T: type, d: Conv2dDims(T), dst_data: []T, dst_strides: [@import("../tensor.zig").max_dims]usize, col_buf: []const T, n: usize, col_stride: usize, col_offset: usize) void {
     if (dst_strides[0] == 1) {
         for (0..d.c_in) |ic| {
             for (0..d.kh) |ky| {
                 for (0..d.kw) |kx| {
-                    const row = (kx + ky * d.kw + ic * d.kw * d.kh) * d.N;
+                    const row = (kx + ky * d.kw + ic * d.kw * d.kh) * col_stride + col_offset;
                     for (0..d.out_h) |oy| {
                         const dst_base = kx + (oy + ky) * d.in_w + ic * dst_strides[2] + n * dst_strides[3];
                         const src_base = row + oy * d.out_w;
@@ -864,7 +973,7 @@ fn col2im(comptime T: type, d: Conv2dDims(T), dst_data: []T, dst_strides: [@impo
         for (0..d.c_in) |ic| {
             for (0..d.kh) |ky| {
                 for (0..d.kw) |kx| {
-                    const row = (kx + ky * d.kw + ic * d.kw * d.kh) * d.N;
+                    const row = (kx + ky * d.kw + ic * d.kw * d.kh) * col_stride + col_offset;
                     for (0..d.out_h) |oy| {
                         for (0..d.out_w) |ox| {
                             dst_data[
@@ -894,6 +1003,12 @@ fn freeScratch(comptime T: type, buf: []T) void {
     scratch_allocator.free(buf);
 }
 
+/// Select the best matmul for fused conv2d: BLAS when available (f32), else tiled.
+fn selectConvMatMul(comptime T: type) forward.MatMulFnType(T) {
+    if (T == f32) return &forward.blasSgemm;
+    return forward.selectMatMulKernel(T);
+}
+
 // ---------------------------------------------------------------------------
 // Conv2d execution: forward, backward-input, backward-kernel
 // ---------------------------------------------------------------------------
@@ -917,7 +1032,7 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
     }
 
     // 2. Single matmul: kernel[c_out, K] @ col_buf[K, NB] → mm_temp[c_out, NB]
-    const mm = forward.selectMatMulKernel(T);
+    const mm = selectConvMatMul(T);
     mm(mm_temp, d.kernel_data, col_buf.ptr[0..col_buf.len], d.c_out, NB, d.K, d.K, 1, NB, 1, 0, 0, 0, NB);
 
     // 3. Rearrange [c_out, NB] → [batch, c_out, N] with fused bias + activation.
@@ -963,58 +1078,71 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
 
 fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T)) void {
     const d = Conv2dDims(T).fromBwdInput(plan);
-    const col_buf = plan.scratch orelse allocScratch(T, d.K * d.N) orelse {
+    const NB = d.N * d.batch;
+    const total_scratch = (d.K + d.c_out) * NB;
+    const scratch = plan.scratch orelse allocScratch(T, total_scratch) orelse {
         conv2dBwdInputNaive(T, d, plan);
         return;
     };
-    defer if (plan.scratch == null) freeScratch(T, col_buf);
+    defer if (plan.scratch == null) freeScratch(T, scratch);
 
-    const mm = forward.selectMatMulKernel(T);
+    const col_buf = scratch[0 .. d.K * NB];
+    const grad_buf = scratch[d.K * NB ..][0 .. d.c_out * NB];
+
+    // 1. Rearrange output_grad from [N, c_out, batch] to [c_out, N*batch]
+    for (0..d.c_out) |oc| {
+        for (0..d.batch) |n| {
+            @memcpy(
+                grad_buf[oc * NB + n * d.N ..][0..d.N],
+                plan.output_grad.data[n * d.N * d.c_out + oc * d.N ..][0..d.N],
+            );
+        }
+    }
+
+    // 2. Single GEMM: kernel^T[K, c_out] @ grad_buf[c_out, NB] → col_buf[K, NB]
+    const mm = selectConvMatMul(T);
+    mm(col_buf, d.kernel_data, grad_buf, d.K, NB, d.c_out, 1, d.K, NB, 1, 0, 0, 0, NB);
+
+    // 3. col2im per batch from batched col_buf
     @memset(plan.output.data, 0);
-
     for (0..d.batch) |n| {
-        // kernel^T[K, c_out] @ out_grad_n[c_out, N] → col_buf[K, N]
-        mm(col_buf, d.kernel_data, plan.output_grad.data, d.K, d.N, d.c_out, 1, d.K, d.N, 1, 0, n * d.N * d.c_out, 0, d.N);
-        col2im(T, d, plan.output.data, plan.output.strides, col_buf, n);
+        col2im(T, d, plan.output.data, plan.output.strides, col_buf, n, NB, n * d.N);
     }
 }
 
 fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T)) void {
     const d = Conv2dDims(T).fromBwdKernel(plan);
     const NB = d.N * d.batch;
+    const total_scratch = (d.K + d.c_out) * NB;
 
-    const col_buf = plan.scratch orelse allocScratch(T, d.K * NB) orelse {
+    const scratch = plan.scratch orelse allocScratch(T, total_scratch) orelse {
         conv2dBwdKernelNaive(T, d, plan);
         return;
     };
-    defer if (plan.scratch == null) freeScratch(T, col_buf);
+    defer if (plan.scratch == null) freeScratch(T, scratch);
 
-    // Build batched im2col: [K, N*batch] — all samples concatenated.
+    const col_buf = scratch[0 .. d.K * NB];
+    const grad_buf = scratch[d.K * NB ..][0 .. d.c_out * NB];
+
+    // 1. Build batched im2col: [K, N*batch] — all samples concatenated.
     for (0..d.batch) |n| {
         im2col(T, d, col_buf, n, NB, n * d.N);
     }
 
-    // Per-batch matmul: out_grad_n[c_out, N] @ col_n^T[N, K] → accumulate into output[c_out, K].
-    // Layout is [out_w, out_h, c_out, batch] — channels are interleaved with batches,
-    // so we can't do a single batched matmul.
-    const mm = forward.selectMatMulKernel(T);
-
-    // First batch: write directly to output.
-    // col_buf layout is [K, NB] — rows have stride NB, not N.
-    mm(plan.output.data, plan.output_grad.data, col_buf, d.c_out, d.K, d.N, d.N, 1, 1, NB, 0, 0, 0, d.K);
-
-    // Remaining batches: matmul into temp, then accumulate.
-    if (d.batch > 1) {
-        const temp = allocScratch(T, d.c_out * d.K) orelse {
-            conv2dBwdKernelNaive(T, d, plan);
-            return;
-        };
-        defer freeScratch(T, temp);
-        for (1..d.batch) |n| {
-            mm(temp, plan.output_grad.data, col_buf, d.c_out, d.K, d.N, d.N, 1, 1, NB, n * d.N * d.c_out, n * d.N, 0, d.K);
-            for (0..d.c_out * d.K) |j| plan.output.data[j] += temp[j];
+    // 2. Rearrange output_grad from [N, c_out, batch] to [c_out, N*batch]
+    for (0..d.c_out) |oc| {
+        for (0..d.batch) |n| {
+            @memcpy(
+                grad_buf[oc * NB + n * d.N ..][0..d.N],
+                plan.output_grad.data[n * d.N * d.c_out + oc * d.N ..][0..d.N],
+            );
         }
     }
+
+    // 3. Single GEMM: grad_buf[c_out, NB] @ col_buf^T[NB, K] → output[c_out, K]
+    //    Inner dim NB inherently sums across all batches.
+    const mm = selectConvMatMul(T);
+    mm(plan.output.data, grad_buf, col_buf, d.c_out, d.K, NB, NB, 1, 1, NB, 0, 0, 0, d.K);
 }
 
 // ---------------------------------------------------------------------------

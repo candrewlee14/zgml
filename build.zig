@@ -86,7 +86,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const use_blas = b.option(bool, "use-blas", "Use BLAS library") orelse false;
+    const use_blas = b.option(bool, "use-blas", "Use BLAS library") orelse (target.result.os.tag == .macos);
 
     _ = package(b, target, optimize, .{ .options = .{ .use_blas = use_blas } });
 
@@ -225,6 +225,29 @@ pub fn build(b: *std.Build) void {
         const step = b.step("bench-inference", "Benchmark inference session (f32 vs int8)");
         step.dependOn(&b.addRunArtifact(exe).step);
     }
+
+    // Per-op microbenchmark
+    const zgml_opbench_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+    const opbench_mod = b.createModule(.{
+        .root_source_file = b.path("benchmarks/op_bench.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "zgml", .module = zgml_opbench_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_opbench_pkg.zgml_options },
+        },
+    });
+    const opbench_exe = b.addExecutable(.{
+        .name = "op-bench",
+        .root_module = opbench_mod,
+    });
+    if (use_blas) {
+        linkBlas(target, opbench_exe);
+        opbench_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    b.installArtifact(opbench_exe);
+    const opbench_step = b.step("op-bench", "Per-op microbenchmark for MNIST CNN ops");
+    opbench_step.dependOn(&b.addRunArtifact(opbench_exe).step);
 
     // Text generation binary
     const zgml_gen_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
