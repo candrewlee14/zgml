@@ -205,6 +205,57 @@ pub fn TransformerBlock(
             return after_attn.add(ff_out);
         }
 
+        /// Cached forward for autoregressive generation.
+        ///
+        /// x: [d_model, 1] — single new token embedding.
+        /// k/v_caches: per-head [d_head, max_seq] tensors (persistent across steps).
+        /// pos: current position (number of tokens already cached).
+        ///
+        /// Returns [d_model, 1].
+        pub fn forwardCached(
+            self: *const Self,
+            x: *Tensor(T),
+            k_caches: [n_heads]*Tensor(T),
+            v_caches: [n_heads]*Tensor(T),
+            pos: usize,
+        ) *Tensor(T) {
+            var ln_reduce = [_]usize{ 1, 1 };
+            const norm1 = x.layerNorm(&ln_reduce, 1e-5);
+
+            var attn_sum: ?*Tensor(T) = null;
+            for (0..n_heads) |h| {
+                const q = norm1.matMul(false, self.w_q[h].inner, false); // [d_head, 1]
+                const k_new = norm1.matMul(false, self.w_k[h].inner, false);
+                const v_new = norm1.matMul(false, self.w_v[h].inner, false);
+
+                // Append to cache
+                _ = k_caches[h].sliceAssign(k_new, pos);
+                _ = v_caches[h].sliceAssign(v_new, pos);
+
+                // Full cached K, V
+                const ck = k_caches[h].sliceColumns(0, pos + 1); // [d_head, pos+1]
+                const cv = v_caches[h].sliceColumns(0, pos + 1);
+
+                // scores = q @ ck^T → [pos+1, 1] (same pattern as non-cached)
+                const scores = q.matMul(false, ck, true);
+                const dk: T = @floatFromInt(d_head);
+                const scaled = scores.scaleByVal(1.0 / @sqrt(dk));
+                const weights = scaled.softmax(&.{ 1, 1 }); // [pos+1, 1]
+
+                // attn_out = weights^T @ cv^T → [d_head, 1]
+                const attn_out = weights.matMul(false, cv, false);
+                const projected = attn_out.matMul(false, self.w_o[h].inner, false);
+                attn_sum = if (attn_sum) |acc| acc.add(projected) else projected;
+            }
+
+            const after_attn = x.add(attn_sum.?);
+            var ln2_reduce = [_]usize{ 1, 1 };
+            const norm2 = after_attn.layerNorm(&ln2_reduce, 1e-5);
+            const activated = nn.linear(T, norm2, self.w1.inner, self.b1.inner).gelu();
+            const ff_out = nn.linear(T, activated, self.w2.inner, self.b2.inner);
+            return after_attn.add(ff_out);
+        }
+
         /// Return all learnable parameters (as runtime tensors for optimizer compatibility).
         pub fn params(self: *const Self) [4 * n_heads + 4]*Tensor(T) {
             var result: [4 * n_heads + 4]*Tensor(T) = undefined;
@@ -481,4 +532,50 @@ test "transformer block - numerical gradient check on one parameter" {
 
     const numerical_grad = (loss_plus.data[0] - loss_minus.data[0]) / (2.0 * h);
     try testing.expectApproxEqAbs(numerical_grad, analytical_grad, 0.5);
+}
+
+test "transformer block - cached forward produces valid output" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const d_model = 4;
+    const n_h = 2;
+    const d_h = d_model / n_h; // 2
+    const max_seq = 8;
+
+    const block = try TransformerBlock(f32, d_model, n_h, 8, true).init(a);
+
+    // Allocate KV caches: [d_head, max_seq] per head
+    var k_caches: [n_h]*Tensor(f32) = undefined;
+    var v_caches: [n_h]*Tensor(f32) = undefined;
+    for (0..n_h) |h| {
+        k_caches[h] = try Tensor(f32).init(a, &.{ d_h, max_seq });
+        v_caches[h] = try Tensor(f32).init(a, &.{ d_h, max_seq });
+    }
+
+    // Run 3 tokens through cached forward
+    for (0..3) |pos| {
+        const x = try Tensor(f32).init(a, &.{ d_model, 1 });
+        for (x.data, 0..) |*v, i| {
+            v.* = @as(f32, @floatFromInt(pos * d_model + i)) * 0.1;
+        }
+
+        const out = block.forwardCached(x, k_caches, v_caches, pos);
+
+        try g.buildForward(out);
+        g.computeNoGrad();
+
+        try testing.expectEqual(@as(usize, d_model), out.ne[0]);
+        try testing.expectEqual(@as(usize, 1), out.ne[1]);
+        for (out.data) |v| {
+            try testing.expect(!std.math.isNan(v));
+            try testing.expect(!std.math.isInf(v));
+        }
+
+        // Reset graph for next position (but caches persist!)
+        g.built_forward = false;
+        g.nodes.clearRetainingCapacity();
+        g.visited_nodes = .empty;
+    }
 }
