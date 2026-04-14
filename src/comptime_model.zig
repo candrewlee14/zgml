@@ -1,25 +1,34 @@
-//! Comptime model definition and compilation.
+//! Comptime model definition and compilation (inference only).
 //!
-//! When the model architecture is known at compile time, the entire execution
-//! plan — fusion, kernel selection, memory layout — can be baked into the
-//! binary. Zero runtime graph construction, zero fusion detection.
+//! When the model architecture is known at compile time, the execution
+//! plan is baked into the binary — zero runtime graph construction.
 //!
 //! ```
 //! const Model = ComptimeModel(f32, struct {
 //!     pub fn define(b: *Builder) void {
-//!         const x = b.input(.{784});
-//!         const h = b.linear(x, 128).gelu();
-//!         b.output(b.linear(h, 10));
+//!         const x = b.input(.{ 3, 2 });
+//!         const y = b.gelu(b.linear(x, .{ 2, 3 }, true));
+//!         b.output(y);
 //!     }
 //! });
-//!
 //! var model = try Model.init(allocator);
 //! defer model.deinit();
 //! model.forward(&input_data, &output_data);
 //! ```
 //!
-//! The `forward` function is a flat sequence of pre-specialized ops.
-//! No graph traversal, no fusion detection, no dispatch overhead.
+//! ## Supported ops
+//! Elementwise: neg, exp, log, sqrt, recip, abs, step, gelu
+//! Binary: add, mul (with cyclic broadcast for different-sized operands)
+//! Matmul: uses optimized SIMD-tiled kernel (row-major, no transpose)
+//! Layers: linear (matmul + optional bias)
+//! Reduction: sum
+//!
+//! ## Limitations
+//! - Inference only (no backward pass / training)
+//! - Matmul assumes row-major layout, no transpose flags
+//! - No conv2d, softmax, layerNorm, maxPool2d
+//! - No weight serialization (params must be filled manually)
+//! - No connection to the dynamic ComputeGraph
 
 const std = @import("std");
 const tensorlib = @import("tensor.zig");
@@ -477,14 +486,42 @@ test "comptime model - matmul" {
     try std.testing.expectApproxEqAbs(@as(f32, 4), output[3], 1e-6);
 }
 
-test "comptime model - linear layer" {
+test "comptime model - linear layer end-to-end" {
+    // Linear: y = x @ W + b
+    // x: [2, 1] (2 features, 1 sample)
+    // W: [3, 2] (project 2→3)
+    // b: [3]
     const Model = ComptimeModel(f32, struct {
         pub fn define(b: *Builder) void {
-            const x = b.input(.{ 3, 2 }); // 3 features, 2 samples
-            _ = b.linear(x, .{ 2, 3 }, true); // project 3→2 with bias
+            const x = b.input(.{ 2, 1 });
+            const y = b.linear(x, .{ 3, 2 }, true);
+            b.output(y);
         }
     });
 
-    // Should have weight (2x3=6 elems) + bias (2 elems) = 8 param elems
-    try std.testing.expectEqual(@as(usize, 2), Model.param_count);
+    try std.testing.expectEqual(@as(usize, 2), Model.param_count); // weight + bias
+
+    var model = try Model.init(std.testing.allocator);
+    defer model.deinit();
+
+    // W = [[1, 0], [0, 1], [1, 1]] — projects [a,b] → [a, b, a+b]
+    model.param_data[0][0] = 1;
+    model.param_data[0][1] = 0;
+    model.param_data[0][2] = 0;
+    model.param_data[0][3] = 1;
+    model.param_data[0][4] = 1;
+    model.param_data[0][5] = 1;
+    // b = [0.5, -0.5, 0]
+    model.param_data[1][0] = 0.5;
+    model.param_data[1][1] = -0.5;
+    model.param_data[1][2] = 0.0;
+
+    const input = [_]f32{ 2.0, 3.0 };
+    var output: [3]f32 = undefined;
+    model.forward(&input, &output);
+
+    // Expected: [2+0.5, 3-0.5, 2+3+0] = [2.5, 2.5, 5.0]
+    try std.testing.expectApproxEqAbs(@as(f32, 2.5), output[0], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.5), output[1], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 5.0), output[2], 1e-5);
 }
