@@ -274,6 +274,97 @@ pub fn ComputeGraph(comptime T: type) type {
 
             try self.buildExecutionSteps(alloc, node_count, &self.execution_steps);
             try self.buildExecutionSteps(alloc, self.forward_node_count, &self.forward_execution_steps);
+
+            // Pack intermediate buffers into a contiguous memory pool.
+            // Non-overlapping lifetimes share the same memory, reducing
+            // peak allocation for training loops.
+            try self.buildMemoryPool(alloc, node_count);
+        }
+
+        /// Compute liveness intervals and pack intermediate buffers.
+        /// Params, leaves, and view/alias nodes keep their own data.
+        /// Everything else gets remapped into a single contiguous pool.
+        fn buildMemoryPool(self: *Self, alloc: Alloc, node_count: usize) Alloc.Error!void {
+            // Compute last-use step for each node
+            const last_use = try alloc.alloc(usize, node_count);
+            @memset(last_use, 0);
+            for (self.nodes.items, 0..) |node, i| {
+                if (node.source0()) |src| {
+                    for (self.nodes.items, 0..) |_, j| {
+                        if (self.nodes.items[j] == src) { last_use[j] = @max(last_use[j], i); break; }
+                    }
+                }
+                if (node.source1()) |src| {
+                    for (self.nodes.items, 0..) |_, j| {
+                        if (self.nodes.items[j] == src) { last_use[j] = @max(last_use[j], i); break; }
+                    }
+                }
+            }
+
+            // Compute per-node buffer size (0 for nodes that keep their own data)
+            const buf_size = try alloc.alloc(usize, node_count);
+            for (self.nodes.items, 0..) |node, i| {
+                if (node.isParam() or !node.ownsData() or node.opTag() == .none) {
+                    buf_size[i] = 0;
+                } else if (i < self.fused_skip.items.len and self.fused_skip.items[i]) {
+                    // Fused nodes still need data for the fused kernel to write to
+                    buf_size[i] = node.nElems();
+                } else {
+                    buf_size[i] = node.nElems();
+                }
+            }
+
+            // Greedy interval packing: assign offsets, reusing freed space.
+            // Simple approach: maintain a list of (offset, size, free_at_step) slots.
+            const max_slots = node_count;
+            const Slot = struct { offset: usize, size: usize, free_at: usize };
+            const slots = try alloc.alloc(Slot, max_slots);
+            var n_slots: usize = 0;
+            var pool_size: usize = 0;
+
+            const offsets = try alloc.alloc(?usize, node_count);
+            @memset(offsets, null);
+
+            for (0..node_count) |i| {
+                if (buf_size[i] == 0) continue;
+                const needed = buf_size[i];
+
+                // Try to reuse a freed slot
+                var best_slot: ?usize = null;
+                var best_waste: usize = std.math.maxInt(usize);
+                for (slots[0..n_slots], 0..) |slot, si| {
+                    if (slot.free_at <= i and slot.size >= needed) {
+                        const waste = slot.size - needed;
+                        if (waste < best_waste) {
+                            best_waste = waste;
+                            best_slot = si;
+                        }
+                    }
+                }
+
+                if (best_slot) |si| {
+                    offsets[i] = slots[si].offset;
+                    slots[si].free_at = last_use[i];
+                    slots[si].size = @max(slots[si].size, needed); // keep max size for reuse
+                } else {
+                    // Allocate new slot at end of pool
+                    offsets[i] = pool_size;
+                    slots[n_slots] = .{ .offset = pool_size, .size = needed, .free_at = last_use[i] };
+                    n_slots += 1;
+                    pool_size += needed;
+                }
+            }
+
+            if (pool_size == 0) return;
+
+            // Allocate the pool and remap pointers
+            const pool = try alloc.alloc(T, pool_size);
+            @memset(pool, 0);
+            for (self.nodes.items, 0..) |node, i| {
+                if (offsets[i]) |off| {
+                    node.data = pool[off..][0..buf_size[i]];
+                }
+            }
         }
 
         fn nextFusedChainAtOrAfter(self: *const Self, start: usize, limit: usize) ?usize {
