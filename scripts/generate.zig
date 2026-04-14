@@ -53,6 +53,7 @@ pub fn main() !void {
     var stdout_buf: [4096]u8 = undefined;
     var stdout = stdout_file.writer(&stdout_buf);
     try stdout.interface.writeAll(prompt);
+    stdout.interface.flush() catch {};
 
     // Tokenize: bytes → token IDs
     var tokens = std.ArrayList(usize){};
@@ -97,11 +98,15 @@ pub fn main() !void {
         }
 
         // Output and append
-        if (best < 128) try stdout.interface.writeByte(@intCast(best));
-        try tokens.append(alloc,best);
+        if (best < 128) {
+            try stdout.interface.writeByte(@intCast(best));
+            stdout.interface.flush() catch {};
+        }
+        try tokens.append(alloc, best);
 
         // Stop at newline or EOS
         if (best == '\n' or best == 0) break;
     }
     try stdout.interface.writeByte('\n');
+    stdout.interface.flush() catch {};
 }

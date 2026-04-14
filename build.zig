@@ -228,6 +228,28 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(gen_exe);
     const gen_step = b.step("generate", "Build text generation binary");
     gen_step.dependOn(&b.addInstallArtifact(gen_exe, .{}).step);
+
+    // Training script
+    const zgml_train_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+    const train_mod = b.createModule(.{
+        .root_source_file = b.path("scripts/train_tiny.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "zgml", .module = zgml_train_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_train_pkg.zgml_options },
+        },
+    });
+    const train_exe = b.addExecutable(.{
+        .name = "train-tiny",
+        .root_module = train_mod,
+    });
+    if (use_blas) {
+        linkBlas(target, train_exe);
+        train_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    const train_step = b.step("train-tiny", "Train a tiny GPT and save checkpoint");
+    train_step.dependOn(&b.addInstallArtifact(train_exe, .{}).step);
 }
 
 pub fn runTests(
