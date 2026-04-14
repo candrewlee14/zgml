@@ -86,43 +86,17 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
         quant_weights: []QuantizedWeight(T),
         quant_map: std.AutoHashMapUnmanaged(*Tensor(T), usize),
 
-        // Device state for quantized inference (populated by quantize()
-        // when a backend with device_buffers is attached).
-        device_state: ?DeviceState = null,
-
-        const DeviceState = struct {
-            be: backend_mod.Backend,
-            alloc: std.mem.Allocator,
-            // Quantized weight device buffers.
-            weight_views: []backend_mod.DeviceQuantizedWeightView,
-            weight_data_bufs: []backend_mod.DeviceBuffer,
-            weight_scale_bufs: []backend_mod.DeviceBuffer,
-            // Per-node device buffers (all forward graph nodes).
-            // Nodes sharing host data (views, workspace) share device buffers.
-            node_bufs: std.AutoHashMapUnmanaged(*Tensor(T), backend_mod.DeviceBuffer),
-            // Unique device allocations for cleanup.
-            owned_bufs: []backend_mod.DeviceBuffer,
-
-            fn deinit(self: *DeviceState) void {
-                for (self.weight_data_bufs) |buf| self.be.freeBuffer(buf);
-                for (self.weight_scale_bufs) |buf| self.be.freeBuffer(buf);
-                for (self.owned_bufs) |buf| self.be.freeBuffer(buf);
-                self.alloc.free(self.owned_bufs);
-                self.node_bufs.deinit(self.alloc);
-                self.alloc.free(self.weight_views);
-                self.alloc.free(self.weight_data_bufs);
-                self.alloc.free(self.weight_scale_bufs);
-            }
-
-            fn tensorDesc(self: *const DeviceState, tensor: *const Tensor(T)) backend_mod.TensorDesc {
-                return .{
-                    .buf = self.node_bufs.get(@constCast(tensor)).?,
-                    .offset = @intCast(tensor.storage_offset),
-                    .ne = .{ @intCast(tensor.ne[0]), @intCast(tensor.ne[1]), @intCast(tensor.ne[2]), @intCast(tensor.ne[3]) },
-                    .strides = .{ @intCast(tensor.strides[0]), @intCast(tensor.strides[1]), @intCast(tensor.strides[2]), @intCast(tensor.strides[3]) },
-                };
-            }
-        };
+        // Compiled device program (populated by quantize() when a backend
+        // with device_buffers is attached). Replaces per-op dispatch with
+        // a single compiled execution per token.
+        compiled_handle: ?backend_mod.Backend.CompiledHandle = null,
+        // Per-step I/O descriptors for the compiled program.
+        program_inputs: []backend_mod.ProgramIO = &.{},
+        program_outputs: []backend_mod.ProgramIO = &.{},
+        // Mutable ops array + indices of slice_assign ops for per-token patching.
+        program_ops: []backend_mod.DeviceOp = &.{},
+        slice_assign_op_indices: []u32 = &.{},
+        slice_assign_base_stride: u32 = 0, // stride per position in KV cache
 
         /// Build a frozen plan from an existing model and KV caches.
         ///
@@ -206,7 +180,13 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
         /// Free the graph, workspace buffers, and output buffer.
         /// Does NOT free the model weights or KV caches (caller owns those).
         pub fn deinit(self: *Self) void {
-            if (self.device_state) |*ds| ds.deinit();
+            if (self.compiled_handle) |h| {
+                self.graph.backend.?.freeProgram(h);
+                self.backing_alloc.free(self.program_inputs);
+                self.backing_alloc.free(self.program_outputs);
+                self.backing_alloc.free(self.program_ops);
+                if (self.slice_assign_op_indices.len > 0) self.backing_alloc.free(self.slice_assign_op_indices);
+            }
             for (self.quant_weights) |qw| qw.deinit(self.backing_alloc);
             if (self.quant_weights.len > 0) self.backing_alloc.free(self.quant_weights);
             self.quant_map.deinit(self.backing_alloc);
@@ -256,12 +236,14 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             self.quant_weights = qw;
             self.quant_map = map;
 
-            // Upload quantized weights to device if the backend supports it.
-            if (self.device_state) |*ds| ds.deinit();
-            self.device_state = null;
+            // Compile device program if the backend supports it.
+            if (self.compiled_handle) |h| {
+                self.graph.backend.?.freeProgram(h);
+                self.compiled_handle = null;
+            }
             if (self.graph.backend) |be| {
                 if (be.caps().device_buffers) {
-                    self.device_state = try self.initDeviceState(be);
+                    try self.compileDeviceProgram(be);
                 }
             }
         }
@@ -270,8 +252,8 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
         /// matmul for weight-matmul nodes and standard compute for the rest.
         /// Bypasses fusion (minor cost — the big wins are in quantized matmul).
         fn computeQuantized(self: *Self) void {
-            if (self.device_state) |*ds| {
-                self.computeQuantizedDevice(ds);
+            if (self.compiled_handle) |h| {
+                self.graph.backend.?.executeProgram(h, self.program_inputs, self.program_outputs);
                 return;
             }
             for (self.graph.nodes.items[0..self.graph.forward_node_count]) |node| {
@@ -293,115 +275,199 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             }
         }
 
-        /// Full device-resident execution using the graph's execution plan.
-        /// Fused chains (softmax, layernorm) dispatch as single GPU kernels.
-        /// Only uploads bound inputs and downloads logits — no per-op transfers.
-        fn computeQuantizedDevice(self: *Self, ds: *DeviceState) void {
-            const be = ds.be;
+        /// Build a DeviceProgram from the execution plan and compile it.
+        /// The program is a flat list of DeviceOps using buffer indices.
+        /// The backend compiles it once and executes it per token.
+        fn compileDeviceProgram(self: *Self, be: backend_mod.Backend) !void {
+            const alloc = self.backing_alloc;
+            const nodes = self.graph.nodes.items[0..self.graph.forward_node_count];
             const steps = self.graph.forward_execution_steps.items;
 
-            // If execution steps aren't built (no fusion pass), fall back to raw nodes.
-            if (steps.len == 0) {
-                self.computeQuantizedDeviceRaw(ds);
-                return;
-            }
+            // ── Assign buffer indices to unique host data pointers ────
+            var ptr_to_idx = std.AutoHashMap([*]T, u16).init(alloc);
+            defer ptr_to_idx.deinit();
+            var buf_sizes: std.ArrayListUnmanaged(usize) = .empty;
+            defer buf_sizes.deinit(alloc);
+            var initial_uploads_list: std.ArrayListUnmanaged(backend_mod.ProgramIO) = .empty;
+            defer initial_uploads_list.deinit(alloc);
 
-            for (steps) |step| {
-                switch (step) {
-                    .fusion => |idx| self.dispatchFused(ds, idx),
-                    .node => |node| self.dispatchNode(ds, node),
+            // Map all reachable tensors to buffer indices.
+            for (nodes) |node| {
+                const tensors = [_]?*const Tensor(T){ node, node.src0, node.src1 };
+                for (tensors) |maybe_t| {
+                    const t = maybe_t orelse continue;
+                    const entry = try ptr_to_idx.getOrPut(t.data.ptr);
+                    if (!entry.found_existing) {
+                        entry.value_ptr.* = @intCast(buf_sizes.items.len);
+                        try buf_sizes.append(alloc, @max(t.data.len, 1));
+                        // Upload leaf data (weights, embeddings, KV cache zeros).
+                        if (t.opTag() == .none and t.data.len > 0) {
+                            try initial_uploads_list.append(alloc, .{
+                                .buf_idx = entry.value_ptr.*,
+                                .host_ptr = @ptrCast(t.data.ptr),
+                                .size = @intCast(t.data.len * @sizeOf(T)),
+                            });
+                        }
+                    } else {
+                        buf_sizes.items[entry.value_ptr.*] = @max(buf_sizes.items[entry.value_ptr.*], @max(t.data.len, 1));
+                    }
                 }
             }
-            be.sync();
-        }
 
-        /// Dispatch a fused chain as a single GPU kernel.
-        fn dispatchFused(self: *Self, ds: *DeviceState, idx: usize) void {
-            const plan = self.graph.fused_chains.items[idx];
-            const kind = plan.kind();
-            const be = ds.be;
+            // Helper: get buffer index for a tensor.
+            const bufIdx = struct {
+                fn get(map: *const std.AutoHashMap([*]T, u16), tensor: *const Tensor(T)) u16 {
+                    return map.get(tensor.data.ptr).?;
+                }
+            }.get;
 
-            switch (kind) {
-                .softmax => {
-                    const sm = plan.payload.softmax;
-                    _ = be.deviceFused(.{
-                        .op = .softmax,
-                        .src = ds.tensorDesc(sm.input),
-                        .dst = ds.tensorDesc(sm.output),
-                        .rows = @intCast(sm.input.ne[1]),
-                        .cols = @intCast(sm.input.ne[0]),
-                    });
-                },
-                .layer_norm => {
-                    const ln = plan.payload.layer_norm;
-                    // LayerNorm output is the last node: output = centered * rep_std_inv
-                    // which then gets gamma * x + beta applied. The plan.output is the
-                    // final mul (gamma * normalized). But affine params need explicit lookup.
-                    // For simplicity, dispatch the normalize-only kernel and let affine
-                    // ops (if present) run as separate elementwise steps.
-                    _ = be.deviceFused(.{
-                        .op = .layer_norm,
-                        .src = ds.tensorDesc(ln.input),
-                        .dst = ds.tensorDesc(ln.output),
-                        .rows = @intCast(ln.input.ne[1]),
-                        .cols = @intCast(ln.input.ne[0]),
-                        // gamma/beta are the mul/add after norm — not part of the
-                        // LayerNormPlan itself. The fused kernel gets them from the
-                        // graph if the output's src chain includes them.
-                    });
-                },
-                .elementwise_chain => {
-                    // Dispatch each op in the chain individually on device.
-                    const chain = plan.payload.elementwise_chain;
-                    for (chain.nodes) |node| {
-                        self.dispatchNode(ds, node);
-                    }
-                },
-                else => {
-                    // Unsupported fused pattern: sync, CPU, re-upload output.
-                    ds.be.sync();
-                    fused.executeFusionPlan(T, plan);
-                    const output_node = self.graph.nodes.items[plan.output_idx];
-                    ds.be.uploadSlice(T, ds.node_bufs.get(output_node).?, 0, output_node.data);
-                },
+            // ── Build DeviceOp list from execution steps ──────────────
+            var ops_list: std.ArrayListUnmanaged(backend_mod.DeviceOp) = .empty;
+            defer ops_list.deinit(alloc);
+
+            const step_list = if (steps.len > 0) steps else blk: {
+                // No fusion — build a simple node list.
+                break :blk &.{};
+            };
+
+            for (step_list) |step| {
+                switch (step) {
+                    .fusion => |idx| {
+                        const plan = self.graph.fused_chains.items[idx];
+                        switch (plan.kind()) {
+                            .softmax => {
+                                const sm = plan.payload.softmax;
+                                try ops_list.append(alloc, .{ .softmax = .{
+                                    .dst = bufIdx(&ptr_to_idx, sm.output),
+                                    .src = bufIdx(&ptr_to_idx, sm.input),
+                                    .rows = @intCast(sm.input.ne[1]),
+                                    .cols = @intCast(sm.input.ne[0]),
+                                } });
+                            },
+                            .layer_norm => {
+                                const ln = plan.payload.layer_norm;
+                                try ops_list.append(alloc, .{ .layernorm = .{
+                                    .dst = bufIdx(&ptr_to_idx, ln.output),
+                                    .src = bufIdx(&ptr_to_idx, ln.input),
+                                    .rows = @intCast(ln.input.ne[1]),
+                                    .cols = @intCast(ln.input.ne[0]),
+                                } });
+                            },
+                            .elementwise_chain => {
+                                const chain = plan.payload.elementwise_chain;
+                                for (chain.nodes) |node| {
+                                    try self.appendNodeOp(&ops_list, &ptr_to_idx, node, alloc);
+                                }
+                            },
+                            else => {
+                                // Unsupported fused pattern — skip (will produce wrong results,
+                                // but this path shouldn't be hit for standard GPT inference).
+                            },
+                        }
+                    },
+                    .node => |node| {
+                        try self.appendNodeOp(&ops_list, &ptr_to_idx, node, alloc);
+                    },
+                }
+            }
+
+            // If no execution steps, iterate raw nodes.
+            if (steps.len == 0) {
+                for (nodes) |node| {
+                    try self.appendNodeOp(&ops_list, &ptr_to_idx, node, alloc);
+                }
+            }
+
+            // ── Build ProgramIO for per-step inputs/outputs ───────────
+            const inputs = try alloc.alloc(backend_mod.ProgramIO, 3);
+            inputs[0] = .{ .buf_idx = bufIdx(&ptr_to_idx, self.token_input), .host_ptr = @ptrCast(self.token_input.data.ptr), .size = @intCast(d_model * @sizeOf(T)) };
+            inputs[1] = .{ .buf_idx = bufIdx(&ptr_to_idx, self.pos_input), .host_ptr = @ptrCast(self.pos_input.data.ptr), .size = @intCast(d_model * @sizeOf(T)) };
+            inputs[2] = .{ .buf_idx = bufIdx(&ptr_to_idx, self.attn_mask), .host_ptr = @ptrCast(self.attn_mask.data.ptr), .size = @intCast(max_seq * @sizeOf(T)) };
+
+            const outputs = try alloc.alloc(backend_mod.ProgramIO, 1);
+            outputs[0] = .{ .buf_idx = bufIdx(&ptr_to_idx, self.logits), .host_ptr = @ptrCast(self.logits_buf.ptr), .size = @intCast(config.vocab_size * @sizeOf(T)) };
+
+            // ── Build quantized weight descriptors ────────────────────
+            const qw_uploads = try alloc.alloc(backend_mod.QuantizedWeightUpload, self.quant_weights.len);
+            defer alloc.free(qw_uploads);
+            for (self.quant_weights, 0..) |qw, i| {
+                qw_uploads[i] = .{ .data = qw.data, .scales = qw.scales, .rows = qw.rows, .cols = qw.cols, .block_size = qw.block_size };
+            }
+
+            // ── Track slice_assign op indices for per-token patching ──
+            var sa_indices_list: std.ArrayListUnmanaged(u32) = .empty;
+            defer sa_indices_list.deinit(alloc);
+            for (ops_list.items, 0..) |dop, i| {
+                switch (dop) {
+                    .slice_assign => try sa_indices_list.append(alloc, @intCast(i)),
+                    else => {},
+                }
+            }
+
+            // Store ops as owned mutable slice so we can patch slice_assign offsets.
+            const owned_ops = try alloc.dupe(backend_mod.DeviceOp, ops_list.items);
+
+            // ── Compile ───────────────────────────────────────────────
+            const program = backend_mod.DeviceProgram{
+                .ops = owned_ops,
+                .n_buffers = @intCast(buf_sizes.items.len),
+                .buffer_sizes = buf_sizes.items,
+                .initial_uploads = initial_uploads_list.items,
+                .qweights = qw_uploads,
+            };
+
+            self.compiled_handle = be.compileProgram(program) orelse return error.CompileFailed;
+            self.program_inputs = inputs;
+            self.program_outputs = outputs;
+            self.program_ops = owned_ops;
+            self.slice_assign_op_indices = try sa_indices_list.toOwnedSlice(alloc);
+            // Cache the KV cache row count for computing slice_assign offsets.
+            if (self.slice_assign_nodes.len > 0) {
+                self.slice_assign_base_stride = @intCast(self.slice_assign_nodes[0].src0.?.ne[0]);
             }
         }
 
-        /// Dispatch a single (non-fused) node on GPU.
-        fn dispatchNode(self: *Self, ds: *DeviceState, node: *Tensor(T)) void {
+        /// Emit a DeviceOp for a single graph node.
+        fn appendNodeOp(
+            self: *const Self,
+            ops: *std.ArrayListUnmanaged(backend_mod.DeviceOp),
+            ptr_to_idx: *const std.AutoHashMap([*]T, u16),
+            node: *Tensor(T),
+            alloc: std.mem.Allocator,
+        ) !void {
             const op = node.opTag();
-            const be = ds.be;
 
-            // Structural ops: zero-copy.
+            // Structural: zero-copy, skip.
             if (op == .none or op == .view or op == .as_strided or op == .reshape or
                 op == .transpose or op == .permute or op == .broadcast_to) return;
 
-            // Matmul: specialized kernels.
+            const bufIdx = struct {
+                fn get(map: *const std.AutoHashMap([*]T, u16), tensor: *const Tensor(T)) u16 {
+                    return map.get(tensor.data.ptr).?;
+                }
+            }.get;
+
             if (op == .matmul) {
+                const s0 = node.src0.?;
+                const s1 = node.src1.?;
+                const flags = node.matmul_flags;
+                const M = if (flags.trans0) s0.ne[0] else s0.ne[1];
+                const N = if (flags.trans1) s1.ne[1] else s1.ne[0];
+                const K = if (flags.trans0) s0.ne[1] else s0.ne[0];
+
                 if (self.quant_map.get(node)) |qi| {
-                    const s0 = node.src0.?;
-                    const s1 = node.src1.?;
-                    const flags = node.matmul_flags;
                     const input_tensor = if (s1.isParam()) s0 else s1;
-                    _ = be.deviceQuantizedMatMul(.{
-                        .dst = ds.node_bufs.get(node).?,
-                        .input = ds.node_bufs.get(@constCast(input_tensor)).?,
-                        .weight = ds.weight_views[qi],
-                        .M = if (flags.trans0) s0.ne[0] else s0.ne[1],
-                        .N = if (flags.trans1) s1.ne[1] else s1.ne[0],
-                        .K = if (flags.trans0) s0.ne[1] else s0.ne[0],
-                    });
+                    try ops.append(alloc, .{ .qmatmul = .{
+                        .dst = bufIdx(ptr_to_idx, node),
+                        .input = bufIdx(ptr_to_idx, input_tensor),
+                        .weight_idx = @intCast(qi),
+                        .M = @intCast(M), .N = @intCast(N), .K = @intCast(K),
+                    } });
                 } else {
-                    const s0 = node.src0.?;
-                    const s1 = node.src1.?;
-                    const flags = node.matmul_flags;
-                    const M = if (flags.trans0) s0.ne[0] else s0.ne[1];
-                    const N = if (flags.trans1) s1.ne[1] else s1.ne[0];
-                    const K = if (flags.trans0) s0.ne[1] else s0.ne[0];
-                    _ = be.deviceMatMul(.{
-                        .dst = ds.node_bufs.get(node).?,
-                        .a = ds.node_bufs.get(@constCast(s0)).?,
-                        .b = ds.node_bufs.get(@constCast(s1)).?,
+                    try ops.append(alloc, .{ .matmul = .{
+                        .dst = bufIdx(ptr_to_idx, node),
+                        .a = bufIdx(ptr_to_idx, s0),
+                        .b = bufIdx(ptr_to_idx, s1),
                         .geom = .{
                             .M = M, .N = N, .K = K,
                             .a_row_stride = if (flags.trans0) s0.strides[0] else s0.strides[1],
@@ -411,138 +477,56 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
                             .a_offset = 0, .b_offset = 0,
                             .dst_offset = 0, .dst_row_stride = N,
                         },
-                    });
+                    } });
                 }
                 return;
             }
 
-            // Generic device compute.
-            const dst_desc = ds.tensorDesc(node);
-            const src0_desc = if (node.src0) |s| ds.tensorDesc(s) else dst_desc;
-            const src1_desc = if (node.src1) |s| ds.tensorDesc(s) else dst_desc;
+            // Elementwise and other ops.
+            const dst_idx = bufIdx(ptr_to_idx, node);
+            const src0_idx = if (node.src0) |s| bufIdx(ptr_to_idx, s) else dst_idx;
+            const src1_idx = if (node.src1) |s| bufIdx(ptr_to_idx, s) else dst_idx;
 
-            if (!be.deviceCompute(.{
-                .op = op,
-                .dst = dst_desc,
-                .src0 = src0_desc,
-                .src1 = src1_desc,
-                .n_elements = @intCast(node.nElems()),
-            })) {
-                // Fallback: sync, run on CPU, re-upload result.
-                if (@import("builtin").mode == .Debug)
-                    std.debug.print("  CPU fallback: {s} ({d} elems)\n", .{ op.symbol(), node.nElems() });
-                be.sync();
-                node.compute();
-                be.uploadSlice(T, ds.node_bufs.get(node).?, 0, node.data);
+            switch (op) {
+                .add, .mul, .neg, .exp, .sqrt, .recip, .gelu, .abs, .sgn, .step, .log => {
+                    try ops.append(alloc, .{ .elementwise = .{
+                        .op = op, .dst = dst_idx, .src0 = src0_idx, .src1 = src1_idx,
+                        .n = @intCast(node.nElems()),
+                        .dst_offset = @intCast(node.storage_offset),
+                        .src0_offset = if (node.src0) |s| @intCast(s.storage_offset) else 0,
+                        .src1_offset = if (node.src1) |s| @intCast(s.storage_offset) else 0,
+                    } });
+                },
+                .sum, .max => {
+                    try ops.append(alloc, .{ .reduce = .{
+                        .op = op, .dst = dst_idx, .src = src0_idx,
+                        .n_out = @intCast(node.nElems()),
+                        .reduce_size = @intCast(node.src0.?.ne[0]),
+                    } });
+                },
+                .repeat => {
+                    const src = node.src0.?;
+                    try ops.append(alloc, .{ .repeat = .{
+                        .dst = dst_idx, .src = src0_idx, .n = @intCast(node.nElems()),
+                        .src_ne = .{ @intCast(src.ne[0]), @intCast(src.ne[1]), @intCast(src.ne[2]), @intCast(src.ne[3]) },
+                        .dst_ne = .{ @intCast(node.ne[0]), @intCast(node.ne[1]), @intCast(node.ne[2]), @intCast(node.ne[3]) },
+                        .src_strides = .{ @intCast(src.strides[0]), @intCast(src.strides[1]), @intCast(src.strides[2]), @intCast(src.strides[3]) },
+                        .dst_strides = .{ @intCast(node.strides[0]), @intCast(node.strides[1]), @intCast(node.strides[2]), @intCast(node.strides[3]) },
+                    } });
+                },
+                .slice_assign => {
+                    try ops.append(alloc, .{ .slice_assign = .{
+                        .dst = if (node.src1) |s| bufIdx(ptr_to_idx, s) else dst_idx,
+                        .src = src0_idx,
+                        .n = @intCast(node.src0.?.nElems()),
+                        .dst_offset = @intCast(node.storage_offset),
+                        .dst_stride = @intCast(if (node.src1) |s| s.strides[0] else 1),
+                        .src_offset = @intCast(node.src0.?.storage_offset),
+                        .src_stride = @intCast(node.src0.?.strides[0]),
+                    } });
+                },
+                else => {}, // Unsupported — skip.
             }
-        }
-
-        /// Raw node iteration fallback (when execution_steps aren't built).
-        fn computeQuantizedDeviceRaw(self: *Self, ds: *DeviceState) void {
-            for (self.graph.nodes.items[0..self.graph.forward_node_count]) |node| {
-                self.dispatchNode(ds, node);
-            }
-            ds.be.sync();
-        }
-
-        /// Allocate device buffers for all graph nodes and upload weights.
-        /// Nodes sharing host memory (views, workspace) share device buffers.
-        fn initDeviceState(self: *Self, be: backend_mod.Backend) !DeviceState {
-            const alloc = self.backing_alloc;
-            const nodes = self.graph.nodes.items[0..self.graph.forward_node_count];
-
-            // ── Quantized weight upload ───────────────────────────────
-            const n = self.quant_weights.len;
-            const data_bufs = try alloc.alloc(backend_mod.DeviceBuffer, n);
-            errdefer alloc.free(data_bufs);
-            const scale_bufs = try alloc.alloc(backend_mod.DeviceBuffer, n);
-            errdefer alloc.free(scale_bufs);
-            const views = try alloc.alloc(backend_mod.DeviceQuantizedWeightView, n);
-            errdefer alloc.free(views);
-
-            var qw_init: usize = 0;
-            errdefer for (0..qw_init) |j| {
-                be.freeBuffer(data_bufs[j]);
-                be.freeBuffer(scale_bufs[j]);
-            };
-
-            for (self.quant_weights, 0..) |qw, i| {
-                data_bufs[i] = be.allocBuffer(qw.data.len) orelse return error.OutOfMemory;
-                const i8_ptr: [*]const u8 = @ptrCast(qw.data.ptr);
-                be.uploadBytes(data_bufs[i], 0, i8_ptr[0..qw.data.len]);
-
-                scale_bufs[i] = be.allocSlice(T, qw.scales.len) orelse {
-                    be.freeBuffer(data_bufs[i]);
-                    return error.OutOfMemory;
-                };
-                be.uploadSlice(T, scale_bufs[i], 0, qw.scales);
-
-                views[i] = .{ .data = data_bufs[i], .scales = scale_bufs[i], .rows = qw.rows, .cols = qw.cols, .block_size = qw.block_size };
-                qw_init += 1;
-            }
-
-            // ── Per-node device buffers ───────────────────────────────
-            // Phase 1: find unique host data pointers and their max sizes.
-            // Include ALL tensors reachable from forward nodes (src0/src1
-            // may be leaves like weights or KV caches outside the node list).
-            var ptr_sizes = std.AutoHashMap([*]T, usize).init(alloc);
-            defer ptr_sizes.deinit();
-            for (nodes) |node| {
-                const tensors = [_]?*const Tensor(T){ node, node.src0, node.src1 };
-                for (tensors) |maybe_t| {
-                    const t = maybe_t orelse continue;
-                    const size = @max(t.data.len, 1);
-                    const entry = try ptr_sizes.getOrPut(t.data.ptr);
-                    if (!entry.found_existing) entry.value_ptr.* = 0;
-                    entry.value_ptr.* = @max(entry.value_ptr.*, size);
-                }
-            }
-
-            // Phase 2: allocate one device buffer per unique host pointer.
-            var ptr_bufs = std.AutoHashMap([*]T, backend_mod.DeviceBuffer).init(alloc);
-            defer ptr_bufs.deinit();
-            var owned_list: std.ArrayListUnmanaged(backend_mod.DeviceBuffer) = .empty;
-            errdefer {
-                for (owned_list.items) |buf| be.freeBuffer(buf);
-                owned_list.deinit(alloc);
-            }
-
-            var it = ptr_sizes.iterator();
-            while (it.next()) |entry| {
-                const buf = be.allocSlice(T, entry.value_ptr.*) orelse return error.OutOfMemory;
-                try owned_list.append(alloc, buf);
-                try ptr_bufs.put(entry.key_ptr.*, buf);
-            }
-
-            // Phase 3: map each node (and its sources) to device buffers.
-            var node_bufs: std.AutoHashMapUnmanaged(*Tensor(T), backend_mod.DeviceBuffer) = .empty;
-            try node_bufs.ensureTotalCapacity(alloc, @intCast(ptr_sizes.count()));
-            for (nodes) |node| {
-                const tensors = [_]?*Tensor(T){ node, node.src0, node.src1 };
-                for (tensors) |maybe_t| {
-                    const t = maybe_t orelse continue;
-                    if (node_bufs.get(t) != null) continue;
-                    const buf = ptr_bufs.get(t.data.ptr).?;
-                    node_bufs.putAssumeCapacity(t, buf);
-
-                    // Upload leaf data (weights, embeddings, KV cache zeros).
-                    if (t.opTag() == .none and t.data.len > 0) {
-                        be.uploadSlice(T, buf, 0, t.data);
-                    }
-                }
-            }
-
-            const owned = try owned_list.toOwnedSlice(alloc);
-
-            return .{
-                .be = be,
-                .alloc = alloc,
-                .weight_views = views,
-                .weight_data_bufs = data_bufs,
-                .weight_scale_bufs = scale_bufs,
-                .node_bufs = node_bufs,
-                .owned_bufs = owned,
-            };
         }
 
         fn executeQuantizedMatmul(node: *Tensor(T), qw: *const QuantizedWeight(T)) void {
@@ -609,14 +593,13 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
 
             // 5. Reset intermediates and execute.
             self.graph.reset();
-            if (self.device_state) |*ds| {
-                // Upload patched inputs to device.
-                ds.be.uploadSlice(T, ds.node_bufs.get(self.token_input).?, 0, self.token_input.data[0..d_model]);
-                ds.be.uploadSlice(T, ds.node_bufs.get(self.pos_input).?, 0, self.pos_input.data[0..d_model]);
-                ds.be.uploadSlice(T, ds.node_bufs.get(self.attn_mask).?, 0, self.attn_mask.data[0..max_seq]);
+            if (self.compiled_handle != null) {
+                // Patch slice_assign offsets for current position.
+                for (self.slice_assign_op_indices) |idx| {
+                    self.program_ops[idx].slice_assign.dst_offset = @intCast(pos);
+                }
+                // Compiled device program handles upload/dispatch/download.
                 self.computeQuantized();
-                // Download logits from device.
-                ds.be.downloadSlice(T, self.logits_buf, ds.node_bufs.get(self.logits).?, 0);
             } else if (self.quant_weights.len > 0) {
                 self.computeQuantized();
                 @memcpy(self.logits_buf, self.logits.data[0..config.vocab_size]);

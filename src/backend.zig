@@ -1,11 +1,11 @@
-//! Backend interface for kernel dispatch and device buffer management.
+//! Backend interface for kernel dispatch and compiled program execution.
 //!
-//! Two levels of integration:
+//! Three levels of integration:
 //!   1. Host kernel dispatch — override matmul/qmatmul with host pointers.
-//!   2. Device buffers — alloc/free/transfer + device kernel dispatch.
-//!
-//! The graph and autodiff layers remain backend-agnostic. Only the
-//! execution hot path and frozen inference plans use the backend.
+//!   2. Device buffers — alloc/free/transfer for data management.
+//!   3. Compiled programs — the framework builds a DeviceProgram (list of
+//!      DeviceOps using buffer indices), the backend compiles it once, then
+//!      executes it per token with minimal overhead.
 
 const std = @import("std");
 
@@ -100,42 +100,59 @@ pub const DeviceQuantizedMatMulSpecF32 = struct {
     K: usize,
 };
 
-// ── Generic device compute ─────────────────────────────────────────
+// ── Compiled device programs ───────────────────────────────────────
 
 pub const Op = @import("op.zig").Op;
 
-/// Describes one operand (dst, src0, or src1) for generic device compute.
-pub const TensorDesc = struct {
-    buf: DeviceBuffer,
-    offset: u32,
-    ne: [4]u32,
-    strides: [4]u32,
+/// A single operation in a device program. Uses buffer indices (u16)
+/// instead of pointers — the backend maps indices to device buffers.
+pub const DeviceOp = union(enum) {
+    /// Elementwise: add, mul, neg, exp, sqrt, recip, gelu, etc.
+    elementwise: struct { op: Op, dst: u16, src0: u16, src1: u16, n: u32, dst_offset: u32 = 0, src0_offset: u32 = 0, src1_offset: u32 = 0 },
+    /// Dense matmul with full geometry.
+    matmul: struct { dst: u16, a: u16, b: u16, geom: MatMulGeometry },
+    /// Quantized matmul (weight index refers to a quantized weight, not a buffer).
+    qmatmul: struct { dst: u16, input: u16, weight_idx: u16, M: u32, N: u32, K: u32 },
+    /// Fused softmax: one kernel for max → shift → exp → sum → normalize.
+    softmax: struct { dst: u16, src: u16, rows: u32, cols: u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
+    /// Fused layer norm: mean → center → var → normalize.
+    layernorm: struct { dst: u16, src: u16, rows: u32, cols: u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
+    /// Reduce (sum, max) along innermost dim.
+    reduce: struct { op: Op, dst: u16, src: u16, n_out: u32, reduce_size: u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
+    /// Broadcast repeat.
+    repeat: struct { dst: u16, src: u16, n: u32, src_ne: [4]u32, dst_ne: [4]u32, src_strides: [4]u32, dst_strides: [4]u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
+    /// KV cache column write.
+    slice_assign: struct { dst: u16, src: u16, n: u32, dst_offset: u32, dst_stride: u32, src_offset: u32, src_stride: u32 },
 };
 
-/// Fused operations that collapse multiple primitive ops into one kernel.
-pub const FusedOp = enum { softmax, layer_norm };
-
-/// Spec for fused device kernels. src is input, dst is output.
-/// For layer_norm, gamma/beta are the affine parameters (null = identity).
-pub const DeviceFusedSpec = struct {
-    op: FusedOp,
-    dst: TensorDesc,
-    src: TensorDesc,
-    gamma: ?TensorDesc = null,
-    beta: ?TensorDesc = null,
-    rows: u32,
-    cols: u32,
+/// Host↔device transfer for per-step inputs/outputs.
+pub const ProgramIO = struct {
+    buf_idx: u16,
+    offset: u32 = 0,
+    host_ptr: [*]u8,
+    size: u32,
 };
 
-/// Generic device compute spec — handles all non-matmul ops.
-/// The backend dispatches based on `op` to elementwise, reduce,
-/// broadcast, or scatter kernels internally.
-pub const DeviceComputeSpec = struct {
-    op: Op,
-    dst: TensorDesc,
-    src0: TensorDesc,
-    src1: TensorDesc,
-    n_elements: u32,
+/// A compiled device program — built once from the execution plan,
+/// executed per token. Backend-agnostic: expressed in buffer indices
+/// and op codes. The backend compiles this into optimized execution.
+pub const DeviceProgram = struct {
+    ops: []const DeviceOp,
+    n_buffers: u16,
+    buffer_sizes: []const usize,
+    /// Initial data to upload at compile time (weights, zeros).
+    initial_uploads: []const ProgramIO,
+    /// Quantized weight views for qmatmul ops (indexed by DeviceOp.qmatmul.weight_idx).
+    qweights: []const QuantizedWeightUpload = &.{},
+};
+
+/// Quantized weight to upload at compile time (host data + device buffer info).
+pub const QuantizedWeightUpload = struct {
+    data: []const i8,
+    scales: []const f32,
+    rows: usize,
+    cols: usize,
+    block_size: usize,
 };
 
 // ── Backend ────────────────────────────────────────────────────────
@@ -147,6 +164,9 @@ pub const Backend = struct {
     name_str: []const u8,
     device_type: Device,
     capabilities: BackendCaps,
+
+    /// Opaque handle to a backend-compiled program.
+    pub const CompiledHandle = *anyopaque;
 
     pub const VTable = struct {
         // Host kernel dispatch — returns true if handled.
@@ -160,11 +180,13 @@ pub const Backend = struct {
         download: *const fn (ctx: *anyopaque, dst: []u8, src: DeviceBuffer, src_byte_offset: usize) void,
         sync: *const fn (ctx: *anyopaque) void,
 
-        // Device kernel dispatch — returns true if handled.
-        device_matmul_f32: *const fn (ctx: *anyopaque, spec: DeviceMatMulSpecF32) bool,
-        device_quantized_matmul_f32: *const fn (ctx: *anyopaque, spec: DeviceQuantizedMatMulSpecF32) bool,
-        device_compute: *const fn (ctx: *anyopaque, spec: DeviceComputeSpec) bool,
-        device_fused: *const fn (ctx: *anyopaque, spec: DeviceFusedSpec) bool,
+        // Compiled program execution — replaces per-op device dispatch.
+        // compile: build backend-optimized execution from a DeviceProgram.
+        // execute: run the compiled program (upload inputs, dispatch, download outputs).
+        // free: release compiled program resources.
+        compile_program: *const fn (ctx: *anyopaque, program: DeviceProgram) ?CompiledHandle,
+        execute_program: *const fn (ctx: *anyopaque, handle: CompiledHandle, inputs: []const ProgramIO, outputs: []const ProgramIO) void,
+        free_program: *const fn (ctx: *anyopaque, handle: CompiledHandle) void,
     };
 
     // ── Convenience methods ────────────────────────────────────
@@ -213,20 +235,16 @@ pub const Backend = struct {
         self.vtable.sync(self.ctx);
     }
 
-    pub fn deviceMatMul(self: Backend, spec: DeviceMatMulSpecF32) bool {
-        return self.vtable.device_matmul_f32(self.ctx, spec);
+    pub fn compileProgram(self: Backend, program: DeviceProgram) ?CompiledHandle {
+        return self.vtable.compile_program(self.ctx, program);
     }
 
-    pub fn deviceQuantizedMatMul(self: Backend, spec: DeviceQuantizedMatMulSpecF32) bool {
-        return self.vtable.device_quantized_matmul_f32(self.ctx, spec);
+    pub fn executeProgram(self: Backend, handle: CompiledHandle, inputs: []const ProgramIO, outputs: []const ProgramIO) void {
+        self.vtable.execute_program(self.ctx, handle, inputs, outputs);
     }
 
-    pub fn deviceCompute(self: Backend, spec: DeviceComputeSpec) bool {
-        return self.vtable.device_compute(self.ctx, spec);
-    }
-
-    pub fn deviceFused(self: Backend, spec: DeviceFusedSpec) bool {
-        return self.vtable.device_fused(self.ctx, spec);
+    pub fn freeProgram(self: Backend, handle: CompiledHandle) void {
+        self.vtable.free_program(self.ctx, handle);
     }
 };
 
