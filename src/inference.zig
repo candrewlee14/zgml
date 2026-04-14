@@ -82,7 +82,6 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
 
         // Quantization state (empty until quantize() is called).
         quant_weights: []QuantizedWeight(T),
-        quant_nodes: []*Tensor(T),
         quant_map: std.AutoHashMapUnmanaged(*Tensor(T), usize),
 
         /// Build a frozen plan from an existing model and KV caches.
@@ -148,7 +147,6 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
                 .logits_buf = logits_buf,
                 .workspace_bufs = bufs,
                 .quant_weights = &.{},
-                .quant_nodes = &.{},
                 .quant_map = .empty,
             };
         }
@@ -158,7 +156,6 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
         pub fn deinit(self: *Self) void {
             for (self.quant_weights) |qw| qw.deinit(self.backing_alloc);
             if (self.quant_weights.len > 0) self.backing_alloc.free(self.quant_weights);
-            if (self.quant_nodes.len > 0) self.backing_alloc.free(self.quant_nodes);
             self.quant_map.deinit(self.backing_alloc);
             for (self.workspace_bufs) |buf| self.backing_alloc.free(buf);
             if (self.workspace_bufs.len > 0) self.backing_alloc.free(self.workspace_bufs);
@@ -183,15 +180,17 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
 
             const qw = try alloc.alloc(QuantizedWeight(T), count);
             errdefer alloc.free(qw);
-            const qi = try alloc.alloc(*Tensor(T), count);
-            errdefer alloc.free(qi);
+
+            // Build pointer → index map and quantize weights in one pass.
+            var map: std.AutoHashMapUnmanaged(*Tensor(T), usize) = .empty;
+            try map.ensureTotalCapacity(alloc, @intCast(count));
 
             var idx: usize = 0;
             for (nodes) |node| {
                 if (node.opTag() == .matmul and isWeightMatmul(node)) {
                     const weight = if (node.src1.?.isParam()) node.src1.? else node.src0.?;
                     qw[idx] = try QuantizedWeight(T).fromTensor(alloc, weight, block_size);
-                    qi[idx] = node;
+                    map.putAssumeCapacity(node, idx);
                     idx += 1;
                 }
             }
@@ -199,16 +198,9 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             // Free any prior quantization.
             for (self.quant_weights) |w| w.deinit(alloc);
             if (self.quant_weights.len > 0) alloc.free(self.quant_weights);
-            if (self.quant_nodes.len > 0) alloc.free(self.quant_nodes);
             self.quant_map.deinit(alloc);
 
-            // Build pointer → index map for O(1) dispatch.
-            var map: std.AutoHashMapUnmanaged(*Tensor(T), usize) = .empty;
-            try map.ensureTotalCapacity(alloc, @intCast(count));
-            for (qi, 0..) |node, i| map.putAssumeCapacity(node, i);
-
             self.quant_weights = qw;
-            self.quant_nodes = qi;
             self.quant_map = map;
         }
 
@@ -232,15 +224,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             const src1 = node.src1.?;
             const flags = node.matmul_flags;
 
-            // Determine which source is the weight (quantized) and which is the input.
-            const is_src1_weight = src1.isParam();
-            const input = if (is_src1_weight) src0 else src1;
-            const weight_src = if (is_src1_weight) src1 else src0;
-            _ = weight_src;
-            const trans_input = if (is_src1_weight) flags.trans0 else flags.trans1;
-            _ = trans_input;
-
-            // Extract dimensions in the same convention as the standard matmul.
+            const input = if (src1.isParam()) src0 else src1;
             const M = if (flags.trans0) src0.ne[0] else src0.ne[1];
             const N = if (flags.trans1) src1.ne[1] else src1.ne[0];
             const K = if (flags.trans0) src0.ne[1] else src0.ne[0];
@@ -528,85 +512,6 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
             const logits = self.plan.execute(&self.model, token_id, self.pos);
             self.pos += 1;
             return logits;
-        }
-    };
-}
-
-/// Eager per-step inference session (Phase 1 baseline).
-///
-/// Creates and destroys a `ComputeGraph` on every token.  Simpler but
-/// slower than `InferenceSession` — kept as a reference implementation
-/// and fallback.  Prefer `InferenceSession` for production use.
-pub fn GPTDecodeSession(comptime T: type, comptime config: GPTConfig) type {
-    const Model = GPT(T, config);
-
-    return struct {
-        const Self = @This();
-
-        backing_alloc: std.mem.Allocator,
-        arena: std.heap.ArenaAllocator,
-        model: Model,
-        k_caches: [config.n_layers]*Tensor(T),
-        v_caches: [config.n_layers]*Tensor(T),
-        logits_buf: []T,
-        pos: usize,
-
-        pub fn init(backing_alloc: std.mem.Allocator) !Self {
-            var arena = std.heap.ArenaAllocator.init(backing_alloc);
-            errdefer arena.deinit();
-            const a = arena.allocator();
-
-            const model = try Model.init(a);
-
-            var k_caches: [config.n_layers]*Tensor(T) = undefined;
-            var v_caches: [config.n_layers]*Tensor(T) = undefined;
-            for (0..config.n_layers) |l| {
-                k_caches[l] = try Tensor(T).init(a, &.{ config.d_model, config.max_seq_len });
-                v_caches[l] = try Tensor(T).init(a, &.{ config.d_model, config.max_seq_len });
-                @memset(k_caches[l].data, 0);
-                @memset(v_caches[l].data, 0);
-            }
-
-            const logits_buf = try a.alloc(T, config.vocab_size);
-
-            return .{
-                .backing_alloc = backing_alloc,
-                .arena = arena,
-                .model = model,
-                .k_caches = k_caches,
-                .v_caches = v_caches,
-                .logits_buf = logits_buf,
-                .pos = 0,
-            };
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.arena.deinit();
-        }
-
-        pub fn reset(self: *Self) void {
-            self.pos = 0;
-            for (0..config.n_layers) |l| {
-                @memset(self.k_caches[l].data, 0);
-                @memset(self.v_caches[l].data, 0);
-            }
-        }
-
-        pub fn position(self: *const Self) usize {
-            return self.pos;
-        }
-
-        pub fn step(self: *Self, token_id: usize) ![]const T {
-            if (self.pos >= config.max_seq_len) return error.SequenceTooLong;
-
-            var g = ComputeGraph(T).init(self.backing_alloc);
-            defer g.deinit();
-
-            const logits = self.model.forwardCached(g.allocator(), token_id, self.pos, self.k_caches, self.v_caches);
-            try g.infer(logits);
-            @memcpy(self.logits_buf, logits.data[0..self.logits_buf.len]);
-            self.pos += 1;
-            return self.logits_buf;
         }
     };
 }
