@@ -38,6 +38,25 @@ void mtl_dispatch_compute(
     unsigned int threads_x,
     unsigned int threads_y);
 
+// Batched command encoding — multiple dispatches share one command buffer.
+// mtl_begin_commands creates a command buffer + encoder (returned as opaque handle).
+// mtl_encode_dispatch encodes a dispatch into an existing session.
+// mtl_commit_and_wait ends encoding, commits, and waits. Releases the session.
+void* mtl_begin_commands(void* queue);
+void mtl_encode_dispatch(
+    void* commands,
+    void* pipeline,
+    void** buffers,
+    unsigned int num_buffers,
+    const void* params,
+    size_t params_size,
+    unsigned int params_index,
+    unsigned int grid_x,
+    unsigned int grid_y,
+    unsigned int threads_x,
+    unsigned int threads_y);
+void mtl_commit_and_wait(void* commands);
+
 // Release any Metal object (device, queue, buffer, library, pipeline).
 void mtl_release(void* obj);
 

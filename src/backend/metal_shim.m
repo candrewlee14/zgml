@@ -83,6 +83,62 @@ void mtl_dispatch_compute(
     [cmd waitUntilCompleted];
 }
 
+// ── Batched command encoding ─────────────────────────────────────
+
+// Wrapper holding a command buffer + compute encoder for batched dispatch.
+typedef struct {
+    id<MTLCommandBuffer> cmd;
+    id<MTLComputeCommandEncoder> enc;
+} MTLCommandSession;
+
+void* mtl_begin_commands(void* queue) {
+    MTLCommandSession* session = (MTLCommandSession*)malloc(sizeof(MTLCommandSession));
+    session->cmd = [(id<MTLCommandQueue>)queue commandBuffer];
+    [session->cmd retain];
+    session->enc = [session->cmd computeCommandEncoder];
+    [session->enc retain];
+    return session;
+}
+
+void mtl_encode_dispatch(
+    void* commands,
+    void* pipeline,
+    void** buffers,
+    unsigned int num_buffers,
+    const void* params,
+    size_t params_size,
+    unsigned int params_index,
+    unsigned int grid_x,
+    unsigned int grid_y,
+    unsigned int threads_x,
+    unsigned int threads_y
+) {
+    MTLCommandSession* session = (MTLCommandSession*)commands;
+    id<MTLComputeCommandEncoder> enc = session->enc;
+
+    [enc setComputePipelineState:(id<MTLComputePipelineState>)pipeline];
+    for (unsigned int i = 0; i < num_buffers; i++) {
+        [enc setBuffer:(id<MTLBuffer>)buffers[i] offset:0 atIndex:i];
+    }
+    if (params && params_size > 0) {
+        [enc setBytes:params length:params_size atIndex:params_index];
+    }
+
+    MTLSize grid = MTLSizeMake(grid_x, grid_y, 1);
+    MTLSize group = MTLSizeMake(threads_x, threads_y, 1);
+    [enc dispatchThreadgroups:grid threadsPerThreadgroup:group];
+}
+
+void mtl_commit_and_wait(void* commands) {
+    MTLCommandSession* session = (MTLCommandSession*)commands;
+    [session->enc endEncoding];
+    [session->cmd commit];
+    [session->cmd waitUntilCompleted];
+    [session->enc release];
+    [session->cmd release];
+    free(session);
+}
+
 void mtl_release(void* obj) {
     [(id)obj release];
 }

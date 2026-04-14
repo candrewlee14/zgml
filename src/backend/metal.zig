@@ -219,6 +219,7 @@ pub const MetalBackend = struct {
     matmul_pipeline: *anyopaque,
     qmatmul_pipeline: *anyopaque,
     library: *anyopaque,
+    active_commands: ?*anyopaque = null,
 
     pub fn init() !MetalBackend {
         const device = c.mtl_create_device() orelse return error.MetalNotAvailable;
@@ -245,11 +246,28 @@ pub const MetalBackend = struct {
     }
 
     pub fn deinit(self: *MetalBackend) void {
+        self.flushCommands();
         c.mtl_release(self.qmatmul_pipeline);
         c.mtl_release(self.matmul_pipeline);
         c.mtl_release(self.library);
         c.mtl_release(self.queue);
         c.mtl_release(self.device);
+    }
+
+    /// Ensure a command session is active, creating one if needed.
+    fn ensureCommands(self: *MetalBackend) *anyopaque {
+        if (self.active_commands == null) {
+            self.active_commands = c.mtl_begin_commands(self.queue);
+        }
+        return self.active_commands.?;
+    }
+
+    /// Commit and wait on any active command session.
+    fn flushCommands(self: *MetalBackend) void {
+        if (self.active_commands) |cmds| {
+            c.mtl_commit_and_wait(cmds);
+            self.active_commands = null;
+        }
     }
 
     pub fn backend(self: *MetalBackend) backend_mod.Backend {
@@ -308,13 +326,16 @@ fn uploadFn(_: *anyopaque, dst: backend_mod.DeviceBuffer, dst_byte_offset: usize
     @memcpy(ptr[dst_byte_offset..][0..src.len], src);
 }
 
-fn downloadFn(_: *anyopaque, dst: []u8, src: backend_mod.DeviceBuffer, src_byte_offset: usize) void {
+fn downloadFn(ctx: *anyopaque, dst: []u8, src: backend_mod.DeviceBuffer, src_byte_offset: usize) void {
+    const self = getState(ctx);
+    self.flushCommands();
     const ptr: [*]const u8 = @ptrCast(c.mtl_buffer_contents(src.ptr));
     @memcpy(dst, ptr[src_byte_offset..][0..dst.len]);
 }
 
-fn syncFn(_: *anyopaque) void {
-    // Each dispatch already does commit+wait. Nothing to do here.
+fn syncFn(ctx: *anyopaque) void {
+    const self = getState(ctx);
+    self.flushCommands();
 }
 
 // Device kernel dispatch — run on GPU.
@@ -340,7 +361,8 @@ fn deviceMatMulF32(ctx: *anyopaque, spec: backend_mod.DeviceMatMulSpecF32) bool 
     const grid_x: u32 = @intCast((g.N + TILE - 1) / TILE);
     const grid_y: u32 = @intCast((g.M + TILE - 1) / TILE);
 
-    c.mtl_dispatch_compute(self.queue, self.matmul_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(MatMulParams), 3, grid_x, grid_y, 128, 1);
+    const cmds = self.ensureCommands();
+    c.mtl_encode_dispatch(cmds, self.matmul_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(MatMulParams), 3, grid_x, grid_y, 128, 1);
     return true;
 }
 
@@ -359,7 +381,8 @@ fn deviceQuantizedMatMulF32(ctx: *anyopaque, spec: backend_mod.DeviceQuantizedMa
     const grid_x: u32 = @intCast((spec.N + TILE - 1) / TILE);
     const grid_y: u32 = @intCast((spec.M + TILE - 1) / TILE);
 
-    c.mtl_dispatch_compute(self.queue, self.qmatmul_pipeline, @ptrCast(&bufs), 4, &params, @sizeOf(QMatMulParams), 4, grid_x, grid_y, 128, 1);
+    const cmds = self.ensureCommands();
+    c.mtl_encode_dispatch(cmds, self.qmatmul_pipeline, @ptrCast(&bufs), 4, &params, @sizeOf(QMatMulParams), 4, grid_x, grid_y, 128, 1);
     return true;
 }
 
