@@ -269,6 +269,26 @@ pub fn build(b: *std.Build) void {
     const opbench_step = b.step("op-bench", "Per-op microbenchmark for MNIST CNN ops");
     opbench_step.dependOn(&b.addRunArtifact(opbench_exe).step);
 
+    // Metal backend benchmark
+    {
+        const pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+        const mod = b.createModule(.{
+            .root_source_file = b.path("benchmarks/metal_bench.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "zgml", .module = pkg.zgml },
+                .{ .name = "zgml_options", .module = pkg.zgml_options },
+            },
+        });
+        const exe = b.addExecutable(.{ .name = "bench-metal", .root_module = mod });
+        if (use_blas) { linkBlas(target, exe); exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" }); }
+        linkMetal(b, target, exe);
+        b.installArtifact(exe);
+        const step = b.step("bench-metal", "Benchmark Metal GPU vs CPU BLAS matmul");
+        step.dependOn(&b.addRunArtifact(exe).step);
+    }
+
     // Text generation binary
     const zgml_gen_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
     const gen_mod = b.createModule(.{

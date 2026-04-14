@@ -9,9 +9,22 @@ const backend_mod = @import("../backend.zig");
 
 const c = @cImport(@cInclude("metal_shim.h"));
 
+// ── Tile size for simdgroup kernel ────────────────────────────────
+
+const TILE: u32 = 32; // output tile per threadgroup (TILE x TILE)
+// 4 simdgroups per threadgroup (128 threads), each handles 8x8 sub-tiles
+// Shared memory per K step: TILE*8 + 8*TILE = 512 floats = 2 KB
+
 // ── Metal shader source (compiled at init time) ───────────────────
 
 const shader_source =
+    \\#include <metal_stdlib>
+    \\#include <metal_simdgroup_matrix>
+    \\using namespace metal;
+    \\
+    \\constant uint TILE = 32;
+    \\constant uint NSUB = 4; // 2x2 arrangement of 8x8 sub-tiles per simdgroup
+    \\
     \\struct MatMulParams {
     \\    uint M; uint N; uint K;
     \\    uint a_row_stride; uint a_col_stride;
@@ -20,20 +33,81 @@ const shader_source =
     \\    uint dst_offset; uint dst_row_stride;
     \\};
     \\
+    \\// Simdgroup-accelerated matmul: 4 simdgroups per threadgroup,
+    \\// each computing a 2x2 grid of 8x8 tiles = 16x16 per simdgroup,
+    \\// 32x32 per threadgroup. Uses hardware matrix multiply-accumulate.
     \\kernel void matmul_f32(
     \\    device const float* A [[buffer(0)]],
     \\    device const float* B [[buffer(1)]],
     \\    device float* C       [[buffer(2)]],
     \\    constant MatMulParams& p [[buffer(3)]],
-    \\    uint2 gid [[thread_position_in_grid]]
+    \\    uint2 group_id  [[threadgroup_position_in_grid]],
+    \\    uint  simd_idx  [[simdgroup_index_in_threadgroup]],
+    \\    uint  lane      [[thread_index_in_simdgroup]],
+    \\    uint  tid       [[thread_index_in_threadgroup]]
     \\) {
-    \\    if (gid.y >= p.M || gid.x >= p.N) return;
-    \\    float sum = 0.0f;
-    \\    for (uint k = 0; k < p.K; k++) {
-    \\        sum += A[p.a_offset + gid.y * p.a_row_stride + k * p.a_col_stride]
-    \\             * B[p.b_offset + k * p.b_row_stride + gid.x * p.b_col_stride];
+    \\    const uint gRow = group_id.y * TILE;
+    \\    const uint gCol = group_id.x * TILE;
+    \\
+    \\    // Each simdgroup owns a 16x16 quadrant (2x2 of 8x8 sub-tiles).
+    \\    const uint sRow = (simd_idx / 2) * 16;
+    \\    const uint sCol = (simd_idx % 2) * 16;
+    \\
+    \\    simdgroup_float8x8 acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\
+    \\    threadgroup float tA[TILE * 8];
+    \\    threadgroup float tB[8 * TILE];
+    \\
+    \\    for (uint kt = 0; kt < p.K; kt += 8) {
+    \\        // Cooperatively load A[gRow:gRow+32, kt:kt+8] — 256 elems, 128 threads → 2 each
+    \\        for (uint i = tid; i < TILE * 8; i += 128) {
+    \\            uint r = i / 8, c = i % 8;
+    \\            uint ar = gRow + r, ac = kt + c;
+    \\            tA[i] = (ar < p.M && ac < p.K)
+    \\                ? A[p.a_offset + ar * p.a_row_stride + ac * p.a_col_stride] : 0.0f;
+    \\        }
+    \\        // Cooperatively load B[kt:kt+8, gCol:gCol+32] — 256 elems
+    \\        for (uint i = tid; i < 8 * TILE; i += 128) {
+    \\            uint r = i / TILE, c = i % TILE;
+    \\            uint br = kt + r, bc = gCol + c;
+    \\            tB[i] = (br < p.K && bc < p.N)
+    \\                ? B[p.b_offset + br * p.b_row_stride + bc * p.b_col_stride] : 0.0f;
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        // Each simdgroup: 2x2 sub-tiles within its 16x16 quadrant
+    \\        simdgroup_float8x8 a0, a1, b0, b1;
+    \\        simdgroup_load(a0, tA + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tA + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(b0, tB + (sCol + 0), TILE);
+    \\        simdgroup_load(b1, tB + (sCol + 8), TILE);
+    \\
+    \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
+    \\
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
     \\    }
-    \\    C[p.dst_offset + gid.y * p.dst_row_stride + gid.x] = sum;
+    \\
+    \\    // Store 2x2 sub-tiles via threadgroup memory
+    \\    threadgroup float tC[TILE * TILE];
+    \\    simdgroup_store(acc[0], tC + (sRow + 0) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[1], tC + (sRow + 0) * TILE + sCol + 8, TILE);
+    \\    simdgroup_store(acc[2], tC + (sRow + 8) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    // Write to global — 1024 elems, 128 threads → 8 each
+    \\    for (uint i = tid; i < TILE * TILE; i += 128) {
+    \\        uint r = i / TILE, c = i % TILE;
+    \\        uint cr = gRow + r, cc = gCol + c;
+    \\        if (cr < p.M && cc < p.N)
+    \\            C[p.dst_offset + cr * p.dst_row_stride + cc] = tC[i];
+    \\    }
     \\}
     \\
     \\struct QMatMulParams {
@@ -41,23 +115,76 @@ const shader_source =
     \\    uint block_size;
     \\};
     \\
+    \\// Simdgroup-accelerated quantized matmul: dequantize during tile load.
     \\kernel void qmatmul_f32(
     \\    device const char*  weight_data   [[buffer(0)]],
     \\    device const float* weight_scales [[buffer(1)]],
     \\    device const float* input         [[buffer(2)]],
     \\    device float*       output        [[buffer(3)]],
     \\    constant QMatMulParams& p [[buffer(4)]],
-    \\    uint2 gid [[thread_position_in_grid]]
+    \\    uint2 group_id  [[threadgroup_position_in_grid]],
+    \\    uint  simd_idx  [[simdgroup_index_in_threadgroup]],
+    \\    uint  lane      [[thread_index_in_simdgroup]],
+    \\    uint  tid       [[thread_index_in_threadgroup]]
     \\) {
-    \\    if (gid.y >= p.M || gid.x >= p.N) return;
-    \\    float sum = 0.0f;
-    \\    for (uint k = 0; k < p.K; k++) {
-    \\        uint w_idx = k * p.N + gid.x;
-    \\        float scale = weight_scales[w_idx / p.block_size];
-    \\        float w = float(weight_data[w_idx]) * scale;
-    \\        sum += input[gid.y * p.K + k] * w;
+    \\    const uint gRow = group_id.y * TILE;
+    \\    const uint gCol = group_id.x * TILE;
+    \\    const uint sRow = (simd_idx / 2) * 16;
+    \\    const uint sCol = (simd_idx % 2) * 16;
+    \\
+    \\    simdgroup_float8x8 acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\
+    \\    threadgroup float tI[TILE * 8];
+    \\    threadgroup float tW[8 * TILE];
+    \\
+    \\    for (uint kt = 0; kt < p.K; kt += 8) {
+    \\        for (uint i = tid; i < TILE * 8; i += 128) {
+    \\            uint r = i / 8, c = i % 8;
+    \\            uint ir = gRow + r, ic = kt + c;
+    \\            tI[i] = (ir < p.M && ic < p.K) ? input[ir * p.K + ic] : 0.0f;
+    \\        }
+    \\        for (uint i = tid; i < 8 * TILE; i += 128) {
+    \\            uint r = i / TILE, c = i % TILE;
+    \\            uint kr = kt + r, nc = gCol + c;
+    \\            if (kr < p.K && nc < p.N) {
+    \\                uint w_idx = kr * p.N + nc;
+    \\                tW[i] = float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
+    \\            } else {
+    \\                tW[i] = 0.0f;
+    \\            }
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        simdgroup_float8x8 a0, a1, b0, b1;
+    \\        simdgroup_load(a0, tI + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tI + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(b0, tW + (sCol + 0), TILE);
+    \\        simdgroup_load(b1, tW + (sCol + 8), TILE);
+    \\
+    \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
+    \\
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
     \\    }
-    \\    output[gid.y * p.N + gid.x] = sum;
+    \\
+    \\    threadgroup float tC[TILE * TILE];
+    \\    simdgroup_store(acc[0], tC + (sRow + 0) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[1], tC + (sRow + 0) * TILE + sCol + 8, TILE);
+    \\    simdgroup_store(acc[2], tC + (sRow + 8) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < TILE * TILE; i += 128) {
+    \\        uint r = i / TILE, c = i % TILE;
+    \\        uint cr = gRow + r, cc = gCol + c;
+    \\        if (cr < p.M && cc < p.N)
+    \\            output[cr * p.N + cc] = tC[i];
+    \\    }
     \\}
 ;
 
@@ -210,12 +337,10 @@ fn deviceMatMulF32(ctx: *anyopaque, spec: backend_mod.DeviceMatMulSpecF32) bool 
     };
 
     var bufs = [_]?*anyopaque{ spec.a.ptr, spec.b.ptr, spec.dst.ptr };
-    const threads_x: u32 = @intCast(@min(@as(usize, 16), g.N));
-    const threads_y: u32 = @intCast(@min(@as(usize, 16), g.M));
-    const grid_x: u32 = @intCast((g.N + threads_x - 1) / threads_x);
-    const grid_y: u32 = @intCast((g.M + threads_y - 1) / threads_y);
+    const grid_x: u32 = @intCast((g.N + TILE - 1) / TILE);
+    const grid_y: u32 = @intCast((g.M + TILE - 1) / TILE);
 
-    c.mtl_dispatch_compute(self.queue, self.matmul_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(MatMulParams), 3, grid_x, grid_y, threads_x, threads_y);
+    c.mtl_dispatch_compute(self.queue, self.matmul_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(MatMulParams), 3, grid_x, grid_y, 128, 1);
     return true;
 }
 
@@ -231,12 +356,10 @@ fn deviceQuantizedMatMulF32(ctx: *anyopaque, spec: backend_mod.DeviceQuantizedMa
     };
 
     var bufs = [_]?*anyopaque{ w.data.ptr, w.scales.ptr, spec.input.ptr, spec.dst.ptr };
-    const threads_x: u32 = @intCast(@min(@as(usize, 16), spec.N));
-    const threads_y: u32 = @intCast(@min(@as(usize, 16), spec.M));
-    const grid_x: u32 = @intCast((spec.N + threads_x - 1) / threads_x);
-    const grid_y: u32 = @intCast((spec.M + threads_y - 1) / threads_y);
+    const grid_x: u32 = @intCast((spec.N + TILE - 1) / TILE);
+    const grid_y: u32 = @intCast((spec.M + TILE - 1) / TILE);
 
-    c.mtl_dispatch_compute(self.queue, self.qmatmul_pipeline, @ptrCast(&bufs), 4, &params, @sizeOf(QMatMulParams), 4, grid_x, grid_y, threads_x, threads_y);
+    c.mtl_dispatch_compute(self.queue, self.qmatmul_pipeline, @ptrCast(&bufs), 4, &params, @sizeOf(QMatMulParams), 4, grid_x, grid_y, 128, 1);
     return true;
 }
 
