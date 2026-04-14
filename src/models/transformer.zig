@@ -274,7 +274,7 @@ pub fn TransformerBlock(
 
         /// Frozen cached forward — all shapes position-independent (freezable).
         /// `attn_mask`: [cache_cols, 1] — 0 for valid positions, -inf for masked.
-        pub fn forwardCachedFrozen(
+        pub fn forwardCachedMasked(
             self: *const Self,
             x: *Tensor(T),
             k_cache: *Tensor(T),

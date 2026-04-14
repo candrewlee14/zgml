@@ -154,6 +154,56 @@ pub fn loadGPTNeo(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+test "transposeIntoPackedRows stacks Q/K/V correctly" {
+    // Two 2×2 row-major matrices stacked into a packed [4, 2] col-major buffer.
+    //   Q row-major: [[1,2],[3,4]]  →  col-major rows 0-1
+    //   K row-major: [[5,6],[7,8]]  →  col-major rows 2-3
+    var dst: [8]f32 = undefined;
+    @memset(&dst, 0);
+
+    const q = [_]f32{ 1, 2, 3, 4 }; // [2,2] row-major
+    const k = [_]f32{ 5, 6, 7, 8 };
+
+    transposeIntoPackedRows(&dst, &q, 2, 2, 4, 0);
+    transposeIntoPackedRows(&dst, &k, 2, 2, 4, 2);
+
+    // dst is col-major [4, 2]:
+    //   col 0: [Q(0,0), Q(1,0), K(0,0), K(1,0)] = [1, 3, 5, 7]
+    //   col 1: [Q(0,1), Q(1,1), K(0,1), K(1,1)] = [2, 4, 6, 8]
+    try testing.expectEqual(@as(f32, 1), dst[0]); // col0 row0
+    try testing.expectEqual(@as(f32, 3), dst[1]); // col0 row1
+    try testing.expectEqual(@as(f32, 5), dst[2]); // col0 row2
+    try testing.expectEqual(@as(f32, 7), dst[3]); // col0 row3
+    try testing.expectEqual(@as(f32, 2), dst[4]); // col1 row0
+    try testing.expectEqual(@as(f32, 4), dst[5]); // col1 row1
+    try testing.expectEqual(@as(f32, 6), dst[6]); // col1 row2
+    try testing.expectEqual(@as(f32, 8), dst[7]); // col1 row3
+}
+
+test "transposeRowToCol matches expected layout" {
+    const src = [_]f32{ 1, 2, 3, 4, 5, 6 }; // [2, 3] row-major
+    var dst: [6]f32 = undefined;
+
+    transposeRowToCol(&dst, &src, 2, 3);
+
+    // dst col-major [3, 2]:
+    //   col 0: [src(0,0), src(1,0)] = [1, 4]
+    //   col 1: [src(0,1), src(1,1)] = [2, 5]
+    //   col 2: [src(0,2), src(1,2)] = [3, 6]
+    try testing.expectEqual(@as(f32, 1), dst[0]);
+    try testing.expectEqual(@as(f32, 4), dst[1]);
+    try testing.expectEqual(@as(f32, 2), dst[2]);
+    try testing.expectEqual(@as(f32, 5), dst[3]);
+    try testing.expectEqual(@as(f32, 3), dst[4]);
+    try testing.expectEqual(@as(f32, 6), dst[5]);
+}
+
 fn layerName(buf: *[128]u8, layer: usize, suffix: []const u8) ![]const u8 {
     const prefix = "transformer.h.";
     var pos: usize = 0;

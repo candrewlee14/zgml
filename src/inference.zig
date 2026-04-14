@@ -46,7 +46,7 @@ const QuantizedWeight = @import("quant.zig").QuantizedWeight;
 
 /// Frozen forward-only execution plan.
 ///
-/// Built once from a `ComputeGraph` trace of `GPT.forwardCachedFrozen`.
+/// Built once from a `ComputeGraph` trace of `GPT.forwardCachedMasked`.
 /// Re-executed each step by patching bound inputs (token embedding,
 /// positional encoding, causal mask, KV-cache write positions) and
 /// calling `computeNoGrad` — no graph rebuild, no fusion re-analysis,
@@ -86,7 +86,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
 
         /// Build a frozen plan from an existing model and KV caches.
         ///
-        /// Traces one forward pass through `forwardCachedFrozen`, builds the
+        /// Traces one forward pass through `forwardCachedMasked`, builds the
         /// graph, runs fusion, and optionally optimises the workspace.  The
         /// model weights and KV caches must outlive the plan (they are
         /// referenced, not copied).
@@ -107,7 +107,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             @memset(attn_mask.data, -std.math.inf(T));
 
             const x = token_input.add(pos_input);
-            const logits = model.forwardCachedFrozen(x, k_caches, v_caches, 0, attn_mask);
+            const logits = model.forwardCachedMasked(x, k_caches, v_caches, 0, attn_mask);
 
             // Build forward graph + fusion (one-time cost).
             try graph.infer(logits);
@@ -515,6 +515,36 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
             self.pos += 1;
             return logits;
         }
+
+        /// Process multiple prompt tokens at once, returning logits for the
+        /// last token (used to predict the next token after the prompt).
+        ///
+        /// This is semantically equivalent to calling `step()` for each token
+        /// in sequence but expresses the intent of bulk prompt processing.
+        /// The returned logits slice remains valid until the next call to
+        /// `step` or `prefill`.
+        ///
+        /// Returns `error.SequenceTooLong` if the prompt would exceed the
+        /// maximum sequence length.
+        ///
+        /// TODO: Replace the sequential step() loop with a true batched
+        /// forward pass using `GPT.forward()` (full-sequence attention in a
+        /// single `[seq, seq]` matmul instead of `seq` separate `[pos, 1]`
+        /// matmuls).  This requires either (a) capturing intermediate K/V
+        /// projections from the batched forward to populate the KV caches,
+        /// or (b) adding a `forwardWithKVCapture` variant to
+        /// `TransformerBlock`.  For prompts of 100+ tokens the batched
+        /// approach would be significantly faster.
+        pub fn prefill(self: *Self, token_ids: []const usize) ![]const T {
+            if (token_ids.len == 0) return self.plan.logits_buf;
+            if (self.pos + token_ids.len > config.max_seq_len) return error.SequenceTooLong;
+
+            for (token_ids) |tok| {
+                _ = try self.step(tok);
+            }
+
+            return self.plan.logits_buf;
+        }
     };
 }
 
@@ -599,7 +629,7 @@ test "InferenceSession matches manual forward" {
         }
 
         const x = tok_input.add(pos_input);
-        const ref_logits = ref_model.forwardCachedFrozen(x, ref_k, ref_v, pos, ref_mask);
+        const ref_logits = ref_model.forwardCachedMasked(x, ref_k, ref_v, pos, ref_mask);
         try g.infer(ref_logits);
 
         // Frozen session step.
@@ -723,4 +753,94 @@ test "Quantized logits are close to f32 logits" {
             try testing.expectApproxEqAbs(f, q, 0.5);
         }
     }
+}
+
+test "prefill matches sequential step() calls" {
+    const cfg = GPTConfig{
+        .vocab_size = 8,
+        .d_model = 4,
+        .n_heads = 2,
+        .d_ff = 8,
+        .n_layers = 2,
+        .max_seq_len = 16,
+    };
+
+    const tokens = [_]usize{ 2, 5, 0, 7, 1 };
+
+    // Run 1: sequential step() calls.
+    var step_session = try InferenceSession(f32, cfg).init(testing.allocator);
+    defer step_session.deinit();
+
+    var step_logits: [cfg.vocab_size]f32 = undefined;
+    for (tokens) |tok| {
+        const logits = try step_session.step(tok);
+        @memcpy(&step_logits, logits);
+    }
+
+    // Run 2: single prefill() call with same weights.
+    var prefill_session = try InferenceSession(f32, cfg).init(testing.allocator);
+    defer prefill_session.deinit();
+
+    // Copy weights so both sessions are identical.
+    for (step_session.model.params(), prefill_session.model.params()) |src, dst| {
+        @memcpy(dst.data, src.data);
+    }
+
+    const prefill_logits = try prefill_session.prefill(&tokens);
+
+    // Logits from the last token must match exactly.
+    for (step_logits[0..], prefill_logits) |want, got| {
+        try testing.expectApproxEqAbs(want, got, 1e-6);
+    }
+
+    // Position must be advanced correctly.
+    try testing.expectEqual(tokens.len, prefill_session.pos);
+
+    // A subsequent step() after prefill must work and match.
+    const next_tok: usize = 3;
+    const step_next = try step_session.step(next_tok);
+    const prefill_next = try prefill_session.step(next_tok);
+    for (step_next, prefill_next) |want, got| {
+        try testing.expectApproxEqAbs(want, got, 1e-6);
+    }
+}
+
+test "prefill with empty slice is a no-op" {
+    const cfg = GPTConfig{
+        .vocab_size = 8,
+        .d_model = 4,
+        .n_heads = 2,
+        .d_ff = 8,
+        .n_layers = 1,
+        .max_seq_len = 8,
+    };
+
+    var session = try InferenceSession(f32, cfg).init(testing.allocator);
+    defer session.deinit();
+
+    const empty: []const usize = &.{};
+    _ = try session.prefill(empty);
+    try testing.expectEqual(@as(usize, 0), session.pos);
+}
+
+test "prefill returns SequenceTooLong when exceeding max_seq_len" {
+    const cfg = GPTConfig{
+        .vocab_size = 8,
+        .d_model = 4,
+        .n_heads = 2,
+        .d_ff = 8,
+        .n_layers = 1,
+        .max_seq_len = 4,
+    };
+
+    var session = try InferenceSession(f32, cfg).init(testing.allocator);
+    defer session.deinit();
+
+    // 5 tokens exceeds max_seq_len of 4.
+    const tokens = [_]usize{ 0, 1, 2, 3, 0 };
+    const result = session.prefill(&tokens);
+    try testing.expectError(error.SequenceTooLong, result);
+
+    // Position should be unchanged after the error.
+    try testing.expectEqual(@as(usize, 0), session.pos);
 }

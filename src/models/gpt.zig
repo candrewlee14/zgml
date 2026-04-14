@@ -171,7 +171,7 @@ pub fn GPT(comptime T: type, comptime config: GPTConfig) type {
         ///
         /// `x`: [d_model, 1] — token embedding + positional encoding.
         /// `attn_mask`: [max_seq_len, 1] — 0 for valid, -inf for masked.
-        pub fn forwardCachedFrozen(
+        pub fn forwardCachedMasked(
             self: *const Self,
             x_in: *Tensor(T),
             k_caches: [config.n_layers]*Tensor(T),
@@ -181,7 +181,7 @@ pub fn GPT(comptime T: type, comptime config: GPTConfig) type {
         ) *Tensor(T) {
             var x = x_in;
             for (0..config.n_layers) |i| {
-                x = self.blocks[i].forwardCachedFrozen(x, k_caches[i], v_caches[i], pos, attn_mask);
+                x = self.blocks[i].forwardCachedMasked(x, k_caches[i], v_caches[i], pos, attn_mask);
             }
 
             var ln_reduce = [_]usize{ 1, 1 };

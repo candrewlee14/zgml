@@ -115,33 +115,84 @@ pub fn QuantizedWeight(comptime T: type) type {
             const IVec = @Vector(vec_len, i32);
             const I8Vec = @Vector(vec_len, i8);
 
+            const k_unroll: usize = 4;
+
             for (0..M) |m| {
                 const dst_row = dst[m * N ..][0..N];
                 const inp_row = input[m * K ..][0..K];
 
-                for (0..K) |k| {
+                // --- K-unrolled loop: process k_unroll K values at a time ---
+                var k: usize = 0;
+                while (k + k_unroll <= K) : (k += k_unroll) {
+                    // Load k_unroll input values.
+                    var inp_vals: [k_unroll]T = undefined;
+                    var w_bases: [k_unroll]usize = undefined;
+                    inline for (0..k_unroll) |ki| {
+                        inp_vals[ki] = inp_row[k + ki];
+                        w_bases[ki] = (k + ki) * N;
+                    }
+
+                    // Walk N in quantization-block-aligned chunks.
+                    // All k_unroll weight rows share the same N layout, but each
+                    // row has its own quant blocks (different scales).
+                    var n: usize = 0;
+                    while (n < N) {
+                        // Determine chunk size from first row's block alignment
+                        // (all rows have the same column layout).
+                        const flat0 = w_bases[0] + n;
+                        const block_rem = bs - (flat0 % bs);
+                        const chunk = @min(block_rem, N - n);
+
+                        // Precompute combined scale*input vectors for each k.
+                        var combined: [k_unroll]Vec = undefined;
+                        inline for (0..k_unroll) |ki| {
+                            const flat_ki = w_bases[ki] + n;
+                            const scale_ki = scales[flat_ki / bs];
+                            combined[ki] = @splat(scale_ki * inp_vals[ki]);
+                        }
+
+                        // SIMD inner loop: load dst once, accumulate k_unroll FMAs, store once.
+                        var j: usize = 0;
+                        while (j + vec_len <= chunk) : (j += vec_len) {
+                            var d_vec: Vec = dst_row[n + j ..][0..vec_len].*;
+                            inline for (0..k_unroll) |ki| {
+                                const w_vec: I8Vec = w_data[w_bases[ki] + n + j ..][0..vec_len].*;
+                                const f_vec: Vec = @floatFromInt(@as(IVec, w_vec));
+                                d_vec += f_vec * combined[ki];
+                            }
+                            dst_row[n + j ..][0..vec_len].* = d_vec;
+                        }
+                        // Scalar tail for N.
+                        while (j < chunk) : (j += 1) {
+                            inline for (0..k_unroll) |ki| {
+                                const flat_ki = w_bases[ki] + n + j;
+                                dst_row[n + j] += inp_vals[ki] * @as(T, @floatFromInt(w_data[flat_ki])) * scales[flat_ki / bs];
+                            }
+                        }
+                        n += chunk;
+                    }
+                }
+
+                // --- Scalar tail for remaining K values ---
+                while (k < K) : (k += 1) {
                     const inp_val = inp_row[k];
                     const w_base = k * N;
 
-                    // Walk N in quantization-block-aligned chunks.
                     var n: usize = 0;
                     while (n < N) {
                         const flat = w_base + n;
                         const scale = scales[flat / bs];
-                        const combined: Vec = @splat(scale * inp_val);
-                        // Elements remaining in this quant block.
+                        const combined_s: Vec = @splat(scale * inp_val);
                         const block_rem = bs - (flat % bs);
                         const chunk = @min(block_rem, N - n);
 
-                        // SIMD inner loop.
                         var j: usize = 0;
                         while (j + vec_len <= chunk) : (j += vec_len) {
                             const w_vec: I8Vec = w_data[flat + j ..][0..vec_len].*;
                             const f_vec: Vec = @floatFromInt(@as(IVec, w_vec));
                             const d_vec: Vec = dst_row[n + j ..][0..vec_len].*;
-                            dst_row[n + j ..][0..vec_len].* = d_vec + f_vec * combined;
+                            dst_row[n + j ..][0..vec_len].* = d_vec + f_vec * combined_s;
                         }
-                        // Scalar tail.
                         while (j < chunk) : (j += 1) {
                             dst_row[n + j] += inp_val * @as(T, @floatFromInt(w_data[flat + j])) * scale;
                         }
