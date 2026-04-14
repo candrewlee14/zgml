@@ -89,10 +89,13 @@ pub fn load(comptime T: type, params: []const *Tensor(T), path: []const u8) !voi
 // Tests
 // ---------------------------------------------------------------------------
 
+const builtin = @import("builtin");
 const testing = std.testing;
 const tac = testing.allocator;
+const is_wasm = builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64;
 
 test "checkpoint - save and load roundtrip" {
+    if (comptime is_wasm) return error.SkipZigTest;
     const alloc = tac;
 
     const a = try Tensor(f32).init(alloc, &.{ 3, 2 });
@@ -121,6 +124,7 @@ test "checkpoint - save and load roundtrip" {
 }
 
 test "checkpoint - shape mismatch is detected" {
+    if (comptime is_wasm) return error.SkipZigTest;
     const alloc = tac;
 
     const a = try Tensor(f32).init(alloc, &.{ 3, 2 });
@@ -139,6 +143,7 @@ test "checkpoint - shape mismatch is detected" {
 }
 
 test "checkpoint - param count mismatch is detected" {
+    if (comptime is_wasm) return error.SkipZigTest;
     const alloc = tac;
 
     const a = try Tensor(f32).init(alloc, &.{2});
