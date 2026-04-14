@@ -207,6 +207,25 @@ pub fn build(b: *std.Build) void {
     const rbench_step = b.step("bench-reduce", "Benchmark reduction and broadcast ops");
     rbench_step.dependOn(&b.addRunArtifact(rbench_exe).step);
 
+    // Inference benchmark
+    {
+        const pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+        const mod = b.createModule(.{
+            .root_source_file = b.path("bench/inference.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "zgml", .module = pkg.zgml },
+                .{ .name = "zgml_options", .module = pkg.zgml_options },
+            },
+        });
+        const exe = b.addExecutable(.{ .name = "bench-inference", .root_module = mod });
+        if (use_blas) { linkBlas(target, exe); exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" }); }
+        b.installArtifact(exe);
+        const step = b.step("bench-inference", "Benchmark inference session (f32 vs int8)");
+        step.dependOn(&b.addRunArtifact(exe).step);
+    }
+
     // Text generation binary
     const zgml_gen_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
     const gen_mod = b.createModule(.{
