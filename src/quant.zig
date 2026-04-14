@@ -93,6 +93,10 @@ pub fn QuantizedWeight(comptime T: type) type {
         /// input: [M, K] row-major f32
         /// weight (self): [K, N] row-major int8
         /// dst: [M, N] row-major f32
+        ///
+        /// Loop order M→K→N for sequential weight reads.  The inner N loop
+        /// processes one quantization block at a time (hoisted scale) with
+        /// explicit SIMD.
         pub fn matmul(self: *const Self, input: []const T, dst: []T, M: usize, N: usize, K: usize) void {
             std.debug.assert(self.rows == K);
             std.debug.assert(self.cols == N);
@@ -100,23 +104,50 @@ pub fn QuantizedWeight(comptime T: type) type {
             std.debug.assert(dst.len >= M * N);
 
             const bs = self.block_size;
+            const w_data = self.data;
+            const scales = self.scales;
+
+            // Zero destination.
+            @memset(dst[0 .. M * N], 0);
+
+            const vec_len = comptime @min(8, default_block_size);
+            const Vec = @Vector(vec_len, T);
+            const IVec = @Vector(vec_len, i32);
+            const I8Vec = @Vector(vec_len, i8);
 
             for (0..M) |m| {
-                for (0..N) |n| {
-                    var acc: T = 0;
-                    // Process in blocks for better scale reuse
-                    var k: usize = 0;
-                    while (k < K) {
-                        const block_end = @min(k + bs, K);
-                        // All elements in this column-block share a scale
-                        // (if block_size divides K; otherwise approximate)
-                        while (k < block_end) : (k += 1) {
-                            const w_idx = k * N + n;
-                            const w_val = self.dequant(w_idx);
-                            acc += input[m * K + k] * w_val;
+                const dst_row = dst[m * N ..][0..N];
+                const inp_row = input[m * K ..][0..K];
+
+                for (0..K) |k| {
+                    const inp_val = inp_row[k];
+                    const w_base = k * N;
+
+                    // Walk N in quantization-block-aligned chunks.
+                    var n: usize = 0;
+                    while (n < N) {
+                        const flat = w_base + n;
+                        const scale = scales[flat / bs];
+                        const combined: Vec = @splat(scale * inp_val);
+                        // Elements remaining in this quant block.
+                        const block_rem = bs - (flat % bs);
+                        const chunk = @min(block_rem, N - n);
+
+                        // SIMD inner loop.
+                        var j: usize = 0;
+                        while (j + vec_len <= chunk) : (j += vec_len) {
+                            const w_vec: I8Vec = w_data[flat + j ..][0..vec_len].*;
+                            const f_vec: Vec = @floatFromInt(@as(IVec, w_vec));
+                            const d: *[vec_len]T = @ptrCast(dst_row[n + j ..][0..vec_len]);
+                            const d_vec: Vec = d.*;
+                            d.* = d_vec + f_vec * combined;
                         }
+                        // Scalar tail.
+                        while (j < chunk) : (j += 1) {
+                            dst_row[n + j] += inp_val * @as(T, @floatFromInt(w_data[flat + j])) * scale;
+                        }
+                        n += chunk;
                     }
-                    dst[m * N + n] = acc;
                 }
             }
         }
