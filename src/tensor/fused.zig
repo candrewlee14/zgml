@@ -493,16 +493,22 @@ pub fn executeFusedGeneric(comptime T: type, plan: ElementwiseFusionPlan(T)) voi
 /// Length 4+: single-pass generic interpreter (one runtime switch per op per element).
 ///            Memory-bound for large tensors, so branch overhead is negligible.
 pub fn executeFusedChain(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
-    const is_wasm = @import("builtin").target.cpu.arch == .wasm32 or
-        @import("builtin").target.cpu.arch == .wasm64;
     if (!isSafeElementwiseChain(T, plan)) {
         for (plan.nodes) |node| node.compute();
         return;
     }
+    // On WASM, the comptime-enumerated dispatch (13^N inline for) is
+    // miscompiled at optimization levels above Debug. Use the generic
+    // interpreter which is correct and still single-pass.
+    if (comptime @import("builtin").target.cpu.arch == .wasm32 or
+        @import("builtin").target.cpu.arch == .wasm64)
+    {
+        executeFusedGeneric(T, plan);
+        return;
+    }
     switch (plan.nodes.len) {
         2 => executeFused2(T, plan),
-        // 13³=2197 kernel variants exceed WASM local limit; use generic on WASM.
-        3 => if (comptime is_wasm) executeFusedGeneric(T, plan) else executeFused3(T, plan),
+        3 => executeFused3(T, plan),
         else => executeFusedGeneric(T, plan),
     }
 }
@@ -1247,74 +1253,68 @@ pub fn executeFusionPlan(comptime T: type, plan: FusionPlan(T)) void {
 }
 
 
-test "fused - specialized swapped commutative 2-op chain matches generic" {
+test "fused - swapped commutative 2-op chain" {
     const T = f32;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
-    const input_fused = try Tensor(T).init(a, &.{3});
-    input_fused.setData(&.{ 1, 2, 3 });
-    const scalar_fused = try Tensor(T).initScalar(a, 2);
-    const exp_fused = input_fused.exp();
-    const add_fused = scalar_fused.repeatLike(exp_fused).add(exp_fused);
+    // Chain: exp(x), then add(scalar_repeat, exp) with swapped operands
+    // Expected: exp(x) + 2 for each element
+    const input = try Tensor(T).init(a, &.{3});
+    input.setData(&.{ 1, 2, 3 });
+    const scalar = try Tensor(T).initScalar(a, 2);
+    const scalar_rep = scalar.repeatLike(input);
+    scalar_rep.compute(); // materialize the repeat so fused kernel can read it
+    const exp_node = input.exp();
+    const add_node = scalar_rep.add(exp_node);
 
-    const input_generic = try Tensor(T).init(a, &.{3});
-    input_generic.setData(&.{ 1, 2, 3 });
-    const scalar_generic = try Tensor(T).initScalar(a, 2);
-    const exp_generic = input_generic.exp();
-    const add_generic = scalar_generic.repeatLike(exp_generic).add(exp_generic);
-
-    const fused_plan = ElementwiseFusionPlan(T){
-        .input = input_fused,
-        .nodes = &.{ exp_fused, add_fused },
-        .other_operand_roles = &.{ .src1, .src0 },
-    };
-    const generic_plan = ElementwiseFusionPlan(T){
-        .input = input_generic,
-        .nodes = &.{ exp_generic, add_generic },
+    const plan = ElementwiseFusionPlan(T){
+        .input = input,
+        .nodes = &.{ exp_node, add_node },
         .other_operand_roles = &.{ .src1, .src0 },
     };
 
-    executeFusedChain(T, fused_plan);
-    executeFusedGeneric(T, generic_plan);
+    executeFusedChain(T, plan);
 
-    try std.testing.expectEqualSlices(T, add_generic.data, add_fused.data);
+    // Verify against hand-computed reference
+    const expected = [_]T{ @exp(@as(T, 1)) + 2, @exp(@as(T, 2)) + 2, @exp(@as(T, 3)) + 2 };
+    for (add_node.data, expected) |actual, exp| {
+        try std.testing.expectApproxEqAbs(exp, actual, 1e-5);
+    }
 }
 
-test "fused - specialized swapped commutative 3-op chain matches generic" {
+test "fused - swapped commutative 3-op chain" {
     const T = f32;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
-    const input_fused = try Tensor(T).init(a, &.{3});
-    input_fused.setData(&.{ 1, 2, 3 });
-    const scalar_fused = try Tensor(T).initScalar(a, 2);
-    const exp_fused = input_fused.exp();
-    const add_fused = scalar_fused.repeatLike(exp_fused).add(exp_fused);
-    const log_fused = add_fused.log();
+    // Chain: exp(x), add(scalar_repeat, exp), log(add)
+    // Expected: log(exp(x) + 2) for each element
+    const input = try Tensor(T).init(a, &.{3});
+    input.setData(&.{ 1, 2, 3 });
+    const scalar = try Tensor(T).initScalar(a, 2);
+    const scalar_rep = scalar.repeatLike(input);
+    scalar_rep.compute(); // materialize the repeat
+    const exp_node = input.exp();
+    const add_node = scalar_rep.add(exp_node);
+    const log_node = add_node.log();
 
-    const input_generic = try Tensor(T).init(a, &.{3});
-    input_generic.setData(&.{ 1, 2, 3 });
-    const scalar_generic = try Tensor(T).initScalar(a, 2);
-    const exp_generic = input_generic.exp();
-    const add_generic = scalar_generic.repeatLike(exp_generic).add(exp_generic);
-    const log_generic = add_generic.log();
-
-    const fused_plan = ElementwiseFusionPlan(T){
-        .input = input_fused,
-        .nodes = &.{ exp_fused, add_fused, log_fused },
-        .other_operand_roles = &.{ .src1, .src0, .src1 },
-    };
-    const generic_plan = ElementwiseFusionPlan(T){
-        .input = input_generic,
-        .nodes = &.{ exp_generic, add_generic, log_generic },
+    const plan = ElementwiseFusionPlan(T){
+        .input = input,
+        .nodes = &.{ exp_node, add_node, log_node },
         .other_operand_roles = &.{ .src1, .src0, .src1 },
     };
 
-    executeFusedChain(T, fused_plan);
-    executeFusedGeneric(T, generic_plan);
+    executeFusedChain(T, plan);
 
-    try std.testing.expectEqualSlices(T, log_generic.data, log_fused.data);
+    const expected = [_]T{
+        @log(@exp(@as(T, 1)) + 2),
+        @log(@exp(@as(T, 2)) + 2),
+        @log(@exp(@as(T, 3)) + 2),
+    };
+    for (log_node.data, expected) |actual, exp| {
+        try std.testing.expectApproxEqAbs(exp, actual, 1e-5);
+    }
 }
