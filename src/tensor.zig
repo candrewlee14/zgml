@@ -492,6 +492,15 @@ pub fn Tensor(comptime T: type) type {
             return true;
         }
 
+        /// True if all strides are zero — a scalar broadcast to any shape.
+        /// Every element maps to data[storage_offset].
+        pub fn isBroadcastScalar(self: *const Self) bool {
+            for (self.strides[0..]) |s| {
+                if (s != 0) return false;
+            }
+            return true;
+        }
+
         /// True if this is a 1-D vector (dims 1+ are all 1).
         pub fn isVector(self: *const Self) bool {
             for (self.ne[1..]) |s| {
@@ -521,14 +530,32 @@ pub fn Tensor(comptime T: type) type {
             return true;
         }
 
-        /// True if data is laid out contiguously in memory (no stride gaps).
+        /// True if data is laid out contiguously in memory starting at offset 0.
         pub fn isContiguous(self: *const Self) bool {
             if (self.storage_offset != 0) return false;
+            return self.isDenseLayout();
+        }
+
+        /// True if elements are densely packed (standard strides) but possibly
+        /// at a non-zero storage_offset. Use `denseSlice()` to get the actual
+        /// contiguous element range.
+        pub fn isDenseLayout(self: *const Self) bool {
             if (self.strides[0] != 1) return false;
             for (1..max_dims) |i| {
                 if (self.strides[i] != self.strides[i - 1] * self.ne[i - 1]) return false;
             }
             return true;
+        }
+
+        /// Returns the densely-packed element slice `data[offset..offset+nElems]`.
+        /// Only valid when `isDenseLayout()` is true.
+        pub fn denseSlice(self: *const Self) []T {
+            return self.data[self.storage_offset..][0..self.nElems()];
+        }
+
+        /// Const version of `denseSlice()`.
+        pub fn denseSliceConst(self: *const Self) []const T {
+            return self.data[self.storage_offset..][0..self.nElems()];
         }
 
         /// True if self can be broadcast (repeated) to match `other`'s shape.

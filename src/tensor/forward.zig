@@ -11,12 +11,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const builtin = @import("builtin");
 const Op = @import("../op.zig").Op;
-const opts = if (@hasDecl(@import("root"), "zgml_options"))
-    @import("zgml_options")
-else
-    struct {
-        pub const use_blas = false;
-    };
+const opts = @import("zgml_options");
 
 const c = if (opts.use_blas)
     switch (builtin.os.tag) {
@@ -217,6 +212,14 @@ fn computeStructuralDup(comptime Self: type, dst: *Self, src0: *const Self) void
 }
 
 fn computeBinaryGeneric(comptime Self: type, comptime Tt: type, dst: *Self, src0: *const Self, src1: *const Self, comptime f: fn (Tt, Tt) Tt) void {
+    // Fast path: vectorize inner dim when all three tensors are dense and match at dim 0
+    if (dst.strides[0] == 1 and
+        src0.strides[0] == 1 and src0.ne[0] == dst.ne[0] and
+        src1.strides[0] == 1 and src1.ne[0] == dst.ne[0])
+    {
+        computeBinaryInnerSimd(Self, Tt, dst, src0, src1, f);
+        return;
+    }
     var coords: [max_dims]usize = [_]usize{0} ** max_dims;
     var lhs_coords: [max_dims]usize = [_]usize{0} ** max_dims;
     var rhs_coords: [max_dims]usize = [_]usize{0} ** max_dims;
@@ -233,6 +236,64 @@ fn computeBinaryGeneric(comptime Self: type, comptime Tt: type, dst: *Self, src0
         );
         if (!nextCoord(coords[0..dst.n_dims], dst.ne[0..dst.n_dims])) break;
     }
+}
+
+/// Vectorized binary op for tensors where the innermost dimension is contiguous.
+/// Merges consecutive dense dims into a single SIMD span, then iterates outer
+/// (possibly broadcast) dims with stride arithmetic.
+/// Precondition: all three tensors have stride[0]==1 and ne[0] matches.
+fn computeBinaryInnerSimd(comptime Self: type, comptime Tt: type, dst: *Self, src0: *const Self, src1: *const Self, comptime f: fn (Tt, Tt) Tt) void {
+    const vec_size = comptime simdVecSize(Tt);
+    const VecT = @Vector(vec_size, Tt);
+
+    // Merge consecutive dims where all three tensors are dense and non-broadcast.
+    var inner_span: usize = dst.ne[0];
+    var outer_dim: usize = 1;
+    while (outer_dim < dst.n_dims) : (outer_dim += 1) {
+        if (dst.strides[outer_dim] != inner_span) break;
+        if (src0.strides[outer_dim] != inner_span or src0.ne[outer_dim] != dst.ne[outer_dim]) break;
+        if (src1.strides[outer_dim] != inner_span or src1.ne[outer_dim] != dst.ne[outer_dim]) break;
+        inner_span *= dst.ne[outer_dim];
+    }
+
+    // Iterate outer dimensions with broadcast-aware offsets.
+    var coords: [max_dims]usize = [_]usize{0} ** max_dims;
+    while (true) {
+        var d_off: usize = dst.storage_offset;
+        var s0_off: usize = src0.storage_offset;
+        var s1_off: usize = src1.storage_offset;
+        for (outer_dim..dst.n_dims) |dim| {
+            d_off += coords[dim] * dst.strides[dim];
+            s0_off += if (src0.ne[dim] > 1) coords[dim] * src0.strides[dim] else 0;
+            s1_off += if (src1.ne[dim] > 1) coords[dim] * src1.strides[dim] else 0;
+        }
+
+        const d = dst.data[d_off..];
+        const a = src0.data[s0_off..];
+        const b = src1.data[s1_off..];
+        var j: usize = 0;
+        while (j + vec_size <= inner_span) : (j += vec_size) {
+            const va: VecT = a[j..][0..vec_size].*;
+            const vb: VecT = b[j..][0..vec_size].*;
+            d[j..][0..vec_size].* = vecBinaryOp(Tt, f, va, vb);
+        }
+        while (j < inner_span) : (j += 1) {
+            d[j] = f(a[j], b[j]);
+        }
+
+        if (outer_dim >= dst.n_dims) break;
+        if (!nextCoord(coords[outer_dim..dst.n_dims], dst.ne[outer_dim..dst.n_dims])) break;
+    }
+}
+
+/// Element-wise binary op on SIMD vectors via comptime scalar function.
+fn vecBinaryOp(comptime Tt: type, comptime f: fn (Tt, Tt) Tt, a: anytype, b: anytype) @TypeOf(a) {
+    const vec_size = @typeInfo(@TypeOf(a)).vector.len;
+    var result: @TypeOf(a) = undefined;
+    inline for (0..vec_size) |i| {
+        result[i] = f(a[i], b[i]);
+    }
+    return result;
 }
 
 fn computeReduceGeneric(comptime Self: type, comptime Tt: type, dst: *Self, src0: *const Self, comptime op: enum { sum, max }, mean_divisor: ?Tt) void {
@@ -495,6 +556,56 @@ pub fn selectMatMulKernel(comptime T: type) MatMulFnType(T) {
     return State.cached;
 }
 
+/// BLAS-accelerated sgemm with the same stride-based calling convention as MatMulFnType.
+/// Dispatches to cblas_sgemm when BLAS is available, otherwise falls back to the
+/// best tiled kernel. Used by fused conv2d kernels to route GEMMs through Accelerate/OpenBLAS.
+pub fn blasSgemm(
+    dst: []f32,
+    A: []const f32,
+    B: []const f32,
+    M: usize,
+    N: usize,
+    K: usize,
+    a_row_stride: usize,
+    a_col_stride: usize,
+    b_row_stride: usize,
+    b_col_stride: usize,
+    a_offset: usize,
+    b_offset: usize,
+    dst_offset: usize,
+    dst_row_stride: usize,
+) void {
+    if (opts.use_blas) {
+        // Map stride convention to BLAS transpose flags + leading dimensions.
+        // col_stride == 1 → NoTrans (row-major), ld = row_stride
+        // row_stride == 1 → Trans (column stored as rows), ld = col_stride
+        const trans_a: c_uint = if (a_col_stride == 1) c.CblasNoTrans else c.CblasTrans;
+        const lda: c_int = @intCast(if (a_col_stride == 1) a_row_stride else a_col_stride);
+        const trans_b: c_uint = if (b_col_stride == 1) c.CblasNoTrans else c.CblasTrans;
+        const ldb: c_int = @intCast(if (b_col_stride == 1) b_row_stride else b_col_stride);
+
+        c.cblas_sgemm(
+            c.CblasRowMajor,
+            trans_a,
+            trans_b,
+            @intCast(M),
+            @intCast(N),
+            @intCast(K),
+            1.0,
+            A[a_offset..].ptr,
+            lda,
+            B[b_offset..].ptr,
+            ldb,
+            0.0,
+            dst[dst_offset..].ptr,
+            @intCast(dst_row_stride),
+        );
+    } else {
+        const mm = selectMatMulKernel(f32);
+        mm(dst, A, B, M, N, K, a_row_stride, a_col_stride, b_row_stride, b_col_stride, a_offset, b_offset, dst_offset, dst_row_stride);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Forward compute operations parameterized on the tensor type
 // ---------------------------------------------------------------------------
@@ -731,32 +842,27 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
 
         pub fn computeAdd(dst: *Self, src0: *const Self, src1: *const Self) void {
             if (src0.isSameShape(src1) and dst.isSameShape(src0)) {
-                if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
-                    simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, addVec, addScalar);
+                if (dst.isDenseLayout() and src0.isDenseLayout() and src1.isDenseLayout()) {
+                    simdMapBinary(T, .vec_vec, src0.denseSliceConst(), src1.denseSliceConst(), dst.denseSlice(), addVec, addScalar);
+                } else if (src0.isBroadcastScalar() and dst.isDenseLayout() and src1.isDenseLayout()) {
+                    simdMapBinary(T, .scalar_lhs, src0.data[src0.storage_offset..][0..1], src1.denseSliceConst(), dst.denseSlice(), addVec, addScalar);
+                } else if (src1.isBroadcastScalar() and dst.isDenseLayout() and src0.isDenseLayout()) {
+                    simdMapBinary(T, .scalar_rhs, src0.denseSliceConst(), src1.data[src1.storage_offset..][0..1], dst.denseSlice(), addVec, addScalar);
                 } else {
-                    if (dst.n_dims > 4) {
-                        computeBinaryGeneric(Self, T, dst, src0, src1, addScalar);
-                        return;
-                    }
-                    for (0..dst.ne[3]) |d3| {
-                        for (0..dst.ne[2]) |d2| {
-                            for (0..dst.ne[1]) |d1| {
-                                for (0..dst.ne[0]) |d0| {
-                                    const dst_idx = elemOffset(dst.strides, d0, d1, d2, d3);
-                                    const src0_idx = elemOffset(src0.strides, d0, d1, d2, d3);
-                                    const src1_idx = elemOffset(src1.strides, d0, d1, d2, d3);
-                                    dst.data[dst_idx] = src0.data[src0_idx] + src1.data[src1_idx];
-                                }
-                            }
-                        }
-                    }
+                    computeBinaryGeneric(Self, T, dst, src0, src1, addScalar);
                 }
-            } else if (src1.isScalar() and dst.isSameShape(src0)) {
-                assert(dst.isSameShape(src0));
-                simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, addVec, addScalar);
-            } else if (src0.isScalar() and dst.isSameShape(src1)) {
-                assert(dst.isSameShape(src1));
-                simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, addVec, addScalar);
+            } else if ((src1.isScalar() or src1.isBroadcastScalar()) and dst.isSameShape(src0)) {
+                if (dst.isDenseLayout() and src0.isDenseLayout()) {
+                    simdMapBinary(T, .scalar_rhs, src0.denseSliceConst(), src1.data[src1.storage_offset..][0..1], dst.denseSlice(), addVec, addScalar);
+                } else {
+                    simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, addVec, addScalar);
+                }
+            } else if ((src0.isScalar() or src0.isBroadcastScalar()) and dst.isSameShape(src1)) {
+                if (dst.isDenseLayout() and src1.isDenseLayout()) {
+                    simdMapBinary(T, .scalar_lhs, src0.data[src0.storage_offset..][0..1], src1.denseSliceConst(), dst.denseSlice(), addVec, addScalar);
+                } else {
+                    simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, addVec, addScalar);
+                }
             } else {
                 computeBinaryGeneric(Self, T, dst, src0, src1, addScalar);
             }
@@ -764,8 +870,8 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
 
         pub fn computeSub(dst: *Self, src0: *const Self, src1: *const Self) void {
             if (src0.isSameShape(src1) and dst.isSameShape(src0)) {
-                if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
-                    simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, subVec, subScalar);
+                if (dst.isDenseLayout() and src0.isDenseLayout() and src1.isDenseLayout()) {
+                    simdMapBinary(T, .vec_vec, src0.denseSliceConst(), src1.denseSliceConst(), dst.denseSlice(), subVec, subScalar);
                 } else {
                     if (dst.n_dims > 4) {
                         computeBinaryGeneric(Self, T, dst, src0, src1, subScalar);
@@ -786,44 +892,47 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 }
             } else if (src1.isScalar() and dst.isSameShape(src0)) {
                 assert(dst.isSameShape(src0));
-                simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, subVec, subScalar);
+                if (dst.isDenseLayout() and src0.isDenseLayout()) {
+                    simdMapBinary(T, .scalar_rhs, src0.denseSliceConst(), src1.denseSliceConst(), dst.denseSlice(), subVec, subScalar);
+                } else {
+                    simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, subVec, subScalar);
+                }
             } else if (src0.isScalar() and dst.isSameShape(src1)) {
                 assert(dst.isSameShape(src1));
-                simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, subVec, subScalar);
+                if (dst.isDenseLayout() and src1.isDenseLayout()) {
+                    simdMapBinary(T, .scalar_lhs, src0.denseSliceConst(), src1.denseSliceConst(), dst.denseSlice(), subVec, subScalar);
+                } else {
+                    simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, subVec, subScalar);
+                }
             } else {
                 computeBinaryGeneric(Self, T, dst, src0, src1, subScalar);
             }
         }
 
         pub fn computeMul(dst: *Self, src0: *const Self, src1: *const Self) void {
-            if (src0.isScalar()) {
-                assert(dst.isSameShape(src1));
-                simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, mulVec, mulScalar);
-            } else if (src1.isScalar()) {
-                assert(dst.isSameShape(src0));
-                simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, mulVec, mulScalar);
+            if (src0.isScalar() or src0.isBroadcastScalar()) {
+                if (dst.isDenseLayout() and src1.isDenseLayout()) {
+                    simdMapBinary(T, .scalar_lhs, src0.data[src0.storage_offset..][0..1], src1.denseSliceConst(), dst.denseSlice(), mulVec, mulScalar);
+                } else {
+                    simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, mulVec, mulScalar);
+                }
+            } else if (src1.isScalar() or src1.isBroadcastScalar()) {
+                if (dst.isDenseLayout() and src0.isDenseLayout()) {
+                    simdMapBinary(T, .scalar_rhs, src0.denseSliceConst(), src1.data[src1.storage_offset..][0..1], dst.denseSlice(), mulVec, mulScalar);
+                } else {
+                    simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, mulVec, mulScalar);
+                }
             } else {
                 assert(dst.isBroadcastable(src0));
                 assert(src0.isBroadcastable(src1));
-                if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
-                    simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, mulVec, mulScalar);
+                if (dst.isDenseLayout() and src0.isDenseLayout() and src1.isDenseLayout() and dst.isSameShape(src0) and src0.isSameShape(src1)) {
+                    simdMapBinary(T, .vec_vec, src0.denseSliceConst(), src1.denseSliceConst(), dst.denseSlice(), mulVec, mulScalar);
+                } else if (src0.isBroadcastScalar() and dst.isDenseLayout() and src1.isDenseLayout()) {
+                    simdMapBinary(T, .scalar_lhs, src0.data[src0.storage_offset..][0..1], src1.denseSliceConst(), dst.denseSlice(), mulVec, mulScalar);
+                } else if (src1.isBroadcastScalar() and dst.isDenseLayout() and src0.isDenseLayout()) {
+                    simdMapBinary(T, .scalar_rhs, src0.denseSliceConst(), src1.data[src1.storage_offset..][0..1], dst.denseSlice(), mulVec, mulScalar);
                 } else {
-                    if (dst.n_dims > 4 or !dst.isSameShape(src0) or !src0.isSameShape(src1)) {
-                        computeBinaryGeneric(Self, T, dst, src0, src1, mulScalar);
-                        return;
-                    }
-                    for (0..dst.ne[3]) |d3| {
-                        for (0..dst.ne[2]) |d2| {
-                            for (0..dst.ne[1]) |d1| {
-                                for (0..dst.ne[0]) |d0| {
-                                    const dst_idx = elemOffset(dst.strides, d0, d1, d2, d3);
-                                    const src0_idx = elemOffset(src0.strides, d0, d1, d2, d3);
-                                    const src1_idx = elemOffset(src1.strides, d0, d1, d2, d3);
-                                    dst.data[dst_idx] = src0.data[src0_idx] * src1.data[src1_idx];
-                                }
-                            }
-                        }
-                    }
+                    computeBinaryGeneric(Self, T, dst, src0, src1, mulScalar);
                 }
             }
         }
@@ -831,15 +940,23 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         pub fn computeDiv(dst: *Self, src0: *const Self, src1: *const Self) void {
             if (src0.isScalar()) {
                 assert(dst.isSameShape(src1));
-                simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, divVec, divScalar);
+                if (dst.isDenseLayout() and src1.isDenseLayout()) {
+                    simdMapBinary(T, .scalar_lhs, src0.denseSliceConst(), src1.denseSliceConst(), dst.denseSlice(), divVec, divScalar);
+                } else {
+                    simdMapBinary(T, .scalar_lhs, src0.data, src1.data, dst.data, divVec, divScalar);
+                }
             } else if (src1.isScalar()) {
                 assert(dst.isSameShape(src0));
-                simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, divVec, divScalar);
+                if (dst.isDenseLayout() and src0.isDenseLayout()) {
+                    simdMapBinary(T, .scalar_rhs, src0.denseSliceConst(), src1.denseSliceConst(), dst.denseSlice(), divVec, divScalar);
+                } else {
+                    simdMapBinary(T, .scalar_rhs, src0.data, src1.data, dst.data, divVec, divScalar);
+                }
             } else {
                 assert(dst.isBroadcastable(src0));
                 assert(src0.isBroadcastable(src1));
-                if (dst.isContiguous() and src0.isContiguous() and src1.isContiguous()) {
-                    simdMapBinary(T, .vec_vec, src0.data, src1.data, dst.data, divVec, divScalar);
+                if (dst.isDenseLayout() and src0.isDenseLayout() and src1.isDenseLayout() and dst.isSameShape(src0) and src0.isSameShape(src1)) {
+                    simdMapBinary(T, .vec_vec, src0.denseSliceConst(), src1.denseSliceConst(), dst.denseSlice(), divVec, divScalar);
                 } else {
                     if (dst.n_dims > 4 or !dst.isSameShape(src0) or !src0.isSameShape(src1)) {
                         computeBinaryGeneric(Self, T, dst, src0, src1, divScalar);
