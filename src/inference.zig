@@ -132,7 +132,8 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             errdefer backing_alloc.free(logits_buf);
 
             // Workspace reuse: share buffers among temporaries whose
-            // lifetimes don't overlap.
+            // lifetimes don't overlap.  Failure is non-fatal — the plan
+            // works without it, just uses more memory.
             var bufs: [][]T = &.{};
             optimizeWorkspace(&graph, backing_alloc, &bufs) catch {};
 
@@ -210,16 +211,14 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
         fn computeQuantized(self: *Self) void {
             for (self.graph.nodes.items[0..self.graph.forward_node_count]) |node| {
                 if (self.quant_map.get(node)) |qi| {
-                    self.executeQuantizedMatmul(node, &self.quant_weights[qi]);
+                    executeQuantizedMatmul(node, &self.quant_weights[qi]);
                 } else {
                     node.compute();
                 }
             }
         }
 
-        /// Execute a single matmul node using quantized weights.
-        fn executeQuantizedMatmul(self: *const Self, node: *Tensor(T), qw: *const QuantizedWeight(T)) void {
-            _ = self;
+        fn executeQuantizedMatmul(node: *Tensor(T), qw: *const QuantizedWeight(T)) void {
             const src0 = node.src0.?;
             const src1 = node.src1.?;
             const flags = node.matmul_flags;
@@ -253,6 +252,9 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             token_id: usize,
             pos: usize,
         ) []const T {
+            std.debug.assert(token_id < config.vocab_size);
+            std.debug.assert(pos < config.max_seq_len);
+
             // 1. Patch token embedding.
             const tok_data = model.embed.token_embed.inner.data;
             @memcpy(

@@ -138,9 +138,8 @@ pub fn QuantizedWeight(comptime T: type) type {
                         while (j + vec_len <= chunk) : (j += vec_len) {
                             const w_vec: I8Vec = w_data[flat + j ..][0..vec_len].*;
                             const f_vec: Vec = @floatFromInt(@as(IVec, w_vec));
-                            const d: *[vec_len]T = @ptrCast(dst_row[n + j ..][0..vec_len]);
-                            const d_vec: Vec = d.*;
-                            d.* = d_vec + f_vec * combined;
+                            const d_vec: Vec = dst_row[n + j ..][0..vec_len].*;
+                            dst_row[n + j ..][0..vec_len].* = d_vec + f_vec * combined;
                         }
                         // Scalar tail.
                         while (j < chunk) : (j += 1) {
