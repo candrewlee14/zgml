@@ -10,6 +10,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const builtin = @import("builtin");
+const backend_mod = @import("../backend.zig");
 const Op = @import("../op.zig").Op;
 const opts = @import("zgml_options");
 
@@ -1203,6 +1204,17 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         pub fn computeMatMul(dst: *Self, src0: *const Self, comptime trans0: bool, src1: *const Self, comptime trans1: bool) void {
+            dst.computeMatMulWithBackend(src0, trans0, src1, trans1, null);
+        }
+
+        pub fn computeMatMulWithBackend(
+            dst: *Self,
+            src0: *const Self,
+            comptime trans0: bool,
+            src1: *const Self,
+            comptime trans1: bool,
+            backend_opt: ?backend_mod.Backend,
+        ) void {
             assert(max_dims >= 4);
             dst.assertValidMatMulDims(src0, trans0, src1, trans1);
             assert(dst.strides[0] == 1);
@@ -1237,6 +1249,19 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
 
             for (0..src0_ne3) |src0_i3| {
                 for (0..src0_ne2) |src0_i2| {
+                    const a_base = src0_i3 * src0.strides[3] + src0_i2 * src0.strides[2];
+                    const b_base = src0_i3 * src1.strides[3] + src0_i2 * src1.strides[2];
+                    const d_base = src0_i3 * dst.strides[3] + src0_i2 * dst.strides[2];
+
+                    if (backend_mod.tryDenseMatMul(T, backend_opt, .{
+                        .dst = dst.data,
+                        .a = src0.data,
+                        .b = src1.data,
+                        .geom = .{ .M = M, .N = N, .K = K, .a_row_stride = a_m_stride, .a_col_stride = a_k_stride, .b_row_stride = b_k_stride, .b_col_stride = b_n_stride, .a_offset = a_base, .b_offset = b_base, .dst_offset = d_base, .dst_row_stride = dst.strides[1] },
+                    })) {
+                        continue;
+                    }
+
                     if (opts.use_blas and T == f32) {
                         c.cblas_sgemm(
                             c.CblasRowMajor,
@@ -1246,18 +1271,15 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                             if (trans1) src1_ne1c else src1_ne0c,
                             if (trans0) src0_ne1c else src0_ne0c,
                             1.0,
-                            &src0.data[src0_i3 * src0.strides[3] + src0_i2 * src0.strides[2]],
+                            &src0.data[a_base],
                             src0_ne0c,
-                            &src1.data[src0_i3 * src1.strides[3] + src0_i2 * src1.strides[2]],
+                            &src1.data[b_base],
                             src1_ne0c,
                             0.0,
-                            &dst.data[src0_i3 * dst.strides[3] + src0_i2 * dst.strides[2]],
+                            &dst.data[d_base],
                             dst_ne0c,
                         );
                     } else {
-                        const a_base = src0_i3 * src0.strides[3] + src0_i2 * src0.strides[2];
-                        const b_base = src0_i3 * src1.strides[3] + src0_i2 * src1.strides[2];
-                        const d_base = src0_i3 * dst.strides[3] + src0_i2 * dst.strides[2];
                         kernel(dst.data, src0.data, src1.data, M, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1]);
                     }
                 }

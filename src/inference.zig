@@ -38,6 +38,7 @@
 
 const std = @import("std");
 
+const backend_mod = @import("backend.zig");
 const Tensor = @import("tensor.zig").Tensor;
 const ComputeGraph = @import("graph.zig").ComputeGraph;
 const GPT = @import("models/gpt.zig").GPT;
@@ -84,6 +85,30 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
         quant_weights: []QuantizedWeight(T),
         quant_map: std.AutoHashMapUnmanaged(*Tensor(T), usize),
 
+        // Device state for quantized inference (populated by quantize()
+        // when a backend with device_buffers is attached).
+        device_state: ?DeviceState = null,
+
+        const DeviceState = struct {
+            be: backend_mod.Backend,
+            alloc: std.mem.Allocator,
+            weight_views: []backend_mod.DeviceQuantizedWeightView,
+            weight_data_bufs: []backend_mod.DeviceBuffer,
+            weight_scale_bufs: []backend_mod.DeviceBuffer,
+            input_staging: backend_mod.DeviceBuffer,
+            output_staging: backend_mod.DeviceBuffer,
+
+            fn deinit(self: *DeviceState) void {
+                for (self.weight_data_bufs) |buf| self.be.freeBuffer(buf);
+                for (self.weight_scale_bufs) |buf| self.be.freeBuffer(buf);
+                self.be.freeBuffer(self.input_staging);
+                self.be.freeBuffer(self.output_staging);
+                self.alloc.free(self.weight_views);
+                self.alloc.free(self.weight_data_bufs);
+                self.alloc.free(self.weight_scale_bufs);
+            }
+        };
+
         /// Build a frozen plan from an existing model and KV caches.
         ///
         /// Traces one forward pass through `forwardCachedMasked`, builds the
@@ -96,8 +121,19 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             v_caches: [config.n_layers]*Tensor(T),
             backing_alloc: std.mem.Allocator,
         ) !Self {
+            return Self.initWithBackend(model, k_caches, v_caches, backing_alloc, null);
+        }
+
+        pub fn initWithBackend(
+            model: *const Model,
+            k_caches: [config.n_layers]*Tensor(T),
+            v_caches: [config.n_layers]*Tensor(T),
+            backing_alloc: std.mem.Allocator,
+            backend: ?backend_mod.Backend,
+        ) !Self {
             var graph = ComputeGraph(T).init(backing_alloc);
             errdefer graph.deinit();
+            if (backend) |b| graph.setBackend(b);
             const a = graph.allocator();
 
             // Bound-input placeholders (leaves: op=.none, never zeroed by reset).
@@ -155,6 +191,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
         /// Free the graph, workspace buffers, and output buffer.
         /// Does NOT free the model weights or KV caches (caller owns those).
         pub fn deinit(self: *Self) void {
+            if (self.device_state) |*ds| ds.deinit();
             for (self.quant_weights) |qw| qw.deinit(self.backing_alloc);
             if (self.quant_weights.len > 0) self.backing_alloc.free(self.quant_weights);
             self.quant_map.deinit(self.backing_alloc);
@@ -203,19 +240,151 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
 
             self.quant_weights = qw;
             self.quant_map = map;
+
+            // Upload quantized weights to device if the backend supports it.
+            if (self.device_state) |*ds| ds.deinit();
+            self.device_state = null;
+            if (self.graph.backend) |be| {
+                if (be.caps().device_buffers) {
+                    self.device_state = try self.initDeviceState(be);
+                }
+            }
         }
 
         /// Custom execution: iterate forward nodes, dispatching quantized
         /// matmul for weight-matmul nodes and standard compute for the rest.
         /// Bypasses fusion (minor cost — the big wins are in quantized matmul).
         fn computeQuantized(self: *Self) void {
+            if (self.device_state) |*ds| {
+                self.computeQuantizedDevice(ds);
+                return;
+            }
             for (self.graph.nodes.items[0..self.graph.forward_node_count]) |node| {
                 if (self.quant_map.get(node)) |qi| {
-                    executeQuantizedMatmul(node, &self.quant_weights[qi]);
+                    const weight = &self.quant_weights[qi];
+                    if (!backend_mod.tryQuantizedMatMul(T, self.graph.backend, .{
+                        .dst = node.data,
+                        .input = if (node.src1.?.isParam()) node.src0.?.data else node.src1.?.data,
+                        .weight = backend_mod.quantizedWeightViewF32(weight.*),
+                        .M = if (node.matmul_flags.trans0) node.src0.?.ne[0] else node.src0.?.ne[1],
+                        .N = if (node.matmul_flags.trans1) node.src1.?.ne[1] else node.src1.?.ne[0],
+                        .K = if (node.matmul_flags.trans0) node.src0.?.ne[1] else node.src0.?.ne[0],
+                    })) {
+                        executeQuantizedMatmul(node, weight);
+                    }
                 } else {
-                    node.compute();
+                    self.graph.executeNode(node, null);
                 }
             }
+        }
+
+        /// Device-accelerated quantized execution: quantized matmul ops
+        /// dispatch through device buffers (weights resident, activations
+        /// staged per-op). All other ops fall back to CPU.
+        fn computeQuantizedDevice(self: *Self, ds: *DeviceState) void {
+            const be = ds.be;
+            for (self.graph.nodes.items[0..self.graph.forward_node_count]) |node| {
+                if (self.quant_map.get(node)) |qi| {
+                    const src0 = node.src0.?;
+                    const src1 = node.src1.?;
+                    const flags = node.matmul_flags;
+                    const input = if (src1.isParam()) src0 else src1;
+                    const M = if (flags.trans0) src0.ne[0] else src0.ne[1];
+                    const N = if (flags.trans1) src1.ne[1] else src1.ne[0];
+                    const K = if (flags.trans0) src0.ne[1] else src0.ne[0];
+
+                    // Upload activation input to staging buffer.
+                    be.uploadSlice(T, ds.input_staging, 0, input.data[0 .. M * K]);
+
+                    // Dispatch device quantized matmul.
+                    _ = be.vtable.device_quantized_matmul_f32(be.ctx, .{
+                        .dst = ds.output_staging,
+                        .input = ds.input_staging,
+                        .weight = ds.weight_views[qi],
+                        .M = M,
+                        .N = N,
+                        .K = K,
+                    });
+
+                    // Download result (sync: blocks until kernel completes).
+                    be.downloadSlice(T, node.data[0 .. M * N], ds.output_staging, 0);
+                } else {
+                    self.graph.executeNode(node, null);
+                }
+            }
+            be.sync();
+        }
+
+        /// Upload quantized weights to device and allocate staging buffers.
+        fn initDeviceState(self: *Self, be: backend_mod.Backend) !DeviceState {
+            const alloc = self.backing_alloc;
+            const n = self.quant_weights.len;
+
+            const data_bufs = try alloc.alloc(backend_mod.DeviceBuffer, n);
+            errdefer alloc.free(data_bufs);
+            const scale_bufs = try alloc.alloc(backend_mod.DeviceBuffer, n);
+            errdefer alloc.free(scale_bufs);
+            const views = try alloc.alloc(backend_mod.DeviceQuantizedWeightView, n);
+            errdefer alloc.free(views);
+
+            var initialized: usize = 0;
+            errdefer for (0..initialized) |j| {
+                be.freeBuffer(data_bufs[j]);
+                be.freeBuffer(scale_bufs[j]);
+            };
+
+            for (self.quant_weights, 0..) |qw, i| {
+                // Upload i8 weight data.
+                data_bufs[i] = be.allocBuffer(qw.data.len) orelse return error.OutOfMemory;
+                const i8_ptr: [*]const u8 = @ptrCast(qw.data.ptr);
+                be.uploadBytes(data_bufs[i], 0, i8_ptr[0..qw.data.len]);
+
+                // Upload f32 scales.
+                scale_bufs[i] = be.allocSlice(T, qw.scales.len) orelse {
+                    be.freeBuffer(data_bufs[i]);
+                    return error.OutOfMemory;
+                };
+                be.uploadSlice(T, scale_bufs[i], 0, qw.scales);
+
+                views[i] = .{
+                    .data = data_bufs[i],
+                    .scales = scale_bufs[i],
+                    .rows = qw.rows,
+                    .cols = qw.cols,
+                    .block_size = qw.block_size,
+                };
+                initialized += 1;
+            }
+
+            // Size staging buffers to the largest quantized matmul.
+            var max_input: usize = 0;
+            var max_output: usize = 0;
+            for (self.graph.nodes.items[0..self.graph.forward_node_count]) |node| {
+                if (self.quant_map.get(node) != null) {
+                    const flags = node.matmul_flags;
+                    const s0 = node.src0.?;
+                    const s1 = node.src1.?;
+                    const M = if (flags.trans0) s0.ne[0] else s0.ne[1];
+                    const N = if (flags.trans1) s1.ne[1] else s1.ne[0];
+                    const K = if (flags.trans0) s0.ne[1] else s0.ne[0];
+                    max_input = @max(max_input, M * K);
+                    max_output = @max(max_output, M * N);
+                }
+            }
+
+            const input_staging = be.allocSlice(T, @max(max_input, 1)) orelse return error.OutOfMemory;
+            errdefer be.freeBuffer(input_staging);
+            const output_staging = be.allocSlice(T, @max(max_output, 1)) orelse return error.OutOfMemory;
+
+            return .{
+                .be = be,
+                .alloc = alloc,
+                .weight_views = views,
+                .weight_data_bufs = data_bufs,
+                .weight_scale_bufs = scale_bufs,
+                .input_staging = input_staging,
+                .output_staging = output_staging,
+            };
         }
 
         fn executeQuantizedMatmul(node: *Tensor(T), qw: *const QuantizedWeight(T)) void {
@@ -448,6 +617,10 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
         /// checkpoint.load(f32, &s.model.params(), path);
         /// ```
         pub fn init(backing_alloc: std.mem.Allocator) !Self {
+            return Self.initWithBackend(backing_alloc, null);
+        }
+
+        pub fn initWithBackend(backing_alloc: std.mem.Allocator, backend: ?backend_mod.Backend) !Self {
             var arena = std.heap.ArenaAllocator.init(backing_alloc);
             errdefer arena.deinit();
             const a = arena.allocator();
@@ -463,7 +636,7 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
                 @memset(v_caches[l].data, 0);
             }
 
-            var plan = try Plan.init(&model, k_caches, v_caches, backing_alloc);
+            var plan = try Plan.initWithBackend(&model, k_caches, v_caches, backing_alloc, backend);
             errdefer plan.deinit();
 
             return .{

@@ -9,6 +9,7 @@ const std = @import("std");
 
 const tensorlib = @import("./tensor.zig");
 const Tensor = tensorlib.Tensor;
+const backend_mod = @import("backend.zig");
 const Op = @import("op.zig").Op;
 const loss = @import("loss.zig");
 const fusion = @import("fusion.zig");
@@ -52,6 +53,7 @@ pub fn ComputeGraph(comptime T: type) type {
         /// Optional thread pool for parallel matmul and elementwise ops.
         /// Null by default (single-threaded). Call `enableThreading()` to activate.
         thread_pool: ?std.Thread.Pool = null,
+        backend: ?backend_mod.Backend = null,
 
         const ExecutionStep = union(enum) {
             fusion: usize,
@@ -72,6 +74,7 @@ pub fn ComputeGraph(comptime T: type) type {
                 .fused_skip = .{},
                 .execution_steps = .{},
                 .forward_execution_steps = .{},
+                .backend = null,
             };
         }
 
@@ -132,6 +135,10 @@ pub fn ComputeGraph(comptime T: type) type {
                 .track_ids = false,
             });
             self.thread_pool = pool;
+        }
+
+        pub fn setBackend(self: *Self, backend: backend_mod.Backend) void {
+            self.backend = backend;
         }
 
         /// Build a graph where the provided tensor is the final output node.
@@ -1036,18 +1043,7 @@ pub fn ComputeGraph(comptime T: type) type {
                         };
                     },
                     .node => |node| {
-                        if (pool != null and node.opTag() == .matmul) {
-                            const flags = node.matmul_flags;
-                            const s0 = node.src0.?;
-                            const s1 = node.src1.?;
-                            if (flags.trans0) {
-                                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, true, s1, true, pool.?) else Tensor(T).computeMatMulParallel(node, s0, true, s1, false, pool.?);
-                            } else {
-                                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, false, s1, true, pool.?) else Tensor(T).computeMatMulParallel(node, s0, false, s1, false, pool.?);
-                            }
-                        } else {
-                            node.compute();
-                        }
+                        self.executeNode(node, pool);
                         const elapsed = timer.read();
                         out[i] = .{
                             .kind = .{ .node = node.opTag() },
@@ -1333,7 +1329,8 @@ pub fn ComputeGraph(comptime T: type) type {
         /// comptime-specialized kernels.
         pub fn compute(self: *const Self) void {
             if (self.execution_steps.items.len == 0) {
-                for (self.nodes.items) |node| node.compute();
+                const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
+                for (self.nodes.items) |node| self.executeNode(node, pool);
                 return;
             }
             self.executeGraphPlan(self.execution_steps.items);
@@ -1341,7 +1338,8 @@ pub fn ComputeGraph(comptime T: type) type {
 
         pub fn computeNoGrad(self: *const Self) void {
             if (self.forward_execution_steps.items.len == 0) {
-                for (self.nodes.items[0..self.forward_node_count]) |node| node.compute();
+                const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
+                for (self.nodes.items[0..self.forward_node_count]) |node| self.executeNode(node, pool);
                 return;
             }
             self.executeGraphPlan(self.forward_execution_steps.items);
@@ -1351,7 +1349,8 @@ pub fn ComputeGraph(comptime T: type) type {
         /// Uses fused execution plans when available.
         pub fn computeBackward(self: *const Self) void {
             if (self.execution_steps.items.len == 0) {
-                for (self.nodes.items[self.forward_node_count..]) |node| node.compute();
+                const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
+                for (self.nodes.items[self.forward_node_count..]) |node| self.executeNode(node, pool);
                 return;
             }
             // Backward steps are everything after the forward execution steps.
@@ -1417,20 +1416,46 @@ pub fn ComputeGraph(comptime T: type) type {
                         }
                     },
                     .node => |node| {
-                        if (pool != null and node.opTag() == .matmul) {
-                            const flags = node.matmul_flags;
-                            const s0 = node.src0.?;
-                            const s1 = node.src1.?;
-                            if (flags.trans0) {
-                                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, true, s1, true, pool.?) else Tensor(T).computeMatMulParallel(node, s0, true, s1, false, pool.?);
-                            } else {
-                                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, false, s1, true, pool.?) else Tensor(T).computeMatMulParallel(node, s0, false, s1, false, pool.?);
-                            }
-                        } else {
-                            node.compute();
-                        }
+                        self.executeNode(node, pool);
                     },
                 }
+            }
+        }
+
+        /// Execute a single node, routing matmul through backend or thread pool when available.
+        pub fn executeNode(self: *const Self, node: *Tensor(T), pool: ?*std.Thread.Pool) void {
+            if (node.opTag() == .matmul) {
+                const flags = node.matmul_flags;
+                const s0 = node.src0.?;
+                const s1 = node.src1.?;
+
+                if (self.backend) |be| {
+                    dispatchMatMul(node, s0, s1, flags, be);
+                    return;
+                }
+
+                if (pool) |tp| {
+                    dispatchMatMulParallel(node, s0, s1, flags, tp);
+                    return;
+                }
+            }
+
+            node.compute();
+        }
+
+        fn dispatchMatMul(node: *Tensor(T), s0: *const Tensor(T), s1: *const Tensor(T), flags: Tensor(T).MatMulFlags, be: backend_mod.Backend) void {
+            if (flags.trans0) {
+                if (flags.trans1) node.computeMatMulWithBackend(s0, true, s1, true, be) else node.computeMatMulWithBackend(s0, true, s1, false, be);
+            } else {
+                if (flags.trans1) node.computeMatMulWithBackend(s0, false, s1, true, be) else node.computeMatMulWithBackend(s0, false, s1, false, be);
+            }
+        }
+
+        fn dispatchMatMulParallel(node: *Tensor(T), s0: *const Tensor(T), s1: *const Tensor(T), flags: Tensor(T).MatMulFlags, tp: *std.Thread.Pool) void {
+            if (flags.trans0) {
+                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, true, s1, true, tp) else Tensor(T).computeMatMulParallel(node, s0, true, s1, false, tp);
+            } else {
+                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, false, s1, true, tp) else Tensor(T).computeMatMulParallel(node, s0, false, s1, false, tp);
             }
         }
 
