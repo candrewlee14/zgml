@@ -27,6 +27,7 @@ const Tensor = tensorlib.Tensor;
 const max_dims = tensorlib.max_dims;
 const Op = @import("op.zig").Op;
 const fused = @import("tensor/fused.zig");
+const fwd = @import("tensor/forward.zig");
 
 // ---------------------------------------------------------------------------
 // Comptime graph recording
@@ -362,16 +363,9 @@ pub fn ComptimeModel(comptime T: type, comptime Def: type) type {
                         const N = s[0]; // output cols
                         const M = s[1]; // output rows
                         const K = s0[0]; // inner dim
-                        // Simple matmul: dst[m,n] = sum_k(src0[m,k] * src1[k,n])
-                        for (0..M) |m| {
-                            for (0..N) |n| {
-                                var acc: T = 0;
-                                for (0..K) |k| {
-                                    acc += src0[m * K + k] * src1[k * N + n];
-                                }
-                                dst[m * N + n] = acc;
-                            }
-                        }
+                        // Use optimized SIMD-tiled kernel
+                        const kernel = fwd.selectMatMulKernel(T);
+                        kernel(dst, src0, src1, M, N, K, K, 1, N, 1, 0, 0, 0, N);
                     },
                     else => {},
                 }
