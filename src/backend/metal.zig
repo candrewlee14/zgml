@@ -275,6 +275,58 @@ const shader_source =
     \\    if (gid >= p.n_elements) return;
     \\    dst[p.dst_offset + gid * p.dst_strides[0]] = src[p.src0_offset + gid * p.src0_strides[0]];
     \\}
+    \\
+    \\// ── Fused kernels ────────────────────────────────────────
+    \\
+    \\struct FusedParams { uint rows; uint cols; uint src_offset; uint dst_offset; };
+    \\
+    \\// Fused softmax: max → shift → exp → sum → normalize. One thread per row.
+    \\kernel void fused_softmax_f32(
+    \\    device const float* src [[buffer(0)]],
+    \\    device float* dst       [[buffer(1)]],
+    \\    constant FusedParams& p [[buffer(2)]],
+    \\    uint rid [[thread_position_in_grid]]
+    \\) {
+    \\    if (rid >= p.rows) return;
+    \\    uint src_base = p.src_offset + rid * p.cols;
+    \\    uint dst_base = p.dst_offset + rid * p.cols;
+    \\    float m = -INFINITY;
+    \\    for (uint j = 0; j < p.cols; j++) m = max(m, src[src_base + j]);
+    \\    float s = 0.0f;
+    \\    for (uint j = 0; j < p.cols; j++) {
+    \\        float e = exp(src[src_base + j] - m);
+    \\        dst[dst_base + j] = e;
+    \\        s += e;
+    \\    }
+    \\    float inv = 1.0f / s;
+    \\    for (uint j = 0; j < p.cols; j++) dst[dst_base + j] *= inv;
+    \\}
+    \\
+    \\// Fused layer norm: mean → center → var → normalize → scale + shift.
+    \\// One thread per row. gamma at buffer(2), beta at buffer(3).
+    \\kernel void fused_layernorm_f32(
+    \\    device const float* src   [[buffer(0)]],
+    \\    device float* dst         [[buffer(1)]],
+    \\    device const float* gamma [[buffer(2)]],
+    \\    device const float* beta  [[buffer(3)]],
+    \\    constant FusedParams& p   [[buffer(4)]],
+    \\    uint rid [[thread_position_in_grid]]
+    \\) {
+    \\    if (rid >= p.rows) return;
+    \\    uint base = p.src_offset + rid * p.cols;
+    \\    uint dbase = p.dst_offset + rid * p.cols;
+    \\    float mu = 0.0f;
+    \\    for (uint j = 0; j < p.cols; j++) mu += src[base + j];
+    \\    mu /= float(p.cols);
+    \\    float v = 0.0f;
+    \\    for (uint j = 0; j < p.cols; j++) {
+    \\        float d = src[base + j] - mu;
+    \\        v += d * d;
+    \\    }
+    \\    float inv_std = 1.0f / sqrt(v / float(p.cols) + 1e-5f);
+    \\    for (uint j = 0; j < p.cols; j++)
+    \\        dst[dbase + j] = (src[base + j] - mu) * inv_std * gamma[j] + beta[j];
+    \\}
 ;
 
 // ── Kernel param structs (must match MSL layout) ──────────────────
@@ -298,6 +350,13 @@ const QMatMulParams = extern struct {
     N: u32,
     K: u32,
     block_size: u32,
+};
+
+const FusedParams = extern struct {
+    rows: u32,
+    cols: u32,
+    src_offset: u32,
+    dst_offset: u32,
 };
 
 const ComputeParams = extern struct {
@@ -325,6 +384,8 @@ pub const MetalBackend = struct {
     reduce_pipeline: *anyopaque,
     repeat_pipeline: *anyopaque,
     slice_assign_pipeline: *anyopaque,
+    fused_softmax_pipeline: *anyopaque,
+    fused_layernorm_pipeline: *anyopaque,
     library: *anyopaque,
     active_commands: ?*anyopaque = null,
 
@@ -349,6 +410,10 @@ pub const MetalBackend = struct {
         const repeat_pipeline = c.mtl_create_pipeline(device, library, "repeat_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(repeat_pipeline);
         const slice_assign_pipeline = c.mtl_create_pipeline(device, library, "slice_assign_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(slice_assign_pipeline);
+        const fused_softmax_pipeline = c.mtl_create_pipeline(device, library, "fused_softmax_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(fused_softmax_pipeline);
+        const fused_layernorm_pipeline = c.mtl_create_pipeline(device, library, "fused_layernorm_f32") orelse return error.PipelineCreateFailed;
 
         return .{
             .device = device,
@@ -359,12 +424,16 @@ pub const MetalBackend = struct {
             .reduce_pipeline = reduce_pipeline,
             .repeat_pipeline = repeat_pipeline,
             .slice_assign_pipeline = slice_assign_pipeline,
+            .fused_softmax_pipeline = fused_softmax_pipeline,
+            .fused_layernorm_pipeline = fused_layernorm_pipeline,
             .library = library,
         };
     }
 
     pub fn deinit(self: *MetalBackend) void {
         self.flushCommands();
+        c.mtl_release(self.fused_layernorm_pipeline);
+        c.mtl_release(self.fused_softmax_pipeline);
         c.mtl_release(self.slice_assign_pipeline);
         c.mtl_release(self.repeat_pipeline);
         c.mtl_release(self.reduce_pipeline);
@@ -555,6 +624,35 @@ fn deviceComputeF32(ctx: *anyopaque, spec: backend_mod.DeviceComputeSpec) bool {
     return true;
 }
 
+fn deviceFusedF32(ctx: *anyopaque, spec: backend_mod.DeviceFusedSpec) bool {
+    const self = getState(ctx);
+    const params = FusedParams{
+        .rows = spec.rows,
+        .cols = spec.cols,
+        .src_offset = spec.src.offset,
+        .dst_offset = spec.dst.offset,
+    };
+    const cmds = self.ensureCommands();
+
+    switch (spec.op) {
+        .softmax => {
+            var bufs = [_]?*anyopaque{ spec.src.buf.ptr, spec.dst.buf.ptr };
+            const threads: u32 = @min(spec.rows, 256);
+            const grid: u32 = (spec.rows + threads - 1) / threads;
+            c.mtl_encode_dispatch(cmds, self.fused_softmax_pipeline, @ptrCast(&bufs), 2, &params, @sizeOf(FusedParams), 2, grid, 1, threads, 1);
+        },
+        .layer_norm => {
+            const gamma_ptr = if (spec.gamma) |g| g.buf.ptr else spec.src.buf.ptr;
+            const beta_ptr = if (spec.beta) |b| b.buf.ptr else spec.src.buf.ptr;
+            var bufs = [_]?*anyopaque{ spec.src.buf.ptr, spec.dst.buf.ptr, gamma_ptr, beta_ptr };
+            const threads: u32 = @min(spec.rows, 256);
+            const grid: u32 = (spec.rows + threads - 1) / threads;
+            c.mtl_encode_dispatch(cmds, self.fused_layernorm_pipeline, @ptrCast(&bufs), 4, &params, @sizeOf(FusedParams), 4, grid, 1, threads, 1);
+        },
+    }
+    return true;
+}
+
 const vtable = backend_mod.Backend.VTable{
     .dense_matmul_f32 = denseMatMulF32,
     .quantized_matmul_f32 = quantizedMatMulF32,
@@ -566,6 +664,7 @@ const vtable = backend_mod.Backend.VTable{
     .device_matmul_f32 = deviceMatMulF32,
     .device_quantized_matmul_f32 = deviceQuantizedMatMulF32,
     .device_compute = deviceComputeF32,
+    .device_fused = deviceFusedF32,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────

@@ -131,7 +131,11 @@ fn deviceQuantizedMatMulF32(_: *anyopaque, spec: backend_mod.DeviceQuantizedMatM
 // ── VTable ─────────────────────────────────────────────────────────
 
 fn deviceCompute(_: *anyopaque, _: backend_mod.DeviceComputeSpec) bool {
-    return false; // CPU backend: fall back to host compute
+    return false;
+}
+
+fn deviceFused(_: *anyopaque, _: backend_mod.DeviceFusedSpec) bool {
+    return false;
 }
 
 const vtable = backend_mod.Backend.VTable{
@@ -145,6 +149,7 @@ const vtable = backend_mod.Backend.VTable{
     .device_matmul_f32 = deviceMatMulF32,
     .device_quantized_matmul_f32 = deviceQuantizedMatMulF32,
     .device_compute = deviceCompute,
+    .device_fused = deviceFused,
 };
 
 // ── Tests ──────────────────────────────────────────────────────────

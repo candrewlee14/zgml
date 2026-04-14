@@ -112,6 +112,21 @@ pub const TensorDesc = struct {
     strides: [4]u32,
 };
 
+/// Fused operations that collapse multiple primitive ops into one kernel.
+pub const FusedOp = enum { softmax, layer_norm };
+
+/// Spec for fused device kernels. src is input, dst is output.
+/// For layer_norm, gamma/beta are the affine parameters (null = identity).
+pub const DeviceFusedSpec = struct {
+    op: FusedOp,
+    dst: TensorDesc,
+    src: TensorDesc,
+    gamma: ?TensorDesc = null,
+    beta: ?TensorDesc = null,
+    rows: u32,
+    cols: u32,
+};
+
 /// Generic device compute spec — handles all non-matmul ops.
 /// The backend dispatches based on `op` to elementwise, reduce,
 /// broadcast, or scatter kernels internally.
@@ -149,6 +164,7 @@ pub const Backend = struct {
         device_matmul_f32: *const fn (ctx: *anyopaque, spec: DeviceMatMulSpecF32) bool,
         device_quantized_matmul_f32: *const fn (ctx: *anyopaque, spec: DeviceQuantizedMatMulSpecF32) bool,
         device_compute: *const fn (ctx: *anyopaque, spec: DeviceComputeSpec) bool,
+        device_fused: *const fn (ctx: *anyopaque, spec: DeviceFusedSpec) bool,
     };
 
     // ── Convenience methods ────────────────────────────────────
@@ -207,6 +223,10 @@ pub const Backend = struct {
 
     pub fn deviceCompute(self: Backend, spec: DeviceComputeSpec) bool {
         return self.vtable.device_compute(self.ctx, spec);
+    }
+
+    pub fn deviceFused(self: Backend, spec: DeviceFusedSpec) bool {
+        return self.vtable.device_fused(self.ctx, spec);
     }
 };
 
