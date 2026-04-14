@@ -304,7 +304,7 @@ pub fn deinitFusionPlan(comptime T: type, alloc: std.mem.Allocator, plan: Fusion
 /// Validate that a softmax-family plan's intermediate nodes have consistent shapes.
 /// The execution kernel iterates over input dimensions and indexes into all
 /// full-sized intermediates — if any have a different shape, we'd go OOB.
-fn validateSoftmaxPlan(comptime T: type, plan: SoftmaxPlan(T)) bool {
+pub fn validateSoftmaxPlan(comptime T: type, plan: SoftmaxPlan(T)) bool {
     const input = plan.input;
     const full_nodes = [_]*Tensor(T){ plan.rep_max, plan.neg_rep_max, plan.shifted, plan.exp_node, plan.output };
     for (full_nodes) |node| {
@@ -313,7 +313,7 @@ fn validateSoftmaxPlan(comptime T: type, plan: SoftmaxPlan(T)) bool {
     return true;
 }
 
-fn validateLogSoftmaxPlan(comptime T: type, plan: LogSoftmaxPlan(T)) bool {
+pub fn validateLogSoftmaxPlan(comptime T: type, plan: LogSoftmaxPlan(T)) bool {
     const input = plan.input;
     const full_nodes = [_]*Tensor(T){ plan.rep_max, plan.neg_rep_max, plan.shifted, plan.exp_node, plan.rep_log, plan.neg_rep_log, plan.output };
     for (full_nodes) |node| {
@@ -322,7 +322,7 @@ fn validateLogSoftmaxPlan(comptime T: type, plan: LogSoftmaxPlan(T)) bool {
     return true;
 }
 
-fn validateLayerNormPlan(comptime T: type, plan: LayerNormPlan(T)) bool {
+pub fn validateLayerNormPlan(comptime T: type, plan: LayerNormPlan(T)) bool {
     if (plan.mean_node.source1() == null or plan.var_node.source1() == null) return false;
     const input = plan.input;
     const full_nodes = [_]*Tensor(T){ plan.rep_mean, plan.neg_rep_mean, plan.centered, plan.sqr_node, plan.rep_std_inv, plan.output };

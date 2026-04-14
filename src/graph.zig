@@ -11,6 +11,7 @@ const tensorlib = @import("./tensor.zig");
 const Tensor = tensorlib.Tensor;
 const Op = @import("op.zig").Op;
 const loss = @import("loss.zig");
+const fusion = @import("fusion.zig");
 const compiler = @import("compiler.zig");
 const fused = @import("tensor/fused.zig");
 const assert = std.debug.assert;
@@ -31,6 +32,7 @@ pub fn ComputeGraph(comptime T: type) type {
         built_forward: bool = false,
         built_backward: bool = false,
         built_fusion: bool = false,
+        backward_inplace: bool = false,
         forward_node_count: usize = 0,
 
         arena: std.heap.ArenaAllocator,
@@ -155,6 +157,7 @@ pub fn ComputeGraph(comptime T: type) type {
             }
 
             self.built_backward = true;
+            self.backward_inplace = keep;
             self.resetGrads();
             self.invalidateExecutionPlans();
         }

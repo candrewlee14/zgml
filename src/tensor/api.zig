@@ -60,8 +60,13 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return t;
         }
 
+        /// Create a zero-initialized tensor with the same shape as self.
+        /// Used for gradient accumulators — they must start at zero and
+        /// stay zero (backward never writes to them, only reads).
         pub fn copyTensorShape(self: *Self) *Self {
-            return Self.initHelper(a(self), self.ne[0..self.n_dims], null) catch unreachable;
+            const t = Self.initHelper(a(self), self.ne[0..self.n_dims], null) catch unreachable;
+            @memset(t.data, 0);
+            return t;
         }
 
         fn structuralView(self: *Self, ne: []const usize, strides: [max_dims]usize, storage_offset: usize, op: Op) *Self {
@@ -82,7 +87,11 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const is_node: bool = !inplace and self.grad != null;
             const res = if (inplace) self.view() else self.copyTensorShape();
             res.op = op;
-            res.grad = if (is_node) Self.initHelper(alloc, &self.ne, null) catch unreachable else null;
+            res.grad = if (is_node) blk: {
+                const g = Self.initHelper(alloc, &self.ne, null) catch unreachable;
+                @memset(g.data, 0);
+                break :blk g;
+            } else null;
             res.src0 = self;
             res.src1 = null;
             return res;
@@ -101,7 +110,11 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const is_node: bool = !inplace and (self.grad != null or other.grad != null);
             const res: *Self = if (inplace) self.view() else Self.init(alloc, out_ne[0..out_ndims]) catch unreachable;
             res.op = op;
-            res.grad = if (is_node) Self.initHelper(alloc, out_ne[0..out_ndims], null) catch unreachable else null;
+            res.grad = if (is_node) blk: {
+                const g = Self.initHelper(alloc, out_ne[0..out_ndims], null) catch unreachable;
+                @memset(g.data, 0);
+                break :blk g;
+            } else null;
             res.src0 = self;
             res.src1 = other;
             return res;
