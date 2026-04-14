@@ -493,13 +493,16 @@ pub fn executeFusedGeneric(comptime T: type, plan: ElementwiseFusionPlan(T)) voi
 /// Length 4+: single-pass generic interpreter (one runtime switch per op per element).
 ///            Memory-bound for large tensors, so branch overhead is negligible.
 pub fn executeFusedChain(comptime T: type, plan: ElementwiseFusionPlan(T)) void {
+    const is_wasm = @import("builtin").target.cpu.arch == .wasm32 or
+        @import("builtin").target.cpu.arch == .wasm64;
     if (!isSafeElementwiseChain(T, plan)) {
         for (plan.nodes) |node| node.compute();
         return;
     }
     switch (plan.nodes.len) {
         2 => executeFused2(T, plan),
-        3 => executeFused3(T, plan),
+        // 13³=2197 kernel variants exceed WASM local limit; use generic on WASM.
+        3 => if (comptime is_wasm) executeFusedGeneric(T, plan) else executeFused3(T, plan),
         else => executeFusedGeneric(T, plan),
     }
 }

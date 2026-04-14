@@ -488,9 +488,10 @@ test "comptime model - matmul" {
 
 test "comptime model - linear layer end-to-end" {
     // Linear: y = x @ W + b
-    // x: [2, 1] (2 features, 1 sample)
-    // W: [3, 2] (project 2→3)
+    // x: [2, 1] (2 features, 1 sample) — data layout: [x0, x1]
+    // W: [3, 2] (project 2→3) — data layout: [w00,w01,w02, w10,w11,w12] (K=2 rows × N=3 cols)
     // b: [3]
+    // matmul: y[n] = sum_k(x[k] * W[k*N+n])
     const Model = ComptimeModel(f32, struct {
         pub fn define(b: *Builder) void {
             const x = b.input(.{ 2, 1 });
@@ -499,16 +500,17 @@ test "comptime model - linear layer end-to-end" {
         }
     });
 
-    try std.testing.expectEqual(@as(usize, 2), Model.param_count); // weight + bias
+    try std.testing.expectEqual(@as(usize, 2), Model.param_count);
 
     var model = try Model.init(std.testing.allocator);
     defer model.deinit();
 
-    // W = [[1, 0], [0, 1], [1, 1]] — projects [a,b] → [a, b, a+b]
+    // W layout [K=2, N=3]: row 0 = [1, 0, 1], row 1 = [0, 1, 1]
+    // So y = [x0*1+x1*0, x0*0+x1*1, x0*1+x1*1] = [x0, x1, x0+x1]
     model.param_data[0][0] = 1;
     model.param_data[0][1] = 0;
-    model.param_data[0][2] = 0;
-    model.param_data[0][3] = 1;
+    model.param_data[0][2] = 1;
+    model.param_data[0][3] = 0;
     model.param_data[0][4] = 1;
     model.param_data[0][5] = 1;
     // b = [0.5, -0.5, 0]
