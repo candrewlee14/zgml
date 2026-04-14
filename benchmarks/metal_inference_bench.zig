@@ -14,6 +14,87 @@ const Backend = zgml.backend.Backend;
 const WARMUP_TOKENS = 1;
 const TIMED_TOKENS = 32;
 
+fn diagnoseGraph(comptime config: GPTConfig, writer: anytype) !void {
+    const Session = zgml.inference.InferenceSession(f32, config);
+    const Op = zgml.Op;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+    var session = try Session.init(alloc);
+    defer session.deinit();
+    try session.quantize();
+
+    const steps = session.plan.graph.forward_execution_steps.items;
+    const nodes = session.plan.graph.nodes.items[0..session.plan.graph.forward_node_count];
+
+    // GPU-supported ops (must match metal.zig deviceComputeF32)
+    const gpu_ops = [_]Op{ .add, .mul, .neg, .exp, .sqrt, .recip, .gelu, .sum, .max, .repeat, .slice_assign };
+    const structural = [_]Op{ .none, .view, .as_strided, .reshape, .transpose, .permute, .broadcast_to };
+
+    const fused_mod = @import("zgml").backend; // just for type access
+    _ = fused_mod;
+    var n_fusion: u32 = 0;
+    var n_fused_elem: u32 = 0;
+    var n_fused_softmax: u32 = 0;
+    var n_fused_layernorm: u32 = 0;
+    var n_fused_other: u32 = 0;
+    var n_node: u32 = 0;
+    var n_matmul: u32 = 0;
+    var n_gpu: u32 = 0;
+    var n_structural: u32 = 0;
+    var n_cpu_fallback: u32 = 0;
+
+    for (steps) |step| {
+        switch (step) {
+            .fusion => |idx| {
+                n_fusion += 1;
+                const kind = session.plan.graph.fused_chains.items[idx].kind();
+                switch (kind) {
+                    .elementwise_chain => n_fused_elem += 1,
+                    .softmax => n_fused_softmax += 1,
+                    .layer_norm => n_fused_layernorm += 1,
+                    else => n_fused_other += 1,
+                }
+            },
+            .node => |node| {
+                n_node += 1;
+                const op = node.opTag();
+                if (op == .matmul) { n_matmul += 1; continue; }
+                for (structural) |s| { if (op == s) { n_structural += 1; break; } } else {
+                    var found = false;
+                    for (gpu_ops) |g| { if (op == g) { found = true; break; } }
+                    if (found) n_gpu += 1 else n_cpu_fallback += 1;
+                }
+            },
+        }
+    }
+
+    try writer.print("  Graph: {d} steps ({d} fused, {d} nodes)\n", .{ steps.len, n_fusion, n_node });
+    try writer.print("  Nodes: {d} total raw, {d} forward\n", .{ session.plan.graph.nodes.items.len, nodes.len });
+    try writer.print("  Device: {d} matmul, {d} gpu-compute, {d} structural(skip)\n", .{ n_matmul, n_gpu, n_structural });
+    try writer.print("  Fused:  {d} total ({d} elem-chain, {d} softmax, {d} layernorm, {d} other)\n", .{ n_fusion, n_fused_elem, n_fused_softmax, n_fused_layernorm, n_fused_other });
+    try writer.print("  CPU fallback: {d} ops", .{n_cpu_fallback});
+    if (n_cpu_fallback > 0) {
+        try writer.print(" [", .{});
+        for (steps) |step| {
+            switch (step) {
+                .node => |node| {
+                    const op = node.opTag();
+                    if (op == .matmul) continue;
+                    for (structural) |s| { if (op == s) break; } else {
+                        var found = false;
+                        for (gpu_ops) |g| { if (op == g) { found = true; break; } }
+                        if (!found) try writer.print("{s} ", .{op.symbol()});
+                    }
+                },
+                else => {},
+            }
+        }
+        try writer.print("]", .{});
+    }
+    try writer.print("\n\n", .{});
+}
+
 fn runBenchmark(
     comptime label: []const u8,
     comptime config: GPTConfig,
@@ -121,6 +202,7 @@ pub fn main() !void {
 
     // --- GPT-2 scale ---
     try w.interface.print("\nGPT-2 scale (d=768, L=12, H=12):\n", .{});
+    try diagnoseGraph(gpt2, &w.interface);
     try runBenchmark("CPU f32   ", gpt2, false, null, &w.interface);
     try runBenchmark("CPU int8  ", gpt2, true, null, &w.interface);
     if (metal) |be| {

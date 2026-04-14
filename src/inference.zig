@@ -350,9 +350,19 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
                         // graph if the output's src chain includes them.
                     });
                 },
+                .elementwise_chain => {
+                    // Dispatch each op in the chain individually on device.
+                    const chain = plan.payload.elementwise_chain;
+                    for (chain.nodes) |node| {
+                        self.dispatchNode(ds, node);
+                    }
+                },
                 else => {
-                    // Unsupported fused pattern: fall back to CPU.
+                    // Unsupported fused pattern: sync, CPU, re-upload output.
+                    ds.be.sync();
                     fused.executeFusionPlan(T, plan);
+                    const output_node = self.graph.nodes.items[plan.output_idx];
+                    ds.be.uploadSlice(T, ds.node_bufs.get(output_node).?, 0, output_node.data);
                 },
             }
         }
@@ -419,6 +429,8 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
                 .n_elements = @intCast(node.nElems()),
             })) {
                 // Fallback: sync, run on CPU, re-upload result.
+                if (@import("builtin").mode == .Debug)
+                    std.debug.print("  CPU fallback: {s} ({d} elems)\n", .{ op.symbol(), node.nElems() });
                 be.sync();
                 node.compute();
                 be.uploadSlice(T, ds.node_bufs.get(node).?, 0, node.data);
