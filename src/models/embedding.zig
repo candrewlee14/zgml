@@ -26,17 +26,18 @@ const Shaped = shaped_mod.Shaped;
 ///   - `vocab_size`: number of tokens in the vocabulary
 ///   - `d_model`: embedding/model dimension
 ///   - `max_seq_len`: maximum supported sequence length for positional encoding
-pub fn Embedding(comptime T: type, comptime vocab_size: usize, comptime d_model: usize, comptime max_seq_len: usize) type {
+pub fn Embedding(comptime T: type, comptime vocab_size: usize, comptime d_model: usize, comptime max_seq_len: usize, comptime learnable_pe: bool) type {
     return struct {
         const Self = @This();
 
         /// Learnable token embedding table: [d_model, vocab_size].
-        /// Row i (column in zgml layout) contains the embedding for token i.
+        /// Column i (in zgml col-major layout) contains the d_model-dim embedding for token i.
         token_embed: Shaped(T, .{ d_model, vocab_size }),
 
-        /// Pre-computed sinusoidal positional encoding: [d_model, max_seq_len].
-        /// This is a constant (not a learnable parameter).
-        pos_encode: *Tensor(T),
+        /// Positional encoding: [d_model, max_seq_len].
+        /// When learnable_pe is false, this is pre-computed sinusoidal (constant).
+        /// When learnable_pe is true, this is a learnable parameter table.
+        pos_encode: if (learnable_pe) Shaped(T, .{ d_model, max_seq_len }) else *Tensor(T),
 
         pub fn init(alloc: Alloc) !Self {
             var self: Self = undefined;
@@ -52,21 +53,28 @@ pub fn Embedding(comptime T: type, comptime vocab_size: usize, comptime d_model:
             }
             self.token_embed.inner.setParam();
 
-            // Pre-compute sinusoidal positional encoding
-            self.pos_encode = try Tensor(T).init(alloc, &.{ d_model, max_seq_len });
-            for (0..max_seq_len) |pos| {
-                for (0..d_model) |i| {
-                    const p: T = @floatFromInt(pos);
-                    const dim_pair: T = @floatFromInt(2 * (i / 2)); // floor to even
-                    const dm: T = @floatFromInt(d_model);
-                    const angle = p / std.math.pow(T, 10000.0, dim_pair / dm);
-                    self.pos_encode.data[pos * d_model + i] = if (i % 2 == 0)
-                        @sin(angle)
-                    else
-                        @cos(angle);
+            if (learnable_pe) {
+                // Learnable positional embedding table (loaded from pretrained weights)
+                self.pos_encode = try Shaped(T, .{ d_model, max_seq_len }).init(alloc);
+                _ = self.pos_encode.inner.setAllScalar(0);
+                self.pos_encode.inner.setParam();
+            } else {
+                // Pre-compute sinusoidal positional encoding
+                self.pos_encode = try Tensor(T).init(alloc, &.{ d_model, max_seq_len });
+                for (0..max_seq_len) |pos| {
+                    for (0..d_model) |i| {
+                        const p: T = @floatFromInt(pos);
+                        const dim_pair: T = @floatFromInt(2 * (i / 2)); // floor to even
+                        const dm: T = @floatFromInt(d_model);
+                        const angle = p / std.math.pow(T, 10000.0, dim_pair / dm);
+                        self.pos_encode.data[pos * d_model + i] = if (i % 2 == 0)
+                            @sin(angle)
+                        else
+                            @cos(angle);
+                    }
                 }
+                // pos_encode is NOT a parameter — no gradients needed
             }
-            // pos_encode is NOT a parameter — no gradients needed
 
             return self;
         }
@@ -86,12 +94,11 @@ pub fn Embedding(comptime T: type, comptime vocab_size: usize, comptime d_model:
             const tok_embed = self.token_embed.inner.gatherRows(token_indices);
 
             // Slice positional encoding to seq_len.
-            // We create a [d_model, seq_len] view by reshaping the first d_model*seq_len elements.
             const alloc = token_indices.alloc.?;
             const pos_enc = Tensor(T).init(alloc, &.{ d_model, seq_len }) catch unreachable;
             const elems = d_model * seq_len;
-            @memcpy(pos_enc.data[0..elems], self.pos_encode.data[0..elems]);
-            // pos_enc is a constant — no grad
+            const pe_data = if (learnable_pe) self.pos_encode.inner.data else self.pos_encode.data;
+            @memcpy(pos_enc.data[0..elems], pe_data[0..elems]);
 
             return tok_embed.add(pos_enc.repeatLike(tok_embed));
         }
@@ -112,16 +119,22 @@ pub fn Embedding(comptime T: type, comptime vocab_size: usize, comptime d_model:
 
             // Positional encoding at position `pos`
             const pe = Tensor(T).init(alloc, &.{ d_model, 1 }) catch unreachable;
+            const pe_data = if (learnable_pe) self.pos_encode.inner.data else self.pos_encode.data;
             for (0..d_model) |i| {
-                pe.data[i] = self.pos_encode.data[pos * d_model + i];
+                pe.data[i] = pe_data[pos * d_model + i];
             }
 
             return tok.add(pe);
         }
 
         /// Return all learnable parameters.
-        pub fn params(self: *const Self) [1]*Tensor(T) {
-            return .{self.token_embed.inner};
+        pub const n_params = if (learnable_pe) 2 else 1;
+        pub fn params(self: *const Self) [n_params]*Tensor(T) {
+            if (learnable_pe) {
+                return .{ self.token_embed.inner, self.pos_encode.inner };
+            } else {
+                return .{self.token_embed.inner};
+            }
         }
     };
 }
@@ -135,7 +148,7 @@ test "embedding - forward produces valid output" {
     defer g.deinit();
     const a = g.allocator();
 
-    const embed = try Embedding(f32, 10, 4, 8).init(a);
+    const embed = try Embedding(f32, 10, 4, 8, false).init(a);
 
     // Token indices: [3] (3 tokens from vocab of 10)
     const indices = try Tensor(f32).initIndexVectorCopy(a, &.{ 2, 5, 0 });
@@ -158,7 +171,7 @@ test "embedding - positional encoding varies by position" {
     defer g.deinit();
     const a = g.allocator();
 
-    const embed = try Embedding(f32, 10, 4, 8).init(a);
+    const embed = try Embedding(f32, 10, 4, 8, false).init(a);
 
     // Same token at different positions should produce different embeddings
     const indices = try Tensor(f32).initIndexVectorCopy(a, &.{ 3, 3, 3 });
@@ -183,7 +196,7 @@ test "embedding - forwardAt matches forward for single token" {
     var g1 = ComputeGraph(f32).init(tac);
     defer g1.deinit();
     const a1 = g1.allocator();
-    const embed1 = try Embedding(f32, 10, 4, 8).init(a1);
+    const embed1 = try Embedding(f32, 10, 4, 8, false).init(a1);
     const indices = try Tensor(f32).initIndexVectorCopy(a1, &.{ 2, 5, 0 });
     const full_out = embed1.forward(indices);
     try g1.infer(full_out);
@@ -192,7 +205,7 @@ test "embedding - forwardAt matches forward for single token" {
     var g2 = ComputeGraph(f32).init(tac);
     defer g2.deinit();
     const a2 = g2.allocator();
-    const embed2 = try Embedding(f32, 10, 4, 8).init(a2);
+    const embed2 = try Embedding(f32, 10, 4, 8, false).init(a2);
     // Copy weights
     @memcpy(embed2.token_embed.inner.data, embed1.token_embed.inner.data);
     const single = embed2.forwardAt(a2, 5, 1);
@@ -208,7 +221,7 @@ test "embedding - backward produces gradients for token embeddings" {
     defer g.deinit();
     const a = g.allocator();
 
-    const embed = try Embedding(f32, 10, 4, 8).init(a);
+    const embed = try Embedding(f32, 10, 4, 8, false).init(a);
     const indices = try Tensor(f32).initIndexVectorCopy(a, &.{ 1, 4 });
 
     const loss = embed.forward(indices).sumAll();

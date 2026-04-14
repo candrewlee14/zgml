@@ -250,6 +250,29 @@ pub fn build(b: *std.Build) void {
     }
     const train_step = b.step("train-tiny", "Train a tiny GPT and save checkpoint");
     train_step.dependOn(&b.addInstallArtifact(train_exe, .{}).step);
+
+    // Pretrained model generation
+    const zgml_pt_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+    const pt_mod = b.createModule(.{
+        .root_source_file = b.path("scripts/generate_pretrained.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "zgml", .module = zgml_pt_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_pt_pkg.zgml_options },
+        },
+    });
+    const pt_exe = b.addExecutable(.{
+        .name = "generate-pretrained",
+        .root_module = pt_mod,
+    });
+    if (use_blas) {
+        linkBlas(target, pt_exe);
+        pt_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    b.installArtifact(pt_exe);
+    const pt_step = b.step("generate-pretrained", "Generate text from a pretrained HF model");
+    pt_step.dependOn(&b.addInstallArtifact(pt_exe, .{}).step);
 }
 
 pub fn runTests(

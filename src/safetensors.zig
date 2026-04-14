@@ -170,8 +170,8 @@ pub const SafetensorsFile = struct {
 
     /// List all tensor names in the file.
     pub fn tensorNames(self: *const SafetensorsFile, alloc: Alloc) ![][]const u8 {
-        var names = std.ArrayList([]const u8).init(alloc);
-        errdefer names.deinit();
+        var names: std.ArrayList([]const u8) = .{};
+        errdefer names.deinit(alloc);
 
         const json = self.header_json;
         var pos: usize = 0;
@@ -193,12 +193,12 @@ pub const SafetensorsFile = struct {
             const trimmed_start = std.mem.trimLeft(u8, json[after_colon..], " \t\n");
             if (trimmed_start.len > 0 and trimmed_start[0] == '{') {
                 if (std.mem.indexOf(u8, trimmed_start, "data_offsets") != null) {
-                    try names.append(key);
+                    try names.append(alloc, key);
                 }
             }
         }
 
-        return names.toOwnedSlice();
+        return names.toOwnedSlice(alloc);
     }
 };
 

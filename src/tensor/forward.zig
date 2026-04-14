@@ -308,9 +308,9 @@ fn computeSliceAssign(comptime Self: type, result: *Self, src: *const Self, dst:
     std.debug.assert(pos < cols);
     std.debug.assert(src.nElems() >= rows);
 
-    // Write src into column `pos` of dst
+    // Write src into column `pos` of dst (column-major: col `pos` starts at pos * rows)
     for (0..rows) |r| {
-        dst.data[r * cols + pos] = src.data[r];
+        dst.data[pos * rows + r] = src.data[r];
     }
     // Result aliases dst's data
     result.data = dst.data;

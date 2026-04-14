@@ -37,6 +37,11 @@ pub const GPTConfig = struct {
     d_ff: usize,
     n_layers: usize,
     max_seq_len: usize,
+    // Pretrained model support (defaults preserve existing behavior)
+    learnable_pos_embed: bool = false,
+    learnable_ln: bool = false,
+    attn_bias: bool = false,
+    tied_lm_head: bool = false,
 };
 
 /// GPT-style decoder-only transformer.
@@ -47,23 +52,29 @@ pub const GPTConfig = struct {
 ///   3. Final layer normalization
 ///   4. Linear projection to vocabulary logits
 pub fn GPT(comptime T: type, comptime config: GPTConfig) type {
-    const Block = TransformerBlock(T, config.d_model, config.n_heads, config.d_ff, true);
-    const Embed = Embedding(T, config.vocab_size, config.d_model, config.max_seq_len);
+    const Block = TransformerBlock(T, config.d_model, config.n_heads, config.d_ff, true, config.learnable_ln, config.attn_bias);
+    const Embed = Embedding(T, config.vocab_size, config.d_model, config.max_seq_len, config.learnable_pos_embed);
 
     // Output projection weight shape: [vocab_size, d_model]
     const OutProjShape = Shaped(T, .{ config.vocab_size, config.d_model });
+    const LnShape = Shaped(T, .{config.d_model});
 
     // Number of params per block
-    const params_per_block = 4 * config.n_heads + 4;
-    // Total: embedding(1) + blocks(params_per_block * n_layers) + output_proj(1)
-    const total_params = 1 + params_per_block * config.n_layers + 1;
+    const params_per_block = Block.n_block_params;
+    const embed_params = Embed.n_params;
+    const ln_f_params: usize = if (config.learnable_ln) 2 else 0;
+    const out_proj_params: usize = if (config.tied_lm_head) 0 else 1;
+    // Total: embedding + blocks + final_ln + output_proj
+    const total_params = embed_params + params_per_block * config.n_layers + ln_f_params + out_proj_params;
 
     return struct {
         const Self = @This();
 
         embed: Embed,
         blocks: [config.n_layers]Block,
-        out_proj: OutProjShape,
+        out_proj: if (!config.tied_lm_head) OutProjShape else void,
+        ln_f_gamma: if (config.learnable_ln) LnShape else void,
+        ln_f_beta: if (config.learnable_ln) LnShape else void,
 
         pub fn init(alloc: Alloc) !Self {
             var self: Self = undefined;
@@ -74,9 +85,20 @@ pub fn GPT(comptime T: type, comptime config: GPTConfig) type {
                 self.blocks[i] = try Block.init(alloc);
             }
 
-            self.out_proj = try OutProjShape.init(alloc);
-            nn.kaimingUniform(T, self.out_proj.inner, 99);
-            self.out_proj.inner.setParam();
+            if (!config.tied_lm_head) {
+                self.out_proj = try OutProjShape.init(alloc);
+                nn.kaimingUniform(T, self.out_proj.inner, 99);
+                self.out_proj.inner.setParam();
+            }
+
+            if (config.learnable_ln) {
+                self.ln_f_gamma = try LnShape.init(alloc);
+                self.ln_f_beta = try LnShape.init(alloc);
+                _ = self.ln_f_gamma.inner.setAllScalar(1);
+                _ = self.ln_f_beta.inner.setAllScalar(0);
+                self.ln_f_gamma.inner.setParam();
+                self.ln_f_beta.inner.setParam();
+            }
 
             return self;
         }
@@ -96,12 +118,19 @@ pub fn GPT(comptime T: type, comptime config: GPTConfig) type {
                 x = self.blocks[i].forward(x);
             }
 
-            // 3. Final layer norm
+            // 3. Final layer norm (optionally affine)
             var ln_reduce = [_]usize{ 1, seq_len };
             x = x.layerNorm(&ln_reduce, 1e-5);
+            if (config.learnable_ln) {
+                x = x.mul(self.ln_f_gamma.inner.repeatLike(x)).addBias(self.ln_f_beta.inner);
+            }
 
-            // 4. Output projection: [d_model, seq] @ [vocab_size, d_model] = [vocab_size, seq]
-            return x.matMul(false, self.out_proj.inner, false);
+            // 4. Output projection: [d_model, seq] -> [vocab_size, seq]
+            if (config.tied_lm_head) {
+                return x.matMul(false, self.embed.token_embed.inner, true);
+            } else {
+                return x.matMul(false, self.out_proj.inner, false);
+            }
         }
 
         /// Cached forward for autoregressive generation (O(1) per token).
@@ -135,9 +164,16 @@ pub fn GPT(comptime T: type, comptime config: GPTConfig) type {
             // 3. Final layer norm (single token: reduce over [1,1])
             var ln_reduce = [_]usize{ 1, 1 };
             x = x.layerNorm(&ln_reduce, 1e-5);
+            if (config.learnable_ln) {
+                x = x.mul(self.ln_f_gamma.inner.repeatLike(x)).addBias(self.ln_f_beta.inner);
+            }
 
-            // 4. Output projection: [d_model, 1] @ [vocab_size, d_model] = [vocab_size, 1]
-            return x.matMul(false, self.out_proj.inner, false);
+            // 4. Output projection: [d_model, 1] -> [vocab_size, 1]
+            if (config.tied_lm_head) {
+                return x.matMul(false, self.embed.token_embed.inner, true);
+            } else {
+                return x.matMul(false, self.out_proj.inner, false);
+            }
         }
 
         /// Return all learnable parameters.
@@ -159,9 +195,19 @@ pub fn GPT(comptime T: type, comptime config: GPTConfig) type {
                 }
             }
 
+            // Final layer norm
+            if (config.learnable_ln) {
+                result[idx] = self.ln_f_gamma.inner;
+                idx += 1;
+                result[idx] = self.ln_f_beta.inner;
+                idx += 1;
+            }
+
             // Output projection
-            result[idx] = self.out_proj.inner;
-            idx += 1;
+            if (!config.tied_lm_head) {
+                result[idx] = self.out_proj.inner;
+                idx += 1;
+            }
 
             std.debug.assert(idx == total_params);
             return result;

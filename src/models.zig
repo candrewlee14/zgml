@@ -6,6 +6,7 @@ pub const TransformerBlock = @import("models/transformer.zig").TransformerBlock;
 pub const Embedding = @import("models/embedding.zig").Embedding;
 pub const GPT = @import("models/gpt.zig").GPT;
 pub const GPTConfig = @import("models/gpt.zig").GPTConfig;
+pub const gpt_loader = @import("models/gpt_loader.zig");
 pub const XorMlp = @import("models/xor_mlp.zig").Model;
 pub const MlpClassifier = @import("models/mlp_classifier.zig").Model;
 pub const Autoencoder = @import("models/autoencoder.zig").Model;

@@ -46,6 +46,8 @@ pub fn TransformerBlock(
     comptime n_heads: usize,
     comptime d_ff: usize,
     comptime causal: bool,
+    comptime learnable_ln: bool,
+    comptime attn_bias: bool,
 ) type {
     if (d_model % n_heads != 0)
         @compileError("d_model (" ++ std.fmt.comptimePrint("{}", .{d_model}) ++
@@ -56,6 +58,11 @@ pub fn TransformerBlock(
     // Per-head weight shapes
     const QkvShape = Shaped(T, .{ d_head, d_model }); // [d_head, d_model]
     const OShape = Shaped(T, .{ d_model, d_head }); // [d_model, d_head]
+    const QkvBiasShape = Shaped(T, .{d_head});
+    const OBiasShape = Shaped(T, .{d_model});
+
+    // Layer norm shapes
+    const LnShape = Shaped(T, .{d_model});
 
     // FFN weight shapes
     const W1Shape = Shaped(T, .{ d_ff, d_model });
@@ -71,6 +78,18 @@ pub fn TransformerBlock(
         w_k: [n_heads]QkvShape,
         w_v: [n_heads]QkvShape,
         w_o: [n_heads]OShape,
+
+        // Attention biases (only when attn_bias=true)
+        b_q: if (attn_bias) [n_heads]QkvBiasShape else void,
+        b_k: if (attn_bias) [n_heads]QkvBiasShape else void,
+        b_v: if (attn_bias) [n_heads]QkvBiasShape else void,
+        b_o: if (attn_bias) OBiasShape else void,
+
+        // Learnable layer norm (only when learnable_ln=true)
+        ln1_gamma: if (learnable_ln) LnShape else void,
+        ln1_beta: if (learnable_ln) LnShape else void,
+        ln2_gamma: if (learnable_ln) LnShape else void,
+        ln2_beta: if (learnable_ln) LnShape else void,
 
         // FFN weights
         w1: W1Shape, // d_model -> d_ff
@@ -113,6 +132,40 @@ pub fn TransformerBlock(
                 b.setParam();
             }
 
+            // Initialize attention biases to zero
+            if (attn_bias) {
+                for (0..n_heads) |h| {
+                    self.b_q[h] = try QkvBiasShape.init(alloc);
+                    self.b_k[h] = try QkvBiasShape.init(alloc);
+                    self.b_v[h] = try QkvBiasShape.init(alloc);
+                    _ = self.b_q[h].inner.setAllScalar(0);
+                    _ = self.b_k[h].inner.setAllScalar(0);
+                    _ = self.b_v[h].inner.setAllScalar(0);
+                    self.b_q[h].inner.setParam();
+                    self.b_k[h].inner.setParam();
+                    self.b_v[h].inner.setParam();
+                }
+                self.b_o = try OBiasShape.init(alloc);
+                _ = self.b_o.inner.setAllScalar(0);
+                self.b_o.inner.setParam();
+            }
+
+            // Initialize learnable layer norm (gamma=1, beta=0)
+            if (learnable_ln) {
+                self.ln1_gamma = try LnShape.init(alloc);
+                self.ln1_beta = try LnShape.init(alloc);
+                self.ln2_gamma = try LnShape.init(alloc);
+                self.ln2_beta = try LnShape.init(alloc);
+                _ = self.ln1_gamma.inner.setAllScalar(1);
+                _ = self.ln1_beta.inner.setAllScalar(0);
+                _ = self.ln2_gamma.inner.setAllScalar(1);
+                _ = self.ln2_beta.inner.setAllScalar(0);
+                self.ln1_gamma.inner.setParam();
+                self.ln1_beta.inner.setParam();
+                self.ln2_gamma.inner.setParam();
+                self.ln2_beta.inner.setParam();
+            }
+
             return self;
         }
 
@@ -147,6 +200,21 @@ pub fn TransformerBlock(
                 result;
         }
 
+        /// Apply layer norm, optionally with learnable affine (gamma * LN(x) + beta).
+        fn applyLayerNorm(self: *const Self, x: *Tensor(T), ln_reduce: []usize, comptime which: enum { ln1, ln2 }) *Tensor(T) {
+            const bare = x.layerNorm(ln_reduce, 1e-5);
+            if (!learnable_ln) return bare;
+            const gamma = switch (which) {
+                .ln1 => self.ln1_gamma.inner,
+                .ln2 => self.ln2_gamma.inner,
+            };
+            const beta = switch (which) {
+                .ln1 => self.ln1_beta.inner,
+                .ln2 => self.ln2_beta.inner,
+            };
+            return bare.mul(gamma.repeatLike(bare)).addBias(beta);
+        }
+
         /// Unified forward implementation operating on raw tensors.
         fn forwardInner(self: *const Self, x: *Tensor(T)) *Tensor(T) {
             const alloc = x.alloc.?;
@@ -154,7 +222,7 @@ pub fn TransformerBlock(
             var ln_reduce = [_]usize{ 1, seq_len };
 
             // --- Multi-head self-attention with pre-norm ---
-            const norm1 = x.layerNorm(&ln_reduce, 1e-5);
+            const norm1 = self.applyLayerNorm(x, &ln_reduce, .ln1);
 
             // Build causal mask once (shared across heads)
             const mask: ?*Tensor(T) = if (causal) blk: {
@@ -171,9 +239,15 @@ pub fn TransformerBlock(
             var attn_sum: ?*Tensor(T) = null;
             for (0..n_heads) |h| {
                 // Q, K, V projections: [d_model, seq] @ [d_head, d_model] = [d_head, seq]
-                const q = norm1.matMul(false, self.w_q[h].inner, false);
-                const k = norm1.matMul(false, self.w_k[h].inner, false);
-                const v = norm1.matMul(false, self.w_v[h].inner, false);
+                var q = norm1.matMul(false, self.w_q[h].inner, false);
+                var k = norm1.matMul(false, self.w_k[h].inner, false);
+                var v = norm1.matMul(false, self.w_v[h].inner, false);
+
+                if (attn_bias) {
+                    q = q.addBias(self.b_q[h].inner);
+                    k = k.addBias(self.b_k[h].inner);
+                    v = v.addBias(self.b_v[h].inner);
+                }
 
                 // Scaled dot-product attention: softmax(Q @ K^T / sqrt(d_head)) @ V
                 const scores = q.matMul(false, k, true); // [seq, seq]
@@ -194,10 +268,15 @@ pub fn TransformerBlock(
                 attn_sum = if (attn_sum) |acc| acc.add(projected) else projected;
             }
 
+            // Add output projection bias after summing all heads
+            if (attn_bias) {
+                attn_sum = attn_sum.?.addBias(self.b_o.inner);
+            }
+
             const after_attn = x.add(attn_sum.?);
 
             // --- Feed-forward with pre-norm ---
-            const norm2 = after_attn.layerNorm(&ln_reduce, 1e-5);
+            const norm2 = self.applyLayerNorm(after_attn, &ln_reduce, .ln2);
 
             const activated = nn.linear(T, norm2, self.w1.inner, self.b1.inner).gelu();
             const ff_out = nn.linear(T, activated, self.w2.inner, self.b2.inner);
@@ -220,21 +299,27 @@ pub fn TransformerBlock(
             pos: usize,
         ) *Tensor(T) {
             var ln_reduce = [_]usize{ 1, 1 };
-            const norm1 = x.layerNorm(&ln_reduce, 1e-5);
+            const norm1 = self.applyLayerNorm(x, &ln_reduce, .ln1);
 
             var attn_sum: ?*Tensor(T) = null;
             for (0..n_heads) |h| {
-                const q = norm1.matMul(false, self.w_q[h].inner, false); // [d_head, 1]
-                const k_new = norm1.matMul(false, self.w_k[h].inner, false);
-                const v_new = norm1.matMul(false, self.w_v[h].inner, false);
+                var q = norm1.matMul(false, self.w_q[h].inner, false); // [d_head, 1]
+                var k_new = norm1.matMul(false, self.w_k[h].inner, false);
+                var v_new = norm1.matMul(false, self.w_v[h].inner, false);
 
-                // Append to cache
-                _ = k_caches[h].sliceAssign(k_new, pos);
-                _ = v_caches[h].sliceAssign(v_new, pos);
+                if (attn_bias) {
+                    q = q.addBias(self.b_q[h].inner);
+                    k_new = k_new.addBias(self.b_k[h].inner);
+                    v_new = v_new.addBias(self.b_v[h].inner);
+                }
 
-                // Full cached K, V
-                const ck = k_caches[h].sliceColumns(0, pos + 1); // [d_head, pos+1]
-                const cv = v_caches[h].sliceColumns(0, pos + 1);
+                // Append to cache and use updated view for attention
+                const k_updated = k_caches[h].sliceAssign(k_new, pos);
+                const v_updated = v_caches[h].sliceAssign(v_new, pos);
+
+                // Full cached K, V (must chain from updated tensors so sliceAssign is in graph)
+                const ck = k_updated.sliceColumns(0, pos + 1); // [d_head, pos+1]
+                const cv = v_updated.sliceColumns(0, pos + 1);
 
                 // scores = q @ ck^T → [pos+1, 1] (same pattern as non-cached)
                 const scores = q.matMul(false, ck, true);
@@ -248,27 +333,72 @@ pub fn TransformerBlock(
                 attn_sum = if (attn_sum) |acc| acc.add(projected) else projected;
             }
 
+            if (attn_bias) {
+                attn_sum = attn_sum.?.addBias(self.b_o.inner);
+            }
+
             const after_attn = x.add(attn_sum.?);
             var ln2_reduce = [_]usize{ 1, 1 };
-            const norm2 = after_attn.layerNorm(&ln2_reduce, 1e-5);
+            const norm2 = self.applyLayerNorm(after_attn, &ln2_reduce, .ln2);
             const activated = nn.linear(T, norm2, self.w1.inner, self.b1.inner).gelu();
             const ff_out = nn.linear(T, activated, self.w2.inner, self.b2.inner);
             return after_attn.add(ff_out);
         }
 
         /// Return all learnable parameters (as runtime tensors for optimizer compatibility).
-        pub fn params(self: *const Self) [4 * n_heads + 4]*Tensor(T) {
-            var result: [4 * n_heads + 4]*Tensor(T) = undefined;
+        pub const n_block_params = 4 * n_heads + 4 +
+            (if (learnable_ln) 4 else 0) +
+            (if (attn_bias) 3 * n_heads + 1 else 0);
+
+        pub fn params(self: *const Self) [n_block_params]*Tensor(T) {
+            var result: [n_block_params]*Tensor(T) = undefined;
+            var idx: usize = 0;
+
             for (0..n_heads) |h| {
-                result[h * 4 + 0] = self.w_q[h].inner;
-                result[h * 4 + 1] = self.w_k[h].inner;
-                result[h * 4 + 2] = self.w_v[h].inner;
-                result[h * 4 + 3] = self.w_o[h].inner;
+                result[idx] = self.w_q[h].inner;
+                idx += 1;
+                result[idx] = self.w_k[h].inner;
+                idx += 1;
+                result[idx] = self.w_v[h].inner;
+                idx += 1;
+                result[idx] = self.w_o[h].inner;
+                idx += 1;
             }
-            result[4 * n_heads + 0] = self.w1.inner;
-            result[4 * n_heads + 1] = self.b1.inner;
-            result[4 * n_heads + 2] = self.w2.inner;
-            result[4 * n_heads + 3] = self.b2.inner;
+
+            if (attn_bias) {
+                for (0..n_heads) |h| {
+                    result[idx] = self.b_q[h].inner;
+                    idx += 1;
+                    result[idx] = self.b_k[h].inner;
+                    idx += 1;
+                    result[idx] = self.b_v[h].inner;
+                    idx += 1;
+                }
+                result[idx] = self.b_o.inner;
+                idx += 1;
+            }
+
+            if (learnable_ln) {
+                result[idx] = self.ln1_gamma.inner;
+                idx += 1;
+                result[idx] = self.ln1_beta.inner;
+                idx += 1;
+                result[idx] = self.ln2_gamma.inner;
+                idx += 1;
+                result[idx] = self.ln2_beta.inner;
+                idx += 1;
+            }
+
+            result[idx] = self.w1.inner;
+            idx += 1;
+            result[idx] = self.b1.inner;
+            idx += 1;
+            result[idx] = self.w2.inner;
+            idx += 1;
+            result[idx] = self.b2.inner;
+            idx += 1;
+
+            std.debug.assert(idx == n_block_params);
             return result;
         }
     };
@@ -283,7 +413,7 @@ test "transformer block - single head forward (dynamic)" {
     defer g.deinit();
     const a = g.allocator();
 
-    const block = try TransformerBlock(f32, 4, 1, 8, false).init(a);
+    const block = try TransformerBlock(f32, 4, 1, 8, false, false, false).init(a);
 
     const input = try Tensor(f32).init(a, &.{ 4, 3 });
     for (input.data, 0..) |*d, i| {
@@ -310,7 +440,7 @@ test "transformer block - multi-head forward (dynamic)" {
     const a = g.allocator();
 
     // d_model=4, n_heads=2, d_head=2
-    const block = try TransformerBlock(f32, 4, 2, 8, false).init(a);
+    const block = try TransformerBlock(f32, 4, 2, 8, false, false, false).init(a);
 
     const input = try Tensor(f32).init(a, &.{ 4, 3 });
     for (input.data, 0..) |*d, i| {
@@ -336,7 +466,7 @@ test "transformer block - causal masking" {
     defer g.deinit();
     const a = g.allocator();
 
-    const block = try TransformerBlock(f32, 4, 2, 8, true).init(a);
+    const block = try TransformerBlock(f32, 4, 2, 8, true, false, false).init(a);
 
     const input = try Tensor(f32).init(a, &.{ 4, 3 });
     for (input.data, 0..) |*d, i| {
@@ -362,7 +492,7 @@ test "transformer block - forward produces valid output (shaped)" {
     defer g.deinit();
     const a = g.allocator();
 
-    const block = try TransformerBlock(f32, 4, 2, 8, false).init(a);
+    const block = try TransformerBlock(f32, 4, 2, 8, false, false, false).init(a);
 
     const input = (try Shaped(f32, .{ 4, 3 }).init(a)).setData(
         &[_]f32{ 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1 },
@@ -389,7 +519,7 @@ test "transformer block - shaped and dynamic produce same result" {
     var g1 = ComputeGraph(f32).init(tac);
     defer g1.deinit();
     const a1 = g1.allocator();
-    const block1 = try TransformerBlock(f32, 4, 2, 8, false).init(a1);
+    const block1 = try TransformerBlock(f32, 4, 2, 8, false, false, false).init(a1);
     const input_shaped = (try Shaped(f32, .{ 4, 3 }).init(a1)).setData(&data);
     const out_shaped = block1.forward(input_shaped);
     try g1.buildForward(out_shaped.tensor());
@@ -398,7 +528,7 @@ test "transformer block - shaped and dynamic produce same result" {
     var g2 = ComputeGraph(f32).init(tac);
     defer g2.deinit();
     const a2 = g2.allocator();
-    const block2 = try TransformerBlock(f32, 4, 2, 8, false).init(a2);
+    const block2 = try TransformerBlock(f32, 4, 2, 8, false, false, false).init(a2);
     const input_dynamic = try Tensor(f32).init(a2, &.{ 4, 3 });
     input_dynamic.setData(&data);
     const out_dynamic = block2.forward(input_dynamic);
@@ -415,7 +545,7 @@ test "transformer block - backward produces non-zero gradients" {
     defer g.deinit();
     const a = g.allocator();
 
-    const block = try TransformerBlock(f32, 4, 2, 8, false).init(a);
+    const block = try TransformerBlock(f32, 4, 2, 8, false, false, false).init(a);
 
     const input = try Tensor(f32).init(a, &.{ 4, 3 });
     for (input.data, 0..) |*d, i| {
@@ -444,7 +574,7 @@ test "transformer block - causal backward produces non-zero gradients" {
     defer g.deinit();
     const a = g.allocator();
 
-    const block = try TransformerBlock(f32, 4, 2, 8, true).init(a);
+    const block = try TransformerBlock(f32, 4, 2, 8, true, false, false).init(a);
 
     const input = try Tensor(f32).init(a, &.{ 4, 3 });
     for (input.data, 0..) |*d, i| {
@@ -472,7 +602,7 @@ test "transformer block - residual connection preserves input contribution" {
     defer g.deinit();
     const a = g.allocator();
 
-    const block = try TransformerBlock(f32, 4, 1, 8, false).init(a);
+    const block = try TransformerBlock(f32, 4, 1, 8, false, false, false).init(a);
     for (block.params()) |param| {
         _ = param.setAllScalar(0);
     }
@@ -497,7 +627,7 @@ test "transformer block - numerical gradient check on one parameter" {
     var g1 = ComputeGraph(f32).init(tac);
     defer g1.deinit();
     const a1 = g1.allocator();
-    const block1 = try TransformerBlock(f32, 4, 2, 8, false).init(a1);
+    const block1 = try TransformerBlock(f32, 4, 2, 8, false, false, false).init(a1);
     const input1 = try Tensor(f32).init(a1, &.{ 4, 3 });
     for (input1.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(i)) * 0.1;
 
@@ -511,7 +641,7 @@ test "transformer block - numerical gradient check on one parameter" {
     var g2 = ComputeGraph(f32).init(tac);
     defer g2.deinit();
     const a2 = g2.allocator();
-    const block2 = try TransformerBlock(f32, 4, 2, 8, false).init(a2);
+    const block2 = try TransformerBlock(f32, 4, 2, 8, false, false, false).init(a2);
     block2.w_o[0].inner.data[0] += h;
     const input2 = try Tensor(f32).init(a2, &.{ 4, 3 });
     for (input2.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(i)) * 0.1;
@@ -522,7 +652,7 @@ test "transformer block - numerical gradient check on one parameter" {
     var g3 = ComputeGraph(f32).init(tac);
     defer g3.deinit();
     const a3 = g3.allocator();
-    const block3 = try TransformerBlock(f32, 4, 2, 8, false).init(a3);
+    const block3 = try TransformerBlock(f32, 4, 2, 8, false, false, false).init(a3);
     block3.w_o[0].inner.data[0] -= h;
     const input3 = try Tensor(f32).init(a3, &.{ 4, 3 });
     for (input3.data, 0..) |*d, i| d.* = @as(f32, @floatFromInt(i)) * 0.1;
@@ -544,7 +674,7 @@ test "transformer block - cached forward produces valid output" {
     const d_h = d_model / n_h; // 2
     const max_seq = 8;
 
-    const block = try TransformerBlock(f32, d_model, n_h, 8, true).init(a);
+    const block = try TransformerBlock(f32, d_model, n_h, 8, true, false, false).init(a);
 
     // Allocate KV caches: [d_head, max_seq] per head
     var k_caches: [n_h]*Tensor(f32) = undefined;

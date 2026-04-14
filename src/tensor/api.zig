@@ -648,13 +648,12 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             assert(self.n_dims >= 2);
             assert(pos < self.ne[1]);
             assert(src.ne[0] == self.ne[0]);
-            const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
+            const res = Self.initHelper(alloc, self.ne[0..self.n_dims], self.data) catch unreachable;
             res.op = .slice_assign;
             res.storage_offset = pos;
             res.grad = null; // inference-only
             res.src0 = src;
             res.src1 = self;
-            res.data = self.data; // result aliases destination
             return res;
         }
 
