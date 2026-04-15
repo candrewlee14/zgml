@@ -23,7 +23,8 @@ const config = zgml.models.LlamaConfig{
     .tied_lm_head = true,
 };
 
-const Session = zgml.llama_inference.LlamaInferenceSession(f32, config);
+const T = f32;
+const Session = zgml.llama_inference.LlamaInferenceSession(T, config);
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -70,7 +71,7 @@ pub fn main(init: std.process.Init) !void {
 
     var sf = try zgml.safetensors.SafetensorsFile.open(alloc, model_path, io);
     defer sf.deinit();
-    try zgml.models.llama_loader.loadLlama(f32, config, &session.model, &sf);
+    try zgml.models.llama_loader.loadLlama(T, config, &session.model, &sf);
 
     try stderr.interface.print("Loaded {s} ({d} tokens)\n", .{ prompt, prompt_ids.len });
     stderr.interface.flush() catch {};

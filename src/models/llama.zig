@@ -115,7 +115,7 @@ pub fn LLaMA(comptime T: type, comptime config: LlamaConfig) type {
 
             // Final RMSNorm
             var norm_reduce = [_]usize{ 1, seq_len };
-            x = x.rmsNorm(&norm_reduce, config.rms_norm_eps);
+            x = x.rmsNorm(&norm_reduce, @floatCast(config.rms_norm_eps));
             x = x.mul(self.rms_norm_f.inner.repeatLike(x));
 
             // Output projection
@@ -145,7 +145,7 @@ pub fn LLaMA(comptime T: type, comptime config: LlamaConfig) type {
             }
 
             var norm_reduce = [_]usize{ 1, 1 };
-            x = x.rmsNorm(&norm_reduce, config.rms_norm_eps);
+            x = x.rmsNorm(&norm_reduce, @floatCast(config.rms_norm_eps));
             x = x.mul(self.rms_norm_f.inner.repeatLike(x));
 
             if (config.tied_lm_head) {

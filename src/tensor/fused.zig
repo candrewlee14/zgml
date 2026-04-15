@@ -448,9 +448,11 @@ fn applyOp(comptime T: type, comptime op: FusedOp, val: T, node: anytype, i: usi
         .recip => 1.0 / val,
         .exp => @exp(val),
         .log => @log(val),
-        .gelu => 0.5 * val * (1.0 + std.math.tanh(
-            @as(T, SQRT_2_OVER_PI) * val * (1.0 + @as(T, GELU_COEF_A) * val * val),
-        )),
+        .gelu => blk: {
+            const vf: f32 = @floatCast(val);
+            const t = std.math.tanh(@as(f32, SQRT_2_OVER_PI) * vf * (1.0 + @as(f32, GELU_COEF_A) * vf * vf));
+            break :blk @floatCast(0.5 * vf * (1.0 + t));
+        },
         .add_src1 => val + loadOther(T, node.src1.?, i),
         .add_src0 => val + loadOther(T, node.src0.?, i),
         .mul_src1 => if (node.src0.? == node.src1.?) val * val else val * loadOther(T, node.src1.?, i),

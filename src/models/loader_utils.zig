@@ -74,12 +74,7 @@ pub fn loadWeight2D(
     rows: usize,
     cols: usize,
 ) !void {
-    const meta = sf.findTensorMeta(name) orelse return error.TensorNotFound;
-    switch (meta.dtype) {
-        .f32 => transposeRowToCol(dst, sf.getTensorF32(meta.offset_start, meta.offset_end), rows, cols),
-        .f16 => transposeRowToColF16(dst, sf.getTensorF16(meta.offset_start, meta.offset_end), rows, cols),
-        else => return error.UnsupportedDtype,
-    }
+    loadWeight2DGeneric(f32, dst, sf, name, rows, cols) catch |e| return e;
 }
 
 /// Load a 1D weight vector (bias, norm weight). No transposition needed.
@@ -88,12 +83,54 @@ pub fn loadWeight1D(
     sf: *const SafetensorsFile,
     name: []const u8,
 ) !void {
+    loadWeight1DGeneric(f32, dst, sf, name) catch |e| return e;
+}
+
+/// Generic 2D weight loader: transpose from HF row-major to column-major,
+/// converting to destination type T.
+pub fn loadWeight2DGeneric(
+    comptime T: type,
+    dst: []T,
+    sf: *const SafetensorsFile,
+    name: []const u8,
+    rows: usize,
+    cols: usize,
+) !void {
     const meta = sf.findTensorMeta(name) orelse return error.TensorNotFound;
     switch (meta.dtype) {
-        .f32 => copyDirect(dst, sf.getTensorF32(meta.offset_start, meta.offset_end)),
-        .f16 => copyDirectF16(dst, sf.getTensorF16(meta.offset_start, meta.offset_end)),
+        .f32 => transposeRowToColGeneric(T, dst, sf.getTensorF32(meta.offset_start, meta.offset_end), rows, cols),
+        .f16 => transposeRowToColGeneric(T, dst, sf.getTensorF16(meta.offset_start, meta.offset_end), rows, cols),
         else => return error.UnsupportedDtype,
     }
+}
+
+/// Generic 1D weight loader: copy with type conversion.
+pub fn loadWeight1DGeneric(
+    comptime T: type,
+    dst: []T,
+    sf: *const SafetensorsFile,
+    name: []const u8,
+) !void {
+    const meta = sf.findTensorMeta(name) orelse return error.TensorNotFound;
+    switch (meta.dtype) {
+        .f32 => copyGeneric(T, dst, sf.getTensorF32(meta.offset_start, meta.offset_end)),
+        .f16 => copyGeneric(T, dst, sf.getTensorF16(meta.offset_start, meta.offset_end)),
+        else => return error.UnsupportedDtype,
+    }
+}
+
+/// Transpose row-major [rows, cols] to column-major [cols, rows] with type conversion.
+fn transposeRowToColGeneric(comptime T: type, dst: []T, src: anytype, rows: usize, cols: usize) void {
+    for (0..rows) |r| {
+        for (0..cols) |c| {
+            dst[c * rows + r] = @floatCast(src[r * cols + c]);
+        }
+    }
+}
+
+/// Copy with float type conversion.
+fn copyGeneric(comptime T: type, dst: []T, src: anytype) void {
+    for (dst, src) |*d, s| d.* = @floatCast(s);
 }
 
 /// Load a 1D tensor into a slice of the destination buffer.

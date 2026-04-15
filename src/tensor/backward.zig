@@ -366,14 +366,15 @@ pub fn Ops(comptime Self: type) type {
                         const ElemType = @TypeOf(src0.data[0]);
                         const gelu_grad = try src0.map(struct {
                             fn f(x: ElemType) ElemType {
-                                const coef: ElemType = GELU_COEF_A;
-                                const s2pi: ElemType = SQRT_2_OVER_PI;
-                                const x2 = x * x;
-                                const a = s2pi * x * (1.0 + coef * x2);
+                                const xf: f32 = @floatCast(x);
+                                const coef: f32 = GELU_COEF_A;
+                                const s2pi: f32 = SQRT_2_OVER_PI;
+                                const x2 = xf * xf;
+                                const a = s2pi * xf * (1.0 + coef * x2);
                                 const tanh_a = std.math.tanh(a);
                                 const sech2_a = 1.0 - tanh_a * tanh_a;
                                 const da = s2pi * (1.0 + 3.0 * coef * x2);
-                                return 0.5 * (1.0 + tanh_a) + 0.5 * x * sech2_a * da;
+                                return @floatCast(0.5 * (1.0 + tanh_a) + 0.5 * xf * sech2_a * da);
                             }
                         }.f);
                         const contribution = gelu_grad.mul(out_grad);
