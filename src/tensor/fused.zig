@@ -14,6 +14,24 @@ const Op = @import("../op.zig").Op;
 const Tensor = @import("../tensor.zig").Tensor;
 const forward = @import("forward.zig");
 
+pub const ConvPhaseProfile = struct {
+    fwd_im2col_ns: u64 = 0,
+    fwd_gemm_ns: u64 = 0,
+    fwd_epilogue_ns: u64 = 0,
+    bwd_input_rearrange_ns: u64 = 0,
+    bwd_input_gemm_ns: u64 = 0,
+    bwd_input_col2im_ns: u64 = 0,
+    bwd_kernel_im2col_ns: u64 = 0,
+    bwd_kernel_rearrange_ns: u64 = 0,
+    bwd_kernel_gemm_ns: u64 = 0,
+};
+
+fn addConvPhase(dst: ?*ConvPhaseProfile, comptime field: []const u8, ns: u64) void {
+    if (dst) |profile| {
+        @field(profile, field) += ns;
+    }
+}
+
 const GELU_COEF_A: comptime_float = 0.044715;
 const SQRT_2_OVER_PI: comptime_float = @sqrt(2.0 / std.math.pi);
 
@@ -1032,7 +1050,7 @@ fn selectConvMatMul(comptime T: type) forward.MatMulFnType(T) {
 // Conv2d execution: forward, backward-input, backward-kernel
 // ---------------------------------------------------------------------------
 
-fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
+fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T), phase_profile: ?*ConvPhaseProfile) void {
     const d = Conv2dDims(T).fromForward(plan);
     const NB = d.N * d.batch;
     const total_scratch = (d.K + d.c_out) * NB;
@@ -1044,21 +1062,27 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
 
     const col_buf = scratch[0 .. d.K * NB];
     const mm_temp = scratch[d.K * NB ..][0 .. d.c_out * NB];
+    var timer = std.time.Timer.start() catch @panic("timer");
 
     // 1. Batched im2col: all samples into [K, N*batch].
+    timer.reset();
     for (0..d.batch) |n| {
         im2col(T, d, col_buf, n, NB, n * d.N);
     }
+    addConvPhase(phase_profile, "fwd_im2col_ns", timer.read());
 
     // 2. Single matmul: kernel[c_out, K] @ col_buf[K, NB] → mm_temp[c_out, NB]
     const mm = selectConvMatMul(T);
+    timer.reset();
     mm(mm_temp, d.kernel_data, col_buf.ptr[0..col_buf.len], d.c_out, NB, d.K, d.K, 1, NB, 1, 0, 0, 0, NB);
+    addConvPhase(phase_profile, "fwd_gemm_ns", timer.read());
 
     // 3. Rearrange [c_out, NB] → [batch, c_out, N] with optional fused bias
     // and relu applied directly into the final output tensor.
     const output = plan.output.data;
     const has_bias = plan.bias != null;
     const has_relu = plan.activation != null;
+    timer.reset();
     for (0..d.batch) |n| {
         for (0..d.c_out) |oc| {
             const src = mm_temp[oc * NB + n * d.N ..][0..d.N];
@@ -1071,6 +1095,7 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
             }
         }
     }
+    addConvPhase(phase_profile, "fwd_epilogue_ns", timer.read());
 }
 
 /// SIMD copy with fused bias add + optional ReLU.
@@ -1094,7 +1119,7 @@ fn rearrangeSimd(comptime T: type, dst: []T, src: []const T, bias: T, relu: bool
     }
 }
 
-fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T)) void {
+fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T), phase_profile: ?*ConvPhaseProfile) void {
     const d = Conv2dDims(T).fromBwdInput(plan);
     const NB = d.N * d.batch;
     const total_scratch = (d.K + d.c_out) * NB;
@@ -1106,8 +1131,10 @@ fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T)) void
 
     const col_buf = scratch[0 .. d.K * NB];
     const grad_buf = scratch[d.K * NB ..][0 .. d.c_out * NB];
+    var timer = std.time.Timer.start() catch @panic("timer");
 
     // 1. Rearrange output_grad from [N, c_out, batch] to [c_out, N*batch]
+    timer.reset();
     for (0..d.c_out) |oc| {
         for (0..d.batch) |n| {
             @memcpy(
@@ -1116,19 +1143,24 @@ fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T)) void
             );
         }
     }
+    addConvPhase(phase_profile, "bwd_input_rearrange_ns", timer.read());
 
     // 2. Single GEMM: kernel^T[K, c_out] @ grad_buf[c_out, NB] → col_buf[K, NB]
     const mm = selectConvMatMul(T);
+    timer.reset();
     mm(col_buf, d.kernel_data, grad_buf, d.K, NB, d.c_out, 1, d.K, NB, 1, 0, 0, 0, NB);
+    addConvPhase(phase_profile, "bwd_input_gemm_ns", timer.read());
 
     // 3. col2im per batch from batched col_buf
+    timer.reset();
     @memset(plan.output.data, 0);
     for (0..d.batch) |n| {
         col2im(T, d, plan.output.data, plan.output.strides, col_buf, n, NB, n * d.N);
     }
+    addConvPhase(phase_profile, "bwd_input_col2im_ns", timer.read());
 }
 
-fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T)) void {
+fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T), phase_profile: ?*ConvPhaseProfile) void {
     const d = Conv2dDims(T).fromBwdKernel(plan);
     const NB = d.N * d.batch;
     const total_scratch = (d.K + d.c_out) * NB;
@@ -1141,13 +1173,17 @@ fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T)) vo
 
     const col_buf = scratch[0 .. d.K * NB];
     const grad_buf = scratch[d.K * NB ..][0 .. d.c_out * NB];
+    var timer = std.time.Timer.start() catch @panic("timer");
 
     // 1. Build batched im2col: [K, N*batch] — all samples concatenated.
+    timer.reset();
     for (0..d.batch) |n| {
         im2col(T, d, col_buf, n, NB, n * d.N);
     }
+    addConvPhase(phase_profile, "bwd_kernel_im2col_ns", timer.read());
 
     // 2. Rearrange output_grad from [N, c_out, batch] to [c_out, N*batch]
+    timer.reset();
     for (0..d.c_out) |oc| {
         for (0..d.batch) |n| {
             @memcpy(
@@ -1156,11 +1192,14 @@ fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T)) vo
             );
         }
     }
+    addConvPhase(phase_profile, "bwd_kernel_rearrange_ns", timer.read());
 
     // 3. Single GEMM: grad_buf[c_out, NB] @ col_buf^T[NB, K] → output[c_out, K]
     //    Inner dim NB inherently sums across all batches.
     const mm = selectConvMatMul(T);
+    timer.reset();
     mm(plan.output.data, grad_buf, col_buf, d.c_out, d.K, NB, NB, 1, 1, NB, 0, 0, 0, d.K);
+    addConvPhase(phase_profile, "bwd_kernel_gemm_ns", timer.read());
 }
 
 // ---------------------------------------------------------------------------
@@ -1382,12 +1421,12 @@ fn executeLayerNormPlan(comptime T: type, plan: LayerNormPlan(T)) void {
     }
 }
 
-pub fn executeFusionPlan(comptime T: type, plan: FusionPlan(T)) void {
+pub fn executeFusionPlan(comptime T: type, plan: FusionPlan(T), phase_profile: ?*ConvPhaseProfile) void {
     switch (plan.payload) {
         .elementwise_chain => |chain_plan| executeFusedChain(T, chain_plan),
-        .conv2d => |conv2d_plan| executeConv2dPlan(T, conv2d_plan),
-        .conv2d_bwd_input => |conv2d_plan| executeConv2dBwdInputPlan(T, conv2d_plan),
-        .conv2d_bwd_kernel => |conv2d_plan| executeConv2dBwdKernelPlan(T, conv2d_plan),
+        .conv2d => |conv2d_plan| executeConv2dPlan(T, conv2d_plan, phase_profile),
+        .conv2d_bwd_input => |conv2d_plan| executeConv2dBwdInputPlan(T, conv2d_plan, phase_profile),
+        .conv2d_bwd_kernel => |conv2d_plan| executeConv2dBwdKernelPlan(T, conv2d_plan, phase_profile),
         .max_pool2d => |pool_plan| executeMaxPool2d(T, pool_plan),
         .max_pool2d_bwd => |pool_plan| executeMaxPool2dBwd(T, pool_plan),
         .softmax => |softmax_plan| executeSoftmaxPlan(T, softmax_plan),

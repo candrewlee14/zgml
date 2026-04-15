@@ -617,6 +617,14 @@ pub fn ComputeGraph(comptime T: type) type {
             fused_region_count: usize = 0,
             forward_step_count: usize = 0,
             backward_step_count: usize = 0,
+            fused_conv_phases: fused.ConvPhaseProfile = .{},
+
+            fn hasConvPhaseData(self: @This()) bool {
+                const p = self.fused_conv_phases;
+                return p.fwd_im2col_ns != 0 or p.fwd_gemm_ns != 0 or p.fwd_epilogue_ns != 0 or
+                    p.bwd_input_rearrange_ns != 0 or p.bwd_input_gemm_ns != 0 or p.bwd_input_col2im_ns != 0 or
+                    p.bwd_kernel_im2col_ns != 0 or p.bwd_kernel_rearrange_ns != 0 or p.bwd_kernel_gemm_ns != 0;
+            }
 
             pub fn render(self: @This(), writer: anytype) !void {
                 try writer.print(
@@ -634,6 +642,22 @@ pub fn ComputeGraph(comptime T: type) type {
                         nsToMs(self.total_ns),
                     },
                 );
+                if (self.hasConvPhaseData()) {
+                    try writer.print(
+                        "  conv_phases_ms: fwd(im2col={d:.3}, gemm={d:.3}, epilogue={d:.3}) bwd_in(rearrange={d:.3}, gemm={d:.3}, col2im={d:.3}) bwd_k(im2col={d:.3}, rearrange={d:.3}, gemm={d:.3})\n",
+                        .{
+                            nsToMs(self.fused_conv_phases.fwd_im2col_ns),
+                            nsToMs(self.fused_conv_phases.fwd_gemm_ns),
+                            nsToMs(self.fused_conv_phases.fwd_epilogue_ns),
+                            nsToMs(self.fused_conv_phases.bwd_input_rearrange_ns),
+                            nsToMs(self.fused_conv_phases.bwd_input_gemm_ns),
+                            nsToMs(self.fused_conv_phases.bwd_input_col2im_ns),
+                            nsToMs(self.fused_conv_phases.bwd_kernel_im2col_ns),
+                            nsToMs(self.fused_conv_phases.bwd_kernel_rearrange_ns),
+                            nsToMs(self.fused_conv_phases.bwd_kernel_gemm_ns),
+                        },
+                    );
+                }
             }
 
             pub fn dump(self: @This(), writer: anytype) !void {
@@ -705,12 +729,12 @@ pub fn ComputeGraph(comptime T: type) type {
             profile.seed_loss_grad_ns = timer.read();
 
             timer.reset();
-            self.computeNoGrad();
+            self.computeNoGradProfiled(&profile.fused_conv_phases);
             profile.forward_ns = timer.read();
 
             if (!options.forward_only) {
                 timer.reset();
-                self.computeBackward();
+                self.computeBackwardProfiled(&profile.fused_conv_phases);
                 profile.backward_ns = timer.read();
             }
 
@@ -1028,7 +1052,7 @@ pub fn ComputeGraph(comptime T: type) type {
                         if (pool != null and plan.kind() == .elementwise_chain) {
                             fused.executeFusedChainParallel(T, plan.payload.elementwise_chain, pool.?);
                         } else {
-                            fused.executeFusionPlan(T, plan);
+                            fused.executeFusionPlan(T, plan, null);
                         }
                         const elapsed = timer.read();
                         const out_node = self.nodes.items[plan.output_idx];
@@ -1324,33 +1348,45 @@ pub fn ComputeGraph(comptime T: type) type {
         /// If `fusionPass()` was called, fused chains execute as single-pass
         /// comptime-specialized kernels.
         pub fn compute(self: *const Self) void {
+            self.computeProfiled(null);
+        }
+
+        fn computeProfiled(self: *const Self, phase_profile: ?*fused.ConvPhaseProfile) void {
             if (self.execution_steps.items.len == 0) {
                 const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
                 for (self.nodes.items) |node| self.executeNode(node, pool);
                 return;
             }
-            self.executeGraphPlan(self.execution_steps.items);
+            self.executeGraphPlan(self.execution_steps.items, phase_profile);
         }
 
         pub fn computeNoGrad(self: *const Self) void {
+            self.computeNoGradProfiled(null);
+        }
+
+        fn computeNoGradProfiled(self: *const Self, phase_profile: ?*fused.ConvPhaseProfile) void {
             if (self.forward_execution_steps.items.len == 0) {
                 const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
                 for (self.nodes.items[0..self.forward_node_count]) |node| self.executeNode(node, pool);
                 return;
             }
-            self.executeGraphPlan(self.forward_execution_steps.items);
+            self.executeGraphPlan(self.forward_execution_steps.items, phase_profile);
         }
 
         /// Execute only the backward portion of the graph (nodes after forward_node_count).
         /// Uses fused execution plans when available.
         pub fn computeBackward(self: *const Self) void {
+            self.computeBackwardProfiled(null);
+        }
+
+        fn computeBackwardProfiled(self: *const Self, phase_profile: ?*fused.ConvPhaseProfile) void {
             if (self.execution_steps.items.len == 0) {
                 const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
                 for (self.nodes.items[self.forward_node_count..]) |node| self.executeNode(node, pool);
                 return;
             }
             // Backward steps are everything after the forward execution steps.
-            self.executeGraphPlan(self.execution_steps.items[self.forward_execution_steps.items.len..]);
+            self.executeGraphPlan(self.execution_steps.items[self.forward_execution_steps.items.len..], phase_profile);
         }
 
         // ---------------------------------------------------------------
@@ -1399,7 +1435,7 @@ pub fn ComputeGraph(comptime T: type) type {
             self.computeNoGrad();
         }
 
-        fn executeGraphPlan(self: *const Self, steps: []const ExecutionStep) void {
+        fn executeGraphPlan(self: *const Self, steps: []const ExecutionStep, phase_profile: ?*fused.ConvPhaseProfile) void {
             const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
             for (steps) |step| {
                 switch (step) {
@@ -1408,7 +1444,7 @@ pub fn ComputeGraph(comptime T: type) type {
                         if (pool != null and plan.kind() == .elementwise_chain) {
                             fused.executeFusedChainParallel(T, plan.payload.elementwise_chain, pool.?);
                         } else {
-                            fused.executeFusionPlan(T, plan);
+                            fused.executeFusionPlan(T, plan, phase_profile);
                         }
                     },
                     .node => |node| {
