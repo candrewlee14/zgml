@@ -1,0 +1,42 @@
+src/tensor/forward.zig
+  d19db77cdb34a3b9 65-91
+src/conv_phase_bench.zig
+  d19db77cdb34a3b9 1-126
+build.zig
+  d19db77cdb34a3b9 192-213
+src/tensor/fused.zig
+  d19db77cdb34a3b9 960,1000,1090,1131,1137,1182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "23b2c9b07a9bba79adbc82af67fee1e66c4425b8",
+  "prompts": {
+    "262cba42320c9d80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "76ba96b2-0a0d-44cd-8aa8-9c79befc0c99",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 278,
+      "overriden_lines": 0
+    },
+    "d19db77cdb34a3b9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_27129087cffeUNiU6R3IvPldf4",
+        "model": "github-copilot/gpt-5.4"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 286,
+      "total_deletions": 119,
+      "accepted_lines": 206,
+      "overriden_lines": 0
+    }
+  }
+}
