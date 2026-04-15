@@ -129,12 +129,11 @@ pub fn ComputeGraph(comptime T: type) type {
         /// Uses all available CPU cores. Safe to call multiple times (no-op if already enabled).
         pub fn enableThreading(self: *Self) !void {
             if (self.thread_pool != null) return;
-            var pool: std.Thread.Pool = undefined;
-            try pool.init(.{
+            self.thread_pool = undefined;
+            try self.thread_pool.?.init(.{
                 .allocator = std.heap.page_allocator,
                 .track_ids = false,
             });
-            self.thread_pool = pool;
         }
 
         pub fn setBackend(self: *Self, backend: backend_mod.Backend) void {
