@@ -1,0 +1,40 @@
+src/mnist_micro.zig
+  d19db77cdb34a3b9 139-149
+src/tensor/fused.zig
+  d19db77cdb34a3b9 17-34,1053,1065,1068,1072,1076,1078,1085,1098,1122,1134,1137,1146,1150,1152,1155,1160,1163,1176,1179,1183,1186,1195,1200,1202,1424,1427-1429
+src/graph.zig
+  d19db77cdb34a3b9 620,622-627,645-660,732,737,1055,1351-1354,1360,1364-1367,1373,1379-1382,1389,1438,1447
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "e8d3264d8ce779ca20ab8aefcc007bb93a4d42f1",
+  "prompts": {
+    "262cba42320c9d80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "76ba96b2-0a0d-44cd-8aa8-9c79befc0c99",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 278,
+      "overriden_lines": 0
+    },
+    "d19db77cdb34a3b9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_27129087cffeUNiU6R3IvPldf4",
+        "model": "github-copilot/gpt-5.4"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 281,
+      "total_deletions": 111,
+      "accepted_lines": 106,
+      "overriden_lines": 8
+    }
+  }
+}
