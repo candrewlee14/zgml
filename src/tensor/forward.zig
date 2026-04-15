@@ -62,6 +62,35 @@ fn simdMapUnary(
     }
 }
 
+/// SIMD contiguous copy for reusable staging paths.
+pub fn simdCopy(comptime T: type, dst: []T, src: []const T) void {
+    assert(dst.len == src.len);
+    const vec_size = comptime simdVecSize(T);
+    var i: usize = 0;
+    while (i + vec_size <= src.len) : (i += vec_size) {
+        dst[i..][0..vec_size].* = src[i..][0..vec_size].*;
+    }
+    while (i < src.len) : (i += 1) {
+        dst[i] = src[i];
+    }
+}
+
+/// SIMD contiguous accumulate: dst += src.
+pub fn simdAccumulate(comptime T: type, dst: []T, src: []const T) void {
+    assert(dst.len == src.len);
+    const vec_size = comptime simdVecSize(T);
+    const Vec = @Vector(vec_size, T);
+    var i: usize = 0;
+    while (i + vec_size <= src.len) : (i += vec_size) {
+        const dv: Vec = dst[i..][0..vec_size].*;
+        const sv: Vec = src[i..][0..vec_size].*;
+        dst[i..][0..vec_size].* = dv + sv;
+    }
+    while (i < src.len) : (i += 1) {
+        dst[i] += src[i];
+    }
+}
+
 /// Generic stride-aware unary map for non-contiguous tensors.
 /// dst must be dense (contiguous); src0 may have arbitrary strides.
 fn computeUnaryStrided(comptime Self: type, dst: *Self, src0: *const Self, comptime scalarFn: anytype) void {

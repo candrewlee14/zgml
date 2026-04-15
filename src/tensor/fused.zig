@@ -281,13 +281,11 @@ pub fn FusionPlan(comptime T: type) type {
                 .conv2d_bwd_input => |*p| {
                     const d = Conv2dDims(T).fromBwdInput(p.*);
                     const NB = d.N * d.batch;
-                    // Batched: col_buf[K, NB] + rearranged grad[c_out, NB]
                     p.scratch = try alloc.alloc(T, (d.K + d.c_out) * NB);
                 },
                 .conv2d_bwd_kernel => |*p| {
                     const d = Conv2dDims(T).fromBwdKernel(p.*);
                     const NB = d.N * d.batch;
-                    // Batched: col_buf[K, NB] + rearranged grad[c_out, NB]
                     p.scratch = try alloc.alloc(T, (d.K + d.c_out) * NB);
                 },
                 else => {},
@@ -959,7 +957,7 @@ fn im2col(comptime T: type, d: Conv2dDims(T), col_buf: []T, n: usize, col_stride
                     const row = (kx + ky * d.kw + ic * d.kw * d.kh) * col_stride + col_offset;
                     for (0..d.out_h) |oy| {
                         const src = kx + (oy + ky) * d.in_w + ic * d.input_strides[2] + n * d.input_strides[3];
-                        @memcpy(col_buf[row + oy * d.out_w ..][0..d.out_w], d.input_data[src..][0..d.out_w]);
+                        forward.simdCopy(T, col_buf[row + oy * d.out_w ..][0..d.out_w], d.input_data[src..][0..d.out_w]);
                     }
                 }
             }
@@ -999,9 +997,7 @@ fn col2im(comptime T: type, d: Conv2dDims(T), dst_data: []T, dst_strides: [@impo
                     for (0..d.out_h) |oy| {
                         const dst_base = kx + (oy + ky) * d.in_w + ic * dst_strides[2] + n * dst_strides[3];
                         const src_base = row + oy * d.out_w;
-                        for (0..d.out_w) |ox| {
-                            dst_data[dst_base + ox] += col_buf[src_base + ox];
-                        }
+                        forward.simdAccumulate(T, dst_data[dst_base..][0..d.out_w], col_buf[src_base..][0..d.out_w]);
                     }
                 }
             }
@@ -1091,7 +1087,7 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T), phase_profile: ?*Con
             if (has_bias or has_relu) {
                 rearrangeSimd(T, dst, src, b, has_relu);
             } else {
-                @memcpy(dst, src);
+                forward.simdCopy(T, dst, src);
             }
         }
     }
@@ -1132,15 +1128,13 @@ fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T), phas
     const col_buf = scratch[0 .. d.K * NB];
     const grad_buf = scratch[d.K * NB ..][0 .. d.c_out * NB];
     var timer = std.time.Timer.start() catch @panic("timer");
+    @memset(plan.output.data, 0);
 
     // 1. Rearrange output_grad from [N, c_out, batch] to [c_out, N*batch]
     timer.reset();
     for (0..d.c_out) |oc| {
         for (0..d.batch) |n| {
-            @memcpy(
-                grad_buf[oc * NB + n * d.N ..][0..d.N],
-                plan.output_grad.data[n * d.N * d.c_out + oc * d.N ..][0..d.N],
-            );
+            forward.simdCopy(T, grad_buf[oc * NB + n * d.N ..][0..d.N], plan.output_grad.data[n * d.N * d.c_out + oc * d.N ..][0..d.N]);
         }
     }
     addConvPhase(phase_profile, "bwd_input_rearrange_ns", timer.read());
@@ -1153,7 +1147,6 @@ fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T), phas
 
     // 3. col2im per batch from batched col_buf
     timer.reset();
-    @memset(plan.output.data, 0);
     for (0..d.batch) |n| {
         col2im(T, d, plan.output.data, plan.output.strides, col_buf, n, NB, n * d.N);
     }
@@ -1186,10 +1179,7 @@ fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T), ph
     timer.reset();
     for (0..d.c_out) |oc| {
         for (0..d.batch) |n| {
-            @memcpy(
-                grad_buf[oc * NB + n * d.N ..][0..d.N],
-                plan.output_grad.data[n * d.N * d.c_out + oc * d.N ..][0..d.N],
-            );
+            forward.simdCopy(T, grad_buf[oc * NB + n * d.N ..][0..d.N], plan.output_grad.data[n * d.N * d.c_out + oc * d.N ..][0..d.N]);
         }
     }
     addConvPhase(phase_profile, "bwd_kernel_rearrange_ns", timer.read());

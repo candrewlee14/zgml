@@ -189,6 +189,28 @@ pub fn build(b: *std.Build) void {
     const micro_step = b.step("mnist-micro", "Build and run MNIST CNN training micro-benchmark");
     micro_step.dependOn(&b.addRunArtifact(micro_exe).step);
 
+    const zgml_conv_phase_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+    const conv_phase_mod = b.createModule(.{
+        .root_source_file = b.path("src/conv_phase_bench.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "zgml", .module = zgml_conv_phase_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_conv_phase_pkg.zgml_options },
+        },
+    });
+    const conv_phase_exe = b.addExecutable(.{
+        .name = "conv-phase-bench",
+        .root_module = conv_phase_mod,
+    });
+    if (use_blas) {
+        linkBlas(target, conv_phase_exe);
+        conv_phase_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    b.installArtifact(conv_phase_exe);
+    const conv_phase_step = b.step("conv-phase-bench", "Run parameterized conv phase benchmark");
+    conv_phase_step.dependOn(&b.addRunArtifact(conv_phase_exe).step);
+
     // Gradient check — compare zgml vs PyTorch reference
     const zgml_gc_pkg = package(b, target, optimize, .{ .options = .{ .use_blas = use_blas } });
     const gc_mod = b.createModule(.{
