@@ -434,6 +434,29 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(pt_exe);
     const pt_step = b.step("generate-pretrained", "Generate text from a pretrained HF model");
     pt_step.dependOn(&b.addInstallArtifact(pt_exe, .{}).step);
+
+    // LLaMA model generation
+    const zgml_llama_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+    const llama_mod = b.createModule(.{
+        .root_source_file = b.path("scripts/generate_llama.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "zgml", .module = zgml_llama_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_llama_pkg.zgml_options },
+        },
+    });
+    const llama_exe = b.addExecutable(.{
+        .name = "generate-llama",
+        .root_module = llama_mod,
+    });
+    if (use_blas) {
+        linkBlas(target, llama_exe);
+        llama_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    b.installArtifact(llama_exe);
+    const llama_step = b.step("generate-llama", "Generate text from a pretrained LLaMA model");
+    llama_step.dependOn(&b.addInstallArtifact(llama_exe, .{}).step);
 }
 
 pub fn runTests(

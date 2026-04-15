@@ -44,6 +44,7 @@ const ComputeGraph = @import("graph.zig").ComputeGraph;
 const GPT = @import("models/gpt.zig").GPT;
 const GPTConfig = @import("models/gpt.zig").GPTConfig;
 const QuantizedWeight = @import("quant.zig").QuantizedWeight;
+const inference_utils = @import("inference_utils.zig");
 
 /// Frozen forward-only execution plan.
 ///
@@ -147,7 +148,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             // lifetimes don't overlap.  Failure is non-fatal — the plan
             // works without it, just uses more memory.
             var bufs: [][]T = &.{};
-            optimizeWorkspace(&graph, backing_alloc, &bufs) catch {};
+            inference_utils.optimizeWorkspace(T, &graph, backing_alloc, &bufs) catch {};
 
             return .{
                 .graph = graph,
@@ -187,7 +188,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             // Find matmul nodes where one source is a parameter.
             var count: usize = 0;
             for (nodes) |node| {
-                if (node.opTag() == .matmul and isWeightMatmul(node)) count += 1;
+                if (node.opTag() == .matmul and inference_utils.isWeightMatmul(T, node)) count += 1;
             }
             if (count == 0) return;
 
@@ -200,7 +201,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
 
             var idx: usize = 0;
             for (nodes) |node| {
-                if (node.opTag() == .matmul and isWeightMatmul(node)) {
+                if (node.opTag() == .matmul and inference_utils.isWeightMatmul(T, node)) {
                     const weight = if (node.src1.?.isParam()) node.src1.? else node.src0.?;
                     qw[idx] = try QuantizedWeight(T).fromTensor(alloc, weight, block_size);
                     map.putAssumeCapacity(node, idx);
@@ -223,38 +224,11 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
         fn computeQuantized(self: *Self) void {
             for (self.graph.nodes.items[0..self.graph.forward_node_count]) |node| {
                 if (self.quant_map.get(node)) |qi| {
-                    executeQuantizedMatmul(node, &self.quant_weights[qi]);
+                    inference_utils.executeQuantizedMatmul(T, node, &self.quant_weights[qi]);
                 } else {
                     self.graph.executeNode(node, 1);
                 }
             }
-        }
-
-
-        fn executeQuantizedMatmul(node: *Tensor(T), qw: *const QuantizedWeight(T)) void {
-            const src0 = node.src0.?;
-            const src1 = node.src1.?;
-            const flags = node.matmul_flags;
-
-            const input = if (src1.isParam()) src0 else src1;
-            const M = if (flags.trans0) src0.ne[0] else src0.ne[1];
-            const N = if (flags.trans1) src1.ne[1] else src1.ne[0];
-            const K = if (flags.trans0) src0.ne[1] else src0.ne[0];
-
-            // The quantized matmul expects:
-            //   input: [M, K] row-major (= col-major [K, M])
-            //   weight: [K, N] row-major (= col-major [N, K]) — stored in qw
-            //   dst: [M, N] row-major (= col-major [N, M])
-            //
-            // Our col-major tensors have this exact flat layout, so we pass
-            // data pointers directly.
-            qw.matmul(input.data, node.data, M, N, K);
-        }
-
-        fn isWeightMatmul(node: *Tensor(T)) bool {
-            if (node.src0) |s| { if (s.isParam()) return true; }
-            if (node.src1) |s| { if (s.isParam()) return true; }
-            return false;
         }
 
         /// Execute one step: patch inputs, reset intermediates, compute.
@@ -305,119 +279,6 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             return self.logits_buf;
         }
 
-        // ---------------------------------------------------------------
-        // Workspace optimisation
-        // ---------------------------------------------------------------
-
-        /// Analyse tensor liveness across the forward schedule and assign
-        /// shared workspace buffers so that dead temporaries are recycled.
-        fn optimizeWorkspace(
-            graph: *ComputeGraph(T),
-            alloc: std.mem.Allocator,
-            out_bufs: *[][]T,
-        ) !void {
-            const nodes = graph.nodes.items[0..graph.forward_node_count];
-            if (nodes.len == 0) return;
-
-            // Build pointer → index map.
-            var ptr_to_idx = std.AutoHashMap(*Tensor(T), u32).init(alloc);
-            defer ptr_to_idx.deinit();
-            try ptr_to_idx.ensureTotalCapacity(@intCast(nodes.len));
-            for (nodes, 0..) |node, i| ptr_to_idx.putAssumeCapacity(node, @intCast(i));
-
-            // Compute last-use step for each node.
-            const last_use = try alloc.alloc(u32, nodes.len);
-            defer alloc.free(last_use);
-            for (0..nodes.len) |i| last_use[i] = @intCast(i);
-
-            for (nodes, 0..) |node, step| {
-                inline for (.{ node.src0, node.src1 }) |maybe_src| {
-                    if (maybe_src) |s| {
-                        if (ptr_to_idx.get(s)) |idx| {
-                            last_use[idx] = @max(last_use[idx], @as(u32, @intCast(step)));
-                        }
-                    }
-                }
-            }
-
-            // Mark tensors that are parents of views — their data buffers
-            // must not be relocated because child views hold raw pointers
-            // into them.
-            const is_view_parent = try alloc.alloc(bool, nodes.len);
-            defer alloc.free(is_view_parent);
-            @memset(is_view_parent, false);
-            for (nodes) |node| {
-                const op = node.opTag();
-                if (op == .as_strided or op == .view) {
-                    if (node.src0) |parent| {
-                        if (ptr_to_idx.get(parent)) |idx| is_view_parent[idx] = true;
-                    }
-                }
-            }
-
-            // Identify workspace-eligible nodes: intermediate, owned data,
-            // not a view parent, not fused-skip.
-            const eligible = try alloc.alloc(bool, nodes.len);
-            defer alloc.free(eligible);
-            for (nodes, 0..) |node, i| {
-                eligible[i] = node.opTag() != .none and
-                    node.ownsData() and
-                    !is_view_parent[i] and
-                    !(i < graph.fused_skip.items.len and graph.fused_skip.items[i]);
-            }
-
-            // Slot assignment: best-fit (smallest adequate free slot).
-            const Slot = struct { free_after: u32, size: usize };
-            var slots: std.ArrayList(Slot) = .empty;
-            defer slots.deinit(alloc);
-
-            const assignment = try alloc.alloc(i32, nodes.len);
-            defer alloc.free(assignment);
-            @memset(assignment, -1);
-
-            for (nodes, 0..) |node, step_usize| {
-                if (!eligible[step_usize]) continue;
-                const step: u32 = @intCast(step_usize);
-                const size = node.nElems();
-
-                var best: ?usize = null;
-                for (slots.items, 0..) |slot, si| {
-                    if (slot.free_after < step and slot.size >= size) {
-                        if (best == null or slot.size < slots.items[best.?].size) {
-                            best = si;
-                        }
-                    }
-                }
-
-                if (best) |si| {
-                    slots.items[si].free_after = last_use[step_usize];
-                    assignment[step_usize] = @intCast(si);
-                } else {
-                    assignment[step_usize] = @intCast(slots.items.len);
-                    try slots.append(alloc, .{ .free_after = last_use[step_usize], .size = size });
-                }
-            }
-
-            if (slots.items.len == 0) return;
-
-            // Allocate workspace buffers and redirect tensor data pointers.
-            const bufs = try alloc.alloc([]T, slots.items.len);
-            errdefer {
-                for (bufs) |b| if (b.len > 0) alloc.free(b);
-                alloc.free(bufs);
-            }
-            for (slots.items, 0..) |slot, si| {
-                bufs[si] = try alloc.alloc(T, slot.size);
-            }
-
-            for (nodes, 0..) |node, i| {
-                if (assignment[i] < 0) continue;
-                const si: usize = @intCast(assignment[i]);
-                node.data = bufs[si][0..node.nElems()];
-            }
-
-            out_bufs.* = bufs;
-        }
     };
 }
 
