@@ -66,9 +66,8 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         // Patched each step with values for the current position.
         rope_nodes: [config.n_layers]*Tensor(T),
 
-        // Output tensor and stable buffer.
+        // Output tensor.
         logits: *Tensor(T),
-        logits_buf: []T,
 
         // Workspace reuse state.
         workspace_bufs: [][]T,
@@ -138,9 +137,6 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             }
             std.debug.assert(rope_idx == config.n_layers);
 
-            const logits_buf = try backing_alloc.alloc(T, config.vocab_size);
-            errdefer backing_alloc.free(logits_buf);
-
             var bufs: [][]T = &.{};
             inference_utils.optimizeWorkspace(T, &graph, backing_alloc, &bufs) catch {};
 
@@ -152,7 +148,6 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
                 .slice_assign_nodes = sa_nodes,
                 .rope_nodes = rope_nodes,
                 .logits = logits,
-                .logits_buf = logits_buf,
                 .workspace_bufs = bufs,
                 .quant_weights = &.{},
                 .quant_map = .empty,
@@ -165,7 +160,6 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             self.quant_map.deinit(self.backing_alloc);
             for (self.workspace_bufs) |buf| self.backing_alloc.free(buf);
             if (self.workspace_bufs.len > 0) self.backing_alloc.free(self.workspace_bufs);
-            self.backing_alloc.free(self.logits_buf);
             self.backing_alloc.free(self.slice_assign_nodes);
             self.graph.deinit();
         }
@@ -232,10 +226,8 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
                 tok_data[token_id * d_model ..][0..d_model],
             );
 
-            // 2. Update causal mask: 0 for positions <= pos, -inf otherwise.
-            for (self.attn_mask.data[0..max_seq], 0..) |*v, i| {
-                v.* = if (i <= pos) 0 else -std.math.inf(T);
-            }
+            // 2. Extend the causal mask for the new position.
+            self.attn_mask.data[pos] = 0;
 
             // 3. Patch RoPE packed cos_sin for current position.
             const rope = &model.blocks[0].rope;
@@ -247,18 +239,16 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             // 4. Patch KV-cache write positions.
             for (self.slice_assign_nodes) |node| node.storage_offset = pos;
 
-            // 5. Reset intermediates and execute.
-            self.graph.reset();
+            // 5. Execute. Inference nodes fully overwrite their outputs, so we
+            // can skip the graph-wide zeroing pass here.
             if (self.quant_weights.len > 0) {
                 self.computeQuantized();
             } else {
                 self.graph.computeNoGrad();
             }
-            @memcpy(self.logits_buf, self.logits.data[0..config.vocab_size]);
 
-            return self.logits_buf;
+            return self.logits.data[0..config.vocab_size];
         }
-
     };
 }
 
@@ -325,6 +315,7 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
         /// Clear KV caches and rewind to position 0.
         pub fn reset(self: *Self) void {
             self.pos = 0;
+            @memset(self.plan.attn_mask.data, -std.math.inf(T));
             for (0..config.n_layers) |l| {
                 for (0..config.n_kv_heads) |h| {
                     @memset(self.k_caches[l][h].data, 0);
@@ -352,14 +343,14 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
 
         /// Process multiple prompt tokens, returning logits for the last token.
         pub fn prefill(self: *Self, token_ids: []const usize) ![]const T {
-            if (token_ids.len == 0) return self.plan.logits_buf;
+            if (token_ids.len == 0) return self.plan.logits.data[0..config.vocab_size];
             if (self.pos + token_ids.len > config.max_seq_len) return error.SequenceTooLong;
 
             for (token_ids) |tok| {
                 _ = try self.step(tok);
             }
 
-            return self.plan.logits_buf;
+            return self.plan.logits.data[0..config.vocab_size];
         }
     };
 }

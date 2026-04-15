@@ -107,7 +107,7 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
         }
 
         fn applyRmsNorm(self: *const Self, x: *Tensor(T), norm_reduce: []usize, comptime which: enum { norm1, norm2 }) *Tensor(T) {
-            const bare = x.rmsNorm(norm_reduce, cfg.rms_norm_eps);
+            const bare = x.rmsNorm(norm_reduce, @floatCast(cfg.rms_norm_eps));
             const gamma = switch (which) {
                 .norm1 => self.rms_norm_1.inner,
                 .norm2 => self.rms_norm_2.inner,

@@ -96,11 +96,11 @@ pub fn kaimingUniform(comptime T: type, tensor: *Tensor(T), seed: u64) void {
         for (tensor.ne[0 .. tensor.n_dims - 1]) |d| fi *= d;
         break :blk fi;
     };
-    const bound: T = @sqrt(6.0 / @as(T, @floatFromInt(fan_in)));
+    const bound: f32 = @sqrt(6.0 / @as(f32, @floatFromInt(fan_in)));
     var rng = std.Random.DefaultPrng.init(seed);
     var random = rng.random();
     for (tensor.data) |*d| {
-        d.* = (random.float(T) * 2.0 - 1.0) * bound;
+        d.* = @floatCast((random.float(f32) * 2.0 - 1.0) * bound);
     }
 }
 
@@ -108,9 +108,10 @@ pub fn kaimingUniform(comptime T: type, tensor: *Tensor(T), seed: u64) void {
 pub fn uniform(comptime T: type, tensor: *Tensor(T), low: T, high: T, seed: u64) void {
     var rng = std.Random.DefaultPrng.init(seed);
     var random = rng.random();
-    const range = high - low;
+    const range: f32 = @floatCast(high - low);
+    const lo: f32 = @floatCast(low);
     for (tensor.data) |*d| {
-        d.* = random.float(T) * range + low;
+        d.* = @floatCast(random.float(f32) * range + lo);
     }
 }
 
@@ -291,14 +292,17 @@ pub fn RoPE(comptime T: type, comptime d: usize, comptime max_seq_len: usize) ty
             self.cos_table = try Tensor(T).init(alloc, &.{ d, max_seq_len });
             self.sin_table = try Tensor(T).init(alloc, &.{ d, max_seq_len });
 
+            // Compute frequencies in f32 for precision and std.math compatibility,
+            // then cast to T for storage.
             for (0..max_seq_len) |pos| {
                 for (0..d / 2) |i| {
-                    const p: T = @floatFromInt(pos);
-                    const dim: T = @floatFromInt(2 * i);
-                    const dm: T = @floatFromInt(d);
-                    const freq = p / std.math.pow(T, base, dim / dm);
-                    const cos_val = @cos(freq);
-                    const sin_val = @sin(freq);
+                    const p: f32 = @floatFromInt(pos);
+                    const dim: f32 = @floatFromInt(2 * i);
+                    const dm: f32 = @floatFromInt(d);
+                    const base_f32: f32 = @floatCast(base);
+                    const freq = p / std.math.pow(f32, base_f32, dim / dm);
+                    const cos_val: T = @floatCast(@cos(freq));
+                    const sin_val: T = @floatCast(@sin(freq));
                     self.cos_table.data[pos * d + i] = cos_val;
                     self.cos_table.data[pos * d + i + d / 2] = cos_val;
                     self.sin_table.data[pos * d + i] = sin_val;

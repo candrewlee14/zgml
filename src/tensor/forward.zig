@@ -466,11 +466,24 @@ fn computeSliceAssignRows(comptime Self: type, result: *Self, src: *const Self, 
 fn TiledMatMul(comptime T: type, comptime vl: comptime_int) type {
     return struct {
         const V = @Vector(vl, T);
+        // Accumulate in f32 when T is f16 to avoid precision loss over large K.
+        const AccT = if (T == f16) f32 else T;
+        const AccV = @Vector(vl, AccT);
         // mr sized to keep 2*mr accumulators in the register file.
         // vl=8 (16 YMM regs): mr=6 → 12 acc + 2 B + 1 A + 1 spare = 16.
         // vl=16 (32 ZMM regs): mr=14 → 28 acc + 2 B + 1 A + 1 spare = 32.
         const mr: usize = if (vl <= 8) 6 else 14;
         const kc: usize = 128;
+
+        fn widen(v: V) AccV {
+            if (T == AccT) return v;
+            return v; // implicit @Vector f16->f32 widening
+        }
+
+        fn narrow(v: AccV) V {
+            if (T == AccT) return v;
+            return @floatCast(v);
+        }
 
         pub fn run(
             dst_data: []T,
@@ -520,47 +533,47 @@ fn TiledMatMul(comptime T: type, comptime vl: comptime_int) type {
                 var ni: usize = 0;
                 // --- Wide tiles (2 vectors per row) ---
                 while (ni + nr <= N) : (ni += nr) {
-                    var acc0: [mr]V = .{@as(V, @splat(0))} ** mr;
-                    var acc1: [mr]V = .{@as(V, @splat(0))} ** mr;
+                    var acc0: [mr]AccV = .{@as(AccV, @splat(0))} ** mr;
+                    var acc1: [mr]AccV = .{@as(AccV, @splat(0))} ** mr;
 
                     var ki: usize = 0;
                     while (ki < K) : (ki += kc) {
                         const k_end = @min(ki + kc, K);
                         for (ki..k_end) |k| {
                             const b_off = b_base + k * b_k_stride + ni * b_n_stride;
-                            const b0: V = if (b_contig) src1_data[b_off..][0..vl].* else gatherVec(T, vl, src1_data, b_off, b_n_stride, 0);
-                            const b1: V = if (b_contig) src1_data[(b_off + vl)..][0..vl].* else gatherVec(T, vl, src1_data, b_off, b_n_stride, vl);
+                            const b0: AccV = widen(if (b_contig) src1_data[b_off..][0..vl].* else gatherVec(T, vl, src1_data, b_off, b_n_stride, 0));
+                            const b1: AccV = widen(if (b_contig) src1_data[(b_off + vl)..][0..vl].* else gatherVec(T, vl, src1_data, b_off, b_n_stride, vl));
                             for (mi..m_end, 0..) |m, ml| {
-                                const av: V = @splat(src0_data[a_base + m * a_m_stride + k * a_k_stride]);
-                                acc0[ml] = @mulAdd(V, av, b0, acc0[ml]);
-                                acc1[ml] = @mulAdd(V, av, b1, acc1[ml]);
+                                const av: AccV = @splat(@as(AccT, @floatCast(src0_data[a_base + m * a_m_stride + k * a_k_stride])));
+                                acc0[ml] = @mulAdd(AccV, av, b0, acc0[ml]);
+                                acc1[ml] = @mulAdd(AccV, av, b1, acc1[ml]);
                             }
                         }
                     }
                     for (mi..m_end, 0..) |m, ml| {
                         const rb = d_base + m * d_row_stride + ni;
-                        dst_data[rb..][0..vl].* = acc0[ml];
-                        dst_data[(rb + vl)..][0..vl].* = acc1[ml];
+                        dst_data[rb..][0..vl].* = narrow(acc0[ml]);
+                        dst_data[(rb + vl)..][0..vl].* = narrow(acc1[ml]);
                     }
                 }
 
                 // --- Single-vector remainder ---
                 if (ni + vl <= N) {
-                    var acc: [mr]V = .{@as(V, @splat(0))} ** mr;
+                    var acc: [mr]AccV = .{@as(AccV, @splat(0))} ** mr;
                     var ki: usize = 0;
                     while (ki < K) : (ki += kc) {
                         const k_end = @min(ki + kc, K);
                         for (ki..k_end) |k| {
                             const b_off = b_base + k * b_k_stride + ni * b_n_stride;
-                            const bv: V = if (b_contig) src1_data[b_off..][0..vl].* else gatherVec(T, vl, src1_data, b_off, b_n_stride, 0);
+                            const bv: AccV = widen(if (b_contig) src1_data[b_off..][0..vl].* else gatherVec(T, vl, src1_data, b_off, b_n_stride, 0));
                             for (mi..m_end, 0..) |m, ml| {
-                                const av: V = @splat(src0_data[a_base + m * a_m_stride + k * a_k_stride]);
-                                acc[ml] = @mulAdd(V, av, bv, acc[ml]);
+                                const av: AccV = @splat(@as(AccT, @floatCast(src0_data[a_base + m * a_m_stride + k * a_k_stride])));
+                                acc[ml] = @mulAdd(AccV, av, bv, acc[ml]);
                             }
                         }
                     }
                     for (mi..m_end, 0..) |m, ml| {
-                        dst_data[(d_base + m * d_row_stride + ni)..][0..vl].* = acc[ml];
+                        dst_data[(d_base + m * d_row_stride + ni)..][0..vl].* = narrow(acc[ml]);
                     }
                     ni += vl;
                 }
@@ -568,11 +581,13 @@ fn TiledMatMul(comptime T: type, comptime vl: comptime_int) type {
                 // --- Scalar tail ---
                 while (ni < N) : (ni += 1) {
                     for (mi..m_end) |m| {
-                        var s: T = 0;
+                        var s: AccT = 0;
                         for (0..K) |k| {
-                            s = @mulAdd(T, src0_data[a_base + m * a_m_stride + k * a_k_stride], src1_data[b_base + k * b_k_stride + ni * b_n_stride], s);
+                            const a_val: AccT = @floatCast(src0_data[a_base + m * a_m_stride + k * a_k_stride]);
+                            const b_val: AccT = @floatCast(src1_data[b_base + k * b_k_stride + ni * b_n_stride]);
+                            s = @mulAdd(AccT, a_val, b_val, s);
                         }
-                        dst_data[d_base + m * d_row_stride + ni] = s;
+                        dst_data[d_base + m * d_row_stride + ni] = @floatCast(s);
                     }
                 }
             }
@@ -755,9 +770,11 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             return 1.0 / x;
         }
         fn expScalar(x: T) T {
+            if (T == f16) return @floatCast(std.math.exp(@as(f32, @floatCast(x))));
             return std.math.exp(x);
         }
         fn logScalar(x: T) T {
+            if (T == f16) return @floatCast(std.math.log(f32, std.math.e, @as(f32, @floatCast(x))));
             return std.math.log(T, std.math.e, x);
         }
 
@@ -779,6 +796,22 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         // -- Vectorized tanh (3,3) Pade approximant ----------------------
 
         fn tanhApprox(x: Vec) Vec {
+            // Use f32 intermediates for the Pade approximant when T is too narrow,
+            // since the coefficients (135135, 62370, ...) overflow f16 max (65504).
+            if (T == f16) {
+                const F32Vec = @Vector(vec_size, f32);
+                const xf: F32Vec = x;
+                const lo: F32Vec = @splat(@as(f32, -4.97));
+                const hi: F32Vec = @splat(@as(f32, 4.97));
+                const xc = @min(@max(xf, lo), hi);
+                const x2 = xc * xc;
+                const x4 = x2 * x2;
+                const x6 = x4 * x2;
+                const num = xc * (@as(F32Vec, @splat(135135.0)) + @as(F32Vec, @splat(17325.0)) * x2 + @as(F32Vec, @splat(378.0)) * x4 + x6);
+                const den = @as(F32Vec, @splat(135135.0)) + @as(F32Vec, @splat(62370.0)) * x2 + @as(F32Vec, @splat(3150.0)) * x4 + @as(F32Vec, @splat(28.0)) * x6;
+                const result: F32Vec = num / den;
+                return @floatCast(result);
+            }
             const lo: Vec = @splat(@as(T, -4.97));
             const hi: Vec = @splat(@as(T, 4.97));
             const xc = @min(@max(x, lo), hi);
@@ -960,8 +993,9 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 dst.data[i..][0..vec_size].* = half * x * (one + tanhApprox(inner));
             }
             while (i < len) : (i += 1) {
-                const x = src0.data[i];
-                dst.data[i] = 0.5 * x * (1.0 + std.math.tanh(SQRT_2_OVER_PI * x * (1.0 + GELU_COEF_A * x * x)));
+                const xf: f32 = @floatCast(src0.data[i]);
+                const t = std.math.tanh(@as(f32, SQRT_2_OVER_PI) * xf * (1.0 + @as(f32, GELU_COEF_A) * xf * xf));
+                dst.data[i] = @floatCast(0.5 * xf * (1.0 + t));
             }
         }
 
@@ -1393,13 +1427,15 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                     const b_base = src0_i3 * src1.strides[3] + src0_i2 * src1.strides[2];
                     const d_base = src0_i3 * dst.strides[3] + src0_i2 * dst.strides[2];
 
-                    if (backend_mod.tryDenseMatMul(T, backend_opt, .{
-                        .dst = dst.data,
-                        .a = src0.data,
-                        .b = src1.data,
-                        .geom = .{ .M = M, .N = N, .K = K, .a_row_stride = a_m_stride, .a_col_stride = a_k_stride, .b_row_stride = b_k_stride, .b_col_stride = b_n_stride, .a_offset = a_base, .b_offset = b_base, .dst_offset = d_base, .dst_row_stride = dst.strides[1] },
-                    })) {
-                        continue;
+                    if (T == f32) {
+                        if (backend_mod.tryDenseMatMul(T, backend_opt, .{
+                            .dst = dst.data,
+                            .a = src0.data,
+                            .b = src1.data,
+                            .geom = .{ .M = M, .N = N, .K = K, .a_row_stride = a_m_stride, .a_col_stride = a_k_stride, .b_row_stride = b_k_stride, .b_col_stride = b_n_stride, .a_offset = a_base, .b_offset = b_base, .dst_offset = d_base, .dst_row_stride = dst.strides[1] },
+                        })) {
+                            continue;
+                        }
                     }
 
                     if (opts.use_blas and T == f32 and M * N * K >= 32768) {
