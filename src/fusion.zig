@@ -85,7 +85,7 @@ pub fn FusionDetector(comptime T: type) type {
                     self.markBwdConvSkip(plan, idx);
                 } else if (self.detectMaxPool2dBwd(node, idx)) |plan| {
                     try self.fused_chains.append(alloc, plan);
-                    self.markBwdSkipChain(idx);
+                    self.markBwdMaxPoolSkip(plan, idx);
                 }
             }
 
@@ -425,7 +425,8 @@ pub fn FusionDetector(comptime T: type) type {
             const input = view.source0() orelse return null;
             if (input.n_dims != 4 or view.ne[2] != 2 or view.ne[3] != 2) return null;
 
-            const bcast = findBroadcastFromReshape(scatter.source0() orelse return null) orelse return null;
+            const contribution = scatter.source0() orelse return null;
+            const bcast = findBroadcastFromReshape(contribution) orelse return null;
             const reshape = findPastAdd(bcast.source0() orelse return null, .reshape) orelse return null;
             const output_grad = reshape.source0() orelse return null;
             if (output_grad.n_dims != 4) return null;
@@ -605,6 +606,28 @@ pub fn FusionDetector(comptime T: type) type {
                 self.fused_skip[i] = true;
                 cur = cur.source0() orelse break;
             }
+        }
+
+        fn markBwdMaxPoolSkip(self: *Self, plan: FusionPlan(T), scatter_idx: usize) void {
+            self.fused_skip[scatter_idx] = true;
+            const p = switch (plan.payload) {
+                .max_pool2d_bwd => |payload| payload,
+                else => return,
+            };
+            const root = self.nodes[scatter_idx].source0() orelse return;
+            self.markBwdAncestorsUntil(root, &.{p.output_grad});
+        }
+
+        fn markBwdAncestorsUntil(self: *Self, node: *Tensor(T), stop_nodes: []const *Tensor(T)) void {
+            for (stop_nodes) |stop| {
+                if (node == stop) return;
+            }
+            const idx = self.ptr_to_idx.get(node) orelse return;
+            if (idx < self.forward_node_count) return;
+            if (self.fused_skip[idx]) return;
+            self.fused_skip[idx] = true;
+            if (node.source0()) |s0| self.markBwdAncestorsUntil(s0, stop_nodes);
+            if (node.source1()) |s1| self.markBwdAncestorsUntil(s1, stop_nodes);
         }
     };
 }
