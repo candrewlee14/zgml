@@ -1,0 +1,56 @@
+src/tensor.zig
+  d19db77cdb34a3b9 758-791
+src/nn.zig
+  262cba42320c9d80 62-64,66-72,606
+src/fusion.zig
+  d19db77cdb34a3b9 40-45,107-130,151-159,190-200,221-224,227-230,233-238,272-286,290-291,325,339-341,357-369,384-387,418-423,427-432,445,451-453,501-503,549-561,586-588
+build.zig
+  262cba42320c9d80 192-214
+  d19db77cdb34a3b9 266-269,311-314,334-337
+src/mnist_bench.zig
+  262cba42320c9d80 166
+src/graph.zig
+  d19db77cdb34a3b9 790,792,1930-1950,2222-2265,2267-2282,2285-2402
+src/tensor/forward.zig
+  262cba42320c9d80 65-77,751-755,761-765,770-775,781-786,792-796,801-805,811-818,838-845
+src/tensor/fused.zig
+  d19db77cdb34a3b9 114,119,121,126-130,509-511,519-521,546-548,557-559,812-830,1060-1062,1067-1071,1073,1077-1082,1085-1086,1090,1094-1096,1099-1103,1105-1111,1114-1117,1120-1127
+src/tensor/backward.zig
+  d19db77cdb34a3b9 240-243,246-248
+benchmarks/grad_check.zig
+  262cba42320c9d80 1-2,4-5,7,18,27-44,94-98,100,102-105,108-110,112-114,116,118-119,121-122,133,135-136,146-147
+  d19db77cdb34a3b9 3,6,8-17,19-26,45-93,99,101,106-107,111,115,117,120,123-132,134,137-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "33d9efa39162b90e5e0d56815d9e2ef6c18a64c2",
+  "prompts": {
+    "262cba42320c9d80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "76ba96b2-0a0d-44cd-8aa8-9c79befc0c99",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 1134,
+      "total_deletions": 28,
+      "accepted_lines": 424,
+      "overriden_lines": 0
+    },
+    "d19db77cdb34a3b9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_27129087cffeUNiU6R3IvPldf4",
+        "model": "github-copilot/gpt-5.4"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 646,
+      "total_deletions": 668,
+      "accepted_lines": 585,
+      "overriden_lines": 0
+    }
+  }
+}
