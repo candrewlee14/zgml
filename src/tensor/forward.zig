@@ -62,6 +62,19 @@ fn simdMapUnary(
     }
 }
 
+/// Generic stride-aware unary map for non-contiguous tensors.
+/// dst must be dense (contiguous); src0 may have arbitrary strides.
+fn computeUnaryStrided(comptime Self: type, dst: *Self, src0: *const Self, comptime scalarFn: anytype) void {
+    var coords: [max_dims]usize = [_]usize{0} ** max_dims;
+    var dst_i: usize = 0;
+    while (true) {
+        const src_idx = offsetFor(Self, src0, coords[0..src0.n_dims]);
+        dst.data[dst_i] = scalarFn(src0.data[src_idx]);
+        dst_i += 1;
+        if (!nextCoord(coords[0..dst.n_dims], dst.ne[0..dst.n_dims])) break;
+    }
+}
+
 /// How the two operands of a binary op are supplied.
 const BinaryMode = enum { vec_vec, scalar_lhs, scalar_rhs };
 
@@ -735,44 +748,74 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
 
         pub fn computeSqrt(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
-            simdMapUnary(T, src0.data, dst.data, sqrtVec, sqrtScalar);
+            if (src0.isDenseLayout()) {
+                simdMapUnary(T, src0.denseSliceConst(), dst.denseSlice(), sqrtVec, sqrtScalar);
+            } else {
+                computeUnaryStrided(Self, dst, src0, sqrtScalar);
+            }
         }
 
         /// Element-wise reciprocal: dst[i] = 1 / src0[i].
         pub fn computeRecip(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
-            simdMapUnary(T, src0.data, dst.data, recipVec, recipScalar);
+            if (src0.isDenseLayout()) {
+                simdMapUnary(T, src0.denseSliceConst(), dst.denseSlice(), recipVec, recipScalar);
+            } else {
+                computeUnaryStrided(Self, dst, src0, recipScalar);
+            }
         }
 
         pub fn computeExp(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
-            var i: usize = 0;
-            while (i < src0.data.len) : (i += 1) {
-                dst.data[i] = expScalar(src0.data[i]);
+            if (src0.isDenseLayout()) {
+                const slice = src0.denseSliceConst();
+                const d = dst.denseSlice();
+                for (slice, 0..) |v, i| d[i] = expScalar(v);
+            } else {
+                computeUnaryStrided(Self, dst, src0, expScalar);
             }
         }
 
         pub fn computeLog(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
-            var i: usize = 0;
-            while (i < src0.data.len) : (i += 1) {
-                dst.data[i] = logScalar(src0.data[i]);
+            if (src0.isDenseLayout()) {
+                const slice = src0.denseSliceConst();
+                const d = dst.denseSlice();
+                for (slice, 0..) |v, i| d[i] = logScalar(v);
+            } else {
+                computeUnaryStrided(Self, dst, src0, logScalar);
             }
         }
 
         pub fn computeAbs(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
-            simdMapUnary(T, src0.data, dst.data, absVec, absScalar);
+            if (src0.isDenseLayout()) {
+                simdMapUnary(T, src0.denseSliceConst(), dst.denseSlice(), absVec, absScalar);
+            } else {
+                computeUnaryStrided(Self, dst, src0, absScalar);
+            }
         }
 
         pub fn computeNeg(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
-            simdMapUnary(T, src0.data, dst.data, negVec, negScalar);
+            if (src0.isDenseLayout()) {
+                simdMapUnary(T, src0.denseSliceConst(), dst.denseSlice(), negVec, negScalar);
+            } else {
+                computeUnaryStrided(Self, dst, src0, negScalar);
+            }
         }
 
         /// Element-wise sign: -1, 0, or 1.  Uses @select for branchless SIMD.
         pub fn computeSgn(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
+            if (!src0.isDenseLayout()) {
+                computeUnaryStrided(Self, dst, src0, struct {
+                    fn f(s: T) T {
+                        return if (s > 0) 1 else if (s < 0) @as(T, -1) else 0;
+                    }
+                }.f);
+                return;
+            }
             const zero: Vec = @splat(0);
             const one: Vec = @splat(1);
             const neg_one: Vec = @splat(-1);
@@ -792,6 +835,14 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         /// Element-wise step function: 1 if positive, 0 otherwise.
         pub fn computeStep(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
+            if (!src0.isDenseLayout()) {
+                computeUnaryStrided(Self, dst, src0, struct {
+                    fn f(s: T) T {
+                        return if (s > 0) 1 else 0;
+                    }
+                }.f);
+                return;
+            }
             const zero: Vec = @splat(0);
             const one: Vec = @splat(1);
             const len = src0.data.len;

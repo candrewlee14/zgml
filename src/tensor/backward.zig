@@ -237,9 +237,15 @@ pub fn Ops(comptime Self: type) type {
                         stripGrad(zero_mask);
                         const mask = one.broadcastTo(src0.ne[0..src0.n_dims]).sub(zero_mask);
                         stripGrad(mask);
+                        const tie_count = mask.sum(tensor.ne[0..tensor.n_dims]);
+                        stripGrad(tie_count);
+                        const expanded_tie_count = tie_count.broadcastTo(src0.ne[0..src0.n_dims]);
+                        stripGrad(expanded_tie_count);
                         const expanded_out_grad = out_grad.broadcastTo(src0.ne[0..src0.n_dims]);
                         stripGrad(expanded_out_grad);
-                        const contribution = mask.mul(expanded_out_grad);
+                        const shared_out_grad = expanded_out_grad.div(expanded_tie_count);
+                        stripGrad(shared_out_grad);
+                        const contribution = mask.mul(shared_out_grad);
                         stripGrad(contribution);
                         src0.setGrad(accumGrad(grad, contribution, inplace));
                     }

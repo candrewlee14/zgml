@@ -755,6 +755,40 @@ test "broadcastTo creates zero-stride view" {
     try testing.expectEqual(@as(f32, 30), b.get(&.{ 1, 2 }));
 }
 
+test "unary ops handle zero-stride broadcast views" {
+    const pos = try Tensor(f32).initScalar(tac, 7);
+    defer pos.deinit();
+    const pos_b = pos.broadcastTo(&.{ 2, 2, 1, 1 });
+    defer pos_b.deinit();
+
+    try testing.expectEqual(false, pos_b.isDenseLayout());
+
+    const neg = pos_b.neg();
+    defer neg.deinit();
+    neg.compute();
+    try testing.expectEqualSlices(f32, &.{ -7, -7, -7, -7 }, neg.data);
+
+    const step_pos = pos_b.step();
+    defer step_pos.deinit();
+    step_pos.compute();
+    try testing.expectEqualSlices(f32, &.{ 1, 1, 1, 1 }, step_pos.data);
+
+    const neg_src = try Tensor(f32).initScalar(tac, -7);
+    defer neg_src.deinit();
+    const neg_b = neg_src.broadcastTo(&.{ 2, 2, 1, 1 });
+    defer neg_b.deinit();
+
+    const abs = neg_b.abs();
+    defer abs.deinit();
+    abs.compute();
+    try testing.expectEqualSlices(f32, &.{ 7, 7, 7, 7 }, abs.data);
+
+    const step_neg = neg_b.step();
+    defer step_neg.deinit();
+    step_neg.compute();
+    try testing.expectEqualSlices(f32, &.{ 0, 0, 0, 0 }, step_neg.data);
+}
+
 test "slidingWindow2d exposes overlapping patches" {
     const t = try Tensor(f32).init(tac, &.{ 4, 4, 1, 1 });
     defer t.deinit();

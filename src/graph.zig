@@ -787,10 +787,9 @@ pub fn ComputeGraph(comptime T: type) type {
                     "", "", "", "", "", "", "",
                 });
                 try writer.print("{s:<22} {s:>6} {d:>10.1} {s:>6} {d:>10.1} {d:>10.1}\n", .{
-                    "TOTAL", "",
+                    "TOTAL",                                              "",
                     @as(f64, @floatFromInt(self.fwd_total_ns)) / 1_000.0, "",
-                    @as(f64, @floatFromInt(self.bwd_total_ns)) / 1_000.0,
-                    @as(f64, @floatFromInt(total_ns)) / 1_000.0,
+                    @as(f64, @floatFromInt(self.bwd_total_ns)) / 1_000.0, @as(f64, @floatFromInt(total_ns)) / 1_000.0,
                 });
             }
         };
@@ -1241,8 +1240,6 @@ pub fn ComputeGraph(comptime T: type) type {
             }
             return .fusible_isolated;
         }
-
-
 
         fn addParentsThenSelf(self: *Self, cur: *Tensor(T)) Alloc.Error!void {
             const alloc = self.arena.allocator();
@@ -1930,6 +1927,27 @@ test "backward - relu" {
     try testing.expectEqualSlices(f32, &.{ 0, 0, 1, 1 }, x.grad.?.data);
 }
 
+test "backward - max splits ties evenly" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{4});
+    x.setData(&[_]f32{ 2, 5, 5, 1 });
+    x.setParam();
+    const out = x.maxAll();
+    try g.buildForward(out);
+    try g.buildBackward(false);
+    _ = out.grad.?.setAllScalar(1);
+    g.compute();
+
+    try testing.expectApproxEqAbs(@as(f32, 5.0), out.data[0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.0), x.grad.?.data[0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), x.grad.?.data[1], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), x.grad.?.data[2], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.0), x.grad.?.data[3], 1e-6);
+}
+
 test "backward - recip" {
     // f(x) = 1/x, f'(x) = -1/x^2
     var g = ComputeGraph(f32).init(tac);
@@ -2197,6 +2215,187 @@ test "fusion - conv2d backward fused matches unfused" {
         try testing.expectApproxEqAbs(a_out, b_out, 1e-5);
     }
     for (kf.grad.?.data, ku.grad.?.data) |a_out, b_out| {
+        try testing.expectApproxEqAbs(a_out, b_out, 1e-5);
+    }
+}
+
+test "fusion - maxpool2d backward fused matches unfused on ties" {
+    var gf = ComputeGraph(f32).init(tac);
+    defer gf.deinit();
+    var gu = ComputeGraph(f32).init(tac);
+    defer gu.deinit();
+
+    const af = gf.allocator();
+    const au = gu.allocator();
+
+    const xf = try Tensor(f32).init(af, &.{ 4, 4, 1, 1 });
+    const xu = try Tensor(f32).init(au, &.{ 4, 4, 1, 1 });
+    const input = [_]f32{
+        1, 3, 2, 2,
+        3, 0, 0, 1,
+        5, 4, 1, 1,
+        5, 5, 1, 1,
+    };
+    xf.setData(&input);
+    xu.setData(&input);
+    xf.setParam();
+    xu.setParam();
+
+    const pooled_f = xf.maxPool2d();
+    const pooled_u = xu.maxPool2d();
+    const out_f = pooled_f.sumAll();
+    const out_u = pooled_u.sumAll();
+
+    try gf.buildForward(out_f);
+    try gf.buildBackward(false);
+    try gf.fusionPass();
+    _ = out_f.grad.?.setAllScalar(1);
+
+    try gu.buildForward(out_u);
+    try gu.buildBackward(false);
+    _ = out_u.grad.?.setAllScalar(1);
+
+    var found_fwd = false;
+    var found_bwd = false;
+    for (gf.fused_chains.items) |plan| {
+        switch (plan.kind()) {
+            .max_pool2d => found_fwd = true,
+            .max_pool2d_bwd => found_bwd = true,
+            else => {},
+        }
+    }
+    try testing.expect(found_fwd);
+    try testing.expect(found_bwd);
+
+    gf.compute();
+    gu.compute();
+
+    try testing.expectEqualSlices(f32, pooled_u.data, pooled_f.data);
+    try testing.expectEqualSlices(f32, &.{ 3, 2, 5, 1 }, pooled_f.data);
+
+    try testing.expectEqualSlices(f32, xu.grad.?.data, xf.grad.?.data);
+    try testing.expectEqualSlices(f32, &.{
+        0,         0.5,       0.5,  0.5,
+        0.5,       0,         0,    0,
+        1.0 / 3.0, 0,         0.25, 0.25,
+        1.0 / 3.0, 1.0 / 3.0, 0.25, 0.25,
+    }, xf.grad.?.data);
+}
+
+test "fusion - conv2d bias relu crossEntropy backward fused matches unfused" {
+    var gf = ComputeGraph(f32).init(tac);
+    defer gf.deinit();
+    var gu = ComputeGraph(f32).init(tac);
+    defer gu.deinit();
+
+    const af = gf.allocator();
+    const au = gu.allocator();
+
+    const ks: usize = 3;
+    const n_filters: usize = 2;
+    const n_classes: usize = 3;
+    const batch_size: usize = 2;
+    const in_w: usize = 4;
+    const in_h: usize = 4;
+    const conv_w = in_w - ks + 1;
+    const conv_h = in_h - ks + 1;
+    const flat_dim = (conv_w / 2) * (conv_h / 2) * n_filters;
+
+    const conv_k_data = [_]f32{
+        0.15235855,  -0.51999205, 0.3752256,    0.47028235,  -0.9755176, -0.6510897,
+        0.0639202,   -0.1581213,  -0.008400579, -0.42652196, 0.439699,   0.38889596,
+        0.033015348, 0.5636206,   0.23375466,   -0.42964622, 0.18437539, -0.47944131,
+    };
+    const fc_w_data = [_]f32{ 0.43922514, -0.024962956, -0.09243118, -0.34046477, 0.61127067, -0.07726474 };
+    const xs_data = [_]f32{
+        -0.42832783, -0.35213354, 0.5323092,   0.36544406,
+        0.4127326,   0.430821,    2.1416476,   -0.40641502,
+        -0.51224273, -0.81377274, 0.61597943,  1.1289723,
+        -0.11394746, -0.8401565,  -0.8244812,  0.6505928,
+        0.7432542,   0.54315424,  -0.6655097,  0.23216133,
+        0.11668581,  0.21868859,  0.8714288,   0.22359554,
+        0.67891353,  0.06757907,  0.2891194,   0.63128823,
+        -1.4571558,  -0.3196712,  -0.47037265, -0.63887787,
+    };
+    const ys_data = [_]f32{ 0.0, 2.0 };
+
+    const conv_k_f = try Tensor(f32).init(af, &.{ ks, ks, 1, n_filters });
+    const conv_k_u = try Tensor(f32).init(au, &.{ ks, ks, 1, n_filters });
+    conv_k_f.setData(&conv_k_data);
+    conv_k_u.setData(&conv_k_data);
+    conv_k_f.setParam();
+    conv_k_u.setParam();
+
+    const conv_b_f = try Tensor(f32).init(af, &.{n_filters});
+    const conv_b_u = try Tensor(f32).init(au, &.{n_filters});
+    conv_b_f.setData(&.{ 0.0, 0.0 });
+    conv_b_u.setData(&.{ 0.0, 0.0 });
+    conv_b_f.setParam();
+    conv_b_u.setParam();
+
+    const fc_w_f = try Tensor(f32).init(af, &.{ n_classes, flat_dim });
+    const fc_w_u = try Tensor(f32).init(au, &.{ n_classes, flat_dim });
+    fc_w_f.setData(&fc_w_data);
+    fc_w_u.setData(&fc_w_data);
+    fc_w_f.setParam();
+    fc_w_u.setParam();
+
+    const fc_b_f = try Tensor(f32).init(af, &.{n_classes});
+    const fc_b_u = try Tensor(f32).init(au, &.{n_classes});
+    fc_b_f.setData(&.{ 0.0, 0.0, 0.0 });
+    fc_b_u.setData(&.{ 0.0, 0.0, 0.0 });
+    fc_b_f.setParam();
+    fc_b_u.setParam();
+
+    const xs_f = try Tensor(f32).init(af, &.{ in_w, in_h, 1, batch_size });
+    const xs_u = try Tensor(f32).init(au, &.{ in_w, in_h, 1, batch_size });
+    xs_f.setData(&xs_data);
+    xs_u.setData(&xs_data);
+
+    const ys_f = try Tensor(f32).init(af, &.{batch_size});
+    const ys_u = try Tensor(f32).init(au, &.{batch_size});
+    ys_f.setData(&ys_data);
+    ys_u.setData(&ys_data);
+
+    const conv_out_f = xs_f.conv2d(conv_k_f);
+    const conv_out_u = xs_u.conv2d(conv_k_u);
+    const cb4_f = conv_b_f.reshape(&.{ 1, 1, n_filters, 1 });
+    const cb4_u = conv_b_u.reshape(&.{ 1, 1, n_filters, 1 });
+    const act_f = conv_out_f.add(cb4_f.repeat(conv_out_f.ne[0..conv_out_f.n_dims])).relu();
+    const act_u = conv_out_u.add(cb4_u.repeat(conv_out_u.ne[0..conv_out_u.n_dims])).relu();
+    const flat_f = act_f.maxPool2d().reshape(&.{ flat_dim, batch_size });
+    const flat_u = act_u.maxPool2d().reshape(&.{ flat_dim, batch_size });
+    const logits_f = flat_f.matMul(false, fc_w_f, false).addBias(fc_b_f);
+    const logits_u = flat_u.matMul(false, fc_w_u, false).addBias(fc_b_u);
+    const out_f = loss.crossEntropy(f32, logits_f, ys_f);
+    const out_u = loss.crossEntropy(f32, logits_u, ys_u);
+
+    try gf.buildForward(out_f);
+    try gf.buildBackward(false);
+    try gf.fusionPass();
+    _ = out_f.grad.?.setAllScalar(1);
+
+    try gu.buildForward(out_u);
+    try gu.buildBackward(false);
+    _ = out_u.grad.?.setAllScalar(1);
+
+    gf.compute();
+    gu.compute();
+
+    try testing.expectApproxEqAbs(out_u.data[0], out_f.data[0], 1e-6);
+    for (logits_f.data, logits_u.data) |a_out, b_out| {
+        try testing.expectApproxEqAbs(a_out, b_out, 1e-6);
+    }
+    for (conv_k_f.grad.?.data, conv_k_u.grad.?.data) |a_out, b_out| {
+        try testing.expectApproxEqAbs(a_out, b_out, 1e-5);
+    }
+    for (conv_b_f.grad.?.data, conv_b_u.grad.?.data) |a_out, b_out| {
+        try testing.expectApproxEqAbs(a_out, b_out, 1e-5);
+    }
+    for (fc_w_f.grad.?.data, fc_w_u.grad.?.data) |a_out, b_out| {
+        try testing.expectApproxEqAbs(a_out, b_out, 1e-5);
+    }
+    for (fc_b_f.grad.?.data, fc_b_u.grad.?.data) |a_out, b_out| {
         try testing.expectApproxEqAbs(a_out, b_out, 1e-5);
     }
 }

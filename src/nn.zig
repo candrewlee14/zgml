@@ -59,8 +59,17 @@ pub fn batchNorm2d(comptime T: type, x: *Tensor(T), gamma: *Tensor(T), beta: *Te
 ///
 /// Draws from U(-bound, +bound) where bound = sqrt(6 / fan_in).
 /// Standard initialization for layers followed by ReLU.
+///
+/// For 2D weights {out_features, in_features}: fan_in = in_features.
+/// For ≥3D conv kernels {kw, kh, c_in, c_out}: fan_in = kw * kh * c_in.
 pub fn kaimingUniform(comptime T: type, tensor: *Tensor(T), seed: u64) void {
-    const fan_in = tensor.ne[0];
+    const fan_in: usize = if (tensor.n_dims == 2)
+        tensor.ne[1]
+    else blk: {
+        var fi: usize = 1;
+        for (tensor.ne[0 .. tensor.n_dims - 1]) |d| fi *= d;
+        break :blk fi;
+    };
     const bound: T = @sqrt(6.0 / @as(T, @floatFromInt(fan_in)));
     var rng = std.Random.DefaultPrng.init(seed);
     var random = rng.random();
@@ -167,7 +176,6 @@ pub fn trainUnsupervised(
         }
     }
 }
-
 
 /// Inverted dropout: randomly zeroes elements during training and scales
 /// surviving elements by `1/(1-p)` so expected values are preserved.
@@ -595,7 +603,7 @@ test "kaimingUniform - values within expected bounds" {
 
     kaimingUniform(f32, t, 42);
 
-    const bound: f32 = @sqrt(6.0 / 16.0);
+    const bound: f32 = @sqrt(6.0 / 4.0);
     for (t.data) |v| {
         try testing.expect(v >= -bound and v <= bound);
     }
@@ -611,4 +619,3 @@ test "uniform - values within range" {
         try testing.expect(v >= -0.5 and v < 0.5);
     }
 }
-

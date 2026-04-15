@@ -111,15 +111,23 @@ pub fn Conv2dPlan(comptime T: type) type {
     return struct {
         input: *Tensor(T),
         kernel: *Tensor(T),
+        conv_out: *Tensor(T),
         input_view: *Tensor(T),
         kernel_view: *Tensor(T),
         bias: ?*Tensor(T),
         bias_node: ?*Tensor(T),
+        bias_add: ?*Tensor(T),
         activation: ?*Tensor(T),
+        step_node: ?*Tensor(T),
         mul_node: *Tensor(T),
         sum_node: *Tensor(T),
         output: *Tensor(T),
         scratch: ?[]T = null, // pre-allocated im2col buffer [K, N]
+
+        fn activationBase(self: @This()) ?*Tensor(T) {
+            if (self.activation == null) return null;
+            return self.bias_add orelse self.conv_out;
+        }
     };
 }
 
@@ -334,7 +342,6 @@ pub fn validateLayerNormPlan(comptime T: type, plan: LayerNormPlan(T)) bool {
     return true;
 }
 
-
 fn fusedOpForNode(comptime T: type, plan: ElementwiseFusionPlan(T), idx: usize) ?FusedOp {
     const node = plan.nodes[idx];
     return switch (node.op) {
@@ -499,7 +506,9 @@ fn executeFusedGenericRange(comptime T: type, plan: ElementwiseFusionPlan(T), st
             var val: VecT = input_data[i + input_off ..][0..V].*;
             for (nodes, 0..) |node, node_idx| {
                 const fop = fusedOpForNode(T, plan, node_idx).?;
-                inline for (fusible_ops) |c| if (fop == c) { val = applyOpVec(T, V, c, val, node, i); };
+                inline for (fusible_ops) |c| if (fop == c) {
+                    val = applyOpVec(T, V, c, val, node, i);
+                };
                 node.data[i + node.storage_offset ..][0..V].* = val;
             }
         }
@@ -507,7 +516,9 @@ fn executeFusedGenericRange(comptime T: type, plan: ElementwiseFusionPlan(T), st
             var val: T = input_data[i + input_off];
             for (nodes, 0..) |node, node_idx| {
                 const fop = fusedOpForNode(T, plan, node_idx).?;
-                inline for (fusible_ops) |c| if (fop == c) { val = applyOp(T, c, val, node, i); };
+                inline for (fusible_ops) |c| if (fop == c) {
+                    val = applyOp(T, c, val, node, i);
+                };
                 node.data[i + node.storage_offset] = val;
             }
         }
@@ -532,7 +543,9 @@ fn executeFusedGenericRange(comptime T: type, plan: ElementwiseFusionPlan(T), st
             }
             for (nodes, 0..) |node, node_idx| {
                 const fop = fusedOpForNode(T, plan, node_idx).?;
-                inline for (fusible_ops) |c| if (fop == c) { val = applyOpVec(T, V, c, val, node, i); };
+                inline for (fusible_ops) |c| if (fop == c) {
+                    val = applyOpVec(T, V, c, val, node, i);
+                };
                 node.data[i + node.storage_offset ..][0..V].* = val;
             }
         }
@@ -541,7 +554,9 @@ fn executeFusedGenericRange(comptime T: type, plan: ElementwiseFusionPlan(T), st
             _ = nextCoord(coords[0..n_dims], input.ne[0..n_dims]);
             for (nodes, 0..) |node, node_idx| {
                 const fop = fusedOpForNode(T, plan, node_idx).?;
-                inline for (fusible_ops) |c| if (fop == c) { val = applyOp(T, c, val, node, i); };
+                inline for (fusible_ops) |c| if (fop == c) {
+                    val = applyOp(T, c, val, node, i);
+                };
                 node.data[i + node.storage_offset] = val;
             }
         }
@@ -794,18 +809,25 @@ fn executeMaxPool2dBwd(comptime T: type, plan: MaxPool2dBwdPlan(T)) void {
                     const ix = ox * 2;
                     const iy = oy * 2;
                     const base = ix + iy * in_stride_h + ch * in_stride_c + n * in_stride_n;
-                    // Find argmax in 2x2 window
-                    var best = base;
-                    var val = input.data[base];
-                    const offsets = [_]usize{ 1, in_stride_h, in_stride_h + 1 };
-                    for (offsets) |off| {
-                        if (input.data[base + off] > val) {
-                            val = input.data[base + off];
-                            best = base + off;
-                        }
-                    }
-                    // Scatter gradient to argmax position
-                    dst.data[best] += out_grad.data[ox + oy * out_stride_h + ch * out_stride_c + n * out_stride_n];
+                    const grad = out_grad.data[ox + oy * out_stride_h + ch * out_stride_c + n * out_stride_n];
+                    const v00 = input.data[base];
+                    const v10 = input.data[base + 1];
+                    const v01 = input.data[base + in_stride_h];
+                    const v11 = input.data[base + in_stride_h + 1];
+                    const max_val = @max(@max(v00, v10), @max(v01, v11));
+                    const tie_count_usize: usize =
+                        @as(usize, @intFromBool(v00 == max_val)) +
+                        @as(usize, @intFromBool(v10 == max_val)) +
+                        @as(usize, @intFromBool(v01 == max_val)) +
+                        @as(usize, @intFromBool(v11 == max_val));
+                    const share = grad / @as(T, @floatFromInt(tie_count_usize));
+
+                    // Symmetric subgradient for max: split upstream gradient
+                    // evenly across all tied maxima in the pooling window.
+                    if (v00 == max_val) dst.data[base] += share;
+                    if (v10 == max_val) dst.data[base + 1] += share;
+                    if (v01 == max_val) dst.data[base + in_stride_h] += share;
+                    if (v11 == max_val) dst.data[base + in_stride_h + 1] += share;
                 }
             }
         }
@@ -1035,41 +1057,74 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
     const mm = selectConvMatMul(T);
     mm(mm_temp, d.kernel_data, col_buf.ptr[0..col_buf.len], d.c_out, NB, d.K, d.K, 1, NB, 1, 0, 0, 0, NB);
 
-    // 3. Rearrange [c_out, NB] → [batch, c_out, N] with fused bias + activation.
-    const output = plan.output.data;
+    // 3. Rearrange [c_out, NB] → [batch, c_out, N], materializing the raw
+    // conv output plus any fused bias/relu intermediates needed later.
+    const conv_out = plan.conv_out.data;
     const has_bias = plan.bias != null;
-    const has_relu = plan.activation != null;
     for (0..d.batch) |n| {
         for (0..d.c_out) |oc| {
             const src = mm_temp[oc * NB + n * d.N ..][0..d.N];
-            const dst = output[n * d.N * d.c_out + oc * d.N ..][0..d.N];
-            if (has_bias or has_relu) {
-                const b = if (plan.bias) |bv| bv.data[oc] else 0;
-                if (has_relu) rearrangeSimd(T, dst, src, b, true) else rearrangeSimd(T, dst, src, b, false);
+            const conv_dst = conv_out[n * d.N * d.c_out + oc * d.N ..][0..d.N];
+            if (has_bias) {
+                const b = plan.bias.?.data[oc];
+                const bias_dst = plan.bias_add.?.data[n * d.N * d.c_out + oc * d.N ..][0..d.N];
+                copyAndAddBiasSimd(T, conv_dst, bias_dst, src, b);
             } else {
-                @memcpy(dst, src);
+                @memcpy(conv_dst, src);
             }
         }
     }
+
+    if (plan.activation) |activation| {
+        const pre_relu = plan.activationBase().?;
+        const step_node = plan.step_node.?;
+        executeActivationMulRelu(T, pre_relu, step_node, activation);
+    }
 }
 
-/// SIMD copy with fused bias add + optional ReLU.
-fn rearrangeSimd(comptime T: type, dst: []T, src: []const T, bias: T, comptime relu: bool) void {
+/// SIMD copy that materializes both the raw conv output and the biased output.
+fn copyAndAddBiasSimd(comptime T: type, raw_dst: []T, bias_dst: []T, src: []const T, bias: T) void {
     const vl = comptime forward.simdVecSize(T);
     const V = @Vector(vl, T);
     const bv: V = @splat(bias);
-    const len = dst.len;
+    const len = raw_dst.len;
 
     var i: usize = 0;
     while (i + vl <= len) : (i += vl) {
-        var v: V = src[i..][0..vl].* + bv;
-        if (relu) v = @max(v, @as(V, @splat(0)));
-        dst[i..][0..vl].* = v;
+        const v = src[i..][0..vl].*;
+        raw_dst[i..][0..vl].* = v;
+        bias_dst[i..][0..vl].* = v + bv;
     }
     while (i < len) : (i += 1) {
-        var v = src[i] + bias;
-        if (relu) v = @max(v, 0);
-        dst[i] = v;
+        const v = src[i];
+        raw_dst[i] = v;
+        bias_dst[i] = v + bias;
+    }
+}
+
+fn executeActivationMulRelu(comptime T: type, pre_relu: *Tensor(T), step_node: *Tensor(T), activation: *Tensor(T)) void {
+    const vl = comptime forward.simdVecSize(T);
+    const V = @Vector(vl, T);
+    const zero: V = @splat(0);
+    const one: V = @splat(1);
+    const len = pre_relu.data.len;
+
+    var i: usize = 0;
+    while (i + vl <= len) : (i += vl) {
+        const v: V = pre_relu.data[i..][0..vl].*;
+        const mask: @Vector(vl, bool) = v > zero;
+        step_node.data[i..][0..vl].* = @select(T, mask, one, zero);
+        activation.data[i..][0..vl].* = @select(T, mask, v, zero);
+    }
+    while (i < len) : (i += 1) {
+        const v = pre_relu.data[i];
+        if (v > 0) {
+            step_node.data[i] = 1;
+            activation.data[i] = v;
+        } else {
+            step_node.data[i] = 0;
+            activation.data[i] = 0;
+        }
     }
 }
 
@@ -1273,7 +1328,6 @@ fn findNodeAfter(comptime T: type, nodes: []const *Tensor(T), start_idx: usize, 
 /// dependency that exists in the node list, bounded by the output index.
 /// Used to determine the start of a fused region that replaces an entire
 /// backward chain (e.g., conv2d backward: reshape → broadcast → mul → scatter).
-
 pub fn indexOfNodeMaybe(comptime T: type, nodes: []const *Tensor(T), needle: *Tensor(T)) ?usize {
     for (nodes, 0..) |node, i| {
         if (node == needle) return i;
@@ -1376,7 +1430,6 @@ pub fn executeFusionPlan(comptime T: type, plan: FusionPlan(T)) void {
         .layer_norm => |layer_norm_plan| executeLayerNormPlan(T, layer_norm_plan),
     }
 }
-
 
 test "fused - swapped commutative 2-op chain" {
     const T = f32;
