@@ -1,0 +1,61 @@
+scripts/generate.zig
+  4cabc5ce3753062f 52,67,99
+src/graph.zig
+  4cabc5ce3753062f 22-25,30,34,38,75,149-151,1060,1067-1068,1083,1373-1374,1386-1387,1401-1402,1456,1461-1462,1468,1480,1491-1492,1508,1510,1512
+src/tensor/fused.zig
+  4cabc5ce3753062f 17-19,25,29,33,602,610,618-619,621,624,628-629,635
+src/bench.zig
+  4cabc5ce3753062f 13-15,76,80,82,103,135,137,142,144,149,151,156,158,170,198,200,229
+src/conv_phase_bench.zig
+  4cabc5ce3753062f 111
+src/mnist_bench.zig
+  4cabc5ce3753062f 15-27,43-44,71-72,111,113,115,117,150,153,197,209
+src/inference.zig
+  4cabc5ce3753062f 228
+src/tokenizer.zig
+  4cabc5ce3753062f 34,39,43,219-228
+src/data/mnist.zig
+  4cabc5ce3753062f 17-28,45,47,65
+benchmarks/metal_inference_bench.zig
+  4cabc5ce3753062f 105,124,128,193-194,196,201-202,204,210-211,213
+src/mnist_micro.zig
+  4cabc5ce3753062f 28,79,81
+src/profile_backward.zig
+  4cabc5ce3753062f 69,71
+scripts/generate_pretrained.zig
+  4cabc5ce3753062f 53,70,84,117
+src/safetensors.zig
+  4cabc5ce3753062f 28-30,32,38
+src/tensor/forward.zig
+  4cabc5ce3753062f 1394,1408,1420-1421,1423,1425,1429-1430,1435
+src/checkpoint.zig
+  4cabc5ce3753062f 25,32,39,46,52,60-61,66-68,73,75,84-85,90,92,94,100,103,122,137,144,150,161,166,169,180,187,190
+bench/inference.zig
+  4cabc5ce3753062f 17,34,38,91-92,95-96
+scripts/train_tiny.zig
+  4cabc5ce3753062f 108
+benchmarks/metal_bench.zig
+  4cabc5ce3753062f 20,57,59,106-107
+src/bench_reduce.zig
+  4cabc5ce3753062f 40,42,49,51,63,77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "0eb70a52fc10fd6dd3ee3e7cd7a00e688dd4b9d3",
+  "prompts": {
+    "4cabc5ce3753062f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fed9e05d-53a2-40e5-980a-1aaca8b314e2",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 249,
+      "total_deletions": 359,
+      "accepted_lines": 209,
+      "overriden_lines": 0
+    }
+  }
+}
