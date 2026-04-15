@@ -163,6 +163,7 @@ pub fn main() !void {
             model.g.resetGrads();
             if (model.loss.grad) |grad| _ = grad.setAllScalar(1);
             model.g.compute();
+
             sgd.step();
 
             epoch_loss += model.loss.data[0];

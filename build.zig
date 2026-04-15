@@ -189,6 +189,51 @@ pub fn build(b: *std.Build) void {
     const micro_step = b.step("mnist-micro", "Build and run MNIST CNN training micro-benchmark");
     micro_step.dependOn(&b.addRunArtifact(micro_exe).step);
 
+    const zgml_conv_phase_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+    const conv_phase_mod = b.createModule(.{
+        .root_source_file = b.path("src/conv_phase_bench.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "zgml", .module = zgml_conv_phase_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_conv_phase_pkg.zgml_options },
+        },
+    });
+    const conv_phase_exe = b.addExecutable(.{
+        .name = "conv-phase-bench",
+        .root_module = conv_phase_mod,
+    });
+    if (use_blas) {
+        linkBlas(target, conv_phase_exe);
+        conv_phase_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    b.installArtifact(conv_phase_exe);
+    const conv_phase_step = b.step("conv-phase-bench", "Run parameterized conv phase benchmark");
+    conv_phase_step.dependOn(&b.addRunArtifact(conv_phase_exe).step);
+
+    // Gradient check — compare zgml vs PyTorch reference
+    const zgml_gc_pkg = package(b, target, optimize, .{ .options = .{ .use_blas = use_blas } });
+    const gc_mod = b.createModule(.{
+        .root_source_file = b.path("benchmarks/grad_check.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zgml", .module = zgml_gc_pkg.zgml },
+            .{ .name = "zgml_options", .module = zgml_gc_pkg.zgml_options },
+        },
+    });
+    const gc_exe = b.addExecutable(.{
+        .name = "grad-check",
+        .root_module = gc_mod,
+    });
+    if (use_blas) {
+        linkBlas(target, gc_exe);
+        gc_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    b.installArtifact(gc_exe);
+    const gc_step = b.step("grad-check", "Compare gradients with PyTorch reference");
+    gc_step.dependOn(&b.addRunArtifact(gc_exe).step);
+
     // Per-op backward profiler
     const zgml_prof_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
     const prof_mod = b.createModule(.{
@@ -240,7 +285,10 @@ pub fn build(b: *std.Build) void {
             },
         });
         const exe = b.addExecutable(.{ .name = "bench-inference", .root_module = mod });
-        if (use_blas) { linkBlas(target, exe); exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" }); }
+        if (use_blas) {
+            linkBlas(target, exe);
+            exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        }
         b.installArtifact(exe);
         const step = b.step("bench-inference", "Benchmark inference session (f32 vs int8)");
         step.dependOn(&b.addRunArtifact(exe).step);
@@ -282,7 +330,10 @@ pub fn build(b: *std.Build) void {
             },
         });
         const exe = b.addExecutable(.{ .name = "bench-metal", .root_module = mod });
-        if (use_blas) { linkBlas(target, exe); exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" }); }
+        if (use_blas) {
+            linkBlas(target, exe);
+            exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        }
         linkMetal(b, target, exe);
         b.installArtifact(exe);
         const step = b.step("bench-metal", "Benchmark Metal GPU vs CPU BLAS matmul");
@@ -302,7 +353,10 @@ pub fn build(b: *std.Build) void {
             },
         });
         const exe = b.addExecutable(.{ .name = "bench-metal-inference", .root_module = mod });
-        if (use_blas) { linkBlas(target, exe); exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" }); }
+        if (use_blas) {
+            linkBlas(target, exe);
+            exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        }
         linkMetal(b, target, exe);
         b.installArtifact(exe);
         const step = b.step("bench-metal-inference", "Benchmark CPU vs Metal inference tok/s");

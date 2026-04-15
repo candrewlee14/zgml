@@ -29,6 +29,7 @@ pub const Op = enum {
     abs,
     sgn,
     step,
+    relu,
     sqrt,
     recip,
     exp,
@@ -54,7 +55,7 @@ pub const Op = enum {
     /// True if this op is elementwise (shape-preserving) and can participate in fusion.
     pub fn isFusible(self: Self) bool {
         return switch (self) {
-            .add, .mul, .neg, .abs, .sgn, .step, .sqrt, .recip, .exp, .log, .gelu => true,
+            .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu => true,
             else => false,
         };
     }
@@ -83,6 +84,7 @@ pub const Op = enum {
             .abs => "abs(x)",
             .sgn => "sgn(x)",
             .step => "step(x)",
+            .relu => "relu(x)",
             .sqrt => "√x",
             .recip => "1/x",
             .exp => "exp(x)",

@@ -181,14 +181,15 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn step(self: *Self) *Self {
             return unaryOp(self, .step, false);
         }
+        pub fn reluPrimitive(self: *Self) *Self {
+            return unaryOp(self, .relu, false);
+        }
         pub fn gelu(self: *Self) *Self {
             return unaryOp(self, .gelu, false);
         }
-        /// Element-wise ReLU: max(0, x). Decomposes to `mul(self, step(self))`.
+        /// Element-wise ReLU primitive.
         pub fn relu(self: *Self) *Self {
-            const mask = aux(self.step());
-            mask.grad = null;
-            return self.mul(mask);
+            return unaryOp(self, .relu, false);
         }
 
         // ---------------------------------------------------------------

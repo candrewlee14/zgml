@@ -37,8 +37,12 @@ pub fn FusionDetector(comptime T: type) type {
             const uc = try alloc.alloc(u16, n);
             @memset(uc, 0);
             for (nodes) |node| {
-                if (node.source0()) |s| if (map.get(s)) |j| { uc[j] += 1; };
-                if (node.source1()) |s| if (map.get(s)) |j| { uc[j] += 1; };
+                if (node.source0()) |s| if (map.get(s)) |j| {
+                    uc[j] += 1;
+                };
+                if (node.source1()) |s| if (map.get(s)) |j| {
+                    uc[j] += 1;
+                };
             }
 
             return .{
@@ -81,7 +85,7 @@ pub fn FusionDetector(comptime T: type) type {
                     self.markBwdConvSkip(plan, idx);
                 } else if (self.detectMaxPool2dBwd(node, idx)) |plan| {
                     try self.fused_chains.append(alloc, plan);
-                    self.markBwdSkipChain(idx);
+                    self.markBwdMaxPoolSkip(plan, idx);
                 }
             }
 
@@ -100,12 +104,30 @@ pub fn FusionDetector(comptime T: type) type {
         // =================================================================
 
         fn tryForwardPattern(self: *Self, alloc: std.mem.Allocator, node: *Tensor(T), idx: usize) !bool {
-            if (self.detectCrossEntropy(node, idx)) |plan| { try self.fused_chains.append(alloc, plan); return true; }
-            if (self.detectLogSoftmax(node, idx)) |plan| { try self.fused_chains.append(alloc, plan); return true; }
-            if (self.detectSoftmax(node, idx)) |plan| { try self.fused_chains.append(alloc, plan); return true; }
-            if (self.detectLayerNorm(node, idx)) |plan| { try self.fused_chains.append(alloc, plan); return true; }
-            if (self.detectConv2dForward(node, idx)) |plan| { try self.fused_chains.append(alloc, plan); return true; }
-            if (self.detectMaxPool2dForward(node, idx)) |plan| { try self.fused_chains.append(alloc, plan); return true; }
+            if (self.detectCrossEntropy(node, idx)) |plan| {
+                try self.fused_chains.append(alloc, plan);
+                return true;
+            }
+            if (self.detectLogSoftmax(node, idx)) |plan| {
+                try self.fused_chains.append(alloc, plan);
+                return true;
+            }
+            if (self.detectSoftmax(node, idx)) |plan| {
+                try self.fused_chains.append(alloc, plan);
+                return true;
+            }
+            if (self.detectLayerNorm(node, idx)) |plan| {
+                try self.fused_chains.append(alloc, plan);
+                return true;
+            }
+            if (self.detectConv2dForward(node, idx)) |plan| {
+                try self.fused_chains.append(alloc, plan);
+                return true;
+            }
+            if (self.detectMaxPool2dForward(node, idx)) |plan| {
+                try self.fused_chains.append(alloc, plan);
+                return true;
+            }
             return false;
         }
 
@@ -126,9 +148,15 @@ pub fn FusionDetector(comptime T: type) type {
             if (max_node.source0() != input) return null;
 
             const plan = fused.SoftmaxPlan(T){
-                .input = input, .max_node = max_node, .rep_max = rep_max,
-                .neg_rep_max = neg_rep_max, .shifted = shifted, .exp_node = exp_node,
-                .sum_node = sum_node, .rep_sum = rep_sum, .recip_rep_sum = recip_rep_sum,
+                .input = input,
+                .max_node = max_node,
+                .rep_max = rep_max,
+                .neg_rep_max = neg_rep_max,
+                .shifted = shifted,
+                .exp_node = exp_node,
+                .sum_node = sum_node,
+                .rep_sum = rep_sum,
+                .recip_rep_sum = recip_rep_sum,
                 .output = node,
             };
             if (!fused.validateSoftmaxPlan(T, plan)) return null;
@@ -159,10 +187,17 @@ pub fn FusionDetector(comptime T: type) type {
             if (max_node.source0() != input) return null;
 
             const plan = fused.LogSoftmaxPlan(T){
-                .input = input, .max_node = max_node, .rep_max = rep_max,
-                .neg_rep_max = neg_rep_max, .shifted = shifted, .exp_node = exp_node,
-                .sum_node = sum_node, .log_node = log_node, .rep_log = rep_log,
-                .neg_rep_log = neg_rep_log, .output = node,
+                .input = input,
+                .max_node = max_node,
+                .rep_max = rep_max,
+                .neg_rep_max = neg_rep_max,
+                .shifted = shifted,
+                .exp_node = exp_node,
+                .sum_node = sum_node,
+                .log_node = log_node,
+                .rep_log = rep_log,
+                .neg_rep_log = neg_rep_log,
+                .output = node,
             };
             if (!fused.validateLogSoftmaxPlan(T, plan)) return null;
             if (mark) self.markNodes(&.{ max_node, rep_max, neg_rep_max, shifted, exp_node, sum_node, log_node, rep_log, neg_rep_log, node });
@@ -183,16 +218,24 @@ pub fn FusionDetector(comptime T: type) type {
 
             const ls_idx = self.ptr_to_idx.get(log_softmax_output) orelse return null;
             const ls = self.detectLogSoftmaxImpl(log_softmax_output, ls_idx, false) orelse return null;
-            const inner = switch (ls.payload) { .log_softmax => |p| p, else => return null };
+            const inner = switch (ls.payload) {
+                .log_softmax => |p| p,
+                else => return null,
+            };
 
             self.markNodes(&.{
-                inner.max_node, inner.rep_max, inner.neg_rep_max, inner.shifted,
-                inner.exp_node, inner.sum_node, inner.log_node, inner.rep_log,
-                inner.neg_rep_log, inner.output, picked, neg_picked, sum_node, node,
+                inner.max_node,    inner.rep_max,  inner.neg_rep_max, inner.shifted,
+                inner.exp_node,    inner.sum_node, inner.log_node,    inner.rep_log,
+                inner.neg_rep_log, inner.output,   picked,            neg_picked,
+                sum_node,          node,
             });
             return .{ .output_idx = idx, .payload = .{ .cross_entropy = .{
-                .log_softmax = inner, .targets = targets, .picked = picked,
-                .neg_picked = neg_picked, .sum_node = sum_node, .mean_node = node,
+                .log_softmax = inner,
+                .targets = targets,
+                .picked = picked,
+                .neg_picked = neg_picked,
+                .sum_node = sum_node,
+                .mean_node = node,
             } } };
         }
 
@@ -226,16 +269,26 @@ pub fn FusionDetector(comptime T: type) type {
             if (sum_node.source0() != input) return null;
 
             const plan = fused.LayerNormPlan(T){
-                .input = input, .sum_node = sum_node, .mean_node = mean_node,
-                .rep_mean = rep_mean, .neg_rep_mean = neg_rep_mean, .centered = centered,
-                .sqr_node = sqr_node, .var_sum = var_sum, .var_node = var_node,
-                .eps_like = eps_like, .var_eps = var_eps, .sqrt_node = sqrt_node,
-                .recip_node = recip_node, .rep_std_inv = rep_std_inv, .output = node,
+                .input = input,
+                .sum_node = sum_node,
+                .mean_node = mean_node,
+                .rep_mean = rep_mean,
+                .neg_rep_mean = neg_rep_mean,
+                .centered = centered,
+                .sqr_node = sqr_node,
+                .var_sum = var_sum,
+                .var_node = var_node,
+                .eps_like = eps_like,
+                .var_eps = var_eps,
+                .sqrt_node = sqrt_node,
+                .recip_node = recip_node,
+                .rep_std_inv = rep_std_inv,
+                .output = node,
             };
             if (!fused.validateLayerNormPlan(T, plan)) return null;
             self.markNodes(&.{
-                sum_node, mean_node, rep_mean, neg_rep_mean, centered,
-                sqr_node, var_sum, var_node, eps_like, var_eps,
+                sum_node,  mean_node,  rep_mean,    neg_rep_mean, centered,
+                sqr_node,  var_sum,    var_node,    eps_like,     var_eps,
                 sqrt_node, recip_node, rep_std_inv, node,
             });
             return .{ .output_idx = idx, .payload = .{ .layer_norm = plan } };
@@ -245,37 +298,23 @@ pub fn FusionDetector(comptime T: type) type {
         fn detectConv2dForward(self: *Self, node: *Tensor(T), idx: usize) ?FusionPlan(T) {
             var core = node;
             var activation: ?*Tensor(T) = null;
-            var step_node: ?*Tensor(T) = null;
             var bias: ?*Tensor(T) = null;
             var bias_node: ?*Tensor(T) = null;
-            var bias_add: ?*Tensor(T) = null;
 
-            // Peel optional relu: mul(x, step(x))
-            if (core.opTag() == .mul) {
-                const s0 = core.source0() orelse return null;
-                const s1 = core.source1() orelse return null;
-                if (s1.opTag() == .step and s1.source0() == s0) {
-                    activation = core;
-                    step_node = s1;
-                    core = s0;
-                } else if (s0.opTag() == .step and s0.source0() == s1) {
-                    activation = core;
-                    step_node = s0;
-                    core = s1;
-                }
+            // Peel optional relu.
+            if (core.opTag() == .relu) {
+                activation = core;
+                core = core.source0() orelse return null;
             }
 
             // Peel optional bias: add(core, repeat(bias))
             if (core.opTag() == .add) {
                 const s0 = core.source0() orelse return null;
                 const s1 = core.source1() orelse return null;
-                const bias_side = if (s1.opTag() == .repeat and !s1.isScalar()) s1
-                    else if (s0.opTag() == .repeat and !s0.isScalar()) s0
-                    else null;
+                const bias_side = if (s1.opTag() == .repeat and !s1.isScalar()) s1 else if (s0.opTag() == .repeat and !s0.isScalar()) s0 else null;
                 if (bias_side) |bs| {
                     const other = if (bs == s1) s0 else s1;
                     if (other.opTag() == .reshape) {
-                        bias_add = core;
                         bias = bs.source0();
                         bias_node = bs;
                         core = other;
@@ -285,7 +324,9 @@ pub fn FusionDetector(comptime T: type) type {
 
             if (core.opTag() != .reshape or core.n_dims != 4) return null;
             // Guard: skip if core was already claimed by another fusion plan.
-            if (self.ptr_to_idx.get(core)) |ci| { if (self.fused_skip[ci]) return null; }
+            if (self.ptr_to_idx.get(core)) |ci| {
+                if (self.fused_skip[ci]) return null;
+            }
             const sum_node = expect(core.source0(), .sum) orelse return null;
             const mul_node = expect(sum_node.source0(), .mul) orelse return null;
             const input_view = expect(mul_node.source0(), .as_strided) orelse return null;
@@ -297,14 +338,18 @@ pub fn FusionDetector(comptime T: type) type {
 
             self.markNodes(&.{ input_view, kernel_view, mul_node, sum_node, core, node });
             if (bias_node) |bn| self.markNodes(&.{bn});
-            if (bias_add) |ba| self.markNodes(&.{ba});
-            if (step_node) |sn| self.markNodes(&.{sn});
 
             return .{ .output_idx = idx, .payload = .{ .conv2d = .{
-                .input = input, .kernel = kernel, .input_view = input_view,
-                .kernel_view = kernel_view, .bias = bias, .bias_node = bias_node,
-                .activation = activation, .mul_node = mul_node,
-                .sum_node = sum_node, .output = node,
+                .input = input,
+                .kernel = kernel,
+                .input_view = input_view,
+                .kernel_view = kernel_view,
+                .bias = bias,
+                .bias_node = bias_node,
+                .activation = activation,
+                .mul_node = mul_node,
+                .sum_node = sum_node,
+                .output = node,
             } } };
         }
 
@@ -319,7 +364,10 @@ pub fn FusionDetector(comptime T: type) type {
 
             self.markNodes(&.{ strided, max_node, node });
             return .{ .output_idx = idx, .payload = .{ .max_pool2d = .{
-                .input = input, .strided = strided, .max_node = max_node, .output = node,
+                .input = input,
+                .strided = strided,
+                .max_node = max_node,
+                .output = node,
             } } };
         }
 
@@ -350,15 +398,21 @@ pub fn FusionDetector(comptime T: type) type {
             const is_kernel = view_source.nElems() <= other_source.nElems();
             return if (is_kernel)
                 .{ .output_idx = scatter_idx, .payload = .{ .conv2d_bwd_kernel = .{
-                    .input = other_source, .output_grad = output_grad,
-                    .reshape_node = reshape, .repeat_node = bcast,
-                    .mul_node = mul_node, .output = scatter,
+                    .input = other_source,
+                    .output_grad = output_grad,
+                    .reshape_node = reshape,
+                    .repeat_node = bcast,
+                    .mul_node = mul_node,
+                    .output = scatter,
                 } } }
             else
                 .{ .output_idx = scatter_idx, .payload = .{ .conv2d_bwd_input = .{
-                    .output_grad = output_grad, .kernel = other_source,
-                    .reshape_node = reshape, .repeat_node = bcast,
-                    .mul_node = mul_node, .output = scatter,
+                    .output_grad = output_grad,
+                    .kernel = other_source,
+                    .reshape_node = reshape,
+                    .repeat_node = bcast,
+                    .mul_node = mul_node,
+                    .output = scatter,
                 } } };
         }
 
@@ -371,14 +425,16 @@ pub fn FusionDetector(comptime T: type) type {
             const input = view.source0() orelse return null;
             if (input.n_dims != 4 or view.ne[2] != 2 or view.ne[3] != 2) return null;
 
-            const mul_node = findPastAdd(scatter.source0() orelse return null, .mul) orelse return null;
-            const bcast = findOp(mul_node, .broadcast_to) orelse return null;
+            const contribution = scatter.source0() orelse return null;
+            const bcast = findBroadcastFromReshape(contribution) orelse return null;
             const reshape = findPastAdd(bcast.source0() orelse return null, .reshape) orelse return null;
             const output_grad = reshape.source0() orelse return null;
             if (output_grad.n_dims != 4) return null;
 
             return .{ .output_idx = scatter_idx, .payload = .{ .max_pool2d_bwd = .{
-                .input = input, .output_grad = output_grad, .output = scatter,
+                .input = input,
+                .output_grad = output_grad,
+                .output = scatter,
             } } };
         }
 
@@ -426,7 +482,9 @@ pub fn FusionDetector(comptime T: type) type {
                 try self.fused_chains.append(alloc, .{
                     .output_idx = end,
                     .payload = .{ .elementwise_chain = .{
-                        .input = input, .nodes = chain_nodes, .other_operand_roles = roles,
+                        .input = input,
+                        .nodes = chain_nodes,
+                        .other_operand_roles = roles,
                     } },
                 });
                 i = end;
@@ -472,6 +530,22 @@ pub fn FusionDetector(comptime T: type) type {
             return null;
         }
 
+        fn findBroadcastFromReshape(node: *Tensor(T)) ?*Tensor(T) {
+            if (node.opTag() == .broadcast_to) {
+                const src = node.source0() orelse return null;
+                const reshape = findPastAdd(src, .reshape) orelse return null;
+                const output_grad = reshape.source0() orelse return null;
+                if (output_grad.n_dims == 4) return node;
+            }
+            if (node.source0()) |s| {
+                if (findBroadcastFromReshape(s)) |hit| return hit;
+            }
+            if (node.source1()) |s| {
+                if (findBroadcastFromReshape(s)) |hit| return hit;
+            }
+            return null;
+        }
+
         fn markNodes(self: *Self, nodes: []const *Tensor(T)) void {
             for (nodes) |node| {
                 if (self.ptr_to_idx.get(node)) |i| self.fused_skip[i] = true;
@@ -493,7 +567,10 @@ pub fn FusionDetector(comptime T: type) type {
                 }
                 prev = node;
             }
-            if (!any_swapped) { alloc.free(roles); return &.{}; }
+            if (!any_swapped) {
+                alloc.free(roles);
+                return &.{};
+            }
             return roles;
         }
 
@@ -529,6 +606,28 @@ pub fn FusionDetector(comptime T: type) type {
                 self.fused_skip[i] = true;
                 cur = cur.source0() orelse break;
             }
+        }
+
+        fn markBwdMaxPoolSkip(self: *Self, plan: FusionPlan(T), scatter_idx: usize) void {
+            self.fused_skip[scatter_idx] = true;
+            const p = switch (plan.payload) {
+                .max_pool2d_bwd => |payload| payload,
+                else => return,
+            };
+            const root = self.nodes[scatter_idx].source0() orelse return;
+            self.markBwdAncestorsUntil(root, &.{p.output_grad});
+        }
+
+        fn markBwdAncestorsUntil(self: *Self, node: *Tensor(T), stop_nodes: []const *Tensor(T)) void {
+            for (stop_nodes) |stop| {
+                if (node == stop) return;
+            }
+            const idx = self.ptr_to_idx.get(node) orelse return;
+            if (idx < self.forward_node_count) return;
+            if (self.fused_skip[idx]) return;
+            self.fused_skip[idx] = true;
+            if (node.source0()) |s0| self.markBwdAncestorsUntil(s0, stop_nodes);
+            if (node.source1()) |s1| self.markBwdAncestorsUntil(s1, stop_nodes);
         }
     };
 }

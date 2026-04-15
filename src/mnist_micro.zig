@@ -48,7 +48,6 @@ pub fn main() !void {
     // Print graph and fusion summary
     try model.g.dumpReport(&w.interface, .{ .include_nodes = false, .include_execution = true });
 
-
     // Warmup
     for (0..warmup_iters) |_| {
         model.g.reset();
@@ -137,6 +136,17 @@ pub fn main() !void {
     try w.interface.print("  throughput: {d:.0} img/s (at p50)\n\n", .{
         @as(f64, @floatFromInt(batch_size)) / (ns_to_ms(p50) / 1000.0),
     });
+    const phase_profile = (try model.g.profileExecution(.{ .loss_grad = model.loss.grad })).fused_conv_phases;
+    try w.interface.print("Conv phases (single profiled step, ms):\n", .{});
+    try w.interface.print("  fwd im2col:      {d:>7.3}\n", .{@as(f64, @floatFromInt(phase_profile.fwd_im2col_ns)) / 1_000_000.0});
+    try w.interface.print("  fwd gemm:        {d:>7.3}\n", .{@as(f64, @floatFromInt(phase_profile.fwd_gemm_ns)) / 1_000_000.0});
+    try w.interface.print("  fwd epilogue:    {d:>7.3}\n", .{@as(f64, @floatFromInt(phase_profile.fwd_epilogue_ns)) / 1_000_000.0});
+    try w.interface.print("  bwd-in rearrange:{d:>7.3}\n", .{@as(f64, @floatFromInt(phase_profile.bwd_input_rearrange_ns)) / 1_000_000.0});
+    try w.interface.print("  bwd-in gemm:     {d:>7.3}\n", .{@as(f64, @floatFromInt(phase_profile.bwd_input_gemm_ns)) / 1_000_000.0});
+    try w.interface.print("  bwd-in col2im:   {d:>7.3}\n", .{@as(f64, @floatFromInt(phase_profile.bwd_input_col2im_ns)) / 1_000_000.0});
+    try w.interface.print("  bwd-k im2col:    {d:>7.3}\n", .{@as(f64, @floatFromInt(phase_profile.bwd_kernel_im2col_ns)) / 1_000_000.0});
+    try w.interface.print("  bwd-k rearrange: {d:>7.3}\n", .{@as(f64, @floatFromInt(phase_profile.bwd_kernel_rearrange_ns)) / 1_000_000.0});
+    try w.interface.print("  bwd-k gemm:      {d:>7.3}\n", .{@as(f64, @floatFromInt(phase_profile.bwd_kernel_gemm_ns)) / 1_000_000.0});
     try w.interface.print("  loss after bench: {d:.4}\n\n", .{model.loss.data[0]});
     w.interface.flush() catch {};
 }
