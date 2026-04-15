@@ -38,6 +38,7 @@
 
 const std = @import("std");
 
+const backend_mod = @import("backend.zig");
 const Tensor = @import("tensor.zig").Tensor;
 const ComputeGraph = @import("graph.zig").ComputeGraph;
 const GPT = @import("models/gpt.zig").GPT;
@@ -96,8 +97,19 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             v_caches: [config.n_layers]*Tensor(T),
             backing_alloc: std.mem.Allocator,
         ) !Self {
+            return Self.initWithBackend(model, k_caches, v_caches, backing_alloc, null);
+        }
+
+        pub fn initWithBackend(
+            model: *const Model,
+            k_caches: [config.n_layers]*Tensor(T),
+            v_caches: [config.n_layers]*Tensor(T),
+            backing_alloc: std.mem.Allocator,
+            backend: ?backend_mod.Backend,
+        ) !Self {
             var graph = ComputeGraph(T).init(backing_alloc);
             errdefer graph.deinit();
+            if (backend) |b| graph.setBackend(b);
             const a = graph.allocator();
 
             // Bound-input placeholders (leaves: op=.none, never zeroed by reset).
@@ -213,10 +225,11 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
                 if (self.quant_map.get(node)) |qi| {
                     executeQuantizedMatmul(node, &self.quant_weights[qi]);
                 } else {
-                    node.compute();
+                    self.graph.executeNode(node, null);
                 }
             }
         }
+
 
         fn executeQuantizedMatmul(node: *Tensor(T), qw: *const QuantizedWeight(T)) void {
             const src0 = node.src0.?;
@@ -287,9 +300,8 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             } else {
                 self.graph.computeNoGrad();
             }
-
-            // 6. Copy to stable output buffer.
             @memcpy(self.logits_buf, self.logits.data[0..config.vocab_size]);
+
             return self.logits_buf;
         }
 
@@ -448,6 +460,10 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
         /// checkpoint.load(f32, &s.model.params(), path);
         /// ```
         pub fn init(backing_alloc: std.mem.Allocator) !Self {
+            return Self.initWithBackend(backing_alloc, null);
+        }
+
+        pub fn initWithBackend(backing_alloc: std.mem.Allocator, backend: ?backend_mod.Backend) !Self {
             var arena = std.heap.ArenaAllocator.init(backing_alloc);
             errdefer arena.deinit();
             const a = arena.allocator();
@@ -463,7 +479,7 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
                 @memset(v_caches[l].data, 0);
             }
 
-            var plan = try Plan.init(&model, k_caches, v_caches, backing_alloc);
+            var plan = try Plan.initWithBackend(&model, k_caches, v_caches, backing_alloc, backend);
             errdefer plan.deinit();
 
             return .{

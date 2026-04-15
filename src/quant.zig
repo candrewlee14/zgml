@@ -20,8 +20,8 @@ pub fn QuantizedWeight(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        data: []i8,
-        scales: []T,
+        data: []const i8,
+        scales: []const T,
         rows: usize, // K (inner dim)
         cols: usize, // N (output dim)
         block_size: usize,

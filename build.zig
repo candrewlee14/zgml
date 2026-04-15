@@ -10,9 +10,10 @@ pub const Package = struct {
     zgml: *std.Build.Module,
     zgml_options: *std.Build.Module,
 
-    pub fn link(pkg: Package, exe: *std.Build.Step.Compile) void {
+    pub fn link(pkg: Package, b: *std.Build, exe: *std.Build.Step.Compile) void {
         exe.root_module.addImport("zgml", pkg.zgml);
         exe.root_module.addImport("zgml_options", pkg.zgml_options);
+        linkMetal(b, pkg.target, exe);
 
         if (pkg.options.use_blas) {
             exe.linkLibC();
@@ -36,6 +37,19 @@ pub const Package = struct {
         }
     }
 };
+
+fn linkMetal(b: *std.Build, target: std.Build.ResolvedTarget, exe: *std.Build.Step.Compile) void {
+    if (target.result.os.tag == .macos) {
+        exe.addCSourceFile(.{
+            .file = b.path("src/backend/metal_shim.m"),
+            .flags = &.{"-fno-objc-arc"},
+        });
+        exe.addIncludePath(b.path("src/backend"));
+        exe.linkFramework("Metal");
+        exe.linkFramework("Foundation");
+        exe.linkLibC();
+    }
+}
 
 fn linkBlas(target: std.Build.ResolvedTarget, exe: *std.Build.Step.Compile) void {
     exe.linkLibC();
@@ -72,6 +86,12 @@ pub fn package(
 
     if (args.options.use_blas) {
         zgml.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+
+    // Metal backend: include path for the C shim header so metal.zig can @cImport it.
+    // Actual linking happens in Package.link() and linkMetal() on the compile step.
+    if (target.result.os.tag == .macos) {
+        zgml.addIncludePath(b.path("src/backend"));
     }
 
     return .{
@@ -249,6 +269,46 @@ pub fn build(b: *std.Build) void {
     const opbench_step = b.step("op-bench", "Per-op microbenchmark for MNIST CNN ops");
     opbench_step.dependOn(&b.addRunArtifact(opbench_exe).step);
 
+    // Metal backend benchmark
+    {
+        const pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+        const mod = b.createModule(.{
+            .root_source_file = b.path("benchmarks/metal_bench.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "zgml", .module = pkg.zgml },
+                .{ .name = "zgml_options", .module = pkg.zgml_options },
+            },
+        });
+        const exe = b.addExecutable(.{ .name = "bench-metal", .root_module = mod });
+        if (use_blas) { linkBlas(target, exe); exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" }); }
+        linkMetal(b, target, exe);
+        b.installArtifact(exe);
+        const step = b.step("bench-metal", "Benchmark Metal GPU vs CPU BLAS matmul");
+        step.dependOn(&b.addRunArtifact(exe).step);
+    }
+
+    // Metal inference benchmark
+    {
+        const pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+        const mod = b.createModule(.{
+            .root_source_file = b.path("benchmarks/metal_inference_bench.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "zgml", .module = pkg.zgml },
+                .{ .name = "zgml_options", .module = pkg.zgml_options },
+            },
+        });
+        const exe = b.addExecutable(.{ .name = "bench-metal-inference", .root_module = mod });
+        if (use_blas) { linkBlas(target, exe); exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" }); }
+        linkMetal(b, target, exe);
+        b.installArtifact(exe);
+        const step = b.step("bench-metal-inference", "Benchmark CPU vs Metal inference tok/s");
+        step.dependOn(&b.addRunArtifact(exe).step);
+    }
+
     // Text generation binary
     const zgml_gen_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
     const gen_mod = b.createModule(.{
@@ -343,6 +403,7 @@ pub fn runTests(
         linkBlas(target, test_exe);
         test_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
+    linkMetal(b, target, test_exe);
     b.installArtifact(test_exe);
 
     return &b.addRunArtifact(test_exe).step;
@@ -373,6 +434,7 @@ fn runInferenceTests(
         linkBlas(target, test_exe);
         test_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
+    linkMetal(b, target, test_exe);
 
     return &b.addRunArtifact(test_exe).step;
 }
