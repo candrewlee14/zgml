@@ -105,7 +105,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Save
     const path = "tiny_gpt.bin";
-    try checkpoint.save(f32, &params, path);
+    try checkpoint.save(f32, &params, path, io);
     try w.interface.print("\nSaved to '{s}'. Generate with:\n  ./zig-out/bin/generate {s} \"The \"\n", .{ path, path });
     w.interface.flush() catch {};
 }

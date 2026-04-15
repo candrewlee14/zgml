@@ -15,7 +15,6 @@
 
 const std = @import("std");
 const Alloc = std.mem.Allocator;
-const file_compat = @import("file_compat.zig");
 
 pub const GPT2Tokenizer = struct {
     alloc: Alloc,
@@ -32,16 +31,16 @@ pub const GPT2Tokenizer = struct {
     /// Raw vocab.json file data
     vocab_data: []u8 = &.{},
 
-    pub fn init(alloc: Alloc, vocab_path: []const u8, merges_path: []const u8) !GPT2Tokenizer {
+    pub fn init(alloc: Alloc, vocab_path: []const u8, merges_path: []const u8, io: std.Io) !GPT2Tokenizer {
         var self = GPT2Tokenizer{ .alloc = alloc };
         errdefer self.deinit();
 
         // Load vocab.json
-        self.vocab_data = try readFile(alloc, vocab_path);
+        self.vocab_data = try readFile(alloc, vocab_path, io);
         try parseVocabJson(&self);
 
         // Load merges.txt
-        const merges_data = try readFile(alloc, merges_path);
+        const merges_data = try readFile(alloc, merges_path, io);
         defer alloc.free(merges_data);
         try parseMerges(&self, merges_data);
 
@@ -217,8 +216,16 @@ fn unicodeToByteTable(cp: u21) u8 {
     return '?';
 }
 
-fn readFile(alloc: Alloc, path: []const u8) ![]u8 {
-    return file_compat.readToEndAlloc(alloc, path, std.math.maxInt(usize));
+fn readFile(alloc: Alloc, path: []const u8, io: std.Io) ![]u8 {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    const stat = try file.stat(io);
+    const size: usize = @intCast(stat.size);
+    const buf = try alloc.alloc(u8, size);
+    errdefer alloc.free(buf);
+    const bytes_read = try file.readPositionalAll(io, buf, 0);
+    if (bytes_read != size) return error.UnexpectedEof;
+    return buf;
 }
 
 /// Parse a minimal vocab.json: {"token": id, "token2": id2, ...}

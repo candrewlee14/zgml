@@ -225,7 +225,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
                 if (self.quant_map.get(node)) |qi| {
                     executeQuantizedMatmul(node, &self.quant_weights[qi]);
                 } else {
-                    self.graph.executeNode(node, null);
+                    self.graph.executeNode(node, 1);
                 }
             }
         }

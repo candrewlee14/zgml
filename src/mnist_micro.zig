@@ -10,7 +10,6 @@ const zgml = @import("zgml");
 const Tensor = zgml.Tensor;
 const nn = zgml.nn;
 const ConvClassifier = zgml.models.ConvClassifier;
-const time_compat = zgml.time_compat;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -26,7 +25,7 @@ pub fn main(init: std.process.Init) !void {
     try model.g.fusionPass();
 
     // Enable threading if available
-    model.g.enableThreading() catch {};
+    model.g.enableThreading();
 
     const p = model.params();
     var sgd = try zgml.optim.sgd.SGD(f32).init(alloc, p, .{ .lr = 0.01, .momentum = 0.9 });
@@ -77,10 +76,9 @@ pub fn main(init: std.process.Init) !void {
         t.forward = profile.forward_ns;
         t.backward = profile.backward_ns;
 
-        var timer = time_compat.Timer.start();
-        timer.reset();
+        const optim_t0 = std.Io.Clock.awake.now(io).nanoseconds;
         sgd.step();
-        t.optim = timer.read();
+        t.optim = @intCast(std.Io.Clock.awake.now(io).nanoseconds - optim_t0);
 
         t.total = profile.total_ns + t.optim;
     }

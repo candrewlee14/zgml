@@ -14,8 +14,6 @@ const std = @import("std");
 const zgml = @import("zgml");
 const Tensor = zgml.Tensor;
 const ConvClassifier = zgml.models.ConvClassifier;
-const time_compat = zgml.time_compat;
-
 const Bucket = struct {
     name: []const u8,
     count: u64 = 0,
@@ -68,10 +66,9 @@ pub fn main(init: std.process.Init) !void {
             if (idx < model.g.fused_skip.items.len and model.g.fused_skip.items[idx]) continue;
             const tag_name = @tagName(node.opTag());
 
-            var timer = time_compat.Timer.start();
-            timer.reset();
+            const node_t0 = std.Io.Clock.awake.now(io).nanoseconds;
             node.compute();
-            const elapsed = timer.read();
+            const elapsed: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds - node_t0);
 
             const gop = try map.getOrPut(tag_name);
             if (!gop.found_existing) {

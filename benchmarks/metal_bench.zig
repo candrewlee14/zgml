@@ -7,8 +7,6 @@ const zgml = @import("zgml");
 const backend_mod = zgml.backend;
 const CpuBackend = zgml.backend_cpu.CpuBackend;
 const MetalBackend = zgml.backend_metal.MetalBackend;
-const time_compat = zgml.time_compat;
-
 const WARMUP = 5;
 const ITERS = 50;
 
@@ -19,6 +17,7 @@ fn benchDenseMatMul(
     N: usize,
     K: usize,
     writer: anytype,
+    io: std.Io,
 ) !void {
     // Build a single-matmul program.
     const a_data = try std.heap.page_allocator.alloc(f32, M * K);
@@ -55,9 +54,9 @@ fn benchDenseMatMul(
     for (0..WARMUP) |_| be.executeProgram(handle, &.{}, &out);
 
     // Timed
-    var timer = time_compat.Timer.start();
+    const t0 = std.Io.Clock.awake.now(io).nanoseconds;
     for (0..ITERS) |_| be.executeProgram(handle, &.{}, &out);
-    const elapsed_ns = timer.read();
+    const elapsed_ns: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds - t0);
 
     const per_iter_us = @as(f64, @floatFromInt(elapsed_ns)) / 1000.0 / @as(f64, @floatFromInt(ITERS));
     const flops = 2.0 * @as(f64, @floatFromInt(M)) * @as(f64, @floatFromInt(N)) * @as(f64, @floatFromInt(K));
@@ -104,8 +103,8 @@ pub fn main(init: std.process.Init) !void {
 
     for (sizes) |s| {
         try w.interface.print("  M={d}, N={d}, K={d}:\n", .{ s[0], s[1], s[2] });
-        try benchDenseMatMul("CPU/BLAS", cpu, s[0], s[1], s[2], &w.interface);
-        try benchDenseMatMul("Metal/GPU", metal, s[0], s[1], s[2], &w.interface);
+        try benchDenseMatMul("CPU/BLAS", cpu, s[0], s[1], s[2], &w.interface, io);
+        try benchDenseMatMul("Metal/GPU", metal, s[0], s[1], s[2], &w.interface, io);
     }
 
     try w.interface.print("\n", .{});

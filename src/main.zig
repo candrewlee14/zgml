@@ -25,8 +25,6 @@ pub const tokenizer = @import("tokenizer.zig");
 pub const inference = @import("inference.zig");
 pub const device_inference = @import("device_inference.zig");
 pub const data = @import("data.zig");
-pub const file_compat = @import("file_compat.zig");
-pub const time_compat = @import("time_compat.zig");
 
 test "ref all decls" {
     _ = testing.refAllDecls(models);

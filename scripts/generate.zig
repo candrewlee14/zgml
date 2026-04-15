@@ -10,7 +10,6 @@
 const std = @import("std");
 const zgml = @import("zgml");
 const checkpoint = zgml.checkpoint;
-const time_compat = zgml.time_compat;
 
 const config = zgml.models.GPTConfig{
     .vocab_size = 256,
@@ -50,7 +49,7 @@ pub fn main(init: std.process.Init) !void {
     defer session.deinit();
 
     const params = session.model.params();
-    checkpoint.load(f32, &params, ckpt_path) catch |err| {
+    checkpoint.load(f32, &params, ckpt_path, io) catch |err| {
         try stderr.interface.print("Error loading '{s}': {}\n", .{ ckpt_path, err });
         stderr.interface.flush() catch {};
         return;
@@ -65,7 +64,7 @@ pub fn main(init: std.process.Init) !void {
     var gen_tokens: usize = 0;
 
     const max_tokens = prompt.len + 200;
-    const t_start = time_compat.nanoTimestamp();
+    const t_start = std.Io.Clock.awake.now(io).nanoseconds;
 
     for (0..max_tokens) |_| {
         const logits = try session.step(next_token);
@@ -97,7 +96,7 @@ pub fn main(init: std.process.Init) !void {
         next_token = best;
     }
 
-    const t_end = time_compat.nanoTimestamp();
+    const t_end = std.Io.Clock.awake.now(io).nanoseconds;
     const elapsed_ms: f64 = @as(f64, @floatFromInt(t_end - t_start)) / 1_000_000.0;
     const total_tokens = session.position();
     const toks_per_sec: f64 = if (elapsed_ms > 0)

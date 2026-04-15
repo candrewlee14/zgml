@@ -8,14 +8,13 @@
 const std = @import("std");
 const zgml = @import("zgml");
 const GPTConfig = zgml.models.GPTConfig;
-const time_compat = zgml.time_compat;
-
 fn runBenchmark(
     comptime name: []const u8,
     comptime config: GPTConfig,
     n_tokens: usize,
     quantized: bool,
     writer: anytype,
+    io: std.Io,
 ) !void {
     const Session = zgml.inference.InferenceSession(f32, config);
 
@@ -32,11 +31,11 @@ fn runBenchmark(
     _ = try session.step(0);
     session.reset();
 
-    const t_start = time_compat.nanoTimestamp();
+    const t_start = std.Io.Clock.awake.now(io).nanoseconds;
     for (0..n_tokens) |i| {
         _ = try session.step(i % config.vocab_size);
     }
-    const t_end = time_compat.nanoTimestamp();
+    const t_end = std.Io.Clock.awake.now(io).nanoseconds;
 
     const elapsed_ns: f64 = @floatFromInt(t_end - t_start);
     const elapsed_ms = elapsed_ns / 1_000_000.0;
@@ -89,12 +88,12 @@ pub fn main(init: std.process.Init) !void {
 
     try stdout.interface.writeAll("=== Inference Benchmarks ===\n\n");
     try stdout.interface.writeAll("Small (d=64, L=4, H=4):\n");
-    try runBenchmark("small ", small, n_tokens, false, &stdout.interface);
-    try runBenchmark("small ", small, n_tokens, true, &stdout.interface);
+    try runBenchmark("small ", small, n_tokens, false, &stdout.interface, io);
+    try runBenchmark("small ", small, n_tokens, true, &stdout.interface, io);
 
     try stdout.interface.writeAll("\nMedium (d=128, L=6, H=8):\n");
-    try runBenchmark("medium", medium, n_tokens, false, &stdout.interface);
-    try runBenchmark("medium", medium, n_tokens, true, &stdout.interface);
+    try runBenchmark("medium", medium, n_tokens, false, &stdout.interface, io);
+    try runBenchmark("medium", medium, n_tokens, true, &stdout.interface, io);
 
     try stdout.interface.writeAll("\n");
     stdout.interface.flush() catch {};

@@ -10,8 +10,6 @@
 
 const std = @import("std");
 const zgml = @import("zgml");
-const time_compat = zgml.time_compat;
-
 const config = zgml.models.GPTConfig{
     .vocab_size = 50257,
     .d_model = 64,
@@ -52,7 +50,7 @@ pub fn main(init: std.process.Init) !void {
     const prompt = if (args.len > 4) args[4] else "Once upon a time";
 
     // Load tokenizer.
-    var tok = try zgml.tokenizer.GPT2Tokenizer.init(alloc, vocab_path, merges_path);
+    var tok = try zgml.tokenizer.GPT2Tokenizer.init(alloc, vocab_path, merges_path, io);
     defer tok.deinit();
 
     const prompt_ids = try tok.encode(alloc, prompt);
@@ -69,7 +67,7 @@ pub fn main(init: std.process.Init) !void {
     var session = try Session.init(alloc);
     defer session.deinit();
 
-    var sf = try zgml.safetensors.SafetensorsFile.open(alloc, model_path);
+    var sf = try zgml.safetensors.SafetensorsFile.open(alloc, model_path, io);
     defer sf.deinit();
     try zgml.models.gpt_loader.loadGPTNeo(f32, config, &session.model, &sf);
 
@@ -83,7 +81,7 @@ pub fn main(init: std.process.Init) !void {
     var prompt_idx: usize = 0;
     var gen_tokens: usize = 0;
 
-    const t_start = time_compat.nanoTimestamp();
+    const t_start = std.Io.Clock.awake.now(io).nanoseconds;
 
     for (0..prompt_ids.len + 200) |_| {
         const logits = try session.step(next_token);
@@ -116,7 +114,7 @@ pub fn main(init: std.process.Init) !void {
         next_token = @intCast(best);
     }
 
-    const t_end = time_compat.nanoTimestamp();
+    const t_end = std.Io.Clock.awake.now(io).nanoseconds;
     const elapsed_ms: f64 = @as(f64, @floatFromInt(t_end - t_start)) / 1_000_000.0;
     const total_tokens = session.position();
     const toks_per_sec: f64 = if (elapsed_ms > 0)

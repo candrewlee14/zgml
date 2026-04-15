@@ -13,22 +13,24 @@ const std = @import("std");
 const Op = @import("../op.zig").Op;
 const Tensor = @import("../tensor.zig").Tensor;
 const forward = @import("forward.zig");
-const threading = @import("../threading.zig");
+
+fn nowNs() i96 {
+    return std.Io.Clock.awake.now(std.Io.Threaded.global_single_threaded.io()).nanoseconds;
+}
 
 const Timer = struct {
     start_ns: i96,
 
     fn start() Timer {
-        return .{ .start_ns = std.Io.Timestamp.now(std.Options.debug_io, .awake).nanoseconds };
+        return .{ .start_ns = nowNs() };
     }
 
     fn reset(self: *Timer) void {
-        self.start_ns = std.Io.Timestamp.now(std.Options.debug_io, .awake).nanoseconds;
+        self.start_ns = nowNs();
     }
 
     fn read(self: *const Timer) u64 {
-        const now_ns = std.Io.Timestamp.now(std.Options.debug_io, .awake).nanoseconds;
-        return @intCast(now_ns - self.start_ns);
+        return @intCast(nowNs() - self.start_ns);
     }
 };
 
@@ -597,7 +599,7 @@ fn executeFusedGenericRange(comptime T: type, plan: ElementwiseFusionPlan(T), st
 }
 
 /// Parallel elementwise chain execution. Splits the element range across threads.
-pub fn executeFusedChainParallel(comptime T: type, plan: ElementwiseFusionPlan(T), pool: *threading.Pool) void {
+pub fn executeFusedChainParallel(comptime T: type, plan: ElementwiseFusionPlan(T), n_workers: usize) void {
     if (!isSafeElementwiseChain(T, plan)) {
         for (plan.nodes) |node| node.compute();
         return;
@@ -605,7 +607,7 @@ pub fn executeFusedChainParallel(comptime T: type, plan: ElementwiseFusionPlan(T
 
     const n_elems = plan.nodes[plan.nodes.len - 1].nElems();
     const min_chunk = 1024; // below this, not worth threading
-    const n_workers = pool.threads.len + 1;
+    const max_spawn = 127;
 
     if (n_elems < min_chunk * 2 or n_workers <= 1) {
         executeFusedChain(T, plan);
@@ -613,22 +615,24 @@ pub fn executeFusedChainParallel(comptime T: type, plan: ElementwiseFusionPlan(T
     }
 
     const chunk = @max(min_chunk, (n_elems + n_workers - 1) / n_workers);
-    var wg = threading.WaitGroup{};
+    var threads: [max_spawn]std.Thread = undefined;
+    var n_spawned: usize = 0;
     var start: usize = chunk;
-    while (start < n_elems) {
+    while (start < n_elems and n_spawned < max_spawn) {
         const s = start;
         const e = @min(start + chunk, n_elems);
-        pool.spawnWg(&wg, struct {
+        threads[n_spawned] = std.Thread.spawn(.{}, struct {
             fn run(p: ElementwiseFusionPlan(T), cs: usize, ce: usize) void {
                 executeFusedGenericRange(T, p, cs, ce);
             }
-        }.run, .{ plan, s, e });
+        }.run, .{ plan, s, e }) catch break;
+        n_spawned += 1;
         start = e;
     }
 
     // Caller thread does the first chunk (comptime-specialized when possible)
     executeFusedGenericRange(T, plan, 0, @min(chunk, n_elems));
-    wg.wait();
+    for (threads[0..n_spawned]) |t| t.join();
 }
 
 /// Runtime interpreter fallback for chains longer than the comptime dispatch limit.

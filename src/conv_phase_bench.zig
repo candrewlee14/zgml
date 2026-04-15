@@ -108,7 +108,7 @@ fn runCase(alloc: std.mem.Allocator, writer: anytype, cfg: Config) !void {
     };
     defer model.deinit();
     try model.g.fusionPass();
-    model.g.enableThreading() catch {};
+    model.g.enableThreading();
 
     var prng = std.Random.DefaultPrng.init(42);
     const rand = prng.random();

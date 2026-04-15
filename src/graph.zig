@@ -14,26 +14,28 @@ const Op = @import("op.zig").Op;
 const loss = @import("loss.zig");
 const fusion = @import("fusion.zig");
 const fused = @import("tensor/fused.zig");
-const threading = @import("threading.zig");
 const assert = std.debug.assert;
 const testing = std.testing;
 const Alloc = std.mem.Allocator;
 const tac = std.testing.allocator;
 
+fn nowNs() i96 {
+    return std.Io.Clock.awake.now(std.Io.Threaded.global_single_threaded.io()).nanoseconds;
+}
+
 const Timer = struct {
     start_ns: i96,
 
     fn start() Timer {
-        return .{ .start_ns = std.Io.Timestamp.now(std.Options.debug_io, .awake).nanoseconds };
+        return .{ .start_ns = nowNs() };
     }
 
     fn reset(self: *Timer) void {
-        self.start_ns = std.Io.Timestamp.now(std.Options.debug_io, .awake).nanoseconds;
+        self.start_ns = nowNs();
     }
 
     fn read(self: *const Timer) u64 {
-        const now_ns = std.Io.Timestamp.now(std.Options.debug_io, .awake).nanoseconds;
-        return @intCast(now_ns - self.start_ns);
+        return @intCast(nowNs() - self.start_ns);
     }
 };
 
@@ -70,7 +72,7 @@ pub fn ComputeGraph(comptime T: type) type {
 
         /// Optional thread pool for parallel matmul and elementwise ops.
         /// Null by default (single-threaded). Call `enableThreading()` to activate.
-        thread_pool: ?threading.Pool = null,
+        n_threads: usize = 1,
         backend: ?backend_mod.Backend = null,
 
         const ExecutionStep = union(enum) {
@@ -129,7 +131,6 @@ pub fn ComputeGraph(comptime T: type) type {
 
         /// Clean up all the resources for this compute graph
         pub fn deinit(self: *Self) void {
-            if (self.thread_pool) |*tp| tp.deinit();
             const alloc = self.arena.allocator();
             self.deinitFusedChains();
             self.fused_skip.deinit(alloc);
@@ -145,13 +146,9 @@ pub fn ComputeGraph(comptime T: type) type {
 
         /// Enable multi-threaded execution for matmul and elementwise ops.
         /// Uses all available CPU cores. Safe to call multiple times (no-op if already enabled).
-        pub fn enableThreading(self: *Self) !void {
-            if (self.thread_pool != null) return;
-            self.thread_pool = undefined;
-            try self.thread_pool.?.init(.{
-                .allocator = std.heap.page_allocator,
-                .track_ids = false,
-            });
+        pub fn enableThreading(self: *Self) void {
+            if (self.n_threads > 1) return;
+            self.n_threads = std.Thread.getCpuCount() catch 1;
         }
 
         pub fn setBackend(self: *Self, backend: backend_mod.Backend) void {
@@ -1060,15 +1057,15 @@ pub fn ComputeGraph(comptime T: type) type {
         }
 
         fn timeSteps(self: *const Self, steps: []const ExecutionStep, out: []StepEntry) void {
-            const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
+            const nw = self.n_threads;
             var timer = Timer.start();
             for (steps, 0..) |step, i| {
                 timer.reset();
                 switch (step) {
                     .fusion => |idx| {
                         const plan = self.fused_chains.items[idx];
-                        if (pool != null and plan.kind() == .elementwise_chain) {
-                            fused.executeFusedChainParallel(T, plan.payload.elementwise_chain, pool.?);
+                        if (nw > 1 and plan.kind() == .elementwise_chain) {
+                            fused.executeFusedChainParallel(T, plan.payload.elementwise_chain, nw);
                         } else {
                             fused.executeFusionPlan(T, plan, null);
                         }
@@ -1083,7 +1080,7 @@ pub fn ComputeGraph(comptime T: type) type {
                         };
                     },
                     .node => |node| {
-                        self.executeNode(node, pool);
+                        self.executeNode(node, nw);
                         const elapsed = timer.read();
                         out[i] = .{
                             .kind = .{ .node = node.opTag() },
@@ -1373,8 +1370,8 @@ pub fn ComputeGraph(comptime T: type) type {
 
         fn computeProfiled(self: *const Self, phase_profile: ?*fused.ConvPhaseProfile) void {
             if (self.execution_steps.items.len == 0) {
-                const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
-                for (self.nodes.items) |node| self.executeNode(node, pool);
+                const nw = self.n_threads;
+                for (self.nodes.items) |node| self.executeNode(node, nw);
                 return;
             }
             self.executeGraphPlan(self.execution_steps.items, phase_profile);
@@ -1386,8 +1383,8 @@ pub fn ComputeGraph(comptime T: type) type {
 
         fn computeNoGradProfiled(self: *const Self, phase_profile: ?*fused.ConvPhaseProfile) void {
             if (self.forward_execution_steps.items.len == 0) {
-                const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
-                for (self.nodes.items[0..self.forward_node_count]) |node| self.executeNode(node, pool);
+                const nw = self.n_threads;
+                for (self.nodes.items[0..self.forward_node_count]) |node| self.executeNode(node, nw);
                 return;
             }
             self.executeGraphPlan(self.forward_execution_steps.items, phase_profile);
@@ -1401,8 +1398,8 @@ pub fn ComputeGraph(comptime T: type) type {
 
         fn computeBackwardProfiled(self: *const Self, phase_profile: ?*fused.ConvPhaseProfile) void {
             if (self.execution_steps.items.len == 0) {
-                const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
-                for (self.nodes.items[self.forward_node_count..]) |node| self.executeNode(node, pool);
+                const nw = self.n_threads;
+                for (self.nodes.items[self.forward_node_count..]) |node| self.executeNode(node, nw);
                 return;
             }
             // Backward steps are everything after the forward execution steps.
@@ -1456,19 +1453,19 @@ pub fn ComputeGraph(comptime T: type) type {
         }
 
         fn executeGraphPlan(self: *const Self, steps: []const ExecutionStep, phase_profile: ?*fused.ConvPhaseProfile) void {
-            const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
+            const nw = self.n_threads;
             for (steps) |step| {
                 switch (step) {
                     .fusion => |idx| {
                         const plan = self.fused_chains.items[idx];
-                        if (pool != null and plan.kind() == .elementwise_chain) {
-                            fused.executeFusedChainParallel(T, plan.payload.elementwise_chain, pool.?);
+                        if (nw > 1 and plan.kind() == .elementwise_chain) {
+                            fused.executeFusedChainParallel(T, plan.payload.elementwise_chain, nw);
                         } else {
                             fused.executeFusionPlan(T, plan, phase_profile);
                         }
                     },
                     .node => |node| {
-                        self.executeNode(node, pool);
+                        self.executeNode(node, nw);
                     },
                 }
             }
@@ -1480,7 +1477,7 @@ pub fn ComputeGraph(comptime T: type) type {
         /// When a backend is set it owns matmul execution entirely (the backend
         /// may use BLAS/GPU threading internally). The thread pool is a
         /// framework-level parallelism strategy for when no backend is attached.
-        pub fn executeNode(self: *const Self, node: *Tensor(T), pool: ?*threading.Pool) void {
+        pub fn executeNode(self: *const Self, node: *Tensor(T), n_workers: usize) void {
             if (node.opTag() == .matmul) {
                 const flags = node.matmul_flags;
                 const s0 = node.src0.?;
@@ -1491,8 +1488,8 @@ pub fn ComputeGraph(comptime T: type) type {
                     return;
                 }
 
-                if (pool) |tp| {
-                    dispatchMatMulParallel(node, s0, s1, flags, tp);
+                if (n_workers > 1) {
+                    dispatchMatMulParallel(node, s0, s1, flags, n_workers);
                     return;
                 }
             }
@@ -1508,11 +1505,11 @@ pub fn ComputeGraph(comptime T: type) type {
             }
         }
 
-        fn dispatchMatMulParallel(node: *Tensor(T), s0: *const Tensor(T), s1: *const Tensor(T), flags: Tensor(T).MatMulFlags, tp: *threading.Pool) void {
+        fn dispatchMatMulParallel(node: *Tensor(T), s0: *const Tensor(T), s1: *const Tensor(T), flags: Tensor(T).MatMulFlags, n_workers: usize) void {
             if (flags.trans0) {
-                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, true, s1, true, tp) else Tensor(T).computeMatMulParallel(node, s0, true, s1, false, tp);
+                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, true, s1, true, n_workers) else Tensor(T).computeMatMulParallel(node, s0, true, s1, false, n_workers);
             } else {
-                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, false, s1, true, tp) else Tensor(T).computeMatMulParallel(node, s0, false, s1, false, tp);
+                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, false, s1, true, n_workers) else Tensor(T).computeMatMulParallel(node, s0, false, s1, false, n_workers);
             }
         }
 

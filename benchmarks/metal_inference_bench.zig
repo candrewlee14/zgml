@@ -11,7 +11,6 @@ const GPTConfig = zgml.models.GPTConfig;
 const MetalBackend = zgml.backend_metal.MetalBackend;
 const CpuBackend = zgml.backend_cpu.CpuBackend;
 const Backend = zgml.backend.Backend;
-const time_compat = zgml.time_compat;
 
 const WARMUP_TOKENS = 1;
 const TIMED_TOKENS = 32;
@@ -103,6 +102,7 @@ fn runBenchmark(
     quantized: bool,
     backend: ?Backend,
     writer: anytype,
+    io: std.Io,
 ) !void {
     const Session = zgml.inference.InferenceSession(f32, config);
 
@@ -121,11 +121,11 @@ fn runBenchmark(
     }
     session.reset();
 
-    const t_start = time_compat.nanoTimestamp();
+    const t_start = std.Io.Clock.awake.now(io).nanoseconds;
     for (0..TIMED_TOKENS) |i| {
         _ = try session.step(i % config.vocab_size);
     }
-    const t_end = time_compat.nanoTimestamp();
+    const t_end = std.Io.Clock.awake.now(io).nanoseconds;
 
     const elapsed_ns: f64 = @floatFromInt(t_end - t_start);
     const elapsed_ms = elapsed_ns / 1_000_000.0;
@@ -190,27 +190,27 @@ pub fn main(init: std.process.Init) !void {
 
     // --- Small ---
     try w.interface.print("Small (d=64, L=4, H=4):\n", .{});
-    try runBenchmark("CPU f32   ", small, false, null, &w.interface);
-    try runBenchmark("CPU int8  ", small, true, null, &w.interface);
+    try runBenchmark("CPU f32   ", small, false, null, &w.interface, io);
+    try runBenchmark("CPU int8  ", small, true, null, &w.interface, io);
     if (metal) |be| {
-        try runBenchmark("Metal int8", small, true, be, &w.interface);
+        try runBenchmark("Metal int8", small, true, be, &w.interface, io);
     }
 
     // --- Medium ---
     try w.interface.print("\nMedium (d=128, L=6, H=8):\n", .{});
-    try runBenchmark("CPU f32   ", medium, false, null, &w.interface);
-    try runBenchmark("CPU int8  ", medium, true, null, &w.interface);
+    try runBenchmark("CPU f32   ", medium, false, null, &w.interface, io);
+    try runBenchmark("CPU int8  ", medium, true, null, &w.interface, io);
     if (metal) |be| {
-        try runBenchmark("Metal int8", medium, true, be, &w.interface);
+        try runBenchmark("Metal int8", medium, true, be, &w.interface, io);
     }
 
     // --- GPT-2 scale ---
     try w.interface.print("\nGPT-2 scale (d=768, L=12, H=12):\n", .{});
     try diagnoseGraph(gpt2, &w.interface);
-    try runBenchmark("CPU f32   ", gpt2, false, null, &w.interface);
-    try runBenchmark("CPU int8  ", gpt2, true, null, &w.interface);
+    try runBenchmark("CPU f32   ", gpt2, false, null, &w.interface, io);
+    try runBenchmark("CPU int8  ", gpt2, true, null, &w.interface, io);
     if (metal) |be| {
-        try runBenchmark("Metal int8", gpt2, true, be, &w.interface);
+        try runBenchmark("Metal int8", gpt2, true, be, &w.interface, io);
     }
 
     try w.interface.print("\n", .{});

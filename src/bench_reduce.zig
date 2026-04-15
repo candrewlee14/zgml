@@ -8,8 +8,6 @@
 const std = @import("std");
 const zgml = @import("zgml");
 const Tensor = zgml.Tensor;
-const time_compat = zgml.time_compat;
-
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const alloc = init.gpa;
@@ -38,20 +36,19 @@ pub fn main(init: std.process.Init) !void {
 
         // Benchmark sum: reduce [24,24,C,32] → [1,1,C,1]
         // dst.computeSum(src) — dst is target, src is source
-        var timer = time_compat.Timer.start();
         for (0..warmup) |_| dst.computeSum(src);
-        timer.reset();
+        var t0 = std.Io.Clock.awake.now(io).nanoseconds;
         for (0..iters) |_| dst.computeSum(src);
-        const sum_ns = timer.read();
+        const sum_ns: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds - t0);
 
         // Benchmark repeat: broadcast [1,1,C,1] → [24,24,C,32]
         const rep_dst = try Tensor(f32).init(alloc, &.{ 24, 24, C, 32 });
         defer rep_dst.deinit();
         for (0..warmup) |_| rep_dst.computeRepeat(dst);
 
-        timer.reset();
+        t0 = std.Io.Clock.awake.now(io).nanoseconds;
         for (0..iters) |_| rep_dst.computeRepeat(dst);
-        const rep_ns = timer.read();
+        const rep_ns: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds - t0);
 
         const sum_us = @as(f64, @floatFromInt(sum_ns)) / @as(f64, @floatFromInt(iters)) / 1000.0;
         const rep_us = @as(f64, @floatFromInt(rep_ns)) / @as(f64, @floatFromInt(iters)) / 1000.0;
@@ -63,7 +60,7 @@ pub fn main(init: std.process.Init) !void {
         try w.interface.print("  repeat: {d:>8.1} us   {d:.2} GB/s\n", .{ rep_us, rep_gbps });
 
         // Also benchmark a raw SIMD sum of the same data for comparison
-        timer.reset();
+        t0 = std.Io.Clock.awake.now(io).nanoseconds;
         for (0..iters) |_| {
             var acc: f32 = 0;
             const vec_size = 8;
@@ -77,7 +74,7 @@ pub fn main(init: std.process.Init) !void {
             while (j < n_elems) : (j += 1) acc += src.data[j];
             std.mem.doNotOptimizeAway(acc);
         }
-        const raw_ns = timer.read();
+        const raw_ns: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds - t0);
         const raw_us = @as(f64, @floatFromInt(raw_ns)) / @as(f64, @floatFromInt(iters)) / 1000.0;
         const raw_gbps = @as(f64, @floatFromInt(n_elems * 4)) / (@as(f64, @floatFromInt(raw_ns)) / @as(f64, @floatFromInt(iters))) * 1.0;
         try w.interface.print("  raw:    {d:>8.1} us   {d:.2} GB/s  (SIMD flat sum baseline)\n\n", .{ raw_us, raw_gbps });
