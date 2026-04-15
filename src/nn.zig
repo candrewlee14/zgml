@@ -276,11 +276,6 @@ pub fn RoPE(comptime T: type, comptime d: usize, comptime max_seq_len: usize) ty
     return struct {
         const Self = @This();
 
-        /// Permutation matrix [d, d]: swaps pairs and negates first of each pair.
-        /// P[2i, 2i+1] = -1,  P[2i+1, 2i] = 1,  all others 0.
-        /// So (x @ P)[2i] = -x[2i+1],  (x @ P)[2i+1] = x[2i].
-        perm: *Tensor(T),
-
         /// Pre-computed cos values [d, max_seq_len].
         cos_table: *Tensor(T),
 
@@ -289,17 +284,6 @@ pub fn RoPE(comptime T: type, comptime d: usize, comptime max_seq_len: usize) ty
 
         pub fn init(alloc: Alloc, base: T) !Self {
             var self: Self = undefined;
-
-            // Build permutation matrix implementing HF's rotate_half:
-            //   rotate_half(x) = [-x[d/2:], x[:d/2]]
-            // P[i, i+d/2] = -1  → maps x[i+d/2] to position i, negated
-            // P[i+d/2, i] = 1   → maps x[i] to position i+d/2
-            self.perm = try Tensor(T).init(alloc, &.{ d, d });
-            _ = self.perm.setAllScalar(0);
-            for (0..d / 2) |i| {
-                self.perm.data[(i + d / 2) * d + i] = -1;
-                self.perm.data[i * d + (i + d / 2)] = 1;
-            }
 
             // Build cos/sin frequency tables.
             // Half-split pairing: pair (i, i+d/2) shares the same frequency,
@@ -325,41 +309,49 @@ pub fn RoPE(comptime T: type, comptime d: usize, comptime max_seq_len: usize) ty
             return self;
         }
 
-        const CosSin = struct { cos: *Tensor(T), sin: *Tensor(T) };
+        /// Pack cos/sin into a single [2*d, seq_len] tensor for the fused rope op.
+        fn packCosSin(alloc: Alloc, cos: *Tensor(T), sin: *Tensor(T)) *Tensor(T) {
+            const seq = cos.ne[1];
+            const cs_buf = Tensor(T).init(alloc, &.{ 2 * d, seq }) catch unreachable;
+            // Pack column by column: for each column, cos rows then sin rows.
+            for (0..seq) |col| {
+                @memcpy(cs_buf.data[col * 2 * d ..][0..d], cos.data[col * d ..][0..d]);
+                @memcpy(cs_buf.data[col * 2 * d + d ..][0..d], sin.data[col * d ..][0..d]);
+            }
+            return cs_buf;
+        }
 
-        /// Prepare cos/sin tensors for positions [0, seq_len).
-        pub fn getCosSin(self: *const Self, alloc: Alloc, seq_len: usize) CosSin {
+        /// Prepare packed cos_sin [2*d, seq_len] for positions [0, seq_len).
+        pub fn getCosSinPacked(self: *const Self, alloc: Alloc, seq_len: usize) *Tensor(T) {
             std.debug.assert(seq_len <= max_seq_len);
             const cos = Tensor(T).init(alloc, &.{ d, seq_len }) catch unreachable;
             const sin = Tensor(T).init(alloc, &.{ d, seq_len }) catch unreachable;
             const elems = d * seq_len;
             @memcpy(cos.data[0..elems], self.cos_table.data[0..elems]);
             @memcpy(sin.data[0..elems], self.sin_table.data[0..elems]);
-            return .{ .cos = cos, .sin = sin };
+            return packCosSin(alloc, cos, sin);
         }
 
-        /// Prepare cos/sin for a single position [d, 1].
-        pub fn getCosSinAtPos(self: *const Self, alloc: Alloc, pos: usize) CosSin {
+        /// Prepare packed cos_sin [2*d, 1] for a single position.
+        pub fn getCosSinPackedAtPos(self: *const Self, alloc: Alloc, pos: usize) *Tensor(T) {
             std.debug.assert(pos < max_seq_len);
-            const cos = Tensor(T).init(alloc, &.{ d, 1 }) catch unreachable;
-            const sin = Tensor(T).init(alloc, &.{ d, 1 }) catch unreachable;
-            @memcpy(cos.data[0..d], self.cos_table.data[pos * d ..][0..d]);
-            @memcpy(sin.data[0..d], self.sin_table.data[pos * d ..][0..d]);
-            return .{ .cos = cos, .sin = sin };
+            const cs_buf = Tensor(T).init(alloc, &.{ 2 * d, 1 }) catch unreachable;
+            @memcpy(cs_buf.data[0..d], self.cos_table.data[pos * d ..][0..d]);
+            @memcpy(cs_buf.data[d .. 2 * d], self.sin_table.data[pos * d ..][0..d]);
+            return cs_buf;
         }
 
-        /// Apply RoPE rotation with pre-computed cos/sin.
-        pub fn apply(self: *const Self, x: *Tensor(T), cos: *Tensor(T), sin: *Tensor(T)) *Tensor(T) {
-            const rotated = x.matMul(false, self.perm, false);
-            return x.mul(cos.repeatLike(x)).add(rotated.mul(sin.repeatLike(rotated)));
+        /// Apply fused RoPE rotation: x * cos + rotate_half(x) * sin.
+        pub fn apply(_: *const Self, x: *Tensor(T), cos_sin: *Tensor(T)) *Tensor(T) {
+            return x.ropeRotate(cos_sin);
         }
 
         /// Apply rotary position embeddings to x [d, seq_len] from position 0.
         pub fn forward(self: *const Self, x: *Tensor(T), seq_len: usize) *Tensor(T) {
             std.debug.assert(x.ne[0] == d);
             std.debug.assert(x.ne[1] == seq_len);
-            const cs = self.getCosSin(x.alloc.?, seq_len);
-            return self.apply(x, cs.cos, cs.sin);
+            const cs = self.getCosSinPacked(x.alloc.?, seq_len);
+            return self.apply(x, cs);
         }
     };
 }

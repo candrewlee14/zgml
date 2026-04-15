@@ -420,6 +420,42 @@ fn computeSliceAssign(comptime Self: type, result: *Self, src: *const Self, dst:
     result.data = dst.data;
 }
 
+/// Fused RoPE: result[i] = x[i]*cos[i] - x[i+half]*sin[i] for i < half,
+///             result[i] = x[i]*cos[i] + x[i-half]*sin[i] for i >= half.
+/// src0 = x [d, seq], src1 = cos_sin [2*d, seq] (cos in [0..d], sin in [d..2d]).
+fn computeRope(comptime Self: type, result: *Self, x: *const Self, cos_sin: *const Self) void {
+    const d = x.ne[0];
+    const half = d / 2;
+    const seq_len = x.ne[1];
+    for (0..seq_len) |col| {
+        const x_off = col * d;
+        const cs_off = col * 2 * d;
+        const dst_off = col * d;
+        for (0..half) |i| {
+            const cos_val = cos_sin.data[cs_off + i];
+            const sin_val = cos_sin.data[cs_off + d + i];
+            result.data[dst_off + i] = x.data[x_off + i] * cos_val - x.data[x_off + i + half] * sin_val;
+            result.data[dst_off + i + half] = x.data[x_off + i + half] * cos_val + x.data[x_off + i] * sin_val;
+        }
+    }
+}
+
+/// Write src into rows [offset..offset+src_rows] of dst (column-major).
+fn computeSliceAssignRows(comptime Self: type, result: *Self, src: *const Self, dst: *Self) void {
+    const dst_rows = dst.ne[0];
+    const src_rows = src.ne[0];
+    const cols = dst.ne[1];
+    const offset = result.storage_offset;
+    std.debug.assert(offset + src_rows <= dst_rows);
+
+    for (0..cols) |col| {
+        const dst_base = col * dst_rows + offset;
+        const src_base = col * src_rows;
+        @memcpy(dst.data[dst_base..][0..src_rows], src.data[src_base..][0..src_rows]);
+    }
+    result.data = dst.data;
+}
+
 // ---------------------------------------------------------------------------
 // Multi-width tiled matmul micro-kernel
 // ---------------------------------------------------------------------------
@@ -1366,7 +1402,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                         continue;
                     }
 
-                    if (opts.use_blas and T == f32) {
+                    if (opts.use_blas and T == f32 and M * N * K >= 32768) {
                         c.cblas_sgemm(
                             c.CblasRowMajor,
                             if (trans0) c.CblasTrans else c.CblasNoTrans,
@@ -1468,6 +1504,8 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .pick_rows => tensor.computePickRows(src0.?, src1.?),
                 .scatter_add_picks => tensor.computeScatterAddPicks(src0.?, src1.?),
                 .slice_assign => computeSliceAssign(Self, tensor, src0.?, src1.?),
+                .rope => computeRope(Self, tensor, src0.?, src1.?),
+                .slice_assign_rows => computeSliceAssignRows(Self, tensor, src0.?, src1.?),
                 .matmul => {
                     const flags = tensor.matmul_flags;
                     if (flags.trans0) {

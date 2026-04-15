@@ -62,9 +62,9 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         // Cached slice_assign nodes for position patching.
         slice_assign_nodes: []const *Tensor(T),
 
-        // RoPE cos/sin leaf nodes: [cos_l0, sin_l0, cos_l1, sin_l1, ...].
+        // RoPE packed cos_sin leaf nodes: one [2*d_head, 1] per layer.
         // Patched each step with values for the current position.
-        rope_nodes: [2 * config.n_layers]*Tensor(T),
+        rope_nodes: [config.n_layers]*Tensor(T),
 
         // Output tensor and stable buffer.
         logits: *Tensor(T),
@@ -123,21 +123,20 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
                 }
             }
 
-            // Find RoPE cos/sin leaf nodes in the graph's leaf list.
-            // They are non-param, shape [d_head, 1], not token_input or attn_mask.
-            // Order: cos_l0, sin_l0, cos_l1, sin_l1, ...
-            var rope_nodes: [2 * config.n_layers]*Tensor(T) = undefined;
+            // Find RoPE packed cos_sin leaf nodes in the graph's leaf list.
+            // They are non-param, shape [2*d_head, 1], not token_input or attn_mask.
+            var rope_nodes: [config.n_layers]*Tensor(T) = undefined;
             var rope_idx: usize = 0;
             for (graph.leaves.items) |leaf| {
                 if (!leaf.isParam() and
                     leaf != token_input and leaf != attn_mask and
-                    leaf.ne[0] == d_head and leaf.ne[1] == 1)
+                    leaf.ne[0] == 2 * d_head and leaf.ne[1] == 1)
                 {
                     rope_nodes[rope_idx] = leaf;
                     rope_idx += 1;
                 }
             }
-            std.debug.assert(rope_idx == 2 * config.n_layers);
+            std.debug.assert(rope_idx == config.n_layers);
 
             const logits_buf = try backing_alloc.alloc(T, config.vocab_size);
             errdefer backing_alloc.free(logits_buf);
@@ -238,11 +237,11 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
                 v.* = if (i <= pos) 0 else -std.math.inf(T);
             }
 
-            // 3. Patch RoPE cos/sin for current position.
+            // 3. Patch RoPE packed cos_sin for current position.
             const rope = &model.blocks[0].rope;
             for (0..config.n_layers) |l| {
-                @memcpy(self.rope_nodes[l * 2].data[0..d_head], rope.cos_table.data[pos * d_head ..][0..d_head]);
-                @memcpy(self.rope_nodes[l * 2 + 1].data[0..d_head], rope.sin_table.data[pos * d_head ..][0..d_head]);
+                @memcpy(self.rope_nodes[l].data[0..d_head], rope.cos_table.data[pos * d_head ..][0..d_head]);
+                @memcpy(self.rope_nodes[l].data[d_head .. 2 * d_head], rope.sin_table.data[pos * d_head ..][0..d_head]);
             }
 
             // 4. Patch KV-cache write positions.
