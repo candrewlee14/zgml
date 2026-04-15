@@ -25,11 +25,13 @@ pub const tokenizer = @import("tokenizer.zig");
 pub const inference = @import("inference.zig");
 pub const device_inference = @import("device_inference.zig");
 pub const data = @import("data.zig");
+pub const file_compat = @import("file_compat.zig");
+pub const time_compat = @import("time_compat.zig");
 
 test "ref all decls" {
-    _ = testing.refAllDeclsRecursive(models);
-    _ = testing.refAllDeclsRecursive(optim);
-    _ = testing.refAllDeclsRecursive(loss);
+    _ = testing.refAllDecls(models);
+    _ = testing.refAllDecls(optim);
+    _ = testing.refAllDecls(loss);
     _ = @import("nn.zig");
     _ = @import("checkpoint.zig");
     _ = @import("index.zig");

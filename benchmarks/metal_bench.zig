@@ -7,6 +7,7 @@ const zgml = @import("zgml");
 const backend_mod = zgml.backend;
 const CpuBackend = zgml.backend_cpu.CpuBackend;
 const MetalBackend = zgml.backend_metal.MetalBackend;
+const time_compat = zgml.time_compat;
 
 const WARMUP = 5;
 const ITERS = 50;
@@ -54,7 +55,7 @@ fn benchDenseMatMul(
     for (0..WARMUP) |_| be.executeProgram(handle, &.{}, &out);
 
     // Timed
-    var timer = try std.time.Timer.start();
+    var timer = time_compat.Timer.start();
     for (0..ITERS) |_| be.executeProgram(handle, &.{}, &out);
     const elapsed_ns = timer.read();
 
@@ -65,18 +66,17 @@ fn benchDenseMatMul(
     try writer.print("    {s:<12} {d:8.1} us/iter  {d:6.2} GFLOPS\n", .{ label, per_iter_us, gflops });
 }
 
-pub fn main() !void {
-    const stdout_file = std.fs.File.stdout();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const stdout_file = std.Io.File.stdout();
     var stdout_buf: [4096]u8 = undefined;
-    var w = stdout_file.writer(&stdout_buf);
+    var w = stdout_file.writer(io, &stdout_buf);
 
     try w.interface.print("\nMetal Backend Benchmark — Dense MatMul\n", .{});
     try w.interface.print("========================================\n", .{});
     try w.interface.print("  warmup={d}, iters={d}\n\n", .{ WARMUP, ITERS });
 
-    const alloc = std.heap.page_allocator;
-
-    var cpu_be = CpuBackend.init(alloc);
+    var cpu_be = CpuBackend{};
     const cpu = cpu_be.backend();
 
     var metal_be = MetalBackend.init() catch |err| {

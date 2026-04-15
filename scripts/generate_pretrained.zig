@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const zgml = @import("zgml");
+const time_compat = zgml.time_compat;
 
 const config = zgml.models.GPTConfig{
     .vocab_size = 50257,
@@ -26,20 +27,18 @@ const config = zgml.models.GPTConfig{
 
 const Session = zgml.inference.InferenceSession(f32, config);
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const alloc = init.gpa;
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
-    const stderr_file = std.fs.File.stderr();
+    const stderr_file = std.Io.File.stderr();
     var stderr_buf: [4096]u8 = undefined;
-    var stderr = stderr_file.writer(&stderr_buf);
-    const stdout_file = std.fs.File.stdout();
+    var stderr = stderr_file.writer(io, &stderr_buf);
+    const stdout_file = std.Io.File.stdout();
     var stdout_buf: [4096]u8 = undefined;
-    var stdout = stdout_file.writer(&stdout_buf);
+    var stdout = stdout_file.writer(io, &stdout_buf);
 
     if (args.len < 4) {
         try stderr.interface.print("Usage: {s} <model.safetensors> <vocab.json> <merges.txt> [prompt]\n", .{args[0]});
@@ -84,7 +83,7 @@ pub fn main() !void {
     var prompt_idx: usize = 0;
     var gen_tokens: usize = 0;
 
-    const t_start = std.time.nanoTimestamp();
+    const t_start = time_compat.nanoTimestamp();
 
     for (0..prompt_ids.len + 200) |_| {
         const logits = try session.step(next_token);
@@ -117,7 +116,7 @@ pub fn main() !void {
         next_token = @intCast(best);
     }
 
-    const t_end = std.time.nanoTimestamp();
+    const t_end = time_compat.nanoTimestamp();
     const elapsed_ms: f64 = @as(f64, @floatFromInt(t_end - t_start)) / 1_000_000.0;
     const total_tokens = session.position();
     const toks_per_sec: f64 = if (elapsed_ms > 0)

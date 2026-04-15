@@ -16,14 +16,13 @@ const BATCH = 32;
 const WARMUP = 5;
 const ITERS = 20;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const alloc = init.gpa;
 
-    const stdout_file = std.fs.File.stdout();
+    const stdout_file = std.Io.File.stdout();
     var buf: [16384]u8 = undefined;
-    var w = stdout_file.writer(&buf);
+    var w = stdout_file.writer(io, &buf);
 
     try w.interface.print("\nPer-Op Microbenchmark — MNIST CNN (batch={})\n", .{BATCH});
     try w.interface.print("===============================================\n\n", .{});

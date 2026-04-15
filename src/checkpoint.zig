@@ -22,66 +22,94 @@ const max_dims = @import("tensor.zig").max_dims;
 
 const MAGIC: u32 = 0x5A474D4C; // "ZGML" in little-endian
 const VERSION: u32 = 1;
+const io = std.Options.debug_io;
 
-fn writeU32(file: std.fs.File, val: u32) !void {
-    const le = std.mem.nativeToLittle(u32, val);
-    try file.writeAll(std.mem.asBytes(&le));
+fn createFile(path: []const u8) !std.Io.File {
+    if (std.fs.path.isAbsolute(path)) {
+        return std.Io.Dir.createFileAbsolute(io, path, .{});
+    }
+    return std.Io.Dir.cwd().createFile(io, path, .{});
 }
 
-fn readU32(file: std.fs.File) !u32 {
+fn openFile(path: []const u8) !std.Io.File {
+    if (std.fs.path.isAbsolute(path)) {
+        return std.Io.Dir.openFileAbsolute(io, path, .{});
+    }
+    return std.Io.Dir.cwd().openFile(io, path, .{});
+}
+
+fn deleteFile(path: []const u8) !void {
+    if (std.fs.path.isAbsolute(path)) {
+        return std.Io.Dir.deleteFileAbsolute(io, path);
+    }
+    return std.Io.Dir.cwd().deleteFile(io, path);
+}
+
+fn writeU32(file: std.Io.File, offset: *u64, val: u32) !void {
+    const le = std.mem.nativeToLittle(u32, val);
+    try file.writePositionalAll(io, std.mem.asBytes(&le), offset.*);
+    offset.* += 4;
+}
+
+fn readU32(file: std.Io.File, offset: *u64) !u32 {
     var le: u32 = undefined;
-    const n = try file.readAll(std.mem.asBytes(&le));
+    const n = try file.readPositionalAll(io, std.mem.asBytes(&le), offset.*);
     if (n != 4) return error.UnexpectedEof;
+    offset.* += 4;
     return std.mem.littleToNative(u32, le);
 }
 
 pub fn save(comptime T: type, params: []const *Tensor(T), path: []const u8) !void {
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
+    const file = try createFile(path);
+    defer file.close(io);
+    var offset: u64 = 0;
 
     // Header
-    try writeU32(file, MAGIC);
-    try writeU32(file, VERSION);
-    try writeU32(file, @intCast(params.len));
+    try writeU32(file, &offset, MAGIC);
+    try writeU32(file, &offset, VERSION);
+    try writeU32(file, &offset, @intCast(params.len));
 
     // Parameters
     for (params) |param| {
         // Shape
-        try writeU32(file, param.n_dims);
+        try writeU32(file, &offset, param.n_dims);
         for (param.ne) |dim| {
-            try writeU32(file, @intCast(dim));
+            try writeU32(file, &offset, @intCast(dim));
         }
         // Data (raw bytes)
         const bytes = std.mem.sliceAsBytes(param.data);
-        try file.writeAll(bytes);
+        try file.writePositionalAll(io, bytes, offset);
+        offset += bytes.len;
     }
 }
 
 pub fn load(comptime T: type, params: []const *Tensor(T), path: []const u8) !void {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    const file = try openFile(path);
+    defer file.close(io);
+    var offset: u64 = 0;
 
     // Header
-    const magic = try readU32(file);
+    const magic = try readU32(file, &offset);
     if (magic != MAGIC) return error.InvalidCheckpoint;
-    const version = try readU32(file);
+    const version = try readU32(file, &offset);
     if (version != VERSION) return error.UnsupportedVersion;
-    const n_params = try readU32(file);
+    const n_params = try readU32(file, &offset);
     if (n_params != params.len) return error.ParamCountMismatch;
 
     // Parameters
     for (params) |param| {
         // Shape — read and verify
-        const n_dims = try readU32(file);
+        const n_dims = try readU32(file, &offset);
         if (n_dims != param.n_dims) return error.ShapeMismatch;
         for (param.ne) |dim| {
-            const saved_dim = try readU32(file);
+            const saved_dim = try readU32(file, &offset);
             if (saved_dim != dim) return error.ShapeMismatch;
         }
         // Data
         const bytes = std.mem.sliceAsBytes(param.data);
-        const n = try file.readAll(bytes);
+        const n = try file.readPositionalAll(io, bytes, offset);
         if (n != bytes.len) return error.UnexpectedEof;
+        offset += bytes.len;
     }
 }
 
@@ -120,7 +148,7 @@ test "checkpoint - save and load roundtrip" {
     try testing.expectEqualSlices(f32, &.{ 1.0, 2.0, 3.0, 4.5, -1.0, 0.5 }, a.data);
     try testing.expectEqualSlices(f32, &.{ 10.0, 20.0, 30.0, 40.0 }, b.data);
 
-    std.fs.cwd().deleteFile("/tmp/zgml_test_ckpt.bin") catch {};
+    deleteFile("/tmp/zgml_test_ckpt.bin") catch {};
 }
 
 test "checkpoint - shape mismatch is detected" {
@@ -139,7 +167,7 @@ test "checkpoint - shape mismatch is detected" {
     const result = load(f32, &.{b}, "/tmp/zgml_test_ckpt2.bin");
     try testing.expectError(error.ShapeMismatch, result);
 
-    std.fs.cwd().deleteFile("/tmp/zgml_test_ckpt2.bin") catch {};
+    deleteFile("/tmp/zgml_test_ckpt2.bin") catch {};
 }
 
 test "checkpoint - param count mismatch is detected" {
@@ -160,5 +188,5 @@ test "checkpoint - param count mismatch is detected" {
     const result = load(f32, &.{ b, c }, "/tmp/zgml_test_ckpt3.bin");
     try testing.expectError(error.ParamCountMismatch, result);
 
-    std.fs.cwd().deleteFile("/tmp/zgml_test_ckpt3.bin") catch {};
+    deleteFile("/tmp/zgml_test_ckpt3.bin") catch {};
 }

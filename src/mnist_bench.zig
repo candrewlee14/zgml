@@ -10,8 +10,10 @@ const IndexTensor = zgml.IndexTensor;
 const loss_mod = zgml.loss;
 const nn = zgml.nn;
 const ConvClassifier = zgml.models.ConvClassifier;
+const time_compat = zgml.time_compat;
 
 const Alloc = std.mem.Allocator;
+const file_compat = zgml.file_compat;
 
 // ---------------------------------------------------------------------------
 // MNIST IDX file loading
@@ -28,9 +30,7 @@ const MnistImages = struct {
     cols: usize,
 
     fn load(alloc: Alloc, path: []const u8) !MnistImages {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-        const raw = try file.readToEndAlloc(alloc, 128 * 1024 * 1024);
+        const raw = try file_compat.readToEndAlloc(alloc, path, 128 * 1024 * 1024);
         defer alloc.free(raw);
 
         const magic = readU32Big(raw[0..]);
@@ -58,9 +58,7 @@ const MnistLabels = struct {
     n: usize,
 
     fn load(alloc: Alloc, path: []const u8) !MnistLabels {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-        const raw = try file.readToEndAlloc(alloc, 16 * 1024 * 1024);
+        const raw = try file_compat.readToEndAlloc(alloc, path, 16 * 1024 * 1024);
         defer alloc.free(raw);
 
         const magic = readU32Big(raw[0..]);
@@ -84,14 +82,13 @@ const MnistLabels = struct {
 // Main
 // ---------------------------------------------------------------------------
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const alloc = init.gpa;
 
-    const stdout_file = std.fs.File.stdout();
+    const stdout_file = std.Io.File.stdout();
     var buf: [4096]u8 = undefined;
-    var w = stdout_file.writer(&buf);
+    var w = stdout_file.writer(io, &buf);
 
     try w.interface.print("\nMNIST CNN Training Benchmark\n", .{});
     try w.interface.print("============================\n\n", .{});
@@ -139,10 +136,10 @@ pub fn main() !void {
     var prng = std.Random.DefaultPrng.init(42);
 
     // Training loop
-    var total_timer = std.time.Timer.start() catch unreachable;
+    var total_timer = time_compat.Timer.start();
 
     for (0..n_epochs) |epoch| {
-        var epoch_timer = std.time.Timer.start() catch unreachable;
+        var epoch_timer = time_compat.Timer.start();
         var epoch_loss: f64 = 0;
         var epoch_correct: usize = 0;
         var preds: [32]usize = undefined;

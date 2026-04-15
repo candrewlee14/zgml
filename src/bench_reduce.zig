@@ -8,15 +8,15 @@
 const std = @import("std");
 const zgml = @import("zgml");
 const Tensor = zgml.Tensor;
+const time_compat = zgml.time_compat;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const alloc = init.gpa;
 
-    const stdout_file = std.fs.File.stdout();
+    const stdout_file = std.Io.File.stdout();
     var buf: [4096]u8 = undefined;
-    var w = stdout_file.writer(&buf);
+    var w = stdout_file.writer(io, &buf);
 
     // BN backward reduction: [24,24,C,32] → [1,1,C,1]
     // Test with C=8 (simple model) and C=32 (deep model)
@@ -38,7 +38,7 @@ pub fn main() !void {
 
         // Benchmark sum: reduce [24,24,C,32] → [1,1,C,1]
         // dst.computeSum(src) — dst is target, src is source
-        var timer = try std.time.Timer.start();
+        var timer = time_compat.Timer.start();
         for (0..warmup) |_| dst.computeSum(src);
         timer.reset();
         for (0..iters) |_| dst.computeSum(src);

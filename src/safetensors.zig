@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const Alloc = std.mem.Allocator;
+const file_compat = @import("file_compat.zig");
 
 pub const SafetensorsFile = struct {
     alloc: Alloc,
@@ -26,16 +27,16 @@ pub const SafetensorsFile = struct {
     data_start: usize,
 
     pub fn open(alloc: Alloc, path: []const u8) !SafetensorsFile {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
+        const file = try file_compat.openRead(path);
+        defer file.close(file_compat.io);
 
-        const file_size = try file.getEndPos();
+        const file_size = (try file.stat(file_compat.io)).size;
         if (file_size < 8) return error.InvalidFormat;
 
         // Read entire file into aligned buffer
         const buf = try alloc.alignedAlloc(u8, .@"4", file_size);
         errdefer alloc.free(buf);
-        const bytes_read = try file.readAll(buf);
+        const bytes_read = try file.readPositionalAll(file_compat.io, buf, 0);
         if (bytes_read != file_size) return error.UnexpectedEof;
 
         // Parse header length
@@ -170,7 +171,7 @@ pub const SafetensorsFile = struct {
 
     /// List all tensor names in the file.
     pub fn tensorNames(self: *const SafetensorsFile, alloc: Alloc) ![][]const u8 {
-        var names: std.ArrayList([]const u8) = .{};
+        var names: std.ArrayList([]const u8) = .empty;
         errdefer names.deinit(alloc);
 
         const json = self.header_json;

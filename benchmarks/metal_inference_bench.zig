@@ -11,6 +11,7 @@ const GPTConfig = zgml.models.GPTConfig;
 const MetalBackend = zgml.backend_metal.MetalBackend;
 const CpuBackend = zgml.backend_cpu.CpuBackend;
 const Backend = zgml.backend.Backend;
+const time_compat = zgml.time_compat;
 
 const WARMUP_TOKENS = 1;
 const TIMED_TOKENS = 32;
@@ -18,9 +19,9 @@ const TIMED_TOKENS = 32;
 fn diagnoseGraph(comptime config: GPTConfig, writer: anytype) !void {
     const Session = zgml.inference.InferenceSession(f32, config);
     const Op = zgml.Op;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
     var session = try Session.init(alloc);
     defer session.deinit();
     try session.quantize();
@@ -105,9 +106,9 @@ fn runBenchmark(
 ) !void {
     const Session = zgml.inference.InferenceSession(f32, config);
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
     var session = try Session.initWithBackend(alloc, backend);
     defer session.deinit();
@@ -120,11 +121,11 @@ fn runBenchmark(
     }
     session.reset();
 
-    const t_start = std.time.nanoTimestamp();
+    const t_start = time_compat.nanoTimestamp();
     for (0..TIMED_TOKENS) |i| {
         _ = try session.step(i % config.vocab_size);
     }
-    const t_end = std.time.nanoTimestamp();
+    const t_end = time_compat.nanoTimestamp();
 
     const elapsed_ns: f64 = @floatFromInt(t_end - t_start);
     const elapsed_ms = elapsed_ns / 1_000_000.0;
@@ -139,10 +140,11 @@ fn runBenchmark(
     });
 }
 
-pub fn main() !void {
-    const stdout_file = std.fs.File.stdout();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const stdout_file = std.Io.File.stdout();
     var stdout_buf: [4096]u8 = undefined;
-    var w = stdout_file.writer(&stdout_buf);
+    var w = stdout_file.writer(io, &stdout_buf);
 
     try w.interface.print("\nMetal Inference Benchmark — CPU vs Metal\n", .{});
     try w.interface.print("==========================================\n", .{});

@@ -16,16 +16,16 @@ pub const Package = struct {
         linkMetal(b, pkg.target, exe);
 
         if (pkg.options.use_blas) {
-            exe.linkLibC();
+            exe.root_module.link_libc = true;
             switch (pkg.target.result.os.tag) {
                 .windows => {
-                    exe.linkSystemLibrary("libopenblas");
+                    exe.root_module.linkSystemLibrary("libopenblas", .{});
                 },
                 .linux => {
-                    exe.linkSystemLibrary("openblas");
+                    exe.root_module.linkSystemLibrary("openblas", .{});
                 },
                 .macos => {
-                    exe.linkFramework("Accelerate");
+                    exe.root_module.linkFramework("Accelerate", .{});
                 },
                 .freestanding => {
                     // WASM/freestanding targets cannot use BLAS — ignore silently.
@@ -40,23 +40,23 @@ pub const Package = struct {
 
 fn linkMetal(b: *std.Build, target: std.Build.ResolvedTarget, exe: *std.Build.Step.Compile) void {
     if (target.result.os.tag == .macos) {
-        exe.addCSourceFile(.{
+        exe.root_module.addCSourceFile(.{
             .file = b.path("src/backend/metal_shim.m"),
             .flags = &.{"-fno-objc-arc"},
         });
-        exe.addIncludePath(b.path("src/backend"));
-        exe.linkFramework("Metal");
-        exe.linkFramework("Foundation");
-        exe.linkLibC();
+        exe.root_module.addIncludePath(b.path("src/backend"));
+        exe.root_module.linkFramework("Metal", .{});
+        exe.root_module.linkFramework("Foundation", .{});
+        exe.root_module.link_libc = true;
     }
 }
 
 fn linkBlas(target: std.Build.ResolvedTarget, exe: *std.Build.Step.Compile) void {
-    exe.linkLibC();
+    exe.root_module.link_libc = true;
     switch (target.result.os.tag) {
-        .windows => exe.linkSystemLibrary("libopenblas"),
-        .linux => exe.linkSystemLibrary("openblas"),
-        .macos => exe.linkFramework("Accelerate"),
+        .windows => exe.root_module.linkSystemLibrary("libopenblas", .{}),
+        .linux => exe.root_module.linkSystemLibrary("openblas", .{}),
+        .macos => exe.root_module.linkFramework("Accelerate", .{}),
         .freestanding => {}, // WASM/freestanding — no BLAS available
         else => @panic("Unsupported host OS for BLAS linking"),
     }
@@ -131,7 +131,7 @@ pub fn build(b: *std.Build) void {
     });
     if (use_blas) {
         linkBlas(target, bench_exe);
-        bench_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        bench_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     b.installArtifact(bench_exe);
 
@@ -158,7 +158,7 @@ pub fn build(b: *std.Build) void {
     });
     if (use_blas) {
         linkBlas(target, mnist_exe);
-        mnist_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        mnist_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     b.installArtifact(mnist_exe);
 
@@ -182,7 +182,7 @@ pub fn build(b: *std.Build) void {
     });
     if (use_blas) {
         linkBlas(target, micro_exe);
-        micro_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        micro_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     b.installArtifact(micro_exe);
 
@@ -205,7 +205,7 @@ pub fn build(b: *std.Build) void {
     });
     if (use_blas) {
         linkBlas(target, conv_phase_exe);
-        conv_phase_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        conv_phase_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     b.installArtifact(conv_phase_exe);
     const conv_phase_step = b.step("conv-phase-bench", "Run parameterized conv phase benchmark");
@@ -228,7 +228,7 @@ pub fn build(b: *std.Build) void {
     });
     if (use_blas) {
         linkBlas(target, gc_exe);
-        gc_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        gc_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     b.installArtifact(gc_exe);
     const gc_step = b.step("grad-check", "Compare gradients with PyTorch reference");
@@ -249,6 +249,10 @@ pub fn build(b: *std.Build) void {
         .name = "profile-bwd",
         .root_module = prof_mod,
     });
+    if (use_blas) {
+        linkBlas(target, prof_exe);
+        prof_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
     b.installArtifact(prof_exe);
     const prof_step = b.step("profile-bwd", "Profile backward pass per-op timing");
     prof_step.dependOn(&b.addRunArtifact(prof_exe).step);
@@ -287,7 +291,7 @@ pub fn build(b: *std.Build) void {
         const exe = b.addExecutable(.{ .name = "bench-inference", .root_module = mod });
         if (use_blas) {
             linkBlas(target, exe);
-            exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+            exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
         }
         b.installArtifact(exe);
         const step = b.step("bench-inference", "Benchmark inference session (f32 vs int8)");
@@ -311,7 +315,7 @@ pub fn build(b: *std.Build) void {
     });
     if (use_blas) {
         linkBlas(target, opbench_exe);
-        opbench_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        opbench_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     b.installArtifact(opbench_exe);
     const opbench_step = b.step("op-bench", "Per-op microbenchmark for MNIST CNN ops");
@@ -332,7 +336,7 @@ pub fn build(b: *std.Build) void {
         const exe = b.addExecutable(.{ .name = "bench-metal", .root_module = mod });
         if (use_blas) {
             linkBlas(target, exe);
-            exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+            exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
         }
         linkMetal(b, target, exe);
         b.installArtifact(exe);
@@ -355,7 +359,7 @@ pub fn build(b: *std.Build) void {
         const exe = b.addExecutable(.{ .name = "bench-metal-inference", .root_module = mod });
         if (use_blas) {
             linkBlas(target, exe);
-            exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+            exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
         }
         linkMetal(b, target, exe);
         b.installArtifact(exe);
@@ -380,7 +384,7 @@ pub fn build(b: *std.Build) void {
     });
     if (use_blas) {
         linkBlas(target, gen_exe);
-        gen_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        gen_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     b.installArtifact(gen_exe);
     const gen_step = b.step("generate", "Build text generation binary");
@@ -403,7 +407,7 @@ pub fn build(b: *std.Build) void {
     });
     if (use_blas) {
         linkBlas(target, train_exe);
-        train_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        train_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     const train_step = b.step("train-tiny", "Train a tiny GPT and save checkpoint");
     train_step.dependOn(&b.addInstallArtifact(train_exe, .{}).step);
@@ -425,7 +429,7 @@ pub fn build(b: *std.Build) void {
     });
     if (use_blas) {
         linkBlas(target, pt_exe);
-        pt_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        pt_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     b.installArtifact(pt_exe);
     const pt_step = b.step("generate-pretrained", "Generate text from a pretrained HF model");
@@ -455,7 +459,7 @@ pub fn runTests(
     });
     if (options.use_blas) {
         linkBlas(target, test_exe);
-        test_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        test_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     linkMetal(b, target, test_exe);
     b.installArtifact(test_exe);
@@ -486,7 +490,7 @@ fn runInferenceTests(
     });
     if (options.use_blas) {
         linkBlas(target, test_exe);
-        test_exe.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        test_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
     linkMetal(b, target, test_exe);
 

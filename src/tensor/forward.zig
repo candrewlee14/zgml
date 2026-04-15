@@ -12,12 +12,13 @@ const assert = std.debug.assert;
 const builtin = @import("builtin");
 const backend_mod = @import("../backend.zig");
 const Op = @import("../op.zig").Op;
+const threading = @import("../threading.zig");
 const opts = @import("zgml_options");
 
 const c = if (opts.use_blas)
     switch (builtin.os.tag) {
         .linux, .windows => @cImport(@cInclude("cblas.h")),
-        .macos => @cImport(@cInclude("Accelerate/Accelerate.h")),
+        .macos => @cImport(@cInclude("vecLib/cblas.h")),
         else => @cImport(@compileError("Unsupported OS")),
     }
 else
@@ -1391,7 +1392,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         /// Parallel matmul: splits M-rows across threads for each batch.
-        pub fn computeMatMulParallel(dst: *Self, src0: *const Self, comptime trans0: bool, src1: *const Self, comptime trans1: bool, pool: *std.Thread.Pool) void {
+        pub fn computeMatMulParallel(dst: *Self, src0: *const Self, comptime trans0: bool, src1: *const Self, comptime trans1: bool, pool: *threading.Pool) void {
             dst.assertValidMatMulDims(src0, trans0, src1, trans1);
             assert(dst.strides[0] == 1);
 
@@ -1417,7 +1418,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                         kernel(dst.data, src0.data, src1.data, 0, M, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1]);
                     } else {
                         const chunk = @max(min_rows_per_thread, (M + n_workers - 1) / n_workers);
-                        var wg = std.Thread.WaitGroup{};
+                        var wg = threading.WaitGroup{};
                         var m_start: usize = chunk;
                         while (m_start < M) {
                             const m_end = @min(m_start + chunk, M);

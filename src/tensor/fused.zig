@@ -13,6 +13,24 @@ const std = @import("std");
 const Op = @import("../op.zig").Op;
 const Tensor = @import("../tensor.zig").Tensor;
 const forward = @import("forward.zig");
+const threading = @import("../threading.zig");
+
+const Timer = struct {
+    start_ns: i96,
+
+    fn start() Timer {
+        return .{ .start_ns = std.Io.Timestamp.now(std.Options.debug_io, .awake).nanoseconds };
+    }
+
+    fn reset(self: *Timer) void {
+        self.start_ns = std.Io.Timestamp.now(std.Options.debug_io, .awake).nanoseconds;
+    }
+
+    fn read(self: *const Timer) u64 {
+        const now_ns = std.Io.Timestamp.now(std.Options.debug_io, .awake).nanoseconds;
+        return @intCast(now_ns - self.start_ns);
+    }
+};
 
 const conv_workspace_target_bytes: usize = 16 * 1024 * 1024;
 const conv_workspace_min_tiled_k: usize = 64;
@@ -579,7 +597,7 @@ fn executeFusedGenericRange(comptime T: type, plan: ElementwiseFusionPlan(T), st
 }
 
 /// Parallel elementwise chain execution. Splits the element range across threads.
-pub fn executeFusedChainParallel(comptime T: type, plan: ElementwiseFusionPlan(T), pool: *std.Thread.Pool) void {
+pub fn executeFusedChainParallel(comptime T: type, plan: ElementwiseFusionPlan(T), pool: *threading.Pool) void {
     if (!isSafeElementwiseChain(T, plan)) {
         for (plan.nodes) |node| node.compute();
         return;
@@ -595,7 +613,7 @@ pub fn executeFusedChainParallel(comptime T: type, plan: ElementwiseFusionPlan(T
     }
 
     const chunk = @max(min_chunk, (n_elems + n_workers - 1) / n_workers);
-    var wg = std.Thread.WaitGroup{};
+    var wg = threading.WaitGroup{};
     var start: usize = chunk;
     while (start < n_elems) {
         const s = start;
@@ -1117,7 +1135,7 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T), phase_profile: ?*Con
 
     const col_buf = ws.colBuf(scratch);
     const mm_temp = ws.auxBuf(scratch);
-    var timer = std.time.Timer.start() catch @panic("timer");
+    var timer = Timer.start();
 
     // 1. Batched im2col: all samples into [K, N*batch].
     timer.reset();
@@ -1194,7 +1212,7 @@ fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T), phas
 
     const col_buf = ws.colBuf(scratch);
     const grad_buf = ws.auxBuf(scratch);
-    var timer = std.time.Timer.start() catch @panic("timer");
+    var timer = Timer.start();
     @memset(plan.output.data, 0);
     const mm = selectConvMatMul(T);
     var batch_start: usize = 0;
@@ -1244,7 +1262,7 @@ fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T), ph
     const col_buf = ws.colBuf(scratch);
     const grad_buf = ws.auxBuf(scratch);
     const partial = ws.partialBuf(scratch);
-    var timer = std.time.Timer.start() catch @panic("timer");
+    var timer = Timer.start();
     @memset(plan.output.data, 0);
     const use_partial = ws.batch_tile < d.batch;
 

@@ -671,7 +671,7 @@ const tac = std.testing.allocator;
 const ComputeGraph = @import("graph.zig").ComputeGraph;
 
 test "ref all decls" {
-    _ = testing.refAllDeclsRecursive(Tensor(f32));
+    _ = testing.refAllDecls(Tensor(f32));
 }
 
 test "init" {

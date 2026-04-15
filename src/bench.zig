@@ -6,7 +6,8 @@
 const std = @import("std");
 const zgml = @import("zgml");
 const Tensor = zgml.Tensor;
-const IoWriter = std.io.Writer;
+const IoWriter = std.Io.Writer;
+const time_compat = zgml.time_compat;
 const opts = @import("zgml_options");
 const use_blas = opts.use_blas;
 
@@ -73,7 +74,7 @@ fn runBench(comptime func: anytype, args: anytype) u64 {
     for (0..WARMUP) |_| @call(.auto, func, args);
     var times: [ITERS]u64 = undefined;
     for (&times) |*t| {
-        var timer = std.time.Timer.start() catch unreachable;
+        var timer = time_compat.Timer.start();
         @call(.auto, func, args);
         t.* = timer.read();
     }
@@ -207,14 +208,13 @@ fn benchMatMul(alloc: std.mem.Allocator, w: *IoWriter) !void {
 // Main
 // ---------------------------------------------------------------------------
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const alloc = init.gpa;
 
-    const stdout_file = std.fs.File.stdout();
+    const stdout_file = std.Io.File.stdout();
     var buf: [4096]u8 = undefined;
-    var file_writer = stdout_file.writer(&buf);
+    var file_writer = stdout_file.writer(io, &buf);
     var w = &file_writer.interface;
 
     try w.print("\nzgml benchmark suite", .{});

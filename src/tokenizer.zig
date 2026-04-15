@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const Alloc = std.mem.Allocator;
+const file_compat = @import("file_compat.zig");
 
 pub const GPT2Tokenizer = struct {
     alloc: Alloc,
@@ -25,9 +26,9 @@ pub const GPT2Tokenizer = struct {
     /// Ordered BPE merge rules: "a b" → priority (lower = higher priority)
     merges: std.StringHashMapUnmanaged(u32) = .empty,
     /// Storage for merge key strings
-    merge_keys: std.ArrayList([]u8) = .{},
+    merge_keys: std.ArrayList([]u8) = .empty,
     /// Allocated vocab token key strings
-    vocab_keys: std.ArrayList([]u8) = .{},
+    vocab_keys: std.ArrayList([]u8) = .empty,
     /// Raw vocab.json file data
     vocab_data: []u8 = &.{},
 
@@ -61,7 +62,7 @@ pub const GPT2Tokenizer = struct {
 
     /// Decode token IDs back to UTF-8 text.
     pub fn decode(self: *const GPT2Tokenizer, alloc: Alloc, ids: []const u32) ![]u8 {
-        var result: std.ArrayList(u8) = .{};
+        var result: std.ArrayList(u8) = .empty;
         errdefer result.deinit(alloc);
 
         for (ids) |id| {
@@ -88,7 +89,7 @@ pub const GPT2Tokenizer = struct {
 
     /// Encode UTF-8 text to token IDs using byte-level BPE.
     pub fn encode(self: *const GPT2Tokenizer, alloc: Alloc, text: []const u8) ![]u32 {
-        var ids: std.ArrayList(u32) = .{};
+        var ids: std.ArrayList(u32) = .empty;
         errdefer ids.deinit(alloc);
 
         // Pre-tokenize: split on whitespace boundaries (GPT-2 style)
@@ -103,7 +104,7 @@ pub const GPT2Tokenizer = struct {
             const word = text[word_start..word_end];
 
             // Convert bytes to GPT-2 Unicode representation
-            var symbols: std.ArrayList([]const u8) = .{};
+            var symbols: std.ArrayList([]const u8) = .empty;
             defer symbols.deinit(alloc);
 
             for (word) |byte| {
@@ -217,13 +218,7 @@ fn unicodeToByteTable(cp: u21) u8 {
 }
 
 fn readFile(alloc: Alloc, path: []const u8) ![]u8 {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    const size = try file.getEndPos();
-    const buf = try alloc.alloc(u8, size);
-    const read = try file.readAll(buf);
-    if (read != size) return error.UnexpectedEof;
-    return buf;
+    return file_compat.readToEndAlloc(alloc, path, std.math.maxInt(usize));
 }
 
 /// Parse a minimal vocab.json: {"token": id, "token2": id2, ...}
@@ -302,7 +297,7 @@ fn parseMerges(self: *GPT2Tokenizer, data: []const u8) !void {
 
 /// Unescape JSON string: handle \uXXXX, \\, \", \n, \t, \r, \/, \b, \f
 fn unescapeJsonString(alloc: Alloc, raw: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .{};
+    var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(alloc);
 
     var i: usize = 0;

@@ -14,6 +14,7 @@ const std = @import("std");
 const zgml = @import("zgml");
 const Tensor = zgml.Tensor;
 const ConvClassifier = zgml.models.ConvClassifier;
+const time_compat = zgml.time_compat;
 
 const Bucket = struct {
     name: []const u8,
@@ -21,10 +22,9 @@ const Bucket = struct {
     total_ns: u64 = 0,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const alloc = init.gpa;
 
     const batch_size: usize = 32;
     const n_warmup: usize = 3;
@@ -68,7 +68,7 @@ pub fn main() !void {
             if (idx < model.g.fused_skip.items.len and model.g.fused_skip.items[idx]) continue;
             const tag_name = @tagName(node.opTag());
 
-            var timer = try std.time.Timer.start();
+            var timer = time_compat.Timer.start();
             timer.reset();
             node.compute();
             const elapsed = timer.read();
@@ -99,9 +99,9 @@ pub fn main() !void {
     }.lessThan);
 
     // Print results
-    const stdout_file = std.fs.File.stdout();
+    const stdout_file = std.Io.File.stdout();
     var buf: [8192]u8 = undefined;
-    var w = stdout_file.writer(&buf);
+    var w = stdout_file.writer(io, &buf);
 
     try w.interface.print("\nBackward Per-Op Profile (batch={}, {} runs, {} bwd nodes)\n", .{ batch_size, n_runs, bwd_nodes.len });
     try w.interface.print("==========================================================\n", .{});
