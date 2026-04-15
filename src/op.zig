@@ -49,6 +49,10 @@ pub const Op = enum {
     // -- Slice --
     slice_assign, // write src0 into src1 at a position (mutates src1)
 
+    // -- Fused ops --
+    rope, // fused RoPE: x * cos + rotate_half(x) * sin
+    slice_assign_rows, // write src0 into row range of src1 (mutates src1)
+
     // -- Matrix multiplication --
     matmul,
 
@@ -99,6 +103,8 @@ pub const Op = enum {
             .scatter_add_picks => "scatter_add_picks(x)",
             .scatter_add_view => "scatter_add_view(x)",
             .slice_assign => "x[pos]=y",
+            .rope => "rope(x)",
+            .slice_assign_rows => "x[rows]=y",
             .matmul => "X*Y",
         };
     }

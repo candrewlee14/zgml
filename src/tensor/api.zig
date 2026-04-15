@@ -658,6 +658,39 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return res;
         }
 
+        /// Fused RoPE: result = x * cos + rotate_half(x) * sin.
+        /// src0 = x [d, seq_len], src1 = cos_sin [2*d, seq_len] (cos in rows 0..d, sin in rows d..2d).
+        pub fn ropeRotate(self: *Self, cos_sin: *Self) *Self {
+            const alloc = a(self);
+            const d = self.ne[0];
+            assert(d % 2 == 0);
+            assert(cos_sin.ne[0] == 2 * d);
+            assert(cos_sin.ne[1] == self.ne[1]);
+            const is_node = self.grad != null or cos_sin.grad != null;
+            const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
+            res.op = .rope;
+            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.src0 = self;
+            res.src1 = cos_sin;
+            return res;
+        }
+
+        /// Write src into rows [offset..offset+src.ne[0]] of self, returning the mutated tensor.
+        /// Analogous to sliceAssign but for row ranges instead of column positions.
+        pub fn sliceAssignRows(self: *Self, src: *Self, row_offset: usize) *Self {
+            const alloc = a(self);
+            assert(self.n_dims >= 2);
+            assert(src.ne[0] + row_offset <= self.ne[0]);
+            assert(src.ne[1] == self.ne[1]);
+            const res = Self.initHelper(alloc, self.ne[0..self.n_dims], self.data) catch unreachable;
+            res.op = .slice_assign_rows;
+            res.storage_offset = row_offset;
+            res.grad = null; // inference-only
+            res.src0 = src;
+            res.src1 = self;
+            return res;
+        }
+
         /// View columns [start, end) of a 2D tensor. Returns a view with
         /// adjusted shape — no data copy.
         ///

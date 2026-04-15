@@ -116,13 +116,17 @@ pub fn optimizeWorkspace(comptime T: type, graph: *ComputeGraph(T), alloc: std.m
     out_bufs.* = bufs;
 }
 
-/// Check if a matmul node has at least one parameter (weight) source.
+/// Check if a matmul node has a non-transposed parameter (weight) source.
+/// Transposed weight matmuls are excluded because the quantized kernel
+/// assumes [K, N] row-major layout which doesn't match a transposed
+/// column-major tensor.
 pub fn isWeightMatmul(comptime T: type, node: *Tensor(T)) bool {
+    const flags = node.matmul_flags;
     if (node.src0) |s| {
-        if (s.isParam()) return true;
+        if (s.isParam() and !flags.trans0) return true;
     }
     if (node.src1) |s| {
-        if (s.isParam()) return true;
+        if (s.isParam() and !flags.trans1) return true;
     }
     return false;
 }

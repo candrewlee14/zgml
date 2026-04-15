@@ -290,7 +290,34 @@ pub fn Ops(comptime Self: type) type {
                 .scatter_add_picks => {},
 
                 // Slice assign: inference-only, no gradient needed
-                .slice_assign => {},
+                .slice_assign, .slice_assign_rows => {},
+
+                .rope => {
+                    // Backward of rope: inverse rotation (negate sin).
+                    // dx[i] = dy[i]*cos[i] + dy[i+half]*sin[i]
+                    // dx[i+half] = dy[i+half]*cos[i] - dy[i]*sin[i]
+                    // This is rope with negated sin applied to out_grad.
+                    const src0 = src0_o.?;
+                    if (src0.gradOrNull()) |grad| {
+                        // Build cos_sin_neg: cos unchanged, sin negated.
+                        const cos_sin = src1_o.?;
+                        const d = src0.ne[0];
+                        const seq = src0.ne[1];
+                        const neg_cs = Self.init(alloc, &.{ 2 * d, seq }) catch unreachable;
+                        // Copy cos rows (0..d)
+                        for (0..seq) |col| {
+                            const cs_off = col * 2 * d;
+                            @memcpy(neg_cs.data[cs_off..][0..d], cos_sin.data[cs_off..][0..d]);
+                            // Negate sin rows (d..2d)
+                            for (0..d) |i| {
+                                neg_cs.data[cs_off + d + i] = -cos_sin.data[cs_off + d + i];
+                            }
+                        }
+                        const contribution = out_grad.ropeRotate(neg_cs);
+                        stripGrad(contribution);
+                        src0.setGrad(accumGrad(grad, contribution, inplace));
+                    }
+                },
 
                 // Matmul backward: dispatch based on transpose flags.
                 // For fwd C = op(A) @ op(B) where op is identity or transpose:

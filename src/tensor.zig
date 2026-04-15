@@ -417,6 +417,8 @@ pub fn Tensor(comptime T: type) type {
         pub const scatterAddView = api.scatterAddView; // Internal: used by backward pass only
         pub const broadcastTo = api.broadcastTo;
         pub const sliceAssign = api.sliceAssign;
+        pub const sliceAssignRows = api.sliceAssignRows;
+        pub const ropeRotate = api.ropeRotate;
         pub const sliceColumns = api.sliceColumns;
         pub const sliceRows = api.sliceRows;
         pub const slidingWindow2d = api.slidingWindow2d;

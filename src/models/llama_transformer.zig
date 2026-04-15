@@ -137,13 +137,13 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
             const v_all = norm1.matMul(false, self.w_v.inner, false);
 
             const mask = nn.buildCausalMask(T, alloc, seq_len);
-            const rope_cs = self.rope.getCosSin(alloc, seq_len);
+            const rope_cs = self.rope.getCosSinPacked(alloc, seq_len);
 
             // Pre-rotate K per KV head (avoid redundant rotation in GQA)
             var k_rotated: [cfg.n_kv_heads]*Tensor(T) = undefined;
             for (0..cfg.n_kv_heads) |kv_h| {
                 const k_h = k_all.sliceRows(kv_h * d_head, (kv_h + 1) * d_head);
-                k_rotated[kv_h] = self.rope.apply(k_h, rope_cs.cos, rope_cs.sin);
+                k_rotated[kv_h] = self.rope.apply(k_h, rope_cs);
             }
 
             var sm_reduce = [_]usize{ 1, seq_len };
@@ -154,7 +154,7 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
                 const kv_h = h / n_rep;
                 const v_h = v_all.sliceRows(kv_h * d_head, (kv_h + 1) * d_head);
 
-                const q_rot = self.rope.apply(q_h, rope_cs.cos, rope_cs.sin);
+                const q_rot = self.rope.apply(q_h, rope_cs);
 
                 const scores = q_rot.matMul(false, k_rotated[kv_h], true);
                 const dk: T = @floatFromInt(d_head);
@@ -197,7 +197,7 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
             const k_proj = norm1.matMul(false, self.w_k.inner, false);
             const v_proj = norm1.matMul(false, self.w_v.inner, false);
 
-            const rope_cs = self.rope.getCosSinAtPos(alloc, pos);
+            const rope_cs = self.rope.getCosSinPackedAtPos(alloc, pos);
 
             // Rotate and cache K/V per KV head
             var k_updated: [cfg.n_kv_heads]*Tensor(T) = undefined;
@@ -205,22 +205,22 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
             for (0..cfg.n_kv_heads) |kv_h| {
                 const k_h = k_proj.sliceRows(kv_h * d_head, (kv_h + 1) * d_head);
                 const v_h = v_proj.sliceRows(kv_h * d_head, (kv_h + 1) * d_head);
-                k_updated[kv_h] = k_caches[kv_h].sliceAssign(self.rope.apply(k_h, rope_cs.cos, rope_cs.sin), pos);
+                k_updated[kv_h] = k_caches[kv_h].sliceAssign(self.rope.apply(k_h, rope_cs), pos);
                 v_updated[kv_h] = v_caches[kv_h].sliceAssign(v_h, pos);
             }
 
-            // Attention per Q head
+            var sm_reduce = [_]usize{ 1, 1 };
             var attn_sum: ?*Tensor(T) = null;
+
             for (0..cfg.n_heads) |h| {
                 const kv_h = h / n_rep;
                 const q_h = q_proj.sliceRows(h * d_head, (h + 1) * d_head);
-                const q_rot = self.rope.apply(q_h, rope_cs.cos, rope_cs.sin);
+                const q_rot = self.rope.apply(q_h, rope_cs);
 
                 const scores = q_rot.matMul(false, k_updated[kv_h], true);
                 const dk: T = @floatFromInt(d_head);
                 const scaled = scores.scaleByVal(1.0 / @sqrt(dk));
                 const masked = scaled.add(attn_mask);
-                var sm_reduce = [_]usize{ 1, 1 };
                 const weights = masked.softmax(&sm_reduce);
                 const attn_out = weights.matMul(false, v_updated[kv_h], false);
 
@@ -229,7 +229,9 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
                 attn_sum = if (attn_sum) |acc| acc.add(projected) else projected;
             }
 
-            const after_attn = x.add(attn_sum.?);
+            const attn_projected = attn_sum.?;
+
+            const after_attn = x.add(attn_projected);
 
             const norm2 = self.applyRmsNorm(after_attn, &norm_reduce, .norm2);
             return after_attn.add(self.swigluFfn(norm2));
