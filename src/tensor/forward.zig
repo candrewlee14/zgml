@@ -856,6 +856,30 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
+        /// Element-wise ReLU: max(src0, 0).
+        pub fn computeRelu(dst: *Self, src0: *const Self) void {
+            assert(dst.isSameShape(src0));
+            if (!src0.isDenseLayout()) {
+                computeUnaryStrided(Self, dst, src0, struct {
+                    fn f(s: T) T {
+                        return if (s > 0) s else 0;
+                    }
+                }.f);
+                return;
+            }
+            const zero: Vec = @splat(0);
+            const len = src0.data.len;
+            var i: usize = 0;
+            while (i + vec_size <= len) : (i += vec_size) {
+                const v: Vec = src0.data[i..][0..vec_size].*;
+                dst.data[i..][0..vec_size].* = @max(v, zero);
+            }
+            while (i < len) : (i += 1) {
+                const v = src0.data[i];
+                dst.data[i] = if (v > 0) v else 0;
+            }
+        }
+
         /// Element-wise GeLU with vectorized tanh approximation.
         pub fn computeGelu(dst: *Self, src0: *const Self) void {
             assert(dst.isSameShape(src0));
@@ -1399,6 +1423,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .abs => tensor.computeAbs(src0.?),
                 .sgn => tensor.computeSgn(src0.?),
                 .step => tensor.computeStep(src0.?),
+                .relu => tensor.computeRelu(src0.?),
                 .sqrt => tensor.computeSqrt(src0.?),
                 .recip => tensor.computeRecip(src0.?),
                 .exp => tensor.computeExp(src0.?),

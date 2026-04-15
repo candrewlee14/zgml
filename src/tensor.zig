@@ -438,6 +438,7 @@ pub fn Tensor(comptime T: type) type {
         pub const computeAbs = fwd.computeAbs;
         pub const computeSgn = fwd.computeSgn;
         pub const computeStep = fwd.computeStep;
+        pub const computeRelu = fwd.computeRelu;
         pub const computeSqrt = fwd.computeSqrt;
         pub const computeRecip = fwd.computeRecip;
         pub const computeExp = fwd.computeExp;

@@ -67,12 +67,6 @@ pub fn main() !void {
     };
     const ys_ref = [_]f32{ 0.0, 2.0 };
 
-    const conv_out_expected = [_]f32{
-        -1.2122365,  -1.9742179,  0.9268430,  -2.8479621,
-        0.7666551,   1.5745969,   0.80403054, 1.0811217,
-        -1.1144669,  -0.42360207, 0.25751454, -0.9378939,
-        -0.42404205, -0.16175698, 1.3060079,  1.0465225,
-    };
     const pooled_expected = [_]f32{ 0.9268430, 1.5745969, 0.25751454, 1.3060079 };
     const logits_expected = [_]f32{ -0.12900202, 0.9393681, -0.20733, -0.33154282, 0.791896, -0.12471073 };
     const loss_expected: f32 = 1.5188972950;
@@ -114,14 +108,45 @@ pub fn main() !void {
     const logits = nn.linear(f32, flat, fc_w, fc_b);
     const ce = loss.crossEntropy(f32, logits, ys);
 
+    var g_unfused = ComputeGraph(f32).init(backing);
+    defer g_unfused.deinit();
+    const au = g_unfused.allocator();
+
+    const conv_k_u = try g_unfused.param(&.{ ks, ks, 1, n_filters });
+    const conv_b_u = try g_unfused.param(&.{n_filters});
+    const fc_w_u = try g_unfused.param(&.{ n_classes, flat_dim });
+    const fc_b_u = try g_unfused.param(&.{n_classes});
+    conv_k_u.setData(&conv_k_ref);
+    conv_b_u.setData(&.{ 0.0, 0.0 });
+    fc_w_u.setData(&fc_w_ref);
+    fc_b_u.setData(&.{ 0.0, 0.0, 0.0 });
+
+    const xs_u = try Tensor(f32).init(au, &.{ in_w, in_h, 1, batch_size });
+    const ys_u = try Tensor(f32).init(au, &.{batch_size});
+    xs_u.setData(&xs_ref);
+    ys_u.setData(&ys_ref);
+
+    const conv_out_u = xs_u.conv2d(conv_k_u);
+    const cb_4d_u = conv_b_u.reshape(&.{ 1, 1, n_filters, 1 });
+    const conv_act_u = conv_out_u.add(cb_4d_u.repeat(conv_out_u.ne[0..conv_out_u.n_dims])).relu();
+    const pooled_u = conv_act_u.maxPool2d();
+    const flat_u = pooled_u.reshape(&.{ flat_dim, batch_size });
+    const logits_u = nn.linear(f32, flat_u, fc_w_u, fc_b_u);
+    const ce_u = loss.crossEntropy(f32, logits_u, ys_u);
+
     try g.buildForward(ce);
     try g.buildBackward(false);
     try g.fusionPass();
     _ = ce.grad.?.setAllScalar(1);
+
+    try g_unfused.buildForward(ce_u);
+    try g_unfused.buildBackward(false);
+    _ = ce_u.grad.?.setAllScalar(1);
+
     g.compute();
+    g_unfused.compute();
 
     const tol: f32 = 1e-5;
-    try expectAllClose(conv_out.data, &conv_out_expected, tol);
     try expectAllClose(pooled.data, &pooled_expected, tol);
     try expectAllClose(logits.data, &logits_expected, tol);
     try std.testing.expectApproxEqAbs(loss_expected, ce.data[0], tol);
@@ -129,6 +154,13 @@ pub fn main() !void {
     try expectAllClose(fc_b.grad.?.data, &fc_b_grad_expected, tol);
     try expectAllClose(conv_k.grad.?.data, &conv_k_grad_expected, tol);
     try expectAllClose(conv_b.grad.?.data, &conv_b_grad_expected, tol);
+    try expectAllClose(pooled.data, pooled_u.data, tol);
+    try expectAllClose(logits.data, logits_u.data, tol);
+    try std.testing.expectApproxEqAbs(ce_u.data[0], ce.data[0], tol);
+    try expectAllClose(conv_k_u.grad.?.data, conv_k.grad.?.data, tol);
+    try expectAllClose(conv_b_u.grad.?.data, conv_b.grad.?.data, tol);
+    try expectAllClose(fc_w_u.grad.?.data, fc_w.grad.?.data, tol);
+    try expectAllClose(fc_b_u.grad.?.data, fc_b.grad.?.data, tol);
 
     const stdout_file = std.fs.File.stdout();
     var buf: [2048]u8 = undefined;
@@ -136,7 +168,7 @@ pub fn main() !void {
 
     try w.interface.print("grad-check passed\n", .{});
     try w.interface.print("  loss diff: {d:.10}\n", .{@abs(ce.data[0] - loss_expected)});
-    try w.interface.print("  conv_out max diff: {d:.10}\n", .{maxAbsDiff(conv_out.data, &conv_out_expected)});
+    try w.interface.print("  conv_out materialized in unfused path only\n", .{});
     try w.interface.print("  pooled max diff: {d:.10}\n", .{maxAbsDiff(pooled.data, &pooled_expected)});
     try w.interface.print("  logits max diff: {d:.10}\n", .{maxAbsDiff(logits.data, &logits_expected)});
     try w.interface.print("  conv_k.grad max diff: {d:.10}\n", .{maxAbsDiff(conv_k.grad.?.data, &conv_k_grad_expected)});

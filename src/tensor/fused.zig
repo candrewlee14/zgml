@@ -22,6 +22,7 @@ const FusedOp = enum {
     abs,
     sgn,
     step,
+    relu,
     sqrt,
     recip,
     exp,
@@ -39,6 +40,7 @@ pub const fusible_ops = [_]FusedOp{
     .abs,
     .sgn,
     .step,
+    .relu,
     .sqrt,
     .recip,
     .exp,
@@ -111,23 +113,15 @@ pub fn Conv2dPlan(comptime T: type) type {
     return struct {
         input: *Tensor(T),
         kernel: *Tensor(T),
-        conv_out: *Tensor(T),
         input_view: *Tensor(T),
         kernel_view: *Tensor(T),
         bias: ?*Tensor(T),
         bias_node: ?*Tensor(T),
-        bias_add: ?*Tensor(T),
         activation: ?*Tensor(T),
-        step_node: ?*Tensor(T),
         mul_node: *Tensor(T),
         sum_node: *Tensor(T),
         output: *Tensor(T),
         scratch: ?[]T = null, // pre-allocated im2col buffer [K, N]
-
-        fn activationBase(self: @This()) ?*Tensor(T) {
-            if (self.activation == null) return null;
-            return self.bias_add orelse self.conv_out;
-        }
     };
 }
 
@@ -349,6 +343,7 @@ fn fusedOpForNode(comptime T: type, plan: ElementwiseFusionPlan(T), idx: usize) 
         .abs => .abs,
         .sgn => .sgn,
         .step => .step,
+        .relu => .relu,
         .sqrt => .sqrt,
         .recip => .recip,
         .exp => .exp,
@@ -410,6 +405,7 @@ fn applyOp(comptime T: type, comptime op: FusedOp, val: T, node: anytype, i: usi
         .abs => @abs(val),
         .sgn => if (val > 0) 1 else if (val < 0) @as(T, -1) else 0,
         .step => if (val > 0) @as(T, 1) else 0,
+        .relu => if (val > 0) val else 0,
         .sqrt => @sqrt(val),
         .recip => 1.0 / val,
         .exp => @exp(val),
@@ -435,6 +431,7 @@ fn applyOpVec(comptime T: type, comptime V: comptime_int, comptime op: FusedOp, 
             break :blk @select(T, val > zero, @as(VecT, @splat(@as(T, 1))), @select(T, val < zero, @as(VecT, @splat(@as(T, -1))), zero));
         },
         .step => @select(T, val > @as(VecT, @splat(@as(T, 0))), @as(VecT, @splat(@as(T, 1))), @as(VecT, @splat(@as(T, 0)))),
+        .relu => @max(val, @as(VecT, @splat(@as(T, 0)))),
         .sqrt => @sqrt(val),
         .recip => @as(VecT, @splat(@as(T, 1))) / val,
         .exp => @exp(val),
@@ -1057,74 +1054,43 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T)) void {
     const mm = selectConvMatMul(T);
     mm(mm_temp, d.kernel_data, col_buf.ptr[0..col_buf.len], d.c_out, NB, d.K, d.K, 1, NB, 1, 0, 0, 0, NB);
 
-    // 3. Rearrange [c_out, NB] → [batch, c_out, N], materializing the raw
-    // conv output plus any fused bias/relu intermediates needed later.
-    const conv_out = plan.conv_out.data;
+    // 3. Rearrange [c_out, NB] → [batch, c_out, N] with optional fused bias
+    // and relu applied directly into the final output tensor.
+    const output = plan.output.data;
     const has_bias = plan.bias != null;
+    const has_relu = plan.activation != null;
     for (0..d.batch) |n| {
         for (0..d.c_out) |oc| {
             const src = mm_temp[oc * NB + n * d.N ..][0..d.N];
-            const conv_dst = conv_out[n * d.N * d.c_out + oc * d.N ..][0..d.N];
-            if (has_bias) {
-                const b = plan.bias.?.data[oc];
-                const bias_dst = plan.bias_add.?.data[n * d.N * d.c_out + oc * d.N ..][0..d.N];
-                copyAndAddBiasSimd(T, conv_dst, bias_dst, src, b);
+            const dst = output[n * d.N * d.c_out + oc * d.N ..][0..d.N];
+            const b = if (has_bias) plan.bias.?.data[oc] else 0;
+            if (has_bias or has_relu) {
+                rearrangeSimd(T, dst, src, b, has_relu);
             } else {
-                @memcpy(conv_dst, src);
+                @memcpy(dst, src);
             }
         }
     }
-
-    if (plan.activation) |activation| {
-        const pre_relu = plan.activationBase().?;
-        const step_node = plan.step_node.?;
-        executeActivationMulRelu(T, pre_relu, step_node, activation);
-    }
 }
 
-/// SIMD copy that materializes both the raw conv output and the biased output.
-fn copyAndAddBiasSimd(comptime T: type, raw_dst: []T, bias_dst: []T, src: []const T, bias: T) void {
+/// SIMD copy with fused bias add + optional ReLU.
+fn rearrangeSimd(comptime T: type, dst: []T, src: []const T, bias: T, relu: bool) void {
     const vl = comptime forward.simdVecSize(T);
     const V = @Vector(vl, T);
     const bv: V = @splat(bias);
-    const len = raw_dst.len;
-
-    var i: usize = 0;
-    while (i + vl <= len) : (i += vl) {
-        const v = src[i..][0..vl].*;
-        raw_dst[i..][0..vl].* = v;
-        bias_dst[i..][0..vl].* = v + bv;
-    }
-    while (i < len) : (i += 1) {
-        const v = src[i];
-        raw_dst[i] = v;
-        bias_dst[i] = v + bias;
-    }
-}
-
-fn executeActivationMulRelu(comptime T: type, pre_relu: *Tensor(T), step_node: *Tensor(T), activation: *Tensor(T)) void {
-    const vl = comptime forward.simdVecSize(T);
-    const V = @Vector(vl, T);
+    const len = dst.len;
     const zero: V = @splat(0);
-    const one: V = @splat(1);
-    const len = pre_relu.data.len;
 
     var i: usize = 0;
     while (i + vl <= len) : (i += vl) {
-        const v: V = pre_relu.data[i..][0..vl].*;
-        const mask: @Vector(vl, bool) = v > zero;
-        step_node.data[i..][0..vl].* = @select(T, mask, one, zero);
-        activation.data[i..][0..vl].* = @select(T, mask, v, zero);
+        var v = src[i..][0..vl].* + bv;
+        if (relu) v = @max(v, zero);
+        dst[i..][0..vl].* = v;
     }
     while (i < len) : (i += 1) {
-        const v = pre_relu.data[i];
-        if (v > 0) {
-            step_node.data[i] = 1;
-            activation.data[i] = v;
-        } else {
-            step_node.data[i] = 0;
-            activation.data[i] = 0;
-        }
+        var v = src[i] + bias;
+        if (relu and v < 0) v = 0;
+        dst[i] = v;
     }
 }
 

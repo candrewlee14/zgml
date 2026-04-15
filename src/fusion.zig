@@ -298,24 +298,13 @@ pub fn FusionDetector(comptime T: type) type {
         fn detectConv2dForward(self: *Self, node: *Tensor(T), idx: usize) ?FusionPlan(T) {
             var core = node;
             var activation: ?*Tensor(T) = null;
-            var step_node: ?*Tensor(T) = null;
             var bias: ?*Tensor(T) = null;
             var bias_node: ?*Tensor(T) = null;
-            var bias_add: ?*Tensor(T) = null;
 
-            // Peel optional relu: mul(x, step(x))
-            if (core.opTag() == .mul) {
-                const s0 = core.source0() orelse return null;
-                const s1 = core.source1() orelse return null;
-                if (s1.opTag() == .step and s1.source0() == s0) {
-                    activation = core;
-                    step_node = s1;
-                    core = s0;
-                } else if (s0.opTag() == .step and s0.source0() == s1) {
-                    activation = core;
-                    step_node = s0;
-                    core = s1;
-                }
+            // Peel optional relu.
+            if (core.opTag() == .relu) {
+                activation = core;
+                core = core.source0() orelse return null;
             }
 
             // Peel optional bias: add(core, repeat(bias))
@@ -326,7 +315,6 @@ pub fn FusionDetector(comptime T: type) type {
                 if (bias_side) |bs| {
                     const other = if (bs == s1) s0 else s1;
                     if (other.opTag() == .reshape) {
-                        bias_add = core;
                         bias = bs.source0();
                         bias_node = bs;
                         core = other;
@@ -350,20 +338,15 @@ pub fn FusionDetector(comptime T: type) type {
 
             self.markNodes(&.{ input_view, kernel_view, mul_node, sum_node, core, node });
             if (bias_node) |bn| self.markNodes(&.{bn});
-            if (bias_add) |ba| self.markNodes(&.{ba});
-            if (step_node) |sn| self.markNodes(&.{sn});
 
             return .{ .output_idx = idx, .payload = .{ .conv2d = .{
                 .input = input,
                 .kernel = kernel,
-                .conv_out = core,
                 .input_view = input_view,
                 .kernel_view = kernel_view,
                 .bias = bias,
                 .bias_node = bias_node,
-                .bias_add = bias_add,
                 .activation = activation,
-                .step_node = step_node,
                 .mul_node = mul_node,
                 .sum_node = sum_node,
                 .output = node,

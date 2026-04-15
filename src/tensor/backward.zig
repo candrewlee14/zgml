@@ -147,6 +147,20 @@ pub fn Ops(comptime Self: type) type {
                     }
                 },
 
+                // d/d(src0) [relu(src0)] = 1{tensor > 0} * out_grad
+                // Uses the forward output so backward does not depend on any
+                // decomposed step-mask subgraph.
+                .relu => {
+                    const src0 = src0_o.?;
+                    if (src0.gradOrNull()) |grad| {
+                        const mask = tensor.step();
+                        stripGrad(mask);
+                        const contribution = mask.mul(out_grad);
+                        stripGrad(contribution);
+                        src0.setGrad(accumGrad(grad, contribution, inplace));
+                    }
+                },
+
                 // d/d(src0) [abs(src0)] = sgn(src0) * out_grad
                 .abs => {
                     const src0 = src0_o.?;
