@@ -31,6 +31,32 @@ pub fn linear(comptime T: type, x: *Tensor(T), w: *Tensor(T), b: ?*Tensor(T)) *T
     return if (b) |bias| h.addBias(bias) else h;
 }
 
+/// SiLU activation: x * sigmoid(x) = x / (1 + exp(-x)).
+///
+/// Composed from primitives (neg, exp, add, recip, mul) so gradients
+/// flow automatically. Used by SwiGLU FFN in LLaMA-style models.
+pub fn silu(comptime T: type, x: *Tensor(T)) *Tensor(T) {
+    const alloc = x.alloc.?;
+    const one = Tensor(T).initScalar(alloc, 1) catch unreachable;
+    const exp_neg = x.neg().exp();
+    const sigmoid = exp_neg.add(one.repeatLike(exp_neg)).recip();
+    return x.mul(sigmoid);
+}
+
+/// Build a lower-triangular causal attention mask [seq_len, seq_len].
+///
+/// Returns 0 for valid (attend) positions and `mask_val` (typically -1e9)
+/// for masked positions.
+pub fn buildCausalMask(comptime T: type, alloc: Alloc, seq_len: usize) *Tensor(T) {
+    const mask = Tensor(T).init(alloc, &.{ seq_len, seq_len }) catch unreachable;
+    for (0..seq_len) |qi| {
+        for (0..seq_len) |ki| {
+            mask.data[qi * seq_len + ki] = if (ki <= qi) 0 else -1e9;
+        }
+    }
+    return mask;
+}
+
 /// Batch normalization for 4D tensors [W, H, C, N].
 ///
 /// Normalizes per-channel across the spatial and batch dimensions,
@@ -264,18 +290,20 @@ pub fn RoPE(comptime T: type, comptime d: usize, comptime max_seq_len: usize) ty
         pub fn init(alloc: Alloc, base: T) !Self {
             var self: Self = undefined;
 
-            // Build permutation matrix: P @ x rotates pairs
+            // Build permutation matrix implementing HF's rotate_half:
+            //   rotate_half(x) = [-x[d/2:], x[:d/2]]
+            // P[i, i+d/2] = -1  → maps x[i+d/2] to position i, negated
+            // P[i+d/2, i] = 1   → maps x[i] to position i+d/2
             self.perm = try Tensor(T).init(alloc, &.{ d, d });
             _ = self.perm.setAllScalar(0);
             for (0..d / 2) |i| {
-                // P[2i, 2i+1] = -1  → maps x[2i+1] to position 2i, negated
-                self.perm.data[(2 * i + 1) * d + (2 * i)] = -1;
-                // P[2i+1, 2i] = 1   → maps x[2i] to position 2i+1
-                self.perm.data[(2 * i) * d + (2 * i + 1)] = 1;
+                self.perm.data[(i + d / 2) * d + i] = -1;
+                self.perm.data[i * d + (i + d / 2)] = 1;
             }
-            // perm is a constant — no grad, no setParam
 
-            // Build cos/sin frequency tables
+            // Build cos/sin frequency tables.
+            // Half-split pairing: pair (i, i+d/2) shares the same frequency,
+            // matching HuggingFace's LlamaRotaryEmbedding.
             self.cos_table = try Tensor(T).init(alloc, &.{ d, max_seq_len });
             self.sin_table = try Tensor(T).init(alloc, &.{ d, max_seq_len });
 
@@ -287,43 +315,51 @@ pub fn RoPE(comptime T: type, comptime d: usize, comptime max_seq_len: usize) ty
                     const freq = p / std.math.pow(T, base, dim / dm);
                     const cos_val = @cos(freq);
                     const sin_val = @sin(freq);
-                    // Both features in a pair get the same cos/sin
-                    self.cos_table.data[pos * d + 2 * i] = cos_val;
-                    self.cos_table.data[pos * d + 2 * i + 1] = cos_val;
-                    self.sin_table.data[pos * d + 2 * i] = sin_val;
-                    self.sin_table.data[pos * d + 2 * i + 1] = sin_val;
+                    self.cos_table.data[pos * d + i] = cos_val;
+                    self.cos_table.data[pos * d + i + d / 2] = cos_val;
+                    self.sin_table.data[pos * d + i] = sin_val;
+                    self.sin_table.data[pos * d + i + d / 2] = sin_val;
                 }
             }
 
             return self;
         }
 
-        /// Apply rotary position embeddings to x [d, seq_len].
-        ///
-        /// Returns: x * cos + rotate_half(x) * sin
-        /// where rotate_half(x) = x @ P (permutation matrix).
-        ///
-        /// Gradients flow through x via the mul and matMul ops automatically.
-        pub fn forward(self: *const Self, x: *Tensor(T), seq_len: usize) *Tensor(T) {
-            std.debug.assert(x.ne[0] == d);
+        const CosSin = struct { cos: *Tensor(T), sin: *Tensor(T) };
+
+        /// Prepare cos/sin tensors for positions [0, seq_len).
+        pub fn getCosSin(self: *const Self, alloc: Alloc, seq_len: usize) CosSin {
             std.debug.assert(seq_len <= max_seq_len);
-            std.debug.assert(x.ne[1] == seq_len);
-
-            const alloc = x.alloc.?;
-
-            // Slice cos/sin tables to actual seq_len
             const cos = Tensor(T).init(alloc, &.{ d, seq_len }) catch unreachable;
             const sin = Tensor(T).init(alloc, &.{ d, seq_len }) catch unreachable;
             const elems = d * seq_len;
             @memcpy(cos.data[0..elems], self.cos_table.data[0..elems]);
             @memcpy(sin.data[0..elems], self.sin_table.data[0..elems]);
-            // cos, sin are constants — no grad
+            return .{ .cos = cos, .sin = sin };
+        }
 
-            // rotate_half(x) = x @ P
+        /// Prepare cos/sin for a single position [d, 1].
+        pub fn getCosSinAtPos(self: *const Self, alloc: Alloc, pos: usize) CosSin {
+            std.debug.assert(pos < max_seq_len);
+            const cos = Tensor(T).init(alloc, &.{ d, 1 }) catch unreachable;
+            const sin = Tensor(T).init(alloc, &.{ d, 1 }) catch unreachable;
+            @memcpy(cos.data[0..d], self.cos_table.data[pos * d ..][0..d]);
+            @memcpy(sin.data[0..d], self.sin_table.data[pos * d ..][0..d]);
+            return .{ .cos = cos, .sin = sin };
+        }
+
+        /// Apply RoPE rotation with pre-computed cos/sin.
+        pub fn apply(self: *const Self, x: *Tensor(T), cos: *Tensor(T), sin: *Tensor(T)) *Tensor(T) {
             const rotated = x.matMul(false, self.perm, false);
-
-            // output = x * cos + rotated * sin
             return x.mul(cos.repeatLike(x)).add(rotated.mul(sin.repeatLike(rotated)));
+        }
+
+        /// Apply rotary position embeddings to x [d, seq_len] from position 0.
+        pub fn forward(self: *const Self, x: *Tensor(T), seq_len: usize) *Tensor(T) {
+            std.debug.assert(x.ne[0] == d);
+            std.debug.assert(x.ne[1] == seq_len);
+            const cs = self.getCosSin(x.alloc.?, seq_len);
+            return self.apply(x, cs.cos, cs.sin);
         }
     };
 }
