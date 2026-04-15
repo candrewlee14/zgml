@@ -27,9 +27,9 @@ pub const device_inference = @import("device_inference.zig");
 pub const data = @import("data.zig");
 
 test "ref all decls" {
-    _ = testing.refAllDeclsRecursive(models);
-    _ = testing.refAllDeclsRecursive(optim);
-    _ = testing.refAllDeclsRecursive(loss);
+    _ = testing.refAllDecls(models);
+    _ = testing.refAllDecls(optim);
+    _ = testing.refAllDecls(loss);
     _ = @import("nn.zig");
     _ = @import("checkpoint.zig");
     _ = @import("index.zig");

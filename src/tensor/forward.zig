@@ -17,7 +17,7 @@ const opts = @import("zgml_options");
 const c = if (opts.use_blas)
     switch (builtin.os.tag) {
         .linux, .windows => @cImport(@cInclude("cblas.h")),
-        .macos => @cImport(@cInclude("Accelerate/Accelerate.h")),
+        .macos => @cImport(@cInclude("vecLib/cblas.h")),
         else => @cImport(@compileError("Unsupported OS")),
     }
 else
@@ -1391,7 +1391,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         /// Parallel matmul: splits M-rows across threads for each batch.
-        pub fn computeMatMulParallel(dst: *Self, src0: *const Self, comptime trans0: bool, src1: *const Self, comptime trans1: bool, pool: *std.Thread.Pool) void {
+        pub fn computeMatMulParallel(dst: *Self, src0: *const Self, comptime trans0: bool, src1: *const Self, comptime trans1: bool, n_workers: usize) void {
             dst.assertValidMatMulDims(src0, trans0, src1, trans1);
             assert(dst.strides[0] == 1);
 
@@ -1404,8 +1404,8 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             const b_k_stride = if (trans1) src1.strides[0] else src1.strides[1];
             const kernel = selectMatMulRangeKernel(T);
 
-            const n_workers = pool.threads.len + 1;
             const min_rows_per_thread = 4; // don't split below this
+            const max_spawn = 127; // max threads to spawn
 
             for (0..src0.ne[3]) |b3| {
                 for (0..src0.ne[2]) |b2| {
@@ -1417,20 +1417,22 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                         kernel(dst.data, src0.data, src1.data, 0, M, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1]);
                     } else {
                         const chunk = @max(min_rows_per_thread, (M + n_workers - 1) / n_workers);
-                        var wg = std.Thread.WaitGroup{};
+                        var threads: [max_spawn]std.Thread = undefined;
+                        var n_spawned: usize = 0;
                         var m_start: usize = chunk;
-                        while (m_start < M) {
+                        while (m_start < M and n_spawned < max_spawn) {
                             const m_end = @min(m_start + chunk, M);
-                            pool.spawnWg(&wg, struct {
+                            threads[n_spawned] = std.Thread.spawn(.{}, struct {
                                 fn work(d: []T, s0: []const T, s1: []const T, ms: usize, me: usize, n: usize, k: usize, am: usize, ak: usize, bk: usize, bn: usize, ab: usize, bb: usize, db: usize, dr: usize, kfn: MatMulRangeFnType(T)) void {
                                     kfn(d, s0, s1, ms, me, n, k, am, ak, bk, bn, ab, bb, db, dr);
                                 }
-                            }.work, .{ dst.data, src0.data, src1.data, m_start, m_end, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1], kernel });
+                            }.work, .{ dst.data, src0.data, src1.data, m_start, m_end, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1], kernel }) catch break;
+                            n_spawned += 1;
                             m_start += chunk;
                         }
                         // Caller does first chunk
                         kernel(dst.data, src0.data, src1.data, 0, @min(chunk, M), N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1]);
-                        wg.wait();
+                        for (threads[0..n_spawned]) |t| t.join();
                     }
                 }
             }

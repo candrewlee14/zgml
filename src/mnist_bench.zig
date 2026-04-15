@@ -13,6 +13,19 @@ const ConvClassifier = zgml.models.ConvClassifier;
 
 const Alloc = std.mem.Allocator;
 
+fn readFileAlloc(alloc: Alloc, path: []const u8, io: std.Io, max_bytes: usize) ![]u8 {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    const stat = try file.stat(io);
+    if (stat.size > max_bytes) return error.FileTooBig;
+    const size: usize = @intCast(stat.size);
+    const buf = try alloc.alloc(u8, size);
+    errdefer alloc.free(buf);
+    const bytes_read = try file.readPositionalAll(io, buf, 0);
+    if (bytes_read != size) return error.UnexpectedEof;
+    return buf;
+}
+
 // ---------------------------------------------------------------------------
 // MNIST IDX file loading
 // ---------------------------------------------------------------------------
@@ -27,10 +40,8 @@ const MnistImages = struct {
     rows: usize,
     cols: usize,
 
-    fn load(alloc: Alloc, path: []const u8) !MnistImages {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-        const raw = try file.readToEndAlloc(alloc, 128 * 1024 * 1024);
+    fn load(alloc: Alloc, path: []const u8, io: std.Io) !MnistImages {
+        const raw = try readFileAlloc(alloc, path, io, 128 * 1024 * 1024);
         defer alloc.free(raw);
 
         const magic = readU32Big(raw[0..]);
@@ -57,10 +68,8 @@ const MnistLabels = struct {
     data: []f32,
     n: usize,
 
-    fn load(alloc: Alloc, path: []const u8) !MnistLabels {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-        const raw = try file.readToEndAlloc(alloc, 16 * 1024 * 1024);
+    fn load(alloc: Alloc, path: []const u8, io: std.Io) !MnistLabels {
+        const raw = try readFileAlloc(alloc, path, io, 16 * 1024 * 1024);
         defer alloc.free(raw);
 
         const magic = readU32Big(raw[0..]);
@@ -84,14 +93,13 @@ const MnistLabels = struct {
 // Main
 // ---------------------------------------------------------------------------
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const alloc = init.gpa;
 
-    const stdout_file = std.fs.File.stdout();
+    const stdout_file = std.Io.File.stdout();
     var buf: [4096]u8 = undefined;
-    var w = stdout_file.writer(&buf);
+    var w = stdout_file.writer(io, &buf);
 
     try w.interface.print("\nMNIST CNN Training Benchmark\n", .{});
     try w.interface.print("============================\n\n", .{});
@@ -100,13 +108,13 @@ pub fn main() !void {
     try w.interface.print("Loading MNIST data...\n", .{});
     w.interface.flush() catch {};
 
-    var train_images = try MnistImages.load(alloc, "data/train-images-idx3-ubyte");
+    var train_images = try MnistImages.load(alloc, "data/train-images-idx3-ubyte", io);
     defer train_images.deinit(alloc);
-    var train_labels = try MnistLabels.load(alloc, "data/train-labels-idx1-ubyte");
+    var train_labels = try MnistLabels.load(alloc, "data/train-labels-idx1-ubyte", io);
     defer train_labels.deinit(alloc);
-    var test_images = try MnistImages.load(alloc, "data/t10k-images-idx3-ubyte");
+    var test_images = try MnistImages.load(alloc, "data/t10k-images-idx3-ubyte", io);
     defer test_images.deinit(alloc);
-    var test_labels = try MnistLabels.load(alloc, "data/t10k-labels-idx1-ubyte");
+    var test_labels = try MnistLabels.load(alloc, "data/t10k-labels-idx1-ubyte", io);
     defer test_labels.deinit(alloc);
 
     try w.interface.print("  Train: {} images, Test: {} images\n", .{ train_images.n, test_images.n });
@@ -139,10 +147,10 @@ pub fn main() !void {
     var prng = std.Random.DefaultPrng.init(42);
 
     // Training loop
-    var total_timer = std.time.Timer.start() catch unreachable;
+    const total_t0 = std.Io.Clock.awake.now(io).nanoseconds;
 
     for (0..n_epochs) |epoch| {
-        var epoch_timer = std.time.Timer.start() catch unreachable;
+        const epoch_t0 = std.Io.Clock.awake.now(io).nanoseconds;
         var epoch_loss: f64 = 0;
         var epoch_correct: usize = 0;
         var preds: [32]usize = undefined;
@@ -186,7 +194,7 @@ pub fn main() !void {
             }
         }
 
-        const epoch_ns = epoch_timer.read();
+        const epoch_ns: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds - epoch_t0);
         const epoch_ms = @as(f64, @floatFromInt(epoch_ns)) / 1_000_000.0;
         const avg_loss = epoch_loss / @as(f64, @floatFromInt(train_batches));
         const train_acc = @as(f64, @floatFromInt(epoch_correct)) / @as(f64, @floatFromInt(train_batches * batch_size)) * 100.0;
@@ -198,7 +206,7 @@ pub fn main() !void {
         w.interface.flush() catch {};
     }
 
-    const total_ns = total_timer.read();
+    const total_ns: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds - total_t0);
     const total_ms = @as(f64, @floatFromInt(total_ns)) / 1_000_000.0;
 
     // Test set evaluation

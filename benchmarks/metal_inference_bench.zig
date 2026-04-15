@@ -18,9 +18,9 @@ const TIMED_TOKENS = 32;
 fn diagnoseGraph(comptime config: GPTConfig, writer: anytype) !void {
     const Session = zgml.inference.InferenceSession(f32, config);
     const Op = zgml.Op;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
     var session = try Session.init(alloc);
     defer session.deinit();
     try session.quantize();
@@ -102,12 +102,13 @@ fn runBenchmark(
     quantized: bool,
     backend: ?Backend,
     writer: anytype,
+    io: std.Io,
 ) !void {
     const Session = zgml.inference.InferenceSession(f32, config);
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
     var session = try Session.initWithBackend(alloc, backend);
     defer session.deinit();
@@ -120,11 +121,11 @@ fn runBenchmark(
     }
     session.reset();
 
-    const t_start = std.time.nanoTimestamp();
+    const t_start = std.Io.Clock.awake.now(io).nanoseconds;
     for (0..TIMED_TOKENS) |i| {
         _ = try session.step(i % config.vocab_size);
     }
-    const t_end = std.time.nanoTimestamp();
+    const t_end = std.Io.Clock.awake.now(io).nanoseconds;
 
     const elapsed_ns: f64 = @floatFromInt(t_end - t_start);
     const elapsed_ms = elapsed_ns / 1_000_000.0;
@@ -139,10 +140,11 @@ fn runBenchmark(
     });
 }
 
-pub fn main() !void {
-    const stdout_file = std.fs.File.stdout();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const stdout_file = std.Io.File.stdout();
     var stdout_buf: [4096]u8 = undefined;
-    var w = stdout_file.writer(&stdout_buf);
+    var w = stdout_file.writer(io, &stdout_buf);
 
     try w.interface.print("\nMetal Inference Benchmark — CPU vs Metal\n", .{});
     try w.interface.print("==========================================\n", .{});
@@ -188,27 +190,27 @@ pub fn main() !void {
 
     // --- Small ---
     try w.interface.print("Small (d=64, L=4, H=4):\n", .{});
-    try runBenchmark("CPU f32   ", small, false, null, &w.interface);
-    try runBenchmark("CPU int8  ", small, true, null, &w.interface);
+    try runBenchmark("CPU f32   ", small, false, null, &w.interface, io);
+    try runBenchmark("CPU int8  ", small, true, null, &w.interface, io);
     if (metal) |be| {
-        try runBenchmark("Metal int8", small, true, be, &w.interface);
+        try runBenchmark("Metal int8", small, true, be, &w.interface, io);
     }
 
     // --- Medium ---
     try w.interface.print("\nMedium (d=128, L=6, H=8):\n", .{});
-    try runBenchmark("CPU f32   ", medium, false, null, &w.interface);
-    try runBenchmark("CPU int8  ", medium, true, null, &w.interface);
+    try runBenchmark("CPU f32   ", medium, false, null, &w.interface, io);
+    try runBenchmark("CPU int8  ", medium, true, null, &w.interface, io);
     if (metal) |be| {
-        try runBenchmark("Metal int8", medium, true, be, &w.interface);
+        try runBenchmark("Metal int8", medium, true, be, &w.interface, io);
     }
 
     // --- GPT-2 scale ---
     try w.interface.print("\nGPT-2 scale (d=768, L=12, H=12):\n", .{});
     try diagnoseGraph(gpt2, &w.interface);
-    try runBenchmark("CPU f32   ", gpt2, false, null, &w.interface);
-    try runBenchmark("CPU int8  ", gpt2, true, null, &w.interface);
+    try runBenchmark("CPU f32   ", gpt2, false, null, &w.interface, io);
+    try runBenchmark("CPU int8  ", gpt2, true, null, &w.interface, io);
     if (metal) |be| {
-        try runBenchmark("Metal int8", gpt2, true, be, &w.interface);
+        try runBenchmark("Metal int8", gpt2, true, be, &w.interface, io);
     }
 
     try w.interface.print("\n", .{});

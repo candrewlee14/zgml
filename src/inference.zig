@@ -225,7 +225,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
                 if (self.quant_map.get(node)) |qi| {
                     executeQuantizedMatmul(node, &self.quant_weights[qi]);
                 } else {
-                    self.graph.executeNode(node, null);
+                    self.graph.executeNode(node, 1);
                 }
             }
         }
@@ -368,7 +368,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
 
             // Slot assignment: best-fit (smallest adequate free slot).
             const Slot = struct { free_after: u32, size: usize };
-            var slots: std.ArrayList(Slot) = .{};
+            var slots: std.ArrayList(Slot) = .empty;
             defer slots.deinit(alloc);
 
             const assignment = try alloc.alloc(i32, nodes.len);

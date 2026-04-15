@@ -25,17 +25,17 @@ pub const SafetensorsFile = struct {
     header_json: []const u8,
     data_start: usize,
 
-    pub fn open(alloc: Alloc, path: []const u8) !SafetensorsFile {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
+    pub fn open(alloc: Alloc, path: []const u8, io: std.Io) !SafetensorsFile {
+        const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+        defer file.close(io);
 
-        const file_size = try file.getEndPos();
+        const file_size = (try file.stat(io)).size;
         if (file_size < 8) return error.InvalidFormat;
 
         // Read entire file into aligned buffer
         const buf = try alloc.alignedAlloc(u8, .@"4", file_size);
         errdefer alloc.free(buf);
-        const bytes_read = try file.readAll(buf);
+        const bytes_read = try file.readPositionalAll(io, buf, 0);
         if (bytes_read != file_size) return error.UnexpectedEof;
 
         // Parse header length
@@ -170,7 +170,7 @@ pub const SafetensorsFile = struct {
 
     /// List all tensor names in the file.
     pub fn tensorNames(self: *const SafetensorsFile, alloc: Alloc) ![][]const u8 {
-        var names: std.ArrayList([]const u8) = .{};
+        var names: std.ArrayList([]const u8) = .empty;
         errdefer names.deinit(alloc);
 
         const json = self.header_json;

@@ -14,6 +14,19 @@
 const std = @import("std");
 const Alloc = std.mem.Allocator;
 
+fn readFileAlloc(alloc: Alloc, path: []const u8, io: std.Io, max_bytes: usize) ![]u8 {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    const stat = try file.stat(io);
+    if (stat.size > max_bytes) return error.FileTooBig;
+    const size: usize = @intCast(stat.size);
+    const buf = try alloc.alloc(u8, size);
+    errdefer alloc.free(buf);
+    const bytes_read = try file.readPositionalAll(io, buf, 0);
+    if (bytes_read != size) return error.UnexpectedEof;
+    return buf;
+}
+
 fn readU32Big(buf: []const u8) u32 {
     return std.mem.readInt(u32, buf[0..4], .big);
 }
@@ -29,11 +42,9 @@ pub const MnistDataset = struct {
     ///
     /// Images are normalized to [0, 1] (divided by 255).
     /// Labels are stored as f32 class indices (e.g., 0.0, 1.0, ..., 9.0).
-    pub fn load(alloc: Alloc, images_path: []const u8, labels_path: []const u8) !MnistDataset {
+    pub fn load(alloc: Alloc, images_path: []const u8, labels_path: []const u8, io: std.Io) !MnistDataset {
         // -- Load images --
-        const img_file = try std.fs.cwd().openFile(images_path, .{});
-        defer img_file.close();
-        const img_raw = try img_file.readToEndAlloc(alloc, 128 * 1024 * 1024);
+        const img_raw = try readFileAlloc(alloc, images_path, io, 128 * 1024 * 1024);
         defer alloc.free(img_raw);
 
         const img_magic = readU32Big(img_raw[0..]);
@@ -51,9 +62,7 @@ pub const MnistDataset = struct {
         }
 
         // -- Load labels --
-        const lbl_file = try std.fs.cwd().openFile(labels_path, .{});
-        defer lbl_file.close();
-        const lbl_raw = try lbl_file.readToEndAlloc(alloc, 16 * 1024 * 1024);
+        const lbl_raw = try readFileAlloc(alloc, labels_path, io, 16 * 1024 * 1024);
         defer alloc.free(lbl_raw);
 
         const lbl_magic = readU32Big(lbl_raw[0..]);

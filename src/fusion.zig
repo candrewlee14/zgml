@@ -49,7 +49,7 @@ pub fn FusionDetector(comptime T: type) type {
                 .nodes = nodes,
                 .forward_node_count = forward_node_count,
                 .fused_skip = skip,
-                .fused_chains = .{},
+                .fused_chains = .empty,
                 .use_count = uc,
                 .ptr_to_idx = map,
             };

@@ -108,7 +108,7 @@ fn runCase(alloc: std.mem.Allocator, writer: anytype, cfg: Config) !void {
     };
     defer model.deinit();
     try model.g.fusionPass();
-    model.g.enableThreading() catch {};
+    model.g.enableThreading();
 
     var prng = std.Random.DefaultPrng.init(42);
     const rand = prng.random();
@@ -179,14 +179,13 @@ fn runCase(alloc: std.mem.Allocator, writer: anytype, cfg: Config) !void {
     try writer.print("\n", .{});
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const alloc = init.gpa;
 
-    const stdout_file = std.fs.File.stdout();
+    const stdout_file = std.Io.File.stdout();
     var buf: [4096]u8 = undefined;
-    var w = stdout_file.writer(&buf);
+    var w = stdout_file.writer(io, &buf);
 
     try runCase(alloc, &w.interface, .{
         .name = "MNIST-scale conv",

@@ -6,9 +6,13 @@
 const std = @import("std");
 const zgml = @import("zgml");
 const Tensor = zgml.Tensor;
-const IoWriter = std.io.Writer;
+const IoWriter = std.Io.Writer;
 const opts = @import("zgml_options");
 const use_blas = opts.use_blas;
+
+fn nowNs(io: std.Io) i96 {
+    return std.Io.Clock.awake.now(io).nanoseconds;
+}
 
 // ---------------------------------------------------------------------------
 // Naive baselines (scalar, no SIMD, bounds-check-free)
@@ -69,13 +73,13 @@ fn doNotOptimize(ptr: anytype) void {
 
 const ITERS = 200;
 
-fn runBench(comptime func: anytype, args: anytype) u64 {
+fn runBench(io: std.Io, comptime func: anytype, args: anytype) u64 {
     for (0..WARMUP) |_| @call(.auto, func, args);
     var times: [ITERS]u64 = undefined;
     for (&times) |*t| {
-        var timer = std.time.Timer.start() catch unreachable;
+        const t0 = nowNs(io);
         @call(.auto, func, args);
-        t.* = timer.read();
+        t.* = @intCast(nowNs(io) - t0);
     }
     return benchMedian(&times);
 }
@@ -96,7 +100,7 @@ fn printElemResult(w: *IoWriter, name: []const u8, n: usize, naive_ns: u64, simd
 // Element-wise benchmarks
 // ---------------------------------------------------------------------------
 
-fn benchElementwise(alloc: std.mem.Allocator, w: *IoWriter) !void {
+fn benchElementwise(io: std.Io, alloc: std.mem.Allocator, w: *IoWriter) !void {
     const sizes = [_]usize{ 64, 4096, 1_048_576 };
 
     for (sizes) |n| {
@@ -128,30 +132,30 @@ fn benchElementwise(alloc: std.mem.Allocator, w: *IoWriter) !void {
         defer t_gelu.deinit();
 
         {
-            const naive = runBench(naiveAdd, .{ buf_dst, buf_a, buf_b });
+            const naive = runBench(io, naiveAdd, .{ buf_dst, buf_a, buf_b });
             doNotOptimize(buf_dst.ptr);
-            const simd = runBench(computeWrapper, .{t_add});
+            const simd = runBench(io, computeWrapper, .{t_add});
             doNotOptimize(t_add.data.ptr);
             printElemResult(w, "add", n, naive, simd);
         }
         {
-            const naive = runBench(naiveMul, .{ buf_dst, buf_a, buf_b });
+            const naive = runBench(io, naiveMul, .{ buf_dst, buf_a, buf_b });
             doNotOptimize(buf_dst.ptr);
-            const simd = runBench(computeWrapper, .{t_mul});
+            const simd = runBench(io, computeWrapper, .{t_mul});
             doNotOptimize(t_mul.data.ptr);
             printElemResult(w, "mul", n, naive, simd);
         }
         {
-            const naive = runBench(naiveRelu, .{ buf_dst, buf_a });
+            const naive = runBench(io, naiveRelu, .{ buf_dst, buf_a });
             doNotOptimize(buf_dst.ptr);
-            const simd = runBench(computeWrapper, .{t_relu});
+            const simd = runBench(io, computeWrapper, .{t_relu});
             doNotOptimize(t_relu.data.ptr);
             printElemResult(w, "relu", n, naive, simd);
         }
         {
-            const naive = runBench(naiveGelu, .{ buf_dst, buf_a });
+            const naive = runBench(io, naiveGelu, .{ buf_dst, buf_a });
             doNotOptimize(buf_dst.ptr);
-            const simd = runBench(computeWrapper, .{t_gelu});
+            const simd = runBench(io, computeWrapper, .{t_gelu});
             doNotOptimize(t_gelu.data.ptr);
             printElemResult(w, "gelu", n, naive, simd);
         }
@@ -163,7 +167,7 @@ fn benchElementwise(alloc: std.mem.Allocator, w: *IoWriter) !void {
 // MatMul benchmarks
 // ---------------------------------------------------------------------------
 
-fn benchMatMul(alloc: std.mem.Allocator, w: *IoWriter) !void {
+fn benchMatMul(io: std.Io, alloc: std.mem.Allocator, w: *IoWriter) !void {
     const sizes = [_]usize{ 4, 32, 128, 512 };
 
     for (sizes) |dim| {
@@ -191,9 +195,9 @@ fn benchMatMul(alloc: std.mem.Allocator, w: *IoWriter) !void {
 
         const flops: f64 = 2.0 * @as(f64, @floatFromInt(dim)) * @as(f64, @floatFromInt(dim)) * @as(f64, @floatFromInt(dim));
 
-        const naive = runBench(naiveMatMul, .{ buf_dst, buf_a, buf_b, dim, dim, dim });
+        const naive = runBench(io, naiveMatMul, .{ buf_dst, buf_a, buf_b, dim, dim, dim });
         doNotOptimize(buf_dst.ptr);
-        const tiled = runBench(computeWrapper, .{t_dst});
+        const tiled = runBench(io, computeWrapper, .{t_dst});
         doNotOptimize(t_dst.data.ptr);
         const gflops = flops / @as(f64, @floatFromInt(@max(tiled, 1)));
         const speedup = @as(f64, @floatFromInt(naive)) / @as(f64, @floatFromInt(@max(tiled, 1)));
@@ -207,14 +211,13 @@ fn benchMatMul(alloc: std.mem.Allocator, w: *IoWriter) !void {
 // Main
 // ---------------------------------------------------------------------------
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const alloc = init.gpa;
 
-    const stdout_file = std.fs.File.stdout();
+    const stdout_file = std.Io.File.stdout();
     var buf: [4096]u8 = undefined;
-    var file_writer = stdout_file.writer(&buf);
+    var file_writer = stdout_file.writer(io, &buf);
     var w = &file_writer.interface;
 
     try w.print("\nzgml benchmark suite", .{});
@@ -223,7 +226,7 @@ pub fn main() !void {
 
     try w.print("Element-wise operations (SIMD vs naive scalar)\n", .{});
     try w.print("-----------------------------------------------\n", .{});
-    try benchElementwise(alloc, w);
+    try benchElementwise(io, alloc, w);
 
     if (use_blas) {
         try w.print("\nMatrix multiplication (OpenBLAS vs naive triple-loop)\n", .{});
@@ -231,7 +234,7 @@ pub fn main() !void {
         try w.print("\nMatrix multiplication (tiled SIMD vs naive triple-loop)\n", .{});
     }
     try w.print("-------------------------------------------------------\n", .{});
-    try benchMatMul(alloc, w);
+    try benchMatMul(io, alloc, w);
 
     try w.print("\n", .{});
     file_writer.interface.flush() catch {};

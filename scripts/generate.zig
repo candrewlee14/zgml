@@ -22,20 +22,18 @@ const config = zgml.models.GPTConfig{
 
 const Session = zgml.inference.InferenceSession(f32, config);
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const alloc = init.gpa;
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
-    const stderr_file = std.fs.File.stderr();
+    const stderr_file = std.Io.File.stderr();
     var stderr_buf: [4096]u8 = undefined;
-    var stderr = stderr_file.writer(&stderr_buf);
-    const stdout_file = std.fs.File.stdout();
+    var stderr = stderr_file.writer(io, &stderr_buf);
+    const stdout_file = std.Io.File.stdout();
     var stdout_buf: [4096]u8 = undefined;
-    var stdout = stdout_file.writer(&stdout_buf);
+    var stdout = stdout_file.writer(io, &stdout_buf);
 
     if (args.len < 2) {
         try stderr.interface.print("Usage: {s} <checkpoint.bin> [prompt]\n", .{args[0]});
@@ -51,7 +49,7 @@ pub fn main() !void {
     defer session.deinit();
 
     const params = session.model.params();
-    checkpoint.load(f32, &params, ckpt_path) catch |err| {
+    checkpoint.load(f32, &params, ckpt_path, io) catch |err| {
         try stderr.interface.print("Error loading '{s}': {}\n", .{ ckpt_path, err });
         stderr.interface.flush() catch {};
         return;
@@ -66,7 +64,7 @@ pub fn main() !void {
     var gen_tokens: usize = 0;
 
     const max_tokens = prompt.len + 200;
-    const t_start = std.time.nanoTimestamp();
+    const t_start = std.Io.Clock.awake.now(io).nanoseconds;
 
     for (0..max_tokens) |_| {
         const logits = try session.step(next_token);
@@ -98,7 +96,7 @@ pub fn main() !void {
         next_token = best;
     }
 
-    const t_end = std.time.nanoTimestamp();
+    const t_end = std.Io.Clock.awake.now(io).nanoseconds;
     const elapsed_ms: f64 = @as(f64, @floatFromInt(t_end - t_start)) / 1_000_000.0;
     const total_tokens = session.position();
     const toks_per_sec: f64 = if (elapsed_ms > 0)

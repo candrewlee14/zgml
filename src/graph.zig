@@ -19,6 +19,26 @@ const testing = std.testing;
 const Alloc = std.mem.Allocator;
 const tac = std.testing.allocator;
 
+fn nowNs() i96 {
+    return std.Io.Clock.awake.now(std.Io.Threaded.global_single_threaded.io()).nanoseconds;
+}
+
+const Timer = struct {
+    start_ns: i96,
+
+    fn start() Timer {
+        return .{ .start_ns = nowNs() };
+    }
+
+    fn reset(self: *Timer) void {
+        self.start_ns = nowNs();
+    }
+
+    fn read(self: *const Timer) u64 {
+        return @intCast(nowNs() - self.start_ns);
+    }
+};
+
 /// Manages forward and backward passes over a tensor computation graph.
 ///
 /// All tensors should be allocated from `allocator()` so that `deinit()`
@@ -52,7 +72,7 @@ pub fn ComputeGraph(comptime T: type) type {
 
         /// Optional thread pool for parallel matmul and elementwise ops.
         /// Null by default (single-threaded). Call `enableThreading()` to activate.
-        thread_pool: ?std.Thread.Pool = null,
+        n_threads: usize = 1,
         backend: ?backend_mod.Backend = null,
 
         const ExecutionStep = union(enum) {
@@ -65,15 +85,15 @@ pub fn ComputeGraph(comptime T: type) type {
         pub fn init(backing_alloc: Alloc) Self {
             return .{
                 .arena = std.heap.ArenaAllocator.init(backing_alloc),
-                .nodes = .{},
-                .grads = .{},
-                .leaves = .{},
+                .nodes = .empty,
+                .grads = .empty,
+                .leaves = .empty,
                 .visited_nodes = .empty,
-                .scratch = .{},
-                .fused_chains = .{},
-                .fused_skip = .{},
-                .execution_steps = .{},
-                .forward_execution_steps = .{},
+                .scratch = .empty,
+                .fused_chains = .empty,
+                .fused_skip = .empty,
+                .execution_steps = .empty,
+                .forward_execution_steps = .empty,
                 .backend = null,
             };
         }
@@ -111,7 +131,6 @@ pub fn ComputeGraph(comptime T: type) type {
 
         /// Clean up all the resources for this compute graph
         pub fn deinit(self: *Self) void {
-            if (self.thread_pool) |*tp| tp.deinit();
             const alloc = self.arena.allocator();
             self.deinitFusedChains();
             self.fused_skip.deinit(alloc);
@@ -127,13 +146,9 @@ pub fn ComputeGraph(comptime T: type) type {
 
         /// Enable multi-threaded execution for matmul and elementwise ops.
         /// Uses all available CPU cores. Safe to call multiple times (no-op if already enabled).
-        pub fn enableThreading(self: *Self) !void {
-            if (self.thread_pool != null) return;
-            self.thread_pool = undefined;
-            try self.thread_pool.?.init(.{
-                .allocator = std.heap.page_allocator,
-                .track_ids = false,
-            });
+        pub fn enableThreading(self: *Self) void {
+            if (self.n_threads > 1) return;
+            self.n_threads = std.Thread.getCpuCount() catch 1;
         }
 
         pub fn setBackend(self: *Self, backend: backend_mod.Backend) void {
@@ -707,7 +722,7 @@ pub fn ComputeGraph(comptime T: type) type {
         }
 
         pub fn profileExecution(self: *Self, options: ExecutionProfileOptions) !ExecutionProfile {
-            var timer = try std.time.Timer.start();
+            var timer = Timer.start();
             var profile = ExecutionProfile{
                 .node_count = self.nodes.items.len,
                 .forward_node_count = self.forward_node_count,
@@ -839,7 +854,7 @@ pub fn ComputeGraph(comptime T: type) type {
             const fwd_nodes = self.nodes.items[0..self.forward_node_count];
             for (fwd_nodes) |node| {
                 const idx: usize = @intFromEnum(node.opTag());
-                var timer = try std.time.Timer.start();
+                var timer = Timer.start();
                 timer.reset();
                 node.compute();
                 const elapsed = timer.read();
@@ -854,7 +869,7 @@ pub fn ComputeGraph(comptime T: type) type {
                 const bwd_nodes = self.nodes.items[self.forward_node_count..];
                 for (bwd_nodes) |node| {
                     const idx: usize = @intFromEnum(node.opTag());
-                    var timer = try std.time.Timer.start();
+                    var timer = Timer.start();
                     timer.reset();
                     node.compute();
                     const elapsed = timer.read();
@@ -1042,15 +1057,15 @@ pub fn ComputeGraph(comptime T: type) type {
         }
 
         fn timeSteps(self: *const Self, steps: []const ExecutionStep, out: []StepEntry) void {
-            const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
-            var timer = std.time.Timer.start() catch @panic("timer");
+            const nw = self.n_threads;
+            var timer = Timer.start();
             for (steps, 0..) |step, i| {
                 timer.reset();
                 switch (step) {
                     .fusion => |idx| {
                         const plan = self.fused_chains.items[idx];
-                        if (pool != null and plan.kind() == .elementwise_chain) {
-                            fused.executeFusedChainParallel(T, plan.payload.elementwise_chain, pool.?);
+                        if (nw > 1 and plan.kind() == .elementwise_chain) {
+                            fused.executeFusedChainParallel(T, plan.payload.elementwise_chain, nw);
                         } else {
                             fused.executeFusionPlan(T, plan, null);
                         }
@@ -1065,7 +1080,7 @@ pub fn ComputeGraph(comptime T: type) type {
                         };
                     },
                     .node => |node| {
-                        self.executeNode(node, pool);
+                        self.executeNode(node, nw);
                         const elapsed = timer.read();
                         out[i] = .{
                             .kind = .{ .node = node.opTag() },
@@ -1282,43 +1297,45 @@ pub fn ComputeGraph(comptime T: type) type {
             }
         }
         pub fn toGraphViz(self: *const Self, alloc: Alloc) Alloc.Error!std.ArrayList(u8) {
-            var str = std.ArrayList(u8){};
-            const writer = str.writer(alloc);
-            try writer.print("digraph G {{\n  node [shape=box];\n", .{});
+            var str: std.ArrayList(u8) = .empty;
+            var allocating_writer = std.Io.Writer.Allocating.fromArrayList(alloc, &str);
+            defer str = allocating_writer.toArrayList();
+            const writer = &allocating_writer.writer;
+            writer.print("digraph G {{\n  node [shape=box];\n", .{}) catch return error.OutOfMemory;
 
             for (self.nodes.items) |node| {
-                try writer.print("  \"{*}\" [shape=\"none\",label=<<table>", .{node});
+                writer.print("  \"{*}\" [shape=\"none\",label=<<table>", .{node}) catch return error.OutOfMemory;
                 if (node.opTag() == .none) {
-                    try writer.print("<tr><td>{any}</td></tr>", .{node.data});
+                    writer.print("<tr><td>{any}</td></tr>", .{node.data}) catch return error.OutOfMemory;
                 } else {
-                    try writer.print("<tr><td>{any}</td></tr>", .{node.data});
-                    try writer.print("<tr><td>{s}</td></tr>", .{node.opTag().symbol()});
+                    writer.print("<tr><td>{any}</td></tr>", .{node.data}) catch return error.OutOfMemory;
+                    writer.print("<tr><td>{s}</td></tr>", .{node.opTag().symbol()}) catch return error.OutOfMemory;
                 }
                 if (node.name) |name| {
-                    try writer.print("<tr><td>{s}</td></tr>", .{name});
+                    writer.print("<tr><td>{s}</td></tr>", .{name}) catch return error.OutOfMemory;
                 }
-                try writer.print("<tr><td>{any}</td></tr>", .{node.ne});
-                try writer.print("</table>>];\n", .{});
+                writer.print("<tr><td>{any}</td></tr>", .{node.ne}) catch return error.OutOfMemory;
+                writer.print("</table>>];\n", .{}) catch return error.OutOfMemory;
                 if (node.source0()) |src0| {
-                    try writer.print("  \"{*}\" -> \"{*}\";\n", .{ src0, node });
+                    writer.print("  \"{*}\" -> \"{*}\";\n", .{ src0, node }) catch return error.OutOfMemory;
                 }
                 if (node.source1()) |src1| {
-                    try writer.print("  \"{*}\" -> \"{*}\";\n", .{ src1, node });
+                    writer.print("  \"{*}\" -> \"{*}\";\n", .{ src1, node }) catch return error.OutOfMemory;
                 }
                 if (node.gradOrNull()) |grad| {
-                    try writer.print("  \"{*}\" -> \"{*}\" [style=dashed];\n", .{ node, grad });
+                    writer.print("  \"{*}\" -> \"{*}\" [style=dashed];\n", .{ node, grad }) catch return error.OutOfMemory;
                 }
                 if (!node.ownsData()) {
-                    try writer.print("  \"{*}\" [style=filled fillcolor=gray];\n", .{node});
+                    writer.print("  \"{*}\" [style=filled fillcolor=gray];\n", .{node}) catch return error.OutOfMemory;
                 }
             }
             for (self.leaves.items) |leaf| {
-                try writer.print("  \"{*}\" [style=filled fillcolor=green label=\"{any}\"];\n", .{ leaf, leaf.data });
+                writer.print("  \"{*}\" [style=filled fillcolor=green label=\"{any}\"];\n", .{ leaf, leaf.data }) catch return error.OutOfMemory;
             }
             for (self.scratch.items) |item| {
-                try writer.print("  \"{*}\" [style=filled fillcolor=gray label=\"{any}\"];\n", .{ item, item.data });
+                writer.print("  \"{*}\" [style=filled fillcolor=gray label=\"{any}\"];\n", .{ item, item.data }) catch return error.OutOfMemory;
             }
-            try writer.print("}}\n", .{});
+            writer.print("}}\n", .{}) catch return error.OutOfMemory;
             return str;
         }
 
@@ -1353,8 +1370,8 @@ pub fn ComputeGraph(comptime T: type) type {
 
         fn computeProfiled(self: *const Self, phase_profile: ?*fused.ConvPhaseProfile) void {
             if (self.execution_steps.items.len == 0) {
-                const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
-                for (self.nodes.items) |node| self.executeNode(node, pool);
+                const nw = self.n_threads;
+                for (self.nodes.items) |node| self.executeNode(node, nw);
                 return;
             }
             self.executeGraphPlan(self.execution_steps.items, phase_profile);
@@ -1366,8 +1383,8 @@ pub fn ComputeGraph(comptime T: type) type {
 
         fn computeNoGradProfiled(self: *const Self, phase_profile: ?*fused.ConvPhaseProfile) void {
             if (self.forward_execution_steps.items.len == 0) {
-                const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
-                for (self.nodes.items[0..self.forward_node_count]) |node| self.executeNode(node, pool);
+                const nw = self.n_threads;
+                for (self.nodes.items[0..self.forward_node_count]) |node| self.executeNode(node, nw);
                 return;
             }
             self.executeGraphPlan(self.forward_execution_steps.items, phase_profile);
@@ -1381,8 +1398,8 @@ pub fn ComputeGraph(comptime T: type) type {
 
         fn computeBackwardProfiled(self: *const Self, phase_profile: ?*fused.ConvPhaseProfile) void {
             if (self.execution_steps.items.len == 0) {
-                const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
-                for (self.nodes.items[self.forward_node_count..]) |node| self.executeNode(node, pool);
+                const nw = self.n_threads;
+                for (self.nodes.items[self.forward_node_count..]) |node| self.executeNode(node, nw);
                 return;
             }
             // Backward steps are everything after the forward execution steps.
@@ -1436,19 +1453,19 @@ pub fn ComputeGraph(comptime T: type) type {
         }
 
         fn executeGraphPlan(self: *const Self, steps: []const ExecutionStep, phase_profile: ?*fused.ConvPhaseProfile) void {
-            const pool = if (self.thread_pool) |*tp| @constCast(tp) else null;
+            const nw = self.n_threads;
             for (steps) |step| {
                 switch (step) {
                     .fusion => |idx| {
                         const plan = self.fused_chains.items[idx];
-                        if (pool != null and plan.kind() == .elementwise_chain) {
-                            fused.executeFusedChainParallel(T, plan.payload.elementwise_chain, pool.?);
+                        if (nw > 1 and plan.kind() == .elementwise_chain) {
+                            fused.executeFusedChainParallel(T, plan.payload.elementwise_chain, nw);
                         } else {
                             fused.executeFusionPlan(T, plan, phase_profile);
                         }
                     },
                     .node => |node| {
-                        self.executeNode(node, pool);
+                        self.executeNode(node, nw);
                     },
                 }
             }
@@ -1460,7 +1477,7 @@ pub fn ComputeGraph(comptime T: type) type {
         /// When a backend is set it owns matmul execution entirely (the backend
         /// may use BLAS/GPU threading internally). The thread pool is a
         /// framework-level parallelism strategy for when no backend is attached.
-        pub fn executeNode(self: *const Self, node: *Tensor(T), pool: ?*std.Thread.Pool) void {
+        pub fn executeNode(self: *const Self, node: *Tensor(T), n_workers: usize) void {
             if (node.opTag() == .matmul) {
                 const flags = node.matmul_flags;
                 const s0 = node.src0.?;
@@ -1471,8 +1488,8 @@ pub fn ComputeGraph(comptime T: type) type {
                     return;
                 }
 
-                if (pool) |tp| {
-                    dispatchMatMulParallel(node, s0, s1, flags, tp);
+                if (n_workers > 1) {
+                    dispatchMatMulParallel(node, s0, s1, flags, n_workers);
                     return;
                 }
             }
@@ -1488,11 +1505,11 @@ pub fn ComputeGraph(comptime T: type) type {
             }
         }
 
-        fn dispatchMatMulParallel(node: *Tensor(T), s0: *const Tensor(T), s1: *const Tensor(T), flags: Tensor(T).MatMulFlags, tp: *std.Thread.Pool) void {
+        fn dispatchMatMulParallel(node: *Tensor(T), s0: *const Tensor(T), s1: *const Tensor(T), flags: Tensor(T).MatMulFlags, n_workers: usize) void {
             if (flags.trans0) {
-                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, true, s1, true, tp) else Tensor(T).computeMatMulParallel(node, s0, true, s1, false, tp);
+                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, true, s1, true, n_workers) else Tensor(T).computeMatMulParallel(node, s0, true, s1, false, n_workers);
             } else {
-                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, false, s1, true, tp) else Tensor(T).computeMatMulParallel(node, s0, false, s1, false, tp);
+                if (flags.trans1) Tensor(T).computeMatMulParallel(node, s0, false, s1, true, n_workers) else Tensor(T).computeMatMulParallel(node, s0, false, s1, false, n_workers);
             }
         }
 
@@ -1530,7 +1547,7 @@ pub fn ComputeGraph(comptime T: type) type {
 }
 
 test "ref all decls" {
-    _ = testing.refAllDeclsRecursive(ComputeGraph(f32));
+    _ = testing.refAllDecls(ComputeGraph(f32));
 }
 
 //#region Tests
@@ -2711,9 +2728,11 @@ test "fusion report reflects built graph" {
     try testing.expect(summary.fused_region_count > 0);
     try testing.expect(summary.leaf_count > 0);
 
-    var buf = std.ArrayList(u8){};
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(tac);
-    try g.dumpFusionReport(buf.writer(tac));
+    var fusion_writer = std.Io.Writer.Allocating.fromArrayList(tac, &buf);
+    try g.dumpFusionReport(&fusion_writer.writer);
+    buf = fusion_writer.toArrayList();
     try testing.expect(std.mem.indexOf(u8, buf.items, "fused[") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "node[") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "forward_steps=") != null);
@@ -2739,9 +2758,11 @@ test "profile execution reports phase timings" {
     try testing.expect(profile.node_count == g.nodes.items.len);
     try testing.expect(profile.forward_step_count > 0);
 
-    var buf = std.ArrayList(u8){};
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(tac);
-    try profile.dump(buf.writer(tac));
+    var profile_writer = std.Io.Writer.Allocating.fromArrayList(tac, &buf);
+    try profile.dump(&profile_writer.writer);
+    buf = profile_writer.toArrayList();
     try testing.expect(std.mem.indexOf(u8, buf.items, "profile nodes=") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "forward=") != null);
 }
@@ -2756,9 +2777,11 @@ test "tensor lineage reports reachable node chain" {
     const y = x.conv2d(k).sumAll();
     try g.buildForward(y);
 
-    var buf = std.ArrayList(u8){};
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(tac);
-    try g.dumpTensorLineage(buf.writer(tac), y);
+    var lineage_writer = std.Io.Writer.Allocating.fromArrayList(tac, &buf);
+    try g.dumpTensorLineage(&lineage_writer.writer, y);
+    buf = lineage_writer.toArrayList();
     try testing.expect(std.mem.indexOf(u8, buf.items, "lineage for node[") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "sum") != null);
 }

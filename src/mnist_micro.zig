@@ -11,10 +11,9 @@ const Tensor = zgml.Tensor;
 const nn = zgml.nn;
 const ConvClassifier = zgml.models.ConvClassifier;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const alloc = init.gpa;
 
     const batch_size: usize = 32;
     const warmup_iters: usize = 5;
@@ -26,7 +25,7 @@ pub fn main() !void {
     try model.g.fusionPass();
 
     // Enable threading if available
-    model.g.enableThreading() catch {};
+    model.g.enableThreading();
 
     const p = model.params();
     var sgd = try zgml.optim.sgd.SGD(f32).init(alloc, p, .{ .lr = 0.01, .momentum = 0.9 });
@@ -38,9 +37,9 @@ pub fn main() !void {
     for (model.xs_batch.data) |*v| v.* = rand.float(f32);
     for (model.ys_batch.data) |*v| v.* = @floatFromInt(rand.intRangeAtMost(u32, 0, 9));
 
-    const stdout_file = std.fs.File.stdout();
+    const stdout_file = std.Io.File.stdout();
     var buf: [4096]u8 = undefined;
-    var w = stdout_file.writer(&buf);
+    var w = stdout_file.writer(io, &buf);
 
     try w.interface.print("\nMNIST CNN Micro-Benchmark (batch_size={})\n", .{batch_size});
     try w.interface.print("==========================================\n\n", .{});
@@ -77,10 +76,9 @@ pub fn main() !void {
         t.forward = profile.forward_ns;
         t.backward = profile.backward_ns;
 
-        var timer = try std.time.Timer.start();
-        timer.reset();
+        const optim_t0 = std.Io.Clock.awake.now(io).nanoseconds;
         sgd.step();
-        t.optim = timer.read();
+        t.optim = @intCast(std.Io.Clock.awake.now(io).nanoseconds - optim_t0);
 
         t.total = profile.total_ns + t.optim;
     }

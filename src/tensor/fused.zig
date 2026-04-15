@@ -14,6 +14,26 @@ const Op = @import("../op.zig").Op;
 const Tensor = @import("../tensor.zig").Tensor;
 const forward = @import("forward.zig");
 
+fn nowNs() i96 {
+    return std.Io.Clock.awake.now(std.Io.Threaded.global_single_threaded.io()).nanoseconds;
+}
+
+const Timer = struct {
+    start_ns: i96,
+
+    fn start() Timer {
+        return .{ .start_ns = nowNs() };
+    }
+
+    fn reset(self: *Timer) void {
+        self.start_ns = nowNs();
+    }
+
+    fn read(self: *const Timer) u64 {
+        return @intCast(nowNs() - self.start_ns);
+    }
+};
+
 const conv_workspace_target_bytes: usize = 16 * 1024 * 1024;
 const conv_workspace_min_tiled_k: usize = 64;
 
@@ -579,7 +599,7 @@ fn executeFusedGenericRange(comptime T: type, plan: ElementwiseFusionPlan(T), st
 }
 
 /// Parallel elementwise chain execution. Splits the element range across threads.
-pub fn executeFusedChainParallel(comptime T: type, plan: ElementwiseFusionPlan(T), pool: *std.Thread.Pool) void {
+pub fn executeFusedChainParallel(comptime T: type, plan: ElementwiseFusionPlan(T), n_workers: usize) void {
     if (!isSafeElementwiseChain(T, plan)) {
         for (plan.nodes) |node| node.compute();
         return;
@@ -587,7 +607,7 @@ pub fn executeFusedChainParallel(comptime T: type, plan: ElementwiseFusionPlan(T
 
     const n_elems = plan.nodes[plan.nodes.len - 1].nElems();
     const min_chunk = 1024; // below this, not worth threading
-    const n_workers = pool.threads.len + 1;
+    const max_spawn = 127;
 
     if (n_elems < min_chunk * 2 or n_workers <= 1) {
         executeFusedChain(T, plan);
@@ -595,22 +615,24 @@ pub fn executeFusedChainParallel(comptime T: type, plan: ElementwiseFusionPlan(T
     }
 
     const chunk = @max(min_chunk, (n_elems + n_workers - 1) / n_workers);
-    var wg = std.Thread.WaitGroup{};
+    var threads: [max_spawn]std.Thread = undefined;
+    var n_spawned: usize = 0;
     var start: usize = chunk;
-    while (start < n_elems) {
+    while (start < n_elems and n_spawned < max_spawn) {
         const s = start;
         const e = @min(start + chunk, n_elems);
-        pool.spawnWg(&wg, struct {
+        threads[n_spawned] = std.Thread.spawn(.{}, struct {
             fn run(p: ElementwiseFusionPlan(T), cs: usize, ce: usize) void {
                 executeFusedGenericRange(T, p, cs, ce);
             }
-        }.run, .{ plan, s, e });
+        }.run, .{ plan, s, e }) catch break;
+        n_spawned += 1;
         start = e;
     }
 
     // Caller thread does the first chunk (comptime-specialized when possible)
     executeFusedGenericRange(T, plan, 0, @min(chunk, n_elems));
-    wg.wait();
+    for (threads[0..n_spawned]) |t| t.join();
 }
 
 /// Runtime interpreter fallback for chains longer than the comptime dispatch limit.
@@ -1117,7 +1139,7 @@ fn executeConv2dPlan(comptime T: type, plan: Conv2dPlan(T), phase_profile: ?*Con
 
     const col_buf = ws.colBuf(scratch);
     const mm_temp = ws.auxBuf(scratch);
-    var timer = std.time.Timer.start() catch @panic("timer");
+    var timer = Timer.start();
 
     // 1. Batched im2col: all samples into [K, N*batch].
     timer.reset();
@@ -1194,7 +1216,7 @@ fn executeConv2dBwdInputPlan(comptime T: type, plan: Conv2dBwdInputPlan(T), phas
 
     const col_buf = ws.colBuf(scratch);
     const grad_buf = ws.auxBuf(scratch);
-    var timer = std.time.Timer.start() catch @panic("timer");
+    var timer = Timer.start();
     @memset(plan.output.data, 0);
     const mm = selectConvMatMul(T);
     var batch_start: usize = 0;
@@ -1244,7 +1266,7 @@ fn executeConv2dBwdKernelPlan(comptime T: type, plan: Conv2dBwdKernelPlan(T), ph
     const col_buf = ws.colBuf(scratch);
     const grad_buf = ws.auxBuf(scratch);
     const partial = ws.partialBuf(scratch);
-    var timer = std.time.Timer.start() catch @panic("timer");
+    var timer = Timer.start();
     @memset(plan.output.data, 0);
     const use_partial = ws.batch_tile < d.batch;
 

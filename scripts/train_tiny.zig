@@ -26,19 +26,18 @@ const seq_len = 16;
 
 const corpus = "The cat sat on the mat. The dog ran in the park. A bird flew over the tree. The sun was warm and bright. ";
 
-pub fn main() !void {
-    const stdout_file = std.fs.File.stdout();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const stdout_file = std.Io.File.stdout();
     var stdout_buf: [4096]u8 = undefined;
-    var w = stdout_file.writer(&stdout_buf);
+    var w = stdout_file.writer(io, &stdout_buf);
 
     try w.interface.print("Training tiny GPT (dim={}, layers={}, seq={})\n", .{
         config.d_model, config.n_layers, seq_len,
     });
     w.interface.flush() catch {};
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+    const alloc = init.gpa;
 
     var g = ComputeGraph(f32).init(alloc);
     defer g.deinit();
@@ -106,7 +105,7 @@ pub fn main() !void {
 
     // Save
     const path = "tiny_gpt.bin";
-    try checkpoint.save(f32, &params, path);
+    try checkpoint.save(f32, &params, path, io);
     try w.interface.print("\nSaved to '{s}'. Generate with:\n  ./zig-out/bin/generate {s} \"The \"\n", .{ path, path });
     w.interface.flush() catch {};
 }

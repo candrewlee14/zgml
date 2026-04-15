@@ -24,10 +24,9 @@ fn expectAllClose(actual: []const f32, expected: []const f32, tol: f32) !void {
     }
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const backing = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const backing = init.gpa;
 
     var g = ComputeGraph(f32).init(backing);
     defer g.deinit();
@@ -162,9 +161,9 @@ pub fn main() !void {
     try expectAllClose(fc_w_u.grad.?.data, fc_w.grad.?.data, tol);
     try expectAllClose(fc_b_u.grad.?.data, fc_b.grad.?.data, tol);
 
-    const stdout_file = std.fs.File.stdout();
+    const stdout_file = std.Io.File.stdout();
     var buf: [2048]u8 = undefined;
-    var w = stdout_file.writer(&buf);
+    var w = stdout_file.writer(io, &buf);
 
     try w.interface.print("grad-check passed\n", .{});
     try w.interface.print("  loss diff: {d:.10}\n", .{@abs(ce.data[0] - loss_expected)});

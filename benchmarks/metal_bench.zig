@@ -7,7 +7,6 @@ const zgml = @import("zgml");
 const backend_mod = zgml.backend;
 const CpuBackend = zgml.backend_cpu.CpuBackend;
 const MetalBackend = zgml.backend_metal.MetalBackend;
-
 const WARMUP = 5;
 const ITERS = 50;
 
@@ -18,6 +17,7 @@ fn benchDenseMatMul(
     N: usize,
     K: usize,
     writer: anytype,
+    io: std.Io,
 ) !void {
     // Build a single-matmul program.
     const a_data = try std.heap.page_allocator.alloc(f32, M * K);
@@ -54,9 +54,9 @@ fn benchDenseMatMul(
     for (0..WARMUP) |_| be.executeProgram(handle, &.{}, &out);
 
     // Timed
-    var timer = try std.time.Timer.start();
+    const t0 = std.Io.Clock.awake.now(io).nanoseconds;
     for (0..ITERS) |_| be.executeProgram(handle, &.{}, &out);
-    const elapsed_ns = timer.read();
+    const elapsed_ns: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds - t0);
 
     const per_iter_us = @as(f64, @floatFromInt(elapsed_ns)) / 1000.0 / @as(f64, @floatFromInt(ITERS));
     const flops = 2.0 * @as(f64, @floatFromInt(M)) * @as(f64, @floatFromInt(N)) * @as(f64, @floatFromInt(K));
@@ -65,18 +65,17 @@ fn benchDenseMatMul(
     try writer.print("    {s:<12} {d:8.1} us/iter  {d:6.2} GFLOPS\n", .{ label, per_iter_us, gflops });
 }
 
-pub fn main() !void {
-    const stdout_file = std.fs.File.stdout();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const stdout_file = std.Io.File.stdout();
     var stdout_buf: [4096]u8 = undefined;
-    var w = stdout_file.writer(&stdout_buf);
+    var w = stdout_file.writer(io, &stdout_buf);
 
     try w.interface.print("\nMetal Backend Benchmark — Dense MatMul\n", .{});
     try w.interface.print("========================================\n", .{});
     try w.interface.print("  warmup={d}, iters={d}\n\n", .{ WARMUP, ITERS });
 
-    const alloc = std.heap.page_allocator;
-
-    var cpu_be = CpuBackend.init(alloc);
+    var cpu_be = CpuBackend{};
     const cpu = cpu_be.backend();
 
     var metal_be = MetalBackend.init() catch |err| {
@@ -104,8 +103,8 @@ pub fn main() !void {
 
     for (sizes) |s| {
         try w.interface.print("  M={d}, N={d}, K={d}:\n", .{ s[0], s[1], s[2] });
-        try benchDenseMatMul("CPU/BLAS", cpu, s[0], s[1], s[2], &w.interface);
-        try benchDenseMatMul("Metal/GPU", metal, s[0], s[1], s[2], &w.interface);
+        try benchDenseMatMul("CPU/BLAS", cpu, s[0], s[1], s[2], &w.interface, io);
+        try benchDenseMatMul("Metal/GPU", metal, s[0], s[1], s[2], &w.interface, io);
     }
 
     try w.interface.print("\n", .{});
