@@ -24,7 +24,7 @@
 //! ```
 //!
 //! Key differences from GPT InferencePlan:
-//!   - Per-head KV caches: [n_layers][n_kv_heads] * [d_head, max_seq_len]
+//!   - Consolidated KV cache: [n_layers] * [d_head, max_seq_len * n_kv_heads]
 //!   - No positional encoding input (RoPE is internal to each block)
 //!   - Token embedding lookup done externally, fed as [d_model, 1]
 
@@ -80,8 +80,8 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
 
         pub fn init(
             model: *const Model,
-            k_caches: [config.n_layers][config.n_kv_heads]*Tensor(T),
-            v_caches: [config.n_layers][config.n_kv_heads]*Tensor(T),
+            k_caches: [config.n_layers]*Tensor(T),
+            v_caches: [config.n_layers]*Tensor(T),
             backing_alloc: std.mem.Allocator,
         ) !Self {
             return Self.initWithBackend(model, k_caches, v_caches, backing_alloc, null);
@@ -89,8 +89,8 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
 
         pub fn initWithBackend(
             model: *const Model,
-            k_caches: [config.n_layers][config.n_kv_heads]*Tensor(T),
-            v_caches: [config.n_layers][config.n_kv_heads]*Tensor(T),
+            k_caches: [config.n_layers]*Tensor(T),
+            v_caches: [config.n_layers]*Tensor(T),
             backing_alloc: std.mem.Allocator,
             backend: ?backend_mod.Backend,
         ) !Self {
@@ -293,8 +293,8 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
         backing_alloc: std.mem.Allocator,
         arena: std.heap.ArenaAllocator,
         model: Model,
-        k_caches: [config.n_layers][config.n_kv_heads]*Tensor(T),
-        v_caches: [config.n_layers][config.n_kv_heads]*Tensor(T),
+        k_caches: [config.n_layers]*Tensor(T),
+        v_caches: [config.n_layers]*Tensor(T),
         plan: Plan,
         pos: usize,
 
@@ -309,15 +309,13 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
 
             const model = try Model.init(a);
 
-            var k_caches: [config.n_layers][config.n_kv_heads]*Tensor(T) = undefined;
-            var v_caches: [config.n_layers][config.n_kv_heads]*Tensor(T) = undefined;
+            var k_caches: [config.n_layers]*Tensor(T) = undefined;
+            var v_caches: [config.n_layers]*Tensor(T) = undefined;
             for (0..config.n_layers) |l| {
-                for (0..config.n_kv_heads) |h| {
-                    k_caches[l][h] = try Tensor(T).init(a, &.{ d_head, config.max_seq_len });
-                    v_caches[l][h] = try Tensor(T).init(a, &.{ d_head, config.max_seq_len });
-                    @memset(k_caches[l][h].data, 0);
-                    @memset(v_caches[l][h].data, 0);
-                }
+                k_caches[l] = try Tensor(T).init(a, &.{ d_head, config.max_seq_len * config.n_kv_heads });
+                v_caches[l] = try Tensor(T).init(a, &.{ d_head, config.max_seq_len * config.n_kv_heads });
+                @memset(k_caches[l].data, 0);
+                @memset(v_caches[l].data, 0);
             }
 
             var plan = try Plan.initWithBackend(&model, k_caches, v_caches, backing_alloc, backend);
@@ -344,10 +342,8 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
             self.pos = 0;
             @memset(self.plan.attn_mask.data, -std.math.inf(T));
             for (0..config.n_layers) |l| {
-                for (0..config.n_kv_heads) |h| {
-                    @memset(self.k_caches[l][h].data, 0);
-                    @memset(self.v_caches[l][h].data, 0);
-                }
+                @memset(self.k_caches[l].data, 0);
+                @memset(self.v_caches[l].data, 0);
             }
         }
 
@@ -493,15 +489,13 @@ test "LlamaInferenceSession matches manual forward" {
     const ref_model = try Model.init(ra);
     for (session.model.params(), ref_model.params()) |src, dst| @memcpy(dst.data, src.data);
 
-    var ref_k: [cfg.n_layers][cfg.n_kv_heads]*Tensor(f32) = undefined;
-    var ref_v: [cfg.n_layers][cfg.n_kv_heads]*Tensor(f32) = undefined;
+    var ref_k: [cfg.n_layers]*Tensor(f32) = undefined;
+    var ref_v: [cfg.n_layers]*Tensor(f32) = undefined;
     for (0..cfg.n_layers) |l| {
-        for (0..cfg.n_kv_heads) |h| {
-            ref_k[l][h] = try Tensor(f32).init(ra, &.{ d_head, cfg.max_seq_len });
-            ref_v[l][h] = try Tensor(f32).init(ra, &.{ d_head, cfg.max_seq_len });
-            @memset(ref_k[l][h].data, 0);
-            @memset(ref_v[l][h].data, 0);
-        }
+        ref_k[l] = try Tensor(f32).init(ra, &.{ d_head, cfg.max_seq_len * cfg.n_kv_heads });
+        ref_v[l] = try Tensor(f32).init(ra, &.{ d_head, cfg.max_seq_len * cfg.n_kv_heads });
+        @memset(ref_k[l].data, 0);
+        @memset(ref_v[l].data, 0);
     }
 
     const ref_mask = try Tensor(f32).init(ra, &.{ cfg.max_seq_len, 1 });
