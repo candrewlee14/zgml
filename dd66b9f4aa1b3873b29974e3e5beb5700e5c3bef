@@ -1,0 +1,23 @@
+src/quant.zig
+  c0b6a400fe3a8858 604-853,987-1195
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "dd66b9f4aa1b3873b29974e3e5beb5700e5c3bef",
+  "prompts": {
+    "c0b6a400fe3a8858": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8305effc-e845-4039-915e-7ae777d04ffc",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 469,
+      "total_deletions": 9,
+      "accepted_lines": 460,
+      "overriden_lines": 0
+    }
+  }
+}
