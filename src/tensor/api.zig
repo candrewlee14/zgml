@@ -315,15 +315,18 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         // Composite ops
         // ---------------------------------------------------------------
 
-        /// Numerically stable softmax.
+        /// Numerically stable softmax as a single composite graph node.
+        /// `ne` is the reduce-target shape (same meaning as `max(ne)`/`sum(ne)`).
         pub fn softmax(self: *Self, ne: []const usize) *Self {
-            const max_t = aux(self.max(ne));
-            const rep_max = aux(max_t.repeatLike(self));
-            const shifted = aux(self.sub(rep_max));
-            const exps = aux(shifted.exp());
-            const denom = aux(exps.sum(ne));
-            const rep_denom = aux(denom.repeatLike(exps));
-            return exps.div(rep_denom);
+            const alloc = a(self);
+            std.debug.assert(self.canSumToShape(ne));
+            const is_node: bool = self.grad != null;
+            const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
+            res.op = .softmax;
+            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.src0 = self;
+            res.setReduceNe(ne);
+            return res;
         }
 
         /// Numerically stable log-softmax.
@@ -342,14 +345,19 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         ///
         /// Simpler than layerNorm (no mean subtraction). Used in LLaMA, Gemma, etc.
         /// Decomposes to: sqr -> mean -> add(eps) -> sqrt -> recip -> mul.
+        /// Root-mean-square normalization as a single composite graph node.
+        /// `ne` is the reduce-target shape; `eps` stabilizes the inverse sqrt.
         pub fn rmsNorm(self: *Self, ne: []const usize, eps: T) *Self {
-            const sq = aux(self.sqr());
-            const ms = aux(sq.mean(ne));
-            const ms_eps = aux(ms.add(scalarRepeatLike(self, eps, ms)));
-            const ms_sqrt = aux(ms_eps.sqrt());
-            const rms_inv = aux(ms_sqrt.recip());
-            const rep_rms_inv = aux(rms_inv.repeatLike(self));
-            return self.mul(rep_rms_inv);
+            const alloc = a(self);
+            std.debug.assert(self.canSumToShape(ne));
+            const is_node: bool = self.grad != null;
+            const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
+            res.op = .rmsnorm;
+            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.src0 = self;
+            res.setReduceNe(ne);
+            res.setOpEps(eps);
+            return res;
         }
 
         /// Layer normalization: `(x - mean) / sqrt(var + eps)`.

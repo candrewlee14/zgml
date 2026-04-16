@@ -488,9 +488,6 @@ pub fn ComputeGraph(comptime T: type) type {
             max_pool2d_bwd: struct {
                 input: TensorRef,
             },
-            softmax: struct {
-                input: TensorRef,
-            },
             log_softmax: struct {
                 input: TensorRef,
             },
@@ -500,6 +497,11 @@ pub fn ComputeGraph(comptime T: type) type {
             },
             layer_norm: struct {
                 input: TensorRef,
+            },
+            attention: struct {
+                q: TensorRef,
+                k: TensorRef,
+                v: TensorRef,
             },
 
             fn render(self: @This(), writer: anytype, output_idx: usize) !void {
@@ -536,11 +538,6 @@ pub fn ComputeGraph(comptime T: type) type {
                         try payload.input.render(writer);
                         try writer.print(" output=node[{}]\n", .{output_idx});
                     },
-                    .softmax => |payload| {
-                        try writer.writeAll("  softmax input=");
-                        try payload.input.render(writer);
-                        try writer.print(" output=node[{}]\n", .{output_idx});
-                    },
                     .log_softmax => |payload| {
                         try writer.writeAll("  log_softmax input=");
                         try payload.input.render(writer);
@@ -556,6 +553,15 @@ pub fn ComputeGraph(comptime T: type) type {
                     .layer_norm => |payload| {
                         try writer.writeAll("  layer_norm input=");
                         try payload.input.render(writer);
+                        try writer.print(" output=node[{}]\n", .{output_idx});
+                    },
+                    .attention => |payload| {
+                        try writer.writeAll("  attention q=");
+                        try payload.q.render(writer);
+                        try writer.writeAll(" k=");
+                        try payload.k.render(writer);
+                        try writer.writeAll(" v=");
+                        try payload.v.render(writer);
                         try writer.print(" output=node[{}]\n", .{output_idx});
                     },
                 }
@@ -1151,10 +1157,10 @@ pub fn ComputeGraph(comptime T: type) type {
                 .conv2d_bwd_kernel => |payload| payload.output,
                 .max_pool2d => |payload| payload.strided,
                 .max_pool2d_bwd => |payload| payload.output,
-                .softmax => |payload| payload.max_node,
                 .log_softmax => |payload| payload.max_node,
                 .cross_entropy => |payload| payload.log_softmax.max_node,
                 .layer_norm => |payload| payload.sum_node,
+                .attention => |payload| payload.scores,
             };
         }
 
@@ -1195,9 +1201,6 @@ pub fn ComputeGraph(comptime T: type) type {
                     .max_pool2d_bwd => |payload| .{ .max_pool2d_bwd = .{
                         .input = self.tensorRef(payload.input),
                     } },
-                    .softmax => |payload| .{ .softmax = .{
-                        .input = self.tensorRef(payload.input),
-                    } },
                     .log_softmax => |payload| .{ .log_softmax = .{
                         .input = self.tensorRef(payload.input),
                     } },
@@ -1207,6 +1210,11 @@ pub fn ComputeGraph(comptime T: type) type {
                     } },
                     .layer_norm => |payload| .{ .layer_norm = .{
                         .input = self.tensorRef(payload.input),
+                    } },
+                    .attention => |payload| .{ .attention = .{
+                        .q = self.tensorRef(payload.q),
+                        .k = self.tensorRef(payload.k),
+                        .v = self.tensorRef(payload.v),
                     } },
                 },
             };
@@ -2087,24 +2095,6 @@ test "fusion - chain detection skips non-fusible ops" {
     try testing.expectApproxEqAbs(@as(f32, -21.0), out.data[0], 1e-6);
 }
 
-test "fusion - detects softmax region" {
-    var g = ComputeGraph(f32).init(tac);
-    defer g.deinit();
-    const a = g.allocator();
-
-    const x = try Tensor(f32).init(a, &.{3});
-    x.setData(&.{ 1, 2, 3 });
-    const out = x.softmax(&.{1});
-    try g.buildForward(out);
-    try g.fusionPass();
-
-    try testing.expectEqual(@as(usize, 1), g.fused_chains.items.len);
-    try testing.expectEqual(fused.FusionKind.softmax, g.fused_chains.items[0].kind());
-
-    g.compute();
-    try testing.expectApproxEqAbs(@as(f32, 1.0), out.data[0] + out.data[1] + out.data[2], 1e-6);
-}
-
 test "fusion - detects conv2d composite pattern" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
@@ -2452,21 +2442,6 @@ test "fusion - conv2d bias relu crossEntropy backward fused matches unfused" {
     }
 }
 
-test "fusion - detects softmax pattern" {
-    var g = ComputeGraph(f32).init(tac);
-    defer g.deinit();
-    const a = g.allocator();
-
-    const x = try Tensor(f32).init(a, &.{3});
-    x.setData(&.{ 1, 2, 3 });
-    const out = x.softmax(&.{1});
-    try g.buildForward(out);
-    try g.fusionPass();
-
-    try testing.expect(g.fused_chains.items.len >= 1);
-    try testing.expectEqual(fused.FusionKind.softmax, g.fused_chains.items[g.fused_chains.items.len - 1].kind());
-}
-
 test "fusion - detects logSoftmax region" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
@@ -2578,20 +2553,19 @@ test "fusion - detects multi-region plans" {
 
     const x = try Tensor(f32).init(a, &.{ 2, 3 });
     x.setData(&.{ 1, 2, 3, 4, 5, 6 });
-    const y = x.layerNorm(&.{ 1, 3 }, 1e-5).softmax(&.{ 1, 3 });
+    const y = x.layerNorm(&.{ 1, 3 }, 1e-5).relu().gelu();
     try g.buildForward(y);
     try g.fusionPass();
 
     try testing.expect(g.fused_chains.items.len >= 2);
-    // Should have both layer_norm and softmax patterns
     var has_layer_norm = false;
-    var has_softmax = false;
+    var has_elementwise = false;
     for (g.fused_chains.items) |chain| {
         if (chain.kind() == .layer_norm) has_layer_norm = true;
-        if (chain.kind() == .softmax) has_softmax = true;
+        if (chain.kind() == .elementwise_chain) has_elementwise = true;
     }
     try testing.expect(has_layer_norm);
-    try testing.expect(has_softmax);
+    try testing.expect(has_elementwise);
 }
 
 test "fusion - detects elementwise chain" {
@@ -2609,7 +2583,7 @@ test "fusion - detects elementwise chain" {
     try testing.expectEqual(fused.FusionKind.elementwise_chain, g.fused_chains.items[0].kind());
 }
 
-test "compute uses fused execution plan for softmax" {
+test "compute softmax via composite op" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
     const a = g.allocator();
@@ -2620,8 +2594,6 @@ test "compute uses fused execution plan for softmax" {
 
     try g.buildForward(y);
     try g.fusionPass();
-    try testing.expect(g.fused_chains.items.len > 0);
-
     g.computeNoGrad();
     try testing.expectApproxEqAbs(@as(f32, 0.09003057), y.data[0], 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 0.24472848), y.data[1], 1e-5);
@@ -3061,6 +3033,117 @@ test "fusion - conv2d backward gradients fused matches unfused (multi-filter)" {
     }
     for (xf.gradOrNull().?.data, xu.gradOrNull().?.data) |fg, ug| {
         try testing.expectApproxEqAbs(ug, fg, 1e-4);
+    }
+}
+
+test "fusion - detects single-query attention region" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const d_head: usize = 4;
+    const seq_len: usize = 3;
+
+    const q = try Tensor(f32).init(a, &.{ d_head, 1 });
+    const k = try Tensor(f32).init(a, &.{ d_head, seq_len });
+    const v = try Tensor(f32).init(a, &.{ d_head, seq_len });
+    const mask = try Tensor(f32).init(a, &.{ seq_len, 1 });
+
+    q.setData(&.{ 1.0, 0.5, -0.3, 0.2 });
+    k.setData(&.{
+        0.1,  0.2,  -0.1, 0.4,
+        0.3,  -0.2, 0.5,  0.1,
+        -0.4, 0.3,  0.2,  0.5,
+    });
+    v.setData(&.{
+        1.0, 2.0,  -1.0, 0.5,
+        0.0, 1.0,  0.5,  -0.5,
+        2.0, -1.0, 0.0,  1.0,
+    });
+    mask.setData(&.{ 0, 0, 0 });
+
+    const scores = q.matMul(false, k, true);
+    const scaled = scores.scaleByVal(1.0 / @sqrt(@as(f32, @floatFromInt(d_head))));
+    const masked = scaled.add(mask);
+    var sm_reduce = [_]usize{ 1, 1 };
+    const weights = masked.softmax(&sm_reduce);
+    const out = weights.matMul(false, v, false);
+
+    try g.buildForward(out);
+    try g.fusionPass();
+
+    var attn_count: usize = 0;
+    for (g.fused_chains.items) |plan| {
+        switch (plan.kind()) {
+            .attention => attn_count += 1,
+            else => {},
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), attn_count);
+}
+
+test "fusion - attention fused matches unfused" {
+    var gf = ComputeGraph(f32).init(tac);
+    defer gf.deinit();
+    var gu = ComputeGraph(f32).init(tac);
+    defer gu.deinit();
+
+    const af = gf.allocator();
+    const au = gu.allocator();
+
+    const d_head: usize = 4;
+    const seq_len: usize = 5;
+
+    const qf = try Tensor(f32).init(af, &.{ d_head, 1 });
+    const qu = try Tensor(f32).init(au, &.{ d_head, 1 });
+    for (qf.data, 0..) |*d, i| d.* = 0.1 * @as(f32, @floatFromInt(i)) - 0.2;
+    @memcpy(qu.data, qf.data);
+
+    const kf = try Tensor(f32).init(af, &.{ d_head, seq_len });
+    const ku = try Tensor(f32).init(au, &.{ d_head, seq_len });
+    for (kf.data, 0..) |*d, i| d.* = 0.05 * @as(f32, @floatFromInt(i)) - 0.3;
+    @memcpy(ku.data, kf.data);
+
+    const vf = try Tensor(f32).init(af, &.{ d_head, seq_len });
+    const vu = try Tensor(f32).init(au, &.{ d_head, seq_len });
+    for (vf.data, 0..) |*d, i| d.* = 0.07 * @as(f32, @floatFromInt(i)) - 0.4;
+    @memcpy(vu.data, vf.data);
+
+    const maskf = try Tensor(f32).init(af, &.{ seq_len, 1 });
+    const masku = try Tensor(f32).init(au, &.{ seq_len, 1 });
+    maskf.setData(&.{ 0, 0, 0, -std.math.inf(f32), -std.math.inf(f32) });
+    @memcpy(masku.data, maskf.data);
+
+    const build = struct {
+        fn go(qt: *Tensor(f32), kt: *Tensor(f32), vt: *Tensor(f32), mt: *Tensor(f32), dh: usize) *Tensor(f32) {
+            const s = qt.matMul(false, kt, true);
+            const sc = s.scaleByVal(1.0 / @sqrt(@as(f32, @floatFromInt(dh))));
+            const m = sc.add(mt);
+            var sr = [_]usize{ 1, 1 };
+            const w = m.softmax(&sr);
+            return w.matMul(false, vt, false);
+        }
+    }.go;
+
+    const out_f = build(qf, kf, vf, maskf, d_head);
+    const out_u = build(qu, ku, vu, masku, d_head);
+
+    try gf.buildForward(out_f);
+    try gu.buildForward(out_u);
+    try gf.fusionPass();
+    // gu: no fusion pass — runs unfused for reference.
+
+    gf.compute();
+    gu.compute();
+
+    var saw_attn = false;
+    for (gf.fused_chains.items) |plan| {
+        if (plan.kind() == .attention) saw_attn = true;
+    }
+    try testing.expect(saw_attn);
+
+    for (out_f.data, out_u.data) |fv, uv| {
+        try testing.expectApproxEqAbs(uv, fv, 1e-5);
     }
 }
 

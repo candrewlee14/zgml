@@ -319,6 +319,77 @@ pub fn Ops(comptime Self: type) type {
                     }
                 },
 
+                // d/dx[rmsnorm(x, axis, eps)] = s*dy - y*(sum(y*dy, axis) / N)
+                // where s = 1/sqrt(mean(x², axis) + eps), N = elems per group.
+                .rmsnorm => {
+                    const src0 = src0_o.?;
+                    if (src0.gradOrNull()) |grad| {
+                        const y = tensor;
+                        const reduce_shape = y.reduce_ne[0..y.n_dims];
+                        const eps = y.op_eps;
+
+                        var total: usize = 1;
+                        for (src0.ne[0..src0.n_dims]) |e| total *= e;
+                        var red: usize = 1;
+                        for (reduce_shape) |e| red *= e;
+                        const count_per_group: @TypeOf(eps) = @floatFromInt(total / red);
+
+                        // Recompute per-group scale s = 1/sqrt(mean(x²) + eps).
+                        const sq = src0.sqr();
+                        stripGrad(sq);
+                        const mean_sq = sq.mean(reduce_shape);
+                        stripGrad(mean_sq);
+                        const eps_scalar = try Self.initScalar(alloc, eps);
+                        stripGrad(eps_scalar);
+                        const eps_bcast = eps_scalar.broadcastTo(mean_sq.ne[0..mean_sq.n_dims]);
+                        stripGrad(eps_bcast);
+                        const var_eps = mean_sq.add(eps_bcast);
+                        stripGrad(var_eps);
+                        const rsqrt = var_eps.sqrt().recip();
+                        stripGrad(rsqrt);
+                        const s_expanded = rsqrt.broadcastTo(src0.ne[0..src0.n_dims]);
+                        stripGrad(s_expanded);
+
+                        // inner = sum(y * dy, axis) / N, broadcast back.
+                        const y_d = y.mul(out_grad);
+                        stripGrad(y_d);
+                        const inner = y_d.sum(reduce_shape);
+                        stripGrad(inner);
+                        const inner_scaled = inner.scaleByVal(1.0 / count_per_group);
+                        stripGrad(inner_scaled);
+                        const inner_bcast = inner_scaled.broadcastTo(src0.ne[0..src0.n_dims]);
+                        stripGrad(inner_bcast);
+
+                        const term1 = s_expanded.mul(out_grad);
+                        stripGrad(term1);
+                        const term2 = y.mul(inner_bcast);
+                        stripGrad(term2);
+                        const contribution = term1.sub(term2);
+                        stripGrad(contribution);
+                        src0.setGrad(accumGrad(grad, contribution, inplace));
+                    }
+                },
+
+                // d/dx[softmax(x, axis)] = y * (dy - sum(dy * y, axis))
+                .softmax => {
+                    const src0 = src0_o.?;
+                    if (src0.gradOrNull()) |grad| {
+                        const y = tensor;
+                        const inner = out_grad.mul(y);
+                        stripGrad(inner);
+                        const reduce_shape = y.reduce_ne[0..y.n_dims];
+                        const s = inner.sum(reduce_shape);
+                        stripGrad(s);
+                        const s_expanded = s.broadcastTo(src0.ne[0..src0.n_dims]);
+                        stripGrad(s_expanded);
+                        const diff = out_grad.sub(s_expanded);
+                        stripGrad(diff);
+                        const contribution = y.mul(diff);
+                        stripGrad(contribution);
+                        src0.setGrad(accumGrad(grad, contribution, inplace));
+                    }
+                },
+
                 // Matmul backward: dispatch based on transpose flags.
                 // For fwd C = op(A) @ op(B) where op is identity or transpose:
                 //   no trans:  d/dA = G @ B^T,      d/dB = A^T @ G

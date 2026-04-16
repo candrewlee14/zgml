@@ -1241,6 +1241,201 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
+        /// Numerically stable softmax with reduction axes given by `dst.reduce_ne`.
+        /// Output shape matches input; `reduce_ne` has 1s along reduction axes (same
+        /// convention as `sum(ne)` / `max(ne)`).
+        pub fn computeSoftmax(dst: *Self, src0: *const Self) void {
+            assert(dst.isSameShape(src0));
+            assert(src0.canSumToShape(dst.reduce_ne[0..src0.n_dims]));
+            assert(src0.n_dims <= 4); // 4D is the contiguous fast-path ceiling
+
+            const reduce_ne = dst.reduce_ne;
+            var reduce_elems: usize = 1;
+            for (0..4) |i| reduce_elems *= reduce_ne[i];
+
+            // Scratch for per-group max and sum. Stack for small groups, heap otherwise.
+            var max_stack: [256]T = undefined;
+            var sum_stack: [256]T = undefined;
+            var max_heap: ?[]T = null;
+            var sum_heap: ?[]T = null;
+            defer if (max_heap) |b| std.heap.page_allocator.free(b);
+            defer if (sum_heap) |b| std.heap.page_allocator.free(b);
+            const max_buf: []T = blk: {
+                if (reduce_elems <= 256) break :blk max_stack[0..reduce_elems];
+                const heap = std.heap.page_allocator.alloc(T, reduce_elems) catch @panic("softmax scratch alloc");
+                max_heap = heap;
+                break :blk heap;
+            };
+            const sum_buf: []T = blk: {
+                if (reduce_elems <= 256) break :blk sum_stack[0..reduce_elems];
+                const heap = std.heap.page_allocator.alloc(T, reduce_elems) catch @panic("softmax scratch alloc");
+                sum_heap = heap;
+                break :blk heap;
+            };
+            @memset(max_buf, -std.math.inf(T));
+            @memset(sum_buf, 0);
+
+            // Contiguous strides over the reduce shape (groups are indexed by reduce coords).
+            var reduce_strides: [4]usize = undefined;
+            reduce_strides[0] = 1;
+            for (1..4) |i| reduce_strides[i] = reduce_strides[i - 1] * reduce_ne[i - 1];
+
+            const src_stride_v = first4(src0.strides);
+            const dst_stride_v = first4(dst.strides);
+            const reduce_ne_v: @Vector(4, usize) = .{ reduce_ne[0], reduce_ne[1], reduce_ne[2], reduce_ne[3] };
+            const reduce_stride_v: @Vector(4, usize) = .{ reduce_strides[0], reduce_strides[1], reduce_strides[2], reduce_strides[3] };
+
+            // Pass 1: per-group max.
+            for (0..src0.ne[3]) |ne3| {
+                for (0..src0.ne[2]) |ne2| {
+                    for (0..src0.ne[1]) |ne1| {
+                        for (0..src0.ne[0]) |ne0| {
+                            const nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
+                            const r_nes = nes % reduce_ne_v;
+                            const src_idx = @reduce(.Add, nes * src_stride_v);
+                            const r_idx = @reduce(.Add, r_nes * reduce_stride_v);
+                            max_buf[r_idx] = @max(max_buf[r_idx], src0.data[src_idx]);
+                        }
+                    }
+                }
+            }
+
+            // Pass 2: exp(x - max) into dst, accumulate sum per group.
+            for (0..src0.ne[3]) |ne3| {
+                for (0..src0.ne[2]) |ne2| {
+                    for (0..src0.ne[1]) |ne1| {
+                        for (0..src0.ne[0]) |ne0| {
+                            const nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
+                            const r_nes = nes % reduce_ne_v;
+                            const src_idx = @reduce(.Add, nes * src_stride_v);
+                            const dst_idx = @reduce(.Add, nes * dst_stride_v);
+                            const r_idx = @reduce(.Add, r_nes * reduce_stride_v);
+                            const shifted = src0.data[src_idx] - max_buf[r_idx];
+                            const v = if (std.math.isFinite(shifted)) @exp(shifted) else 0;
+                            dst.data[dst_idx] = v;
+                            sum_buf[r_idx] += v;
+                        }
+                    }
+                }
+            }
+
+            // Pass 3: normalize. Zero-sum groups stay zero (all-masked row is well-defined).
+            for (0..src0.ne[3]) |ne3| {
+                for (0..src0.ne[2]) |ne2| {
+                    for (0..src0.ne[1]) |ne1| {
+                        for (0..src0.ne[0]) |ne0| {
+                            const nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
+                            const r_nes = nes % reduce_ne_v;
+                            const dst_idx = @reduce(.Add, nes * dst_stride_v);
+                            const r_idx = @reduce(.Add, r_nes * reduce_stride_v);
+                            const s = sum_buf[r_idx];
+                            dst.data[dst_idx] = if (s > 0) dst.data[dst_idx] / s else 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        /// Root-mean-square normalization: `y = x / sqrt(mean(x², reduce_ne) + eps)`.
+        /// Shape of `dst` matches `src0`; `dst.reduce_ne` selects the axes to average.
+        pub fn computeRmsNorm(dst: *Self, src0: *const Self) void {
+            assert(dst.isSameShape(src0));
+            assert(src0.canSumToShape(dst.reduce_ne[0..src0.n_dims]));
+            assert(src0.n_dims <= 4);
+
+            const reduce_ne = dst.reduce_ne;
+            var reduce_elems: usize = 1;
+            for (0..4) |i| reduce_elems *= reduce_ne[i];
+
+            var total: usize = 1;
+            for (0..4) |i| total *= src0.ne[i];
+            const count_per_group: T = @floatFromInt(total / reduce_elems);
+            const eps = dst.op_eps;
+
+            // Fast path: canonical per-row RMSNorm — reduce over axis 0 only,
+            // src and dst both contiguous. Each group is a contiguous chunk of
+            // src0.ne[0] elements; loop is single-pass and cache-friendly.
+            if (src0.isContiguous() and dst.isContiguous() and
+                reduce_ne[0] == 1 and
+                reduce_ne[1] == src0.ne[1] and
+                reduce_ne[2] == src0.ne[2] and
+                reduce_ne[3] == src0.ne[3])
+            {
+                const n = src0.ne[0];
+                const groups = total / n;
+                const inv_n: T = 1.0 / @as(T, @floatFromInt(n));
+                var g: usize = 0;
+                while (g < groups) : (g += 1) {
+                    const base = g * n;
+                    const row_src = src0.data[base .. base + n];
+                    const row_dst = dst.data[base .. base + n];
+                    var sum_sq: T = 0;
+                    for (row_src) |v| sum_sq += v * v;
+                    const s = 1.0 / @sqrt(sum_sq * inv_n + eps);
+                    for (row_src, row_dst) |v, *o| o.* = v * s;
+                }
+                return;
+            }
+
+            var scratch_stack: [256]T = undefined;
+            var scratch_heap: ?[]T = null;
+            defer if (scratch_heap) |b| std.heap.page_allocator.free(b);
+            const sum_sq: []T = blk: {
+                if (reduce_elems <= 256) break :blk scratch_stack[0..reduce_elems];
+                const heap = std.heap.page_allocator.alloc(T, reduce_elems) catch @panic("rmsnorm scratch alloc");
+                scratch_heap = heap;
+                break :blk heap;
+            };
+            @memset(sum_sq, 0);
+
+            var reduce_strides: [4]usize = undefined;
+            reduce_strides[0] = 1;
+            for (1..4) |i| reduce_strides[i] = reduce_strides[i - 1] * reduce_ne[i - 1];
+
+            const src_stride_v = first4(src0.strides);
+            const dst_stride_v = first4(dst.strides);
+            const reduce_ne_v: @Vector(4, usize) = .{ reduce_ne[0], reduce_ne[1], reduce_ne[2], reduce_ne[3] };
+            const reduce_stride_v: @Vector(4, usize) = .{ reduce_strides[0], reduce_strides[1], reduce_strides[2], reduce_strides[3] };
+
+            // Pass 1: sum of squares per group.
+            for (0..src0.ne[3]) |ne3| {
+                for (0..src0.ne[2]) |ne2| {
+                    for (0..src0.ne[1]) |ne1| {
+                        for (0..src0.ne[0]) |ne0| {
+                            const nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
+                            const r_nes = nes % reduce_ne_v;
+                            const src_idx = @reduce(.Add, nes * src_stride_v);
+                            const r_idx = @reduce(.Add, r_nes * reduce_stride_v);
+                            const x = src0.data[src_idx];
+                            sum_sq[r_idx] += x * x;
+                        }
+                    }
+                }
+            }
+
+            // Convert sum-of-squares → rsqrt(mean + eps) in place.
+            for (sum_sq) |*v| {
+                const mean_sq = v.* / count_per_group;
+                v.* = 1.0 / @sqrt(mean_sq + eps);
+            }
+
+            // Pass 2: dst = src * rsqrt.
+            for (0..src0.ne[3]) |ne3| {
+                for (0..src0.ne[2]) |ne2| {
+                    for (0..src0.ne[1]) |ne1| {
+                        for (0..src0.ne[0]) |ne0| {
+                            const nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
+                            const r_nes = nes % reduce_ne_v;
+                            const src_idx = @reduce(.Add, nes * src_stride_v);
+                            const dst_idx = @reduce(.Add, nes * dst_stride_v);
+                            const r_idx = @reduce(.Add, r_nes * reduce_stride_v);
+                            dst.data[dst_idx] = src0.data[src_idx] * sum_sq[r_idx];
+                        }
+                    }
+                }
+            }
+        }
+
         pub fn computeRepeat(dst: *Self, src0: *const Self) void {
             assert(src0.canRepeatTo(dst));
             if (dst.n_dims > 4 or src0.n_dims > 4) {
@@ -1545,6 +1740,8 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .slice_assign => computeSliceAssign(Self, tensor, src0.?, src1.?),
                 .rope => computeRope(Self, tensor, src0.?, src1.?),
                 .slice_assign_rows => computeSliceAssignRows(Self, tensor, src0.?, src1.?),
+                .softmax => tensor.computeSoftmax(src0.?),
+                .rmsnorm => tensor.computeRmsNorm(src0.?),
                 .matmul => {
                     const flags = tensor.matmul_flags;
                     if (flags.trans0) {
@@ -1556,4 +1753,133 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
     };
+}
+
+// ---------------------------------------------------------------------------
+// Tests (kept next to the kernels they exercise)
+// ---------------------------------------------------------------------------
+
+const Tensor = @import("../tensor.zig").Tensor;
+
+test "computeSoftmax - column reduce matches explicit formula" {
+    const T = f32;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const rows: usize = 4;
+    const cols: usize = 3;
+    const x = try Tensor(T).init(a, &.{ rows, cols });
+    x.setData(&.{
+        1.0,  2.0, -1.0,
+        0.5,  0.0, 3.0,
+        -2.0, 1.5, 0.2,
+        0.1,  -0.3, 0.8,
+    });
+
+    // Composite: softmax over axis 0 (reduce rows).
+    const y = x.softmax(&.{ 1, cols });
+    y.computeSoftmax(x);
+
+    // Reference: explicit primitive softmax.
+    var ref: [rows * cols]T = undefined;
+    for (0..cols) |col| {
+        var m: T = -std.math.inf(T);
+        for (0..rows) |r| m = @max(m, x.data[col * x.strides[1] + r * x.strides[0]]);
+        var s: T = 0;
+        for (0..rows) |r| {
+            const e = @exp(x.data[col * x.strides[1] + r * x.strides[0]] - m);
+            ref[col * rows + r] = e;
+            s += e;
+        }
+        for (0..rows) |r| ref[col * rows + r] /= s;
+    }
+
+    for (0..cols) |col| {
+        for (0..rows) |r| {
+            const got = y.data[col * y.strides[1] + r * y.strides[0]];
+            const want = ref[col * rows + r];
+            try std.testing.expectApproxEqAbs(want, got, 1e-6);
+        }
+    }
+}
+
+test "computeSoftmax - all -inf row yields zeros (no NaN)" {
+    const T = f32;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const x = try Tensor(T).init(a, &.{ 3, 1 });
+    const neg_inf = -std.math.inf(T);
+    x.setData(&.{ neg_inf, neg_inf, neg_inf });
+
+    const y = x.softmax(&.{ 1, 1 });
+    y.computeSoftmax(x);
+
+    for (y.data) |v| try std.testing.expectEqual(@as(T, 0), v);
+}
+
+test "computeRmsNorm - row reduce matches explicit formula" {
+    const T = f32;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const rows: usize = 3;
+    const cols: usize = 4;
+    const x = try Tensor(T).init(a, &.{ rows, cols });
+    x.setData(&.{
+        1.0,  2.0,  -1.0, 0.5,
+        0.0,  3.0,  -2.0, 1.5,
+        0.2,  0.1,  -0.3, 0.8,
+    });
+    const eps: T = 1e-5;
+
+    // Composite: RMSNorm over the row dimension (reduce axis 0).
+    const y = x.rmsNorm(&.{ 1, cols }, eps);
+    y.computeRmsNorm(x);
+
+    // Reference: explicit primitive RMSNorm per row.
+    var ref: [rows * cols]T = undefined;
+    for (0..cols) |col| {
+        var sum_sq: T = 0;
+        for (0..rows) |r| {
+            const v = x.data[col * x.strides[1] + r * x.strides[0]];
+            sum_sq += v * v;
+        }
+        const mean_sq = sum_sq / @as(T, @floatFromInt(rows));
+        const s = 1.0 / @sqrt(mean_sq + eps);
+        for (0..rows) |r| {
+            const v = x.data[col * x.strides[1] + r * x.strides[0]];
+            ref[col * rows + r] = v * s;
+        }
+    }
+
+    for (0..cols) |col| {
+        for (0..rows) |r| {
+            const got = y.data[col * y.strides[1] + r * y.strides[0]];
+            const want = ref[col * rows + r];
+            try std.testing.expectApproxEqAbs(want, got, 1e-6);
+        }
+    }
+}
+
+test "computeRmsNorm - all-zero input stays finite via eps" {
+    const T = f32;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const x = try Tensor(T).init(a, &.{ 4, 1 });
+    x.setData(&.{ 0, 0, 0, 0 });
+    const eps: T = 1e-5;
+
+    const y = x.rmsNorm(&.{ 1, 1 }, eps);
+    y.computeRmsNorm(x);
+
+    for (y.data) |v| {
+        try std.testing.expect(std.math.isFinite(v));
+        try std.testing.expectEqual(@as(T, 0), v);
+    }
 }

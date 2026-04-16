@@ -99,6 +99,13 @@ pub fn Tensor(comptime T: type) type {
         op: Op,
         /// Transpose flags for matmul ops (ignored for other ops).
         matmul_flags: MatMulFlags = .{},
+        /// Target reduction shape for composite reduction ops (softmax, etc.).
+        /// For softmax, this is the shape the intermediate max/sum would have.
+        /// Ignored by ops that don't reduce. Defaults to the input's own shape
+        /// (no reduction, scalar-equivalent) and must be set by the op builder.
+        reduce_ne: [max_dims]usize = .{1} ** max_dims,
+        /// Scalar epsilon for numerically-stabilized composite ops (rmsnorm, layernorm).
+        op_eps: T = 0,
         /// Gradient tensor, populated during backward pass. Only present for parameters
         /// and intermediate nodes that contribute to a parameter's gradient.
         grad: ?*Self,
@@ -246,6 +253,18 @@ pub fn Tensor(comptime T: type) type {
         pub fn setSources(self: *Self, src0: ?*Self, src1: ?*Self) void {
             self.src0 = src0;
             self.src1 = src1;
+        }
+
+        /// Set the reduction-target shape for composite reduction ops (softmax, etc.).
+        pub fn setReduceNe(self: *Self, ne: []const usize) void {
+            std.debug.assert(ne.len <= max_dims);
+            self.reduce_ne = .{1} ** max_dims;
+            for (ne, 0..) |v, i| self.reduce_ne[i] = v;
+        }
+
+        /// Set the epsilon used by numerically-stabilized composite ops (rmsnorm, layernorm).
+        pub fn setOpEps(self: *Self, eps: T) void {
+            self.op_eps = eps;
         }
 
         pub fn opTag(self: *const Self) Op {
@@ -448,6 +467,8 @@ pub fn Tensor(comptime T: type) type {
         pub const computeGelu = fwd.computeGelu;
         pub const computeSum = fwd.computeSum;
         pub const computeMax = fwd.computeMax;
+        pub const computeSoftmax = fwd.computeSoftmax;
+        pub const computeRmsNorm = fwd.computeRmsNorm;
         pub const computeRepeat = fwd.computeRepeat;
         pub const computeGatherRows = fwd.computeGatherRows;
         pub const computeScatterAddRows = fwd.computeScatterAddRows;
@@ -1227,6 +1248,88 @@ test "compute softmax" {
     try testing.expectApproxEqAbs(e1 / denom, s.data[0], 1e-6);
     try testing.expectApproxEqAbs(e2 / denom, s.data[1], 1e-6);
     try testing.expectApproxEqAbs(e3 / denom, s.data[2], 1e-6);
+}
+
+test "backward - softmax" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+    x.setParam();
+    const y = x.softmax(&.{1});
+    try g.buildForward(y);
+    try g.buildBackward(false);
+    // dL/dy = [0, 1, 0]
+    y.grad.?.setData(&.{ 0, 1, 0 });
+    g.compute();
+
+    const e1 = std.math.exp(@as(f32, 1));
+    const e2 = std.math.exp(@as(f32, 2));
+    const e3 = std.math.exp(@as(f32, 3));
+    const denom = e1 + e2 + e3;
+    const y0 = e1 / denom;
+    const y1 = e2 / denom;
+    const y2 = e3 / denom;
+    // dx_i = y_i * (dy_i - sum_j(dy_j * y_j)); with dy=[0,1,0], sum = y1.
+    try testing.expectApproxEqAbs(-y0 * y1, x.grad.?.data[0], 1e-6);
+    try testing.expectApproxEqAbs(y1 * (1 - y1), x.grad.?.data[1], 1e-6);
+    try testing.expectApproxEqAbs(-y2 * y1, x.grad.?.data[2], 1e-6);
+}
+
+test "compute rmsNorm" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{4});
+    x.setData(&.{ 1, 2, -1, 0.5 });
+    const eps: f32 = 1e-5;
+    const y = x.rmsNorm(&.{1}, eps);
+    try g.buildForward(y);
+    g.compute();
+
+    var sum_sq: f32 = 0;
+    for (x.data) |v| sum_sq += v * v;
+    const mean_sq = sum_sq / 4.0;
+    const s = 1.0 / @sqrt(mean_sq + eps);
+    for (x.data, 0..) |v, i| {
+        try testing.expectApproxEqAbs(v * s, y.data[i], 1e-6);
+    }
+}
+
+test "backward - rmsnorm" {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    const a = g.allocator();
+
+    const x = try Tensor(f32).init(a, &.{4});
+    x.setData(&.{ 1, 2, -1, 0.5 });
+    x.setParam();
+    const eps: f32 = 1e-5;
+    const y = x.rmsNorm(&.{1}, eps);
+    try g.buildForward(y);
+    try g.buildBackward(false);
+    // dL/dy
+    y.grad.?.setData(&.{ 0.1, -0.2, 0.3, 0.4 });
+    g.compute();
+
+    // Analytical: dx = s*dy - y*(sum(y*dy)/N)
+    const N: f32 = 4.0;
+    var sum_sq: f32 = 0;
+    for (x.data) |v| sum_sq += v * v;
+    const mean_sq = sum_sq / N;
+    const s = 1.0 / @sqrt(mean_sq + eps);
+
+    var inner: f32 = 0;
+    for (x.data, 0..) |v, i| inner += (v * s) * y.grad.?.data[i];
+    inner /= N;
+
+    for (x.data, 0..) |v, i| {
+        const want = s * y.grad.?.data[i] - (v * s) * inner;
+        try testing.expectApproxEqAbs(want, x.grad.?.data[i], 1e-5);
+    }
 }
 
 test "compute logSoftmax" {
