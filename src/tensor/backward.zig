@@ -390,6 +390,19 @@ pub fn Ops(comptime Self: type) type {
                     }
                 },
 
+                // Attention backward is not yet implemented — inference-only for now.
+                // Composite backward via primitives is possible (Q@K^T → softmax → @V
+                // plus the softmax Jacobian) but substantially more expensive than the
+                // forward kernel and not yet needed by any training path in the repo.
+                .attention => {
+                    const q = src0_o.?;
+                    const k = src1_o.?;
+                    const v = tensor.source2().?;
+                    if (q.gradOrNull() != null or k.gradOrNull() != null or v.gradOrNull() != null) {
+                        @panic("attention backward not implemented");
+                    }
+                },
+
                 // Matmul backward: dispatch based on transpose flags.
                 // For fwd C = op(A) @ op(B) where op is identity or transpose:
                 //   no trans:  d/dA = G @ B^T,      d/dB = A^T @ G

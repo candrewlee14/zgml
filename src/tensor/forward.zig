@@ -1436,6 +1436,138 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
+        /// Max d_head supported by the stack-allocated flash-attention accumulator.
+        /// Large enough to cover LLaMA-7B (128), LLaMA-13B (128), Mistral (128), and
+        /// leaves headroom for bigger future models without heap fallback on the hot path.
+        pub const attention_max_d_head: usize = 512;
+
+        /// Fused attention: `out = softmax(scale * (Q @ K^T) + mask) @ V^T`.
+        ///
+        /// Shapes (d_head first, seq second — this codebase's convention):
+        ///   Q: [d_head, seq_q]
+        ///   K: [d_head, seq_kv]
+        ///   V: [d_head, seq_kv]
+        ///   mask (optional): [seq_kv, seq_q] (or [seq_kv, 1] broadcast)
+        ///   out: [d_head, seq_q]
+        ///
+        /// Single-pass streaming softmax over the seq_kv dimension per query column;
+        /// never materializes the [seq_kv, seq_q] scores tensor. Works for both
+        /// prefill (seq_q > 1) and decode (seq_q == 1).
+        pub fn computeAttention(dst: *Self, q: *const Self, k: *const Self, v: *const Self, mask: ?*const Self) void {
+            const d_head = q.ne[0];
+            const seq_q = q.ne[1];
+            const seq_kv = k.ne[1];
+            assert(d_head <= attention_max_d_head);
+            assert(dst.ne[0] == d_head and dst.ne[1] == seq_q);
+            assert(k.ne[0] == d_head and v.ne[0] == d_head and v.ne[1] == seq_kv);
+
+            const q_r = q.strides[0];
+            const q_c = q.strides[1];
+            const k_r = k.strides[0];
+            const k_c = k.strides[1];
+            const v_r = v.strides[0];
+            const v_c = v.strides[1];
+            const out_r = dst.strides[0];
+            const out_c = dst.strides[1];
+
+            const scale = dst.op_scale;
+            const neg_inf = -std.math.inf(T);
+            const unit_strides = q_r == 1 and k_r == 1 and v_r == 1 and out_r == 1;
+
+            // Mask layout: `mask.data[q_idx * mask_c + s * mask_r]`. When the caller
+            // passes a broadcast single-column mask (seq_q == 1 on the mask), mask_c
+            // is set to 0 so every query column reads the same row.
+            const mask_r: usize = if (mask) |m| m.strides[0] else 0;
+            const mask_c: usize = blk: {
+                const m = mask orelse break :blk 0;
+                if (m.ne[1] <= 1) break :blk 0;
+                break :blk m.strides[1];
+            };
+            const mask_data: ?[]const T = if (mask) |m| m.data else null;
+
+            const V = comptime simdVecSize(T);
+            const VecT = @Vector(V, T);
+
+            var acc_buf: [attention_max_d_head]T = undefined;
+            const acc = acc_buf[0..d_head];
+
+            for (0..seq_q) |qi| {
+                var m_val: T = neg_inf;
+                var l: T = 0;
+                @memset(acc, 0);
+                const q_base = qi * q_c;
+                const mask_base = qi * mask_c;
+
+                for (0..seq_kv) |s| {
+                    // score = scale * (Q[:, qi] · K[:, s]) + mask[s, qi]
+                    var dot: T = 0;
+                    if (unit_strides) {
+                        var dot_v: VecT = @splat(0);
+                        var r: usize = 0;
+                        while (r + V <= d_head) : (r += V) {
+                            const qv: VecT = q.data[q_base + r ..][0..V].*;
+                            const kv: VecT = k.data[s * k_c + r ..][0..V].*;
+                            dot_v = dot_v + qv * kv;
+                        }
+                        dot = @reduce(.Add, dot_v);
+                        while (r < d_head) : (r += 1) {
+                            dot += q.data[q_base + r] * k.data[s * k_c + r];
+                        }
+                    } else {
+                        for (0..d_head) |r| {
+                            dot += q.data[q_base + r * q_r] * k.data[s * k_c + r * k_r];
+                        }
+                    }
+
+                    const mask_add: T = if (mask_data) |md| md[mask_base + s * mask_r] else 0;
+                    const score = dot * scale + mask_add;
+                    if (!std.math.isFinite(score)) continue;
+
+                    const new_m = @max(m_val, score);
+                    const alpha: T = if (m_val == neg_inf) 0 else @exp(m_val - new_m);
+                    const w = @exp(score - new_m);
+                    l = l * alpha + w;
+                    m_val = new_m;
+
+                    if (unit_strides) {
+                        const alpha_v: VecT = @splat(alpha);
+                        const w_v: VecT = @splat(w);
+                        var r: usize = 0;
+                        while (r + V <= d_head) : (r += V) {
+                            const acc_vv: VecT = acc[r..][0..V].*;
+                            const v_vv: VecT = v.data[s * v_c + r ..][0..V].*;
+                            acc[r..][0..V].* = acc_vv * alpha_v + w_v * v_vv;
+                        }
+                        while (r < d_head) : (r += 1) {
+                            acc[r] = acc[r] * alpha + w * v.data[s * v_c + r];
+                        }
+                    } else {
+                        for (0..d_head) |r| {
+                            acc[r] = acc[r] * alpha + w * v.data[s * v_c + r * v_r];
+                        }
+                    }
+                }
+
+                const inv_l: T = if (l > 0) @as(T, 1) / l else 0;
+                const out_base = qi * out_c;
+                if (unit_strides) {
+                    const inv_v: VecT = @splat(inv_l);
+                    var r: usize = 0;
+                    while (r + V <= d_head) : (r += V) {
+                        const acc_vv: VecT = acc[r..][0..V].*;
+                        dst.data[out_base + r ..][0..V].* = acc_vv * inv_v;
+                    }
+                    while (r < d_head) : (r += 1) {
+                        dst.data[out_base + r] = acc[r] * inv_l;
+                    }
+                } else {
+                    for (0..d_head) |r| {
+                        dst.data[out_base + r * out_r] = acc[r] * inv_l;
+                    }
+                }
+            }
+        }
+
         pub fn computeRepeat(dst: *Self, src0: *const Self) void {
             assert(src0.canRepeatTo(dst));
             if (dst.n_dims > 4 or src0.n_dims > 4) {
@@ -1742,6 +1874,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .slice_assign_rows => computeSliceAssignRows(Self, tensor, src0.?, src1.?),
                 .softmax => tensor.computeSoftmax(src0.?),
                 .rmsnorm => tensor.computeRmsNorm(src0.?),
+                .attention => tensor.computeAttention(src0.?, src1.?, tensor.src2.?, tensor.src3),
                 .matmul => {
                     const flags = tensor.matmul_flags;
                     if (flags.trans0) {
@@ -1881,5 +2014,122 @@ test "computeRmsNorm - all-zero input stays finite via eps" {
     for (y.data) |v| {
         try std.testing.expect(std.math.isFinite(v));
         try std.testing.expectEqual(@as(T, 0), v);
+    }
+}
+
+// Reference attention via explicit primitives (no flash path).
+fn attentionReference(
+    comptime T: type,
+    a: std.mem.Allocator,
+    q: *Tensor(T),
+    k: *Tensor(T),
+    v: *Tensor(T),
+    mask: ?*Tensor(T),
+    scale: T,
+) *Tensor(T) {
+    const scores = q.matMul(false, k, true);
+    const scaled = scores.scaleByVal(scale);
+    const masked_or_scaled = if (mask) |m| scaled.add(m) else scaled;
+    const weights = masked_or_scaled.softmax(&.{ 1, masked_or_scaled.ne[1] });
+    const out = weights.matMul(false, v, false);
+    var graph = @import("../graph.zig").ComputeGraph(T).init(a);
+    defer graph.deinit();
+    graph.buildForward(out) catch unreachable;
+    graph.compute();
+    return out;
+}
+
+test "computeAttention - prefill matches explicit reference" {
+    const T = f32;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const d_head: usize = 8;
+    const seq_q: usize = 5;
+    const seq_kv: usize = 5;
+
+    var rng_state = std.Random.DefaultPrng.init(0xA11);
+    var rng = rng_state.random();
+    const q = try Tensor(T).initRand(a, &rng, &.{ d_head, seq_q });
+    const k = try Tensor(T).initRand(a, &rng, &.{ d_head, seq_kv });
+    const v = try Tensor(T).initRand(a, &rng, &.{ d_head, seq_kv });
+
+    // Causal mask: mask[kv, q] = 0 if kv <= q else -inf.
+    const mask = try Tensor(T).init(a, &.{ seq_kv, seq_q });
+    for (0..seq_q) |qi| {
+        for (0..seq_kv) |ki| {
+            mask.data[qi * mask.strides[1] + ki * mask.strides[0]] =
+                if (ki <= qi) 0 else -std.math.inf(T);
+        }
+    }
+
+    const scale: T = 1.0 / @sqrt(@as(T, @floatFromInt(d_head)));
+
+    const y = q.attention(k, v, mask, scale);
+    y.computeAttention(q, k, v, mask);
+
+    const ref = attentionReference(T, a, q, k, v, mask, scale);
+    for (y.data, ref.data) |got, want| {
+        try std.testing.expectApproxEqAbs(want, got, 1e-5);
+    }
+}
+
+test "computeAttention - decode (seq_q=1) matches reference" {
+    const T = f32;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const d_head: usize = 16;
+    const seq_kv: usize = 12;
+
+    var rng_state = std.Random.DefaultPrng.init(0xBEEF);
+    var rng = rng_state.random();
+    const q = try Tensor(T).initRand(a, &rng, &.{ d_head, 1 });
+    const k = try Tensor(T).initRand(a, &rng, &.{ d_head, seq_kv });
+    const v = try Tensor(T).initRand(a, &rng, &.{ d_head, seq_kv });
+
+    const mask = try Tensor(T).init(a, &.{ seq_kv, 1 });
+    @memset(mask.data, 0);
+
+    const scale: T = 1.0 / @sqrt(@as(T, @floatFromInt(d_head)));
+
+    const y = q.attention(k, v, mask, scale);
+    y.computeAttention(q, k, v, mask);
+
+    const ref = attentionReference(T, a, q, k, v, mask, scale);
+    for (y.data, ref.data) |got, want| {
+        try std.testing.expectApproxEqAbs(want, got, 1e-5);
+    }
+}
+
+test "computeAttention - no-mask path matches reference" {
+    const T = f32;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const d_head: usize = 4;
+    const seq_q: usize = 3;
+    const seq_kv: usize = 6;
+
+    var rng_state = std.Random.DefaultPrng.init(0xC0DE);
+    var rng = rng_state.random();
+    const q = try Tensor(T).initRand(a, &rng, &.{ d_head, seq_q });
+    const k = try Tensor(T).initRand(a, &rng, &.{ d_head, seq_kv });
+    const v = try Tensor(T).initRand(a, &rng, &.{ d_head, seq_kv });
+
+    const scale: T = 1.0 / @sqrt(@as(T, @floatFromInt(d_head)));
+
+    const y = q.attention(k, v, null, scale);
+    y.computeAttention(q, k, v, null);
+
+    // Reference with zero mask.
+    const zero_mask = try Tensor(T).init(a, &.{ seq_kv, seq_q });
+    @memset(zero_mask.data, 0);
+    const ref = attentionReference(T, a, q, k, v, zero_mask, scale);
+    for (y.data, ref.data) |got, want| {
+        try std.testing.expectApproxEqAbs(want, got, 1e-5);
     }
 }

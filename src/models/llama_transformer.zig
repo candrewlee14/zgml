@@ -146,7 +146,8 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
                 k_rotated[kv_h] = self.rope.apply(k_h, rope_cs);
             }
 
-            var sm_reduce = [_]usize{ 1, seq_len };
+            const dk: T = @floatFromInt(d_head);
+            const attn_scale: T = 1.0 / @sqrt(dk);
             var attn_sum: ?*Tensor(T) = null;
 
             for (0..cfg.n_heads) |h| {
@@ -155,12 +156,7 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
                 const v_h = v_all.sliceRows(kv_h * d_head, (kv_h + 1) * d_head);
 
                 const q_rot = self.rope.apply(q_h, rope_cs);
-
-                const scores = q_rot.matMul(false, k_rotated[kv_h], true);
-                const dk: T = @floatFromInt(d_head);
-                const scaled = scores.scaleByVal(1.0 / @sqrt(dk)).add(mask);
-                const weights = scaled.softmax(&sm_reduce);
-                const attn_out = weights.matMul(false, v_h, false);
+                const attn_out = q_rot.attention(k_rotated[kv_h], v_h, mask, attn_scale);
 
                 const w_o_h = self.w_o.inner.sliceColumns(h * d_head, (h + 1) * d_head);
                 const projected = attn_out.matMul(false, w_o_h, false);
@@ -209,7 +205,8 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
                 v_updated[kv_h] = v_caches[kv_h].sliceAssign(v_h, pos);
             }
 
-            var sm_reduce = [_]usize{ 1, 1 };
+            const dk: T = @floatFromInt(d_head);
+            const attn_scale: T = 1.0 / @sqrt(dk);
             // Build the concatenated attention output directly, then apply a
             // single output projection instead of one tiny matmul per head.
             var attn_buf = x.scaleByVal(0).sliceRows(0, cfg.d_model);
@@ -218,13 +215,7 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
                 const kv_h = h / n_rep;
                 const q_h = q_proj.sliceRows(h * d_head, (h + 1) * d_head);
                 const q_rot = self.rope.apply(q_h, rope_cs);
-
-                const scores = q_rot.matMul(false, k_updated[kv_h], true);
-                const dk: T = @floatFromInt(d_head);
-                const scaled = scores.scaleByVal(1.0 / @sqrt(dk));
-                const masked = scaled.add(attn_mask);
-                const weights = masked.softmax(&sm_reduce);
-                const attn_out = weights.matMul(false, v_updated[kv_h], false);
+                const attn_out = q_rot.attention(k_updated[kv_h], v_updated[kv_h], attn_mask, attn_scale);
 
                 attn_buf = attn_buf.sliceAssignRows(attn_out, h * d_head);
             }
