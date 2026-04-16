@@ -1,0 +1,39 @@
+src/tensor/api.zig
+  c0b6a400fe3a8858 318-319,321-329,348-349,351-360
+src/tensor/fused.zig
+  c0b6a400fe3a8858 106,222-248,280,358,361,363,370-388,390-394,851-955,1676,1745-1824
+src/tensor.zig
+  c0b6a400fe3a8858 102-108,258-269,470-471,1253-1334
+src/tensor/forward.zig
+  c0b6a400fe3a8858 1244-1438,1743-1744,1757-1885
+src/graph.zig
+  c0b6a400fe3a8858 501-505,558-566,1163,1214-1218,2556,2562,2565,2568,2586,3039-3149
+benchmarks/metal_inference_bench.zig
+  c0b6a400fe3a8858 74
+src/op.zig
+  c0b6a400fe3a8858 56-59,112-113
+src/fusion.zig
+  c0b6a400fe3a8858 115,134-170,172-175,177-180
+src/tensor/backward.zig
+  c0b6a400fe3a8858 322-392
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "9bb51fb9f006b8f7a11040e4b3693306f4f9fee8",
+  "prompts": {
+    "c0b6a400fe3a8858": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8305effc-e845-4039-915e-7ae777d04ffc",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 1038,
+      "total_deletions": 213,
+      "accepted_lines": 966,
+      "overriden_lines": 0
+    }
+  }
+}
