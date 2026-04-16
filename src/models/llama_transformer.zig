@@ -173,15 +173,16 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
         // Frozen cached forward (for InferencePlan)
         // ---------------------------------------------------------------
 
-        /// Cached forward with per-head KV caches.
+        /// Cached forward with a consolidated KV cache.
         ///
-        /// `k_caches`/`v_caches`: per-KV-head caches, each [d_head, max_seq_len].
+        /// `k_cache`/`v_cache`: single `[d_head, max_seq_len * n_kv_heads]` tensor each.
+        /// Head `kv_h`'s `[d_head, max_seq_len]` slab is a contiguous column range.
         /// RoPE cos/sin are looked up at position `pos`.
         pub fn forwardCachedMasked(
             self: *const Self,
             x: *Tensor(T),
-            k_caches: [cfg.n_kv_heads]*Tensor(T),
-            v_caches: [cfg.n_kv_heads]*Tensor(T),
+            k_cache: *Tensor(T),
+            v_cache: *Tensor(T),
             pos: usize,
             attn_mask: *Tensor(T),
         ) *Tensor(T) {
@@ -195,14 +196,16 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
 
             const rope_cs = self.rope.getCosSinPackedAtPos(alloc, pos);
 
-            // Rotate and cache K/V per KV head
+            // Rotate and write into the per-head slab of the consolidated cache.
             var k_updated: [cfg.n_kv_heads]*Tensor(T) = undefined;
             var v_updated: [cfg.n_kv_heads]*Tensor(T) = undefined;
             for (0..cfg.n_kv_heads) |kv_h| {
                 const k_h = k_proj.sliceRows(kv_h * d_head, (kv_h + 1) * d_head);
                 const v_h = v_proj.sliceRows(kv_h * d_head, (kv_h + 1) * d_head);
-                k_updated[kv_h] = k_caches[kv_h].sliceAssign(self.rope.apply(k_h, rope_cs), pos);
-                v_updated[kv_h] = v_caches[kv_h].sliceAssign(v_h, pos);
+                const k_slab = k_cache.sliceColumns(kv_h * cfg.max_seq_len, (kv_h + 1) * cfg.max_seq_len);
+                const v_slab = v_cache.sliceColumns(kv_h * cfg.max_seq_len, (kv_h + 1) * cfg.max_seq_len);
+                k_updated[kv_h] = k_slab.sliceAssign(self.rope.apply(k_h, rope_cs), pos);
+                v_updated[kv_h] = v_slab.sliceAssign(v_h, pos);
             }
 
             const dk: T = @floatFromInt(d_head);
@@ -351,14 +354,10 @@ test "llama block - frozen cached masked forward" {
         .max_seq_len = max_seq,
     }).init(a);
 
-    var k_caches: [n_kv]*Tensor(f32) = undefined;
-    var v_caches: [n_kv]*Tensor(f32) = undefined;
-    for (0..n_kv) |h| {
-        k_caches[h] = try Tensor(f32).init(a, &.{ d_h, max_seq });
-        v_caches[h] = try Tensor(f32).init(a, &.{ d_h, max_seq });
-        @memset(k_caches[h].data, 0);
-        @memset(v_caches[h].data, 0);
-    }
+    const k_cache = try Tensor(f32).init(a, &.{ d_h, max_seq * n_kv });
+    const v_cache = try Tensor(f32).init(a, &.{ d_h, max_seq * n_kv });
+    @memset(k_cache.data, 0);
+    @memset(v_cache.data, 0);
 
     const attn_mask = try Tensor(f32).init(a, &.{ max_seq, 1 });
     @memset(attn_mask.data, -std.math.inf(f32));
@@ -367,7 +366,7 @@ test "llama block - frozen cached masked forward" {
     const x = try Tensor(f32).init(a, &.{ d, 1 });
     nn.uniform(f32, x, -0.1, 0.1, 101);
 
-    const out = block.forwardCachedMasked(x, k_caches, v_caches, 0, attn_mask);
+    const out = block.forwardCachedMasked(x, k_cache, v_cache, 0, attn_mask);
     try g.infer(out);
 
     try testing.expectEqual(@as(usize, d), out.ne[0]);

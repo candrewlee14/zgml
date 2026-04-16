@@ -129,13 +129,14 @@ pub fn LLaMA(comptime T: type, comptime config: LlamaConfig) type {
         /// Frozen cached forward for persistent inference plans.
         ///
         /// `x_in`: [d_model, 1] — token embedding (caller does the lookup).
-        /// `k_caches`/`v_caches`: per-layer, per-KV-head caches [d_head, max_seq_len].
+        /// `k_caches`/`v_caches`: one consolidated [d_head, max_seq_len * n_kv_heads]
+        /// tensor per layer; head `kv_h`'s slab is a contiguous column range.
         /// `attn_mask`: [max_seq_len, 1] — 0 for valid, -inf for masked.
         pub fn forwardCachedMasked(
             self: *const Self,
             x_in: *Tensor(T),
-            k_caches: [config.n_layers][config.n_kv_heads]*Tensor(T),
-            v_caches: [config.n_layers][config.n_kv_heads]*Tensor(T),
+            k_caches: [config.n_layers]*Tensor(T),
+            v_caches: [config.n_layers]*Tensor(T),
             pos: usize,
             attn_mask: *Tensor(T),
         ) *Tensor(T) {
@@ -297,15 +298,13 @@ test "LLaMA - frozen cached masked forward" {
     const model = try Model.init(a);
 
     const d_h = Model.kv_d_head;
-    var k_caches: [cfg.n_layers][cfg.n_kv_heads]*Tensor(f32) = undefined;
-    var v_caches: [cfg.n_layers][cfg.n_kv_heads]*Tensor(f32) = undefined;
+    var k_caches: [cfg.n_layers]*Tensor(f32) = undefined;
+    var v_caches: [cfg.n_layers]*Tensor(f32) = undefined;
     for (0..cfg.n_layers) |l| {
-        for (0..cfg.n_kv_heads) |h| {
-            k_caches[l][h] = try Tensor(f32).init(a, &.{ d_h, cfg.max_seq_len });
-            v_caches[l][h] = try Tensor(f32).init(a, &.{ d_h, cfg.max_seq_len });
-            @memset(k_caches[l][h].data, 0);
-            @memset(v_caches[l][h].data, 0);
-        }
+        k_caches[l] = try Tensor(f32).init(a, &.{ d_h, cfg.max_seq_len * cfg.n_kv_heads });
+        v_caches[l] = try Tensor(f32).init(a, &.{ d_h, cfg.max_seq_len * cfg.n_kv_heads });
+        @memset(k_caches[l].data, 0);
+        @memset(v_caches[l].data, 0);
     }
 
     const attn_mask = try Tensor(f32).init(a, &.{ cfg.max_seq_len, 1 });
