@@ -36,7 +36,6 @@ fn diagnoseGraph(comptime config: GPTConfig, writer: anytype) !void {
     _ = fused_mod;
     var n_fusion: u32 = 0;
     var n_fused_elem: u32 = 0;
-    var n_fused_softmax: u32 = 0;
     var n_fused_layernorm: u32 = 0;
     var n_fused_other: u32 = 0;
     var n_node: u32 = 0;
@@ -52,7 +51,6 @@ fn diagnoseGraph(comptime config: GPTConfig, writer: anytype) !void {
                 const kind = session.plan.graph.fused_chains.items[idx].kind();
                 switch (kind) {
                     .elementwise_chain => n_fused_elem += 1,
-                    .softmax => n_fused_softmax += 1,
                     .layer_norm => n_fused_layernorm += 1,
                     else => n_fused_other += 1,
                 }
@@ -73,7 +71,7 @@ fn diagnoseGraph(comptime config: GPTConfig, writer: anytype) !void {
     try writer.print("  Graph: {d} steps ({d} fused, {d} nodes)\n", .{ steps.len, n_fusion, n_node });
     try writer.print("  Nodes: {d} total raw, {d} forward\n", .{ session.plan.graph.nodes.items.len, nodes.len });
     try writer.print("  Device: {d} matmul, {d} gpu-compute, {d} structural(skip)\n", .{ n_matmul, n_gpu, n_structural });
-    try writer.print("  Fused:  {d} total ({d} elem-chain, {d} softmax, {d} layernorm, {d} other)\n", .{ n_fusion, n_fused_elem, n_fused_softmax, n_fused_layernorm, n_fused_other });
+    try writer.print("  Fused:  {d} total ({d} elem-chain, {d} layernorm, {d} other)\n", .{ n_fusion, n_fused_elem, n_fused_layernorm, n_fused_other });
     try writer.print("  CPU fallback: {d} ops", .{n_cpu_fallback});
     if (n_cpu_fallback > 0) {
         try writer.print(" [", .{});

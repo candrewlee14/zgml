@@ -53,6 +53,10 @@ pub const Op = enum {
     rope, // fused RoPE: x * cos + rotate_half(x) * sin
     slice_assign_rows, // write src0 into row range of src1 (mutates src1)
 
+    // -- Composite ops (first-class single nodes; replace multi-node decompositions) --
+    softmax, // numerically stable softmax over axes given by `reduce_ne`
+    rmsnorm, // x / sqrt(mean(x², reduce_ne) + op_eps)
+
     // -- Matrix multiplication --
     matmul,
 
@@ -105,6 +109,8 @@ pub const Op = enum {
             .slice_assign => "x[pos]=y",
             .rope => "rope(x)",
             .slice_assign_rows => "x[rows]=y",
+            .softmax => "softmax(x)",
+            .rmsnorm => "rmsnorm(x)",
             .matmul => "X*Y",
         };
     }
