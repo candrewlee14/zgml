@@ -1,0 +1,27 @@
+src/llama_inference.zig
+  c0b6a400fe3a8858 40,54-64,75-79,93,98-103,173-174,181-184,193-198,244-394,400,410,447,524-525,537-542,710-754
+src/quant.zig
+  c0b6a400fe3a8858 694-709,720-756,823-825,841,843,851-852,855,860-866,874-879,885-888,909,1111-1132,1213,1215,1223-1224,1267,1269,1288,1290,1300-1359
+benchmarks/llama_smollm_bench.zig
+  c0b6a400fe3a8858 55,69,149,152-156
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "bdc2db6faf7faef1f1a56dc1107dcc7c6ba2f32f",
+  "prompts": {
+    "c0b6a400fe3a8858": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8305effc-e845-4039-915e-7ae777d04ffc",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 439,
+      "total_deletions": 42,
+      "accepted_lines": 420,
+      "overriden_lines": 0
+    }
+  }
+}
