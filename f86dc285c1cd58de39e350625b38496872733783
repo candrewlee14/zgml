@@ -1,0 +1,35 @@
+src/models/llama_transformer.zig
+  c0b6a400fe3a8858 149-150,159,208-209,218
+src/tensor/api.zig
+  c0b6a400fe3a8858 363-391
+src/tensor.zig
+  c0b6a400fe3a8858 109-110,118-121,259-266,272-276,429,492
+src/tensor/forward.zig
+  c0b6a400fe3a8858 1439-1570,1877,2019-2135
+src/tensor/backward.zig
+  c0b6a400fe3a8858 393-405
+src/op.zig
+  c0b6a400fe3a8858 59,115
+src/graph.zig
+  c0b6a400fe3a8858 1279-1280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "f86dc285c1cd58de39e350625b38496872733783",
+  "prompts": {
+    "c0b6a400fe3a8858": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8305effc-e845-4039-915e-7ae777d04ffc",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 327,
+      "total_deletions": 447,
+      "accepted_lines": 323,
+      "overriden_lines": 0
+    }
+  }
+}
