@@ -106,6 +106,8 @@ pub fn Tensor(comptime T: type) type {
         reduce_ne: [max_dims]usize = .{1} ** max_dims,
         /// Scalar epsilon for numerically-stabilized composite ops (rmsnorm, layernorm).
         op_eps: T = 0,
+        /// Scalar multiplier for composite ops that embed a scale factor (attention).
+        op_scale: T = 0,
         /// Gradient tensor, populated during backward pass. Only present for parameters
         /// and intermediate nodes that contribute to a parameter's gradient.
         grad: ?*Self,
@@ -113,6 +115,10 @@ pub fn Tensor(comptime T: type) type {
         src0: ?*Self,
         /// Second source tensor (right operand for binary ops).
         src1: ?*Self,
+        /// Third source tensor, used by composite ops that take >2 operands (attention).
+        src2: ?*Self = null,
+        /// Fourth source tensor, used by composite ops that take >3 operands (attention mask).
+        src3: ?*Self = null,
         /// Debug label for visualization.
         name: ?[]const u8,
         /// Raw element data.
@@ -250,9 +256,22 @@ pub fn Tensor(comptime T: type) type {
             return self.src1;
         }
 
+        pub fn source2(self: *const Self) ?*Self {
+            return self.src2;
+        }
+
+        pub fn source3(self: *const Self) ?*Self {
+            return self.src3;
+        }
+
         pub fn setSources(self: *Self, src0: ?*Self, src1: ?*Self) void {
             self.src0 = src0;
             self.src1 = src1;
+        }
+
+        /// Set the scalar multiplier used by composite ops that embed a scale (attention).
+        pub fn setOpScale(self: *Self, scale_val: T) void {
+            self.op_scale = scale_val;
         }
 
         /// Set the reduction-target shape for composite reduction ops (softmax, etc.).
@@ -407,6 +426,7 @@ pub fn Tensor(comptime T: type) type {
         pub const softmax = api.softmax;
         pub const logSoftmax = api.logSoftmax;
         pub const rmsNorm = api.rmsNorm;
+        pub const attention = api.attention;
         pub const layerNorm = api.layerNorm;
         pub const meanInto = api.meanInto;
         pub const repeat = api.repeat;
@@ -469,6 +489,7 @@ pub fn Tensor(comptime T: type) type {
         pub const computeMax = fwd.computeMax;
         pub const computeSoftmax = fwd.computeSoftmax;
         pub const computeRmsNorm = fwd.computeRmsNorm;
+        pub const computeAttention = fwd.computeAttention;
         pub const computeRepeat = fwd.computeRepeat;
         pub const computeGatherRows = fwd.computeGatherRows;
         pub const computeScatterAddRows = fwd.computeScatterAddRows;

@@ -360,6 +360,35 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return res;
         }
 
+        /// Fused scaled dot-product attention as a single composite graph node.
+        /// `self` is Q with shape `[d_head, seq_q]`; `k` and `v` are `[d_head, seq_kv]`.
+        /// `mask` (optional) is `[seq_kv, seq_q]` or `[seq_kv, 1]` (broadcast) and is
+        /// added to the scaled scores before softmax — use `-inf` entries to suppress
+        /// positions (e.g. causal masking). `scale` is typically `1/sqrt(d_head)`.
+        /// Returns a tensor with shape `[d_head, seq_q]`.
+        pub fn attention(self: *Self, k: *Self, v: *Self, mask: ?*Self, scale_val: T) *Self {
+            std.debug.assert(self.n_dims == 2 and k.n_dims == 2 and v.n_dims == 2);
+            std.debug.assert(self.ne[0] == k.ne[0] and self.ne[0] == v.ne[0]);
+            std.debug.assert(k.ne[1] == v.ne[1]);
+            if (mask) |m| {
+                std.debug.assert(m.n_dims <= 2);
+                std.debug.assert(m.ne[0] == k.ne[1]);
+                const m_q = if (m.n_dims >= 2) m.ne[1] else 1;
+                std.debug.assert(m_q == self.ne[1] or m_q == 1);
+            }
+            const alloc = a(self);
+            const is_node = self.grad != null or k.grad != null or v.grad != null;
+            const res = Self.init(alloc, &.{ self.ne[0], self.ne[1] }) catch unreachable;
+            res.op = .attention;
+            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.src0 = self;
+            res.src1 = k;
+            res.src2 = v;
+            res.src3 = mask;
+            res.setOpScale(scale_val);
+            return res;
+        }
+
         /// Layer normalization: `(x - mean) / sqrt(var + eps)`.
         pub fn layerNorm(self: *Self, ne: []const usize, eps: T) *Self {
             const mu = aux(self.mean(ne));

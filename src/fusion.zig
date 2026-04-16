@@ -112,10 +112,6 @@ pub fn FusionDetector(comptime T: type) type {
                 try self.fused_chains.append(alloc, plan);
                 return true;
             }
-            if (self.detectAttention(node, idx)) |plan| {
-                try self.fused_chains.append(alloc, plan);
-                return true;
-            }
             if (self.detectLayerNorm(node, idx)) |plan| {
                 try self.fused_chains.append(alloc, plan);
                 return true;
@@ -129,55 +125,6 @@ pub fn FusionDetector(comptime T: type) type {
                 return true;
             }
             return false;
-        }
-
-        /// Single-query attention:
-        ///   matmul2 = matmul(softmax(mask + scale * matmul(q, k^T)), v)
-        ///
-        /// Recognizing the whole chain collapses it to a streaming (flash)
-        /// kernel that never materializes the [seq_len, 1] scores/weights
-        /// tensors.
-        fn detectAttention(self: *Self, node: *Tensor(T), idx: usize) ?FusionPlan(T) {
-            if (node.opTag() != .matmul) return null;
-            if (node.matmul_flags.trans0 or node.matmul_flags.trans1) return null;
-            const softmax_node = node.source0() orelse return null;
-            const v = node.source1() orelse return null;
-
-            if (softmax_node.opTag() != .softmax) return null;
-            const masked = softmax_node.source0() orelse return null;
-            if (masked.opTag() != .add) return null;
-            const scaled = masked.source0() orelse return null;
-            const attn_mask = masked.source1() orelse return null;
-
-            if (scaled.opTag() != .mul) return null;
-            const scores = scaled.source0() orelse return null;
-            const scale_rep = expect(scaled.source1(), .repeat) orelse return null;
-            const scale_scalar = scale_rep.source0() orelse return null;
-            if (!scale_scalar.isScalar()) return null;
-            const scale: T = scale_scalar.data[0];
-
-            if (scores.opTag() != .matmul) return null;
-            // scores = q @ k^T — left untransposed, right transposed.
-            if (scores.matmul_flags.trans0 or !scores.matmul_flags.trans1) return null;
-            const q = scores.source0() orelse return null;
-            const k = scores.source1() orelse return null;
-
-            const plan = fused.AttentionPlan(T){
-                .q = q,
-                .k = k,
-                .v = v,
-                .mask = attn_mask,
-                .scale = scale,
-                .output = node,
-                .scores = scores,
-                .scaled = scaled,
-                .masked = masked,
-                .softmax = softmax_node,
-            };
-            if (!fused.validateAttentionPlan(T, plan)) return null;
-
-            self.markNodes(&.{ scores, scaled, masked, softmax_node, node });
-            return .{ .output_idx = idx, .payload = .{ .attention = plan } };
         }
 
         /// log_softmax: add(shifted, neg(rep(log(sum(exp(shifted))))))

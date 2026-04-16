@@ -56,6 +56,7 @@ pub const Op = enum {
     // -- Composite ops (first-class single nodes; replace multi-node decompositions) --
     softmax, // numerically stable softmax over axes given by `reduce_ne`
     rmsnorm, // x / sqrt(mean(x², reduce_ne) + op_eps)
+    attention, // fused attention: softmax(Q @ K^T * scale + mask) @ V
 
     // -- Matrix multiplication --
     matmul,
@@ -111,6 +112,7 @@ pub const Op = enum {
             .slice_assign_rows => "x[rows]=y",
             .softmax => "softmax(x)",
             .rmsnorm => "rmsnorm(x)",
+            .attention => "attn(Q,K,V)",
             .matmul => "X*Y",
         };
     }

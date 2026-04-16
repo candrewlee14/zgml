@@ -103,7 +103,6 @@ pub const FusionKind = enum {
     log_softmax,
     cross_entropy,
     layer_norm,
-    attention,
 };
 
 pub const BinaryOperandRole = enum {
@@ -219,33 +218,6 @@ pub fn CrossEntropyPlan(comptime T: type) type {
     };
 }
 
-/// Single-query flash attention. Input shapes (ne convention, ne[0]=rows):
-///   q:      [d_head, 1]
-///   k, v:   [d_head, seq_len]
-///   mask:   [seq_len, 1]   (additive)
-///   scores, scaled, masked, softmax output: [seq_len, 1]
-///   output: [d_head, 1]
-pub fn AttentionPlan(comptime T: type) type {
-    return struct {
-        // Inputs
-        q: *Tensor(T),
-        k: *Tensor(T),
-        v: *Tensor(T),
-        mask: *Tensor(T),
-        scale: T,
-
-        // Fused output (the final weights @ V matmul).
-        output: *Tensor(T),
-
-        // Displaced intermediates (shape-validated; kept fused so the framework
-        // won't try to compute them independently).
-        scores: *Tensor(T),
-        scaled: *Tensor(T),
-        masked: *Tensor(T),
-        softmax: *Tensor(T),
-    };
-}
-
 pub fn LayerNormPlan(comptime T: type) type {
     return struct {
         input: *Tensor(T),
@@ -277,7 +249,6 @@ pub fn FusionPayload(comptime T: type) type {
         log_softmax: LogSoftmaxPlan(T),
         cross_entropy: CrossEntropyPlan(T),
         layer_norm: LayerNormPlan(T),
-        attention: AttentionPlan(T),
     };
 }
 
@@ -364,34 +335,6 @@ pub fn validateLogSoftmaxPlan(comptime T: type, plan: LogSoftmaxPlan(T)) bool {
     for (full_nodes) |node| {
         if (!node.isSameShape(input)) return false;
     }
-    return true;
-}
-
-pub fn validateAttentionPlan(comptime T: type, plan: AttentionPlan(T)) bool {
-    const q = plan.q;
-    const k = plan.k;
-    const v = plan.v;
-    const mask = plan.mask;
-    const out = plan.output;
-    // Single-query Q: [d_head, 1].
-    if (q.n_dims < 2 or q.ne[1] != 1) return false;
-    const d_head = q.ne[0];
-    // K, V: [d_head, seq_len] with matching seq_len.
-    if (k.ne[0] != d_head or v.ne[0] != d_head) return false;
-    const seq_len = k.ne[1];
-    if (v.ne[1] != seq_len) return false;
-    // Mask: [seq_len, 1].
-    if (mask.ne[0] != seq_len or mask.ne[1] != 1) return false;
-    // Intermediate score tensors: [seq_len, 1].
-    const score_shaped = [_]*Tensor(T){ plan.scores, plan.scaled, plan.masked };
-    for (score_shaped) |t| {
-        if (t.ne[0] != seq_len or t.ne[1] != 1) return false;
-    }
-    // Softmax node must be the composite op with shape [seq_len, 1].
-    if (plan.softmax.opTag() != .softmax) return false;
-    if (plan.softmax.ne[0] != seq_len or plan.softmax.ne[1] != 1) return false;
-    // Output: [d_head, 1].
-    if (out.ne[0] != d_head or out.ne[1] != 1) return false;
     return true;
 }
 
@@ -844,113 +787,6 @@ fn executeSoftmaxPlanBase(comptime T: type, plan: anytype, comptime log_mode: bo
                     }
                 }
             }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Single-query flash attention
-// ---------------------------------------------------------------------------
-
-/// Max d_head supported by the stack-allocated accumulator. Picked high enough
-/// to cover every head size we currently ship (SmolLM=64, LLaMA-7B=128, etc.).
-const attention_max_d_head: usize = 512;
-
-fn executeAttentionPlan(comptime T: type, plan: AttentionPlan(T)) void {
-    const q = plan.q;
-    const k = plan.k;
-    const v = plan.v;
-    const mask = plan.mask;
-    const out = plan.output;
-
-    const d_head = q.ne[0];
-    const seq_len = k.ne[1];
-    std.debug.assert(d_head <= attention_max_d_head);
-
-    const q_r = q.strides[0];
-    const k_r = k.strides[0];
-    const k_c = k.strides[1];
-    const v_r = v.strides[0];
-    const v_c = v.strides[1];
-    const mask_r = mask.strides[0];
-    const out_r = out.strides[0];
-
-    const scale = plan.scale;
-    const neg_inf = -std.math.inf(T);
-    const unit_strides = q_r == 1 and k_r == 1 and v_r == 1 and out_r == 1;
-
-    var m: T = neg_inf;
-    var l: T = 0;
-    var acc_buf: [attention_max_d_head]T = undefined;
-    const acc = acc_buf[0..d_head];
-    @memset(acc, 0);
-
-    const V = comptime vecSize(T);
-    const VecT = @Vector(V, T);
-
-    for (0..seq_len) |s| {
-        // score = scale * (Q · K[s]) + mask[s]
-        var dot: T = 0;
-        if (unit_strides) {
-            var dot_v: VecT = @splat(0);
-            var r: usize = 0;
-            while (r + V <= d_head) : (r += V) {
-                const qv: VecT = q.data[r..][0..V].*;
-                const kv: VecT = k.data[s * k_c + r ..][0..V].*;
-                dot_v = dot_v + qv * kv;
-            }
-            dot = @reduce(.Add, dot_v);
-            while (r < d_head) : (r += 1) {
-                dot += q.data[r] * k.data[s * k_c + r];
-            }
-        } else {
-            for (0..d_head) |r| {
-                dot += q.data[r * q_r] * k.data[s * k_c + r * k_r];
-            }
-        }
-
-        const score = dot * scale + mask.data[s * mask_r];
-        if (!std.math.isFinite(score)) continue;
-
-        const new_m = @max(m, score);
-        const alpha: T = if (m == neg_inf) 0 else @exp(m - new_m);
-        const w = @exp(score - new_m);
-        l = l * alpha + w;
-        m = new_m;
-
-        if (unit_strides) {
-            const alpha_v: VecT = @splat(alpha);
-            const w_v: VecT = @splat(w);
-            var r: usize = 0;
-            while (r + V <= d_head) : (r += V) {
-                const acc_vv: VecT = acc[r..][0..V].*;
-                const v_vv: VecT = v.data[s * v_c + r ..][0..V].*;
-                acc[r..][0..V].* = acc_vv * alpha_v + w_v * v_vv;
-            }
-            while (r < d_head) : (r += 1) {
-                acc[r] = acc[r] * alpha + w * v.data[s * v_c + r];
-            }
-        } else {
-            for (0..d_head) |r| {
-                acc[r] = acc[r] * alpha + w * v.data[s * v_c + r * v_r];
-            }
-        }
-    }
-
-    const inv_l: T = if (l > 0) @as(T, 1) / l else 0;
-    if (unit_strides) {
-        const inv_v: VecT = @splat(inv_l);
-        var r: usize = 0;
-        while (r + V <= d_head) : (r += V) {
-            const acc_vv: VecT = acc[r..][0..V].*;
-            out.data[r..][0..V].* = acc_vv * inv_v;
-        }
-        while (r < d_head) : (r += 1) {
-            out.data[r] = acc[r] * inv_l;
-        }
-    } else {
-        for (0..d_head) |r| {
-            out.data[r * out_r] = acc[r] * inv_l;
         }
     }
 }
@@ -1673,7 +1509,6 @@ pub fn executeFusionPlan(comptime T: type, plan: FusionPlan(T), phase_profile: ?
         .log_softmax => |log_softmax_plan| executeLogSoftmaxPlan(T, log_softmax_plan),
         .cross_entropy => |cross_entropy_plan| executeCrossEntropyPlan(T, cross_entropy_plan),
         .layer_norm => |layer_norm_plan| executeLayerNormPlan(T, layer_norm_plan),
-        .attention => |attn_plan| executeAttentionPlan(T, attn_plan),
     }
 }
 
@@ -1743,82 +1578,3 @@ test "fused - swapped commutative 3-op chain" {
     }
 }
 
-test "fused - single-query attention matches reference" {
-    const T = f32;
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    const d_head: usize = 4;
-    const seq_len: usize = 3;
-
-    const q = try Tensor(T).init(a, &.{ d_head, 1 });
-    const k = try Tensor(T).init(a, &.{ d_head, seq_len });
-    const v = try Tensor(T).init(a, &.{ d_head, seq_len });
-    const mask = try Tensor(T).init(a, &.{ seq_len, 1 });
-
-    q.setData(&.{ 1.0, 0.5, -0.3, 0.2 });
-    k.setData(&.{
-        0.1,  0.2,  -0.1, 0.4,
-        0.3,  -0.2, 0.5,  0.1,
-        -0.4, 0.3,  0.2,  0.5,
-    });
-    v.setData(&.{
-        1.0, 2.0,  -1.0, 0.5,
-        0.0, 1.0,  0.5,  -0.5,
-        2.0, -1.0, 0.0,  1.0,
-    });
-    // Third position masked out to exercise the -inf skip path.
-    mask.setData(&.{ 0, 0, -std.math.inf(T) });
-
-    const out = try Tensor(T).init(a, &.{ d_head, 1 });
-    const scores = try Tensor(T).init(a, &.{ seq_len, 1 });
-    const scaled = try Tensor(T).init(a, &.{ seq_len, 1 });
-    const masked = try Tensor(T).init(a, &.{ seq_len, 1 });
-    const softmax_output = masked.softmax(&.{ 1, 1 });
-
-    const scale: T = 1.0 / @sqrt(@as(T, @floatFromInt(d_head)));
-    const plan = AttentionPlan(T){
-        .q = q,
-        .k = k,
-        .v = v,
-        .mask = mask,
-        .scale = scale,
-        .output = out,
-        .scores = scores,
-        .scaled = scaled,
-        .masked = masked,
-        .softmax = softmax_output,
-    };
-    try std.testing.expect(validateAttentionPlan(T, plan));
-    executeAttentionPlan(T, plan);
-
-    // Reference: plain matmul → scale → +mask → softmax → matmul, computed
-    // over finite mask positions only (matches the kernel's masked skip).
-    var ref_scores: [seq_len]T = undefined;
-    for (0..seq_len) |s| {
-        var d: T = 0;
-        for (0..d_head) |r| d += q.data[r] * k.data[s * d_head + r];
-        ref_scores[s] = d * scale + mask.data[s];
-    }
-    var max_score: T = -std.math.inf(T);
-    for (ref_scores) |rs| if (std.math.isFinite(rs)) {
-        max_score = @max(max_score, rs);
-    };
-    var total: T = 0;
-    var ref_weights: [seq_len]T = undefined;
-    for (ref_scores, 0..) |rs, i| {
-        ref_weights[i] = if (std.math.isFinite(rs)) @exp(rs - max_score) else 0;
-        total += ref_weights[i];
-    }
-    for (&ref_weights) |*w| w.* /= total;
-
-    var ref_out: [d_head]T = [_]T{0} ** d_head;
-    for (0..seq_len) |s| {
-        for (0..d_head) |r| ref_out[r] += ref_weights[s] * v.data[s * d_head + r];
-    }
-
-    for (0..d_head) |r| {
-        try std.testing.expectApproxEqAbs(ref_out[r], out.data[r], 1e-5);
-    }
-}
