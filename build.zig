@@ -367,6 +367,28 @@ pub fn build(b: *std.Build) void {
         step.dependOn(&b.addRunArtifact(exe).step);
     }
 
+    // SmolLM LLaMA benchmark
+    {
+        const pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
+        const mod = b.createModule(.{
+            .root_source_file = b.path("benchmarks/llama_smollm_bench.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "zgml", .module = pkg.zgml },
+                .{ .name = "zgml_options", .module = pkg.zgml_options },
+            },
+        });
+        const exe = b.addExecutable(.{ .name = "bench-llama-smollm", .root_module = mod });
+        if (use_blas) {
+            linkBlas(target, exe);
+            exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        }
+        b.installArtifact(exe);
+        const step = b.step("bench-llama-smollm", "Benchmark SmolLM LLaMA inference throughput");
+        step.dependOn(&b.addRunArtifact(exe).step);
+    }
+
     // Text generation binary
     const zgml_gen_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
     const gen_mod = b.createModule(.{
@@ -454,6 +476,7 @@ pub fn build(b: *std.Build) void {
         linkBlas(target, llama_exe);
         llama_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
     }
+    linkMetal(b, target, llama_exe);
     b.installArtifact(llama_exe);
     const llama_step = b.step("generate-llama", "Generate text from a pretrained LLaMA model");
     llama_step.dependOn(&b.addInstallArtifact(llama_exe, .{}).step);
