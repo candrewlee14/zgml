@@ -601,6 +601,257 @@ pub fn QuantizedWeight(comptime T: type) type {
 }
 
 // ---------------------------------------------------------------------------
+// Quantized KV cache (Q8_0 block layout)
+// ---------------------------------------------------------------------------
+
+/// Column-major quantized KV cache.
+///
+/// `q_data`: [d_head * n_cols] int8. Column `c` at `q_data[c*d_head ..][0..d_head]`.
+/// `scales`: [blocks_per_col * n_cols] f32. Column `c`'s scales at
+///           `scales[c*blocks_per_col ..][0..blocks_per_col]`.
+///
+/// d_head must be divisible by block_size. Storage per column is
+/// `d_head + blocks_per_col * sizeof(T)` bytes — ~3.6× smaller than f32 for
+/// d_head=64, block_size=32.
+pub fn QuantizedKVCache(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        d_head: usize,
+        n_cols: usize,
+        block_size: usize,
+        blocks_per_col: usize,
+
+        q_data: []i8,
+        scales: []T,
+
+        pub fn init(alloc: std.mem.Allocator, d_head: usize, n_cols: usize, block_size: usize) !Self {
+            std.debug.assert(d_head % block_size == 0);
+            const bpc = d_head / block_size;
+            const q_data = try alloc.alloc(i8, d_head * n_cols);
+            errdefer alloc.free(q_data);
+            const scales = try alloc.alloc(T, bpc * n_cols);
+            errdefer alloc.free(scales);
+            @memset(q_data, 0);
+            @memset(scales, 0);
+            return .{
+                .d_head = d_head,
+                .n_cols = n_cols,
+                .block_size = block_size,
+                .blocks_per_col = bpc,
+                .q_data = q_data,
+                .scales = scales,
+            };
+        }
+
+        pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
+            alloc.free(self.q_data);
+            alloc.free(self.scales);
+        }
+
+        pub fn clear(self: *Self) void {
+            @memset(self.q_data, 0);
+            @memset(self.scales, 0);
+        }
+
+        /// Quantize `src` f32 [d_head] into column `col_idx`.
+        pub fn storeColumn(self: *Self, col_idx: usize, src: []const T) void {
+            std.debug.assert(src.len == self.d_head);
+            std.debug.assert(col_idx < self.n_cols);
+            const q_off = col_idx * self.d_head;
+            const s_off = col_idx * self.blocks_per_col;
+            QuantizedWeight(T).quantizeInput(
+                src,
+                self.d_head,
+                self.block_size,
+                self.q_data[q_off..][0..self.d_head],
+                self.scales[s_off..][0..self.blocks_per_col],
+            );
+        }
+
+        /// Dequantize column `col_idx` into `dst` f32 [d_head].
+        pub fn dequantColumn(self: *const Self, col_idx: usize, dst: []T) void {
+            std.debug.assert(dst.len == self.d_head);
+            const q_col = self.q_data[col_idx * self.d_head ..][0..self.d_head];
+            const sc = self.scales[col_idx * self.blocks_per_col ..][0..self.blocks_per_col];
+            for (0..self.blocks_per_col) |b| {
+                const base = b * self.block_size;
+                const s = sc[b];
+                for (0..self.block_size) |i| {
+                    dst[base + i] = @as(T, @floatFromInt(q_col[base + i])) * s;
+                }
+            }
+        }
+
+        /// Dot product: `f_vec · dequant(col_idx)`.
+        pub fn dotF32(self: *const Self, f_vec: []const T, col_idx: usize) T {
+            std.debug.assert(f_vec.len == self.d_head);
+            const q_col = self.q_data[col_idx * self.d_head ..][0..self.d_head];
+            const sc = self.scales[col_idx * self.blocks_per_col ..][0..self.blocks_per_col];
+            return dotI8F32(T, f_vec, q_col, sc, self.block_size, self.blocks_per_col);
+        }
+
+        /// `acc[i] += w * dequant(col_idx)[i]`.
+        pub fn accumF32(self: *const Self, acc: []T, w: T, col_idx: usize) void {
+            std.debug.assert(acc.len == self.d_head);
+            const q_col = self.q_data[col_idx * self.d_head ..][0..self.d_head];
+            const sc = self.scales[col_idx * self.blocks_per_col ..][0..self.blocks_per_col];
+            accumI8F32(T, acc, w, q_col, sc, self.block_size, self.blocks_per_col);
+        }
+    };
+}
+
+fn dotI8F32(
+    comptime T: type,
+    f_vec: []const T,
+    q_col: []const i8,
+    scales: []const T,
+    block_size: usize,
+    n_blocks: usize,
+) T {
+    const V = 8;
+    const VecT = @Vector(V, T);
+    const VecI = @Vector(V, i32);
+    const VecI8 = @Vector(V, i8);
+    var total: T = 0;
+    for (0..n_blocks) |b| {
+        const base = b * block_size;
+        var block_sum: VecT = @splat(0);
+        var i: usize = 0;
+        while (i + V <= block_size) : (i += V) {
+            const fv: VecT = f_vec[base + i ..][0..V].*;
+            const iv: VecI8 = q_col[base + i ..][0..V].*;
+            const qv: VecT = @floatFromInt(@as(VecI, iv));
+            block_sum += fv * qv;
+        }
+        var sub: T = @reduce(.Add, block_sum);
+        while (i < block_size) : (i += 1) {
+            sub += f_vec[base + i] * @as(T, @floatFromInt(q_col[base + i]));
+        }
+        total += sub * scales[b];
+    }
+    return total;
+}
+
+fn accumI8F32(
+    comptime T: type,
+    acc: []T,
+    w: T,
+    q_col: []const i8,
+    scales: []const T,
+    block_size: usize,
+    n_blocks: usize,
+) void {
+    const V = 8;
+    const VecT = @Vector(V, T);
+    const VecI = @Vector(V, i32);
+    const VecI8 = @Vector(V, i8);
+    for (0..n_blocks) |b| {
+        const base = b * block_size;
+        const ws_scalar = w * scales[b];
+        const ws: VecT = @splat(ws_scalar);
+        var i: usize = 0;
+        while (i + V <= block_size) : (i += V) {
+            const av: VecT = acc[base + i ..][0..V].*;
+            const iv: VecI8 = q_col[base + i ..][0..V].*;
+            const qv: VecT = @floatFromInt(@as(VecI, iv));
+            acc[base + i ..][0..V].* = av + ws * qv;
+        }
+        while (i < block_size) : (i += 1) {
+            acc[base + i] += ws_scalar * @as(T, @floatFromInt(q_col[base + i]));
+        }
+    }
+}
+
+/// Flash attention with quantized K/V cache.
+///
+/// Output dst (f32) is written in-place. Q is f32. K and V come from
+/// `QuantizedKVCache`s that were populated via `storeColumn`. The kernel
+/// iterates over the first `seq_kv` columns of each cache.
+///
+/// Shapes (column-major):
+///   q:    [d_head, seq_q], column stride `q_col_stride`
+///   dst:  [d_head, seq_q], column stride `dst_col_stride`
+///   mask: optional [seq_kv, seq_q_or_1] with strides (row_stride, col_stride).
+///         Passing `mask_col_stride = 0` broadcasts a single mask column.
+pub fn attentionQuantized(
+    comptime T: type,
+    dst: []T,
+    dst_col_stride: usize,
+    q: []const T,
+    q_col_stride: usize,
+    d_head: usize,
+    seq_q: usize,
+    k_cache: *const QuantizedKVCache(T),
+    v_cache: *const QuantizedKVCache(T),
+    seq_kv: usize,
+    mask: ?[]const T,
+    mask_row_stride: usize,
+    mask_col_stride: usize,
+    scale: T,
+) void {
+    std.debug.assert(k_cache.d_head == d_head and v_cache.d_head == d_head);
+    std.debug.assert(seq_kv <= k_cache.n_cols and seq_kv <= v_cache.n_cols);
+
+    const max_d_head: usize = 512;
+    std.debug.assert(d_head <= max_d_head);
+    var acc_buf: [max_d_head]T = undefined;
+    const acc = acc_buf[0..d_head];
+
+    const neg_inf = -std.math.inf(T);
+
+    for (0..seq_q) |qi| {
+        const q_base = qi * q_col_stride;
+        const q_col = q[q_base..][0..d_head];
+        const mask_base = qi * mask_col_stride;
+
+        var m_val: T = neg_inf;
+        var l: T = 0;
+        @memset(acc, 0);
+
+        for (0..seq_kv) |s| {
+            const dot = k_cache.dotF32(q_col, s);
+            const mask_add: T = if (mask) |md| md[mask_base + s * mask_row_stride] else 0;
+            const score = dot * scale + mask_add;
+            if (!std.math.isFinite(score)) continue;
+
+            const new_m = @max(m_val, score);
+            const alpha: T = if (m_val == neg_inf) 0 else @exp(m_val - new_m);
+            const w = @exp(score - new_m);
+
+            // acc = acc * alpha + w * dequant(V[:, s])
+            if (alpha != 1) {
+                const V = 8;
+                const VecT = @Vector(V, T);
+                const alpha_v: VecT = @splat(alpha);
+                var r: usize = 0;
+                while (r + V <= d_head) : (r += V) {
+                    const av: VecT = acc[r..][0..V].*;
+                    acc[r..][0..V].* = av * alpha_v;
+                }
+                while (r < d_head) : (r += 1) acc[r] *= alpha;
+            }
+            v_cache.accumF32(acc, w, s);
+
+            l = l * alpha + w;
+            m_val = new_m;
+        }
+
+        const inv_l: T = if (l > 0) @as(T, 1) / l else 0;
+        const out_base = qi * dst_col_stride;
+        const V = 8;
+        const VecT = @Vector(V, T);
+        const inv_v: VecT = @splat(inv_l);
+        var r: usize = 0;
+        while (r + V <= d_head) : (r += V) {
+            const av: VecT = acc[r..][0..V].*;
+            dst[out_base + r ..][0..V].* = av * inv_v;
+        }
+        while (r < d_head) : (r += 1) dst[out_base + r] = acc[r] * inv_l;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -732,4 +983,213 @@ test "block size affects quantization error" {
 
     // Smaller blocks should have less error
     try testing.expect(err_small <= err_large);
+}
+
+// ---------------------------------------------------------------------------
+// QuantizedKVCache tests
+// ---------------------------------------------------------------------------
+
+fn fillRandF32(buf: []f32, seed: u64) void {
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rng = prng.random();
+    for (buf) |*v| v.* = (rng.float(f32) - 0.5) * 2.0;
+}
+
+test "QuantizedKVCache - store then dequant roundtrip" {
+    const alloc = testing.allocator;
+    const d_head: usize = 64;
+    const n_cols: usize = 4;
+    const bs: usize = 32;
+
+    var cache = try QuantizedKVCache(f32).init(alloc, d_head, n_cols, bs);
+    defer cache.deinit(alloc);
+
+    var src: [d_head]f32 = undefined;
+    fillRandF32(&src, 1);
+    cache.storeColumn(2, &src);
+
+    var out: [d_head]f32 = undefined;
+    cache.dequantColumn(2, &out);
+
+    for (src, out) |s, o| try testing.expectApproxEqAbs(s, o, 0.02);
+}
+
+test "QuantizedKVCache - dotF32 matches reference" {
+    const alloc = testing.allocator;
+    const d_head: usize = 64;
+    var cache = try QuantizedKVCache(f32).init(alloc, d_head, 1, 32);
+    defer cache.deinit(alloc);
+
+    var k_col: [d_head]f32 = undefined;
+    var q_vec: [d_head]f32 = undefined;
+    fillRandF32(&k_col, 2);
+    fillRandF32(&q_vec, 3);
+    cache.storeColumn(0, &k_col);
+
+    var ref: f32 = 0;
+    for (q_vec, k_col) |a, b| ref += a * b;
+
+    const got = cache.dotF32(&q_vec, 0);
+    try testing.expectApproxEqAbs(ref, got, 0.05);
+}
+
+test "QuantizedKVCache - accumF32 matches reference" {
+    const alloc = testing.allocator;
+    const d_head: usize = 64;
+    var cache = try QuantizedKVCache(f32).init(alloc, d_head, 1, 32);
+    defer cache.deinit(alloc);
+
+    var v_col: [d_head]f32 = undefined;
+    fillRandF32(&v_col, 4);
+    cache.storeColumn(0, &v_col);
+
+    const w: f32 = 0.7;
+    var ref: [d_head]f32 = .{0} ** d_head;
+    for (&ref, v_col) |*r, v| r.* = w * v;
+
+    var got: [d_head]f32 = .{0} ** d_head;
+    cache.accumF32(&got, w, 0);
+
+    for (ref, got) |r, g| try testing.expectApproxEqAbs(r, g, 0.02);
+}
+
+test "attentionQuantized - decode (seq_q=1) matches reference" {
+    const alloc = testing.allocator;
+    const d_head: usize = 64;
+    const seq_kv: usize = 8;
+    const bs: usize = 32;
+
+    var k_cache = try QuantizedKVCache(f32).init(alloc, d_head, seq_kv, bs);
+    defer k_cache.deinit(alloc);
+    var v_cache = try QuantizedKVCache(f32).init(alloc, d_head, seq_kv, bs);
+    defer v_cache.deinit(alloc);
+
+    var k_data: [d_head * seq_kv]f32 = undefined;
+    var v_data: [d_head * seq_kv]f32 = undefined;
+    fillRandF32(&k_data, 10);
+    fillRandF32(&v_data, 11);
+
+    for (0..seq_kv) |ci| {
+        k_cache.storeColumn(ci, k_data[ci * d_head ..][0..d_head]);
+        v_cache.storeColumn(ci, v_data[ci * d_head ..][0..d_head]);
+    }
+
+    var q: [d_head]f32 = undefined;
+    fillRandF32(&q, 12);
+
+    const scale: f32 = 1.0 / @sqrt(@as(f32, @floatFromInt(d_head)));
+
+    // Reference: dequantize K/V, run the same streaming softmax.
+    var k_ref: [d_head * seq_kv]f32 = undefined;
+    var v_ref: [d_head * seq_kv]f32 = undefined;
+    for (0..seq_kv) |ci| {
+        k_cache.dequantColumn(ci, k_ref[ci * d_head ..][0..d_head]);
+        v_cache.dequantColumn(ci, v_ref[ci * d_head ..][0..d_head]);
+    }
+    var ref_out: [d_head]f32 = .{0} ** d_head;
+    var m_val: f32 = -std.math.inf(f32);
+    var l: f32 = 0;
+    for (0..seq_kv) |s| {
+        var dot: f32 = 0;
+        for (0..d_head) |r| dot += q[r] * k_ref[s * d_head + r];
+        const score = dot * scale;
+        const new_m = @max(m_val, score);
+        const alpha: f32 = if (m_val == -std.math.inf(f32)) 0 else @exp(m_val - new_m);
+        const w = @exp(score - new_m);
+        for (0..d_head) |r| ref_out[r] = ref_out[r] * alpha + w * v_ref[s * d_head + r];
+        l = l * alpha + w;
+        m_val = new_m;
+    }
+    const inv_l = if (l > 0) 1.0 / l else 0.0;
+    for (&ref_out) |*r| r.* *= inv_l;
+
+    var out: [d_head]f32 = .{0} ** d_head;
+    attentionQuantized(
+        f32,
+        &out,
+        d_head,
+        &q,
+        d_head,
+        d_head,
+        1,
+        &k_cache,
+        &v_cache,
+        seq_kv,
+        null,
+        0,
+        0,
+        scale,
+    );
+
+    for (ref_out, out) |r, o| try testing.expectApproxEqAbs(r, o, 1e-5);
+}
+
+test "attentionQuantized - causal mask via broadcast column" {
+    const alloc = testing.allocator;
+    const d_head: usize = 32;
+    const seq_kv: usize = 8;
+    const pos: usize = 4;
+    const bs: usize = 32;
+
+    var k_cache = try QuantizedKVCache(f32).init(alloc, d_head, seq_kv, bs);
+    defer k_cache.deinit(alloc);
+    var v_cache = try QuantizedKVCache(f32).init(alloc, d_head, seq_kv, bs);
+    defer v_cache.deinit(alloc);
+
+    var k_data: [d_head * seq_kv]f32 = undefined;
+    var v_data: [d_head * seq_kv]f32 = undefined;
+    fillRandF32(&k_data, 20);
+    fillRandF32(&v_data, 21);
+    for (0..seq_kv) |ci| {
+        k_cache.storeColumn(ci, k_data[ci * d_head ..][0..d_head]);
+        v_cache.storeColumn(ci, v_data[ci * d_head ..][0..d_head]);
+    }
+
+    var q: [d_head]f32 = undefined;
+    fillRandF32(&q, 22);
+
+    // Mask: 0 for positions <= pos, -inf elsewhere. Broadcast single column.
+    var mask: [seq_kv]f32 = undefined;
+    for (0..seq_kv) |i| mask[i] = if (i <= pos) 0 else -std.math.inf(f32);
+
+    const scale: f32 = 0.25;
+
+    var out_masked: [d_head]f32 = .{0} ** d_head;
+    attentionQuantized(
+        f32,
+        &out_masked,
+        d_head,
+        &q,
+        d_head,
+        d_head,
+        1,
+        &k_cache,
+        &v_cache,
+        seq_kv,
+        &mask,
+        1,
+        0,
+        scale,
+    );
+
+    // Expected: same result as attending only to positions [0..pos+1].
+    var out_truncated: [d_head]f32 = .{0} ** d_head;
+    attentionQuantized(
+        f32,
+        &out_truncated,
+        d_head,
+        &q,
+        d_head,
+        d_head,
+        1,
+        &k_cache,
+        &v_cache,
+        pos + 1,
+        null,
+        0,
+        0,
+        scale,
+    );
+
+    for (out_masked, out_truncated) |m, t| try testing.expectApproxEqAbs(m, t, 1e-6);
 }
