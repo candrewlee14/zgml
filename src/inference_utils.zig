@@ -8,7 +8,8 @@ const std = @import("std");
 
 const Tensor = @import("tensor.zig").Tensor;
 const ComputeGraph = @import("graph.zig").ComputeGraph;
-const QuantizedWeight = @import("quant.zig").QuantizedWeight;
+const quant = @import("quant.zig");
+const QuantizedWeight = quant.QuantizedWeight;
 
 /// Analyse tensor liveness across the forward schedule and assign
 /// shared workspace buffers so that dead temporaries are recycled.
@@ -132,7 +133,7 @@ pub fn isWeightMatmul(comptime T: type, node: *Tensor(T)) bool {
 }
 
 /// Dispatch a quantized matmul for a node whose weight has been quantized.
-pub fn executeQuantizedMatmul(comptime T: type, node: *Tensor(T), qw: *const QuantizedWeight(T)) void {
+pub fn executeQuantizedMatmul(comptime T: type, node: *Tensor(T), qw: *const QuantizedWeight(T), pool: ?*quant.GemvPool(T)) void {
     const src0 = node.src0.?;
     const src1 = node.src1.?;
     const flags = node.matmul_flags;
@@ -142,5 +143,25 @@ pub fn executeQuantizedMatmul(comptime T: type, node: *Tensor(T), qw: *const Qua
     const N = if (flags.trans1) src1.ne[1] else src1.ne[0];
     const K = if (flags.trans0) src0.ne[1] else src0.ne[0];
 
-    qw.matmul(input.data, node.data, M, N, K);
+    if (M == 1 and qw.t_data != null) {
+        const bs = qw.block_size;
+        const blocks_per_row = (K + bs - 1) / bs;
+
+        // Quantize input (shared across all threads).
+        var inp_q_buf: [16384]i8 = undefined;
+        var inp_scales_buf: [512]T = undefined;
+        const inp_q = inp_q_buf[0..K];
+        const inp_scales = inp_scales_buf[0..blocks_per_row];
+        QuantizedWeight(T).quantizeInput(input.data, K, bs, inp_q, inp_scales);
+
+        if (pool) |p| {
+            if (p.n_workers > 1) {
+                p.dispatch(qw, inp_q.ptr, inp_scales.ptr, node.data, N, K);
+                return;
+            }
+        }
+        QuantizedWeight(T).gemvRange(qw.t_data.?, qw.t_scales.?, inp_q, inp_scales, node.data, 0, N, K, bs);
+    } else {
+        qw.matmul(input.data, node.data, M, N, K);
+    }
 }

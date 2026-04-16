@@ -89,8 +89,8 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
 
             var seed: u64 = 42;
             for ([_]*Tensor(T){
-                self.w_q.inner,    self.w_k.inner,     self.w_v.inner,
-                self.w_o.inner,    self.w_gate.inner,   self.w_up.inner,
+                self.w_q.inner,    self.w_k.inner,    self.w_v.inner,
+                self.w_o.inner,    self.w_gate.inner, self.w_up.inner,
                 self.w_down.inner,
             }) |w| {
                 nn.kaimingUniform(T, w, seed);
@@ -210,7 +210,9 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
             }
 
             var sm_reduce = [_]usize{ 1, 1 };
-            var attn_sum: ?*Tensor(T) = null;
+            // Build the concatenated attention output directly, then apply a
+            // single output projection instead of one tiny matmul per head.
+            var attn_buf = x.scaleByVal(0).sliceRows(0, cfg.d_model);
 
             for (0..cfg.n_heads) |h| {
                 const kv_h = h / n_rep;
@@ -224,12 +226,10 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
                 const weights = masked.softmax(&sm_reduce);
                 const attn_out = weights.matMul(false, v_updated[kv_h], false);
 
-                const w_o_h = self.w_o.inner.sliceColumns(h * d_head, (h + 1) * d_head);
-                const projected = attn_out.matMul(false, w_o_h, false);
-                attn_sum = if (attn_sum) |acc| acc.add(projected) else projected;
+                attn_buf = attn_buf.sliceAssignRows(attn_out, h * d_head);
             }
 
-            const attn_projected = attn_sum.?;
+            const attn_projected = attn_buf.matMul(false, self.w_o.inner, false);
 
             const after_attn = x.add(attn_projected);
 

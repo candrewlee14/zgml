@@ -72,6 +72,7 @@ pub fn main(init: std.process.Init) !void {
     var sf = try zgml.safetensors.SafetensorsFile.open(alloc, model_path, io);
     defer sf.deinit();
     try zgml.models.llama_loader.loadLlama(T, config, &session.model, &sf);
+    try session.quantize();
 
     try stderr.interface.print("Loaded {s} ({d} tokens)\n", .{ prompt, prompt_ids.len });
     stderr.interface.flush() catch {};

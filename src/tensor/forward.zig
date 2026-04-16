@@ -670,6 +670,28 @@ pub fn blasSgemm(
     dst_row_stride: usize,
 ) void {
     if (opts.use_blas) {
+        // Cached decoding is dominated by row-vector matmuls. Route those to
+        // GEMV, which is a better match than GEMM for M=1.
+        if (M == 1 and a_col_stride == 1 and b_col_stride == 1 and dst_row_stride == N) {
+            if (a_row_stride == K and b_row_stride == N) {
+                c.cblas_sgemv(
+                    c.CblasRowMajor,
+                    c.CblasTrans,
+                    @intCast(K),
+                    @intCast(N),
+                    1.0,
+                    B[b_offset..].ptr,
+                    @intCast(N),
+                    A[a_offset..].ptr,
+                    1,
+                    0.0,
+                    dst[dst_offset..].ptr,
+                    1,
+                );
+                return;
+            }
+        }
+
         // Map stride convention to BLAS transpose flags + leading dimensions.
         // col_stride == 1 → NoTrans (row-major), ld = row_stride
         // row_stride == 1 → Trans (column stored as rows), ld = col_stride
@@ -1403,12 +1425,6 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             const src1_ne1 = src1.ne[1];
             const src1_ne0 = src1.ne[0];
 
-            const src0_ne1c: c_int = @intCast(src0_ne1);
-            const src0_ne0c: c_int = @intCast(src0_ne0);
-            const src1_ne1c: c_int = @intCast(src1_ne1);
-            const src1_ne0c: c_int = @intCast(src1_ne0);
-            const dst_ne0c: c_int = @intCast(dst.ne[0]);
-
             // Resolve transpose-dependent dimensions once
             const M = if (trans0) src0_ne0 else src0_ne1;
             const N = if (trans1) src1_ne1 else src1_ne0;
@@ -1438,23 +1454,10 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                         }
                     }
 
-                    if (opts.use_blas and T == f32 and M * N * K >= 32768) {
-                        c.cblas_sgemm(
-                            c.CblasRowMajor,
-                            if (trans0) c.CblasTrans else c.CblasNoTrans,
-                            if (trans1) c.CblasTrans else c.CblasNoTrans,
-                            if (trans0) src0_ne0c else src0_ne1c,
-                            if (trans1) src1_ne1c else src1_ne0c,
-                            if (trans0) src0_ne1c else src0_ne0c,
-                            1.0,
-                            &src0.data[a_base],
-                            src0_ne0c,
-                            &src1.data[b_base],
-                            src1_ne0c,
-                            0.0,
-                            &dst.data[d_base],
-                            dst_ne0c,
-                        );
+                    if (opts.use_blas and T == f32 and (M == 1 or M * N * K >= 32768)) {
+                        // Reuse the shared BLAS helper so the default path and
+                        // cpu backend take the same dense matmul fast path.
+                        blasSgemm(dst.data, src0.data, src1.data, M, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1]);
                     } else {
                         kernel(dst.data, src0.data, src1.data, M, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1]);
                     }

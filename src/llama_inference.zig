@@ -35,7 +35,8 @@ const Tensor = @import("tensor.zig").Tensor;
 const ComputeGraph = @import("graph.zig").ComputeGraph;
 const LLaMA = @import("models/llama.zig").LLaMA;
 const LlamaConfig = @import("models/llama.zig").LlamaConfig;
-const QuantizedWeight = @import("quant.zig").QuantizedWeight;
+const quant = @import("quant.zig");
+const QuantizedWeight = quant.QuantizedWeight;
 const inference_utils = @import("inference_utils.zig");
 
 /// Frozen forward-only execution plan for LLaMA models.
@@ -75,6 +76,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         // Quantization state.
         quant_weights: []QuantizedWeight(T),
         quant_map: std.AutoHashMapUnmanaged(*Tensor(T), usize),
+        gemv_pool: ?quant.GemvPool(T) = null,
 
         pub fn init(
             model: *const Model,
@@ -155,6 +157,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         }
 
         pub fn deinit(self: *Self) void {
+            if (self.gemv_pool) |*p| p.deinit(self.backing_alloc);
             for (self.quant_weights) |qw| qw.deinit(self.backing_alloc);
             if (self.quant_weights.len > 0) self.backing_alloc.free(self.quant_weights);
             self.quant_map.deinit(self.backing_alloc);
@@ -186,6 +189,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
                 if (node.opTag() == .matmul and inference_utils.isWeightMatmul(T, node)) {
                     const weight = if (node.src1.?.isParam()) node.src1.? else node.src0.?;
                     qw[idx] = try QuantizedWeight(T).fromTensor(alloc, weight, block_size);
+                    try qw[idx].prepareTransposed(alloc);
                     map.putAssumeCapacity(node, idx);
                     idx += 1;
                 }
@@ -197,14 +201,37 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
 
             self.quant_weights = qw;
             self.quant_map = map;
+            const n_workers = std.Thread.getCpuCount() catch 1;
+            if (self.gemv_pool) |*p| p.deinit(alloc);
+            self.gemv_pool = try quant.GemvPool(T).init(alloc, n_workers);
         }
 
         fn computeQuantized(self: *Self) void {
-            for (self.graph.nodes.items[0..self.graph.forward_node_count]) |node| {
-                if (self.quant_map.get(node)) |qi| {
-                    inference_utils.executeQuantizedMatmul(T, node, &self.quant_weights[qi]);
-                } else {
-                    self.graph.executeNode(node, 1);
+            const pool: ?*quant.GemvPool(T) = if (self.gemv_pool != null) &self.gemv_pool.? else null;
+            const steps = self.graph.forward_execution_steps.items;
+            if (steps.len == 0) {
+                for (self.graph.nodes.items[0..self.graph.forward_node_count]) |node| {
+                    if (self.quant_map.get(node)) |qi| {
+                        inference_utils.executeQuantizedMatmul(T, node, &self.quant_weights[qi], pool);
+                    } else {
+                        self.graph.executeNode(node, 1);
+                    }
+                }
+                return;
+            }
+            for (steps) |step_item| {
+                switch (step_item) {
+                    .fusion => |idx| {
+                        const fplan = self.graph.fused_chains.items[idx];
+                        @import("tensor/fused.zig").executeFusionPlan(T, fplan, null);
+                    },
+                    .node => |node| {
+                        if (self.quant_map.get(node)) |qi| {
+                            inference_utils.executeQuantizedMatmul(T, node, &self.quant_weights[qi], pool);
+                        } else {
+                            self.graph.executeNode(node, 1);
+                        }
+                    },
                 }
             }
         }
