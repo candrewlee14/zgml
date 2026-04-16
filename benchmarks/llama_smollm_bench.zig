@@ -52,6 +52,7 @@ fn runVariant(
     label: []const u8,
     maybe_backend: ?Backend,
     quantized: bool,
+    quant_kv: bool,
     cfg: BenchConfig,
     writer: anytype,
     io: std.Io,
@@ -65,6 +66,7 @@ fn runVariant(
 
     try loadWeights(&session, alloc, cfg.model_path, io);
     if (quantized) try session.quantize();
+    if (quant_kv) try session.quantizeKV();
 
     // Warm up the real decode path once to settle kernel/backend selection.
     _ = try session.step(0);
@@ -144,12 +146,14 @@ pub fn main(init: std.process.Init) !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    _ = try runVariant("default f32    ", null, false, cfg, &stdout.interface, io, alloc);
+    _ = try runVariant("default f32      ", null, false, false, cfg, &stdout.interface, io, alloc);
 
     var cpu_backend = CpuBackend{};
-    _ = try runVariant("cpu-backend f32", cpu_backend.backend(), false, cfg, &stdout.interface, io, alloc);
-    _ = try runVariant("default int8   ", null, true, cfg, &stdout.interface, io, alloc);
-    _ = try runVariant("cpu-backend i8 ", cpu_backend.backend(), true, cfg, &stdout.interface, io, alloc);
+    _ = try runVariant("cpu-backend f32  ", cpu_backend.backend(), false, false, cfg, &stdout.interface, io, alloc);
+    _ = try runVariant("default int8     ", null, true, false, cfg, &stdout.interface, io, alloc);
+    _ = try runVariant("cpu-backend i8   ", cpu_backend.backend(), true, false, cfg, &stdout.interface, io, alloc);
+    _ = try runVariant("i8 + kv-i8       ", null, true, true, cfg, &stdout.interface, io, alloc);
+    _ = try runVariant("kv-i8 only       ", null, false, true, cfg, &stdout.interface, io, alloc);
 
     try stdout.interface.writeByte('\n');
     stdout.interface.flush() catch {};

@@ -691,6 +691,22 @@ pub fn QuantizedKVCache(comptime T: type) type {
             return dotI8F32(T, f_vec, q_col, sc, self.block_size, self.blocks_per_col);
         }
 
+        /// SDOT-accelerated dot: pre-quantized `q_i8` (with `q_scales`) ·
+        /// dequant(col_idx). Caller must quantize the f32 query once via
+        /// `QuantizedWeight(T).quantizeInput`, then call this across many
+        /// columns to amortize the quantization.
+        pub fn dotI8(
+            self: *const Self,
+            q_i8: []const i8,
+            q_scales: []const T,
+            col_idx: usize,
+        ) T {
+            std.debug.assert(q_i8.len == self.d_head);
+            const q_col = self.q_data[col_idx * self.d_head ..][0..self.d_head];
+            const sc = self.scales[col_idx * self.blocks_per_col ..][0..self.blocks_per_col];
+            return dotI8I8(T, q_i8, q_scales, q_col, sc, self.block_size, self.blocks_per_col);
+        }
+
         /// `acc[i] += w * dequant(col_idx)[i]`.
         pub fn accumF32(self: *const Self, acc: []T, w: T, col_idx: usize) void {
             std.debug.assert(acc.len == self.d_head);
@@ -699,6 +715,43 @@ pub fn QuantizedKVCache(comptime T: type) type {
             accumI8F32(T, acc, w, q_col, sc, self.block_size, self.blocks_per_col);
         }
     };
+}
+
+/// Int8×int8 dot with per-block scales, SDOT-accelerated on aarch64.
+/// `q_i8` and `k_i8` are int8 vectors sharing the same block structure.
+fn dotI8I8(
+    comptime T: type,
+    q_i8: []const i8,
+    q_scales: []const T,
+    k_i8: []const i8,
+    k_scales: []const T,
+    block_size: usize,
+    n_blocks: usize,
+) T {
+    const I8x16 = @Vector(16, i8);
+    const I32x4 = @Vector(4, i32);
+    var total: T = 0;
+    for (0..n_blocks) |b| {
+        const base = b * block_size;
+        var sdot_acc: I32x4 = @splat(0);
+        var j: usize = 0;
+        while (j + 16 <= block_size) : (j += 16) {
+            const qv: I8x16 = q_i8[base + j ..][0..16].*;
+            const kv: I8x16 = k_i8[base + j ..][0..16].*;
+            sdot_acc = asm ("sdot %[acc].4s, %[a].16b, %[b].16b"
+                : [acc] "=w" (-> I32x4),
+                : [_] "0" (sdot_acc),
+                  [a] "w" (qv),
+                  [b] "w" (kv),
+            );
+        }
+        var int_sum: i32 = @reduce(.Add, sdot_acc);
+        while (j < block_size) : (j += 1) {
+            int_sum += @as(i32, q_i8[base + j]) * @as(i32, k_i8[base + j]);
+        }
+        total += @as(T, @floatFromInt(int_sum)) * q_scales[b] * k_scales[b];
+    }
+    return total;
 }
 
 fn dotI8F32(
@@ -767,7 +820,9 @@ fn accumI8F32(
 ///
 /// Output dst (f32) is written in-place. Q is f32. K and V come from
 /// `QuantizedKVCache`s that were populated via `storeColumn`. The kernel
-/// iterates over the first `seq_kv` columns of each cache.
+/// iterates over columns `[k_col_start, k_col_start + seq_kv)` of `k_cache`
+/// and likewise for `v_cache`. Offsets let several heads share one backing
+/// cache via contiguous slabs.
 ///
 /// Shapes (column-major):
 ///   q:    [d_head, seq_q], column stride `q_col_stride`
@@ -783,7 +838,9 @@ pub fn attentionQuantized(
     d_head: usize,
     seq_q: usize,
     k_cache: *const QuantizedKVCache(T),
+    k_col_start: usize,
     v_cache: *const QuantizedKVCache(T),
+    v_col_start: usize,
     seq_kv: usize,
     mask: ?[]const T,
     mask_row_stride: usize,
@@ -791,12 +848,21 @@ pub fn attentionQuantized(
     scale: T,
 ) void {
     std.debug.assert(k_cache.d_head == d_head and v_cache.d_head == d_head);
-    std.debug.assert(seq_kv <= k_cache.n_cols and seq_kv <= v_cache.n_cols);
+    std.debug.assert(k_col_start + seq_kv <= k_cache.n_cols);
+    std.debug.assert(v_col_start + seq_kv <= v_cache.n_cols);
 
     const max_d_head: usize = 512;
+    const max_blocks = max_d_head / 16;
     std.debug.assert(d_head <= max_d_head);
     var acc_buf: [max_d_head]T = undefined;
     const acc = acc_buf[0..d_head];
+
+    // SDOT fast path: pre-quantize each query column to int8 once so the
+    // inner dot can go int8×int8 via SDOT instead of widen-and-FMA.
+    const use_sdot = @import("builtin").cpu.arch == .aarch64 and
+        T == f32 and k_cache.block_size % 16 == 0;
+    var q_i8_buf: [max_d_head]i8 = undefined;
+    var q_scales_buf: [max_blocks]T = undefined;
 
     const neg_inf = -std.math.inf(T);
 
@@ -805,12 +871,21 @@ pub fn attentionQuantized(
         const q_col = q[q_base..][0..d_head];
         const mask_base = qi * mask_col_stride;
 
+        const q_i8 = q_i8_buf[0..d_head];
+        const q_scales = q_scales_buf[0..k_cache.blocks_per_col];
+        if (use_sdot) {
+            QuantizedWeight(T).quantizeInput(q_col, d_head, k_cache.block_size, q_i8, q_scales);
+        }
+
         var m_val: T = neg_inf;
         var l: T = 0;
         @memset(acc, 0);
 
         for (0..seq_kv) |s| {
-            const dot = k_cache.dotF32(q_col, s);
+            const dot = if (use_sdot)
+                k_cache.dotI8(q_i8, q_scales, k_col_start + s)
+            else
+                k_cache.dotF32(q_col, k_col_start + s);
             const mask_add: T = if (mask) |md| md[mask_base + s * mask_row_stride] else 0;
             const score = dot * scale + mask_add;
             if (!std.math.isFinite(score)) continue;
@@ -831,7 +906,7 @@ pub fn attentionQuantized(
                 }
                 while (r < d_head) : (r += 1) acc[r] *= alpha;
             }
-            v_cache.accumF32(acc, w, s);
+            v_cache.accumF32(acc, w, v_col_start + s);
 
             l = l * alpha + w;
             m_val = new_m;
@@ -1033,6 +1108,28 @@ test "QuantizedKVCache - dotF32 matches reference" {
     try testing.expectApproxEqAbs(ref, got, 0.05);
 }
 
+test "QuantizedKVCache - dotI8 (SDOT path) matches dotF32" {
+    const alloc = testing.allocator;
+    const d_head: usize = 64;
+    const bs: usize = 32;
+    var cache = try QuantizedKVCache(f32).init(alloc, d_head, 1, bs);
+    defer cache.deinit(alloc);
+
+    var k_col: [d_head]f32 = undefined;
+    var q_vec: [d_head]f32 = undefined;
+    fillRandF32(&k_col, 42);
+    fillRandF32(&q_vec, 43);
+    cache.storeColumn(0, &k_col);
+
+    var q_i8: [d_head]i8 = undefined;
+    var q_scales: [d_head / bs]f32 = undefined;
+    QuantizedWeight(f32).quantizeInput(&q_vec, d_head, bs, &q_i8, &q_scales);
+
+    const ref = cache.dotF32(&q_vec, 0);
+    const got = cache.dotI8(&q_i8, &q_scales, 0);
+    try testing.expectApproxEqAbs(ref, got, 0.05);
+}
+
 test "QuantizedKVCache - accumF32 matches reference" {
     const alloc = testing.allocator;
     const d_head: usize = 64;
@@ -1113,7 +1210,9 @@ test "attentionQuantized - decode (seq_q=1) matches reference" {
         d_head,
         1,
         &k_cache,
+        0,
         &v_cache,
+        0,
         seq_kv,
         null,
         0,
@@ -1121,7 +1220,8 @@ test "attentionQuantized - decode (seq_q=1) matches reference" {
         scale,
     );
 
-    for (ref_out, out) |r, o| try testing.expectApproxEqAbs(r, o, 1e-5);
+    // Tolerance accounts for extra Q-quantization error on the SDOT fast path.
+    for (ref_out, out) |r, o| try testing.expectApproxEqAbs(r, o, 0.01);
 }
 
 test "attentionQuantized - causal mask via broadcast column" {
@@ -1164,7 +1264,9 @@ test "attentionQuantized - causal mask via broadcast column" {
         d_head,
         1,
         &k_cache,
+        0,
         &v_cache,
+        0,
         seq_kv,
         &mask,
         1,
@@ -1183,7 +1285,9 @@ test "attentionQuantized - causal mask via broadcast column" {
         d_head,
         1,
         &k_cache,
+        0,
         &v_cache,
+        0,
         pos + 1,
         null,
         0,
@@ -1192,4 +1296,64 @@ test "attentionQuantized - causal mask via broadcast column" {
     );
 
     for (out_masked, out_truncated) |m, t| try testing.expectApproxEqAbs(m, t, 1e-6);
+}
+
+test "attentionQuantized - col_offset selects correct slab" {
+    const alloc = testing.allocator;
+    const d_head: usize = 32;
+    const slab_len: usize = 6;
+    const n_slabs: usize = 2;
+    const bs: usize = 32;
+
+    // One consolidated cache with two slabs; write different random data into each.
+    var k_big = try QuantizedKVCache(f32).init(alloc, d_head, slab_len * n_slabs, bs);
+    defer k_big.deinit(alloc);
+    var v_big = try QuantizedKVCache(f32).init(alloc, d_head, slab_len * n_slabs, bs);
+    defer v_big.deinit(alloc);
+
+    // Independent caches holding just slab 1.
+    var k_small = try QuantizedKVCache(f32).init(alloc, d_head, slab_len, bs);
+    defer k_small.deinit(alloc);
+    var v_small = try QuantizedKVCache(f32).init(alloc, d_head, slab_len, bs);
+    defer v_small.deinit(alloc);
+
+    var k_s0: [d_head * slab_len]f32 = undefined;
+    var v_s0: [d_head * slab_len]f32 = undefined;
+    var k_s1: [d_head * slab_len]f32 = undefined;
+    var v_s1: [d_head * slab_len]f32 = undefined;
+    fillRandF32(&k_s0, 30);
+    fillRandF32(&v_s0, 31);
+    fillRandF32(&k_s1, 32);
+    fillRandF32(&v_s1, 33);
+
+    for (0..slab_len) |ci| {
+        k_big.storeColumn(ci, k_s0[ci * d_head ..][0..d_head]);
+        v_big.storeColumn(ci, v_s0[ci * d_head ..][0..d_head]);
+        k_big.storeColumn(slab_len + ci, k_s1[ci * d_head ..][0..d_head]);
+        v_big.storeColumn(slab_len + ci, v_s1[ci * d_head ..][0..d_head]);
+        k_small.storeColumn(ci, k_s1[ci * d_head ..][0..d_head]);
+        v_small.storeColumn(ci, v_s1[ci * d_head ..][0..d_head]);
+    }
+
+    var q: [d_head]f32 = undefined;
+    fillRandF32(&q, 34);
+    const scale: f32 = 1.0 / @sqrt(@as(f32, @floatFromInt(d_head)));
+
+    var out_big: [d_head]f32 = .{0} ** d_head;
+    attentionQuantized(
+        f32, &out_big, d_head, &q, d_head,
+        d_head, 1,
+        &k_big, slab_len, &v_big, slab_len,
+        slab_len, null, 0, 0, scale,
+    );
+
+    var out_small: [d_head]f32 = .{0} ** d_head;
+    attentionQuantized(
+        f32, &out_small, d_head, &q, d_head,
+        d_head, 1,
+        &k_small, 0, &v_small, 0,
+        slab_len, null, 0, 0, scale,
+    );
+
+    for (out_big, out_small) |b, s| try testing.expectApproxEqAbs(b, s, 1e-6);
 }

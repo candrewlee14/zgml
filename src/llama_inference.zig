@@ -37,6 +37,7 @@ const LLaMA = @import("models/llama.zig").LLaMA;
 const LlamaConfig = @import("models/llama.zig").LlamaConfig;
 const quant = @import("quant.zig");
 const QuantizedWeight = quant.QuantizedWeight;
+const QuantizedKVCache = quant.QuantizedKVCache;
 const inference_utils = @import("inference_utils.zig");
 
 /// Frozen forward-only execution plan for LLaMA models.
@@ -50,6 +51,17 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
     const d_head = d_model / config.n_heads;
     const max_seq = config.max_seq_len;
 
+    const SAQuant = struct {
+        cache: *QuantizedKVCache(T),
+        col_offset: usize,
+    };
+    const AttnQuant = struct {
+        k_cache: *QuantizedKVCache(T),
+        v_cache: *QuantizedKVCache(T),
+        k_col_offset: usize,
+        v_col_offset: usize,
+    };
+
     return struct {
         const Self = @This();
 
@@ -59,6 +71,11 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         // Bound inputs.
         token_input: *Tensor(T),
         attn_mask: *Tensor(T),
+
+        // Base KV cache tensors (borrowed from session) — used to identify
+        // slice_assign/attention nodes that target the caches.
+        k_cache_tensors: [config.n_layers]*Tensor(T),
+        v_cache_tensors: [config.n_layers]*Tensor(T),
 
         // Cached slice_assign nodes for position patching.
         slice_assign_nodes: []const *Tensor(T),
@@ -73,10 +90,16 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         // Workspace reuse state.
         workspace_bufs: [][]T,
 
-        // Quantization state.
+        // Weight-quantization state.
         quant_weights: []QuantizedWeight(T),
         quant_map: std.AutoHashMapUnmanaged(*Tensor(T), usize),
         gemv_pool: ?quant.GemvPool(T) = null,
+
+        // KV-cache-quantization state.
+        k_quant_caches: []QuantizedKVCache(T),
+        v_quant_caches: []QuantizedKVCache(T),
+        quant_sa_map: std.AutoHashMapUnmanaged(*Tensor(T), SAQuant),
+        quant_attn_map: std.AutoHashMapUnmanaged(*Tensor(T), AttnQuant),
 
         pub fn init(
             model: *const Model,
@@ -147,12 +170,18 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
                 .backing_alloc = backing_alloc,
                 .token_input = token_input,
                 .attn_mask = attn_mask,
+                .k_cache_tensors = k_caches,
+                .v_cache_tensors = v_caches,
                 .slice_assign_nodes = sa_nodes,
                 .rope_nodes = rope_nodes,
                 .logits = logits,
                 .workspace_bufs = bufs,
                 .quant_weights = &.{},
                 .quant_map = .empty,
+                .k_quant_caches = &.{},
+                .v_quant_caches = &.{},
+                .quant_sa_map = .empty,
+                .quant_attn_map = .empty,
             };
         }
 
@@ -161,6 +190,12 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             for (self.quant_weights) |qw| qw.deinit(self.backing_alloc);
             if (self.quant_weights.len > 0) self.backing_alloc.free(self.quant_weights);
             self.quant_map.deinit(self.backing_alloc);
+            for (self.k_quant_caches) |*c| c.deinit(self.backing_alloc);
+            if (self.k_quant_caches.len > 0) self.backing_alloc.free(self.k_quant_caches);
+            for (self.v_quant_caches) |*c| c.deinit(self.backing_alloc);
+            if (self.v_quant_caches.len > 0) self.backing_alloc.free(self.v_quant_caches);
+            self.quant_sa_map.deinit(self.backing_alloc);
+            self.quant_attn_map.deinit(self.backing_alloc);
             for (self.workspace_bufs) |buf| self.backing_alloc.free(buf);
             if (self.workspace_bufs.len > 0) self.backing_alloc.free(self.workspace_bufs);
             self.backing_alloc.free(self.slice_assign_nodes);
@@ -206,16 +241,163 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             self.gemv_pool = try quant.GemvPool(T).init(alloc, n_workers);
         }
 
+        /// Quantize each layer's KV cache to int8 with per-block f32 scales.
+        /// Slice-assigns into the cache and attention reads from the cache are
+        /// rerouted through `QuantizedKVCache` in the inference step — the
+        /// f32 cache tensors still exist but are no longer touched.
+        pub fn quantizeKV(self: *Self, block_size: usize) !void {
+            const alloc = self.backing_alloc;
+            const n_cols = config.max_seq_len * config.n_kv_heads;
+
+            const k_caches = try alloc.alloc(QuantizedKVCache(T), config.n_layers);
+            errdefer alloc.free(k_caches);
+            const v_caches = try alloc.alloc(QuantizedKVCache(T), config.n_layers);
+            errdefer alloc.free(v_caches);
+
+            var ki: usize = 0;
+            errdefer for (k_caches[0..ki]) |*c| c.deinit(alloc);
+            while (ki < config.n_layers) : (ki += 1) {
+                k_caches[ki] = try QuantizedKVCache(T).init(alloc, d_head, n_cols, block_size);
+            }
+            var vi: usize = 0;
+            errdefer for (v_caches[0..vi]) |*c| c.deinit(alloc);
+            while (vi < config.n_layers) : (vi += 1) {
+                v_caches[vi] = try QuantizedKVCache(T).init(alloc, d_head, n_cols, block_size);
+            }
+
+            var base_k: std.AutoHashMapUnmanaged(*Tensor(T), usize) = .empty;
+            defer base_k.deinit(alloc);
+            var base_v: std.AutoHashMapUnmanaged(*Tensor(T), usize) = .empty;
+            defer base_v.deinit(alloc);
+            try base_k.ensureTotalCapacity(alloc, @intCast(config.n_layers));
+            try base_v.ensureTotalCapacity(alloc, @intCast(config.n_layers));
+            for (self.k_cache_tensors, 0..) |t, l| base_k.putAssumeCapacity(t, l);
+            for (self.v_cache_tensors, 0..) |t, l| base_v.putAssumeCapacity(t, l);
+
+            var sa_map: std.AutoHashMapUnmanaged(*Tensor(T), SAQuant) = .empty;
+            errdefer sa_map.deinit(alloc);
+            var attn_map: std.AutoHashMapUnmanaged(*Tensor(T), AttnQuant) = .empty;
+            errdefer attn_map.deinit(alloc);
+
+            const nodes = self.graph.nodes.items[0..self.graph.forward_node_count];
+            for (nodes) |node| {
+                switch (node.opTag()) {
+                    .slice_assign => {
+                        const dest = node.src1.?;
+                        const info = walkToCacheBase(dest) orelse continue;
+                        if (base_k.get(info.base)) |layer| {
+                            try sa_map.put(alloc, node, .{
+                                .cache = &k_caches[layer],
+                                .col_offset = info.col_offset,
+                            });
+                        } else if (base_v.get(info.base)) |layer| {
+                            try sa_map.put(alloc, node, .{
+                                .cache = &v_caches[layer],
+                                .col_offset = info.col_offset,
+                            });
+                        }
+                    },
+                    .attention => {
+                        const k_info = walkToCacheBase(node.src1.?) orelse continue;
+                        const v_info = walkToCacheBase(node.src2.?) orelse continue;
+                        const k_layer = base_k.get(k_info.base) orelse continue;
+                        const v_layer = base_v.get(v_info.base) orelse continue;
+                        try attn_map.put(alloc, node, .{
+                            .k_cache = &k_caches[k_layer],
+                            .v_cache = &v_caches[v_layer],
+                            .k_col_offset = k_info.col_offset,
+                            .v_col_offset = v_info.col_offset,
+                        });
+                    },
+                    else => {},
+                }
+            }
+
+            // Swap in new state.
+            for (self.k_quant_caches) |*c| c.deinit(alloc);
+            if (self.k_quant_caches.len > 0) alloc.free(self.k_quant_caches);
+            for (self.v_quant_caches) |*c| c.deinit(alloc);
+            if (self.v_quant_caches.len > 0) alloc.free(self.v_quant_caches);
+            self.quant_sa_map.deinit(alloc);
+            self.quant_attn_map.deinit(alloc);
+
+            self.k_quant_caches = k_caches;
+            self.v_quant_caches = v_caches;
+            self.quant_sa_map = sa_map;
+            self.quant_attn_map = attn_map;
+        }
+
+        const CacheLoc = struct { base: *Tensor(T), col_offset: usize };
+
+        /// Walk through view/slice_assign nodes to reach an allocated base tensor,
+        /// and return the column offset of `start` within that base. Returns null
+        /// if the chain doesn't terminate at an op-less leaf or the offset isn't
+        /// column-aligned.
+        fn walkToCacheBase(start: *Tensor(T)) ?CacheLoc {
+            var cur = start;
+            while (true) {
+                const op = cur.opTag();
+                if (op == .view) {
+                    cur = cur.src0 orelse return null;
+                } else if (op == .slice_assign or op == .slice_assign_rows) {
+                    cur = cur.src1 orelse return null;
+                } else break;
+            }
+            if (cur.data.len == 0) return null;
+            const base_ptr = @intFromPtr(cur.data.ptr);
+            const start_ptr = @intFromPtr(start.data.ptr);
+            if (start_ptr < base_ptr) return null;
+            const byte_offset = start_ptr - base_ptr;
+            const row_bytes = cur.ne[0] * @sizeOf(T);
+            if (row_bytes == 0 or byte_offset % row_bytes != 0) return null;
+            return .{ .base = cur, .col_offset = byte_offset / row_bytes };
+        }
+
+        fn executeOneQuantized(self: *Self, node: *Tensor(T), pool: ?*quant.GemvPool(T)) void {
+            if (self.quant_map.get(node)) |qi| {
+                inference_utils.executeQuantizedMatmul(T, node, &self.quant_weights[qi], pool);
+                return;
+            }
+            if (self.quant_sa_map.get(node)) |sa| {
+                // Quantize src0 (shape [d_head, 1]) into the cache column.
+                const src = node.src0.?;
+                const col = sa.col_offset + node.storage_offset;
+                sa.cache.storeColumn(col, src.data[0..sa.cache.d_head]);
+                return;
+            }
+            if (self.quant_attn_map.get(node)) |aq| {
+                const q = node.src0.?;
+                const mask = node.src3;
+                const seq_kv = node.src1.?.ne[1];
+                const mask_col_stride: usize = blk: {
+                    const m = mask orelse break :blk 0;
+                    if (m.ne[1] <= 1) break :blk 0;
+                    break :blk m.strides[1];
+                };
+                quant.attentionQuantized(
+                    T,
+                    node.data, node.strides[1],
+                    q.data, q.strides[1],
+                    q.ne[0], q.ne[1],
+                    aq.k_cache, aq.k_col_offset,
+                    aq.v_cache, aq.v_col_offset,
+                    seq_kv,
+                    if (mask) |m| m.data else null,
+                    if (mask) |m| m.strides[0] else 0,
+                    mask_col_stride,
+                    node.op_scale,
+                );
+                return;
+            }
+            self.graph.executeNode(node, 1);
+        }
+
         fn computeQuantized(self: *Self) void {
             const pool: ?*quant.GemvPool(T) = if (self.gemv_pool != null) &self.gemv_pool.? else null;
             const steps = self.graph.forward_execution_steps.items;
             if (steps.len == 0) {
                 for (self.graph.nodes.items[0..self.graph.forward_node_count]) |node| {
-                    if (self.quant_map.get(node)) |qi| {
-                        inference_utils.executeQuantizedMatmul(T, node, &self.quant_weights[qi], pool);
-                    } else {
-                        self.graph.executeNode(node, 1);
-                    }
+                    self.executeOneQuantized(node, pool);
                 }
                 return;
             }
@@ -225,13 +407,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
                         const fplan = self.graph.fused_chains.items[idx];
                         @import("tensor/fused.zig").executeFusionPlan(T, fplan, null);
                     },
-                    .node => |node| {
-                        if (self.quant_map.get(node)) |qi| {
-                            inference_utils.executeQuantizedMatmul(T, node, &self.quant_weights[qi], pool);
-                        } else {
-                            self.graph.executeNode(node, 1);
-                        }
-                    },
+                    .node => |node| self.executeOneQuantized(node, pool),
                 }
             }
         }
@@ -268,7 +444,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
 
             // 5. Execute. Inference nodes fully overwrite their outputs, so we
             // can skip the graph-wide zeroing pass here.
-            if (self.quant_weights.len > 0) {
+            if (self.quant_weights.len > 0 or self.k_quant_caches.len > 0) {
                 self.computeQuantized();
             } else {
                 self.graph.computeNoGrad();
@@ -345,6 +521,8 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
                 @memset(self.k_caches[l].data, 0);
                 @memset(self.v_caches[l].data, 0);
             }
+            for (self.plan.k_quant_caches) |*c| c.clear();
+            for (self.plan.v_quant_caches) |*c| c.clear();
         }
 
         pub fn position(self: *const Self) usize {
@@ -354,6 +532,12 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
         /// Quantize eligible weight matrices to int8.
         pub fn quantize(self: *Self) !void {
             try self.plan.quantize(@import("quant.zig").default_block_size);
+        }
+
+        /// Quantize the per-layer KV caches to int8. Safe to call before or
+        /// after `quantize()` — the two act on disjoint parts of the graph.
+        pub fn quantizeKV(self: *Self) !void {
+            try self.plan.quantizeKV(@import("quant.zig").default_block_size);
         }
 
         /// Process one token and return logits [vocab_size].
@@ -520,6 +704,51 @@ test "LlamaInferenceSession matches manual forward" {
         for (session_logits, ref_logits.data[0..cfg.vocab_size]) |got, want| {
             try testing.expectApproxEqAbs(want, got, 1e-5);
         }
+    }
+}
+
+test "LlamaInferenceSession quantizeKV approximates f32 path" {
+    // d_head must divide evenly into block_size=32.
+    const cfg = LlamaConfig{
+        .vocab_size = 16,
+        .d_model = 32,
+        .n_heads = 1,
+        .n_kv_heads = 1,
+        .d_ff = 32,
+        .n_layers = 2,
+        .max_seq_len = 8,
+    };
+
+    var ref_session = try LlamaInferenceSession(f32, cfg).init(testing.allocator);
+    defer ref_session.deinit();
+
+    var quant_session = try LlamaInferenceSession(f32, cfg).init(testing.allocator);
+    defer quant_session.deinit();
+
+    for (ref_session.model.params(), quant_session.model.params()) |src, dst| {
+        @memcpy(dst.data, src.data);
+    }
+    try quant_session.quantizeKV();
+
+    const tokens = [_]usize{ 3, 7, 1, 0 };
+    for (tokens) |tok| {
+        const ref_logits = try ref_session.step(tok);
+        const q_logits = try quant_session.step(tok);
+        try testing.expectEqual(ref_logits.len, q_logits.len);
+
+        // Cosine similarity: logit directions should stay close even when
+        // per-element noise from Q8 KV dominates a toy model's tiny weights.
+        var dot: f32 = 0;
+        var nr: f32 = 0;
+        var nq: f32 = 0;
+        for (ref_logits, q_logits) |r, q| {
+            try testing.expect(!std.math.isNan(q) and !std.math.isInf(q));
+            dot += r * q;
+            nr += r * r;
+            nq += q * q;
+        }
+        const cos = dot / (@sqrt(nr) * @sqrt(nq));
+        try testing.expect(cos > 0.99);
     }
 }
 
