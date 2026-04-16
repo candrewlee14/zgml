@@ -714,6 +714,21 @@ pub fn QuantizedKVCache(comptime T: type) type {
             const sc = self.scales[col_idx * self.blocks_per_col ..][0..self.blocks_per_col];
             accumI8F32(T, acc, w, q_col, sc, self.block_size, self.blocks_per_col);
         }
+
+        /// Batched accumulate: `acc[i] += sum_{b=0..Bs}(ws[b] * dequant(col_start+b)[i])`.
+        /// Keeps `acc` in registers across the Bs-wide inner sum so we pay one
+        /// pair of loads/stores on `acc` per tile instead of per column.
+        pub fn accumBatchF32(
+            self: *const Self,
+            comptime Bs: usize,
+            acc: []T,
+            ws: *const [Bs]T,
+            col_start: usize,
+        ) void {
+            std.debug.assert(acc.len == self.d_head);
+            std.debug.assert(col_start + Bs <= self.n_cols);
+            accumBatchI8F32(T, Bs, acc, ws, self.q_data, self.scales, col_start, self.d_head, self.block_size, self.blocks_per_col);
+        }
     };
 }
 
@@ -816,6 +831,55 @@ fn accumI8F32(
     }
 }
 
+/// Batched V-accumulate: `acc[i] += sum_{b=0..Bs}(ws[b] * dequant(V[col_start+b])[i])`.
+/// For each block, pre-scales `ws[b]` by the per-column block scale, then fuses
+/// Bs widen+FMAs so `acc` stays in registers across the whole Bs-wide inner sum.
+fn accumBatchI8F32(
+    comptime T: type,
+    comptime Bs: usize,
+    acc: []T,
+    ws: *const [Bs]T,
+    q_data: []const i8,
+    scales: []const T,
+    col_start: usize,
+    d_head: usize,
+    block_size: usize,
+    n_blocks: usize,
+) void {
+    const V = 8;
+    const VecT = @Vector(V, T);
+    const VecI = @Vector(V, i32);
+    const VecI8 = @Vector(V, i8);
+
+    for (0..n_blocks) |bl| {
+        const block_off = bl * block_size;
+
+        var ws_scaled: [Bs]T = undefined;
+        inline for (0..Bs) |b| {
+            ws_scaled[b] = ws[b] * scales[(col_start + b) * n_blocks + bl];
+        }
+
+        var i: usize = 0;
+        while (i + V <= block_size) : (i += V) {
+            var sum_v: VecT = acc[block_off + i ..][0..V].*;
+            inline for (0..Bs) |b| {
+                const iv: VecI8 = q_data[(col_start + b) * d_head + block_off + i ..][0..V].*;
+                const qv: VecT = @floatFromInt(@as(VecI, iv));
+                const wv: VecT = @splat(ws_scaled[b]);
+                sum_v = sum_v + wv * qv;
+            }
+            acc[block_off + i ..][0..V].* = sum_v;
+        }
+        while (i < block_size) : (i += 1) {
+            var sum_s: T = acc[block_off + i];
+            inline for (0..Bs) |b| {
+                sum_s += ws_scaled[b] * @as(T, @floatFromInt(q_data[(col_start + b) * d_head + block_off + i]));
+            }
+            acc[block_off + i] = sum_s;
+        }
+    }
+}
+
 /// Flash attention with quantized K/V cache.
 ///
 /// Output dst (f32) is written in-place. Q is f32. K and V come from
@@ -864,6 +928,12 @@ pub fn attentionQuantized(
     var q_i8_buf: [max_d_head]i8 = undefined;
     var q_scales_buf: [max_blocks]T = undefined;
 
+    // Flash-attention tile width: amortizes the acc alpha-rescale across Bs
+    // columns and lets the batched V-accum keep acc hot in registers.
+    const Bs: usize = 8;
+    var scores_buf: [Bs]T = undefined;
+    var ws_buf: [Bs]T = undefined;
+
     const neg_inf = -std.math.inf(T);
 
     for (0..seq_q) |qi| {
@@ -881,7 +951,56 @@ pub fn attentionQuantized(
         var l: T = 0;
         @memset(acc, 0);
 
-        for (0..seq_kv) |s| {
+        var s: usize = 0;
+        while (s + Bs <= seq_kv) : (s += Bs) {
+            // Phase 1: compute Bs scores, find tile max.
+            var tile_max: T = neg_inf;
+            inline for (0..Bs) |b| {
+                const dot = if (use_sdot)
+                    k_cache.dotI8(q_i8, q_scales, k_col_start + s + b)
+                else
+                    k_cache.dotF32(q_col, k_col_start + s + b);
+                const mask_add: T = if (mask) |md| md[mask_base + (s + b) * mask_row_stride] else 0;
+                const score = dot * scale + mask_add;
+                scores_buf[b] = score;
+                if (std.math.isFinite(score) and score > tile_max) tile_max = score;
+            }
+
+            if (tile_max == neg_inf) continue; // whole tile masked
+
+            // Phase 2: flash-softmax update (one rescale, Bs weights).
+            const new_m = if (m_val == neg_inf) tile_max else @max(m_val, tile_max);
+            const alpha: T = if (m_val == neg_inf) 0 else @exp(m_val - new_m);
+
+            var tile_l: T = 0;
+            inline for (0..Bs) |b| {
+                // Masked lanes (-inf) naturally give 0 via exp(-inf) = 0.
+                const w = @exp(scores_buf[b] - new_m);
+                ws_buf[b] = w;
+                tile_l += w;
+            }
+
+            if (m_val != neg_inf and alpha != 1) {
+                const V = 8;
+                const VecT = @Vector(V, T);
+                const alpha_v: VecT = @splat(alpha);
+                var r: usize = 0;
+                while (r + V <= d_head) : (r += V) {
+                    const av: VecT = acc[r..][0..V].*;
+                    acc[r..][0..V].* = av * alpha_v;
+                }
+                while (r < d_head) : (r += 1) acc[r] *= alpha;
+            }
+
+            // Phase 3: batched V-accum, acc stays in registers across Bs cols.
+            v_cache.accumBatchF32(Bs, acc, &ws_buf, v_col_start + s);
+
+            l = l * alpha + tile_l;
+            m_val = new_m;
+        }
+
+        // Tail: remaining < Bs columns, one at a time.
+        while (s < seq_kv) : (s += 1) {
             const dot = if (use_sdot)
                 k_cache.dotI8(q_i8, q_scales, k_col_start + s)
             else
@@ -894,8 +1013,7 @@ pub fn attentionQuantized(
             const alpha: T = if (m_val == neg_inf) 0 else @exp(m_val - new_m);
             const w = @exp(score - new_m);
 
-            // acc = acc * alpha + w * dequant(V[:, s])
-            if (alpha != 1) {
+            if (m_val != neg_inf and alpha != 1) {
                 const V = 8;
                 const VecT = @Vector(V, T);
                 const alpha_v: VecT = @splat(alpha);
@@ -1356,4 +1474,65 @@ test "attentionQuantized - col_offset selects correct slab" {
     );
 
     for (out_big, out_small) |b, s| try testing.expectApproxEqAbs(b, s, 1e-6);
+}
+
+test "attentionQuantized - tile + tail path matches single-column reference" {
+    const alloc = testing.allocator;
+    const d_head: usize = 64;
+    // Several full Bs-tiles plus a non-zero tail exercises both code paths.
+    const seq_kv: usize = 21;
+    const bs: usize = 32;
+
+    var k_cache = try QuantizedKVCache(f32).init(alloc, d_head, seq_kv, bs);
+    defer k_cache.deinit(alloc);
+    var v_cache = try QuantizedKVCache(f32).init(alloc, d_head, seq_kv, bs);
+    defer v_cache.deinit(alloc);
+
+    var k_data: [d_head * seq_kv]f32 = undefined;
+    var v_data: [d_head * seq_kv]f32 = undefined;
+    fillRandF32(&k_data, 40);
+    fillRandF32(&v_data, 41);
+    for (0..seq_kv) |ci| {
+        k_cache.storeColumn(ci, k_data[ci * d_head ..][0..d_head]);
+        v_cache.storeColumn(ci, v_data[ci * d_head ..][0..d_head]);
+    }
+
+    var q: [d_head]f32 = undefined;
+    fillRandF32(&q, 42);
+    const scale: f32 = 1.0 / @sqrt(@as(f32, @floatFromInt(d_head)));
+
+    // Reference: dequantize then streaming-softmax single-column.
+    var k_ref: [d_head * seq_kv]f32 = undefined;
+    var v_ref: [d_head * seq_kv]f32 = undefined;
+    for (0..seq_kv) |ci| {
+        k_cache.dequantColumn(ci, k_ref[ci * d_head ..][0..d_head]);
+        v_cache.dequantColumn(ci, v_ref[ci * d_head ..][0..d_head]);
+    }
+    var ref_out: [d_head]f32 = .{0} ** d_head;
+    var m_val: f32 = -std.math.inf(f32);
+    var l: f32 = 0;
+    for (0..seq_kv) |s| {
+        var dot: f32 = 0;
+        for (0..d_head) |r| dot += q[r] * k_ref[s * d_head + r];
+        const score = dot * scale;
+        const new_m = @max(m_val, score);
+        const alpha: f32 = if (m_val == -std.math.inf(f32)) 0 else @exp(m_val - new_m);
+        const w = @exp(score - new_m);
+        for (0..d_head) |r| ref_out[r] = ref_out[r] * alpha + w * v_ref[s * d_head + r];
+        l = l * alpha + w;
+        m_val = new_m;
+    }
+    const inv_l = if (l > 0) 1.0 / l else 0.0;
+    for (&ref_out) |*r| r.* *= inv_l;
+
+    var out: [d_head]f32 = .{0} ** d_head;
+    attentionQuantized(
+        f32, &out, d_head, &q, d_head,
+        d_head, 1,
+        &k_cache, 0, &v_cache, 0,
+        seq_kv, null, 0, 0, scale,
+    );
+
+    // Tolerance matches the SDOT-path test — Q-quantization adds error.
+    for (ref_out, out) |r, o| try testing.expectApproxEqAbs(r, o, 0.01);
 }
