@@ -588,6 +588,35 @@ pub fn QuantizedWeight(comptime T: type) type {
             }
         }
 
+        /// Dequantize the whole K×N weight into `dst` (row-major f32).
+        /// Used to stage weights for BLAS GEMM when M > 1 — the one-shot
+        /// dequant cost is amortized across M input rows.
+        pub fn dequantizeTo(self: *const Self, dst: []T) void {
+            const n_elems = self.rows * self.cols;
+            std.debug.assert(dst.len >= n_elems);
+            const bs = self.block_size;
+            const n_blocks = (n_elems + bs - 1) / bs;
+            const vec_len = comptime @min(16, default_block_size);
+            const Vec = @Vector(vec_len, T);
+            const IVec = @Vector(vec_len, i32);
+            const I8Vec = @Vector(vec_len, i8);
+
+            for (0..n_blocks) |b| {
+                const start = b * bs;
+                const end = @min(start + bs, n_elems);
+                const scale_v: Vec = @splat(self.scales[b]);
+                var j = start;
+                while (j + vec_len <= end) : (j += vec_len) {
+                    const w_vec: I8Vec = self.data[j..][0..vec_len].*;
+                    const f_vec: Vec = @floatFromInt(@as(IVec, w_vec));
+                    dst[j..][0..vec_len].* = f_vec * scale_v;
+                }
+                while (j < end) : (j += 1) {
+                    dst[j] = @as(T, @floatFromInt(self.data[j])) * self.scales[b];
+                }
+            }
+        }
+
         /// Compute quantization error (RMSE) vs original weights.
         pub fn quantizationError(self: *const Self, original: []const T) T {
             var sum_sq: T = 0;
@@ -953,17 +982,32 @@ pub fn attentionQuantized(
 
         var s: usize = 0;
         while (s + Bs <= seq_kv) : (s += Bs) {
-            // Phase 1: compute Bs scores, find tile max.
+            // Whole-tile mask skip: if every lane is masked, skip the Bs dots.
+            // Causal masks make this common for unvisited KV positions.
+            if (mask) |md| {
+                var any_valid = false;
+                inline for (0..Bs) |b| {
+                    if (std.math.isFinite(md[mask_base + (s + b) * mask_row_stride])) any_valid = true;
+                }
+                if (!any_valid) continue;
+            }
+
+            // Phase 1: compute Bs scores, find tile max. Skip the dot for
+            // masked lanes to save K-cache reads for transition tiles.
             var tile_max: T = neg_inf;
             inline for (0..Bs) |b| {
-                const dot = if (use_sdot)
-                    k_cache.dotI8(q_i8, q_scales, k_col_start + s + b)
-                else
-                    k_cache.dotF32(q_col, k_col_start + s + b);
                 const mask_add: T = if (mask) |md| md[mask_base + (s + b) * mask_row_stride] else 0;
-                const score = dot * scale + mask_add;
-                scores_buf[b] = score;
-                if (std.math.isFinite(score) and score > tile_max) tile_max = score;
+                if (std.math.isFinite(mask_add)) {
+                    const dot = if (use_sdot)
+                        k_cache.dotI8(q_i8, q_scales, k_col_start + s + b)
+                    else
+                        k_cache.dotF32(q_col, k_col_start + s + b);
+                    const score = dot * scale + mask_add;
+                    scores_buf[b] = score;
+                    if (score > tile_max) tile_max = score;
+                } else {
+                    scores_buf[b] = neg_inf;
+                }
             }
 
             if (tile_max == neg_inf) continue; // whole tile masked
@@ -1001,11 +1045,13 @@ pub fn attentionQuantized(
 
         // Tail: remaining < Bs columns, one at a time.
         while (s < seq_kv) : (s += 1) {
+            const mask_add: T = if (mask) |md| md[mask_base + s * mask_row_stride] else 0;
+            if (!std.math.isFinite(mask_add)) continue;
+
             const dot = if (use_sdot)
                 k_cache.dotI8(q_i8, q_scales, k_col_start + s)
             else
                 k_cache.dotF32(q_col, k_col_start + s);
-            const mask_add: T = if (mask) |md| md[mask_base + s * mask_row_stride] else 0;
             const score = dot * scale + mask_add;
             if (!std.math.isFinite(score)) continue;
 
@@ -1060,6 +1106,28 @@ test "quantize and dequantize preserves values approximately" {
     // Quantization error should be small
     const err = qw.quantizationError(&weights);
     try testing.expect(err < 0.01);
+}
+
+test "dequantizeTo matches per-element dequant" {
+    const alloc = testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0xd3fa);
+    const rng = prng.random();
+
+    const K: usize = 37;
+    const N: usize = 11;
+    var weights: [K * N]f32 = undefined;
+    for (&weights) |*w| w.* = (rng.float(f32) - 0.5) * 2.0;
+
+    var qw = try QuantizedWeight(f32).fromSlice(alloc, &weights, K, N, 32);
+    defer qw.deinit(alloc);
+
+    var dst: [K * N]f32 = undefined;
+    qw.dequantizeTo(&dst);
+
+    for (0..K * N) |j| {
+        const ref = qw.dequant(j);
+        try testing.expectApproxEqAbs(ref, dst[j], 1e-7);
+    }
 }
 
 test "quantized matmul matches float matmul approximately" {
