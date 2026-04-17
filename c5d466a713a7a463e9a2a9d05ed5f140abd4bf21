@@ -1,0 +1,23 @@
+src/llama_inference.zig
+  c0b6a400fe3a8858 107-110,194,265-275,330,478,512-516,561-562,573-576,590-591,606-608,610-634,636-638,654,659-660,685-687
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "c5d466a713a7a463e9a2a9d05ed5f140abd4bf21",
+  "prompts": {
+    "c0b6a400fe3a8858": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8305effc-e845-4039-915e-7ae777d04ffc",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 68,
+      "total_deletions": 63,
+      "accepted_lines": 68,
+      "overriden_lines": 0
+    }
+  }
+}
