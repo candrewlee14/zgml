@@ -1461,6 +1461,165 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         /// leaves headroom for bigger future models without heap fallback on the hot path.
         pub const attention_max_d_head: usize = 512;
 
+        /// Multi-query flash-attention driven by cblas_sgemm. Tiles `seq_kv` in
+        /// blocks of Bs and `seq_q` in blocks of Mb so scratch stays on the
+        /// stack. Per tile: one GEMM for Q·K^T, an online-softmax update, and
+        /// one GEMM for S·V accumulated into `dst` (rows are rescaled in place
+        /// by the softmax alpha before each accumulation).
+        ///
+        /// Assumes row-of-d_head-is-contiguous layout for q/k/v/dst (the
+        /// caller checked `unit_strides`). Mask layout matches the per-query
+        /// kernel above: `mask.data[qi * mask_c + s * mask_r]`.
+        fn computeAttentionFlashBLAS(
+            dst: *Self,
+            q: *const Self,
+            k: *const Self,
+            v: *const Self,
+            mask: ?*const Self,
+            scale: T,
+            d_head: usize,
+            seq_q: usize,
+            seq_kv: usize,
+            q_c: usize,
+            k_c: usize,
+            v_c: usize,
+            out_c: usize,
+        ) void {
+            if (T != f32) return; // compile-time narrowed; keep runtime guard.
+
+            const Mb: usize = 64;
+            const Bs: usize = 64;
+
+            const neg_inf = -std.math.inf(T);
+            const mask_r: usize = if (mask) |m| m.strides[0] else 0;
+            const mask_c: usize = blk: {
+                const m = mask orelse break :blk 0;
+                if (m.ne[1] <= 1) break :blk 0;
+                break :blk m.strides[1];
+            };
+            const mask_data: ?[]const T = if (mask) |m| m.data else null;
+
+            var scores_buf: [Mb * Bs]T = undefined;
+            var m_buf: [Mb]T = undefined;
+            var l_buf: [Mb]T = undefined;
+
+            var q_start: usize = 0;
+            while (q_start < seq_q) : (q_start += Mb) {
+                const m_chunk = @min(Mb, seq_q - q_start);
+                const m_state = m_buf[0..m_chunk];
+                const l_state = l_buf[0..m_chunk];
+                for (m_state) |*x| x.* = neg_inf;
+                @memset(l_state, 0);
+
+                // Zero the dst rows owned by this chunk; acc is written in
+                // place and later multiplied by 1/l.
+                for (0..m_chunk) |qi| {
+                    const row = dst.data[(q_start + qi) * out_c ..][0..d_head];
+                    @memset(row, 0);
+                }
+
+                var s: usize = 0;
+                while (s < seq_kv) : (s += Bs) {
+                    const b_chunk = @min(Bs, seq_kv - s);
+
+                    // scores = Q_chunk^T @ K_tile  →  [m_chunk, b_chunk]
+                    // Q col-major [d_head, seq_q] ≡ row-major [seq_q, d_head], lda = q_c
+                    // K col-major [d_head, seq_kv] ≡ row-major [seq_kv, d_head], ldb = k_c
+                    // scores row-major with ldc = b_chunk
+                    c.cblas_sgemm(
+                        c.CblasRowMajor,
+                        c.CblasNoTrans,
+                        c.CblasTrans,
+                        @intCast(m_chunk),
+                        @intCast(b_chunk),
+                        @intCast(d_head),
+                        1.0,
+                        q.data[q_start * q_c ..].ptr,
+                        @intCast(q_c),
+                        k.data[s * k_c ..].ptr,
+                        @intCast(k_c),
+                        0.0,
+                        &scores_buf,
+                        @intCast(b_chunk),
+                    );
+
+                    // Apply mask + scale, run online softmax update per row.
+                    // Rows whose tile is fully masked contribute nothing.
+                    for (0..m_chunk) |qi| {
+                        const row_base = qi * b_chunk;
+                        var row_max: T = neg_inf;
+                        const mask_row_base = (q_start + qi) * mask_c;
+
+                        for (0..b_chunk) |bi| {
+                            const mask_add: T = if (mask_data) |md| md[mask_row_base + (s + bi) * mask_r] else 0;
+                            if (!std.math.isFinite(mask_add)) {
+                                scores_buf[row_base + bi] = neg_inf;
+                                continue;
+                            }
+                            const sc = scores_buf[row_base + bi] * scale + mask_add;
+                            scores_buf[row_base + bi] = sc;
+                            if (sc > row_max) row_max = sc;
+                        }
+
+                        if (row_max == neg_inf) {
+                            // No valid positions in this tile for this row — scores_buf
+                            // already holds -inf, so the upcoming GEMM will contribute 0
+                            // (after the weight pass); we still need to zero the weights.
+                            for (0..b_chunk) |bi| scores_buf[row_base + bi] = 0;
+                            continue;
+                        }
+
+                        const old_m = m_state[qi];
+                        const new_m = if (old_m == neg_inf) row_max else @max(old_m, row_max);
+                        const alpha: T = if (old_m == neg_inf) 0 else @exp(old_m - new_m);
+
+                        var row_l: T = 0;
+                        for (0..b_chunk) |bi| {
+                            const w = @exp(scores_buf[row_base + bi] - new_m);
+                            scores_buf[row_base + bi] = w;
+                            row_l += w;
+                        }
+
+                        if (old_m != neg_inf and alpha != 1) {
+                            const acc_row = dst.data[(q_start + qi) * out_c ..][0..d_head];
+                            for (acc_row) |*a| a.* *= alpha;
+                        }
+                        l_state[qi] = l_state[qi] * alpha + row_l;
+                        m_state[qi] = new_m;
+                    }
+
+                    // acc += scores_tile @ V_tile
+                    // scores row-major [m_chunk, b_chunk], lda = b_chunk
+                    // V col-major [d_head, seq_kv] ≡ row-major [seq_kv, d_head], ldb = v_c
+                    // V_tile = rows s..s+b_chunk → offset v.data + s*v_c
+                    // acc row-major at dst.data + q_start*out_c, ldc = out_c
+                    c.cblas_sgemm(
+                        c.CblasRowMajor,
+                        c.CblasNoTrans,
+                        c.CblasNoTrans,
+                        @intCast(m_chunk),
+                        @intCast(d_head),
+                        @intCast(b_chunk),
+                        1.0,
+                        &scores_buf,
+                        @intCast(b_chunk),
+                        v.data[s * v_c ..].ptr,
+                        @intCast(v_c),
+                        1.0,
+                        dst.data[q_start * out_c ..].ptr,
+                        @intCast(out_c),
+                    );
+                }
+
+                // Finalize: divide each row of acc by its l.
+                for (0..m_chunk) |qi| {
+                    const inv_l: T = if (l_state[qi] > 0) @as(T, 1) / l_state[qi] else 0;
+                    const row = dst.data[(q_start + qi) * out_c ..][0..d_head];
+                    for (row) |*a| a.* *= inv_l;
+                }
+            }
+        }
+
         /// Fused attention: `out = softmax(scale * (Q @ K^T) + mask) @ V^T`.
         ///
         /// Shapes (d_head first, seq second — this codebase's convention):
@@ -1493,6 +1652,18 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             const scale = dst.op_scale;
             const neg_inf = -std.math.inf(T);
             const unit_strides = q_r == 1 and k_r == 1 and v_r == 1 and out_r == 1;
+
+            // Multi-query BLAS flash path: for prefill with contiguous
+            // column-major inputs, batch Q·K^T and S·V into GEMM calls over
+            // seq_kv tiles. Threshold picked empirically — below it the
+            // per-query mask-first SIMD loop below beats GEMM overhead
+            // because causal masking makes the valid-KV set tiny.
+            if (comptime (T == f32 and opts.use_blas)) {
+                if (seq_q >= 8 and unit_strides) {
+                    computeAttentionFlashBLAS(dst, q, k, v, mask, scale, d_head, seq_q, seq_kv, q_c, k_c, v_c, out_c);
+                    return;
+                }
+            }
 
             // Mask layout: `mask.data[q_idx * mask_c + s * mask_r]`. When the caller
             // passes a broadcast single-column mask (seq_q == 1 on the mask), mask_c
