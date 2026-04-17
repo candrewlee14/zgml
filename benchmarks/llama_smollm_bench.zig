@@ -68,8 +68,16 @@ fn runVariant(
     if (quantized) try session.quantize();
     if (quant_kv) try session.quantizeKV();
 
-    // Warm up the real decode path once to settle kernel/backend selection.
+    // Pre-build the prompt token buffer once. The session takes it verbatim.
+    const prompt = try alloc.alloc(usize, cfg.prompt_tokens);
+    defer alloc.free(prompt);
+    for (prompt, 0..) |*t, i| t.* = (i + 1) % config.vocab_size;
+
+    // Warm up the real decode path and prefill path once each to settle
+    // kernel/backend selection and amortize plan-build cost.
     _ = try session.step(0);
+    session.reset();
+    _ = try session.prefill(prompt);
     session.reset();
 
     var prompt_total_ns: u128 = 0;
@@ -78,16 +86,9 @@ fn runVariant(
     for (0..cfg.repetitions) |_| {
         session.reset();
         const prompt_start = std.Io.Clock.awake.now(io).nanoseconds;
-        for (0..cfg.prompt_tokens) |i| {
-            _ = try session.step((i + 1) % config.vocab_size);
-        }
+        _ = try session.prefill(prompt);
         const prompt_end = std.Io.Clock.awake.now(io).nanoseconds;
         prompt_total_ns += @intCast(prompt_end - prompt_start);
-
-        session.reset();
-        for (0..cfg.prompt_tokens) |i| {
-            _ = try session.step((i + 1) % config.vocab_size);
-        }
 
         const gen_start = std.Io.Clock.awake.now(io).nanoseconds;
         for (0..cfg.gen_tokens) |i| {

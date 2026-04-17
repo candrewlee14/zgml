@@ -409,14 +409,29 @@ fn computeSliceAssign(comptime Self: type, result: *Self, src: *const Self, dst:
     const rows = dst.ne[0];
     const cols = dst.ne[1];
     const pos = result.storage_offset;
-    std.debug.assert(pos < cols);
-    std.debug.assert(src.nElems() >= rows);
+    // src is [rows, n_cols_to_write]. Decode passes n_cols=1; prefill passes n_cols=N.
+    const n_write: usize = if (src.ne[1] == 0) 1 else src.ne[1];
+    std.debug.assert(pos + n_write <= cols);
 
-    // Write src into column `pos` of dst (column-major: col `pos` starts at pos * rows)
-    for (0..rows) |r| {
-        dst.data[pos * rows + r] = src.data[r];
+    const src_rs = src.strides[0];
+    const src_cs = src.strides[1];
+    if (src_rs == 1 and src_cs == rows) {
+        // Fast path: contiguous [rows, n_write].
+        @memcpy(dst.data[pos * rows ..][0 .. n_write * rows], src.data[0 .. n_write * rows]);
+    } else {
+        // Strided src (e.g. sliceRows of a wider matrix): copy column by column.
+        for (0..n_write) |col| {
+            const dst_base = (pos + col) * rows;
+            const src_base = col * src_cs;
+            if (src_rs == 1) {
+                @memcpy(dst.data[dst_base..][0..rows], src.data[src_base..][0..rows]);
+            } else {
+                for (0..rows) |r| {
+                    dst.data[dst_base + r] = src.data[src_base + r * src_rs];
+                }
+            }
+        }
     }
-    // Result aliases dst's data
     result.data = dst.data;
 }
 
@@ -427,15 +442,20 @@ fn computeRope(comptime Self: type, result: *Self, x: *const Self, cos_sin: *con
     const d = x.ne[0];
     const half = d / 2;
     const seq_len = x.ne[1];
+    const x_rs = x.strides[0];
+    const x_cs = x.strides[1];
+    const cs_cs = cos_sin.strides[1];
     for (0..seq_len) |col| {
-        const x_off = col * d;
-        const cs_off = col * 2 * d;
+        const x_base = col * x_cs;
+        const cs_off = col * cs_cs;
         const dst_off = col * d;
         for (0..half) |i| {
             const cos_val = cos_sin.data[cs_off + i];
             const sin_val = cos_sin.data[cs_off + d + i];
-            result.data[dst_off + i] = x.data[x_off + i] * cos_val - x.data[x_off + i + half] * sin_val;
-            result.data[dst_off + i + half] = x.data[x_off + i + half] * cos_val + x.data[x_off + i] * sin_val;
+            const x_lo = x.data[x_base + i * x_rs];
+            const x_hi = x.data[x_base + (i + half) * x_rs];
+            result.data[dst_off + i] = x_lo * cos_val - x_hi * sin_val;
+            result.data[dst_off + i + half] = x_hi * cos_val + x_lo * sin_val;
         }
     }
 }

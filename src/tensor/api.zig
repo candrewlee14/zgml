@@ -684,7 +684,8 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn sliceAssign(self: *Self, src: *Self, pos: usize) *Self {
             const alloc = a(self);
             assert(self.n_dims >= 2);
-            assert(pos < self.ne[1]);
+            const n_cols = if (src.n_dims >= 2) src.ne[1] else 1;
+            assert(pos + n_cols <= self.ne[1]);
             assert(src.ne[0] == self.ne[0]);
             const res = Self.initHelper(alloc, self.ne[0..self.n_dims], self.data) catch unreachable;
             res.op = .slice_assign;

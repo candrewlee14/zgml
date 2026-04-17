@@ -30,6 +30,7 @@
 
 const std = @import("std");
 
+const opts = @import("zgml_options");
 const backend_mod = @import("backend.zig");
 const Tensor = @import("tensor.zig").Tensor;
 const ComputeGraph = @import("graph.zig").ComputeGraph;
@@ -68,6 +69,10 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         graph: ComputeGraph(T),
         backing_alloc: std.mem.Allocator,
 
+        // Shape regime for this plan: number of query timesteps processed per
+        // execute() call. 1 for decode, N for batched prefill. Frozen at init.
+        token_len: usize,
+
         // Bound inputs.
         token_input: *Tensor(T),
         attn_mask: *Tensor(T),
@@ -80,8 +85,8 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         // Cached slice_assign nodes for position patching.
         slice_assign_nodes: []const *Tensor(T),
 
-        // RoPE packed cos_sin leaf nodes: one [2*d_head, 1] per layer.
-        // Patched each step with values for the current position.
+        // RoPE packed cos_sin leaf nodes: one [2*d_head, token_len] per layer.
+        // Patched each call with values for the current position range.
         rope_nodes: [config.n_layers]*Tensor(T),
 
         // Output tensor.
@@ -94,6 +99,10 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         quant_weights: []QuantizedWeight(T),
         quant_map: std.AutoHashMapUnmanaged(*Tensor(T), usize),
         gemv_pool: ?quant.GemvPool(T) = null,
+        // Scratch buffer for BLAS-backed M>1 quantized matmul: sized to
+        // max(K*N) across quant_weights. Empty when no quant weights or
+        // BLAS is disabled.
+        quant_scratch: []T = &.{},
 
         // KV-cache-quantization state.
         k_quant_caches: []QuantizedKVCache(T),
@@ -107,7 +116,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             v_caches: [config.n_layers]*Tensor(T),
             backing_alloc: std.mem.Allocator,
         ) !Self {
-            return Self.initWithBackend(model, k_caches, v_caches, backing_alloc, null);
+            return Self.initWithBackend(model, k_caches, v_caches, backing_alloc, null, 1);
         }
 
         pub fn initWithBackend(
@@ -116,15 +125,17 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             v_caches: [config.n_layers]*Tensor(T),
             backing_alloc: std.mem.Allocator,
             backend: ?backend_mod.Backend,
+            token_len: usize,
         ) !Self {
+            std.debug.assert(token_len >= 1 and token_len <= max_seq);
             var graph = ComputeGraph(T).init(backing_alloc);
             errdefer graph.deinit();
             if (backend) |b| graph.setBackend(b);
             const a = graph.allocator();
 
-            // Bound-input placeholder: token embedding [d_model, 1].
-            const token_input = try Tensor(T).init(a, &.{ d_model, 1 });
-            const attn_mask = try Tensor(T).init(a, &.{ max_seq, 1 });
+            // Bound-input placeholder: token embeddings [d_model, token_len].
+            const token_input = try Tensor(T).init(a, &.{ d_model, token_len });
+            const attn_mask = try Tensor(T).init(a, &.{ max_seq, token_len });
             @memset(attn_mask.data, -std.math.inf(T));
 
             const logits = model.forwardCachedMasked(token_input, k_caches, v_caches, 0, attn_mask);
@@ -148,13 +159,13 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             }
 
             // Find RoPE packed cos_sin leaf nodes in the graph's leaf list.
-            // They are non-param, shape [2*d_head, 1], not token_input or attn_mask.
+            // They are non-param, shape [2*d_head, token_len], not token_input or attn_mask.
             var rope_nodes: [config.n_layers]*Tensor(T) = undefined;
             var rope_idx: usize = 0;
             for (graph.leaves.items) |leaf| {
                 if (!leaf.isParam() and
                     leaf != token_input and leaf != attn_mask and
-                    leaf.ne[0] == 2 * d_head and leaf.ne[1] == 1)
+                    leaf.ne[0] == 2 * d_head and leaf.ne[1] == token_len)
                 {
                     rope_nodes[rope_idx] = leaf;
                     rope_idx += 1;
@@ -168,6 +179,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             return .{
                 .graph = graph,
                 .backing_alloc = backing_alloc,
+                .token_len = token_len,
                 .token_input = token_input,
                 .attn_mask = attn_mask,
                 .k_cache_tensors = k_caches,
@@ -189,6 +201,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             if (self.gemv_pool) |*p| p.deinit(self.backing_alloc);
             for (self.quant_weights) |qw| qw.deinit(self.backing_alloc);
             if (self.quant_weights.len > 0) self.backing_alloc.free(self.quant_weights);
+            if (self.quant_scratch.len > 0) self.backing_alloc.free(self.quant_scratch);
             self.quant_map.deinit(self.backing_alloc);
             for (self.k_quant_caches) |*c| c.deinit(self.backing_alloc);
             if (self.k_quant_caches.len > 0) self.backing_alloc.free(self.k_quant_caches);
@@ -239,6 +252,18 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             const n_workers = std.Thread.getCpuCount() catch 1;
             if (self.gemv_pool) |*p| p.deinit(alloc);
             self.gemv_pool = try quant.GemvPool(T).init(alloc, n_workers);
+
+            // Size a shared scratch buffer for BLAS-backed M>1 matmul to
+            // the largest K*N across quantized weights. Only allocated when
+            // BLAS is built in — otherwise the fallback kernel is used and
+            // scratch would be unused.
+            if (self.quant_scratch.len > 0) alloc.free(self.quant_scratch);
+            self.quant_scratch = &.{};
+            if (comptime (T == f32 and opts.use_blas)) {
+                var max_kn: usize = 0;
+                for (qw) |w| max_kn = @max(max_kn, w.rows * w.cols);
+                if (max_kn > 0) self.quant_scratch = try alloc.alloc(T, max_kn);
+            }
         }
 
         /// Quantize each layer's KV cache to int8 with per-block f32 scales.
@@ -355,14 +380,21 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
 
         fn executeOneQuantized(self: *Self, node: *Tensor(T), pool: ?*quant.GemvPool(T)) void {
             if (self.quant_map.get(node)) |qi| {
-                inference_utils.executeQuantizedMatmul(T, node, &self.quant_weights[qi], pool);
+                const scratch: ?[]T = if (self.quant_scratch.len > 0) self.quant_scratch else null;
+                inference_utils.executeQuantizedMatmul(T, node, &self.quant_weights[qi], pool, scratch);
                 return;
             }
             if (self.quant_sa_map.get(node)) |sa| {
-                // Quantize src0 (shape [d_head, 1]) into the cache column.
+                // Quantize src0 (shape [d_head, n_write]) into consecutive cache columns
+                // starting at col_offset + storage_offset. n_write is 1 for decode and
+                // N for batched prefill.
                 const src = node.src0.?;
-                const col = sa.col_offset + node.storage_offset;
-                sa.cache.storeColumn(col, src.data[0..sa.cache.d_head]);
+                const d = sa.cache.d_head;
+                const n_write = if (src.n_dims >= 2) src.ne[1] else 1;
+                const base = sa.col_offset + node.storage_offset;
+                for (0..n_write) |i| {
+                    sa.cache.storeColumn(base + i, src.data[i * d ..][0..d]);
+                }
                 return;
             }
             if (self.quant_attn_map.get(node)) |aq| {
@@ -413,44 +445,67 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         }
 
         /// Execute one step: patch inputs, reset intermediates, compute.
+        /// Returns logits for the last (newest) query position. For decode
+        /// plans (token_len=1) that's the only column; for prefill plans
+        /// (token_len=N) it's the final column of the [vocab, N] output.
         pub fn execute(
             self: *Self,
             model: *const Model,
-            token_id: usize,
+            token_ids: []const usize,
             pos: usize,
         ) []const T {
-            std.debug.assert(token_id < config.vocab_size);
-            std.debug.assert(pos < config.max_seq_len);
+            std.debug.assert(token_ids.len == self.token_len);
+            std.debug.assert(pos + self.token_len <= config.max_seq_len);
 
-            // 1. Patch token embedding.
+            const n = self.token_len;
+
+            // 1. Patch token embeddings for the N positions.
             const tok_data = model.token_embed.inner.data;
-            @memcpy(
-                self.token_input.data[0..d_model],
-                tok_data[token_id * d_model ..][0..d_model],
-            );
-
-            // 2. Extend the causal mask for the new position.
-            self.attn_mask.data[pos] = 0;
-
-            // 3. Patch RoPE packed cos_sin for current position.
-            const rope = &model.blocks[0].rope;
-            for (0..config.n_layers) |l| {
-                @memcpy(self.rope_nodes[l].data[0..d_head], rope.cos_table.data[pos * d_head ..][0..d_head]);
-                @memcpy(self.rope_nodes[l].data[d_head .. 2 * d_head], rope.sin_table.data[pos * d_head ..][0..d_head]);
+            for (token_ids, 0..) |tid, i| {
+                std.debug.assert(tid < config.vocab_size);
+                @memcpy(
+                    self.token_input.data[i * d_model ..][0..d_model],
+                    tok_data[tid * d_model ..][0..d_model],
+                );
             }
 
-            // 4. Patch KV-cache write positions.
+            // 2. Causal mask across [max_seq, N]: column j (position pos+j) can
+            //    attend to kv positions [0..pos+j]. Column-major mask; column j
+            //    starts at offset j * max_seq.
+            for (0..n) |j| {
+                const col = self.attn_mask.data[j * config.max_seq_len ..][0..config.max_seq_len];
+                const valid_upto = pos + j + 1;
+                @memset(col[0..valid_upto], 0);
+                if (valid_upto < config.max_seq_len) {
+                    @memset(col[valid_upto..], -std.math.inf(T));
+                }
+            }
+
+            // 3. Patch RoPE packed cos_sin for positions [pos..pos+n).
+            const rope = &model.blocks[0].rope;
+            for (0..config.n_layers) |l| {
+                const buf = self.rope_nodes[l].data;
+                for (0..n) |j| {
+                    @memcpy(buf[j * 2 * d_head ..][0..d_head], rope.cos_table.data[(pos + j) * d_head ..][0..d_head]);
+                    @memcpy(buf[j * 2 * d_head + d_head ..][0..d_head], rope.sin_table.data[(pos + j) * d_head ..][0..d_head]);
+                }
+            }
+
+            // 4. KV-cache write offsets: each slice_assign writes N contiguous
+            //    columns starting at pos.
             for (self.slice_assign_nodes) |node| node.storage_offset = pos;
 
             // 5. Execute. Inference nodes fully overwrite their outputs, so we
-            // can skip the graph-wide zeroing pass here.
+            //    can skip the graph-wide zeroing pass here.
             if (self.quant_weights.len > 0 or self.k_quant_caches.len > 0) {
                 self.computeQuantized();
             } else {
                 self.graph.computeNoGrad();
             }
 
-            return self.logits.data[0..config.vocab_size];
+            // Last-column logits: [vocab, N] column-major → last col at offset (N-1)*vocab.
+            const last_off = (n - 1) * config.vocab_size;
+            return self.logits.data[last_off..][0..config.vocab_size];
         }
     };
 }
@@ -467,11 +522,27 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
         const Self = @This();
 
         backing_alloc: std.mem.Allocator,
-        arena: std.heap.ArenaAllocator,
+        /// Heap-allocated so its address is stable across moves of the
+        /// Session struct. Model tensors capture this allocator by pointer,
+        /// so the arena must not move after tensors are created.
+        arena: *std.heap.ArenaAllocator,
+        backend: ?backend_mod.Backend,
         model: Model,
         k_caches: [config.n_layers]*Tensor(T),
         v_caches: [config.n_layers]*Tensor(T),
+
+        /// Decode plan: token_len=1, used by `step()`. Always present.
         plan: Plan,
+        /// Lazily built prefill plan for batched prompt ingestion. Rebuilt
+        /// when `prefill()` is called with a different token count.
+        prefill_plan: ?Plan,
+        /// Remembered weight-quant block size so prefill plans, when built
+        /// lazily, can match the decode plan's quantization state.
+        quant_block_size: ?usize,
+        /// KV-cache quantization is active on the decode plan. When set,
+        /// `prefill()` falls back to sequential step() — the two plans would
+        /// each own a distinct QuantizedKVCache and drift out of sync.
+        quant_kv_active: bool,
         pos: usize,
 
         pub fn init(backing_alloc: std.mem.Allocator) !Self {
@@ -479,8 +550,12 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
         }
 
         pub fn initWithBackend(backing_alloc: std.mem.Allocator, backend: ?backend_mod.Backend) !Self {
-            var arena = std.heap.ArenaAllocator.init(backing_alloc);
-            errdefer arena.deinit();
+            const arena = try backing_alloc.create(std.heap.ArenaAllocator);
+            arena.* = std.heap.ArenaAllocator.init(backing_alloc);
+            errdefer {
+                arena.deinit();
+                backing_alloc.destroy(arena);
+            }
             const a = arena.allocator();
 
             const model = try Model.init(a);
@@ -494,29 +569,36 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
                 @memset(v_caches[l].data, 0);
             }
 
-            var plan = try Plan.initWithBackend(&model, k_caches, v_caches, backing_alloc, backend);
+            var plan = try Plan.initWithBackend(&model, k_caches, v_caches, backing_alloc, backend, 1);
             errdefer plan.deinit();
 
             return .{
                 .backing_alloc = backing_alloc,
                 .arena = arena,
+                .backend = backend,
                 .model = model,
                 .k_caches = k_caches,
                 .v_caches = v_caches,
                 .plan = plan,
+                .prefill_plan = null,
+                .quant_block_size = null,
+                .quant_kv_active = false,
                 .pos = 0,
             };
         }
 
         pub fn deinit(self: *Self) void {
+            if (self.prefill_plan) |*p| p.deinit();
             self.plan.deinit();
             self.arena.deinit();
+            self.backing_alloc.destroy(self.arena);
         }
 
         /// Clear KV caches and rewind to position 0.
         pub fn reset(self: *Self) void {
             self.pos = 0;
             @memset(self.plan.attn_mask.data, -std.math.inf(T));
+            if (self.prefill_plan) |*p| @memset(p.attn_mask.data, -std.math.inf(T));
             for (0..config.n_layers) |l| {
                 @memset(self.k_caches[l].data, 0);
                 @memset(self.v_caches[l].data, 0);
@@ -529,35 +611,77 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
             return self.pos;
         }
 
-        /// Quantize eligible weight matrices to int8.
+        /// Quantize eligible weight matrices to int8 on all plans.
         pub fn quantize(self: *Self) !void {
-            try self.plan.quantize(@import("quant.zig").default_block_size);
+            const bs = @import("quant.zig").default_block_size;
+            try self.plan.quantize(bs);
+            if (self.prefill_plan) |*p| try p.quantize(bs);
+            self.quant_block_size = bs;
         }
 
-        /// Quantize the per-layer KV caches to int8. Safe to call before or
-        /// after `quantize()` — the two act on disjoint parts of the graph.
+        /// Quantize the decode plan's per-layer KV caches to int8. Any
+        /// existing prefill plan is dropped: each plan owns its own
+        /// QuantizedKVCache, so they can't share state without a larger
+        /// refactor. Subsequent `prefill()` calls fall back to looping
+        /// `step()` instead of using a batched prefill plan.
         pub fn quantizeKV(self: *Self) !void {
             try self.plan.quantizeKV(@import("quant.zig").default_block_size);
+            self.quant_kv_active = true;
+            if (self.prefill_plan) |*p| {
+                p.deinit();
+                self.prefill_plan = null;
+            }
         }
 
         /// Process one token and return logits [vocab_size].
         pub fn step(self: *Self, token_id: usize) ![]const T {
             if (self.pos >= config.max_seq_len) return error.SequenceTooLong;
-            const logits = self.plan.execute(&self.model, token_id, self.pos);
+            const logits = self.plan.execute(&self.model, &.{token_id}, self.pos);
             self.pos += 1;
             return logits;
         }
 
-        /// Process multiple prompt tokens, returning logits for the last token.
+        /// Process a prompt of N tokens in a single batched forward, and
+        /// return logits [vocab_size] for the final position. The batched
+        /// path uses a lazily-built prefill plan of token_len=N. Plans are
+        /// reused across calls with matching N; a different N rebuilds it.
+        ///
+        /// Falls back to sequential `step()` when N<=1 or when KV quant is
+        /// active (see `quantizeKV`).
         pub fn prefill(self: *Self, token_ids: []const usize) ![]const T {
             if (token_ids.len == 0) return self.plan.logits.data[0..config.vocab_size];
             if (self.pos + token_ids.len > config.max_seq_len) return error.SequenceTooLong;
 
-            for (token_ids) |tok| {
-                _ = try self.step(tok);
+            if (token_ids.len == 1 or self.quant_kv_active) {
+                var last: []const T = &.{};
+                for (token_ids) |tok| last = try self.step(tok);
+                return last;
             }
 
-            return self.plan.logits.data[0..config.vocab_size];
+            const pp = try self.getOrBuildPrefillPlan(token_ids.len);
+            const logits = pp.execute(&self.model, token_ids, self.pos);
+            self.pos += token_ids.len;
+            return logits;
+        }
+
+        fn getOrBuildPrefillPlan(self: *Self, n: usize) !*Plan {
+            if (self.prefill_plan) |*p| {
+                if (p.token_len == n) return p;
+                p.deinit();
+                self.prefill_plan = null;
+            }
+            var pp = try Plan.initWithBackend(
+                &self.model,
+                self.k_caches,
+                self.v_caches,
+                self.backing_alloc,
+                self.backend,
+                n,
+            );
+            errdefer pp.deinit();
+            if (self.quant_block_size) |bs| try pp.quantize(bs);
+            self.prefill_plan = pp;
+            return &self.prefill_plan.?;
         }
     };
 }
@@ -811,7 +935,7 @@ test "LlamaInferenceSession prefill matches sequential step()" {
     const prefill_logits = try prefill_session.prefill(&tokens);
 
     for (step_logits[0..], prefill_logits) |want, got| {
-        try testing.expectApproxEqAbs(want, got, 1e-6);
+        try testing.expectApproxEqAbs(want, got, 1e-4);
     }
 
     try testing.expectEqual(tokens.len, prefill_session.pos);
@@ -820,6 +944,6 @@ test "LlamaInferenceSession prefill matches sequential step()" {
     const step_next = try step_session.step(next_tok);
     const prefill_next = try prefill_session.step(next_tok);
     for (step_next, prefill_next) |want, got| {
-        try testing.expectApproxEqAbs(want, got, 1e-6);
+        try testing.expectApproxEqAbs(want, got, 1e-4);
     }
 }

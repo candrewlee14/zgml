@@ -145,7 +145,7 @@ pub fn LLaMA(comptime T: type, comptime config: LlamaConfig) type {
                 x = self.blocks[i].forwardCachedMasked(x, k_caches[i], v_caches[i], pos, attn_mask);
             }
 
-            var norm_reduce = [_]usize{ 1, 1 };
+            var norm_reduce = [_]usize{ 1, x.ne[1] };
             x = x.rmsNorm(&norm_reduce, @floatCast(config.rms_norm_eps));
             x = x.mul(self.rms_norm_f.inner.repeatLike(x));
 

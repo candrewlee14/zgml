@@ -187,14 +187,14 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
             attn_mask: *Tensor(T),
         ) *Tensor(T) {
             const alloc = x.alloc.?;
-            var norm_reduce = [_]usize{ 1, 1 };
+            var norm_reduce = [_]usize{ 1, x.ne[1] };
             const norm1 = self.applyRmsNorm(x, &norm_reduce, .norm1);
 
             const q_proj = norm1.matMul(false, self.w_q.inner, false);
             const k_proj = norm1.matMul(false, self.w_k.inner, false);
             const v_proj = norm1.matMul(false, self.w_v.inner, false);
 
-            const rope_cs = self.rope.getCosSinPackedAtPos(alloc, pos);
+            const rope_cs = self.rope.getCosSinPackedRange(alloc, pos, x.ne[1]);
 
             // Rotate and write into the per-head slab of the consolidated cache.
             var k_updated: [cfg.n_kv_heads]*Tensor(T) = undefined;

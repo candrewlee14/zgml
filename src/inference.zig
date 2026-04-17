@@ -38,6 +38,7 @@
 
 const std = @import("std");
 
+const opts = @import("zgml_options");
 const backend_mod = @import("backend.zig");
 const Tensor = @import("tensor.zig").Tensor;
 const ComputeGraph = @import("graph.zig").ComputeGraph;
@@ -87,6 +88,8 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
         quant_weights: []QuantizedWeight(T),
         quant_map: std.AutoHashMapUnmanaged(*Tensor(T), usize),
         gemv_pool: ?quant.GemvPool(T) = null,
+        // Shared f32 scratch for BLAS-backed M>1 quantized matmul.
+        quant_scratch: []T = &.{},
 
         /// Build a frozen plan from an existing model and KV caches.
         ///
@@ -173,6 +176,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             if (self.gemv_pool) |*p| p.deinit(self.backing_alloc);
             for (self.quant_weights) |qw| qw.deinit(self.backing_alloc);
             if (self.quant_weights.len > 0) self.backing_alloc.free(self.quant_weights);
+            if (self.quant_scratch.len > 0) self.backing_alloc.free(self.quant_scratch);
             self.quant_map.deinit(self.backing_alloc);
             for (self.workspace_bufs) |buf| self.backing_alloc.free(buf);
             if (self.workspace_bufs.len > 0) self.backing_alloc.free(self.workspace_bufs);
@@ -223,6 +227,14 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             const n_workers = std.Thread.getCpuCount() catch 1;
             if (self.gemv_pool) |*p| p.deinit(alloc);
             self.gemv_pool = try quant.GemvPool(T).init(alloc, n_workers);
+
+            if (self.quant_scratch.len > 0) alloc.free(self.quant_scratch);
+            self.quant_scratch = &.{};
+            if (comptime (T == f32 and opts.use_blas)) {
+                var max_kn: usize = 0;
+                for (qw) |w| max_kn = @max(max_kn, w.rows * w.cols);
+                if (max_kn > 0) self.quant_scratch = try alloc.alloc(T, max_kn);
+            }
         }
 
         /// Execute forward pass with quantized matmul dispatch.
@@ -230,11 +242,12 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
         /// only intercepts matmul nodes that have quantized weights.
         fn computeQuantized(self: *Self) void {
             const pool: ?*quant.GemvPool(T) = if (self.gemv_pool != null) &self.gemv_pool.? else null;
+            const scratch: ?[]T = if (self.quant_scratch.len > 0) self.quant_scratch else null;
             const steps = self.graph.forward_execution_steps.items;
             if (steps.len == 0) {
                 for (self.graph.nodes.items[0..self.graph.forward_node_count]) |node| {
                     if (self.quant_map.get(node)) |qi| {
-                        inference_utils.executeQuantizedMatmul(T, node, &self.quant_weights[qi], pool);
+                        inference_utils.executeQuantizedMatmul(T, node, &self.quant_weights[qi], pool, scratch);
                     } else {
                         self.graph.executeNode(node, 1);
                     }
@@ -249,7 +262,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
                     },
                     .node => |node| {
                         if (self.quant_map.get(node)) |qi| {
-                            inference_utils.executeQuantizedMatmul(T, node, &self.quant_weights[qi], pool);
+                            inference_utils.executeQuantizedMatmul(T, node, &self.quant_weights[qi], pool, scratch);
                         } else {
                             self.graph.executeNode(node, 1);
                         }
