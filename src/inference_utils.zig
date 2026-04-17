@@ -6,10 +6,12 @@
 
 const std = @import("std");
 
+const opts = @import("zgml_options");
 const Tensor = @import("tensor.zig").Tensor;
 const ComputeGraph = @import("graph.zig").ComputeGraph;
 const quant = @import("quant.zig");
 const QuantizedWeight = quant.QuantizedWeight;
+const blasSgemm = @import("tensor/forward.zig").blasSgemm;
 
 /// Analyse tensor liveness across the forward schedule and assign
 /// shared workspace buffers so that dead temporaries are recycled.
@@ -133,7 +135,16 @@ pub fn isWeightMatmul(comptime T: type, node: *Tensor(T)) bool {
 }
 
 /// Dispatch a quantized matmul for a node whose weight has been quantized.
-pub fn executeQuantizedMatmul(comptime T: type, node: *Tensor(T), qw: *const QuantizedWeight(T), pool: ?*quant.GemvPool(T)) void {
+/// `scratch` is an optional f32 buffer sized ≥ K*N across all quantized
+/// weights; if present and BLAS is available, the M>1 path dequantizes
+/// into it and routes through cblas_sgemm (Accelerate/AMX on Apple).
+pub fn executeQuantizedMatmul(
+    comptime T: type,
+    node: *Tensor(T),
+    qw: *const QuantizedWeight(T),
+    pool: ?*quant.GemvPool(T),
+    scratch: ?[]T,
+) void {
     const src0 = node.src0.?;
     const src1 = node.src1.?;
     const flags = node.matmul_flags;
@@ -161,7 +172,22 @@ pub fn executeQuantizedMatmul(comptime T: type, node: *Tensor(T), qw: *const Qua
             }
         }
         QuantizedWeight(T).gemvRange(qw.t_data.?, qw.t_scales.?, inp_q, inp_scales, node.data, 0, N, K, bs);
-    } else {
-        qw.matmul(input.data, node.data, M, N, K);
+        return;
     }
+
+    if (comptime (T == f32 and opts.use_blas)) {
+        if (scratch) |sc| {
+            if (sc.len >= K * N) {
+                const w_buf = sc[0 .. K * N];
+                qw.dequantizeTo(w_buf);
+                // A = input  [M, K] row-major: a_row_stride=K, a_col_stride=1
+                // B = weight [K, N] row-major: b_row_stride=N, b_col_stride=1
+                // dst         [M, N] row-major: dst_row_stride=N
+                blasSgemm(node.data, input.data, w_buf, M, N, K, K, 1, N, 1, 0, 0, 0, N);
+                return;
+            }
+        }
+    }
+
+    qw.matmul(input.data, node.data, M, N, K);
 }

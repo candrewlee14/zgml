@@ -338,10 +338,19 @@ pub fn RoPE(comptime T: type, comptime d: usize, comptime max_seq_len: usize) ty
 
         /// Prepare packed cos_sin [2*d, 1] for a single position.
         pub fn getCosSinPackedAtPos(self: *const Self, alloc: Alloc, pos: usize) *Tensor(T) {
-            std.debug.assert(pos < max_seq_len);
-            const cs_buf = Tensor(T).init(alloc, &.{ 2 * d, 1 }) catch unreachable;
-            @memcpy(cs_buf.data[0..d], self.cos_table.data[pos * d ..][0..d]);
-            @memcpy(cs_buf.data[d .. 2 * d], self.sin_table.data[pos * d ..][0..d]);
+            return self.getCosSinPackedRange(alloc, pos, 1);
+        }
+
+        /// Prepare packed cos_sin [2*d, seq_len] for positions [start_pos, start_pos+seq_len).
+        /// Used by both decode (seq_len=1) and batched prefill (seq_len=N).
+        pub fn getCosSinPackedRange(self: *const Self, alloc: Alloc, start_pos: usize, seq_len: usize) *Tensor(T) {
+            std.debug.assert(start_pos + seq_len <= max_seq_len);
+            std.debug.assert(seq_len >= 1);
+            const cs_buf = Tensor(T).init(alloc, &.{ 2 * d, seq_len }) catch unreachable;
+            for (0..seq_len) |col| {
+                @memcpy(cs_buf.data[col * 2 * d ..][0..d], self.cos_table.data[(start_pos + col) * d ..][0..d]);
+                @memcpy(cs_buf.data[col * 2 * d + d ..][0..d], self.sin_table.data[(start_pos + col) * d ..][0..d]);
+            }
             return cs_buf;
         }
 
