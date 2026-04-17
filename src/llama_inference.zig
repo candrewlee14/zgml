@@ -104,9 +104,10 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         // BLAS is disabled.
         quant_scratch: []T = &.{},
 
-        // KV-cache-quantization state.
-        k_quant_caches: []QuantizedKVCache(T),
-        v_quant_caches: []QuantizedKVCache(T),
+        // KV-cache-quantization state. The caches themselves are session-owned
+        // so the decode and prefill plans share the same physical storage;
+        // plans only hold per-graph-node maps into them.
+        uses_quant_kv: bool,
         quant_sa_map: std.AutoHashMapUnmanaged(*Tensor(T), SAQuant),
         quant_attn_map: std.AutoHashMapUnmanaged(*Tensor(T), AttnQuant),
 
@@ -190,8 +191,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
                 .workspace_bufs = bufs,
                 .quant_weights = &.{},
                 .quant_map = .empty,
-                .k_quant_caches = &.{},
-                .v_quant_caches = &.{},
+                .uses_quant_kv = false,
                 .quant_sa_map = .empty,
                 .quant_attn_map = .empty,
             };
@@ -203,10 +203,6 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             if (self.quant_weights.len > 0) self.backing_alloc.free(self.quant_weights);
             if (self.quant_scratch.len > 0) self.backing_alloc.free(self.quant_scratch);
             self.quant_map.deinit(self.backing_alloc);
-            for (self.k_quant_caches) |*c| c.deinit(self.backing_alloc);
-            if (self.k_quant_caches.len > 0) self.backing_alloc.free(self.k_quant_caches);
-            for (self.v_quant_caches) |*c| c.deinit(self.backing_alloc);
-            if (self.v_quant_caches.len > 0) self.backing_alloc.free(self.v_quant_caches);
             self.quant_sa_map.deinit(self.backing_alloc);
             self.quant_attn_map.deinit(self.backing_alloc);
             for (self.workspace_bufs) |buf| self.backing_alloc.free(buf);
@@ -266,29 +262,18 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             }
         }
 
-        /// Quantize each layer's KV cache to int8 with per-block f32 scales.
-        /// Slice-assigns into the cache and attention reads from the cache are
-        /// rerouted through `QuantizedKVCache` in the inference step — the
-        /// f32 cache tensors still exist but are no longer touched.
-        pub fn quantizeKV(self: *Self, block_size: usize) !void {
+        /// Build the slice_assign / attention → QuantizedKVCache maps for this
+        /// plan's graph nodes using caches owned by the session. Plans share
+        /// the same physical caches so a single session can hold both a
+        /// decode plan and a prefill plan without duplicated state.
+        pub fn quantizeKV(
+            self: *Self,
+            k_caches: []QuantizedKVCache(T),
+            v_caches: []QuantizedKVCache(T),
+        ) !void {
+            std.debug.assert(k_caches.len == config.n_layers);
+            std.debug.assert(v_caches.len == config.n_layers);
             const alloc = self.backing_alloc;
-            const n_cols = config.max_seq_len * config.n_kv_heads;
-
-            const k_caches = try alloc.alloc(QuantizedKVCache(T), config.n_layers);
-            errdefer alloc.free(k_caches);
-            const v_caches = try alloc.alloc(QuantizedKVCache(T), config.n_layers);
-            errdefer alloc.free(v_caches);
-
-            var ki: usize = 0;
-            errdefer for (k_caches[0..ki]) |*c| c.deinit(alloc);
-            while (ki < config.n_layers) : (ki += 1) {
-                k_caches[ki] = try QuantizedKVCache(T).init(alloc, d_head, n_cols, block_size);
-            }
-            var vi: usize = 0;
-            errdefer for (v_caches[0..vi]) |*c| c.deinit(alloc);
-            while (vi < config.n_layers) : (vi += 1) {
-                v_caches[vi] = try QuantizedKVCache(T).init(alloc, d_head, n_cols, block_size);
-            }
 
             var base_k: std.AutoHashMapUnmanaged(*Tensor(T), usize) = .empty;
             defer base_k.deinit(alloc);
@@ -338,18 +323,11 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
                 }
             }
 
-            // Swap in new state.
-            for (self.k_quant_caches) |*c| c.deinit(alloc);
-            if (self.k_quant_caches.len > 0) alloc.free(self.k_quant_caches);
-            for (self.v_quant_caches) |*c| c.deinit(alloc);
-            if (self.v_quant_caches.len > 0) alloc.free(self.v_quant_caches);
             self.quant_sa_map.deinit(alloc);
             self.quant_attn_map.deinit(alloc);
-
-            self.k_quant_caches = k_caches;
-            self.v_quant_caches = v_caches;
             self.quant_sa_map = sa_map;
             self.quant_attn_map = attn_map;
+            self.uses_quant_kv = true;
         }
 
         const CacheLoc = struct { base: *Tensor(T), col_offset: usize };
@@ -497,7 +475,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
 
             // 5. Execute. Inference nodes fully overwrite their outputs, so we
             //    can skip the graph-wide zeroing pass here.
-            if (self.quant_weights.len > 0 or self.k_quant_caches.len > 0) {
+            if (self.quant_weights.len > 0 or self.uses_quant_kv) {
                 self.computeQuantized();
             } else {
                 self.graph.computeNoGrad();
@@ -531,6 +509,11 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
         k_caches: [config.n_layers]*Tensor(T),
         v_caches: [config.n_layers]*Tensor(T),
 
+        /// Session-owned quantized KV caches, shared by all plans. Empty
+        /// until `quantizeKV()` is called.
+        k_quant_caches: []QuantizedKVCache(T),
+        v_quant_caches: []QuantizedKVCache(T),
+
         /// Decode plan: token_len=1, used by `step()`. Always present.
         plan: Plan,
         /// Lazily built prefill plan for batched prompt ingestion. Rebuilt
@@ -539,10 +522,6 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
         /// Remembered weight-quant block size so prefill plans, when built
         /// lazily, can match the decode plan's quantization state.
         quant_block_size: ?usize,
-        /// KV-cache quantization is active on the decode plan. When set,
-        /// `prefill()` falls back to sequential step() — the two plans would
-        /// each own a distinct QuantizedKVCache and drift out of sync.
-        quant_kv_active: bool,
         pos: usize,
 
         pub fn init(backing_alloc: std.mem.Allocator) !Self {
@@ -579,10 +558,11 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
                 .model = model,
                 .k_caches = k_caches,
                 .v_caches = v_caches,
+                .k_quant_caches = &.{},
+                .v_quant_caches = &.{},
                 .plan = plan,
                 .prefill_plan = null,
                 .quant_block_size = null,
-                .quant_kv_active = false,
                 .pos = 0,
             };
         }
@@ -590,6 +570,10 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
         pub fn deinit(self: *Self) void {
             if (self.prefill_plan) |*p| p.deinit();
             self.plan.deinit();
+            for (self.k_quant_caches) |*c| c.deinit(self.backing_alloc);
+            if (self.k_quant_caches.len > 0) self.backing_alloc.free(self.k_quant_caches);
+            for (self.v_quant_caches) |*c| c.deinit(self.backing_alloc);
+            if (self.v_quant_caches.len > 0) self.backing_alloc.free(self.v_quant_caches);
             self.arena.deinit();
             self.backing_alloc.destroy(self.arena);
         }
@@ -603,8 +587,8 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
                 @memset(self.k_caches[l].data, 0);
                 @memset(self.v_caches[l].data, 0);
             }
-            for (self.plan.k_quant_caches) |*c| c.clear();
-            for (self.plan.v_quant_caches) |*c| c.clear();
+            for (self.k_quant_caches) |*c| c.clear();
+            for (self.v_quant_caches) |*c| c.clear();
         }
 
         pub fn position(self: *const Self) usize {
@@ -619,18 +603,39 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
             self.quant_block_size = bs;
         }
 
-        /// Quantize the decode plan's per-layer KV caches to int8. Any
-        /// existing prefill plan is dropped: each plan owns its own
-        /// QuantizedKVCache, so they can't share state without a larger
-        /// refactor. Subsequent `prefill()` calls fall back to looping
-        /// `step()` instead of using a batched prefill plan.
+        /// Quantize the session's per-layer KV caches to int8. The caches are
+        /// session-owned and shared by the decode plan and any prefill plan,
+        /// so `prefill()` can still use the batched path after this call.
         pub fn quantizeKV(self: *Self) !void {
-            try self.plan.quantizeKV(@import("quant.zig").default_block_size);
-            self.quant_kv_active = true;
-            if (self.prefill_plan) |*p| {
-                p.deinit();
-                self.prefill_plan = null;
+            const alloc = self.backing_alloc;
+            const block_size = @import("quant.zig").default_block_size;
+            const n_cols = config.max_seq_len * config.n_kv_heads;
+
+            // Caches are allocated at most once per session; calling quantizeKV
+            // twice is a no-op on the storage and just rebuilds the plan maps.
+            if (self.k_quant_caches.len == 0) {
+                const k_caches = try alloc.alloc(QuantizedKVCache(T), config.n_layers);
+                errdefer alloc.free(k_caches);
+                const v_caches = try alloc.alloc(QuantizedKVCache(T), config.n_layers);
+                errdefer alloc.free(v_caches);
+
+                var ki: usize = 0;
+                errdefer for (k_caches[0..ki]) |*c| c.deinit(alloc);
+                while (ki < config.n_layers) : (ki += 1) {
+                    k_caches[ki] = try QuantizedKVCache(T).init(alloc, d_head, n_cols, block_size);
+                }
+                var vi: usize = 0;
+                errdefer for (v_caches[0..vi]) |*c| c.deinit(alloc);
+                while (vi < config.n_layers) : (vi += 1) {
+                    v_caches[vi] = try QuantizedKVCache(T).init(alloc, d_head, n_cols, block_size);
+                }
+
+                self.k_quant_caches = k_caches;
+                self.v_quant_caches = v_caches;
             }
+
+            try self.plan.quantizeKV(self.k_quant_caches, self.v_quant_caches);
+            if (self.prefill_plan) |*p| try p.quantizeKV(self.k_quant_caches, self.v_quant_caches);
         }
 
         /// Process one token and return logits [vocab_size].
@@ -646,16 +651,13 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
         /// path uses a lazily-built prefill plan of token_len=N. Plans are
         /// reused across calls with matching N; a different N rebuilds it.
         ///
-        /// Falls back to sequential `step()` when N<=1 or when KV quant is
-        /// active (see `quantizeKV`).
+        /// Falls back to sequential `step()` only when N==1.
         pub fn prefill(self: *Self, token_ids: []const usize) ![]const T {
             if (token_ids.len == 0) return self.plan.logits.data[0..config.vocab_size];
             if (self.pos + token_ids.len > config.max_seq_len) return error.SequenceTooLong;
 
-            if (token_ids.len == 1 or self.quant_kv_active) {
-                var last: []const T = &.{};
-                for (token_ids) |tok| last = try self.step(tok);
-                return last;
+            if (token_ids.len == 1) {
+                return try self.step(token_ids[0]);
             }
 
             const pp = try self.getOrBuildPrefillPlan(token_ids.len);
@@ -680,6 +682,9 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
             );
             errdefer pp.deinit();
             if (self.quant_block_size) |bs| try pp.quantize(bs);
+            if (self.k_quant_caches.len > 0) {
+                try pp.quantizeKV(self.k_quant_caches, self.v_quant_caches);
+            }
             self.prefill_plan = pp;
             return &self.prefill_plan.?;
         }
