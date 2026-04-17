@@ -1,0 +1,23 @@
+src/tensor/forward.zig
+  c0b6a400fe3a8858 1464-1622,1656-1667
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "a99eb7b526820d21ac4d14533e93875a1271d28f",
+  "prompts": {
+    "c0b6a400fe3a8858": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8305effc-e845-4039-915e-7ae777d04ffc",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 176,
+      "total_deletions": 5,
+      "accepted_lines": 171,
+      "overriden_lines": 0
+    }
+  }
+}
