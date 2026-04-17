@@ -1,0 +1,39 @@
+src/tensor/forward.zig
+  c0b6a400fe3a8858 412-433,445-447,449-450,455-458
+src/tensor/api.zig
+  c0b6a400fe3a8858 687-688
+src/models/llama.zig
+  c0b6a400fe3a8858 148
+src/inference_utils.zig
+  c0b6a400fe3a8858 9,14,138-147,175,177-192
+src/nn.zig
+  c0b6a400fe3a8858 341-353
+benchmarks/llama_smollm_bench.zig
+  c0b6a400fe3a8858 71-77,80-81,89
+src/llama_inference.zig
+  c0b6a400fe3a8858 33,72-75,88-89,102-105,119,128,130,136-138,162,168,182,204,255-266,383-384,388-390,392-397,448-450,454,457-460,462,464-470,472-482,484,487-491,494-495,499,506-508,525-529,533-534,536-545,553-558,572,578,583-585,591,594,601,614,616-619,622-626,629-633,639,644-650,655-658,661-684,938,947
+src/models/llama_transformer.zig
+  c0b6a400fe3a8858 190,197
+src/inference.zig
+  c0b6a400fe3a8858 41,91-92,179,230-237,245,250,265
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "707fdca01e9ecde1461655fdd470c53f15a3d607",
+  "prompts": {
+    "c0b6a400fe3a8858": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8305effc-e845-4039-915e-7ae777d04ffc",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 388,
+      "total_deletions": 120,
+      "accepted_lines": 354,
+      "overriden_lines": 0
+    }
+  }
+}
