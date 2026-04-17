@@ -1519,6 +1519,13 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 const mask_base = qi * mask_c;
 
                 for (0..seq_kv) |s| {
+                    // Mask-first: skip masked KV positions before doing the
+                    // Q·K dot product. For causal prefill with N queries only
+                    // pos+N of max_seq_len positions are valid; this avoids the
+                    // d_head MAC work for the rest.
+                    const mask_add: T = if (mask_data) |md| md[mask_base + s * mask_r] else 0;
+                    if (!std.math.isFinite(mask_add)) continue;
+
                     // score = scale * (Q[:, qi] · K[:, s]) + mask[s, qi]
                     var dot: T = 0;
                     if (unit_strides) {
@@ -1539,7 +1546,6 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                         }
                     }
 
-                    const mask_add: T = if (mask_data) |md| md[mask_base + s * mask_r] else 0;
                     const score = dot * scale + mask_add;
                     if (!std.math.isFinite(score)) continue;
 
