@@ -67,6 +67,14 @@ pub fn LLaMA(comptime T: type, comptime config: LlamaConfig) type {
     return struct {
         const Self = @This();
 
+        /// Everything a frozen inference plan needs to operate without
+        /// re-scanning the graph: `logits` plus per-layer `CachedLayerTrace`s
+        /// that pin down RoPE leaves, KV-cache writes, and attention nodes.
+        pub const CachedForwardTrace = struct {
+            logits: *Tensor(T),
+            layers: [config.n_layers]Block.CachedLayerTrace,
+        };
+
         token_embed: EmbedShape,
         blocks: [config.n_layers]Block,
         rms_norm_f: NormShape,
@@ -139,21 +147,24 @@ pub fn LLaMA(comptime T: type, comptime config: LlamaConfig) type {
             v_caches: [config.n_layers]*Tensor(T),
             pos: usize,
             attn_mask: *Tensor(T),
-        ) *Tensor(T) {
+        ) CachedForwardTrace {
             var x = x_in;
+            var layers: [config.n_layers]Block.CachedLayerTrace = undefined;
             for (0..config.n_layers) |i| {
-                x = self.blocks[i].forwardCachedMasked(x, k_caches[i], v_caches[i], pos, attn_mask);
+                layers[i] = self.blocks[i].forwardCachedMasked(x, k_caches[i], v_caches[i], pos, attn_mask);
+                x = layers[i].output;
             }
 
             var norm_reduce = [_]usize{ 1, x.ne[1] };
             x = x.rmsNorm(&norm_reduce, @floatCast(config.rms_norm_eps));
             x = x.mul(self.rms_norm_f.inner.repeatLike(x));
 
-            if (config.tied_lm_head) {
-                return x.matMul(false, self.token_embed.inner, true);
-            } else {
-                return x.matMul(false, self.out_proj.inner, false);
-            }
+            const logits = if (config.tied_lm_head)
+                x.matMul(false, self.token_embed.inner, true)
+            else
+                x.matMul(false, self.out_proj.inner, false);
+
+            return .{ .logits = logits, .layers = layers };
         }
 
         /// Return all learnable parameters.
@@ -317,12 +328,12 @@ test "LLaMA - frozen cached masked forward" {
         x.data[i] = model.token_embed.inner.data[0 * cfg.d_model + i]; // token 0
     }
 
-    const logits = model.forwardCachedMasked(x, k_caches, v_caches, 0, attn_mask);
-    try g.infer(logits);
+    const trace = model.forwardCachedMasked(x, k_caches, v_caches, 0, attn_mask);
+    try g.infer(trace.logits);
 
-    try testing.expectEqual(@as(usize, cfg.vocab_size), logits.ne[0]);
-    try testing.expectEqual(@as(usize, 1), logits.ne[1]);
-    for (logits.data) |v| {
+    try testing.expectEqual(@as(usize, cfg.vocab_size), trace.logits.ne[0]);
+    try testing.expectEqual(@as(usize, 1), trace.logits.ne[1]);
+    for (trace.logits.data) |v| {
         try testing.expect(!std.math.isNan(v));
         try testing.expect(!std.math.isInf(v));
     }
