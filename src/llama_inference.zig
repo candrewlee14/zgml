@@ -101,15 +101,6 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         quant_sa_map: std.AutoHashMapUnmanaged(*Tensor(T), SAQuant),
         quant_attn_map: std.AutoHashMapUnmanaged(*Tensor(T), AttnQuant),
 
-        pub fn init(
-            model: *const Model,
-            k_caches: [config.n_layers]*Tensor(T),
-            v_caches: [config.n_layers]*Tensor(T),
-            backing_alloc: std.mem.Allocator,
-        ) !Self {
-            return Self.initWithBackend(model, k_caches, v_caches, backing_alloc, null, 1);
-        }
-
         pub fn initWithBackend(
             model: *const Model,
             k_caches: [config.n_layers]*Tensor(T),
@@ -516,11 +507,10 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
             self.backing_alloc.destroy(self.arena);
         }
 
-        /// Clear KV caches and rewind to position 0.
+        /// Clear KV caches and rewind to position 0. Attention masks are
+        /// fully rewritten on every `execute()` call, so they need no reset.
         pub fn reset(self: *Self) void {
             self.pos = 0;
-            @memset(self.plan.attn_mask.data, -std.math.inf(T));
-            if (self.prefill_plan) |*p| @memset(p.attn_mask.data, -std.math.inf(T));
             for (0..config.n_layers) |l| {
                 @memset(self.k_caches[l].data, 0);
                 @memset(self.v_caches[l].data, 0);
