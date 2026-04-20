@@ -597,6 +597,12 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
             if (token_ids.len == 0) return self.plan.trace.logits.data[0..config.vocab_size];
             if (self.pos + token_ids.len > config.max_seq_len) return error.SequenceTooLong;
 
+            // Silently clamp an out-of-range chunk so callers that tweak the
+            // knob at runtime (e.g. tests or tuning code) never hit an
+            // assertion inside plan build. 0 is nonsensical — treat as the
+            // default to avoid an infinite loop.
+            if (self.prefill_chunk == 0) self.prefill_chunk = @min(default_prefill_chunk, config.max_seq_len);
+            if (self.prefill_chunk > config.max_seq_len) self.prefill_chunk = config.max_seq_len;
             const chunk = self.prefill_chunk;
             // Short prompts (or degenerate chunk) flow entirely through
             // step(). Building a chunk-sized plan would be wasted work.
@@ -912,6 +918,34 @@ test "LlamaInferenceSession chunked prefill matches sequential step()" {
         try testing.expectApproxEqAbs(want, got, 1e-4);
     }
     try testing.expectEqual(tokens.len, tail_session.pos);
+}
+
+test "LlamaInferenceSession clamps out-of-range prefill_chunk" {
+    const cfg = LlamaConfig{
+        .vocab_size = 8,
+        .d_model = 4,
+        .n_heads = 2,
+        .n_kv_heads = 2,
+        .d_ff = 8,
+        .n_layers = 1,
+        .max_seq_len = 8,
+    };
+
+    const tokens = [_]usize{ 1, 2, 3, 4, 5 };
+
+    // chunk=0: must not infinite-loop; silently falls back to the default.
+    var zero_session = try LlamaInferenceSession(f32, cfg).init(testing.allocator);
+    defer zero_session.deinit();
+    zero_session.prefill_chunk = 0;
+    _ = try zero_session.prefill(&tokens);
+    try testing.expect(zero_session.prefill_chunk > 0);
+
+    // chunk > max_seq_len: must not panic in plan build; silently clamped.
+    var big_session = try LlamaInferenceSession(f32, cfg).init(testing.allocator);
+    defer big_session.deinit();
+    big_session.prefill_chunk = cfg.max_seq_len * 4;
+    _ = try big_session.prefill(&tokens);
+    try testing.expect(big_session.prefill_chunk <= cfg.max_seq_len);
 }
 
 test "LlamaInferenceSession prefill matches sequential step()" {
