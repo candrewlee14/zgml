@@ -77,20 +77,10 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         token_input: *Tensor(T),
         attn_mask: *Tensor(T),
 
-        // Base KV cache tensors (borrowed from session) — used to identify
-        // slice_assign/attention nodes that target the caches.
-        k_cache_tensors: [config.n_layers]*Tensor(T),
-        v_cache_tensors: [config.n_layers]*Tensor(T),
-
-        // Cached slice_assign nodes for position patching.
-        slice_assign_nodes: []const *Tensor(T),
-
-        // RoPE packed cos_sin leaf nodes: one [2*d_head, token_len] per layer.
-        // Patched each call with values for the current position range.
-        rope_nodes: [config.n_layers]*Tensor(T),
-
-        // Output tensor.
-        logits: *Tensor(T),
+        // Identified graph nodes returned by `model.forwardCachedMasked` —
+        // the single source of truth for which nodes the plan patches each
+        // step. No graph walking, no shape-based leaf guessing.
+        trace: Model.CachedForwardTrace,
 
         // Workspace reuse state.
         workspace_bufs: [][]T,
@@ -139,40 +129,10 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             const attn_mask = try Tensor(T).init(a, &.{ max_seq, token_len });
             @memset(attn_mask.data, -std.math.inf(T));
 
-            const logits = model.forwardCachedMasked(token_input, k_caches, v_caches, 0, attn_mask);
+            const trace = model.forwardCachedMasked(token_input, k_caches, v_caches, 0, attn_mask);
 
             // Build forward graph + fusion.
-            try graph.infer(logits);
-
-            // Cache slice_assign nodes.
-            var sa_count: usize = 0;
-            for (graph.nodes.items) |node| {
-                if (node.opTag() == .slice_assign) sa_count += 1;
-            }
-            const sa_nodes = try backing_alloc.alloc(*Tensor(T), sa_count);
-            errdefer backing_alloc.free(sa_nodes);
-            var sa_idx: usize = 0;
-            for (graph.nodes.items) |node| {
-                if (node.opTag() == .slice_assign) {
-                    sa_nodes[sa_idx] = node;
-                    sa_idx += 1;
-                }
-            }
-
-            // Find RoPE packed cos_sin leaf nodes in the graph's leaf list.
-            // They are non-param, shape [2*d_head, token_len], not token_input or attn_mask.
-            var rope_nodes: [config.n_layers]*Tensor(T) = undefined;
-            var rope_idx: usize = 0;
-            for (graph.leaves.items) |leaf| {
-                if (!leaf.isParam() and
-                    leaf != token_input and leaf != attn_mask and
-                    leaf.ne[0] == 2 * d_head and leaf.ne[1] == token_len)
-                {
-                    rope_nodes[rope_idx] = leaf;
-                    rope_idx += 1;
-                }
-            }
-            std.debug.assert(rope_idx == config.n_layers);
+            try graph.infer(trace.logits);
 
             var bufs: [][]T = &.{};
             inference_utils.optimizeWorkspace(T, &graph, backing_alloc, &bufs) catch {};
@@ -183,11 +143,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
                 .token_len = token_len,
                 .token_input = token_input,
                 .attn_mask = attn_mask,
-                .k_cache_tensors = k_caches,
-                .v_cache_tensors = v_caches,
-                .slice_assign_nodes = sa_nodes,
-                .rope_nodes = rope_nodes,
-                .logits = logits,
+                .trace = trace,
                 .workspace_bufs = bufs,
                 .quant_weights = &.{},
                 .quant_map = .empty,
@@ -207,7 +163,6 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             self.quant_attn_map.deinit(self.backing_alloc);
             for (self.workspace_bufs) |buf| self.backing_alloc.free(buf);
             if (self.workspace_bufs.len > 0) self.backing_alloc.free(self.workspace_bufs);
-            self.backing_alloc.free(self.slice_assign_nodes);
             self.graph.deinit();
         }
 
@@ -266,6 +221,10 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         /// plan's graph nodes using caches owned by the session. Plans share
         /// the same physical caches so a single session can hold both a
         /// decode plan and a prefill plan without duplicated state.
+        ///
+        /// The trace tells us which graph node is which KV write / attention
+        /// read for which (layer, kv_head), so the mapping is a direct index
+        /// lookup — no graph walking, no pointer arithmetic on tensor data.
         pub fn quantizeKV(
             self: *Self,
             k_caches: []QuantizedKVCache(T),
@@ -275,51 +234,40 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             std.debug.assert(v_caches.len == config.n_layers);
             const alloc = self.backing_alloc;
 
-            var base_k: std.AutoHashMapUnmanaged(*Tensor(T), usize) = .empty;
-            defer base_k.deinit(alloc);
-            var base_v: std.AutoHashMapUnmanaged(*Tensor(T), usize) = .empty;
-            defer base_v.deinit(alloc);
-            try base_k.ensureTotalCapacity(alloc, @intCast(config.n_layers));
-            try base_v.ensureTotalCapacity(alloc, @intCast(config.n_layers));
-            for (self.k_cache_tensors, 0..) |t, l| base_k.putAssumeCapacity(t, l);
-            for (self.v_cache_tensors, 0..) |t, l| base_v.putAssumeCapacity(t, l);
+            // One entry per (layer, kv_h) write and per (layer, head) read.
+            const sa_capacity = 2 * config.n_layers * config.n_kv_heads;
+            const attn_capacity = config.n_layers * config.n_heads;
 
             var sa_map: std.AutoHashMapUnmanaged(*Tensor(T), SAQuant) = .empty;
             errdefer sa_map.deinit(alloc);
+            try sa_map.ensureTotalCapacity(alloc, @intCast(sa_capacity));
+
             var attn_map: std.AutoHashMapUnmanaged(*Tensor(T), AttnQuant) = .empty;
             errdefer attn_map.deinit(alloc);
+            try attn_map.ensureTotalCapacity(alloc, @intCast(attn_capacity));
 
-            const nodes = self.graph.nodes.items[0..self.graph.forward_node_count];
-            for (nodes) |node| {
-                switch (node.opTag()) {
-                    .slice_assign => {
-                        const dest = node.src1.?;
-                        const info = walkToCacheBase(dest) orelse continue;
-                        if (base_k.get(info.base)) |layer| {
-                            try sa_map.put(alloc, node, .{
-                                .cache = &k_caches[layer],
-                                .col_offset = info.col_offset,
-                            });
-                        } else if (base_v.get(info.base)) |layer| {
-                            try sa_map.put(alloc, node, .{
-                                .cache = &v_caches[layer],
-                                .col_offset = info.col_offset,
-                            });
-                        }
-                    },
-                    .attention => {
-                        const k_info = walkToCacheBase(node.src1.?) orelse continue;
-                        const v_info = walkToCacheBase(node.src2.?) orelse continue;
-                        const k_layer = base_k.get(k_info.base) orelse continue;
-                        const v_layer = base_v.get(v_info.base) orelse continue;
-                        try attn_map.put(alloc, node, .{
-                            .k_cache = &k_caches[k_layer],
-                            .v_cache = &v_caches[v_layer],
-                            .k_col_offset = k_info.col_offset,
-                            .v_col_offset = v_info.col_offset,
-                        });
-                    },
-                    else => {},
+            const n_rep = config.n_heads / config.n_kv_heads;
+            for (self.trace.layers, 0..) |layer_trace, l| {
+                for (0..config.n_kv_heads) |kv_h| {
+                    const col = kv_h * max_seq;
+                    sa_map.putAssumeCapacity(layer_trace.k_write[kv_h], .{
+                        .cache = &k_caches[l],
+                        .col_offset = col,
+                    });
+                    sa_map.putAssumeCapacity(layer_trace.v_write[kv_h], .{
+                        .cache = &v_caches[l],
+                        .col_offset = col,
+                    });
+                }
+                for (0..config.n_heads) |h| {
+                    const kv_h = h / n_rep;
+                    const col = kv_h * max_seq;
+                    attn_map.putAssumeCapacity(layer_trace.attention[h], .{
+                        .k_cache = &k_caches[l],
+                        .v_cache = &v_caches[l],
+                        .k_col_offset = col,
+                        .v_col_offset = col,
+                    });
                 }
             }
 
@@ -328,32 +276,6 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             self.quant_sa_map = sa_map;
             self.quant_attn_map = attn_map;
             self.uses_quant_kv = true;
-        }
-
-        const CacheLoc = struct { base: *Tensor(T), col_offset: usize };
-
-        /// Walk through view/slice_assign nodes to reach an allocated base tensor,
-        /// and return the column offset of `start` within that base. Returns null
-        /// if the chain doesn't terminate at an op-less leaf or the offset isn't
-        /// column-aligned.
-        fn walkToCacheBase(start: *Tensor(T)) ?CacheLoc {
-            var cur = start;
-            while (true) {
-                const op = cur.opTag();
-                if (op == .view) {
-                    cur = cur.src0 orelse return null;
-                } else if (op == .slice_assign or op == .slice_assign_rows) {
-                    cur = cur.src1 orelse return null;
-                } else break;
-            }
-            if (cur.data.len == 0) return null;
-            const base_ptr = @intFromPtr(cur.data.ptr);
-            const start_ptr = @intFromPtr(start.data.ptr);
-            if (start_ptr < base_ptr) return null;
-            const byte_offset = start_ptr - base_ptr;
-            const row_bytes = cur.ne[0] * @sizeOf(T);
-            if (row_bytes == 0 or byte_offset % row_bytes != 0) return null;
-            return .{ .base = cur, .col_offset = byte_offset / row_bytes };
         }
 
         fn executeOneQuantized(self: *Self, node: *Tensor(T), pool: ?*quant.GemvPool(T)) void {
@@ -461,8 +383,8 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
 
             // 3. Patch RoPE packed cos_sin for positions [pos..pos+n).
             const rope = &model.blocks[0].rope;
-            for (0..config.n_layers) |l| {
-                const buf = self.rope_nodes[l].data;
+            for (self.trace.layers) |layer_trace| {
+                const buf = layer_trace.rope.data;
                 for (0..n) |j| {
                     @memcpy(buf[j * 2 * d_head ..][0..d_head], rope.cos_table.data[(pos + j) * d_head ..][0..d_head]);
                     @memcpy(buf[j * 2 * d_head + d_head ..][0..d_head], rope.sin_table.data[(pos + j) * d_head ..][0..d_head]);
@@ -471,7 +393,10 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
 
             // 4. KV-cache write offsets: each slice_assign writes N contiguous
             //    columns starting at pos.
-            for (self.slice_assign_nodes) |node| node.storage_offset = pos;
+            for (self.trace.layers) |layer_trace| {
+                for (layer_trace.k_write) |node| node.storage_offset = pos;
+                for (layer_trace.v_write) |node| node.storage_offset = pos;
+            }
 
             // 5. Execute. Inference nodes fully overwrite their outputs, so we
             //    can skip the graph-wide zeroing pass here.
@@ -483,7 +408,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
 
             // Last-column logits: [vocab, N] column-major → last col at offset (N-1)*vocab.
             const last_off = (n - 1) * config.vocab_size;
-            return self.logits.data[last_off..][0..config.vocab_size];
+            return self.trace.logits.data[last_off..][0..config.vocab_size];
         }
     };
 }
@@ -653,7 +578,7 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
         ///
         /// Falls back to sequential `step()` only when N==1.
         pub fn prefill(self: *Self, token_ids: []const usize) ![]const T {
-            if (token_ids.len == 0) return self.plan.logits.data[0..config.vocab_size];
+            if (token_ids.len == 0) return self.plan.trace.logits.data[0..config.vocab_size];
             if (self.pos + token_ids.len > config.max_seq_len) return error.SequenceTooLong;
 
             if (token_ids.len == 1) {
@@ -826,11 +751,11 @@ test "LlamaInferenceSession matches manual forward" {
             v.* = if (i <= pos) 0 else -std.math.inf(f32);
         }
 
-        const ref_logits = ref_model.forwardCachedMasked(tok_input, ref_k, ref_v, pos, ref_mask);
-        try g.infer(ref_logits);
+        const ref_trace = ref_model.forwardCachedMasked(tok_input, ref_k, ref_v, pos, ref_mask);
+        try g.infer(ref_trace.logits);
 
         const session_logits = try session.step(tok);
-        for (session_logits, ref_logits.data[0..cfg.vocab_size]) |got, want| {
+        for (session_logits, ref_trace.logits.data[0..cfg.vocab_size]) |got, want| {
             try testing.expectApproxEqAbs(want, got, 1e-5);
         }
     }

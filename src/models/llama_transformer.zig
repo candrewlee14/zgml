@@ -63,6 +63,17 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
     return struct {
         const Self = @This();
 
+        /// Identified graph nodes from a single `forwardCachedMasked` trace.
+        /// The plan layer above uses these pointers directly — no graph
+        /// walking, no shape-based node matching.
+        pub const CachedLayerTrace = struct {
+            output: *Tensor(T),
+            rope: *Tensor(T),
+            k_write: [cfg.n_kv_heads]*Tensor(T),
+            v_write: [cfg.n_kv_heads]*Tensor(T),
+            attention: [cfg.n_heads]*Tensor(T),
+        };
+
         w_q: WqShape,
         w_k: WkShape,
         w_v: WvShape,
@@ -185,7 +196,7 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
             v_cache: *Tensor(T),
             pos: usize,
             attn_mask: *Tensor(T),
-        ) *Tensor(T) {
+        ) CachedLayerTrace {
             const alloc = x.alloc.?;
             var norm_reduce = [_]usize{ 1, x.ne[1] };
             const norm1 = self.applyRmsNorm(x, &norm_reduce, .norm1);
@@ -197,15 +208,15 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
             const rope_cs = self.rope.getCosSinPackedRange(alloc, pos, x.ne[1]);
 
             // Rotate and write into the per-head slab of the consolidated cache.
-            var k_updated: [cfg.n_kv_heads]*Tensor(T) = undefined;
-            var v_updated: [cfg.n_kv_heads]*Tensor(T) = undefined;
+            var k_write: [cfg.n_kv_heads]*Tensor(T) = undefined;
+            var v_write: [cfg.n_kv_heads]*Tensor(T) = undefined;
             for (0..cfg.n_kv_heads) |kv_h| {
                 const k_h = k_proj.sliceRows(kv_h * d_head, (kv_h + 1) * d_head);
                 const v_h = v_proj.sliceRows(kv_h * d_head, (kv_h + 1) * d_head);
                 const k_slab = k_cache.sliceColumns(kv_h * cfg.max_seq_len, (kv_h + 1) * cfg.max_seq_len);
                 const v_slab = v_cache.sliceColumns(kv_h * cfg.max_seq_len, (kv_h + 1) * cfg.max_seq_len);
-                k_updated[kv_h] = k_slab.sliceAssign(self.rope.apply(k_h, rope_cs), pos);
-                v_updated[kv_h] = v_slab.sliceAssign(v_h, pos);
+                k_write[kv_h] = k_slab.sliceAssign(self.rope.apply(k_h, rope_cs), pos);
+                v_write[kv_h] = v_slab.sliceAssign(v_h, pos);
             }
 
             const dk: T = @floatFromInt(d_head);
@@ -214,11 +225,13 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
             // single output projection instead of one tiny matmul per head.
             var attn_buf = x.scaleByVal(0).sliceRows(0, cfg.d_model);
 
+            var attention_nodes: [cfg.n_heads]*Tensor(T) = undefined;
             for (0..cfg.n_heads) |h| {
                 const kv_h = h / n_rep;
                 const q_h = q_proj.sliceRows(h * d_head, (h + 1) * d_head);
                 const q_rot = self.rope.apply(q_h, rope_cs);
-                const attn_out = q_rot.attention(k_updated[kv_h], v_updated[kv_h], attn_mask, attn_scale);
+                const attn_out = q_rot.attention(k_write[kv_h], v_write[kv_h], attn_mask, attn_scale);
+                attention_nodes[h] = attn_out;
 
                 attn_buf = attn_buf.sliceAssignRows(attn_out, h * d_head);
             }
@@ -228,7 +241,14 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
             const after_attn = x.add(attn_projected);
 
             const norm2 = self.applyRmsNorm(after_attn, &norm_reduce, .norm2);
-            return after_attn.add(self.swigluFfn(norm2));
+            const output = after_attn.add(self.swigluFfn(norm2));
+            return .{
+                .output = output,
+                .rope = rope_cs,
+                .k_write = k_write,
+                .v_write = v_write,
+                .attention = attention_nodes,
+            };
         }
 
         // ---------------------------------------------------------------
@@ -366,12 +386,12 @@ test "llama block - frozen cached masked forward" {
     const x = try Tensor(f32).init(a, &.{ d, 1 });
     nn.uniform(f32, x, -0.1, 0.1, 101);
 
-    const out = block.forwardCachedMasked(x, k_cache, v_cache, 0, attn_mask);
-    try g.infer(out);
+    const trace = block.forwardCachedMasked(x, k_cache, v_cache, 0, attn_mask);
+    try g.infer(trace.output);
 
-    try testing.expectEqual(@as(usize, d), out.ne[0]);
-    try testing.expectEqual(@as(usize, 1), out.ne[1]);
-    for (out.data) |v| {
+    try testing.expectEqual(@as(usize, d), trace.output.ne[0]);
+    try testing.expectEqual(@as(usize, 1), trace.output.ne[1]);
+    for (trace.output.data) |v| {
         try testing.expect(!std.math.isNan(v));
         try testing.expect(!std.math.isInf(v));
     }
