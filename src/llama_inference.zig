@@ -413,6 +413,12 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
     };
 }
 
+/// Default prefill chunk size in tokens. A single prefill plan is built once
+/// at this shape and reused across all prompts; tails shorter than the chunk
+/// flow through `step()`. 128 balances SGEMM efficiency, plan-build cost, and
+/// memory.
+pub const default_prefill_chunk: usize = 128;
+
 /// Persistent inference session for LLaMA models.
 ///
 /// Owns model weights, per-head KV caches, and the frozen plan.
@@ -441,9 +447,15 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
 
         /// Decode plan: token_len=1, used by `step()`. Always present.
         plan: Plan,
-        /// Lazily built prefill plan for batched prompt ingestion. Rebuilt
-        /// when `prefill()` is called with a different token count.
+        /// Lazily built prefill plan sized at `prefill_chunk`. Reused across
+        /// all prompts; rebuilt only if `prefill_chunk` changes.
         prefill_plan: ?Plan,
+        /// Fixed chunk size for batched prompt ingestion. `prefill()` runs
+        /// full chunks through the batched plan and a tail shorter than a
+        /// chunk through `step()`. Public — adjust before the first
+        /// `prefill()` call to tune for throughput vs. latency. Clamped to
+        /// `max_seq_len` at init.
+        prefill_chunk: usize,
         /// Remembered weight-quant block size so prefill plans, when built
         /// lazily, can match the decode plan's quantization state.
         quant_block_size: ?usize,
@@ -487,6 +499,7 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
                 .v_quant_caches = &.{},
                 .plan = plan,
                 .prefill_plan = null,
+                .prefill_chunk = @min(default_prefill_chunk, config.max_seq_len),
                 .quant_block_size = null,
                 .pos = 0,
             };
@@ -571,24 +584,39 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
             return logits;
         }
 
-        /// Process a prompt of N tokens in a single batched forward, and
-        /// return logits [vocab_size] for the final position. The batched
-        /// path uses a lazily-built prefill plan of token_len=N. Plans are
-        /// reused across calls with matching N; a different N rebuilds it.
+        /// Ingest a prompt of N tokens and return logits [vocab_size] for
+        /// the final position.
         ///
-        /// Falls back to sequential `step()` only when N==1.
+        /// The prompt is split into fixed-size chunks of `prefill_chunk`
+        /// tokens (128 by default). Full chunks are executed through a
+        /// single batched plan built once and reused for every prompt; a
+        /// tail shorter than a chunk falls back to `step()`. Two plans
+        /// exist for the session's lifetime — decode and prefill — so
+        /// varying prompt lengths never trigger graph rebuilds.
         pub fn prefill(self: *Self, token_ids: []const usize) ![]const T {
             if (token_ids.len == 0) return self.plan.trace.logits.data[0..config.vocab_size];
             if (self.pos + token_ids.len > config.max_seq_len) return error.SequenceTooLong;
 
-            if (token_ids.len == 1) {
-                return try self.step(token_ids[0]);
+            const chunk = self.prefill_chunk;
+            // Short prompts (or degenerate chunk) flow entirely through
+            // step(). Building a chunk-sized plan would be wasted work.
+            if (token_ids.len < chunk) {
+                var last: []const T = &.{};
+                for (token_ids) |tok| last = try self.step(tok);
+                return last;
             }
 
-            const pp = try self.getOrBuildPrefillPlan(token_ids.len);
-            const logits = pp.execute(&self.model, token_ids, self.pos);
-            self.pos += token_ids.len;
-            return logits;
+            const pp = try self.getOrBuildPrefillPlan(chunk);
+            var processed: usize = 0;
+            var last: []const T = &.{};
+            while (processed + chunk <= token_ids.len) : (processed += chunk) {
+                last = pp.execute(&self.model, token_ids[processed..][0..chunk], self.pos);
+                self.pos += chunk;
+            }
+            while (processed < token_ids.len) : (processed += 1) {
+                last = try self.step(token_ids[processed]);
+            }
+            return last;
         }
 
         fn getOrBuildPrefillPlan(self: *Self, n: usize) !*Plan {
@@ -831,6 +859,59 @@ test "LlamaInferencePlan workspace reuse reduces slot count" {
     if (n_intermediates > 2) {
         try testing.expect(n_slots < n_intermediates);
     }
+}
+
+test "LlamaInferenceSession chunked prefill matches sequential step()" {
+    // Small prefill_chunk forces the batched path to execute multiple full
+    // chunks plus a tail, exercising the chunking logic end-to-end.
+    const cfg = LlamaConfig{
+        .vocab_size = 8,
+        .d_model = 4,
+        .n_heads = 2,
+        .n_kv_heads = 2,
+        .d_ff = 8,
+        .n_layers = 2,
+        .max_seq_len = 16,
+    };
+
+    const tokens = [_]usize{ 2, 5, 0, 7, 1, 3, 6, 4, 2 };
+
+    var step_session = try LlamaInferenceSession(f32, cfg).init(testing.allocator);
+    defer step_session.deinit();
+
+    var step_logits: [cfg.vocab_size]f32 = undefined;
+    for (tokens) |tok| {
+        const logits = try step_session.step(tok);
+        @memcpy(&step_logits, logits);
+    }
+
+    var prefill_session = try LlamaInferenceSession(f32, cfg).init(testing.allocator);
+    defer prefill_session.deinit();
+
+    for (step_session.model.params(), prefill_session.model.params()) |src, dst| {
+        @memcpy(dst.data, src.data);
+    }
+
+    // chunk=3 over 9 tokens: 3 full batched chunks + 0 tail.
+    prefill_session.prefill_chunk = 3;
+    const prefill_logits = try prefill_session.prefill(&tokens);
+    for (step_logits[0..], prefill_logits) |want, got| {
+        try testing.expectApproxEqAbs(want, got, 1e-4);
+    }
+    try testing.expectEqual(tokens.len, prefill_session.pos);
+
+    // Separate session exercises the "full chunks + non-empty tail" path.
+    var tail_session = try LlamaInferenceSession(f32, cfg).init(testing.allocator);
+    defer tail_session.deinit();
+    for (step_session.model.params(), tail_session.model.params()) |src, dst| {
+        @memcpy(dst.data, src.data);
+    }
+    tail_session.prefill_chunk = 4; // 9 tokens = 2 full chunks of 4 + 1 tail.
+    const tail_logits = try tail_session.prefill(&tokens);
+    for (step_logits[0..], tail_logits) |want, got| {
+        try testing.expectApproxEqAbs(want, got, 1e-4);
+    }
+    try testing.expectEqual(tokens.len, tail_session.pos);
 }
 
 test "LlamaInferenceSession prefill matches sequential step()" {
