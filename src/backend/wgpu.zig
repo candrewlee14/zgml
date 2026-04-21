@@ -249,18 +249,33 @@ const DeviceQWeight = struct {
     block_size: usize,
 };
 
+// ── Pre-built dispatch (one per op, built at compile time) ────────
+
+const PrebuiltDispatch = struct {
+    pipeline: c.WGPUComputePipeline, // borrowed from WgpuBackend — not released
+    bind_group: c.WGPUBindGroup, // owned — release on deinit
+    uniform_buf: c.WGPUBuffer, // owned — release on deinit
+    gx: u32,
+    gy: u32,
+};
+
 // ── Compiled program ──────────────────────────────────────────────
 
 const CompiledProgram = struct {
     be: *WgpuBackend,
     device_bufs: []DeviceBuffer,
     qweight_views: []DeviceQWeight,
-    ops: []const backend_mod.DeviceOp,
+    dispatches: []PrebuiltDispatch,
     staging_buf: c.WGPUBuffer,
     staging_size: usize,
     alloc: std.mem.Allocator,
 
     fn deinit(self: *CompiledProgram) void {
+        for (self.dispatches) |d| {
+            c.wgpuBindGroupRelease(d.bind_group);
+            c.wgpuBufferRelease(d.uniform_buf);
+        }
+        self.alloc.free(self.dispatches);
         if (self.staging_buf != null) c.wgpuBufferRelease(self.staging_buf);
         for (self.device_bufs) |db| c.wgpuBufferRelease(db.buf);
         for (self.qweight_views) |qw| {
@@ -281,7 +296,7 @@ const CompiledProgram = struct {
             c.wgpuQueueWriteBuffer(be.queue, db.buf, io.offset, io.host_ptr, io.size);
         }
 
-        // Encode all ops into one command buffer with one compute pass.
+        // Encode all dispatches — zero allocation, everything pre-built.
         const encoder = c.wgpuDeviceCreateCommandEncoder(be.device, &c.WGPUCommandEncoderDescriptor{
             .nextInChain = null,
             .label = .{ .data = null, .length = 0 },
@@ -296,15 +311,21 @@ const CompiledProgram = struct {
             return;
         };
 
-        for (self.ops) |op| self.encodeOp(pass, op);
+        for (self.dispatches) |d| {
+            c.wgpuComputePassEncoderSetPipeline(pass, d.pipeline);
+            c.wgpuComputePassEncoderSetBindGroup(pass, 0, d.bind_group, 0, null);
+            c.wgpuComputePassEncoderDispatchWorkgroups(pass, d.gx, d.gy, 1);
+        }
 
         c.wgpuComputePassEncoderEnd(pass);
         c.wgpuComputePassEncoderRelease(pass);
 
-        // Copy outputs to staging buffer for readback.
+        // Copy outputs to staging buffer at sequential offsets.
+        var staging_used: u64 = 0;
         for (outputs) |io| {
             const db = self.device_bufs[io.buf_idx];
-            c.wgpuCommandEncoderCopyBufferToBuffer(encoder, db.buf, io.offset, self.staging_buf, 0, io.size);
+            c.wgpuCommandEncoderCopyBufferToBuffer(encoder, db.buf, io.offset, self.staging_buf, staging_used, io.size);
+            staging_used += std.mem.alignForward(u64, io.size, 4);
         }
 
         const cmd_buf = c.wgpuCommandEncoderFinish(encoder, &c.WGPUCommandBufferDescriptor{
@@ -319,195 +340,29 @@ const CompiledProgram = struct {
         c.wgpuCommandBufferRelease(cmd_buf);
 
         // Block until GPU is done.
-        // wgpu-native: wgpuDevicePoll(device, true, null) blocks.
         _ = c.wgpuDevicePoll(be.device, @intFromBool(true), null);
 
-        // Map staging buffer and copy outputs to host.
-        for (outputs) |io| {
-            mapAndRead(be.device, self.staging_buf, io.size, io.host_ptr);
-        }
-    }
-
-    fn encodeOp(self: *CompiledProgram, pass: c.WGPUComputePassEncoder, op: backend_mod.DeviceOp) void {
-        const be = self.be;
-        switch (op) {
-            .matmul => |m| {
-                const params = MatMulParams{
-                    .M = @intCast(m.geom.M),
-                    .N = @intCast(m.geom.N),
-                    .K = @intCast(m.geom.K),
-                    .a_row_stride = @intCast(m.geom.a_row_stride),
-                    .a_col_stride = @intCast(m.geom.a_col_stride),
-                    .b_row_stride = @intCast(m.geom.b_row_stride),
-                    .b_col_stride = @intCast(m.geom.b_col_stride),
-                    .a_offset = @intCast(m.geom.a_offset),
-                    .b_offset = @intCast(m.geom.b_offset),
-                    .dst_offset = @intCast(m.geom.dst_offset),
-                    .dst_row_stride = @intCast(m.geom.dst_row_stride),
-                };
-                const uniform_buf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
-                defer c.wgpuBufferRelease(uniform_buf);
-                const entries = [_]c.WGPUBindGroupEntry{
-                    bufEntry(0, self.device_bufs[m.a].buf, self.device_bufs[m.a].size),
-                    bufEntry(1, self.device_bufs[m.b].buf, self.device_bufs[m.b].size),
-                    bufEntry(2, self.device_bufs[m.dst].buf, self.device_bufs[m.dst].size),
-                    bufEntry(3, uniform_buf, @sizeOf(MatMulParams)),
-                };
-                const bg = createBindGroup(be.device, be.matmul_bgl, &entries);
-                defer c.wgpuBindGroupRelease(bg);
-                const gx: u32 = @intCast((m.geom.N + TILE - 1) / TILE);
-                const gy: u32 = @intCast((m.geom.M + TILE - 1) / TILE);
-                c.wgpuComputePassEncoderSetPipeline(pass, be.matmul_pipeline);
-                c.wgpuComputePassEncoderSetBindGroup(pass, 0, bg, 0, null);
-                c.wgpuComputePassEncoderDispatchWorkgroups(pass, gx, gy, 1);
-            },
-            .qmatmul => |q| {
-                const w = self.qweight_views[q.weight_idx];
-                const params = QMatMulParams{ .M = q.M, .N = q.N, .K = q.K, .block_size = @intCast(w.block_size) };
-                const uniform_buf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
-                defer c.wgpuBufferRelease(uniform_buf);
-                const entries = [_]c.WGPUBindGroupEntry{
-                    bufEntry(0, w.data.buf, w.data.size),
-                    bufEntry(1, w.scales.buf, w.scales.size),
-                    bufEntry(2, self.device_bufs[q.input].buf, self.device_bufs[q.input].size),
-                    bufEntry(3, self.device_bufs[q.dst].buf, self.device_bufs[q.dst].size),
-                    bufEntry(4, uniform_buf, @sizeOf(QMatMulParams)),
-                };
-                const bg = createBindGroup(be.device, be.qmatmul_bgl, &entries);
-                defer c.wgpuBindGroupRelease(bg);
-                const gx: u32 = (q.N + TILE - 1) / TILE;
-                const gy: u32 = (q.M + TILE - 1) / TILE;
-                c.wgpuComputePassEncoderSetPipeline(pass, be.qmatmul_pipeline);
-                c.wgpuComputePassEncoderSetBindGroup(pass, 0, bg, 0, null);
-                c.wgpuComputePassEncoderDispatchWorkgroups(pass, gx, gy, 1);
-            },
-            .elementwise => |e| {
-                switch (e.op) {
-                    .add, .mul, .neg, .exp, .sqrt, .recip, .gelu => {},
-                    else => return,
+        // Map staging buffer and copy all outputs to host.
+        if (staging_used > 0) {
+            var state = MapState{};
+            _ = c.wgpuBufferMapAsync(self.staging_buf, c.WGPUMapMode_Read, 0, staging_used, .{
+                .mode = c.WGPUCallbackMode_AllowSpontaneous,
+                .callback = onMapComplete,
+                .userdata1 = @ptrCast(&state),
+            });
+            while (!state.done) {
+                _ = c.wgpuDevicePoll(be.device, @intFromBool(true), null);
+            }
+            if (state.status == c.WGPUMapAsyncStatus_Success) {
+                const mapped: [*]const u8 = @ptrCast(c.wgpuBufferGetConstMappedRange(self.staging_buf, 0, staging_used));
+                var read_offset: usize = 0;
+                for (outputs) |io| {
+                    @memcpy(io.host_ptr[0..io.size], mapped[read_offset..][0..io.size]);
+                    read_offset += std.mem.alignForward(usize, io.size, 4);
                 }
-                const params = ComputeParams{
-                    .op = @intFromEnum(e.op),
-                    .n_elements = e.n,
-                    .dst_ne = .{ 0, 0, 0, 0 },
-                    .dst_strides = .{ 0, 0, 0, 0 },
-                    .dst_offset = e.dst_offset,
-                    .src0_ne = .{ 0, 0, 0, 0 },
-                    .src0_strides = .{ 0, 0, 0, 0 },
-                    .src0_offset = e.src0_offset,
-                    .src1_ne = .{ 0, 0, 0, 0 },
-                    .src1_strides = .{ 0, 0, 0, 0 },
-                    .src1_offset = e.src1_offset,
-                };
-                self.dispatchCompute(pass, be, &params, e.src0, e.src1, e.dst, (e.n + WG_SIZE - 1) / WG_SIZE);
-            },
-            .softmax => |s| {
-                const params = ComputeParams{
-                    .op = 100,
-                    .n_elements = s.rows,
-                    .dst_ne = .{ 0, 0, 0, 0 },
-                    .dst_strides = .{ 0, 0, 0, 0 },
-                    .dst_offset = s.dst_offset,
-                    .src0_ne = .{ s.cols, 0, 0, 0 },
-                    .src0_strides = .{ 0, 0, 0, 0 },
-                    .src0_offset = s.src_offset,
-                    .src1_ne = .{ 0, 0, 0, 0 },
-                    .src1_strides = .{ 0, 0, 0, 0 },
-                    .src1_offset = 0,
-                };
-                self.dispatchCompute(pass, be, &params, s.src, s.src, s.dst, (s.rows + WG_SIZE - 1) / WG_SIZE);
-            },
-            .layernorm => |l| {
-                const params = ComputeParams{
-                    .op = 101,
-                    .n_elements = l.rows,
-                    .dst_ne = .{ 0, 0, 0, 0 },
-                    .dst_strides = .{ 0, 0, 0, 0 },
-                    .dst_offset = l.dst_offset,
-                    .src0_ne = .{ l.cols, 0, 0, 0 },
-                    .src0_strides = .{ 0, 0, 0, 0 },
-                    .src0_offset = l.src_offset,
-                    .src1_ne = .{ 0, 0, 0, 0 },
-                    .src1_strides = .{ 0, 0, 0, 0 },
-                    .src1_offset = 0,
-                };
-                self.dispatchCompute(pass, be, &params, l.src, l.src, l.dst, (l.rows + WG_SIZE - 1) / WG_SIZE);
-            },
-            .reduce => |r| {
-                const params = ComputeParams{
-                    .op = @intFromEnum(r.op),
-                    .n_elements = r.n_out,
-                    .dst_ne = .{ 0, 0, 0, 0 },
-                    .dst_strides = .{ 0, 0, 0, 0 },
-                    .dst_offset = r.dst_offset,
-                    .src0_ne = .{ r.reduce_size, 0, 0, 0 },
-                    .src0_strides = .{ 0, 0, 0, 0 },
-                    .src0_offset = r.src_offset,
-                    .src1_ne = .{ 0, 0, 0, 0 },
-                    .src1_strides = .{ 0, 0, 0, 0 },
-                    .src1_offset = 0,
-                };
-                self.dispatchCompute(pass, be, &params, r.src, r.dst, r.dst, (r.n_out + WG_SIZE - 1) / WG_SIZE);
-            },
-            .repeat => |rp| {
-                const params = ComputeParams{
-                    .op = @intFromEnum(backend_mod.Op.repeat),
-                    .n_elements = rp.n,
-                    .dst_ne = rp.dst_ne,
-                    .dst_strides = rp.dst_strides,
-                    .dst_offset = rp.dst_offset,
-                    .src0_ne = rp.src_ne,
-                    .src0_strides = rp.src_strides,
-                    .src0_offset = rp.src_offset,
-                    .src1_ne = .{ 0, 0, 0, 0 },
-                    .src1_strides = .{ 0, 0, 0, 0 },
-                    .src1_offset = 0,
-                };
-                self.dispatchCompute(pass, be, &params, rp.src, rp.src, rp.dst, (rp.n + WG_SIZE - 1) / WG_SIZE);
-            },
-            .slice_assign => |sa| {
-                const params = ComputeParams{
-                    .op = @intFromEnum(backend_mod.Op.slice_assign),
-                    .n_elements = sa.n,
-                    .dst_ne = .{ 0, 0, 0, 0 },
-                    .dst_strides = .{ sa.dst_stride, 0, 0, 0 },
-                    .dst_offset = sa.dst_offset,
-                    .src0_ne = .{ 0, 0, 0, 0 },
-                    .src0_strides = .{ sa.src_stride, 0, 0, 0 },
-                    .src0_offset = sa.src_offset,
-                    .src1_ne = .{ 0, 0, 0, 0 },
-                    .src1_strides = .{ 0, 0, 0, 0 },
-                    .src1_offset = 0,
-                };
-                self.dispatchCompute(pass, be, &params, sa.src, sa.src, sa.dst, (sa.n + WG_SIZE - 1) / WG_SIZE);
-            },
+            }
+            c.wgpuBufferUnmap(self.staging_buf);
         }
-    }
-
-    /// Helper: dispatch the compute.wgsl pipeline with 3 storage + 1 uniform binding.
-    fn dispatchCompute(
-        self: *CompiledProgram,
-        pass: c.WGPUComputePassEncoder,
-        be: *WgpuBackend,
-        params: *const ComputeParams,
-        src0_idx: u16,
-        src1_idx: u16,
-        dst_idx: u16,
-        workgroups_x: u32,
-    ) void {
-        const uniform_buf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(params));
-        defer c.wgpuBufferRelease(uniform_buf);
-        const entries = [_]c.WGPUBindGroupEntry{
-            bufEntry(0, self.device_bufs[src0_idx].buf, self.device_bufs[src0_idx].size),
-            bufEntry(1, self.device_bufs[src1_idx].buf, self.device_bufs[src1_idx].size),
-            bufEntry(2, self.device_bufs[dst_idx].buf, self.device_bufs[dst_idx].size),
-            bufEntry(3, uniform_buf, @sizeOf(ComputeParams)),
-        };
-        const bg = createBindGroup(be.device, be.compute_bgl, &entries);
-        defer c.wgpuBindGroupRelease(bg);
-        c.wgpuComputePassEncoderSetPipeline(pass, be.compute_pipeline);
-        c.wgpuComputePassEncoderSetBindGroup(pass, 0, bg, 0, null);
-        c.wgpuComputePassEncoderDispatchWorkgroups(pass, workgroups_x, 1, 1);
     }
 };
 
@@ -566,24 +421,208 @@ fn onMapComplete(status: c.WGPUMapAsyncStatus, _: c.WGPUStringView, userdata1: ?
     state.done = true;
 }
 
-fn mapAndRead(device: c.WGPUDevice, staging: c.WGPUBuffer, size: u32, dst: [*]u8) void {
-    var state = MapState{};
-    _ = c.wgpuBufferMapAsync(staging, c.WGPUMapMode_Read, 0, size, .{
-        .mode = c.WGPUCallbackMode_AllowSpontaneous,
-        .callback = onMapComplete,
-        .userdata1 = @ptrCast(&state),
-    });
+// ── Dispatch builder (compile-time) ───────────────────────────────
+//
+// Builds a PrebuiltDispatch for each DeviceOp: creates the uniform
+// buffer (pre-filled with params) and the bind group referencing
+// the appropriate storage + uniform buffers. At execute time, the
+// dispatch loop is just setPipeline → setBindGroup → dispatch with
+// zero GPU object allocation.
 
-    // Poll until mapping completes.
-    while (!state.done) {
-        _ = c.wgpuDevicePoll(device, @intFromBool(true), null);
-    }
+fn buildMatmulDispatch(
+    be: *WgpuBackend,
+    device_bufs: []const DeviceBuffer,
+    m: @TypeOf(@as(backend_mod.DeviceOp, undefined).matmul),
+) PrebuiltDispatch {
+    const params = MatMulParams{
+        .M = @intCast(m.geom.M),
+        .N = @intCast(m.geom.N),
+        .K = @intCast(m.geom.K),
+        .a_row_stride = @intCast(m.geom.a_row_stride),
+        .a_col_stride = @intCast(m.geom.a_col_stride),
+        .b_row_stride = @intCast(m.geom.b_row_stride),
+        .b_col_stride = @intCast(m.geom.b_col_stride),
+        .a_offset = @intCast(m.geom.a_offset),
+        .b_offset = @intCast(m.geom.b_offset),
+        .dst_offset = @intCast(m.geom.dst_offset),
+        .dst_row_stride = @intCast(m.geom.dst_row_stride),
+    };
+    const uniform_buf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
+    const entries = [_]c.WGPUBindGroupEntry{
+        bufEntry(0, device_bufs[m.a].buf, device_bufs[m.a].size),
+        bufEntry(1, device_bufs[m.b].buf, device_bufs[m.b].size),
+        bufEntry(2, device_bufs[m.dst].buf, device_bufs[m.dst].size),
+        bufEntry(3, uniform_buf, @sizeOf(MatMulParams)),
+    };
+    return .{
+        .pipeline = be.matmul_pipeline,
+        .bind_group = createBindGroup(be.device, be.matmul_bgl, &entries),
+        .uniform_buf = uniform_buf,
+        .gx = @intCast((m.geom.N + TILE - 1) / TILE),
+        .gy = @intCast((m.geom.M + TILE - 1) / TILE),
+    };
+}
 
-    if (state.status == c.WGPUMapAsyncStatus_Success) {
-        const mapped: [*]const u8 = @ptrCast(c.wgpuBufferGetConstMappedRange(staging, 0, size));
-        @memcpy(dst[0..size], mapped[0..size]);
+fn buildQMatmulDispatch(
+    be: *WgpuBackend,
+    device_bufs: []const DeviceBuffer,
+    qweight_views: []const DeviceQWeight,
+    q: @TypeOf(@as(backend_mod.DeviceOp, undefined).qmatmul),
+) PrebuiltDispatch {
+    const w = qweight_views[q.weight_idx];
+    const params = QMatMulParams{ .M = q.M, .N = q.N, .K = q.K, .block_size = @intCast(w.block_size) };
+    const uniform_buf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
+    const entries = [_]c.WGPUBindGroupEntry{
+        bufEntry(0, w.data.buf, w.data.size),
+        bufEntry(1, w.scales.buf, w.scales.size),
+        bufEntry(2, device_bufs[q.input].buf, device_bufs[q.input].size),
+        bufEntry(3, device_bufs[q.dst].buf, device_bufs[q.dst].size),
+        bufEntry(4, uniform_buf, @sizeOf(QMatMulParams)),
+    };
+    return .{
+        .pipeline = be.qmatmul_pipeline,
+        .bind_group = createBindGroup(be.device, be.qmatmul_bgl, &entries),
+        .uniform_buf = uniform_buf,
+        .gx = (q.N + TILE - 1) / TILE,
+        .gy = (q.M + TILE - 1) / TILE,
+    };
+}
+
+fn buildComputeDispatch(
+    be: *WgpuBackend,
+    device_bufs: []const DeviceBuffer,
+    params: ComputeParams,
+    src0_idx: u16,
+    src1_idx: u16,
+    dst_idx: u16,
+    workgroups_x: u32,
+) PrebuiltDispatch {
+    const uniform_buf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
+    const entries = [_]c.WGPUBindGroupEntry{
+        bufEntry(0, device_bufs[src0_idx].buf, device_bufs[src0_idx].size),
+        bufEntry(1, device_bufs[src1_idx].buf, device_bufs[src1_idx].size),
+        bufEntry(2, device_bufs[dst_idx].buf, device_bufs[dst_idx].size),
+        bufEntry(3, uniform_buf, @sizeOf(ComputeParams)),
+    };
+    return .{
+        .pipeline = be.compute_pipeline,
+        .bind_group = createBindGroup(be.device, be.compute_bgl, &entries),
+        .uniform_buf = uniform_buf,
+        .gx = workgroups_x,
+        .gy = 1,
+    };
+}
+
+fn buildDispatch(
+    be: *WgpuBackend,
+    device_bufs: []const DeviceBuffer,
+    qweight_views: []const DeviceQWeight,
+    op: backend_mod.DeviceOp,
+) ?PrebuiltDispatch {
+    switch (op) {
+        .matmul => |m| return buildMatmulDispatch(be, device_bufs, m),
+        .qmatmul => |q| return buildQMatmulDispatch(be, device_bufs, qweight_views, q),
+        .elementwise => |e| {
+            switch (e.op) {
+                .add, .mul, .neg, .exp, .sqrt, .recip, .gelu => {},
+                else => return null,
+            }
+            const params = ComputeParams{
+                .op = @intFromEnum(e.op),
+                .n_elements = e.n,
+                .dst_ne = .{ 0, 0, 0, 0 },
+                .dst_strides = .{ 0, 0, 0, 0 },
+                .dst_offset = e.dst_offset,
+                .src0_ne = .{ 0, 0, 0, 0 },
+                .src0_strides = .{ 0, 0, 0, 0 },
+                .src0_offset = e.src0_offset,
+                .src1_ne = .{ 0, 0, 0, 0 },
+                .src1_strides = .{ 0, 0, 0, 0 },
+                .src1_offset = e.src1_offset,
+            };
+            return buildComputeDispatch(be, device_bufs, params, e.src0, e.src1, e.dst, (e.n + WG_SIZE - 1) / WG_SIZE);
+        },
+        .softmax => |s| {
+            const params = ComputeParams{
+                .op = 100,
+                .n_elements = s.rows,
+                .dst_ne = .{ 0, 0, 0, 0 },
+                .dst_strides = .{ 0, 0, 0, 0 },
+                .dst_offset = s.dst_offset,
+                .src0_ne = .{ s.cols, 0, 0, 0 },
+                .src0_strides = .{ 0, 0, 0, 0 },
+                .src0_offset = s.src_offset,
+                .src1_ne = .{ 0, 0, 0, 0 },
+                .src1_strides = .{ 0, 0, 0, 0 },
+                .src1_offset = 0,
+            };
+            return buildComputeDispatch(be, device_bufs, params, s.src, s.src, s.dst, (s.rows + WG_SIZE - 1) / WG_SIZE);
+        },
+        .layernorm => |l| {
+            const params = ComputeParams{
+                .op = 101,
+                .n_elements = l.rows,
+                .dst_ne = .{ 0, 0, 0, 0 },
+                .dst_strides = .{ 0, 0, 0, 0 },
+                .dst_offset = l.dst_offset,
+                .src0_ne = .{ l.cols, 0, 0, 0 },
+                .src0_strides = .{ 0, 0, 0, 0 },
+                .src0_offset = l.src_offset,
+                .src1_ne = .{ 0, 0, 0, 0 },
+                .src1_strides = .{ 0, 0, 0, 0 },
+                .src1_offset = 0,
+            };
+            return buildComputeDispatch(be, device_bufs, params, l.src, l.src, l.dst, (l.rows + WG_SIZE - 1) / WG_SIZE);
+        },
+        .reduce => |r| {
+            const params = ComputeParams{
+                .op = @intFromEnum(r.op),
+                .n_elements = r.n_out,
+                .dst_ne = .{ 0, 0, 0, 0 },
+                .dst_strides = .{ 0, 0, 0, 0 },
+                .dst_offset = r.dst_offset,
+                .src0_ne = .{ r.reduce_size, 0, 0, 0 },
+                .src0_strides = .{ 0, 0, 0, 0 },
+                .src0_offset = r.src_offset,
+                .src1_ne = .{ 0, 0, 0, 0 },
+                .src1_strides = .{ 0, 0, 0, 0 },
+                .src1_offset = 0,
+            };
+            return buildComputeDispatch(be, device_bufs, params, r.src, r.dst, r.dst, (r.n_out + WG_SIZE - 1) / WG_SIZE);
+        },
+        .repeat => |rp| {
+            const params = ComputeParams{
+                .op = @intFromEnum(backend_mod.Op.repeat),
+                .n_elements = rp.n,
+                .dst_ne = rp.dst_ne,
+                .dst_strides = rp.dst_strides,
+                .dst_offset = rp.dst_offset,
+                .src0_ne = rp.src_ne,
+                .src0_strides = rp.src_strides,
+                .src0_offset = rp.src_offset,
+                .src1_ne = .{ 0, 0, 0, 0 },
+                .src1_strides = .{ 0, 0, 0, 0 },
+                .src1_offset = 0,
+            };
+            return buildComputeDispatch(be, device_bufs, params, rp.src, rp.src, rp.dst, (rp.n + WG_SIZE - 1) / WG_SIZE);
+        },
+        .slice_assign => |sa| {
+            const params = ComputeParams{
+                .op = @intFromEnum(backend_mod.Op.slice_assign),
+                .n_elements = sa.n,
+                .dst_ne = .{ 0, 0, 0, 0 },
+                .dst_strides = .{ sa.dst_stride, 0, 0, 0 },
+                .dst_offset = sa.dst_offset,
+                .src0_ne = .{ 0, 0, 0, 0 },
+                .src0_strides = .{ sa.src_stride, 0, 0, 0 },
+                .src0_offset = sa.src_offset,
+                .src1_ne = .{ 0, 0, 0, 0 },
+                .src1_strides = .{ 0, 0, 0, 0 },
+                .src1_offset = 0,
+            };
+            return buildComputeDispatch(be, device_bufs, params, sa.src, sa.src, sa.dst, (sa.n + WG_SIZE - 1) / WG_SIZE);
+        },
     }
-    c.wgpuBufferUnmap(staging);
 }
 
 // ── VTable functions ──────────────────────────────────────────────
@@ -639,8 +678,16 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         };
     }
 
-    // Find max output size needed for staging buffer.
-    // Conservative: use the largest buffer size.
+    // Pre-build all dispatches (uniform buffers + bind groups).
+    var dispatch_list: std.ArrayListUnmanaged(PrebuiltDispatch) = .empty;
+    for (program.ops) |op| {
+        if (buildDispatch(self, device_bufs, qweight_views, op)) |d| {
+            dispatch_list.append(alloc, d) catch return null;
+        }
+    }
+    const dispatches = dispatch_list.toOwnedSlice(alloc) catch return null;
+
+    // Staging buffer — conservatively sized to the largest device buffer.
     var max_buf_size: usize = 0;
     for (program.buffer_sizes) |s| {
         const bs = s * @sizeOf(f32);
@@ -658,7 +705,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         .be = self,
         .device_bufs = device_bufs,
         .qweight_views = qweight_views,
-        .ops = program.ops,
+        .dispatches = dispatches,
         .staging_buf = staging,
         .staging_size = max_buf_size,
         .alloc = alloc,
