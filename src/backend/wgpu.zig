@@ -16,7 +16,8 @@ const c = @cImport({
 
 // ── Tile sizes (must match WGSL shaders) ──────────────────────────
 
-const TILE: u32 = 16; // matmul output tile per workgroup
+const MATMUL_BM: u32 = 64; // matmul output rows per workgroup
+const MATMUL_BN: u32 = 64; // matmul output cols per workgroup
 const WG_SIZE: u32 = 256; // compute.wgsl workgroup size
 
 // ── Shader sources (embedded at comptime) ─────────────────────────
@@ -478,8 +479,8 @@ fn buildDispatch(
                 .pipeline = be.matmul_pipeline,
                 .bind_group = createBindGroup(be.device, be.matmul_bgl, &entries),
                 .uniform_buf = ubuf,
-                .gx = @intCast((m.geom.N + TILE - 1) / TILE),
-                .gy = @intCast((m.geom.M + TILE - 1) / TILE),
+                .gx = @intCast((m.geom.N + MATMUL_BN - 1) / MATMUL_BN),
+                .gy = @intCast((m.geom.M + MATMUL_BM - 1) / MATMUL_BM),
             };
         },
         .qmatmul => |q| {
@@ -497,8 +498,8 @@ fn buildDispatch(
                 .pipeline = be.qmatmul_pipeline,
                 .bind_group = createBindGroup(be.device, be.qmatmul_bgl, &entries),
                 .uniform_buf = ubuf,
-                .gx = (q.N + TILE - 1) / TILE,
-                .gy = (q.M + TILE - 1) / TILE,
+                .gx = (q.N + MATMUL_BN - 1) / MATMUL_BN,
+                .gy = (q.M + MATMUL_BM - 1) / MATMUL_BM,
             };
         },
         .elementwise => |e| {
