@@ -23,6 +23,7 @@ const WG_SIZE: u32 = 256; // compute.wgsl workgroup size
 // ── Shader sources (embedded at comptime) ─────────────────────────
 
 const matmul_wgsl = @embedFile("shaders/matmul.wgsl");
+const matmul_f16_wgsl = @embedFile("shaders/matmul_f16.wgsl");
 const qmatmul_wgsl = @embedFile("shaders/qmatmul.wgsl");
 const compute_wgsl = @embedFile("shaders/compute.wgsl");
 
@@ -41,6 +42,17 @@ const MatMulParams = extern struct {
     dst_offset: u32,
     dst_row_stride: u32,
     _pad: u32 = 0, // align to 16 bytes (3 vec4s → 48 bytes)
+};
+
+const MatMulF16Params = extern struct {
+    M: u32,
+    N: u32,
+    K: u32,
+    a_offset: u32,
+    dst_offset: u32,
+    dst_row_stride: u32,
+    _pad0: u32 = 0,
+    _pad1: u32 = 0, // align to 16 bytes (2 vec4s → 32 bytes)
 };
 
 const QMatMulParams = extern struct {
@@ -75,10 +87,22 @@ pub const WgpuBackend = struct {
 
     matmul_pipeline: c.WGPUComputePipeline,
     matmul_bgl: c.WGPUBindGroupLayout,
+    matmul_f16_pipeline: c.WGPUComputePipeline,
+    matmul_f16_bgl: c.WGPUBindGroupLayout,
     qmatmul_pipeline: c.WGPUComputePipeline,
     qmatmul_bgl: c.WGPUBindGroupLayout,
     compute_pipeline: c.WGPUComputePipeline,
     compute_bgl: c.WGPUBindGroupLayout,
+
+    // Scratch buffers for denseMatMulF32 — reused across calls, grown as needed.
+    scratch_a: c.WGPUBuffer = null,
+    scratch_b: c.WGPUBuffer = null,
+    scratch_c: c.WGPUBuffer = null,
+    scratch_staging: c.WGPUBuffer = null,
+    scratch_a_size: usize = 0,
+    scratch_b_size: usize = 0,
+    scratch_c_size: usize = 0,
+    scratch_staging_size: usize = 0,
 
     pub fn init() !WgpuBackend {
         // Create instance.
@@ -118,6 +142,8 @@ pub const WgpuBackend = struct {
         // Compile shader modules + pipelines.
         const matmul_mod = createShaderModule(device, matmul_wgsl) orelse return error.ShaderCompileFailed;
         defer c.wgpuShaderModuleRelease(matmul_mod);
+        const matmul_f16_mod = createShaderModule(device, matmul_f16_wgsl) orelse return error.ShaderCompileFailed;
+        defer c.wgpuShaderModuleRelease(matmul_f16_mod);
         const qmatmul_mod = createShaderModule(device, qmatmul_wgsl) orelse return error.ShaderCompileFailed;
         defer c.wgpuShaderModuleRelease(qmatmul_mod);
         const compute_mod = createShaderModule(device, compute_wgsl) orelse return error.ShaderCompileFailed;
@@ -127,6 +153,11 @@ pub const WgpuBackend = struct {
         const matmul_pipeline = createPipeline(device, matmul_mod, &matmul_bgl) orelse return error.PipelineCreateFailed;
         errdefer c.wgpuComputePipelineRelease(matmul_pipeline);
         errdefer c.wgpuBindGroupLayoutRelease(matmul_bgl);
+
+        var matmul_f16_bgl: c.WGPUBindGroupLayout = null;
+        const matmul_f16_pipeline = createPipeline(device, matmul_f16_mod, &matmul_f16_bgl) orelse return error.PipelineCreateFailed;
+        errdefer c.wgpuComputePipelineRelease(matmul_f16_pipeline);
+        errdefer c.wgpuBindGroupLayoutRelease(matmul_f16_bgl);
 
         var qmatmul_bgl: c.WGPUBindGroupLayout = null;
         const qmatmul_pipeline = createPipeline(device, qmatmul_mod, &qmatmul_bgl) orelse return error.PipelineCreateFailed;
@@ -143,6 +174,8 @@ pub const WgpuBackend = struct {
             .queue = queue,
             .matmul_pipeline = matmul_pipeline,
             .matmul_bgl = matmul_bgl,
+            .matmul_f16_pipeline = matmul_f16_pipeline,
+            .matmul_f16_bgl = matmul_f16_bgl,
             .qmatmul_pipeline = qmatmul_pipeline,
             .qmatmul_bgl = qmatmul_bgl,
             .compute_pipeline = compute_pipeline,
@@ -151,10 +184,16 @@ pub const WgpuBackend = struct {
     }
 
     pub fn deinit(self: *WgpuBackend) void {
+        if (self.scratch_a != null) c.wgpuBufferRelease(self.scratch_a);
+        if (self.scratch_b != null) c.wgpuBufferRelease(self.scratch_b);
+        if (self.scratch_c != null) c.wgpuBufferRelease(self.scratch_c);
+        if (self.scratch_staging != null) c.wgpuBufferRelease(self.scratch_staging);
         c.wgpuBindGroupLayoutRelease(self.compute_bgl);
         c.wgpuComputePipelineRelease(self.compute_pipeline);
         c.wgpuBindGroupLayoutRelease(self.qmatmul_bgl);
         c.wgpuComputePipelineRelease(self.qmatmul_pipeline);
+        c.wgpuBindGroupLayoutRelease(self.matmul_f16_bgl);
+        c.wgpuComputePipelineRelease(self.matmul_f16_pipeline);
         c.wgpuBindGroupLayoutRelease(self.matmul_bgl);
         c.wgpuComputePipelineRelease(self.matmul_pipeline);
         c.wgpuQueueRelease(self.queue);
@@ -230,11 +269,117 @@ fn getState(ctx: *anyopaque) *WgpuBackend {
     return @ptrCast(@alignCast(ctx));
 }
 
-/// Host matmul override — return false to let the graph interpreter handle it.
-/// WebGPU has no shared-memory path for ad-hoc host matmul; only compiled
-/// programs use the GPU.
-fn denseMatMulF32(_: *anyopaque, _: backend_mod.DenseMatMulSpecF32) bool {
-    return false;
+fn ensureScratch(self: *WgpuBackend, buf: *c.WGPUBuffer, cur_size: *usize, needed: usize, usage: c.WGPUBufferUsage) void {
+    if (needed <= cur_size.*) return;
+    if (buf.* != null) c.wgpuBufferRelease(buf.*);
+    buf.* = createGpuBuffer(self.device, needed, usage);
+    cur_size.* = needed;
+}
+
+/// Host matmul override — dispatches matmul on the GPU using scratch buffers.
+fn denseMatMulF32(ctx: *anyopaque, spec: backend_mod.DenseMatMulSpecF32) bool {
+    const self = getState(ctx);
+
+    const a_size = spec.a.len * 4;
+    const b_size = spec.b.len * 4;
+    const c_size = spec.dst.len * 4;
+
+    // Grow scratch buffers if needed.
+    const storage_dst = c.WGPUBufferUsage_Storage | c.WGPUBufferUsage_CopyDst;
+    const storage_dst_src = c.WGPUBufferUsage_Storage | c.WGPUBufferUsage_CopyDst | c.WGPUBufferUsage_CopySrc;
+    ensureScratch(self, &self.scratch_a, &self.scratch_a_size, a_size, storage_dst);
+    ensureScratch(self, &self.scratch_b, &self.scratch_b_size, b_size, storage_dst);
+    ensureScratch(self, &self.scratch_c, &self.scratch_c_size, c_size, storage_dst_src);
+    ensureScratch(self, &self.scratch_staging, &self.scratch_staging_size, c_size, c.WGPUBufferUsage_MapRead | c.WGPUBufferUsage_CopyDst);
+
+    // Upload A and B.
+    c.wgpuQueueWriteBuffer(self.queue, self.scratch_a, 0, @ptrCast(spec.a.ptr), a_size);
+    c.wgpuQueueWriteBuffer(self.queue, self.scratch_b, 0, @ptrCast(spec.b.ptr), b_size);
+
+    // Create temporary uniform buffer with matmul params.
+    const params = MatMulParams{
+        .M = @intCast(spec.geom.M),
+        .N = @intCast(spec.geom.N),
+        .K = @intCast(spec.geom.K),
+        .a_row_stride = @intCast(spec.geom.a_row_stride),
+        .a_col_stride = @intCast(spec.geom.a_col_stride),
+        .b_row_stride = @intCast(spec.geom.b_row_stride),
+        .b_col_stride = @intCast(spec.geom.b_col_stride),
+        .a_offset = @intCast(spec.geom.a_offset),
+        .b_offset = @intCast(spec.geom.b_offset),
+        .dst_offset = @intCast(spec.geom.dst_offset),
+        .dst_row_stride = @intCast(spec.geom.dst_row_stride),
+    };
+    const ubuf = createUniformBuffer(self.device, self.queue, std.mem.asBytes(&params));
+    defer c.wgpuBufferRelease(ubuf);
+
+    // Create temporary bind group.
+    const entries = [_]c.WGPUBindGroupEntry{
+        bufEntry(0, self.scratch_a, self.scratch_a_size),
+        bufEntry(1, self.scratch_b, self.scratch_b_size),
+        bufEntry(2, self.scratch_c, self.scratch_c_size),
+        bufEntry(3, ubuf, @sizeOf(MatMulParams)),
+    };
+    const bind_group = createBindGroup(self.device, self.matmul_bgl, &entries);
+    defer c.wgpuBindGroupRelease(bind_group);
+
+    // Encode compute pass.
+    const encoder = c.wgpuDeviceCreateCommandEncoder(self.device, &c.WGPUCommandEncoderDescriptor{
+        .nextInChain = null,
+        .label = .{ .data = null, .length = 0 },
+    }) orelse return false;
+
+    const pass = c.wgpuCommandEncoderBeginComputePass(encoder, &c.WGPUComputePassDescriptor{
+        .nextInChain = null,
+        .label = .{ .data = null, .length = 0 },
+        .timestampWrites = null,
+    }) orelse {
+        c.wgpuCommandEncoderRelease(encoder);
+        return false;
+    };
+
+    c.wgpuComputePassEncoderSetPipeline(pass, self.matmul_pipeline);
+    c.wgpuComputePassEncoderSetBindGroup(pass, 0, bind_group, 0, null);
+    const gx: u32 = @intCast((spec.geom.N + MATMUL_BN - 1) / MATMUL_BN);
+    const gy: u32 = @intCast((spec.geom.M + MATMUL_BM - 1) / MATMUL_BM);
+    c.wgpuComputePassEncoderDispatchWorkgroups(pass, gx, gy, 1);
+    c.wgpuComputePassEncoderEnd(pass);
+    c.wgpuComputePassEncoderRelease(pass);
+
+    // Copy result to staging buffer.
+    c.wgpuCommandEncoderCopyBufferToBuffer(encoder, self.scratch_c, 0, self.scratch_staging, 0, c_size);
+
+    const cmd_buf = c.wgpuCommandEncoderFinish(encoder, &c.WGPUCommandBufferDescriptor{
+        .nextInChain = null,
+        .label = .{ .data = null, .length = 0 },
+    });
+    c.wgpuCommandEncoderRelease(encoder);
+
+    if (cmd_buf == null) return false;
+    var cmds = [_]c.WGPUCommandBuffer{cmd_buf};
+    c.wgpuQueueSubmit(self.queue, 1, &cmds);
+    c.wgpuCommandBufferRelease(cmd_buf);
+
+    // Block until GPU is done.
+    _ = c.wgpuDevicePoll(self.device, @intFromBool(true), null);
+
+    // Map staging buffer and copy result to dst.
+    var state = MapState{};
+    _ = c.wgpuBufferMapAsync(self.scratch_staging, c.WGPUMapMode_Read, 0, c_size, .{
+        .mode = c.WGPUCallbackMode_AllowSpontaneous,
+        .callback = onMapComplete,
+        .userdata1 = @ptrCast(&state),
+    });
+    while (!state.done) {
+        _ = c.wgpuDevicePoll(self.device, @intFromBool(true), null);
+    }
+    if (state.status == c.WGPUMapAsyncStatus_Success) {
+        const mapped: [*]const f32 = @ptrCast(@alignCast(c.wgpuBufferGetConstMappedRange(self.scratch_staging, 0, c_size)));
+        @memcpy(spec.dst, mapped[0..spec.dst.len]);
+    }
+    c.wgpuBufferUnmap(self.scratch_staging);
+
+    return true;
 }
 
 // ── GPU buffer wrapper ────────────────────────────────────────────
@@ -242,6 +387,8 @@ fn denseMatMulF32(_: *anyopaque, _: backend_mod.DenseMatMulSpecF32) bool {
 const DeviceBuffer = struct {
     buf: c.WGPUBuffer,
     size: usize,
+    f16_buf: c.WGPUBuffer = null, // f16 shadow for weight buffers
+    f16_size: usize = 0,
 };
 
 const DeviceQWeight = struct {
@@ -278,7 +425,10 @@ const CompiledProgram = struct {
         }
         self.alloc.free(self.dispatches);
         if (self.staging_buf != null) c.wgpuBufferRelease(self.staging_buf);
-        for (self.device_bufs) |db| c.wgpuBufferRelease(db.buf);
+        for (self.device_bufs) |db| {
+            if (db.f16_buf != null) c.wgpuBufferRelease(db.f16_buf);
+            c.wgpuBufferRelease(db.buf);
+        }
         for (self.qweight_views) |qw| {
             c.wgpuBufferRelease(qw.data.buf);
             c.wgpuBufferRelease(qw.scales.buf);
@@ -461,6 +611,30 @@ fn buildDispatch(
 ) ?PrebuiltDispatch {
     switch (op) {
         .matmul => |m| {
+            // F16 weight path: B buffer has a pre-packed f16 shadow.
+            if (bufs[m.b].f16_buf) |f16_b| {
+                const params = MatMulF16Params{
+                    .M = @intCast(m.geom.M), .N = @intCast(m.geom.N), .K = @intCast(m.geom.K),
+                    .a_offset = @intCast(m.geom.a_offset),
+                    .dst_offset = @intCast(m.geom.dst_offset),
+                    .dst_row_stride = @intCast(m.geom.dst_row_stride),
+                };
+                const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
+                const entries = [_]c.WGPUBindGroupEntry{
+                    bufEntry(0, bufs[m.a].buf, bufs[m.a].size),
+                    bufEntry(1, f16_b, bufs[m.b].f16_size),
+                    bufEntry(2, bufs[m.dst].buf, bufs[m.dst].size),
+                    bufEntry(3, ubuf, @sizeOf(MatMulF16Params)),
+                };
+                return .{
+                    .pipeline = be.matmul_f16_pipeline,
+                    .bind_group = createBindGroup(be.device, be.matmul_f16_bgl, &entries),
+                    .uniform_buf = ubuf,
+                    .gx = @intCast((m.geom.N + MATMUL_BN - 1) / MATMUL_BN),
+                    .gy = @intCast((m.geom.M + MATMUL_BM - 1) / MATMUL_BM),
+                };
+            }
+            // F32 path.
             const params = MatMulParams{
                 .M = @intCast(m.geom.M), .N = @intCast(m.geom.N), .K = @intCast(m.geom.K),
                 .a_row_stride = @intCast(m.geom.a_row_stride), .a_col_stride = @intCast(m.geom.a_col_stride),
@@ -504,7 +678,7 @@ fn buildDispatch(
         },
         .elementwise => |e| {
             switch (e.op) {
-                .add, .mul, .neg, .exp, .sqrt, .recip, .gelu => {},
+                .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu => {},
                 else => return null,
             }
             var p = std.mem.zeroes(ComputeParams);
@@ -531,7 +705,18 @@ fn buildDispatch(
             p.dst_offset = l.dst_offset;
             p.src0_ne[0] = l.cols;
             p.src0_offset = l.src_offset;
+            p.src1_ne[0] = @bitCast(l.eps);
             return computeDispatch(be, bufs, p, l.src, l.src, l.dst, (l.rows + WG_SIZE - 1) / WG_SIZE);
+        },
+        .rmsnorm => |r| {
+            var p = std.mem.zeroes(ComputeParams);
+            p.op = 102;
+            p.n_elements = r.rows;
+            p.dst_offset = r.dst_offset;
+            p.src0_ne[0] = r.cols;
+            p.src0_offset = r.src_offset;
+            p.src1_ne[0] = @bitCast(r.eps);
+            return computeDispatch(be, bufs, p, r.src, r.src, r.dst, (r.rows + WG_SIZE - 1) / WG_SIZE);
         },
         .reduce => |r| {
             var p = std.mem.zeroes(ComputeParams);
@@ -620,6 +805,42 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         };
     }
 
+    // Auto-promote weight buffers to f16: detect matmul B operands with initial uploads.
+    for (program.ops) |op| {
+        const b_idx = switch (op) {
+            .matmul => |m| m.b,
+            else => continue,
+        };
+        // Find the initial upload for this buffer (if any).
+        const upload = for (program.initial_uploads) |io| {
+            if (io.buf_idx == b_idx) break io;
+        } else continue;
+        // Already promoted? (same buffer used in multiple matmuls)
+        if (device_bufs[b_idx].f16_buf != null) continue;
+
+        // Pack f32 → f16 using matmul geometry for stride-aware reads.
+        const geom = op.matmul.geom;
+        const n_elems = geom.K * geom.N;
+        const f16_bytes = std.mem.alignForward(usize, n_elems * 2, 4);
+        const f16_tmp = alloc.alloc(u16, n_elems + (n_elems & 1)) catch continue;
+        defer alloc.free(f16_tmp);
+
+        const f32_ptr: [*]const f32 = @ptrCast(@alignCast(upload.host_ptr));
+        for (0..geom.K) |row| {
+            for (0..geom.N) |col| {
+                const src_idx = geom.b_offset + row * geom.b_row_stride + col * geom.b_col_stride;
+                f16_tmp[row * geom.N + col] = @bitCast(@as(f16, @floatCast(f32_ptr[src_idx])));
+            }
+        }
+        if (n_elems & 1 != 0) f16_tmp[n_elems] = 0;
+
+        const f16_gpu = createGpuBuffer(self.device, f16_bytes, c.WGPUBufferUsage_Storage | c.WGPUBufferUsage_CopyDst);
+        if (f16_gpu == null) continue;
+        c.wgpuQueueWriteBuffer(self.queue, f16_gpu, 0, @ptrCast(f16_tmp.ptr), f16_bytes);
+        device_bufs[b_idx].f16_buf = f16_gpu;
+        device_bufs[b_idx].f16_size = f16_bytes;
+    }
+
     // Pre-build all dispatches (uniform buffers + bind groups).
     var dispatch_list: std.ArrayListUnmanaged(PrebuiltDispatch) = .empty;
     for (program.ops) |op| {
@@ -706,6 +927,50 @@ test "wgpu backend compiled program matmul" {
     be.executeProgram(handle, &.{}, &out);
 
     try std.testing.expectEqualSlices(f32, &.{ 58, 64, 139, 154 }, &dst);
+}
+
+test "wgpu backend f16 matmul (auto-promoted)" {
+    var wgpu = WgpuBackend.init() catch |err| switch (err) {
+        error.WgpuInitFailed, error.WgpuAdapterNotAvailable, error.WgpuDeviceNotAvailable => return,
+        else => return err,
+    };
+    defer wgpu.deinit();
+    const be = wgpu.backend();
+
+    // Program: buf0(A) × buf1(B) → buf2(dst). 2x3 × 3x2 = 2x2.
+    // B has an initial upload, so the backend auto-promotes it to f16.
+    // A = [[1,2,3],[4,5,6]], B = [[7,8],[9,10],[11,12]]
+    // Expected: [[58,64],[139,154]]
+    var a_data = [_]f32{ 1, 2, 3, 4, 5, 6 };
+    var b_data = [_]f32{ 7, 8, 9, 10, 11, 12 };
+
+    const ops = [_]backend_mod.DeviceOp{.{ .matmul = .{
+        .dst = 2,
+        .a = 0,
+        .b = 1,
+        .geom = .{ .M = 2, .N = 2, .K = 3, .a_row_stride = 3, .a_col_stride = 1, .b_row_stride = 2, .b_col_stride = 1, .a_offset = 0, .b_offset = 0, .dst_offset = 0, .dst_row_stride = 2 },
+    } }};
+    const buf_sizes = [_]usize{ 6, 6, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&a_data), .size = 6 * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&b_data), .size = 6 * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 3,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var dst_buf: [4]f32 = undefined;
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 2, .host_ptr = @ptrCast(&dst_buf), .size = 4 * 4 }};
+    be.executeProgram(handle, &.{}, &out);
+
+    // f16 has limited precision, but small integers are exact.
+    try std.testing.expectEqualSlices(f32, &.{ 58, 64, 139, 154 }, &dst_buf);
 }
 
 test "wgpu backend elementwise add" {

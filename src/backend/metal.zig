@@ -198,10 +198,11 @@ const shader_source =
     \\};
     \\
     \\// Op codes — elementwise match op.zig values directly:
-    \\//   add=7 mul=8 neg=9 sqrt=13 recip=14 exp=15 gelu=17
-    \\//   sum=18 max=19 repeat=20 slice_assign=27
+    \\//   add=7 mul=8 neg=9 abs=10 sgn=11 step=12 relu=13
+    \\//   sqrt=14 recip=15 exp=16 log=17 gelu=18
+    \\//   sum=19 max=20 repeat=21 slice_assign=27
     \\// Fused ops use codes 100+:
-    \\//   fused_softmax=100 fused_layernorm=101
+    \\//   fused_softmax=100 fused_layernorm=101 fused_rmsnorm=102
     \\
     \\kernel void compute_f32(
     \\    device const float* src0 [[buffer(0)]],
@@ -216,29 +217,34 @@ const shader_source =
     \\        case 7:  dst[p.dst_offset + gid] = src0[p.src0_offset + gid] + src1[p.src1_offset + gid]; break;
     \\        case 8:  dst[p.dst_offset + gid] = src0[p.src0_offset + gid] * src1[p.src1_offset + gid]; break;
     \\        case 9:  dst[p.dst_offset + gid] = -src0[p.src0_offset + gid]; break;
-    \\        case 13: dst[p.dst_offset + gid] = sqrt(src0[p.src0_offset + gid]); break;
-    \\        case 14: dst[p.dst_offset + gid] = 1.0f / src0[p.src0_offset + gid]; break;
-    \\        case 15: dst[p.dst_offset + gid] = exp(src0[p.src0_offset + gid]); break;
-    \\        case 17: {
+    \\        case 10: dst[p.dst_offset + gid] = abs(src0[p.src0_offset + gid]); break;
+    \\        case 11: dst[p.dst_offset + gid] = sign(src0[p.src0_offset + gid]); break;
+    \\        case 12: dst[p.dst_offset + gid] = (src0[p.src0_offset + gid] > 0.0f) ? 1.0f : 0.0f; break;
+    \\        case 13: dst[p.dst_offset + gid] = max(src0[p.src0_offset + gid], 0.0f); break;
+    \\        case 14: dst[p.dst_offset + gid] = sqrt(src0[p.src0_offset + gid]); break;
+    \\        case 15: dst[p.dst_offset + gid] = 1.0f / src0[p.src0_offset + gid]; break;
+    \\        case 16: dst[p.dst_offset + gid] = exp(src0[p.src0_offset + gid]); break;
+    \\        case 17: dst[p.dst_offset + gid] = log(src0[p.src0_offset + gid]); break;
+    \\        case 18: {
     \\            float a = src0[p.src0_offset + gid];
     \\            float c = 0.7978845608f * (a + 0.044715f * a * a * a);
     \\            dst[p.dst_offset + gid] = 0.5f * a * (1.0f + precise::tanh(c));
     \\            break;
     \\        }
-    \\        // ── Reduce: sum(18) or max(19), one thread per output ──
-    \\        case 18: case 19: {
+    \\        // ── Reduce: sum(19) or max(20), one thread per output ──
+    \\        case 19: case 20: {
     \\            uint reduce_size = p.src0_ne[0];
     \\            uint src_base = p.src0_offset + gid * reduce_size;
-    \\            float val = (p.op == 19) ? -INFINITY : 0.0f;
+    \\            float val = (p.op == 20) ? -INFINITY : 0.0f;
     \\            for (uint k = 0; k < reduce_size; k++) {
     \\                float v = src0[src_base + k];
-    \\                if (p.op == 18) val += v; else val = max(val, v);
+    \\                if (p.op == 19) val += v; else val = max(val, v);
     \\            }
     \\            dst[p.dst_offset + gid] = val;
     \\            break;
     \\        }
     \\        // ── Repeat: broadcast via modular indexing ──
-    \\        case 20: {
+    \\        case 21: {
     \\            uint idx = gid;
     \\            uint src_idx = p.src0_offset;
     \\            for (int d = 3; d >= 0; d--) {
@@ -279,6 +285,7 @@ const shader_source =
     \\            uint cols = p.src0_ne[0];
     \\            uint base = p.src0_offset + gid * cols;
     \\            uint dbase = p.dst_offset + gid * cols;
+    \\            float eps = as_type<float>(p.src1_ne[0]);
     \\            float mu = 0.0f;
     \\            for (uint j = 0; j < cols; j++) mu += src0[base + j];
     \\            mu /= float(cols);
@@ -287,9 +294,23 @@ const shader_source =
     \\                float d = src0[base + j] - mu;
     \\                v += d * d;
     \\            }
-    \\            float inv_std = 1.0f / sqrt(v / float(cols) + 1e-5f);
+    \\            float inv_std = 1.0f / sqrt(v / float(cols) + eps);
     \\            for (uint j = 0; j < cols; j++)
     \\                dst[dbase + j] = (src0[base + j] - mu) * inv_std;
+    \\            break;
+    \\        }
+    \\        // ── Fused RMS norm: one thread per row ──
+    \\        // n_elements = rows, src0_ne[0] = cols
+    \\        case 102: {
+    \\            uint cols = p.src0_ne[0];
+    \\            uint base = p.src0_offset + gid * cols;
+    \\            uint dbase = p.dst_offset + gid * cols;
+    \\            float eps = as_type<float>(p.src1_ne[0]);
+    \\            float ss = 0.0f;
+    \\            for (uint j = 0; j < cols; j++) ss += src0[base + j] * src0[base + j];
+    \\            float inv_rms = 1.0f / sqrt(ss / float(cols) + eps);
+    \\            for (uint j = 0; j < cols; j++)
+    \\                dst[dbase + j] = src0[base + j] * inv_rms;
     \\            break;
     \\        }
     \\        default: break;
@@ -496,7 +517,7 @@ const CompiledProgram = struct {
             },
             .elementwise => |e| {
                 switch (e.op) {
-                    .add, .mul, .neg, .exp, .sqrt, .recip, .gelu => {},
+                    .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu => {},
                     else => return,
                 }
                 const params = ComputeParams{
@@ -525,11 +546,22 @@ const CompiledProgram = struct {
                     .op = 101, .n_elements = l.rows,
                     .dst_ne = .{ 0, 0, 0, 0 }, .dst_strides = .{ 0, 0, 0, 0 }, .dst_offset = l.dst_offset,
                     .src0_ne = .{ l.cols, 0, 0, 0 }, .src0_strides = .{ 0, 0, 0, 0 }, .src0_offset = l.src_offset,
-                    .src1_ne = .{ 0, 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
+                    .src1_ne = .{ @bitCast(l.eps), 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
                 };
                 var bufs = [_]?*anyopaque{ self.device_bufs[l.src].ptr, self.device_bufs[l.src].ptr, self.device_bufs[l.dst].ptr };
                 const grid: u32 = (l.rows + 255) / 256;
                 c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, @min(l.rows, 256), 1);
+            },
+            .rmsnorm => |r| {
+                const params = ComputeParams{
+                    .op = 102, .n_elements = r.rows,
+                    .dst_ne = .{ 0, 0, 0, 0 }, .dst_strides = .{ 0, 0, 0, 0 }, .dst_offset = r.dst_offset,
+                    .src0_ne = .{ r.cols, 0, 0, 0 }, .src0_strides = .{ 0, 0, 0, 0 }, .src0_offset = r.src_offset,
+                    .src1_ne = .{ @bitCast(r.eps), 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
+                };
+                var bufs = [_]?*anyopaque{ self.device_bufs[r.src].ptr, self.device_bufs[r.src].ptr, self.device_bufs[r.dst].ptr };
+                const grid: u32 = (r.rows + 255) / 256;
+                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, @min(r.rows, 256), 1);
             },
             .reduce => |r| {
                 const params = ComputeParams{

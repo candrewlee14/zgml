@@ -109,6 +109,58 @@ fn benchWgpuMatMul(
     try writer.print("    {s:<12} {d:8.1} us/iter  {d:6.2} GFLOPS\n", .{ "WebGPU/GPU", per_iter_us, gflops });
 }
 
+fn benchWgpuF16MatMul(
+    be: backend_mod.Backend,
+    M: usize,
+    N: usize,
+    K: usize,
+    writer: anytype,
+    io: std.Io,
+) !void {
+    const a_data = try std.heap.page_allocator.alloc(f32, M * K);
+    defer std.heap.page_allocator.free(a_data);
+    @memset(a_data, 1.0);
+    const b_data = try std.heap.page_allocator.alloc(f32, K * N);
+    defer std.heap.page_allocator.free(b_data);
+    @memset(b_data, 1.0);
+
+    // Use regular matmul op — B is in initial_uploads so backend auto-promotes to f16.
+    const ops = [_]backend_mod.DeviceOp{.{ .matmul = .{
+        .dst = 2, .a = 0, .b = 1,
+        .geom = .{ .M = M, .N = N, .K = K, .a_row_stride = K, .a_col_stride = 1, .b_row_stride = N, .b_col_stride = 1, .a_offset = 0, .b_offset = 0, .dst_offset = 0, .dst_row_stride = N },
+    } }};
+    const buf_sizes = [_]usize{ M * K, K * N, M * N };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(a_data.ptr), .size = @intCast(M * K * 4) },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(b_data.ptr), .size = @intCast(K * N * 4) },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 3,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    const dst = try std.heap.page_allocator.alloc(f32, M * N);
+    defer std.heap.page_allocator.free(dst);
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 2, .host_ptr = @ptrCast(dst.ptr), .size = @intCast(M * N * 4) }};
+
+    for (0..WARMUP) |_| be.executeProgram(handle, &.{}, &out);
+
+    const t0 = std.Io.Clock.awake.now(io).nanoseconds;
+    for (0..ITERS) |_| be.executeProgram(handle, &.{}, &out);
+    const elapsed_ns: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds - t0);
+
+    const per_iter_us = @as(f64, @floatFromInt(elapsed_ns)) / 1000.0 / @as(f64, @floatFromInt(ITERS));
+    const flops = 2.0 * @as(f64, @floatFromInt(M)) * @as(f64, @floatFromInt(N)) * @as(f64, @floatFromInt(K));
+    const gflops = flops * @as(f64, @floatFromInt(ITERS)) / @as(f64, @floatFromInt(elapsed_ns));
+
+    try writer.print("    {s:<12} {d:8.1} us/iter  {d:6.2} GFLOPS\n", .{ "WebGPU/F16", per_iter_us, gflops });
+}
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const stdout_file = std.Io.File.stdout();
@@ -146,6 +198,7 @@ pub fn main(init: std.process.Init) !void {
         try w.interface.print("  M={d}, N={d}, K={d}:\n", .{ s[0], s[1], s[2] });
         try benchCpuMatMul(s[0], s[1], s[2], &w.interface, io);
         try benchWgpuMatMul(wgpu, s[0], s[1], s[2], &w.interface, io);
+        try benchWgpuF16MatMul(wgpu, s[0], s[1], s[2], &w.interface, io);
     }
 
     try w.interface.print("\n", .{});

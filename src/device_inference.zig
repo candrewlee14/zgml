@@ -96,6 +96,7 @@ pub fn DeviceInference(comptime T: type, comptime config: GPTConfig) type {
                                         .src = bufIdx(&ptr_to_idx, ln.input),
                                         .rows = @intCast(ln.input.ne[1]),
                                         .cols = @intCast(ln.input.ne[0]),
+                                        .eps = ln.eps_like.data[0],
                                     } });
                                 },
                                 .elementwise_chain => {
@@ -103,7 +104,10 @@ pub fn DeviceInference(comptime T: type, comptime config: GPTConfig) type {
                                         try appendNodeOp(plan, &ops_list, &ptr_to_idx, node, alloc);
                                     }
                                 },
-                                else => {},
+                                // CNN and training fusions — not supported on GPU inference path.
+                                .conv2d, .conv2d_bwd_input, .conv2d_bwd_kernel,
+                                .max_pool2d, .max_pool2d_bwd,
+                                .log_softmax, .cross_entropy => {},
                             }
                         },
                         .node => |node_ptr| try appendNodeOp(plan, &ops_list, &ptr_to_idx, node_ptr, alloc),
@@ -240,7 +244,7 @@ pub fn DeviceInference(comptime T: type, comptime config: GPTConfig) type {
             const src1_idx = if (node.src1) |s| bufIdx(ptr_to_idx, s) else dst_idx;
 
             switch (op) {
-                .add, .mul, .neg, .exp, .sqrt, .recip, .gelu, .abs, .sgn, .step, .log => {
+                .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu => {
                     try ops.append(alloc, .{ .elementwise = .{
                         .op = op, .dst = dst_idx, .src0 = src0_idx, .src1 = src1_idx,
                         .n = @intCast(node.nElems()),
@@ -262,6 +266,15 @@ pub fn DeviceInference(comptime T: type, comptime config: GPTConfig) type {
                         .dst_strides = .{ @intCast(node.strides[0]), @intCast(node.strides[1]), @intCast(node.strides[2]), @intCast(node.strides[3]) },
                     } });
                 },
+                .rmsnorm => {
+                    const src = node.src0.?;
+                    try ops.append(alloc, .{ .rmsnorm = .{
+                        .dst = dst_idx, .src = src0_idx,
+                        .rows = @intCast(src.ne[1]),
+                        .cols = @intCast(src.ne[0]),
+                        .eps = node.op_eps,
+                    } });
+                },
                 .slice_assign => {
                     try ops.append(alloc, .{ .slice_assign = .{
                         .dst = if (node.src1) |s| bufIdx(ptr_to_idx, s) else dst_idx,
@@ -272,7 +285,12 @@ pub fn DeviceInference(comptime T: type, comptime config: GPTConfig) type {
                         .src_stride = @intCast(node.src0.?.strides[0]),
                     } });
                 },
-                else => {},
+                // Structural ops are filtered at function entry; matmul handled above.
+                // Scatter/gather and fused composite ops not yet supported on GPU.
+                .none, .view, .reshape, .transpose, .permute, .as_strided, .broadcast_to,
+                .matmul, .softmax, .attention,
+                .gather_rows, .scatter_add_rows, .pick_rows, .scatter_add_picks, .scatter_add_view,
+                .rope, .slice_assign_rows => {},
             }
         }
     };
