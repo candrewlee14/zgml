@@ -1,6 +1,12 @@
 // Register-tiled quantized int8 matmul — 2D block tiling with per-thread accumulation.
 // B weights stored as packed array<i32> (4 × int8 per i32), dequantized during
 // cooperative load into shared memory. Accumulation loop is pure f32.
+//
+// TODO: when wgpu-native ships cooperative matrix support (v30+), add an
+// alternate kernel using `enable wgpu_cooperative_matrix;` with 8×8 f32
+// coop_mat tiles and coopMatrixMulAdd(). The dequant load stays the same —
+// only the accumulation inner loop changes. This maps to simdgroup MMA on
+// Metal and SPV_KHR_cooperative_matrix on Vulkan.
 
 struct QMatMulParams {
     M: u32, N: u32, K: u32,

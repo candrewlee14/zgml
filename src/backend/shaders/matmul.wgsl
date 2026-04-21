@@ -1,6 +1,12 @@
 // Register-tiled f32 matmul — 2D block tiling with per-thread accumulation.
 // BM×BN output tile per workgroup, each thread computes TM×TN outputs.
 // 256 threads per workgroup (16×16), 16 output elements per thread.
+//
+// TODO: when wgpu-native ships cooperative matrix support (v30+), add an
+// alternate kernel using `enable wgpu_cooperative_matrix;` with 8×8 f32
+// coop_mat tiles and coopMatrixMulAdd(). This maps to simdgroup MMA on
+// Metal and SPV_KHR_cooperative_matrix on Vulkan, closing the gap with
+// the native Metal backend's simdgroup_multiply_accumulate path.
 
 struct MatMulParams {
     M: u32, N: u32, K: u32,
