@@ -231,18 +231,6 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return res;
         }
 
-        pub fn maxInto(self: *Self, other: *Self) *Self {
-            const alloc = a(self);
-            assert(self.canSumTo(other));
-            const is_node: bool = self.grad != null;
-            if (self.isSameShape(other) and !is_node) return self;
-            const res = other.view();
-            res.op = .max;
-            res.grad = if (is_node) Self.initHelper(alloc, &res.ne, null) catch unreachable else null;
-            res.src0 = self;
-            return res;
-        }
-
         /// Sum into another tensor's shape.
         pub fn sumInto(self: *Self, other: *Self) *Self {
             const alloc = a(self);
@@ -259,12 +247,6 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         /// Mean (reduce). Decomposes to `sum * (1/count)`.
         pub fn mean(self: *Self, ne: []const usize) *Self {
             const s = aux(self.sum(ne));
-            const count: T = @floatFromInt(self.nElems() / s.nElems());
-            return s.mul(scalarRepeatLike(self, 1.0 / count, s));
-        }
-
-        pub fn meanInto(self: *Self, other: *Self) *Self {
-            const s = aux(self.sumInto(other));
             const count: T = @floatFromInt(self.nElems() / s.nElems());
             return s.mul(scalarRepeatLike(self, 1.0 / count, s));
         }
@@ -408,11 +390,6 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return self.add(aux(bias.repeatLike(self)));
         }
 
-        pub fn scale(self: *Self, other: *Self) *Self {
-            assert(other.isScalar());
-            return self.mul(aux(other.repeatLike(self)));
-        }
-
         /// Scale every element by a scalar value.
         pub fn scaleByVal(self: *Self, val: T) *Self {
             return self.mul(scalarRepeatLike(self, val, self));
@@ -445,23 +422,6 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             res.src1 = other;
             res.assertValidMatMulDims(self, trans_self, other, trans_other);
             return res;
-        }
-
-        /// `self @ other` (no transpose).
-        pub fn mm(self: *Self, other: *Self) *Self {
-            return self.matMul(false, other, false);
-        }
-        /// `self^T @ other`.
-        pub fn Tmm(self: *Self, other: *Self) *Self {
-            return self.matMul(true, other, false);
-        }
-        /// `self @ other^T`.
-        pub fn mmT(self: *Self, other: *Self) *Self {
-            return self.matMul(false, other, true);
-        }
-        /// `self^T @ other^T`.
-        pub fn TmmT(self: *Self, other: *Self) *Self {
-            return self.matMul(true, other, true);
         }
 
         // ---------------------------------------------------------------
@@ -555,32 +515,6 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return structuralView(self, ne, out_strides, self.storage_offset + storage_offset, .as_strided);
         }
 
-        /// Backward pass for as_strided: accumulate gradients back into the
-        /// original tensor's shape by scatter-adding from the strided view.
-        pub fn asStridedBackward(self: *Self, src: *Self) *Self {
-            const alloc = a(self);
-            const res = Self.init(alloc, src.ne[0..src.n_dims]) catch unreachable;
-            _ = res.setAllScalar(0);
-            // Accumulate self's gradient into res using src's strides
-            const n = self.nElems();
-            for (0..n) |i| {
-                // Map flat index i through self's strides back to src's flat index
-                var remaining = i;
-                var src_idx: usize = src.storage_offset;
-                var dim: usize = self.n_dims;
-                while (dim > 0) {
-                    dim -= 1;
-                    const coord = remaining / self.strides[dim];
-                    remaining %= self.strides[dim];
-                    src_idx += coord * src.strides[dim];
-                }
-                if (src_idx < res.nElems()) {
-                    res.data[src_idx] += self.data[i];
-                }
-            }
-            return res;
-        }
-
         pub fn scatterAddView(self: *Self, view_tensor: *Self) *Self {
             const alloc = a(self);
             const base = view_tensor.source0().?;
@@ -589,19 +523,6 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             res.src0 = self;
             res.src1 = view_tensor;
             return res;
-        }
-
-        pub fn slidingWindow2d(self: *Self, kw: usize, kh: usize) *Self {
-            assert(self.n_dims == 4);
-            assert(kw <= self.ne[0]);
-            assert(kh <= self.ne[1]);
-            const out_w = self.ne[0] - kw + 1;
-            const out_h = self.ne[1] - kh + 1;
-            return self.asStrided(
-                &.{ out_w, out_h, kw, kh, self.ne[2], self.ne[3] },
-                &.{ self.strides[0], self.strides[1], self.strides[0], self.strides[1], self.strides[2], self.strides[3] },
-                0,
-            );
         }
 
         // ---------------------------------------------------------------

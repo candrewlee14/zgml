@@ -428,14 +428,9 @@ pub fn Tensor(comptime T: type) type {
         pub const rmsNorm = api.rmsNorm;
         pub const attention = api.attention;
         pub const layerNorm = api.layerNorm;
-        pub const meanInto = api.meanInto;
         pub const repeat = api.repeat;
         pub const repeatLike = api.repeatLike;
         pub const matMul = api.matMul;
-        pub const mm = api.mm;
-        pub const Tmm = api.Tmm;
-        pub const mmT = api.mmT;
-        pub const TmmT = api.TmmT;
         pub const gatherRows = api.gatherRows;
         pub const scatterAddRows = api.scatterAddRows; // Internal: used by backward pass only
         pub const pickRows = api.pickRows;
@@ -443,7 +438,6 @@ pub fn Tensor(comptime T: type) type {
         pub const gatherRowsIdx = api.gatherRowsIdx;
         pub const pickRowsIdx = api.pickRowsIdx;
         pub const addBias = api.addBias;
-        pub const scale = api.scale;
         pub const scaleByVal = api.scaleByVal;
         pub const conv2d = api.conv2d;
         pub const maxPool2d = api.maxPool2d;
@@ -460,7 +454,6 @@ pub fn Tensor(comptime T: type) type {
         pub const ropeRotate = api.ropeRotate;
         pub const sliceColumns = api.sliceColumns;
         pub const sliceRows = api.sliceRows;
-        pub const slidingWindow2d = api.slidingWindow2d;
 
         // ---------------------------------------------------------------
         // Forward compute — delegated to tensor/forward.zig
@@ -832,26 +825,6 @@ test "unary ops handle zero-stride broadcast views" {
     defer step_neg.deinit();
     step_neg.compute();
     try testing.expectEqualSlices(f32, &.{ 0, 0, 0, 0 }, step_neg.data);
-}
-
-test "slidingWindow2d exposes overlapping patches" {
-    const t = try Tensor(f32).init(tac, &.{ 4, 4, 1, 1 });
-    defer t.deinit();
-    for (t.data, 0..) |*d, i| d.* = @floatFromInt(i);
-
-    const w = t.slidingWindow2d(2, 2);
-    defer w.deinit();
-
-    try testing.expectEqual(@as(u8, 6), w.n_dims);
-    try testing.expectEqual(@as(usize, 3), w.ne[0]);
-    try testing.expectEqual(@as(usize, 3), w.ne[1]);
-    try testing.expectEqual(@as(usize, 2), w.ne[2]);
-    try testing.expectEqual(@as(usize, 2), w.ne[3]);
-    try testing.expectEqual(@as(f32, 0), w.get(&.{ 0, 0, 0, 0, 0, 0 }));
-    try testing.expectEqual(@as(f32, 1), w.get(&.{ 0, 0, 1, 0, 0, 0 }));
-    try testing.expectEqual(@as(f32, 4), w.get(&.{ 0, 0, 0, 1, 0, 0 }));
-    try testing.expectEqual(@as(f32, 5), w.get(&.{ 0, 0, 1, 1, 0, 0 }));
-    try testing.expectEqual(@as(f32, 10), w.get(&.{ 1, 1, 1, 1, 0, 0 }));
 }
 
 test "compute conv2d composite view path" {
