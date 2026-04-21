@@ -102,6 +102,60 @@ pub fn package(
     };
 }
 
+// ---------------------------------------------------------------
+// Executable helper — eliminates per-target boilerplate
+// ---------------------------------------------------------------
+
+const ExeConfig = struct {
+    name: []const u8,
+    src: []const u8,
+    step_name: []const u8,
+    step_desc: []const u8,
+    /// null = use the user's optimize option (for debug/test targets)
+    optimize: ?std.builtin.OptimizeMode = .ReleaseFast,
+    /// install-only targets don't get a run step
+    install_only: bool = false,
+    /// extra linkMetal call (bench-metal, generate-llama, etc.)
+    extra_metal: bool = false,
+    /// skip BLAS linking (bench-reduce)
+    skip_blas: bool = false,
+};
+
+fn addExe(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    use_blas: bool,
+    cfg: ExeConfig,
+) *std.Build.Step.Compile {
+    const opt = cfg.optimize orelse optimize;
+    const pkg = package(b, target, opt, .{ .options = .{ .use_blas = use_blas } });
+    const mod = b.createModule(.{
+        .root_source_file = b.path(cfg.src),
+        .target = target,
+        .optimize = opt,
+        .imports = &.{
+            .{ .name = "zgml", .module = pkg.zgml },
+            .{ .name = "zgml_options", .module = pkg.zgml_options },
+        },
+    });
+    const exe = b.addExecutable(.{ .name = cfg.name, .root_module = mod });
+    if (use_blas and !cfg.skip_blas) {
+        linkBlas(target, exe);
+        exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    if (cfg.extra_metal) linkMetal(b, target, exe);
+    b.installArtifact(exe);
+
+    const step = b.step(cfg.step_name, cfg.step_desc);
+    if (cfg.install_only) {
+        step.dependOn(&b.addInstallArtifact(exe, .{}).step);
+    } else {
+        step.dependOn(&b.addRunArtifact(exe).step);
+    }
+    return exe;
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -114,372 +168,122 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(runTests(b, optimize, target, .{ .use_blas = use_blas }));
     test_step.dependOn(runInferenceTests(b, optimize, target, .{ .use_blas = use_blas }));
 
-    // Benchmark — always built with ReleaseFast
-    const zgml_bench_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-    const bench_mod = b.createModule(.{
-        .root_source_file = b.path("src/bench.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &.{
-            .{ .name = "zgml", .module = zgml_bench_pkg.zgml },
-            .{ .name = "zgml_options", .module = zgml_bench_pkg.zgml_options },
-        },
-    });
-    const bench_exe = b.addExecutable(.{
-        .name = "zgml-bench",
-        .root_module = bench_mod,
-    });
-    if (use_blas) {
-        linkBlas(target, bench_exe);
-        bench_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-    }
-    b.installArtifact(bench_exe);
+    // -- Benchmarks --
 
+    const bench_exe = addExe(b, target, optimize, use_blas, .{
+        .name = "zgml-bench",
+        .src = "src/bench.zig",
+        .step_name = "bench",
+        .step_desc = "Build and run zgml benchmarks",
+    });
     const bench_build_step = b.step("bench-build", "Build zgml benchmarks");
     bench_build_step.dependOn(&bench_exe.step);
 
-    const bench_step = b.step("bench", "Build and run zgml benchmarks");
-    bench_step.dependOn(&b.addRunArtifact(bench_exe).step);
-
-    // MNIST benchmark — always built with ReleaseFast
-    const zgml_mnist_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-    const mnist_mod = b.createModule(.{
-        .root_source_file = b.path("src/mnist_bench.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &.{
-            .{ .name = "zgml", .module = zgml_mnist_pkg.zgml },
-            .{ .name = "zgml_options", .module = zgml_mnist_pkg.zgml_options },
-        },
-    });
-    const mnist_exe = b.addExecutable(.{
+    _ = addExe(b, target, optimize, use_blas, .{
         .name = "mnist-bench",
-        .root_module = mnist_mod,
+        .src = "src/mnist_bench.zig",
+        .step_name = "mnist-bench",
+        .step_desc = "Build and run MNIST CNN training benchmark",
     });
-    if (use_blas) {
-        linkBlas(target, mnist_exe);
-        mnist_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-    }
-    b.installArtifact(mnist_exe);
-
-    const mnist_step = b.step("mnist-bench", "Build and run MNIST CNN training benchmark");
-    mnist_step.dependOn(&b.addRunArtifact(mnist_exe).step);
-
-    // MNIST micro-benchmark — isolates the training hotloop
-    const zgml_micro_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-    const micro_mod = b.createModule(.{
-        .root_source_file = b.path("src/mnist_micro.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &.{
-            .{ .name = "zgml", .module = zgml_micro_pkg.zgml },
-            .{ .name = "zgml_options", .module = zgml_micro_pkg.zgml_options },
-        },
-    });
-    const micro_exe = b.addExecutable(.{
+    _ = addExe(b, target, optimize, use_blas, .{
         .name = "mnist-micro",
-        .root_module = micro_mod,
+        .src = "src/mnist_micro.zig",
+        .step_name = "mnist-micro",
+        .step_desc = "Build and run MNIST CNN training micro-benchmark",
     });
-    if (use_blas) {
-        linkBlas(target, micro_exe);
-        micro_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-    }
-    b.installArtifact(micro_exe);
-
-    const micro_step = b.step("mnist-micro", "Build and run MNIST CNN training micro-benchmark");
-    micro_step.dependOn(&b.addRunArtifact(micro_exe).step);
-
-    const zgml_conv_phase_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-    const conv_phase_mod = b.createModule(.{
-        .root_source_file = b.path("src/conv_phase_bench.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &.{
-            .{ .name = "zgml", .module = zgml_conv_phase_pkg.zgml },
-            .{ .name = "zgml_options", .module = zgml_conv_phase_pkg.zgml_options },
-        },
-    });
-    const conv_phase_exe = b.addExecutable(.{
+    _ = addExe(b, target, optimize, use_blas, .{
         .name = "conv-phase-bench",
-        .root_module = conv_phase_mod,
+        .src = "src/conv_phase_bench.zig",
+        .step_name = "conv-phase-bench",
+        .step_desc = "Run parameterized conv phase benchmark",
     });
-    if (use_blas) {
-        linkBlas(target, conv_phase_exe);
-        conv_phase_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-    }
-    b.installArtifact(conv_phase_exe);
-    const conv_phase_step = b.step("conv-phase-bench", "Run parameterized conv phase benchmark");
-    conv_phase_step.dependOn(&b.addRunArtifact(conv_phase_exe).step);
-
-    // Gradient check — compare zgml vs PyTorch reference
-    const zgml_gc_pkg = package(b, target, optimize, .{ .options = .{ .use_blas = use_blas } });
-    const gc_mod = b.createModule(.{
-        .root_source_file = b.path("benchmarks/grad_check.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "zgml", .module = zgml_gc_pkg.zgml },
-            .{ .name = "zgml_options", .module = zgml_gc_pkg.zgml_options },
-        },
-    });
-    const gc_exe = b.addExecutable(.{
-        .name = "grad-check",
-        .root_module = gc_mod,
-    });
-    if (use_blas) {
-        linkBlas(target, gc_exe);
-        gc_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-    }
-    b.installArtifact(gc_exe);
-    const gc_step = b.step("grad-check", "Compare gradients with PyTorch reference");
-    gc_step.dependOn(&b.addRunArtifact(gc_exe).step);
-
-    // Per-op backward profiler
-    const zgml_prof_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-    const prof_mod = b.createModule(.{
-        .root_source_file = b.path("src/profile_backward.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &.{
-            .{ .name = "zgml", .module = zgml_prof_pkg.zgml },
-            .{ .name = "zgml_options", .module = zgml_prof_pkg.zgml_options },
-        },
-    });
-    const prof_exe = b.addExecutable(.{
-        .name = "profile-bwd",
-        .root_module = prof_mod,
-    });
-    if (use_blas) {
-        linkBlas(target, prof_exe);
-        prof_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-    }
-    b.installArtifact(prof_exe);
-    const prof_step = b.step("profile-bwd", "Profile backward pass per-op timing");
-    prof_step.dependOn(&b.addRunArtifact(prof_exe).step);
-
-    // Reduction microbenchmark
-    const zgml_rbench_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-    const rbench_mod = b.createModule(.{
-        .root_source_file = b.path("src/bench_reduce.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &.{
-            .{ .name = "zgml", .module = zgml_rbench_pkg.zgml },
-            .{ .name = "zgml_options", .module = zgml_rbench_pkg.zgml_options },
-        },
-    });
-    const rbench_exe = b.addExecutable(.{
-        .name = "bench-reduce",
-        .root_module = rbench_mod,
-    });
-    b.installArtifact(rbench_exe);
-    const rbench_step = b.step("bench-reduce", "Benchmark reduction and broadcast ops");
-    rbench_step.dependOn(&b.addRunArtifact(rbench_exe).step);
-
-    // Inference benchmark
-    {
-        const pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-        const mod = b.createModule(.{
-            .root_source_file = b.path("bench/inference.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-            .imports = &.{
-                .{ .name = "zgml", .module = pkg.zgml },
-                .{ .name = "zgml_options", .module = pkg.zgml_options },
-            },
-        });
-        const exe = b.addExecutable(.{ .name = "bench-inference", .root_module = mod });
-        if (use_blas) {
-            linkBlas(target, exe);
-            exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-        }
-        b.installArtifact(exe);
-        const step = b.step("bench-inference", "Benchmark inference session (f32 vs int8)");
-        step.dependOn(&b.addRunArtifact(exe).step);
-    }
-
-    // Per-op microbenchmark
-    const zgml_opbench_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-    const opbench_mod = b.createModule(.{
-        .root_source_file = b.path("benchmarks/op_bench.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &.{
-            .{ .name = "zgml", .module = zgml_opbench_pkg.zgml },
-            .{ .name = "zgml_options", .module = zgml_opbench_pkg.zgml_options },
-        },
-    });
-    const opbench_exe = b.addExecutable(.{
+    _ = addExe(b, target, optimize, use_blas, .{
         .name = "op-bench",
-        .root_module = opbench_mod,
+        .src = "benchmarks/op_bench.zig",
+        .step_name = "op-bench",
+        .step_desc = "Per-op microbenchmark for MNIST CNN ops",
     });
-    if (use_blas) {
-        linkBlas(target, opbench_exe);
-        opbench_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-    }
-    b.installArtifact(opbench_exe);
-    const opbench_step = b.step("op-bench", "Per-op microbenchmark for MNIST CNN ops");
-    opbench_step.dependOn(&b.addRunArtifact(opbench_exe).step);
-
-    // Metal backend benchmark
-    {
-        const pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-        const mod = b.createModule(.{
-            .root_source_file = b.path("benchmarks/metal_bench.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-            .imports = &.{
-                .{ .name = "zgml", .module = pkg.zgml },
-                .{ .name = "zgml_options", .module = pkg.zgml_options },
-            },
-        });
-        const exe = b.addExecutable(.{ .name = "bench-metal", .root_module = mod });
-        if (use_blas) {
-            linkBlas(target, exe);
-            exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-        }
-        linkMetal(b, target, exe);
-        b.installArtifact(exe);
-        const step = b.step("bench-metal", "Benchmark Metal GPU vs CPU BLAS matmul");
-        step.dependOn(&b.addRunArtifact(exe).step);
-    }
-
-    // Metal inference benchmark
-    {
-        const pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-        const mod = b.createModule(.{
-            .root_source_file = b.path("benchmarks/metal_inference_bench.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-            .imports = &.{
-                .{ .name = "zgml", .module = pkg.zgml },
-                .{ .name = "zgml_options", .module = pkg.zgml_options },
-            },
-        });
-        const exe = b.addExecutable(.{ .name = "bench-metal-inference", .root_module = mod });
-        if (use_blas) {
-            linkBlas(target, exe);
-            exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-        }
-        linkMetal(b, target, exe);
-        b.installArtifact(exe);
-        const step = b.step("bench-metal-inference", "Benchmark CPU vs Metal inference tok/s");
-        step.dependOn(&b.addRunArtifact(exe).step);
-    }
-
-    // SmolLM LLaMA benchmark
-    {
-        const pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-        const mod = b.createModule(.{
-            .root_source_file = b.path("benchmarks/llama_smollm_bench.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-            .imports = &.{
-                .{ .name = "zgml", .module = pkg.zgml },
-                .{ .name = "zgml_options", .module = pkg.zgml_options },
-            },
-        });
-        const exe = b.addExecutable(.{ .name = "bench-llama-smollm", .root_module = mod });
-        if (use_blas) {
-            linkBlas(target, exe);
-            exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-        }
-        b.installArtifact(exe);
-        const step = b.step("bench-llama-smollm", "Benchmark SmolLM LLaMA inference throughput");
-        step.dependOn(&b.addRunArtifact(exe).step);
-    }
-
-    // Text generation binary
-    const zgml_gen_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-    const gen_mod = b.createModule(.{
-        .root_source_file = b.path("scripts/generate.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &.{
-            .{ .name = "zgml", .module = zgml_gen_pkg.zgml },
-            .{ .name = "zgml_options", .module = zgml_gen_pkg.zgml_options },
-        },
+    _ = addExe(b, target, optimize, use_blas, .{
+        .name = "bench-reduce",
+        .src = "src/bench_reduce.zig",
+        .step_name = "bench-reduce",
+        .step_desc = "Benchmark reduction and broadcast ops",
+        .skip_blas = true,
     });
-    const gen_exe = b.addExecutable(.{
+    _ = addExe(b, target, optimize, use_blas, .{
+        .name = "bench-inference",
+        .src = "bench/inference.zig",
+        .step_name = "bench-inference",
+        .step_desc = "Benchmark inference session (f32 vs int8)",
+    });
+    _ = addExe(b, target, optimize, use_blas, .{
+        .name = "bench-metal",
+        .src = "benchmarks/metal_bench.zig",
+        .step_name = "bench-metal",
+        .step_desc = "Benchmark Metal GPU vs CPU BLAS matmul",
+        .extra_metal = true,
+    });
+    _ = addExe(b, target, optimize, use_blas, .{
+        .name = "bench-metal-inference",
+        .src = "benchmarks/metal_inference_bench.zig",
+        .step_name = "bench-metal-inference",
+        .step_desc = "Benchmark CPU vs Metal inference tok/s",
+        .extra_metal = true,
+    });
+    _ = addExe(b, target, optimize, use_blas, .{
+        .name = "bench-llama-smollm",
+        .src = "benchmarks/llama_smollm_bench.zig",
+        .step_name = "bench-llama-smollm",
+        .step_desc = "Benchmark SmolLM LLaMA inference throughput",
+    });
+
+    // -- Profiling & grad check --
+
+    _ = addExe(b, target, optimize, use_blas, .{
+        .name = "profile-bwd",
+        .src = "src/profile_backward.zig",
+        .step_name = "profile-bwd",
+        .step_desc = "Profile backward pass per-op timing",
+    });
+    _ = addExe(b, target, optimize, use_blas, .{
+        .name = "grad-check",
+        .src = "benchmarks/grad_check.zig",
+        .step_name = "grad-check",
+        .step_desc = "Compare gradients with PyTorch reference",
+        .optimize = null, // use user's optimize setting
+    });
+
+    // -- Scripts --
+
+    _ = addExe(b, target, optimize, use_blas, .{
         .name = "generate",
-        .root_module = gen_mod,
+        .src = "scripts/generate.zig",
+        .step_name = "generate",
+        .step_desc = "Build text generation binary",
+        .install_only = true,
     });
-    if (use_blas) {
-        linkBlas(target, gen_exe);
-        gen_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-    }
-    b.installArtifact(gen_exe);
-    const gen_step = b.step("generate", "Build text generation binary");
-    gen_step.dependOn(&b.addInstallArtifact(gen_exe, .{}).step);
-
-    // Training script
-    const zgml_train_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-    const train_mod = b.createModule(.{
-        .root_source_file = b.path("scripts/train_tiny.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &.{
-            .{ .name = "zgml", .module = zgml_train_pkg.zgml },
-            .{ .name = "zgml_options", .module = zgml_train_pkg.zgml_options },
-        },
-    });
-    const train_exe = b.addExecutable(.{
+    _ = addExe(b, target, optimize, use_blas, .{
         .name = "train-tiny",
-        .root_module = train_mod,
+        .src = "scripts/train_tiny.zig",
+        .step_name = "train-tiny",
+        .step_desc = "Train a tiny GPT and save checkpoint",
+        .install_only = true,
     });
-    if (use_blas) {
-        linkBlas(target, train_exe);
-        train_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-    }
-    const train_step = b.step("train-tiny", "Train a tiny GPT and save checkpoint");
-    train_step.dependOn(&b.addInstallArtifact(train_exe, .{}).step);
-
-    // Pretrained model generation
-    const zgml_pt_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-    const pt_mod = b.createModule(.{
-        .root_source_file = b.path("scripts/generate_pretrained.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &.{
-            .{ .name = "zgml", .module = zgml_pt_pkg.zgml },
-            .{ .name = "zgml_options", .module = zgml_pt_pkg.zgml_options },
-        },
-    });
-    const pt_exe = b.addExecutable(.{
+    _ = addExe(b, target, optimize, use_blas, .{
         .name = "generate-pretrained",
-        .root_module = pt_mod,
+        .src = "scripts/generate_pretrained.zig",
+        .step_name = "generate-pretrained",
+        .step_desc = "Generate text from a pretrained HF model",
+        .install_only = true,
     });
-    if (use_blas) {
-        linkBlas(target, pt_exe);
-        pt_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-    }
-    b.installArtifact(pt_exe);
-    const pt_step = b.step("generate-pretrained", "Generate text from a pretrained HF model");
-    pt_step.dependOn(&b.addInstallArtifact(pt_exe, .{}).step);
-
-    // LLaMA model generation
-    const zgml_llama_pkg = package(b, target, .ReleaseFast, .{ .options = .{ .use_blas = use_blas } });
-    const llama_mod = b.createModule(.{
-        .root_source_file = b.path("scripts/generate_llama.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &.{
-            .{ .name = "zgml", .module = zgml_llama_pkg.zgml },
-            .{ .name = "zgml_options", .module = zgml_llama_pkg.zgml_options },
-        },
-    });
-    const llama_exe = b.addExecutable(.{
+    _ = addExe(b, target, optimize, use_blas, .{
         .name = "generate-llama",
-        .root_module = llama_mod,
+        .src = "scripts/generate_llama.zig",
+        .step_name = "generate-llama",
+        .step_desc = "Generate text from a pretrained LLaMA model",
+        .install_only = true,
+        .extra_metal = true,
     });
-    if (use_blas) {
-        linkBlas(target, llama_exe);
-        llama_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
-    }
-    linkMetal(b, target, llama_exe);
-    b.installArtifact(llama_exe);
-    const llama_step = b.step("generate-llama", "Generate text from a pretrained LLaMA model");
-    llama_step.dependOn(&b.addInstallArtifact(llama_exe, .{}).step);
 }
 
 pub fn runTests(

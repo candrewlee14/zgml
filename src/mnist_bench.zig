@@ -10,88 +10,7 @@ const IndexTensor = zgml.IndexTensor;
 const loss_mod = zgml.loss;
 const nn = zgml.nn;
 const ConvClassifier = zgml.models.ConvClassifier;
-
-const Alloc = std.mem.Allocator;
-
-fn readFileAlloc(alloc: Alloc, path: []const u8, io: std.Io, max_bytes: usize) ![]u8 {
-    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
-    defer file.close(io);
-    const stat = try file.stat(io);
-    if (stat.size > max_bytes) return error.FileTooBig;
-    const size: usize = @intCast(stat.size);
-    const buf = try alloc.alloc(u8, size);
-    errdefer alloc.free(buf);
-    const bytes_read = try file.readPositionalAll(io, buf, 0);
-    if (bytes_read != size) return error.UnexpectedEof;
-    return buf;
-}
-
-// ---------------------------------------------------------------------------
-// MNIST IDX file loading
-// ---------------------------------------------------------------------------
-
-fn readU32Big(buf: []const u8) u32 {
-    return std.mem.readInt(u32, buf[0..4], .big);
-}
-
-const MnistImages = struct {
-    data: []f32,
-    n: usize,
-    rows: usize,
-    cols: usize,
-
-    fn load(alloc: Alloc, path: []const u8, io: std.Io) !MnistImages {
-        const raw = try readFileAlloc(alloc, path, io, 128 * 1024 * 1024);
-        defer alloc.free(raw);
-
-        const magic = readU32Big(raw[0..]);
-        if (magic != 2051) return error.BadMagic;
-        const n = readU32Big(raw[4..]);
-        const rows = readU32Big(raw[8..]);
-        const cols = readU32Big(raw[12..]);
-        const pixels = raw[16..];
-
-        const total = n * rows * cols;
-        const data = try alloc.alloc(f32, total);
-        for (0..total) |i| {
-            data[i] = @as(f32, @floatFromInt(pixels[i])) / 255.0;
-        }
-        return .{ .data = data, .n = n, .rows = rows, .cols = cols };
-    }
-
-    fn deinit(self: *MnistImages, alloc: Alloc) void {
-        alloc.free(self.data);
-    }
-};
-
-const MnistLabels = struct {
-    data: []f32,
-    n: usize,
-
-    fn load(alloc: Alloc, path: []const u8, io: std.Io) !MnistLabels {
-        const raw = try readFileAlloc(alloc, path, io, 16 * 1024 * 1024);
-        defer alloc.free(raw);
-
-        const magic = readU32Big(raw[0..]);
-        if (magic != 2049) return error.BadMagic;
-        const n = readU32Big(raw[4..]);
-        const labels = raw[8..];
-
-        const data = try alloc.alloc(f32, n);
-        for (0..n) |i| {
-            data[i] = @floatFromInt(labels[i]);
-        }
-        return .{ .data = data, .n = n };
-    }
-
-    fn deinit(self: *MnistLabels, alloc: Alloc) void {
-        alloc.free(self.data);
-    }
-};
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
+const MnistDataset = zgml.data.mnist.MnistDataset;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -108,22 +27,18 @@ pub fn main(init: std.process.Init) !void {
     try w.interface.print("Loading MNIST data...\n", .{});
     w.interface.flush() catch {};
 
-    var train_images = try MnistImages.load(alloc, "data/train-images-idx3-ubyte", io);
-    defer train_images.deinit(alloc);
-    var train_labels = try MnistLabels.load(alloc, "data/train-labels-idx1-ubyte", io);
-    defer train_labels.deinit(alloc);
-    var test_images = try MnistImages.load(alloc, "data/t10k-images-idx3-ubyte", io);
-    defer test_images.deinit(alloc);
-    var test_labels = try MnistLabels.load(alloc, "data/t10k-labels-idx1-ubyte", io);
-    defer test_labels.deinit(alloc);
+    var train = try MnistDataset.load(alloc, "data/train-images-idx3-ubyte", "data/train-labels-idx1-ubyte", io);
+    defer train.deinit(alloc);
+    var test_data = try MnistDataset.load(alloc, "data/t10k-images-idx3-ubyte", "data/t10k-labels-idx1-ubyte", io);
+    defer test_data.deinit(alloc);
 
-    try w.interface.print("  Train: {} images, Test: {} images\n", .{ train_images.n, test_images.n });
-    try w.interface.print("  Image size: {}x{}\n\n", .{ train_images.cols, train_images.rows });
+    try w.interface.print("  Train: {} images, Test: {} images\n", .{ train.n_samples, test_data.n_samples });
+    try w.interface.print("  Image size: {}x{}\n\n", .{ train.cols, train.rows });
 
     const batch_size: usize = 32;
     const n_epochs: usize = 10;
-    const train_batches = train_images.n / batch_size;
-    const pixels_per_image = train_images.rows * train_images.cols;
+    const train_batches = train.n_samples / batch_size;
+    const pixels_per_image = train.pixelsPerImage();
 
     try w.interface.print("Architecture: Conv(5x5, 1->8) -> ReLU -> MaxPool(2x2) -> FC(1152->10)\n", .{});
     try w.interface.print("Optimizer: Adam (lr=1e-3)\n", .{});
@@ -163,9 +78,9 @@ pub fn main(init: std.process.Init) !void {
 
             // Copy batch data
             const img_off = batch_idx * batch_size * pixels_per_image;
-            @memcpy(model.xs_batch.data, train_images.data[img_off..][0 .. batch_size * pixels_per_image]);
+            @memcpy(model.xs_batch.data, train.images[img_off..][0 .. batch_size * pixels_per_image]);
             const lbl_off = batch_idx * batch_size;
-            @memcpy(model.ys_batch.data, train_labels.data[lbl_off..][0..batch_size]);
+            @memcpy(model.ys_batch.data, train.labels[lbl_off..][0..batch_size]);
 
             model.g.reset();
             model.g.resetGrads();
@@ -179,7 +94,7 @@ pub fn main(init: std.process.Init) !void {
             // Track accuracy
             model.predict(&preds);
             for (0..batch_size) |i| {
-                if (preds[i] == @as(usize, @intFromFloat(train_labels.data[lbl_off + i]))) {
+                if (preds[i] == @as(usize, @intFromFloat(train.labels[lbl_off + i]))) {
                     epoch_correct += 1;
                 }
             }
@@ -213,20 +128,20 @@ pub fn main(init: std.process.Init) !void {
     try w.interface.print("\nEvaluating on test set...\n", .{});
     w.interface.flush() catch {};
 
-    const test_batches = test_images.n / batch_size;
+    const test_batches = test_data.n_samples / batch_size;
     var test_correct: usize = 0;
     var preds_test: [32]usize = undefined;
 
     for (0..test_batches) |batch_idx| {
         const img_off = batch_idx * batch_size * pixels_per_image;
-        @memcpy(model.xs_batch.data, test_images.data[img_off..][0 .. batch_size * pixels_per_image]);
+        @memcpy(model.xs_batch.data, test_data.images[img_off..][0 .. batch_size * pixels_per_image]);
 
         model.g.reset();
         model.g.compute();
 
         model.predict(&preds_test);
         for (0..batch_size) |i| {
-            if (preds_test[i] == @as(usize, @intFromFloat(test_labels.data[batch_idx * batch_size + i]))) {
+            if (preds_test[i] == @as(usize, @intFromFloat(test_data.labels[batch_idx * batch_size + i]))) {
                 test_correct += 1;
             }
         }
