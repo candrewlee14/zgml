@@ -11,7 +11,9 @@ const std = @import("std");
 const zgml = @import("zgml");
 
 const CpuBackend = zgml.backend_cpu.CpuBackend;
+const WgpuBackend = zgml.backend_wgpu.WgpuBackend;
 const Backend = zgml.backend.Backend;
+const have_wgpu = @import("zgml_options").use_wgpu;
 
 const config = zgml.models.LlamaConfig{
     .vocab_size = 49152,
@@ -155,6 +157,16 @@ pub fn main(init: std.process.Init) !void {
     _ = try runVariant("cpu-backend i8   ", cpu_backend.backend(), true, false, cfg, &stdout.interface, io, alloc);
     _ = try runVariant("i8 + kv-i8       ", null, true, true, cfg, &stdout.interface, io, alloc);
     _ = try runVariant("kv-i8 only       ", null, false, true, cfg, &stdout.interface, io, alloc);
+
+    if (have_wgpu) {
+        var wgpu_be = WgpuBackend.init() catch |err| {
+            try stdout.interface.print("  wgpu init failed: {}\n", .{err});
+            return;
+        };
+        defer wgpu_be.deinit();
+        _ = try runVariant("wgpu f32         ", wgpu_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
+        _ = try runVariant("wgpu int8        ", wgpu_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
+    }
 
     try stdout.interface.writeByte('\n');
     stdout.interface.flush() catch {};

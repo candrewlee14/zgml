@@ -8,7 +8,7 @@
 
 const std = @import("std");
 
-pub const Device = enum { cpu, metal, cuda, npu };
+pub const Device = enum { cpu, metal, cuda, npu, wgpu };
 
 // ── Host kernel specs ──────────────────────────────────────────────
 
