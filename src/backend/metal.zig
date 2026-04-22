@@ -979,7 +979,38 @@ const CompiledProgram = struct {
     fn cpuRepeat(self: *const CompiledProgram, rp: anytype) void {
         const src = self.bufF32(rp.src);
         const dst = self.bufF32(rp.dst);
-        for (0..@as(usize, rp.n)) |gid| {
+        const n: usize = rp.n;
+        const d = dst + @as(usize, rp.dst_offset);
+        const s = src + @as(usize, rp.src_offset);
+
+        const src_n: usize = @as(usize, rp.src_ne[0]) * @as(usize, rp.src_ne[1]) *
+            @as(usize, rp.src_ne[2]) * @as(usize, rp.src_ne[3]);
+
+        if (src_n == 1) {
+            // Scalar broadcast → fill.
+            @memset(d[0..n], s[0]);
+            return;
+        }
+        if (src_n >= n) {
+            // Same-size or larger source → plain copy.
+            @memcpy(d[0..n], s[0..n]);
+            return;
+        }
+        // Tiled contiguous copy: source is contiguous and tiles evenly into dst.
+        if (n % src_n == 0 and rp.src_strides[0] == 1 and
+            (rp.src_ne[1] <= 1 or rp.src_strides[1] == rp.src_ne[0]) and
+            (rp.src_ne[2] <= 1 or rp.src_strides[2] == @as(u32, rp.src_ne[0]) * rp.src_ne[1]) and
+            (rp.src_ne[3] <= 1 or rp.src_strides[3] == @as(u32, rp.src_ne[0]) * @as(u32, rp.src_ne[1]) * rp.src_ne[2]))
+        {
+            var off: usize = 0;
+            while (off + src_n <= n) : (off += src_n) {
+                @memcpy(d[off..][0..src_n], s[0..src_n]);
+            }
+            return;
+        }
+
+        // Generic 4D modular indexing fallback.
+        for (0..n) |gid| {
             var idx = gid;
             var src_idx: usize = rp.src_offset;
             var dim: usize = 4;
