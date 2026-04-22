@@ -32,11 +32,16 @@ fn executeProgram(_: *anyopaque, _: backend_mod.Backend.CompiledHandle, _: []con
 
 fn freeProgram(_: *anyopaque, _: backend_mod.Backend.CompiledHandle) void {}
 
+fn getRuntimeProfile(_: *anyopaque, _: backend_mod.Backend.CompiledHandle) ?*@import("../profile.zig").RuntimeProfile {
+    return null;
+}
+
 const vtable = backend_mod.Backend.VTable{
     .dense_matmul_f32 = denseMatMulF32,
     .compile_program = compileProgram,
     .execute_program = executeProgram,
     .free_program = freeProgram,
+    .get_runtime_profile = getRuntimeProfile,
 };
 
 test "cpu backend host dense matmul" {

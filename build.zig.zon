@@ -3,11 +3,14 @@
     .version = "0.0.0",
     .fingerprint = 0xfc097ad848725717,
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .wgpu_native = .{ .path = "vendor/wgpu-native" },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        "vendor/wgpu-native",
         "LICENSE",
         "README.md",
     },

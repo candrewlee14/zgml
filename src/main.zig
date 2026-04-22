@@ -19,6 +19,7 @@ pub const comptime_model = @import("comptime_model.zig");
 pub const backend = @import("backend.zig");
 pub const backend_cpu = @import("backend/cpu.zig");
 pub const backend_metal = if (@import("builtin").os.tag == .macos) @import("backend/metal.zig") else struct {};
+pub const backend_wgpu = if (@import("zgml_options").use_wgpu) @import("backend/wgpu.zig") else struct {};
 pub const quant = @import("quant.zig");
 pub const safetensors = @import("safetensors.zig");
 pub const tokenizer = @import("tokenizer.zig");
@@ -26,6 +27,7 @@ pub const inference = @import("inference.zig");
 pub const inference_utils = @import("inference_utils.zig");
 pub const llama_inference = @import("llama_inference.zig");
 pub const device_inference = @import("device_inference.zig");
+pub const profile = @import("profile.zig");
 pub const data = @import("data.zig");
 
 test "ref all decls" {
@@ -42,10 +44,14 @@ test "ref all decls" {
     if (@import("builtin").os.tag == .macos) {
         _ = @import("backend/metal.zig");
     }
+    if (@import("zgml_options").use_wgpu) {
+        _ = @import("backend/wgpu.zig");
+    }
     _ = @import("quant.zig");
     _ = @import("safetensors.zig");
     _ = @import("tokenizer.zig");
     _ = @import("inference_utils.zig");
     _ = @import("llama_inference.zig");
+    _ = @import("profile.zig");
     _ = @import("data.zig");
 }
