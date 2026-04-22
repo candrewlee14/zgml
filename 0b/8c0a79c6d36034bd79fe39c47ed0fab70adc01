@@ -1,0 +1,31 @@
+benchmarks/wgpu_bench.zig
+  713bc3ed11b8c262 3-5,167-252,259-260,270-272,291-311
+src/backend/shaders/matmul_f16.wgsl
+  713bc3ed11b8c262 1-143
+build.zig
+  713bc3ed11b8c262 268
+src/main.zig
+  713bc3ed11b8c262 30,55
+src/backend/shaders/compute.wgsl
+  713bc3ed11b8c262 3-6,43-56,59,62,65-68,73-74,83,93,148,153,166,172-187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "0b8c0a79c6d36034bd79fe39c47ed0fab70adc01",
+  "prompts": {
+    "713bc3ed11b8c262": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a1fdf715-d3b7-40c8-9d0e-973803566b29",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 311,
+      "total_deletions": 19,
+      "accepted_lines": 311,
+      "overriden_lines": 0
+    }
+  }
+}
