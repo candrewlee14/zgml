@@ -1,0 +1,55 @@
+src/device_inference.zig
+  bf0515a9916c4b9a 348-372
+src/backend/metal.zig
+  bf0515a9916c4b9a 414,445-449,864-876,900-902
+src/backend/shaders/compute.wgsl
+  bf0515a9916c4b9a 5,73-76
+src/shaped.zig
+  bf0515a9916c4b9a 193-196
+src/op.zig
+  bf0515a9916c4b9a 60-62,70,119-121
+src/tensor/forward.zig
+  bf0515a9916c4b9a 1459-1711,2327-2329
+src/fusion.zig
+  bf0515a9916c4b9a 119-122,264-344
+src/schedule.zig
+  bf0515a9916c4b9a 1-334
+src/tensor/api.zig
+  bf0515a9916c4b9a 300-311,326-327,329-337,388-389,391-400
+src/tensor/backward.zig
+  bf0515a9916c4b9a 406-518
+src/tensor.zig
+  bf0515a9916c4b9a 426,486-488
+src/backend/wgpu.zig
+  bf0515a9916c4b9a 677
+src/graph.zig
+  bf0515a9916c4b9a 15,18-19,300-310,515-520,573-583,1180,1231-1236,2465,2476-2477,2484,2495-2497,2500,2517-2519,2530,2547-2551,2554,2565-2567,2570,2581-2583,2591-2693,2903,2914-2916
+build.zig
+  bf0515a9916c4b9a 7,86,186,189
+src/main.zig
+  bf0515a9916c4b9a 31,57
+src/nn.zig
+  bf0515a9916c4b9a 36-37,39
+src/tensor/fused.zig
+  bf0515a9916c4b9a 72,91,108,244-259,271,384,451,482-485,1527-1618,1630
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "0abbef488493e3969bdbe4cef1c361949b778710",
+  "prompts": {
+    "bf0515a9916c4b9a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee823bdf-153c-474f-9476-24c0062a7ae9",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 69160,
+      "total_deletions": 361,
+      "accepted_lines": 68860,
+      "overriden_lines": 0
+    }
+  }
+}
