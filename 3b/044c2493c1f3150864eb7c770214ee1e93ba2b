@@ -1,0 +1,23 @@
+build.zig
+  bf0515a9916c4b9a 245-253
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "3b044c2493c1f3150864eb7c770214ee1e93ba2b",
+  "prompts": {
+    "bf0515a9916c4b9a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee823bdf-153c-474f-9476-24c0062a7ae9",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 9,
+      "total_deletions": 7,
+      "accepted_lines": 67679,
+      "overriden_lines": 0
+    }
+  }
+}
