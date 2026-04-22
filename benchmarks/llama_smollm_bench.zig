@@ -12,8 +12,13 @@ const zgml = @import("zgml");
 
 const CpuBackend = zgml.backend_cpu.CpuBackend;
 const WgpuBackend = zgml.backend_wgpu.WgpuBackend;
+const MetalBackend = zgml.backend_metal.MetalBackend;
+const DeviceInference = zgml.device_inference.DeviceInference;
 const Backend = zgml.backend.Backend;
+const Tensor = zgml.Tensor;
+const profile = zgml.profile;
 const have_wgpu = @import("zgml_options").use_wgpu;
+const is_macos = @import("builtin").os.tag == .macos;
 
 const config = zgml.models.LlamaConfig{
     .vocab_size = 49152,
@@ -120,6 +125,125 @@ fn runVariant(
     };
 }
 
+/// Run decode-only benchmark through DeviceInference (compiled GPU program).
+fn runDeviceVariant(
+    label: []const u8,
+    be: Backend,
+    cfg: BenchConfig,
+    writer: anytype,
+    io: std.Io,
+    alloc: std.mem.Allocator,
+) !BenchResult {
+    const d_model = config.d_model;
+    const d_head = d_model / config.n_heads;
+    const max_seq = config.max_seq_len;
+
+    // Build session without backend — graph captures all ops for device compilation.
+    var session = try Session.init(alloc);
+    defer session.deinit();
+    try loadWeights(&session, alloc, cfg.model_path, io);
+
+    // Build input tensor list: token_input, attn_mask, per-layer RoPE.
+    const n_inputs = 2 + config.n_layers;
+    const input_tensors = try alloc.alloc(*const Tensor(f32), n_inputs);
+    defer alloc.free(input_tensors);
+    input_tensors[0] = session.plan.token_input;
+    input_tensors[1] = session.plan.attn_mask;
+    for (session.plan.trace.layers, 0..) |lt, l| {
+        input_tensors[2 + l] = lt.rope;
+    }
+
+    // Logits host buffer.
+    const logits_buf = try alloc.alloc(f32, config.vocab_size);
+    defer alloc.free(logits_buf);
+
+    var device = try DeviceInference(f32).init(.{
+        .graph = &session.plan.graph,
+        .be = be,
+        .alloc = alloc,
+        .input_tensors = input_tensors,
+        .output_tensor = session.plan.trace.logits,
+        .output_host_buf = logits_buf.ptr,
+        .output_len = config.vocab_size,
+    });
+    defer device.deinit();
+
+    profile.printProfile(profile.profileProgram(device.getProgram()));
+
+    const rope = &session.model.blocks[0].rope;
+    const tok_data = session.model.token_embed.inner.data;
+
+    // Helper: execute one decode step through DeviceInference.
+    const StepCtx = struct {
+        fn doStep(
+            dev: *DeviceInference(f32),
+            plan_: *@TypeOf(session.plan),
+            tok_data_: []const f32,
+            rope_: anytype,
+            token_id: usize,
+            pos: usize,
+        ) void {
+            // 1. Patch token embedding.
+            @memcpy(plan_.token_input.data[0..d_model], tok_data_[token_id * d_model ..][0..d_model]);
+            // 2. Patch causal mask.
+            const mask = plan_.attn_mask.data[0..max_seq];
+            @memset(mask[0 .. pos + 1], 0);
+            if (pos + 1 < max_seq) @memset(mask[pos + 1 ..], -std.math.inf(f32));
+            // 3. Patch RoPE cos/sin for each layer.
+            for (plan_.trace.layers) |lt| {
+                @memcpy(lt.rope.data[0..d_head], rope_.cos_table.data[pos * d_head ..][0..d_head]);
+                @memcpy(lt.rope.data[d_head .. 2 * d_head], rope_.sin_table.data[pos * d_head ..][0..d_head]);
+            }
+            // 4. Patch KV-cache write offsets and attention seq_kv.
+            dev.patchSliceAssignOffset(@intCast(pos));
+            dev.patchAttentionSeqKV(@intCast(pos + 1));
+            // 5. Execute.
+            dev.execute();
+        }
+    };
+
+    // Warm up.
+    StepCtx.doStep(&device, &session.plan, tok_data, rope, 0, 0);
+    // Reset KV caches (zero shared memory).
+    for (0..config.n_layers) |l| {
+        @memset(session.k_caches[l].data, 0);
+        @memset(session.v_caches[l].data, 0);
+    }
+
+    // Benchmark decode only (prompt is trivially 1-token, focus on decode throughput).
+    var gen_total_ns: u128 = 0;
+    for (0..cfg.repetitions) |_| {
+        // Reset KV caches.
+        for (0..config.n_layers) |l| {
+            @memset(session.k_caches[l].data, 0);
+            @memset(session.v_caches[l].data, 0);
+        }
+
+        const gen_start = std.Io.Clock.awake.now(io).nanoseconds;
+        for (0..cfg.gen_tokens) |i| {
+            StepCtx.doStep(&device, &session.plan, tok_data, rope, (i + 1) % config.vocab_size, i);
+        }
+        const gen_end = std.Io.Clock.awake.now(io).nanoseconds;
+        gen_total_ns += @intCast(gen_end - gen_start);
+    }
+
+    const gen_ns = @as(f64, @floatFromInt(gen_total_ns));
+    const gen_tok_s = @as(f64, @floatFromInt(cfg.gen_tokens * cfg.repetitions)) / (gen_ns / 1_000_000_000.0);
+    const gen_avg_ms = gen_ns / @as(f64, @floatFromInt(cfg.repetitions)) / 1_000_000.0;
+
+    try writer.print(
+        "  {s}: prompt {s:>7} tok/s ({s:>6} ms avg)  decode {d:>7.1} tok/s ({d:>6.2} ms avg)\n",
+        .{ label, "  —  ", " —  ", gen_tok_s, gen_avg_ms },
+    );
+
+    if (device.getRuntimeProfile()) |rt| {
+        const est = profile.estimateProgram(device.program_ops);
+        profile.printRuntimeProfile(rt.*, est);
+    }
+
+    return .{ .prompt_tok_s = 0, .gen_tok_s = gen_tok_s, .prompt_avg_ms = 0, .gen_avg_ms = gen_avg_ms };
+}
+
 fn parseArgOrDefault(args: []const []const u8, idx: usize, default: usize) !usize {
     if (idx >= args.len) return default;
     return try std.fmt.parseInt(usize, args[idx], 10);
@@ -157,6 +281,17 @@ pub fn main(init: std.process.Init) !void {
     _ = try runVariant("cpu-backend i8   ", cpu_backend.backend(), true, false, cfg, &stdout.interface, io, alloc);
     _ = try runVariant("i8 + kv-i8       ", null, true, true, cfg, &stdout.interface, io, alloc);
     _ = try runVariant("kv-i8 only       ", null, false, true, cfg, &stdout.interface, io, alloc);
+
+    if (is_macos) metal: {
+        var metal_be = MetalBackend.init() catch |err| {
+            try stdout.interface.print("  metal init failed: {}\n", .{err});
+            break :metal;
+        };
+        defer metal_be.deinit();
+        _ = try runVariant("metal f32        ", metal_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
+        _ = try runVariant("metal int8       ", metal_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
+        _ = try runDeviceVariant("metal device f16 ", metal_be.backend(), cfg, &stdout.interface, io, alloc);
+    }
 
     if (have_wgpu) {
         var wgpu_be = WgpuBackend.init() catch |err| {

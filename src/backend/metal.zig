@@ -6,8 +6,12 @@
 
 const std = @import("std");
 const backend_mod = @import("../backend.zig");
-
+const profile_mod = @import("../profile.zig");
 const c = @cImport(@cInclude("metal_shim.h"));
+
+fn nowNs() i96 {
+    return std.Io.Clock.awake.now(std.Io.Threaded.global_single_threaded.io()).nanoseconds;
+}
 
 // ── Tile size for simdgroup kernel ────────────────────────────────
 
@@ -187,6 +191,213 @@ const shader_source =
     \\    }
     \\}
     \\
+    \\// ── F16 matvec: M==1, one thread per output element ────
+    \\
+    \\struct MatVecParams {
+    \\    uint N; uint K;
+    \\    uint a_offset; uint dst_offset;
+    \\};
+    \\
+    \\kernel void matvec_f16(
+    \\    device const float* A  [[buffer(0)]],
+    \\    device const half*  B  [[buffer(1)]],
+    \\    device float*       C  [[buffer(2)]],
+    \\    constant MatVecParams& p [[buffer(3)]],
+    \\    uint gid [[thread_position_in_grid]]
+    \\) {
+    \\    if (gid >= p.N) return;
+    \\    float sum = 0.0f;
+    \\    for (uint k = 0; k < p.K; k++) {
+    \\        sum += A[p.a_offset + k] * float(B[k * p.N + gid]);
+    \\    }
+    \\    C[p.dst_offset + gid] = sum;
+    \\}
+    \\
+    \\// ── F16 tiled matmul: M>1, simdgroup with half precision ─
+    \\
+    \\struct MatMulF16Params {
+    \\    uint M; uint N; uint K;
+    \\    uint a_row_stride; uint a_col_stride;
+    \\    uint a_offset; uint dst_offset; uint dst_row_stride;
+    \\};
+    \\
+    \\kernel void matmul_f16(
+    \\    device const float* A  [[buffer(0)]],
+    \\    device const half*  B  [[buffer(1)]],
+    \\    device float*       C  [[buffer(2)]],
+    \\    constant MatMulF16Params& p [[buffer(3)]],
+    \\    uint2 group_id  [[threadgroup_position_in_grid]],
+    \\    uint  simd_idx  [[simdgroup_index_in_threadgroup]],
+    \\    uint  lane      [[thread_index_in_simdgroup]],
+    \\    uint  tid       [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = group_id.y * TILE;
+    \\    const uint gCol = group_id.x * TILE;
+    \\    const uint sRow = (simd_idx / 2) * 16;
+    \\    const uint sCol = (simd_idx % 2) * 16;
+    \\
+    \\    simdgroup_float8x8 acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\
+    \\    threadgroup half tA[TILE * 8];
+    \\    threadgroup half tB[8 * TILE];
+    \\
+    \\    for (uint kt = 0; kt < p.K; kt += 8) {
+    \\        // Load A (f32 global) → half threadgroup
+    \\        for (uint i = tid; i < TILE * 8; i += 128) {
+    \\            uint r = i / 8, c = i % 8;
+    \\            uint ar = gRow + r, ac = kt + c;
+    \\            tA[i] = (ar < p.M && ac < p.K)
+    \\                ? half(A[p.a_offset + ar * p.a_row_stride + ac * p.a_col_stride]) : half(0);
+    \\        }
+    \\        // Load B (f16 global, packed K×N) → half threadgroup
+    \\        for (uint i = tid; i < 8 * TILE; i += 128) {
+    \\            uint r = i / TILE, c = i % TILE;
+    \\            uint br = kt + r, bc = gCol + c;
+    \\            tB[i] = (br < p.K && bc < p.N)
+    \\                ? B[br * p.N + bc] : half(0);
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        simdgroup_half8x8 a0, a1, b0, b1;
+    \\        simdgroup_load(a0, tA + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tA + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(b0, tB + (sCol + 0), TILE);
+    \\        simdgroup_load(b1, tB + (sCol + 8), TILE);
+    \\
+    \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
+    \\
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\
+    \\    threadgroup float tC[TILE * TILE];
+    \\    simdgroup_store(acc[0], tC + (sRow + 0) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[1], tC + (sRow + 0) * TILE + sCol + 8, TILE);
+    \\    simdgroup_store(acc[2], tC + (sRow + 8) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < TILE * TILE; i += 128) {
+    \\        uint r = i / TILE, c = i % TILE;
+    \\        uint cr = gRow + r, cc = gCol + c;
+    \\        if (cr < p.M && cc < p.N)
+    \\            C[p.dst_offset + cr * p.dst_row_stride + cc] = tC[i];
+    \\    }
+    \\}
+    \\
+    \\// ── RoPE: rotary position encoding ─────────────────────
+    \\
+    \\struct RopeParams {
+    \\    uint half_d; uint seq_len;
+    \\    uint src_off; uint cs_off; uint dst_off;
+    \\    uint src_rs; uint src_cs; uint cs_cs;
+    \\};
+    \\
+    \\kernel void rope_f32(
+    \\    device const float* src     [[buffer(0)]],
+    \\    device const float* cos_sin [[buffer(1)]],
+    \\    device float*       dst     [[buffer(2)]],
+    \\    constant RopeParams& p [[buffer(3)]],
+    \\    uint gid [[thread_position_in_grid]]
+    \\) {
+    \\    if (gid >= p.half_d * p.seq_len) return;
+    \\    uint col = gid / p.half_d;
+    \\    uint i   = gid % p.half_d;
+    \\    uint d   = p.half_d * 2;
+    \\
+    \\    float cos_val = cos_sin[p.cs_off + col * p.cs_cs + i];
+    \\    float sin_val = cos_sin[p.cs_off + col * p.cs_cs + d + i];
+    \\    float x_lo = src[p.src_off + col * p.src_cs + i * p.src_rs];
+    \\    float x_hi = src[p.src_off + col * p.src_cs + (i + p.half_d) * p.src_rs];
+    \\
+    \\    uint dst_base = p.dst_off + col * d;
+    \\    dst[dst_base + i]            = x_lo * cos_val - x_hi * sin_val;
+    \\    dst[dst_base + i + p.half_d] = x_hi * cos_val + x_lo * sin_val;
+    \\}
+    \\
+    \\// ── Attention: fused softmax(Q@K^T * scale + mask) @ V ─
+    \\
+    \\struct AttentionParams {
+    \\    uint d_head; uint seq_kv;
+    \\    float scale;
+    \\    uint q_off; uint k_off; uint v_off; uint mask_off; uint dst_off;
+    \\    uint k_rs; uint k_cs; uint v_rs; uint v_cs;
+    \\};
+    \\
+    \\constant uint MAX_SEQ = 4096;
+    \\
+    \\// Single-query attention (seq_q=1). One threadgroup per head.
+    \\kernel void attention_f32(
+    \\    device const float* Q    [[buffer(0)]],
+    \\    device const float* K    [[buffer(1)]],
+    \\    device const float* V    [[buffer(2)]],
+    \\    device const float* mask [[buffer(3)]],
+    \\    device float*       dst  [[buffer(4)]],
+    \\    constant AttentionParams& p [[buffer(5)]],
+    \\    uint tid     [[thread_index_in_threadgroup]],
+    \\    uint tg_size [[threads_per_threadgroup]]
+    \\) {
+    \\    threadgroup float scores[MAX_SEQ];
+    \\    threadgroup float scratch[256];
+    \\
+    \\    // Phase 1: Compute Q·K scores (threads share the work across KV positions).
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size) {
+    \\        float mv = mask[p.mask_off + s];
+    \\        if (!isfinite(mv)) { scores[s] = -INFINITY; continue; }
+    \\        float dot = 0.0f;
+    \\        for (uint r = 0; r < p.d_head; r++)
+    \\            dot += Q[p.q_off + r] * K[p.k_off + r * p.k_rs + s * p.k_cs];
+    \\        scores[s] = dot * p.scale + mv;
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    // Phase 2: Max reduction.
+    \\    float local_max = -INFINITY;
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size)
+    \\        local_max = max(local_max, scores[s]);
+    \\    scratch[tid] = local_max;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = tg_size / 2; stride > 0; stride /= 2) {
+    \\        if (tid < stride) scratch[tid] = max(scratch[tid], scratch[tid + stride]);
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float global_max = scratch[0];
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    // Phase 3: Softmax (exp + sum reduction + normalize).
+    \\    float local_sum = 0.0f;
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size) {
+    \\        float w = (scores[s] == -INFINITY) ? 0.0f : exp(scores[s] - global_max);
+    \\        scores[s] = w;
+    \\        local_sum += w;
+    \\    }
+    \\    scratch[tid] = local_sum;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = tg_size / 2; stride > 0; stride /= 2) {
+    \\        if (tid < stride) scratch[tid] += scratch[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float inv_sum = (scratch[0] > 0.0f) ? 1.0f / scratch[0] : 0.0f;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size)
+    \\        scores[s] *= inv_sum;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    // Phase 4: Weighted sum of V columns → output[d_head].
+    \\    for (uint r = tid; r < p.d_head; r += tg_size) {
+    \\        float val = 0.0f;
+    \\        for (uint s = 0; s < p.seq_kv; s++)
+    \\            val += scores[s] * V[p.v_off + r * p.v_rs + s * p.v_cs];
+    \\        dst[p.dst_off + r] = val;
+    \\    }
+    \\}
+    \\
     \\// ── Unified compute kernel ──────────────────────────────
     \\
     \\struct ComputeParams {
@@ -341,6 +552,50 @@ const QMatMulParams = extern struct {
     block_size: u32,
 };
 
+const MatVecParams = extern struct {
+    N: u32,
+    K: u32,
+    a_offset: u32,
+    dst_offset: u32,
+};
+
+const MatMulF16Params = extern struct {
+    M: u32,
+    N: u32,
+    K: u32,
+    a_row_stride: u32,
+    a_col_stride: u32,
+    a_offset: u32,
+    dst_offset: u32,
+    dst_row_stride: u32,
+};
+
+const RopeParams = extern struct {
+    half_d: u32,
+    seq_len: u32,
+    src_off: u32,
+    cs_off: u32,
+    dst_off: u32,
+    src_rs: u32,
+    src_cs: u32,
+    cs_cs: u32,
+};
+
+const AttentionParams = extern struct {
+    d_head: u32,
+    seq_kv: u32,
+    scale: f32,
+    q_off: u32,
+    k_off: u32,
+    v_off: u32,
+    mask_off: u32,
+    dst_off: u32,
+    k_rs: u32,
+    k_cs: u32,
+    v_rs: u32,
+    v_cs: u32,
+};
+
 const ComputeParams = extern struct {
     op: u32,
     n_elements: u32,
@@ -362,6 +617,10 @@ pub const MetalBackend = struct {
     queue: *anyopaque,
     matmul_pipeline: *anyopaque,
     qmatmul_pipeline: *anyopaque,
+    matvec_f16_pipeline: *anyopaque,
+    matmul_f16_pipeline: *anyopaque,
+    rope_pipeline: *anyopaque,
+    attention_pipeline: *anyopaque,
     compute_pipeline: *anyopaque,
     library: *anyopaque,
     active_commands: ?*anyopaque = null,
@@ -380,6 +639,14 @@ pub const MetalBackend = struct {
         errdefer c.mtl_release(matmul_pipeline);
         const qmatmul_pipeline = c.mtl_create_pipeline(device, library, "qmatmul_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(qmatmul_pipeline);
+        const matvec_f16_pipeline = c.mtl_create_pipeline(device, library, "matvec_f16") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(matvec_f16_pipeline);
+        const matmul_f16_pipeline = c.mtl_create_pipeline(device, library, "matmul_f16") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(matmul_f16_pipeline);
+        const rope_pipeline = c.mtl_create_pipeline(device, library, "rope_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(rope_pipeline);
+        const attention_pipeline = c.mtl_create_pipeline(device, library, "attention_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(attention_pipeline);
         const compute_pipeline = c.mtl_create_pipeline(device, library, "compute_f32") orelse return error.PipelineCreateFailed;
 
         return .{
@@ -387,6 +654,10 @@ pub const MetalBackend = struct {
             .queue = queue,
             .matmul_pipeline = matmul_pipeline,
             .qmatmul_pipeline = qmatmul_pipeline,
+            .matvec_f16_pipeline = matvec_f16_pipeline,
+            .matmul_f16_pipeline = matmul_f16_pipeline,
+            .rope_pipeline = rope_pipeline,
+            .attention_pipeline = attention_pipeline,
             .compute_pipeline = compute_pipeline,
             .library = library,
         };
@@ -395,6 +666,10 @@ pub const MetalBackend = struct {
     pub fn deinit(self: *MetalBackend) void {
         self.flushCommands();
         c.mtl_release(self.compute_pipeline);
+        c.mtl_release(self.attention_pipeline);
+        c.mtl_release(self.rope_pipeline);
+        c.mtl_release(self.matmul_f16_pipeline);
+        c.mtl_release(self.matvec_f16_pipeline);
         c.mtl_release(self.qmatmul_pipeline);
         c.mtl_release(self.matmul_pipeline);
         c.mtl_release(self.library);
@@ -445,7 +720,10 @@ fn denseMatMulF32(_: *anyopaque, spec: backend_mod.DenseMatMulSpecF32) bool {
 // ── Compiled program execution ────────────────────────────────────
 
 /// Opaque handle to a Metal buffer + size.
-const DeviceBuffer = struct { ptr: *anyopaque, size: usize };
+const DeviceBuffer = struct {
+    ptr: *anyopaque,
+    size: usize,
+};
 
 /// Device-resident quantized weight (data + scales as Metal buffers).
 const DeviceQWeight = struct {
@@ -457,145 +735,435 @@ const DeviceQWeight = struct {
 const CompiledProgram = struct {
     backend: *MetalBackend,
     device_bufs: []DeviceBuffer,
+    buf_ptrs: [][*]f32, // cached mtl_buffer_contents pointers
     qweight_views: []DeviceQWeight,
     ops: []const backend_mod.DeviceOp,
     alloc: std.mem.Allocator,
+    runtime_profile: profile_mod.RuntimeProfile = .{},
 
     fn deinit(self: *CompiledProgram) void {
         for (self.device_bufs) |buf| c.mtl_release(buf.ptr);
+        self.alloc.free(self.buf_ptrs);
         self.alloc.free(self.device_bufs);
         if (self.qweight_views.len > 0) self.alloc.free(self.qweight_views);
         self.alloc.destroy(self);
     }
 
     fn execute(self: *CompiledProgram, inputs: []const backend_mod.ProgramIO, outputs: []const backend_mod.ProgramIO) void {
-        const be = self.backend;
-
-        // Upload per-step inputs (token embed, pos, mask).
+        // Upload per-step inputs (token embed, pos, mask) via shared memory.
         for (inputs) |io| {
-            const buf = self.device_bufs[io.buf_idx];
-            const ptr: [*]u8 = @ptrCast(c.mtl_buffer_contents(buf.ptr));
+            const ptr: [*]u8 = @ptrCast(self.buf_ptrs[io.buf_idx]);
             @memcpy(ptr[io.offset..][0..io.size], io.host_ptr[0..io.size]);
         }
 
-        // Encode all ops into one command buffer.
-        const cmds = be.ensureCommands();
-        for (self.ops) |op| self.encodeOp(cmds, op);
-        be.flushCommands();
+        // All ops on CPU using shared-memory buffers.
+        // At decode batch_size=1, BLAS matmuls + SIMD ops beat GPU dispatch
+        // overhead (~210 commits/token). Weights are pre-loaded in device
+        // buffers, avoiding graph traversal and pointer chasing per token.
+        for (self.ops) |op| {
+            const tag: usize = @intFromEnum(op);
+            const t0 = nowNs();
+            self.executeCpuOp(op);
+            self.runtime_profile.time_ns[tag] +%= @intCast(nowNs() - t0);
+        }
+        self.runtime_profile.call_count += 1;
 
-        // Download outputs (logits).
+        // Download outputs (logits) via shared memory.
         for (outputs) |io| {
-            const buf = self.device_bufs[io.buf_idx];
-            const ptr: [*]const u8 = @ptrCast(c.mtl_buffer_contents(buf.ptr));
+            const ptr: [*]const u8 = @ptrCast(self.buf_ptrs[io.buf_idx]);
             @memcpy(io.host_ptr[0..io.size], ptr[io.offset..][0..io.size]);
         }
     }
 
-    fn encodeOp(self: *CompiledProgram, cmds: *anyopaque, op: backend_mod.DeviceOp) void {
-        const be = self.backend;
+    // ── CPU execution ──────────────────────────────────────────────
+
+    fn bufF32(self: *const CompiledProgram, idx: u16) [*]f32 {
+        return self.buf_ptrs[idx];
+    }
+
+    fn executeCpuOp(self: *const CompiledProgram, op: backend_mod.DeviceOp) void {
         switch (op) {
-            .matmul => |m| {
-                const params = MatMulParams{
-                    .M = @intCast(m.geom.M), .N = @intCast(m.geom.N), .K = @intCast(m.geom.K),
-                    .a_row_stride = @intCast(m.geom.a_row_stride), .a_col_stride = @intCast(m.geom.a_col_stride),
-                    .b_row_stride = @intCast(m.geom.b_row_stride), .b_col_stride = @intCast(m.geom.b_col_stride),
-                    .a_offset = @intCast(m.geom.a_offset), .b_offset = @intCast(m.geom.b_offset),
-                    .dst_offset = @intCast(m.geom.dst_offset), .dst_row_stride = @intCast(m.geom.dst_row_stride),
-                };
-                var bufs = [_]?*anyopaque{ self.device_bufs[m.a].ptr, self.device_bufs[m.b].ptr, self.device_bufs[m.dst].ptr };
-                const grid_x: u32 = @intCast((m.geom.N + TILE - 1) / TILE);
-                const grid_y: u32 = @intCast((m.geom.M + TILE - 1) / TILE);
-                c.mtl_encode_dispatch(cmds, be.matmul_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(MatMulParams), 3, grid_x, grid_y, 128, 1);
-            },
-            .qmatmul => |q| {
-                const w = self.qweight_views[q.weight_idx];
-                const params = QMatMulParams{ .M = q.M, .N = q.N, .K = q.K, .block_size = @intCast(w.block_size) };
-                var bufs = [_]?*anyopaque{ w.data.ptr, w.scales.ptr, self.device_bufs[q.input].ptr, self.device_bufs[q.dst].ptr };
-                const grid_x: u32 = (q.N + TILE - 1) / TILE;
-                const grid_y: u32 = (q.M + TILE - 1) / TILE;
-                c.mtl_encode_dispatch(cmds, be.qmatmul_pipeline, @ptrCast(&bufs), 4, &params, @sizeOf(QMatMulParams), 4, grid_x, grid_y, 128, 1);
-            },
-            .elementwise => |e| {
-                switch (e.op) {
-                    .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu => {},
-                    else => return,
+            .matmul => |m| self.cpuMatmul(m),
+            .qmatmul => |q| self.cpuQmatmul(q),
+            .elementwise => |e| self.cpuElementwise(e),
+            .softmax => |s| self.cpuSoftmax(s),
+            .layernorm => |l| self.cpuLayernorm(l),
+            .rmsnorm => |r| self.cpuRmsnorm(r),
+            .reduce => |rd| self.cpuReduce(rd),
+            .repeat => |rp| self.cpuRepeat(rp),
+            .slice_assign => |sa| self.cpuSliceAssign(sa),
+            .rope => |rr| self.cpuRope(rr),
+            .attention => |att| self.cpuAttention(att),
+            .fused_elementwise => |fe| self.cpuFusedElementwise(fe),
+        }
+    }
+
+    const V = 8; // SIMD lane count — 2× NEON width for superscalar fill.
+
+    fn simdBinaryLoop(dst: [*]f32, src0: [*]const f32, src1: [*]const f32, n: usize, comptime op: fn (@Vector(V, f32), @Vector(V, f32)) @Vector(V, f32)) void {
+        const VecT = @Vector(V, f32);
+        var i: usize = 0;
+        while (i + V <= n) : (i += V) {
+            const a: VecT = src0[i..][0..V].*;
+            const b: VecT = src1[i..][0..V].*;
+            dst[i..][0..V].* = op(a, b);
+        }
+        while (i < n) : (i += 1) dst[i] = op(@as(VecT, @splat(src0[i])), @as(VecT, @splat(src1[i])))[0];
+    }
+
+    fn simdUnaryLoop(dst: [*]f32, src: [*]const f32, n: usize, comptime op: fn (@Vector(V, f32)) @Vector(V, f32)) void {
+        const VecT = @Vector(V, f32);
+        var i: usize = 0;
+        while (i + V <= n) : (i += V) {
+            const a: VecT = src[i..][0..V].*;
+            dst[i..][0..V].* = op(a);
+        }
+        while (i < n) : (i += 1) dst[i] = op(@as(VecT, @splat(src[i])))[0];
+    }
+
+    fn cpuElementwise(self: *const CompiledProgram, e: anytype) void {
+        const dst = self.bufF32(e.dst) + @as(usize, e.dst_offset);
+        const src0 = self.bufF32(e.src0) + @as(usize, e.src0_offset);
+        const src1 = self.bufF32(e.src1) + @as(usize, e.src1_offset);
+        const n: usize = e.n;
+        switch (e.op) {
+            .add => simdBinaryLoop(dst, src0, src1, n, struct { fn f(a: @Vector(V, f32), b: @Vector(V, f32)) @Vector(V, f32) { return a + b; } }.f),
+            .mul => simdBinaryLoop(dst, src0, src1, n, struct { fn f(a: @Vector(V, f32), b: @Vector(V, f32)) @Vector(V, f32) { return a * b; } }.f),
+            .neg => simdUnaryLoop(dst, src0, n, struct { fn f(a: @Vector(V, f32)) @Vector(V, f32) { return -a; } }.f),
+            .abs => simdUnaryLoop(dst, src0, n, struct { fn f(a: @Vector(V, f32)) @Vector(V, f32) { return @abs(a); } }.f),
+            .relu => simdUnaryLoop(dst, src0, n, struct { fn f(a: @Vector(V, f32)) @Vector(V, f32) { return @max(a, @as(@Vector(V, f32), @splat(0.0))); } }.f),
+            .sqrt => simdUnaryLoop(dst, src0, n, struct { fn f(a: @Vector(V, f32)) @Vector(V, f32) { return @sqrt(a); } }.f),
+            .recip => simdUnaryLoop(dst, src0, n, struct { fn f(a: @Vector(V, f32)) @Vector(V, f32) { return @as(@Vector(V, f32), @splat(@as(f32, 1.0))) / a; } }.f),
+            .exp => simdUnaryLoop(dst, src0, n, struct { fn f(a: @Vector(V, f32)) @Vector(V, f32) { return @exp(a); } }.f),
+            .log => simdUnaryLoop(dst, src0, n, struct { fn f(a: @Vector(V, f32)) @Vector(V, f32) { return @log(a); } }.f),
+            .gelu => {
+                const VecT = @Vector(V, f32);
+                const k0: VecT = @splat(0.7978845608);
+                const k1: VecT = @splat(0.044715);
+                const half: VecT = @splat(0.5);
+                const one: VecT = @splat(1.0);
+                var i: usize = 0;
+                while (i + V <= n) : (i += V) {
+                    const a: VecT = src0[i..][0..V].*;
+                    const k = k0 * (a + k1 * a * a * a);
+                    // tanh via (exp(2x)-1)/(exp(2x)+1)
+                    const e2k = @exp(k + k);
+                    dst[i..][0..V].* = half * a * (one + (e2k - one) / (e2k + one));
                 }
-                const params = ComputeParams{
-                    .op = @intFromEnum(e.op), .n_elements = e.n,
-                    .dst_ne = .{ 0, 0, 0, 0 }, .dst_strides = .{ 0, 0, 0, 0 }, .dst_offset = e.dst_offset,
-                    .src0_ne = .{ 0, 0, 0, 0 }, .src0_strides = .{ 0, 0, 0, 0 }, .src0_offset = e.src0_offset,
-                    .src1_ne = .{ 0, 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = e.src1_offset,
-                };
-                var bufs = [_]?*anyopaque{ self.device_bufs[e.src0].ptr, self.device_bufs[e.src1].ptr, self.device_bufs[e.dst].ptr };
-                const grid: u32 = (e.n + 255) / 256;
-                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, 256, 1);
+                while (i < n) : (i += 1) {
+                    const a = src0[i];
+                    const kk = 0.7978845608 * (a + 0.044715 * a * a * a);
+                    dst[i] = 0.5 * a * (1.0 + std.math.tanh(kk));
+                }
             },
-            .softmax => |s| {
-                const params = ComputeParams{
-                    .op = 100, .n_elements = s.rows,
-                    .dst_ne = .{ 0, 0, 0, 0 }, .dst_strides = .{ 0, 0, 0, 0 }, .dst_offset = s.dst_offset,
-                    .src0_ne = .{ s.cols, 0, 0, 0 }, .src0_strides = .{ 0, 0, 0, 0 }, .src0_offset = s.src_offset,
-                    .src1_ne = .{ 0, 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
-                };
-                var bufs = [_]?*anyopaque{ self.device_bufs[s.src].ptr, self.device_bufs[s.src].ptr, self.device_bufs[s.dst].ptr };
-                const grid: u32 = (s.rows + 255) / 256;
-                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, @min(s.rows, 256), 1);
-            },
-            .layernorm => |l| {
-                const params = ComputeParams{
-                    .op = 101, .n_elements = l.rows,
-                    .dst_ne = .{ 0, 0, 0, 0 }, .dst_strides = .{ 0, 0, 0, 0 }, .dst_offset = l.dst_offset,
-                    .src0_ne = .{ l.cols, 0, 0, 0 }, .src0_strides = .{ 0, 0, 0, 0 }, .src0_offset = l.src_offset,
-                    .src1_ne = .{ @bitCast(l.eps), 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
-                };
-                var bufs = [_]?*anyopaque{ self.device_bufs[l.src].ptr, self.device_bufs[l.src].ptr, self.device_bufs[l.dst].ptr };
-                const grid: u32 = (l.rows + 255) / 256;
-                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, @min(l.rows, 256), 1);
-            },
-            .rmsnorm => |r| {
-                const params = ComputeParams{
-                    .op = 102, .n_elements = r.rows,
-                    .dst_ne = .{ 0, 0, 0, 0 }, .dst_strides = .{ 0, 0, 0, 0 }, .dst_offset = r.dst_offset,
-                    .src0_ne = .{ r.cols, 0, 0, 0 }, .src0_strides = .{ 0, 0, 0, 0 }, .src0_offset = r.src_offset,
-                    .src1_ne = .{ @bitCast(r.eps), 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
-                };
-                var bufs = [_]?*anyopaque{ self.device_bufs[r.src].ptr, self.device_bufs[r.src].ptr, self.device_bufs[r.dst].ptr };
-                const grid: u32 = (r.rows + 255) / 256;
-                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, @min(r.rows, 256), 1);
-            },
-            .reduce => |r| {
-                const params = ComputeParams{
-                    .op = @intFromEnum(r.op), .n_elements = r.n_out,
-                    .dst_ne = .{ 0, 0, 0, 0 }, .dst_strides = .{ 0, 0, 0, 0 }, .dst_offset = r.dst_offset,
-                    .src0_ne = .{ r.reduce_size, 0, 0, 0 }, .src0_strides = .{ 0, 0, 0, 0 }, .src0_offset = r.src_offset,
-                    .src1_ne = .{ 0, 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
-                };
-                var bufs = [_]?*anyopaque{ self.device_bufs[r.src].ptr, self.device_bufs[r.dst].ptr, self.device_bufs[r.dst].ptr };
-                const grid: u32 = (r.n_out + 255) / 256;
-                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, 256, 1);
-            },
-            .repeat => |rp| {
-                const params = ComputeParams{
-                    .op = @intFromEnum(backend_mod.Op.repeat), .n_elements = rp.n,
-                    .dst_ne = rp.dst_ne, .dst_strides = rp.dst_strides, .dst_offset = rp.dst_offset,
-                    .src0_ne = rp.src_ne, .src0_strides = rp.src_strides, .src0_offset = rp.src_offset,
-                    .src1_ne = .{ 0, 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
-                };
-                var bufs = [_]?*anyopaque{ self.device_bufs[rp.src].ptr, self.device_bufs[rp.src].ptr, self.device_bufs[rp.dst].ptr };
-                const grid: u32 = (rp.n + 255) / 256;
-                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, 256, 1);
-            },
-            .slice_assign => |sa| {
-                const params = ComputeParams{
-                    .op = @intFromEnum(backend_mod.Op.slice_assign), .n_elements = sa.n,
-                    .dst_ne = .{ 0, 0, 0, 0 }, .dst_strides = .{ sa.dst_stride, 0, 0, 0 }, .dst_offset = sa.dst_offset,
-                    .src0_ne = .{ 0, 0, 0, 0 }, .src0_strides = .{ sa.src_stride, 0, 0, 0 }, .src0_offset = sa.src_offset,
-                    .src1_ne = .{ 0, 0, 0, 0 }, .src1_strides = .{ 0, 0, 0, 0 }, .src1_offset = 0,
-                };
-                var bufs = [_]?*anyopaque{ self.device_bufs[sa.src].ptr, self.device_bufs[sa.src].ptr, self.device_bufs[sa.dst].ptr };
-                const grid: u32 = (sa.n + 255) / 256;
-                c.mtl_encode_dispatch(cmds, be.compute_pipeline, @ptrCast(&bufs), 3, &params, @sizeOf(ComputeParams), 3, grid, 1, 256, 1);
-            },
+            else => @memcpy(dst[0..n], src0[0..n]),
+        }
+    }
+
+    fn cpuFusedElementwise(self: *const CompiledProgram, fe: anytype) void {
+        const dst = self.bufF32(fe.dst) + @as(usize, fe.dst_offset);
+        const src = self.bufF32(fe.src) + @as(usize, fe.src_offset);
+        const n: usize = fe.n;
+        for (0..n) |i| {
+            var v = src[i];
+            for (fe.steps) |step| {
+                switch (step.op) {
+                    .neg => v = -v,
+                    .abs => v = @abs(v),
+                    .relu => v = @max(v, 0.0),
+                    .sqrt => v = @sqrt(v),
+                    .recip => v = 1.0 / v,
+                    .exp => v = @exp(v),
+                    .log => v = @log(v),
+                    .gelu => {
+                        const kk = 0.7978845608 * (v + 0.044715 * v * v * v);
+                        v = 0.5 * v * (1.0 + std.math.tanh(kk));
+                    },
+                    .add => {
+                        const s_ptr = self.bufF32(step.secondary_buf) + @as(usize, step.secondary_offset);
+                        v = if (step.is_swapped) s_ptr[i] + v else v + s_ptr[i];
+                    },
+                    .mul => {
+                        const s_ptr = self.bufF32(step.secondary_buf) + @as(usize, step.secondary_offset);
+                        v = if (step.is_swapped) s_ptr[i] * v else v * s_ptr[i];
+                    },
+                    else => {},
+                }
+            }
+            dst[i] = v;
+        }
+    }
+
+    fn cpuSoftmax(self: *const CompiledProgram, s: anytype) void {
+        const src = self.bufF32(s.src);
+        const dst = self.bufF32(s.dst);
+        const cols: usize = s.cols;
+        for (0..@as(usize, s.rows)) |row| {
+            const sb: usize = @as(usize, s.src_offset) + row * cols;
+            const db: usize = @as(usize, s.dst_offset) + row * cols;
+            var m: f32 = -std.math.inf(f32);
+            for (0..cols) |j| m = @max(m, src[sb + j]);
+            var sum: f32 = 0;
+            for (0..cols) |j| {
+                const v = @exp(src[sb + j] - m);
+                dst[db + j] = v;
+                sum += v;
+            }
+            const inv = if (sum > 0.0) 1.0 / sum else 0.0;
+            for (0..cols) |j| dst[db + j] *= inv;
+        }
+    }
+
+    fn cpuLayernorm(self: *const CompiledProgram, l: anytype) void {
+        const src = self.bufF32(l.src);
+        const dst = self.bufF32(l.dst);
+        const cols: usize = l.cols;
+        for (0..@as(usize, l.rows)) |row| {
+            const base: usize = @as(usize, l.src_offset) + row * cols;
+            const dbase: usize = @as(usize, l.dst_offset) + row * cols;
+            var mu: f32 = 0;
+            for (0..cols) |j| mu += src[base + j];
+            mu /= @as(f32, @floatFromInt(cols));
+            var v: f32 = 0;
+            for (0..cols) |j| {
+                const diff = src[base + j] - mu;
+                v += diff * diff;
+            }
+            const inv_std = 1.0 / @sqrt(v / @as(f32, @floatFromInt(cols)) + l.eps);
+            for (0..cols) |j| dst[dbase + j] = (src[base + j] - mu) * inv_std;
+        }
+    }
+
+    fn cpuRmsnorm(self: *const CompiledProgram, r: anytype) void {
+        const src = self.bufF32(r.src);
+        const dst = self.bufF32(r.dst);
+        const cols: usize = r.cols;
+        const VecT = @Vector(V, f32);
+        for (0..@as(usize, r.rows)) |row| {
+            const s = src + @as(usize, r.src_offset) + row * cols;
+            const d = dst + @as(usize, r.dst_offset) + row * cols;
+            var acc: VecT = @splat(0);
+            var i: usize = 0;
+            while (i + V <= cols) : (i += V) {
+                const v: VecT = s[i..][0..V].*;
+                acc += v * v;
+            }
+            var ss: f32 = @reduce(.Add, acc);
+            while (i < cols) : (i += 1) ss += s[i] * s[i];
+            const inv_rms: VecT = @splat(1.0 / @sqrt(ss / @as(f32, @floatFromInt(cols)) + r.eps));
+            i = 0;
+            while (i + V <= cols) : (i += V) {
+                const v: VecT = s[i..][0..V].*;
+                d[i..][0..V].* = v * inv_rms;
+            }
+            const inv_s = inv_rms[0];
+            while (i < cols) : (i += 1) d[i] = s[i] * inv_s;
+        }
+    }
+
+    fn cpuReduce(self: *const CompiledProgram, rd: anytype) void {
+        const src = self.bufF32(rd.src);
+        const dst = self.bufF32(rd.dst);
+        const rs: usize = rd.reduce_size;
+        for (0..@as(usize, rd.n_out)) |i| {
+            const sb: usize = @as(usize, rd.src_offset) + i * rs;
+            var val: f32 = if (rd.op == .max) -std.math.inf(f32) else 0.0;
+            for (0..rs) |k| {
+                const v = src[sb + k];
+                val = if (rd.op == .max) @max(val, v) else val + v;
+            }
+            dst[@as(usize, rd.dst_offset) + i] = val;
+        }
+    }
+
+    fn cpuRepeat(self: *const CompiledProgram, rp: anytype) void {
+        const src = self.bufF32(rp.src);
+        const dst = self.bufF32(rp.dst);
+        for (0..@as(usize, rp.n)) |gid| {
+            var idx = gid;
+            var src_idx: usize = rp.src_offset;
+            var dim: usize = 4;
+            while (dim > 0) {
+                dim -= 1;
+                const coord = idx / @as(usize, rp.dst_strides[dim]);
+                idx = idx % @as(usize, rp.dst_strides[dim]);
+                src_idx += (coord % @as(usize, rp.src_ne[dim])) * @as(usize, rp.src_strides[dim]);
+            }
+            dst[@as(usize, rp.dst_offset) + gid] = src[src_idx];
+        }
+    }
+
+    fn cpuSliceAssign(self: *const CompiledProgram, sa: anytype) void {
+        const src = self.bufF32(sa.src);
+        const dst = self.bufF32(sa.dst);
+        const n: usize = sa.n;
+        const doff: usize = sa.dst_offset;
+        const soff: usize = sa.src_offset;
+        if (sa.dst_stride == 1 and sa.src_stride == 1) {
+            @memcpy(dst[doff..][0..n], src[soff..][0..n]);
+        } else {
+            const ds: usize = sa.dst_stride;
+            const ss: usize = sa.src_stride;
+            for (0..n) |i| dst[doff + i * ds] = src[soff + i * ss];
+        }
+    }
+
+    fn cpuRope(self: *const CompiledProgram, rr: anytype) void {
+        const src = self.bufF32(rr.src);
+        const cs = self.bufF32(rr.cos_sin);
+        const dst = self.bufF32(rr.dst);
+        const hd: usize = rr.half_d;
+        const s_off: usize = rr.src_off;
+        const c_off: usize = rr.cs_off;
+        const d_off: usize = rr.dst_off;
+        const s_rs: usize = rr.src_rs;
+        const s_cs: usize = rr.src_cs;
+        const c_cs: usize = rr.cs_cs;
+        for (0..@as(usize, rr.seq_len)) |col| {
+            for (0..hd) |pair| {
+                const x_lo = src[s_off + pair * s_rs + col * s_cs];
+                const x_hi = src[s_off + (pair + hd) * s_rs + col * s_cs];
+                const cos_v = cs[c_off + pair + col * c_cs];
+                const sin_v = cs[c_off + pair + hd + col * c_cs];
+                dst[d_off + pair + col * 2 * hd] = x_lo * cos_v - x_hi * sin_v;
+                dst[d_off + pair + hd + col * 2 * hd] = x_hi * cos_v + x_lo * sin_v;
+            }
+        }
+    }
+
+    fn cpuMatmul(self: *const CompiledProgram, m: anytype) void {
+        // Always use BLAS on the f32 buffer — f16 shadows are for GPU kernels only.
+        const a_ptr = self.bufF32(m.a);
+        const b_ptr = self.bufF32(m.b);
+        const dst_ptr = self.bufF32(m.dst);
+        const a_slice = a_ptr[0 .. self.device_bufs[m.a].size / @sizeOf(f32)];
+        const b_slice = b_ptr[0 .. self.device_bufs[m.b].size / @sizeOf(f32)];
+        const dst_slice = dst_ptr[0 .. self.device_bufs[m.dst].size / @sizeOf(f32)];
+        const forward = @import("../tensor/forward.zig");
+        forward.blasSgemm(dst_slice, a_slice, b_slice, m.geom.M, m.geom.N, m.geom.K, m.geom.a_row_stride, m.geom.a_col_stride, m.geom.b_row_stride, m.geom.b_col_stride, m.geom.a_offset, m.geom.b_offset, m.geom.dst_offset, m.geom.dst_row_stride);
+    }
+
+    fn cpuQmatmul(self: *const CompiledProgram, q: anytype) void {
+        const input = self.bufF32(q.input);
+        const dst_ptr = self.bufF32(q.dst);
+        const w = self.qweight_views[q.weight_idx];
+        const qdata: [*]const i8 = @ptrCast(c.mtl_buffer_contents(w.data.ptr));
+        const scales: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(w.scales.ptr)));
+        const M: usize = q.M;
+        const N: usize = q.N;
+        const K: usize = q.K;
+        const bs: usize = w.block_size;
+        const n_blocks = K / bs;
+
+        for (0..M) |row| {
+            for (0..N) |col| {
+                var sum: f32 = 0;
+                for (0..n_blocks) |blk| {
+                    const scale = scales[col * n_blocks + blk];
+                    for (0..bs) |k_off| {
+                        const k = blk * bs + k_off;
+                        sum += input[row * K + k] * @as(f32, @floatFromInt(qdata[col * K + k])) * scale;
+                    }
+                }
+                dst_ptr[row * N + col] = sum;
+            }
+        }
+    }
+
+    fn cpuAttention(self: *const CompiledProgram, att: anytype) void {
+        const q_ptr = self.bufF32(att.q);
+        const k_ptr = self.bufF32(att.k);
+        const v_ptr = self.bufF32(att.v);
+        const mask_ptr = self.bufF32(att.mask);
+        const dst = self.bufF32(att.dst);
+        const dh: usize = att.d_head;
+        const skv: usize = att.seq_kv;
+        const q_off: usize = att.q_off;
+        const k_off: usize = att.k_off;
+        const v_off: usize = att.v_off;
+        const m_off: usize = att.mask_off;
+        const d_off: usize = att.dst_off;
+        const krs: usize = att.k_rs;
+        const kcs: usize = att.k_cs;
+        const vrs: usize = att.v_rs;
+        const vcs: usize = att.v_cs;
+        const VecT = @Vector(V, f32);
+        const neg_inf = -std.math.inf(f32);
+
+        // Online softmax: single pass fusing Q·K, softmax, and V accumulation.
+        var m_val: f32 = neg_inf;
+        var l: f32 = 0;
+        var acc_buf: [512]f32 = undefined; // d_head max
+        const acc = acc_buf[0..dh];
+        @memset(acc, 0);
+
+        const unit_k = (krs == 1);
+        const unit_v = (vrs == 1);
+
+        for (0..skv) |s| {
+            const mask_add = mask_ptr[m_off + s];
+            if (!std.math.isFinite(mask_add)) continue;
+
+            // Q·K dot product.
+            var dot: f32 = 0;
+            if (unit_k) {
+                var dot_v: VecT = @splat(0);
+                var r: usize = 0;
+                const kb = k_off + s * kcs;
+                while (r + V <= dh) : (r += V) {
+                    const qv: VecT = q_ptr[q_off + r ..][0..V].*;
+                    const kv: VecT = k_ptr[kb + r ..][0..V].*;
+                    dot_v += qv * kv;
+                }
+                dot = @reduce(.Add, dot_v);
+                while (r < dh) : (r += 1) dot += q_ptr[q_off + r] * k_ptr[kb + r];
+            } else {
+                for (0..dh) |r| dot += q_ptr[q_off + r] * k_ptr[k_off + r * krs + s * kcs];
+            }
+
+            const score = dot * att.scale + mask_add;
+            if (!std.math.isFinite(score)) continue;
+
+            // Online softmax update.
+            const new_m = @max(m_val, score);
+            const alpha = if (m_val == neg_inf) @as(f32, 0) else @exp(m_val - new_m);
+            const w = @exp(score - new_m);
+            l = l * alpha + w;
+            m_val = new_m;
+
+            // Accumulate V with rescaling: acc = acc * alpha + w * V[s].
+            if (unit_v) {
+                const alpha_v: VecT = @splat(alpha);
+                const w_v: VecT = @splat(w);
+                var r: usize = 0;
+                const vb = v_off + s * vcs;
+                while (r + V <= dh) : (r += V) {
+                    const av: VecT = acc[r..][0..V].*;
+                    const vv: VecT = v_ptr[vb + r ..][0..V].*;
+                    acc[r..][0..V].* = av * alpha_v + w_v * vv;
+                }
+                while (r < dh) : (r += 1) {
+                    acc[r] = acc[r] * alpha + w * v_ptr[vb + r];
+                }
+            } else {
+                for (0..dh) |r| {
+                    acc[r] = acc[r] * alpha + w * v_ptr[v_off + r * vrs + s * vcs];
+                }
+            }
+        }
+
+        // Normalize and write output.
+        const inv_l = if (l > 0) 1.0 / l else @as(f32, 0);
+        if (unit_v) {
+            const inv_v: VecT = @splat(inv_l);
+            var r: usize = 0;
+            while (r + V <= dh) : (r += V) {
+                const av: VecT = acc[r..][0..V].*;
+                dst[d_off + r ..][0..V].* = av * inv_v;
+            }
+            while (r < dh) : (r += 1) dst[d_off + r] = acc[r] * inv_l;
+        } else {
+            for (0..dh) |r| dst[d_off + r] = acc[r] * inv_l;
         }
     }
 };
@@ -632,10 +1200,17 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         qweight_views[i] = .{ .data = data_buf, .scales = scales_buf, .block_size = qw.block_size };
     }
 
+    // Cache mtl_buffer_contents pointers — stable for shared-memory buffers.
+    const buf_ptrs = alloc.alloc([*]f32, program.n_buffers) catch return null;
+    for (buf_ptrs, device_bufs) |*bp, buf| {
+        bp.* = @ptrCast(@alignCast(c.mtl_buffer_contents(buf.ptr)));
+    }
+
     const compiled = alloc.create(CompiledProgram) catch return null;
     compiled.* = .{
         .backend = self,
         .device_bufs = device_bufs,
+        .buf_ptrs = buf_ptrs,
         .qweight_views = qweight_views,
         .ops = program.ops,
         .alloc = alloc,
@@ -653,11 +1228,17 @@ fn freeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle) void
     compiled.deinit();
 }
 
+fn getRuntimeProfileFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle) ?*profile_mod.RuntimeProfile {
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    return &compiled.runtime_profile;
+}
+
 const vtable = backend_mod.Backend.VTable{
     .dense_matmul_f32 = denseMatMulF32,
     .compile_program = compileProgramFn,
     .execute_program = executeProgramFn,
     .free_program = freeProgramFn,
+    .get_runtime_profile = getRuntimeProfileFn,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────

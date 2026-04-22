@@ -360,10 +360,8 @@ fn denseMatMulF32(ctx: *anyopaque, spec: backend_mod.DenseMatMulSpecF32) bool {
     c.wgpuQueueSubmit(self.queue, 1, &cmds);
     c.wgpuCommandBufferRelease(cmd_buf);
 
-    // Block until GPU is done.
-    _ = c.wgpuDevicePoll(self.device, @intFromBool(true), null);
-
-    // Map staging buffer and copy result to dst.
+    // Map staging buffer; the poll loop waits for both GPU completion
+    // and the map in a single sync point (avoids two separate blocking waits).
     var state = MapState{};
     _ = c.wgpuBufferMapAsync(self.scratch_staging, c.WGPUMapMode_Read, 0, c_size, .{
         .mode = c.WGPUCallbackMode_AllowSpontaneous,
@@ -490,30 +488,28 @@ const CompiledProgram = struct {
         c.wgpuQueueSubmit(be.queue, 1, &cmds);
         c.wgpuCommandBufferRelease(cmd_buf);
 
-        // Block until GPU is done.
-        _ = c.wgpuDevicePoll(be.device, @intFromBool(true), null);
+        if (staging_used == 0) return; // No readback — queue serializes next submit.
 
-        // Map staging buffer and copy all outputs to host.
-        if (staging_used > 0) {
-            var state = MapState{};
-            _ = c.wgpuBufferMapAsync(self.staging_buf, c.WGPUMapMode_Read, 0, staging_used, .{
-                .mode = c.WGPUCallbackMode_AllowSpontaneous,
-                .callback = onMapComplete,
-                .userdata1 = @ptrCast(&state),
-            });
-            while (!state.done) {
-                _ = c.wgpuDevicePoll(be.device, @intFromBool(true), null);
-            }
-            if (state.status == c.WGPUMapAsyncStatus_Success) {
-                const mapped: [*]const u8 = @ptrCast(c.wgpuBufferGetConstMappedRange(self.staging_buf, 0, staging_used));
-                var read_offset: usize = 0;
-                for (outputs) |io| {
-                    @memcpy(io.host_ptr[0..io.size], mapped[read_offset..][0..io.size]);
-                    read_offset += std.mem.alignForward(usize, io.size, 4);
-                }
-            }
-            c.wgpuBufferUnmap(self.staging_buf);
+        // Map staging buffer; the poll loop waits for both GPU completion
+        // and the map in a single sync point (avoids two separate blocking waits).
+        var state = MapState{};
+        _ = c.wgpuBufferMapAsync(self.staging_buf, c.WGPUMapMode_Read, 0, staging_used, .{
+            .mode = c.WGPUCallbackMode_AllowSpontaneous,
+            .callback = onMapComplete,
+            .userdata1 = @ptrCast(&state),
+        });
+        while (!state.done) {
+            _ = c.wgpuDevicePoll(be.device, @intFromBool(true), null);
         }
+        if (state.status == c.WGPUMapAsyncStatus_Success) {
+            const mapped: [*]const u8 = @ptrCast(c.wgpuBufferGetConstMappedRange(self.staging_buf, 0, staging_used));
+            var read_offset: usize = 0;
+            for (outputs) |io| {
+                @memcpy(io.host_ptr[0..io.size], mapped[read_offset..][0..io.size]);
+                read_offset += std.mem.alignForward(usize, io.size, 4);
+            }
+        }
+        c.wgpuBufferUnmap(self.staging_buf);
     }
 };
 
@@ -749,6 +745,9 @@ fn buildDispatch(
             p.src0_offset = sa.src_offset;
             return computeDispatch(be, bufs, p, sa.src, sa.src, sa.dst, (sa.n + WG_SIZE - 1) / WG_SIZE);
         },
+        .rope, .attention => return null,
+        // Fused/batched ops: fall back to individual dispatches or skip.
+        .fused_elementwise => return null,
     }
 }
 
@@ -886,11 +885,16 @@ fn freeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle) void
     compiled.deinit();
 }
 
+fn getRuntimeProfileFn(_: *anyopaque, _: backend_mod.Backend.CompiledHandle) ?*@import("../profile.zig").RuntimeProfile {
+    return null;
+}
+
 const vtable = backend_mod.Backend.VTable{
     .dense_matmul_f32 = denseMatMulF32,
     .compile_program = compileProgramFn,
     .execute_program = executeProgramFn,
     .free_program = freeProgramFn,
+    .get_runtime_profile = getRuntimeProfileFn,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────

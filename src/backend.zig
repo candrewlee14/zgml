@@ -32,6 +32,14 @@ pub const DenseMatMulSpecF32 = struct {
 
 pub const Op = @import("op.zig").Op;
 
+/// One step in a fused elementwise chain.
+pub const FusedEwStep = struct {
+    op: Op,
+    is_swapped: bool, // true if chain value is in src1 position
+    secondary_buf: u16, // buffer index of external operand (binary ops)
+    secondary_offset: u32, // offset into that buffer
+};
+
 /// A single operation in a device program. Uses buffer indices (u16)
 /// instead of pointers — the backend maps indices to its own buffers.
 pub const DeviceOp = union(enum) {
@@ -44,6 +52,16 @@ pub const DeviceOp = union(enum) {
     reduce: struct { op: Op, dst: u16, src: u16, n_out: u32, reduce_size: u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
     repeat: struct { dst: u16, src: u16, n: u32, src_ne: [4]u32, dst_ne: [4]u32, src_strides: [4]u32, dst_strides: [4]u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
     slice_assign: struct { dst: u16, src: u16, n: u32, dst_offset: u32, dst_stride: u32, src_offset: u32, src_stride: u32 },
+    rope: struct { dst: u16, src: u16, cos_sin: u16, half_d: u32, seq_len: u32, src_off: u32, cs_off: u32, dst_off: u32, src_rs: u32, src_cs: u32, cs_cs: u32 },
+    attention: struct { dst: u16, q: u16, k: u16, v: u16, mask: u16, d_head: u32, seq_kv: u32, scale: f32, q_off: u32, k_off: u32, v_off: u32, mask_off: u32, dst_off: u32, k_rs: u32, k_cs: u32, v_rs: u32, v_cs: u32 },
+    fused_elementwise: struct {
+        steps: []const FusedEwStep,
+        n: u32,
+        dst: u16,
+        src: u16,
+        dst_offset: u32,
+        src_offset: u32,
+    },
 };
 
 /// Per-step host↔device transfer descriptor.
@@ -92,6 +110,8 @@ pub const Backend = struct {
         execute_program: *const fn (ctx: *anyopaque, handle: CompiledHandle, inputs: []const ProgramIO, outputs: []const ProgramIO) void,
         /// Release compiled program resources.
         free_program: *const fn (ctx: *anyopaque, handle: CompiledHandle) void,
+        /// Get pointer to accumulated runtime profile (null if unsupported).
+        get_runtime_profile: *const fn (ctx: *anyopaque, handle: CompiledHandle) ?*@import("profile.zig").RuntimeProfile,
     };
 
     pub fn compileProgram(self: Backend, program: DeviceProgram) ?CompiledHandle {
@@ -104,6 +124,10 @@ pub const Backend = struct {
 
     pub fn freeProgram(self: Backend, handle: CompiledHandle) void {
         self.vtable.free_program(self.ctx, handle);
+    }
+
+    pub fn getRuntimeProfile(self: Backend, handle: CompiledHandle) ?*@import("profile.zig").RuntimeProfile {
+        return self.vtable.get_runtime_profile(self.ctx, handle);
     }
 };
 
