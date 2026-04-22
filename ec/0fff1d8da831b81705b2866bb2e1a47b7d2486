@@ -1,0 +1,23 @@
+src/backend/metal.zig
+  e9dcfbbb2d0c0aab 216-234,644,667-668,684,701,755-756,776-779,793-794,871-918,929-934,1097-1125,1711-1751
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "ec0fff1d8da831b81705b2866bb2e1a47b7d2486",
+  "prompts": {
+    "e9dcfbbb2d0c0aab": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e4261cb6-7cbd-403a-a08b-b6f7a79a8b11",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 156,
+      "total_deletions": 38,
+      "accepted_lines": 156,
+      "overriden_lines": 0
+    }
+  }
+}
