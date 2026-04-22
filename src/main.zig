@@ -27,6 +27,7 @@ pub const inference = @import("inference.zig");
 pub const inference_utils = @import("inference_utils.zig");
 pub const llama_inference = @import("llama_inference.zig");
 pub const device_inference = @import("device_inference.zig");
+pub const profile = @import("profile.zig");
 pub const data = @import("data.zig");
 
 test "ref all decls" {
@@ -51,5 +52,6 @@ test "ref all decls" {
     _ = @import("tokenizer.zig");
     _ = @import("inference_utils.zig");
     _ = @import("llama_inference.zig");
+    _ = @import("profile.zig");
     _ = @import("data.zig");
 }

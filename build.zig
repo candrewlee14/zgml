@@ -265,6 +265,7 @@ pub fn build(b: *std.Build) void {
         .src = "benchmarks/llama_smollm_bench.zig",
         .step_name = "bench-llama-smollm",
         .step_desc = "Benchmark SmolLM LLaMA inference throughput",
+        .extra_metal = true,
         .extra_wgpu = build_opts.use_wgpu,
     });
 
