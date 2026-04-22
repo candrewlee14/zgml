@@ -1,0 +1,51 @@
+src/tensor/api.zig
+  bf0515a9916c4b9a 340-373
+src/tensor/forward.zig
+  bf0515a9916c4b9a 1712-1776,2395-2396
+src/backend.zig
+  bf0515a9916c4b9a 65-74
+src/fusion.zig
+  bf0515a9916c4b9a 506-514,533-542
+src/op.zig
+  bf0515a9916c4b9a 63-64,85-93,133-134
+src/tensor.zig
+  bf0515a9916c4b9a 429-430,491-492
+src/backend/wgpu.zig
+  bf0515a9916c4b9a 748
+src/schedule.zig
+  bf0515a9916c4b9a 110-111,123-133,143,149,166,172-175,178-179,219,224-225,229-232,234-282,367-395
+src/device_inference.zig
+  bf0515a9916c4b9a 147-173,469
+src/profile.zig
+  bf0515a9916c4b9a 163-168,208-213
+src/graph.zig
+  bf0515a9916c4b9a 3163-3211
+src/backend/metal.zig
+  bf0515a9916c4b9a 803,1099-1136
+src/models/llama_transformer.zig
+  bf0515a9916c4b9a 132
+src/tensor/backward.zig
+  bf0515a9916c4b9a 519-608
+src/loss.zig
+  bf0515a9916c4b9a 25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "dad1d906e510438540e03861470eaef4d16b5ff4",
+  "prompts": {
+    "bf0515a9916c4b9a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee823bdf-153c-474f-9476-24c0062a7ae9",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 501,
+      "total_deletions": 62,
+      "accepted_lines": 68145,
+      "overriden_lines": 0
+    }
+  }
+}
