@@ -1,0 +1,23 @@
+benchmarks/wgpu_bench.zig
+  06fc52a14883cf5f 253-549,610-632
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "89479f94857118a82eebf4046a4419130c982c5d",
+  "prompts": {
+    "06fc52a14883cf5f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbc42-ec38-79c3-8beb-ef2750f89dfe",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 321,
+      "total_deletions": 0,
+      "accepted_lines": 321,
+      "overriden_lines": 0
+    }
+  }
+}
