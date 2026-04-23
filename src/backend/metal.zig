@@ -746,6 +746,10 @@ const CompiledProgram = struct {
 
     fn deinit(self: *CompiledProgram) void {
         for (self.device_bufs) |buf| c.mtl_release(buf.ptr);
+        for (self.qweight_views) |qw| {
+            c.mtl_release(qw.data.ptr);
+            c.mtl_release(qw.scales.ptr);
+        }
         self.alloc.free(self.buf_ptrs);
         self.alloc.free(self.device_bufs);
         if (self.qweight_views.len > 0) self.alloc.free(self.qweight_views);
