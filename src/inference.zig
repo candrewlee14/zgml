@@ -308,8 +308,8 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
                 layer_trace.v_write.storage_offset = pos;
             }
 
-            // 5. Reset intermediates and execute.
-            self.graph.reset();
+            // 5. Execute. Inference nodes fully overwrite their outputs, so
+            //    we can skip the graph-wide zeroing pass on the hot path.
             if (self.quant_weights.len > 0) {
                 self.computeQuantized();
             } else {
