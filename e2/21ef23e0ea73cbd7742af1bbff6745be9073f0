@@ -1,0 +1,23 @@
+src/inference.zig
+  cf05e2d7ef39955a 72-74,80-81,106,115,117,124-126,130,133,148,152,265,268-270,272,274-280,282,287-292,294-302,306-309,318-319,327-331,356-360,365-369,384-389,403,409,414-416,423,426,447-450,460,465-468,473-491,493-494,496-513,750,766-767,778-811
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "e221ef23e0ea73cbd7742af1bbff6745be9073f0",
+  "prompts": {
+    "cf05e2d7ef39955a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbc0c-117b-7b51-b1b3-c648c5d6ff13",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 168,
+      "total_deletions": 78,
+      "accepted_lines": 166,
+      "overriden_lines": 0
+    }
+  }
+}
