@@ -71,6 +71,12 @@ pub fn TransformerBlock(
         w2: W2Shape,
         b2: B2Shape,
 
+        pub const CachedLayerTrace = struct {
+            output: *Tensor(T),
+            k_write: *Tensor(T),
+            v_write: *Tensor(T),
+        };
+
         pub fn init(alloc: Alloc) !Self {
             var self: Self = undefined;
             self.w_qkv = try QkvShape.init(alloc);
@@ -282,7 +288,19 @@ pub fn TransformerBlock(
             pos: usize,
             attn_mask: *Tensor(T),
         ) *Tensor(T) {
-            var ln_reduce = [_]usize{ 1, 1 };
+            return self.forwardCachedMaskedTrace(x, k_cache, v_cache, pos, attn_mask).output;
+        }
+
+        pub fn forwardCachedMaskedTrace(
+            self: *const Self,
+            x: *Tensor(T),
+            k_cache: *Tensor(T),
+            v_cache: *Tensor(T),
+            pos: usize,
+            attn_mask: *Tensor(T),
+        ) CachedLayerTrace {
+            const seq_len = x.ne[1];
+            var ln_reduce = [_]usize{ 1, seq_len };
             const norm1 = self.applyLayerNorm(x, &ln_reduce, .ln1);
             const qkv = self.projectQkv(norm1);
 
@@ -301,7 +319,7 @@ pub fn TransformerBlock(
                 const dk: T = @floatFromInt(d_head);
                 const scaled = scores.scaleByVal(1.0 / @sqrt(dk));
                 const masked = scaled.add(attn_mask);
-                var sm_reduce = [_]usize{ 1, 1 };
+                var sm_reduce = [_]usize{ 1, seq_len };
                 const weights = masked.softmax(&sm_reduce);
                 const attn_out = weights.matMul(false, cv, false);
                 attn_sum = self.projectAndSum(attn_sum, attn_out, h);
@@ -309,7 +327,11 @@ pub fn TransformerBlock(
 
             if (attn_bias) attn_sum = attn_sum.?.addBias(self.b_o.inner);
             const after_attn = x.add(attn_sum.?);
-            return self.ffn(after_attn, &ln_reduce);
+            return .{
+                .output = self.ffn(after_attn, &ln_reduce),
+                .k_write = k_updated,
+                .v_write = v_updated,
+            };
         }
 
         // ---------------------------------------------------------------

@@ -69,16 +69,16 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
         graph: ComputeGraph(T),
         backing_alloc: std.mem.Allocator,
 
+        // Shape regime for this plan. 1 for decode, N for batched prefill.
+        token_len: usize,
+
         // Bound inputs — data patched before each execution.
         token_input: *Tensor(T),
         pos_input: *Tensor(T),
         attn_mask: *Tensor(T),
 
-        // Cached slice_assign nodes — avoids linear scan per step.
-        slice_assign_nodes: []const *Tensor(T),
-
-        // Output tensor (read after execution).
-        logits: *Tensor(T),
+        // Identified graph nodes returned by `model.forwardCachedMaskedTrace`.
+        trace: Model.CachedForwardTrace,
         logits_buf: []T,
 
         // Workspace reuse state.
@@ -103,7 +103,7 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             v_caches: [config.n_layers]*Tensor(T),
             backing_alloc: std.mem.Allocator,
         ) !Self {
-            return Self.initWithBackend(model, k_caches, v_caches, backing_alloc, null);
+            return Self.initWithBackend(model, k_caches, v_caches, backing_alloc, null, 1);
         }
 
         pub fn initWithBackend(
@@ -112,38 +112,25 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             v_caches: [config.n_layers]*Tensor(T),
             backing_alloc: std.mem.Allocator,
             backend: ?backend_mod.Backend,
+            token_len: usize,
         ) !Self {
+            std.debug.assert(token_len >= 1 and token_len <= max_seq);
             var graph = ComputeGraph(T).init(backing_alloc);
             errdefer graph.deinit();
             if (backend) |b| graph.setBackend(b);
             const a = graph.allocator();
 
             // Bound-input placeholders (leaves: op=.none, never zeroed by reset).
-            const token_input = try Tensor(T).init(a, &.{ d_model, 1 });
-            const pos_input = try Tensor(T).init(a, &.{ d_model, 1 });
-            const attn_mask = try Tensor(T).init(a, &.{ max_seq, 1 });
+            const token_input = try Tensor(T).init(a, &.{ d_model, token_len });
+            const pos_input = try Tensor(T).init(a, &.{ d_model, token_len });
+            const attn_mask = try Tensor(T).init(a, &.{ max_seq, token_len });
             @memset(attn_mask.data, -std.math.inf(T));
 
             const x = token_input.add(pos_input);
-            const logits = model.forwardCachedMasked(x, k_caches, v_caches, 0, attn_mask);
+            const trace = model.forwardCachedMaskedTrace(x, k_caches, v_caches, 0, attn_mask);
 
             // Build forward graph + fusion (one-time cost).
-            try graph.infer(logits);
-
-            // Cache slice_assign node pointers for fast per-step patching.
-            var sa_count: usize = 0;
-            for (graph.nodes.items) |node| {
-                if (node.opTag() == .slice_assign) sa_count += 1;
-            }
-            const sa_nodes = try backing_alloc.alloc(*Tensor(T), sa_count);
-            errdefer backing_alloc.free(sa_nodes);
-            var sa_idx: usize = 0;
-            for (graph.nodes.items) |node| {
-                if (node.opTag() == .slice_assign) {
-                    sa_nodes[sa_idx] = node;
-                    sa_idx += 1;
-                }
-            }
+            try graph.infer(trace.logits);
 
             // Stable output buffer — survives across steps.
             const logits_buf = try backing_alloc.alloc(T, config.vocab_size);
@@ -158,11 +145,11 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             return .{
                 .graph = graph,
                 .backing_alloc = backing_alloc,
+                .token_len = token_len,
                 .token_input = token_input,
                 .pos_input = pos_input,
                 .attn_mask = attn_mask,
-                .slice_assign_nodes = sa_nodes,
-                .logits = logits,
+                .trace = trace,
                 .logits_buf = logits_buf,
                 .workspace_bufs = bufs,
                 .quant_weights = &.{},
@@ -181,7 +168,6 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             for (self.workspace_bufs) |buf| self.backing_alloc.free(buf);
             if (self.workspace_bufs.len > 0) self.backing_alloc.free(self.workspace_bufs);
             self.backing_alloc.free(self.logits_buf);
-            self.backing_alloc.free(self.slice_assign_nodes);
             self.graph.deinit();
         }
 
@@ -276,36 +262,51 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
         pub fn execute(
             self: *Self,
             model: *const Model,
-            token_id: usize,
+            token_ids: []const usize,
             pos: usize,
         ) []const T {
-            std.debug.assert(token_id < config.vocab_size);
-            std.debug.assert(pos < config.max_seq_len);
+            std.debug.assert(token_ids.len == self.token_len);
+            std.debug.assert(pos + self.token_len <= config.max_seq_len);
+            const n = self.token_len;
 
-            // 1. Patch token embedding.
+            // 1. Patch token embeddings for the N positions.
             const tok_data = model.embed.token_embed.inner.data;
-            @memcpy(
-                self.token_input.data[0..d_model],
-                tok_data[token_id * d_model ..][0..d_model],
-            );
+            for (token_ids, 0..) |token_id, i| {
+                std.debug.assert(token_id < config.vocab_size);
+                @memcpy(
+                    self.token_input.data[i * d_model ..][0..d_model],
+                    tok_data[token_id * d_model ..][0..d_model],
+                );
+            }
 
-            // 2. Patch positional encoding.
+            // 2. Patch positional encodings for positions [pos..pos+n).
             const pe_data = if (config.learnable_pos_embed)
                 model.embed.pos_encode.inner.data
             else
                 model.embed.pos_encode.data;
-            @memcpy(
-                self.pos_input.data[0..d_model],
-                pe_data[pos * d_model ..][0..d_model],
-            );
+            for (0..n) |i| {
+                @memcpy(
+                    self.pos_input.data[i * d_model ..][0..d_model],
+                    pe_data[(pos + i) * d_model ..][0..d_model],
+                );
+            }
 
-            // 3. Update causal mask: 0 for positions ≤ pos, -inf otherwise.
-            for (self.attn_mask.data[0..max_seq], 0..) |*v, i| {
-                v.* = if (i <= pos) 0 else -std.math.inf(T);
+            // 3. Update causal mask. Column j (query at pos+j) can attend
+            //    through KV position pos+j and masks the rest of the cache.
+            for (0..n) |j| {
+                const col = self.attn_mask.data[j * max_seq ..][0..max_seq];
+                const valid_upto = pos + j + 1;
+                @memset(col[0..valid_upto], 0);
+                if (valid_upto < max_seq) {
+                    @memset(col[valid_upto..], -std.math.inf(T));
+                }
             }
 
             // 4. Patch KV-cache write positions.
-            for (self.slice_assign_nodes) |node| node.storage_offset = pos;
+            for (self.trace.layers) |layer_trace| {
+                layer_trace.k_write.storage_offset = pos;
+                layer_trace.v_write.storage_offset = pos;
+            }
 
             // 5. Reset intermediates and execute.
             self.graph.reset();
@@ -314,13 +315,19 @@ pub fn InferencePlan(comptime T: type, comptime config: GPTConfig) type {
             } else {
                 self.graph.computeNoGrad();
             }
-            @memcpy(self.logits_buf, self.logits.data[0..config.vocab_size]);
+            const last_off = (n - 1) * config.vocab_size;
+            @memcpy(self.logits_buf, self.trace.logits.data[last_off..][0..config.vocab_size]);
 
             return self.logits_buf;
         }
 
     };
 }
+
+/// Default GPT prefill chunk size in tokens. The session builds one reusable
+/// plan at this shape and streams full prompt chunks through it; shorter tails
+/// keep using the decode plan.
+pub const default_prefill_chunk: usize = 128;
 
 /// Persistent inference session backed by a frozen `InferencePlan`.
 ///
@@ -346,11 +353,20 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
         const Self = @This();
 
         backing_alloc: std.mem.Allocator,
-        arena: std.heap.ArenaAllocator,
+        /// Heap-allocated so its address is stable across moves of the
+        /// Session struct. Model tensors capture this allocator by pointer,
+        /// so the arena must not move after tensors are created.
+        arena: *std.heap.ArenaAllocator,
+        backend: ?backend_mod.Backend,
         model: Model,
         k_caches: [config.n_layers]*Tensor(T),
         v_caches: [config.n_layers]*Tensor(T),
         plan: Plan,
+        prefill_plan: ?Plan,
+        /// Tune before `prefill()` to trade plan memory for prompt throughput.
+        /// Values outside [1, max_seq_len] are clamped at use sites.
+        prefill_chunk: usize,
+        quant_block_size: ?usize,
         pos: usize,
 
         /// Create a session with freshly initialised weights.
@@ -365,8 +381,12 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
         }
 
         pub fn initWithBackend(backing_alloc: std.mem.Allocator, backend: ?backend_mod.Backend) !Self {
-            var arena = std.heap.ArenaAllocator.init(backing_alloc);
-            errdefer arena.deinit();
+            const arena = try backing_alloc.create(std.heap.ArenaAllocator);
+            arena.* = std.heap.ArenaAllocator.init(backing_alloc);
+            errdefer {
+                arena.deinit();
+                backing_alloc.destroy(arena);
+            }
             const a = arena.allocator();
 
             const model = try Model.init(a);
@@ -380,24 +400,30 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
                 @memset(v_caches[l].data, 0);
             }
 
-            var plan = try Plan.initWithBackend(&model, k_caches, v_caches, backing_alloc, backend);
+            var plan = try Plan.initWithBackend(&model, k_caches, v_caches, backing_alloc, backend, 1);
             errdefer plan.deinit();
 
             return .{
                 .backing_alloc = backing_alloc,
                 .arena = arena,
+                .backend = backend,
                 .model = model,
                 .k_caches = k_caches,
                 .v_caches = v_caches,
                 .plan = plan,
+                .prefill_plan = null,
+                .prefill_chunk = @min(default_prefill_chunk, config.max_seq_len),
+                .quant_block_size = null,
                 .pos = 0,
             };
         }
 
         /// Free the plan, model arena, and all owned memory.
         pub fn deinit(self: *Self) void {
+            if (self.prefill_plan) |*p| p.deinit();
             self.plan.deinit();
             self.arena.deinit();
+            self.backing_alloc.destroy(self.arena);
         }
 
         /// Clear KV caches and rewind to position 0.
@@ -418,7 +444,10 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
         /// Quantize eligible weight matrices to int8.
         /// Call after loading weights, before the first `step()`.
         pub fn quantize(self: *Self) !void {
-            try self.plan.quantize(@import("quant.zig").default_block_size);
+            const bs = @import("quant.zig").default_block_size;
+            try self.plan.quantize(bs);
+            if (self.prefill_plan) |*p| try p.quantize(bs);
+            self.quant_block_size = bs;
         }
 
         /// Process one token and return logits over the vocabulary.
@@ -428,39 +457,60 @@ pub fn InferenceSession(comptime T: type, comptime config: GPTConfig) type {
         /// is full (`pos >= max_seq_len`).
         pub fn step(self: *Self, token_id: usize) ![]const T {
             if (self.pos >= config.max_seq_len) return error.SequenceTooLong;
-            const logits = self.plan.execute(&self.model, token_id, self.pos);
+            const logits = self.plan.execute(&self.model, &.{token_id}, self.pos);
             self.pos += 1;
             return logits;
         }
 
-        /// Process multiple prompt tokens at once, returning logits for the
-        /// last token (used to predict the next token after the prompt).
-        ///
-        /// This is semantically equivalent to calling `step()` for each token
-        /// in sequence but expresses the intent of bulk prompt processing.
-        /// The returned logits slice remains valid until the next call to
-        /// `step` or `prefill`.
-        ///
-        /// Returns `error.SequenceTooLong` if the prompt would exceed the
-        /// maximum sequence length.
-        ///
-        /// TODO: Replace the sequential step() loop with a true batched
-        /// forward pass using `GPT.forward()` (full-sequence attention in a
-        /// single `[seq, seq]` matmul instead of `seq` separate `[pos, 1]`
-        /// matmuls).  This requires either (a) capturing intermediate K/V
-        /// projections from the batched forward to populate the KV caches,
-        /// or (b) adding a `forwardWithKVCapture` variant to
-        /// `TransformerBlock`.  For prompts of 100+ tokens the batched
-        /// approach would be significantly faster.
+        /// Process multiple prompt tokens and return logits for the final
+        /// position. Full `prefill_chunk` runs use a reusable batched plan;
+        /// a shorter tail falls through the decode plan, preserving one
+        /// simple public API while avoiding graph rebuilds for long prompts.
         pub fn prefill(self: *Self, token_ids: []const usize) ![]const T {
             if (token_ids.len == 0) return self.plan.logits_buf;
             if (self.pos + token_ids.len > config.max_seq_len) return error.SequenceTooLong;
 
-            for (token_ids) |tok| {
-                _ = try self.step(tok);
+            if (self.prefill_chunk == 0) self.prefill_chunk = @min(default_prefill_chunk, config.max_seq_len);
+            if (self.prefill_chunk > config.max_seq_len) self.prefill_chunk = config.max_seq_len;
+            const chunk = self.prefill_chunk;
+
+            if (token_ids.len < chunk) {
+                var last: []const T = &.{};
+                for (token_ids) |tok| last = try self.step(tok);
+                return last;
             }
 
-            return self.plan.logits_buf;
+            const pp = try self.getOrBuildPrefillPlan(chunk);
+            var processed: usize = 0;
+            var last: []const T = &.{};
+            while (processed + chunk <= token_ids.len) : (processed += chunk) {
+                last = pp.execute(&self.model, token_ids[processed..][0..chunk], self.pos);
+                self.pos += chunk;
+            }
+            while (processed < token_ids.len) : (processed += 1) {
+                last = try self.step(token_ids[processed]);
+            }
+            return last;
+        }
+
+        fn getOrBuildPrefillPlan(self: *Self, n: usize) !*Plan {
+            if (self.prefill_plan) |*p| {
+                if (p.token_len == n) return p;
+                p.deinit();
+                self.prefill_plan = null;
+            }
+            var pp = try Plan.initWithBackend(
+                &self.model,
+                self.k_caches,
+                self.v_caches,
+                self.backing_alloc,
+                self.backend,
+                n,
+            );
+            errdefer pp.deinit();
+            if (self.quant_block_size) |bs| try pp.quantize(bs);
+            self.prefill_plan = pp;
+            return &self.prefill_plan.?;
         }
     };
 }
@@ -697,6 +747,7 @@ test "prefill matches sequential step() calls" {
     // Run 2: single prefill() call with same weights.
     var prefill_session = try InferenceSession(f32, cfg).init(testing.allocator);
     defer prefill_session.deinit();
+    prefill_session.prefill_chunk = 2;
 
     // Copy weights so both sessions are identical.
     for (step_session.model.params(), prefill_session.model.params()) |src, dst| {
@@ -712,6 +763,8 @@ test "prefill matches sequential step() calls" {
 
     // Position must be advanced correctly.
     try testing.expectEqual(tokens.len, prefill_session.pos);
+    try testing.expect(prefill_session.prefill_plan != null);
+    try testing.expectEqual(@as(usize, 2), prefill_session.prefill_plan.?.token_len);
 
     // A subsequent step() after prefill must work and match.
     const next_tok: usize = 3;
@@ -719,6 +772,43 @@ test "prefill matches sequential step() calls" {
     const prefill_next = try prefill_session.step(next_tok);
     for (step_next, prefill_next) |want, got| {
         try testing.expectApproxEqAbs(want, got, 1e-6);
+    }
+}
+
+test "quantized prefill stays close to quantized sequential step() calls" {
+    const cfg = GPTConfig{
+        .vocab_size = 8,
+        .d_model = 4,
+        .n_heads = 2,
+        .d_ff = 8,
+        .n_layers = 1,
+        .max_seq_len = 16,
+    };
+
+    const tokens = [_]usize{ 2, 5, 0, 7 };
+
+    var step_session = try InferenceSession(f32, cfg).init(testing.allocator);
+    defer step_session.deinit();
+    try step_session.quantize();
+
+    var prefill_session = try InferenceSession(f32, cfg).init(testing.allocator);
+    defer prefill_session.deinit();
+    prefill_session.prefill_chunk = 2;
+
+    for (step_session.model.params(), prefill_session.model.params()) |src, dst| {
+        @memcpy(dst.data, src.data);
+    }
+    try prefill_session.quantize();
+
+    var step_logits: [cfg.vocab_size]f32 = undefined;
+    for (tokens) |tok| {
+        const logits = try step_session.step(tok);
+        @memcpy(&step_logits, logits);
+    }
+
+    const prefill_logits = try prefill_session.prefill(&tokens);
+    for (step_logits[0..], prefill_logits) |want, got| {
+        try testing.expectApproxEqAbs(want, got, 0.05);
     }
 }
 

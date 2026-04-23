@@ -76,6 +76,11 @@ pub fn GPT(comptime T: type, comptime config: GPTConfig) type {
         ln_f_gamma: if (config.learnable_ln) LnShape else void,
         ln_f_beta: if (config.learnable_ln) LnShape else void,
 
+        pub const CachedForwardTrace = struct {
+            logits: *Tensor(T),
+            layers: [config.n_layers]Block.CachedLayerTrace,
+        };
+
         pub fn init(alloc: Alloc) !Self {
             var self: Self = undefined;
 
@@ -179,22 +184,36 @@ pub fn GPT(comptime T: type, comptime config: GPTConfig) type {
             pos: usize,
             attn_mask: *Tensor(T),
         ) *Tensor(T) {
+            return self.forwardCachedMaskedTrace(x_in, k_caches, v_caches, pos, attn_mask).logits;
+        }
+
+        pub fn forwardCachedMaskedTrace(
+            self: *const Self,
+            x_in: *Tensor(T),
+            k_caches: [config.n_layers]*Tensor(T),
+            v_caches: [config.n_layers]*Tensor(T),
+            pos: usize,
+            attn_mask: *Tensor(T),
+        ) CachedForwardTrace {
             var x = x_in;
+            var layers: [config.n_layers]Block.CachedLayerTrace = undefined;
             for (0..config.n_layers) |i| {
-                x = self.blocks[i].forwardCachedMasked(x, k_caches[i], v_caches[i], pos, attn_mask);
+                layers[i] = self.blocks[i].forwardCachedMaskedTrace(x, k_caches[i], v_caches[i], pos, attn_mask);
+                x = layers[i].output;
             }
 
-            var ln_reduce = [_]usize{ 1, 1 };
+            const seq_len = x.ne[1];
+            var ln_reduce = [_]usize{ 1, seq_len };
             x = x.layerNorm(&ln_reduce, 1e-5);
             if (config.learnable_ln) {
                 x = x.mul(self.ln_f_gamma.inner.repeatLike(x)).addBias(self.ln_f_beta.inner);
             }
 
-            if (config.tied_lm_head) {
-                return x.matMul(false, self.embed.token_embed.inner, true);
-            } else {
-                return x.matMul(false, self.out_proj.inner, false);
-            }
+            const logits = if (config.tied_lm_head)
+                x.matMul(false, self.embed.token_embed.inner, true)
+            else
+                x.matMul(false, self.out_proj.inner, false);
+            return .{ .logits = logits, .layers = layers };
         }
 
         /// Return all learnable parameters.
