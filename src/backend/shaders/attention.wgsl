@@ -65,6 +65,36 @@ fn scoreFor(qi: u32, s: u32) -> f32 {
     return score;
 }
 
+fn scoreForContiguous(s: u32, d_head: u32, scale: f32, has_mask: u32, mask_off: u32, mask_rs: u32, mask_cs: u32) -> f32 {
+    let k_base = p.offsets0.y + s * d_head;
+    var dot: f32 = 0.0;
+    var r: u32 = 0u;
+    while (r + 4u <= d_head) {
+        dot += q_buf[r] * K[k_base + r];
+        dot += q_buf[r + 1u] * K[k_base + r + 1u];
+        dot += q_buf[r + 2u] * K[k_base + r + 2u];
+        dot += q_buf[r + 3u] * K[k_base + r + 3u];
+        r += 4u;
+    }
+    while (r < d_head) {
+        dot += q_buf[r] * K[k_base + r];
+        r += 1u;
+    }
+
+    var score = dot * scale;
+    if (has_mask != 0u) {
+        let mask_add = MASK[mask_off + s * mask_rs];
+        if (!isFiniteVal(mask_add)) {
+            return NEG_INF;
+        }
+        score += mask_add;
+        if (!isFiniteVal(score)) {
+            return NEG_INF;
+        }
+    }
+    return score;
+}
+
 fn reduceMax(tid: u32) {
     if (tid < 32u) { reduce_buf[tid] = max(reduce_buf[tid], reduce_buf[tid + 32u]); }
     workgroupBarrier();
@@ -118,14 +148,32 @@ fn main(
         return;
     }
 
+    let contiguous = q_rs == 1u && q_cs == d_head &&
+        p.strides0.x == 1u && p.strides0.y == d_head &&
+        v_rs == 1u && v_cs == d_head &&
+        dst_rs == 1u && dst_cs == d_head;
+    let scale = p.scale_pad.x;
+    let has_mask = p.dims0.w;
+    let mask_off = p.offsets0.w + qi * p.strides1.y;
+    let mask_rs = p.strides1.x;
+
     for (var r = tid; r < d_head; r = r + WG_SIZE) {
-        q_buf[r] = Q[q_off + r * q_rs + qi * q_cs];
+        if (contiguous) {
+            q_buf[r] = Q[q_off + qi * d_head + r];
+        } else {
+            q_buf[r] = Q[q_off + r * q_rs + qi * q_cs];
+        }
     }
     workgroupBarrier();
 
     var local_max = NEG_INF;
     for (var s = tid; s < seq_kv; s = s + WG_SIZE) {
-        let score = scoreFor(qi, s);
+        var score: f32 = 0.0;
+        if (contiguous) {
+            score = scoreForContiguous(s, d_head, scale, has_mask, mask_off, mask_rs, p.strides1.y);
+        } else {
+            score = scoreFor(qi, s);
+        }
         score_buf[s] = score;
         local_max = max(local_max, score);
     }
@@ -153,13 +201,24 @@ fn main(
     let sum_weights = reduce_buf[0];
     let inv_sum = select(0.0, 1.0 / sum_weights, sum_weights > 0.0);
 
-    for (var r = tid; r < d_head; r = r + WG_SIZE) {
-        var acc: f32 = 0.0;
-        for (var s: u32 = 0u; s < seq_kv; s = s + 1u) {
-            let w = score_buf[s] * inv_sum;
-            let v_idx = v_off + r * v_rs + s * v_cs;
-            acc += w * V[v_idx];
+    if (contiguous) {
+        for (var r = tid; r < d_head; r = r + WG_SIZE) {
+            var acc: f32 = 0.0;
+            for (var s: u32 = 0u; s < seq_kv; s = s + 1u) {
+                let w = score_buf[s] * inv_sum;
+                acc += w * V[v_off + s * d_head + r];
+            }
+            OUT[dst_off + qi * d_head + r] = acc;
         }
-        OUT[dst_off + r * dst_rs + qi * dst_cs] = acc;
+    } else {
+        for (var r = tid; r < d_head; r = r + WG_SIZE) {
+            var acc: f32 = 0.0;
+            for (var s: u32 = 0u; s < seq_kv; s = s + 1u) {
+                let w = score_buf[s] * inv_sum;
+                let v_idx = v_off + r * v_rs + s * v_cs;
+                acc += w * V[v_idx];
+            }
+            OUT[dst_off + r * dst_rs + qi * dst_cs] = acc;
+        }
     }
 }
