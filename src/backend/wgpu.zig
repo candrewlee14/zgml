@@ -90,6 +90,10 @@ const AttentionParams = extern struct {
     strides1: [4]u32,
 };
 
+const AttentionDynamicParams = extern struct {
+    seq_info: [4]u32,
+};
+
 // ── WgpuBackend ───────────────────────────────────────────────────
 
 pub const WgpuBackend = struct {
@@ -438,6 +442,7 @@ const CompiledProgram = struct {
     device_bufs: []DeviceBuffer,
     qweight_views: []DeviceQWeight,
     dispatches: []PrebuiltDispatch,
+    attention_dynamic_buf: c.WGPUBuffer,
     staging_buf: c.WGPUBuffer,
     staging_size: usize,
     alloc: std.mem.Allocator,
@@ -448,6 +453,7 @@ const CompiledProgram = struct {
             c.wgpuBufferRelease(d.uniform_buf);
         }
         self.alloc.free(self.dispatches);
+        if (self.attention_dynamic_buf != null) c.wgpuBufferRelease(self.attention_dynamic_buf);
         if (self.staging_buf != null) c.wgpuBufferRelease(self.staging_buf);
         for (self.device_bufs) |db| {
             if (db.f16_buf != null) c.wgpuBufferRelease(db.f16_buf);
@@ -656,7 +662,7 @@ fn ropeComputeParams(rr: anytype) ComputeParams {
 
 fn attentionParams(att: anytype) AttentionParams {
     return .{
-        .dims0 = .{ att.d_head, att.seq_q, att.seq_kv, @intFromBool(att.has_mask) },
+        .dims0 = .{ att.d_head, att.seq_q, @intFromBool(att.has_mask), 0 },
         .scale_pad = .{ att.scale, 0, 0, 0 },
         .offsets0 = .{ att.q_off, att.k_off, att.v_off, att.mask_off },
         .offsets1 = .{ att.dst_off, att.q_rs, att.q_cs, 0 },
@@ -665,11 +671,16 @@ fn attentionParams(att: anytype) AttentionParams {
     };
 }
 
+fn attentionDynamicParams(seq_kv: u32) AttentionDynamicParams {
+    return .{ .seq_info = .{ seq_kv, 0, 0, 0 } };
+}
+
 fn buildDispatch(
     be: *WgpuBackend,
     bufs: []const DeviceBuffer,
     qweights: []const DeviceQWeight,
     op: backend_mod.DeviceOp,
+    attention_dynamic_buf: c.WGPUBuffer,
 ) ?PrebuiltDispatch {
     switch (op) {
         .matmul => |m| {
@@ -820,7 +831,7 @@ fn buildDispatch(
             return computeDispatch(be, bufs, p, rr.src, rr.cos_sin, rr.dst, (n + WG_SIZE - 1) / WG_SIZE);
         },
         .attention => |att| {
-            if (att.seq_kv > ATTN_MAX_SEQ_KV or att.d_head > ATTN_MAX_D_HEAD) return null;
+            if (att.seq_kv > ATTN_MAX_SEQ_KV or att.d_head > ATTN_MAX_D_HEAD or attention_dynamic_buf == null) return null;
 
             const params = attentionParams(att);
             const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
@@ -831,6 +842,7 @@ fn buildDispatch(
                 bufEntry(3, bufs[att.mask].buf, bufs[att.mask].size),
                 bufEntry(4, bufs[att.dst].buf, bufs[att.dst].size),
                 bufEntry(5, ubuf, @sizeOf(AttentionParams)),
+                bufEntry(6, attention_dynamic_buf, @sizeOf(AttentionDynamicParams)),
             };
             return .{
                 .pipeline = be.attention_pipeline,
@@ -934,10 +946,22 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         device_bufs[b_idx].f16_size = f16_bytes;
     }
 
+    var attention_dynamic_buf: c.WGPUBuffer = null;
+    for (program.ops) |op| {
+        switch (op) {
+            .attention => |att| {
+                const params = attentionDynamicParams(att.seq_kv);
+                attention_dynamic_buf = createUniformBuffer(self.device, self.queue, std.mem.asBytes(&params));
+                break;
+            },
+            else => {},
+        }
+    }
+
     // Pre-build all dispatches (uniform buffers + bind groups).
     var dispatch_list: std.ArrayListUnmanaged(PrebuiltDispatch) = .empty;
     for (program.ops) |op| {
-        if (buildDispatch(self, device_bufs, qweight_views, op)) |d| {
+        if (buildDispatch(self, device_bufs, qweight_views, op, attention_dynamic_buf)) |d| {
             dispatch_list.append(alloc, d) catch return null;
         } else {
             for (dispatch_list.items) |d| {
@@ -945,6 +969,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
                 c.wgpuBufferRelease(d.uniform_buf);
             }
             dispatch_list.deinit(alloc);
+            if (attention_dynamic_buf != null) c.wgpuBufferRelease(attention_dynamic_buf);
             for (qweight_views) |qv| {
                 c.wgpuBufferRelease(qv.data.buf);
                 c.wgpuBufferRelease(qv.scales.buf);
@@ -979,6 +1004,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         .device_bufs = device_bufs,
         .qweight_views = qweight_views,
         .dispatches = dispatches,
+        .attention_dynamic_buf = attention_dynamic_buf,
         .staging_buf = staging,
         .staging_size = max_buf_size,
         .alloc = alloc,
@@ -994,6 +1020,7 @@ fn executeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, i
 fn refreshProgramFn(ctx: *anyopaque, handle: backend_mod.Backend.CompiledHandle, ops: []const backend_mod.DeviceOp) void {
     const self = getState(ctx);
     const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    var refreshed_attention = false;
     for (ops, compiled.dispatches) |op, dispatch| {
         switch (op) {
             .slice_assign => |sa| {
@@ -1001,8 +1028,11 @@ fn refreshProgramFn(ctx: *anyopaque, handle: backend_mod.Backend.CompiledHandle,
                 c.wgpuQueueWriteBuffer(self.queue, dispatch.uniform_buf, 0, std.mem.asBytes(&params).ptr, @sizeOf(ComputeParams));
             },
             .attention => |att| {
-                const params = attentionParams(att);
-                c.wgpuQueueWriteBuffer(self.queue, dispatch.uniform_buf, 0, std.mem.asBytes(&params).ptr, @sizeOf(AttentionParams));
+                if (!refreshed_attention and compiled.attention_dynamic_buf != null) {
+                    const params = attentionDynamicParams(att.seq_kv);
+                    c.wgpuQueueWriteBuffer(self.queue, compiled.attention_dynamic_buf, 0, std.mem.asBytes(&params).ptr, @sizeOf(AttentionDynamicParams));
+                    refreshed_attention = true;
+                }
             },
             else => {},
         }

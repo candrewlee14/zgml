@@ -13,6 +13,10 @@ struct AttentionParams {
     strides1: vec4<u32>,
 };
 
+struct AttentionDynamicParams {
+    seq_info: vec4<u32>,
+};
+
 const WG_SIZE: u32 = 64u;
 const MAX_SEQ_KV: u32 = 4096u;
 const MAX_D_HEAD: u32 = 512u;
@@ -25,6 +29,7 @@ const FLT_MAX: f32 = 3.402823466e+38;
 @group(0) @binding(3) var<storage, read>       MASK : array<f32>;
 @group(0) @binding(4) var<storage, read_write> OUT  : array<f32>;
 @group(0) @binding(5) var<uniform>             p    : AttentionParams;
+@group(0) @binding(6) var<uniform>             d    : AttentionDynamicParams;
 
 var<workgroup> reduce_buf : array<f32, WG_SIZE>;
 var<workgroup> score_buf  : array<f32, MAX_SEQ_KV>;
@@ -36,7 +41,7 @@ fn isFiniteVal(x: f32) -> bool {
 
 fn scoreFor(qi: u32, s: u32) -> f32 {
     let d_head = p.dims0.x;
-    let has_mask = p.dims0.w;
+    let has_mask = p.dims0.z;
     let scale = p.scale_pad.x;
     let k_off = p.offsets0.y;
     let mask_off = p.offsets0.w;
@@ -131,7 +136,7 @@ fn main(
     @builtin(local_invocation_id) local_id : vec3<u32>,
 ) {
     let seq_q = p.dims0.y;
-    let seq_kv = p.dims0.z;
+    let seq_kv = d.seq_info.x;
     let d_head = p.dims0.x;
     let q_off = p.offsets0.x;
     let v_off = p.offsets0.z;
@@ -153,7 +158,7 @@ fn main(
         v_rs == 1u && v_cs == d_head &&
         dst_rs == 1u && dst_cs == d_head;
     let scale = p.scale_pad.x;
-    let has_mask = p.dims0.w;
+    let has_mask = p.dims0.z;
     let mask_off = p.offsets0.w + qi * p.strides1.y;
     let mask_rs = p.strides1.x;
 
