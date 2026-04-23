@@ -1283,6 +1283,47 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             var reduce_elems: usize = 1;
             for (0..4) |i| reduce_elems *= reduce_ne[i];
 
+            var total: usize = 1;
+            for (0..4) |i| total *= src0.ne[i];
+
+            // Fast path: canonical attention/logit softmax — reduce over axis
+            // 0 with contiguous src/dst. Each group is one contiguous column,
+            // so no grouped-index modulo math or scratch buffers are needed.
+            if (src0.isContiguous() and dst.isContiguous() and
+                reduce_ne[0] == 1 and
+                reduce_ne[1] == src0.ne[1] and
+                reduce_ne[2] == src0.ne[2] and
+                reduce_ne[3] == src0.ne[3])
+            {
+                const n = src0.ne[0];
+                const groups = total / n;
+                var g: usize = 0;
+                while (g < groups) : (g += 1) {
+                    const base = g * n;
+                    const row_src = src0.data[base .. base + n];
+                    const row_dst = dst.data[base .. base + n];
+
+                    var max_v: T = -std.math.inf(T);
+                    for (row_src) |v| max_v = @max(max_v, v);
+
+                    var sum: T = 0;
+                    for (row_src, row_dst) |v, *out| {
+                        const shifted = v - max_v;
+                        const e = if (std.math.isFinite(shifted)) @exp(shifted) else 0;
+                        out.* = e;
+                        sum += e;
+                    }
+
+                    if (sum > 0) {
+                        const inv_sum = 1.0 / sum;
+                        for (row_dst) |*out| out.* *= inv_sum;
+                    } else {
+                        @memset(row_dst, 0);
+                    }
+                }
+                return;
+            }
+
             // Scratch for per-group max and sum. Stack for common groups,
             // allocator fallback only for unusually large grouped reductions.
             var max_stack: [normalizer_stack_scratch_len]T = undefined;
