@@ -81,11 +81,11 @@ const ComputeParams = extern struct {
     _pad: u32 = 0, // align to 16 bytes
 };
 
-const ComputeDynamicParams = extern struct {
+const StepDynamicParams = extern struct {
     slice_pos: u32,
+    seq_kv: u32,
     _pad0: u32 = 0,
     _pad1: u32 = 0,
-    _pad2: u32 = 0,
 };
 
 const AttentionParams = extern struct {
@@ -97,8 +97,14 @@ const AttentionParams = extern struct {
     strides1: [4]u32,
 };
 
-const AttentionDynamicParams = extern struct {
-    seq_info: [4]u32,
+const StepDynamicState = struct {
+    params: StepDynamicParams = .{ .slice_pos = 0, .seq_kv = 0 },
+    has_slice_assign: bool = false,
+    has_attention: bool = false,
+
+    fn needsUpload(self: StepDynamicState) bool {
+        return self.has_slice_assign or self.has_attention;
+    }
 };
 
 // ── WgpuBackend ───────────────────────────────────────────────────
@@ -449,8 +455,7 @@ const CompiledProgram = struct {
     device_bufs: []DeviceBuffer,
     qweight_views: []DeviceQWeight,
     dispatches: []PrebuiltDispatch,
-    compute_dynamic_buf: c.WGPUBuffer,
-    attention_dynamic_buf: c.WGPUBuffer,
+    dynamic_buf: c.WGPUBuffer,
     staging_buf: c.WGPUBuffer,
     staging_size: usize,
     alloc: std.mem.Allocator,
@@ -461,8 +466,7 @@ const CompiledProgram = struct {
             c.wgpuBufferRelease(d.uniform_buf);
         }
         self.alloc.free(self.dispatches);
-        if (self.compute_dynamic_buf != null) c.wgpuBufferRelease(self.compute_dynamic_buf);
-        if (self.attention_dynamic_buf != null) c.wgpuBufferRelease(self.attention_dynamic_buf);
+        if (self.dynamic_buf != null) c.wgpuBufferRelease(self.dynamic_buf);
         if (self.staging_buf != null) c.wgpuBufferRelease(self.staging_buf);
         for (self.device_bufs) |db| {
             if (db.f16_buf != null) c.wgpuBufferRelease(db.f16_buf);
@@ -623,7 +627,7 @@ fn computeDispatch(
     src1: u16,
     dst: u16,
     gx: u32,
-    compute_dynamic_buf: c.WGPUBuffer,
+    dynamic_buf: c.WGPUBuffer,
 ) PrebuiltDispatch {
     const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
     const entries = [_]c.WGPUBindGroupEntry{
@@ -631,7 +635,7 @@ fn computeDispatch(
         bufEntry(1, bufs[src1].buf, bufs[src1].size),
         bufEntry(2, bufs[dst].buf, bufs[dst].size),
         bufEntry(3, ubuf, @sizeOf(ComputeParams)),
-        bufEntry(4, compute_dynamic_buf, @sizeOf(ComputeDynamicParams)),
+        bufEntry(4, dynamic_buf, @sizeOf(StepDynamicParams)),
     };
     return .{
         .pipeline = be.compute_pipeline,
@@ -683,12 +687,27 @@ fn attentionParams(att: anytype) AttentionParams {
     };
 }
 
-fn attentionDynamicParams(seq_kv: u32) AttentionDynamicParams {
-    return .{ .seq_info = .{ seq_kv, 0, 0, 0 } };
-}
-
-fn computeDynamicParams(slice_pos: u32) ComputeDynamicParams {
-    return .{ .slice_pos = slice_pos };
+fn stepDynamicStateFromOps(ops: []const backend_mod.DeviceOp) StepDynamicState {
+    var state = StepDynamicState{};
+    for (ops) |op| {
+        switch (op) {
+            .slice_assign => |sa| {
+                if (!state.has_slice_assign and sa.patch_stride != 0 and sa.dst_offset >= sa.dst_base_offset) {
+                    state.params.slice_pos = @intCast((sa.dst_offset - sa.dst_base_offset) / sa.patch_stride);
+                    state.has_slice_assign = true;
+                }
+            },
+            .attention => |att| {
+                if (!state.has_attention) {
+                    state.params.seq_kv = att.seq_kv;
+                    state.has_attention = true;
+                }
+            },
+            else => {},
+        }
+        if (state.has_slice_assign and state.has_attention) break;
+    }
+    return state;
 }
 
 fn buildDispatch(
@@ -696,8 +715,7 @@ fn buildDispatch(
     bufs: []const DeviceBuffer,
     qweights: []const DeviceQWeight,
     op: backend_mod.DeviceOp,
-    compute_dynamic_buf: c.WGPUBuffer,
-    attention_dynamic_buf: c.WGPUBuffer,
+    dynamic_buf: c.WGPUBuffer,
 ) ?PrebuiltDispatch {
     switch (op) {
         .matmul => |m| {
@@ -785,7 +803,7 @@ fn buildDispatch(
             p.dst_offset = e.dst_offset;
             p.src0_offset = e.src0_offset;
             p.src1_offset = e.src1_offset;
-            return computeDispatch(be, bufs, p, e.src0, e.src1, e.dst, (e.n + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
+            return computeDispatch(be, bufs, p, e.src0, e.src1, e.dst, (e.n + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
         },
         .softmax => |s| {
             var p = std.mem.zeroes(ComputeParams);
@@ -794,7 +812,7 @@ fn buildDispatch(
             p.dst_offset = s.dst_offset;
             p.src0_ne[0] = s.cols;
             p.src0_offset = s.src_offset;
-            return computeDispatch(be, bufs, p, s.src, s.src, s.dst, (s.rows + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
+            return computeDispatch(be, bufs, p, s.src, s.src, s.dst, (s.rows + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
         },
         .layernorm => |l| {
             var p = std.mem.zeroes(ComputeParams);
@@ -804,7 +822,7 @@ fn buildDispatch(
             p.src0_ne[0] = l.cols;
             p.src0_offset = l.src_offset;
             p.src1_ne[0] = @bitCast(l.eps);
-            return computeDispatch(be, bufs, p, l.src, l.src, l.dst, (l.rows + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
+            return computeDispatch(be, bufs, p, l.src, l.src, l.dst, (l.rows + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
         },
         .rmsnorm => |r| {
             var p = std.mem.zeroes(ComputeParams);
@@ -814,7 +832,7 @@ fn buildDispatch(
             p.src0_ne[0] = r.cols;
             p.src0_offset = r.src_offset;
             p.src1_ne[0] = @bitCast(r.eps);
-            return computeDispatch(be, bufs, p, r.src, r.src, r.dst, (r.rows + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
+            return computeDispatch(be, bufs, p, r.src, r.src, r.dst, (r.rows + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
         },
         .reduce => |r| {
             var p = std.mem.zeroes(ComputeParams);
@@ -823,7 +841,7 @@ fn buildDispatch(
             p.dst_offset = r.dst_offset;
             p.src0_ne[0] = r.reduce_size;
             p.src0_offset = r.src_offset;
-            return computeDispatch(be, bufs, p, r.src, r.dst, r.dst, (r.n_out + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
+            return computeDispatch(be, bufs, p, r.src, r.dst, r.dst, (r.n_out + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
         },
         .repeat => |rp| {
             var p = std.mem.zeroes(ComputeParams);
@@ -835,20 +853,20 @@ fn buildDispatch(
             p.src0_ne = rp.src_ne;
             p.src0_strides = rp.src_strides;
             p.src0_offset = rp.src_offset;
-            return computeDispatch(be, bufs, p, rp.src, rp.src, rp.dst, (rp.n + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
+            return computeDispatch(be, bufs, p, rp.src, rp.src, rp.dst, (rp.n + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
         },
         .slice_assign => |sa| {
             const p = sliceAssignComputeParams(sa);
             const n = p.n_elements;
-            return computeDispatch(be, bufs, p, sa.src, sa.src, sa.dst, (n + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
+            return computeDispatch(be, bufs, p, sa.src, sa.src, sa.dst, (n + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
         },
         .rope => |rr| {
             const p = ropeComputeParams(rr);
             const n = p.n_elements;
-            return computeDispatch(be, bufs, p, rr.src, rr.cos_sin, rr.dst, (n + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
+            return computeDispatch(be, bufs, p, rr.src, rr.cos_sin, rr.dst, (n + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
         },
         .attention => |att| {
-            if (att.seq_kv > ATTN_MAX_SEQ_KV or att.d_head > ATTN_MAX_D_HEAD or attention_dynamic_buf == null) return null;
+            if (att.seq_kv > ATTN_MAX_SEQ_KV or att.d_head > ATTN_MAX_D_HEAD) return null;
 
             const params = attentionParams(att);
             const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
@@ -859,7 +877,7 @@ fn buildDispatch(
                 bufEntry(3, bufs[att.mask].buf, bufs[att.mask].size),
                 bufEntry(4, bufs[att.dst].buf, bufs[att.dst].size),
                 bufEntry(5, ubuf, @sizeOf(AttentionParams)),
-                bufEntry(6, attention_dynamic_buf, @sizeOf(AttentionDynamicParams)),
+                bufEntry(6, dynamic_buf, @sizeOf(StepDynamicParams)),
             };
             return .{
                 .pipeline = be.attention_pipeline,
@@ -963,37 +981,13 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         device_bufs[b_idx].f16_size = f16_bytes;
     }
 
-    var initial_slice_pos: u32 = 0;
-    for (program.ops) |op| {
-        switch (op) {
-            .slice_assign => |sa| {
-                if (sa.patch_stride != 0 and sa.dst_offset >= sa.dst_base_offset) {
-                    initial_slice_pos = @intCast((sa.dst_offset - sa.dst_base_offset) / sa.patch_stride);
-                }
-                break;
-            },
-            else => {},
-        }
-    }
-    const compute_dynamic_init = computeDynamicParams(initial_slice_pos);
-    const compute_dynamic_buf = createUniformBuffer(self.device, self.queue, std.mem.asBytes(&compute_dynamic_init));
-
-    var attention_dynamic_buf: c.WGPUBuffer = null;
-    for (program.ops) |op| {
-        switch (op) {
-            .attention => |att| {
-                const params = attentionDynamicParams(att.seq_kv);
-                attention_dynamic_buf = createUniformBuffer(self.device, self.queue, std.mem.asBytes(&params));
-                break;
-            },
-            else => {},
-        }
-    }
+    const dynamic_state = stepDynamicStateFromOps(program.ops);
+    const dynamic_buf = createUniformBuffer(self.device, self.queue, std.mem.asBytes(&dynamic_state.params));
 
     // Pre-build all dispatches (uniform buffers + bind groups).
     var dispatch_list: std.ArrayListUnmanaged(PrebuiltDispatch) = .empty;
     for (program.ops) |op| {
-        if (buildDispatch(self, device_bufs, qweight_views, op, compute_dynamic_buf, attention_dynamic_buf)) |d| {
+        if (buildDispatch(self, device_bufs, qweight_views, op, dynamic_buf)) |d| {
             dispatch_list.append(alloc, d) catch return null;
         } else {
             for (dispatch_list.items) |d| {
@@ -1001,8 +995,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
                 c.wgpuBufferRelease(d.uniform_buf);
             }
             dispatch_list.deinit(alloc);
-            if (compute_dynamic_buf != null) c.wgpuBufferRelease(compute_dynamic_buf);
-            if (attention_dynamic_buf != null) c.wgpuBufferRelease(attention_dynamic_buf);
+            if (dynamic_buf != null) c.wgpuBufferRelease(dynamic_buf);
             for (qweight_views) |qv| {
                 c.wgpuBufferRelease(qv.data.buf);
                 c.wgpuBufferRelease(qv.scales.buf);
@@ -1037,8 +1030,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         .device_bufs = device_bufs,
         .qweight_views = qweight_views,
         .dispatches = dispatches,
-        .compute_dynamic_buf = compute_dynamic_buf,
-        .attention_dynamic_buf = attention_dynamic_buf,
+        .dynamic_buf = dynamic_buf,
         .staging_buf = staging,
         .staging_size = max_buf_size,
         .alloc = alloc,
@@ -1054,27 +1046,9 @@ fn executeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, i
 fn refreshProgramFn(ctx: *anyopaque, handle: backend_mod.Backend.CompiledHandle, ops: []const backend_mod.DeviceOp) void {
     const self = getState(ctx);
     const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
-    var refreshed_slice_assign = false;
-    var refreshed_attention = false;
-    for (ops) |op| {
-        switch (op) {
-            .slice_assign => |sa| {
-                if (!refreshed_slice_assign and compiled.compute_dynamic_buf != null and sa.patch_stride != 0 and sa.dst_offset >= sa.dst_base_offset) {
-                    const pos: u32 = @intCast((sa.dst_offset - sa.dst_base_offset) / sa.patch_stride);
-                    const params = computeDynamicParams(pos);
-                    c.wgpuQueueWriteBuffer(self.queue, compiled.compute_dynamic_buf, 0, std.mem.asBytes(&params).ptr, @sizeOf(ComputeDynamicParams));
-                    refreshed_slice_assign = true;
-                }
-            },
-            .attention => |att| {
-                if (!refreshed_attention and compiled.attention_dynamic_buf != null) {
-                    const params = attentionDynamicParams(att.seq_kv);
-                    c.wgpuQueueWriteBuffer(self.queue, compiled.attention_dynamic_buf, 0, std.mem.asBytes(&params).ptr, @sizeOf(AttentionDynamicParams));
-                    refreshed_attention = true;
-                }
-            },
-            else => {},
-        }
+    const dynamic_state = stepDynamicStateFromOps(ops);
+    if (compiled.dynamic_buf != null and dynamic_state.needsUpload()) {
+        c.wgpuQueueWriteBuffer(self.queue, compiled.dynamic_buf, 0, std.mem.asBytes(&dynamic_state.params).ptr, @sizeOf(StepDynamicParams));
     }
 }
 
@@ -1095,6 +1069,60 @@ const vtable = backend_mod.Backend.VTable{
     .free_program = freeProgramFn,
     .get_runtime_profile = getRuntimeProfileFn,
 };
+
+test "wgpu backend step dynamic state derives from ops" {
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .elementwise = .{ .op = .add, .dst = 0, .src0 = 0, .src1 = 0, .n = 1 } },
+        .{ .slice_assign = .{
+            .dst = 0,
+            .src = 0,
+            .rows = 4,
+            .cols = 1,
+            .dst_base_offset = 8,
+            .dst_offset = 20,
+            .dst_row_stride = 1,
+            .dst_col_stride = 4,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 4,
+        } },
+        .{ .attention = .{
+            .dst = 0,
+            .q = 0,
+            .k = 0,
+            .v = 0,
+            .mask = 0,
+            .has_mask = false,
+            .d_head = 4,
+            .seq_q = 1,
+            .seq_kv = 17,
+            .scale = 1.0,
+            .q_off = 0,
+            .k_off = 0,
+            .v_off = 0,
+            .mask_off = 0,
+            .dst_off = 0,
+            .q_rs = 1,
+            .q_cs = 4,
+            .k_rs = 1,
+            .k_cs = 4,
+            .v_rs = 1,
+            .v_cs = 4,
+            .mask_rs = 0,
+            .mask_cs = 0,
+            .dst_rs = 1,
+            .dst_cs = 4,
+        } },
+    };
+
+    const state = stepDynamicStateFromOps(&ops);
+    try std.testing.expect(state.has_slice_assign);
+    try std.testing.expect(state.has_attention);
+    try std.testing.expect(state.needsUpload());
+    try std.testing.expectEqual(@as(u32, 3), state.params.slice_pos);
+    try std.testing.expectEqual(@as(u32, 17), state.params.seq_kv);
+}
 
 // ── Tests ─────────────────────────────────────────────────────────
 

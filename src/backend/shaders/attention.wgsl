@@ -13,8 +13,11 @@ struct AttentionParams {
     strides1: vec4<u32>,
 };
 
-struct AttentionDynamicParams {
-    seq_info: vec4<u32>,
+struct StepDynamicParams {
+    slice_pos: u32,
+    seq_kv: u32,
+    _pad0: u32,
+    _pad1: u32,
 };
 
 const WG_SIZE: u32 = 64u;
@@ -29,7 +32,7 @@ const FLT_MAX: f32 = 3.402823466e+38;
 @group(0) @binding(3) var<storage, read>       MASK : array<f32>;
 @group(0) @binding(4) var<storage, read_write> OUT  : array<f32>;
 @group(0) @binding(5) var<uniform>             p    : AttentionParams;
-@group(0) @binding(6) var<uniform>             d    : AttentionDynamicParams;
+@group(0) @binding(6) var<uniform>             d    : StepDynamicParams;
 
 var<workgroup> reduce_buf : array<f32, WG_SIZE>;
 var<workgroup> score_buf  : array<f32, MAX_SEQ_KV>;
@@ -136,7 +139,7 @@ fn main(
     @builtin(local_invocation_id) local_id : vec3<u32>,
 ) {
     let seq_q = p.dims0.y;
-    let seq_kv = d.seq_info.x;
+    let seq_kv = d.seq_kv;
     let d_head = p.dims0.x;
     let q_off = p.offsets0.x;
     let v_off = p.offsets0.z;
