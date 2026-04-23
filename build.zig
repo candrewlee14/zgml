@@ -207,8 +207,8 @@ pub fn build(b: *std.Build) void {
     frontier_options_step.addOption(bool, "use_blas", build_opts.use_blas);
     frontier_options_step.addOption(bool, "use_wgpu", build_opts.use_wgpu);
     const frontier_options = frontier_options_step.createModule();
-    const frontier_tensor = b.createModule(.{
-        .root_source_file = b.path("src/tensor.zig"),
+    const frontier_zgml = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = frontier_opt,
         .imports = &.{
@@ -217,7 +217,16 @@ pub fn build(b: *std.Build) void {
         .link_libc = if (build_opts.use_blas) true else null,
     });
     if (build_opts.use_blas) {
-        frontier_tensor.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+        frontier_zgml.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    if (target.result.os.tag == .macos) {
+        frontier_zgml.addIncludePath(b.path("src/backend"));
+    }
+    if (build_opts.use_wgpu) {
+        const dep = b.dependency("wgpu_native", .{});
+        if (wgpu_native.includePath(dep, target)) |inc| {
+            frontier_zgml.addIncludePath(inc);
+        }
     }
     const frontier_mod = b.createModule(.{
         .root_source_file = b.path("benchmarks/frontier_bench.zig"),
@@ -225,10 +234,12 @@ pub fn build(b: *std.Build) void {
         .optimize = frontier_opt,
         .imports = &.{
             .{ .name = "zgml_options", .module = frontier_options },
-            .{ .name = "zgml_tensor", .module = frontier_tensor },
+            .{ .name = "zgml", .module = frontier_zgml },
         },
     });
     const frontier_exe = b.addExecutable(.{ .name = "bench-frontier", .root_module = frontier_mod });
+    linkMetal(b, target, frontier_exe);
+    if (build_opts.use_wgpu) linkWgpu(b, target, frontier_exe);
     if (build_opts.use_blas) {
         linkBlas(target, frontier_exe);
         frontier_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });

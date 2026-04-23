@@ -9,8 +9,9 @@
 
 const std = @import("std");
 const opts = @import("zgml_options");
+const zgml = @import("zgml");
 
-const Tensor = @import("zgml_tensor").Tensor;
+const Tensor = zgml.Tensor;
 
 const SampleCount = 15;
 const WarmupSamples = 3;
@@ -460,6 +461,91 @@ fn benchDecodeGraph(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !vo
     try printStats(w, "rmsnorm-attn-logits token", "tokens", 1.0, "tok", stats);
 }
 
+const GptPrefillCfg = zgml.models.GPTConfig{
+    .vocab_size = 512,
+    .d_model = 64,
+    .n_heads = 4,
+    .d_ff = 256,
+    .n_layers = 2,
+    .max_seq_len = 128,
+};
+const GptPrefillPromptLen: usize = 64;
+const GptPrefillSession = zgml.inference.InferenceSession(f32, GptPrefillCfg);
+
+const GptPrefillMode = enum { sequential, batched };
+
+const GptPrefillBench = struct {
+    session: GptPrefillSession,
+    tokens: [GptPrefillPromptLen]usize,
+    mode: GptPrefillMode,
+    last: []const f32,
+
+    fn init(alloc: std.mem.Allocator, mode: GptPrefillMode) !GptPrefillBench {
+        var session = try GptPrefillSession.init(alloc);
+        session.prefill_chunk = switch (mode) {
+            .sequential => GptPrefillPromptLen + 1,
+            .batched => 32,
+        };
+
+        var tokens: [GptPrefillPromptLen]usize = undefined;
+        for (&tokens, 0..) |*tok, i| {
+            tok.* = (i * 37 + 11) % GptPrefillCfg.vocab_size;
+        }
+
+        var self = GptPrefillBench{
+            .session = session,
+            .tokens = tokens,
+            .mode = mode,
+            .last = &.{},
+        };
+
+        // Build the reusable batched plan before timing; the benchmark tracks
+        // steady-state prompt ingestion, not one-time plan construction.
+        if (mode == .batched) {
+            self.last = try self.session.prefill(&self.tokens);
+            self.session.reset();
+        }
+
+        return self;
+    }
+
+    fn deinit(self: *GptPrefillBench) void {
+        self.session.deinit();
+    }
+
+    fn run(self: *GptPrefillBench) void {
+        self.session.reset();
+        self.last = switch (self.mode) {
+            .sequential => blk: {
+                var last: []const f32 = &.{};
+                for (self.tokens) |tok| last = self.session.step(tok) catch unreachable;
+                break :blk last;
+            },
+            .batched => self.session.prefill(&self.tokens) catch unreachable,
+        };
+    }
+
+    fn consume(self: *GptPrefillBench) f64 {
+        return checksum(self.last);
+    }
+};
+
+fn benchGptPrefill(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
+    try w.print("\nGPT Persistent Prefill\n", .{});
+    try w.print("----------------------\n", .{});
+
+    var sequential = try GptPrefillBench.init(alloc, .sequential);
+    defer sequential.deinit();
+    var batched = try GptPrefillBench.init(alloc, .batched);
+    defer batched.deinit();
+
+    const tokens = @as(f64, @floatFromInt(GptPrefillPromptLen));
+    const seq_stats = measure(io, &sequential);
+    const batched_stats = measure(io, &batched);
+    try printStats(w, "gpt prefill step loop", "tokens", tokens, "tok", seq_stats);
+    try printStats(w, "gpt prefill batched", "tokens", tokens, "tok", batched_stats);
+}
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const alloc = init.gpa;
@@ -481,6 +567,7 @@ pub fn main(init: std.process.Init) !void {
     try benchMatmul(io, alloc, w);
     try benchNorms(io, alloc, w);
     try benchDecodeGraph(io, alloc, w);
+    try benchGptPrefill(io, alloc, w);
 
     try w.print("\n", .{});
     writer.interface.flush() catch {};
