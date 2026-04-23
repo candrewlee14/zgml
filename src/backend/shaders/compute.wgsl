@@ -142,9 +142,15 @@ fn main(@builtin(global_invocation_id) gid_v : vec3<u32>) {
                 dst[dst_base + j] = e;
                 s += e;
             }
-            let inv = 1.0 / s;
-            for (var j: u32 = 0u; j < cols; j++) {
-                dst[dst_base + j] *= inv;
+            if (s > 0.0) {
+                let inv = 1.0 / s;
+                for (var j: u32 = 0u; j < cols; j++) {
+                    dst[dst_base + j] *= inv;
+                }
+            } else {
+                for (var j: u32 = 0u; j < cols; j++) {
+                    dst[dst_base + j] = 0.0;
+                }
             }
         }
         // ── Fused layer norm: one thread per row ──
