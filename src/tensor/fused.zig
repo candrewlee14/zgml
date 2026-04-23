@@ -1442,6 +1442,69 @@ fn executeLayerNormPlan(comptime T: type, plan: LayerNormPlan(T)) void {
     const var_scale = scalarValueFromBroadcast(T, var_node.source1().?);
     const eps = scalarValueFromBroadcast(T, rep_eps);
 
+    if (input.isContiguous() and output.isContiguous() and
+        sum_node.isContiguous() and mean_node.isContiguous() and
+        var_sum.isContiguous() and var_node.isContiguous() and
+        rep_eps.isContiguous() and var_eps.isContiguous() and
+        sqrt_node.isContiguous() and recip_node.isContiguous() and
+        rep_mean.isContiguous() and neg_rep_mean.isContiguous() and
+        centered.isContiguous() and sqr_node.isContiguous() and
+        rep_std_inv.isContiguous() and
+        sum_node.ne[0] == 1 and
+        sum_node.ne[1] == input.ne[1] and
+        sum_node.ne[2] == input.ne[2] and
+        sum_node.ne[3] == input.ne[3] and
+        mean_node.isSameShape(sum_node) and
+        var_sum.isSameShape(sum_node) and
+        var_node.isSameShape(sum_node) and
+        rep_eps.isSameShape(sum_node) and
+        var_eps.isSameShape(sum_node) and
+        sqrt_node.isSameShape(sum_node) and
+        recip_node.isSameShape(sum_node))
+    {
+        const n = input.ne[0];
+        const groups = input.data.len / n;
+        var g: usize = 0;
+        while (g < groups) : (g += 1) {
+            const base = g * n;
+            const src = input.data[base .. base + n];
+
+            var sum: T = 0;
+            for (src) |v| sum += v;
+            const mean = sum * mean_scale;
+            sum_node.data[g] = sum;
+            mean_node.data[g] = mean;
+
+            var var_sum_v: T = 0;
+            for (0..n) |i| {
+                const idx = base + i;
+                const centered_v = input.data[idx] - mean;
+                const sq = centered_v * centered_v;
+                rep_mean.data[idx] = mean;
+                neg_rep_mean.data[idx] = -mean;
+                centered.data[idx] = centered_v;
+                sqr_node.data[idx] = sq;
+                var_sum_v += sq;
+            }
+
+            var_sum.data[g] = var_sum_v;
+            const var_v = var_sum_v * var_scale;
+            var_node.data[g] = var_v;
+            rep_eps.data[g] = eps;
+            var_eps.data[g] = var_v + eps;
+            sqrt_node.data[g] = @sqrt(var_eps.data[g]);
+            recip_node.data[g] = 1.0 / sqrt_node.data[g];
+            const std_inv = recip_node.data[g];
+
+            for (0..n) |i| {
+                const idx = base + i;
+                rep_std_inv.data[idx] = std_inv;
+                output.data[idx] = centered.data[idx] * std_inv;
+            }
+        }
+        return;
+    }
+
     @memset(sum_node.data, 0);
     for (0..input.ne[3]) |d3| {
         for (0..input.ne[2]) |d2| {
@@ -1577,4 +1640,3 @@ test "fused - swapped commutative 3-op chain" {
         try std.testing.expectApproxEqAbs(exp, actual, 1e-5);
     }
 }
-
