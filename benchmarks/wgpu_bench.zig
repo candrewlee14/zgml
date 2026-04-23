@@ -250,6 +250,303 @@ fn benchWgpuPipeline(
     });
 }
 
+fn cpuAttention(
+    dst: []f32,
+    q: []const f32,
+    k: []const f32,
+    v: []const f32,
+    mask: []const f32,
+    d_head: usize,
+    seq_q: usize,
+    seq_kv: usize,
+    scale: f32,
+) void {
+    const neg_inf = -std.math.inf(f32);
+    var weights: [4096]f32 = undefined;
+
+    for (0..seq_q) |qi| {
+        var max_score = neg_inf;
+        for (0..seq_kv) |s| {
+            const mask_add = mask[qi * seq_kv + s];
+            if (!std.math.isFinite(mask_add)) {
+                weights[s] = neg_inf;
+                continue;
+            }
+            var dot: f32 = 0.0;
+            const q_off = qi * d_head;
+            const k_off = s * d_head;
+            for (0..d_head) |r| dot += q[q_off + r] * k[k_off + r];
+            const score = dot * scale + mask_add;
+            weights[s] = score;
+            max_score = @max(max_score, score);
+        }
+
+        var sum: f32 = 0.0;
+        if (max_score != neg_inf) {
+            for (0..seq_kv) |s| {
+                if (weights[s] == neg_inf) {
+                    weights[s] = 0.0;
+                } else {
+                    weights[s] = @exp(weights[s] - max_score);
+                    sum += weights[s];
+                }
+            }
+        } else {
+            @memset(weights[0..seq_kv], 0.0);
+        }
+
+        const inv_sum: f32 = if (sum > 0.0) 1.0 / sum else 0.0;
+        for (0..d_head) |r| {
+            var acc: f32 = 0.0;
+            for (0..seq_kv) |s| acc += weights[s] * inv_sum * v[s * d_head + r];
+            dst[qi * d_head + r] = acc;
+        }
+    }
+}
+
+fn benchCpuAttention(
+    d_head: usize,
+    seq_q: usize,
+    seq_kv: usize,
+    writer: anytype,
+    io: std.Io,
+) !void {
+    const scale = 1.0 / @sqrt(@as(f32, @floatFromInt(d_head)));
+    const q = try std.heap.page_allocator.alloc(f32, d_head * seq_q);
+    defer std.heap.page_allocator.free(q);
+    const k = try std.heap.page_allocator.alloc(f32, d_head * seq_kv);
+    defer std.heap.page_allocator.free(k);
+    const v = try std.heap.page_allocator.alloc(f32, d_head * seq_kv);
+    defer std.heap.page_allocator.free(v);
+    const mask = try std.heap.page_allocator.alloc(f32, seq_q * seq_kv);
+    defer std.heap.page_allocator.free(mask);
+    const dst = try std.heap.page_allocator.alloc(f32, d_head * seq_q);
+    defer std.heap.page_allocator.free(dst);
+
+    for (q, 0..) |*x, i| x.* = @sin(@as(f32, @floatFromInt(i)) * 0.03125);
+    for (k, 0..) |*x, i| x.* = @cos(@as(f32, @floatFromInt(i)) * 0.0234375);
+    for (v, 0..) |*x, i| x.* = @sin(@as(f32, @floatFromInt(i)) * 0.015625) * 0.5;
+    for (0..seq_q) |qi| {
+        @memset(mask[qi * seq_kv ..][0..seq_kv], 0.0);
+    }
+
+    for (0..WARMUP) |_| cpuAttention(dst, q, k, v, mask, d_head, seq_q, seq_kv, scale);
+
+    const t0 = std.Io.Clock.awake.now(io).nanoseconds;
+    for (0..ITERS) |_| cpuAttention(dst, q, k, v, mask, d_head, seq_q, seq_kv, scale);
+    const elapsed_ns: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds - t0);
+
+    const per_iter_us = @as(f64, @floatFromInt(elapsed_ns)) / 1000.0 / @as(f64, @floatFromInt(ITERS));
+    const flops = 4.0 * @as(f64, @floatFromInt(d_head)) * @as(f64, @floatFromInt(seq_q)) * @as(f64, @floatFromInt(seq_kv));
+    const gflops = flops * @as(f64, @floatFromInt(ITERS)) / @as(f64, @floatFromInt(elapsed_ns));
+
+    try writer.print("    {s:<12} {d:8.1} us/iter  {d:6.2} GFLOPS\n", .{ "CPU", per_iter_us, gflops });
+}
+
+fn benchWgpuAttention(
+    be: backend_mod.Backend,
+    d_head: usize,
+    seq_q: usize,
+    seq_kv: usize,
+    include_refresh: bool,
+    writer: anytype,
+    io: std.Io,
+) !void {
+    const scale = 1.0 / @sqrt(@as(f32, @floatFromInt(d_head)));
+    const q = try std.heap.page_allocator.alloc(f32, d_head * seq_q);
+    defer std.heap.page_allocator.free(q);
+    const k = try std.heap.page_allocator.alloc(f32, d_head * seq_kv);
+    defer std.heap.page_allocator.free(k);
+    const v = try std.heap.page_allocator.alloc(f32, d_head * seq_kv);
+    defer std.heap.page_allocator.free(v);
+    const mask = try std.heap.page_allocator.alloc(f32, seq_q * seq_kv);
+    defer std.heap.page_allocator.free(mask);
+    const dst = try std.heap.page_allocator.alloc(f32, d_head * seq_q);
+    defer std.heap.page_allocator.free(dst);
+
+    for (q, 0..) |*x, i| x.* = @sin(@as(f32, @floatFromInt(i)) * 0.03125);
+    for (k, 0..) |*x, i| x.* = @cos(@as(f32, @floatFromInt(i)) * 0.0234375);
+    for (v, 0..) |*x, i| x.* = @sin(@as(f32, @floatFromInt(i)) * 0.015625) * 0.5;
+    for (0..seq_q) |qi| {
+        @memset(mask[qi * seq_kv ..][0..seq_kv], 0.0);
+    }
+
+    var ops = [_]backend_mod.DeviceOp{.{ .attention = .{
+        .dst = 4,
+        .q = 0,
+        .k = 1,
+        .v = 2,
+        .mask = 3,
+        .has_mask = true,
+        .d_head = @intCast(d_head),
+        .seq_q = @intCast(seq_q),
+        .seq_kv = @intCast(seq_kv),
+        .scale = scale,
+        .q_off = 0,
+        .k_off = 0,
+        .v_off = 0,
+        .mask_off = 0,
+        .dst_off = 0,
+        .q_rs = 1,
+        .q_cs = @intCast(d_head),
+        .k_rs = 1,
+        .k_cs = @intCast(d_head),
+        .v_rs = 1,
+        .v_cs = @intCast(d_head),
+        .mask_rs = 1,
+        .mask_cs = @intCast(seq_kv),
+        .dst_rs = 1,
+        .dst_cs = @intCast(d_head),
+    } }};
+    const buf_sizes = [_]usize{ q.len, k.len, v.len, mask.len, dst.len };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(q.ptr), .size = @intCast(q.len * @sizeOf(f32)) },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(k.ptr), .size = @intCast(k.len * @sizeOf(f32)) },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(v.ptr), .size = @intCast(v.len * @sizeOf(f32)) },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(mask.ptr), .size = @intCast(mask.len * @sizeOf(f32)) },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 5,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+    };
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 4, .host_ptr = @ptrCast(dst.ptr), .size = @intCast(dst.len * @sizeOf(f32)) }};
+
+    for (0..WARMUP) |_| {
+        if (include_refresh) be.refreshProgram(handle, &ops);
+        be.executeProgram(handle, &.{}, &out);
+    }
+
+    const t0 = std.Io.Clock.awake.now(io).nanoseconds;
+    for (0..ITERS) |_| {
+        if (include_refresh) be.refreshProgram(handle, &ops);
+        be.executeProgram(handle, &.{}, &out);
+    }
+    const elapsed_ns: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds - t0);
+
+    const per_iter_us = @as(f64, @floatFromInt(elapsed_ns)) / 1000.0 / @as(f64, @floatFromInt(ITERS));
+    const flops = 4.0 * @as(f64, @floatFromInt(d_head)) * @as(f64, @floatFromInt(seq_q)) * @as(f64, @floatFromInt(seq_kv));
+    const gflops = flops * @as(f64, @floatFromInt(ITERS)) / @as(f64, @floatFromInt(elapsed_ns));
+
+    try writer.print("    {s:<12} {d:8.1} us/iter  {d:6.2} GFLOPS\n", .{
+        if (include_refresh) "WebGPU+ref" else "WebGPU",
+        per_iter_us,
+        gflops,
+    });
+}
+
+fn benchWgpuAttentionPipeline(
+    be: backend_mod.Backend,
+    comptime n_ops: usize,
+    d_head: usize,
+    seq_q: usize,
+    seq_kv: usize,
+    include_refresh: bool,
+    writer: anytype,
+    io: std.Io,
+) !void {
+    const scale = 1.0 / @sqrt(@as(f32, @floatFromInt(d_head)));
+    const q = try std.heap.page_allocator.alloc(f32, d_head * seq_q);
+    defer std.heap.page_allocator.free(q);
+    const k = try std.heap.page_allocator.alloc(f32, d_head * seq_kv);
+    defer std.heap.page_allocator.free(k);
+    const v = try std.heap.page_allocator.alloc(f32, d_head * seq_kv);
+    defer std.heap.page_allocator.free(v);
+    const mask = try std.heap.page_allocator.alloc(f32, seq_q * seq_kv);
+    defer std.heap.page_allocator.free(mask);
+    const dst = try std.heap.page_allocator.alloc(f32, d_head * seq_q);
+    defer std.heap.page_allocator.free(dst);
+
+    for (q, 0..) |*x, i| x.* = @sin(@as(f32, @floatFromInt(i)) * 0.03125);
+    for (k, 0..) |*x, i| x.* = @cos(@as(f32, @floatFromInt(i)) * 0.0234375);
+    for (v, 0..) |*x, i| x.* = @sin(@as(f32, @floatFromInt(i)) * 0.015625) * 0.5;
+    for (0..seq_q) |qi| {
+        @memset(mask[qi * seq_kv ..][0..seq_kv], 0.0);
+    }
+
+    var ops: [n_ops]backend_mod.DeviceOp = undefined;
+    for (0..n_ops) |i| {
+        ops[i] = .{ .attention = .{
+            .dst = 4,
+            .q = 0,
+            .k = 1,
+            .v = 2,
+            .mask = 3,
+            .has_mask = true,
+            .d_head = @intCast(d_head),
+            .seq_q = @intCast(seq_q),
+            .seq_kv = @intCast(seq_kv),
+            .scale = scale,
+            .q_off = 0,
+            .k_off = 0,
+            .v_off = 0,
+            .mask_off = 0,
+            .dst_off = 0,
+            .q_rs = 1,
+            .q_cs = @intCast(d_head),
+            .k_rs = 1,
+            .k_cs = @intCast(d_head),
+            .v_rs = 1,
+            .v_cs = @intCast(d_head),
+            .mask_rs = 1,
+            .mask_cs = @intCast(seq_kv),
+            .dst_rs = 1,
+            .dst_cs = @intCast(d_head),
+        } };
+    }
+
+    const buf_sizes = [_]usize{ q.len, k.len, v.len, mask.len, dst.len };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(q.ptr), .size = @intCast(q.len * @sizeOf(f32)) },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(k.ptr), .size = @intCast(k.len * @sizeOf(f32)) },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(v.ptr), .size = @intCast(v.len * @sizeOf(f32)) },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(mask.ptr), .size = @intCast(mask.len * @sizeOf(f32)) },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 5,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+    };
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 4, .host_ptr = @ptrCast(dst.ptr), .size = @intCast(dst.len * @sizeOf(f32)) }};
+
+    for (0..WARMUP) |_| {
+        if (include_refresh) be.refreshProgram(handle, &ops);
+        be.executeProgram(handle, &.{}, &out);
+    }
+
+    const t0 = std.Io.Clock.awake.now(io).nanoseconds;
+    for (0..ITERS) |_| {
+        if (include_refresh) be.refreshProgram(handle, &ops);
+        be.executeProgram(handle, &.{}, &out);
+    }
+    const elapsed_ns: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds - t0);
+
+    const per_iter_us = @as(f64, @floatFromInt(elapsed_ns)) / 1000.0 / @as(f64, @floatFromInt(ITERS));
+    const flops = 4.0 *
+        @as(f64, @floatFromInt(d_head)) *
+        @as(f64, @floatFromInt(seq_q)) *
+        @as(f64, @floatFromInt(seq_kv)) *
+        @as(f64, @floatFromInt(n_ops));
+    const gflops = flops * @as(f64, @floatFromInt(ITERS)) / @as(f64, @floatFromInt(elapsed_ns));
+    const per_op_us = per_iter_us / @as(f64, @floatFromInt(n_ops));
+
+    try writer.print("    {d:>2} ops {s:<7} {d:8.1} us/iter  {d:6.2} GFLOPS  ({d:.1} us/op)\n", .{
+        n_ops,
+        if (include_refresh) "+ref" else "",
+        per_iter_us,
+        gflops,
+        per_op_us,
+    });
+}
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const stdout_file = std.Io.File.stdout();
@@ -309,6 +606,30 @@ pub fn main(init: std.process.Init) !void {
     try benchWgpuPipeline(wgpu, 1, pipe_m2, pipe_n2, pipe_k2, &w.interface, io);
     try benchWgpuPipeline(wgpu, 12, pipe_m2, pipe_n2, pipe_k2, &w.interface, io);
     try benchWgpuPipeline(wgpu, 24, pipe_m2, pipe_n2, pipe_k2, &w.interface, io);
+
+    try w.interface.print("\n── Attention (compiled device op) ──\n\n", .{});
+
+    const attn_shapes = [_][3]usize{
+        .{ 64, 1, 128 },
+        .{ 64, 1, 512 },
+        .{ 64, 1, 2048 },
+        .{ 128, 1, 2048 },
+        .{ 64, 16, 512 },
+    };
+
+    for (attn_shapes) |shape| {
+        try w.interface.print("  d_head={d}, seq_q={d}, seq_kv={d}:\n", .{ shape[0], shape[1], shape[2] });
+        try benchCpuAttention(shape[0], shape[1], shape[2], &w.interface, io);
+        try benchWgpuAttention(wgpu, shape[0], shape[1], shape[2], false, &w.interface, io);
+        try benchWgpuAttention(wgpu, shape[0], shape[1], shape[2], true, &w.interface, io);
+    }
+
+    try w.interface.print("\n── Attention pipeline (1 sync, repeated ops) ──\n\n", .{});
+    try w.interface.print("  d_head=64, seq_q=1, seq_kv=2048:\n", .{});
+    try benchWgpuAttentionPipeline(wgpu, 1, 64, 1, 2048, false, &w.interface, io);
+    try benchWgpuAttentionPipeline(wgpu, 12, 64, 1, 2048, false, &w.interface, io);
+    try benchWgpuAttentionPipeline(wgpu, 24, 64, 1, 2048, false, &w.interface, io);
+    try benchWgpuAttentionPipeline(wgpu, 24, 64, 1, 2048, true, &w.interface, io);
 
     try w.interface.print("\n", .{});
     w.interface.flush() catch {};

@@ -15,6 +15,7 @@ struct AttentionParams {
 
 const WG_SIZE: u32 = 64u;
 const MAX_SEQ_KV: u32 = 4096u;
+const MAX_D_HEAD: u32 = 512u;
 const NEG_INF: f32 = -3.402823466e+38;
 const FLT_MAX: f32 = 3.402823466e+38;
 
@@ -27,6 +28,7 @@ const FLT_MAX: f32 = 3.402823466e+38;
 
 var<workgroup> reduce_buf : array<f32, WG_SIZE>;
 var<workgroup> score_buf  : array<f32, MAX_SEQ_KV>;
+var<workgroup> q_buf      : array<f32, MAX_D_HEAD>;
 
 fn isFiniteVal(x: f32) -> bool {
     return x == x && abs(x) <= FLT_MAX;
@@ -36,11 +38,8 @@ fn scoreFor(qi: u32, s: u32) -> f32 {
     let d_head = p.dims0.x;
     let has_mask = p.dims0.w;
     let scale = p.scale_pad.x;
-    let q_off = p.offsets0.x;
     let k_off = p.offsets0.y;
     let mask_off = p.offsets0.w;
-    let q_rs = p.offsets1.y;
-    let q_cs = p.offsets1.z;
     let k_rs = p.strides0.x;
     let k_cs = p.strides0.y;
     let mask_rs = p.strides1.x;
@@ -48,9 +47,8 @@ fn scoreFor(qi: u32, s: u32) -> f32 {
 
     var dot: f32 = 0.0;
     for (var r: u32 = 0u; r < d_head; r = r + 1u) {
-        let q_idx = q_off + r * q_rs + qi * q_cs;
         let k_idx = k_off + r * k_rs + s * k_cs;
-        dot += Q[q_idx] * K[k_idx];
+        dot += q_buf[r] * K[k_idx];
     }
 
     var score = dot * scale;
@@ -105,17 +103,25 @@ fn main(
     let seq_q = p.dims0.y;
     let seq_kv = p.dims0.z;
     let d_head = p.dims0.x;
+    let q_off = p.offsets0.x;
     let v_off = p.offsets0.z;
     let dst_off = p.offsets1.x;
+    let q_rs = p.offsets1.y;
+    let q_cs = p.offsets1.z;
     let v_rs = p.strides0.z;
     let v_cs = p.strides0.w;
     let dst_rs = p.strides1.z;
     let dst_cs = p.strides1.w;
     let qi = workgroup_id.x;
     let tid = local_id.x;
-    if (qi >= seq_q || seq_kv > MAX_SEQ_KV) {
+    if (qi >= seq_q || seq_kv > MAX_SEQ_KV || d_head > MAX_D_HEAD) {
         return;
     }
+
+    for (var r = tid; r < d_head; r = r + WG_SIZE) {
+        q_buf[r] = Q[q_off + r * q_rs + qi * q_cs];
+    }
+    workgroupBarrier();
 
     var local_max = NEG_INF;
     for (var s = tid; s < seq_kv; s = s + WG_SIZE) {

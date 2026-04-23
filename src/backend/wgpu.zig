@@ -21,6 +21,7 @@ const MATMUL_BN: u32 = 64; // matmul output cols per workgroup
 const WG_SIZE: u32 = 256; // compute.wgsl workgroup size
 const ATTN_WG_SIZE: u32 = 64; // attention.wgsl workgroup size
 const ATTN_MAX_SEQ_KV: u32 = 4096; // bounded workgroup score buffer
+const ATTN_MAX_D_HEAD: u32 = 512; // bounded workgroup query cache
 
 // ── Shader sources (embedded at comptime) ─────────────────────────
 
@@ -819,7 +820,7 @@ fn buildDispatch(
             return computeDispatch(be, bufs, p, rr.src, rr.cos_sin, rr.dst, (n + WG_SIZE - 1) / WG_SIZE);
         },
         .attention => |att| {
-            if (att.seq_kv > ATTN_MAX_SEQ_KV) return null;
+            if (att.seq_kv > ATTN_MAX_SEQ_KV or att.d_head > ATTN_MAX_D_HEAD) return null;
 
             const params = attentionParams(att);
             const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
