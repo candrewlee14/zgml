@@ -220,7 +220,7 @@ fn createShaderModule(device: c.WGPUDevice, src: [*:0]const u8) ?c.WGPUShaderMod
         .code = .{ .data = src, .length = std.mem.len(src) },
     };
     const desc = c.WGPUShaderModuleDescriptor{
-        .nextInChain = @constCast(@ptrCast(&wgsl_desc.chain)),
+        .nextInChain = @ptrCast(@constCast(&wgsl_desc.chain)),
     };
     return c.wgpuDeviceCreateShaderModule(device, &desc);
 }
@@ -610,7 +610,9 @@ fn buildDispatch(
             // F16 weight path: B buffer has a pre-packed f16 shadow.
             if (bufs[m.b].f16_buf) |f16_b| {
                 const params = MatMulF16Params{
-                    .M = @intCast(m.geom.M), .N = @intCast(m.geom.N), .K = @intCast(m.geom.K),
+                    .M = @intCast(m.geom.M),
+                    .N = @intCast(m.geom.N),
+                    .K = @intCast(m.geom.K),
                     .a_offset = @intCast(m.geom.a_offset),
                     .dst_offset = @intCast(m.geom.dst_offset),
                     .dst_row_stride = @intCast(m.geom.dst_row_stride),
@@ -632,11 +634,17 @@ fn buildDispatch(
             }
             // F32 path.
             const params = MatMulParams{
-                .M = @intCast(m.geom.M), .N = @intCast(m.geom.N), .K = @intCast(m.geom.K),
-                .a_row_stride = @intCast(m.geom.a_row_stride), .a_col_stride = @intCast(m.geom.a_col_stride),
-                .b_row_stride = @intCast(m.geom.b_row_stride), .b_col_stride = @intCast(m.geom.b_col_stride),
-                .a_offset = @intCast(m.geom.a_offset), .b_offset = @intCast(m.geom.b_offset),
-                .dst_offset = @intCast(m.geom.dst_offset), .dst_row_stride = @intCast(m.geom.dst_row_stride),
+                .M = @intCast(m.geom.M),
+                .N = @intCast(m.geom.N),
+                .K = @intCast(m.geom.K),
+                .a_row_stride = @intCast(m.geom.a_row_stride),
+                .a_col_stride = @intCast(m.geom.a_col_stride),
+                .b_row_stride = @intCast(m.geom.b_row_stride),
+                .b_col_stride = @intCast(m.geom.b_col_stride),
+                .a_offset = @intCast(m.geom.a_offset),
+                .b_offset = @intCast(m.geom.b_offset),
+                .dst_offset = @intCast(m.geom.dst_offset),
+                .dst_row_stride = @intCast(m.geom.dst_row_stride),
             };
             const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
             const entries = [_]c.WGPUBindGroupEntry{
@@ -845,6 +853,23 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
     for (program.ops) |op| {
         if (buildDispatch(self, device_bufs, qweight_views, op)) |d| {
             dispatch_list.append(alloc, d) catch return null;
+        } else {
+            for (dispatch_list.items) |d| {
+                c.wgpuBindGroupRelease(d.bind_group);
+                c.wgpuBufferRelease(d.uniform_buf);
+            }
+            dispatch_list.deinit(alloc);
+            for (qweight_views) |qv| {
+                c.wgpuBufferRelease(qv.data.buf);
+                c.wgpuBufferRelease(qv.scales.buf);
+            }
+            alloc.free(qweight_views);
+            for (device_bufs) |db| {
+                if (db.f16_buf != null) c.wgpuBufferRelease(db.f16_buf);
+                c.wgpuBufferRelease(db.buf);
+            }
+            alloc.free(device_bufs);
+            return null;
         }
     }
     const dispatches = dispatch_list.toOwnedSlice(alloc) catch return null;

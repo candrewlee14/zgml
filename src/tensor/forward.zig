@@ -31,6 +31,16 @@ const GELU_COEF_A: comptime_float = 0.044715;
 /// √(2/π), computed from std.math.pi.
 const SQRT_2_OVER_PI: comptime_float = @sqrt(2.0 / std.math.pi);
 
+/// Per-call stack scratch used by softmax/RMSNorm grouped normalizers.
+/// Keeps common long-sequence reductions off the allocator without adding API.
+const normalizer_stack_scratch_len: usize = 4096;
+
+/// Fallback scratch allocator for uncommon reductions beyond the stack budget.
+const normalizer_scratch_allocator = switch (builtin.cpu.arch) {
+    .wasm32, .wasm64 => std.heap.wasm_allocator,
+    else => std.heap.smp_allocator,
+};
+
 // ---------------------------------------------------------------------------
 // SIMD primitives
 // ---------------------------------------------------------------------------
@@ -1273,22 +1283,23 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             var reduce_elems: usize = 1;
             for (0..4) |i| reduce_elems *= reduce_ne[i];
 
-            // Scratch for per-group max and sum. Stack for small groups, heap otherwise.
-            var max_stack: [256]T = undefined;
-            var sum_stack: [256]T = undefined;
+            // Scratch for per-group max and sum. Stack for common groups,
+            // allocator fallback only for unusually large grouped reductions.
+            var max_stack: [normalizer_stack_scratch_len]T = undefined;
+            var sum_stack: [normalizer_stack_scratch_len]T = undefined;
             var max_heap: ?[]T = null;
             var sum_heap: ?[]T = null;
-            defer if (max_heap) |b| std.heap.page_allocator.free(b);
-            defer if (sum_heap) |b| std.heap.page_allocator.free(b);
+            defer if (max_heap) |b| normalizer_scratch_allocator.free(b);
+            defer if (sum_heap) |b| normalizer_scratch_allocator.free(b);
             const max_buf: []T = blk: {
-                if (reduce_elems <= 256) break :blk max_stack[0..reduce_elems];
-                const heap = std.heap.page_allocator.alloc(T, reduce_elems) catch @panic("softmax scratch alloc");
+                if (reduce_elems <= normalizer_stack_scratch_len) break :blk max_stack[0..reduce_elems];
+                const heap = normalizer_scratch_allocator.alloc(T, reduce_elems) catch @panic("softmax scratch alloc");
                 max_heap = heap;
                 break :blk heap;
             };
             const sum_buf: []T = blk: {
-                if (reduce_elems <= 256) break :blk sum_stack[0..reduce_elems];
-                const heap = std.heap.page_allocator.alloc(T, reduce_elems) catch @panic("softmax scratch alloc");
+                if (reduce_elems <= normalizer_stack_scratch_len) break :blk sum_stack[0..reduce_elems];
+                const heap = normalizer_scratch_allocator.alloc(T, reduce_elems) catch @panic("softmax scratch alloc");
                 sum_heap = heap;
                 break :blk heap;
             };
@@ -1397,12 +1408,12 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 return;
             }
 
-            var scratch_stack: [256]T = undefined;
+            var scratch_stack: [normalizer_stack_scratch_len]T = undefined;
             var scratch_heap: ?[]T = null;
-            defer if (scratch_heap) |b| std.heap.page_allocator.free(b);
+            defer if (scratch_heap) |b| normalizer_scratch_allocator.free(b);
             const sum_sq: []T = blk: {
-                if (reduce_elems <= 256) break :blk scratch_stack[0..reduce_elems];
-                const heap = std.heap.page_allocator.alloc(T, reduce_elems) catch @panic("rmsnorm scratch alloc");
+                if (reduce_elems <= normalizer_stack_scratch_len) break :blk scratch_stack[0..reduce_elems];
+                const heap = normalizer_scratch_allocator.alloc(T, reduce_elems) catch @panic("rmsnorm scratch alloc");
                 scratch_heap = heap;
                 break :blk heap;
             };
@@ -2150,6 +2161,48 @@ test "computeSoftmax - all -inf row yields zeros (no NaN)" {
     for (y.data) |v| try std.testing.expectEqual(@as(T, 0), v);
 }
 
+test "computeSoftmax - grouped reduction over old scratch boundary" {
+    const T = f32;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const rows: usize = 4;
+    const cols: usize = 513;
+    const x = try Tensor(T).init(a, &.{ rows, cols });
+    for (x.data, 0..) |*v, i| {
+        const centered = @as(i32, @intCast(i % 17)) - 8;
+        v.* = @as(T, @floatFromInt(centered)) * 0.125;
+    }
+
+    const y = x.softmax(&.{ 1, cols });
+    y.computeSoftmax(x);
+
+    for (0..cols) |col| {
+        var m: T = -std.math.inf(T);
+        for (0..rows) |r| {
+            const v = x.data[col * x.strides[1] + r * x.strides[0]];
+            m = @max(m, v);
+        }
+
+        var s: T = 0;
+        for (0..rows) |r| {
+            const v = x.data[col * x.strides[1] + r * x.strides[0]];
+            s += @exp(v - m);
+        }
+
+        var got_sum: T = 0;
+        for (0..rows) |r| {
+            const idx = col * x.strides[1] + r * x.strides[0];
+            const want = @exp(x.data[idx] - m) / s;
+            const got = y.data[col * y.strides[1] + r * y.strides[0]];
+            got_sum += got;
+            try std.testing.expectApproxEqAbs(want, got, 1e-6);
+        }
+        try std.testing.expectApproxEqAbs(@as(T, 1), got_sum, 1e-6);
+    }
+}
+
 test "computeRmsNorm - row reduce matches explicit formula" {
     const T = f32;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2211,6 +2264,45 @@ test "computeRmsNorm - all-zero input stays finite via eps" {
     for (y.data) |v| {
         try std.testing.expect(std.math.isFinite(v));
         try std.testing.expectEqual(@as(T, 0), v);
+    }
+}
+
+test "computeRmsNorm - generic grouped reduction over old scratch boundary" {
+    const T = f32;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const dim0: usize = 2;
+    const dim1: usize = 3;
+    const dim2: usize = 257;
+    const x = try Tensor(T).init(a, &.{ dim0, dim1, dim2 });
+    for (x.data, 0..) |*v, i| {
+        const centered = @as(i32, @intCast(i % 23)) - 11;
+        v.* = @as(T, @floatFromInt(centered)) * 0.05;
+    }
+    const eps: T = 1e-5;
+
+    // Reduce axis 1 so the generic grouped path owns 2 * 257 scratch entries.
+    const y = x.rmsNorm(&.{ dim0, 1, dim2 }, eps);
+    y.computeRmsNorm(x);
+
+    for (0..dim2) |d2| {
+        for (0..dim0) |a0| {
+            var sum_sq: T = 0;
+            for (0..dim1) |b| {
+                const idx = a0 * x.strides[0] + b * x.strides[1] + d2 * x.strides[2];
+                const v = x.data[idx];
+                sum_sq += v * v;
+            }
+
+            const inv_rms = 1.0 / @sqrt(sum_sq / @as(T, @floatFromInt(dim1)) + eps);
+            for (0..dim1) |b| {
+                const idx = a0 * x.strides[0] + b * x.strides[1] + d2 * x.strides[2];
+                const got = y.data[a0 * y.strides[0] + b * y.strides[1] + d2 * y.strides[2]];
+                try std.testing.expectApproxEqAbs(x.data[idx] * inv_rms, got, 1e-6);
+            }
+        }
     }
 }
 

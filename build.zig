@@ -202,6 +202,42 @@ pub fn build(b: *std.Build) void {
     const bench_build_step = b.step("bench-build", "Build zgml benchmarks");
     bench_build_step.dependOn(&bench_exe.step);
 
+    const frontier_opt = .ReleaseFast;
+    const frontier_options_step = b.addOptions();
+    frontier_options_step.addOption(bool, "use_blas", build_opts.use_blas);
+    frontier_options_step.addOption(bool, "use_wgpu", build_opts.use_wgpu);
+    const frontier_options = frontier_options_step.createModule();
+    const frontier_tensor = b.createModule(.{
+        .root_source_file = b.path("src/tensor.zig"),
+        .target = target,
+        .optimize = frontier_opt,
+        .imports = &.{
+            .{ .name = "zgml_options", .module = frontier_options },
+        },
+        .link_libc = if (build_opts.use_blas) true else null,
+    });
+    if (build_opts.use_blas) {
+        frontier_tensor.addIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    const frontier_mod = b.createModule(.{
+        .root_source_file = b.path("benchmarks/frontier_bench.zig"),
+        .target = target,
+        .optimize = frontier_opt,
+        .imports = &.{
+            .{ .name = "zgml_options", .module = frontier_options },
+            .{ .name = "zgml_tensor", .module = frontier_tensor },
+        },
+    });
+    const frontier_exe = b.addExecutable(.{ .name = "bench-frontier", .root_module = frontier_mod });
+    if (build_opts.use_blas) {
+        linkBlas(target, frontier_exe);
+        frontier_exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/openblas" });
+    }
+    b.installArtifact(frontier_exe);
+    const frontier_step = b.step("bench-frontier", "Run decision-grade benchmark frontier");
+    frontier_step.dependOn(&b.addRunArtifact(frontier_exe).step);
+    bench_build_step.dependOn(&frontier_exe.step);
+
     _ = addExe(b, target, optimize, build_opts, .{
         .name = "mnist-bench",
         .src = "src/mnist_bench.zig",

@@ -9,11 +9,13 @@ const std = @import("std");
 
 const tensorlib = @import("./tensor.zig");
 const Tensor = tensorlib.Tensor;
+const tensor_forward = @import("tensor/forward.zig");
 const backend_mod = @import("backend.zig");
 const Op = @import("op.zig").Op;
 const loss = @import("loss.zig");
 const fusion = @import("fusion.zig");
 const fused = @import("tensor/fused.zig");
+const thread_pool_mod = @import("thread_pool.zig");
 const assert = std.debug.assert;
 const testing = std.testing;
 const Alloc = std.mem.Allocator;
@@ -73,6 +75,7 @@ pub fn ComputeGraph(comptime T: type) type {
         /// Optional thread pool for parallel matmul and elementwise ops.
         /// Null by default (single-threaded). Call `enableThreading()` to activate.
         n_threads: usize = 1,
+        thread_pool: ?*thread_pool_mod.ThreadPool = null,
         backend: ?backend_mod.Backend = null,
 
         const ExecutionStep = union(enum) {
@@ -132,6 +135,11 @@ pub fn ComputeGraph(comptime T: type) type {
         /// Clean up all the resources for this compute graph
         pub fn deinit(self: *Self) void {
             const alloc = self.arena.allocator();
+            if (self.thread_pool) |pool| {
+                pool.deinit();
+                alloc.destroy(pool);
+                self.thread_pool = null;
+            }
             self.deinitFusedChains();
             self.fused_skip.deinit(alloc);
             self.execution_steps.deinit(alloc);
@@ -148,7 +156,23 @@ pub fn ComputeGraph(comptime T: type) type {
         /// Uses all available CPU cores. Safe to call multiple times (no-op if already enabled).
         pub fn enableThreading(self: *Self) void {
             if (self.n_threads > 1) return;
-            self.n_threads = std.Thread.getCpuCount() catch 1;
+            const n_threads = std.Thread.getCpuCount() catch 1;
+            if (n_threads <= 1) return;
+
+            const alloc = self.arena.allocator();
+            const pool = alloc.create(thread_pool_mod.ThreadPool) catch {
+                self.n_threads = n_threads;
+                return;
+            };
+            pool.* = .{};
+            pool.init(alloc, n_threads - 1) catch {
+                alloc.destroy(pool);
+                self.n_threads = n_threads;
+                return;
+            };
+
+            self.thread_pool = pool;
+            self.n_threads = pool.threadCount();
         }
 
         pub fn setBackend(self: *Self, backend: backend_mod.Backend) void {
@@ -1479,12 +1503,119 @@ pub fn ComputeGraph(comptime T: type) type {
                 }
 
                 if (n_workers > 1) {
+                    if (self.thread_pool) |pool| {
+                        self.dispatchMatMulThreadPool(node, s0, s1, flags, pool);
+                        return;
+                    }
                     dispatchMatMulParallel(node, s0, s1, flags, n_workers);
                     return;
                 }
             }
 
             node.compute();
+        }
+
+        fn dispatchMatMulThreadPool(self: *const Self, node: *Tensor(T), s0: *const Tensor(T), s1: *const Tensor(T), flags: Tensor(T).MatMulFlags, pool: *thread_pool_mod.ThreadPool) void {
+            _ = self;
+            if (flags.trans0) {
+                if (flags.trans1) computeMatMulThreadPool(node, s0, true, s1, true, pool) else computeMatMulThreadPool(node, s0, true, s1, false, pool);
+            } else {
+                if (flags.trans1) computeMatMulThreadPool(node, s0, false, s1, true, pool) else computeMatMulThreadPool(node, s0, false, s1, false, pool);
+            }
+        }
+
+        fn computeMatMulThreadPool(dst: *Tensor(T), src0: *const Tensor(T), comptime trans0: bool, src1: *const Tensor(T), comptime trans1: bool, pool: *thread_pool_mod.ThreadPool) void {
+            dst.assertValidMatMulDims(src0, trans0, src1, trans1);
+            assert(dst.strides[0] == 1);
+
+            const M = if (trans0) src0.ne[0] else src0.ne[1];
+            const N = if (trans1) src1.ne[1] else src1.ne[0];
+            const K = if (trans0) src0.ne[1] else src0.ne[0];
+            const a_m_stride = if (trans0) src0.strides[0] else src0.strides[1];
+            const a_k_stride = if (trans0) src0.strides[1] else src0.strides[0];
+            const b_n_stride = if (trans1) src1.strides[1] else src1.strides[0];
+            const b_k_stride = if (trans1) src1.strides[0] else src1.strides[1];
+            const kernel = tensor_forward.selectMatMulRangeKernel(T);
+
+            const min_rows_per_thread = 4;
+            const n_workers = pool.threadCount();
+
+            const Context = struct {
+                dst_data: []T,
+                src0_data: []const T,
+                src1_data: []const T,
+                chunk: usize,
+                M: usize,
+                N: usize,
+                K: usize,
+                a_m_stride: usize,
+                a_k_stride: usize,
+                b_k_stride: usize,
+                b_n_stride: usize,
+                a_base: usize,
+                b_base: usize,
+                d_base: usize,
+                d_row_stride: usize,
+                kernel: tensor_forward.MatMulRangeFnType(T),
+
+                fn run(ctx: *@This(), task_index: usize) void {
+                    const m_start = task_index * ctx.chunk;
+                    const m_end = @min(m_start + ctx.chunk, ctx.M);
+                    if (m_start >= m_end) return;
+                    ctx.kernel(
+                        ctx.dst_data,
+                        ctx.src0_data,
+                        ctx.src1_data,
+                        m_start,
+                        m_end,
+                        ctx.N,
+                        ctx.K,
+                        ctx.a_m_stride,
+                        ctx.a_k_stride,
+                        ctx.b_k_stride,
+                        ctx.b_n_stride,
+                        ctx.a_base,
+                        ctx.b_base,
+                        ctx.d_base,
+                        ctx.d_row_stride,
+                    );
+                }
+            };
+
+            for (0..src0.ne[3]) |b3| {
+                for (0..src0.ne[2]) |b2| {
+                    const a_base = b3 * src0.strides[3] + b2 * src0.strides[2];
+                    const b_base = b3 * src1.strides[3] + b2 * src1.strides[2];
+                    const d_base = b3 * dst.strides[3] + b2 * dst.strides[2];
+
+                    if (M < min_rows_per_thread * 2 or n_workers <= 1) {
+                        kernel(dst.data, src0.data, src1.data, 0, M, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1]);
+                        continue;
+                    }
+
+                    const chunk = @max(min_rows_per_thread, (M + n_workers - 1) / n_workers);
+                    const task_count = (M + chunk - 1) / chunk;
+                    var ctx = Context{
+                        .dst_data = dst.data,
+                        .src0_data = src0.data,
+                        .src1_data = src1.data,
+                        .chunk = chunk,
+                        .M = M,
+                        .N = N,
+                        .K = K,
+                        .a_m_stride = a_m_stride,
+                        .a_k_stride = a_k_stride,
+                        .b_k_stride = b_k_stride,
+                        .b_n_stride = b_n_stride,
+                        .a_base = a_base,
+                        .b_base = b_base,
+                        .d_base = d_base,
+                        .d_row_stride = dst.strides[1],
+                        .kernel = kernel,
+                    };
+                    pool.parallelFor(Context, &ctx, task_count, Context.run);
+                }
+            }
         }
 
         fn dispatchMatMul(node: *Tensor(T), s0: *const Tensor(T), s1: *const Tensor(T), flags: Tensor(T).MatMulFlags, be: backend_mod.Backend) void {
@@ -1582,6 +1713,40 @@ test "tensor compute graph - matmul" {
             6, 15,
         };
         try testing.expectEqualSlices(f32, &expected, t1.grad.?.data);
+    }
+}
+
+test "threaded graph matmul matches single threaded" {
+    var g_single = ComputeGraph(f32).init(tac);
+    defer g_single.deinit();
+    var g_threaded = ComputeGraph(f32).init(tac);
+    defer g_threaded.deinit();
+
+    const lhs_single = try Tensor(f32).init(g_single.allocator(), &.{ 5, 16 });
+    const rhs_single = try Tensor(f32).init(g_single.allocator(), &.{ 7, 5 });
+    const lhs_threaded = try Tensor(f32).init(g_threaded.allocator(), &.{ 5, 16 });
+    const rhs_threaded = try Tensor(f32).init(g_threaded.allocator(), &.{ 7, 5 });
+
+    for (lhs_single.data, 0..) |*value, i| {
+        value.* = @as(f32, @floatFromInt((i % 13) + 1)) * 0.125;
+        lhs_threaded.data[i] = value.*;
+    }
+    for (rhs_single.data, 0..) |*value, i| {
+        value.* = @as(f32, @floatFromInt((i % 17) + 1)) * 0.0625;
+        rhs_threaded.data[i] = value.*;
+    }
+
+    const out_single = lhs_single.matMul(false, rhs_single, false);
+    const out_threaded = lhs_threaded.matMul(false, rhs_threaded, false);
+    try g_single.buildForward(out_single);
+    try g_threaded.buildForward(out_threaded);
+
+    g_single.computeNoGrad();
+    g_threaded.enableThreading();
+    g_threaded.computeNoGrad();
+
+    for (out_single.data, out_threaded.data) |expected, actual| {
+        try testing.expectApproxEqAbs(expected, actual, 1e-6);
     }
 }
 
