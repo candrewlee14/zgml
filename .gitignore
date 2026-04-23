@@ -19,5 +19,17 @@ zig-out/
 /build-*/
 /docgen_tmp/
 
+# Local package/cache artifacts.
+/zig-pkg/
+
+# Ad hoc root-level test binaries/scratch files.
+/test_mach
+/test_mach2
+/test_nano
+/test_timer
+/test_timer2
+/test_timer3
+/test_timer4
+
 data/*
 !data/.gitkeep
