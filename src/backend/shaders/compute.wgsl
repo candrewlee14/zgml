@@ -19,10 +19,18 @@ struct ComputeParams {
     src1_offset: u32,
 };
 
+struct ComputeDynamicParams {
+    slice_pos: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+};
+
 @group(0) @binding(0) var<storage, read>       src0 : array<f32>;
 @group(0) @binding(1) var<storage, read>       src1 : array<f32>;
 @group(0) @binding(2) var<storage, read_write> dst  : array<f32>;
 @group(0) @binding(3) var<uniform>             p    : ComputeParams;
+@group(0) @binding(4) var<uniform>             d    : ComputeDynamicParams;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid_v : vec3<u32>) {
@@ -121,7 +129,8 @@ fn main(@builtin(global_invocation_id) gid_v : vec3<u32>) {
         case 27u: {
             let row = gid % p.src0_ne0;
             let col = gid / p.src0_ne0;
-            let dst_idx = p.dst_offset + row * p.dst_str0 + col * p.dst_str1;
+            let dst_base = p.dst_offset + d.slice_pos * p.src1_ne0;
+            let dst_idx = dst_base + row * p.dst_str0 + col * p.dst_str1;
             let src_idx = p.src0_offset + row * p.src0_str0 + col * p.src0_str1;
             dst[dst_idx] = src0[src_idx];
         }

@@ -81,6 +81,13 @@ const ComputeParams = extern struct {
     _pad: u32 = 0, // align to 16 bytes
 };
 
+const ComputeDynamicParams = extern struct {
+    slice_pos: u32,
+    _pad0: u32 = 0,
+    _pad1: u32 = 0,
+    _pad2: u32 = 0,
+};
+
 const AttentionParams = extern struct {
     dims0: [4]u32,
     scale_pad: [4]f32,
@@ -442,6 +449,7 @@ const CompiledProgram = struct {
     device_bufs: []DeviceBuffer,
     qweight_views: []DeviceQWeight,
     dispatches: []PrebuiltDispatch,
+    compute_dynamic_buf: c.WGPUBuffer,
     attention_dynamic_buf: c.WGPUBuffer,
     staging_buf: c.WGPUBuffer,
     staging_size: usize,
@@ -453,6 +461,7 @@ const CompiledProgram = struct {
             c.wgpuBufferRelease(d.uniform_buf);
         }
         self.alloc.free(self.dispatches);
+        if (self.compute_dynamic_buf != null) c.wgpuBufferRelease(self.compute_dynamic_buf);
         if (self.attention_dynamic_buf != null) c.wgpuBufferRelease(self.attention_dynamic_buf);
         if (self.staging_buf != null) c.wgpuBufferRelease(self.staging_buf);
         for (self.device_bufs) |db| {
@@ -614,6 +623,7 @@ fn computeDispatch(
     src1: u16,
     dst: u16,
     gx: u32,
+    compute_dynamic_buf: c.WGPUBuffer,
 ) PrebuiltDispatch {
     const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
     const entries = [_]c.WGPUBindGroupEntry{
@@ -621,6 +631,7 @@ fn computeDispatch(
         bufEntry(1, bufs[src1].buf, bufs[src1].size),
         bufEntry(2, bufs[dst].buf, bufs[dst].size),
         bufEntry(3, ubuf, @sizeOf(ComputeParams)),
+        bufEntry(4, compute_dynamic_buf, @sizeOf(ComputeDynamicParams)),
     };
     return .{
         .pipeline = be.compute_pipeline,
@@ -638,10 +649,11 @@ fn sliceAssignComputeParams(sa: anytype) ComputeParams {
     p.src0_ne[0] = sa.rows;
     p.dst_strides[0] = sa.dst_row_stride;
     p.dst_strides[1] = sa.dst_col_stride;
-    p.dst_offset = sa.dst_offset;
+    p.dst_offset = sa.dst_base_offset;
     p.src0_strides[0] = sa.src_row_stride;
     p.src0_strides[1] = sa.src_col_stride;
     p.src0_offset = sa.src_offset;
+    p.src1_ne[0] = sa.patch_stride;
     return p;
 }
 
@@ -675,11 +687,16 @@ fn attentionDynamicParams(seq_kv: u32) AttentionDynamicParams {
     return .{ .seq_info = .{ seq_kv, 0, 0, 0 } };
 }
 
+fn computeDynamicParams(slice_pos: u32) ComputeDynamicParams {
+    return .{ .slice_pos = slice_pos };
+}
+
 fn buildDispatch(
     be: *WgpuBackend,
     bufs: []const DeviceBuffer,
     qweights: []const DeviceQWeight,
     op: backend_mod.DeviceOp,
+    compute_dynamic_buf: c.WGPUBuffer,
     attention_dynamic_buf: c.WGPUBuffer,
 ) ?PrebuiltDispatch {
     switch (op) {
@@ -768,7 +785,7 @@ fn buildDispatch(
             p.dst_offset = e.dst_offset;
             p.src0_offset = e.src0_offset;
             p.src1_offset = e.src1_offset;
-            return computeDispatch(be, bufs, p, e.src0, e.src1, e.dst, (e.n + WG_SIZE - 1) / WG_SIZE);
+            return computeDispatch(be, bufs, p, e.src0, e.src1, e.dst, (e.n + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
         },
         .softmax => |s| {
             var p = std.mem.zeroes(ComputeParams);
@@ -777,7 +794,7 @@ fn buildDispatch(
             p.dst_offset = s.dst_offset;
             p.src0_ne[0] = s.cols;
             p.src0_offset = s.src_offset;
-            return computeDispatch(be, bufs, p, s.src, s.src, s.dst, (s.rows + WG_SIZE - 1) / WG_SIZE);
+            return computeDispatch(be, bufs, p, s.src, s.src, s.dst, (s.rows + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
         },
         .layernorm => |l| {
             var p = std.mem.zeroes(ComputeParams);
@@ -787,7 +804,7 @@ fn buildDispatch(
             p.src0_ne[0] = l.cols;
             p.src0_offset = l.src_offset;
             p.src1_ne[0] = @bitCast(l.eps);
-            return computeDispatch(be, bufs, p, l.src, l.src, l.dst, (l.rows + WG_SIZE - 1) / WG_SIZE);
+            return computeDispatch(be, bufs, p, l.src, l.src, l.dst, (l.rows + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
         },
         .rmsnorm => |r| {
             var p = std.mem.zeroes(ComputeParams);
@@ -797,7 +814,7 @@ fn buildDispatch(
             p.src0_ne[0] = r.cols;
             p.src0_offset = r.src_offset;
             p.src1_ne[0] = @bitCast(r.eps);
-            return computeDispatch(be, bufs, p, r.src, r.src, r.dst, (r.rows + WG_SIZE - 1) / WG_SIZE);
+            return computeDispatch(be, bufs, p, r.src, r.src, r.dst, (r.rows + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
         },
         .reduce => |r| {
             var p = std.mem.zeroes(ComputeParams);
@@ -806,7 +823,7 @@ fn buildDispatch(
             p.dst_offset = r.dst_offset;
             p.src0_ne[0] = r.reduce_size;
             p.src0_offset = r.src_offset;
-            return computeDispatch(be, bufs, p, r.src, r.dst, r.dst, (r.n_out + WG_SIZE - 1) / WG_SIZE);
+            return computeDispatch(be, bufs, p, r.src, r.dst, r.dst, (r.n_out + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
         },
         .repeat => |rp| {
             var p = std.mem.zeroes(ComputeParams);
@@ -818,17 +835,17 @@ fn buildDispatch(
             p.src0_ne = rp.src_ne;
             p.src0_strides = rp.src_strides;
             p.src0_offset = rp.src_offset;
-            return computeDispatch(be, bufs, p, rp.src, rp.src, rp.dst, (rp.n + WG_SIZE - 1) / WG_SIZE);
+            return computeDispatch(be, bufs, p, rp.src, rp.src, rp.dst, (rp.n + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
         },
         .slice_assign => |sa| {
             const p = sliceAssignComputeParams(sa);
             const n = p.n_elements;
-            return computeDispatch(be, bufs, p, sa.src, sa.src, sa.dst, (n + WG_SIZE - 1) / WG_SIZE);
+            return computeDispatch(be, bufs, p, sa.src, sa.src, sa.dst, (n + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
         },
         .rope => |rr| {
             const p = ropeComputeParams(rr);
             const n = p.n_elements;
-            return computeDispatch(be, bufs, p, rr.src, rr.cos_sin, rr.dst, (n + WG_SIZE - 1) / WG_SIZE);
+            return computeDispatch(be, bufs, p, rr.src, rr.cos_sin, rr.dst, (n + WG_SIZE - 1) / WG_SIZE, compute_dynamic_buf);
         },
         .attention => |att| {
             if (att.seq_kv > ATTN_MAX_SEQ_KV or att.d_head > ATTN_MAX_D_HEAD or attention_dynamic_buf == null) return null;
@@ -946,6 +963,21 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         device_bufs[b_idx].f16_size = f16_bytes;
     }
 
+    var initial_slice_pos: u32 = 0;
+    for (program.ops) |op| {
+        switch (op) {
+            .slice_assign => |sa| {
+                if (sa.patch_stride != 0 and sa.dst_offset >= sa.dst_base_offset) {
+                    initial_slice_pos = @intCast((sa.dst_offset - sa.dst_base_offset) / sa.patch_stride);
+                }
+                break;
+            },
+            else => {},
+        }
+    }
+    const compute_dynamic_init = computeDynamicParams(initial_slice_pos);
+    const compute_dynamic_buf = createUniformBuffer(self.device, self.queue, std.mem.asBytes(&compute_dynamic_init));
+
     var attention_dynamic_buf: c.WGPUBuffer = null;
     for (program.ops) |op| {
         switch (op) {
@@ -961,7 +993,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
     // Pre-build all dispatches (uniform buffers + bind groups).
     var dispatch_list: std.ArrayListUnmanaged(PrebuiltDispatch) = .empty;
     for (program.ops) |op| {
-        if (buildDispatch(self, device_bufs, qweight_views, op, attention_dynamic_buf)) |d| {
+        if (buildDispatch(self, device_bufs, qweight_views, op, compute_dynamic_buf, attention_dynamic_buf)) |d| {
             dispatch_list.append(alloc, d) catch return null;
         } else {
             for (dispatch_list.items) |d| {
@@ -969,6 +1001,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
                 c.wgpuBufferRelease(d.uniform_buf);
             }
             dispatch_list.deinit(alloc);
+            if (compute_dynamic_buf != null) c.wgpuBufferRelease(compute_dynamic_buf);
             if (attention_dynamic_buf != null) c.wgpuBufferRelease(attention_dynamic_buf);
             for (qweight_views) |qv| {
                 c.wgpuBufferRelease(qv.data.buf);
@@ -1004,6 +1037,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         .device_bufs = device_bufs,
         .qweight_views = qweight_views,
         .dispatches = dispatches,
+        .compute_dynamic_buf = compute_dynamic_buf,
         .attention_dynamic_buf = attention_dynamic_buf,
         .staging_buf = staging,
         .staging_size = max_buf_size,
@@ -1020,12 +1054,17 @@ fn executeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, i
 fn refreshProgramFn(ctx: *anyopaque, handle: backend_mod.Backend.CompiledHandle, ops: []const backend_mod.DeviceOp) void {
     const self = getState(ctx);
     const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    var refreshed_slice_assign = false;
     var refreshed_attention = false;
-    for (ops, compiled.dispatches) |op, dispatch| {
+    for (ops) |op| {
         switch (op) {
             .slice_assign => |sa| {
-                const params = sliceAssignComputeParams(sa);
-                c.wgpuQueueWriteBuffer(self.queue, dispatch.uniform_buf, 0, std.mem.asBytes(&params).ptr, @sizeOf(ComputeParams));
+                if (!refreshed_slice_assign and compiled.compute_dynamic_buf != null and sa.patch_stride != 0 and sa.dst_offset >= sa.dst_base_offset) {
+                    const pos: u32 = @intCast((sa.dst_offset - sa.dst_base_offset) / sa.patch_stride);
+                    const params = computeDynamicParams(pos);
+                    c.wgpuQueueWriteBuffer(self.queue, compiled.compute_dynamic_buf, 0, std.mem.asBytes(&params).ptr, @sizeOf(ComputeDynamicParams));
+                    refreshed_slice_assign = true;
+                }
             },
             .attention => |att| {
                 if (!refreshed_attention and compiled.attention_dynamic_buf != null) {
@@ -1216,6 +1255,62 @@ test "wgpu backend rope op" {
     be.executeProgram(handle, &.{}, &out);
 
     try std.testing.expectEqualSlices(f32, &.{ 1, 2, 3, 4, -7, -8, 5, 6 }, &dst);
+}
+
+test "wgpu backend slice assign refreshes position" {
+    var wgpu = WgpuBackend.init() catch |err| switch (err) {
+        error.WgpuInitFailed, error.WgpuAdapterNotAvailable, error.WgpuDeviceNotAvailable => return,
+        else => return err,
+    };
+    defer wgpu.deinit();
+    const be = wgpu.backend();
+
+    var src_data = [_]f32{ 1, 2, 3, 4 };
+    var dst_data = [_]f32{0} ** 16;
+
+    var ops = [_]backend_mod.DeviceOp{.{ .slice_assign = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 4,
+        .cols = 1,
+        .dst_base_offset = 0,
+        .dst_offset = 4,
+        .dst_row_stride = 1,
+        .dst_col_stride = 4,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 4,
+        .patch_stride = 4,
+    } }};
+    const buf_sizes = [_]usize{ src_data.len, dst_data.len };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&src_data), .size = src_data.len * @sizeOf(f32) },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&dst_data), .size = dst_data.len * @sizeOf(f32) },
+    };
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 2, .buffer_sizes = &buf_sizes, .initial_uploads = &uploads };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var dst = [_]f32{0} ** 16;
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 1, .host_ptr = @ptrCast(&dst), .size = dst.len * @sizeOf(f32) }};
+    be.executeProgram(handle, &.{}, &out);
+    try std.testing.expectEqualSlices(f32, &.{
+        0, 0, 0, 0,
+        1, 2, 3, 4,
+        0, 0, 0, 0,
+        0, 0, 0, 0,
+    }, &dst);
+
+    ops[0].slice_assign.dst_offset = 12;
+    be.refreshProgram(handle, &ops);
+    be.executeProgram(handle, &.{}, &out);
+    try std.testing.expectEqualSlices(f32, &.{
+        0, 0, 0, 0,
+        1, 2, 3, 4,
+        0, 0, 0, 0,
+        1, 2, 3, 4,
+    }, &dst);
 }
 
 test "wgpu backend attention op refreshes seq_kv" {
