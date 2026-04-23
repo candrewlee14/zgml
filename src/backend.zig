@@ -145,6 +145,8 @@ pub const Backend = struct {
         dense_matmul_f32: *const fn (ctx: *anyopaque, spec: DenseMatMulSpecF32) bool,
         /// Compile a DeviceProgram into backend-optimized execution.
         compile_program: *const fn (ctx: *anyopaque, program: DeviceProgram) ?CompiledHandle,
+        /// Refresh dynamic op parameters before execution.
+        refresh_program: *const fn (ctx: *anyopaque, handle: CompiledHandle, ops: []const DeviceOp) void,
         /// Execute a compiled program: upload inputs, dispatch, download outputs.
         execute_program: *const fn (ctx: *anyopaque, handle: CompiledHandle, inputs: []const ProgramIO, outputs: []const ProgramIO) void,
         /// Release compiled program resources.
@@ -155,6 +157,10 @@ pub const Backend = struct {
 
     pub fn compileProgram(self: Backend, program: DeviceProgram) ?CompiledHandle {
         return self.vtable.compile_program(self.ctx, program);
+    }
+
+    pub fn refreshProgram(self: Backend, handle: CompiledHandle, ops: []const DeviceOp) void {
+        self.vtable.refresh_program(self.ctx, handle, ops);
     }
 
     pub fn executeProgram(self: Backend, handle: CompiledHandle, inputs: []const ProgramIO, outputs: []const ProgramIO) void {

@@ -30,6 +30,8 @@ fn compileProgram(_: *anyopaque, _: backend_mod.DeviceProgram) ?backend_mod.Back
 
 fn executeProgram(_: *anyopaque, _: backend_mod.Backend.CompiledHandle, _: []const backend_mod.ProgramIO, _: []const backend_mod.ProgramIO) void {}
 
+fn refreshProgram(_: *anyopaque, _: backend_mod.Backend.CompiledHandle, _: []const backend_mod.DeviceOp) void {}
+
 fn freeProgram(_: *anyopaque, _: backend_mod.Backend.CompiledHandle) void {}
 
 fn getRuntimeProfile(_: *anyopaque, _: backend_mod.Backend.CompiledHandle) ?*@import("../profile.zig").RuntimeProfile {
@@ -39,6 +41,7 @@ fn getRuntimeProfile(_: *anyopaque, _: backend_mod.Backend.CompiledHandle) ?*@im
 const vtable = backend_mod.Backend.VTable{
     .dense_matmul_f32 = denseMatMulF32,
     .compile_program = compileProgram,
+    .refresh_program = refreshProgram,
     .execute_program = executeProgram,
     .free_program = freeProgram,
     .get_runtime_profile = getRuntimeProfile,

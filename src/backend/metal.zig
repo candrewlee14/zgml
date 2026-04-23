@@ -1277,6 +1277,11 @@ fn executeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, i
     compiled.execute(inputs, outputs);
 }
 
+fn refreshProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, ops: []const backend_mod.DeviceOp) void {
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    compiled.ops = ops;
+}
+
 fn freeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle) void {
     const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
     compiled.deinit();
@@ -1290,6 +1295,7 @@ fn getRuntimeProfileFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle
 const vtable = backend_mod.Backend.VTable{
     .dense_matmul_f32 = denseMatMulF32,
     .compile_program = compileProgramFn,
+    .refresh_program = refreshProgramFn,
     .execute_program = executeProgramFn,
     .free_program = freeProgramFn,
     .get_runtime_profile = getRuntimeProfileFn,

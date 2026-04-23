@@ -232,6 +232,7 @@ pub fn DeviceInference(comptime T: type) type {
         /// Execute the compiled program. Caller must have already patched
         /// input tensor data and slice_assign offsets before calling.
         pub fn execute(self: *Self) void {
+            self.be.refreshProgram(self.compiled, self.program_ops);
             self.be.executeProgram(self.compiled, self.step_inputs, self.step_outputs);
         }
 
@@ -599,6 +600,7 @@ const ComputeGraphF32 = @import("graph.zig").ComputeGraph(f32);
 
 const TestBackendState = struct {
     compile_calls: usize = 0,
+    refresh_calls: usize = 0,
 };
 
 fn testDenseMatMul(_: *anyopaque, _: backend_mod.DenseMatMulSpecF32) bool {
@@ -613,6 +615,11 @@ fn testCompile(ctx: *anyopaque, _: backend_mod.DeviceProgram) ?backend_mod.Backe
 
 fn testExecute(_: *anyopaque, _: backend_mod.Backend.CompiledHandle, _: []const backend_mod.ProgramIO, _: []const backend_mod.ProgramIO) void {}
 
+fn testRefresh(ctx: *anyopaque, _: backend_mod.Backend.CompiledHandle, _: []const backend_mod.DeviceOp) void {
+    const state: *TestBackendState = @ptrCast(@alignCast(ctx));
+    state.refresh_calls += 1;
+}
+
 fn testFree(_: *anyopaque, _: backend_mod.Backend.CompiledHandle) void {}
 
 fn testProfile(_: *anyopaque, _: backend_mod.Backend.CompiledHandle) ?*@import("profile.zig").RuntimeProfile {
@@ -622,6 +629,7 @@ fn testProfile(_: *anyopaque, _: backend_mod.Backend.CompiledHandle) ?*@import("
 const test_vtable = backend_mod.Backend.VTable{
     .dense_matmul_f32 = testDenseMatMul,
     .compile_program = testCompile,
+    .refresh_program = testRefresh,
     .execute_program = testExecute,
     .free_program = testFree,
     .get_runtime_profile = testProfile,
@@ -736,6 +744,8 @@ test "DeviceInference lowers prefill slice_assign with 2D strides" {
 
     dev.patchSliceAssignOffset(5);
     try testing.expectEqual(@as(u32, 20), dev.program_ops[0].slice_assign.dst_offset);
+    dev.execute();
+    try testing.expectEqual(@as(usize, 1), state.refresh_calls);
 }
 
 test "DeviceInference lowers batched attention geometry" {

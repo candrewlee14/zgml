@@ -599,6 +599,20 @@ fn computeDispatch(
     };
 }
 
+fn sliceAssignComputeParams(sa: anytype) ComputeParams {
+    var p = std.mem.zeroes(ComputeParams);
+    p.op = @intFromEnum(backend_mod.Op.slice_assign);
+    p.n_elements = sa.rows * sa.cols;
+    p.src0_ne[0] = sa.rows;
+    p.dst_strides[0] = sa.dst_row_stride;
+    p.dst_strides[1] = sa.dst_col_stride;
+    p.dst_offset = sa.dst_offset;
+    p.src0_strides[0] = sa.src_row_stride;
+    p.src0_strides[1] = sa.src_col_stride;
+    p.src0_offset = sa.src_offset;
+    return p;
+}
+
 fn buildDispatch(
     be: *WgpuBackend,
     bufs: []const DeviceBuffer,
@@ -744,17 +758,8 @@ fn buildDispatch(
             return computeDispatch(be, bufs, p, rp.src, rp.src, rp.dst, (rp.n + WG_SIZE - 1) / WG_SIZE);
         },
         .slice_assign => |sa| {
-            var p = std.mem.zeroes(ComputeParams);
-            p.op = @intFromEnum(backend_mod.Op.slice_assign);
-            const n = sa.rows * sa.cols;
-            p.n_elements = n;
-            p.src0_ne[0] = sa.rows;
-            p.dst_strides[0] = sa.dst_row_stride;
-            p.dst_strides[1] = sa.dst_col_stride;
-            p.dst_offset = sa.dst_offset;
-            p.src0_strides[0] = sa.src_row_stride;
-            p.src0_strides[1] = sa.src_col_stride;
-            p.src0_offset = sa.src_offset;
+            const p = sliceAssignComputeParams(sa);
+            const n = p.n_elements;
             return computeDispatch(be, bufs, p, sa.src, sa.src, sa.dst, (n + WG_SIZE - 1) / WG_SIZE);
         },
         .rope, .attention => return null,
@@ -909,6 +914,20 @@ fn executeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, i
     compiled.execute(inputs, outputs);
 }
 
+fn refreshProgramFn(ctx: *anyopaque, handle: backend_mod.Backend.CompiledHandle, ops: []const backend_mod.DeviceOp) void {
+    const self = getState(ctx);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    for (ops, compiled.dispatches) |op, dispatch| {
+        switch (op) {
+            .slice_assign => |sa| {
+                const params = sliceAssignComputeParams(sa);
+                c.wgpuQueueWriteBuffer(self.queue, dispatch.uniform_buf, 0, std.mem.asBytes(&params).ptr, @sizeOf(ComputeParams));
+            },
+            else => {},
+        }
+    }
+}
+
 fn freeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle) void {
     const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
     compiled.deinit();
@@ -921,6 +940,7 @@ fn getRuntimeProfileFn(_: *anyopaque, _: backend_mod.Backend.CompiledHandle) ?*@
 const vtable = backend_mod.Backend.VTable{
     .dense_matmul_f32 = denseMatMulF32,
     .compile_program = compileProgramFn,
+    .refresh_program = refreshProgramFn,
     .execute_program = executeProgramFn,
     .free_program = freeProgramFn,
     .get_runtime_profile = getRuntimeProfileFn,
