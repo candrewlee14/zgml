@@ -469,7 +469,10 @@ const shader_source =
     \\        }
     \\        // ── Slice assign: strided copy ──
     \\        case 27: {
-    \\            dst[p.dst_offset + gid * p.dst_strides[0]] = src0[p.src0_offset + gid * p.src0_strides[0]];
+    \\            uint row = gid % p.src0_ne[0];
+    \\            uint col = gid / p.src0_ne[0];
+    \\            dst[p.dst_offset + row * p.dst_strides[0] + col * p.dst_strides[1]] =
+    \\                src0[p.src0_offset + row * p.src0_strides[0] + col * p.src0_strides[1]];
     \\            break;
     \\        }
     \\        // ── Fused softmax: one thread per row ──
@@ -1027,15 +1030,22 @@ const CompiledProgram = struct {
     fn cpuSliceAssign(self: *const CompiledProgram, sa: anytype) void {
         const src = self.bufF32(sa.src);
         const dst = self.bufF32(sa.dst);
-        const n: usize = sa.n;
+        const rows: usize = sa.rows;
+        const cols: usize = sa.cols;
         const doff: usize = sa.dst_offset;
         const soff: usize = sa.src_offset;
-        if (sa.dst_stride == 1 and sa.src_stride == 1) {
-            @memcpy(dst[doff..][0..n], src[soff..][0..n]);
+        const drs: usize = sa.dst_row_stride;
+        const dcs: usize = sa.dst_col_stride;
+        const srs: usize = sa.src_row_stride;
+        const scs: usize = sa.src_col_stride;
+        if (drs == 1 and srs == 1 and dcs == rows and scs == rows) {
+            @memcpy(dst[doff..][0 .. rows * cols], src[soff..][0 .. rows * cols]);
         } else {
-            const ds: usize = sa.dst_stride;
-            const ss: usize = sa.src_stride;
-            for (0..n) |i| dst[doff + i * ds] = src[soff + i * ss];
+            for (0..cols) |col| {
+                for (0..rows) |row| {
+                    dst[doff + row * drs + col * dcs] = src[soff + row * srs + col * scs];
+                }
+            }
         }
     }
 
@@ -1108,93 +1118,106 @@ const CompiledProgram = struct {
         const mask_ptr = self.bufF32(att.mask);
         const dst = self.bufF32(att.dst);
         const dh: usize = att.d_head;
+        const sq: usize = att.seq_q;
         const skv: usize = att.seq_kv;
-        const q_off: usize = att.q_off;
         const k_off: usize = att.k_off;
         const v_off: usize = att.v_off;
         const m_off: usize = att.mask_off;
-        const d_off: usize = att.dst_off;
+        const qrs: usize = att.q_rs;
+        const qcs: usize = att.q_cs;
         const krs: usize = att.k_rs;
         const kcs: usize = att.k_cs;
         const vrs: usize = att.v_rs;
         const vcs: usize = att.v_cs;
+        const mrs: usize = att.mask_rs;
+        const mcs: usize = att.mask_cs;
+        const drs: usize = att.dst_rs;
+        const dcs: usize = att.dst_cs;
         const VecT = @Vector(V, f32);
         const neg_inf = -std.math.inf(f32);
 
-        // Online softmax: single pass fusing Q·K, softmax, and V accumulation.
-        var m_val: f32 = neg_inf;
-        var l: f32 = 0;
-        var acc_buf: [512]f32 = undefined; // d_head max
-        const acc = acc_buf[0..dh];
-        @memset(acc, 0);
-
         const unit_k = (krs == 1);
         const unit_v = (vrs == 1);
+        const unit_q = (qrs == 1);
+        const unit_dst = (drs == 1);
 
-        for (0..skv) |s| {
-            const mask_add = mask_ptr[m_off + s];
-            if (!std.math.isFinite(mask_add)) continue;
+        for (0..sq) |qi| {
+            const q_off: usize = @as(usize, att.q_off) + qi * qcs;
+            const d_off: usize = @as(usize, att.dst_off) + qi * dcs;
+            const mask_q_off = m_off + qi * mcs;
 
-            // Q·K dot product.
-            var dot: f32 = 0;
-            if (unit_k) {
-                var dot_v: VecT = @splat(0);
-                var r: usize = 0;
-                const kb = k_off + s * kcs;
-                while (r + V <= dh) : (r += V) {
-                    const qv: VecT = q_ptr[q_off + r ..][0..V].*;
-                    const kv: VecT = k_ptr[kb + r ..][0..V].*;
-                    dot_v += qv * kv;
+            // Online softmax: single pass fusing Q·K, softmax, and V accumulation.
+            var m_val: f32 = neg_inf;
+            var l: f32 = 0;
+            var acc_buf: [512]f32 = undefined; // d_head max
+            const acc = acc_buf[0..dh];
+            @memset(acc, 0);
+
+            for (0..skv) |s| {
+                const mask_add = if (att.has_mask) mask_ptr[mask_q_off + s * mrs] else 0;
+                if (!std.math.isFinite(mask_add)) continue;
+
+                // Q·K dot product.
+                var dot: f32 = 0;
+                if (unit_q and unit_k) {
+                    var dot_v: VecT = @splat(0);
+                    var r: usize = 0;
+                    const kb = k_off + s * kcs;
+                    while (r + V <= dh) : (r += V) {
+                        const qv: VecT = q_ptr[q_off + r ..][0..V].*;
+                        const kv: VecT = k_ptr[kb + r ..][0..V].*;
+                        dot_v += qv * kv;
+                    }
+                    dot = @reduce(.Add, dot_v);
+                    while (r < dh) : (r += 1) dot += q_ptr[q_off + r] * k_ptr[kb + r];
+                } else {
+                    for (0..dh) |r| dot += q_ptr[q_off + r * qrs] * k_ptr[k_off + r * krs + s * kcs];
                 }
-                dot = @reduce(.Add, dot_v);
-                while (r < dh) : (r += 1) dot += q_ptr[q_off + r] * k_ptr[kb + r];
-            } else {
-                for (0..dh) |r| dot += q_ptr[q_off + r] * k_ptr[k_off + r * krs + s * kcs];
+
+                const score = dot * att.scale + mask_add;
+                if (!std.math.isFinite(score)) continue;
+
+                // Online softmax update.
+                const new_m = @max(m_val, score);
+                const alpha = if (m_val == neg_inf) @as(f32, 0) else @exp(m_val - new_m);
+                const w = @exp(score - new_m);
+                l = l * alpha + w;
+                m_val = new_m;
+
+                // Accumulate V with rescaling: acc = acc * alpha + w * V[s].
+                if (unit_v) {
+                    const alpha_v: VecT = @splat(alpha);
+                    const w_v: VecT = @splat(w);
+                    var r: usize = 0;
+                    const vb = v_off + s * vcs;
+                    while (r + V <= dh) : (r += V) {
+                        const av: VecT = acc[r..][0..V].*;
+                        const vv: VecT = v_ptr[vb + r ..][0..V].*;
+                        acc[r..][0..V].* = av * alpha_v + w_v * vv;
+                    }
+                    while (r < dh) : (r += 1) {
+                        acc[r] = acc[r] * alpha + w * v_ptr[vb + r];
+                    }
+                } else {
+                    for (0..dh) |r| {
+                        acc[r] = acc[r] * alpha + w * v_ptr[v_off + r * vrs + s * vcs];
+                    }
+                }
             }
 
-            const score = dot * att.scale + mask_add;
-            if (!std.math.isFinite(score)) continue;
-
-            // Online softmax update.
-            const new_m = @max(m_val, score);
-            const alpha = if (m_val == neg_inf) @as(f32, 0) else @exp(m_val - new_m);
-            const w = @exp(score - new_m);
-            l = l * alpha + w;
-            m_val = new_m;
-
-            // Accumulate V with rescaling: acc = acc * alpha + w * V[s].
-            if (unit_v) {
-                const alpha_v: VecT = @splat(alpha);
-                const w_v: VecT = @splat(w);
+            // Normalize and write output.
+            const inv_l = if (l > 0) 1.0 / l else @as(f32, 0);
+            if (unit_dst) {
+                const inv_v: VecT = @splat(inv_l);
                 var r: usize = 0;
-                const vb = v_off + s * vcs;
                 while (r + V <= dh) : (r += V) {
                     const av: VecT = acc[r..][0..V].*;
-                    const vv: VecT = v_ptr[vb + r ..][0..V].*;
-                    acc[r..][0..V].* = av * alpha_v + w_v * vv;
+                    dst[d_off + r ..][0..V].* = av * inv_v;
                 }
-                while (r < dh) : (r += 1) {
-                    acc[r] = acc[r] * alpha + w * v_ptr[vb + r];
-                }
+                while (r < dh) : (r += 1) dst[d_off + r] = acc[r] * inv_l;
             } else {
-                for (0..dh) |r| {
-                    acc[r] = acc[r] * alpha + w * v_ptr[v_off + r * vrs + s * vcs];
-                }
+                for (0..dh) |r| dst[d_off + r * drs] = acc[r] * inv_l;
             }
-        }
-
-        // Normalize and write output.
-        const inv_l = if (l > 0) 1.0 / l else @as(f32, 0);
-        if (unit_v) {
-            const inv_v: VecT = @splat(inv_l);
-            var r: usize = 0;
-            while (r + V <= dh) : (r += V) {
-                const av: VecT = acc[r..][0..V].*;
-                dst[d_off + r ..][0..V].* = av * inv_v;
-            }
-            while (r < dh) : (r += 1) dst[d_off + r] = acc[r] * inv_l;
-        } else {
-            for (0..dh) |r| dst[d_off + r] = acc[r] * inv_l;
         }
     }
 };

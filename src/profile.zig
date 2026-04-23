@@ -152,7 +152,7 @@ pub fn estimateFlops(op: DeviceOp) u64 {
     switch (op) {
         .matmul => |m| return 2 * @as(u64, m.geom.M) * @as(u64, m.geom.N) * @as(u64, m.geom.K),
         .qmatmul => |q| return 2 * @as(u64, q.M) * @as(u64, q.N) * @as(u64, q.K),
-        .attention => |a| return 4 * @as(u64, a.seq_kv) * @as(u64, a.d_head) + 7 * @as(u64, a.seq_kv),
+        .attention => |a| return @as(u64, a.seq_q) * (4 * @as(u64, a.seq_kv) * @as(u64, a.d_head) + 7 * @as(u64, a.seq_kv)),
         .rope => |r| return 6 * @as(u64, r.seq_len) * @as(u64, r.half_d),
         .softmax => |s| return 5 * @as(u64, s.rows) * @as(u64, s.cols),
         .layernorm => |l| return 5 * @as(u64, l.rows) * @as(u64, l.cols),
@@ -183,8 +183,9 @@ pub fn estimateBytes(op: DeviceOp) u64 {
         .attention => |a| {
             const d: u64 = a.d_head;
             const s: u64 = a.seq_kv;
+            const q: u64 = a.seq_q;
             // Q + K + V reads + scores + output
-            return (d + 2 * s * d + s + d) * 4;
+            return (q * d + 2 * q * s * d + q * s + q * d) * 4;
         },
         .rope => |r| {
             // read src(2*half_d) + cos_sin(2*half_d) + write dst(2*half_d)
@@ -200,7 +201,7 @@ pub fn estimateBytes(op: DeviceOp) u64 {
         },
         .fused_elementwise => |fe| return 2 * @as(u64, fe.n) * 4,
         .repeat => |rp| return @as(u64, rp.n) * 4,
-        .slice_assign => |sa| return @as(u64, sa.n) * 4,
+        .slice_assign => |sa| return @as(u64, sa.rows) * @as(u64, sa.cols) * 4,
     }
 }
 

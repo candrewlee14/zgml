@@ -746,12 +746,16 @@ fn buildDispatch(
         .slice_assign => |sa| {
             var p = std.mem.zeroes(ComputeParams);
             p.op = @intFromEnum(backend_mod.Op.slice_assign);
-            p.n_elements = sa.n;
-            p.dst_strides[0] = sa.dst_stride;
+            const n = sa.rows * sa.cols;
+            p.n_elements = n;
+            p.src0_ne[0] = sa.rows;
+            p.dst_strides[0] = sa.dst_row_stride;
+            p.dst_strides[1] = sa.dst_col_stride;
             p.dst_offset = sa.dst_offset;
-            p.src0_strides[0] = sa.src_stride;
+            p.src0_strides[0] = sa.src_row_stride;
+            p.src0_strides[1] = sa.src_col_stride;
             p.src0_offset = sa.src_offset;
-            return computeDispatch(be, bufs, p, sa.src, sa.src, sa.dst, (sa.n + WG_SIZE - 1) / WG_SIZE);
+            return computeDispatch(be, bufs, p, sa.src, sa.src, sa.dst, (n + WG_SIZE - 1) / WG_SIZE);
         },
         .rope, .attention => return null,
         // Fused/batched ops: fall back to individual dispatches or skip.

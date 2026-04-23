@@ -117,9 +117,13 @@ fn main(@builtin(global_invocation_id) gid_v : vec3<u32>) {
 
             dst[p.dst_offset + gid] = src0[src_idx];
         }
-        // ── Slice assign: strided copy ──
+        // ── Slice assign: 2D strided copy ──
         case 27u: {
-            dst[p.dst_offset + gid * p.dst_str0] = src0[p.src0_offset + gid * p.src0_str0];
+            let row = gid % p.src0_ne0;
+            let col = gid / p.src0_ne0;
+            let dst_idx = p.dst_offset + row * p.dst_str0 + col * p.dst_str1;
+            let src_idx = p.src0_offset + row * p.src0_str0 + col * p.src0_str1;
+            dst[dst_idx] = src0[src_idx];
         }
         // ── Fused softmax: one thread per row ──
         // n_elements = rows, src0_ne0 = cols
