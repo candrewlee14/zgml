@@ -208,13 +208,26 @@ fn main(
 
     let sum_weights = reduce_buf[0];
     let inv_sum = select(0.0, 1.0 / sum_weights, sum_weights > 0.0);
+    for (var s = tid; s < seq_kv; s = s + WG_SIZE) {
+        score_buf[s] = score_buf[s] * inv_sum;
+    }
+    workgroupBarrier();
 
     if (contiguous) {
         for (var r = tid; r < d_head; r = r + WG_SIZE) {
             var acc: f32 = 0.0;
-            for (var s: u32 = 0u; s < seq_kv; s = s + 1u) {
-                let w = score_buf[s] * inv_sum;
-                acc += w * V[v_off + s * d_head + r];
+            var s: u32 = 0u;
+            while (s + 4u <= seq_kv) {
+                let v_base = v_off + s * d_head + r;
+                acc += score_buf[s] * V[v_base];
+                acc += score_buf[s + 1u] * V[v_base + d_head];
+                acc += score_buf[s + 2u] * V[v_base + 2u * d_head];
+                acc += score_buf[s + 3u] * V[v_base + 3u * d_head];
+                s += 4u;
+            }
+            while (s < seq_kv) {
+                acc += score_buf[s] * V[v_off + s * d_head + r];
+                s += 1u;
             }
             OUT[dst_off + qi * d_head + r] = acc;
         }
@@ -222,9 +235,8 @@ fn main(
         for (var r = tid; r < d_head; r = r + WG_SIZE) {
             var acc: f32 = 0.0;
             for (var s: u32 = 0u; s < seq_kv; s = s + 1u) {
-                let w = score_buf[s] * inv_sum;
                 let v_idx = v_off + r * v_rs + s * v_cs;
-                acc += w * V[v_idx];
+                acc += score_buf[s] * V[v_idx];
             }
             OUT[dst_off + r * dst_rs + qi * dst_cs] = acc;
         }
