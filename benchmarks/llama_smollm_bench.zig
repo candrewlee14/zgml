@@ -301,6 +301,7 @@ pub fn main(init: std.process.Init) !void {
         defer wgpu_be.deinit();
         _ = try runVariant("wgpu f32         ", wgpu_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
         _ = try runVariant("wgpu int8        ", wgpu_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
+        _ = try runDeviceVariant("wgpu device f16 ", wgpu_be.backend(), cfg, &stdout.interface, io, alloc);
     }
 
     try stdout.interface.writeByte('\n');

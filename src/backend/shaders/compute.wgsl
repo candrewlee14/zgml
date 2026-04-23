@@ -2,7 +2,7 @@
 // Op codes match op.zig enum values:
 //   add=7 mul=8 neg=9 abs=10 sgn=11 step=12 relu=13
 //   sqrt=14 recip=15 exp=16 log=17 gelu=18
-//   sum=19 max=20 repeat=21 slice_assign=27
+//   sum=19 max=20 repeat=21 slice_assign=27 rope=28
 //   fused_softmax=100 fused_layernorm=101 fused_rmsnorm=102
 
 struct ComputeParams {
@@ -124,6 +124,24 @@ fn main(@builtin(global_invocation_id) gid_v : vec3<u32>) {
             let dst_idx = p.dst_offset + row * p.dst_str0 + col * p.dst_str1;
             let src_idx = p.src0_offset + row * p.src0_str0 + col * p.src0_str1;
             dst[dst_idx] = src0[src_idx];
+        }
+        // ── RoPE: one thread per (pair, sequence-position) ──
+        case 28u: {
+            let half_d = p.src0_ne0;
+            let seq_len = p.src0_ne1;
+            let pair = gid % half_d;
+            let col = gid / half_d;
+            if (col >= seq_len) { return; }
+
+            let src_base = p.src0_offset + col * p.src0_str1;
+            let x_lo = src0[src_base + pair * p.src0_str0];
+            let x_hi = src0[src_base + (pair + half_d) * p.src0_str0];
+            let cs_base = p.src1_offset + col * p.src1_str0;
+            let cos_v = src1[cs_base + pair];
+            let sin_v = src1[cs_base + pair + half_d];
+            let dst_base = p.dst_offset + col * (2u * half_d);
+            dst[dst_base + pair] = x_lo * cos_v - x_hi * sin_v;
+            dst[dst_base + pair + half_d] = x_hi * cos_v + x_lo * sin_v;
         }
         // ── Fused softmax: one thread per row ──
         // n_elements = rows, src0_ne0 = cols

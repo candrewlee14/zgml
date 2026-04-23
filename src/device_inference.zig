@@ -103,37 +103,41 @@ pub fn DeviceInference(comptime T: type) type {
                                 },
                                 .elementwise_chain => {
                                     const chain = fp.payload.elementwise_chain;
-                                    const out_node = chain.nodes[chain.nodes.len - 1];
-                                    if (!chain.input.isDenseLayout() or !out_node.isDenseLayout()) return error.UnsupportedDeviceOp;
-                                    const ew_steps = try alloc.alloc(backend_mod.FusedEwStep, chain.nodes.len);
-                                    errdefer alloc.free(ew_steps);
-                                    for (chain.nodes, 0..) |node, k| {
-                                        const node_op = node.opTag();
-                                        const role = chain.otherOperandRole(k);
-                                        const is_swapped = (role == .src0);
-                                        var secondary_buf: u16 = 0;
-                                        var secondary_offset: u32 = 0;
-                                        if (node_op.isBinary()) {
-                                            const other = if (is_swapped) node.src0.? else node.src1.?;
-                                            if (!other.isDenseLayout()) return error.UnsupportedDeviceOp;
-                                            secondary_buf = buffers.idx(other);
-                                            secondary_offset = @intCast(buffers.offset(other));
+                                    if (opts.be.device_type == .wgpu) {
+                                        try appendElementwiseChainOps(&ops_list, &buffers, chain, alloc);
+                                    } else {
+                                        const out_node = chain.nodes[chain.nodes.len - 1];
+                                        if (!chain.input.isDenseLayout() or !out_node.isDenseLayout()) return error.UnsupportedDeviceOp;
+                                        const ew_steps = try alloc.alloc(backend_mod.FusedEwStep, chain.nodes.len);
+                                        errdefer alloc.free(ew_steps);
+                                        for (chain.nodes, 0..) |node, k| {
+                                            const node_op = node.opTag();
+                                            const role = chain.otherOperandRole(k);
+                                            const is_swapped = (role == .src0);
+                                            var secondary_buf: u16 = 0;
+                                            var secondary_offset: u32 = 0;
+                                            if (node_op.isBinary()) {
+                                                const other = if (is_swapped) node.src0.? else node.src1.?;
+                                                if (!other.isDenseLayout()) return error.UnsupportedDeviceOp;
+                                                secondary_buf = buffers.idx(other);
+                                                secondary_offset = @intCast(buffers.offset(other));
+                                            }
+                                            ew_steps[k] = .{
+                                                .op = node_op,
+                                                .is_swapped = is_swapped,
+                                                .secondary_buf = secondary_buf,
+                                                .secondary_offset = secondary_offset,
+                                            };
                                         }
-                                        ew_steps[k] = .{
-                                            .op = node_op,
-                                            .is_swapped = is_swapped,
-                                            .secondary_buf = secondary_buf,
-                                            .secondary_offset = secondary_offset,
-                                        };
+                                        try ops_list.append(alloc, .{ .fused_elementwise = .{
+                                            .steps = ew_steps,
+                                            .n = @intCast(out_node.nElems()),
+                                            .dst = buffers.idx(out_node),
+                                            .src = buffers.idx(chain.input),
+                                            .dst_offset = @intCast(buffers.offset(out_node)),
+                                            .src_offset = @intCast(buffers.offset(chain.input)),
+                                        } });
                                     }
-                                    try ops_list.append(alloc, .{ .fused_elementwise = .{
-                                        .steps = ew_steps,
-                                        .n = @intCast(out_node.nElems()),
-                                        .dst = buffers.idx(out_node),
-                                        .src = buffers.idx(chain.input),
-                                        .dst_offset = @intCast(buffers.offset(out_node)),
-                                        .src_offset = @intCast(buffers.offset(chain.input)),
-                                    } });
                                 },
                                 .conv2d, .conv2d_bwd_input, .conv2d_bwd_kernel, .max_pool2d, .max_pool2d_bwd, .log_softmax, .cross_entropy => {},
                             }
@@ -338,6 +342,32 @@ pub fn DeviceInference(comptime T: type) type {
                 .slice_assign, .slice_assign_rows => storageBase(tensor.src1.?),
                 else => tensor,
             };
+        }
+
+        fn appendElementwiseChainOps(
+            ops: *std.ArrayListUnmanaged(backend_mod.DeviceOp),
+            buffers: *BufferMap,
+            chain: @import("tensor/fused.zig").ElementwiseFusionPlan(T),
+            alloc: std.mem.Allocator,
+        ) !void {
+            for (chain.nodes) |node| {
+                if (!node.isDenseLayout()) return error.UnsupportedDeviceOp;
+                const src0 = node.src0.?;
+                if (!src0.isDenseLayout()) return error.UnsupportedDeviceOp;
+                const src1 = node.src1;
+                if (src1) |other| if (!other.isDenseLayout()) return error.UnsupportedDeviceOp;
+
+                try ops.append(alloc, .{ .elementwise = .{
+                    .op = node.opTag(),
+                    .dst = buffers.idx(node),
+                    .src0 = buffers.idx(src0),
+                    .src1 = if (src1) |other| buffers.idx(other) else buffers.idx(src0),
+                    .n = @intCast(node.nElems()),
+                    .dst_offset = @intCast(buffers.offset(node)),
+                    .src0_offset = @intCast(buffers.offset(src0)),
+                    .src1_offset = if (src1) |other| @intCast(buffers.offset(other)) else @intCast(buffers.offset(src0)),
+                } });
+            }
         }
 
         fn storageRef(tensor: *const Tensor) StorageRef {
@@ -636,11 +666,15 @@ const test_vtable = backend_mod.Backend.VTable{
 };
 
 fn testBackend(state: *TestBackendState) backend_mod.Backend {
+    return testBackendForDevice(state, .cpu);
+}
+
+fn testBackendForDevice(state: *TestBackendState, device_type: backend_mod.Device) backend_mod.Backend {
     return .{
         .ctx = state,
         .vtable = &test_vtable,
         .name_str = "test",
-        .device_type = .cpu,
+        .device_type = device_type,
     };
 }
 
@@ -789,6 +823,35 @@ test "DeviceInference lowers batched attention geometry" {
 
     dev.patchAttentionSeqKV(5);
     try testing.expectEqual(@as(u32, 5), dev.program_ops[0].attention.seq_kv);
+}
+
+test "DeviceInference lowers WGPU elementwise chains as primitive ops" {
+    var graph = ComputeGraphF32.init(testing.allocator);
+    defer graph.deinit();
+    const a = graph.allocator();
+
+    const x = try TensorF32.init(a, &.{ 4, 3 });
+    for (x.data, 0..) |*v, i| v.* = @as(f32, @floatFromInt(i)) * 0.25;
+    const y = x.relu().sqrt();
+    try graph.infer(y);
+
+    var out = [_]f32{0} ** 12;
+    var state = TestBackendState{};
+    var dev = try DeviceInference(f32).init(.{
+        .graph = &graph,
+        .be = testBackendForDevice(&state, .wgpu),
+        .alloc = testing.allocator,
+        .input_tensors = &.{x},
+        .output_tensor = y,
+        .output_host_buf = &out,
+        .output_len = out.len,
+    });
+    defer dev.deinit();
+
+    const program = dev.getProgram();
+    try testing.expectEqual(@as(usize, 2), program.ops.len);
+    try testing.expectEqual(backend_mod.Op.relu, program.ops[0].elementwise.op);
+    try testing.expectEqual(backend_mod.Op.sqrt, program.ops[1].elementwise.op);
 }
 
 test "DeviceInference rejects unsupported graph ops" {
