@@ -1,0 +1,44 @@
+src/backend/shaders/compute.wgsl
+  06fc52a14883cf5f 5,128-144
+benchmarks/llama_smollm_bench.zig
+  06fc52a14883cf5f 304
+src/backend/shaders/attention.wgsl
+  06fc52a14883cf5f 1-159
+src/backend/wgpu.zig
+  06fc52a14883cf5f 22-23,31,83-91,108-109,165-166,185-189,204-205,214-215,641-666,816-841,1002-1005,1142-1329
+src/device_inference.zig
+  06fc52a14883cf5f 106-130,132-139,347-372,669-672,677,828-854
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "332873ba501d41511024a17d0d725408080957d7",
+  "prompts": {
+    "06fc52a14883cf5f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbc42-ec38-79c3-8beb-ef2750f89dfe",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 633,
+      "total_deletions": 123,
+      "accepted_lines": 542,
+      "overriden_lines": 0
+    },
+    "2a8916c05f915de2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbc35-53e8-7351-8aff-fdc347935dbc",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
