@@ -1,0 +1,21 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "d5ba87f9fc7b6d7f1d71881f03b75f8c823502e7",
+  "prompts": {
+    "2a8916c05f915de2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbc35-53e8-7351-8aff-fdc347935dbc",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
