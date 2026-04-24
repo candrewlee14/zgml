@@ -1385,6 +1385,7 @@ const CompiledProgram = struct {
         const policy = metalSchedulePolicy(self.backend.fine_grained_program_dispatch);
         if (program_mod.scheduleShapeMatches(ops, self.schedule, policy)) {
             self.ops = ops;
+            self.runtime_profile.schedule_reuse_count +%= 1;
             return;
         }
 
@@ -1396,12 +1397,14 @@ const CompiledProgram = struct {
             if (self.schedule.len > 0) self.alloc.free(self.schedule);
             self.ops = ops;
             self.schedule = &.{};
+            self.runtime_profile.schedule_rebuild_count +%= 1;
             return;
         };
 
         if (self.schedule.len > 0) self.alloc.free(self.schedule);
         self.ops = ops;
         self.schedule = schedule;
+        self.runtime_profile.schedule_rebuild_count +%= 1;
     }
 };
 

@@ -374,6 +374,8 @@ pub const RuntimeProfile = struct {
     fallback_op_count: u64 = 0,
     sync_time_ns: u64 = 0,
     sync_count: u64 = 0,
+    schedule_reuse_count: u64 = 0,
+    schedule_rebuild_count: u64 = 0,
     call_count: u32 = 0,
 
     pub fn reset(self: *RuntimeProfile) void {
@@ -492,6 +494,12 @@ pub fn printRuntimeProfile(rt: RuntimeProfile, est: ProgramEstimates) void {
     if (rt.sync_count > 0) {
         const sync_ms: f64 = @as(f64, @floatFromInt(rt.sync_time_ns)) / 1_000_000.0;
         std.debug.print("Backend sync: {d} waits, {d:.2} ms\n", .{ rt.sync_count, sync_ms });
+    }
+    if (rt.schedule_reuse_count > 0 or rt.schedule_rebuild_count > 0) {
+        std.debug.print(
+            "Schedule refresh: {d} reused, {d} rebuilt\n",
+            .{ rt.schedule_reuse_count, rt.schedule_rebuild_count },
+        );
     }
     std.debug.print("{s:<22} {s:>9} {s:>6}  {s:>10} {s:>9}  {s:>10} {s:>8}\n", .{ "op", "time_ms", "pct", "GFLOP", "GFLOP/s", "GB", "GB/s" });
 
