@@ -511,6 +511,7 @@ fn itemScheduleUnit(item_index: u32, item: KernelItem) ScheduleUnit {
 }
 
 fn sortPatternRegions(regions: []PatternRegion) void {
+    if (regions.len < 2) return;
     for (1..regions.len) |i| {
         const tmp = regions[i];
         var j = i;

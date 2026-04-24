@@ -962,6 +962,7 @@ pub const MetalBackend = struct {
     library: *anyopaque,
     active_commands: ?*anyopaque = null,
     fine_grained_program_dispatch: bool = false,
+    region_program_dispatch: bool = false,
 
     pub fn init() !MetalBackend {
         const device = c.mtl_create_device() orelse return error.MetalNotAvailable;
@@ -1028,6 +1029,13 @@ pub const MetalBackend = struct {
     /// fusion removes the tiny-dispatch overhead.
     pub fn setFineGrainedProgramDispatch(self: *MetalBackend, enabled: bool) void {
         self.fine_grained_program_dispatch = enabled;
+    }
+
+    /// Enable named schedule-region lowering experiments. This keeps the
+    /// public DeviceProgram IR simple while allowing Metal to lower reusable
+    /// transformer-shaped regions when it has a native implementation.
+    pub fn setRegionProgramDispatch(self: *MetalBackend, enabled: bool) void {
+        self.region_program_dispatch = enabled;
     }
 
     /// Ensure a command session is active, creating one if needed.
@@ -1116,6 +1124,19 @@ fn metalSchedulePolicy(fine_grained: bool) program_mod.SchedulePolicy {
     };
 }
 
+const qmatvec_rope_attention_pattern = [_]program_mod.KernelFamily{ .qmatvec, .rope, .qmatvec, .rope, .movement, .qmatvec, .movement, .attention };
+const metal_region_patterns = [_]program_mod.FamilyPattern{.{
+    .name = "qmatvec-rope-attention",
+    .families = &qmatvec_rope_attention_pattern,
+}};
+const metal_pattern_qmatvec_rope_attention: u32 = 0;
+
+fn buildMetalRegionSchedule(alloc: std.mem.Allocator, schedule: []const program_mod.KernelItem) ![]program_mod.ScheduleUnit {
+    const region_plan = try program_mod.buildFamilyPatternPlan(alloc, schedule, &metal_region_patterns);
+    defer alloc.free(region_plan);
+    return program_mod.buildRegionSchedule(alloc, schedule, region_plan);
+}
+
 const CompiledProgram = struct {
     backend: *MetalBackend,
     device_bufs: []DeviceBuffer,
@@ -1124,6 +1145,7 @@ const CompiledProgram = struct {
     ref_qweights: []reference.QWeight,
     ops: []const backend_mod.DeviceOp,
     schedule: []const program_mod.KernelItem,
+    region_schedule: []const program_mod.ScheduleUnit,
     alloc: std.mem.Allocator,
     runtime_profile: profile_mod.RuntimeProfile = .{},
 
@@ -1136,6 +1158,7 @@ const CompiledProgram = struct {
         if (self.qweight_views.len > 0) self.alloc.free(self.qweight_views);
         if (self.ref_qweights.len > 0) self.alloc.free(self.ref_qweights);
         if (self.schedule.len > 0) self.alloc.free(self.schedule);
+        if (self.region_schedule.len > 0) self.alloc.free(self.region_schedule);
         self.alloc.destroy(self);
     }
 
@@ -1162,22 +1185,52 @@ const CompiledProgram = struct {
     }
 
     fn executeScheduled(self: *CompiledProgram) void {
+        if (self.backend.region_program_dispatch and self.region_schedule.len > 0) {
+            self.executeRegionScheduled();
+            return;
+        }
+
         for (self.schedule) |item| {
-            const start: usize = @intCast(item.start);
-            const end = start + @as(usize, item.len);
-            switch (item.execution) {
-                .backend => {
-                    for (self.ops[start..end]) |op| {
-                        self.executeOp(op);
-                    }
-                },
-                .fallback => {
-                    self.flushCommandsProfiled();
-                    for (self.ops[start..end]) |op| {
-                        self.executeFallbackOp(op);
+            self.executeScheduleItem(item);
+        }
+    }
+
+    fn executeRegionScheduled(self: *CompiledProgram) void {
+        for (self.region_schedule) |unit| {
+            switch (unit.kind) {
+                .item => self.executeScheduleItem(self.schedule[@intCast(unit.start_item)]),
+                .pattern_region => {
+                    if (!self.tryEncodePatternRegion(unit)) {
+                        self.executeScheduleItems(unit.start_item, unit.item_count);
                     }
                 },
             }
+        }
+    }
+
+    fn executeScheduleItems(self: *CompiledProgram, start_item: u32, item_count: u32) void {
+        const start: usize = @intCast(start_item);
+        const end = start + @as(usize, item_count);
+        for (self.schedule[start..end]) |item| {
+            self.executeScheduleItem(item);
+        }
+    }
+
+    fn executeScheduleItem(self: *CompiledProgram, item: program_mod.KernelItem) void {
+        const start: usize = @intCast(item.start);
+        const end = start + @as(usize, item.len);
+        switch (item.execution) {
+            .backend => {
+                for (self.ops[start..end]) |op| {
+                    self.executeOp(op);
+                }
+            },
+            .fallback => {
+                self.flushCommandsProfiled();
+                for (self.ops[start..end]) |op| {
+                    self.executeFallbackOp(op);
+                }
+            },
         }
     }
 
@@ -1300,17 +1353,134 @@ const CompiledProgram = struct {
         return true;
     }
 
+    fn encodeComputeDispatch(self: *CompiledProgram, spec: ComputeDispatchSpec) void {
+        const buffers = [_]DeviceBuffer{
+            self.device_bufs[spec.src0],
+            self.device_bufs[spec.src1],
+            self.device_bufs[spec.dst],
+        };
+        self.encodeTyped(ComputeParams, self.backend.compute_pipeline, &buffers, spec.params, 3, spec.grid, WG_SIZE);
+    }
+
+    fn encodeQMatvec(self: *CompiledProgram, q: anytype) bool {
+        if (@as(usize, q.weight_idx) >= self.qweight_views.len) return false;
+        const w = self.qweight_views[q.weight_idx];
+        const buffers = [_]DeviceBuffer{
+            w.data,
+            w.scales,
+            self.device_bufs[q.input],
+            self.device_bufs[q.dst],
+        };
+        self.encodeTyped(QMatMulParams, self.backend.qmatvec_pipeline, &buffers, qmatmulParams(q, w.block_size), 4, .{ .gx = linearGrid(q.N) }, WG_SIZE);
+        return true;
+    }
+
+    fn encodeRope(self: *CompiledProgram, rr: anytype) void {
+        const buffers = [_]DeviceBuffer{
+            self.device_bufs[rr.src],
+            self.device_bufs[rr.cos_sin],
+            self.device_bufs[rr.dst],
+        };
+        const params = RopeParams{
+            .half_d = rr.half_d,
+            .seq_len = rr.seq_len,
+            .src_off = rr.src_off,
+            .cs_off = rr.cs_off,
+            .dst_off = rr.dst_off,
+            .src_rs = rr.src_rs,
+            .src_cs = rr.src_cs,
+            .cs_cs = rr.cs_cs,
+        };
+        self.encodeTyped(RopeParams, self.backend.rope_pipeline, &buffers, params, 3, .{ .gx = linearGrid(rr.half_d * rr.seq_len) }, WG_SIZE);
+    }
+
+    fn encodeAttention(self: *CompiledProgram, att: anytype) void {
+        const buffers = [_]DeviceBuffer{
+            self.device_bufs[att.q],
+            self.device_bufs[att.k],
+            self.device_bufs[att.v],
+            self.device_bufs[att.mask],
+            self.device_bufs[att.dst],
+        };
+        self.encodeTyped(AttentionParams, self.backend.attention_pipeline, &buffers, attentionParams(att), 5, .{ .gx = 1 }, WG_SIZE);
+    }
+
+    fn canEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
+        return switch (op) {
+            .qmatmul => |q| q.M == 1 and @as(usize, q.weight_idx) < self.qweight_views.len,
+            .rope => true,
+            .slice_assign => computeDispatchSpec(op) != null,
+            .attention => |att| att.seq_q == 1 and
+                att.seq_kv <= 4096 and
+                att.d_head <= 512 and
+                att.has_mask and
+                att.q_rs == 1 and
+                att.mask_rs == 1 and
+                att.dst_rs == 1,
+            else => false,
+        };
+    }
+
+    fn tryEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
+        const tag: usize = @intFromEnum(op);
+        const t0 = nowNs();
+        const encoded = switch (op) {
+            .qmatmul => |q| q.M == 1 and self.encodeQMatvec(q),
+            .rope => |rr| blk: {
+                self.encodeRope(rr);
+                break :blk true;
+            },
+            .slice_assign => blk: {
+                const spec = computeDispatchSpec(op) orelse break :blk false;
+                self.encodeComputeDispatch(spec);
+                break :blk true;
+            },
+            .attention => |att| blk: {
+                if (!self.canEncodeRegionGpuOp(op)) break :blk false;
+                self.encodeAttention(att);
+                break :blk true;
+            },
+            else => false,
+        };
+        if (encoded) {
+            self.runtime_profile.backend_op_count +%= 1;
+            self.runtime_profile.time_ns[tag] +%= @intCast(nowNs() - t0);
+        }
+        return encoded;
+    }
+
+    fn tryEncodePatternRegion(self: *CompiledProgram, unit: program_mod.ScheduleUnit) bool {
+        return switch (unit.pattern_index) {
+            metal_pattern_qmatvec_rope_attention => self.tryEncodeQmatvecRopeAttentionRegion(unit),
+            else => false,
+        };
+    }
+
+    fn tryEncodeQmatvecRopeAttentionRegion(self: *CompiledProgram, unit: program_mod.ScheduleUnit) bool {
+        if (unit.item_count != qmatvec_rope_attention_pattern.len) return false;
+
+        const start_item: usize = @intCast(unit.start_item);
+        const end_item = start_item + qmatvec_rope_attention_pattern.len;
+        if (end_item > self.schedule.len) return false;
+        const items = self.schedule[start_item..end_item];
+
+        for (items, qmatvec_rope_attention_pattern) |item, expected_family| {
+            if (item.family != expected_family or item.len != 1) return false;
+            if (!self.canEncodeRegionGpuOp(self.ops[@intCast(item.start)])) return false;
+        }
+
+        for (items) |item| {
+            if (!self.tryEncodeRegionGpuOp(self.ops[@intCast(item.start)])) return false;
+        }
+        return true;
+    }
+
     fn tryEncodeGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
         const fine_grained = self.backend.fine_grained_program_dispatch;
 
         if (fine_grained) {
             if (computeDispatchSpec(op)) |spec| {
-                const buffers = [_]DeviceBuffer{
-                    self.device_bufs[spec.src0],
-                    self.device_bufs[spec.src1],
-                    self.device_bufs[spec.dst],
-                };
-                self.encodeTyped(ComputeParams, self.backend.compute_pipeline, &buffers, spec.params, 3, spec.grid, WG_SIZE);
+                self.encodeComputeDispatch(spec);
                 return true;
             }
         }
@@ -1335,8 +1505,7 @@ const CompiledProgram = struct {
                     self.device_bufs[q.dst],
                 };
                 if (q.M == 1) {
-                    self.encodeTyped(QMatMulParams, self.backend.qmatvec_pipeline, &buffers, qmatmulParams(q, w.block_size), 4, .{ .gx = linearGrid(q.N) }, WG_SIZE);
-                    return true;
+                    return self.encodeQMatvec(q);
                 }
                 if (!fine_grained and q.M < 16) return false;
                 self.encodeTyped(QMatMulParams, self.backend.qmatmul_pipeline, &buffers, qmatmulParams(q, w.block_size), 4, matmulGrid(q.M, q.N), MATMUL_THREADS);
@@ -1344,36 +1513,14 @@ const CompiledProgram = struct {
             },
             .rope => |rr| {
                 if (!fine_grained) return false;
-                const buffers = [_]DeviceBuffer{
-                    self.device_bufs[rr.src],
-                    self.device_bufs[rr.cos_sin],
-                    self.device_bufs[rr.dst],
-                };
-                const params = RopeParams{
-                    .half_d = rr.half_d,
-                    .seq_len = rr.seq_len,
-                    .src_off = rr.src_off,
-                    .cs_off = rr.cs_off,
-                    .dst_off = rr.dst_off,
-                    .src_rs = rr.src_rs,
-                    .src_cs = rr.src_cs,
-                    .cs_cs = rr.cs_cs,
-                };
-                self.encodeTyped(RopeParams, self.backend.rope_pipeline, &buffers, params, 3, .{ .gx = linearGrid(rr.half_d * rr.seq_len) }, WG_SIZE);
+                self.encodeRope(rr);
                 return true;
             },
             .attention => |att| {
                 if (!fine_grained) return false;
                 if (att.seq_q != 1 or att.seq_kv > 4096 or att.d_head > 512) return false;
                 if (!att.has_mask or att.q_rs != 1 or att.mask_rs != 1 or att.dst_rs != 1) return false;
-                const buffers = [_]DeviceBuffer{
-                    self.device_bufs[att.q],
-                    self.device_bufs[att.k],
-                    self.device_bufs[att.v],
-                    self.device_bufs[att.mask],
-                    self.device_bufs[att.dst],
-                };
-                self.encodeTyped(AttentionParams, self.backend.attention_pipeline, &buffers, attentionParams(att), 5, .{ .gx = 1 }, WG_SIZE);
+                self.encodeAttention(att);
                 return true;
             },
             .elementwise, .softmax, .layernorm, .rmsnorm, .reduce, .repeat, .slice_assign => return false,
@@ -1395,15 +1542,21 @@ const CompiledProgram = struct {
             policy,
         ) catch {
             if (self.schedule.len > 0) self.alloc.free(self.schedule);
+            if (self.region_schedule.len > 0) self.alloc.free(self.region_schedule);
             self.ops = ops;
             self.schedule = &.{};
+            self.region_schedule = &.{};
             self.runtime_profile.schedule_rebuild_count +%= 1;
             return;
         };
 
+        const region_schedule = buildMetalRegionSchedule(self.alloc, schedule) catch &.{};
+
         if (self.schedule.len > 0) self.alloc.free(self.schedule);
+        if (self.region_schedule.len > 0) self.alloc.free(self.region_schedule);
         self.ops = ops;
         self.schedule = schedule;
+        self.region_schedule = region_schedule;
         self.runtime_profile.schedule_rebuild_count +%= 1;
     }
 };
@@ -1484,6 +1637,9 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
     ) catch return null;
     errdefer if (schedule.len > 0) alloc.free(schedule);
 
+    const region_schedule = buildMetalRegionSchedule(alloc, schedule) catch &.{};
+    errdefer if (region_schedule.len > 0) alloc.free(region_schedule);
+
     const compiled = alloc.create(CompiledProgram) catch return null;
     compiled.* = .{
         .backend = self,
@@ -1493,6 +1649,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         .ref_qweights = ref_qweights,
         .ops = program.ops,
         .schedule = schedule,
+        .region_schedule = region_schedule,
         .alloc = alloc,
     };
     return @ptrCast(compiled);

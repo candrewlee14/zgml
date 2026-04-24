@@ -6,6 +6,7 @@
 //! Run:
 //!   zig build bench-llama-smollm
 //!   ./zig-out/bin/bench-llama-smollm [model.safetensors|model.gguf] [prompt_tokens] [gen_tokens] [repetitions]
+//!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --metal-region
 
 const std = @import("std");
 const zgml = @import("zgml");
@@ -348,6 +349,7 @@ pub fn main(init: std.process.Init) !void {
         .gen_tokens = try parseArgOrDefault(args, 3, 200),
         .repetitions = try parseArgOrDefault(args, 4, 3),
     };
+    const run_metal_region = args.len > 5 and std.mem.eql(u8, args[5], "--metal-region");
     const model_is_gguf = isGGUF(cfg.model_path);
 
     try stdout.interface.print("\nSmolLM LLaMA Benchmark — zgml\n", .{});
@@ -382,6 +384,11 @@ pub fn main(init: std.process.Init) !void {
         _ = try runVariant(if (model_is_gguf) "metal gguf      " else "metal f32        ", metal_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
         if (!model_is_gguf) _ = try runVariant("metal int8       ", metal_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
         _ = try runDeviceVariant(if (model_is_gguf) "metal device q  " else "metal device f16", metal_be.backend(), cfg, &stdout.interface, io, alloc);
+        if (run_metal_region) {
+            metal_be.setRegionProgramDispatch(true);
+            _ = try runDeviceVariant(if (model_is_gguf) "metal region q  " else "metal region f16", metal_be.backend(), cfg, &stdout.interface, io, alloc);
+            metal_be.setRegionProgramDispatch(false);
+        }
     }
 
     if (have_wgpu) {
