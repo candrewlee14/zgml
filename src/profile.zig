@@ -273,6 +273,23 @@ pub fn printRegionScheduleSummary(label: []const u8, units: []const program_mod.
     );
 }
 
+pub fn printRegionExecutionSummary(label: []const u8, summary: program_mod.RegionExecutionSummary) void {
+    const backend_pct: f64 = if (summary.ops > 0) @as(f64, @floatFromInt(summary.backend_ops)) / @as(f64, @floatFromInt(summary.ops)) * 100.0 else 0.0;
+    std.debug.print(
+        "Region execution ({s}): {d} backend islands, {d} transitions, {d}/{d} ops backend ({d:.1}%), {d} backend units, {d} fallback units\n\n",
+        .{
+            label,
+            summary.backend_islands,
+            summary.execution_transitions,
+            summary.backend_ops,
+            summary.ops,
+            backend_pct,
+            summary.backend_units,
+            summary.fallback_units,
+        },
+    );
+}
+
 const neighborhood_edge: u8 = 255;
 
 pub fn printAnchorNeighborhoodSummary(

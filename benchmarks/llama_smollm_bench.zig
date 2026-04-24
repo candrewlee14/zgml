@@ -255,6 +255,11 @@ fn runDeviceVariant(
     const region_schedule = try backend_program.buildRegionSchedule(alloc, schedule, region_plan);
     defer alloc.free(region_schedule);
     profile.printRegionScheduleSummary(region_patterns[0].name, region_schedule);
+    const lowered_region_patterns = [_]u32{0};
+    profile.printRegionExecutionSummary(
+        "qmatvec-rope-attention lowered",
+        backend_program.summarizeRegionExecution(region_schedule, schedule, &lowered_region_patterns),
+    );
 
     const rope = &session.model.blocks[0].rope;
     const tok_data = session.model.token_embed.inner.data;

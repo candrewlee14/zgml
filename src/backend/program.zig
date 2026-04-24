@@ -172,6 +172,17 @@ pub const ScheduleUnit = struct {
     op_count: u32,
 };
 
+pub const RegionExecutionSummary = struct {
+    units: u32 = 0,
+    backend_units: u32 = 0,
+    fallback_units: u32 = 0,
+    ops: u32 = 0,
+    backend_ops: u32 = 0,
+    fallback_ops: u32 = 0,
+    backend_islands: u32 = 0,
+    execution_transitions: u32 = 0,
+};
+
 /// Describes reusable anchored regions over a KernelItem schedule. This is the
 /// pure planning layer for future fusion: choose anchor families (for example
 /// qmatvec) and families allowed to travel with them, then emit contiguous
@@ -498,6 +509,55 @@ pub fn buildRegionSchedule(
     }
 
     return units.toOwnedSlice(alloc);
+}
+
+pub fn summarizeRegionExecution(
+    units: []const ScheduleUnit,
+    items: []const KernelItem,
+    backend_pattern_indices: []const u32,
+) RegionExecutionSummary {
+    var summary = RegionExecutionSummary{ .units = @intCast(units.len) };
+    var prev_execution: ?ExecutionClass = null;
+
+    for (units) |unit| {
+        const execution = scheduleUnitExecution(unit, items, backend_pattern_indices);
+        summary.ops += unit.op_count;
+        switch (execution) {
+            .backend => {
+                summary.backend_units += 1;
+                summary.backend_ops += unit.op_count;
+                if (prev_execution == null or prev_execution.? != .backend) summary.backend_islands += 1;
+            },
+            .fallback => {
+                summary.fallback_units += 1;
+                summary.fallback_ops += unit.op_count;
+            },
+        }
+        if (prev_execution) |prev| {
+            if (prev != execution) summary.execution_transitions += 1;
+        }
+        prev_execution = execution;
+    }
+
+    return summary;
+}
+
+pub fn scheduleUnitExecution(
+    unit: ScheduleUnit,
+    items: []const KernelItem,
+    backend_pattern_indices: []const u32,
+) ExecutionClass {
+    return switch (unit.kind) {
+        .item => items[@intCast(unit.start_item)].execution,
+        .pattern_region => if (containsPatternIndex(backend_pattern_indices, unit.pattern_index)) .backend else .fallback,
+    };
+}
+
+fn containsPatternIndex(indices: []const u32, pattern_index: u32) bool {
+    for (indices) |idx| {
+        if (idx == pattern_index) return true;
+    }
+    return false;
 }
 
 fn itemScheduleUnit(item_index: u32, item: KernelItem) ScheduleUnit {
@@ -838,6 +898,35 @@ test "region schedule covers items once and replaces selected patterns" {
     try std.testing.expectEqual(@as(u32, 3), units[1].op_count);
     try std.testing.expectEqual(ScheduleUnitKind.item, units[2].kind);
     try std.testing.expectEqual(@as(u32, 5), units[2].op_start);
+}
+
+test "region execution summary counts backend islands and transitions" {
+    const items = [_]KernelItem{
+        .{ .family = .movement, .execution = .fallback, .start = 0, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 1, .len = 1 },
+        .{ .family = .rope, .execution = .fallback, .start = 2, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 3, .len = 1 },
+        .{ .family = .elementwise, .execution = .fallback, .start = 4, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 5, .len = 1 },
+        .{ .family = .rope, .execution = .fallback, .start = 6, .len = 1 },
+    };
+    const pattern = [_]KernelFamily{ .qmatvec, .rope };
+    const patterns = [_]FamilyPattern{.{ .name = "q-r", .families = &pattern }};
+
+    const regions = try buildFamilyPatternPlan(std.testing.allocator, &items, &patterns);
+    defer std.testing.allocator.free(regions);
+    const units = try buildRegionSchedule(std.testing.allocator, &items, regions);
+    defer std.testing.allocator.free(units);
+
+    const backend_patterns = [_]u32{0};
+    const summary = summarizeRegionExecution(units, &items, &backend_patterns);
+    try std.testing.expectEqual(@as(u32, 5), summary.units);
+    try std.testing.expectEqual(@as(u32, 2), summary.backend_units);
+    try std.testing.expectEqual(@as(u32, 3), summary.fallback_units);
+    try std.testing.expectEqual(@as(u32, 4), summary.backend_ops);
+    try std.testing.expectEqual(@as(u32, 3), summary.fallback_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.backend_islands);
+    try std.testing.expectEqual(@as(u32, 3), summary.execution_transitions);
 }
 
 pub const StepDynamicParams = extern struct {
