@@ -159,6 +159,7 @@ pub fn LlamaSession(comptime T: type, comptime config: LlamaConfig) type {
         pub fn loadSafetensors(self: *Self, alloc: std.mem.Allocator, io: std.Io, path: []const u8) !void {
             var sf = try safetensors.SafetensorsFile.open(alloc, path, io);
             defer sf.deinit();
+            self.inner.clearDirectQuantWeights();
             try llama_loader.loadLlama(T, config, &self.inner.model, &sf);
         }
 
@@ -168,13 +169,20 @@ pub fn LlamaSession(comptime T: type, comptime config: LlamaConfig) type {
         pub fn loadGGUFDequantized(self: *Self, alloc: std.mem.Allocator, io: std.Io, path: []const u8) !void {
             var gf = try gguf.GGUFFile.open(alloc, io, path);
             defer gf.deinit();
+            self.inner.clearDirectQuantWeights();
             try gguf_loader.loadDequantized(T, config, &self.inner.model, &gf);
+        }
+
+        pub fn loadGGUFDirectQuantized(self: *Self, alloc: std.mem.Allocator, io: std.Io, path: []const u8) !void {
+            var gf = try gguf.GGUFFile.open(alloc, io, path);
+            defer gf.deinit();
+            try self.inner.loadGGUFDirectQuantized(&gf);
         }
 
         pub fn load(self: *Self, alloc: std.mem.Allocator, io: std.Io, path: []const u8) !void {
             return switch (inferFileKind(path) orelse return error.UnknownModelFormat) {
                 .safetensors => self.loadSafetensors(alloc, io, path),
-                .gguf => self.loadGGUFDequantized(alloc, io, path),
+                .gguf => self.loadGGUFDirectQuantized(alloc, io, path),
             };
         }
     };

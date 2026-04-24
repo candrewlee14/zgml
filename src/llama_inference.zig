@@ -36,6 +36,8 @@ const Tensor = @import("tensor.zig").Tensor;
 const ComputeGraph = @import("graph.zig").ComputeGraph;
 const LLaMA = @import("models/llama.zig").LLaMA;
 const LlamaConfig = @import("models/llama.zig").LlamaConfig;
+const gguf_mod = @import("gguf.zig");
+const gguf_loader = @import("models/gguf_loader.zig");
 const quant = @import("quant.zig");
 const QuantizedWeight = quant.QuantizedWeight;
 const QuantizedKVCache = quant.QuantizedKVCache;
@@ -87,6 +89,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
 
         // Weight-quantization state.
         quant_weights: []QuantizedWeight(T),
+        owns_quant_weights: bool,
         quant_map: std.AutoHashMapUnmanaged(*Tensor(T), usize),
         gemv_pool: ?quant.GemvPool(T) = null,
         // Scratch buffer for BLAS-backed M>1 quantized matmul: sized to
@@ -137,6 +140,7 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
                 .trace = trace,
                 .workspace_bufs = bufs,
                 .quant_weights = &.{},
+                .owns_quant_weights = true,
                 .quant_map = .empty,
                 .uses_quant_kv = false,
                 .quant_sa_map = .empty,
@@ -145,16 +149,40 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
         }
 
         pub fn deinit(self: *Self) void {
-            if (self.gemv_pool) |*p| p.deinit(self.backing_alloc);
-            for (self.quant_weights) |qw| qw.deinit(self.backing_alloc);
-            if (self.quant_weights.len > 0) self.backing_alloc.free(self.quant_weights);
-            if (self.quant_scratch.len > 0) self.backing_alloc.free(self.quant_scratch);
-            self.quant_map.deinit(self.backing_alloc);
+            self.clearQuantization();
             self.quant_sa_map.deinit(self.backing_alloc);
             self.quant_attn_map.deinit(self.backing_alloc);
             for (self.workspace_bufs) |buf| self.backing_alloc.free(buf);
             if (self.workspace_bufs.len > 0) self.backing_alloc.free(self.workspace_bufs);
             self.graph.deinit();
+        }
+
+        pub fn clearQuantization(self: *Self) void {
+            const alloc = self.backing_alloc;
+            if (self.gemv_pool) |*p| p.deinit(alloc);
+            self.gemv_pool = null;
+            if (self.owns_quant_weights) {
+                for (self.quant_weights) |qw| qw.deinit(alloc);
+                if (self.quant_weights.len > 0) alloc.free(self.quant_weights);
+            }
+            self.quant_weights = &.{};
+            self.owns_quant_weights = true;
+            if (self.quant_scratch.len > 0) alloc.free(self.quant_scratch);
+            self.quant_scratch = &.{};
+            self.quant_map.deinit(alloc);
+            self.quant_map = .empty;
+        }
+
+        fn setupQuantRuntime(self: *Self) !void {
+            const alloc = self.backing_alloc;
+            const n_workers = std.Thread.getCpuCount() catch 1;
+            self.gemv_pool = try quant.GemvPool(T).init(alloc, n_workers);
+
+            if (comptime (T == f32 and opts.use_blas)) {
+                var max_kn: usize = 0;
+                for (self.quant_weights) |w| max_kn = @max(max_kn, w.rows * w.cols);
+                if (max_kn > 0) self.quant_scratch = try alloc.alloc(T, max_kn);
+            }
         }
 
         /// Quantize eligible weight matmuls to int8.
@@ -169,9 +197,15 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
             if (count == 0) return;
 
             const qw = try alloc.alloc(QuantizedWeight(T), count);
-            errdefer alloc.free(qw);
+            var qw_transferred = false;
+            errdefer if (!qw_transferred) alloc.free(qw);
+            var initialized: usize = 0;
+            errdefer if (!qw_transferred) {
+                for (qw[0..initialized]) |w| w.deinit(alloc);
+            };
 
             var map: std.AutoHashMapUnmanaged(*Tensor(T), usize) = .empty;
+            errdefer map.deinit(alloc);
             try map.ensureTotalCapacity(alloc, @intCast(count));
 
             var idx: usize = 0;
@@ -179,33 +213,57 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
                 if (node.opTag() == .matmul and inference_utils.isWeightMatmul(T, node)) {
                     const weight = if (node.src1.?.isParam()) node.src1.? else node.src0.?;
                     qw[idx] = try QuantizedWeight(T).fromTensor(alloc, weight, block_size);
+                    initialized += 1;
                     try qw[idx].prepareTransposed(alloc);
                     map.putAssumeCapacity(node, idx);
                     idx += 1;
                 }
             }
 
-            for (self.quant_weights) |w| w.deinit(alloc);
-            if (self.quant_weights.len > 0) alloc.free(self.quant_weights);
-            self.quant_map.deinit(alloc);
-
+            self.clearQuantization();
             self.quant_weights = qw;
+            self.owns_quant_weights = true;
             self.quant_map = map;
-            const n_workers = std.Thread.getCpuCount() catch 1;
-            if (self.gemv_pool) |*p| p.deinit(alloc);
-            self.gemv_pool = try quant.GemvPool(T).init(alloc, n_workers);
+            map = .empty;
+            initialized = 0;
+            qw_transferred = true;
+            try self.setupQuantRuntime();
+        }
 
-            // Size a shared scratch buffer for BLAS-backed M>1 matmul to
-            // the largest K*N across quantized weights. Only allocated when
-            // BLAS is built in — otherwise the fallback kernel is used and
-            // scratch would be unused.
-            if (self.quant_scratch.len > 0) alloc.free(self.quant_scratch);
-            self.quant_scratch = &.{};
-            if (comptime (T == f32 and opts.use_blas)) {
-                var max_kn: usize = 0;
-                for (qw) |w| max_kn = @max(max_kn, w.rows * w.cols);
-                if (max_kn > 0) self.quant_scratch = try alloc.alloc(T, max_kn);
+        pub fn useExternalQuantWeights(
+            self: *Self,
+            weights: []QuantizedWeight(T),
+            param_map: *const std.AutoHashMapUnmanaged(*Tensor(T), usize),
+        ) !void {
+            const alloc = self.backing_alloc;
+            const nodes = self.graph.nodes.items[0..self.graph.forward_node_count];
+
+            var count: usize = 0;
+            for (nodes) |node| {
+                if (node.opTag() == .matmul and inference_utils.isWeightMatmul(T, node)) {
+                    const weight = if (node.src1.?.isParam()) node.src1.? else node.src0.?;
+                    if (param_map.get(weight) != null) count += 1;
+                }
             }
+            if (count == 0) return;
+
+            var map: std.AutoHashMapUnmanaged(*Tensor(T), usize) = .empty;
+            errdefer map.deinit(alloc);
+            try map.ensureTotalCapacity(alloc, @intCast(count));
+
+            for (nodes) |node| {
+                if (node.opTag() == .matmul and inference_utils.isWeightMatmul(T, node)) {
+                    const weight = if (node.src1.?.isParam()) node.src1.? else node.src0.?;
+                    if (param_map.get(weight)) |qi| map.putAssumeCapacity(node, qi);
+                }
+            }
+
+            self.clearQuantization();
+            self.quant_weights = weights;
+            self.owns_quant_weights = false;
+            self.quant_map = map;
+            map = .empty;
+            try self.setupQuantRuntime();
         }
 
         /// Build the slice_assign / attention → QuantizedKVCache maps for this
@@ -299,11 +357,16 @@ pub fn LlamaInferencePlan(comptime T: type, comptime config: LlamaConfig) type {
                 };
                 quant.attentionQuantized(
                     T,
-                    node.data, node.strides[1],
-                    q.data, q.strides[1],
-                    q.ne[0], q.ne[1],
-                    aq.k_cache, aq.k_col_offset,
-                    aq.v_cache, aq.v_col_offset,
+                    node.data,
+                    node.strides[1],
+                    q.data,
+                    q.strides[1],
+                    q.ne[0],
+                    q.ne[1],
+                    aq.k_cache,
+                    aq.k_col_offset,
+                    aq.v_cache,
+                    aq.v_col_offset,
                     seq_kv,
                     if (mask) |m| m.data else null,
                     if (mask) |m| m.strides[0] else 0,
@@ -450,6 +513,8 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
         /// Remembered weight-quant block size so prefill plans, when built
         /// lazily, can match the decode plan's quantization state.
         quant_block_size: ?usize,
+        direct_quant_weights: []QuantizedWeight(T),
+        direct_quant_param_map: std.AutoHashMapUnmanaged(*Tensor(T), usize),
         pos: usize,
 
         pub fn init(backing_alloc: std.mem.Allocator) !Self {
@@ -492,6 +557,8 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
                 .prefill_plan = null,
                 .prefill_chunk = @min(default_prefill_chunk, config.max_seq_len),
                 .quant_block_size = null,
+                .direct_quant_weights = &.{},
+                .direct_quant_param_map = .empty,
                 .pos = 0,
             };
         }
@@ -499,12 +566,29 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
         pub fn deinit(self: *Self) void {
             if (self.prefill_plan) |*p| p.deinit();
             self.plan.deinit();
+            self.deinitDirectQuantStorage();
             for (self.k_quant_caches) |*c| c.deinit(self.backing_alloc);
             if (self.k_quant_caches.len > 0) self.backing_alloc.free(self.k_quant_caches);
             for (self.v_quant_caches) |*c| c.deinit(self.backing_alloc);
             if (self.v_quant_caches.len > 0) self.backing_alloc.free(self.v_quant_caches);
             self.arena.deinit();
             self.backing_alloc.destroy(self.arena);
+        }
+
+        fn deinitDirectQuantStorage(self: *Self) void {
+            for (self.direct_quant_weights) |qw| qw.deinit(self.backing_alloc);
+            if (self.direct_quant_weights.len > 0) self.backing_alloc.free(self.direct_quant_weights);
+            self.direct_quant_weights = &.{};
+            self.direct_quant_param_map.deinit(self.backing_alloc);
+            self.direct_quant_param_map = .empty;
+        }
+
+        pub fn clearDirectQuantWeights(self: *Self) void {
+            if (!self.plan.owns_quant_weights) self.plan.clearQuantization();
+            if (self.prefill_plan) |*p| {
+                if (!p.owns_quant_weights) p.clearQuantization();
+            }
+            self.deinitDirectQuantStorage();
         }
 
         /// Clear KV caches and rewind to position 0. Attention masks are
@@ -525,10 +609,37 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
 
         /// Quantize eligible weight matrices to int8 on all plans.
         pub fn quantize(self: *Self) !void {
+            if (self.direct_quant_weights.len > 0) return error.DirectQuantizedWeightsActive;
             const bs = @import("quant.zig").default_block_size;
             try self.plan.quantize(bs);
             if (self.prefill_plan) |*p| try p.quantize(bs);
             self.quant_block_size = bs;
+        }
+
+        /// Load GGUF tensors for inference while keeping supported quantized
+        /// matmul weights compressed. Non-matmul tensors and unsupported
+        /// formats are dequantized into the model's f32 parameter tensors.
+        pub fn loadGGUFDirectQuantized(self: *Self, gf: *const gguf_mod.GGUFFile) !void {
+            var loaded = try gguf_loader.loadDirectQuantized(T, config, self.backing_alloc, &self.model, gf);
+            errdefer loaded.deinit(self.backing_alloc);
+
+            self.clearDirectQuantWeights();
+            try self.plan.useExternalQuantWeights(loaded.weights, &loaded.param_map);
+            var plan_installed = true;
+            errdefer if (plan_installed) self.plan.clearQuantization();
+            if (self.prefill_plan) |*p| {
+                try p.useExternalQuantWeights(loaded.weights, &loaded.param_map);
+                var prefill_installed = true;
+                errdefer if (prefill_installed) p.clearQuantization();
+                prefill_installed = false;
+            }
+
+            self.direct_quant_weights = loaded.weights;
+            self.direct_quant_param_map = loaded.param_map;
+            loaded.weights = &.{};
+            loaded.param_map = .empty;
+            self.quant_block_size = null;
+            plan_installed = false;
         }
 
         /// Quantize the session's per-layer KV caches to int8. The caches are
@@ -630,7 +741,11 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
                 n,
             );
             errdefer pp.deinit();
-            if (self.quant_block_size) |bs| try pp.quantize(bs);
+            if (self.direct_quant_weights.len > 0) {
+                try pp.useExternalQuantWeights(self.direct_quant_weights, &self.direct_quant_param_map);
+            } else if (self.quant_block_size) |bs| {
+                try pp.quantize(bs);
+            }
             if (self.k_quant_caches.len > 0) {
                 try pp.quantizeKV(self.k_quant_caches, self.v_quant_caches);
             }

@@ -8,6 +8,7 @@ const std = @import("std");
 const backend_mod = @import("../backend.zig");
 const profile_mod = @import("../profile.zig");
 const reference = @import("reference.zig");
+const program_mod = @import("program.zig");
 const c = @cImport(@cInclude("metal_shim.h"));
 
 fn nowNs() i96 {
@@ -312,7 +313,7 @@ const shader_source =
     \\    uint d   = p.half_d * 2;
     \\
     \\    float cos_val = cos_sin[p.cs_off + col * p.cs_cs + i];
-    \\    float sin_val = cos_sin[p.cs_off + col * p.cs_cs + d + i];
+    \\    float sin_val = cos_sin[p.cs_off + col * p.cs_cs + p.half_d + i];
     \\    float x_lo = src[p.src_off + col * p.src_cs + i * p.src_rs];
     \\    float x_hi = src[p.src_off + col * p.src_cs + (i + p.half_d) * p.src_rs];
     \\
@@ -404,9 +405,9 @@ const shader_source =
     \\struct ComputeParams {
     \\    uint op;
     \\    uint n_elements;
-    \\    uint4 dst_ne;    uint4 dst_strides;   uint dst_offset;
-    \\    uint4 src0_ne;   uint4 src0_strides;   uint src0_offset;
-    \\    uint4 src1_ne;   uint4 src1_strides;   uint src1_offset;
+    \\    uint dst_ne[4];    uint dst_strides[4];   uint dst_offset;
+    \\    uint src0_ne[4];   uint src0_strides[4];   uint src0_offset;
+    \\    uint src1_ne[4];   uint src1_strides[4];   uint src1_offset;
     \\};
     \\
     \\// Op codes — elementwise match op.zig values directly:
@@ -614,6 +615,205 @@ const ComputeParams = extern struct {
     src1_offset: u32,
 };
 
+const WG_SIZE: u32 = 256;
+const MATMUL_THREADS: u32 = 128;
+
+const DispatchGrid = struct {
+    gx: u32,
+    gy: u32 = 1,
+};
+
+const ComputeDispatchSpec = struct {
+    params: ComputeParams,
+    src0: u16,
+    src1: u16,
+    dst: u16,
+    grid: DispatchGrid,
+};
+
+fn matmulGrid(M: anytype, N: anytype) DispatchGrid {
+    return .{
+        .gx = @intCast((N + TILE - 1) / TILE),
+        .gy = @intCast((M + TILE - 1) / TILE),
+    };
+}
+
+fn linearGrid(n: anytype) u32 {
+    return @intCast((n + WG_SIZE - 1) / WG_SIZE);
+}
+
+fn matmulParams(geom: backend_mod.MatMulGeometry) MatMulParams {
+    return .{
+        .M = @intCast(geom.M),
+        .N = @intCast(geom.N),
+        .K = @intCast(geom.K),
+        .a_row_stride = @intCast(geom.a_row_stride),
+        .a_col_stride = @intCast(geom.a_col_stride),
+        .b_row_stride = @intCast(geom.b_row_stride),
+        .b_col_stride = @intCast(geom.b_col_stride),
+        .a_offset = @intCast(geom.a_offset),
+        .b_offset = @intCast(geom.b_offset),
+        .dst_offset = @intCast(geom.dst_offset),
+        .dst_row_stride = @intCast(geom.dst_row_stride),
+    };
+}
+
+fn qmatmulParams(q: anytype, block_size: usize) QMatMulParams {
+    return .{
+        .M = q.M,
+        .N = q.N,
+        .K = q.K,
+        .block_size = @intCast(block_size),
+    };
+}
+
+fn baseComputeParams(op_code: u32, n_elements: u32, dst_offset: u32) ComputeParams {
+    var p = std.mem.zeroes(ComputeParams);
+    p.op = op_code;
+    p.n_elements = n_elements;
+    p.dst_offset = dst_offset;
+    return p;
+}
+
+fn rowComputeParams(op_code: u32, rows: u32, cols: u32, src_offset: u32, dst_offset: u32) ComputeParams {
+    var p = baseComputeParams(op_code, rows, dst_offset);
+    p.src0_ne[0] = cols;
+    p.src0_offset = src_offset;
+    return p;
+}
+
+fn epsilonRowComputeParams(op_code: u32, rows: u32, cols: u32, eps: f32, src_offset: u32, dst_offset: u32) ComputeParams {
+    var p = rowComputeParams(op_code, rows, cols, src_offset, dst_offset);
+    p.src1_ne[0] = @bitCast(eps);
+    return p;
+}
+
+fn elementwiseComputeParams(e: anytype) ComputeParams {
+    var p = baseComputeParams(@intFromEnum(e.op), e.n, e.dst_offset);
+    p.src0_offset = e.src0_offset;
+    p.src1_offset = e.src1_offset;
+    return p;
+}
+
+fn reduceComputeParams(r: anytype) ComputeParams {
+    var p = baseComputeParams(@intFromEnum(r.op), r.n_out, r.dst_offset);
+    p.src0_ne[0] = r.reduce_size;
+    p.src0_offset = r.src_offset;
+    return p;
+}
+
+fn repeatComputeParams(rp: anytype) ComputeParams {
+    var p = baseComputeParams(@intFromEnum(backend_mod.Op.repeat), rp.n, rp.dst_offset);
+    p.dst_ne = rp.dst_ne;
+    p.dst_strides = rp.dst_strides;
+    p.src0_ne = rp.src_ne;
+    p.src0_strides = rp.src_strides;
+    p.src0_offset = rp.src_offset;
+    return p;
+}
+
+fn sliceAssignComputeParams(sa: anytype) ComputeParams {
+    var p = std.mem.zeroes(ComputeParams);
+    p.op = @intFromEnum(backend_mod.Op.slice_assign);
+    p.n_elements = sa.rows * sa.cols;
+    p.src0_ne[0] = sa.rows;
+    p.dst_strides[0] = sa.dst_row_stride;
+    p.dst_strides[1] = sa.dst_col_stride;
+    p.dst_offset = sa.dst_offset;
+    p.src0_strides[0] = sa.src_row_stride;
+    p.src0_strides[1] = sa.src_col_stride;
+    p.src0_offset = sa.src_offset;
+    return p;
+}
+
+fn isSupportedElementwiseOp(op: backend_mod.Op) bool {
+    return switch (op) {
+        .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu => true,
+        else => false,
+    };
+}
+
+fn computeDispatchSpec(op: backend_mod.DeviceOp) ?ComputeDispatchSpec {
+    switch (op) {
+        .elementwise => |e| {
+            if (!isSupportedElementwiseOp(e.op)) return null;
+            return .{
+                .params = elementwiseComputeParams(e),
+                .src0 = e.src0,
+                .src1 = e.src1,
+                .dst = e.dst,
+                .grid = .{ .gx = linearGrid(e.n) },
+            };
+        },
+        .softmax => |s| return .{
+            .params = rowComputeParams(program_mod.compute_op_softmax, s.rows, s.cols, s.src_offset, s.dst_offset),
+            .src0 = s.src,
+            .src1 = s.src,
+            .dst = s.dst,
+            .grid = .{ .gx = linearGrid(s.rows) },
+        },
+        .layernorm => |l| return .{
+            .params = epsilonRowComputeParams(program_mod.compute_op_layernorm, l.rows, l.cols, l.eps, l.src_offset, l.dst_offset),
+            .src0 = l.src,
+            .src1 = l.src,
+            .dst = l.dst,
+            .grid = .{ .gx = linearGrid(l.rows) },
+        },
+        .rmsnorm => |r| return .{
+            .params = epsilonRowComputeParams(program_mod.compute_op_rmsnorm, r.rows, r.cols, r.eps, r.src_offset, r.dst_offset),
+            .src0 = r.src,
+            .src1 = r.src,
+            .dst = r.dst,
+            .grid = .{ .gx = linearGrid(r.rows) },
+        },
+        .reduce => |r| {
+            if (r.op != .sum and r.op != .max) return null;
+            return .{
+                .params = reduceComputeParams(r),
+                .src0 = r.src,
+                .src1 = r.dst,
+                .dst = r.dst,
+                .grid = .{ .gx = linearGrid(r.n_out) },
+            };
+        },
+        .repeat => |rp| return .{
+            .params = repeatComputeParams(rp),
+            .src0 = rp.src,
+            .src1 = rp.src,
+            .dst = rp.dst,
+            .grid = .{ .gx = linearGrid(rp.n) },
+        },
+        .slice_assign => |sa| {
+            const params = sliceAssignComputeParams(sa);
+            return .{
+                .params = params,
+                .src0 = sa.src,
+                .src1 = sa.src,
+                .dst = sa.dst,
+                .grid = .{ .gx = linearGrid(params.n_elements) },
+            };
+        },
+        else => return null,
+    }
+}
+
+fn attentionParams(att: anytype) AttentionParams {
+    return .{
+        .d_head = att.d_head,
+        .seq_kv = att.seq_kv,
+        .scale = att.scale,
+        .q_off = att.q_off,
+        .k_off = att.k_off,
+        .v_off = att.v_off,
+        .mask_off = att.mask_off,
+        .dst_off = att.dst_off,
+        .k_rs = att.k_rs,
+        .k_cs = att.k_cs,
+        .v_rs = att.v_rs,
+        .v_cs = att.v_cs,
+    };
+}
+
 // ── MetalBackend ──────────────────────────────────────────────────
 
 pub const MetalBackend = struct {
@@ -772,20 +972,129 @@ const CompiledProgram = struct {
         // Upload per-step inputs (token embed, pos, mask) via shared memory.
         reference.uploadToBuffers(self.ref_buffers, inputs);
 
-        // All ops on CPU using shared-memory buffers.
-        // At decode batch_size=1, BLAS matmuls + SIMD ops beat GPU dispatch
-        // overhead (~210 commits/token). Weights are pre-loaded in device
-        // buffers, avoiding graph traversal and pointer chasing per token.
         for (self.ops) |op| {
             const tag: usize = @intFromEnum(op);
             const t0 = nowNs();
-            reference.executeOp(self.ref_buffers, self.ref_qweights, op);
+            if (!self.tryEncodeGpuOp(op)) {
+                self.backend.flushCommands();
+                reference.executeOp(self.ref_buffers, self.ref_qweights, op);
+            }
             self.runtime_profile.time_ns[tag] +%= @intCast(nowNs() - t0);
         }
+        self.backend.flushCommands();
         self.runtime_profile.call_count += 1;
 
         // Download outputs (logits) via shared memory.
         reference.downloadFromBuffers(self.ref_buffers, outputs);
+    }
+
+    fn encode(
+        self: *CompiledProgram,
+        pipeline: *anyopaque,
+        buffers: []const DeviceBuffer,
+        params: *const anyopaque,
+        params_size: usize,
+        params_index: u32,
+        grid: DispatchGrid,
+        threads_x: u32,
+    ) void {
+        var raw_buffers: [6]?*anyopaque = undefined;
+        for (buffers, 0..) |buf, i| raw_buffers[i] = buf.ptr;
+        c.mtl_encode_dispatch(
+            self.backend.ensureCommands(),
+            pipeline,
+            @ptrCast(&raw_buffers),
+            @intCast(buffers.len),
+            params,
+            params_size,
+            params_index,
+            grid.gx,
+            grid.gy,
+            threads_x,
+            1,
+        );
+    }
+
+    fn encodeTyped(
+        self: *CompiledProgram,
+        comptime Params: type,
+        pipeline: *anyopaque,
+        buffers: []const DeviceBuffer,
+        params: Params,
+        params_index: u32,
+        grid: DispatchGrid,
+        threads_x: u32,
+    ) void {
+        self.encode(pipeline, buffers, &params, @sizeOf(Params), params_index, grid, threads_x);
+    }
+
+    fn tryEncodeGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
+        if (computeDispatchSpec(op)) |spec| {
+            const buffers = [_]DeviceBuffer{
+                self.device_bufs[spec.src0],
+                self.device_bufs[spec.src1],
+                self.device_bufs[spec.dst],
+            };
+            self.encodeTyped(ComputeParams, self.backend.compute_pipeline, &buffers, spec.params, 3, spec.grid, WG_SIZE);
+            return true;
+        }
+
+        switch (op) {
+            .matmul => |m| {
+                const buffers = [_]DeviceBuffer{
+                    self.device_bufs[m.a],
+                    self.device_bufs[m.b],
+                    self.device_bufs[m.dst],
+                };
+                self.encodeTyped(MatMulParams, self.backend.matmul_pipeline, &buffers, matmulParams(m.geom), 3, matmulGrid(m.geom.M, m.geom.N), MATMUL_THREADS);
+                return true;
+            },
+            .qmatmul => |q| {
+                const w = self.qweight_views[q.weight_idx];
+                const buffers = [_]DeviceBuffer{
+                    w.data,
+                    w.scales,
+                    self.device_bufs[q.input],
+                    self.device_bufs[q.dst],
+                };
+                self.encodeTyped(QMatMulParams, self.backend.qmatmul_pipeline, &buffers, qmatmulParams(q, w.block_size), 4, matmulGrid(q.M, q.N), MATMUL_THREADS);
+                return true;
+            },
+            .rope => |rr| {
+                const buffers = [_]DeviceBuffer{
+                    self.device_bufs[rr.src],
+                    self.device_bufs[rr.cos_sin],
+                    self.device_bufs[rr.dst],
+                };
+                const params = RopeParams{
+                    .half_d = rr.half_d,
+                    .seq_len = rr.seq_len,
+                    .src_off = rr.src_off,
+                    .cs_off = rr.cs_off,
+                    .dst_off = rr.dst_off,
+                    .src_rs = rr.src_rs,
+                    .src_cs = rr.src_cs,
+                    .cs_cs = rr.cs_cs,
+                };
+                self.encodeTyped(RopeParams, self.backend.rope_pipeline, &buffers, params, 3, .{ .gx = linearGrid(rr.half_d * rr.seq_len) }, WG_SIZE);
+                return true;
+            },
+            .attention => |att| {
+                if (att.seq_q != 1 or att.seq_kv > 4096 or att.d_head > 512) return false;
+                if (!att.has_mask or att.q_rs != 1 or att.mask_rs != 1 or att.dst_rs != 1) return false;
+                const buffers = [_]DeviceBuffer{
+                    self.device_bufs[att.q],
+                    self.device_bufs[att.k],
+                    self.device_bufs[att.v],
+                    self.device_bufs[att.mask],
+                    self.device_bufs[att.dst],
+                };
+                self.encodeTyped(AttentionParams, self.backend.attention_pipeline, &buffers, attentionParams(att), 5, .{ .gx = 1 }, WG_SIZE);
+                return true;
+            },
+            .elementwise, .softmax, .layernorm, .rmsnorm, .reduce, .repeat, .slice_assign => unreachable,
+            .fused_elementwise => return false,
+        }
     }
 };
 

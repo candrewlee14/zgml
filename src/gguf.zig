@@ -4,7 +4,7 @@
 //! used by llama.cpp and related projects for storing quantized LLM weights.
 //!
 //! File layout:
-//!   [4 bytes: magic "GGUF" (0x46475547)]
+//!   [4 bytes: magic "GGUF" (0x46554747)]
 //!   [4 bytes: version (u32 LE, 2 or 3)]
 //!   [8 bytes: tensor_count (u64 LE for v3, u32 for v2)]
 //!   [8 bytes: kv_count (u64 LE for v3, u32 for v2)]
@@ -188,7 +188,7 @@ pub const GGUFFile = struct {
     data_offset: usize,
     alloc: std.mem.Allocator,
 
-    const magic_value: u32 = 0x46475547; // "GGUF" in LE
+    const magic_value: u32 = 0x46554747; // "GGUF" in LE
     const default_alignment: usize = 32;
 
     /// Open and parse a GGUF file from disk.
@@ -509,7 +509,7 @@ fn buildTestBuffer(alloc: std.mem.Allocator) ![]align(32) u8 {
     defer buf.deinit(alloc);
 
     // Magic
-    try appendU32(&buf, alloc, 0x46475547);
+    try appendU32(&buf, alloc, 0x46554747);
     // Version 3
     try appendU32(&buf, alloc, 3);
     // Tensor count: 2
@@ -574,6 +574,26 @@ test "gguf - parse synthetic v3 buffer" {
     defer gf.deinit();
 
     try testing.expectEqual(@as(u32, 3), gf.version);
+}
+
+test "gguf - parses literal GGUF magic byte order" {
+    const alloc = testing.allocator;
+
+    var buf_list = std.ArrayList(u8).empty;
+    defer buf_list.deinit(alloc);
+
+    try buf_list.appendSlice(alloc, "GGUF");
+    try appendU32(&buf_list, alloc, 3); // version
+    try appendU64(&buf_list, alloc, 0); // tensor count
+    try appendU64(&buf_list, alloc, 0); // metadata count
+    try appendPadding(&buf_list, alloc, 32);
+
+    const buf = try toAligned(alloc, &buf_list);
+    var gf = try GGUFFile.parseBuffer(alloc, buf);
+    defer gf.deinit();
+
+    try testing.expectEqual(@as(u32, 3), gf.version);
+    try testing.expectEqual(@as(usize, 0), gf.tensors.count());
 }
 
 test "gguf - metadata retrieval" {
@@ -740,7 +760,7 @@ test "gguf - v2 buffer parsing" {
     var buf_list = std.ArrayList(u8).empty;
     defer buf_list.deinit(alloc);
 
-    try appendU32(&buf_list, alloc, 0x46475547); // magic
+    try appendU32(&buf_list, alloc, 0x46554747); // magic
     try appendU32(&buf_list, alloc, 2); // version 2
     try appendU32(&buf_list, alloc, 1); // tensor count (u32 for v2)
     try appendU32(&buf_list, alloc, 1); // kv count (u32 for v2)
@@ -782,7 +802,7 @@ test "gguf - custom alignment via general.alignment" {
     var buf_list = std.ArrayList(u8).empty;
     defer buf_list.deinit(alloc);
 
-    try appendU32(&buf_list, alloc, 0x46475547); // magic
+    try appendU32(&buf_list, alloc, 0x46554747); // magic
     try appendU32(&buf_list, alloc, 3); // version 3
     try appendU64(&buf_list, alloc, 1); // tensor count
     try appendU64(&buf_list, alloc, 1); // kv count
@@ -835,7 +855,7 @@ test "gguf - unsupported version rejected" {
     defer alloc.free(buf);
     @memset(buf, 0);
     // Correct magic, version 99
-    std.mem.writeInt(u32, buf[0..4], 0x46475547, .little);
+    std.mem.writeInt(u32, buf[0..4], 0x46554747, .little);
     std.mem.writeInt(u32, buf[4..8], 99, .little);
 
     const result = GGUFFile.parseBuffer(alloc, buf);
@@ -848,7 +868,7 @@ test "gguf - array metadata value" {
     var buf_list = std.ArrayList(u8).empty;
     defer buf_list.deinit(alloc);
 
-    try appendU32(&buf_list, alloc, 0x46475547); // magic
+    try appendU32(&buf_list, alloc, 0x46554747); // magic
     try appendU32(&buf_list, alloc, 3); // version
     try appendU64(&buf_list, alloc, 0); // no tensors
     try appendU64(&buf_list, alloc, 1); // 1 KV
