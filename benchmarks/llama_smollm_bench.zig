@@ -19,6 +19,7 @@ const CpuBackend = zgml.backend_cpu.CpuBackend;
 const WgpuBackend = zgml.backend_wgpu.WgpuBackend;
 const MetalBackend = zgml.backend_metal.MetalBackend;
 const DeviceInference = zgml.device_inference.DeviceInference;
+const LlamaDevicePrefill = zgml.llm.LlamaDevicePrefill;
 const Backend = zgml.backend.Backend;
 const Tensor = zgml.Tensor;
 const profile = zgml.profile;
@@ -366,10 +367,6 @@ fn runDevicePrefillVariant(
 ) !BenchResult {
     if (cfg.prompt_tokens == 0 or cfg.prompt_tokens > config.max_seq_len) return error.InvalidPromptLength;
 
-    const d_model = config.d_model;
-    const d_head = d_model / config.n_heads;
-    const max_seq = config.max_seq_len;
-
     var session = try Session.init(alloc);
     defer session.deinit();
     try loadWeights(&session, alloc, cfg.model_path, io);
@@ -378,87 +375,30 @@ fn runDevicePrefillVariant(
     defer alloc.free(prompt);
     for (prompt, 0..) |*t, i| t.* = (i + 1) % config.vocab_size;
 
-    const pp = try session.ensurePrefillPlan(cfg.prompt_tokens);
-
-    const n_inputs = 2 + config.n_layers;
-    const input_tensors = try alloc.alloc(*const Tensor(f32), n_inputs);
-    defer alloc.free(input_tensors);
-    input_tensors[0] = pp.token_input;
-    input_tensors[1] = pp.attn_mask;
-    for (pp.trace.layers, 0..) |lt, l| {
-        input_tensors[2 + l] = lt.rope;
-    }
-
-    const last_logits = pp.trace.logits.sliceColumns(cfg.prompt_tokens - 1, cfg.prompt_tokens);
     const logits_buf = try alloc.alloc(f32, config.vocab_size);
     defer alloc.free(logits_buf);
 
-    var device = try DeviceInference(f32).init(.{
-        .graph = &pp.graph,
-        .be = be,
+    var prefill = try LlamaDevicePrefill(f32, config).init(.{
+        .session = &session,
+        .backend = be,
         .alloc = alloc,
-        .input_tensors = input_tensors,
-        .output_tensor = last_logits,
-        .output_host_buf = logits_buf.ptr,
-        .output_len = config.vocab_size,
-        .quant_weights = pp.quant_weights,
-        .quant_map = &pp.quant_map,
+        .chunk_tokens = cfg.prompt_tokens,
+        .logits_buf = logits_buf,
     });
-    defer device.deinit();
+    defer prefill.deinit();
 
-    const program = device.getProgram();
+    const program = prefill.getProgram();
     const schedule_policy = schedulePolicyForBackend(be);
     profile.printProfile(profile.profileProgramWithSchedule(program, schedule_policy));
 
-    const rope = &session.model.blocks[0].rope;
-    const tok_data = session.model.token_embed.inner.data;
-
-    const StepCtx = struct {
-        fn doPrefill(
-            dev: *DeviceInference(f32),
-            plan_: *@TypeOf(pp.*),
-            tok_data_: []const f32,
-            rope_: anytype,
-            tokens: []const usize,
-            pos: usize,
-        ) void {
-            for (tokens, 0..) |token_id, i| {
-                @memcpy(plan_.token_input.data[i * d_model ..][0..d_model], tok_data_[token_id * d_model ..][0..d_model]);
-            }
-
-            for (0..tokens.len) |j| {
-                const col = plan_.attn_mask.data[j * max_seq ..][0..max_seq];
-                const valid_upto = pos + j + 1;
-                @memset(col[0..valid_upto], 0);
-                if (valid_upto < max_seq) @memset(col[valid_upto..], -std.math.inf(f32));
-            }
-
-            for (plan_.trace.layers) |lt| {
-                const buf = lt.rope.data;
-                for (0..tokens.len) |j| {
-                    @memcpy(buf[j * 2 * d_head ..][0..d_head], rope_.cos_table.data[(pos + j) * d_head ..][0..d_head]);
-                    @memcpy(buf[j * 2 * d_head + d_head ..][0..d_head], rope_.sin_table.data[(pos + j) * d_head ..][0..d_head]);
-                }
-            }
-
-            for (plan_.trace.layers) |lt| {
-                for (lt.k_write) |node| node.storage_offset = pos;
-                for (lt.v_write) |node| node.storage_offset = pos;
-            }
-            dev.patchSliceAssignOffset(@intCast(pos));
-            dev.patchAttentionSeqKV(@intCast(pos + tokens.len));
-            dev.execute();
-        }
-    };
-
-    StepCtx.doPrefill(&device, pp, tok_data, rope, prompt, 0);
+    _ = try prefill.executeAt(prompt, 0);
     session.reset();
 
     var prompt_total_ns: u128 = 0;
     for (0..cfg.repetitions) |_| {
         session.reset();
         const prompt_start = std.Io.Clock.awake.now(io).nanoseconds;
-        StepCtx.doPrefill(&device, pp, tok_data, rope, prompt, 0);
+        _ = try prefill.executeAt(prompt, 0);
         const prompt_end = std.Io.Clock.awake.now(io).nanoseconds;
         prompt_total_ns += @intCast(prompt_end - prompt_start);
     }
@@ -473,8 +413,8 @@ fn runDevicePrefillVariant(
     );
     writer.flush() catch {};
 
-    if (device.getRuntimeProfile()) |rt| {
-        const est = profile.estimateProgram(device.program_ops);
+    if (prefill.getRuntimeProfile()) |rt| {
+        const est = profile.estimateProgram(program.ops);
         profile.printRuntimeProfile(rt.*, est);
     }
 
