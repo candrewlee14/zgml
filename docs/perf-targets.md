@@ -52,6 +52,14 @@ This is a structural cleanup, not a claimed speedup by itself; the current
 SmolLM Metal prefill smoke is roughly `1,292` dispatches/call after batched
 qmatmul partial-slice cache-store sidecars.
 
+The next layer of the same abstraction is `StageCommand`: a pure, model-agnostic
+lowering view over the ops inside a stage. Today it names `row_chain` commands
+for RMSNorm + repeated scale + multiply. On SmolLM prefill this finds 61
+row-chains covering 183 ops, corresponding to 122 dispatches already saved by
+the Metal RMSNorm-scale kernel. Future work should add projection, movement,
+RoPE/KV, and attention commands here before adding more backend-specific
+pattern code.
+
 ## Acceptance Thresholds
 
 SmolLM-135M:

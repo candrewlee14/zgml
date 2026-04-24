@@ -255,6 +255,127 @@ pub const StagePolicy = struct {
     }
 };
 
+pub const StageCommandKind = enum {
+    op,
+    row_chain,
+
+    pub fn label(self: StageCommandKind) []const u8 {
+        return switch (self) {
+            .op => "op",
+            .row_chain => "row_chain",
+        };
+    }
+};
+
+pub const StageCommand = struct {
+    kind: StageCommandKind,
+    op_start: u32,
+    op_count: u32,
+
+    pub fn dispatchCount(self: StageCommand) u32 {
+        return switch (self.kind) {
+            .op, .row_chain => 1,
+        };
+    }
+};
+
+pub const StageCommandSummary = struct {
+    commands: u32 = 0,
+    ops: u32 = 0,
+    estimated_dispatches: u32 = 0,
+    estimated_saved_dispatches: u32 = 0,
+    row_chains: u32 = 0,
+    row_chain_ops: u32 = 0,
+};
+
+pub fn buildStageCommands(
+    alloc: std.mem.Allocator,
+    ops: []const backend_mod.DeviceOp,
+) ![]StageCommand {
+    var commands: std.ArrayListUnmanaged(StageCommand) = .empty;
+    errdefer commands.deinit(alloc);
+
+    var i: usize = 0;
+    while (i < ops.len) {
+        if (i + 2 < ops.len and isRmsnormScaleChain(ops[i], ops[i + 1], ops[i + 2])) {
+            try commands.append(alloc, .{
+                .kind = .row_chain,
+                .op_start = @intCast(i),
+                .op_count = 3,
+            });
+            i += 3;
+            continue;
+        }
+
+        try commands.append(alloc, .{
+            .kind = .op,
+            .op_start = @intCast(i),
+            .op_count = 1,
+        });
+        i += 1;
+    }
+
+    return commands.toOwnedSlice(alloc);
+}
+
+pub fn summarizeStageCommands(commands: []const StageCommand) StageCommandSummary {
+    var summary = StageCommandSummary{ .commands = @intCast(commands.len) };
+    for (commands) |command| {
+        summary.ops += command.op_count;
+        const dispatches = command.dispatchCount();
+        summary.estimated_dispatches += dispatches;
+        if (command.op_count > dispatches) {
+            summary.estimated_saved_dispatches += command.op_count - dispatches;
+        }
+        switch (command.kind) {
+            .op => {},
+            .row_chain => {
+                summary.row_chains += 1;
+                summary.row_chain_ops += command.op_count;
+            },
+        }
+    }
+    return summary;
+}
+
+pub fn isRmsnormScaleChain(
+    a: backend_mod.DeviceOp,
+    b: backend_mod.DeviceOp,
+    c: backend_mod.DeviceOp,
+) bool {
+    const rn = switch (a) {
+        .rmsnorm => |rn| rn,
+        else => return false,
+    };
+    const rp = switch (b) {
+        .repeat => |rp| rp,
+        else => return false,
+    };
+    const e = switch (c) {
+        .elementwise => |e| e,
+        else => return false,
+    };
+
+    const n = rn.rows * rn.cols;
+    return e.op == .mul and
+        rp.n == n and
+        e.n == n and
+        rp.dst == (if (e.src0 == rn.dst and e.src0_offset == rn.dst_offset) e.src1 else e.src0) and
+        rp.src_ne[0] == rn.cols and
+        rp.src_ne[1] == 1 and
+        rp.dst_ne[0] == rn.cols and
+        rp.dst_ne[1] == rn.rows and
+        rp.src_strides[0] == 1 and
+        rp.dst_strides[0] == 1 and
+        rp.dst_strides[1] == rn.cols and
+        mulSourcesMatchNormAndScale(e, rn.dst, rn.dst_offset, rp.dst, rp.dst_offset);
+}
+
+fn mulSourcesMatchNormAndScale(e: anytype, norm_buf: u16, norm_offset: u32, scale_buf: u16, scale_offset: u32) bool {
+    return (e.src0 == norm_buf and e.src0_offset == norm_offset and e.src1 == scale_buf and e.src1_offset == scale_offset) or
+        (e.src1 == norm_buf and e.src1_offset == norm_offset and e.src0 == scale_buf and e.src0_offset == scale_offset);
+}
+
 pub fn kernelFamily(op: backend_mod.DeviceOp) KernelFamily {
     return switch (op) {
         .elementwise => .elementwise,
@@ -833,6 +954,34 @@ fn testSliceAssign(dst_offset: u32) backend_mod.DeviceOp {
     } };
 }
 
+fn testRmsnormScaleOps() [3]backend_mod.DeviceOp {
+    return .{
+        .{ .rmsnorm = .{
+            .dst = 1,
+            .src = 0,
+            .rows = 2,
+            .cols = 4,
+            .eps = 1e-5,
+        } },
+        .{ .repeat = .{
+            .dst = 2,
+            .src = 3,
+            .n = 8,
+            .src_ne = .{ 4, 1, 1, 1 },
+            .dst_ne = .{ 4, 2, 1, 1 },
+            .src_strides = .{ 1, 4, 4, 4 },
+            .dst_strides = .{ 1, 4, 8, 8 },
+        } },
+        .{ .elementwise = .{
+            .op = .mul,
+            .dst = 4,
+            .src0 = 1,
+            .src1 = 2,
+            .n = 8,
+        } },
+    };
+}
+
 fn expectKernelItem(item: KernelItem, family: KernelFamily, execution: ExecutionClass, start: u32, len: u32) !void {
     try std.testing.expectEqual(family, item.family);
     try std.testing.expectEqual(execution, item.execution);
@@ -1095,6 +1244,52 @@ test "stage plan builds named anchored layer windows" {
     try std.testing.expectEqual(@as(u32, 7), units[0].pattern_index);
     try std.testing.expectEqual(ScheduleUnitKind.item, units[1].kind);
     try std.testing.expectEqual(@as(u32, 15), units[1].op_start);
+}
+
+test "stage commands collapse rmsnorm scale row chains" {
+    const row_chain = testRmsnormScaleOps();
+    const ops = [_]backend_mod.DeviceOp{
+        row_chain[0],
+        row_chain[1],
+        row_chain[2],
+        testQMatmul(16),
+    };
+
+    try std.testing.expect(isRmsnormScaleChain(ops[0], ops[1], ops[2]));
+
+    const commands = try buildStageCommands(std.testing.allocator, &ops);
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(StageCommandKind.row_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 0), commands[0].op_start);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].op_count);
+    try std.testing.expectEqual(StageCommandKind.op, commands[1].kind);
+    try std.testing.expectEqual(@as(u32, 3), commands[1].op_start);
+
+    const summary = summarizeStageCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 4), summary.ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.row_chains);
+    try std.testing.expectEqual(@as(u32, 3), summary.row_chain_ops);
+}
+
+test "stage commands leave nonmatching row triples as ops" {
+    var row_chain = testRmsnormScaleOps();
+    row_chain[2].elementwise.op = .add;
+
+    const commands = try buildStageCommands(std.testing.allocator, &row_chain);
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expect(!isRmsnormScaleChain(row_chain[0], row_chain[1], row_chain[2]));
+    try std.testing.expectEqual(@as(usize, 3), commands.len);
+    for (commands, 0..) |command, i| {
+        try std.testing.expectEqual(StageCommandKind.op, command.kind);
+        try std.testing.expectEqual(@as(u32, @intCast(i)), command.op_start);
+        try std.testing.expectEqual(@as(u32, 1), command.op_count);
+    }
 }
 
 test "family pattern regions match exact contiguous family sequences" {

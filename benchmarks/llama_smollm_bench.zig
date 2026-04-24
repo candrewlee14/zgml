@@ -398,6 +398,9 @@ fn runDevicePrefillVariant(
     const prefill_stage_schedule = try backend_program.buildStageRegionSchedule(alloc, schedule, &prefill_stages);
     defer alloc.free(prefill_stage_schedule);
     profile.printRegionScheduleSummary("prefill-layer stages", prefill_stage_schedule);
+    const stage_commands = try backend_program.buildStageCommands(alloc, program.ops);
+    defer alloc.free(stage_commands);
+    profile.printStageCommandSummary("prefill", backend_program.summarizeStageCommands(stage_commands));
     const lowered_prefill_stages = [_]u32{0};
     profile.printRegionExecutionSummary(
         "prefill-layer stages lowered",

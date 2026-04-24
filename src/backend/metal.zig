@@ -2970,25 +2970,12 @@ const CompiledProgram = struct {
         self.encodeTyped(SliceAssignBatchParams, self.backend.slice_assign_batch_pipeline, &buffers, params, 2, .{ .gx = linearGrid(params.max_n), .gy = @intCast(n) }, WG_SIZE);
     }
 
-    fn mulSourcesMatchNormAndScale(e: anytype, norm_buf: u16, norm_offset: u32, scale_buf: u16, scale_offset: u32) bool {
-        return (e.src0 == norm_buf and e.src0_offset == norm_offset and e.src1 == scale_buf and e.src1_offset == scale_offset) or
-            (e.src1 == norm_buf and e.src1_offset == norm_offset and e.src0 == scale_buf and e.src0_offset == scale_offset);
-    }
-
     fn canFuseRmsnormRepeatMul(rn: anytype, rp: anytype, e: anytype) bool {
-        const n = rn.rows * rn.cols;
-        return e.op == .mul and
-            rp.n == n and
-            e.n == n and
-            rp.dst == (if (e.src0 == rn.dst and e.src0_offset == rn.dst_offset) e.src1 else e.src0) and
-            rp.src_ne[0] == rn.cols and
-            rp.src_ne[1] == 1 and
-            rp.dst_ne[0] == rn.cols and
-            rp.dst_ne[1] == rn.rows and
-            rp.src_strides[0] == 1 and
-            rp.dst_strides[0] == 1 and
-            rp.dst_strides[1] == rn.cols and
-            mulSourcesMatchNormAndScale(e, rn.dst, rn.dst_offset, rp.dst, rp.dst_offset);
+        return program_mod.isRmsnormScaleChain(
+            .{ .rmsnorm = rn },
+            .{ .repeat = rp },
+            .{ .elementwise = e },
+        );
     }
 
     fn encodeRmsnormRepeatMul(self: *CompiledProgram, rn: anytype, rp: anytype, e: anytype) bool {

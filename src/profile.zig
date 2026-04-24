@@ -294,6 +294,26 @@ pub fn printRegionExecutionSummary(label: []const u8, summary: program_mod.Regio
     );
 }
 
+pub fn printStageCommandSummary(label: []const u8, summary: program_mod.StageCommandSummary) void {
+    const saved_pct: f64 = if (summary.ops > 0)
+        @as(f64, @floatFromInt(summary.estimated_saved_dispatches)) / @as(f64, @floatFromInt(summary.ops)) * 100.0
+    else
+        0.0;
+    std.debug.print(
+        "Stage commands ({s}): {d} commands over {d} ops, estimated {d} dispatches ({d} saved, {d:.1}% of ops); row_chains={d} ({d} ops)\n\n",
+        .{
+            label,
+            summary.commands,
+            summary.ops,
+            summary.estimated_dispatches,
+            summary.estimated_saved_dispatches,
+            saved_pct,
+            summary.row_chains,
+            summary.row_chain_ops,
+        },
+    );
+}
+
 const neighborhood_edge: u8 = 255;
 
 pub fn printAnchorNeighborhoodSummary(
