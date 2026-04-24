@@ -1,0 +1,88 @@
+src/main.zig
+  c55c277b162bb712 20,22,46,48
+  3e0f7da912f1c0f9 21,47
+src/metal/metal_shaders.zig
+  c55c277b162bb712 1-196
+.superset/config.json
+  c55c277b162bb712 1-5
+src/backend/cpu.zig
+  c55c277b162bb712 1-2,6,17,28-96,99-102,104-107,109-112,133-135,142,145-168
+benchmarks/backend_decision_bench.zig
+  c55c277b162bb712 1-127
+src/gguf.zig
+  06fc52a14883cf5f 1-891
+src/metal/metal_objc.zig
+  c55c277b162bb712 1-241
+src/models/gguf_loader.zig
+  06fc52a14883cf5f 1-402
+src/device_inference.zig
+  c55c277b162bb712 106,138-139,748-752,758
+src/backend.zig
+  c55c277b162bb712 13-65,70-80,199,237-240,253-255,260-265
+src/backend/conformance.zig
+  c55c277b162bb712 1-153
+src/backend/program.zig
+  c55c277b162bb712 1-102
+src/backend/reference.zig
+  3e0f7da912f1c0f9 1-21,78-80,91-151,197-609
+  c55c277b162bb712 22-77,81-90,152-196
+src/io.zig
+  06fc52a14883cf5f 1-22
+src/backend/wgpu.zig
+  c55c277b162bb712 11,302,709,780,787,794,974,1084,1142,1144,1180
+scripts/generate_gguf.zig
+  06fc52a14883cf5f 1-132
+src/backend/metal.zig
+  3e0f7da912f1c0f9 10,803,815-817,821,830,832
+  c55c277b162bb712 706,743,745,756,759,765,774,780,822-823,882-884
+build.zig
+  c55c277b162bb712 297-303
+src/metal/metal.zig
+  c55c277b162bb712 1-443
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "1da7ae7208476110b4a1abf874a19a46450e95b5",
+  "prompts": {
+    "06fc52a14883cf5f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbc42-ec38-79c3-8beb-ef2750f89dfe",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1897,
+      "overriden_lines": 0
+    },
+    "3e0f7da912f1c0f9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbd4b-b518-7a91-bd08-ffb64c26f452",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 520,
+      "total_deletions": 0,
+      "accepted_lines": 508,
+      "overriden_lines": 0
+    },
+    "c55c277b162bb712": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbd4b-12dc-7d73-a3c1-86decccabe3b",
+        "model": "gpt-5.5"
+      },
+      "human_author": null,
+      "messages": [],
+      "total_additions": 1693,
+      "total_deletions": 672,
+      "accepted_lines": 1613,
+      "overriden_lines": 0
+    }
+  }
+}
