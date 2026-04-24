@@ -211,6 +211,29 @@ fn printScheduledFamilies(p: DeviceProgramProfile) void {
     }
 }
 
+pub fn printKernelRegionSummary(label: []const u8, regions: []const program_mod.KernelRegion) void {
+    var item_count: u32 = 0;
+    var op_count: u32 = 0;
+    var anchor_count: u32 = 0;
+    var max_ops: u32 = 0;
+    for (regions) |region| {
+        item_count += region.item_count;
+        op_count += region.op_count;
+        anchor_count += region.anchor_count;
+        max_ops = @max(max_ops, region.op_count);
+    }
+
+    const n_f: f64 = @floatFromInt(regions.len);
+    const avg_items: f64 = if (regions.len > 0) @as(f64, @floatFromInt(item_count)) / n_f else 0.0;
+    const avg_ops: f64 = if (regions.len > 0) @as(f64, @floatFromInt(op_count)) / n_f else 0.0;
+    const avg_anchors: f64 = if (regions.len > 0) @as(f64, @floatFromInt(anchor_count)) / n_f else 0.0;
+
+    std.debug.print(
+        "Kernel regions ({s}): {d} regions, {d} ops, {d} anchors; avg {d:.1} items/{d:.1} ops/{d:.1} anchors, max {d} ops\n\n",
+        .{ label, regions.len, op_count, anchor_count, avg_items, avg_ops, avg_anchors, max_ops },
+    );
+}
+
 /// Print a timing breakdown for a model inference run.
 pub fn printTimingBreakdown(label: []const u8, n_tokens: u32, total_ns: u64) void {
     const total_ms: f64 = @as(f64, @floatFromInt(total_ns)) / 1_000_000.0;

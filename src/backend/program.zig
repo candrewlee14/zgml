@@ -25,6 +25,40 @@ pub const KernelFamily = enum {
 };
 
 pub const n_kernel_families = @typeInfo(KernelFamily).@"enum".fields.len;
+comptime {
+    if (n_kernel_families > 64) @compileError("KernelFamilyMask stores families in u64");
+}
+
+pub const KernelFamilyMask = struct {
+    bits: u64 = 0,
+
+    pub const empty: KernelFamilyMask = .{};
+    pub const all: KernelFamilyMask = blk: {
+        var bits: u64 = 0;
+        for (0..n_kernel_families) |i| bits |= @as(u64, 1) << @intCast(i);
+        break :blk .{ .bits = bits };
+    };
+
+    pub fn init(comptime families: []const KernelFamily) KernelFamilyMask {
+        var mask: KernelFamilyMask = .empty;
+        inline for (families) |family| {
+            mask = mask.with(family);
+        }
+        return mask;
+    }
+
+    pub fn with(self: KernelFamilyMask, family: KernelFamily) KernelFamilyMask {
+        return .{ .bits = self.bits | bit(family) };
+    }
+
+    pub fn contains(self: KernelFamilyMask, family: KernelFamily) bool {
+        return (self.bits & bit(family)) != 0;
+    }
+
+    fn bit(family: KernelFamily) u64 {
+        return @as(u64, 1) << @intCast(@intFromEnum(family));
+    }
+};
 
 /// Whether a scheduled region is expected to run in the backend's native
 /// execution path or through the backend's semantic fallback.
@@ -100,6 +134,38 @@ pub const KernelItem = struct {
     len: u32,
 };
 
+pub const KernelRegion = struct {
+    start_item: u32,
+    item_count: u32,
+    op_start: u32,
+    op_count: u32,
+    anchor_count: u32,
+};
+
+/// Describes reusable anchored regions over a KernelItem schedule. This is the
+/// pure planning layer for future fusion: choose anchor families (for example
+/// qmatvec) and families allowed to travel with them, then emit contiguous
+/// candidate regions without knowing which model produced the ops.
+pub const RegionPolicy = struct {
+    anchor_families: KernelFamilyMask,
+    member_families: KernelFamilyMask,
+
+    pub fn qmatvecCluster() RegionPolicy {
+        return .{
+            .anchor_families = KernelFamilyMask.init(&.{.qmatvec}),
+            .member_families = KernelFamilyMask.init(&.{
+                .elementwise,
+                .fused_elementwise,
+                .row,
+                .movement,
+                .qmatvec,
+                .rope,
+                .attention,
+            }),
+        };
+    }
+};
+
 pub fn kernelFamily(op: backend_mod.DeviceOp) KernelFamily {
     return switch (op) {
         .elementwise => .elementwise,
@@ -170,6 +236,46 @@ pub fn buildKernelSchedule(
     }
 
     return items.toOwnedSlice(alloc);
+}
+
+pub fn buildKernelRegions(
+    alloc: std.mem.Allocator,
+    items: []const KernelItem,
+    policy: RegionPolicy,
+) ![]KernelRegion {
+    var regions: std.ArrayListUnmanaged(KernelRegion) = .empty;
+    errdefer regions.deinit(alloc);
+
+    var run_start: usize = 0;
+    while (run_start < items.len) {
+        while (run_start < items.len and !policy.member_families.contains(items[run_start].family)) {
+            run_start += 1;
+        }
+        if (run_start >= items.len) break;
+
+        var run_end = run_start;
+        var anchor_count: u32 = 0;
+        while (run_end < items.len and policy.member_families.contains(items[run_end].family)) : (run_end += 1) {
+            if (policy.anchor_families.contains(items[run_end].family)) anchor_count += items[run_end].len;
+        }
+
+        if (anchor_count > 0) {
+            const first = items[run_start];
+            const last = items[run_end - 1];
+            const op_end = last.start + last.len;
+            try regions.append(alloc, .{
+                .start_item = @intCast(run_start),
+                .item_count = @intCast(run_end - run_start),
+                .op_start = first.start,
+                .op_count = op_end - first.start,
+                .anchor_count = anchor_count,
+            });
+        }
+
+        run_start = run_end;
+    }
+
+    return regions.toOwnedSlice(alloc);
 }
 
 fn testElementwise(op: backend_mod.Op) backend_mod.DeviceOp {
@@ -294,6 +400,43 @@ test "kernel schedule fine grained policy unlocks small native kernels" {
     try std.testing.expectEqual(ExecutionClass.fallback, executionClass(op, policy));
     policy.fine_grained = true;
     try std.testing.expectEqual(ExecutionClass.backend, executionClass(op, policy));
+}
+
+test "kernel regions group qmatvec anchored member runs" {
+    const items = [_]KernelItem{
+        .{ .family = .movement, .execution = .fallback, .start = 0, .len = 2 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 2, .len = 1 },
+        .{ .family = .elementwise, .execution = .fallback, .start = 3, .len = 2 },
+        .{ .family = .matmul, .execution = .backend, .start = 5, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 6, .len = 1 },
+    };
+
+    const regions = try buildKernelRegions(std.testing.allocator, &items, RegionPolicy.qmatvecCluster());
+    defer std.testing.allocator.free(regions);
+
+    try std.testing.expectEqual(@as(usize, 2), regions.len);
+    try std.testing.expectEqual(@as(u32, 0), regions[0].start_item);
+    try std.testing.expectEqual(@as(u32, 3), regions[0].item_count);
+    try std.testing.expectEqual(@as(u32, 0), regions[0].op_start);
+    try std.testing.expectEqual(@as(u32, 5), regions[0].op_count);
+    try std.testing.expectEqual(@as(u32, 1), regions[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 4), regions[1].start_item);
+    try std.testing.expectEqual(@as(u32, 1), regions[1].item_count);
+    try std.testing.expectEqual(@as(u32, 6), regions[1].op_start);
+    try std.testing.expectEqual(@as(u32, 1), regions[1].op_count);
+    try std.testing.expectEqual(@as(u32, 1), regions[1].anchor_count);
+}
+
+test "kernel regions skip member runs without anchors" {
+    const items = [_]KernelItem{
+        .{ .family = .movement, .execution = .fallback, .start = 0, .len = 2 },
+        .{ .family = .elementwise, .execution = .fallback, .start = 2, .len = 1 },
+    };
+
+    const regions = try buildKernelRegions(std.testing.allocator, &items, RegionPolicy.qmatvecCluster());
+    defer std.testing.allocator.free(regions);
+
+    try std.testing.expectEqual(@as(usize, 0), regions.len);
 }
 
 pub const StepDynamicParams = extern struct {

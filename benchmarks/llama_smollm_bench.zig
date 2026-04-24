@@ -228,10 +228,14 @@ fn runDeviceVariant(
     });
     defer device.deinit();
 
-    profile.printProfile(profile.profileProgramWithSchedule(
-        device.getProgram(),
-        schedulePolicyForBackend(be),
-    ));
+    const program = device.getProgram();
+    const schedule_policy = schedulePolicyForBackend(be);
+    profile.printProfile(profile.profileProgramWithSchedule(program, schedule_policy));
+    const schedule = try backend_program.buildKernelSchedule(alloc, device.program_ops, schedule_policy);
+    defer alloc.free(schedule);
+    const qmatvec_regions = try backend_program.buildKernelRegions(alloc, schedule, backend_program.RegionPolicy.qmatvecCluster());
+    defer alloc.free(qmatvec_regions);
+    profile.printKernelRegionSummary("qmatvec clusters", qmatvec_regions);
 
     const rope = &session.model.blocks[0].rope;
     const tok_data = session.model.token_embed.inner.data;
