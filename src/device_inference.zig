@@ -103,9 +103,7 @@ pub fn DeviceInference(comptime T: type) type {
                                 },
                                 .elementwise_chain => {
                                     const chain = fp.payload.elementwise_chain;
-                                    if (opts.be.device_type == .wgpu) {
-                                        try appendElementwiseChainOps(&ops_list, &buffers, chain, alloc);
-                                    } else {
+                                    if (opts.be.capabilities.fused_elementwise) {
                                         const out_node = chain.nodes[chain.nodes.len - 1];
                                         if (!chain.input.isDenseLayout() or !out_node.isDenseLayout()) return error.UnsupportedDeviceOp;
                                         const ew_steps = try alloc.alloc(backend_mod.FusedEwStep, chain.nodes.len);
@@ -137,6 +135,8 @@ pub fn DeviceInference(comptime T: type) type {
                                             .dst_offset = @intCast(buffers.offset(out_node)),
                                             .src_offset = @intCast(buffers.offset(chain.input)),
                                         } });
+                                    } else {
+                                        try appendElementwiseChainOps(&ops_list, &buffers, chain, alloc);
                                     }
                                 },
                                 .conv2d, .conv2d_bwd_input, .conv2d_bwd_kernel, .max_pool2d, .max_pool2d_bwd, .log_softmax, .cross_entropy => {},
@@ -745,11 +745,17 @@ fn testBackend(state: *TestBackendState) backend_mod.Backend {
 }
 
 fn testBackendForDevice(state: *TestBackendState, device_type: backend_mod.Device) backend_mod.Backend {
+    const capabilities = switch (device_type) {
+        .wgpu => backend_mod.Capabilities.wgpu,
+        .metal => backend_mod.Capabilities.metal,
+        else => backend_mod.Capabilities.reference_cpu,
+    };
     return .{
         .ctx = state,
         .vtable = &test_vtable,
         .name_str = "test",
         .device_type = device_type,
+        .capabilities = capabilities,
     };
 }
 

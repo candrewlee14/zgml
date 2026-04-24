@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const backend_mod = @import("../backend.zig");
+const program_mod = @import("program.zig");
 
 const c = @cImport({
     @cInclude("webgpu/webgpu.h");
@@ -80,13 +81,6 @@ const ComputeParams = extern struct {
     _pad: u32 = 0, // align to 16 bytes
 };
 
-const StepDynamicParams = extern struct {
-    slice_pos: u32,
-    seq_kv: u32,
-    _pad0: u32 = 0,
-    _pad1: u32 = 0,
-};
-
 const AttentionParams = extern struct {
     dims0: [4]u32,
     scale_pad: [4]f32,
@@ -94,16 +88,6 @@ const AttentionParams = extern struct {
     offsets1: [4]u32,
     strides0: [4]u32,
     strides1: [4]u32,
-};
-
-const StepDynamicState = struct {
-    params: StepDynamicParams = .{ .slice_pos = 0, .seq_kv = 0 },
-    has_slice_assign: bool = false,
-    has_attention: bool = false,
-
-    fn needsUpload(self: StepDynamicState) bool {
-        return self.has_slice_assign or self.has_attention;
-    }
 };
 
 const ComputePipelineState = struct {
@@ -315,6 +299,7 @@ pub const WgpuBackend = struct {
             .vtable = &vtable,
             .name_str = "wgpu",
             .device_type = .wgpu,
+            .capabilities = backend_mod.Capabilities.wgpu,
         };
     }
 };
@@ -721,7 +706,7 @@ fn computeDispatch(
         },
         3,
         .{
-            bufEntry(4, dynamic_buf, @sizeOf(StepDynamicParams)),
+            bufEntry(4, dynamic_buf, @sizeOf(program_mod.StepDynamicParams)),
         },
         spec.grid,
     );
@@ -792,21 +777,21 @@ fn computeDispatchSpec(op: backend_mod.DeviceOp) ?ComputeDispatchSpec {
             };
         },
         .softmax => |s| return .{
-            .params = rowComputeParams(100, s.rows, s.cols, s.src_offset, s.dst_offset),
+            .params = rowComputeParams(program_mod.compute_op_softmax, s.rows, s.cols, s.src_offset, s.dst_offset),
             .src0 = s.src,
             .src1 = s.src,
             .dst = s.dst,
             .grid = .{ .gx = linearGrid(s.rows) },
         },
         .layernorm => |l| return .{
-            .params = epsilonRowComputeParams(101, l.rows, l.cols, l.eps, l.src_offset, l.dst_offset),
+            .params = epsilonRowComputeParams(program_mod.compute_op_layernorm, l.rows, l.cols, l.eps, l.src_offset, l.dst_offset),
             .src0 = l.src,
             .src1 = l.src,
             .dst = l.dst,
             .grid = .{ .gx = linearGrid(l.rows) },
         },
         .rmsnorm => |r| return .{
-            .params = epsilonRowComputeParams(102, r.rows, r.cols, r.eps, r.src_offset, r.dst_offset),
+            .params = epsilonRowComputeParams(program_mod.compute_op_rmsnorm, r.rows, r.cols, r.eps, r.src_offset, r.dst_offset),
             .src0 = r.src,
             .src1 = r.src,
             .dst = r.dst,
@@ -889,29 +874,6 @@ fn attentionParams(att: anytype) AttentionParams {
         .strides0 = .{ att.k_rs, att.k_cs, att.v_rs, att.v_cs },
         .strides1 = .{ att.mask_rs, att.mask_cs, att.dst_rs, att.dst_cs },
     };
-}
-
-fn stepDynamicStateFromOps(ops: []const backend_mod.DeviceOp) StepDynamicState {
-    var state = StepDynamicState{};
-    for (ops) |op| {
-        switch (op) {
-            .slice_assign => |sa| {
-                if (!state.has_slice_assign and sa.patch_stride != 0 and sa.dst_offset >= sa.dst_base_offset) {
-                    state.params.slice_pos = @intCast((sa.dst_offset - sa.dst_base_offset) / sa.patch_stride);
-                    state.has_slice_assign = true;
-                }
-            },
-            .attention => |att| {
-                if (!state.has_attention) {
-                    state.params.seq_kv = att.seq_kv;
-                    state.has_attention = true;
-                }
-            },
-            else => {},
-        }
-        if (state.has_slice_assign and state.has_attention) break;
-    }
-    return state;
 }
 
 fn buildDispatch(
@@ -1009,7 +971,7 @@ fn buildDispatch(
                 },
                 5,
                 .{
-                    bufEntry(6, dynamic_buf, @sizeOf(StepDynamicParams)),
+                    bufEntry(6, dynamic_buf, @sizeOf(program_mod.StepDynamicParams)),
                 },
                 .{ .gx = att.seq_q },
             );
@@ -1119,7 +1081,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         device_bufs[b_idx].f16_size = f16_bytes;
     }
 
-    const dynamic_state = stepDynamicStateFromOps(program.ops);
+    const dynamic_state = program_mod.stepDynamicStateFromOps(program.ops);
     const dynamic_buf = createUniformBuffer(self.device, self.queue, std.mem.asBytes(&dynamic_state.params));
     errdefer if (dynamic_buf != null) c.wgpuBufferRelease(dynamic_buf);
 
@@ -1177,9 +1139,9 @@ fn executeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, i
 fn refreshProgramFn(ctx: *anyopaque, handle: backend_mod.Backend.CompiledHandle, ops: []const backend_mod.DeviceOp) void {
     const self = getState(ctx);
     const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
-    const dynamic_state = stepDynamicStateFromOps(ops);
+    const dynamic_state = program_mod.stepDynamicStateFromOps(ops);
     if (compiled.dynamic_buf != null and dynamic_state.needsUpload()) {
-        c.wgpuQueueWriteBuffer(self.queue, compiled.dynamic_buf, 0, std.mem.asBytes(&dynamic_state.params).ptr, @sizeOf(StepDynamicParams));
+        c.wgpuQueueWriteBuffer(self.queue, compiled.dynamic_buf, 0, std.mem.asBytes(&dynamic_state.params).ptr, @sizeOf(program_mod.StepDynamicParams));
     }
 }
 
@@ -1201,60 +1163,6 @@ const vtable = backend_mod.Backend.VTable{
     .get_runtime_profile = getRuntimeProfileFn,
 };
 
-test "wgpu backend step dynamic state derives from ops" {
-    const ops = [_]backend_mod.DeviceOp{
-        .{ .elementwise = .{ .op = .add, .dst = 0, .src0 = 0, .src1 = 0, .n = 1 } },
-        .{ .slice_assign = .{
-            .dst = 0,
-            .src = 0,
-            .rows = 4,
-            .cols = 1,
-            .dst_base_offset = 8,
-            .dst_offset = 20,
-            .dst_row_stride = 1,
-            .dst_col_stride = 4,
-            .src_offset = 0,
-            .src_row_stride = 1,
-            .src_col_stride = 4,
-            .patch_stride = 4,
-        } },
-        .{ .attention = .{
-            .dst = 0,
-            .q = 0,
-            .k = 0,
-            .v = 0,
-            .mask = 0,
-            .has_mask = false,
-            .d_head = 4,
-            .seq_q = 1,
-            .seq_kv = 17,
-            .scale = 1.0,
-            .q_off = 0,
-            .k_off = 0,
-            .v_off = 0,
-            .mask_off = 0,
-            .dst_off = 0,
-            .q_rs = 1,
-            .q_cs = 4,
-            .k_rs = 1,
-            .k_cs = 4,
-            .v_rs = 1,
-            .v_cs = 4,
-            .mask_rs = 0,
-            .mask_cs = 0,
-            .dst_rs = 1,
-            .dst_cs = 4,
-        } },
-    };
-
-    const state = stepDynamicStateFromOps(&ops);
-    try std.testing.expect(state.has_slice_assign);
-    try std.testing.expect(state.has_attention);
-    try std.testing.expect(state.needsUpload());
-    try std.testing.expectEqual(@as(u32, 3), state.params.slice_pos);
-    try std.testing.expectEqual(@as(u32, 17), state.params.seq_kv);
-}
-
 test "wgpu backend compute dispatch spec groups compute ops only" {
     const layernorm = backend_mod.DeviceOp{ .layernorm = .{
         .dst = 3,
@@ -1269,7 +1177,7 @@ test "wgpu backend compute dispatch spec groups compute ops only" {
     try std.testing.expectEqual(@as(u16, 1), spec.src0);
     try std.testing.expectEqual(@as(u16, 1), spec.src1);
     try std.testing.expectEqual(@as(u16, 3), spec.dst);
-    try std.testing.expectEqual(@as(u32, 101), spec.params.op);
+    try std.testing.expectEqual(@as(u32, program_mod.compute_op_layernorm), spec.params.op);
     try std.testing.expectEqual(@as(u32, 8), spec.params.n_elements);
     try std.testing.expectEqual(@as(u32, 16), spec.params.src0_ne[0]);
     try std.testing.expectEqual(@as(u32, @bitCast(@as(f32, 1e-5))), spec.params.src1_ne[0]);

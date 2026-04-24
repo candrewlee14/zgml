@@ -17,6 +17,9 @@ pub const nn = @import("nn.zig");
 pub const checkpoint = @import("checkpoint.zig");
 pub const comptime_model = @import("comptime_model.zig");
 pub const backend = @import("backend.zig");
+pub const backend_program = @import("backend/program.zig");
+pub const backend_reference = @import("backend/reference.zig");
+pub const backend_conformance = @import("backend/conformance.zig");
 pub const backend_cpu = @import("backend/cpu.zig");
 pub const backend_metal = if (@import("builtin").os.tag == .macos) @import("backend/metal.zig") else struct {};
 pub const backend_wgpu = if (@import("zgml_options").use_wgpu) @import("backend/wgpu.zig") else struct {};
@@ -40,6 +43,9 @@ test "ref all decls" {
     _ = @import("shaped.zig");
     _ = @import("comptime_model.zig");
     _ = @import("backend.zig");
+    _ = @import("backend/program.zig");
+    _ = @import("backend/reference.zig");
+    _ = @import("backend/conformance.zig");
     _ = @import("backend/cpu.zig");
     if (@import("builtin").os.tag == .macos) {
         _ = @import("backend/metal.zig");

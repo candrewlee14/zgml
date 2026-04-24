@@ -10,15 +10,74 @@ const std = @import("std");
 
 pub const Device = enum { cpu, metal, cuda, npu, wgpu };
 
+pub const Capabilities = struct {
+    compiled_programs: bool = false,
+    host_visible_program_memory: bool = false,
+    dense_matmul_f32: bool = false,
+    qmatmul: bool = false,
+    fused_elementwise: bool = false,
+    f16_weight_promotion: bool = false,
+    dynamic_program_refresh: bool = false,
+    attention: Attention = .{},
+
+    pub const Attention = struct {
+        supported: bool = false,
+        max_seq_kv: ?u32 = null,
+        max_d_head: ?u32 = null,
+
+        pub fn supports(self: Attention, seq_kv: u32, d_head: u32) bool {
+            if (!self.supported) return false;
+            if (self.max_seq_kv) |max| if (seq_kv > max) return false;
+            if (self.max_d_head) |max| if (d_head > max) return false;
+            return true;
+        }
+    };
+
+    pub const reference_cpu = Capabilities{
+        .compiled_programs = true,
+        .host_visible_program_memory = true,
+        .dense_matmul_f32 = true,
+        .qmatmul = true,
+        .fused_elementwise = true,
+        .dynamic_program_refresh = true,
+        .attention = .{ .supported = true, .max_d_head = 512 },
+    };
+
+    pub const metal = Capabilities{
+        .compiled_programs = true,
+        .host_visible_program_memory = true,
+        .dense_matmul_f32 = true,
+        .qmatmul = true,
+        .fused_elementwise = true,
+        .dynamic_program_refresh = true,
+        .attention = .{ .supported = true, .max_d_head = 512 },
+    };
+
+    pub const wgpu = Capabilities{
+        .compiled_programs = true,
+        .dense_matmul_f32 = true,
+        .qmatmul = true,
+        .f16_weight_promotion = true,
+        .dynamic_program_refresh = true,
+        .attention = .{ .supported = true, .max_seq_kv = 4096, .max_d_head = 512 },
+    };
+};
+
 // ── Host kernel specs ──────────────────────────────────────────────
 
 /// Stride/offset parameters for matmul dispatch.
 pub const MatMulGeometry = struct {
-    M: usize, N: usize, K: usize,
-    a_row_stride: usize, a_col_stride: usize,
-    b_row_stride: usize, b_col_stride: usize,
-    a_offset: usize, b_offset: usize,
-    dst_offset: usize, dst_row_stride: usize,
+    M: usize,
+    N: usize,
+    K: usize,
+    a_row_stride: usize,
+    a_col_stride: usize,
+    b_row_stride: usize,
+    b_col_stride: usize,
+    a_offset: usize,
+    b_offset: usize,
+    dst_offset: usize,
+    dst_row_stride: usize,
 };
 
 pub const DenseMatMulSpecF32 = struct {
@@ -137,6 +196,7 @@ pub const Backend = struct {
     vtable: *const VTable,
     name_str: []const u8,
     device_type: Device,
+    capabilities: Capabilities,
 
     pub const CompiledHandle = *anyopaque;
 
@@ -174,6 +234,10 @@ pub const Backend = struct {
     pub fn getRuntimeProfile(self: Backend, handle: CompiledHandle) ?*@import("profile.zig").RuntimeProfile {
         return self.vtable.get_runtime_profile(self.ctx, handle);
     }
+
+    pub fn supportsAttention(self: Backend, seq_kv: u32, d_head: u32) bool {
+        return self.capabilities.attention.supports(seq_kv, d_head);
+    }
 };
 
 // ── Dispatch helper ────────────────────────────────────────────────
@@ -186,8 +250,17 @@ pub fn tryDenseMatMul(comptime T: type, backend_opt: ?Backend, spec: DenseMatMul
 
 test "dispatch helper returns false when no backend is configured" {
     const dense = DenseMatMulSpecF32{
-        .dst = &.{}, .a = &.{}, .b = &.{},
+        .dst = &.{},
+        .a = &.{},
+        .b = &.{},
         .geom = .{ .M = 0, .N = 0, .K = 0, .a_row_stride = 0, .a_col_stride = 0, .b_row_stride = 0, .b_col_stride = 0, .a_offset = 0, .b_offset = 0, .dst_offset = 0, .dst_row_stride = 0 },
     };
     try std.testing.expect(!tryDenseMatMul(f32, null, dense));
+}
+
+test "capability attention limits are explicit" {
+    try std.testing.expect(Capabilities.reference_cpu.attention.supports(8192, 512));
+    try std.testing.expect(!Capabilities.reference_cpu.attention.supports(1, 513));
+    try std.testing.expect(Capabilities.wgpu.attention.supports(4096, 512));
+    try std.testing.expect(!Capabilities.wgpu.attention.supports(4097, 512));
 }

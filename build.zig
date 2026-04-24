@@ -294,6 +294,14 @@ pub fn build(b: *std.Build) void {
         .extra_wgpu = true,
     });
     _ = addExe(b, target, optimize, build_opts, .{
+        .name = "bench-backend-decision",
+        .src = "benchmarks/backend_decision_bench.zig",
+        .step_name = "bench-backend-decision",
+        .step_desc = "Benchmark compiled backend program decisions",
+        .extra_metal = true,
+        .extra_wgpu = build_opts.use_wgpu,
+    });
+    _ = addExe(b, target, optimize, build_opts, .{
         .name = "bench-metal",
         .src = "benchmarks/metal_bench.zig",
         .step_name = "bench-metal",
