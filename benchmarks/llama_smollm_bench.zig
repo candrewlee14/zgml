@@ -6,6 +6,7 @@
 //! Run:
 //!   zig build bench-llama-smollm
 //!   ./zig-out/bin/bench-llama-smollm [model.safetensors|model.gguf] [prompt_tokens] [gen_tokens] [repetitions]
+//!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --metal-fine
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --metal-region
 
 const std = @import("std");
@@ -335,6 +336,14 @@ fn parseArgOrDefault(args: []const []const u8, idx: usize, default: usize) !usiz
     return try std.fmt.parseInt(usize, args[idx], 10);
 }
 
+fn hasFlag(args: []const []const u8, flag: []const u8) bool {
+    if (args.len <= 5) return false;
+    for (args[5..]) |arg| {
+        if (std.mem.eql(u8, arg, flag)) return true;
+    }
+    return false;
+}
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -349,7 +358,8 @@ pub fn main(init: std.process.Init) !void {
         .gen_tokens = try parseArgOrDefault(args, 3, 200),
         .repetitions = try parseArgOrDefault(args, 4, 3),
     };
-    const run_metal_region = args.len > 5 and std.mem.eql(u8, args[5], "--metal-region");
+    const run_metal_fine = hasFlag(args, "--metal-fine");
+    const run_metal_region = hasFlag(args, "--metal-region");
     const model_is_gguf = isGGUF(cfg.model_path);
 
     try stdout.interface.print("\nSmolLM LLaMA Benchmark — zgml\n", .{});
@@ -384,6 +394,11 @@ pub fn main(init: std.process.Init) !void {
         _ = try runVariant(if (model_is_gguf) "metal gguf      " else "metal f32        ", metal_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
         if (!model_is_gguf) _ = try runVariant("metal int8       ", metal_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
         _ = try runDeviceVariant(if (model_is_gguf) "metal device q  " else "metal device f16", metal_be.backend(), cfg, &stdout.interface, io, alloc);
+        if (run_metal_fine) {
+            metal_be.setFineGrainedProgramDispatch(true);
+            _ = try runDeviceVariant(if (model_is_gguf) "metal fine q    " else "metal fine f16  ", metal_be.backend(), cfg, &stdout.interface, io, alloc);
+            metal_be.setFineGrainedProgramDispatch(false);
+        }
         if (run_metal_region) {
             metal_be.setRegionProgramDispatch(true);
             _ = try runDeviceVariant(if (model_is_gguf) "metal region q  " else "metal region f16", metal_be.backend(), cfg, &stdout.interface, io, alloc);
