@@ -631,6 +631,10 @@ fn bufEntry(binding: u32, buffer: c.WGPUBuffer, size: usize) c.WGPUBindGroupEntr
     };
 }
 
+fn deviceBufEntry(binding: u32, db: DeviceBuffer) c.WGPUBindGroupEntry {
+    return bufEntry(binding, db.buf, db.size);
+}
+
 fn createBindGroup(device: c.WGPUDevice, layout: c.WGPUBindGroupLayout, entries: []const c.WGPUBindGroupEntry) c.WGPUBindGroup {
     return c.wgpuDeviceCreateBindGroup(device, &c.WGPUBindGroupDescriptor{
         .nextInChain = null,
@@ -677,21 +681,50 @@ fn dispatchWithPipeline(
     };
 }
 
+fn dispatchWithUniformParams(
+    comptime ParamsType: type,
+    comptime PrefixN: usize,
+    comptime SuffixN: usize,
+    be: *WgpuBackend,
+    pipeline_state: ComputePipelineState,
+    params: ParamsType,
+    prefix_entries: [PrefixN]c.WGPUBindGroupEntry,
+    uniform_binding: u32,
+    suffix_entries: [SuffixN]c.WGPUBindGroupEntry,
+    grid: DispatchGrid,
+) PrebuiltDispatch {
+    const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
+    var entries: [PrefixN + 1 + SuffixN]c.WGPUBindGroupEntry = undefined;
+    @memcpy(entries[0..PrefixN], prefix_entries[0..]);
+    entries[PrefixN] = bufEntry(uniform_binding, ubuf, @sizeOf(ParamsType));
+    @memcpy(entries[PrefixN + 1 ..], suffix_entries[0..]);
+    return dispatchWithPipeline(be, pipeline_state, ubuf, &entries, grid.gx, grid.gy);
+}
+
 fn computeDispatch(
     be: *WgpuBackend,
     bufs: []const DeviceBuffer,
     spec: ComputeDispatchSpec,
     dynamic_buf: c.WGPUBuffer,
 ) PrebuiltDispatch {
-    const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&spec.params));
-    const entries = [_]c.WGPUBindGroupEntry{
-        bufEntry(0, bufs[spec.src0].buf, bufs[spec.src0].size),
-        bufEntry(1, bufs[spec.src1].buf, bufs[spec.src1].size),
-        bufEntry(2, bufs[spec.dst].buf, bufs[spec.dst].size),
-        bufEntry(3, ubuf, @sizeOf(ComputeParams)),
-        bufEntry(4, dynamic_buf, @sizeOf(StepDynamicParams)),
-    };
-    return dispatchWithPipeline(be, be.compute, ubuf, &entries, spec.grid.gx, spec.grid.gy);
+    return dispatchWithUniformParams(
+        ComputeParams,
+        3,
+        1,
+        be,
+        be.compute,
+        spec.params,
+        .{
+            deviceBufEntry(0, bufs[spec.src0]),
+            deviceBufEntry(1, bufs[spec.src1]),
+            deviceBufEntry(2, bufs[spec.dst]),
+        },
+        3,
+        .{
+            bufEntry(4, dynamic_buf, @sizeOf(StepDynamicParams)),
+        },
+        spec.grid,
+    );
 }
 
 fn baseComputeParams(op_code: u32, n_elements: u32, dst_offset: u32) ComputeParams {
@@ -897,77 +930,89 @@ fn buildDispatch(
             if (bufs[m.b].f16_buf) |f16_b| {
                 const grid = matmulGrid(m.geom.M, m.geom.N);
                 const params = matmulF16Params(m.geom);
-                const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
-                const entries = [_]c.WGPUBindGroupEntry{
-                    bufEntry(0, bufs[m.a].buf, bufs[m.a].size),
-                    bufEntry(1, f16_b, bufs[m.b].f16_size),
-                    bufEntry(2, bufs[m.dst].buf, bufs[m.dst].size),
-                    bufEntry(3, ubuf, @sizeOf(MatMulF16Params)),
-                };
-                return dispatchWithPipeline(
+                return dispatchWithUniformParams(
+                    MatMulF16Params,
+                    3,
+                    0,
                     be,
                     be.matmul_f16,
-                    ubuf,
-                    &entries,
-                    grid.gx,
-                    grid.gy,
+                    params,
+                    .{
+                        deviceBufEntry(0, bufs[m.a]),
+                        bufEntry(1, f16_b, bufs[m.b].f16_size),
+                        deviceBufEntry(2, bufs[m.dst]),
+                    },
+                    3,
+                    .{},
+                    grid,
                 );
             }
             // F32 path.
             const grid = matmulGrid(m.geom.M, m.geom.N);
             const params = matmulParams(m.geom);
-            const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
-            const entries = [_]c.WGPUBindGroupEntry{
-                bufEntry(0, bufs[m.a].buf, bufs[m.a].size),
-                bufEntry(1, bufs[m.b].buf, bufs[m.b].size),
-                bufEntry(2, bufs[m.dst].buf, bufs[m.dst].size),
-                bufEntry(3, ubuf, @sizeOf(MatMulParams)),
-            };
-            return dispatchWithPipeline(
+            return dispatchWithUniformParams(
+                MatMulParams,
+                3,
+                0,
                 be,
                 be.matmul,
-                ubuf,
-                &entries,
-                grid.gx,
-                grid.gy,
+                params,
+                .{
+                    deviceBufEntry(0, bufs[m.a]),
+                    deviceBufEntry(1, bufs[m.b]),
+                    deviceBufEntry(2, bufs[m.dst]),
+                },
+                3,
+                .{},
+                grid,
             );
         },
         .qmatmul => |q| {
             const w = qweights[q.weight_idx];
             const grid = matmulGrid(q.M, q.N);
             const params = qmatmulParams(q, w.block_size);
-            const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
-            const entries = [_]c.WGPUBindGroupEntry{
-                bufEntry(0, w.data.buf, w.data.size),
-                bufEntry(1, w.scales.buf, w.scales.size),
-                bufEntry(2, bufs[q.input].buf, bufs[q.input].size),
-                bufEntry(3, bufs[q.dst].buf, bufs[q.dst].size),
-                bufEntry(4, ubuf, @sizeOf(QMatMulParams)),
-            };
-            return dispatchWithPipeline(
+            return dispatchWithUniformParams(
+                QMatMulParams,
+                4,
+                0,
                 be,
                 be.qmatmul,
-                ubuf,
-                &entries,
-                grid.gx,
-                grid.gy,
+                params,
+                .{
+                    deviceBufEntry(0, w.data),
+                    deviceBufEntry(1, w.scales),
+                    deviceBufEntry(2, bufs[q.input]),
+                    deviceBufEntry(3, bufs[q.dst]),
+                },
+                4,
+                .{},
+                grid,
             );
         },
         .attention => |att| {
             if (att.seq_kv > ATTN_MAX_SEQ_KV or att.d_head > ATTN_MAX_D_HEAD) return null;
 
             const params = attentionParams(att);
-            const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
-            const entries = [_]c.WGPUBindGroupEntry{
-                bufEntry(0, bufs[att.q].buf, bufs[att.q].size),
-                bufEntry(1, bufs[att.k].buf, bufs[att.k].size),
-                bufEntry(2, bufs[att.v].buf, bufs[att.v].size),
-                bufEntry(3, bufs[att.mask].buf, bufs[att.mask].size),
-                bufEntry(4, bufs[att.dst].buf, bufs[att.dst].size),
-                bufEntry(5, ubuf, @sizeOf(AttentionParams)),
-                bufEntry(6, dynamic_buf, @sizeOf(StepDynamicParams)),
-            };
-            return dispatchWithPipeline(be, be.attention, ubuf, &entries, att.seq_q, 1);
+            return dispatchWithUniformParams(
+                AttentionParams,
+                5,
+                1,
+                be,
+                be.attention,
+                params,
+                .{
+                    deviceBufEntry(0, bufs[att.q]),
+                    deviceBufEntry(1, bufs[att.k]),
+                    deviceBufEntry(2, bufs[att.v]),
+                    deviceBufEntry(3, bufs[att.mask]),
+                    deviceBufEntry(4, bufs[att.dst]),
+                },
+                5,
+                .{
+                    bufEntry(6, dynamic_buf, @sizeOf(StepDynamicParams)),
+                },
+                .{ .gx = att.seq_q },
+            );
         },
         .elementwise, .softmax, .layernorm, .rmsnorm, .reduce, .repeat, .slice_assign, .rope => return null,
         // Fused/batched ops: fall back to individual dispatches or skip.
