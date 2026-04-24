@@ -106,6 +106,55 @@ const StepDynamicState = struct {
     }
 };
 
+const ComputePipelineState = struct {
+    pipeline: c.WGPUComputePipeline,
+    bgl: c.WGPUBindGroupLayout,
+
+    fn init(device: c.WGPUDevice, module: c.WGPUShaderModule) ?ComputePipelineState {
+        const desc = c.WGPUComputePipelineDescriptor{
+            .nextInChain = null,
+            .label = .{ .data = null, .length = 0 },
+            .layout = null, // auto layout
+            .compute = .{
+                .nextInChain = null,
+                .module = module,
+                .entryPoint = .{ .data = "main", .length = 4 },
+                .constantCount = 0,
+                .constants = null,
+            },
+        };
+        const pipeline = c.wgpuDeviceCreateComputePipeline(device, &desc) orelse return null;
+        errdefer c.wgpuComputePipelineRelease(pipeline);
+
+        const bgl = c.wgpuComputePipelineGetBindGroupLayout(pipeline, 0) orelse return null;
+        return .{
+            .pipeline = pipeline,
+            .bgl = bgl,
+        };
+    }
+
+    fn deinit(self: ComputePipelineState) void {
+        c.wgpuBindGroupLayoutRelease(self.bgl);
+        c.wgpuComputePipelineRelease(self.pipeline);
+    }
+};
+
+const DispatchGrid = struct {
+    gx: u32,
+    gy: u32 = 1,
+};
+
+fn matmulGrid(M: anytype, N: anytype) DispatchGrid {
+    return .{
+        .gx = @intCast((N + MATMUL_BN - 1) / MATMUL_BN),
+        .gy = @intCast((M + MATMUL_BM - 1) / MATMUL_BM),
+    };
+}
+
+fn linearGrid(n: anytype) u32 {
+    return @intCast((n + WG_SIZE - 1) / WG_SIZE);
+}
+
 // ── WgpuBackend ───────────────────────────────────────────────────
 
 pub const WgpuBackend = struct {
@@ -114,16 +163,11 @@ pub const WgpuBackend = struct {
     device: c.WGPUDevice,
     queue: c.WGPUQueue,
 
-    matmul_pipeline: c.WGPUComputePipeline,
-    matmul_bgl: c.WGPUBindGroupLayout,
-    matmul_f16_pipeline: c.WGPUComputePipeline,
-    matmul_f16_bgl: c.WGPUBindGroupLayout,
-    qmatmul_pipeline: c.WGPUComputePipeline,
-    qmatmul_bgl: c.WGPUBindGroupLayout,
-    compute_pipeline: c.WGPUComputePipeline,
-    compute_bgl: c.WGPUBindGroupLayout,
-    attention_pipeline: c.WGPUComputePipeline,
-    attention_bgl: c.WGPUBindGroupLayout,
+    matmul: ComputePipelineState,
+    matmul_f16: ComputePipelineState,
+    qmatmul: ComputePipelineState,
+    compute: ComputePipelineState,
+    attention: ComputePipelineState,
 
     // Scratch buffers for denseMatMulF32 — reused across calls, grown as needed.
     scratch_a: c.WGPUBuffer = null,
@@ -182,44 +226,26 @@ pub const WgpuBackend = struct {
         const attention_mod = createShaderModule(device, attention_wgsl) orelse return error.ShaderCompileFailed;
         defer c.wgpuShaderModuleRelease(attention_mod);
 
-        var matmul_bgl: c.WGPUBindGroupLayout = null;
-        const matmul_pipeline = createPipeline(device, matmul_mod, &matmul_bgl) orelse return error.PipelineCreateFailed;
-        errdefer c.wgpuComputePipelineRelease(matmul_pipeline);
-        errdefer c.wgpuBindGroupLayoutRelease(matmul_bgl);
-
-        var matmul_f16_bgl: c.WGPUBindGroupLayout = null;
-        const matmul_f16_pipeline = createPipeline(device, matmul_f16_mod, &matmul_f16_bgl) orelse return error.PipelineCreateFailed;
-        errdefer c.wgpuComputePipelineRelease(matmul_f16_pipeline);
-        errdefer c.wgpuBindGroupLayoutRelease(matmul_f16_bgl);
-
-        var qmatmul_bgl: c.WGPUBindGroupLayout = null;
-        const qmatmul_pipeline = createPipeline(device, qmatmul_mod, &qmatmul_bgl) orelse return error.PipelineCreateFailed;
-        errdefer c.wgpuComputePipelineRelease(qmatmul_pipeline);
-        errdefer c.wgpuBindGroupLayoutRelease(qmatmul_bgl);
-
-        var compute_bgl: c.WGPUBindGroupLayout = null;
-        const compute_pipeline = createPipeline(device, compute_mod, &compute_bgl) orelse return error.PipelineCreateFailed;
-        errdefer c.wgpuComputePipelineRelease(compute_pipeline);
-        errdefer c.wgpuBindGroupLayoutRelease(compute_bgl);
-
-        var attention_bgl: c.WGPUBindGroupLayout = null;
-        const attention_pipeline = createPipeline(device, attention_mod, &attention_bgl) orelse return error.PipelineCreateFailed;
+        const matmul = ComputePipelineState.init(device, matmul_mod) orelse return error.PipelineCreateFailed;
+        errdefer matmul.deinit();
+        const matmul_f16 = ComputePipelineState.init(device, matmul_f16_mod) orelse return error.PipelineCreateFailed;
+        errdefer matmul_f16.deinit();
+        const qmatmul = ComputePipelineState.init(device, qmatmul_mod) orelse return error.PipelineCreateFailed;
+        errdefer qmatmul.deinit();
+        const compute = ComputePipelineState.init(device, compute_mod) orelse return error.PipelineCreateFailed;
+        errdefer compute.deinit();
+        const attention = ComputePipelineState.init(device, attention_mod) orelse return error.PipelineCreateFailed;
 
         return .{
             .instance = instance,
             .adapter = adapter,
             .device = device,
             .queue = queue,
-            .matmul_pipeline = matmul_pipeline,
-            .matmul_bgl = matmul_bgl,
-            .matmul_f16_pipeline = matmul_f16_pipeline,
-            .matmul_f16_bgl = matmul_f16_bgl,
-            .qmatmul_pipeline = qmatmul_pipeline,
-            .qmatmul_bgl = qmatmul_bgl,
-            .compute_pipeline = compute_pipeline,
-            .compute_bgl = compute_bgl,
-            .attention_pipeline = attention_pipeline,
-            .attention_bgl = attention_bgl,
+            .matmul = matmul,
+            .matmul_f16 = matmul_f16,
+            .qmatmul = qmatmul,
+            .compute = compute,
+            .attention = attention,
         };
     }
 
@@ -228,16 +254,11 @@ pub const WgpuBackend = struct {
         if (self.scratch_b != null) c.wgpuBufferRelease(self.scratch_b);
         if (self.scratch_c != null) c.wgpuBufferRelease(self.scratch_c);
         if (self.scratch_staging != null) c.wgpuBufferRelease(self.scratch_staging);
-        c.wgpuBindGroupLayoutRelease(self.attention_bgl);
-        c.wgpuComputePipelineRelease(self.attention_pipeline);
-        c.wgpuBindGroupLayoutRelease(self.compute_bgl);
-        c.wgpuComputePipelineRelease(self.compute_pipeline);
-        c.wgpuBindGroupLayoutRelease(self.qmatmul_bgl);
-        c.wgpuComputePipelineRelease(self.qmatmul_pipeline);
-        c.wgpuBindGroupLayoutRelease(self.matmul_f16_bgl);
-        c.wgpuComputePipelineRelease(self.matmul_f16_pipeline);
-        c.wgpuBindGroupLayoutRelease(self.matmul_bgl);
-        c.wgpuComputePipelineRelease(self.matmul_pipeline);
+        self.attention.deinit();
+        self.compute.deinit();
+        self.qmatmul.deinit();
+        self.matmul_f16.deinit();
+        self.matmul.deinit();
         c.wgpuQueueRelease(self.queue);
         c.wgpuDeviceRelease(self.device);
         c.wgpuAdapterRelease(self.adapter);
@@ -265,28 +286,6 @@ fn createShaderModule(device: c.WGPUDevice, src: [*:0]const u8) ?c.WGPUShaderMod
         .nextInChain = @ptrCast(@constCast(&wgsl_desc.chain)),
     };
     return c.wgpuDeviceCreateShaderModule(device, &desc);
-}
-
-/// Create compute pipeline and extract its bind group layout (group 0).
-fn createPipeline(device: c.WGPUDevice, module: c.WGPUShaderModule, out_bgl: *c.WGPUBindGroupLayout) ?c.WGPUComputePipeline {
-    const desc = c.WGPUComputePipelineDescriptor{
-        .nextInChain = null,
-        .label = .{ .data = null, .length = 0 },
-        .layout = null, // auto layout
-        .compute = .{
-            .nextInChain = null,
-            .module = module,
-            .entryPoint = .{ .data = "main", .length = 4 },
-            .constantCount = 0,
-            .constants = null,
-        },
-    };
-    const pipeline = c.wgpuDeviceCreateComputePipeline(device, &desc) orelse return null;
-    out_bgl.* = c.wgpuComputePipelineGetBindGroupLayout(pipeline, 0) orelse {
-        c.wgpuComputePipelineRelease(pipeline);
-        return null;
-    };
-    return pipeline;
 }
 
 // ── Adapter/device request callbacks (wgpu-native sync pattern) ───
@@ -362,7 +361,7 @@ fn denseMatMulF32(ctx: *anyopaque, spec: backend_mod.DenseMatMulSpecF32) bool {
         bufEntry(2, self.scratch_c, self.scratch_c_size),
         bufEntry(3, ubuf, @sizeOf(MatMulParams)),
     };
-    const bind_group = createBindGroup(self.device, self.matmul_bgl, &entries);
+    const bind_group = createBindGroup(self.device, self.matmul.bgl, &entries);
     defer c.wgpuBindGroupRelease(bind_group);
 
     // Encode compute pass.
@@ -380,11 +379,10 @@ fn denseMatMulF32(ctx: *anyopaque, spec: backend_mod.DenseMatMulSpecF32) bool {
         return false;
     };
 
-    c.wgpuComputePassEncoderSetPipeline(pass, self.matmul_pipeline);
+    c.wgpuComputePassEncoderSetPipeline(pass, self.matmul.pipeline);
     c.wgpuComputePassEncoderSetBindGroup(pass, 0, bind_group, 0, null);
-    const gx: u32 = @intCast((spec.geom.N + MATMUL_BN - 1) / MATMUL_BN);
-    const gy: u32 = @intCast((spec.geom.M + MATMUL_BM - 1) / MATMUL_BM);
-    c.wgpuComputePassEncoderDispatchWorkgroups(pass, gx, gy, 1);
+    const grid = matmulGrid(spec.geom.M, spec.geom.N);
+    c.wgpuComputePassEncoderDispatchWorkgroups(pass, grid.gx, grid.gy, 1);
     c.wgpuComputePassEncoderEnd(pass);
     c.wgpuComputePassEncoderRelease(pass);
 
@@ -447,6 +445,27 @@ const PrebuiltDispatch = struct {
     gy: u32,
 };
 
+fn releaseDispatches(dispatches: []const PrebuiltDispatch) void {
+    for (dispatches) |d| {
+        c.wgpuBindGroupRelease(d.bind_group);
+        c.wgpuBufferRelease(d.uniform_buf);
+    }
+}
+
+fn releaseDeviceBuffers(device_bufs: []const DeviceBuffer) void {
+    for (device_bufs) |db| {
+        if (db.f16_buf != null) c.wgpuBufferRelease(db.f16_buf);
+        c.wgpuBufferRelease(db.buf);
+    }
+}
+
+fn releaseQWeightViews(qweight_views: []const DeviceQWeight) void {
+    for (qweight_views) |qw| {
+        c.wgpuBufferRelease(qw.data.buf);
+        c.wgpuBufferRelease(qw.scales.buf);
+    }
+}
+
 // ── Compiled program ──────────────────────────────────────────────
 
 const CompiledProgram = struct {
@@ -460,21 +479,12 @@ const CompiledProgram = struct {
     alloc: std.mem.Allocator,
 
     fn deinit(self: *CompiledProgram) void {
-        for (self.dispatches) |d| {
-            c.wgpuBindGroupRelease(d.bind_group);
-            c.wgpuBufferRelease(d.uniform_buf);
-        }
+        releaseDispatches(self.dispatches);
         self.alloc.free(self.dispatches);
         if (self.dynamic_buf != null) c.wgpuBufferRelease(self.dynamic_buf);
         if (self.staging_buf != null) c.wgpuBufferRelease(self.staging_buf);
-        for (self.device_bufs) |db| {
-            if (db.f16_buf != null) c.wgpuBufferRelease(db.f16_buf);
-            c.wgpuBufferRelease(db.buf);
-        }
-        for (self.qweight_views) |qw| {
-            c.wgpuBufferRelease(qw.data.buf);
-            c.wgpuBufferRelease(qw.scales.buf);
-        }
+        releaseDeviceBuffers(self.device_bufs);
+        releaseQWeightViews(self.qweight_views);
         self.alloc.free(self.device_bufs);
         if (self.qweight_views.len > 0) self.alloc.free(self.qweight_views);
         self.alloc.destroy(self);
@@ -618,18 +628,17 @@ fn onMapComplete(status: c.WGPUMapAsyncStatus, _: c.WGPUStringView, userdata1: ?
 // uniform buffer (pre-filled), bind group, and workgroup counts.
 // The execute loop is just setPipeline → setBindGroup → dispatch.
 
-fn dispatchWithBindGroup(
+fn dispatchWithPipeline(
     be: *WgpuBackend,
-    pipeline: c.WGPUComputePipeline,
-    bgl: c.WGPUBindGroupLayout,
+    pipeline_state: ComputePipelineState,
     ubuf: c.WGPUBuffer,
     entries: []const c.WGPUBindGroupEntry,
     gx: u32,
     gy: u32,
 ) PrebuiltDispatch {
     return .{
-        .pipeline = pipeline,
-        .bind_group = createBindGroup(be.device, bgl, entries),
+        .pipeline = pipeline_state.pipeline,
+        .bind_group = createBindGroup(be.device, pipeline_state.bgl, entries),
         .uniform_buf = ubuf,
         .gx = gx,
         .gy = gy,
@@ -654,7 +663,7 @@ fn computeDispatch(
         bufEntry(3, ubuf, @sizeOf(ComputeParams)),
         bufEntry(4, dynamic_buf, @sizeOf(StepDynamicParams)),
     };
-    return dispatchWithBindGroup(be, be.compute_pipeline, be.compute_bgl, ubuf, &entries, gx, 1);
+    return dispatchWithPipeline(be, be.compute, ubuf, &entries, gx, 1);
 }
 
 fn sliceAssignComputeParams(sa: anytype) ComputeParams {
@@ -732,6 +741,7 @@ fn buildDispatch(
         .matmul => |m| {
             // F16 weight path: B buffer has a pre-packed f16 shadow.
             if (bufs[m.b].f16_buf) |f16_b| {
+                const grid = matmulGrid(m.geom.M, m.geom.N);
                 const params = MatMulF16Params{
                     .M = @intCast(m.geom.M),
                     .N = @intCast(m.geom.N),
@@ -747,17 +757,17 @@ fn buildDispatch(
                     bufEntry(2, bufs[m.dst].buf, bufs[m.dst].size),
                     bufEntry(3, ubuf, @sizeOf(MatMulF16Params)),
                 };
-                return dispatchWithBindGroup(
+                return dispatchWithPipeline(
                     be,
-                    be.matmul_f16_pipeline,
-                    be.matmul_f16_bgl,
+                    be.matmul_f16,
                     ubuf,
                     &entries,
-                    @intCast((m.geom.N + MATMUL_BN - 1) / MATMUL_BN),
-                    @intCast((m.geom.M + MATMUL_BM - 1) / MATMUL_BM),
+                    grid.gx,
+                    grid.gy,
                 );
             }
             // F32 path.
+            const grid = matmulGrid(m.geom.M, m.geom.N);
             const params = MatMulParams{
                 .M = @intCast(m.geom.M),
                 .N = @intCast(m.geom.N),
@@ -778,18 +788,18 @@ fn buildDispatch(
                 bufEntry(2, bufs[m.dst].buf, bufs[m.dst].size),
                 bufEntry(3, ubuf, @sizeOf(MatMulParams)),
             };
-            return dispatchWithBindGroup(
+            return dispatchWithPipeline(
                 be,
-                be.matmul_pipeline,
-                be.matmul_bgl,
+                be.matmul,
                 ubuf,
                 &entries,
-                @intCast((m.geom.N + MATMUL_BN - 1) / MATMUL_BN),
-                @intCast((m.geom.M + MATMUL_BM - 1) / MATMUL_BM),
+                grid.gx,
+                grid.gy,
             );
         },
         .qmatmul => |q| {
             const w = qweights[q.weight_idx];
+            const grid = matmulGrid(q.M, q.N);
             const params = QMatMulParams{ .M = q.M, .N = q.N, .K = q.K, .block_size = @intCast(w.block_size) };
             const ubuf = createUniformBuffer(be.device, be.queue, std.mem.asBytes(&params));
             const entries = [_]c.WGPUBindGroupEntry{
@@ -799,14 +809,13 @@ fn buildDispatch(
                 bufEntry(3, bufs[q.dst].buf, bufs[q.dst].size),
                 bufEntry(4, ubuf, @sizeOf(QMatMulParams)),
             };
-            return dispatchWithBindGroup(
+            return dispatchWithPipeline(
                 be,
-                be.qmatmul_pipeline,
-                be.qmatmul_bgl,
+                be.qmatmul,
                 ubuf,
                 &entries,
-                (q.N + MATMUL_BN - 1) / MATMUL_BN,
-                (q.M + MATMUL_BM - 1) / MATMUL_BM,
+                grid.gx,
+                grid.gy,
             );
         },
         .elementwise => |e| {
@@ -820,7 +829,7 @@ fn buildDispatch(
             p.dst_offset = e.dst_offset;
             p.src0_offset = e.src0_offset;
             p.src1_offset = e.src1_offset;
-            return computeDispatch(be, bufs, p, e.src0, e.src1, e.dst, (e.n + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
+            return computeDispatch(be, bufs, p, e.src0, e.src1, e.dst, linearGrid(e.n), dynamic_buf);
         },
         .softmax => |s| {
             var p = std.mem.zeroes(ComputeParams);
@@ -829,7 +838,7 @@ fn buildDispatch(
             p.dst_offset = s.dst_offset;
             p.src0_ne[0] = s.cols;
             p.src0_offset = s.src_offset;
-            return computeDispatch(be, bufs, p, s.src, s.src, s.dst, (s.rows + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
+            return computeDispatch(be, bufs, p, s.src, s.src, s.dst, linearGrid(s.rows), dynamic_buf);
         },
         .layernorm => |l| {
             var p = std.mem.zeroes(ComputeParams);
@@ -839,7 +848,7 @@ fn buildDispatch(
             p.src0_ne[0] = l.cols;
             p.src0_offset = l.src_offset;
             p.src1_ne[0] = @bitCast(l.eps);
-            return computeDispatch(be, bufs, p, l.src, l.src, l.dst, (l.rows + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
+            return computeDispatch(be, bufs, p, l.src, l.src, l.dst, linearGrid(l.rows), dynamic_buf);
         },
         .rmsnorm => |r| {
             var p = std.mem.zeroes(ComputeParams);
@@ -849,7 +858,7 @@ fn buildDispatch(
             p.src0_ne[0] = r.cols;
             p.src0_offset = r.src_offset;
             p.src1_ne[0] = @bitCast(r.eps);
-            return computeDispatch(be, bufs, p, r.src, r.src, r.dst, (r.rows + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
+            return computeDispatch(be, bufs, p, r.src, r.src, r.dst, linearGrid(r.rows), dynamic_buf);
         },
         .reduce => |r| {
             var p = std.mem.zeroes(ComputeParams);
@@ -858,7 +867,7 @@ fn buildDispatch(
             p.dst_offset = r.dst_offset;
             p.src0_ne[0] = r.reduce_size;
             p.src0_offset = r.src_offset;
-            return computeDispatch(be, bufs, p, r.src, r.dst, r.dst, (r.n_out + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
+            return computeDispatch(be, bufs, p, r.src, r.dst, r.dst, linearGrid(r.n_out), dynamic_buf);
         },
         .repeat => |rp| {
             var p = std.mem.zeroes(ComputeParams);
@@ -870,17 +879,17 @@ fn buildDispatch(
             p.src0_ne = rp.src_ne;
             p.src0_strides = rp.src_strides;
             p.src0_offset = rp.src_offset;
-            return computeDispatch(be, bufs, p, rp.src, rp.src, rp.dst, (rp.n + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
+            return computeDispatch(be, bufs, p, rp.src, rp.src, rp.dst, linearGrid(rp.n), dynamic_buf);
         },
         .slice_assign => |sa| {
             const p = sliceAssignComputeParams(sa);
             const n = p.n_elements;
-            return computeDispatch(be, bufs, p, sa.src, sa.src, sa.dst, (n + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
+            return computeDispatch(be, bufs, p, sa.src, sa.src, sa.dst, linearGrid(n), dynamic_buf);
         },
         .rope => |rr| {
             const p = ropeComputeParams(rr);
             const n = p.n_elements;
-            return computeDispatch(be, bufs, p, rr.src, rr.cos_sin, rr.dst, (n + WG_SIZE - 1) / WG_SIZE, dynamic_buf);
+            return computeDispatch(be, bufs, p, rr.src, rr.cos_sin, rr.dst, linearGrid(n), dynamic_buf);
         },
         .attention => |att| {
             if (att.seq_kv > ATTN_MAX_SEQ_KV or att.d_head > ATTN_MAX_D_HEAD) return null;
@@ -896,7 +905,7 @@ fn buildDispatch(
                 bufEntry(5, ubuf, @sizeOf(AttentionParams)),
                 bufEntry(6, dynamic_buf, @sizeOf(StepDynamicParams)),
             };
-            return dispatchWithBindGroup(be, be.attention_pipeline, be.attention_bgl, ubuf, &entries, att.seq_q, 1);
+            return dispatchWithPipeline(be, be.attention, ubuf, &entries, att.seq_q, 1);
         },
         // Fused/batched ops: fall back to individual dispatches or skip.
         .fused_elementwise => return null,
@@ -911,6 +920,9 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
 
     // Allocate device buffers (Storage + CopyDst + CopySrc).
     const device_bufs = alloc.alloc(DeviceBuffer, program.n_buffers) catch return null;
+    errdefer alloc.free(device_bufs);
+    var n_device_bufs: usize = 0;
+    errdefer releaseDeviceBuffers(device_bufs[0..n_device_bufs]);
     for (device_bufs, program.buffer_sizes) |*db, size| {
         const byte_size = size * @sizeOf(f32);
         const buf = createGpuBuffer(
@@ -920,6 +932,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         );
         if (buf == null) return null;
         db.* = .{ .buf = buf, .size = byte_size };
+        n_device_bufs += 1;
     }
 
     // Upload initial data (weights, KV cache zeros).
@@ -930,6 +943,11 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
 
     // Upload quantized weights.
     const qweight_views = alloc.alloc(DeviceQWeight, program.qweights.len) catch return null;
+    errdefer {
+        if (qweight_views.len > 0) alloc.free(qweight_views);
+    }
+    var n_qweight_views: usize = 0;
+    errdefer releaseQWeightViews(qweight_views[0..n_qweight_views]);
     for (program.qweights, 0..) |qw, i| {
         const data_buf = createGpuBuffer(
             self.device,
@@ -954,6 +972,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
             .scales = .{ .buf = scales_buf, .size = scales_size },
             .block_size = qw.block_size,
         };
+        n_qweight_views += 1;
     }
 
     // Auto-promote weight buffers to f16: detect matmul B operands with initial uploads.
@@ -994,33 +1013,25 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
 
     const dynamic_state = stepDynamicStateFromOps(program.ops);
     const dynamic_buf = createUniformBuffer(self.device, self.queue, std.mem.asBytes(&dynamic_state.params));
+    errdefer if (dynamic_buf != null) c.wgpuBufferRelease(dynamic_buf);
 
     // Pre-build all dispatches (uniform buffers + bind groups).
     var dispatch_list: std.ArrayListUnmanaged(PrebuiltDispatch) = .empty;
+    errdefer {
+        releaseDispatches(dispatch_list.items);
+        dispatch_list.deinit(alloc);
+    }
     for (program.ops) |op| {
         if (buildDispatch(self, device_bufs, qweight_views, op, dynamic_buf)) |d| {
             dispatch_list.append(alloc, d) catch return null;
         } else {
-            for (dispatch_list.items) |d| {
-                c.wgpuBindGroupRelease(d.bind_group);
-                c.wgpuBufferRelease(d.uniform_buf);
-            }
-            dispatch_list.deinit(alloc);
-            if (dynamic_buf != null) c.wgpuBufferRelease(dynamic_buf);
-            for (qweight_views) |qv| {
-                c.wgpuBufferRelease(qv.data.buf);
-                c.wgpuBufferRelease(qv.scales.buf);
-            }
-            alloc.free(qweight_views);
-            for (device_bufs) |db| {
-                if (db.f16_buf != null) c.wgpuBufferRelease(db.f16_buf);
-                c.wgpuBufferRelease(db.buf);
-            }
-            alloc.free(device_bufs);
             return null;
         }
     }
     const dispatches = dispatch_list.toOwnedSlice(alloc) catch return null;
+    dispatch_list = .empty;
+    errdefer alloc.free(dispatches);
+    errdefer releaseDispatches(dispatches);
 
     // Staging buffer — conservatively sized to the largest device buffer.
     var max_buf_size: usize = 0;
@@ -1034,6 +1045,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         max_buf_size,
         c.WGPUBufferUsage_MapRead | c.WGPUBufferUsage_CopyDst,
     );
+    errdefer if (staging != null) c.wgpuBufferRelease(staging);
 
     const compiled = alloc.create(CompiledProgram) catch return null;
     compiled.* = .{
@@ -1377,7 +1389,7 @@ test "wgpu backend attention op refreshes seq_kv" {
         2.0, 2.0, 2.0, 2.0,
     };
     var mask_data = [_]f32{
-        0.0, 0.0, 0.0, -std.math.inf(f32),
+        0.0,                0.0,                0.0,                -std.math.inf(f32),
         -std.math.inf(f32), -std.math.inf(f32), -std.math.inf(f32), -std.math.inf(f32),
     };
 
