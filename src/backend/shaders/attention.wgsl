@@ -73,7 +73,7 @@ fn scoreFor(qi: u32, s: u32) -> f32 {
     return score;
 }
 
-fn scoreForContiguous(s: u32, d_head: u32, scale: f32, has_mask: u32, mask_off: u32, mask_rs: u32, mask_cs: u32) -> f32 {
+fn scoreForContiguous(s: u32, d_head: u32, scale: f32, has_mask: u32, mask_off: u32, mask_rs: u32) -> f32 {
     let k_base = p.offsets0.y + s * d_head;
     var dot_acc: f32 = 0.0;
     var r: u32 = 0u;
@@ -215,7 +215,7 @@ fn main(
     for (var s = tid; s < seq_kv; s = s + WG_SIZE) {
         var score: f32 = 0.0;
         if (contiguous) {
-            score = scoreForContiguous(s, d_head, scale, has_mask, mask_off, mask_rs, p.strides1.y);
+            score = scoreForContiguous(s, d_head, scale, has_mask, mask_off, mask_rs);
         } else {
             score = scoreFor(qi, s);
         }

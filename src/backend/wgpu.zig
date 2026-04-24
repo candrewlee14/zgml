@@ -19,7 +19,6 @@ const c = @cImport({
 const MATMUL_BM: u32 = 64; // matmul output rows per workgroup
 const MATMUL_BN: u32 = 64; // matmul output cols per workgroup
 const WG_SIZE: u32 = 256; // compute.wgsl workgroup size
-const ATTN_WG_SIZE: u32 = 64; // attention.wgsl workgroup size
 const ATTN_MAX_SEQ_KV: u32 = 4096; // bounded workgroup score buffer
 const ATTN_MAX_D_HEAD: u32 = 512; // bounded workgroup query cache
 
@@ -619,6 +618,24 @@ fn onMapComplete(status: c.WGPUMapAsyncStatus, _: c.WGPUStringView, userdata1: ?
 // uniform buffer (pre-filled), bind group, and workgroup counts.
 // The execute loop is just setPipeline → setBindGroup → dispatch.
 
+fn dispatchWithBindGroup(
+    be: *WgpuBackend,
+    pipeline: c.WGPUComputePipeline,
+    bgl: c.WGPUBindGroupLayout,
+    ubuf: c.WGPUBuffer,
+    entries: []const c.WGPUBindGroupEntry,
+    gx: u32,
+    gy: u32,
+) PrebuiltDispatch {
+    return .{
+        .pipeline = pipeline,
+        .bind_group = createBindGroup(be.device, bgl, entries),
+        .uniform_buf = ubuf,
+        .gx = gx,
+        .gy = gy,
+    };
+}
+
 fn computeDispatch(
     be: *WgpuBackend,
     bufs: []const DeviceBuffer,
@@ -637,13 +654,7 @@ fn computeDispatch(
         bufEntry(3, ubuf, @sizeOf(ComputeParams)),
         bufEntry(4, dynamic_buf, @sizeOf(StepDynamicParams)),
     };
-    return .{
-        .pipeline = be.compute_pipeline,
-        .bind_group = createBindGroup(be.device, be.compute_bgl, &entries),
-        .uniform_buf = ubuf,
-        .gx = gx,
-        .gy = 1,
-    };
+    return dispatchWithBindGroup(be, be.compute_pipeline, be.compute_bgl, ubuf, &entries, gx, 1);
 }
 
 fn sliceAssignComputeParams(sa: anytype) ComputeParams {
@@ -736,13 +747,15 @@ fn buildDispatch(
                     bufEntry(2, bufs[m.dst].buf, bufs[m.dst].size),
                     bufEntry(3, ubuf, @sizeOf(MatMulF16Params)),
                 };
-                return .{
-                    .pipeline = be.matmul_f16_pipeline,
-                    .bind_group = createBindGroup(be.device, be.matmul_f16_bgl, &entries),
-                    .uniform_buf = ubuf,
-                    .gx = @intCast((m.geom.N + MATMUL_BN - 1) / MATMUL_BN),
-                    .gy = @intCast((m.geom.M + MATMUL_BM - 1) / MATMUL_BM),
-                };
+                return dispatchWithBindGroup(
+                    be,
+                    be.matmul_f16_pipeline,
+                    be.matmul_f16_bgl,
+                    ubuf,
+                    &entries,
+                    @intCast((m.geom.N + MATMUL_BN - 1) / MATMUL_BN),
+                    @intCast((m.geom.M + MATMUL_BM - 1) / MATMUL_BM),
+                );
             }
             // F32 path.
             const params = MatMulParams{
@@ -765,13 +778,15 @@ fn buildDispatch(
                 bufEntry(2, bufs[m.dst].buf, bufs[m.dst].size),
                 bufEntry(3, ubuf, @sizeOf(MatMulParams)),
             };
-            return .{
-                .pipeline = be.matmul_pipeline,
-                .bind_group = createBindGroup(be.device, be.matmul_bgl, &entries),
-                .uniform_buf = ubuf,
-                .gx = @intCast((m.geom.N + MATMUL_BN - 1) / MATMUL_BN),
-                .gy = @intCast((m.geom.M + MATMUL_BM - 1) / MATMUL_BM),
-            };
+            return dispatchWithBindGroup(
+                be,
+                be.matmul_pipeline,
+                be.matmul_bgl,
+                ubuf,
+                &entries,
+                @intCast((m.geom.N + MATMUL_BN - 1) / MATMUL_BN),
+                @intCast((m.geom.M + MATMUL_BM - 1) / MATMUL_BM),
+            );
         },
         .qmatmul => |q| {
             const w = qweights[q.weight_idx];
@@ -784,13 +799,15 @@ fn buildDispatch(
                 bufEntry(3, bufs[q.dst].buf, bufs[q.dst].size),
                 bufEntry(4, ubuf, @sizeOf(QMatMulParams)),
             };
-            return .{
-                .pipeline = be.qmatmul_pipeline,
-                .bind_group = createBindGroup(be.device, be.qmatmul_bgl, &entries),
-                .uniform_buf = ubuf,
-                .gx = (q.N + MATMUL_BN - 1) / MATMUL_BN,
-                .gy = (q.M + MATMUL_BM - 1) / MATMUL_BM,
-            };
+            return dispatchWithBindGroup(
+                be,
+                be.qmatmul_pipeline,
+                be.qmatmul_bgl,
+                ubuf,
+                &entries,
+                (q.N + MATMUL_BN - 1) / MATMUL_BN,
+                (q.M + MATMUL_BM - 1) / MATMUL_BM,
+            );
         },
         .elementwise => |e| {
             switch (e.op) {
@@ -879,13 +896,7 @@ fn buildDispatch(
                 bufEntry(5, ubuf, @sizeOf(AttentionParams)),
                 bufEntry(6, dynamic_buf, @sizeOf(StepDynamicParams)),
             };
-            return .{
-                .pipeline = be.attention_pipeline,
-                .bind_group = createBindGroup(be.device, be.attention_bgl, &entries),
-                .uniform_buf = ubuf,
-                .gx = att.seq_q,
-                .gy = 1,
-            };
+            return dispatchWithBindGroup(be, be.attention_pipeline, be.attention_bgl, ubuf, &entries, att.seq_q, 1);
         },
         // Fused/batched ops: fall back to individual dispatches or skip.
         .fused_elementwise => return null,
