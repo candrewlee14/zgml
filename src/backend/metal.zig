@@ -3107,14 +3107,6 @@ const CompiledProgram = struct {
         self.recordRegionBackendOp(b, elapsed_ns - first);
     }
 
-    fn recordRegionFusedTriple(self: *CompiledProgram, a: backend_mod.DeviceOp, b: backend_mod.DeviceOp, c_op: backend_mod.DeviceOp, elapsed_ns: u64) void {
-        const first = elapsed_ns / 3;
-        const second = elapsed_ns / 3;
-        self.recordRegionBackendOp(a, first);
-        self.recordRegionBackendOp(b, second);
-        self.recordRegionBackendOp(c_op, elapsed_ns - first - second);
-    }
-
     fn recordRegionFusedRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, elapsed_ns: u64) void {
         if (ops.len == 0) return;
         const per_op = elapsed_ns / ops.len;
@@ -3289,22 +3281,40 @@ const CompiledProgram = struct {
         return encoded;
     }
 
-    fn tryEncodeRegionFusedTriple(self: *CompiledProgram, a: backend_mod.DeviceOp, b: backend_mod.DeviceOp, c_op: backend_mod.DeviceOp) bool {
+    fn tryEncodeStageCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize) usize {
+        const command = program_mod.findStageCommand(ops, start) orelse return 0;
+        const end = start + @as(usize, command.op_count);
+        if (end > ops.len) return 0;
+
         const t0 = nowNs();
-        const encoded = switch (a) {
-            .rmsnorm => |rn| switch (b) {
-                .repeat => |rp| switch (c_op) {
-                    .elementwise => |e| self.encodeRmsnormRepeatMul(rn, rp, e),
+        const encoded = switch (command.kind) {
+            .op => false,
+            .row_chain => switch (ops[start]) {
+                .rmsnorm => |rn| switch (ops[start + 1]) {
+                    .repeat => |rp| switch (ops[start + 2]) {
+                        .elementwise => |e| self.encodeRmsnormRepeatMul(rn, rp, e),
+                        else => false,
+                    },
                     else => false,
                 },
                 else => false,
             },
-            else => false,
+            .rope_chain => switch (ops[start]) {
+                .rope => |rr| switch (ops[start + 1]) {
+                    .slice_assign => |sa| blk: {
+                        if (!canFuseRopeSliceAssign(rr, sa)) break :blk false;
+                        self.encodeRopeSliceAssign(rr, sa);
+                        break :blk true;
+                    },
+                    else => false,
+                },
+                else => false,
+            },
         };
-        if (encoded) {
-            self.recordRegionFusedTriple(a, b, c_op, @intCast(nowNs() - t0));
-        }
-        return encoded;
+
+        if (!encoded) return 0;
+        self.recordRegionFusedRun(ops[start..end], @intCast(nowNs() - t0));
+        return command.op_count;
     }
 
     fn tryEncodeAttentionBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) usize {
@@ -3372,8 +3382,9 @@ const CompiledProgram = struct {
                 i += attention_batch_len;
                 continue;
             }
-            if (i + 2 < ops.len and self.tryEncodeRegionFusedTriple(ops[i], ops[i + 1], ops[i + 2])) {
-                i += 3;
+            const stage_command_len = self.tryEncodeStageCommand(ops, i);
+            if (stage_command_len > 0) {
+                i += stage_command_len;
                 continue;
             }
             if (i + 1 < ops.len and self.tryEncodeRegionFusedPair(ops[i], ops[i + 1])) {

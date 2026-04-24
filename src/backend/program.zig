@@ -379,23 +379,9 @@ pub fn buildStageCommands(
 
     var i: usize = 0;
     while (i < ops.len) {
-        if (i + 2 < ops.len and isRmsnormScaleChain(ops[i], ops[i + 1], ops[i + 2])) {
-            try commands.append(alloc, .{
-                .kind = .row_chain,
-                .op_start = @intCast(i),
-                .op_count = 3,
-            });
-            i += 3;
-            continue;
-        }
-
-        if (i + 1 < ops.len and isRopeSliceAssignChain(ops[i], ops[i + 1])) {
-            try commands.append(alloc, .{
-                .kind = .rope_chain,
-                .op_start = @intCast(i),
-                .op_count = 2,
-            });
-            i += 2;
+        if (findStageCommand(ops, i)) |command| {
+            try commands.append(alloc, command);
+            i += command.op_count;
             continue;
         }
 
@@ -408,6 +394,31 @@ pub fn buildStageCommands(
     }
 
     return commands.toOwnedSlice(alloc);
+}
+
+pub fn findStageCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+) ?StageCommand {
+    if (start >= ops.len) return null;
+
+    if (start + 2 < ops.len and isRmsnormScaleChain(ops[start], ops[start + 1], ops[start + 2])) {
+        return .{
+            .kind = .row_chain,
+            .op_start = @intCast(start),
+            .op_count = 3,
+        };
+    }
+
+    if (start + 1 < ops.len and isRopeSliceAssignChain(ops[start], ops[start + 1])) {
+        return .{
+            .kind = .rope_chain,
+            .op_start = @intCast(start),
+            .op_count = 2,
+        };
+    }
+
+    return null;
 }
 
 pub fn summarizeStageCommands(commands: []const StageCommand) StageCommandSummary {
@@ -1702,6 +1713,7 @@ test "stage commands collapse rope cache-write chains" {
     };
 
     try std.testing.expect(isRopeSliceAssignChain(ops[0], ops[1]));
+    try std.testing.expectEqual(StageCommandKind.rope_chain, findStageCommand(&ops, 0).?.kind);
 
     const commands = try buildStageCommands(std.testing.allocator, &ops);
     defer std.testing.allocator.free(commands);
