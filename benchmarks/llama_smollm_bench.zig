@@ -236,6 +236,10 @@ fn runDeviceVariant(
     const qmatvec_regions = try backend_program.buildKernelRegions(alloc, schedule, backend_program.RegionPolicy.qmatvecCluster());
     defer alloc.free(qmatvec_regions);
     profile.printKernelRegionSummary("qmatvec clusters", qmatvec_regions);
+    const qmatvec_anchor_runs = try backend_program.buildAnchorRunRegions(alloc, schedule, backend_program.RegionPolicy.qmatvecCluster());
+    defer alloc.free(qmatvec_anchor_runs);
+    profile.printKernelRegionSummary("qmatvec anchor runs", qmatvec_anchor_runs);
+    try profile.printAnchorNeighborhoodSummary(2, alloc, "qmatvec", schedule, backend_program.RegionPolicy.qmatvecCluster(), 8);
 
     const rope = &session.model.blocks[0].rope;
     const tok_data = session.model.token_embed.inner.data;

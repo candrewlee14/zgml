@@ -216,11 +216,14 @@ pub fn printKernelRegionSummary(label: []const u8, regions: []const program_mod.
     var op_count: u32 = 0;
     var anchor_count: u32 = 0;
     var max_ops: u32 = 0;
+    var anchor_bins = [_]u32{0} ** 9;
     for (regions) |region| {
         item_count += region.item_count;
         op_count += region.op_count;
         anchor_count += region.anchor_count;
         max_ops = @max(max_ops, region.op_count);
+        const bin: usize = if (region.anchor_count < 8) @intCast(region.anchor_count) else 8;
+        anchor_bins[bin] += 1;
     }
 
     const n_f: f64 = @floatFromInt(regions.len);
@@ -229,9 +232,98 @@ pub fn printKernelRegionSummary(label: []const u8, regions: []const program_mod.
     const avg_anchors: f64 = if (regions.len > 0) @as(f64, @floatFromInt(anchor_count)) / n_f else 0.0;
 
     std.debug.print(
-        "Kernel regions ({s}): {d} regions, {d} ops, {d} anchors; avg {d:.1} items/{d:.1} ops/{d:.1} anchors, max {d} ops\n\n",
+        "Kernel regions ({s}): {d} regions, {d} ops, {d} anchors; avg {d:.1} items/{d:.1} ops/{d:.1} anchors, max {d} ops\n",
         .{ label, regions.len, op_count, anchor_count, avg_items, avg_ops, avg_anchors, max_ops },
     );
+    if (regions.len > 0) {
+        std.debug.print("  anchors/region:", .{});
+        for (1..8) |i| {
+            if (anchor_bins[i] > 0) std.debug.print(" {d}x{d}", .{ anchor_bins[i], i });
+        }
+        if (anchor_bins[8] > 0) std.debug.print(" {d}x8+", .{anchor_bins[8]});
+        std.debug.print("\n\n", .{});
+    } else {
+        std.debug.print("\n", .{});
+    }
+}
+
+const neighborhood_edge: u8 = 255;
+
+pub fn printAnchorNeighborhoodSummary(
+    comptime radius: usize,
+    alloc: std.mem.Allocator,
+    label: []const u8,
+    items: []const program_mod.KernelItem,
+    policy: program_mod.RegionPolicy,
+    top_n: usize,
+) !void {
+    const width = radius * 2 + 1;
+    const Entry = struct {
+        key: [width]u8,
+        count: u32,
+    };
+
+    var entries: std.ArrayListUnmanaged(Entry) = .empty;
+    defer entries.deinit(alloc);
+
+    var total_anchors: u32 = 0;
+    for (items, 0..) |item, center| {
+        if (!policy.anchor_families.contains(item.family)) continue;
+        total_anchors += item.len;
+
+        var key = [_]u8{neighborhood_edge} ** width;
+        for (0..width) |slot| {
+            const item_idx_signed = @as(isize, @intCast(center)) + @as(isize, @intCast(slot)) - @as(isize, @intCast(radius));
+            if (item_idx_signed < 0) continue;
+            const item_idx: usize = @intCast(item_idx_signed);
+            if (item_idx >= items.len) continue;
+            key[slot] = @intCast(@intFromEnum(items[item_idx].family));
+        }
+
+        for (entries.items) |*entry| {
+            if (std.mem.eql(u8, &entry.key, &key)) {
+                entry.count += item.len;
+                break;
+            }
+        } else {
+            try entries.append(alloc, .{ .key = key, .count = item.len });
+        }
+    }
+
+    for (1..entries.items.len) |i| {
+        const tmp = entries.items[i];
+        var j = i;
+        while (j > 0 and entries.items[j - 1].count < tmp.count) : (j -= 1) {
+            entries.items[j] = entries.items[j - 1];
+        }
+        entries.items[j] = tmp;
+    }
+
+    std.debug.print(
+        "Anchor neighborhoods ({s}, radius {d}): {d} anchors, {d} signatures\n",
+        .{ label, radius, total_anchors, entries.items.len },
+    );
+    const n = @min(top_n, entries.items.len);
+    for (entries.items[0..n]) |entry| {
+        std.debug.print("  {d:>4}  ", .{entry.count});
+        printNeighborhoodKey(width, entry.key, radius);
+        std.debug.print("\n", .{});
+    }
+    std.debug.print("\n", .{});
+}
+
+fn printNeighborhoodKey(comptime width: usize, key: [width]u8, center: usize) void {
+    for (key, 0..) |family_id, i| {
+        if (i > 0) std.debug.print(" -> ", .{});
+        if (i == center) std.debug.print("[", .{});
+        if (family_id == neighborhood_edge) {
+            std.debug.print("edge", .{});
+        } else {
+            const family: program_mod.KernelFamily = @enumFromInt(family_id);
+            std.debug.print("{s}", .{@tagName(family)});
+        }
+        if (i == center) std.debug.print("]", .{});
+    }
 }
 
 /// Print a timing breakdown for a model inference run.

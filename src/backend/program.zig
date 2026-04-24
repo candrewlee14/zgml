@@ -278,6 +278,46 @@ pub fn buildKernelRegions(
     return regions.toOwnedSlice(alloc);
 }
 
+/// Emit one region per contiguous run of anchor-family items. Because
+/// buildKernelSchedule already coalesces adjacent ops of the same family,
+/// this exposes reusable projection groups such as "three qmatvec ops in a
+/// row" without knowing whether they came from attention, FFN, or any model.
+pub fn buildAnchorRunRegions(
+    alloc: std.mem.Allocator,
+    items: []const KernelItem,
+    policy: RegionPolicy,
+) ![]KernelRegion {
+    var regions: std.ArrayListUnmanaged(KernelRegion) = .empty;
+    errdefer regions.deinit(alloc);
+
+    var i: usize = 0;
+    while (i < items.len) {
+        while (i < items.len and !policy.anchor_families.contains(items[i].family)) {
+            i += 1;
+        }
+        if (i >= items.len) break;
+
+        const start = i;
+        var anchor_count: u32 = 0;
+        while (i < items.len and policy.anchor_families.contains(items[i].family)) : (i += 1) {
+            anchor_count += items[i].len;
+        }
+
+        const first = items[start];
+        const last = items[i - 1];
+        const op_end = last.start + last.len;
+        try regions.append(alloc, .{
+            .start_item = @intCast(start),
+            .item_count = @intCast(i - start),
+            .op_start = first.start,
+            .op_count = op_end - first.start,
+            .anchor_count = anchor_count,
+        });
+    }
+
+    return regions.toOwnedSlice(alloc);
+}
+
 fn testElementwise(op: backend_mod.Op) backend_mod.DeviceOp {
     return .{ .elementwise = .{ .op = op, .dst = 0, .src0 = 0, .src1 = 0, .n = 1 } };
 }
@@ -437,6 +477,31 @@ test "kernel regions skip member runs without anchors" {
     defer std.testing.allocator.free(regions);
 
     try std.testing.expectEqual(@as(usize, 0), regions.len);
+}
+
+test "anchor run regions expose contiguous anchor groups" {
+    const items = [_]KernelItem{
+        .{ .family = .movement, .execution = .fallback, .start = 0, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 1, .len = 3 },
+        .{ .family = .elementwise, .execution = .fallback, .start = 4, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 5, .len = 2 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 7, .len = 1 },
+    };
+
+    const regions = try buildAnchorRunRegions(std.testing.allocator, &items, RegionPolicy.qmatvecCluster());
+    defer std.testing.allocator.free(regions);
+
+    try std.testing.expectEqual(@as(usize, 2), regions.len);
+    try std.testing.expectEqual(@as(u32, 1), regions[0].start_item);
+    try std.testing.expectEqual(@as(u32, 1), regions[0].item_count);
+    try std.testing.expectEqual(@as(u32, 1), regions[0].op_start);
+    try std.testing.expectEqual(@as(u32, 3), regions[0].op_count);
+    try std.testing.expectEqual(@as(u32, 3), regions[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 3), regions[1].start_item);
+    try std.testing.expectEqual(@as(u32, 2), regions[1].item_count);
+    try std.testing.expectEqual(@as(u32, 5), regions[1].op_start);
+    try std.testing.expectEqual(@as(u32, 3), regions[1].op_count);
+    try std.testing.expectEqual(@as(u32, 3), regions[1].anchor_count);
 }
 
 pub const StepDynamicParams = extern struct {
