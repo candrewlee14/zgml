@@ -403,51 +403,233 @@ pub fn DeviceInference(comptime T: type) type {
             return true;
         }
 
+        fn shape4(tensor: *const Tensor) [4]u32 {
+            return .{
+                @intCast(tensor.ne[0]),
+                @intCast(tensor.ne[1]),
+                @intCast(tensor.ne[2]),
+                @intCast(tensor.ne[3]),
+            };
+        }
+
+        fn strides4(tensor: *const Tensor) [4]u32 {
+            return .{
+                @intCast(tensor.strides[0]),
+                @intCast(tensor.strides[1]),
+                @intCast(tensor.strides[2]),
+                @intCast(tensor.strides[3]),
+            };
+        }
+
+        fn appendMatmulOp(
+            quant_map: *const std.AutoHashMapUnmanaged(*Tensor, usize),
+            ops: *std.ArrayListUnmanaged(backend_mod.DeviceOp),
+            buffers: *const BufferMap,
+            node: *Tensor,
+            alloc: std.mem.Allocator,
+        ) !void {
+            const s0 = node.src0.?;
+            const s1 = node.src1.?;
+            const flags = node.matmul_flags;
+            const M = if (flags.trans0) s0.ne[0] else s0.ne[1];
+            const N = if (flags.trans1) s1.ne[1] else s1.ne[0];
+            const K = if (flags.trans0) s0.ne[1] else s0.ne[0];
+
+            if (quant_map.get(node)) |qi| {
+                const input_tensor = if (s1.isParam()) s0 else s1;
+                if (!input_tensor.isDenseLayout() or !node.isDenseLayout()) return error.UnsupportedDeviceOp;
+                if (buffers.offset(input_tensor) != 0 or buffers.offset(node) != 0) return error.UnsupportedDeviceOp;
+                try ops.append(alloc, .{ .qmatmul = .{
+                    .dst = buffers.idx(node),
+                    .input = buffers.idx(input_tensor),
+                    .weight_idx = @intCast(qi),
+                    .M = @intCast(M),
+                    .N = @intCast(N),
+                    .K = @intCast(K),
+                } });
+                return;
+            }
+
+            try ops.append(alloc, .{ .matmul = .{
+                .dst = buffers.idx(node),
+                .a = buffers.idx(s0),
+                .b = buffers.idx(s1),
+                .geom = .{
+                    .M = M,
+                    .N = N,
+                    .K = K,
+                    .a_row_stride = if (flags.trans0) s0.strides[0] else s0.strides[1],
+                    .a_col_stride = if (flags.trans0) s0.strides[1] else s0.strides[0],
+                    .b_row_stride = if (flags.trans1) s1.strides[0] else s1.strides[1],
+                    .b_col_stride = if (flags.trans1) s1.strides[1] else s1.strides[0],
+                    .a_offset = buffers.offset(s0),
+                    .b_offset = buffers.offset(s1),
+                    .dst_offset = buffers.offset(node),
+                    .dst_row_stride = N,
+                },
+            } });
+        }
+
+        fn elementwiseDeviceOp(buffers: *const BufferMap, node: *Tensor, dst_idx: u16, src0_idx: u16, src1_idx: u16) backend_mod.DeviceOp {
+            return .{ .elementwise = .{
+                .op = node.opTag(),
+                .dst = dst_idx,
+                .src0 = src0_idx,
+                .src1 = src1_idx,
+                .n = @intCast(node.nElems()),
+                .dst_offset = @intCast(buffers.offset(node)),
+                .src0_offset = if (node.src0) |s| @intCast(buffers.offset(s)) else 0,
+                .src1_offset = if (node.src1) |s| @intCast(buffers.offset(s)) else 0,
+            } };
+        }
+
+        fn reduceDeviceOp(buffers: *const BufferMap, node: *Tensor, src: *const Tensor, dst_idx: u16, src_idx: u16) backend_mod.DeviceOp {
+            return .{ .reduce = .{
+                .op = node.opTag(),
+                .dst = dst_idx,
+                .src = src_idx,
+                .n_out = @intCast(node.nElems()),
+                .reduce_size = @intCast(src.ne[0]),
+                .src_offset = @intCast(buffers.offset(src)),
+                .dst_offset = @intCast(buffers.offset(node)),
+            } };
+        }
+
+        fn repeatDeviceOp(buffers: *const BufferMap, node: *Tensor, src: *const Tensor, dst_idx: u16, src_idx: u16) backend_mod.DeviceOp {
+            return .{ .repeat = .{
+                .dst = dst_idx,
+                .src = src_idx,
+                .n = @intCast(node.nElems()),
+                .src_ne = shape4(src),
+                .dst_ne = shape4(node),
+                .src_strides = strides4(src),
+                .dst_strides = strides4(node),
+                .src_offset = @intCast(buffers.offset(src)),
+                .dst_offset = @intCast(buffers.offset(node)),
+            } };
+        }
+
+        fn softmaxDeviceOp(buffers: *const BufferMap, node: *Tensor, src: *const Tensor, dst_idx: u16, src_idx: u16) backend_mod.DeviceOp {
+            return .{ .softmax = .{
+                .dst = dst_idx,
+                .src = src_idx,
+                .rows = @intCast(src.nElems() / src.ne[0]),
+                .cols = @intCast(src.ne[0]),
+                .src_offset = @intCast(buffers.offset(src)),
+                .dst_offset = @intCast(buffers.offset(node)),
+            } };
+        }
+
+        fn rmsnormDeviceOp(buffers: *const BufferMap, node: *Tensor, src: *const Tensor, dst_idx: u16, src_idx: u16) backend_mod.DeviceOp {
+            return .{ .rmsnorm = .{
+                .dst = dst_idx,
+                .src = src_idx,
+                .rows = @intCast(src.ne[1]),
+                .cols = @intCast(src.ne[0]),
+                .eps = node.op_eps,
+                .src_offset = @intCast(buffers.offset(src)),
+                .dst_offset = @intCast(buffers.offset(node)),
+            } };
+        }
+
+        fn sliceAssignDeviceOp(
+            buffers: *const BufferMap,
+            src: *const Tensor,
+            dst: *const Tensor,
+            src_idx: u16,
+            rows: usize,
+            cols: usize,
+            dst_base_offset: usize,
+            dst_offset: usize,
+            patch_stride: usize,
+        ) backend_mod.DeviceOp {
+            return .{ .slice_assign = .{
+                .dst = buffers.idx(dst),
+                .src = src_idx,
+                .rows = @intCast(rows),
+                .cols = @intCast(cols),
+                .dst_base_offset = @intCast(dst_base_offset),
+                .dst_offset = @intCast(dst_offset),
+                .dst_row_stride = @intCast(dst.strides[0]),
+                .dst_col_stride = @intCast(dst.strides[1]),
+                .src_offset = @intCast(buffers.offset(src)),
+                .src_row_stride = @intCast(src.strides[0]),
+                .src_col_stride = @intCast(src.strides[1]),
+                .patch_stride = @intCast(patch_stride),
+            } };
+        }
+
+        fn ropeDeviceOp(
+            buffers: *const BufferMap,
+            node: *Tensor,
+            src: *const Tensor,
+            cs: *const Tensor,
+            dst_idx: u16,
+            src_idx: u16,
+            cos_sin_idx: u16,
+        ) backend_mod.DeviceOp {
+            return .{ .rope = .{
+                .dst = dst_idx,
+                .src = src_idx,
+                .cos_sin = cos_sin_idx,
+                .half_d = @intCast(src.ne[0] / 2),
+                .seq_len = @intCast(src.ne[1]),
+                .src_off = @intCast(buffers.offset(src)),
+                .cs_off = @intCast(buffers.offset(cs)),
+                .dst_off = @intCast(buffers.offset(node)),
+                .src_rs = @intCast(src.strides[0]),
+                .src_cs = @intCast(src.strides[1]),
+                .cs_cs = @intCast(cs.strides[1]),
+            } };
+        }
+
+        fn attentionDeviceOp(
+            buffers: *const BufferMap,
+            node: *Tensor,
+            q: *const Tensor,
+            k: *const Tensor,
+            v: *const Tensor,
+            mask: ?*const Tensor,
+            dst_idx: u16,
+            q_idx: u16,
+            k_idx: u16,
+        ) backend_mod.DeviceOp {
+            return .{ .attention = .{
+                .dst = dst_idx,
+                .q = q_idx,
+                .k = k_idx,
+                .v = buffers.idx(v),
+                .mask = if (mask) |m| buffers.idx(m) else dst_idx,
+                .has_mask = mask != null,
+                .d_head = @intCast(q.ne[0]),
+                .seq_q = @intCast(q.ne[1]),
+                .seq_kv = @intCast(k.ne[1]),
+                .scale = node.op_scale,
+                .q_off = @intCast(buffers.offset(q)),
+                .k_off = @intCast(buffers.offset(k)),
+                .v_off = @intCast(buffers.offset(v)),
+                .mask_off = if (mask) |m| @intCast(buffers.offset(m)) else 0,
+                .dst_off = @intCast(buffers.offset(node)),
+                .q_rs = @intCast(q.strides[0]),
+                .q_cs = @intCast(q.strides[1]),
+                .k_rs = @intCast(k.strides[0]),
+                .k_cs = @intCast(k.strides[1]),
+                .v_rs = @intCast(v.strides[0]),
+                .v_cs = @intCast(v.strides[1]),
+                .mask_rs = if (mask) |m| @intCast(m.strides[0]) else 0,
+                .mask_cs = if (mask) |m| @intCast(m.strides[1]) else 0,
+                .dst_rs = @intCast(node.strides[0]),
+                .dst_cs = @intCast(node.strides[1]),
+            } };
+        }
+
         fn appendNodeOp(quant_map: *const std.AutoHashMapUnmanaged(*Tensor, usize), ops: *std.ArrayListUnmanaged(backend_mod.DeviceOp), buffers: *const BufferMap, node: *Tensor, alloc: std.mem.Allocator) !void {
             const op = node.opTag();
             if (op == .none or op == .view or op == .as_strided or op == .reshape or
                 op == .transpose or op == .permute or op == .broadcast_to) return;
 
             if (op == .matmul) {
-                const s0 = node.src0.?;
-                const s1 = node.src1.?;
-                const flags = node.matmul_flags;
-                const M = if (flags.trans0) s0.ne[0] else s0.ne[1];
-                const N = if (flags.trans1) s1.ne[1] else s1.ne[0];
-                const K = if (flags.trans0) s0.ne[1] else s0.ne[0];
-
-                if (quant_map.get(node)) |qi| {
-                    const input_tensor = if (s1.isParam()) s0 else s1;
-                    if (!input_tensor.isDenseLayout() or !node.isDenseLayout()) return error.UnsupportedDeviceOp;
-                    if (buffers.offset(input_tensor) != 0 or buffers.offset(node) != 0) return error.UnsupportedDeviceOp;
-                    try ops.append(alloc, .{ .qmatmul = .{
-                        .dst = buffers.idx(node),
-                        .input = buffers.idx(input_tensor),
-                        .weight_idx = @intCast(qi),
-                        .M = @intCast(M),
-                        .N = @intCast(N),
-                        .K = @intCast(K),
-                    } });
-                } else {
-                    try ops.append(alloc, .{ .matmul = .{
-                        .dst = buffers.idx(node),
-                        .a = buffers.idx(s0),
-                        .b = buffers.idx(s1),
-                        .geom = .{
-                            .M = M,
-                            .N = N,
-                            .K = K,
-                            .a_row_stride = if (flags.trans0) s0.strides[0] else s0.strides[1],
-                            .a_col_stride = if (flags.trans0) s0.strides[1] else s0.strides[0],
-                            .b_row_stride = if (flags.trans1) s1.strides[0] else s1.strides[1],
-                            .b_col_stride = if (flags.trans1) s1.strides[1] else s1.strides[0],
-                            .a_offset = buffers.offset(s0),
-                            .b_offset = buffers.offset(s1),
-                            .dst_offset = buffers.offset(node),
-                            .dst_row_stride = N,
-                        },
-                    } });
-                }
+                try appendMatmulOp(quant_map, ops, buffers, node, alloc);
                 return;
             }
 
@@ -460,68 +642,26 @@ pub fn DeviceInference(comptime T: type) type {
                     if (!node.isDenseLayout()) return error.UnsupportedDeviceOp;
                     if (node.src0) |s| if (!s.isDenseLayout()) return error.UnsupportedDeviceOp;
                     if (node.src1) |s| if (!s.isDenseLayout()) return error.UnsupportedDeviceOp;
-                    try ops.append(alloc, .{ .elementwise = .{
-                        .op = op,
-                        .dst = dst_idx,
-                        .src0 = src0_idx,
-                        .src1 = src1_idx,
-                        .n = @intCast(node.nElems()),
-                        .dst_offset = @intCast(buffers.offset(node)),
-                        .src0_offset = if (node.src0) |s| @intCast(buffers.offset(s)) else 0,
-                        .src1_offset = if (node.src1) |s| @intCast(buffers.offset(s)) else 0,
-                    } });
+                    try ops.append(alloc, elementwiseDeviceOp(buffers, node, dst_idx, src0_idx, src1_idx));
                 },
                 .sum, .max => {
                     const src = node.src0.?;
                     if (!src.isDenseLayout() or !node.isDenseLayout()) return error.UnsupportedDeviceOp;
-                    try ops.append(alloc, .{ .reduce = .{
-                        .op = op,
-                        .dst = dst_idx,
-                        .src = src0_idx,
-                        .n_out = @intCast(node.nElems()),
-                        .reduce_size = @intCast(src.ne[0]),
-                        .src_offset = @intCast(buffers.offset(src)),
-                        .dst_offset = @intCast(buffers.offset(node)),
-                    } });
+                    try ops.append(alloc, reduceDeviceOp(buffers, node, src, dst_idx, src0_idx));
                 },
                 .repeat => {
                     const src = node.src0.?;
-                    try ops.append(alloc, .{ .repeat = .{
-                        .dst = dst_idx,
-                        .src = src0_idx,
-                        .n = @intCast(node.nElems()),
-                        .src_ne = .{ @intCast(src.ne[0]), @intCast(src.ne[1]), @intCast(src.ne[2]), @intCast(src.ne[3]) },
-                        .dst_ne = .{ @intCast(node.ne[0]), @intCast(node.ne[1]), @intCast(node.ne[2]), @intCast(node.ne[3]) },
-                        .src_strides = .{ @intCast(src.strides[0]), @intCast(src.strides[1]), @intCast(src.strides[2]), @intCast(src.strides[3]) },
-                        .dst_strides = .{ @intCast(node.strides[0]), @intCast(node.strides[1]), @intCast(node.strides[2]), @intCast(node.strides[3]) },
-                        .src_offset = @intCast(buffers.offset(src)),
-                        .dst_offset = @intCast(buffers.offset(node)),
-                    } });
+                    try ops.append(alloc, repeatDeviceOp(buffers, node, src, dst_idx, src0_idx));
                 },
                 .softmax => {
                     if (!isCanonicalRowSoftmax(node)) return error.UnsupportedDeviceOp;
                     const src = node.src0.?;
-                    try ops.append(alloc, .{ .softmax = .{
-                        .dst = dst_idx,
-                        .src = src0_idx,
-                        .rows = @intCast(src.nElems() / src.ne[0]),
-                        .cols = @intCast(src.ne[0]),
-                        .src_offset = @intCast(buffers.offset(src)),
-                        .dst_offset = @intCast(buffers.offset(node)),
-                    } });
+                    try ops.append(alloc, softmaxDeviceOp(buffers, node, src, dst_idx, src0_idx));
                 },
                 .rmsnorm => {
                     const src = node.src0.?;
                     if (!src.isDenseLayout() or !node.isDenseLayout()) return error.UnsupportedDeviceOp;
-                    try ops.append(alloc, .{ .rmsnorm = .{
-                        .dst = dst_idx,
-                        .src = src0_idx,
-                        .rows = @intCast(src.ne[1]),
-                        .cols = @intCast(src.ne[0]),
-                        .eps = node.op_eps,
-                        .src_offset = @intCast(buffers.offset(src)),
-                        .dst_offset = @intCast(buffers.offset(node)),
-                    } });
+                    try ops.append(alloc, rmsnormDeviceOp(buffers, node, src, dst_idx, src0_idx));
                 },
                 .slice_assign => {
                     const src = node.src0.?;
@@ -530,91 +670,26 @@ pub fn DeviceInference(comptime T: type) type {
                     const cols = if (src.n_dims >= 2) src.ne[1] else 1;
                     const base = buffers.offset(dst);
                     const dst_offset = base + node.storage_offset * dst.strides[1];
-                    try ops.append(alloc, .{ .slice_assign = .{
-                        .dst = buffers.idx(dst),
-                        .src = src0_idx,
-                        .rows = @intCast(rows),
-                        .cols = @intCast(cols),
-                        .dst_base_offset = @intCast(base),
-                        .dst_offset = @intCast(dst_offset),
-                        .dst_row_stride = @intCast(dst.strides[0]),
-                        .dst_col_stride = @intCast(dst.strides[1]),
-                        .src_offset = @intCast(buffers.offset(src)),
-                        .src_row_stride = @intCast(src.strides[0]),
-                        .src_col_stride = @intCast(src.strides[1]),
-                        .patch_stride = @intCast(dst.strides[1]),
-                    } });
+                    try ops.append(alloc, sliceAssignDeviceOp(buffers, src, dst, src0_idx, rows, cols, base, dst_offset, dst.strides[1]));
                 },
                 .slice_assign_rows => {
                     const src = node.src0.?;
                     const dst = node.src1 orelse node;
                     const base = buffers.offset(dst);
                     const dst_offset = base + node.storage_offset * dst.strides[0];
-                    try ops.append(alloc, .{ .slice_assign = .{
-                        .dst = buffers.idx(dst),
-                        .src = src0_idx,
-                        .rows = @intCast(src.ne[0]),
-                        .cols = @intCast(src.ne[1]),
-                        .dst_base_offset = @intCast(base),
-                        .dst_offset = @intCast(dst_offset),
-                        .dst_row_stride = @intCast(dst.strides[0]),
-                        .dst_col_stride = @intCast(dst.strides[1]),
-                        .src_offset = @intCast(buffers.offset(src)),
-                        .src_row_stride = @intCast(src.strides[0]),
-                        .src_col_stride = @intCast(src.strides[1]),
-                        .patch_stride = @intCast(dst.strides[0]),
-                    } });
+                    try ops.append(alloc, sliceAssignDeviceOp(buffers, src, dst, src0_idx, src.ne[0], src.ne[1], base, dst_offset, dst.strides[0]));
                 },
                 .rope => {
                     const src = node.src0.?;
                     const cs = node.src1.?;
-                    const d = src.ne[0];
-                    try ops.append(alloc, .{ .rope = .{
-                        .dst = dst_idx,
-                        .src = src0_idx,
-                        .cos_sin = src1_idx,
-                        .half_d = @intCast(d / 2),
-                        .seq_len = @intCast(src.ne[1]),
-                        .src_off = @intCast(buffers.offset(src)),
-                        .cs_off = @intCast(buffers.offset(cs)),
-                        .dst_off = @intCast(buffers.offset(node)),
-                        .src_rs = @intCast(src.strides[0]),
-                        .src_cs = @intCast(src.strides[1]),
-                        .cs_cs = @intCast(cs.strides[1]),
-                    } });
+                    try ops.append(alloc, ropeDeviceOp(buffers, node, src, cs, dst_idx, src0_idx, src1_idx));
                 },
                 .attention => {
                     const q = node.src0.?;
                     const k = node.src1.?;
                     const v = node.src2.?;
                     const mask = node.src3;
-                    try ops.append(alloc, .{ .attention = .{
-                        .dst = dst_idx,
-                        .q = src0_idx,
-                        .k = src1_idx,
-                        .v = buffers.idx(v),
-                        .mask = if (mask) |m| buffers.idx(m) else dst_idx,
-                        .has_mask = mask != null,
-                        .d_head = @intCast(q.ne[0]),
-                        .seq_q = @intCast(q.ne[1]),
-                        .seq_kv = @intCast(k.ne[1]),
-                        .scale = node.op_scale,
-                        .q_off = @intCast(buffers.offset(q)),
-                        .k_off = @intCast(buffers.offset(k)),
-                        .v_off = @intCast(buffers.offset(v)),
-                        .mask_off = if (mask) |m| @intCast(buffers.offset(m)) else 0,
-                        .dst_off = @intCast(buffers.offset(node)),
-                        .q_rs = @intCast(q.strides[0]),
-                        .q_cs = @intCast(q.strides[1]),
-                        .k_rs = @intCast(k.strides[0]),
-                        .k_cs = @intCast(k.strides[1]),
-                        .v_rs = @intCast(v.strides[0]),
-                        .v_cs = @intCast(v.strides[1]),
-                        .mask_rs = if (mask) |m| @intCast(m.strides[0]) else 0,
-                        .mask_cs = if (mask) |m| @intCast(m.strides[1]) else 0,
-                        .dst_rs = @intCast(node.strides[0]),
-                        .dst_cs = @intCast(node.strides[1]),
-                    } });
+                    try ops.append(alloc, attentionDeviceOp(buffers, node, q, k, v, mask, dst_idx, src0_idx, src1_idx));
                 },
                 // Structural ops filtered at entry; matmul handled above.
                 // Scatter/gather and fused composite ops not yet on device programs.
