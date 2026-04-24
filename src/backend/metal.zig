@@ -197,6 +197,24 @@ const shader_source =
     \\    }
     \\}
     \\
+    \\// Decode-oriented qmatmul specialization: M==1, one thread per output element.
+    \\kernel void qmatvec_f32(
+    \\    device const char*  weight_data   [[buffer(0)]],
+    \\    device const float* weight_scales [[buffer(1)]],
+    \\    device const float* input         [[buffer(2)]],
+    \\    device float*       output        [[buffer(3)]],
+    \\    constant QMatMulParams& p [[buffer(4)]],
+    \\    uint gid [[thread_position_in_grid]]
+    \\) {
+    \\    if (gid >= p.N) return;
+    \\    float sum = 0.0f;
+    \\    for (uint k = 0; k < p.K; k++) {
+    \\        uint w_idx = k * p.N + gid;
+    \\        sum += input[p.input_offset + k] * float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
+    \\    }
+    \\    output[p.dst_offset + gid] = sum;
+    \\}
+    \\
     \\// ── F16 matvec: M==1, one thread per output element ────
     \\
     \\struct MatVecParams {
@@ -934,6 +952,7 @@ pub const MetalBackend = struct {
     queue: *anyopaque,
     matmul_pipeline: *anyopaque,
     qmatmul_pipeline: *anyopaque,
+    qmatvec_pipeline: *anyopaque,
     matvec_f16_pipeline: *anyopaque,
     matmul_f16_pipeline: *anyopaque,
     rope_pipeline: *anyopaque,
@@ -958,6 +977,8 @@ pub const MetalBackend = struct {
         errdefer c.mtl_release(matmul_pipeline);
         const qmatmul_pipeline = c.mtl_create_pipeline(device, library, "qmatmul_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(qmatmul_pipeline);
+        const qmatvec_pipeline = c.mtl_create_pipeline(device, library, "qmatvec_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(qmatvec_pipeline);
         const matvec_f16_pipeline = c.mtl_create_pipeline(device, library, "matvec_f16") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(matvec_f16_pipeline);
         const matmul_f16_pipeline = c.mtl_create_pipeline(device, library, "matmul_f16") orelse return error.PipelineCreateFailed;
@@ -975,6 +996,7 @@ pub const MetalBackend = struct {
             .queue = queue,
             .matmul_pipeline = matmul_pipeline,
             .qmatmul_pipeline = qmatmul_pipeline,
+            .qmatvec_pipeline = qmatvec_pipeline,
             .matvec_f16_pipeline = matvec_f16_pipeline,
             .matmul_f16_pipeline = matmul_f16_pipeline,
             .rope_pipeline = rope_pipeline,
@@ -993,6 +1015,7 @@ pub const MetalBackend = struct {
         c.mtl_release(self.rope_pipeline);
         c.mtl_release(self.matmul_f16_pipeline);
         c.mtl_release(self.matvec_f16_pipeline);
+        c.mtl_release(self.qmatvec_pipeline);
         c.mtl_release(self.qmatmul_pipeline);
         c.mtl_release(self.matmul_pipeline);
         c.mtl_release(self.library);
@@ -1084,6 +1107,7 @@ fn metalSchedulePolicy(fine_grained: bool) program_mod.SchedulePolicy {
             .reduce = fine_grained,
             .movement = fine_grained,
             .matmul = true,
+            .qmatvec = true,
             .qmatmul = true,
             .rope = fine_grained,
             .attention = fine_grained,
@@ -1124,7 +1148,7 @@ const CompiledProgram = struct {
         } else {
             self.executeScheduled();
         }
-        self.backend.flushCommands();
+        self.flushCommandsProfiled();
         self.runtime_profile.call_count += 1;
 
         // Download outputs (logits) via shared memory.
@@ -1148,7 +1172,7 @@ const CompiledProgram = struct {
                     }
                 },
                 .fallback => {
-                    self.backend.flushCommands();
+                    self.flushCommandsProfiled();
                     for (self.ops[start..end]) |op| {
                         self.executeFallbackOp(op);
                     }
@@ -1160,9 +1184,12 @@ const CompiledProgram = struct {
     fn executeOp(self: *CompiledProgram, op: backend_mod.DeviceOp) void {
         const tag: usize = @intFromEnum(op);
         const t0 = nowNs();
-        if (!self.tryEncodeGpuOp(op)) {
-            self.backend.flushCommands();
+        if (self.tryEncodeGpuOp(op)) {
+            self.runtime_profile.backend_op_count +%= 1;
+        } else {
+            self.flushCommandsProfiled();
             reference.executeOp(self.ref_buffers, self.ref_qweights, op);
+            self.runtime_profile.fallback_op_count +%= 1;
         }
         self.runtime_profile.time_ns[tag] +%= @intCast(nowNs() - t0);
     }
@@ -1171,7 +1198,16 @@ const CompiledProgram = struct {
         const tag: usize = @intFromEnum(op);
         const t0 = nowNs();
         reference.executeOp(self.ref_buffers, self.ref_qweights, op);
+        self.runtime_profile.fallback_op_count +%= 1;
         self.runtime_profile.time_ns[tag] +%= @intCast(nowNs() - t0);
+    }
+
+    fn flushCommandsProfiled(self: *CompiledProgram) void {
+        if (self.backend.active_commands == null) return;
+        const t0 = nowNs();
+        self.backend.flushCommands();
+        self.runtime_profile.sync_time_ns +%= @intCast(nowNs() - t0);
+        self.runtime_profile.sync_count +%= 1;
     }
 
     fn encode(
@@ -1291,7 +1327,6 @@ const CompiledProgram = struct {
                 return true;
             },
             .qmatmul => |q| {
-                if (!fine_grained and q.M < 16) return false;
                 const w = self.qweight_views[q.weight_idx];
                 const buffers = [_]DeviceBuffer{
                     w.data,
@@ -1299,6 +1334,11 @@ const CompiledProgram = struct {
                     self.device_bufs[q.input],
                     self.device_bufs[q.dst],
                 };
+                if (q.M == 1) {
+                    self.encodeTyped(QMatMulParams, self.backend.qmatvec_pipeline, &buffers, qmatmulParams(q, w.block_size), 4, .{ .gx = linearGrid(q.N) }, WG_SIZE);
+                    return true;
+                }
+                if (!fine_grained and q.M < 16) return false;
                 self.encodeTyped(QMatMulParams, self.backend.qmatmul_pipeline, &buffers, qmatmulParams(q, w.block_size), 4, matmulGrid(q.M, q.N), MATMUL_THREADS);
                 return true;
             },
@@ -1339,6 +1379,23 @@ const CompiledProgram = struct {
             .elementwise, .softmax, .layernorm, .rmsnorm, .reduce, .repeat, .slice_assign => return false,
             .fused_elementwise => |fe| return self.tryEncodeFusedElementwise(fe),
         }
+    }
+
+    fn rebuildSchedule(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) void {
+        const schedule = program_mod.buildKernelSchedule(
+            self.alloc,
+            ops,
+            metalSchedulePolicy(self.backend.fine_grained_program_dispatch),
+        ) catch {
+            if (self.schedule.len > 0) self.alloc.free(self.schedule);
+            self.ops = ops;
+            self.schedule = &.{};
+            return;
+        };
+
+        if (self.schedule.len > 0) self.alloc.free(self.schedule);
+        self.ops = ops;
+        self.schedule = schedule;
     }
 };
 
@@ -1411,6 +1468,13 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         rb.* = .{ .ptr = @ptrCast(@alignCast(c.mtl_buffer_contents(buf.ptr))), .len = buf.size / @sizeOf(f32) };
     }
 
+    const schedule = program_mod.buildKernelSchedule(
+        alloc,
+        program.ops,
+        metalSchedulePolicy(self.fine_grained_program_dispatch),
+    ) catch return null;
+    errdefer if (schedule.len > 0) alloc.free(schedule);
+
     const compiled = alloc.create(CompiledProgram) catch return null;
     compiled.* = .{
         .backend = self,
@@ -1419,6 +1483,7 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         .qweight_views = qweight_views,
         .ref_qweights = ref_qweights,
         .ops = program.ops,
+        .schedule = schedule,
         .alloc = alloc,
     };
     return @ptrCast(compiled);
@@ -1431,7 +1496,7 @@ fn executeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, i
 
 fn refreshProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, ops: []const backend_mod.DeviceOp) void {
     const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
-    compiled.ops = ops;
+    compiled.rebuildSchedule(ops);
 }
 
 fn freeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle) void {
@@ -1488,4 +1553,51 @@ test "metal backend compiled program matmul" {
     be.executeProgram(handle, &.{}, &out);
 
     try std.testing.expectEqualSlices(f32, &.{ 58, 64, 139, 154 }, &dst);
+}
+
+test "metal backend compiled program qmatvec" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setFineGrainedProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 10, 20, 30 };
+    const qdata = [_]i8{ 1, 2, 3, 4, 5, 6 };
+    const scales = [_]f32{1};
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 3, .cols = 2, .block_size = 6 }};
+    const ops = [_]backend_mod.DeviceOp{.{ .qmatmul = .{
+        .dst = 1,
+        .input = 0,
+        .weight_idx = 0,
+        .M = 1,
+        .N = 2,
+        .K = 3,
+    } }};
+    const buf_sizes = [_]usize{ 3, 2 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = 3 * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 2,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var dst: [2]f32 = undefined;
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 1, .host_ptr = @ptrCast(&dst), .size = 2 * 4 }};
+    be.executeProgram(handle, &.{}, &out);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 220), dst[0], 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, 280), dst[1], 1e-4);
+    const rt = be.getRuntimeProfile(handle).?;
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
 }

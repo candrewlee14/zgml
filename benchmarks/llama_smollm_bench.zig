@@ -17,6 +17,7 @@ const DeviceInference = zgml.device_inference.DeviceInference;
 const Backend = zgml.backend.Backend;
 const Tensor = zgml.Tensor;
 const profile = zgml.profile;
+const backend_program = zgml.backend_program;
 const have_wgpu = @import("zgml_options").use_wgpu;
 const is_macos = @import("builtin").os.tag == .macos;
 
@@ -67,6 +68,48 @@ fn loadWeights(session: *Session, alloc: std.mem.Allocator, model_path: []const 
 
 fn isGGUF(model_path: []const u8) bool {
     return (zgml.llm.inferFileKind(model_path) orelse return false) == .gguf;
+}
+
+fn schedulePolicyForBackend(be: Backend) backend_program.SchedulePolicy {
+    return switch (be.device_type) {
+        .wgpu => .{
+            .capabilities = be.capabilities,
+            .native_kernels = .{
+                .elementwise = true,
+                .fused_elementwise = be.capabilities.fused_elementwise,
+                .row = true,
+                .reduce = true,
+                .movement = true,
+                .matmul = be.capabilities.dense_matmul_f32,
+                .qmatvec = be.capabilities.qmatmul,
+                .qmatmul = be.capabilities.qmatmul,
+                .rope = true,
+                .attention = be.capabilities.attention.supported,
+            },
+            .fine_grained = true,
+            .min_backend_matmul_m = 0,
+            .min_backend_qmatmul_m = 0,
+        },
+        .cpu => .{
+            .capabilities = be.capabilities,
+            .native_kernels = .{
+                .elementwise = true,
+                .fused_elementwise = be.capabilities.fused_elementwise,
+                .row = true,
+                .reduce = true,
+                .movement = true,
+                .matmul = be.capabilities.dense_matmul_f32,
+                .qmatvec = be.capabilities.qmatmul,
+                .qmatmul = be.capabilities.qmatmul,
+                .rope = true,
+                .attention = be.capabilities.attention.supported,
+            },
+            .fine_grained = true,
+            .min_backend_matmul_m = 0,
+            .min_backend_qmatmul_m = 0,
+        },
+        else => backend_program.SchedulePolicy.conservative(be.capabilities),
+    };
 }
 
 fn runVariant(
@@ -185,7 +228,10 @@ fn runDeviceVariant(
     });
     defer device.deinit();
 
-    profile.printProfile(profile.profileProgram(device.getProgram()));
+    profile.printProfile(profile.profileProgramWithSchedule(
+        device.getProgram(),
+        schedulePolicyForBackend(be),
+    ));
 
     const rope = &session.model.blocks[0].rope;
     const tok_data = session.model.token_embed.inner.data;

@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const backend = @import("backend.zig");
+const program_mod = @import("backend/program.zig");
 
 pub const DeviceOp = backend.DeviceOp;
 pub const DeviceProgram = backend.DeviceProgram;
@@ -49,6 +50,15 @@ pub const DeviceProgramProfile = struct {
     total_buffer_bytes: usize,
     gpu_ops: u32,
     cpu_ops: u32,
+    has_schedule: bool = false,
+    schedule_items: u32 = 0,
+    backend_items: u32 = 0,
+    fallback_items: u32 = 0,
+    backend_ops: u32 = 0,
+    fallback_ops: u32 = 0,
+    family_ops: [program_mod.n_kernel_families]u32 = [_]u32{0} ** program_mod.n_kernel_families,
+    family_backend_ops: [program_mod.n_kernel_families]u32 = [_]u32{0} ** program_mod.n_kernel_families,
+    family_fallback_ops: [program_mod.n_kernel_families]u32 = [_]u32{0} ** program_mod.n_kernel_families,
 };
 
 /// Analyze a DeviceProgram and return a static profile summary.
@@ -82,6 +92,53 @@ pub fn profileProgram(program: DeviceProgram) DeviceProgramProfile {
     };
 }
 
+/// Analyze a DeviceProgram with an explicit backend schedule policy.
+/// This reports native-backend vs fallback placement without baking device
+/// assumptions into DeviceOp tag names.
+pub fn profileProgramWithSchedule(program: DeviceProgram, policy: program_mod.SchedulePolicy) DeviceProgramProfile {
+    var p = profileProgram(program);
+    p.has_schedule = true;
+    p.gpu_ops = 0;
+    p.cpu_ops = 0;
+
+    var has_prev = false;
+    var prev_family: program_mod.KernelFamily = undefined;
+    var prev_execution: program_mod.ExecutionClass = undefined;
+
+    for (program.ops) |op| {
+        const family = program_mod.kernelFamily(op);
+        const execution = program_mod.executionClass(op, policy);
+        const family_idx: usize = @intFromEnum(family);
+        p.family_ops[family_idx] += 1;
+
+        if (!has_prev or family != prev_family or execution != prev_execution) {
+            p.schedule_items += 1;
+            switch (execution) {
+                .backend => p.backend_items += 1,
+                .fallback => p.fallback_items += 1,
+            }
+            has_prev = true;
+            prev_family = family;
+            prev_execution = execution;
+        }
+
+        switch (execution) {
+            .backend => {
+                p.backend_ops += 1;
+                p.gpu_ops += 1;
+                p.family_backend_ops[family_idx] += 1;
+            },
+            .fallback => {
+                p.fallback_ops += 1;
+                p.cpu_ops += 1;
+                p.family_fallback_ops[family_idx] += 1;
+            },
+        }
+    }
+
+    return p;
+}
+
 /// Print a formatted profile summary to stderr.
 pub fn printProfile(p: DeviceProgramProfile) void {
     // Build index array sorted by count descending.
@@ -108,18 +165,50 @@ pub fn printProfile(p: DeviceProgramProfile) void {
         const count = p.op_counts[idx];
         if (count == 0) continue;
         const pct: f64 = if (p.total_ops > 0) @as(f64, @floatFromInt(count)) / total_f * 100.0 else 0.0;
-        const label = if (isGpuTag(idx)) "[GPU]" else "[CPU]";
+        const label = if (p.has_schedule) "" else if (isGpuTag(idx)) "[GPU]" else "[CPU]";
         std.debug.print("  {s:<22} {d:>5}  ({d:.1}%)  {s}\n", .{ tag_names[idx], count, pct, label });
     }
 
     const gpu_pct: f64 = if (p.total_ops > 0) @as(f64, @floatFromInt(p.gpu_ops)) / total_f * 100.0 else 0.0;
     const cpu_pct: f64 = if (p.total_ops > 0) @as(f64, @floatFromInt(p.cpu_ops)) / total_f * 100.0 else 0.0;
 
-    std.debug.print("GPU dispatches: {d} ({d:.1}%)\n", .{ p.gpu_ops, gpu_pct });
-    std.debug.print("CPU ops: {d} ({d:.1}%)\n", .{ p.cpu_ops, cpu_pct });
+    if (p.has_schedule) {
+        std.debug.print("Schedule items: {d} ({d} backend, {d} fallback)\n", .{ p.schedule_items, p.backend_items, p.fallback_items });
+        std.debug.print("Backend ops: {d} ({d:.1}%)\n", .{ p.backend_ops, gpu_pct });
+        std.debug.print("Fallback ops: {d} ({d:.1}%)\n", .{ p.fallback_ops, cpu_pct });
+        printScheduledFamilies(p);
+    } else {
+        std.debug.print("GPU dispatches: {d} ({d:.1}%)\n", .{ p.gpu_ops, gpu_pct });
+        std.debug.print("CPU ops: {d} ({d:.1}%)\n", .{ p.cpu_ops, cpu_pct });
+    }
 
     const mb: f64 = @as(f64, @floatFromInt(p.total_buffer_bytes)) / (1024.0 * 1024.0);
     std.debug.print("Buffers: {d} ({d:.1} MB)\n\n", .{ p.n_buffers, mb });
+}
+
+fn printScheduledFamilies(p: DeviceProgramProfile) void {
+    var order: [program_mod.n_kernel_families]usize = undefined;
+    for (0..program_mod.n_kernel_families) |i| order[i] = i;
+    for (1..program_mod.n_kernel_families) |i| {
+        var j = i;
+        while (j > 0 and p.family_ops[order[j]] > p.family_ops[order[j - 1]]) {
+            const tmp = order[j];
+            order[j] = order[j - 1];
+            order[j - 1] = tmp;
+            j -= 1;
+        }
+    }
+
+    std.debug.print("Kernel families:\n", .{});
+    for (order) |idx| {
+        const total = p.family_ops[idx];
+        if (total == 0) continue;
+        const family: program_mod.KernelFamily = @enumFromInt(idx);
+        std.debug.print(
+            "  {s:<18} {d:>5} ({d} backend, {d} fallback)\n",
+            .{ @tagName(family), total, p.family_backend_ops[idx], p.family_fallback_ops[idx] },
+        );
+    }
 }
 
 /// Print a timing breakdown for a model inference run.
@@ -140,6 +229,10 @@ pub fn printTimingBreakdown(label: []const u8, n_tokens: u32, total_ns: u64) voi
 /// during CompiledProgram.execute(). Caller resets explicitly.
 pub const RuntimeProfile = struct {
     time_ns: [n_op_tags]u64 = [_]u64{0} ** n_op_tags,
+    backend_op_count: u64 = 0,
+    fallback_op_count: u64 = 0,
+    sync_time_ns: u64 = 0,
+    sync_count: u64 = 0,
     call_count: u32 = 0,
 
     pub fn reset(self: *RuntimeProfile) void {
@@ -245,6 +338,20 @@ pub fn printRuntimeProfile(rt: RuntimeProfile, est: ProgramEstimates) void {
     const calls_f: f64 = @floatFromInt(rt.call_count);
 
     std.debug.print("\n=== Runtime Profile ({d} calls) ===\n", .{rt.call_count});
+    const placed_ops = rt.backend_op_count + rt.fallback_op_count;
+    if (placed_ops > 0) {
+        const placed_f: f64 = @floatFromInt(placed_ops);
+        const backend_pct = @as(f64, @floatFromInt(rt.backend_op_count)) / placed_f * 100.0;
+        const fallback_pct = @as(f64, @floatFromInt(rt.fallback_op_count)) / placed_f * 100.0;
+        std.debug.print(
+            "Runtime placement: {d} backend ({d:.1}%), {d} fallback ({d:.1}%)\n",
+            .{ rt.backend_op_count, backend_pct, rt.fallback_op_count, fallback_pct },
+        );
+    }
+    if (rt.sync_count > 0) {
+        const sync_ms: f64 = @as(f64, @floatFromInt(rt.sync_time_ns)) / 1_000_000.0;
+        std.debug.print("Backend sync: {d} waits, {d:.2} ms\n", .{ rt.sync_count, sync_ms });
+    }
     std.debug.print("{s:<22} {s:>9} {s:>6}  {s:>10} {s:>9}  {s:>10} {s:>8}\n", .{ "op", "time_ms", "pct", "GFLOP", "GFLOP/s", "GB", "GB/s" });
 
     for (order) |idx| {
@@ -271,18 +378,30 @@ pub fn printRuntimeProfile(rt: RuntimeProfile, est: ProgramEstimates) void {
 test "profileProgram counts ops correctly" {
     const ops = [_]DeviceOp{
         .{ .matmul = .{ .dst = 0, .a = 1, .b = 2, .geom = .{
-            .M = 1, .N = 1, .K = 1,
-            .a_row_stride = 1, .a_col_stride = 1,
-            .b_row_stride = 1, .b_col_stride = 1,
-            .a_offset = 0, .b_offset = 0,
-            .dst_offset = 0, .dst_row_stride = 1,
+            .M = 1,
+            .N = 1,
+            .K = 1,
+            .a_row_stride = 1,
+            .a_col_stride = 1,
+            .b_row_stride = 1,
+            .b_col_stride = 1,
+            .a_offset = 0,
+            .b_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 1,
         } } },
         .{ .matmul = .{ .dst = 0, .a = 1, .b = 2, .geom = .{
-            .M = 1, .N = 1, .K = 1,
-            .a_row_stride = 1, .a_col_stride = 1,
-            .b_row_stride = 1, .b_col_stride = 1,
-            .a_offset = 0, .b_offset = 0,
-            .dst_offset = 0, .dst_row_stride = 1,
+            .M = 1,
+            .N = 1,
+            .K = 1,
+            .a_row_stride = 1,
+            .a_col_stride = 1,
+            .b_row_stride = 1,
+            .b_col_stride = 1,
+            .a_offset = 0,
+            .b_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 1,
         } } },
         .{ .softmax = .{ .dst = 0, .src = 1, .rows = 1, .cols = 4 } },
     };
@@ -319,9 +438,64 @@ test "profileProgram handles empty program" {
     try std.testing.expectEqual(@as(usize, 0), p.total_buffer_bytes);
 }
 
+test "profileProgramWithSchedule counts backend and fallback placement" {
+    const ops = [_]DeviceOp{
+        .{ .matmul = .{ .dst = 0, .a = 1, .b = 2, .geom = .{
+            .M = 1,
+            .N = 4,
+            .K = 4,
+            .a_row_stride = 4,
+            .a_col_stride = 1,
+            .b_row_stride = 4,
+            .b_col_stride = 1,
+            .a_offset = 0,
+            .b_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 4,
+        } } },
+        .{ .matmul = .{ .dst = 0, .a = 1, .b = 2, .geom = .{
+            .M = 16,
+            .N = 4,
+            .K = 4,
+            .a_row_stride = 4,
+            .a_col_stride = 1,
+            .b_row_stride = 4,
+            .b_col_stride = 1,
+            .a_offset = 0,
+            .b_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 4,
+        } } },
+        .{ .qmatmul = .{ .dst = 0, .input = 1, .weight_idx = 0, .M = 1, .N = 4, .K = 4 } },
+    };
+    const sizes = [_]usize{ 4, 16, 64 };
+    const program = DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 3,
+        .buffer_sizes = &sizes,
+        .initial_uploads = &.{},
+    };
+    const policy = program_mod.SchedulePolicy{
+        .capabilities = backend.Capabilities.metal,
+        .native_kernels = .{ .matmul = true },
+    };
+
+    const p = profileProgramWithSchedule(program, policy);
+    try std.testing.expect(p.has_schedule);
+    try std.testing.expectEqual(@as(u32, 3), p.schedule_items);
+    try std.testing.expectEqual(@as(u32, 1), p.backend_items);
+    try std.testing.expectEqual(@as(u32, 2), p.fallback_items);
+    try std.testing.expectEqual(@as(u32, 1), p.backend_ops);
+    try std.testing.expectEqual(@as(u32, 2), p.fallback_ops);
+    try std.testing.expectEqual(@as(u32, 1), p.family_fallback_ops[@intFromEnum(program_mod.KernelFamily.qmatvec)]);
+    try std.testing.expectEqual(@as(u32, 1), p.family_backend_ops[@intFromEnum(program_mod.KernelFamily.matmul)]);
+}
+
 test "estimateFlops matmul" {
     const op = DeviceOp{ .matmul = .{
-        .dst = 0, .a = 1, .b = 2,
+        .dst = 0,
+        .a = 1,
+        .b = 2,
         .geom = .{ .M = 4, .N = 8, .K = 16, .a_row_stride = 16, .a_col_stride = 1, .b_row_stride = 8, .b_col_stride = 1, .a_offset = 0, .b_offset = 0, .dst_offset = 0, .dst_row_stride = 8 },
     } };
     try std.testing.expectEqual(@as(u64, 2 * 4 * 8 * 16), estimateFlops(op));
@@ -353,8 +527,16 @@ test "estimateProgram aggregates per tag" {
 test "RuntimeProfile reset" {
     var rt = RuntimeProfile{};
     rt.time_ns[0] = 42;
+    rt.backend_op_count = 7;
+    rt.fallback_op_count = 11;
+    rt.sync_time_ns = 13;
+    rt.sync_count = 17;
     rt.call_count = 5;
     rt.reset();
     try std.testing.expectEqual(@as(u64, 0), rt.time_ns[0]);
+    try std.testing.expectEqual(@as(u64, 0), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.sync_time_ns);
+    try std.testing.expectEqual(@as(u64, 0), rt.sync_count);
     try std.testing.expectEqual(@as(u32, 0), rt.call_count);
 }

@@ -7,6 +7,295 @@ pub const compute_op_softmax: u32 = 100;
 pub const compute_op_layernorm: u32 = 101;
 pub const compute_op_rmsnorm: u32 = 102;
 
+/// Broad, model-agnostic operation families used by backend schedulers.
+/// These are intentionally coarser than DeviceOp tags: a backend can reason
+/// about "row kernels" or "movement kernels" without knowing which model
+/// produced the program.
+pub const KernelFamily = enum {
+    elementwise,
+    fused_elementwise,
+    row,
+    reduce,
+    movement,
+    matmul,
+    qmatvec,
+    qmatmul,
+    rope,
+    attention,
+};
+
+pub const n_kernel_families = @typeInfo(KernelFamily).@"enum".fields.len;
+
+/// Whether a scheduled region is expected to run in the backend's native
+/// execution path or through the backend's semantic fallback.
+pub const ExecutionClass = enum {
+    backend,
+    fallback,
+};
+
+/// Native kernel families a backend can lower directly.
+/// This is separate from backend.Capabilities.supportsOp(): a backend may
+/// support a DeviceProgram by falling back for some ops.
+pub const KernelSupport = struct {
+    elementwise: bool = false,
+    fused_elementwise: bool = false,
+    row: bool = false,
+    reduce: bool = false,
+    movement: bool = false,
+    matmul: bool = false,
+    qmatvec: bool = false,
+    qmatmul: bool = false,
+    rope: bool = false,
+    attention: bool = false,
+
+    pub fn fromCapabilities(capabilities: backend_mod.Capabilities) KernelSupport {
+        return .{
+            .fused_elementwise = capabilities.fused_elementwise,
+            .matmul = capabilities.dense_matmul_f32,
+            .qmatvec = capabilities.qmatmul,
+            .qmatmul = capabilities.qmatmul,
+            .attention = capabilities.attention.supported,
+        };
+    }
+
+    pub fn supports(self: KernelSupport, family: KernelFamily) bool {
+        return switch (family) {
+            .elementwise => self.elementwise,
+            .fused_elementwise => self.fused_elementwise,
+            .row => self.row,
+            .reduce => self.reduce,
+            .movement => self.movement,
+            .matmul => self.matmul,
+            .qmatvec => self.qmatvec,
+            .qmatmul => self.qmatmul,
+            .rope => self.rope,
+            .attention => self.attention,
+        };
+    }
+};
+
+/// Pure scheduling policy. It has no backend state and no model knowledge:
+/// given capabilities, native kernel availability, and dispatch thresholds,
+/// the same DeviceProgram always maps to the same KernelItems.
+pub const SchedulePolicy = struct {
+    capabilities: backend_mod.Capabilities,
+    native_kernels: KernelSupport = .{},
+    fine_grained: bool = false,
+    min_backend_matmul_m: u32 = 16,
+    min_backend_qmatmul_m: u32 = 16,
+
+    pub fn conservative(capabilities: backend_mod.Capabilities) SchedulePolicy {
+        return .{
+            .capabilities = capabilities,
+            .native_kernels = KernelSupport.fromCapabilities(capabilities),
+        };
+    }
+};
+
+/// A contiguous DeviceOp range with the same broad family and execution class.
+pub const KernelItem = struct {
+    family: KernelFamily,
+    execution: ExecutionClass,
+    start: u32,
+    len: u32,
+};
+
+pub fn kernelFamily(op: backend_mod.DeviceOp) KernelFamily {
+    return switch (op) {
+        .elementwise => .elementwise,
+        .fused_elementwise => .fused_elementwise,
+        .softmax, .layernorm, .rmsnorm => .row,
+        .reduce => .reduce,
+        .repeat, .slice_assign => .movement,
+        .matmul => .matmul,
+        .qmatmul => |q| if (q.M == 1) .qmatvec else .qmatmul,
+        .rope => .rope,
+        .attention => .attention,
+    };
+}
+
+pub fn executionClass(op: backend_mod.DeviceOp, policy: SchedulePolicy) ExecutionClass {
+    if (!policy.capabilities.supportsOp(op)) return .fallback;
+
+    const family = kernelFamily(op);
+    if (!policy.native_kernels.supports(family)) return .fallback;
+
+    const can_use_backend = switch (op) {
+        .matmul => |m| policy.fine_grained or m.geom.M >= @as(usize, policy.min_backend_matmul_m),
+        .qmatmul => |q| if (q.M == 1) policy.fine_grained else policy.fine_grained or q.M >= policy.min_backend_qmatmul_m,
+        .elementwise,
+        .fused_elementwise,
+        .softmax,
+        .layernorm,
+        .rmsnorm,
+        .reduce,
+        .repeat,
+        .slice_assign,
+        .rope,
+        .attention,
+        => policy.fine_grained,
+    };
+
+    return if (can_use_backend) .backend else .fallback;
+}
+
+pub fn buildKernelSchedule(
+    alloc: std.mem.Allocator,
+    ops: []const backend_mod.DeviceOp,
+    policy: SchedulePolicy,
+) ![]KernelItem {
+    var items: std.ArrayListUnmanaged(KernelItem) = .empty;
+    errdefer items.deinit(alloc);
+
+    for (ops, 0..) |op, i| {
+        const next = KernelItem{
+            .family = kernelFamily(op),
+            .execution = executionClass(op, policy),
+            .start = @intCast(i),
+            .len = 1,
+        };
+
+        if (items.items.len > 0) {
+            const last = &items.items[items.items.len - 1];
+            if (last.family == next.family and
+                last.execution == next.execution and
+                last.start + last.len == next.start)
+            {
+                last.len += 1;
+                continue;
+            }
+        }
+
+        try items.append(alloc, next);
+    }
+
+    return items.toOwnedSlice(alloc);
+}
+
+fn testElementwise(op: backend_mod.Op) backend_mod.DeviceOp {
+    return .{ .elementwise = .{ .op = op, .dst = 0, .src0 = 0, .src1 = 0, .n = 1 } };
+}
+
+fn testMatmul(rows: usize) backend_mod.DeviceOp {
+    return .{ .matmul = .{
+        .dst = 0,
+        .a = 0,
+        .b = 0,
+        .geom = .{
+            .M = rows,
+            .N = 4,
+            .K = 4,
+            .a_row_stride = 4,
+            .a_col_stride = 1,
+            .b_row_stride = 4,
+            .b_col_stride = 1,
+            .a_offset = 0,
+            .b_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 4,
+        },
+    } };
+}
+
+fn testQMatmul(rows: u32) backend_mod.DeviceOp {
+    return .{ .qmatmul = .{ .dst = 0, .input = 0, .weight_idx = 0, .M = rows, .N = 4, .K = 4 } };
+}
+
+fn expectKernelItem(item: KernelItem, family: KernelFamily, execution: ExecutionClass, start: u32, len: u32) !void {
+    try std.testing.expectEqual(family, item.family);
+    try std.testing.expectEqual(execution, item.execution);
+    try std.testing.expectEqual(start, item.start);
+    try std.testing.expectEqual(len, item.len);
+}
+
+test "kernel schedule groups contiguous fallback ops by family" {
+    const ops = [_]backend_mod.DeviceOp{
+        testElementwise(.add),
+        testElementwise(.relu),
+        .{ .softmax = .{ .dst = 0, .src = 0, .rows = 1, .cols = 4 } },
+        .{ .rmsnorm = .{ .dst = 0, .src = 0, .rows = 1, .cols = 4 } },
+        .{ .reduce = .{ .op = .sum, .dst = 0, .src = 0, .n_out = 1, .reduce_size = 4 } },
+    };
+    const policy = SchedulePolicy{ .capabilities = backend_mod.Capabilities.reference_cpu };
+
+    const items = try buildKernelSchedule(std.testing.allocator, &ops, policy);
+    defer std.testing.allocator.free(items);
+
+    try std.testing.expectEqual(@as(usize, 3), items.len);
+    try expectKernelItem(items[0], .elementwise, .fallback, 0, 2);
+    try expectKernelItem(items[1], .row, .fallback, 2, 2);
+    try expectKernelItem(items[2], .reduce, .fallback, 4, 1);
+}
+
+test "kernel schedule uses coarse backend thresholds for matmul families" {
+    const ops = [_]backend_mod.DeviceOp{
+        testMatmul(1),
+        testMatmul(16),
+        testMatmul(32),
+        testQMatmul(1),
+        testQMatmul(16),
+    };
+    const policy = SchedulePolicy{
+        .capabilities = backend_mod.Capabilities.metal,
+        .native_kernels = .{ .matmul = true, .qmatvec = true, .qmatmul = true },
+    };
+
+    const items = try buildKernelSchedule(std.testing.allocator, &ops, policy);
+    defer std.testing.allocator.free(items);
+
+    try std.testing.expectEqual(@as(usize, 4), items.len);
+    try expectKernelItem(items[0], .matmul, .fallback, 0, 1);
+    try expectKernelItem(items[1], .matmul, .backend, 1, 2);
+    try expectKernelItem(items[2], .qmatvec, .fallback, 3, 1);
+    try expectKernelItem(items[3], .qmatmul, .backend, 4, 1);
+}
+
+test "kernel schedule treats single-row quantized matmul as qmatvec" {
+    const op = testQMatmul(1);
+    var policy = SchedulePolicy{
+        .capabilities = backend_mod.Capabilities.metal,
+        .native_kernels = .{ .qmatvec = true },
+    };
+
+    try std.testing.expectEqual(KernelFamily.qmatvec, kernelFamily(op));
+    try std.testing.expectEqual(ExecutionClass.fallback, executionClass(op, policy));
+    policy.fine_grained = true;
+    try std.testing.expectEqual(ExecutionClass.backend, executionClass(op, policy));
+}
+
+test "kernel schedule respects fused elementwise capability limits" {
+    const small_steps = [_]backend_mod.FusedEwStep{.{ .op = .relu, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 }};
+    const large_steps = [_]backend_mod.FusedEwStep{.{ .op = .relu, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 }} ** 9;
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .fused_elementwise = .{ .steps = &small_steps, .n = 1, .dst = 0, .src = 0, .dst_offset = 0, .src_offset = 0 } },
+        .{ .fused_elementwise = .{ .steps = &large_steps, .n = 1, .dst = 0, .src = 0, .dst_offset = 0, .src_offset = 0 } },
+    };
+    const policy = SchedulePolicy{
+        .capabilities = backend_mod.Capabilities.metal,
+        .native_kernels = .{ .fused_elementwise = true },
+        .fine_grained = true,
+    };
+
+    const items = try buildKernelSchedule(std.testing.allocator, &ops, policy);
+    defer std.testing.allocator.free(items);
+
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    try expectKernelItem(items[0], .fused_elementwise, .backend, 0, 1);
+    try expectKernelItem(items[1], .fused_elementwise, .fallback, 1, 1);
+}
+
+test "kernel schedule fine grained policy unlocks small native kernels" {
+    const op = testElementwise(.add);
+    var policy = SchedulePolicy{
+        .capabilities = backend_mod.Capabilities.metal,
+        .native_kernels = .{ .elementwise = true },
+    };
+
+    try std.testing.expectEqual(ExecutionClass.fallback, executionClass(op, policy));
+    policy.fine_grained = true;
+    try std.testing.expectEqual(ExecutionClass.backend, executionClass(op, policy));
+}
+
 pub const StepDynamicParams = extern struct {
     slice_pos: u32,
     seq_kv: u32,
