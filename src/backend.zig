@@ -15,11 +15,16 @@ pub const Capabilities = struct {
     compiled_programs: bool = false,
     host_visible_program_memory: bool = false,
     dense_matmul_f32: bool = false,
+    dense_matmul_f16: bool = false,
     qmatmul: bool = false,
     fused_elementwise: bool = false,
     max_fused_elementwise_steps: ?u32 = null,
     f16_weight_promotion: bool = false,
     dynamic_program_refresh: bool = false,
+    prefill_attention: bool = false,
+    decode_attention: bool = false,
+    quantized_kv: bool = false,
+    command_buffer_execution: bool = false,
     attention: Attention = .{},
 
     pub const Attention = struct {
@@ -42,6 +47,8 @@ pub const Capabilities = struct {
         .qmatmul = true,
         .fused_elementwise = true,
         .dynamic_program_refresh = true,
+        .prefill_attention = true,
+        .decode_attention = true,
         .attention = .{ .supported = true, .max_d_head = 512 },
     };
 
@@ -49,10 +56,14 @@ pub const Capabilities = struct {
         .compiled_programs = true,
         .host_visible_program_memory = true,
         .dense_matmul_f32 = true,
+        .dense_matmul_f16 = true,
         .qmatmul = true,
         .fused_elementwise = true,
         .max_fused_elementwise_steps = 8,
         .dynamic_program_refresh = true,
+        .prefill_attention = true,
+        .decode_attention = true,
+        .command_buffer_execution = true,
         .attention = .{ .supported = true, .max_d_head = 512 },
     };
 
@@ -62,6 +73,9 @@ pub const Capabilities = struct {
         .qmatmul = true,
         .f16_weight_promotion = true,
         .dynamic_program_refresh = true,
+        .prefill_attention = true,
+        .decode_attention = true,
+        .command_buffer_execution = true,
         .attention = .{ .supported = true, .max_seq_kv = 4096, .max_d_head = 512 },
     };
 

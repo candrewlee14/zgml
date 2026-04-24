@@ -17,6 +17,8 @@ const gguf_loader = @import("models/gguf_loader.zig");
 const safetensors = @import("safetensors.zig");
 const LlamaConfig = @import("models/llama.zig").LlamaConfig;
 
+pub const stage_plan = @import("llm/stage_plan.zig");
+
 /// First-class formats for inference weights. Dense tensors remain the
 /// training/autodiff path; quantized variants are for direct inference runtimes.
 pub const WeightFormat = enum {

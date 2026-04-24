@@ -24,6 +24,7 @@ pub const backend_cpu = @import("backend/cpu.zig");
 pub const backend_metal = if (@import("builtin").os.tag == .macos) @import("backend/metal.zig") else struct {};
 pub const backend_wgpu = if (@import("zgml_options").use_wgpu) @import("backend/wgpu.zig") else struct {};
 pub const llm = @import("llm.zig");
+pub const llm_stage_plan = @import("llm/stage_plan.zig");
 pub const gguf = @import("gguf.zig");
 pub const quant = @import("quant.zig");
 pub const safetensors = @import("safetensors.zig");
@@ -56,6 +57,7 @@ test "ref all decls" {
         _ = @import("backend/wgpu.zig");
     }
     _ = @import("llm.zig");
+    _ = @import("llm/stage_plan.zig");
     _ = @import("gguf.zig");
     _ = @import("quant.zig");
     _ = @import("safetensors.zig");

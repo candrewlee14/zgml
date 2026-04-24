@@ -8,6 +8,8 @@
 //!   ./zig-out/bin/bench-llama-smollm [model.safetensors|model.gguf] [prompt_tokens] [gen_tokens] [repetitions]
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --metal-fine
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --metal-region
+//!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --print-stage-plan
+//!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --stage-plan-only
 
 const std = @import("std");
 const zgml = @import("zgml");
@@ -381,13 +383,25 @@ pub fn main(init: std.process.Init) !void {
     };
     const run_metal_fine = hasFlag(args, "--metal-fine");
     const run_metal_region = hasFlag(args, "--metal-region");
+    const stage_plan_only = hasFlag(args, "--stage-plan-only");
+    const print_stage_plan = stage_plan_only or hasFlag(args, "--print-stage-plan");
     const model_is_gguf = isGGUF(cfg.model_path);
 
     try stdout.interface.print("\nSmolLM LLaMA Benchmark — zgml\n", .{});
     try stdout.interface.print("================================\n", .{});
     try stdout.interface.print("  model={s}\n", .{cfg.model_path});
     try stdout.interface.print("  prompt={d}, gen={d}, reps={d}\n\n", .{ cfg.prompt_tokens, cfg.gen_tokens, cfg.repetitions });
+    if (print_stage_plan) {
+        const stage_caps: ?zgml.llm.stage_plan.StageCapabilities = if (stage_plan_only)
+            zgml.llm.stage_plan.StageCapabilities.fromBackendCapabilities(if (is_macos) zgml.backend.Capabilities.metal else zgml.backend.Capabilities.reference_cpu)
+        else
+            null;
+        try zgml.llm.stage_plan.printLlamaDecodePlanSummary(config, &stdout.interface, stage_caps);
+        try stdout.interface.writeByte('\n');
+    }
     stdout.interface.flush() catch {};
+
+    if (stage_plan_only) return;
 
     var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer arena.deinit();
@@ -412,6 +426,12 @@ pub fn main(init: std.process.Init) !void {
             break :metal;
         };
         defer metal_be.deinit();
+        if (print_stage_plan) {
+            const caps = zgml.llm.stage_plan.StageCapabilities.fromBackendCapabilities(metal_be.backend().capabilities);
+            try zgml.llm.stage_plan.printLlamaDecodePlanSummary(config, &stdout.interface, caps);
+            try stdout.interface.writeByte('\n');
+            stdout.interface.flush() catch {};
+        }
         _ = try runVariant(if (model_is_gguf) "metal gguf      " else "metal f32        ", metal_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
         if (!model_is_gguf) _ = try runVariant("metal int8       ", metal_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
         _ = try runDeviceVariant(if (model_is_gguf) "metal device q  " else "metal device f16", metal_be.backend(), cfg, &stdout.interface, io, alloc);
