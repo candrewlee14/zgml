@@ -24,7 +24,7 @@ Interpretation:
 Current decode planning exposes two useful lowering shapes:
 
 - `qmatvec-rope-attention`: 30 regions, 240/1714 ops. If lowered alone it creates 30 backend islands and 60 CPU/GPU transitions, so it is too small to be a good Metal boundary.
-- `qmatvec 7-anchor windows`: 30 regions, 1713/1714 ops. If lowered as block-sized units it forms one backend island with one transition, which is the right shape for Apple parity work.
+- `decode-layer` / `prefill-layer` stage windows: 30 regions, roughly one transformer layer each. In decode this covers 1713/1714 ops; in prefill it gives the Metal backend a reusable whole-layer lowering target instead of ad hoc qmatmul clusters.
 
 Implication: do not chase one-dispatch-per-op execution. Metal work should target
 large region/layer lowerings that keep the decode step on device across the
@@ -44,6 +44,12 @@ but it is still not parity. QMatmul batching plus qmatmul sidecar fusion
 removed about 180 dispatches/call. The next target is reusable layer-stage
 lowering that cuts dispatch count by at least an order of magnitude without
 adding model special cases to the public API.
+
+The stage planning abstraction now lives in `src/backend/program.zig` as a pure
+`StagePolicy`: a named anchored region plus a backend pattern id. Metal uses it
+for `decode-layer` and `prefill-layer` schedules with seven projection anchors.
+This is a structural cleanup, not a claimed speedup by itself; the current
+SmolLM Metal prefill smoke remains at roughly `1,322` dispatches/call.
 
 ## Acceptance Thresholds
 

@@ -2075,40 +2075,26 @@ fn metalSchedulePolicy(fine_grained: bool) program_mod.SchedulePolicy {
     };
 }
 
-const metal_pattern_qmatvec_anchor_window: u32 = 0;
-const metal_pattern_qmatmul_cluster: u32 = 1;
-const metal_qmatvec_window_anchors: u32 = 7;
+const metal_pattern_decode_layer_stage: u32 = 0;
+const metal_pattern_prefill_layer_stage: u32 = 1;
+const metal_projection_anchors_per_stage: u32 = 7;
 
 fn buildMetalRegionSchedule(alloc: std.mem.Allocator, schedule: []const program_mod.KernelItem) ![]program_mod.ScheduleUnit {
-    var candidates: std.ArrayListUnmanaged(program_mod.PatternRegion) = .empty;
-    defer candidates.deinit(alloc);
-
-    const qmatvec_regions = try program_mod.buildAnchorWindowRegions(
-        alloc,
-        schedule,
-        program_mod.RegionPolicy.qmatvecCluster(),
-        metal_qmatvec_window_anchors,
-    );
-    defer alloc.free(qmatvec_regions);
-    for (qmatvec_regions) |region| {
-        try candidates.append(alloc, .{ .pattern_index = metal_pattern_qmatvec_anchor_window, .region = region });
-    }
-
-    const qmatmul_regions = try program_mod.buildAnchorWindowRegions(
-        alloc,
-        schedule,
-        program_mod.RegionPolicy.qmatmulCluster(),
-        metal_qmatvec_window_anchors,
-    );
-    defer alloc.free(qmatmul_regions);
-    for (qmatmul_regions) |region| {
-        try candidates.append(alloc, .{ .pattern_index = metal_pattern_qmatmul_cluster, .region = region });
-    }
-
-    const region_plan = try program_mod.selectPatternRegions(alloc, candidates.items);
-    defer alloc.free(region_plan);
-
-    return program_mod.buildRegionSchedule(alloc, schedule, region_plan);
+    const stages = [_]program_mod.StagePolicy{
+        program_mod.StagePolicy.anchored(
+            "decode-layer",
+            metal_pattern_decode_layer_stage,
+            program_mod.RegionPolicy.qmatvecCluster(),
+            metal_projection_anchors_per_stage,
+        ),
+        program_mod.StagePolicy.anchored(
+            "prefill-layer",
+            metal_pattern_prefill_layer_stage,
+            program_mod.RegionPolicy.qmatmulCluster(),
+            metal_projection_anchors_per_stage,
+        ),
+    };
+    return program_mod.buildStageRegionSchedule(alloc, schedule, &stages);
 }
 
 const CompiledProgram = struct {
@@ -3296,8 +3282,8 @@ const CompiledProgram = struct {
 
     fn tryEncodePatternRegion(self: *CompiledProgram, unit: program_mod.ScheduleUnit) bool {
         return switch (unit.pattern_index) {
-            metal_pattern_qmatvec_anchor_window,
-            metal_pattern_qmatmul_cluster,
+            metal_pattern_decode_layer_stage,
+            metal_pattern_prefill_layer_stage,
             => self.tryEncodeGpuRegion(unit),
             else => false,
         };

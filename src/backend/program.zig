@@ -226,6 +226,35 @@ pub const RegionPolicy = struct {
     }
 };
 
+/// A named, backend-owned lowering target over a KernelItem schedule.
+///
+/// StagePolicy keeps the central idea tiny: a stage is a reusable anchored
+/// region with a pattern id. Model code does not know about it, and backend
+/// code can progressively replace the conservative per-op walk with a fused
+/// stage lowering.
+pub const StagePolicy = struct {
+    name: []const u8,
+    pattern_index: u32,
+    region_policy: RegionPolicy,
+    anchors_per_stage: u32,
+    min_items_per_stage: u32 = 1,
+    min_ops_per_stage: u32 = 1,
+
+    pub fn anchored(
+        name: []const u8,
+        pattern_index: u32,
+        region_policy: RegionPolicy,
+        anchors_per_stage: u32,
+    ) StagePolicy {
+        return .{
+            .name = name,
+            .pattern_index = pattern_index,
+            .region_policy = region_policy,
+            .anchors_per_stage = anchors_per_stage,
+        };
+    }
+};
+
 pub fn kernelFamily(op: backend_mod.DeviceOp) KernelFamily {
     return switch (op) {
         .elementwise => .elementwise,
@@ -483,6 +512,63 @@ pub fn buildAnchorWindowRegions(
     }
 
     return regions.toOwnedSlice(alloc);
+}
+
+pub fn buildStagePatternRegions(
+    alloc: std.mem.Allocator,
+    items: []const KernelItem,
+    stage: StagePolicy,
+) ![]PatternRegion {
+    var pattern_regions: std.ArrayListUnmanaged(PatternRegion) = .empty;
+    errdefer pattern_regions.deinit(alloc);
+
+    const regions = try buildAnchorWindowRegions(
+        alloc,
+        items,
+        stage.region_policy,
+        stage.anchors_per_stage,
+    );
+    defer alloc.free(regions);
+
+    for (regions) |region| {
+        if (region.item_count < stage.min_items_per_stage) continue;
+        if (region.op_count < stage.min_ops_per_stage) continue;
+        try pattern_regions.append(alloc, .{
+            .pattern_index = stage.pattern_index,
+            .region = region,
+        });
+    }
+
+    return pattern_regions.toOwnedSlice(alloc);
+}
+
+pub fn buildStagePlan(
+    alloc: std.mem.Allocator,
+    items: []const KernelItem,
+    stages: []const StagePolicy,
+) ![]PatternRegion {
+    var candidates: std.ArrayListUnmanaged(PatternRegion) = .empty;
+    defer candidates.deinit(alloc);
+
+    for (stages) |stage| {
+        const regions = try buildStagePatternRegions(alloc, items, stage);
+        defer alloc.free(regions);
+        for (regions) |region| {
+            try candidates.append(alloc, region);
+        }
+    }
+
+    return selectPatternRegions(alloc, candidates.items);
+}
+
+pub fn buildStageRegionSchedule(
+    alloc: std.mem.Allocator,
+    items: []const KernelItem,
+    stages: []const StagePolicy,
+) ![]ScheduleUnit {
+    const plan = try buildStagePlan(alloc, items, stages);
+    defer alloc.free(plan);
+    return buildRegionSchedule(alloc, items, plan);
 }
 
 pub fn buildFamilyPatternRegions(
@@ -972,6 +1058,43 @@ test "qmatmul cluster windows keep prefill attention inside layer regions" {
     try std.testing.expectEqual(@as(u32, 0), regions[0].op_start);
     try std.testing.expectEqual(@as(u32, 13), regions[0].op_count);
     try std.testing.expectEqual(@as(u32, 7), regions[0].anchor_count);
+}
+
+test "stage plan builds named anchored layer windows" {
+    const items = [_]KernelItem{
+        .{ .family = .row, .execution = .fallback, .start = 0, .len = 1 },
+        .{ .family = .qmatmul, .execution = .backend, .start = 1, .len = 3 },
+        .{ .family = .rope, .execution = .backend, .start = 4, .len = 2 },
+        .{ .family = .movement, .execution = .backend, .start = 6, .len = 2 },
+        .{ .family = .attention, .execution = .backend, .start = 8, .len = 1 },
+        .{ .family = .qmatmul, .execution = .backend, .start = 9, .len = 1 },
+        .{ .family = .fused_elementwise, .execution = .backend, .start = 10, .len = 1 },
+        .{ .family = .qmatmul, .execution = .backend, .start = 11, .len = 3 },
+        .{ .family = .matmul, .execution = .backend, .start = 14, .len = 1 },
+        .{ .family = .qmatvec, .execution = .backend, .start = 15, .len = 1 },
+    };
+    const stages = [_]StagePolicy{
+        StagePolicy.anchored("prefill-layer", 7, RegionPolicy.qmatmulCluster(), 7),
+    };
+
+    const plan = try buildStagePlan(std.testing.allocator, &items, &stages);
+    defer std.testing.allocator.free(plan);
+
+    try std.testing.expectEqual(@as(usize, 1), plan.len);
+    try std.testing.expectEqual(@as(u32, 7), plan[0].pattern_index);
+    try std.testing.expectEqual(@as(u32, 0), plan[0].region.start_item);
+    try std.testing.expectEqual(@as(u32, 9), plan[0].region.item_count);
+    try std.testing.expectEqual(@as(u32, 15), plan[0].region.op_count);
+    try std.testing.expectEqual(@as(u32, 7), plan[0].region.anchor_count);
+
+    const units = try buildStageRegionSchedule(std.testing.allocator, &items, &stages);
+    defer std.testing.allocator.free(units);
+
+    try std.testing.expectEqual(@as(usize, 2), units.len);
+    try std.testing.expectEqual(ScheduleUnitKind.pattern_region, units[0].kind);
+    try std.testing.expectEqual(@as(u32, 7), units[0].pattern_index);
+    try std.testing.expectEqual(ScheduleUnitKind.item, units[1].kind);
+    try std.testing.expectEqual(@as(u32, 15), units[1].op_start);
 }
 
 test "family pattern regions match exact contiguous family sequences" {
