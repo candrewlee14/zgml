@@ -359,6 +359,70 @@ pub fn printAnchorNeighborhoodSummary(
     std.debug.print("\n", .{});
 }
 
+pub fn printQMatmulSliceSidecarSummary(label: []const u8, ops: []const DeviceOp) void {
+    var immediate_pairs: u32 = 0;
+    var compatible_pairs: u32 = 0;
+    var first_q: ?DeviceOp = null;
+    var first_sa: ?DeviceOp = null;
+    for (ops[0..ops.len -| 1], 0..) |op, i| {
+        const q = switch (op) {
+            .qmatmul => |q| q,
+            else => continue,
+        };
+        const sa = switch (ops[i + 1]) {
+            .slice_assign => |sa| sa,
+            else => continue,
+        };
+        immediate_pairs += 1;
+        if (first_q == null) {
+            first_q = op;
+            first_sa = ops[i + 1];
+        }
+        const dst_row_stride = if (q.dst_row_stride != 0) q.dst_row_stride else q.N;
+        const slice_src_col_start: ?u32 = if (sa.src_offset >= q.dst_offset and sa.src_offset - q.dst_offset < dst_row_stride)
+            sa.src_offset - q.dst_offset
+        else
+            null;
+        if (q.M != 1 and
+            q.dst == sa.src and
+            slice_src_col_start != null and
+            slice_src_col_start.? + sa.rows <= q.N and
+            q.M == sa.cols and
+            sa.src_row_stride == 1 and
+            sa.src_col_stride == dst_row_stride)
+        {
+            compatible_pairs += 1;
+        }
+    }
+    std.debug.print(
+        "QMatmul sidecars ({s}): {d} immediate qmatmul->slice_assign pairs, {d} compatible with batched cache-store\n\n",
+        .{ label, immediate_pairs, compatible_pairs },
+    );
+    if (compatible_pairs == 0 and first_q != null and first_sa != null) {
+        const q = first_q.?.qmatmul;
+        const sa = first_sa.?.slice_assign;
+        const dst_row_stride = if (q.dst_row_stride != 0) q.dst_row_stride else q.N;
+        std.debug.print(
+            "  first pair: q(dst={d} off={d} M={d} N={d} row_stride={d}) -> slice(src={d} off={d} rows={d} cols={d} src_rs={d} src_cs={d} dst_rs={d} dst_cs={d})\n\n",
+            .{
+                q.dst,
+                q.dst_offset,
+                q.M,
+                q.N,
+                dst_row_stride,
+                sa.src,
+                sa.src_offset,
+                sa.rows,
+                sa.cols,
+                sa.src_row_stride,
+                sa.src_col_stride,
+                sa.dst_row_stride,
+                sa.dst_col_stride,
+            },
+        );
+    }
+}
+
 fn printNeighborhoodKey(comptime width: usize, key: [width]u8, center: usize) void {
     for (key, 0..) |family_id, i| {
         if (i > 0) std.debug.print(" -> ", .{});

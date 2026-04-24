@@ -390,6 +390,21 @@ fn runDevicePrefillVariant(
     const program = prefill.getProgram();
     const schedule_policy = schedulePolicyForBackend(be);
     profile.printProfile(profile.profileProgramWithSchedule(program, schedule_policy));
+    const schedule = try backend_program.buildKernelSchedule(alloc, program.ops, schedule_policy);
+    defer alloc.free(schedule);
+    const prefill_stages = [_]backend_program.StagePolicy{
+        backend_program.StagePolicy.anchored("prefill-layer", 0, backend_program.RegionPolicy.qmatmulCluster(), 7),
+    };
+    const prefill_stage_schedule = try backend_program.buildStageRegionSchedule(alloc, schedule, &prefill_stages);
+    defer alloc.free(prefill_stage_schedule);
+    profile.printRegionScheduleSummary("prefill-layer stages", prefill_stage_schedule);
+    const lowered_prefill_stages = [_]u32{0};
+    profile.printRegionExecutionSummary(
+        "prefill-layer stages lowered",
+        backend_program.summarizeRegionExecution(prefill_stage_schedule, schedule, &lowered_prefill_stages),
+    );
+    try profile.printAnchorNeighborhoodSummary(2, alloc, "prefill qmatmul", schedule, backend_program.RegionPolicy.qmatmulCluster(), 8);
+    profile.printQMatmulSliceSidecarSummary("prefill", program.ops);
 
     _ = try prefill.executeAt(prompt, 0);
     session.reset();
