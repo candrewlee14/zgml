@@ -300,7 +300,7 @@ pub fn printStageCommandSummary(label: []const u8, summary: program_mod.StageCom
     else
         0.0;
     std.debug.print(
-        "Stage commands ({s}): {d} commands over {d} ops, estimated {d} dispatches ({d} saved, {d:.1}% of ops); row_chains={d} ({d} ops)\n\n",
+        "Stage commands ({s}): {d} commands over {d} ops, estimated {d} dispatches ({d} saved, {d:.1}% of ops); row_chains={d} ({d} ops), rope_chains={d} ({d} ops)\n\n",
         .{
             label,
             summary.commands,
@@ -310,6 +310,8 @@ pub fn printStageCommandSummary(label: []const u8, summary: program_mod.StageCom
             saved_pct,
             summary.row_chains,
             summary.row_chain_ops,
+            summary.rope_chains,
+            summary.rope_chain_ops,
         },
     );
 }

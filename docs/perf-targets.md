@@ -54,9 +54,10 @@ qmatmul partial-slice cache-store sidecars.
 
 The next layer of the same abstraction is `StageCommand`: a pure, model-agnostic
 lowering view over the ops inside a stage. Today it names `row_chain` commands
-for RMSNorm + repeated scale + multiply. On SmolLM prefill this finds 61
-row-chains covering 183 ops, corresponding to 122 dispatches already saved by
-the Metal RMSNorm-scale kernel.
+for RMSNorm + repeated scale + multiply and `rope_chain` commands for RoPE plus
+the cache write that consumes it. On SmolLM prefill this currently finds 61
+row-chains and 90 RoPE/cache chains, raising the pure command view to 212
+estimated saved dispatches already covered by Metal fused kernels.
 
 Projection batching now has the same pure legality layer:
 `ProjectionGroupPolicy` finds independent qmatvec/qmatmul anchors, proves when

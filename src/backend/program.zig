@@ -258,11 +258,13 @@ pub const StagePolicy = struct {
 pub const StageCommandKind = enum {
     op,
     row_chain,
+    rope_chain,
 
     pub fn label(self: StageCommandKind) []const u8 {
         return switch (self) {
             .op => "op",
             .row_chain => "row_chain",
+            .rope_chain => "rope_chain",
         };
     }
 };
@@ -274,7 +276,7 @@ pub const StageCommand = struct {
 
     pub fn dispatchCount(self: StageCommand) u32 {
         return switch (self.kind) {
-            .op, .row_chain => 1,
+            .op, .row_chain, .rope_chain => 1,
         };
     }
 };
@@ -286,6 +288,8 @@ pub const StageCommandSummary = struct {
     estimated_saved_dispatches: u32 = 0,
     row_chains: u32 = 0,
     row_chain_ops: u32 = 0,
+    rope_chains: u32 = 0,
+    rope_chain_ops: u32 = 0,
 };
 
 pub const ProjectionGroupKind = enum {
@@ -385,6 +389,16 @@ pub fn buildStageCommands(
             continue;
         }
 
+        if (i + 1 < ops.len and isRopeSliceAssignChain(ops[i], ops[i + 1])) {
+            try commands.append(alloc, .{
+                .kind = .rope_chain,
+                .op_start = @intCast(i),
+                .op_count = 2,
+            });
+            i += 2;
+            continue;
+        }
+
         try commands.append(alloc, .{
             .kind = .op,
             .op_start = @intCast(i),
@@ -410,6 +424,10 @@ pub fn summarizeStageCommands(commands: []const StageCommand) StageCommandSummar
             .row_chain => {
                 summary.row_chains += 1;
                 summary.row_chain_ops += command.op_count;
+            },
+            .rope_chain => {
+                summary.rope_chains += 1;
+                summary.rope_chain_ops += command.op_count;
             },
         }
     }
@@ -641,6 +659,31 @@ pub fn qmatvecSliceSidecarCompatible(q: anytype, sa: anytype) bool {
 
 pub fn qmatmulDstRowStride(q: anytype) u32 {
     return if (q.dst_row_stride != 0) q.dst_row_stride else q.N;
+}
+
+pub fn isRopeSliceAssignChain(
+    a: backend_mod.DeviceOp,
+    b: backend_mod.DeviceOp,
+) bool {
+    const rr = switch (a) {
+        .rope => |rr| rr,
+        else => return false,
+    };
+    const sa = switch (b) {
+        .slice_assign => |sa| sa,
+        else => return false,
+    };
+    return ropeSliceAssignCompatible(rr, sa);
+}
+
+pub fn ropeSliceAssignCompatible(rr: anytype, sa: anytype) bool {
+    const d = rr.half_d * 2;
+    return rr.dst == sa.src and
+        rr.dst_off == sa.src_offset and
+        sa.rows == d and
+        sa.cols == rr.seq_len and
+        sa.src_row_stride == 1 and
+        sa.src_col_stride == d;
 }
 
 pub fn isRmsnormScaleChain(
@@ -1280,6 +1323,38 @@ fn testQMatmulSidecar(src: u16, dst: u16) backend_mod.DeviceOp {
     } };
 }
 
+fn testRopeSliceAssignOps() [2]backend_mod.DeviceOp {
+    return .{
+        .{ .rope = .{
+            .dst = 2,
+            .src = 0,
+            .cos_sin = 1,
+            .half_d = 2,
+            .seq_len = 3,
+            .src_off = 0,
+            .cs_off = 0,
+            .dst_off = 8,
+            .src_rs = 1,
+            .src_cs = 4,
+            .cs_cs = 4,
+        } },
+        .{ .slice_assign = .{
+            .dst = 3,
+            .src = 2,
+            .rows = 4,
+            .cols = 3,
+            .dst_base_offset = 0,
+            .dst_offset = 4,
+            .dst_row_stride = 1,
+            .dst_col_stride = 4,
+            .src_offset = 8,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 4,
+        } },
+    };
+}
+
 fn testRmsnormScaleOps() [3]backend_mod.DeviceOp {
     return .{
         .{ .rmsnorm = .{
@@ -1611,6 +1686,50 @@ test "stage commands leave nonmatching row triples as ops" {
 
     try std.testing.expect(!isRmsnormScaleChain(row_chain[0], row_chain[1], row_chain[2]));
     try std.testing.expectEqual(@as(usize, 3), commands.len);
+    for (commands, 0..) |command, i| {
+        try std.testing.expectEqual(StageCommandKind.op, command.kind);
+        try std.testing.expectEqual(@as(u32, @intCast(i)), command.op_start);
+        try std.testing.expectEqual(@as(u32, 1), command.op_count);
+    }
+}
+
+test "stage commands collapse rope cache-write chains" {
+    const rope_chain = testRopeSliceAssignOps();
+    const ops = [_]backend_mod.DeviceOp{
+        rope_chain[0],
+        rope_chain[1],
+        testQMatmul(16),
+    };
+
+    try std.testing.expect(isRopeSliceAssignChain(ops[0], ops[1]));
+
+    const commands = try buildStageCommands(std.testing.allocator, &ops);
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(StageCommandKind.rope_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 0), commands[0].op_start);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].op_count);
+    try std.testing.expectEqual(StageCommandKind.op, commands[1].kind);
+
+    const summary = summarizeStageCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 3), summary.ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.rope_chains);
+    try std.testing.expectEqual(@as(u32, 2), summary.rope_chain_ops);
+}
+
+test "stage commands leave nonmatching rope pairs as ops" {
+    var rope_chain = testRopeSliceAssignOps();
+    rope_chain[1].slice_assign.src_col_stride = 8;
+
+    const commands = try buildStageCommands(std.testing.allocator, &rope_chain);
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expect(!isRopeSliceAssignChain(rope_chain[0], rope_chain[1]));
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
     for (commands, 0..) |command, i| {
         try std.testing.expectEqual(StageCommandKind.op, command.kind);
         try std.testing.expectEqual(@as(u32, @intCast(i)), command.op_start);

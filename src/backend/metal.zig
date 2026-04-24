@@ -2692,13 +2692,7 @@ const CompiledProgram = struct {
     }
 
     fn canFuseRopeSliceAssign(rr: anytype, sa: anytype) bool {
-        const d = rr.half_d * 2;
-        return rr.dst == sa.src and
-            rr.dst_off == sa.src_offset and
-            sa.rows == d and
-            sa.cols == rr.seq_len and
-            sa.src_row_stride == 1 and
-            sa.src_col_stride == d;
+        return program_mod.ropeSliceAssignCompatible(rr, sa);
     }
 
     fn encodeRopeSliceAssign(self: *CompiledProgram, rr: anytype, sa: anytype) void {
