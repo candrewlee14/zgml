@@ -393,6 +393,7 @@ pub const RuntimeProfile = struct {
     time_ns: [n_op_tags]u64 = [_]u64{0} ** n_op_tags,
     backend_op_count: u64 = 0,
     fallback_op_count: u64 = 0,
+    backend_dispatch_count: u64 = 0,
     sync_time_ns: u64 = 0,
     sync_count: u64 = 0,
     schedule_reuse_count: u64 = 0,
@@ -510,6 +511,13 @@ pub fn printRuntimeProfile(rt: RuntimeProfile, est: ProgramEstimates) void {
         std.debug.print(
             "Runtime placement: {d} backend ({d:.1}%), {d} fallback ({d:.1}%)\n",
             .{ rt.backend_op_count, backend_pct, rt.fallback_op_count, fallback_pct },
+        );
+    }
+    if (rt.backend_dispatch_count > 0) {
+        const dispatches_per_call = @as(f64, @floatFromInt(rt.backend_dispatch_count)) / calls_f;
+        std.debug.print(
+            "Backend dispatches: {d} total ({d:.1}/call)\n",
+            .{ rt.backend_dispatch_count, dispatches_per_call },
         );
     }
     if (rt.sync_count > 0) {
@@ -699,6 +707,7 @@ test "RuntimeProfile reset" {
     rt.time_ns[0] = 42;
     rt.backend_op_count = 7;
     rt.fallback_op_count = 11;
+    rt.backend_dispatch_count = 3;
     rt.sync_time_ns = 13;
     rt.sync_count = 17;
     rt.call_count = 5;
@@ -706,6 +715,7 @@ test "RuntimeProfile reset" {
     try std.testing.expectEqual(@as(u64, 0), rt.time_ns[0]);
     try std.testing.expectEqual(@as(u64, 0), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.backend_dispatch_count);
     try std.testing.expectEqual(@as(u64, 0), rt.sync_time_ns);
     try std.testing.expectEqual(@as(u64, 0), rt.sync_count);
     try std.testing.expectEqual(@as(u32, 0), rt.call_count);

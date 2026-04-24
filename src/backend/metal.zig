@@ -344,6 +344,120 @@ const shader_source =
     \\    dst[dst_base + i + p.half_d] = x_hi * cos_val + x_lo * sin_val;
     \\}
     \\
+    \\// ── RoPE directly into a strided slice destination ─────
+    \\
+    \\struct RopeSliceAssignParams {
+    \\    uint half_d; uint seq_len;
+    \\    uint src_off; uint cs_off;
+    \\    uint src_rs; uint src_cs; uint cs_cs;
+    \\    uint dst_offset; uint dst_row_stride; uint dst_col_stride;
+    \\};
+    \\
+    \\kernel void rope_slice_assign_f32(
+    \\    device const float* src     [[buffer(0)]],
+    \\    device const float* cos_sin [[buffer(1)]],
+    \\    device float*       dst     [[buffer(2)]],
+    \\    constant RopeSliceAssignParams& p [[buffer(3)]],
+    \\    uint gid [[thread_position_in_grid]]
+    \\) {
+    \\    if (gid >= p.half_d * p.seq_len) return;
+    \\    uint col = gid / p.half_d;
+    \\    uint i   = gid % p.half_d;
+    \\
+    \\    float cos_val = cos_sin[p.cs_off + col * p.cs_cs + i];
+    \\    float sin_val = cos_sin[p.cs_off + col * p.cs_cs + p.half_d + i];
+    \\    float x_lo = src[p.src_off + col * p.src_cs + i * p.src_rs];
+    \\    float x_hi = src[p.src_off + col * p.src_cs + (i + p.half_d) * p.src_rs];
+    \\    float y_lo = x_lo * cos_val - x_hi * sin_val;
+    \\    float y_hi = x_hi * cos_val + x_lo * sin_val;
+    \\
+    \\    uint dst_col = p.dst_offset + col * p.dst_col_stride;
+    \\    dst[dst_col + i * p.dst_row_stride] = y_lo;
+    \\    dst[dst_col + (i + p.half_d) * p.dst_row_stride] = y_hi;
+    \\}
+    \\
+    \\// ── QMatvec with an attached strided slice store ────────
+    \\
+    \\struct QMatvecSliceAssignParams {
+    \\    uint M; uint N; uint K;
+    \\    uint block_size;
+    \\    uint input_offset;
+    \\    uint input_row_stride;
+    \\    uint dst_offset;
+    \\    uint dst_row_stride;
+    \\    uint slice_rows; uint slice_cols;
+    \\    uint slice_dst_offset;
+    \\    uint slice_dst_row_stride;
+    \\    uint slice_dst_col_stride;
+    \\};
+    \\
+    \\kernel void qmatvec_slice_assign_f32(
+    \\    device const char*  weight_data   [[buffer(0)]],
+    \\    device const float* weight_scales [[buffer(1)]],
+    \\    device const float* input         [[buffer(2)]],
+    \\    device float*       output        [[buffer(3)]],
+    \\    device float*       slice_dst     [[buffer(4)]],
+    \\    constant QMatvecSliceAssignParams& p [[buffer(5)]],
+    \\    uint gid [[thread_position_in_grid]]
+    \\) {
+    \\    if (gid >= p.N) return;
+    \\    float sum = 0.0f;
+    \\    for (uint k = 0; k < p.K; k++) {
+    \\        uint w_idx = k * p.N + gid;
+    \\        sum += input[p.input_offset + k] * float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
+    \\    }
+    \\
+    \\    output[p.dst_offset + gid] = sum;
+    \\    uint slice_n = p.slice_rows * p.slice_cols;
+    \\    if (gid < slice_n) {
+    \\        uint row = gid % p.slice_rows;
+    \\        uint col = gid / p.slice_rows;
+    \\        slice_dst[p.slice_dst_offset + row * p.slice_dst_row_stride + col * p.slice_dst_col_stride] = sum;
+    \\    }
+    \\}
+    \\
+    \\// ── RMSNorm with repeated scale and final multiply ──────
+    \\
+    \\struct RmsNormScaleParams {
+    \\    uint rows; uint cols;
+    \\    float eps;
+    \\    uint src_offset;
+    \\    uint norm_dst_offset;
+    \\    uint scale_src_offset;
+    \\    uint scale_repeat_dst_offset;
+    \\    uint scaled_dst_offset;
+    \\};
+    \\
+    \\kernel void rmsnorm_scale_f32(
+    \\    device const float* src [[buffer(0)]],
+    \\    device const float* scale_src [[buffer(1)]],
+    \\    device float* norm_dst [[buffer(2)]],
+    \\    device float* scale_repeat_dst [[buffer(3)]],
+    \\    device float* scaled_dst [[buffer(4)]],
+    \\    constant RmsNormScaleParams& p [[buffer(5)]],
+    \\    uint row [[thread_position_in_grid]]
+    \\) {
+    \\    if (row >= p.rows) return;
+    \\    uint src_base = p.src_offset + row * p.cols;
+    \\    uint norm_base = p.norm_dst_offset + row * p.cols;
+    \\    uint repeat_base = p.scale_repeat_dst_offset + row * p.cols;
+    \\    uint scaled_base = p.scaled_dst_offset + row * p.cols;
+    \\
+    \\    float ss = 0.0f;
+    \\    for (uint col = 0; col < p.cols; col++) {
+    \\        float v = src[src_base + col];
+    \\        ss += v * v;
+    \\    }
+    \\    float inv_rms = 1.0f / sqrt(ss / float(p.cols) + p.eps);
+    \\    for (uint col = 0; col < p.cols; col++) {
+    \\        float norm = src[src_base + col] * inv_rms;
+    \\        float scale = scale_src[p.scale_src_offset + col];
+    \\        norm_dst[norm_base + col] = norm;
+    \\        scale_repeat_dst[repeat_base + col] = scale;
+    \\        scaled_dst[scaled_base + col] = norm * scale;
+    \\    }
+    \\}
+    \\
     \\// ── Attention: fused softmax(Q@K^T * scale + mask) @ V ─
     \\
     \\struct AttentionParams {
@@ -699,6 +813,46 @@ const RopeParams = extern struct {
     cs_cs: u32,
 };
 
+const RopeSliceAssignParams = extern struct {
+    half_d: u32,
+    seq_len: u32,
+    src_off: u32,
+    cs_off: u32,
+    src_rs: u32,
+    src_cs: u32,
+    cs_cs: u32,
+    dst_offset: u32,
+    dst_row_stride: u32,
+    dst_col_stride: u32,
+};
+
+const QMatvecSliceAssignParams = extern struct {
+    M: u32,
+    N: u32,
+    K: u32,
+    block_size: u32,
+    input_offset: u32,
+    input_row_stride: u32,
+    dst_offset: u32,
+    dst_row_stride: u32,
+    slice_rows: u32,
+    slice_cols: u32,
+    slice_dst_offset: u32,
+    slice_dst_row_stride: u32,
+    slice_dst_col_stride: u32,
+};
+
+const RmsNormScaleParams = extern struct {
+    rows: u32,
+    cols: u32,
+    eps: f32,
+    src_offset: u32,
+    norm_dst_offset: u32,
+    scale_src_offset: u32,
+    scale_repeat_dst_offset: u32,
+    scaled_dst_offset: u32,
+};
+
 const AttentionParams = extern struct {
     d_head: u32,
     seq_kv: u32,
@@ -956,6 +1110,9 @@ pub const MetalBackend = struct {
     matvec_f16_pipeline: *anyopaque,
     matmul_f16_pipeline: *anyopaque,
     rope_pipeline: *anyopaque,
+    rope_slice_assign_pipeline: *anyopaque,
+    qmatvec_slice_assign_pipeline: *anyopaque,
+    rmsnorm_scale_pipeline: *anyopaque,
     attention_pipeline: *anyopaque,
     compute_pipeline: *anyopaque,
     fused_ew_pipeline: *anyopaque,
@@ -986,6 +1143,12 @@ pub const MetalBackend = struct {
         errdefer c.mtl_release(matmul_f16_pipeline);
         const rope_pipeline = c.mtl_create_pipeline(device, library, "rope_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(rope_pipeline);
+        const rope_slice_assign_pipeline = c.mtl_create_pipeline(device, library, "rope_slice_assign_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(rope_slice_assign_pipeline);
+        const qmatvec_slice_assign_pipeline = c.mtl_create_pipeline(device, library, "qmatvec_slice_assign_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(qmatvec_slice_assign_pipeline);
+        const rmsnorm_scale_pipeline = c.mtl_create_pipeline(device, library, "rmsnorm_scale_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(rmsnorm_scale_pipeline);
         const attention_pipeline = c.mtl_create_pipeline(device, library, "attention_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(attention_pipeline);
         const compute_pipeline = c.mtl_create_pipeline(device, library, "compute_f32") orelse return error.PipelineCreateFailed;
@@ -1001,6 +1164,9 @@ pub const MetalBackend = struct {
             .matvec_f16_pipeline = matvec_f16_pipeline,
             .matmul_f16_pipeline = matmul_f16_pipeline,
             .rope_pipeline = rope_pipeline,
+            .rope_slice_assign_pipeline = rope_slice_assign_pipeline,
+            .qmatvec_slice_assign_pipeline = qmatvec_slice_assign_pipeline,
+            .rmsnorm_scale_pipeline = rmsnorm_scale_pipeline,
             .attention_pipeline = attention_pipeline,
             .compute_pipeline = compute_pipeline,
             .fused_ew_pipeline = fused_ew_pipeline,
@@ -1013,6 +1179,9 @@ pub const MetalBackend = struct {
         c.mtl_release(self.fused_ew_pipeline);
         c.mtl_release(self.compute_pipeline);
         c.mtl_release(self.attention_pipeline);
+        c.mtl_release(self.rmsnorm_scale_pipeline);
+        c.mtl_release(self.qmatvec_slice_assign_pipeline);
+        c.mtl_release(self.rope_slice_assign_pipeline);
         c.mtl_release(self.rope_pipeline);
         c.mtl_release(self.matmul_f16_pipeline);
         c.mtl_release(self.matvec_f16_pipeline);
@@ -1296,6 +1465,7 @@ const CompiledProgram = struct {
             threads_x,
             1,
         );
+        self.runtime_profile.backend_dispatch_count +%= 1;
     }
 
     fn encodeTyped(
@@ -1414,6 +1584,121 @@ const CompiledProgram = struct {
         self.encodeTyped(RopeParams, self.backend.rope_pipeline, &buffers, params, 3, .{ .gx = linearGrid(rr.half_d * rr.seq_len) }, WG_SIZE);
     }
 
+    fn canFuseRopeSliceAssign(rr: anytype, sa: anytype) bool {
+        const d = rr.half_d * 2;
+        return rr.dst == sa.src and
+            rr.dst_off == sa.src_offset and
+            sa.rows == d and
+            sa.cols == rr.seq_len and
+            sa.src_row_stride == 1 and
+            sa.src_col_stride == d;
+    }
+
+    fn encodeRopeSliceAssign(self: *CompiledProgram, rr: anytype, sa: anytype) void {
+        const buffers = [_]DeviceBuffer{
+            self.device_bufs[rr.src],
+            self.device_bufs[rr.cos_sin],
+            self.device_bufs[sa.dst],
+        };
+        const params = RopeSliceAssignParams{
+            .half_d = rr.half_d,
+            .seq_len = rr.seq_len,
+            .src_off = rr.src_off,
+            .cs_off = rr.cs_off,
+            .src_rs = rr.src_rs,
+            .src_cs = rr.src_cs,
+            .cs_cs = rr.cs_cs,
+            .dst_offset = sa.dst_offset,
+            .dst_row_stride = sa.dst_row_stride,
+            .dst_col_stride = sa.dst_col_stride,
+        };
+        self.encodeTyped(RopeSliceAssignParams, self.backend.rope_slice_assign_pipeline, &buffers, params, 3, .{ .gx = linearGrid(rr.half_d * rr.seq_len) }, WG_SIZE);
+    }
+
+    fn canFuseQMatvecSliceAssign(self: *CompiledProgram, q: anytype, sa: anytype) bool {
+        return q.M == 1 and
+            @as(usize, q.weight_idx) < self.qweight_views.len and
+            q.dst == sa.src and
+            q.dst_offset == sa.src_offset and
+            q.N == sa.rows * sa.cols and
+            sa.src_row_stride == 1 and
+            sa.src_col_stride == sa.rows;
+    }
+
+    fn encodeQMatvecSliceAssign(self: *CompiledProgram, q: anytype, sa: anytype) bool {
+        if (!self.canFuseQMatvecSliceAssign(q, sa)) return false;
+        const w = self.qweight_views[q.weight_idx];
+        const qparams = qmatmulParams(q, w.block_size);
+        const buffers = [_]DeviceBuffer{
+            w.data,
+            w.scales,
+            self.device_bufs[q.input],
+            self.device_bufs[q.dst],
+            self.device_bufs[sa.dst],
+        };
+        const params = QMatvecSliceAssignParams{
+            .M = qparams.M,
+            .N = qparams.N,
+            .K = qparams.K,
+            .block_size = qparams.block_size,
+            .input_offset = qparams.input_offset,
+            .input_row_stride = qparams.input_row_stride,
+            .dst_offset = qparams.dst_offset,
+            .dst_row_stride = qparams.dst_row_stride,
+            .slice_rows = sa.rows,
+            .slice_cols = sa.cols,
+            .slice_dst_offset = sa.dst_offset,
+            .slice_dst_row_stride = sa.dst_row_stride,
+            .slice_dst_col_stride = sa.dst_col_stride,
+        };
+        self.encodeTyped(QMatvecSliceAssignParams, self.backend.qmatvec_slice_assign_pipeline, &buffers, params, 5, .{ .gx = linearGrid(q.N) }, WG_SIZE);
+        return true;
+    }
+
+    fn mulSourcesMatchNormAndScale(e: anytype, norm_buf: u16, norm_offset: u32, scale_buf: u16, scale_offset: u32) bool {
+        return (e.src0 == norm_buf and e.src0_offset == norm_offset and e.src1 == scale_buf and e.src1_offset == scale_offset) or
+            (e.src1 == norm_buf and e.src1_offset == norm_offset and e.src0 == scale_buf and e.src0_offset == scale_offset);
+    }
+
+    fn canFuseRmsnormRepeatMul(rn: anytype, rp: anytype, e: anytype) bool {
+        const n = rn.rows * rn.cols;
+        return e.op == .mul and
+            rp.n == n and
+            e.n == n and
+            rp.dst == (if (e.src0 == rn.dst and e.src0_offset == rn.dst_offset) e.src1 else e.src0) and
+            rp.src_ne[0] == rn.cols and
+            rp.src_ne[1] == 1 and
+            rp.dst_ne[0] == rn.cols and
+            rp.dst_ne[1] == rn.rows and
+            rp.src_strides[0] == 1 and
+            rp.dst_strides[0] == 1 and
+            rp.dst_strides[1] == rn.cols and
+            mulSourcesMatchNormAndScale(e, rn.dst, rn.dst_offset, rp.dst, rp.dst_offset);
+    }
+
+    fn encodeRmsnormRepeatMul(self: *CompiledProgram, rn: anytype, rp: anytype, e: anytype) bool {
+        if (!canFuseRmsnormRepeatMul(rn, rp, e)) return false;
+        const buffers = [_]DeviceBuffer{
+            self.device_bufs[rn.src],
+            self.device_bufs[rp.src],
+            self.device_bufs[rn.dst],
+            self.device_bufs[rp.dst],
+            self.device_bufs[e.dst],
+        };
+        const params = RmsNormScaleParams{
+            .rows = rn.rows,
+            .cols = rn.cols,
+            .eps = rn.eps,
+            .src_offset = rn.src_offset,
+            .norm_dst_offset = rn.dst_offset,
+            .scale_src_offset = rp.src_offset,
+            .scale_repeat_dst_offset = rp.dst_offset,
+            .scaled_dst_offset = e.dst_offset,
+        };
+        self.encodeTyped(RmsNormScaleParams, self.backend.rmsnorm_scale_pipeline, &buffers, params, 5, .{ .gx = linearGrid(rn.rows) }, WG_SIZE);
+        return true;
+    }
+
     fn encodeAttention(self: *CompiledProgram, att: anytype) void {
         const buffers = [_]DeviceBuffer{
             self.device_bufs[att.q],
@@ -1442,8 +1727,27 @@ const CompiledProgram = struct {
         };
     }
 
-    fn tryEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
+    fn recordRegionBackendOp(self: *CompiledProgram, op: backend_mod.DeviceOp, elapsed_ns: u64) void {
         const tag: usize = @intFromEnum(op);
+        self.runtime_profile.backend_op_count +%= 1;
+        self.runtime_profile.time_ns[tag] +%= elapsed_ns;
+    }
+
+    fn recordRegionFusedPair(self: *CompiledProgram, a: backend_mod.DeviceOp, b: backend_mod.DeviceOp, elapsed_ns: u64) void {
+        const first = elapsed_ns / 2;
+        self.recordRegionBackendOp(a, first);
+        self.recordRegionBackendOp(b, elapsed_ns - first);
+    }
+
+    fn recordRegionFusedTriple(self: *CompiledProgram, a: backend_mod.DeviceOp, b: backend_mod.DeviceOp, c_op: backend_mod.DeviceOp, elapsed_ns: u64) void {
+        const first = elapsed_ns / 3;
+        const second = elapsed_ns / 3;
+        self.recordRegionBackendOp(a, first);
+        self.recordRegionBackendOp(b, second);
+        self.recordRegionBackendOp(c_op, elapsed_ns - first - second);
+    }
+
+    fn tryEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
         const t0 = nowNs();
         const encoded = if (computeDispatchSpec(op)) |spec| blk: {
             self.encodeComputeDispatch(spec);
@@ -1463,10 +1767,67 @@ const CompiledProgram = struct {
             else => false,
         };
         if (encoded) {
-            self.runtime_profile.backend_op_count +%= 1;
-            self.runtime_profile.time_ns[tag] +%= @intCast(nowNs() - t0);
+            self.recordRegionBackendOp(op, @intCast(nowNs() - t0));
         }
         return encoded;
+    }
+
+    fn tryEncodeRegionFusedPair(self: *CompiledProgram, a: backend_mod.DeviceOp, b: backend_mod.DeviceOp) bool {
+        const t0 = nowNs();
+        const encoded = switch (a) {
+            .qmatmul => |q| switch (b) {
+                .slice_assign => |sa| self.encodeQMatvecSliceAssign(q, sa),
+                else => false,
+            },
+            .rope => |rr| switch (b) {
+                .slice_assign => |sa| blk: {
+                    if (!canFuseRopeSliceAssign(rr, sa)) break :blk false;
+                    self.encodeRopeSliceAssign(rr, sa);
+                    break :blk true;
+                },
+                else => false,
+            },
+            else => false,
+        };
+        if (encoded) {
+            self.recordRegionFusedPair(a, b, @intCast(nowNs() - t0));
+        }
+        return encoded;
+    }
+
+    fn tryEncodeRegionFusedTriple(self: *CompiledProgram, a: backend_mod.DeviceOp, b: backend_mod.DeviceOp, c_op: backend_mod.DeviceOp) bool {
+        const t0 = nowNs();
+        const encoded = switch (a) {
+            .rmsnorm => |rn| switch (b) {
+                .repeat => |rp| switch (c_op) {
+                    .elementwise => |e| self.encodeRmsnormRepeatMul(rn, rp, e),
+                    else => false,
+                },
+                else => false,
+            },
+            else => false,
+        };
+        if (encoded) {
+            self.recordRegionFusedTriple(a, b, c_op, @intCast(nowNs() - t0));
+        }
+        return encoded;
+    }
+
+    fn tryEncodeRegionGpuOps(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) bool {
+        var i: usize = 0;
+        while (i < ops.len) {
+            if (i + 2 < ops.len and self.tryEncodeRegionFusedTriple(ops[i], ops[i + 1], ops[i + 2])) {
+                i += 3;
+                continue;
+            }
+            if (i + 1 < ops.len and self.tryEncodeRegionFusedPair(ops[i], ops[i + 1])) {
+                i += 2;
+                continue;
+            }
+            if (!self.tryEncodeRegionGpuOp(ops[i])) return false;
+            i += 1;
+        }
+        return true;
     }
 
     fn tryEncodePatternRegion(self: *CompiledProgram, unit: program_mod.ScheduleUnit) bool {
@@ -1491,14 +1852,10 @@ const CompiledProgram = struct {
             }
         }
 
-        for (items) |item| {
-            const op_start: usize = @intCast(item.start);
-            const op_end = op_start + @as(usize, item.len);
-            for (self.ops[op_start..op_end]) |op| {
-                if (!self.tryEncodeRegionGpuOp(op)) return false;
-            }
-        }
-        return true;
+        const op_start: usize = @intCast(unit.op_start);
+        const op_end = op_start + @as(usize, unit.op_count);
+        if (op_end > self.ops.len) return false;
+        return self.tryEncodeRegionGpuOps(self.ops[op_start..op_end]);
     }
 
     fn tryEncodeGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
@@ -1792,4 +2149,219 @@ test "metal backend compiled program qmatvec" {
     const rt = be.getRuntimeProfile(handle).?;
     try std.testing.expectEqual(@as(u64, 1), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+}
+
+test "metal backend region fuses cache-store sidecars" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4 };
+    var cos_sin = [_]f32{ 1, 0, 0, 1 };
+    var rope_tmp = [_]f32{0} ** 4;
+    var q_cache = [_]f32{0} ** 12;
+    var q_out = [_]f32{0} ** 4;
+    var rope_cache = [_]f32{0} ** 12;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+
+    var ops: [10]backend_mod.DeviceOp = undefined;
+    for (ops[0..7]) |*op| {
+        op.* = .{ .qmatmul = .{
+            .dst = 4,
+            .input = 0,
+            .weight_idx = 0,
+            .M = 1,
+            .N = 4,
+            .K = 4,
+        } };
+    }
+    ops[7] = .{ .slice_assign = .{
+        .dst = 3,
+        .src = 4,
+        .rows = 4,
+        .cols = 1,
+        .dst_base_offset = 0,
+        .dst_offset = 4,
+        .dst_row_stride = 1,
+        .dst_col_stride = 4,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 4,
+        .patch_stride = 4,
+    } };
+    ops[8] = .{ .rope = .{
+        .dst = 2,
+        .src = 0,
+        .cos_sin = 1,
+        .half_d = 2,
+        .seq_len = 1,
+        .src_off = 0,
+        .cs_off = 0,
+        .dst_off = 0,
+        .src_rs = 1,
+        .src_cs = 4,
+        .cs_cs = 4,
+    } };
+    ops[9] = .{ .slice_assign = .{
+        .dst = 5,
+        .src = 2,
+        .rows = 4,
+        .cols = 1,
+        .dst_base_offset = 0,
+        .dst_offset = 4,
+        .dst_row_stride = 1,
+        .dst_col_stride = 4,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 4,
+        .patch_stride = 4,
+    } };
+
+    const buf_sizes = [_]usize{ 4, 4, 4, 12, 4, 12 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = 4 * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&cos_sin), .size = 4 * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&rope_tmp), .size = 4 * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&q_cache), .size = 12 * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&q_out), .size = 4 * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&rope_cache), .size = 12 * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 6,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var q_cache_out: [12]f32 = undefined;
+    var rope_cache_out: [12]f32 = undefined;
+    var out = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&q_cache_out), .size = 12 * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&rope_cache_out), .size = 12 * 4 },
+    };
+    be.executeProgram(handle, &.{}, &out);
+
+    try std.testing.expectEqualSlices(f32, &.{ 1, 2, 3, 4 }, q_cache_out[4..8]);
+    try std.testing.expectEqualSlices(f32, &.{ 1, -4, 3, 2 }, rope_cache_out[4..8]);
+
+    const rt = be.getRuntimeProfile(handle).?;
+    try std.testing.expectEqual(@as(u64, 10), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 8), rt.backend_dispatch_count);
+}
+
+test "metal backend region fuses rmsnorm scale chain" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4 };
+    var q_out = [_]f32{0} ** 4;
+    var scale = [_]f32{ 2, 3, 4, 5 };
+    var norm_out = [_]f32{0} ** 4;
+    var repeat_out = [_]f32{0} ** 4;
+    var scaled_out = [_]f32{0} ** 4;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+
+    var ops: [10]backend_mod.DeviceOp = undefined;
+    for (ops[0..7]) |*op| {
+        op.* = .{ .qmatmul = .{
+            .dst = 1,
+            .input = 0,
+            .weight_idx = 0,
+            .M = 1,
+            .N = 4,
+            .K = 4,
+        } };
+    }
+    ops[7] = .{ .rmsnorm = .{
+        .dst = 3,
+        .src = 0,
+        .rows = 1,
+        .cols = 4,
+        .eps = 0,
+    } };
+    ops[8] = .{ .repeat = .{
+        .dst = 4,
+        .src = 2,
+        .n = 4,
+        .src_ne = .{ 4, 1, 1, 1 },
+        .dst_ne = .{ 4, 1, 1, 1 },
+        .src_strides = .{ 1, 4, 4, 4 },
+        .dst_strides = .{ 1, 4, 4, 4 },
+    } };
+    ops[9] = .{ .elementwise = .{
+        .op = .mul,
+        .dst = 5,
+        .src0 = 3,
+        .src1 = 4,
+        .n = 4,
+    } };
+
+    const buf_sizes = [_]usize{ 4, 4, 4, 4, 4, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = 4 * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&q_out), .size = 4 * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&scale), .size = 4 * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&norm_out), .size = 4 * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&repeat_out), .size = 4 * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&scaled_out), .size = 4 * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 6,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var got: [4]f32 = undefined;
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 5, .host_ptr = @ptrCast(&got), .size = 4 * 4 }};
+    be.executeProgram(handle, &.{}, &out);
+
+    const inv_rms: f32 = 1.0 / @sqrt(@as(f32, 30.0 / 4.0));
+    const expected = [_]f32{
+        1 * inv_rms * 2,
+        2 * inv_rms * 3,
+        3 * inv_rms * 4,
+        4 * inv_rms * 5,
+    };
+    for (expected, got) |want, actual| {
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
+
+    const rt = be.getRuntimeProfile(handle).?;
+    try std.testing.expectEqual(@as(u64, 10), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 8), rt.backend_dispatch_count);
 }
