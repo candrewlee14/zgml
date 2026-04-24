@@ -197,6 +197,119 @@ const shader_source =
     \\    }
     \\}
     \\
+    \\constant uint MAX_QMATMUL_BATCH = 4;
+    \\
+    \\struct QMatmulBatch4Params {
+    \\    uint n_ops; uint max_tiles_y;
+    \\    uint M[MAX_QMATMUL_BATCH];
+    \\    uint N[MAX_QMATMUL_BATCH];
+    \\    uint K[MAX_QMATMUL_BATCH];
+    \\    uint block_size[MAX_QMATMUL_BATCH];
+    \\    uint input_offset[MAX_QMATMUL_BATCH];
+    \\    uint input_row_stride[MAX_QMATMUL_BATCH];
+    \\    uint dst_offset[MAX_QMATMUL_BATCH];
+    \\    uint dst_row_stride[MAX_QMATMUL_BATCH];
+    \\};
+    \\
+    \\kernel void qmatmul_batch4_f32(
+    \\    device const char*  w0 [[buffer(0)]],
+    \\    device const float* s0 [[buffer(1)]],
+    \\    device const float* i0 [[buffer(2)]],
+    \\    device float*       o0 [[buffer(3)]],
+    \\    device const char*  w1 [[buffer(4)]],
+    \\    device const float* s1 [[buffer(5)]],
+    \\    device const float* i1 [[buffer(6)]],
+    \\    device float*       o1 [[buffer(7)]],
+    \\    device const char*  w2 [[buffer(8)]],
+    \\    device const float* s2 [[buffer(9)]],
+    \\    device const float* i2 [[buffer(10)]],
+    \\    device float*       o2 [[buffer(11)]],
+    \\    device const char*  w3 [[buffer(12)]],
+    \\    device const float* s3 [[buffer(13)]],
+    \\    device const float* i3 [[buffer(14)]],
+    \\    device float*       o3 [[buffer(15)]],
+    \\    constant QMatmulBatch4Params& p [[buffer(16)]],
+    \\    uint2 group_id [[threadgroup_position_in_grid]],
+    \\    uint  simd_idx [[simdgroup_index_in_threadgroup]],
+    \\    uint  lane     [[thread_index_in_simdgroup]],
+    \\    uint  tid      [[thread_index_in_threadgroup]]
+    \\) {
+    \\    uint slot = group_id.y / p.max_tiles_y;
+    \\    uint row_tile = group_id.y - slot * p.max_tiles_y;
+    \\    if (slot >= p.n_ops) return;
+    \\
+    \\    device const char* w = w0;
+    \\    device const float* s = s0;
+    \\    device const float* input = i0;
+    \\    device float* output = o0;
+    \\    switch (slot) {
+    \\        case 1: w = w1; s = s1; input = i1; output = o1; break;
+    \\        case 2: w = w2; s = s2; input = i2; output = o2; break;
+    \\        case 3: w = w3; s = s3; input = i3; output = o3; break;
+    \\        default: break;
+    \\    }
+    \\
+    \\    uint M = p.M[slot], N = p.N[slot], K = p.K[slot];
+    \\    const uint gRow = row_tile * TILE;
+    \\    const uint gCol = group_id.x * TILE;
+    \\    const uint sRow = (simd_idx / 2) * 16;
+    \\    const uint sCol = (simd_idx % 2) * 16;
+    \\
+    \\    simdgroup_float8x8 acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\
+    \\    threadgroup float tI[TILE * 8];
+    \\    threadgroup float tW[8 * TILE];
+    \\
+    \\    for (uint kt = 0; kt < K; kt += 8) {
+    \\        for (uint i = tid; i < TILE * 8; i += 128) {
+    \\            uint r = i / 8, c = i % 8;
+    \\            uint ir = gRow + r, ic = kt + c;
+    \\            tI[i] = (ir < M && ic < K) ? input[p.input_offset[slot] + ir * p.input_row_stride[slot] + ic] : 0.0f;
+    \\        }
+    \\        for (uint i = tid; i < 8 * TILE; i += 128) {
+    \\            uint r = i / TILE, c = i % TILE;
+    \\            uint kr = kt + r, nc = gCol + c;
+    \\            if (kr < K && nc < N) {
+    \\                uint w_idx = kr * N + nc;
+    \\                tW[i] = float(w[w_idx]) * s[w_idx / p.block_size[slot]];
+    \\            } else {
+    \\                tW[i] = 0.0f;
+    \\            }
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        simdgroup_float8x8 a0, a1, b0, b1;
+    \\        simdgroup_load(a0, tI + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tI + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(b0, tW + (sCol + 0), TILE);
+    \\        simdgroup_load(b1, tW + (sCol + 8), TILE);
+    \\
+    \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
+    \\
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\
+    \\    threadgroup float tC[TILE * TILE];
+    \\    simdgroup_store(acc[0], tC + (sRow + 0) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[1], tC + (sRow + 0) * TILE + sCol + 8, TILE);
+    \\    simdgroup_store(acc[2], tC + (sRow + 8) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < TILE * TILE; i += 128) {
+    \\        uint r = i / TILE, c = i % TILE;
+    \\        uint cr = gRow + r, cc = gCol + c;
+    \\        if (cr < M && cc < N)
+    \\            output[p.dst_offset[slot] + cr * p.dst_row_stride[slot] + cc] = tC[i];
+    \\    }
+    \\}
+    \\
     \\// Decode-oriented qmatmul specialization: M==1, one thread per output element.
     \\kernel void qmatvec_f32(
     \\    device const char*  weight_data   [[buffer(0)]],
@@ -996,6 +1109,21 @@ const QMatMulParams = extern struct {
     dst_row_stride: u32,
 };
 
+const MAX_QMATMUL_BATCH: usize = 4;
+
+const QMatmulBatch4Params = extern struct {
+    n_ops: u32,
+    max_tiles_y: u32,
+    M: [MAX_QMATMUL_BATCH]u32,
+    N: [MAX_QMATMUL_BATCH]u32,
+    K: [MAX_QMATMUL_BATCH]u32,
+    block_size: [MAX_QMATMUL_BATCH]u32,
+    input_offset: [MAX_QMATMUL_BATCH]u32,
+    input_row_stride: [MAX_QMATMUL_BATCH]u32,
+    dst_offset: [MAX_QMATMUL_BATCH]u32,
+    dst_row_stride: [MAX_QMATMUL_BATCH]u32,
+};
+
 const MAX_QMATVEC_BATCH: usize = 4;
 
 const QMatvecBatch4Params = extern struct {
@@ -1409,6 +1537,7 @@ pub const MetalBackend = struct {
     queue: *anyopaque,
     matmul_pipeline: *anyopaque,
     qmatmul_pipeline: *anyopaque,
+    qmatmul_batch4_pipeline: *anyopaque,
     qmatvec_pipeline: *anyopaque,
     qmatvec_batch4_pipeline: *anyopaque,
     matvec_f16_pipeline: *anyopaque,
@@ -1442,6 +1571,8 @@ pub const MetalBackend = struct {
         errdefer c.mtl_release(matmul_pipeline);
         const qmatmul_pipeline = c.mtl_create_pipeline(device, library, "qmatmul_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(qmatmul_pipeline);
+        const qmatmul_batch4_pipeline = c.mtl_create_pipeline(device, library, "qmatmul_batch4_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(qmatmul_batch4_pipeline);
         const qmatvec_pipeline = c.mtl_create_pipeline(device, library, "qmatvec_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(qmatvec_pipeline);
         const qmatvec_batch4_pipeline = c.mtl_create_pipeline(device, library, "qmatvec_batch4_f32") orelse return error.PipelineCreateFailed;
@@ -1475,6 +1606,7 @@ pub const MetalBackend = struct {
             .queue = queue,
             .matmul_pipeline = matmul_pipeline,
             .qmatmul_pipeline = qmatmul_pipeline,
+            .qmatmul_batch4_pipeline = qmatmul_batch4_pipeline,
             .qmatvec_pipeline = qmatvec_pipeline,
             .qmatvec_batch4_pipeline = qmatvec_batch4_pipeline,
             .matvec_f16_pipeline = matvec_f16_pipeline,
@@ -1509,6 +1641,7 @@ pub const MetalBackend = struct {
         c.mtl_release(self.matvec_f16_pipeline);
         c.mtl_release(self.qmatvec_batch4_pipeline);
         c.mtl_release(self.qmatvec_pipeline);
+        c.mtl_release(self.qmatmul_batch4_pipeline);
         c.mtl_release(self.qmatmul_pipeline);
         c.mtl_release(self.matmul_pipeline);
         c.mtl_release(self.library);
@@ -1902,6 +2035,57 @@ const CompiledProgram = struct {
         };
         self.encodeTyped(QMatMulParams, self.backend.qmatvec_pipeline, &buffers, qmatmulParams(q, w.block_size), 4, .{ .gx = linearGrid(q.N) }, WG_SIZE);
         return true;
+    }
+
+    fn canEncodeQMatmulBatchOp(self: *CompiledProgram, q: anytype) bool {
+        return q.M != 1 and @as(usize, q.weight_idx) < self.qweight_views.len;
+    }
+
+    fn encodeQMatmulBatch(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, indices: []const usize) void {
+        const first_q = ops[indices[0]].qmatmul;
+        const first_w = self.qweight_views[first_q.weight_idx];
+        var buffers: [MAX_QMATMUL_BATCH * 4]DeviceBuffer = undefined;
+        for (0..MAX_QMATMUL_BATCH) |slot| {
+            buffers[slot * 4 + 0] = first_w.data;
+            buffers[slot * 4 + 1] = first_w.scales;
+            buffers[slot * 4 + 2] = self.device_bufs[first_q.input];
+            buffers[slot * 4 + 3] = self.device_bufs[first_q.dst];
+        }
+
+        var params = std.mem.zeroes(QMatmulBatch4Params);
+        params.n_ops = @intCast(indices.len);
+        var max_tiles_x: u32 = 1;
+        var max_tiles_y: u32 = 1;
+        for (indices, 0..) |op_index, slot| {
+            const q = ops[op_index].qmatmul;
+            const w = self.qweight_views[q.weight_idx];
+            const qparams = qmatmulParams(q, w.block_size);
+            buffers[slot * 4 + 0] = w.data;
+            buffers[slot * 4 + 1] = w.scales;
+            buffers[slot * 4 + 2] = self.device_bufs[q.input];
+            buffers[slot * 4 + 3] = self.device_bufs[q.dst];
+            params.M[slot] = qparams.M;
+            params.N[slot] = qparams.N;
+            params.K[slot] = qparams.K;
+            params.block_size[slot] = qparams.block_size;
+            params.input_offset[slot] = qparams.input_offset;
+            params.input_row_stride[slot] = qparams.input_row_stride;
+            params.dst_offset[slot] = qparams.dst_offset;
+            params.dst_row_stride[slot] = qparams.dst_row_stride;
+            max_tiles_x = @max(max_tiles_x, (qparams.N + TILE - 1) / TILE);
+            max_tiles_y = @max(max_tiles_y, (qparams.M + TILE - 1) / TILE);
+        }
+        params.max_tiles_y = max_tiles_y;
+
+        self.encodeTyped(
+            QMatmulBatch4Params,
+            self.backend.qmatmul_batch4_pipeline,
+            &buffers,
+            params,
+            16,
+            .{ .gx = max_tiles_x, .gy = max_tiles_y * @as(u32, @intCast(indices.len)) },
+            MATMUL_THREADS,
+        );
     }
 
     fn canEncodeQMatvecBatchOp(self: *CompiledProgram, q: anytype) bool {
@@ -2343,6 +2527,14 @@ const CompiledProgram = struct {
         return false;
     }
 
+    fn qmatmulConflictsSelected(ops: []const backend_mod.DeviceOp, indices: []const usize, q: anytype) bool {
+        for (indices) |idx| {
+            const selected = ops[idx].qmatmul;
+            if (selected.dst == q.dst or selected.input == q.dst or selected.dst == q.input) return true;
+        }
+        return false;
+    }
+
     fn recordRegionBackendOp(self: *CompiledProgram, op: backend_mod.DeviceOp, elapsed_ns: u64) void {
         const tag: usize = @intFromEnum(op);
         self.runtime_profile.backend_op_count +%= 1;
@@ -2415,6 +2607,41 @@ const CompiledProgram = struct {
 
         const t0 = nowNs();
         self.encodeQMatvecBatch(ops, indices[0..count]);
+        self.recordRegionFusedRunFromIndices(ops, indices[0..count], @intCast(nowNs() - t0));
+        for (indices[0..count]) |idx| skipped.set(idx);
+        return true;
+    }
+
+    fn tryEncodeQMatmulBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: *std.bit_set.IntegerBitSet(256)) bool {
+        if (start >= ops.len or skipped.isSet(start)) return false;
+        const first = switch (ops[start]) {
+            .qmatmul => |q| q,
+            else => return false,
+        };
+        if (!self.canEncodeQMatmulBatchOp(first)) return false;
+
+        var indices: [MAX_QMATMUL_BATCH]usize = undefined;
+        indices[0] = start;
+        var count: usize = 1;
+
+        var scan = start + 1;
+        while (scan < ops.len and count < MAX_QMATMUL_BATCH) : (scan += 1) {
+            if (skipped.isSet(scan)) continue;
+            const q = switch (ops[scan]) {
+                .qmatmul => |q| q,
+                else => continue,
+            };
+            if (!self.canEncodeQMatmulBatchOp(q)) continue;
+            if (!canHoistQMatvecTo(ops, start, scan, q)) continue;
+            if (qmatmulConflictsSelected(ops, indices[0..count], q)) continue;
+            indices[count] = scan;
+            count += 1;
+        }
+
+        if (count < 2) return false;
+
+        const t0 = nowNs();
+        self.encodeQMatmulBatch(ops, indices[0..count]);
         self.recordRegionFusedRunFromIndices(ops, indices[0..count], @intCast(nowNs() - t0));
         for (indices[0..count]) |idx| skipped.set(idx);
         return true;
@@ -2557,6 +2784,10 @@ const CompiledProgram = struct {
             const slice_assign_batch_len = self.tryEncodeSliceAssignBatchRun(ops[i..]);
             if (slice_assign_batch_len > 0) {
                 i += slice_assign_batch_len;
+                continue;
+            }
+            if (self.tryEncodeQMatmulBatchRun(ops, i, &skipped)) {
+                i += 1;
                 continue;
             }
             if (self.tryEncodeQMatvecBatchRun(ops, i, &skipped)) {
