@@ -244,6 +244,12 @@ fn runDeviceVariant(
     const qmatvec_rope_attention = try backend_program.buildFamilyPatternRegions(alloc, schedule, &qmatvec_rope_attention_pattern);
     defer alloc.free(qmatvec_rope_attention);
     profile.printKernelRegionSummary("qmatvec-rope-attention pattern", qmatvec_rope_attention);
+    const region_patterns = [_][]const backend_program.KernelFamily{&qmatvec_rope_attention_pattern};
+    const region_plan = try backend_program.buildFamilyPatternPlan(alloc, schedule, &region_patterns);
+    defer alloc.free(region_plan);
+    const region_schedule = try backend_program.buildRegionSchedule(alloc, schedule, region_plan);
+    defer alloc.free(region_schedule);
+    profile.printRegionScheduleSummary("qmatvec-rope-attention", region_schedule);
 
     const rope = &session.model.blocks[0].rope;
     const tok_data = session.model.token_embed.inner.data;

@@ -142,6 +142,31 @@ pub const KernelRegion = struct {
     anchor_count: u32,
 };
 
+pub const invalid_pattern_index = std.math.maxInt(u32);
+
+pub const PatternRegion = struct {
+    pattern_index: u32,
+    region: KernelRegion,
+};
+
+pub const ScheduleUnitKind = enum {
+    item,
+    pattern_region,
+};
+
+/// A logical execution unit over a KernelItem schedule. Backends can start with
+/// item units, then replace selected ranges with pattern regions as they grow
+/// fused lowerings. This stays model-agnostic: a pattern is just a family
+/// sequence with a backend-owned lowering.
+pub const ScheduleUnit = struct {
+    kind: ScheduleUnitKind,
+    pattern_index: u32 = invalid_pattern_index,
+    start_item: u32,
+    item_count: u32,
+    op_start: u32,
+    op_count: u32,
+};
+
 /// Describes reusable anchored regions over a KernelItem schedule. This is the
 /// pure planning layer for future fusion: choose anchor families (for example
 /// qmatvec) and families allowed to travel with them, then emit contiguous
@@ -353,6 +378,106 @@ pub fn buildFamilyPatternRegions(
     return regions.toOwnedSlice(alloc);
 }
 
+pub fn buildFamilyPatternPlan(
+    alloc: std.mem.Allocator,
+    items: []const KernelItem,
+    patterns: []const []const KernelFamily,
+) ![]PatternRegion {
+    var candidates: std.ArrayListUnmanaged(PatternRegion) = .empty;
+    defer candidates.deinit(alloc);
+
+    for (patterns, 0..) |pattern, pattern_index| {
+        const matches = try buildFamilyPatternRegions(alloc, items, pattern);
+        defer alloc.free(matches);
+        for (matches) |region| {
+            try candidates.append(alloc, .{
+                .pattern_index = @intCast(pattern_index),
+                .region = region,
+            });
+        }
+    }
+
+    sortPatternRegions(candidates.items);
+
+    var selected: std.ArrayListUnmanaged(PatternRegion) = .empty;
+    errdefer selected.deinit(alloc);
+
+    var next_free_item: u32 = 0;
+    for (candidates.items) |candidate| {
+        if (candidate.region.start_item < next_free_item) continue;
+        try selected.append(alloc, candidate);
+        next_free_item = candidate.region.start_item + candidate.region.item_count;
+    }
+
+    return selected.toOwnedSlice(alloc);
+}
+
+pub fn buildRegionSchedule(
+    alloc: std.mem.Allocator,
+    items: []const KernelItem,
+    pattern_regions: []const PatternRegion,
+) ![]ScheduleUnit {
+    var units: std.ArrayListUnmanaged(ScheduleUnit) = .empty;
+    errdefer units.deinit(alloc);
+
+    var item_index: usize = 0;
+    for (pattern_regions) |pattern_region| {
+        const region = pattern_region.region;
+        const region_start: usize = @intCast(region.start_item);
+        if (region_start < item_index) continue;
+        while (item_index < region_start) : (item_index += 1) {
+            try units.append(alloc, itemScheduleUnit(@intCast(item_index), items[item_index]));
+        }
+
+        try units.append(alloc, .{
+            .kind = .pattern_region,
+            .pattern_index = pattern_region.pattern_index,
+            .start_item = region.start_item,
+            .item_count = region.item_count,
+            .op_start = region.op_start,
+            .op_count = region.op_count,
+        });
+        item_index = @intCast(region.start_item + region.item_count);
+    }
+
+    while (item_index < items.len) : (item_index += 1) {
+        try units.append(alloc, itemScheduleUnit(@intCast(item_index), items[item_index]));
+    }
+
+    return units.toOwnedSlice(alloc);
+}
+
+fn itemScheduleUnit(item_index: u32, item: KernelItem) ScheduleUnit {
+    return .{
+        .kind = .item,
+        .start_item = item_index,
+        .item_count = 1,
+        .op_start = item.start,
+        .op_count = item.len,
+    };
+}
+
+fn sortPatternRegions(regions: []PatternRegion) void {
+    for (1..regions.len) |i| {
+        const tmp = regions[i];
+        var j = i;
+        while (j > 0 and patternRegionLess(tmp, regions[j - 1])) : (j -= 1) {
+            regions[j] = regions[j - 1];
+        }
+        regions[j] = tmp;
+    }
+}
+
+fn patternRegionLess(lhs: PatternRegion, rhs: PatternRegion) bool {
+    if (lhs.region.start_item != rhs.region.start_item) {
+        return lhs.region.start_item < rhs.region.start_item;
+    }
+    if (lhs.region.item_count != rhs.region.item_count) {
+        return lhs.region.item_count > rhs.region.item_count;
+    }
+    return lhs.pattern_index < rhs.pattern_index;
+}
+
 fn testElementwise(op: backend_mod.Op) backend_mod.DeviceOp {
     return .{ .elementwise = .{ .op = op, .dst = 0, .src0 = 0, .src1 = 0, .n = 1 } };
 }
@@ -562,6 +687,60 @@ test "family pattern regions match exact contiguous family sequences" {
     try std.testing.expectEqual(@as(u32, 3), regions[0].op_count);
     try std.testing.expectEqual(@as(u32, 3), regions[0].anchor_count);
     try std.testing.expectEqual(@as(u32, 5), regions[1].start_item);
+}
+
+test "family pattern plan selects non-overlapping longest matches" {
+    const items = [_]KernelItem{
+        .{ .family = .qmatvec, .execution = .fallback, .start = 0, .len = 1 },
+        .{ .family = .rope, .execution = .fallback, .start = 1, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 2, .len = 1 },
+        .{ .family = .attention, .execution = .fallback, .start = 3, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 4, .len = 1 },
+        .{ .family = .rope, .execution = .fallback, .start = 5, .len = 1 },
+    };
+    const short = [_]KernelFamily{ .qmatvec, .rope };
+    const long = [_]KernelFamily{ .qmatvec, .rope, .qmatvec };
+    const patterns = [_][]const KernelFamily{ &short, &long };
+
+    const regions = try buildFamilyPatternPlan(std.testing.allocator, &items, &patterns);
+    defer std.testing.allocator.free(regions);
+
+    try std.testing.expectEqual(@as(usize, 2), regions.len);
+    try std.testing.expectEqual(@as(u32, 1), regions[0].pattern_index);
+    try std.testing.expectEqual(@as(u32, 0), regions[0].region.start_item);
+    try std.testing.expectEqual(@as(u32, 3), regions[0].region.item_count);
+    try std.testing.expectEqual(@as(u32, 0), regions[1].pattern_index);
+    try std.testing.expectEqual(@as(u32, 4), regions[1].region.start_item);
+}
+
+test "region schedule covers items once and replaces selected patterns" {
+    const items = [_]KernelItem{
+        .{ .family = .movement, .execution = .fallback, .start = 0, .len = 2 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 2, .len = 1 },
+        .{ .family = .rope, .execution = .fallback, .start = 3, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 4, .len = 1 },
+        .{ .family = .attention, .execution = .fallback, .start = 5, .len = 1 },
+    };
+    const pattern = [_]KernelFamily{ .qmatvec, .rope, .qmatvec };
+    const patterns = [_][]const KernelFamily{&pattern};
+
+    const regions = try buildFamilyPatternPlan(std.testing.allocator, &items, &patterns);
+    defer std.testing.allocator.free(regions);
+    const units = try buildRegionSchedule(std.testing.allocator, &items, regions);
+    defer std.testing.allocator.free(units);
+
+    try std.testing.expectEqual(@as(usize, 3), units.len);
+    try std.testing.expectEqual(ScheduleUnitKind.item, units[0].kind);
+    try std.testing.expectEqual(@as(u32, 0), units[0].op_start);
+    try std.testing.expectEqual(@as(u32, 2), units[0].op_count);
+    try std.testing.expectEqual(ScheduleUnitKind.pattern_region, units[1].kind);
+    try std.testing.expectEqual(@as(u32, 0), units[1].pattern_index);
+    try std.testing.expectEqual(@as(u32, 1), units[1].start_item);
+    try std.testing.expectEqual(@as(u32, 3), units[1].item_count);
+    try std.testing.expectEqual(@as(u32, 2), units[1].op_start);
+    try std.testing.expectEqual(@as(u32, 3), units[1].op_count);
+    try std.testing.expectEqual(ScheduleUnitKind.item, units[2].kind);
+    try std.testing.expectEqual(@as(u32, 5), units[2].op_start);
 }
 
 pub const StepDynamicParams = extern struct {

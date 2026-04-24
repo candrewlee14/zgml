@@ -247,6 +247,32 @@ pub fn printKernelRegionSummary(label: []const u8, regions: []const program_mod.
     }
 }
 
+pub fn printRegionScheduleSummary(label: []const u8, units: []const program_mod.ScheduleUnit) void {
+    var item_units: u32 = 0;
+    var region_units: u32 = 0;
+    var total_ops: u32 = 0;
+    var region_ops: u32 = 0;
+    var max_region_ops: u32 = 0;
+
+    for (units) |unit| {
+        total_ops += unit.op_count;
+        switch (unit.kind) {
+            .item => item_units += 1,
+            .pattern_region => {
+                region_units += 1;
+                region_ops += unit.op_count;
+                max_region_ops = @max(max_region_ops, unit.op_count);
+            },
+        }
+    }
+
+    const region_pct: f64 = if (total_ops > 0) @as(f64, @floatFromInt(region_ops)) / @as(f64, @floatFromInt(total_ops)) * 100.0 else 0.0;
+    std.debug.print(
+        "Region schedule ({s}): {d} units ({d} pattern regions, {d} items), {d}/{d} ops in regions ({d:.1}%), max region {d} ops\n\n",
+        .{ label, units.len, region_units, item_units, region_ops, total_ops, region_pct, max_region_ops },
+    );
+}
+
 const neighborhood_edge: u8 = 255;
 
 pub fn printAnchorNeighborhoodSummary(
