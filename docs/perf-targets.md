@@ -19,6 +19,17 @@ Interpretation:
 - Prefill is the real parity blocker: roughly 10x behind llama.cpp.
 - A recent device profile showed roughly 1,500 CPU-side ops per token in the SmolLM decode program, so backend lowering and fused execution must become visible in profiles, not hidden behind aggregate tok/s.
 
+## Dispatch/Fusion Findings
+
+Current decode planning exposes two useful lowering shapes:
+
+- `qmatvec-rope-attention`: 30 regions, 240/1714 ops. If lowered alone it creates 30 backend islands and 60 CPU/GPU transitions, so it is too small to be a good Metal boundary.
+- `qmatvec 7-anchor windows`: 30 regions, 1713/1714 ops. If lowered as block-sized units it forms one backend island with one transition, which is the right shape for Apple parity work.
+
+Implication: do not chase one-dispatch-per-op execution. Metal work should target
+large region/layer lowerings that keep the decode step on device across the
+transformer block, then return to CPU only at explicit boundaries.
+
 ## Acceptance Thresholds
 
 SmolLM-135M:
