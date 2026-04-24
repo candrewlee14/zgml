@@ -1,0 +1,36 @@
+src/llama_inference.zig
+  c55c277b162bb712 39-40,92,143,152,160-187,200-205,208,216,223,225,227-231,233-258,260-266,360-369,516-517,560-561,569,578-593,612,619-644,744-748
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "1c00ca4a4cf5534bf9b486122dbfe5e82a55ca96",
+  "prompts": {
+    "3e0f7da912f1c0f9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbd4b-b518-7a91-bd08-ffb64c26f452",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 120,
+      "total_deletions": 3,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "c55c277b162bb712": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbd4b-12dc-7d73-a3c1-86decccabe3b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 144,
+      "total_deletions": 29,
+      "accepted_lines": 144,
+      "overriden_lines": 0
+    }
+  }
+}
