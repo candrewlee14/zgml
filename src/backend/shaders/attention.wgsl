@@ -252,21 +252,34 @@ fn main(
 
     if (contiguous) {
         for (var r = tid; r < d_head; r = r + WG_SIZE) {
-            var acc: f32 = 0.0;
+            var acc0: f32 = 0.0;
+            var acc1: f32 = 0.0;
             var s: u32 = 0u;
+            while (s + 8u <= seq_kv) {
+                let v_base = v_off + s * d_head + r;
+                acc0 += score_buf[s] * V[v_base];
+                acc0 += score_buf[s + 1u] * V[v_base + d_head];
+                acc0 += score_buf[s + 2u] * V[v_base + 2u * d_head];
+                acc0 += score_buf[s + 3u] * V[v_base + 3u * d_head];
+                acc1 += score_buf[s + 4u] * V[v_base + 4u * d_head];
+                acc1 += score_buf[s + 5u] * V[v_base + 5u * d_head];
+                acc1 += score_buf[s + 6u] * V[v_base + 6u * d_head];
+                acc1 += score_buf[s + 7u] * V[v_base + 7u * d_head];
+                s += 8u;
+            }
             while (s + 4u <= seq_kv) {
                 let v_base = v_off + s * d_head + r;
-                acc += score_buf[s] * V[v_base];
-                acc += score_buf[s + 1u] * V[v_base + d_head];
-                acc += score_buf[s + 2u] * V[v_base + 2u * d_head];
-                acc += score_buf[s + 3u] * V[v_base + 3u * d_head];
+                acc0 += score_buf[s] * V[v_base];
+                acc0 += score_buf[s + 1u] * V[v_base + d_head];
+                acc0 += score_buf[s + 2u] * V[v_base + 2u * d_head];
+                acc0 += score_buf[s + 3u] * V[v_base + 3u * d_head];
                 s += 4u;
             }
             while (s < seq_kv) {
-                acc += score_buf[s] * V[v_off + s * d_head + r];
+                acc0 += score_buf[s] * V[v_off + s * d_head + r];
                 s += 1u;
             }
-            OUT[dst_off + qi * d_head + r] = acc;
+            OUT[dst_off + qi * d_head + r] = acc0 + acc1;
         }
     } else {
         for (var r = tid; r < d_head; r = r + WG_SIZE) {
