@@ -3198,6 +3198,68 @@ test "metal backend region batches independent qmatvecs" {
     try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
 }
 
+test "metal backend region batches independent qmatmuls" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4, 5, 6 };
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+    };
+    const scales = [_]f32{ 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 3, .cols = 4, .block_size = 4 }};
+
+    var ops: [7]backend_mod.DeviceOp = undefined;
+    for (&ops, 0..) |*op, i| {
+        op.* = .{ .qmatmul = .{
+            .dst = @intCast(i + 1),
+            .input = 0,
+            .weight_idx = 0,
+            .M = 2,
+            .N = 4,
+            .K = 3,
+        } };
+    }
+    const buf_sizes = [_]usize{ 6, 8, 8, 8, 8, 8, 8, 8 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 8,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var got: [7][8]f32 = undefined;
+    var outs: [7]backend_mod.ProgramIO = undefined;
+    for (&outs, 0..) |*out, i| {
+        out.* = .{ .buf_idx = @intCast(i + 1), .host_ptr = @ptrCast(&got[i]), .size = 8 * 4 };
+    }
+    be.executeProgram(handle, &.{}, &outs);
+
+    const expected = [_]f32{ 1, 2, 3, 0, 4, 5, 6, 0 };
+    for (got) |row| {
+        try std.testing.expectEqualSlices(f32, &expected, &row);
+    }
+
+    const rt = be.getRuntimeProfile(handle).?;
+    try std.testing.expectEqual(@as(u64, 7), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
+}
+
 test "metal backend region fuses cache-store sidecars" {
     var metal = MetalBackend.init() catch |err| switch (err) {
         error.MetalNotAvailable => return,
