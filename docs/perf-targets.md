@@ -35,13 +35,13 @@ Current prefill work has a first real device-only path:
 | Path | Prompt/prefill | Runtime placement | Dispatches |
 | --- | ---: | --- | ---: |
 | Current GGUF session path | ~0.9k tok/s | CPU/Accelerate quant path | n/a |
-| Experimental Metal device prefill Q8_0 | ~2.5-2.7k tok/s | 100% backend | ~1,352/call |
+| Experimental Metal device prefill Q8_0 | ~2.6-2.7k tok/s | 100% backend | ~1,322/call |
 
 Measured with
 `./zig-out/bin/bench-llama-smollm data/smollm/SmolLM-135M.Q8_0.gguf 128 1 3 --metal-prefill-device`.
 This roughly doubles `pp128` while eliminating fallback for the prefill graph,
-but it is still not parity. QMatmul batching and qmatmul+elementwise sidecar
-fusion removed about 150 dispatches/call. The next target is reusable layer-stage
+but it is still not parity. QMatmul batching plus qmatmul sidecar fusion
+removed about 180 dispatches/call. The next target is reusable layer-stage
 lowering that cuts dispatch count by at least an order of magnitude without
 adding model special cases to the public API.
 
