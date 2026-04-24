@@ -75,21 +75,30 @@ fn scoreFor(qi: u32, s: u32) -> f32 {
 
 fn scoreForContiguous(s: u32, d_head: u32, scale: f32, has_mask: u32, mask_off: u32, mask_rs: u32, mask_cs: u32) -> f32 {
     let k_base = p.offsets0.y + s * d_head;
-    var dot: f32 = 0.0;
+    var dot_acc: f32 = 0.0;
     var r: u32 = 0u;
     while (r + 4u <= d_head) {
-        dot += q_buf[r] * K[k_base + r];
-        dot += q_buf[r + 1u] * K[k_base + r + 1u];
-        dot += q_buf[r + 2u] * K[k_base + r + 2u];
-        dot += q_buf[r + 3u] * K[k_base + r + 3u];
+        let qv = vec4(
+            q_buf[r],
+            q_buf[r + 1u],
+            q_buf[r + 2u],
+            q_buf[r + 3u],
+        );
+        let kv = vec4(
+            K[k_base + r],
+            K[k_base + r + 1u],
+            K[k_base + r + 2u],
+            K[k_base + r + 3u],
+        );
+        dot_acc += dot(qv, kv);
         r += 4u;
     }
     while (r < d_head) {
-        dot += q_buf[r] * K[k_base + r];
+        dot_acc += q_buf[r] * K[k_base + r];
         r += 1u;
     }
 
-    var score = dot * scale;
+    var score = dot_acc * scale;
     if (has_mask != 0u) {
         let mask_add = MASK[mask_off + s * mask_rs];
         if (!isFiniteVal(mask_add)) {
