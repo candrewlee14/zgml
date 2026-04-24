@@ -1,0 +1,23 @@
+src/backend/wgpu.zig
+  06fc52a14883cf5f 109-157,166-170,229-237,244-248,257-261,364,382,384-385,448-468,482,486-487,631,633,640-641,666,744,760,762,765-766,770,791,793,796-797,802,812,814,817-818,832,841,851,861,870,882,887,892,908,923-925,935,946-950,975,1016,1020-1023,1032-1034,1048,1392
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "c0fc439c10450fe9066aa71b1ebdac95503da58a",
+  "prompts": {
+    "06fc52a14883cf5f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbc42-ec38-79c3-8beb-ef2750f89dfe",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 159,
+      "total_deletions": 147,
+      "accepted_lines": 150,
+      "overriden_lines": 0
+    }
+  }
+}
