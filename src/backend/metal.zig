@@ -468,6 +468,7 @@ const shader_source =
     \\};
     \\
     \\constant uint MAX_SEQ = 4096;
+    \\constant uint MAX_ATTENTION_BATCH_HEADS = 16;
     \\
     \\// Single-query attention (seq_q=1). One threadgroup per head.
     \\kernel void attention_f32(
@@ -533,6 +534,89 @@ const shader_source =
     \\        for (uint s = 0; s < p.seq_kv; s++)
     \\            val += scores[s] * V[p.v_off + r * p.v_rs + s * p.v_cs];
     \\        dst[p.dst_off + r] = val;
+    \\    }
+    \\}
+    \\
+    \\struct AttentionBatchParams {
+    \\    uint n_heads; uint d_head; uint seq_kv;
+    \\    float scale;
+    \\    uint q_off[MAX_ATTENTION_BATCH_HEADS];
+    \\    uint k_off[MAX_ATTENTION_BATCH_HEADS];
+    \\    uint v_off[MAX_ATTENTION_BATCH_HEADS];
+    \\    uint mask_off[MAX_ATTENTION_BATCH_HEADS];
+    \\    uint dst_off[MAX_ATTENTION_BATCH_HEADS];
+    \\    uint q_rs; uint q_cs; uint k_rs; uint k_cs; uint v_rs; uint v_cs;
+    \\    uint mask_rs; uint mask_cs; uint dst_rs; uint dst_cs;
+    \\};
+    \\
+    \\kernel void attention_batch_f32(
+    \\    device const float* Q    [[buffer(0)]],
+    \\    device const float* K    [[buffer(1)]],
+    \\    device const float* V    [[buffer(2)]],
+    \\    device const float* mask [[buffer(3)]],
+    \\    device float*       dst  [[buffer(4)]],
+    \\    constant AttentionBatchParams& p [[buffer(5)]],
+    \\    uint head [[threadgroup_position_in_grid]],
+    \\    uint tid     [[thread_index_in_threadgroup]],
+    \\    uint tg_size [[threads_per_threadgroup]]
+    \\) {
+    \\    if (head >= p.n_heads) return;
+    \\
+    \\    threadgroup float scores[MAX_SEQ];
+    \\    threadgroup float scratch[256];
+    \\
+    \\    uint q_off = p.q_off[head];
+    \\    uint k_off = p.k_off[head];
+    \\    uint v_off = p.v_off[head];
+    \\    uint mask_off = p.mask_off[head];
+    \\    uint dst_off = p.dst_off[head];
+    \\
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size) {
+    \\        float mv = mask[mask_off + s * p.mask_rs];
+    \\        if (!isfinite(mv)) { scores[s] = -INFINITY; continue; }
+    \\        float dot = 0.0f;
+    \\        for (uint r = 0; r < p.d_head; r++)
+    \\            dot += Q[q_off + r * p.q_rs] * K[k_off + r * p.k_rs + s * p.k_cs];
+    \\        scores[s] = dot * p.scale + mv;
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    float local_max = -INFINITY;
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size)
+    \\        local_max = max(local_max, scores[s]);
+    \\    scratch[tid] = local_max;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = tg_size / 2; stride > 0; stride /= 2) {
+    \\        if (tid < stride) scratch[tid] = max(scratch[tid], scratch[tid + stride]);
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float global_max = scratch[0];
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    float local_sum = 0.0f;
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size) {
+    \\        float w = (scores[s] == -INFINITY) ? 0.0f : exp(scores[s] - global_max);
+    \\        scores[s] = w;
+    \\        local_sum += w;
+    \\    }
+    \\    scratch[tid] = local_sum;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = tg_size / 2; stride > 0; stride /= 2) {
+    \\        if (tid < stride) scratch[tid] += scratch[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float inv_sum = (scratch[0] > 0.0f) ? 1.0f / scratch[0] : 0.0f;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size)
+    \\        scores[s] *= inv_sum;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint r = tid; r < p.d_head; r += tg_size) {
+    \\        float val = 0.0f;
+    \\        for (uint s = 0; s < p.seq_kv; s++)
+    \\            val += scores[s] * V[v_off + r * p.v_rs + s * p.v_cs];
+    \\        dst[dst_off + r * p.dst_rs] = val;
     \\    }
     \\}
     \\
@@ -868,6 +952,30 @@ const AttentionParams = extern struct {
     v_cs: u32,
 };
 
+const MAX_ATTENTION_BATCH_HEADS: usize = 16;
+
+const AttentionBatchParams = extern struct {
+    n_heads: u32,
+    d_head: u32,
+    seq_kv: u32,
+    scale: f32,
+    q_off: [MAX_ATTENTION_BATCH_HEADS]u32,
+    k_off: [MAX_ATTENTION_BATCH_HEADS]u32,
+    v_off: [MAX_ATTENTION_BATCH_HEADS]u32,
+    mask_off: [MAX_ATTENTION_BATCH_HEADS]u32,
+    dst_off: [MAX_ATTENTION_BATCH_HEADS]u32,
+    q_rs: u32,
+    q_cs: u32,
+    k_rs: u32,
+    k_cs: u32,
+    v_rs: u32,
+    v_cs: u32,
+    mask_rs: u32,
+    mask_cs: u32,
+    dst_rs: u32,
+    dst_cs: u32,
+};
+
 const ComputeParams = extern struct {
     op: u32,
     n_elements: u32,
@@ -1099,6 +1207,16 @@ fn attentionParams(att: anytype) AttentionParams {
     };
 }
 
+fn canEncodeAttention(att: anytype) bool {
+    return att.seq_q == 1 and
+        att.seq_kv <= 4096 and
+        att.d_head <= 512 and
+        att.has_mask and
+        att.q_rs == 1 and
+        att.mask_rs == 1 and
+        att.dst_rs == 1;
+}
+
 // ── MetalBackend ──────────────────────────────────────────────────
 
 pub const MetalBackend = struct {
@@ -1114,6 +1232,7 @@ pub const MetalBackend = struct {
     qmatvec_slice_assign_pipeline: *anyopaque,
     rmsnorm_scale_pipeline: *anyopaque,
     attention_pipeline: *anyopaque,
+    attention_batch_pipeline: *anyopaque,
     compute_pipeline: *anyopaque,
     fused_ew_pipeline: *anyopaque,
     library: *anyopaque,
@@ -1151,6 +1270,8 @@ pub const MetalBackend = struct {
         errdefer c.mtl_release(rmsnorm_scale_pipeline);
         const attention_pipeline = c.mtl_create_pipeline(device, library, "attention_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(attention_pipeline);
+        const attention_batch_pipeline = c.mtl_create_pipeline(device, library, "attention_batch_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(attention_batch_pipeline);
         const compute_pipeline = c.mtl_create_pipeline(device, library, "compute_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(compute_pipeline);
         const fused_ew_pipeline = c.mtl_create_pipeline(device, library, "fused_elementwise_f32") orelse return error.PipelineCreateFailed;
@@ -1168,6 +1289,7 @@ pub const MetalBackend = struct {
             .qmatvec_slice_assign_pipeline = qmatvec_slice_assign_pipeline,
             .rmsnorm_scale_pipeline = rmsnorm_scale_pipeline,
             .attention_pipeline = attention_pipeline,
+            .attention_batch_pipeline = attention_batch_pipeline,
             .compute_pipeline = compute_pipeline,
             .fused_ew_pipeline = fused_ew_pipeline,
             .library = library,
@@ -1178,6 +1300,7 @@ pub const MetalBackend = struct {
         self.flushCommands();
         c.mtl_release(self.fused_ew_pipeline);
         c.mtl_release(self.compute_pipeline);
+        c.mtl_release(self.attention_batch_pipeline);
         c.mtl_release(self.attention_pipeline);
         c.mtl_release(self.rmsnorm_scale_pipeline);
         c.mtl_release(self.qmatvec_slice_assign_pipeline);
@@ -1710,18 +1833,90 @@ const CompiledProgram = struct {
         self.encodeTyped(AttentionParams, self.backend.attention_pipeline, &buffers, attentionParams(att), 5, .{ .gx = 1 }, WG_SIZE);
     }
 
+    fn attentionBatchCompatible(first: anytype, next: anytype) bool {
+        return first.q == next.q and
+            first.k == next.k and
+            first.v == next.v and
+            first.mask == next.mask and
+            first.dst == next.dst and
+            first.has_mask == next.has_mask and
+            first.d_head == next.d_head and
+            first.seq_q == next.seq_q and
+            first.seq_kv == next.seq_kv and
+            first.scale == next.scale and
+            first.q_rs == next.q_rs and
+            first.q_cs == next.q_cs and
+            first.k_rs == next.k_rs and
+            first.k_cs == next.k_cs and
+            first.v_rs == next.v_rs and
+            first.v_cs == next.v_cs and
+            first.mask_rs == next.mask_rs and
+            first.mask_cs == next.mask_cs and
+            first.dst_rs == next.dst_rs and
+            first.dst_cs == next.dst_cs;
+    }
+
+    fn attentionBatchRunLen(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) usize {
+        _ = self;
+        if (ops.len < 2) return 0;
+        const first = switch (ops[0]) {
+            .attention => |att| att,
+            else => return 0,
+        };
+        if (!canEncodeAttention(first)) return 0;
+
+        var n: usize = 1;
+        while (n < ops.len and n < MAX_ATTENTION_BATCH_HEADS) : (n += 1) {
+            const next = switch (ops[n]) {
+                .attention => |att| att,
+                else => break,
+            };
+            if (!canEncodeAttention(next) or !attentionBatchCompatible(first, next)) break;
+        }
+        return if (n >= 2) n else 0;
+    }
+
+    fn encodeAttentionBatch(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, n: usize) void {
+        const first = ops[0].attention;
+        const buffers = [_]DeviceBuffer{
+            self.device_bufs[first.q],
+            self.device_bufs[first.k],
+            self.device_bufs[first.v],
+            self.device_bufs[first.mask],
+            self.device_bufs[first.dst],
+        };
+        var params = std.mem.zeroes(AttentionBatchParams);
+        params.n_heads = @intCast(n);
+        params.d_head = first.d_head;
+        params.seq_kv = first.seq_kv;
+        params.scale = first.scale;
+        params.q_rs = first.q_rs;
+        params.q_cs = first.q_cs;
+        params.k_rs = first.k_rs;
+        params.k_cs = first.k_cs;
+        params.v_rs = first.v_rs;
+        params.v_cs = first.v_cs;
+        params.mask_rs = first.mask_rs;
+        params.mask_cs = first.mask_cs;
+        params.dst_rs = first.dst_rs;
+        params.dst_cs = first.dst_cs;
+        for (ops[0..n], 0..) |op, i| {
+            const att = op.attention;
+            params.q_off[i] = att.q_off;
+            params.k_off[i] = att.k_off;
+            params.v_off[i] = att.v_off;
+            params.mask_off[i] = att.mask_off;
+            params.dst_off[i] = att.dst_off;
+        }
+        self.encodeTyped(AttentionBatchParams, self.backend.attention_batch_pipeline, &buffers, params, 5, .{ .gx = @intCast(n) }, WG_SIZE);
+    }
+
     fn canEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
         if (computeDispatchSpec(op) != null) return true;
         return switch (op) {
             .qmatmul => |q| q.M == 1 and @as(usize, q.weight_idx) < self.qweight_views.len,
             .rope => true,
-            .attention => |att| att.seq_q == 1 and
-                att.seq_kv <= 4096 and
-                att.d_head <= 512 and
-                att.has_mask and
-                att.q_rs == 1 and
-                att.mask_rs == 1 and
-                att.dst_rs == 1,
+            .attention => |att| canEncodeAttention(att),
             .fused_elementwise => |fe| canEncodeFusedElementwise(fe),
             else => false,
         };
@@ -1745,6 +1940,17 @@ const CompiledProgram = struct {
         self.recordRegionBackendOp(a, first);
         self.recordRegionBackendOp(b, second);
         self.recordRegionBackendOp(c_op, elapsed_ns - first - second);
+    }
+
+    fn recordRegionFusedRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, elapsed_ns: u64) void {
+        if (ops.len == 0) return;
+        const per_op = elapsed_ns / ops.len;
+        var used: u64 = 0;
+        for (ops, 0..) |op, i| {
+            const t = if (i + 1 == ops.len) elapsed_ns - used else per_op;
+            self.recordRegionBackendOp(op, t);
+            used += t;
+        }
     }
 
     fn tryEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
@@ -1813,9 +2019,23 @@ const CompiledProgram = struct {
         return encoded;
     }
 
+    fn tryEncodeAttentionBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) usize {
+        const n = self.attentionBatchRunLen(ops);
+        if (n == 0) return 0;
+        const t0 = nowNs();
+        self.encodeAttentionBatch(ops, n);
+        self.recordRegionFusedRun(ops[0..n], @intCast(nowNs() - t0));
+        return n;
+    }
+
     fn tryEncodeRegionGpuOps(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) bool {
         var i: usize = 0;
         while (i < ops.len) {
+            const attention_batch_len = self.tryEncodeAttentionBatchRun(ops[i..]);
+            if (attention_batch_len > 0) {
+                i += attention_batch_len;
+                continue;
+            }
             if (i + 2 < ops.len and self.tryEncodeRegionFusedTriple(ops[i], ops[i + 1], ops[i + 2])) {
                 i += 3;
                 continue;
@@ -1901,8 +2121,7 @@ const CompiledProgram = struct {
             },
             .attention => |att| {
                 if (!fine_grained) return false;
-                if (att.seq_q != 1 or att.seq_kv > 4096 or att.d_head > 512) return false;
-                if (!att.has_mask or att.q_rs != 1 or att.mask_rs != 1 or att.dst_rs != 1) return false;
+                if (!canEncodeAttention(att)) return false;
                 self.encodeAttention(att);
                 return true;
             },
@@ -2362,6 +2581,122 @@ test "metal backend region fuses rmsnorm scale chain" {
 
     const rt = be.getRuntimeProfile(handle).?;
     try std.testing.expectEqual(@as(u64, 10), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 8), rt.backend_dispatch_count);
+}
+
+test "metal backend region batches attention heads" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var q_input = [_]f32{ 1, 0, 0, 1 };
+    var q_out = [_]f32{0} ** 4;
+    var k_cache = [_]f32{
+        1, 0, 0, 1,
+        1, 0, 0, 1,
+    };
+    var v_cache = [_]f32{
+        10, 20, 30, 40,
+        50, 60, 70, 80,
+    };
+    var mask = [_]f32{ 0, 0 };
+    var dst = [_]f32{0} ** 4;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+
+    var ops: [9]backend_mod.DeviceOp = undefined;
+    for (ops[0..7]) |*op| {
+        op.* = .{ .qmatmul = .{
+            .dst = 1,
+            .input = 0,
+            .weight_idx = 0,
+            .M = 1,
+            .N = 4,
+            .K = 4,
+        } };
+    }
+    ops[7] = .{ .attention = .{
+        .dst = 5,
+        .q = 0,
+        .k = 2,
+        .v = 3,
+        .mask = 4,
+        .has_mask = true,
+        .d_head = 2,
+        .seq_q = 1,
+        .seq_kv = 2,
+        .scale = 1,
+        .q_off = 0,
+        .k_off = 0,
+        .v_off = 0,
+        .mask_off = 0,
+        .dst_off = 0,
+        .q_rs = 1,
+        .q_cs = 2,
+        .k_rs = 1,
+        .k_cs = 2,
+        .v_rs = 1,
+        .v_cs = 2,
+        .mask_rs = 1,
+        .mask_cs = 2,
+        .dst_rs = 1,
+        .dst_cs = 2,
+    } };
+    ops[8] = ops[7];
+    ops[8].attention.q_off = 2;
+    ops[8].attention.k_off = 4;
+    ops[8].attention.v_off = 4;
+    ops[8].attention.dst_off = 2;
+
+    const buf_sizes = [_]usize{ 4, 4, 8, 8, 2, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&q_input), .size = 4 * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&q_out), .size = 4 * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&k_cache), .size = 8 * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&v_cache), .size = 8 * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&mask), .size = 2 * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&dst), .size = 4 * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 6,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var got: [4]f32 = undefined;
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 5, .host_ptr = @ptrCast(&got), .size = 4 * 4 }};
+    be.executeProgram(handle, &.{}, &out);
+
+    const hi: f32 = @exp(@as(f32, 1.0)) / (@exp(@as(f32, 1.0)) + 1.0);
+    const lo: f32 = 1.0 / (@exp(@as(f32, 1.0)) + 1.0);
+    const expected = [_]f32{
+        hi * 10 + lo * 30,
+        hi * 20 + lo * 40,
+        lo * 50 + hi * 70,
+        lo * 60 + hi * 80,
+    };
+    for (expected, got) |want, actual| {
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
+
+    const rt = be.getRuntimeProfile(handle).?;
+    try std.testing.expectEqual(@as(u64, 9), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_dispatch_count);
 }
