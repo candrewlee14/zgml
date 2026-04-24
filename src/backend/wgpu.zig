@@ -64,6 +64,10 @@ const QMatMulParams = extern struct {
     N: u32,
     K: u32,
     block_size: u32,
+    input_offset: u32,
+    input_row_stride: u32,
+    dst_offset: u32,
+    dst_row_stride: u32,
 };
 
 const ComputeParams = extern struct {
@@ -180,6 +184,10 @@ fn qmatmulParams(q: anytype, block_size: usize) QMatMulParams {
         .N = q.N,
         .K = q.K,
         .block_size = @intCast(block_size),
+        .input_offset = q.input_offset,
+        .input_row_stride = if (q.input_row_stride != 0) q.input_row_stride else q.K,
+        .dst_offset = q.dst_offset,
+        .dst_row_stride = if (q.dst_row_stride != 0) q.dst_row_stride else q.N,
     };
 }
 

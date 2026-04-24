@@ -3,7 +3,6 @@
 #
 # Prerequisites:
 #   brew install llama.cpp
-#   python3 scripts/download_smollm.py
 #   python3 -c "from huggingface_hub import hf_hub_download; \
 #     hf_hub_download('mradermacher/SmolLM-135M-GGUF','SmolLM-135M.f16.gguf',local_dir='data/smollm'); \
 #     hf_hub_download('mradermacher/SmolLM-135M-GGUF','SmolLM-135M.Q8_0.gguf',local_dir='data/smollm')"
@@ -25,9 +24,9 @@ REPS=${3:-3}
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
 
-SAFETENSORS="data/smollm/model.safetensors"
 GGUF_F16="data/smollm/SmolLM-135M.f16.gguf"
 GGUF_Q8="data/smollm/SmolLM-135M.Q8_0.gguf"
+ZGML_MODEL="${ZGML_MODEL:-$GGUF_Q8}"
 ZGML_BIN="./zig-out/bin/bench-llama-smollm"
 OUT_DIR="${OUT_DIR:-bench-results}"
 STAMP="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -37,7 +36,7 @@ JSON_OUT="${BASE}.json"
 
 mkdir -p "$OUT_DIR"
 
-for f in "$SAFETENSORS" "$GGUF_F16" "$GGUF_Q8"; do
+for f in "$ZGML_MODEL" "$GGUF_F16" "$GGUF_Q8"; do
     [ -f "$f" ] || { echo "Missing: $f. See prerequisites in this script."; exit 1; }
 done
 command -v llama-bench >/dev/null || { echo "llama-bench not found. Run: brew install llama.cpp"; exit 1; }
@@ -60,7 +59,7 @@ echo "machine=$MACHINE"
 echo
 
 echo "Running zgml benchmark..."
-ZGML_OUT="$("$ZGML_BIN" "$SAFETENSORS" "$PROMPT" "$GEN" "$REPS" 2>&1)"
+ZGML_OUT="$("$ZGML_BIN" "$ZGML_MODEL" "$PROMPT" "$GEN" "$REPS" 2>&1)"
 
 echo "Running llama.cpp Metal F16 benchmark..."
 GGML_F16_OUT="$(llama-bench -m "$GGUF_F16" -p "$PROMPT" -n "$GEN" -r "$REPS" -o md 2>&1 | grep -E '^\|')"
@@ -82,6 +81,9 @@ cat > "$MD_OUT" <<EOF
 - prompt_tokens: \`$PROMPT\`
 - gen_tokens: \`$GEN\`
 - repetitions: \`$REPS\`
+- zgml_model: \`$ZGML_MODEL\`
+- llama_cpp_f16_model: \`$GGUF_F16\`
+- llama_cpp_q8_model: \`$GGUF_Q8\`
 - zgml_commit: \`$ZGML_COMMIT\`
 - zig_version: \`$ZIG_VERSION\`
 - llama_bench: \`$LLAMA_BENCH_PATH\`
@@ -117,7 +119,7 @@ $ZGML_STATUS
 \`\`\`
 EOF
 
-export DATE_UTC MACHINE PROMPT GEN REPS ZGML_COMMIT ZGML_STATUS ZIG_VERSION
+export DATE_UTC MACHINE PROMPT GEN REPS ZGML_MODEL GGUF_F16 GGUF_Q8 ZGML_COMMIT ZGML_STATUS ZIG_VERSION
 export LLAMA_BENCH_PATH LLAMA_BREW_VERSION GGML_BREW_VERSION
 export ZGML_OUT GGML_F16_OUT GGML_Q8_OUT GGML_CPU_F16_OUT GGML_CPU_Q8_OUT
 python3 - <<'PY' > "$JSON_OUT"
@@ -135,6 +137,9 @@ data = {
         "zgml_commit": os.environ["ZGML_COMMIT"],
         "zgml_status": os.environ["ZGML_STATUS"],
         "zig_version": os.environ["ZIG_VERSION"],
+        "zgml_model": os.environ["ZGML_MODEL"],
+        "llama_cpp_f16_model": os.environ["GGUF_F16"],
+        "llama_cpp_q8_model": os.environ["GGUF_Q8"],
         "llama_bench_path": os.environ["LLAMA_BENCH_PATH"],
         "llama_cpp_brew": os.environ["LLAMA_BREW_VERSION"],
         "ggml_brew": os.environ["GGML_BREW_VERSION"],

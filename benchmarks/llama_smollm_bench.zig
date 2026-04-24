@@ -5,7 +5,7 @@
 //!
 //! Run:
 //!   zig build bench-llama-smollm
-//!   ./zig-out/bin/bench-llama-smollm [model.safetensors] [prompt_tokens] [gen_tokens] [repetitions]
+//!   ./zig-out/bin/bench-llama-smollm [model.safetensors|model.gguf] [prompt_tokens] [gen_tokens] [repetitions]
 
 const std = @import("std");
 const zgml = @import("zgml");
@@ -50,9 +50,23 @@ const BenchResult = struct {
 };
 
 fn loadWeights(session: *Session, alloc: std.mem.Allocator, model_path: []const u8, io: std.Io) !void {
-    var sf = try zgml.safetensors.SafetensorsFile.open(alloc, model_path, io);
-    defer sf.deinit();
-    try zgml.models.llama_loader.loadLlama(f32, config, &session.model, &sf);
+    return switch (zgml.llm.inferFileKind(model_path) orelse return error.UnknownModelFormat) {
+        .safetensors => {
+            var sf = try zgml.safetensors.SafetensorsFile.open(alloc, model_path, io);
+            defer sf.deinit();
+            session.clearDirectQuantWeights();
+            try zgml.models.llama_loader.loadLlama(f32, config, &session.model, &sf);
+        },
+        .gguf => {
+            var gf = try zgml.gguf.GGUFFile.open(alloc, io, model_path);
+            defer gf.deinit();
+            try session.loadGGUFDirectQuantized(&gf);
+        },
+    };
+}
+
+fn isGGUF(model_path: []const u8) bool {
+    return (zgml.llm.inferFileKind(model_path) orelse return false) == .gguf;
 }
 
 fn runVariant(
@@ -72,7 +86,7 @@ fn runVariant(
     defer session.deinit();
 
     try loadWeights(&session, alloc, cfg.model_path, io);
-    if (quantized) try session.quantize();
+    if (quantized and !isGGUF(cfg.model_path)) try session.quantize();
     if (quant_kv) try session.quantizeKV();
 
     // Pre-build the prompt token buffer once. The session takes it verbatim.
@@ -116,6 +130,7 @@ fn runVariant(
         "  {s}: prompt {d:>7.1} tok/s ({d:>6.2} ms avg)  decode {d:>7.1} tok/s ({d:>6.2} ms avg)\n",
         .{ label, prompt_tok_s, prompt_avg_ms, gen_tok_s, gen_avg_ms },
     );
+    writer.flush() catch {};
 
     return .{
         .prompt_tok_s = prompt_tok_s,
@@ -165,6 +180,8 @@ fn runDeviceVariant(
         .output_tensor = session.plan.trace.logits,
         .output_host_buf = logits_buf.ptr,
         .output_len = config.vocab_size,
+        .quant_weights = session.plan.quant_weights,
+        .quant_map = &session.plan.quant_map,
     });
     defer device.deinit();
 
@@ -235,6 +252,7 @@ fn runDeviceVariant(
         "  {s}: prompt {s:>7} tok/s ({s:>6} ms avg)  decode {d:>7.1} tok/s ({d:>6.2} ms avg)\n",
         .{ label, "  —  ", " —  ", gen_tok_s, gen_avg_ms },
     );
+    writer.flush() catch {};
 
     if (device.getRuntimeProfile()) |rt| {
         const est = profile.estimateProgram(device.program_ops);
@@ -263,24 +281,30 @@ pub fn main(init: std.process.Init) !void {
         .gen_tokens = try parseArgOrDefault(args, 3, 200),
         .repetitions = try parseArgOrDefault(args, 4, 3),
     };
+    const model_is_gguf = isGGUF(cfg.model_path);
 
     try stdout.interface.print("\nSmolLM LLaMA Benchmark — zgml\n", .{});
     try stdout.interface.print("================================\n", .{});
     try stdout.interface.print("  model={s}\n", .{cfg.model_path});
     try stdout.interface.print("  prompt={d}, gen={d}, reps={d}\n\n", .{ cfg.prompt_tokens, cfg.gen_tokens, cfg.repetitions });
+    stdout.interface.flush() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    _ = try runVariant("default f32      ", null, false, false, cfg, &stdout.interface, io, alloc);
+    _ = try runVariant(if (model_is_gguf) "default gguf    " else "default f32      ", null, false, false, cfg, &stdout.interface, io, alloc);
 
     var cpu_backend = CpuBackend{};
-    _ = try runVariant("cpu-backend f32  ", cpu_backend.backend(), false, false, cfg, &stdout.interface, io, alloc);
-    _ = try runVariant("default int8     ", null, true, false, cfg, &stdout.interface, io, alloc);
-    _ = try runVariant("cpu-backend i8   ", cpu_backend.backend(), true, false, cfg, &stdout.interface, io, alloc);
-    _ = try runVariant("i8 + kv-i8       ", null, true, true, cfg, &stdout.interface, io, alloc);
-    _ = try runVariant("kv-i8 only       ", null, false, true, cfg, &stdout.interface, io, alloc);
+    _ = try runVariant(if (model_is_gguf) "cpu-backend gguf" else "cpu-backend f32  ", cpu_backend.backend(), false, false, cfg, &stdout.interface, io, alloc);
+    if (!model_is_gguf) {
+        _ = try runVariant("default int8     ", null, true, false, cfg, &stdout.interface, io, alloc);
+        _ = try runVariant("cpu-backend i8   ", cpu_backend.backend(), true, false, cfg, &stdout.interface, io, alloc);
+        _ = try runVariant("i8 + kv-i8       ", null, true, true, cfg, &stdout.interface, io, alloc);
+        _ = try runVariant("kv-i8 only       ", null, false, true, cfg, &stdout.interface, io, alloc);
+    } else {
+        _ = try runVariant("gguf + kv-i8    ", null, false, true, cfg, &stdout.interface, io, alloc);
+    }
 
     if (is_macos) metal: {
         var metal_be = MetalBackend.init() catch |err| {
@@ -288,9 +312,9 @@ pub fn main(init: std.process.Init) !void {
             break :metal;
         };
         defer metal_be.deinit();
-        _ = try runVariant("metal f32        ", metal_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
-        _ = try runVariant("metal int8       ", metal_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
-        _ = try runDeviceVariant("metal device f16 ", metal_be.backend(), cfg, &stdout.interface, io, alloc);
+        _ = try runVariant(if (model_is_gguf) "metal gguf      " else "metal f32        ", metal_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
+        if (!model_is_gguf) _ = try runVariant("metal int8       ", metal_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
+        _ = try runDeviceVariant(if (model_is_gguf) "metal device q  " else "metal device f16", metal_be.backend(), cfg, &stdout.interface, io, alloc);
     }
 
     if (have_wgpu) {
@@ -299,9 +323,9 @@ pub fn main(init: std.process.Init) !void {
             return;
         };
         defer wgpu_be.deinit();
-        _ = try runVariant("wgpu f32         ", wgpu_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
-        _ = try runVariant("wgpu int8        ", wgpu_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
-        _ = try runDeviceVariant("wgpu device f16 ", wgpu_be.backend(), cfg, &stdout.interface, io, alloc);
+        _ = try runVariant(if (model_is_gguf) "wgpu gguf       " else "wgpu f32         ", wgpu_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
+        if (!model_is_gguf) _ = try runVariant("wgpu int8        ", wgpu_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
+        _ = try runDeviceVariant(if (model_is_gguf) "wgpu device q   " else "wgpu device f16 ", wgpu_be.backend(), cfg, &stdout.interface, io, alloc);
     }
 
     try stdout.interface.writeByte('\n');

@@ -11,6 +11,10 @@
 struct QMatMulParams {
     M: u32, N: u32, K: u32,
     block_size: u32,
+    input_offset: u32,
+    input_row_stride: u32,
+    dst_offset: u32,
+    dst_row_stride: u32,
 };
 
 @group(0) @binding(0) var<storage, read>       weight_data   : array<i32>;
@@ -69,7 +73,7 @@ fn main(
             let g_row = row0 + i_r;
             let g_col = kt + i_c;
             if (g_row < p.M && g_col < p.K) {
-                tI[i_r * BK_PAD + i_c] = input[g_row * p.K + g_col];
+                tI[i_r * BK_PAD + i_c] = input[p.input_offset + g_row * p.input_row_stride + g_col];
             } else {
                 tI[i_r * BK_PAD + i_c] = 0.0;
             }
@@ -139,7 +143,7 @@ fn main(
         for (var tn = 0u; tn < TN; tn++) {
             let g_col = col0 + thread_col + tn;
             if (g_col < p.N) {
-                output[g_row * p.N + g_col] = acc[tm * TN + tn];
+                output[p.dst_offset + g_row * p.dst_row_stride + g_col] = acc[tm * TN + tn];
             }
         }
     }

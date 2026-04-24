@@ -147,8 +147,8 @@ fn quantizedWeightFromInfo(
     return .{
         .data = data,
         .scales = scales,
-        .rows = @intCast(info.dims[1]),
-        .cols = @intCast(info.dims[0]),
+        .rows = @intCast(info.dims[0]),
+        .cols = @intCast(info.dims[1]),
         .block_size = block_size,
     };
 }
@@ -539,7 +539,7 @@ test "direct Q8_0 quantized weight import preserves GGUF block layout" {
     raw[3] = @as(u8, @bitCast(@as(i8, -5)));
     for (raw[4..]) |*b| b.* = 0;
 
-    const info = TensorInfo{ .name = "w", .n_dims = 2, .dims = .{ 2, 16, 1, 1 }, .type_ = .q8_0, .offset = 0 };
+    const info = TensorInfo{ .name = "w", .n_dims = 2, .dims = .{ 16, 2, 1, 1 }, .type_ = .q8_0, .offset = 0 };
     const qw = try quantizedWeightFromInfo(f32, alloc, info, &raw);
     defer qw.deinit(alloc);
 
@@ -561,7 +561,7 @@ test "direct Q4_0 quantized weight import expands nibbles to int8 weights" {
     raw[2] = 0xF8; // element 0 => 0, element 1 => 7
     for (raw[3..]) |*b| b.* = 0;
 
-    const info = TensorInfo{ .name = "w", .n_dims = 2, .dims = .{ 2, 16, 1, 1 }, .type_ = .q4_0, .offset = 0 };
+    const info = TensorInfo{ .name = "w", .n_dims = 2, .dims = .{ 16, 2, 1, 1 }, .type_ = .q4_0, .offset = 0 };
     const qw = try quantizedWeightFromInfo(f32, alloc, info, &raw);
     defer qw.deinit(alloc);
 
@@ -699,8 +699,8 @@ test "loadDirectQuantized maps GGUF quantized matmul tensors by parameter pointe
 
     try writeTestString(writer, "output.weight");
     try testWriteInt(u32, writer, 2);
-    try testWriteInt(u64, writer, 2);
     try testWriteInt(u64, writer, 16);
+    try testWriteInt(u64, writer, 2);
     try testWriteInt(u32, writer, @intFromEnum(GGMLType.q8_0));
     try testWriteInt(u64, writer, 0);
 

@@ -17,6 +17,7 @@ pub const Capabilities = struct {
     dense_matmul_f32: bool = false,
     qmatmul: bool = false,
     fused_elementwise: bool = false,
+    max_fused_elementwise_steps: ?u32 = null,
     f16_weight_promotion: bool = false,
     dynamic_program_refresh: bool = false,
     attention: Attention = .{},
@@ -50,6 +51,7 @@ pub const Capabilities = struct {
         .dense_matmul_f32 = true,
         .qmatmul = true,
         .fused_elementwise = true,
+        .max_fused_elementwise_steps = 8,
         .dynamic_program_refresh = true,
         .attention = .{ .supported = true, .max_d_head = 512 },
     };
@@ -81,6 +83,9 @@ pub const Capabilities = struct {
             .attention => |att| self.attention.supports(att.seq_kv, att.d_head),
             .fused_elementwise => |fe| {
                 if (!self.fused_elementwise) return false;
+                if (self.max_fused_elementwise_steps) |max| {
+                    if (fe.steps.len > max) return false;
+                }
                 for (fe.steps) |step| {
                     if (!self.supportsElementwiseOp(step.op)) return false;
                 }
@@ -129,7 +134,18 @@ pub const FusedEwStep = struct {
 pub const DeviceOp = union(enum) {
     elementwise: struct { op: Op, dst: u16, src0: u16, src1: u16, n: u32, dst_offset: u32 = 0, src0_offset: u32 = 0, src1_offset: u32 = 0 },
     matmul: struct { dst: u16, a: u16, b: u16, geom: MatMulGeometry },
-    qmatmul: struct { dst: u16, input: u16, weight_idx: u16, M: u32, N: u32, K: u32 },
+    qmatmul: struct {
+        dst: u16,
+        input: u16,
+        weight_idx: u16,
+        M: u32,
+        N: u32,
+        K: u32,
+        input_offset: u32 = 0,
+        input_row_stride: u32 = 0,
+        dst_offset: u32 = 0,
+        dst_row_stride: u32 = 0,
+    },
     softmax: struct { dst: u16, src: u16, rows: u32, cols: u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
     layernorm: struct { dst: u16, src: u16, rows: u32, cols: u32, eps: f32 = 1e-5, src_offset: u32 = 0, dst_offset: u32 = 0 },
     rmsnorm: struct { dst: u16, src: u16, rows: u32, cols: u32, eps: f32 = 1e-5, src_offset: u32 = 0, dst_offset: u32 = 0 },
@@ -343,7 +359,18 @@ test "program support validates capabilities and qweight descriptors" {
     const fused_ops = [_]DeviceOp{.{ .fused_elementwise = .{ .steps = &fused_steps, .n = 1, .dst = 1, .src = 0, .dst_offset = 0, .src_offset = 0 } }};
     const fused_program = DeviceProgram{ .ops = &fused_ops, .n_buffers = 2, .buffer_sizes = &.{ 1, 1 }, .initial_uploads = &.{} };
     try std.testing.expect(!fused_program.isSupportedBy(Capabilities.wgpu));
+    try std.testing.expect(fused_program.isSupportedBy(Capabilities.metal));
     try std.testing.expect(fused_program.isSupportedBy(Capabilities.reference_cpu));
+
+    const many_fused_steps = [_]FusedEwStep{.{ .op = .relu, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 }} ** 9;
+    const too_large_fused = DeviceProgram{
+        .ops = &.{.{ .fused_elementwise = .{ .steps = &many_fused_steps, .n = 1, .dst = 1, .src = 0, .dst_offset = 0, .src_offset = 0 } }},
+        .n_buffers = 2,
+        .buffer_sizes = &.{ 1, 1 },
+        .initial_uploads = &.{},
+    };
+    try std.testing.expect(!too_large_fused.isSupportedBy(Capabilities.metal));
+    try std.testing.expect(too_large_fused.isSupportedBy(Capabilities.reference_cpu));
 
     const qdata = [_]i8{ 1, 2, 3, 4 };
     const scales = [_]f32{1};

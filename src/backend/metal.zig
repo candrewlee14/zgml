@@ -119,6 +119,10 @@ const shader_source =
     \\struct QMatMulParams {
     \\    uint M; uint N; uint K;
     \\    uint block_size;
+    \\    uint input_offset;
+    \\    uint input_row_stride;
+    \\    uint dst_offset;
+    \\    uint dst_row_stride;
     \\};
     \\
     \\// Simdgroup-accelerated quantized matmul: dequantize during tile load.
@@ -150,7 +154,7 @@ const shader_source =
     \\        for (uint i = tid; i < TILE * 8; i += 128) {
     \\            uint r = i / 8, c = i % 8;
     \\            uint ir = gRow + r, ic = kt + c;
-    \\            tI[i] = (ir < p.M && ic < p.K) ? input[ir * p.K + ic] : 0.0f;
+    \\            tI[i] = (ir < p.M && ic < p.K) ? input[p.input_offset + ir * p.input_row_stride + ic] : 0.0f;
     \\        }
     \\        for (uint i = tid; i < 8 * TILE; i += 128) {
     \\            uint r = i / TILE, c = i % TILE;
@@ -189,7 +193,7 @@ const shader_source =
     \\        uint r = i / TILE, c = i % TILE;
     \\        uint cr = gRow + r, cc = gCol + c;
     \\        if (cr < p.M && cc < p.N)
-    \\            output[cr * p.N + cc] = tC[i];
+    \\            output[p.dst_offset + cr * p.dst_row_stride + cc] = tC[i];
     \\    }
     \\}
     \\
@@ -532,6 +536,93 @@ const shader_source =
     \\        default: break;
     \\    }
     \\}
+    \\
+    \\constant uint MAX_FUSED_EW_STEPS = 8;
+    \\constant uint MAX_FUSED_EW_SECONDARIES = 8;
+    \\
+    \\struct FusedEwParams {
+    \\    uint n_elements;
+    \\    uint n_steps;
+    \\    uint dst_offset;
+    \\    uint src_offset;
+    \\    uint op[MAX_FUSED_EW_STEPS];
+    \\    uint is_swapped[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_slot[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_offset[MAX_FUSED_EW_STEPS];
+    \\};
+    \\
+    \\float fused_secondary(
+    \\    uint slot,
+    \\    uint idx,
+    \\    device const float* s0,
+    \\    device const float* s1,
+    \\    device const float* s2,
+    \\    device const float* s3,
+    \\    device const float* s4,
+    \\    device const float* s5,
+    \\    device const float* s6,
+    \\    device const float* s7
+    \\) {
+    \\    switch (slot) {
+    \\        case 0: return s0[idx];
+    \\        case 1: return s1[idx];
+    \\        case 2: return s2[idx];
+    \\        case 3: return s3[idx];
+    \\        case 4: return s4[idx];
+    \\        case 5: return s5[idx];
+    \\        case 6: return s6[idx];
+    \\        default: return s7[idx];
+    \\    }
+    \\}
+    \\
+    \\float fused_unary(uint op, float v) {
+    \\    switch (op) {
+    \\        case 9: return -v;
+    \\        case 10: return abs(v);
+    \\        case 11: return sign(v);
+    \\        case 12: return (v > 0.0f) ? 1.0f : 0.0f;
+    \\        case 13: return max(v, 0.0f);
+    \\        case 14: return sqrt(v);
+    \\        case 15: return 1.0f / v;
+    \\        case 16: return exp(v);
+    \\        case 17: return log(v);
+    \\        case 18: {
+    \\            float c = 0.7978845608f * (v + 0.044715f * v * v * v);
+    \\            return 0.5f * v * (1.0f + precise::tanh(c));
+    \\        }
+    \\        default: return v;
+    \\    }
+    \\}
+    \\
+    \\kernel void fused_elementwise_f32(
+    \\    device const float* src [[buffer(0)]],
+    \\    device float* dst [[buffer(1)]],
+    \\    device const float* s0 [[buffer(2)]],
+    \\    device const float* s1 [[buffer(3)]],
+    \\    device const float* s2 [[buffer(4)]],
+    \\    device const float* s3 [[buffer(5)]],
+    \\    device const float* s4 [[buffer(6)]],
+    \\    device const float* s5 [[buffer(7)]],
+    \\    device const float* s6 [[buffer(8)]],
+    \\    device const float* s7 [[buffer(9)]],
+    \\    constant FusedEwParams& p [[buffer(10)]],
+    \\    uint gid [[thread_position_in_grid]]
+    \\) {
+    \\    if (gid >= p.n_elements) return;
+    \\    float v = src[p.src_offset + gid];
+    \\    for (uint step = 0; step < p.n_steps; step++) {
+    \\        uint op = p.op[step];
+    \\        if (op == 7 || op == 8) {
+    \\            uint sec_idx = p.secondary_offset[step] + gid;
+    \\            float other = fused_secondary(p.secondary_slot[step], sec_idx, s0, s1, s2, s3, s4, s5, s6, s7);
+    \\            if (op == 7) v = (p.is_swapped[step] != 0) ? other + v : v + other;
+    \\            else v = (p.is_swapped[step] != 0) ? other * v : v * other;
+    \\        } else {
+    \\            v = fused_unary(op, v);
+    \\        }
+    \\    }
+    \\    dst[p.dst_offset + gid] = v;
+    \\}
 ;
 
 // ── Kernel param structs (must match MSL layout) ──────────────────
@@ -555,6 +646,10 @@ const QMatMulParams = extern struct {
     N: u32,
     K: u32,
     block_size: u32,
+    input_offset: u32,
+    input_row_stride: u32,
+    dst_offset: u32,
+    dst_row_stride: u32,
 };
 
 const MatVecParams = extern struct {
@@ -615,6 +710,20 @@ const ComputeParams = extern struct {
     src1_offset: u32,
 };
 
+const MAX_FUSED_EW_STEPS: usize = 8;
+const MAX_FUSED_EW_SECONDARIES: usize = 8;
+
+const FusedEwParams = extern struct {
+    n_elements: u32,
+    n_steps: u32,
+    dst_offset: u32,
+    src_offset: u32,
+    op: [MAX_FUSED_EW_STEPS]u32,
+    is_swapped: [MAX_FUSED_EW_STEPS]u32,
+    secondary_slot: [MAX_FUSED_EW_STEPS]u32,
+    secondary_offset: [MAX_FUSED_EW_STEPS]u32,
+};
+
 const WG_SIZE: u32 = 256;
 const MATMUL_THREADS: u32 = 128;
 
@@ -664,6 +773,10 @@ fn qmatmulParams(q: anytype, block_size: usize) QMatMulParams {
         .N = q.N,
         .K = q.K,
         .block_size = @intCast(block_size),
+        .input_offset = q.input_offset,
+        .input_row_stride = if (q.input_row_stride != 0) q.input_row_stride else q.K,
+        .dst_offset = q.dst_offset,
+        .dst_row_stride = if (q.dst_row_stride != 0) q.dst_row_stride else q.N,
     };
 }
 
@@ -826,8 +939,10 @@ pub const MetalBackend = struct {
     rope_pipeline: *anyopaque,
     attention_pipeline: *anyopaque,
     compute_pipeline: *anyopaque,
+    fused_ew_pipeline: *anyopaque,
     library: *anyopaque,
     active_commands: ?*anyopaque = null,
+    fine_grained_program_dispatch: bool = false,
 
     pub fn init() !MetalBackend {
         const device = c.mtl_create_device() orelse return error.MetalNotAvailable;
@@ -852,6 +967,8 @@ pub const MetalBackend = struct {
         const attention_pipeline = c.mtl_create_pipeline(device, library, "attention_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(attention_pipeline);
         const compute_pipeline = c.mtl_create_pipeline(device, library, "compute_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(compute_pipeline);
+        const fused_ew_pipeline = c.mtl_create_pipeline(device, library, "fused_elementwise_f32") orelse return error.PipelineCreateFailed;
 
         return .{
             .device = device,
@@ -863,12 +980,14 @@ pub const MetalBackend = struct {
             .rope_pipeline = rope_pipeline,
             .attention_pipeline = attention_pipeline,
             .compute_pipeline = compute_pipeline,
+            .fused_ew_pipeline = fused_ew_pipeline,
             .library = library,
         };
     }
 
     pub fn deinit(self: *MetalBackend) void {
         self.flushCommands();
+        c.mtl_release(self.fused_ew_pipeline);
         c.mtl_release(self.compute_pipeline);
         c.mtl_release(self.attention_pipeline);
         c.mtl_release(self.rope_pipeline);
@@ -879,6 +998,13 @@ pub const MetalBackend = struct {
         c.mtl_release(self.library);
         c.mtl_release(self.queue);
         c.mtl_release(self.device);
+    }
+
+    /// Enable one-dispatch-per-DeviceOp execution for experiments and
+    /// conformance tests. Decode keeps this off by default until layer-level
+    /// fusion removes the tiny-dispatch overhead.
+    pub fn setFineGrainedProgramDispatch(self: *MetalBackend, enabled: bool) void {
+        self.fine_grained_program_dispatch = enabled;
     }
 
     /// Ensure a command session is active, creating one if needed.
@@ -998,7 +1124,7 @@ const CompiledProgram = struct {
         grid: DispatchGrid,
         threads_x: u32,
     ) void {
-        var raw_buffers: [6]?*anyopaque = undefined;
+        var raw_buffers: [16]?*anyopaque = undefined;
         for (buffers, 0..) |buf, i| raw_buffers[i] = buf.ptr;
         c.mtl_encode_dispatch(
             self.backend.ensureCommands(),
@@ -1028,19 +1154,74 @@ const CompiledProgram = struct {
         self.encode(pipeline, buffers, &params, @sizeOf(Params), params_index, grid, threads_x);
     }
 
+    fn tryEncodeFusedElementwise(self: *CompiledProgram, fe: anytype) bool {
+        if (!self.backend.fine_grained_program_dispatch) return false;
+        if (fe.steps.len > MAX_FUSED_EW_STEPS) return false;
+
+        var params = std.mem.zeroes(FusedEwParams);
+        params.n_elements = fe.n;
+        params.n_steps = @intCast(fe.steps.len);
+        params.dst_offset = fe.dst_offset;
+        params.src_offset = fe.src_offset;
+
+        var buffers: [2 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
+        buffers[0] = self.device_bufs[fe.src];
+        buffers[1] = self.device_bufs[fe.dst];
+        for (buffers[2..]) |*buf| buf.* = self.device_bufs[fe.src];
+
+        var secondary_bufs: [MAX_FUSED_EW_SECONDARIES]u16 = undefined;
+        var secondary_count: usize = 0;
+
+        for (fe.steps, 0..) |step, i| {
+            params.op[i] = @intFromEnum(step.op);
+            params.is_swapped[i] = @intFromBool(step.is_swapped);
+            params.secondary_offset[i] = step.secondary_offset;
+
+            if (step.op.isBinary()) {
+                const slot = for (secondary_bufs[0..secondary_count], 0..) |buf_idx, slot_idx| {
+                    if (buf_idx == step.secondary_buf) break slot_idx;
+                } else blk: {
+                    if (secondary_count >= MAX_FUSED_EW_SECONDARIES) return false;
+                    const next = secondary_count;
+                    secondary_bufs[next] = step.secondary_buf;
+                    buffers[2 + next] = self.device_bufs[step.secondary_buf];
+                    secondary_count += 1;
+                    break :blk next;
+                };
+                params.secondary_slot[i] = @intCast(slot);
+            }
+        }
+
+        self.encodeTyped(
+            FusedEwParams,
+            self.backend.fused_ew_pipeline,
+            buffers[0..],
+            params,
+            10,
+            .{ .gx = linearGrid(fe.n) },
+            WG_SIZE,
+        );
+        return true;
+    }
+
     fn tryEncodeGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
-        if (computeDispatchSpec(op)) |spec| {
-            const buffers = [_]DeviceBuffer{
-                self.device_bufs[spec.src0],
-                self.device_bufs[spec.src1],
-                self.device_bufs[spec.dst],
-            };
-            self.encodeTyped(ComputeParams, self.backend.compute_pipeline, &buffers, spec.params, 3, spec.grid, WG_SIZE);
-            return true;
+        const fine_grained = self.backend.fine_grained_program_dispatch;
+
+        if (fine_grained) {
+            if (computeDispatchSpec(op)) |spec| {
+                const buffers = [_]DeviceBuffer{
+                    self.device_bufs[spec.src0],
+                    self.device_bufs[spec.src1],
+                    self.device_bufs[spec.dst],
+                };
+                self.encodeTyped(ComputeParams, self.backend.compute_pipeline, &buffers, spec.params, 3, spec.grid, WG_SIZE);
+                return true;
+            }
         }
 
         switch (op) {
             .matmul => |m| {
+                if (!fine_grained and m.geom.M < 16) return false;
                 const buffers = [_]DeviceBuffer{
                     self.device_bufs[m.a],
                     self.device_bufs[m.b],
@@ -1050,6 +1231,7 @@ const CompiledProgram = struct {
                 return true;
             },
             .qmatmul => |q| {
+                if (!fine_grained and q.M < 16) return false;
                 const w = self.qweight_views[q.weight_idx];
                 const buffers = [_]DeviceBuffer{
                     w.data,
@@ -1061,6 +1243,7 @@ const CompiledProgram = struct {
                 return true;
             },
             .rope => |rr| {
+                if (!fine_grained) return false;
                 const buffers = [_]DeviceBuffer{
                     self.device_bufs[rr.src],
                     self.device_bufs[rr.cos_sin],
@@ -1080,6 +1263,7 @@ const CompiledProgram = struct {
                 return true;
             },
             .attention => |att| {
+                if (!fine_grained) return false;
                 if (att.seq_q != 1 or att.seq_kv > 4096 or att.d_head > 512) return false;
                 if (!att.has_mask or att.q_rs != 1 or att.mask_rs != 1 or att.dst_rs != 1) return false;
                 const buffers = [_]DeviceBuffer{
@@ -1092,8 +1276,8 @@ const CompiledProgram = struct {
                 self.encodeTyped(AttentionParams, self.backend.attention_pipeline, &buffers, attentionParams(att), 5, .{ .gx = 1 }, WG_SIZE);
                 return true;
             },
-            .elementwise, .softmax, .layernorm, .rmsnorm, .reduce, .repeat, .slice_assign => unreachable,
-            .fused_elementwise => return false,
+            .elementwise, .softmax, .layernorm, .rmsnorm, .reduce, .repeat, .slice_assign => return false,
+            .fused_elementwise => |fe| return self.tryEncodeFusedElementwise(fe),
         }
     }
 };
@@ -1208,6 +1392,7 @@ test "metal backend compiled program matmul" {
         else => return err,
     };
     defer metal.deinit();
+    metal.setFineGrainedProgramDispatch(true);
     const be = metal.backend();
 
     // Program: buf0(A) × buf1(B) → buf2(dst). 2x3 × 3x2 = 2x2.

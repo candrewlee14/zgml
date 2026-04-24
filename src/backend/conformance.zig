@@ -79,7 +79,8 @@ fn runCoreCases(be: backend_mod.Backend, tol: f32) !void {
     }
 
     {
-        var input = [_]f32{ 1, 2, 3, -1, 0.5, 4 };
+        var input = [_]f32{ 99, 1, 2, 3, 99, -1, 0.5, 4, 99 };
+        var dst_init = [_]f32{-7} ** 9;
         const qdata = [_]i8{ 2, -1, 3, 4, -2, 1, -3, 5, 2 };
         const scales = [_]f32{ 0.5, 0.25, 1.0 };
         const ops = [_]backend_mod.DeviceOp{.{ .qmatmul = .{
@@ -89,9 +90,16 @@ fn runCoreCases(be: backend_mod.Backend, tol: f32) !void {
             .M = 2,
             .N = 3,
             .K = 3,
+            .input_offset = 1,
+            .input_row_stride = 4,
+            .dst_offset = 1,
+            .dst_row_stride = 4,
         } }};
-        const sizes = [_]usize{ 6, 6 };
-        const uploads = [_]backend_mod.ProgramIO{.{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = 6 * @sizeOf(f32) }};
+        const sizes = [_]usize{ 9, 9 };
+        const uploads = [_]backend_mod.ProgramIO{
+            .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * @sizeOf(f32) },
+            .{ .buf_idx = 1, .host_ptr = @ptrCast(&dst_init), .size = dst_init.len * @sizeOf(f32) },
+        };
         const qweights = [_]backend_mod.QuantizedWeightUpload{.{
             .data = &qdata,
             .scales = &scales,
@@ -100,7 +108,7 @@ fn runCoreCases(be: backend_mod.Backend, tol: f32) !void {
             .block_size = 4,
         }};
         const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 2, .buffer_sizes = &sizes, .initial_uploads = &uploads, .qweights = &qweights };
-        try assertBackendMatchesReference(be, program, 1, 6, tol);
+        try assertBackendMatchesReference(be, program, 1, 9, tol);
     }
 
     {
@@ -349,6 +357,7 @@ test "metal backend conforms to reference core ops" {
         else => return err,
     };
     defer metal.deinit();
+    metal.setFineGrainedProgramDispatch(true);
     try runCoreCases(metal.backend(), 1e-5);
 }
 

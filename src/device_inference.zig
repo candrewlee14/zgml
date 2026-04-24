@@ -105,7 +105,11 @@ pub fn DeviceInference(comptime T: type) type {
                                 },
                                 .elementwise_chain => {
                                     const chain = fp.payload.elementwise_chain;
-                                    if (opts.be.capabilities.fused_elementwise) {
+                                    const can_fuse = opts.be.capabilities.fused_elementwise and blk: {
+                                        const max = opts.be.capabilities.max_fused_elementwise_steps orelse break :blk true;
+                                        break :blk chain.nodes.len <= @as(usize, @intCast(max));
+                                    };
+                                    if (can_fuse) {
                                         const out_node = chain.nodes[chain.nodes.len - 1];
                                         if (!chain.input.isDenseLayout() or !out_node.isDenseLayout()) return error.UnsupportedDeviceOp;
                                         const ew_steps = try alloc.alloc(backend_mod.FusedEwStep, chain.nodes.len);
@@ -459,7 +463,16 @@ pub fn DeviceInference(comptime T: type) type {
             if (quant_map.get(node)) |qi| {
                 const input_tensor = if (s1.isParam()) s0 else s1;
                 if (!input_tensor.isDenseLayout() or !node.isDenseLayout()) return error.UnsupportedDeviceOp;
-                if (buffers.offset(input_tensor) != 0 or buffers.offset(node) != 0) return error.UnsupportedDeviceOp;
+                const input_is_src0 = @intFromPtr(input_tensor) == @intFromPtr(s0);
+                const input_col_stride = if (input_is_src0)
+                    (if (flags.trans0) s0.strides[1] else s0.strides[0])
+                else
+                    (if (flags.trans1) s1.strides[1] else s1.strides[0]);
+                if (input_col_stride != 1 or node.strides[0] != 1) return error.UnsupportedDeviceOp;
+                const input_row_stride = if (input_is_src0)
+                    (if (flags.trans0) s0.strides[0] else if (s0.n_dims >= 2) s0.strides[1] else K)
+                else
+                    (if (flags.trans1) s1.strides[0] else if (s1.n_dims >= 2) s1.strides[1] else K);
                 try ops.append(alloc, .{ .qmatmul = .{
                     .dst = buffers.idx(node),
                     .input = buffers.idx(input_tensor),
@@ -467,6 +480,10 @@ pub fn DeviceInference(comptime T: type) type {
                     .M = @intCast(M),
                     .N = @intCast(N),
                     .K = @intCast(K),
+                    .input_offset = @intCast(buffers.offset(input_tensor)),
+                    .input_row_stride = @intCast(input_row_stride),
+                    .dst_offset = @intCast(buffers.offset(node)),
+                    .dst_row_stride = @intCast(if (node.n_dims >= 2) node.strides[1] else N),
                 } });
                 return;
             }

@@ -449,17 +449,21 @@ const Context = struct {
         const N: usize = q.N;
         const K: usize = q.K;
         const bs: usize = w.block_size;
+        const input_offset: usize = q.input_offset;
+        const dst_offset: usize = q.dst_offset;
+        const input_row_stride: usize = if (q.input_row_stride != 0) q.input_row_stride else K;
+        const dst_row_stride: usize = if (q.dst_row_stride != 0) q.dst_row_stride else N;
 
         for (0..M) |row| {
             for (0..N) |col| {
                 var sum: f32 = 0;
                 for (0..K) |k| {
                     const w_idx = k * N + col;
-                    sum += input[row * K + k] *
+                    sum += input[input_offset + row * input_row_stride + k] *
                         @as(f32, @floatFromInt(w.data[w_idx])) *
                         w.scales[w_idx / bs];
                 }
-                dst_ptr[row * N + col] = sum;
+                dst_ptr[dst_offset + row * dst_row_stride + col] = sum;
             }
         }
     }
@@ -632,4 +636,29 @@ test "reference executor qmatmul uses row-major quantized weights" {
     try std.testing.expectApproxEqAbs(@as(f32, -3.0), dst[3], 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 5.25), dst[4], 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 6.625), dst[5], 1e-6);
+
+    var input_offset = [_]f32{ 99, 1, 2, 3, 99, -1, 0.5, 4, 99 };
+    var dst_offset = [_]f32{-7} ** 9;
+    const offset_buffers = [_]Buffer{
+        .{ .ptr = &input_offset, .len = input_offset.len },
+        .{ .ptr = &dst_offset, .len = dst_offset.len },
+    };
+    executeOp(&offset_buffers, &qweights, .{ .qmatmul = .{
+        .dst = 1,
+        .input = 0,
+        .weight_idx = 0,
+        .M = 2,
+        .N = 3,
+        .K = 3,
+        .input_offset = 1,
+        .input_row_stride = 4,
+        .dst_offset = 1,
+        .dst_row_stride = 4,
+    } });
+    try std.testing.expectApproxEqAbs(@as(f32, 2.75), dst_offset[1], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.25), dst_offset[2], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 8.0), dst_offset[3], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, -3.0), dst_offset[5], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 5.25), dst_offset[6], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 6.625), dst_offset[7], 1e-6);
 }
