@@ -50,19 +50,28 @@ pub const WeightRole = enum {
 
 pub const RuntimeBinding = enum {
     token_id,
+    token_ids,
     position,
+    position_start,
+    seq_q,
     seq_kv,
+    causal_mask,
 
     pub fn label(self: RuntimeBinding) []const u8 {
         return switch (self) {
             .token_id => "token_id",
+            .token_ids => "token_ids",
             .position => "position",
+            .position_start => "position_start",
+            .seq_q => "seq_q",
             .seq_kv => "seq_kv",
+            .causal_mask => "causal_mask",
         };
     }
 };
 
-pub const runtime_bindings = [_]RuntimeBinding{ .token_id, .position, .seq_kv };
+pub const decode_runtime_bindings = [_]RuntimeBinding{ .token_id, .position, .seq_kv };
+pub const prefill_runtime_bindings = [_]RuntimeBinding{ .token_ids, .position_start, .seq_q, .seq_kv, .causal_mask };
 
 pub const TransformerShape = struct {
     vocab_size: u32,
@@ -119,6 +128,28 @@ pub const layer_steps = [_]LayerStep{
     .swiglu_down_residual,
 };
 
+pub const PrefillOutput = enum {
+    last_logits,
+    all_logits,
+
+    pub fn label(self: PrefillOutput) []const u8 {
+        return switch (self) {
+            .last_logits => "last_logits",
+            .all_logits => "all_logits",
+        };
+    }
+};
+
+pub const PrefillWindow = struct {
+    /// Maximum query tokens this plan is meant to ingest at once. The actual
+    /// runtime length is `seq_q <= chunk_tokens`.
+    chunk_tokens: u32,
+    /// Maximum key/value positions visible to the window.
+    max_seq_kv: u32,
+    causal: bool = true,
+    output: PrefillOutput = .last_logits,
+};
+
 pub const LayerDecodePlan = struct {
     layer_index: u32,
     shape: TransformerShape,
@@ -136,6 +167,24 @@ pub const LayerDecodePlan = struct {
     }
 };
 
+pub const LayerPrefillPlan = struct {
+    layer_index: u32,
+    shape: TransformerShape,
+    window: PrefillWindow,
+
+    pub fn logicalStageCount(_: LayerPrefillPlan) u32 {
+        return layer_step_count;
+    }
+
+    pub fn targetCommandBuffers(_: LayerPrefillPlan, caps: StageCapabilities) u32 {
+        return if (caps.command_buffer_execution) 1 else layer_step_count;
+    }
+
+    pub fn usesGQA(self: LayerPrefillPlan) bool {
+        return self.shape.n_heads != self.shape.n_kv_heads;
+    }
+};
+
 pub const FinalDecodePlan = struct {
     shape: TransformerShape,
 
@@ -144,6 +193,19 @@ pub const FinalDecodePlan = struct {
     }
 
     pub fn targetCommandBuffers(_: FinalDecodePlan, caps: StageCapabilities) u32 {
+        return if (caps.command_buffer_execution) 1 else 2;
+    }
+};
+
+pub const FinalPrefillPlan = struct {
+    shape: TransformerShape,
+    window: PrefillWindow,
+
+    pub fn logicalStageCount(_: FinalPrefillPlan) u32 {
+        return 2;
+    }
+
+    pub fn targetCommandBuffers(_: FinalPrefillPlan, caps: StageCapabilities) u32 {
         return if (caps.command_buffer_execution) 1 else 2;
     }
 };
@@ -202,7 +264,7 @@ pub fn LlamaDecodePlan(comptime config: LlamaConfig) type {
             );
             try writer.print("  tied_lm_head={}\n", .{self.shape.tied_lm_head});
             try writer.print("  runtime bindings: ", .{});
-            for (runtime_bindings, 0..) |binding, i| {
+            for (decode_runtime_bindings, 0..) |binding, i| {
                 if (i != 0) try writer.writeAll(", ");
                 try writer.writeAll(binding.label());
             }
@@ -231,13 +293,128 @@ pub fn LlamaDecodePlan(comptime config: LlamaConfig) type {
     };
 }
 
+pub fn LlamaPrefillPlan(comptime config: LlamaConfig) type {
+    const shape = llamaShape(config);
+
+    return struct {
+        const Self = @This();
+
+        shape: TransformerShape,
+        window: PrefillWindow,
+        layers: [config.n_layers]LayerPrefillPlan,
+        final: FinalPrefillPlan,
+
+        pub fn init(chunk_tokens: usize) Self {
+            const window = prefillWindow(shape, chunk_tokens);
+            var layers: [config.n_layers]LayerPrefillPlan = undefined;
+            for (0..config.n_layers) |i| {
+                layers[i] = .{
+                    .layer_index = u32From(i),
+                    .shape = shape,
+                    .window = window,
+                };
+            }
+            return .{
+                .shape = shape,
+                .window = window,
+                .layers = layers,
+                .final = .{ .shape = shape, .window = window },
+            };
+        }
+
+        pub fn logicalStageCount(self: *const Self) u32 {
+            return 1 + u32From(self.layers.len) * layer_step_count + self.final.logicalStageCount();
+        }
+
+        pub fn targetCommandBuffers(self: *const Self, caps: StageCapabilities) u32 {
+            var count: u32 = 0;
+            for (self.layers) |layer| count += layer.targetCommandBuffers(caps);
+            count += self.final.targetCommandBuffers(caps);
+            return count;
+        }
+
+        pub fn writeSummary(self: *const Self, writer: anytype, caps: ?StageCapabilities) !void {
+            try writer.print("LLM prefill stage plan\n", .{});
+            try writer.print(
+                "  layers={d} d_model={d} heads={d} kv_heads={d} d_head={d} kv_dim={d} ff={d} max_seq={d} vocab={d}\n",
+                .{
+                    self.layers.len,
+                    self.shape.d_model,
+                    self.shape.n_heads,
+                    self.shape.n_kv_heads,
+                    self.shape.d_head,
+                    self.shape.kvDim(),
+                    self.shape.d_ff,
+                    self.shape.max_seq_len,
+                    self.shape.vocab_size,
+                },
+            );
+            try writer.print(
+                "  window: chunk_tokens={d} max_seq_kv={d} causal={} output={s}\n",
+                .{
+                    self.window.chunk_tokens,
+                    self.window.max_seq_kv,
+                    self.window.causal,
+                    self.window.output.label(),
+                },
+            );
+            try writer.print("  tied_lm_head={}\n", .{self.shape.tied_lm_head});
+            try writer.print("  runtime bindings: ", .{});
+            for (prefill_runtime_bindings, 0..) |binding, i| {
+                if (i != 0) try writer.writeAll(", ");
+                try writer.writeAll(binding.label());
+            }
+            try writer.writeByte('\n');
+            try writer.print("  layer lowering: ", .{});
+            for (layer_steps, 0..) |step, i| {
+                if (i != 0) try writer.writeAll(" -> ");
+                const label = switch (step) {
+                    .decode_attention => "prefill_attention",
+                    else => step.label(),
+                };
+                try writer.writeAll(label);
+            }
+            try writer.writeByte('\n');
+            try writer.print("  logical stages/window={d}\n", .{self.logicalStageCount()});
+            if (caps) |c| {
+                try writer.print(
+                    "  target command buffers/window={d} (fused_ew={} f16_matmul={} qmatmul={} prefill_attention={} quantized_kv={})\n",
+                    .{
+                        self.targetCommandBuffers(c),
+                        c.fused_elementwise,
+                        c.f16_matmul,
+                        c.qmatmul,
+                        c.prefill_attention,
+                        c.quantized_kv,
+                    },
+                );
+            }
+        }
+    };
+}
+
 pub fn buildLlamaDecodePlan(comptime config: LlamaConfig) LlamaDecodePlan(config) {
     return LlamaDecodePlan(config).init();
+}
+
+pub fn buildLlamaPrefillPlan(comptime config: LlamaConfig, chunk_tokens: usize) LlamaPrefillPlan(config) {
+    return LlamaPrefillPlan(config).init(chunk_tokens);
 }
 
 pub fn printLlamaDecodePlanSummary(comptime config: LlamaConfig, writer: anytype, caps: ?StageCapabilities) !void {
     const plan = buildLlamaDecodePlan(config);
     try plan.writeSummary(writer, caps);
+}
+
+pub fn printLlamaPrefillPlanSummary(comptime config: LlamaConfig, writer: anytype, caps: ?StageCapabilities, chunk_tokens: usize) !void {
+    const plan = buildLlamaPrefillPlan(config, chunk_tokens);
+    try plan.writeSummary(writer, caps);
+}
+
+pub fn printLlamaStagePlanSummary(comptime config: LlamaConfig, writer: anytype, caps: ?StageCapabilities, prefill_chunk_tokens: usize) !void {
+    try printLlamaDecodePlanSummary(config, writer, caps);
+    try writer.writeByte('\n');
+    try printLlamaPrefillPlanSummary(config, writer, caps, prefill_chunk_tokens);
 }
 
 pub fn llamaShape(comptime config: LlamaConfig) TransformerShape {
@@ -255,6 +432,16 @@ pub fn llamaShape(comptime config: LlamaConfig) TransformerShape {
         .d_ff = u32From(config.d_ff),
         .max_seq_len = u32From(config.max_seq_len),
         .tied_lm_head = config.tied_lm_head,
+    };
+}
+
+fn prefillWindow(shape: TransformerShape, chunk_tokens: usize) PrefillWindow {
+    std.debug.assert(chunk_tokens > 0);
+    return .{
+        .chunk_tokens = @min(u32From(chunk_tokens), shape.max_seq_len),
+        .max_seq_kv = shape.max_seq_len,
+        .causal = true,
+        .output = .last_logits,
     };
 }
 
@@ -285,6 +472,45 @@ test "llama decode plan captures SmolLM stage geometry" {
     try testing.expectEqual(@as(u32, 31), plan.targetCommandBuffers(.{ .command_buffer_execution = true }));
     try testing.expectEqual(@as(u32, 242), plan.targetCommandBuffers(.{}));
     try testing.expect(plan.layers[0].usesGQA());
+}
+
+test "llama prefill plan captures SmolLM window geometry" {
+    const cfg = LlamaConfig{
+        .vocab_size = 49152,
+        .d_model = 576,
+        .n_heads = 9,
+        .n_kv_heads = 3,
+        .d_ff = 1536,
+        .n_layers = 30,
+        .max_seq_len = 2048,
+        .tied_lm_head = true,
+    };
+    const plan = buildLlamaPrefillPlan(cfg, 128);
+
+    try testing.expectEqual(@as(usize, 30), plan.layers.len);
+    try testing.expectEqual(@as(u32, 128), plan.window.chunk_tokens);
+    try testing.expectEqual(@as(u32, 2048), plan.window.max_seq_kv);
+    try testing.expectEqual(PrefillOutput.last_logits, plan.window.output);
+    try testing.expectEqual(@as(u32, 243), plan.logicalStageCount());
+    try testing.expectEqual(@as(u32, 31), plan.targetCommandBuffers(.{ .command_buffer_execution = true }));
+    try testing.expectEqual(@as(u32, 242), plan.targetCommandBuffers(.{}));
+    try testing.expect(plan.layers[0].usesGQA());
+}
+
+test "llama prefill plan clamps chunk to context length" {
+    const cfg = LlamaConfig{
+        .vocab_size = 32,
+        .d_model = 16,
+        .n_heads = 2,
+        .n_kv_heads = 1,
+        .d_ff = 32,
+        .n_layers = 1,
+        .max_seq_len = 64,
+        .tied_lm_head = true,
+    };
+    const plan = buildLlamaPrefillPlan(cfg, 128);
+
+    try testing.expectEqual(@as(u32, 64), plan.window.chunk_tokens);
 }
 
 test "stage capabilities mirror backend capability metadata" {

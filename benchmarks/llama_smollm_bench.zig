@@ -524,7 +524,7 @@ pub fn main(init: std.process.Init) !void {
             zgml.llm.stage_plan.StageCapabilities.fromBackendCapabilities(if (is_macos) zgml.backend.Capabilities.metal else zgml.backend.Capabilities.reference_cpu)
         else
             null;
-        try zgml.llm.stage_plan.printLlamaDecodePlanSummary(config, &stdout.interface, stage_caps);
+        try zgml.llm.stage_plan.printLlamaStagePlanSummary(config, &stdout.interface, stage_caps, cfg.prompt_tokens);
         try stdout.interface.writeByte('\n');
     }
     stdout.interface.flush() catch {};
@@ -556,7 +556,7 @@ pub fn main(init: std.process.Init) !void {
         defer metal_be.deinit();
         if (print_stage_plan) {
             const caps = zgml.llm.stage_plan.StageCapabilities.fromBackendCapabilities(metal_be.backend().capabilities);
-            try zgml.llm.stage_plan.printLlamaDecodePlanSummary(config, &stdout.interface, caps);
+            try zgml.llm.stage_plan.printLlamaStagePlanSummary(config, &stdout.interface, caps, cfg.prompt_tokens);
             try stdout.interface.writeByte('\n');
             stdout.interface.flush() catch {};
         }
