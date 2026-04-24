@@ -3143,97 +3143,54 @@ const CompiledProgram = struct {
         }
     }
 
-    fn tryEncodeQMatvecBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: *std.bit_set.IntegerBitSet(256)) bool {
-        if (start >= ops.len or skipped.isSet(start)) return false;
-        const first = switch (ops[start]) {
-            .qmatmul => |q| q,
-            else => return false,
-        };
-        if (!self.canEncodeQMatvecBatchOp(first)) return false;
-
-        var indices: [MAX_QMATVEC_BATCH]usize = undefined;
-        indices[0] = start;
-        var count: usize = 1;
-
-        var scan = start + 1;
-        while (scan < ops.len and count < MAX_QMATVEC_BATCH) : (scan += 1) {
-            if (skipped.isSet(scan)) continue;
-            const q = switch (ops[scan]) {
-                .qmatmul => |q| q,
-                else => continue,
-            };
-            if (!self.canEncodeQMatvecBatchOp(q)) continue;
-            if (!program_mod.canHoistProjectionTo(ops, start, scan, q)) continue;
-            if (program_mod.projectionConflictsSelected(ops, indices[0..count], q)) continue;
-            indices[count] = scan;
-            count += 1;
+    fn tryEncodeQMatvecBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: []bool) bool {
+        const selection = program_mod.findProjectionGroup(
+            ops,
+            start,
+            program_mod.ProjectionGroupPolicy.decodeQMatvec(MAX_QMATVEC_BATCH),
+            skipped,
+        ) orelse return false;
+        for (selection.anchorIndices()) |idx| {
+            if (!self.canEncodeQMatvecBatchOp(ops[idx].qmatmul)) return false;
         }
 
-        if (count < 2) return false;
-
         const t0 = nowNs();
-        self.encodeQMatvecBatch(ops, indices[0..count]);
-        self.recordRegionFusedRunFromIndices(ops, indices[0..count], @intCast(nowNs() - t0));
-        for (indices[0..count]) |idx| skipped.set(idx);
+        self.encodeQMatvecBatch(ops, selection.anchorIndices());
+        self.recordRegionFusedRunFromIndices(ops, selection.anchorIndices(), @intCast(nowNs() - t0));
+        for (selection.anchorIndices()) |idx| skipped[idx] = true;
         return true;
     }
 
-    fn tryEncodeQMatmulBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: *std.bit_set.IntegerBitSet(256)) bool {
-        if (start >= ops.len or skipped.isSet(start)) return false;
-        const first = switch (ops[start]) {
-            .qmatmul => |q| q,
-            else => return false,
-        };
-        if (!self.canEncodeQMatmulBatchOp(first)) return false;
-
-        var indices: [MAX_QMATMUL_BATCH]usize = undefined;
-        indices[0] = start;
-        var count: usize = 1;
-
-        var scan = start + 1;
-        while (scan < ops.len and count < MAX_QMATMUL_BATCH) : (scan += 1) {
-            if (skipped.isSet(scan)) continue;
-            const q = switch (ops[scan]) {
-                .qmatmul => |q| q,
-                else => continue,
-            };
-            if (!self.canEncodeQMatmulBatchOp(q)) continue;
-            if (!program_mod.canHoistProjectionTo(ops, start, scan, q)) continue;
-            if (program_mod.projectionConflictsSelected(ops, indices[0..count], q)) continue;
-            indices[count] = scan;
-            count += 1;
+    fn tryEncodeQMatmulBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: []bool) bool {
+        const selection = program_mod.findProjectionGroup(
+            ops,
+            start,
+            program_mod.ProjectionGroupPolicy.prefillQMatmul(MAX_QMATMUL_BATCH),
+            skipped,
+        ) orelse return false;
+        for (selection.anchorIndices()) |idx| {
+            if (!self.canEncodeQMatmulBatchOp(ops[idx].qmatmul)) return false;
         }
-
-        if (count < 2) return false;
-
-        var slice_indices = [_]?usize{null} ** MAX_QMATMUL_BATCH;
-        for (indices[0..count], 0..) |idx, slot| {
-            if (idx + 1 >= ops.len or skipped.isSet(idx + 1)) continue;
-            const sa = switch (ops[idx + 1]) {
-                .slice_assign => |sa| sa,
-                else => continue,
-            };
-            const q = ops[idx].qmatmul;
-            if (self.canFuseQMatmulSliceAssign(q, sa)) {
-                slice_indices[slot] = idx + 1;
-            }
+        for (selection.sidecarIndices(), 0..) |maybe_idx, slot| {
+            const idx = maybe_idx orelse continue;
+            if (!self.canFuseQMatmulSliceAssign(ops[selection.indices[slot]].qmatmul, ops[idx].slice_assign)) return false;
         }
 
         const t0 = nowNs();
-        self.encodeQMatmulBatch(ops, indices[0..count], slice_indices[0..count]);
-        self.recordRegionFusedRunFromIndices(ops, indices[0..count], @intCast(nowNs() - t0));
-        for (indices[0..count]) |idx| skipped.set(idx);
-        for (slice_indices[0..count]) |maybe_idx| {
+        self.encodeQMatmulBatch(ops, selection.anchorIndices(), selection.sidecarIndices());
+        self.recordRegionFusedRunFromIndices(ops, selection.anchorIndices(), @intCast(nowNs() - t0));
+        for (selection.anchorIndices()) |idx| skipped[idx] = true;
+        for (selection.sidecarIndices()) |maybe_idx| {
             if (maybe_idx) |idx| {
                 self.recordRegionBackendOp(ops[idx], 0);
-                skipped.set(idx);
+                skipped[idx] = true;
             }
         }
         return true;
     }
 
-    fn tryEncodeElementwiseBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: *std.bit_set.IntegerBitSet(256)) bool {
-        if (start >= ops.len or skipped.isSet(start)) return false;
+    fn tryEncodeElementwiseBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: []bool) bool {
+        if (start >= ops.len or skipped[start]) return false;
         const first = switch (ops[start]) {
             .elementwise => |e| e,
             else => return false,
@@ -3246,7 +3203,7 @@ const CompiledProgram = struct {
 
         var scan = start + 1;
         while (scan < ops.len and count < MAX_ELEMENTWISE_BATCH) : (scan += 1) {
-            if (skipped.isSet(scan)) continue;
+            if (skipped[scan]) continue;
             const e = switch (ops[scan]) {
                 .elementwise => |e| e,
                 else => continue,
@@ -3263,7 +3220,7 @@ const CompiledProgram = struct {
         const t0 = nowNs();
         self.encodeElementwiseBatch(ops, indices[0..count]);
         self.recordRegionFusedRunFromIndices(ops, indices[0..count], @intCast(nowNs() - t0));
-        for (indices[0..count]) |idx| skipped.set(idx);
+        for (indices[0..count]) |idx| skipped[idx] = true;
         return true;
     }
 
@@ -3391,10 +3348,10 @@ const CompiledProgram = struct {
             return true;
         }
 
-        var skipped = std.bit_set.IntegerBitSet(256).initEmpty();
+        var skipped = [_]bool{false} ** 256;
         var i: usize = 0;
         while (i < ops.len) {
-            if (skipped.isSet(i)) {
+            if (skipped[i]) {
                 i += 1;
                 continue;
             }
@@ -3408,11 +3365,11 @@ const CompiledProgram = struct {
                 i += slice_assign_batch_len;
                 continue;
             }
-            if (self.tryEncodeQMatmulBatchRun(ops, i, &skipped)) {
+            if (self.tryEncodeQMatmulBatchRun(ops, i, skipped[0..ops.len])) {
                 i += 1;
                 continue;
             }
-            if (self.tryEncodeQMatvecBatchRun(ops, i, &skipped)) {
+            if (self.tryEncodeQMatvecBatchRun(ops, i, skipped[0..ops.len])) {
                 i += 1;
                 continue;
             }
@@ -3429,7 +3386,7 @@ const CompiledProgram = struct {
                 i += 2;
                 continue;
             }
-            if (self.tryEncodeElementwiseBatchRun(ops, i, &skipped)) {
+            if (self.tryEncodeElementwiseBatchRun(ops, i, skipped[0..ops.len])) {
                 i += 1;
                 continue;
             }

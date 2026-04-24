@@ -61,9 +61,10 @@ the Metal RMSNorm-scale kernel.
 Projection batching now has the same pure legality layer:
 `ProjectionGroupPolicy` finds independent qmatvec/qmatmul anchors, proves when
 they can be hoisted into one command, and marks compatible qmatmul cache-store
-sidecars. Metal consumes those shared dependency and sidecar predicates for its
-batched projection kernels, so future movement, RoPE/KV, and attention commands
-can follow the same path before adding more backend-specific pattern code.
+sidecars. Metal consumes that shared selection plus the dependency and sidecar
+predicates for its batched projection kernels, so future movement, RoPE/KV, and
+attention commands can follow the same path before adding more backend-specific
+pattern code.
 
 ## Acceptance Thresholds
 

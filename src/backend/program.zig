@@ -338,6 +338,34 @@ pub const ProjectionGroupSummary = struct {
     max_span_ops: u32 = 0,
 };
 
+pub const ProjectionGroupSelection = struct {
+    kind: ProjectionGroupKind,
+    start_op: usize,
+    end_op: usize,
+    anchor_count: usize,
+    sidecar_count: usize,
+    indices: [max_projection_group_anchors]usize = undefined,
+    sidecar_indices: [max_projection_group_anchors]?usize = [_]?usize{null} ** max_projection_group_anchors,
+
+    pub fn anchorIndices(self: *const ProjectionGroupSelection) []const usize {
+        return self.indices[0..self.anchor_count];
+    }
+
+    pub fn sidecarIndices(self: *const ProjectionGroupSelection) []const ?usize {
+        return self.sidecar_indices[0..self.anchor_count];
+    }
+
+    pub fn toGroup(self: ProjectionGroupSelection) ProjectionGroup {
+        return .{
+            .kind = self.kind,
+            .start_op = @intCast(self.start_op),
+            .op_count = @intCast(self.end_op - self.start_op + 1),
+            .anchor_count = @intCast(self.anchor_count),
+            .sidecar_count = @intCast(self.sidecar_count),
+        };
+    }
+};
+
 pub fn buildStageCommands(
     alloc: std.mem.Allocator,
     ops: []const backend_mod.DeviceOp,
@@ -406,64 +434,88 @@ pub fn buildProjectionGroups(
     var i: usize = 0;
     while (i < ops.len) : (i += 1) {
         if (used[i]) continue;
-        const first = switch (ops[i]) {
-            .qmatmul => |q| q,
-            else => continue,
-        };
-        if (!projectionMatchesPolicy(first, policy)) continue;
-
-        var indices: [max_projection_group_anchors]usize = undefined;
-        indices[0] = i;
-        var count: usize = 1;
-
-        var scan = i + 1;
-        while (scan < ops.len and count < max_anchors) : (scan += 1) {
-            if (used[scan]) continue;
-            const q = switch (ops[scan]) {
-                .qmatmul => |q| q,
-                else => continue,
-            };
-            if (!projectionMatchesPolicy(q, policy)) continue;
-            if (!canHoistProjectionTo(ops, i, scan, q)) continue;
-            if (projectionConflictsSelected(ops, indices[0..count], q)) continue;
-            indices[count] = scan;
-            count += 1;
-        }
-
-        if (count < 2) continue;
-
-        var end_op = i;
-        var sidecar_count: u32 = 0;
-        for (indices[0..count]) |idx| {
+        const selection = findProjectionGroup(ops, i, policy, used) orelse continue;
+        for (selection.anchorIndices()) |idx| {
             used[idx] = true;
-            end_op = @max(end_op, idx);
-            if (!policy.carry_slice_sidecars) continue;
-            if (idx + 1 >= ops.len or used[idx + 1]) continue;
-            const sa = switch (ops[idx + 1]) {
-                .slice_assign => |sa| sa,
-                else => continue,
-            };
-            const q = ops[idx].qmatmul;
-            const compatible = switch (policy.kind) {
-                .qmatvec => qmatvecSliceSidecarCompatible(q, sa),
-                .qmatmul => qmatmulSliceSidecarCompatible(q, sa),
-            };
-            if (!compatible) continue;
-            used[idx + 1] = true;
-            sidecar_count += 1;
-            end_op = @max(end_op, idx + 1);
         }
-
-        try groups.append(alloc, .{
-            .kind = policy.kind,
-            .start_op = @intCast(i),
-            .op_count = @intCast(end_op - i + 1),
-            .anchor_count = @intCast(count),
-            .sidecar_count = sidecar_count,
-        });
+        for (selection.sidecarIndices()) |maybe_idx| {
+            if (maybe_idx) |idx| used[idx] = true;
+        }
+        try groups.append(alloc, selection.toGroup());
     }
 
     return groups.toOwnedSlice(alloc);
+}
+
+pub fn findProjectionGroup(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: ProjectionGroupPolicy,
+    used: ?[]const bool,
+) ?ProjectionGroupSelection {
+    if (start >= ops.len) return null;
+    if (used) |used_ops| {
+        if (start >= used_ops.len or used_ops[start]) return null;
+    }
+    const max_anchors = @min(policy.max_anchors, max_projection_group_anchors);
+    if (max_anchors < 2) return null;
+
+    const first = switch (ops[start]) {
+        .qmatmul => |q| q,
+        else => return null,
+    };
+    if (!projectionMatchesPolicy(first, policy)) return null;
+
+    var selection = ProjectionGroupSelection{
+        .kind = policy.kind,
+        .start_op = start,
+        .end_op = start,
+        .anchor_count = 1,
+        .sidecar_count = 0,
+    };
+    selection.indices[0] = start;
+
+    var scan = start + 1;
+    while (scan < ops.len and selection.anchor_count < max_anchors) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const q = switch (ops[scan]) {
+            .qmatmul => |q| q,
+            else => continue,
+        };
+        if (!projectionMatchesPolicy(q, policy)) continue;
+        if (!canHoistProjectionTo(ops, start, scan, q)) continue;
+        if (projectionConflictsSelected(ops, selection.anchorIndices(), q)) continue;
+        selection.indices[selection.anchor_count] = scan;
+        selection.anchor_count += 1;
+    }
+
+    if (selection.anchor_count < 2) return null;
+
+    for (selection.anchorIndices(), 0..) |idx, slot| {
+        selection.end_op = @max(selection.end_op, idx);
+        if (!policy.carry_slice_sidecars) continue;
+        if (idx + 1 >= ops.len) continue;
+        if (used) |used_ops| {
+            if (idx + 1 >= used_ops.len or used_ops[idx + 1]) continue;
+        }
+        const sa = switch (ops[idx + 1]) {
+            .slice_assign => |sa| sa,
+            else => continue,
+        };
+        const q = ops[idx].qmatmul;
+        const compatible = switch (policy.kind) {
+            .qmatvec => qmatvecSliceSidecarCompatible(q, sa),
+            .qmatmul => qmatmulSliceSidecarCompatible(q, sa),
+        };
+        if (!compatible) continue;
+        selection.sidecar_indices[slot] = idx + 1;
+        selection.sidecar_count += 1;
+        selection.end_op = @max(selection.end_op, idx + 1);
+    }
+
+    return selection;
 }
 
 pub fn summarizeProjectionGroups(groups: []const ProjectionGroup) ProjectionGroupSummary {
@@ -1603,6 +1655,12 @@ test "projection groups carry compatible qmatmul cache-store sidecars" {
 
     const groups = try buildProjectionGroups(std.testing.allocator, &ops, ProjectionGroupPolicy.prefillQMatmul(4));
     defer std.testing.allocator.free(groups);
+
+    const selection = findProjectionGroup(&ops, 0, ProjectionGroupPolicy.prefillQMatmul(4), null).?;
+    try std.testing.expectEqual(@as(usize, 0), selection.indices[0]);
+    try std.testing.expectEqual(@as(usize, 3), selection.indices[1]);
+    try std.testing.expectEqual(@as(?usize, 1), selection.sidecar_indices[0]);
+    try std.testing.expectEqual(@as(?usize, null), selection.sidecar_indices[1]);
 
     try std.testing.expect(qmatmulSliceSidecarCompatible(ops[0].qmatmul, ops[1].slice_assign));
     try std.testing.expectEqual(@as(usize, 1), groups.len);
