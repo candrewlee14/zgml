@@ -288,6 +288,56 @@ pub const StageCommandSummary = struct {
     row_chain_ops: u32 = 0,
 };
 
+pub const ProjectionGroupKind = enum {
+    qmatvec,
+    qmatmul,
+};
+
+/// Pure policy for projection batching. Backends still decide whether they
+/// have a native kernel for the command; this only answers "is it legal to
+/// batch these independent projections and carry simple side effects?"
+pub const ProjectionGroupPolicy = struct {
+    kind: ProjectionGroupKind,
+    max_anchors: u32 = 4,
+    carry_slice_sidecars: bool = true,
+
+    pub fn decodeQMatvec(max_anchors: u32) ProjectionGroupPolicy {
+        return .{ .kind = .qmatvec, .max_anchors = max_anchors, .carry_slice_sidecars = false };
+    }
+
+    pub fn prefillQMatmul(max_anchors: u32) ProjectionGroupPolicy {
+        return .{ .kind = .qmatmul, .max_anchors = max_anchors };
+    }
+};
+
+pub const max_projection_group_anchors = 8;
+
+pub const ProjectionGroup = struct {
+    kind: ProjectionGroupKind,
+    start_op: u32,
+    op_count: u32,
+    anchor_count: u32,
+    sidecar_count: u32,
+
+    pub fn coveredOpCount(self: ProjectionGroup) u32 {
+        return self.anchor_count + self.sidecar_count;
+    }
+
+    pub fn dispatchCount(_: ProjectionGroup) u32 {
+        return 1;
+    }
+};
+
+pub const ProjectionGroupSummary = struct {
+    groups: u32 = 0,
+    anchors: u32 = 0,
+    sidecars: u32 = 0,
+    covered_ops: u32 = 0,
+    estimated_dispatches: u32 = 0,
+    estimated_saved_dispatches: u32 = 0,
+    max_span_ops: u32 = 0,
+};
+
 pub fn buildStageCommands(
     alloc: std.mem.Allocator,
     ops: []const backend_mod.DeviceOp,
@@ -336,6 +386,209 @@ pub fn summarizeStageCommands(commands: []const StageCommand) StageCommandSummar
         }
     }
     return summary;
+}
+
+pub fn buildProjectionGroups(
+    alloc: std.mem.Allocator,
+    ops: []const backend_mod.DeviceOp,
+    policy: ProjectionGroupPolicy,
+) ![]ProjectionGroup {
+    var groups: std.ArrayListUnmanaged(ProjectionGroup) = .empty;
+    errdefer groups.deinit(alloc);
+
+    const max_anchors = @min(policy.max_anchors, max_projection_group_anchors);
+    if (max_anchors < 2) return groups.toOwnedSlice(alloc);
+
+    const used = try alloc.alloc(bool, ops.len);
+    defer alloc.free(used);
+    @memset(used, false);
+
+    var i: usize = 0;
+    while (i < ops.len) : (i += 1) {
+        if (used[i]) continue;
+        const first = switch (ops[i]) {
+            .qmatmul => |q| q,
+            else => continue,
+        };
+        if (!projectionMatchesPolicy(first, policy)) continue;
+
+        var indices: [max_projection_group_anchors]usize = undefined;
+        indices[0] = i;
+        var count: usize = 1;
+
+        var scan = i + 1;
+        while (scan < ops.len and count < max_anchors) : (scan += 1) {
+            if (used[scan]) continue;
+            const q = switch (ops[scan]) {
+                .qmatmul => |q| q,
+                else => continue,
+            };
+            if (!projectionMatchesPolicy(q, policy)) continue;
+            if (!canHoistProjectionTo(ops, i, scan, q)) continue;
+            if (projectionConflictsSelected(ops, indices[0..count], q)) continue;
+            indices[count] = scan;
+            count += 1;
+        }
+
+        if (count < 2) continue;
+
+        var end_op = i;
+        var sidecar_count: u32 = 0;
+        for (indices[0..count]) |idx| {
+            used[idx] = true;
+            end_op = @max(end_op, idx);
+            if (!policy.carry_slice_sidecars) continue;
+            if (idx + 1 >= ops.len or used[idx + 1]) continue;
+            const sa = switch (ops[idx + 1]) {
+                .slice_assign => |sa| sa,
+                else => continue,
+            };
+            const q = ops[idx].qmatmul;
+            const compatible = switch (policy.kind) {
+                .qmatvec => qmatvecSliceSidecarCompatible(q, sa),
+                .qmatmul => qmatmulSliceSidecarCompatible(q, sa),
+            };
+            if (!compatible) continue;
+            used[idx + 1] = true;
+            sidecar_count += 1;
+            end_op = @max(end_op, idx + 1);
+        }
+
+        try groups.append(alloc, .{
+            .kind = policy.kind,
+            .start_op = @intCast(i),
+            .op_count = @intCast(end_op - i + 1),
+            .anchor_count = @intCast(count),
+            .sidecar_count = sidecar_count,
+        });
+    }
+
+    return groups.toOwnedSlice(alloc);
+}
+
+pub fn summarizeProjectionGroups(groups: []const ProjectionGroup) ProjectionGroupSummary {
+    var summary = ProjectionGroupSummary{ .groups = @intCast(groups.len) };
+    for (groups) |group| {
+        const covered = group.coveredOpCount();
+        const dispatches = group.dispatchCount();
+        summary.anchors += group.anchor_count;
+        summary.sidecars += group.sidecar_count;
+        summary.covered_ops += covered;
+        summary.estimated_dispatches += dispatches;
+        summary.max_span_ops = @max(summary.max_span_ops, group.op_count);
+        if (covered > dispatches) {
+            summary.estimated_saved_dispatches += covered - dispatches;
+        }
+    }
+    return summary;
+}
+
+fn projectionMatchesPolicy(q: anytype, policy: ProjectionGroupPolicy) bool {
+    return switch (policy.kind) {
+        .qmatvec => q.M == 1,
+        .qmatmul => q.M != 1,
+    };
+}
+
+pub fn opReadsBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
+    return switch (op) {
+        .elementwise => |e| e.src0 == buf or e.src1 == buf,
+        .matmul => |m| m.a == buf or m.b == buf,
+        .qmatmul => |q| q.input == buf,
+        .softmax => |s| s.src == buf,
+        .layernorm => |l| l.src == buf,
+        .rmsnorm => |r| r.src == buf,
+        .reduce => |r| r.src == buf,
+        .repeat => |rp| rp.src == buf,
+        .slice_assign => |sa| sa.src == buf,
+        .rope => |rr| rr.src == buf or rr.cos_sin == buf,
+        .attention => |att| att.q == buf or att.k == buf or att.v == buf or att.mask == buf,
+        .fused_elementwise => |fe| {
+            if (fe.src == buf) return true;
+            for (fe.steps) |step| {
+                if (step.op.isBinary() and step.secondary_buf == buf) return true;
+            }
+            return false;
+        },
+    };
+}
+
+pub fn opWritesBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
+    return switch (op) {
+        .elementwise => |e| e.dst == buf,
+        .matmul => |m| m.dst == buf,
+        .qmatmul => |q| q.dst == buf,
+        .softmax => |s| s.dst == buf,
+        .layernorm => |l| l.dst == buf,
+        .rmsnorm => |r| r.dst == buf,
+        .reduce => |r| r.dst == buf,
+        .repeat => |rp| rp.dst == buf,
+        .slice_assign => |sa| sa.dst == buf,
+        .rope => |rr| rr.dst == buf,
+        .attention => |att| att.dst == buf,
+        .fused_elementwise => |fe| fe.dst == buf,
+    };
+}
+
+pub fn opTouchesBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
+    return opReadsBuffer(op, buf) or opWritesBuffer(op, buf);
+}
+
+pub fn canHoistProjectionTo(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    candidate_index: usize,
+    q: anytype,
+) bool {
+    for (ops[start..candidate_index]) |op| {
+        if (opWritesBuffer(op, q.input)) return false;
+        if (opTouchesBuffer(op, q.dst)) return false;
+    }
+    return true;
+}
+
+pub fn projectionConflictsSelected(
+    ops: []const backend_mod.DeviceOp,
+    indices: []const usize,
+    q: anytype,
+) bool {
+    for (indices) |idx| {
+        const selected = ops[idx].qmatmul;
+        if (selected.dst == q.dst or selected.input == q.dst or selected.dst == q.input) return true;
+    }
+    return false;
+}
+
+pub fn qmatmulSliceSrcColStart(q: anytype, sa: anytype) ?u32 {
+    if (sa.src_offset < q.dst_offset) return null;
+    const delta = sa.src_offset - q.dst_offset;
+    const dst_row_stride = qmatmulDstRowStride(q);
+    if (delta >= dst_row_stride) return null;
+    return delta;
+}
+
+pub fn qmatmulSliceSidecarCompatible(q: anytype, sa: anytype) bool {
+    const slice_src_col_start = qmatmulSliceSrcColStart(q, sa) orelse return false;
+    return q.M != 1 and
+        q.dst == sa.src and
+        slice_src_col_start + sa.rows <= q.N and
+        q.M == sa.cols and
+        sa.src_row_stride == 1 and
+        sa.src_col_stride == qmatmulDstRowStride(q);
+}
+
+pub fn qmatvecSliceSidecarCompatible(q: anytype, sa: anytype) bool {
+    const slice_src_col_start = qmatmulSliceSrcColStart(q, sa) orelse return false;
+    return q.M == 1 and
+        q.dst == sa.src and
+        slice_src_col_start + sa.rows <= q.N and
+        sa.cols == 1 and
+        sa.src_row_stride == 1 and
+        (sa.src_col_stride == q.N or sa.src_col_stride == sa.rows);
+}
+
+pub fn qmatmulDstRowStride(q: anytype) u32 {
+    return if (q.dst_row_stride != 0) q.dst_row_stride else q.N;
 }
 
 pub fn isRmsnormScaleChain(
@@ -937,6 +1190,10 @@ fn testQMatmul(rows: u32) backend_mod.DeviceOp {
     return .{ .qmatmul = .{ .dst = 0, .input = 0, .weight_idx = 0, .M = rows, .N = 4, .K = 4 } };
 }
 
+fn testQMatmulWith(dst: u16, input: u16, rows: u32) backend_mod.DeviceOp {
+    return .{ .qmatmul = .{ .dst = dst, .input = input, .weight_idx = 0, .M = rows, .N = 4, .K = 4 } };
+}
+
 fn testSliceAssign(dst_offset: u32) backend_mod.DeviceOp {
     return .{ .slice_assign = .{
         .dst = 0,
@@ -950,6 +1207,23 @@ fn testSliceAssign(dst_offset: u32) backend_mod.DeviceOp {
         .src_offset = 0,
         .src_row_stride = 4,
         .src_col_stride = 1,
+        .patch_stride = 4,
+    } };
+}
+
+fn testQMatmulSidecar(src: u16, dst: u16) backend_mod.DeviceOp {
+    return .{ .slice_assign = .{
+        .dst = dst,
+        .src = src,
+        .rows = 4,
+        .cols = 2,
+        .dst_base_offset = 0,
+        .dst_offset = 4,
+        .dst_row_stride = 1,
+        .dst_col_stride = 4,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 4,
         .patch_stride = 4,
     } };
 }
@@ -1290,6 +1564,74 @@ test "stage commands leave nonmatching row triples as ops" {
         try std.testing.expectEqual(@as(u32, @intCast(i)), command.op_start);
         try std.testing.expectEqual(@as(u32, 1), command.op_count);
     }
+}
+
+test "projection groups batch independent prefill qmatmuls" {
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 16),
+        testQMatmulWith(2, 0, 16),
+        testQMatmulWith(3, 0, 16),
+        testQMatmulWith(4, 0, 16),
+        testQMatmulWith(5, 0, 16),
+    };
+
+    const groups = try buildProjectionGroups(std.testing.allocator, &ops, ProjectionGroupPolicy.prefillQMatmul(4));
+    defer std.testing.allocator.free(groups);
+
+    try std.testing.expectEqual(@as(usize, 1), groups.len);
+    try std.testing.expectEqual(ProjectionGroupKind.qmatmul, groups[0].kind);
+    try std.testing.expectEqual(@as(u32, 0), groups[0].start_op);
+    try std.testing.expectEqual(@as(u32, 4), groups[0].op_count);
+    try std.testing.expectEqual(@as(u32, 4), groups[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 0), groups[0].sidecar_count);
+
+    const summary = summarizeProjectionGroups(groups);
+    try std.testing.expectEqual(@as(u32, 1), summary.groups);
+    try std.testing.expectEqual(@as(u32, 4), summary.anchors);
+    try std.testing.expectEqual(@as(u32, 4), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+}
+
+test "projection groups carry compatible qmatmul cache-store sidecars" {
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 2),
+        testQMatmulSidecar(1, 8),
+        .{ .elementwise = .{ .op = .add, .dst = 9, .src0 = 9, .src1 = 9, .n = 1 } },
+        testQMatmulWith(2, 0, 2),
+    };
+
+    const groups = try buildProjectionGroups(std.testing.allocator, &ops, ProjectionGroupPolicy.prefillQMatmul(4));
+    defer std.testing.allocator.free(groups);
+
+    try std.testing.expect(qmatmulSliceSidecarCompatible(ops[0].qmatmul, ops[1].slice_assign));
+    try std.testing.expectEqual(@as(usize, 1), groups.len);
+    try std.testing.expectEqual(@as(u32, 0), groups[0].start_op);
+    try std.testing.expectEqual(@as(u32, 4), groups[0].op_count);
+    try std.testing.expectEqual(@as(u32, 2), groups[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 1), groups[0].sidecar_count);
+
+    const summary = summarizeProjectionGroups(groups);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_saved_dispatches);
+}
+
+test "projection groups reject conflicting or nonhoistable projections" {
+    const conflict_ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 16),
+        testQMatmulWith(1, 0, 16),
+    };
+    const conflict_groups = try buildProjectionGroups(std.testing.allocator, &conflict_ops, ProjectionGroupPolicy.prefillQMatmul(4));
+    defer std.testing.allocator.free(conflict_groups);
+    try std.testing.expectEqual(@as(usize, 0), conflict_groups.len);
+
+    const blocked_ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 16),
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 0, .src1 = 0, .n = 1 } },
+        testQMatmulWith(3, 2, 16),
+    };
+    const blocked_groups = try buildProjectionGroups(std.testing.allocator, &blocked_ops, ProjectionGroupPolicy.prefillQMatmul(4));
+    defer std.testing.allocator.free(blocked_groups);
+    try std.testing.expectEqual(@as(usize, 0), blocked_groups.len);
 }
 
 test "family pattern regions match exact contiguous family sequences" {

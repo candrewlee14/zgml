@@ -2551,7 +2551,7 @@ const CompiledProgram = struct {
                 params.has_slice[slot] = 1;
                 params.slice_rows[slot] = sa.rows;
                 params.slice_cols[slot] = sa.cols;
-                params.slice_src_col_start[slot] = qmatmulSliceSrcColStart(q, sa).?;
+                params.slice_src_col_start[slot] = program_mod.qmatmulSliceSrcColStart(q, sa).?;
                 params.slice_dst_offset[slot] = sa.dst_offset;
                 params.slice_dst_row_stride[slot] = sa.dst_row_stride;
                 params.slice_dst_col_stride[slot] = sa.dst_col_stride;
@@ -2723,34 +2723,13 @@ const CompiledProgram = struct {
     }
 
     fn canFuseQMatvecSliceAssign(self: *CompiledProgram, q: anytype, sa: anytype) bool {
-        const slice_src_col_start = qmatmulSliceSrcColStart(q, sa) orelse return false;
-        return q.M == 1 and
-            @as(usize, q.weight_idx) < self.qweight_views.len and
-            q.dst == sa.src and
-            slice_src_col_start + sa.rows <= q.N and
-            sa.cols == 1 and
-            sa.src_row_stride == 1 and
-            (sa.src_col_stride == q.N or sa.src_col_stride == sa.rows);
+        return @as(usize, q.weight_idx) < self.qweight_views.len and
+            program_mod.qmatvecSliceSidecarCompatible(q, sa);
     }
 
     fn canFuseQMatmulSliceAssign(self: *CompiledProgram, q: anytype, sa: anytype) bool {
-        const dst_row_stride = if (q.dst_row_stride != 0) q.dst_row_stride else q.N;
-        const slice_src_col_start = qmatmulSliceSrcColStart(q, sa) orelse return false;
-        return q.M != 1 and
-            @as(usize, q.weight_idx) < self.qweight_views.len and
-            q.dst == sa.src and
-            slice_src_col_start + sa.rows <= q.N and
-            q.M == sa.cols and
-            sa.src_row_stride == 1 and
-            sa.src_col_stride == dst_row_stride;
-    }
-
-    fn qmatmulSliceSrcColStart(q: anytype, sa: anytype) ?u32 {
-        if (sa.src_offset < q.dst_offset) return null;
-        const delta = sa.src_offset - q.dst_offset;
-        const dst_row_stride = if (q.dst_row_stride != 0) q.dst_row_stride else q.N;
-        if (delta >= dst_row_stride) return null;
-        return delta;
+        return @as(usize, q.weight_idx) < self.qweight_views.len and
+            program_mod.qmatmulSliceSidecarCompatible(q, sa);
     }
 
     fn encodeQMatvecSliceAssign(self: *CompiledProgram, q: anytype, sa: anytype) bool {
@@ -2775,7 +2754,7 @@ const CompiledProgram = struct {
             .dst_row_stride = qparams.dst_row_stride,
             .slice_rows = sa.rows,
             .slice_cols = sa.cols,
-            .slice_src_col_start = qmatmulSliceSrcColStart(q, sa).?,
+            .slice_src_col_start = program_mod.qmatmulSliceSrcColStart(q, sa).?,
             .slice_dst_offset = sa.dst_offset,
             .slice_dst_row_stride = sa.dst_row_stride,
             .slice_dst_col_stride = sa.dst_col_stride,
@@ -2806,7 +2785,7 @@ const CompiledProgram = struct {
             .dst_row_stride = qparams.dst_row_stride,
             .slice_rows = sa.rows,
             .slice_cols = sa.cols,
-            .slice_src_col_start = qmatmulSliceSrcColStart(q, sa).?,
+            .slice_src_col_start = program_mod.qmatmulSliceSrcColStart(q, sa).?,
             .slice_dst_offset = sa.dst_offset,
             .slice_dst_row_stride = sa.dst_row_stride,
             .slice_dst_col_stride = sa.dst_col_stride,
@@ -3103,79 +3082,11 @@ const CompiledProgram = struct {
         };
     }
 
-    fn opReadsBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
-        return switch (op) {
-            .elementwise => |e| e.src0 == buf or e.src1 == buf,
-            .matmul => |m| m.a == buf or m.b == buf,
-            .qmatmul => |q| q.input == buf,
-            .softmax => |s| s.src == buf,
-            .layernorm => |l| l.src == buf,
-            .rmsnorm => |r| r.src == buf,
-            .reduce => |r| r.src == buf,
-            .repeat => |rp| rp.src == buf,
-            .slice_assign => |sa| sa.src == buf,
-            .rope => |rr| rr.src == buf or rr.cos_sin == buf,
-            .attention => |att| att.q == buf or att.k == buf or att.v == buf or att.mask == buf,
-            .fused_elementwise => |fe| {
-                if (fe.src == buf) return true;
-                for (fe.steps) |step| {
-                    if (step.op.isBinary() and step.secondary_buf == buf) return true;
-                }
-                return false;
-            },
-        };
-    }
-
-    fn opWritesBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
-        return switch (op) {
-            .elementwise => |e| e.dst == buf,
-            .matmul => |m| m.dst == buf,
-            .qmatmul => |q| q.dst == buf,
-            .softmax => |s| s.dst == buf,
-            .layernorm => |l| l.dst == buf,
-            .rmsnorm => |r| r.dst == buf,
-            .reduce => |r| r.dst == buf,
-            .repeat => |rp| rp.dst == buf,
-            .slice_assign => |sa| sa.dst == buf,
-            .rope => |rr| rr.dst == buf,
-            .attention => |att| att.dst == buf,
-            .fused_elementwise => |fe| fe.dst == buf,
-        };
-    }
-
-    fn opTouchesBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
-        return opReadsBuffer(op, buf) or opWritesBuffer(op, buf);
-    }
-
-    fn canHoistQMatvecTo(ops: []const backend_mod.DeviceOp, start: usize, candidate_index: usize, q: anytype) bool {
-        for (ops[start..candidate_index]) |op| {
-            if (opWritesBuffer(op, q.input)) return false;
-            if (opTouchesBuffer(op, q.dst)) return false;
-        }
-        return true;
-    }
-
-    fn qmatvecConflictsSelected(ops: []const backend_mod.DeviceOp, indices: []const usize, q: anytype) bool {
-        for (indices) |idx| {
-            const selected = ops[idx].qmatmul;
-            if (selected.dst == q.dst or selected.input == q.dst or selected.dst == q.input) return true;
-        }
-        return false;
-    }
-
-    fn qmatmulConflictsSelected(ops: []const backend_mod.DeviceOp, indices: []const usize, q: anytype) bool {
-        for (indices) |idx| {
-            const selected = ops[idx].qmatmul;
-            if (selected.dst == q.dst or selected.input == q.dst or selected.dst == q.input) return true;
-        }
-        return false;
-    }
-
     fn canHoistElementwiseTo(ops: []const backend_mod.DeviceOp, start: usize, candidate_index: usize, e: anytype) bool {
         for (ops[start..candidate_index]) |op| {
-            if (opWritesBuffer(op, e.src0)) return false;
-            if (e.op.isBinary() and opWritesBuffer(op, e.src1)) return false;
-            if (opTouchesBuffer(op, e.dst)) return false;
+            if (program_mod.opWritesBuffer(op, e.src0)) return false;
+            if (e.op.isBinary() and program_mod.opWritesBuffer(op, e.src1)) return false;
+            if (program_mod.opTouchesBuffer(op, e.dst)) return false;
         }
         return true;
     }
@@ -3252,8 +3163,8 @@ const CompiledProgram = struct {
                 else => continue,
             };
             if (!self.canEncodeQMatvecBatchOp(q)) continue;
-            if (!canHoistQMatvecTo(ops, start, scan, q)) continue;
-            if (qmatvecConflictsSelected(ops, indices[0..count], q)) continue;
+            if (!program_mod.canHoistProjectionTo(ops, start, scan, q)) continue;
+            if (program_mod.projectionConflictsSelected(ops, indices[0..count], q)) continue;
             indices[count] = scan;
             count += 1;
         }
@@ -3287,8 +3198,8 @@ const CompiledProgram = struct {
                 else => continue,
             };
             if (!self.canEncodeQMatmulBatchOp(q)) continue;
-            if (!canHoistQMatvecTo(ops, start, scan, q)) continue;
-            if (qmatmulConflictsSelected(ops, indices[0..count], q)) continue;
+            if (!program_mod.canHoistProjectionTo(ops, start, scan, q)) continue;
+            if (program_mod.projectionConflictsSelected(ops, indices[0..count], q)) continue;
             indices[count] = scan;
             count += 1;
         }

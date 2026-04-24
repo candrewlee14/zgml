@@ -314,6 +314,26 @@ pub fn printStageCommandSummary(label: []const u8, summary: program_mod.StageCom
     );
 }
 
+pub fn printProjectionGroupSummary(label: []const u8, summary: program_mod.ProjectionGroupSummary) void {
+    const avg_anchors: f64 = if (summary.groups > 0)
+        @as(f64, @floatFromInt(summary.anchors)) / @as(f64, @floatFromInt(summary.groups))
+    else
+        0.0;
+    std.debug.print(
+        "Projection groups ({s}): {d} groups, {d} anchors, {d} sidecars, estimated {d} dispatches ({d} saved), avg {d:.1} anchors/group, max span {d} ops\n\n",
+        .{
+            label,
+            summary.groups,
+            summary.anchors,
+            summary.sidecars,
+            summary.estimated_dispatches,
+            summary.estimated_saved_dispatches,
+            avg_anchors,
+            summary.max_span_ops,
+        },
+    );
+}
+
 const neighborhood_edge: u8 = 255;
 
 pub fn printAnchorNeighborhoodSummary(
@@ -398,19 +418,7 @@ pub fn printQMatmulSliceSidecarSummary(label: []const u8, ops: []const DeviceOp)
             first_q = op;
             first_sa = ops[i + 1];
         }
-        const dst_row_stride = if (q.dst_row_stride != 0) q.dst_row_stride else q.N;
-        const slice_src_col_start: ?u32 = if (sa.src_offset >= q.dst_offset and sa.src_offset - q.dst_offset < dst_row_stride)
-            sa.src_offset - q.dst_offset
-        else
-            null;
-        if (q.M != 1 and
-            q.dst == sa.src and
-            slice_src_col_start != null and
-            slice_src_col_start.? + sa.rows <= q.N and
-            q.M == sa.cols and
-            sa.src_row_stride == 1 and
-            sa.src_col_stride == dst_row_stride)
-        {
+        if (program_mod.qmatmulSliceSidecarCompatible(q, sa)) {
             compatible_pairs += 1;
         }
     }
@@ -421,7 +429,7 @@ pub fn printQMatmulSliceSidecarSummary(label: []const u8, ops: []const DeviceOp)
     if (compatible_pairs == 0 and first_q != null and first_sa != null) {
         const q = first_q.?.qmatmul;
         const sa = first_sa.?.slice_assign;
-        const dst_row_stride = if (q.dst_row_stride != 0) q.dst_row_stride else q.N;
+        const dst_row_stride = program_mod.qmatmulDstRowStride(q);
         std.debug.print(
             "  first pair: q(dst={d} off={d} M={d} N={d} row_stride={d}) -> slice(src={d} off={d} rows={d} cols={d} src_rs={d} src_cs={d} dst_rs={d} dst_cs={d})\n\n",
             .{

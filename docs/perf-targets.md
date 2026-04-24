@@ -56,9 +56,14 @@ The next layer of the same abstraction is `StageCommand`: a pure, model-agnostic
 lowering view over the ops inside a stage. Today it names `row_chain` commands
 for RMSNorm + repeated scale + multiply. On SmolLM prefill this finds 61
 row-chains covering 183 ops, corresponding to 122 dispatches already saved by
-the Metal RMSNorm-scale kernel. Future work should add projection, movement,
-RoPE/KV, and attention commands here before adding more backend-specific
-pattern code.
+the Metal RMSNorm-scale kernel.
+
+Projection batching now has the same pure legality layer:
+`ProjectionGroupPolicy` finds independent qmatvec/qmatmul anchors, proves when
+they can be hoisted into one command, and marks compatible qmatmul cache-store
+sidecars. Metal consumes those shared dependency and sidecar predicates for its
+batched projection kernels, so future movement, RoPE/KV, and attention commands
+can follow the same path before adding more backend-specific pattern code.
 
 ## Acceptance Thresholds
 

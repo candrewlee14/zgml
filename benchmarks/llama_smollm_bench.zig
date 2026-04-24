@@ -401,6 +401,9 @@ fn runDevicePrefillVariant(
     const stage_commands = try backend_program.buildStageCommands(alloc, program.ops);
     defer alloc.free(stage_commands);
     profile.printStageCommandSummary("prefill", backend_program.summarizeStageCommands(stage_commands));
+    const projection_groups = try backend_program.buildProjectionGroups(alloc, program.ops, backend_program.ProjectionGroupPolicy.prefillQMatmul(4));
+    defer alloc.free(projection_groups);
+    profile.printProjectionGroupSummary("prefill qmatmul", backend_program.summarizeProjectionGroups(projection_groups));
     const lowered_prefill_stages = [_]u32{0};
     profile.printRegionExecutionSummary(
         "prefill-layer stages lowered",
