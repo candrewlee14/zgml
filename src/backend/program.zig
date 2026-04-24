@@ -268,6 +268,54 @@ pub fn buildKernelSchedule(
     return items.toOwnedSlice(alloc);
 }
 
+pub fn scheduleShapeMatches(
+    ops: []const backend_mod.DeviceOp,
+    items: []const KernelItem,
+    policy: SchedulePolicy,
+) bool {
+    var item_index: usize = 0;
+    var current: ?KernelItem = null;
+
+    for (ops, 0..) |op, i| {
+        const next = KernelItem{
+            .family = kernelFamily(op),
+            .execution = executionClass(op, policy),
+            .start = @intCast(i),
+            .len = 1,
+        };
+
+        if (current) |*item| {
+            if (item.family == next.family and
+                item.execution == next.execution and
+                item.start + item.len == next.start)
+            {
+                item.len += 1;
+                continue;
+            }
+
+            if (item_index >= items.len or !kernelItemsEqual(item.*, items[item_index])) return false;
+            item_index += 1;
+            current = next;
+        } else {
+            current = next;
+        }
+    }
+
+    if (current) |item| {
+        if (item_index >= items.len or !kernelItemsEqual(item, items[item_index])) return false;
+        item_index += 1;
+    }
+
+    return item_index == items.len;
+}
+
+fn kernelItemsEqual(a: KernelItem, b: KernelItem) bool {
+    return a.family == b.family and
+        a.execution == b.execution and
+        a.start == b.start and
+        a.len == b.len;
+}
+
 pub fn buildKernelRegions(
     alloc: std.mem.Allocator,
     items: []const KernelItem,
@@ -512,6 +560,23 @@ fn testQMatmul(rows: u32) backend_mod.DeviceOp {
     return .{ .qmatmul = .{ .dst = 0, .input = 0, .weight_idx = 0, .M = rows, .N = 4, .K = 4 } };
 }
 
+fn testSliceAssign(dst_offset: u32) backend_mod.DeviceOp {
+    return .{ .slice_assign = .{
+        .dst = 0,
+        .src = 1,
+        .rows = 1,
+        .cols = 4,
+        .dst_base_offset = 0,
+        .dst_offset = dst_offset,
+        .dst_row_stride = 4,
+        .dst_col_stride = 1,
+        .src_offset = 0,
+        .src_row_stride = 4,
+        .src_col_stride = 1,
+        .patch_stride = 4,
+    } };
+}
+
 fn expectKernelItem(item: KernelItem, family: KernelFamily, execution: ExecutionClass, start: u32, len: u32) !void {
     try std.testing.expectEqual(family, item.family);
     try std.testing.expectEqual(execution, item.execution);
@@ -605,6 +670,29 @@ test "kernel schedule fine grained policy unlocks small native kernels" {
     try std.testing.expectEqual(ExecutionClass.fallback, executionClass(op, policy));
     policy.fine_grained = true;
     try std.testing.expectEqual(ExecutionClass.backend, executionClass(op, policy));
+}
+
+test "schedule shape match ignores dynamic offsets but catches family changes" {
+    var ops = [_]backend_mod.DeviceOp{
+        testSliceAssign(0),
+        testQMatmul(1),
+        testQMatmul(16),
+    };
+    const policy = SchedulePolicy{
+        .capabilities = backend_mod.Capabilities.reference_cpu,
+        .native_kernels = .{ .movement = true, .qmatvec = true, .qmatmul = true },
+        .fine_grained = true,
+        .min_backend_qmatmul_m = 0,
+    };
+
+    const items = try buildKernelSchedule(std.testing.allocator, &ops, policy);
+    defer std.testing.allocator.free(items);
+
+    ops[0].slice_assign.dst_offset = 128;
+    try std.testing.expect(scheduleShapeMatches(&ops, items, policy));
+
+    ops[1].qmatmul.M = 16;
+    try std.testing.expect(!scheduleShapeMatches(&ops, items, policy));
 }
 
 test "kernel regions group qmatvec anchored member runs" {

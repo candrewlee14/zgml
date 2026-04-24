@@ -1382,10 +1382,16 @@ const CompiledProgram = struct {
     }
 
     fn rebuildSchedule(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) void {
+        const policy = metalSchedulePolicy(self.backend.fine_grained_program_dispatch);
+        if (program_mod.scheduleShapeMatches(ops, self.schedule, policy)) {
+            self.ops = ops;
+            return;
+        }
+
         const schedule = program_mod.buildKernelSchedule(
             self.alloc,
             ops,
-            metalSchedulePolicy(self.backend.fine_grained_program_dispatch),
+            policy,
         ) catch {
             if (self.schedule.len > 0) self.alloc.free(self.schedule);
             self.ops = ops;
