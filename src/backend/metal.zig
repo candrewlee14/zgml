@@ -1074,6 +1074,24 @@ fn releaseQWeightViews(qweight_views: []const DeviceQWeight) void {
     }
 }
 
+fn metalSchedulePolicy(fine_grained: bool) program_mod.SchedulePolicy {
+    return .{
+        .capabilities = backend_mod.Capabilities.metal,
+        .native_kernels = .{
+            .elementwise = fine_grained,
+            .fused_elementwise = fine_grained,
+            .row = fine_grained,
+            .reduce = fine_grained,
+            .movement = fine_grained,
+            .matmul = true,
+            .qmatmul = true,
+            .rope = fine_grained,
+            .attention = fine_grained,
+        },
+        .fine_grained = fine_grained,
+    };
+}
+
 const CompiledProgram = struct {
     backend: *MetalBackend,
     device_bufs: []DeviceBuffer,
@@ -1081,16 +1099,19 @@ const CompiledProgram = struct {
     qweight_views: []DeviceQWeight,
     ref_qweights: []reference.QWeight,
     ops: []const backend_mod.DeviceOp,
+    schedule: []const program_mod.KernelItem,
     alloc: std.mem.Allocator,
     runtime_profile: profile_mod.RuntimeProfile = .{},
 
     fn deinit(self: *CompiledProgram) void {
         releaseDeviceBuffers(self.device_bufs);
         releaseQWeightViews(self.qweight_views);
+        for (self.ref_qweights) |qw| reference.deinitTransposedQWeight(self.alloc, qw);
         self.alloc.free(self.ref_buffers);
         self.alloc.free(self.device_bufs);
         if (self.qweight_views.len > 0) self.alloc.free(self.qweight_views);
         if (self.ref_qweights.len > 0) self.alloc.free(self.ref_qweights);
+        if (self.schedule.len > 0) self.alloc.free(self.schedule);
         self.alloc.destroy(self);
     }
 
@@ -1098,20 +1119,59 @@ const CompiledProgram = struct {
         // Upload per-step inputs (token embed, pos, mask) via shared memory.
         reference.uploadToBuffers(self.ref_buffers, inputs);
 
-        for (self.ops) |op| {
-            const tag: usize = @intFromEnum(op);
-            const t0 = nowNs();
-            if (!self.tryEncodeGpuOp(op)) {
-                self.backend.flushCommands();
-                reference.executeOp(self.ref_buffers, self.ref_qweights, op);
-            }
-            self.runtime_profile.time_ns[tag] +%= @intCast(nowNs() - t0);
+        if (self.schedule.len == 0 and self.ops.len > 0) {
+            self.executeUnscheduled();
+        } else {
+            self.executeScheduled();
         }
         self.backend.flushCommands();
         self.runtime_profile.call_count += 1;
 
         // Download outputs (logits) via shared memory.
         reference.downloadFromBuffers(self.ref_buffers, outputs);
+    }
+
+    fn executeUnscheduled(self: *CompiledProgram) void {
+        for (self.ops) |op| {
+            self.executeOp(op);
+        }
+    }
+
+    fn executeScheduled(self: *CompiledProgram) void {
+        for (self.schedule) |item| {
+            const start: usize = @intCast(item.start);
+            const end = start + @as(usize, item.len);
+            switch (item.execution) {
+                .backend => {
+                    for (self.ops[start..end]) |op| {
+                        self.executeOp(op);
+                    }
+                },
+                .fallback => {
+                    self.backend.flushCommands();
+                    for (self.ops[start..end]) |op| {
+                        self.executeFallbackOp(op);
+                    }
+                },
+            }
+        }
+    }
+
+    fn executeOp(self: *CompiledProgram, op: backend_mod.DeviceOp) void {
+        const tag: usize = @intFromEnum(op);
+        const t0 = nowNs();
+        if (!self.tryEncodeGpuOp(op)) {
+            self.backend.flushCommands();
+            reference.executeOp(self.ref_buffers, self.ref_qweights, op);
+        }
+        self.runtime_profile.time_ns[tag] +%= @intCast(nowNs() - t0);
+    }
+
+    fn executeFallbackOp(self: *CompiledProgram, op: backend_mod.DeviceOp) void {
+        const tag: usize = @intFromEnum(op);
+        const t0 = nowNs();
+        reference.executeOp(self.ref_buffers, self.ref_qweights, op);
+        self.runtime_profile.time_ns[tag] +%= @intCast(nowNs() - t0);
     }
 
     fn encode(
@@ -1312,6 +1372,8 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
     errdefer if (ref_qweights.len > 0) alloc.free(ref_qweights);
     var n_qweight_views: usize = 0;
     errdefer releaseQWeightViews(qweight_views[0..n_qweight_views]);
+    var n_ref_qweights: usize = 0;
+    errdefer for (ref_qweights[0..n_ref_qweights]) |qw| reference.deinitTransposedQWeight(alloc, qw);
     for (program.qweights, 0..) |qw, i| {
         const data_raw = c.mtl_create_buffer(self.device, qw.data.len) orelse return null;
         const data_buf: DeviceBuffer = .{ .ptr = data_raw, .size = qw.data.len };
@@ -1329,10 +1391,17 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
         @memcpy(scales_ptr[0..scales_size], std.mem.sliceAsBytes(qw.scales));
 
         qweight_views[i] = .{ .data = data_buf, .scales = scales_buf, .block_size = qw.block_size };
+        n_qweight_views += 1;
         const ref_data: [*]const i8 = @ptrCast(c.mtl_buffer_contents(data_buf.ptr));
         const ref_scales: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(scales_buf.ptr)));
-        ref_qweights[i] = .{ .data = ref_data[0..qw.data.len], .scales = ref_scales[0..qw.scales.len], .block_size = qw.block_size };
-        n_qweight_views += 1;
+        ref_qweights[i] = reference.prepareTransposedQWeight(alloc, .{
+            .data = ref_data[0..qw.data.len],
+            .scales = ref_scales[0..qw.scales.len],
+            .rows = qw.rows,
+            .cols = qw.cols,
+            .block_size = qw.block_size,
+        }) catch return null;
+        n_ref_qweights += 1;
     }
 
     // Cache mtl_buffer_contents pointers — stable for shared-memory buffers.

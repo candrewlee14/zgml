@@ -5,8 +5,10 @@
 //! elementwise, norm, cache update, RoPE, matmul, qmatmul, and attention logic.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const backend_mod = @import("../backend.zig");
 const forward = @import("../tensor/forward.zig");
+const quant = @import("../quant.zig");
 
 pub const Buffer = struct {
     ptr: [*]f32,
@@ -17,7 +19,60 @@ pub const QWeight = struct {
     data: []const i8,
     scales: []const f32,
     block_size: usize,
+    t_data: []const i8 = &.{},
+    t_scales: []const f32 = &.{},
 };
+
+pub fn prepareTransposedQWeight(alloc: std.mem.Allocator, qw: backend_mod.QuantizedWeightUpload) !QWeight {
+    const K = qw.rows;
+    const N = qw.cols;
+    const bs = qw.block_size;
+    const blocks_per_row = (K + bs - 1) / bs;
+
+    const t_data = try alloc.alloc(i8, N * K);
+    errdefer alloc.free(t_data);
+    const t_scales = try alloc.alloc(f32, N * blocks_per_row);
+    errdefer alloc.free(t_scales);
+
+    for (0..N) |n| {
+        for (0..blocks_per_row) |b| {
+            const k_start = b * bs;
+            const k_end = @min(k_start + bs, K);
+
+            var max_abs: f32 = 0;
+            for (k_start..k_end) |k| {
+                const orig_flat = k * N + n;
+                const orig_block = orig_flat / bs;
+                const val = @as(f32, @floatFromInt(qw.data[orig_flat])) * qw.scales[orig_block];
+                max_abs = @max(max_abs, @abs(val));
+            }
+
+            const scale = if (max_abs > 0) max_abs / 127.0 else 1.0;
+            const inv_scale = if (max_abs > 0) 127.0 / max_abs else 0.0;
+            t_scales[n * blocks_per_row + b] = scale;
+
+            for (k_start..k_end) |k| {
+                const orig_flat = k * N + n;
+                const orig_block = orig_flat / bs;
+                const val = @as(f32, @floatFromInt(qw.data[orig_flat])) * qw.scales[orig_block];
+                t_data[n * K + k] = @intFromFloat(std.math.clamp(val * inv_scale, -127.0, 127.0));
+            }
+        }
+    }
+
+    return .{
+        .data = qw.data,
+        .scales = qw.scales,
+        .block_size = qw.block_size,
+        .t_data = t_data,
+        .t_scales = t_scales,
+    };
+}
+
+pub fn deinitTransposedQWeight(alloc: std.mem.Allocator, qw: QWeight) void {
+    if (qw.t_data.len > 0) alloc.free(@constCast(qw.t_data));
+    if (qw.t_scales.len > 0) alloc.free(@constCast(qw.t_scales));
+}
 
 pub const OwnedBufferTable = struct {
     alloc: std.mem.Allocator,
@@ -454,16 +509,58 @@ const Context = struct {
         const input_row_stride: usize = if (q.input_row_stride != 0) q.input_row_stride else K;
         const dst_row_stride: usize = if (q.dst_row_stride != 0) q.dst_row_stride else N;
 
+        if (comptime (builtin.cpu.arch == .aarch64 or builtin.cpu.arch == .aarch64_be)) {
+            const blocks_per_row = (K + bs - 1) / bs;
+            if (M == 1 and input_row_stride == K and dst_row_stride == N and
+                K <= 16384 and blocks_per_row <= 512 and
+                w.t_data.len >= N * K and w.t_scales.len >= N * blocks_per_row)
+            {
+                const input_row = input[input_offset..][0..K];
+                const dst_row = dst_ptr[dst_offset..][0..N];
+                var inp_q_buf: [16384]i8 = undefined;
+                var inp_scales_buf: [512]f32 = undefined;
+                const inp_q = inp_q_buf[0..K];
+                const inp_scales = inp_scales_buf[0..blocks_per_row];
+                quant.QuantizedWeight(f32).quantizeInput(input_row, K, bs, inp_q, inp_scales);
+                quant.QuantizedWeight(f32).gemvRange(w.t_data, w.t_scales, inp_q, inp_scales, dst_row, 0, N, K, bs);
+                return;
+            }
+        }
+
         for (0..M) |row| {
-            for (0..N) |col| {
-                var sum: f32 = 0;
-                for (0..K) |k| {
-                    const w_idx = k * N + col;
-                    sum += input[input_offset + row * input_row_stride + k] *
-                        @as(f32, @floatFromInt(w.data[w_idx])) *
-                        w.scales[w_idx / bs];
+            const input_row = input[input_offset + row * input_row_stride ..][0..K];
+            const dst_row = dst_ptr[dst_offset + row * dst_row_stride ..][0..N];
+            @memset(dst_row, 0);
+
+            const vec_len = 8;
+            const Vec = @Vector(vec_len, f32);
+            const IVec = @Vector(vec_len, i32);
+            const I8Vec = @Vector(vec_len, i8);
+
+            for (0..K) |k| {
+                const input_v = input_row[k];
+                const w_base = k * N;
+
+                var n: usize = 0;
+                while (n < N) {
+                    const flat = w_base + n;
+                    const scale = w.scales[flat / bs] * input_v;
+                    const scale_v: Vec = @splat(scale);
+                    const block_rem = bs - (flat % bs);
+                    const chunk = @min(block_rem, N - n);
+
+                    var j: usize = 0;
+                    while (j + vec_len <= chunk) : (j += vec_len) {
+                        const w_vec: I8Vec = w.data[flat + j ..][0..vec_len].*;
+                        const f_vec: Vec = @floatFromInt(@as(IVec, w_vec));
+                        const d_vec: Vec = dst_row[n + j ..][0..vec_len].*;
+                        dst_row[n + j ..][0..vec_len].* = d_vec + f_vec * scale_v;
+                    }
+                    while (j < chunk) : (j += 1) {
+                        dst_row[n + j] += @as(f32, @floatFromInt(w.data[flat + j])) * scale;
+                    }
+                    n += chunk;
                 }
-                dst_ptr[dst_offset + row * dst_row_stride + col] = sum;
             }
         }
     }

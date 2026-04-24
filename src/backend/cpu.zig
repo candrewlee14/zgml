@@ -28,6 +28,8 @@ fn denseMatMulF32(_: *anyopaque, spec: backend_mod.DenseMatMulSpecF32) bool {
 const OwnedQWeight = struct {
     data: []i8,
     scales: []f32,
+    t_data: []i8 = &.{},
+    t_scales: []f32 = &.{},
 };
 
 const CompiledProgram = struct {
@@ -42,6 +44,8 @@ const CompiledProgram = struct {
         for (self.owned_qweights) |qw| {
             self.alloc.free(qw.data);
             self.alloc.free(qw.scales);
+            if (qw.t_data.len > 0) self.alloc.free(qw.t_data);
+            if (qw.t_scales.len > 0) self.alloc.free(qw.t_scales);
         }
         if (self.owned_qweights.len > 0) self.alloc.free(self.owned_qweights);
         if (self.qweights.len > 0) self.alloc.free(self.qweights);
@@ -70,6 +74,8 @@ fn compileProgram(_: *anyopaque, program: backend_mod.DeviceProgram) ?backend_mo
         for (owned_qweights[0..n_qweights]) |qw| {
             alloc.free(qw.data);
             alloc.free(qw.scales);
+            if (qw.t_data.len > 0) alloc.free(qw.t_data);
+            if (qw.t_scales.len > 0) alloc.free(qw.t_scales);
         }
         if (owned_qweights.len > 0) alloc.free(owned_qweights);
     }
@@ -80,8 +86,24 @@ fn compileProgram(_: *anyopaque, program: backend_mod.DeviceProgram) ?backend_mo
             alloc.free(data);
             return null;
         };
-        owned_qweights[i] = .{ .data = data, .scales = scales };
-        qweights[i] = .{ .data = data, .scales = scales, .block_size = qw.block_size };
+        const desc = backend_mod.QuantizedWeightUpload{
+            .data = data,
+            .scales = scales,
+            .rows = qw.rows,
+            .cols = qw.cols,
+            .block_size = qw.block_size,
+        };
+        qweights[i] = reference.prepareTransposedQWeight(alloc, desc) catch {
+            alloc.free(data);
+            alloc.free(scales);
+            return null;
+        };
+        owned_qweights[i] = .{
+            .data = data,
+            .scales = scales,
+            .t_data = @constCast(qweights[i].t_data),
+            .t_scales = @constCast(qweights[i].t_scales),
+        };
         n_qweights += 1;
     }
 
