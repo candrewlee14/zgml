@@ -752,6 +752,14 @@ pub fn LlamaInferenceSession(comptime T: type, comptime config: LlamaConfig) typ
             self.prefill_plan = pp;
             return &self.prefill_plan.?;
         }
+
+        /// Ensure a fixed-size batched prefill plan exists and return it.
+        /// This is primarily for backend/device execution layers that want the
+        /// same frozen graph as `prefill()` without first running a prompt.
+        pub fn ensurePrefillPlan(self: *Self, n: usize) !*Plan {
+            if (n == 0 or n > config.max_seq_len) return error.InvalidPrefillLength;
+            return self.getOrBuildPrefillPlan(n);
+        }
     };
 }
 

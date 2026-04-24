@@ -207,6 +207,23 @@ pub const RegionPolicy = struct {
             }),
         };
     }
+
+    pub fn qmatmulCluster() RegionPolicy {
+        return .{
+            .anchor_families = KernelFamilyMask.init(&.{.qmatmul}),
+            .member_families = KernelFamilyMask.init(&.{
+                .elementwise,
+                .fused_elementwise,
+                .row,
+                .reduce,
+                .movement,
+                .matmul,
+                .qmatmul,
+                .rope,
+                .attention,
+            }),
+        };
+    }
 };
 
 pub fn kernelFamily(op: backend_mod.DeviceOp) KernelFamily {
@@ -529,6 +546,27 @@ pub fn buildFamilyPatternPlan(
 
     var next_free_item: u32 = 0;
     for (candidates.items) |candidate| {
+        if (candidate.region.start_item < next_free_item) continue;
+        try selected.append(alloc, candidate);
+        next_free_item = candidate.region.start_item + candidate.region.item_count;
+    }
+
+    return selected.toOwnedSlice(alloc);
+}
+
+pub fn selectPatternRegions(
+    alloc: std.mem.Allocator,
+    candidates: []const PatternRegion,
+) ![]PatternRegion {
+    const sorted = try alloc.dupe(PatternRegion, candidates);
+    defer alloc.free(sorted);
+    sortPatternRegions(sorted);
+
+    var selected: std.ArrayListUnmanaged(PatternRegion) = .empty;
+    errdefer selected.deinit(alloc);
+
+    var next_free_item: u32 = 0;
+    for (sorted) |candidate| {
         if (candidate.region.start_item < next_free_item) continue;
         try selected.append(alloc, candidate);
         next_free_item = candidate.region.start_item + candidate.region.item_count;
@@ -913,6 +951,29 @@ test "anchor window regions split member runs by anchor count" {
     try std.testing.expectEqual(@as(u32, 3), regions[0].anchor_count);
 }
 
+test "qmatmul cluster windows keep prefill attention inside layer regions" {
+    const items = [_]KernelItem{
+        .{ .family = .row, .execution = .fallback, .start = 0, .len = 1 },
+        .{ .family = .qmatmul, .execution = .backend, .start = 1, .len = 3 },
+        .{ .family = .rope, .execution = .fallback, .start = 4, .len = 2 },
+        .{ .family = .attention, .execution = .fallback, .start = 6, .len = 1 },
+        .{ .family = .qmatmul, .execution = .backend, .start = 7, .len = 1 },
+        .{ .family = .fused_elementwise, .execution = .fallback, .start = 8, .len = 1 },
+        .{ .family = .qmatmul, .execution = .backend, .start = 9, .len = 3 },
+        .{ .family = .matmul, .execution = .backend, .start = 12, .len = 1 },
+    };
+
+    const regions = try buildAnchorWindowRegions(std.testing.allocator, &items, RegionPolicy.qmatmulCluster(), 7);
+    defer std.testing.allocator.free(regions);
+
+    try std.testing.expectEqual(@as(usize, 1), regions.len);
+    try std.testing.expectEqual(@as(u32, 0), regions[0].start_item);
+    try std.testing.expectEqual(@as(u32, 8), regions[0].item_count);
+    try std.testing.expectEqual(@as(u32, 0), regions[0].op_start);
+    try std.testing.expectEqual(@as(u32, 13), regions[0].op_count);
+    try std.testing.expectEqual(@as(u32, 7), regions[0].anchor_count);
+}
+
 test "family pattern regions match exact contiguous family sequences" {
     const items = [_]KernelItem{
         .{ .family = .movement, .execution = .fallback, .start = 0, .len = 1 },
@@ -963,6 +1024,23 @@ test "family pattern plan selects non-overlapping longest matches" {
     try std.testing.expectEqual(@as(u32, 3), regions[0].region.item_count);
     try std.testing.expectEqual(@as(u32, 0), regions[1].pattern_index);
     try std.testing.expectEqual(@as(u32, 4), regions[1].region.start_item);
+}
+
+test "select pattern regions sorts candidates and removes overlaps" {
+    const candidates = [_]PatternRegion{
+        .{ .pattern_index = 0, .region = .{ .start_item = 2, .item_count = 2, .op_start = 2, .op_count = 2, .anchor_count = 2 } },
+        .{ .pattern_index = 1, .region = .{ .start_item = 0, .item_count = 3, .op_start = 0, .op_count = 3, .anchor_count = 3 } },
+        .{ .pattern_index = 2, .region = .{ .start_item = 4, .item_count = 1, .op_start = 4, .op_count = 1, .anchor_count = 1 } },
+    };
+
+    const selected = try selectPatternRegions(std.testing.allocator, &candidates);
+    defer std.testing.allocator.free(selected);
+
+    try std.testing.expectEqual(@as(usize, 2), selected.len);
+    try std.testing.expectEqual(@as(u32, 1), selected[0].pattern_index);
+    try std.testing.expectEqual(@as(u32, 0), selected[0].region.start_item);
+    try std.testing.expectEqual(@as(u32, 2), selected[1].pattern_index);
+    try std.testing.expectEqual(@as(u32, 4), selected[1].region.start_item);
 }
 
 test "region schedule covers items once and replaces selected patterns" {

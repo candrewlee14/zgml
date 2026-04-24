@@ -583,16 +583,17 @@ const shader_source =
     \\// ── Attention: fused softmax(Q@K^T * scale + mask) @ V ─
     \\
     \\struct AttentionParams {
-    \\    uint d_head; uint seq_kv;
+    \\    uint d_head; uint seq_q; uint seq_kv;
     \\    float scale;
     \\    uint q_off; uint k_off; uint v_off; uint mask_off; uint dst_off;
-    \\    uint k_rs; uint k_cs; uint v_rs; uint v_cs;
+    \\    uint q_rs; uint q_cs; uint k_rs; uint k_cs; uint v_rs; uint v_cs;
+    \\    uint mask_rs; uint mask_cs; uint dst_rs; uint dst_cs;
     \\};
     \\
     \\constant uint MAX_SEQ = 4096;
     \\constant uint MAX_ATTENTION_BATCH_HEADS = 16;
     \\
-    \\// Single-query attention (seq_q=1). One threadgroup per head.
+    \\// One threadgroup per query position. Decode is the seq_q=1 case.
     \\kernel void attention_f32(
     \\    device const float* Q    [[buffer(0)]],
     \\    device const float* K    [[buffer(1)]],
@@ -600,19 +601,21 @@ const shader_source =
     \\    device const float* mask [[buffer(3)]],
     \\    device float*       dst  [[buffer(4)]],
     \\    constant AttentionParams& p [[buffer(5)]],
-    \\    uint tid     [[thread_index_in_threadgroup]],
-    \\    uint tg_size [[threads_per_threadgroup]]
+    \\    uint q_col   [[threadgroup_position_in_grid]],
+    \\    uint tid     [[thread_index_in_threadgroup]]
     \\) {
+    \\    if (q_col >= p.seq_q) return;
+    \\    const uint tg_size = 256;
     \\    threadgroup float scores[MAX_SEQ];
     \\    threadgroup float scratch[256];
     \\
     \\    // Phase 1: Compute Q·K scores (threads share the work across KV positions).
     \\    for (uint s = tid; s < p.seq_kv; s += tg_size) {
-    \\        float mv = mask[p.mask_off + s];
+    \\        float mv = mask[p.mask_off + s * p.mask_rs + q_col * p.mask_cs];
     \\        if (!isfinite(mv)) { scores[s] = -INFINITY; continue; }
     \\        float dot = 0.0f;
     \\        for (uint r = 0; r < p.d_head; r++)
-    \\            dot += Q[p.q_off + r] * K[p.k_off + r * p.k_rs + s * p.k_cs];
+    \\            dot += Q[p.q_off + r * p.q_rs + q_col * p.q_cs] * K[p.k_off + r * p.k_rs + s * p.k_cs];
     \\        scores[s] = dot * p.scale + mv;
     \\    }
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -655,12 +658,12 @@ const shader_source =
     \\        float val = 0.0f;
     \\        for (uint s = 0; s < p.seq_kv; s++)
     \\            val += scores[s] * V[p.v_off + r * p.v_rs + s * p.v_cs];
-    \\        dst[p.dst_off + r] = val;
+    \\        dst[p.dst_off + r * p.dst_rs + q_col * p.dst_cs] = val;
     \\    }
     \\}
     \\
     \\struct AttentionBatchParams {
-    \\    uint n_heads; uint d_head; uint seq_kv;
+    \\    uint n_heads; uint d_head; uint seq_q; uint seq_kv;
     \\    float scale;
     \\    uint q_off[MAX_ATTENTION_BATCH_HEADS];
     \\    uint k_off[MAX_ATTENTION_BATCH_HEADS];
@@ -678,11 +681,14 @@ const shader_source =
     \\    device const float* mask [[buffer(3)]],
     \\    device float*       dst  [[buffer(4)]],
     \\    constant AttentionBatchParams& p [[buffer(5)]],
-    \\    uint head [[threadgroup_position_in_grid]],
-    \\    uint tid     [[thread_index_in_threadgroup]],
-    \\    uint tg_size [[threads_per_threadgroup]]
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint tid     [[thread_index_in_threadgroup]]
     \\) {
+    \\    uint q_col = group.x;
+    \\    uint head = group.y;
+    \\    if (q_col >= p.seq_q) return;
     \\    if (head >= p.n_heads) return;
+    \\    const uint tg_size = 256;
     \\
     \\    threadgroup float scores[MAX_SEQ];
     \\    threadgroup float scratch[256];
@@ -694,11 +700,11 @@ const shader_source =
     \\    uint dst_off = p.dst_off[head];
     \\
     \\    for (uint s = tid; s < p.seq_kv; s += tg_size) {
-    \\        float mv = mask[mask_off + s * p.mask_rs];
+    \\        float mv = mask[mask_off + s * p.mask_rs + q_col * p.mask_cs];
     \\        if (!isfinite(mv)) { scores[s] = -INFINITY; continue; }
     \\        float dot = 0.0f;
     \\        for (uint r = 0; r < p.d_head; r++)
-    \\            dot += Q[q_off + r * p.q_rs] * K[k_off + r * p.k_rs + s * p.k_cs];
+    \\            dot += Q[q_off + r * p.q_rs + q_col * p.q_cs] * K[k_off + r * p.k_rs + s * p.k_cs];
     \\        scores[s] = dot * p.scale + mv;
     \\    }
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -738,7 +744,7 @@ const shader_source =
     \\        float val = 0.0f;
     \\        for (uint s = 0; s < p.seq_kv; s++)
     \\            val += scores[s] * V[v_off + r * p.v_rs + s * p.v_cs];
-    \\        dst[dst_off + r * p.dst_rs] = val;
+    \\        dst[dst_off + r * p.dst_rs + q_col * p.dst_cs] = val;
     \\    }
     \\}
     \\
@@ -1103,6 +1109,7 @@ const RmsNormScaleParams = extern struct {
 
 const AttentionParams = extern struct {
     d_head: u32,
+    seq_q: u32,
     seq_kv: u32,
     scale: f32,
     q_off: u32,
@@ -1110,10 +1117,16 @@ const AttentionParams = extern struct {
     v_off: u32,
     mask_off: u32,
     dst_off: u32,
+    q_rs: u32,
+    q_cs: u32,
     k_rs: u32,
     k_cs: u32,
     v_rs: u32,
     v_cs: u32,
+    mask_rs: u32,
+    mask_cs: u32,
+    dst_rs: u32,
+    dst_cs: u32,
 };
 
 const MAX_ATTENTION_BATCH_HEADS: usize = 16;
@@ -1121,6 +1134,7 @@ const MAX_ATTENTION_BATCH_HEADS: usize = 16;
 const AttentionBatchParams = extern struct {
     n_heads: u32,
     d_head: u32,
+    seq_q: u32,
     seq_kv: u32,
     scale: f32,
     q_off: [MAX_ATTENTION_BATCH_HEADS]u32,
@@ -1357,6 +1371,7 @@ fn computeDispatchSpec(op: backend_mod.DeviceOp) ?ComputeDispatchSpec {
 fn attentionParams(att: anytype) AttentionParams {
     return .{
         .d_head = att.d_head,
+        .seq_q = att.seq_q,
         .seq_kv = att.seq_kv,
         .scale = att.scale,
         .q_off = att.q_off,
@@ -1364,15 +1379,21 @@ fn attentionParams(att: anytype) AttentionParams {
         .v_off = att.v_off,
         .mask_off = att.mask_off,
         .dst_off = att.dst_off,
+        .q_rs = att.q_rs,
+        .q_cs = att.q_cs,
         .k_rs = att.k_rs,
         .k_cs = att.k_cs,
         .v_rs = att.v_rs,
         .v_cs = att.v_cs,
+        .mask_rs = att.mask_rs,
+        .mask_cs = att.mask_cs,
+        .dst_rs = att.dst_rs,
+        .dst_cs = att.dst_cs,
     };
 }
 
 fn canEncodeAttention(att: anytype) bool {
-    return att.seq_q == 1 and
+    return att.seq_q >= 1 and
         att.seq_kv <= 4096 and
         att.d_head <= 512 and
         att.has_mask and
@@ -1596,22 +1617,37 @@ fn metalSchedulePolicy(fine_grained: bool) program_mod.SchedulePolicy {
 }
 
 const metal_pattern_qmatvec_anchor_window: u32 = 0;
+const metal_pattern_qmatmul_cluster: u32 = 1;
 const metal_qmatvec_window_anchors: u32 = 7;
 
 fn buildMetalRegionSchedule(alloc: std.mem.Allocator, schedule: []const program_mod.KernelItem) ![]program_mod.ScheduleUnit {
-    const regions = try program_mod.buildAnchorWindowRegions(
+    var candidates: std.ArrayListUnmanaged(program_mod.PatternRegion) = .empty;
+    defer candidates.deinit(alloc);
+
+    const qmatvec_regions = try program_mod.buildAnchorWindowRegions(
         alloc,
         schedule,
         program_mod.RegionPolicy.qmatvecCluster(),
         metal_qmatvec_window_anchors,
     );
-    defer alloc.free(regions);
-
-    const region_plan = try alloc.alloc(program_mod.PatternRegion, regions.len);
-    defer alloc.free(region_plan);
-    for (regions, 0..) |region, i| {
-        region_plan[i] = .{ .pattern_index = metal_pattern_qmatvec_anchor_window, .region = region };
+    defer alloc.free(qmatvec_regions);
+    for (qmatvec_regions) |region| {
+        try candidates.append(alloc, .{ .pattern_index = metal_pattern_qmatvec_anchor_window, .region = region });
     }
+
+    const qmatmul_regions = try program_mod.buildAnchorWindowRegions(
+        alloc,
+        schedule,
+        program_mod.RegionPolicy.qmatmulCluster(),
+        metal_qmatvec_window_anchors,
+    );
+    defer alloc.free(qmatmul_regions);
+    for (qmatmul_regions) |region| {
+        try candidates.append(alloc, .{ .pattern_index = metal_pattern_qmatmul_cluster, .region = region });
+    }
+
+    const region_plan = try program_mod.selectPatternRegions(alloc, candidates.items);
+    defer alloc.free(region_plan);
 
     return program_mod.buildRegionSchedule(alloc, schedule, region_plan);
 }
@@ -2153,7 +2189,7 @@ const CompiledProgram = struct {
             self.device_bufs[att.mask],
             self.device_bufs[att.dst],
         };
-        self.encodeTyped(AttentionParams, self.backend.attention_pipeline, &buffers, attentionParams(att), 5, .{ .gx = 1 }, WG_SIZE);
+        self.encodeTyped(AttentionParams, self.backend.attention_pipeline, &buffers, attentionParams(att), 5, .{ .gx = att.seq_q }, WG_SIZE);
     }
 
     fn attentionBatchCompatible(first: anytype, next: anytype) bool {
@@ -2211,6 +2247,7 @@ const CompiledProgram = struct {
         var params = std.mem.zeroes(AttentionBatchParams);
         params.n_heads = @intCast(n);
         params.d_head = first.d_head;
+        params.seq_q = first.seq_q;
         params.seq_kv = first.seq_kv;
         params.scale = first.scale;
         params.q_rs = first.q_rs;
@@ -2231,13 +2268,14 @@ const CompiledProgram = struct {
             params.mask_off[i] = att.mask_off;
             params.dst_off[i] = att.dst_off;
         }
-        self.encodeTyped(AttentionBatchParams, self.backend.attention_batch_pipeline, &buffers, params, 5, .{ .gx = @intCast(n) }, WG_SIZE);
+        self.encodeTyped(AttentionBatchParams, self.backend.attention_batch_pipeline, &buffers, params, 5, .{ .gx = first.seq_q, .gy = @intCast(n) }, WG_SIZE);
     }
 
     fn canEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
         if (computeDispatchSpec(op) != null) return true;
         return switch (op) {
-            .qmatmul => |q| self.canEncodeQMatvecBatchOp(q),
+            .matmul => true,
+            .qmatmul => |q| @as(usize, q.weight_idx) < self.qweight_views.len and (q.M != 1 or self.canEncodeQMatvecBatchOp(q)),
             .rope => true,
             .attention => |att| canEncodeAttention(att),
             .fused_elementwise => |fe| canEncodeFusedElementwise(fe),
@@ -2388,7 +2426,28 @@ const CompiledProgram = struct {
             self.encodeComputeDispatch(spec);
             break :blk true;
         } else switch (op) {
-            .qmatmul => |q| q.M == 1 and self.encodeQMatvec(q),
+            .matmul => |m| blk: {
+                const buffers = [_]DeviceBuffer{
+                    self.device_bufs[m.a],
+                    self.device_bufs[m.b],
+                    self.device_bufs[m.dst],
+                };
+                self.encodeTyped(MatMulParams, self.backend.matmul_pipeline, &buffers, matmulParams(m.geom), 3, matmulGrid(m.geom.M, m.geom.N), MATMUL_THREADS);
+                break :blk true;
+            },
+            .qmatmul => |q| blk: {
+                if (@as(usize, q.weight_idx) >= self.qweight_views.len) break :blk false;
+                if (q.M == 1) break :blk self.encodeQMatvec(q);
+                const w = self.qweight_views[q.weight_idx];
+                const buffers = [_]DeviceBuffer{
+                    w.data,
+                    w.scales,
+                    self.device_bufs[q.input],
+                    self.device_bufs[q.dst],
+                };
+                self.encodeTyped(QMatMulParams, self.backend.qmatmul_pipeline, &buffers, qmatmulParams(q, w.block_size), 4, matmulGrid(q.M, q.N), MATMUL_THREADS);
+                break :blk true;
+            },
             .rope => |rr| blk: {
                 self.encodeRope(rr);
                 break :blk true;
@@ -2525,12 +2584,14 @@ const CompiledProgram = struct {
 
     fn tryEncodePatternRegion(self: *CompiledProgram, unit: program_mod.ScheduleUnit) bool {
         return switch (unit.pattern_index) {
-            metal_pattern_qmatvec_anchor_window => self.tryEncodeQmatvecAnchorWindowRegion(unit),
+            metal_pattern_qmatvec_anchor_window,
+            metal_pattern_qmatmul_cluster,
+            => self.tryEncodeGpuRegion(unit),
             else => false,
         };
     }
 
-    fn tryEncodeQmatvecAnchorWindowRegion(self: *CompiledProgram, unit: program_mod.ScheduleUnit) bool {
+    fn tryEncodeGpuRegion(self: *CompiledProgram, unit: program_mod.ScheduleUnit) bool {
         const start_item: usize = @intCast(unit.start_item);
         const end_item = start_item + @as(usize, unit.item_count);
         if (end_item > self.schedule.len) return false;

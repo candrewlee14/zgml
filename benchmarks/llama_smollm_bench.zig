@@ -8,6 +8,7 @@
 //!   ./zig-out/bin/bench-llama-smollm [model.safetensors|model.gguf] [prompt_tokens] [gen_tokens] [repetitions]
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --metal-fine
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --metal-region
+//!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-prefill-device
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --print-stage-plan
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --stage-plan-only
 
@@ -354,6 +355,132 @@ fn runDeviceVariant(
     return .{ .prompt_tok_s = 0, .gen_tok_s = gen_tok_s, .prompt_avg_ms = 0, .gen_avg_ms = gen_avg_ms };
 }
 
+/// Run prompt/prefill through DeviceInference at the requested prompt width.
+fn runDevicePrefillVariant(
+    label: []const u8,
+    be: Backend,
+    cfg: BenchConfig,
+    writer: anytype,
+    io: std.Io,
+    alloc: std.mem.Allocator,
+) !BenchResult {
+    if (cfg.prompt_tokens == 0 or cfg.prompt_tokens > config.max_seq_len) return error.InvalidPromptLength;
+
+    const d_model = config.d_model;
+    const d_head = d_model / config.n_heads;
+    const max_seq = config.max_seq_len;
+
+    var session = try Session.init(alloc);
+    defer session.deinit();
+    try loadWeights(&session, alloc, cfg.model_path, io);
+
+    const prompt = try alloc.alloc(usize, cfg.prompt_tokens);
+    defer alloc.free(prompt);
+    for (prompt, 0..) |*t, i| t.* = (i + 1) % config.vocab_size;
+
+    const pp = try session.ensurePrefillPlan(cfg.prompt_tokens);
+
+    const n_inputs = 2 + config.n_layers;
+    const input_tensors = try alloc.alloc(*const Tensor(f32), n_inputs);
+    defer alloc.free(input_tensors);
+    input_tensors[0] = pp.token_input;
+    input_tensors[1] = pp.attn_mask;
+    for (pp.trace.layers, 0..) |lt, l| {
+        input_tensors[2 + l] = lt.rope;
+    }
+
+    const last_logits = pp.trace.logits.sliceColumns(cfg.prompt_tokens - 1, cfg.prompt_tokens);
+    const logits_buf = try alloc.alloc(f32, config.vocab_size);
+    defer alloc.free(logits_buf);
+
+    var device = try DeviceInference(f32).init(.{
+        .graph = &pp.graph,
+        .be = be,
+        .alloc = alloc,
+        .input_tensors = input_tensors,
+        .output_tensor = last_logits,
+        .output_host_buf = logits_buf.ptr,
+        .output_len = config.vocab_size,
+        .quant_weights = pp.quant_weights,
+        .quant_map = &pp.quant_map,
+    });
+    defer device.deinit();
+
+    const program = device.getProgram();
+    const schedule_policy = schedulePolicyForBackend(be);
+    profile.printProfile(profile.profileProgramWithSchedule(program, schedule_policy));
+
+    const rope = &session.model.blocks[0].rope;
+    const tok_data = session.model.token_embed.inner.data;
+
+    const StepCtx = struct {
+        fn doPrefill(
+            dev: *DeviceInference(f32),
+            plan_: *@TypeOf(pp.*),
+            tok_data_: []const f32,
+            rope_: anytype,
+            tokens: []const usize,
+            pos: usize,
+        ) void {
+            for (tokens, 0..) |token_id, i| {
+                @memcpy(plan_.token_input.data[i * d_model ..][0..d_model], tok_data_[token_id * d_model ..][0..d_model]);
+            }
+
+            for (0..tokens.len) |j| {
+                const col = plan_.attn_mask.data[j * max_seq ..][0..max_seq];
+                const valid_upto = pos + j + 1;
+                @memset(col[0..valid_upto], 0);
+                if (valid_upto < max_seq) @memset(col[valid_upto..], -std.math.inf(f32));
+            }
+
+            for (plan_.trace.layers) |lt| {
+                const buf = lt.rope.data;
+                for (0..tokens.len) |j| {
+                    @memcpy(buf[j * 2 * d_head ..][0..d_head], rope_.cos_table.data[(pos + j) * d_head ..][0..d_head]);
+                    @memcpy(buf[j * 2 * d_head + d_head ..][0..d_head], rope_.sin_table.data[(pos + j) * d_head ..][0..d_head]);
+                }
+            }
+
+            for (plan_.trace.layers) |lt| {
+                for (lt.k_write) |node| node.storage_offset = pos;
+                for (lt.v_write) |node| node.storage_offset = pos;
+            }
+            dev.patchSliceAssignOffset(@intCast(pos));
+            dev.patchAttentionSeqKV(@intCast(pos + tokens.len));
+            dev.execute();
+        }
+    };
+
+    StepCtx.doPrefill(&device, pp, tok_data, rope, prompt, 0);
+    session.reset();
+
+    var prompt_total_ns: u128 = 0;
+    for (0..cfg.repetitions) |_| {
+        session.reset();
+        const prompt_start = std.Io.Clock.awake.now(io).nanoseconds;
+        StepCtx.doPrefill(&device, pp, tok_data, rope, prompt, 0);
+        const prompt_end = std.Io.Clock.awake.now(io).nanoseconds;
+        prompt_total_ns += @intCast(prompt_end - prompt_start);
+    }
+
+    const prompt_ns = @as(f64, @floatFromInt(prompt_total_ns));
+    const prompt_tok_s = @as(f64, @floatFromInt(cfg.prompt_tokens * cfg.repetitions)) / (prompt_ns / 1_000_000_000.0);
+    const prompt_avg_ms = prompt_ns / @as(f64, @floatFromInt(cfg.repetitions)) / 1_000_000.0;
+
+    try writer.print(
+        "  {s}: prompt {d:>7.1} tok/s ({d:>6.2} ms avg)  decode {s:>7} tok/s ({s:>6} ms avg)\n",
+        .{ label, prompt_tok_s, prompt_avg_ms, "  —  ", " —  " },
+    );
+    writer.flush() catch {};
+
+    if (device.getRuntimeProfile()) |rt| {
+        const est = profile.estimateProgram(device.program_ops);
+        profile.printRuntimeProfile(rt.*, est);
+    }
+
+    return .{ .prompt_tok_s = prompt_tok_s, .gen_tok_s = 0, .prompt_avg_ms = prompt_avg_ms, .gen_avg_ms = 0 };
+}
+
 fn parseArgOrDefault(args: []const []const u8, idx: usize, default: usize) !usize {
     if (idx >= args.len) return default;
     return try std.fmt.parseInt(usize, args[idx], 10);
@@ -383,6 +510,7 @@ pub fn main(init: std.process.Init) !void {
     };
     const run_metal_fine = hasFlag(args, "--metal-fine");
     const run_metal_region = hasFlag(args, "--metal-region");
+    const run_metal_prefill_device = hasFlag(args, "--metal-prefill-device");
     const stage_plan_only = hasFlag(args, "--stage-plan-only");
     const print_stage_plan = stage_plan_only or hasFlag(args, "--print-stage-plan");
     const model_is_gguf = isGGUF(cfg.model_path);
@@ -434,6 +562,11 @@ pub fn main(init: std.process.Init) !void {
         }
         _ = try runVariant(if (model_is_gguf) "metal gguf      " else "metal f32        ", metal_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
         if (!model_is_gguf) _ = try runVariant("metal int8       ", metal_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
+        if (run_metal_prefill_device and model_is_gguf) {
+            metal_be.setRegionProgramDispatch(true);
+            _ = try runDevicePrefillVariant("metal prefill q", metal_be.backend(), cfg, &stdout.interface, io, alloc);
+            metal_be.setRegionProgramDispatch(false);
+        }
         _ = try runDeviceVariant(if (model_is_gguf) "metal device q  " else "metal device f16", metal_be.backend(), cfg, &stdout.interface, io, alloc);
         if (run_metal_fine) {
             metal_be.setFineGrainedProgramDispatch(true);
