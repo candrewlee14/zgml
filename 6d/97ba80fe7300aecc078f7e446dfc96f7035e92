@@ -1,0 +1,27 @@
+benchmarks/llama_smollm_bench.zig
+  3e0f7da912f1c0f9 527,559
+src/llm/stage_plan.zig
+  3e0f7da912f1c0f9 53,55-56,58,63,65-66,68,73-74,131-152,170-187,200-212,267,296-395,400-403,409-419,438-447,477-513
+docs/perf-targets.md
+  3e0f7da912f1c0f9 33-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "6d97ba80fe7300aecc078f7e446dfc96f7035e92",
+  "prompts": {
+    "3e0f7da912f1c0f9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbd4b-b518-7a91-bd08-ffb64c26f452",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 244,
+      "total_deletions": 4,
+      "accepted_lines": 244,
+      "overriden_lines": 0
+    }
+  }
+}
