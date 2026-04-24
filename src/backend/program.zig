@@ -318,6 +318,41 @@ pub fn buildAnchorRunRegions(
     return regions.toOwnedSlice(alloc);
 }
 
+pub fn buildFamilyPatternRegions(
+    alloc: std.mem.Allocator,
+    items: []const KernelItem,
+    pattern: []const KernelFamily,
+) ![]KernelRegion {
+    var regions: std.ArrayListUnmanaged(KernelRegion) = .empty;
+    errdefer regions.deinit(alloc);
+
+    if (pattern.len == 0 or pattern.len > items.len) return regions.toOwnedSlice(alloc);
+
+    var i: usize = 0;
+    while (i + pattern.len <= items.len) : (i += 1) {
+        for (pattern, 0..) |family, j| {
+            if (items[i + j].family != family) break;
+        } else {
+            const first = items[i];
+            const last = items[i + pattern.len - 1];
+            const op_end = last.start + last.len;
+            var anchor_count: u32 = 0;
+            for (items[i .. i + pattern.len]) |item| {
+                anchor_count += item.len;
+            }
+            try regions.append(alloc, .{
+                .start_item = @intCast(i),
+                .item_count = @intCast(pattern.len),
+                .op_start = first.start,
+                .op_count = op_end - first.start,
+                .anchor_count = anchor_count,
+            });
+        }
+    }
+
+    return regions.toOwnedSlice(alloc);
+}
+
 fn testElementwise(op: backend_mod.Op) backend_mod.DeviceOp {
     return .{ .elementwise = .{ .op = op, .dst = 0, .src0 = 0, .src1 = 0, .n = 1 } };
 }
@@ -502,6 +537,31 @@ test "anchor run regions expose contiguous anchor groups" {
     try std.testing.expectEqual(@as(u32, 5), regions[1].op_start);
     try std.testing.expectEqual(@as(u32, 3), regions[1].op_count);
     try std.testing.expectEqual(@as(u32, 3), regions[1].anchor_count);
+}
+
+test "family pattern regions match exact contiguous family sequences" {
+    const items = [_]KernelItem{
+        .{ .family = .movement, .execution = .fallback, .start = 0, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 1, .len = 1 },
+        .{ .family = .rope, .execution = .fallback, .start = 2, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 3, .len = 1 },
+        .{ .family = .attention, .execution = .fallback, .start = 4, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 5, .len = 1 },
+        .{ .family = .rope, .execution = .fallback, .start = 6, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 7, .len = 1 },
+    };
+    const pattern = [_]KernelFamily{ .qmatvec, .rope, .qmatvec };
+
+    const regions = try buildFamilyPatternRegions(std.testing.allocator, &items, &pattern);
+    defer std.testing.allocator.free(regions);
+
+    try std.testing.expectEqual(@as(usize, 2), regions.len);
+    try std.testing.expectEqual(@as(u32, 1), regions[0].start_item);
+    try std.testing.expectEqual(@as(u32, 3), regions[0].item_count);
+    try std.testing.expectEqual(@as(u32, 1), regions[0].op_start);
+    try std.testing.expectEqual(@as(u32, 3), regions[0].op_count);
+    try std.testing.expectEqual(@as(u32, 3), regions[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 5), regions[1].start_item);
 }
 
 pub const StepDynamicParams = extern struct {

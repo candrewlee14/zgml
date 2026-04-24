@@ -240,6 +240,10 @@ fn runDeviceVariant(
     defer alloc.free(qmatvec_anchor_runs);
     profile.printKernelRegionSummary("qmatvec anchor runs", qmatvec_anchor_runs);
     try profile.printAnchorNeighborhoodSummary(2, alloc, "qmatvec", schedule, backend_program.RegionPolicy.qmatvecCluster(), 8);
+    const qmatvec_rope_attention_pattern = [_]backend_program.KernelFamily{ .qmatvec, .rope, .qmatvec, .rope, .movement, .qmatvec, .movement, .attention };
+    const qmatvec_rope_attention = try backend_program.buildFamilyPatternRegions(alloc, schedule, &qmatvec_rope_attention_pattern);
+    defer alloc.free(qmatvec_rope_attention);
+    profile.printKernelRegionSummary("qmatvec-rope-attention pattern", qmatvec_rope_attention);
 
     const rope = &session.model.blocks[0].rope;
     const tok_data = session.model.token_embed.inner.data;
