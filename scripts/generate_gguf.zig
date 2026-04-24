@@ -68,7 +68,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("d_ff:        {d}\n", .{cfg.d_ff});
     std.debug.print("vocab_size:  {d}\n", .{cfg.vocab_size});
     std.debug.print("max_seq_len: {d}\n", .{cfg.max_seq_len});
-    std.debug.print("rope_theta:  {d:.1}\n", .{cfg.rope_theta});
+    std.debug.print("rope_base:   {d:.1}\n", .{cfg.rope_base});
 
     // Print tensor summary.
     std.debug.print("\n=== Tensors ({d}) ===\n", .{gf.tensors.count()});

@@ -12,6 +12,7 @@ pub const LlamaConfig = @import("models/llama.zig").LlamaConfig;
 pub const LlamaBlock = @import("models/llama_transformer.zig").LlamaBlock;
 pub const LlamaBlockConfig = @import("models/llama_transformer.zig").LlamaBlockConfig;
 pub const llama_loader = @import("models/llama_loader.zig");
+pub const gguf_loader = @import("models/gguf_loader.zig");
 pub const Whisper = @import("models/whisper.zig").Whisper;
 pub const WhisperConfig = @import("models/whisper.zig").WhisperConfig;
 pub const WhisperDecoderBlock = @import("models/whisper.zig").WhisperDecoderBlock;
@@ -30,6 +31,7 @@ test "ref all decls" {
     _ = @import("models/llama_transformer.zig");
     _ = @import("models/llama.zig");
     _ = @import("models/llama_loader.zig");
+    _ = @import("models/gguf_loader.zig");
     _ = @import("models/whisper.zig");
     _ = @import("models/whisper_loader.zig");
     _ = @import("models/loader_utils.zig");

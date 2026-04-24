@@ -286,13 +286,15 @@ pub fn build(b: *std.Build) void {
         .step_name = "bench-inference",
         .step_desc = "Benchmark inference session (f32 vs int8)",
     });
-    _ = addExe(b, target, optimize, build_opts, .{
-        .name = "bench-wgpu",
-        .src = "benchmarks/wgpu_bench.zig",
-        .step_name = "bench-wgpu",
-        .step_desc = "Benchmark WebGPU GPU vs CPU BLAS matmul",
-        .extra_wgpu = true,
-    });
+    if (build_opts.use_wgpu) {
+        _ = addExe(b, target, optimize, build_opts, .{
+            .name = "bench-wgpu",
+            .src = "benchmarks/wgpu_bench.zig",
+            .step_name = "bench-wgpu",
+            .step_desc = "Benchmark WebGPU GPU vs CPU BLAS matmul",
+            .extra_wgpu = true,
+        });
+    }
     _ = addExe(b, target, optimize, build_opts, .{
         .name = "bench-backend-decision",
         .src = "benchmarks/backend_decision_bench.zig",
@@ -370,6 +372,15 @@ pub fn build(b: *std.Build) void {
         .step_desc = "Generate text from a pretrained LLaMA model",
         .install_only = true,
         .extra_metal = true,
+    });
+    _ = addExe(b, target, optimize, build_opts, .{
+        .name = "zgml",
+        .src = "scripts/zgml.zig",
+        .step_name = "zgml-cli",
+        .step_desc = "Build the zgml command-line tool",
+        .install_only = true,
+        .extra_metal = true,
+        .extra_wgpu = build_opts.use_wgpu,
     });
 }
 

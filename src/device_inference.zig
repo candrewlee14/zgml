@@ -81,6 +81,8 @@ pub fn DeviceInference(comptime T: type) type {
             // ── Build DeviceOp list ───────────────────────────────────
             var ops_list: std.ArrayListUnmanaged(backend_mod.DeviceOp) = .empty;
             defer ops_list.deinit(alloc);
+            var ops_payloads_transferred = false;
+            errdefer if (!ops_payloads_transferred) freeOpPayloads(alloc, ops_list.items);
 
             if (steps.len > 0) {
                 for (steps) |exec_step| {
@@ -151,6 +153,7 @@ pub fn DeviceInference(comptime T: type) type {
 
             // ── Per-step I/O ──────────────────────────────────────────
             const inputs = try alloc.alloc(backend_mod.ProgramIO, opts.input_tensors.len);
+            errdefer alloc.free(inputs);
             for (opts.input_tensors, 0..) |t, i| {
                 inputs[i] = .{
                     .buf_idx = buffers.idx(t),
@@ -161,6 +164,7 @@ pub fn DeviceInference(comptime T: type) type {
             }
 
             const outputs = try alloc.alloc(backend_mod.ProgramIO, 1);
+            errdefer alloc.free(outputs);
             outputs[0] = .{
                 .buf_idx = buffers.idx(opts.output_tensor),
                 .offset = @intCast(buffers.offset(opts.output_tensor) * @sizeOf(T)),
@@ -189,6 +193,11 @@ pub fn DeviceInference(comptime T: type) type {
             }
 
             const owned_ops = try alloc.dupe(backend_mod.DeviceOp, ops_list.items);
+            ops_payloads_transferred = true;
+            errdefer {
+                freeOpPayloads(alloc, owned_ops);
+                alloc.free(owned_ops);
+            }
 
             // ── Compile ───────────────────────────────────────────────
             const program = backend_mod.DeviceProgram{
@@ -199,9 +208,17 @@ pub fn DeviceInference(comptime T: type) type {
                 .qweights = qw_uploads,
             };
 
+            if (!opts.be.supportsProgram(program)) return error.UnsupportedDeviceOp;
             const compiled = opts.be.compileProgram(program) orelse return error.CompileFailed;
+            errdefer opts.be.freeProgram(compiled);
 
             const owned_buf_sizes = try alloc.dupe(usize, buffers.buf_sizes.items);
+            errdefer alloc.free(owned_buf_sizes);
+
+            const slice_assign_indices = try sa_list.toOwnedSlice(alloc);
+            errdefer if (slice_assign_indices.len > 0) alloc.free(slice_assign_indices);
+            const attention_indices = try attn_list.toOwnedSlice(alloc);
+            errdefer if (attention_indices.len > 0) alloc.free(attention_indices);
 
             return .{
                 .be = opts.be,
@@ -212,8 +229,8 @@ pub fn DeviceInference(comptime T: type) type {
                 .buffer_sizes = owned_buf_sizes,
                 .step_inputs = inputs,
                 .step_outputs = outputs,
-                .slice_assign_op_indices = try sa_list.toOwnedSlice(alloc),
-                .attention_op_indices = try attn_list.toOwnedSlice(alloc),
+                .slice_assign_op_indices = slice_assign_indices,
+                .attention_op_indices = attention_indices,
             };
         }
 
@@ -257,18 +274,22 @@ pub fn DeviceInference(comptime T: type) type {
 
         pub fn deinit(self: *Self) void {
             self.be.freeProgram(self.compiled);
-            for (self.program_ops) |op| {
-                switch (op) {
-                    .fused_elementwise => |fe| if (fe.steps.len > 0) self.alloc.free(fe.steps),
-                    else => {},
-                }
-            }
+            freeOpPayloads(self.alloc, self.program_ops);
             self.alloc.free(self.program_ops);
             self.alloc.free(self.buffer_sizes);
             self.alloc.free(self.step_inputs);
             self.alloc.free(self.step_outputs);
             if (self.slice_assign_op_indices.len > 0) self.alloc.free(self.slice_assign_op_indices);
             if (self.attention_op_indices.len > 0) self.alloc.free(self.attention_op_indices);
+        }
+
+        fn freeOpPayloads(alloc: std.mem.Allocator, ops: []const backend_mod.DeviceOp) void {
+            for (ops) |op| {
+                switch (op) {
+                    .fused_elementwise => |fe| if (fe.steps.len > 0) alloc.free(fe.steps),
+                    else => {},
+                }
+            }
         }
 
         // ── Helpers ──────────────────────────────────────────────

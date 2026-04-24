@@ -737,6 +737,17 @@ const DeviceQWeight = struct {
     block_size: usize,
 };
 
+fn releaseDeviceBuffers(device_bufs: []const DeviceBuffer) void {
+    for (device_bufs) |buf| c.mtl_release(buf.ptr);
+}
+
+fn releaseQWeightViews(qweight_views: []const DeviceQWeight) void {
+    for (qweight_views) |qw| {
+        c.mtl_release(qw.data.ptr);
+        c.mtl_release(qw.scales.ptr);
+    }
+}
+
 const CompiledProgram = struct {
     backend: *MetalBackend,
     device_bufs: []DeviceBuffer,
@@ -748,11 +759,8 @@ const CompiledProgram = struct {
     runtime_profile: profile_mod.RuntimeProfile = .{},
 
     fn deinit(self: *CompiledProgram) void {
-        for (self.device_bufs) |buf| c.mtl_release(buf.ptr);
-        for (self.qweight_views) |qw| {
-            c.mtl_release(qw.data.ptr);
-            c.mtl_release(qw.scales.ptr);
-        }
+        releaseDeviceBuffers(self.device_bufs);
+        releaseQWeightViews(self.qweight_views);
         self.alloc.free(self.ref_buffers);
         self.alloc.free(self.device_bufs);
         if (self.qweight_views.len > 0) self.alloc.free(self.qweight_views);
@@ -787,8 +795,14 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
 
     // Allocate device buffers.
     const device_bufs = alloc.alloc(DeviceBuffer, program.n_buffers) catch return null;
+    errdefer alloc.free(device_bufs);
+    var n_device_bufs: usize = 0;
+    errdefer releaseDeviceBuffers(device_bufs[0..n_device_bufs]);
     for (device_bufs, program.buffer_sizes) |*buf, size| {
-        buf.* = .{ .ptr = c.mtl_create_buffer(self.device, size * @sizeOf(f32)) orelse return null, .size = size * @sizeOf(f32) };
+        const byte_size = size * @sizeOf(f32);
+        const ptr = c.mtl_create_buffer(self.device, byte_size) orelse return null;
+        buf.* = .{ .ptr = ptr, .size = byte_size };
+        n_device_bufs += 1;
     }
 
     // Upload initial data (weights, KV cache zeros).
@@ -800,25 +814,37 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
 
     // Upload quantized weights.
     const qweight_views = alloc.alloc(DeviceQWeight, program.qweights.len) catch return null;
+    errdefer if (qweight_views.len > 0) alloc.free(qweight_views);
     const ref_qweights = alloc.alloc(reference.QWeight, program.qweights.len) catch return null;
+    errdefer if (ref_qweights.len > 0) alloc.free(ref_qweights);
+    var n_qweight_views: usize = 0;
+    errdefer releaseQWeightViews(qweight_views[0..n_qweight_views]);
     for (program.qweights, 0..) |qw, i| {
-        const data_buf: DeviceBuffer = .{ .ptr = c.mtl_create_buffer(self.device, qw.data.len) orelse return null, .size = qw.data.len };
+        const data_raw = c.mtl_create_buffer(self.device, qw.data.len) orelse return null;
+        const data_buf: DeviceBuffer = .{ .ptr = data_raw, .size = qw.data.len };
         const data_ptr: [*]u8 = @ptrCast(c.mtl_buffer_contents(data_buf.ptr));
         const i8_as_u8: [*]const u8 = @ptrCast(qw.data.ptr);
         @memcpy(data_ptr[0..qw.data.len], i8_as_u8[0..qw.data.len]);
 
-        const scales_buf: DeviceBuffer = .{ .ptr = c.mtl_create_buffer(self.device, qw.scales.len * @sizeOf(f32)) orelse return null, .size = qw.scales.len * @sizeOf(f32) };
+        const scales_size = qw.scales.len * @sizeOf(f32);
+        const scales_raw = c.mtl_create_buffer(self.device, scales_size) orelse {
+            c.mtl_release(data_buf.ptr);
+            return null;
+        };
+        const scales_buf: DeviceBuffer = .{ .ptr = scales_raw, .size = scales_size };
         const scales_ptr: [*]u8 = @ptrCast(c.mtl_buffer_contents(scales_buf.ptr));
-        @memcpy(scales_ptr[0 .. qw.scales.len * @sizeOf(f32)], std.mem.sliceAsBytes(qw.scales));
+        @memcpy(scales_ptr[0..scales_size], std.mem.sliceAsBytes(qw.scales));
 
         qweight_views[i] = .{ .data = data_buf, .scales = scales_buf, .block_size = qw.block_size };
         const ref_data: [*]const i8 = @ptrCast(c.mtl_buffer_contents(data_buf.ptr));
         const ref_scales: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(scales_buf.ptr)));
         ref_qweights[i] = .{ .data = ref_data[0..qw.data.len], .scales = ref_scales[0..qw.scales.len], .block_size = qw.block_size };
+        n_qweight_views += 1;
     }
 
     // Cache mtl_buffer_contents pointers — stable for shared-memory buffers.
     const ref_buffers = alloc.alloc(reference.Buffer, program.n_buffers) catch return null;
+    errdefer alloc.free(ref_buffers);
     for (ref_buffers, device_bufs) |*rb, buf| {
         rb.* = .{ .ptr = @ptrCast(@alignCast(c.mtl_buffer_contents(buf.ptr))), .len = buf.size / @sizeOf(f32) };
     }

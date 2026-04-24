@@ -1019,14 +1019,26 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
     var n_qweight_views: usize = 0;
     errdefer releaseQWeightViews(qweight_views[0..n_qweight_views]);
     for (program.qweights, 0..) |qw, i| {
+        const data_size = std.mem.alignForward(usize, qw.data.len, 4);
         const data_buf = createGpuBuffer(
             self.device,
-            qw.data.len,
+            data_size,
             c.WGPUBufferUsage_Storage | c.WGPUBufferUsage_CopyDst,
         );
         if (data_buf == null) return null;
         const i8_as_u8: [*]const u8 = @ptrCast(qw.data.ptr);
-        c.wgpuQueueWriteBuffer(self.queue, data_buf, 0, i8_as_u8, qw.data.len);
+        if (data_size == qw.data.len) {
+            c.wgpuQueueWriteBuffer(self.queue, data_buf, 0, i8_as_u8, data_size);
+        } else {
+            const padded = alloc.alloc(u8, data_size) catch {
+                c.wgpuBufferRelease(data_buf);
+                return null;
+            };
+            defer alloc.free(padded);
+            @memset(padded, 0);
+            @memcpy(padded[0..qw.data.len], i8_as_u8[0..qw.data.len]);
+            c.wgpuQueueWriteBuffer(self.queue, data_buf, 0, padded.ptr, data_size);
+        }
 
         const scales_size = qw.scales.len * @sizeOf(f32);
         const scales_buf = createGpuBuffer(
@@ -1034,11 +1046,14 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
             scales_size,
             c.WGPUBufferUsage_Storage | c.WGPUBufferUsage_CopyDst,
         );
-        if (scales_buf == null) return null;
+        if (scales_buf == null) {
+            c.wgpuBufferRelease(data_buf);
+            return null;
+        }
         c.wgpuQueueWriteBuffer(self.queue, scales_buf, 0, @ptrCast(qw.scales.ptr), scales_size);
 
         qweight_views[i] = .{
-            .data = .{ .buf = data_buf, .size = qw.data.len },
+            .data = .{ .buf = data_buf, .size = data_size },
             .scales = .{ .buf = scales_buf, .size = scales_size },
             .block_size = qw.block_size,
         };

@@ -90,9 +90,87 @@ fn benchElementwise(be: backend_mod.Backend) !void {
     try benchProgram(be, "add 4096", program, 2, N, 500);
 }
 
+fn benchRmsNormDecode(be: backend_mod.Backend) !void {
+    const alloc = std.heap.page_allocator;
+    const D = 4096;
+    const src = try alloc.alloc(f32, D);
+    defer alloc.free(src);
+    for (src, 0..) |*v, i| v.* = @as(f32, @floatFromInt(@as(i32, @intCast(i % 29)) - 14)) * 0.03125;
+
+    const ops = [_]backend_mod.DeviceOp{.{ .rmsnorm = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 1,
+        .cols = D,
+        .eps = 1e-5,
+    } }};
+    const sizes = [_]usize{ src.len, D };
+    const uploads = [_]backend_mod.ProgramIO{.{ .buf_idx = 0, .host_ptr = @ptrCast(src.ptr), .size = @intCast(src.len * @sizeOf(f32)) }};
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 2, .buffer_sizes = &sizes, .initial_uploads = &uploads };
+    try benchProgram(be, "rmsnorm decode D4096", program, 1, D, 500);
+}
+
+fn benchAttentionDecode(be: backend_mod.Backend) !void {
+    const alloc = std.heap.page_allocator;
+    const D = 64;
+    const S = 128;
+    const q = try alloc.alloc(f32, D);
+    defer alloc.free(q);
+    const k = try alloc.alloc(f32, D * S);
+    defer alloc.free(k);
+    const v = try alloc.alloc(f32, D * S);
+    defer alloc.free(v);
+    const mask = try alloc.alloc(f32, S);
+    defer alloc.free(mask);
+
+    for (q, 0..) |*x, i| x.* = @as(f32, @floatFromInt(@as(i32, @intCast(i % 17)) - 8)) * 0.05;
+    for (k, 0..) |*x, i| x.* = @as(f32, @floatFromInt(@as(i32, @intCast(i % 31)) - 15)) * 0.02;
+    for (v, 0..) |*x, i| x.* = @as(f32, @floatFromInt(@as(i32, @intCast(i % 23)) - 11)) * 0.03;
+    @memset(mask, 0);
+
+    const ops = [_]backend_mod.DeviceOp{.{ .attention = .{
+        .dst = 4,
+        .q = 0,
+        .k = 1,
+        .v = 2,
+        .mask = 3,
+        .has_mask = true,
+        .d_head = D,
+        .seq_q = 1,
+        .seq_kv = S,
+        .scale = 0.125,
+        .q_off = 0,
+        .k_off = 0,
+        .v_off = 0,
+        .mask_off = 0,
+        .dst_off = 0,
+        .q_rs = 1,
+        .q_cs = D,
+        .k_rs = 1,
+        .k_cs = D,
+        .v_rs = 1,
+        .v_cs = D,
+        .mask_rs = 1,
+        .mask_cs = S,
+        .dst_rs = 1,
+        .dst_cs = D,
+    } }};
+    const sizes = [_]usize{ q.len, k.len, v.len, mask.len, D };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(q.ptr), .size = @intCast(q.len * @sizeOf(f32)) },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(k.ptr), .size = @intCast(k.len * @sizeOf(f32)) },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(v.ptr), .size = @intCast(v.len * @sizeOf(f32)) },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(mask.ptr), .size = @intCast(mask.len * @sizeOf(f32)) },
+    };
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 5, .buffer_sizes = &sizes, .initial_uploads = &uploads };
+    try benchProgram(be, "attention decode D64 S128", program, 4, D, 100);
+}
+
 fn benchBackend(be: backend_mod.Backend) !void {
     try benchMatmul(be);
     try benchElementwise(be);
+    try benchRmsNormDecode(be);
+    try benchAttentionDecode(be);
 }
 
 pub fn main() !void {

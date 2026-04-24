@@ -17,7 +17,7 @@ const gguf_mod = @import("../gguf.zig");
 const GGUFFile = gguf_mod.GGUFFile;
 const GGMLType = gguf_mod.GGMLType;
 const TensorInfo = gguf_mod.TensorInfo;
-const Llama = @import("llama.zig").Llama;
+const LLaMA = @import("llama.zig").LLaMA;
 const LlamaConfig = @import("llama.zig").LlamaConfig;
 
 const log = std.log.scoped(.gguf_loader);
@@ -128,15 +128,16 @@ fn loadTensor(comptime T: type, dst: *Tensor(T), gf: *const GGUFFile, name: []co
 /// then maps standard GGUF metadata keys to LlamaConfig fields.
 pub fn configFromGGUF(gf: *const GGUFFile) LlamaConfig {
     const arch = gf.getMetaString("general.architecture") orelse "llama";
+    const n_heads = getArchU32(gf, arch, "attention.head_count") orelse 32;
 
     return .{
         .d_model = getArchU32(gf, arch, "embedding_length") orelse 4096,
         .n_layers = getArchU32(gf, arch, "block_count") orelse 32,
-        .n_heads = getArchU32(gf, arch, "attention.head_count") orelse 32,
-        .n_kv_heads = getArchU32(gf, arch, "attention.head_count_kv") orelse 32,
+        .n_heads = n_heads,
+        .n_kv_heads = getArchU32(gf, arch, "attention.head_count_kv") orelse n_heads,
         .d_ff = getArchU32(gf, arch, "feed_forward_length") orelse 11008,
         .max_seq_len = getArchU32(gf, arch, "context_length") orelse 2048,
-        .rope_theta = getArchF32(gf, arch, "rope.freq_base") orelse 10000.0,
+        .rope_base = getArchF32(gf, arch, "rope.freq_base") orelse 10000.0,
         .vocab_size = getArchU32(gf, arch, "vocab_size") orelse blk: {
             // Fall back to counting token_embd rows if metadata missing.
             if (gf.getTensorInfo("token_embd.weight")) |ti| {
@@ -183,22 +184,22 @@ fn blockTensorName(buf: *[128]u8, layer: usize, suffix: []const u8) []const u8 {
 /// Load GGUF weights into a LLaMA model, dequantizing Q4_0/Q8_0/F16 to f32.
 ///
 /// Tensor name mapping (GGUF LLaMA convention):
-///   token_embd.weight          -> token_embed
-///   blk.{i}.attn_norm.weight   -> blocks[i].rms_attn
-///   blk.{i}.attn_q.weight      -> blocks[i].w_q
-///   blk.{i}.attn_k.weight      -> blocks[i].w_k
-///   blk.{i}.attn_v.weight      -> blocks[i].w_v
-///   blk.{i}.attn_output.weight -> blocks[i].w_o
-///   blk.{i}.ffn_norm.weight    -> blocks[i].rms_ffn
-///   blk.{i}.ffn_gate.weight    -> blocks[i].w_gate
-///   blk.{i}.ffn_up.weight      -> blocks[i].w_up
-///   blk.{i}.ffn_down.weight    -> blocks[i].w_down
-///   output_norm.weight          -> rms_final
-///   output.weight               -> out_proj
+///   token_embd.weight          -> token_embed.inner
+///   blk.{i}.attn_norm.weight   -> blocks[i].rms_norm_1.inner
+///   blk.{i}.attn_q.weight      -> blocks[i].w_q.inner
+///   blk.{i}.attn_k.weight      -> blocks[i].w_k.inner
+///   blk.{i}.attn_v.weight      -> blocks[i].w_v.inner
+///   blk.{i}.attn_output.weight -> blocks[i].w_o.inner
+///   blk.{i}.ffn_norm.weight    -> blocks[i].rms_norm_2.inner
+///   blk.{i}.ffn_gate.weight    -> blocks[i].w_gate.inner
+///   blk.{i}.ffn_up.weight      -> blocks[i].w_up.inner
+///   blk.{i}.ffn_down.weight    -> blocks[i].w_down.inner
+///   output_norm.weight          -> rms_norm_f.inner
+///   output.weight               -> out_proj.inner
 pub fn loadDequantized(
     comptime T: type,
     comptime config: LlamaConfig,
-    model: *Llama(T, config),
+    model: *const LLaMA(T, config),
     gf: *const GGUFFile,
 ) !void {
     if (T != f32) @compileError("loadDequantized only supports f32 currently");
@@ -206,57 +207,59 @@ pub fn loadDequantized(
     var name_buf: [128]u8 = undefined;
 
     // Token embedding
-    loadTensor(T, model.token_embed, gf, "token_embd.weight") catch |err| {
+    loadTensor(T, model.token_embed.inner, gf, "token_embd.weight") catch |err| {
         if (err != error.TensorNotFound) return err;
     };
 
     // Transformer blocks
     for (0..config.n_layers) |i| {
         // Attention norm
-        loadTensor(T, model.blocks[i].rms_attn, gf, blockTensorName(&name_buf, i, "attn_norm.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].rms_norm_1.inner, gf, blockTensorName(&name_buf, i, "attn_norm.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
 
         // Q/K/V/O projections
-        loadTensor(T, model.blocks[i].w_q, gf, blockTensorName(&name_buf, i, "attn_q.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_q.inner, gf, blockTensorName(&name_buf, i, "attn_q.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
-        loadTensor(T, model.blocks[i].w_k, gf, blockTensorName(&name_buf, i, "attn_k.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_k.inner, gf, blockTensorName(&name_buf, i, "attn_k.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
-        loadTensor(T, model.blocks[i].w_v, gf, blockTensorName(&name_buf, i, "attn_v.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_v.inner, gf, blockTensorName(&name_buf, i, "attn_v.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
-        loadTensor(T, model.blocks[i].w_o, gf, blockTensorName(&name_buf, i, "attn_output.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_o.inner, gf, blockTensorName(&name_buf, i, "attn_output.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
 
         // FFN norm
-        loadTensor(T, model.blocks[i].rms_ffn, gf, blockTensorName(&name_buf, i, "ffn_norm.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].rms_norm_2.inner, gf, blockTensorName(&name_buf, i, "ffn_norm.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
 
         // FFN gate/up/down (SwiGLU)
-        loadTensor(T, model.blocks[i].w_gate, gf, blockTensorName(&name_buf, i, "ffn_gate.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_gate.inner, gf, blockTensorName(&name_buf, i, "ffn_gate.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
-        loadTensor(T, model.blocks[i].w_up, gf, blockTensorName(&name_buf, i, "ffn_up.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_up.inner, gf, blockTensorName(&name_buf, i, "ffn_up.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
-        loadTensor(T, model.blocks[i].w_down, gf, blockTensorName(&name_buf, i, "ffn_down.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_down.inner, gf, blockTensorName(&name_buf, i, "ffn_down.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
     }
 
     // Final RMS norm
-    loadTensor(T, model.rms_final, gf, "output_norm.weight") catch |err| {
+    loadTensor(T, model.rms_norm_f.inner, gf, "output_norm.weight") catch |err| {
         if (err != error.TensorNotFound) return err;
     };
 
     // Output projection
-    loadTensor(T, model.out_proj, gf, "output.weight") catch |err| {
-        if (err != error.TensorNotFound) return err;
-    };
+    if (!config.tied_lm_head) {
+        loadTensor(T, model.out_proj.inner, gf, "output.weight") catch |err| {
+            if (err != error.TensorNotFound) return err;
+        };
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -381,8 +384,8 @@ test "configFromGGUF extracts metadata" {
     try testing.expectEqual(@as(usize, 4), cfg.n_layers);
     try testing.expectEqual(@as(usize, 8), cfg.n_heads);
     // Defaults for missing keys:
-    try testing.expectEqual(@as(usize, 32), cfg.n_kv_heads); // default
-    try testing.expectEqual(@as(f32, 10000.0), cfg.rope_theta); // default
+    try testing.expectEqual(@as(usize, 8), cfg.n_kv_heads); // default to n_heads
+    try testing.expectEqual(@as(f32, 10000.0), cfg.rope_base); // default
 }
 
 test "blockTensorName formats correctly" {

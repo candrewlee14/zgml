@@ -9,6 +9,7 @@
 const std = @import("std");
 
 pub const Device = enum { cpu, metal, cuda, npu, wgpu };
+pub const Op = @import("op.zig").Op;
 
 pub const Capabilities = struct {
     compiled_programs: bool = false,
@@ -61,6 +62,32 @@ pub const Capabilities = struct {
         .dynamic_program_refresh = true,
         .attention = .{ .supported = true, .max_seq_kv = 4096, .max_d_head = 512 },
     };
+
+    pub fn supportsElementwiseOp(_: Capabilities, op: Op) bool {
+        return switch (op) {
+            .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu => true,
+            else => false,
+        };
+    }
+
+    pub fn supportsOp(self: Capabilities, op: DeviceOp) bool {
+        if (!self.compiled_programs) return false;
+        return switch (op) {
+            .elementwise => |e| self.supportsElementwiseOp(e.op),
+            .matmul => self.dense_matmul_f32,
+            .qmatmul => self.qmatmul,
+            .softmax, .layernorm, .rmsnorm, .repeat, .slice_assign, .rope => true,
+            .reduce => |r| r.op == .sum or r.op == .max,
+            .attention => |att| self.attention.supports(att.seq_kv, att.d_head),
+            .fused_elementwise => |fe| {
+                if (!self.fused_elementwise) return false;
+                for (fe.steps) |step| {
+                    if (!self.supportsElementwiseOp(step.op)) return false;
+                }
+                return true;
+            },
+        };
+    }
 };
 
 // ── Host kernel specs ──────────────────────────────────────────────
@@ -88,8 +115,6 @@ pub const DenseMatMulSpecF32 = struct {
 };
 
 // ── Compiled device programs ───────────────────────────────────────
-
-pub const Op = @import("op.zig").Op;
 
 /// One step in a fused elementwise chain.
 pub const FusedEwStep = struct {
@@ -187,6 +212,56 @@ pub const DeviceProgram = struct {
     buffer_sizes: []const usize,
     initial_uploads: []const ProgramIO,
     qweights: []const QuantizedWeightUpload = &.{},
+
+    pub fn isSupportedBy(self: DeviceProgram, capabilities: Capabilities) bool {
+        if (!capabilities.compiled_programs) return false;
+        if (@as(usize, self.n_buffers) != self.buffer_sizes.len) return false;
+        for (self.ops) |op| {
+            if (!capabilities.supportsOp(op)) return false;
+            if (!self.opBuffersValid(op)) return false;
+            switch (op) {
+                .qmatmul => |q| {
+                    if (@as(usize, q.weight_idx) >= self.qweights.len) return false;
+                    const qw = self.qweights[q.weight_idx];
+                    if (qw.block_size == 0) return false;
+                    if (qw.rows != q.K or qw.cols != q.N) return false;
+                    const n_elems: usize = @as(usize, q.K) * @as(usize, q.N);
+                    const n_blocks = (n_elems + qw.block_size - 1) / qw.block_size;
+                    if (qw.data.len < n_elems or qw.scales.len < n_blocks) return false;
+                },
+                else => {},
+            }
+        }
+        return true;
+    }
+
+    fn hasBuffer(self: DeviceProgram, idx: u16) bool {
+        return @as(usize, idx) < self.buffer_sizes.len;
+    }
+
+    fn opBuffersValid(self: DeviceProgram, op: DeviceOp) bool {
+        return switch (op) {
+            .elementwise => |e| self.hasBuffer(e.dst) and self.hasBuffer(e.src0) and self.hasBuffer(e.src1),
+            .matmul => |m| self.hasBuffer(m.dst) and self.hasBuffer(m.a) and self.hasBuffer(m.b),
+            .qmatmul => |q| self.hasBuffer(q.dst) and self.hasBuffer(q.input),
+            .softmax => |s| self.hasBuffer(s.dst) and self.hasBuffer(s.src),
+            .layernorm => |l| self.hasBuffer(l.dst) and self.hasBuffer(l.src),
+            .rmsnorm => |r| self.hasBuffer(r.dst) and self.hasBuffer(r.src),
+            .reduce => |r| self.hasBuffer(r.dst) and self.hasBuffer(r.src),
+            .repeat => |rp| self.hasBuffer(rp.dst) and self.hasBuffer(rp.src),
+            .slice_assign => |sa| self.hasBuffer(sa.dst) and self.hasBuffer(sa.src),
+            .rope => |rr| self.hasBuffer(rr.dst) and self.hasBuffer(rr.src) and self.hasBuffer(rr.cos_sin),
+            .attention => |att| self.hasBuffer(att.dst) and self.hasBuffer(att.q) and
+                self.hasBuffer(att.k) and self.hasBuffer(att.v) and self.hasBuffer(att.mask),
+            .fused_elementwise => |fe| {
+                if (!self.hasBuffer(fe.dst) or !self.hasBuffer(fe.src)) return false;
+                for (fe.steps) |step| {
+                    if (step.op.isBinary() and !self.hasBuffer(step.secondary_buf)) return false;
+                }
+                return true;
+            },
+        };
+    }
 };
 
 // ── Backend ────────────────────────────────────────────────────────
@@ -216,7 +291,12 @@ pub const Backend = struct {
     };
 
     pub fn compileProgram(self: Backend, program: DeviceProgram) ?CompiledHandle {
+        if (!self.supportsProgram(program)) return null;
         return self.vtable.compile_program(self.ctx, program);
+    }
+
+    pub fn supportsProgram(self: Backend, program: DeviceProgram) bool {
+        return program.isSupportedBy(self.capabilities);
     }
 
     pub fn refreshProgram(self: Backend, handle: CompiledHandle, ops: []const DeviceOp) void {
@@ -256,6 +336,25 @@ test "dispatch helper returns false when no backend is configured" {
         .geom = .{ .M = 0, .N = 0, .K = 0, .a_row_stride = 0, .a_col_stride = 0, .b_row_stride = 0, .b_col_stride = 0, .a_offset = 0, .b_offset = 0, .dst_offset = 0, .dst_row_stride = 0 },
     };
     try std.testing.expect(!tryDenseMatMul(f32, null, dense));
+}
+
+test "program support validates capabilities and qweight descriptors" {
+    const fused_steps = [_]FusedEwStep{.{ .op = .relu, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 }};
+    const fused_ops = [_]DeviceOp{.{ .fused_elementwise = .{ .steps = &fused_steps, .n = 1, .dst = 1, .src = 0, .dst_offset = 0, .src_offset = 0 } }};
+    const fused_program = DeviceProgram{ .ops = &fused_ops, .n_buffers = 2, .buffer_sizes = &.{ 1, 1 }, .initial_uploads = &.{} };
+    try std.testing.expect(!fused_program.isSupportedBy(Capabilities.wgpu));
+    try std.testing.expect(fused_program.isSupportedBy(Capabilities.reference_cpu));
+
+    const qdata = [_]i8{ 1, 2, 3, 4 };
+    const scales = [_]f32{1};
+    const qops = [_]DeviceOp{.{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = 1, .N = 2, .K = 2 } }};
+    const qweights = [_]QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 2, .cols = 2, .block_size = 4 }};
+    const valid_qprogram = DeviceProgram{ .ops = &qops, .n_buffers = 2, .buffer_sizes = &.{ 2, 2 }, .initial_uploads = &.{}, .qweights = &qweights };
+    try std.testing.expect(valid_qprogram.isSupportedBy(Capabilities.wgpu));
+
+    const bad_qweights = [_]QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 3, .cols = 2, .block_size = 4 }};
+    const bad_qprogram = DeviceProgram{ .ops = &qops, .n_buffers = 2, .buffer_sizes = &.{ 2, 2 }, .initial_uploads = &.{}, .qweights = &bad_qweights };
+    try std.testing.expect(!bad_qprogram.isSupportedBy(Capabilities.wgpu));
 }
 
 test "capability attention limits are explicit" {
