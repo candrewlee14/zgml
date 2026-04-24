@@ -77,6 +77,34 @@ fn scoreForContiguous(s: u32, d_head: u32, scale: f32, has_mask: u32, mask_off: 
     let k_base = p.offsets0.y + s * d_head;
     var dot_acc: f32 = 0.0;
     var r: u32 = 0u;
+    while (r + 8u <= d_head) {
+        let qv0 = vec4(
+            q_buf[r],
+            q_buf[r + 1u],
+            q_buf[r + 2u],
+            q_buf[r + 3u],
+        );
+        let kv0 = vec4(
+            K[k_base + r],
+            K[k_base + r + 1u],
+            K[k_base + r + 2u],
+            K[k_base + r + 3u],
+        );
+        let qv1 = vec4(
+            q_buf[r + 4u],
+            q_buf[r + 5u],
+            q_buf[r + 6u],
+            q_buf[r + 7u],
+        );
+        let kv1 = vec4(
+            K[k_base + r + 4u],
+            K[k_base + r + 5u],
+            K[k_base + r + 6u],
+            K[k_base + r + 7u],
+        );
+        dot_acc += dot(qv0, kv0) + dot(qv1, kv1);
+        r += 8u;
+    }
     while (r + 4u <= d_head) {
         let qv = vec4(
             q_buf[r],
