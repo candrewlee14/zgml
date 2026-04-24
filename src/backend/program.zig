@@ -407,6 +407,65 @@ pub fn buildAnchorRunRegions(
     return regions.toOwnedSlice(alloc);
 }
 
+/// Split anchored member runs into non-overlapping windows with at least
+/// `anchors_per_region` anchors. Schedule items are not split, so a coalesced
+/// anchor item may make a region contain more anchors than requested.
+pub fn buildAnchorWindowRegions(
+    alloc: std.mem.Allocator,
+    items: []const KernelItem,
+    policy: RegionPolicy,
+    anchors_per_region: u32,
+) ![]KernelRegion {
+    var regions: std.ArrayListUnmanaged(KernelRegion) = .empty;
+    errdefer regions.deinit(alloc);
+
+    if (anchors_per_region == 0) return regions.toOwnedSlice(alloc);
+
+    var run_start: usize = 0;
+    while (run_start < items.len) {
+        while (run_start < items.len and !policy.member_families.contains(items[run_start].family)) {
+            run_start += 1;
+        }
+        if (run_start >= items.len) break;
+
+        var run_end = run_start;
+        while (run_end < items.len and policy.member_families.contains(items[run_end].family)) : (run_end += 1) {}
+
+        var window_start = run_start;
+        while (window_start < run_end) {
+            var window_end = window_start;
+            var anchor_count: u32 = 0;
+
+            while (window_end < run_end and anchor_count < anchors_per_region) : (window_end += 1) {
+                if (policy.anchor_families.contains(items[window_end].family)) {
+                    anchor_count += items[window_end].len;
+                }
+            }
+
+            if (anchor_count < anchors_per_region) break;
+
+            while (window_end < run_end and !policy.anchor_families.contains(items[window_end].family)) : (window_end += 1) {}
+
+            const first = items[window_start];
+            const last = items[window_end - 1];
+            const op_end = last.start + last.len;
+            try regions.append(alloc, .{
+                .start_item = @intCast(window_start),
+                .item_count = @intCast(window_end - window_start),
+                .op_start = first.start,
+                .op_count = op_end - first.start,
+                .anchor_count = anchor_count,
+            });
+
+            window_start = window_end;
+        }
+
+        run_start = run_end;
+    }
+
+    return regions.toOwnedSlice(alloc);
+}
+
 pub fn buildFamilyPatternRegions(
     alloc: std.mem.Allocator,
     items: []const KernelItem,
@@ -816,6 +875,30 @@ test "anchor run regions expose contiguous anchor groups" {
     try std.testing.expectEqual(@as(u32, 5), regions[1].op_start);
     try std.testing.expectEqual(@as(u32, 3), regions[1].op_count);
     try std.testing.expectEqual(@as(u32, 3), regions[1].anchor_count);
+}
+
+test "anchor window regions split member runs by anchor count" {
+    const items = [_]KernelItem{
+        .{ .family = .movement, .execution = .fallback, .start = 0, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 1, .len = 1 },
+        .{ .family = .elementwise, .execution = .fallback, .start = 2, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 3, .len = 2 },
+        .{ .family = .row, .execution = .fallback, .start = 5, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 6, .len = 1 },
+        .{ .family = .attention, .execution = .fallback, .start = 7, .len = 1 },
+        .{ .family = .qmatvec, .execution = .fallback, .start = 8, .len = 1 },
+        .{ .family = .matmul, .execution = .backend, .start = 9, .len = 1 },
+    };
+
+    const regions = try buildAnchorWindowRegions(std.testing.allocator, &items, RegionPolicy.qmatvecCluster(), 3);
+    defer std.testing.allocator.free(regions);
+
+    try std.testing.expectEqual(@as(usize, 1), regions.len);
+    try std.testing.expectEqual(@as(u32, 0), regions[0].start_item);
+    try std.testing.expectEqual(@as(u32, 5), regions[0].item_count);
+    try std.testing.expectEqual(@as(u32, 0), regions[0].op_start);
+    try std.testing.expectEqual(@as(u32, 6), regions[0].op_count);
+    try std.testing.expectEqual(@as(u32, 3), regions[0].anchor_count);
 }
 
 test "family pattern regions match exact contiguous family sequences" {

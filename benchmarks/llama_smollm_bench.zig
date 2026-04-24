@@ -241,6 +241,22 @@ fn runDeviceVariant(
     const qmatvec_anchor_runs = try backend_program.buildAnchorRunRegions(alloc, schedule, backend_program.RegionPolicy.qmatvecCluster());
     defer alloc.free(qmatvec_anchor_runs);
     profile.printKernelRegionSummary("qmatvec anchor runs", qmatvec_anchor_runs);
+    const qmatvec_block_windows = try backend_program.buildAnchorWindowRegions(alloc, schedule, backend_program.RegionPolicy.qmatvecCluster(), 7);
+    defer alloc.free(qmatvec_block_windows);
+    profile.printKernelRegionSummary("qmatvec 7-anchor windows", qmatvec_block_windows);
+    const block_region_plan = try alloc.alloc(backend_program.PatternRegion, qmatvec_block_windows.len);
+    defer alloc.free(block_region_plan);
+    for (qmatvec_block_windows, 0..) |region, i| {
+        block_region_plan[i] = .{ .pattern_index = 0, .region = region };
+    }
+    const block_region_schedule = try backend_program.buildRegionSchedule(alloc, schedule, block_region_plan);
+    defer alloc.free(block_region_schedule);
+    profile.printRegionScheduleSummary("qmatvec 7-anchor windows", block_region_schedule);
+    const lowered_block_patterns = [_]u32{0};
+    profile.printRegionExecutionSummary(
+        "qmatvec 7-anchor windows lowered",
+        backend_program.summarizeRegionExecution(block_region_schedule, schedule, &lowered_block_patterns),
+    );
     try profile.printAnchorNeighborhoodSummary(2, alloc, "qmatvec", schedule, backend_program.RegionPolicy.qmatvecCluster(), 8);
     const qmatvec_rope_attention_pattern = [_]backend_program.KernelFamily{ .qmatvec, .rope, .qmatvec, .rope, .movement, .qmatvec, .movement, .attention };
     const qmatvec_rope_attention = try backend_program.buildFamilyPatternRegions(alloc, schedule, &qmatvec_rope_attention_pattern);
