@@ -1124,16 +1124,24 @@ fn metalSchedulePolicy(fine_grained: bool) program_mod.SchedulePolicy {
     };
 }
 
-const qmatvec_rope_attention_pattern = [_]program_mod.KernelFamily{ .qmatvec, .rope, .qmatvec, .rope, .movement, .qmatvec, .movement, .attention };
-const metal_region_patterns = [_]program_mod.FamilyPattern{.{
-    .name = "qmatvec-rope-attention",
-    .families = &qmatvec_rope_attention_pattern,
-}};
-const metal_pattern_qmatvec_rope_attention: u32 = 0;
+const metal_pattern_qmatvec_anchor_window: u32 = 0;
+const metal_qmatvec_window_anchors: u32 = 7;
 
 fn buildMetalRegionSchedule(alloc: std.mem.Allocator, schedule: []const program_mod.KernelItem) ![]program_mod.ScheduleUnit {
-    const region_plan = try program_mod.buildFamilyPatternPlan(alloc, schedule, &metal_region_patterns);
+    const regions = try program_mod.buildAnchorWindowRegions(
+        alloc,
+        schedule,
+        program_mod.RegionPolicy.qmatvecCluster(),
+        metal_qmatvec_window_anchors,
+    );
+    defer alloc.free(regions);
+
+    const region_plan = try alloc.alloc(program_mod.PatternRegion, regions.len);
     defer alloc.free(region_plan);
+    for (regions, 0..) |region, i| {
+        region_plan[i] = .{ .pattern_index = metal_pattern_qmatvec_anchor_window, .region = region };
+    }
+
     return program_mod.buildRegionSchedule(alloc, schedule, region_plan);
 }
 
@@ -1303,9 +1311,16 @@ const CompiledProgram = struct {
         self.encode(pipeline, buffers, &params, @sizeOf(Params), params_index, grid, threads_x);
     }
 
-    fn tryEncodeFusedElementwise(self: *CompiledProgram, fe: anytype) bool {
-        if (!self.backend.fine_grained_program_dispatch) return false;
+    fn canEncodeFusedElementwise(fe: anytype) bool {
         if (fe.steps.len > MAX_FUSED_EW_STEPS) return false;
+        for (fe.steps) |step| {
+            if (!isSupportedElementwiseOp(step.op)) return false;
+        }
+        return true;
+    }
+
+    fn encodeFusedElementwise(self: *CompiledProgram, fe: anytype) bool {
+        if (!canEncodeFusedElementwise(fe)) return false;
 
         var params = std.mem.zeroes(FusedEwParams);
         params.n_elements = fe.n;
@@ -1351,6 +1366,11 @@ const CompiledProgram = struct {
             WG_SIZE,
         );
         return true;
+    }
+
+    fn tryEncodeFusedElementwise(self: *CompiledProgram, fe: anytype) bool {
+        if (!self.backend.fine_grained_program_dispatch) return false;
+        return self.encodeFusedElementwise(fe);
     }
 
     fn encodeComputeDispatch(self: *CompiledProgram, spec: ComputeDispatchSpec) void {
@@ -1406,10 +1426,10 @@ const CompiledProgram = struct {
     }
 
     fn canEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
+        if (computeDispatchSpec(op) != null) return true;
         return switch (op) {
             .qmatmul => |q| q.M == 1 and @as(usize, q.weight_idx) < self.qweight_views.len,
             .rope => true,
-            .slice_assign => computeDispatchSpec(op) != null,
             .attention => |att| att.seq_q == 1 and
                 att.seq_kv <= 4096 and
                 att.d_head <= 512 and
@@ -1417,6 +1437,7 @@ const CompiledProgram = struct {
                 att.q_rs == 1 and
                 att.mask_rs == 1 and
                 att.dst_rs == 1,
+            .fused_elementwise => |fe| canEncodeFusedElementwise(fe),
             else => false,
         };
     }
@@ -1424,15 +1445,13 @@ const CompiledProgram = struct {
     fn tryEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
         const tag: usize = @intFromEnum(op);
         const t0 = nowNs();
-        const encoded = switch (op) {
+        const encoded = if (computeDispatchSpec(op)) |spec| blk: {
+            self.encodeComputeDispatch(spec);
+            break :blk true;
+        } else switch (op) {
             .qmatmul => |q| q.M == 1 and self.encodeQMatvec(q),
             .rope => |rr| blk: {
                 self.encodeRope(rr);
-                break :blk true;
-            },
-            .slice_assign => blk: {
-                const spec = computeDispatchSpec(op) orelse break :blk false;
-                self.encodeComputeDispatch(spec);
                 break :blk true;
             },
             .attention => |att| blk: {
@@ -1440,6 +1459,7 @@ const CompiledProgram = struct {
                 self.encodeAttention(att);
                 break :blk true;
             },
+            .fused_elementwise => |fe| self.encodeFusedElementwise(fe),
             else => false,
         };
         if (encoded) {
@@ -1451,26 +1471,32 @@ const CompiledProgram = struct {
 
     fn tryEncodePatternRegion(self: *CompiledProgram, unit: program_mod.ScheduleUnit) bool {
         return switch (unit.pattern_index) {
-            metal_pattern_qmatvec_rope_attention => self.tryEncodeQmatvecRopeAttentionRegion(unit),
+            metal_pattern_qmatvec_anchor_window => self.tryEncodeQmatvecAnchorWindowRegion(unit),
             else => false,
         };
     }
 
-    fn tryEncodeQmatvecRopeAttentionRegion(self: *CompiledProgram, unit: program_mod.ScheduleUnit) bool {
-        if (unit.item_count != qmatvec_rope_attention_pattern.len) return false;
-
+    fn tryEncodeQmatvecAnchorWindowRegion(self: *CompiledProgram, unit: program_mod.ScheduleUnit) bool {
         const start_item: usize = @intCast(unit.start_item);
-        const end_item = start_item + qmatvec_rope_attention_pattern.len;
+        const end_item = start_item + @as(usize, unit.item_count);
         if (end_item > self.schedule.len) return false;
         const items = self.schedule[start_item..end_item];
 
-        for (items, qmatvec_rope_attention_pattern) |item, expected_family| {
-            if (item.family != expected_family or item.len != 1) return false;
-            if (!self.canEncodeRegionGpuOp(self.ops[@intCast(item.start)])) return false;
+        for (items) |item| {
+            const op_start: usize = @intCast(item.start);
+            const op_end = op_start + @as(usize, item.len);
+            if (op_end > self.ops.len) return false;
+            for (self.ops[op_start..op_end]) |op| {
+                if (!self.canEncodeRegionGpuOp(op)) return false;
+            }
         }
 
         for (items) |item| {
-            if (!self.tryEncodeRegionGpuOp(self.ops[@intCast(item.start)])) return false;
+            const op_start: usize = @intCast(item.start);
+            const op_end = op_start + @as(usize, item.len);
+            for (self.ops[op_start..op_end]) |op| {
+                if (!self.tryEncodeRegionGpuOp(op)) return false;
+            }
         }
         return true;
     }
