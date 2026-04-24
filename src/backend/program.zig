@@ -149,6 +149,11 @@ pub const PatternRegion = struct {
     region: KernelRegion,
 };
 
+pub const FamilyPattern = struct {
+    name: []const u8,
+    families: []const KernelFamily,
+};
+
 pub const ScheduleUnitKind = enum {
     item,
     pattern_region,
@@ -381,13 +386,13 @@ pub fn buildFamilyPatternRegions(
 pub fn buildFamilyPatternPlan(
     alloc: std.mem.Allocator,
     items: []const KernelItem,
-    patterns: []const []const KernelFamily,
+    patterns: []const FamilyPattern,
 ) ![]PatternRegion {
     var candidates: std.ArrayListUnmanaged(PatternRegion) = .empty;
     defer candidates.deinit(alloc);
 
     for (patterns, 0..) |pattern, pattern_index| {
-        const matches = try buildFamilyPatternRegions(alloc, items, pattern);
+        const matches = try buildFamilyPatternRegions(alloc, items, pattern.families);
         defer alloc.free(matches);
         for (matches) |region| {
             try candidates.append(alloc, .{
@@ -700,7 +705,10 @@ test "family pattern plan selects non-overlapping longest matches" {
     };
     const short = [_]KernelFamily{ .qmatvec, .rope };
     const long = [_]KernelFamily{ .qmatvec, .rope, .qmatvec };
-    const patterns = [_][]const KernelFamily{ &short, &long };
+    const patterns = [_]FamilyPattern{
+        .{ .name = "short", .families = &short },
+        .{ .name = "long", .families = &long },
+    };
 
     const regions = try buildFamilyPatternPlan(std.testing.allocator, &items, &patterns);
     defer std.testing.allocator.free(regions);
@@ -722,7 +730,7 @@ test "region schedule covers items once and replaces selected patterns" {
         .{ .family = .attention, .execution = .fallback, .start = 5, .len = 1 },
     };
     const pattern = [_]KernelFamily{ .qmatvec, .rope, .qmatvec };
-    const patterns = [_][]const KernelFamily{&pattern};
+    const patterns = [_]FamilyPattern{.{ .name = "q-r-q", .families = &pattern }};
 
     const regions = try buildFamilyPatternPlan(std.testing.allocator, &items, &patterns);
     defer std.testing.allocator.free(regions);
