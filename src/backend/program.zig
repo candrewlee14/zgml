@@ -180,6 +180,8 @@ pub const RegionExecutionSummary = struct {
     backend_ops: u32 = 0,
     fallback_ops: u32 = 0,
     backend_islands: u32 = 0,
+    max_backend_island_units: u32 = 0,
+    max_backend_island_ops: u32 = 0,
     execution_transitions: u32 = 0,
 };
 
@@ -577,6 +579,8 @@ pub fn summarizeRegionExecution(
 ) RegionExecutionSummary {
     var summary = RegionExecutionSummary{ .units = @intCast(units.len) };
     var prev_execution: ?ExecutionClass = null;
+    var current_backend_island_units: u32 = 0;
+    var current_backend_island_ops: u32 = 0;
 
     for (units) |unit| {
         const execution = scheduleUnitExecution(unit, items, backend_pattern_indices);
@@ -585,7 +589,15 @@ pub fn summarizeRegionExecution(
             .backend => {
                 summary.backend_units += 1;
                 summary.backend_ops += unit.op_count;
-                if (prev_execution == null or prev_execution.? != .backend) summary.backend_islands += 1;
+                if (prev_execution == null or prev_execution.? != .backend) {
+                    summary.backend_islands += 1;
+                    current_backend_island_units = 0;
+                    current_backend_island_ops = 0;
+                }
+                current_backend_island_units += 1;
+                current_backend_island_ops += unit.op_count;
+                summary.max_backend_island_units = @max(summary.max_backend_island_units, current_backend_island_units);
+                summary.max_backend_island_ops = @max(summary.max_backend_island_ops, current_backend_island_ops);
             },
             .fallback => {
                 summary.fallback_units += 1;
@@ -1009,6 +1021,8 @@ test "region execution summary counts backend islands and transitions" {
     try std.testing.expectEqual(@as(u32, 4), summary.backend_ops);
     try std.testing.expectEqual(@as(u32, 3), summary.fallback_ops);
     try std.testing.expectEqual(@as(u32, 2), summary.backend_islands);
+    try std.testing.expectEqual(@as(u32, 1), summary.max_backend_island_units);
+    try std.testing.expectEqual(@as(u32, 2), summary.max_backend_island_ops);
     try std.testing.expectEqual(@as(u32, 3), summary.execution_transitions);
 }
 
