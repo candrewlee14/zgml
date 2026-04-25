@@ -35,7 +35,7 @@ Current prefill work has a first real device-only path:
 | Path | Prompt/prefill | Runtime placement | Dispatches |
 | --- | ---: | --- | ---: |
 | Current GGUF session path | ~0.9k tok/s | CPU/Accelerate quant path | n/a |
-| Experimental Metal device prefill Q8_0 | ~2.0-2.7k tok/s | 100% backend | ~1,292/call |
+| Experimental Metal device prefill Q8_0 | ~2.6-2.8k tok/s | 100% backend | ~1,142/call |
 
 Measured with
 `./zig-out/bin/bench-llama-smollm data/smollm/SmolLM-135M.Q8_0.gguf 128 1 3 --metal-prefill-device`.
@@ -74,9 +74,10 @@ share a buffer and still batch if their read/write spans do not overlap.
 
 The first unified command stream now combines those pure stage commands and
 projection groups into a single ordered view. On SmolLM prefill it currently
-emits 1,262 commands for 1,714 ops, including 61 row chains, 90 RoPE/cache
-chains, 30 movement groups, 120 projection sidecar chains, and 30 projection
-groups covering 90 anchors plus 30 sidecars. Metal can consume this stream for
+emits 932 commands for 1,654 ops, including 61 row chains, 90 RoPE/cache
+chains, 30 movement groups, 270 attention output-store chains, 120 projection
+sidecar chains, and 30 projection groups covering 90 anchors plus 30 sidecars.
+Metal can consume this stream for
 those command classes while still falling back to existing local lowering for
 commands that are not first-class yet. The stream
 also has first-class contiguous batch commands for RoPE, movement/slice-assign,
@@ -99,6 +100,14 @@ single projection feeds an immediate elementwise, fused-elementwise, or cache
 write sidecar. This lifts Metal's local pair fusers into the same pure command
 stream and gives the next batching pass a clear target: teach projection batch
 kernels to carry those sidecars without losing the multi-anchor dispatch win.
+
+Attention output assembly now follows the same rule: the cached LLaMA forward
+uses a scratch concat buffer that is fully overwritten by per-head stores instead
+of emitting a fake zero-fill dependency. The command stream can therefore attach
+270 delayed attention output stores to their producer attention ops. The current
+runtime still executes ~1,142 dispatches/call because region windows only realize
+the immediate subset today; the pure command target is ~932 dispatches before
+the next region-execution cleanup.
 
 ## Acceptance Thresholds
 

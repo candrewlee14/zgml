@@ -414,6 +414,7 @@ fn runDevicePrefillVariant(
     );
     try profile.printAnchorNeighborhoodSummary(2, alloc, "prefill qmatmul", schedule, backend_program.RegionPolicy.qmatmulCluster(), 8);
     profile.printQMatmulSliceSidecarSummary("prefill", program.ops);
+    profile.printAttentionStoreSidecarSummary("prefill", program.ops);
 
     _ = try prefill.executeAt(prompt, 0);
     session.reset();

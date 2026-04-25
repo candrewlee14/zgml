@@ -342,7 +342,7 @@ pub fn printProgramCommandSummary(label: []const u8, summary: program_mod.Progra
     else
         0.0;
     std.debug.print(
-        "Program commands ({s}): {d} commands cover {d} ops, estimated {d} dispatches ({d} saved, {d:.1}% of ops); ops={d}, row={d}, rope={d}, rope_batch={d}, movement_batch={d}, movement_group={d} ({d} ops), attention_batch={d}, attention_group={d} ({d} ops), elementwise_batch={d} ({d} ops), projection_chains={d} ({d} sidecars), projection_groups={d} ({d} anchors, {d} sidecars, max span {d})\n\n",
+        "Program commands ({s}): {d} commands cover {d} ops, estimated {d} dispatches ({d} saved, {d:.1}% of ops); ops={d}, row={d}, rope={d}, rope_batch={d}, movement_batch={d}, movement_group={d} ({d} ops), attention_chain={d} ({d} sidecars), attention_store_chain={d} ({d} sidecars), attention_batch={d}, attention_group={d} ({d} ops), elementwise_batch={d} ({d} ops), projection_chains={d} ({d} sidecars), projection_groups={d} ({d} anchors, {d} sidecars, max span {d})\n\n",
         .{
             label,
             summary.commands,
@@ -357,6 +357,10 @@ pub fn printProgramCommandSummary(label: []const u8, summary: program_mod.Progra
             summary.movement_batches,
             summary.movement_groups,
             summary.movement_group_ops,
+            summary.attention_chains,
+            summary.attention_chain_sidecars,
+            summary.attention_store_chains,
+            summary.attention_store_chain_sidecars,
             summary.attention_batches,
             summary.attention_groups,
             summary.attention_group_ops,
@@ -487,6 +491,60 @@ pub fn printQMatmulSliceSidecarSummary(label: []const u8, ops: []const DeviceOp)
             },
         );
     }
+}
+
+pub fn printAttentionStoreSidecarSummary(label: []const u8, ops: []const DeviceOp) void {
+    var attentions: u32 = 0;
+    var immediate_slice: u32 = 0;
+    var immediate_compatible: u32 = 0;
+    var later_src_match: u32 = 0;
+    var later_compatible: u32 = 0;
+    var later_fusable: u32 = 0;
+    var blocked_read: u32 = 0;
+    var blocked_write_read: u32 = 0;
+    var blocked_write_write: u32 = 0;
+    var blocked_overflow: u32 = 0;
+
+    for (ops, 0..) |op, i| {
+        const att = switch (op) {
+            .attention => |att| att,
+            else => continue,
+        };
+        attentions += 1;
+
+        if (i + 1 < ops.len and ops[i + 1] == .slice_assign) {
+            immediate_slice += 1;
+            if (program_mod.attentionSliceStoreCompatible(att, ops[i + 1].slice_assign)) {
+                immediate_compatible += 1;
+            }
+        }
+
+        var scan = i + 1;
+        while (scan < ops.len) : (scan += 1) {
+            const sa = switch (ops[scan]) {
+                .slice_assign => |sa| sa,
+                else => continue,
+            };
+            if (sa.src != att.dst) continue;
+            later_src_match += 1;
+            if (program_mod.attentionSliceStoreCompatible(att, sa)) {
+                later_compatible += 1;
+                switch (program_mod.attentionStoreSidecarBlocker(ops, i, scan, sa)) {
+                    .none => later_fusable += 1,
+                    .candidate_read_written => blocked_read += 1,
+                    .sidecar_write_read => blocked_write_read += 1,
+                    .sidecar_write_written => blocked_write_write += 1,
+                    .overflow_conflict, .invalid_range => blocked_overflow += 1,
+                }
+            }
+            break;
+        }
+    }
+
+    std.debug.print(
+        "Attention store sidecars ({s}): {d} attentions, immediate slice_assign={d} ({d} compatible), later src matches={d} ({d} compatible, {d} fusable; blocked read={d}, write-read={d}, write-write={d}, overflow={d})\n\n",
+        .{ label, attentions, immediate_slice, immediate_compatible, later_src_match, later_compatible, later_fusable, blocked_read, blocked_write_read, blocked_write_write, blocked_overflow },
+    );
 }
 
 fn printNeighborhoodKey(comptime width: usize, key: [width]u8, center: usize) void {

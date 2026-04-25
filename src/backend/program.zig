@@ -299,6 +299,8 @@ pub const ProgramCommandKind = enum {
     rope_batch,
     movement_batch,
     movement_group,
+    attention_chain,
+    attention_store_chain,
     attention_batch,
     attention_group,
     elementwise_batch,
@@ -313,6 +315,8 @@ pub const ProgramCommandKind = enum {
             .rope_batch => "rope_batch",
             .movement_batch => "movement_batch",
             .movement_group => "movement_group",
+            .attention_chain => "attention_chain",
+            .attention_store_chain => "attention_store_chain",
             .attention_batch => "attention_batch",
             .attention_group => "attention_group",
             .elementwise_batch => "elementwise_batch",
@@ -432,6 +436,7 @@ pub const ProgramCommand = struct {
     pub fn coveredOpCount(self: ProgramCommand) u32 {
         return switch (self.kind) {
             .projection_group, .projection_chain => self.anchor_count + self.sidecar_count,
+            .attention_chain, .attention_store_chain => self.anchor_count + self.sidecar_count,
             .attention_group => self.anchor_count,
             .movement_group => self.anchor_count,
             .elementwise_batch => self.anchor_count,
@@ -441,7 +446,7 @@ pub const ProgramCommand = struct {
 
     pub fn advanceCount(self: ProgramCommand) u32 {
         return switch (self.kind) {
-            .projection_group, .elementwise_batch, .attention_group, .movement_group => 1,
+            .projection_group, .elementwise_batch, .attention_store_chain, .attention_group, .movement_group => 1,
             else => self.op_count,
         };
     }
@@ -467,6 +472,10 @@ pub const ProgramCommandSummary = struct {
     movement_batches: u32 = 0,
     movement_groups: u32 = 0,
     movement_group_ops: u32 = 0,
+    attention_chains: u32 = 0,
+    attention_chain_sidecars: u32 = 0,
+    attention_store_chains: u32 = 0,
+    attention_store_chain_sidecars: u32 = 0,
     attention_batches: u32 = 0,
     attention_groups: u32 = 0,
     attention_group_ops: u32 = 0,
@@ -855,6 +864,18 @@ pub fn findProgramCommand(
         return command;
     }
 
+    if (op == .slice_assign) {
+        if (findAttentionChainCommand(ops, start, used)) |command| {
+            return command;
+        }
+    }
+
+    if (op == .attention) {
+        if (findAttentionStoreChainCommand(ops, start, used)) |command| {
+            return command;
+        }
+    }
+
     if (op == .slice_assign and policy.max_movement_batch >= 2) {
         if (findMovementGroupCommand(ops, start, policy, used)) |command| {
             return command;
@@ -868,6 +889,78 @@ pub fn findProgramCommand(
     }
 
     return null;
+}
+
+fn findAttentionChainCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (start + 1 >= ops.len) return null;
+    if (commandRangeTouchesUsed(@intCast(start), 2, used)) return null;
+    const sa = switch (ops[start]) {
+        .slice_assign => |sa| sa,
+        else => return null,
+    };
+    const att = switch (ops[start + 1]) {
+        .attention => |att| att,
+        else => return null,
+    };
+    if (attentionSliceAssignOperand(sa, att) == null) return null;
+
+    var command = ProgramCommand{
+        .kind = .attention_chain,
+        .op_start = @intCast(start),
+        .op_count = 2,
+        .anchor_count = 1,
+        .sidecar_count = 1,
+    };
+    command.indices[0] = start + 1;
+    command.sidecar_indices[0] = start;
+    return command;
+}
+
+fn findAttentionStoreChainCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (start >= ops.len) return null;
+    if (used) |used_ops| {
+        if (start >= used_ops.len or used_ops[start]) return null;
+    }
+    const att = switch (ops[start]) {
+        .attention => |att| att,
+        else => return null,
+    };
+
+    var sidecar_idx: ?usize = null;
+    var scan = start + 1;
+    while (scan < ops.len) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const sa = switch (ops[scan]) {
+            .slice_assign => |sa| sa,
+            else => continue,
+        };
+        if (!attentionSliceStoreCompatible(att, sa)) continue;
+        if (!canFuseAttentionStoreSidecar(ops, start, scan, sa)) continue;
+        sidecar_idx = scan;
+        break;
+    }
+    const found = sidecar_idx orelse return null;
+
+    var command = ProgramCommand{
+        .kind = .attention_store_chain,
+        .op_start = @intCast(start),
+        .op_count = @intCast(found - start + 1),
+        .anchor_count = 1,
+        .sidecar_count = 1,
+    };
+    command.indices[0] = start;
+    command.sidecar_indices[0] = found;
+    return command;
 }
 
 fn findMovementGroupCommand(
@@ -1086,6 +1179,14 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
                 summary.movement_groups += 1;
                 summary.movement_group_ops += command.anchor_count;
             },
+            .attention_chain => {
+                summary.attention_chains += 1;
+                summary.attention_chain_sidecars += command.sidecar_count;
+            },
+            .attention_store_chain => {
+                summary.attention_store_chains += 1;
+                summary.attention_store_chain_sidecars += command.sidecar_count;
+            },
             .attention_batch => summary.attention_batches += 1,
             .attention_group => {
                 summary.attention_groups += 1;
@@ -1112,11 +1213,11 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
 
 pub fn markProgramCommandUsed(used: []bool, command: ProgramCommand) void {
     switch (command.kind) {
-        .projection_group, .elementwise_batch, .attention_group, .movement_group => {
+        .projection_group, .elementwise_batch, .attention_store_chain, .attention_group, .movement_group => {
             for (command.anchorIndices()) |idx| {
                 if (idx < used.len) used[idx] = true;
             }
-            if (command.kind == .projection_group) {
+            if (command.kind == .projection_group or command.kind == .attention_store_chain) {
                 for (command.sidecarIndices()) |maybe_idx| {
                     if (maybe_idx) |idx| {
                         if (idx < used.len) used[idx] = true;
@@ -1358,6 +1459,76 @@ pub fn canHoistOpTo(
     return true;
 }
 
+pub fn canFuseAttentionStoreSidecar(
+    ops: []const backend_mod.DeviceOp,
+    attention_index: usize,
+    sidecar_index: usize,
+    sa: anytype,
+) bool {
+    return attentionStoreSidecarBlocker(ops, attention_index, sidecar_index, sa) == .none;
+}
+
+pub const AttentionStoreSidecarBlocker = enum {
+    none,
+    invalid_range,
+    candidate_read_written,
+    sidecar_write_read,
+    sidecar_write_written,
+    overflow_conflict,
+};
+
+pub fn attentionStoreSidecarBlocker(
+    ops: []const backend_mod.DeviceOp,
+    attention_index: usize,
+    sidecar_index: usize,
+    sa: anytype,
+) AttentionStoreSidecarBlocker {
+    if (attention_index >= sidecar_index or sidecar_index > ops.len) return .invalid_range;
+    const candidate_access = opAccessSpans(.{ .slice_assign = sa });
+    for (ops[attention_index + 1 .. sidecar_index]) |op| {
+        for (candidate_access.readSpans()) |read| {
+            if (opWritesSpan(op, read)) return .candidate_read_written;
+        }
+        for (candidate_access.writeSpans()) |write| {
+            if (opReadsSpan(op, write)) return .sidecar_write_read;
+            if (opWritesSpan(op, write)) {
+                const other_sa = switch (op) {
+                    .slice_assign => |other| other,
+                    else => return .sidecar_write_written,
+                };
+                if (sliceAssignWritesMayOverlap(other_sa, sa)) return .sidecar_write_written;
+            }
+        }
+        if (candidate_access.read_overflow or candidate_access.write_overflow) {
+            if (opAccessConflicts(op, .{ .slice_assign = sa })) return .overflow_conflict;
+        }
+    }
+    return .none;
+}
+
+fn sliceAssignWritesMayOverlap(a: anytype, b: anytype) bool {
+    if (a.dst != b.dst) return false;
+    if (a.dst_row_stride == 1 and
+        b.dst_row_stride == 1 and
+        a.dst_col_stride == b.dst_col_stride and
+        a.dst_col_stride > 0)
+    {
+        const stride: i64 = @intCast(a.dst_col_stride);
+        const diff: i64 = @as(i64, @intCast(b.dst_offset)) - @as(i64, @intCast(a.dst_offset));
+        const min_delta = -@as(i64, @intCast(a.cols)) + 1;
+        const max_delta = @as(i64, @intCast(b.cols)) - 1;
+        var delta = min_delta;
+        while (delta <= max_delta) : (delta += 1) {
+            const start_delta = diff + delta * stride;
+            if (start_delta < @as(i64, @intCast(a.rows)) and -start_delta < @as(i64, @intCast(b.rows))) return true;
+        }
+        return false;
+    }
+    const a_span = stridedSpan(a.dst, a.dst_offset, a.rows, a.cols, a.dst_row_stride, a.dst_col_stride);
+    const b_span = stridedSpan(b.dst, b.dst_offset, b.rows, b.cols, b.dst_row_stride, b.dst_col_stride);
+    return a_span.overlaps(b_span);
+}
+
 pub fn opConflictsSelected(
     ops: []const backend_mod.DeviceOp,
     indices: []const usize,
@@ -1462,6 +1633,41 @@ pub fn qmatvecSliceSidecarCompatible(q: anytype, sa: anytype) bool {
 
 pub fn qmatmulDstRowStride(q: anytype) u32 {
     return if (q.dst_row_stride != 0) q.dst_row_stride else q.N;
+}
+
+pub const AttentionOperand = enum { q, k, v };
+
+pub fn attentionSliceAssignOperand(sa: anytype, att: anytype) ?AttentionOperand {
+    if (attentionSliceMatches(sa, att.q, att.q_off, att.d_head, att.seq_q, att.q_rs, att.q_cs)) return .q;
+    if (attentionSliceMatches(sa, att.k, att.k_off, att.d_head, att.seq_kv, att.k_rs, att.k_cs)) return .k;
+    if (attentionSliceMatches(sa, att.v, att.v_off, att.d_head, att.seq_kv, att.v_rs, att.v_cs)) return .v;
+    return null;
+}
+
+pub fn attentionSliceStoreCompatible(att: anytype, sa: anytype) bool {
+    return sa.src == att.dst and
+        sa.src_offset == att.dst_off and
+        sa.rows == att.d_head and
+        sa.cols == att.seq_q and
+        sa.src_row_stride == att.dst_rs and
+        sa.src_col_stride == att.dst_cs;
+}
+
+fn attentionSliceMatches(
+    sa: anytype,
+    buf: u16,
+    offset: u32,
+    rows: u32,
+    cols: u32,
+    row_stride: u32,
+    col_stride: u32,
+) bool {
+    return sa.dst == buf and
+        sa.dst_offset == offset and
+        sa.rows == rows and
+        sa.cols == cols and
+        sa.dst_row_stride == row_stride and
+        sa.dst_col_stride == col_stride;
 }
 
 pub fn isRopeSliceAssignChain(
@@ -2911,6 +3117,123 @@ test "program command stream emits noncontiguous attention groups" {
     try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.attention_groups);
     try std.testing.expectEqual(@as(u32, 2), summary.attention_group_ops);
+}
+
+test "program command stream emits attention producer chains" {
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .slice_assign = .{
+            .dst = 2,
+            .src = 9,
+            .rows = 4,
+            .cols = 4,
+            .dst_base_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 1,
+            .dst_col_stride = 4,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 4,
+        } },
+        testAttention(0),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.attention_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(usize, 1), commands[0].indices[0]);
+    try std.testing.expectEqual(@as(?usize, 0), commands[0].sidecar_indices[0]);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.attention_chains);
+    try std.testing.expectEqual(@as(u32, 1), summary.attention_chain_sidecars);
+}
+
+test "program command stream emits attention output store chains" {
+    const ops = [_]backend_mod.DeviceOp{
+        testAttention(0),
+        .{ .slice_assign = .{
+            .dst = 9,
+            .src = 4,
+            .rows = 4,
+            .cols = 2,
+            .dst_base_offset = 0,
+            .dst_offset = 8,
+            .dst_row_stride = 1,
+            .dst_col_stride = 4,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 4,
+        } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.attention_store_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(usize, 0), commands[0].indices[0]);
+    try std.testing.expectEqual(@as(?usize, 1), commands[0].sidecar_indices[0]);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.attention_store_chains);
+    try std.testing.expectEqual(@as(u32, 1), summary.attention_store_chain_sidecars);
+}
+
+test "program command stream carries delayed attention output stores" {
+    const ops = [_]backend_mod.DeviceOp{
+        testAttention(0),
+        testQMatmulWith(8, 0, 2),
+        .{ .slice_assign = .{
+            .dst = 9,
+            .src = 4,
+            .rows = 4,
+            .cols = 2,
+            .dst_base_offset = 0,
+            .dst_offset = 8,
+            .dst_row_stride = 1,
+            .dst_col_stride = 4,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 4,
+        } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.attention_store_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].op_count);
+    try std.testing.expectEqual(@as(usize, 0), commands[0].indices[0]);
+    try std.testing.expectEqual(@as(?usize, 2), commands[0].sidecar_indices[0]);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[1].op_start);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 3), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.op_commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.attention_store_chains);
+    try std.testing.expectEqual(@as(u32, 1), summary.attention_store_chain_sidecars);
 }
 
 test "program command stream emits noncontiguous movement groups" {
