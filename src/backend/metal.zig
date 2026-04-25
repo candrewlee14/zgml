@@ -2769,13 +2769,8 @@ const CompiledProgram = struct {
     }
 
     fn canFuseQMatmulElementwise(self: *CompiledProgram, q: anytype, e: anytype) bool {
-        if (q.M == 1 or @as(usize, q.weight_idx) >= self.qweight_views.len) return false;
-        if (e.op != .add and e.op != .mul) return false;
-        if (e.n != q.M * q.N) return false;
-        const dst_row_stride = if (q.dst_row_stride != 0) q.dst_row_stride else q.N;
-        if (dst_row_stride != q.N) return false;
-        return (e.src0 == q.dst and e.src0_offset == q.dst_offset) or
-            (e.src1 == q.dst and e.src1_offset == q.dst_offset);
+        if (@as(usize, q.weight_idx) >= self.qweight_views.len) return false;
+        return program_mod.qmatmulElementwiseSidecarCompatible(q, e);
     }
 
     fn encodeQMatmulElementwise(self: *CompiledProgram, q: anytype, e: anytype) bool {
@@ -2812,12 +2807,9 @@ const CompiledProgram = struct {
     }
 
     fn canFuseQMatmulFusedElementwise(self: *CompiledProgram, q: anytype, fe: anytype) bool {
-        if (q.M == 1 or @as(usize, q.weight_idx) >= self.qweight_views.len) return false;
+        if (@as(usize, q.weight_idx) >= self.qweight_views.len) return false;
         if (!canEncodeFusedElementwise(fe)) return false;
-        if (fe.n != q.M * q.N) return false;
-        const dst_row_stride = if (q.dst_row_stride != 0) q.dst_row_stride else q.N;
-        if (dst_row_stride != q.N) return false;
-        return fe.src == q.dst and fe.src_offset == q.dst_offset;
+        return program_mod.qmatmulFusedElementwiseSidecarCompatible(q, fe);
     }
 
     fn encodeQMatmulFusedElementwise(self: *CompiledProgram, q: anytype, fe: anytype) bool {
@@ -3089,6 +3081,23 @@ const CompiledProgram = struct {
         }
     }
 
+    fn tryEncodeProjectionChainCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.anchor_count != 1 or command.sidecar_count != 1) return false;
+        const anchor_idx = command.indices[0];
+        const sidecar_idx = command.sidecar_indices[0] orelse return false;
+        if (anchor_idx >= ops.len or sidecar_idx >= ops.len) return false;
+        const q = switch (ops[anchor_idx]) {
+            .qmatmul => |q| q,
+            else => return false,
+        };
+        return switch (ops[sidecar_idx]) {
+            .slice_assign => |sa| if (q.M == 1) self.encodeQMatvecSliceAssign(q, sa) else self.encodeQMatmulSliceAssign(q, sa),
+            .elementwise => |e| self.encodeQMatmulElementwise(q, e),
+            .fused_elementwise => |fe| self.encodeQMatmulFusedElementwise(q, fe),
+            else => false,
+        };
+    }
+
     fn tryEncodeElementwiseBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: []bool) bool {
         if (start >= ops.len or skipped[start]) return false;
         const first = switch (ops[start]) {
@@ -3209,6 +3218,7 @@ const CompiledProgram = struct {
         const encoded = switch (command.kind) {
             .op => false,
             .projection_group => self.tryEncodeProjectionCommand(ops, command),
+            .projection_chain => self.tryEncodeProjectionChainCommand(ops, command),
             .attention_batch => blk: {
                 const n: usize = @intCast(command.op_count);
                 if (self.attentionBatchRunLen(ops[start..]) < n) break :blk false;

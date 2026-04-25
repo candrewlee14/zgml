@@ -74,10 +74,11 @@ share a buffer and still batch if their read/write spans do not overlap.
 
 The first unified command stream now combines those pure stage commands and
 projection groups into a single ordered view. On SmolLM prefill it currently
-emits 1,412 commands for 1,714 ops, including 61 row chains, 90 RoPE/cache
-chains, and 30 projection groups covering 90 anchors plus 30 sidecars. Metal can
-consume this stream for those command classes while still falling back to
-existing local lowering for commands that are not first-class yet. The stream
+emits 1,292 commands for 1,714 ops, including 61 row chains, 90 RoPE/cache
+chains, 120 projection sidecar chains, and 30 projection groups covering 90
+anchors plus 30 sidecars. Metal can consume this stream for those command
+classes while still falling back to existing local lowering for commands that
+are not first-class yet. The stream
 also has first-class contiguous batch commands for RoPE, movement/slice-assign,
 and attention; SmolLM prefill does not currently expose those as contiguous
 runs, but decode and future lowering passes can share the same command shape.
@@ -85,6 +86,12 @@ It also has a non-contiguous `elementwise_batch` command backed by pure
 dependency checks; this is a reusable command-stream primitive, though the
 current SmolLM prefill trace reports `0` such batches because its elementwise ops
 are dependency-adjacent rather than independent.
+
+QMatmul side effects are now represented as `projection_chain` commands when a
+single projection feeds an immediate elementwise, fused-elementwise, or cache
+write sidecar. This lifts Metal's local pair fusers into the same pure command
+stream and gives the next batching pass a clear target: teach projection batch
+kernels to carry those sidecars without losing the multi-anchor dispatch win.
 
 ## Acceptance Thresholds
 

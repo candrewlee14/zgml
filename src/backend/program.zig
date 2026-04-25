@@ -300,6 +300,7 @@ pub const ProgramCommandKind = enum {
     movement_batch,
     attention_batch,
     elementwise_batch,
+    projection_chain,
     projection_group,
 
     pub fn label(self: ProgramCommandKind) []const u8 {
@@ -311,6 +312,7 @@ pub const ProgramCommandKind = enum {
             .movement_batch => "movement_batch",
             .attention_batch => "attention_batch",
             .elementwise_batch => "elementwise_batch",
+            .projection_chain => "projection_chain",
             .projection_group => "projection_group",
         };
     }
@@ -425,7 +427,7 @@ pub const ProgramCommand = struct {
 
     pub fn coveredOpCount(self: ProgramCommand) u32 {
         return switch (self.kind) {
-            .projection_group => self.anchor_count + self.sidecar_count,
+            .projection_group, .projection_chain => self.anchor_count + self.sidecar_count,
             .elementwise_batch => self.anchor_count,
             else => self.op_count,
         };
@@ -460,6 +462,8 @@ pub const ProgramCommandSummary = struct {
     attention_batches: u32 = 0,
     elementwise_batches: u32 = 0,
     elementwise_ops: u32 = 0,
+    projection_chains: u32 = 0,
+    projection_chain_sidecars: u32 = 0,
     projection_groups: u32 = 0,
     projection_anchors: u32 = 0,
     projection_sidecars: u32 = 0,
@@ -818,6 +822,9 @@ pub fn findProgramCommand(
                 return ProgramCommand.fromProjectionSelection(selection);
             }
         }
+        if (findProjectionChainCommand(ops, start, used)) |command| {
+            return command;
+        }
     }
 
     if (op == .elementwise and policy.max_elementwise_batch >= 2) {
@@ -839,6 +846,32 @@ pub fn findProgramCommand(
     }
 
     return null;
+}
+
+fn findProjectionChainCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (start + 1 >= ops.len) return null;
+    if (commandRangeTouchesUsed(@intCast(start), 2, used)) return null;
+    const q = switch (ops[start]) {
+        .qmatmul => |q| q,
+        else => return null,
+    };
+    if (!projectionSidecarCompatible(q, ops[start + 1])) return null;
+
+    var command = ProgramCommand{
+        .kind = .projection_chain,
+        .op_start = @intCast(start),
+        .op_count = 2,
+        .projection_kind = if (q.M == 1) .qmatvec else .qmatmul,
+        .anchor_count = 1,
+        .sidecar_count = 1,
+    };
+    command.indices[0] = start;
+    command.sidecar_indices[0] = start + 1;
+    return command;
 }
 
 fn findElementwiseBatchCommand(
@@ -939,6 +972,10 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
             .elementwise_batch => {
                 summary.elementwise_batches += 1;
                 summary.elementwise_ops += command.anchor_count;
+            },
+            .projection_chain => {
+                summary.projection_chains += 1;
+                summary.projection_chain_sidecars += command.sidecar_count;
             },
             .projection_group => {
                 summary.projection_groups += 1;
@@ -1246,6 +1283,31 @@ pub fn projectionConflictsSelected(
     q: anytype,
 ) bool {
     return opConflictsSelected(ops, indices, .{ .qmatmul = q });
+}
+
+pub fn projectionSidecarCompatible(q: anytype, op: backend_mod.DeviceOp) bool {
+    return switch (op) {
+        .slice_assign => |sa| if (q.M == 1) qmatvecSliceSidecarCompatible(q, sa) else qmatmulSliceSidecarCompatible(q, sa),
+        .elementwise => |e| qmatmulElementwiseSidecarCompatible(q, e),
+        .fused_elementwise => |fe| qmatmulFusedElementwiseSidecarCompatible(q, fe),
+        else => false,
+    };
+}
+
+pub fn qmatmulElementwiseSidecarCompatible(q: anytype, e: anytype) bool {
+    if (q.M == 1) return false;
+    if (e.op != .add and e.op != .mul) return false;
+    if (e.n != q.M * q.N) return false;
+    if (qmatmulDstRowStride(q) != q.N) return false;
+    return (e.src0 == q.dst and e.src0_offset == q.dst_offset) or
+        (e.src1 == q.dst and e.src1_offset == q.dst_offset);
+}
+
+pub fn qmatmulFusedElementwiseSidecarCompatible(q: anytype, fe: anytype) bool {
+    if (q.M == 1) return false;
+    if (fe.n != q.M * q.N) return false;
+    if (qmatmulDstRowStride(q) != q.N) return false;
+    return fe.src == q.dst and fe.src_offset == q.dst_offset;
 }
 
 pub fn qmatmulSliceSrcColStart(q: anytype, sa: anytype) ?u32 {
@@ -2625,6 +2687,46 @@ test "program command stream keeps used noncontiguous ops single-owned" {
     try std.testing.expectEqual(@as(u32, 1), summary.op_commands);
     try std.testing.expectEqual(@as(u32, 1), summary.projection_groups);
     try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
+}
+
+test "program command stream emits projection sidecar chains" {
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 2),
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 8 } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_chain, commands[0].kind);
+    try std.testing.expectEqual(ProjectionGroupKind.qmatmul, commands[0].projection_kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(usize, 0), commands[0].indices[0]);
+    try std.testing.expectEqual(@as(?usize, 1), commands[0].sidecar_indices[0]);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_chains);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_chain_sidecars);
+}
+
+test "projection sidecar chains reject incompatible consumers" {
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 2),
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 7 } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[0].kind);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
 }
 
 test "program command stream emits contiguous batch commands" {
