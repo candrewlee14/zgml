@@ -2880,15 +2880,39 @@ const CompiledProgram = struct {
     }
 
     fn encodeSliceAssignBatch(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, n: usize) void {
-        const first = ops[0].slice_assign;
+        var indices: [MAX_SLICE_ASSIGN_BATCH]usize = undefined;
+        for (0..n) |i| indices[i] = i;
+        self.encodeSliceAssignBatchIndices(ops, indices[0..n]);
+    }
+
+    fn canEncodeSliceAssignBatchIndices(_: *CompiledProgram, ops: []const backend_mod.DeviceOp, indices: []const usize) bool {
+        if (indices.len < 2 or indices.len > MAX_SLICE_ASSIGN_BATCH) return false;
+        if (indices[0] >= ops.len) return false;
+        const first = switch (ops[indices[0]]) {
+            .slice_assign => |sa| sa,
+            else => return false,
+        };
+        for (indices[1..]) |idx| {
+            if (idx >= ops.len) return false;
+            const next = switch (ops[idx]) {
+                .slice_assign => |sa| sa,
+                else => return false,
+            };
+            if (!sliceAssignBatchCompatible(first, next)) return false;
+        }
+        return true;
+    }
+
+    fn encodeSliceAssignBatchIndices(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, indices: []const usize) void {
+        const first = ops[indices[0]].slice_assign;
         const buffers = [_]DeviceBuffer{
             self.device_bufs[first.src],
             self.device_bufs[first.dst],
         };
         var params = std.mem.zeroes(SliceAssignBatchParams);
-        params.n_ops = @intCast(n);
-        for (ops[0..n], 0..) |op, i| {
-            const sa = op.slice_assign;
+        params.n_ops = @intCast(indices.len);
+        for (indices, 0..) |idx, i| {
+            const sa = ops[idx].slice_assign;
             params.rows[i] = sa.rows;
             params.cols[i] = sa.cols;
             params.dst_offset[i] = sa.dst_offset;
@@ -2899,7 +2923,7 @@ const CompiledProgram = struct {
             params.src_col_stride[i] = sa.src_col_stride;
             params.max_n = @max(params.max_n, sa.rows * sa.cols);
         }
-        self.encodeTyped(SliceAssignBatchParams, self.backend.slice_assign_batch_pipeline, &buffers, params, 2, .{ .gx = linearGrid(params.max_n), .gy = @intCast(n) }, WG_SIZE);
+        self.encodeTyped(SliceAssignBatchParams, self.backend.slice_assign_batch_pipeline, &buffers, params, 2, .{ .gx = linearGrid(params.max_n), .gy = @intCast(indices.len) }, WG_SIZE);
     }
 
     fn canFuseRmsnormRepeatMul(rn: anytype, rp: anytype, e: anytype) bool {
@@ -3270,6 +3294,13 @@ const CompiledProgram = struct {
                 self.encodeSliceAssignBatch(ops[start..], n);
                 break :blk true;
             },
+            .movement_group => blk: {
+                if (!self.canEncodeSliceAssignBatchIndices(ops, command.anchorIndices())) break :blk false;
+                const t_batch = nowNs();
+                self.encodeSliceAssignBatchIndices(ops, command.anchorIndices());
+                self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), @intCast(nowNs() - t_batch));
+                break :blk true;
+            },
             .elementwise_batch => blk: {
                 for (command.anchorIndices()) |idx| {
                     if (idx >= ops.len) break :blk false;
@@ -3308,7 +3339,7 @@ const CompiledProgram = struct {
         };
 
         if (!encoded) return 0;
-        if (command.kind != .projection_group and command.kind != .elementwise_batch and command.kind != .attention_group) {
+        if (command.kind != .projection_group and command.kind != .elementwise_batch and command.kind != .attention_group and command.kind != .movement_group) {
             self.recordRegionFusedRun(ops[start..end], @intCast(nowNs() - t0));
         }
         program_mod.markProgramCommandUsed(skipped, command);
