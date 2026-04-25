@@ -2640,31 +2640,11 @@ const CompiledProgram = struct {
     }
 
     fn ropeBatchCompatible(first: anytype, next: anytype) bool {
-        return first.src == next.src and
-            first.cos_sin == next.cos_sin and
-            first.dst == next.dst and
-            first.half_d == next.half_d and
-            first.seq_len == next.seq_len and
-            first.src_rs == next.src_rs and
-            first.src_cs == next.src_cs and
-            first.cs_cs == next.cs_cs;
+        return program_mod.ropeBatchCompatible(first, next);
     }
 
     fn ropeBatchRunLen(ops: []const backend_mod.DeviceOp) usize {
-        if (ops.len < 2) return 0;
-        const first = switch (ops[0]) {
-            .rope => |rr| rr,
-            else => return 0,
-        };
-        var n: usize = 1;
-        while (n < ops.len and n < MAX_ROPE_BATCH) : (n += 1) {
-            const next = switch (ops[n]) {
-                .rope => |rr| rr,
-                else => break,
-            };
-            if (!ropeBatchCompatible(first, next)) break;
-        }
-        return if (n >= 2) n else 0;
+        return program_mod.ropeBatchRunLen(ops, MAX_ROPE_BATCH);
     }
 
     fn encodeRopeBatch(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, n: usize) void {
@@ -2900,24 +2880,11 @@ const CompiledProgram = struct {
     }
 
     fn sliceAssignBatchCompatible(first: anytype, next: anytype) bool {
-        return first.src == next.src and first.dst == next.dst;
+        return program_mod.sliceAssignBatchCompatible(first, next);
     }
 
     fn sliceAssignBatchRunLen(ops: []const backend_mod.DeviceOp) usize {
-        if (ops.len < 2) return 0;
-        const first = switch (ops[0]) {
-            .slice_assign => |sa| sa,
-            else => return 0,
-        };
-        var n: usize = 1;
-        while (n < ops.len and n < MAX_SLICE_ASSIGN_BATCH) : (n += 1) {
-            const next = switch (ops[n]) {
-                .slice_assign => |sa| sa,
-                else => break,
-            };
-            if (!sliceAssignBatchCompatible(first, next)) break;
-        }
-        return if (n >= 2) n else 0;
+        return program_mod.sliceAssignBatchRunLen(ops, MAX_SLICE_ASSIGN_BATCH);
     }
 
     fn encodeSliceAssignBatch(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, n: usize) void {
@@ -2986,46 +2953,26 @@ const CompiledProgram = struct {
     }
 
     fn attentionBatchCompatible(first: anytype, next: anytype) bool {
-        return first.q == next.q and
-            first.k == next.k and
-            first.v == next.v and
-            first.mask == next.mask and
-            first.dst == next.dst and
-            first.has_mask == next.has_mask and
-            first.d_head == next.d_head and
-            first.seq_q == next.seq_q and
-            first.seq_kv == next.seq_kv and
-            first.scale == next.scale and
-            first.q_rs == next.q_rs and
-            first.q_cs == next.q_cs and
-            first.k_rs == next.k_rs and
-            first.k_cs == next.k_cs and
-            first.v_rs == next.v_rs and
-            first.v_cs == next.v_cs and
-            first.mask_rs == next.mask_rs and
-            first.mask_cs == next.mask_cs and
-            first.dst_rs == next.dst_rs and
-            first.dst_cs == next.dst_cs;
+        return program_mod.attentionBatchCompatible(first, next);
     }
 
     fn attentionBatchRunLen(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) usize {
         _ = self;
-        if (ops.len < 2) return 0;
+        const n = program_mod.attentionBatchRunLen(ops, MAX_ATTENTION_BATCH_HEADS);
+        if (n == 0) return 0;
         const first = switch (ops[0]) {
             .attention => |att| att,
             else => return 0,
         };
         if (!canEncodeAttention(first)) return 0;
-
-        var n: usize = 1;
-        while (n < ops.len and n < MAX_ATTENTION_BATCH_HEADS) : (n += 1) {
-            const next = switch (ops[n]) {
+        for (ops[1..n]) |op| {
+            const next = switch (op) {
                 .attention => |att| att,
-                else => break,
+                else => return 0,
             };
-            if (!canEncodeAttention(next) or !attentionBatchCompatible(first, next)) break;
+            if (!canEncodeAttention(next) or !attentionBatchCompatible(first, next)) return 0;
         }
-        return if (n >= 2) n else 0;
+        return n;
     }
 
     fn encodeAttentionBatch(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, n: usize) void {
@@ -3281,6 +3228,24 @@ const CompiledProgram = struct {
         const encoded = switch (command.kind) {
             .op => false,
             .projection_group => self.tryEncodeProjectionCommand(ops, command),
+            .attention_batch => blk: {
+                const n: usize = @intCast(command.op_count);
+                if (self.attentionBatchRunLen(ops[start..]) < n) break :blk false;
+                self.encodeAttentionBatch(ops[start..], n);
+                break :blk true;
+            },
+            .rope_batch => blk: {
+                const n: usize = @intCast(command.op_count);
+                if (ropeBatchRunLen(ops[start..]) < n) break :blk false;
+                self.encodeRopeBatch(ops[start..], n);
+                break :blk true;
+            },
+            .movement_batch => blk: {
+                const n: usize = @intCast(command.op_count);
+                if (sliceAssignBatchRunLen(ops[start..]) < n) break :blk false;
+                self.encodeSliceAssignBatch(ops[start..], n);
+                break :blk true;
+            },
             .row_chain => switch (ops[start]) {
                 .rmsnorm => |rn| switch (ops[start + 1]) {
                     .repeat => |rp| switch (ops[start + 2]) {
@@ -3354,6 +3319,11 @@ const CompiledProgram = struct {
                 i += 1;
                 continue;
             }
+            const command_advance = self.tryEncodeProgramCommand(ops, i, skipped[0..ops.len]);
+            if (command_advance > 0) {
+                i += command_advance;
+                continue;
+            }
             const rope_batch_len = self.tryEncodeRopeBatchRun(ops[i..]);
             if (rope_batch_len > 0) {
                 i += rope_batch_len;
@@ -3362,11 +3332,6 @@ const CompiledProgram = struct {
             const slice_assign_batch_len = self.tryEncodeSliceAssignBatchRun(ops[i..]);
             if (slice_assign_batch_len > 0) {
                 i += slice_assign_batch_len;
-                continue;
-            }
-            const command_advance = self.tryEncodeProgramCommand(ops, i, skipped[0..ops.len]);
-            if (command_advance > 0) {
-                i += command_advance;
                 continue;
             }
             const attention_batch_len = self.tryEncodeAttentionBatchRun(ops[i..]);

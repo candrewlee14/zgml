@@ -342,7 +342,7 @@ pub fn printProgramCommandSummary(label: []const u8, summary: program_mod.Progra
     else
         0.0;
     std.debug.print(
-        "Program commands ({s}): {d} commands cover {d} ops, estimated {d} dispatches ({d} saved, {d:.1}% of ops); ops={d}, row={d}, rope={d}, projection_groups={d} ({d} anchors, {d} sidecars, max span {d})\n\n",
+        "Program commands ({s}): {d} commands cover {d} ops, estimated {d} dispatches ({d} saved, {d:.1}% of ops); ops={d}, row={d}, rope={d}, rope_batch={d}, movement_batch={d}, attention_batch={d}, projection_groups={d} ({d} anchors, {d} sidecars, max span {d})\n\n",
         .{
             label,
             summary.commands,
@@ -353,6 +353,9 @@ pub fn printProgramCommandSummary(label: []const u8, summary: program_mod.Progra
             summary.op_commands,
             summary.row_chains,
             summary.rope_chains,
+            summary.rope_batches,
+            summary.movement_batches,
+            summary.attention_batches,
             summary.projection_groups,
             summary.projection_anchors,
             summary.projection_sidecars,

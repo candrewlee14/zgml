@@ -72,7 +72,10 @@ projection groups into a single ordered view. On SmolLM prefill it currently
 emits 1,412 commands for 1,714 ops, including 61 row chains, 90 RoPE/cache
 chains, and 30 projection groups covering 90 anchors plus 30 sidecars. Metal can
 consume this stream for those command classes while still falling back to
-existing local lowering for commands that are not first-class yet.
+existing local lowering for commands that are not first-class yet. The stream
+also has first-class contiguous batch commands for RoPE, movement/slice-assign,
+and attention; SmolLM prefill does not currently expose those as contiguous
+runs, but decode and future lowering passes can share the same command shape.
 
 ## Acceptance Thresholds
 

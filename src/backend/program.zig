@@ -296,6 +296,9 @@ pub const ProgramCommandKind = enum {
     op,
     row_chain,
     rope_chain,
+    rope_batch,
+    movement_batch,
+    attention_batch,
     projection_group,
 
     pub fn label(self: ProgramCommandKind) []const u8 {
@@ -303,6 +306,9 @@ pub const ProgramCommandKind = enum {
             .op => "op",
             .row_chain => "row_chain",
             .rope_chain => "rope_chain",
+            .rope_batch => "rope_batch",
+            .movement_batch => "movement_batch",
+            .attention_batch => "attention_batch",
             .projection_group => "projection_group",
         };
     }
@@ -335,6 +341,9 @@ pub const CommandStreamPolicy = struct {
     qmatvec_group_size: u32 = 4,
     qmatmul_group_size: u32 = 4,
     qmatmul_sidecars: bool = true,
+    max_rope_batch: u32 = 16,
+    max_movement_batch: u32 = 16,
+    max_attention_batch: u32 = 16,
 
     pub fn metal(qmatvec_group_size: u32, qmatmul_group_size: u32) CommandStreamPolicy {
         return .{
@@ -399,6 +408,14 @@ pub const ProgramCommand = struct {
         return command;
     }
 
+    pub fn contiguous(kind: ProgramCommandKind, start: usize, count: usize) ProgramCommand {
+        return .{
+            .kind = kind,
+            .op_start = @intCast(start),
+            .op_count = @intCast(count),
+        };
+    }
+
     pub fn dispatchCount(_: ProgramCommand) u32 {
         return 1;
     }
@@ -434,6 +451,9 @@ pub const ProgramCommandSummary = struct {
     op_commands: u32 = 0,
     row_chains: u32 = 0,
     rope_chains: u32 = 0,
+    rope_batches: u32 = 0,
+    movement_batches: u32 = 0,
+    attention_batches: u32 = 0,
     projection_groups: u32 = 0,
     projection_anchors: u32 = 0,
     projection_sidecars: u32 = 0,
@@ -753,6 +773,40 @@ pub fn findProgramCommand(
         }
     }
 
+    if (findContiguousBatchCommand(ops, start, policy, used)) |command| {
+        return command;
+    }
+
+    return null;
+}
+
+fn findContiguousBatchCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: CommandStreamPolicy,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (policy.max_attention_batch >= 2) {
+        const n = attentionBatchRunLen(ops[start..], policy.max_attention_batch);
+        if (n >= 2 and !commandRangeTouchesUsed(@intCast(start), @intCast(n), used)) {
+            return ProgramCommand.contiguous(.attention_batch, start, n);
+        }
+    }
+
+    if (policy.max_rope_batch >= 2) {
+        const n = ropeBatchRunLen(ops[start..], policy.max_rope_batch);
+        if (n >= 2 and !commandRangeTouchesUsed(@intCast(start), @intCast(n), used)) {
+            return ProgramCommand.contiguous(.rope_batch, start, n);
+        }
+    }
+
+    if (policy.max_movement_batch >= 2) {
+        const n = sliceAssignBatchRunLen(ops[start..], policy.max_movement_batch);
+        if (n >= 2 and !commandRangeTouchesUsed(@intCast(start), @intCast(n), used)) {
+            return ProgramCommand.contiguous(.movement_batch, start, n);
+        }
+    }
+
     return null;
 }
 
@@ -771,6 +825,9 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
             .op => summary.op_commands += 1,
             .row_chain => summary.row_chains += 1,
             .rope_chain => summary.rope_chains += 1,
+            .rope_batch => summary.rope_batches += 1,
+            .movement_batch => summary.movement_batches += 1,
+            .attention_batch => summary.attention_batches += 1,
             .projection_group => {
                 summary.projection_groups += 1;
                 summary.projection_anchors += command.anchor_count;
@@ -944,6 +1001,98 @@ pub fn ropeSliceAssignCompatible(rr: anytype, sa: anytype) bool {
         sa.cols == rr.seq_len and
         sa.src_row_stride == 1 and
         sa.src_col_stride == d;
+}
+
+pub fn ropeBatchCompatible(first: anytype, next: anytype) bool {
+    return first.src == next.src and
+        first.cos_sin == next.cos_sin and
+        first.dst == next.dst and
+        first.half_d == next.half_d and
+        first.seq_len == next.seq_len and
+        first.src_rs == next.src_rs and
+        first.src_cs == next.src_cs and
+        first.cs_cs == next.cs_cs;
+}
+
+pub fn ropeBatchRunLen(ops: []const backend_mod.DeviceOp, max_ops: u32) usize {
+    if (ops.len < 2 or max_ops < 2) return 0;
+    const first = switch (ops[0]) {
+        .rope => |rr| rr,
+        else => return 0,
+    };
+    var n: usize = 1;
+    const limit = @min(ops.len, @as(usize, @intCast(max_ops)));
+    while (n < limit) : (n += 1) {
+        const next = switch (ops[n]) {
+            .rope => |rr| rr,
+            else => break,
+        };
+        if (!ropeBatchCompatible(first, next)) break;
+    }
+    return if (n >= 2) n else 0;
+}
+
+pub fn sliceAssignBatchCompatible(first: anytype, next: anytype) bool {
+    return first.src == next.src and first.dst == next.dst;
+}
+
+pub fn sliceAssignBatchRunLen(ops: []const backend_mod.DeviceOp, max_ops: u32) usize {
+    if (ops.len < 2 or max_ops < 2) return 0;
+    const first = switch (ops[0]) {
+        .slice_assign => |sa| sa,
+        else => return 0,
+    };
+    var n: usize = 1;
+    const limit = @min(ops.len, @as(usize, @intCast(max_ops)));
+    while (n < limit) : (n += 1) {
+        const next = switch (ops[n]) {
+            .slice_assign => |sa| sa,
+            else => break,
+        };
+        if (!sliceAssignBatchCompatible(first, next)) break;
+    }
+    return if (n >= 2) n else 0;
+}
+
+pub fn attentionBatchCompatible(first: anytype, next: anytype) bool {
+    return first.q == next.q and
+        first.k == next.k and
+        first.v == next.v and
+        first.mask == next.mask and
+        first.dst == next.dst and
+        first.has_mask == next.has_mask and
+        first.d_head == next.d_head and
+        first.seq_q == next.seq_q and
+        first.seq_kv == next.seq_kv and
+        first.scale == next.scale and
+        first.q_rs == next.q_rs and
+        first.q_cs == next.q_cs and
+        first.k_rs == next.k_rs and
+        first.k_cs == next.k_cs and
+        first.v_rs == next.v_rs and
+        first.v_cs == next.v_cs and
+        first.mask_rs == next.mask_rs and
+        first.mask_cs == next.mask_cs and
+        first.dst_rs == next.dst_rs and
+        first.dst_cs == next.dst_cs;
+}
+
+pub fn attentionBatchRunLen(ops: []const backend_mod.DeviceOp, max_ops: u32) usize {
+    if (ops.len < 2 or max_ops < 2) return 0;
+    const first = switch (ops[0]) {
+        .attention => |att| att,
+        else => return 0,
+    };
+    var n: usize = 1;
+    const limit = @min(ops.len, @as(usize, @intCast(max_ops)));
+    while (n < limit) : (n += 1) {
+        const next = switch (ops[n]) {
+            .attention => |att| att,
+            else => break,
+        };
+        if (!attentionBatchCompatible(first, next)) break;
+    }
+    return if (n >= 2) n else 0;
 }
 
 pub fn isRmsnormScaleChain(
@@ -1615,6 +1764,36 @@ fn testRopeSliceAssignOps() [2]backend_mod.DeviceOp {
     };
 }
 
+fn testAttention(offset: u32) backend_mod.DeviceOp {
+    return .{ .attention = .{
+        .dst = 4,
+        .q = 0,
+        .k = 1,
+        .v = 2,
+        .mask = 3,
+        .has_mask = true,
+        .d_head = 4,
+        .seq_q = 2,
+        .seq_kv = 4,
+        .scale = 0.5,
+        .q_off = offset,
+        .k_off = 0,
+        .v_off = 0,
+        .mask_off = 0,
+        .dst_off = offset,
+        .q_rs = 1,
+        .q_cs = 4,
+        .k_rs = 1,
+        .k_cs = 4,
+        .v_rs = 1,
+        .v_cs = 4,
+        .mask_rs = 1,
+        .mask_cs = 4,
+        .dst_rs = 1,
+        .dst_cs = 4,
+    } };
+}
+
 fn testRmsnormScaleOps() [3]backend_mod.DeviceOp {
     return .{
         .{ .rmsnorm = .{
@@ -2125,6 +2304,41 @@ test "program command stream keeps used noncontiguous ops single-owned" {
     try std.testing.expectEqual(@as(u32, 1), summary.op_commands);
     try std.testing.expectEqual(@as(u32, 1), summary.projection_groups);
     try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
+}
+
+test "program command stream emits contiguous batch commands" {
+    var rope_pair = testRopeSliceAssignOps();
+    rope_pair[1] = rope_pair[0];
+    rope_pair[1].rope.src_off = 4;
+    rope_pair[1].rope.dst_off = 12;
+
+    const ops = [_]backend_mod.DeviceOp{
+        rope_pair[0],
+        rope_pair[1],
+        testQMatmulSidecar(1, 8),
+        testQMatmulSidecar(1, 8),
+        testAttention(0),
+        testAttention(8),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 3), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.rope_batch, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].op_count);
+    try std.testing.expectEqual(ProgramCommandKind.movement_batch, commands[1].kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[1].op_count);
+    try std.testing.expectEqual(ProgramCommandKind.attention_batch, commands[2].kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[2].op_count);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 3), summary.commands);
+    try std.testing.expectEqual(@as(u32, 6), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.rope_batches);
+    try std.testing.expectEqual(@as(u32, 1), summary.movement_batches);
+    try std.testing.expectEqual(@as(u32, 1), summary.attention_batches);
 }
 
 test "family pattern regions match exact contiguous family sequences" {
