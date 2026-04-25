@@ -336,6 +336,31 @@ pub fn printProjectionGroupSummary(label: []const u8, summary: program_mod.Proje
     );
 }
 
+pub fn printProgramCommandSummary(label: []const u8, summary: program_mod.ProgramCommandSummary) void {
+    const saved_pct: f64 = if (summary.covered_ops > 0)
+        @as(f64, @floatFromInt(summary.estimated_saved_dispatches)) / @as(f64, @floatFromInt(summary.covered_ops)) * 100.0
+    else
+        0.0;
+    std.debug.print(
+        "Program commands ({s}): {d} commands cover {d} ops, estimated {d} dispatches ({d} saved, {d:.1}% of ops); ops={d}, row={d}, rope={d}, projection_groups={d} ({d} anchors, {d} sidecars, max span {d})\n\n",
+        .{
+            label,
+            summary.commands,
+            summary.covered_ops,
+            summary.estimated_dispatches,
+            summary.estimated_saved_dispatches,
+            saved_pct,
+            summary.op_commands,
+            summary.row_chains,
+            summary.rope_chains,
+            summary.projection_groups,
+            summary.projection_anchors,
+            summary.projection_sidecars,
+            summary.max_projection_span_ops,
+        },
+    );
+}
+
 const neighborhood_edge: u8 = 255;
 
 pub fn printAnchorNeighborhoodSummary(

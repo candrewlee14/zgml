@@ -67,6 +67,13 @@ predicates for its batched projection kernels, so future movement, RoPE/KV, and
 attention commands can follow the same path before adding more backend-specific
 pattern code.
 
+The first unified command stream now combines those pure stage commands and
+projection groups into a single ordered view. On SmolLM prefill it currently
+emits 1,412 commands for 1,714 ops, including 61 row chains, 90 RoPE/cache
+chains, and 30 projection groups covering 90 anchors plus 30 sidecars. Metal can
+consume this stream for those command classes while still falling back to
+existing local lowering for commands that are not first-class yet.
+
 ## Acceptance Thresholds
 
 SmolLM-135M:

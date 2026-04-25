@@ -292,6 +292,22 @@ pub const StageCommandSummary = struct {
     rope_chain_ops: u32 = 0,
 };
 
+pub const ProgramCommandKind = enum {
+    op,
+    row_chain,
+    rope_chain,
+    projection_group,
+
+    pub fn label(self: ProgramCommandKind) []const u8 {
+        return switch (self) {
+            .op => "op",
+            .row_chain => "row_chain",
+            .rope_chain => "rope_chain",
+            .projection_group => "projection_group",
+        };
+    }
+};
+
 pub const ProjectionGroupKind = enum {
     qmatvec,
     qmatmul,
@@ -312,6 +328,116 @@ pub const ProjectionGroupPolicy = struct {
     pub fn prefillQMatmul(max_anchors: u32) ProjectionGroupPolicy {
         return .{ .kind = .qmatmul, .max_anchors = max_anchors };
     }
+};
+
+pub const CommandStreamPolicy = struct {
+    stage_commands: bool = true,
+    qmatvec_group_size: u32 = 4,
+    qmatmul_group_size: u32 = 4,
+    qmatmul_sidecars: bool = true,
+
+    pub fn metal(qmatvec_group_size: u32, qmatmul_group_size: u32) CommandStreamPolicy {
+        return .{
+            .qmatvec_group_size = qmatvec_group_size,
+            .qmatmul_group_size = qmatmul_group_size,
+        };
+    }
+
+    fn projectionPolicyFor(self: CommandStreamPolicy, q: anytype) ?ProjectionGroupPolicy {
+        if (q.M == 1) {
+            if (self.qmatvec_group_size < 2) return null;
+            return ProjectionGroupPolicy.decodeQMatvec(self.qmatvec_group_size);
+        }
+        if (self.qmatmul_group_size < 2) return null;
+        var policy = ProjectionGroupPolicy.prefillQMatmul(self.qmatmul_group_size);
+        policy.carry_slice_sidecars = self.qmatmul_sidecars;
+        return policy;
+    }
+};
+
+pub const ProgramCommand = struct {
+    kind: ProgramCommandKind,
+    op_start: u32,
+    op_count: u32,
+    projection_kind: ProjectionGroupKind = .qmatmul,
+    anchor_count: u32 = 0,
+    sidecar_count: u32 = 0,
+    indices: [max_projection_group_anchors]usize = [_]usize{0} ** max_projection_group_anchors,
+    sidecar_indices: [max_projection_group_anchors]?usize = [_]?usize{null} ** max_projection_group_anchors,
+
+    pub fn op(start: usize) ProgramCommand {
+        return .{
+            .kind = .op,
+            .op_start = @intCast(start),
+            .op_count = 1,
+        };
+    }
+
+    pub fn fromStageCommand(command: StageCommand) ProgramCommand {
+        return .{
+            .kind = switch (command.kind) {
+                .op => .op,
+                .row_chain => .row_chain,
+                .rope_chain => .rope_chain,
+            },
+            .op_start = command.op_start,
+            .op_count = command.op_count,
+        };
+    }
+
+    pub fn fromProjectionSelection(selection: ProjectionGroupSelection) ProgramCommand {
+        var command = ProgramCommand{
+            .kind = .projection_group,
+            .op_start = @intCast(selection.start_op),
+            .op_count = @intCast(selection.end_op - selection.start_op + 1),
+            .projection_kind = selection.kind,
+            .anchor_count = @intCast(selection.anchor_count),
+            .sidecar_count = @intCast(selection.sidecar_count),
+        };
+        for (selection.anchorIndices(), 0..) |idx, slot| command.indices[slot] = idx;
+        for (selection.sidecarIndices(), 0..) |idx, slot| command.sidecar_indices[slot] = idx;
+        return command;
+    }
+
+    pub fn dispatchCount(_: ProgramCommand) u32 {
+        return 1;
+    }
+
+    pub fn coveredOpCount(self: ProgramCommand) u32 {
+        return switch (self.kind) {
+            .projection_group => self.anchor_count + self.sidecar_count,
+            else => self.op_count,
+        };
+    }
+
+    pub fn advanceCount(self: ProgramCommand) u32 {
+        return switch (self.kind) {
+            .projection_group => 1,
+            else => self.op_count,
+        };
+    }
+
+    pub fn anchorIndices(self: *const ProgramCommand) []const usize {
+        return self.indices[0..self.anchor_count];
+    }
+
+    pub fn sidecarIndices(self: *const ProgramCommand) []const ?usize {
+        return self.sidecar_indices[0..self.anchor_count];
+    }
+};
+
+pub const ProgramCommandSummary = struct {
+    commands: u32 = 0,
+    covered_ops: u32 = 0,
+    estimated_dispatches: u32 = 0,
+    estimated_saved_dispatches: u32 = 0,
+    op_commands: u32 = 0,
+    row_chains: u32 = 0,
+    rope_chains: u32 = 0,
+    projection_groups: u32 = 0,
+    projection_anchors: u32 = 0,
+    projection_sidecars: u32 = 0,
+    max_projection_span_ops: u32 = 0,
 };
 
 pub const max_projection_group_anchors = 8;
@@ -562,6 +688,129 @@ pub fn summarizeProjectionGroups(groups: []const ProjectionGroup) ProjectionGrou
         }
     }
     return summary;
+}
+
+pub fn buildProgramCommands(
+    alloc: std.mem.Allocator,
+    ops: []const backend_mod.DeviceOp,
+    policy: CommandStreamPolicy,
+) ![]ProgramCommand {
+    var commands: std.ArrayListUnmanaged(ProgramCommand) = .empty;
+    errdefer commands.deinit(alloc);
+
+    const used = try alloc.alloc(bool, ops.len);
+    defer alloc.free(used);
+    @memset(used, false);
+
+    var i: usize = 0;
+    while (i < ops.len) {
+        if (used[i]) {
+            i += 1;
+            continue;
+        }
+
+        if (findProgramCommand(ops, i, policy, used)) |command| {
+            markProgramCommandUsed(used, command);
+            try commands.append(alloc, command);
+            i += command.advanceCount();
+            continue;
+        }
+
+        const command = ProgramCommand.op(i);
+        markProgramCommandUsed(used, command);
+        try commands.append(alloc, command);
+        i += 1;
+    }
+
+    return commands.toOwnedSlice(alloc);
+}
+
+pub fn findProgramCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: CommandStreamPolicy,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (start >= ops.len) return null;
+    if (used) |used_ops| {
+        if (start >= used_ops.len or used_ops[start]) return null;
+    }
+
+    const op = ops[start];
+    if (op == .qmatmul) {
+        if (policy.projectionPolicyFor(op.qmatmul)) |projection_policy| {
+            if (findProjectionGroup(ops, start, projection_policy, used)) |selection| {
+                return ProgramCommand.fromProjectionSelection(selection);
+            }
+        }
+    }
+
+    if (policy.stage_commands) {
+        if (findStageCommand(ops, start)) |stage_command| {
+            if (!commandRangeTouchesUsed(stage_command.op_start, stage_command.op_count, used)) {
+                return ProgramCommand.fromStageCommand(stage_command);
+            }
+        }
+    }
+
+    return null;
+}
+
+pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommandSummary {
+    var summary = ProgramCommandSummary{ .commands = @intCast(commands.len) };
+    for (commands) |command| {
+        const covered = command.coveredOpCount();
+        const dispatches = command.dispatchCount();
+        summary.covered_ops += covered;
+        summary.estimated_dispatches += dispatches;
+        if (covered > dispatches) {
+            summary.estimated_saved_dispatches += covered - dispatches;
+        }
+
+        switch (command.kind) {
+            .op => summary.op_commands += 1,
+            .row_chain => summary.row_chains += 1,
+            .rope_chain => summary.rope_chains += 1,
+            .projection_group => {
+                summary.projection_groups += 1;
+                summary.projection_anchors += command.anchor_count;
+                summary.projection_sidecars += command.sidecar_count;
+                summary.max_projection_span_ops = @max(summary.max_projection_span_ops, command.op_count);
+            },
+        }
+    }
+    return summary;
+}
+
+pub fn markProgramCommandUsed(used: []bool, command: ProgramCommand) void {
+    switch (command.kind) {
+        .projection_group => {
+            for (command.anchorIndices()) |idx| {
+                if (idx < used.len) used[idx] = true;
+            }
+            for (command.sidecarIndices()) |maybe_idx| {
+                if (maybe_idx) |idx| {
+                    if (idx < used.len) used[idx] = true;
+                }
+            }
+        },
+        else => {
+            const start: usize = @intCast(command.op_start);
+            const end = @min(used.len, start + @as(usize, command.op_count));
+            for (used[start..end]) |*slot| slot.* = true;
+        },
+    }
+}
+
+fn commandRangeTouchesUsed(op_start: u32, op_count: u32, used: ?[]const bool) bool {
+    const used_ops = used orelse return false;
+    const start: usize = @intCast(op_start);
+    if (start >= used_ops.len) return true;
+    const end = @min(used_ops.len, start + @as(usize, op_count));
+    for (used_ops[start..end]) |slot| {
+        if (slot) return true;
+    }
+    return false;
 }
 
 fn projectionMatchesPolicy(q: anytype, policy: ProjectionGroupPolicy) bool {
@@ -1821,6 +2070,61 @@ test "projection groups reject conflicting or nonhoistable projections" {
     const blocked_groups = try buildProjectionGroups(std.testing.allocator, &blocked_ops, ProjectionGroupPolicy.prefillQMatmul(4));
     defer std.testing.allocator.free(blocked_groups);
     try std.testing.expectEqual(@as(usize, 0), blocked_groups.len);
+}
+
+test "program command stream merges stage and projection commands" {
+    const rope_chain = testRopeSliceAssignOps();
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 2),
+        testQMatmulSidecar(1, 8),
+        rope_chain[0],
+        rope_chain[1],
+        testQMatmulWith(4, 0, 2),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_group, commands[0].kind);
+    try std.testing.expectEqual(ProjectionGroupKind.qmatmul, commands[0].projection_kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(usize, 0), commands[0].indices[0]);
+    try std.testing.expectEqual(@as(usize, 4), commands[0].indices[1]);
+    try std.testing.expectEqual(@as(?usize, 1), commands[0].sidecar_indices[0]);
+    try std.testing.expectEqual(ProgramCommandKind.rope_chain, commands[1].kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[1].op_start);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_groups);
+    try std.testing.expectEqual(@as(u32, 1), summary.rope_chains);
+}
+
+test "program command stream keeps used noncontiguous ops single-owned" {
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 2),
+        .{ .elementwise = .{ .op = .add, .dst = 9, .src0 = 9, .src1 = 9, .n = 1 } },
+        testQMatmulWith(4, 0, 2),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_group, commands[0].kind);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[1].op_start);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 3), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 1), summary.op_commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_groups);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
 }
 
 test "family pattern regions match exact contiguous family sequences" {

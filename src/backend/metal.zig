@@ -3129,50 +3129,36 @@ const CompiledProgram = struct {
         }
     }
 
-    fn tryEncodeQMatvecBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: []bool) bool {
-        const selection = program_mod.findProjectionGroup(
-            ops,
-            start,
-            program_mod.ProjectionGroupPolicy.decodeQMatvec(MAX_QMATVEC_BATCH),
-            skipped,
-        ) orelse return false;
-        for (selection.anchorIndices()) |idx| {
-            if (!self.canEncodeQMatvecBatchOp(ops[idx].qmatmul)) return false;
-        }
+    fn tryEncodeProjectionCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        switch (command.projection_kind) {
+            .qmatvec => {
+                for (command.anchorIndices()) |idx| {
+                    if (!self.canEncodeQMatvecBatchOp(ops[idx].qmatmul)) return false;
+                }
 
-        const t0 = nowNs();
-        self.encodeQMatvecBatch(ops, selection.anchorIndices());
-        self.recordRegionFusedRunFromIndices(ops, selection.anchorIndices(), @intCast(nowNs() - t0));
-        for (selection.anchorIndices()) |idx| skipped[idx] = true;
-        return true;
-    }
+                const t0 = nowNs();
+                self.encodeQMatvecBatch(ops, command.anchorIndices());
+                self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), @intCast(nowNs() - t0));
+                return true;
+            },
+            .qmatmul => {
+                for (command.anchorIndices()) |idx| {
+                    if (!self.canEncodeQMatmulBatchOp(ops[idx].qmatmul)) return false;
+                }
+                for (command.sidecarIndices(), 0..) |maybe_idx, slot| {
+                    const idx = maybe_idx orelse continue;
+                    if (!self.canFuseQMatmulSliceAssign(ops[command.indices[slot]].qmatmul, ops[idx].slice_assign)) return false;
+                }
 
-    fn tryEncodeQMatmulBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: []bool) bool {
-        const selection = program_mod.findProjectionGroup(
-            ops,
-            start,
-            program_mod.ProjectionGroupPolicy.prefillQMatmul(MAX_QMATMUL_BATCH),
-            skipped,
-        ) orelse return false;
-        for (selection.anchorIndices()) |idx| {
-            if (!self.canEncodeQMatmulBatchOp(ops[idx].qmatmul)) return false;
+                const t0 = nowNs();
+                self.encodeQMatmulBatch(ops, command.anchorIndices(), command.sidecarIndices());
+                self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), @intCast(nowNs() - t0));
+                for (command.sidecarIndices()) |maybe_idx| {
+                    if (maybe_idx) |idx| self.recordRegionBackendOp(ops[idx], 0);
+                }
+                return true;
+            },
         }
-        for (selection.sidecarIndices(), 0..) |maybe_idx, slot| {
-            const idx = maybe_idx orelse continue;
-            if (!self.canFuseQMatmulSliceAssign(ops[selection.indices[slot]].qmatmul, ops[idx].slice_assign)) return false;
-        }
-
-        const t0 = nowNs();
-        self.encodeQMatmulBatch(ops, selection.anchorIndices(), selection.sidecarIndices());
-        self.recordRegionFusedRunFromIndices(ops, selection.anchorIndices(), @intCast(nowNs() - t0));
-        for (selection.anchorIndices()) |idx| skipped[idx] = true;
-        for (selection.sidecarIndices()) |maybe_idx| {
-            if (maybe_idx) |idx| {
-                self.recordRegionBackendOp(ops[idx], 0);
-                skipped[idx] = true;
-            }
-        }
-        return true;
     }
 
     fn tryEncodeElementwiseBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: []bool) bool {
@@ -3281,14 +3267,20 @@ const CompiledProgram = struct {
         return encoded;
     }
 
-    fn tryEncodeStageCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize) usize {
-        const command = program_mod.findStageCommand(ops, start) orelse return 0;
+    fn tryEncodeProgramCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: []bool) usize {
+        const command = program_mod.findProgramCommand(
+            ops,
+            start,
+            program_mod.CommandStreamPolicy.metal(MAX_QMATVEC_BATCH, MAX_QMATMUL_BATCH),
+            skipped,
+        ) orelse return 0;
         const end = start + @as(usize, command.op_count);
         if (end > ops.len) return 0;
 
         const t0 = nowNs();
         const encoded = switch (command.kind) {
             .op => false,
+            .projection_group => self.tryEncodeProjectionCommand(ops, command),
             .row_chain => switch (ops[start]) {
                 .rmsnorm => |rn| switch (ops[start + 1]) {
                     .repeat => |rp| switch (ops[start + 2]) {
@@ -3313,8 +3305,11 @@ const CompiledProgram = struct {
         };
 
         if (!encoded) return 0;
-        self.recordRegionFusedRun(ops[start..end], @intCast(nowNs() - t0));
-        return command.op_count;
+        if (command.kind != .projection_group) {
+            self.recordRegionFusedRun(ops[start..end], @intCast(nowNs() - t0));
+        }
+        program_mod.markProgramCommandUsed(skipped, command);
+        return command.advanceCount();
     }
 
     fn tryEncodeAttentionBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) usize {
@@ -3369,22 +3364,14 @@ const CompiledProgram = struct {
                 i += slice_assign_batch_len;
                 continue;
             }
-            if (self.tryEncodeQMatmulBatchRun(ops, i, skipped[0..ops.len])) {
-                i += 1;
-                continue;
-            }
-            if (self.tryEncodeQMatvecBatchRun(ops, i, skipped[0..ops.len])) {
-                i += 1;
+            const command_advance = self.tryEncodeProgramCommand(ops, i, skipped[0..ops.len]);
+            if (command_advance > 0) {
+                i += command_advance;
                 continue;
             }
             const attention_batch_len = self.tryEncodeAttentionBatchRun(ops[i..]);
             if (attention_batch_len > 0) {
                 i += attention_batch_len;
-                continue;
-            }
-            const stage_command_len = self.tryEncodeStageCommand(ops, i);
-            if (stage_command_len > 0) {
-                i += stage_command_len;
                 continue;
             }
             if (i + 1 < ops.len and self.tryEncodeRegionFusedPair(ops[i], ops[i + 1])) {
