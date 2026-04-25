@@ -2967,8 +2967,34 @@ const CompiledProgram = struct {
         return n;
     }
 
+    fn canEncodeAttentionBatchIndices(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, indices: []const usize) bool {
+        _ = self;
+        if (indices.len < 2 or indices.len > MAX_ATTENTION_BATCH_HEADS) return false;
+        if (indices[0] >= ops.len) return false;
+        const first = switch (ops[indices[0]]) {
+            .attention => |att| att,
+            else => return false,
+        };
+        if (!canEncodeAttention(first)) return false;
+        for (indices[1..]) |idx| {
+            if (idx >= ops.len) return false;
+            const next = switch (ops[idx]) {
+                .attention => |att| att,
+                else => return false,
+            };
+            if (!canEncodeAttention(next) or !attentionBatchCompatible(first, next)) return false;
+        }
+        return true;
+    }
+
     fn encodeAttentionBatch(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, n: usize) void {
-        const first = ops[0].attention;
+        var indices: [MAX_ATTENTION_BATCH_HEADS]usize = undefined;
+        for (0..n) |i| indices[i] = i;
+        self.encodeAttentionBatchIndices(ops, indices[0..n]);
+    }
+
+    fn encodeAttentionBatchIndices(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, indices: []const usize) void {
+        const first = ops[indices[0]].attention;
         const buffers = [_]DeviceBuffer{
             self.device_bufs[first.q],
             self.device_bufs[first.k],
@@ -2977,7 +3003,7 @@ const CompiledProgram = struct {
             self.device_bufs[first.dst],
         };
         var params = std.mem.zeroes(AttentionBatchParams);
-        params.n_heads = @intCast(n);
+        params.n_heads = @intCast(indices.len);
         params.d_head = first.d_head;
         params.seq_q = first.seq_q;
         params.seq_kv = first.seq_kv;
@@ -2992,15 +3018,15 @@ const CompiledProgram = struct {
         params.mask_cs = first.mask_cs;
         params.dst_rs = first.dst_rs;
         params.dst_cs = first.dst_cs;
-        for (ops[0..n], 0..) |op, i| {
-            const att = op.attention;
+        for (indices, 0..) |idx, i| {
+            const att = ops[idx].attention;
             params.q_off[i] = att.q_off;
             params.k_off[i] = att.k_off;
             params.v_off[i] = att.v_off;
             params.mask_off[i] = att.mask_off;
             params.dst_off[i] = att.dst_off;
         }
-        self.encodeTyped(AttentionBatchParams, self.backend.attention_batch_pipeline, &buffers, params, 5, .{ .gx = first.seq_q, .gy = @intCast(n) }, WG_SIZE);
+        self.encodeTyped(AttentionBatchParams, self.backend.attention_batch_pipeline, &buffers, params, 5, .{ .gx = first.seq_q, .gy = @intCast(indices.len) }, WG_SIZE);
     }
 
     fn canEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
@@ -3225,6 +3251,13 @@ const CompiledProgram = struct {
                 self.encodeAttentionBatch(ops[start..], n);
                 break :blk true;
             },
+            .attention_group => blk: {
+                if (!self.canEncodeAttentionBatchIndices(ops, command.anchorIndices())) break :blk false;
+                const t_batch = nowNs();
+                self.encodeAttentionBatchIndices(ops, command.anchorIndices());
+                self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), @intCast(nowNs() - t_batch));
+                break :blk true;
+            },
             .rope_batch => blk: {
                 const n: usize = @intCast(command.op_count);
                 if (ropeBatchRunLen(ops[start..]) < n) break :blk false;
@@ -3275,7 +3308,7 @@ const CompiledProgram = struct {
         };
 
         if (!encoded) return 0;
-        if (command.kind != .projection_group and command.kind != .elementwise_batch) {
+        if (command.kind != .projection_group and command.kind != .elementwise_batch and command.kind != .attention_group) {
             self.recordRegionFusedRun(ops[start..end], @intCast(nowNs() - t0));
         }
         program_mod.markProgramCommandUsed(skipped, command);

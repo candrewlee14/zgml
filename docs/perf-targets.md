@@ -82,6 +82,10 @@ are not first-class yet. The stream
 also has first-class contiguous batch commands for RoPE, movement/slice-assign,
 and attention; SmolLM prefill does not currently expose those as contiguous
 runs, but decode and future lowering passes can share the same command shape.
+It can also represent non-contiguous attention groups when all attention inputs
+are already available; the current SmolLM prefill trace still reports `0`, which
+means attention batching must include the producer movement/slice work rather
+than only grouping ready attention ops.
 It also has a non-contiguous `elementwise_batch` command backed by pure
 dependency checks; this is a reusable command-stream primitive, though the
 current SmolLM prefill trace reports `0` such batches because its elementwise ops

@@ -299,6 +299,7 @@ pub const ProgramCommandKind = enum {
     rope_batch,
     movement_batch,
     attention_batch,
+    attention_group,
     elementwise_batch,
     projection_chain,
     projection_group,
@@ -311,6 +312,7 @@ pub const ProgramCommandKind = enum {
             .rope_batch => "rope_batch",
             .movement_batch => "movement_batch",
             .attention_batch => "attention_batch",
+            .attention_group => "attention_group",
             .elementwise_batch => "elementwise_batch",
             .projection_chain => "projection_chain",
             .projection_group => "projection_group",
@@ -428,6 +430,7 @@ pub const ProgramCommand = struct {
     pub fn coveredOpCount(self: ProgramCommand) u32 {
         return switch (self.kind) {
             .projection_group, .projection_chain => self.anchor_count + self.sidecar_count,
+            .attention_group => self.anchor_count,
             .elementwise_batch => self.anchor_count,
             else => self.op_count,
         };
@@ -435,7 +438,7 @@ pub const ProgramCommand = struct {
 
     pub fn advanceCount(self: ProgramCommand) u32 {
         return switch (self.kind) {
-            .projection_group, .elementwise_batch => 1,
+            .projection_group, .elementwise_batch, .attention_group => 1,
             else => self.op_count,
         };
     }
@@ -460,6 +463,8 @@ pub const ProgramCommandSummary = struct {
     rope_batches: u32 = 0,
     movement_batches: u32 = 0,
     attention_batches: u32 = 0,
+    attention_groups: u32 = 0,
+    attention_group_ops: u32 = 0,
     elementwise_batches: u32 = 0,
     elementwise_ops: u32 = 0,
     projection_chains: u32 = 0,
@@ -845,7 +850,59 @@ pub fn findProgramCommand(
         return command;
     }
 
+    if (op == .attention and policy.max_attention_batch >= 2) {
+        if (findAttentionGroupCommand(ops, start, policy, used)) |command| {
+            return command;
+        }
+    }
+
     return null;
+}
+
+fn findAttentionGroupCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: CommandStreamPolicy,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (start >= ops.len) return null;
+    if (used) |used_ops| {
+        if (start >= used_ops.len or used_ops[start]) return null;
+    }
+    const first = switch (ops[start]) {
+        .attention => |att| att,
+        else => return null,
+    };
+
+    const max_ops: usize = @intCast(@min(policy.max_attention_batch, max_projection_group_anchors));
+    if (max_ops < 2) return null;
+
+    var command = ProgramCommand{
+        .kind = .attention_group,
+        .op_start = @intCast(start),
+        .op_count = 1,
+        .anchor_count = 1,
+    };
+    command.indices[0] = start;
+
+    var scan = start + 1;
+    while (scan < ops.len and command.anchor_count < max_ops) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const next = switch (ops[scan]) {
+            .attention => |att| att,
+            else => continue,
+        };
+        if (!attentionBatchCompatible(first, next)) continue;
+        if (!canHoistOpTo(ops, start, scan, .{ .attention = next })) continue;
+        if (opConflictsSelected(ops, command.anchorIndices(), .{ .attention = next })) continue;
+        command.indices[command.anchor_count] = scan;
+        command.anchor_count += 1;
+        command.op_count = @intCast(scan - start + 1);
+    }
+
+    return if (command.anchor_count >= 2) command else null;
 }
 
 fn findProjectionChainCommand(
@@ -969,6 +1026,10 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
             .rope_batch => summary.rope_batches += 1,
             .movement_batch => summary.movement_batches += 1,
             .attention_batch => summary.attention_batches += 1,
+            .attention_group => {
+                summary.attention_groups += 1;
+                summary.attention_group_ops += command.anchor_count;
+            },
             .elementwise_batch => {
                 summary.elementwise_batches += 1;
                 summary.elementwise_ops += command.anchor_count;
@@ -990,7 +1051,7 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
 
 pub fn markProgramCommandUsed(used: []bool, command: ProgramCommand) void {
     switch (command.kind) {
-        .projection_group, .elementwise_batch => {
+        .projection_group, .elementwise_batch, .attention_group => {
             for (command.anchorIndices()) |idx| {
                 if (idx < used.len) used[idx] = true;
             }
@@ -2762,6 +2823,33 @@ test "program command stream emits contiguous batch commands" {
     try std.testing.expectEqual(@as(u32, 1), summary.rope_batches);
     try std.testing.expectEqual(@as(u32, 1), summary.movement_batches);
     try std.testing.expectEqual(@as(u32, 1), summary.attention_batches);
+}
+
+test "program command stream emits noncontiguous attention groups" {
+    const ops = [_]backend_mod.DeviceOp{
+        testAttention(0),
+        testQMatmulWith(9, 8, 2),
+        testAttention(8),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.attention_group, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(usize, 0), commands[0].indices[0]);
+    try std.testing.expectEqual(@as(usize, 2), commands[0].indices[1]);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[1].op_start);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 3), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.attention_groups);
+    try std.testing.expectEqual(@as(u32, 2), summary.attention_group_ops);
 }
 
 test "program command stream emits noncontiguous elementwise batch commands" {
