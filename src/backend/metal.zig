@@ -2453,7 +2453,7 @@ const CompiledProgram = struct {
     }
 
     fn canEncodeElementwiseBatchOp(e: anytype) bool {
-        return isSupportedElementwiseOp(e.op);
+        return program_mod.canBatchElementwiseOp(e);
     }
 
     fn encodeElementwiseBatch(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, indices: []const usize) void {
@@ -3023,25 +3023,6 @@ const CompiledProgram = struct {
         };
     }
 
-    fn canHoistElementwiseTo(ops: []const backend_mod.DeviceOp, start: usize, candidate_index: usize, e: anytype) bool {
-        for (ops[start..candidate_index]) |op| {
-            if (program_mod.opWritesBuffer(op, e.src0)) return false;
-            if (e.op.isBinary() and program_mod.opWritesBuffer(op, e.src1)) return false;
-            if (program_mod.opTouchesBuffer(op, e.dst)) return false;
-        }
-        return true;
-    }
-
-    fn elementwiseConflictsSelected(ops: []const backend_mod.DeviceOp, indices: []const usize, e: anytype) bool {
-        for (indices) |idx| {
-            const selected = ops[idx].elementwise;
-            if (selected.dst == e.dst) return true;
-            if (selected.dst == e.src0 or (e.op.isBinary() and selected.dst == e.src1)) return true;
-            if (e.dst == selected.src0 or (selected.op.isBinary() and e.dst == selected.src1)) return true;
-        }
-        return false;
-    }
-
     fn recordRegionBackendOp(self: *CompiledProgram, op: backend_mod.DeviceOp, elapsed_ns: u64) void {
         const tag: usize = @intFromEnum(op);
         self.runtime_profile.backend_op_count +%= 1;
@@ -3128,8 +3109,8 @@ const CompiledProgram = struct {
                 else => continue,
             };
             if (!canEncodeElementwiseBatchOp(e)) continue;
-            if (!canHoistElementwiseTo(ops, start, scan, e)) continue;
-            if (elementwiseConflictsSelected(ops, indices[0..count], e)) continue;
+            if (!program_mod.canHoistElementwiseTo(ops, start, scan, e)) continue;
+            if (program_mod.elementwiseConflictsSelected(ops, indices[0..count], e)) continue;
             indices[count] = scan;
             count += 1;
         }
@@ -3246,6 +3227,20 @@ const CompiledProgram = struct {
                 self.encodeSliceAssignBatch(ops[start..], n);
                 break :blk true;
             },
+            .elementwise_batch => blk: {
+                for (command.anchorIndices()) |idx| {
+                    if (idx >= ops.len) break :blk false;
+                    const e = switch (ops[idx]) {
+                        .elementwise => |e| e,
+                        else => break :blk false,
+                    };
+                    if (!canEncodeElementwiseBatchOp(e)) break :blk false;
+                }
+                const t_batch = nowNs();
+                self.encodeElementwiseBatch(ops, command.anchorIndices());
+                self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), @intCast(nowNs() - t_batch));
+                break :blk true;
+            },
             .row_chain => switch (ops[start]) {
                 .rmsnorm => |rn| switch (ops[start + 1]) {
                     .repeat => |rp| switch (ops[start + 2]) {
@@ -3270,7 +3265,7 @@ const CompiledProgram = struct {
         };
 
         if (!encoded) return 0;
-        if (command.kind != .projection_group) {
+        if (command.kind != .projection_group and command.kind != .elementwise_batch) {
             self.recordRegionFusedRun(ops[start..end], @intCast(nowNs() - t0));
         }
         program_mod.markProgramCommandUsed(skipped, command);

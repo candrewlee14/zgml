@@ -76,6 +76,10 @@ existing local lowering for commands that are not first-class yet. The stream
 also has first-class contiguous batch commands for RoPE, movement/slice-assign,
 and attention; SmolLM prefill does not currently expose those as contiguous
 runs, but decode and future lowering passes can share the same command shape.
+It also has a non-contiguous `elementwise_batch` command backed by pure
+dependency checks; this is a reusable command-stream primitive, though the
+current SmolLM prefill trace reports `0` such batches because its elementwise ops
+are dependency-adjacent rather than independent.
 
 ## Acceptance Thresholds
 

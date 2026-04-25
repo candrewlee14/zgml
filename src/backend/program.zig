@@ -299,6 +299,7 @@ pub const ProgramCommandKind = enum {
     rope_batch,
     movement_batch,
     attention_batch,
+    elementwise_batch,
     projection_group,
 
     pub fn label(self: ProgramCommandKind) []const u8 {
@@ -309,6 +310,7 @@ pub const ProgramCommandKind = enum {
             .rope_batch => "rope_batch",
             .movement_batch => "movement_batch",
             .attention_batch => "attention_batch",
+            .elementwise_batch => "elementwise_batch",
             .projection_group => "projection_group",
         };
     }
@@ -344,6 +346,7 @@ pub const CommandStreamPolicy = struct {
     max_rope_batch: u32 = 16,
     max_movement_batch: u32 = 16,
     max_attention_batch: u32 = 16,
+    max_elementwise_batch: u32 = 8,
 
     pub fn metal(qmatvec_group_size: u32, qmatmul_group_size: u32) CommandStreamPolicy {
         return .{
@@ -423,13 +426,14 @@ pub const ProgramCommand = struct {
     pub fn coveredOpCount(self: ProgramCommand) u32 {
         return switch (self.kind) {
             .projection_group => self.anchor_count + self.sidecar_count,
+            .elementwise_batch => self.anchor_count,
             else => self.op_count,
         };
     }
 
     pub fn advanceCount(self: ProgramCommand) u32 {
         return switch (self.kind) {
-            .projection_group => 1,
+            .projection_group, .elementwise_batch => 1,
             else => self.op_count,
         };
     }
@@ -454,6 +458,8 @@ pub const ProgramCommandSummary = struct {
     rope_batches: u32 = 0,
     movement_batches: u32 = 0,
     attention_batches: u32 = 0,
+    elementwise_batches: u32 = 0,
+    elementwise_ops: u32 = 0,
     projection_groups: u32 = 0,
     projection_anchors: u32 = 0,
     projection_sidecars: u32 = 0,
@@ -765,6 +771,12 @@ pub fn findProgramCommand(
         }
     }
 
+    if (op == .elementwise and policy.max_elementwise_batch >= 2) {
+        if (findElementwiseBatchCommand(ops, start, policy, used)) |command| {
+            return command;
+        }
+    }
+
     if (policy.stage_commands) {
         if (findStageCommand(ops, start)) |stage_command| {
             if (!commandRangeTouchesUsed(stage_command.op_start, stage_command.op_count, used)) {
@@ -778,6 +790,53 @@ pub fn findProgramCommand(
     }
 
     return null;
+}
+
+fn findElementwiseBatchCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: CommandStreamPolicy,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (start >= ops.len) return null;
+    if (used) |used_ops| {
+        if (start >= used_ops.len or used_ops[start]) return null;
+    }
+    const first = switch (ops[start]) {
+        .elementwise => |e| e,
+        else => return null,
+    };
+    if (!canBatchElementwiseOp(first)) return null;
+
+    const max_ops: usize = @intCast(@min(policy.max_elementwise_batch, max_projection_group_anchors));
+    if (max_ops < 2) return null;
+
+    var command = ProgramCommand{
+        .kind = .elementwise_batch,
+        .op_start = @intCast(start),
+        .op_count = 1,
+        .anchor_count = 1,
+    };
+    command.indices[0] = start;
+
+    var scan = start + 1;
+    while (scan < ops.len and command.anchor_count < max_ops) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const e = switch (ops[scan]) {
+            .elementwise => |e| e,
+            else => continue,
+        };
+        if (!canBatchElementwiseOp(e)) continue;
+        if (!canHoistElementwiseTo(ops, start, scan, e)) continue;
+        if (elementwiseConflictsSelected(ops, command.anchorIndices(), e)) continue;
+        command.indices[command.anchor_count] = scan;
+        command.anchor_count += 1;
+        command.op_count = @intCast(scan - start + 1);
+    }
+
+    return if (command.anchor_count >= 2) command else null;
 }
 
 fn findContiguousBatchCommand(
@@ -828,6 +887,10 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
             .rope_batch => summary.rope_batches += 1,
             .movement_batch => summary.movement_batches += 1,
             .attention_batch => summary.attention_batches += 1,
+            .elementwise_batch => {
+                summary.elementwise_batches += 1;
+                summary.elementwise_ops += command.anchor_count;
+            },
             .projection_group => {
                 summary.projection_groups += 1;
                 summary.projection_anchors += command.anchor_count;
@@ -841,13 +904,15 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
 
 pub fn markProgramCommandUsed(used: []bool, command: ProgramCommand) void {
     switch (command.kind) {
-        .projection_group => {
+        .projection_group, .elementwise_batch => {
             for (command.anchorIndices()) |idx| {
                 if (idx < used.len) used[idx] = true;
             }
-            for (command.sidecarIndices()) |maybe_idx| {
-                if (maybe_idx) |idx| {
-                    if (idx < used.len) used[idx] = true;
+            if (command.kind == .projection_group) {
+                for (command.sidecarIndices()) |maybe_idx| {
+                    if (maybe_idx) |idx| {
+                        if (idx < used.len) used[idx] = true;
+                    }
                 }
             }
         },
@@ -932,6 +997,38 @@ pub fn canHoistProjectionTo(
         if (opTouchesBuffer(op, q.dst)) return false;
     }
     return true;
+}
+
+pub fn canBatchElementwiseOp(e: anytype) bool {
+    return e.op.isFusible();
+}
+
+pub fn canHoistElementwiseTo(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    candidate_index: usize,
+    e: anytype,
+) bool {
+    for (ops[start..candidate_index]) |op| {
+        if (opWritesBuffer(op, e.src0)) return false;
+        if (e.op.isBinary() and opWritesBuffer(op, e.src1)) return false;
+        if (opTouchesBuffer(op, e.dst)) return false;
+    }
+    return true;
+}
+
+pub fn elementwiseConflictsSelected(
+    ops: []const backend_mod.DeviceOp,
+    indices: []const usize,
+    e: anytype,
+) bool {
+    for (indices) |idx| {
+        const selected = ops[idx].elementwise;
+        if (selected.dst == e.dst) return true;
+        if (selected.dst == e.src0 or (e.op.isBinary() and selected.dst == e.src1)) return true;
+        if (e.dst == selected.src0 or (selected.op.isBinary() and e.dst == selected.src1)) return true;
+    }
+    return false;
 }
 
 pub fn projectionConflictsSelected(
@@ -2339,6 +2436,54 @@ test "program command stream emits contiguous batch commands" {
     try std.testing.expectEqual(@as(u32, 1), summary.rope_batches);
     try std.testing.expectEqual(@as(u32, 1), summary.movement_batches);
     try std.testing.expectEqual(@as(u32, 1), summary.attention_batches);
+}
+
+test "program command stream emits noncontiguous elementwise batch commands" {
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .elementwise = .{ .op = .add, .dst = 1, .src0 = 0, .src1 = 0, .n = 4 } },
+        testQMatmulWith(9, 8, 2),
+        .{ .elementwise = .{ .op = .mul, .dst = 2, .src0 = 0, .src1 = 0, .n = 4 } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.elementwise_batch, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(usize, 0), commands[0].indices[0]);
+    try std.testing.expectEqual(@as(usize, 2), commands[0].indices[1]);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[1].op_start);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 3), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.op_commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.elementwise_batches);
+    try std.testing.expectEqual(@as(u32, 2), summary.elementwise_ops);
+}
+
+test "program command stream keeps conflicting elementwise ops separate" {
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .elementwise = .{ .op = .add, .dst = 1, .src0 = 0, .src1 = 0, .n = 4 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 1, .src0 = 0, .src1 = 0, .n = 4 } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[0].kind);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 0), summary.elementwise_batches);
+    try std.testing.expectEqual(@as(u32, 2), summary.op_commands);
 }
 
 test "family pattern regions match exact contiguous family sequences" {
