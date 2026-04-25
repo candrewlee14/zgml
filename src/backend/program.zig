@@ -468,6 +468,55 @@ pub const ProgramCommandSummary = struct {
 
 pub const max_projection_group_anchors = 8;
 
+pub const BufferSpan = struct {
+    buf: u16,
+    start: u64,
+    end: u64,
+
+    pub fn overlaps(self: BufferSpan, other: BufferSpan) bool {
+        return self.buf == other.buf and self.start < other.end and other.start < self.end;
+    }
+};
+
+const max_access_spans = 16;
+
+const OpAccessSpans = struct {
+    reads: [max_access_spans]BufferSpan = undefined,
+    writes: [max_access_spans]BufferSpan = undefined,
+    read_count: u8 = 0,
+    write_count: u8 = 0,
+    read_overflow: bool = false,
+    write_overflow: bool = false,
+
+    fn addRead(self: *OpAccessSpans, span: BufferSpan) void {
+        if (span.start == span.end) return;
+        if (self.read_count >= max_access_spans) {
+            self.read_overflow = true;
+            return;
+        }
+        self.reads[self.read_count] = span;
+        self.read_count += 1;
+    }
+
+    fn addWrite(self: *OpAccessSpans, span: BufferSpan) void {
+        if (span.start == span.end) return;
+        if (self.write_count >= max_access_spans) {
+            self.write_overflow = true;
+            return;
+        }
+        self.writes[self.write_count] = span;
+        self.write_count += 1;
+    }
+
+    fn readSpans(self: *const OpAccessSpans) []const BufferSpan {
+        return self.reads[0..self.read_count];
+    }
+
+    fn writeSpans(self: *const OpAccessSpans) []const BufferSpan {
+        return self.writes[0..self.write_count];
+    }
+};
+
 pub const ProjectionGroup = struct {
     kind: ProjectionGroupKind,
     start_op: u32,
@@ -986,17 +1035,188 @@ pub fn opTouchesBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
     return opReadsBuffer(op, buf) or opWritesBuffer(op, buf);
 }
 
+fn bufferSpan(buf: u16, offset: anytype, len: anytype) BufferSpan {
+    const start: u64 = @intCast(offset);
+    const n: u64 = @intCast(len);
+    return .{ .buf = buf, .start = start, .end = start + n };
+}
+
+fn stridedSpan(buf: u16, offset: anytype, rows: anytype, cols: anytype, row_stride: anytype, col_stride: anytype) BufferSpan {
+    const start: u64 = @intCast(offset);
+    const r: u64 = @intCast(rows);
+    const c: u64 = @intCast(cols);
+    if (r == 0 or c == 0) return .{ .buf = buf, .start = start, .end = start };
+    const rs: u64 = @intCast(row_stride);
+    const cs: u64 = @intCast(col_stride);
+    const last = start + (r - 1) * rs + (c - 1) * cs;
+    return .{ .buf = buf, .start = start, .end = last + 1 };
+}
+
+fn strided4Span(buf: u16, offset: anytype, ne: [4]u32, strides: [4]u32) BufferSpan {
+    const start: u64 = @intCast(offset);
+    var last = start;
+    for (ne, 0..) |extent, i| {
+        if (extent == 0) return .{ .buf = buf, .start = start, .end = start };
+        last += @as(u64, extent - 1) * @as(u64, strides[i]);
+    }
+    return .{ .buf = buf, .start = start, .end = last + 1 };
+}
+
+fn opAccessSpans(op: backend_mod.DeviceOp) OpAccessSpans {
+    var access = OpAccessSpans{};
+    switch (op) {
+        .elementwise => |e| {
+            access.addRead(bufferSpan(e.src0, e.src0_offset, e.n));
+            if (e.op.isBinary()) access.addRead(bufferSpan(e.src1, e.src1_offset, e.n));
+            access.addWrite(bufferSpan(e.dst, e.dst_offset, e.n));
+        },
+        .matmul => |m| {
+            const g = m.geom;
+            access.addRead(stridedSpan(m.a, g.a_offset, g.M, g.K, g.a_row_stride, g.a_col_stride));
+            access.addRead(stridedSpan(m.b, g.b_offset, g.K, g.N, g.b_row_stride, g.b_col_stride));
+            access.addWrite(stridedSpan(m.dst, g.dst_offset, g.M, g.N, g.dst_row_stride, 1));
+        },
+        .qmatmul => |q| {
+            const input_row_stride = if (q.input_row_stride != 0) q.input_row_stride else q.K;
+            access.addRead(stridedSpan(q.input, q.input_offset, q.M, q.K, input_row_stride, 1));
+            access.addWrite(stridedSpan(q.dst, q.dst_offset, q.M, q.N, qmatmulDstRowStride(q), 1));
+        },
+        .softmax => |s| {
+            access.addRead(bufferSpan(s.src, s.src_offset, s.rows * s.cols));
+            access.addWrite(bufferSpan(s.dst, s.dst_offset, s.rows * s.cols));
+        },
+        .layernorm => |l| {
+            access.addRead(bufferSpan(l.src, l.src_offset, l.rows * l.cols));
+            access.addWrite(bufferSpan(l.dst, l.dst_offset, l.rows * l.cols));
+        },
+        .rmsnorm => |r| {
+            access.addRead(bufferSpan(r.src, r.src_offset, r.rows * r.cols));
+            access.addWrite(bufferSpan(r.dst, r.dst_offset, r.rows * r.cols));
+        },
+        .reduce => |r| {
+            access.addRead(bufferSpan(r.src, r.src_offset, r.n_out * r.reduce_size));
+            access.addWrite(bufferSpan(r.dst, r.dst_offset, r.n_out));
+        },
+        .repeat => |rp| {
+            access.addRead(strided4Span(rp.src, rp.src_offset, rp.src_ne, rp.src_strides));
+            access.addWrite(strided4Span(rp.dst, rp.dst_offset, rp.dst_ne, rp.dst_strides));
+        },
+        .slice_assign => |sa| {
+            access.addRead(stridedSpan(sa.src, sa.src_offset, sa.rows, sa.cols, sa.src_row_stride, sa.src_col_stride));
+            access.addWrite(stridedSpan(sa.dst, sa.dst_offset, sa.rows, sa.cols, sa.dst_row_stride, sa.dst_col_stride));
+        },
+        .rope => |rr| {
+            const d = rr.half_d * 2;
+            access.addRead(stridedSpan(rr.src, rr.src_off, d, rr.seq_len, rr.src_rs, rr.src_cs));
+            access.addRead(stridedSpan(rr.cos_sin, rr.cs_off, d, rr.seq_len, 1, rr.cs_cs));
+            access.addWrite(stridedSpan(rr.dst, rr.dst_off, d, rr.seq_len, 1, d));
+        },
+        .attention => |att| {
+            access.addRead(stridedSpan(att.q, att.q_off, att.d_head, att.seq_q, att.q_rs, att.q_cs));
+            access.addRead(stridedSpan(att.k, att.k_off, att.d_head, att.seq_kv, att.k_rs, att.k_cs));
+            access.addRead(stridedSpan(att.v, att.v_off, att.d_head, att.seq_kv, att.v_rs, att.v_cs));
+            if (att.has_mask) access.addRead(stridedSpan(att.mask, att.mask_off, att.seq_kv, att.seq_q, att.mask_rs, att.mask_cs));
+            access.addWrite(stridedSpan(att.dst, att.dst_off, att.d_head, att.seq_q, att.dst_rs, att.dst_cs));
+        },
+        .fused_elementwise => |fe| {
+            access.addRead(bufferSpan(fe.src, fe.src_offset, fe.n));
+            for (fe.steps) |step| {
+                if (step.op.isBinary()) access.addRead(bufferSpan(step.secondary_buf, step.secondary_offset, fe.n));
+            }
+            access.addWrite(bufferSpan(fe.dst, fe.dst_offset, fe.n));
+        },
+    }
+    return access;
+}
+
+pub fn opReadsSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
+    const access = opAccessSpans(op);
+    for (access.readSpans()) |read| {
+        if (read.overlaps(target)) return true;
+    }
+    return access.read_overflow and opReadsBuffer(op, target.buf);
+}
+
+pub fn opWritesSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
+    const access = opAccessSpans(op);
+    for (access.writeSpans()) |write| {
+        if (write.overlaps(target)) return true;
+    }
+    return access.write_overflow and opWritesBuffer(op, target.buf);
+}
+
+pub fn opTouchesSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
+    return opReadsSpan(op, target) or opWritesSpan(op, target);
+}
+
+pub fn opAccessConflicts(a: backend_mod.DeviceOp, b: backend_mod.DeviceOp) bool {
+    const a_access = opAccessSpans(a);
+    const b_access = opAccessSpans(b);
+    for (a_access.writeSpans()) |write| {
+        for (b_access.writeSpans()) |other_write| {
+            if (write.overlaps(other_write)) return true;
+        }
+        for (b_access.readSpans()) |read| {
+            if (write.overlaps(read)) return true;
+        }
+        if ((b_access.read_overflow and opReadsBuffer(b, write.buf)) or (b_access.write_overflow and opWritesBuffer(b, write.buf))) return true;
+    }
+    for (a_access.readSpans()) |read| {
+        for (b_access.writeSpans()) |write| {
+            if (read.overlaps(write)) return true;
+        }
+        if (b_access.write_overflow and opWritesBuffer(b, read.buf)) return true;
+    }
+    if (a_access.read_overflow or a_access.write_overflow) {
+        const b_may_touch_overflowed_buffer = for (b_access.readSpans()) |read| {
+            if (opTouchesBuffer(a, read.buf)) break true;
+        } else for (b_access.writeSpans()) |write| {
+            if (opTouchesBuffer(a, write.buf)) break true;
+        } else false;
+        if (b_may_touch_overflowed_buffer) return true;
+    }
+    return false;
+}
+
+pub fn canHoistOpTo(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    candidate_index: usize,
+    candidate: backend_mod.DeviceOp,
+) bool {
+    const candidate_access = opAccessSpans(candidate);
+    for (ops[start..candidate_index]) |op| {
+        for (candidate_access.readSpans()) |read| {
+            if (opWritesSpan(op, read)) return false;
+        }
+        for (candidate_access.writeSpans()) |write| {
+            if (opTouchesSpan(op, write)) return false;
+        }
+        if (candidate_access.read_overflow or candidate_access.write_overflow) {
+            if (opAccessConflicts(op, candidate)) return false;
+        }
+    }
+    return true;
+}
+
+pub fn opConflictsSelected(
+    ops: []const backend_mod.DeviceOp,
+    indices: []const usize,
+    candidate: backend_mod.DeviceOp,
+) bool {
+    for (indices) |idx| {
+        if (opAccessConflicts(ops[idx], candidate)) return true;
+    }
+    return false;
+}
+
 pub fn canHoistProjectionTo(
     ops: []const backend_mod.DeviceOp,
     start: usize,
     candidate_index: usize,
     q: anytype,
 ) bool {
-    for (ops[start..candidate_index]) |op| {
-        if (opWritesBuffer(op, q.input)) return false;
-        if (opTouchesBuffer(op, q.dst)) return false;
-    }
-    return true;
+    return canHoistOpTo(ops, start, candidate_index, .{ .qmatmul = q });
 }
 
 pub fn canBatchElementwiseOp(e: anytype) bool {
@@ -1009,12 +1229,7 @@ pub fn canHoistElementwiseTo(
     candidate_index: usize,
     e: anytype,
 ) bool {
-    for (ops[start..candidate_index]) |op| {
-        if (opWritesBuffer(op, e.src0)) return false;
-        if (e.op.isBinary() and opWritesBuffer(op, e.src1)) return false;
-        if (opTouchesBuffer(op, e.dst)) return false;
-    }
-    return true;
+    return canHoistOpTo(ops, start, candidate_index, .{ .elementwise = e });
 }
 
 pub fn elementwiseConflictsSelected(
@@ -1022,13 +1237,7 @@ pub fn elementwiseConflictsSelected(
     indices: []const usize,
     e: anytype,
 ) bool {
-    for (indices) |idx| {
-        const selected = ops[idx].elementwise;
-        if (selected.dst == e.dst) return true;
-        if (selected.dst == e.src0 or (e.op.isBinary() and selected.dst == e.src1)) return true;
-        if (e.dst == selected.src0 or (selected.op.isBinary() and e.dst == selected.src1)) return true;
-    }
-    return false;
+    return opConflictsSelected(ops, indices, .{ .elementwise = e });
 }
 
 pub fn projectionConflictsSelected(
@@ -1036,11 +1245,7 @@ pub fn projectionConflictsSelected(
     indices: []const usize,
     q: anytype,
 ) bool {
-    for (indices) |idx| {
-        const selected = ops[idx].qmatmul;
-        if (selected.dst == q.dst or selected.input == q.dst or selected.dst == q.input) return true;
-    }
-    return false;
+    return opConflictsSelected(ops, indices, .{ .qmatmul = q });
 }
 
 pub fn qmatmulSliceSrcColStart(q: anytype, sa: anytype) ?u32 {
@@ -2346,6 +2551,25 @@ test "projection groups reject conflicting or nonhoistable projections" {
     const blocked_groups = try buildProjectionGroups(std.testing.allocator, &blocked_ops, ProjectionGroupPolicy.prefillQMatmul(4));
     defer std.testing.allocator.free(blocked_groups);
     try std.testing.expectEqual(@as(usize, 0), blocked_groups.len);
+}
+
+test "projection groups use access spans instead of whole-buffer conflicts" {
+    var first = testQMatmulWith(1, 0, 2);
+    first.qmatmul.dst_offset = 0;
+    var second = testQMatmulWith(1, 0, 2);
+    second.qmatmul.dst_offset = 8;
+    const disjoint_ops = [_]backend_mod.DeviceOp{ first, second };
+
+    const groups = try buildProjectionGroups(std.testing.allocator, &disjoint_ops, ProjectionGroupPolicy.prefillQMatmul(4));
+    defer std.testing.allocator.free(groups);
+    try std.testing.expectEqual(@as(usize, 1), groups.len);
+    try std.testing.expectEqual(@as(u32, 2), groups[0].anchor_count);
+
+    second.qmatmul.dst_offset = 4;
+    const overlapping_ops = [_]backend_mod.DeviceOp{ first, second };
+    const overlapping_groups = try buildProjectionGroups(std.testing.allocator, &overlapping_ops, ProjectionGroupPolicy.prefillQMatmul(4));
+    defer std.testing.allocator.free(overlapping_groups);
+    try std.testing.expectEqual(@as(usize, 0), overlapping_groups.len);
 }
 
 test "program command stream merges stage and projection commands" {

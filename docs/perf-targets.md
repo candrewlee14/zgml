@@ -67,6 +67,11 @@ predicates for its batched projection kernels, so future movement, RoPE/KV, and
 attention commands can follow the same path before adding more backend-specific
 pattern code.
 
+That legality layer now reasons in terms of buffer spans instead of whole-buffer
+touches. This keeps the command stream pure while making future fusion more
+precise for shared workspaces, KV caches, and head-sliced tensors: two ops can
+share a buffer and still batch if their read/write spans do not overlap.
+
 The first unified command stream now combines those pure stage commands and
 projection groups into a single ordered view. On SmolLM prefill it currently
 emits 1,412 commands for 1,714 ops, including 61 row chains, 90 RoPE/cache
