@@ -896,6 +896,7 @@ const shader_source =
     \\
     \\constant uint MAX_SEQ = 4096;
     \\constant uint MAX_ATTENTION_BATCH_HEADS = 16;
+    \\constant uint MAX_ATTENTION_STORE_BATCH_HEADS = 4;
     \\
     \\// One threadgroup per query position. Decode is the seq_q=1 case.
     \\kernel void attention_f32(
@@ -1130,6 +1131,105 @@ const shader_source =
     \\    }
     \\}
     \\
+    \\struct AttentionRopeStoreParams {
+    \\    uint d_head; uint seq_q; uint seq_kv;
+    \\    float scale;
+    \\    uint rope_half_d; uint rope_src_off; uint rope_cs_off;
+    \\    uint rope_src_rs; uint rope_src_cs; uint rope_cs_cs;
+    \\    uint k_off; uint v_off; uint mask_off; uint dst_off;
+    \\    uint k_rs; uint k_cs; uint v_rs; uint v_cs;
+    \\    uint mask_rs; uint mask_cs; uint dst_rs; uint dst_cs;
+    \\    uint slice_dst_offset; uint slice_dst_row_stride; uint slice_dst_col_stride;
+    \\};
+    \\
+    \\inline float rope_q_value(
+    \\    device const float* q_src,
+    \\    device const float* cos_sin,
+    \\    constant AttentionRopeStoreParams& p,
+    \\    uint r,
+    \\    uint q_col
+    \\) {
+    \\    uint i = r;
+    \\    bool high = false;
+    \\    if (i >= p.rope_half_d) {
+    \\        i -= p.rope_half_d;
+    \\        high = true;
+    \\    }
+    \\    float cos_val = cos_sin[p.rope_cs_off + q_col * p.rope_cs_cs + i];
+    \\    float sin_val = cos_sin[p.rope_cs_off + q_col * p.rope_cs_cs + p.rope_half_d + i];
+    \\    float x_lo = q_src[p.rope_src_off + q_col * p.rope_src_cs + i * p.rope_src_rs];
+    \\    float x_hi = q_src[p.rope_src_off + q_col * p.rope_src_cs + (i + p.rope_half_d) * p.rope_src_rs];
+    \\    return high ? (x_hi * cos_val + x_lo * sin_val) : (x_lo * cos_val - x_hi * sin_val);
+    \\}
+    \\
+    \\kernel void attention_rope_store_f32(
+    \\    device const float* q_src     [[buffer(0)]],
+    \\    device const float* cos_sin   [[buffer(1)]],
+    \\    device const float* K         [[buffer(2)]],
+    \\    device const float* V         [[buffer(3)]],
+    \\    device const float* mask      [[buffer(4)]],
+    \\    device float*       dst       [[buffer(5)]],
+    \\    device float*       slice_dst [[buffer(6)]],
+    \\    constant AttentionRopeStoreParams& p [[buffer(7)]],
+    \\    uint q_col   [[threadgroup_position_in_grid]],
+    \\    uint tid     [[thread_index_in_threadgroup]]
+    \\) {
+    \\    if (q_col >= p.seq_q) return;
+    \\    const uint tg_size = 256;
+    \\
+    \\    threadgroup float scores[MAX_SEQ];
+    \\    threadgroup float scratch[256];
+    \\
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size) {
+    \\        float mv = mask[p.mask_off + s * p.mask_rs + q_col * p.mask_cs];
+    \\        if (!isfinite(mv)) { scores[s] = -INFINITY; continue; }
+    \\        float dot = 0.0f;
+    \\        for (uint r = 0; r < p.d_head; r++)
+    \\            dot += rope_q_value(q_src, cos_sin, p, r, q_col) * K[p.k_off + r * p.k_rs + s * p.k_cs];
+    \\        scores[s] = dot * p.scale + mv;
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    float local_max = -INFINITY;
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size)
+    \\        local_max = max(local_max, scores[s]);
+    \\    scratch[tid] = local_max;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = tg_size / 2; stride > 0; stride /= 2) {
+    \\        if (tid < stride) scratch[tid] = max(scratch[tid], scratch[tid + stride]);
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float global_max = scratch[0];
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    float local_sum = 0.0f;
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size) {
+    \\        float w = (scores[s] == -INFINITY) ? 0.0f : exp(scores[s] - global_max);
+    \\        scores[s] = w;
+    \\        local_sum += w;
+    \\    }
+    \\    scratch[tid] = local_sum;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = tg_size / 2; stride > 0; stride /= 2) {
+    \\        if (tid < stride) scratch[tid] += scratch[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float inv_sum = (scratch[0] > 0.0f) ? 1.0f / scratch[0] : 0.0f;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size)
+    \\        scores[s] *= inv_sum;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint r = tid; r < p.d_head; r += tg_size) {
+    \\        float val = 0.0f;
+    \\        for (uint s = 0; s < p.seq_kv; s++)
+    \\            val += scores[s] * V[p.v_off + r * p.v_rs + s * p.v_cs];
+    \\        dst[p.dst_off + r * p.dst_rs + q_col * p.dst_cs] = val;
+    \\        slice_dst[p.slice_dst_offset + r * p.slice_dst_row_stride + q_col * p.slice_dst_col_stride] = val;
+    \\    }
+    \\}
+    \\
     \\struct AttentionBatchParams {
     \\    uint n_heads; uint d_head; uint seq_q; uint seq_kv;
     \\    float scale;
@@ -1140,6 +1240,20 @@ const shader_source =
     \\    uint dst_off[MAX_ATTENTION_BATCH_HEADS];
     \\    uint q_rs; uint q_cs; uint k_rs; uint k_cs; uint v_rs; uint v_cs;
     \\    uint mask_rs; uint mask_cs; uint dst_rs; uint dst_cs;
+    \\};
+    \\
+    \\struct AttentionStoreBatchParams {
+    \\    uint n_heads; uint d_head; uint seq_q; uint seq_kv;
+    \\    float scale;
+    \\    uint q_off[MAX_ATTENTION_STORE_BATCH_HEADS];
+    \\    uint k_off[MAX_ATTENTION_STORE_BATCH_HEADS];
+    \\    uint v_off[MAX_ATTENTION_STORE_BATCH_HEADS];
+    \\    uint mask_off[MAX_ATTENTION_STORE_BATCH_HEADS];
+    \\    uint dst_off[MAX_ATTENTION_STORE_BATCH_HEADS];
+    \\    uint slice_dst_offset[MAX_ATTENTION_STORE_BATCH_HEADS];
+    \\    uint q_rs; uint q_cs; uint k_rs; uint k_cs; uint v_rs; uint v_cs;
+    \\    uint mask_rs; uint mask_cs; uint dst_rs; uint dst_cs;
+    \\    uint slice_dst_row_stride; uint slice_dst_col_stride;
     \\};
     \\
     \\kernel void attention_batch_f32(
@@ -1213,6 +1327,115 @@ const shader_source =
     \\        for (uint s = 0; s < p.seq_kv; s++)
     \\            val += scores[s] * V[v_off + r * p.v_rs + s * p.v_cs];
     \\        dst[dst_off + r * p.dst_rs + q_col * p.dst_cs] = val;
+    \\    }
+    \\}
+    \\
+    \\kernel void attention_store_batch_f32(
+    \\    device const float* Q0         [[buffer(0)]],
+    \\    device const float* Q1         [[buffer(1)]],
+    \\    device const float* Q2         [[buffer(2)]],
+    \\    device const float* Q3         [[buffer(3)]],
+    \\    device const float* K0         [[buffer(4)]],
+    \\    device const float* K1         [[buffer(5)]],
+    \\    device const float* K2         [[buffer(6)]],
+    \\    device const float* K3         [[buffer(7)]],
+    \\    device const float* V0         [[buffer(8)]],
+    \\    device const float* V1         [[buffer(9)]],
+    \\    device const float* V2         [[buffer(10)]],
+    \\    device const float* V3         [[buffer(11)]],
+    \\    device const float* mask0      [[buffer(12)]],
+    \\    device const float* mask1      [[buffer(13)]],
+    \\    device const float* mask2      [[buffer(14)]],
+    \\    device const float* mask3      [[buffer(15)]],
+    \\    device float*       dst0       [[buffer(16)]],
+    \\    device float*       dst1       [[buffer(17)]],
+    \\    device float*       dst2       [[buffer(18)]],
+    \\    device float*       dst3       [[buffer(19)]],
+    \\    device float*       slice_dst0 [[buffer(20)]],
+    \\    device float*       slice_dst1 [[buffer(21)]],
+    \\    device float*       slice_dst2 [[buffer(22)]],
+    \\    device float*       slice_dst3 [[buffer(23)]],
+    \\    constant AttentionStoreBatchParams& p [[buffer(24)]],
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint tid     [[thread_index_in_threadgroup]]
+    \\) {
+    \\    uint q_col = group.x;
+    \\    uint head = group.y;
+    \\    if (q_col >= p.seq_q) return;
+    \\    if (head >= p.n_heads) return;
+    \\    const uint tg_size = 256;
+    \\
+    \\    device const float* Q = Q0;
+    \\    device const float* K = K0;
+    \\    device const float* V = V0;
+    \\    device const float* mask = mask0;
+    \\    device float* dst = dst0;
+    \\    device float* slice_dst = slice_dst0;
+    \\    if (head == 1) {
+    \\        Q = Q1; K = K1; V = V1; mask = mask1; dst = dst1; slice_dst = slice_dst1;
+    \\    } else if (head == 2) {
+    \\        Q = Q2; K = K2; V = V2; mask = mask2; dst = dst2; slice_dst = slice_dst2;
+    \\    } else if (head == 3) {
+    \\        Q = Q3; K = K3; V = V3; mask = mask3; dst = dst3; slice_dst = slice_dst3;
+    \\    }
+    \\
+    \\    threadgroup float scores[MAX_SEQ];
+    \\    threadgroup float scratch[256];
+    \\
+    \\    uint q_off = p.q_off[head];
+    \\    uint k_off = p.k_off[head];
+    \\    uint v_off = p.v_off[head];
+    \\    uint mask_off = p.mask_off[head];
+    \\    uint dst_off = p.dst_off[head];
+    \\    uint slice_dst_off = p.slice_dst_offset[head];
+    \\
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size) {
+    \\        float mv = mask[mask_off + s * p.mask_rs + q_col * p.mask_cs];
+    \\        if (!isfinite(mv)) { scores[s] = -INFINITY; continue; }
+    \\        float dot = 0.0f;
+    \\        for (uint r = 0; r < p.d_head; r++)
+    \\            dot += Q[q_off + r * p.q_rs + q_col * p.q_cs] * K[k_off + r * p.k_rs + s * p.k_cs];
+    \\        scores[s] = dot * p.scale + mv;
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    float local_max = -INFINITY;
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size)
+    \\        local_max = max(local_max, scores[s]);
+    \\    scratch[tid] = local_max;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = tg_size / 2; stride > 0; stride /= 2) {
+    \\        if (tid < stride) scratch[tid] = max(scratch[tid], scratch[tid + stride]);
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float global_max = scratch[0];
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    float local_sum = 0.0f;
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size) {
+    \\        float w = (scores[s] == -INFINITY) ? 0.0f : exp(scores[s] - global_max);
+    \\        scores[s] = w;
+    \\        local_sum += w;
+    \\    }
+    \\    scratch[tid] = local_sum;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = tg_size / 2; stride > 0; stride /= 2) {
+    \\        if (tid < stride) scratch[tid] += scratch[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float inv_sum = (scratch[0] > 0.0f) ? 1.0f / scratch[0] : 0.0f;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint s = tid; s < p.seq_kv; s += tg_size)
+    \\        scores[s] *= inv_sum;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint r = tid; r < p.d_head; r += tg_size) {
+    \\        float val = 0.0f;
+    \\        for (uint s = 0; s < p.seq_kv; s++)
+    \\            val += scores[s] * V[v_off + r * p.v_rs + s * p.v_cs];
+    \\        dst[dst_off + r * p.dst_rs + q_col * p.dst_cs] = val;
+    \\        slice_dst[slice_dst_off + r * p.slice_dst_row_stride + q_col * p.slice_dst_col_stride] = val;
     \\    }
     \\}
     \\
@@ -1869,7 +2092,36 @@ const AttentionStoreParams = extern struct {
     slice_dst_col_stride: u32,
 };
 
+const AttentionRopeStoreParams = extern struct {
+    d_head: u32,
+    seq_q: u32,
+    seq_kv: u32,
+    scale: f32,
+    rope_half_d: u32,
+    rope_src_off: u32,
+    rope_cs_off: u32,
+    rope_src_rs: u32,
+    rope_src_cs: u32,
+    rope_cs_cs: u32,
+    k_off: u32,
+    v_off: u32,
+    mask_off: u32,
+    dst_off: u32,
+    k_rs: u32,
+    k_cs: u32,
+    v_rs: u32,
+    v_cs: u32,
+    mask_rs: u32,
+    mask_cs: u32,
+    dst_rs: u32,
+    dst_cs: u32,
+    slice_dst_offset: u32,
+    slice_dst_row_stride: u32,
+    slice_dst_col_stride: u32,
+};
+
 const MAX_ATTENTION_BATCH_HEADS: usize = 16;
+const MAX_ATTENTION_STORE_BATCH_HEADS: usize = 4;
 
 const AttentionBatchParams = extern struct {
     n_heads: u32,
@@ -1892,6 +2144,32 @@ const AttentionBatchParams = extern struct {
     mask_cs: u32,
     dst_rs: u32,
     dst_cs: u32,
+};
+
+const AttentionStoreBatchParams = extern struct {
+    n_heads: u32,
+    d_head: u32,
+    seq_q: u32,
+    seq_kv: u32,
+    scale: f32,
+    q_off: [MAX_ATTENTION_STORE_BATCH_HEADS]u32,
+    k_off: [MAX_ATTENTION_STORE_BATCH_HEADS]u32,
+    v_off: [MAX_ATTENTION_STORE_BATCH_HEADS]u32,
+    mask_off: [MAX_ATTENTION_STORE_BATCH_HEADS]u32,
+    dst_off: [MAX_ATTENTION_STORE_BATCH_HEADS]u32,
+    slice_dst_offset: [MAX_ATTENTION_STORE_BATCH_HEADS]u32,
+    q_rs: u32,
+    q_cs: u32,
+    k_rs: u32,
+    k_cs: u32,
+    v_rs: u32,
+    v_cs: u32,
+    mask_rs: u32,
+    mask_cs: u32,
+    dst_rs: u32,
+    dst_cs: u32,
+    slice_dst_row_stride: u32,
+    slice_dst_col_stride: u32,
 };
 
 const ComputeParams = extern struct {
@@ -2220,6 +2498,36 @@ fn attentionStoreParams(att: anytype, sa: anytype) AttentionStoreParams {
     };
 }
 
+fn attentionRopeStoreParams(rr: anytype, att: anytype, sa: anytype) AttentionRopeStoreParams {
+    return .{
+        .d_head = att.d_head,
+        .seq_q = att.seq_q,
+        .seq_kv = att.seq_kv,
+        .scale = att.scale,
+        .rope_half_d = rr.half_d,
+        .rope_src_off = rr.src_off,
+        .rope_cs_off = rr.cs_off,
+        .rope_src_rs = rr.src_rs,
+        .rope_src_cs = rr.src_cs,
+        .rope_cs_cs = rr.cs_cs,
+        .k_off = att.k_off,
+        .v_off = att.v_off,
+        .mask_off = att.mask_off,
+        .dst_off = att.dst_off,
+        .k_rs = att.k_rs,
+        .k_cs = att.k_cs,
+        .v_rs = att.v_rs,
+        .v_cs = att.v_cs,
+        .mask_rs = att.mask_rs,
+        .mask_cs = att.mask_cs,
+        .dst_rs = att.dst_rs,
+        .dst_cs = att.dst_cs,
+        .slice_dst_offset = sa.dst_offset,
+        .slice_dst_row_stride = sa.dst_row_stride,
+        .slice_dst_col_stride = sa.dst_col_stride,
+    };
+}
+
 fn canEncodeAttention(att: anytype) bool {
     return att.seq_q >= 1 and
         att.seq_kv <= 4096 and
@@ -2254,6 +2562,8 @@ pub const MetalBackend = struct {
     attention_pipeline: *anyopaque,
     attention_slice_assign_pipeline: *anyopaque,
     attention_store_pipeline: *anyopaque,
+    attention_rope_store_pipeline: *anyopaque,
+    attention_store_batch_pipeline: *anyopaque,
     attention_batch_pipeline: *anyopaque,
     compute_pipeline: *anyopaque,
     elementwise_batch8_pipeline: *anyopaque,
@@ -2311,6 +2621,10 @@ pub const MetalBackend = struct {
         errdefer c.mtl_release(attention_slice_assign_pipeline);
         const attention_store_pipeline = c.mtl_create_pipeline(device, library, "attention_store_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(attention_store_pipeline);
+        const attention_rope_store_pipeline = c.mtl_create_pipeline(device, library, "attention_rope_store_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(attention_rope_store_pipeline);
+        const attention_store_batch_pipeline = c.mtl_create_pipeline(device, library, "attention_store_batch_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(attention_store_batch_pipeline);
         const attention_batch_pipeline = c.mtl_create_pipeline(device, library, "attention_batch_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(attention_batch_pipeline);
         const compute_pipeline = c.mtl_create_pipeline(device, library, "compute_f32") orelse return error.PipelineCreateFailed;
@@ -2341,6 +2655,8 @@ pub const MetalBackend = struct {
             .attention_pipeline = attention_pipeline,
             .attention_slice_assign_pipeline = attention_slice_assign_pipeline,
             .attention_store_pipeline = attention_store_pipeline,
+            .attention_rope_store_pipeline = attention_rope_store_pipeline,
+            .attention_store_batch_pipeline = attention_store_batch_pipeline,
             .attention_batch_pipeline = attention_batch_pipeline,
             .compute_pipeline = compute_pipeline,
             .elementwise_batch8_pipeline = elementwise_batch8_pipeline,
@@ -2355,6 +2671,8 @@ pub const MetalBackend = struct {
         c.mtl_release(self.elementwise_batch8_pipeline);
         c.mtl_release(self.compute_pipeline);
         c.mtl_release(self.attention_batch_pipeline);
+        c.mtl_release(self.attention_store_batch_pipeline);
+        c.mtl_release(self.attention_rope_store_pipeline);
         c.mtl_release(self.attention_store_pipeline);
         c.mtl_release(self.attention_slice_assign_pipeline);
         c.mtl_release(self.attention_pipeline);
@@ -3309,6 +3627,119 @@ const CompiledProgram = struct {
         return true;
     }
 
+    fn encodeAttentionRopeStore(self: *CompiledProgram, rr: anytype, att: anytype, sa: anytype) bool {
+        if (!program_mod.ropeAttentionCompatible(rr, att)) return false;
+        if (!program_mod.attentionSliceStoreCompatible(att, sa)) return false;
+        if (!canEncodeAttention(att)) return false;
+        if (rr.half_d * 2 != att.d_head) return false;
+        const buffers = [_]DeviceBuffer{
+            self.device_bufs[rr.src],
+            self.device_bufs[rr.cos_sin],
+            self.device_bufs[att.k],
+            self.device_bufs[att.v],
+            self.device_bufs[att.mask],
+            self.device_bufs[att.dst],
+            self.device_bufs[sa.dst],
+        };
+        self.encodeTyped(AttentionRopeStoreParams, self.backend.attention_rope_store_pipeline, &buffers, attentionRopeStoreParams(rr, att, sa), 7, .{ .gx = att.seq_q }, WG_SIZE);
+        return true;
+    }
+
+    fn canEncodeAttentionStoreBatchCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        _ = self;
+        if (command.anchor_count < 2 or command.anchor_count > MAX_ATTENTION_STORE_BATCH_HEADS) return false;
+        if (command.sidecar_count != command.anchor_count) return false;
+        const first_idx = command.indices[0];
+        const first_sa_idx = command.sidecar_indices[0] orelse return false;
+        if (first_idx >= ops.len or first_sa_idx >= ops.len) return false;
+        const first = switch (ops[first_idx]) {
+            .attention => |att| att,
+            else => return false,
+        };
+        const first_sa = switch (ops[first_sa_idx]) {
+            .slice_assign => |sa| sa,
+            else => return false,
+        };
+        if (!canEncodeAttention(first)) return false;
+        if (!program_mod.attentionSliceStoreCompatible(first, first_sa)) return false;
+        if (!program_mod.canFuseAttentionStoreSidecar(ops, first_idx, first_sa_idx, first_sa)) return false;
+
+        for (command.anchorIndices()[1..], command.sidecarIndices()[1..]) |idx, maybe_sa_idx| {
+            const sa_idx = maybe_sa_idx orelse return false;
+            if (idx >= ops.len or sa_idx >= ops.len) return false;
+            const att = switch (ops[idx]) {
+                .attention => |att| att,
+                else => return false,
+            };
+            const sa = switch (ops[sa_idx]) {
+                .slice_assign => |sa| sa,
+                else => return false,
+            };
+            if (!canEncodeAttention(att)) return false;
+            if (!program_mod.attentionGeometryCompatible(first, att)) return false;
+            if (!program_mod.attentionSliceStoreCompatible(att, sa)) return false;
+            if (!program_mod.canFuseAttentionStoreSidecar(ops, idx, sa_idx, sa)) return false;
+            if (sa.dst_row_stride != first_sa.dst_row_stride or
+                sa.dst_col_stride != first_sa.dst_col_stride) return false;
+        }
+        return true;
+    }
+
+    fn encodeAttentionStoreBatchCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) void {
+        const first = ops[command.indices[0]].attention;
+        const first_sa = ops[command.sidecar_indices[0].?].slice_assign;
+        const q_base = 0;
+        const k_base = q_base + MAX_ATTENTION_STORE_BATCH_HEADS;
+        const v_base = k_base + MAX_ATTENTION_STORE_BATCH_HEADS;
+        const mask_base = v_base + MAX_ATTENTION_STORE_BATCH_HEADS;
+        const dst_base = mask_base + MAX_ATTENTION_STORE_BATCH_HEADS;
+        const slice_dst_base = dst_base + MAX_ATTENTION_STORE_BATCH_HEADS;
+        var buffers: [MAX_ATTENTION_STORE_BATCH_HEADS * 6]DeviceBuffer = undefined;
+        for (0..MAX_ATTENTION_STORE_BATCH_HEADS) |i| {
+            buffers[q_base + i] = self.device_bufs[first.q];
+            buffers[k_base + i] = self.device_bufs[first.k];
+            buffers[v_base + i] = self.device_bufs[first.v];
+            buffers[mask_base + i] = self.device_bufs[first.mask];
+            buffers[dst_base + i] = self.device_bufs[first.dst];
+            buffers[slice_dst_base + i] = self.device_bufs[first_sa.dst];
+        }
+        var params = std.mem.zeroes(AttentionStoreBatchParams);
+        params.n_heads = @intCast(command.anchor_count);
+        params.d_head = first.d_head;
+        params.seq_q = first.seq_q;
+        params.seq_kv = first.seq_kv;
+        params.scale = first.scale;
+        params.q_rs = first.q_rs;
+        params.q_cs = first.q_cs;
+        params.k_rs = first.k_rs;
+        params.k_cs = first.k_cs;
+        params.v_rs = first.v_rs;
+        params.v_cs = first.v_cs;
+        params.mask_rs = first.mask_rs;
+        params.mask_cs = first.mask_cs;
+        params.dst_rs = first.dst_rs;
+        params.dst_cs = first.dst_cs;
+        params.slice_dst_row_stride = first_sa.dst_row_stride;
+        params.slice_dst_col_stride = first_sa.dst_col_stride;
+        for (command.anchorIndices(), command.sidecarIndices(), 0..) |idx, maybe_sa_idx, i| {
+            const att = ops[idx].attention;
+            const sa = ops[maybe_sa_idx.?].slice_assign;
+            buffers[q_base + i] = self.device_bufs[att.q];
+            buffers[k_base + i] = self.device_bufs[att.k];
+            buffers[v_base + i] = self.device_bufs[att.v];
+            buffers[mask_base + i] = self.device_bufs[att.mask];
+            buffers[dst_base + i] = self.device_bufs[att.dst];
+            buffers[slice_dst_base + i] = self.device_bufs[sa.dst];
+            params.q_off[i] = att.q_off;
+            params.k_off[i] = att.k_off;
+            params.v_off[i] = att.v_off;
+            params.mask_off[i] = att.mask_off;
+            params.dst_off[i] = att.dst_off;
+            params.slice_dst_offset[i] = sa.dst_offset;
+        }
+        self.encodeTyped(AttentionStoreBatchParams, self.backend.attention_store_batch_pipeline, &buffers, params, @intCast(buffers.len), .{ .gx = first.seq_q, .gy = @intCast(command.anchor_count) }, WG_SIZE);
+    }
+
     fn attentionBatchCompatible(first: anytype, next: anytype) bool {
         return program_mod.attentionBatchCompatible(first, next);
     }
@@ -3570,6 +4001,31 @@ const CompiledProgram = struct {
                 };
                 break :blk self.encodeAttentionSliceStore(att, sa);
             },
+            .attention_store_group => blk: {
+                if (!self.canEncodeAttentionStoreBatchCommand(ops, command)) break :blk false;
+                self.encodeAttentionStoreBatchCommand(ops, command);
+                break :blk true;
+            },
+            .rope_attention_store_chain => blk: {
+                if (command.anchor_count != 2 or command.sidecar_count != 1) break :blk false;
+                const rope_idx = command.indices[0];
+                const att_idx = command.indices[1];
+                const sa_idx = command.sidecar_indices[0] orelse break :blk false;
+                if (rope_idx >= ops.len or att_idx >= ops.len or sa_idx >= ops.len) break :blk false;
+                const rr = switch (ops[rope_idx]) {
+                    .rope => |rr| rr,
+                    else => break :blk false,
+                };
+                const att = switch (ops[att_idx]) {
+                    .attention => |att| att,
+                    else => break :blk false,
+                };
+                const sa = switch (ops[sa_idx]) {
+                    .slice_assign => |sa| sa,
+                    else => break :blk false,
+                };
+                break :blk self.encodeAttentionRopeStore(rr, att, sa);
+            },
             .attention_batch => blk: {
                 const n: usize = @intCast(command.op_count);
                 if (self.attentionBatchRunLen(ops[start..]) < n) break :blk false;
@@ -3643,9 +4099,14 @@ const CompiledProgram = struct {
             self.runtime_profile.recordProgramCommandFailed(command.kind);
             return false;
         }
-        if (command.kind == .attention_store_chain) {
-            const record_indices = [_]usize{ command.indices[0], command.sidecar_indices[0] orelse command.indices[0] };
-            self.recordRegionFusedRunFromIndices(ops, record_indices[0..], @intCast(nowNs() - t0));
+        if (command.kind == .attention_store_chain or command.kind == .attention_store_group or command.kind == .rope_attention_store_chain) {
+            var record_indices: [program_mod.max_projection_group_anchors * 2]usize = undefined;
+            var record_count: usize = 0;
+            for (command.anchorIndices()) |idx| appendCommandIndex(&record_indices, &record_count, idx);
+            for (command.sidecarIndices()) |maybe_idx| {
+                if (maybe_idx) |idx| appendCommandIndex(&record_indices, &record_count, idx);
+            }
+            self.recordRegionFusedRunFromIndices(ops, record_indices[0..record_count], @intCast(nowNs() - t0));
         } else if (command.kind != .projection_group and command.kind != .elementwise_batch and command.kind != .attention_group and command.kind != .movement_group) {
             self.recordRegionFusedRun(ops[start..end], @intCast(nowNs() - t0));
         }
@@ -3677,6 +4138,8 @@ const CompiledProgram = struct {
             .projection_group,
             .attention_chain,
             .attention_store_chain,
+            .attention_store_group,
+            .rope_attention_store_chain,
             .attention_group,
             .movement_group,
             .elementwise_batch,
@@ -5052,4 +5515,144 @@ test "metal backend fuses attention output store chains" {
     try std.testing.expectEqual(@as(u64, 9), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_dispatch_count);
+}
+
+test "metal backend fuses rope attention output store chains" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var q_input = [_]f32{ 1, 0 };
+    var q_rope = [_]f32{0} ** 2;
+    var cos_sin = [_]f32{ 1, 0 };
+    var k_cache = [_]f32{ 1, 0, 0, 1 };
+    var v_cache = [_]f32{ 10, 20, 30, 40 };
+    var mask = [_]f32{ 0, 0 };
+    var dst = [_]f32{0} ** 2;
+    var slice_dst = [_]f32{ -1, -1, -1, -1 };
+    const qdata = [_]i8{
+        1, 0,
+        0, 1,
+    };
+    const scales = [_]f32{ 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 2, .cols = 2, .block_size = 2 }};
+
+    var ops: [10]backend_mod.DeviceOp = undefined;
+    for (ops[0..7]) |*op| {
+        op.* = .{ .qmatmul = .{
+            .dst = 1,
+            .input = 0,
+            .weight_idx = 0,
+            .M = 1,
+            .N = 2,
+            .K = 2,
+        } };
+    }
+    ops[7] = .{ .rope = .{
+        .dst = 1,
+        .src = 0,
+        .cos_sin = 2,
+        .half_d = 1,
+        .seq_len = 1,
+        .src_off = 0,
+        .cs_off = 0,
+        .dst_off = 0,
+        .src_rs = 1,
+        .src_cs = 2,
+        .cs_cs = 1,
+    } };
+    ops[8] = .{ .attention = .{
+        .dst = 6,
+        .q = 1,
+        .k = 3,
+        .v = 4,
+        .mask = 5,
+        .has_mask = true,
+        .d_head = 2,
+        .seq_q = 1,
+        .seq_kv = 2,
+        .scale = 1,
+        .q_off = 0,
+        .k_off = 0,
+        .v_off = 0,
+        .mask_off = 0,
+        .dst_off = 0,
+        .q_rs = 1,
+        .q_cs = 2,
+        .k_rs = 1,
+        .k_cs = 2,
+        .v_rs = 1,
+        .v_cs = 2,
+        .mask_rs = 1,
+        .mask_cs = 2,
+        .dst_rs = 1,
+        .dst_cs = 2,
+    } };
+    ops[9] = .{ .slice_assign = .{
+        .dst = 7,
+        .src = 6,
+        .rows = 2,
+        .cols = 1,
+        .dst_base_offset = 0,
+        .dst_offset = 2,
+        .dst_row_stride = 1,
+        .dst_col_stride = 4,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 2,
+        .patch_stride = 4,
+    } };
+
+    const buf_sizes = [_]usize{ 2, 2, 2, 4, 4, 2, 2, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&q_input), .size = 2 * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&q_rope), .size = 2 * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&cos_sin), .size = 2 * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&k_cache), .size = 4 * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&v_cache), .size = 4 * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&mask), .size = 2 * 4 },
+        .{ .buf_idx = 6, .host_ptr = @ptrCast(&dst), .size = 2 * 4 },
+        .{ .buf_idx = 7, .host_ptr = @ptrCast(&slice_dst), .size = 4 * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 8,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var got_dst: [2]f32 = undefined;
+    var got_slice: [4]f32 = undefined;
+    var out = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 6, .host_ptr = @ptrCast(&got_dst), .size = 2 * 4 },
+        .{ .buf_idx = 7, .host_ptr = @ptrCast(&got_slice), .size = 4 * 4 },
+    };
+    be.executeProgram(handle, &.{}, &out);
+
+    const hi: f32 = @exp(@as(f32, 1.0)) / (@exp(@as(f32, 1.0)) + 1.0);
+    const lo: f32 = 1.0 / (@exp(@as(f32, 1.0)) + 1.0);
+    const expected = [_]f32{
+        hi * 10 + lo * 30,
+        hi * 20 + lo * 40,
+    };
+    for (expected, got_dst) |want, actual| {
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
+    try std.testing.expectEqual(@as(f32, -1), got_slice[0]);
+    try std.testing.expectEqual(@as(f32, -1), got_slice[1]);
+    for (expected, got_slice[2..4]) |want, actual| {
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
+
+    const rt = be.getRuntimeProfile(handle).?;
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.rope_attention_store_chain)]);
 }

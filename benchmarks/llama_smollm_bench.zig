@@ -415,6 +415,7 @@ fn runDevicePrefillVariant(
     try profile.printAnchorNeighborhoodSummary(2, alloc, "prefill qmatmul", schedule, backend_program.RegionPolicy.qmatmulCluster(), 8);
     profile.printQMatmulSliceSidecarSummary("prefill", program.ops);
     profile.printAttentionStoreSidecarSummary("prefill", program.ops);
+    profile.printAttentionStoreGroupCandidateSummary("prefill", program.ops, backend_program.CommandStreamPolicy.metal(4, 4));
     profile.printAttentionStoreRegionSummary("prefill-layer stages", program.ops, prefill_stage_schedule);
     try profile.printRegionProgramCommandSummary(
         "prefill-layer stages",

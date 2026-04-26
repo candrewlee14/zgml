@@ -301,6 +301,8 @@ pub const ProgramCommandKind = enum {
     movement_group,
     attention_chain,
     attention_store_chain,
+    attention_store_group,
+    rope_attention_store_chain,
     attention_batch,
     attention_group,
     elementwise_batch,
@@ -317,6 +319,8 @@ pub const ProgramCommandKind = enum {
             .movement_group => "movement_group",
             .attention_chain => "attention_chain",
             .attention_store_chain => "attention_store_chain",
+            .attention_store_group => "attention_store_group",
+            .rope_attention_store_chain => "rope_attention_store_chain",
             .attention_batch => "attention_batch",
             .attention_group => "attention_group",
             .elementwise_batch => "elementwise_batch",
@@ -356,6 +360,7 @@ pub const CommandStreamPolicy = struct {
     max_rope_batch: u32 = 16,
     max_movement_batch: u32 = 16,
     max_attention_batch: u32 = 16,
+    max_attention_store_batch: u32 = 4,
     max_elementwise_batch: u32 = 8,
 
     pub fn metal(qmatvec_group_size: u32, qmatmul_group_size: u32) CommandStreamPolicy {
@@ -436,7 +441,7 @@ pub const ProgramCommand = struct {
     pub fn coveredOpCount(self: ProgramCommand) u32 {
         return switch (self.kind) {
             .projection_group, .projection_chain => self.anchor_count + self.sidecar_count,
-            .attention_chain, .attention_store_chain => self.anchor_count + self.sidecar_count,
+            .attention_chain, .attention_store_chain, .attention_store_group, .rope_attention_store_chain => self.anchor_count + self.sidecar_count,
             .attention_group => self.anchor_count,
             .movement_group => self.anchor_count,
             .elementwise_batch => self.anchor_count,
@@ -446,7 +451,7 @@ pub const ProgramCommand = struct {
 
     pub fn advanceCount(self: ProgramCommand) u32 {
         return switch (self.kind) {
-            .projection_group, .elementwise_batch, .attention_store_chain, .attention_group, .movement_group => 1,
+            .projection_group, .elementwise_batch, .attention_store_chain, .attention_store_group, .rope_attention_store_chain, .attention_group, .movement_group => 1,
             else => self.op_count,
         };
     }
@@ -476,6 +481,11 @@ pub const ProgramCommandSummary = struct {
     attention_chain_sidecars: u32 = 0,
     attention_store_chains: u32 = 0,
     attention_store_chain_sidecars: u32 = 0,
+    attention_store_groups: u32 = 0,
+    attention_store_group_ops: u32 = 0,
+    attention_store_group_sidecars: u32 = 0,
+    rope_attention_store_chains: u32 = 0,
+    rope_attention_store_chain_sidecars: u32 = 0,
     attention_batches: u32 = 0,
     attention_groups: u32 = 0,
     attention_group_ops: u32 = 0,
@@ -487,6 +497,20 @@ pub const ProgramCommandSummary = struct {
     projection_anchors: u32 = 0,
     projection_sidecars: u32 = 0,
     max_projection_span_ops: u32 = 0,
+};
+
+pub const AttentionStoreGroupCandidateSummary = struct {
+    anchors: u32 = 0,
+    first_store_missing: u32 = 0,
+    candidate_attentions: u32 = 0,
+    geometry_rejects: u32 = 0,
+    hoist_rejects: u32 = 0,
+    selected_conflict_rejects: u32 = 0,
+    no_store_rejects: u32 = 0,
+    pair_conflict_rejects: u32 = 0,
+    formed_groups: u32 = 0,
+    grouped_anchors: u32 = 0,
+    max_group_anchors: u32 = 0,
 };
 
 pub const max_projection_group_anchors = 8;
@@ -864,6 +888,12 @@ pub fn findProgramCommand(
         return command;
     }
 
+    if (op == .rope) {
+        if (findRopeAttentionStoreChainCommand(ops, start, used)) |command| {
+            return command;
+        }
+    }
+
     if (op == .slice_assign) {
         if (findAttentionChainCommand(ops, start, used)) |command| {
             return command;
@@ -871,6 +901,11 @@ pub fn findProgramCommand(
     }
 
     if (op == .attention) {
+        if (policy.max_attention_batch >= 2) {
+            if (findAttentionStoreGroupCommand(ops, start, policy, used)) |command| {
+                return command;
+            }
+        }
         if (findAttentionStoreChainCommand(ops, start, used)) |command| {
             return command;
         }
@@ -993,6 +1028,286 @@ fn findAttentionStoreChainCommand(
     command.indices[0] = start;
     command.sidecar_indices[0] = found;
     return command;
+}
+
+fn findAttentionStoreGroupCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: CommandStreamPolicy,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (start >= ops.len) return null;
+    if (used) |used_ops| {
+        if (start >= used_ops.len or used_ops[start]) return null;
+    }
+    const first = switch (ops[start]) {
+        .attention => |att| att,
+        else => return null,
+    };
+
+    const max_ops: usize = @intCast(@min(policy.max_attention_store_batch, max_projection_group_anchors));
+    if (max_ops < 2) return null;
+
+    var command = ProgramCommand{
+        .kind = .attention_store_group,
+        .op_start = @intCast(start),
+        .op_count = 1,
+        .anchor_count = 0,
+        .sidecar_count = 0,
+    };
+    if (!appendAttentionStorePair(ops, &command, start, first, start, used)) return null;
+
+    var scan = start + 1;
+    while (scan < ops.len and command.anchor_count < max_ops) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const next = switch (ops[scan]) {
+            .attention => |att| att,
+            else => continue,
+        };
+        if (!attentionGeometryCompatible(first, next)) continue;
+        if (!canHoistAttentionForStoreGroup(ops, start, scan, next, &command)) continue;
+        if (opConflictsSelected(ops, command.anchorIndices(), .{ .attention = next })) continue;
+        if (!appendAttentionStorePair(ops, &command, scan, next, start, used)) continue;
+    }
+
+    return if (command.anchor_count >= 2) command else null;
+}
+
+fn findRopeAttentionStoreChainCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (start >= ops.len) return null;
+    if (used) |used_ops| {
+        if (start >= used_ops.len or used_ops[start]) return null;
+    }
+    const rr = switch (ops[start]) {
+        .rope => |rr| rr,
+        else => return null,
+    };
+
+    var scan = start + 1;
+    while (scan < ops.len) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const att = switch (ops[scan]) {
+            .attention => |att| att,
+            else => continue,
+        };
+        if (!ropeAttentionCompatible(rr, att)) continue;
+
+        var command = ProgramCommand{
+            .kind = .rope_attention_store_chain,
+            .op_start = @intCast(start),
+            .op_count = @intCast(scan - start + 1),
+            .anchor_count = 2,
+            .sidecar_count = 0,
+        };
+        command.indices[0] = start;
+        command.indices[1] = scan;
+        if (ropeOutputHasExternalUsers(ops, start, scan, rr)) continue;
+        if (!canHoistAttentionForStoreGroup(ops, start, scan, att, &command)) continue;
+
+        const sidecar_index = findAttentionStoreSidecarIndex(ops, scan, att, used) orelse return null;
+        command.sidecar_indices[0] = sidecar_index;
+        command.sidecar_count = 1;
+        command.op_count = @intCast(sidecar_index - start + 1);
+        return command;
+    }
+    return null;
+}
+
+fn ropeOutputHasExternalUsers(
+    ops: []const backend_mod.DeviceOp,
+    rope_index: usize,
+    attention_index: usize,
+    rr: anytype,
+) bool {
+    const rope_access = opAccessSpans(.{ .rope = rr });
+    for (ops[rope_index + 1 .. attention_index], rope_index + 1..) |op, idx| {
+        if (idx == attention_index) continue;
+        for (rope_access.writeSpans()) |write| {
+            if (opTouchesSpan(op, write)) return true;
+        }
+        if (rope_access.write_overflow and opTouchesBuffer(op, rr.dst)) return true;
+    }
+    return false;
+}
+
+fn canHoistAttentionForStoreGroup(
+    ops: []const backend_mod.DeviceOp,
+    group_start: usize,
+    attention_index: usize,
+    att: anytype,
+    command: *const ProgramCommand,
+) bool {
+    const candidate_access = opAccessSpans(.{ .attention = att });
+    for (ops[group_start..attention_index], group_start..) |op, idx| {
+        if (commandContainsIndex(command, idx)) continue;
+        for (candidate_access.readSpans()) |read| {
+            if (opWritesSpan(op, read)) return false;
+        }
+        for (candidate_access.writeSpans()) |write| {
+            if (opTouchesSpan(op, write)) return false;
+        }
+        if (candidate_access.read_overflow or candidate_access.write_overflow) {
+            if (opAccessConflicts(op, .{ .attention = att })) return false;
+        }
+    }
+    return true;
+}
+
+fn commandContainsIndex(command: *const ProgramCommand, candidate: usize) bool {
+    for (command.anchorIndices()) |idx| {
+        if (idx == candidate) return true;
+    }
+    for (command.sidecarIndices()) |maybe_idx| {
+        if (maybe_idx) |idx| {
+            if (idx == candidate) return true;
+        }
+    }
+    return false;
+}
+
+fn appendAttentionStorePair(
+    ops: []const backend_mod.DeviceOp,
+    command: *ProgramCommand,
+    attention_index: usize,
+    att: anytype,
+    group_start: usize,
+    used: ?[]const bool,
+) bool {
+    const sidecar_index = findAttentionStoreSidecarIndex(ops, attention_index, att, used) orelse return false;
+    const sa = ops[sidecar_index].slice_assign;
+    if (attentionStorePairConflictsSelected(ops, command, attention_index, sa)) return false;
+
+    const slot = command.anchor_count;
+    command.indices[slot] = attention_index;
+    command.sidecar_indices[slot] = sidecar_index;
+    command.anchor_count += 1;
+    command.sidecar_count += 1;
+    command.op_count = @intCast(@max(
+        group_start + @as(usize, command.op_count),
+        sidecar_index + 1,
+    ) - group_start);
+    return true;
+}
+
+fn findAttentionStoreSidecarIndex(
+    ops: []const backend_mod.DeviceOp,
+    attention_index: usize,
+    att: anytype,
+    used: ?[]const bool,
+) ?usize {
+    var scan = attention_index + 1;
+    while (scan < ops.len) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const sa = switch (ops[scan]) {
+            .slice_assign => |sa| sa,
+            else => continue,
+        };
+        if (!attentionSliceStoreCompatible(att, sa)) continue;
+        if (!canFuseAttentionStoreSidecar(ops, attention_index, scan, sa)) continue;
+        return scan;
+    }
+    return null;
+}
+
+fn attentionStorePairConflictsSelected(
+    ops: []const backend_mod.DeviceOp,
+    command: *const ProgramCommand,
+    attention_index: usize,
+    sa: anytype,
+) bool {
+    const attention_op = ops[attention_index];
+    const sidecar_op: backend_mod.DeviceOp = .{ .slice_assign = sa };
+    for (command.anchorIndices()) |idx| {
+        if (opAccessConflicts(ops[idx], attention_op)) return true;
+        if (opAccessConflicts(ops[idx], sidecar_op)) return true;
+    }
+    for (command.sidecarIndices()) |maybe_idx| {
+        const idx = maybe_idx orelse continue;
+        const selected_sa = switch (ops[idx]) {
+            .slice_assign => |selected| selected,
+            else => return true,
+        };
+        if (sliceAssignWritesMayOverlap(selected_sa, sa)) return true;
+    }
+    return false;
+}
+
+pub fn summarizeAttentionStoreGroupCandidates(
+    ops: []const backend_mod.DeviceOp,
+    policy: CommandStreamPolicy,
+) AttentionStoreGroupCandidateSummary {
+    var summary = AttentionStoreGroupCandidateSummary{};
+    const max_ops: usize = @intCast(@min(policy.max_attention_store_batch, max_projection_group_anchors));
+    if (max_ops < 2) return summary;
+
+    for (ops, 0..) |op, start| {
+        const first = switch (op) {
+            .attention => |att| att,
+            else => continue,
+        };
+        summary.anchors += 1;
+
+        var command = ProgramCommand{
+            .kind = .attention_store_group,
+            .op_start = @intCast(start),
+            .op_count = 1,
+            .anchor_count = 0,
+            .sidecar_count = 0,
+        };
+        if (!appendAttentionStorePair(ops, &command, start, first, start, null)) {
+            summary.first_store_missing += 1;
+            continue;
+        }
+
+        var scan = start + 1;
+        while (scan < ops.len and command.anchor_count < max_ops) : (scan += 1) {
+            const next = switch (ops[scan]) {
+                .attention => |att| att,
+                else => continue,
+            };
+            summary.candidate_attentions += 1;
+            if (!attentionGeometryCompatible(first, next)) {
+                summary.geometry_rejects += 1;
+                continue;
+            }
+            if (!canHoistAttentionForStoreGroup(ops, start, scan, next, &command)) {
+                summary.hoist_rejects += 1;
+                continue;
+            }
+            if (opConflictsSelected(ops, command.anchorIndices(), .{ .attention = next })) {
+                summary.selected_conflict_rejects += 1;
+                continue;
+            }
+            const sidecar_index = findAttentionStoreSidecarIndex(ops, scan, next, null) orelse {
+                summary.no_store_rejects += 1;
+                continue;
+            };
+            const sa = ops[sidecar_index].slice_assign;
+            if (attentionStorePairConflictsSelected(ops, &command, scan, sa)) {
+                summary.pair_conflict_rejects += 1;
+                continue;
+            }
+            _ = appendAttentionStorePair(ops, &command, scan, next, start, null);
+        }
+
+        if (command.anchor_count >= 2) {
+            summary.formed_groups += 1;
+            summary.grouped_anchors += command.anchor_count;
+            summary.max_group_anchors = @max(summary.max_group_anchors, command.anchor_count);
+        }
+    }
+
+    return summary;
 }
 
 fn findMovementGroupCommand(
@@ -1219,6 +1534,15 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
                 summary.attention_store_chains += 1;
                 summary.attention_store_chain_sidecars += command.sidecar_count;
             },
+            .attention_store_group => {
+                summary.attention_store_groups += 1;
+                summary.attention_store_group_ops += command.anchor_count;
+                summary.attention_store_group_sidecars += command.sidecar_count;
+            },
+            .rope_attention_store_chain => {
+                summary.rope_attention_store_chains += 1;
+                summary.rope_attention_store_chain_sidecars += command.sidecar_count;
+            },
             .attention_batch => summary.attention_batches += 1,
             .attention_group => {
                 summary.attention_groups += 1;
@@ -1245,11 +1569,11 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
 
 pub fn markProgramCommandUsed(used: []bool, command: ProgramCommand) void {
     switch (command.kind) {
-        .projection_group, .elementwise_batch, .attention_store_chain, .attention_group, .movement_group => {
+        .projection_group, .elementwise_batch, .attention_store_chain, .attention_store_group, .rope_attention_store_chain, .attention_group, .movement_group => {
             for (command.anchorIndices()) |idx| {
                 if (idx < used.len) used[idx] = true;
             }
-            if (command.kind == .projection_group or command.kind == .attention_store_chain) {
+            if (command.kind == .projection_group or command.kind == .attention_store_chain or command.kind == .attention_store_group or command.kind == .rope_attention_store_chain) {
                 for (command.sidecarIndices()) |maybe_idx| {
                     if (maybe_idx) |idx| {
                         if (idx < used.len) used[idx] = true;
@@ -1685,6 +2009,16 @@ pub fn attentionSliceStoreCompatible(att: anytype, sa: anytype) bool {
         sa.src_col_stride == att.dst_cs;
 }
 
+pub fn ropeAttentionCompatible(rr: anytype, att: anytype) bool {
+    const d = rr.half_d * 2;
+    return rr.dst == att.q and
+        rr.dst_off == att.q_off and
+        d == att.d_head and
+        rr.seq_len == att.seq_q and
+        att.q_rs == 1 and
+        att.q_cs == d;
+}
+
 fn attentionSliceMatches(
     sa: anytype,
     buf: u16,
@@ -1785,6 +2119,24 @@ pub fn attentionBatchCompatible(first: anytype, next: anytype) bool {
         first.mask == next.mask and
         first.dst == next.dst and
         first.has_mask == next.has_mask and
+        first.d_head == next.d_head and
+        first.seq_q == next.seq_q and
+        first.seq_kv == next.seq_kv and
+        first.scale == next.scale and
+        first.q_rs == next.q_rs and
+        first.q_cs == next.q_cs and
+        first.k_rs == next.k_rs and
+        first.k_cs == next.k_cs and
+        first.v_rs == next.v_rs and
+        first.v_cs == next.v_cs and
+        first.mask_rs == next.mask_rs and
+        first.mask_cs == next.mask_cs and
+        first.dst_rs == next.dst_rs and
+        first.dst_cs == next.dst_cs;
+}
+
+pub fn attentionGeometryCompatible(first: anytype, next: anytype) bool {
+    return first.has_mask == next.has_mask and
         first.d_head == next.d_head and
         first.seq_q == next.seq_q and
         first.seq_kv == next.seq_kv and
@@ -3276,6 +3628,123 @@ test "program command stream emits attention output store chains" {
     try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.attention_store_chains);
     try std.testing.expectEqual(@as(u32, 1), summary.attention_store_chain_sidecars);
+}
+
+test "program command stream groups attention output stores" {
+    const att0 = testAttention(0);
+    var att1 = testAttention(8);
+    att1.attention.q = 10;
+    att1.attention.k = 11;
+    att1.attention.v = 12;
+    att1.attention.dst = 13;
+
+    const ops = [_]backend_mod.DeviceOp{
+        att0,
+        .{ .slice_assign = .{
+            .dst = 9,
+            .src = 4,
+            .rows = 4,
+            .cols = 2,
+            .dst_base_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 1,
+            .dst_col_stride = 8,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 0,
+        } },
+        att1,
+        .{ .slice_assign = .{
+            .dst = 9,
+            .src = 13,
+            .rows = 4,
+            .cols = 2,
+            .dst_base_offset = 0,
+            .dst_offset = 4,
+            .dst_row_stride = 1,
+            .dst_col_stride = 8,
+            .src_offset = 8,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 0,
+        } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.attention_store_group, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(usize, 0), commands[0].indices[0]);
+    try std.testing.expectEqual(@as(?usize, 1), commands[0].sidecar_indices[0]);
+    try std.testing.expectEqual(@as(usize, 2), commands[0].indices[1]);
+    try std.testing.expectEqual(@as(?usize, 3), commands[0].sidecar_indices[1]);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.commands);
+    try std.testing.expectEqual(@as(u32, 4), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.attention_store_groups);
+    try std.testing.expectEqual(@as(u32, 2), summary.attention_store_group_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.attention_store_group_sidecars);
+}
+
+test "program command stream emits rope attention output store chains" {
+    var att = testAttention(0);
+    att.attention.q = 4;
+    att.attention.dst = 5;
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .rope = .{
+            .dst = 4,
+            .src = 0,
+            .cos_sin = 1,
+            .half_d = 2,
+            .seq_len = 2,
+            .src_off = 0,
+            .cs_off = 0,
+            .dst_off = 0,
+            .src_rs = 1,
+            .src_cs = 4,
+            .cs_cs = 4,
+        } },
+        att,
+        .{ .slice_assign = .{
+            .dst = 9,
+            .src = 5,
+            .rows = 4,
+            .cols = 2,
+            .dst_base_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 1,
+            .dst_col_stride = 4,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 0,
+        } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.rope_attention_store_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(usize, 0), commands[0].indices[0]);
+    try std.testing.expectEqual(@as(usize, 1), commands[0].indices[1]);
+    try std.testing.expectEqual(@as(?usize, 2), commands[0].sidecar_indices[0]);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.rope_attention_store_chains);
+    try std.testing.expectEqual(@as(u32, 1), summary.rope_attention_store_chain_sidecars);
+    try std.testing.expectEqual(@as(u32, 3), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_dispatches);
 }
 
 test "program command stream carries delayed attention output stores" {

@@ -343,7 +343,7 @@ pub fn printProgramCommandSummary(label: []const u8, summary: program_mod.Progra
     else
         0.0;
     std.debug.print(
-        "Program commands ({s}): {d} commands cover {d} ops, estimated {d} dispatches ({d} saved, {d:.1}% of ops); ops={d}, row={d}, rope={d}, rope_batch={d}, movement_batch={d}, movement_group={d} ({d} ops), attention_chain={d} ({d} sidecars), attention_store_chain={d} ({d} sidecars), attention_batch={d}, attention_group={d} ({d} ops), elementwise_batch={d} ({d} ops), projection_chains={d} ({d} sidecars), projection_groups={d} ({d} anchors, {d} sidecars, max span {d})\n\n",
+        "Program commands ({s}): {d} commands cover {d} ops, estimated {d} dispatches ({d} saved, {d:.1}% of ops); ops={d}, row={d}, rope={d}, rope_batch={d}, movement_batch={d}, movement_group={d} ({d} ops), attention_chain={d} ({d} sidecars), attention_store_chain={d} ({d} sidecars), attention_store_group={d} ({d} ops, {d} sidecars), attention_batch={d}, attention_group={d} ({d} ops), elementwise_batch={d} ({d} ops), projection_chains={d} ({d} sidecars), projection_groups={d} ({d} anchors, {d} sidecars, max span {d})\n",
         .{
             label,
             summary.commands,
@@ -362,6 +362,9 @@ pub fn printProgramCommandSummary(label: []const u8, summary: program_mod.Progra
             summary.attention_chain_sidecars,
             summary.attention_store_chains,
             summary.attention_store_chain_sidecars,
+            summary.attention_store_groups,
+            summary.attention_store_group_ops,
+            summary.attention_store_group_sidecars,
             summary.attention_batches,
             summary.attention_groups,
             summary.attention_group_ops,
@@ -374,6 +377,10 @@ pub fn printProgramCommandSummary(label: []const u8, summary: program_mod.Progra
             summary.projection_sidecars,
             summary.max_projection_span_ops,
         },
+    );
+    std.debug.print(
+        "  fused producer chains: rope_attention_store_chain={d} ({d} sidecars)\n\n",
+        .{ summary.rope_attention_store_chains, summary.rope_attention_store_chain_sidecars },
     );
 }
 
@@ -548,6 +555,27 @@ pub fn printAttentionStoreSidecarSummary(label: []const u8, ops: []const DeviceO
     );
 }
 
+pub fn printAttentionStoreGroupCandidateSummary(label: []const u8, ops: []const DeviceOp, policy: program_mod.CommandStreamPolicy) void {
+    const summary = program_mod.summarizeAttentionStoreGroupCandidates(ops, policy);
+    std.debug.print(
+        "Attention store group candidates ({s}): {d} anchors, formed={d} groups ({d} anchors, max {d}); first-store missing={d}, candidates={d}, rejects geometry={d}, hoist={d}, selected-conflict={d}, no-store={d}, pair-conflict={d}\n\n",
+        .{
+            label,
+            summary.anchors,
+            summary.formed_groups,
+            summary.grouped_anchors,
+            summary.max_group_anchors,
+            summary.first_store_missing,
+            summary.candidate_attentions,
+            summary.geometry_rejects,
+            summary.hoist_rejects,
+            summary.selected_conflict_rejects,
+            summary.no_store_rejects,
+            summary.pair_conflict_rejects,
+        },
+    );
+}
+
 pub fn printAttentionStoreRegionSummary(label: []const u8, ops: []const DeviceOp, units: []const program_mod.ScheduleUnit) void {
     var fusable: u32 = 0;
     var same_unit: u32 = 0;
@@ -613,6 +641,11 @@ pub fn printRegionProgramCommandSummary(
         total.attention_chain_sidecars += summary.attention_chain_sidecars;
         total.attention_store_chains += summary.attention_store_chains;
         total.attention_store_chain_sidecars += summary.attention_store_chain_sidecars;
+        total.attention_store_groups += summary.attention_store_groups;
+        total.attention_store_group_ops += summary.attention_store_group_ops;
+        total.attention_store_group_sidecars += summary.attention_store_group_sidecars;
+        total.rope_attention_store_chains += summary.rope_attention_store_chains;
+        total.rope_attention_store_chain_sidecars += summary.rope_attention_store_chain_sidecars;
         total.attention_batches += summary.attention_batches;
         total.attention_groups += summary.attention_groups;
         total.attention_group_ops += summary.attention_group_ops;
