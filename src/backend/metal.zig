@@ -209,13 +209,18 @@ const shader_source =
     \\    uint input_row_stride[MAX_QMATMUL_BATCH];
     \\    uint dst_offset[MAX_QMATMUL_BATCH];
     \\    uint dst_row_stride[MAX_QMATMUL_BATCH];
-    \\    uint has_slice[MAX_QMATMUL_BATCH];
+    \\    uint write_primary[MAX_QMATMUL_BATCH];
+    \\    uint sidecar_kind[MAX_QMATMUL_BATCH];
     \\    uint slice_rows[MAX_QMATMUL_BATCH];
     \\    uint slice_cols[MAX_QMATMUL_BATCH];
     \\    uint slice_src_col_start[MAX_QMATMUL_BATCH];
     \\    uint slice_dst_offset[MAX_QMATMUL_BATCH];
     \\    uint slice_dst_row_stride[MAX_QMATMUL_BATCH];
     \\    uint slice_dst_col_stride[MAX_QMATMUL_BATCH];
+    \\    uint ew_op[MAX_QMATMUL_BATCH];
+    \\    uint ew_is_swapped[MAX_QMATMUL_BATCH];
+    \\    uint ew_dst_offset[MAX_QMATMUL_BATCH];
+    \\    uint ew_secondary_offset[MAX_QMATMUL_BATCH];
     \\};
     \\
     \\kernel void qmatmul_batch4_f32(
@@ -223,23 +228,27 @@ const shader_source =
     \\    device const float* s0 [[buffer(1)]],
     \\    device const float* i0 [[buffer(2)]],
     \\    device float*       o0 [[buffer(3)]],
-    \\    device float*       sd0 [[buffer(4)]],
-    \\    device const char*  w1 [[buffer(5)]],
-    \\    device const float* s1 [[buffer(6)]],
-    \\    device const float* i1 [[buffer(7)]],
-    \\    device float*       o1 [[buffer(8)]],
-    \\    device float*       sd1 [[buffer(9)]],
-    \\    device const char*  w2 [[buffer(10)]],
-    \\    device const float* s2 [[buffer(11)]],
-    \\    device const float* i2 [[buffer(12)]],
-    \\    device float*       o2 [[buffer(13)]],
-    \\    device float*       sd2 [[buffer(14)]],
-    \\    device const char*  w3 [[buffer(15)]],
-    \\    device const float* s3 [[buffer(16)]],
-    \\    device const float* i3 [[buffer(17)]],
-    \\    device float*       o3 [[buffer(18)]],
-    \\    device float*       sd3 [[buffer(19)]],
-    \\    constant QMatmulBatch4Params& p [[buffer(20)]],
+    \\    device float*       side0 [[buffer(4)]],
+    \\    device const float* sec0 [[buffer(5)]],
+    \\    device const char*  w1 [[buffer(6)]],
+    \\    device const float* s1 [[buffer(7)]],
+    \\    device const float* i1 [[buffer(8)]],
+    \\    device float*       o1 [[buffer(9)]],
+    \\    device float*       side1 [[buffer(10)]],
+    \\    device const float* sec1 [[buffer(11)]],
+    \\    device const char*  w2 [[buffer(12)]],
+    \\    device const float* s2 [[buffer(13)]],
+    \\    device const float* i2 [[buffer(14)]],
+    \\    device float*       o2 [[buffer(15)]],
+    \\    device float*       side2 [[buffer(16)]],
+    \\    device const float* sec2 [[buffer(17)]],
+    \\    device const char*  w3 [[buffer(18)]],
+    \\    device const float* s3 [[buffer(19)]],
+    \\    device const float* i3 [[buffer(20)]],
+    \\    device float*       o3 [[buffer(21)]],
+    \\    device float*       side3 [[buffer(22)]],
+    \\    device const float* sec3 [[buffer(23)]],
+    \\    constant QMatmulBatch4Params& p [[buffer(24)]],
     \\    uint2 group_id [[threadgroup_position_in_grid]],
     \\    uint  simd_idx [[simdgroup_index_in_threadgroup]],
     \\    uint  lane     [[thread_index_in_simdgroup]],
@@ -253,11 +262,12 @@ const shader_source =
     \\    device const float* s = s0;
     \\    device const float* input = i0;
     \\    device float* output = o0;
-    \\    device float* slice_dst = sd0;
+    \\    device float* sidecar_dst = side0;
+    \\    device const float* secondary = sec0;
     \\    switch (slot) {
-    \\        case 1: w = w1; s = s1; input = i1; output = o1; slice_dst = sd1; break;
-    \\        case 2: w = w2; s = s2; input = i2; output = o2; slice_dst = sd2; break;
-    \\        case 3: w = w3; s = s3; input = i3; output = o3; slice_dst = sd3; break;
+    \\        case 1: w = w1; s = s1; input = i1; output = o1; sidecar_dst = side1; secondary = sec1; break;
+    \\        case 2: w = w2; s = s2; input = i2; output = o2; sidecar_dst = side2; secondary = sec2; break;
+    \\        case 3: w = w3; s = s3; input = i3; output = o3; sidecar_dst = side3; secondary = sec3; break;
     \\        default: break;
     \\    }
     \\
@@ -319,11 +329,18 @@ const shader_source =
     \\        uint cr = gRow + r, cc = gCol + c;
     \\        if (cr < M && cc < N) {
     \\            float val = tC[i];
-    \\            output[p.dst_offset[slot] + cr * p.dst_row_stride[slot] + cc] = val;
+    \\            if (p.write_primary[slot] != 0) output[p.dst_offset[slot] + cr * p.dst_row_stride[slot] + cc] = val;
     \\            uint slice_col_start = p.slice_src_col_start[slot];
-    \\            if (p.has_slice[slot] != 0 && cc >= slice_col_start && cc < slice_col_start + p.slice_rows[slot] && cr < p.slice_cols[slot]) {
+    \\            if (p.sidecar_kind[slot] == 1 && cc >= slice_col_start && cc < slice_col_start + p.slice_rows[slot] && cr < p.slice_cols[slot]) {
     \\                uint slice_row = cc - slice_col_start;
-    \\                slice_dst[p.slice_dst_offset[slot] + slice_row * p.slice_dst_row_stride[slot] + cr * p.slice_dst_col_stride[slot]] = val;
+    \\                sidecar_dst[p.slice_dst_offset[slot] + slice_row * p.slice_dst_row_stride[slot] + cr * p.slice_dst_col_stride[slot]] = val;
+    \\            } else if (p.sidecar_kind[slot] == 2) {
+    \\                uint linear = cr * N + cc;
+    \\                float other = secondary[p.ew_secondary_offset[slot] + linear];
+    \\                float ew = val;
+    \\                if (p.ew_op[slot] == 7) ew = (p.ew_is_swapped[slot] != 0) ? other + val : val + other;
+    \\                else if (p.ew_op[slot] == 8) ew = (p.ew_is_swapped[slot] != 0) ? other * val : val * other;
+    \\                sidecar_dst[p.ew_dst_offset[slot] + linear] = ew;
     \\            }
     \\        }
     \\    }
@@ -683,6 +700,7 @@ const shader_source =
     \\    uint input_row_stride;
     \\    uint dst_offset;
     \\    uint dst_row_stride;
+    \\    uint write_primary;
     \\    uint slice_rows; uint slice_cols;
     \\    uint slice_src_col_start;
     \\    uint slice_dst_offset;
@@ -759,7 +777,7 @@ const shader_source =
     \\        uint cr = gRow + r, cc = gCol + c;
     \\        if (cr < p.M && cc < p.N) {
     \\            float val = tC[i];
-    \\            output[p.dst_offset + cr * p.dst_row_stride + cc] = val;
+    \\            if (p.write_primary != 0) output[p.dst_offset + cr * p.dst_row_stride + cc] = val;
     \\            if (cc >= p.slice_src_col_start && cc < p.slice_src_col_start + p.slice_rows && cr < p.slice_cols) {
     \\                uint slice_row = cc - p.slice_src_col_start;
     \\                slice_dst[p.slice_dst_offset + slice_row * p.slice_dst_row_stride + cr * p.slice_dst_col_stride] = val;
@@ -775,6 +793,7 @@ const shader_source =
     \\    uint input_row_stride;
     \\    uint dst_offset;
     \\    uint dst_row_stride;
+    \\    uint write_primary;
     \\    uint ew_op;
     \\    uint ew_is_swapped;
     \\    uint ew_dst_offset;
@@ -856,7 +875,7 @@ const shader_source =
     \\            float ew = val;
     \\            if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
     \\            else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
-    \\            output[p.dst_offset + cr * p.dst_row_stride + cc] = val;
+    \\            if (p.write_primary != 0) output[p.dst_offset + cr * p.dst_row_stride + cc] = val;
     \\            ew_output[p.ew_dst_offset + linear] = ew;
     \\        }
     \\    }
@@ -878,7 +897,7 @@ const shader_source =
     \\        sum += input[p.input_offset + k] * float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
     \\    }
     \\
-    \\    output[p.dst_offset + gid] = sum;
+    \\    if (p.write_primary != 0) output[p.dst_offset + gid] = sum;
     \\    if (gid >= p.slice_src_col_start && gid < p.slice_src_col_start + p.slice_rows) {
     \\        uint row = gid - p.slice_src_col_start;
     \\        uint col = 0;
@@ -1960,6 +1979,7 @@ const shader_source =
     \\    uint input_row_stride;
     \\    uint dst_offset;
     \\    uint dst_row_stride;
+    \\    uint write_primary;
     \\    uint n_steps;
     \\    uint ew_dst_offset;
     \\    uint op[MAX_FUSED_EW_STEPS];
@@ -2055,7 +2075,7 @@ const shader_source =
     \\                    v = fused_unary(op, v);
     \\                }
     \\            }
-    \\            output[p.dst_offset + cr * p.dst_row_stride + cc] = base;
+    \\            if (p.write_primary != 0) output[p.dst_offset + cr * p.dst_row_stride + cc] = base;
     \\            ew_output[p.ew_dst_offset + linear] = v;
     \\        }
     \\    }
@@ -2102,13 +2122,18 @@ const QMatmulBatch4Params = extern struct {
     input_row_stride: [MAX_QMATMUL_BATCH]u32,
     dst_offset: [MAX_QMATMUL_BATCH]u32,
     dst_row_stride: [MAX_QMATMUL_BATCH]u32,
-    has_slice: [MAX_QMATMUL_BATCH]u32,
+    write_primary: [MAX_QMATMUL_BATCH]u32,
+    sidecar_kind: [MAX_QMATMUL_BATCH]u32,
     slice_rows: [MAX_QMATMUL_BATCH]u32,
     slice_cols: [MAX_QMATMUL_BATCH]u32,
     slice_src_col_start: [MAX_QMATMUL_BATCH]u32,
     slice_dst_offset: [MAX_QMATMUL_BATCH]u32,
     slice_dst_row_stride: [MAX_QMATMUL_BATCH]u32,
     slice_dst_col_stride: [MAX_QMATMUL_BATCH]u32,
+    ew_op: [MAX_QMATMUL_BATCH]u32,
+    ew_is_swapped: [MAX_QMATMUL_BATCH]u32,
+    ew_dst_offset: [MAX_QMATMUL_BATCH]u32,
+    ew_secondary_offset: [MAX_QMATMUL_BATCH]u32,
 };
 
 const MAX_QMATVEC_BATCH: usize = 4;
@@ -2204,6 +2229,7 @@ const QMatmulSliceAssignParams = extern struct {
     input_row_stride: u32,
     dst_offset: u32,
     dst_row_stride: u32,
+    write_primary: u32,
     slice_rows: u32,
     slice_cols: u32,
     slice_src_col_start: u32,
@@ -2221,6 +2247,7 @@ const QMatmulElementwiseParams = extern struct {
     input_row_stride: u32,
     dst_offset: u32,
     dst_row_stride: u32,
+    write_primary: u32,
     ew_op: u32,
     ew_is_swapped: u32,
     ew_dst_offset: u32,
@@ -2488,6 +2515,7 @@ const QMatmulFusedEwParams = extern struct {
     input_row_stride: u32,
     dst_offset: u32,
     dst_row_stride: u32,
+    write_primary: u32,
     n_steps: u32,
     ew_dst_offset: u32,
     op: [MAX_FUSED_EW_STEPS]u32,
@@ -3395,17 +3423,18 @@ const CompiledProgram = struct {
         self: *CompiledProgram,
         ops: []const backend_mod.DeviceOp,
         indices: []const usize,
-        slice_indices: []const ?usize,
+        sidecar_indices: []const ?usize,
     ) void {
         const first_q = ops[indices[0]].qmatmul;
         const first_w = self.qweight_views[first_q.weight_idx];
-        var buffers: [MAX_QMATMUL_BATCH * 5]DeviceBuffer = undefined;
+        var buffers: [MAX_QMATMUL_BATCH * 6]DeviceBuffer = undefined;
         for (0..MAX_QMATMUL_BATCH) |slot| {
-            buffers[slot * 5 + 0] = first_w.data;
-            buffers[slot * 5 + 1] = first_w.scales;
-            buffers[slot * 5 + 2] = self.device_bufs[first_q.input];
-            buffers[slot * 5 + 3] = self.device_bufs[first_q.dst];
-            buffers[slot * 5 + 4] = self.device_bufs[first_q.dst];
+            buffers[slot * 6 + 0] = first_w.data;
+            buffers[slot * 6 + 1] = first_w.scales;
+            buffers[slot * 6 + 2] = self.device_bufs[first_q.input];
+            buffers[slot * 6 + 3] = self.device_bufs[first_q.dst];
+            buffers[slot * 6 + 4] = self.device_bufs[first_q.dst];
+            buffers[slot * 6 + 5] = self.device_bufs[first_q.input];
         }
 
         var params = std.mem.zeroes(QMatmulBatch4Params);
@@ -3416,11 +3445,12 @@ const CompiledProgram = struct {
             const q = ops[op_index].qmatmul;
             const w = self.qweight_views[q.weight_idx];
             const qparams = qmatmulParams(q, w.block_size);
-            buffers[slot * 5 + 0] = w.data;
-            buffers[slot * 5 + 1] = w.scales;
-            buffers[slot * 5 + 2] = self.device_bufs[q.input];
-            buffers[slot * 5 + 3] = self.device_bufs[q.dst];
-            buffers[slot * 5 + 4] = self.device_bufs[q.dst];
+            buffers[slot * 6 + 0] = w.data;
+            buffers[slot * 6 + 1] = w.scales;
+            buffers[slot * 6 + 2] = self.device_bufs[q.input];
+            buffers[slot * 6 + 3] = self.device_bufs[q.dst];
+            buffers[slot * 6 + 4] = self.device_bufs[q.dst];
+            buffers[slot * 6 + 5] = self.device_bufs[q.input];
             params.M[slot] = qparams.M;
             params.N[slot] = qparams.N;
             params.K[slot] = qparams.K;
@@ -3429,16 +3459,34 @@ const CompiledProgram = struct {
             params.input_row_stride[slot] = qparams.input_row_stride;
             params.dst_offset[slot] = qparams.dst_offset;
             params.dst_row_stride[slot] = qparams.dst_row_stride;
-            if (slice_indices[slot]) |slice_index| {
-                const sa = ops[slice_index].slice_assign;
-                params.has_slice[slot] = 1;
-                params.slice_rows[slot] = sa.rows;
-                params.slice_cols[slot] = sa.cols;
-                params.slice_src_col_start[slot] = program_mod.qmatmulSliceSrcColStart(q, sa).?;
-                params.slice_dst_offset[slot] = sa.dst_offset;
-                params.slice_dst_row_stride[slot] = sa.dst_row_stride;
-                params.slice_dst_col_stride[slot] = sa.dst_col_stride;
-                buffers[slot * 5 + 4] = self.device_bufs[sa.dst];
+            params.write_primary[slot] = 1;
+            if (sidecar_indices[slot]) |sidecar_index| {
+                params.write_primary[slot] = @intFromBool(program_mod.projectionPrimaryOutputHasExternalUsers(ops, op_index, sidecar_index));
+                switch (ops[sidecar_index]) {
+                    .slice_assign => |sa| {
+                        params.sidecar_kind[slot] = 1;
+                        params.slice_rows[slot] = sa.rows;
+                        params.slice_cols[slot] = sa.cols;
+                        params.slice_src_col_start[slot] = program_mod.qmatmulSliceSrcColStart(q, sa).?;
+                        params.slice_dst_offset[slot] = sa.dst_offset;
+                        params.slice_dst_row_stride[slot] = sa.dst_row_stride;
+                        params.slice_dst_col_stride[slot] = sa.dst_col_stride;
+                        buffers[slot * 6 + 4] = self.device_bufs[sa.dst];
+                    },
+                    .elementwise => |e| {
+                        const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
+                        const secondary_buf = if (q_is_src0) e.src1 else e.src0;
+                        const secondary_offset = if (q_is_src0) e.src1_offset else e.src0_offset;
+                        params.sidecar_kind[slot] = 2;
+                        params.ew_op[slot] = @intFromEnum(e.op);
+                        params.ew_is_swapped[slot] = if (q_is_src0) 0 else 1;
+                        params.ew_dst_offset[slot] = e.dst_offset;
+                        params.ew_secondary_offset[slot] = secondary_offset;
+                        buffers[slot * 6 + 4] = self.device_bufs[e.dst];
+                        buffers[slot * 6 + 5] = self.device_bufs[secondary_buf];
+                    },
+                    else => {},
+                }
             }
             max_tiles_x = @max(max_tiles_x, (qparams.N + TILE - 1) / TILE);
             max_tiles_y = @max(max_tiles_y, (qparams.M + TILE - 1) / TILE);
@@ -3450,7 +3498,7 @@ const CompiledProgram = struct {
             self.backend.qmatmul_batch4_pipeline,
             &buffers,
             params,
-            20,
+            24,
             .{ .gx = max_tiles_x, .gy = max_tiles_y * @as(u32, @intCast(indices.len)) },
             MATMUL_THREADS,
         );
@@ -3656,7 +3704,7 @@ const CompiledProgram = struct {
             program_mod.qmatmulSliceSidecarCompatible(q, sa);
     }
 
-    fn encodeQMatvecSliceAssign(self: *CompiledProgram, q: anytype, sa: anytype) bool {
+    fn encodeQMatvecSliceAssign(self: *CompiledProgram, q: anytype, sa: anytype, write_primary: bool) bool {
         if (!self.canFuseQMatvecSliceAssign(q, sa)) return false;
         const w = self.qweight_views[q.weight_idx];
         const qparams = qmatmulParams(q, w.block_size);
@@ -3676,6 +3724,7 @@ const CompiledProgram = struct {
             .input_row_stride = qparams.input_row_stride,
             .dst_offset = qparams.dst_offset,
             .dst_row_stride = qparams.dst_row_stride,
+            .write_primary = @intFromBool(write_primary),
             .slice_rows = sa.rows,
             .slice_cols = sa.cols,
             .slice_src_col_start = program_mod.qmatmulSliceSrcColStart(q, sa).?,
@@ -3687,7 +3736,7 @@ const CompiledProgram = struct {
         return true;
     }
 
-    fn encodeQMatmulSliceAssign(self: *CompiledProgram, q: anytype, sa: anytype) bool {
+    fn encodeQMatmulSliceAssign(self: *CompiledProgram, q: anytype, sa: anytype, write_primary: bool) bool {
         if (!self.canFuseQMatmulSliceAssign(q, sa)) return false;
         const w = self.qweight_views[q.weight_idx];
         const qparams = qmatmulParams(q, w.block_size);
@@ -3707,6 +3756,7 @@ const CompiledProgram = struct {
             .input_row_stride = qparams.input_row_stride,
             .dst_offset = qparams.dst_offset,
             .dst_row_stride = qparams.dst_row_stride,
+            .write_primary = @intFromBool(write_primary),
             .slice_rows = sa.rows,
             .slice_cols = sa.cols,
             .slice_src_col_start = program_mod.qmatmulSliceSrcColStart(q, sa).?,
@@ -3723,7 +3773,7 @@ const CompiledProgram = struct {
         return program_mod.qmatmulElementwiseSidecarCompatible(q, e);
     }
 
-    fn encodeQMatmulElementwise(self: *CompiledProgram, q: anytype, e: anytype) bool {
+    fn encodeQMatmulElementwise(self: *CompiledProgram, q: anytype, e: anytype, write_primary: bool) bool {
         if (!self.canFuseQMatmulElementwise(q, e)) return false;
         const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
         const secondary_buf = if (q_is_src0) e.src1 else e.src0;
@@ -3747,6 +3797,7 @@ const CompiledProgram = struct {
             .input_row_stride = qparams.input_row_stride,
             .dst_offset = qparams.dst_offset,
             .dst_row_stride = qparams.dst_row_stride,
+            .write_primary = @intFromBool(write_primary),
             .ew_op = @intFromEnum(e.op),
             .ew_is_swapped = if (q_is_src0) 0 else 1,
             .ew_dst_offset = e.dst_offset,
@@ -3762,7 +3813,7 @@ const CompiledProgram = struct {
         return program_mod.qmatmulFusedElementwiseSidecarCompatible(q, fe);
     }
 
-    fn encodeQMatmulFusedElementwise(self: *CompiledProgram, q: anytype, fe: anytype) bool {
+    fn encodeQMatmulFusedElementwise(self: *CompiledProgram, q: anytype, fe: anytype, write_primary: bool) bool {
         if (!self.canFuseQMatmulFusedElementwise(q, fe)) return false;
         const w = self.qweight_views[q.weight_idx];
         const qparams = qmatmulParams(q, w.block_size);
@@ -3775,6 +3826,7 @@ const CompiledProgram = struct {
         params.input_row_stride = qparams.input_row_stride;
         params.dst_offset = qparams.dst_offset;
         params.dst_row_stride = qparams.dst_row_stride;
+        params.write_primary = @intFromBool(write_primary);
         params.n_steps = @intCast(fe.steps.len);
         params.ew_dst_offset = fe.dst_offset;
 
@@ -4349,7 +4401,12 @@ const CompiledProgram = struct {
                 }
                 for (command.sidecarIndices(), 0..) |maybe_idx, slot| {
                     const idx = maybe_idx orelse continue;
-                    if (!self.canFuseQMatmulSliceAssign(ops[command.indices[slot]].qmatmul, ops[idx].slice_assign)) return false;
+                    const q = ops[command.indices[slot]].qmatmul;
+                    switch (ops[idx]) {
+                        .slice_assign => |sa| if (!self.canFuseQMatmulSliceAssign(q, sa)) return false,
+                        .elementwise => |e| if (!self.canFuseQMatmulElementwise(q, e)) return false,
+                        else => return false,
+                    }
                 }
 
                 const t0 = nowNs();
@@ -4372,10 +4429,11 @@ const CompiledProgram = struct {
             .qmatmul => |q| q,
             else => return false,
         };
+        const write_primary = program_mod.projectionPrimaryOutputHasExternalUsers(ops, anchor_idx, sidecar_idx);
         return switch (ops[sidecar_idx]) {
-            .slice_assign => |sa| if (q.M == 1) self.encodeQMatvecSliceAssign(q, sa) else self.encodeQMatmulSliceAssign(q, sa),
-            .elementwise => |e| self.encodeQMatmulElementwise(q, e),
-            .fused_elementwise => |fe| self.encodeQMatmulFusedElementwise(q, fe),
+            .slice_assign => |sa| if (q.M == 1) self.encodeQMatvecSliceAssign(q, sa, write_primary) else self.encodeQMatmulSliceAssign(q, sa, write_primary),
+            .elementwise => |e| self.encodeQMatmulElementwise(q, e, write_primary),
+            .fused_elementwise => |fe| self.encodeQMatmulFusedElementwise(q, fe, write_primary),
             else => false,
         };
     }
@@ -5204,6 +5262,74 @@ test "metal backend qmatmul batch carries cache-store sidecars" {
     try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
 }
 
+test "metal backend qmatmul batch carries elementwise sidecars" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4, 5, 6 };
+    var bias = [_]f32{ 10, 20, 30, 40, 50, 60, 70, 80 };
+    var sidecar_out = [_]f32{0} ** 8;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+    };
+    const scales = [_]f32{ 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 3, .cols = 4, .block_size = 4 }};
+
+    var ops: [8]backend_mod.DeviceOp = undefined;
+    for (ops[0..7], 0..) |*op, i| {
+        op.* = .{ .qmatmul = .{
+            .dst = @intCast(i + 1),
+            .input = 0,
+            .weight_idx = 0,
+            .M = 2,
+            .N = 4,
+            .K = 3,
+        } };
+    }
+    ops[7] = .{ .elementwise = .{
+        .op = .add,
+        .dst = 8,
+        .src0 = 7,
+        .src1 = 9,
+        .n = 8,
+    } };
+
+    const buf_sizes = [_]usize{ 6, 8, 8, 8, 8, 8, 8, 8, 8, 8 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 8, .host_ptr = @ptrCast(&sidecar_out), .size = sidecar_out.len * 4 },
+        .{ .buf_idx = 9, .host_ptr = @ptrCast(&bias), .size = bias.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 10,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var got: [8]f32 = undefined;
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 8, .host_ptr = @ptrCast(&got), .size = got.len * 4 }};
+    be.executeProgram(handle, &.{}, &out);
+
+    try std.testing.expectEqualSlices(f32, &.{ 11, 22, 33, 40, 54, 65, 76, 80 }, &got);
+
+    const rt = be.getRuntimeProfile(handle).?;
+    try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
+}
+
 test "metal backend region batches independent elementwise ops" {
     var metal = MetalBackend.init() catch |err| switch (err) {
         error.MetalNotAvailable => return,
@@ -5453,6 +5579,81 @@ test "metal backend region fuses qmatmul elementwise sidecar" {
     try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 4), rt.backend_dispatch_count);
+}
+
+test "metal qmatmul sidecar elides dead primary output" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4, 5, 6 };
+    var q_out = [_]f32{99} ** 8;
+    var residual = [_]f32{ 10, 10, 10, 10, 10, 10, 10, 10 };
+    var fused_out = [_]f32{0} ** 8;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+    };
+    const scales = [_]f32{ 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 3, .cols = 4, .block_size = 4 }};
+
+    var ops: [8]backend_mod.DeviceOp = undefined;
+    for (ops[0..7], 0..) |*op, i| {
+        op.* = .{ .qmatmul = .{
+            .dst = @intCast(i + 1),
+            .input = 0,
+            .weight_idx = 0,
+            .M = 2,
+            .N = 4,
+            .K = 3,
+        } };
+    }
+    ops[7] = .{ .elementwise = .{
+        .op = .add,
+        .dst = 9,
+        .src0 = 7,
+        .src1 = 8,
+        .n = 8,
+    } };
+
+    const buf_sizes = [_]usize{ 6, 8, 8, 8, 8, 8, 8, 8, 8, 8 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 7, .host_ptr = @ptrCast(&q_out), .size = q_out.len * 4 },
+        .{ .buf_idx = 8, .host_ptr = @ptrCast(&residual), .size = residual.len * 4 },
+        .{ .buf_idx = 9, .host_ptr = @ptrCast(&fused_out), .size = fused_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 10,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var got_q: [8]f32 = undefined;
+    var got_fused: [8]f32 = undefined;
+    var out = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 7, .host_ptr = @ptrCast(&got_q), .size = got_q.len * 4 },
+        .{ .buf_idx = 9, .host_ptr = @ptrCast(&got_fused), .size = got_fused.len * 4 },
+    };
+    be.executeProgram(handle, &.{}, &out);
+
+    try std.testing.expectEqualSlices(f32, &.{ 99, 99, 99, 99, 99, 99, 99, 99 }, &got_q);
+    try std.testing.expectEqualSlices(f32, &.{ 11, 12, 13, 10, 14, 15, 16, 10 }, &got_fused);
+
+    const rt = be.getRuntimeProfile(handle).?;
+    try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
 }
 
 test "metal backend region fuses qmatmul fused-elementwise sidecar" {

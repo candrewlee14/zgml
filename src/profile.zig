@@ -337,6 +337,25 @@ pub fn printProjectionGroupSummary(label: []const u8, summary: program_mod.Proje
     );
 }
 
+pub fn printProjectionSidecarSummary(label: []const u8, ops: []const DeviceOp) void {
+    const summary = program_mod.summarizeProjectionSidecars(ops);
+    std.debug.print(
+        "Projection sidecars ({s}): {d} qmatmul anchors, immediate={d}, compatible={d}; primary_elidable={d}, primary_required={d}; slice={d}, elementwise={d}, fused_elementwise={d}, incompatible={d}\n\n",
+        .{
+            label,
+            summary.anchors,
+            summary.immediate_sidecars,
+            summary.compatible_sidecars,
+            summary.primary_elidable_sidecars,
+            summary.primary_required_sidecars,
+            summary.slice_sidecars,
+            summary.elementwise_sidecars,
+            summary.fused_elementwise_sidecars,
+            summary.incompatible_sidecars,
+        },
+    );
+}
+
 pub fn printProgramCommandSummary(label: []const u8, summary: program_mod.ProgramCommandSummary) void {
     const saved_pct: f64 = if (summary.covered_ops > 0)
         @as(f64, @floatFromInt(summary.estimated_saved_dispatches)) / @as(f64, @floatFromInt(summary.covered_ops)) * 100.0

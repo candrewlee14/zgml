@@ -567,6 +567,18 @@ pub const RopeStoreGroupCandidateSummary = struct {
     max_group_pairs: u32 = 0,
 };
 
+pub const ProjectionSidecarSummary = struct {
+    anchors: u32 = 0,
+    immediate_sidecars: u32 = 0,
+    compatible_sidecars: u32 = 0,
+    primary_elidable_sidecars: u32 = 0,
+    primary_required_sidecars: u32 = 0,
+    slice_sidecars: u32 = 0,
+    elementwise_sidecars: u32 = 0,
+    fused_elementwise_sidecars: u32 = 0,
+    incompatible_sidecars: u32 = 0,
+};
+
 pub const max_projection_group_anchors = 8;
 
 pub const BufferSpan = struct {
@@ -831,19 +843,16 @@ pub fn findProjectionGroup(
         if (used) |used_ops| {
             if (idx + 1 >= used_ops.len or used_ops[idx + 1]) continue;
         }
-        const sa = switch (ops[idx + 1]) {
-            .slice_assign => |sa| sa,
-            else => continue,
-        };
         const q = ops[idx].qmatmul;
-        const compatible = switch (policy.kind) {
-            .qmatvec => qmatvecSliceSidecarCompatible(q, sa),
-            .qmatmul => qmatmulSliceSidecarCompatible(q, sa),
-        };
-        if (!compatible) continue;
-        selection.sidecar_indices[slot] = idx + 1;
-        selection.sidecar_count += 1;
-        selection.end_op = @max(selection.end_op, idx + 1);
+        const sidecar = ops[idx + 1];
+        if (!projectionSidecarMatchesPolicy(policy, q, sidecar)) continue;
+
+        var candidate = selection;
+        candidate.sidecar_indices[slot] = idx + 1;
+        candidate.sidecar_count += 1;
+        candidate.end_op = @max(candidate.end_op, idx + 1);
+        if (!canHoistProjectionSidecarToGroup(ops, selection.start_op, idx + 1, q, sidecar, &candidate)) continue;
+        selection = candidate;
     }
 
     return selection;
@@ -861,6 +870,43 @@ pub fn summarizeProjectionGroups(groups: []const ProjectionGroup) ProjectionGrou
         summary.max_span_ops = @max(summary.max_span_ops, group.op_count);
         if (covered > dispatches) {
             summary.estimated_saved_dispatches += covered - dispatches;
+        }
+    }
+    return summary;
+}
+
+pub fn summarizeProjectionSidecars(ops: []const backend_mod.DeviceOp) ProjectionSidecarSummary {
+    var summary = ProjectionSidecarSummary{};
+    for (ops, 0..) |op, i| {
+        const q = switch (op) {
+            .qmatmul => |q| q,
+            else => continue,
+        };
+        summary.anchors += 1;
+        if (i + 1 >= ops.len) continue;
+
+        const sidecar = ops[i + 1];
+        switch (sidecar) {
+            .slice_assign, .elementwise, .fused_elementwise => {},
+            else => continue,
+        }
+        summary.immediate_sidecars += 1;
+        if (!projectionSidecarCompatible(q, sidecar)) {
+            summary.incompatible_sidecars += 1;
+            continue;
+        }
+
+        summary.compatible_sidecars += 1;
+        if (projectionPrimaryOutputHasExternalUsers(ops, i, i + 1)) {
+            summary.primary_required_sidecars += 1;
+        } else {
+            summary.primary_elidable_sidecars += 1;
+        }
+        switch (sidecar) {
+            .slice_assign => summary.slice_sidecars += 1,
+            .elementwise => summary.elementwise_sidecars += 1,
+            .fused_elementwise => summary.fused_elementwise_sidecars += 1,
+            else => unreachable,
         }
     }
     return summary;
@@ -1298,6 +1344,51 @@ fn ropeStoreGroupOutputsHaveExternalUsers(
             if (!any_live and !overflow_live) break;
         }
     }
+    return false;
+}
+
+pub fn projectionPrimaryOutputHasExternalUsers(
+    ops: []const backend_mod.DeviceOp,
+    q_index: usize,
+    sidecar_index: usize,
+) bool {
+    if (q_index >= ops.len or sidecar_index >= ops.len) return true;
+    if (sidecar_index <= q_index) return true;
+    const q = switch (ops[q_index]) {
+        .qmatmul => |q| q,
+        else => return true,
+    };
+    if (!projectionSidecarCompatible(q, ops[sidecar_index])) return true;
+
+    const q_access = opAccessSpans(.{ .qmatmul = q });
+    var live_writes = [_]bool{false} ** max_access_spans;
+    for (q_access.writeSpans(), 0..) |_, slot| live_writes[slot] = true;
+    var overflow_live = q_access.write_overflow;
+
+    var scan = q_index + 1;
+    while (scan < ops.len) : (scan += 1) {
+        const op = ops[scan];
+        if (scan != sidecar_index) {
+            for (q_access.writeSpans(), 0..) |write, slot| {
+                if (!live_writes[slot]) continue;
+                if (opReadsSpan(op, write)) return true;
+            }
+            if (overflow_live and opReadsBuffer(op, q.dst)) return true;
+        }
+
+        var any_live = false;
+        for (q_access.writeSpans(), 0..) |write, slot| {
+            if (!live_writes[slot]) continue;
+            if (opWritesCoverSpan(op, write)) {
+                live_writes[slot] = false;
+            } else {
+                any_live = true;
+            }
+        }
+        if (overflow_live and opWritesBuffer(op, q.dst)) overflow_live = false;
+        if (!any_live and !overflow_live) break;
+    }
+
     return false;
 }
 
@@ -2849,6 +2940,65 @@ pub fn projectionSidecarCompatible(q: anytype, op: backend_mod.DeviceOp) bool {
     };
 }
 
+fn projectionSidecarMatchesPolicy(policy: ProjectionGroupPolicy, q: anytype, op: backend_mod.DeviceOp) bool {
+    return switch (policy.kind) {
+        .qmatvec => switch (op) {
+            .slice_assign => |sa| qmatvecSliceSidecarCompatible(q, sa),
+            else => false,
+        },
+        .qmatmul => switch (op) {
+            .slice_assign => |sa| qmatmulSliceSidecarCompatible(q, sa),
+            .elementwise => |e| qmatmulElementwiseSidecarCompatible(q, e),
+            else => false,
+        },
+    };
+}
+
+fn projectionSelectionContainsIndex(selection: *const ProjectionGroupSelection, candidate: usize) bool {
+    for (selection.anchorIndices()) |idx| {
+        if (idx == candidate) return true;
+    }
+    for (selection.sidecarIndices()) |maybe_idx| {
+        if (maybe_idx) |idx| {
+            if (idx == candidate) return true;
+        }
+    }
+    return false;
+}
+
+fn projectionWriteCoversRead(q: anytype, read: BufferSpan) bool {
+    const q_access = opAccessSpans(.{ .qmatmul = q });
+    for (q_access.writeSpans()) |write| {
+        if (write.buf == read.buf and write.start <= read.start and write.end >= read.end) return true;
+    }
+    return q_access.write_overflow and opWritesBuffer(.{ .qmatmul = q }, read.buf);
+}
+
+fn canHoistProjectionSidecarToGroup(
+    ops: []const backend_mod.DeviceOp,
+    group_start: usize,
+    sidecar_index: usize,
+    q: anytype,
+    sidecar: backend_mod.DeviceOp,
+    selection: *const ProjectionGroupSelection,
+) bool {
+    const sidecar_access = opAccessSpans(sidecar);
+    for (ops[group_start..sidecar_index], group_start..) |op, idx| {
+        if (projectionSelectionContainsIndex(selection, idx)) continue;
+        for (sidecar_access.readSpans()) |read| {
+            if (projectionWriteCoversRead(q, read)) continue;
+            if (opWritesSpan(op, read)) return false;
+        }
+        for (sidecar_access.writeSpans()) |write| {
+            if (opTouchesSpan(op, write)) return false;
+        }
+        if (sidecar_access.read_overflow or sidecar_access.write_overflow) {
+            if (opAccessConflicts(op, sidecar)) return false;
+        }
+    }
+    return true;
+}
+
 pub fn qmatmulElementwiseSidecarCompatible(q: anytype, e: anytype) bool {
     if (q.M == 1) return false;
     if (e.op != .add and e.op != .mul) return false;
@@ -4234,6 +4384,31 @@ test "projection groups carry compatible qmatmul cache-store sidecars" {
     try std.testing.expectEqual(@as(u32, 2), summary.estimated_saved_dispatches);
 }
 
+test "projection groups carry compatible qmatmul elementwise sidecars" {
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 2),
+        .{ .elementwise = .{ .op = .add, .dst = 10, .src0 = 1, .src1 = 20, .n = 8 } },
+        testQMatmulWith(2, 0, 2),
+        .{ .elementwise = .{ .op = .mul, .dst = 11, .src0 = 21, .src1 = 2, .n = 8 } },
+    };
+
+    const selection = findProjectionGroup(&ops, 0, ProjectionGroupPolicy.prefillQMatmul(4), null).?;
+    try std.testing.expectEqual(@as(usize, 0), selection.indices[0]);
+    try std.testing.expectEqual(@as(usize, 2), selection.indices[1]);
+    try std.testing.expectEqual(@as(?usize, 1), selection.sidecar_indices[0]);
+    try std.testing.expectEqual(@as(?usize, 3), selection.sidecar_indices[1]);
+
+    const groups = try buildProjectionGroups(std.testing.allocator, &ops, ProjectionGroupPolicy.prefillQMatmul(4));
+    defer std.testing.allocator.free(groups);
+    try std.testing.expectEqual(@as(usize, 1), groups.len);
+    try std.testing.expectEqual(@as(u32, 2), groups[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 2), groups[0].sidecar_count);
+
+    const summary = summarizeProjectionGroups(groups);
+    try std.testing.expectEqual(@as(u32, 4), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+}
+
 test "projection groups reject conflicting or nonhoistable projections" {
     const conflict_ops = [_]backend_mod.DeviceOp{
         testQMatmulWith(1, 0, 16),
@@ -4405,6 +4580,36 @@ test "projection sidecar chains reject incompatible consumers" {
     try std.testing.expectEqual(@as(usize, 2), commands.len);
     try std.testing.expectEqual(ProgramCommandKind.op, commands[0].kind);
     try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+}
+
+test "projection primary output liveness ignores internal sidecar reads" {
+    const scratch_only = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 2),
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 8 } },
+    };
+    try std.testing.expect(!projectionPrimaryOutputHasExternalUsers(&scratch_only, 0, 1));
+
+    const external_read = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 2),
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 8 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 1, .src1 = 5, .n = 8 } },
+    };
+    try std.testing.expect(projectionPrimaryOutputHasExternalUsers(&external_read, 0, 1));
+
+    const overwritten = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 2),
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 8 } },
+        testQMatmulWith(1, 4, 2),
+        .{ .elementwise = .{ .op = .mul, .dst = 5, .src0 = 1, .src1 = 6, .n = 8 } },
+    };
+    try std.testing.expect(!projectionPrimaryOutputHasExternalUsers(&overwritten, 0, 1));
+
+    const inplace_sidecar = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 2),
+        .{ .elementwise = .{ .op = .add, .dst = 1, .src0 = 1, .src1 = 3, .n = 8 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 1, .src1 = 5, .n = 8 } },
+    };
+    try std.testing.expect(!projectionPrimaryOutputHasExternalUsers(&inplace_sidecar, 0, 1));
 }
 
 test "program command stream emits contiguous batch commands" {
