@@ -416,6 +416,8 @@ fn runDevicePrefillVariant(
     profile.printQMatmulSliceSidecarSummary("prefill", program.ops);
     profile.printAttentionStoreSidecarSummary("prefill", program.ops);
     profile.printAttentionStoreGroupCandidateSummary("prefill", program.ops, backend_program.CommandStreamPolicy.metal(4, 4));
+    profile.printEarlyRopeAttentionStoreGroupCandidateSummary("prefill", program.ops, backend_program.CommandStreamPolicy.metal(4, 4));
+    profile.printRopeAttentionStoreGroupCandidateSummary("prefill", program.ops, backend_program.CommandStreamPolicy.metal(4, 4));
     profile.printAttentionStoreRegionSummary("prefill-layer stages", program.ops, prefill_stage_schedule);
     try profile.printRegionProgramCommandSummary(
         "prefill-layer stages",

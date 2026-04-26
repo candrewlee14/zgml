@@ -303,6 +303,7 @@ pub const ProgramCommandKind = enum {
     attention_store_chain,
     attention_store_group,
     rope_attention_store_chain,
+    rope_attention_store_group,
     attention_batch,
     attention_group,
     elementwise_batch,
@@ -321,6 +322,7 @@ pub const ProgramCommandKind = enum {
             .attention_store_chain => "attention_store_chain",
             .attention_store_group => "attention_store_group",
             .rope_attention_store_chain => "rope_attention_store_chain",
+            .rope_attention_store_group => "rope_attention_store_group",
             .attention_batch => "attention_batch",
             .attention_group => "attention_group",
             .elementwise_batch => "elementwise_batch",
@@ -441,7 +443,7 @@ pub const ProgramCommand = struct {
     pub fn coveredOpCount(self: ProgramCommand) u32 {
         return switch (self.kind) {
             .projection_group, .projection_chain => self.anchor_count + self.sidecar_count,
-            .attention_chain, .attention_store_chain, .attention_store_group, .rope_attention_store_chain => self.anchor_count + self.sidecar_count,
+            .attention_chain, .attention_store_chain, .attention_store_group, .rope_attention_store_chain, .rope_attention_store_group => self.anchor_count + self.sidecar_count,
             .attention_group => self.anchor_count,
             .movement_group => self.anchor_count,
             .elementwise_batch => self.anchor_count,
@@ -451,7 +453,7 @@ pub const ProgramCommand = struct {
 
     pub fn advanceCount(self: ProgramCommand) u32 {
         return switch (self.kind) {
-            .projection_group, .elementwise_batch, .attention_store_chain, .attention_store_group, .rope_attention_store_chain, .attention_group, .movement_group => 1,
+            .projection_group, .elementwise_batch, .attention_store_chain, .attention_store_group, .rope_attention_store_chain, .rope_attention_store_group, .attention_group, .movement_group => 1,
             else => self.op_count,
         };
     }
@@ -486,6 +488,9 @@ pub const ProgramCommandSummary = struct {
     attention_store_group_sidecars: u32 = 0,
     rope_attention_store_chains: u32 = 0,
     rope_attention_store_chain_sidecars: u32 = 0,
+    rope_attention_store_groups: u32 = 0,
+    rope_attention_store_group_ops: u32 = 0,
+    rope_attention_store_group_sidecars: u32 = 0,
     attention_batches: u32 = 0,
     attention_groups: u32 = 0,
     attention_group_ops: u32 = 0,
@@ -511,6 +516,36 @@ pub const AttentionStoreGroupCandidateSummary = struct {
     formed_groups: u32 = 0,
     grouped_anchors: u32 = 0,
     max_group_anchors: u32 = 0,
+};
+
+pub const RopeAttentionStoreGroupCandidateSummary = struct {
+    anchors: u32 = 0,
+    first_pair_missing: u32 = 0,
+    candidate_ropes: u32 = 0,
+    geometry_rejects: u32 = 0,
+    pair_missing_rejects: u32 = 0,
+    before_emit_rejects: u32 = 0,
+    delay_rejects: u32 = 0,
+    attention_hoist_rejects: u32 = 0,
+    sidecar_hoist_rejects: u32 = 0,
+    selected_conflict_rejects: u32 = 0,
+    formed_groups: u32 = 0,
+    grouped_pairs: u32 = 0,
+    max_group_pairs: u32 = 0,
+};
+
+pub const EarlyRopeAttentionStoreGroupCandidateSummary = struct {
+    anchors: u32 = 0,
+    first_pair_missing: u32 = 0,
+    candidate_ropes: u32 = 0,
+    geometry_rejects: u32 = 0,
+    pair_missing_rejects: u32 = 0,
+    rope_hoist_rejects: u32 = 0,
+    attention_hoist_rejects: u32 = 0,
+    selected_conflict_rejects: u32 = 0,
+    formed_groups: u32 = 0,
+    grouped_pairs: u32 = 0,
+    max_group_pairs: u32 = 0,
 };
 
 pub const max_projection_group_anchors = 8;
@@ -819,20 +854,34 @@ pub fn buildProgramCommands(
 ) ![]ProgramCommand {
     var commands: std.ArrayListUnmanaged(ProgramCommand) = .empty;
     errdefer commands.deinit(alloc);
+    var pending: std.ArrayListUnmanaged(PendingProgramCommand) = .empty;
+    defer pending.deinit(alloc);
 
     const used = try alloc.alloc(bool, ops.len);
     defer alloc.free(used);
     @memset(used, false);
+    const executed = try alloc.alloc(bool, ops.len);
+    defer alloc.free(executed);
+    @memset(executed, false);
 
     var i: usize = 0;
     while (i < ops.len) {
+        try emitPendingProgramCommandsAt(alloc, &commands, &pending, used, executed, i);
         if (used[i]) {
             i += 1;
             continue;
         }
 
-        if (findProgramCommand(ops, i, policy, used)) |command| {
+        if (findDelayedRopeAttentionStoreGroupCommand(ops, i, policy, used, executed)) |command| {
             markProgramCommandUsed(used, command);
+            try pending.append(alloc, .{ .emit_at = command.op_start, .command = command });
+            i += 1;
+            continue;
+        }
+
+        if (findProgramCommandWithExecuted(ops, i, policy, used, executed)) |command| {
+            markProgramCommandUsed(used, command);
+            markProgramCommandUsed(executed, command);
             try commands.append(alloc, command);
             i += command.advanceCount();
             continue;
@@ -840,11 +889,42 @@ pub fn buildProgramCommands(
 
         const command = ProgramCommand.op(i);
         markProgramCommandUsed(used, command);
+        markProgramCommandUsed(executed, command);
         try commands.append(alloc, command);
         i += 1;
     }
+    while (pending.items.len != 0) {
+        const pending_command = pending.orderedRemove(0);
+        try commands.append(alloc, pending_command.command);
+    }
 
     return commands.toOwnedSlice(alloc);
+}
+
+const PendingProgramCommand = struct {
+    emit_at: u32,
+    command: ProgramCommand,
+};
+
+fn emitPendingProgramCommandsAt(
+    alloc: std.mem.Allocator,
+    commands: *std.ArrayListUnmanaged(ProgramCommand),
+    pending: *std.ArrayListUnmanaged(PendingProgramCommand),
+    used: []bool,
+    executed: []bool,
+    index: usize,
+) !void {
+    var p: usize = 0;
+    while (p < pending.items.len) {
+        if (pending.items[p].emit_at != index) {
+            p += 1;
+            continue;
+        }
+        const pending_command = pending.orderedRemove(p);
+        markProgramCommandUsed(used, pending_command.command);
+        markProgramCommandUsed(executed, pending_command.command);
+        try commands.append(alloc, pending_command.command);
+    }
 }
 
 pub fn findProgramCommand(
@@ -852,6 +932,16 @@ pub fn findProgramCommand(
     start: usize,
     policy: CommandStreamPolicy,
     used: ?[]const bool,
+) ?ProgramCommand {
+    return findProgramCommandWithExecuted(ops, start, policy, used, null);
+}
+
+fn findProgramCommandWithExecuted(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: CommandStreamPolicy,
+    used: ?[]const bool,
+    executed: ?[]const bool,
 ) ?ProgramCommand {
     if (start >= ops.len) return null;
     if (used) |used_ops| {
@@ -889,7 +979,12 @@ pub fn findProgramCommand(
     }
 
     if (op == .rope) {
-        if (findRopeAttentionStoreChainCommand(ops, start, used)) |command| {
+        if (policy.max_attention_store_batch >= 2) {
+            if (findRopeAttentionStoreGroupCommand(ops, start, policy, used, executed)) |command| {
+                return command;
+            }
+        }
+        if (findRopeAttentionStoreChainCommand(ops, start, used, executed)) |command| {
             return command;
         }
     }
@@ -902,7 +997,7 @@ pub fn findProgramCommand(
 
     if (op == .attention) {
         if (policy.max_attention_batch >= 2) {
-            if (findAttentionStoreGroupCommand(ops, start, policy, used)) |command| {
+            if (findAttentionStoreGroupCommand(ops, start, policy, used, executed)) |command| {
                 return command;
             }
         }
@@ -1035,6 +1130,7 @@ fn findAttentionStoreGroupCommand(
     start: usize,
     policy: CommandStreamPolicy,
     used: ?[]const bool,
+    executed: ?[]const bool,
 ) ?ProgramCommand {
     if (start >= ops.len) return null;
     if (used) |used_ops| {
@@ -1067,7 +1163,7 @@ fn findAttentionStoreGroupCommand(
             else => continue,
         };
         if (!attentionGeometryCompatible(first, next)) continue;
-        if (!canHoistAttentionForStoreGroup(ops, start, scan, next, &command)) continue;
+        if (!canHoistAttentionForStoreGroup(ops, start, scan, next, &command, executed)) continue;
         if (opConflictsSelected(ops, command.anchorIndices(), .{ .attention = next })) continue;
         if (!appendAttentionStorePair(ops, &command, scan, next, start, used)) continue;
     }
@@ -1079,6 +1175,7 @@ fn findRopeAttentionStoreChainCommand(
     ops: []const backend_mod.DeviceOp,
     start: usize,
     used: ?[]const bool,
+    executed: ?[]const bool,
 ) ?ProgramCommand {
     if (start >= ops.len) return null;
     if (used) |used_ops| {
@@ -1110,7 +1207,7 @@ fn findRopeAttentionStoreChainCommand(
         command.indices[0] = start;
         command.indices[1] = scan;
         if (ropeOutputHasExternalUsers(ops, start, scan, rr)) continue;
-        if (!canHoistAttentionForStoreGroup(ops, start, scan, att, &command)) continue;
+        if (!canHoistAttentionForStoreGroup(ops, start, scan, att, &command, executed)) continue;
 
         const sidecar_index = findAttentionStoreSidecarIndex(ops, scan, att, used) orelse return null;
         command.sidecar_indices[0] = sidecar_index;
@@ -1119,6 +1216,310 @@ fn findRopeAttentionStoreChainCommand(
         return command;
     }
     return null;
+}
+
+fn findRopeAttentionStoreGroupCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: CommandStreamPolicy,
+    used: ?[]const bool,
+    executed: ?[]const bool,
+) ?ProgramCommand {
+    if (start >= ops.len) return null;
+    if (used) |used_ops| {
+        if (start >= used_ops.len or used_ops[start]) return null;
+    }
+    const max_pairs: usize = @intCast(@min(policy.max_attention_store_batch, max_projection_group_anchors / 2));
+    if (max_pairs < 2) return null;
+
+    const first_pair = findRopeAttentionStorePair(ops, start, used, executed) orelse return null;
+    var command = ProgramCommand{
+        .kind = .rope_attention_store_group,
+        .op_start = @intCast(start),
+        .op_count = 1,
+        .anchor_count = 0,
+        .sidecar_count = 0,
+    };
+    appendRopeAttentionStorePair(&command, start, first_pair.attention_index, first_pair.sidecar_index, start);
+
+    const first_att = ops[first_pair.attention_index].attention;
+    const first_rope = ops[start].rope;
+    var scan = start + 1;
+    while (scan < ops.len and command.sidecar_count < max_pairs) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const rr = switch (ops[scan]) {
+            .rope => |rr| rr,
+            else => continue,
+        };
+        if (!ropeStoreBatchGeometryCompatible(first_rope, rr)) continue;
+        const pair = findRopeAttentionStorePair(ops, scan, used, executed) orelse continue;
+        const att = ops[pair.attention_index].attention;
+        if (!attentionGeometryCompatible(first_att, att)) continue;
+
+        var candidate = command;
+        const slot = candidate.anchor_count;
+        if (slot + 2 > max_projection_group_anchors) break;
+        candidate.indices[slot] = scan;
+        candidate.indices[slot + 1] = pair.attention_index;
+        candidate.anchor_count += 2;
+        if (!canHoistOpToRopeAttentionStoreGroup(ops, start, scan, .{ .rope = rr }, &candidate, executed)) continue;
+        if (!canHoistAttentionForStoreGroup(ops, start, pair.attention_index, att, &candidate, executed)) continue;
+        if (ropeAttentionStorePairConflictsSelected(ops, &command, scan, pair.attention_index, ops[pair.sidecar_index].slice_assign)) continue;
+
+        appendRopeAttentionStorePair(&command, scan, pair.attention_index, pair.sidecar_index, start);
+    }
+
+    return if (command.sidecar_count >= 2) command else null;
+}
+
+fn findDelayedRopeAttentionStoreGroupCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: CommandStreamPolicy,
+    used: ?[]const bool,
+    executed: ?[]const bool,
+) ?ProgramCommand {
+    if (start >= ops.len) return null;
+    if (used) |used_ops| {
+        if (start >= used_ops.len or used_ops[start]) return null;
+    }
+    const max_pairs: usize = @intCast(@min(policy.max_attention_store_batch, max_projection_group_anchors / 2));
+    if (max_pairs < 2) return null;
+
+    const first_pair = findDelayableRopeAttentionStorePair(ops, start, used, executed) orelse return null;
+    const emit_at = first_pair.attention_index;
+    if (emit_at <= start) return null;
+
+    var command = ProgramCommand{
+        .kind = .rope_attention_store_group,
+        .op_start = @intCast(emit_at),
+        .op_count = 1,
+        .anchor_count = 0,
+        .sidecar_count = 0,
+    };
+    appendRopeAttentionStorePair(&command, start, first_pair.attention_index, first_pair.sidecar_index, emit_at);
+
+    const first_att = ops[first_pair.attention_index].attention;
+    const first_rope = ops[start].rope;
+    var scan = start + 1;
+    while (scan < emit_at and command.sidecar_count < max_pairs) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const rr = switch (ops[scan]) {
+            .rope => |rr| rr,
+            else => continue,
+        };
+        if (!ropeStoreBatchGeometryCompatible(first_rope, rr)) continue;
+        const pair = findDelayableRopeAttentionStorePair(ops, scan, used, executed) orelse continue;
+        if (pair.attention_index < emit_at) continue;
+        const att = ops[pair.attention_index].attention;
+        if (!attentionGeometryCompatible(first_att, att)) continue;
+        const sa = ops[pair.sidecar_index].slice_assign;
+
+        var candidate = command;
+        if (candidate.anchor_count + 2 > max_projection_group_anchors) break;
+        appendRopeAttentionStorePair(&candidate, scan, pair.attention_index, pair.sidecar_index, emit_at);
+        if (!canDelayOpToCommand(ops, scan, emit_at, .{ .rope = rr }, &candidate)) continue;
+        if (!canHoistAttentionForStoreGroup(ops, emit_at, pair.attention_index, att, &candidate, executed)) continue;
+        if (!canHoistOpToRopeAttentionStoreGroup(ops, emit_at, pair.sidecar_index, .{ .slice_assign = sa }, &candidate, executed)) continue;
+        if (ropeAttentionStorePairConflictsSelected(ops, &command, scan, pair.attention_index, sa)) continue;
+
+        command = candidate;
+    }
+
+    return if (command.sidecar_count >= 2) command else null;
+}
+
+const RopeAttentionStorePair = struct {
+    attention_index: usize,
+    sidecar_index: usize,
+};
+
+fn findRopeAttentionStorePair(
+    ops: []const backend_mod.DeviceOp,
+    rope_index: usize,
+    used: ?[]const bool,
+    executed: ?[]const bool,
+) ?RopeAttentionStorePair {
+    const rr = switch (ops[rope_index]) {
+        .rope => |rr| rr,
+        else => return null,
+    };
+    var scan = rope_index + 1;
+    while (scan < ops.len) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const att = switch (ops[scan]) {
+            .attention => |att| att,
+            else => continue,
+        };
+        if (!ropeAttentionCompatible(rr, att)) continue;
+        if (ropeOutputHasExternalUsers(ops, rope_index, scan, rr)) continue;
+        var command = ProgramCommand{
+            .kind = .rope_attention_store_chain,
+            .op_start = @intCast(rope_index),
+            .op_count = @intCast(scan - rope_index + 1),
+            .anchor_count = 2,
+            .sidecar_count = 0,
+        };
+        command.indices[0] = rope_index;
+        command.indices[1] = scan;
+        if (!canHoistAttentionForStoreGroup(ops, rope_index, scan, att, &command, executed)) continue;
+        const sidecar_index = findAttentionStoreSidecarIndex(ops, scan, att, used) orelse return null;
+        return .{ .attention_index = scan, .sidecar_index = sidecar_index };
+    }
+    return null;
+}
+
+fn findDelayableRopeAttentionStorePair(
+    ops: []const backend_mod.DeviceOp,
+    rope_index: usize,
+    used: ?[]const bool,
+    executed: ?[]const bool,
+) ?RopeAttentionStorePair {
+    const rr = switch (ops[rope_index]) {
+        .rope => |rr| rr,
+        else => return null,
+    };
+    var scan = rope_index + 1;
+    while (scan < ops.len) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const att = switch (ops[scan]) {
+            .attention => |att| att,
+            else => continue,
+        };
+        if (!ropeAttentionCompatible(rr, att)) continue;
+        if (ropeOutputHasExternalUsers(ops, rope_index, scan, rr)) continue;
+
+        var command = ProgramCommand{
+            .kind = .rope_attention_store_group,
+            .op_start = @intCast(scan),
+            .op_count = 1,
+            .anchor_count = 2,
+            .sidecar_count = 0,
+        };
+        command.indices[0] = rope_index;
+        command.indices[1] = scan;
+        if (!canDelayOpToCommand(ops, rope_index, scan, .{ .rope = rr }, &command)) continue;
+
+        const sidecar_index = findAttentionStoreSidecarIndex(ops, scan, att, used) orelse return null;
+        command.sidecar_indices[0] = sidecar_index;
+        command.sidecar_count = 1;
+        const sa = ops[sidecar_index].slice_assign;
+        if (!canHoistOpToRopeAttentionStoreGroup(ops, scan, sidecar_index, .{ .slice_assign = sa }, &command, executed)) continue;
+        return .{ .attention_index = scan, .sidecar_index = sidecar_index };
+    }
+    return null;
+}
+
+fn appendRopeAttentionStorePair(
+    command: *ProgramCommand,
+    rope_index: usize,
+    attention_index: usize,
+    sidecar_index: usize,
+    group_start: usize,
+) void {
+    const slot = command.anchor_count;
+    command.indices[slot] = rope_index;
+    command.indices[slot + 1] = attention_index;
+    command.sidecar_indices[command.sidecar_count] = sidecar_index;
+    command.anchor_count += 2;
+    command.sidecar_count += 1;
+    command.op_count = @intCast(@max(
+        group_start + @as(usize, command.op_count),
+        sidecar_index + 1,
+    ) - group_start);
+}
+
+fn canDelayOpToCommand(
+    ops: []const backend_mod.DeviceOp,
+    candidate_index: usize,
+    emit_at: usize,
+    candidate: backend_mod.DeviceOp,
+    command: *const ProgramCommand,
+) bool {
+    if (candidate_index > emit_at) return false;
+    const candidate_access = opAccessSpans(candidate);
+    for (ops[candidate_index + 1 .. emit_at + 1], candidate_index + 1..) |op, idx| {
+        if (commandContainsIndex(command, idx)) continue;
+        for (candidate_access.readSpans()) |read| {
+            if (opWritesSpan(op, read)) return false;
+        }
+        for (candidate_access.writeSpans()) |write| {
+            if (opTouchesSpan(op, write)) return false;
+        }
+        if (candidate_access.read_overflow or candidate_access.write_overflow) {
+            if (opAccessConflicts(op, candidate)) return false;
+        }
+    }
+    return true;
+}
+
+fn canHoistOpToRopeAttentionStoreGroup(
+    ops: []const backend_mod.DeviceOp,
+    group_start: usize,
+    candidate_index: usize,
+    candidate: backend_mod.DeviceOp,
+    command: *const ProgramCommand,
+    executed: ?[]const bool,
+) bool {
+    const candidate_access = opAccessSpans(candidate);
+    for (ops[group_start..candidate_index], group_start..) |op, idx| {
+        if (commandContainsIndex(command, idx)) continue;
+        if (executed) |executed_ops| {
+            if (idx < executed_ops.len and executed_ops[idx]) continue;
+        }
+        for (candidate_access.readSpans()) |read| {
+            if (opWritesSpan(op, read)) return false;
+        }
+        for (candidate_access.writeSpans()) |write| {
+            if (opTouchesSpan(op, write)) return false;
+        }
+        if (candidate_access.read_overflow or candidate_access.write_overflow) {
+            if (opAccessConflicts(op, candidate)) return false;
+        }
+    }
+    return true;
+}
+
+fn ropeAttentionStorePairConflictsSelected(
+    ops: []const backend_mod.DeviceOp,
+    command: *const ProgramCommand,
+    rope_index: usize,
+    attention_index: usize,
+    sa: anytype,
+) bool {
+    const rope_op = ops[rope_index];
+    const attention_op = ops[attention_index];
+    const sidecar_op: backend_mod.DeviceOp = .{ .slice_assign = sa };
+    const sidecar_access = opAccessSpans(sidecar_op);
+    for (command.anchorIndices()) |idx| {
+        for (sidecar_access.writeSpans()) |write| {
+            if (opReadsSpan(ops[idx], write)) return true;
+        }
+        if (sidecar_access.write_overflow and opReadsBuffer(ops[idx], sa.dst)) return true;
+    }
+    for (command.sidecarIndices()) |maybe_idx| {
+        const idx = maybe_idx orelse continue;
+        const selected_sa = switch (ops[idx]) {
+            .slice_assign => |selected| selected,
+            else => return true,
+        };
+        if (sliceAssignWritesMayOverlap(selected_sa, sa)) return true;
+        const selected_access = opAccessSpans(ops[idx]);
+        for (selected_access.writeSpans()) |write| {
+            if (opReadsSpan(rope_op, write) or opReadsSpan(attention_op, write)) return true;
+        }
+        if (selected_access.write_overflow and
+            (opReadsBuffer(rope_op, selected_sa.dst) or opReadsBuffer(attention_op, selected_sa.dst))) return true;
+    }
+    return false;
 }
 
 fn ropeOutputHasExternalUsers(
@@ -1138,16 +1539,37 @@ fn ropeOutputHasExternalUsers(
     return false;
 }
 
+fn attentionOutputHasExternalUsers(
+    ops: []const backend_mod.DeviceOp,
+    attention_index: usize,
+    sidecar_index: usize,
+    att: anytype,
+) bool {
+    const attention_access = opAccessSpans(.{ .attention = att });
+    for (ops[attention_index + 1 ..], attention_index + 1..) |op, idx| {
+        if (idx == sidecar_index) continue;
+        for (attention_access.writeSpans()) |write| {
+            if (opReadsSpan(op, write)) return true;
+        }
+        if (attention_access.write_overflow and opReadsBuffer(op, att.dst)) return true;
+    }
+    return false;
+}
+
 fn canHoistAttentionForStoreGroup(
     ops: []const backend_mod.DeviceOp,
     group_start: usize,
     attention_index: usize,
     att: anytype,
     command: *const ProgramCommand,
+    executed: ?[]const bool,
 ) bool {
     const candidate_access = opAccessSpans(.{ .attention = att });
     for (ops[group_start..attention_index], group_start..) |op, idx| {
         if (commandContainsIndex(command, idx)) continue;
+        if (executed) |executed_ops| {
+            if (idx < executed_ops.len and executed_ops[idx]) continue;
+        }
         for (candidate_access.readSpans()) |read| {
             if (opWritesSpan(op, read)) return false;
         }
@@ -1280,7 +1702,7 @@ pub fn summarizeAttentionStoreGroupCandidates(
                 summary.geometry_rejects += 1;
                 continue;
             }
-            if (!canHoistAttentionForStoreGroup(ops, start, scan, next, &command)) {
+            if (!canHoistAttentionForStoreGroup(ops, start, scan, next, &command, null)) {
                 summary.hoist_rejects += 1;
                 continue;
             }
@@ -1304,6 +1726,180 @@ pub fn summarizeAttentionStoreGroupCandidates(
             summary.formed_groups += 1;
             summary.grouped_anchors += command.anchor_count;
             summary.max_group_anchors = @max(summary.max_group_anchors, command.anchor_count);
+        }
+    }
+
+    return summary;
+}
+
+pub fn summarizeRopeAttentionStoreGroupCandidates(
+    ops: []const backend_mod.DeviceOp,
+    policy: CommandStreamPolicy,
+) RopeAttentionStoreGroupCandidateSummary {
+    var summary = RopeAttentionStoreGroupCandidateSummary{};
+    const max_pairs: usize = @intCast(@min(policy.max_attention_store_batch, max_projection_group_anchors / 2));
+    if (max_pairs < 2) return summary;
+
+    for (ops, 0..) |op, start| {
+        const first_rope = switch (op) {
+            .rope => |rr| rr,
+            else => continue,
+        };
+        summary.anchors += 1;
+
+        const first_pair = findDelayableRopeAttentionStorePair(ops, start, null, null) orelse {
+            summary.first_pair_missing += 1;
+            continue;
+        };
+        const emit_at = first_pair.attention_index;
+        if (emit_at <= start) {
+            summary.first_pair_missing += 1;
+            continue;
+        }
+
+        var command = ProgramCommand{
+            .kind = .rope_attention_store_group,
+            .op_start = @intCast(emit_at),
+            .op_count = 1,
+            .anchor_count = 0,
+            .sidecar_count = 0,
+        };
+        appendRopeAttentionStorePair(&command, start, first_pair.attention_index, first_pair.sidecar_index, emit_at);
+        const first_att = ops[first_pair.attention_index].attention;
+
+        var scan = start + 1;
+        while (scan < emit_at and command.sidecar_count < max_pairs) : (scan += 1) {
+            const rr = switch (ops[scan]) {
+                .rope => |rr| rr,
+                else => continue,
+            };
+            summary.candidate_ropes += 1;
+            if (!ropeStoreBatchGeometryCompatible(first_rope, rr)) {
+                summary.geometry_rejects += 1;
+                continue;
+            }
+            const pair = findDelayableRopeAttentionStorePair(ops, scan, null, null) orelse {
+                summary.pair_missing_rejects += 1;
+                continue;
+            };
+            if (pair.attention_index < emit_at) {
+                summary.before_emit_rejects += 1;
+                continue;
+            }
+            const att = ops[pair.attention_index].attention;
+            if (!attentionGeometryCompatible(first_att, att)) {
+                summary.geometry_rejects += 1;
+                continue;
+            }
+            const sa = ops[pair.sidecar_index].slice_assign;
+
+            var candidate = command;
+            if (candidate.anchor_count + 2 > max_projection_group_anchors) break;
+            appendRopeAttentionStorePair(&candidate, scan, pair.attention_index, pair.sidecar_index, emit_at);
+            if (!canDelayOpToCommand(ops, scan, emit_at, .{ .rope = rr }, &candidate)) {
+                summary.delay_rejects += 1;
+                continue;
+            }
+            if (!canHoistAttentionForStoreGroup(ops, emit_at, pair.attention_index, att, &candidate, null)) {
+                summary.attention_hoist_rejects += 1;
+                continue;
+            }
+            if (!canHoistOpToRopeAttentionStoreGroup(ops, emit_at, pair.sidecar_index, .{ .slice_assign = sa }, &candidate, null)) {
+                summary.sidecar_hoist_rejects += 1;
+                continue;
+            }
+            if (ropeAttentionStorePairConflictsSelected(ops, &command, scan, pair.attention_index, sa)) {
+                summary.selected_conflict_rejects += 1;
+                continue;
+            }
+            command = candidate;
+        }
+
+        if (command.sidecar_count >= 2) {
+            summary.formed_groups += 1;
+            summary.grouped_pairs += command.sidecar_count;
+            summary.max_group_pairs = @max(summary.max_group_pairs, command.sidecar_count);
+        }
+    }
+
+    return summary;
+}
+
+pub fn summarizeEarlyRopeAttentionStoreGroupCandidates(
+    ops: []const backend_mod.DeviceOp,
+    policy: CommandStreamPolicy,
+) EarlyRopeAttentionStoreGroupCandidateSummary {
+    var summary = EarlyRopeAttentionStoreGroupCandidateSummary{};
+    const max_pairs: usize = @intCast(@min(policy.max_attention_store_batch, max_projection_group_anchors / 2));
+    if (max_pairs < 2) return summary;
+
+    for (ops, 0..) |op, start| {
+        const first_rope = switch (op) {
+            .rope => |rr| rr,
+            else => continue,
+        };
+        summary.anchors += 1;
+
+        const first_pair = findRopeAttentionStorePair(ops, start, null, null) orelse {
+            summary.first_pair_missing += 1;
+            continue;
+        };
+        var command = ProgramCommand{
+            .kind = .rope_attention_store_group,
+            .op_start = @intCast(start),
+            .op_count = 1,
+            .anchor_count = 0,
+            .sidecar_count = 0,
+        };
+        appendRopeAttentionStorePair(&command, start, first_pair.attention_index, first_pair.sidecar_index, start);
+
+        const first_att = ops[first_pair.attention_index].attention;
+        var scan = start + 1;
+        while (scan < ops.len and command.sidecar_count < max_pairs) : (scan += 1) {
+            const rr = switch (ops[scan]) {
+                .rope => |rr| rr,
+                else => continue,
+            };
+            summary.candidate_ropes += 1;
+            if (!ropeStoreBatchGeometryCompatible(first_rope, rr)) {
+                summary.geometry_rejects += 1;
+                continue;
+            }
+            const pair = findRopeAttentionStorePair(ops, scan, null, null) orelse {
+                summary.pair_missing_rejects += 1;
+                continue;
+            };
+            const att = ops[pair.attention_index].attention;
+            if (!attentionGeometryCompatible(first_att, att)) {
+                summary.geometry_rejects += 1;
+                continue;
+            }
+
+            var candidate = command;
+            const slot = candidate.anchor_count;
+            if (slot + 2 > max_projection_group_anchors) break;
+            candidate.indices[slot] = scan;
+            candidate.indices[slot + 1] = pair.attention_index;
+            candidate.anchor_count += 2;
+            if (!canHoistOpToRopeAttentionStoreGroup(ops, start, scan, .{ .rope = rr }, &candidate, null)) {
+                summary.rope_hoist_rejects += 1;
+                continue;
+            }
+            if (!canHoistAttentionForStoreGroup(ops, start, pair.attention_index, att, &candidate, null)) {
+                summary.attention_hoist_rejects += 1;
+                continue;
+            }
+            if (ropeAttentionStorePairConflictsSelected(ops, &command, scan, pair.attention_index, ops[pair.sidecar_index].slice_assign)) {
+                summary.selected_conflict_rejects += 1;
+                continue;
+            }
+            appendRopeAttentionStorePair(&command, scan, pair.attention_index, pair.sidecar_index, start);
+        }
+
+        if (command.sidecar_count >= 2) {
+            summary.formed_groups += 1;
+            summary.grouped_pairs += command.sidecar_count;
+            summary.max_group_pairs = @max(summary.max_group_pairs, command.sidecar_count);
         }
     }
 
@@ -1543,6 +2139,11 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
                 summary.rope_attention_store_chains += 1;
                 summary.rope_attention_store_chain_sidecars += command.sidecar_count;
             },
+            .rope_attention_store_group => {
+                summary.rope_attention_store_groups += 1;
+                summary.rope_attention_store_group_ops += command.anchor_count;
+                summary.rope_attention_store_group_sidecars += command.sidecar_count;
+            },
             .attention_batch => summary.attention_batches += 1,
             .attention_group => {
                 summary.attention_groups += 1;
@@ -1569,11 +2170,11 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
 
 pub fn markProgramCommandUsed(used: []bool, command: ProgramCommand) void {
     switch (command.kind) {
-        .projection_group, .elementwise_batch, .attention_store_chain, .attention_store_group, .rope_attention_store_chain, .attention_group, .movement_group => {
+        .projection_group, .elementwise_batch, .attention_store_chain, .attention_store_group, .rope_attention_store_chain, .rope_attention_store_group, .attention_group, .movement_group => {
             for (command.anchorIndices()) |idx| {
                 if (idx < used.len) used[idx] = true;
             }
-            if (command.kind == .projection_group or command.kind == .attention_store_chain or command.kind == .attention_store_group or command.kind == .rope_attention_store_chain) {
+            if (command.kind == .projection_group or command.kind == .attention_store_chain or command.kind == .attention_store_group or command.kind == .rope_attention_store_chain or command.kind == .rope_attention_store_group) {
                 for (command.sidecarIndices()) |maybe_idx| {
                     if (maybe_idx) |idx| {
                         if (idx < used.len) used[idx] = true;
@@ -2017,6 +2618,14 @@ pub fn ropeAttentionCompatible(rr: anytype, att: anytype) bool {
         rr.seq_len == att.seq_q and
         att.q_rs == 1 and
         att.q_cs == d;
+}
+
+pub fn ropeStoreBatchGeometryCompatible(first: anytype, next: anytype) bool {
+    return first.half_d == next.half_d and
+        first.seq_len == next.seq_len and
+        first.src_rs == next.src_rs and
+        first.src_cs == next.src_cs and
+        first.cs_cs == next.cs_cs;
 }
 
 fn attentionSliceMatches(
@@ -3745,6 +4354,191 @@ test "program command stream emits rope attention output store chains" {
     try std.testing.expectEqual(@as(u32, 1), summary.rope_attention_store_chain_sidecars);
     try std.testing.expectEqual(@as(u32, 3), summary.covered_ops);
     try std.testing.expectEqual(@as(u32, 1), summary.estimated_dispatches);
+}
+
+test "program command stream groups rope attention output stores" {
+    var att0 = testAttention(0);
+    var att1 = testAttention(8);
+    att0.attention.q = 4;
+    att0.attention.dst = 5;
+    att1.attention.q = 6;
+    att1.attention.dst = 7;
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .rope = .{
+            .dst = 4,
+            .src = 0,
+            .cos_sin = 1,
+            .half_d = 2,
+            .seq_len = 2,
+            .src_off = 0,
+            .cs_off = 0,
+            .dst_off = 0,
+            .src_rs = 1,
+            .src_cs = 4,
+            .cs_cs = 4,
+        } },
+        att0,
+        .{ .slice_assign = .{
+            .dst = 9,
+            .src = 5,
+            .rows = 4,
+            .cols = 2,
+            .dst_base_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 1,
+            .dst_col_stride = 8,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 0,
+        } },
+        .{ .rope = .{
+            .dst = 6,
+            .src = 10,
+            .cos_sin = 1,
+            .half_d = 2,
+            .seq_len = 2,
+            .src_off = 8,
+            .cs_off = 0,
+            .dst_off = 8,
+            .src_rs = 1,
+            .src_cs = 4,
+            .cs_cs = 4,
+        } },
+        att1,
+        .{ .slice_assign = .{
+            .dst = 9,
+            .src = 7,
+            .rows = 4,
+            .cols = 2,
+            .dst_base_offset = 0,
+            .dst_offset = 4,
+            .dst_row_stride = 1,
+            .dst_col_stride = 8,
+            .src_offset = 8,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 0,
+        } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.rope_attention_store_group, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(usize, 0), commands[0].indices[0]);
+    try std.testing.expectEqual(@as(usize, 1), commands[0].indices[1]);
+    try std.testing.expectEqual(@as(usize, 3), commands[0].indices[2]);
+    try std.testing.expectEqual(@as(usize, 4), commands[0].indices[3]);
+    try std.testing.expectEqual(@as(?usize, 2), commands[0].sidecar_indices[0]);
+    try std.testing.expectEqual(@as(?usize, 5), commands[0].sidecar_indices[1]);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.rope_attention_store_groups);
+    try std.testing.expectEqual(@as(u32, 4), summary.rope_attention_store_group_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.rope_attention_store_group_sidecars);
+    try std.testing.expectEqual(@as(u32, 6), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_dispatches);
+}
+
+test "program command stream delays rope attention groups until inputs are ready" {
+    var att0 = testAttention(0);
+    var att1 = testAttention(8);
+    att0.attention.q = 4;
+    att0.attention.dst = 5;
+    att1.attention.q = 6;
+    att1.attention.dst = 7;
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .rope = .{
+            .dst = 4,
+            .src = 0,
+            .cos_sin = 1,
+            .half_d = 2,
+            .seq_len = 2,
+            .src_off = 0,
+            .cs_off = 0,
+            .dst_off = 0,
+            .src_rs = 1,
+            .src_cs = 4,
+            .cs_cs = 4,
+        } },
+        testQMatmulWith(10, 8, 2),
+        .{ .rope = .{
+            .dst = 6,
+            .src = 10,
+            .cos_sin = 1,
+            .half_d = 2,
+            .seq_len = 2,
+            .src_off = 0,
+            .cs_off = 0,
+            .dst_off = 8,
+            .src_rs = 1,
+            .src_cs = 4,
+            .cs_cs = 4,
+        } },
+        att0,
+        .{ .slice_assign = .{
+            .dst = 9,
+            .src = 5,
+            .rows = 4,
+            .cols = 2,
+            .dst_base_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 1,
+            .dst_col_stride = 8,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 0,
+        } },
+        att1,
+        .{ .slice_assign = .{
+            .dst = 9,
+            .src = 7,
+            .rows = 4,
+            .cols = 2,
+            .dst_base_offset = 0,
+            .dst_offset = 4,
+            .dst_row_stride = 1,
+            .dst_col_stride = 8,
+            .src_offset = 8,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 0,
+        } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].op_start);
+    try std.testing.expectEqual(ProgramCommandKind.rope_attention_store_group, commands[1].kind);
+    try std.testing.expectEqual(@as(u32, 3), commands[1].op_start);
+    try std.testing.expectEqual(@as(u32, 4), commands[1].anchor_count);
+    try std.testing.expectEqual(@as(u32, 2), commands[1].sidecar_count);
+    try std.testing.expectEqual(@as(usize, 0), commands[1].indices[0]);
+    try std.testing.expectEqual(@as(usize, 3), commands[1].indices[1]);
+    try std.testing.expectEqual(@as(usize, 2), commands[1].indices[2]);
+    try std.testing.expectEqual(@as(usize, 5), commands[1].indices[3]);
+    try std.testing.expectEqual(@as(?usize, 4), commands[1].sidecar_indices[0]);
+    try std.testing.expectEqual(@as(?usize, 6), commands[1].sidecar_indices[1]);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 7), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 5), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.op_commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.rope_attention_store_groups);
+    try std.testing.expectEqual(@as(u32, 4), summary.rope_attention_store_group_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.rope_attention_store_group_sidecars);
 }
 
 test "program command stream carries delayed attention output stores" {

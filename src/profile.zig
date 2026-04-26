@@ -379,8 +379,14 @@ pub fn printProgramCommandSummary(label: []const u8, summary: program_mod.Progra
         },
     );
     std.debug.print(
-        "  fused producer chains: rope_attention_store_chain={d} ({d} sidecars)\n\n",
-        .{ summary.rope_attention_store_chains, summary.rope_attention_store_chain_sidecars },
+        "  fused producer chains: rope_attention_store_chain={d} ({d} sidecars), rope_attention_store_group={d} ({d} ops, {d} sidecars)\n\n",
+        .{
+            summary.rope_attention_store_chains,
+            summary.rope_attention_store_chain_sidecars,
+            summary.rope_attention_store_groups,
+            summary.rope_attention_store_group_ops,
+            summary.rope_attention_store_group_sidecars,
+        },
     );
 }
 
@@ -576,6 +582,50 @@ pub fn printAttentionStoreGroupCandidateSummary(label: []const u8, ops: []const 
     );
 }
 
+pub fn printRopeAttentionStoreGroupCandidateSummary(label: []const u8, ops: []const DeviceOp, policy: program_mod.CommandStreamPolicy) void {
+    const summary = program_mod.summarizeRopeAttentionStoreGroupCandidates(ops, policy);
+    std.debug.print(
+        "RoPE attention-store group candidates ({s}): {d} anchors, formed={d} groups ({d} pairs, max {d}); first-pair missing={d}, candidates={d}, rejects geometry={d}, pair-missing={d}, before-emit={d}, delay={d}, attention-hoist={d}, sidecar-hoist={d}, selected-conflict={d}\n\n",
+        .{
+            label,
+            summary.anchors,
+            summary.formed_groups,
+            summary.grouped_pairs,
+            summary.max_group_pairs,
+            summary.first_pair_missing,
+            summary.candidate_ropes,
+            summary.geometry_rejects,
+            summary.pair_missing_rejects,
+            summary.before_emit_rejects,
+            summary.delay_rejects,
+            summary.attention_hoist_rejects,
+            summary.sidecar_hoist_rejects,
+            summary.selected_conflict_rejects,
+        },
+    );
+}
+
+pub fn printEarlyRopeAttentionStoreGroupCandidateSummary(label: []const u8, ops: []const DeviceOp, policy: program_mod.CommandStreamPolicy) void {
+    const summary = program_mod.summarizeEarlyRopeAttentionStoreGroupCandidates(ops, policy);
+    std.debug.print(
+        "Early RoPE attention-store group candidates ({s}): {d} anchors, formed={d} groups ({d} pairs, max {d}); first-pair missing={d}, candidates={d}, rejects geometry={d}, pair-missing={d}, rope-hoist={d}, attention-hoist={d}, selected-conflict={d}\n\n",
+        .{
+            label,
+            summary.anchors,
+            summary.formed_groups,
+            summary.grouped_pairs,
+            summary.max_group_pairs,
+            summary.first_pair_missing,
+            summary.candidate_ropes,
+            summary.geometry_rejects,
+            summary.pair_missing_rejects,
+            summary.rope_hoist_rejects,
+            summary.attention_hoist_rejects,
+            summary.selected_conflict_rejects,
+        },
+    );
+}
+
 pub fn printAttentionStoreRegionSummary(label: []const u8, ops: []const DeviceOp, units: []const program_mod.ScheduleUnit) void {
     var fusable: u32 = 0;
     var same_unit: u32 = 0;
@@ -646,6 +696,9 @@ pub fn printRegionProgramCommandSummary(
         total.attention_store_group_sidecars += summary.attention_store_group_sidecars;
         total.rope_attention_store_chains += summary.rope_attention_store_chains;
         total.rope_attention_store_chain_sidecars += summary.rope_attention_store_chain_sidecars;
+        total.rope_attention_store_groups += summary.rope_attention_store_groups;
+        total.rope_attention_store_group_ops += summary.rope_attention_store_group_ops;
+        total.rope_attention_store_group_sidecars += summary.rope_attention_store_group_sidecars;
         total.attention_batches += summary.attention_batches;
         total.attention_groups += summary.attention_groups;
         total.attention_group_ops += summary.attention_group_ops;
