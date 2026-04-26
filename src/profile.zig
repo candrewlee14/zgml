@@ -15,6 +15,7 @@ pub const DeviceProgram = backend.DeviceProgram;
 
 /// Number of distinct DeviceOp tags.
 const n_op_tags = 12;
+const n_program_command_kinds = @typeInfo(program_mod.ProgramCommandKind).@"enum".fields.len;
 
 /// Tag names in canonical order matching the DeviceOp union(enum) declaration.
 const tag_names = [n_op_tags][]const u8{
@@ -547,6 +548,96 @@ pub fn printAttentionStoreSidecarSummary(label: []const u8, ops: []const DeviceO
     );
 }
 
+pub fn printAttentionStoreRegionSummary(label: []const u8, ops: []const DeviceOp, units: []const program_mod.ScheduleUnit) void {
+    var fusable: u32 = 0;
+    var same_unit: u32 = 0;
+
+    for (ops, 0..) |op, i| {
+        const att = switch (op) {
+            .attention => |att| att,
+            else => continue,
+        };
+        var scan = i + 1;
+        while (scan < ops.len) : (scan += 1) {
+            const sa = switch (ops[scan]) {
+                .slice_assign => |sa| sa,
+                else => continue,
+            };
+            if (sa.src != att.dst) continue;
+            if (program_mod.attentionSliceStoreCompatible(att, sa) and
+                program_mod.canFuseAttentionStoreSidecar(ops, i, scan, sa))
+            {
+                fusable += 1;
+                if (opsShareScheduleUnit(i, scan, units)) same_unit += 1;
+            }
+            break;
+        }
+    }
+
+    std.debug.print(
+        "Attention store region coverage ({s}): {d}/{d} fusable pairs inside one region unit\n\n",
+        .{ label, same_unit, fusable },
+    );
+}
+
+pub fn printRegionProgramCommandSummary(
+    label: []const u8,
+    alloc: std.mem.Allocator,
+    ops: []const DeviceOp,
+    units: []const program_mod.ScheduleUnit,
+    policy: program_mod.CommandStreamPolicy,
+) !void {
+    var total = program_mod.ProgramCommandSummary{};
+    var regions: u32 = 0;
+    for (units) |unit| {
+        if (unit.kind != .pattern_region) continue;
+        const start: usize = @intCast(unit.op_start);
+        const end = start + @as(usize, unit.op_count);
+        if (end > ops.len) continue;
+        const commands = try program_mod.buildProgramCommands(alloc, ops[start..end], policy);
+        const summary = program_mod.summarizeProgramCommands(commands);
+        alloc.free(commands);
+        regions += 1;
+        total.commands += summary.commands;
+        total.covered_ops += summary.covered_ops;
+        total.estimated_dispatches += summary.estimated_dispatches;
+        total.estimated_saved_dispatches += summary.estimated_saved_dispatches;
+        total.op_commands += summary.op_commands;
+        total.row_chains += summary.row_chains;
+        total.rope_chains += summary.rope_chains;
+        total.rope_batches += summary.rope_batches;
+        total.movement_batches += summary.movement_batches;
+        total.movement_groups += summary.movement_groups;
+        total.movement_group_ops += summary.movement_group_ops;
+        total.attention_chains += summary.attention_chains;
+        total.attention_chain_sidecars += summary.attention_chain_sidecars;
+        total.attention_store_chains += summary.attention_store_chains;
+        total.attention_store_chain_sidecars += summary.attention_store_chain_sidecars;
+        total.attention_batches += summary.attention_batches;
+        total.attention_groups += summary.attention_groups;
+        total.attention_group_ops += summary.attention_group_ops;
+        total.elementwise_batches += summary.elementwise_batches;
+        total.elementwise_ops += summary.elementwise_ops;
+        total.projection_chains += summary.projection_chains;
+        total.projection_chain_sidecars += summary.projection_chain_sidecars;
+        total.projection_groups += summary.projection_groups;
+        total.projection_anchors += summary.projection_anchors;
+        total.projection_sidecars += summary.projection_sidecars;
+        total.max_projection_span_ops = @max(total.max_projection_span_ops, summary.max_projection_span_ops);
+    }
+    std.debug.print("Region-local command rollup ({s}): {d} regions\n", .{ label, regions });
+    printProgramCommandSummary(label, total);
+}
+
+fn opsShareScheduleUnit(a: usize, b: usize, units: []const program_mod.ScheduleUnit) bool {
+    for (units) |unit| {
+        const start: usize = @intCast(unit.op_start);
+        const end = start + @as(usize, unit.op_count);
+        if (a >= start and a < end and b >= start and b < end) return true;
+    }
+    return false;
+}
+
 fn printNeighborhoodKey(comptime width: usize, key: [width]u8, center: usize) void {
     for (key, 0..) |family_id, i| {
         if (i > 0) std.debug.print(" -> ", .{});
@@ -579,6 +670,10 @@ pub fn printTimingBreakdown(label: []const u8, n_tokens: u32, total_ns: u64) voi
 /// during CompiledProgram.execute(). Caller resets explicitly.
 pub const RuntimeProfile = struct {
     time_ns: [n_op_tags]u64 = [_]u64{0} ** n_op_tags,
+    program_command_counts: [n_program_command_kinds]u64 = [_]u64{0} ** n_program_command_kinds,
+    program_command_planned_counts: [n_program_command_kinds]u64 = [_]u64{0} ** n_program_command_kinds,
+    program_command_attempt_counts: [n_program_command_kinds]u64 = [_]u64{0} ** n_program_command_kinds,
+    program_command_failed_counts: [n_program_command_kinds]u64 = [_]u64{0} ** n_program_command_kinds,
     backend_op_count: u64 = 0,
     fallback_op_count: u64 = 0,
     backend_dispatch_count: u64 = 0,
@@ -590,6 +685,22 @@ pub const RuntimeProfile = struct {
 
     pub fn reset(self: *RuntimeProfile) void {
         self.* = .{};
+    }
+
+    pub fn recordProgramCommand(self: *RuntimeProfile, kind: program_mod.ProgramCommandKind) void {
+        self.program_command_counts[@intFromEnum(kind)] +%= 1;
+    }
+
+    pub fn recordProgramCommandPlanned(self: *RuntimeProfile, kind: program_mod.ProgramCommandKind) void {
+        self.program_command_planned_counts[@intFromEnum(kind)] +%= 1;
+    }
+
+    pub fn recordProgramCommandAttempt(self: *RuntimeProfile, kind: program_mod.ProgramCommandKind) void {
+        self.program_command_attempt_counts[@intFromEnum(kind)] +%= 1;
+    }
+
+    pub fn recordProgramCommandFailed(self: *RuntimeProfile, kind: program_mod.ProgramCommandKind) void {
+        self.program_command_failed_counts[@intFromEnum(kind)] +%= 1;
     }
 };
 
@@ -737,6 +848,43 @@ pub fn printRuntimeProfile(rt: RuntimeProfile, est: ProgramEstimates) void {
         std.debug.print("{s:<22} {d:>9.2} {d:>5.1}%  {d:>10.3} {d:>9.1}  {d:>10.4} {d:>8.1}\n", .{ tag_names[idx], t_ms, pct, gflop, gflop_s, gb, gb_s });
     }
     std.debug.print("{s:<22} {d:>9.2}\n\n", .{ "TOTAL", total_ms });
+
+    var printed_commands = false;
+    for (rt.program_command_counts, 0..) |count, i| {
+        if (count == 0) continue;
+        const kind: program_mod.ProgramCommandKind = @enumFromInt(i);
+        if (!printed_commands) {
+            std.debug.print("Program commands encoded:\n", .{});
+            printed_commands = true;
+        }
+        std.debug.print("  {s:<24} {d}\n", .{ kind.label(), count });
+    }
+    if (printed_commands) std.debug.print("\n", .{});
+
+    var printed_planned_commands = false;
+    for (rt.program_command_planned_counts, 0..) |count, i| {
+        if (count == 0) continue;
+        const kind: program_mod.ProgramCommandKind = @enumFromInt(i);
+        if (!printed_planned_commands) {
+            std.debug.print("Program commands planned:\n", .{});
+            printed_planned_commands = true;
+        }
+        std.debug.print("  {s:<24} {d}\n", .{ kind.label(), count });
+    }
+    if (printed_planned_commands) std.debug.print("\n", .{});
+
+    var printed_command_attempts = false;
+    for (rt.program_command_attempt_counts, 0..) |count, i| {
+        const failed = rt.program_command_failed_counts[i];
+        if (count == 0 and failed == 0) continue;
+        const kind: program_mod.ProgramCommandKind = @enumFromInt(i);
+        if (!printed_command_attempts) {
+            std.debug.print("Program command attempts:\n", .{});
+            printed_command_attempts = true;
+        }
+        std.debug.print("  {s:<24} attempts={d} refused={d}\n", .{ kind.label(), count, failed });
+    }
+    if (printed_command_attempts) std.debug.print("\n", .{});
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

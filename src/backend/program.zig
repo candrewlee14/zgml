@@ -907,6 +907,7 @@ fn findAttentionChainCommand(
         else => return null,
     };
     if (attentionSliceAssignOperand(sa, att) == null) return null;
+    if (attentionHasFusableStoreSidecar(ops, start + 1, used)) return null;
 
     var command = ProgramCommand{
         .kind = .attention_chain,
@@ -918,6 +919,37 @@ fn findAttentionChainCommand(
     command.indices[0] = start + 1;
     command.sidecar_indices[0] = start;
     return command;
+}
+
+fn attentionHasFusableStoreSidecar(
+    ops: []const backend_mod.DeviceOp,
+    attention_index: usize,
+    used: ?[]const bool,
+) bool {
+    if (attention_index >= ops.len) return false;
+    if (used) |used_ops| {
+        if (attention_index >= used_ops.len or used_ops[attention_index]) return false;
+    }
+    const att = switch (ops[attention_index]) {
+        .attention => |att| att,
+        else => return false,
+    };
+
+    var scan = attention_index + 1;
+    while (scan < ops.len) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const sa = switch (ops[scan]) {
+            .slice_assign => |sa| sa,
+            else => continue,
+        };
+        if (sa.src != att.dst) continue;
+        if (!attentionSliceStoreCompatible(att, sa)) continue;
+        if (!canFuseAttentionStoreSidecar(ops, attention_index, scan, sa)) continue;
+        return true;
+    }
+    return false;
 }
 
 fn findAttentionStoreChainCommand(
@@ -3155,6 +3187,57 @@ test "program command stream emits attention producer chains" {
     try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.attention_chains);
     try std.testing.expectEqual(@as(u32, 1), summary.attention_chain_sidecars);
+}
+
+test "program command stream preserves attention output store over input sidecar" {
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .slice_assign = .{
+            .dst = 2,
+            .src = 9,
+            .rows = 4,
+            .cols = 4,
+            .dst_base_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 1,
+            .dst_col_stride = 4,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 4,
+        } },
+        testAttention(0),
+        .{ .slice_assign = .{
+            .dst = 9,
+            .src = 4,
+            .rows = 4,
+            .cols = 2,
+            .dst_base_offset = 0,
+            .dst_offset = 8,
+            .dst_row_stride = 1,
+            .dst_col_stride = 4,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 4,
+        } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 0), commands[0].op_start);
+    try std.testing.expectEqual(ProgramCommandKind.attention_store_chain, commands[1].kind);
+    try std.testing.expectEqual(@as(usize, 1), commands[1].indices[0]);
+    try std.testing.expectEqual(@as(?usize, 2), commands[1].sidecar_indices[0]);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 3), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 1), summary.op_commands);
+    try std.testing.expectEqual(@as(u32, 0), summary.attention_chains);
+    try std.testing.expectEqual(@as(u32, 1), summary.attention_store_chains);
 }
 
 test "program command stream emits attention output store chains" {

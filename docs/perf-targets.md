@@ -35,15 +35,15 @@ Current prefill work has a first real device-only path:
 | Path | Prompt/prefill | Runtime placement | Dispatches |
 | --- | ---: | --- | ---: |
 | Current GGUF session path | ~0.9k tok/s | CPU/Accelerate quant path | n/a |
-| Experimental Metal device prefill Q8_0 | ~2.6-2.8k tok/s | 100% backend | ~1,142/call |
+| Experimental Metal device prefill Q8_0 | ~1.7-2.1k tok/s | 100% backend | ~932/call |
 
 Measured with
 `./zig-out/bin/bench-llama-smollm data/smollm/SmolLM-135M.Q8_0.gguf 128 1 3 --metal-prefill-device`.
 This roughly doubles `pp128` while eliminating fallback for the prefill graph,
-but it is still not parity. QMatmul batching plus qmatmul sidecar fusion
-removed about 210 dispatches/call. The next target is reusable layer-stage
-lowering that cuts dispatch count by at least an order of magnitude without
-adding model special cases to the public API.
+but it is still not parity. QMatmul batching, qmatmul sidecar fusion, movement
+groups, and attention output-store chains now remove about 722 dispatches/call.
+The next target is reusable layer-stage lowering that cuts dispatch count by at
+least an order of magnitude without adding model special cases to the public API.
 
 The stage planning abstraction now lives in `src/backend/program.zig` as a pure
 `StagePolicy`: a named anchored region plus a backend pattern id. Metal uses it
@@ -104,10 +104,12 @@ kernels to carry those sidecars without losing the multi-anchor dispatch win.
 Attention output assembly now follows the same rule: the cached LLaMA forward
 uses a scratch concat buffer that is fully overwritten by per-head stores instead
 of emitting a fake zero-fill dependency. The command stream can therefore attach
-270 delayed attention output stores to their producer attention ops. The current
-runtime still executes ~1,142 dispatches/call because region windows only realize
-the immediate subset today; the pure command target is ~932 dispatches before
-the next region-execution cleanup.
+270 delayed attention output stores to their producer attention ops. Dynamic
+slice-store patching now only applies to KV-cache writes, so static
+`slice_assign_rows` output stores keep their row offsets after refresh. Metal's
+runtime command stream now matches the pure prefill target at ~932
+dispatches/call with no backend fallback; the next step is coarser layer command
+realization, not more local pair fusers.
 
 ## Acceptance Thresholds
 

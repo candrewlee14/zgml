@@ -3412,12 +3412,6 @@ const CompiledProgram = struct {
         self.runtime_profile.time_ns[tag] +%= elapsed_ns;
     }
 
-    fn recordRegionFusedPair(self: *CompiledProgram, a: backend_mod.DeviceOp, b: backend_mod.DeviceOp, elapsed_ns: u64) void {
-        const first = elapsed_ns / 2;
-        self.recordRegionBackendOp(a, first);
-        self.recordRegionBackendOp(b, elapsed_ns - first);
-    }
-
     fn recordRegionFusedRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, elapsed_ns: u64) void {
         if (ops.len == 0) return;
         const per_op = elapsed_ns / ops.len;
@@ -3489,41 +3483,6 @@ const CompiledProgram = struct {
         };
     }
 
-    fn tryEncodeElementwiseBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: []bool) bool {
-        if (start >= ops.len or skipped[start]) return false;
-        const first = switch (ops[start]) {
-            .elementwise => |e| e,
-            else => return false,
-        };
-        if (!canEncodeElementwiseBatchOp(first)) return false;
-
-        var indices: [MAX_ELEMENTWISE_BATCH]usize = undefined;
-        indices[0] = start;
-        var count: usize = 1;
-
-        var scan = start + 1;
-        while (scan < ops.len and count < MAX_ELEMENTWISE_BATCH) : (scan += 1) {
-            if (skipped[scan]) continue;
-            const e = switch (ops[scan]) {
-                .elementwise => |e| e,
-                else => continue,
-            };
-            if (!canEncodeElementwiseBatchOp(e)) continue;
-            if (!program_mod.canHoistElementwiseTo(ops, start, scan, e)) continue;
-            if (program_mod.elementwiseConflictsSelected(ops, indices[0..count], e)) continue;
-            indices[count] = scan;
-            count += 1;
-        }
-
-        if (count < 2) return false;
-
-        const t0 = nowNs();
-        self.encodeElementwiseBatch(ops, indices[0..count]);
-        self.recordRegionFusedRunFromIndices(ops, indices[0..count], @intCast(nowNs() - t0));
-        for (indices[0..count]) |idx| skipped[idx] = true;
-        return true;
-    }
-
     fn tryEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
         const t0 = nowNs();
         const encoded = if (computeDispatchSpec(op)) |spec| blk: {
@@ -3570,41 +3529,12 @@ const CompiledProgram = struct {
         return encoded;
     }
 
-    fn tryEncodeRegionFusedPair(self: *CompiledProgram, a: backend_mod.DeviceOp, b: backend_mod.DeviceOp) bool {
-        const t0 = nowNs();
-        const encoded = switch (a) {
-            .qmatmul => |q| switch (b) {
-                .slice_assign => |sa| if (q.M == 1) self.encodeQMatvecSliceAssign(q, sa) else self.encodeQMatmulSliceAssign(q, sa),
-                .elementwise => |e| self.encodeQMatmulElementwise(q, e),
-                .fused_elementwise => |fe| self.encodeQMatmulFusedElementwise(q, fe),
-                else => false,
-            },
-            .rope => |rr| switch (b) {
-                .slice_assign => |sa| blk: {
-                    if (!canFuseRopeSliceAssign(rr, sa)) break :blk false;
-                    self.encodeRopeSliceAssign(rr, sa);
-                    break :blk true;
-                },
-                else => false,
-            },
-            else => false,
-        };
-        if (encoded) {
-            self.recordRegionFusedPair(a, b, @intCast(nowNs() - t0));
-        }
-        return encoded;
-    }
-
-    fn tryEncodeProgramCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, start: usize, skipped: []bool) usize {
-        const command = program_mod.findProgramCommand(
-            ops,
-            start,
-            program_mod.CommandStreamPolicy.metal(MAX_QMATVEC_BATCH, MAX_QMATMUL_BATCH),
-            skipped,
-        ) orelse return 0;
+    fn tryEncodeExactProgramCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        const start: usize = @intCast(command.op_start);
         const end = start + @as(usize, command.op_count);
-        if (end > ops.len) return 0;
+        if (end > ops.len) return false;
 
+        self.runtime_profile.recordProgramCommandAttempt(command.kind);
         const t0 = nowNs();
         const encoded = switch (command.kind) {
             .op => false,
@@ -3709,42 +3639,69 @@ const CompiledProgram = struct {
             },
         };
 
-        if (!encoded) return 0;
+        if (!encoded) {
+            self.runtime_profile.recordProgramCommandFailed(command.kind);
+            return false;
+        }
         if (command.kind == .attention_store_chain) {
             const record_indices = [_]usize{ command.indices[0], command.sidecar_indices[0] orelse command.indices[0] };
             self.recordRegionFusedRunFromIndices(ops, record_indices[0..], @intCast(nowNs() - t0));
         } else if (command.kind != .projection_group and command.kind != .elementwise_batch and command.kind != .attention_group and command.kind != .movement_group) {
             self.recordRegionFusedRun(ops[start..end], @intCast(nowNs() - t0));
         }
-        program_mod.markProgramCommandUsed(skipped, command);
-        return command.advanceCount();
+        self.runtime_profile.recordProgramCommand(command.kind);
+        return true;
     }
 
-    fn tryEncodeAttentionBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) usize {
-        const n = self.attentionBatchRunLen(ops);
-        if (n == 0) return 0;
-        const t0 = nowNs();
-        self.encodeAttentionBatch(ops, n);
-        self.recordRegionFusedRun(ops[0..n], @intCast(nowNs() - t0));
-        return n;
+    fn appendCommandIndex(indices: *[program_mod.max_projection_group_anchors * 2]usize, count: *usize, idx: usize) void {
+        for (indices[0..count.*]) |existing| {
+            if (existing == idx) return;
+        }
+        if (count.* >= indices.len) return;
+        indices[count.*] = idx;
+        count.* += 1;
     }
 
-    fn tryEncodeRopeBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) usize {
-        const n = ropeBatchRunLen(ops);
-        if (n == 0) return 0;
-        const t0 = nowNs();
-        self.encodeRopeBatch(ops, n);
-        self.recordRegionFusedRun(ops[0..n], @intCast(nowNs() - t0));
-        return n;
-    }
-
-    fn tryEncodeSliceAssignBatchRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) usize {
-        const n = sliceAssignBatchRunLen(ops);
-        if (n == 0) return 0;
-        const t0 = nowNs();
-        self.encodeSliceAssignBatch(ops, n);
-        self.recordRegionFusedRun(ops[0..n], @intCast(nowNs() - t0));
-        return n;
+    fn tryEncodeProgramCommandIndividually(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        switch (command.kind) {
+            .op, .row_chain, .rope_chain, .rope_batch, .movement_batch, .attention_batch => {
+                const start: usize = @intCast(command.op_start);
+                const end = start + @as(usize, command.op_count);
+                if (end > ops.len) return false;
+                for (ops[start..end]) |op| {
+                    if (!self.tryEncodeRegionGpuOp(op)) return false;
+                }
+                return true;
+            },
+            .projection_chain,
+            .projection_group,
+            .attention_chain,
+            .attention_store_chain,
+            .attention_group,
+            .movement_group,
+            .elementwise_batch,
+            => {
+                var indices: [program_mod.max_projection_group_anchors * 2]usize = undefined;
+                var count: usize = 0;
+                for (command.anchorIndices()) |idx| {
+                    if (idx >= ops.len) return false;
+                    appendCommandIndex(&indices, &count, idx);
+                }
+                if (command.sidecar_count > 0) {
+                    for (command.sidecarIndices()) |maybe_idx| {
+                        if (maybe_idx) |idx| {
+                            if (idx >= ops.len) return false;
+                            appendCommandIndex(&indices, &count, idx);
+                        }
+                    }
+                }
+                std.mem.sort(usize, indices[0..count], {}, std.sort.asc(usize));
+                for (indices[0..count]) |idx| {
+                    if (!self.tryEncodeRegionGpuOp(ops[idx])) return false;
+                }
+                return true;
+            },
+        }
     }
 
     fn tryEncodeRegionGpuOps(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) bool {
@@ -3756,42 +3713,31 @@ const CompiledProgram = struct {
         }
 
         var skipped = [_]bool{false} ** 256;
-        var i: usize = 0;
-        while (i < ops.len) {
-            if (skipped[i]) {
-                i += 1;
+        const commands = program_mod.buildProgramCommands(
+            self.alloc,
+            ops,
+            program_mod.CommandStreamPolicy.metal(MAX_QMATVEC_BATCH, MAX_QMATMUL_BATCH),
+        ) catch return false;
+        defer self.alloc.free(commands);
+
+        for (commands) |command| {
+            self.runtime_profile.recordProgramCommandPlanned(command.kind);
+            const start: usize = @intCast(command.op_start);
+            if (start >= ops.len) return false;
+            if (command.kind == .op) {
+                if (skipped[start]) continue;
+                if (!self.tryEncodeRegionGpuOp(ops[start])) return false;
+                program_mod.markProgramCommandUsed(skipped[0..ops.len], command);
                 continue;
             }
-            const command_advance = self.tryEncodeProgramCommand(ops, i, skipped[0..ops.len]);
-            if (command_advance > 0) {
-                i += command_advance;
+
+            if (self.tryEncodeExactProgramCommand(ops, command)) {
+                program_mod.markProgramCommandUsed(skipped[0..ops.len], command);
                 continue;
             }
-            const rope_batch_len = self.tryEncodeRopeBatchRun(ops[i..]);
-            if (rope_batch_len > 0) {
-                i += rope_batch_len;
-                continue;
-            }
-            const slice_assign_batch_len = self.tryEncodeSliceAssignBatchRun(ops[i..]);
-            if (slice_assign_batch_len > 0) {
-                i += slice_assign_batch_len;
-                continue;
-            }
-            const attention_batch_len = self.tryEncodeAttentionBatchRun(ops[i..]);
-            if (attention_batch_len > 0) {
-                i += attention_batch_len;
-                continue;
-            }
-            if (i + 1 < ops.len and self.tryEncodeRegionFusedPair(ops[i], ops[i + 1])) {
-                i += 2;
-                continue;
-            }
-            if (self.tryEncodeElementwiseBatchRun(ops, i, skipped[0..ops.len])) {
-                i += 1;
-                continue;
-            }
-            if (!self.tryEncodeRegionGpuOp(ops[i])) return false;
-            i += 1;
+
+            if (!self.tryEncodeProgramCommandIndividually(ops, command)) return false;
+            program_mod.markProgramCommandUsed(skipped[0..ops.len], command);
         }
         return true;
     }
