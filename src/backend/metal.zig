@@ -601,6 +601,79 @@ const shader_source =
     \\    dst[dst_col + (i + p.half_d) * p.dst_row_stride] = y_hi;
     \\}
     \\
+    \\struct RopeSliceAssignBatchParams {
+    \\    uint n_ops; uint max_n;
+    \\    uint half_d[MAX_ROPE_BATCH];
+    \\    uint seq_len[MAX_ROPE_BATCH];
+    \\    uint src_off[MAX_ROPE_BATCH];
+    \\    uint cs_off[MAX_ROPE_BATCH];
+    \\    uint src_rs[MAX_ROPE_BATCH];
+    \\    uint src_cs[MAX_ROPE_BATCH];
+    \\    uint cs_cs[MAX_ROPE_BATCH];
+    \\    uint dst_offset[MAX_ROPE_BATCH];
+    \\    uint dst_row_stride[MAX_ROPE_BATCH];
+    \\    uint dst_col_stride[MAX_ROPE_BATCH];
+    \\};
+    \\
+    \\kernel void rope_slice_assign_batch_f32(
+    \\    device const float* src0    [[buffer(0)]],
+    \\    device const float* src1    [[buffer(1)]],
+    \\    device const float* src2    [[buffer(2)]],
+    \\    device const float* src3    [[buffer(3)]],
+    \\    device const float* src4    [[buffer(4)]],
+    \\    device const float* src5    [[buffer(5)]],
+    \\    device const float* src6    [[buffer(6)]],
+    \\    device const float* src7    [[buffer(7)]],
+    \\    device const float* src8    [[buffer(8)]],
+    \\    device const float* src9    [[buffer(9)]],
+    \\    device const float* src10   [[buffer(10)]],
+    \\    device const float* src11   [[buffer(11)]],
+    \\    device const float* src12   [[buffer(12)]],
+    \\    device const float* src13   [[buffer(13)]],
+    \\    device const float* src14   [[buffer(14)]],
+    \\    device const float* src15   [[buffer(15)]],
+    \\    device const float* cos_sin [[buffer(16)]],
+    \\    device float*       dst     [[buffer(17)]],
+    \\    constant RopeSliceAssignBatchParams& p [[buffer(18)]],
+    \\    uint2 gid [[thread_position_in_grid]]
+    \\) {
+    \\    uint local = gid.x;
+    \\    uint slot = gid.y;
+    \\    if (slot >= p.n_ops || local >= p.half_d[slot] * p.seq_len[slot]) return;
+    \\    uint col = local / p.half_d[slot];
+    \\    uint i   = local % p.half_d[slot];
+    \\    device const float* src = src0;
+    \\    switch (slot) {
+    \\        case 1: src = src1; break;
+    \\        case 2: src = src2; break;
+    \\        case 3: src = src3; break;
+    \\        case 4: src = src4; break;
+    \\        case 5: src = src5; break;
+    \\        case 6: src = src6; break;
+    \\        case 7: src = src7; break;
+    \\        case 8: src = src8; break;
+    \\        case 9: src = src9; break;
+    \\        case 10: src = src10; break;
+    \\        case 11: src = src11; break;
+    \\        case 12: src = src12; break;
+    \\        case 13: src = src13; break;
+    \\        case 14: src = src14; break;
+    \\        case 15: src = src15; break;
+    \\        default: break;
+    \\    }
+    \\
+    \\    float cos_val = cos_sin[p.cs_off[slot] + col * p.cs_cs[slot] + i];
+    \\    float sin_val = cos_sin[p.cs_off[slot] + col * p.cs_cs[slot] + p.half_d[slot] + i];
+    \\    float x_lo = src[p.src_off[slot] + col * p.src_cs[slot] + i * p.src_rs[slot]];
+    \\    float x_hi = src[p.src_off[slot] + col * p.src_cs[slot] + (i + p.half_d[slot]) * p.src_rs[slot]];
+    \\    float y_lo = x_lo * cos_val - x_hi * sin_val;
+    \\    float y_hi = x_hi * cos_val + x_lo * sin_val;
+    \\
+    \\    uint dst_col = p.dst_offset[slot] + col * p.dst_col_stride[slot];
+    \\    dst[dst_col + i * p.dst_row_stride[slot]] = y_lo;
+    \\    dst[dst_col + (i + p.half_d[slot]) * p.dst_row_stride[slot]] = y_hi;
+    \\}
+    \\
     \\// ── QMatmul with an attached strided slice store ────────
     \\
     \\struct QMatmulSliceAssignParams {
@@ -2107,6 +2180,21 @@ const RopeSliceAssignParams = extern struct {
     dst_col_stride: u32,
 };
 
+const RopeSliceAssignBatchParams = extern struct {
+    n_ops: u32,
+    max_n: u32,
+    half_d: [MAX_ROPE_BATCH]u32,
+    seq_len: [MAX_ROPE_BATCH]u32,
+    src_off: [MAX_ROPE_BATCH]u32,
+    cs_off: [MAX_ROPE_BATCH]u32,
+    src_rs: [MAX_ROPE_BATCH]u32,
+    src_cs: [MAX_ROPE_BATCH]u32,
+    cs_cs: [MAX_ROPE_BATCH]u32,
+    dst_offset: [MAX_ROPE_BATCH]u32,
+    dst_row_stride: [MAX_ROPE_BATCH]u32,
+    dst_col_stride: [MAX_ROPE_BATCH]u32,
+};
+
 const QMatmulSliceAssignParams = extern struct {
     M: u32,
     N: u32,
@@ -2732,6 +2820,7 @@ pub const MetalBackend = struct {
     rope_pipeline: *anyopaque,
     rope_batch_pipeline: *anyopaque,
     rope_slice_assign_pipeline: *anyopaque,
+    rope_slice_assign_batch_pipeline: *anyopaque,
     qmatmul_slice_assign_pipeline: *anyopaque,
     qmatmul_elementwise_pipeline: *anyopaque,
     qmatmul_fused_ew_pipeline: *anyopaque,
@@ -2783,6 +2872,8 @@ pub const MetalBackend = struct {
         errdefer c.mtl_release(rope_batch_pipeline);
         const rope_slice_assign_pipeline = c.mtl_create_pipeline(device, library, "rope_slice_assign_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(rope_slice_assign_pipeline);
+        const rope_slice_assign_batch_pipeline = c.mtl_create_pipeline(device, library, "rope_slice_assign_batch_f32") orelse return error.PipelineCreateFailed;
+        errdefer c.mtl_release(rope_slice_assign_batch_pipeline);
         const qmatmul_slice_assign_pipeline = c.mtl_create_pipeline(device, library, "qmatmul_slice_assign_f32") orelse return error.PipelineCreateFailed;
         errdefer c.mtl_release(qmatmul_slice_assign_pipeline);
         const qmatmul_elementwise_pipeline = c.mtl_create_pipeline(device, library, "qmatmul_elementwise_f32") orelse return error.PipelineCreateFailed;
@@ -2828,6 +2919,7 @@ pub const MetalBackend = struct {
             .rope_pipeline = rope_pipeline,
             .rope_batch_pipeline = rope_batch_pipeline,
             .rope_slice_assign_pipeline = rope_slice_assign_pipeline,
+            .rope_slice_assign_batch_pipeline = rope_slice_assign_batch_pipeline,
             .qmatmul_slice_assign_pipeline = qmatmul_slice_assign_pipeline,
             .qmatmul_elementwise_pipeline = qmatmul_elementwise_pipeline,
             .qmatmul_fused_ew_pipeline = qmatmul_fused_ew_pipeline,
@@ -2866,6 +2958,7 @@ pub const MetalBackend = struct {
         c.mtl_release(self.qmatmul_fused_ew_pipeline);
         c.mtl_release(self.qmatmul_elementwise_pipeline);
         c.mtl_release(self.qmatmul_slice_assign_pipeline);
+        c.mtl_release(self.rope_slice_assign_batch_pipeline);
         c.mtl_release(self.rope_slice_assign_pipeline);
         c.mtl_release(self.rope_batch_pipeline);
         c.mtl_release(self.rope_pipeline);
@@ -3484,6 +3577,73 @@ const CompiledProgram = struct {
             .dst_col_stride = sa.dst_col_stride,
         };
         self.encodeTyped(RopeSliceAssignParams, self.backend.rope_slice_assign_pipeline, &buffers, params, 3, .{ .gx = linearGrid(rr.half_d * rr.seq_len) }, WG_SIZE);
+    }
+
+    fn canEncodeRopeStoreGroupCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        _ = self;
+        if (command.anchor_count < 2 or command.anchor_count > MAX_ROPE_BATCH) return false;
+        if (command.sidecar_count != command.anchor_count) return false;
+        const first_rope_idx = command.indices[0];
+        const first_sa_idx = command.sidecar_indices[0] orelse return false;
+        if (first_rope_idx >= ops.len or first_sa_idx >= ops.len) return false;
+        const first_rope = switch (ops[first_rope_idx]) {
+            .rope => |rr| rr,
+            else => return false,
+        };
+        const first_sa = switch (ops[first_sa_idx]) {
+            .slice_assign => |sa| sa,
+            else => return false,
+        };
+        if (!program_mod.ropeSliceAssignCompatible(first_rope, first_sa)) return false;
+
+        var i: usize = 1;
+        while (i < command.anchor_count) : (i += 1) {
+            const rope_idx = command.indices[i];
+            const sa_idx = command.sidecar_indices[i] orelse return false;
+            if (rope_idx >= ops.len or sa_idx >= ops.len) return false;
+            const rr = switch (ops[rope_idx]) {
+                .rope => |rr| rr,
+                else => return false,
+            };
+            const sa = switch (ops[sa_idx]) {
+                .slice_assign => |sa| sa,
+                else => return false,
+            };
+            if (!program_mod.ropeSliceAssignCompatible(rr, sa)) return false;
+            if (!program_mod.ropeStoreGroupCompatible(first_rope, first_sa, rr, sa)) return false;
+        }
+        return true;
+    }
+
+    fn encodeRopeStoreGroupCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) void {
+        const first_rope = ops[command.indices[0]].rope;
+        const first_sa = ops[command.sidecar_indices[0].?].slice_assign;
+        var buffers: [MAX_ROPE_BATCH + 2]DeviceBuffer = undefined;
+        for (buffers[0..MAX_ROPE_BATCH]) |*buffer| {
+            buffer.* = self.device_bufs[first_rope.src];
+        }
+        buffers[MAX_ROPE_BATCH] = self.device_bufs[first_rope.cos_sin];
+        buffers[MAX_ROPE_BATCH + 1] = self.device_bufs[first_sa.dst];
+        var params = std.mem.zeroes(RopeSliceAssignBatchParams);
+        params.n_ops = command.anchor_count;
+        var i: usize = 0;
+        while (i < command.anchor_count) : (i += 1) {
+            const rr = ops[command.indices[i]].rope;
+            const sa = ops[command.sidecar_indices[i].?].slice_assign;
+            buffers[i] = self.device_bufs[rr.src];
+            params.half_d[i] = rr.half_d;
+            params.seq_len[i] = rr.seq_len;
+            params.src_off[i] = rr.src_off;
+            params.cs_off[i] = rr.cs_off;
+            params.src_rs[i] = rr.src_rs;
+            params.src_cs[i] = rr.src_cs;
+            params.cs_cs[i] = rr.cs_cs;
+            params.dst_offset[i] = sa.dst_offset;
+            params.dst_row_stride[i] = sa.dst_row_stride;
+            params.dst_col_stride[i] = sa.dst_col_stride;
+            params.max_n = @max(params.max_n, rr.half_d * rr.seq_len);
+        }
+        self.encodeTyped(RopeSliceAssignBatchParams, self.backend.rope_slice_assign_batch_pipeline, &buffers, params, MAX_ROPE_BATCH + 2, .{ .gx = linearGrid(params.max_n), .gy = command.anchor_count }, WG_SIZE);
     }
 
     fn canFuseQMatvecSliceAssign(self: *CompiledProgram, q: anytype, sa: anytype) bool {
@@ -4356,6 +4516,11 @@ const CompiledProgram = struct {
                 self.encodeRopeBatch(ops[start..], n);
                 break :blk true;
             },
+            .rope_store_group => blk: {
+                if (!self.canEncodeRopeStoreGroupCommand(ops, command)) break :blk false;
+                self.encodeRopeStoreGroupCommand(ops, command);
+                break :blk true;
+            },
             .movement_batch => blk: {
                 const n: usize = @intCast(command.op_count);
                 if (sliceAssignBatchRunLen(ops[start..]) < n) break :blk false;
@@ -4410,7 +4575,7 @@ const CompiledProgram = struct {
             self.runtime_profile.recordProgramCommandFailed(command.kind);
             return false;
         }
-        if (command.kind == .attention_store_chain or command.kind == .attention_store_group or command.kind == .rope_attention_store_chain or command.kind == .rope_attention_store_group) {
+        if (command.kind == .rope_store_group or command.kind == .attention_store_chain or command.kind == .attention_store_group or command.kind == .rope_attention_store_chain or command.kind == .rope_attention_store_group) {
             var record_indices: [program_mod.max_projection_group_anchors * 2]usize = undefined;
             var record_count: usize = 0;
             for (command.anchorIndices()) |idx| appendCommandIndex(&record_indices, &record_count, idx);
@@ -4447,6 +4612,7 @@ const CompiledProgram = struct {
             },
             .projection_chain,
             .projection_group,
+            .rope_store_group,
             .attention_chain,
             .attention_store_chain,
             .attention_store_group,
@@ -5967,6 +6133,127 @@ test "metal backend fuses rope attention output store chains" {
     const rt = be.getRuntimeProfile(handle).?;
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.rope_attention_store_chain)]);
+}
+
+test "metal backend groups rope slice stores" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var src0 = [_]f32{ 1, 0 };
+    var src1 = [_]f32{ 0, 1 };
+    var cos_sin = [_]f32{ 1, 0 };
+    var dst = [_]f32{ -1, -1, -1, -1 };
+    var scratch = [_]f32{ -9, -9 };
+    var q_out = [_]f32{0} ** 2;
+    const qdata = [_]i8{
+        1, 0,
+        0, 1,
+    };
+    const scales = [_]f32{ 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 2, .cols = 2, .block_size = 2 }};
+
+    var ops: [11]backend_mod.DeviceOp = undefined;
+    for (ops[0..7]) |*op| {
+        op.* = .{ .qmatmul = .{
+            .dst = 4,
+            .input = 0,
+            .weight_idx = 0,
+            .M = 1,
+            .N = 2,
+            .K = 2,
+        } };
+    }
+    ops[7] = .{ .rope = .{
+        .dst = 3,
+        .src = 0,
+        .cos_sin = 1,
+        .half_d = 1,
+        .seq_len = 1,
+        .src_off = 0,
+        .cs_off = 0,
+        .dst_off = 0,
+        .src_rs = 1,
+        .src_cs = 2,
+        .cs_cs = 1,
+    } };
+    ops[8] = .{ .slice_assign = .{
+        .dst = 2,
+        .src = 3,
+        .rows = 2,
+        .cols = 1,
+        .dst_base_offset = 0,
+        .dst_offset = 0,
+        .dst_row_stride = 1,
+        .dst_col_stride = 2,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 2,
+        .patch_stride = 2,
+    } };
+    ops[9] = .{ .rope = .{
+        .dst = 3,
+        .src = 5,
+        .cos_sin = 1,
+        .half_d = 1,
+        .seq_len = 1,
+        .src_off = 0,
+        .cs_off = 0,
+        .dst_off = 0,
+        .src_rs = 1,
+        .src_cs = 2,
+        .cs_cs = 1,
+    } };
+    ops[10] = .{ .slice_assign = .{
+        .dst = 2,
+        .src = 3,
+        .rows = 2,
+        .cols = 1,
+        .dst_base_offset = 0,
+        .dst_offset = 2,
+        .dst_row_stride = 1,
+        .dst_col_stride = 2,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 2,
+        .patch_stride = 2,
+    } };
+    const buf_sizes = [_]usize{ 2, 2, 4, 2, 2, 2 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&src0), .size = 2 * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&cos_sin), .size = 2 * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&dst), .size = 4 * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&scratch), .size = 2 * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&q_out), .size = 2 * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&src1), .size = 2 * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 6,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var got: [4]f32 = undefined;
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 2, .host_ptr = @ptrCast(&got), .size = 4 * 4 }};
+    be.executeProgram(handle, &.{}, &out);
+
+    const expected = [_]f32{ 1, 0, 0, 1 };
+    for (expected, got) |want, actual| {
+        try std.testing.expectApproxEqAbs(want, actual, 1e-5);
+    }
+
+    const rt = be.getRuntimeProfile(handle).?;
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.rope_store_group)]);
 }
 
 test "metal backend groups rope attention output stores with aliased scratch" {

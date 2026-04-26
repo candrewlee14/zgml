@@ -297,6 +297,7 @@ pub const ProgramCommandKind = enum {
     row_chain,
     rope_chain,
     rope_batch,
+    rope_store_group,
     movement_batch,
     movement_group,
     attention_chain,
@@ -316,6 +317,7 @@ pub const ProgramCommandKind = enum {
             .row_chain => "row_chain",
             .rope_chain => "rope_chain",
             .rope_batch => "rope_batch",
+            .rope_store_group => "rope_store_group",
             .movement_batch => "movement_batch",
             .movement_group => "movement_group",
             .attention_chain => "attention_chain",
@@ -443,7 +445,7 @@ pub const ProgramCommand = struct {
     pub fn coveredOpCount(self: ProgramCommand) u32 {
         return switch (self.kind) {
             .projection_group, .projection_chain => self.anchor_count + self.sidecar_count,
-            .attention_chain, .attention_store_chain, .attention_store_group, .rope_attention_store_chain, .rope_attention_store_group => self.anchor_count + self.sidecar_count,
+            .rope_store_group, .attention_chain, .attention_store_chain, .attention_store_group, .rope_attention_store_chain, .rope_attention_store_group => self.anchor_count + self.sidecar_count,
             .attention_group => self.anchor_count,
             .movement_group => self.anchor_count,
             .elementwise_batch => self.anchor_count,
@@ -453,7 +455,7 @@ pub const ProgramCommand = struct {
 
     pub fn advanceCount(self: ProgramCommand) u32 {
         return switch (self.kind) {
-            .projection_group, .elementwise_batch, .attention_store_chain, .attention_store_group, .rope_attention_store_chain, .rope_attention_store_group, .attention_group, .movement_group => 1,
+            .projection_group, .elementwise_batch, .rope_store_group, .attention_store_chain, .attention_store_group, .rope_attention_store_chain, .rope_attention_store_group, .attention_group, .movement_group => 1,
             else => self.op_count,
         };
     }
@@ -476,6 +478,9 @@ pub const ProgramCommandSummary = struct {
     row_chains: u32 = 0,
     rope_chains: u32 = 0,
     rope_batches: u32 = 0,
+    rope_store_groups: u32 = 0,
+    rope_store_group_ops: u32 = 0,
+    rope_store_group_sidecars: u32 = 0,
     movement_batches: u32 = 0,
     movement_groups: u32 = 0,
     movement_group_ops: u32 = 0,
@@ -543,6 +548,20 @@ pub const EarlyRopeAttentionStoreGroupCandidateSummary = struct {
     rope_hoist_rejects: u32 = 0,
     attention_hoist_rejects: u32 = 0,
     selected_conflict_rejects: u32 = 0,
+    formed_groups: u32 = 0,
+    grouped_pairs: u32 = 0,
+    max_group_pairs: u32 = 0,
+};
+
+pub const RopeStoreGroupCandidateSummary = struct {
+    anchors: u32 = 0,
+    first_pair_missing: u32 = 0,
+    candidate_ropes: u32 = 0,
+    geometry_rejects: u32 = 0,
+    pair_missing_rejects: u32 = 0,
+    hoist_rejects: u32 = 0,
+    selected_conflict_rejects: u32 = 0,
+    external_user_rejects: u32 = 0,
     formed_groups: u32 = 0,
     grouped_pairs: u32 = 0,
     max_group_pairs: u32 = 0,
@@ -966,6 +985,12 @@ fn findProgramCommandWithExecuted(
         }
     }
 
+    if (op == .rope and policy.max_rope_batch >= 2) {
+        if (findRopeStoreGroupCommand(ops, start, policy, used, executed)) |command| {
+            return command;
+        }
+    }
+
     if (policy.stage_commands) {
         if (findStageCommand(ops, start)) |stage_command| {
             if (!commandRangeTouchesUsed(stage_command.op_start, stage_command.op_count, used)) {
@@ -1080,6 +1105,273 @@ fn attentionHasFusableStoreSidecar(
         return true;
     }
     return false;
+}
+
+const RopeStorePair = struct {
+    sidecar_index: usize,
+};
+
+fn findRopeStoreGroupCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: CommandStreamPolicy,
+    used: ?[]const bool,
+    executed: ?[]const bool,
+) ?ProgramCommand {
+    if (start >= ops.len) return null;
+    if (used) |used_ops| {
+        if (start >= used_ops.len or used_ops[start]) return null;
+    }
+    const max_pairs: usize = @intCast(@min(policy.max_rope_batch, max_projection_group_anchors));
+    if (max_pairs < 2) return null;
+
+    const first_pair = findRopeStorePair(ops, start, used) orelse return null;
+    const first_rope = ops[start].rope;
+    const first_sa = ops[first_pair.sidecar_index].slice_assign;
+
+    var command = ProgramCommand{
+        .kind = .rope_store_group,
+        .op_start = @intCast(start),
+        .op_count = 1,
+        .anchor_count = 0,
+        .sidecar_count = 0,
+    };
+    appendRopeStorePair(&command, start, first_pair.sidecar_index, start);
+
+    var scan = start + 1;
+    while (scan < ops.len and command.anchor_count < max_pairs) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const rr = switch (ops[scan]) {
+            .rope => |rr| rr,
+            else => continue,
+        };
+        const pair = findRopeStorePair(ops, scan, used) orelse continue;
+        const sa = ops[pair.sidecar_index].slice_assign;
+        if (!ropeStoreGroupCompatible(first_rope, first_sa, rr, sa)) continue;
+
+        var candidate = command;
+        if (candidate.anchor_count + 1 > max_projection_group_anchors) break;
+        appendRopeStorePair(&candidate, scan, pair.sidecar_index, start);
+        if (!canHoistRopeStorePairToGroup(ops, start, scan, pair.sidecar_index, rr, sa, &candidate, executed)) continue;
+        if (ropeStorePairConflictsSelected(ops, &command, scan, sa)) continue;
+
+        command = candidate;
+    }
+
+    if (ropeStoreGroupOutputsHaveExternalUsers(ops, &command)) return null;
+    return if (command.anchor_count >= 2) command else null;
+}
+
+fn findRopeStorePair(
+    ops: []const backend_mod.DeviceOp,
+    rope_index: usize,
+    used: ?[]const bool,
+) ?RopeStorePair {
+    if (rope_index + 1 >= ops.len) return null;
+    if (used) |used_ops| {
+        if (rope_index >= used_ops.len or used_ops[rope_index]) return null;
+        if (rope_index + 1 >= used_ops.len or used_ops[rope_index + 1]) return null;
+    }
+    if (!isRopeSliceAssignChain(ops[rope_index], ops[rope_index + 1])) return null;
+    return .{ .sidecar_index = rope_index + 1 };
+}
+
+fn appendRopeStorePair(
+    command: *ProgramCommand,
+    rope_index: usize,
+    sidecar_index: usize,
+    group_start: usize,
+) void {
+    const slot = command.anchor_count;
+    command.indices[slot] = rope_index;
+    command.sidecar_indices[slot] = sidecar_index;
+    command.anchor_count += 1;
+    command.sidecar_count += 1;
+    command.op_count = @intCast(@max(
+        group_start + @as(usize, command.op_count),
+        sidecar_index + 1,
+    ) - group_start);
+}
+
+fn canHoistRopeStorePairToGroup(
+    ops: []const backend_mod.DeviceOp,
+    group_start: usize,
+    rope_index: usize,
+    sidecar_index: usize,
+    rr: anytype,
+    sa: anytype,
+    command: *const ProgramCommand,
+    executed: ?[]const bool,
+) bool {
+    const rope_access = opAccessSpans(.{ .rope = rr });
+    for (ops[group_start..rope_index], group_start..) |op, idx| {
+        if (commandContainsIndex(command, idx)) continue;
+        if (executed) |executed_ops| {
+            if (idx < executed_ops.len and executed_ops[idx]) continue;
+        }
+        for (rope_access.readSpans()) |read| {
+            if (opWritesSpan(op, read)) return false;
+        }
+        if (rope_access.read_overflow and (opWritesBuffer(op, rr.src) or opWritesBuffer(op, rr.cos_sin))) return false;
+    }
+
+    const sidecar_access = opAccessSpans(.{ .slice_assign = sa });
+    for (ops[group_start..sidecar_index], group_start..) |op, idx| {
+        if (commandContainsIndex(command, idx)) continue;
+        if (executed) |executed_ops| {
+            if (idx < executed_ops.len and executed_ops[idx]) continue;
+        }
+        for (sidecar_access.writeSpans()) |write| {
+            if (opTouchesSpan(op, write)) return false;
+        }
+        if (sidecar_access.write_overflow and opTouchesBuffer(op, sa.dst)) return false;
+    }
+
+    return true;
+}
+
+fn ropeStorePairConflictsSelected(
+    ops: []const backend_mod.DeviceOp,
+    command: *const ProgramCommand,
+    rope_index: usize,
+    sa: anytype,
+) bool {
+    const rope_op = ops[rope_index];
+    const sidecar_op: backend_mod.DeviceOp = .{ .slice_assign = sa };
+    const sidecar_access = opAccessSpans(sidecar_op);
+    for (command.anchorIndices()) |idx| {
+        for (sidecar_access.writeSpans()) |write| {
+            if (opReadsSpan(ops[idx], write)) return true;
+        }
+        if (sidecar_access.write_overflow and opReadsBuffer(ops[idx], sa.dst)) return true;
+    }
+    for (command.sidecarIndices()) |maybe_idx| {
+        const idx = maybe_idx orelse continue;
+        const selected_sa = switch (ops[idx]) {
+            .slice_assign => |selected| selected,
+            else => return true,
+        };
+        if (sliceAssignWritesMayOverlap(selected_sa, sa)) return true;
+        const selected_access = opAccessSpans(ops[idx]);
+        for (selected_access.writeSpans()) |write| {
+            if (opReadsSpan(rope_op, write)) return true;
+        }
+        if (selected_access.write_overflow and opReadsBuffer(rope_op, selected_sa.dst)) return true;
+    }
+    return false;
+}
+
+fn ropeStoreGroupOutputsHaveExternalUsers(
+    ops: []const backend_mod.DeviceOp,
+    command: *const ProgramCommand,
+) bool {
+    for (command.anchorIndices()) |rope_index| {
+        const rr = switch (ops[rope_index]) {
+            .rope => |rr| rr,
+            else => return true,
+        };
+        const rope_access = opAccessSpans(.{ .rope = rr });
+        var live_writes = [_]bool{false} ** max_access_spans;
+        for (rope_access.writeSpans(), 0..) |_, slot| live_writes[slot] = true;
+        var overflow_live = rope_access.write_overflow;
+
+        for (ops[rope_index + 1 ..], rope_index + 1..) |op, idx| {
+            if (commandContainsIndex(command, idx)) continue;
+            for (rope_access.writeSpans(), 0..) |write, slot| {
+                if (!live_writes[slot]) continue;
+                if (opReadsSpan(op, write)) return true;
+            }
+            if (overflow_live and opReadsBuffer(op, rr.dst)) return true;
+
+            var any_live = false;
+            for (rope_access.writeSpans(), 0..) |write, slot| {
+                if (!live_writes[slot]) continue;
+                if (opWritesCoverSpan(op, write)) {
+                    live_writes[slot] = false;
+                } else {
+                    any_live = true;
+                }
+            }
+            if (overflow_live and opWritesBuffer(op, rr.dst)) overflow_live = false;
+            if (!any_live and !overflow_live) break;
+        }
+    }
+    return false;
+}
+
+pub fn summarizeRopeStoreGroupCandidates(
+    ops: []const backend_mod.DeviceOp,
+    policy: CommandStreamPolicy,
+) RopeStoreGroupCandidateSummary {
+    var summary = RopeStoreGroupCandidateSummary{};
+    const max_pairs: usize = @intCast(@min(policy.max_rope_batch, max_projection_group_anchors));
+    if (max_pairs < 2) return summary;
+
+    for (ops, 0..) |op, start| {
+        const first_rope = switch (op) {
+            .rope => |rr| rr,
+            else => continue,
+        };
+        summary.anchors += 1;
+
+        const first_pair = findRopeStorePair(ops, start, null) orelse {
+            summary.first_pair_missing += 1;
+            continue;
+        };
+        const first_sa = ops[first_pair.sidecar_index].slice_assign;
+        var command = ProgramCommand{
+            .kind = .rope_store_group,
+            .op_start = @intCast(start),
+            .op_count = 1,
+            .anchor_count = 0,
+            .sidecar_count = 0,
+        };
+        appendRopeStorePair(&command, start, first_pair.sidecar_index, start);
+
+        var scan = start + 1;
+        while (scan < ops.len and command.anchor_count < max_pairs) : (scan += 1) {
+            const rr = switch (ops[scan]) {
+                .rope => |rr| rr,
+                else => continue,
+            };
+            summary.candidate_ropes += 1;
+            const pair = findRopeStorePair(ops, scan, null) orelse {
+                summary.pair_missing_rejects += 1;
+                continue;
+            };
+            const sa = ops[pair.sidecar_index].slice_assign;
+            if (!ropeStoreGroupCompatible(first_rope, first_sa, rr, sa)) {
+                summary.geometry_rejects += 1;
+                continue;
+            }
+
+            var candidate = command;
+            if (candidate.anchor_count + 1 > max_projection_group_anchors) break;
+            appendRopeStorePair(&candidate, scan, pair.sidecar_index, start);
+            if (!canHoistRopeStorePairToGroup(ops, start, scan, pair.sidecar_index, rr, sa, &candidate, null)) {
+                summary.hoist_rejects += 1;
+                continue;
+            }
+            if (ropeStorePairConflictsSelected(ops, &command, scan, sa)) {
+                summary.selected_conflict_rejects += 1;
+                continue;
+            }
+            command = candidate;
+        }
+
+        if (command.anchor_count < 2) continue;
+        if (ropeStoreGroupOutputsHaveExternalUsers(ops, &command)) {
+            summary.external_user_rejects += 1;
+            continue;
+        }
+        summary.formed_groups += 1;
+        summary.grouped_pairs += command.anchor_count;
+        summary.max_group_pairs = @max(summary.max_group_pairs, command.anchor_count);
+    }
+
+    return summary;
 }
 
 fn findAttentionStoreChainCommand(
@@ -2117,6 +2409,11 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
             .row_chain => summary.row_chains += 1,
             .rope_chain => summary.rope_chains += 1,
             .rope_batch => summary.rope_batches += 1,
+            .rope_store_group => {
+                summary.rope_store_groups += 1;
+                summary.rope_store_group_ops += command.anchor_count;
+                summary.rope_store_group_sidecars += command.sidecar_count;
+            },
             .movement_batch => summary.movement_batches += 1,
             .movement_group => {
                 summary.movement_groups += 1;
@@ -2170,11 +2467,11 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
 
 pub fn markProgramCommandUsed(used: []bool, command: ProgramCommand) void {
     switch (command.kind) {
-        .projection_group, .elementwise_batch, .attention_store_chain, .attention_store_group, .rope_attention_store_chain, .rope_attention_store_group, .attention_group, .movement_group => {
+        .projection_group, .elementwise_batch, .rope_store_group, .attention_store_chain, .attention_store_group, .rope_attention_store_chain, .rope_attention_store_group, .attention_group, .movement_group => {
             for (command.anchorIndices()) |idx| {
                 if (idx < used.len) used[idx] = true;
             }
-            if (command.kind == .projection_group or command.kind == .attention_store_chain or command.kind == .attention_store_group or command.kind == .rope_attention_store_chain or command.kind == .rope_attention_store_group) {
+            if (command.kind == .projection_group or command.kind == .rope_store_group or command.kind == .attention_store_chain or command.kind == .attention_store_group or command.kind == .rope_attention_store_chain or command.kind == .rope_attention_store_group) {
                 for (command.sidecarIndices()) |maybe_idx| {
                     if (maybe_idx) |idx| {
                         if (idx < used.len) used[idx] = true;
@@ -2358,6 +2655,14 @@ pub fn opWritesSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
     const access = opAccessSpans(op);
     for (access.writeSpans()) |write| {
         if (write.overlaps(target)) return true;
+    }
+    return access.write_overflow and opWritesBuffer(op, target.buf);
+}
+
+pub fn opWritesCoverSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
+    const access = opAccessSpans(op);
+    for (access.writeSpans()) |write| {
+        if (write.buf == target.buf and write.start <= target.start and write.end >= target.end) return true;
     }
     return access.write_overflow and opWritesBuffer(op, target.buf);
 }
@@ -2668,6 +2973,18 @@ pub fn ropeSliceAssignCompatible(rr: anytype, sa: anytype) bool {
         sa.cols == rr.seq_len and
         sa.src_row_stride == 1 and
         sa.src_col_stride == d;
+}
+
+pub fn ropeStoreGroupCompatible(first_rope: anytype, first_sa: anytype, next_rope: anytype, next_sa: anytype) bool {
+    return first_rope.cos_sin == next_rope.cos_sin and
+        first_sa.dst == next_sa.dst and
+        first_rope.half_d == next_rope.half_d and
+        first_rope.seq_len == next_rope.seq_len and
+        first_rope.src_rs == next_rope.src_rs and
+        first_rope.src_cs == next_rope.src_cs and
+        first_rope.cs_cs == next_rope.cs_cs and
+        first_sa.dst_row_stride == next_sa.dst_row_stride and
+        first_sa.dst_col_stride == next_sa.dst_col_stride;
 }
 
 pub fn ropeBatchCompatible(first: anytype, next: anytype) bool {
@@ -3986,6 +4303,46 @@ test "program command stream merges stage and projection commands" {
     try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.projection_groups);
     try std.testing.expectEqual(@as(u32, 1), summary.rope_chains);
+}
+
+test "program command stream groups rope slice stores" {
+    const first = testRopeSliceAssignOps();
+    var second = testRopeSliceAssignOps();
+    second[0].rope.src = 11;
+    second[0].rope.src_off = 8;
+    second[1].slice_assign.dst_offset = 16;
+
+    const ops = [_]backend_mod.DeviceOp{
+        first[0],
+        first[1],
+        testQMatmulWith(8, 9, 2),
+        second[0],
+        second[1],
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.rope_store_group, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(usize, 0), commands[0].indices[0]);
+    try std.testing.expectEqual(@as(?usize, 1), commands[0].sidecar_indices[0]);
+    try std.testing.expectEqual(@as(usize, 3), commands[0].indices[1]);
+    try std.testing.expectEqual(@as(?usize, 4), commands[0].sidecar_indices[1]);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[1].op_start);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.op_commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.rope_store_groups);
+    try std.testing.expectEqual(@as(u32, 2), summary.rope_store_group_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.rope_store_group_sidecars);
 }
 
 test "program command stream keeps used noncontiguous ops single-owned" {

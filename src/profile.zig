@@ -379,8 +379,11 @@ pub fn printProgramCommandSummary(label: []const u8, summary: program_mod.Progra
         },
     );
     std.debug.print(
-        "  fused producer chains: rope_attention_store_chain={d} ({d} sidecars), rope_attention_store_group={d} ({d} ops, {d} sidecars)\n\n",
+        "  fused producer chains: rope_store_group={d} ({d} ops, {d} sidecars), rope_attention_store_chain={d} ({d} sidecars), rope_attention_store_group={d} ({d} ops, {d} sidecars)\n\n",
         .{
+            summary.rope_store_groups,
+            summary.rope_store_group_ops,
+            summary.rope_store_group_sidecars,
             summary.rope_attention_store_chains,
             summary.rope_attention_store_chain_sidecars,
             summary.rope_attention_store_groups,
@@ -626,6 +629,27 @@ pub fn printEarlyRopeAttentionStoreGroupCandidateSummary(label: []const u8, ops:
     );
 }
 
+pub fn printRopeStoreGroupCandidateSummary(label: []const u8, ops: []const DeviceOp, policy: program_mod.CommandStreamPolicy) void {
+    const summary = program_mod.summarizeRopeStoreGroupCandidates(ops, policy);
+    std.debug.print(
+        "RoPE store group candidates ({s}): {d} anchors, formed={d} groups ({d} pairs, max {d}); first-pair missing={d}, candidates={d}, rejects geometry={d}, pair-missing={d}, hoist={d}, selected-conflict={d}, external-user={d}\n\n",
+        .{
+            label,
+            summary.anchors,
+            summary.formed_groups,
+            summary.grouped_pairs,
+            summary.max_group_pairs,
+            summary.first_pair_missing,
+            summary.candidate_ropes,
+            summary.geometry_rejects,
+            summary.pair_missing_rejects,
+            summary.hoist_rejects,
+            summary.selected_conflict_rejects,
+            summary.external_user_rejects,
+        },
+    );
+}
+
 pub fn printAttentionStoreRegionSummary(label: []const u8, ops: []const DeviceOp, units: []const program_mod.ScheduleUnit) void {
     var fusable: u32 = 0;
     var same_unit: u32 = 0;
@@ -684,6 +708,9 @@ pub fn printRegionProgramCommandSummary(
         total.row_chains += summary.row_chains;
         total.rope_chains += summary.rope_chains;
         total.rope_batches += summary.rope_batches;
+        total.rope_store_groups += summary.rope_store_groups;
+        total.rope_store_group_ops += summary.rope_store_group_ops;
+        total.rope_store_group_sidecars += summary.rope_store_group_sidecars;
         total.movement_batches += summary.movement_batches;
         total.movement_groups += summary.movement_groups;
         total.movement_group_ops += summary.movement_group_ops;
