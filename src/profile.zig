@@ -836,6 +836,7 @@ pub const RuntimeProfile = struct {
     schedule_reuse_count: u64 = 0,
     schedule_rebuild_count: u64 = 0,
     call_count: u32 = 0,
+    timing_enabled: bool = false,
 
     pub fn reset(self: *RuntimeProfile) void {
         self.* = .{};
@@ -1051,8 +1052,12 @@ pub fn printRuntimeProfile(rt: RuntimeProfile, est: ProgramEstimates) void {
         }
     }
     if (rt.sync_count > 0) {
-        const sync_ms: f64 = @as(f64, @floatFromInt(rt.sync_time_ns)) / 1_000_000.0;
-        std.debug.print("Backend sync: {d} waits, {d:.2} ms\n", .{ rt.sync_count, sync_ms });
+        if (rt.timing_enabled) {
+            const sync_ms: f64 = @as(f64, @floatFromInt(rt.sync_time_ns)) / 1_000_000.0;
+            std.debug.print("Backend sync: {d} waits, {d:.2} ms\n", .{ rt.sync_count, sync_ms });
+        } else {
+            std.debug.print("Backend sync: {d} waits\n", .{rt.sync_count});
+        }
     }
     if (rt.schedule_reuse_count > 0 or rt.schedule_rebuild_count > 0) {
         std.debug.print(
@@ -1060,25 +1065,29 @@ pub fn printRuntimeProfile(rt: RuntimeProfile, est: ProgramEstimates) void {
             .{ rt.schedule_reuse_count, rt.schedule_rebuild_count },
         );
     }
-    std.debug.print("{s:<22} {s:>9} {s:>6}  {s:>10} {s:>9}  {s:>10} {s:>8}\n", .{ "op", "time_ms", "pct", "GFLOP", "GFLOP/s", "GB", "GB/s" });
+    if (rt.timing_enabled and total_ns > 0) {
+        std.debug.print("{s:<22} {s:>9} {s:>6}  {s:>10} {s:>9}  {s:>10} {s:>8}\n", .{ "op", "time_ms", "pct", "GFLOP", "GFLOP/s", "GB", "GB/s" });
 
-    for (order) |idx| {
-        const t = rt.time_ns[idx];
-        if (t == 0) continue;
-        const t_ms: f64 = @as(f64, @floatFromInt(t)) / 1_000_000.0;
-        const pct: f64 = if (total_ns > 0) @as(f64, @floatFromInt(t)) / @as(f64, @floatFromInt(total_ns)) * 100.0 else 0.0;
+        for (order) |idx| {
+            const t = rt.time_ns[idx];
+            if (t == 0) continue;
+            const t_ms: f64 = @as(f64, @floatFromInt(t)) / 1_000_000.0;
+            const pct: f64 = @as(f64, @floatFromInt(t)) / @as(f64, @floatFromInt(total_ns)) * 100.0;
 
-        const total_flops: f64 = @as(f64, @floatFromInt(est.flops[idx])) * calls_f;
-        const total_bytes: f64 = @as(f64, @floatFromInt(est.bytes[idx])) * calls_f;
-        const gflop: f64 = total_flops / 1e9;
-        const gb: f64 = total_bytes / 1e9;
-        const t_s: f64 = @as(f64, @floatFromInt(t)) / 1e9;
-        const gflop_s: f64 = if (t_s > 0) gflop / t_s else 0.0;
-        const gb_s: f64 = if (t_s > 0) gb / t_s else 0.0;
+            const total_flops: f64 = @as(f64, @floatFromInt(est.flops[idx])) * calls_f;
+            const total_bytes: f64 = @as(f64, @floatFromInt(est.bytes[idx])) * calls_f;
+            const gflop: f64 = total_flops / 1e9;
+            const gb: f64 = total_bytes / 1e9;
+            const t_s: f64 = @as(f64, @floatFromInt(t)) / 1e9;
+            const gflop_s: f64 = if (t_s > 0) gflop / t_s else 0.0;
+            const gb_s: f64 = if (t_s > 0) gb / t_s else 0.0;
 
-        std.debug.print("{s:<22} {d:>9.2} {d:>5.1}%  {d:>10.3} {d:>9.1}  {d:>10.4} {d:>8.1}\n", .{ tag_names[idx], t_ms, pct, gflop, gflop_s, gb, gb_s });
+            std.debug.print("{s:<22} {d:>9.2} {d:>5.1}%  {d:>10.3} {d:>9.1}  {d:>10.4} {d:>8.1}\n", .{ tag_names[idx], t_ms, pct, gflop, gflop_s, gb, gb_s });
+        }
+        std.debug.print("{s:<22} {d:>9.2}\n\n", .{ "TOTAL", total_ms });
+    } else {
+        std.debug.print("Runtime timing: disabled (counts are still collected; enable backend timing for per-op time/throughput table)\n\n", .{});
     }
-    std.debug.print("{s:<22} {d:>9.2}\n\n", .{ "TOTAL", total_ms });
 
     var printed_commands = false;
     for (rt.program_command_counts, 0..) |count, i| {
@@ -1297,6 +1306,7 @@ test "RuntimeProfile reset" {
     rt.sync_time_ns = 13;
     rt.sync_count = 17;
     rt.call_count = 5;
+    rt.timing_enabled = true;
     rt.reset();
     try std.testing.expectEqual(@as(u64, 0), rt.time_ns[0]);
     try std.testing.expectEqual(ScheduleRegionStats{}, rt.schedule_regions);
@@ -1310,6 +1320,7 @@ test "RuntimeProfile reset" {
     try std.testing.expectEqual(@as(u64, 0), rt.sync_time_ns);
     try std.testing.expectEqual(@as(u64, 0), rt.sync_count);
     try std.testing.expectEqual(@as(u32, 0), rt.call_count);
+    try std.testing.expect(!rt.timing_enabled);
 }
 
 test "RuntimeProfile records schedule region lowerings" {

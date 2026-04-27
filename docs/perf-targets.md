@@ -135,6 +135,13 @@ the durable rule: producer-sidecar lowerings should prove side-effect legality
 in the pure planner, then let Metal write the final side effect directly instead
 of materializing scratch tensors.
 
+Metal runtime timing is now opt-in (`--profile-timing` in the SmolLM benchmark).
+Cheap correctness/perf counters remain always on: backend/fallback placement,
+kernel dispatches, command-buffer syncs, scheduled-region lowering, and command
+stream command counts. This keeps throughput runs honest by avoiding hundreds of
+host clock reads per token/window while preserving the diagnostics that catch
+hidden CPU fallback.
+
 Projection cache stores now follow that same durable rule. The pure planner
 emits `projection_cache_group` for batched projections plus the direct slice
 stores they own, and Metal's qmatmul batch kernel supports multiple slice

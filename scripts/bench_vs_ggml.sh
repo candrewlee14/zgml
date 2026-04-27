@@ -11,6 +11,9 @@
 # Usage:
 #   ./scripts/bench_vs_ggml.sh [prompt_tokens] [gen_tokens] [repetitions]
 #
+# Optional:
+#   ZGML_EXTRA_ARGS="--profile-timing" ./scripts/bench_vs_ggml.sh 128 200 3
+#
 # Artifacts:
 #   bench-results/smollm-<timestamp>-p<PROMPT>-g<GEN>-r<REPS>.md
 #   bench-results/smollm-<timestamp>-p<PROMPT>-g<GEN>-r<REPS>.json
@@ -27,6 +30,7 @@ cd "$ROOT"
 GGUF_F16="data/smollm/SmolLM-135M.f16.gguf"
 GGUF_Q8="data/smollm/SmolLM-135M.Q8_0.gguf"
 ZGML_MODEL="${ZGML_MODEL:-$GGUF_Q8}"
+ZGML_EXTRA_ARGS="${ZGML_EXTRA_ARGS:-}"
 ZGML_BIN="./zig-out/bin/bench-llama-smollm"
 OUT_DIR="${OUT_DIR:-bench-results}"
 STAMP="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -59,7 +63,8 @@ echo "machine=$MACHINE"
 echo
 
 echo "Running zgml benchmark..."
-ZGML_OUT="$("$ZGML_BIN" "$ZGML_MODEL" "$PROMPT" "$GEN" "$REPS" 2>&1)"
+read -r -a ZGML_EXTRA_ARGV <<< "$ZGML_EXTRA_ARGS"
+ZGML_OUT="$("$ZGML_BIN" "$ZGML_MODEL" "$PROMPT" "$GEN" "$REPS" "${ZGML_EXTRA_ARGV[@]}" 2>&1)"
 
 echo "Running llama.cpp Metal F16 benchmark..."
 GGML_F16_OUT="$(llama-bench -m "$GGUF_F16" -p "$PROMPT" -n "$GEN" -r "$REPS" -o md 2>&1 | grep -E '^\|')"
@@ -82,6 +87,7 @@ cat > "$MD_OUT" <<EOF
 - gen_tokens: \`$GEN\`
 - repetitions: \`$REPS\`
 - zgml_model: \`$ZGML_MODEL\`
+- zgml_extra_args: \`$ZGML_EXTRA_ARGS\`
 - llama_cpp_f16_model: \`$GGUF_F16\`
 - llama_cpp_q8_model: \`$GGUF_Q8\`
 - zgml_commit: \`$ZGML_COMMIT\`
@@ -119,12 +125,86 @@ $ZGML_STATUS
 \`\`\`
 EOF
 
-export DATE_UTC MACHINE PROMPT GEN REPS ZGML_MODEL GGUF_F16 GGUF_Q8 ZGML_COMMIT ZGML_STATUS ZIG_VERSION
+export DATE_UTC MACHINE PROMPT GEN REPS ZGML_MODEL ZGML_EXTRA_ARGS GGUF_F16 GGUF_Q8 ZGML_COMMIT ZGML_STATUS ZIG_VERSION
 export LLAMA_BENCH_PATH LLAMA_BREW_VERSION GGML_BREW_VERSION
 export ZGML_OUT GGML_F16_OUT GGML_Q8_OUT GGML_CPU_F16_OUT GGML_CPU_Q8_OUT
 python3 - <<'PY' > "$JSON_OUT"
 import json
 import os
+import re
+
+def parse_float(text):
+    m = re.search(r"([0-9]+(?:\.[0-9]+)?)", text)
+    return float(m.group(1)) if m else None
+
+def parse_zgml(text):
+    rows = {}
+    line_re = re.compile(
+        r"^\s*(?P<label>[^:]+):\s+prompt\s+(?P<prompt>[0-9.]+|[-—]+)\s+tok/s.*?"
+        r"decode\s+(?P<decode>[0-9.]+|[-—]+)\s+tok/s",
+    )
+    for line in text.splitlines():
+        m = line_re.search(line)
+        if not m:
+            continue
+        label = " ".join(m.group("label").split())
+        rows[label] = {
+            "prompt_tok_s": parse_float(m.group("prompt")),
+            "decode_tok_s": parse_float(m.group("decode")),
+        }
+    return rows
+
+def parse_llama_bench_md(text):
+    rows = {}
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if not cells or all(set(cell) <= {"-", ":"} for cell in cells):
+            continue
+        test_index = None
+        test_name = None
+        for i, cell in enumerate(cells):
+            if re.fullmatch(r"(pp|tg)\d+", cell):
+                test_index = i
+                test_name = cell
+                break
+        if test_index is None:
+            continue
+        tok_s = None
+        for cell in cells[test_index + 1:]:
+            tok_s = parse_float(cell)
+            if tok_s is not None:
+                break
+        if tok_s is not None:
+            rows[test_name] = {"tok_s": tok_s, "row": cells}
+    return rows
+
+def first_metric(rows, prefix):
+    for key, value in rows.items():
+        if key.startswith(prefix):
+            return value.get("tok_s")
+    return None
+
+def parity(zgml_rows, llama_rows):
+    pp = first_metric(llama_rows, "pp")
+    tg = first_metric(llama_rows, "tg")
+    out = {}
+    for label, row in zgml_rows.items():
+        ratios = {}
+        if pp and row.get("prompt_tok_s"):
+            ratios["prompt"] = row["prompt_tok_s"] / pp
+        if tg and row.get("decode_tok_s"):
+            ratios["decode"] = row["decode_tok_s"] / tg
+        if ratios:
+            out[label] = ratios
+    return out
+
+zgml = parse_zgml(os.environ["ZGML_OUT"])
+llama_metal_f16 = parse_llama_bench_md(os.environ["GGML_F16_OUT"])
+llama_metal_q8 = parse_llama_bench_md(os.environ["GGML_Q8_OUT"])
+llama_cpu_f16 = parse_llama_bench_md(os.environ["GGML_CPU_F16_OUT"])
+llama_cpu_q8 = parse_llama_bench_md(os.environ["GGML_CPU_Q8_OUT"])
 
 data = {
     "benchmark": "smollm-135m",
@@ -138,6 +218,7 @@ data = {
         "zgml_status": os.environ["ZGML_STATUS"],
         "zig_version": os.environ["ZIG_VERSION"],
         "zgml_model": os.environ["ZGML_MODEL"],
+        "zgml_extra_args": os.environ["ZGML_EXTRA_ARGS"],
         "llama_cpp_f16_model": os.environ["GGUF_F16"],
         "llama_cpp_q8_model": os.environ["GGUF_Q8"],
         "llama_bench_path": os.environ["LLAMA_BENCH_PATH"],
@@ -150,6 +231,15 @@ data = {
         "llama_cpp_metal_q8_0": os.environ["GGML_Q8_OUT"],
         "llama_cpp_cpu_f16": os.environ["GGML_CPU_F16_OUT"],
         "llama_cpp_cpu_q8_0": os.environ["GGML_CPU_Q8_OUT"],
+    },
+    "parsed": {
+        "zgml": zgml,
+        "llama_cpp_metal_f16": llama_metal_f16,
+        "llama_cpp_metal_q8_0": llama_metal_q8,
+        "llama_cpp_cpu_f16": llama_cpu_f16,
+        "llama_cpp_cpu_q8_0": llama_cpu_q8,
+        "parity_vs_llama_cpp_metal_f16": parity(zgml, llama_metal_f16),
+        "parity_vs_llama_cpp_metal_q8_0": parity(zgml, llama_metal_q8),
     },
 }
 print(json.dumps(data, indent=2))
