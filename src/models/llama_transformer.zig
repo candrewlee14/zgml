@@ -223,7 +223,8 @@ pub fn LlamaBlock(comptime T: type, comptime cfg: LlamaBlockConfig) type {
             const attn_scale: T = 1.0 / @sqrt(dk);
             // Build the concatenated attention output directly, then apply a
             // single output projection instead of one tiny matmul per head.
-            var attn_buf = x.scaleByVal(0).sliceRows(0, cfg.d_model);
+            // This scratch buffer is fully populated by the per-head stores below.
+            var attn_buf = Tensor(T).init(alloc, &.{ cfg.d_model, x.ne[1] }) catch unreachable;
 
             var attention_nodes: [cfg.n_heads]*Tensor(T) = undefined;
             for (0..cfg.n_heads) |h| {

@@ -238,10 +238,11 @@ pub fn DeviceInference(comptime T: type) type {
             };
         }
 
-        /// Patch all slice_assign destination offsets (KV-cache write positions).
+        /// Patch dynamic slice_assign destination offsets (KV-cache write positions).
         pub fn patchSliceAssignOffset(self: *Self, pos: u32) void {
             for (self.slice_assign_op_indices) |idx| {
                 const sa = &self.program_ops[idx].slice_assign;
+                if (sa.patch_stride == 0) continue;
                 sa.dst_offset = sa.dst_base_offset + pos * sa.patch_stride;
             }
         }
@@ -715,7 +716,7 @@ pub fn DeviceInference(comptime T: type) type {
                     const dst = node.src1 orelse node;
                     const base = buffers.offset(dst);
                     const dst_offset = base + node.storage_offset * dst.strides[0];
-                    try ops.append(alloc, sliceAssignDeviceOp(buffers, src, dst, src0_idx, src.ne[0], src.ne[1], base, dst_offset, dst.strides[0]));
+                    try ops.append(alloc, sliceAssignDeviceOp(buffers, src, dst, src0_idx, src.ne[0], src.ne[1], base, dst_offset, 0));
                 },
                 .rope => {
                     const src = node.src0.?;
@@ -899,6 +900,36 @@ test "DeviceInference lowers prefill slice_assign with 2D strides" {
     try testing.expectEqual(@as(u32, 20), dev.program_ops[0].slice_assign.dst_offset);
     dev.execute();
     try testing.expectEqual(@as(usize, 1), state.refresh_calls);
+}
+
+test "DeviceInference keeps slice_assign_rows static during position patch" {
+    var graph = ComputeGraphF32.init(testing.allocator);
+    defer graph.deinit();
+    const a = graph.allocator();
+
+    const dst = try TensorF32.init(a, &.{ 8, 2 });
+    const src_full = try TensorF32.init(a, &.{ 8, 2 });
+    const src = src_full.sliceRows(2, 6);
+    const y = dst.sliceAssignRows(src, 2);
+    try graph.infer(y);
+
+    var out = [_]f32{0} ** 16;
+    var state = TestBackendState{};
+    var dev = try DeviceInference(f32).init(.{
+        .graph = &graph,
+        .be = testBackend(&state),
+        .alloc = testing.allocator,
+        .input_tensors = &.{src_full},
+        .output_tensor = y,
+        .output_host_buf = &out,
+        .output_len = out.len,
+    });
+    defer dev.deinit();
+
+    const before = dev.program_ops[0].slice_assign.dst_offset;
+    try testing.expectEqual(@as(u32, 0), dev.program_ops[0].slice_assign.patch_stride);
+    dev.patchSliceAssignOffset(5);
+    try testing.expectEqual(before, dev.program_ops[0].slice_assign.dst_offset);
 }
 
 test "DeviceInference lowers batched attention geometry" {

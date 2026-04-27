@@ -25,6 +25,7 @@ pub const Capabilities = struct {
     decode_attention: bool = false,
     quantized_kv: bool = false,
     command_buffer_execution: bool = false,
+    command_stream: CommandStream = .{},
     attention: Attention = .{},
 
     pub const Attention = struct {
@@ -38,6 +39,22 @@ pub const Capabilities = struct {
             if (self.max_d_head) |max| if (d_head > max) return false;
             return true;
         }
+    };
+
+    pub const CommandStream = struct {
+        stage_commands: bool = false,
+        qmatvec_group_size: u32 = 1,
+        qmatmul_group_size: u32 = 1,
+        qmatmul_sidecars: bool = false,
+        qmatmul_cache_sidecars_per_anchor: u32 = 1,
+        projection_rope_cache_sidecars: bool = false,
+        max_rope_batch: u32 = 1,
+        max_movement_batch: u32 = 1,
+        max_attention_batch: u32 = 1,
+        max_attention_store_batch: u32 = 1,
+        max_rope_attention_store_batch: u32 = 1,
+        max_elementwise_batch: u32 = 1,
+        fuse_repeat_fused_elementwise: bool = false,
     };
 
     pub const reference_cpu = Capabilities{
@@ -64,6 +81,20 @@ pub const Capabilities = struct {
         .prefill_attention = true,
         .decode_attention = true,
         .command_buffer_execution = true,
+        .command_stream = .{
+            .stage_commands = true,
+            .qmatvec_group_size = 4,
+            .qmatmul_group_size = 4,
+            .qmatmul_sidecars = true,
+            .qmatmul_cache_sidecars_per_anchor = 8,
+            .max_rope_batch = 16,
+            .max_movement_batch = 16,
+            .max_attention_batch = 16,
+            .max_attention_store_batch = 4,
+            .max_rope_attention_store_batch = 16,
+            .max_elementwise_batch = 8,
+            .fuse_repeat_fused_elementwise = true,
+        },
         .attention = .{ .supported = true, .max_d_head = 512 },
     };
 

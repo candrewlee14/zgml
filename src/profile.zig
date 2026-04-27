@@ -15,6 +15,32 @@ pub const DeviceProgram = backend.DeviceProgram;
 
 /// Number of distinct DeviceOp tags.
 const n_op_tags = 12;
+const n_program_command_kinds = @typeInfo(program_mod.ProgramCommandKind).@"enum".fields.len;
+const max_schedule_region_patterns = 16;
+
+pub const ScheduleRegionStats = struct {
+    attempted: u64 = 0,
+    lowered: u64 = 0,
+    failed: u64 = 0,
+    attempted_ops: u64 = 0,
+    lowered_ops: u64 = 0,
+    failed_ops: u64 = 0,
+
+    pub fn recordAttempt(self: *ScheduleRegionStats, op_count: u32) void {
+        self.attempted +%= 1;
+        self.attempted_ops +%= op_count;
+    }
+
+    pub fn recordLowered(self: *ScheduleRegionStats, op_count: u32) void {
+        self.lowered +%= 1;
+        self.lowered_ops +%= op_count;
+    }
+
+    pub fn recordFailed(self: *ScheduleRegionStats, op_count: u32) void {
+        self.failed +%= 1;
+        self.failed_ops +%= op_count;
+    }
+};
 
 /// Tag names in canonical order matching the DeviceOp union(enum) declaration.
 const tag_names = [n_op_tags][]const u8{
@@ -336,6 +362,109 @@ pub fn printProjectionGroupSummary(label: []const u8, summary: program_mod.Proje
     );
 }
 
+pub fn printProjectionSidecarSummary(label: []const u8, ops: []const DeviceOp) void {
+    const summary = program_mod.summarizeProjectionSidecars(ops);
+    std.debug.print(
+        "Projection sidecars ({s}): {d} qmatmul anchors, immediate={d}, compatible={d}; primary_elidable={d}, primary_required={d}; slice={d}, elementwise={d}, fused_elementwise={d}, incompatible={d}\n\n",
+        .{
+            label,
+            summary.anchors,
+            summary.immediate_sidecars,
+            summary.compatible_sidecars,
+            summary.primary_elidable_sidecars,
+            summary.primary_required_sidecars,
+            summary.slice_sidecars,
+            summary.elementwise_sidecars,
+            summary.fused_elementwise_sidecars,
+            summary.incompatible_sidecars,
+        },
+    );
+}
+
+pub fn printProjectionRopeCacheSummary(label: []const u8, ops: []const DeviceOp, tile_cols: u32) void {
+    const summary = program_mod.summarizeProjectionRopeCacheSidecars(ops, tile_cols);
+    std.debug.print(
+        "Projection RoPE sidecars ({s}): {d} projection anchors, {d} projection->rope->slice pairs ({d} compatible, {d} qmatmul tile-pair compatible at tile={d}), {d} rope materializations ({d} left for attention fusion)\n\n",
+        .{
+            label,
+            summary.anchors,
+            summary.rope_store_pairs,
+            summary.compatible_pairs,
+            summary.tile_pair_pairs,
+            tile_cols,
+            summary.rope_materializations,
+            summary.materialization_attention_fusion_skips,
+        },
+    );
+}
+
+pub fn printProgramCommandSummary(label: []const u8, summary: program_mod.ProgramCommandSummary) void {
+    const saved_pct: f64 = if (summary.covered_ops > 0)
+        @as(f64, @floatFromInt(summary.estimated_saved_dispatches)) / @as(f64, @floatFromInt(summary.covered_ops)) * 100.0
+    else
+        0.0;
+    std.debug.print(
+        "Program commands ({s}): {d} commands cover {d} ops, estimated {d} dispatches ({d} saved, {d:.1}% of ops); ops={d}, row={d}, rope={d}, rope_batch={d}, movement_batch={d}, movement_group={d} ({d} ops), attention_chain={d} ({d} sidecars), attention_store_chain={d} ({d} sidecars), attention_store_group={d} ({d} ops, {d} sidecars), attention_batch={d}, attention_group={d} ({d} ops)\n",
+        .{
+            label,
+            summary.commands,
+            summary.covered_ops,
+            summary.estimated_dispatches,
+            summary.estimated_saved_dispatches,
+            saved_pct,
+            summary.op_commands,
+            summary.row_chains,
+            summary.rope_chains,
+            summary.rope_batches,
+            summary.movement_batches,
+            summary.movement_groups,
+            summary.movement_group_ops,
+            summary.attention_chains,
+            summary.attention_chain_sidecars,
+            summary.attention_store_chains,
+            summary.attention_store_chain_sidecars,
+            summary.attention_store_groups,
+            summary.attention_store_group_ops,
+            summary.attention_store_group_sidecars,
+            summary.attention_batches,
+            summary.attention_groups,
+            summary.attention_group_ops,
+        },
+    );
+    std.debug.print(
+        "  elementwise_batch={d} ({d} ops), repeat_fused_ew={d}, projection_fused_ew={d}, projection_pair_fused_ew={d}, projection_chains={d} ({d} sidecars), projection_groups={d} ({d} anchors, {d} sidecars), projection_cache_groups={d} ({d} anchors, {d} sidecars, max span {d})\n",
+        .{
+            summary.elementwise_batches,
+            summary.elementwise_ops,
+            summary.repeat_fused_elementwise_chains,
+            summary.projection_fused_elementwise_chains,
+            summary.projection_pair_fused_elementwise_chains,
+            summary.projection_chains,
+            summary.projection_chain_sidecars,
+            summary.projection_groups,
+            summary.projection_anchors,
+            summary.projection_sidecars,
+            summary.projection_cache_groups,
+            summary.projection_cache_anchors,
+            summary.projection_cache_sidecars,
+            summary.max_projection_span_ops,
+        },
+    );
+    std.debug.print(
+        "  fused producer chains: rope_store_group={d} ({d} ops, {d} sidecars), rope_attention_store_chain={d} ({d} sidecars), rope_attention_store_group={d} ({d} ops, {d} sidecars)\n\n",
+        .{
+            summary.rope_store_groups,
+            summary.rope_store_group_ops,
+            summary.rope_store_group_sidecars,
+            summary.rope_attention_store_chains,
+            summary.rope_attention_store_chain_sidecars,
+            summary.rope_attention_store_groups,
+            summary.rope_attention_store_group_ops,
+            summary.rope_attention_store_group_sidecars,
+        },
+    );
+}
+
 const neighborhood_edge: u8 = 255;
 
 pub fn printAnchorNeighborhoodSummary(
@@ -453,6 +582,211 @@ pub fn printQMatmulSliceSidecarSummary(label: []const u8, ops: []const DeviceOp)
     }
 }
 
+pub fn printAttentionStoreSidecarSummary(label: []const u8, ops: []const DeviceOp) void {
+    var attentions: u32 = 0;
+    var immediate_slice: u32 = 0;
+    var immediate_compatible: u32 = 0;
+    var later_src_match: u32 = 0;
+    var later_compatible: u32 = 0;
+    var later_fusable: u32 = 0;
+    var blocked_read: u32 = 0;
+    var blocked_write_read: u32 = 0;
+    var blocked_write_write: u32 = 0;
+    var blocked_overflow: u32 = 0;
+
+    for (ops, 0..) |op, i| {
+        const att = switch (op) {
+            .attention => |att| att,
+            else => continue,
+        };
+        attentions += 1;
+
+        if (i + 1 < ops.len and ops[i + 1] == .slice_assign) {
+            immediate_slice += 1;
+            if (program_mod.attentionSliceStoreCompatible(att, ops[i + 1].slice_assign)) {
+                immediate_compatible += 1;
+            }
+        }
+
+        var scan = i + 1;
+        while (scan < ops.len) : (scan += 1) {
+            const sa = switch (ops[scan]) {
+                .slice_assign => |sa| sa,
+                else => continue,
+            };
+            if (sa.src != att.dst) continue;
+            later_src_match += 1;
+            if (program_mod.attentionSliceStoreCompatible(att, sa)) {
+                later_compatible += 1;
+                switch (program_mod.attentionStoreSidecarBlocker(ops, i, scan, sa)) {
+                    .none => later_fusable += 1,
+                    .candidate_read_written => blocked_read += 1,
+                    .sidecar_write_read => blocked_write_read += 1,
+                    .sidecar_write_written => blocked_write_write += 1,
+                    .overflow_conflict, .invalid_range => blocked_overflow += 1,
+                }
+            }
+            break;
+        }
+    }
+
+    std.debug.print(
+        "Attention store sidecars ({s}): {d} attentions, immediate slice_assign={d} ({d} compatible), later src matches={d} ({d} compatible, {d} fusable; blocked read={d}, write-read={d}, write-write={d}, overflow={d})\n\n",
+        .{ label, attentions, immediate_slice, immediate_compatible, later_src_match, later_compatible, later_fusable, blocked_read, blocked_write_read, blocked_write_write, blocked_overflow },
+    );
+}
+
+pub fn printAttentionStoreGroupCandidateSummary(label: []const u8, ops: []const DeviceOp, policy: program_mod.CommandStreamPolicy) void {
+    const summary = program_mod.summarizeAttentionStoreGroupCandidates(ops, policy);
+    std.debug.print(
+        "Attention store group candidates ({s}): {d} anchors, formed={d} groups ({d} anchors, max {d}); first-store missing={d}, candidates={d}, rejects geometry={d}, hoist={d}, selected-conflict={d}, no-store={d}, pair-conflict={d}\n\n",
+        .{
+            label,
+            summary.anchors,
+            summary.formed_groups,
+            summary.grouped_anchors,
+            summary.max_group_anchors,
+            summary.first_store_missing,
+            summary.candidate_attentions,
+            summary.geometry_rejects,
+            summary.hoist_rejects,
+            summary.selected_conflict_rejects,
+            summary.no_store_rejects,
+            summary.pair_conflict_rejects,
+        },
+    );
+}
+
+pub fn printRopeAttentionStoreGroupCandidateSummary(label: []const u8, ops: []const DeviceOp, policy: program_mod.CommandStreamPolicy) void {
+    const summary = program_mod.summarizeRopeAttentionStoreGroupCandidates(ops, policy);
+    std.debug.print(
+        "RoPE attention-store group candidates ({s}): {d} anchors, formed={d} groups ({d} pairs, max {d}); first-pair missing={d}, candidates={d}, rejects geometry={d}, pair-missing={d}, before-emit={d}, delay={d}, attention-hoist={d}, sidecar-hoist={d}, selected-conflict={d}\n\n",
+        .{
+            label,
+            summary.anchors,
+            summary.formed_groups,
+            summary.grouped_pairs,
+            summary.max_group_pairs,
+            summary.first_pair_missing,
+            summary.candidate_ropes,
+            summary.geometry_rejects,
+            summary.pair_missing_rejects,
+            summary.before_emit_rejects,
+            summary.delay_rejects,
+            summary.attention_hoist_rejects,
+            summary.sidecar_hoist_rejects,
+            summary.selected_conflict_rejects,
+        },
+    );
+}
+
+pub fn printEarlyRopeAttentionStoreGroupCandidateSummary(label: []const u8, ops: []const DeviceOp, policy: program_mod.CommandStreamPolicy) void {
+    const summary = program_mod.summarizeEarlyRopeAttentionStoreGroupCandidates(ops, policy);
+    std.debug.print(
+        "Early RoPE attention-store group candidates ({s}): {d} anchors, formed={d} groups ({d} pairs, max {d}); first-pair missing={d}, candidates={d}, rejects geometry={d}, pair-missing={d}, rope-hoist={d}, attention-hoist={d}, selected-conflict={d}\n\n",
+        .{
+            label,
+            summary.anchors,
+            summary.formed_groups,
+            summary.grouped_pairs,
+            summary.max_group_pairs,
+            summary.first_pair_missing,
+            summary.candidate_ropes,
+            summary.geometry_rejects,
+            summary.pair_missing_rejects,
+            summary.rope_hoist_rejects,
+            summary.attention_hoist_rejects,
+            summary.selected_conflict_rejects,
+        },
+    );
+}
+
+pub fn printRopeStoreGroupCandidateSummary(label: []const u8, ops: []const DeviceOp, policy: program_mod.CommandStreamPolicy) void {
+    const summary = program_mod.summarizeRopeStoreGroupCandidates(ops, policy);
+    std.debug.print(
+        "RoPE store group candidates ({s}): {d} anchors, formed={d} groups ({d} pairs, max {d}); first-pair missing={d}, candidates={d}, rejects geometry={d}, pair-missing={d}, hoist={d}, selected-conflict={d}, external-user={d}\n\n",
+        .{
+            label,
+            summary.anchors,
+            summary.formed_groups,
+            summary.grouped_pairs,
+            summary.max_group_pairs,
+            summary.first_pair_missing,
+            summary.candidate_ropes,
+            summary.geometry_rejects,
+            summary.pair_missing_rejects,
+            summary.hoist_rejects,
+            summary.selected_conflict_rejects,
+            summary.external_user_rejects,
+        },
+    );
+}
+
+pub fn printAttentionStoreRegionSummary(label: []const u8, ops: []const DeviceOp, units: []const program_mod.ScheduleUnit) void {
+    var fusable: u32 = 0;
+    var same_unit: u32 = 0;
+
+    for (ops, 0..) |op, i| {
+        const att = switch (op) {
+            .attention => |att| att,
+            else => continue,
+        };
+        var scan = i + 1;
+        while (scan < ops.len) : (scan += 1) {
+            const sa = switch (ops[scan]) {
+                .slice_assign => |sa| sa,
+                else => continue,
+            };
+            if (sa.src != att.dst) continue;
+            if (program_mod.attentionSliceStoreCompatible(att, sa) and
+                program_mod.canFuseAttentionStoreSidecar(ops, i, scan, sa))
+            {
+                fusable += 1;
+                if (opsShareScheduleUnit(i, scan, units)) same_unit += 1;
+            }
+            break;
+        }
+    }
+
+    std.debug.print(
+        "Attention store region coverage ({s}): {d}/{d} fusable pairs inside one region unit\n\n",
+        .{ label, same_unit, fusable },
+    );
+}
+
+pub fn printRegionProgramCommandSummary(
+    label: []const u8,
+    alloc: std.mem.Allocator,
+    ops: []const DeviceOp,
+    units: []const program_mod.ScheduleUnit,
+    policy: program_mod.CommandStreamPolicy,
+) !void {
+    var total = program_mod.ProgramCommandSummary{};
+    var regions: u32 = 0;
+    for (units) |unit| {
+        if (unit.kind != .pattern_region) continue;
+        const start: usize = @intCast(unit.op_start);
+        const end = start + @as(usize, unit.op_count);
+        if (end > ops.len) continue;
+        const commands = try program_mod.buildProgramCommands(alloc, ops[start..end], policy);
+        const summary = program_mod.summarizeProgramCommands(commands);
+        alloc.free(commands);
+        regions += 1;
+        total.add(summary);
+    }
+    std.debug.print("Region-local command rollup ({s}): {d} regions\n", .{ label, regions });
+    printProgramCommandSummary(label, total);
+}
+
+fn opsShareScheduleUnit(a: usize, b: usize, units: []const program_mod.ScheduleUnit) bool {
+    for (units) |unit| {
+        const start: usize = @intCast(unit.op_start);
+        const end = start + @as(usize, unit.op_count);
+        if (a >= start and a < end and b >= start and b < end) return true;
+    }
+    return false;
+}
+
 fn printNeighborhoodKey(comptime width: usize, key: [width]u8, center: usize) void {
     for (key, 0..) |family_id, i| {
         if (i > 0) std.debug.print(" -> ", .{});
@@ -485,6 +819,15 @@ pub fn printTimingBreakdown(label: []const u8, n_tokens: u32, total_ns: u64) voi
 /// during CompiledProgram.execute(). Caller resets explicitly.
 pub const RuntimeProfile = struct {
     time_ns: [n_op_tags]u64 = [_]u64{0} ** n_op_tags,
+    program_command_counts: [n_program_command_kinds]u64 = [_]u64{0} ** n_program_command_kinds,
+    program_command_planned_counts: [n_program_command_kinds]u64 = [_]u64{0} ** n_program_command_kinds,
+    program_command_attempt_counts: [n_program_command_kinds]u64 = [_]u64{0} ** n_program_command_kinds,
+    program_command_failed_counts: [n_program_command_kinds]u64 = [_]u64{0} ** n_program_command_kinds,
+    schedule_regions: ScheduleRegionStats = .{},
+    schedule_region_patterns: [max_schedule_region_patterns]ScheduleRegionStats = [_]ScheduleRegionStats{.{}} ** max_schedule_region_patterns,
+    region_command_plan_cached_count: u64 = 0,
+    region_command_plan_dynamic_count: u64 = 0,
+    region_command_plan_cached_command_count: u64 = 0,
     backend_op_count: u64 = 0,
     fallback_op_count: u64 = 0,
     backend_dispatch_count: u64 = 0,
@@ -497,7 +840,52 @@ pub const RuntimeProfile = struct {
     pub fn reset(self: *RuntimeProfile) void {
         self.* = .{};
     }
+
+    pub fn recordProgramCommand(self: *RuntimeProfile, kind: program_mod.ProgramCommandKind) void {
+        self.program_command_counts[@intFromEnum(kind)] +%= 1;
+    }
+
+    pub fn recordProgramCommandPlanned(self: *RuntimeProfile, kind: program_mod.ProgramCommandKind) void {
+        self.program_command_planned_counts[@intFromEnum(kind)] +%= 1;
+    }
+
+    pub fn recordProgramCommandAttempt(self: *RuntimeProfile, kind: program_mod.ProgramCommandKind) void {
+        self.program_command_attempt_counts[@intFromEnum(kind)] +%= 1;
+    }
+
+    pub fn recordProgramCommandFailed(self: *RuntimeProfile, kind: program_mod.ProgramCommandKind) void {
+        self.program_command_failed_counts[@intFromEnum(kind)] +%= 1;
+    }
+
+    pub fn recordScheduleRegionAttempt(self: *RuntimeProfile, unit: program_mod.ScheduleUnit) void {
+        self.schedule_regions.recordAttempt(unit.op_count);
+        if (scheduleRegionPatternSlot(unit)) |slot| self.schedule_region_patterns[slot].recordAttempt(unit.op_count);
+    }
+
+    pub fn recordScheduleRegionLowered(self: *RuntimeProfile, unit: program_mod.ScheduleUnit) void {
+        self.schedule_regions.recordLowered(unit.op_count);
+        if (scheduleRegionPatternSlot(unit)) |slot| self.schedule_region_patterns[slot].recordLowered(unit.op_count);
+    }
+
+    pub fn recordScheduleRegionFailed(self: *RuntimeProfile, unit: program_mod.ScheduleUnit) void {
+        self.schedule_regions.recordFailed(unit.op_count);
+        if (scheduleRegionPatternSlot(unit)) |slot| self.schedule_region_patterns[slot].recordFailed(unit.op_count);
+    }
+
+    pub fn recordCachedRegionCommandPlan(self: *RuntimeProfile, command_count: usize) void {
+        self.region_command_plan_cached_count +%= 1;
+        self.region_command_plan_cached_command_count +%= command_count;
+    }
+
+    pub fn recordDynamicRegionCommandPlan(self: *RuntimeProfile) void {
+        self.region_command_plan_dynamic_count +%= 1;
+    }
 };
+
+fn scheduleRegionPatternSlot(unit: program_mod.ScheduleUnit) ?usize {
+    const idx: usize = @intCast(unit.pattern_index);
+    return if (idx < max_schedule_region_patterns) idx else null;
+}
 
 /// Estimate FLOPs for a single DeviceOp based on its geometry.
 pub fn estimateFlops(op: DeviceOp) u64 {
@@ -614,6 +1002,54 @@ pub fn printRuntimeProfile(rt: RuntimeProfile, est: ProgramEstimates) void {
             .{ rt.backend_dispatch_count, dispatches_per_call },
         );
     }
+    if (rt.schedule_regions.attempted > 0) {
+        const regions = rt.schedule_regions;
+        const attempt_f: f64 = @floatFromInt(regions.attempted);
+        const lowered_pct = @as(f64, @floatFromInt(regions.lowered)) / attempt_f * 100.0;
+        const lowered_per_call = @as(f64, @floatFromInt(regions.lowered)) / calls_f;
+        const lowered_ops_per_call = @as(f64, @floatFromInt(regions.lowered_ops)) / calls_f;
+        std.debug.print(
+            "Schedule regions: {d}/{d} lowered ({d:.1}%, {d:.1}/call), {d:.1} ops/call covered, {d} ops refused\n",
+            .{
+                regions.lowered,
+                regions.attempted,
+                lowered_pct,
+                lowered_per_call,
+                lowered_ops_per_call,
+                regions.failed_ops,
+            },
+        );
+        for (rt.schedule_region_patterns, 0..) |pattern_stats, pattern| {
+            if (pattern_stats.attempted == 0) continue;
+            const pattern_lowered_ops_per_call = @as(f64, @floatFromInt(pattern_stats.lowered_ops)) / calls_f;
+            std.debug.print(
+                "  pattern#{d}: {d}/{d} lowered, {d} failed, {d:.1} ops/call covered, {d} ops refused\n",
+                .{
+                    pattern,
+                    pattern_stats.lowered,
+                    pattern_stats.attempted,
+                    pattern_stats.failed,
+                    pattern_lowered_ops_per_call,
+                    pattern_stats.failed_ops,
+                },
+            );
+        }
+        if (rt.region_command_plan_cached_count > 0 or rt.region_command_plan_dynamic_count > 0) {
+            const cached_per_call = @as(f64, @floatFromInt(rt.region_command_plan_cached_count)) / calls_f;
+            const dynamic_per_call = @as(f64, @floatFromInt(rt.region_command_plan_dynamic_count)) / calls_f;
+            const cached_commands_per_call = @as(f64, @floatFromInt(rt.region_command_plan_cached_command_count)) / calls_f;
+            std.debug.print(
+                "Region command plans: {d} cached ({d:.1}/call, {d:.1} commands/call), {d} dynamic ({d:.1}/call)\n",
+                .{
+                    rt.region_command_plan_cached_count,
+                    cached_per_call,
+                    cached_commands_per_call,
+                    rt.region_command_plan_dynamic_count,
+                    dynamic_per_call,
+                },
+            );
+        }
+    }
     if (rt.sync_count > 0) {
         const sync_ms: f64 = @as(f64, @floatFromInt(rt.sync_time_ns)) / 1_000_000.0;
         std.debug.print("Backend sync: {d} waits, {d:.2} ms\n", .{ rt.sync_count, sync_ms });
@@ -643,6 +1079,43 @@ pub fn printRuntimeProfile(rt: RuntimeProfile, est: ProgramEstimates) void {
         std.debug.print("{s:<22} {d:>9.2} {d:>5.1}%  {d:>10.3} {d:>9.1}  {d:>10.4} {d:>8.1}\n", .{ tag_names[idx], t_ms, pct, gflop, gflop_s, gb, gb_s });
     }
     std.debug.print("{s:<22} {d:>9.2}\n\n", .{ "TOTAL", total_ms });
+
+    var printed_commands = false;
+    for (rt.program_command_counts, 0..) |count, i| {
+        if (count == 0) continue;
+        const kind: program_mod.ProgramCommandKind = @enumFromInt(i);
+        if (!printed_commands) {
+            std.debug.print("Program commands encoded:\n", .{});
+            printed_commands = true;
+        }
+        std.debug.print("  {s:<24} {d}\n", .{ kind.label(), count });
+    }
+    if (printed_commands) std.debug.print("\n", .{});
+
+    var printed_planned_commands = false;
+    for (rt.program_command_planned_counts, 0..) |count, i| {
+        if (count == 0) continue;
+        const kind: program_mod.ProgramCommandKind = @enumFromInt(i);
+        if (!printed_planned_commands) {
+            std.debug.print("Program commands planned:\n", .{});
+            printed_planned_commands = true;
+        }
+        std.debug.print("  {s:<24} {d}\n", .{ kind.label(), count });
+    }
+    if (printed_planned_commands) std.debug.print("\n", .{});
+
+    var printed_command_attempts = false;
+    for (rt.program_command_attempt_counts, 0..) |count, i| {
+        const failed = rt.program_command_failed_counts[i];
+        if (count == 0 and failed == 0) continue;
+        const kind: program_mod.ProgramCommandKind = @enumFromInt(i);
+        if (!printed_command_attempts) {
+            std.debug.print("Program command attempts:\n", .{});
+            printed_command_attempts = true;
+        }
+        std.debug.print("  {s:<24} attempts={d} refused={d}\n", .{ kind.label(), count, failed });
+    }
+    if (printed_command_attempts) std.debug.print("\n", .{});
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -799,6 +1272,25 @@ test "estimateProgram aggregates per tag" {
 test "RuntimeProfile reset" {
     var rt = RuntimeProfile{};
     rt.time_ns[0] = 42;
+    rt.schedule_regions = .{
+        .attempted = 2,
+        .lowered = 1,
+        .failed = 1,
+        .attempted_ops = 14,
+        .lowered_ops = 7,
+        .failed_ops = 7,
+    };
+    rt.schedule_region_patterns[3] = .{
+        .attempted = 2,
+        .lowered = 1,
+        .failed = 1,
+        .attempted_ops = 14,
+        .lowered_ops = 7,
+        .failed_ops = 7,
+    };
+    rt.region_command_plan_cached_count = 2;
+    rt.region_command_plan_dynamic_count = 3;
+    rt.region_command_plan_cached_command_count = 11;
     rt.backend_op_count = 7;
     rt.fallback_op_count = 11;
     rt.backend_dispatch_count = 3;
@@ -807,10 +1299,74 @@ test "RuntimeProfile reset" {
     rt.call_count = 5;
     rt.reset();
     try std.testing.expectEqual(@as(u64, 0), rt.time_ns[0]);
+    try std.testing.expectEqual(ScheduleRegionStats{}, rt.schedule_regions);
+    try std.testing.expectEqual(ScheduleRegionStats{}, rt.schedule_region_patterns[3]);
     try std.testing.expectEqual(@as(u64, 0), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.region_command_plan_cached_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.region_command_plan_dynamic_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.region_command_plan_cached_command_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.backend_dispatch_count);
     try std.testing.expectEqual(@as(u64, 0), rt.sync_time_ns);
     try std.testing.expectEqual(@as(u64, 0), rt.sync_count);
     try std.testing.expectEqual(@as(u32, 0), rt.call_count);
+}
+
+test "RuntimeProfile records schedule region lowerings" {
+    var rt = RuntimeProfile{};
+    const unit = program_mod.ScheduleUnit{
+        .kind = .pattern_region,
+        .pattern_index = 3,
+        .start_item = 2,
+        .item_count = 4,
+        .op_start = 10,
+        .op_count = 7,
+    };
+
+    rt.recordScheduleRegionAttempt(unit);
+    rt.recordScheduleRegionLowered(unit);
+    rt.recordScheduleRegionFailed(unit);
+
+    const expected = ScheduleRegionStats{
+        .attempted = 1,
+        .lowered = 1,
+        .failed = 1,
+        .attempted_ops = 7,
+        .lowered_ops = 7,
+        .failed_ops = 7,
+    };
+    try std.testing.expectEqual(expected, rt.schedule_regions);
+    try std.testing.expectEqual(expected, rt.schedule_region_patterns[3]);
+}
+
+test "RuntimeProfile records region command plan source" {
+    var rt = RuntimeProfile{};
+    rt.recordCachedRegionCommandPlan(9);
+    rt.recordCachedRegionCommandPlan(4);
+    rt.recordDynamicRegionCommandPlan();
+
+    try std.testing.expectEqual(@as(u64, 2), rt.region_command_plan_cached_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.region_command_plan_dynamic_count);
+    try std.testing.expectEqual(@as(u64, 13), rt.region_command_plan_cached_command_count);
+}
+
+test "RuntimeProfile ignores out-of-range schedule region pattern counters" {
+    var rt = RuntimeProfile{};
+    const unit = program_mod.ScheduleUnit{
+        .kind = .pattern_region,
+        .pattern_index = 999,
+        .start_item = 0,
+        .item_count = 1,
+        .op_start = 0,
+        .op_count = 4,
+    };
+
+    rt.recordScheduleRegionAttempt(unit);
+    rt.recordScheduleRegionLowered(unit);
+
+    try std.testing.expectEqual(@as(u64, 1), rt.schedule_regions.attempted);
+    try std.testing.expectEqual(@as(u64, 1), rt.schedule_regions.lowered);
+    for (rt.schedule_region_patterns) |stats| {
+        try std.testing.expectEqual(ScheduleRegionStats{}, stats);
+    }
 }
