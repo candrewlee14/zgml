@@ -4513,10 +4513,7 @@ const CompiledProgram = struct {
     };
 
     fn canEncodeQMatvecBatchOp(self: *CompiledProgram, q: anytype) bool {
-        return q.M == 1 and
-            @as(usize, q.weight_idx) < self.qweight_views.len and
-            (q.input_row_stride == 0 or q.input_row_stride == q.K) and
-            (q.dst_row_stride == 0 or q.dst_row_stride == q.N);
+        return q.M == 1 and @as(usize, q.weight_idx) < self.qweight_views.len;
     }
 
     fn canEncodeQMatvecElementwiseSidecar(_: *CompiledProgram, q: anytype, e: anytype) bool {
@@ -6004,8 +6001,14 @@ const CompiledProgram = struct {
         const write_primary = program_mod.projectionPrimaryOutputHasExternalUsers(ops, anchor_idx, sidecar_idx);
         return switch (ops[sidecar_idx]) {
             .slice_assign => |sa| if (q.M == 1) self.encodeQMatvecSliceAssign(q, sa, write_primary) else self.encodeQMatmulSliceAssign(q, sa, write_primary),
-            .elementwise => |e| self.encodeQMatmulElementwise(q, e, write_primary),
-            .fused_elementwise => |fe| self.encodeQMatmulFusedElementwise(q, fe, write_primary),
+            .elementwise => |e| if (q.M == 1) blk: {
+                if (!self.canEncodeQMatvecElementwiseSidecar(q, e)) break :blk false;
+                const anchors = [_]usize{anchor_idx};
+                const sidecars = [_]?usize{sidecar_idx};
+                self.encodeQMatvecBatch(ops, &anchors, &sidecars);
+                break :blk true;
+            } else self.encodeQMatmulElementwise(q, e, write_primary),
+            .fused_elementwise => |fe| if (q.M == 1) false else self.encodeQMatmulFusedElementwise(q, fe, write_primary),
             else => false,
         };
     }
