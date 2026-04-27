@@ -19,6 +19,7 @@ pub const StageCapabilities = struct {
     decode_attention: bool = false,
     quantized_kv: bool = false,
     command_buffer_execution: bool = false,
+    projection_rope_cache_sidecars: bool = false,
 
     pub fn fromBackendCapabilities(caps: backend_mod.Capabilities) StageCapabilities {
         return .{
@@ -29,6 +30,7 @@ pub const StageCapabilities = struct {
             .decode_attention = caps.decode_attention or caps.attention.supported,
             .quantized_kv = caps.quantized_kv,
             .command_buffer_execution = caps.command_buffer_execution,
+            .projection_rope_cache_sidecars = caps.command_stream.projection_rope_cache_sidecars,
         };
     }
 };
@@ -278,7 +280,7 @@ pub fn LlamaDecodePlan(comptime config: LlamaConfig) type {
             try writer.print("  logical stages/token={d}\n", .{self.logicalStageCount()});
             if (caps) |c| {
                 try writer.print(
-                    "  target command buffers/token={d} (fused_ew={} f16_matmul={} qmatmul={} decode_attention={} quantized_kv={})\n",
+                    "  target command buffers/token={d} (fused_ew={} f16_matmul={} qmatmul={} decode_attention={} quantized_kv={} projection_rope_cache={})\n",
                     .{
                         self.targetCommandBuffers(c),
                         c.fused_elementwise,
@@ -286,6 +288,7 @@ pub fn LlamaDecodePlan(comptime config: LlamaConfig) type {
                         c.qmatmul,
                         c.decode_attention,
                         c.quantized_kv,
+                        c.projection_rope_cache_sidecars,
                     },
                 );
             }
@@ -378,7 +381,7 @@ pub fn LlamaPrefillPlan(comptime config: LlamaConfig) type {
             try writer.print("  logical stages/window={d}\n", .{self.logicalStageCount()});
             if (caps) |c| {
                 try writer.print(
-                    "  target command buffers/window={d} (fused_ew={} f16_matmul={} qmatmul={} prefill_attention={} quantized_kv={})\n",
+                    "  target command buffers/window={d} (fused_ew={} f16_matmul={} qmatmul={} prefill_attention={} quantized_kv={} projection_rope_cache={})\n",
                     .{
                         self.targetCommandBuffers(c),
                         c.fused_elementwise,
@@ -386,6 +389,7 @@ pub fn LlamaPrefillPlan(comptime config: LlamaConfig) type {
                         c.qmatmul,
                         c.prefill_attention,
                         c.quantized_kv,
+                        c.projection_rope_cache_sidecars,
                     },
                 );
             }
@@ -522,4 +526,5 @@ test "stage capabilities mirror backend capability metadata" {
     try testing.expect(metal_caps.prefill_attention);
     try testing.expect(metal_caps.decode_attention);
     try testing.expect(metal_caps.command_buffer_execution);
+    try testing.expect(!metal_caps.projection_rope_cache_sidecars);
 }

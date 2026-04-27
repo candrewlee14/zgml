@@ -35,23 +35,28 @@ Current prefill work has a first real device-only path:
 | Path | Prompt/prefill | Runtime placement | Dispatches |
 | --- | ---: | --- | ---: |
 | Current GGUF session path | ~0.9k tok/s | CPU/Accelerate quant path | n/a |
-| Experimental Metal device prefill Q8_0 | ~2.7k tok/s | 100% backend | ~542/call |
+| Experimental Metal device prefill Q8_0 | ~2.2k tok/s | 100% backend | ~242/call |
 
 Measured with
 `./zig-out/bin/bench-llama-smollm data/smollm/SmolLM-135M.Q8_0.gguf 128 1 3 --metal-prefill-device`.
-This is roughly 3x the default GGUF path while eliminating fallback for the
-prefill graph, but it is still not parity. QMatmul batching, producer-sidecar
-fusion, movement groups, attention output-store chains, and RoPE-store grouping
-now remove about 1,112 dispatches/call. The next target is reusable layer-stage
-lowering that cuts dispatch count by at least another order of magnitude without
-adding model special cases to the public API.
+This is roughly 2.4x the default GGUF path while eliminating fallback for the
+prefill graph, but it is still not parity. QMatmul batching, projection-owned
+cache stores, producer-sidecar fusion, attention output-store grouping, and
+RoPE-store grouping now remove about 1,412 dispatches/call. The next target is
+reusable layer-stage lowering that cuts dispatch count by at least another order
+of magnitude without adding model special cases to the public API.
 
 The stage planning abstraction now lives in `src/backend/program.zig` as a pure
 `StagePolicy`: a named anchored region plus a backend pattern id. Metal uses it
 for `decode-layer` and `prefill-layer` schedules with seven projection anchors.
+The runtime profile now reports total and per-pattern schedule-region attempts,
+lowered regions, refused regions, and covered/refused op counts, so a fast path
+cannot silently fall back to tiny dispatches while still looking "device backed".
 This is a structural cleanup, not a claimed speedup by itself; the current
-SmolLM Metal prefill smoke is roughly `542` dispatches/call after command-stream
-lowering, RoPE-store grouping, and projection sidecar kernels.
+SmolLM Metal prefill smoke is roughly `242` dispatches/call after command-stream
+lowering, RoPE-store grouping, projection sidecar kernels, projection activation
+fusion, projection-owned cache stores, and shared-offset RoPE-attention-store
+grouping.
 
 The next layer of the same abstraction is `StageCommand`: a pure, model-agnostic
 lowering view over the ops inside a stage. Today it names `row_chain` commands
@@ -75,11 +80,11 @@ share a buffer and still batch if their read/write spans do not overlap.
 
 The first unified command stream now combines those pure stage commands and
 projection groups into a single ordered view. On SmolLM prefill it currently
-emits 542 commands for 1,654 ops, including 61 row chains, 30 movement groups,
-60 attention output-store chains, 120 projection sidecar chains, and 30
-projection groups covering 90 anchors plus 30 sidecars. Additional
-producer-sidecar commands cover 30 RoPE-store groups, 30 RoPE-attention-store
-chains, and 60 RoPE-attention-store groups.
+emits 242 commands for 1,654 ops, including 61 row chains, 30 projection-owned
+cache groups covering 90 anchors plus 90 sidecars, 30 projection
+pair/fused-elementwise chains, and 60 projection sidecar chains. Additional
+producer-sidecar commands cover 30 RoPE-store groups and 30 wide
+RoPE-attention-store groups covering all 270 attention output stores.
 Metal can consume this stream for those command classes while still falling
 back to existing local lowering for commands that are not first-class yet. The
 stream also has first-class contiguous batch commands for RoPE,
@@ -87,8 +92,15 @@ movement/slice-assign, and attention; SmolLM prefill does not currently expose
 those as contiguous runs, but decode and future lowering passes can share the
 same command shape. Movement/slice-assign now also has an indexed
 `movement_group` command for non-contiguous independent copies that share
-source/destination buffers; SmolLM prefill currently finds 30 such groups
-covering 60 copy ops.
+source/destination buffers. SmolLM prefill now has `0` movement groups because
+the V-cache stores ride with the owning projection batch.
+Metal now compiles the command stream for each scheduled region alongside the
+region schedule and reuses that cached command plan while the command-stream
+policy remains unchanged. If a backend knob changes after compile, Metal falls
+back to dynamic command planning for correctness. This does not claim a dispatch
+count reduction by itself, but it is the first real stage-execution step: the
+`prefill-layer`/`decode-layer` lowerer executes a compiled region command plan
+instead of rediscovering commands on every region execution.
 It can also represent non-contiguous attention groups when all attention inputs
 are already available; the current SmolLM prefill trace still reports `0`, which
 means attention batching must include the producer movement/slice work rather
@@ -110,18 +122,59 @@ of emitting a fake zero-fill dependency. The command stream can therefore attach
 270 delayed attention output stores to their producer attention ops. Dynamic
 slice-store patching now only applies to KV-cache writes, so static
 `slice_assign_rows` output stores keep their row offsets after refresh. Metal's
-runtime command stream now matches the pure prefill target at ~542
+runtime command stream now matches the pure prefill target at ~242
 dispatches/call with no backend fallback; the next step is coarser layer command
 realization, not more local pair fusers.
 
 The current SmolLM Metal prefill command stream is now materially smaller:
 `rope_store_group` batches the remaining RoPE-to-KV-store chains and elides the
 intermediate scratch write when the scratch is only live until the store. The
-profile reports roughly 542 dispatches/call, 100% backend placement, and no
+profile reports roughly 242 dispatches/call, 100% backend placement, and no
 fallback for the device prefill path. This is still not parity, but it confirms
 the durable rule: producer-sidecar lowerings should prove side-effect legality
 in the pure planner, then let Metal write the final side effect directly instead
 of materializing scratch tensors.
+
+Projection cache stores now follow that same durable rule. The pure planner
+emits `projection_cache_group` for batched projections plus the direct slice
+stores they own, and Metal's qmatmul batch kernel supports multiple slice
+sidecars per projection when they share a sink buffer. On SmolLM prefill this
+removes the remaining V-cache movement dispatches: 30 projection-cache groups
+cover 90 projection anchors and 90 cache-store sidecars.
+
+The planner also has an opt-in legality rule for projection-owned K-cache stores
+that pass through RoPE (`qmatmul -> rope -> slice_assign`). This is intentionally
+not enabled in the default Metal policy yet: scalar and shared-kernel tile-pair
+prototypes reduced the visible dispatch count to 212/call, but slowed prefill.
+Metal now has that separate qmatmul/RoPE/cache-store lowering target behind
+`setProjectionRopeCacheSidecars(true)` and the benchmark flag
+`--metal-rope-cache-sidecars`. The common qmatmul batch kernel stays lean; the
+new path is only selected for tile-pair-compatible projection/RoPE/store
+sidecars and remains opt-in until model benchmarks prove it is a default win.
+Profiles count projection-owned RoPE cache candidates and tile-pair-shaped
+opportunities explicitly, so tuning can happen against that target without
+turning a speculative kernel on by default.
+Command-stream fusion knobs are now declared in backend capability metadata and
+the pure planner derives its default policy from that metadata. This keeps the
+long-term rule sharp: the planner may know a general pattern is legal, but a
+backend only advertises the pattern as default when it has a lowering that is
+actually fast.
+
+Decode-side qmatvec projection groups can also carry RoPE sidecars, but the
+planner now leaves Q-RoPE materialization alone when the same RoPE can feed a
+RoPE-attention-store command. This avoids a local dispatch-count win that would
+block the better attention-side fusion. Profiles report both projection/RoPE
+materialization opportunities and how many were intentionally left for
+attention fusion, which is the finish-line rule for new fusions: prefer the
+producer-sidecar placement that keeps the largest downstream semantic command
+available.
+
+Decode qmatvec projection groups now carry simple add/mul sidecars too. This is
+the same producer-sidecar concept applied to M=1 projections, so down-projection
+plus residual-style tails can ride with a batched qmatvec group without adding a
+model-specific FFN op. Metal lowers the sidecar in the qmatvec batch kernel by
+using the sidecar source as a per-anchor secondary buffer, keeping the public IR
+as plain `qmatmul` plus `elementwise`.
 
 The next projection target should follow that rule rather than growing
 model-specific kernels. SmolLM prefill has 210 qmatmul anchors and 150 immediate
@@ -150,6 +203,15 @@ it. Current SmolLM prefill reports 90 primary-elidable projection sidecars and
 60 that still require the primary output. The dispatch count is unchanged, but
 projection groups and projection chains now share the same dead-scratch elision
 rule as RoPE-store groups.
+
+The current RoPE-attention-store lowering extends that rule across head batches:
+when heads share Q source, RoPE tables, K/V/mask bases, and the final concat
+destination, the pure command stream can batch more than the old four-buffer
+Metal limit by carrying per-head offsets. SmolLM prefill now emits one
+RoPE-attention-store command per layer instead of split groups plus singleton
+chains: 30 commands cover 540 producer ops and 270 output-store sidecars.
+This is the right kind of win: it keeps the IR general for LLaMA/Qwen-style GQA
+layouts while hiding backend buffer-slot constraints inside Metal lowering.
 
 ## Acceptance Thresholds
 

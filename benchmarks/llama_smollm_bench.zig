@@ -9,6 +9,7 @@
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --metal-fine
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --metal-region
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-prefill-device
+//!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-rope-cache-sidecars
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --print-stage-plan
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --stage-plan-only
 
@@ -364,6 +365,7 @@ fn runDevicePrefillVariant(
     writer: anytype,
     io: std.Io,
     alloc: std.mem.Allocator,
+    command_policy: backend_program.CommandStreamPolicy,
 ) !BenchResult {
     if (cfg.prompt_tokens == 0 or cfg.prompt_tokens > config.max_seq_len) return error.InvalidPromptLength;
 
@@ -393,7 +395,7 @@ fn runDevicePrefillVariant(
     const schedule = try backend_program.buildKernelSchedule(alloc, program.ops, schedule_policy);
     defer alloc.free(schedule);
     const prefill_stages = [_]backend_program.StagePolicy{
-        backend_program.StagePolicy.anchored("prefill-layer", 0, backend_program.RegionPolicy.qmatmulCluster(), 7),
+        zgml.backend_metal.MetalRegionPattern.prefill_layer_stage.stagePolicy(),
     };
     const prefill_stage_schedule = try backend_program.buildStageRegionSchedule(alloc, schedule, &prefill_stages);
     defer alloc.free(prefill_stage_schedule);
@@ -401,14 +403,15 @@ fn runDevicePrefillVariant(
     const stage_commands = try backend_program.buildStageCommands(alloc, program.ops);
     defer alloc.free(stage_commands);
     profile.printStageCommandSummary("prefill", backend_program.summarizeStageCommands(stage_commands));
-    const projection_groups = try backend_program.buildProjectionGroups(alloc, program.ops, backend_program.ProjectionGroupPolicy.prefillQMatmul(4));
+    const projection_groups = try backend_program.buildProjectionGroups(alloc, program.ops, backend_program.ProjectionGroupPolicy.prefillQMatmul(command_policy.qmatmul_group_size));
     defer alloc.free(projection_groups);
     profile.printProjectionGroupSummary("prefill qmatmul", backend_program.summarizeProjectionGroups(projection_groups));
     profile.printProjectionSidecarSummary("prefill", program.ops);
-    const program_commands = try backend_program.buildProgramCommands(alloc, program.ops, backend_program.CommandStreamPolicy.metal(4, 4));
+    profile.printProjectionRopeCacheSummary("prefill", program.ops, 32);
+    const program_commands = try backend_program.buildProgramCommands(alloc, program.ops, command_policy);
     defer alloc.free(program_commands);
     profile.printProgramCommandSummary("prefill", backend_program.summarizeProgramCommands(program_commands));
-    const lowered_prefill_stages = [_]u32{0};
+    const lowered_prefill_stages = [_]u32{zgml.backend_metal.MetalRegionPattern.prefill_layer_stage.index()};
     profile.printRegionExecutionSummary(
         "prefill-layer stages lowered",
         backend_program.summarizeRegionExecution(prefill_stage_schedule, schedule, &lowered_prefill_stages),
@@ -416,17 +419,17 @@ fn runDevicePrefillVariant(
     try profile.printAnchorNeighborhoodSummary(2, alloc, "prefill qmatmul", schedule, backend_program.RegionPolicy.qmatmulCluster(), 8);
     profile.printQMatmulSliceSidecarSummary("prefill", program.ops);
     profile.printAttentionStoreSidecarSummary("prefill", program.ops);
-    profile.printAttentionStoreGroupCandidateSummary("prefill", program.ops, backend_program.CommandStreamPolicy.metal(4, 4));
-    profile.printEarlyRopeAttentionStoreGroupCandidateSummary("prefill", program.ops, backend_program.CommandStreamPolicy.metal(4, 4));
-    profile.printRopeStoreGroupCandidateSummary("prefill", program.ops, backend_program.CommandStreamPolicy.metal(4, 4));
-    profile.printRopeAttentionStoreGroupCandidateSummary("prefill", program.ops, backend_program.CommandStreamPolicy.metal(4, 4));
+    profile.printAttentionStoreGroupCandidateSummary("prefill", program.ops, command_policy);
+    profile.printEarlyRopeAttentionStoreGroupCandidateSummary("prefill", program.ops, command_policy);
+    profile.printRopeStoreGroupCandidateSummary("prefill", program.ops, command_policy);
+    profile.printRopeAttentionStoreGroupCandidateSummary("prefill", program.ops, command_policy);
     profile.printAttentionStoreRegionSummary("prefill-layer stages", program.ops, prefill_stage_schedule);
     try profile.printRegionProgramCommandSummary(
         "prefill-layer stages",
         alloc,
         program.ops,
         prefill_stage_schedule,
-        backend_program.CommandStreamPolicy.metal(4, 4),
+        command_policy,
     );
 
     _ = try prefill.executeAt(prompt, 0);
@@ -489,6 +492,7 @@ pub fn main(init: std.process.Init) !void {
     const run_metal_fine = hasFlag(args, "--metal-fine");
     const run_metal_region = hasFlag(args, "--metal-region");
     const run_metal_prefill_device = hasFlag(args, "--metal-prefill-device");
+    const run_metal_rope_cache_sidecars = hasFlag(args, "--metal-rope-cache-sidecars");
     const stage_plan_only = hasFlag(args, "--stage-plan-only");
     const print_stage_plan = stage_plan_only or hasFlag(args, "--print-stage-plan");
     const model_is_gguf = isGGUF(cfg.model_path);
@@ -542,7 +546,9 @@ pub fn main(init: std.process.Init) !void {
         if (!model_is_gguf) _ = try runVariant("metal int8       ", metal_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
         if (run_metal_prefill_device and model_is_gguf) {
             metal_be.setRegionProgramDispatch(true);
-            _ = try runDevicePrefillVariant("metal prefill q", metal_be.backend(), cfg, &stdout.interface, io, alloc);
+            metal_be.setProjectionRopeCacheSidecars(run_metal_rope_cache_sidecars);
+            _ = try runDevicePrefillVariant(if (run_metal_rope_cache_sidecars) "metal prefill r" else "metal prefill q", metal_be.backend(), cfg, &stdout.interface, io, alloc, metal_be.commandStreamPolicy());
+            metal_be.setProjectionRopeCacheSidecars(false);
             metal_be.setRegionProgramDispatch(false);
         }
         _ = try runDeviceVariant(if (model_is_gguf) "metal device q  " else "metal device f16", metal_be.backend(), cfg, &stdout.interface, io, alloc);
@@ -554,6 +560,13 @@ pub fn main(init: std.process.Init) !void {
         if (run_metal_region) {
             metal_be.setRegionProgramDispatch(true);
             _ = try runDeviceVariant(if (model_is_gguf) "metal region q  " else "metal region f16", metal_be.backend(), cfg, &stdout.interface, io, alloc);
+            metal_be.setRegionProgramDispatch(false);
+        }
+        if (run_metal_rope_cache_sidecars and model_is_gguf) {
+            metal_be.setRegionProgramDispatch(true);
+            metal_be.setProjectionRopeCacheSidecars(true);
+            _ = try runDeviceVariant("metal rope q    ", metal_be.backend(), cfg, &stdout.interface, io, alloc);
+            metal_be.setProjectionRopeCacheSidecars(false);
             metal_be.setRegionProgramDispatch(false);
         }
     }
