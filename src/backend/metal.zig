@@ -2,7 +2,8 @@
 //!
 //! Uses shared memory (MTLResourceStorageModeShared) so upload/download
 //! are plain memcpy — CPU and GPU see the same physical pages.
-//! Each dispatch is synchronous (commit + waitUntilCompleted).
+//! Kernel dispatches are encoded into a command session and committed at
+//! explicit sync/fallback boundaries.
 
 const std = @import("std");
 const backend_mod = @import("../backend.zig");
@@ -3687,6 +3688,7 @@ pub const MetalBackend = struct {
     fine_grained_program_dispatch: bool = false,
     region_program_dispatch: bool = false,
     projection_rope_cache_sidecars: bool = false,
+    runtime_timing: bool = false,
 
     pub fn init() !MetalBackend {
         const device = c.mtl_create_device() orelse return error.MetalNotAvailable;
@@ -3747,6 +3749,12 @@ pub const MetalBackend = struct {
 
     pub fn setQMatmulRopeCacheSidecars(self: *MetalBackend, enabled: bool) void {
         self.setProjectionRopeCacheSidecars(enabled);
+    }
+
+    /// Enable expensive per-op/per-command wall-clock timing. Cheap placement,
+    /// dispatch, command, fallback, and sync counts are always collected.
+    pub fn setRuntimeTiming(self: *MetalBackend, enabled: bool) void {
+        self.runtime_timing = enabled;
     }
 
     pub fn commandStreamPolicy(self: *const MetalBackend) program_mod.CommandStreamPolicy {
@@ -3901,6 +3909,14 @@ const CompiledProgram = struct {
     alloc: std.mem.Allocator,
     runtime_profile: profile_mod.RuntimeProfile = .{},
 
+    fn timingStart(self: *const CompiledProgram) i96 {
+        return if (self.backend.runtime_timing) nowNs() else @as(i96, 0);
+    }
+
+    fn timingElapsed(self: *const CompiledProgram, start_ns: i96) u64 {
+        return if (self.backend.runtime_timing) @intCast(nowNs() - start_ns) else 0;
+    }
+
     fn deinit(self: *CompiledProgram) void {
         releaseDeviceBuffers(self.device_bufs);
         releaseQWeightViews(self.qweight_views);
@@ -3914,6 +3930,7 @@ const CompiledProgram = struct {
     }
 
     fn execute(self: *CompiledProgram, inputs: []const backend_mod.ProgramIO, outputs: []const backend_mod.ProgramIO) void {
+        self.runtime_profile.timing_enabled = self.runtime_profile.timing_enabled or self.backend.runtime_timing;
         // Upload per-step inputs (token embed, pos, mask) via shared memory.
         reference.uploadToBuffers(self.ref_buffers, inputs);
 
@@ -3986,8 +4003,7 @@ const CompiledProgram = struct {
     }
 
     fn executeOp(self: *CompiledProgram, op: backend_mod.DeviceOp) void {
-        const tag: usize = @intFromEnum(op);
-        const t0 = nowNs();
+        const t0 = self.timingStart();
         if (self.tryEncodeGpuOp(op)) {
             self.runtime_profile.backend_op_count +%= 1;
         } else {
@@ -3995,22 +4011,24 @@ const CompiledProgram = struct {
             reference.executeOp(self.ref_buffers, self.ref_qweights, op);
             self.runtime_profile.fallback_op_count +%= 1;
         }
-        self.runtime_profile.time_ns[tag] +%= @intCast(nowNs() - t0);
+        const elapsed = self.timingElapsed(t0);
+        if (elapsed != 0) self.runtime_profile.time_ns[@intFromEnum(op)] +%= elapsed;
     }
 
     fn executeFallbackOp(self: *CompiledProgram, op: backend_mod.DeviceOp) void {
-        const tag: usize = @intFromEnum(op);
-        const t0 = nowNs();
+        const t0 = self.timingStart();
         reference.executeOp(self.ref_buffers, self.ref_qweights, op);
         self.runtime_profile.fallback_op_count +%= 1;
-        self.runtime_profile.time_ns[tag] +%= @intCast(nowNs() - t0);
+        const elapsed = self.timingElapsed(t0);
+        if (elapsed != 0) self.runtime_profile.time_ns[@intFromEnum(op)] +%= elapsed;
     }
 
     fn flushCommandsProfiled(self: *CompiledProgram) void {
         if (self.backend.active_commands == null) return;
-        const t0 = nowNs();
+        const t0 = self.timingStart();
         self.backend.flushCommands();
-        self.runtime_profile.sync_time_ns +%= @intCast(nowNs() - t0);
+        const elapsed = self.timingElapsed(t0);
+        if (elapsed != 0) self.runtime_profile.sync_time_ns +%= elapsed;
         self.runtime_profile.sync_count +%= 1;
     }
 
@@ -5779,9 +5797,9 @@ const CompiledProgram = struct {
                     }
                 }
 
-                const t0 = nowNs();
+                const t0 = self.timingStart();
                 self.encodeQMatvecBatch(ops, command.anchorIndices(), command.sidecarIndices());
-                self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), @intCast(nowNs() - t0));
+                self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), self.timingElapsed(t0));
                 for (command.sidecarIndices()) |maybe_idx| {
                     if (maybe_idx) |idx| self.recordRegionBackendOp(ops[idx], 0);
                 }
@@ -5801,9 +5819,9 @@ const CompiledProgram = struct {
                     }
                 }
 
-                const t0 = nowNs();
+                const t0 = self.timingStart();
                 self.encodeQMatmulBatch(ops, command.anchorIndices(), command.sidecarIndices());
-                self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), @intCast(nowNs() - t0));
+                self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), self.timingElapsed(t0));
                 for (command.sidecarIndices()) |maybe_idx| {
                     if (maybe_idx) |idx| self.recordRegionBackendOp(ops[idx], 0);
                 }
@@ -5872,7 +5890,7 @@ const CompiledProgram = struct {
             }
         }
 
-        const t0 = nowNs();
+        const t0 = self.timingStart();
         if (rope_pair_count == 0) {
             self.encodeQMatmulBatchWithSidecars(ops, command.anchorIndices(), &direct_sidecars);
         } else {
@@ -5907,7 +5925,7 @@ const CompiledProgram = struct {
             }
             self.encodeQMatmulRopeStoreBatch(ops, rope_pairs[0..rope_pair_count]);
         }
-        self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), @intCast(nowNs() - t0));
+        self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), self.timingElapsed(t0));
         for (command.carriedSidecarIndices()) |maybe_idx| {
             if (maybe_idx) |idx| self.recordRegionBackendOp(ops[idx], 0);
         }
@@ -5965,9 +5983,9 @@ const CompiledProgram = struct {
             }
         }
 
-        const t0 = nowNs();
+        const t0 = self.timingStart();
         self.encodeQMatvecBatchWithSidecars(ops, command.anchorIndices(), &sidecars);
-        self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), @intCast(nowNs() - t0));
+        self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), self.timingElapsed(t0));
         for (command.carriedSidecarIndices()) |maybe_idx| {
             if (maybe_idx) |idx| self.recordRegionBackendOp(ops[idx], 0);
         }
@@ -5993,7 +6011,7 @@ const CompiledProgram = struct {
     }
 
     fn tryEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
-        const t0 = nowNs();
+        const t0 = self.timingStart();
         const encoded = if (computeDispatchSpec(op)) |spec| blk: {
             self.encodeComputeDispatch(spec);
             break :blk true;
@@ -6033,7 +6051,7 @@ const CompiledProgram = struct {
             else => false,
         };
         if (encoded) {
-            self.recordRegionBackendOp(op, @intCast(nowNs() - t0));
+            self.recordRegionBackendOp(op, self.timingElapsed(t0));
         }
         return encoded;
     }
@@ -6240,7 +6258,7 @@ const CompiledProgram = struct {
         if (end > ops.len) return false;
 
         self.runtime_profile.recordProgramCommandAttempt(command.kind);
-        const t0 = nowNs();
+        const t0 = self.timingStart();
         const lowering = exactProgramCommandLowering(command.kind) orelse return false;
         const encoded = lowering.encode(self, ops, command);
 
@@ -6248,7 +6266,7 @@ const CompiledProgram = struct {
             self.runtime_profile.recordProgramCommandFailed(command.kind);
             return false;
         }
-        self.recordExactProgramCommandRun(ops, command, lowering, @intCast(nowNs() - t0));
+        self.recordExactProgramCommandRun(ops, command, lowering, self.timingElapsed(t0));
         self.runtime_profile.recordProgramCommand(command.kind);
         return true;
     }

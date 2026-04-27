@@ -10,6 +10,7 @@
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --metal-region
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-prefill-device
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-rope-cache-sidecars
+//!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --profile-timing
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --print-stage-plan
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --stage-plan-only
 
@@ -493,6 +494,7 @@ pub fn main(init: std.process.Init) !void {
     const run_metal_region = hasFlag(args, "--metal-region");
     const run_metal_prefill_device = hasFlag(args, "--metal-prefill-device");
     const run_metal_rope_cache_sidecars = hasFlag(args, "--metal-rope-cache-sidecars");
+    const profile_timing = hasFlag(args, "--profile-timing");
     const stage_plan_only = hasFlag(args, "--stage-plan-only");
     const print_stage_plan = stage_plan_only or hasFlag(args, "--print-stage-plan");
     const model_is_gguf = isGGUF(cfg.model_path);
@@ -536,6 +538,7 @@ pub fn main(init: std.process.Init) !void {
             break :metal;
         };
         defer metal_be.deinit();
+        metal_be.setRuntimeTiming(profile_timing);
         if (print_stage_plan) {
             const caps = zgml.llm.stage_plan.StageCapabilities.fromBackendCapabilities(metal_be.backend().capabilities);
             try zgml.llm.stage_plan.printLlamaStagePlanSummary(config, &stdout.interface, caps, cfg.prompt_tokens);
