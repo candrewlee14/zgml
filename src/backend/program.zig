@@ -4199,12 +4199,14 @@ fn projectionRopeSidecarOpCompatible(q: anytype, op: backend_mod.DeviceOp) bool 
 
 pub fn qmatvecSliceSidecarCompatible(q: anytype, sa: anytype) bool {
     const slice_src_col_start = qmatmulSliceSrcColStart(q, sa) orelse return false;
+    const slice_len = @as(u64, sa.rows) * @as(u64, sa.cols);
     return q.M == 1 and
         q.dst == sa.src and
-        slice_src_col_start + sa.rows <= q.N and
-        sa.cols == 1 and
+        sa.rows != 0 and
+        sa.cols != 0 and
+        @as(u64, slice_src_col_start) + slice_len <= @as(u64, q.N) and
         sa.src_row_stride == 1 and
-        (sa.src_col_stride == q.N or sa.src_col_stride == sa.rows);
+        (sa.src_col_stride == sa.rows or (sa.cols == 1 and sa.src_col_stride == q.N));
 }
 
 pub fn qmatmulDstRowStride(q: anytype) u32 {

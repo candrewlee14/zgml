@@ -581,9 +581,11 @@ const shader_source =
     \\    uint write_primary[MAX_QMATVEC_BATCH];
     \\    uint sidecar_kind[MAX_QMATVEC_BATCH];
     \\    uint slice_rows[MAX_QMATVEC_BATCH];
+    \\    uint slice_cols[MAX_QMATVEC_BATCH];
     \\    uint slice_src_col_start[MAX_QMATVEC_BATCH];
     \\    uint slice_dst_offset[MAX_QMATVEC_BATCH];
     \\    uint slice_dst_row_stride[MAX_QMATVEC_BATCH];
+    \\    uint slice_dst_col_stride[MAX_QMATVEC_BATCH];
     \\    uint rope_half_d[MAX_QMATVEC_BATCH];
     \\    uint rope_cs_off[MAX_QMATVEC_BATCH];
     \\    uint ew_op[MAX_QMATVEC_BATCH];
@@ -644,9 +646,11 @@ const shader_source =
     \\    }
     \\    if (p.write_primary[slot] != 0) output[p.dst_offset[slot] + col] = sum;
     \\    uint slice_col_start = p.slice_src_col_start[slot];
-    \\    if (p.sidecar_kind[slot] == 1 && col >= slice_col_start && col < slice_col_start + p.slice_rows[slot]) {
-    \\        uint slice_row = col - slice_col_start;
-    \\        sidecar_dst[p.slice_dst_offset[slot] + slice_row * p.slice_dst_row_stride[slot]] = sum;
+    \\    if (p.sidecar_kind[slot] == 1 && col >= slice_col_start && col < slice_col_start + p.slice_rows[slot] * p.slice_cols[slot]) {
+    \\        uint local = col - slice_col_start;
+    \\        uint slice_row = local % p.slice_rows[slot];
+    \\        uint slice_col = local / p.slice_rows[slot];
+    \\        sidecar_dst[p.slice_dst_offset[slot] + slice_row * p.slice_dst_row_stride[slot] + slice_col * p.slice_dst_col_stride[slot]] = sum;
     \\    } else if (p.sidecar_kind[slot] == 2) {
     \\        uint rope_half = p.rope_half_d[slot];
     \\        if (col >= slice_col_start && col < slice_col_start + rope_half) {
@@ -1151,9 +1155,10 @@ const shader_source =
     \\    }
     \\
     \\    if (p.write_primary != 0) output[p.dst_offset + gid] = sum;
-    \\    if (gid >= p.slice_src_col_start && gid < p.slice_src_col_start + p.slice_rows) {
-    \\        uint row = gid - p.slice_src_col_start;
-    \\        uint col = 0;
+    \\    if (gid >= p.slice_src_col_start && gid < p.slice_src_col_start + p.slice_rows * p.slice_cols) {
+    \\        uint local = gid - p.slice_src_col_start;
+    \\        uint row = local % p.slice_rows;
+    \\        uint col = local / p.slice_rows;
     \\        slice_dst[p.slice_dst_offset + row * p.slice_dst_row_stride + col * p.slice_dst_col_stride] = sum;
     \\    }
     \\}
@@ -2849,9 +2854,11 @@ const QMatvecBatch4Params = extern struct {
     write_primary: [MAX_QMATVEC_BATCH]u32,
     sidecar_kind: [MAX_QMATVEC_BATCH]u32,
     slice_rows: [MAX_QMATVEC_BATCH]u32,
+    slice_cols: [MAX_QMATVEC_BATCH]u32,
     slice_src_col_start: [MAX_QMATVEC_BATCH]u32,
     slice_dst_offset: [MAX_QMATVEC_BATCH]u32,
     slice_dst_row_stride: [MAX_QMATVEC_BATCH]u32,
+    slice_dst_col_stride: [MAX_QMATVEC_BATCH]u32,
     rope_half_d: [MAX_QMATVEC_BATCH]u32,
     rope_cs_off: [MAX_QMATVEC_BATCH]u32,
     ew_op: [MAX_QMATVEC_BATCH]u32,
@@ -4482,15 +4489,95 @@ const CompiledProgram = struct {
         elementwise = 3,
     };
 
+    const QMatvecSliceSidecar = struct {
+        dst: u16,
+        src: u16,
+        rows: u32,
+        cols: u32,
+        dst_base_offset: u32,
+        dst_offset: u32,
+        dst_row_stride: u32,
+        dst_col_stride: u32,
+        src_offset: u32,
+        src_row_stride: u32,
+        src_col_stride: u32,
+        patch_stride: u32,
+    };
+
+    fn qmatvecSliceSidecarFrom(sa: anytype) QMatvecSliceSidecar {
+        return .{
+            .dst = sa.dst,
+            .src = sa.src,
+            .rows = sa.rows,
+            .cols = sa.cols,
+            .dst_base_offset = sa.dst_base_offset,
+            .dst_offset = sa.dst_offset,
+            .dst_row_stride = sa.dst_row_stride,
+            .dst_col_stride = sa.dst_col_stride,
+            .src_offset = sa.src_offset,
+            .src_row_stride = sa.src_row_stride,
+            .src_col_stride = sa.src_col_stride,
+            .patch_stride = sa.patch_stride,
+        };
+    }
+
+    fn qmatvecSliceSidecarCompatible(q: anytype, sa: QMatvecSliceSidecar) bool {
+        return program_mod.qmatvecSliceSidecarCompatible(q, sa);
+    }
+
+    fn qmatvecSliceSidecarSpan(q: anytype, sa: QMatvecSliceSidecar) ?struct { start: u32, len: u32 } {
+        const start = program_mod.qmatmulSliceSrcColStart(q, sa) orelse return null;
+        const len64 = @as(u64, sa.rows) * @as(u64, sa.cols);
+        if (len64 > std.math.maxInt(u32)) return null;
+        return .{ .start = start, .len = @intCast(len64) };
+    }
+
+    fn mergeOrderedQMatvecSliceSidecars(q: anytype, left: QMatvecSliceSidecar, right: QMatvecSliceSidecar) ?QMatvecSliceSidecar {
+        const l = qmatvecSliceSidecarSpan(q, left) orelse return null;
+        const r = qmatvecSliceSidecarSpan(q, right) orelse return null;
+        if (@as(u64, l.start) + @as(u64, l.len) != @as(u64, r.start)) return null;
+
+        const stride = if (left.cols > 1) left.dst_col_stride else if (right.cols > 1) right.dst_col_stride else blk: {
+            if (right.dst_offset <= left.dst_offset) return null;
+            break :blk right.dst_offset - left.dst_offset;
+        };
+        const next_delta = @as(u64, left.cols) * @as(u64, stride);
+        if (@as(u64, left.dst_offset) + next_delta != @as(u64, right.dst_offset)) return null;
+        if (@as(u64, left.dst_base_offset) + next_delta != @as(u64, right.dst_base_offset)) return null;
+
+        var merged = left;
+        merged.cols += right.cols;
+        merged.src_col_stride = merged.rows;
+        merged.dst_col_stride = stride;
+        return if (qmatvecSliceSidecarCompatible(q, merged)) merged else null;
+    }
+
+    fn mergeQMatvecSliceSidecars(q: anytype, a: QMatvecSliceSidecar, b: QMatvecSliceSidecar) ?QMatvecSliceSidecar {
+        if (!qmatvecSliceSidecarCompatible(q, a) or !qmatvecSliceSidecarCompatible(q, b)) return null;
+        if (a.src != b.src or a.dst != b.dst or a.rows != b.rows or a.dst_row_stride != b.dst_row_stride) return null;
+        if (a.src_row_stride != b.src_row_stride or a.patch_stride != b.patch_stride) return null;
+        return mergeOrderedQMatvecSliceSidecars(q, a, b) orelse mergeOrderedQMatvecSliceSidecars(q, b, a);
+    }
+
     const QMatvecBatchSidecarPlan = struct {
         kinds: [MAX_QMATVEC_BATCH]QMatvecBatchSidecarKind = [_]QMatvecBatchSidecarKind{.none} ** MAX_QMATVEC_BATCH,
         rope_indices: [MAX_QMATVEC_BATCH]?usize = [_]?usize{null} ** MAX_QMATVEC_BATCH,
         store_indices: [MAX_QMATVEC_BATCH]?usize = [_]?usize{null} ** MAX_QMATVEC_BATCH,
+        slice_overrides: [MAX_QMATVEC_BATCH]?QMatvecSliceSidecar = [_]?QMatvecSliceSidecar{null} ** MAX_QMATVEC_BATCH,
 
         fn appendSlice(self: *QMatvecBatchSidecarPlan, slot: usize, idx: usize) bool {
             if (slot >= MAX_QMATVEC_BATCH or self.kinds[slot] != .none) return false;
             self.kinds[slot] = .slice;
             self.store_indices[slot] = idx;
+            return true;
+        }
+
+        fn mergeSlice(self: *QMatvecBatchSidecarPlan, ops: []const backend_mod.DeviceOp, slot: usize, idx: usize, q: anytype) bool {
+            if (slot >= MAX_QMATVEC_BATCH or self.kinds[slot] != .slice) return false;
+            const next = qmatvecSliceSidecarFrom(ops[idx].slice_assign);
+            const current = self.slice_overrides[slot] orelse qmatvecSliceSidecarFrom(ops[self.store_indices[slot].?].slice_assign);
+            const merged = mergeQMatvecSliceSidecars(q, current, next) orelse return false;
+            self.slice_overrides[slot] = merged;
             return true;
         }
 
@@ -4583,14 +4670,16 @@ const CompiledProgram = struct {
                 .none => {},
                 .slice => {
                     const sidecar_index = sidecars.store_indices[slot].?;
-                    const sa = ops[sidecar_index].slice_assign;
+                    const sa = sidecars.slice_overrides[slot] orelse qmatvecSliceSidecarFrom(ops[sidecar_index].slice_assign);
                     const carried = [_]?usize{sidecar_index};
                     params.write_primary[slot] = @intFromBool(program_mod.projectionPrimaryOutputHasExternalUsersExcept(ops, op_index, &carried));
                     params.sidecar_kind[slot] = @intFromEnum(QMatvecBatchSidecarKind.slice);
                     params.slice_rows[slot] = sa.rows;
-                    params.slice_src_col_start[slot] = program_mod.qmatmulSliceSrcColStart(q, sa).?;
+                    params.slice_cols[slot] = sa.cols;
+                    params.slice_src_col_start[slot] = program_mod.qmatmulSliceSrcColStart(q, .{ .src_offset = sa.src_offset }).?;
                     params.slice_dst_offset[slot] = sa.dst_offset;
                     params.slice_dst_row_stride[slot] = sa.dst_row_stride;
+                    params.slice_dst_col_stride[slot] = sa.dst_col_stride;
                     buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = self.device_bufs[sa.dst];
                 },
                 .elementwise => {
@@ -5949,7 +6038,10 @@ const CompiledProgram = struct {
                         const q = ops[anchor_idx].qmatmul;
                         if (program_mod.qmatvecSliceSidecarCompatible(q, sa)) break slot;
                     } else return false;
-                    if (!sidecars.appendSlice(slot, idx)) return self.tryEncodeQMatvecProjectionCacheMaterialized(ops, command);
+                    if (!sidecars.appendSlice(slot, idx)) {
+                        const q = ops[command.indices[slot]].qmatmul;
+                        if (!sidecars.mergeSlice(ops, slot, idx, q)) return self.tryEncodeQMatvecProjectionCacheMaterialized(ops, command);
+                    }
                 },
                 .elementwise => |e| {
                     const slot = for (command.anchorIndices(), 0..) |anchor_idx, slot| {
@@ -6934,6 +7026,96 @@ test "metal backend qmatvec projection group carries cache store sidecars" {
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
     try std.testing.expectEqual(@as(u64, 1), rt.region_command_plan_cached_count);
+}
+
+test "metal backend qmatvec projection cache coalesces rectangular stores" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4, 5, 6 };
+    var cache = [_]f32{-1} ** 18;
+    const qdata = [_]i8{
+        1, 0, 0, 0, 0, 0,
+        0, 1, 0, 0, 0, 0,
+        0, 0, 1, 0, 0, 0,
+        0, 0, 0, 1, 0, 0,
+        0, 0, 0, 0, 1, 0,
+        0, 0, 0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 6, .cols = 6, .block_size = 6 }};
+
+    var ops: [10]backend_mod.DeviceOp = undefined;
+    ops[0] = .{ .qmatmul = .{
+        .dst = 1,
+        .input = 0,
+        .weight_idx = 0,
+        .M = 1,
+        .N = 6,
+        .K = 6,
+    } };
+    for (ops[1..4], 0..) |*op, i| {
+        const head: u32 = @intCast(2 - i);
+        op.* = .{ .slice_assign = .{
+            .dst = 8,
+            .src = 1,
+            .rows = 2,
+            .cols = 1,
+            .dst_base_offset = head * 6,
+            .dst_offset = head * 6,
+            .dst_row_stride = 1,
+            .dst_col_stride = 6,
+            .src_offset = head * 2,
+            .src_row_stride = 1,
+            .src_col_stride = 2,
+            .patch_stride = 2,
+        } };
+    }
+    for (ops[4..], 0..) |*op, i| {
+        op.* = .{ .qmatmul = .{
+            .dst = @intCast(i + 2),
+            .input = 0,
+            .weight_idx = 0,
+            .M = 1,
+            .N = 6,
+            .K = 6,
+        } };
+    }
+
+    const buf_sizes = [_]usize{ 6, 6, 6, 6, 6, 6, 6, 6, 18 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 8, .host_ptr = @ptrCast(&cache), .size = cache.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 9,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var got: [18]f32 = undefined;
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 8, .host_ptr = @ptrCast(&got), .size = got.len * 4 }};
+    be.executeProgram(handle, &.{}, &out);
+
+    try std.testing.expectEqualSlices(f32, &.{ 1, 2 }, got[0..2]);
+    try std.testing.expectEqualSlices(f32, &.{ 3, 4 }, got[6..8]);
+    try std.testing.expectEqualSlices(f32, &.{ 5, 6 }, got[12..14]);
+
+    const rt = be.getRuntimeProfile(handle).?;
+    try std.testing.expectEqual(@as(u64, 10), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_cache_group)]);
 }
 
 test "metal backend qmatvec projection group carries elementwise sidecars" {
