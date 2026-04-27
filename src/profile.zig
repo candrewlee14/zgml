@@ -820,6 +820,7 @@ pub fn printTimingBreakdown(label: []const u8, n_tokens: u32, total_ns: u64) voi
 pub const RuntimeProfile = struct {
     time_ns: [n_op_tags]u64 = [_]u64{0} ** n_op_tags,
     program_command_counts: [n_program_command_kinds]u64 = [_]u64{0} ** n_program_command_kinds,
+    program_command_dispatch_counts: [n_program_command_kinds]u64 = [_]u64{0} ** n_program_command_kinds,
     program_command_planned_counts: [n_program_command_kinds]u64 = [_]u64{0} ** n_program_command_kinds,
     program_command_attempt_counts: [n_program_command_kinds]u64 = [_]u64{0} ** n_program_command_kinds,
     program_command_failed_counts: [n_program_command_kinds]u64 = [_]u64{0} ** n_program_command_kinds,
@@ -844,6 +845,10 @@ pub const RuntimeProfile = struct {
 
     pub fn recordProgramCommand(self: *RuntimeProfile, kind: program_mod.ProgramCommandKind) void {
         self.program_command_counts[@intFromEnum(kind)] +%= 1;
+    }
+
+    pub fn recordProgramCommandDispatch(self: *RuntimeProfile, kind: program_mod.ProgramCommandKind) void {
+        self.program_command_dispatch_counts[@intFromEnum(kind)] +%= 1;
     }
 
     pub fn recordProgramCommandPlanned(self: *RuntimeProfile, kind: program_mod.ProgramCommandKind) void {
@@ -1101,6 +1106,23 @@ pub fn printRuntimeProfile(rt: RuntimeProfile, est: ProgramEstimates) void {
     }
     if (printed_commands) std.debug.print("\n", .{});
 
+    var printed_command_dispatches = false;
+    for (rt.program_command_dispatch_counts, 0..) |count, i| {
+        if (count == 0) continue;
+        const kind: program_mod.ProgramCommandKind = @enumFromInt(i);
+        if (!printed_command_dispatches) {
+            std.debug.print("Program command dispatches:\n", .{});
+            printed_command_dispatches = true;
+        }
+        const command_count = if (rt.program_command_counts[i] + rt.program_command_failed_counts[i] > 0)
+            rt.program_command_counts[i] + rt.program_command_failed_counts[i]
+        else
+            rt.program_command_planned_counts[i];
+        const avg = if (command_count > 0) @as(f64, @floatFromInt(count)) / @as(f64, @floatFromInt(command_count)) else 0.0;
+        std.debug.print("  {s:<24} {d} ({d:.1}/command)\n", .{ kind.label(), count, avg });
+    }
+    if (printed_command_dispatches) std.debug.print("\n", .{});
+
     var printed_planned_commands = false;
     for (rt.program_command_planned_counts, 0..) |count, i| {
         if (count == 0) continue;
@@ -1281,6 +1303,7 @@ test "estimateProgram aggregates per tag" {
 test "RuntimeProfile reset" {
     var rt = RuntimeProfile{};
     rt.time_ns[0] = 42;
+    rt.recordProgramCommandDispatch(.projection_cache_group);
     rt.schedule_regions = .{
         .attempted = 2,
         .lowered = 1,
@@ -1309,6 +1332,7 @@ test "RuntimeProfile reset" {
     rt.timing_enabled = true;
     rt.reset();
     try std.testing.expectEqual(@as(u64, 0), rt.time_ns[0]);
+    try std.testing.expectEqual(@as(u64, 0), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_cache_group)]);
     try std.testing.expectEqual(ScheduleRegionStats{}, rt.schedule_regions);
     try std.testing.expectEqual(ScheduleRegionStats{}, rt.schedule_region_patterns[3]);
     try std.testing.expectEqual(@as(u64, 0), rt.backend_op_count);

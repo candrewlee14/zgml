@@ -3908,6 +3908,7 @@ const CompiledProgram = struct {
     plan: program_mod.ExecutionPlan,
     alloc: std.mem.Allocator,
     runtime_profile: profile_mod.RuntimeProfile = .{},
+    active_program_command_kind: ?program_mod.ProgramCommandKind = null,
 
     fn timingStart(self: *const CompiledProgram) i96 {
         return if (self.backend.runtime_timing) nowNs() else @as(i96, 0);
@@ -4059,6 +4060,7 @@ const CompiledProgram = struct {
             1,
         );
         self.runtime_profile.backend_dispatch_count +%= 1;
+        if (self.active_program_command_kind) |kind| self.runtime_profile.recordProgramCommandDispatch(kind);
     }
 
     fn encodeKernel(
@@ -6287,6 +6289,9 @@ const CompiledProgram = struct {
         self.runtime_profile.recordProgramCommandAttempt(command.kind);
         const t0 = self.timingStart();
         const lowering = exactProgramCommandLowering(command.kind) orelse return false;
+        const previous_command_kind = self.active_program_command_kind;
+        self.active_program_command_kind = command.kind;
+        defer self.active_program_command_kind = previous_command_kind;
         const encoded = lowering.encode(self, ops, command);
 
         if (!encoded) {
@@ -6342,6 +6347,9 @@ const CompiledProgram = struct {
     }
 
     fn tryEncodeProgramCommandIndividually(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        const previous_command_kind = self.active_program_command_kind;
+        self.active_program_command_kind = command.kind;
+        defer self.active_program_command_kind = previous_command_kind;
         var indices = command.coveredIndexIterator();
         while (indices.next()) |idx| {
             if (idx >= ops.len) return false;
@@ -6361,7 +6369,7 @@ const CompiledProgram = struct {
             if (start >= ops.len) return false;
             if (command.kind == .op) {
                 if (skipped[start]) continue;
-                if (!self.tryEncodeRegionGpuOp(ops[start])) return false;
+                if (!self.tryEncodeProgramCommandIndividually(ops, command)) return false;
                 program_mod.markProgramCommandUsed(skipped[0..ops.len], command);
                 continue;
             }
