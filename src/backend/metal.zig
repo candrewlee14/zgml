@@ -570,6 +570,7 @@ const shader_source =
     \\}
     \\
     \\constant uint MAX_QMATVEC_BATCH = 4;
+    \\constant uint QMATVEC_DOT_THREADS = 64;
     \\
     \\struct QMatvecBatch4Params {
     \\    uint n_ops; uint max_n;
@@ -620,10 +621,11 @@ const shader_source =
     \\    device const float* aux3 [[buffer(22)]],
     \\    device float*       d3 [[buffer(23)]],
     \\    constant QMatvecBatch4Params& p [[buffer(24)]],
-    \\    uint2 gid [[thread_position_in_grid]]
+    \\    uint2 group_id [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
     \\) {
-    \\    uint col = gid.x;
-    \\    uint slot = gid.y;
+    \\    uint col = group_id.x;
+    \\    uint slot = group_id.y;
     \\    if (slot >= p.n_ops || col >= p.N[slot]) return;
     \\
     \\    device const char* w = w0;
@@ -639,13 +641,37 @@ const shader_source =
     \\        default: break;
     \\    }
     \\
+    \\    threadgroup float partial[QMATVEC_DOT_THREADS];
+    \\    threadgroup float partial_pair[QMATVEC_DOT_THREADS];
+    \\    uint slice_col_start = p.slice_src_col_start[slot];
+    \\    bool rope_pair = p.sidecar_kind[slot] == 2 && col >= slice_col_start && col < slice_col_start + p.rope_half_d[slot];
+    \\    uint pair_col = col + p.rope_half_d[slot];
+    \\
     \\    float sum = 0.0f;
-    \\    for (uint k = 0; k < p.K[slot]; k++) {
+    \\    float pair_sum = 0.0f;
+    \\    for (uint k = tid; k < p.K[slot]; k += QMATVEC_DOT_THREADS) {
     \\        uint w_idx = k * p.N[slot] + col;
     \\        sum += input[p.input_offset[slot] + k] * float(w[w_idx]) * s[w_idx / p.block_size[slot]];
+    \\        if (rope_pair) {
+    \\            uint pair_w_idx = k * p.N[slot] + pair_col;
+    \\            pair_sum += input[p.input_offset[slot] + k] * float(w[pair_w_idx]) * s[pair_w_idx / p.block_size[slot]];
+    \\        }
     \\    }
+    \\    partial[tid] = sum;
+    \\    partial_pair[tid] = pair_sum;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = QMATVEC_DOT_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) {
+    \\            partial[tid] += partial[tid + stride];
+    \\            partial_pair[tid] += partial_pair[tid + stride];
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    if (tid != 0) return;
+    \\    sum = partial[0];
+    \\    pair_sum = partial_pair[0];
+    \\
     \\    if (p.write_primary[slot] != 0) output[p.dst_offset[slot] + col] = sum;
-    \\    uint slice_col_start = p.slice_src_col_start[slot];
     \\    if (p.sidecar_kind[slot] == 1 && col >= slice_col_start && col < slice_col_start + p.slice_rows[slot] * p.slice_cols[slot]) {
     \\        uint local = col - slice_col_start;
     \\        uint slice_row = local % p.slice_rows[slot];
@@ -655,12 +681,6 @@ const shader_source =
     \\        uint rope_half = p.rope_half_d[slot];
     \\        if (col >= slice_col_start && col < slice_col_start + rope_half) {
     \\            uint local = col - slice_col_start;
-    \\            uint pair_col = col + rope_half;
-    \\            float pair_sum = 0.0f;
-    \\            for (uint k = 0; k < p.K[slot]; k++) {
-    \\                uint w_idx = k * p.N[slot] + pair_col;
-    \\                pair_sum += input[p.input_offset[slot] + k] * float(w[w_idx]) * s[w_idx / p.block_size[slot]];
-    \\            }
     \\            float cos_val = sidecar_src[p.rope_cs_off[slot] + local];
     \\            float sin_val = sidecar_src[p.rope_cs_off[slot] + rope_half + local];
     \\            sidecar_dst[p.slice_dst_offset[slot] + local * p.slice_dst_row_stride[slot]] = sum * cos_val - pair_sum * sin_val;
@@ -2826,6 +2846,7 @@ comptime {
 }
 
 const MAX_QMATVEC_BATCH: usize = 4;
+const QMATVEC_DOT_THREADS: u32 = 64;
 
 const QMatvecBatchBuffer = enum(u8) {
     weight_data,
@@ -2840,6 +2861,7 @@ const QMatvecBatchKernel = BatchKernelLayout(QMatvecBatchBuffer, MAX_QMATVEC_BAT
 
 comptime {
     requireShaderUintConst("MAX_QMATVEC_BATCH", MAX_QMATVEC_BATCH);
+    requireShaderUintConst("QMATVEC_DOT_THREADS", QMATVEC_DOT_THREADS);
     requireKernelBuffers(QMatvecBatchKernel, 24, "qmatvec_batch4_f32");
 }
 
@@ -4731,8 +4753,8 @@ const CompiledProgram = struct {
             &buffers,
             params,
             QMatvecBatchKernel.params_index,
-            .{ .gx = linearGrid(params.max_n), .gy = @intCast(indices.len) },
-            WG_SIZE,
+            .{ .gx = params.max_n, .gy = @intCast(indices.len) },
+            QMATVEC_DOT_THREADS,
         );
     }
 
