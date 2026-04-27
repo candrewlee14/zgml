@@ -6280,6 +6280,22 @@ test "program command stream emits projection sidecar chains" {
     try std.testing.expectEqual(@as(u32, 1), summary.projection_chain_sidecars);
 }
 
+test "program command stream emits qmatvec projection sidecar chains" {
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 1),
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 4 } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_chain, commands[0].kind);
+    try std.testing.expectEqual(ProjectionGroupKind.qmatvec, commands[0].projection_kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].sidecar_count);
+}
+
 test "projection sidecar chains reject incompatible consumers" {
     const ops = [_]backend_mod.DeviceOp{
         testQMatmulWith(1, 0, 2),

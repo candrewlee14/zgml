@@ -3,16 +3,16 @@
 #
 # Prerequisites:
 #   brew install llama.cpp
-#   python3 -c "from huggingface_hub import hf_hub_download; \
-#     hf_hub_download('mradermacher/SmolLM-135M-GGUF','SmolLM-135M.f16.gguf',local_dir='data/smollm'); \
-#     hf_hub_download('mradermacher/SmolLM-135M-GGUF','SmolLM-135M.Q8_0.gguf',local_dir='data/smollm')"
+#   curl and python3
 #   zig build -Doptimize=ReleaseFast
 #
 # Usage:
 #   ./scripts/bench_vs_ggml.sh [prompt_tokens] [gen_tokens] [repetitions]
 #
 # Optional:
-#   ZGML_EXTRA_ARGS="--profile-timing" ./scripts/bench_vs_ggml.sh 128 200 3
+#   ZGML_EXTRA_ARGS="" ./scripts/bench_vs_ggml.sh 128 200 3
+#   ZGML_EXTRA_ARGS="--metal-prefill-device --metal-region --profile-timing" ./scripts/bench_vs_ggml.sh 128 200 3
+#   BENCH_AUTO_DOWNLOAD=0 ./scripts/bench_vs_ggml.sh 128 200 3
 #
 # Artifacts:
 #   bench-results/smollm-<timestamp>-p<PROMPT>-g<GEN>-r<REPS>.md
@@ -30,7 +30,12 @@ cd "$ROOT"
 GGUF_F16="data/smollm/SmolLM-135M.f16.gguf"
 GGUF_Q8="data/smollm/SmolLM-135M.Q8_0.gguf"
 ZGML_MODEL="${ZGML_MODEL:-$GGUF_Q8}"
-ZGML_EXTRA_ARGS="${ZGML_EXTRA_ARGS:-}"
+ZGML_DEFAULT_EXTRA_ARGS="${ZGML_DEFAULT_EXTRA_ARGS:---metal-prefill-device --metal-region}"
+if [ "${ZGML_EXTRA_ARGS+x}" != "x" ]; then
+    ZGML_EXTRA_ARGS="$ZGML_DEFAULT_EXTRA_ARGS"
+fi
+HF_GGUF_REPO="${HF_GGUF_REPO:-mradermacher/SmolLM-135M-GGUF}"
+BENCH_AUTO_DOWNLOAD="${BENCH_AUTO_DOWNLOAD:-1}"
 ZGML_BIN="./zig-out/bin/bench-llama-smollm"
 OUT_DIR="${OUT_DIR:-bench-results}"
 STAMP="$(date -u +"%Y%m%dT%H%M%SZ")"
@@ -40,9 +45,28 @@ JSON_OUT="${BASE}.json"
 
 mkdir -p "$OUT_DIR"
 
-for f in "$ZGML_MODEL" "$GGUF_F16" "$GGUF_Q8"; do
-    [ -f "$f" ] || { echo "Missing: $f. See prerequisites in this script."; exit 1; }
-done
+download_known_model() {
+    local path="$1"
+    local filename="$2"
+    [ -f "$path" ] && return 0
+    if [ "$BENCH_AUTO_DOWNLOAD" != "1" ]; then
+        echo "Missing: $path. Set BENCH_AUTO_DOWNLOAD=1 or download the model manually."
+        exit 1
+    fi
+    command -v curl >/dev/null || { echo "curl not found; cannot download missing model: $path"; exit 1; }
+    mkdir -p "$(dirname "$path")"
+    local url="https://huggingface.co/${HF_GGUF_REPO}/resolve/main/${filename}"
+    echo "Downloading missing model: $path"
+    curl --fail --location --continue-at - --output "$path" "$url"
+}
+
+download_known_model "$GGUF_F16" "SmolLM-135M.f16.gguf"
+download_known_model "$GGUF_Q8" "SmolLM-135M.Q8_0.gguf"
+if [ ! -f "$ZGML_MODEL" ]; then
+    echo "Missing custom ZGML_MODEL: $ZGML_MODEL"
+    echo "Auto-download currently knows only: $GGUF_F16 and $GGUF_Q8"
+    exit 1
+fi
 command -v llama-bench >/dev/null || { echo "llama-bench not found. Run: brew install llama.cpp"; exit 1; }
 command -v python3 >/dev/null || { echo "python3 not found."; exit 1; }
 [ -x "$ZGML_BIN" ] || { echo "Missing: $ZGML_BIN. Run: zig build -Doptimize=ReleaseFast"; exit 1; }
@@ -63,8 +87,13 @@ echo "machine=$MACHINE"
 echo
 
 echo "Running zgml benchmark..."
-read -r -a ZGML_EXTRA_ARGV <<< "$ZGML_EXTRA_ARGS"
-ZGML_OUT="$("$ZGML_BIN" "$ZGML_MODEL" "$PROMPT" "$GEN" "$REPS" "${ZGML_EXTRA_ARGV[@]}" 2>&1)"
+if [ -n "$ZGML_EXTRA_ARGS" ]; then
+    ZGML_EXTRA_ARGV=()
+    read -r -a ZGML_EXTRA_ARGV <<< "$ZGML_EXTRA_ARGS"
+    ZGML_OUT="$("$ZGML_BIN" "$ZGML_MODEL" "$PROMPT" "$GEN" "$REPS" "${ZGML_EXTRA_ARGV[@]}" 2>&1)"
+else
+    ZGML_OUT="$("$ZGML_BIN" "$ZGML_MODEL" "$PROMPT" "$GEN" "$REPS" 2>&1)"
+fi
 
 echo "Running llama.cpp Metal F16 benchmark..."
 GGML_F16_OUT="$(llama-bench -m "$GGUF_F16" -p "$PROMPT" -n "$GEN" -r "$REPS" -o md 2>&1 | grep -E '^\|')"
@@ -87,7 +116,10 @@ cat > "$MD_OUT" <<EOF
 - gen_tokens: \`$GEN\`
 - repetitions: \`$REPS\`
 - zgml_model: \`$ZGML_MODEL\`
+- zgml_default_extra_args: \`$ZGML_DEFAULT_EXTRA_ARGS\`
 - zgml_extra_args: \`$ZGML_EXTRA_ARGS\`
+- hf_gguf_repo: \`$HF_GGUF_REPO\`
+- bench_auto_download: \`$BENCH_AUTO_DOWNLOAD\`
 - llama_cpp_f16_model: \`$GGUF_F16\`
 - llama_cpp_q8_model: \`$GGUF_Q8\`
 - zgml_commit: \`$ZGML_COMMIT\`
@@ -125,7 +157,7 @@ $ZGML_STATUS
 \`\`\`
 EOF
 
-export DATE_UTC MACHINE PROMPT GEN REPS ZGML_MODEL ZGML_EXTRA_ARGS GGUF_F16 GGUF_Q8 ZGML_COMMIT ZGML_STATUS ZIG_VERSION
+export DATE_UTC MACHINE PROMPT GEN REPS ZGML_MODEL ZGML_DEFAULT_EXTRA_ARGS ZGML_EXTRA_ARGS HF_GGUF_REPO BENCH_AUTO_DOWNLOAD GGUF_F16 GGUF_Q8 ZGML_COMMIT ZGML_STATUS ZIG_VERSION
 export LLAMA_BENCH_PATH LLAMA_BREW_VERSION GGML_BREW_VERSION
 export ZGML_OUT GGML_F16_OUT GGML_Q8_OUT GGML_CPU_F16_OUT GGML_CPU_Q8_OUT
 python3 - <<'PY' > "$JSON_OUT"
@@ -218,7 +250,10 @@ data = {
         "zgml_status": os.environ["ZGML_STATUS"],
         "zig_version": os.environ["ZIG_VERSION"],
         "zgml_model": os.environ["ZGML_MODEL"],
+        "zgml_default_extra_args": os.environ["ZGML_DEFAULT_EXTRA_ARGS"],
         "zgml_extra_args": os.environ["ZGML_EXTRA_ARGS"],
+        "hf_gguf_repo": os.environ["HF_GGUF_REPO"],
+        "bench_auto_download": os.environ["BENCH_AUTO_DOWNLOAD"],
         "llama_cpp_f16_model": os.environ["GGUF_F16"],
         "llama_cpp_q8_model": os.environ["GGUF_Q8"],
         "llama_bench_path": os.environ["LLAMA_BENCH_PATH"],

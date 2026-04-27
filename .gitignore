@@ -33,3 +33,5 @@ zig-out/
 
 data/*
 !data/.gitkeep
+
+bench-results/
