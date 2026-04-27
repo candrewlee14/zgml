@@ -1,0 +1,25 @@
+src/backend/program.zig
+  54ba36a40cf943b8 4202,4205-4207,4209
+src/backend/metal.zig
+  54ba36a40cf943b8 584,588,649-653,1158-1161,2857,2861,4492-4561,4566,4575-4583,4673,4678-4679,4682,6041-6044,7031-7118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "2ff73fe6c95141086bda75abe64f33da496f6428",
+  "prompts": {
+    "54ba36a40cf943b8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dc076-294b-7862-a2a8-8ca27f84804d",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Andrew Lee",
+      "messages": [],
+      "total_additions": 196,
+      "total_deletions": 12,
+      "accepted_lines": 523,
+      "overriden_lines": 0
+    }
+  }
+}
