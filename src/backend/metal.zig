@@ -5947,14 +5947,14 @@ const CompiledProgram = struct {
                         const q = ops[anchor_idx].qmatmul;
                         if (program_mod.qmatvecSliceSidecarCompatible(q, sa)) break slot;
                     } else return false;
-                    if (!sidecars.appendSlice(slot, idx)) return false;
+                    if (!sidecars.appendSlice(slot, idx)) return self.tryEncodeQMatvecProjectionCacheMaterialized(ops, command);
                 },
                 .elementwise => |e| {
                     const slot = for (command.anchorIndices(), 0..) |anchor_idx, slot| {
                         const q = ops[anchor_idx].qmatmul;
                         if (self.canEncodeQMatvecElementwiseSidecar(q, e)) break slot;
                     } else return false;
-                    if (!sidecars.appendElementwise(slot, idx)) return false;
+                    if (!sidecars.appendElementwise(slot, idx)) return self.tryEncodeQMatvecProjectionCacheMaterialized(ops, command);
                 },
                 .rope => |rr| {
                     var maybe_store_idx: ?usize = null;
@@ -5974,7 +5974,7 @@ const CompiledProgram = struct {
                             }
                         }
                     }
-                    if (!sidecars.appendRope(slot, idx, maybe_store_idx)) return false;
+                    if (!sidecars.appendRope(slot, idx, maybe_store_idx)) return self.tryEncodeQMatvecProjectionCacheMaterialized(ops, command);
                 },
                 else => return false,
             }
@@ -5985,6 +5985,30 @@ const CompiledProgram = struct {
         self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), self.timingElapsed(t0));
         for (command.carriedSidecarIndices()) |maybe_idx| {
             if (maybe_idx) |idx| self.recordRegionBackendOp(ops[idx], 0);
+        }
+        return true;
+    }
+
+    fn tryEncodeQMatvecProjectionCacheMaterialized(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.anchor_count == 0 or command.anchor_count > MAX_QMATVEC_BATCH) return false;
+        for (command.anchorIndices()) |idx| {
+            if (idx >= ops.len) return false;
+            if (!self.canEncodeQMatvecBatchOp(ops[idx].qmatmul)) return false;
+        }
+        for (command.carriedSidecarIndices()) |maybe_idx| {
+            const idx = maybe_idx orelse continue;
+            if (idx >= ops.len) return false;
+            if (!self.canEncodeRegionGpuOp(ops[idx])) return false;
+        }
+
+        var no_sidecars = [_]?usize{null} ** MAX_QMATVEC_BATCH;
+        const t0 = self.timingStart();
+        self.encodeQMatvecBatch(ops, command.anchorIndices(), no_sidecars[0..command.anchor_count]);
+        self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), self.timingElapsed(t0));
+
+        for (command.carriedSidecarIndices()) |maybe_idx| {
+            const idx = maybe_idx orelse continue;
+            std.debug.assert(self.tryEncodeRegionGpuOp(ops[idx]));
         }
         return true;
     }
