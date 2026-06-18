@@ -3581,6 +3581,11 @@ Current first slice:
   page log and dataset explain that boundary. `zig build check` now includes
   this non-required browser smoke so portable browser/Wasm host-resource
   regressions are part of the default local/subagent gate.
+- `zig build ffi-wasm-browser-llama-focused-smoke` runs the same browser page
+  with `--llama-profile-label=gguf-smollm3-nope-gqa-pipeline`, giving the goal
+  scorecard a narrower SmolLM3 GGUF LLaMA-family proof that checks focused
+  browser execution without requiring the full browser profile matrix on every
+  scorecard run.
 - `zig build ffi-wasm-browser-gpu-smoke` runs the same page with Chrome WebGPU
   flags, requires real `GPUBuffer` mode, and fails if the adapter cannot bind
   the six-storage-buffer LLaMA block-pipeline proof. It is an exhaustive

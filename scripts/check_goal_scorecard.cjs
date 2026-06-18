@@ -202,6 +202,9 @@ function checkScripts() {
   if (scripts["smoke:portable-ffi:browser"] !== "zig build ffi-wasm-browser-smoke") {
     errors.push("package.json smoke:portable-ffi:browser must keep the browser Wasm FFI portability gate");
   }
+  if (scripts["smoke:portable-ffi:browser-llama"] !== "zig build ffi-wasm-browser-llama-focused-smoke") {
+    errors.push("package.json smoke:portable-ffi:browser-llama must keep the focused browser LLaMA family proof gate");
+  }
   if (scripts["smoke:portable-ffi:browser-gpu"] !== "zig build ffi-wasm-browser-gpu-smoke") {
     errors.push("package.json smoke:portable-ffi:browser-gpu must keep the required-GPU browser Wasm FFI gate");
   }
@@ -268,6 +271,8 @@ function checkScripts() {
     "const ffi_wasm_smoke_step = b.step(\"ffi-wasm-smoke\", \"Run Wasm C ABI smoke with Node/WASI\")",
     "examples/wasm_ffi/smoke.mjs",
     "const ffi_wasm_browser_smoke_step = b.step(\"ffi-wasm-browser-smoke\", \"Run browser Wasm C ABI smoke with Chrome/Chromium\")",
+    "const ffi_wasm_browser_llama_focused_smoke_step = b.step(\"ffi-wasm-browser-llama-focused-smoke\", \"Run focused browser Wasm LLaMA family proof with Chrome/Chromium\")",
+    "--llama-profile-label=gguf-smollm3-nope-gqa-pipeline",
     "const ffi_wasm_browser_gpu_smoke_step = b.step(\"ffi-wasm-browser-gpu-smoke\", \"Run browser Wasm C ABI smoke and require real GPUBuffer mode\")",
     "examples/wasm_ffi/browser_smoke_runner.mjs",
     "check_step.dependOn(ffi_wasm_browser_smoke_step)",
@@ -326,6 +331,7 @@ function checkScripts() {
     "Chrome/Chromium not found; set CHROME_PATH or pass --chrome=/path/to/chrome",
     "options.enableUnsafeWebGpu = true",
     "options.requireGpu = true",
+    "focusedLlamaProfileLabelSet(options.llamaProfileLabels)",
     "zgmlWasmSmoke",
     "zgmlWasmGpuResources",
     "zgml browser wasm smoke ok",
@@ -989,8 +995,9 @@ function checkPortableWasmRuntimeEvidence() {
     "zgml wasm ffi webgpu LLaMA packed proof ok: labels=",
     "zgml wasm ffi webgpu resource-probe tiny llama smoke ok",
   ]);
+  requirePattern(nodeWasiOutput, "portable Wasm Node/WASI smoke output", "exact packed LLaMA profile matrix", /zgml wasm ffi webgpu LLaMA packed proof ok: labels=49\b/);
 
-  const browserArgs = ["build", "ffi-wasm-browser-smoke"];
+  const browserArgs = ["build", "ffi-wasm-browser-llama-focused-smoke"];
   const browser = spawnSync("zig", browserArgs, {
     cwd: root,
     encoding: "utf8",
@@ -1025,6 +1032,7 @@ function checkPortableWasmRuntimeEvidence() {
     "llamaSyncs=",
     "llamaProfileLabels=",
   ]);
+  requirePattern(browserOutput, "portable browser Wasm smoke output", "focused browser SmolLM3 GGUF LLaMA proof", /llamaProfileLabels=2\b/);
   notes.push(nodeWasiOutput.trim().split("\n").at(-1));
   notes.push(browserOutput.trim().split("\n").at(-1));
 }

@@ -217,6 +217,7 @@
     "smoke:native-contract": "node dist/smokes/native_bridge_contract_smoke.cjs",
     "smoke:portable-ffi": "npm run build:package && zig build ffi-c-smoke ffi-node-smoke ffi-bun-smoke ffi-wasm-smoke",
     "smoke:portable-ffi:browser": "zig build ffi-wasm-browser-smoke",
+    "smoke:portable-ffi:browser-llama": "zig build ffi-wasm-browser-llama-focused-smoke",
     "smoke:portable-ffi:browser-gpu": "zig build ffi-wasm-browser-gpu-smoke",
     "smoke:training": "npm run build:package && node examples/node_training/train_linear.cjs && node examples/node_training/manual_loop.cjs && node examples/node_training/train_mlp.cjs && node examples/node_training/train_classifier.cjs && node examples/node_training/torch_quickstart.cjs",
     "smoke:training:bun": "npm run build:package && bun examples/bun_training/train_linear.ts && bun examples/bun_training/manual_loop.ts && bun examples/bun_training/train_mlp.ts && bun examples/bun_training/train_classifier.ts",
