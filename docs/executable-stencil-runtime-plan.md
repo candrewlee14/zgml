@@ -216,7 +216,7 @@ Current checked progress:
   reduce-min kernel later without changing user code. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence.
-- PyTorch-like replacement feel: ~92%. The TS-owned product frontend now has
+- PyTorch-like replacement feel: ~93%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
   checkpoints, eager debugging, eager/autograd `einsum` with ellipsis and
@@ -227,7 +227,9 @@ Current checked progress:
   reduced MLP, classifier log-softmax, classifier softmax-reduction, transformer FFN,
   normalized transformer classifier, and token-head Session paths,
   `torch.compile.compile(lazyGraph)` and `lazyGraph.compile()` Program construction through Node/Bun
-  adapters, and compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
+  adapters, eval-mode `BatchNorm1d` lowering through a derived native affine
+  Program while training-mode BatchNorm remains honestly stateful/eager, and
+  compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
   compile hooks exist.
 
@@ -1799,9 +1801,10 @@ Current frontend slice:
   public trace, Tensor Program IR, KernelPlan, fused shape-op evidence, and
   Program/module compatibility diagnostics now use closed JS/TS vocabularies as
   well: unsupported modules can still appear as an honest `unknown` trace op,
-  stateful `BatchNorm1d` preserves typed trace/IR evidence under
-  `compileSupport()` before honestly stopping at a `kernelizer:unsupported-op`
-  native-lowering diagnostic, while fixed native-subset `Conv2d`,
+  eval-mode `BatchNorm1d` preserves typed trace/IR evidence and lowers through
+  a native affine KernelPlan with derived running-stat scale/offset bindings,
+  while training-mode `BatchNorm1d` still honestly stops at a
+  `kernelizer:unsupported-op` native-lowering diagnostic. Fixed native-subset `Conv2d`,
   `MaxPool2d(2)`, and `AvgPool2d(2)` shapes now go further and compile to
   named native Program kernels. Unsupported Conv/Pool shapes still stop with
   structured diagnostics. Executable KernelPlans can only claim the

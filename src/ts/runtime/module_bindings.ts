@@ -60,8 +60,13 @@ type ModuleWithParameterBinding = CompileSupportModule & {
 
 type SequentialParameterEntry = {
   readonly layer: {
+    readonly kind?: unknown;
     readonly weight?: Float32Array | ArrayLike<number> | null;
     readonly bias?: Float32Array | ArrayLike<number> | null;
+    readonly bindParameters?: (options?: ModuleBindingOptions) => {
+      weights?: unknown;
+      bias?: unknown;
+    };
   };
 };
 
@@ -289,13 +294,16 @@ export function packedSequentialModuleParameters(spec: SequentialModuleParameter
 
   for (const entry of spec.entries) {
     const layer = entry.layer;
-    if (layer.weight) {
-      weights.set(layer.weight, weightsOffset);
-      weightsOffset += layer.weight.length;
+    const bindings = layer.kind === "batchNorm1d" && typeof layer.bindParameters === "function" ? layer.bindParameters() : null;
+    const layerWeights = bindings ? packedBindingF32(bindings.weights, "weights") : layer.weight;
+    const layerBias = bindings ? packedBindingF32(bindings.bias, "bias") : layer.bias;
+    if (layerWeights) {
+      weights.set(layerWeights, weightsOffset);
+      weightsOffset += layerWeights.length;
     }
-    if (layer.bias) {
-      bias.set(layer.bias, biasOffset);
-      biasOffset += layer.bias.length;
+    if (layerBias) {
+      bias.set(layerBias, biasOffset);
+      biasOffset += layerBias.length;
     }
   }
 

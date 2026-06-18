@@ -10,7 +10,7 @@ const notes = [];
 const goalProgress = Object.freeze({
   substratePct: 77,
   substrateFloorPct: 65,
-  pytorchLikePct: 92,
+  pytorchLikePct: 93,
   pytorchLikeFloorPct: 60,
 });
 
@@ -3613,7 +3613,9 @@ function checkPytorchLikeSurface() {
     "expectClose(batchNormState[\"bn.runningMean\"].data, [1, 2.5]",
     "expectClose(batchNorm.forward(adapter.tensor([3, 4], [1, 2])).data, [2.5, 2.5]",
     "expected nn.BatchNorm1d trace output shape evidence",
-    "expected nn.BatchNorm1d compileSupport to be honest unsupported with partial IR",
+    "expected eval nn.BatchNorm1d compileSupport to lower as native affine",
+    "nn.BatchNorm1d eval compiled output",
+    "expected training nn.BatchNorm1d compileSupport to remain honest unsupported with partial IR",
     "expected batched nn.Linear to compile to native Program",
     "compiled nn.Linear batched output",
     "new adapter.nn.Conv2d(1, 1, 2",
@@ -4253,7 +4255,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=77% floor=65%; PyTorch-like surface=92% floor=60%",
+    "goal progress: Program/Session substrate=77% floor=65%; PyTorch-like surface=93% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4298,7 +4300,7 @@ function checkDocs() {
     "capability-disabled test still proves the composite fallback",
     "Compile-capable lazy graphs can now lower through the host adapter into a",
     "native Program with preserved KernelPlan evidence.",
-    "PyTorch-like replacement feel: ~92%",
+    "PyTorch-like replacement feel: ~93%",
     "`torch.compile.compile(lazyGraph)` and `lazyGraph.compile()` Program construction through Node/Bun",
     "The remaining substrate",
     "tiled quantized row-chain",

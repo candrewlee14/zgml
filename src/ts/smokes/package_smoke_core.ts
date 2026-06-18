@@ -4962,12 +4962,30 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   }
   const batchNormSupport = adapter.nn.sequential(batchNorm).compileSupport({ inputShape: [1, 2], backend: "cpu" });
   if (
-    batchNormSupport.supported !== false ||
+    batchNormSupport.supported !== true ||
     batchNormSupport.ir?.ops[0]?.op !== "batchNorm1d" ||
-    batchNormSupport.diagnostics?.[0]?.stage !== "kernelizer" ||
-    batchNormSupport.diagnostics?.[0]?.code !== "unsupported-op"
+    batchNormSupport.kernelPlan?.ops[0]?.op !== "batchNorm1d" ||
+    batchNormSupport.kernelPlan?.ops[0]?.kernel !== "affine"
   ) {
-    throw new Error(`${label} expected nn.BatchNorm1d compileSupport to be honest unsupported with partial IR`);
+    throw new Error(`${label} expected eval nn.BatchNorm1d compileSupport to lower as native affine`);
+  }
+  const batchNormProgram = adapter.nn.sequential(batchNorm).compile({ inputShape: [1, 2], backend: "cpu" });
+  const batchNormSession = batchNormProgram.bindModule(adapter.nn.sequential(batchNorm));
+  const batchNormCompiledOutput = batchNormSession.executeInto(new Float32Array(2), {
+    input: adapter.tensor([3, 4], [1, 2]),
+  });
+  expectClose(batchNormCompiledOutput, [2.5, 2.5], `${label} nn.BatchNorm1d eval compiled output`);
+  batchNormSession.dispose();
+  batchNormProgram.dispose();
+  batchNorm.train();
+  const batchNormTrainSupport = adapter.nn.sequential(batchNorm).compileSupport({ inputShape: [1, 2], backend: "cpu" });
+  if (
+    batchNormTrainSupport.supported !== false ||
+    batchNormTrainSupport.ir?.ops[0]?.op !== "batchNorm1d" ||
+    batchNormTrainSupport.diagnostics?.[0]?.stage !== "kernelizer" ||
+    batchNormTrainSupport.diagnostics?.[0]?.code !== "unsupported-op"
+  ) {
+    throw new Error(`${label} expected training nn.BatchNorm1d compileSupport to remain honest unsupported with partial IR`);
   }
   const conv2d = new adapter.nn.Conv2d(1, 1, 2, { weight: [1, 0, 0, 1], bias: false });
   expectClose(conv2d.forward(adapter.tensor([1, 2, 3, 4], [1, 2, 2])).data, [5], `${label} nn.Conv2d eager forward`);

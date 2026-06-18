@@ -158,6 +158,7 @@ const module_op_reduce_sum: u32 = 12;
 const module_op_reduce_mean: u32 = 13;
 const module_op_reduce_max: u32 = 14;
 const module_op_reduce_min: u32 = 21;
+const module_op_feature_affine: u32 = 22;
 const module_op_slice: u32 = 15;
 const module_op_activation_chain: u32 = 16;
 const module_op_max_pool2d: u32 = 17;
@@ -2092,6 +2093,29 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
                     &bias_len,
                 );
                 current = current.add(bias.repeatLike(current));
+            },
+            module_op_feature_affine => {
+                const features = op.a;
+                if (features == 0 or features != current_len) return error.ShapeMismatch;
+                if (op.activation != 0 or op.b != 0 or op.c != 0 or op.eps != 0) return error.InvalidArgument;
+                if (op.flags != (module_flag_weight | module_flag_bias)) return error.InvalidArgument;
+                const weight = try moduleAddParam(
+                    graph_alloc,
+                    &persistent_tensors_list,
+                    &persistent_params_list,
+                    .weights,
+                    &.{features},
+                    &weights_len,
+                );
+                const bias = try moduleAddParam(
+                    graph_alloc,
+                    &persistent_tensors_list,
+                    &persistent_params_list,
+                    .bias,
+                    &.{features},
+                    &bias_len,
+                );
+                current = current.mul(weight.repeatLike(current)).add(bias.repeatLike(current));
             },
             module_op_activation => {
                 if (op.flags != 0 or op.a != 0 or op.b != 0 or op.c != 0) return error.InvalidArgument;
@@ -7013,6 +7037,50 @@ test "C ABI module program compiles traced sequential ops" {
         }, &result));
         try std.testing.expectEqual(@as(usize, 2), result.output_len);
         try std.testing.expectEqualSlices(f32, &.{ 1, 4 }, &reduce_min_output);
+
+        const feature_affine_ops = [_]zgml_module_op_desc{.{
+            .kind = module_op_feature_affine,
+            .flags = module_flag_weight | module_flag_bias,
+            .a = 3,
+        }};
+        var feature_affine_program: ?*zgml_program = null;
+        var feature_affine_session: ?*zgml_session = null;
+        defer zgml_session_free(feature_affine_session);
+        defer zgml_program_free(feature_affine_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = reduce_input_shape[0..].ptr,
+            .input_rank = reduce_input_shape.len,
+            .ops = feature_affine_ops[0..].ptr,
+            .op_count = feature_affine_ops.len,
+        }, &.{ .backend = backend_cpu }, &feature_affine_program));
+        try std.testing.expect(feature_affine_program != null);
+
+        var feature_affine_requirements = zgml_program_requirements{};
+        try std.testing.expectEqual(status(.ok), zgml_program_get_requirements(feature_affine_program, &feature_affine_requirements));
+        try std.testing.expectEqual(@as(usize, 3), feature_affine_requirements.weights_len);
+        try std.testing.expectEqual(@as(usize, 3), feature_affine_requirements.bias_len);
+
+        const feature_affine_weights = [_]f32{ 2, 3, 4 };
+        const feature_affine_bias = [_]f32{ 0.5, -1, 1 };
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(feature_affine_program, &.{
+            .weights = feature_affine_weights[0..].ptr,
+            .weights_len = feature_affine_weights.len,
+            .bias = feature_affine_bias[0..].ptr,
+            .bias_len = feature_affine_bias.len,
+        }, &feature_affine_session));
+        try std.testing.expect(feature_affine_session != null);
+
+        var feature_affine_output = [_]f32{0} ** 6;
+        result = .{};
+        try std.testing.expectEqual(status(.ok), zgml_session_step(feature_affine_session, &.{
+            .input = reduce_input[0..].ptr,
+            .input_len = reduce_input.len,
+            .output = feature_affine_output[0..].ptr,
+            .output_len = feature_affine_output.len,
+        }, &result));
+        try std.testing.expectEqual(@as(usize, 6), result.output_len);
+        try std.testing.expectEqualSlices(f32, &.{ 2.5, 5, 13, 8.5, 14, 25 }, &feature_affine_output);
 
         const batch_reduce_max_ops = [_]zgml_module_op_desc{
             .{

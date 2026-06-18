@@ -8182,7 +8182,13 @@ expectSame(Array.from(batchNormModule.forward([3, 4]), (value) => Number(value.t
   2.5,
   2.5,
 ], "nn feature norm batchNorm1d eval forward");
-expectSame(batchNormModule.bindParameters().bias, [0.5, -0.5], "nn feature norm batchNorm1d bind parameters");
+expectSame({
+  weights: batchNormModule.bindParameters().weights,
+  bias: batchNormModule.bindParameters().bias,
+}, {
+  weights: [1, 1],
+  bias: [-0.5, -1.5],
+}, "nn feature norm batchNorm1d eval bind parameters");
 const noAffineLayerNorm = new FeatureNormModule("layerNorm", 2, { affine: false, eps: 0 });
 expectSame(noAffineLayerNorm.parameters(), [], "nn feature norm no-affine parameters");
 expectSame(noAffineLayerNorm.bindParameters().weights, [], "nn feature norm no-affine bind parameters");

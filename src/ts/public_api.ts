@@ -2562,6 +2562,7 @@ export type ModuleKernelPlanOpKind =
   | ModuleReductionKind
   | "layerNorm"
   | "rmsNorm"
+  | "batchNorm1d"
   | "dropout"
   | ModuleShapeOpKind
   | "shape-chain"
@@ -2583,6 +2584,7 @@ export type ModuleKernelName =
   | "transpose"
   | "layer-norm"
   | "rms-norm"
+  | "affine"
   | "embedding"
   | "avg-pool2d"
   | "max-pool2d";
@@ -3088,7 +3090,8 @@ export type ModuleKernelPlanSliceOp = ModuleKernelPlanOpBase<"slice", "slice">;
 export type ModuleKernelPlanTransposeOp = ModuleKernelPlanOpBase<"transpose", "transpose">;
 export type ModuleKernelPlanFeatureNormOp =
   | ModuleKernelPlanOpBase<"layerNorm", "layer-norm">
-  | ModuleKernelPlanOpBase<"rmsNorm", "rms-norm">;
+  | ModuleKernelPlanOpBase<"rmsNorm", "rms-norm">
+  | ModuleKernelPlanOpBase<"batchNorm1d", "affine">;
 export type ModuleKernelPlanShapeChainOp = ModuleKernelPlanOpBase<"shape-chain", "reshape"> & Readonly<{
   fusedOpCount: number;
   fusedOps: readonly ModuleKernelFusedOpKind[];

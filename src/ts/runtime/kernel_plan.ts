@@ -628,6 +628,26 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
         c: 0,
         eps: attrs.eps,
       };
+    case "batchNorm1d":
+      if (
+        attrs.training === true ||
+        attrs.trackRunningStats !== true ||
+        attrs.hasWeight !== true ||
+        attrs.hasBias !== true ||
+        !op.inputShape ||
+        op.inputShape[op.inputShape.length - 1] !== attrs.features
+      ) {
+        return null;
+      }
+      return {
+        kind: moduleOpIds.featureAffine,
+        activation: 0,
+        flags: moduleFlags.weight | moduleFlags.bias,
+        a: attrs.features,
+        b: 0,
+        c: 0,
+        eps: 0,
+      };
     case "embedding":
       if (!op.inputShape || op.inputShape.length !== 1) return null;
       if (!attrs.hasWeight) return null;
@@ -830,6 +850,7 @@ function kernelNameForIrOp(op: any) {
     case "permute": return "transpose";
     case "layerNorm": return "layer-norm";
     case "rmsNorm": return "rms-norm";
+    case "batchNorm1d": return "affine";
     case "embedding": return "embedding";
     case "conv2d": return "conv2d";
     case "maxPool2d": return "max-pool2d";

@@ -51,8 +51,14 @@ export type FeatureNormParameter = {
   readonly requires_grad?: boolean;
 };
 type FeatureNormBindableModule = Readonly<{
+  kind?: unknown;
+  features?: unknown;
+  eps?: unknown;
+  training?: unknown;
   weight: Float32Array | null;
   bias: Float32Array | null;
+  runningMean?: FeatureNormBuffer | null;
+  runningVar?: FeatureNormBuffer | null;
 }> & SingleModuleRecord;
 type TensorConstructor = new (values: Float32Array, shape?: readonly number[], options?: FeatureNormTensorConstructOptions) => FeatureNormTensor;
 type F32 = (values: unknown) => Float32Array;
@@ -78,6 +84,30 @@ function featureNormGradTensor(tensor: FeatureNormTensor): FeatureNormGradTensor
 
 function featureNormBindableModule(module: SingleModuleRecord): FeatureNormBindableModule {
   return module as FeatureNormBindableModule;
+}
+
+function batchNormEvalBindings(module: FeatureNormBindableModule) {
+  if (
+    module.kind !== "batchNorm1d" ||
+    module.training === true ||
+    !module.runningMean ||
+    !module.runningVar ||
+    !module.weight ||
+    !module.bias
+  ) {
+    return null;
+  }
+  const features = Number(module.features);
+  if (!Number.isSafeInteger(features) || features <= 0) return null;
+  const eps = Number(module.eps ?? 1e-5);
+  const weights = new Float32Array(features);
+  const bias = new Float32Array(features);
+  for (let i = 0; i < features; i += 1) {
+    const scale = module.weight[i] / Math.sqrt(module.runningVar.data[i] + eps);
+    weights[i] = scale;
+    bias[i] = module.bias[i] - module.runningMean.data[i] * scale;
+  }
+  return { weights, bias };
 }
 
 function onesF32(length: number) {
@@ -562,6 +592,8 @@ export function createFeatureNormModuleClass(options: FeatureNormModuleClassOpti
     compileSupport: false,
     bindParameters(module: SingleModuleRecord, _hooks: SingleModuleCompileHooks, options: ModuleCompileOptions = {}) {
       const featureNormModule = featureNormBindableModule(module);
+      const batchNormBindings = batchNormEvalBindings(featureNormModule);
+      if (batchNormBindings) return annotateModuleBindings(batchNormBindings, featureNormModule, options);
       if (featureNormModule.bias) return annotateModuleBindings({ weights: featureNormModule.weight, bias: featureNormModule.bias }, featureNormModule, options);
       if (featureNormModule.weight) return annotateModuleBindings({ weights: featureNormModule.weight }, featureNormModule, options);
       return emptySingleModuleBindings(featureNormModule, options);

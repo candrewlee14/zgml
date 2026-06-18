@@ -55,6 +55,7 @@ export function kernelNameForNativeModuleDesc(desc: NativeModuleOpDesc | null | 
     case moduleOpIds.avgPool2d: return "avg-pool2d";
     case moduleOpIds.conv2d: return "conv2d";
     case moduleOpIds.add: return "add";
+    case moduleOpIds.featureAffine: return "affine";
     default: return "unknown";
   }
 }
