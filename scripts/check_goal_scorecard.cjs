@@ -61,6 +61,22 @@ function requirePattern(source, relativePath, label, pattern) {
   }
 }
 
+function commandLine(command, args) {
+  return [command, ...args].join(" ");
+}
+
+function spawnOutput(result) {
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+  return output.length === 0 ? "<no output>" : output;
+}
+
+function spawnFailure(label, command, args, result) {
+  const status = result.status === null || result.status === undefined ? "null" : String(result.status);
+  const signal = result.signal ? ` signal=${result.signal}` : "";
+  const error = result.error ? ` error=${result.error.message}` : "";
+  return `${label} failed: ${commandLine(command, args)} status=${status}${signal}${error}\n${spawnOutput(result)}`;
+}
+
 function checkScripts() {
   const packageJson = JSON.parse(read("package.json"));
   const scripts = packageJson.scripts ?? {};
@@ -121,6 +137,15 @@ function checkScripts() {
   if (scripts["check:goal-scorecard"] !== "node scripts/check_goal_scorecard.cjs") {
     errors.push("package.json must expose check:goal-scorecard for goal evidence");
   }
+  requireIncludes(read("scripts/check_goal_scorecard.cjs"), "scripts/check_goal_scorecard.cjs", "diagnostic child-process failure reporting", [
+    "function spawnFailure(label, command, args, result)",
+    "status=${status}",
+    "signal=${result.signal}",
+    "<no output>",
+    "q8 prompt candidate gate\", process.execPath, args, result",
+    "module Program bench gate\", process.execPath, args, result",
+    "portable Wasm Node/WASI smoke\", \"zig\", nodeWasiArgs, nodeWasi",
+  ]);
   requireIncludes(read("scripts/check_q8_prompt_candidate.cjs"), "scripts/check_q8_prompt_candidate.cjs", "full-model Q8 prompt candidate probe", [
     "metal scheduled prefill projection-row-chain candidate",
     "--metal-prompt-projection-row-chain-candidate",
@@ -695,14 +720,15 @@ function checkScripts() {
 }
 
 function checkSubstrateEvidence() {
-  const result = spawnSync(process.execPath, ["scripts/bench_status.cjs", "--trend-gate", "--substrate-gate"], {
+  const args = ["scripts/bench_status.cjs", "--trend-gate", "--substrate-gate"];
+  const result = spawnSync(process.execPath, args, {
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   if (result.status !== 0) {
-    errors.push(`bench substrate gate failed:\n${output.trim()}`);
+    errors.push(spawnFailure("bench substrate gate", process.execPath, args, result));
     return;
   }
   requireIncludes(output, "bench substrate gate output", "no-fallback substrate proof", [
@@ -785,14 +811,15 @@ function checkSubstrateEvidence() {
 }
 
 function checkFrontierEvidence() {
-  const result = spawnSync(process.execPath, ["scripts/check_frontier_bench.cjs"], {
+  const args = ["scripts/check_frontier_bench.cjs"];
+  const result = spawnSync(process.execPath, args, {
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   if (result.status !== 0) {
-    errors.push(`frontier bench gate failed:\n${output.trim()}`);
+    errors.push(spawnFailure("frontier bench gate", process.execPath, args, result));
     return;
   }
   requireIncludes(output, "frontier bench gate output", "scheduler/kernelizer frontier evidence", [
@@ -838,7 +865,8 @@ function checkQ8PromptCandidateEvidence() {
     notes.push("q8 prompt candidate gate skipped: local Q8 model or bench binary unavailable");
     return;
   }
-  const result = spawnSync(process.execPath, ["scripts/check_q8_prompt_candidate.cjs"], {
+  const args = ["scripts/check_q8_prompt_candidate.cjs"];
+  const result = spawnSync(process.execPath, args, {
     cwd: root,
     encoding: "utf8",
     env: {
@@ -850,7 +878,7 @@ function checkQ8PromptCandidateEvidence() {
   });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   if (result.status !== 0) {
-    errors.push(`q8 prompt candidate gate failed:\n${output.trim()}`);
+    errors.push(spawnFailure("q8 prompt candidate gate", process.execPath, args, result));
     return;
   }
   requireIncludes(output, "q8 prompt candidate gate output", "full-model Q8 semantic row-chain candidate evidence", [
@@ -871,14 +899,15 @@ function checkQ8PromptCandidateEvidence() {
 }
 
 function checkModuleProgramBenchEvidence() {
-  const result = spawnSync(process.execPath, ["scripts/check_module_program_bench.cjs"], {
+  const args = ["scripts/check_module_program_bench.cjs"];
+  const result = spawnSync(process.execPath, args, {
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   if (result.status !== 0) {
-    errors.push(`module Program bench gate failed:\n${output.trim()}`);
+    errors.push(spawnFailure("module Program bench gate", process.execPath, args, result));
     return;
   }
   requireIncludes(output, "module Program bench gate output", "TS frontend compiled Program speedup proof", [
@@ -940,14 +969,15 @@ function checkModuleProgramBenchEvidence() {
 }
 
 function checkPortableWasmRuntimeEvidence() {
-  const nodeWasi = spawnSync("zig", ["build", "ffi-wasm-smoke"], {
+  const nodeWasiArgs = ["build", "ffi-wasm-smoke"];
+  const nodeWasi = spawnSync("zig", nodeWasiArgs, {
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   const nodeWasiOutput = `${nodeWasi.stdout ?? ""}${nodeWasi.stderr ?? ""}`;
   if (nodeWasi.status !== 0) {
-    errors.push(`portable Wasm Node/WASI smoke failed:\n${nodeWasiOutput.trim()}`);
+    errors.push(spawnFailure("portable Wasm Node/WASI smoke", "zig", nodeWasiArgs, nodeWasi));
     return;
   }
   requireIncludes(nodeWasiOutput, "portable Wasm Node/WASI smoke output", "executable Wasm handle lifecycle proof", [
@@ -960,7 +990,8 @@ function checkPortableWasmRuntimeEvidence() {
     "zgml wasm ffi webgpu resource-probe tiny llama smoke ok",
   ]);
 
-  const browser = spawnSync("zig", ["build", "ffi-wasm-browser-smoke"], {
+  const browserArgs = ["build", "ffi-wasm-browser-smoke"];
+  const browser = spawnSync("zig", browserArgs, {
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -977,7 +1008,7 @@ function checkPortableWasmRuntimeEvidence() {
       notes.push(nodeWasiOutput.trim().split("\n").at(-1));
       return;
     }
-    errors.push(`portable browser Wasm smoke failed:\n${browserOutput.trim()}`);
+    errors.push(spawnFailure("portable browser Wasm smoke", "zig", browserArgs, browser));
     return;
   }
   requireIncludes(browserOutput, "portable browser Wasm smoke output", "browser handle/resource bridge proof", [
