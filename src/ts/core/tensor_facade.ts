@@ -63,6 +63,7 @@ type TensorPlacementFacade = Readonly<{
 type TensorJoinFacade = Readonly<{
   cat: BivariantCallback<[tensors: unknown, dim?: number], AnyRecord>;
   stack: BivariantCallback<[tensors: unknown, dim?: number], AnyRecord>;
+  einsum: BivariantCallback<[equation: unknown, tensors: unknown, ...moreTensors: unknown[]], AnyRecord>;
 }>;
 
 export type TensorFacadeHelpersOptions = Readonly<{
@@ -141,7 +142,7 @@ export function createTensorFacadeHelpers(options: TensorFacadeHelpersOptions) {
   if (!tensorPlacement || typeof tensorPlacement.validateProgramPlacement !== "function") {
     throw new Error("createTensorFacadeHelpers requires tensorPlacement");
   }
-  if (!tensorJoin || typeof tensorJoin.cat !== "function" || typeof tensorJoin.stack !== "function") {
+  if (!tensorJoin || typeof tensorJoin.cat !== "function" || typeof tensorJoin.stack !== "function" || typeof tensorJoin.einsum !== "function") {
     throw new Error("createTensorFacadeHelpers requires tensorJoin");
   }
 
@@ -249,6 +250,7 @@ export function createTensorFacadeHelpers(options: TensorFacadeHelpersOptions) {
     fromNativeBuffer,
     cat: (tensors: unknown, dim = 0) => tensorJoin.cat(tensors, dim),
     stack: (tensors: unknown, dim = 0) => tensorJoin.stack(tensors, dim),
+    einsum: (equation: unknown, tensors: unknown, ...moreTensors: unknown[]) => tensorJoin.einsum(equation, tensors, ...moreTensors),
     full: (shape: unknown, value: number, options: TensorOptions = {}) => tensorFactory.full(shape, value, options),
     empty: (shape: unknown, options: TensorOptions = {}) => tensorFactory.empty(shape, options),
     zeros: (shape: unknown, options: TensorOptions = {}) => tensorFactory.zeros(shape, options),

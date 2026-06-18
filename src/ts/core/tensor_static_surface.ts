@@ -169,6 +169,7 @@ export type TensorStaticSurfaceOptions<TTensor> = {
   stack: (tensors: readonly TTensor[], dim?: number) => TTensor;
   vstack: (tensors: readonly TTensor[]) => TTensor;
   hstack: (tensors: readonly TTensor[]) => TTensor;
+  einsum: (equation: string, tensors: readonly TTensor[] | TTensor, ...moreTensors: readonly TTensor[]) => TTensor;
 };
 
 export type TensorStaticSurfaceCore<TTensor> = {
@@ -364,6 +365,9 @@ export function createTensorStaticSurface<TTensor>(options: TensorStaticSurfaceO
     stack: (tensors: readonly TTensor[], dim = 0) => options.stack(tensors, dim),
     vstack: (tensors: readonly TTensor[]) => options.vstack(tensors),
     hstack: (tensors: readonly TTensor[]) => options.hstack(tensors),
+    einsum: (equation: string, tensors: readonly TTensor[] | TTensor, ...moreTensors: readonly TTensor[]) => (
+      options.einsum(equation, tensors, ...moreTensors)
+    ),
   });
 }
 
@@ -539,5 +543,6 @@ export function createTensorStaticSurfaceFromFacade<TTensor>(options: TensorStat
     stack: rootOps.stack,
     vstack: rootOps.vstack,
     hstack: rootOps.hstack,
+    einsum: rootOps.einsum,
   });
 }

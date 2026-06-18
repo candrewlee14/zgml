@@ -1361,6 +1361,7 @@ export let concatenate: (tensors: readonly Tensor[], dim?: number) => Tensor;
 export let stack: (tensors: readonly Tensor[], dim?: number) => Tensor;
 export let vstack: (tensors: readonly Tensor[]) => Tensor;
 export let hstack: (tensors: readonly Tensor[]) => Tensor;
+export let einsum: (equation: string, tensors: readonly Tensor[] | Tensor, ...moreTensors: readonly Tensor[]) => Tensor;
 export let full: (shape: TensorShape, value: number, options?: TensorOptions) => Tensor;
 export let fullLike: (input: TensorLike, value: number, options?: TensorOptions) => Tensor;
 export let full_like: (input: TensorLike, value: number, options?: TensorOptions) => Tensor;
@@ -1577,6 +1578,7 @@ setAdapterTensorSurfaceHelpers({
   stack,
   vstack,
   hstack,
+  einsum,
   full,
   fullLike,
   full_like,
@@ -2548,6 +2550,7 @@ export const torch = Object.freeze({
   stack,
   vstack,
   hstack,
+  einsum,
   broadcastTo,
   expand,
   repeat,

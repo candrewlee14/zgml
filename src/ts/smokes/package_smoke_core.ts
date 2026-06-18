@@ -4433,6 +4433,17 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   expectClose(adapter.Tensor.vstack([nested, nested]).data, [1, 2, 3, 4, 1, 2, 3, 4], `${label} Tensor.vstack 2D helper`);
   expectClose(adapter.hstack([rowA, rowB]).data, [1, 2, 3, 4, 5, 6], `${label} hstack root 1D helper`);
   expectClose(adapter.Tensor.hstack([nested, nested]).data, [1, 2, 1, 2, 3, 4, 3, 4], `${label} Tensor.hstack 2D helper`);
+  const einsumLhs = adapter.tensor([1, 2, 3, 4], [2, 2]).requiresGrad_();
+  const einsumRhs = adapter.tensor([5, 6, 7, 8], [2, 2]).requiresGrad_();
+  const einsumMatmul = adapter.einsum("ij,jk->ik", [einsumLhs, einsumRhs]);
+  if (einsumMatmul.shape.join("x") !== "2x2") throw new Error(`${label} expected einsum matrix product shape`);
+  expectClose(einsumMatmul.data, [19, 22, 43, 50], `${label} einsum root matrix product`);
+  einsumMatmul.sum().backward();
+  expectClose(einsumLhs.grad, [11, 15, 11, 15], `${label} einsum lhs autograd backward`);
+  expectClose(einsumRhs.grad, [4, 4, 6, 6], `${label} einsum rhs autograd backward`);
+  expectClose(adapter.Tensor.einsum("ii->", nested).data, [5], `${label} Tensor.einsum trace scalar`);
+  expectClose(adapter.torch.einsum("ij,jk->ik", einsumLhs.detach(), einsumRhs.detach()).data, [19, 22, 43, 50], `${label} torch.einsum variadic matrix product`);
+  expectThrowIncludes(() => adapter.einsum("i...->i", [rowA]), "einsum ellipsis is not supported yet", `${label} einsum rejects unsupported ellipsis`);
   const indexSelectInput = adapter.tensor([1, 2, 3, 4, 5, 6], [3, 2]).requiresGrad_();
   const indexSelectOutput = indexSelectInput.indexSelect(0, [2, 0, 2]);
   if (indexSelectOutput.shape.join("x") !== "3x2") throw new Error(`${label} expected indexSelect to replace the selected axis length`);

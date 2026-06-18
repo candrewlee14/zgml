@@ -207,6 +207,7 @@ const {
   parameter: rawParameter,
   cat: rawCat,
   stack: rawStack,
+  einsum: rawEinsum,
 } = tensorFacade;
 const TensorClass = Tensor as unknown as typeof PublicApi.Tensor;
 const parameter = rawParameter as typeof PublicApi.parameter;
@@ -217,6 +218,7 @@ const concatenate = rawCat as typeof PublicApi.concatenate;
 const stack = rawStack as typeof PublicApi.stack;
 const vstack = tensorStaticHelpers.vstack as typeof PublicApi.vstack;
 const hstack = tensorStaticHelpers.hstack as typeof PublicApi.hstack;
+const einsum = rawEinsum as typeof PublicApi.einsum;
 const tensor = Object.assign(tensorFacade.tensor, {
   tensorManifest: tensorProductManifest,
 }) as typeof PublicApi.tensor & Readonly<{ tensorManifest: typeof tensorProductManifest }>;
@@ -306,6 +308,7 @@ export {
   stack,
   vstack,
   hstack,
+  einsum,
   isGradEnabled,
   is_grad_enabled,
   setGradEnabled,
@@ -612,6 +615,7 @@ export const torch = Object.freeze({
   stack,
   vstack,
   hstack,
+  einsum,
   broadcastTo,
   expand,
   repeat,

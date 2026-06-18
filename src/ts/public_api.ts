@@ -1683,6 +1683,8 @@ export declare class Tensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
   static vstack(tensors: readonly Tensor[]): Tensor;
   static hstack<const Tensors extends readonly [Tensor, ...Tensor[]]>(tensors: Tensors): Tensor<TensorHStackShape<Tensors>>;
   static hstack(tensors: readonly Tensor[]): Tensor;
+  static einsum(equation: string, operands: readonly Tensor[]): Tensor;
+  static einsum(equation: string, ...operands: readonly Tensor[]): Tensor;
   static hasShape<const S extends TensorShape>(input: Tensor, shape: S): input is Tensor<TensorShapeOf<S>>;
   static hasShape(input: TensorLike, shape: TensorShape): boolean;
   static requireShape<const S extends TensorShape>(input: TensorLike, shape: S): Tensor<TensorShapeOf<S>>;
@@ -1717,6 +1719,8 @@ export declare function vstack<const Tensors extends readonly [Tensor, ...Tensor
 export declare function vstack(tensors: readonly Tensor[]): Tensor;
 export declare function hstack<const Tensors extends readonly [Tensor, ...Tensor[]]>(tensors: Tensors): Tensor<TensorHStackShape<Tensors>>;
 export declare function hstack(tensors: readonly Tensor[]): Tensor;
+export declare function einsum(equation: string, operands: readonly Tensor[]): Tensor;
+export declare function einsum(equation: string, ...operands: readonly Tensor[]): Tensor;
 export declare function allclose(actual: TensorLike, expected: TensorLike, options?: AllCloseOptions): boolean;
 export declare function equal(actual: TensorLike, expected: TensorLike): boolean;
 export declare function to<const S extends TensorShapeTuple>(input: Tensor<S>, target?: TensorToTarget | TensorToOptions, options?: TensorToOptions): Tensor<S>;
@@ -6320,6 +6324,7 @@ export type PublicTorchNamespace = Readonly<{
   stack: typeof stack;
   vstack: typeof vstack;
   hstack: typeof hstack;
+  einsum: typeof einsum;
   broadcastTo: typeof broadcastTo;
   expand: typeof expand;
   repeat: typeof repeat;

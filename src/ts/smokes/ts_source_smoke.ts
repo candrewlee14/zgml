@@ -504,6 +504,7 @@ const tensorFacadeHelpers = tensorFacadePolicy.createTensorFacadeHelpers({
   tensorJoin: {
     cat: (tensors, dim) => ({ op: "cat", tensors, dim }),
     stack: (tensors, dim) => ({ op: "stack", tensors, dim }),
+    einsum: (equation, tensors, ...moreTensors) => ({ op: "einsum", equation, tensors, moreTensors }),
   },
 });
 const initializedTensor = {};
@@ -539,6 +540,7 @@ expectSame({ kind: placedBuffer.kind, options: placedBuffer.options, writes: pla
   writes: [[7, 8]],
 }, "tensor facade place writes");
 expectSame(tensorFacadeHelpers.cat(["a", "b"], 1), { op: "cat", tensors: ["a", "b"], dim: 1 }, "tensor facade cat delegates");
+expectSame(tensorFacadeHelpers.einsum("i,i->", ["a", "b"]), { op: "einsum", equation: "i,i->", tensors: ["a", "b"], moreTensors: [] }, "tensor facade einsum delegates");
 expectSame(tensorFacadeHelpers.eye(2).data, [1, 0, 0, 1], "tensor facade eye delegates");
 expectSame(tensorFacadeHelpers.arange(3).data, [0, 1, 2], "tensor facade arange delegates");
 expectSame(tensorFacadePolicy.normalizeShapeModuleShape([-1, 2], "view shape", true), [-1, 2], "tensor facade shape module infer");
@@ -583,6 +585,23 @@ stackResult._backward(Float32Array.of(1, 2, 3, 4, 5, 6, 7, 8));
 expectSame(joinA.grad, [1, 2, 3, 4], "tensor join stack backward first");
 expectSame(joinB.grad, [5, 6, 7, 8], "tensor join stack backward second");
 expectSame(tensorJoin.stack([join4d, join4d], 2).shape, [2, 3, 2, 4, 5], "tensor join stack 4d dim 2");
+joinA.grad.fill(0);
+joinB.grad.fill(0);
+const einsumMatmul = tensorJoin.einsum("ij,jk->ik", [joinA, joinB]);
+expectSame({ data: einsumMatmul.data, shape: einsumMatmul.shape, requiresGrad: einsumMatmul.requiresGrad }, {
+  data: [19, 22, 43, 50],
+  shape: [2, 2],
+  requiresGrad: true,
+}, "tensor join einsum matmul");
+einsumMatmul._backward(Float32Array.of(1, 1, 1, 1));
+expectSame(joinA.grad, [11, 15, 11, 15], "tensor join einsum backward lhs");
+expectSame(joinB.grad, [4, 4, 6, 6], "tensor join einsum backward rhs");
+joinA.grad.fill(0);
+const einsumTrace = tensorJoin.einsum("ii->", [joinA]);
+expectSame({ data: einsumTrace.data, shape: einsumTrace.shape }, { data: [5], shape: [1] }, "tensor join einsum repeated-label scalar");
+einsumTrace._backward(Float32Array.of(2));
+expectSame(joinA.grad, [2, 0, 0, 2], "tensor join einsum trace backward diagonal");
+expectSame(tensorJoin.einsum("ij,jk->ik", joinA, joinB).data, [19, 22, 43, 50], "tensor join einsum variadic operands");
 expectThrow(
   () => tensorJoin.cat([joinA, new TensorDataSmokeTensor(Float32Array.of(1, 2, 3), [3])], 0),
   "cat input 1 rank must be 2, got 1",
@@ -592,6 +611,11 @@ expectThrow(
   () => tensorJoin.stack([joinA, new TensorDataSmokeTensor(Float32Array.of(1, 2), [2])]),
   "stack input 1 shape [2] must match [2,2]",
   "tensor join stack rejects shape mismatch",
+);
+expectThrow(
+  () => tensorJoin.einsum("i...->i", [joinA]),
+  "einsum ellipsis is not supported yet",
+  "tensor join einsum rejects ellipsis honestly",
 );
 
 const dataNs = dataNamespace.createDataNamespace({

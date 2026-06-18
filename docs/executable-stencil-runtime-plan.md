@@ -199,13 +199,14 @@ Current checked progress:
   The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default browser/WebGPU
   execution evidence.
-- PyTorch-like replacement feel: ~65%. The TS-owned product frontend now has
+- PyTorch-like replacement feel: ~67%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
-  checkpoints, eager debugging, and compile/bind/session hooks through Node,
-  Bun, package, and type smokes. The remaining frontend jump is polish and
-  breadth, not proof that `nn.Linear`, training, state dicts, data loaders, or
-  compile hooks exist.
+  checkpoints, eager debugging, eager/autograd `einsum`, and
+  compile/bind/session hooks through Node, Bun, package, and type smokes. The
+  remaining frontend jump is native lowering, ellipsis/broadcast polish, and
+  breadth, not proof that `nn.Linear`, training, state dicts, data loaders,
+  model math primitives, or compile hooks exist.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS
@@ -761,7 +762,7 @@ Current frontend slice:
   `setGradEnabled`, `noGrad`, `inferenceMode`, `enableGrad`) that suppress
   tensor/module/loss autograd edges while preserving explicit parameter
   construction,
-  indexed selection/gather/take/argsort/sort/topk/scatter-add (`indexSelect`, `index_select`, `gather`, `take`, `argsort`, `sort`, `topk`, `scatterAdd`, `scatter_add`), tensor joins (`cat`, `concat`, `concatenate`, `stack`, `vstack`, `hstack`), JSON serialization, deterministic seeded
+  indexed selection/gather/take/argsort/sort/topk/scatter-add (`indexSelect`, `index_select`, `gather`, `take`, `argsort`, `sort`, `topk`, `scatterAdd`, `scatter_add`), tensor joins (`cat`, `concat`, `concatenate`, `stack`, `vstack`, `hstack`) and eager/autograd `einsum` for explicit-output contractions and repeated-label traces, JSON serialization, deterministic seeded
   randomness (`manualSeed` / `manual_seed`, `initialSeed`, `seededRng`, and
   per-call `seed` options), and
   PyTorch-familiar construction helpers (`zeros`, `ones`, `full`, `rand`,

@@ -10,7 +10,7 @@ const notes = [];
 const goalProgress = Object.freeze({
   substratePct: 70,
   substrateFloorPct: 65,
-  pytorchLikePct: 65,
+  pytorchLikePct: 67,
   pytorchLikeFloorPct: 60,
 });
 
@@ -3132,6 +3132,9 @@ function checkPytorchLikeSurface() {
     "const literalBmmTensor: Tensor<readonly [2, 2, 2]> = literalBmmLhs.bmm(literalBmmRhs)",
     "const literalRootBmmTensor: Tensor<readonly [2, 2, 2]> = bmm(literalBmmLhs, literalBmmRhs)",
     "type LiteralBmmShape = Expect<Equal<BmmShape<readonly [2, 2, 3], readonly [2, 3, 4]>, readonly [2, 2, 4]>>",
+    "const einsumRootTensor: Tensor = einsum(\"ij,jk->ik\"",
+    "const einsumStaticTensor: Tensor = Tensor.einsum(\"ii->\"",
+    "const einsumTorchTensor: Tensor = torch.einsum(\"ij,jk->ik\"",
     "const logSoftmaxSnakeModule: ReturnType<typeof nn.log_softmax> = nn.log_softmax(-1)",
     "const layerNormSnake: ReturnType<typeof nn.layer_norm> = nn.layer_norm(2",
     "const rmsNormSnake: ReturnType<typeof nn.rms_norm> = nn.rms_norm(2",
@@ -4041,6 +4044,10 @@ function checkPytorchLikeSurface() {
     "asarray root helper",
     "from_numpy root helper",
     "fromNumpy root helper",
+    "const einsumMatmul = adapter.einsum(\"ij,jk->ik\", [einsumLhs, einsumRhs])",
+    "adapter.Tensor.einsum(\"ii->\", nested)",
+    "adapter.torch.einsum(\"ij,jk->ik\", einsumLhs.detach(), einsumRhs.detach())",
+    "einsum ellipsis is not supported yet",
   ]);
   requireIncludes(packageSmokeCore, "src/ts/smokes/package_smoke_core.ts", "package runtime train predict validators", [
     "adapter.train.isTrainPredictEvidence(predictEvidence)",
@@ -4081,7 +4088,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=70% floor=65%; PyTorch-like surface=65% floor=60%",
+    "goal progress: Program/Session substrate=70% floor=65%; PyTorch-like surface=67% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4119,10 +4126,10 @@ function checkDocs() {
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
     "Program/Session performance substrate: ~70%",
-    "PyTorch-like replacement feel: ~65%",
+    "PyTorch-like replacement feel: ~67%",
     "The remaining substrate jump is not another compatibility lane;",
     "tiled quantized row-chain throughput kernel",
-    "The remaining frontend jump is polish and",
+    "remaining frontend jump is native lowering,",
     "compile hooks exist.",
   ]);
 }

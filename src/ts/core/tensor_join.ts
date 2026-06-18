@@ -183,5 +183,148 @@ export function createTensorJoinHelpers(options: TensorJoinHelpersOptions) {
     return out;
   }
 
-  return Object.freeze({ cat, stack });
+  function parseEinsumEquation(equation: unknown, operandCount: number) {
+    if (typeof equation !== "string" || equation.trim().length === 0) {
+      throw new Error("einsum equation must be a non-empty string");
+    }
+    const compact = equation.replace(/\s+/g, "");
+    if (compact.includes("...")) {
+      throw new Error("einsum ellipsis is not supported yet");
+    }
+    const parts = compact.split("->");
+    if (parts.length > 2) throw new Error(`invalid einsum equation: ${equation}`);
+    const inputSpecs = parts[0].split(",");
+    if (inputSpecs.length !== operandCount) {
+      throw new Error(`einsum equation expects ${inputSpecs.length} operand(s), got ${operandCount}`);
+    }
+    for (const spec of inputSpecs) {
+      if (!/^[A-Za-z]*$/.test(spec)) throw new Error(`invalid einsum input subscript: ${spec}`);
+    }
+    let outputSpec = parts[1];
+    if (outputSpec !== undefined) {
+      if (!/^[A-Za-z]*$/.test(outputSpec)) throw new Error(`invalid einsum output subscript: ${outputSpec}`);
+      const seen = new Set();
+      for (const label of outputSpec) {
+        if (seen.has(label)) throw new Error(`einsum output label ${label} appears more than once`);
+        seen.add(label);
+      }
+    } else {
+      const counts = new Map<string, number>();
+      for (const spec of inputSpecs) {
+        for (const label of spec) counts.set(label, (counts.get(label) ?? 0) + 1);
+      }
+      outputSpec = [...counts.entries()]
+        .filter((entry) => entry[1] === 1)
+        .map((entry) => entry[0])
+        .sort()
+        .join("");
+    }
+    return { inputSpecs, outputSpec };
+  }
+
+  function coordsForFlat(flat: number, shape: readonly number[], strides: readonly number[]) {
+    const coords = new Array(shape.length);
+    for (let dim = 0; dim < shape.length; dim += 1) coords[dim] = Math.floor(flat / strides[dim]) % shape[dim];
+    return coords;
+  }
+
+  function einsum(equation: unknown, tensorValues: unknown, ...moreTensorValues: unknown[]) {
+    const operands = Array.isArray(tensorValues) && moreTensorValues.length === 0
+      ? requireTensorList(tensorValues, "einsum")
+      : requireTensorList([tensorValues, ...moreTensorValues], "einsum");
+    const { inputSpecs, outputSpec } = parseEinsumEquation(equation, operands.length);
+    const labelSizes = new Map<string, number>();
+    const labelOrder: string[] = [];
+    const operandStrides = operands.map((operand) => rowMajorStrides(operand.shape));
+    for (let operandIndex = 0; operandIndex < operands.length; operandIndex += 1) {
+      const operand = operands[operandIndex];
+      const spec = inputSpecs[operandIndex];
+      if (spec.length !== operand.shape.length) {
+        throw new Error(`einsum operand ${operandIndex} rank ${operand.shape.length} does not match subscript ${spec}`);
+      }
+      for (let dim = 0; dim < spec.length; dim += 1) {
+        const label = spec[dim];
+        const size = operand.shape[dim];
+        if (!labelSizes.has(label)) {
+          labelSizes.set(label, size);
+          labelOrder.push(label);
+        } else if (labelSizes.get(label) !== size) {
+          throw new Error(`einsum label ${label} has inconsistent dimensions ${labelSizes.get(label)} and ${size}`);
+        }
+      }
+    }
+    for (const label of outputSpec) {
+      if (!labelSizes.has(label)) throw new Error(`einsum output label ${label} does not appear in any input`);
+    }
+    const outputShape = outputSpec.length === 0 ? [1] : [...outputSpec].map((label) => labelSizes.get(label)!);
+    const outputStrides = rowMajorStrides(outputShape);
+    const outData = new Float32Array(shapeProduct(outputShape));
+    const assignment = new Map<string, number>();
+
+    function operandFlatIndex(operandIndex: number) {
+      const spec = inputSpecs[operandIndex];
+      const strides = operandStrides[operandIndex];
+      let index = 0;
+      for (let dim = 0; dim < spec.length; dim += 1) index += assignment.get(spec[dim])! * strides[dim];
+      return index;
+    }
+
+    function outputFlatIndex() {
+      if (outputSpec.length === 0) return 0;
+      let index = 0;
+      for (let dim = 0; dim < outputSpec.length; dim += 1) index += assignment.get(outputSpec[dim])! * outputStrides[dim];
+      return index;
+    }
+
+    function visit(labelIndex: number, callback: () => void) {
+      if (labelIndex === labelOrder.length) {
+        callback();
+        return;
+      }
+      const label = labelOrder[labelIndex];
+      const size = labelSizes.get(label)!;
+      for (let value = 0; value < size; value += 1) {
+        assignment.set(label, value);
+        visit(labelIndex + 1, callback);
+      }
+    }
+
+    visit(0, () => {
+      let product = 1;
+      for (let operandIndex = 0; operandIndex < operands.length; operandIndex += 1) {
+        product *= operands[operandIndex].data[operandFlatIndex(operandIndex)];
+      }
+      outData[outputFlatIndex()] += product;
+    });
+
+    const prev = gradModeEnabled() ? operands.filter((tensor) => tensor.requiresGrad) : [];
+    const out = new TensorCtor(outData, outputShape, {
+      requiresGrad: prev.length > 0,
+      prev,
+    });
+    out._backward = (grad: Float32Array | null) => {
+      if (!grad) return;
+      const operandGrads = operands.map((operand) => operand.requiresGrad ? new Float32Array(operand.length) : null);
+      visit(0, () => {
+        const outGrad = grad[outputFlatIndex()];
+        if (outGrad === 0) return;
+        for (let target = 0; target < operands.length; target += 1) {
+          const targetGrad = operandGrads[target];
+          if (!targetGrad) continue;
+          let product = outGrad;
+          for (let operandIndex = 0; operandIndex < operands.length; operandIndex += 1) {
+            if (operandIndex !== target) product *= operands[operandIndex].data[operandFlatIndex(operandIndex)];
+          }
+          targetGrad[operandFlatIndex(target)] += product;
+        }
+      });
+      for (let operandIndex = 0; operandIndex < operands.length; operandIndex += 1) {
+        const targetGrad = operandGrads[operandIndex];
+        if (targetGrad) addTensorGrad(operands[operandIndex], targetGrad);
+      }
+    };
+    return out;
+  }
+
+  return Object.freeze({ cat, stack, einsum });
 }

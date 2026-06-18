@@ -24,6 +24,8 @@ export type TensorFacade<TTensor> = {
   parameter(data: TensorLike, shape?: TensorShape | TensorOptions, options?: TensorOptions): TTensor;
   cat(tensors: readonly TTensor[], dim?: number): TTensor;
   stack(tensors: readonly TTensor[], dim?: number): TTensor;
+  einsum(equation: string, tensors: readonly TTensor[]): TTensor;
+  einsum(equation: string, ...tensors: readonly TTensor[]): TTensor;
   full(shape: TensorShape, value: number, options?: TensorOptions): TTensor;
   empty(shape: TensorShape, options?: TensorOptions): TTensor;
   zeros(shape: TensorShape, options?: TensorOptions): TTensor;
@@ -196,6 +198,12 @@ export function createTensorRootOps<TTensor>(options: TensorRootOpsOptions<TTens
 
   function stack(tensors: readonly TTensor[], dim = 0): TTensor {
     return tensorFacade.stack(tensors, dim);
+  }
+
+  function einsum(equation: string, operandsOrFirst: readonly TTensor[] | TTensor, ...moreOperands: readonly TTensor[]): TTensor {
+    return Array.isArray(operandsOrFirst) && moreOperands.length === 0
+      ? tensorFacade.einsum(equation, operandsOrFirst)
+      : tensorFacade.einsum(equation, operandsOrFirst as TTensor, ...moreOperands);
   }
 
   function requireStackArray(tensors: readonly TTensor[], label: string): readonly TTensor[] {
@@ -840,6 +848,7 @@ export function createTensorRootOps<TTensor>(options: TensorRootOpsOptions<TTens
     stack,
     vstack,
     hstack,
+    einsum,
     full,
     fullLike,
     full_like,

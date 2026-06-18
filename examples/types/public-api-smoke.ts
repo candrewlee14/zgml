@@ -28,6 +28,7 @@ import {
   diagonal,
   enable_grad,
   empty,
+  einsum,
   emptyLike,
   empty_like,
   eq,
@@ -1276,6 +1277,9 @@ const initKaimingCamelParameter: NnParameter<readonly [2, 2]> = nn.init.kaimingU
 const initKaimingNormalOptions: KaimingNormalOptions = { mode: "fan_in", nonlinearity: "relu" };
 const initKaimingNormalParameter: NnParameter<readonly [2, 2]> = nn.init.kaiming_normal_(initWeightParameter, initKaimingNormalOptions);
 const initKaimingNormalCamelParameter: NnParameter<readonly [2, 2]> = nn.init.kaimingNormal_(initWeightParameter, { mode: "fanOut", nonlinearity: "leaky_relu", negativeSlope: 0.2 });
+const einsumRootTensor: Tensor = einsum("ij,jk->ik", [tensor([1, 2, 3, 4], [2, 2] as const), tensor([5, 6, 7, 8], [2, 2] as const)]);
+const einsumStaticTensor: Tensor = Tensor.einsum("ii->", tensor([1, 2, 3, 4], [2, 2] as const));
+const einsumTorchTensor: Tensor = torch.einsum("ij,jk->ik", tensor([1, 2, 3, 4], [2, 2] as const), tensor([5, 6, 7, 8], [2, 2] as const));
 const customParameterModule: CustomModule<readonly [2], readonly [1]> = nn.module({
   kind: "custom-parameter-head",
   parameters: [customWeightParameter, customBiasParameter],
@@ -6038,6 +6042,15 @@ void initUniformParameter;
 void initNormalParameter;
 void initXavierParameter;
 void initXavierCamelParameter;
+void initXavierNormalParameter;
+void initXavierNormalCamelParameter;
+void initKaimingParameter;
+void initKaimingCamelParameter;
+void initKaimingNormalParameter;
+void initKaimingNormalCamelParameter;
+void einsumRootTensor;
+void einsumStaticTensor;
+void einsumTorchTensor;
 void customParameterModule;
 void customParameterState;
 void customParameterOptimizer;

@@ -1117,6 +1117,10 @@ export class Tensor {
     return surface().tensorStaticHelpers.hstack(tensors);
   }
 
+  static einsum(equation: unknown, operandsOrFirst: unknown, ...moreOperands: unknown[]) {
+    return surface().tensorStaticHelpers.einsum(equation, operandsOrFirst, ...moreOperands);
+  }
+
   binary(other: unknown, op: unknown, gradLeft: unknown, gradRight: unknown, label: unknown) {
     return surface().tensorMathSurfaceHelpers.binary(this, other, op, gradLeft, gradRight, label);
   }
