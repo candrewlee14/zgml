@@ -2171,7 +2171,7 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
             module_op_reduce_min => {
                 if (op.activation != 0 or op.flags != 0 or op.b != 0 or op.c != 0 or op.a != 0) return error.InvalidArgument;
                 if (op.a >= current_rank) return error.ShapeMismatch;
-                current = current.neg().maxDim(op.a).neg();
+                current = current.minDim(op.a);
                 current_len = current.ne[0];
             },
             module_op_reshape => {

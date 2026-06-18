@@ -2473,7 +2473,7 @@ const shader_source =
     \\// Op codes — elementwise match op.zig values directly:
     \\//   add=7 mul=8 neg=9 abs=10 sgn=11 step=12 relu=13
     \\//   sqrt=14 recip=15 exp=16 log=17 gelu=18 sqr=34
-    \\//   sum=19 max=20 repeat=21 slice_assign=27
+    \\//   sum=19 max=20 repeat=21 slice_assign=27 min=35
     \\// Fused ops use codes 100+:
     \\//   fused_softmax=100 fused_layernorm=101 fused_rmsnorm=102 fused_logsoftmax=103
     \\
@@ -2509,14 +2509,14 @@ const shader_source =
     \\            dst[p.dst_offset + gid] = a * a;
     \\            break;
     \\        }
-    \\        // ── Reduce: sum(19) or max(20), one thread per output ──
-    \\        case 19: case 20: {
+    \\        // ── Reduce: sum(19), max(20), or min(35), one thread per output ──
+    \\        case 19: case 20: case 35: {
     \\            uint reduce_size = p.src0_ne[0];
     \\            uint src_base = p.src0_offset + gid * reduce_size;
-    \\            float val = (p.op == 20) ? -INFINITY : 0.0f;
+    \\            float val = (p.op == 20) ? -INFINITY : ((p.op == 35) ? INFINITY : 0.0f);
     \\            for (uint k = 0; k < reduce_size; k++) {
     \\                float v = src0[src_base + k];
-    \\                if (p.op == 19) val += v; else val = max(val, v);
+    \\                if (p.op == 19) val += v; else if (p.op == 20) val = max(val, v); else val = min(val, v);
     \\            }
     \\            dst[p.dst_offset + gid] = val;
     \\            break;
@@ -4572,7 +4572,7 @@ fn computeDispatchSpec(op: backend_mod.DeviceOp) ?ComputeDispatchSpec {
             .grid = .{ .gx = linearGrid(r.rows) },
         },
         .reduce => |r| {
-            if (r.op != .sum and r.op != .max) return null;
+            if (r.op != .sum and r.op != .max and r.op != .min) return null;
             return .{
                 .params = reduceComputeParams(r),
                 .src0 = r.src,

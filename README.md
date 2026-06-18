@@ -878,7 +878,7 @@ native Program construction, and benchmarked allocation-free lazy
 Linear+GELU, `matmul -> add -> relu/gelu`, Conv2d+ReLU, MLP, reduced MLP, classifier log-softmax,
 native `diagonal`,
 rank-1/rank-2 repeat/tile Program lowering,
-native `min(dim)`, eval-mode `BatchNorm1d`, classifier softmax-reduction, transformer FFN, normalized transformer
+direct backend `min(dim)`, eval-mode `BatchNorm1d`, classifier softmax-reduction, transformer FFN, normalized transformer
 classifier, and token-head Session paths rather than only API exports.
 Tensor, `nn`, `optim`, `train`, `data`, loss modules, state dicts,
 manual `backward`/`step` loops, train helper verbs (`backward`, `lossStep`,

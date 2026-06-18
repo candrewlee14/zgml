@@ -349,10 +349,11 @@ fn vecBinaryOp(comptime Tt: type, comptime f: fn (Tt, Tt) Tt, a: anytype, b: any
     return result;
 }
 
-fn computeReduceGeneric(comptime Self: type, comptime Tt: type, dst: *Self, src0: *const Self, comptime op: enum { sum, max }, mean_divisor: ?Tt) void {
+fn computeReduceGeneric(comptime Self: type, comptime Tt: type, dst: *Self, src0: *const Self, comptime op: enum { sum, max, min }, mean_divisor: ?Tt) void {
     switch (op) {
         .sum => @memset(dst.data, 0),
         .max => @memset(dst.data, -std.math.inf(Tt)),
+        .min => @memset(dst.data, std.math.inf(Tt)),
     }
 
     var src_coords: [max_dims]usize = [_]usize{0} ** max_dims;
@@ -368,6 +369,7 @@ fn computeReduceGeneric(comptime Self: type, comptime Tt: type, dst: *Self, src0
         switch (op) {
             .sum => dst.data[dst_idx] += if (mean_divisor) |div| src0.data[src_idx] / div else src0.data[src_idx],
             .max => dst.data[dst_idx] = @max(dst.data[dst_idx], src0.data[src_idx]),
+            .min => dst.data[dst_idx] = @min(dst.data[dst_idx], src0.data[src_idx]),
         }
         if (!nextCoord(src_coords[0..src0.n_dims], src0.ne[0..src0.n_dims])) break;
     }
@@ -1307,6 +1309,31 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
+        pub fn computeMin(dst: *Self, src0: *const Self) void {
+            assert(src0.canSumTo(dst));
+            if (src0.n_dims > 4 or dst.n_dims > 4) {
+                computeReduceGeneric(Self, T, dst, src0, .min, null);
+                return;
+            }
+            @memset(dst.data, std.math.inf(T));
+            for (0..src0.ne[3]) |ne3| {
+                for (0..src0.ne[2]) |ne2| {
+                    for (0..src0.ne[1]) |ne1| {
+                        for (0..src0.ne[0]) |ne0| {
+                            const src0_nes = @Vector(4, usize){ ne0, ne1, ne2, ne3 };
+                            const dst_ne_v = first4(dst.ne);
+                            const dst_nes = src0_nes % dst_ne_v;
+                            const src0_stride_v = first4(src0.strides);
+                            const dst_stride_v = first4(dst.strides);
+                            const src0_idx = @reduce(.Add, src0_nes * src0_stride_v);
+                            const dst_idx = @reduce(.Add, dst_nes * dst_stride_v);
+                            dst.data[dst_idx] = @min(dst.data[dst_idx], src0.data[src0_idx]);
+                        }
+                    }
+                }
+            }
+        }
+
         /// Numerically stable softmax with reduction axes given by `dst.reduce_ne`.
         /// Output shape matches input; `reduce_ne` has 1s along reduction axes (same
         /// convention as `sum(ne)` / `max(ne)`).
@@ -2160,6 +2187,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .sqr => computeSqr(tensor, src0.?),
                 .sum => tensor.computeSum(src0.?),
                 .max => computeMax(tensor, src0.?),
+                .min => computeMin(tensor, src0.?),
                 .repeat => tensor.computeRepeat(src0.?),
                 .gather_rows => computeGatherRows(tensor, src0.?, src1.?),
                 .scatter_add_rows => computeScatterAddRows(tensor, src0.?, src1.?),

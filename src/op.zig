@@ -63,6 +63,7 @@ pub const Op = enum {
 
     // Appended to preserve existing op enum values consumed by backend shaders.
     sqr,
+    min,
 
     /// True if this op is elementwise (shape-preserving) and can participate in fusion.
     pub fn isFusible(self: Self) bool {
@@ -104,6 +105,7 @@ pub const Op = enum {
             .gelu => "gelu(x)",
             .sum => "Σx",
             .max => "max(x)",
+            .min => "min(x)",
             .repeat => "repeat(x)",
             .gather_rows => "gather_rows(x)",
             .scatter_add_rows => "scatter_add_rows(x)",

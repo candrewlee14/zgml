@@ -221,6 +221,32 @@ function checkScripts() {
     "if (detectLogSoftmax(program)) |shape| return .{ .logsoftmax = shape }",
     "wgpu backend executes DeviceInference log-softmax lowering",
   ]);
+  requireIncludes(read("src/op.zig"), "src/op.zig", "direct primitive min reduction op", [
+    "min,",
+    ".min => \"min(x)\"",
+  ]);
+  requireIncludes(read("src/device_inference.zig"), "src/device_inference.zig", "native reduce-min lowering", [
+    ".sum, .max, .min =>",
+    "DeviceInference lowers min reduction directly",
+    "try testing.expectEqual(Op.min, reduce.op)",
+  ]);
+  requireIncludes(read("src/backend.zig"), "src/backend.zig", "backend reduce-min capability", [
+    ".reduce => |r| self.reduce and (r.op == .sum or r.op == .max or r.op == .min)",
+  ]);
+  requireIncludes(read("src/backend/reference.zig"), "src/backend/reference.zig", "reference reduce-min kernel", [
+    ".min => std.math.inf(f32)",
+    ".min => @min(val, v)",
+  ]);
+  requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "Metal reduce-min kernel", [
+    "sum=19 max=20 repeat=21 slice_assign=27 min=35",
+    "case 19: case 20: case 35:",
+    "else val = min(val, v)",
+  ]);
+  requireIncludes(read("src/backend/wgpu.zig"), "src/backend/wgpu.zig", "WGPU reduce-min kernel", [
+    ".min => 3",
+    "params.op == 3u",
+    "acc = min(acc, value)",
+  ]);
   if (scripts["smoke:adapters"] !== "npm run build:package && npm run smoke:node && npm run smoke:bun:dist") {
     errors.push("package.json smoke:adapters must keep the one-build Node/Bun adapter gate");
   }
@@ -4305,6 +4331,7 @@ function checkDocs() {
     "Common classifier/token-head `LogSoftmax` tails now",
     "native row op on reference CPU, Metal, and WGPU",
     "capability-disabled test still proves the composite fallback",
+    "direct backend reduce-min command on reference CPU, Metal, and WGPU",
     "Compile-capable lazy graphs can now lower through the host adapter into a",
     "native Program with preserved KernelPlan evidence.",
     "PyTorch-like replacement feel: ~96%",

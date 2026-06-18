@@ -210,10 +210,9 @@ Current checked progress:
   lower to a native row op on reference CPU, Metal, and WGPU instead of
   replaying ten composite Tensor Program IR sub-ops, while an explicit
   capability-disabled test still proves the composite fallback. Module
-  `min(dim)` now lowers through a first-class `reduceMin` descriptor instead
-  of exposing its `neg -> max -> neg` decomposition in KernelPlan evidence, so
-  the TS/native Program contract is simpler today and can receive a backend
-  reduce-min kernel later without changing user code. The remaining substrate jump is not another compatibility lane; it is a real
+  `min(dim)` now lowers through a first-class `reduceMin` descriptor and a
+  direct backend reduce-min command on reference CPU, Metal, and WGPU instead
+  of exposing or executing its old `neg -> max -> neg` decomposition. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence.
 - PyTorch-like replacement feel: ~96%. The TS-owned product frontend now has

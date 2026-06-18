@@ -191,6 +191,10 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn maxAll(self: *Self) *Self {
             return max(self, &.{1});
         }
+        /// Min-reduce all elements into a scalar.
+        pub fn minAll(self: *Self) *Self {
+            return min(self, &.{1});
+        }
 
         /// Sum (reduce) elements into the given target shape.
         pub fn sum(self: *Self, ne: []const usize) *Self {
@@ -218,6 +222,19 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return res;
         }
 
+        /// Min-reduce elements into the given target shape.
+        pub fn min(self: *Self, ne: []const usize) *Self {
+            const alloc = a(self);
+            assert(ne.len <= max_dims);
+            assert(self.canSumToShape(ne));
+            const is_node: bool = self.grad != null;
+            const res = Self.init(alloc, ne) catch unreachable;
+            res.op = .min;
+            res.grad = if (is_node) copyTensorShape(res) else null;
+            res.src0 = self;
+            return res;
+        }
+
         fn reduceShapeForDim(self: *Self, dim: usize) [max_dims]usize {
             assert(dim < self.n_dims);
             var out_ne = self.ne;
@@ -235,6 +252,12 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn maxDim(self: *Self, dim: usize) *Self {
             const out_ne = reduceShapeForDim(self, dim);
             return self.max(out_ne[0..self.n_dims]);
+        }
+
+        /// Min-reduce one dimension while preserving rank.
+        pub fn minDim(self: *Self, dim: usize) *Self {
+            const out_ne = reduceShapeForDim(self, dim);
+            return self.min(out_ne[0..self.n_dims]);
         }
 
         /// Sum into another tensor's shape.

@@ -660,10 +660,20 @@ const Context = struct {
         const rs: usize = rd.reduce_size;
         for (0..@as(usize, rd.n_out)) |i| {
             const sb: usize = @as(usize, rd.src_offset) + i * rs;
-            var val: f32 = if (rd.op == .max) -std.math.inf(f32) else 0.0;
+            var val: f32 = switch (rd.op) {
+                .sum => 0.0,
+                .max => -std.math.inf(f32),
+                .min => std.math.inf(f32),
+                else => unreachable,
+            };
             for (0..rs) |k| {
                 const v = src[sb + k];
-                val = if (rd.op == .max) @max(val, v) else val + v;
+                val = switch (rd.op) {
+                    .sum => val + v,
+                    .max => @max(val, v),
+                    .min => @min(val, v),
+                    else => unreachable,
+                };
             }
             dst[@as(usize, rd.dst_offset) + i] = val;
         }

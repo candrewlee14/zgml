@@ -2176,6 +2176,8 @@ const wgsl_reduce =
     \\  var acc = 0.0f;
     \\  if (params.op == 2u) {
     \\    acc = -3.4028234663852886e38f;
+    \\  } else if (params.op == 3u) {
+    \\    acc = 3.4028234663852886e38f;
     \\  }
     \\  var col = lid;
     \\  loop {
@@ -2185,6 +2187,8 @@ const wgsl_reduce =
     \\    let value = src.data[src_base + col];
     \\    if (params.op == 2u) {
     \\      acc = max(acc, value);
+    \\    } else if (params.op == 3u) {
+    \\      acc = min(acc, value);
     \\    } else {
     \\      acc = acc + value;
     \\    }
@@ -2200,6 +2204,8 @@ const wgsl_reduce =
     \\    if (lid < stride) {
     \\      if (params.op == 2u) {
     \\        scratch[lid] = max(scratch[lid], scratch[lid + stride]);
+    \\      } else if (params.op == 3u) {
+    \\        scratch[lid] = min(scratch[lid], scratch[lid + stride]);
     \\      } else {
     \\        scratch[lid] = scratch[lid] + scratch[lid + stride];
     \\      }
@@ -6340,6 +6346,7 @@ fn reduceOpCode(op: backend_mod.Op) ?u32 {
     return switch (op) {
         .sum => 1,
         .max => 2,
+        .min => 3,
         else => null,
     };
 }
@@ -10061,6 +10068,30 @@ test "wgpu backend configured reduce supports host and resource bindings" {
     be.executeProgram(max_handle, &.{}, &max_outputs);
     try std.testing.expectApproxEqAbs(@as(f32, 3), max_output[0], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, -1), max_output[1], 0.001);
+
+    var min_src = [_]f32{ 1, -2, 3, 0, -1, -5, -3, -4 };
+    const min_ops = [_]backend_mod.DeviceOp{.{ .reduce = .{
+        .op = .min,
+        .dst = 1,
+        .src = 0,
+        .n_out = 2,
+        .reduce_size = 4,
+    } }};
+    const min_uploads = [_]backend_mod.ProgramIO{.host(0, 0, @ptrCast(&min_src), min_src.len * @sizeOf(f32))};
+    const min_program = backend_mod.DeviceProgram{
+        .ops = &min_ops,
+        .n_buffers = buffer_sizes.len,
+        .buffer_sizes = &buffer_sizes,
+        .initial_uploads = &min_uploads,
+    };
+    const min_handle = be.compileProgram(min_program) orelse return error.SkipZigTest;
+    defer be.freeProgram(min_handle);
+
+    var min_output = [_]f32{ 0, 0 };
+    const min_outputs = [_]backend_mod.ProgramIO{.host(1, 0, @ptrCast(&min_output), min_output.len * @sizeOf(f32))};
+    be.executeProgram(min_handle, &.{}, &min_outputs);
+    try std.testing.expectApproxEqAbs(@as(f32, -2), min_output[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, -5), min_output[1], 0.001);
 }
 
 test "wgpu backend configured rope supports host and resource bindings" {

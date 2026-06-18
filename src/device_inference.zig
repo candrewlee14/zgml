@@ -646,7 +646,7 @@ pub fn DeviceInference(comptime T: type) type {
                     .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu, .sqr => {
                         try self.appendElementwiseIrOps(op, dst, src0, src1);
                     },
-                    .sum, .max => {
+                    .sum, .max, .min => {
                         const src = src0.?;
                         if (!src.isDenseLayout() or !dst.isDenseLayout()) return error.UnsupportedDeviceOp;
                         try self.ops.append(self.alloc, reduceDeviceOp(self.buffers, dst, src, dst_idx, src0_idx));
@@ -2227,6 +2227,37 @@ test "DeviceInference keeps log softmax fusion sub-ops without native row op sup
     try testing.expectEqual(@as(usize, 10), state.compiled_ops.len);
     try testing.expectEqual(backend_mod.DeviceOp.reduce, std.meta.activeTag(state.compiled_ops[0]));
     try testing.expectEqual(backend_mod.DeviceOp.elementwise, std.meta.activeTag(state.compiled_ops[state.compiled_ops.len - 1]));
+}
+
+test "DeviceInference lowers min reduction directly" {
+    const DeviceF32 = DeviceInference(f32);
+    var graph = ComputeGraphF32.init(testing.allocator);
+    defer graph.deinit();
+    const a = graph.allocator();
+
+    const x = try TensorF32.init(a, &.{ 3, 2 });
+    x.setData(&.{ 3, 1, 2, 6, 4, 5 });
+    const y = x.minDim(0);
+    try graph.infer(y);
+
+    var state = TestBackendState{};
+    var program = try DeviceF32.Program.compile(.{
+        .graph = &graph,
+        .be = testBackend(&state),
+        .alloc = testing.allocator,
+        .input_tensors = &.{x},
+        .output_tensors = &.{y},
+    });
+    defer program.deinit();
+
+    try testing.expectEqual(@as(usize, 1), state.compiled_ops.len);
+    const reduce = switch (state.compiled_ops[0]) {
+        .reduce => |r| r,
+        else => return error.TestExpectedEqual,
+    };
+    try testing.expectEqual(Op.min, reduce.op);
+    try testing.expectEqual(@as(u32, 2), reduce.n_out);
+    try testing.expectEqual(@as(u32, 3), reduce.reduce_size);
 }
 
 test "DeviceInference uploads persistent bindings without executing" {

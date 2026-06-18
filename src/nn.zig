@@ -1918,7 +1918,7 @@ fn Reduction(comptime kind: ReductionKind) type {
                 .sum => x.sumDim(self.dim),
                 .mean => x.meanDim(self.dim),
                 .max => x.maxDim(self.dim),
-                .min => x.neg().maxDim(self.dim).neg(),
+                .min => x.minDim(self.dim),
             };
         }
 
