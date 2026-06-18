@@ -1,4 +1,4 @@
-//! Decision-grade benchmark frontier for zgml.
+//! Decision-grade benchmark frontier for internal.
 //!
 //! Run with: zig build bench-frontier
 //!
@@ -9,14 +9,18 @@
 
 const std = @import("std");
 const opts = @import("zgml_options");
-const zgml = @import("zgml");
+const internal = @import("zgml_internal");
+const backend_mod = internal.backend;
+const program_mod = internal.backend_program;
 
-const Tensor = zgml.Tensor;
+const Tensor = internal.Tensor;
 
 const SampleCount = 15;
 const WarmupSamples = 3;
 const MinSampleNs: u64 = 2_000_000;
+const MinRepeats: usize = 8;
 const MaxRepeats: usize = 1 << 20;
+const FrontierStencilVecLen = 16;
 
 fn nowNs(io: std.Io) u64 {
     return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
@@ -45,6 +49,16 @@ fn checksum(data: []const f32) f64 {
     return acc;
 }
 
+fn maxAbsDiff(a: []const f32, b: []const f32) f32 {
+    if (a.len != b.len) @panic("mismatched benchmark outputs");
+    var max_diff: f32 = 0;
+    for (a, b) |x, y| {
+        const diff = @abs(x - y);
+        if (diff > max_diff) max_diff = diff;
+    }
+    return max_diff;
+}
+
 const BenchStats = struct {
     repeats: usize,
     min_ns: f64,
@@ -54,7 +68,7 @@ const BenchStats = struct {
 };
 
 fn calibrateRepeats(io: std.Io, bench: anytype) usize {
-    var repeats: usize = 1;
+    var repeats: usize = MinRepeats;
     while (true) {
         const t0 = nowNs(io);
         for (0..repeats) |_| bench.run();
@@ -106,6 +120,32 @@ fn printStats(
         "  {s:<28} p50={d:>10.1} ns  min={d:>10.1}  p90={d:>10.1}  reps={d:<7}  {s}={d:>9.2} {s}/s  check={d:.3}\n",
         .{ name, stats.p50_ns, stats.min_ns, stats.p90_ns, stats.repeats, work_label, throughput, unit_suffix, stats.checksum },
     );
+}
+
+fn printRatio(
+    w: *std.Io.Writer,
+    name: []const u8,
+    numerator: BenchStats,
+    denominator: BenchStats,
+    diff: ?f32,
+) !void {
+    const ratio = numerator.p50_ns / denominator.p50_ns;
+    if (diff) |max_diff| {
+        try w.print("  {s:<28} speedup={d:.2}x  old_p50={d:.1} ns  fused_p50={d:.1} ns  max_abs_diff={d:.6}\n", .{
+            name,
+            ratio,
+            numerator.p50_ns,
+            denominator.p50_ns,
+            max_diff,
+        });
+    } else {
+        try w.print("  {s:<28} speedup={d:.2}x  old_p50={d:.1} ns  fused_p50={d:.1} ns\n", .{
+            name,
+            ratio,
+            numerator.p50_ns,
+            denominator.p50_ns,
+        });
+    }
 }
 
 const TensorComputeBench = struct {
@@ -222,14 +262,15 @@ const FusedChainBench = struct {
     }
 
     fn run(self: *FusedChainBench) void {
-        const Vec = @Vector(8, f32);
+        const vec_len = FrontierStencilVecLen;
+        const Vec = @Vector(vec_len, f32);
         const zero: Vec = @splat(0);
         var i: usize = 0;
-        while (i + 8 <= self.out.data.len) : (i += 8) {
-            const xv: Vec = self.x.data[i..][0..8].*;
-            const yv: Vec = self.y.data[i..][0..8].*;
-            const bv: Vec = self.bias.data[i..][0..8].*;
-            self.out.data[i..][0..8].* = @max(xv * yv + bv, zero) * yv + xv;
+        while (i + vec_len <= self.out.data.len) : (i += vec_len) {
+            const xv: Vec = self.x.data[i..][0..vec_len].*;
+            const yv: Vec = self.y.data[i..][0..vec_len].*;
+            const bv: Vec = self.bias.data[i..][0..vec_len].*;
+            self.out.data[i..][0..vec_len].* = @max(xv * yv + bv, zero) * yv + xv;
         }
         while (i < self.out.data.len) : (i += 1) {
             const x = self.x.data[i];
@@ -461,89 +502,418 @@ fn benchDecodeGraph(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !vo
     try printStats(w, "rmsnorm-attn-logits token", "tokens", 1.0, "tok", stats);
 }
 
-const GptPrefillCfg = zgml.models.GPTConfig{
-    .vocab_size = 512,
-    .d_model = 64,
-    .n_heads = 4,
-    .d_ff = 256,
-    .n_layers = 2,
-    .max_seq_len = 128,
-};
-const GptPrefillPromptLen: usize = 64;
-const GptPrefillSession = zgml.inference.InferenceSession(f32, GptPrefillCfg);
+const ProjectionRowChainMetalBench = struct {
+    be: backend_mod.Backend,
+    handle: backend_mod.Backend.CompiledHandle,
+    out: []f32,
+    output_io: []const backend_mod.ProgramIO,
 
-const GptPrefillMode = enum { sequential, batched };
-
-const GptPrefillBench = struct {
-    session: GptPrefillSession,
-    tokens: [GptPrefillPromptLen]usize,
-    mode: GptPrefillMode,
-    last: []const f32,
-
-    fn init(alloc: std.mem.Allocator, mode: GptPrefillMode) !GptPrefillBench {
-        var session = try GptPrefillSession.init(alloc);
-        session.prefill_chunk = switch (mode) {
-            .sequential => GptPrefillPromptLen + 1,
-            .batched => 32,
-        };
-
-        var tokens: [GptPrefillPromptLen]usize = undefined;
-        for (&tokens, 0..) |*tok, i| {
-            tok.* = (i * 37 + 11) % GptPrefillCfg.vocab_size;
-        }
-
-        var self = GptPrefillBench{
-            .session = session,
-            .tokens = tokens,
-            .mode = mode,
-            .last = &.{},
-        };
-
-        // Build the reusable batched plan before timing; the benchmark tracks
-        // steady-state prompt ingestion, not one-time plan construction.
-        if (mode == .batched) {
-            self.last = try self.session.prefill(&self.tokens);
-            self.session.reset();
-        }
-
-        return self;
+    fn run(self: *ProjectionRowChainMetalBench) void {
+        self.be.executeProgram(self.handle, &.{}, self.output_io);
     }
 
-    fn deinit(self: *GptPrefillBench) void {
-        self.session.deinit();
-    }
-
-    fn run(self: *GptPrefillBench) void {
-        self.session.reset();
-        self.last = switch (self.mode) {
-            .sequential => blk: {
-                var last: []const f32 = &.{};
-                for (self.tokens) |tok| last = self.session.step(tok) catch unreachable;
-                break :blk last;
-            },
-            .batched => self.session.prefill(&self.tokens) catch unreachable,
-        };
-    }
-
-    fn consume(self: *GptPrefillBench) f64 {
-        return checksum(self.last);
+    fn consume(self: *ProjectionRowChainMetalBench) f64 {
+        return checksum(self.out);
     }
 };
 
-fn benchGptPrefill(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
-    try w.print("\nGPT Persistent Prefill\n", .{});
-    try w.print("----------------------\n", .{});
+const ProjectionRowChainCase = struct {
+    name: []const u8,
+    m: usize,
+    n: usize,
+    k: usize,
+};
 
-    var sequential = try GptPrefillBench.init(alloc, .sequential);
-    defer sequential.deinit();
-    var batched = try GptPrefillBench.init(alloc, .batched);
-    defer batched.deinit();
+fn allocF32(alloc: std.mem.Allocator, n: usize, seed: u64, scale: f32) ![]f32 {
+    const data = try alloc.alloc(f32, n);
+    fillDeterministic(data, seed, scale);
+    return data;
+}
 
-    const tokens = @as(f64, @floatFromInt(GptPrefillPromptLen));
-    const seq_stats = measure(io, &sequential);
-    const batched_stats = measure(io, &batched);
-    try printStats(w, "gpt prefill step loop", "tokens", tokens, "tok", seq_stats);
-    try printStats(w, "gpt prefill batched", "tokens", tokens, "tok", batched_stats);
+fn allocI8Weights(alloc: std.mem.Allocator, n: usize, seed: u64) ![]i8 {
+    const data = try alloc.alloc(i8, n);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rng = prng.random();
+    for (data) |*v| {
+        v.* = @intCast(rng.intRangeAtMost(i16, -12, 12));
+    }
+    return data;
+}
+
+fn programIo(buf_idx: u16, data: anytype) backend_mod.ProgramIO {
+    return .{
+        .buf_idx = buf_idx,
+        .host_ptr = @ptrCast(data.ptr),
+        .size = @intCast(data.len * @sizeOf(@TypeOf(data[0]))),
+    };
+}
+
+fn benchProjectionChainMetalCase(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    w: *std.Io.Writer,
+    metal: *internal.backend_metal.MetalBackend,
+    case: ProjectionRowChainCase,
+) !void {
+    const elems = case.m * case.n;
+    const input_len = case.m * case.k;
+    const block_size: usize = 32;
+    const scale_len = (case.k * case.n + block_size - 1) / block_size;
+
+    const input = try allocF32(alloc, input_len, 601, 0.25);
+    defer alloc.free(input);
+    const q_out = try allocF32(alloc, elems, 602, 0.0);
+    defer alloc.free(q_out);
+    const residual = try allocF32(alloc, elems, 603, 0.20);
+    defer alloc.free(residual);
+    const ew_out = try allocF32(alloc, elems, 604, 0.0);
+    defer alloc.free(ew_out);
+    const default_out = try allocF32(alloc, elems, 605, 0.0);
+    defer alloc.free(default_out);
+    const fused_out = try allocF32(alloc, elems, 606, 0.0);
+    defer alloc.free(fused_out);
+    const qdata = try allocI8Weights(alloc, case.k * case.n, 607);
+    defer alloc.free(qdata);
+    const qscales = try allocF32(alloc, scale_len, 608, 0.02);
+    defer alloc.free(qscales);
+    for (qscales) |*v| v.* = 0.02;
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = @intCast(case.m), .N = @intCast(case.n), .K = @intCast(case.k) } },
+        .{ .elementwise = .{ .op = .add, .dst = 3, .src0 = 1, .src1 = 2, .n = @intCast(elems) } },
+    };
+    const buffer_sizes = [_]usize{ input_len, elems, elems, elems };
+    const uploads = [_]backend_mod.ProgramIO{
+        programIo(0, input),
+        programIo(1, q_out),
+        programIo(2, residual),
+        programIo(3, ew_out),
+    };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{
+        .data = qdata,
+        .scales = qscales,
+        .rows = case.k,
+        .cols = case.n,
+        .block_size = block_size,
+    }};
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = buffer_sizes.len,
+        .buffer_sizes = &buffer_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const be = metal.backend();
+    var staged_policy = program_mod.CommandStreamPolicy.default();
+    staged_policy.fuse_projection_chain = false;
+    const staged_handle = metal.compileProgramWithCommandPolicy(program, staged_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(staged_handle);
+    const fused_handle = metal.compileProgramWithCommandPolicy(program, program_mod.CommandStreamPolicy.default()) orelse return error.CompileFailed;
+    defer be.freeProgram(fused_handle);
+
+    const staged_output_io = [_]backend_mod.ProgramIO{programIo(3, default_out)};
+    const fused_output_io = [_]backend_mod.ProgramIO{programIo(3, fused_out)};
+    var staged_bench = ProjectionRowChainMetalBench{
+        .be = be,
+        .handle = staged_handle,
+        .out = default_out,
+        .output_io = &staged_output_io,
+    };
+    var fused_bench = ProjectionRowChainMetalBench{
+        .be = be,
+        .handle = fused_handle,
+        .out = fused_out,
+        .output_io = &fused_output_io,
+    };
+
+    const staged_stats = measure(io, &staged_bench);
+    const fused_stats = measure(io, &fused_bench);
+    const approx_work = 2.0 * @as(f64, @floatFromInt(case.m * case.n * case.k));
+
+    var staged_name_buf: [96]u8 = undefined;
+    const staged_name = try std.fmt.bufPrint(&staged_name_buf, "{s} staged", .{case.name});
+    try printStats(w, staged_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", staged_stats);
+
+    var fused_name_buf: [96]u8 = undefined;
+    const fused_name = try std.fmt.bufPrint(&fused_name_buf, "{s} projection_chain", .{case.name});
+    try printStats(w, fused_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", fused_stats);
+
+    var ratio_name_buf: [96]u8 = undefined;
+    const ratio_name = try std.fmt.bufPrint(&ratio_name_buf, "{s} projection_chain", .{case.name});
+    try printRatio(w, ratio_name, staged_stats, fused_stats, maxAbsDiff(default_out, fused_out));
+}
+
+fn benchProjectionGroupMetalCase(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    w: *std.Io.Writer,
+    metal: *internal.backend_metal.MetalBackend,
+    case: ProjectionRowChainCase,
+) !void {
+    const n_slots: usize = 4;
+    const elems = case.m * case.n;
+    const input_len = case.m * case.k;
+    const block_size: usize = 32;
+    const scale_len = (case.k * case.n + block_size - 1) / block_size;
+
+    const input = try allocF32(alloc, input_len, 701, 0.25);
+    defer alloc.free(input);
+    const q_out = try allocF32(alloc, n_slots * elems, 702, 0.0);
+    defer alloc.free(q_out);
+    const residual = try allocF32(alloc, n_slots * elems, 703, 0.20);
+    defer alloc.free(residual);
+    const staged_out = try allocF32(alloc, n_slots * elems, 704, 0.0);
+    defer alloc.free(staged_out);
+    const grouped_out = try allocF32(alloc, n_slots * elems, 705, 0.0);
+    defer alloc.free(grouped_out);
+    const qdata = try allocI8Weights(alloc, n_slots * case.k * case.n, 706);
+    defer alloc.free(qdata);
+    const qscales = try allocF32(alloc, n_slots * scale_len, 707, 0.02);
+    defer alloc.free(qscales);
+    for (qscales) |*v| v.* = 0.02;
+
+    var ops: [n_slots * 2]backend_mod.DeviceOp = undefined;
+    var buffer_sizes: [1 + n_slots * 3]usize = undefined;
+    var uploads: [1 + n_slots * 3]backend_mod.ProgramIO = undefined;
+    var qweights: [n_slots]backend_mod.QuantizedWeightUpload = undefined;
+
+    buffer_sizes[0] = input_len;
+    uploads[0] = programIo(0, input);
+    for (0..n_slots) |slot| {
+        const q_buf: u16 = @intCast(1 + slot * 3);
+        const residual_buf: u16 = @intCast(2 + slot * 3);
+        const out_buf: u16 = @intCast(3 + slot * 3);
+        const base = slot * elems;
+        const weight_base = slot * case.k * case.n;
+        const scale_base = slot * scale_len;
+
+        ops[slot * 2] = .{ .qmatmul = .{ .dst = q_buf, .input = 0, .weight_idx = @intCast(slot), .M = @intCast(case.m), .N = @intCast(case.n), .K = @intCast(case.k) } };
+        ops[slot * 2 + 1] = .{ .elementwise = .{ .op = .add, .dst = out_buf, .src0 = q_buf, .src1 = residual_buf, .n = @intCast(elems) } };
+
+        buffer_sizes[1 + slot * 3] = elems;
+        buffer_sizes[2 + slot * 3] = elems;
+        buffer_sizes[3 + slot * 3] = elems;
+        uploads[1 + slot * 3] = programIo(q_buf, q_out[base .. base + elems]);
+        uploads[2 + slot * 3] = programIo(residual_buf, residual[base .. base + elems]);
+        uploads[3 + slot * 3] = programIo(out_buf, staged_out[base .. base + elems]);
+        qweights[slot] = .{
+            .data = qdata[weight_base .. weight_base + case.k * case.n],
+            .scales = qscales[scale_base .. scale_base + scale_len],
+            .rows = case.k,
+            .cols = case.n,
+            .block_size = block_size,
+        };
+    }
+
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = buffer_sizes.len,
+        .buffer_sizes = &buffer_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const be = metal.backend();
+    var staged_policy = program_mod.CommandStreamPolicy.default();
+    staged_policy.qmatmul_group_size = 1;
+    const staged_handle = metal.compileProgramWithCommandPolicy(program, staged_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(staged_handle);
+    const grouped_handle = metal.compileProgramWithCommandPolicy(program, program_mod.CommandStreamPolicy.default()) orelse return error.CompileFailed;
+    defer be.freeProgram(grouped_handle);
+
+    var staged_outputs: [n_slots]backend_mod.ProgramIO = undefined;
+    var grouped_outputs: [n_slots]backend_mod.ProgramIO = undefined;
+    for (0..n_slots) |slot| {
+        const out_buf: u16 = @intCast(3 + slot * 3);
+        const base = slot * elems;
+        staged_outputs[slot] = programIo(out_buf, staged_out[base .. base + elems]);
+        grouped_outputs[slot] = programIo(out_buf, grouped_out[base .. base + elems]);
+    }
+
+    var staged_bench = ProjectionRowChainMetalBench{
+        .be = be,
+        .handle = staged_handle,
+        .out = staged_out,
+        .output_io = &staged_outputs,
+    };
+    var grouped_bench = ProjectionRowChainMetalBench{
+        .be = be,
+        .handle = grouped_handle,
+        .out = grouped_out,
+        .output_io = &grouped_outputs,
+    };
+
+    const staged_stats = measure(io, &staged_bench);
+    const grouped_stats = measure(io, &grouped_bench);
+    const approx_work = 2.0 * @as(f64, @floatFromInt(n_slots * case.m * case.n * case.k));
+
+    var staged_name_buf: [96]u8 = undefined;
+    const staged_name = try std.fmt.bufPrint(&staged_name_buf, "{s} staged", .{case.name});
+    try printStats(w, staged_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", staged_stats);
+
+    var grouped_name_buf: [96]u8 = undefined;
+    const grouped_name = try std.fmt.bufPrint(&grouped_name_buf, "{s} projection_group", .{case.name});
+    try printStats(w, grouped_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", grouped_stats);
+
+    var ratio_name_buf: [96]u8 = undefined;
+    const ratio_name = try std.fmt.bufPrint(&ratio_name_buf, "{s} projection_group", .{case.name});
+    try printRatio(w, ratio_name, staged_stats, grouped_stats, maxAbsDiff(staged_out, grouped_out));
+}
+
+fn benchProjectionRowChainMetalCase(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    w: *std.Io.Writer,
+    metal: *internal.backend_metal.MetalBackend,
+    case: ProjectionRowChainCase,
+) !void {
+    const elems = case.m * case.n;
+    const input_len = case.m * case.k;
+    const block_size: usize = 32;
+    const scale_len = (case.k * case.n + block_size - 1) / block_size;
+
+    const input = try allocF32(alloc, input_len, 501, 0.25);
+    defer alloc.free(input);
+    const q_out = try allocF32(alloc, elems, 502, 0.0);
+    defer alloc.free(q_out);
+    const residual = try allocF32(alloc, elems, 503, 0.20);
+    defer alloc.free(residual);
+    const norm_out = try allocF32(alloc, elems, 504, 0.0);
+    defer alloc.free(norm_out);
+    const scale = try allocF32(alloc, case.n, 505, 0.30);
+    defer alloc.free(scale);
+    const repeat_out = try allocF32(alloc, elems, 506, 0.0);
+    defer alloc.free(repeat_out);
+    const default_out = try allocF32(alloc, elems, 507, 0.0);
+    defer alloc.free(default_out);
+    const fused_out = try allocF32(alloc, elems, 508, 0.0);
+    defer alloc.free(fused_out);
+    const qdata = try allocI8Weights(alloc, case.k * case.n, 509);
+    defer alloc.free(qdata);
+    const qscales = try allocF32(alloc, scale_len, 510, 0.02);
+    defer alloc.free(qscales);
+    for (qscales) |*v| v.* = 0.02;
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = @intCast(case.m), .N = @intCast(case.n), .K = @intCast(case.k) } },
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 2, .n = @intCast(elems) } },
+        .{ .rmsnorm = .{ .dst = 3, .src = 2, .rows = @intCast(case.m), .cols = @intCast(case.n), .eps = 1e-5 } },
+        .{ .repeat = .{
+            .dst = 5,
+            .src = 4,
+            .n = @intCast(elems),
+            .src_ne = .{ @intCast(case.n), 1, 1, 1 },
+            .dst_ne = .{ @intCast(case.n), @intCast(case.m), 1, 1 },
+            .src_strides = .{ 1, @intCast(case.n), @intCast(case.n), @intCast(case.n) },
+            .dst_strides = .{ 1, @intCast(case.n), @intCast(elems), @intCast(elems) },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 6, .src0 = 3, .src1 = 5, .n = @intCast(elems) } },
+    };
+    const buffer_sizes = [_]usize{ input_len, elems, elems, elems, case.n, elems, elems };
+    const uploads = [_]backend_mod.ProgramIO{
+        programIo(0, input),
+        programIo(1, q_out),
+        programIo(2, residual),
+        programIo(3, norm_out),
+        programIo(4, scale),
+        programIo(5, repeat_out),
+        programIo(6, default_out),
+    };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{
+        .data = qdata,
+        .scales = qscales,
+        .rows = case.k,
+        .cols = case.n,
+        .block_size = block_size,
+    }};
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = buffer_sizes.len,
+        .buffer_sizes = &buffer_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const be = metal.backend();
+    var legacy_policy = program_mod.CommandStreamPolicy.default();
+    legacy_policy.fuse_projection_row_chain = false;
+    const default_handle = metal.compileProgramWithCommandPolicy(program, legacy_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(default_handle);
+    var fused_policy = program_mod.CommandStreamPolicy.default();
+    fused_policy.fuse_projection_row_chain = true;
+    fused_policy.fuse_projection_row_chain_qmatvec = true;
+    const fused_handle = metal.compileProgramWithCommandPolicy(program, fused_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(fused_handle);
+
+    const default_output_io = [_]backend_mod.ProgramIO{programIo(6, default_out)};
+    const fused_output_io = [_]backend_mod.ProgramIO{programIo(6, fused_out)};
+    var default_bench = ProjectionRowChainMetalBench{
+        .be = be,
+        .handle = default_handle,
+        .out = default_out,
+        .output_io = &default_output_io,
+    };
+    var fused_bench = ProjectionRowChainMetalBench{
+        .be = be,
+        .handle = fused_handle,
+        .out = fused_out,
+        .output_io = &fused_output_io,
+    };
+
+    const default_stats = measure(io, &default_bench);
+    const fused_stats = measure(io, &fused_bench);
+    const approx_work = 2.0 * @as(f64, @floatFromInt(case.m * case.n * case.k));
+
+    var default_name_buf: [96]u8 = undefined;
+    const default_name = try std.fmt.bufPrint(&default_name_buf, "{s} default", .{case.name});
+    try printStats(w, default_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", default_stats);
+
+    var fused_name_buf: [96]u8 = undefined;
+    const fused_name = try std.fmt.bufPrint(&fused_name_buf, "{s} projection_row_chain", .{case.name});
+    try printStats(w, fused_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", fused_stats);
+
+    var ratio_name_buf: [96]u8 = undefined;
+    const ratio_name = try std.fmt.bufPrint(&ratio_name_buf, "{s} projection_row_chain", .{case.name});
+    try printRatio(w, ratio_name, default_stats, fused_stats, maxAbsDiff(default_out, fused_out));
+}
+
+fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
+    try w.print("\nMetal Projection Row-Chain Command\n", .{});
+    try w.print("----------------------------------\n", .{});
+
+    if (@import("builtin").os.tag != .macos or !opts.use_metal) {
+        try w.print("  projection_row_chain metal unavailable\n", .{});
+        return;
+    }
+
+    var metal = internal.backend_metal.MetalBackend.initWithAllocator(alloc) catch |err| switch (err) {
+        error.MetalNotAvailable => {
+            try w.print("  projection_row_chain metal unavailable\n", .{});
+            return;
+        },
+        else => return err,
+    };
+    defer metal.deinit();
+
+    const projection_chain_cases = [_]ProjectionRowChainCase{
+        .{ .name = "qproj prompt m=32 n=512 k=512", .m = 32, .n = 512, .k = 512 },
+        .{ .name = "qproj full-prefill m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
+    };
+    for (projection_chain_cases) |case| try benchProjectionChainMetalCase(io, alloc, w, &metal, case);
+
+    const projection_group_cases = [_]ProjectionRowChainCase{
+        .{ .name = "qproj group full-prefill x4 m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
+    };
+    for (projection_group_cases) |case| try benchProjectionGroupMetalCase(io, alloc, w, &metal, case);
+
+    const cases = [_]ProjectionRowChainCase{
+        .{ .name = "qrow decode m=1 n=512 k=512", .m = 1, .n = 512, .k = 512 },
+        .{ .name = "qrow tiny m=2 n=128 k=128", .m = 2, .n = 128, .k = 128 },
+        .{ .name = "qrow prompt m=32 n=512 k=512", .m = 32, .n = 512, .k = 512 },
+        .{ .name = "qrow full-prefill m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
+    };
+    for (cases) |case| try benchProjectionRowChainMetalCase(io, alloc, w, &metal, case);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -567,7 +937,7 @@ pub fn main(init: std.process.Init) !void {
     try benchMatmul(io, alloc, w);
     try benchNorms(io, alloc, w);
     try benchDecodeGraph(io, alloc, w);
-    try benchGptPrefill(io, alloc, w);
+    try benchProjectionRowChainMetal(io, alloc, w);
 
     try w.print("\n", .{});
     writer.interface.flush() catch {};

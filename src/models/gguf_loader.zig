@@ -82,7 +82,7 @@ fn dequantF16(dst: []f32, src: []const u8, n_elems: usize) void {
 pub fn DirectQuantizedWeights(comptime T: type) type {
     return struct {
         weights: []quant.QuantizedWeight(T),
-        param_map: std.AutoHashMapUnmanaged(*Tensor(T), usize),
+        param_map: std.AutoHashMapUnmanaged(*Tensor(T), quant.QuantizedWeightBinding),
 
         pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
             for (self.weights) |qw| qw.deinit(alloc);
@@ -223,6 +223,9 @@ pub fn configFromGGUF(gf: *const GGUFFile) LlamaConfig {
         .d_ff = getArchU32(gf, arch, "feed_forward_length") orelse 11008,
         .max_seq_len = getArchU32(gf, arch, "context_length") orelse 2048,
         .rope_base = getArchF32(gf, arch, "rope.freq_base") orelse 10000.0,
+        .rms_norm_eps = getArchF32(gf, arch, "attention.layer_norm_rms_epsilon") orelse
+            getArchF32(gf, arch, "attention.layer_norm_epsilon") orelse 1e-6,
+        .tied_lm_head = gf.getTensorInfo("output.weight") == null,
         .vocab_size = getArchU32(gf, arch, "vocab_size") orelse blk: {
             // Fall back to counting token_embd rows if metadata missing.
             if (gf.getTensorInfo("token_embd.weight")) |ti| {
@@ -273,22 +276,66 @@ pub fn tensorNameForLlamaParam(
     tensor: *const Tensor(T),
     buf: *[128]u8,
 ) ?[]const u8 {
-    if (sameTensor(T, tensor, model.token_embed.inner)) return "token_embd.weight";
+    if (sameTensor(T, tensor, model.token_embed)) return "token_embd.weight";
     for (0..config.n_layers) |i| {
         const block = &model.blocks[i];
-        if (sameTensor(T, tensor, block.rms_norm_1.inner)) return blockTensorName(buf, i, "attn_norm.weight");
-        if (sameTensor(T, tensor, block.w_q.inner)) return blockTensorName(buf, i, "attn_q.weight");
-        if (sameTensor(T, tensor, block.w_k.inner)) return blockTensorName(buf, i, "attn_k.weight");
-        if (sameTensor(T, tensor, block.w_v.inner)) return blockTensorName(buf, i, "attn_v.weight");
-        if (sameTensor(T, tensor, block.w_o.inner)) return blockTensorName(buf, i, "attn_output.weight");
-        if (sameTensor(T, tensor, block.rms_norm_2.inner)) return blockTensorName(buf, i, "ffn_norm.weight");
-        if (sameTensor(T, tensor, block.w_gate.inner)) return blockTensorName(buf, i, "ffn_gate.weight");
-        if (sameTensor(T, tensor, block.w_up.inner)) return blockTensorName(buf, i, "ffn_up.weight");
-        if (sameTensor(T, tensor, block.w_down.inner)) return blockTensorName(buf, i, "ffn_down.weight");
+        if (sameTensor(T, tensor, block.rms_norm_1)) return blockTensorName(buf, i, "attn_norm.weight");
+        if (sameTensor(T, tensor, block.w_q)) return blockTensorName(buf, i, "attn_q.weight");
+        if (sameTensor(T, tensor, block.w_k)) return blockTensorName(buf, i, "attn_k.weight");
+        if (sameTensor(T, tensor, block.w_v)) return blockTensorName(buf, i, "attn_v.weight");
+        if (sameTensor(T, tensor, block.w_o)) return blockTensorName(buf, i, "attn_output.weight");
+        if (sameTensor(T, tensor, block.rms_norm_2)) return blockTensorName(buf, i, "ffn_norm.weight");
+        if (sameTensor(T, tensor, block.w_gate)) return blockTensorName(buf, i, "ffn_gate.weight");
+        if (sameTensor(T, tensor, block.w_up)) return blockTensorName(buf, i, "ffn_up.weight");
+        if (sameTensor(T, tensor, block.w_down)) return blockTensorName(buf, i, "ffn_down.weight");
     }
-    if (sameTensor(T, tensor, model.rms_norm_f.inner)) return "output_norm.weight";
-    if (!config.tied_lm_head and sameTensor(T, tensor, model.out_proj.inner)) return "output.weight";
+    if (sameTensor(T, tensor, model.rms_norm_f)) return "output_norm.weight";
+    if (!config.tied_lm_head and sameTensor(T, tensor, model.out_proj)) return "output.weight";
     return null;
+}
+
+fn keepDirectQuantizedWeight(
+    comptime T: type,
+    alloc: std.mem.Allocator,
+    dst: *Tensor(T),
+    gf: *const GGUFFile,
+    name: []const u8,
+    direct_weights: *std.ArrayListUnmanaged(quant.QuantizedWeight(T)),
+    direct_map: *std.AutoHashMapUnmanaged(*Tensor(T), quant.QuantizedWeightBinding),
+) !bool {
+    const info = gf.getTensorInfo(name) orelse return error.TensorNotFound;
+    if (@as(usize, @intCast(info.nElems())) != dst.data.len) return error.SizeMismatch;
+    if (!isDirectQuantizedMatmulType(info.type_)) return false;
+
+    try direct_map.ensureUnusedCapacity(alloc, 1);
+    var qw = try quantizedWeightFromInfo(T, alloc, info, gf.getTensorData(info));
+    errdefer qw.deinit(alloc);
+    const idx = direct_weights.items.len;
+    try direct_weights.append(alloc, qw);
+    direct_map.putAssumeCapacity(dst, .{ .index = idx, .layout = .native_param });
+    return true;
+}
+
+fn keepTransposedQuantizedWeight(
+    comptime T: type,
+    alloc: std.mem.Allocator,
+    dst: *Tensor(T),
+    gf: *const GGUFFile,
+    name: []const u8,
+    direct_weights: *std.ArrayListUnmanaged(quant.QuantizedWeight(T)),
+    direct_map: *std.AutoHashMapUnmanaged(*Tensor(T), quant.QuantizedWeightBinding),
+) !bool {
+    const info = gf.getTensorInfo(name) orelse return error.TensorNotFound;
+    if (@as(usize, @intCast(info.nElems())) != dst.data.len) return error.SizeMismatch;
+    if (!isDirectQuantizedMatmulType(info.type_)) return false;
+
+    try direct_map.ensureUnusedCapacity(alloc, 1);
+    var qw = try quant.QuantizedWeight(T).fromTransposedTensor(alloc, dst, quant.default_block_size);
+    errdefer qw.deinit(alloc);
+    const idx = direct_weights.items.len;
+    try direct_weights.append(alloc, qw);
+    direct_map.putAssumeCapacity(dst, .{ .index = idx, .layout = .transposed_param });
+    return true;
 }
 
 fn loadRuntimeTensor(
@@ -298,20 +345,12 @@ fn loadRuntimeTensor(
     gf: *const GGUFFile,
     name: []const u8,
     direct_weights: *std.ArrayListUnmanaged(quant.QuantizedWeight(T)),
-    direct_map: *std.AutoHashMapUnmanaged(*Tensor(T), usize),
+    direct_map: *std.AutoHashMapUnmanaged(*Tensor(T), quant.QuantizedWeightBinding),
     allow_direct_quantized: bool,
 ) !void {
     const info = gf.getTensorInfo(name) orelse return error.TensorNotFound;
     if (@as(usize, @intCast(info.nElems())) != dst.data.len) return error.SizeMismatch;
-    if (allow_direct_quantized and isDirectQuantizedMatmulType(info.type_)) {
-        try direct_map.ensureUnusedCapacity(alloc, 1);
-        var qw = try quantizedWeightFromInfo(T, alloc, info, gf.getTensorData(info));
-        errdefer qw.deinit(alloc);
-        const idx = direct_weights.items.len;
-        try direct_weights.append(alloc, qw);
-        direct_map.putAssumeCapacity(dst, idx);
-        return;
-    }
+    if (allow_direct_quantized and try keepDirectQuantizedWeight(T, alloc, dst, gf, name, direct_weights, direct_map)) return;
     try loadTensor(T, dst, gf, name);
 }
 
@@ -322,7 +361,7 @@ fn loadRuntimeTensorOptional(
     gf: *const GGUFFile,
     name: []const u8,
     direct_weights: *std.ArrayListUnmanaged(quant.QuantizedWeight(T)),
-    direct_map: *std.AutoHashMapUnmanaged(*Tensor(T), usize),
+    direct_map: *std.AutoHashMapUnmanaged(*Tensor(T), quant.QuantizedWeightBinding),
     allow_direct_quantized: bool,
 ) !void {
     loadRuntimeTensor(T, alloc, dst, gf, name, direct_weights, direct_map, allow_direct_quantized) catch |err| {
@@ -351,28 +390,34 @@ pub fn loadDirectQuantized(
         deinitQuantizedWeightList(T, alloc, direct_weights.items);
         direct_weights.deinit(alloc);
     }
-    var direct_map: std.AutoHashMapUnmanaged(*Tensor(T), usize) = .empty;
+    var direct_map: std.AutoHashMapUnmanaged(*Tensor(T), quant.QuantizedWeightBinding) = .empty;
     errdefer direct_map.deinit(alloc);
 
     var name_buf: [128]u8 = undefined;
 
-    try loadRuntimeTensorOptional(T, alloc, model.token_embed.inner, gf, "token_embd.weight", &direct_weights, &direct_map, false);
-
-    for (0..config.n_layers) |i| {
-        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].rms_norm_1.inner, gf, blockTensorName(&name_buf, i, "attn_norm.weight"), &direct_weights, &direct_map, false);
-        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_q.inner, gf, blockTensorName(&name_buf, i, "attn_q.weight"), &direct_weights, &direct_map, true);
-        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_k.inner, gf, blockTensorName(&name_buf, i, "attn_k.weight"), &direct_weights, &direct_map, true);
-        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_v.inner, gf, blockTensorName(&name_buf, i, "attn_v.weight"), &direct_weights, &direct_map, true);
-        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_o.inner, gf, blockTensorName(&name_buf, i, "attn_output.weight"), &direct_weights, &direct_map, true);
-        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].rms_norm_2.inner, gf, blockTensorName(&name_buf, i, "ffn_norm.weight"), &direct_weights, &direct_map, false);
-        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_gate.inner, gf, blockTensorName(&name_buf, i, "ffn_gate.weight"), &direct_weights, &direct_map, true);
-        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_up.inner, gf, blockTensorName(&name_buf, i, "ffn_up.weight"), &direct_weights, &direct_map, true);
-        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_down.inner, gf, blockTensorName(&name_buf, i, "ffn_down.weight"), &direct_weights, &direct_map, true);
+    try loadRuntimeTensorOptional(T, alloc, model.token_embed, gf, "token_embd.weight", &direct_weights, &direct_map, false);
+    if (config.tied_lm_head) {
+        _ = keepTransposedQuantizedWeight(T, alloc, model.token_embed, gf, "token_embd.weight", &direct_weights, &direct_map) catch |err| switch (err) {
+            error.TensorNotFound => false,
+            else => return err,
+        };
     }
 
-    try loadRuntimeTensorOptional(T, alloc, model.rms_norm_f.inner, gf, "output_norm.weight", &direct_weights, &direct_map, false);
+    for (0..config.n_layers) |i| {
+        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].rms_norm_1, gf, blockTensorName(&name_buf, i, "attn_norm.weight"), &direct_weights, &direct_map, false);
+        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_q, gf, blockTensorName(&name_buf, i, "attn_q.weight"), &direct_weights, &direct_map, true);
+        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_k, gf, blockTensorName(&name_buf, i, "attn_k.weight"), &direct_weights, &direct_map, true);
+        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_v, gf, blockTensorName(&name_buf, i, "attn_v.weight"), &direct_weights, &direct_map, true);
+        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_o, gf, blockTensorName(&name_buf, i, "attn_output.weight"), &direct_weights, &direct_map, true);
+        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].rms_norm_2, gf, blockTensorName(&name_buf, i, "ffn_norm.weight"), &direct_weights, &direct_map, false);
+        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_gate, gf, blockTensorName(&name_buf, i, "ffn_gate.weight"), &direct_weights, &direct_map, true);
+        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_up, gf, blockTensorName(&name_buf, i, "ffn_up.weight"), &direct_weights, &direct_map, true);
+        try loadRuntimeTensorOptional(T, alloc, model.blocks[i].w_down, gf, blockTensorName(&name_buf, i, "ffn_down.weight"), &direct_weights, &direct_map, true);
+    }
+
+    try loadRuntimeTensorOptional(T, alloc, model.rms_norm_f, gf, "output_norm.weight", &direct_weights, &direct_map, false);
     if (!config.tied_lm_head) {
-        try loadRuntimeTensorOptional(T, alloc, model.out_proj.inner, gf, "output.weight", &direct_weights, &direct_map, true);
+        try loadRuntimeTensorOptional(T, alloc, model.out_proj, gf, "output.weight", &direct_weights, &direct_map, true);
     }
 
     const owned_weights = try direct_weights.toOwnedSlice(alloc);
@@ -397,18 +442,18 @@ pub fn loadDirectQuantized(
 /// Load GGUF weights into a LLaMA model, dequantizing Q4_0/Q8_0/F16 to f32.
 ///
 /// Tensor name mapping (GGUF LLaMA convention):
-///   token_embd.weight          -> token_embed.inner
-///   blk.{i}.attn_norm.weight   -> blocks[i].rms_norm_1.inner
-///   blk.{i}.attn_q.weight      -> blocks[i].w_q.inner
-///   blk.{i}.attn_k.weight      -> blocks[i].w_k.inner
-///   blk.{i}.attn_v.weight      -> blocks[i].w_v.inner
-///   blk.{i}.attn_output.weight -> blocks[i].w_o.inner
-///   blk.{i}.ffn_norm.weight    -> blocks[i].rms_norm_2.inner
-///   blk.{i}.ffn_gate.weight    -> blocks[i].w_gate.inner
-///   blk.{i}.ffn_up.weight      -> blocks[i].w_up.inner
-///   blk.{i}.ffn_down.weight    -> blocks[i].w_down.inner
-///   output_norm.weight          -> rms_norm_f.inner
-///   output.weight               -> out_proj.inner
+///   token_embd.weight          -> token_embed
+///   blk.{i}.attn_norm.weight   -> blocks[i].rms_norm_1
+///   blk.{i}.attn_q.weight      -> blocks[i].w_q
+///   blk.{i}.attn_k.weight      -> blocks[i].w_k
+///   blk.{i}.attn_v.weight      -> blocks[i].w_v
+///   blk.{i}.attn_output.weight -> blocks[i].w_o
+///   blk.{i}.ffn_norm.weight    -> blocks[i].rms_norm_2
+///   blk.{i}.ffn_gate.weight    -> blocks[i].w_gate
+///   blk.{i}.ffn_up.weight      -> blocks[i].w_up
+///   blk.{i}.ffn_down.weight    -> blocks[i].w_down
+///   output_norm.weight          -> rms_norm_f
+///   output.weight               -> out_proj
 pub fn loadDequantized(
     comptime T: type,
     comptime config: LlamaConfig,
@@ -420,56 +465,56 @@ pub fn loadDequantized(
     var name_buf: [128]u8 = undefined;
 
     // Token embedding
-    loadTensor(T, model.token_embed.inner, gf, "token_embd.weight") catch |err| {
+    loadTensor(T, model.token_embed, gf, "token_embd.weight") catch |err| {
         if (err != error.TensorNotFound) return err;
     };
 
     // Transformer blocks
     for (0..config.n_layers) |i| {
         // Attention norm
-        loadTensor(T, model.blocks[i].rms_norm_1.inner, gf, blockTensorName(&name_buf, i, "attn_norm.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].rms_norm_1, gf, blockTensorName(&name_buf, i, "attn_norm.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
 
         // Q/K/V/O projections
-        loadTensor(T, model.blocks[i].w_q.inner, gf, blockTensorName(&name_buf, i, "attn_q.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_q, gf, blockTensorName(&name_buf, i, "attn_q.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
-        loadTensor(T, model.blocks[i].w_k.inner, gf, blockTensorName(&name_buf, i, "attn_k.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_k, gf, blockTensorName(&name_buf, i, "attn_k.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
-        loadTensor(T, model.blocks[i].w_v.inner, gf, blockTensorName(&name_buf, i, "attn_v.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_v, gf, blockTensorName(&name_buf, i, "attn_v.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
-        loadTensor(T, model.blocks[i].w_o.inner, gf, blockTensorName(&name_buf, i, "attn_output.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_o, gf, blockTensorName(&name_buf, i, "attn_output.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
 
         // FFN norm
-        loadTensor(T, model.blocks[i].rms_norm_2.inner, gf, blockTensorName(&name_buf, i, "ffn_norm.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].rms_norm_2, gf, blockTensorName(&name_buf, i, "ffn_norm.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
 
         // FFN gate/up/down (SwiGLU)
-        loadTensor(T, model.blocks[i].w_gate.inner, gf, blockTensorName(&name_buf, i, "ffn_gate.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_gate, gf, blockTensorName(&name_buf, i, "ffn_gate.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
-        loadTensor(T, model.blocks[i].w_up.inner, gf, blockTensorName(&name_buf, i, "ffn_up.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_up, gf, blockTensorName(&name_buf, i, "ffn_up.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
-        loadTensor(T, model.blocks[i].w_down.inner, gf, blockTensorName(&name_buf, i, "ffn_down.weight")) catch |err| {
+        loadTensor(T, model.blocks[i].w_down, gf, blockTensorName(&name_buf, i, "ffn_down.weight")) catch |err| {
             if (err != error.TensorNotFound) return err;
         };
     }
 
     // Final RMS norm
-    loadTensor(T, model.rms_norm_f.inner, gf, "output_norm.weight") catch |err| {
+    loadTensor(T, model.rms_norm_f, gf, "output_norm.weight") catch |err| {
         if (err != error.TensorNotFound) return err;
     };
 
     // Output projection
     if (!config.tied_lm_head) {
-        loadTensor(T, model.out_proj.inner, gf, "output.weight") catch |err| {
+        loadTensor(T, model.out_proj, gf, "output.weight") catch |err| {
             if (err != error.TensorNotFound) return err;
         };
     }
@@ -666,10 +711,10 @@ test "tensorNameForLlamaParam maps LLaMA parameters to GGUF names" {
     const model = try LLaMA(f32, cfg).init(arena.allocator());
 
     var buf: [128]u8 = undefined;
-    try testing.expectEqualStrings("token_embd.weight", tensorNameForLlamaParam(f32, cfg, &model, model.token_embed.inner, &buf).?);
-    try testing.expectEqualStrings("blk.0.attn_q.weight", tensorNameForLlamaParam(f32, cfg, &model, model.blocks[0].w_q.inner, &buf).?);
-    try testing.expectEqualStrings("blk.0.ffn_down.weight", tensorNameForLlamaParam(f32, cfg, &model, model.blocks[0].w_down.inner, &buf).?);
-    try testing.expectEqualStrings("output.weight", tensorNameForLlamaParam(f32, cfg, &model, model.out_proj.inner, &buf).?);
+    try testing.expectEqualStrings("token_embd.weight", tensorNameForLlamaParam(f32, cfg, &model, model.token_embed, &buf).?);
+    try testing.expectEqualStrings("blk.0.attn_q.weight", tensorNameForLlamaParam(f32, cfg, &model, model.blocks[0].w_q, &buf).?);
+    try testing.expectEqualStrings("blk.0.ffn_down.weight", tensorNameForLlamaParam(f32, cfg, &model, model.blocks[0].w_down, &buf).?);
+    try testing.expectEqualStrings("output.weight", tensorNameForLlamaParam(f32, cfg, &model, model.out_proj, &buf).?);
 }
 
 test "loadDirectQuantized maps GGUF quantized matmul tensors by parameter pointer" {
@@ -688,6 +733,69 @@ test "loadDirectQuantized maps GGUF quantized matmul tensors by parameter pointe
     defer arena.deinit();
     const model = try LLaMA(f32, cfg).init(arena.allocator());
 
+    var gf = try parseSingleBlockQ8GGUF(alloc, "output.weight", 16, 2, 0.5, &[_]i8{3});
+    defer gf.deinit();
+
+    var loaded = try loadDirectQuantized(f32, cfg, alloc, &model, &gf);
+    defer loaded.deinit(alloc);
+
+    try testing.expectEqual(@as(usize, 1), loaded.weights.len);
+    const binding = loaded.param_map.get(model.out_proj).?;
+    try testing.expectEqual(@as(usize, 0), binding.index);
+    try testing.expectEqual(quant.QuantizedWeightLayout.native_param, binding.layout);
+    try testing.expectEqual(@as(i8, 3), loaded.weights[0].data[0]);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), loaded.weights[0].scales[0], 1e-3);
+}
+
+test "loadDirectQuantized keeps tied token embedding as both f32 lookup and direct qweight" {
+    const cfg = LlamaConfig{
+        .vocab_size = 2,
+        .d_model = 16,
+        .n_heads = 1,
+        .n_kv_heads = 1,
+        .d_ff = 16,
+        .n_layers = 0,
+        .max_seq_len = 4,
+        .tied_lm_head = true,
+    };
+    const alloc = testing.allocator;
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const model = try LLaMA(f32, cfg).init(arena.allocator());
+
+    const values = [_]i8{ 3, -4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5 };
+    var gf = try parseSingleBlockQ8GGUF(alloc, "token_embd.weight", 16, 2, 0.5, &values);
+    defer gf.deinit();
+
+    var loaded = try loadDirectQuantized(f32, cfg, alloc, &model, &gf);
+    defer loaded.deinit(alloc);
+
+    try testing.expectApproxEqAbs(@as(f32, 1.5), model.token_embed.data[0], 1e-3);
+    try testing.expectApproxEqAbs(@as(f32, -2.0), model.token_embed.data[1], 1e-3);
+    try testing.expectEqual(@as(usize, 1), loaded.weights.len);
+    const binding = loaded.param_map.get(model.token_embed).?;
+    try testing.expectEqual(@as(usize, 0), binding.index);
+    try testing.expectEqual(quant.QuantizedWeightLayout.transposed_param, binding.layout);
+    try testing.expectEqual(@as(usize, 16), loaded.weights[0].rows);
+    try testing.expectEqual(@as(usize, 2), loaded.weights[0].cols);
+
+    var deq: [32]f32 = undefined;
+    loaded.weights[0].dequantizeTo(&deq);
+    try testing.expectApproxEqAbs(@as(f32, 1.5), deq[0], 0.02);
+    try testing.expectApproxEqAbs(@as(f32, 2.5), deq[1], 0.02);
+    try testing.expectApproxEqAbs(@as(f32, -2.0), deq[2], 0.02);
+}
+
+fn parseSingleBlockQ8GGUF(
+    alloc: std.mem.Allocator,
+    name: []const u8,
+    rows: u64,
+    cols: u64,
+    scale: f16,
+    values: []const i8,
+) !GGUFFile {
+    std.debug.assert(rows * cols <= 32);
     var aw: std.Io.Writer.Allocating = .init(alloc);
     defer aw.deinit();
     const writer = &aw.writer;
@@ -697,10 +805,10 @@ test "loadDirectQuantized maps GGUF quantized matmul tensors by parameter pointe
     try testWriteInt(u64, writer, 1);
     try testWriteInt(u64, writer, 0);
 
-    try writeTestString(writer, "output.weight");
+    try writeTestString(writer, name);
     try testWriteInt(u32, writer, 2);
-    try testWriteInt(u64, writer, 16);
-    try testWriteInt(u64, writer, 2);
+    try testWriteInt(u64, writer, rows);
+    try testWriteInt(u64, writer, cols);
     try testWriteInt(u32, writer, @intFromEnum(GGMLType.q8_0));
     try testWriteInt(u64, writer, 0);
 
@@ -708,26 +816,18 @@ test "loadDirectQuantized maps GGUF quantized matmul tensors by parameter pointe
     const data_offset = GGUFFile.alignUp(header_end, 32);
     for (0..data_offset - header_end) |_| try writer.writeByte(0);
 
-    const scale: f16 = 0.5;
     const scale_bytes: [2]u8 = @bitCast(scale);
     try writer.writeAll(&scale_bytes);
-    try writer.writeByte(@as(u8, @bitCast(@as(i8, 3))));
-    for (1..32) |_| try writer.writeByte(0);
+    for (0..32) |i| {
+        const value: i8 = if (i < values.len) values[i] else 0;
+        try writer.writeByte(@as(u8, @bitCast(value)));
+    }
 
     const raw_data = aw.writer.buffer[0..aw.writer.end];
     const buf = try alloc.alignedAlloc(u8, .@"32", raw_data.len);
+    errdefer alloc.free(buf);
     @memcpy(buf, raw_data);
-
-    var gf = try GGUFFile.parseBuffer(alloc, buf);
-    defer gf.deinit();
-
-    var loaded = try loadDirectQuantized(f32, cfg, alloc, &model, &gf);
-    defer loaded.deinit(alloc);
-
-    try testing.expectEqual(@as(usize, 1), loaded.weights.len);
-    try testing.expectEqual(@as(usize, 0), loaded.param_map.get(model.out_proj.inner).?);
-    try testing.expectEqual(@as(i8, 3), loaded.weights[0].data[0]);
-    try testing.expectApproxEqAbs(@as(f32, 0.5), loaded.weights[0].scales[0], 1e-3);
+    return GGUFFile.parseBuffer(alloc, buf);
 }
 
 fn writeTestString(writer: *std.Io.Writer, s: []const u8) !void {

@@ -25,25 +25,16 @@ pub const SafetensorsFile = struct {
     header_json: []const u8,
     data_start: usize,
 
-    pub fn open(alloc: Alloc, path: []const u8, io: std.Io) !SafetensorsFile {
-        const file = try std.Io.Dir.cwd().openFile(io, path, .{});
-        defer file.close(io);
-
-        const file_size = (try file.stat(io)).size;
-        if (file_size < 8) return error.InvalidFormat;
-
-        // Read entire file into aligned buffer
-        const buf = try alloc.alignedAlloc(u8, .@"4", file_size);
+    pub fn fromOwnedBuffer(alloc: Alloc, buf: []align(4) u8) !SafetensorsFile {
         errdefer alloc.free(buf);
-        const bytes_read = try file.readPositionalAll(io, buf, 0);
-        if (bytes_read != file_size) return error.UnexpectedEof;
+        if (buf.len < 8) return error.InvalidFormat;
 
-        // Parse header length
         const header_len = std.mem.readInt(u64, buf[0..8], .little);
-        if (8 + header_len > file_size) return error.InvalidFormat;
+        const header_len_usize: usize = std.math.cast(usize, header_len) orelse return error.InvalidFormat;
+        if (8 + header_len_usize > buf.len) return error.InvalidFormat;
 
-        const header_json = buf[8..][0..header_len];
-        const data_start = 8 + header_len;
+        const header_json = buf[8..][0..header_len_usize];
+        const data_start = 8 + header_len_usize;
 
         return .{
             .alloc = alloc,
@@ -51,6 +42,32 @@ pub const SafetensorsFile = struct {
             .header_json = header_json,
             .data_start = data_start,
         };
+    }
+
+    pub fn fromBytes(alloc: Alloc, bytes: []const u8) !SafetensorsFile {
+        const buf = try alloc.alignedAlloc(u8, .@"4", bytes.len);
+        errdefer alloc.free(buf);
+        @memcpy(buf, bytes);
+        return fromOwnedBuffer(alloc, buf);
+    }
+
+    pub fn open(alloc: Alloc, path: []const u8, io: std.Io) !SafetensorsFile {
+        const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+        defer file.close(io);
+
+        const stat_size = (try file.stat(io)).size;
+        const file_size: usize = std.math.cast(usize, stat_size) orelse return error.InvalidFormat;
+        if (file_size < 8) return error.InvalidFormat;
+
+        // Read entire file into aligned buffer
+        const buf = try alloc.alignedAlloc(u8, .@"4", file_size);
+        var buf_owned = true;
+        errdefer if (buf_owned) alloc.free(buf);
+        const bytes_read = try file.readPositionalAll(io, buf, 0);
+        if (bytes_read != file_size) return error.UnexpectedEof;
+
+        buf_owned = false;
+        return fromOwnedBuffer(alloc, buf);
     }
 
     pub fn deinit(self: *SafetensorsFile) void {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const Alloc = std.mem.Allocator;
 
@@ -6,7 +7,33 @@ const Alloc = std.mem.Allocator;
 ///
 /// The pool owns background workers and lets the caller participate in each
 /// job, so `workerCount() + 1` is the effective parallel width.
-pub const ThreadPool = struct {
+pub const ThreadPool = if (builtin.single_threaded) struct {
+    pub fn init(self: *ThreadPool, _: Alloc, _: usize) !void {
+        self.* = .{};
+    }
+
+    pub fn deinit(self: *ThreadPool) void {
+        self.* = .{};
+    }
+
+    pub fn workerCount(_: *const ThreadPool) usize {
+        return 0;
+    }
+
+    pub fn threadCount(_: *const ThreadPool) usize {
+        return 1;
+    }
+
+    pub fn parallelFor(
+        _: *ThreadPool,
+        comptime Context: type,
+        ctx: *Context,
+        count: usize,
+        comptime func: fn (*Context, usize) void,
+    ) void {
+        for (0..count) |i| func(ctx, i);
+    }
+} else struct {
     const JobFn = *const fn (*anyopaque, usize) void;
 
     alloc: Alloc = undefined,
@@ -177,6 +204,8 @@ fn io() std.Io {
 }
 
 test "thread pool runs each job once" {
+    if (builtin.single_threaded) return;
+
     var pool: ThreadPool = .{};
     try pool.init(std.testing.allocator, 2);
     defer pool.deinit();

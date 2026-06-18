@@ -1,0 +1,322 @@
+"use strict";
+
+import {
+  dlopen,
+  FFIType,
+} from "./bun_ffi_intrinsics.js";
+
+export type BunNativeHandle = number;
+
+export type BunNativeSymbols = Readonly<{
+  zgml_abi_struct_size(kind: number): bigint;
+  zgml_get_runtime_info(outInfo: BigUint64Array): number;
+  zgml_status_name(code: number): string;
+  zgml_model_create(desc: Uint8Array | BigUint64Array | DataView, outModel: BigUint64Array): number;
+  zgml_model_load_path(desc: BigUint64Array, outModel: BigUint64Array): number;
+  zgml_model_load_safetensors_data(desc: BigUint64Array, outModel: BigUint64Array): number;
+  zgml_model_probe_path(desc: BigUint64Array, outInspection: BigUint64Array): number;
+  zgml_model_probe_safetensors_data(desc: BigUint64Array, outInspection: BigUint64Array): number;
+  zgml_model_probe_safetensors_header(desc: BigUint64Array, outInspection: BigUint64Array): number;
+  zgml_supported_checkpoint_count(): bigint;
+  zgml_supported_checkpoint_inspect(index: bigint, outInspection: BigUint64Array): number;
+  zgml_model_inspect(model: BunNativeHandle, outInspection: BigUint64Array): number;
+  zgml_program_compile(model: BunNativeHandle, desc: BunNativeHandle | BigUint64Array, outProgram: BigUint64Array): number;
+  zgml_module_program_compile(moduleDesc: BigUint64Array, compileDesc: BunNativeHandle | BigUint64Array, outProgram: BigUint64Array): number;
+  zgml_program_get_requirements(program: BunNativeHandle, outRequirements: BigUint64Array): number;
+  zgml_program_check_model_compatibility(program: BunNativeHandle, model: BunNativeHandle, outCompatibility: BigUint64Array): number;
+  zgml_program_create_buffer(program: BunNativeHandle, kind: number, outBuffer: BigUint64Array): number;
+  zgml_program_create_device_buffer(program: BunNativeHandle, kind: number, placement: number, outBuffer: BigUint64Array): number;
+  zgml_program_get_device_handle(program: BunNativeHandle, placement: number, outHandle: BigUint64Array): number;
+  zgml_program_import_device_buffer(program: BunNativeHandle, kind: number, desc: BigUint64Array, outBuffer: BigUint64Array): number;
+  zgml_program_create_output_buffer(program: BunNativeHandle, outBuffer: BigUint64Array): number;
+  zgml_program_inspect(program: BunNativeHandle, outInspection: BigUint64Array): number;
+  zgml_llama_program_inspect(program: BunNativeHandle, outInspection: BigUint64Array): number;
+  zgml_llama_program_get_kv_cache_requirements(program: BunNativeHandle, outRequirements: BigUint64Array): number;
+  zgml_program_runtime_profile(program: BunNativeHandle, outProfile: BigUint64Array): number;
+  zgml_program_reset_runtime_profile(program: BunNativeHandle): number;
+  zgml_buffer_create(desc: BigUint64Array, outBuffer: BigUint64Array): number;
+  zgml_buffer_wrap(data: BunNativeHandle, byteLen: bigint, outBuffer: BigUint64Array): number;
+  zgml_buffer_wrap_resource(desc: BigUint64Array, outBuffer: BigUint64Array): number;
+  zgml_buffer_size(buffer: BunNativeHandle): bigint;
+  zgml_buffer_inspect(buffer: BunNativeHandle, outInspection: BigUint64Array): number;
+  zgml_buffer_write(buffer: BunNativeHandle, byteOffset: bigint, src: Float32Array | Uint8Array, byteLen: bigint): number;
+  zgml_buffer_read(buffer: BunNativeHandle, byteOffset: bigint, dst: Float32Array | Uint8Array, byteLen: bigint): number;
+  zgml_buffer_free(buffer: BunNativeHandle): void;
+  zgml_session_bind(program: BunNativeHandle, desc: BunNativeHandle | BigUint64Array, outSession: BigUint64Array): number;
+  zgml_session_bind_model(program: BunNativeHandle, model: BunNativeHandle, desc: BunNativeHandle | BigUint64Array, outSession: BigUint64Array): number;
+  zgml_session_bind_model_buffers(program: BunNativeHandle, model: BunNativeHandle, desc: BigUint64Array, outSession: BigUint64Array): number;
+  zgml_session_bind_buffers(program: BunNativeHandle, desc: BigUint64Array, outSession: BigUint64Array): number;
+  zgml_llama_session_bind_model_buffers(program: BunNativeHandle, model: BunNativeHandle, desc: BunNativeHandle | BigUint64Array, outSession: BigUint64Array): number;
+  zgml_llama_session_bind_buffers(program: BunNativeHandle, desc: BunNativeHandle | BigUint64Array, outSession: BigUint64Array): number;
+  zgml_session_upload_persistent(session: BunNativeHandle): number;
+  zgml_session_upload_persistent_range(session: BunNativeHandle, first: bigint, len: bigint): number;
+  zgml_session_step(session: BunNativeHandle, desc: BunNativeHandle | BigUint64Array, result: BigUint64Array): number;
+  zgml_session_step_no_output(session: BunNativeHandle, desc: BunNativeHandle | BigUint64Array, result: BigUint64Array): number;
+  zgml_session_step_token(session: BunNativeHandle, desc: BigUint64Array, result: BigUint64Array): number;
+  zgml_session_advance_token(session: BunNativeHandle, desc: BigUint64Array): number;
+  zgml_session_execute_tokens(session: BunNativeHandle, desc: BigUint64Array, result: BigUint64Array): number;
+  zgml_session_argmax_token(session: BunNativeHandle, desc: BunNativeHandle | BigUint64Array, result: BigUint64Array): number;
+  zgml_session_execute_argmax_tokens(session: BunNativeHandle, desc: BigUint64Array, result: BigUint64Array): number;
+  zgml_session_generate_argmax_tokens(session: BunNativeHandle, desc: BigUint64Array, result: BigUint64Array): number;
+  zgml_session_sample_token(session: BunNativeHandle, desc: BigUint64Array, result: BigUint64Array): number;
+  zgml_session_execute_sample_tokens(session: BunNativeHandle, desc: BigUint64Array, result: BigUint64Array): number;
+  zgml_session_generate_sample_tokens(session: BunNativeHandle, desc: BigUint64Array, result: BigUint64Array): number;
+  zgml_session_position(session: BunNativeHandle, outPosition: BigUint64Array): number;
+  zgml_session_inspect(session: BunNativeHandle, outInspection: BigUint64Array): number;
+  zgml_session_reset(session: BunNativeHandle): number;
+  zgml_session_runtime_profile(session: BunNativeHandle, outProfile: BigUint64Array): number;
+  zgml_session_reset_runtime_profile(session: BunNativeHandle): number;
+  zgml_session_free(session: BunNativeHandle): void;
+  zgml_program_free(program: BunNativeHandle): void;
+  zgml_model_free(model: BunNativeHandle): void;
+}>;
+
+export function bindBunSymbols(libPath: string): BunNativeSymbols {
+  const dylib = dlopen<BunNativeSymbols>(libPath, {
+    zgml_abi_struct_size: {
+      args: [FFIType.u32],
+      returns: FFIType.u64,
+    },
+    zgml_get_runtime_info: {
+      args: [FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_status_name: {
+      args: [FFIType.i32],
+      returns: FFIType.cstring,
+    },
+    zgml_model_create: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_model_load_path: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_model_load_safetensors_data: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_model_probe_path: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_model_probe_safetensors_data: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_model_probe_safetensors_header: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_supported_checkpoint_count: {
+      args: [],
+      returns: FFIType.u64,
+    },
+    zgml_supported_checkpoint_inspect: {
+      args: [FFIType.u64, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_model_inspect: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_program_compile: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_module_program_compile: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_program_get_requirements: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_program_check_model_compatibility: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_program_create_output_buffer: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_program_create_buffer: {
+      args: [FFIType.ptr, FFIType.u32, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_program_create_device_buffer: {
+      args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_program_get_device_handle: {
+      args: [FFIType.ptr, FFIType.u32, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_program_import_device_buffer: {
+      args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_program_inspect: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_llama_program_inspect: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_llama_program_get_kv_cache_requirements: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_program_runtime_profile: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_program_reset_runtime_profile: {
+      args: [FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_buffer_create: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_buffer_wrap: {
+      args: [FFIType.ptr, FFIType.u64, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_buffer_wrap_resource: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_buffer_size: {
+      args: [FFIType.ptr],
+      returns: FFIType.u64,
+    },
+    zgml_buffer_inspect: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_buffer_write: {
+      args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
+      returns: FFIType.i32,
+    },
+    zgml_buffer_read: {
+      args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
+      returns: FFIType.i32,
+    },
+    zgml_buffer_free: {
+      args: [FFIType.ptr],
+      returns: "void",
+    },
+    zgml_session_bind: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_bind_model: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_bind_model_buffers: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_bind_buffers: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_llama_session_bind_model_buffers: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_llama_session_bind_buffers: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_upload_persistent: {
+      args: [FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_upload_persistent_range: {
+      args: [FFIType.ptr, FFIType.u64, FFIType.u64],
+      returns: FFIType.i32,
+    },
+    zgml_session_step: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_step_no_output: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_step_token: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_advance_token: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_execute_tokens: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_argmax_token: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_execute_argmax_tokens: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_generate_argmax_tokens: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_sample_token: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_execute_sample_tokens: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_generate_sample_tokens: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_position: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_inspect: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_reset: {
+      args: [FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_runtime_profile: {
+      args: [FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_reset_runtime_profile: {
+      args: [FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_session_free: {
+      args: [FFIType.ptr],
+      returns: "void",
+    },
+    zgml_program_free: {
+      args: [FFIType.ptr],
+      returns: "void",
+    },
+    zgml_model_free: {
+      args: [FFIType.ptr],
+      returns: "void",
+    },
+  });
+  return dylib.symbols;
+}

@@ -61,10 +61,13 @@ pub const Op = enum {
     // -- Matrix multiplication --
     matmul,
 
+    // Appended to preserve existing op enum values consumed by backend shaders.
+    sqr,
+
     /// True if this op is elementwise (shape-preserving) and can participate in fusion.
     pub fn isFusible(self: Self) bool {
         return switch (self) {
-            .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu => true,
+            .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu, .sqr => true,
             else => false,
         };
     }
@@ -77,7 +80,7 @@ pub const Op = enum {
         };
     }
 
-    /// Human-readable symbol for this operation, used in debug output and GraphViz export.
+    /// Human-readable symbol for this operation, used in debug output.
     pub fn symbol(self: Self) []const u8 {
         return switch (self) {
             .none => "none",
@@ -114,6 +117,7 @@ pub const Op = enum {
             .rmsnorm => "rmsnorm(x)",
             .attention => "attn(Q,K,V)",
             .matmul => "X*Y",
+            .sqr => "x²",
         };
     }
 };

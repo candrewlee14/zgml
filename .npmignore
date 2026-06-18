@@ -1,0 +1,33 @@
+# Local/editor state.
+.vscode/
+.superset/
+.gitconfig
+.gitattributes
+.DS_Store
+
+# Local caches and build outputs.
+zig-cache/
+.zig-cache/
+zig-out/
+zig-pkg/
+node_modules/
+release/
+debug/
+build/
+build-*/
+docgen_tmp/
+*.o
+
+# Local model data and benchmark output.
+data/
+bench-results/
+notebooks/
+
+# Ad hoc root-level test binaries/scratch files.
+test_mach
+test_mach2
+test_nano
+test_timer
+test_timer2
+test_timer3
+test_timer4

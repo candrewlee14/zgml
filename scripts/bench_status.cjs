@@ -1,0 +1,680 @@
+"use strict";
+
+const { spawnSync } = require("node:child_process");
+const { existsSync, readFileSync, readdirSync } = require("node:fs");
+const { join } = require("node:path");
+
+const trendGateEnabled = process.argv.includes("--trend-gate");
+const substrateGateEnabled = process.argv.includes("--substrate-gate");
+const trendGateFloors = {
+  prompt: 0.80,
+  decode: 0.90,
+};
+const baselineGateFloor = 1.00;
+const parityTarget = 0.90;
+
+const baselineArtifacts = [
+  "benchmarks/baselines/smollm-m5pro-p128-g200-r3.json",
+  "benchmarks/baselines/smollm-stencil-p128.json",
+];
+
+function latestFullRunArtifact() {
+  const artifacts = fullRunArtifacts();
+  return artifacts.at(-1) ?? null;
+}
+
+function isAcceptedFullRunArtifact(path) {
+  try {
+    const data = JSON.parse(readFileSync(path, "utf8"));
+    if (!(data?.benchmark === "smollm-135m" &&
+      data?.lanes &&
+      data?.outputs &&
+      data?.summary &&
+      data?.gates &&
+      data.gates.required_pass === true &&
+      !data.gates.preflight)) {
+      return false;
+    }
+    const baseline = baselineEvidence(path);
+    return !!baseline &&
+      baseline.rows.every((row) => row.ok) &&
+      baseline.structuralRows.every((row) => row.ok);
+  } catch {
+    return false;
+  }
+}
+
+function fullRunArtifacts() {
+  const dir = "bench-results";
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => /^smollm-\d{8}T\d{6}Z-p128-g200-r3\.json$/.test(name))
+    .sort()
+    .map((name) => join(dir, name))
+    .filter(isAcceptedFullRunArtifact);
+}
+
+function quarantinedFullRunArtifacts() {
+  const dir = join("bench-results", "failed");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => /^smollm-\d{8}T\d{6}Z-p128-g200-r3\.json$/.test(name))
+    .sort()
+    .map((name) => join(dir, name));
+}
+
+const trendMetrics = [
+  ["F16 pp", "prompt", "zgml_f16", "metal scheduled prefill", "prompt_tok_s"],
+  ["F16 tg", "decode", "zgml_f16", "metal region decode", "decode_tok_s"],
+  ["Q8 pp", "prompt", "zgml_q8_0", "metal scheduled prefill", "prompt_tok_s"],
+  ["Q8 tg", "decode", "zgml_q8_0", "metal region decode", "decode_tok_s"],
+];
+
+function metricValue(data, lane, row, key) {
+  const value = data?.lanes?.[lane]?.[row]?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function compactName(path) {
+  return path.split("/").at(-1)?.replace(/^smollm-/, "").replace(/\.json$/, "") ?? path;
+}
+
+function formatPct(value) {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatMultiplier(value) {
+  return `${value.toFixed(1)}x`;
+}
+
+function trendEvidence(latestPath) {
+  const runs = fullRunArtifacts();
+  if (!latestPath || runs.length === 0) return null;
+  let latestData;
+  try {
+    latestData = JSON.parse(readFileSync(latestPath, "utf8"));
+  } catch {
+    return null;
+  }
+  const rows = [];
+  for (const [label, phase, lane, row, key] of trendMetrics) {
+    const latestValue = metricValue(latestData, lane, row, key);
+    let best = null;
+    for (const path of runs) {
+      const data = JSON.parse(readFileSync(path, "utf8"));
+      const value = metricValue(data, lane, row, key);
+      if (value === null) continue;
+      if (best === null || value > best.value) best = { path, value };
+    }
+    if (latestValue === null || best === null) {
+      rows.push({ label, phase, ok: false, reason: "missing" });
+      continue;
+    }
+    rows.push({
+      label,
+      phase,
+      latest: latestValue,
+      best: best.value,
+      ratio: latestValue / best.value,
+      bestPath: best.path,
+      floor: trendGateFloors[phase],
+      ok: latestValue / best.value >= trendGateFloors[phase],
+    });
+  }
+  return { latestPath, runs, rows };
+}
+
+function trendStatusLine(latestPath) {
+  const trend = trendEvidence(latestPath);
+  if (!trend) return null;
+  const parts = trend.rows.map((row) => {
+    if (row.reason) return `${row.label}=n/a`;
+    return `${row.label}=${row.latest.toFixed(2)}/${row.best.toFixed(2)} ${formatPct(row.ratio)} best=${compactName(row.bestPath)}`;
+  });
+  return `bench trend: ${trend.runs.length} full p128/g200/r3 runs; latest=${compactName(latestPath)}; ${parts.join("; ")}`;
+}
+
+function trendGateLine(latestPath) {
+  const trend = trendEvidence(latestPath);
+  if (!trend) return null;
+  const failed = trend.rows.filter((row) => !row.ok);
+  const parts = trend.rows.map((row) => {
+    if (row.reason) return `${row.label}=missing`;
+    return `${row.label}=${formatPct(row.ratio)} floor=${formatPct(row.floor)}`;
+  });
+  return {
+    passed: failed.length === 0,
+    line: `bench trend gate: ${failed.length === 0 ? "pass" : "fail"}; latest=${compactName(latestPath)}; ${parts.join("; ")}`,
+  };
+}
+
+function readJson(path) {
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function matchesExpected(value, expected) {
+  return Array.isArray(expected) ? expected.includes(value) : value === expected;
+}
+
+function selectedLaneRows(data) {
+  const gate = data?.summary?.gate_zgml;
+  return [
+    ["f16", "prompt", gate?.f16?.prompt],
+    ["f16", "decode", gate?.f16?.decode],
+    ["q8_0", "prompt", gate?.q8_0?.prompt],
+    ["q8_0", "decode", gate?.q8_0?.decode],
+  ];
+}
+
+const baselineComparisonMetrics = [
+  ["F16 pp", "f16", "prompt"],
+  ["F16 tg", "f16", "decode"],
+  ["Q8 pp", "q8_0", "prompt"],
+  ["Q8 tg", "q8_0", "decode"],
+];
+
+const substrateLaneShape = {
+  "f16/prompt": { dispatches: 242, commands: 242, cachedCommandPlansPerCall: 31 },
+  "f16/decode": { dispatches: 212, commands: 212, cachedCommandPlansPerCall: 31 },
+  "q8_0/prompt": { dispatches: 242, commands: [181, 241], cachedCommandPlansPerCall: 30 },
+  "q8_0/decode": { dispatches: 212, commands: 211, cachedCommandPlansPerCall: 30 },
+};
+
+const substrateParityFloors = {
+  "f16/prompt": 0.32,
+  "f16/decode": 0.31,
+  "q8_0/prompt": 0.27,
+  "q8_0/decode": 0.32,
+};
+
+const substratePatchShape = {
+  holes: 450,
+  cacheWritePosHoles: 180,
+  attentionSeqKvHoles: 270,
+};
+
+const substrateRuntimePatchStencilHashes = {
+  prompt: "17558208047327870709",
+  decode: "14405191909906507341",
+};
+
+function rawRuntimePatchStencilHash(path, fmt, phase) {
+  let source;
+  try {
+    source = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  const gateIndex = source.indexOf('"gate_zgml"');
+  if (gateIndex === -1) return null;
+  const fmtIndex = source.indexOf(`"${fmt}"`, gateIndex);
+  if (fmtIndex === -1) return null;
+  const phaseIndex = source.indexOf(`"${phase}"`, fmtIndex);
+  if (phaseIndex === -1) return null;
+  const nextPhase = phase === "prompt" ? source.indexOf('"decode"', phaseIndex + 1) : -1;
+  const searchEnd = nextPhase === -1 ? source.indexOf(`"${fmt === "f16" ? "q8_0" : "outputs"}"`, phaseIndex + 1) : nextPhase;
+  const slice = source.slice(phaseIndex, searchEnd === -1 ? undefined : searchEnd);
+  const match = slice.match(/"runtime_patch_stencil_hash"\s*:\s*([0-9]+)/);
+  return match?.[1] ?? null;
+}
+
+function laneMetricFromSummary(data, fmt, phase, key) {
+  const row = data?.summary?.gate_zgml?.[fmt]?.[phase];
+  const value = row?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function parityRowFor(data, fmt, phase) {
+  const target = fmt === "f16" ? "llama_cpp_metal_f16" : "llama_cpp_metal_q8_0";
+  const rows = data?.gates?.parity?.rows;
+  if (!Array.isArray(rows)) return null;
+  return rows.find((row) => row?.target === target && row?.phase === phase) ?? null;
+}
+
+function commandBreakdown(row, limit = 3) {
+  if (!row || typeof row !== "object") return "missing";
+  const entries = Object.entries(row)
+    .filter(([key, value]) =>
+      key.startsWith("program_command_dispatches_") &&
+      key.endsWith("_per_call") &&
+      typeof value === "number" &&
+      Number.isFinite(value) &&
+      value > 0
+    )
+    .map(([key, value]) => [
+      key
+        .replace(/^program_command_dispatches_/, "")
+        .replace(/_per_call$/, ""),
+      value,
+    ])
+    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
+    .slice(0, limit);
+  return entries.length ? entries.map(([name, count]) => `${name}:${count}`).join(",") : "none";
+}
+
+function commandPressure(row, limit = 3) {
+  if (!row || typeof row !== "object") return "missing";
+  const commands = row.commands_per_call;
+  if (!(typeof commands === "number" && Number.isFinite(commands) && commands > 0)) return "missing";
+  const topTotal = Object.entries(row)
+    .filter(([key, value]) =>
+      key.startsWith("program_command_dispatches_") &&
+      key.endsWith("_per_call") &&
+      typeof value === "number" &&
+      Number.isFinite(value) &&
+      value > 0
+    )
+    .map(([, value]) => value)
+    .sort((a, b) => b - a)
+    .slice(0, limit)
+    .reduce((sum, value) => sum + value, 0);
+  return `${topTotal}/${commands} ${formatPct(topTotal / commands)}`;
+}
+
+function projectionChainSidecars(row) {
+  if (!row || typeof row !== "object") return "missing";
+  const entries = [
+    ["qmatvec_elementwise", row.projection_chain_qmatvec_elementwise_per_call],
+    ["qmatmul_elementwise", row.projection_chain_qmatmul_elementwise_per_call],
+    ["projection_row_chain", row.program_command_encoded_projection_row_chain_per_call],
+  ].filter(([, value]) => typeof value === "number" && Number.isFinite(value) && value > 0);
+  return entries.length ? entries.map(([name, count]) => `${name}:${count}`).join(",") : "none";
+}
+
+function projectionChainShape(row) {
+  if (!row || typeof row !== "object") return "missing";
+  const total = row.program_command_shape_projection_chains;
+  const split = projectionChainSplit(row);
+  const parts = [];
+  if (split) parts.push(`dense:${split.dense}`, `quantized:${split.quantized}`);
+  if (typeof total === "number" && Number.isFinite(total)) parts.push(`total:${total}`);
+  return parts.length ? parts.join(",") : "missing";
+}
+
+function projectionChainSplit(row) {
+  if (!row || typeof row !== "object") return null;
+  const dense = row.program_command_shape_dense_projection_chains;
+  const quantized = row.program_command_shape_quantized_projection_chains;
+  if (Number.isInteger(dense) || Number.isInteger(quantized)) {
+    return {
+      dense: Number.isInteger(dense) ? dense : 0,
+      quantized: Number.isInteger(quantized) ? quantized : 0,
+    };
+  }
+  const encodedDense = row.program_command_encoded_dense_projection_chain_per_call;
+  const encodedQuantized = row.program_command_encoded_projection_chain_per_call;
+  if (Number.isInteger(encodedDense) || Number.isInteger(encodedQuantized)) {
+    return {
+      dense: Number.isInteger(encodedDense) ? encodedDense : 0,
+      quantized: Number.isInteger(encodedQuantized) ? encodedQuantized : 0,
+    };
+  }
+  return null;
+}
+
+function pressureReductionTarget(row) {
+  if (!row || typeof row !== "object") return "missing";
+  const targets = Object.entries(row)
+    .filter(([key, value]) =>
+      key.startsWith("program_command_dispatches_") &&
+      key.endsWith("_per_call") &&
+      typeof value === "number" &&
+      Number.isFinite(value) &&
+      value > 0
+    )
+    .map(([key, value]) => [
+      key
+        .replace(/^program_command_dispatches_/, "")
+        .replace(/_per_call$/, ""),
+      value,
+    ])
+    .filter(([name]) => name.includes("projection_chain") || name.includes("projection_row_chain"))
+    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
+  return targets.length ? `${targets[0][0]}:${targets[0][1]}` : "none";
+}
+
+function frontierNextTarget(weakest) {
+  if (!weakest) return "none";
+  if (weakest.label === "q8_0/prompt" && weakest.pressureTarget === "projection_chain:60") {
+    return "semantic_sublayer_or_quantized_projection_chain";
+  }
+  if (weakest.label === "q8_0/prompt" && weakest.pressureTarget.startsWith("projection_row_chain:")) {
+    return "tiled_qmatmul_row_chain_throughput";
+  }
+  if (weakest.label === "f16/decode" && weakest.pressureTarget === "dense_projection_chain:60") {
+    return "semantic_sublayer_or_dense_projection_chain";
+  }
+  return "inspect_command_pressure";
+}
+
+function rejectedFrontierShortcut(weakest) {
+  if (!weakest) return "none";
+  if (weakest.label === "q8_0/prompt" && weakest.pressureTarget === "projection_chain:60") {
+    return "projection_row_chain_default_off_needs_model_speedup";
+  }
+  if (weakest.label === "q8_0/prompt" && weakest.pressureTarget.startsWith("projection_row_chain:")) {
+    return "default_semantic_row_chain_needs_throughput_kernel";
+  }
+  return "none";
+}
+
+function baselineEvidence(latestPath) {
+  if (!latestPath) return null;
+  let baselineData;
+  let latestData;
+  try {
+    baselineData = readJson(baselineArtifacts[0]);
+    latestData = readJson(latestPath);
+  } catch {
+    return null;
+  }
+  const rows = baselineComparisonMetrics.map(([label, fmt, phase]) => {
+    const latestValue = laneMetricFromSummary(latestData, fmt, phase, "tok_s");
+    const baselineValue = laneMetricFromSummary(baselineData, fmt, phase, "tok_s");
+    if (latestValue === null || baselineValue === null || baselineValue === 0) {
+      return { label, fmt, phase, ok: false, reason: "missing" };
+    }
+    return {
+      label,
+      fmt,
+      phase,
+      latest: latestValue,
+      baseline: baselineValue,
+      ratio: latestValue / baselineValue,
+      floor: baselineGateFloor,
+      ok: latestValue / baselineValue >= baselineGateFloor,
+    };
+  });
+  const structuralRows = baselineComparisonMetrics.map(([label, fmt, phase]) => {
+    const latestDispatch = laneMetricFromSummary(latestData, fmt, phase, "dispatches_per_call");
+    const baselineDispatch = laneMetricFromSummary(baselineData, fmt, phase, "dispatches_per_call");
+    const latestFallback = laneMetricFromSummary(latestData, fmt, phase, "fallback_ops");
+    const baselineFallback = laneMetricFromSummary(baselineData, fmt, phase, "fallback_ops");
+    if (latestDispatch === null || baselineDispatch === null || latestFallback === null || baselineFallback === null) {
+      return { label, fmt, phase, ok: false, reason: "missing" };
+    }
+    return {
+      label,
+      fmt,
+      phase,
+      latestDispatch,
+      baselineDispatch,
+      latestFallback,
+      baselineFallback,
+      ok: latestDispatch <= baselineDispatch && latestFallback === 0 && baselineFallback === 0,
+    };
+  });
+  return { latestPath, baselinePath: baselineArtifacts[0], rows, structuralRows };
+}
+
+function baselineDeltaLine(latestPath) {
+  const evidence = baselineEvidence(latestPath);
+  if (!evidence) return null;
+  const parts = baselineComparisonMetrics.map(([label, fmt, phase]) => {
+    const row = evidence.rows.find((candidate) => candidate.fmt === fmt && candidate.phase === phase);
+    if (!row || row.reason) return `${label}=n/a`;
+    return `${label}=${row.latest.toFixed(2)}/${row.baseline.toFixed(2)} ${formatPct(row.ratio)}`;
+  });
+  const structuralParts = baselineComparisonMetrics.map(([label, fmt, phase]) => {
+    const row = evidence.structuralRows.find((candidate) => candidate.fmt === fmt && candidate.phase === phase);
+    if (!row || row.reason) return `${label}=n/a`;
+    return `${label}=dispatch ${row.latestDispatch}/${row.baselineDispatch} fallback ${row.latestFallback}/${row.baselineFallback}`;
+  });
+  return `bench baseline delta: latest=${compactName(evidence.latestPath)}; baseline=${compactName(evidence.baselinePath)}; ${parts.join("; ")}; ${structuralParts.join("; ")}`;
+}
+
+function referenceTokS(data, fmt, phase) {
+  const key = fmt === "f16" ? "parity_gate_vs_llama_cpp_metal_f16" : "parity_gate_vs_llama_cpp_metal_q8_0";
+  const value = data?.summary?.[key]?.[phase]?.llama_tok_s;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function failedReferenceDriftLine(failedPath) {
+  if (!failedPath) return null;
+  let baselineData;
+  let failedData;
+  try {
+    baselineData = readJson(baselineArtifacts[0]);
+    failedData = readJson(failedPath);
+  } catch {
+    return null;
+  }
+  const rows = baselineComparisonMetrics.map(([label, fmt, phase]) => {
+    const baseline = referenceTokS(baselineData, fmt, phase);
+    const failed = referenceTokS(failedData, fmt, phase);
+    if (baseline === null || failed === null || baseline === 0) return { label, reason: "missing" };
+    return {
+      label,
+      baseline,
+      failed,
+      ratio: failed / baseline,
+      ok: failed / baseline >= baselineGateFloor,
+    };
+  });
+  const slow = rows.filter((row) => row.reason || !row.ok);
+  if (slow.length === 0) {
+    return `bench-results: latest_failed_reference=ok latest_failed=${compactName(failedPath)}`;
+  }
+  const parts = slow.map((row) => {
+    if (row.reason) return `${row.label}=missing`;
+    return `${row.label}=${row.failed.toFixed(2)}/${row.baseline.toFixed(2)} ${formatPct(row.ratio)} floor=${formatPct(baselineGateFloor)}`;
+  });
+  return `bench-results: latest_failed_reference_drift=${compactName(failedPath)}; ${parts.join("; ")}`;
+}
+
+function failedArtifactLaneLine(failedPath) {
+  if (!failedPath) return null;
+  let failedData;
+  try {
+    failedData = readJson(failedPath);
+  } catch {
+    return null;
+  }
+  const rows = selectedLaneRows(failedData);
+  const parts = rows.map(([fmt, phase, row]) => {
+    const label = `${fmt}/${phase}`;
+    if (!row || typeof row !== "object") return `${label}=missing`;
+    const parityRow = parityRowFor(failedData, fmt, phase);
+    const parity = parityRow && typeof parityRow.parity === "number" && Number.isFinite(parityRow.parity)
+      ? ` ggml=${formatPct(parityRow.parity)}`
+      : " ggml=missing";
+    return `${label}=${Number(row.tok_s).toFixed(2)} tok/s${parity} dispatch=${row.dispatches_per_call} commands=${row.commands_per_call} fallback=${row.fallback_ops}`;
+  });
+  return `bench-results: latest_failed_zgml=${compactName(failedPath)}; ${parts.join("; ")}`;
+}
+
+function failedAcceptedDeltaLine(failedPath, acceptedPath) {
+  if (!failedPath || !acceptedPath) return null;
+  let failedData;
+  let acceptedData;
+  try {
+    failedData = readJson(failedPath);
+    acceptedData = readJson(acceptedPath);
+  } catch {
+    return null;
+  }
+  const parts = baselineComparisonMetrics.map(([label, fmt, phase]) => {
+    const failed = laneMetricFromSummary(failedData, fmt, phase, "tok_s");
+    const accepted = laneMetricFromSummary(acceptedData, fmt, phase, "tok_s");
+    if (failed === null || accepted === null || accepted === 0) return `${label}=missing`;
+    return `${label}=${formatPct(failed / accepted)} failed=${failed.toFixed(2)} accepted=${accepted.toFixed(2)}`;
+  });
+  return `bench-results: latest_failed_vs_accepted=${compactName(failedPath)}; accepted=${compactName(acceptedPath)}; ${parts.join("; ")}`;
+}
+
+function baselineGateLine(latestPath) {
+  const evidence = baselineEvidence(latestPath);
+  if (!evidence) return null;
+  const failed = [
+    ...evidence.rows.filter((row) => !row.ok),
+    ...evidence.structuralRows.filter((row) => !row.ok),
+  ];
+  const speedParts = evidence.rows.map((row) => {
+    if (row.reason) return `${row.label}=missing`;
+    return `${row.label}=${formatPct(row.ratio)} floor=${formatPct(row.floor)}`;
+  });
+  const structuralParts = evidence.structuralRows.map((row) => {
+    if (row.reason) return `${row.label}=missing`;
+    return `${row.label}=dispatch ${row.latestDispatch}/${row.baselineDispatch} fallback ${row.latestFallback}/${row.baselineFallback}`;
+  });
+  return {
+    passed: failed.length === 0,
+    line: `bench baseline gate: ${failed.length === 0 ? "pass" : "fail"}; latest=${compactName(evidence.latestPath)}; baseline=${compactName(evidence.baselinePath)}; ${speedParts.join("; ")}; ${structuralParts.join("; ")}`,
+  };
+}
+
+function substrateGateLine(latestPath) {
+  if (!latestPath) {
+    return {
+      passed: false,
+      line: "bench substrate gate: fail; no local p128/g200/r3 full-run artifact found; run npm run bench:ggml",
+    };
+  }
+  let data;
+  try {
+    data = readJson(latestPath);
+  } catch (error) {
+    return {
+      passed: false,
+      line: `bench substrate gate: fail; latest=${compactName(latestPath)}; could not read artifact: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  const rows = selectedLaneRows(data);
+  const failures = [];
+  if (data?.benchmark !== "smollm-135m" || data?.prompt_tokens !== 128 || data?.gen_tokens !== 200 || data?.repetitions !== 3) {
+    failures.push("wrong benchmark shape");
+  }
+  if (data?.gates?.required_pass !== true) failures.push("required_pass is not true");
+  if (data?.gates?.native_execution?.passed !== true) failures.push("native_execution gate is not true");
+  for (const [fmt, phase, row] of rows) {
+    const label = `${fmt}/${phase}`;
+    if (!row || typeof row !== "object") {
+      failures.push(`${label} missing selected lane`);
+      continue;
+    }
+    const shape = substrateLaneShape[label];
+    const parityFloor = substrateParityFloors[label];
+    const expectedStencilHash = substrateRuntimePatchStencilHashes[phase];
+    const rawStencilHash = rawRuntimePatchStencilHash(latestPath, fmt, phase);
+    if (!shape) failures.push(`${label} missing substrate lane shape expectation`);
+    if (row.fallback_ops !== 0) failures.push(`${label} fallback_ops=${row.fallback_ops}`);
+    if (row.dynamic_region_command_plans !== 0) failures.push(`${label} dynamic_region_command_plans=${row.dynamic_region_command_plans}`);
+    if (row.dynamic_region_command_plans_per_call !== 0) failures.push(`${label} dynamic_region_command_plans_per_call=${row.dynamic_region_command_plans_per_call}`);
+    if (row.schedule_region_failed_ops !== 0) failures.push(`${label} schedule_region_failed_ops=${row.schedule_region_failed_ops}`);
+    if (row.schedule_region_failed_ops_per_call !== 0) failures.push(`${label} schedule_region_failed_ops_per_call=${row.schedule_region_failed_ops_per_call}`);
+    if ((row.runtime_patch_invalid ?? 0) !== 0) failures.push(`${label} runtime_patch_invalid=${row.runtime_patch_invalid}`);
+    if ((row.runtime_patch_changed ?? 0) !== (phase === "decode" ? row.expected_profile_calls : 0)) failures.push(`${label} runtime_patch_changed=${row.runtime_patch_changed ?? 0} expected=${phase === "decode" ? row.expected_profile_calls : 0}`);
+    if (row.profile_calls_match !== true) failures.push(`${label} profile_calls_match is not true`);
+    if (!(typeof row.runtime_patch_stencil_hash === "number" && row.runtime_patch_stencil_hash > 0)) failures.push(`${label} missing runtime_patch_stencil_hash`);
+    if (rawStencilHash !== expectedStencilHash) failures.push(`${label} runtime_patch_stencil_hash=${rawStencilHash ?? "missing"} expected=${expectedStencilHash}`);
+    const parityRow = parityRowFor(data, fmt, phase);
+    if (!parityRow) failures.push(`${label} missing ggml parity row`);
+    else {
+      if (parityRow.llama_backend_is_metal !== true) failures.push(`${label} ggml reference backend is not Metal`);
+      if (!(typeof parityRow.parity === "number" && Number.isFinite(parityRow.parity) && parityRow.parity > 0)) failures.push(`${label} missing ggml parity ratio`);
+      else if (typeof parityFloor === "number" && parityRow.parity < parityFloor) failures.push(`${label} ggml=${formatPct(parityRow.parity)} below floor=${formatPct(parityFloor)}`);
+      if (!(typeof parityRow.llama_tok_s === "number" && Number.isFinite(parityRow.llama_tok_s) && parityRow.llama_tok_s > 0)) failures.push(`${label} missing ggml reference tok/s`);
+    }
+    if (shape && row.dispatches_per_call !== shape.dispatches) failures.push(`${label} dispatches_per_call=${row.dispatches_per_call}`);
+    if (shape && !matchesExpected(row.commands_per_call, shape.commands)) failures.push(`${label} commands_per_call=${row.commands_per_call}`);
+    if (shape && row.region_command_plan_cached_per_call !== shape.cachedCommandPlansPerCall) failures.push(`${label} region_command_plan_cached_per_call=${row.region_command_plan_cached_per_call}`);
+    if (row.syncs_per_call !== 1) failures.push(`${label} syncs_per_call=${row.syncs_per_call}`);
+    if (row.runtime_patch_holes !== substratePatchShape.holes) failures.push(`${label} runtime_patch_holes=${row.runtime_patch_holes}`);
+    if (row.runtime_patch_cache_write_pos_holes !== substratePatchShape.cacheWritePosHoles) failures.push(`${label} runtime_patch_cache_write_pos_holes=${row.runtime_patch_cache_write_pos_holes}`);
+    if (row.runtime_patch_attention_seq_kv_holes !== substratePatchShape.attentionSeqKvHoles) failures.push(`${label} runtime_patch_attention_seq_kv_holes=${row.runtime_patch_attention_seq_kv_holes}`);
+    if (row.semantic_runtime_patch_holes !== substratePatchShape.holes) failures.push(`${label} semantic_runtime_patch_holes=${row.semantic_runtime_patch_holes}`);
+    if (row.semantic_runtime_patch_cache_write_pos_holes !== substratePatchShape.cacheWritePosHoles) failures.push(`${label} semantic_runtime_patch_cache_write_pos_holes=${row.semantic_runtime_patch_cache_write_pos_holes}`);
+    if (row.semantic_runtime_patch_attention_seq_kv_holes !== substratePatchShape.attentionSeqKvHoles) failures.push(`${label} semantic_runtime_patch_attention_seq_kv_holes=${row.semantic_runtime_patch_attention_seq_kv_holes}`);
+    if (row.runtime_patch_calls !== row.expected_profile_calls) failures.push(`${label} runtime_patch_calls=${row.runtime_patch_calls} expected_profile_calls=${row.expected_profile_calls}`);
+  }
+  const trendGate = trendGateLine(latestPath);
+  if (!trendGate) failures.push("missing trend evidence");
+  else if (!trendGate.passed) failures.push("trend floor failed");
+  const baselineGate = baselineGateLine(latestPath);
+  if (!baselineGate) failures.push("missing baseline evidence");
+  else if (!baselineGate.passed) failures.push("baseline floor failed");
+  const laneSummary = rows.map(([fmt, phase, row]) => {
+    if (!row || typeof row !== "object") return `${fmt}/${phase}=missing`;
+    const rawStencilHash = rawRuntimePatchStencilHash(latestPath, fmt, phase);
+    const expectedStencilHash = substrateRuntimePatchStencilHashes[phase];
+    const parityRow = parityRowFor(data, fmt, phase);
+    const parityFloor = substrateParityFloors[`${fmt}/${phase}`];
+    const floorText = typeof parityFloor === "number" ? ` ggml_floor=${formatPct(parityFloor)}` : "";
+    const ggml = parityRow && typeof parityRow.parity === "number" && Number.isFinite(parityRow.parity)
+      ? ` ggml=${formatPct(parityRow.parity)} to90=${formatMultiplier(parityTarget / parityRow.parity)} ref=${Number(parityRow.llama_tok_s).toFixed(2)}`
+      : " ggml=missing";
+    return `${fmt}/${phase}=${Number(row.tok_s).toFixed(2)} tok/s${ggml} dispatch=${row.dispatches_per_call} commands=${row.commands_per_call} cached=${row.region_command_plan_cached_per_call} dynamic=${row.dynamic_region_command_plans}/${row.dynamic_region_command_plans_per_call} schedule_fail=${row.schedule_region_failed_ops}/${row.schedule_region_failed_ops_per_call} sync=${row.syncs_per_call} patch_holes=${row.runtime_patch_holes} patch_calls=${row.runtime_patch_calls}/${row.expected_profile_calls} patch_changed=${row.runtime_patch_changed ?? 0} stencil=${rawStencilHash ?? "missing"}/${expectedStencilHash} fallback=${row.fallback_ops}${floorText}`;
+  }).join("; ");
+  const weakest = rows.reduce((best, [fmt, phase, row]) => {
+    if (!row || typeof row !== "object") return best;
+    const parityRow = parityRowFor(data, fmt, phase);
+    if (!parityRow || typeof parityRow.parity !== "number" || !Number.isFinite(parityRow.parity) || parityRow.parity <= 0) return best;
+    const current = {
+      label: `${fmt}/${phase}`,
+      parity: parityRow.parity,
+      to90: parityTarget / parityRow.parity,
+      dispatches: row.dispatches_per_call,
+      commands: row.commands_per_call,
+      topCommands: commandBreakdown(row),
+      commandPressure: commandPressure(row),
+      sidecarChains: projectionChainSidecars(row),
+      chainShape: projectionChainShape(row),
+      pressureTarget: pressureReductionTarget(row),
+    };
+    return !best || current.parity < best.parity ? current : best;
+  }, null);
+  const q8DecodeSidecars = projectionChainSidecars(rows.find(([fmt, phase]) => fmt === "q8_0" && phase === "decode")?.[2]);
+  const frontierSummary = weakest
+    ? `; frontier weakest=${weakest.label} ggml=${formatPct(weakest.parity)} to90=${formatMultiplier(weakest.to90)} dispatch=${weakest.dispatches} commands=${weakest.commands} top=${weakest.topCommands} pressure=${weakest.commandPressure} target=${weakest.pressureTarget} chain_shape=${weakest.chainShape} next=${frontierNextTarget(weakest)} rejected=${rejectedFrontierShortcut(weakest)} sidecars=${weakest.sidecarChains} q8_decode_sidecars=${q8DecodeSidecars}`
+    : "";
+  return {
+    passed: failures.length === 0,
+    line: `bench substrate gate: ${failures.length === 0 ? "pass" : "fail"}; latest=${compactName(latestPath)}; ${laneSummary}${frontierSummary}${failures.length ? `; failures=${failures.join(", ")}` : ""}`,
+  };
+}
+
+const artifacts = [...baselineArtifacts];
+const latest = latestFullRunArtifact();
+if (latest) artifacts.push(latest);
+
+const result = spawnSync("python3", ["scripts/verify_bench_artifact.py", "--status", ...artifacts], {
+  encoding: "utf8",
+  stdio: ["ignore", "pipe", "pipe"],
+});
+
+if (result.stdout) process.stdout.write(result.stdout);
+if (result.stderr) process.stderr.write(result.stderr);
+const quarantined = quarantinedFullRunArtifacts();
+if (quarantined.length > 0) {
+  process.stdout.write(`bench-results: ${quarantined.length} quarantined p128/g200/r3 artifact(s) ignored for accepted evidence; latest_failed=${compactName(quarantined.at(-1))}\n`);
+  const referenceDrift = failedReferenceDriftLine(quarantined.at(-1));
+  if (referenceDrift) process.stdout.write(`${referenceDrift}\n`);
+  const failedLanes = failedArtifactLaneLine(quarantined.at(-1));
+  if (failedLanes) process.stdout.write(`${failedLanes}\n`);
+  const failedAcceptedDelta = failedAcceptedDeltaLine(quarantined.at(-1), latest);
+  if (failedAcceptedDelta) process.stdout.write(`${failedAcceptedDelta}\n`);
+}
+if (!latest) {
+  process.stdout.write("bench-results: no local p128/g200/r3 full-run artifact found; run npm run bench:ggml for parity evidence\n");
+} else {
+  const baselineDelta = baselineDeltaLine(latest);
+  if (baselineDelta) process.stdout.write(`${baselineDelta}\n`);
+  const baselineGate = substrateGateEnabled ? baselineGateLine(latest) : null;
+  if (baselineGate) {
+    process.stdout.write(`${baselineGate.line}\n`);
+    if (!baselineGate.passed) process.exit(1);
+  }
+  const trend = trendStatusLine(latest);
+  if (trend) process.stdout.write(`${trend}\n`);
+  const gate = trendGateEnabled ? trendGateLine(latest) : null;
+  if (gate) {
+    process.stdout.write(`${gate.line}\n`);
+    if (!gate.passed) process.exit(1);
+  }
+}
+const substrateGate = substrateGateEnabled ? substrateGateLine(latest) : null;
+if (substrateGate) {
+  process.stdout.write(`${substrateGate.line}\n`);
+  if (!substrateGate.passed) process.exit(1);
+}
+process.exit(result.status ?? 1);

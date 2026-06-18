@@ -11,17 +11,69 @@
 //! ```
 
 const std = @import("std");
-const c = @cImport(@cInclude("pthread.h"));
+const builtin = @import("builtin");
+const pthread_available = builtin.os.tag != .wasi and builtin.os.tag != .freestanding;
+const c = if (pthread_available) @cImport(@cInclude("pthread.h")) else struct {};
 
 /// Block size for quantization scales. Each block of `block_size` int8 values
 /// shares one f32 scale factor.
 pub const default_block_size: usize = 32;
+
+pub const QuantizedWeightLayout = enum {
+    native_param,
+    transposed_param,
+};
+
+pub const QuantizedWeightBinding = struct {
+    index: usize,
+    layout: QuantizedWeightLayout,
+};
 
 /// Persistent GEMV thread pool using pthreads condition variables.
 /// Workers sleep on a condvar between dispatches — near-zero wake latency.
 /// Threads are spawned lazily on first dispatch so the pool can be
 /// returned by value from init.
 pub fn GemvPool(comptime T: type) type {
+    if (!pthread_available) {
+        return struct {
+            const Self = @This();
+            pub const max_workers = 1;
+
+            n_workers: usize = 1,
+
+            pub fn init(_: std.mem.Allocator, _: usize) !Self {
+                return .{};
+            }
+
+            pub fn deinit(_: *Self, _: std.mem.Allocator) void {}
+
+            pub fn dispatch(
+                self: *Self,
+                qw: *const QuantizedWeight(T),
+                inp_q: [*]const i8,
+                inp_scales: [*]const T,
+                dst: []T,
+                N: usize,
+                K: usize,
+            ) void {
+                _ = self;
+                const bs = qw.block_size;
+                const blocks_per_row = (K + bs - 1) / bs;
+                QuantizedWeight(T).gemvRange(
+                    qw.t_data.?,
+                    qw.t_scales.?,
+                    inp_q[0..K],
+                    inp_scales[0..blocks_per_row],
+                    dst,
+                    0,
+                    N,
+                    K,
+                    bs,
+                );
+            }
+        };
+    }
+
     return struct {
         const Self = @This();
         pub const max_workers = 16;
@@ -122,7 +174,10 @@ pub fn GemvPool(comptime T: type) type {
                     task.inp_q[0..task.K],
                     task.inp_scales[0..bpr],
                     task.dst[0..task.n_end],
-                    task.n_start, task.n_end, task.K, task.bs,
+                    task.n_start,
+                    task.n_end,
+                    task.K,
+                    task.bs,
                 );
 
                 _ = c.pthread_mutex_lock(&pool.mutex);
@@ -153,8 +208,15 @@ pub fn GemvPool(comptime T: type) type {
 
             if (n_active <= 1) {
                 QuantizedWeight(T).gemvRange(
-                    t_d, t_s, inp_q[0..K], inp_scales[0..blocks_per_row],
-                    dst, 0, N, K, bs,
+                    t_d,
+                    t_s,
+                    inp_q[0..K],
+                    inp_scales[0..blocks_per_row],
+                    dst,
+                    0,
+                    N,
+                    K,
+                    bs,
                 );
                 return;
             }
@@ -170,11 +232,15 @@ pub fn GemvPool(comptime T: type) type {
             for (1..n_active) |i| {
                 if (n_start >= N) break;
                 self.tasks[i] = .{
-                    .t_d = t_d.ptr, .t_s = t_s.ptr,
-                    .inp_q = inp_q, .inp_scales = inp_scales,
-                    .dst = dst.ptr, .n_start = n_start,
+                    .t_d = t_d.ptr,
+                    .t_s = t_s.ptr,
+                    .inp_q = inp_q,
+                    .inp_scales = inp_scales,
+                    .dst = dst.ptr,
+                    .n_start = n_start,
                     .n_end = @min(n_start + chunk, N),
-                    .K = K, .bs = bs,
+                    .K = K,
+                    .bs = bs,
                 };
                 self.worker_gens[i] = self.generation;
                 n_dispatched += 1;
@@ -185,8 +251,15 @@ pub fn GemvPool(comptime T: type) type {
             _ = c.pthread_mutex_unlock(&self.mutex);
 
             QuantizedWeight(T).gemvRange(
-                t_d, t_s, inp_q[0..K], inp_scales[0..blocks_per_row],
-                dst, 0, @min(chunk, N), K, bs,
+                t_d,
+                t_s,
+                inp_q[0..K],
+                inp_scales[0..blocks_per_row],
+                dst,
+                0,
+                @min(chunk, N),
+                K,
+                bs,
             );
 
             _ = c.pthread_mutex_lock(&self.mutex);
@@ -263,11 +336,84 @@ pub fn QuantizedWeight(comptime T: type) type {
             return fromSlice(alloc, tensor.data, tensor.ne[1], tensor.ne[0], block_size);
         }
 
+        /// Quantize a col-major tensor for a matmul that uses it transposed.
+        ///
+        /// Tensor layout [K, N] is read with tensor strides and stored as the
+        /// row-major quantized weight expected by qmatmul: `weight[k, n]`.
+        pub fn fromTransposedTensor(alloc: std.mem.Allocator, tensor: anytype, block_size: usize) !Self {
+            const rows = tensor.ne[0];
+            const cols = tensor.ne[1];
+            const n_elems = rows * cols;
+            const n_blocks = (n_elems + block_size - 1) / block_size;
+
+            const data = try alloc.alloc(i8, n_elems);
+            errdefer alloc.free(data);
+            const scales = try alloc.alloc(T, n_blocks);
+            errdefer alloc.free(scales);
+
+            for (0..n_blocks) |b| {
+                const start = b * block_size;
+                const end = @min(start + block_size, n_elems);
+
+                var max_abs: T = 0;
+                for (start..end) |j| {
+                    const k = j / cols;
+                    const n = j % cols;
+                    const v = tensor.data[n * tensor.strides[1] + k * tensor.strides[0]];
+                    max_abs = @max(max_abs, @abs(v));
+                }
+
+                const scale = if (max_abs > 0) max_abs / 127.0 else 1.0;
+                const inv_scale = if (max_abs > 0) 127.0 / max_abs else 0.0;
+                scales[b] = scale;
+
+                for (start..end) |j| {
+                    const k = j / cols;
+                    const n = j % cols;
+                    const v = tensor.data[n * tensor.strides[1] + k * tensor.strides[0]];
+                    data[j] = @intFromFloat(std.math.clamp(v * inv_scale, -127.0, 127.0));
+                }
+            }
+
+            return .{
+                .data = data,
+                .scales = scales,
+                .rows = rows,
+                .cols = cols,
+                .block_size = block_size,
+            };
+        }
+
         pub fn deinit(self: Self, alloc: std.mem.Allocator) void {
             alloc.free(self.data);
             alloc.free(self.scales);
             if (self.t_data) |d| alloc.free(d);
             if (self.t_scales) |s| alloc.free(s);
+        }
+
+        pub fn clone(self: Self, alloc: std.mem.Allocator) !Self {
+            const data = try alloc.dupe(i8, self.data);
+            errdefer alloc.free(data);
+            const scales = try alloc.dupe(T, self.scales);
+            errdefer alloc.free(scales);
+
+            var t_data: ?[]const i8 = null;
+            errdefer if (t_data) |d| alloc.free(d);
+            if (self.t_data) |d| t_data = try alloc.dupe(i8, d);
+
+            var t_scales: ?[]const T = null;
+            errdefer if (t_scales) |s| alloc.free(s);
+            if (self.t_scales) |s| t_scales = try alloc.dupe(T, s);
+
+            return .{
+                .data = data,
+                .scales = scales,
+                .rows = self.rows,
+                .cols = self.cols,
+                .block_size = self.block_size,
+                .t_data = t_data,
+                .t_scales = t_scales,
+            };
         }
 
         /// Build transposed [N, K] layout for fast GEMV (M=1).
@@ -345,6 +491,15 @@ pub fn QuantizedWeight(comptime T: type) type {
 
         /// ARM SDOT: acc += dot4(a, b) per lane. 4×i8→i32 in one cycle.
         inline fn armSdot(acc: I32x4, a: I8x16, b: I8x16) I32x4 {
+            if (comptime builtin.cpu.arch != .aarch64 and builtin.cpu.arch != .aarch64_be) {
+                var out = acc;
+                var sum: i32 = 0;
+                inline for (0..16) |i| {
+                    sum += @as(i32, a[i]) * @as(i32, b[i]);
+                }
+                out[0] += sum;
+                return out;
+            }
             return asm ("sdot %[acc].4s, %[a].16b, %[b].16b"
                 : [acc] "=w" (-> I32x4),
                 : [_] "0" (acc),
@@ -1130,6 +1285,50 @@ test "dequantizeTo matches per-element dequant" {
     }
 }
 
+test "QuantizedWeight clone owns data and transposed storage" {
+    const alloc = testing.allocator;
+    const weights = [_]f32{ 1.0, -0.5, 0.25, -1.0, 0.0, 0.75, -0.3, 0.9 };
+
+    var qw = try QuantizedWeight(f32).fromSlice(alloc, &weights, 2, 4, 4);
+    defer qw.deinit(alloc);
+    try qw.prepareTransposed(alloc);
+
+    const cloned = try qw.clone(alloc);
+    defer cloned.deinit(alloc);
+
+    try testing.expect(qw.data.ptr != cloned.data.ptr);
+    try testing.expect(qw.scales.ptr != cloned.scales.ptr);
+    try testing.expect(qw.t_data.?.ptr != cloned.t_data.?.ptr);
+    try testing.expect(qw.t_scales.?.ptr != cloned.t_scales.?.ptr);
+    try testing.expectEqualSlices(i8, qw.data, cloned.data);
+    try testing.expectEqualSlices(f32, qw.scales, cloned.scales);
+    try testing.expectEqualSlices(i8, qw.t_data.?, cloned.t_data.?);
+    try testing.expectEqualSlices(f32, qw.t_scales.?, cloned.t_scales.?);
+}
+
+test "fromTransposedTensor packs tensor columns as qmatmul rows" {
+    const alloc = testing.allocator;
+    const Tensor = @import("tensor.zig").Tensor;
+
+    const t = try Tensor(f32).init(alloc, &.{ 2, 3 });
+    defer t.deinit();
+    @memcpy(t.data, &[_]f32{ 1, 2, 3, 4, 5, 6 });
+
+    var qw = try QuantizedWeight(f32).fromTransposedTensor(alloc, t, 1);
+    defer qw.deinit(alloc);
+
+    var got: [6]f32 = undefined;
+    qw.dequantizeTo(&got);
+    try testing.expectEqual(@as(usize, 2), qw.rows);
+    try testing.expectEqual(@as(usize, 3), qw.cols);
+    try testing.expectApproxEqAbs(@as(f32, 1), got[0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 3), got[1], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 5), got[2], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 2), got[3], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 4), got[4], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 6), got[5], 1e-6);
+}
+
 test "quantized matmul matches float matmul approximately" {
     const alloc = testing.allocator;
 
@@ -1175,10 +1374,10 @@ test "gemv matches matmul for M=1" {
 
     // Weight: 4x8 (K=4, N=8)
     const weights = [_]f32{
-        1.0,  0.5,  -0.3, 0.8,  -1.0, 0.2,  0.7,  -0.4,
-        -0.5, 1.0,  0.6,  -0.9, 0.3,  -0.7, 0.1,  0.5,
-        0.25, -0.25, 1.0, 0.4,  -0.6, 0.9,  -0.2, 0.3,
-        0.7,  -0.8, 0.15, 1.0,  0.5,  -0.3, 0.6,  -0.1,
+        1.0,  0.5,   -0.3, 0.8,  -1.0, 0.2,  0.7,  -0.4,
+        -0.5, 1.0,   0.6,  -0.9, 0.3,  -0.7, 0.1,  0.5,
+        0.25, -0.25, 1.0,  0.4,  -0.6, 0.9,  -0.2, 0.3,
+        0.7,  -0.8,  0.15, 1.0,  0.5,  -0.3, 0.6,  -0.1,
     };
     const input = [_]f32{ 1.0, 2.0, -0.5, 0.3 };
 
@@ -1527,18 +1726,42 @@ test "attentionQuantized - col_offset selects correct slab" {
 
     var out_big: [d_head]f32 = .{0} ** d_head;
     attentionQuantized(
-        f32, &out_big, d_head, &q, d_head,
-        d_head, 1,
-        &k_big, slab_len, &v_big, slab_len,
-        slab_len, null, 0, 0, scale,
+        f32,
+        &out_big,
+        d_head,
+        &q,
+        d_head,
+        d_head,
+        1,
+        &k_big,
+        slab_len,
+        &v_big,
+        slab_len,
+        slab_len,
+        null,
+        0,
+        0,
+        scale,
     );
 
     var out_small: [d_head]f32 = .{0} ** d_head;
     attentionQuantized(
-        f32, &out_small, d_head, &q, d_head,
-        d_head, 1,
-        &k_small, 0, &v_small, 0,
-        slab_len, null, 0, 0, scale,
+        f32,
+        &out_small,
+        d_head,
+        &q,
+        d_head,
+        d_head,
+        1,
+        &k_small,
+        0,
+        &v_small,
+        0,
+        slab_len,
+        null,
+        0,
+        0,
+        scale,
     );
 
     for (out_big, out_small) |b, s| try testing.expectApproxEqAbs(b, s, 1e-6);
@@ -1595,10 +1818,22 @@ test "attentionQuantized - tile + tail path matches single-column reference" {
 
     var out: [d_head]f32 = .{0} ** d_head;
     attentionQuantized(
-        f32, &out, d_head, &q, d_head,
-        d_head, 1,
-        &k_cache, 0, &v_cache, 0,
-        seq_kv, null, 0, 0, scale,
+        f32,
+        &out,
+        d_head,
+        &q,
+        d_head,
+        d_head,
+        1,
+        &k_cache,
+        0,
+        &v_cache,
+        0,
+        seq_kv,
+        null,
+        0,
+        0,
+        scale,
     );
 
     // Tolerance matches the SDOT-path test — Q-quantization adds error.

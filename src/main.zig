@@ -1,71 +1,76 @@
-const std = @import("std");
-const testing = std.testing;
+const testing = @import("std").testing;
 pub const Tensor = @import("tensor.zig").Tensor;
-pub const IndexTensor = @import("index.zig").IndexTensor;
-pub const max_dims = @import("tensor.zig").max_dims;
 pub const ComputeGraph = @import("graph.zig").ComputeGraph;
-pub const Op = @import("op.zig").Op;
+const native_manifest = @import("native_substrate_manifest.zig");
 
-pub const shaped = @import("shaped.zig");
-pub const Shaped = shaped.Shaped;
-pub const ShapedTensor = shaped.ShapedTensor;
-
-pub const models = @import("models.zig");
-pub const optim = @import("optim.zig");
-pub const loss = @import("loss.zig");
 pub const nn = @import("nn.zig");
-pub const checkpoint = @import("checkpoint.zig");
-pub const comptime_model = @import("comptime_model.zig");
-pub const backend = @import("backend.zig");
-pub const backend_program = @import("backend/program.zig");
-pub const backend_reference = @import("backend/reference.zig");
-pub const backend_conformance = @import("backend/conformance.zig");
-pub const backend_cpu = @import("backend/cpu.zig");
-pub const backend_metal = if (@import("builtin").os.tag == .macos) @import("backend/metal.zig") else struct {};
-pub const backend_wgpu = if (@import("zgml_options").use_wgpu) @import("backend/wgpu.zig") else struct {};
+pub const loss = @import("loss.zig");
+pub const optim = @import("optim.zig");
+pub const train = @import("train.zig");
 pub const llm = @import("llm.zig");
-pub const llm_stage_plan = @import("llm/stage_plan.zig");
-pub const llm_device_prefill = @import("llm/device_prefill.zig");
-pub const gguf = @import("gguf.zig");
-pub const quant = @import("quant.zig");
-pub const safetensors = @import("safetensors.zig");
-pub const tokenizer = @import("tokenizer.zig");
-pub const inference = @import("inference.zig");
-pub const inference_utils = @import("inference_utils.zig");
-pub const llama_inference = @import("llama_inference.zig");
-pub const device_inference = @import("device_inference.zig");
-pub const profile = @import("profile.zig");
-pub const data = @import("data.zig");
+
+pub const native_substrate_manifest = native_manifest.native_substrate_manifest;
+
+test "native root surface stays curated" {
+    const root = @This();
+    const expected = .{
+        "Tensor",
+        "ComputeGraph",
+        "nn",
+        "loss",
+        "optim",
+        "train",
+        "llm",
+        "native_substrate_manifest",
+    };
+    try testing.expectEqual(expected.len, @typeInfo(root).@"struct".decls.len);
+    inline for (expected) |name| {
+        try testing.expect(@hasDecl(root, name));
+    }
+
+    const Graph = ComputeGraph(f32);
+    const graph_expected = .{
+        "init",
+        "allocator",
+        "tensor",
+        "fromSlice",
+        "full",
+        "zeros",
+        "ones",
+        "param",
+        "scalar",
+        "arange",
+        "linspace",
+        "rand",
+        "randn",
+        "deinit",
+        "enableThreading",
+        "run",
+        "infer",
+    };
+    try testing.expectEqual(graph_expected.len, @typeInfo(Graph).@"struct".decls.len);
+    inline for (graph_expected) |name| {
+        try testing.expect(@hasDecl(Graph, name));
+    }
+
+    try testing.expectEqualStrings("zgml-native-substrate", native_substrate_manifest.kind);
+    try testing.expectEqualStrings("runtime-kernel-abi-substrate", native_substrate_manifest.role);
+    try testing.expectEqualStrings("typescript", native_substrate_manifest.product_language);
+    try testing.expectEqualStrings("src/ts/**", native_substrate_manifest.product_source);
+    try testing.expectEqualStrings("ts-only", native_substrate_manifest.product_source_of_truth);
+    try testing.expectEqualStrings("src/ts/**", native_substrate_manifest.product_semantics_owner);
+    try testing.expectEqualStrings("tsdown", native_substrate_manifest.package_fanout);
+    try testing.expectEqualStrings("none", native_substrate_manifest.frontend_sync);
+    try testing.expect(!native_substrate_manifest.handwritten_frontend_mirrors);
+    try testing.expectEqualStrings("contract-tested-substrate", native_substrate_manifest.native_alignment);
+    try testing.expectEqualStrings("forbidden", native_substrate_manifest.native_product_policy);
+    try testing.expectEqualStrings("Program/Session/ABI contracts", native_substrate_manifest.native_contract_boundary);
+}
 
 test "ref all decls" {
-    _ = testing.refAllDecls(models);
-    _ = testing.refAllDecls(optim);
-    _ = testing.refAllDecls(loss);
     _ = @import("nn.zig");
-    _ = @import("checkpoint.zig");
-    _ = @import("index.zig");
-    _ = @import("shaped.zig");
-    _ = @import("comptime_model.zig");
-    _ = @import("backend.zig");
-    _ = @import("backend/program.zig");
-    _ = @import("backend/reference.zig");
-    _ = @import("backend/conformance.zig");
-    _ = @import("backend/cpu.zig");
-    if (@import("builtin").os.tag == .macos) {
-        _ = @import("backend/metal.zig");
-    }
-    if (@import("zgml_options").use_wgpu) {
-        _ = @import("backend/wgpu.zig");
-    }
+    _ = @import("loss.zig");
+    _ = @import("optim.zig");
+    _ = @import("train.zig");
     _ = @import("llm.zig");
-    _ = @import("llm/stage_plan.zig");
-    _ = @import("llm/device_prefill.zig");
-    _ = @import("gguf.zig");
-    _ = @import("quant.zig");
-    _ = @import("safetensors.zig");
-    _ = @import("tokenizer.zig");
-    _ = @import("inference_utils.zig");
-    _ = @import("llama_inference.zig");
-    _ = @import("profile.zig");
-    _ = @import("data.zig");
 }

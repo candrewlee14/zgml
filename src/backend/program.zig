@@ -4,15 +4,906 @@ const std = @import("std");
 const backend_mod = @import("../backend.zig");
 const DeviceOpTag = std.meta.Tag(backend_mod.DeviceOp);
 
-pub const compute_op_softmax: u32 = 100;
-pub const compute_op_layernorm: u32 = 101;
-pub const compute_op_rmsnorm: u32 = 102;
+pub const RuntimePatchEnvelope = struct {
+    max_cache_write_pos: ?u32 = std.math.maxInt(u32),
+    max_attention_seq_kv: ?u32 = std.math.maxInt(u32),
+
+    pub fn initProgram(program: backend_mod.DeviceProgram) !RuntimePatchEnvelope {
+        var out = RuntimePatchEnvelope{};
+        for (program.ops, 0..) |op, op_index| switch (op) {
+            .slice_assign => |sa| if (sa.patch_stride != 0) {
+                _ = std.math.cast(u32, op_index) orelse return error.UnsupportedDeviceOp;
+                if (maxCacheWritePos(sa, program.buffer_sizes)) |max| {
+                    if (out.max_cache_write_pos) |current| out.max_cache_write_pos = @min(current, max);
+                } else {
+                    out.max_cache_write_pos = null;
+                }
+            },
+            .attention => |att| if (att.patch_seq_kv) {
+                _ = std.math.cast(u32, op_index) orelse return error.UnsupportedDeviceOp;
+                if (maxAttentionSeqKv(att, program.buffer_sizes)) |max| {
+                    if (out.max_attention_seq_kv) |current| out.max_attention_seq_kv = @min(current, max);
+                } else {
+                    out.max_attention_seq_kv = null;
+                }
+            },
+            else => {},
+        };
+        return out;
+    }
+};
+
+const RuntimeBindings = struct {
+    patch_op_indices: []u32 = &.{},
+    patch_shape: backend_mod.RuntimePatchShape = .{},
+    max_cache_write_pos: ?u32 = std.math.maxInt(u32),
+    max_attention_seq_kv: ?u32 = std.math.maxInt(u32),
+    window: backend_mod.RuntimeWindow = .{ .position = 0, .len = 0 },
+    valid: bool = false,
+
+    fn initProgram(alloc: std.mem.Allocator, program: backend_mod.DeviceProgram) !RuntimeBindings {
+        const ops = program.ops;
+        const counts = try countRuntimePatchHoles(ops);
+        const n_cache: usize = @intCast(counts.cache_write_pos);
+        const n_attention: usize = @intCast(counts.attention_seq_kv);
+        const envelope = try RuntimePatchEnvelope.initProgram(program);
+
+        const patch_op_indices = try alloc.alloc(u32, n_cache + n_attention);
+        errdefer alloc.free(patch_op_indices);
+        const cache_write_pos_ops = patch_op_indices[0..n_cache];
+        const attention_seq_kv_ops = patch_op_indices[n_cache..];
+        var cache_i: usize = 0;
+        var h = RuntimeStencilHasher{};
+        const has_dynamic_patches = counts.cache_write_pos != 0 or counts.attention_seq_kv != 0;
+        if (has_dynamic_patches) h.add(counts.cache_write_pos);
+        for (ops, 0..) |op, op_index| {
+            switch (op) {
+                .slice_assign => |sa| if (sa.patch_stride != 0) {
+                    const idx = std.math.cast(u32, op_index) orelse return error.UnsupportedDeviceOp;
+                    cache_write_pos_ops[cache_i] = idx;
+                    cache_i += 1;
+                    if (has_dynamic_patches) addSliceRuntimeStencil(&h, idx, sa);
+                },
+                else => {},
+            }
+        }
+        var attention_i: usize = 0;
+        if (has_dynamic_patches) h.add(counts.attention_seq_kv);
+        for (ops, 0..) |op, op_index| {
+            switch (op) {
+                .attention => |att| if (att.patch_seq_kv) {
+                    const idx = std.math.cast(u32, op_index) orelse return error.UnsupportedDeviceOp;
+                    attention_seq_kv_ops[attention_i] = idx;
+                    attention_i += 1;
+                    if (has_dynamic_patches) addAttentionRuntimeStencil(&h, idx, att);
+                },
+                else => {},
+            }
+        }
+        std.debug.assert(cache_i == n_cache);
+        std.debug.assert(attention_i == n_attention);
+
+        return .{
+            .patch_op_indices = patch_op_indices,
+            .patch_shape = backend_mod.RuntimePatchShape.actual(counts.cache_write_pos, counts.attention_seq_kv, if (has_dynamic_patches) h.state else 0),
+            .max_cache_write_pos = envelope.max_cache_write_pos,
+            .max_attention_seq_kv = envelope.max_attention_seq_kv,
+        };
+    }
+
+    fn deinit(self: *RuntimeBindings, alloc: std.mem.Allocator) void {
+        if (self.patch_op_indices.len > 0) alloc.free(self.patch_op_indices);
+        self.* = .{};
+    }
+
+    fn windowFit(self: RuntimeBindings, window: backend_mod.RuntimeWindow) ?u32 {
+        const max_cache_write_pos = self.max_cache_write_pos orelse return null;
+        const max_attention_seq_kv = self.max_attention_seq_kv orelse return null;
+        const attention_seq_kv = window.attentionSeqKv() orelse return null;
+        if (window.position > max_cache_write_pos or attention_seq_kv > max_attention_seq_kv) return null;
+        return attention_seq_kv;
+    }
+
+    fn apply(self: *RuntimeBindings, ops: []backend_mod.DeviceOp, window: backend_mod.RuntimeWindow) backend_mod.RuntimePatchStatus {
+        const attention_seq_kv = self.windowFit(window) orelse return .invalid;
+
+        var changed = false;
+        const patch_cache_write_pos = !self.valid or self.window.position != window.position;
+        const patch_attention_seq_kv = !self.valid or self.window.attentionSeqKv().? != attention_seq_kv;
+        const n_cache: usize = @intCast(self.patch_shape.runtime_patch_cache_write_pos_holes);
+
+        if (patch_cache_write_pos) {
+            for (self.patch_op_indices[0..n_cache]) |op_index| {
+                const idx: usize = @intCast(op_index);
+                std.debug.assert(idx < ops.len and ops[idx] == .slice_assign);
+                const sa = &ops[idx].slice_assign;
+                sa.dst_offset = sa.dst_base_offset + window.position * sa.patch_stride;
+                changed = true;
+            }
+        }
+        if (patch_attention_seq_kv) {
+            for (self.patch_op_indices[n_cache..]) |op_index| {
+                const idx: usize = @intCast(op_index);
+                std.debug.assert(idx < ops.len and ops[idx] == .attention);
+                ops[idx].attention.seq_kv = attention_seq_kv;
+                changed = true;
+            }
+        }
+        self.window = window;
+        self.valid = true;
+        return if (changed) .changed else .unchanged;
+    }
+
+    fn runtimePatchEnvelope(self: RuntimeBindings) RuntimePatchEnvelope {
+        return .{
+            .max_cache_write_pos = self.max_cache_write_pos,
+            .max_attention_seq_kv = self.max_attention_seq_kv,
+        };
+    }
+};
+
+const RuntimePatchCounts = struct {
+    cache_write_pos: u32 = 0,
+    attention_seq_kv: u32 = 0,
+};
+
+fn countRuntimePatchHoles(ops: []const backend_mod.DeviceOp) !RuntimePatchCounts {
+    var counts = RuntimePatchCounts{};
+    for (ops, 0..) |op, op_index| switch (op) {
+        .slice_assign => |sa| if (sa.patch_stride != 0) {
+            _ = std.math.cast(u32, op_index) orelse return error.UnsupportedDeviceOp;
+            counts.cache_write_pos = std.math.add(u32, counts.cache_write_pos, 1) catch return error.UnsupportedDeviceOp;
+        },
+        .attention => |att| if (att.patch_seq_kv) {
+            _ = std.math.cast(u32, op_index) orelse return error.UnsupportedDeviceOp;
+            counts.attention_seq_kv = std.math.add(u32, counts.attention_seq_kv, 1) catch return error.UnsupportedDeviceOp;
+        },
+        else => {},
+    };
+    return counts;
+}
+
+fn maxCacheWritePos(sa: anytype, buffer_sizes: []const usize) ?u32 {
+    const size = bufferSize(buffer_sizes, sa.dst) orelse return null;
+    const span = strided2Span(sa.rows, sa.cols, sa.dst_row_stride, sa.dst_col_stride) orelse return null;
+    if (span > size or sa.dst_base_offset > size - span) return null;
+    if (sa.patch_stride == 0) return std.math.maxInt(u32);
+    const buffer_room = size - span - sa.dst_base_offset;
+    const u32_room = std.math.maxInt(u32) - sa.dst_base_offset;
+    return @intCast(@min(buffer_room / sa.patch_stride, u32_room / sa.patch_stride));
+}
+
+fn maxAttentionSeqKv(att: anytype, buffer_sizes: []const usize) ?u32 {
+    if (!backend_mod.BufferBounds.strided2Fits(buffer_sizes, att.q, att.q_off, att.d_head, att.seq_q, att.q_rs, att.q_cs) or
+        !backend_mod.BufferBounds.strided2Fits(buffer_sizes, att.dst, att.dst_off, att.d_head, att.seq_q, att.dst_rs, att.dst_cs)) return null;
+    var max_seq_kv = maxDynamicExtent(buffer_sizes, att.k, att.k_off, att.d_head, att.k_rs, att.k_cs) orelse return null;
+    max_seq_kv = @min(max_seq_kv, maxDynamicExtent(buffer_sizes, att.v, att.v_off, att.d_head, att.v_rs, att.v_cs) orelse return null);
+    if (att.has_mask) {
+        max_seq_kv = @min(max_seq_kv, maxDynamicExtent(buffer_sizes, att.mask, att.mask_off, att.seq_q, att.mask_cs, att.mask_rs) orelse return null);
+    }
+    return max_seq_kv;
+}
+
+fn bufferSize(buffer_sizes: []const usize, idx: u16) ?usize {
+    const i: usize = idx;
+    return if (i < buffer_sizes.len) buffer_sizes[i] else null;
+}
+
+fn strided2Span(rows: u32, cols: u32, row_stride: u32, col_stride: u32) ?usize {
+    if (rows == 0 or cols == 0) return 0;
+    const row_span = std.math.mul(usize, rows - 1, row_stride) catch return null;
+    const col_span = std.math.mul(usize, cols - 1, col_stride) catch return null;
+    return std.math.add(usize, std.math.add(usize, row_span, col_span) catch return null, 1) catch return null;
+}
+
+fn maxDynamicExtent(buffer_sizes: []const usize, idx: u16, offset: u32, fixed_extent: u32, fixed_stride: u32, dynamic_stride: u32) ?u32 {
+    const size = bufferSize(buffer_sizes, idx) orelse return null;
+    if (@as(usize, offset) > size) return null;
+    if (fixed_extent == 0) return std.math.maxInt(u32);
+    const fixed_span = std.math.mul(usize, fixed_extent - 1, fixed_stride) catch return null;
+    const first_dynamic_end = std.math.add(usize, std.math.add(usize, offset, fixed_span) catch return null, 1) catch return null;
+    if (first_dynamic_end > size) return 0;
+    if (dynamic_stride == 0) return std.math.maxInt(u32);
+    return @intCast(@min(@as(usize, std.math.maxInt(u32)), (size - first_dynamic_end) / dynamic_stride + 1));
+}
+
+fn dupeRuntimeOps(alloc: std.mem.Allocator, source_ops: []const backend_mod.DeviceOp) ![]backend_mod.DeviceOp {
+    const ops = try alloc.dupe(backend_mod.DeviceOp, source_ops);
+    errdefer {
+        freeRuntimeOpPayloads(alloc, ops);
+        alloc.free(ops);
+    }
+    for (ops) |*op| switch (op.*) {
+        .fused_elementwise => |*fe| fe.steps = &.{},
+        else => {},
+    };
+    for (ops, source_ops) |*op, source| switch (source) {
+        .fused_elementwise => |fe| if (fe.steps.len > 0) {
+            op.fused_elementwise.steps = try alloc.dupe(backend_mod.FusedEwStep, fe.steps);
+        },
+        else => {},
+    };
+    return ops;
+}
+
+fn freeRuntimeOpPayloads(alloc: std.mem.Allocator, ops: []const backend_mod.DeviceOp) void {
+    for (ops) |op| switch (op) {
+        .fused_elementwise => |fe| if (fe.steps.len > 0) alloc.free(fe.steps),
+        else => {},
+    };
+}
+
+/// Deep compiler Module that schedules DeviceProgram ops into executable
+/// backend commands.
+pub const Kernelizer = struct {
+    command_policy: CommandStreamPolicy,
+
+    pub fn init(command_policy: CommandStreamPolicy) Kernelizer {
+        return .{ .command_policy = command_policy };
+    }
+
+    pub fn default() Kernelizer {
+        return init(CommandStreamPolicy.default());
+    }
+
+    pub fn kernelize(self: Kernelizer, alloc: std.mem.Allocator, ops: []const backend_mod.DeviceOp) !KernelPlan {
+        return KernelPlan.init(alloc, ops, self.command_policy);
+    }
+
+    pub fn executionPlan(
+        self: Kernelizer,
+        alloc: std.mem.Allocator,
+        ops: []const backend_mod.DeviceOp,
+        schedule_policy: SchedulePolicy,
+        stages: []const StagePolicy,
+    ) !ExecutionPlan {
+        return buildExecutionPlan(alloc, ops, schedule_policy, stages, self);
+    }
+};
+
+/// Scheduled executable command plan for a copied DeviceOp tape.
+///
+/// KernelPlan is the cold compiler artifact between raw DeviceProgram ops and
+/// ProgramStencil. It owns the command stream and its inspection shape, while
+/// ProgramStencil adds runtime patching and Session-bound execution state.
+pub const KernelPlan = struct {
+    commands: []const ProgramCommand = &.{},
+    command_shape: ProgramCommandStreamShape = .{},
+
+    fn init(
+        alloc: std.mem.Allocator,
+        ops: []const backend_mod.DeviceOp,
+        policy: CommandStreamPolicy,
+    ) !KernelPlan {
+        const commands = try buildProgramCommands(alloc, ops, policy);
+        errdefer if (commands.len > 0) alloc.free(commands);
+        const command_shape = try ProgramCommandStreamShape.fromCommands(commands);
+        return .{
+            .commands = commands,
+            .command_shape = command_shape,
+        };
+    }
+
+    pub fn clone(self: KernelPlan, alloc: std.mem.Allocator) !KernelPlan {
+        const commands = try alloc.dupe(ProgramCommand, self.commands);
+        return .{
+            .commands = commands,
+            .command_shape = self.command_shape,
+        };
+    }
+
+    pub fn deinit(self: *KernelPlan, alloc: std.mem.Allocator) void {
+        if (self.commands.len > 0) alloc.free(self.commands);
+        self.* = .{};
+    }
+};
+
+/// Backend-agnostic executable skeleton for a DeviceProgram.
+///
+/// A ProgramStencil owns the copied op tape, command stream, and bounded runtime
+/// update table used to apply per-step windows. Inspection and execution should
+/// both flow through this same object: command evidence describes the command
+/// stream that backends lower, and runtime patch evidence describes the exact
+/// mutable op tape that patchRuntimeWindow() updates before a backend step.
+pub const ProgramStencil = struct {
+    ops: []backend_mod.DeviceOp = &.{},
+    buffer_sizes: []const usize = &.{},
+    runtime_bindings: RuntimeBindings = .{},
+    kernel_plan: KernelPlan = .{},
+
+    pub const Inspection = struct {
+        op_count: usize,
+        buffer_count: usize,
+        buffer_element_count: usize,
+        runtime_patch_shape: backend_mod.RuntimePatchShape,
+        runtime_patch_envelope: RuntimePatchEnvelope,
+        command_shape: ProgramCommandStreamShape,
+    };
+
+    pub fn initProgram(alloc: std.mem.Allocator, program: backend_mod.DeviceProgram) !ProgramStencil {
+        return initProgramWithKernelizer(alloc, program, Kernelizer.default());
+    }
+
+    pub fn initProgramWithKernelizer(
+        alloc: std.mem.Allocator,
+        program: backend_mod.DeviceProgram,
+        kernelizer: Kernelizer,
+    ) !ProgramStencil {
+        const ops = try dupeRuntimeOps(alloc, program.ops);
+        errdefer {
+            freeRuntimeOpPayloads(alloc, ops);
+            alloc.free(ops);
+        }
+        const buffer_sizes = try alloc.dupe(usize, program.buffer_sizes);
+        errdefer alloc.free(buffer_sizes);
+        var runtime_bindings = try RuntimeBindings.initProgram(alloc, program);
+        errdefer runtime_bindings.deinit(alloc);
+        const kernel_plan = try kernelizer.kernelize(alloc, ops);
+        return .{
+            .ops = ops,
+            .buffer_sizes = buffer_sizes,
+            .runtime_bindings = runtime_bindings,
+            .kernel_plan = kernel_plan,
+        };
+    }
+
+    pub fn deinit(self: *ProgramStencil, alloc: std.mem.Allocator) void {
+        self.runtime_bindings.deinit(alloc);
+        self.kernel_plan.deinit(alloc);
+        if (self.buffer_sizes.len > 0) alloc.free(self.buffer_sizes);
+        if (self.ops.len > 0) {
+            freeRuntimeOpPayloads(alloc, self.ops);
+            alloc.free(self.ops);
+        }
+        self.* = .{};
+    }
+
+    pub fn clone(self: ProgramStencil, alloc: std.mem.Allocator) !ProgramStencil {
+        const ops = try dupeRuntimeOps(alloc, self.ops);
+        errdefer {
+            freeRuntimeOpPayloads(alloc, ops);
+            alloc.free(ops);
+        }
+        const buffer_sizes = try alloc.dupe(usize, self.buffer_sizes);
+        errdefer alloc.free(buffer_sizes);
+        var runtime_bindings = try RuntimeBindings.initProgram(alloc, .{
+            .ops = ops,
+            .n_buffers = std.math.cast(u16, buffer_sizes.len) orelse return error.UnsupportedDeviceOp,
+            .buffer_sizes = buffer_sizes,
+            .initial_uploads = &.{},
+        });
+        errdefer runtime_bindings.deinit(alloc);
+        const kernel_plan = try self.kernel_plan.clone(alloc);
+        return .{
+            .ops = ops,
+            .buffer_sizes = buffer_sizes,
+            .runtime_bindings = runtime_bindings,
+            .kernel_plan = kernel_plan,
+        };
+    }
+
+    pub fn patchRuntimeWindow(self: *ProgramStencil, window: backend_mod.RuntimeWindow) backend_mod.RuntimePatchStatus {
+        return self.runtime_bindings.apply(self.ops, window);
+    }
+
+    pub fn ioValid(self: ProgramStencil, inputs: []const backend_mod.ProgramIO, outputs: []const backend_mod.ProgramIO) bool {
+        return backend_mod.BufferBounds.programIOListsValid(self.buffer_sizes, inputs, outputs);
+    }
+
+    pub fn runtimePatchShape(self: ProgramStencil) backend_mod.RuntimePatchShape {
+        return self.runtime_bindings.patch_shape;
+    }
+
+    pub fn inspect(self: ProgramStencil) Inspection {
+        return .{
+            .op_count = self.ops.len,
+            .buffer_count = self.buffer_sizes.len,
+            .buffer_element_count = totalElements(self.buffer_sizes),
+            .runtime_patch_shape = self.runtimePatchShape(),
+            .runtime_patch_envelope = self.runtime_bindings.runtimePatchEnvelope(),
+            .command_shape = self.kernel_plan.command_shape,
+        };
+    }
+};
+
+fn totalElements(buffer_sizes: []const usize) usize {
+    var total: usize = 0;
+    for (buffer_sizes) |len| total = std.math.add(usize, total, len) catch return std.math.maxInt(usize);
+    return total;
+}
+
+test "kernel plan owns command stream evidence" {
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 0, .src1 = 1, .n = 4 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 3, .src0 = 2, .src1 = 1, .n = 4 } },
+    };
+
+    var plan = try Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer plan.deinit(std.testing.allocator);
+
+    try std.testing.expect(plan.commands.len > 0);
+    try std.testing.expectEqual(plan.command_shape, try ProgramCommandStreamShape.fromCommands(plan.commands));
+
+    var clone = try plan.clone(std.testing.allocator);
+    defer clone.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualSlices(ProgramCommand, plan.commands, clone.commands);
+    try std.testing.expectEqual(plan.command_shape, clone.command_shape);
+}
+
+const RuntimeStencilHasher = struct {
+    state: u64 = 14695981039346656037,
+
+    fn add(self: *RuntimeStencilHasher, value: u64) void {
+        var v = value;
+        for (0..8) |_| {
+            self.state ^= v & 0xff;
+            self.state *%= 1099511628211;
+            v >>= 8;
+        }
+    }
+};
+
+fn addSliceRuntimeStencil(h: *RuntimeStencilHasher, op_index: u32, sa: anytype) void {
+    h.add(1);
+    h.add(op_index);
+    h.add(sa.dst);
+    h.add(sa.src);
+    h.add(sa.rows);
+    h.add(sa.cols);
+    h.add(sa.dst_base_offset);
+    h.add(sa.dst_row_stride);
+    h.add(sa.dst_col_stride);
+    h.add(sa.src_offset);
+    h.add(sa.src_row_stride);
+    h.add(sa.src_col_stride);
+    h.add(sa.patch_stride);
+}
+
+fn addAttentionRuntimeStencil(h: *RuntimeStencilHasher, op_index: u32, att: anytype) void {
+    h.add(2);
+    h.add(op_index);
+    h.add(att.dst);
+    h.add(att.q);
+    h.add(att.k);
+    h.add(att.v);
+    h.add(att.mask);
+    h.add(@intFromBool(att.has_mask));
+    h.add(att.d_head);
+    h.add(att.seq_q);
+    h.add(att.q_off);
+    h.add(att.k_off);
+    h.add(att.v_off);
+    h.add(att.mask_off);
+    h.add(att.dst_off);
+    h.add(att.q_rs);
+    h.add(att.q_cs);
+    h.add(att.k_rs);
+    h.add(att.k_cs);
+    h.add(att.v_rs);
+    h.add(att.v_cs);
+    h.add(att.mask_rs);
+    h.add(att.mask_cs);
+    h.add(att.dst_rs);
+    h.add(att.dst_cs);
+}
+
+fn testAttentionOp() backend_mod.DeviceOp {
+    return .{ .attention = .{
+        .dst = 4,
+        .q = 1,
+        .k = 2,
+        .v = 3,
+        .mask = 0,
+        .has_mask = false,
+        .d_head = 4,
+        .seq_q = 1,
+        .seq_kv = 1,
+        .scale = 1.0,
+        .q_off = 0,
+        .k_off = 0,
+        .v_off = 0,
+        .mask_off = 0,
+        .dst_off = 0,
+        .q_rs = 1,
+        .q_cs = 4,
+        .k_rs = 1,
+        .k_cs = 4,
+        .v_rs = 1,
+        .v_cs = 4,
+        .mask_rs = 1,
+        .mask_cs = 4,
+        .dst_rs = 1,
+        .dst_cs = 4,
+    } };
+}
+
+test "program stencil owns dynamic patching state" {
+    var attention = testAttentionOp();
+    attention.attention.patch_seq_kv = true;
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .slice_assign = .{
+            .dst = 1,
+            .src = 0,
+            .rows = 4,
+            .cols = 1,
+            .dst_base_offset = 8,
+            .dst_offset = 8,
+            .dst_row_stride = 1,
+            .dst_col_stride = 4,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 4,
+        } },
+        attention,
+    };
+
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 5, .buffer_sizes = &.{ 4, 32, 20, 20, 4 }, .initial_uploads = &.{} };
+    var program_stencil = try ProgramStencil.initProgram(std.testing.allocator, program);
+    defer program_stencil.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.changed, program_stencil.patchRuntimeWindow(try backend_mod.RuntimeWindow.init(3, 2)));
+    try std.testing.expectEqual(@as(u32, 20), program_stencil.ops[0].slice_assign.dst_offset);
+    try std.testing.expectEqual(@as(u32, 5), program_stencil.ops[1].attention.seq_kv);
+    try std.testing.expectEqual(backend_mod.RuntimePatchShape.actual(1, 1, program_stencil.runtimePatchShape().runtime_patch_stencil_hash), program_stencil.runtimePatchShape());
+    try std.testing.expect(program_stencil.runtimePatchShape().runtime_patch_stencil_hash != 0);
+    try std.testing.expectEqual(@as(u32, 8), ops[0].slice_assign.dst_offset);
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.unchanged, program_stencil.patchRuntimeWindow(try backend_mod.RuntimeWindow.init(3, 2)));
+}
+
+test "program stencil inspection reports executable shape" {
+    const ops = [_]backend_mod.DeviceOp{.{ .slice_assign = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 2,
+        .cols = 1,
+        .dst_base_offset = 0,
+        .dst_offset = 0,
+        .dst_row_stride = 1,
+        .dst_col_stride = 2,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 2,
+        .patch_stride = 2,
+    } }};
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 2, .buffer_sizes = &.{ 2, 8 }, .initial_uploads = &.{} };
+    var program_stencil = try ProgramStencil.initProgram(std.testing.allocator, program);
+    defer program_stencil.deinit(std.testing.allocator);
+
+    const inspection = program_stencil.inspect();
+    try std.testing.expectEqual(@as(usize, 1), inspection.op_count);
+    try std.testing.expectEqual(@as(usize, 2), inspection.buffer_count);
+    try std.testing.expectEqual(@as(usize, 10), inspection.buffer_element_count);
+    try std.testing.expectEqual(backend_mod.RuntimePatchShape.actual(1, 0, inspection.runtime_patch_shape.runtime_patch_stencil_hash), inspection.runtime_patch_shape);
+    try std.testing.expect(inspection.runtime_patch_shape.runtime_patch_stencil_hash != 0);
+    try std.testing.expectEqual(@as(usize, 1), program_stencil.kernel_plan.commands.len);
+    try std.testing.expectEqual(@as(u32, 1), inspection.command_shape.command_count);
+    try std.testing.expectEqual(@as(u32, 1), inspection.command_shape.covered_ops);
+    try std.testing.expectEqual(@as(u32, 0), inspection.command_shape.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), inspection.command_shape.command_kind_counts[@intFromEnum(ProgramCommandKind.op)]);
+    try std.testing.expect(inspection.command_shape.command_stencil_hash != 0);
+    try std.testing.expectEqual(inspection.command_shape, try ProgramCommandStreamShape.fromCommands(program_stencil.kernel_plan.commands));
+}
+
+test "runtime patch stencil hash changes when patch geometry changes" {
+    const a_ops = [_]backend_mod.DeviceOp{.{ .slice_assign = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 1,
+        .cols = 1,
+        .dst_base_offset = 4,
+        .dst_offset = 4,
+        .dst_row_stride = 1,
+        .dst_col_stride = 1,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 1,
+        .patch_stride = 2,
+    } }};
+    const b_ops = [_]backend_mod.DeviceOp{.{ .slice_assign = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 1,
+        .cols = 1,
+        .dst_base_offset = 4,
+        .dst_offset = 4,
+        .dst_row_stride = 1,
+        .dst_col_stride = 1,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 1,
+        .patch_stride = 3,
+    } }};
+
+    var a = try ProgramStencil.initProgram(std.testing.allocator, .{ .ops = &a_ops, .n_buffers = 2, .buffer_sizes = &.{ 1, 16 }, .initial_uploads = &.{} });
+    defer a.deinit(std.testing.allocator);
+    var b = try ProgramStencil.initProgram(std.testing.allocator, .{ .ops = &b_ops, .n_buffers = 2, .buffer_sizes = &.{ 1, 16 }, .initial_uploads = &.{} });
+    defer b.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u32, 1), a.runtimePatchShape().runtime_patch_holes);
+    try std.testing.expectEqual(a.runtimePatchShape().runtime_patch_holes, b.runtimePatchShape().runtime_patch_holes);
+    try std.testing.expect(a.runtimePatchShape().runtime_patch_stencil_hash != b.runtimePatchShape().runtime_patch_stencil_hash);
+}
+
+test "program stencil command hash changes when command stream changes" {
+    const a_ops = [_]backend_mod.DeviceOp{.{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 0, .src1 = 1, .n = 4 } }};
+    const b_ops = [_]backend_mod.DeviceOp{
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 0, .src1 = 1, .n = 4 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 3, .src0 = 2, .src1 = 1, .n = 4 } },
+    };
+
+    var a = try ProgramStencil.initProgram(std.testing.allocator, .{ .ops = &a_ops, .n_buffers = 3, .buffer_sizes = &.{ 4, 4, 4 }, .initial_uploads = &.{} });
+    defer a.deinit(std.testing.allocator);
+    var b = try ProgramStencil.initProgram(std.testing.allocator, .{ .ops = &b_ops, .n_buffers = 4, .buffer_sizes = &.{ 4, 4, 4, 4 }, .initial_uploads = &.{} });
+    defer b.deinit(std.testing.allocator);
+
+    try std.testing.expect(a.inspect().command_shape.command_count > 0);
+    try std.testing.expect(b.inspect().command_shape.command_count > 0);
+    try std.testing.expect(a.inspect().command_shape.command_stencil_hash != b.inspect().command_shape.command_stencil_hash);
+}
+
+test "program stencil rejects invalid runtime windows" {
+    var attention = testAttentionOp();
+    attention.attention.patch_seq_kv = true;
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .slice_assign = .{
+            .dst = 1,
+            .src = 0,
+            .rows = 4,
+            .cols = 1,
+            .dst_base_offset = 8,
+            .dst_offset = 8,
+            .dst_row_stride = 1,
+            .dst_col_stride = 4,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 4,
+        } },
+        attention,
+    };
+
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 5, .buffer_sizes = &.{ 4, 32, 20, 20, 4 }, .initial_uploads = &.{} };
+    var program_stencil = try ProgramStencil.initProgram(std.testing.allocator, program);
+    defer program_stencil.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.invalid, program_stencil.patchRuntimeWindow(.{
+        .position = std.math.maxInt(u32),
+        .len = 1,
+    }));
+    try std.testing.expectEqual(@as(u32, 8), program_stencil.ops[0].slice_assign.dst_offset);
+    try std.testing.expectEqual(@as(u32, 1), program_stencil.ops[1].attention.seq_kv);
+}
+
+test "program stencil derives cache-write holes from slice assign stride" {
+    const ops = [_]backend_mod.DeviceOp{.{ .slice_assign = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 1,
+        .cols = 1,
+        .dst_base_offset = 4,
+        .dst_offset = 4,
+        .dst_row_stride = 1,
+        .dst_col_stride = 1,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 1,
+        .patch_stride = 2,
+    } }};
+
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 2, .buffer_sizes = &.{ 1, 8 }, .initial_uploads = &.{} };
+    var program_stencil = try ProgramStencil.initProgram(std.testing.allocator, program);
+    defer program_stencil.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.changed, program_stencil.patchRuntimeWindow(try backend_mod.RuntimeWindow.init(1, 1)));
+    try std.testing.expectEqual(@as(u32, 6), program_stencil.ops[0].slice_assign.dst_offset);
+    try std.testing.expectEqual(@as(u32, 1), program_stencil.runtimePatchShape().runtime_patch_cache_write_pos_holes);
+    try std.testing.expectEqual(@as(u32, 0), program_stencil.runtimePatchShape().runtime_patch_attention_seq_kv_holes);
+}
+
+test "program stencil keeps static attention length without patch flag" {
+    const ops = [_]backend_mod.DeviceOp{testAttentionOp()};
+
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 5, .buffer_sizes = &.{ 1, 4, 4, 4, 4 }, .initial_uploads = &.{} };
+    var program_stencil = try ProgramStencil.initProgram(std.testing.allocator, program);
+    defer program_stencil.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.unchanged, program_stencil.patchRuntimeWindow(try backend_mod.RuntimeWindow.init(5, 3)));
+    try std.testing.expectEqual(@as(u32, 1), program_stencil.ops[0].attention.seq_kv);
+}
+
+test "program stencil owns fused elementwise step payloads" {
+    const steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .mul, .is_swapped = false, .secondary_buf = 2, .secondary_offset = 3 },
+    };
+    const ops = [_]backend_mod.DeviceOp{.{ .fused_elementwise = .{
+        .steps = &steps,
+        .n = 4,
+        .dst = 1,
+        .src = 0,
+        .dst_offset = 0,
+        .src_offset = 0,
+    } }};
+
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 3, .buffer_sizes = &.{ 4, 4, 4 }, .initial_uploads = &.{} };
+    var program_stencil = try ProgramStencil.initProgram(std.testing.allocator, program);
+    defer program_stencil.deinit(std.testing.allocator);
+
+    const runtime_steps = program_stencil.ops[0].fused_elementwise.steps;
+    try std.testing.expect(runtime_steps.ptr != steps[0..].ptr);
+    try std.testing.expectEqual(steps[0], runtime_steps[0]);
+}
+
+test "program stencil patch owned ops after source ops mutate" {
+    var attention = testAttentionOp();
+    attention.attention.patch_seq_kv = true;
+    var ops = [_]backend_mod.DeviceOp{
+        .{ .slice_assign = .{
+            .dst = 1,
+            .src = 0,
+            .rows = 1,
+            .cols = 1,
+            .dst_base_offset = 4,
+            .dst_offset = 4,
+            .dst_row_stride = 1,
+            .dst_col_stride = 1,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 1,
+            .patch_stride = 2,
+        } },
+        attention,
+    };
+
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 5, .buffer_sizes = &.{ 1, 32, 32, 32, 4 }, .initial_uploads = &.{} };
+    var program_stencil = try ProgramStencil.initProgram(std.testing.allocator, program);
+    defer program_stencil.deinit(std.testing.allocator);
+
+    ops[0] = .{ .elementwise = .{ .op = .add, .dst = 0, .src0 = 0, .src1 = 0, .n = 1 } };
+    ops[1] = .{ .reduce = .{ .op = .sum, .dst = 0, .src = 0, .n_out = 1, .reduce_size = 1 } };
+
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.changed, program_stencil.patchRuntimeWindow(try backend_mod.RuntimeWindow.init(5, 3)));
+    try std.testing.expectEqual(@as(u32, 14), program_stencil.ops[0].slice_assign.dst_offset);
+    try std.testing.expectEqual(@as(u32, 8), program_stencil.ops[1].attention.seq_kv);
+}
+
+test "program stencil refuses cache patches outside compiled buffers" {
+    const ops = [_]backend_mod.DeviceOp{.{ .slice_assign = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 1,
+        .cols = 2,
+        .dst_base_offset = 0,
+        .dst_offset = 0,
+        .dst_row_stride = 1,
+        .dst_col_stride = 1,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 1,
+        .patch_stride = 2,
+    } }};
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 2, .buffer_sizes = &.{ 2, 8 }, .initial_uploads = &.{} };
+    var program_stencil = try ProgramStencil.initProgram(std.testing.allocator, program);
+    defer program_stencil.deinit(std.testing.allocator);
+    const inspection = program_stencil.inspect();
+    try std.testing.expectEqual(@as(?u32, 3), inspection.runtime_patch_envelope.max_cache_write_pos);
+    try std.testing.expectEqual(@as(?u32, std.math.maxInt(u32)), inspection.runtime_patch_envelope.max_attention_seq_kv);
+
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.changed, program_stencil.patchRuntimeWindow(try backend_mod.RuntimeWindow.init(3, 1)));
+    try std.testing.expectEqual(@as(u32, 6), program_stencil.ops[0].slice_assign.dst_offset);
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.invalid, program_stencil.patchRuntimeWindow(try backend_mod.RuntimeWindow.init(4, 1)));
+    try std.testing.expectEqual(@as(u32, 6), program_stencil.ops[0].slice_assign.dst_offset);
+}
+
+test "program stencil rejects cache patches without buffer bounds" {
+    const ops = [_]backend_mod.DeviceOp{.{ .slice_assign = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 1,
+        .cols = 1,
+        .dst_base_offset = 0,
+        .dst_offset = 0,
+        .dst_row_stride = 1,
+        .dst_col_stride = 1,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 1,
+        .patch_stride = 1,
+    } }};
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 0, .buffer_sizes = &.{}, .initial_uploads = &.{} };
+    var program_stencil = try ProgramStencil.initProgram(std.testing.allocator, program);
+    defer program_stencil.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.invalid, program_stencil.patchRuntimeWindow(try backend_mod.RuntimeWindow.init(0, 1)));
+}
+
+test "program stencil rejects cache patches beyond u32 offsets" {
+    const near_u32_limit: u32 = std.math.maxInt(u32) - 1;
+    const ops = [_]backend_mod.DeviceOp{.{ .slice_assign = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 1,
+        .cols = 1,
+        .dst_base_offset = near_u32_limit,
+        .dst_offset = near_u32_limit,
+        .dst_row_stride = 1,
+        .dst_col_stride = 1,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 1,
+        .patch_stride = 2,
+    } }};
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 2, .buffer_sizes = &.{ 1, @as(usize, std.math.maxInt(u32)) + 2 }, .initial_uploads = &.{} };
+    var program_stencil = try ProgramStencil.initProgram(std.testing.allocator, program);
+    defer program_stencil.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.invalid, program_stencil.patchRuntimeWindow(try backend_mod.RuntimeWindow.init(1, 1)));
+    try std.testing.expectEqual(near_u32_limit, program_stencil.ops[0].slice_assign.dst_offset);
+}
+
+test "program stencil refuses attention patches outside compiled buffers" {
+    var attention = testAttentionOp();
+    attention.attention.patch_seq_kv = true;
+    const ops = [_]backend_mod.DeviceOp{attention};
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 5, .buffer_sizes = &.{ 1, 4, 8, 8, 4 }, .initial_uploads = &.{} };
+    var program_stencil = try ProgramStencil.initProgram(std.testing.allocator, program);
+    defer program_stencil.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.changed, program_stencil.patchRuntimeWindow(try backend_mod.RuntimeWindow.init(0, 2)));
+    try std.testing.expectEqual(@as(u32, 2), program_stencil.ops[0].attention.seq_kv);
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.invalid, program_stencil.patchRuntimeWindow(try backend_mod.RuntimeWindow.init(0, 3)));
+    try std.testing.expectEqual(@as(u32, 2), program_stencil.ops[0].attention.seq_kv);
+}
+
+test "program stencil bounds attention patches by mask storage" {
+    var attention = testAttentionOp();
+    attention.attention.patch_seq_kv = true;
+    attention.attention.has_mask = true;
+    const ops = [_]backend_mod.DeviceOp{attention};
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 5, .buffer_sizes = &.{ 2, 4, 20, 20, 4 }, .initial_uploads = &.{} };
+    var program_stencil = try ProgramStencil.initProgram(std.testing.allocator, program);
+    defer program_stencil.deinit(std.testing.allocator);
+    const inspection = program_stencil.inspect();
+    try std.testing.expectEqual(@as(?u32, std.math.maxInt(u32)), inspection.runtime_patch_envelope.max_cache_write_pos);
+    try std.testing.expectEqual(@as(?u32, 2), inspection.runtime_patch_envelope.max_attention_seq_kv);
+
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.changed, program_stencil.patchRuntimeWindow(try backend_mod.RuntimeWindow.init(0, 2)));
+    try std.testing.expectEqual(@as(u32, 2), program_stencil.ops[0].attention.seq_kv);
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.invalid, program_stencil.patchRuntimeWindow(try backend_mod.RuntimeWindow.init(0, 3)));
+    try std.testing.expectEqual(@as(u32, 2), program_stencil.ops[0].attention.seq_kv);
+}
+
+fn initProgramStencilWithFusedPayloads(alloc: std.mem.Allocator) !void {
+    const steps_a = [_]backend_mod.FusedEwStep{
+        .{ .op = .mul, .is_swapped = false, .secondary_buf = 2, .secondary_offset = 3 },
+    };
+    const steps_b = [_]backend_mod.FusedEwStep{
+        .{ .op = .add, .is_swapped = true, .secondary_buf = 4, .secondary_offset = 5 },
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .fused_elementwise = .{ .steps = &steps_a, .n = 4, .dst = 1, .src = 0, .dst_offset = 0, .src_offset = 0 } },
+        .{ .fused_elementwise = .{ .steps = &steps_b, .n = 4, .dst = 3, .src = 1, .dst_offset = 0, .src_offset = 0 } },
+    };
+
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 5, .buffer_sizes = &.{ 4, 4, 4, 4, 4 }, .initial_uploads = &.{} };
+    var program_stencil = try ProgramStencil.initProgram(alloc, program);
+    defer program_stencil.deinit(alloc);
+}
+
+test "program stencil cleans up partial fused payload copies" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        initProgramStencilWithFusedPayloads,
+        .{},
+    );
+}
 
 /// Broad, model-agnostic operation families used by backend schedulers.
 /// These are intentionally coarser than DeviceOp tags: a backend can reason
 /// about "row kernels" or "movement kernels" without knowing which model
 /// produced the program.
-pub const KernelFamily = enum {
+const KernelFamily = enum {
     elementwise,
     fused_elementwise,
     row,
@@ -25,22 +916,17 @@ pub const KernelFamily = enum {
     attention,
 };
 
-pub const n_kernel_families = @typeInfo(KernelFamily).@"enum".fields.len;
+const n_kernel_families = @typeInfo(KernelFamily).@"enum".fields.len;
 comptime {
     if (n_kernel_families > 64) @compileError("KernelFamilyMask stores families in u64");
 }
 
-pub const KernelFamilyMask = struct {
+const KernelFamilyMask = struct {
     bits: u64 = 0,
 
-    pub const empty: KernelFamilyMask = .{};
-    pub const all: KernelFamilyMask = blk: {
-        var bits: u64 = 0;
-        for (0..n_kernel_families) |i| bits |= @as(u64, 1) << @intCast(i);
-        break :blk .{ .bits = bits };
-    };
+    const empty: KernelFamilyMask = .{};
 
-    pub fn init(comptime families: []const KernelFamily) KernelFamilyMask {
+    fn init(comptime families: []const KernelFamily) KernelFamilyMask {
         var mask: KernelFamilyMask = .empty;
         inline for (families) |family| {
             mask = mask.with(family);
@@ -48,11 +934,11 @@ pub const KernelFamilyMask = struct {
         return mask;
     }
 
-    pub fn with(self: KernelFamilyMask, family: KernelFamily) KernelFamilyMask {
+    fn with(self: KernelFamilyMask, family: KernelFamily) KernelFamilyMask {
         return .{ .bits = self.bits | bit(family) };
     }
 
-    pub fn contains(self: KernelFamilyMask, family: KernelFamily) bool {
+    fn contains(self: KernelFamilyMask, family: KernelFamily) bool {
         return (self.bits & bit(family)) != 0;
     }
 
@@ -63,7 +949,7 @@ pub const KernelFamilyMask = struct {
 
 /// Whether a scheduled region is expected to run in the backend's native
 /// execution path or through the backend's semantic fallback.
-pub const ExecutionClass = enum {
+const ExecutionClass = enum {
     backend,
     fallback,
 };
@@ -71,7 +957,7 @@ pub const ExecutionClass = enum {
 /// Native kernel families a backend can lower directly.
 /// This is separate from backend.Capabilities.supportsOp(): a backend may
 /// support a DeviceProgram by falling back for some ops.
-pub const KernelSupport = struct {
+const KernelSupport = struct {
     elementwise: bool = false,
     fused_elementwise: bool = false,
     row: bool = false,
@@ -83,17 +969,7 @@ pub const KernelSupport = struct {
     rope: bool = false,
     attention: bool = false,
 
-    pub fn fromCapabilities(capabilities: backend_mod.Capabilities) KernelSupport {
-        return .{
-            .fused_elementwise = capabilities.fused_elementwise,
-            .matmul = capabilities.dense_matmul_f32,
-            .qmatvec = capabilities.qmatmul,
-            .qmatmul = capabilities.qmatmul,
-            .attention = capabilities.attention.supported,
-        };
-    }
-
-    pub fn supports(self: KernelSupport, family: KernelFamily) bool {
+    fn supports(self: KernelSupport, family: KernelFamily) bool {
         return switch (family) {
             .elementwise => self.elementwise,
             .fused_elementwise => self.fused_elementwise,
@@ -118,13 +994,6 @@ pub const SchedulePolicy = struct {
     fine_grained: bool = false,
     min_backend_matmul_m: u32 = 16,
     min_backend_qmatmul_m: u32 = 16,
-
-    pub fn conservative(capabilities: backend_mod.Capabilities) SchedulePolicy {
-        return .{
-            .capabilities = capabilities,
-            .native_kernels = KernelSupport.fromCapabilities(capabilities),
-        };
-    }
 };
 
 /// A contiguous DeviceOp range with the same broad family and execution class.
@@ -135,7 +1004,7 @@ pub const KernelItem = struct {
     len: u32,
 };
 
-pub const KernelRegion = struct {
+const KernelRegion = struct {
     start_item: u32,
     item_count: u32,
     op_start: u32,
@@ -143,19 +1012,14 @@ pub const KernelRegion = struct {
     anchor_count: u32,
 };
 
-pub const invalid_pattern_index = std.math.maxInt(u32);
+const invalid_pattern_index = std.math.maxInt(u32);
 
-pub const PatternRegion = struct {
+const PatternRegion = struct {
     pattern_index: u32,
     region: KernelRegion,
 };
 
-pub const FamilyPattern = struct {
-    name: []const u8,
-    families: []const KernelFamily,
-};
-
-pub const ScheduleUnitKind = enum {
+const ScheduleUnitKind = enum {
     item,
     pattern_region,
 };
@@ -173,7 +1037,7 @@ pub const ScheduleUnit = struct {
     op_count: u32,
 };
 
-pub const RegionExecutionSummary = struct {
+const RegionExecutionSummary = struct {
     units: u32 = 0,
     backend_units: u32 = 0,
     fallback_units: u32 = 0,
@@ -202,6 +1066,7 @@ pub const RegionPolicy = struct {
                 .fused_elementwise,
                 .row,
                 .movement,
+                .matmul,
                 .qmatvec,
                 .rope,
                 .attention,
@@ -225,16 +1090,30 @@ pub const RegionPolicy = struct {
             }),
         };
     }
+
+    pub fn matmulCluster() RegionPolicy {
+        return .{
+            .anchor_families = KernelFamilyMask.init(&.{.matmul}),
+            .member_families = KernelFamilyMask.init(&.{
+                .elementwise,
+                .fused_elementwise,
+                .row,
+                .reduce,
+                .movement,
+                .matmul,
+                .rope,
+                .attention,
+            }),
+        };
+    }
 };
 
-/// A named, backend-owned lowering target over a KernelItem schedule.
+/// A backend-owned lowering target over a KernelItem schedule.
 ///
-/// StagePolicy keeps the central idea tiny: a stage is a reusable anchored
-/// region with a pattern id. Model code does not know about it, and backend
-/// code can progressively replace the conservative per-op walk with a fused
-/// stage lowering.
+/// StagePolicy keeps the central idea tiny: a reusable anchored region with a
+/// pattern id. Model code does not know about it, and backend code can
+/// progressively replace the conservative per-op walk with a fused lowering.
 pub const StagePolicy = struct {
-    name: []const u8,
     pattern_index: u32,
     region_policy: RegionPolicy,
     anchors_per_stage: u32,
@@ -242,50 +1121,16 @@ pub const StagePolicy = struct {
     min_ops_per_stage: u32 = 1,
 
     pub fn anchored(
-        name: []const u8,
         pattern_index: u32,
         region_policy: RegionPolicy,
         anchors_per_stage: u32,
     ) StagePolicy {
         return .{
-            .name = name,
             .pattern_index = pattern_index,
             .region_policy = region_policy,
             .anchors_per_stage = anchors_per_stage,
         };
     }
-};
-
-pub const StageCommandKind = enum {
-    op,
-    row_chain,
-    rope_chain,
-
-    pub fn label(self: StageCommandKind) []const u8 {
-        return @tagName(self);
-    }
-};
-
-pub const StageCommand = struct {
-    kind: StageCommandKind,
-    op_start: u32,
-    op_count: u32,
-
-    pub fn dispatchCount(self: StageCommand) u32 {
-        _ = self;
-        return 1;
-    }
-};
-
-pub const StageCommandSummary = struct {
-    commands: u32 = 0,
-    ops: u32 = 0,
-    estimated_dispatches: u32 = 0,
-    estimated_saved_dispatches: u32 = 0,
-    row_chains: u32 = 0,
-    row_chain_ops: u32 = 0,
-    rope_chains: u32 = 0,
-    rope_chain_ops: u32 = 0,
 };
 
 pub const ProgramCommandKind = enum {
@@ -301,33 +1146,47 @@ pub const ProgramCommandKind = enum {
     attention_store_group,
     rope_attention_store_chain,
     rope_attention_store_group,
-    attention_batch,
     attention_group,
     elementwise_batch,
     repeat_fused_elementwise_chain,
-    projection_fused_elementwise_chain,
+    projection_pair_elementwise_chain,
     projection_pair_fused_elementwise_chain,
+    dense_projection_pair_fused_elementwise_chain,
+    projection_row_chain,
+    dense_projection_row_chain,
+    dense_projection_chain,
     projection_chain,
     projection_group,
+    dense_projection_cache_group,
     projection_cache_group,
 
-    pub fn label(self: ProgramCommandKind) []const u8 {
-        return @tagName(self);
-    }
-
-    pub fn shape(self: ProgramCommandKind) ProgramCommandShape {
+    fn shape(self: ProgramCommandKind) ProgramCommandShape {
         return switch (self) {
             .op,
             .row_chain,
             .rope_chain,
             .rope_batch,
             .movement_batch,
-            .attention_batch,
             .repeat_fused_elementwise_chain,
-            .projection_fused_elementwise_chain,
             .projection_pair_fused_elementwise_chain,
+            .dense_projection_pair_fused_elementwise_chain,
             => .{},
 
+            .projection_pair_elementwise_chain,
+            => .{
+                .coverage = .anchor_sidecars,
+                .advance = .explicit_indices,
+            },
+
+            .projection_row_chain,
+            .dense_projection_row_chain,
+            => .{
+                .coverage = .anchor_sidecars,
+                .sidecars = .flat,
+                .advance = .explicit_indices,
+            },
+
+            .dense_projection_chain,
             .projection_chain,
             .attention_chain,
             => .{ .coverage = .anchor_sidecars },
@@ -343,7 +1202,9 @@ pub const ProgramCommandKind = enum {
                 .advance = .explicit_indices,
             },
 
-            .projection_cache_group => .{
+            .dense_projection_cache_group,
+            .projection_cache_group,
+            => .{
                 .coverage = .anchor_sidecars,
                 .sidecars = .flat,
                 .advance = .explicit_indices,
@@ -360,29 +1221,37 @@ pub const ProgramCommandKind = enum {
     }
 };
 
-pub const ProgramCommandCoverage = enum {
+pub const n_program_command_kinds = @typeInfo(ProgramCommandKind).@"enum".fields.len;
+
+pub const program_command_kind_names = blk: {
+    var names: [n_program_command_kinds][]const u8 = undefined;
+    for (@typeInfo(ProgramCommandKind).@"enum".fields, 0..) |field, i| names[i] = field.name;
+    break :blk names;
+};
+
+const ProgramCommandCoverage = enum {
     contiguous,
     anchor_sidecars,
     anchors_only,
 };
 
-pub const ProgramCommandSidecarLayout = enum {
+const ProgramCommandSidecarLayout = enum {
     anchor_aligned,
     flat,
 };
 
-pub const ProgramCommandAdvance = enum {
+const ProgramCommandAdvance = enum {
     contiguous,
     explicit_indices,
 };
 
-pub const ProgramCommandShape = struct {
+const ProgramCommandShape = struct {
     coverage: ProgramCommandCoverage = .contiguous,
     sidecars: ProgramCommandSidecarLayout = .anchor_aligned,
     advance: ProgramCommandAdvance = .contiguous,
 };
 
-pub const ProjectionGroupKind = enum {
+const ProjectionGroupKind = enum {
     qmatvec,
     qmatmul,
 };
@@ -390,27 +1259,27 @@ pub const ProjectionGroupKind = enum {
 /// Pure policy for projection batching. Backends still decide whether they
 /// have a native kernel for the command; this only answers "is it legal to
 /// batch these independent projections and carry simple side effects?"
-pub const ProjectionGroupPolicy = struct {
+const ProjectionGroupPolicy = struct {
     kind: ProjectionGroupKind,
     max_anchors: u32 = 4,
     carry_slice_sidecars: bool = true,
 
-    pub fn decodeQMatvec(max_anchors: u32) ProjectionGroupPolicy {
+    fn decodeQMatvec(max_anchors: u32) ProjectionGroupPolicy {
         return .{ .kind = .qmatvec, .max_anchors = max_anchors, .carry_slice_sidecars = true };
     }
 
-    pub fn prefillQMatmul(max_anchors: u32) ProjectionGroupPolicy {
+    fn prefillQMatmul(max_anchors: u32) ProjectionGroupPolicy {
         return .{ .kind = .qmatmul, .max_anchors = max_anchors };
     }
 };
 
 pub const CommandStreamPolicy = struct {
-    stage_commands: bool = true,
+    row_rope_chains: bool = true,
     qmatvec_group_size: u32 = 4,
     qmatmul_group_size: u32 = 4,
+    dense_matvec_group_size: u32 = 4,
     qmatmul_sidecars: bool = true,
     qmatmul_cache_sidecars_per_anchor: u32 = 8,
-    projection_rope_cache_sidecars: bool = false,
     max_rope_batch: u32 = 16,
     max_movement_batch: u32 = 16,
     max_attention_batch: u32 = 16,
@@ -418,30 +1287,29 @@ pub const CommandStreamPolicy = struct {
     max_rope_attention_store_batch: u32 = 16,
     max_elementwise_batch: u32 = 8,
     fuse_repeat_fused_elementwise: bool = true,
+    fuse_projection_chain: bool = true,
+    fuse_projection_row_chain: bool = true,
+    fuse_projection_row_chain_qmatvec: bool = false,
+    fuse_dense_projection_row_chain: bool = false,
+    min_projection_row_chain_rows: u32 = 8,
 
-    pub fn fromCapabilities(capabilities: backend_mod.Capabilities) CommandStreamPolicy {
-        const c = capabilities.command_stream;
-        return .{
-            .stage_commands = c.stage_commands,
-            .qmatvec_group_size = c.qmatvec_group_size,
-            .qmatmul_group_size = c.qmatmul_group_size,
-            .qmatmul_sidecars = c.qmatmul_sidecars,
-            .qmatmul_cache_sidecars_per_anchor = c.qmatmul_cache_sidecars_per_anchor,
-            .projection_rope_cache_sidecars = c.projection_rope_cache_sidecars,
-            .max_rope_batch = c.max_rope_batch,
-            .max_movement_batch = c.max_movement_batch,
-            .max_attention_batch = c.max_attention_batch,
-            .max_attention_store_batch = c.max_attention_store_batch,
-            .max_rope_attention_store_batch = c.max_rope_attention_store_batch,
-            .max_elementwise_batch = c.max_elementwise_batch,
-            .fuse_repeat_fused_elementwise = c.fuse_repeat_fused_elementwise,
-        };
+    pub fn default() CommandStreamPolicy {
+        return .{};
     }
 
-    pub fn metal(qmatvec_group_size: u32, qmatmul_group_size: u32) CommandStreamPolicy {
-        var policy = CommandStreamPolicy.fromCapabilities(backend_mod.Capabilities.metal);
+    pub fn promptProjectionRowChainCandidate() CommandStreamPolicy {
+        var policy = CommandStreamPolicy.default();
+        policy.fuse_projection_row_chain = true;
+        policy.fuse_projection_row_chain_qmatvec = false;
+        policy.min_projection_row_chain_rows = 8;
+        return policy;
+    }
+
+    fn grouped(qmatvec_group_size: u32, qmatmul_group_size: u32) CommandStreamPolicy {
+        var policy = CommandStreamPolicy.default();
         policy.qmatvec_group_size = qmatvec_group_size;
         policy.qmatmul_group_size = qmatmul_group_size;
+        policy.dense_matvec_group_size = qmatvec_group_size;
         return policy;
     }
 
@@ -458,6 +1326,8 @@ pub const CommandStreamPolicy = struct {
 };
 
 pub const ProgramCommand = struct {
+    const invalid_sidecar_slot = std.math.maxInt(u8);
+
     kind: ProgramCommandKind,
     op_start: u32,
     op_count: u32,
@@ -466,8 +1336,9 @@ pub const ProgramCommand = struct {
     sidecar_count: u32 = 0,
     indices: [max_projection_group_anchors]usize = [_]usize{0} ** max_projection_group_anchors,
     sidecar_indices: [max_projection_group_anchors]?usize = [_]?usize{null} ** max_projection_group_anchors,
+    sidecar_slots: [max_projection_group_anchors]u8 = [_]u8{invalid_sidecar_slot} ** max_projection_group_anchors,
 
-    pub fn op(start: usize) ProgramCommand {
+    fn op(start: usize) ProgramCommand {
         return .{
             .kind = .op,
             .op_start = @intCast(start),
@@ -475,19 +1346,7 @@ pub const ProgramCommand = struct {
         };
     }
 
-    pub fn fromStageCommand(command: StageCommand) ProgramCommand {
-        return .{
-            .kind = switch (command.kind) {
-                .op => .op,
-                .row_chain => .row_chain,
-                .rope_chain => .rope_chain,
-            },
-            .op_start = command.op_start,
-            .op_count = command.op_count,
-        };
-    }
-
-    pub fn fromProjectionSelection(selection: ProjectionGroupSelection) ProgramCommand {
+    fn fromProjectionSelection(selection: ProjectionGroupSelection) ProgramCommand {
         var command = ProgramCommand{
             .kind = .projection_group,
             .op_start = @intCast(selection.start_op),
@@ -501,7 +1360,7 @@ pub const ProgramCommand = struct {
         return command;
     }
 
-    pub fn contiguous(kind: ProgramCommandKind, start: usize, count: usize) ProgramCommand {
+    fn contiguous(kind: ProgramCommandKind, start: usize, count: usize) ProgramCommand {
         return .{
             .kind = kind,
             .op_start = @intCast(start),
@@ -509,15 +1368,11 @@ pub const ProgramCommand = struct {
         };
     }
 
-    pub fn dispatchCount(_: ProgramCommand) u32 {
-        return 1;
-    }
-
-    pub fn shape(self: ProgramCommand) ProgramCommandShape {
+    fn shape(self: ProgramCommand) ProgramCommandShape {
         return self.kind.shape();
     }
 
-    pub fn coveredOpCount(self: ProgramCommand) u32 {
+    fn coveredOpCount(self: ProgramCommand) u32 {
         return switch (self.shape().coverage) {
             .contiguous => self.op_count,
             .anchor_sidecars => self.anchor_count + self.sidecar_count,
@@ -525,30 +1380,18 @@ pub const ProgramCommand = struct {
         };
     }
 
-    pub fn advanceCount(self: ProgramCommand) u32 {
+    fn advanceCount(self: ProgramCommand) u32 {
         return switch (self.shape().advance) {
             .contiguous => self.op_count,
             .explicit_indices => 1,
         };
     }
 
-    pub fn coversAnchorSidecars(self: ProgramCommand) bool {
-        return self.shape().coverage == .anchor_sidecars;
-    }
-
-    pub fn coversAnchorsOnly(self: ProgramCommand) bool {
-        return self.shape().coverage == .anchors_only;
-    }
-
-    pub fn hasExplicitCoverage(self: ProgramCommand) bool {
+    fn hasExplicitCoverage(self: ProgramCommand) bool {
         return self.shape().coverage != .contiguous;
     }
 
-    pub fn usesExplicitIndices(self: ProgramCommand) bool {
-        return self.shape().advance == .explicit_indices;
-    }
-
-    pub fn explicitIndexSet(self: *const ProgramCommand) CommandIndexSet {
+    fn explicitIndexSet(self: *const ProgramCommand) CommandIndexSet {
         var set = CommandIndexSet{};
         for (self.anchorIndices()) |idx| {
             _ = set.append(idx);
@@ -559,7 +1402,7 @@ pub const ProgramCommand = struct {
         return set;
     }
 
-    pub fn sortedExplicitIndexSet(self: *const ProgramCommand) CommandIndexSet {
+    fn sortedExplicitIndexSet(self: *const ProgramCommand) CommandIndexSet {
         var set = self.explicitIndexSet();
         set.sort();
         return set;
@@ -577,11 +1420,18 @@ pub const ProgramCommand = struct {
         return self.sidecar_indices[0..self.anchor_count];
     }
 
-    pub fn flatSidecarIndices(self: *const ProgramCommand) []const ?usize {
+    pub fn sidecarAnchorSlot(self: *const ProgramCommand, sidecar_index: usize) ?usize {
+        if (sidecar_index >= self.sidecar_count) return null;
+        const slot = self.sidecar_slots[sidecar_index];
+        if (slot == invalid_sidecar_slot or slot >= self.anchor_count) return null;
+        return slot;
+    }
+
+    fn flatSidecarIndices(self: *const ProgramCommand) []const ?usize {
         return self.sidecar_indices[0..self.sidecar_count];
     }
 
-    pub fn carriedSidecarIndices(self: *const ProgramCommand) []const ?usize {
+    fn carriedSidecarIndices(self: *const ProgramCommand) []const ?usize {
         return switch (self.shape().sidecars) {
             .anchor_aligned => self.sidecarIndices(),
             .flat => self.flatSidecarIndices(),
@@ -589,16 +1439,442 @@ pub const ProgramCommand = struct {
     }
 };
 
-pub const max_command_indices = max_projection_group_anchors * 2;
+pub const ProgramCommandStreamShape = struct {
+    command_count: u32 = 0,
+    covered_ops: u32 = 0,
+    estimated_saved_dispatches: u32 = 0,
+    row_chains: u32 = 0,
+    projection_row_chains: u32 = 0,
+    dense_projection_row_chains: u32 = 0,
+    projection_chains: u32 = 0,
+    dense_projection_chains: u32 = 0,
+    quantized_projection_chains: u32 = 0,
+    projection_chain_sidecars: u32 = 0,
+    projection_chain_row_chain_frontiers: u32 = 0,
+    projection_groups: u32 = 0,
+    projection_anchors: u32 = 0,
+    projection_sidecars: u32 = 0,
+    projection_cache_groups: u32 = 0,
+    projection_cache_anchors: u32 = 0,
+    projection_cache_sidecars: u32 = 0,
+    max_projection_span_ops: u32 = 0,
+    command_kind_counts: [n_program_command_kinds]u32 = [_]u32{0} ** n_program_command_kinds,
+    command_stencil_hash: u64 = 0,
 
-pub const CommandIndexIterator = struct {
+    fn init(alloc: std.mem.Allocator, ops: []const backend_mod.DeviceOp, policy: CommandStreamPolicy) !ProgramCommandStreamShape {
+        const commands = try buildProgramCommands(alloc, ops, policy);
+        defer if (commands.len > 0) alloc.free(commands);
+        return fromCommands(commands);
+    }
+
+    fn fromCommands(commands: []const ProgramCommand) !ProgramCommandStreamShape {
+        const summary = summarizeProgramCommands(commands);
+        var shape = ProgramCommandStreamShape{
+            .command_count = std.math.cast(u32, commands.len) orelse return error.UnsupportedDeviceOp,
+            .covered_ops = summary.covered_ops,
+            .estimated_saved_dispatches = summary.estimated_saved_dispatches,
+            .row_chains = summary.row_chains,
+            .projection_row_chains = summary.projection_row_chains,
+            .dense_projection_row_chains = summary.dense_projection_row_chains,
+            .projection_chains = summary.projection_chains,
+            .dense_projection_chains = summary.dense_projection_chains,
+            .quantized_projection_chains = summary.quantized_projection_chains,
+            .projection_chain_sidecars = summary.projection_chain_sidecars,
+            .projection_chain_row_chain_frontiers = summary.projection_chain_row_chain_frontiers,
+            .projection_groups = summary.projection_groups,
+            .projection_anchors = summary.projection_anchors,
+            .projection_sidecars = summary.projection_sidecars,
+            .projection_cache_groups = summary.projection_cache_groups,
+            .projection_cache_anchors = summary.projection_cache_anchors,
+            .projection_cache_sidecars = summary.projection_cache_sidecars,
+            .max_projection_span_ops = summary.max_projection_span_ops,
+            .command_stencil_hash = if (commands.len > 0) 14695981039346656037 else 0,
+        };
+        var h = RuntimeStencilHasher{ .state = shape.command_stencil_hash };
+        for (commands) |command| {
+            shape.command_kind_counts[@intFromEnum(command.kind)] =
+                std.math.add(u32, shape.command_kind_counts[@intFromEnum(command.kind)], 1) catch return error.UnsupportedDeviceOp;
+            addProgramCommandStencil(&h, command);
+        }
+        shape.command_stencil_hash = if (commands.len > 0) h.state else 0;
+        return shape;
+    }
+
+    pub fn merge(self: ProgramCommandStreamShape, other: ProgramCommandStreamShape) ProgramCommandStreamShape {
+        if (self.command_count == 0 and self.command_stencil_hash == 0) return other;
+        if (other.command_count == 0 and other.command_stencil_hash == 0) return self;
+
+        var merged = ProgramCommandStreamShape{
+            .command_count = @max(self.command_count, other.command_count),
+            .covered_ops = @max(self.covered_ops, other.covered_ops),
+            .estimated_saved_dispatches = @max(self.estimated_saved_dispatches, other.estimated_saved_dispatches),
+            .row_chains = @max(self.row_chains, other.row_chains),
+            .projection_row_chains = @max(self.projection_row_chains, other.projection_row_chains),
+            .dense_projection_row_chains = @max(self.dense_projection_row_chains, other.dense_projection_row_chains),
+            .projection_chains = @max(self.projection_chains, other.projection_chains),
+            .dense_projection_chains = @max(self.dense_projection_chains, other.dense_projection_chains),
+            .quantized_projection_chains = @max(self.quantized_projection_chains, other.quantized_projection_chains),
+            .projection_chain_sidecars = @max(self.projection_chain_sidecars, other.projection_chain_sidecars),
+            .projection_chain_row_chain_frontiers = @max(self.projection_chain_row_chain_frontiers, other.projection_chain_row_chain_frontiers),
+            .projection_groups = @max(self.projection_groups, other.projection_groups),
+            .projection_anchors = @max(self.projection_anchors, other.projection_anchors),
+            .projection_sidecars = @max(self.projection_sidecars, other.projection_sidecars),
+            .projection_cache_groups = @max(self.projection_cache_groups, other.projection_cache_groups),
+            .projection_cache_anchors = @max(self.projection_cache_anchors, other.projection_cache_anchors),
+            .projection_cache_sidecars = @max(self.projection_cache_sidecars, other.projection_cache_sidecars),
+            .max_projection_span_ops = @max(self.max_projection_span_ops, other.max_projection_span_ops),
+            .command_stencil_hash = if (self.command_stencil_hash == other.command_stencil_hash) self.command_stencil_hash else 0,
+        };
+        for (&merged.command_kind_counts, self.command_kind_counts, other.command_kind_counts) |*dst, a, b| {
+            dst.* = @max(a, b);
+        }
+        return merged;
+    }
+
+    pub fn categoryCounts(self: ProgramCommandStreamShape) ProgramCommandCategoryCounts {
+        var counts = ProgramCommandCategoryCounts{};
+        for (self.command_kind_counts, 0..) |count, index| {
+            const kind: ProgramCommandKind = @enumFromInt(index);
+            const value: u64 = count;
+            switch (kind) {
+                .op => counts.op += value,
+                .row_chain => counts.row += value,
+                .projection_pair_fused_elementwise_chain,
+                .projection_pair_elementwise_chain,
+                .dense_projection_pair_fused_elementwise_chain,
+                .projection_row_chain,
+                .dense_projection_row_chain,
+                .dense_projection_chain,
+                .projection_chain,
+                .projection_group,
+                .dense_projection_cache_group,
+                .projection_cache_group,
+                => counts.projection += value,
+                .attention_chain,
+                .attention_store_chain,
+                .attention_store_group,
+                .rope_attention_store_chain,
+                .rope_attention_store_group,
+                .attention_group,
+                => counts.attention += value,
+                .movement_batch,
+                .movement_group,
+                => counts.movement += value,
+                .elementwise_batch,
+                .repeat_fused_elementwise_chain,
+                => counts.elementwise += value,
+                .rope_chain,
+                .rope_batch,
+                .rope_store_group,
+                => counts.rope += value,
+            }
+        }
+        return counts;
+    }
+};
+
+pub const ProjectionRowChainFrontierDebug = struct {
+    reason: Reason,
+    command_count: u32 = 0,
+    first_command_kind: ProgramCommandKind = .op,
+    first_projection_command_index: u32 = 0,
+    first_projection_op_start: u32 = 0,
+    first_projection_op_count: u32 = 0,
+    first_projection_sidecars: u32 = 0,
+    first_projection_op_tags: [6]DeviceOpTag = .{.elementwise} ** 6,
+    first_projection_prev_kind: ProgramCommandKind = .op,
+    first_projection_kind: ProgramCommandKind = .op,
+    first_projection_next_kind: ProgramCommandKind = .op,
+    projection_command_index: u32 = 0,
+    projection_op_start: u32 = 0,
+    row_op_start: u32 = 0,
+    q_m: u32 = 0,
+    q_n: u32 = 0,
+    q_dst: u16 = 0,
+    elementwise_dst: u16 = 0,
+    elementwise_src0: u16 = 0,
+    elementwise_src1: u16 = 0,
+    rms_src: u16 = 0,
+    rms_dst: u16 = 0,
+
+    pub const Reason = enum {
+        no_frontier,
+        already_projection_row_chain,
+        policy_disabled,
+        qmatvec_policy_disabled,
+        qmatmul_too_few_rows,
+        malformed_frontier,
+        sidecar_incompatible,
+        rms_source_mismatch,
+        scale_chain_mismatch,
+        projection_primary_external_users,
+        elementwise_external_read,
+        scale_chain_external_users,
+        would_fuse,
+    };
+};
+
+pub fn firstProjectionRowChainFrontierDebug(
+    ops: []const backend_mod.DeviceOp,
+    commands: []const ProgramCommand,
+    policy: CommandStreamPolicy,
+) ProjectionRowChainFrontierDebug {
+    var base = ProjectionRowChainFrontierDebug{
+        .reason = .no_frontier,
+        .command_count = @intCast(commands.len),
+        .first_command_kind = if (commands.len > 0) commands[0].kind else .op,
+    };
+    for (commands, 0..) |command, index| {
+        if (command.kind == .projection_chain or command.kind == .dense_projection_chain) {
+            base.first_projection_command_index = @intCast(index);
+            base.first_projection_op_start = command.op_start;
+            base.first_projection_op_count = command.op_count;
+            base.first_projection_sidecars = command.sidecar_count;
+            for (base.first_projection_op_tags[0..], 0..) |*tag, offset| {
+                const op_index = @as(usize, command.op_start) + offset;
+                if (op_index < ops.len) tag.* = std.meta.activeTag(ops[op_index]);
+            }
+            base.first_projection_prev_kind = if (index > 0) commands[index - 1].kind else .op;
+            base.first_projection_kind = command.kind;
+            base.first_projection_next_kind = if (index + 1 < commands.len) commands[index + 1].kind else .op;
+            break;
+        }
+    }
+    for (commands, 0..) |command, command_index| {
+        if (command_index + 1 >= commands.len) continue;
+        const row = commands[command_index + 1];
+        if ((command.kind != .projection_chain and command.kind != .dense_projection_chain) or row.kind != .row_chain) continue;
+        if (command.op_start + command.op_count != row.op_start) continue;
+
+        var out = base;
+        out.reason = .malformed_frontier;
+        out.projection_command_index = @intCast(command_index);
+        out.projection_op_start = command.op_start;
+        out.row_op_start = row.op_start;
+        const start: usize = @intCast(command.op_start);
+        if (start + 4 >= ops.len) return out;
+        const e = switch (ops[start + 1]) {
+            .elementwise => |e| e,
+            else => return out,
+        };
+        const rn = switch (ops[start + 2]) {
+            .rmsnorm => |rn| rn,
+            else => return out,
+        };
+        if (command.kind == .projection_chain) {
+            const q = switch (ops[start]) {
+                .qmatmul => |q| q,
+                else => return out,
+            };
+            out.q_m = q.M;
+            out.q_n = q.N;
+            out.q_dst = q.dst;
+        } else {
+            const m = switch (ops[start]) {
+                .matmul => |m| m,
+                else => return out,
+            };
+            out.q_m = @intCast(m.geom.M);
+            out.q_n = @intCast(m.geom.N);
+            out.q_dst = m.dst;
+        }
+        out.elementwise_dst = e.dst;
+        out.elementwise_src0 = e.src0;
+        out.elementwise_src1 = e.src1;
+        out.rms_src = rn.src;
+        out.rms_dst = rn.dst;
+
+        if (!policy.fuse_projection_row_chain) {
+            out.reason = .policy_disabled;
+            return out;
+        }
+        if (command.kind == .projection_chain) {
+            const q = ops[start].qmatmul;
+            if (q.M == 1) {
+                if (!policy.fuse_projection_row_chain_qmatvec) {
+                    out.reason = .qmatvec_policy_disabled;
+                    return out;
+                }
+                if (!qmatvecElementwiseSidecarCompatible(q, e)) {
+                    out.reason = .sidecar_incompatible;
+                    return out;
+                }
+            } else {
+                if (q.M < policy.min_projection_row_chain_rows) {
+                    out.reason = .qmatmul_too_few_rows;
+                    return out;
+                }
+                if (!qmatmulElementwiseSidecarCompatible(q, e)) {
+                    out.reason = .sidecar_incompatible;
+                    return out;
+                }
+            }
+        } else {
+            const m = ops[start].matmul;
+            if (!matmulElementwiseSidecarCompatible(m, e)) {
+                out.reason = .sidecar_incompatible;
+                return out;
+            }
+        }
+        if (rn.src != e.dst or rn.src_offset != e.dst_offset) {
+            out.reason = .rms_source_mismatch;
+            return out;
+        }
+        if (!isRmsnormScaleChain(ops[start + 2], ops[start + 3], ops[start + 4])) {
+            out.reason = .scale_chain_mismatch;
+            return out;
+        }
+        const projection_sidecars = [_]?usize{start + 1};
+        const has_projection_users = if (command.kind == .projection_chain)
+            projectionPrimaryOutputHasExternalUsersExcept(ops, start, projection_sidecars[0..])
+        else
+            matmulPrimaryOutputHasExternalUsersExcept(ops, start, projection_sidecars[0..]);
+        if (has_projection_users) {
+            out.reason = .projection_primary_external_users;
+            return out;
+        }
+        if (command.kind == .projection_chain and spanHasExternalReadAfter(ops, start + 1, start + 2, start + 5, bufferSpan(e.dst, e.dst_offset, e.n))) {
+            out.reason = .elementwise_external_read;
+            return out;
+        }
+        if (rmsnormScaleChainHasExternalUsers(ops, start + 2)) {
+            out.reason = .scale_chain_external_users;
+            return out;
+        }
+        out.reason = .would_fuse;
+        return out;
+    }
+
+    for (commands) |command| {
+        if (command.kind == .projection_row_chain or command.kind == .dense_projection_row_chain) {
+            base.reason = .already_projection_row_chain;
+            return base;
+        }
+    }
+
+    return base;
+}
+
+pub const ProjectionElementwiseChainDebug = struct {
+    reason: Reason,
+    command_count: u32 = 0,
+    command_index: u32 = 0,
+    op_start: u32 = 0,
+    op_count: u32 = 0,
+    prev_kind: ProgramCommandKind = .op,
+    kind: ProgramCommandKind = .op,
+    next_kind: ProgramCommandKind = .op,
+    q_m: u32 = 0,
+    q_n: u32 = 0,
+    q_dst: u16 = 0,
+    q_input: u16 = 0,
+    weight_idx: u32 = 0,
+    elementwise_op: backend_mod.Op = .add,
+    elementwise_dst: u16 = 0,
+    elementwise_src0: u16 = 0,
+    elementwise_src1: u16 = 0,
+    elementwise_n: u32 = 0,
+    primary_has_external_users: bool = false,
+
+    pub const Reason = enum {
+        no_projection_elementwise_chain,
+        dense_projection_elementwise_chain,
+        quantized_projection_elementwise_chain,
+        malformed_chain,
+    };
+};
+
+pub fn firstProjectionElementwiseChainDebug(
+    ops: []const backend_mod.DeviceOp,
+    commands: []const ProgramCommand,
+) ProjectionElementwiseChainDebug {
+    var out = ProjectionElementwiseChainDebug{
+        .reason = .no_projection_elementwise_chain,
+        .command_count = @intCast(commands.len),
+    };
+    for (commands, 0..) |command, command_index| {
+        if (command.kind != .projection_chain and command.kind != .dense_projection_chain) continue;
+        out.reason = .malformed_chain;
+        out.command_index = @intCast(command_index);
+        out.op_start = command.op_start;
+        out.op_count = command.op_count;
+        out.prev_kind = if (command_index > 0) commands[command_index - 1].kind else .op;
+        out.kind = command.kind;
+        out.next_kind = if (command_index + 1 < commands.len) commands[command_index + 1].kind else .op;
+        if (command.anchor_count != 1 or command.sidecar_count != 1) return out;
+        const q_idx = command.indices[0];
+        const sidecar_idx = command.sidecar_indices[0] orelse return out;
+        if (q_idx >= ops.len or sidecar_idx >= ops.len) return out;
+        const e = switch (ops[sidecar_idx]) {
+            .elementwise => |e| e,
+            else => continue,
+        };
+        if (command.kind == .projection_chain) {
+            const q = switch (ops[q_idx]) {
+                .qmatmul => |q| q,
+                else => return out,
+            };
+            out.reason = .quantized_projection_elementwise_chain;
+            out.q_m = q.M;
+            out.q_n = q.N;
+            out.q_dst = q.dst;
+            out.q_input = q.input;
+            out.weight_idx = q.weight_idx;
+            out.primary_has_external_users = projectionPrimaryOutputHasExternalUsers(ops, q_idx, sidecar_idx);
+        } else {
+            const m = switch (ops[q_idx]) {
+                .matmul => |m| m,
+                else => return out,
+            };
+            out.reason = .dense_projection_elementwise_chain;
+            out.q_m = @intCast(m.geom.M);
+            out.q_n = @intCast(m.geom.N);
+            out.q_dst = m.dst;
+            out.q_input = m.a;
+            out.primary_has_external_users = matmulPrimaryOutputHasExternalUsers(ops, q_idx, sidecar_idx);
+        }
+        out.elementwise_op = e.op;
+        out.elementwise_dst = e.dst;
+        out.elementwise_src0 = e.src0;
+        out.elementwise_src1 = e.src1;
+        out.elementwise_n = e.n;
+        return out;
+    }
+    return out;
+}
+
+pub const ProgramCommandCategoryCounts = struct {
+    op: u64 = 0,
+    row: u64 = 0,
+    projection: u64 = 0,
+    attention: u64 = 0,
+    movement: u64 = 0,
+    elementwise: u64 = 0,
+    rope: u64 = 0,
+};
+
+fn addProgramCommandStencil(h: *RuntimeStencilHasher, command: ProgramCommand) void {
+    h.add(@intFromEnum(command.kind));
+    h.add(command.op_start);
+    h.add(command.op_count);
+    h.add(@intFromEnum(command.projection_kind));
+    h.add(command.anchor_count);
+    h.add(command.sidecar_count);
+    for (command.indices[0..command.anchor_count]) |idx| h.add(idx);
+    for (command.carriedSidecarIndices()) |maybe_idx| h.add(maybe_idx orelse std.math.maxInt(u64));
+    for (command.sidecar_slots[0..command.sidecar_count]) |slot| h.add(slot);
+}
+
+const max_command_indices = max_projection_group_anchors * 2;
+
+const CommandIndexIterator = struct {
     mode: enum { contiguous, explicit },
     next_index: usize = 0,
     end_index: usize = 0,
     explicit: CommandIndexSet = .{},
     explicit_pos: usize = 0,
 
-    pub fn init(command: *const ProgramCommand) CommandIndexIterator {
+    fn init(command: *const ProgramCommand) CommandIndexIterator {
         if (command.hasExplicitCoverage()) {
             return .{
                 .mode = .explicit,
@@ -631,7 +1907,7 @@ pub const CommandIndexIterator = struct {
         };
     }
 
-    pub fn remainingCount(self: *const CommandIndexIterator) usize {
+    fn remainingCount(self: *const CommandIndexIterator) usize {
         return switch (self.mode) {
             .contiguous => self.end_index - self.next_index,
             .explicit => self.explicit.count - self.explicit_pos,
@@ -639,11 +1915,11 @@ pub const CommandIndexIterator = struct {
     }
 };
 
-pub const CommandIndexSet = struct {
+const CommandIndexSet = struct {
     indices: [max_command_indices]usize = undefined,
     count: usize = 0,
 
-    pub fn append(self: *CommandIndexSet, idx: usize) bool {
+    fn append(self: *CommandIndexSet, idx: usize) bool {
         for (self.indices[0..self.count]) |existing| {
             if (existing == idx) return true;
         }
@@ -653,16 +1929,16 @@ pub const CommandIndexSet = struct {
         return true;
     }
 
-    pub fn sort(self: *CommandIndexSet) void {
+    fn sort(self: *CommandIndexSet) void {
         std.mem.sort(usize, self.indices[0..self.count], {}, std.sort.asc(usize));
     }
 
-    pub fn slice(self: *const CommandIndexSet) []const usize {
+    fn slice(self: *const CommandIndexSet) []const usize {
         return self.indices[0..self.count];
     }
 };
 
-pub const ProgramCommandSummary = struct {
+const ProgramCommandSummary = struct {
     commands: u32 = 0,
     covered_ops: u32 = 0,
     estimated_dispatches: u32 = 0,
@@ -689,16 +1965,19 @@ pub const ProgramCommandSummary = struct {
     rope_attention_store_groups: u32 = 0,
     rope_attention_store_group_ops: u32 = 0,
     rope_attention_store_group_sidecars: u32 = 0,
-    attention_batches: u32 = 0,
     attention_groups: u32 = 0,
     attention_group_ops: u32 = 0,
     elementwise_batches: u32 = 0,
     elementwise_ops: u32 = 0,
     repeat_fused_elementwise_chains: u32 = 0,
-    projection_fused_elementwise_chains: u32 = 0,
     projection_pair_fused_elementwise_chains: u32 = 0,
+    projection_row_chains: u32 = 0,
+    dense_projection_row_chains: u32 = 0,
     projection_chains: u32 = 0,
+    dense_projection_chains: u32 = 0,
+    quantized_projection_chains: u32 = 0,
     projection_chain_sidecars: u32 = 0,
+    projection_chain_row_chain_frontiers: u32 = 0,
     projection_groups: u32 = 0,
     projection_anchors: u32 = 0,
     projection_sidecars: u32 = 0,
@@ -706,105 +1985,16 @@ pub const ProgramCommandSummary = struct {
     projection_cache_anchors: u32 = 0,
     projection_cache_sidecars: u32 = 0,
     max_projection_span_ops: u32 = 0,
-
-    pub fn add(self: *ProgramCommandSummary, other: ProgramCommandSummary) void {
-        inline for (@typeInfo(ProgramCommandSummary).@"struct".fields) |field| {
-            if (comptime std.mem.eql(u8, field.name, "max_projection_span_ops")) {
-                @field(self.*, field.name) = @max(@field(self.*, field.name), @field(other, field.name));
-            } else {
-                @field(self.*, field.name) += @field(other, field.name);
-            }
-        }
-    }
 };
 
-pub const AttentionStoreGroupCandidateSummary = struct {
-    anchors: u32 = 0,
-    first_store_missing: u32 = 0,
-    candidate_attentions: u32 = 0,
-    geometry_rejects: u32 = 0,
-    hoist_rejects: u32 = 0,
-    selected_conflict_rejects: u32 = 0,
-    no_store_rejects: u32 = 0,
-    pair_conflict_rejects: u32 = 0,
-    formed_groups: u32 = 0,
-    grouped_anchors: u32 = 0,
-    max_group_anchors: u32 = 0,
-};
+const max_projection_group_anchors = 32;
 
-pub const RopeAttentionStoreGroupCandidateSummary = struct {
-    anchors: u32 = 0,
-    first_pair_missing: u32 = 0,
-    candidate_ropes: u32 = 0,
-    geometry_rejects: u32 = 0,
-    pair_missing_rejects: u32 = 0,
-    before_emit_rejects: u32 = 0,
-    delay_rejects: u32 = 0,
-    attention_hoist_rejects: u32 = 0,
-    sidecar_hoist_rejects: u32 = 0,
-    selected_conflict_rejects: u32 = 0,
-    formed_groups: u32 = 0,
-    grouped_pairs: u32 = 0,
-    max_group_pairs: u32 = 0,
-};
-
-pub const EarlyRopeAttentionStoreGroupCandidateSummary = struct {
-    anchors: u32 = 0,
-    first_pair_missing: u32 = 0,
-    candidate_ropes: u32 = 0,
-    geometry_rejects: u32 = 0,
-    pair_missing_rejects: u32 = 0,
-    rope_hoist_rejects: u32 = 0,
-    attention_hoist_rejects: u32 = 0,
-    selected_conflict_rejects: u32 = 0,
-    formed_groups: u32 = 0,
-    grouped_pairs: u32 = 0,
-    max_group_pairs: u32 = 0,
-};
-
-pub const RopeStoreGroupCandidateSummary = struct {
-    anchors: u32 = 0,
-    first_pair_missing: u32 = 0,
-    candidate_ropes: u32 = 0,
-    geometry_rejects: u32 = 0,
-    pair_missing_rejects: u32 = 0,
-    hoist_rejects: u32 = 0,
-    selected_conflict_rejects: u32 = 0,
-    external_user_rejects: u32 = 0,
-    formed_groups: u32 = 0,
-    grouped_pairs: u32 = 0,
-    max_group_pairs: u32 = 0,
-};
-
-pub const ProjectionSidecarSummary = struct {
-    anchors: u32 = 0,
-    immediate_sidecars: u32 = 0,
-    compatible_sidecars: u32 = 0,
-    primary_elidable_sidecars: u32 = 0,
-    primary_required_sidecars: u32 = 0,
-    slice_sidecars: u32 = 0,
-    elementwise_sidecars: u32 = 0,
-    fused_elementwise_sidecars: u32 = 0,
-    incompatible_sidecars: u32 = 0,
-};
-
-pub const ProjectionRopeCacheSummary = struct {
-    anchors: u32 = 0,
-    rope_store_pairs: u32 = 0,
-    compatible_pairs: u32 = 0,
-    tile_pair_pairs: u32 = 0,
-    rope_materializations: u32 = 0,
-    materialization_attention_fusion_skips: u32 = 0,
-};
-
-pub const max_projection_group_anchors = 32;
-
-pub const BufferSpan = struct {
+const BufferSpan = struct {
     buf: u16,
     start: u64,
     end: u64,
 
-    pub fn overlaps(self: BufferSpan, other: BufferSpan) bool {
+    fn overlaps(self: BufferSpan, other: BufferSpan) bool {
         return self.buf == other.buf and self.start < other.end and other.start < self.end;
     }
 };
@@ -848,33 +2038,7 @@ const OpAccessSpans = struct {
     }
 };
 
-pub const ProjectionGroup = struct {
-    kind: ProjectionGroupKind,
-    start_op: u32,
-    op_count: u32,
-    anchor_count: u32,
-    sidecar_count: u32,
-
-    pub fn coveredOpCount(self: ProjectionGroup) u32 {
-        return self.anchor_count + self.sidecar_count;
-    }
-
-    pub fn dispatchCount(_: ProjectionGroup) u32 {
-        return 1;
-    }
-};
-
-pub const ProjectionGroupSummary = struct {
-    groups: u32 = 0,
-    anchors: u32 = 0,
-    sidecars: u32 = 0,
-    covered_ops: u32 = 0,
-    estimated_dispatches: u32 = 0,
-    estimated_saved_dispatches: u32 = 0,
-    max_span_ops: u32 = 0,
-};
-
-pub const ProjectionGroupSelection = struct {
+const ProjectionGroupSelection = struct {
     kind: ProjectionGroupKind,
     start_op: usize,
     end_op: usize,
@@ -883,132 +2047,16 @@ pub const ProjectionGroupSelection = struct {
     indices: [max_projection_group_anchors]usize = undefined,
     sidecar_indices: [max_projection_group_anchors]?usize = [_]?usize{null} ** max_projection_group_anchors,
 
-    pub fn anchorIndices(self: *const ProjectionGroupSelection) []const usize {
+    fn anchorIndices(self: *const ProjectionGroupSelection) []const usize {
         return self.indices[0..self.anchor_count];
     }
 
-    pub fn sidecarIndices(self: *const ProjectionGroupSelection) []const ?usize {
+    fn sidecarIndices(self: *const ProjectionGroupSelection) []const ?usize {
         return self.sidecar_indices[0..self.anchor_count];
-    }
-
-    pub fn toGroup(self: ProjectionGroupSelection) ProjectionGroup {
-        return .{
-            .kind = self.kind,
-            .start_op = @intCast(self.start_op),
-            .op_count = @intCast(self.end_op - self.start_op + 1),
-            .anchor_count = @intCast(self.anchor_count),
-            .sidecar_count = @intCast(self.sidecar_count),
-        };
     }
 };
 
-pub fn buildStageCommands(
-    alloc: std.mem.Allocator,
-    ops: []const backend_mod.DeviceOp,
-) ![]StageCommand {
-    var commands: std.ArrayListUnmanaged(StageCommand) = .empty;
-    errdefer commands.deinit(alloc);
-
-    var i: usize = 0;
-    while (i < ops.len) {
-        if (findStageCommand(ops, i)) |command| {
-            try commands.append(alloc, command);
-            i += command.op_count;
-            continue;
-        }
-
-        try commands.append(alloc, .{
-            .kind = .op,
-            .op_start = @intCast(i),
-            .op_count = 1,
-        });
-        i += 1;
-    }
-
-    return commands.toOwnedSlice(alloc);
-}
-
-pub fn findStageCommand(
-    ops: []const backend_mod.DeviceOp,
-    start: usize,
-) ?StageCommand {
-    if (start >= ops.len) return null;
-
-    if (start + 2 < ops.len and isRmsnormScaleChain(ops[start], ops[start + 1], ops[start + 2])) {
-        return .{
-            .kind = .row_chain,
-            .op_start = @intCast(start),
-            .op_count = 3,
-        };
-    }
-
-    if (start + 1 < ops.len and isRopeSliceAssignChain(ops[start], ops[start + 1])) {
-        return .{
-            .kind = .rope_chain,
-            .op_start = @intCast(start),
-            .op_count = 2,
-        };
-    }
-
-    return null;
-}
-
-pub fn summarizeStageCommands(commands: []const StageCommand) StageCommandSummary {
-    var summary = StageCommandSummary{ .commands = @intCast(commands.len) };
-    for (commands) |command| {
-        summary.ops += command.op_count;
-        const dispatches = command.dispatchCount();
-        summary.estimated_dispatches += dispatches;
-        if (command.op_count > dispatches) {
-            summary.estimated_saved_dispatches += command.op_count - dispatches;
-        }
-        switch (command.kind) {
-            .op => {},
-            .row_chain => {
-                summary.row_chains += 1;
-                summary.row_chain_ops += command.op_count;
-            },
-            .rope_chain => {
-                summary.rope_chains += 1;
-                summary.rope_chain_ops += command.op_count;
-            },
-        }
-    }
-    return summary;
-}
-
-pub fn buildProjectionGroups(
-    alloc: std.mem.Allocator,
-    ops: []const backend_mod.DeviceOp,
-    policy: ProjectionGroupPolicy,
-) ![]ProjectionGroup {
-    var groups: std.ArrayListUnmanaged(ProjectionGroup) = .empty;
-    errdefer groups.deinit(alloc);
-
-    const max_anchors = @min(policy.max_anchors, max_projection_group_anchors);
-    if (max_anchors < 2) return groups.toOwnedSlice(alloc);
-
-    const used = try alloc.alloc(bool, ops.len);
-    defer alloc.free(used);
-    @memset(used, false);
-
-    var i: usize = 0;
-    while (i < ops.len) : (i += 1) {
-        if (used[i]) continue;
-        const selection = findProjectionGroup(ops, i, policy, used) orelse continue;
-        for (selection.anchorIndices()) |idx| {
-            used[idx] = true;
-        }
-        for (selection.sidecarIndices()) |maybe_idx| {
-            if (maybe_idx) |idx| used[idx] = true;
-        }
-        try groups.append(alloc, selection.toGroup());
-    }
-
-    return groups.toOwnedSlice(alloc);
-}
-
-pub fn findProjectionGroup(
+fn findProjectionGroup(
     ops: []const backend_mod.DeviceOp,
     start: usize,
     policy: ProjectionGroupPolicy,
@@ -1103,171 +2151,364 @@ fn findProjectionCacheGroupCommand(
             .slice_assign => |sa| sa,
             else => return null,
         };
-        if (!appendProjectionCacheSidecar(&command, idx, selection.start_op)) return null;
+        if (!appendProjectionCacheSidecar(&command, idx, selection.start_op, slot)) return null;
         per_anchor_sidecars[slot] += 1;
         if (!projectionCacheSidecarsShareSink(ops, &command, slot, sa)) return null;
     }
 
     const initial_sidecars = command.sidecar_count;
     const max_sidecars_per_anchor = @max(1, policy.qmatmul_cache_sidecars_per_anchor);
-    var scan = start + 1;
-    while (scan < ops.len and command.sidecar_count < max_projection_group_anchors) : (scan += 1) {
-        if (used) |used_ops| {
-            if (scan >= used_ops.len or used_ops[scan]) continue;
-        }
-        if (commandContainsIndex(&command, scan)) continue;
-        if (scan > selection.end_op and ops[scan] == .qmatmul) break;
-        if (policy.projection_rope_cache_sidecars and ops[scan] == .rope) {
-            const rr = ops[scan].rope;
-            if (scan + 1 < ops.len) store: {
-                if (used) |used_ops| {
-                    if (scan + 1 >= used_ops.len or used_ops[scan + 1]) break :store;
-                }
-                const sa = switch (ops[scan + 1]) {
-                    .slice_assign => |sa| sa,
-                    else => break :store,
-                };
-                const slot = projectionCacheRopeStoreAnchorSlot(ops, &command, rr, sa) orelse break :store;
-                if (per_anchor_sidecars[slot] >= max_sidecars_per_anchor) break :store;
-                if (!projectionCacheSidecarsShareSink(ops, &command, slot, sa)) break :store;
-
-                var candidate = command;
-                if (!appendProjectionCacheRopeStoreSidecar(&candidate, scan, scan + 1, selection.start_op)) break;
-                if (!canHoistProjectionCacheRopeStoreToGroup(ops, selection.start_op, scan, scan + 1, ops[command.indices[slot]].qmatmul, rr, sa, &candidate, executed)) break :store;
-                if (projectionCacheSidecarConflictsSelected(ops, &command, sa)) break :store;
-                if (projectionCacheRopeOutputHasExternalUsers(ops, scan, scan + 1)) break :store;
-
-                command = candidate;
-                per_anchor_sidecars[slot] += 1;
-                scan += 1;
-                continue;
-            }
-
-            const slot = projectionCacheRopeAnchorSlot(ops, &command, rr) orelse continue;
-            if (per_anchor_sidecars[slot] >= max_sidecars_per_anchor) continue;
-            if (projectionCacheRopeWouldBlockAttentionFusion(ops, scan, used, executed)) continue;
-            var candidate = command;
-            if (!appendProjectionCacheRopeSidecar(&candidate, scan, selection.start_op)) break;
-            if (!canHoistProjectionCacheRopeToGroup(ops, selection.start_op, scan, ops[command.indices[slot]].qmatmul, rr, &candidate, executed)) continue;
-            if (projectionCacheRopeConflictsSelected(ops, &command, rr)) continue;
-
-            command = candidate;
-            per_anchor_sidecars[slot] += 1;
-            continue;
-        }
-
-        const sa = switch (ops[scan]) {
-            .slice_assign => |sa| sa,
-            else => continue,
-        };
-        const slot = projectionCacheSidecarAnchorSlot(ops, &command, sa) orelse continue;
-        if (per_anchor_sidecars[slot] >= max_sidecars_per_anchor) continue;
-        if (!projectionCacheSidecarsShareSink(ops, &command, slot, sa)) continue;
-
-        var candidate = command;
-        if (!appendProjectionCacheSidecar(&candidate, scan, selection.start_op)) break;
-        if (!canHoistProjectionCacheSidecarToGroup(ops, selection.start_op, scan, ops[command.indices[slot]].qmatmul, sa, &candidate, executed)) continue;
-        if (projectionCacheSidecarConflictsSelected(ops, &command, sa)) continue;
-
-        command = candidate;
-        per_anchor_sidecars[slot] += 1;
-    }
+    var scan = ProjectionCacheSidecarScan{
+        .ops = ops,
+        .used = used,
+        .executed = executed,
+        .group_start = selection.start_op,
+        .fixed_end = selection.end_op,
+        .max_sidecars_per_anchor = max_sidecars_per_anchor,
+        .per_anchor_sidecars = per_anchor_sidecars,
+    };
+    scan.collect(.qmatmul, projectionSliceSidecarCompatible, qmatvecRopeStoreSidecarCompatiblePair, &command);
+    collectProjectionElementwiseSidecars(ops, used, executed, selection.start_op, &command);
 
     return if (command.sidecar_count > initial_sidecars) command else null;
 }
 
-fn appendProjectionCacheSidecar(command: *ProgramCommand, sidecar_index: usize, group_start: usize) bool {
-    if (command.sidecar_count >= max_projection_group_anchors) return false;
-    command.sidecar_indices[command.sidecar_count] = sidecar_index;
-    command.sidecar_count += 1;
-    command.op_count = @intCast(@max(
-        group_start + @as(usize, command.op_count),
-        sidecar_index + 1,
-    ) - group_start);
-    return true;
-}
-
-fn appendProjectionCacheRopeStoreSidecar(command: *ProgramCommand, rope_index: usize, sidecar_index: usize, group_start: usize) bool {
-    if (command.sidecar_count + 2 > max_projection_group_anchors) return false;
-    command.sidecar_indices[command.sidecar_count] = rope_index;
-    command.sidecar_count += 1;
-    command.sidecar_indices[command.sidecar_count] = sidecar_index;
-    command.sidecar_count += 1;
-    command.op_count = @intCast(@max(
-        group_start + @as(usize, command.op_count),
-        sidecar_index + 1,
-    ) - group_start);
-    return true;
-}
-
-fn appendProjectionCacheRopeSidecar(command: *ProgramCommand, rope_index: usize, group_start: usize) bool {
-    if (command.sidecar_count >= max_projection_group_anchors) return false;
-    command.sidecar_indices[command.sidecar_count] = rope_index;
-    command.sidecar_count += 1;
-    command.op_count = @intCast(@max(
-        group_start + @as(usize, command.op_count),
-        rope_index + 1,
-    ) - group_start);
-    return true;
-}
-
-fn projectionCacheSidecarAnchorSlot(
+fn findDenseProjectionCacheGroupCommand(
     ops: []const backend_mod.DeviceOp,
-    command: *const ProgramCommand,
-    sa: anytype,
-) ?usize {
-    for (command.anchorIndices(), 0..) |idx, slot| {
-        if (idx >= ops.len) return null;
-        const q = switch (ops[idx]) {
-            .qmatmul => |q| q,
-            else => return null,
-        };
-        if (projectionSidecarCompatible(q, .{ .slice_assign = sa })) return slot;
-    }
-    return null;
-}
-
-fn projectionCacheRopeStoreAnchorSlot(
-    ops: []const backend_mod.DeviceOp,
-    command: *const ProgramCommand,
-    rr: anytype,
-    sa: anytype,
-) ?usize {
-    for (command.anchorIndices(), 0..) |idx, slot| {
-        if (idx >= ops.len) return null;
-        const q = switch (ops[idx]) {
-            .qmatmul => |q| q,
-            else => return null,
-        };
-        if (projectionRopeStoreSidecarCompatible(q, rr, sa)) return slot;
-    }
-    return null;
-}
-
-fn projectionCacheRopeAnchorSlot(
-    ops: []const backend_mod.DeviceOp,
-    command: *const ProgramCommand,
-    rr: anytype,
-) ?usize {
-    for (command.anchorIndices(), 0..) |idx, slot| {
-        if (idx >= ops.len) return null;
-        const q = switch (ops[idx]) {
-            .qmatmul => |q| q,
-            else => return null,
-        };
-        if (qmatvecRopeSidecarCompatible(q, rr)) return slot;
-    }
-    return null;
-}
-
-fn projectionCacheRopeWouldBlockAttentionFusion(
-    ops: []const backend_mod.DeviceOp,
-    rope_index: usize,
+    start: usize,
+    policy: CommandStreamPolicy,
     used: ?[]const bool,
     executed: ?[]const bool,
+) ?ProgramCommand {
+    if (start >= ops.len) return null;
+    if (used) |used_ops| {
+        if (start >= used_ops.len or used_ops[start]) return null;
+    }
+    const max_anchors = @min(max_projection_group_anchors, @as(usize, @intCast(policy.dense_matvec_group_size)));
+    if (max_anchors < 2) return null;
+    const first = switch (ops[start]) {
+        .matmul => |m| m,
+        else => return null,
+    };
+    if (!denseProjectionAnchor(first)) return null;
+
+    var command = ProgramCommand{
+        .kind = .dense_projection_cache_group,
+        .op_start = @intCast(start),
+        .op_count = 1,
+        .anchor_count = 1,
+    };
+    command.indices[0] = start;
+
+    var scan = start + 1;
+    while (scan < ops.len and command.anchor_count < max_anchors) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        const m = switch (ops[scan]) {
+            .matmul => |m| m,
+            else => continue,
+        };
+        if (!denseProjectionAnchor(m)) continue;
+        if (!denseProjectionGroupCompatible(first, m)) continue;
+        if (!canHoistOpTo(ops, start, scan, .{ .matmul = m })) continue;
+        if (opConflictsSelected(ops, command.anchorIndices(), .{ .matmul = m })) continue;
+        command.indices[command.anchor_count] = scan;
+        command.anchor_count += 1;
+        command.op_count = @intCast(scan - start + 1);
+    }
+    if (command.anchor_count < 2) return null;
+
+    const initial_sidecars = command.sidecar_count;
+    var sidecar_scan = ProjectionCacheSidecarScan{
+        .ops = ops,
+        .used = used,
+        .executed = executed,
+        .group_start = start,
+        .max_sidecars_per_anchor = MAX_DENSE_CACHE_SIDECARS_PER_ANCHOR,
+    };
+    sidecar_scan.collect(.matmul, denseProjectionSliceSidecarCompatible, denseMatvecRopeStoreSidecarCompatiblePair, &command);
+    collectDenseProjectionElementwiseSidecars(ops, used, executed, start, &command);
+
+    return if (command.sidecar_count > initial_sidecars) command else null;
+}
+
+const MAX_DENSE_CACHE_SIDECARS_PER_ANCHOR = 8;
+
+fn commandAnchorSlotHasSidecar(command: *const ProgramCommand, slot: usize) bool {
+    var i: usize = 0;
+    while (i < command.sidecar_count) : (i += 1) {
+        if (command.sidecarAnchorSlot(i) == slot) return true;
+    }
+    return false;
+}
+
+fn carriedSidecarConflictsSelected(
+    ops: []const backend_mod.DeviceOp,
+    command: *const ProgramCommand,
+    candidate: backend_mod.DeviceOp,
 ) bool {
-    return findDelayableRopeAttentionStorePair(ops, rope_index, used, executed) != null or
-        findRopeAttentionStorePair(ops, rope_index, used, executed) != null;
+    var i: usize = 0;
+    while (i < command.sidecar_count) : (i += 1) {
+        const idx = command.sidecar_indices[i] orelse continue;
+        if (idx >= ops.len) return true;
+        if (opAccessConflicts(ops[idx], candidate)) return true;
+    }
+    return false;
+}
+
+fn sidecarConflictsSiblingAnchors(
+    ops: []const backend_mod.DeviceOp,
+    command: *const ProgramCommand,
+    producer_slot: usize,
+    candidate: backend_mod.DeviceOp,
+) bool {
+    for (command.anchorIndices(), 0..) |idx, slot| {
+        if (slot == producer_slot) continue;
+        if (idx >= ops.len or opAccessConflicts(ops[idx], candidate)) return true;
+    }
+    return false;
+}
+
+fn denseProjectionElementwiseAnchorSlot(
+    ops: []const backend_mod.DeviceOp,
+    command: *const ProgramCommand,
+    e: anytype,
+) ?usize {
+    for (command.anchorIndices(), 0..) |idx, slot| {
+        if (idx >= ops.len) return null;
+        const m = switch (ops[idx]) {
+            .matmul => |m| m,
+            else => return null,
+        };
+        if (matmulElementwiseSidecarCompatible(m, e)) return slot;
+    }
+    return null;
+}
+
+fn projectionElementwiseAnchorSlot(
+    ops: []const backend_mod.DeviceOp,
+    command: *const ProgramCommand,
+    e: anytype,
+) ?usize {
+    for (command.anchorIndices(), 0..) |idx, slot| {
+        if (idx >= ops.len) return null;
+        const q = switch (ops[idx]) {
+            .qmatmul => |q| q,
+            else => return null,
+        };
+        if (projectionSidecarCompatible(q, .{ .elementwise = e })) return slot;
+    }
+    return null;
+}
+
+fn collectProjectionElementwiseSidecars(
+    ops: []const backend_mod.DeviceOp,
+    used: ?[]const bool,
+    executed: ?[]const bool,
+    group_start: usize,
+    command: *ProgramCommand,
+) void {
+    var scan = group_start + 1;
+    scan_loop: while (scan < ops.len and command.sidecar_count < max_projection_group_anchors) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        if (commandContainsIndex(command, scan)) continue;
+        const e = switch (ops[scan]) {
+            .elementwise => |e| e,
+            else => continue,
+        };
+        const slot = projectionElementwiseAnchorSlot(ops, command, e) orelse continue;
+        if (commandAnchorSlotHasSidecar(command, slot)) continue;
+
+        var candidate = command.*;
+        if (!appendProjectionCacheSidecar(&candidate, scan, group_start, slot)) break :scan_loop;
+        const producer = backend_mod.DeviceOp{ .qmatmul = ops[command.indices[slot]].qmatmul };
+        const sidecar = backend_mod.DeviceOp{ .elementwise = e };
+        if (sidecarConflictsSiblingAnchors(ops, command, slot, sidecar)) continue;
+        if (!canHoistCacheSidecarToGroup(ops, group_start, scan, producer, sidecar, &candidate, executed)) continue;
+        if (carriedSidecarConflictsSelected(ops, command, sidecar)) continue;
+
+        command.* = candidate;
+    }
+}
+
+fn collectDenseProjectionElementwiseSidecars(
+    ops: []const backend_mod.DeviceOp,
+    used: ?[]const bool,
+    executed: ?[]const bool,
+    group_start: usize,
+    command: *ProgramCommand,
+) void {
+    var scan = group_start + 1;
+    scan_loop: while (scan < ops.len and command.sidecar_count < max_projection_group_anchors) : (scan += 1) {
+        if (used) |used_ops| {
+            if (scan >= used_ops.len or used_ops[scan]) continue;
+        }
+        if (commandContainsIndex(command, scan)) continue;
+        const e = switch (ops[scan]) {
+            .elementwise => |e| e,
+            else => continue,
+        };
+        const slot = denseProjectionElementwiseAnchorSlot(ops, command, e) orelse continue;
+        if (commandAnchorSlotHasSidecar(command, slot)) continue;
+
+        var candidate = command.*;
+        if (!appendProjectionCacheSidecar(&candidate, scan, group_start, slot)) break :scan_loop;
+        const producer = backend_mod.DeviceOp{ .matmul = ops[command.indices[slot]].matmul };
+        const sidecar = backend_mod.DeviceOp{ .elementwise = e };
+        if (sidecarConflictsSiblingAnchors(ops, command, slot, sidecar)) continue;
+        if (!canHoistCacheSidecarToGroup(ops, group_start, scan, producer, sidecar, &candidate, executed)) continue;
+        if (carriedSidecarConflictsSelected(ops, command, sidecar)) continue;
+
+        command.* = candidate;
+    }
+}
+
+const ProjectionCacheSidecarScan = struct {
+    ops: []const backend_mod.DeviceOp,
+    used: ?[]const bool,
+    executed: ?[]const bool,
+    group_start: usize,
+    fixed_end: ?usize = null,
+    max_sidecars_per_anchor: u32,
+    per_anchor_sidecars: [max_projection_group_anchors]u32 = [_]u32{0} ** max_projection_group_anchors,
+
+    fn collect(
+        self: *ProjectionCacheSidecarScan,
+        comptime anchor_tag: DeviceOpTag,
+        comptime sliceCompatibleFn: anytype,
+        comptime ropeStoreCompatibleFn: anytype,
+        command: *ProgramCommand,
+    ) void {
+        var scan = self.group_start + 1;
+        scan_loop: while (scan < self.ops.len and command.sidecar_count < max_projection_group_anchors) : (scan += 1) {
+            if (self.used) |used_ops| {
+                if (scan >= used_ops.len or used_ops[scan]) continue;
+            }
+            if (commandContainsIndex(command, scan)) continue;
+            if (self.stopsAtNextAnchor(command, scan, anchor_tag)) break;
+            if (self.ops[scan] == .rope and scan + 1 < self.ops.len) store: {
+                if (self.used) |used_ops| {
+                    if (scan + 1 >= used_ops.len or used_ops[scan + 1]) break :store;
+                }
+                const rr = self.ops[scan].rope;
+                const sa = switch (self.ops[scan + 1]) {
+                    .slice_assign => |sa| sa,
+                    else => break :store,
+                };
+                const slot = projectionCacheAnchorSlot(self.ops, command, anchor_tag, .{ .rr = rr, .sa = sa }, ropeStoreCompatibleFn) orelse break :store;
+                if (!self.slotCanAccept(command, slot, sa)) break :store;
+
+                var candidate = command.*;
+                if (!appendProjectionCacheRopeStoreSidecar(&candidate, scan, scan + 1, self.group_start, slot)) break :scan_loop;
+                if (!canHoistCacheRopeStoreToGroup(self.ops, self.group_start, scan, scan + 1, self.anchorProducer(anchor_tag, command, slot), rr, sa, &candidate, self.executed)) break :store;
+                if (projectionCacheSidecarConflictsSelected(self.ops, command, sa)) break :store;
+                if (projectionCacheRopeOutputHasExternalUsers(self.ops, scan, scan + 1)) break :store;
+
+                command.* = candidate;
+                self.per_anchor_sidecars[slot] += 1;
+                scan += 1;
+                continue;
+            }
+            const sa = switch (self.ops[scan]) {
+                .slice_assign => |sa| sa,
+                else => continue,
+            };
+            const slot = projectionCacheAnchorSlot(self.ops, command, anchor_tag, sa, sliceCompatibleFn) orelse continue;
+            if (!self.slotCanAccept(command, slot, sa)) continue;
+
+            var candidate = command.*;
+            if (!appendProjectionCacheSidecar(&candidate, scan, self.group_start, slot)) break;
+            if (!canHoistCacheSidecarToGroup(self.ops, self.group_start, scan, self.anchorProducer(anchor_tag, command, slot), .{ .slice_assign = sa }, &candidate, self.executed)) continue;
+            if (projectionCacheSidecarConflictsSelected(self.ops, command, sa)) continue;
+
+            command.* = candidate;
+            self.per_anchor_sidecars[slot] += 1;
+        }
+    }
+
+    fn stopsAtNextAnchor(
+        self: *const ProjectionCacheSidecarScan,
+        command: *const ProgramCommand,
+        scan: usize,
+        comptime anchor_tag: DeviceOpTag,
+    ) bool {
+        const extent_end = self.fixed_end orelse self.group_start + @as(usize, command.op_count);
+        return scan > extent_end and std.meta.activeTag(self.ops[scan]) == anchor_tag;
+    }
+
+    fn slotCanAccept(self: *const ProjectionCacheSidecarScan, command: *const ProgramCommand, slot: usize, sa: anytype) bool {
+        return self.per_anchor_sidecars[slot] < self.max_sidecars_per_anchor and
+            projectionCacheSidecarsShareSink(self.ops, command, slot, sa);
+    }
+
+    fn anchorProducer(
+        self: *const ProjectionCacheSidecarScan,
+        comptime anchor_tag: DeviceOpTag,
+        command: *const ProgramCommand,
+        slot: usize,
+    ) backend_mod.DeviceOp {
+        const anchor = self.ops[command.indices[slot]];
+        return @unionInit(backend_mod.DeviceOp, @tagName(anchor_tag), @field(anchor, @tagName(anchor_tag)));
+    }
+};
+
+fn appendProjectionCacheSidecar(command: *ProgramCommand, sidecar_index: usize, group_start: usize, slot: usize) bool {
+    if (command.sidecar_count >= max_projection_group_anchors) return false;
+    if (slot >= command.anchor_count or slot > std.math.maxInt(u8)) return false;
+    const sidecar_slot = command.sidecar_count;
+    command.sidecar_indices[sidecar_slot] = sidecar_index;
+    command.sidecar_slots[sidecar_slot] = @intCast(slot);
+    command.sidecar_count += 1;
+    command.op_count = @intCast(@max(
+        group_start + @as(usize, command.op_count),
+        sidecar_index + 1,
+    ) - group_start);
+    return true;
+}
+
+fn appendProjectionCacheRopeStoreSidecar(command: *ProgramCommand, rope_index: usize, sidecar_index: usize, group_start: usize, slot: usize) bool {
+    if (command.sidecar_count + 2 > max_projection_group_anchors) return false;
+    if (slot >= command.anchor_count or slot > std.math.maxInt(u8)) return false;
+    command.sidecar_indices[command.sidecar_count] = rope_index;
+    command.sidecar_slots[command.sidecar_count] = @intCast(slot);
+    command.sidecar_count += 1;
+    command.sidecar_indices[command.sidecar_count] = sidecar_index;
+    command.sidecar_slots[command.sidecar_count] = @intCast(slot);
+    command.sidecar_count += 1;
+    command.op_count = @intCast(@max(
+        group_start + @as(usize, command.op_count),
+        sidecar_index + 1,
+    ) - group_start);
+    return true;
+}
+
+fn projectionCacheAnchorSlot(
+    ops: []const backend_mod.DeviceOp,
+    command: *const ProgramCommand,
+    comptime anchor_tag: DeviceOpTag,
+    candidate: anytype,
+    comptime compatibleFn: anytype,
+) ?usize {
+    for (command.anchorIndices(), 0..) |idx, slot| {
+        if (idx >= ops.len or std.meta.activeTag(ops[idx]) != anchor_tag) return null;
+        if (compatibleFn(@field(ops[idx], @tagName(anchor_tag)), candidate)) return slot;
+    }
+    return null;
+}
+
+fn projectionSliceSidecarCompatible(q: anytype, sa: anytype) bool {
+    return projectionSidecarCompatible(q, .{ .slice_assign = sa });
+}
+
+fn qmatvecRopeStoreSidecarCompatiblePair(q: anytype, pair: anytype) bool {
+    return qmatvecRopeStoreSidecarCompatible(q, pair.rr, pair.sa);
+}
+
+fn denseMatvecRopeStoreSidecarCompatiblePair(m: anytype, pair: anytype) bool {
+    return denseMatvecRopeStoreSidecarCompatible(m, pair.rr, pair.sa);
 }
 
 fn projectionCacheSidecarsShareSink(
@@ -1281,17 +2522,18 @@ fn projectionCacheSidecarsShareSink(
         const idx = command.sidecar_indices[i] orelse continue;
         switch (ops[idx]) {
             .slice_assign => |selected| {
-                const selected_slot = projectionCacheSidecarAnchorSlot(ops, command, selected) orelse continue;
+                const selected_slot = command.sidecarAnchorSlot(i) orelse return false;
                 if (selected_slot == anchor_slot and selected.dst != sa.dst) return false;
             },
-            .rope => |rr| {
+            .rope => {
                 if (i + 1 < command.sidecar_count) {
                     const sidecar_idx = command.sidecar_indices[i + 1] orelse return false;
                     const selected = switch (ops[sidecar_idx]) {
                         .slice_assign => |selected| selected,
                         else => continue,
                     };
-                    const selected_slot = projectionCacheRopeStoreAnchorSlot(ops, command, rr, selected) orelse continue;
+                    const selected_slot = command.sidecarAnchorSlot(i) orelse return false;
+                    if (command.sidecarAnchorSlot(i + 1) != selected_slot) return false;
                     if (selected_slot == anchor_slot and selected.dst != sa.dst) return false;
                     i += 1;
                 }
@@ -1323,16 +2565,16 @@ fn projectionCacheSidecarConflictsSelected(
             },
             .rope => |rr| {
                 if (opAccessConflicts(.{ .rope = rr }, .{ .slice_assign = sa })) return true;
-                if (i + 1 < command.sidecar_count) {
-                    const sidecar_idx = command.sidecar_indices[i + 1] orelse return true;
-                    const selected = switch (ops[sidecar_idx]) {
-                        .slice_assign => |selected| selected,
-                        else => continue,
-                    };
-                    if (projectionCacheRopeStoreAnchorSlot(ops, command, rr, selected) == null) continue;
-                    if (sliceAssignWritesMayOverlap(selected, sa)) return true;
-                    i += 1;
-                }
+                if (i + 1 >= command.sidecar_count) return true;
+                const slot = command.sidecarAnchorSlot(i) orelse return true;
+                if (command.sidecarAnchorSlot(i + 1) != slot) return true;
+                const sidecar_idx = command.sidecar_indices[i + 1] orelse return true;
+                const selected = switch (ops[sidecar_idx]) {
+                    .slice_assign => |selected| selected,
+                    else => return true,
+                };
+                if (sliceAssignWritesMayOverlap(selected, sa)) return true;
+                i += 1;
             },
             else => return true,
         }
@@ -1340,101 +2582,52 @@ fn projectionCacheSidecarConflictsSelected(
     return false;
 }
 
-fn projectionCacheRopeConflictsSelected(
-    ops: []const backend_mod.DeviceOp,
-    command: *const ProgramCommand,
-    rr: anytype,
-) bool {
-    const rope_op: backend_mod.DeviceOp = .{ .rope = rr };
-    for (command.anchorIndices()) |idx| {
-        if (idx >= ops.len) return true;
-        if (ops[idx] == .qmatmul and projectionRopeSidecarCompatible(ops[idx].qmatmul, rr)) continue;
-        if (opAccessConflicts(ops[idx], rope_op)) return true;
-    }
-    var i: usize = 0;
-    while (i < command.sidecar_count) : (i += 1) {
-        const idx = command.sidecar_indices[i] orelse continue;
-        if (idx >= ops.len) return true;
-        if (opAccessConflicts(ops[idx], rope_op)) return true;
-        if (ops[idx] == .rope and i + 1 < command.sidecar_count) {
-            const sidecar_idx = command.sidecar_indices[i + 1] orelse continue;
-            if (sidecar_idx >= ops.len) return true;
-            const selected = switch (ops[sidecar_idx]) {
-                .slice_assign => |selected| selected,
-                else => continue,
-            };
-            if (projectionCacheRopeStoreAnchorSlot(ops, command, ops[idx].rope, selected) != null) {
-                if (opAccessConflicts(ops[sidecar_idx], rope_op)) return true;
-                i += 1;
-            }
-        }
-    }
+fn hoistScanSkips(command: *const ProgramCommand, executed: ?[]const bool, idx: usize) bool {
+    if (commandContainsIndex(command, idx)) return true;
+    if (executed) |executed_ops| return idx < executed_ops.len and executed_ops[idx];
     return false;
 }
 
-fn canHoistProjectionCacheSidecarToGroup(
+fn opWriteCoversRead(op: backend_mod.DeviceOp, read: BufferSpan) bool {
+    const access = opAccessSpans(op);
+    for (access.writeSpans()) |write| {
+        if (write.buf == read.buf and write.start <= read.start and write.end >= read.end) return true;
+    }
+    return access.write_overflow and opWritesBuffer(op, read.buf);
+}
+
+fn canHoistCacheSidecarToGroup(
     ops: []const backend_mod.DeviceOp,
     group_start: usize,
     sidecar_index: usize,
-    q: anytype,
-    sa: anytype,
+    producer: backend_mod.DeviceOp,
+    sidecar: backend_mod.DeviceOp,
     command: *const ProgramCommand,
     executed: ?[]const bool,
 ) bool {
-    const sidecar_access = opAccessSpans(.{ .slice_assign = sa });
+    const sidecar_access = opAccessSpans(sidecar);
     for (ops[group_start..sidecar_index], group_start..) |op, idx| {
-        if (commandContainsIndex(command, idx)) continue;
-        if (executed) |executed_ops| {
-            if (idx < executed_ops.len and executed_ops[idx]) continue;
-        }
+        if (hoistScanSkips(command, executed, idx)) continue;
         for (sidecar_access.readSpans()) |read| {
-            if (projectionWriteCoversRead(q, read)) continue;
+            if (opWriteCoversRead(producer, read)) continue;
             if (opWritesSpan(op, read)) return false;
         }
         for (sidecar_access.writeSpans()) |write| {
             if (opTouchesSpan(op, write)) return false;
         }
         if (sidecar_access.read_overflow or sidecar_access.write_overflow) {
-            if (opAccessConflicts(op, .{ .slice_assign = sa })) return false;
+            if (opAccessConflicts(op, sidecar)) return false;
         }
     }
     return true;
 }
 
-fn canHoistProjectionCacheRopeToGroup(
-    ops: []const backend_mod.DeviceOp,
-    group_start: usize,
-    rope_index: usize,
-    q: anytype,
-    rr: anytype,
-    command: *const ProgramCommand,
-    executed: ?[]const bool,
-) bool {
-    const rope_access = opAccessSpans(.{ .rope = rr });
-    for (ops[group_start..rope_index], group_start..) |op, idx| {
-        if (commandContainsIndex(command, idx)) continue;
-        if (executed) |executed_ops| {
-            if (idx < executed_ops.len and executed_ops[idx]) continue;
-        }
-        for (rope_access.readSpans()) |read| {
-            if (projectionWriteCoversRead(q, read)) continue;
-            if (opWritesSpan(op, read)) return false;
-        }
-        for (rope_access.writeSpans()) |write| {
-            if (opTouchesSpan(op, write)) return false;
-        }
-        if (rope_access.read_overflow and (opWritesBuffer(op, rr.src) or opWritesBuffer(op, rr.cos_sin))) return false;
-        if (rope_access.write_overflow and opTouchesBuffer(op, rr.dst)) return false;
-    }
-    return true;
-}
-
-fn canHoistProjectionCacheRopeStoreToGroup(
+fn canHoistCacheRopeStoreToGroup(
     ops: []const backend_mod.DeviceOp,
     group_start: usize,
     rope_index: usize,
     sidecar_index: usize,
-    q: anytype,
+    producer: backend_mod.DeviceOp,
     rr: anytype,
     sa: anytype,
     command: *const ProgramCommand,
@@ -1442,12 +2635,9 @@ fn canHoistProjectionCacheRopeStoreToGroup(
 ) bool {
     const rope_access = opAccessSpans(.{ .rope = rr });
     for (ops[group_start..rope_index], group_start..) |op, idx| {
-        if (commandContainsIndex(command, idx)) continue;
-        if (executed) |executed_ops| {
-            if (idx < executed_ops.len and executed_ops[idx]) continue;
-        }
+        if (hoistScanSkips(command, executed, idx)) continue;
         for (rope_access.readSpans()) |read| {
-            if (projectionWriteCoversRead(q, read)) continue;
+            if (opWriteCoversRead(producer, read)) continue;
             if (opWritesSpan(op, read)) return false;
         }
         if (rope_access.read_overflow and (opWritesBuffer(op, rr.src) or opWritesBuffer(op, rr.cos_sin))) return false;
@@ -1455,10 +2645,7 @@ fn canHoistProjectionCacheRopeStoreToGroup(
 
     const sidecar_access = opAccessSpans(.{ .slice_assign = sa });
     for (ops[group_start..sidecar_index], group_start..) |op, idx| {
-        if (commandContainsIndex(command, idx)) continue;
-        if (executed) |executed_ops| {
-            if (idx < executed_ops.len and executed_ops[idx]) continue;
-        }
+        if (hoistScanSkips(command, executed, idx)) continue;
         for (sidecar_access.writeSpans()) |write| {
             if (opTouchesSpan(op, write)) return false;
         }
@@ -1482,104 +2669,7 @@ fn projectionCacheRopeOutputHasExternalUsers(
     return ropeStoreGroupOutputsHaveExternalUsers(ops, &command);
 }
 
-pub fn summarizeProjectionGroups(groups: []const ProjectionGroup) ProjectionGroupSummary {
-    var summary = ProjectionGroupSummary{ .groups = @intCast(groups.len) };
-    for (groups) |group| {
-        const covered = group.coveredOpCount();
-        const dispatches = group.dispatchCount();
-        summary.anchors += group.anchor_count;
-        summary.sidecars += group.sidecar_count;
-        summary.covered_ops += covered;
-        summary.estimated_dispatches += dispatches;
-        summary.max_span_ops = @max(summary.max_span_ops, group.op_count);
-        if (covered > dispatches) {
-            summary.estimated_saved_dispatches += covered - dispatches;
-        }
-    }
-    return summary;
-}
-
-pub fn summarizeProjectionSidecars(ops: []const backend_mod.DeviceOp) ProjectionSidecarSummary {
-    var summary = ProjectionSidecarSummary{};
-    for (ops, 0..) |op, i| {
-        const q = switch (op) {
-            .qmatmul => |q| q,
-            else => continue,
-        };
-        summary.anchors += 1;
-        if (i + 1 >= ops.len) continue;
-
-        const sidecar = ops[i + 1];
-        switch (sidecar) {
-            .slice_assign, .elementwise, .fused_elementwise => {},
-            else => continue,
-        }
-        summary.immediate_sidecars += 1;
-        if (!projectionSidecarCompatible(q, sidecar)) {
-            summary.incompatible_sidecars += 1;
-            continue;
-        }
-
-        summary.compatible_sidecars += 1;
-        if (projectionPrimaryOutputHasExternalUsers(ops, i, i + 1)) {
-            summary.primary_required_sidecars += 1;
-        } else {
-            summary.primary_elidable_sidecars += 1;
-        }
-        switch (sidecar) {
-            .slice_assign => summary.slice_sidecars += 1,
-            .elementwise => summary.elementwise_sidecars += 1,
-            .fused_elementwise => summary.fused_elementwise_sidecars += 1,
-            else => unreachable,
-        }
-    }
-    return summary;
-}
-
-pub fn summarizeProjectionRopeCacheSidecars(ops: []const backend_mod.DeviceOp, tile_cols: u32) ProjectionRopeCacheSummary {
-    var summary = ProjectionRopeCacheSummary{};
-    for (ops) |op| {
-        const q = switch (op) {
-            .qmatmul => |q| q,
-            else => continue,
-        };
-        summary.anchors += 1;
-
-        for (ops[0..ops.len -| 1], 0..) |candidate, i| {
-            const rr = switch (candidate) {
-                .rope => |rr| rr,
-                else => continue,
-            };
-            const sa = switch (ops[i + 1]) {
-                .slice_assign => |sa| sa,
-                else => continue,
-            };
-            if (rr.src != q.dst) continue;
-            summary.rope_store_pairs += 1;
-            if (!projectionRopeStoreSidecarCompatible(q, rr, sa)) continue;
-            summary.compatible_pairs += 1;
-            if (qmatmulRopeStoreTilePairCompatible(q, rr, sa, tile_cols)) {
-                summary.tile_pair_pairs += 1;
-            }
-        }
-
-        for (ops, 0..) |candidate, i| {
-            const rr = switch (candidate) {
-                .rope => |rr| rr,
-                else => continue,
-            };
-            if (!projectionRopeSidecarCompatible(q, rr)) continue;
-            if (i + 1 < ops.len and ops[i + 1] == .slice_assign and projectionRopeStoreSidecarCompatible(q, rr, ops[i + 1].slice_assign)) continue;
-            summary.rope_materializations += 1;
-            if (projectionCacheRopeWouldBlockAttentionFusion(ops, i, null, null)) {
-                summary.materialization_attention_fusion_skips += 1;
-            }
-        }
-    }
-    return summary;
-}
-
-pub fn buildProgramCommands(
+fn buildProgramCommands(
     alloc: std.mem.Allocator,
     ops: []const backend_mod.DeviceOp,
     policy: CommandStreamPolicy,
@@ -1629,8 +2719,49 @@ pub fn buildProgramCommands(
         const pending_command = pending.orderedRemove(0);
         try commands.append(alloc, pending_command.command);
     }
+    mergeAdjacentProjectionRowChains(ops, policy, &commands);
 
     return commands.toOwnedSlice(alloc);
+}
+
+fn mergeAdjacentProjectionRowChains(
+    ops: []const backend_mod.DeviceOp,
+    policy: CommandStreamPolicy,
+    commands: *std.ArrayListUnmanaged(ProgramCommand),
+) void {
+    if (!policy.fuse_projection_row_chain and !policy.fuse_dense_projection_row_chain) return;
+    const items = commands.items;
+    var read: usize = 0;
+    var write: usize = 0;
+    while (read < items.len) {
+        if (read + 1 < items.len) {
+            const current = items[read];
+            const next = items[read + 1];
+            if (policy.fuse_projection_row_chain and current.kind == .projection_chain and next.kind == .row_chain) {
+                if (findProjectionRowChainCommand(ops, current.op_start, policy, null)) |fused| {
+                    if (fused.op_start == current.op_start and fused.op_count == current.op_count + next.op_count) {
+                        items[write] = fused;
+                        write += 1;
+                        read += 2;
+                        continue;
+                    }
+                }
+            } else if (policy.fuse_dense_projection_row_chain and current.kind == .dense_projection_chain and next.kind == .row_chain) {
+                if (findDenseProjectionRowChainCommand(ops, current.op_start, policy, null)) |fused| {
+                    if (fused.op_start == current.op_start and fused.op_count == current.op_count + next.op_count) {
+                        items[write] = fused;
+                        write += 1;
+                        read += 2;
+                        continue;
+                    }
+                }
+            }
+        }
+        items[write] = items[read];
+        write += 1;
+        read += 1;
+    }
+    commands.items.len = write;
 }
 
 fn findDelayedProgramCommand(
@@ -1669,15 +2800,6 @@ fn emitPendingProgramCommandsAt(
     }
 }
 
-pub fn findProgramCommand(
-    ops: []const backend_mod.DeviceOp,
-    start: usize,
-    policy: CommandStreamPolicy,
-    used: ?[]const bool,
-) ?ProgramCommand {
-    return findProgramCommandWithExecuted(ops, start, policy, used, null);
-}
-
 fn findProgramCommandWithExecuted(
     ops: []const backend_mod.DeviceOp,
     start: usize,
@@ -1711,30 +2833,33 @@ const ProgramCommandFinderFn = *const fn ([]const backend_mod.DeviceOp, usize, C
 
 const ProgramCommandFinderFeature = enum {
     always,
-    stage_commands,
+    row_rope_chains,
     elementwise_batch,
     repeat_fused_elementwise,
+    projection_chain,
+    projection_row_chain,
     rope_batch,
     movement_batch,
-    attention_batch,
+    attention_group,
     rope_attention_store_batch,
 
-    pub fn enabled(self: ProgramCommandFinderFeature, policy: CommandStreamPolicy) bool {
+    fn enabled(self: ProgramCommandFinderFeature, policy: CommandStreamPolicy) bool {
         return switch (self) {
             .always => true,
-            .stage_commands => policy.stage_commands,
+            .row_rope_chains => policy.row_rope_chains,
             .elementwise_batch => policy.max_elementwise_batch >= 2,
             .repeat_fused_elementwise => policy.fuse_repeat_fused_elementwise,
+            .projection_chain => policy.fuse_projection_chain,
+            .projection_row_chain => policy.fuse_projection_row_chain,
             .rope_batch => policy.max_rope_batch >= 2,
             .movement_batch => policy.max_movement_batch >= 2,
-            .attention_batch => policy.max_attention_batch >= 2,
+            .attention_group => policy.max_attention_batch >= 2,
             .rope_attention_store_batch => policy.max_rope_attention_store_batch >= 2,
         };
     }
 };
 
 const ProgramCommandFinder = struct {
-    name: []const u8,
     start_tag: ?DeviceOpTag = null,
     feature: ProgramCommandFinderFeature = .always,
     find: ProgramCommandFinderFn,
@@ -1756,44 +2881,33 @@ const ProgramCommandFinder = struct {
 };
 
 const program_command_finders = [_]ProgramCommandFinder{
-    .{ .name = "projection_pair_fused_elementwise_chain", .start_tag = .qmatmul, .find = finderUsedOnly(findProjectionPairFusedElementwiseChainCommand) },
-    .{ .name = "projection_fused_elementwise_chain", .start_tag = .qmatmul, .find = finderUsedOnly(findProjectionFusedElementwiseChainCommand) },
-    .{ .name = "projection_cache_group", .start_tag = .qmatmul, .find = findProjectionCacheGroupCommand },
-    .{ .name = "projection_group", .start_tag = .qmatmul, .find = findProjectionGroupAt },
-    .{ .name = "projection_chain", .start_tag = .qmatmul, .find = finderUsedOnly(findProjectionChainCommand) },
-    .{ .name = "elementwise_batch", .start_tag = .elementwise, .feature = .elementwise_batch, .find = finderPolicyUsed(findElementwiseBatchCommand) },
-    .{ .name = "repeat_fused_elementwise_chain", .start_tag = .repeat, .feature = .repeat_fused_elementwise, .find = finderUsedOnly(findRepeatFusedElementwiseCommand) },
-    .{ .name = "rope_store_group", .start_tag = .rope, .feature = .rope_batch, .find = findRopeStoreGroupCommand },
-    .{ .name = "stage_command", .feature = .stage_commands, .find = findStageProgramCommandAt },
-    .{ .name = "contiguous_batch", .find = finderPolicyUsed(findContiguousBatchCommand) },
-    .{ .name = "rope_attention_store_group", .start_tag = .rope, .feature = .rope_attention_store_batch, .find = findRopeAttentionStoreGroupCommand },
-    .{ .name = "rope_attention_store_chain", .start_tag = .rope, .find = finderUsedExecuted(findRopeAttentionStoreChainCommand) },
-    .{ .name = "attention_chain", .start_tag = .slice_assign, .find = finderUsedOnly(findAttentionChainCommand) },
-    .{ .name = "attention_store_group", .start_tag = .attention, .feature = .attention_batch, .find = findAttentionStoreGroupCommand },
-    .{ .name = "attention_store_chain", .start_tag = .attention, .find = finderUsedOnly(findAttentionStoreChainCommand) },
-    .{ .name = "movement_group", .start_tag = .slice_assign, .feature = .movement_batch, .find = finderPolicyUsed(findMovementGroupCommand) },
-    .{ .name = "attention_group", .start_tag = .attention, .feature = .attention_batch, .find = finderPolicyUsed(findAttentionGroupCommand) },
+    .{ .start_tag = .qmatmul, .find = finderUsedOnly(findProjectionPairElementwiseChainCommand) },
+    .{ .start_tag = .qmatmul, .find = finderUsedOnly(findProjectionPairFusedElementwiseChainCommand) },
+    .{ .start_tag = .qmatmul, .feature = .projection_row_chain, .find = finderPolicyUsed(findProjectionRowChainCommand) },
+    .{ .start_tag = .qmatmul, .find = findProjectionCacheGroupCommand },
+    .{ .start_tag = .qmatmul, .find = findProjectionGroupAt },
+    .{ .start_tag = .qmatmul, .feature = .projection_chain, .find = finderUsedOnly(findProjectionChainCommand) },
+    .{ .start_tag = .matmul, .find = finderUsedOnly(findDenseProjectionPairFusedElementwiseChainCommand) },
+    .{ .start_tag = .matmul, .find = findDenseProjectionCacheGroupCommand },
+    .{ .start_tag = .matmul, .feature = .projection_row_chain, .find = finderPolicyUsed(findDenseProjectionRowChainCommand) },
+    .{ .start_tag = .matmul, .feature = .projection_chain, .find = finderUsedOnly(findDenseProjectionChainCommand) },
+    .{ .start_tag = .elementwise, .feature = .elementwise_batch, .find = finderPolicyUsed(findElementwiseBatchCommand) },
+    .{ .start_tag = .repeat, .feature = .repeat_fused_elementwise, .find = finderUsedOnly(findRepeatFusedElementwiseCommand) },
+    .{ .start_tag = .rope, .feature = .rope_batch, .find = findRopeStoreGroupCommand },
+    .{ .feature = .row_rope_chains, .find = findRowRopeChainCommand },
+    .{ .find = finderPolicyUsed(findContiguousBatchCommand) },
+    .{ .start_tag = .rope, .feature = .rope_attention_store_batch, .find = findRopeAttentionStoreGroupCommand },
+    .{ .start_tag = .rope, .find = finderUsedExecuted(findRopeAttentionStoreChainCommand) },
+    .{ .start_tag = .slice_assign, .find = finderUsedOnly(findAttentionChainCommand) },
+    .{ .start_tag = .attention, .feature = .attention_group, .find = findAttentionStoreGroupCommand },
+    .{ .start_tag = .attention, .find = finderUsedOnly(findAttentionStoreChainCommand) },
+    .{ .start_tag = .slice_assign, .feature = .movement_batch, .find = finderPolicyUsed(findMovementGroupCommand) },
+    .{ .start_tag = .attention, .feature = .attention_group, .find = finderPolicyUsed(findAttentionGroupCommand) },
 };
 
 const delayed_program_command_finders = [_]ProgramCommandFinder{
-    .{ .name = "delayed_rope_attention_store_group", .start_tag = .rope, .find = findDelayedRopeAttentionStoreGroupCommand },
+    .{ .start_tag = .rope, .find = findDelayedRopeAttentionStoreGroupCommand },
 };
-
-fn requireUniqueFinderNames(comptime label: []const u8, comptime finders: anytype) void {
-    inline for (finders, 0..) |finder, i| {
-        if (finder.name.len == 0) @compileError("empty " ++ label ++ " program command finder name");
-        inline for (finders[0..i]) |previous| {
-            if (std.mem.eql(u8, finder.name, previous.name)) {
-                @compileError("duplicate " ++ label ++ " program command finder name: " ++ finder.name);
-            }
-        }
-    }
-}
-
-comptime {
-    requireUniqueFinderNames("normal", program_command_finders);
-    requireUniqueFinderNames("delayed", delayed_program_command_finders);
-}
 
 fn opIs(ops: []const backend_mod.DeviceOp, start: usize, tag: DeviceOpTag) bool {
     if (start >= ops.len) return false;
@@ -1817,7 +2931,7 @@ fn findProjectionGroupAt(
     return ProgramCommand.fromProjectionSelection(selection);
 }
 
-fn findStageProgramCommandAt(
+fn findRowRopeChainCommand(
     ops: []const backend_mod.DeviceOp,
     start: usize,
     policy: CommandStreamPolicy,
@@ -1826,9 +2940,15 @@ fn findStageProgramCommandAt(
 ) ?ProgramCommand {
     _ = executed;
     _ = policy;
-    const stage_command = findStageCommand(ops, start) orelse return null;
-    if (commandRangeTouchesUsed(stage_command.op_start, stage_command.op_count, used)) return null;
-    return ProgramCommand.fromStageCommand(stage_command);
+    if (start + 2 < ops.len and isRmsnormScaleChain(ops[start], ops[start + 1], ops[start + 2])) {
+        if (commandRangeTouchesUsed(@intCast(start), 3, used)) return null;
+        return ProgramCommand.contiguous(.row_chain, start, 3);
+    }
+    if (start + 1 < ops.len and isRopeSliceAssignChain(ops[start], ops[start + 1])) {
+        if (commandRangeTouchesUsed(@intCast(start), 2, used)) return null;
+        return ProgramCommand.contiguous(.rope_chain, start, 2);
+    }
+    return null;
 }
 
 fn finderUsedOnly(comptime find: anytype) ProgramCommandFinderFn {
@@ -1910,18 +3030,77 @@ fn findProjectionPairFusedElementwiseChainCommand(
     };
     if (!projectionPairFusedElementwiseChainCompatible(gate, first, rp, second, up, product)) return null;
     if (projectionPairFusedElementwiseChainHasExternalUsers(ops, start)) return null;
-    return ProgramCommand.contiguous(.projection_pair_fused_elementwise_chain, start, 6);
+    var command = ProgramCommand.contiguous(.projection_pair_fused_elementwise_chain, start, 6);
+    command.projection_kind = if (gate.M == 1) .qmatvec else .qmatmul;
+    return command;
 }
 
-fn findProjectionFusedElementwiseChainCommand(
+fn findProjectionPairElementwiseChainCommand(
     ops: []const backend_mod.DeviceOp,
     start: usize,
     used: ?[]const bool,
 ) ?ProgramCommand {
-    if (start + 3 >= ops.len) return null;
-    if (commandRangeTouchesUsed(@intCast(start), 4, used)) return null;
-    const q = switch (ops[start]) {
+    if (start >= ops.len) return null;
+    if (used) |used_ops| {
+        if (start >= used_ops.len or used_ops[start]) return null;
+    }
+    const left = switch (ops[start]) {
         .qmatmul => |q| q,
+        else => return null,
+    };
+    if (!qmatvecSiblingProjectionAnchor(left)) return null;
+
+    var right_index = start + 1;
+    while (right_index < ops.len) : (right_index += 1) {
+        if (used) |used_ops| {
+            if (right_index >= used_ops.len or used_ops[right_index]) continue;
+        }
+        const right = switch (ops[right_index]) {
+            .qmatmul => |q| q,
+            else => continue,
+        };
+        if (!qmatvecSiblingProjectionCompatible(left, right)) continue;
+        if (!canHoistProjectionTo(ops, start, right_index, right)) continue;
+
+        var elementwise_index = right_index + 1;
+        while (elementwise_index < ops.len) : (elementwise_index += 1) {
+            if (used) |used_ops| {
+                if (elementwise_index >= used_ops.len or used_ops[elementwise_index]) continue;
+            }
+            const e = switch (ops[elementwise_index]) {
+                .elementwise => |e| e,
+                else => continue,
+            };
+            if (!qmatvecPairElementwiseCompatible(left, right, e)) continue;
+
+            var command = ProgramCommand{
+                .kind = .projection_pair_elementwise_chain,
+                .op_start = @intCast(start),
+                .op_count = @intCast(elementwise_index - start + 1),
+                .projection_kind = .qmatvec,
+                .anchor_count = 2,
+                .sidecar_count = 1,
+            };
+            command.indices[0] = start;
+            command.indices[1] = right_index;
+            command.sidecar_indices[0] = elementwise_index;
+            if (!canHoistSiblingElementwiseToCommand(ops, start, elementwise_index, .{ .elementwise = e }, &command)) continue;
+            if (projectionPairElementwiseHasExternalUsers(ops, &command)) continue;
+            return command;
+        }
+    }
+    return null;
+}
+
+fn findDenseProjectionPairFusedElementwiseChainCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (start + 5 >= ops.len) return null;
+    if (commandRangeTouchesUsed(@intCast(start), 6, used)) return null;
+    const gate = switch (ops[start]) {
+        .matmul => |m| m,
         else => return null,
     };
     const first = switch (ops[start + 1]) {
@@ -1936,9 +3115,17 @@ fn findProjectionFusedElementwiseChainCommand(
         .fused_elementwise => |fe| fe,
         else => return null,
     };
-    if (!projectionFusedElementwiseChainCompatible(q, first, rp, second)) return null;
-    if (projectionFusedElementwiseChainHasExternalUsers(ops, start)) return null;
-    return ProgramCommand.contiguous(.projection_fused_elementwise_chain, start, 4);
+    const up = switch (ops[start + 4]) {
+        .matmul => |m| m,
+        else => return null,
+    };
+    const product = switch (ops[start + 5]) {
+        .elementwise => |e| e,
+        else => return null,
+    };
+    if (!denseProjectionPairFusedElementwiseChainCompatible(gate, first, rp, second, up, product)) return null;
+    if (denseProjectionPairFusedElementwiseChainHasExternalUsers(ops, start)) return null;
+    return ProgramCommand.contiguous(.dense_projection_pair_fused_elementwise_chain, start, 6);
 }
 
 fn findRepeatFusedElementwiseCommand(
@@ -2238,7 +3425,7 @@ pub fn projectionPrimaryOutputHasExternalUsersExcept(
     for (sidecar_indices) |maybe_idx| {
         const idx = maybe_idx orelse continue;
         if (idx >= ops.len or idx <= q_index) return true;
-        if (opReadsBuffer(ops[idx], q.dst) and !projectionSidecarCompatible(q, ops[idx]) and !projectionRopeSidecarOpCompatible(q, ops[idx])) return true;
+        if (opReadsBuffer(ops[idx], q.dst) and !projectionPrimarySidecarCompatible(q, ops[idx])) return true;
     }
 
     const q_access = opAccessSpans(.{ .qmatmul = q });
@@ -2273,6 +3460,63 @@ pub fn projectionPrimaryOutputHasExternalUsersExcept(
     return false;
 }
 
+pub fn matmulPrimaryOutputHasExternalUsers(
+    ops: []const backend_mod.DeviceOp,
+    matmul_index: usize,
+    sidecar_index: usize,
+) bool {
+    const sidecars = [_]?usize{sidecar_index};
+    return matmulPrimaryOutputHasExternalUsersExcept(ops, matmul_index, sidecars[0..]);
+}
+
+pub fn matmulPrimaryOutputHasExternalUsersExcept(
+    ops: []const backend_mod.DeviceOp,
+    matmul_index: usize,
+    sidecar_indices: []const ?usize,
+) bool {
+    if (matmul_index >= ops.len) return true;
+    const m = switch (ops[matmul_index]) {
+        .matmul => |m| m,
+        else => return true,
+    };
+    for (sidecar_indices) |maybe_idx| {
+        const idx = maybe_idx orelse continue;
+        if (idx >= ops.len or idx <= matmul_index) return true;
+        if (opReadsBuffer(ops[idx], m.dst) and !matmulPrimarySidecarCompatible(m, ops[idx])) return true;
+    }
+
+    const m_access = opAccessSpans(.{ .matmul = m });
+    var live_writes = [_]bool{false} ** max_access_spans;
+    for (m_access.writeSpans(), 0..) |_, slot| live_writes[slot] = true;
+    var overflow_live = m_access.write_overflow;
+
+    var scan = matmul_index + 1;
+    while (scan < ops.len) : (scan += 1) {
+        const op = ops[scan];
+        if (!optionalIndexContains(sidecar_indices, scan)) {
+            for (m_access.writeSpans(), 0..) |write, slot| {
+                if (!live_writes[slot]) continue;
+                if (opReadsSpan(op, write)) return true;
+            }
+            if (overflow_live and opReadsBuffer(op, m.dst)) return true;
+        }
+
+        var any_live = false;
+        for (m_access.writeSpans(), 0..) |write, slot| {
+            if (!live_writes[slot]) continue;
+            if (opWritesCoverSpan(op, write)) {
+                live_writes[slot] = false;
+            } else {
+                any_live = true;
+            }
+        }
+        if (overflow_live and opWritesBuffer(op, m.dst)) overflow_live = false;
+        if (!any_live and !overflow_live) break;
+    }
+
+    return false;
+}
+
 fn optionalIndexContains(indices: []const ?usize, candidate: usize) bool {
     for (indices) |maybe_idx| {
         if (maybe_idx) |idx| {
@@ -2297,8 +3541,12 @@ pub fn repeatFusedElementwiseCompatible(rp: anytype, fe: anytype) bool {
     return found_secondary;
 }
 
-pub fn projectionFusedElementwiseChainCompatible(q: anytype, first: anytype, rp: anytype, second: anytype) bool {
-    if (!qmatmulFusedElementwiseSidecarCompatible(q, first)) return false;
+fn projectionActivationChainCompatible(q: anytype, first: anytype, rp: anytype, second: anytype) bool {
+    const projection_compatible = if (q.M == 1)
+        qmatvecFusedElementwiseSidecarCompatible(q, first)
+    else
+        qmatmulFusedElementwiseSidecarCompatible(q, first);
+    if (!projection_compatible) return false;
     if (!repeatFusedElementwiseCompatible(rp, second)) return false;
     if (rp.dst == q.dst) return false;
     if (first.dst == q.dst) return false;
@@ -2319,9 +3567,30 @@ pub fn projectionFusedElementwiseChainCompatible(q: anytype, first: anytype, rp:
     return reads_primary;
 }
 
-fn qmatmulPairGeometryCompatible(a: anytype, b: anytype) bool {
-    return a.M != 1 and
-        a.M == b.M and
+fn denseProjectionActivationChainCompatible(m: anytype, first: anytype, rp: anytype, second: anytype) bool {
+    if (!matmulFusedElementwiseSidecarCompatible(m, first)) return false;
+    if (!repeatFusedElementwiseCompatible(rp, second)) return false;
+    if (rp.dst == m.dst) return false;
+    if (first.dst == m.dst) return false;
+    if (first.dst == rp.dst) return false;
+    if (second.src != first.dst or second.src_offset != first.dst_offset) return false;
+    if (second.n != first.n) return false;
+    if (second.dst == m.dst or second.dst == first.dst or second.dst == rp.dst) return false;
+
+    var reads_primary = false;
+    for (second.steps) |step| {
+        if (!step.op.isBinary()) continue;
+        if (step.secondary_buf == first.dst) return false;
+        if (step.secondary_buf == m.dst) {
+            if (step.secondary_offset != m.geom.dst_offset) return false;
+            reads_primary = true;
+        }
+    }
+    return reads_primary;
+}
+
+fn projectionPairGeometryCompatible(a: anytype, b: anytype) bool {
+    return a.M == b.M and
         a.N == b.N and
         a.K == b.K and
         a.input == b.input and
@@ -2329,6 +3598,21 @@ fn qmatmulPairGeometryCompatible(a: anytype, b: anytype) bool {
         a.input_row_stride == b.input_row_stride and
         qmatmulDstRowStride(a) == a.N and
         qmatmulDstRowStride(b) == b.N;
+}
+
+fn denseProjectionPairGeometryCompatible(a: anytype, b: anytype) bool {
+    const ag = a.geom;
+    const bg = b.geom;
+    return ag.M != 0 and
+        ag.M == bg.M and
+        ag.N == bg.N and
+        ag.K == bg.K and
+        a.a == b.a and
+        ag.a_offset == bg.a_offset and
+        ag.a_row_stride == bg.a_row_stride and
+        ag.a_col_stride == bg.a_col_stride and
+        ag.dst_row_stride == ag.N and
+        bg.dst_row_stride == bg.N;
 }
 
 pub fn projectionPairFusedElementwiseChainCompatible(
@@ -2339,14 +3623,36 @@ pub fn projectionPairFusedElementwiseChainCompatible(
     up: anytype,
     product: anytype,
 ) bool {
-    if (!projectionFusedElementwiseChainCompatible(gate, first, rp, second)) return false;
-    if (!qmatmulPairGeometryCompatible(gate, up)) return false;
+    if (!projectionActivationChainCompatible(gate, first, rp, second)) return false;
+    if (!projectionPairGeometryCompatible(gate, up)) return false;
     if (product.op != .mul) return false;
     if (product.n != gate.M * gate.N or product.n != second.n) return false;
     const second_is_src0 = product.src0 == second.dst and product.src0_offset == second.dst_offset;
     const second_is_src1 = product.src1 == second.dst and product.src1_offset == second.dst_offset;
     const up_is_src0 = product.src0 == up.dst and product.src0_offset == up.dst_offset;
     const up_is_src1 = product.src1 == up.dst and product.src1_offset == up.dst_offset;
+    if (!((second_is_src0 and up_is_src1) or (second_is_src1 and up_is_src0))) return false;
+    if (product.dst == gate.dst or product.dst == first.dst or product.dst == second.dst or product.dst == up.dst) return false;
+    return true;
+}
+
+pub fn denseProjectionPairFusedElementwiseChainCompatible(
+    gate: anytype,
+    first: anytype,
+    rp: anytype,
+    second: anytype,
+    up: anytype,
+    product: anytype,
+) bool {
+    const g = gate.geom;
+    if (!denseProjectionActivationChainCompatible(gate, first, rp, second)) return false;
+    if (!denseProjectionPairGeometryCompatible(gate, up)) return false;
+    if (product.op != .mul) return false;
+    if (product.n != g.M * g.N or product.n != second.n) return false;
+    const second_is_src0 = product.src0 == second.dst and product.src0_offset == second.dst_offset;
+    const second_is_src1 = product.src1 == second.dst and product.src1_offset == second.dst_offset;
+    const up_is_src0 = product.src0 == up.dst and product.src0_offset == up.geom.dst_offset;
+    const up_is_src1 = product.src1 == up.dst and product.src1_offset == up.geom.dst_offset;
     if (!((second_is_src0 and up_is_src1) or (second_is_src1 and up_is_src0))) return false;
     if (product.dst == gate.dst or product.dst == first.dst or product.dst == second.dst or product.dst == up.dst) return false;
     return true;
@@ -2368,7 +3674,7 @@ fn spanHasExternalReadAfter(
     return false;
 }
 
-pub fn projectionPairFusedElementwiseChainHasExternalUsers(
+fn projectionPairFusedElementwiseChainHasExternalUsers(
     ops: []const backend_mod.DeviceOp,
     q_index: usize,
 ) bool {
@@ -2409,41 +3715,70 @@ pub fn projectionPairFusedElementwiseChainHasExternalUsers(
     return false;
 }
 
-pub fn projectionFusedElementwiseChainHasExternalUsers(
+fn denseProjectionPairFusedElementwiseChainHasExternalUsers(
     ops: []const backend_mod.DeviceOp,
-    q_index: usize,
+    matmul_index: usize,
 ) bool {
-    if (q_index + 3 >= ops.len) return true;
-    const q = switch (ops[q_index]) {
-        .qmatmul => |q| q,
+    if (matmul_index + 5 >= ops.len) return true;
+    const gate = switch (ops[matmul_index]) {
+        .matmul => |m| m,
         else => return true,
     };
-    const first = switch (ops[q_index + 1]) {
+    const first = switch (ops[matmul_index + 1]) {
         .fused_elementwise => |fe| fe,
         else => return true,
     };
-    const rp = switch (ops[q_index + 2]) {
+    const rp = switch (ops[matmul_index + 2]) {
         .repeat => |rp| rp,
         else => return true,
     };
-    const second = switch (ops[q_index + 3]) {
+    const second = switch (ops[matmul_index + 3]) {
         .fused_elementwise => |fe| fe,
         else => return true,
     };
-    if (!projectionFusedElementwiseChainCompatible(q, first, rp, second)) return true;
+    const up = switch (ops[matmul_index + 4]) {
+        .matmul => |m| m,
+        else => return true,
+    };
+    const product = switch (ops[matmul_index + 5]) {
+        .elementwise => |e| e,
+        else => return true,
+    };
+    if (!denseProjectionPairFusedElementwiseChainCompatible(gate, first, rp, second, up, product)) return true;
 
-    const included_start = q_index + 1;
-    const included_end = q_index + 4;
-    const q_write = bufferSpan(q.dst, q.dst_offset, q.M * q.N);
-    const first_write = bufferSpan(first.dst, first.dst_offset, first.n);
-    const repeat_write = bufferSpan(rp.dst, rp.dst_offset, rp.n);
-    if (spanHasExternalReadAfter(ops, q_index, included_start, included_end, q_write)) return true;
-    if (spanHasExternalReadAfter(ops, q_index + 1, included_start, included_end, first_write)) return true;
-    if (spanHasExternalReadAfter(ops, q_index + 2, included_start, included_end, repeat_write)) return true;
+    const included_start = matmul_index + 1;
+    const included_end = matmul_index + 6;
+    if (spanHasExternalReadAfter(ops, matmul_index, included_start, included_end, bufferSpan(gate.dst, gate.geom.dst_offset, gate.geom.M * gate.geom.N))) return true;
+    if (spanHasExternalReadAfter(ops, matmul_index + 1, included_start, included_end, bufferSpan(first.dst, first.dst_offset, first.n))) return true;
+    if (spanHasExternalReadAfter(ops, matmul_index + 2, included_start, included_end, bufferSpan(rp.dst, rp.dst_offset, rp.n))) return true;
+    if (spanHasExternalReadAfter(ops, matmul_index + 3, included_start, included_end, bufferSpan(second.dst, second.dst_offset, second.n))) return true;
+    if (spanHasExternalReadAfter(ops, matmul_index + 4, included_start, included_end, bufferSpan(up.dst, up.geom.dst_offset, up.geom.M * up.geom.N))) return true;
     return false;
 }
 
-pub fn repeatOutputHasExternalUsers(
+pub fn rmsnormScaleChainHasExternalUsers(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+) bool {
+    if (start + 2 >= ops.len) return true;
+    const rn = switch (ops[start]) {
+        .rmsnorm => |r| r,
+        else => return true,
+    };
+    const rp = switch (ops[start + 1]) {
+        .repeat => |r| r,
+        else => return true,
+    };
+    if (!isRmsnormScaleChain(ops[start], ops[start + 1], ops[start + 2])) return true;
+
+    const included_start = start + 1;
+    const included_end = start + 3;
+    if (spanHasExternalReadAfter(ops, start, included_start, included_end, bufferSpan(rn.dst, rn.dst_offset, rn.rows * rn.cols))) return true;
+    if (spanHasExternalReadAfter(ops, start + 1, included_start, included_end, bufferSpan(rp.dst, rp.dst_offset, rp.n))) return true;
+    return false;
+}
+
+fn repeatOutputHasExternalUsers(
     ops: []const backend_mod.DeviceOp,
     repeat_index: usize,
     fused_index: usize,
@@ -2472,79 +3807,6 @@ pub fn repeatOutputHasExternalUsers(
     }
 
     return false;
-}
-
-pub fn summarizeRopeStoreGroupCandidates(
-    ops: []const backend_mod.DeviceOp,
-    policy: CommandStreamPolicy,
-) RopeStoreGroupCandidateSummary {
-    var summary = RopeStoreGroupCandidateSummary{};
-    const max_pairs: usize = @intCast(@min(policy.max_rope_batch, max_projection_group_anchors));
-    if (max_pairs < 2) return summary;
-
-    for (ops, 0..) |op, start| {
-        const first_rope = switch (op) {
-            .rope => |rr| rr,
-            else => continue,
-        };
-        summary.anchors += 1;
-
-        const first_pair = findRopeStorePair(ops, start, null) orelse {
-            summary.first_pair_missing += 1;
-            continue;
-        };
-        const first_sa = ops[first_pair.sidecar_index].slice_assign;
-        var command = ProgramCommand{
-            .kind = .rope_store_group,
-            .op_start = @intCast(start),
-            .op_count = 1,
-            .anchor_count = 0,
-            .sidecar_count = 0,
-        };
-        appendRopeStorePair(&command, start, first_pair.sidecar_index, start);
-
-        var scan = start + 1;
-        while (scan < ops.len and command.anchor_count < max_pairs) : (scan += 1) {
-            const rr = switch (ops[scan]) {
-                .rope => |rr| rr,
-                else => continue,
-            };
-            summary.candidate_ropes += 1;
-            const pair = findRopeStorePair(ops, scan, null) orelse {
-                summary.pair_missing_rejects += 1;
-                continue;
-            };
-            const sa = ops[pair.sidecar_index].slice_assign;
-            if (!ropeStoreGroupCompatible(first_rope, first_sa, rr, sa)) {
-                summary.geometry_rejects += 1;
-                continue;
-            }
-
-            var candidate = command;
-            if (candidate.anchor_count + 1 > max_projection_group_anchors) break;
-            appendRopeStorePair(&candidate, scan, pair.sidecar_index, start);
-            if (!canHoistRopeStorePairToGroup(ops, start, scan, pair.sidecar_index, rr, sa, &candidate, null)) {
-                summary.hoist_rejects += 1;
-                continue;
-            }
-            if (ropeStorePairConflictsSelected(ops, &command, scan, sa)) {
-                summary.selected_conflict_rejects += 1;
-                continue;
-            }
-            command = candidate;
-        }
-
-        if (command.anchor_count < 2) continue;
-        if (ropeStoreGroupOutputsHaveExternalUsers(ops, &command)) {
-            summary.external_user_rejects += 1;
-            continue;
-        }
-        summary.formed_groups += 1;
-        summary.grouped_pairs += command.anchor_count;
-        summary.max_group_pairs = @max(summary.max_group_pairs, command.anchor_count);
-    }
-
-    return summary;
 }
 
 fn findAttentionStoreChainCommand(
@@ -3091,23 +4353,6 @@ fn ropeOutputHasExternalUsers(
     return false;
 }
 
-fn attentionOutputHasExternalUsers(
-    ops: []const backend_mod.DeviceOp,
-    attention_index: usize,
-    sidecar_index: usize,
-    att: anytype,
-) bool {
-    const attention_access = opAccessSpans(.{ .attention = att });
-    for (ops[attention_index + 1 ..], attention_index + 1..) |op, idx| {
-        if (idx == sidecar_index) continue;
-        for (attention_access.writeSpans()) |write| {
-            if (opReadsSpan(op, write)) return true;
-        }
-        if (attention_access.write_overflow and opReadsBuffer(op, att.dst)) return true;
-    }
-    return false;
-}
-
 fn canHoistAttentionForStoreGroup(
     ops: []const backend_mod.DeviceOp,
     group_start: usize,
@@ -3214,186 +4459,6 @@ fn attentionStorePairConflictsSelected(
         if (sliceAssignWritesMayOverlap(selected_sa, sa)) return true;
     }
     return false;
-}
-
-pub fn summarizeAttentionStoreGroupCandidates(
-    ops: []const backend_mod.DeviceOp,
-    policy: CommandStreamPolicy,
-) AttentionStoreGroupCandidateSummary {
-    var summary = AttentionStoreGroupCandidateSummary{};
-    const max_ops: usize = @intCast(@min(policy.max_attention_store_batch, max_projection_group_anchors));
-    if (max_ops < 2) return summary;
-
-    for (ops, 0..) |op, start| {
-        const first = switch (op) {
-            .attention => |att| att,
-            else => continue,
-        };
-        summary.anchors += 1;
-
-        var command = ProgramCommand{
-            .kind = .attention_store_group,
-            .op_start = @intCast(start),
-            .op_count = 1,
-            .anchor_count = 0,
-            .sidecar_count = 0,
-        };
-        if (!appendAttentionStorePair(ops, &command, start, first, start, null)) {
-            summary.first_store_missing += 1;
-            continue;
-        }
-
-        var scan = start + 1;
-        while (scan < ops.len and command.anchor_count < max_ops) : (scan += 1) {
-            const next = switch (ops[scan]) {
-                .attention => |att| att,
-                else => continue,
-            };
-            summary.candidate_attentions += 1;
-            if (!attentionGeometryCompatible(first, next)) {
-                summary.geometry_rejects += 1;
-                continue;
-            }
-            if (!canHoistAttentionForStoreGroup(ops, start, scan, next, &command, null)) {
-                summary.hoist_rejects += 1;
-                continue;
-            }
-            if (opConflictsSelected(ops, command.anchorIndices(), .{ .attention = next })) {
-                summary.selected_conflict_rejects += 1;
-                continue;
-            }
-            const sidecar_index = findAttentionStoreSidecarIndex(ops, scan, next, null) orelse {
-                summary.no_store_rejects += 1;
-                continue;
-            };
-            const sa = ops[sidecar_index].slice_assign;
-            if (attentionStorePairConflictsSelected(ops, &command, scan, sa)) {
-                summary.pair_conflict_rejects += 1;
-                continue;
-            }
-            _ = appendAttentionStorePair(ops, &command, scan, next, start, null);
-        }
-
-        if (command.anchor_count >= 2) {
-            summary.formed_groups += 1;
-            summary.grouped_anchors += command.anchor_count;
-            summary.max_group_anchors = @max(summary.max_group_anchors, command.anchor_count);
-        }
-    }
-
-    return summary;
-}
-
-pub fn summarizeRopeAttentionStoreGroupCandidates(
-    ops: []const backend_mod.DeviceOp,
-    policy: CommandStreamPolicy,
-) RopeAttentionStoreGroupCandidateSummary {
-    var summary = RopeAttentionStoreGroupCandidateSummary{};
-    const max_pairs: usize = @intCast(@min(policy.max_rope_attention_store_batch, max_projection_group_anchors / 2));
-    if (max_pairs < 2) return summary;
-
-    for (ops, 0..) |op, start| {
-        switch (op) {
-            .rope => {},
-            else => continue,
-        }
-        summary.anchors += 1;
-
-        if (findDelayableRopeAttentionStorePair(ops, start, null, null) == null) {
-            summary.first_pair_missing += 1;
-            continue;
-        }
-
-        const command = findDelayedRopeAttentionStoreGroupCommand(ops, start, policy, null, null) orelse continue;
-        if (command.kind == .rope_attention_store_group and command.sidecar_count >= 2) {
-            summary.formed_groups += 1;
-            summary.grouped_pairs += command.sidecar_count;
-            summary.max_group_pairs = @max(summary.max_group_pairs, command.sidecar_count);
-        }
-    }
-
-    return summary;
-}
-
-pub fn summarizeEarlyRopeAttentionStoreGroupCandidates(
-    ops: []const backend_mod.DeviceOp,
-    policy: CommandStreamPolicy,
-) EarlyRopeAttentionStoreGroupCandidateSummary {
-    var summary = EarlyRopeAttentionStoreGroupCandidateSummary{};
-    const max_pairs: usize = @intCast(@min(policy.max_rope_attention_store_batch, max_projection_group_anchors / 2));
-    if (max_pairs < 2) return summary;
-
-    for (ops, 0..) |op, start| {
-        const first_rope = switch (op) {
-            .rope => |rr| rr,
-            else => continue,
-        };
-        summary.anchors += 1;
-
-        const first_pair = findRopeAttentionStorePair(ops, start, null, null) orelse {
-            summary.first_pair_missing += 1;
-            continue;
-        };
-        var command = ProgramCommand{
-            .kind = .rope_attention_store_group,
-            .op_start = @intCast(start),
-            .op_count = 1,
-            .anchor_count = 0,
-            .sidecar_count = 0,
-        };
-        appendRopeAttentionStorePair(&command, start, first_pair.attention_index, first_pair.sidecar_index, start);
-
-        const first_att = ops[first_pair.attention_index].attention;
-        var scan = start + 1;
-        while (scan < ops.len and command.sidecar_count < max_pairs) : (scan += 1) {
-            const rr = switch (ops[scan]) {
-                .rope => |rr| rr,
-                else => continue,
-            };
-            summary.candidate_ropes += 1;
-            if (!ropeStoreBatchGeometryCompatible(first_rope, rr)) {
-                summary.geometry_rejects += 1;
-                continue;
-            }
-            const pair = findRopeAttentionStorePair(ops, scan, null, null) orelse {
-                summary.pair_missing_rejects += 1;
-                continue;
-            };
-            const att = ops[pair.attention_index].attention;
-            if (!attentionGeometryCompatible(first_att, att)) {
-                summary.geometry_rejects += 1;
-                continue;
-            }
-
-            var candidate = command;
-            const slot = candidate.anchor_count;
-            if (slot + 2 > max_projection_group_anchors) break;
-            candidate.indices[slot] = scan;
-            candidate.indices[slot + 1] = pair.attention_index;
-            candidate.anchor_count += 2;
-            if (!canHoistOpToRopeAttentionStoreGroup(ops, start, scan, .{ .rope = rr }, &candidate, null)) {
-                summary.rope_hoist_rejects += 1;
-                continue;
-            }
-            if (!canHoistAttentionForStoreGroup(ops, start, pair.attention_index, att, &candidate, null)) {
-                summary.attention_hoist_rejects += 1;
-                continue;
-            }
-            if (ropeAttentionStorePairConflictsSelected(ops, &command, scan, pair.attention_index, ops[pair.sidecar_index].slice_assign)) {
-                summary.selected_conflict_rejects += 1;
-                continue;
-            }
-            appendRopeAttentionStorePair(&command, scan, pair.attention_index, pair.sidecar_index, start);
-        }
-
-        if (command.sidecar_count >= 2) {
-            summary.formed_groups += 1;
-            summary.grouped_pairs += command.sidecar_count;
-            summary.max_group_pairs = @max(summary.max_group_pairs, command.sidecar_count);
-        }
-    }
-
-    return summary;
 }
 
 fn findMovementGroupCommand(
@@ -3514,6 +4579,136 @@ fn findProjectionChainCommand(
     return command;
 }
 
+fn findProjectionRowChainCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: CommandStreamPolicy,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (start + 4 >= ops.len) return null;
+    if (commandRangeTouchesUsed(@intCast(start), 5, used)) return null;
+    const q = switch (ops[start]) {
+        .qmatmul => |q| q,
+        else => return null,
+    };
+    if (q.M == 1) {
+        if (!policy.fuse_projection_row_chain_qmatvec) return null;
+    } else if (q.M < policy.min_projection_row_chain_rows) return null;
+    const e = switch (ops[start + 1]) {
+        .elementwise => |e| e,
+        else => return null,
+    };
+    const rn = switch (ops[start + 2]) {
+        .rmsnorm => |rn| rn,
+        else => return null,
+    };
+    if (q.M == 1) {
+        if (!qmatvecElementwiseSidecarCompatible(q, e)) return null;
+    } else if (!qmatmulElementwiseSidecarCompatible(q, e)) return null;
+    if (rn.src != e.dst or rn.src_offset != e.dst_offset) return null;
+    if (!isRmsnormScaleChain(ops[start + 2], ops[start + 3], ops[start + 4])) return null;
+
+    const projection_sidecars = [_]?usize{start + 1};
+    if (projectionPrimaryOutputHasExternalUsersExcept(ops, start, projection_sidecars[0..])) return null;
+    if (rmsnormScaleChainHasExternalUsers(ops, start + 2)) return null;
+
+    var command = ProgramCommand{
+        .kind = .projection_row_chain,
+        .op_start = @intCast(start),
+        .op_count = 5,
+        .projection_kind = if (q.M == 1) .qmatvec else .qmatmul,
+        .anchor_count = 1,
+        .sidecar_count = 4,
+    };
+    command.indices[0] = start;
+    command.sidecar_indices[0] = start + 1;
+    command.sidecar_indices[1] = start + 2;
+    command.sidecar_indices[2] = start + 3;
+    command.sidecar_indices[3] = start + 4;
+    command.sidecar_slots[0] = 0;
+    command.sidecar_slots[1] = 0;
+    command.sidecar_slots[2] = 0;
+    command.sidecar_slots[3] = 0;
+    return command;
+}
+
+fn findDenseProjectionChainCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (start + 1 >= ops.len) return null;
+    if (commandRangeTouchesUsed(@intCast(start), 2, used)) return null;
+    const m = switch (ops[start]) {
+        .matmul => |m| m,
+        else => return null,
+    };
+    switch (ops[start + 1]) {
+        .elementwise => |e| if (!matmulElementwiseSidecarCompatible(m, e)) return null,
+        .fused_elementwise => |fe| if (!matmulFusedElementwiseSidecarCompatible(m, fe)) return null,
+        else => return null,
+    }
+
+    var command = ProgramCommand{
+        .kind = .dense_projection_chain,
+        .op_start = @intCast(start),
+        .op_count = 2,
+        .anchor_count = 1,
+        .sidecar_count = 1,
+    };
+    command.indices[0] = start;
+    command.sidecar_indices[0] = start + 1;
+    return command;
+}
+
+fn findDenseProjectionRowChainCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: CommandStreamPolicy,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (!policy.fuse_dense_projection_row_chain) return null;
+    if (start + 4 >= ops.len) return null;
+    if (commandRangeTouchesUsed(@intCast(start), 5, used)) return null;
+    const m = switch (ops[start]) {
+        .matmul => |m| m,
+        else => return null,
+    };
+    const e = switch (ops[start + 1]) {
+        .elementwise => |e| e,
+        else => return null,
+    };
+    const rn = switch (ops[start + 2]) {
+        .rmsnorm => |rn| rn,
+        else => return null,
+    };
+    if (!matmulElementwiseSidecarCompatible(m, e)) return null;
+    if (rn.src != e.dst or rn.src_offset != e.dst_offset) return null;
+    if (!isRmsnormScaleChain(ops[start + 2], ops[start + 3], ops[start + 4])) return null;
+
+    const projection_sidecars = [_]?usize{start + 1};
+    if (matmulPrimaryOutputHasExternalUsersExcept(ops, start, projection_sidecars[0..])) return null;
+    if (rmsnormScaleChainHasExternalUsers(ops, start + 2)) return null;
+
+    var command = ProgramCommand{
+        .kind = .dense_projection_row_chain,
+        .op_start = @intCast(start),
+        .op_count = 5,
+        .anchor_count = 1,
+        .sidecar_count = 4,
+    };
+    command.indices[0] = start;
+    command.sidecar_indices[0] = start + 1;
+    command.sidecar_indices[1] = start + 2;
+    command.sidecar_indices[2] = start + 3;
+    command.sidecar_indices[3] = start + 4;
+    command.sidecar_slots[0] = 0;
+    command.sidecar_slots[1] = 0;
+    command.sidecar_slots[2] = 0;
+    command.sidecar_slots[3] = 0;
+    return command;
+}
+
 fn findElementwiseBatchCommand(
     ops: []const backend_mod.DeviceOp,
     start: usize,
@@ -3567,13 +4762,6 @@ fn findContiguousBatchCommand(
     policy: CommandStreamPolicy,
     used: ?[]const bool,
 ) ?ProgramCommand {
-    if (policy.max_attention_batch >= 2) {
-        const n = attentionBatchRunLen(ops[start..], policy.max_attention_batch);
-        if (n >= 2 and !commandRangeTouchesUsed(@intCast(start), @intCast(n), used)) {
-            return ProgramCommand.contiguous(.attention_batch, start, n);
-        }
-    }
-
     if (policy.max_rope_batch >= 2) {
         const n = ropeBatchRunLen(ops[start..], policy.max_rope_batch);
         if (n >= 2 and !commandRangeTouchesUsed(@intCast(start), @intCast(n), used)) {
@@ -3591,15 +4779,21 @@ fn findContiguousBatchCommand(
     return null;
 }
 
-pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommandSummary {
+fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommandSummary {
     var summary = ProgramCommandSummary{ .commands = @intCast(commands.len) };
-    for (commands) |command| {
+    for (commands, 0..) |command, command_index| {
         const covered = command.coveredOpCount();
-        const dispatches = command.dispatchCount();
         summary.covered_ops += covered;
-        summary.estimated_dispatches += dispatches;
-        if (covered > dispatches) {
-            summary.estimated_saved_dispatches += covered - dispatches;
+        summary.estimated_dispatches += 1;
+        if (covered > 1) {
+            summary.estimated_saved_dispatches += covered - 1;
+        }
+        if (command_index + 1 < commands.len and
+            (command.kind == .projection_chain or command.kind == .dense_projection_chain) and
+            commands[command_index + 1].kind == .row_chain and
+            command.op_start + command.op_count == commands[command_index + 1].op_start)
+        {
+            summary.projection_chain_row_chain_frontiers += 1;
         }
 
         switch (command.kind) {
@@ -3639,7 +4833,6 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
                 summary.rope_attention_store_group_ops += command.anchor_count;
                 summary.rope_attention_store_group_sidecars += command.sidecar_count;
             },
-            .attention_batch => summary.attention_batches += 1,
             .attention_group => {
                 summary.attention_groups += 1;
                 summary.attention_group_ops += command.anchor_count;
@@ -3649,10 +4842,20 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
                 summary.elementwise_ops += command.anchor_count;
             },
             .repeat_fused_elementwise_chain => summary.repeat_fused_elementwise_chains += 1,
-            .projection_fused_elementwise_chain => summary.projection_fused_elementwise_chains += 1,
-            .projection_pair_fused_elementwise_chain => summary.projection_pair_fused_elementwise_chains += 1,
+            .projection_pair_elementwise_chain,
+            .dense_projection_pair_fused_elementwise_chain,
+            .projection_pair_fused_elementwise_chain,
+            => summary.projection_pair_fused_elementwise_chains += 1,
+            .projection_row_chain => summary.projection_row_chains += 1,
+            .dense_projection_row_chain => summary.dense_projection_row_chains += 1,
+            .dense_projection_chain => {
+                summary.projection_chains += 1;
+                summary.dense_projection_chains += 1;
+                summary.projection_chain_sidecars += command.sidecar_count;
+            },
             .projection_chain => {
                 summary.projection_chains += 1;
+                summary.quantized_projection_chains += 1;
                 summary.projection_chain_sidecars += command.sidecar_count;
             },
             .projection_group => {
@@ -3661,7 +4864,9 @@ pub fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommand
                 summary.projection_sidecars += command.sidecar_count;
                 summary.max_projection_span_ops = @max(summary.max_projection_span_ops, command.op_count);
             },
-            .projection_cache_group => {
+            .dense_projection_cache_group,
+            .projection_cache_group,
+            => {
                 summary.projection_cache_groups += 1;
                 summary.projection_cache_anchors += command.anchor_count;
                 summary.projection_cache_sidecars += command.sidecar_count;
@@ -3697,16 +4902,20 @@ fn projectionMatchesPolicy(q: anytype, policy: ProjectionGroupPolicy) bool {
     };
 }
 
-pub fn opReadsBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
+fn opReadsBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
     return switch (op) {
         .elementwise => |e| e.src0 == buf or e.src1 == buf,
         .matmul => |m| m.a == buf or m.b == buf,
         .qmatmul => |q| q.input == buf,
+        .conv2d => |c| c.src == buf or c.weight == buf or c.bias == buf,
         .softmax => |s| s.src == buf,
         .layernorm => |l| l.src == buf,
         .rmsnorm => |r| r.src == buf,
         .reduce => |r| r.src == buf,
+        .max_pool2d => |mp| mp.src == buf,
+        .avg_pool2d => |mp| mp.src == buf,
         .repeat => |rp| rp.src == buf,
+        .gather_rows => |g| g.src == buf or g.indices == buf,
         .slice_assign => |sa| sa.src == buf,
         .rope => |rr| rr.src == buf or rr.cos_sin == buf,
         .attention => |att| att.q == buf or att.k == buf or att.v == buf or att.mask == buf,
@@ -3720,16 +4929,20 @@ pub fn opReadsBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
     };
 }
 
-pub fn opWritesBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
+fn opWritesBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
     return switch (op) {
         .elementwise => |e| e.dst == buf,
         .matmul => |m| m.dst == buf,
         .qmatmul => |q| q.dst == buf,
+        .conv2d => |c| c.dst == buf,
         .softmax => |s| s.dst == buf,
         .layernorm => |l| l.dst == buf,
         .rmsnorm => |r| r.dst == buf,
         .reduce => |r| r.dst == buf,
+        .max_pool2d => |mp| mp.dst == buf,
+        .avg_pool2d => |mp| mp.dst == buf,
         .repeat => |rp| rp.dst == buf,
+        .gather_rows => |g| g.dst == buf,
         .slice_assign => |sa| sa.dst == buf,
         .rope => |rr| rr.dst == buf,
         .attention => |att| att.dst == buf,
@@ -3737,7 +4950,7 @@ pub fn opWritesBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
     };
 }
 
-pub fn opTouchesBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
+fn opTouchesBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
     return opReadsBuffer(op, buf) or opWritesBuffer(op, buf);
 }
 
@@ -3787,6 +5000,12 @@ fn opAccessSpans(op: backend_mod.DeviceOp) OpAccessSpans {
             access.addRead(stridedSpan(q.input, q.input_offset, q.M, q.K, input_row_stride, 1));
             access.addWrite(stridedSpan(q.dst, q.dst_offset, q.M, q.N, qmatmulDstRowStride(q), 1));
         },
+        .conv2d => |c| {
+            access.addRead(bufferSpan(c.src, c.src_offset, c.in_w * c.in_h * c.in_channels * c.batch));
+            access.addRead(bufferSpan(c.weight, c.weight_offset, c.kernel_w * c.kernel_h * c.in_channels * c.out_channels));
+            if (c.bias != std.math.maxInt(u16)) access.addRead(bufferSpan(c.bias, c.bias_offset, c.out_channels));
+            access.addWrite(bufferSpan(c.dst, c.dst_offset, c.out_w * c.out_h * c.out_channels * c.batch));
+        },
         .softmax => |s| {
             access.addRead(bufferSpan(s.src, s.src_offset, s.rows * s.cols));
             access.addWrite(bufferSpan(s.dst, s.dst_offset, s.rows * s.cols));
@@ -3803,9 +5022,24 @@ fn opAccessSpans(op: backend_mod.DeviceOp) OpAccessSpans {
             access.addRead(bufferSpan(r.src, r.src_offset, r.n_out * r.reduce_size));
             access.addWrite(bufferSpan(r.dst, r.dst_offset, r.n_out));
         },
+        .max_pool2d => |mp| {
+            access.addRead(bufferSpan(mp.src, mp.src_offset, mp.src_w * mp.src_h * mp.channels * mp.batch));
+            access.addWrite(bufferSpan(mp.dst, mp.dst_offset, mp.out_w * mp.out_h * mp.channels * mp.batch));
+        },
+        .avg_pool2d => |mp| {
+            access.addRead(bufferSpan(mp.src, mp.src_offset, mp.src_w * mp.src_h * mp.channels * mp.batch));
+            access.addWrite(bufferSpan(mp.dst, mp.dst_offset, mp.out_w * mp.out_h * mp.channels * mp.batch));
+        },
         .repeat => |rp| {
             access.addRead(strided4Span(rp.src, rp.src_offset, rp.src_ne, rp.src_strides));
             access.addWrite(strided4Span(rp.dst, rp.dst_offset, rp.dst_ne, rp.dst_strides));
+        },
+        .gather_rows => |g| {
+            const src_row_stride = if (g.src_row_stride != 0) g.src_row_stride else g.width;
+            const dst_row_stride = if (g.dst_row_stride != 0) g.dst_row_stride else g.width;
+            access.addRead(stridedSpan(g.src, g.src_offset, g.width, g.src_rows, 1, src_row_stride));
+            access.addRead(bufferSpan(g.indices, g.indices_offset, g.count));
+            access.addWrite(stridedSpan(g.dst, g.dst_offset, g.width, g.count, 1, dst_row_stride));
         },
         .slice_assign => |sa| {
             access.addRead(stridedSpan(sa.src, sa.src_offset, sa.rows, sa.cols, sa.src_row_stride, sa.src_col_stride));
@@ -3835,7 +5069,7 @@ fn opAccessSpans(op: backend_mod.DeviceOp) OpAccessSpans {
     return access;
 }
 
-pub fn opReadsSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
+fn opReadsSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
     const access = opAccessSpans(op);
     for (access.readSpans()) |read| {
         if (read.overlaps(target)) return true;
@@ -3843,7 +5077,7 @@ pub fn opReadsSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
     return access.read_overflow and opReadsBuffer(op, target.buf);
 }
 
-pub fn opWritesSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
+fn opWritesSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
     const access = opAccessSpans(op);
     for (access.writeSpans()) |write| {
         if (write.overlaps(target)) return true;
@@ -3851,7 +5085,7 @@ pub fn opWritesSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
     return access.write_overflow and opWritesBuffer(op, target.buf);
 }
 
-pub fn opWritesCoverSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
+fn opWritesCoverSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
     const access = opAccessSpans(op);
     for (access.writeSpans()) |write| {
         if (write.buf == target.buf and write.start <= target.start and write.end >= target.end) return true;
@@ -3859,11 +5093,11 @@ pub fn opWritesCoverSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
     return access.write_overflow and opWritesBuffer(op, target.buf);
 }
 
-pub fn opTouchesSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
+fn opTouchesSpan(op: backend_mod.DeviceOp, target: BufferSpan) bool {
     return opReadsSpan(op, target) or opWritesSpan(op, target);
 }
 
-pub fn opAccessConflicts(a: backend_mod.DeviceOp, b: backend_mod.DeviceOp) bool {
+fn opAccessConflicts(a: backend_mod.DeviceOp, b: backend_mod.DeviceOp) bool {
     const a_access = opAccessSpans(a);
     const b_access = opAccessSpans(b);
     for (a_access.writeSpans()) |write| {
@@ -3892,7 +5126,7 @@ pub fn opAccessConflicts(a: backend_mod.DeviceOp, b: backend_mod.DeviceOp) bool 
     return false;
 }
 
-pub fn canHoistOpTo(
+fn canHoistOpTo(
     ops: []const backend_mod.DeviceOp,
     start: usize,
     candidate_index: usize,
@@ -3919,45 +5153,27 @@ pub fn canFuseAttentionStoreSidecar(
     sidecar_index: usize,
     sa: anytype,
 ) bool {
-    return attentionStoreSidecarBlocker(ops, attention_index, sidecar_index, sa) == .none;
-}
-
-pub const AttentionStoreSidecarBlocker = enum {
-    none,
-    invalid_range,
-    candidate_read_written,
-    sidecar_write_read,
-    sidecar_write_written,
-    overflow_conflict,
-};
-
-pub fn attentionStoreSidecarBlocker(
-    ops: []const backend_mod.DeviceOp,
-    attention_index: usize,
-    sidecar_index: usize,
-    sa: anytype,
-) AttentionStoreSidecarBlocker {
-    if (attention_index >= sidecar_index or sidecar_index > ops.len) return .invalid_range;
+    if (attention_index >= sidecar_index or sidecar_index > ops.len) return false;
     const candidate_access = opAccessSpans(.{ .slice_assign = sa });
     for (ops[attention_index + 1 .. sidecar_index]) |op| {
         for (candidate_access.readSpans()) |read| {
-            if (opWritesSpan(op, read)) return .candidate_read_written;
+            if (opWritesSpan(op, read)) return false;
         }
         for (candidate_access.writeSpans()) |write| {
-            if (opReadsSpan(op, write)) return .sidecar_write_read;
+            if (opReadsSpan(op, write)) return false;
             if (opWritesSpan(op, write)) {
                 const other_sa = switch (op) {
                     .slice_assign => |other| other,
-                    else => return .sidecar_write_written,
+                    else => return false,
                 };
-                if (sliceAssignWritesMayOverlap(other_sa, sa)) return .sidecar_write_written;
+                if (sliceAssignWritesMayOverlap(other_sa, sa)) return false;
             }
         }
         if (candidate_access.read_overflow or candidate_access.write_overflow) {
-            if (opAccessConflicts(op, .{ .slice_assign = sa })) return .overflow_conflict;
+            if (opAccessConflicts(op, .{ .slice_assign = sa })) return false;
         }
     }
-    return .none;
+    return true;
 }
 
 fn sliceAssignWritesMayOverlap(a: anytype, b: anytype) bool {
@@ -3983,7 +5199,7 @@ fn sliceAssignWritesMayOverlap(a: anytype, b: anytype) bool {
     return a_span.overlaps(b_span);
 }
 
-pub fn opConflictsSelected(
+fn opConflictsSelected(
     ops: []const backend_mod.DeviceOp,
     indices: []const usize,
     candidate: backend_mod.DeviceOp,
@@ -3994,7 +5210,7 @@ pub fn opConflictsSelected(
     return false;
 }
 
-pub fn canHoistProjectionTo(
+fn canHoistProjectionTo(
     ops: []const backend_mod.DeviceOp,
     start: usize,
     candidate_index: usize,
@@ -4007,7 +5223,7 @@ pub fn canBatchElementwiseOp(e: anytype) bool {
     return e.op.isFusible();
 }
 
-pub fn canHoistElementwiseTo(
+fn canHoistElementwiseTo(
     ops: []const backend_mod.DeviceOp,
     start: usize,
     candidate_index: usize,
@@ -4016,7 +5232,7 @@ pub fn canHoistElementwiseTo(
     return canHoistOpTo(ops, start, candidate_index, .{ .elementwise = e });
 }
 
-pub fn elementwiseConflictsSelected(
+fn elementwiseConflictsSelected(
     ops: []const backend_mod.DeviceOp,
     indices: []const usize,
     e: anytype,
@@ -4024,7 +5240,7 @@ pub fn elementwiseConflictsSelected(
     return opConflictsSelected(ops, indices, .{ .elementwise = e });
 }
 
-pub fn projectionConflictsSelected(
+fn projectionConflictsSelected(
     ops: []const backend_mod.DeviceOp,
     indices: []const usize,
     q: anytype,
@@ -4032,11 +5248,102 @@ pub fn projectionConflictsSelected(
     return opConflictsSelected(ops, indices, .{ .qmatmul = q });
 }
 
-pub fn projectionSidecarCompatible(q: anytype, op: backend_mod.DeviceOp) bool {
+fn qmatvecSiblingProjectionAnchor(q: anytype) bool {
+    return q.M == 1 and q.N != 0 and q.K != 0 and (q.dst_row_stride == 0 or q.dst_row_stride == q.N);
+}
+
+fn qmatvecSiblingProjectionCompatible(left: anytype, right: anytype) bool {
+    return qmatvecSiblingProjectionAnchor(left) and
+        qmatvecSiblingProjectionAnchor(right) and
+        left.input == right.input and
+        left.N == right.N and
+        left.K == right.K and
+        left.input_offset == right.input_offset and
+        left.input_row_stride == right.input_row_stride;
+}
+
+pub fn qmatvecPairElementwiseCompatible(left: anytype, right: anytype, e: anytype) bool {
+    if (!qmatvecSiblingProjectionCompatible(left, right)) return false;
+    if (e.op != .add and e.op != .mul) return false;
+    if (e.n != left.N) return false;
+    const left_src0 = e.src0 == left.dst and e.src0_offset == left.dst_offset;
+    const left_src1 = e.src1 == left.dst and e.src1_offset == left.dst_offset;
+    const right_src0 = e.src0 == right.dst and e.src0_offset == right.dst_offset;
+    const right_src1 = e.src1 == right.dst and e.src1_offset == right.dst_offset;
+    return (left_src0 and right_src1) or (right_src0 and left_src1);
+}
+
+fn anchorWritesCoverRead(ops: []const backend_mod.DeviceOp, command: *const ProgramCommand, read: BufferSpan) bool {
+    for (command.anchorIndices()) |idx| {
+        if (idx >= ops.len) return false;
+        if (opWriteCoversRead(ops[idx], read)) return true;
+    }
+    return false;
+}
+
+fn canHoistSiblingElementwiseToCommand(
+    ops: []const backend_mod.DeviceOp,
+    group_start: usize,
+    sidecar_index: usize,
+    sidecar: backend_mod.DeviceOp,
+    command: *const ProgramCommand,
+) bool {
+    const sidecar_access = opAccessSpans(sidecar);
+    for (ops[group_start..sidecar_index], group_start..) |op, idx| {
+        if (commandContainsIndex(command, idx)) continue;
+        for (sidecar_access.readSpans()) |read| {
+            if (anchorWritesCoverRead(ops, command, read)) continue;
+            if (opWritesSpan(op, read)) return false;
+        }
+        for (sidecar_access.writeSpans()) |write| {
+            if (opTouchesSpan(op, write)) return false;
+        }
+        if (sidecar_access.read_overflow or sidecar_access.write_overflow) {
+            if (opAccessConflicts(op, sidecar)) return false;
+        }
+    }
+    return true;
+}
+
+fn projectionPairElementwiseHasExternalUsers(ops: []const backend_mod.DeviceOp, command: *const ProgramCommand) bool {
+    if (command.anchor_count != 2 or command.sidecar_count != 1) return true;
+    const sidecar_index = command.sidecar_indices[0] orelse return true;
+    const carried = [_]?usize{sidecar_index};
+    for (command.anchorIndices()) |idx| {
+        if (idx >= ops.len) return true;
+        if (projectionPrimaryOutputHasExternalUsersExcept(ops, idx, &carried)) return true;
+    }
+    return false;
+}
+
+fn denseMatvecProjectionAnchor(m: anytype) bool {
+    const g = m.geom;
+    return g.M == 1 and denseProjectionAnchor(m);
+}
+
+fn denseProjectionAnchor(m: anytype) bool {
+    const g = m.geom;
+    return g.M != 0 and g.N != 0 and g.K != 0 and g.dst_row_stride == g.N;
+}
+
+fn denseProjectionGroupCompatible(first: anytype, next: anytype) bool {
+    const a = first.geom;
+    const b = next.geom;
+    return denseProjectionAnchor(first) and
+        denseProjectionAnchor(next) and
+        a.M == b.M and
+        first.a == next.a and
+        a.K == b.K and
+        a.a_offset == b.a_offset and
+        a.a_row_stride == b.a_row_stride and
+        a.a_col_stride == b.a_col_stride;
+}
+
+fn projectionSidecarCompatible(q: anytype, op: backend_mod.DeviceOp) bool {
     return switch (op) {
         .slice_assign => |sa| if (q.M == 1) qmatvecSliceSidecarCompatible(q, sa) else qmatmulSliceSidecarCompatible(q, sa),
         .elementwise => |e| if (q.M == 1) qmatvecElementwiseSidecarCompatible(q, e) else qmatmulElementwiseSidecarCompatible(q, e),
-        .fused_elementwise => |fe| qmatmulFusedElementwiseSidecarCompatible(q, fe),
+        .fused_elementwise => |fe| if (q.M == 1) qmatvecFusedElementwiseSidecarCompatible(q, fe) else qmatmulFusedElementwiseSidecarCompatible(q, fe),
         else => false,
     };
 }
@@ -4056,6 +5363,23 @@ fn projectionSidecarMatchesPolicy(policy: ProjectionGroupPolicy, q: anytype, op:
     };
 }
 
+fn projectionPrimarySidecarCompatible(q: anytype, op: backend_mod.DeviceOp) bool {
+    return projectionSidecarCompatible(q, op) or switch (op) {
+        .rope => |rr| projectionRopeSidecarCompatible(q, rr),
+        else => false,
+    };
+}
+
+fn matmulPrimarySidecarCompatible(m: anytype, op: backend_mod.DeviceOp) bool {
+    return switch (op) {
+        .slice_assign => |sa| denseProjectionSliceSidecarCompatible(m, sa),
+        .elementwise => |e| matmulElementwiseSidecarCompatible(m, e),
+        .fused_elementwise => |fe| matmulFusedElementwiseSidecarCompatible(m, fe),
+        .rope => |rr| denseMatvecRopeSidecarCompatible(m, rr),
+        else => false,
+    };
+}
+
 fn projectionSelectionContainsIndex(selection: *const ProjectionGroupSelection, candidate: usize) bool {
     for (selection.anchorIndices()) |idx| {
         if (idx == candidate) return true;
@@ -4066,14 +5390,6 @@ fn projectionSelectionContainsIndex(selection: *const ProjectionGroupSelection, 
         }
     }
     return false;
-}
-
-fn projectionWriteCoversRead(q: anytype, read: BufferSpan) bool {
-    const q_access = opAccessSpans(.{ .qmatmul = q });
-    for (q_access.writeSpans()) |write| {
-        if (write.buf == read.buf and write.start <= read.start and write.end >= read.end) return true;
-    }
-    return q_access.write_overflow and opWritesBuffer(.{ .qmatmul = q }, read.buf);
 }
 
 fn canHoistProjectionSidecarToGroup(
@@ -4088,7 +5404,7 @@ fn canHoistProjectionSidecarToGroup(
     for (ops[group_start..sidecar_index], group_start..) |op, idx| {
         if (projectionSelectionContainsIndex(selection, idx)) continue;
         for (sidecar_access.readSpans()) |read| {
-            if (projectionWriteCoversRead(q, read)) continue;
+            if (opWriteCoversRead(.{ .qmatmul = q }, read)) continue;
             if (opWritesSpan(op, read)) return false;
         }
         for (sidecar_access.writeSpans()) |write| {
@@ -4110,6 +5426,24 @@ pub fn qmatmulElementwiseSidecarCompatible(q: anytype, e: anytype) bool {
         (e.src1 == q.dst and e.src1_offset == q.dst_offset);
 }
 
+pub fn matmulElementwiseSidecarCompatible(m: anytype, e: anytype) bool {
+    const g = m.geom;
+    if (g.M == 0 or g.N == 0 or g.dst_row_stride != g.N) return false;
+    if (e.op != .add and e.op != .mul) return false;
+    if (e.n != g.M * g.N) return false;
+    const src0_primary = e.src0 == m.dst and e.src0_offset == g.dst_offset;
+    const src1_primary = e.src1 == m.dst and e.src1_offset == g.dst_offset;
+    return src0_primary != src1_primary;
+}
+
+pub fn matmulFusedElementwiseSidecarCompatible(m: anytype, fe: anytype) bool {
+    const g = m.geom;
+    if (g.M == 0 or g.N == 0) return false;
+    if (fe.n != g.M * g.N) return false;
+    if (g.dst_row_stride != g.N) return false;
+    return fe.src == m.dst and fe.src_offset == g.dst_offset;
+}
+
 pub fn qmatvecElementwiseSidecarCompatible(q: anytype, e: anytype) bool {
     if (q.M != 1) return false;
     if (e.op != .add and e.op != .mul) return false;
@@ -4118,6 +5452,13 @@ pub fn qmatvecElementwiseSidecarCompatible(q: anytype, e: anytype) bool {
     const src0_primary = e.src0 == q.dst and e.src0_offset == q.dst_offset;
     const src1_primary = e.src1 == q.dst and e.src1_offset == q.dst_offset;
     return src0_primary != src1_primary;
+}
+
+pub fn qmatvecFusedElementwiseSidecarCompatible(q: anytype, fe: anytype) bool {
+    if (q.M != 1) return false;
+    if (fe.n != q.N) return false;
+    if (q.dst_row_stride != 0 and q.dst_row_stride != q.N) return false;
+    return fe.src == q.dst and fe.src_offset == q.dst_offset;
 }
 
 pub fn qmatmulFusedElementwiseSidecarCompatible(q: anytype, fe: anytype) bool {
@@ -4135,14 +5476,6 @@ pub fn qmatmulSliceSrcColStart(q: anytype, sa: anytype) ?u32 {
     return delta;
 }
 
-pub fn qmatmulRopeSrcColStart(q: anytype, rr: anytype) ?u32 {
-    if (rr.src_off < q.dst_offset) return null;
-    const delta = rr.src_off - q.dst_offset;
-    const dst_row_stride = qmatmulDstRowStride(q);
-    if (delta >= dst_row_stride) return null;
-    return delta;
-}
-
 pub fn qmatmulSliceSidecarCompatible(q: anytype, sa: anytype) bool {
     const slice_src_col_start = qmatmulSliceSrcColStart(q, sa) orelse return false;
     return q.M != 1 and
@@ -4151,50 +5484,6 @@ pub fn qmatmulSliceSidecarCompatible(q: anytype, sa: anytype) bool {
         q.M == sa.cols and
         sa.src_row_stride == 1 and
         sa.src_col_stride == qmatmulDstRowStride(q);
-}
-
-pub fn qmatmulRopeSidecarCompatible(q: anytype, rr: anytype) bool {
-    return q.M != 1 and projectionRopeSidecarCompatible(q, rr);
-}
-
-pub fn qmatvecRopeSidecarCompatible(q: anytype, rr: anytype) bool {
-    return q.M == 1 and projectionRopeSidecarCompatible(q, rr);
-}
-
-pub fn projectionRopeSidecarCompatible(q: anytype, rr: anytype) bool {
-    const rope_src_col_start = qmatmulRopeSrcColStart(q, rr) orelse return false;
-    const d = rr.half_d * 2;
-    return q.dst == rr.src and
-        rope_src_col_start + d <= q.N and
-        q.M == rr.seq_len and
-        rr.src_rs == 1 and
-        rr.src_cs == qmatmulDstRowStride(q);
-}
-
-pub fn qmatmulRopeStoreSidecarCompatible(q: anytype, rr: anytype, sa: anytype) bool {
-    return qmatmulRopeSidecarCompatible(q, rr) and ropeSliceAssignCompatible(rr, sa);
-}
-
-pub fn qmatvecRopeStoreSidecarCompatible(q: anytype, rr: anytype, sa: anytype) bool {
-    return qmatvecRopeSidecarCompatible(q, rr) and ropeSliceAssignCompatible(rr, sa);
-}
-
-pub fn projectionRopeStoreSidecarCompatible(q: anytype, rr: anytype, sa: anytype) bool {
-    return projectionRopeSidecarCompatible(q, rr) and ropeSliceAssignCompatible(rr, sa);
-}
-
-pub fn qmatmulRopeStoreTilePairCompatible(q: anytype, rr: anytype, sa: anytype, tile_cols: u32) bool {
-    return tile_cols != 0 and
-        qmatmulRopeStoreSidecarCompatible(q, rr, sa) and
-        rr.half_d >= tile_cols and
-        rr.half_d % tile_cols == 0;
-}
-
-fn projectionRopeSidecarOpCompatible(q: anytype, op: backend_mod.DeviceOp) bool {
-    return switch (op) {
-        .rope => |rr| projectionRopeSidecarCompatible(q, rr),
-        else => false,
-    };
 }
 
 pub fn qmatvecSliceSidecarCompatible(q: anytype, sa: anytype) bool {
@@ -4209,11 +5498,91 @@ pub fn qmatvecSliceSidecarCompatible(q: anytype, sa: anytype) bool {
         (sa.src_col_stride == sa.rows or (sa.cols == 1 and sa.src_col_stride == q.N));
 }
 
-pub fn qmatmulDstRowStride(q: anytype) u32 {
+pub fn denseMatvecSliceSrcColStart(m: anytype, sa: anytype) ?u32 {
+    const g = m.geom;
+    if (sa.src_offset < g.dst_offset) return null;
+    const delta = sa.src_offset - g.dst_offset;
+    if (delta >= g.dst_row_stride) return null;
+    return @intCast(delta);
+}
+
+pub fn denseMatvecSliceSidecarCompatible(m: anytype, sa: anytype) bool {
+    const slice_src_col_start = denseMatvecSliceSrcColStart(m, sa) orelse return false;
+    const g = m.geom;
+    const slice_len = @as(u64, sa.rows) * @as(u64, sa.cols);
+    return denseMatvecProjectionAnchor(m) and
+        m.dst == sa.src and
+        sa.rows != 0 and
+        sa.cols != 0 and
+        @as(u64, slice_src_col_start) + slice_len <= @as(u64, g.N) and
+        sa.src_row_stride == 1 and
+        (sa.src_col_stride == sa.rows or (sa.cols == 1 and sa.src_col_stride == g.N));
+}
+
+pub fn denseProjectionSliceSidecarCompatible(m: anytype, sa: anytype) bool {
+    const slice_src_col_start = denseMatvecSliceSrcColStart(m, sa) orelse return false;
+    const g = m.geom;
+    if (g.M == 1) return denseMatvecSliceSidecarCompatible(m, sa);
+    return denseProjectionAnchor(m) and
+        m.dst == sa.src and
+        sa.rows != 0 and
+        sa.cols == g.M and
+        slice_src_col_start + sa.rows <= g.N and
+        sa.src_row_stride == 1 and
+        sa.src_col_stride == g.dst_row_stride;
+}
+
+pub fn qmatmulRopeSrcColStart(q: anytype, rr: anytype) ?u32 {
+    if (rr.src_off < q.dst_offset) return null;
+    const delta = rr.src_off - q.dst_offset;
+    const dst_row_stride = qmatmulDstRowStride(q);
+    if (delta >= dst_row_stride) return null;
+    return delta;
+}
+
+fn projectionRopeSidecarCompatible(q: anytype, rr: anytype) bool {
+    const rope_src_col_start = qmatmulRopeSrcColStart(q, rr) orelse return false;
+    const d = rr.half_d * 2;
+    return q.dst == rr.src and
+        rope_src_col_start + d <= q.N and
+        q.M == rr.seq_len and
+        rr.src_rs == 1 and
+        rr.src_cs == qmatmulDstRowStride(q);
+}
+
+pub fn qmatvecRopeStoreSidecarCompatible(q: anytype, rr: anytype, sa: anytype) bool {
+    return q.M == 1 and projectionRopeSidecarCompatible(q, rr) and ropeSliceAssignCompatible(rr, sa);
+}
+
+pub fn denseMatvecRopeSrcColStart(m: anytype, rr: anytype) ?u32 {
+    const g = m.geom;
+    if (rr.src_off < g.dst_offset) return null;
+    const delta = rr.src_off - g.dst_offset;
+    if (delta >= g.dst_row_stride) return null;
+    return @intCast(delta);
+}
+
+fn denseMatvecRopeSidecarCompatible(m: anytype, rr: anytype) bool {
+    const rope_src_col_start = denseMatvecRopeSrcColStart(m, rr) orelse return false;
+    const g = m.geom;
+    const d = rr.half_d * 2;
+    return denseMatvecProjectionAnchor(m) and
+        m.dst == rr.src and
+        rope_src_col_start + d <= g.N and
+        rr.seq_len == 1 and
+        rr.src_rs == 1 and
+        rr.src_cs == g.dst_row_stride;
+}
+
+pub fn denseMatvecRopeStoreSidecarCompatible(m: anytype, rr: anytype, sa: anytype) bool {
+    return denseMatvecRopeSidecarCompatible(m, rr) and ropeSliceAssignCompatible(rr, sa);
+}
+
+fn qmatmulDstRowStride(q: anytype) u32 {
     return if (q.dst_row_stride != 0) q.dst_row_stride else q.N;
 }
 
-pub const AttentionOperand = enum { q, k, v };
+const AttentionOperand = enum { q, k, v };
 
 pub fn attentionSliceAssignOperand(sa: anytype, att: anytype) ?AttentionOperand {
     if (attentionSliceMatches(sa, att.q, att.q_off, att.d_head, att.seq_q, att.q_rs, att.q_cs)) return .q;
@@ -4318,7 +5687,7 @@ fn attentionSliceMatches(
         sa.dst_col_stride == col_stride;
 }
 
-pub fn isRopeSliceAssignChain(
+fn isRopeSliceAssignChain(
     a: backend_mod.DeviceOp,
     b: backend_mod.DeviceOp,
 ) bool {
@@ -4355,7 +5724,7 @@ pub fn ropeStoreGroupCompatible(first_rope: anytype, first_sa: anytype, next_rop
         first_sa.dst_col_stride == next_sa.dst_col_stride;
 }
 
-pub fn ropeBatchCompatible(first: anytype, next: anytype) bool {
+fn ropeBatchCompatible(first: anytype, next: anytype) bool {
     return first.src == next.src and
         first.cos_sin == next.cos_sin and
         first.dst == next.dst and
@@ -4447,24 +5816,6 @@ pub fn attentionGeometryCompatible(first: anytype, next: anytype) bool {
         first.dst_cs == next.dst_cs;
 }
 
-pub fn attentionBatchRunLen(ops: []const backend_mod.DeviceOp, max_ops: u32) usize {
-    if (ops.len < 2 or max_ops < 2) return 0;
-    const first = switch (ops[0]) {
-        .attention => |att| att,
-        else => return 0,
-    };
-    var n: usize = 1;
-    const limit = @min(ops.len, @as(usize, @intCast(max_ops)));
-    while (n < limit) : (n += 1) {
-        const next = switch (ops[n]) {
-            .attention => |att| att,
-            else => break,
-        };
-        if (!attentionBatchCompatible(first, next)) break;
-    }
-    return if (n >= 2) n else 0;
-}
-
 pub fn isRmsnormScaleChain(
     a: backend_mod.DeviceOp,
     b: backend_mod.DeviceOp,
@@ -4503,13 +5854,13 @@ fn mulSourcesMatchNormAndScale(e: anytype, norm_buf: u16, norm_offset: u32, scal
         (e.src1 == norm_buf and e.src1_offset == norm_offset and e.src0 == scale_buf and e.src0_offset == scale_offset);
 }
 
-pub fn kernelFamily(op: backend_mod.DeviceOp) KernelFamily {
+fn kernelFamily(op: backend_mod.DeviceOp) KernelFamily {
     return switch (op) {
         .elementwise => .elementwise,
         .fused_elementwise => .fused_elementwise,
         .softmax, .layernorm, .rmsnorm => .row,
         .reduce => .reduce,
-        .repeat, .slice_assign => .movement,
+        .repeat, .conv2d, .max_pool2d, .avg_pool2d, .gather_rows, .slice_assign => .movement,
         .matmul => .matmul,
         .qmatmul => |q| if (q.M == 1) .qmatvec else .qmatmul,
         .rope => .rope,
@@ -4517,7 +5868,7 @@ pub fn kernelFamily(op: backend_mod.DeviceOp) KernelFamily {
     };
 }
 
-pub fn executionClass(op: backend_mod.DeviceOp, policy: SchedulePolicy) ExecutionClass {
+fn executionClass(op: backend_mod.DeviceOp, policy: SchedulePolicy) ExecutionClass {
     if (!policy.capabilities.supportsOp(op)) return .fallback;
 
     const family = kernelFamily(op);
@@ -4525,14 +5876,18 @@ pub fn executionClass(op: backend_mod.DeviceOp, policy: SchedulePolicy) Executio
 
     const can_use_backend = switch (op) {
         .matmul => |m| policy.fine_grained or m.geom.M >= @as(usize, policy.min_backend_matmul_m),
-        .qmatmul => |q| if (q.M == 1) policy.fine_grained else policy.fine_grained or q.M >= policy.min_backend_qmatmul_m,
+        .qmatmul => |q| if (q.M == 1) true else policy.fine_grained or q.M >= policy.min_backend_qmatmul_m,
         .elementwise,
         .fused_elementwise,
         .softmax,
         .layernorm,
         .rmsnorm,
         .reduce,
+        .max_pool2d,
+        .avg_pool2d,
+        .conv2d,
         .repeat,
+        .gather_rows,
         .slice_assign,
         .rope,
         .attention,
@@ -4542,7 +5897,7 @@ pub fn executionClass(op: backend_mod.DeviceOp, policy: SchedulePolicy) Executio
     return if (can_use_backend) .backend else .fallback;
 }
 
-pub fn buildKernelSchedule(
+fn buildKernelSchedule(
     alloc: std.mem.Allocator,
     ops: []const backend_mod.DeviceOp,
     policy: SchedulePolicy,
@@ -4575,7 +5930,7 @@ pub fn buildKernelSchedule(
     return items.toOwnedSlice(alloc);
 }
 
-pub fn scheduleShapeMatches(
+fn scheduleShapeMatches(
     ops: []const backend_mod.DeviceOp,
     items: []const KernelItem,
     policy: SchedulePolicy,
@@ -4623,90 +5978,10 @@ fn kernelItemsEqual(a: KernelItem, b: KernelItem) bool {
         a.len == b.len;
 }
 
-pub fn buildKernelRegions(
-    alloc: std.mem.Allocator,
-    items: []const KernelItem,
-    policy: RegionPolicy,
-) ![]KernelRegion {
-    var regions: std.ArrayListUnmanaged(KernelRegion) = .empty;
-    errdefer regions.deinit(alloc);
-
-    var run_start: usize = 0;
-    while (run_start < items.len) {
-        while (run_start < items.len and !policy.member_families.contains(items[run_start].family)) {
-            run_start += 1;
-        }
-        if (run_start >= items.len) break;
-
-        var run_end = run_start;
-        var anchor_count: u32 = 0;
-        while (run_end < items.len and policy.member_families.contains(items[run_end].family)) : (run_end += 1) {
-            if (policy.anchor_families.contains(items[run_end].family)) anchor_count += items[run_end].len;
-        }
-
-        if (anchor_count > 0) {
-            const first = items[run_start];
-            const last = items[run_end - 1];
-            const op_end = last.start + last.len;
-            try regions.append(alloc, .{
-                .start_item = @intCast(run_start),
-                .item_count = @intCast(run_end - run_start),
-                .op_start = first.start,
-                .op_count = op_end - first.start,
-                .anchor_count = anchor_count,
-            });
-        }
-
-        run_start = run_end;
-    }
-
-    return regions.toOwnedSlice(alloc);
-}
-
-/// Emit one region per contiguous run of anchor-family items. Because
-/// buildKernelSchedule already coalesces adjacent ops of the same family,
-/// this exposes reusable projection groups such as "three qmatvec ops in a
-/// row" without knowing whether they came from attention, FFN, or any model.
-pub fn buildAnchorRunRegions(
-    alloc: std.mem.Allocator,
-    items: []const KernelItem,
-    policy: RegionPolicy,
-) ![]KernelRegion {
-    var regions: std.ArrayListUnmanaged(KernelRegion) = .empty;
-    errdefer regions.deinit(alloc);
-
-    var i: usize = 0;
-    while (i < items.len) {
-        while (i < items.len and !policy.anchor_families.contains(items[i].family)) {
-            i += 1;
-        }
-        if (i >= items.len) break;
-
-        const start = i;
-        var anchor_count: u32 = 0;
-        while (i < items.len and policy.anchor_families.contains(items[i].family)) : (i += 1) {
-            anchor_count += items[i].len;
-        }
-
-        const first = items[start];
-        const last = items[i - 1];
-        const op_end = last.start + last.len;
-        try regions.append(alloc, .{
-            .start_item = @intCast(start),
-            .item_count = @intCast(i - start),
-            .op_start = first.start,
-            .op_count = op_end - first.start,
-            .anchor_count = anchor_count,
-        });
-    }
-
-    return regions.toOwnedSlice(alloc);
-}
-
 /// Split anchored member runs into non-overlapping windows with at least
 /// `anchors_per_region` anchors. Schedule items are not split, so a coalesced
 /// anchor item may make a region contain more anchors than requested.
-pub fn buildAnchorWindowRegions(
+fn buildAnchorWindowRegions(
     alloc: std.mem.Allocator,
     items: []const KernelItem,
     policy: RegionPolicy,
@@ -4762,7 +6037,7 @@ pub fn buildAnchorWindowRegions(
     return regions.toOwnedSlice(alloc);
 }
 
-pub fn buildStagePatternRegions(
+fn buildStagePatternRegions(
     alloc: std.mem.Allocator,
     items: []const KernelItem,
     stage: StagePolicy,
@@ -4790,7 +6065,7 @@ pub fn buildStagePatternRegions(
     return pattern_regions.toOwnedSlice(alloc);
 }
 
-pub fn buildStagePlan(
+fn buildStagePlan(
     alloc: std.mem.Allocator,
     items: []const KernelItem,
     stages: []const StagePolicy,
@@ -4809,7 +6084,7 @@ pub fn buildStagePlan(
     return selectPatternRegions(alloc, candidates.items);
 }
 
-pub fn buildStageRegionSchedule(
+fn buildStageRegionSchedule(
     alloc: std.mem.Allocator,
     items: []const KernelItem,
     stages: []const StagePolicy,
@@ -4819,76 +6094,7 @@ pub fn buildStageRegionSchedule(
     return buildRegionSchedule(alloc, items, plan);
 }
 
-pub fn buildFamilyPatternRegions(
-    alloc: std.mem.Allocator,
-    items: []const KernelItem,
-    pattern: []const KernelFamily,
-) ![]KernelRegion {
-    var regions: std.ArrayListUnmanaged(KernelRegion) = .empty;
-    errdefer regions.deinit(alloc);
-
-    if (pattern.len == 0 or pattern.len > items.len) return regions.toOwnedSlice(alloc);
-
-    var i: usize = 0;
-    while (i + pattern.len <= items.len) : (i += 1) {
-        for (pattern, 0..) |family, j| {
-            if (items[i + j].family != family) break;
-        } else {
-            const first = items[i];
-            const last = items[i + pattern.len - 1];
-            const op_end = last.start + last.len;
-            var anchor_count: u32 = 0;
-            for (items[i .. i + pattern.len]) |item| {
-                anchor_count += item.len;
-            }
-            try regions.append(alloc, .{
-                .start_item = @intCast(i),
-                .item_count = @intCast(pattern.len),
-                .op_start = first.start,
-                .op_count = op_end - first.start,
-                .anchor_count = anchor_count,
-            });
-        }
-    }
-
-    return regions.toOwnedSlice(alloc);
-}
-
-pub fn buildFamilyPatternPlan(
-    alloc: std.mem.Allocator,
-    items: []const KernelItem,
-    patterns: []const FamilyPattern,
-) ![]PatternRegion {
-    var candidates: std.ArrayListUnmanaged(PatternRegion) = .empty;
-    defer candidates.deinit(alloc);
-
-    for (patterns, 0..) |pattern, pattern_index| {
-        const matches = try buildFamilyPatternRegions(alloc, items, pattern.families);
-        defer alloc.free(matches);
-        for (matches) |region| {
-            try candidates.append(alloc, .{
-                .pattern_index = @intCast(pattern_index),
-                .region = region,
-            });
-        }
-    }
-
-    sortPatternRegions(candidates.items);
-
-    var selected: std.ArrayListUnmanaged(PatternRegion) = .empty;
-    errdefer selected.deinit(alloc);
-
-    var next_free_item: u32 = 0;
-    for (candidates.items) |candidate| {
-        if (candidate.region.start_item < next_free_item) continue;
-        try selected.append(alloc, candidate);
-        next_free_item = candidate.region.start_item + candidate.region.item_count;
-    }
-
-    return selected.toOwnedSlice(alloc);
-}
-
-pub fn selectPatternRegions(
+fn selectPatternRegions(
     alloc: std.mem.Allocator,
     candidates: []const PatternRegion,
 ) ![]PatternRegion {
@@ -4909,7 +6115,7 @@ pub fn selectPatternRegions(
     return selected.toOwnedSlice(alloc);
 }
 
-pub fn buildRegionSchedule(
+fn buildRegionSchedule(
     alloc: std.mem.Allocator,
     items: []const KernelItem,
     pattern_regions: []const PatternRegion,
@@ -4944,37 +6150,37 @@ pub fn buildRegionSchedule(
     return units.toOwnedSlice(alloc);
 }
 
-pub const RegionCommandPlan = struct {
-    commands: []const ProgramCommand = &.{},
+const RegionKernelPlan = struct {
+    kernel_plan: KernelPlan = .{},
 
-    pub fn deinit(self: RegionCommandPlan, alloc: std.mem.Allocator) void {
-        if (self.commands.len > 0) alloc.free(self.commands);
+    fn deinit(self: *RegionKernelPlan, alloc: std.mem.Allocator) void {
+        self.kernel_plan.deinit(alloc);
     }
 };
 
-pub fn deinitRegionCommandPlans(alloc: std.mem.Allocator, plans: []const RegionCommandPlan) void {
-    for (plans) |plan| plan.deinit(alloc);
+fn deinitRegionKernelPlans(alloc: std.mem.Allocator, plans: []RegionKernelPlan) void {
+    for (plans) |*plan| plan.deinit(alloc);
 }
 
-pub fn buildRegionCommandPlans(
+fn buildRegionKernelPlans(
     alloc: std.mem.Allocator,
     ops: []const backend_mod.DeviceOp,
     units: []const ScheduleUnit,
-    policy: CommandStreamPolicy,
-) ![]RegionCommandPlan {
+    kernelizer: Kernelizer,
+) ![]RegionKernelPlan {
     if (units.len == 0) return &.{};
 
-    const plans = try alloc.alloc(RegionCommandPlan, units.len);
+    const plans = try alloc.alloc(RegionKernelPlan, units.len);
     errdefer alloc.free(plans);
     @memset(plans, .{});
-    errdefer deinitRegionCommandPlans(alloc, plans);
+    errdefer deinitRegionKernelPlans(alloc, plans);
 
     for (units, 0..) |unit, i| {
         if (unit.kind != .pattern_region or unit.op_count > 256) continue;
         const start: usize = @intCast(unit.op_start);
         const end = start + @as(usize, unit.op_count);
         if (end > ops.len) continue;
-        plans[i].commands = try buildProgramCommands(alloc, ops[start..end], policy);
+        plans[i].kernel_plan = try kernelizer.kernelize(alloc, ops[start..end]);
     }
 
     return plans;
@@ -4983,63 +6189,85 @@ pub fn buildRegionCommandPlans(
 pub const ExecutionPlan = struct {
     schedule: []const KernelItem = &.{},
     regions: []const ScheduleUnit = &.{},
-    region_commands: []const RegionCommandPlan = &.{},
-    region_command_policy: CommandStreamPolicy = .{},
+    region_kernel_plans: []RegionKernelPlan = &.{},
 
     pub fn deinit(self: ExecutionPlan, alloc: std.mem.Allocator) void {
         if (self.schedule.len > 0) alloc.free(self.schedule);
         if (self.regions.len > 0) alloc.free(self.regions);
-        deinitRegionCommandPlans(alloc, self.region_commands);
-        if (self.region_commands.len > 0) alloc.free(self.region_commands);
+        deinitRegionKernelPlans(alloc, self.region_kernel_plans);
+        if (self.region_kernel_plans.len > 0) alloc.free(self.region_kernel_plans);
     }
 
-    pub fn shapeMatches(
-        self: ExecutionPlan,
-        ops: []const backend_mod.DeviceOp,
-        policy: SchedulePolicy,
-    ) bool {
-        return scheduleShapeMatches(ops, self.schedule, policy);
+    pub fn regionCommandPlan(self: ExecutionPlan, unit_index: usize) []const ProgramCommand {
+        if (unit_index >= self.region_kernel_plans.len) return &.{};
+        return self.region_kernel_plans[unit_index].kernel_plan.commands;
     }
 
-    pub fn regionCommandPlan(
-        self: ExecutionPlan,
-        unit_index: usize,
-        policy: CommandStreamPolicy,
-    ) []const ProgramCommand {
-        if (!std.meta.eql(self.region_command_policy, policy)) return &.{};
-        if (unit_index >= self.region_commands.len) return &.{};
-        return self.region_commands[unit_index].commands;
+    pub fn executableCommandShape(self: ExecutionPlan) !ProgramCommandStreamShape {
+        var shape = ProgramCommandStreamShape{};
+        var h = RuntimeStencilHasher{};
+        var saw_command = false;
+        for (self.region_kernel_plans) |region_plan| {
+            const commands = region_plan.kernel_plan.commands;
+            if (commands.len == 0) continue;
+            saw_command = true;
+            const summary = summarizeProgramCommands(commands);
+            shape.command_count = try std.math.add(u32, shape.command_count, @intCast(commands.len));
+            shape.covered_ops = try std.math.add(u32, shape.covered_ops, summary.covered_ops);
+            shape.estimated_saved_dispatches = try std.math.add(u32, shape.estimated_saved_dispatches, summary.estimated_saved_dispatches);
+            shape.row_chains = try std.math.add(u32, shape.row_chains, summary.row_chains);
+            shape.projection_row_chains = try std.math.add(u32, shape.projection_row_chains, summary.projection_row_chains);
+            shape.dense_projection_row_chains = try std.math.add(u32, shape.dense_projection_row_chains, summary.dense_projection_row_chains);
+            shape.projection_chains = try std.math.add(u32, shape.projection_chains, summary.projection_chains);
+            shape.dense_projection_chains = try std.math.add(u32, shape.dense_projection_chains, summary.dense_projection_chains);
+            shape.quantized_projection_chains = try std.math.add(u32, shape.quantized_projection_chains, summary.quantized_projection_chains);
+            shape.projection_chain_sidecars = try std.math.add(u32, shape.projection_chain_sidecars, summary.projection_chain_sidecars);
+            shape.projection_chain_row_chain_frontiers = try std.math.add(u32, shape.projection_chain_row_chain_frontiers, summary.projection_chain_row_chain_frontiers);
+            shape.projection_groups = try std.math.add(u32, shape.projection_groups, summary.projection_groups);
+            shape.projection_anchors = try std.math.add(u32, shape.projection_anchors, summary.projection_anchors);
+            shape.projection_sidecars = try std.math.add(u32, shape.projection_sidecars, summary.projection_sidecars);
+            shape.projection_cache_groups = try std.math.add(u32, shape.projection_cache_groups, summary.projection_cache_groups);
+            shape.projection_cache_anchors = try std.math.add(u32, shape.projection_cache_anchors, summary.projection_cache_anchors);
+            shape.projection_cache_sidecars = try std.math.add(u32, shape.projection_cache_sidecars, summary.projection_cache_sidecars);
+            shape.max_projection_span_ops = @max(shape.max_projection_span_ops, summary.max_projection_span_ops);
+            for (commands) |command| {
+                const kind_index = @intFromEnum(command.kind);
+                shape.command_kind_counts[kind_index] = try std.math.add(u32, shape.command_kind_counts[kind_index], 1);
+                addProgramCommandStencil(&h, command);
+            }
+        }
+        shape.command_stencil_hash = if (saw_command) h.state else 0;
+        return shape;
     }
 };
 
-pub fn buildExecutionPlan(
+fn buildExecutionPlan(
     alloc: std.mem.Allocator,
     ops: []const backend_mod.DeviceOp,
     schedule_policy: SchedulePolicy,
     stages: []const StagePolicy,
-    command_policy: CommandStreamPolicy,
+    kernelizer: Kernelizer,
 ) !ExecutionPlan {
     const schedule = try buildKernelSchedule(alloc, ops, schedule_policy);
     errdefer if (schedule.len > 0) alloc.free(schedule);
 
-    const regions = buildStageRegionSchedule(alloc, schedule, stages) catch &.{};
+    const regions = try buildStageRegionSchedule(alloc, schedule, stages);
     errdefer if (regions.len > 0) alloc.free(regions);
 
-    const region_commands = buildRegionCommandPlans(alloc, ops, regions, command_policy) catch &.{};
+    const region_kernel_plans = try buildRegionKernelPlans(alloc, ops, regions, kernelizer);
     errdefer {
-        deinitRegionCommandPlans(alloc, region_commands);
-        if (region_commands.len > 0) alloc.free(region_commands);
+        deinitRegionKernelPlans(alloc, region_kernel_plans);
+        if (region_kernel_plans.len > 0) alloc.free(region_kernel_plans);
     }
 
     return .{
         .schedule = schedule,
         .regions = regions,
-        .region_commands = region_commands,
-        .region_command_policy = command_policy,
+        .region_kernel_plans = region_kernel_plans,
     };
 }
 
-pub fn summarizeRegionExecution(
+fn summarizeRegionExecution(
     units: []const ScheduleUnit,
     items: []const KernelItem,
     backend_pattern_indices: []const u32,
@@ -5080,7 +6308,7 @@ pub fn summarizeRegionExecution(
     return summary;
 }
 
-pub fn scheduleUnitExecution(
+fn scheduleUnitExecution(
     unit: ScheduleUnit,
     items: []const KernelItem,
     backend_pattern_indices: []const u32,
@@ -5153,6 +6381,14 @@ fn testMatmul(rows: usize) backend_mod.DeviceOp {
             .dst_row_stride = 4,
         },
     } };
+}
+
+fn testMatmulWith(dst: u16, input: u16, weights: u16, rows: usize) backend_mod.DeviceOp {
+    var op = testMatmul(rows);
+    op.matmul.dst = dst;
+    op.matmul.a = input;
+    op.matmul.b = weights;
+    return op;
 }
 
 fn testQMatmul(rows: u32) backend_mod.DeviceOp {
@@ -5328,6 +6564,7 @@ test "program command index set carries flat sidecars once" {
 
 test "program command shape drives coverage and advancement" {
     try std.testing.expectEqual(ProgramCommandCoverage.anchor_sidecars, ProgramCommandKind.projection_chain.shape().coverage);
+    try std.testing.expectEqual(ProgramCommandCoverage.anchor_sidecars, ProgramCommandKind.dense_projection_chain.shape().coverage);
     try std.testing.expectEqual(ProgramCommandAdvance.contiguous, ProgramCommandKind.projection_chain.shape().advance);
     try std.testing.expectEqual(ProgramCommandSidecarLayout.flat, ProgramCommandKind.projection_cache_group.shape().sidecars);
 
@@ -5339,7 +6576,6 @@ test "program command shape drives coverage and advancement" {
         .sidecar_count = 1,
     };
     try std.testing.expect(chain.hasExplicitCoverage());
-    try std.testing.expect(!chain.usesExplicitIndices());
     try std.testing.expectEqual(@as(u32, 2), chain.coveredOpCount());
     try std.testing.expectEqual(@as(u32, 2), chain.advanceCount());
 
@@ -5350,7 +6586,6 @@ test "program command shape drives coverage and advancement" {
         .anchor_count = 4,
     };
     try std.testing.expect(group.hasExplicitCoverage());
-    try std.testing.expect(group.usesExplicitIndices());
     try std.testing.expectEqual(@as(u32, 4), group.coveredOpCount());
     try std.testing.expectEqual(@as(u32, 1), group.advanceCount());
 
@@ -5402,7 +6637,7 @@ test "kernel schedule uses coarse backend thresholds for matmul families" {
     try std.testing.expectEqual(@as(usize, 4), items.len);
     try expectKernelItem(items[0], .matmul, .fallback, 0, 1);
     try expectKernelItem(items[1], .matmul, .backend, 1, 2);
-    try expectKernelItem(items[2], .qmatvec, .fallback, 3, 1);
+    try expectKernelItem(items[2], .qmatvec, .backend, 3, 1);
     try expectKernelItem(items[3], .qmatmul, .backend, 4, 1);
 }
 
@@ -5414,7 +6649,7 @@ test "kernel schedule treats single-row quantized matmul as qmatvec" {
     };
 
     try std.testing.expectEqual(KernelFamily.qmatvec, kernelFamily(op));
-    try std.testing.expectEqual(ExecutionClass.fallback, executionClass(op, policy));
+    try std.testing.expectEqual(ExecutionClass.backend, executionClass(op, policy));
     policy.fine_grained = true;
     try std.testing.expectEqual(ExecutionClass.backend, executionClass(op, policy));
 }
@@ -5475,68 +6710,6 @@ test "schedule shape match ignores dynamic offsets but catches family changes" {
     try std.testing.expect(!scheduleShapeMatches(&ops, items, policy));
 }
 
-test "kernel regions group qmatvec anchored member runs" {
-    const items = [_]KernelItem{
-        .{ .family = .movement, .execution = .fallback, .start = 0, .len = 2 },
-        .{ .family = .qmatvec, .execution = .fallback, .start = 2, .len = 1 },
-        .{ .family = .elementwise, .execution = .fallback, .start = 3, .len = 2 },
-        .{ .family = .matmul, .execution = .backend, .start = 5, .len = 1 },
-        .{ .family = .qmatvec, .execution = .fallback, .start = 6, .len = 1 },
-    };
-
-    const regions = try buildKernelRegions(std.testing.allocator, &items, RegionPolicy.qmatvecCluster());
-    defer std.testing.allocator.free(regions);
-
-    try std.testing.expectEqual(@as(usize, 2), regions.len);
-    try std.testing.expectEqual(@as(u32, 0), regions[0].start_item);
-    try std.testing.expectEqual(@as(u32, 3), regions[0].item_count);
-    try std.testing.expectEqual(@as(u32, 0), regions[0].op_start);
-    try std.testing.expectEqual(@as(u32, 5), regions[0].op_count);
-    try std.testing.expectEqual(@as(u32, 1), regions[0].anchor_count);
-    try std.testing.expectEqual(@as(u32, 4), regions[1].start_item);
-    try std.testing.expectEqual(@as(u32, 1), regions[1].item_count);
-    try std.testing.expectEqual(@as(u32, 6), regions[1].op_start);
-    try std.testing.expectEqual(@as(u32, 1), regions[1].op_count);
-    try std.testing.expectEqual(@as(u32, 1), regions[1].anchor_count);
-}
-
-test "kernel regions skip member runs without anchors" {
-    const items = [_]KernelItem{
-        .{ .family = .movement, .execution = .fallback, .start = 0, .len = 2 },
-        .{ .family = .elementwise, .execution = .fallback, .start = 2, .len = 1 },
-    };
-
-    const regions = try buildKernelRegions(std.testing.allocator, &items, RegionPolicy.qmatvecCluster());
-    defer std.testing.allocator.free(regions);
-
-    try std.testing.expectEqual(@as(usize, 0), regions.len);
-}
-
-test "anchor run regions expose contiguous anchor groups" {
-    const items = [_]KernelItem{
-        .{ .family = .movement, .execution = .fallback, .start = 0, .len = 1 },
-        .{ .family = .qmatvec, .execution = .fallback, .start = 1, .len = 3 },
-        .{ .family = .elementwise, .execution = .fallback, .start = 4, .len = 1 },
-        .{ .family = .qmatvec, .execution = .fallback, .start = 5, .len = 2 },
-        .{ .family = .qmatvec, .execution = .fallback, .start = 7, .len = 1 },
-    };
-
-    const regions = try buildAnchorRunRegions(std.testing.allocator, &items, RegionPolicy.qmatvecCluster());
-    defer std.testing.allocator.free(regions);
-
-    try std.testing.expectEqual(@as(usize, 2), regions.len);
-    try std.testing.expectEqual(@as(u32, 1), regions[0].start_item);
-    try std.testing.expectEqual(@as(u32, 1), regions[0].item_count);
-    try std.testing.expectEqual(@as(u32, 1), regions[0].op_start);
-    try std.testing.expectEqual(@as(u32, 3), regions[0].op_count);
-    try std.testing.expectEqual(@as(u32, 3), regions[0].anchor_count);
-    try std.testing.expectEqual(@as(u32, 3), regions[1].start_item);
-    try std.testing.expectEqual(@as(u32, 2), regions[1].item_count);
-    try std.testing.expectEqual(@as(u32, 5), regions[1].op_start);
-    try std.testing.expectEqual(@as(u32, 3), regions[1].op_count);
-    try std.testing.expectEqual(@as(u32, 3), regions[1].anchor_count);
-}
-
 test "anchor window regions split member runs by anchor count" {
     const items = [_]KernelItem{
         .{ .family = .movement, .execution = .fallback, .start = 0, .len = 1 },
@@ -5584,6 +6757,52 @@ test "qmatmul cluster windows keep prefill attention inside layer regions" {
     try std.testing.expectEqual(@as(u32, 7), regions[0].anchor_count);
 }
 
+test "qmatvec cluster windows carry final dense projection tails" {
+    const items = [_]KernelItem{
+        .{ .family = .row, .execution = .fallback, .start = 0, .len = 1 },
+        .{ .family = .qmatvec, .execution = .backend, .start = 1, .len = 3 },
+        .{ .family = .rope, .execution = .fallback, .start = 4, .len = 2 },
+        .{ .family = .attention, .execution = .fallback, .start = 6, .len = 1 },
+        .{ .family = .qmatvec, .execution = .backend, .start = 7, .len = 1 },
+        .{ .family = .fused_elementwise, .execution = .fallback, .start = 8, .len = 1 },
+        .{ .family = .qmatvec, .execution = .backend, .start = 9, .len = 3 },
+        .{ .family = .row, .execution = .fallback, .start = 12, .len = 1 },
+        .{ .family = .matmul, .execution = .fallback, .start = 13, .len = 1 },
+    };
+
+    const regions = try buildAnchorWindowRegions(std.testing.allocator, &items, RegionPolicy.qmatvecCluster(), 7);
+    defer std.testing.allocator.free(regions);
+
+    try std.testing.expectEqual(@as(usize, 1), regions.len);
+    try std.testing.expectEqual(@as(u32, 0), regions[0].start_item);
+    try std.testing.expectEqual(@as(u32, 9), regions[0].item_count);
+    try std.testing.expectEqual(@as(u32, 0), regions[0].op_start);
+    try std.testing.expectEqual(@as(u32, 14), regions[0].op_count);
+    try std.testing.expectEqual(@as(u32, 7), regions[0].anchor_count);
+}
+
+test "matmul cluster windows keep dense prefill attention inside layer regions" {
+    const items = [_]KernelItem{
+        .{ .family = .row, .execution = .fallback, .start = 0, .len = 1 },
+        .{ .family = .matmul, .execution = .fallback, .start = 1, .len = 3 },
+        .{ .family = .rope, .execution = .fallback, .start = 4, .len = 2 },
+        .{ .family = .attention, .execution = .fallback, .start = 6, .len = 1 },
+        .{ .family = .matmul, .execution = .fallback, .start = 7, .len = 1 },
+        .{ .family = .fused_elementwise, .execution = .fallback, .start = 8, .len = 1 },
+        .{ .family = .matmul, .execution = .fallback, .start = 9, .len = 3 },
+    };
+
+    const regions = try buildAnchorWindowRegions(std.testing.allocator, &items, RegionPolicy.matmulCluster(), 7);
+    defer std.testing.allocator.free(regions);
+
+    try std.testing.expectEqual(@as(usize, 1), regions.len);
+    try std.testing.expectEqual(@as(u32, 0), regions[0].start_item);
+    try std.testing.expectEqual(@as(u32, 7), regions[0].item_count);
+    try std.testing.expectEqual(@as(u32, 0), regions[0].op_start);
+    try std.testing.expectEqual(@as(u32, 12), regions[0].op_count);
+    try std.testing.expectEqual(@as(u32, 7), regions[0].anchor_count);
+}
+
 test "stage plan builds named anchored layer windows" {
     const items = [_]KernelItem{
         .{ .family = .row, .execution = .fallback, .start = 0, .len = 1 },
@@ -5598,7 +6817,7 @@ test "stage plan builds named anchored layer windows" {
         .{ .family = .qmatvec, .execution = .backend, .start = 15, .len = 1 },
     };
     const stages = [_]StagePolicy{
-        StagePolicy.anchored("prefill-layer", 7, RegionPolicy.qmatmulCluster(), 7),
+        StagePolicy.anchored(7, RegionPolicy.qmatmulCluster(), 7),
     };
 
     const plan = try buildStagePlan(std.testing.allocator, &items, &stages);
@@ -5621,95 +6840,79 @@ test "stage plan builds named anchored layer windows" {
     try std.testing.expectEqual(@as(u32, 15), units[1].op_start);
 }
 
-test "stage commands collapse rmsnorm scale row chains" {
-    const row_chain = testRmsnormScaleOps();
-    const ops = [_]backend_mod.DeviceOp{
-        row_chain[0],
-        row_chain[1],
-        row_chain[2],
-        testQMatmul(16),
+test "stage plan prefers dense layer windows before dense matmul tails" {
+    const items = [_]KernelItem{
+        .{ .family = .row, .execution = .fallback, .start = 0, .len = 1 },
+        .{ .family = .matmul, .execution = .fallback, .start = 1, .len = 3 },
+        .{ .family = .rope, .execution = .fallback, .start = 4, .len = 2 },
+        .{ .family = .attention, .execution = .fallback, .start = 6, .len = 1 },
+        .{ .family = .matmul, .execution = .fallback, .start = 7, .len = 1 },
+        .{ .family = .fused_elementwise, .execution = .fallback, .start = 8, .len = 1 },
+        .{ .family = .matmul, .execution = .fallback, .start = 9, .len = 3 },
+        .{ .family = .fused_elementwise, .execution = .fallback, .start = 12, .len = 1 },
+        .{ .family = .matmul, .execution = .fallback, .start = 13, .len = 1 },
+    };
+    const stages = [_]StagePolicy{
+        StagePolicy.anchored(7, RegionPolicy.matmulCluster(), 7),
+        StagePolicy.anchored(8, RegionPolicy.matmulCluster(), 1),
     };
 
-    try std.testing.expect(isRmsnormScaleChain(ops[0], ops[1], ops[2]));
+    const plan = try buildStagePlan(std.testing.allocator, &items, &stages);
+    defer std.testing.allocator.free(plan);
 
-    const commands = try buildStageCommands(std.testing.allocator, &ops);
+    try std.testing.expectEqual(@as(usize, 2), plan.len);
+    try std.testing.expectEqual(@as(u32, 7), plan[0].pattern_index);
+    try std.testing.expectEqual(@as(u32, 0), plan[0].region.start_item);
+    try std.testing.expectEqual(@as(u32, 8), plan[0].region.item_count);
+    try std.testing.expectEqual(@as(u32, 7), plan[0].region.anchor_count);
+    try std.testing.expectEqual(@as(u32, 8), plan[1].pattern_index);
+    try std.testing.expectEqual(@as(u32, 8), plan[1].region.start_item);
+    try std.testing.expectEqual(@as(u32, 1), plan[1].region.item_count);
+    try std.testing.expectEqual(@as(u32, 1), plan[1].region.anchor_count);
+}
+
+test "program command stream emits row chains directly" {
+    const row_chain = testRmsnormScaleOps();
+    const commands = try buildProgramCommands(std.testing.allocator, &row_chain, CommandStreamPolicy.default());
     defer std.testing.allocator.free(commands);
 
-    try std.testing.expectEqual(@as(usize, 2), commands.len);
-    try std.testing.expectEqual(StageCommandKind.row_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.row_chain, commands[0].kind);
     try std.testing.expectEqual(@as(u32, 0), commands[0].op_start);
     try std.testing.expectEqual(@as(u32, 3), commands[0].op_count);
-    try std.testing.expectEqual(StageCommandKind.op, commands[1].kind);
-    try std.testing.expectEqual(@as(u32, 3), commands[1].op_start);
 
-    const summary = summarizeStageCommands(commands);
-    try std.testing.expectEqual(@as(u32, 2), summary.commands);
-    try std.testing.expectEqual(@as(u32, 4), summary.ops);
-    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
-    try std.testing.expectEqual(@as(u32, 2), summary.estimated_saved_dispatches);
+    const summary = summarizeProgramCommands(commands);
     try std.testing.expectEqual(@as(u32, 1), summary.row_chains);
-    try std.testing.expectEqual(@as(u32, 3), summary.row_chain_ops);
+    try std.testing.expectEqual(@as(u32, 3), summary.covered_ops);
 }
 
-test "stage commands leave nonmatching row triples as ops" {
-    var row_chain = testRmsnormScaleOps();
-    row_chain[2].elementwise.op = .add;
+test "rmsnorm scale chain liveness distinguishes materialized intermediates" {
+    const row_chain = testRmsnormScaleOps();
+    try std.testing.expect(!rmsnormScaleChainHasExternalUsers(&row_chain, 0));
 
-    const commands = try buildStageCommands(std.testing.allocator, &row_chain);
-    defer std.testing.allocator.free(commands);
+    const norm_read = row_chain ++ [_]backend_mod.DeviceOp{.{ .elementwise = .{
+        .op = .add,
+        .dst = 6,
+        .src0 = 1,
+        .src1 = 1,
+        .n = 1,
+    } }};
+    try std.testing.expect(rmsnormScaleChainHasExternalUsers(&norm_read, 0));
 
-    try std.testing.expect(!isRmsnormScaleChain(row_chain[0], row_chain[1], row_chain[2]));
-    try std.testing.expectEqual(@as(usize, 3), commands.len);
-    for (commands, 0..) |command, i| {
-        try std.testing.expectEqual(StageCommandKind.op, command.kind);
-        try std.testing.expectEqual(@as(u32, @intCast(i)), command.op_start);
-        try std.testing.expectEqual(@as(u32, 1), command.op_count);
-    }
-}
+    const repeat_read = row_chain ++ [_]backend_mod.DeviceOp{.{ .elementwise = .{
+        .op = .add,
+        .dst = 6,
+        .src0 = 2,
+        .src1 = 2,
+        .n = 1,
+    } }};
+    try std.testing.expect(rmsnormScaleChainHasExternalUsers(&repeat_read, 0));
 
-test "stage commands collapse rope cache-write chains" {
-    const rope_chain = testRopeSliceAssignOps();
-    const ops = [_]backend_mod.DeviceOp{
-        rope_chain[0],
-        rope_chain[1],
-        testQMatmul(16),
+    const overwritten = row_chain ++ [_]backend_mod.DeviceOp{
+        .{ .elementwise = .{ .op = .add, .dst = 1, .src0 = 0, .src1 = 0, .n = 8 } },
+        .{ .elementwise = .{ .op = .add, .dst = 6, .src0 = 1, .src1 = 1, .n = 1 } },
     };
-
-    try std.testing.expect(isRopeSliceAssignChain(ops[0], ops[1]));
-    try std.testing.expectEqual(StageCommandKind.rope_chain, findStageCommand(&ops, 0).?.kind);
-
-    const commands = try buildStageCommands(std.testing.allocator, &ops);
-    defer std.testing.allocator.free(commands);
-
-    try std.testing.expectEqual(@as(usize, 2), commands.len);
-    try std.testing.expectEqual(StageCommandKind.rope_chain, commands[0].kind);
-    try std.testing.expectEqual(@as(u32, 0), commands[0].op_start);
-    try std.testing.expectEqual(@as(u32, 2), commands[0].op_count);
-    try std.testing.expectEqual(StageCommandKind.op, commands[1].kind);
-
-    const summary = summarizeStageCommands(commands);
-    try std.testing.expectEqual(@as(u32, 2), summary.commands);
-    try std.testing.expectEqual(@as(u32, 3), summary.ops);
-    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
-    try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
-    try std.testing.expectEqual(@as(u32, 1), summary.rope_chains);
-    try std.testing.expectEqual(@as(u32, 2), summary.rope_chain_ops);
-}
-
-test "stage commands leave nonmatching rope pairs as ops" {
-    var rope_chain = testRopeSliceAssignOps();
-    rope_chain[1].slice_assign.src_col_stride = 8;
-
-    const commands = try buildStageCommands(std.testing.allocator, &rope_chain);
-    defer std.testing.allocator.free(commands);
-
-    try std.testing.expect(!isRopeSliceAssignChain(rope_chain[0], rope_chain[1]));
-    try std.testing.expectEqual(@as(usize, 2), commands.len);
-    for (commands, 0..) |command, i| {
-        try std.testing.expectEqual(StageCommandKind.op, command.kind);
-        try std.testing.expectEqual(@as(u32, @intCast(i)), command.op_start);
-        try std.testing.expectEqual(@as(u32, 1), command.op_count);
-    }
+    try std.testing.expect(!rmsnormScaleChainHasExternalUsers(&overwritten, 0));
 }
 
 test "projection groups batch independent prefill qmatmuls" {
@@ -5721,22 +6924,15 @@ test "projection groups batch independent prefill qmatmuls" {
         testQMatmulWith(5, 0, 16),
     };
 
-    const groups = try buildProjectionGroups(std.testing.allocator, &ops, ProjectionGroupPolicy.prefillQMatmul(4));
-    defer std.testing.allocator.free(groups);
+    const selection = findProjectionGroup(&ops, 0, ProjectionGroupPolicy.prefillQMatmul(4), null).?;
+    try std.testing.expectEqual(ProjectionGroupKind.qmatmul, selection.kind);
+    try std.testing.expectEqual(@as(usize, 0), selection.start_op);
+    try std.testing.expectEqual(@as(usize, 3), selection.end_op);
+    try std.testing.expectEqual(@as(usize, 4), selection.anchor_count);
+    try std.testing.expectEqual(@as(usize, 0), selection.sidecar_count);
 
-    try std.testing.expectEqual(@as(usize, 1), groups.len);
-    try std.testing.expectEqual(ProjectionGroupKind.qmatmul, groups[0].kind);
-    try std.testing.expectEqual(@as(u32, 0), groups[0].start_op);
-    try std.testing.expectEqual(@as(u32, 4), groups[0].op_count);
-    try std.testing.expectEqual(@as(u32, 4), groups[0].anchor_count);
-    try std.testing.expectEqual(@as(u32, 0), groups[0].sidecar_count);
-
-    const summary = summarizeProjectionGroups(groups);
-    try std.testing.expectEqual(@as(u32, 1), summary.groups);
-    try std.testing.expectEqual(@as(u32, 4), summary.anchors);
-    try std.testing.expectEqual(@as(u32, 4), summary.covered_ops);
-    try std.testing.expectEqual(@as(u32, 1), summary.estimated_dispatches);
-    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+    const command = ProgramCommand.fromProjectionSelection(selection);
+    try std.testing.expectEqual(@as(u32, 4), command.coveredOpCount());
 }
 
 test "projection groups carry compatible qmatmul cache-store sidecars" {
@@ -5747,24 +6943,17 @@ test "projection groups carry compatible qmatmul cache-store sidecars" {
         testQMatmulWith(2, 0, 2),
     };
 
-    const groups = try buildProjectionGroups(std.testing.allocator, &ops, ProjectionGroupPolicy.prefillQMatmul(4));
-    defer std.testing.allocator.free(groups);
-
     const selection = findProjectionGroup(&ops, 0, ProjectionGroupPolicy.prefillQMatmul(4), null).?;
     try std.testing.expectEqual(@as(usize, 0), selection.indices[0]);
     try std.testing.expectEqual(@as(usize, 3), selection.indices[1]);
     try std.testing.expectEqual(@as(?usize, 1), selection.sidecar_indices[0]);
     try std.testing.expectEqual(@as(?usize, null), selection.sidecar_indices[1]);
+    try std.testing.expectEqual(@as(usize, 0), selection.start_op);
+    try std.testing.expectEqual(@as(usize, 3), selection.end_op);
+    try std.testing.expectEqual(@as(usize, 2), selection.anchor_count);
+    try std.testing.expectEqual(@as(usize, 1), selection.sidecar_count);
 
     try std.testing.expect(qmatmulSliceSidecarCompatible(ops[0].qmatmul, ops[1].slice_assign));
-    try std.testing.expectEqual(@as(usize, 1), groups.len);
-    try std.testing.expectEqual(@as(u32, 0), groups[0].start_op);
-    try std.testing.expectEqual(@as(u32, 4), groups[0].op_count);
-    try std.testing.expectEqual(@as(u32, 2), groups[0].anchor_count);
-    try std.testing.expectEqual(@as(u32, 1), groups[0].sidecar_count);
-
-    const summary = summarizeProjectionGroups(groups);
-    try std.testing.expectEqual(@as(u32, 2), summary.estimated_saved_dispatches);
 }
 
 test "projection groups carry compatible qmatvec cache-store sidecars" {
@@ -5794,7 +6983,7 @@ test "projection groups carry compatible qmatvec cache-store sidecars" {
     try std.testing.expectEqual(@as(?usize, null), selection.sidecar_indices[1]);
     try std.testing.expect(qmatvecSliceSidecarCompatible(ops[0].qmatmul, ops[1].slice_assign));
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 1), commands.len);
@@ -5832,7 +7021,7 @@ test "projection groups carry compatible qmatvec elementwise sidecars" {
     try std.testing.expectEqual(@as(?usize, null), selection.sidecar_indices[1]);
     try std.testing.expect(qmatvecElementwiseSidecarCompatible(ops[0].qmatmul, ops[1].elementwise));
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 1), commands.len);
@@ -5863,15 +7052,23 @@ test "projection groups carry compatible qmatmul elementwise sidecars" {
     try std.testing.expectEqual(@as(?usize, 1), selection.sidecar_indices[0]);
     try std.testing.expectEqual(@as(?usize, 3), selection.sidecar_indices[1]);
 
-    const groups = try buildProjectionGroups(std.testing.allocator, &ops, ProjectionGroupPolicy.prefillQMatmul(4));
-    defer std.testing.allocator.free(groups);
-    try std.testing.expectEqual(@as(usize, 1), groups.len);
-    try std.testing.expectEqual(@as(u32, 2), groups[0].anchor_count);
-    try std.testing.expectEqual(@as(u32, 2), groups[0].sidecar_count);
+    try std.testing.expectEqual(@as(usize, 2), selection.anchor_count);
+    try std.testing.expectEqual(@as(usize, 2), selection.sidecar_count);
 
-    const summary = summarizeProjectionGroups(groups);
-    try std.testing.expectEqual(@as(u32, 4), summary.covered_ops);
-    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+    const command = ProgramCommand.fromProjectionSelection(selection);
+    try std.testing.expectEqual(@as(u32, 4), command.coveredOpCount());
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+    const shape = try ProgramCommandStreamShape.fromCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), shape.command_count);
+    try std.testing.expectEqual(@as(u32, 4), shape.covered_ops);
+    try std.testing.expectEqual(@as(u32, 3), shape.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), shape.projection_groups);
+    try std.testing.expectEqual(@as(u32, 2), shape.projection_anchors);
+    try std.testing.expectEqual(@as(u32, 2), shape.projection_sidecars);
+    try std.testing.expectEqual(@as(u32, 0), shape.projection_chain_row_chain_frontiers);
+    try std.testing.expectEqual(@as(u32, 4), shape.max_projection_span_ops);
 }
 
 test "projection groups reject conflicting or nonhoistable projections" {
@@ -5879,18 +7076,14 @@ test "projection groups reject conflicting or nonhoistable projections" {
         testQMatmulWith(1, 0, 16),
         testQMatmulWith(1, 0, 16),
     };
-    const conflict_groups = try buildProjectionGroups(std.testing.allocator, &conflict_ops, ProjectionGroupPolicy.prefillQMatmul(4));
-    defer std.testing.allocator.free(conflict_groups);
-    try std.testing.expectEqual(@as(usize, 0), conflict_groups.len);
+    try std.testing.expect(findProjectionGroup(&conflict_ops, 0, ProjectionGroupPolicy.prefillQMatmul(4), null) == null);
 
     const blocked_ops = [_]backend_mod.DeviceOp{
         testQMatmulWith(1, 0, 16),
         .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 0, .src1 = 0, .n = 1 } },
         testQMatmulWith(3, 2, 16),
     };
-    const blocked_groups = try buildProjectionGroups(std.testing.allocator, &blocked_ops, ProjectionGroupPolicy.prefillQMatmul(4));
-    defer std.testing.allocator.free(blocked_groups);
-    try std.testing.expectEqual(@as(usize, 0), blocked_groups.len);
+    try std.testing.expect(findProjectionGroup(&blocked_ops, 0, ProjectionGroupPolicy.prefillQMatmul(4), null) == null);
 }
 
 test "projection groups use access spans instead of whole-buffer conflicts" {
@@ -5900,16 +7093,12 @@ test "projection groups use access spans instead of whole-buffer conflicts" {
     second.qmatmul.dst_offset = 8;
     const disjoint_ops = [_]backend_mod.DeviceOp{ first, second };
 
-    const groups = try buildProjectionGroups(std.testing.allocator, &disjoint_ops, ProjectionGroupPolicy.prefillQMatmul(4));
-    defer std.testing.allocator.free(groups);
-    try std.testing.expectEqual(@as(usize, 1), groups.len);
-    try std.testing.expectEqual(@as(u32, 2), groups[0].anchor_count);
+    const disjoint = findProjectionGroup(&disjoint_ops, 0, ProjectionGroupPolicy.prefillQMatmul(4), null).?;
+    try std.testing.expectEqual(@as(usize, 2), disjoint.anchor_count);
 
     second.qmatmul.dst_offset = 4;
     const overlapping_ops = [_]backend_mod.DeviceOp{ first, second };
-    const overlapping_groups = try buildProjectionGroups(std.testing.allocator, &overlapping_ops, ProjectionGroupPolicy.prefillQMatmul(4));
-    defer std.testing.allocator.free(overlapping_groups);
-    try std.testing.expectEqual(@as(usize, 0), overlapping_groups.len);
+    try std.testing.expect(findProjectionGroup(&overlapping_ops, 0, ProjectionGroupPolicy.prefillQMatmul(4), null) == null);
 }
 
 test "program command stream merges stage and projection commands" {
@@ -5922,7 +7111,7 @@ test "program command stream merges stage and projection commands" {
         testQMatmulWith(4, 0, 2),
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -5946,13 +7135,13 @@ test "program command stream merges stage and projection commands" {
 }
 
 test "program command stream derives defaults from backend capabilities" {
-    const policy = CommandStreamPolicy.fromCapabilities(backend_mod.Capabilities.metal);
-    try std.testing.expect(policy.stage_commands);
+    const policy = CommandStreamPolicy.default();
+    try std.testing.expect(policy.row_rope_chains);
     try std.testing.expectEqual(@as(u32, 4), policy.qmatvec_group_size);
     try std.testing.expectEqual(@as(u32, 4), policy.qmatmul_group_size);
+    try std.testing.expectEqual(@as(u32, 4), policy.dense_matvec_group_size);
     try std.testing.expect(policy.qmatmul_sidecars);
     try std.testing.expectEqual(@as(u32, 8), policy.qmatmul_cache_sidecars_per_anchor);
-    try std.testing.expect(!policy.projection_rope_cache_sidecars);
     try std.testing.expectEqual(@as(u32, 16), policy.max_rope_batch);
     try std.testing.expectEqual(@as(u32, 16), policy.max_movement_batch);
     try std.testing.expectEqual(@as(u32, 16), policy.max_attention_batch);
@@ -5980,7 +7169,7 @@ test "program command stream carries multiple projection cache stores" {
         store2,
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -5990,6 +7179,9 @@ test "program command stream carries multiple projection cache stores" {
     try std.testing.expectEqual(@as(?usize, 3), commands[0].sidecar_indices[0]);
     try std.testing.expectEqual(@as(?usize, 5), commands[0].sidecar_indices[1]);
     try std.testing.expectEqual(@as(?usize, 6), commands[0].sidecar_indices[2]);
+    try std.testing.expectEqual(@as(?usize, 2), commands[0].sidecarAnchorSlot(0));
+    try std.testing.expectEqual(@as(?usize, 2), commands[0].sidecarAnchorSlot(1));
+    try std.testing.expectEqual(@as(?usize, 2), commands[0].sidecarAnchorSlot(2));
     try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
 
     const summary = summarizeProgramCommands(commands);
@@ -5998,39 +7190,6 @@ test "program command stream carries multiple projection cache stores" {
     try std.testing.expectEqual(@as(u32, 3), summary.projection_cache_sidecars);
     try std.testing.expectEqual(@as(u32, 7), summary.covered_ops);
     try std.testing.expectEqual(@as(u32, 5), summary.estimated_saved_dispatches);
-}
-
-test "program command stream carries projection rope cache stores" {
-    const rope_pair = testRopeSliceAssignOps();
-    var rope = rope_pair[0];
-    rope.rope.src = 1;
-    rope.rope.src_off = 0;
-
-    const ops = [_]backend_mod.DeviceOp{
-        testQMatmulWith(1, 0, 3),
-        rope,
-        rope_pair[1],
-        testQMatmulWith(4, 0, 3),
-    };
-
-    var policy = CommandStreamPolicy.metal(4, 4);
-    policy.projection_rope_cache_sidecars = true;
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, policy);
-    defer std.testing.allocator.free(commands);
-
-    try std.testing.expectEqual(@as(usize, 1), commands.len);
-    try std.testing.expectEqual(ProgramCommandKind.projection_cache_group, commands[0].kind);
-    try std.testing.expectEqual(@as(u32, 2), commands[0].anchor_count);
-    try std.testing.expectEqual(@as(u32, 2), commands[0].sidecar_count);
-    try std.testing.expectEqual(@as(?usize, 1), commands[0].sidecar_indices[0]);
-    try std.testing.expectEqual(@as(?usize, 2), commands[0].sidecar_indices[1]);
-
-    const summary = summarizeProgramCommands(commands);
-    try std.testing.expectEqual(@as(u32, 1), summary.projection_cache_groups);
-    try std.testing.expectEqual(@as(u32, 2), summary.projection_cache_anchors);
-    try std.testing.expectEqual(@as(u32, 2), summary.projection_cache_sidecars);
-    try std.testing.expectEqual(@as(u32, 4), summary.covered_ops);
-    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
 }
 
 test "program command stream carries qmatvec rope cache stores" {
@@ -6049,9 +7208,7 @@ test "program command stream carries qmatvec rope cache stores" {
         testQMatmulWith(4, 0, 1),
     };
 
-    var policy = CommandStreamPolicy.metal(4, 4);
-    policy.projection_rope_cache_sidecars = true;
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, policy);
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 1), commands.len);
@@ -6061,6 +7218,8 @@ test "program command stream carries qmatvec rope cache stores" {
     try std.testing.expectEqual(@as(u32, 2), commands[0].sidecar_count);
     try std.testing.expectEqual(@as(?usize, 1), commands[0].sidecar_indices[0]);
     try std.testing.expectEqual(@as(?usize, 2), commands[0].sidecar_indices[1]);
+    try std.testing.expectEqual(@as(?usize, 0), commands[0].sidecarAnchorSlot(0));
+    try std.testing.expectEqual(@as(?usize, 0), commands[0].sidecarAnchorSlot(1));
 
     const summary = summarizeProgramCommands(commands);
     try std.testing.expectEqual(@as(u32, 1), summary.projection_cache_groups);
@@ -6070,128 +7229,109 @@ test "program command stream carries qmatvec rope cache stores" {
     try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
 }
 
-test "program command stream carries qmatvec rope materialization" {
+test "program command stream carries dense matvec rope and value cache stores" {
+    var rope_pair = testRopeSliceAssignOps();
+    rope_pair[0].rope.src = 2;
+    rope_pair[0].rope.dst = 4;
+    rope_pair[0].rope.src_off = 0;
+    rope_pair[0].rope.dst_off = 0;
+    rope_pair[0].rope.seq_len = 1;
+    rope_pair[1].slice_assign.src = 4;
+    rope_pair[1].slice_assign.dst = 8;
+    rope_pair[1].slice_assign.src_offset = 0;
+    rope_pair[1].slice_assign.cols = 1;
+
+    var v_store = testQMatmulSidecar(3, 9);
+    v_store.slice_assign.cols = 1;
+
+    const ops = [_]backend_mod.DeviceOp{
+        testMatmulWith(1, 0, 10, 1),
+        testMatmulWith(2, 0, 11, 1),
+        testMatmulWith(3, 0, 12, 1),
+        rope_pair[0],
+        rope_pair[1],
+        v_store,
+        testMatmulWith(7, 14, 13, 1),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.dense_projection_cache_group, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(?usize, 3), commands[0].sidecar_indices[0]);
+    try std.testing.expectEqual(@as(?usize, 4), commands[0].sidecar_indices[1]);
+    try std.testing.expectEqual(@as(?usize, 5), commands[0].sidecar_indices[2]);
+    try std.testing.expectEqual(@as(?usize, 1), commands[0].sidecarAnchorSlot(0));
+    try std.testing.expectEqual(@as(?usize, 1), commands[0].sidecarAnchorSlot(1));
+    try std.testing.expectEqual(@as(?usize, 2), commands[0].sidecarAnchorSlot(2));
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_cache_groups);
+    try std.testing.expectEqual(@as(u32, 3), summary.projection_cache_anchors);
+    try std.testing.expectEqual(@as(u32, 3), summary.projection_cache_sidecars);
+    try std.testing.expectEqual(@as(u32, 7), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 5), summary.estimated_saved_dispatches);
+}
+
+test "program command stream carries dense prefill value cache stores" {
+    var v_store = testQMatmulSidecar(3, 9);
+    v_store.slice_assign.cols = 2;
+    v_store.slice_assign.src_col_stride = 4;
+
+    const ops = [_]backend_mod.DeviceOp{
+        testMatmulWith(1, 0, 10, 2),
+        testMatmulWith(2, 0, 11, 2),
+        testMatmulWith(3, 0, 12, 2),
+        v_store,
+        testMatmulWith(7, 14, 13, 2),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.dense_projection_cache_group, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(?usize, 3), commands[0].sidecar_indices[0]);
+    try std.testing.expectEqual(@as(?usize, 2), commands[0].sidecarAnchorSlot(0));
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_cache_groups);
+    try std.testing.expectEqual(@as(u32, 3), summary.projection_cache_anchors);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_cache_sidecars);
+    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+}
+
+test "program command stream rejects live qmatvec rope cache stores" {
     const rope_pair = testRopeSliceAssignOps();
     var rope = rope_pair[0];
     rope.rope.src = 1;
     rope.rope.src_off = 0;
     rope.rope.seq_len = 1;
+    var store = rope_pair[1];
+    store.slice_assign.cols = 1;
 
     const ops = [_]backend_mod.DeviceOp{
         testQMatmulWith(1, 0, 1),
         rope,
+        store,
+        .{ .elementwise = .{ .op = .add, .dst = 9, .src0 = 2, .src1 = 8, .n = 4, .src0_offset = 8 } },
         testQMatmulWith(4, 0, 1),
     };
 
-    var policy = CommandStreamPolicy.metal(4, 4);
-    policy.projection_rope_cache_sidecars = true;
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, policy);
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
-    try std.testing.expectEqual(@as(usize, 1), commands.len);
-    try std.testing.expectEqual(ProgramCommandKind.projection_cache_group, commands[0].kind);
-    try std.testing.expectEqual(ProjectionGroupKind.qmatvec, commands[0].projection_kind);
-    try std.testing.expectEqual(@as(u32, 2), commands[0].anchor_count);
-    try std.testing.expectEqual(@as(u32, 1), commands[0].sidecar_count);
-    try std.testing.expectEqual(@as(?usize, 1), commands[0].sidecar_indices[0]);
-
-    const summary = summarizeProgramCommands(commands);
-    try std.testing.expectEqual(@as(u32, 1), summary.projection_cache_groups);
-    try std.testing.expectEqual(@as(u32, 2), summary.projection_cache_anchors);
-    try std.testing.expectEqual(@as(u32, 1), summary.projection_cache_sidecars);
-    try std.testing.expectEqual(@as(u32, 3), summary.covered_ops);
-    try std.testing.expectEqual(@as(u32, 2), summary.estimated_saved_dispatches);
-}
-
-test "program command stream preserves q rope attention fusion" {
-    var att = testAttention(0);
-    att.attention.q = 4;
-    att.attention.k = 10;
-    att.attention.v = 11;
-    att.attention.dst = 5;
-    att.attention.seq_q = 1;
-
-    const ops = [_]backend_mod.DeviceOp{
-        testQMatmulWith(1, 0, 1),
-        .{ .rope = .{
-            .dst = 4,
-            .src = 1,
-            .cos_sin = 7,
-            .half_d = 2,
-            .seq_len = 1,
-            .src_off = 0,
-            .cs_off = 0,
-            .dst_off = 0,
-            .src_rs = 1,
-            .src_cs = 4,
-            .cs_cs = 4,
-        } },
-        testQMatmulWith(8, 0, 1),
-        att,
-        .{ .slice_assign = .{
-            .dst = 9,
-            .src = 5,
-            .rows = 4,
-            .cols = 1,
-            .dst_base_offset = 0,
-            .dst_offset = 0,
-            .dst_row_stride = 1,
-            .dst_col_stride = 4,
-            .src_offset = 0,
-            .src_row_stride = 1,
-            .src_col_stride = 4,
-            .patch_stride = 0,
-        } },
-    };
-
-    var policy = CommandStreamPolicy.metal(4, 4);
-    policy.projection_rope_cache_sidecars = true;
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, policy);
-    defer std.testing.allocator.free(commands);
-
-    try std.testing.expectEqual(@as(usize, 2), commands.len);
-    try std.testing.expectEqual(ProgramCommandKind.projection_group, commands[0].kind);
-    try std.testing.expectEqual(ProjectionGroupKind.qmatvec, commands[0].projection_kind);
-    try std.testing.expectEqual(@as(u32, 2), commands[0].anchor_count);
-    try std.testing.expectEqual(@as(u32, 0), commands[0].sidecar_count);
-    try std.testing.expectEqual(ProgramCommandKind.rope_attention_store_chain, commands[1].kind);
-    try std.testing.expectEqual(@as(usize, 1), commands[1].indices[0]);
-    try std.testing.expectEqual(@as(usize, 3), commands[1].indices[1]);
-    try std.testing.expectEqual(@as(?usize, 4), commands[1].sidecar_indices[0]);
-
-    const summary = summarizeProgramCommands(commands);
-    try std.testing.expectEqual(@as(u32, 1), summary.projection_groups);
-    try std.testing.expectEqual(@as(u32, 0), summary.projection_cache_groups);
-    try std.testing.expectEqual(@as(u32, 1), summary.rope_attention_store_chains);
-    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
-    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
-
-    const rope_summary = summarizeProjectionRopeCacheSidecars(&ops, 2);
-    try std.testing.expectEqual(@as(u32, 2), rope_summary.anchors);
-    try std.testing.expectEqual(@as(u32, 1), rope_summary.rope_materializations);
-    try std.testing.expectEqual(@as(u32, 1), rope_summary.materialization_attention_fusion_skips);
-}
-
-test "projection rope cache summary counts tile-pair opportunities" {
-    const rope_pair = testRopeSliceAssignOps();
-    var rope = rope_pair[0];
-    rope.rope.src = 1;
-    rope.rope.src_off = 0;
-
-    const ops = [_]backend_mod.DeviceOp{
-        testQMatmulWith(1, 0, 3),
-        rope,
-        rope_pair[1],
-        testQMatmulWith(4, 0, 3),
-    };
-
-    const summary = summarizeProjectionRopeCacheSidecars(&ops, 2);
-    try std.testing.expectEqual(@as(u32, 2), summary.anchors);
-    try std.testing.expectEqual(@as(u32, 1), summary.rope_store_pairs);
-    try std.testing.expectEqual(@as(u32, 1), summary.compatible_pairs);
-    try std.testing.expectEqual(@as(u32, 1), summary.tile_pair_pairs);
-    try std.testing.expectEqual(@as(u32, 0), summary.rope_materializations);
-    try std.testing.expectEqual(@as(u32, 0), summary.materialization_attention_fusion_skips);
+    for (commands) |command| {
+        try std.testing.expect(command.kind != .projection_cache_group);
+    }
 }
 
 test "program command stream groups rope slice stores" {
@@ -6209,7 +7349,7 @@ test "program command stream groups rope slice stores" {
         second[1],
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -6241,7 +7381,7 @@ test "program command stream keeps used noncontiguous ops single-owned" {
         testQMatmulWith(4, 0, 2),
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -6262,7 +7402,7 @@ test "program command stream emits projection sidecar chains" {
         .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 8 } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 1), commands.len);
@@ -6280,6 +7420,109 @@ test "program command stream emits projection sidecar chains" {
     try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.projection_chains);
     try std.testing.expectEqual(@as(u32, 1), summary.projection_chain_sidecars);
+
+    var staged_policy = CommandStreamPolicy.grouped(4, 4);
+    staged_policy.fuse_projection_chain = false;
+    const staged_commands = try buildProgramCommands(std.testing.allocator, &ops, staged_policy);
+    defer std.testing.allocator.free(staged_commands);
+
+    try std.testing.expectEqual(@as(usize, 2), staged_commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.op, staged_commands[0].kind);
+    try std.testing.expectEqual(ProgramCommandKind.op, staged_commands[1].kind);
+    try std.testing.expectEqual(@as(u32, 0), staged_commands[0].op_start);
+    try std.testing.expectEqual(@as(u32, 1), staged_commands[1].op_start);
+
+    const staged_summary = summarizeProgramCommands(staged_commands);
+    try std.testing.expectEqual(@as(u32, 2), staged_summary.commands);
+    try std.testing.expectEqual(@as(u32, 2), staged_summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), staged_summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 0), staged_summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 0), staged_summary.projection_chains);
+    try std.testing.expectEqual(@as(u32, 0), staged_summary.projection_chain_sidecars);
+}
+
+test "program command stream uses projection row-chain only for prompt-sized semantic frontiers" {
+    const tiny_ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 2),
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 7, .n = 8 } },
+        .{ .rmsnorm = .{ .dst = 3, .src = 2, .rows = 2, .cols = 4, .eps = 1e-5 } },
+        .{ .repeat = .{
+            .dst = 4,
+            .src = 5,
+            .n = 8,
+            .src_ne = .{ 4, 1, 1, 1 },
+            .dst_ne = .{ 4, 2, 1, 1 },
+            .src_strides = .{ 1, 4, 4, 4 },
+            .dst_strides = .{ 1, 4, 8, 8 },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 6, .src0 = 3, .src1 = 4, .n = 8 } },
+    };
+
+    var legacy_policy = CommandStreamPolicy.grouped(4, 4);
+    legacy_policy.fuse_projection_row_chain = false;
+    const default_commands = try buildProgramCommands(std.testing.allocator, &tiny_ops, legacy_policy);
+    defer std.testing.allocator.free(default_commands);
+    try std.testing.expectEqual(@as(usize, 2), default_commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_chain, default_commands[0].kind);
+    try std.testing.expectEqual(ProgramCommandKind.row_chain, default_commands[1].kind);
+
+    var policy = CommandStreamPolicy.grouped(4, 4);
+    policy.fuse_projection_row_chain = true;
+    policy.min_projection_row_chain_rows = 2;
+    const fused_commands = try buildProgramCommands(std.testing.allocator, &tiny_ops, policy);
+    defer std.testing.allocator.free(fused_commands);
+
+    try std.testing.expectEqual(@as(usize, 1), fused_commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_row_chain, fused_commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 1), fused_commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 4), fused_commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(u32, 5), fused_commands[0].coveredOpCount());
+    try std.testing.expectEqual(@as(usize, 0), fused_commands[0].indices[0]);
+    try std.testing.expectEqual(@as(?usize, 1), fused_commands[0].sidecar_indices[0]);
+    try std.testing.expectEqual(@as(?usize, 4), fused_commands[0].sidecar_indices[3]);
+
+    const shape = try ProgramCommandStreamShape.fromCommands(fused_commands);
+    try std.testing.expectEqual(@as(u32, 1), shape.command_count);
+    try std.testing.expectEqual(@as(u32, 5), shape.covered_ops);
+    try std.testing.expectEqual(@as(u32, 4), shape.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 0), shape.projection_chain_row_chain_frontiers);
+
+    const prompt_ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(11, 10, 8),
+        .{ .elementwise = .{ .op = .add, .dst = 12, .src0 = 11, .src1 = 12, .n = 32 } },
+        .{ .rmsnorm = .{ .dst = 13, .src = 12, .rows = 8, .cols = 4, .eps = 1e-5 } },
+        .{ .repeat = .{
+            .dst = 15,
+            .src = 14,
+            .n = 32,
+            .src_ne = .{ 4, 1, 1, 1 },
+            .dst_ne = .{ 4, 8, 1, 1 },
+            .src_strides = .{ 1, 4, 4, 4 },
+            .dst_strides = .{ 1, 4, 32, 32 },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 16, .src0 = 13, .src1 = 15, .n = 32 } },
+    };
+    const prompt_policy = CommandStreamPolicy.grouped(4, 4);
+    const prompt_commands = try buildProgramCommands(std.testing.allocator, &prompt_ops, prompt_policy);
+    defer std.testing.allocator.free(prompt_commands);
+    try std.testing.expectEqual(@as(usize, 1), prompt_commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_row_chain, prompt_commands[0].kind);
+
+    const default_prompt_commands = try buildProgramCommands(std.testing.allocator, &prompt_ops, CommandStreamPolicy.default());
+    defer std.testing.allocator.free(default_prompt_commands);
+    try std.testing.expectEqual(@as(usize, 1), default_prompt_commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_row_chain, default_prompt_commands[0].kind);
+
+    const prompt_candidate_commands = try buildProgramCommands(std.testing.allocator, &prompt_ops, CommandStreamPolicy.promptProjectionRowChainCandidate());
+    defer std.testing.allocator.free(prompt_candidate_commands);
+    try std.testing.expectEqual(@as(usize, 1), prompt_candidate_commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_row_chain, prompt_candidate_commands[0].kind);
+
+    const decode_candidate_commands = try buildProgramCommands(std.testing.allocator, &tiny_ops, CommandStreamPolicy.promptProjectionRowChainCandidate());
+    defer std.testing.allocator.free(decode_candidate_commands);
+    try std.testing.expectEqual(@as(usize, 2), decode_candidate_commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_chain, decode_candidate_commands[0].kind);
+    try std.testing.expectEqual(ProgramCommandKind.row_chain, decode_candidate_commands[1].kind);
 }
 
 test "program command stream emits qmatvec projection sidecar chains" {
@@ -6288,7 +7531,7 @@ test "program command stream emits qmatvec projection sidecar chains" {
         .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 4 } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 1), commands.len);
@@ -6298,13 +7541,247 @@ test "program command stream emits qmatvec projection sidecar chains" {
     try std.testing.expectEqual(@as(u32, 1), commands[0].sidecar_count);
 }
 
+test "program command stream batches qmatvec elementwise sidecars" {
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 1),
+        testQMatmulWith(2, 0, 1),
+        testQMatmulWith(3, 0, 1),
+        .{ .elementwise = .{ .op = .add, .dst = 4, .src0 = 1, .src1 = 9, .n = 4 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 5, .src0 = 2, .src1 = 8, .n = 4 } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_cache_group, commands[0].kind);
+    try std.testing.expectEqual(ProjectionGroupKind.qmatvec, commands[0].projection_kind);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(?usize, 3), commands[0].sidecar_indices[0]);
+    try std.testing.expectEqual(@as(?usize, 4), commands[0].sidecar_indices[1]);
+    try std.testing.expectEqual(@as(?usize, 0), commands[0].sidecarAnchorSlot(0));
+    try std.testing.expectEqual(@as(?usize, 1), commands[0].sidecarAnchorSlot(1));
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_cache_groups);
+    try std.testing.expectEqual(@as(u32, 3), summary.projection_cache_anchors);
+    try std.testing.expectEqual(@as(u32, 2), summary.projection_cache_sidecars);
+    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 4), summary.estimated_saved_dispatches);
+}
+
+test "program command stream fuses sibling qmatvec elementwise chain" {
+    var ops: [8]backend_mod.DeviceOp = undefined;
+    for (ops[0..7], 0..) |*op, i| {
+        op.* = testQMatmulWith(@intCast(i + 1), 0, 1);
+    }
+    ops[7] = .{ .elementwise = .{ .op = .add, .dst = 8, .src0 = 1, .src1 = 2, .n = 4 } };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 3), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_pair_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(usize, 0), commands[0].indices[0]);
+    try std.testing.expectEqual(@as(usize, 1), commands[0].indices[1]);
+    try std.testing.expectEqual(@as(?usize, 7), commands[0].sidecar_indices[0]);
+    try std.testing.expectEqual(ProgramCommandKind.projection_group, commands[1].kind);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 3), summary.commands);
+    try std.testing.expectEqual(@as(u32, 8), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 5), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_pair_fused_elementwise_chains);
+}
+
+test "program command stream emits qmatvec fused-elementwise projection chains" {
+    const steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .neg, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .exp, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 1),
+        .{ .fused_elementwise = .{
+            .steps = &steps,
+            .n = 4,
+            .dst = 2,
+            .src = 1,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_chain, commands[0].kind);
+    try std.testing.expectEqual(ProjectionGroupKind.qmatvec, commands[0].projection_kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].coveredOpCount());
+    try std.testing.expectEqual(@as(u32, 1), summarizeProgramCommands(commands).estimated_dispatches);
+}
+
+test "program command stream emits dense matmul elementwise sidecar chains" {
+    var matmul = testMatmul(1);
+    matmul.matmul.dst = 1;
+    const ops = [_]backend_mod.DeviceOp{
+        matmul,
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 4 } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.dense_projection_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].coveredOpCount());
+    try std.testing.expectEqual(@as(u32, 1), summarizeProgramCommands(commands).estimated_dispatches);
+}
+
+test "program command stream emits dense matmul fused-elementwise sidecar chains" {
+    const steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .add, .is_swapped = false, .secondary_buf = 3, .secondary_offset = 0 },
+        .{ .op = .relu, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+    };
+    var matmul = testMatmul(1);
+    matmul.matmul.dst = 1;
+    const ops = [_]backend_mod.DeviceOp{
+        matmul,
+        .{ .fused_elementwise = .{
+            .steps = &steps,
+            .n = 4,
+            .dst = 2,
+            .src = 1,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.dense_projection_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].coveredOpCount());
+    try std.testing.expectEqual(@as(u32, 1), summarizeProgramCommands(commands).estimated_dispatches);
+}
+
+test "dense matmul sidecar chains accept prefill geometry and reject mismatched spans" {
+    var batched = testMatmul(2);
+    batched.matmul.dst = 1;
+    const prefill = [_]backend_mod.DeviceOp{
+        batched,
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 8 } },
+    };
+    const commands_prefill = try buildProgramCommands(std.testing.allocator, &prefill, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands_prefill);
+    try std.testing.expectEqual(ProgramCommandKind.dense_projection_chain, commands_prefill[0].kind);
+
+    var matmul = testMatmul(1);
+    matmul.matmul.dst = 1;
+    const mismatched = [_]backend_mod.DeviceOp{
+        matmul,
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 3 } },
+    };
+    const commands_mismatched = try buildProgramCommands(std.testing.allocator, &mismatched, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands_mismatched);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands_mismatched[0].kind);
+}
+
+test "program command stream batches dense matvec elementwise sidecars" {
+    var first = testMatmulWith(1, 0, 10, 1);
+    first.matmul.geom.N = 4;
+    first.matmul.geom.dst_row_stride = 4;
+    var second = testMatmulWith(2, 0, 11, 1);
+    second.matmul.geom.N = 4;
+    second.matmul.geom.dst_row_stride = 4;
+    var third = testMatmulWith(3, 0, 12, 1);
+    third.matmul.geom.N = 4;
+    third.matmul.geom.dst_row_stride = 4;
+
+    const ops = [_]backend_mod.DeviceOp{
+        first,
+        second,
+        third,
+        .{ .elementwise = .{ .op = .add, .dst = 4, .src0 = 1, .src1 = 9, .n = 4 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 5, .src0 = 2, .src1 = 8, .n = 4 } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.dense_projection_cache_group, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(?usize, 3), commands[0].sidecar_indices[0]);
+    try std.testing.expectEqual(@as(?usize, 4), commands[0].sidecar_indices[1]);
+    try std.testing.expectEqual(@as(?usize, 0), commands[0].sidecarAnchorSlot(0));
+    try std.testing.expectEqual(@as(?usize, 1), commands[0].sidecarAnchorSlot(1));
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_cache_groups);
+    try std.testing.expectEqual(@as(u32, 3), summary.projection_cache_anchors);
+    try std.testing.expectEqual(@as(u32, 2), summary.projection_cache_sidecars);
+    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 4), summary.estimated_saved_dispatches);
+}
+
+test "dense matmul primary output liveness ignores internal sidecar reads" {
+    var matmul = testMatmul(1);
+    matmul.matmul.dst = 1;
+    const scratch_only = [_]backend_mod.DeviceOp{
+        matmul,
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 4 } },
+    };
+    try std.testing.expect(!matmulPrimaryOutputHasExternalUsers(&scratch_only, 0, 1));
+
+    const external_read = [_]backend_mod.DeviceOp{
+        matmul,
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 4 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 1, .src1 = 5, .n = 4 } },
+    };
+    try std.testing.expect(matmulPrimaryOutputHasExternalUsers(&external_read, 0, 1));
+}
+
+test "dense matmul primary output liveness ignores cache store sidecars" {
+    var matmul = testMatmul(1);
+    matmul.matmul.dst = 1;
+
+    var store = testQMatmulSidecar(1, 8);
+    store.slice_assign.cols = 1;
+    const slice_only = [_]backend_mod.DeviceOp{ matmul, store };
+    try std.testing.expect(!matmulPrimaryOutputHasExternalUsers(&slice_only, 0, 1));
+
+    var prefill = testMatmul(2);
+    prefill.matmul.dst = 1;
+    const prefill_slice_only = [_]backend_mod.DeviceOp{ prefill, testQMatmulSidecar(1, 8) };
+    try std.testing.expect(!matmulPrimaryOutputHasExternalUsers(&prefill_slice_only, 0, 1));
+
+    var rope_pair = testRopeSliceAssignOps();
+    rope_pair[0].rope.src = 1;
+    rope_pair[0].rope.src_off = 0;
+    rope_pair[0].rope.seq_len = 1;
+    rope_pair[1].slice_assign.cols = 1;
+    const rope_only = [_]backend_mod.DeviceOp{ matmul, rope_pair[0], rope_pair[1] };
+    const rope_sidecars = [_]?usize{ 1, 2 };
+    try std.testing.expect(!matmulPrimaryOutputHasExternalUsersExcept(&rope_only, 0, &rope_sidecars));
+}
+
 test "projection sidecar chains reject incompatible consumers" {
     const ops = [_]backend_mod.DeviceOp{
         testQMatmulWith(1, 0, 2),
         .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 3, .n = 7 } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -6357,7 +7834,7 @@ test "program command stream emits contiguous batch commands" {
         testAttention(8),
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 3), commands.len);
@@ -6365,8 +7842,8 @@ test "program command stream emits contiguous batch commands" {
     try std.testing.expectEqual(@as(u32, 2), commands[0].op_count);
     try std.testing.expectEqual(ProgramCommandKind.movement_batch, commands[1].kind);
     try std.testing.expectEqual(@as(u32, 2), commands[1].op_count);
-    try std.testing.expectEqual(ProgramCommandKind.attention_batch, commands[2].kind);
-    try std.testing.expectEqual(@as(u32, 2), commands[2].op_count);
+    try std.testing.expectEqual(ProgramCommandKind.attention_group, commands[2].kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[2].anchor_count);
 
     const summary = summarizeProgramCommands(commands);
     try std.testing.expectEqual(@as(u32, 3), summary.commands);
@@ -6374,7 +7851,8 @@ test "program command stream emits contiguous batch commands" {
     try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.rope_batches);
     try std.testing.expectEqual(@as(u32, 1), summary.movement_batches);
-    try std.testing.expectEqual(@as(u32, 1), summary.attention_batches);
+    try std.testing.expectEqual(@as(u32, 1), summary.attention_groups);
+    try std.testing.expectEqual(@as(u32, 2), summary.attention_group_ops);
 }
 
 test "program command stream emits noncontiguous attention groups" {
@@ -6384,7 +7862,7 @@ test "program command stream emits noncontiguous attention groups" {
         testAttention(8),
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -6423,7 +7901,7 @@ test "program command stream emits attention producer chains" {
         testAttention(0),
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 1), commands.len);
@@ -6475,7 +7953,7 @@ test "program command stream preserves attention output store over input sidecar
         } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -6512,7 +7990,7 @@ test "program command stream emits attention output store chains" {
         } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 1), commands.len);
@@ -6572,7 +8050,7 @@ test "program command stream groups attention output stores" {
         } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 1), commands.len);
@@ -6631,7 +8109,7 @@ test "program command stream emits rope attention output store chains" {
         } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 1), commands.len);
@@ -6716,7 +8194,7 @@ test "program command stream groups rope attention output stores" {
         } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 1), commands.len);
@@ -6777,7 +8255,7 @@ test "program command stream groups wide shared-offset rope attention stores" {
         } };
     }
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 1), commands.len);
@@ -6862,7 +8340,7 @@ test "program command stream delays rope attention groups until inputs are ready
         } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -6934,7 +8412,7 @@ test "program command stream delays single rope attention store chains" {
         } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -6978,7 +8456,7 @@ test "program command stream carries delayed attention output stores" {
         } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -7006,7 +8484,7 @@ test "program command stream emits noncontiguous movement groups" {
         testSliceAssign(4),
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -7033,7 +8511,7 @@ test "program command stream emits noncontiguous elementwise batch commands" {
         .{ .elementwise = .{ .op = .mul, .dst = 2, .src0 = 0, .src1 = 0, .n = 4 } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -7080,7 +8558,7 @@ test "program command stream fuses repeat feeding fused elementwise secondary" {
         } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 1), commands.len);
@@ -7093,62 +8571,6 @@ test "program command stream fuses repeat feeding fused elementwise secondary" {
     try std.testing.expectEqual(@as(u32, 1), summary.estimated_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.repeat_fused_elementwise_chains);
-}
-
-test "program command stream fuses projection activation expression chain" {
-    const exp_steps = [_]backend_mod.FusedEwStep{
-        .{ .op = .neg, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
-        .{ .op = .exp, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
-    };
-    const silu_steps = [_]backend_mod.FusedEwStep{
-        .{ .op = .add, .is_swapped = false, .secondary_buf = 4, .secondary_offset = 0 },
-        .{ .op = .recip, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
-        .{ .op = .mul, .is_swapped = true, .secondary_buf = 2, .secondary_offset = 0 },
-    };
-    const ops = [_]backend_mod.DeviceOp{
-        testQMatmulWith(2, 8, 2),
-        .{ .fused_elementwise = .{
-            .steps = &exp_steps,
-            .n = 8,
-            .dst = 3,
-            .src = 2,
-            .dst_offset = 0,
-            .src_offset = 0,
-        } },
-        .{ .repeat = .{
-            .dst = 4,
-            .src = 5,
-            .n = 8,
-            .src_ne = .{ 1, 1, 1, 1 },
-            .dst_ne = .{ 4, 2, 1, 1 },
-            .src_strides = .{ 1, 1, 1, 1 },
-            .dst_strides = .{ 1, 4, 8, 8 },
-        } },
-        .{ .fused_elementwise = .{
-            .steps = &silu_steps,
-            .n = 8,
-            .dst = 6,
-            .src = 3,
-            .dst_offset = 0,
-            .src_offset = 0,
-        } },
-        testQMatmulWith(2, 8, 2),
-    };
-
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
-    defer std.testing.allocator.free(commands);
-
-    try std.testing.expectEqual(@as(usize, 2), commands.len);
-    try std.testing.expectEqual(ProgramCommandKind.projection_fused_elementwise_chain, commands[0].kind);
-    try std.testing.expectEqual(@as(u32, 4), commands[0].op_count);
-    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
-
-    const summary = summarizeProgramCommands(commands);
-    try std.testing.expectEqual(@as(u32, 2), summary.commands);
-    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
-    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
-    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
-    try std.testing.expectEqual(@as(u32, 1), summary.projection_fused_elementwise_chains);
 }
 
 test "program command stream fuses paired projection activation product chain" {
@@ -7193,7 +8615,7 @@ test "program command stream fuses paired projection activation product chain" {
         testQMatmulWith(7, 8, 2),
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -7207,6 +8629,231 @@ test "program command stream fuses paired projection activation product chain" {
     try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
     try std.testing.expectEqual(@as(u32, 5), summary.estimated_saved_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.projection_pair_fused_elementwise_chains);
+}
+
+test "program command stream fuses qmatvec paired projection activation product chain" {
+    const exp_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .neg, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .exp, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+    };
+    const silu_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .add, .is_swapped = false, .secondary_buf = 4, .secondary_offset = 0 },
+        .{ .op = .recip, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .mul, .is_swapped = true, .secondary_buf = 2, .secondary_offset = 0 },
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(2, 8, 1),
+        .{ .fused_elementwise = .{
+            .steps = &exp_steps,
+            .n = 4,
+            .dst = 3,
+            .src = 2,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+        .{ .repeat = .{
+            .dst = 4,
+            .src = 5,
+            .n = 4,
+            .src_ne = .{ 1, 1, 1, 1 },
+            .dst_ne = .{ 4, 1, 1, 1 },
+            .src_strides = .{ 1, 1, 1, 1 },
+            .dst_strides = .{ 1, 4, 4, 4 },
+        } },
+        .{ .fused_elementwise = .{
+            .steps = &silu_steps,
+            .n = 4,
+            .dst = 6,
+            .src = 3,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+        testQMatmulWith(2, 8, 1),
+        .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 6, .src1 = 2, .n = 4 } },
+        testQMatmulWith(7, 8, 1),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(ProjectionGroupKind.qmatvec, commands[0].projection_kind);
+    try std.testing.expectEqual(@as(u32, 6), commands[0].op_count);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 7), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 5), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_pair_fused_elementwise_chains);
+}
+
+test "program command stream fuses dense paired projection activation product chain" {
+    const exp_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .neg, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .exp, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+    };
+    const silu_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .add, .is_swapped = false, .secondary_buf = 4, .secondary_offset = 0 },
+        .{ .op = .recip, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .mul, .is_swapped = true, .secondary_buf = 2, .secondary_offset = 0 },
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        testMatmulWith(2, 8, 9, 1),
+        .{ .fused_elementwise = .{
+            .steps = &exp_steps,
+            .n = 4,
+            .dst = 3,
+            .src = 2,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+        .{ .repeat = .{
+            .dst = 4,
+            .src = 5,
+            .n = 4,
+            .src_ne = .{ 1, 1, 1, 1 },
+            .dst_ne = .{ 4, 1, 1, 1 },
+            .src_strides = .{ 1, 1, 1, 1 },
+            .dst_strides = .{ 1, 4, 4, 4 },
+        } },
+        .{ .fused_elementwise = .{
+            .steps = &silu_steps,
+            .n = 4,
+            .dst = 6,
+            .src = 3,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+        testMatmulWith(2, 8, 10, 1),
+        .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 6, .src1 = 2, .n = 4 } },
+        testMatmulWith(7, 8, 11, 1),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.dense_projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 6), commands[0].op_count);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 7), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 5), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_pair_fused_elementwise_chains);
+}
+
+test "program command stream fuses dense paired projection activation product prefill chain" {
+    const exp_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .neg, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .exp, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+    };
+    const silu_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .add, .is_swapped = false, .secondary_buf = 4, .secondary_offset = 0 },
+        .{ .op = .recip, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .mul, .is_swapped = true, .secondary_buf = 2, .secondary_offset = 0 },
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        testMatmulWith(2, 8, 9, 2),
+        .{ .fused_elementwise = .{
+            .steps = &exp_steps,
+            .n = 8,
+            .dst = 3,
+            .src = 2,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+        .{ .repeat = .{
+            .dst = 4,
+            .src = 5,
+            .n = 8,
+            .src_ne = .{ 1, 1, 1, 1 },
+            .dst_ne = .{ 4, 2, 1, 1 },
+            .src_strides = .{ 1, 1, 1, 1 },
+            .dst_strides = .{ 1, 4, 8, 8 },
+        } },
+        .{ .fused_elementwise = .{
+            .steps = &silu_steps,
+            .n = 8,
+            .dst = 6,
+            .src = 3,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+        testMatmulWith(2, 8, 10, 2),
+        .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 6, .src1 = 2, .n = 8 } },
+        testMatmulWith(7, 8, 11, 2),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.dense_projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 6), commands[0].op_count);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 7), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 5), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_pair_fused_elementwise_chains);
+}
+
+test "dense paired projection liveness covers every prefill row" {
+    const exp_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .neg, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .exp, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+    };
+    const silu_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .add, .is_swapped = false, .secondary_buf = 4, .secondary_offset = 0 },
+        .{ .op = .recip, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .mul, .is_swapped = true, .secondary_buf = 2, .secondary_offset = 0 },
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        testMatmulWith(2, 8, 9, 2),
+        .{ .fused_elementwise = .{
+            .steps = &exp_steps,
+            .n = 8,
+            .dst = 3,
+            .src = 2,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+        .{ .repeat = .{
+            .dst = 4,
+            .src = 5,
+            .n = 8,
+            .src_ne = .{ 1, 1, 1, 1 },
+            .dst_ne = .{ 4, 2, 1, 1 },
+            .src_strides = .{ 1, 1, 1, 1 },
+            .dst_strides = .{ 1, 4, 8, 8 },
+        } },
+        .{ .fused_elementwise = .{
+            .steps = &silu_steps,
+            .n = 8,
+            .dst = 6,
+            .src = 3,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+        testMatmulWith(2, 8, 10, 2),
+        .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 6, .src1 = 2, .n = 8 } },
+        .{ .elementwise = .{ .op = .add, .dst = 12, .src0 = 2, .src1 = 2, .src0_offset = 4, .src1_offset = 4, .n = 1 } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    for (commands) |command| {
+        try std.testing.expect(command.kind != .dense_projection_pair_fused_elementwise_chain);
+    }
 }
 
 test "program command stream keeps live repeat outputs materialized" {
@@ -7232,7 +8879,7 @@ test "program command stream keeps live repeat outputs materialized" {
         .{ .elementwise = .{ .op = .add, .dst = 6, .src0 = 2, .src1 = 5, .n = 4 } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 3), commands.len);
@@ -7247,7 +8894,7 @@ test "program command stream keeps conflicting elementwise ops separate" {
         .{ .elementwise = .{ .op = .mul, .dst = 1, .src0 = 0, .src1 = 0, .n = 4 } },
     };
 
-    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.metal(4, 4));
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands);
 
     try std.testing.expectEqual(@as(usize, 2), commands.len);
@@ -7259,58 +8906,6 @@ test "program command stream keeps conflicting elementwise ops separate" {
     try std.testing.expectEqual(@as(u32, 2), summary.covered_ops);
     try std.testing.expectEqual(@as(u32, 0), summary.elementwise_batches);
     try std.testing.expectEqual(@as(u32, 2), summary.op_commands);
-}
-
-test "family pattern regions match exact contiguous family sequences" {
-    const items = [_]KernelItem{
-        .{ .family = .movement, .execution = .fallback, .start = 0, .len = 1 },
-        .{ .family = .qmatvec, .execution = .fallback, .start = 1, .len = 1 },
-        .{ .family = .rope, .execution = .fallback, .start = 2, .len = 1 },
-        .{ .family = .qmatvec, .execution = .fallback, .start = 3, .len = 1 },
-        .{ .family = .attention, .execution = .fallback, .start = 4, .len = 1 },
-        .{ .family = .qmatvec, .execution = .fallback, .start = 5, .len = 1 },
-        .{ .family = .rope, .execution = .fallback, .start = 6, .len = 1 },
-        .{ .family = .qmatvec, .execution = .fallback, .start = 7, .len = 1 },
-    };
-    const pattern = [_]KernelFamily{ .qmatvec, .rope, .qmatvec };
-
-    const regions = try buildFamilyPatternRegions(std.testing.allocator, &items, &pattern);
-    defer std.testing.allocator.free(regions);
-
-    try std.testing.expectEqual(@as(usize, 2), regions.len);
-    try std.testing.expectEqual(@as(u32, 1), regions[0].start_item);
-    try std.testing.expectEqual(@as(u32, 3), regions[0].item_count);
-    try std.testing.expectEqual(@as(u32, 1), regions[0].op_start);
-    try std.testing.expectEqual(@as(u32, 3), regions[0].op_count);
-    try std.testing.expectEqual(@as(u32, 3), regions[0].anchor_count);
-    try std.testing.expectEqual(@as(u32, 5), regions[1].start_item);
-}
-
-test "family pattern plan selects non-overlapping longest matches" {
-    const items = [_]KernelItem{
-        .{ .family = .qmatvec, .execution = .fallback, .start = 0, .len = 1 },
-        .{ .family = .rope, .execution = .fallback, .start = 1, .len = 1 },
-        .{ .family = .qmatvec, .execution = .fallback, .start = 2, .len = 1 },
-        .{ .family = .attention, .execution = .fallback, .start = 3, .len = 1 },
-        .{ .family = .qmatvec, .execution = .fallback, .start = 4, .len = 1 },
-        .{ .family = .rope, .execution = .fallback, .start = 5, .len = 1 },
-    };
-    const short = [_]KernelFamily{ .qmatvec, .rope };
-    const long = [_]KernelFamily{ .qmatvec, .rope, .qmatvec };
-    const patterns = [_]FamilyPattern{
-        .{ .name = "short", .families = &short },
-        .{ .name = "long", .families = &long },
-    };
-
-    const regions = try buildFamilyPatternPlan(std.testing.allocator, &items, &patterns);
-    defer std.testing.allocator.free(regions);
-
-    try std.testing.expectEqual(@as(usize, 2), regions.len);
-    try std.testing.expectEqual(@as(u32, 1), regions[0].pattern_index);
-    try std.testing.expectEqual(@as(u32, 0), regions[0].region.start_item);
-    try std.testing.expectEqual(@as(u32, 3), regions[0].region.item_count);
-    try std.testing.expectEqual(@as(u32, 0), regions[1].pattern_index);
-    try std.testing.expectEqual(@as(u32, 4), regions[1].region.start_item);
 }
 
 test "select pattern regions sorts candidates and removes overlaps" {
@@ -7338,12 +8933,11 @@ test "region schedule covers items once and replaces selected patterns" {
         .{ .family = .qmatvec, .execution = .fallback, .start = 4, .len = 1 },
         .{ .family = .attention, .execution = .fallback, .start = 5, .len = 1 },
     };
-    const pattern = [_]KernelFamily{ .qmatvec, .rope, .qmatvec };
-    const patterns = [_]FamilyPattern{.{ .name = "q-r-q", .families = &pattern }};
-
-    const regions = try buildFamilyPatternPlan(std.testing.allocator, &items, &patterns);
-    defer std.testing.allocator.free(regions);
-    const units = try buildRegionSchedule(std.testing.allocator, &items, regions);
+    const regions = [_]PatternRegion{.{
+        .pattern_index = 0,
+        .region = .{ .start_item = 1, .item_count = 3, .op_start = 2, .op_count = 3, .anchor_count = 3 },
+    }};
+    const units = try buildRegionSchedule(std.testing.allocator, &items, &regions);
     defer std.testing.allocator.free(units);
 
     try std.testing.expectEqual(@as(usize, 3), units.len);
@@ -7385,17 +8979,17 @@ test "region command plans compile commands only for pattern regions" {
         },
     };
 
-    const plans = try buildRegionCommandPlans(std.testing.allocator, &ops, &units, .{});
+    const plans = try buildRegionKernelPlans(std.testing.allocator, &ops, &units, Kernelizer.init(.{}));
     defer {
-        deinitRegionCommandPlans(std.testing.allocator, plans);
+        deinitRegionKernelPlans(std.testing.allocator, plans);
         std.testing.allocator.free(plans);
     }
 
     try std.testing.expectEqual(@as(usize, units.len), plans.len);
-    try std.testing.expect(plans[0].commands.len > 0);
-    try std.testing.expectEqual(@as(usize, 0), plans[1].commands.len);
+    try std.testing.expect(plans[0].kernel_plan.commands.len > 0);
+    try std.testing.expectEqual(@as(usize, 0), plans[1].kernel_plan.commands.len);
 
-    const summary = summarizeProgramCommands(plans[0].commands);
+    const summary = summarizeProgramCommands(plans[0].kernel_plan.commands);
     try std.testing.expectEqual(@as(u32, 3), summary.covered_ops);
 }
 
@@ -7412,28 +9006,45 @@ test "execution plan bundles schedule regions and cached command plans" {
         .min_backend_qmatmul_m = 0,
     };
     const stages = [_]StagePolicy{
-        StagePolicy.anchored("qmatmul-stage", 0, RegionPolicy.qmatmulCluster(), 1),
+        StagePolicy.anchored(0, RegionPolicy.qmatmulCluster(), 1),
     };
-    const command_policy = CommandStreamPolicy.metal(4, 4);
-
-    const plan = try buildExecutionPlan(
+    const kernelizer = Kernelizer.init(CommandStreamPolicy.grouped(4, 4));
+    const plan = try kernelizer.executionPlan(
         std.testing.allocator,
         &ops,
         schedule_policy,
         &stages,
-        command_policy,
     );
     defer plan.deinit(std.testing.allocator);
 
     try std.testing.expect(plan.schedule.len > 0);
     try std.testing.expect(plan.regions.len > 0);
-    try std.testing.expectEqual(plan.regions.len, plan.region_commands.len);
-    try std.testing.expect(plan.shapeMatches(&ops, schedule_policy));
-    try std.testing.expect(plan.regionCommandPlan(0, command_policy).len > 0);
+    try std.testing.expectEqual(plan.regions.len, plan.region_kernel_plans.len);
+    try std.testing.expect(scheduleShapeMatches(&ops, plan.schedule, schedule_policy));
+    try std.testing.expect(plan.regionCommandPlan(0).len > 0);
+}
 
-    var different_command_policy = command_policy;
-    different_command_policy.max_elementwise_batch = 1;
-    try std.testing.expectEqual(@as(usize, 0), plan.regionCommandPlan(0, different_command_policy).len);
+fn buildExecutionPlanAllocationCase(alloc: std.mem.Allocator) !void {
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmul(16),
+        testElementwise(.add),
+        testQMatmul(16),
+    };
+    const schedule_policy = SchedulePolicy{
+        .capabilities = backend_mod.Capabilities.metal,
+        .native_kernels = .{ .qmatmul = true, .elementwise = true },
+        .fine_grained = true,
+        .min_backend_qmatmul_m = 0,
+    };
+    const stages = [_]StagePolicy{
+        StagePolicy.anchored(0, RegionPolicy.qmatmulCluster(), 1),
+    };
+    const plan = try Kernelizer.init(CommandStreamPolicy.grouped(4, 4)).executionPlan(alloc, &ops, schedule_policy, &stages);
+    defer plan.deinit(alloc);
+}
+
+test "execution plan propagates planner allocation failures" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, buildExecutionPlanAllocationCase, .{});
 }
 
 test "region execution summary counts backend islands and transitions" {
@@ -7446,16 +9057,16 @@ test "region execution summary counts backend islands and transitions" {
         .{ .family = .qmatvec, .execution = .fallback, .start = 5, .len = 1 },
         .{ .family = .rope, .execution = .fallback, .start = 6, .len = 1 },
     };
-    const pattern = [_]KernelFamily{ .qmatvec, .rope };
-    const patterns = [_]FamilyPattern{.{ .name = "q-r", .families = &pattern }};
-
-    const regions = try buildFamilyPatternPlan(std.testing.allocator, &items, &patterns);
-    defer std.testing.allocator.free(regions);
-    const units = try buildRegionSchedule(std.testing.allocator, &items, regions);
-    defer std.testing.allocator.free(units);
+    const units = [_]ScheduleUnit{
+        .{ .kind = .item, .start_item = 0, .item_count = 1, .op_start = 0, .op_count = 1 },
+        .{ .kind = .pattern_region, .pattern_index = 0, .start_item = 1, .item_count = 2, .op_start = 1, .op_count = 2 },
+        .{ .kind = .item, .start_item = 3, .item_count = 1, .op_start = 3, .op_count = 1 },
+        .{ .kind = .item, .start_item = 4, .item_count = 1, .op_start = 4, .op_count = 1 },
+        .{ .kind = .pattern_region, .pattern_index = 0, .start_item = 5, .item_count = 2, .op_start = 5, .op_count = 2 },
+    };
 
     const backend_patterns = [_]u32{0};
-    const summary = summarizeRegionExecution(units, &items, &backend_patterns);
+    const summary = summarizeRegionExecution(&units, &items, &backend_patterns);
     try std.testing.expectEqual(@as(u32, 5), summary.units);
     try std.testing.expectEqual(@as(u32, 2), summary.backend_units);
     try std.testing.expectEqual(@as(u32, 3), summary.fallback_units);
@@ -7465,98 +9076,4 @@ test "region execution summary counts backend islands and transitions" {
     try std.testing.expectEqual(@as(u32, 1), summary.max_backend_island_units);
     try std.testing.expectEqual(@as(u32, 2), summary.max_backend_island_ops);
     try std.testing.expectEqual(@as(u32, 3), summary.execution_transitions);
-}
-
-pub const StepDynamicParams = extern struct {
-    slice_pos: u32,
-    seq_kv: u32,
-    _pad0: u32 = 0,
-    _pad1: u32 = 0,
-};
-
-pub const StepDynamicState = struct {
-    params: StepDynamicParams = .{ .slice_pos = 0, .seq_kv = 0 },
-    has_slice_assign: bool = false,
-    has_attention: bool = false,
-
-    pub fn needsUpload(self: StepDynamicState) bool {
-        return self.has_slice_assign or self.has_attention;
-    }
-};
-
-pub fn stepDynamicStateFromOps(ops: []const backend_mod.DeviceOp) StepDynamicState {
-    var state = StepDynamicState{};
-    for (ops) |op| {
-        switch (op) {
-            .slice_assign => |sa| {
-                if (!state.has_slice_assign and sa.patch_stride != 0 and sa.dst_offset >= sa.dst_base_offset) {
-                    state.params.slice_pos = @intCast((sa.dst_offset - sa.dst_base_offset) / sa.patch_stride);
-                    state.has_slice_assign = true;
-                }
-            },
-            .attention => |att| {
-                if (!state.has_attention) {
-                    state.params.seq_kv = att.seq_kv;
-                    state.has_attention = true;
-                }
-            },
-            else => {},
-        }
-        if (state.has_slice_assign and state.has_attention) break;
-    }
-    return state;
-}
-
-test "step dynamic state derives from ops" {
-    const ops = [_]backend_mod.DeviceOp{
-        .{ .elementwise = .{ .op = .add, .dst = 0, .src0 = 0, .src1 = 0, .n = 1 } },
-        .{ .slice_assign = .{
-            .dst = 0,
-            .src = 0,
-            .rows = 4,
-            .cols = 1,
-            .dst_base_offset = 8,
-            .dst_offset = 20,
-            .dst_row_stride = 1,
-            .dst_col_stride = 4,
-            .src_offset = 0,
-            .src_row_stride = 1,
-            .src_col_stride = 4,
-            .patch_stride = 4,
-        } },
-        .{ .attention = .{
-            .dst = 0,
-            .q = 0,
-            .k = 0,
-            .v = 0,
-            .mask = 0,
-            .has_mask = false,
-            .d_head = 4,
-            .seq_q = 1,
-            .seq_kv = 17,
-            .scale = 1.0,
-            .q_off = 0,
-            .k_off = 0,
-            .v_off = 0,
-            .mask_off = 0,
-            .dst_off = 0,
-            .q_rs = 1,
-            .q_cs = 4,
-            .k_rs = 1,
-            .k_cs = 4,
-            .v_rs = 1,
-            .v_cs = 4,
-            .mask_rs = 0,
-            .mask_cs = 0,
-            .dst_rs = 1,
-            .dst_cs = 4,
-        } },
-    };
-
-    const state = stepDynamicStateFromOps(&ops);
-    try std.testing.expect(state.has_slice_assign);
-    try std.testing.expect(state.has_attention);
-    try std.testing.expect(state.needsUpload());
-    try std.testing.expectEqual(@as(u32, 3), state.params.slice_pos);
-    try std.testing.expectEqual(@as(u32, 17), state.params.seq_kv);
 }

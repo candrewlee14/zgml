@@ -8,6 +8,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const backend_mod = @import("../backend.zig");
 const forward = @import("../tensor/forward.zig");
+const profile_mod = @import("../profile.zig");
+const program_mod = @import("program.zig");
 const quant = @import("../quant.zig");
 
 pub const Buffer = struct {
@@ -27,17 +29,22 @@ pub fn prepareTransposedQWeight(alloc: std.mem.Allocator, qw: backend_mod.Quanti
     const K = qw.rows;
     const N = qw.cols;
     const bs = qw.block_size;
-    const blocks_per_row = (K + bs - 1) / bs;
+    if (bs == 0 or bs > std.math.maxInt(u32)) return error.InvalidQuantizedWeight;
+    const n_data = std.math.mul(usize, N, K) catch return error.InvalidQuantizedWeight;
+    const n_blocks = if (n_data == 0) 0 else ((n_data - 1) / bs) + 1;
+    if (qw.data.len < n_data or qw.scales.len < n_blocks) return error.InvalidQuantizedWeight;
+    const blocks_per_row = if (K == 0) 0 else ((K - 1) / bs) + 1;
+    const n_scales = std.math.mul(usize, N, blocks_per_row) catch return error.InvalidQuantizedWeight;
 
-    const t_data = try alloc.alloc(i8, N * K);
+    const t_data = try alloc.alloc(i8, n_data);
     errdefer alloc.free(t_data);
-    const t_scales = try alloc.alloc(f32, N * blocks_per_row);
+    const t_scales = try alloc.alloc(f32, n_scales);
     errdefer alloc.free(t_scales);
 
     for (0..N) |n| {
         for (0..blocks_per_row) |b| {
             const k_start = b * bs;
-            const k_end = @min(k_start + bs, K);
+            const k_end = if (bs > K - k_start) K else k_start + bs;
 
             var max_abs: f32 = 0;
             for (k_start..k_end) |k| {
@@ -101,6 +108,19 @@ pub const OwnedBufferTable = struct {
         self.alloc.free(self.buffers);
     }
 
+    pub fn clone(self: OwnedBufferTable, alloc: std.mem.Allocator) !OwnedBufferTable {
+        const sizes = try alloc.alloc(usize, self.buffers.len);
+        defer alloc.free(sizes);
+        for (self.buffers, 0..) |buf, i| sizes[i] = buf.len;
+
+        var cloned = try OwnedBufferTable.init(alloc, sizes);
+        errdefer cloned.deinit();
+        for (self.buffers, cloned.buffers) |src, dst| {
+            @memcpy(dst.ptr[0..dst.len], src.ptr[0..src.len]);
+        }
+        return cloned;
+    }
+
     pub fn upload(self: OwnedBufferTable, inputs: []const backend_mod.ProgramIO) void {
         uploadToBuffers(self.buffers, inputs);
     }
@@ -112,19 +132,142 @@ pub const OwnedBufferTable = struct {
 
 pub fn uploadToBuffers(buffers: []const Buffer, inputs: []const backend_mod.ProgramIO) void {
     for (inputs) |io| {
-        const bytes = bufferBytes(buffers[@as(usize, io.buf_idx)]);
-        std.debug.assert(@as(usize, io.offset) + @as(usize, io.size) <= bytes.len);
-        @memcpy(bytes[io.offset..][0..io.size], io.host_ptr[0..io.size]);
+        const idx: usize = io.buf_idx;
+        if (idx >= buffers.len) {
+            std.debug.panic("reference backend upload buffer index out of range: {} >= {}", .{ idx, buffers.len });
+        }
+        const bytes = bufferBytes(buffers[idx]);
+        const offset: usize = io.offset;
+        const size: usize = io.size;
+        if (offset > bytes.len or size > bytes.len - offset) {
+            std.debug.panic("reference backend upload range out of bounds: offset={} size={} buffer_size={}", .{ offset, size, bytes.len });
+        }
+        const host = io.hostSlice() orelse std.debug.panic("reference backend upload received external resource binding", .{});
+        @memcpy(bytes[offset..][0..size], host);
     }
 }
 
 pub fn downloadFromBuffers(buffers: []const Buffer, outputs: []const backend_mod.ProgramIO) void {
     for (outputs) |io| {
-        const bytes = bufferConstBytes(buffers[@as(usize, io.buf_idx)]);
-        std.debug.assert(@as(usize, io.offset) + @as(usize, io.size) <= bytes.len);
-        @memcpy(io.host_ptr[0..io.size], bytes[io.offset..][0..io.size]);
+        const idx: usize = io.buf_idx;
+        if (idx >= buffers.len) {
+            std.debug.panic("reference backend download buffer index out of range: {} >= {}", .{ idx, buffers.len });
+        }
+        const bytes = bufferConstBytes(buffers[idx]);
+        const offset: usize = io.offset;
+        const size: usize = io.size;
+        if (offset > bytes.len or size > bytes.len - offset) {
+            std.debug.panic("reference backend download range out of bounds: offset={} size={} buffer_size={}", .{ offset, size, bytes.len });
+        }
+        const host = io.hostSlice() orelse std.debug.panic("reference backend download received external resource binding", .{});
+        @memcpy(host, bytes[offset..][0..size]);
     }
 }
+
+const ExecuteFn = *const fn (Context, backend_mod.DeviceOp) void;
+
+pub const ExecutionTape = struct {
+    entries: []Entry = &.{},
+    commands: []Command = &.{},
+
+    const Entry = struct {
+        op_index: u32,
+        execute: ExecuteFn,
+    };
+
+    const Command = struct {
+        kind: program_mod.ProgramCommandKind,
+        entry_start: u32,
+        entry_count: u32,
+    };
+
+    pub fn init(alloc: std.mem.Allocator, ops: []const backend_mod.DeviceOp) !ExecutionTape {
+        return initWithCommandPolicy(alloc, ops, program_mod.CommandStreamPolicy.default());
+    }
+
+    pub fn initWithCommandPolicy(alloc: std.mem.Allocator, ops: []const backend_mod.DeviceOp, policy: program_mod.CommandStreamPolicy) !ExecutionTape {
+        var kernel_plan = try program_mod.Kernelizer.init(policy).kernelize(alloc, ops);
+        defer kernel_plan.deinit(alloc);
+        return initFromCommands(alloc, ops, kernel_plan.commands);
+    }
+
+    pub fn initFromCommands(alloc: std.mem.Allocator, ops: []const backend_mod.DeviceOp, program_commands: []const program_mod.ProgramCommand) !ExecutionTape {
+        var n_entries: usize = 0;
+        for (program_commands) |command| {
+            var iter = command.coveredIndexIterator();
+            while (iter.next()) |_| n_entries += 1;
+        }
+
+        const entries = try alloc.alloc(Entry, n_entries);
+        errdefer alloc.free(entries);
+        const commands = try alloc.alloc(Command, program_commands.len);
+        errdefer alloc.free(commands);
+
+        var entry_index: usize = 0;
+        for (program_commands, commands) |program_command, *command| {
+            const entry_start = entry_index;
+            var iter = program_command.coveredIndexIterator();
+            while (iter.next()) |op_index| {
+                if (op_index >= ops.len) return error.UnsupportedDeviceOp;
+                entries[entry_index] = .{
+                    .op_index = std.math.cast(u32, op_index) orelse return error.UnsupportedDeviceOp,
+                    .execute = executeFnForOp(ops[op_index]),
+                };
+                entry_index += 1;
+            }
+            command.* = .{
+                .kind = program_command.kind,
+                .entry_start = std.math.cast(u32, entry_start) orelse return error.UnsupportedDeviceOp,
+                .entry_count = std.math.cast(u32, entry_index - entry_start) orelse return error.UnsupportedDeviceOp,
+            };
+        }
+        std.debug.assert(entry_index == entries.len);
+        return .{ .entries = entries, .commands = commands };
+    }
+
+    pub fn deinit(self: *ExecutionTape, alloc: std.mem.Allocator) void {
+        if (self.entries.len > 0) alloc.free(self.entries);
+        if (self.commands.len > 0) alloc.free(self.commands);
+        self.* = .{};
+    }
+
+    pub fn len(self: ExecutionTape) usize {
+        return self.entries.len;
+    }
+
+    pub fn commandLen(self: ExecutionTape) usize {
+        return self.commands.len;
+    }
+
+    pub fn execute(self: ExecutionTape, buffers: []const Buffer, qweights: []const QWeight, ops: []const backend_mod.DeviceOp) void {
+        self.executeProfiled(buffers, qweights, ops, null);
+    }
+
+    pub fn executeProfiled(self: ExecutionTape, buffers: []const Buffer, qweights: []const QWeight, ops: []const backend_mod.DeviceOp, runtime_profile: ?*profile_mod.RuntimeProfile) void {
+        const ctx = Context{ .buffers = buffers, .qweights = qweights };
+        for (self.commands) |command| {
+            if (runtime_profile) |profile| profile.recordProgramCommandAttempt(command.kind);
+            const start: usize = command.entry_start;
+            const count: usize = command.entry_count;
+            const end = start + count;
+            if (start > self.entries.len or end > self.entries.len) {
+                if (runtime_profile) |profile| profile.recordProgramCommandFailed(command.kind);
+                std.debug.panic("reference execution tape command range out of bounds: start={} count={} entries={}", .{ start, count, self.entries.len });
+            }
+            for (self.entries[start..end]) |entry| {
+                const idx: usize = entry.op_index;
+                if (idx >= ops.len) {
+                    std.debug.panic("reference execution tape op index out of range: {} >= {}", .{ idx, ops.len });
+                }
+                entry.execute(ctx, ops[idx]);
+            }
+            if (runtime_profile) |profile| {
+                profile.recordProgramCommand(command.kind);
+                profile.recordProgramCommandDispatch(command.kind);
+            }
+        }
+    }
+};
 
 pub fn executeProgram(buffers: []const Buffer, qweights: []const QWeight, ops: []const backend_mod.DeviceOp) void {
     for (ops) |op| executeOp(buffers, qweights, op);
@@ -133,6 +276,91 @@ pub fn executeProgram(buffers: []const Buffer, qweights: []const QWeight, ops: [
 pub fn executeOp(buffers: []const Buffer, qweights: []const QWeight, op: backend_mod.DeviceOp) void {
     const ctx = Context{ .buffers = buffers, .qweights = qweights };
     ctx.executeOp(op);
+}
+
+fn executeFnForOp(op: backend_mod.DeviceOp) ExecuteFn {
+    return switch (op) {
+        .matmul => executeMatmul,
+        .qmatmul => executeQMatmul,
+        .elementwise => executeElementwise,
+        .softmax => executeSoftmax,
+        .layernorm => executeLayerNorm,
+        .rmsnorm => executeRmsNorm,
+        .reduce => executeReduce,
+        .conv2d => executeConv2d,
+        .max_pool2d => executeMaxPool2d,
+        .avg_pool2d => executeAvgPool2d,
+        .repeat => executeRepeat,
+        .gather_rows => executeGatherRows,
+        .slice_assign => executeSliceAssign,
+        .rope => executeRope,
+        .attention => executeAttention,
+        .fused_elementwise => executeFusedElementwise,
+    };
+}
+
+fn executeMatmul(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.matmul(op.matmul);
+}
+
+fn executeQMatmul(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.qmatmul(op.qmatmul);
+}
+
+fn executeElementwise(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.elementwise(op.elementwise);
+}
+
+fn executeSoftmax(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.softmax(op.softmax);
+}
+
+fn executeLayerNorm(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.layernorm(op.layernorm);
+}
+
+fn executeRmsNorm(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.rmsnorm(op.rmsnorm);
+}
+
+fn executeReduce(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.reduce(op.reduce);
+}
+
+fn executeConv2d(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.conv2d(op.conv2d);
+}
+
+fn executeMaxPool2d(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.maxPool2d(op.max_pool2d);
+}
+
+fn executeAvgPool2d(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.avgPool2d(op.avg_pool2d);
+}
+
+fn executeRepeat(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.repeat(op.repeat);
+}
+
+fn executeGatherRows(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.gatherRows(op.gather_rows);
+}
+
+fn executeSliceAssign(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.sliceAssign(op.slice_assign);
+}
+
+fn executeRope(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.rope(op.rope);
+}
+
+fn executeAttention(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.attention(op.attention);
+}
+
+fn executeFusedElementwise(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.fusedElementwise(op.fused_elementwise);
 }
 
 fn bufferBytes(buffer: Buffer) []u8 {
@@ -167,7 +395,11 @@ const Context = struct {
             .layernorm => |l| self.layernorm(l),
             .rmsnorm => |r| self.rmsnorm(r),
             .reduce => |rd| self.reduce(rd),
+            .conv2d => |c| self.conv2d(c),
+            .max_pool2d => |mp| self.maxPool2d(mp),
+            .avg_pool2d => |mp| self.avgPool2d(mp),
             .repeat => |rp| self.repeat(rp),
+            .gather_rows => |g| self.gatherRows(g),
             .slice_assign => |sa| self.sliceAssign(sa),
             .rope => |rr| self.rope(rr),
             .attention => |att| self.attention(att),
@@ -198,6 +430,10 @@ const Context = struct {
         while (i < n) : (i += 1) dst[i] = op(@as(VecT, @splat(src[i])))[0];
     }
 
+    fn unsupportedElementwiseOp(op: backend_mod.Op) noreturn {
+        std.debug.panic("reference backend reached unsupported elementwise op: {s}", .{@tagName(op)});
+    }
+
     fn elementwise(self: Context, e: anytype) void {
         const dst = self.bufF32(e.dst) + @as(usize, e.dst_offset);
         const src0 = self.bufF32(e.src0) + @as(usize, e.src0_offset);
@@ -224,9 +460,29 @@ const Context = struct {
                     return @abs(a);
                 }
             }.f),
+            .sgn => simdUnaryLoop(dst, src0, n, struct {
+                fn f(a: @Vector(V, f32)) @Vector(V, f32) {
+                    const zero: @Vector(V, f32) = @splat(0.0);
+                    const one: @Vector(V, f32) = @splat(1.0);
+                    const neg_one: @Vector(V, f32) = @splat(-1.0);
+                    return @select(f32, a > zero, one, @select(f32, a < zero, neg_one, zero));
+                }
+            }.f),
+            .step => simdUnaryLoop(dst, src0, n, struct {
+                fn f(a: @Vector(V, f32)) @Vector(V, f32) {
+                    const zero: @Vector(V, f32) = @splat(0.0);
+                    const one: @Vector(V, f32) = @splat(1.0);
+                    return @select(f32, a > zero, one, zero);
+                }
+            }.f),
             .relu => simdUnaryLoop(dst, src0, n, struct {
                 fn f(a: @Vector(V, f32)) @Vector(V, f32) {
                     return @max(a, @as(@Vector(V, f32), @splat(0.0)));
+                }
+            }.f),
+            .sqr => simdUnaryLoop(dst, src0, n, struct {
+                fn f(a: @Vector(V, f32)) @Vector(V, f32) {
+                    return a * a;
                 }
             }.f),
             .sqrt => simdUnaryLoop(dst, src0, n, struct {
@@ -268,7 +524,7 @@ const Context = struct {
                     dst[i] = 0.5 * a * (1.0 + std.math.tanh(kk));
                 }
             },
-            else => @memcpy(dst[0..n], src0[0..n]),
+            else => unsupportedElementwiseOp(e.op),
         }
     }
 
@@ -282,7 +538,10 @@ const Context = struct {
                 switch (step.op) {
                     .neg => v = -v,
                     .abs => v = @abs(v),
+                    .sgn => v = if (v > 0) 1 else if (v < 0) -1 else 0,
+                    .step => v = if (v > 0) 1 else 0,
                     .relu => v = @max(v, 0.0),
+                    .sqr => v = v * v,
                     .sqrt => v = @sqrt(v),
                     .recip => v = 1.0 / v,
                     .exp => v = @exp(v),
@@ -299,7 +558,7 @@ const Context = struct {
                         const s_ptr = self.bufF32(step.secondary_buf) + @as(usize, step.secondary_offset);
                         v = if (step.is_swapped) s_ptr[i] * v else v * s_ptr[i];
                     },
-                    else => {},
+                    else => unsupportedElementwiseOp(step.op),
                 }
             }
             dst[i] = v;
@@ -388,6 +647,141 @@ const Context = struct {
         }
     }
 
+    fn maxPool2d(self: Context, mp: anytype) void {
+        const src = self.bufF32(mp.src);
+        const dst = self.bufF32(mp.dst);
+        const out_w: usize = mp.out_w;
+        const out_h: usize = mp.out_h;
+        const channels: usize = mp.channels;
+        const batch: usize = mp.batch;
+        const src_w: usize = mp.src_w;
+        const src_h: usize = mp.src_h;
+        const src_base: usize = mp.src_offset;
+        const dst_base: usize = mp.dst_offset;
+        for (0..batch) |n| {
+            for (0..channels) |c| {
+                for (0..out_h) |y| {
+                    for (0..out_w) |x| {
+                        const sx = x * 2;
+                        const sy = y * 2;
+                        const src_channel_base = src_base + n * src_w * src_h * channels + c * src_w * src_h;
+                        const dst_channel_base = dst_base + n * out_w * out_h * channels + c * out_w * out_h;
+                        const a = src[src_channel_base + sx + sy * src_w];
+                        const b = src[src_channel_base + sx + 1 + sy * src_w];
+                        const c0 = src[src_channel_base + sx + (sy + 1) * src_w];
+                        const d = src[src_channel_base + sx + 1 + (sy + 1) * src_w];
+                        dst[dst_channel_base + x + y * out_w] = @max(@max(a, b), @max(c0, d));
+                    }
+                }
+            }
+        }
+    }
+
+    fn avgPool2d(self: Context, mp: anytype) void {
+        const src = self.bufF32(mp.src);
+        const dst = self.bufF32(mp.dst);
+        const out_w: usize = mp.out_w;
+        const out_h: usize = mp.out_h;
+        const channels: usize = mp.channels;
+        const batch: usize = mp.batch;
+        const src_w: usize = mp.src_w;
+        const src_h: usize = mp.src_h;
+        const src_base: usize = mp.src_offset;
+        const dst_base: usize = mp.dst_offset;
+        for (0..batch) |n| {
+            const src_batch_base = src_base + n * src_w * src_h * channels;
+            const dst_batch_base = dst_base + n * out_w * out_h * channels;
+            for (0..channels) |c| {
+                const src_channel_base = src_batch_base + c * src_w * src_h;
+                const dst_channel_base = dst_batch_base + c * out_w * out_h;
+                for (0..out_h) |y| {
+                    const sy = y * 2;
+                    const src_row0 = src_channel_base + sy * src_w;
+                    const src_row1 = src_row0 + src_w;
+                    const dst_row = dst_channel_base + y * out_w;
+                    for (0..out_w) |x| {
+                        const sx = x * 2;
+                        dst[dst_row + x] = (src[src_row0 + sx] + src[src_row0 + sx + 1] + src[src_row1 + sx] + src[src_row1 + sx + 1]) * 0.25;
+                    }
+                }
+            }
+        }
+    }
+
+    fn conv2d(self: Context, c: anytype) void {
+        const src = self.bufF32(c.src);
+        const weight = self.bufF32(c.weight);
+        const dst = self.bufF32(c.dst);
+        const has_bias = c.bias != std.math.maxInt(u16);
+        const bias = if (has_bias) self.bufF32(c.bias) else undefined;
+        const out_w: usize = c.out_w;
+        const out_h: usize = c.out_h;
+        const in_w: usize = c.in_w;
+        const in_h: usize = c.in_h;
+        const in_channels: usize = c.in_channels;
+        const out_channels: usize = c.out_channels;
+        const kernel_w: usize = c.kernel_w;
+        const kernel_h: usize = c.kernel_h;
+        const batch: usize = c.batch;
+        const src_base: usize = c.src_offset;
+        const weight_base: usize = c.weight_offset;
+        const bias_base: usize = c.bias_offset;
+        const dst_base: usize = c.dst_offset;
+        if (in_channels == 1 and out_channels == 1 and kernel_w == 3 and kernel_h == 3) {
+            const b: f32 = if (has_bias) bias[bias_base] else 0;
+            const w0 = weight[weight_base + 0];
+            const w1 = weight[weight_base + 1];
+            const w2 = weight[weight_base + 2];
+            const w3 = weight[weight_base + 3];
+            const w4 = weight[weight_base + 4];
+            const w5 = weight[weight_base + 5];
+            const w6 = weight[weight_base + 6];
+            const w7 = weight[weight_base + 7];
+            const w8 = weight[weight_base + 8];
+            for (0..batch) |n| {
+                const src_batch_base = src_base + n * in_w * in_h;
+                const dst_batch_base = dst_base + n * out_w * out_h;
+                for (0..out_h) |oy| {
+                    const r0 = src_batch_base + oy * in_w;
+                    const r1 = r0 + in_w;
+                    const r2 = r1 + in_w;
+                    const drow = dst_batch_base + oy * out_w;
+                    for (0..out_w) |ox| {
+                        dst[drow + ox] =
+                            src[r0 + ox] * w0 + src[r0 + ox + 1] * w1 + src[r0 + ox + 2] * w2 +
+                            src[r1 + ox] * w3 + src[r1 + ox + 1] * w4 + src[r1 + ox + 2] * w5 +
+                            src[r2 + ox] * w6 + src[r2 + ox + 1] * w7 + src[r2 + ox + 2] * w8 + b;
+                    }
+                }
+            }
+            return;
+        }
+        for (0..batch) |n| {
+            const src_batch_base = src_base + n * in_w * in_h * in_channels;
+            const dst_batch_base = dst_base + n * out_w * out_h * out_channels;
+            for (0..out_channels) |oc| {
+                const dst_channel_base = dst_batch_base + oc * out_w * out_h;
+                for (0..out_h) |oy| {
+                    for (0..out_w) |ox| {
+                        var sum: f32 = if (has_bias) bias[bias_base + oc] else 0;
+                        for (0..in_channels) |ic| {
+                            const src_channel_base = src_batch_base + ic * in_w * in_h;
+                            const weight_channel_base = weight_base + (((oc * in_channels + ic) * kernel_h) * kernel_w);
+                            for (0..kernel_h) |ky| {
+                                const src_row = src_channel_base + (oy + ky) * in_w;
+                                const weight_row = weight_channel_base + ky * kernel_w;
+                                for (0..kernel_w) |kx| {
+                                    sum += src[src_row + ox + kx] * weight[weight_row + kx];
+                                }
+                            }
+                        }
+                        dst[dst_channel_base + oy * out_w + ox] = sum;
+                    }
+                }
+            }
+        }
+    }
+
     fn repeat(self: Context, rp: anytype) void {
         const src = self.bufF32(rp.src);
         const dst = self.bufF32(rp.dst);
@@ -402,20 +796,33 @@ const Context = struct {
             @memset(d[0..n], s[0]);
             return;
         }
-        if (src_n >= n) {
-            @memcpy(d[0..n], s[0..n]);
-            return;
-        }
-        if (n % src_n == 0 and rp.src_strides[0] == 1 and
+
+        const src_dense = rp.src_strides[0] == 1 and
             (rp.src_ne[1] <= 1 or rp.src_strides[1] == rp.src_ne[0]) and
             (rp.src_ne[2] <= 1 or rp.src_strides[2] == @as(u32, rp.src_ne[0]) * rp.src_ne[1]) and
-            (rp.src_ne[3] <= 1 or rp.src_strides[3] == @as(u32, rp.src_ne[0]) * @as(u32, rp.src_ne[1]) * rp.src_ne[2]))
-        {
-            var off: usize = 0;
-            while (off + src_n <= n) : (off += src_n) {
-                @memcpy(d[off..][0..src_n], s[0..src_n]);
+            (rp.src_ne[3] <= 1 or rp.src_strides[3] == @as(u32, rp.src_ne[0]) * @as(u32, rp.src_ne[1]) * rp.src_ne[2]);
+        const dst_dense = rp.dst_strides[0] == 1 and
+            (rp.dst_ne[1] <= 1 or rp.dst_strides[1] == rp.dst_ne[0]) and
+            (rp.dst_ne[2] <= 1 or rp.dst_strides[2] == @as(u32, rp.dst_ne[0]) * rp.dst_ne[1]) and
+            (rp.dst_ne[3] <= 1 or rp.dst_strides[3] == @as(u32, rp.dst_ne[0]) * @as(u32, rp.dst_ne[1]) * rp.dst_ne[2]);
+        if (src_dense and dst_dense) {
+            var chunk: usize = 1;
+            for (0..4) |dim| {
+                if (rp.src_ne[dim] > 1) break;
+                chunk *= rp.dst_ne[dim];
             }
-            return;
+            if (chunk == 1) {
+                for (d[0..n], 0..) |*out, i| out.* = s[i % src_n];
+                return;
+            }
+            if (n % chunk == 0) {
+                const groups = n / chunk;
+                for (0..groups) |group| {
+                    const base = group * chunk;
+                    @memset(d[base..][0..chunk], s[group % src_n]);
+                }
+                return;
+            }
         }
 
         for (0..n) |gid| {
@@ -429,6 +836,31 @@ const Context = struct {
                 src_idx += (coord % @as(usize, rp.src_ne[dim])) * @as(usize, rp.src_strides[dim]);
             }
             dst[@as(usize, rp.dst_offset) + gid] = src[src_idx];
+        }
+    }
+
+    fn indexFromF32(v: f32) usize {
+        std.debug.assert(v >= 0);
+        const iv: usize = @intFromFloat(v);
+        std.debug.assert(@as(f32, @floatFromInt(iv)) == v);
+        return iv;
+    }
+
+    fn gatherRows(self: Context, g: anytype) void {
+        const src = self.bufF32(g.src);
+        const indices = self.bufF32(g.indices);
+        const dst = self.bufF32(g.dst);
+        const width: usize = g.width;
+        const count: usize = g.count;
+        const src_rows: usize = g.src_rows;
+        const src_row_stride: usize = if (g.src_row_stride != 0) g.src_row_stride else width;
+        const dst_row_stride: usize = if (g.dst_row_stride != 0) g.dst_row_stride else width;
+        for (0..count) |out_row| {
+            const src_row = indexFromF32(indices[@as(usize, g.indices_offset) + out_row]);
+            std.debug.assert(src_row < src_rows);
+            const src_off = @as(usize, g.src_offset) + src_row * src_row_stride;
+            const dst_off = @as(usize, g.dst_offset) + out_row * dst_row_stride;
+            @memcpy(dst[dst_off..][0..width], src[src_off..][0..width]);
         }
     }
 
@@ -470,7 +902,7 @@ const Context = struct {
                 const x_lo = src[s_off + pair * s_rs + col * s_cs];
                 const x_hi = src[s_off + (pair + hd) * s_rs + col * s_cs];
                 const cos_v = cs[c_off + pair + col * c_cs];
-                const sin_v = cs[c_off + pair + hd + col * c_cs];
+                const sin_v = cs[c_off + pair + 2 * hd + col * c_cs];
                 dst[d_off + pair + col * 2 * hd] = x_lo * cos_v - x_hi * sin_v;
                 dst[d_off + pair + hd + col * 2 * hd] = x_hi * cos_v + x_lo * sin_v;
             }
@@ -687,6 +1119,40 @@ test "reference executor elementwise add" {
     try std.testing.expectEqualSlices(f32, &.{ 11, 22, 33, 44 }, &dst);
 }
 
+test "reference executor elementwise sgn and step" {
+    var src = [_]f32{ -2, 0, 3, -0.5 };
+    var sgn_dst = [_]f32{0} ** 4;
+    var step_dst = [_]f32{0} ** 4;
+    const buffers = [_]Buffer{
+        .{ .ptr = &src, .len = src.len },
+        .{ .ptr = &sgn_dst, .len = sgn_dst.len },
+        .{ .ptr = &step_dst, .len = step_dst.len },
+    };
+
+    executeOp(&buffers, &.{}, .{ .elementwise = .{ .op = .sgn, .dst = 1, .src0 = 0, .src1 = 0, .n = 4 } });
+    executeOp(&buffers, &.{}, .{ .elementwise = .{ .op = .step, .dst = 2, .src0 = 0, .src1 = 0, .n = 4 } });
+
+    try std.testing.expectEqualSlices(f32, &.{ -1, 0, 1, -1 }, &sgn_dst);
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0, 1, 0 }, &step_dst);
+}
+
+test "reference executor fused elementwise sgn and step" {
+    var src = [_]f32{ -2, 0, 3, -0.5 };
+    var dst = [_]f32{9} ** 4;
+    const buffers = [_]Buffer{
+        .{ .ptr = &src, .len = src.len },
+        .{ .ptr = &dst, .len = dst.len },
+    };
+    const steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .sgn, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .step, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+    };
+
+    executeOp(&buffers, &.{}, .{ .fused_elementwise = .{ .steps = &steps, .dst = 1, .src = 0, .n = 4, .dst_offset = 0, .src_offset = 0 } });
+
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0, 1, 0 }, &dst);
+}
+
 test "reference executor matmul" {
     var a = [_]f32{ 1, 2, 3, 4, 5, 6 };
     var b = [_]f32{ 7, 8, 9, 10, 11, 12 };
@@ -705,6 +1171,138 @@ test "reference executor matmul" {
     } });
 
     try std.testing.expectEqualSlices(f32, &.{ 58, 64, 139, 154 }, &dst);
+}
+
+test "reference execution tape uses patched op payloads" {
+    var src = [_]f32{42};
+    var dst = [_]f32{0} ** 4;
+    const buffers = [_]Buffer{
+        .{ .ptr = &src, .len = src.len },
+        .{ .ptr = &dst, .len = dst.len },
+    };
+    var ops = [_]backend_mod.DeviceOp{.{ .slice_assign = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 1,
+        .cols = 1,
+        .dst_base_offset = 0,
+        .dst_offset = 0,
+        .dst_row_stride = 1,
+        .dst_col_stride = 1,
+        .src_offset = 0,
+        .src_row_stride = 1,
+        .src_col_stride = 1,
+        .patch_stride = 1,
+    } }};
+    var tape = try ExecutionTape.init(std.testing.allocator, &ops);
+    defer tape.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), tape.len());
+    try std.testing.expectEqual(@as(usize, 1), tape.commandLen());
+
+    ops[0].slice_assign.dst_offset = 2;
+    var profile = profile_mod.RuntimeProfile{};
+    tape.executeProfiled(&buffers, &.{}, &ops, &profile);
+
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0, 42, 0 }, &dst);
+    const op_command = @intFromEnum(program_mod.ProgramCommandKind.op);
+    try std.testing.expectEqual(@as(u64, 1), profile.program_command_counts[op_command]);
+    try std.testing.expectEqual(@as(u64, 1), profile.program_command_attempt_counts[op_command]);
+    try std.testing.expectEqual(@as(u64, 1), profile.program_command_dispatch_counts[op_command]);
+    try std.testing.expectEqual(@as(u64, 0), profile.program_command_failed_counts[op_command]);
+}
+
+test "reference executor rope reads sine from packed second half" {
+    var src = [_]f32{ 1, 2, 3, 4 };
+    var cos_sin = [_]f32{ 0.5, 0.25, 0.5, 0.25, 1.0, 2.0, 1.0, 2.0 };
+    var dst = [_]f32{0} ** 4;
+
+    const buffers = [_]Buffer{
+        .{ .ptr = &src, .len = src.len },
+        .{ .ptr = &cos_sin, .len = cos_sin.len },
+        .{ .ptr = &dst, .len = dst.len },
+    };
+
+    executeOp(&buffers, &.{}, .{ .rope = .{
+        .dst = 2,
+        .src = 0,
+        .cos_sin = 1,
+        .half_d = 2,
+        .seq_len = 1,
+        .src_off = 0,
+        .cs_off = 0,
+        .dst_off = 0,
+        .src_rs = 1,
+        .src_cs = 4,
+        .cs_cs = 8,
+    } });
+
+    try std.testing.expectApproxEqAbs(@as(f32, -2.5), dst[0], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, -7.5), dst[1], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.5), dst[2], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 5.0), dst[3], 1e-6);
+}
+
+test "reference executor attention matches scalar two-token decode" {
+    var q = [_]f32{ 0.2, -0.4, 0.6, -0.8 };
+    var k = [_]f32{
+        0.1,  0.3, -0.5, 0.7,
+        -0.2, 0.4, 0.8,  -0.6,
+    };
+    var v = [_]f32{
+        1.0,  2.0,  -1.0, 0.5,
+        -0.5, 0.25, 1.5,  -2.0,
+    };
+    var mask = [_]f32{ 0, 0 };
+    var dst = [_]f32{0} ** 4;
+
+    const buffers = [_]Buffer{
+        .{ .ptr = &q, .len = q.len },
+        .{ .ptr = &k, .len = k.len },
+        .{ .ptr = &v, .len = v.len },
+        .{ .ptr = &mask, .len = mask.len },
+        .{ .ptr = &dst, .len = dst.len },
+    };
+
+    executeOp(&buffers, &.{}, .{ .attention = .{
+        .dst = 4,
+        .q = 0,
+        .k = 1,
+        .v = 2,
+        .mask = 3,
+        .has_mask = true,
+        .d_head = 4,
+        .seq_q = 1,
+        .seq_kv = 2,
+        .scale = 0.5,
+        .q_off = 0,
+        .k_off = 0,
+        .v_off = 0,
+        .mask_off = 0,
+        .dst_off = 0,
+        .q_rs = 1,
+        .q_cs = 4,
+        .k_rs = 1,
+        .k_cs = 4,
+        .v_rs = 1,
+        .v_cs = 4,
+        .mask_rs = 1,
+        .mask_cs = 2,
+        .dst_rs = 1,
+        .dst_cs = 4,
+    } });
+
+    const s0 = 0.5 * (q[0] * k[0] + q[1] * k[1] + q[2] * k[2] + q[3] * k[3]);
+    const s1 = 0.5 * (q[0] * k[4] + q[1] * k[5] + q[2] * k[6] + q[3] * k[7]);
+    const m = @max(s0, s1);
+    const e0 = @exp(s0 - m);
+    const e1 = @exp(s1 - m);
+    const inv = 1.0 / (e0 + e1);
+    const w0 = e0 * inv;
+    const w1 = e1 * inv;
+
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(w0 * v[i] + w1 * v[4 + i], dst[i], 1e-6);
+    }
 }
 
 test "reference executor qmatmul uses row-major quantized weights" {

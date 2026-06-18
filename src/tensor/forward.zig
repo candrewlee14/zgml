@@ -700,6 +700,27 @@ pub fn blasSgemm(
     dst_row_stride: usize,
 ) void {
     if (opts.use_blas) {
+        const BlasLayout = struct {
+            trans: c_uint,
+            ld: c_int,
+
+            fn rowMajor(row_stride: usize, col_stride: usize, rows: usize, cols: usize) ?@This() {
+                if (col_stride == 1 and row_stride >= cols) {
+                    return .{
+                        .trans = c.CblasNoTrans,
+                        .ld = @intCast(row_stride),
+                    };
+                }
+                if (row_stride == 1 and col_stride >= rows) {
+                    return .{
+                        .trans = c.CblasTrans,
+                        .ld = @intCast(col_stride),
+                    };
+                }
+                return null;
+            }
+        };
+
         // Cached decoding is dominated by row-vector matmuls. Route those to
         // GEMV, which is a better match than GEMM for M=1.
         if (M == 1 and a_col_stride == 1 and b_col_stride == 1 and dst_row_stride == N) {
@@ -722,26 +743,32 @@ pub fn blasSgemm(
             }
         }
 
-        // Map stride convention to BLAS transpose flags + leading dimensions.
-        // col_stride == 1 → NoTrans (row-major), ld = row_stride
-        // row_stride == 1 → Trans (column stored as rows), ld = col_stride
-        const trans_a: c_uint = if (a_col_stride == 1) c.CblasNoTrans else c.CblasTrans;
-        const lda: c_int = @intCast(if (a_col_stride == 1) a_row_stride else a_col_stride);
-        const trans_b: c_uint = if (b_col_stride == 1) c.CblasNoTrans else c.CblasTrans;
-        const ldb: c_int = @intCast(if (b_col_stride == 1) b_row_stride else b_col_stride);
+        // Map zgml's explicit row/column strides onto the subset BLAS can
+        // describe. Degenerate thin matrices can have both strides equal to 1;
+        // choose the BLAS orientation whose leading dimension is valid.
+        const a_layout = BlasLayout.rowMajor(a_row_stride, a_col_stride, M, K) orelse {
+            const mm = selectMatMulKernel(f32);
+            mm(dst, A, B, M, N, K, a_row_stride, a_col_stride, b_row_stride, b_col_stride, a_offset, b_offset, dst_offset, dst_row_stride);
+            return;
+        };
+        const b_layout = BlasLayout.rowMajor(b_row_stride, b_col_stride, K, N) orelse {
+            const mm = selectMatMulKernel(f32);
+            mm(dst, A, B, M, N, K, a_row_stride, a_col_stride, b_row_stride, b_col_stride, a_offset, b_offset, dst_offset, dst_row_stride);
+            return;
+        };
 
         c.cblas_sgemm(
             c.CblasRowMajor,
-            trans_a,
-            trans_b,
+            a_layout.trans,
+            b_layout.trans,
             @intCast(M),
             @intCast(N),
             @intCast(K),
             1.0,
             A[a_offset..].ptr,
-            lda,
+            a_layout.ld,
             B[b_offset..].ptr,
-            ldb,
+            b_layout.ld,
             0.0,
             dst[dst_offset..].ptr,
             @intCast(dst_row_stride),
@@ -902,6 +929,15 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 simdMapUnary(T, src0.denseSliceConst(), dst.denseSlice(), sqrtVec, sqrtScalar);
             } else {
                 computeUnaryStrided(Self, dst, src0, sqrtScalar);
+            }
+        }
+
+        pub fn computeSqr(dst: *Self, src0: *const Self) void {
+            assert(dst.isSameShape(src0));
+            if (src0.isDenseLayout()) {
+                simdMapUnary(T, src0.denseSliceConst(), dst.denseSlice(), sqrVec, sqrScalar);
+            } else {
+                computeUnaryStrided(Self, dst, src0, sqrScalar);
             }
         }
 
@@ -1976,7 +2012,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
         }
 
         pub fn computeMatMul(dst: *Self, src0: *const Self, comptime trans0: bool, src1: *const Self, comptime trans1: bool) void {
-            dst.computeMatMulWithBackend(src0, trans0, src1, trans1, null);
+            computeMatMulWithBackend(dst, src0, trans0, src1, trans1, null);
         }
 
         pub fn computeMatMulWithBackend(
@@ -2067,6 +2103,10 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                     if (M < min_rows_per_thread * 2 or n_workers <= 1) {
                         kernel(dst.data, src0.data, src1.data, 0, M, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1]);
                     } else {
+                        if (comptime builtin.single_threaded) {
+                            kernel(dst.data, src0.data, src1.data, 0, M, N, K, a_m_stride, a_k_stride, b_k_stride, b_n_stride, a_base, b_base, d_base, dst.strides[1]);
+                            continue;
+                        }
                         const chunk = @max(min_rows_per_thread, (M + n_workers - 1) / n_workers);
                         var threads: [max_spawn]std.Thread = undefined;
                         var n_spawned: usize = 0;
@@ -2101,29 +2141,30 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .scatter_add_view => computeScatterAddView(Self, tensor, src0.?, src1.?),
                 .add => tensor.computeAdd(src0.?, src1.?),
                 .mul => tensor.computeMul(src0.?, src1.?),
-                .neg => tensor.computeNeg(src0.?),
-                .abs => tensor.computeAbs(src0.?),
-                .sgn => tensor.computeSgn(src0.?),
-                .step => tensor.computeStep(src0.?),
+                .neg => computeNeg(tensor, src0.?),
+                .abs => computeAbs(tensor, src0.?),
+                .sgn => computeSgn(tensor, src0.?),
+                .step => computeStep(tensor, src0.?),
                 .relu => tensor.computeRelu(src0.?),
-                .sqrt => tensor.computeSqrt(src0.?),
-                .recip => tensor.computeRecip(src0.?),
-                .exp => tensor.computeExp(src0.?),
-                .log => tensor.computeLog(src0.?),
-                .gelu => tensor.computeGelu(src0.?),
+                .sqrt => computeSqrt(tensor, src0.?),
+                .recip => computeRecip(tensor, src0.?),
+                .exp => computeExp(tensor, src0.?),
+                .log => computeLog(tensor, src0.?),
+                .gelu => computeGelu(tensor, src0.?),
+                .sqr => computeSqr(tensor, src0.?),
                 .sum => tensor.computeSum(src0.?),
-                .max => tensor.computeMax(src0.?),
+                .max => computeMax(tensor, src0.?),
                 .repeat => tensor.computeRepeat(src0.?),
-                .gather_rows => tensor.computeGatherRows(src0.?, src1.?),
-                .scatter_add_rows => tensor.computeScatterAddRows(src0.?, src1.?),
-                .pick_rows => tensor.computePickRows(src0.?, src1.?),
-                .scatter_add_picks => tensor.computeScatterAddPicks(src0.?, src1.?),
+                .gather_rows => computeGatherRows(tensor, src0.?, src1.?),
+                .scatter_add_rows => computeScatterAddRows(tensor, src0.?, src1.?),
+                .pick_rows => computePickRows(tensor, src0.?, src1.?),
+                .scatter_add_picks => computeScatterAddPicks(tensor, src0.?, src1.?),
                 .slice_assign => computeSliceAssign(Self, tensor, src0.?, src1.?),
                 .rope => computeRope(Self, tensor, src0.?, src1.?),
                 .slice_assign_rows => computeSliceAssignRows(Self, tensor, src0.?, src1.?),
-                .softmax => tensor.computeSoftmax(src0.?),
-                .rmsnorm => tensor.computeRmsNorm(src0.?),
-                .attention => tensor.computeAttention(src0.?, src1.?, tensor.src2.?, tensor.src3),
+                .softmax => computeSoftmax(tensor, src0.?),
+                .rmsnorm => computeRmsNorm(tensor, src0.?),
+                .attention => computeAttention(tensor, src0.?, src1.?, tensor.src2.?, tensor.src3),
                 .matmul => {
                     const flags = tensor.matmul_flags;
                     if (flags.trans0) {
@@ -2153,15 +2194,15 @@ test "computeSoftmax - column reduce matches explicit formula" {
     const cols: usize = 3;
     const x = try Tensor(T).init(a, &.{ rows, cols });
     x.setData(&.{
-        1.0,  2.0, -1.0,
-        0.5,  0.0, 3.0,
-        -2.0, 1.5, 0.2,
+        1.0,  2.0,  -1.0,
+        0.5,  0.0,  3.0,
+        -2.0, 1.5,  0.2,
         0.1,  -0.3, 0.8,
     });
 
     // Composite: softmax over axis 0 (reduce rows).
     const y = x.softmax(&.{ 1, cols });
-    y.computeSoftmax(x);
+    Ops(Tensor(T), T).computeSoftmax(y, x);
 
     // Reference: explicit primitive softmax.
     var ref: [rows * cols]T = undefined;
@@ -2197,7 +2238,7 @@ test "computeSoftmax - all -inf row yields zeros (no NaN)" {
     x.setData(&.{ neg_inf, neg_inf, neg_inf });
 
     const y = x.softmax(&.{ 1, 1 });
-    y.computeSoftmax(x);
+    Ops(Tensor(T), T).computeSoftmax(y, x);
 
     for (y.data) |v| try std.testing.expectEqual(@as(T, 0), v);
 }
@@ -2217,7 +2258,7 @@ test "computeSoftmax - grouped reduction over old scratch boundary" {
     }
 
     const y = x.softmax(&.{ 1, cols });
-    y.computeSoftmax(x);
+    Ops(Tensor(T), T).computeSoftmax(y, x);
 
     for (0..cols) |col| {
         var m: T = -std.math.inf(T);
@@ -2254,15 +2295,15 @@ test "computeRmsNorm - row reduce matches explicit formula" {
     const cols: usize = 4;
     const x = try Tensor(T).init(a, &.{ rows, cols });
     x.setData(&.{
-        1.0,  2.0,  -1.0, 0.5,
-        0.0,  3.0,  -2.0, 1.5,
-        0.2,  0.1,  -0.3, 0.8,
+        1.0, 2.0, -1.0, 0.5,
+        0.0, 3.0, -2.0, 1.5,
+        0.2, 0.1, -0.3, 0.8,
     });
     const eps: T = 1e-5;
 
     // Composite: RMSNorm over the row dimension (reduce axis 0).
     const y = x.rmsNorm(&.{ 1, cols }, eps);
-    y.computeRmsNorm(x);
+    Ops(Tensor(T), T).computeRmsNorm(y, x);
 
     // Reference: explicit primitive RMSNorm per row.
     var ref: [rows * cols]T = undefined;
@@ -2300,7 +2341,7 @@ test "computeRmsNorm - all-zero input stays finite via eps" {
     const eps: T = 1e-5;
 
     const y = x.rmsNorm(&.{ 1, 1 }, eps);
-    y.computeRmsNorm(x);
+    Ops(Tensor(T), T).computeRmsNorm(y, x);
 
     for (y.data) |v| {
         try std.testing.expect(std.math.isFinite(v));
@@ -2326,7 +2367,7 @@ test "computeRmsNorm - generic grouped reduction over old scratch boundary" {
 
     // Reduce axis 1 so the generic grouped path owns 2 * 257 scratch entries.
     const y = x.rmsNorm(&.{ dim0, 1, dim2 }, eps);
-    y.computeRmsNorm(x);
+    Ops(Tensor(T), T).computeRmsNorm(y, x);
 
     for (0..dim2) |d2| {
         for (0..dim0) |a0| {
@@ -2362,10 +2403,11 @@ fn attentionReference(
     const masked_or_scaled = if (mask) |m| scaled.add(m) else scaled;
     const weights = masked_or_scaled.softmax(&.{ 1, masked_or_scaled.ne[1] });
     const out = weights.matMul(false, v, false);
-    var graph = @import("../graph.zig").ComputeGraph(T).init(a);
+    const graph_mod = @import("../graph.zig");
+    var graph = graph_mod.ComputeGraph(T).init(a);
     defer graph.deinit();
-    graph.buildForward(out) catch unreachable;
-    graph.compute();
+    graph_mod.buildForward(T, &graph, out) catch unreachable;
+    graph_mod.compute(T, &graph);
     return out;
 }
 
@@ -2397,7 +2439,7 @@ test "computeAttention - prefill matches explicit reference" {
     const scale: T = 1.0 / @sqrt(@as(T, @floatFromInt(d_head)));
 
     const y = q.attention(k, v, mask, scale);
-    y.computeAttention(q, k, v, mask);
+    Ops(Tensor(T), T).computeAttention(y, q, k, v, mask);
 
     const ref = attentionReference(T, a, q, k, v, mask, scale);
     for (y.data, ref.data) |got, want| {
@@ -2426,7 +2468,7 @@ test "computeAttention - decode (seq_q=1) matches reference" {
     const scale: T = 1.0 / @sqrt(@as(T, @floatFromInt(d_head)));
 
     const y = q.attention(k, v, mask, scale);
-    y.computeAttention(q, k, v, mask);
+    Ops(Tensor(T), T).computeAttention(y, q, k, v, mask);
 
     const ref = attentionReference(T, a, q, k, v, mask, scale);
     for (y.data, ref.data) |got, want| {
@@ -2453,7 +2495,7 @@ test "computeAttention - no-mask path matches reference" {
     const scale: T = 1.0 / @sqrt(@as(T, @floatFromInt(d_head)));
 
     const y = q.attention(k, v, null, scale);
-    y.computeAttention(q, k, v, null);
+    Ops(Tensor(T), T).computeAttention(y, q, k, v, null);
 
     // Reference with zero mask.
     const zero_mask = try Tensor(T).init(a, &.{ seq_kv, seq_q });

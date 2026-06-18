@@ -1,0 +1,259 @@
+{
+  "name": "zgml",
+  "version": "1.0.0",
+  "description": "A tiny TS-first ML library with a PyTorch-like frontend over inspectable native executable programs.",
+  "main": "dist/node.cjs",
+  "types": "dist/public_api.d.cts",
+  "files": [
+    "README.md",
+    "LICENSE",
+    "dist/",
+    "include/",
+    "docs/c-api.md",
+    "tsconfig.types.json",
+    "tsconfig.dist.json",
+    "tsconfig.package.json",
+    "examples/types/public-api-smoke.ts",
+    "examples/types/package-spine-smoke.ts",
+    "examples/types/readme-quickstart-smoke.ts",
+    "examples/types/dist-package-smoke.cts",
+    "examples/types/shape-safety-smoke.ts",
+    "examples/types/pytorch-training-smoke.ts",
+    "examples/types/browser-frontend-smoke.ts",
+    "examples/types/bun-training-smoke.ts",
+    "examples/types/program-session-smoke.ts",
+    "examples/node_training/manual_loop.cjs",
+    "examples/node_training/train_linear.cjs",
+    "examples/node_training/train_mlp.cjs",
+    "examples/node_training/train_classifier.cjs",
+    "examples/node_training/torch_quickstart.cjs",
+    "examples/node_program_session/run_linear.cjs",
+    "examples/bun_training/manual_loop.ts",
+    "examples/bun_training/train_linear.ts",
+    "examples/bun_training/train_mlp.ts",
+    "examples/bun_training/train_classifier.ts",
+    "examples/bun_program_session/run_linear.ts",
+    "scripts/frontend_manifest_policy.cjs",
+    "scripts/generate_package_declarations.cjs",
+    "scripts/package_metadata_policy.cjs",
+    "tsdown.config.mjs",
+    "build.zig",
+    "build.zig.zon",
+    "src/",
+    "vendor/wgpu-native/"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/public_api.d.cts",
+      "require": "./dist/node.cjs",
+      "default": "./dist/node.cjs"
+    },
+    "./adapters/bun": {
+      "types": "./dist/adapters/bun.d.cts",
+      "require": "./dist/adapters/bun.cjs",
+      "default": "./dist/adapters/bun.cjs"
+    },
+    "./adapters/native": {
+      "types": "./dist/adapters/native.d.cts",
+      "require": "./dist/adapters/native.cjs",
+      "default": "./dist/adapters/native.cjs"
+    },
+    "./adapters/node": {
+      "types": "./dist/adapters/node.d.cts",
+      "require": "./dist/adapters/node.cjs",
+      "default": "./dist/adapters/node.cjs"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.cts",
+      "require": "./dist/browser.cjs",
+      "default": "./dist/browser.cjs"
+    },
+    "./browser_frontend_runtime": {
+      "types": "./dist/browser_frontend_runtime.d.cts",
+      "require": "./dist/browser_frontend_runtime.cjs",
+      "default": "./dist/browser_frontend_runtime.cjs"
+    },
+    "./bun": {
+      "types": "./dist/public_api.d.cts",
+      "bun": "./dist/bun_native.cjs",
+      "require": "./dist/bun.cjs",
+      "import": "./dist/bun.cjs",
+      "default": "./dist/bun.cjs"
+    },
+    "./checkpoint": {
+      "types": "./dist/checkpoint.d.cts",
+      "require": "./dist/checkpoint.cjs",
+      "default": "./dist/checkpoint.cjs"
+    },
+    "./compile": {
+      "types": "./dist/compile.d.cts",
+      "require": "./dist/compile.cjs",
+      "default": "./dist/compile.cjs"
+    },
+    "./core/*": {
+      "types": "./dist/core/*.d.cts",
+      "require": "./dist/core/*.cjs",
+      "default": "./dist/core/*.cjs"
+    },
+    "./data": {
+      "types": "./dist/data.d.cts",
+      "require": "./dist/data.cjs",
+      "default": "./dist/data.cjs"
+    },
+    "./frontend": {
+      "types": "./dist/index.d.cts",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.cjs"
+    },
+    "./inspection": {
+      "types": "./dist/inspection.d.cts",
+      "require": "./dist/inspection.cjs",
+      "default": "./dist/inspection.cjs"
+    },
+    "./kernel_plan": {
+      "types": "./dist/kernel_plan.d.cts",
+      "require": "./dist/kernel_plan.cjs",
+      "default": "./dist/kernel_plan.cjs"
+    },
+    "./lazy": {
+      "types": "./dist/lazy.d.cts",
+      "require": "./dist/lazy.cjs",
+      "default": "./dist/lazy.cjs"
+    },
+    "./loss": {
+      "types": "./dist/loss.d.cts",
+      "require": "./dist/loss.cjs",
+      "default": "./dist/loss.cjs"
+    },
+    "./model_source": {
+      "types": "./dist/model_source.d.cts",
+      "require": "./dist/model_source.cjs",
+      "default": "./dist/model_source.cjs"
+    },
+    "./native_buffer": {
+      "types": "./dist/native_buffer.d.cts",
+      "require": "./dist/native_buffer.cjs",
+      "default": "./dist/native_buffer.cjs"
+    },
+    "./nn": {
+      "types": "./dist/nn.d.cts",
+      "require": "./dist/nn.cjs",
+      "default": "./dist/nn.cjs"
+    },
+    "./nn/*": {
+      "types": "./dist/nn/*.d.cts",
+      "require": "./dist/nn/*.cjs",
+      "default": "./dist/nn/*.cjs"
+    },
+    "./node": {
+      "types": "./dist/public_api.d.cts",
+      "require": "./dist/node.cjs",
+      "default": "./dist/node.cjs"
+    },
+    "./optim": {
+      "types": "./dist/optim.d.cts",
+      "require": "./dist/optim.cjs",
+      "default": "./dist/optim.cjs"
+    },
+    "./program": {
+      "types": "./dist/program.d.cts",
+      "require": "./dist/program.cjs",
+      "default": "./dist/program.cjs"
+    },
+    "./program_device": {
+      "types": "./dist/program_device.d.cts",
+      "require": "./dist/program_device.cjs",
+      "default": "./dist/program_device.cjs"
+    },
+    "./runtime/*": {
+      "types": "./dist/runtime/*.d.cts",
+      "require": "./dist/runtime/*.cjs",
+      "default": "./dist/runtime/*.cjs"
+    },
+    "./session": {
+      "types": "./dist/session.d.cts",
+      "require": "./dist/session.cjs",
+      "default": "./dist/session.cjs"
+    },
+    "./step_params": {
+      "types": "./dist/step_params.d.cts",
+      "require": "./dist/step_params.cjs",
+      "default": "./dist/step_params.cjs"
+    },
+    "./tensor": {
+      "types": "./dist/tensor.d.cts",
+      "require": "./dist/tensor.cjs",
+      "default": "./dist/tensor.cjs"
+    },
+    "./train": {
+      "types": "./dist/train.d.cts",
+      "require": "./dist/train.cjs",
+      "default": "./dist/train.cjs"
+    },
+    "./train/*": {
+      "types": "./dist/train/*.d.cts",
+      "require": "./dist/train/*.cjs",
+      "default": "./dist/train/*.cjs"
+    }
+  },
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "build:native": "zig build ffi-c",
+    "build:ts-source": "tsc -p tsconfig.source.json --noEmit",
+    "build:package": "tsdown && node scripts/generate_package_declarations.cjs",
+    "generate:native-runtime-wrappers": "node scripts/generate_native_runtime_wrappers.cjs",
+    "check:native-runtime-wrappers": "node scripts/generate_native_runtime_wrappers.cjs --check",
+    "generate:native-substrate-manifest": "node scripts/generate_native_substrate_manifest.cjs",
+    "check:native-substrate-manifest": "node scripts/generate_native_substrate_manifest.cjs --check",
+    "generate:package-metadata": "node scripts/apply_package_metadata_policy.cjs",
+    "check:package-metadata": "node scripts/apply_package_metadata_policy.cjs --check",
+    "typecheck:dist": "tsc -p tsconfig.dist.json",
+    "smoke:dist": "node dist/smokes/dist_package_smoke.cjs",
+    "smoke:ts-source": "node dist/smokes/ts_source_smoke.cjs",
+    "check:ts-source-architecture": "node scripts/check_ts_source_architecture.cjs && npm run check:native-runtime-wrappers && npm run check:native-substrate-manifest && npm run check:package-metadata",
+    "smoke:frontend": "node dist/smokes/frontend_package_smoke.cjs",
+    "smoke:native-contract": "node dist/smokes/native_bridge_contract_smoke.cjs",
+    "smoke:portable-ffi": "npm run build:package && zig build ffi-c-smoke ffi-node-smoke ffi-bun-smoke ffi-wasm-smoke",
+    "smoke:portable-ffi:browser": "zig build ffi-wasm-browser-smoke",
+    "smoke:portable-ffi:browser-gpu": "zig build ffi-wasm-browser-gpu-smoke",
+    "smoke:training": "npm run build:package && node examples/node_training/train_linear.cjs && node examples/node_training/manual_loop.cjs && node examples/node_training/train_mlp.cjs && node examples/node_training/train_classifier.cjs && node examples/node_training/torch_quickstart.cjs",
+    "smoke:training:bun": "npm run build:package && bun examples/bun_training/train_linear.ts && bun examples/bun_training/manual_loop.ts && bun examples/bun_training/train_mlp.ts && bun examples/bun_training/train_classifier.ts",
+    "check:package-artifact": "node scripts/check_package_artifact.cjs",
+    "check:packed-install": "node scripts/check_packed_install.cjs",
+    "test:ts-source": "npm run build:ts-source && npm run check:ts-source-architecture && npm run build:package && npm run smoke:ts-source && npm run check:package-artifact && npm run typecheck:dist && npm run smoke:dist && npm run smoke:frontend",
+    "smoke": "node dist/smokes/node_package_smoke.cjs && node examples/node_training/train_linear.cjs && node examples/node_training/manual_loop.cjs && node examples/node_training/train_mlp.cjs && node examples/node_training/train_classifier.cjs && node examples/node_training/torch_quickstart.cjs && node examples/node_program_session/run_linear.cjs",
+    "smoke:node": "node dist/smokes/node_package_smoke.cjs && node examples/node_training/train_linear.cjs && node examples/node_training/manual_loop.cjs && node examples/node_training/train_mlp.cjs && node examples/node_training/train_classifier.cjs && node examples/node_training/torch_quickstart.cjs && node examples/node_program_session/run_linear.cjs",
+    "smoke:bun": "npm run build:package && npm run smoke:bun:dist",
+    "smoke:bun:dist": "bun ./dist/smokes/bun_package_smoke.cjs && bun examples/bun_training/train_linear.ts && bun examples/bun_training/manual_loop.ts && bun examples/bun_training/train_mlp.ts && bun examples/bun_training/train_classifier.ts && bun examples/bun_program_session/run_linear.ts && mkdir -p .zig-cache && bun build ./dist/bun_native.cjs --target=bun --outfile=.zig-cache/zgml-bun-adapter-check.js",
+    "smoke:adapters": "npm run build:package && npm run smoke:node && npm run smoke:bun:dist",
+    "bench": "npm run bench:baseline",
+    "bench:baseline": "zig build bench-baseline-check",
+    "bench:status": "node scripts/bench_status.cjs",
+    "bench:substrate": "node scripts/bench_status.cjs --substrate-gate",
+    "bench:trend": "node scripts/bench_status.cjs --trend-gate",
+    "bench:frontier": "zig build bench-frontier",
+    "bench:frontier:gate": "node scripts/check_frontier_bench.cjs",
+    "bench:q8-prompt-candidate": "node scripts/check_q8_prompt_candidate.cjs",
+    "bench:module-program": "npm run build:package && node scripts/check_module_program_bench.cjs",
+    "bench:ggml": "zig build -Doptimize=ReleaseFast bench-build && BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json ./scripts/bench_vs_ggml.sh 128 200 3",
+    "bench:ggml:parity": "zig build -Doptimize=ReleaseFast bench-build && BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json BENCH_REQUIRE_PARITY=1 ./scripts/bench_vs_ggml.sh 128 200 3",
+    "check:goal-scorecard": "node scripts/check_goal_scorecard.cjs",
+    "typecheck": "npm run build:package && tsc -p tsconfig.types.json",
+    "test": "npm run typecheck && npm run smoke:adapters",
+    "test:adapters": "npm run typecheck && npm run smoke:adapters",
+    "test:repo": "npm run typecheck && npm run test:ts-source && npm run smoke:native-contract && npm run smoke:portable-ffi && npm run smoke:portable-ffi:browser && npm run smoke:training && npm run smoke:adapters && npm run check:packed-install && npm run check:goal-scorecard"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "koffi": "^3.0.2"
+  },
+  "devDependencies": {
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3"
+  }
+}

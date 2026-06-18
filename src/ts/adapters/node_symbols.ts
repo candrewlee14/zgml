@@ -1,0 +1,145 @@
+"use strict";
+
+type NativeFunction = (...args: any[]) => any;
+
+type NativeLibrary = {
+  func(signature: string): NativeFunction;
+};
+
+export type NodeNativeSymbols = Readonly<{
+  abiStructSize: NativeFunction;
+  getRuntimeInfo: NativeFunction;
+  statusName: NativeFunction;
+  modelCreate: NativeFunction;
+  modelLoadPath: NativeFunction;
+  modelLoadSafetensorsData: NativeFunction;
+  modelProbePath: NativeFunction;
+  modelProbeSafetensorsData: NativeFunction;
+  modelProbeSafetensorsHeader: NativeFunction;
+  supportedCheckpointCount: NativeFunction;
+  supportedCheckpointInspect: NativeFunction;
+  modelInspect: NativeFunction;
+  programCompile: NativeFunction;
+  moduleProgramCompile: NativeFunction;
+  programGetRequirements: NativeFunction;
+  programCheckModelCompatibility: NativeFunction;
+  programCreateBuffer: NativeFunction;
+  programCreateDeviceBuffer: NativeFunction;
+  programGetDeviceHandle: NativeFunction;
+  programImportDeviceBuffer: NativeFunction;
+  programCreateOutputBuffer: NativeFunction;
+  programInspect: NativeFunction;
+  llamaProgramInspect: NativeFunction;
+  llamaProgramGetKvCacheRequirements: NativeFunction;
+  programRuntimeProfile: NativeFunction;
+  programResetRuntimeProfile: NativeFunction;
+  bufferCreate: NativeFunction;
+  bufferWrap: NativeFunction;
+  bufferWrapResource: NativeFunction;
+  bufferSize: NativeFunction;
+  bufferInspect: NativeFunction;
+  bufferWrite: NativeFunction;
+  bufferRead: NativeFunction;
+  bufferFree: NativeFunction;
+  sessionBind: NativeFunction;
+  sessionBindModel: NativeFunction;
+  sessionBindModelBuffers: NativeFunction;
+  sessionBindBuffers: NativeFunction;
+  llamaSessionBindModelBuffers: NativeFunction;
+  llamaSessionBindBuffers: NativeFunction;
+  sessionUploadPersistent: NativeFunction;
+  sessionUploadPersistentRange: NativeFunction;
+  sessionStep: NativeFunction;
+  sessionStepNoOutput: NativeFunction;
+  sessionStepToken: NativeFunction;
+  sessionAdvanceToken: NativeFunction;
+  sessionExecuteTokens: NativeFunction;
+  sessionArgmaxToken: NativeFunction;
+  sessionExecuteArgmaxTokens: NativeFunction;
+  sessionGenerateArgmaxTokens: NativeFunction;
+  sessionSampleToken: NativeFunction;
+  sessionExecuteSampleTokens: NativeFunction;
+  sessionGenerateSampleTokens: NativeFunction;
+  sessionPosition: NativeFunction;
+  sessionInspect: NativeFunction;
+  sessionReset: NativeFunction;
+  sessionRuntimeProfile: NativeFunction;
+  sessionResetRuntimeProfile: NativeFunction;
+  sessionFree: NativeFunction;
+  programFree: NativeFunction;
+  modelFree: NativeFunction;
+}>;
+
+function requireNativeLibrary(value: unknown): NativeLibrary {
+  if (!value || typeof value !== "object" || typeof (value as { func?: unknown }).func !== "function") {
+    throw new Error("zgml Node FFI expected koffi.load() to return a native library with func(signature)");
+  }
+  return value as NativeLibrary;
+}
+
+export function bindNodeSymbols(nativeLibrary: unknown): NodeNativeSymbols {
+  const lib = requireNativeLibrary(nativeLibrary);
+  return {
+    abiStructSize: lib.func("size_t zgml_abi_struct_size(uint32_t kind)"),
+    getRuntimeInfo: lib.func("int zgml_get_runtime_info(_Out_ zgml_runtime_info *out_info)"),
+    statusName: lib.func("const char *zgml_status_name(int code)"),
+    modelCreate: lib.func("int zgml_model_create(const zgml_model_desc *desc, _Out_ void **out_model)"),
+    modelLoadPath: lib.func("int zgml_model_load_path(const zgml_model_load_desc *desc, _Out_ void **out_model)"),
+    modelLoadSafetensorsData: lib.func("int zgml_model_load_safetensors_data(const zgml_safetensors_data_load_desc *desc, _Out_ void **out_model)"),
+    modelProbePath: lib.func("int zgml_model_probe_path(const zgml_model_load_desc *desc, _Out_ zgml_model_inspection *out_inspection)"),
+    modelProbeSafetensorsData: lib.func("int zgml_model_probe_safetensors_data(const zgml_safetensors_data_load_desc *desc, _Out_ zgml_model_inspection *out_inspection)"),
+    modelProbeSafetensorsHeader: lib.func("int zgml_model_probe_safetensors_header(const zgml_safetensors_header_probe_desc *desc, _Out_ zgml_model_inspection *out_inspection)"),
+    supportedCheckpointCount: lib.func("size_t zgml_supported_checkpoint_count(void)"),
+    supportedCheckpointInspect: lib.func("int zgml_supported_checkpoint_inspect(size_t index, _Out_ zgml_model_inspection *out_inspection)"),
+    modelInspect: lib.func("int zgml_model_inspect(void *model, _Out_ zgml_model_inspection *out_inspection)"),
+    programCompile: lib.func("int zgml_program_compile(void *model, const zgml_compile_desc *desc, _Out_ void **out_program)"),
+    moduleProgramCompile: lib.func("int zgml_module_program_compile(const zgml_module_desc *module_desc, const zgml_compile_desc *compile_desc, _Out_ void **out_program)"),
+    programGetRequirements: lib.func("int zgml_program_get_requirements(void *program, _Out_ zgml_program_requirements *out_requirements)"),
+    programCheckModelCompatibility: lib.func("int zgml_program_check_model_compatibility(void *program, void *model, _Out_ zgml_program_model_compatibility *out_compatibility)"),
+    programCreateBuffer: lib.func("int zgml_program_create_buffer(void *program, uint32_t kind, _Out_ void **out_buffer)"),
+    programCreateDeviceBuffer: lib.func("int zgml_program_create_device_buffer(void *program, uint32_t kind, uint32_t placement, _Out_ void **out_buffer)"),
+    programGetDeviceHandle: lib.func("int zgml_program_get_device_handle(void *program, uint32_t placement, _Out_ size_t *out_handle)"),
+    programImportDeviceBuffer: lib.func("int zgml_program_import_device_buffer(void *program, uint32_t kind, const zgml_device_buffer_import_desc *desc, _Out_ void **out_buffer)"),
+    programCreateOutputBuffer: lib.func("int zgml_program_create_output_buffer(void *program, _Out_ void **out_buffer)"),
+    programInspect: lib.func("int zgml_program_inspect(void *program, _Out_ zgml_program_inspection *out_inspection)"),
+    llamaProgramInspect: lib.func("int zgml_llama_program_inspect(void *program, _Out_ zgml_llama_program_inspection *out_inspection)"),
+    llamaProgramGetKvCacheRequirements: lib.func("int zgml_llama_program_get_kv_cache_requirements(void *program, _Out_ zgml_llama_kv_cache_requirements *out_requirements)"),
+    programRuntimeProfile: lib.func("int zgml_program_runtime_profile(void *program, _Out_ zgml_runtime_profile *out_profile)"),
+    programResetRuntimeProfile: lib.func("int zgml_program_reset_runtime_profile(void *program)"),
+    bufferCreate: lib.func("int zgml_buffer_create(const zgml_buffer_desc *desc, _Out_ void **out_buffer)"),
+    bufferWrap: lib.func("int zgml_buffer_wrap(void *data, size_t byte_len, _Out_ void **out_buffer)"),
+    bufferWrapResource: lib.func("int zgml_buffer_wrap_resource(const zgml_external_resource_desc *desc, _Out_ void **out_buffer)"),
+    bufferSize: lib.func("size_t zgml_buffer_size(void *buffer)"),
+    bufferInspect: lib.func("int zgml_buffer_inspect(void *buffer, _Out_ zgml_buffer_inspection *out_inspection)"),
+    bufferWrite: lib.func("int zgml_buffer_write(void *buffer, size_t byte_offset, const void *src, size_t byte_len)"),
+    bufferRead: lib.func("int zgml_buffer_read(void *buffer, size_t byte_offset, void *dst, size_t byte_len)"),
+    bufferFree: lib.func("void zgml_buffer_free(void *buffer)"),
+    sessionBind: lib.func("int zgml_session_bind(void *program, const zgml_bind_desc *desc, _Out_ void **out_session)"),
+    sessionBindModel: lib.func("int zgml_session_bind_model(void *program, void *model, const zgml_bind_desc *desc, _Out_ void **out_session)"),
+    sessionBindModelBuffers: lib.func("int zgml_session_bind_model_buffers(void *program, void *model, const zgml_buffer_bind_desc *desc, _Out_ void **out_session)"),
+    sessionBindBuffers: lib.func("int zgml_session_bind_buffers(void *program, const zgml_buffer_bind_desc *desc, _Out_ void **out_session)"),
+    llamaSessionBindModelBuffers: lib.func("int zgml_llama_session_bind_model_buffers(void *program, void *model, const zgml_llama_buffer_bind_desc *desc, _Out_ void **out_session)"),
+    llamaSessionBindBuffers: lib.func("int zgml_llama_session_bind_buffers(void *program, const zgml_llama_buffer_bind_desc *desc, _Out_ void **out_session)"),
+    sessionUploadPersistent: lib.func("int zgml_session_upload_persistent(void *session)"),
+    sessionUploadPersistentRange: lib.func("int zgml_session_upload_persistent_range(void *session, size_t first, size_t len)"),
+    sessionStep: lib.func("int zgml_session_step(void *session, const zgml_step_desc *desc, _Out_ zgml_step_result *out_result)"),
+    sessionStepNoOutput: lib.func("int zgml_session_step_no_output(void *session, const zgml_step_desc *desc, _Out_ zgml_step_result *out_result)"),
+    sessionStepToken: lib.func("int zgml_session_step_token(void *session, const zgml_token_step_desc *desc, _Out_ zgml_step_result *out_result)"),
+    sessionAdvanceToken: lib.func("int zgml_session_advance_token(void *session, const zgml_token_advance_desc *desc)"),
+    sessionExecuteTokens: lib.func("int zgml_session_execute_tokens(void *session, const zgml_token_execute_desc *desc, _Out_ zgml_step_result *out_result)"),
+    sessionArgmaxToken: lib.func("int zgml_session_argmax_token(void *session, const zgml_token_argmax_desc *desc, _Out_ zgml_token_argmax_result *out_result)"),
+    sessionExecuteArgmaxTokens: lib.func("int zgml_session_execute_argmax_tokens(void *session, const zgml_token_execute_argmax_desc *desc, _Out_ zgml_token_argmax_result *out_result)"),
+    sessionGenerateArgmaxTokens: lib.func("int zgml_session_generate_argmax_tokens(void *session, const zgml_token_generate_argmax_desc *desc, _Out_ zgml_token_generate_argmax_result *out_result)"),
+    sessionSampleToken: lib.func("int zgml_session_sample_token(void *session, const zgml_token_sample_desc *desc, _Out_ zgml_token_sample_result *out_result)"),
+    sessionExecuteSampleTokens: lib.func("int zgml_session_execute_sample_tokens(void *session, const zgml_token_execute_sample_desc *desc, _Out_ zgml_token_sample_result *out_result)"),
+    sessionGenerateSampleTokens: lib.func("int zgml_session_generate_sample_tokens(void *session, const zgml_token_generate_sample_desc *desc, _Out_ zgml_token_generate_sample_result *out_result)"),
+    sessionPosition: lib.func("int zgml_session_position(void *session, _Out_ size_t *out_position)"),
+    sessionInspect: lib.func("int zgml_session_inspect(void *session, _Out_ zgml_session_inspection *out_inspection)"),
+    sessionReset: lib.func("int zgml_session_reset(void *session)"),
+    sessionRuntimeProfile: lib.func("int zgml_session_runtime_profile(void *session, _Out_ zgml_runtime_profile *out_profile)"),
+    sessionResetRuntimeProfile: lib.func("int zgml_session_reset_runtime_profile(void *session)"),
+    sessionFree: lib.func("void zgml_session_free(void *session)"),
+    programFree: lib.func("void zgml_program_free(void *program)"),
+    modelFree: lib.func("void zgml_model_free(void *model)"),
+  };
+}

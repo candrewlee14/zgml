@@ -124,6 +124,10 @@ pub fn FusionDetector(comptime T: type) type {
                 try self.fused_chains.append(alloc, plan);
                 return true;
             }
+            if (self.detectAvgPool2dForward(node, idx)) |plan| {
+                try self.fused_chains.append(alloc, plan);
+                return true;
+            }
             return false;
         }
 
@@ -218,8 +222,7 @@ pub fn FusionDetector(comptime T: type) type {
             const var_sum = expect(var_node.source0(), .sum) orelse return null;
             if (var_node.source1() == null) return null;
             const sqr_node = var_sum.source0() orelse return null;
-            if (sqr_node.opTag() != .mul) return null;
-            if (sqr_node.source0() != centered or sqr_node.source1() != centered) return null;
+            if (!isSquareOf(sqr_node, centered)) return null;
 
             if (centered.opTag() != .add) return null;
             const neg_rep_mean = expect(centered.source1(), .neg) orelse return null;
@@ -330,6 +333,32 @@ pub fn FusionDetector(comptime T: type) type {
                 .input = input,
                 .strided = strided,
                 .max_node = max_node,
+                .output = node,
+            } } };
+        }
+
+        /// avgpool2d: reshape(mean(as_strided_6d(input))) with 2x2 window
+        fn detectAvgPool2dForward(self: *Self, node: *Tensor(T), idx: usize) ?FusionPlan(T) {
+            const op = node.opTag();
+            if ((op != .reshape and op != .view) or node.n_dims != 4) return null;
+            const mul_node = expect(node.source0(), .mul) orelse return null;
+            const sum_node = if (expect(mul_node.source0(), .sum)) |sum| sum else expect(mul_node.source1(), .sum) orelse return null;
+            const scale_node = if (sum_node == mul_node.source0()) mul_node.source1() orelse return null else mul_node.source0() orelse return null;
+            if (scale_node.opTag() != .repeat) return null;
+            const scalar_node = scale_node.source0() orelse scale_node;
+            if (!scalar_node.isScalar()) return null;
+            if (scalar_node.data.len == 0 or scalar_node.data[scalar_node.storage_offset] != @as(T, 0.25)) return null;
+            const strided = expect(sum_node.source0(), .as_strided) orelse return null;
+            if (strided.n_dims != 6 or strided.ne[2] != 2 or strided.ne[3] != 2) return null;
+            const input = strided.source0() orelse return null;
+            if (input.n_dims != 4) return null;
+
+            self.markNodes(&.{ strided, sum_node, scale_node, mul_node, node });
+            return .{ .output_idx = idx, .payload = .{ .avg_pool2d = .{
+                .input = input,
+                .strided = strided,
+                .sum_node = sum_node,
+                .mul_node = mul_node,
                 .output = node,
             } } };
         }
@@ -472,6 +501,14 @@ pub fn FusionDetector(comptime T: type) type {
 
         fn isCommutative(node: *Tensor(T)) bool {
             return node.opTag() == .add or node.opTag() == .mul;
+        }
+
+        fn isSquareOf(node: *Tensor(T), input: *Tensor(T)) bool {
+            return switch (node.opTag()) {
+                .sqr => node.source0() == input,
+                .mul => node.source0() == input and node.source1() == input,
+                else => false,
+            };
         }
 
         fn isSafeBinaryOperand(node: *Tensor(T)) bool {

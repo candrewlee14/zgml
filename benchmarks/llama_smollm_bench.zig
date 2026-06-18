@@ -1,35 +1,29 @@
-//! SmolLM LLaMA inference benchmark for zgml.
+//! SmolLM LLaMA inference benchmark for internal.
 //!
 //! Measures prompt and decode throughput on the local SmolLM checkpoint using
 //! the real `LlamaInferenceSession` path, without tokenizer or stdout noise.
 //!
 //! Run:
-//!   zig build bench-llama-smollm
+//!   zig build bench-llama-smollm # model-free copy-and-patch stencil probe
 //!   ./zig-out/bin/bench-llama-smollm [model.safetensors|model.gguf] [prompt_tokens] [gen_tokens] [repetitions]
-//!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --metal-fine
-//!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --metal-region
-//!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-prefill-device
-//!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-rope-cache-sidecars
-//!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --profile-timing
-//!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --print-stage-plan
-//!   ./zig-out/bin/bench-llama-smollm model.gguf 4 200 3 --stage-plan-only
+//!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-prefill-device --gate-only
+//!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-prefill-device --metal-decode-region --gate-only
+//!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-prefill-device --metal-prompt-projection-row-chain-candidate --gate-only
+//!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-decode-no-readback
+//!   ./zig-out/bin/bench-llama-smollm ignored 128 1 1 --stencil-only
 
 const std = @import("std");
-const zgml = @import("zgml");
+const internal = @import("zgml_internal");
+const opts = @import("zgml_options");
 
-const CpuBackend = zgml.backend_cpu.CpuBackend;
-const WgpuBackend = zgml.backend_wgpu.WgpuBackend;
-const MetalBackend = zgml.backend_metal.MetalBackend;
-const DeviceInference = zgml.device_inference.DeviceInference;
-const LlamaDevicePrefill = zgml.llm.LlamaDevicePrefill;
-const Backend = zgml.backend.Backend;
-const Tensor = zgml.Tensor;
-const profile = zgml.profile;
-const backend_program = zgml.backend_program;
-const have_wgpu = @import("zgml_options").use_wgpu;
+const CpuBackend = internal.backend_cpu.CpuBackend;
+const MetalBackend = internal.backend_metal.MetalBackend;
+const StencilBackend = internal.backend_stencil.StencilBackend;
+const Backend = internal.backend.Backend;
+const program_mod = internal.backend_program;
 const is_macos = @import("builtin").os.tag == .macos;
 
-const config = zgml.models.LlamaConfig{
+const config = internal.llama_inference.LlamaConfig{
     .vocab_size = 49152,
     .d_model = 576,
     .n_heads = 9,
@@ -42,7 +36,10 @@ const config = zgml.models.LlamaConfig{
     .tied_lm_head = true,
 };
 
-const Session = zgml.llama_inference.LlamaInferenceSession(f32, config);
+const Session = internal.llama_inference.LlamaInferenceSession(f32, config);
+const expected_p128_decode_stencil_hash: u64 = 14405191909906507341;
+const expected_p128_prefill_stencil_hash: u64 = 17558208047327870709;
+const StencilPhase = enum { decode, prompt };
 
 const BenchConfig = struct {
     model_path: []const u8,
@@ -51,73 +48,89 @@ const BenchConfig = struct {
     repetitions: usize,
 };
 
-const BenchResult = struct {
-    prompt_tok_s: f64,
-    gen_tok_s: f64,
-    prompt_avg_ms: f64,
-    gen_avg_ms: f64,
+const JsonRow = union(enum) {
+    bench: struct { prompt_tok_s: ?f64, decode_tok_s: ?f64 },
+    stencil: struct { phase: []const u8 },
 };
 
-fn loadWeights(session: *Session, alloc: std.mem.Allocator, model_path: []const u8, io: std.Io) !void {
-    return switch (zgml.llm.inferFileKind(model_path) orelse return error.UnknownModelFormat) {
-        .safetensors => {
-            var sf = try zgml.safetensors.SafetensorsFile.open(alloc, model_path, io);
-            defer sf.deinit();
-            session.clearDirectQuantWeights();
-            try zgml.models.llama_loader.loadLlama(f32, config, &session.model, &sf);
-        },
-        .gguf => {
-            var gf = try zgml.gguf.GGUFFile.open(alloc, io, model_path);
-            defer gf.deinit();
-            try session.loadGGUFDirectQuantized(&gf);
-        },
-    };
+fn writeSemanticShapeJsonFields(jw: *std.json.Stringify, shape: anytype) !void {
+    try jw.objectField("semantic_stage_count");
+    try jw.write(shape.semantic_stage_count);
+    try jw.objectField("semantic_token_count");
+    try jw.write(shape.semantic_token_count);
+    try jw.objectField("semantic_layers");
+    try jw.write(shape.semantic_layers);
+    try jw.objectField("semantic_heads");
+    try jw.write(shape.semantic_heads);
+    try jw.objectField("semantic_kv_heads");
+    try jw.write(shape.semantic_kv_heads);
+    try jw.objectField("semantic_layer_stage_count");
+    try jw.write(shape.semantic_layer_stage_count);
+    try jw.objectField("semantic_terminal_stage_count");
+    try jw.write(shape.semantic_terminal_stage_count);
+    try jw.objectField("semantic_runtime_patch_holes");
+    try jw.write(shape.semantic_runtime_patch_holes);
+    try jw.objectField("semantic_runtime_patch_cache_write_pos_holes");
+    try jw.write(shape.semantic_runtime_patch_cache_write_pos_holes);
+    try jw.objectField("semantic_runtime_patch_attention_seq_kv_holes");
+    try jw.write(shape.semantic_runtime_patch_attention_seq_kv_holes);
 }
 
-fn isGGUF(model_path: []const u8) bool {
-    return (zgml.llm.inferFileKind(model_path) orelse return false) == .gguf;
+fn writeProfileJson(
+    writer: anytype,
+    label: []const u8,
+    row: JsonRow,
+    profile: internal.profile.RuntimeProfile,
+    shape: anytype,
+) !void {
+    try writer.writeAll(switch (row) {
+        .bench => "ZGML_BENCH_JSON ",
+        .stencil => "ZGML_STENCIL_JSON ",
+    });
+    var jw: std.json.Stringify = .{ .writer = writer };
+    try jw.beginObject();
+    try jw.objectField("label");
+    try jw.write(label);
+    switch (row) {
+        .bench => |bench| {
+            try jw.objectField("prompt_tok_s");
+            try jw.write(bench.prompt_tok_s);
+            try jw.objectField("decode_tok_s");
+            try jw.write(bench.decode_tok_s);
+        },
+        .stencil => |stencil| {
+            try jw.objectField("phase");
+            try jw.write(stencil.phase);
+        },
+    }
+    try writeSemanticShapeJsonFields(&jw, shape);
+    try internal.profile.writeRuntimeProfileJsonFields(profile, &jw);
+    try jw.endObject();
+    try writer.writeByte('\n');
+    writer.flush() catch {};
 }
 
-fn schedulePolicyForBackend(be: Backend) backend_program.SchedulePolicy {
-    return switch (be.device_type) {
-        .wgpu => .{
-            .capabilities = be.capabilities,
-            .native_kernels = .{
-                .elementwise = true,
-                .fused_elementwise = be.capabilities.fused_elementwise,
-                .row = true,
-                .reduce = true,
-                .movement = true,
-                .matmul = be.capabilities.dense_matmul_f32,
-                .qmatvec = be.capabilities.qmatmul,
-                .qmatmul = be.capabilities.qmatmul,
-                .rope = true,
-                .attention = be.capabilities.attention.supported,
-            },
-            .fine_grained = true,
-            .min_backend_matmul_m = 0,
-            .min_backend_qmatmul_m = 0,
-        },
-        .cpu => .{
-            .capabilities = be.capabilities,
-            .native_kernels = .{
-                .elementwise = true,
-                .fused_elementwise = be.capabilities.fused_elementwise,
-                .row = true,
-                .reduce = true,
-                .movement = true,
-                .matmul = be.capabilities.dense_matmul_f32,
-                .qmatvec = be.capabilities.qmatmul,
-                .qmatmul = be.capabilities.qmatmul,
-                .rope = true,
-                .attention = be.capabilities.attention.supported,
-            },
-            .fine_grained = true,
-            .min_backend_matmul_m = 0,
-            .min_backend_qmatmul_m = 0,
-        },
-        else => backend_program.SchedulePolicy.conservative(be.capabilities),
-    };
+fn requireStencilEvidence(comptime phase: StencilPhase, prompt_tokens: usize, profile: internal.profile.RuntimeProfile, shape: anytype) !void {
+    const patch = profile.runtime_patch_shape;
+    if (profile.runtime_patch_call_count != 0) return error.UnexpectedStencilRuntimeCalls;
+    if (patch.runtime_patch_holes != shape.semantic_runtime_patch_holes or
+        patch.runtime_patch_cache_write_pos_holes != shape.semantic_runtime_patch_cache_write_pos_holes or
+        patch.runtime_patch_attention_seq_kv_holes != shape.semantic_runtime_patch_attention_seq_kv_holes) return error.RuntimePatchShapeMismatch;
+    if (prompt_tokens == 128) {
+        const expected_hash = switch (phase) {
+            .decode => expected_p128_decode_stencil_hash,
+            .prompt => expected_p128_prefill_stencil_hash,
+        };
+        if (patch.runtime_patch_stencil_hash != expected_hash) return error.StencilHashMismatch;
+    }
+}
+
+fn decodeToken(decode: anytype, token_id: usize, discard_logits: bool) !void {
+    if (discard_logits) {
+        try decode.advance(token_id);
+    } else {
+        _ = try decode.step(token_id);
+    }
 }
 
 fn runVariant(
@@ -129,15 +142,18 @@ fn runVariant(
     writer: anytype,
     io: std.Io,
     alloc: std.mem.Allocator,
-) !BenchResult {
+) !void {
+    const total_tokens = std.math.add(usize, cfg.prompt_tokens, cfg.gen_tokens) catch return error.SequenceTooLong;
+    if (total_tokens > config.max_seq_len) return error.SequenceTooLong;
+
     var session = if (maybe_backend) |backend|
         try Session.initWithBackend(alloc, backend)
     else
         try Session.init(alloc);
     defer session.deinit();
 
-    try loadWeights(&session, alloc, cfg.model_path, io);
-    if (quantized and !isGGUF(cfg.model_path)) try session.quantize();
+    try session.load(io, cfg.model_path);
+    if (quantized and !std.ascii.endsWithIgnoreCase(cfg.model_path, ".gguf")) try session.quantize();
     if (quant_kv) try session.quantizeKV();
 
     // Pre-build the prompt token buffer once. The session takes it verbatim.
@@ -182,16 +198,9 @@ fn runVariant(
         .{ label, prompt_tok_s, prompt_avg_ms, gen_tok_s, gen_avg_ms },
     );
     writer.flush() catch {};
-
-    return .{
-        .prompt_tok_s = prompt_tok_s,
-        .gen_tok_s = gen_tok_s,
-        .prompt_avg_ms = prompt_avg_ms,
-        .gen_avg_ms = gen_avg_ms,
-    };
 }
 
-/// Run decode-only benchmark through DeviceInference (compiled GPU program).
+/// Run decode-only benchmark through the reusable device decode path.
 fn runDeviceVariant(
     label: []const u8,
     be: Backend,
@@ -199,145 +208,48 @@ fn runDeviceVariant(
     writer: anytype,
     io: std.Io,
     alloc: std.mem.Allocator,
-) !BenchResult {
-    const d_model = config.d_model;
-    const d_head = d_model / config.n_heads;
-    const max_seq = config.max_seq_len;
-
+    discard_logits: bool,
+) !void {
     // Build session without backend — graph captures all ops for device compilation.
     var session = try Session.init(alloc);
     defer session.deinit();
-    try loadWeights(&session, alloc, cfg.model_path, io);
-
-    // Build input tensor list: token_input, attn_mask, per-layer RoPE.
-    const n_inputs = 2 + config.n_layers;
-    const input_tensors = try alloc.alloc(*const Tensor(f32), n_inputs);
-    defer alloc.free(input_tensors);
-    input_tensors[0] = session.plan.token_input;
-    input_tensors[1] = session.plan.attn_mask;
-    for (session.plan.trace.layers, 0..) |lt, l| {
-        input_tensors[2 + l] = lt.rope;
-    }
+    try session.load(io, cfg.model_path);
 
     // Logits host buffer.
     const logits_buf = try alloc.alloc(f32, config.vocab_size);
     defer alloc.free(logits_buf);
 
-    var device = try DeviceInference(f32).init(.{
-        .graph = &session.plan.graph,
-        .be = be,
-        .alloc = alloc,
-        .input_tensors = input_tensors,
-        .output_tensor = session.plan.trace.logits,
-        .output_host_buf = logits_buf.ptr,
-        .output_len = config.vocab_size,
-        .quant_weights = session.plan.quant_weights,
-        .quant_map = &session.plan.quant_map,
-    });
-    defer device.deinit();
+    var decode_program = try session.compileDeviceDecodeProgram(be, alloc);
+    defer decode_program.deinit();
+    var decode = try decode_program.bind(&session, logits_buf);
+    defer decode.deinit();
 
-    const program = device.getProgram();
-    const schedule_policy = schedulePolicyForBackend(be);
-    profile.printProfile(profile.profileProgramWithSchedule(program, schedule_policy));
-    const schedule = try backend_program.buildKernelSchedule(alloc, device.program_ops, schedule_policy);
-    defer alloc.free(schedule);
-    const qmatvec_regions = try backend_program.buildKernelRegions(alloc, schedule, backend_program.RegionPolicy.qmatvecCluster());
-    defer alloc.free(qmatvec_regions);
-    profile.printKernelRegionSummary("qmatvec clusters", qmatvec_regions);
-    const qmatvec_anchor_runs = try backend_program.buildAnchorRunRegions(alloc, schedule, backend_program.RegionPolicy.qmatvecCluster());
-    defer alloc.free(qmatvec_anchor_runs);
-    profile.printKernelRegionSummary("qmatvec anchor runs", qmatvec_anchor_runs);
-    const qmatvec_block_windows = try backend_program.buildAnchorWindowRegions(alloc, schedule, backend_program.RegionPolicy.qmatvecCluster(), 7);
-    defer alloc.free(qmatvec_block_windows);
-    profile.printKernelRegionSummary("qmatvec 7-anchor windows", qmatvec_block_windows);
-    const block_region_plan = try alloc.alloc(backend_program.PatternRegion, qmatvec_block_windows.len);
-    defer alloc.free(block_region_plan);
-    for (qmatvec_block_windows, 0..) |region, i| {
-        block_region_plan[i] = .{ .pattern_index = 0, .region = region };
+    // Warm up the same prompt-seeded decode path measured below.
+    const total_tokens = std.math.add(usize, cfg.prompt_tokens, cfg.gen_tokens) catch return error.SequenceTooLong;
+    if (total_tokens > config.max_seq_len) return error.SequenceTooLong;
+    for (0..total_tokens) |i| {
+        try decodeToken(&decode, (i + 1) % config.vocab_size, discard_logits);
     }
-    const block_region_schedule = try backend_program.buildRegionSchedule(alloc, schedule, block_region_plan);
-    defer alloc.free(block_region_schedule);
-    profile.printRegionScheduleSummary("qmatvec 7-anchor windows", block_region_schedule);
-    const lowered_block_patterns = [_]u32{0};
-    profile.printRegionExecutionSummary(
-        "qmatvec 7-anchor windows lowered",
-        backend_program.summarizeRegionExecution(block_region_schedule, schedule, &lowered_block_patterns),
-    );
-    try profile.printAnchorNeighborhoodSummary(2, alloc, "qmatvec", schedule, backend_program.RegionPolicy.qmatvecCluster(), 8);
-    const qmatvec_rope_attention_pattern = [_]backend_program.KernelFamily{ .qmatvec, .rope, .qmatvec, .rope, .movement, .qmatvec, .movement, .attention };
-    const qmatvec_rope_attention = try backend_program.buildFamilyPatternRegions(alloc, schedule, &qmatvec_rope_attention_pattern);
-    defer alloc.free(qmatvec_rope_attention);
-    profile.printKernelRegionSummary("qmatvec-rope-attention pattern", qmatvec_rope_attention);
-    const region_patterns = [_]backend_program.FamilyPattern{.{
-        .name = "qmatvec-rope-attention",
-        .families = &qmatvec_rope_attention_pattern,
-    }};
-    const region_plan = try backend_program.buildFamilyPatternPlan(alloc, schedule, &region_patterns);
-    defer alloc.free(region_plan);
-    const region_schedule = try backend_program.buildRegionSchedule(alloc, schedule, region_plan);
-    defer alloc.free(region_schedule);
-    profile.printRegionScheduleSummary(region_patterns[0].name, region_schedule);
-    const lowered_region_patterns = [_]u32{0};
-    profile.printRegionExecutionSummary(
-        "qmatvec-rope-attention lowered",
-        backend_program.summarizeRegionExecution(region_schedule, schedule, &lowered_region_patterns),
-    );
+    session.reset();
 
-    const rope = &session.model.blocks[0].rope;
-    const tok_data = session.model.token_embed.inner.data;
-
-    // Helper: execute one decode step through DeviceInference.
-    const StepCtx = struct {
-        fn doStep(
-            dev: *DeviceInference(f32),
-            plan_: *@TypeOf(session.plan),
-            tok_data_: []const f32,
-            rope_: anytype,
-            token_id: usize,
-            pos: usize,
-        ) void {
-            // 1. Patch token embedding.
-            @memcpy(plan_.token_input.data[0..d_model], tok_data_[token_id * d_model ..][0..d_model]);
-            // 2. Patch causal mask.
-            const mask = plan_.attn_mask.data[0..max_seq];
-            @memset(mask[0 .. pos + 1], 0);
-            if (pos + 1 < max_seq) @memset(mask[pos + 1 ..], -std.math.inf(f32));
-            // 3. Patch RoPE cos/sin for each layer.
-            for (plan_.trace.layers) |lt| {
-                @memcpy(lt.rope.data[0..d_head], rope_.cos_table.data[pos * d_head ..][0..d_head]);
-                @memcpy(lt.rope.data[d_head .. 2 * d_head], rope_.sin_table.data[pos * d_head ..][0..d_head]);
-            }
-            // 4. Patch KV-cache write offsets and attention seq_kv.
-            dev.patchSliceAssignOffset(@intCast(pos));
-            dev.patchAttentionSeqKV(@intCast(pos + 1));
-            // 5. Execute.
-            dev.execute();
-        }
-    };
-
-    // Warm up.
-    StepCtx.doStep(&device, &session.plan, tok_data, rope, 0, 0);
-    // Reset KV caches (zero shared memory).
-    for (0..config.n_layers) |l| {
-        @memset(session.k_caches[l].data, 0);
-        @memset(session.v_caches[l].data, 0);
-    }
-
-    // Benchmark decode only (prompt is trivially 1-token, focus on decode throughput).
+    // Benchmark decode after the requested prompt length, matching llama-bench tg.
     var gen_total_ns: u128 = 0;
+    var gen_profile = internal.profile.RuntimeProfile{};
     for (0..cfg.repetitions) |_| {
-        // Reset KV caches.
-        for (0..config.n_layers) |l| {
-            @memset(session.k_caches[l].data, 0);
-            @memset(session.v_caches[l].data, 0);
+        session.reset();
+        decode.resetRuntimeProfile();
+        for (0..cfg.prompt_tokens) |i| {
+            try decodeToken(&decode, (i + 1) % config.vocab_size, discard_logits);
         }
+        decode.resetRuntimeProfile();
 
         const gen_start = std.Io.Clock.awake.now(io).nanoseconds;
         for (0..cfg.gen_tokens) |i| {
-            StepCtx.doStep(&device, &session.plan, tok_data, rope, (i + 1) % config.vocab_size, i);
+            try decodeToken(&decode, (cfg.prompt_tokens + i + 1) % config.vocab_size, discard_logits);
         }
         const gen_end = std.Io.Clock.awake.now(io).nanoseconds;
         gen_total_ns += @intCast(gen_end - gen_start);
+        decode.addRuntimeProfileTo(&gen_profile);
     }
 
     const gen_ns = @as(f64, @floatFromInt(gen_total_ns));
@@ -350,15 +262,10 @@ fn runDeviceVariant(
     );
     writer.flush() catch {};
 
-    if (device.getRuntimeProfile()) |rt| {
-        const est = profile.estimateProgram(device.program_ops);
-        profile.printRuntimeProfile(rt.*, est);
-    }
-
-    return .{ .prompt_tok_s = 0, .gen_tok_s = gen_tok_s, .prompt_avg_ms = 0, .gen_avg_ms = gen_avg_ms };
+    try writeProfileJson(writer, label, .{ .bench = .{ .prompt_tok_s = null, .decode_tok_s = gen_tok_s } }, gen_profile, decode.semanticShape());
 }
 
-/// Run prompt/prefill through DeviceInference at the requested prompt width.
+/// Run prompt/prefill through the reusable device prefill path.
 fn runDevicePrefillVariant(
     label: []const u8,
     be: Backend,
@@ -366,13 +273,12 @@ fn runDevicePrefillVariant(
     writer: anytype,
     io: std.Io,
     alloc: std.mem.Allocator,
-    command_policy: backend_program.CommandStreamPolicy,
-) !BenchResult {
+) !void {
     if (cfg.prompt_tokens == 0 or cfg.prompt_tokens > config.max_seq_len) return error.InvalidPromptLength;
 
     var session = try Session.init(alloc);
     defer session.deinit();
-    try loadWeights(&session, alloc, cfg.model_path, io);
+    try session.load(io, cfg.model_path);
 
     const prompt = try alloc.alloc(usize, cfg.prompt_tokens);
     defer alloc.free(prompt);
@@ -381,66 +287,20 @@ fn runDevicePrefillVariant(
     const logits_buf = try alloc.alloc(f32, config.vocab_size);
     defer alloc.free(logits_buf);
 
-    var prefill = try LlamaDevicePrefill(f32, config).init(.{
-        .session = &session,
-        .backend = be,
-        .alloc = alloc,
-        .chunk_tokens = cfg.prompt_tokens,
-        .logits_buf = logits_buf,
-    });
+    var prefill_program = try session.compileDevicePrefillProgram(be, alloc, cfg.prompt_tokens);
+    defer prefill_program.deinit();
+    var prefill = try prefill_program.bind(&session, logits_buf);
     defer prefill.deinit();
 
-    const program = prefill.getProgram();
-    const schedule_policy = schedulePolicyForBackend(be);
-    profile.printProfile(profile.profileProgramWithSchedule(program, schedule_policy));
-    const schedule = try backend_program.buildKernelSchedule(alloc, program.ops, schedule_policy);
-    defer alloc.free(schedule);
-    const prefill_stages = [_]backend_program.StagePolicy{
-        zgml.backend_metal.MetalRegionPattern.prefill_layer_stage.stagePolicy(),
-    };
-    const prefill_stage_schedule = try backend_program.buildStageRegionSchedule(alloc, schedule, &prefill_stages);
-    defer alloc.free(prefill_stage_schedule);
-    profile.printRegionScheduleSummary("prefill-layer stages", prefill_stage_schedule);
-    const stage_commands = try backend_program.buildStageCommands(alloc, program.ops);
-    defer alloc.free(stage_commands);
-    profile.printStageCommandSummary("prefill", backend_program.summarizeStageCommands(stage_commands));
-    const projection_groups = try backend_program.buildProjectionGroups(alloc, program.ops, backend_program.ProjectionGroupPolicy.prefillQMatmul(command_policy.qmatmul_group_size));
-    defer alloc.free(projection_groups);
-    profile.printProjectionGroupSummary("prefill qmatmul", backend_program.summarizeProjectionGroups(projection_groups));
-    profile.printProjectionSidecarSummary("prefill", program.ops);
-    profile.printProjectionRopeCacheSummary("prefill", program.ops, 32);
-    const program_commands = try backend_program.buildProgramCommands(alloc, program.ops, command_policy);
-    defer alloc.free(program_commands);
-    profile.printProgramCommandSummary("prefill", backend_program.summarizeProgramCommands(program_commands));
-    const lowered_prefill_stages = [_]u32{zgml.backend_metal.MetalRegionPattern.prefill_layer_stage.index()};
-    profile.printRegionExecutionSummary(
-        "prefill-layer stages lowered",
-        backend_program.summarizeRegionExecution(prefill_stage_schedule, schedule, &lowered_prefill_stages),
-    );
-    try profile.printAnchorNeighborhoodSummary(2, alloc, "prefill qmatmul", schedule, backend_program.RegionPolicy.qmatmulCluster(), 8);
-    profile.printQMatmulSliceSidecarSummary("prefill", program.ops);
-    profile.printAttentionStoreSidecarSummary("prefill", program.ops);
-    profile.printAttentionStoreGroupCandidateSummary("prefill", program.ops, command_policy);
-    profile.printEarlyRopeAttentionStoreGroupCandidateSummary("prefill", program.ops, command_policy);
-    profile.printRopeStoreGroupCandidateSummary("prefill", program.ops, command_policy);
-    profile.printRopeAttentionStoreGroupCandidateSummary("prefill", program.ops, command_policy);
-    profile.printAttentionStoreRegionSummary("prefill-layer stages", program.ops, prefill_stage_schedule);
-    try profile.printRegionProgramCommandSummary(
-        "prefill-layer stages",
-        alloc,
-        program.ops,
-        prefill_stage_schedule,
-        command_policy,
-    );
-
-    _ = try prefill.executeAt(prompt, 0);
+    _ = try prefill.prefill(prompt);
     session.reset();
+    prefill.resetRuntimeProfile();
 
     var prompt_total_ns: u128 = 0;
     for (0..cfg.repetitions) |_| {
         session.reset();
         const prompt_start = std.Io.Clock.awake.now(io).nanoseconds;
-        _ = try prefill.executeAt(prompt, 0);
+        _ = try prefill.prefill(prompt);
         const prompt_end = std.Io.Clock.awake.now(io).nanoseconds;
         prompt_total_ns += @intCast(prompt_end - prompt_start);
     }
@@ -455,12 +315,158 @@ fn runDevicePrefillVariant(
     );
     writer.flush() catch {};
 
-    if (prefill.getRuntimeProfile()) |rt| {
-        const est = profile.estimateProgram(program.ops);
-        profile.printRuntimeProfile(rt.*, est);
-    }
+    var prefill_profile = internal.profile.RuntimeProfile{};
+    prefill.addRuntimeProfileTo(&prefill_profile);
+    try writeProfileJson(writer, label, .{ .bench = .{ .prompt_tok_s = prompt_tok_s, .decode_tok_s = null } }, prefill_profile, prefill.semanticShape());
+}
 
-    return .{ .prompt_tok_s = prompt_tok_s, .gen_tok_s = 0, .prompt_avg_ms = prompt_avg_ms, .gen_avg_ms = 0 };
+fn runStencilProbe(
+    cfg: BenchConfig,
+    writer: anytype,
+    alloc: std.mem.Allocator,
+    debug_row_chain: bool,
+) !void {
+    if (cfg.prompt_tokens == 0 or cfg.prompt_tokens > config.max_seq_len) return error.InvalidPromptLength;
+
+    var session = try Session.init(alloc);
+    defer session.deinit();
+
+    var stencil_backend = StencilBackend.init(internal.backend.Capabilities.metal);
+    var decode = try session.compileDeviceDecodeProgram(stencil_backend.backend(), alloc);
+    defer decode.deinit();
+    if (debug_row_chain) {
+        const debug = internal.backend_stencil.firstProjectionRowChainFrontierDebug(decode.program.handle);
+        try writer.print(
+            "ZGML_ROW_CHAIN_DEBUG phase=decode reason={s} command_count={d} first_kind={s} first_projection={d}/{s}/{s}/{s}/op_start={d}/op_count={d}/sidecars={d}/ops={s},{s},{s},{s},{s},{s} command_index={d} op_start={d} row_start={d} q_m={d} q_n={d} q_dst={d} ew_dst={d} ew_src0={d} ew_src1={d} rms_src={d} rms_dst={d}\n",
+            .{
+                @tagName(debug.reason),
+                debug.command_count,
+                @tagName(debug.first_command_kind),
+                debug.first_projection_command_index,
+                @tagName(debug.first_projection_prev_kind),
+                @tagName(debug.first_projection_kind),
+                @tagName(debug.first_projection_next_kind),
+                debug.first_projection_op_start,
+                debug.first_projection_op_count,
+                debug.first_projection_sidecars,
+                @tagName(debug.first_projection_op_tags[0]),
+                @tagName(debug.first_projection_op_tags[1]),
+                @tagName(debug.first_projection_op_tags[2]),
+                @tagName(debug.first_projection_op_tags[3]),
+                @tagName(debug.first_projection_op_tags[4]),
+                @tagName(debug.first_projection_op_tags[5]),
+                debug.projection_command_index,
+                debug.projection_op_start,
+                debug.row_op_start,
+                debug.q_m,
+                debug.q_n,
+                debug.q_dst,
+                debug.elementwise_dst,
+                debug.elementwise_src0,
+                debug.elementwise_src1,
+                debug.rms_src,
+                debug.rms_dst,
+            },
+        );
+        const projection_debug = internal.backend_stencil.firstProjectionElementwiseChainDebug(decode.program.handle);
+        try writer.print(
+            "ZGML_PROJECTION_CHAIN_DEBUG phase=decode reason={s} command_count={d} command_index={d} prev={s} kind={s} next={s} op_start={d} op_count={d} q_m={d} q_n={d} q_dst={d} q_input={d} weight_idx={d} ew_op={s} ew_dst={d} ew_src0={d} ew_src1={d} ew_n={d} primary_external={any}\n",
+            .{
+                @tagName(projection_debug.reason),
+                projection_debug.command_count,
+                projection_debug.command_index,
+                @tagName(projection_debug.prev_kind),
+                @tagName(projection_debug.kind),
+                @tagName(projection_debug.next_kind),
+                projection_debug.op_start,
+                projection_debug.op_count,
+                projection_debug.q_m,
+                projection_debug.q_n,
+                projection_debug.q_dst,
+                projection_debug.q_input,
+                projection_debug.weight_idx,
+                @tagName(projection_debug.elementwise_op),
+                projection_debug.elementwise_dst,
+                projection_debug.elementwise_src0,
+                projection_debug.elementwise_src1,
+                projection_debug.elementwise_n,
+                projection_debug.primary_has_external_users,
+            },
+        );
+    }
+    var decode_profile = internal.profile.RuntimeProfile{};
+    decode.addRuntimeProfileTo(&decode_profile);
+    const decode_shape = decode.semanticShape();
+    try requireStencilEvidence(.decode, cfg.prompt_tokens, decode_profile, decode_shape);
+    try writeProfileJson(writer, "metal stencil decode", .{ .stencil = .{ .phase = "decode" } }, decode_profile, decode_shape);
+
+    var prefill = try session.compileDevicePrefillProgram(stencil_backend.backend(), alloc, cfg.prompt_tokens);
+    defer prefill.deinit();
+    if (debug_row_chain) {
+        const debug = internal.backend_stencil.firstProjectionRowChainFrontierDebug(prefill.program.handle);
+        try writer.print(
+            "ZGML_ROW_CHAIN_DEBUG phase=prompt reason={s} command_count={d} first_kind={s} first_projection={d}/{s}/{s}/{s}/op_start={d}/op_count={d}/sidecars={d}/ops={s},{s},{s},{s},{s},{s} command_index={d} op_start={d} row_start={d} q_m={d} q_n={d} q_dst={d} ew_dst={d} ew_src0={d} ew_src1={d} rms_src={d} rms_dst={d}\n",
+            .{
+                @tagName(debug.reason),
+                debug.command_count,
+                @tagName(debug.first_command_kind),
+                debug.first_projection_command_index,
+                @tagName(debug.first_projection_prev_kind),
+                @tagName(debug.first_projection_kind),
+                @tagName(debug.first_projection_next_kind),
+                debug.first_projection_op_start,
+                debug.first_projection_op_count,
+                debug.first_projection_sidecars,
+                @tagName(debug.first_projection_op_tags[0]),
+                @tagName(debug.first_projection_op_tags[1]),
+                @tagName(debug.first_projection_op_tags[2]),
+                @tagName(debug.first_projection_op_tags[3]),
+                @tagName(debug.first_projection_op_tags[4]),
+                @tagName(debug.first_projection_op_tags[5]),
+                debug.projection_command_index,
+                debug.projection_op_start,
+                debug.row_op_start,
+                debug.q_m,
+                debug.q_n,
+                debug.q_dst,
+                debug.elementwise_dst,
+                debug.elementwise_src0,
+                debug.elementwise_src1,
+                debug.rms_src,
+                debug.rms_dst,
+            },
+        );
+        const projection_debug = internal.backend_stencil.firstProjectionElementwiseChainDebug(prefill.program.handle);
+        try writer.print(
+            "ZGML_PROJECTION_CHAIN_DEBUG phase=prompt reason={s} command_count={d} command_index={d} prev={s} kind={s} next={s} op_start={d} op_count={d} q_m={d} q_n={d} q_dst={d} q_input={d} weight_idx={d} ew_op={s} ew_dst={d} ew_src0={d} ew_src1={d} ew_n={d} primary_external={any}\n",
+            .{
+                @tagName(projection_debug.reason),
+                projection_debug.command_count,
+                projection_debug.command_index,
+                @tagName(projection_debug.prev_kind),
+                @tagName(projection_debug.kind),
+                @tagName(projection_debug.next_kind),
+                projection_debug.op_start,
+                projection_debug.op_count,
+                projection_debug.q_m,
+                projection_debug.q_n,
+                projection_debug.q_dst,
+                projection_debug.q_input,
+                projection_debug.weight_idx,
+                @tagName(projection_debug.elementwise_op),
+                projection_debug.elementwise_dst,
+                projection_debug.elementwise_src0,
+                projection_debug.elementwise_src1,
+                projection_debug.elementwise_n,
+                projection_debug.primary_has_external_users,
+            },
+        );
+    }
+    var prefill_profile = internal.profile.RuntimeProfile{};
+    prefill.addRuntimeProfileTo(&prefill_profile);
+    const prefill_shape = prefill.semanticShape();
+    try requireStencilEvidence(.prompt, cfg.prompt_tokens, prefill_profile, prefill_shape);
+    try writeProfileJson(writer, "metal stencil prefill", .{ .stencil = .{ .phase = "prompt" } }, prefill_profile, prefill_shape);
 }
 
 fn parseArgOrDefault(args: []const []const u8, idx: usize, default: usize) !usize {
@@ -490,99 +496,80 @@ pub fn main(init: std.process.Init) !void {
         .gen_tokens = try parseArgOrDefault(args, 3, 200),
         .repetitions = try parseArgOrDefault(args, 4, 3),
     };
-    const run_metal_fine = hasFlag(args, "--metal-fine");
-    const run_metal_region = hasFlag(args, "--metal-region");
     const run_metal_prefill_device = hasFlag(args, "--metal-prefill-device");
-    const run_metal_rope_cache_sidecars = hasFlag(args, "--metal-rope-cache-sidecars");
-    const profile_timing = hasFlag(args, "--profile-timing");
-    const stage_plan_only = hasFlag(args, "--stage-plan-only");
-    const print_stage_plan = stage_plan_only or hasFlag(args, "--print-stage-plan");
-    const model_is_gguf = isGGUF(cfg.model_path);
+    const run_metal_decode_region = hasFlag(args, "--metal-decode-region");
+    const run_metal_decode_no_readback = hasFlag(args, "--metal-decode-no-readback");
+    const run_metal_prompt_projection_row_chain_candidate = hasFlag(args, "--metal-prompt-projection-row-chain-candidate");
+    const stencil_only = hasFlag(args, "--stencil-only");
+    const debug_row_chain = hasFlag(args, "--debug-row-chain");
+    const gate_only = hasFlag(args, "--gate-only");
+    const model_is_gguf = std.ascii.endsWithIgnoreCase(cfg.model_path, ".gguf");
 
     try stdout.interface.print("\nSmolLM LLaMA Benchmark — zgml\n", .{});
     try stdout.interface.print("================================\n", .{});
     try stdout.interface.print("  model={s}\n", .{cfg.model_path});
     try stdout.interface.print("  prompt={d}, gen={d}, reps={d}\n\n", .{ cfg.prompt_tokens, cfg.gen_tokens, cfg.repetitions });
-    if (print_stage_plan) {
-        const stage_caps: ?zgml.llm.stage_plan.StageCapabilities = if (stage_plan_only)
-            zgml.llm.stage_plan.StageCapabilities.fromBackendCapabilities(if (is_macos) zgml.backend.Capabilities.metal else zgml.backend.Capabilities.reference_cpu)
-        else
-            null;
-        try zgml.llm.stage_plan.printLlamaStagePlanSummary(config, &stdout.interface, stage_caps, cfg.prompt_tokens);
-        try stdout.interface.writeByte('\n');
-    }
     stdout.interface.flush() catch {};
-
-    if (stage_plan_only) return;
 
     var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    _ = try runVariant(if (model_is_gguf) "default gguf    " else "default f32      ", null, false, false, cfg, &stdout.interface, io, alloc);
-
-    var cpu_backend = CpuBackend{};
-    _ = try runVariant(if (model_is_gguf) "cpu-backend gguf" else "cpu-backend f32  ", cpu_backend.backend(), false, false, cfg, &stdout.interface, io, alloc);
-    if (!model_is_gguf) {
-        _ = try runVariant("default int8     ", null, true, false, cfg, &stdout.interface, io, alloc);
-        _ = try runVariant("cpu-backend i8   ", cpu_backend.backend(), true, false, cfg, &stdout.interface, io, alloc);
-        _ = try runVariant("i8 + kv-i8       ", null, true, true, cfg, &stdout.interface, io, alloc);
-        _ = try runVariant("kv-i8 only       ", null, false, true, cfg, &stdout.interface, io, alloc);
-    } else {
-        _ = try runVariant("gguf + kv-i8    ", null, false, true, cfg, &stdout.interface, io, alloc);
+    if (stencil_only) {
+        try runStencilProbe(cfg, &stdout.interface, alloc, debug_row_chain);
+        try stdout.interface.writeByte('\n');
+        stdout.interface.flush() catch {};
+        return;
     }
 
-    if (is_macos) metal: {
+    if (!gate_only) {
+        try runVariant(if (model_is_gguf) "default gguf    " else "default f32      ", null, false, false, cfg, &stdout.interface, io, alloc);
+
+        var cpu_backend = CpuBackend{};
+        try runVariant(if (model_is_gguf) "cpu-backend gguf" else "cpu-backend f32  ", cpu_backend.backend(), false, false, cfg, &stdout.interface, io, alloc);
+        if (!model_is_gguf) {
+            try runVariant("default int8     ", null, true, false, cfg, &stdout.interface, io, alloc);
+            try runVariant("cpu-backend i8   ", cpu_backend.backend(), true, false, cfg, &stdout.interface, io, alloc);
+            try runVariant("i8 + kv-i8       ", null, true, true, cfg, &stdout.interface, io, alloc);
+            try runVariant("kv-i8 only       ", null, false, true, cfg, &stdout.interface, io, alloc);
+        } else {
+            try runVariant("gguf + kv-i8    ", null, false, true, cfg, &stdout.interface, io, alloc);
+        }
+    }
+
+    if (opts.use_metal and is_macos) metal: {
         var metal_be = MetalBackend.init() catch |err| {
             try stdout.interface.print("  metal init failed: {}\n", .{err});
             break :metal;
         };
         defer metal_be.deinit();
-        metal_be.setRuntimeTiming(profile_timing);
-        if (print_stage_plan) {
-            const caps = zgml.llm.stage_plan.StageCapabilities.fromBackendCapabilities(metal_be.backend().capabilities);
-            try zgml.llm.stage_plan.printLlamaStagePlanSummary(config, &stdout.interface, caps, cfg.prompt_tokens);
-            try stdout.interface.writeByte('\n');
-            stdout.interface.flush() catch {};
+        const metal_prefill_label = if (run_metal_prompt_projection_row_chain_candidate)
+            "metal scheduled prefill projection-row-chain candidate"
+        else
+            "metal scheduled prefill";
+        if (run_metal_prompt_projection_row_chain_candidate) {
+            metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainCandidate());
         }
-        _ = try runVariant(if (model_is_gguf) "metal gguf      " else "metal f32        ", metal_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
-        if (!model_is_gguf) _ = try runVariant("metal int8       ", metal_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
+        if (!gate_only) {
+            try runVariant(if (model_is_gguf) "metal gguf      " else "metal f32        ", metal_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
+            if (!model_is_gguf) try runVariant("metal int8       ", metal_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
+        }
         if (run_metal_prefill_device and model_is_gguf) {
             metal_be.setRegionProgramDispatch(true);
-            metal_be.setProjectionRopeCacheSidecars(run_metal_rope_cache_sidecars);
-            _ = try runDevicePrefillVariant(if (run_metal_rope_cache_sidecars) "metal prefill r" else "metal prefill q", metal_be.backend(), cfg, &stdout.interface, io, alloc, metal_be.commandStreamPolicy());
-            metal_be.setProjectionRopeCacheSidecars(false);
+            try runDevicePrefillVariant(metal_prefill_label, metal_be.backend(), cfg, &stdout.interface, io, alloc);
             metal_be.setRegionProgramDispatch(false);
         }
-        _ = try runDeviceVariant(if (model_is_gguf) "metal device q  " else "metal device f16", metal_be.backend(), cfg, &stdout.interface, io, alloc);
-        if (run_metal_fine) {
-            metal_be.setFineGrainedProgramDispatch(true);
-            _ = try runDeviceVariant(if (model_is_gguf) "metal fine q    " else "metal fine f16  ", metal_be.backend(), cfg, &stdout.interface, io, alloc);
-            metal_be.setFineGrainedProgramDispatch(false);
+        if (!gate_only or !run_metal_decode_region) {
+            try runDeviceVariant("metal cpu-fallback decode", metal_be.backend(), cfg, &stdout.interface, io, alloc, false);
         }
-        if (run_metal_region) {
+        if (run_metal_decode_region and model_is_gguf) {
             metal_be.setRegionProgramDispatch(true);
-            _ = try runDeviceVariant(if (model_is_gguf) "metal region q  " else "metal region f16", metal_be.backend(), cfg, &stdout.interface, io, alloc);
+            try runDeviceVariant("metal region decode", metal_be.backend(), cfg, &stdout.interface, io, alloc, false);
+            if (run_metal_decode_no_readback) {
+                try runDeviceVariant("metal region decode no-readback", metal_be.backend(), cfg, &stdout.interface, io, alloc, true);
+            }
             metal_be.setRegionProgramDispatch(false);
         }
-        if (run_metal_rope_cache_sidecars and model_is_gguf) {
-            metal_be.setRegionProgramDispatch(true);
-            metal_be.setProjectionRopeCacheSidecars(true);
-            _ = try runDeviceVariant("metal rope q    ", metal_be.backend(), cfg, &stdout.interface, io, alloc);
-            metal_be.setProjectionRopeCacheSidecars(false);
-            metal_be.setRegionProgramDispatch(false);
-        }
-    }
-
-    if (have_wgpu) {
-        var wgpu_be = WgpuBackend.init() catch |err| {
-            try stdout.interface.print("  wgpu init failed: {}\n", .{err});
-            return;
-        };
-        defer wgpu_be.deinit();
-        _ = try runVariant(if (model_is_gguf) "wgpu gguf       " else "wgpu f32         ", wgpu_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
-        if (!model_is_gguf) _ = try runVariant("wgpu int8        ", wgpu_be.backend(), true, false, cfg, &stdout.interface, io, alloc);
-        _ = try runDeviceVariant(if (model_is_gguf) "wgpu device q   " else "wgpu device f16 ", wgpu_be.backend(), cfg, &stdout.interface, io, alloc);
     }
 
     try stdout.interface.writeByte('\n');

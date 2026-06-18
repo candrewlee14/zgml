@@ -1,12 +1,13 @@
 //! Backward (reverse-mode autodiff) implementations for primitive tensor operations.
 //!
-//! Only primitive ops need backward rules here. Decomposed ops (sub, sqr, div,
+//! Only primitive ops need backward rules here. Decomposed ops (sub, div,
 //! relu, scale, mean) get their gradients automatically through the chain rule
 //! on the primitives they decompose into.
 
 const std = @import("std");
 const assert = std.debug.assert;
 const Alloc = std.mem.Allocator;
+const tensor_api = @import("api.zig");
 
 /// Coefficient for the GeLU tanh approximation: `gelu(x) ≈ 0.5x(1 + tanh(√(2/π) · x · (1 + Ax²)))`.
 const GELU_COEF_A: comptime_float = 0.044715;
@@ -14,16 +15,28 @@ const GELU_COEF_A: comptime_float = 0.044715;
 const SQRT_2_OVER_PI: comptime_float = @sqrt(2.0 / std.math.pi);
 
 /// Backward operations parameterized on the tensor type.
-pub fn Ops(comptime Self: type) type {
+pub fn Ops(comptime Self: type, comptime T: type) type {
     return struct {
+        const LazyOps = tensor_api.Api(Self, T);
+
         /// Accumulate `contribution` into `grad`.
         fn accumGrad(grad: *Self, contribution: *Self, inplace: bool) *Self {
-            return if (inplace) grad.addInplace(contribution) else grad.add(contribution);
+            return if (inplace) grad.addInplace(contribution) else contribution.add(grad);
         }
 
         /// Remove the gradient from an intermediate tensor created during backward.
         fn stripGrad(tensor: *Self) void {
             tensor.setGrad(null);
+        }
+
+        fn geluGradScalar(x: T) T {
+            const xf: f32 = @floatCast(x);
+            const x2 = xf * xf;
+            const a = SQRT_2_OVER_PI * xf * (1.0 + GELU_COEF_A * x2);
+            const tanh_a = std.math.tanh(a);
+            const sech2_a = 1.0 - tanh_a * tanh_a;
+            const da = SQRT_2_OVER_PI * (1.0 + 3.0 * GELU_COEF_A * x2);
+            return @floatCast(0.5 * (1.0 + tanh_a) + 0.5 * xf * sech2_a * da);
         }
 
         fn addToScratchUniq(alloc: Alloc, scratch: *std.ArrayList(*Self), tensor: *Self) Alloc.Error!void {
@@ -90,7 +103,7 @@ pub fn Ops(comptime Self: type) type {
                 .as_strided => {
                     const src0 = src0_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const contribution = out_grad.scatterAddView(tensor);
+                        const contribution = LazyOps.scatterAddView(out_grad, tensor);
 
                         stripGrad(contribution);
                         src0.setGrad(accumGrad(grad, contribution, inplace));
@@ -122,18 +135,33 @@ pub fn Ops(comptime Self: type) type {
                     const src0 = src0_o.?;
                     const src1 = src1_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const raw = src1.mul(out_grad);
+                        const raw = out_grad.mul(src1);
                         stripGrad(raw);
                         const contribution = if (raw.isSameShape(grad)) raw else raw.sumInto(grad);
                         stripGrad(contribution);
                         src0.setGrad(accumGrad(grad, contribution, inplace));
                     }
                     if (src1.gradOrNull()) |grad| {
-                        const raw = src0.mul(out_grad);
+                        const raw = out_grad.mul(src0);
                         stripGrad(raw);
                         const contribution = if (raw.isSameShape(grad)) raw else raw.sumInto(grad);
                         stripGrad(contribution);
                         src1.setGrad(accumGrad(grad, contribution, inplace));
+                    }
+                },
+
+                // d/d(src0) [src0²] = 2 * src0 * out_grad
+                .sqr => {
+                    const src0 = src0_o.?;
+                    if (src0.gradOrNull()) |grad| {
+                        const two = try Self.initScalar(alloc, 2.0);
+                        const two_rep = two.broadcastTo(src0.ne[0..src0.n_dims]);
+                        stripGrad(two_rep);
+                        const scaled = src0.mul(two_rep);
+                        stripGrad(scaled);
+                        const contribution = scaled.mul(out_grad);
+                        stripGrad(contribution);
+                        src0.setGrad(accumGrad(grad, contribution, inplace));
                     }
                 },
 
@@ -153,7 +181,7 @@ pub fn Ops(comptime Self: type) type {
                 .relu => {
                     const src0 = src0_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const mask = tensor.step();
+                        const mask = LazyOps.step(tensor);
                         stripGrad(mask);
                         const contribution = mask.mul(out_grad);
                         stripGrad(contribution);
@@ -165,7 +193,7 @@ pub fn Ops(comptime Self: type) type {
                 .abs => {
                     const src0 = src0_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const sign = src0.sgn();
+                        const sign = LazyOps.sgn(src0);
                         stripGrad(sign);
                         const contribution = sign.mul(out_grad);
                         stripGrad(contribution);
@@ -247,7 +275,7 @@ pub fn Ops(comptime Self: type) type {
                         const diff = src0.sub(repeated_max);
                         stripGrad(diff);
                         const one = try Self.initScalar(alloc, 1);
-                        const zero_mask = diff.abs().step();
+                        const zero_mask = LazyOps.step(diff.abs());
                         stripGrad(zero_mask);
                         const mask = one.broadcastTo(src0.ne[0..src0.n_dims]).sub(zero_mask);
                         stripGrad(mask);
@@ -269,7 +297,7 @@ pub fn Ops(comptime Self: type) type {
                     const src0 = src0_o.?;
                     const indices = src1_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const contribution = grad.scatterAddRows(indices, out_grad);
+                        const contribution = LazyOps.scatterAddRows(grad, indices, out_grad);
                         stripGrad(contribution);
                         src0.setGrad(accumGrad(grad, contribution, inplace));
                     }
@@ -281,7 +309,7 @@ pub fn Ops(comptime Self: type) type {
                     const src0 = src0_o.?;
                     const indices = src1_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const contribution = grad.scatterAddPicks(indices, out_grad);
+                        const contribution = LazyOps.scatterAddPicks(grad, indices, out_grad);
                         stripGrad(contribution);
                         src0.setGrad(accumGrad(grad, contribution, inplace));
                     }
@@ -447,20 +475,10 @@ pub fn Ops(comptime Self: type) type {
                 .gelu => {
                     const src0 = src0_o.?;
                     if (src0.gradOrNull()) |grad| {
-                        const ElemType = @TypeOf(src0.data[0]);
-                        const gelu_grad = try src0.map(struct {
-                            fn f(x: ElemType) ElemType {
-                                const xf: f32 = @floatCast(x);
-                                const coef: f32 = GELU_COEF_A;
-                                const s2pi: f32 = SQRT_2_OVER_PI;
-                                const x2 = xf * xf;
-                                const a = s2pi * xf * (1.0 + coef * x2);
-                                const tanh_a = std.math.tanh(a);
-                                const sech2_a = 1.0 - tanh_a * tanh_a;
-                                const da = s2pi * (1.0 + 3.0 * coef * x2);
-                                return @floatCast(0.5 * (1.0 + tanh_a) + 0.5 * xf * sech2_a * da);
-                            }
-                        }.f);
+                        const gelu_grad = try Self.init(src0.alloc.?, src0.ne[0..src0.n_dims]);
+                        for (src0.data, gelu_grad.data) |x, *dst| {
+                            dst.* = geluGradScalar(x);
+                        }
                         const contribution = gelu_grad.mul(out_grad);
                         stripGrad(contribution);
                         src0.setGrad(accumGrad(grad, contribution, inplace));

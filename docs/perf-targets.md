@@ -4,221 +4,266 @@ This is the checked-in performance contract for the GGML parity push. zgml does
 not claim parity until it is within 10% of llama.cpp on the same Apple Silicon
 machine for both prompt/prefill and decode.
 
-## Current SmolLM-135M Baseline
+## Current SmolLM-135M Status
 
-Measured on Apple Silicon using `scripts/bench_vs_ggml.sh 128 200 3`.
+- F16 and Q8_0 prompt/prefill are backend-only, but still roughly 27-34% of
+  llama.cpp Metal on SmolLM-135M. F16 prompt now uses dense projection-chain,
+  dense projection-pair fused-elementwise, row-chain, and
+  dense projection-cache commands for prefill-shaped projections, reducing its
+  structural roof from the original one-dispatch-per-op shape to 242
+  executable region commands/dispatches per prompt call. Dense projection
+  row-chain fusion is intentionally disabled by default because fresh
+  benchmark evidence showed it lowers dispatch count while losing an order of
+  magnitude of throughput. Projection row-chain fusion is also disabled by
+  default for Q8_0 for the same reason: the full SmolLM path is much faster as
+  projection-chain plus row-chain commands, even though the isolated row-chain
+  microbench still passes. Q8_0 tied embeddings keep the f32 lookup tensor but repack a
+  direct quantized logits weight, so the final tied LM head is no longer a dense
+  ProgramCommand. Current accepted gate evidence is 5171.73 F16 prompt tok/s
+  and 4585.71 Q8_0 prompt tok/s from
+  `bench-results/smollm-20260618T025954Z-p128-g200-r3.json`, with zero fallback,
+  passing native execution evidence, and a checked Program/Session substrate
+  shape: F16 prompt/decode at 242/212 dispatches and 242/212 executable region ProgramCommands,
+  Q8_0 prompt/decode at 242/212 dispatches and 241/211 ProgramCommands because
+  the direct quantized tied LM head is one standalone backend dispatch outside
+  the ProgramCommand stream.
+- Decode is not a parity claim. The benchmark gate selects only the native
+  region-dispatch lane because it is backend-only, even though it is still
+  slower because it pays 212 F16 or 212 Q8_0 dispatches and one backend sync per
+  token. Current accepted local gate evidence is 121.00 F16 decode tok/s
+  and 141.50 Q8_0 decode tok/s from
+  `bench-results/smollm-20260618T025954Z-p128-g200-r3.json`, with zero fallback,
+  passing native execution evidence, and a checked runtime patch shape of 450
+  total holes: 180 cache-write-position holes and 270 attention-seq/KV holes.
+  This is still only 34.53% F16 decode and 32.88% Q8_0 decode parity; the
+  remaining work is coarser semantic
+  commands produced by a stronger scheduler/kernelizer, with LLaMA-specific
+  recognizers for projection/MLP chains, row chains, and attention/rope-store
+  groups only where generic kernelization cannot express the fast path cleanly.
+- Latest evidence lives in the JSON artifact from `scripts/bench_vs_ggml.sh`;
+  `summary.gate_zgml.{f16,q8_0}` and `gates.*` are the machine-readable
+  contract.
+- If llama.cpp Metal preflight cannot find or execute a usable Metal/MTL
+  reference before zgml runs, `bench_vs_ggml.sh` still writes a JSON artifact with
+  `gates.preflight.passed=false`, `gates.preflight.failure_kind`,
+  `gates.required_pass=false`, and the raw preflight output. That artifact is
+  diagnostic blocker evidence, not parity evidence.
+- Preflight blocker kinds distinguish no usable Metal device, Metal context
+  initialization failure, missing Metal result rows, and generic llama-bench
+  failure. Metal-context failures include an explicit `-dev BLAS` smoke in the
+  raw output when available, proving whether the model and llama.cpp CPU/BLAS
+  path still work.
+- The latest accepted artifact is useful as a structural/baseline gate result,
+  not a parity claim. Its current parity rows are 33.88% F16 prompt, 34.53% F16
+  decode, 27.38% Q8_0 prompt, and 32.88% Q8_0 decode.
+- `bench:status`, `bench:substrate`, and `bench:trend` select the latest
+  accepted local full-run artifact, meaning `gates.required_pass=true` and the
+  selected lanes still pass the checked M5 Pro baseline comparison. Failed or
+  baseline-regressing p128/g200/r3 artifacts can remain in `bench-results/` for
+  diagnosis without becoming the substrate proof; status output reports the
+  quarantined count and latest failed artifact explicitly.
+- `bench-results/failed/smollm-20260618T111533Z-p128-g200-r3.json` is the
+  first full-run diagnostic after the block-aligned Q8 scale-hoist work. It is
+  not accepted because every lane missed the checked M5 Pro baseline floor, and
+  llama.cpp reference throughput also drifted down to 68-77% of the checked
+  reference. The diagnostic still records useful shape evidence: zero fallback,
+  the same 242/212 dispatch roofs, Q8_0 prompt at 4011.09 tok/s and 31.14%
+  local parity, and Q8_0 decode at 115.12 tok/s and 37.86% local parity. Treat
+  this as "default-path kernel change survives full-model execution under a
+  noisy reference run," not as a new accepted baseline.
+- In artifacts, `gates.overall_pass` is the actual parity+baseline result.
+  Without `BENCH_REQUIRE_PARITY=1` or `BENCH_BASELINE_JSON`, `gates.required_pass`
+  is structural native-decode evidence rather than a throughput claim.
 
-| Engine | Format/backend | Prompt/prefill | Decode |
-| --- | --- | ---: | ---: |
-| zgml | safetensors, current session path | ~986 tok/s | ~208 tok/s |
-| llama.cpp | GGUF Q8_0, Metal | ~9,800 tok/s | ~237 tok/s |
+## Architecture Rules
 
-Interpretation:
-
-- Decode is close enough to be worth tightening immediately: roughly 12-13% behind llama.cpp.
-- Prefill is the real parity blocker: roughly 10x behind llama.cpp.
-- A recent device profile showed roughly 1,500 CPU-side ops per token in the SmolLM decode program, so backend lowering and fused execution must become visible in profiles, not hidden behind aggregate tok/s.
-
-## Dispatch/Fusion Findings
-
-Current decode planning exposes two useful lowering shapes:
-
-- `qmatvec-rope-attention`: 30 regions, 240/1714 ops. If lowered alone it creates 30 backend islands and 60 CPU/GPU transitions, so it is too small to be a good Metal boundary.
-- `decode-layer` / `prefill-layer` stage windows: 30 regions, roughly one transformer layer each. In decode this covers 1713/1714 ops; in prefill it gives the Metal backend a reusable whole-layer lowering target instead of ad hoc qmatmul clusters.
-
-Implication: do not chase one-dispatch-per-op execution. Metal work should target
-large region/layer lowerings that keep the decode step on device across the
-transformer block, then return to CPU only at explicit boundaries.
-
-Current prefill work has a first real device-only path:
-
-| Path | Prompt/prefill | Runtime placement | Dispatches |
-| --- | ---: | --- | ---: |
-| Current GGUF session path | ~0.9k tok/s | CPU/Accelerate quant path | n/a |
-| Experimental Metal device prefill Q8_0 | ~2.2k tok/s | 100% backend | ~242/call |
-
-Measured with
-`./zig-out/bin/bench-llama-smollm data/smollm/SmolLM-135M.Q8_0.gguf 128 1 3 --metal-prefill-device`.
-This is roughly 2.4x the default GGUF path while eliminating fallback for the
-prefill graph, but it is still not parity. QMatmul batching, projection-owned
-cache stores, producer-sidecar fusion, attention output-store grouping, and
-RoPE-store grouping now remove about 1,412 dispatches/call. The next target is
-reusable layer-stage lowering that cuts dispatch count by at least another order
-of magnitude without adding model special cases to the public API.
-
-The stage planning abstraction now lives in `src/backend/program.zig` as a pure
-`StagePolicy`: a named anchored region plus a backend pattern id. Metal uses it
-for `decode-layer` and `prefill-layer` schedules with seven projection anchors.
-The runtime profile now reports total and per-pattern schedule-region attempts,
-lowered regions, refused regions, and covered/refused op counts, so a fast path
-cannot silently fall back to tiny dispatches while still looking "device backed".
-This is a structural cleanup, not a claimed speedup by itself; the current
-SmolLM Metal prefill smoke is roughly `242` dispatches/call after command-stream
-lowering, RoPE-store grouping, projection sidecar kernels, projection activation
-fusion, projection-owned cache stores, and shared-offset RoPE-attention-store
-grouping.
-
-The next layer of the same abstraction is `StageCommand`: a pure, model-agnostic
-lowering view over the ops inside a stage. Today it names `row_chain` commands
-for RMSNorm + repeated scale + multiply and `rope_chain` commands for RoPE plus
-the cache write that consumes it. On SmolLM prefill this currently finds 61
-row-chains and 90 RoPE/cache chains, raising the pure command view to 212
-estimated saved dispatches already covered by Metal fused kernels.
-
-Projection batching now has the same pure legality layer:
-`ProjectionGroupPolicy` finds independent qmatvec/qmatmul anchors, proves when
-they can be hoisted into one command, and marks compatible qmatmul cache-store
-sidecars. Metal consumes that shared selection plus the dependency and sidecar
-predicates for its batched projection kernels, so future movement, RoPE/KV, and
-attention commands can follow the same path before adding more backend-specific
-pattern code.
-
-That legality layer now reasons in terms of buffer spans instead of whole-buffer
-touches. This keeps the command stream pure while making future fusion more
-precise for shared workspaces, KV caches, and head-sliced tensors: two ops can
-share a buffer and still batch if their read/write spans do not overlap.
-
-The first unified command stream now combines those pure stage commands and
-projection groups into a single ordered view. On SmolLM prefill it currently
-emits 242 commands for 1,654 ops, including 61 row chains, 30 projection-owned
-cache groups covering 90 anchors plus 90 sidecars, 30 projection
-pair/fused-elementwise chains, and 60 projection sidecar chains. Additional
-producer-sidecar commands cover 30 RoPE-store groups and 30 wide
-RoPE-attention-store groups covering all 270 attention output stores.
-Metal can consume this stream for those command classes while still falling
-back to existing local lowering for commands that are not first-class yet. The
-stream also has first-class contiguous batch commands for RoPE,
-movement/slice-assign, and attention; SmolLM prefill does not currently expose
-those as contiguous runs, but decode and future lowering passes can share the
-same command shape. Movement/slice-assign now also has an indexed
-`movement_group` command for non-contiguous independent copies that share
-source/destination buffers. SmolLM prefill now has `0` movement groups because
-the V-cache stores ride with the owning projection batch.
-Metal now compiles the command stream for each scheduled region alongside the
-region schedule and reuses that cached command plan while the command-stream
-policy remains unchanged. If a backend knob changes after compile, Metal falls
-back to dynamic command planning for correctness. This does not claim a dispatch
-count reduction by itself, but it is the first real stage-execution step: the
-`prefill-layer`/`decode-layer` lowerer executes a compiled region command plan
-instead of rediscovering commands on every region execution.
-It can also represent non-contiguous attention groups when all attention inputs
-are already available; the current SmolLM prefill trace still reports `0`, which
-means attention batching must include the producer movement/slice work rather
-than only grouping ready attention ops.
-It also has a non-contiguous `elementwise_batch` command backed by pure
-dependency checks; this is a reusable command-stream primitive, though the
-current SmolLM prefill trace reports `0` such batches because its elementwise ops
-are dependency-adjacent rather than independent.
-
-QMatmul side effects are now represented as `projection_chain` commands when a
-single projection feeds an immediate elementwise, fused-elementwise, or cache
-write sidecar. This lifts Metal's local pair fusers into the same pure command
-stream and gives the next batching pass a clear target: teach projection batch
-kernels to carry those sidecars without losing the multi-anchor dispatch win.
-
-Attention output assembly now follows the same rule: the cached LLaMA forward
-uses a scratch concat buffer that is fully overwritten by per-head stores instead
-of emitting a fake zero-fill dependency. The command stream can therefore attach
-270 delayed attention output stores to their producer attention ops. Dynamic
-slice-store patching now only applies to KV-cache writes, so static
-`slice_assign_rows` output stores keep their row offsets after refresh. Metal's
-runtime command stream now matches the pure prefill target at ~242
-dispatches/call with no backend fallback; the next step is coarser layer command
-realization, not more local pair fusers.
-
-The current SmolLM Metal prefill command stream is now materially smaller:
-`rope_store_group` batches the remaining RoPE-to-KV-store chains and elides the
-intermediate scratch write when the scratch is only live until the store. The
-profile reports roughly 242 dispatches/call, 100% backend placement, and no
-fallback for the device prefill path. This is still not parity, but it confirms
-the durable rule: producer-sidecar lowerings should prove side-effect legality
-in the pure planner, then let Metal write the final side effect directly instead
-of materializing scratch tensors.
-
-Metal runtime timing is now opt-in (`--profile-timing` in the SmolLM benchmark).
-Cheap correctness/perf counters remain always on: backend/fallback placement,
-kernel dispatches, command-buffer syncs, scheduled-region lowering, and command
-stream command counts. This keeps throughput runs honest by avoiding hundreds of
-host clock reads per token/window while preserving the diagnostics that catch
-hidden CPU fallback.
-
-Projection cache stores now follow that same durable rule. The pure planner
-emits `projection_cache_group` for batched projections plus the direct slice
-stores they own, and Metal's qmatmul batch kernel supports multiple slice
-sidecars per projection when they share a sink buffer. On SmolLM prefill this
-removes the remaining V-cache movement dispatches: 30 projection-cache groups
-cover 90 projection anchors and 90 cache-store sidecars.
-
-The planner also has an opt-in legality rule for projection-owned K-cache stores
-that pass through RoPE (`qmatmul -> rope -> slice_assign`). This is intentionally
-not enabled in the default Metal policy yet: scalar and shared-kernel tile-pair
-prototypes reduced the visible dispatch count to 212/call, but slowed prefill.
-Metal now has that separate qmatmul/RoPE/cache-store lowering target behind
-`setProjectionRopeCacheSidecars(true)` and the benchmark flag
-`--metal-rope-cache-sidecars`. The common qmatmul batch kernel stays lean; the
-new path is only selected for tile-pair-compatible projection/RoPE/store
-sidecars and remains opt-in until model benchmarks prove it is a default win.
-Profiles count projection-owned RoPE cache candidates and tile-pair-shaped
-opportunities explicitly, so tuning can happen against that target without
-turning a speculative kernel on by default.
-Command-stream fusion knobs are now declared in backend capability metadata and
-the pure planner derives its default policy from that metadata. This keeps the
-long-term rule sharp: the planner may know a general pattern is legal, but a
-backend only advertises the pattern as default when it has a lowering that is
-actually fast.
-
-Decode-side qmatvec projection groups can also carry RoPE sidecars, but the
-planner now leaves Q-RoPE materialization alone when the same RoPE can feed a
-RoPE-attention-store command. This avoids a local dispatch-count win that would
-block the better attention-side fusion. Profiles report both projection/RoPE
-materialization opportunities and how many were intentionally left for
-attention fusion, which is the finish-line rule for new fusions: prefer the
-producer-sidecar placement that keeps the largest downstream semantic command
-available.
-
-Decode qmatvec projection groups now carry simple add/mul sidecars too. This is
-the same producer-sidecar concept applied to M=1 projections, so down-projection
-plus residual-style tails can ride with a batched qmatvec group without adding a
-model-specific FFN op. Metal lowers the sidecar in the qmatvec batch kernel by
-using the sidecar source as a per-anchor secondary buffer, keeping the public IR
-as plain `qmatmul` plus `elementwise`.
-
-The next projection target should follow that rule rather than growing
-model-specific kernels. SmolLM prefill has 210 qmatmul anchors and 150 immediate
-compatible projection sidecars: 30 slice stores, 90 simple elementwise tails, and
-30 fused-elementwise tails. Today only the slice-store sidecars ride with
-batched projection groups; the 120 elementwise/fused tails remain
-`projection_chain` commands. The long-term fix is a reusable
-producer-sidecar-group abstraction with explicit scratch liveness and optional
-primary-output elision, so qmatmul batches can write final elementwise/fused
-outputs directly without racing on reused scratch buffers.
-
-The first slice of that direction lets qmatmul projection groups carry simple
-elementwise sidecars in the same batched Metal kernel. This is a reusable
-producer-sidecar capability, but it does not reduce the current SmolLM dispatch
-count because the remaining elementwise/fused projection tails are
-dependency-adjacent `projection_chain` commands rather than independent
-projection-group members. That is an important boundary: further prefill wins
-come from stage-level lowering of producer-consumer subgraphs such as FFN
-gate/up/SwiGLU/down and attention assembly, not from endlessly expanding local
-pair fusers.
-
-The second slice makes that producer-sidecar rule cheaper in memory and visible
-in profiles: qmatmul sidecar kernels now receive a pure planner liveness bit and
-can skip writing the primary scratch output when only the fused sidecar observes
-it. Current SmolLM prefill reports 90 primary-elidable projection sidecars and
-60 that still require the primary output. The dispatch count is unchanged, but
-projection groups and projection chains now share the same dead-scratch elision
-rule as RoPE-store groups.
-
-The current RoPE-attention-store lowering extends that rule across head batches:
-when heads share Q source, RoPE tables, K/V/mask bases, and the final concat
-destination, the pure command stream can batch more than the old four-buffer
-Metal limit by carrying per-head offsets. SmolLM prefill now emits one
-RoPE-attention-store command per layer instead of split groups plus singleton
-chains: 30 commands cover 540 producer ops and 270 output-store sidecars.
-This is the right kind of win: it keeps the IR general for LLaMA/Qwen-style GQA
-layouts while hiding backend buffer-slot constraints inside Metal lowering.
+- The stable public Interface stays small. Backend, GGUF, quantization, and
+  benchmark internals live in the build-only `zgml_internal` Module; runtime
+  profiling stays in benchmark/internal evidence, not the public root.
+- Do not ship a generation CLI or tokenizer Adapter unless it matches the model
+  family being served. A smaller Interface is better than a misleading one.
+- `DeviceInference` lowers the caller-side DeviceProgram Interface shape, then
+  keeps the compiled backend `Program`, persistent-bound `Session` buffers,
+  per-step I/O, and per-call `StepParams` separate. `Program.compile` records
+  the bindable tensor/buffer shape, but persistent tensors are not compile-time
+  initial uploads. The C/JS session path now owns host-side persistent and
+  per-step buffers and can sequentially rebind compatible weights through one
+  compiled program. Backend Adapters bind a `RuntimeHandle` per session and can
+  upload persistent bindings without dispatching a step. CPU/stencil runtime
+  handles own independent mutable buffers/stencils; Metal runtime handles own
+  per-session buffers/stencils and bound execution constructs an explicit
+  `RuntimeView` for scheduling, command lowering, fallback, kernel buffer
+  binding, and host/device transfer. Metal command buffers and transient
+  command-profile counters are owned by a per-execution encoder context, then
+  merged through the backend-owned profile path. Callers execute with semantic
+  token windows; they do not scan or patch ops.
+  `Program.inspect()` is the
+  non-hot-path evidence surface for runtime patch and command-stream shape.
+- Treat LLaMA prefill/decode as semantic copy-and-patch on top of the general
+  compiled-Program path: a fixed scheduled program shape plus host-side patching
+  for token embedding, masks, and RoPE ranges; compiled backends derive runtime
+  bindings for cache write positions and valid attention length directly from
+  the DeviceProgram/ProgramStencil. Generic op fusion is not enough by itself,
+  but the first performance seam should be the scheduler/kernelizer that turns
+  lazy tensor graphs into fewer kernels. Semantic LLaMA recognizers should be
+  used when they buy dispatch depth, memory locality, or quantized layout wins
+  that the generic kernelizer cannot express cleanly.
+- `LlamaInferenceSession` owns semantic device patching for tokens, causal
+  masks, RoPE, and host KV offsets. The concrete `LlamaInferencePlan` factory
+  and host-graph patch implementation are private; the internal LLaMA device
+  Module asks the session for `RuntimeWindow` instead of knowing plan patch
+  intents. The plan trace owns the semantic stage and runtime patch-hole shape;
+  device execution Adapters consume that shape instead of re-deriving it from
+  configuration formulas.
+- The public `zgml.llm` surface now names the planned lifecycle as
+  `LlamaModel -> LlamaProgram -> LlamaSession -> StepParams` while preserving
+  the direct `LlamaSession.init/load/step` convenience path. Bound sessions now
+  own independent runtime state: model params are copied, CPU and Metal direct
+  quantized GGUF qweights are uploaded into runtime bindings after compile-time
+  shape validation, and KV caches/position/plans are separate per session.
+  Executable prefill now synchronizes KV-cache side effects into the Session so
+  the following decode call observes prompt state through a refreshed
+  persistent KV-cache binding range instead of a prefill-only backend cache copy
+  or broad weight re-upload.
+  `stepInto` and `prefillInto` let callers reuse their own logits buffers for
+  embedder/FFI-style output ownership.
+  This is still a copy-on-bind slice, not the final zero-copy compatible
+  checkpoint/KV binding model.
+- Backend capability metadata declares support facts only. Command-stream
+  defaults live behind the backend/program planning seam, so scheduler tuning is
+  not part of the public backend Interface.
+- Prefer scheduler/kernelizer-produced coarse kernels over one-dispatch-per-op
+  execution and over endless local pair fusers. Prefer semantic stage/layer
+  commands only when they preserve the same ProgramStencil evidence and prove a
+  real throughput or dispatch-depth win.
+- Row-chain Adapters may drop dead norm/repeat materialization when planner
+  liveness proves only the scaled output survives. Do not fuse RMSNorm into
+  projection matmuls by recomputing it per output tile; dispatch-count wins must
+  not buy themselves with substantially higher math.
+- Row-chain kernels run one threadgroup per row with a cooperative reduction and
+  parallel scale writes; keep non-multiple-of-64 column coverage in exact Metal
+  tests when changing them.
+- Decode projection matvec batches use a four-column Metal variant for slice,
+  elementwise, and RoPE-store sidecars, sharing input loads across adjacent
+  output columns. The tiled RoPE-store path proved faster on the benchmark gate
+  and retired the old one-column batched matvec kernels without changing the
+  ProgramCommand Interface. It is a throughput win, not a dispatch-depth win:
+  prompt remains gated at 242 F16 / 242 Q8_0 dispatches/call and decode at
+  212 F16 / 212 Q8_0 dispatches/token.
+- Decode-shaped dense projection chains (`M == 1` dense matmul plus add/mul
+  sidecar) lower through the same four-column dense matvec Adapter instead of
+  the tiled dense matmul-elementwise kernel. This preserves the
+  `dense_projection_chain` ProgramCommand evidence and dispatch roof while
+  raising F16 decode from the old ~20% ggml lane into the checked >=31% floor.
+- Quantized prompt `projection_row_chain` is now a default semantic
+  ProgramCommand, but not a forced single-kernel throughput claim. Metal lowers
+  prompt-sized Q8 row chains through the existing fast tiled
+  `qmatmul_elementwise_f32` dispatch plus the existing RMSNorm-scale row-chain
+  dispatch under one executable command. This removes the old command-frontier
+  split without promoting the slower row-wise qmatmul kernel. The scalar
+  `qmatmul_row_chain_f32` kernel remains available as diagnosis and as the next
+  throughput target, but default full-model prompt evidence must keep zero
+  fallback and avoid throughput regression.
+- The controlled full-model prompt hook remains:
+  `--metal-prompt-projection-row-chain-candidate`. It now verifies that the
+  candidate flag matches the default semantic command shape rather than proving
+  a separate default flip. `npm run bench:q8-prompt-candidate` runs paired
+  default/candidate attempts (`BENCH_CANDIDATE_ATTEMPTS`, default 3), requires
+  structural readiness on every attempt, and reports the best throughput attempt
+  plus the number of noisy attempts below floor. On Q8_0 SmolLM p128/g40/r1, the
+  multi-attempt probe keeps dispatches at 242, commands at 181,
+  `projection_row_chain` at 60, `projection_row_chain_dispatch` at 120
+  (`split=2.00` dispatches per semantic row-chain), and fallback at zero. The
+  exact single-kernel target is `excess_dispatch=60->0`: preserve the 60
+  semantic row-chain commands while reducing their two-dispatch lowering to one
+  dispatch each.
+  Throughput is still noisy:
+  recent runs include both a best `speedup=1.14x` and two below-floor attempts,
+  so this is candidate evidence, not an accepted full-artifact promotion. The
+  next target is either stabilizing this into a refreshed accepted ggml artifact
+  or building a tiled qmatmul row-chain throughput kernel that reduces the
+  semantic row-chain split below two dispatches while beating the split fast
+  path reliably.
+- The current weakest checked lane is Q8_0 prompt at roughly 30% of llama.cpp.
+  Its pressure is not an obvious wrong-kernel issue: the remaining
+  `projection_chain:60` work is prefill-shaped qmatmul plus add/mul sidecars,
+  already lowered by the tiled `qmatmul_elementwise_f32` Adapter with primary
+  output elision. The next
+  meaningful Q8 prompt move should therefore be either
+  a semantic sublayer command that removes real command depth, or quantized
+  projection-chain layout/kernel work that improves throughput without hiding
+  extra dispatches behind a new command name.
+- The frontier gate now measures prompt-shaped quantized projection-chain
+  kernels independently of the full model:
+  `qproj prompt m=32 n=512 k=512 projection_chain` tile must stay within 5% of
+  staged qmatmul-plus-elementwise throughput, while the noisier
+  `qproj full-prefill m=128 n=512 k=512 projection_chain` diagnostic must stay
+  within 10%. The full-prefill line also reports a parity candidate signal at
+  1.00x. Both must keep max absolute
+  difference below 0.002.
+  Observed runs are often faster, but the gate treats this as local
+  non-regression evidence because Metal command timing is noisy at these sizes.
+  This proves the current weak-lane command is locally justified across tile
+  and full-prompt shapes while keeping the larger Q8 prompt percentage honest.
+- The frontier gate also reports a four-way prompt projection-group diagnostic:
+  `qproj group full-prefill x4 m=128 n=512 k=512 projection_group` compares
+  four staged projection chains against the existing qmatmul batch-with-sidecars
+  kernel. Correctness is enforced, but speed only marks a candidate as ready at
+  1.05x because current runs show this shape is exact but not reliably faster.
+  This keeps projection grouping visible as a potential planner target without
+  pretending it already moves the full Q8 prompt lane.
+- Q8_0 tied LM-head logits are a standalone backend qmatvec dispatch outside
+  the ProgramCommand stream: Q8_0 prompt is gated at 242 dispatches and 241
+  ProgramCommands, while Q8_0 decode is gated at 212 dispatches and 211
+  ProgramCommands. Removing the dense `op` command is a structural win only when
+  fallback remains zero.
+- Do not enable prefill projection RoPE-store sidecars by default until the
+  Adapter is tiled enough to win throughput. The scalar pair-column experiment
+  in `bench-results/smollm-20260601T162410Z-p128-g200-r3.json` lowered the
+  old prompt roof from 242 to 212 dispatches/call but regressed prompt
+  throughput, so the default planner keeps prefill RoPE/cache store as separate
+  commands.
+- The next decode-depth target is a semantic layer or sublayer command that
+  shares one materialized normalized input across projection/cache and MLP
+  projections. Do not collapse `row_chain` into projection-cache commands with a
+  one-dispatch Metal kernel unless the Adapter proves it avoids per-output-tile
+  RMSNorm recomputation; otherwise it is either two dispatches hidden behind one
+  command name or a likely throughput regression.
+- Producer-sidecar lowerings prove dependency, offset, and liveness legality in
+  the pure planner, then let Metal write the final side effect directly.
+- Runtime profiles are the gate evidence: every compiled-program Adapter must
+  expose backend/fallback placement, dispatch counts, schedule-region lowering,
+  command counts, runtime patch changes, and the bounded runtime patch-hole
+  count.
+- Execution-plan allocation or command-plan construction errors must fail
+  compilation rather than degrade into empty schedule regions.
+- A no-readback decode row is available only as a diagnostic. It is not a
+  parity lane because llama.cpp also materializes logits for `llama-bench`; on
+  current Q8 smoke runs it does not beat the normal native row, confirming that
+  command depth, not logits download, is the first-order bottleneck.
+- Experimental perf knobs stay opt-in until model benchmarks prove a default win.
+- Quantized prompt projection-row-chain is now default as a semantic
+  ProgramCommand, but the scalar single-kernel implementation remains
+  diagnostic. It can make the command shape look better by removing
+  projection-chain row frontiers, but the substrate gate must still distinguish
+  that command-shape win from a throughput win. The frontier microbench also
+  requires local speedup and max-absolute-difference correctness before
+  reporting the single-kernel candidate as ready; it includes a full-prefill
+  `qrow full-prefill m=128 n=512 k=512 projection_row_chain` diagnostic because
+  the current `qmatmul_row_chain_f32` Adapter still uses a scalar
+  per-row/per-column dot loop rather than the tiled simdgroup qmatmul path.
+  It caches the row input vector in threadgroup memory for eligible `K <= 2048`
+  shapes, which slightly improves the isolated row-chain frontier but does not
+  change the full-model promotion decision. A 256-thread row-wide variant was
+  tested and rejected: it left decode/tiny cases effectively neutral and
+  regressed the full-prefill row-chain diagnostic, so the next throughput target
+  needs a tiled qmatmul row-chain design with an explicit row-reduction
+  strategy rather than a larger scalar threadgroup. The prompt-sized candidate
+  path now keeps decode qmatvec unfused while preserving prompt qmatmul
+  evidence. The active frontier is tiled row-chain throughput or a larger
+  semantic sublayer, not command-count reduction by itself.
+- Benchmark artifacts keep raw outputs, gate-selected summaries, and gate
+  decisions so this document does not become a changelog.
 
 ## Acceptance Thresholds
 
@@ -226,9 +271,10 @@ SmolLM-135M:
 
 - `pp128`: zgml >= 90% of llama.cpp Metal F16/Q8_0 on the same machine.
 - `tg200`: zgml >= 90% of llama.cpp Metal F16/Q8_0 on the same machine.
-- Default release build: `zig build -Doptimize=ReleaseFast` passes without WGPU installed.
-- WGPU targets build only when requested with `-Duse-wgpu=true`.
-- Benchmarks record fallback counts or runtime profile data so CPU fallback cannot masquerade as GPU parity.
+- Default release build: `zig build -Doptimize=ReleaseFast` passes without ggml
+  installed.
+- Benchmarks gate only the intended Metal lanes and record fallback/profile data
+  so CPU fallback cannot masquerade as GPU parity.
 
 1B-class target:
 
@@ -236,8 +282,179 @@ SmolLM-135M:
 - `tg128`: zgml >= 90% of llama.cpp for equivalent F16 and quantized formats.
 - Memory use <= 115% of llama.cpp for equivalent quant formats.
 
-## Milestone Gate
+## Gates
 
-After a parity milestone is locked, performance changes should fail CI or release
-checks if they regress by more than 5% against the recorded target machine
-baseline, unless the regression is explicitly accepted in the benchmark report.
+Use `zig build check` as the default local/subagent gate. It runs the unit tests,
+builds benchmark artifacts, and verifies the checked compact baseline without a
+full parity run.
+
+The source-checkout npm workflow exposes the same proof path for JS/TS contributors:
+
+```sh
+npm run bench
+npm run bench:status
+npm run bench:frontier
+npm run bench:ggml
+npm run bench:ggml:parity
+```
+
+`npm run bench` is intentionally the cheap checked-baseline gate.
+`bench:status` is the cheap evidence-reading gate: it verifies the checked
+baseline artifacts and, when present, the latest local `bench-results/`
+p128/g200/r3 full-run artifact without rerunning Metal. These benchmark
+artifact commands are source-checkout evidence, not packaged npm runtime API.
+It also prints a latest-vs-checked-baseline delta for the selected native lanes,
+including throughput ratio plus dispatch/fallback shape, so a reader can tell
+whether the current full run is above the checked floor without opening JSON.
+`bench:ggml` builds the benchmark binaries in ReleaseFast, writes a full
+`bench-results/*.json` artifact, and requires the checked M5 Pro baseline so a
+new local artifact cannot improve a ggml percentage by merely running both
+zgml and llama.cpp slower. `bench:ggml:parity` keeps that baseline guard and
+also makes the 90% parity threshold required instead of diagnostic.
+Complete full-run artifacts that fail their required gate are moved to
+`bench-results/failed/` automatically; successful artifacts stay in
+`bench-results/` and become eligible for `bench:status` selection.
+
+When a macOS validation host has an unavailable or wedged Metal stack, use
+`zig build check -Duse-metal=false -Duse-blas=false` for an explicit CPU/Wasm
+gate. That mode is not Metal performance evidence; it exists to keep tests,
+Wasm handles, benchmark artifact construction, and stencil proof checks
+verifiable while Metal-specific gates remain blocked.
+
+Use the ReleaseFast build for all parity runs:
+
+```sh
+zig build -Doptimize=ReleaseFast
+zig build bench-baseline-check
+python3 scripts/verify_bench_artifact.py --status benchmarks/baselines/smollm-m5pro-p128-g200-r3.json benchmarks/baselines/smollm-stencil-p128.json
+BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json ./scripts/bench_vs_ggml.sh 128 200 3
+python3 scripts/verify_bench_artifact.py --status bench-results/<latest>.json
+BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json BENCH_REQUIRE_PARITY=1 ./scripts/bench_vs_ggml.sh 128 200 3
+BENCH_REQUIRE_PARITY=1 BENCH_BASELINE_JSON=bench-results/<baseline>.json ./scripts/bench_vs_ggml.sh 128 200 3
+BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json ./scripts/bench_vs_ggml.sh 128 200 3
+```
+
+`bench_vs_ggml.sh` runs zgml F16 and Q8_0 lanes with
+`--metal-prefill-device --metal-decode-region --gate-only` by default, so the
+selected zgml rows are native backend-only prompt and decode evidence.
+`verify_bench_artifact.py --status` prints the evidence class for checked
+artifacts: full benchmark runs are full-run evidence and explicitly report
+whether parity passed or missed, compact baselines are structural
+native-shape/baseline gates, and stencil artifacts are offline shape/hash gates.
+Only a full run with `gates.overall_pass=true` is a parity claim.
+
+The JSON artifact is the source of truth:
+
+- `summary.gate_zgml` selects native backend-only lanes for parity evidence.
+- `gates.reference_backend` requires the parsed llama-bench rows to be Metal
+  device rows. When llama-bench emits a `dev` column, the gate checks that
+  actual device rather than the broader loaded-backend list, so a BLAS/CPU lane
+  cannot satisfy required Metal parity merely because the MTL backend was also
+  loaded.
+- `gates.native_execution` requires matched profile windows, zero fallback,
+  cached region command plans, zero dynamic plans, and no increase beyond the
+  dispatch/command-per-call roof implied by the current ProgramCommand shape. It
+  also asserts the exact encoded/dispatch/attempt/refusal shape and rejects
+  extra command counters. An apparent dispatch-depth win cannot add a new
+  semantic command or remove RoPE/projection/cache command evidence unless the
+  replacement is explicitly benchmarked.
+- `gates.baseline` compares throughput against a compatible artifact with a 5%
+  floor and applies the same 5% ceiling to lower-is-better structural counters.
+  Semantic stage/token and runtime patch-hole fields are exact native execution
+  evidence, not baseline counters; shrinking program shape is not a throughput
+  win. Baseline and current lanes must include matched profile-window evidence;
+  baseline lanes must also include at least three zgml samples. Stored native
+  execution gates are accepted only when they include current semantic
+  stage/token evidence; otherwise the summary rows must satisfy the strict
+  native execution shape.
+- `program_commands`, `program_op_commands`, and projection sidecar counters are
+  emitted as artifact fields so dispatch-depth work is benchmark-gated instead
+  of checked by hand.
+- `ProgramStencil.inspect()` also carries cold command-stream shape evidence
+  for the executable op tape. This is available to backend profiles for
+  regression tests; benchmark artifact fields remain intentionally strict and
+  should only grow with an explicit baseline schema update.
+- `semantic_stage_count`, `semantic_token_count`, and the flat semantic program
+  shape fields are emitted for device prompt/decode rows, so the benchmark gate
+  proves those lanes still flow through the compiled LLaMA patch path and exact
+  measured token window.
+- `runtime_patch_holes` and its cache-write/attention-length split are emitted
+  for compiled device rows and must match the Zig-emitted semantic stencil
+  shape, including `semantic_runtime_patch_cache_write_pos_holes` and
+  `semantic_runtime_patch_attention_seq_kv_holes`. The Python gate derives the
+  expected stencil shape from those semantic fields, so copy-and-patch work
+  cannot quietly widen, narrow, or reshuffle the runtime bindings without
+  updating the semantic evidence. The checked compact baseline must include the
+  same fields so offline verification gates the patch bindings even when Metal
+  is unavailable locally.
+- Program inspection also exposes the bounded runtime patch envelope: max cache
+  write position and max attention sequence length. Those bounds are the
+  StepParams validity evidence future WebGPU/wgpu update-buffer code should use;
+  benchmark rows remain focused on hole counts, profile calls, and stencil
+  hashes unless the artifact schema is explicitly expanded.
+- `runtime_patch_stencil_hash` is the backend-emitted fingerprint of the
+  ordered runtime patch holes and their fixed geometry. `DeviceInference`
+  compares it against the canonical `ProgramStencil` inspection for the same
+  `DeviceProgram` whenever a caller requests runtime patch evidence, so a
+  backend Adapter cannot satisfy the copy-and-patch contract with the right
+  counts but a different patch layout. The canonical stencil is now inspection
+  evidence over the same executable skeleton that backend execution patches,
+  not a detached pure-shape helper. It is shape evidence, not a lower-is-better
+  perf counter. Full native execution evidence requires it, and baseline
+  regression runs fail if their baseline artifact lacks current native execution
+  evidence with a valid stencil hash. The compact checked-baseline verifier now
+  requires a valid hash on every native zgml lane while keeping the offline
+  schema check runnable on machines without Metal.
+- `runtime_patch_calls` must equal the expected profile-call window for prompt
+  and decode rows. This proves every compiled execution reaches the patch seam;
+  decode rows additionally require `runtime_patch_changed == expected calls`.
+- `runtime_patch_invalid` must be absent or zero; invalid runtime windows are
+  refused before execution and cannot satisfy native execution evidence.
+- zgml rows are sampled three times by default and the median parsed row is
+  gated; structural counters still gate the selected row. Set
+  `BENCH_ZGML_SAMPLES=1` only for quick smoke checks.
+- Full benchmark artifacts attach `sample_count`, `sample_*_tok_s`, and
+  `sample_range_pct` to each selected zgml lane.
+
+`benchmarks/baselines/smollm-m5pro-p128-g200-r3.json` is a compact checked-in
+baseline for the M5 Pro target machine. It keeps exact-schema compatibility
+metadata plus selected zgml lane fields consumed by the regression gate and
+native ProgramCommand shape verifier. It excludes raw stdout, full-run `gates`,
+parity summaries, display labels, and raw duplicate counters. The checked
+baseline is intentionally a conservative guard floor rather than the best
+observed run, so ordinary local variance does not fail the gate. The current
+compact baseline is refreshed from
+`bench-results/smollm-20260604T064807Z-p128-g200-r3.json` because the older
+June 1 compact artifact lacked the now-required `runtime_patch_stencil_hash`
+native-evidence field. The rejected prefill RoPE-store regression from
+`bench-results/smollm-20260601T162410Z-p128-g200-r3.json` still remains the
+kind of throughput regression this baseline is meant to catch.
+
+`benchmarks/baselines/smollm-stencil-p128.json` is the checked offline
+copy-and-patch stencil artifact. It is generated from:
+
+```bash
+./zig-out/bin/bench-llama-smollm ignored 128 1 1 --stencil-only
+```
+
+That mode builds the SmolLM decode and prefill `DeviceProgram` shapes with Metal
+planning capabilities through the internal stencil backend, then records the
+exact `ProgramStencil` inspection hash without loading weights, executing
+kernels, or requiring a Metal device. Decode evidence now comes through the
+persistent `compileDeviceDecodeProgram(...)` path, so the offline stencil row
+tracks the same Program object shape that executable decode sessions bind.
+
+`zig build bench-baseline-check` runs
+`scripts/verify_bench_artifact.py` against the checked compact baselines without
+requiring Metal or `llama-bench`. `zig build check` also runs the stencil probe
+binary with `--stencil-only` and fails if the generated p128 decode/prefill
+hashes drift from the checked exact-stencil artifact. This is a
+schema/native-shape gate, not a throughput run: the full parity run above is
+still required for new performance claims. Native ProgramCommand shape budgets
+live in
+`scripts/bench_contract.py` and are shared by both the full parity gate and the
+compact baseline verifier.
+
+After a parity milestone is locked, release checks should fail if prompt or
+decode throughput regresses by more than 5% against the recorded target-machine
+baseline. Exceptions must be explicitly accepted in the benchmark report.
