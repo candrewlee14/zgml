@@ -147,6 +147,12 @@ function checkScripts() {
     "candidateReady",
     "q8 prompt semantic row-chain gate:",
   ]);
+  requireIncludes(read("scripts/check_frontier_bench.cjs"), "scripts/check_frontier_bench.cjs", "projection row-chain frontier diagnostic", [
+    "const projectionRowChainKernel = \"scalar_per_row_col\";",
+    "const projectionRowChainNextTarget = \"tiled_qmatmul_row_chain_throughput\";",
+    "projection_row_chain_kernel=${projectionRowChainKernel}",
+    "projection_row_chain_next=${projectionRowChainNextTarget}",
+  ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "scalar qmatmul row-chain diagnosis until tiled replacement exists", [
     "kernel void qmatmul_row_chain_f32",
     "threadgroup float row_values[MAX_ROW_CHAIN_COLS]",
@@ -801,6 +807,8 @@ function checkFrontierEvidence() {
     "projection_row_chain_prompt_candidate=",
     "projection_row_chain_candidate=",
     "diff_ceil=0.020000",
+    "projection_row_chain_kernel=scalar_per_row_col",
+    "projection_row_chain_next=tiled_qmatmul_row_chain_throughput",
     "projection_row_chain_default=",
     "projection_row_chain_default=off",
     "reason=",
