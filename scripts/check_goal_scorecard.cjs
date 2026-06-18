@@ -10,7 +10,7 @@ const notes = [];
 const goalProgress = Object.freeze({
   substratePct: 70,
   substrateFloorPct: 65,
-  pytorchLikePct: 68,
+  pytorchLikePct: 69,
   pytorchLikeFloorPct: 60,
 });
 
@@ -3137,6 +3137,12 @@ function checkPytorchLikeSurface() {
     "const einsumTorchTensor: Tensor = torch.einsum(\"ij,jk->ik\"",
     "const einsumEllipsisTensor: Tensor = einsum(\"...ij,jk->...ik\"",
     "const einsumImplicitEllipsisTensor: Tensor = Tensor.einsum(\"...i->...\"",
+    "type EinsumShape,",
+    "const typedEinsumRootTensor: Tensor<readonly [2, 2]> = einsum(\"ij,jk->ik\"",
+    "const typedEinsumStaticTraceTensor: Tensor<readonly [1]> = Tensor.einsum(\"ii->\"",
+    "const typedEinsumEllipsisTensor: Tensor<readonly [2, 2, 2]> = einsum(\"...ij,jk->...ik\"",
+    "const typedEinsumImplicitEllipsisTensor: Tensor<readonly [2]> = Tensor.einsum(\"...i->...\"",
+    "type TypedEinsumBatchBroadcastShape = Expect<Equal<EinsumShape<\"bij,bjk->bik\"",
     "const logSoftmaxSnakeModule: ReturnType<typeof nn.log_softmax> = nn.log_softmax(-1)",
     "const layerNormSnake: ReturnType<typeof nn.layer_norm> = nn.layer_norm(2",
     "const rmsNormSnake: ReturnType<typeof nn.rms_norm> = nn.rms_norm(2",
@@ -4092,7 +4098,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=70% floor=65%; PyTorch-like surface=68% floor=60%",
+    "goal progress: Program/Session substrate=70% floor=65%; PyTorch-like surface=69% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4130,7 +4136,7 @@ function checkDocs() {
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
     "Program/Session performance substrate: ~70%",
-    "PyTorch-like replacement feel: ~68%",
+    "PyTorch-like replacement feel: ~69%",
     "The remaining substrate jump is not another compatibility lane;",
     "tiled quantized row-chain throughput kernel",
     "remaining frontend jump is native lowering and breadth,",

@@ -190,6 +190,7 @@ import {
   type DataSplitOptions,
   type EmbeddingCompileOptions,
   type EmbeddingForwardShape,
+  type EinsumShape,
   type FlattenShape,
   type GradModeNamespace,
   type IndexLike,
@@ -1282,6 +1283,13 @@ const einsumStaticTensor: Tensor = Tensor.einsum("ii->", tensor([1, 2, 3, 4], [2
 const einsumTorchTensor: Tensor = torch.einsum("ij,jk->ik", tensor([1, 2, 3, 4], [2, 2] as const), tensor([5, 6, 7, 8], [2, 2] as const));
 const einsumEllipsisTensor: Tensor = einsum("...ij,jk->...ik", tensor([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2] as const), tensor([1, 2, 3, 4], [2, 2] as const));
 const einsumImplicitEllipsisTensor: Tensor = Tensor.einsum("...i->...", tensor([1, 2, 3, 4, 5, 6], [2, 3] as const));
+const typedEinsumRootTensor: Tensor<readonly [2, 2]> = einsum("ij,jk->ik", [tensor([1, 2, 3, 4], [2, 2] as const), tensor([5, 6, 7, 8], [2, 2] as const)]);
+const typedEinsumStaticTraceTensor: Tensor<readonly [1]> = Tensor.einsum("ii->", tensor([1, 2, 3, 4], [2, 2] as const));
+const typedEinsumEllipsisTensor: Tensor<readonly [2, 2, 2]> = einsum("...ij,jk->...ik", tensor([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2] as const), tensor([1, 2, 3, 4], [2, 2] as const));
+const typedEinsumImplicitEllipsisTensor: Tensor<readonly [2]> = Tensor.einsum("...i->...", tensor([1, 2, 3, 4, 5, 6], [2, 3] as const));
+type TypedEinsumMatmulShape = Expect<Equal<EinsumShape<"ij,jk->ik", readonly [Tensor<readonly [2, 3]>, Tensor<readonly [3, 4]>]>, readonly [2, 4]>>;
+type TypedEinsumBatchBroadcastShape = Expect<Equal<EinsumShape<"bij,bjk->bik", readonly [Tensor<readonly [1, 2, 3]>, Tensor<readonly [4, 3, 5]>]>, readonly [4, 2, 5]>>;
+type TypedEinsumImplicitEllipsisShape = Expect<Equal<EinsumShape<"...i->...", readonly [Tensor<readonly [2, 3, 4]>]>, readonly [2, 3]>>;
 const customParameterModule: CustomModule<readonly [2], readonly [1]> = nn.module({
   kind: "custom-parameter-head",
   parameters: [customWeightParameter, customBiasParameter],
@@ -6055,6 +6063,10 @@ void einsumStaticTensor;
 void einsumTorchTensor;
 void einsumEllipsisTensor;
 void einsumImplicitEllipsisTensor;
+void typedEinsumRootTensor;
+void typedEinsumStaticTraceTensor;
+void typedEinsumEllipsisTensor;
+void typedEinsumImplicitEllipsisTensor;
 void customParameterModule;
 void customParameterState;
 void customParameterOptimizer;

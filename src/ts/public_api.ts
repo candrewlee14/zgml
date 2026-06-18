@@ -401,6 +401,55 @@ export type TensorHStackShape<Tensors extends readonly Tensor[]> =
       ? TensorCatShape<Tensors, 0>
       : TensorCatShape<Tensors, 1>
     : TensorShapeTuple;
+type TensorOperandShape<Operand> = Operand extends Tensor<infer S extends TensorShapeTuple> ? S : TensorShapeTuple;
+type EinsumTraceShape<Shape extends TensorShapeTuple> =
+  Shape extends readonly [infer N extends number, infer N2 extends number]
+    ? N2 extends N ? readonly [1] : TensorShapeTuple
+    : TensorShapeTuple;
+type EinsumImplicitEllipsisReductionShape<Shape extends TensorShapeTuple> =
+  Shape extends readonly [number]
+    ? readonly [1]
+    : Shape extends readonly [infer A extends number, number]
+      ? readonly [A]
+      : Shape extends readonly [infer A extends number, infer B extends number, number]
+        ? readonly [A, B]
+        : Shape extends readonly [infer A extends number, infer B extends number, infer C extends number, number]
+          ? readonly [A, B, C]
+          : TensorShapeTuple;
+type EinsumEllipsisMatmulShape<Lhs extends TensorShapeTuple, Rhs extends TensorShapeTuple> =
+  Rhs extends readonly [infer K extends number, infer N extends number]
+    ? Lhs extends readonly [infer M extends number, K]
+      ? readonly [M, N]
+      : Lhs extends readonly [infer B extends number, infer M extends number, K]
+        ? readonly [B, M, N]
+        : Lhs extends readonly [infer A extends number, infer B extends number, infer M extends number, K]
+          ? readonly [A, B, M, N]
+          : TensorShapeTuple
+    : TensorShapeTuple;
+type EinsumBatchMatmulShape<Lhs extends TensorShapeTuple, Rhs extends TensorShapeTuple> =
+  Lhs extends readonly [infer LB extends number, infer M extends number, infer K extends number]
+    ? Rhs extends readonly [infer RB extends number, K, infer N extends number]
+      ? BroadcastDim<LB, RB> extends infer B extends number
+        ? readonly [B, M, N]
+        : TensorShapeTuple
+      : TensorShapeTuple
+    : TensorShapeTuple;
+export type EinsumShape<Equation extends string, Operands extends readonly Tensor[]> =
+  Operands extends readonly [infer Lhs extends Tensor, infer Rhs extends Tensor]
+    ? Equation extends "ij,jk->ik"
+      ? MatmulShape<TensorOperandShape<Lhs>, TensorOperandShape<Rhs>>
+      : Equation extends "...ij,jk->...ik"
+        ? EinsumEllipsisMatmulShape<TensorOperandShape<Lhs>, TensorOperandShape<Rhs>>
+        : Equation extends "bij,bjk->bik"
+          ? EinsumBatchMatmulShape<TensorOperandShape<Lhs>, TensorOperandShape<Rhs>>
+          : TensorShapeTuple
+    : Operands extends readonly [infer Input extends Tensor]
+      ? Equation extends "ii->"
+        ? EinsumTraceShape<TensorOperandShape<Input>>
+        : Equation extends "...i->..."
+          ? EinsumImplicitEllipsisReductionShape<TensorOperandShape<Input>>
+          : TensorShapeTuple
+      : TensorShapeTuple;
 export type MatmulShape<Lhs extends TensorShapeTuple, Rhs extends TensorShapeTuple> =
   Lhs extends readonly [infer M extends number, infer K extends number]
     ? Rhs extends readonly [K, infer N extends number]
@@ -1683,6 +1732,8 @@ export declare class Tensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
   static vstack(tensors: readonly Tensor[]): Tensor;
   static hstack<const Tensors extends readonly [Tensor, ...Tensor[]]>(tensors: Tensors): Tensor<TensorHStackShape<Tensors>>;
   static hstack(tensors: readonly Tensor[]): Tensor;
+  static einsum<const Equation extends string, const Operands extends readonly [Tensor, ...Tensor[]]>(equation: Equation, operands: Operands): Tensor<EinsumShape<Equation, Operands>>;
+  static einsum<const Equation extends string, const Operands extends readonly [Tensor, ...Tensor[]]>(equation: Equation, ...operands: Operands): Tensor<EinsumShape<Equation, Operands>>;
   static einsum(equation: string, operands: readonly Tensor[]): Tensor;
   static einsum(equation: string, ...operands: readonly Tensor[]): Tensor;
   static hasShape<const S extends TensorShape>(input: Tensor, shape: S): input is Tensor<TensorShapeOf<S>>;
@@ -1719,6 +1770,8 @@ export declare function vstack<const Tensors extends readonly [Tensor, ...Tensor
 export declare function vstack(tensors: readonly Tensor[]): Tensor;
 export declare function hstack<const Tensors extends readonly [Tensor, ...Tensor[]]>(tensors: Tensors): Tensor<TensorHStackShape<Tensors>>;
 export declare function hstack(tensors: readonly Tensor[]): Tensor;
+export declare function einsum<const Equation extends string, const Operands extends readonly [Tensor, ...Tensor[]]>(equation: Equation, operands: Operands): Tensor<EinsumShape<Equation, Operands>>;
+export declare function einsum<const Equation extends string, const Operands extends readonly [Tensor, ...Tensor[]]>(equation: Equation, ...operands: Operands): Tensor<EinsumShape<Equation, Operands>>;
 export declare function einsum(equation: string, operands: readonly Tensor[]): Tensor;
 export declare function einsum(equation: string, ...operands: readonly Tensor[]): Tensor;
 export declare function allclose(actual: TensorLike, expected: TensorLike, options?: AllCloseOptions): boolean;
