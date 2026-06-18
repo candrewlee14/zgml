@@ -33,6 +33,7 @@ const floors = Object.freeze({
   softmaxClassifierBatchedSpeedup: 3.0,
   logSoftmaxClassifierBatchedSpeedup: 3.0,
   lazyMatmulAddReluBatchedSpeedup: 1.5,
+  lazyMlpBatchedSpeedup: 2.5,
 });
 const expectedKeys = Object.freeze([
   "activation_chain",
@@ -54,6 +55,7 @@ const expectedKeys = Object.freeze([
   "softmax_classifier_batched",
   "log_softmax_classifier_batched",
   "lazy_matmul_add_relu_batched",
+  "lazy_mlp_batched",
 ]);
 
 function msNow() {
@@ -189,6 +191,30 @@ function lazyMatmulAddReluEager(input, weightValues, biasValues, batch, inFeatur
         sum += input.data[row * inFeatures + feature] * weightValues[feature * outFeatures + col];
       }
       out[row * outFeatures + col] = Math.max(0, sum);
+    }
+  }
+  return out;
+}
+
+function lazyMlpBatchedEager(input, firstWeights, firstBias, secondWeights, secondBias, batch, inFeatures, hiddenFeatures, outFeatures) {
+  const hidden = new Float32Array(batch * hiddenFeatures);
+  for (let row = 0; row < batch; row += 1) {
+    for (let col = 0; col < hiddenFeatures; col += 1) {
+      let sum = firstBias[col];
+      for (let feature = 0; feature < inFeatures; feature += 1) {
+        sum += input.data[row * inFeatures + feature] * firstWeights[feature * hiddenFeatures + col];
+      }
+      hidden[row * hiddenFeatures + col] = Math.max(0, sum);
+    }
+  }
+  const out = new Float32Array(batch * outFeatures);
+  for (let row = 0; row < batch; row += 1) {
+    for (let col = 0; col < outFeatures; col += 1) {
+      let sum = secondBias[col];
+      for (let feature = 0; feature < hiddenFeatures; feature += 1) {
+        sum += hidden[row * hiddenFeatures + feature] * secondWeights[feature * outFeatures + col];
+      }
+      out[row * outFeatures + col] = sum;
     }
   }
   return out;
@@ -875,6 +901,58 @@ const benchSpecs = [
       },
     },
     summary: (result) => `lazy_matmul_add_relu_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyMatmulAddReluBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=3 kernels=linear|add|relu batched=rank2 parameters=w|b hot=allocation-free`,
+  },
+  {
+    key: "lazy_mlp_batched",
+    label: "lazy-mlp-batched",
+    floor: floors.lazyMlpBatchedSpeedup,
+    inputShape: [128, 64],
+    inputShapeText: "128x64",
+    outputShapeText: "128x32",
+    inputLen: 128 * 64,
+    outputLen: 128 * 32,
+    layerCount: 3,
+    parameterNames: "0.weight|0.bias|2.weight|2.bias",
+    input: () => adapter.tensor(values(128 * 64, 13), [128, 64]),
+    model: () => adapter.lazy.input([128, 64])
+      .linear(64, { name: "0" })
+      .relu()
+      .linear(32, { name: "2" }),
+    eager: (input) => lazyMlpBatchedEager(
+      input,
+      values(64 * 64, 32),
+      values(64, 64),
+      values(64 * 32, 48),
+      values(32, 80),
+      128,
+      64,
+      64,
+      32,
+    ),
+    bindSession: (program) => program.bind({
+      weights: new Float32Array([...values(64 * 64, 32), ...values(64 * 32, 48)]),
+      bias: new Float32Array([...values(64, 64), ...values(32, 80)]),
+    }),
+    ir: { opCount: 3, parameterCount: 4 },
+    iterations: 100,
+    tolerance: 1e-4,
+    plan: {
+      opCount: 3,
+      dispatchCount: 2,
+      publicOps: 2,
+      description: "lazy Tensor IR Linear+ReLU -> Linear Program kernel plan",
+      check: (plan) => {
+        if (
+          ops(plan) !== "linear|linear" ||
+          kernels(plan) !== "linear|relu|linear" ||
+          plan.ops[0].fusedOpCount !== 2 ||
+          plan.parameterLayout.parameters.map((param) => param.name).join("|") !== "0.weight|0.bias|2.weight|2.bias"
+        ) {
+          throw new Error("lazy mlp expected fused Linear+ReLU -> Linear kernel plan with named parameters");
+        }
+      },
+    },
+    summary: (result) => `lazy_mlp_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyMlpBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=2 fused=2 kernels=linear|relu|linear batched=rank2 parameters=0.weight|0.bias|2.weight|2.bias hot=allocation-free`,
   },
 ];
 
