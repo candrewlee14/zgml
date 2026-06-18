@@ -13686,7 +13686,7 @@ async function runTinyLlamaWebGpuCompileOnlySmoke() {
           "smollm3.attention.head_count_kv": "2",
           "smollm3.attention.layer_norm_rms_epsilon": "0.000089",
           "smollm3.block_count": String(groupedTinyLlamaShape.layers),
-          "smollm3.context_length": "16",
+          "smollm3.context_length": String(groupedTinyLlamaShape.contextLength),
           "smollm3.embedding_length": String(groupedTinyLlamaShape.hiddenSize),
           "smollm3.feed_forward_length": String(groupedTinyLlamaShape.ffnSize),
           "smollm3.rope.freq_base": "18150",
@@ -13694,6 +13694,7 @@ async function runTinyLlamaWebGpuCompileOnlySmoke() {
           "smollm3.vocab_size": String(groupedTinyLlamaShape.vocabSize),
         },
         epsilon: 0.000089,
+        modelKind: tinyLlama2LayerKind,
         omitContextLengthOption: true,
         ropeBase: 18150,
         shape: groupedTinyLlamaShape,
@@ -13925,6 +13926,7 @@ async function runTinyLlamaWebGpuCompileOnlySmoke() {
         program,
         config: packedTinyLlamaProof.config,
         ...(packedTinyLlamaProof.omitContextLengthOption === true ? {} : { contextLength: groupedTinyLlamaShape.contextLength }),
+        modelKind: packedTinyLlamaProof.modelKind,
         safetensors: groupedModelResourceBytes,
         allowMockFallback: true,
         executorOptions: {
@@ -13942,24 +13944,28 @@ async function runTinyLlamaWebGpuCompileOnlySmoke() {
       const expectedGroupedQkProjectionNorm = packedTinyLlamaProof.qkProjectionNorm ?? false;
       const expectedGroupedAttentionBiasLayers = packedTinyLlamaProof.attentionBiasLayers ?? [];
       const expectedGroupedMlpBiasLayers = packedTinyLlamaProof.mlpBiasLayers ?? [];
-      if (
-        groupedPipelineProgram.vocabSize !== groupedTinyLlamaShape.vocabSize ||
-        groupedPipelineProgram.hiddenSize !== groupedTinyLlamaShape.hiddenSize ||
-        groupedPipelineProgram.ffnSize !== groupedTinyLlamaShape.ffnSize ||
-        groupedPipelineProgram.kvRequirements.layers !== groupedTinyLlamaShape.layers ||
-        groupedPipelineProgram.kvRequirements.kBufferByteLength !== groupedTinyLlamaShape.contextLength * groupedTinyLlamaShape.kvSize * Float32Array.BYTES_PER_ELEMENT ||
-        groupedPipelineProgram.kvRequirements.vBufferByteLength !== groupedTinyLlamaShape.contextLength * groupedTinyLlamaShape.kvSize * Float32Array.BYTES_PER_ELEMENT ||
-        groupedPipelineProgram.tokenExecutor.blocks[0].executor.attentionHeadSize !== groupedTinyLlamaShape.attentionHeadSize ||
-        groupedPipelineProgram.tokenExecutor.blocks[0].executor.ropeBase !== packedTinyLlamaProof.ropeBase ||
-        groupedPipelineProgram.tokenExecutor.blocks[0].executor.ropeKind !== expectedGroupedRopeKind ||
-        groupedPipelineProgram.tokenExecutor.blocks[0].executor.ropeLowFreqFactor !== expectedGroupedRopeLowFreqFactor ||
-        groupedPipelineProgram.tokenExecutor.blocks[0].executor.ropeHighFreqFactor !== expectedGroupedRopeHighFreqFactor ||
-        groupedPipelineProgram.tokenExecutor.blocks[0].executor.ropeOriginalContextLength !== expectedGroupedRopeOriginalContextLength ||
-        groupedPipelineProgram.tokenExecutor.blocks[0].executor.ropeScale !== expectedGroupedRopeScale ||
-        groupedPipelineProgram.tokenExecutor.blocks[0].executor.slidingWindow !== (packedTinyLlamaProof.slidingWindow ?? null) ||
-        groupedPipelineProgram.tokenExecutor.blocks[0].executor.epsilon !== packedTinyLlamaProof.epsilon ||
-        groupedPipelineProgram.tokenExecutor.blocks[0].executor.qkProjectionNorm !== expectedGroupedQkProjectionNorm
-      ) {
+      const groupedInferenceChecks = [
+        ["vocabSize", groupedPipelineProgram.vocabSize, groupedTinyLlamaShape.vocabSize],
+        ["hiddenSize", groupedPipelineProgram.hiddenSize, groupedTinyLlamaShape.hiddenSize],
+        ["ffnSize", groupedPipelineProgram.ffnSize, groupedTinyLlamaShape.ffnSize],
+        ["kvLayers", groupedPipelineProgram.kvRequirements.layers, groupedTinyLlamaShape.layers],
+        ["kBufferByteLength", groupedPipelineProgram.kvRequirements.kBufferByteLength, groupedTinyLlamaShape.contextLength * groupedTinyLlamaShape.kvSize * Float32Array.BYTES_PER_ELEMENT],
+        ["vBufferByteLength", groupedPipelineProgram.kvRequirements.vBufferByteLength, groupedTinyLlamaShape.contextLength * groupedTinyLlamaShape.kvSize * Float32Array.BYTES_PER_ELEMENT],
+        ["attentionHeadSize", groupedPipelineProgram.tokenExecutor.blocks[0].executor.attentionHeadSize, groupedTinyLlamaShape.attentionHeadSize],
+        ["ropeBase", groupedPipelineProgram.tokenExecutor.blocks[0].executor.ropeBase, packedTinyLlamaProof.ropeBase],
+        ["ropeKind", groupedPipelineProgram.tokenExecutor.blocks[0].executor.ropeKind, expectedGroupedRopeKind],
+        ["ropeLowFreqFactor", groupedPipelineProgram.tokenExecutor.blocks[0].executor.ropeLowFreqFactor, expectedGroupedRopeLowFreqFactor],
+        ["ropeHighFreqFactor", groupedPipelineProgram.tokenExecutor.blocks[0].executor.ropeHighFreqFactor, expectedGroupedRopeHighFreqFactor],
+        ["ropeOriginalContextLength", groupedPipelineProgram.tokenExecutor.blocks[0].executor.ropeOriginalContextLength, expectedGroupedRopeOriginalContextLength],
+        ["ropeScale", groupedPipelineProgram.tokenExecutor.blocks[0].executor.ropeScale, expectedGroupedRopeScale],
+        ["slidingWindow", groupedPipelineProgram.tokenExecutor.blocks[0].executor.slidingWindow, packedTinyLlamaProof.slidingWindow ?? null],
+        ["epsilon", groupedPipelineProgram.tokenExecutor.blocks[0].executor.epsilon, packedTinyLlamaProof.epsilon, 1e-12],
+        ["qkProjectionNorm", groupedPipelineProgram.tokenExecutor.blocks[0].executor.qkProjectionNorm, expectedGroupedQkProjectionNorm],
+      ];
+      const groupedInferenceFailures = groupedInferenceChecks.filter(([_name, actual, expected, tolerance = 0]) => (
+        tolerance === 0 ? actual !== expected : Math.abs(actual - expected) > tolerance
+      ));
+      if (groupedInferenceFailures.length !== 0) {
         throw new Error(`host-only WebGPU grouped LLaMA safetensors Program did not infer packed K/V resources for ${packedTinyLlamaProof.label}: ${JSON.stringify({
           actual: {
             attentionHeadSize: groupedPipelineProgram.tokenExecutor.blocks[0].executor.attentionHeadSize,
@@ -13993,6 +13999,7 @@ async function runTinyLlamaWebGpuCompileOnlySmoke() {
             slidingWindow: packedTinyLlamaProof.slidingWindow ?? null,
             vocabSize: groupedTinyLlamaShape.vocabSize,
           },
+          failed: groupedInferenceFailures.map(([name, actual, expected]) => ({ actual, expected, name })),
         })}`);
       }
       const groupedProgramInspection = groupedPipelineProgram.inspect();

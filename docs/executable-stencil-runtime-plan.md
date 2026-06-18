@@ -3574,9 +3574,9 @@ Current first slice:
   `storageAlignment=256`, `canBindBlockPipeline=true`, 63 LLaMA profile labels,
   211 backend dispatches, 207 executor dispatches, 4 device-selection
   dispatches, 98/98/0/0/0 storage-mode calls, and zero fallback ops. The
-  current no-adapter browser mock gate records 72 profile labels,
-  122/0/122/0/0 storage-mode calls, 43 output reads, and 482 explicit mock
-  fallback ops.
+  current no-adapter browser mock gate records the expanded 74-profile-label
+  matrix, storage-mode call splits, output reads, and explicit mock fallback
+  work.
   For debugging one packed-family browser path without redefining the proof
   gate, `examples/wasm_ffi/browser_smoke_runner.mjs` accepts
   `--llama-profile-label=<label>`; the filtered page now skips unrelated
@@ -5639,7 +5639,7 @@ registered-resource proof now has public owned-buffer and C import surfaces:
   windows also split terminal block stages into a batched no-output prefix plus
   one final logits dispatch, so prompt-style decode windows no longer submit
   every prefix token separately. The
-	  required-GPU browser gate now requires 72 LLaMA profile labels plus
+	  required-GPU browser gate now requires 74 LLaMA profile labels plus
 	  scalar/window block dispatch-family evidence, adding
 	  strict-default safetensors execution evidence,
 	  standalone Mistral sliding-window, Llama 3 RoPE, SmolLM3-NoPE block,

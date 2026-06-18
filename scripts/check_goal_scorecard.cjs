@@ -265,6 +265,7 @@ function checkScripts() {
     "zgml wasm ffi tiny checkpoint data load smoke ok",
     "zgml wasm ffi webgpu compile/resource-probe tiny linear + mock host execution smoke ok",
     "zgml wasm ffi webgpu resource-probe tiny llama smoke ok",
+    "gguf-smollm3-nope-gqa-pipeline",
   ]);
   requireIncludes(read("examples/wasm_ffi/host_resources.mjs"), "examples/wasm_ffi/host_resources.mjs", "Wasm host ProgramRequirements ABI parser", [
     "const usizeBytes = size >= 128 ? 8 : 4",
@@ -287,6 +288,7 @@ function checkScripts() {
     "executionCoverage: \"custom-executor\"",
     "executionCoverageReason: \"custom-token-executor\"",
     "fullDefaultExecutionSupported: false",
+    "modelKind: options.modelKind ?? options.model_kind ?? options.kind",
   ]);
   requireIncludes(read("examples/wasm_ffi/browser_smoke_runner.mjs"), "examples/wasm_ffi/browser_smoke_runner.mjs", "browser Wasm FFI CDP smoke runner", [
     "Chrome/Chromium not found; set CHROME_PATH or pass --chrome=/path/to/chrome",

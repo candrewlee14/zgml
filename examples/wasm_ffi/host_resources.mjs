@@ -5717,6 +5717,7 @@ export class WasmWebGpuLlamaResourceProgram {
       embeddingTensor: options.embeddingTensor,
       lmHeadBiasTensor: options.lmHeadBiasTensor,
       lmHeadTensor: options.lmHeadTensor,
+      modelKind: options.modelKind ?? options.model_kind ?? options.kind,
       normTensor: options.normTensor,
       modelResourceOptions,
       qkProjectionNorm:
