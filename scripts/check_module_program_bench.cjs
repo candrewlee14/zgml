@@ -35,6 +35,7 @@ const floors = Object.freeze({
   logSoftmaxClassifierBatchedSpeedup: 3.0,
   lazyMatmulAddBatchedSpeedup: 1.5,
   lazyMatmulAddReluBatchedSpeedup: 1.5,
+  lazyMatmulAddGeluBatchedSpeedup: 1.5,
   lazyMlpBatchedSpeedup: 2.5,
   lazyMlpMeanBatchedSpeedup: 2.0,
   lazyMlpLogSoftmaxBatchedSpeedup: 2.0,
@@ -65,6 +66,7 @@ const expectedKeys = Object.freeze([
   "log_softmax_classifier_batched",
   "lazy_matmul_add_batched",
   "lazy_matmul_add_relu_batched",
+  "lazy_matmul_add_gelu_batched",
   "lazy_mlp_batched",
   "lazy_mlp_mean_batched",
   "lazy_mlp_log_softmax_batched",
@@ -207,6 +209,20 @@ function lazyMatmulAddReluEager(input, weightValues, biasValues, batch, inFeatur
         sum += input.data[row * inFeatures + feature] * weightValues[feature * outFeatures + col];
       }
       out[row * outFeatures + col] = Math.max(0, sum);
+    }
+  }
+  return out;
+}
+
+function lazyMatmulAddGeluEager(input, weightValues, biasValues, batch, inFeatures, outFeatures) {
+  const out = new Float32Array(batch * outFeatures);
+  for (let row = 0; row < batch; row += 1) {
+    for (let col = 0; col < outFeatures; col += 1) {
+      let sum = biasValues[col];
+      for (let feature = 0; feature < inFeatures; feature += 1) {
+        sum += input.data[row * inFeatures + feature] * weightValues[feature * outFeatures + col];
+      }
+      out[row * outFeatures + col] = geluScalar(sum);
     }
   }
   return out;
@@ -1230,6 +1246,48 @@ const benchSpecs = [
       },
     },
     summary: (result) => `lazy_matmul_add_relu_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyMatmulAddReluBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=1 fused=3 kernels=linear|add|relu batched=rank2 parameters=w:weights|b:bias hot=allocation-free`,
+  },
+  {
+    key: "lazy_matmul_add_gelu_batched",
+    label: "lazy-matmul-add-gelu-batched",
+    floor: floors.lazyMatmulAddGeluBatchedSpeedup,
+    inputShape: [128, 64],
+    inputShapeText: "128x64",
+    outputShapeText: "128x64",
+    inputLen: 128 * 64,
+    outputLen: 128 * 64,
+    layerCount: 3,
+    parameterNames: "w|b",
+    input: () => adapter.tensor(values(128 * 64, 13), [128, 64]),
+    model: () => adapter.lazy.input([128, 64])
+      .matmul(adapter.lazy.parameter([64, 64], "w"))
+      .add(adapter.lazy.parameter([64], "b"))
+      .gelu(),
+    eager: (input) => lazyMatmulAddGeluEager(input, values(64 * 64, 32), values(64, 64), 128, 64, 64),
+    bindSession: (program) => program.bind({
+      weights: new Float32Array(values(64 * 64, 32)),
+      bias: new Float32Array(values(64, 64)),
+    }),
+    ir: { opCount: 3, parameterCount: 2 },
+    iterations: 100,
+    tolerance: 1e-4,
+    plan: {
+      opCount: 3,
+      dispatchCount: 1,
+      publicOps: 1,
+      description: "fused lazy Tensor IR Matmul -> Add -> GELU Program kernel plan",
+      check: (plan) => {
+        if (
+          ops(plan) !== "matmul" ||
+          kernels(plan) !== "linear|add|gelu" ||
+          plan.ops[0].fusedOpCount !== 3 ||
+          plan.parameterLayout.parameters.map((param) => `${param.name}:${param.binding}`).join("|") !== "w:weights|b:bias"
+        ) {
+          throw new Error("lazy matmul-add-gelu expected one fused Matmul -> Add -> GELU kernel plan with named parameters");
+        }
+      },
+    },
+    summary: (result) => `lazy_matmul_add_gelu_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyMatmulAddGeluBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=1 fused=3 kernels=linear|add|gelu batched=rank2 parameters=w:weights|b:bias hot=allocation-free`,
   },
   {
     key: "lazy_mlp_batched",

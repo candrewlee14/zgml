@@ -8,7 +8,7 @@ const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
 const goalProgress = Object.freeze({
-  substratePct: 72,
+  substratePct: 73,
   substrateFloorPct: 65,
   pytorchLikePct: 92,
   pytorchLikeFloorPct: 60,
@@ -572,6 +572,7 @@ function checkScripts() {
     "log_softmax_classifier_batched=",
     "lazy_matmul_add_batched=",
     "lazy_matmul_add_relu_batched=",
+    "lazy_matmul_add_gelu_batched=",
     "lazy_mlp_batched=",
     "lazy_mlp_mean_batched=",
     "lazy_mlp_log_softmax_batched=",
@@ -594,6 +595,7 @@ function checkScripts() {
     "ops=2 dispatch=2 kernels=linear|log-softmax",
     "ops=2 dispatch=1 fused=2 kernels=linear|add",
     "ops=3 dispatch=1 fused=3 kernels=linear|add|relu",
+    "ops=3 dispatch=1 fused=3 kernels=linear|add|gelu",
     "ops=3 dispatch=2 fused=2 kernels=linear|relu|linear",
     "ops=3 dispatch=2 fused=2 kernels=linear|relu|mean",
     "ops=4 dispatch=3 fused=2 kernels=linear|relu|linear|log-softmax",
@@ -622,6 +624,7 @@ function checkScripts() {
     "floors.logSoftmaxClassifierBatchedSpeedup",
     "floors.lazyMatmulAddBatchedSpeedup",
     "floors.lazyMatmulAddReluBatchedSpeedup",
+    "floors.lazyMatmulAddGeluBatchedSpeedup",
     "floors.lazyMlpBatchedSpeedup",
     "floors.lazyMlpMeanBatchedSpeedup",
     "floors.lazyMlpLogSoftmaxBatchedSpeedup",
@@ -1018,6 +1021,8 @@ function checkModuleProgramBenchEvidence() {
   requirePattern(line, "module Program bench gate output", "lazy Tensor IR add-only fusion kernel proof", /ops=2 dispatch=1 fused=2 kernels=linear\|add batched=rank2 parameters=w:weights\|b:bias hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "lazy matmul-add-relu speedup floor", /lazy_matmul_add_relu_batched=[0-9.]+x floor=1\.50x/);
   requirePattern(line, "module Program bench gate output", "lazy Tensor IR add fusion kernel proof", /ops=3 dispatch=1 fused=3 kernels=linear\|add\|relu batched=rank2 parameters=w:weights\|b:bias hot=allocation-free/);
+  requirePattern(line, "module Program bench gate output", "lazy matmul-add-gelu speedup floor", /lazy_matmul_add_gelu_batched=[0-9.]+x floor=1\.50x/);
+  requirePattern(line, "module Program bench gate output", "lazy Tensor IR GELU add fusion kernel proof", /ops=3 dispatch=1 fused=3 kernels=linear\|add\|gelu batched=rank2 parameters=w:weights\|b:bias hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "lazy MLP speedup floor", /lazy_mlp_batched=[0-9.]+x floor=2\.50x/);
   requirePattern(line, "module Program bench gate output", "lazy Tensor IR MLP kernel proof", /ops=3 dispatch=2 fused=2 kernels=linear\|relu\|linear batched=rank2 parameters=0\.weight\|0\.bias\|2\.weight\|2\.bias hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "lazy MLP mean speedup floor", /lazy_mlp_mean_batched=[0-9.]+x floor=2\.00x/);
@@ -4210,7 +4215,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=72% floor=65%; PyTorch-like surface=92% floor=60%",
+    "goal progress: Program/Session substrate=73% floor=65%; PyTorch-like surface=92% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4247,7 +4252,7 @@ function checkDocs() {
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
-    "Program/Session performance substrate: ~72%",
+    "Program/Session performance substrate: ~73%",
     "Compile-capable lazy graphs can now lower through the host adapter into a",
     "native Program with preserved KernelPlan evidence.",
     "PyTorch-like replacement feel: ~92%",
