@@ -1251,6 +1251,44 @@ function fusedConv2dActivationKernelPlanOp(convOp: any, activationOp: any, desc:
   };
 }
 
+function canFuseFeatureNormActivationIrOps(normOp: any, activationOp: any) {
+  if (!normOp || !activationOp) return false;
+  if (normOp.op !== "layerNorm" && normOp.op !== "rmsNorm") return false;
+  const activation = moduleActivationIds[activationOp.attrs?.activation];
+  if (!activation) return false;
+  return activationOp.inputValueIds.length === 1 &&
+    activationOp.parameterValueIds.length === 0 &&
+    activationOp.inputValueIds[0] === normOp.outputValueId &&
+    traceShapesEqual(normOp.outputShape, activationOp.inputShape) &&
+    traceShapesEqual(activationOp.inputShape, activationOp.outputShape);
+}
+
+function fusedFeatureNormActivationKernelPlanOp(normOp: any, activationOp: any, desc: any, values: any) {
+  return {
+    index: normOp.index,
+    path: `${normOp.path}..${activationOp.path}`,
+    op: normOp.op,
+    kernel: kernelNameForIrOp(normOp),
+    inputShape: normOp.inputShape.slice(),
+    outputShape: activationOp.outputShape.slice(),
+    inputLen: normOp.inputLen,
+    outputLen: activationOp.outputLen,
+    ...scalarEvidenceForIrOp(activationOp, values),
+    inputValueIds: normOp.inputValueIds.slice(),
+    outputValueId: activationOp.outputValueId,
+    parameterScalarCount: normOp.parameterScalarCount,
+    nativeDispatchCount: 1,
+    nativeDescriptorCount: 1,
+    nativeKernels: [kernelNameForIrOp(normOp), kernelNameForIrOp(activationOp)],
+    nativeDescriptorSignatures: [nativeModuleDescSignature(desc)],
+    fusedOpCount: 2,
+    fusedOps: [normOp.op, activationOp.op],
+    fusedIndices: [normOp.index, activationOp.index],
+    fusedValueEdges: fusedValueEdgesForIrOps([normOp, activationOp]),
+    desc,
+  };
+}
+
 function fusedActivationChainKernelPlanOp(chain: any, desc: any, values: any) {
   const first = chain[0];
   const last = chain[chain.length - 1];
@@ -1487,6 +1525,25 @@ function kernelizeTensorProgramIr(ir: any) {
       });
       nativeOps.push(fusedDesc);
       ops.push(fusedConv2dActivationKernelPlanOp(op, activationOp, fusedDesc, ir.values));
+      index += 1;
+      continue;
+    }
+
+    if (canFuseFeatureNormActivationIrOps(op, ir.ops[index + 1])) {
+      const activationOp = ir.ops[index + 1];
+      const desc = moduleOpDescForIrOp(op);
+      if (!desc) {
+        return {
+          kernelPlan: null,
+          diagnostic: kernelizerDiagnosticForIrOp(op),
+        };
+      }
+      const fusedDesc = Object.freeze({
+        ...desc,
+        activation: moduleActivationIds[activationOp.attrs.activation],
+      });
+      nativeOps.push(fusedDesc);
+      ops.push(fusedFeatureNormActivationKernelPlanOp(op, activationOp, fusedDesc, ir.values));
       index += 1;
       continue;
     }

@@ -192,7 +192,7 @@ execution is the performance claim. Silent eager fallback is not allowed.
 
 Current checked progress:
 
-- Program/Session performance substrate: ~74%. The Program/Session shape,
+- Program/Session performance substrate: ~75%. The Program/Session shape,
   runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
   native Metal execution, optional native wgpu execution slices, and ggml
   benchmark gates are real enough that the substrate is past "architecture".
@@ -201,7 +201,10 @@ Current checked progress:
   Linear+GELU and
   `matmul -> add(bias) -> activation` now collapse to one native Program
   dispatch and is benchmarked for both ReLU and GELU while preserving the
-  original three-op Tensor IR evidence. The remaining substrate jump is not another compatibility lane; it is a real
+  original three-op Tensor IR evidence. LayerNorm/RMSNorm descriptors can carry post-affine activations,
+  and the norm-GELU MLP module benchmarks now prove
+  `Linear -> LayerNorm(+affine)+GELU -> Linear` as a three-dispatch Program
+  path for scalar and batched inputs. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence.
 - PyTorch-like replacement feel: ~92%. The TS-owned product frontend now has

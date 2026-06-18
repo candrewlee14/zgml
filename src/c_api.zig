@@ -2156,7 +2156,7 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
             },
             module_op_layer_norm => {
                 const features = op.a;
-                if (features != current_len or op.activation != 0 or op.b != 0 or op.c != 0) return error.ShapeMismatch;
+                if (features != current_len or op.b != 0 or op.c != 0) return error.ShapeMismatch;
                 const reduce_ne = try moduleFeatureNormReduceShape(current, features);
                 current = current.layerNorm(reduce_ne[0..current.n_dims], @floatCast(op.eps));
                 if ((op.flags & module_flag_weight) != 0) {
@@ -2183,10 +2183,13 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
                     const repeated_bias = bias.repeatLike(current);
                     current = current.add(repeated_bias);
                 }
+                if (op.activation != 0) {
+                    current = try moduleActivate(current, op.activation);
+                }
             },
             module_op_rms_norm => {
                 const features = op.a;
-                if (features != current_len or op.activation != 0 or op.b != 0 or op.c != 0) return error.ShapeMismatch;
+                if (features != current_len or op.b != 0 or op.c != 0) return error.ShapeMismatch;
                 if ((op.flags & module_flag_bias) != 0) return error.InvalidArgument;
                 const reduce_ne = try moduleFeatureNormReduceShape(current, features);
                 current = current.rmsNorm(reduce_ne[0..current.n_dims], @floatCast(op.eps));
@@ -2201,6 +2204,9 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
                     );
                     const repeated_weight = weight.repeatLike(current);
                     current = current.mul(repeated_weight);
+                }
+                if (op.activation != 0) {
+                    current = try moduleActivate(current, op.activation);
                 }
             },
             module_op_embedding => {
@@ -7273,6 +7279,7 @@ test "C ABI module program compiles traced sequential ops" {
         const batched_norm_shape = [_]usize{ 2, 2 };
         const norm_ops = [_]zgml_module_op_desc{.{
             .kind = module_op_layer_norm,
+            .activation = module_activation_gelu,
             .flags = module_flag_weight | module_flag_bias,
             .a = 2,
             .eps = 1e-5,
@@ -7321,10 +7328,16 @@ test "C ABI module program compiles traced sequential ops" {
 
         const row0_inv = 1.0 / std.math.sqrt(@as(f32, 0.25) + 1e-5);
         const row1_inv = 1.0 / std.math.sqrt(@as(f32, 1.0) + 1e-5);
-        try std.testing.expectApproxEqAbs((@as(f32, -0.5) * row0_inv) * norm_weights[0] + norm_bias[0], norm_output[0], 1e-5);
-        try std.testing.expectApproxEqAbs((@as(f32, 0.5) * row0_inv) * norm_weights[1] + norm_bias[1], norm_output[1], 1e-5);
-        try std.testing.expectApproxEqAbs((@as(f32, 1.0) * row1_inv) * norm_weights[0] + norm_bias[0], norm_output[2], 1e-5);
-        try std.testing.expectApproxEqAbs((@as(f32, -1.0) * row1_inv) * norm_weights[1] + norm_bias[1], norm_output[3], 1e-5);
+        const gelu_fn = struct {
+            fn call(x: f32) f32 {
+                const kk = 0.7978845608 * (x + 0.044715 * x * x * x);
+                return 0.5 * x * (1.0 + std.math.tanh(kk));
+            }
+        }.call;
+        try std.testing.expectApproxEqAbs(gelu_fn((@as(f32, -0.5) * row0_inv) * norm_weights[0] + norm_bias[0]), norm_output[0], 1e-5);
+        try std.testing.expectApproxEqAbs(gelu_fn((@as(f32, 0.5) * row0_inv) * norm_weights[1] + norm_bias[1]), norm_output[1], 1e-5);
+        try std.testing.expectApproxEqAbs(gelu_fn((@as(f32, 1.0) * row1_inv) * norm_weights[0] + norm_bias[0]), norm_output[2], 1e-5);
+        try std.testing.expectApproxEqAbs(gelu_fn((@as(f32, -1.0) * row1_inv) * norm_weights[1] + norm_bias[1]), norm_output[3], 1e-5);
     }
 
     {

@@ -779,16 +779,16 @@ const benchSpecs = [
     tolerance: 1e-4,
     plan: {
       opCount: 4,
-      dispatchCount: 4,
-      publicOps: 4,
-      description: "honest four-dispatch Linear -> LayerNorm -> GELU -> Linear kernel plan",
+      dispatchCount: 3,
+      publicOps: 3,
+      description: "fused feature-norm activation Linear -> LayerNorm+GELU -> Linear kernel plan",
       check: (plan) => {
-        if (ops(plan) !== "linear|layerNorm|activation|linear" || kernels(plan) !== "linear|layer-norm|gelu|linear") {
-          throw new Error("norm-gelu-mlp expected honest four-dispatch Linear -> LayerNorm -> GELU -> Linear kernel plan");
+        if (ops(plan) !== "linear|layerNorm|linear" || kernels(plan) !== "linear|layer-norm|gelu|linear") {
+          throw new Error("norm-gelu-mlp expected fused feature-norm activation Linear -> LayerNorm+GELU -> Linear kernel plan");
         }
       },
     },
-    summary: (result) => `norm_gelu_mlp=${result.speedup.toFixed(2)}x floor=${floors.normGeluMlpSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=4 dispatch=4 kernels=linear|layer-norm|gelu|linear hot=allocation-free`,
+    summary: (result) => `norm_gelu_mlp=${result.speedup.toFixed(2)}x floor=${floors.normGeluMlpSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=4 dispatch=3 fused=2 kernels=linear|layer-norm|gelu|linear hot=allocation-free`,
   },
   {
     key: "norm_gelu_mlp_batched",
@@ -813,16 +813,16 @@ const benchSpecs = [
     tolerance: 1e-4,
     plan: {
       opCount: 4,
-      dispatchCount: 4,
-      publicOps: 4,
-      description: "honest four-dispatch batched Linear -> LayerNorm -> GELU -> Linear kernel plan",
+      dispatchCount: 3,
+      publicOps: 3,
+      description: "fused feature-norm activation batched Linear -> LayerNorm+GELU -> Linear kernel plan",
       check: (plan) => {
-        if (ops(plan) !== "linear|layerNorm|activation|linear" || kernels(plan) !== "linear|layer-norm|gelu|linear") {
-          throw new Error("batched norm-gelu-mlp expected honest four-dispatch Linear -> LayerNorm -> GELU -> Linear kernel plan");
+        if (ops(plan) !== "linear|layerNorm|linear" || kernels(plan) !== "linear|layer-norm|gelu|linear") {
+          throw new Error("batched norm-gelu-mlp expected fused feature-norm activation Linear -> LayerNorm+GELU -> Linear kernel plan");
         }
       },
     },
-    summary: (result) => `norm_gelu_mlp_batched=${result.speedup.toFixed(2)}x floor=${floors.normGeluMlpBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=4 dispatch=4 kernels=linear|layer-norm|gelu|linear batched=rank2 hot=allocation-free`,
+    summary: (result) => `norm_gelu_mlp_batched=${result.speedup.toFixed(2)}x floor=${floors.normGeluMlpBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=4 dispatch=3 fused=2 kernels=linear|layer-norm|gelu|linear batched=rank2 hot=allocation-free`,
   },
   {
     key: "token_head",

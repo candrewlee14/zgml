@@ -3001,8 +3001,9 @@ function expectNormGeluSequentialProgramEvidence(adapter: Record<string, any>, l
     support.biasLen !== 5 ||
     support.trace.ops.map((op: Record<string, any>) => op.op).join("|") !== "linear|layerNorm|activation|linear" ||
     kernelPlan.opCount !== 4 ||
-    kernelPlan.dispatchCount !== 4 ||
-    kernelPlan.descriptorCount !== 4
+    kernelPlan.dispatchCount !== 3 ||
+    kernelPlan.descriptorCount !== 3 ||
+    kernelPlan.ops.map((op: Record<string, any>) => op.nativeKernels.join("|")).join("|") !== "linear|layer-norm|gelu|linear"
   ) {
     throw new Error(`${label} expected Linear/LayerNorm/GELU/Linear compile evidence`);
   }
@@ -3024,7 +3025,7 @@ function expectNormGeluSequentialProgramEvidence(adapter: Record<string, any>, l
   if (
     batchedSupport.supported !== true ||
     batchedSupport.outputShape.join("x") !== "4x1" ||
-    batchedKernelPlan?.dispatchCount !== 4 ||
+    batchedKernelPlan?.dispatchCount !== 3 ||
     batchedKernelPlan.ops.map((op: Record<string, any>) => op.nativeKernels.join("|")).join("|") !== "linear|layer-norm|gelu|linear"
   ) {
     throw new Error(`${label} expected batched Linear/LayerNorm/GELU/Linear compile evidence`);
