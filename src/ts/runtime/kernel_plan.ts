@@ -1413,7 +1413,7 @@ function kernelizeTensorProgramIr(ir: any) {
       continue;
     }
 
-    if (canFuseMatmulAddActivationIrOps(op, ir.ops[index + 1], ir.ops[index + 2], ir.values)) {
+    if (ir.ops[index + 2] && canFuseMatmulAddActivationIrOps(op, ir.ops[index + 1], ir.ops[index + 2], ir.values)) {
       const addOp = ir.ops[index + 1];
       const activationOp = ir.ops[index + 2];
       const desc = moduleOpDescForIrOp(op);

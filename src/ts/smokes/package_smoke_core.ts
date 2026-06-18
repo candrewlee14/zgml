@@ -4013,6 +4013,7 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   const lazyMatmulWeight = torch.lazy.parameter([2, 3], "head.weight", "row-major:matmul.weight[in_features,out_features]");
   const lazyMatmulBias = torch.lazy.parameter([3], "head.bias", "row-major:add.bias[features]");
   const lazyMatmulGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).relu();
+  const lazyMatmulBiasOnlyGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).add(lazyMatmulBias);
   const lazyMatmulBiasGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).add(lazyMatmulBias).relu();
   const lazyNamespaceMatmulGraph = torch.lazy.relu(torch.lazy.matmul(torch.lazy.input([2]), lazyMatmulWeight));
   const lazyNamespaceMatmulBiasGraph = torch.lazy.relu(torch.lazy.add(torch.lazy.matmul(torch.lazy.input([2]), lazyMatmulWeight), lazyMatmulBias));
@@ -4058,6 +4059,7 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   const lazyTrainingDropoutModuleGraph = torch.lazy.fromModule(torch.nn.dropout(0.5, { training: true }), { inputShape: [2] });
   const lazyCompiledProgram = torch.compile.compile(lazy, { backend: "cpu" });
   const lazyMethodCompiledProgram = lazy.compile({ backend: "cpu" });
+  const lazyMatmulBiasOnlyCompiledProgram = torch.compile.compile(lazyMatmulBiasOnlyGraph, { backend: "cpu" });
   const lazyMatmulBiasCompiledProgram = torch.compile.compile(lazyMatmulBiasGraph, { backend: "cpu" });
   const lazyMultiChannelConvReluProgram = lazyMultiChannelConvReluGraph.compile({ backend: "cpu" });
   if (
@@ -4075,6 +4077,7 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazySigmoid.compileSupport().supported !== true ||
     lazyNamespaceSigmoid.compileSupport().supported !== true ||
     lazyMatmulGraph.compileSupport().supported !== true ||
+    lazyMatmulBiasOnlyGraph.compileSupport().supported !== true ||
     lazyMatmulBiasGraph.compileSupport().supported !== true ||
     lazyNamespaceMatmulGraph.compileSupport().supported !== true ||
     lazyNamespaceMatmulBiasGraph.compileSupport().supported !== true ||
@@ -4084,6 +4087,11 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyMatmulGraph.kernelPlan()?.ops[0]?.kernel !== "matmul" ||
     lazyMatmulGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "linear" ||
     lazyMatmulGraph.kernelPlan()?.parameterLayout.parameters[0]?.name !== "head.weight" ||
+    lazyMatmulBiasOnlyGraph.trace().ops.map((op: Record<string, any>) => op.op).join("|") !== "matmul|add" ||
+    lazyMatmulBiasOnlyGraph.tensorProgramIr()?.ops[1]?.op !== "add" ||
+    lazyMatmulBiasOnlyGraph.kernelPlan()?.ops[0]?.fusedOpCount !== 2 ||
+    lazyMatmulBiasOnlyGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "linear|add" ||
+    lazyMatmulBiasOnlyGraph.kernelPlan()?.parameterLayout.parameters.map((param: Record<string, any>) => `${param.name}:${param.binding}`).join("|") !== "head.weight:weights|head.bias:bias" ||
     lazyMatmulBiasGraph.trace().ops.map((op: Record<string, any>) => op.op).join("|") !== "matmul|add|activation" ||
     lazyMatmulBiasGraph.tensorProgramIr()?.ops[1]?.op !== "add" ||
     lazyMatmulBiasGraph.kernelPlan()?.ops[0]?.fusedOpCount !== 3 ||
@@ -4120,6 +4128,9 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 3 ||
     lazyMethodCompiledProgram.outputShape().join("x") !== "1" ||
     lazyMethodCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 3 ||
+    lazyMatmulBiasOnlyCompiledProgram.outputShape().join("x") !== "3" ||
+    lazyMatmulBiasOnlyCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.fusedOpCount !== 2 ||
+    lazyMatmulBiasOnlyCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "linear|add" ||
     lazyMatmulBiasCompiledProgram.outputShape().join("x") !== "3" ||
     lazyMatmulBiasCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.fusedOpCount !== 3 ||
     lazyMatmulBiasCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "linear|add|relu" ||
@@ -4181,6 +4192,7 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   }
   lazyCompiledProgram.free();
   lazyMethodCompiledProgram.free();
+  lazyMatmulBiasOnlyCompiledProgram.free();
   lazyMatmulBiasCompiledProgram.free();
   lazyMultiChannelConvReluProgram.free();
   expectThrowIncludes(() => lazyTrainingDropoutGraph.requireCompileSupport(), "lazy graph cannot compile", `${label} lazy requireCompileSupport unsupported graph`);

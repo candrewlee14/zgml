@@ -570,6 +570,7 @@ function checkScripts() {
     "softmax_classifier=",
     "softmax_classifier_batched=",
     "log_softmax_classifier_batched=",
+    "lazy_matmul_add_batched=",
     "lazy_matmul_add_relu_batched=",
     "lazy_mlp_batched=",
     "lazy_mlp_mean_batched=",
@@ -591,6 +592,7 @@ function checkScripts() {
     "ops=1 dispatch=1 kernels=avg-pool2d",
     "ops=3 dispatch=3 kernels=linear|softmax|linear",
     "ops=2 dispatch=2 kernels=linear|log-softmax",
+    "ops=2 dispatch=1 fused=2 kernels=linear|add",
     "ops=3 dispatch=1 fused=3 kernels=linear|add|relu",
     "ops=3 dispatch=2 fused=2 kernels=linear|relu|linear",
     "ops=3 dispatch=2 fused=2 kernels=linear|relu|mean",
@@ -618,6 +620,7 @@ function checkScripts() {
     "floors.softmaxClassifierSpeedup",
     "floors.softmaxClassifierBatchedSpeedup",
     "floors.logSoftmaxClassifierBatchedSpeedup",
+    "floors.lazyMatmulAddBatchedSpeedup",
     "floors.lazyMatmulAddReluBatchedSpeedup",
     "floors.lazyMlpBatchedSpeedup",
     "floors.lazyMlpMeanBatchedSpeedup",
@@ -1011,6 +1014,8 @@ function checkModuleProgramBenchEvidence() {
   requirePattern(line, "module Program bench gate output", "softmax classifier speedup floor", /softmax_classifier=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "batched softmax classifier speedup floor", /softmax_classifier_batched=[0-9.]+x floor=3\.00x/);
   requirePattern(line, "module Program bench gate output", "batched log-softmax classifier speedup floor", /log_softmax_classifier_batched=[0-9.]+x floor=3\.00x/);
+  requirePattern(line, "module Program bench gate output", "lazy matmul-add speedup floor", /lazy_matmul_add_batched=[0-9.]+x floor=1\.50x/);
+  requirePattern(line, "module Program bench gate output", "lazy Tensor IR add-only fusion kernel proof", /ops=2 dispatch=1 fused=2 kernels=linear\|add batched=rank2 parameters=w:weights\|b:bias hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "lazy matmul-add-relu speedup floor", /lazy_matmul_add_relu_batched=[0-9.]+x floor=1\.50x/);
   requirePattern(line, "module Program bench gate output", "lazy Tensor IR add fusion kernel proof", /ops=3 dispatch=1 fused=3 kernels=linear\|add\|relu batched=rank2 parameters=w:weights\|b:bias hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "lazy MLP speedup floor", /lazy_mlp_batched=[0-9.]+x floor=2\.50x/);
@@ -4033,22 +4038,30 @@ function checkPytorchLikeSurface() {
     "const lazyMatmulWeight = torch.lazy.parameter([2, 3], \"head.weight\", \"row-major:matmul.weight[in_features,out_features]\")",
     "const lazyMatmulBias = torch.lazy.parameter([3], \"head.bias\", \"row-major:add.bias[features]\")",
     "const lazyMatmulGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).relu()",
+    "const lazyMatmulBiasOnlyGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).add(lazyMatmulBias)",
     "const lazyMatmulBiasGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).add(lazyMatmulBias).relu()",
     "const lazyNamespaceMatmulGraph = torch.lazy.relu(torch.lazy.matmul(torch.lazy.input([2]), lazyMatmulWeight))",
     "const lazyNamespaceMatmulBiasGraph = torch.lazy.relu(torch.lazy.add(torch.lazy.matmul(torch.lazy.input([2]), lazyMatmulWeight), lazyMatmulBias))",
     "const lazyMmGraph = torch.lazy.input([1, 2]).mm(lazyMatmulWeight)",
     "lazyMatmulGraph.compileSupport().supported !== true",
+    "lazyMatmulBiasOnlyGraph.compileSupport().supported !== true",
     "lazyMatmulBiasGraph.compileSupport().supported !== true",
     "lazyMatmulGraph.tensorProgramIr()?.ops[0]?.op !== \"matmul\"",
     "lazyMatmulGraph.kernelPlan()?.ops[0]?.nativeKernels.join(\"|\") !== \"linear\"",
     "lazyMatmulGraph.kernelPlan()?.parameterLayout.parameters[0]?.name !== \"head.weight\"",
+    "lazyMatmulBiasOnlyGraph.trace().ops.map((op: Record<string, any>) => op.op).join(\"|\") !== \"matmul|add\"",
+    "lazyMatmulBiasOnlyGraph.kernelPlan()?.ops[0]?.fusedOpCount !== 2",
+    "lazyMatmulBiasOnlyGraph.kernelPlan()?.ops[0]?.nativeKernels.join(\"|\") !== \"linear|add\"",
     "lazyMatmulBiasGraph.trace().ops.map((op: Record<string, any>) => op.op).join(\"|\") !== \"matmul|add|activation\"",
     "lazyMatmulBiasGraph.kernelPlan()?.ops[0]?.fusedOpCount !== 3",
     "lazyMatmulBiasGraph.kernelPlan()?.ops[0]?.nativeKernels.join(\"|\") !== \"linear|add|relu\"",
     "lazyMatmulBiasGraph.kernelPlan()?.parameterLayout.parameters.map((param: Record<string, any>) => `${param.name}:${param.binding}`).join(\"|\") !== \"head.weight:weights|head.bias:bias\"",
     "const lazyCompiledProgram = torch.compile.compile(lazy, { backend: \"cpu\" })",
+    "const lazyMatmulBiasOnlyCompiledProgram = torch.compile.compile(lazyMatmulBiasOnlyGraph, { backend: \"cpu\" })",
     "const lazyMatmulBiasCompiledProgram = torch.compile.compile(lazyMatmulBiasGraph, { backend: \"cpu\" })",
     "lazyCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 3",
+    "lazyMatmulBiasOnlyCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.fusedOpCount !== 2",
+    "lazyMatmulBiasOnlyCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join(\"|\") !== \"linear|add\"",
     "lazyMatmulBiasCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.fusedOpCount !== 3",
     "lazyMatmulBiasCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join(\"|\") !== \"linear|add|relu\"",
     "typeof adapter.compile !== \"function\"",
