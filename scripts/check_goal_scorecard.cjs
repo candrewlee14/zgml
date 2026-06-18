@@ -441,6 +441,11 @@ function checkScripts() {
     "\"lazy\"",
   ]);
   requireIncludes(read("scripts/bench_contract.py"), "scripts/bench_contract.py", "benchmark command-pressure proof contract", [
+    "def command_budget_with_extra_dispatch(shape, extra_dispatches=0, dispatch_shape=None):",
+    "command_total = sum(shape.values())",
+    "dispatch_total = sum((dispatch_shape or shape).values())",
+    "return {\"dispatches_per_call\": dispatch_total + extra_dispatches, \"commands_per_call\": command_total}",
+    "native_command_dispatch_shape(fmt, phase),",
     "def native_command_pressure(shape, limit=3):",
     "def native_sidecar_pressure(aux_metrics):",
     "\"command_pressure_top3_per_call\"",
