@@ -13679,6 +13679,28 @@ async function runTinyLlamaWebGpuCompileOnlySmoke() {
         useRopeLayers: [1, 0],
       },
       {
+        label: "gguf-smollm3-nope-gqa-pipeline",
+        metadata: {
+          "general.architecture": "smollm3",
+          "smollm3.attention.head_count": "4",
+          "smollm3.attention.head_count_kv": "2",
+          "smollm3.attention.layer_norm_rms_epsilon": "0.000089",
+          "smollm3.block_count": String(groupedTinyLlamaShape.layers),
+          "smollm3.context_length": "16",
+          "smollm3.embedding_length": String(groupedTinyLlamaShape.hiddenSize),
+          "smollm3.feed_forward_length": String(groupedTinyLlamaShape.ffnSize),
+          "smollm3.rope.freq_base": "18150",
+          "smollm3.rope.no_rope_layer_interval": "2",
+          "smollm3.vocab_size": String(groupedTinyLlamaShape.vocabSize),
+        },
+        epsilon: 0.000089,
+        omitContextLengthOption: true,
+        ropeBase: 18150,
+        shape: groupedTinyLlamaShape,
+        specs: groupedTinyLlamaTwoLayerTensorSpecs,
+        useRopeLayers: [1, 0],
+      },
+      {
         label: "realistic-gqa-pipeline",
         config: {
           architectures: ["LlamaForCausalLM"],

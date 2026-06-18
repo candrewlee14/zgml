@@ -5890,7 +5890,7 @@ registered-resource proof now has public owned-buffer and C import surfaces:
 	  labels across tiny, sharded, dtype-materialized, wider, realistic-head,
 	  packed-family, and tied-head default pipeline paths, lacks
 	  device-selection readback evidence, or omits any of the
-	  72 current LLaMA labels: host-token/model-token hooks, strict-default
+	  74 current LLaMA labels: host-token/model-token hooks, strict-default
 	  safetensors execution, embedding/RMSNorm/KV/
 	  attention/block projection probes, block-pipeline and ergonomic two-layer
 	  execution, full-logits generation, device-argmax generation, device-sampled
@@ -5907,7 +5907,7 @@ registered-resource proof now has public owned-buffer and C import surfaces:
 	  standalone biased-Qwen2 block, standalone Qwen3-QKNorm block,
 	  standalone sliding-window block, standalone Llama3-RoPE block,
 	  standalone SmolLM3-NoPE block,
-	  SmolLM3-NoPE-GQA, and
+	  SmolLM3-NoPE-GQA, GGUF-metadata SmolLM3-NoPE-GQA, and
 	  realistic-`d_head=128` GQA labels. It also rejects duplicate labels or a
   profile count that does not match the label list.
   Wrapper-created

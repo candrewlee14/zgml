@@ -480,6 +480,7 @@ async function runBrowserSmoke(options) {
         "native-structural-qwen3-qknorm-gqa-pipeline",
         "smollm3-nope-gqa-pipeline",
         "native-smollm3-nope-gqa-pipeline",
+        "gguf-smollm3-nope-gqa-pipeline",
         "realistic-gqa-pipeline",
         "tied-lm-head-pipeline",
         "native-tied-lm-head-pipeline",
@@ -562,6 +563,7 @@ async function runBrowserSmoke(options) {
         "qwen3-qknorm-gqa-pipeline",
         "structural-qwen3-qknorm-gqa-pipeline",
         "smollm3-nope-gqa-pipeline",
+        "gguf-smollm3-nope-gqa-pipeline",
         "realistic-gqa-pipeline",
         "greedy-metadata-mha-pipeline",
         "greedy-gguf-metadata-gqa-pipeline",
@@ -579,6 +581,7 @@ async function runBrowserSmoke(options) {
         "greedy-qwen3-qknorm-gqa-pipeline",
         "greedy-structural-qwen3-qknorm-gqa-pipeline",
         "greedy-smollm3-nope-gqa-pipeline",
+        "greedy-gguf-smollm3-nope-gqa-pipeline",
         "greedy-realistic-gqa-pipeline",
         "tied-lm-head-pipeline",
       ];

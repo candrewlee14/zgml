@@ -296,6 +296,8 @@ function checkScripts() {
     "zgmlWasmGpuResources",
     "zgml browser wasm smoke ok",
     "llamaProfileLabels",
+    "gguf-smollm3-nope-gqa-pipeline",
+    "greedy-gguf-smollm3-nope-gqa-pipeline",
   ]);
   requireIncludes(read("examples/wasm_ffi/browser_smoke.js"), "examples/wasm_ffi/browser_smoke.js", "browser Wasm FFI runtime proof", [
     "document.documentElement.dataset.zgmlWasmSmoke = \"passed\"",
@@ -310,6 +312,7 @@ function checkScripts() {
     "twoLayerProgramInspection.fullDefaultExecutionSupported !== false",
     "twoLayerSessionInspection.executionCoverage !== \"bounded-proof\"",
     "twoLayerSessionInspection.program.fullDefaultExecutionSupported !== false",
+    "gguf-smollm3-nope-gqa-pipeline",
   ]);
   requireIncludes(read("examples/node_ffi/smoke.cjs"), "examples/node_ffi/smoke.cjs", "Node FFI smoke proof", [
     "root package entrypoint must re-export the Node FFI wrapper",
