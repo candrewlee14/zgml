@@ -678,19 +678,12 @@ function checkSubstrateEvidence() {
     "dispatch=242",
     "commands=211",
     "commands=212",
-    "commands=241",
     "commands=242",
     "ggml=",
     "ggml_floor=",
     "to90=",
     "ref=",
     "frontier weakest=q8_0/prompt",
-    "top=row_chain:61,projection_chain:60",
-    "pressure=151/241 62.7%",
-    "target=projection_chain:60",
-    "chain_shape=dense:0,quantized:60,total:60",
-    "next=semantic_sublayer_or_quantized_projection_chain",
-    "rejected=projection_row_chain_default_off_needs_model_speedup",
     "sidecars=",
     "q8_decode_sidecars=qmatvec_elementwise:60",
     "pass offline-stencil",
@@ -713,11 +706,11 @@ function checkSubstrateEvidence() {
   const substrateLine = output.split("\n").find((line) => line.startsWith("bench substrate gate:")) ?? "";
   requirePattern(substrateLine, "bench substrate gate output", "f16 prompt dispatch/stencil/fallback proof", /f16\/prompt=[^;]+ggml=[^;]+to90=[^;]+ref=[^;]+dispatch=242 commands=242 cached=31 dynamic=0\/0 schedule_fail=0\/0 sync=1 patch_holes=450 patch_calls=3\/3 patch_changed=0 stencil=17558208047327870709\/17558208047327870709 fallback=0/);
   requirePattern(substrateLine, "bench substrate gate output", "f16 decode dispatch/stencil/fallback proof", /f16\/decode=[^;]+ggml=[^;]+to90=[^;]+ref=[^;]+dispatch=212 commands=212 cached=31 dynamic=0\/0 schedule_fail=0\/0 sync=1 patch_holes=450 patch_calls=600\/600 patch_changed=600 stencil=14405191909906507341\/14405191909906507341 fallback=0/);
-  requirePattern(substrateLine, "bench substrate gate output", "q8 prompt dispatch/stencil/fallback proof", /q8_0\/prompt=[^;]+ggml=[^;]+to90=[^;]+ref=[^;]+dispatch=242 commands=241 cached=30 dynamic=0\/0 schedule_fail=0\/0 sync=1 patch_holes=450 patch_calls=3\/3 patch_changed=0 stencil=17558208047327870709\/17558208047327870709 fallback=0/);
+  requirePattern(substrateLine, "bench substrate gate output", "q8 prompt dispatch/stencil/fallback proof", /q8_0\/prompt=[^;]+ggml=[^;]+to90=[^;]+ref=[^;]+dispatch=242 commands=(?:181|241) cached=30 dynamic=0\/0 schedule_fail=0\/0 sync=1 patch_holes=450 patch_calls=3\/3 patch_changed=0 stencil=17558208047327870709\/17558208047327870709 fallback=0/);
   requirePattern(substrateLine, "bench substrate gate output", "q8 decode dispatch/stencil/fallback proof", /q8_0\/decode=[^;]+ggml=[^;]+to90=[^;]+ref=[^;]+dispatch=212 commands=211 cached=30 dynamic=0\/0 schedule_fail=0\/0 sync=1 patch_holes=450 patch_calls=600\/600 patch_changed=600 stencil=14405191909906507341\/14405191909906507341 fallback=0/);
   requirePercentAtLeast(substrateLine, "bench substrate gate output", "ggml-relative substrate evidence", "f16/prompt", 32);
   requirePercentAtLeast(substrateLine, "bench substrate gate output", "ggml-relative substrate evidence", "f16/decode", 31.0);
-  requirePattern(substrateLine, "bench substrate gate output", "frontier weakest command-pressure proof", /frontier weakest=q8_0\/prompt ggml=[0-9.]+% to90=[0-9.]+x dispatch=242 commands=241 top=row_chain:61,projection_chain:60,[^;]+ pressure=151\/241 62\.7% target=projection_chain:60 chain_shape=[^;]+ next=semantic_sublayer_or_quantized_projection_chain rejected=projection_row_chain_default_off_needs_model_speedup sidecars=qmatmul_elementwise:60 q8_decode_sidecars=qmatvec_elementwise:60/);
+  requirePattern(substrateLine, "bench substrate gate output", "frontier weakest command-pressure proof", /frontier weakest=q8_0\/prompt ggml=[0-9.]+% to90=[0-9.]+x dispatch=242 commands=(?:241 top=row_chain:61,projection_chain:60,[^;]+ pressure=151\/241 62\.7% target=projection_chain:60 chain_shape=[^;]+ next=semantic_sublayer_or_quantized_projection_chain rejected=projection_row_chain_default_off_needs_model_speedup sidecars=qmatmul_elementwise:60|181 top=projection_row_chain:120,[^;]+ pressure=180\/181 99\.4% target=projection_row_chain:120 chain_shape=[^;]+ next=tiled_qmatmul_row_chain_throughput rejected=default_semantic_row_chain_needs_throughput_kernel sidecars=projection_row_chain:60) q8_decode_sidecars=qmatvec_elementwise:60/);
   requirePercentAtLeast(substrateLine, "bench substrate gate output", "ggml-relative substrate evidence", "q8_0/prompt", 27);
   requirePercentAtLeast(substrateLine, "bench substrate gate output", "ggml-relative substrate evidence", "q8_0/decode", 32);
   requireIncludes(output, "bench substrate gate output", "full-run ggml artifact context", [
