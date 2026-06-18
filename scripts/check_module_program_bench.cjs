@@ -34,6 +34,7 @@ const floors = Object.freeze({
   logSoftmaxClassifierBatchedSpeedup: 3.0,
   lazyMatmulAddReluBatchedSpeedup: 1.5,
   lazyMlpBatchedSpeedup: 2.5,
+  lazyMlpMeanBatchedSpeedup: 2.0,
   lazyTokenHeadBatchedSpeedup: 1.2,
 });
 const expectedKeys = Object.freeze([
@@ -57,6 +58,7 @@ const expectedKeys = Object.freeze([
   "log_softmax_classifier_batched",
   "lazy_matmul_add_relu_batched",
   "lazy_mlp_batched",
+  "lazy_mlp_mean_batched",
   "lazy_token_head_batched",
 ]);
 
@@ -218,6 +220,22 @@ function lazyMlpBatchedEager(input, firstWeights, firstBias, secondWeights, seco
       }
       out[row * outFeatures + col] = sum;
     }
+  }
+  return out;
+}
+
+function lazyMlpMeanBatchedEager(input, weightValues, biasValues, batch, inFeatures, outFeatures) {
+  const out = new Float32Array(batch);
+  for (let row = 0; row < batch; row += 1) {
+    let rowTotal = 0;
+    for (let col = 0; col < outFeatures; col += 1) {
+      let sum = biasValues[col];
+      for (let feature = 0; feature < inFeatures; feature += 1) {
+        sum += input.data[row * inFeatures + feature] * weightValues[feature * outFeatures + col];
+      }
+      rowTotal += Math.max(0, sum);
+    }
+    out[row] = rowTotal / outFeatures;
   }
   return out;
 }
@@ -977,6 +995,55 @@ const benchSpecs = [
       },
     },
     summary: (result) => `lazy_mlp_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyMlpBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=2 fused=2 kernels=linear|relu|linear batched=rank2 parameters=0.weight|0.bias|2.weight|2.bias hot=allocation-free`,
+  },
+  {
+    key: "lazy_mlp_mean_batched",
+    label: "lazy-mlp-mean-batched",
+    floor: floors.lazyMlpMeanBatchedSpeedup,
+    inputShape: [128, 64],
+    inputShapeText: "128x64",
+    outputShapeText: "128",
+    inputLen: 128 * 64,
+    outputLen: 128,
+    layerCount: 3,
+    parameterNames: "0.weight|0.bias",
+    input: () => adapter.tensor(values(128 * 64, 13), [128, 64]),
+    model: () => adapter.lazy.input([128, 64])
+      .linear(64, { name: "0" })
+      .relu()
+      .mean(-1),
+    eager: (input) => lazyMlpMeanBatchedEager(
+      input,
+      values(64 * 64, 32),
+      values(64, 64),
+      128,
+      64,
+      64,
+    ),
+    bindSession: (program) => program.bind({
+      weights: new Float32Array(values(64 * 64, 32)),
+      bias: new Float32Array(values(64, 64)),
+    }),
+    ir: { opCount: 3, parameterCount: 2 },
+    iterations: 100,
+    tolerance: 1e-4,
+    plan: {
+      opCount: 3,
+      dispatchCount: 2,
+      publicOps: 2,
+      description: "lazy Tensor IR Linear+ReLU -> Mean Program kernel plan",
+      check: (plan) => {
+        if (
+          ops(plan) !== "linear|mean" ||
+          kernels(plan) !== "linear|relu|mean" ||
+          plan.ops[0].fusedOpCount !== 2 ||
+          plan.parameterLayout.parameters.map((param) => param.name).join("|") !== "0.weight|0.bias"
+        ) {
+          throw new Error("lazy mlp-mean expected fused Linear+ReLU -> Mean kernel plan with named parameters");
+        }
+      },
+    },
+    summary: (result) => `lazy_mlp_mean_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyMlpMeanBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=2 fused=2 kernels=linear|relu|mean batched=rank2-reduced parameters=0.weight|0.bias hot=allocation-free`,
   },
   {
     key: "lazy_token_head_batched",

@@ -10,7 +10,7 @@ const notes = [];
 const goalProgress = Object.freeze({
   substratePct: 71,
   substrateFloorPct: 65,
-  pytorchLikePct: 80,
+  pytorchLikePct: 82,
   pytorchLikeFloorPct: 60,
 });
 
@@ -571,6 +571,7 @@ function checkScripts() {
     "log_softmax_classifier_batched=",
     "lazy_matmul_add_relu_batched=",
     "lazy_mlp_batched=",
+    "lazy_mlp_mean_batched=",
     "lazy_token_head_batched=",
     "dispatch=1 fused=3",
     "dispatch=1 fused=2",
@@ -586,6 +587,7 @@ function checkScripts() {
     "ops=2 dispatch=2 kernels=linear|log-softmax",
     "ops=3 dispatch=3 kernels=linear|add|relu",
     "ops=3 dispatch=2 fused=2 kernels=linear|relu|linear",
+    "ops=3 dispatch=2 fused=2 kernels=linear|relu|mean",
     "ops=3 dispatch=3 kernels=embedding|linear|log-softmax",
     "floors.activationChainSpeedup",
     "floors.linearReluSpeedup",
@@ -607,6 +609,7 @@ function checkScripts() {
     "floors.logSoftmaxClassifierBatchedSpeedup",
     "floors.lazyMatmulAddReluBatchedSpeedup",
     "floors.lazyMlpBatchedSpeedup",
+    "floors.lazyMlpMeanBatchedSpeedup",
     "floors.lazyTokenHeadBatchedSpeedup",
     "program.kernelPlan()",
     "program.tensorProgramIr()",
@@ -618,6 +621,7 @@ function checkScripts() {
     "2.weight|2.bias",
     "parameters=w|b",
     "parameters=0.weight|0.bias|2.weight|2.bias",
+    "parameters=0.weight|0.bias",
     "parameters=tok.weight|head.weight|head.bias",
     "model.compile({ inputShape:",
     "session.stepTensor(input)",
@@ -986,6 +990,8 @@ function checkModuleProgramBenchEvidence() {
   requirePattern(line, "module Program bench gate output", "lazy Tensor IR add kernel proof", /ops=3 dispatch=3 kernels=linear\|add\|relu batched=rank2 parameters=w\|b hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "lazy MLP speedup floor", /lazy_mlp_batched=[0-9.]+x floor=2\.50x/);
   requirePattern(line, "module Program bench gate output", "lazy Tensor IR MLP kernel proof", /ops=3 dispatch=2 fused=2 kernels=linear\|relu\|linear batched=rank2 parameters=0\.weight\|0\.bias\|2\.weight\|2\.bias hot=allocation-free/);
+  requirePattern(line, "module Program bench gate output", "lazy MLP mean speedup floor", /lazy_mlp_mean_batched=[0-9.]+x floor=2\.00x/);
+  requirePattern(line, "module Program bench gate output", "lazy Tensor IR MLP mean kernel proof", /ops=3 dispatch=2 fused=2 kernels=linear\|relu\|mean batched=rank2-reduced parameters=0\.weight\|0\.bias hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "lazy token-head speedup floor", /lazy_token_head_batched=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "lazy Tensor IR token-head kernel proof", /ops=3 dispatch=3 kernels=embedding\|linear\|log-softmax batched=rank1-token parameters=tok\.weight\|head\.weight\|head\.bias hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "allocation-free executeInto timing", /hot_execute_into=[0-9.]+ms/);
@@ -4152,7 +4158,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=71% floor=65%; PyTorch-like surface=80% floor=60%",
+    "goal progress: Program/Session substrate=71% floor=65%; PyTorch-like surface=82% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4192,7 +4198,7 @@ function checkDocs() {
     "Program/Session performance substrate: ~71%",
     "Compile-capable lazy graphs can now lower through the host adapter into a",
     "native Program with preserved KernelPlan evidence.",
-    "PyTorch-like replacement feel: ~80%",
+    "PyTorch-like replacement feel: ~82%",
     "`torch.compile.compile(lazyGraph)` and `lazyGraph.compile()` Program construction through Node/Bun",
     "The remaining substrate",
     "tiled quantized row-chain",
