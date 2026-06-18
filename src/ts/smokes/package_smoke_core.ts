@@ -56,6 +56,32 @@ function numericSnapshot(values: ArrayLike<number>): number[] {
   return Array.from(values, Number);
 }
 
+type PackageSmokeTensor = Readonly<{
+  data: ArrayLike<number>;
+  shape: readonly number[];
+}>;
+
+type PackageSmokeDatasetSample = Readonly<{
+  kind: "zgml.data.sample";
+  index: number;
+  input: PackageSmokeTensor;
+  target: PackageSmokeTensor;
+}>;
+
+type PackageSmokeCollateContext = Readonly<{
+  sampleIndices: readonly number[];
+  sample_indices: readonly number[];
+  batchIndex: number;
+}>;
+
+type PackageSmokeCustomCollateBatch = Readonly<{
+  kind: "custom-collate";
+  first: number;
+  sampleIndices: readonly number[];
+  sample_indices: readonly number[];
+  batchIndex: number;
+}>;
+
 function withTempCheckpointPath<T>(name: string, fn: (path: string, fs: any) => T): T {
   const fs = require("node:fs");
   const os = require("node:os");
@@ -5418,17 +5444,21 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   const replacementSampler = new adapter.torch.utils.data.RandomSampler(customDataset, { replacement: true, num_samples: 3, seed: 7 });
   const batchSampler = new adapter.data.BatchSampler(sequentialSampler, 1, false);
   const torchBatchSampler = new adapter.torch.utils.data.BatchSampler(sequentialSampler, 2, false);
+  const customCollateFn = (
+    samples: readonly PackageSmokeDatasetSample[],
+    context: PackageSmokeCollateContext,
+  ): PackageSmokeCustomCollateBatch => Object.freeze({
+    kind: "custom-collate",
+    first: samples[0].target.data[0],
+    sampleIndices: context.sampleIndices,
+    sample_indices: context.sample_indices,
+    batchIndex: context.batchIndex,
+  });
   const collatedLoaderBatch = Array.from(new adapter.data.DataLoader(customDataset, {
     sampler: [1, 0],
     batch_size: 2,
-    collate_fn: (samples: any[], context: any) => Object.freeze({
-      kind: "custom-collate",
-      first: samples[0].target.data[0],
-      sampleIndices: context.sampleIndices,
-      sample_indices: context.sample_indices,
-      batchIndex: context.batchIndex,
-    }),
-  }))[0] as any;
+    collate_fn: customCollateFn,
+  }))[0] as PackageSmokeCustomCollateBatch;
   const defaultCollatedBatch = adapter.torch.utils.data.default_collate(
     [customDataset.sample(1), customDataset.sample(0)],
     { batch_index: 4 },
