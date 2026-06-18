@@ -25,6 +25,7 @@ const floors = Object.freeze({
   shapeLinearSpeedup: 1.2,
   conv2dSpeedup: 1.05,
   conv2dBatchedSpeedup: 1.05,
+  lazyConv2dReluBatchedSpeedup: 1.05,
   maxPool2dSpeedup: 1.05,
   maxPool2dBatchedSpeedup: 1.05,
   avgPool2dSpeedup: 1.05,
@@ -53,6 +54,7 @@ const expectedKeys = Object.freeze([
   "shape_linear",
   "conv2d",
   "conv2d_batched",
+  "lazy_conv2d_relu_batched",
   "max_pool2d",
   "max_pool2d_batched",
   "avg_pool2d",
@@ -203,6 +205,32 @@ function lazyMatmulAddReluEager(input, weightValues, biasValues, batch, inFeatur
         sum += input.data[row * inFeatures + feature] * weightValues[feature * outFeatures + col];
       }
       out[row * outFeatures + col] = Math.max(0, sum);
+    }
+  }
+  return out;
+}
+
+function lazyConv2dReluBatchedEager(input, weightValues, biasValues, batch, inChannels, height, width, outChannels, kernel) {
+  const outH = height - kernel + 1;
+  const outW = width - kernel + 1;
+  const out = new Float32Array(batch * outChannels * outH * outW);
+  for (let n = 0; n < batch; n += 1) {
+    for (let oc = 0; oc < outChannels; oc += 1) {
+      for (let oy = 0; oy < outH; oy += 1) {
+        for (let ox = 0; ox < outW; ox += 1) {
+          let sum = biasValues[oc];
+          for (let ic = 0; ic < inChannels; ic += 1) {
+            for (let ky = 0; ky < kernel; ky += 1) {
+              for (let kx = 0; kx < kernel; kx += 1) {
+                const inputIndex = (((n * inChannels + ic) * height + oy + ky) * width) + ox + kx;
+                const weightIndex = (((oc * inChannels + ic) * kernel + ky) * kernel) + kx;
+                sum += input.data[inputIndex] * weightValues[weightIndex];
+              }
+            }
+          }
+          out[(((n * outChannels + oc) * outH + oy) * outW) + ox] = Math.max(0, sum);
+        }
+      }
     }
   }
   return out;
@@ -844,6 +872,49 @@ const benchSpecs = [
       },
     },
     summary: (result) => `conv2d_batched=${result.speedup.toFixed(2)}x floor=${floors.conv2dBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=1 dispatch=1 kernels=conv2d batched=rank4 hot=allocation-free`,
+  },
+  {
+    key: "lazy_conv2d_relu_batched",
+    label: "lazy-conv2d-relu-batched",
+    floor: floors.lazyConv2dReluBatchedSpeedup,
+    inputShape: [2, 1, 64, 64],
+    inputShapeText: "2x1x64x64",
+    outputShapeText: "2x1x62x62",
+    inputLen: 2 * 64 * 64,
+    outputLen: 2 * 62 * 62,
+    layerCount: 2,
+    parameterNames: "conv.weight|conv.bias",
+    input: () => adapter.tensor(values(2 * 64 * 64, 11), [2, 1, 64, 64]),
+    model: () => adapter.lazy.input([2, 1, 64, 64])
+      .conv2d(1, 3, { name: "conv" })
+      .relu(),
+    eager: (input) => lazyConv2dReluBatchedEager(input, values(3 * 3, 24), values(1, 32), 2, 1, 64, 64, 1, 3),
+    bindSession: (program) => program.bind({
+      weights: new Float32Array(values(3 * 3, 24)),
+      bias: new Float32Array(values(1, 32)),
+    }),
+    ir: { opCount: 2, parameterCount: 2 },
+    iterations: 100,
+    tolerance: 1e-4,
+    plan: {
+      opCount: 2,
+      dispatchCount: 1,
+      publicOps: 1,
+      description: "lazy Tensor IR Conv2d+ReLU fused Program kernel plan",
+      check: (plan) => {
+        const op = plan.ops[0];
+        if (
+          op.op !== "conv2d" ||
+          op.fusedOpCount !== 2 ||
+          op.nativeDispatchCount !== 1 ||
+          op.nativeKernels.join("|") !== "conv2d|relu" ||
+          plan.parameterLayout.parameters.map((param) => param.name).join("|") !== "conv.weight|conv.bias"
+        ) {
+          throw new Error("lazy conv2d-relu expected one fused Conv2d+ReLU kernel plan with named parameters");
+        }
+      },
+    },
+    summary: (result) => `lazy_conv2d_relu_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyConv2dReluBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=2 dispatch=1 fused=2 kernels=conv2d|relu batched=rank4 optimized=1x3x3 parameters=conv.weight|conv.bias hot=allocation-free`,
   },
   {
     key: "max_pool2d",

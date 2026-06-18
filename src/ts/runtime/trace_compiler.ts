@@ -178,6 +178,7 @@ const kernelizerRankCheckedOps = new Set([
   "slice",
   "transpose",
   "permute",
+  "activation",
   "conv2d",
   "avgPool2d",
   "maxPool2d",

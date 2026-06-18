@@ -727,6 +727,7 @@ const Context = struct {
         const weight_base: usize = c.weight_offset;
         const bias_base: usize = c.bias_offset;
         const dst_base: usize = c.dst_offset;
+        const relu = c.relu;
         if (in_channels == 1 and out_channels == 1 and kernel_w == 3 and kernel_h == 3) {
             const b: f32 = if (has_bias) bias[bias_base] else 0;
             const w0 = weight[weight_base + 0];
@@ -747,10 +748,12 @@ const Context = struct {
                     const r2 = r1 + in_w;
                     const drow = dst_batch_base + oy * out_w;
                     for (0..out_w) |ox| {
-                        dst[drow + ox] =
+                        var sum =
                             src[r0 + ox] * w0 + src[r0 + ox + 1] * w1 + src[r0 + ox + 2] * w2 +
                             src[r1 + ox] * w3 + src[r1 + ox + 1] * w4 + src[r1 + ox + 2] * w5 +
                             src[r2 + ox] * w6 + src[r2 + ox + 1] * w7 + src[r2 + ox + 2] * w8 + b;
+                        if (relu and sum < 0) sum = 0;
+                        dst[drow + ox] = sum;
                     }
                 }
             }
@@ -775,6 +778,7 @@ const Context = struct {
                                 }
                             }
                         }
+                        if (relu and sum < 0) sum = 0;
                         dst[dst_channel_base + oy * out_w + ox] = sum;
                     }
                 }

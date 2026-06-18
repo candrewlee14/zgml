@@ -2226,7 +2226,7 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
                 const out_channels = op.a;
                 const kh = op.b;
                 const kw = op.c;
-                if (op.activation != 0 or op.eps != 0 or out_channels == 0 or kh == 0 or kw == 0) return error.InvalidArgument;
+                if (op.eps != 0 or out_channels == 0 or kh == 0 or kw == 0) return error.InvalidArgument;
                 if ((op.flags & ~module_flag_bias) != 0) return error.InvalidArgument;
                 if ((current_rank != 3 and current_rank != 4) or current.n_dims != 4) return error.Unsupported;
                 if (current_rank == 3 and current.ne[3] != 1) return error.Unsupported;
@@ -2246,7 +2246,7 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
                         &persistent_tensors_list,
                         &persistent_params_list,
                         .bias,
-                        &.{out_channels},
+                        &.{ 1, 1, out_channels, 1 },
                         &bias_len,
                     )
                 else
@@ -2255,6 +2255,9 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
                 if (bias) |b| {
                     const repeated_bias = b.repeatLike(current);
                     current = current.add(repeated_bias);
+                }
+                if (op.activation != 0) {
+                    current = try moduleActivate(current, op.activation);
                 }
                 current_rank = if (current.ne[3] == 1 and current_rank == 3) 3 else 4;
                 current_len = out_channels;

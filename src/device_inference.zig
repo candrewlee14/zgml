@@ -478,6 +478,7 @@ pub fn DeviceInference(comptime T: type) type {
                     .weight_offset = @intCast(self.buffers.offset(weight)),
                     .bias_offset = if (bias) |b| @intCast(self.buffers.offset(b)) else 0,
                     .dst_offset = @intCast(self.buffers.offset(output)),
+                    .relu = ir_op.info.op == .relu,
                 } });
             }
 

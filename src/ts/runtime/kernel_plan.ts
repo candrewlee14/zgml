@@ -1147,6 +1147,44 @@ function fusedLinearActivationKernelPlanOp(linearOp: any, activationOp: any, des
   };
 }
 
+function canFuseConv2dActivationIrOps(convOp: any, activationOp: any) {
+  if (!convOp || !activationOp) return false;
+  if (convOp.op !== "conv2d" || activationOp.op !== "activation") return false;
+  const activation = moduleActivationIds[activationOp.attrs?.activation];
+  if (!activation) return false;
+  return activationOp.inputValueIds.length === 1 &&
+    activationOp.parameterValueIds.length === 0 &&
+    activationOp.inputValueIds[0] === convOp.outputValueId &&
+    traceShapesEqual(convOp.outputShape, activationOp.inputShape) &&
+    traceShapesEqual(activationOp.inputShape, activationOp.outputShape);
+}
+
+function fusedConv2dActivationKernelPlanOp(convOp: any, activationOp: any, desc: any, values: any) {
+  return {
+    index: convOp.index,
+    path: `${convOp.path}..${activationOp.path}`,
+    op: "conv2d",
+    kernel: "conv2d",
+    inputShape: convOp.inputShape.slice(),
+    outputShape: activationOp.outputShape.slice(),
+    inputLen: convOp.inputLen,
+    outputLen: activationOp.outputLen,
+    ...scalarEvidenceForIrOp(activationOp, values),
+    inputValueIds: convOp.inputValueIds.slice(),
+    outputValueId: activationOp.outputValueId,
+    parameterScalarCount: convOp.parameterScalarCount,
+    nativeDispatchCount: 1,
+    nativeDescriptorCount: 1,
+    nativeKernels: ["conv2d", kernelNameForIrOp(activationOp)],
+    nativeDescriptorSignatures: [nativeModuleDescSignature(desc)],
+    fusedOpCount: 2,
+    fusedOps: [convOp.op, activationOp.op],
+    fusedIndices: [convOp.index, activationOp.index],
+    fusedValueEdges: fusedValueEdgesForIrOps([convOp, activationOp]),
+    desc,
+  };
+}
+
 function fusedActivationChainKernelPlanOp(chain: any, desc: any, values: any) {
   const first = chain[0];
   const last = chain[chain.length - 1];
@@ -1324,6 +1362,25 @@ function kernelizeTensorProgramIr(ir: any) {
       });
       nativeOps.push(fusedDesc);
       ops.push(fusedLinearActivationKernelPlanOp(op, activationOp, fusedDesc, ir.values));
+      index += 1;
+      continue;
+    }
+
+    if (canFuseConv2dActivationIrOps(op, ir.ops[index + 1])) {
+      const activationOp = ir.ops[index + 1];
+      const desc = moduleOpDescForIrOp(op);
+      if (!desc) {
+        return {
+          kernelPlan: null,
+          diagnostic: kernelizerDiagnosticForIrOp(op),
+        };
+      }
+      const fusedDesc = Object.freeze({
+        ...desc,
+        activation: moduleActivationIds[activationOp.attrs.activation],
+      });
+      nativeOps.push(fusedDesc);
+      ops.push(fusedConv2dActivationKernelPlanOp(op, activationOp, fusedDesc, ir.values));
       index += 1;
       continue;
     }

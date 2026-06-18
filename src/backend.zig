@@ -229,6 +229,7 @@ pub const DeviceOp = union(enum) {
         weight_offset: u32 = 0,
         bias_offset: u32 = 0,
         dst_offset: u32 = 0,
+        relu: bool = false,
     },
     max_pool2d: struct { dst: u16, src: u16, out_w: u32, out_h: u32, channels: u32, batch: u32, src_w: u32, src_h: u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
     avg_pool2d: struct { dst: u16, src: u16, out_w: u32, out_h: u32, channels: u32, batch: u32, src_w: u32, src_h: u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
