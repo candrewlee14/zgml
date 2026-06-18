@@ -534,7 +534,9 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
         ? moduleOpIds.reduceSum
         : op.op === "mean"
           ? moduleOpIds.reduceMean
-          : moduleOpIds.reduceMax;
+          : op.op === "max"
+            ? moduleOpIds.reduceMax
+            : moduleOpIds.reduceMin;
       return { kind, activation: 0, flags: 0, a: nativeAxis, b: 0, c: 0, eps: 0 };
     }
     case "identity":
@@ -713,9 +715,9 @@ function activationModuleOpDesc(activation: any): NativeModuleOpDesc | null {
   };
 }
 
-function reduceMaxModuleOpDesc(): NativeModuleOpDesc {
+function reduceDimModuleOpDesc(kind: number): NativeModuleOpDesc {
   return {
-    kind: moduleOpIds.reduceMax,
+    kind,
     activation: 0,
     flags: 0,
     a: 0,
@@ -725,49 +727,37 @@ function reduceMaxModuleOpDesc(): NativeModuleOpDesc {
   };
 }
 
-function reduceMinModuleOpDescs(op: any, attrs: any): readonly NativeModuleOpDesc[] | null {
-  const neg = activationModuleOpDesc("neg");
-  if (!neg) return null;
+function reduceModuleOpKind(op: string): number | null {
+  switch (op) {
+    case "sum": return moduleOpIds.reduceSum;
+    case "mean": return moduleOpIds.reduceMean;
+    case "max": return moduleOpIds.reduceMax;
+    case "min": return moduleOpIds.reduceMin;
+    default: return null;
+  }
+}
+
+function reduceDimModuleOpDescs(op: any, attrs: any): readonly NativeModuleOpDesc[] | null {
+  const kind = reduceModuleOpKind(op.op);
+  if (!kind) return null;
   const rank = op.inputShape ? op.inputShape.length : 0;
   const axis = frontendAxisForRank(attrs.dim, rank);
   const nativeAxis = nativeAxisForFrontendAxis(axis, rank);
   if (axis < 0 || axis >= rank) return null;
-  if (nativeAxis === 0) return [neg, reduceMaxModuleOpDesc(), neg];
+  const reduce = reduceDimModuleOpDesc(kind);
+  if (nativeAxis === 0) return [reduce];
   if (rank === 2 && nativeAxis === 1) {
-    return [transposeModuleOpDesc(), neg, reduceMaxModuleOpDesc(), neg, transposeModuleOpDesc()];
+    return [transposeModuleOpDesc(), reduce, transposeModuleOpDesc()];
   }
   return null;
 }
 
 function moduleOpDescsForIrOp(op: any): readonly NativeModuleOpDesc[] | null {
   const attrs = op.attrs ?? {};
-  if (op.op === "min") {
-    return reduceMinModuleOpDescs(op, attrs);
-  }
-  if (op.op === "sum" || op.op === "mean" || op.op === "max") {
+  if (op.op === "sum" || op.op === "mean" || op.op === "max" || op.op === "min") {
     const desc = moduleOpDescForIrOp(op);
     if (desc) return [desc];
-    const rank = op.inputShape ? op.inputShape.length : 0;
-    const axis = frontendAxisForRank(attrs.dim, rank);
-    const nativeAxis = nativeAxisForFrontendAxis(axis, rank);
-    if (rank === 2 && nativeAxis === 1) {
-      const kind = op.op === "sum"
-        ? moduleOpIds.reduceSum
-        : op.op === "mean"
-          ? moduleOpIds.reduceMean
-          : moduleOpIds.reduceMax;
-      const middle = {
-        kind,
-        activation: 0,
-        flags: 0,
-        a: 0,
-        b: 0,
-        c: 0,
-        eps: 0,
-      };
-      return [transposeModuleOpDesc(), middle, transposeModuleOpDesc()];
-    }
-    return null;
+    return reduceDimModuleOpDescs(op, attrs);
   }
 
   if (op.op === "softmax" || op.op === "logSoftmax") {

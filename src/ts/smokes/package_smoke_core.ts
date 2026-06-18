@@ -3162,8 +3162,8 @@ function expectReductionProgramEvidence(adapter: Record<string, any>, label: str
     { name: "sum-last", module: adapter.nn.sum(-1), expectedShape: "2x1", expectedKernels: "sum" },
     { name: "mean-batch", module: adapter.nn.mean(0), expectedShape: "1x3", expectedKernels: "transpose|mean|transpose" },
     { name: "max-last", module: adapter.nn.max(-1), expectedShape: "2x1", expectedKernels: "max" },
-    { name: "min-last", module: adapter.nn.min(-1), expectedShape: "2x1", expectedKernels: "neg|max|neg" },
-    { name: "min-batch", module: adapter.nn.min(0), expectedShape: "1x3", expectedKernels: "transpose|neg|max|neg|transpose" },
+    { name: "min-last", module: adapter.nn.min(-1), expectedShape: "2x1", expectedKernels: "min" },
+    { name: "min-batch", module: adapter.nn.min(0), expectedShape: "1x3", expectedKernels: "transpose|min|transpose" },
   ];
   for (const testCase of compiledCases) {
     const eager = testCase.module.forward(input);

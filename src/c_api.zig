@@ -157,6 +157,7 @@ const module_op_transpose: u32 = 11;
 const module_op_reduce_sum: u32 = 12;
 const module_op_reduce_mean: u32 = 13;
 const module_op_reduce_max: u32 = 14;
+const module_op_reduce_min: u32 = 21;
 const module_op_slice: u32 = 15;
 const module_op_activation_chain: u32 = 16;
 const module_op_max_pool2d: u32 = 17;
@@ -2125,6 +2126,12 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
                 if (op.activation != 0 or op.flags != 0 or op.b != 0 or op.c != 0 or op.a != 0) return error.InvalidArgument;
                 if (op.a >= current_rank) return error.ShapeMismatch;
                 current = current.maxDim(op.a);
+                current_len = current.ne[0];
+            },
+            module_op_reduce_min => {
+                if (op.activation != 0 or op.flags != 0 or op.b != 0 or op.c != 0 or op.a != 0) return error.InvalidArgument;
+                if (op.a >= current_rank) return error.ShapeMismatch;
+                current = current.neg().maxDim(op.a).neg();
                 current_len = current.ne[0];
             },
             module_op_reshape => {
@@ -6972,6 +6979,40 @@ test "C ABI module program compiles traced sequential ops" {
         }, &result));
         try std.testing.expectEqual(@as(usize, 2), result.output_len);
         try std.testing.expectEqualSlices(f32, &.{ 2, 5 }, &reduce_mean_output);
+
+        const reduce_min_ops = [_]zgml_module_op_desc{.{
+            .kind = module_op_reduce_min,
+            .a = 0,
+        }};
+        var reduce_min_program: ?*zgml_program = null;
+        var reduce_min_session: ?*zgml_session = null;
+        defer zgml_session_free(reduce_min_session);
+        defer zgml_program_free(reduce_min_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = reduce_input_shape[0..].ptr,
+            .input_rank = reduce_input_shape.len,
+            .ops = reduce_min_ops[0..].ptr,
+            .op_count = reduce_min_ops.len,
+        }, &.{ .backend = backend_cpu }, &reduce_min_program));
+        try std.testing.expect(reduce_min_program != null);
+
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(reduce_min_program, &.{
+            .weights = null,
+            .weights_len = 0,
+        }, &reduce_min_session));
+        try std.testing.expect(reduce_min_session != null);
+
+        var reduce_min_output = [_]f32{0} ** 2;
+        result = .{};
+        try std.testing.expectEqual(status(.ok), zgml_session_step(reduce_min_session, &.{
+            .input = reduce_input[0..].ptr,
+            .input_len = reduce_input.len,
+            .output = reduce_min_output[0..].ptr,
+            .output_len = reduce_min_output.len,
+        }, &result));
+        try std.testing.expectEqual(@as(usize, 2), result.output_len);
+        try std.testing.expectEqualSlices(f32, &.{ 1, 4 }, &reduce_min_output);
 
         const batch_reduce_max_ops = [_]zgml_module_op_desc{
             .{

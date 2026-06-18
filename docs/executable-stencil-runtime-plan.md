@@ -209,7 +209,11 @@ Current checked progress:
   profitable workload. Common classifier/token-head `LogSoftmax` tails now
   lower to a native row op on reference CPU, Metal, and WGPU instead of
   replaying ten composite Tensor Program IR sub-ops, while an explicit
-  capability-disabled test still proves the composite fallback. The remaining substrate jump is not another compatibility lane; it is a real
+  capability-disabled test still proves the composite fallback. Module
+  `min(dim)` now lowers through a first-class `reduceMin` descriptor instead
+  of exposing its `neg -> max -> neg` decomposition in KernelPlan evidence, so
+  the TS/native Program contract is simpler today and can receive a backend
+  reduce-min kernel later without changing user code. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence.
 - PyTorch-like replacement feel: ~92%. The TS-owned product frontend now has
@@ -1839,7 +1843,11 @@ Current frontend slice:
 	  signatures before module binding, and it proves a single frontend
 	  `softmax(0)` op that lowers to transpose + softmax + transpose carries
 	  enough public KernelPlan descriptor-signature evidence to derive the same
-	  canonical compiler signatures without private native descriptors. It also
+	  canonical compiler signatures without private native descriptors. Module
+	  `min(dim)` now has the same single-op KernelPlan contract as sum/mean/max
+	  on the native reduction axis, with batch-axis lowering kept to
+	  transpose + min + transpose instead of transpose + neg + max + neg +
+	  transpose. It also
 	  proves zero-dispatch elided shape chains carry empty public
 	  descriptor-signature arrays as intentional evidence, while still deriving the
 	  same canonical compiler signatures. Fused KernelPlan entries now also retain

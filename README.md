@@ -876,7 +876,7 @@ eager/autograd `einsum` semantics with typed output shapes plus lazy
 parameterized `matmul`/`mm`/add compile evidence, direct `lazyGraph.compile()`
 native Program construction, and benchmarked allocation-free lazy
 Linear+GELU, `matmul -> add -> relu/gelu`, Conv2d+ReLU, MLP, reduced MLP, classifier log-softmax,
-classifier softmax-reduction, transformer FFN, normalized transformer
+native `min(dim)`, classifier softmax-reduction, transformer FFN, normalized transformer
 classifier, and token-head Session paths rather than only API exports.
 Tensor, `nn`, `optim`, `train`, `data`, loss modules, state dicts,
 manual `backward`/`step` loops, train helper verbs (`backward`, `lossStep`,

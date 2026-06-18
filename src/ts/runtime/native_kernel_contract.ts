@@ -42,6 +42,7 @@ export function kernelNameForNativeModuleDesc(desc: NativeModuleOpDesc | null | 
     case moduleOpIds.reduceSum: return "sum";
     case moduleOpIds.reduceMean: return "mean";
     case moduleOpIds.reduceMax: return "max";
+    case moduleOpIds.reduceMin: return "min";
     case moduleOpIds.reshape: return "reshape";
     case moduleOpIds.broadcastTo: return "broadcast";
     case moduleOpIds.narrow: return "narrow";
