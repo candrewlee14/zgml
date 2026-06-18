@@ -220,6 +220,13 @@ machine for both prompt/prefill and decode.
   whether a larger semantic sublayer is promising before we write a tiled
   row-wide reduction kernel, but it does not lower the full-model dispatch split
   or promote the scalar row-chain Adapter.
+  The gate also prints canonical scheduler shape evidence for each row-chain
+  diagnostic via `ProgramCommandStreamShape.fromCommands`: a single row-chain
+  command covers 5 ops and records `shape_saved_dispatches=4`, while the x4
+  full-prefill group records 4 row-chain commands, 20 covered ops, and
+  `shape_saved_dispatches=16`. This keeps the semantic scheduler win explicit
+  without confusing it for the still-missing tiled qmatmul row-chain throughput
+  kernel.
 - Q8_0 tied LM-head logits are a standalone backend qmatvec dispatch outside
   the ProgramCommand stream. Current Q8_0 prompt evidence is gated at 181
   ProgramCommands and 242 dispatches because each of the 60 semantic

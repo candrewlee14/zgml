@@ -437,6 +437,7 @@ function checkPackageExports(errors) {
     "qrow decode m=1 n=512 k=512 projection_row_chain",
     "qrow prompt m=32 n=512 k=512 projection_row_chain",
     "qrow full-prefill m=128 n=512 k=512 projection_row_chain",
+    "dispatch_profile",
     "const decodeishTokSFloor = 400_000",
     "const projectionChainTileSpeedupFloor = 0.95",
     "const projectionChainFullPrefillSpeedupFloor = 0.90",
@@ -448,6 +449,10 @@ function checkPackageExports(errors) {
     "projection_chain_full_prefill=",
     "projection_group_full_prefill=",
     "projection_row_chain_group_full_prefill=",
+    "shape_commands=",
+    "shape_projection_row_chains=",
+    "shape_covered_ops=",
+    "shape_saved_dispatches=",
     "projection_row_chain_full_prefill=",
     "projection_row_chain_prompt_candidate=",
     "observed max_abs_diff=",
@@ -457,6 +462,8 @@ function checkPackageExports(errors) {
     "projectionRowChainGroupFullPrefillMaxAbsDiff > projectionRowChainMaxAbsDiffCeil",
     "projectionDecodeMaxAbsDiff > projectionRowChainMaxAbsDiffCeil",
     "projectionPromptMaxAbsDiff > projectionRowChainMaxAbsDiffCeil",
+    "projection_row_chain prompt shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4",
+    "projection_row_chain decode shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4",
     "function scoreMargin(current)",
     "function chooseBest(attempts)",
     "passing.length > 0 ? passing : attempts",
@@ -480,6 +487,8 @@ function checkPackageExports(errors) {
     "staged_policy.qmatmul_group_size = 1",
     "benchProjectionGroupMetalCase",
     "benchProjectionChainMetalCase",
+    "printCommandShape",
+    "ProgramCommandStreamShape.fromCommands",
   ]) {
     if (!frontierBenchZigSource.includes(needle)) {
       errors.push(`benchmarks/frontier_bench.zig must keep stable qmatmul projection-chain frontier evidence: ${needle}`);

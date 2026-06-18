@@ -148,6 +148,24 @@ fn printRatio(
     }
 }
 
+fn printCommandShape(
+    w: *std.Io.Writer,
+    name: []const u8,
+    commands: []const program_mod.ProgramCommand,
+) !void {
+    const shape = try program_mod.ProgramCommandStreamShape.fromCommands(commands);
+    try w.print(
+        "  {s:<28} shape_commands={d}  shape_projection_row_chains={d}  shape_covered_ops={d}  shape_saved_dispatches={d}\n",
+        .{
+            name,
+            shape.command_count,
+            shape.projection_row_chains,
+            shape.covered_ops,
+            shape.estimated_saved_dispatches,
+        },
+    );
+}
+
 const TensorComputeBench = struct {
     out: *Tensor(f32),
 
@@ -876,6 +894,12 @@ fn benchProjectionRowChainMetalCase(
     var ratio_name_buf: [96]u8 = undefined;
     const ratio_name = try std.fmt.bufPrint(&ratio_name_buf, "{s} projection_row_chain", .{case.name});
     try printRatio(w, ratio_name, default_stats, fused_stats, maxAbsDiff(default_out, fused_out));
+
+    const fused_commands = try program_mod.buildProgramCommands(alloc, &ops, fused_policy);
+    defer alloc.free(fused_commands);
+    var profile_name_buf: [112]u8 = undefined;
+    const profile_name = try std.fmt.bufPrint(&profile_name_buf, "{s} projection_row_chain dispatch_profile", .{case.name});
+    try printCommandShape(w, profile_name, fused_commands);
 }
 
 fn benchProjectionRowChainGroupMetalCase(
@@ -1024,6 +1048,12 @@ fn benchProjectionRowChainGroupMetalCase(
     var ratio_name_buf: [112]u8 = undefined;
     const ratio_name = try std.fmt.bufPrint(&ratio_name_buf, "{s} projection_row_chain_group", .{case.name});
     try printRatio(w, ratio_name, staged_stats, grouped_stats, maxAbsDiff(staged_out, grouped_out));
+
+    const grouped_commands = try program_mod.buildProgramCommands(alloc, &ops, grouped_policy);
+    defer alloc.free(grouped_commands);
+    var profile_name_buf: [128]u8 = undefined;
+    const profile_name = try std.fmt.bufPrint(&profile_name_buf, "{s} projection_row_chain_group dispatch_profile", .{case.name});
+    try printCommandShape(w, profile_name, grouped_commands);
 }
 
 fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {

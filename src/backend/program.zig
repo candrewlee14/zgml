@@ -1467,7 +1467,7 @@ pub const ProgramCommandStreamShape = struct {
         return fromCommands(commands);
     }
 
-    fn fromCommands(commands: []const ProgramCommand) !ProgramCommandStreamShape {
+    pub fn fromCommands(commands: []const ProgramCommand) !ProgramCommandStreamShape {
         const summary = summarizeProgramCommands(commands);
         var shape = ProgramCommandStreamShape{
             .command_count = std.math.cast(u32, commands.len) orelse return error.UnsupportedDeviceOp,
@@ -2669,7 +2669,7 @@ fn projectionCacheRopeOutputHasExternalUsers(
     return ropeStoreGroupOutputsHaveExternalUsers(ops, &command);
 }
 
-fn buildProgramCommands(
+pub fn buildProgramCommands(
     alloc: std.mem.Allocator,
     ops: []const backend_mod.DeviceOp,
     policy: CommandStreamPolicy,
