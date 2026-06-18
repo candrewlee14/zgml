@@ -349,14 +349,16 @@ function sliceIrCanLower(op: any) {
 }
 
 function reshapeDescForShape(outputShape: any) {
-  if (!outputShape || outputShape.length < 1 || outputShape.length > 2) return null;
+  if (!outputShape || outputShape.length < 1 || outputShape.length > 3) return null;
+  if (outputShape.length === 3 && outputShape[2] > 0xffffffff) return null;
   return {
     kind: moduleOpIds.reshape,
     activation: 0,
     flags: 0,
+    reserved: outputShape.length === 3 ? outputShape[2] : 0,
     a: outputShape.length,
     b: outputShape[0],
-    c: outputShape.length === 2 ? outputShape[1] : 0,
+    c: outputShape.length >= 2 ? outputShape[1] : 0,
     eps: 0,
   };
 }
@@ -557,14 +559,16 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
       return isNoopDropoutIrOp(op) ? reshapeDescForShape(op.outputShape) : null;
     case "broadcastTo":
     case "expand":
-      if (!op.outputShape || op.outputShape.length < 1 || op.outputShape.length > 2) return null;
+      if (!op.outputShape || op.outputShape.length < 1 || op.outputShape.length > 3) return null;
+      if (op.outputShape.length === 3 && op.outputShape[2] > 0xffffffff) return null;
       return {
         kind: moduleOpIds.broadcastTo,
         activation: 0,
         flags: 0,
+        reserved: op.outputShape.length === 3 ? op.outputShape[2] : 0,
         a: op.outputShape.length,
         b: op.outputShape[0],
-        c: op.outputShape.length === 2 ? op.outputShape[1] : 0,
+        c: op.outputShape.length >= 2 ? op.outputShape[1] : 0,
         eps: 0,
       };
     case "repeat":

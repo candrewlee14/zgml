@@ -1843,17 +1843,23 @@ const ModuleShapeSpec = struct {
     feature_len: usize,
 };
 
-fn moduleShapeSpecFromRowMajor(rank: usize, first: usize, second: usize) !ModuleShapeSpec {
+fn moduleShapeSpecFromRowMajor(rank: usize, first: usize, second: usize, third: usize) !ModuleShapeSpec {
     var ne = [_]usize{1} ** tensor_mod.max_dims;
     switch (rank) {
         1 => {
-            if (first == 0 or second != 0) return error.ShapeMismatch;
+            if (first == 0 or second != 0 or third != 0) return error.ShapeMismatch;
             ne[0] = first;
         },
         2 => {
-            if (first == 0 or second == 0) return error.ShapeMismatch;
+            if (first == 0 or second == 0 or third != 0) return error.ShapeMismatch;
             ne[0] = second;
             ne[1] = first;
+        },
+        3 => {
+            if (first == 0 or second == 0 or third == 0) return error.ShapeMismatch;
+            ne[0] = third;
+            ne[1] = second;
+            ne[2] = first;
         },
         else => return error.ShapeMismatch,
     }
@@ -1872,6 +1878,12 @@ fn moduleRowMajorDim(tensor: *const TensorF32, rank: usize, axis: usize) !usize 
             1 => tensor.ne[0],
             else => error.ShapeMismatch,
         },
+        3 => switch (axis) {
+            0 => tensor.ne[2],
+            1 => tensor.ne[1],
+            2 => tensor.ne[0],
+            else => error.ShapeMismatch,
+        },
         else => error.ShapeMismatch,
     };
 }
@@ -1884,13 +1896,19 @@ fn moduleNativeShapeDim(spec: ModuleShapeSpec, axis: usize) !usize {
             1 => spec.ne[0],
             else => error.ShapeMismatch,
         },
+        3 => switch (axis) {
+            0 => spec.ne[2],
+            1 => spec.ne[1],
+            2 => spec.ne[0],
+            else => error.ShapeMismatch,
+        },
         else => error.ShapeMismatch,
     };
 }
 
 fn moduleReshapeSpec(op: zgml_module_op_desc, current: *const TensorF32) !ModuleShapeSpec {
     if (op.activation != 0 or op.flags != 0 or op.eps != 0) return error.InvalidArgument;
-    const spec = try moduleShapeSpecFromRowMajor(op.a, op.b, op.c);
+    const spec = try moduleShapeSpecFromRowMajor(op.a, op.b, op.c, op.reserved);
     var product: usize = 1;
     for (spec.ne[0..spec.rank]) |dim| product = try std.math.mul(usize, product, dim);
     if (product != current.nElems()) return error.ShapeMismatch;
@@ -1899,8 +1917,8 @@ fn moduleReshapeSpec(op: zgml_module_op_desc, current: *const TensorF32) !Module
 
 fn moduleBroadcastSpec(op: zgml_module_op_desc, current: *const TensorF32, current_rank: usize) !ModuleShapeSpec {
     if (op.activation != 0 or op.flags != 0 or op.eps != 0) return error.InvalidArgument;
-    const spec = try moduleShapeSpecFromRowMajor(op.a, op.b, op.c);
-    if (current_rank == 0 or current_rank > 2 or spec.rank < current_rank) return error.ShapeMismatch;
+    const spec = try moduleShapeSpecFromRowMajor(op.a, op.b, op.c, op.reserved);
+    if (current_rank == 0 or current_rank > 3 or spec.rank < current_rank) return error.ShapeMismatch;
     const src_offset = spec.rank - current_rank;
     for (0..spec.rank) |axis| {
         const target_dim = try moduleNativeShapeDim(spec, axis);
@@ -2066,7 +2084,7 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
 
     const ops: []const zgml_module_op_desc = if (desc.op_count == 0) &.{} else desc.ops.?[0..desc.op_count];
     for (ops) |op| {
-        if (op.reserved != 0 and op.kind != module_op_slice) return error.InvalidArgument;
+        if (op.reserved != 0 and op.kind != module_op_slice and op.kind != module_op_reshape and op.kind != module_op_broadcast_to) return error.InvalidArgument;
         switch (op.kind) {
             module_op_linear => {
                 const in_features = op.a;

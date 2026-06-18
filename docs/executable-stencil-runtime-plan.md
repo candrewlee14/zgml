@@ -215,7 +215,7 @@ Current checked progress:
   of exposing or executing its old `neg -> max -> neg` decomposition. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence.
-- PyTorch-like replacement feel: ~97%. The TS-owned product frontend now has
+- PyTorch-like replacement feel: ~98%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
   checkpoints, eager debugging, eager/autograd `einsum` with ellipsis and
@@ -229,7 +229,10 @@ Current checked progress:
   adapters, eval-mode `BatchNorm1d` lowering through a derived native affine
   Program while training-mode BatchNorm remains honestly stateful/eager,
   native Program lowering for rank-2 `diagonal`, rank-1/rank-2 PyTorch-style
-  `repeat`/`tile` lowering through the native module Program ABI, native Program lowering for `argmax(dim)` and `argmin(dim)`, and
+  `repeat`/`tile` lowering through the native module Program ABI,
+  native Program lowering for `argmax(dim)` and `argmin(dim)`,
+  rank-3 `reshape`/`flatten`/`squeeze`/`unsqueeze` and rank-3 `broadcastTo`/`expand`
+  lowering through the native module Program ABI, and
   compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
   compile hooks exist.
@@ -1202,7 +1205,7 @@ Current frontend slice:
   `nn.Flatten`/`nn.flatten`, `nn.reshape`, `nn.view`,
   `nn.squeeze`, and `nn.unsqueeze` run eagerly, propagate
   normalized trace shapes, and lower through the native module Program ABI for
-  rank-1/rank-2 shapes, so common `Flatten -> Linear` heads and tensor-rank
+  rank-1/rank-2/rank-3 shapes, so common `Flatten -> Linear` heads and tensor-rank
   glue compile instead of hitting an artificial frontend wall. The trace and
   Tensor Program IR keep each user-authored shape op, while the kernel plan
   coalesces consecutive reshape-equivalent shape ops, including identity, into one native reshape
@@ -1236,8 +1239,10 @@ Current frontend slice:
   transposed view into a dense output buffer through the existing stride-aware
   movement kernel. Higher-rank transpose and zero-copy strided output bindings
   remain future compiler work. `nn.broadcastTo` and `nn.expand` also lower
-  through the native module Program ABI for rank-1/rank-2 shapes as materialized
-  dense repeat ops. `nn.diagonal` now lowers through a native materialized
+  through the native module Program ABI for rank-1/rank-2/rank-3 shapes as materialized
+  dense repeat ops. Rank-3 `reshape`, `view`, `flatten`, `squeeze`, and
+  `unsqueeze` now use the same descriptor ABI through the spare `reserved`
+  dimension slot without changing the C struct layout. `nn.diagonal` now lowers through a native materialized
   stride-view descriptor for rank-2 matrices. `nn.repeat` and `nn.tile` now use that same ABI lane for
   rank-1/rank-2 positive-multiple tiled repeats, giving FFI callers a concrete
   output-buffer contract while leaving zero-copy broadcast/tile views and
@@ -1248,7 +1253,7 @@ Current frontend slice:
   Node/Bun product runtime, not only internal compiler helpers:
   `broadcastTo`, `expand`, `diagonal`, `repeat`, `tile`, row/feature-axis `narrow`, row/feature-axis
   `select`, contiguous and stepped `slice`, plus terminal zero-dispatch
-  `flatten`, `squeeze`, and `unsqueeze` all prove frozen compile evidence,
+  rank-2/rank-3 `flatten`, `squeeze`, and `unsqueeze` all prove frozen compile evidence,
   kernel-plan dispatch/elision counts, and eager/compiled output parity; the
   same package smoke also proves honest rank-3 `permute` rejection with frozen
   Tensor Program IR and Kernelizer diagnostics.

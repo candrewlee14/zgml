@@ -574,7 +574,8 @@ snapshots with joint preflight before restore mutates either
 target, for host-side model checks and small training loops.
 `nn.identity`, `nn.reshape`, `nn.view`, `nn.flatten`, `nn.squeeze`, `nn.unsqueeze`, `nn.broadcastTo`, `nn.expand`, `nn.transpose`, bounded `nn.narrow`,
 bounded `nn.select`, and bounded `nn.slice` now lower through native module
-Programs for rank-1/rank-2 shapes where their output shape has a dense
+Programs for rank-1/rank-2 shapes, plus rank-3 reshape-family and
+broadcast/expand shapes, where their output shape has a dense
 caller-visible buffer contract. Consecutive reshape-equivalent shape ops are
 kept in trace/IR evidence but coalesced into one native reshape descriptor by
 the kernel plan, so ergonomic model glue does not pay a dispatch per view.
@@ -868,7 +869,7 @@ long-form smoke and benchmark gates.
 library goal. It requires a passing no-fallback Program/Session substrate gate
 with a latest-vs-checked-baseline delta report for the selected native lanes,
 and checks that the public type smokes still cover the PyTorch-like surface:
-`goal progress: Program/Session substrate=77% floor=65%; PyTorch-like surface=97% floor=60%`.
+`goal progress: Program/Session substrate=77% floor=65%; PyTorch-like surface=98% floor=60%`.
 Those numbers are deliberately conservative: q8 prompt execution still needs a
 real tiled row-chain throughput kernel, while the PyTorch-like surface now has
 runtime and type evidence for the core replacement loop and PyTorch-like
@@ -877,8 +878,9 @@ parameterized `matmul`/`mm`/add compile evidence, direct `lazyGraph.compile()`
 native Program construction, and benchmarked allocation-free lazy
 Linear+GELU, `matmul -> add -> relu/gelu`, Conv2d+ReLU, MLP, reduced MLP, classifier log-softmax,
 native `diagonal`,
-rank-1/rank-2 repeat/tile Program lowering, and native `argmax(dim)` /
-`argmin(dim)` Program lowering,
+rank-1/rank-2 repeat/tile Program lowering, native `argmax(dim)` /
+`argmin(dim)` Program lowering, and rank-3 native shape/view lowering for
+reshape-family plus broadcast/expand,
 direct backend `min(dim)`, eval-mode `BatchNorm1d`, classifier softmax-reduction, transformer FFN, normalized transformer
 classifier, and token-head Session paths rather than only API exports.
 Tensor, `nn`, `optim`, `train`, `data`, loss modules, state dicts,
