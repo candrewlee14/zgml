@@ -525,7 +525,10 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
     }
     case "sum":
     case "mean":
-    case "max": {
+    case "max":
+    case "min":
+    case "argmax":
+    case "argmin": {
       const rank = op.inputShape ? op.inputShape.length : 0;
       const axis = frontendAxisForRank(attrs.dim, rank);
       const nativeAxis = nativeAxisForFrontendAxis(axis, rank);
@@ -536,7 +539,11 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
           ? moduleOpIds.reduceMean
           : op.op === "max"
             ? moduleOpIds.reduceMax
-            : moduleOpIds.reduceMin;
+            : op.op === "min"
+              ? moduleOpIds.reduceMin
+              : op.op === "argmax"
+                ? moduleOpIds.reduceArgmax
+                : moduleOpIds.reduceArgmin;
       return { kind, activation: 0, flags: 0, a: nativeAxis, b: 0, c: 0, eps: 0 };
     }
     case "identity":
@@ -776,6 +783,8 @@ function reduceModuleOpKind(op: string): number | null {
     case "mean": return moduleOpIds.reduceMean;
     case "max": return moduleOpIds.reduceMax;
     case "min": return moduleOpIds.reduceMin;
+    case "argmax": return moduleOpIds.reduceArgmax;
+    case "argmin": return moduleOpIds.reduceArgmin;
     default: return null;
   }
 }
@@ -797,7 +806,7 @@ function reduceDimModuleOpDescs(op: any, attrs: any): readonly NativeModuleOpDes
 
 function moduleOpDescsForIrOp(op: any): readonly NativeModuleOpDesc[] | null {
   const attrs = op.attrs ?? {};
-  if (op.op === "sum" || op.op === "mean" || op.op === "max" || op.op === "min") {
+  if (op.op === "sum" || op.op === "mean" || op.op === "max" || op.op === "min" || op.op === "argmax" || op.op === "argmin") {
     const desc = moduleOpDescForIrOp(op);
     if (desc) return [desc];
     return reduceDimModuleOpDescs(op, attrs);

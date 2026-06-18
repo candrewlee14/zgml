@@ -3152,7 +3152,7 @@ function expectZeroParameterProgramEvidence(adapter: Record<string, any>, label:
     rank3PermuteDiagnostic.code !== "unsupported-view" ||
     rank3PermuteDiagnostic.op !== "permute"
   ) {
-    throw new Error(`${label} expected honest unsupported rank-3 permute compile evidence`);
+    throw new Error(`${label} expected honest unsupported rank-3 permute compile evidence; unsupported compile evidence must stay explicit`);
   }
 }
 
@@ -3164,6 +3164,8 @@ function expectReductionProgramEvidence(adapter: Record<string, any>, label: str
     { name: "max-last", module: adapter.nn.max(-1), expectedShape: "2x1", expectedKernels: "max" },
     { name: "min-last", module: adapter.nn.min(-1), expectedShape: "2x1", expectedKernels: "min" },
     { name: "min-batch", module: adapter.nn.min(0), expectedShape: "1x3", expectedKernels: "transpose|min|transpose" },
+    { name: "argmax-last", module: adapter.nn.argmax(-1), expectedShape: "2x1", expectedKernels: "argmax" },
+    { name: "argmin-last", module: adapter.nn.argmin(-1), expectedShape: "2x1", expectedKernels: "argmin" },
   ];
   for (const testCase of compiledCases) {
     const eager = testCase.module.forward(input);
@@ -3196,29 +3198,6 @@ function expectReductionProgramEvidence(adapter: Record<string, any>, label: str
     }
   }
 
-  for (const testCase of [
-    { name: "argmax", module: adapter.nn.argmax(1), op: "argmax" },
-    { name: "argmin", module: adapter.nn.argmin(1), op: "argmin" },
-  ]) {
-    const support = testCase.module.compileSupport({ inputShape: [2, 3], backend: "cpu" });
-    const diagnostic = support.diagnostics && support.diagnostics[0];
-    if (
-      !Object.isFrozen(support) ||
-      support.supported !== false ||
-      support.ir === undefined ||
-      diagnostic === undefined ||
-      diagnostic.stage !== "kernelizer" ||
-      diagnostic.code !== "unsupported-op" ||
-      diagnostic.op !== testCase.op
-    ) {
-      throw new Error(`${label} expected honest ${testCase.name} reduction unsupported compile evidence`);
-    }
-    expectThrowIncludes(
-      () => testCase.module.compile({ inputShape: [2, 3], backend: "cpu" }),
-      `native module Program compiler cannot lower ${testCase.op}`,
-      `${label} ${testCase.name} reduction compile rejection`,
-    );
-  }
 }
 
 function expectDiagonalModuleEvidence(adapter: Record<string, any>, label: string) {

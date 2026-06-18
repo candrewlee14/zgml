@@ -2509,16 +2509,20 @@ const shader_source =
     \\            dst[p.dst_offset + gid] = a * a;
     \\            break;
     \\        }
-    \\        // ── Reduce: sum(19), max(20), or min(35), one thread per output ──
-    \\        case 19: case 20: case 35: {
+    \\        // ── Reduce: sum(19), max(20), min(35), argmax(36), or argmin(37), one thread per output ──
+    \\        case 19: case 20: case 35: case 36: case 37: {
     \\            uint reduce_size = p.src0_ne[0];
     \\            uint src_base = p.src0_offset + gid * reduce_size;
-    \\            float val = (p.op == 20) ? -INFINITY : ((p.op == 35) ? INFINITY : 0.0f);
+    \\            float val = (p.op == 20 || p.op == 36) ? -INFINITY : ((p.op == 35 || p.op == 37) ? INFINITY : 0.0f);
+    \\            uint best_idx = 0;
     \\            for (uint k = 0; k < reduce_size; k++) {
     \\                float v = src0[src_base + k];
-    \\                if (p.op == 19) val += v; else if (p.op == 20) val = max(val, v); else val = min(val, v);
+    \\                if (p.op == 19) val += v;
+    \\                else if (p.op == 20) val = max(val, v);
+    \\                else if (p.op == 35) val = min(val, v);
+    \\                else if ((p.op == 36 && v > val) || (p.op == 37 && v < val)) { val = v; best_idx = k; }
     \\            }
-    \\            dst[p.dst_offset + gid] = val;
+    \\            dst[p.dst_offset + gid] = (p.op == 36 || p.op == 37) ? float(best_idx) : val;
     \\            break;
     \\        }
     \\        // ── Repeat: broadcast via modular indexing ──

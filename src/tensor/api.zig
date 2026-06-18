@@ -195,6 +195,14 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn minAll(self: *Self) *Self {
             return min(self, &.{1});
         }
+        /// Argmax-reduce all elements into a scalar index.
+        pub fn argmaxAll(self: *Self) *Self {
+            return argmax(self, &.{1});
+        }
+        /// Argmin-reduce all elements into a scalar index.
+        pub fn argminAll(self: *Self) *Self {
+            return argmin(self, &.{1});
+        }
 
         /// Sum (reduce) elements into the given target shape.
         pub fn sum(self: *Self, ne: []const usize) *Self {
@@ -235,6 +243,28 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return res;
         }
 
+        /// Argmax-reduce elements into the given target shape, returning f32 indices.
+        pub fn argmax(self: *Self, ne: []const usize) *Self {
+            const alloc = a(self);
+            assert(ne.len <= max_dims);
+            assert(self.canSumToShape(ne));
+            const res = Self.init(alloc, ne) catch unreachable;
+            res.op = .argmax;
+            res.src0 = self;
+            return res;
+        }
+
+        /// Argmin-reduce elements into the given target shape, returning f32 indices.
+        pub fn argmin(self: *Self, ne: []const usize) *Self {
+            const alloc = a(self);
+            assert(ne.len <= max_dims);
+            assert(self.canSumToShape(ne));
+            const res = Self.init(alloc, ne) catch unreachable;
+            res.op = .argmin;
+            res.src0 = self;
+            return res;
+        }
+
         fn reduceShapeForDim(self: *Self, dim: usize) [max_dims]usize {
             assert(dim < self.n_dims);
             var out_ne = self.ne;
@@ -258,6 +288,18 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn minDim(self: *Self, dim: usize) *Self {
             const out_ne = reduceShapeForDim(self, dim);
             return self.min(out_ne[0..self.n_dims]);
+        }
+
+        /// Argmax-reduce one dimension while preserving rank.
+        pub fn argmaxDim(self: *Self, dim: usize) *Self {
+            const out_ne = reduceShapeForDim(self, dim);
+            return self.argmax(out_ne[0..self.n_dims]);
+        }
+
+        /// Argmin-reduce one dimension while preserving rank.
+        pub fn argminDim(self: *Self, dim: usize) *Self {
+            const out_ne = reduceShapeForDim(self, dim);
+            return self.argmin(out_ne[0..self.n_dims]);
         }
 
         /// Sum into another tensor's shape.

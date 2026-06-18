@@ -488,12 +488,18 @@ pub fn Tensor(comptime T: type) type {
         pub const sumAll = api.sumAll;
         pub const maxAll = api.maxAll;
         pub const minAll = api.minAll;
+        pub const argmaxAll = api.argmaxAll;
+        pub const argminAll = api.argminAll;
         pub const sum = api.sum;
         pub const max = api.max;
         pub const min = api.min;
+        pub const argmax = api.argmax;
+        pub const argmin = api.argmin;
         pub const sumDim = api.sumDim;
         pub const maxDim = api.maxDim;
         pub const minDim = api.minDim;
+        pub const argmaxDim = api.argmaxDim;
+        pub const argminDim = api.argminDim;
 
         pub const sumInto = api.sumInto;
         pub const mean = api.mean;
@@ -1312,6 +1318,14 @@ test "dim reductions preserve rank" {
     const min1 = t.minDim(1);
     try inferF32(min1);
     try testing.expectEqualSlices(f32, &.{ 1, 4 }, min1.data);
+
+    const argmax1 = t.argmaxDim(1);
+    try inferF32(argmax1);
+    try testing.expectEqualSlices(f32, &.{ 0, 1 }, argmax1.data);
+
+    const argmin1 = t.argminDim(1);
+    try inferF32(argmin1);
+    try testing.expectEqualSlices(f32, &.{ 0, 1 }, argmin1.data);
 }
 
 test "compute softmax" {

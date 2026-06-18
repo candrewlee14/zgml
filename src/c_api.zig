@@ -160,6 +160,8 @@ const module_op_reduce_max: u32 = 14;
 const module_op_reduce_min: u32 = 21;
 const module_op_feature_affine: u32 = 22;
 const module_op_diagonal: u32 = 23;
+const module_op_reduce_argmax: u32 = 24;
+const module_op_reduce_argmin: u32 = 25;
 const module_op_slice: u32 = 15;
 const module_op_activation_chain: u32 = 16;
 const module_op_max_pool2d: u32 = 17;
@@ -2172,6 +2174,18 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
                 if (op.activation != 0 or op.flags != 0 or op.b != 0 or op.c != 0 or op.a != 0) return error.InvalidArgument;
                 if (op.a >= current_rank) return error.ShapeMismatch;
                 current = current.minDim(op.a);
+                current_len = current.ne[0];
+            },
+            module_op_reduce_argmax => {
+                if (op.activation != 0 or op.flags != 0 or op.b != 0 or op.c != 0 or op.a != 0) return error.InvalidArgument;
+                if (op.a >= current_rank) return error.ShapeMismatch;
+                current = current.argmaxDim(op.a);
+                current_len = current.ne[0];
+            },
+            module_op_reduce_argmin => {
+                if (op.activation != 0 or op.flags != 0 or op.b != 0 or op.c != 0 or op.a != 0) return error.InvalidArgument;
+                if (op.a >= current_rank) return error.ShapeMismatch;
+                current = current.argminDim(op.a);
                 current_len = current.ne[0];
             },
             module_op_reshape => {

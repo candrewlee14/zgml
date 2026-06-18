@@ -10,7 +10,7 @@ const notes = [];
 const goalProgress = Object.freeze({
   substratePct: 77,
   substrateFloorPct: 65,
-  pytorchLikePct: 96,
+  pytorchLikePct: 97,
   pytorchLikeFloorPct: 60,
 });
 
@@ -221,31 +221,43 @@ function checkScripts() {
     "if (detectLogSoftmax(program)) |shape| return .{ .logsoftmax = shape }",
     "wgpu backend executes DeviceInference log-softmax lowering",
   ]);
-  requireIncludes(read("src/op.zig"), "src/op.zig", "direct primitive min reduction op", [
+  requireIncludes(read("src/op.zig"), "src/op.zig", "direct primitive reduction ops", [
     "min,",
     ".min => \"min(x)\"",
+    "argmax,",
+    "argmin,",
+    ".argmax => \"argmax(x)\"",
+    ".argmin => \"argmin(x)\"",
   ]);
-  requireIncludes(read("src/device_inference.zig"), "src/device_inference.zig", "native reduce-min lowering", [
-    ".sum, .max, .min =>",
+  requireIncludes(read("src/device_inference.zig"), "src/device_inference.zig", "native reduction lowering", [
+    ".sum, .max, .min, .argmax, .argmin =>",
     "DeviceInference lowers min reduction directly",
     "try testing.expectEqual(Op.min, reduce.op)",
   ]);
-  requireIncludes(read("src/backend.zig"), "src/backend.zig", "backend reduce-min capability", [
-    ".reduce => |r| self.reduce and (r.op == .sum or r.op == .max or r.op == .min)",
+  requireIncludes(read("src/backend.zig"), "src/backend.zig", "backend reduction capability", [
+    ".reduce => |r| self.reduce and (r.op == .sum or r.op == .max or r.op == .min or r.op == .argmax or r.op == .argmin)",
   ]);
-  requireIncludes(read("src/backend/reference.zig"), "src/backend/reference.zig", "reference reduce-min kernel", [
+  requireIncludes(read("src/backend/reference.zig"), "src/backend/reference.zig", "reference reduction kernel", [
     ".min => std.math.inf(f32)",
-    ".min => @min(val, v)",
+    ".argmax => -std.math.inf(f32)",
+    ".argmin => std.math.inf(f32)",
+    ".min => val = @min(val, v)",
+    ".argmax => if (v > val)",
+    ".argmin => if (v < val)",
   ]);
-  requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "Metal reduce-min kernel", [
-    "sum=19 max=20 repeat=21 slice_assign=27 min=35",
-    "case 19: case 20: case 35:",
-    "else val = min(val, v)",
+  requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "Metal reduction kernel", [
+    "sum(19), max(20), min(35), argmax(36), or argmin(37)",
+    "case 19: case 20: case 35: case 36: case 37:",
+    "else if (p.op == 35) val = min(val, v)",
+    "best_idx = k",
   ]);
-  requireIncludes(read("src/backend/wgpu.zig"), "src/backend/wgpu.zig", "WGPU reduce-min kernel", [
+  requireIncludes(read("src/backend/wgpu.zig"), "src/backend/wgpu.zig", "WGPU reduction kernel", [
     ".min => 3",
+    ".argmax => 4",
+    ".argmin => 5",
     "params.op == 3u",
     "acc = min(acc, value)",
+    "output.data[params.dst_offset + row] = f32(best_index)",
   ]);
   if (scripts["smoke:adapters"] !== "npm run build:package && npm run smoke:node && npm run smoke:bun:dist") {
     errors.push("package.json smoke:adapters must keep the one-build Node/Bun adapter gate");
@@ -4288,7 +4300,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=77% floor=65%; PyTorch-like surface=96% floor=60%",
+    "goal progress: Program/Session substrate=77% floor=65%; PyTorch-like surface=97% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4334,7 +4346,8 @@ function checkDocs() {
     "direct backend reduce-min command on reference CPU, Metal, and WGPU",
     "Compile-capable lazy graphs can now lower through the host adapter into a",
     "native Program with preserved KernelPlan evidence.",
-    "PyTorch-like replacement feel: ~96%",
+    "PyTorch-like replacement feel: ~97%",
+    "native Program lowering for `argmax(dim)` and `argmin(dim)`",
     "`torch.compile.compile(lazyGraph)` and `lazyGraph.compile()` Program construction through Node/Bun",
     "The remaining substrate",
     "tiled quantized row-chain",

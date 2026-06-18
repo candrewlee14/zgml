@@ -341,7 +341,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                     }
                 },
 
-                .scatter_add_picks => {},
+                .scatter_add_picks, .argmax, .argmin => {},
 
                 // Slice assign: inference-only, no gradient needed
                 .slice_assign, .slice_assign_rows => {},

@@ -664,18 +664,28 @@ const Context = struct {
                 .sum => 0.0,
                 .max => -std.math.inf(f32),
                 .min => std.math.inf(f32),
+                .argmax => -std.math.inf(f32),
+                .argmin => std.math.inf(f32),
                 else => unreachable,
             };
             for (0..rs) |k| {
                 const v = src[sb + k];
-                val = switch (rd.op) {
-                    .sum => val + v,
-                    .max => @max(val, v),
-                    .min => @min(val, v),
+                switch (rd.op) {
+                    .sum => val += v,
+                    .max => val = @max(val, v),
+                    .min => val = @min(val, v),
+                    .argmax => if (v > val) {
+                        val = v;
+                        dst[@as(usize, rd.dst_offset) + i] = @floatFromInt(k);
+                    },
+                    .argmin => if (v < val) {
+                        val = v;
+                        dst[@as(usize, rd.dst_offset) + i] = @floatFromInt(k);
+                    },
                     else => unreachable,
-                };
+                }
             }
-            dst[@as(usize, rd.dst_offset) + i] = val;
+            if (rd.op == .sum or rd.op == .max or rd.op == .min) dst[@as(usize, rd.dst_offset) + i] = val;
         }
     }
 

@@ -2173,6 +2173,26 @@ const wgsl_reduce =
     \\    return;
     \\  }
     \\  let src_base = params.src_offset + row * params.reduce_size;
+    \\  if (params.op == 4u || params.op == 5u) {
+    \\    if (lid == 0u) {
+    \\      var best = select(3.4028234663852886e38f, -3.4028234663852886e38f, params.op == 4u);
+    \\      var best_index = 0u;
+    \\      var index_col = 0u;
+    \\      loop {
+    \\        if (index_col >= params.reduce_size) {
+    \\          break;
+    \\        }
+    \\        let value = src.data[src_base + index_col];
+    \\        if ((params.op == 4u && value > best) || (params.op == 5u && value < best)) {
+    \\          best = value;
+    \\          best_index = index_col;
+    \\        }
+    \\        index_col = index_col + 1u;
+    \\      }
+    \\      output.data[params.dst_offset + row] = f32(best_index);
+    \\    }
+    \\    return;
+    \\  }
     \\  var acc = 0.0f;
     \\  if (params.op == 2u) {
     \\    acc = -3.4028234663852886e38f;
@@ -6347,6 +6367,8 @@ fn reduceOpCode(op: backend_mod.Op) ?u32 {
         .sum => 1,
         .max => 2,
         .min => 3,
+        .argmax => 4,
+        .argmin => 5,
         else => null,
     };
 }

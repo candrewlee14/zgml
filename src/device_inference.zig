@@ -646,7 +646,7 @@ pub fn DeviceInference(comptime T: type) type {
                     .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu, .sqr => {
                         try self.appendElementwiseIrOps(op, dst, src0, src1);
                     },
-                    .sum, .max, .min => {
+                    .sum, .max, .min, .argmax, .argmin => {
                         const src = src0.?;
                         if (!src.isDenseLayout() or !dst.isDenseLayout()) return error.UnsupportedDeviceOp;
                         try self.ops.append(self.alloc, reduceDeviceOp(self.buffers, dst, src, dst_idx, src0_idx));

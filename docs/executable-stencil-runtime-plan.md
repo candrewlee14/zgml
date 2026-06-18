@@ -215,7 +215,7 @@ Current checked progress:
   of exposing or executing its old `neg -> max -> neg` decomposition. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence.
-- PyTorch-like replacement feel: ~96%. The TS-owned product frontend now has
+- PyTorch-like replacement feel: ~97%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
   checkpoints, eager debugging, eager/autograd `einsum` with ellipsis and
@@ -229,7 +229,7 @@ Current checked progress:
   adapters, eval-mode `BatchNorm1d` lowering through a derived native affine
   Program while training-mode BatchNorm remains honestly stateful/eager,
   native Program lowering for rank-2 `diagonal`, rank-1/rank-2 PyTorch-style
-  `repeat`/`tile` lowering through the native module Program ABI, and
+  `repeat`/`tile` lowering through the native module Program ABI, native Program lowering for `argmax(dim)` and `argmin(dim)`, and
   compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
   compile hooks exist.
