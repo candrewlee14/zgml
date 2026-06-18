@@ -270,6 +270,16 @@ function checkScripts() {
     "batch: field(12, \"Program batch\")",
     "maxTokenWindow: field(13, \"Program max token window\")",
   ]);
+  requireIncludes(read("examples/wasm_ffi/host_resources.mjs"), "examples/wasm_ffi/host_resources.mjs", "browser/Wasm LLaMA execution coverage contract", [
+    "function llamaExecutionCoverageInspection(executor)",
+    "executionCoverage: \"resource-probe\"",
+    "executionCoverageReason: \"no-token-executor\"",
+    "executionCoverage: \"bounded-proof\"",
+    "executionCoverageReason: \"llama-family-bounded-proof-executor\"",
+    "executionCoverage: \"custom-executor\"",
+    "executionCoverageReason: \"custom-token-executor\"",
+    "fullDefaultExecutionSupported: false",
+  ]);
   requireIncludes(read("examples/wasm_ffi/browser_smoke_runner.mjs"), "examples/wasm_ffi/browser_smoke_runner.mjs", "browser Wasm FFI CDP smoke runner", [
     "Chrome/Chromium not found; set CHROME_PATH or pass --chrome=/path/to/chrome",
     "options.enableUnsafeWebGpu = true",
@@ -288,6 +298,10 @@ function checkScripts() {
     "zgml browser wasm ffi webgpu resource-probe tiny llama smoke ok",
     "function requirementOutputByteLen(requirements)",
     "requirementOutputByteLen(requirements) !== tinyLlamaVocabSize * 4",
+    "twoLayerProgramInspection.executionCoverage !== \"bounded-proof\"",
+    "twoLayerProgramInspection.fullDefaultExecutionSupported !== false",
+    "twoLayerSessionInspection.executionCoverage !== \"bounded-proof\"",
+    "twoLayerSessionInspection.program.fullDefaultExecutionSupported !== false",
   ]);
   requireIncludes(read("examples/node_ffi/smoke.cjs"), "examples/node_ffi/smoke.cjs", "Node FFI smoke proof", [
     "root package entrypoint must re-export the Node FFI wrapper",
