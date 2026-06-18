@@ -158,6 +158,7 @@ const lazyGridEmbeddingGraph = torch.lazy.input([1, 2]).embedding(4, 3);
 const lazyConvPoolGraph = torch.lazy.input([1, 4, 4]).conv2d(2, 1).maxPool2d(2).avgPool2d(2);
 const lazyNamespaceConvPoolGraph = torch.lazy.avgPool2d(torch.lazy.maxPool2d(torch.lazy.conv2d(torch.lazy.input([1, 4, 4]), 2, 1), 2), 2);
 const lazySnakeConvPoolGraph = torch.lazy.avg_pool2d(torch.lazy.max_pool2d(torch.lazy.input([1, 4, 4]).conv2d(2, 1), 2), 2);
+const lazyMultiChannelConvReluGraph = torch.lazy.input([2, 1, 4, 4]).conv2d(2, 3, { name: "conv" }).relu();
 const lazySigmoid = torch.lazy.input([2]).linear(3).sigmoid().linear(1);
 const lazyNamespaceSigmoid = torch.lazy.sigmoid(torch.lazy.input([2]).linear(3)).linear(1);
 const lazyActivationChain = torch.lazy.input([2]).exp().log().neg().recip().abs().sqrt().square().sgn().step();
@@ -187,6 +188,7 @@ const lazyConvPoolModuleGraph = torch.lazy.fromModule(torch.nn.sequential([
 ]), { inputShape: [1, 4, 4] });
 const lazyTrainingDropoutModuleGraph = torch.lazy.fromModule(torch.nn.dropout(0.5, { training: true }), { inputShape: [2] });
 const lazyMethodCompiledProgram = lazy.compile({ backend: "cpu" });
+const lazyMultiChannelConvReluProgram = lazyMultiChannelConvReluGraph.compile({ backend: "cpu" });
 if (
   lazy.compileSupport().supported !== true ||
   lazyEmbeddingGraph.compileSupport().supported !== true ||
@@ -196,6 +198,9 @@ if (
   lazyConvPoolGraph.compileSupport().supported !== true ||
   lazyNamespaceConvPoolGraph.compileSupport().supported !== true ||
   lazySnakeConvPoolGraph.compileSupport().supported !== true ||
+  lazyMultiChannelConvReluGraph.compileSupport().supported !== true ||
+  lazyMultiChannelConvReluGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "conv2d|relu" ||
+  lazyMultiChannelConvReluGraph.kernelPlan()?.ops[0]?.fusedOpCount !== 2 ||
   lazySigmoid.compileSupport().supported !== true ||
   lazyNamespaceSigmoid.compileSupport().supported !== true ||
   lazyActivationChain.compileSupport().supported !== true ||
@@ -220,6 +225,8 @@ if (
   torch.compile.parameterLayout(lazy).parameters.length !== 4 ||
   lazyMethodCompiledProgram.outputShape().join("x") !== "1" ||
   lazyMethodCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 3 ||
+  lazyMultiChannelConvReluProgram.outputShape().join("x") !== "2x2x2x2" ||
+  lazyMultiChannelConvReluProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "conv2d|relu" ||
   lazyTrainingDropoutGraph.canCompile() !== false ||
   lazyTrainingDropoutGraph.can_compile() !== false ||
   lazyReductionChain.compileSupport().supported !== true ||
@@ -235,7 +242,45 @@ if (
 ) {
   throw new Error("torch.lazy should expose compile-capable quickstart graph evidence");
 }
+const lazyMultiChannelConvReluSession = lazyMultiChannelConvReluProgram.bind({
+  weights: new Float32Array([
+    1, 0, -1,
+    0, 1, 0,
+    -1, 0, 1,
+
+    -1, 0.5, 0.25,
+    0, -0.5, 0,
+    0.25, 0.5, -1,
+  ]),
+  bias: new Float32Array([-1.5, 0.75]),
+});
+try {
+  const convInput = torch.tensor([
+    1, -2, 3, 4,
+    5, 6, -7, 8,
+    9, 10, 11, -12,
+    13, 14, 15, 16,
+
+    -1, -2, -3, -4,
+    5, 6, 7, 8,
+    -9, 10, -11, 12,
+    13, -14, 15, -16,
+  ], [2, 1, 4, 4]);
+  const actual = Array.from(lazyMultiChannelConvReluSession.stepTensor(convInput).data);
+  const expected = [
+    0, 0, 22.5, 0,
+    13.75, 0, 0, 4.5,
+    0, 0, 0, 5.5,
+    6.25, 0, 11.75, 0,
+  ];
+  for (let i = 0; i < expected.length; i += 1) {
+    assertClose(actual[i], expected[i], 1e-5, `lazy multi-channel Conv2d+ReLU compiled output ${i}`);
+  }
+} finally {
+  lazyMultiChannelConvReluSession.dispose();
+}
 lazyMethodCompiledProgram.free();
+lazyMultiChannelConvReluProgram.free();
 assertThrows(() => lazyTrainingDropoutGraph.requireCompileSupport(), "lazy graph cannot compile", "lazy requireCompileSupport unsupported graph");
 assertThrows(() => lazyTrainingDropoutGraph.compile({ backend: "cpu" }), "lazy graph cannot compile", "lazy compile rejects unsupported graph");
 assertThrows(() => torch.lazy.require_compile_support(lazyTrainingDropoutGraph), "lazy graph cannot compile", "lazy namespace require_compile_support unsupported graph");

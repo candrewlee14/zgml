@@ -4007,6 +4007,7 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   const lazyConvPoolGraph = torch.lazy.input([1, 4, 4]).conv2d(2, 1).maxPool2d(2).avgPool2d(2);
   const lazyNamespaceConvPoolGraph = torch.lazy.avgPool2d(torch.lazy.maxPool2d(torch.lazy.conv2d(torch.lazy.input([1, 4, 4]), 2, 1), 2), 2);
   const lazySnakeConvPoolGraph = torch.lazy.avg_pool2d(torch.lazy.max_pool2d(torch.lazy.input([1, 4, 4]).conv2d(2, 1), 2), 2);
+  const lazyMultiChannelConvReluGraph = torch.lazy.input([2, 1, 4, 4]).conv2d(2, 3, { name: "conv" }).relu();
   const lazySigmoid = torch.lazy.input([2]).linear(3).sigmoid().linear(1);
   const lazyNamespaceSigmoid = torch.lazy.sigmoid(torch.lazy.input([2]).linear(3)).linear(1);
   const lazyMatmulWeight = torch.lazy.parameter([2, 3], "head.weight", "row-major:matmul.weight[in_features,out_features]");
@@ -4058,6 +4059,7 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   const lazyCompiledProgram = torch.compile.compile(lazy, { backend: "cpu" });
   const lazyMethodCompiledProgram = lazy.compile({ backend: "cpu" });
   const lazyMatmulBiasCompiledProgram = torch.compile.compile(lazyMatmulBiasGraph, { backend: "cpu" });
+  const lazyMultiChannelConvReluProgram = lazyMultiChannelConvReluGraph.compile({ backend: "cpu" });
   if (
     lazy.compileSupport().supported !== true ||
     lazyEmbeddingGraph.compileSupport().supported !== true ||
@@ -4067,6 +4069,9 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyConvPoolGraph.compileSupport().supported !== true ||
     lazyNamespaceConvPoolGraph.compileSupport().supported !== true ||
     lazySnakeConvPoolGraph.compileSupport().supported !== true ||
+    lazyMultiChannelConvReluGraph.compileSupport().supported !== true ||
+    lazyMultiChannelConvReluGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "conv2d|relu" ||
+    lazyMultiChannelConvReluGraph.kernelPlan()?.ops[0]?.fusedOpCount !== 2 ||
     lazySigmoid.compileSupport().supported !== true ||
     lazyNamespaceSigmoid.compileSupport().supported !== true ||
     lazyMatmulGraph.compileSupport().supported !== true ||
@@ -4117,6 +4122,8 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyMethodCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 3 ||
     lazyMatmulBiasCompiledProgram.outputShape().join("x") !== "3" ||
     lazyMatmulBiasCompiledProgram.compileEvidence()?.kernelPlan?.ops[1]?.kernel !== "add" ||
+    lazyMultiChannelConvReluProgram.outputShape().join("x") !== "2x2x2x2" ||
+    lazyMultiChannelConvReluProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "conv2d|relu" ||
     lazyReductionChain.compileSupport().supported !== true ||
     lazyNamespaceReduction.compileSupport().supported !== true ||
     lazyShapeChain.compileSupport().supported !== true ||
@@ -4134,9 +4141,47 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   ) {
     throw new Error(`${label} expected torch.lazy to expose compile-capable typed graph evidence`);
   }
+  const lazyMultiChannelConvReluSession = lazyMultiChannelConvReluProgram.bind({
+    weights: new Float32Array([
+      1, 0, -1,
+      0, 1, 0,
+      -1, 0, 1,
+
+      -1, 0.5, 0.25,
+      0, -0.5, 0,
+      0.25, 0.5, -1,
+    ]),
+    bias: new Float32Array([-1.5, 0.75]),
+  });
+  try {
+    const convInput = torch.tensor([
+      1, -2, 3, 4,
+      5, 6, -7, 8,
+      9, 10, 11, -12,
+      13, 14, 15, 16,
+
+      -1, -2, -3, -4,
+      5, 6, 7, 8,
+      -9, 10, -11, 12,
+      13, -14, 15, -16,
+    ], [2, 1, 4, 4]);
+    expectClose(
+      lazyMultiChannelConvReluSession.stepTensor(convInput).data,
+      [
+        0, 0, 22.5, 0,
+        13.75, 0, 0, 4.5,
+        0, 0, 0, 5.5,
+        6.25, 0, 11.75, 0,
+      ],
+      `${label} lazy multi-channel Conv2d+ReLU compiled output`,
+    );
+  } finally {
+    lazyMultiChannelConvReluSession.dispose();
+  }
   lazyCompiledProgram.free();
   lazyMethodCompiledProgram.free();
   lazyMatmulBiasCompiledProgram.free();
+  lazyMultiChannelConvReluProgram.free();
   expectThrowIncludes(() => lazyTrainingDropoutGraph.requireCompileSupport(), "lazy graph cannot compile", `${label} lazy requireCompileSupport unsupported graph`);
   expectThrowIncludes(() => lazyTrainingDropoutGraph.compile({ backend: "cpu" }), "lazy graph cannot compile", `${label} lazy compile rejects unsupported graph`);
   expectThrowIncludes(() => torch.lazy.require_compile_support(lazyTrainingDropoutGraph), "lazy graph cannot compile", `${label} lazy namespace require_compile_support unsupported graph`);
