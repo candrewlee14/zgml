@@ -60,6 +60,7 @@ type PackageSmokeTensor = Readonly<{
   data: ArrayLike<number>;
   shape: readonly number[];
   mul(value: number): PackageSmokeTensor;
+  select(dim: number, index: number): PackageSmokeTensor;
 }>;
 
 type PackageSmokeDatasetSample = Readonly<{
@@ -94,6 +95,59 @@ type PackageSmokeDatasetBatch = Readonly<{
 type PackageSmokeMappedSample = PackageSmokeDatasetSample & Readonly<{
   sourceIndex?: number;
 }>;
+
+type PackageSmokeTrainBatch = PackageSmokeDatasetBatch;
+
+type PackageSmokeSampleAliasBatch = Readonly<{
+  input: PackageSmokeTensor;
+  target: PackageSmokeTensor;
+  sampleIndices: readonly number[];
+  sample_indices: readonly number[];
+}>;
+
+type PackageSmokeUnindexedBatch = Readonly<{
+  input: PackageSmokeTensor;
+  target: PackageSmokeTensor;
+}>;
+
+type PackageSmokeTrainContext = Readonly<{
+  epoch: number;
+  step: number;
+  batchIndex: number;
+  sampleIndices: readonly number[];
+  sample_indices: readonly number[];
+}>;
+
+type PackageSmokeNullableTrainContext = Readonly<{
+  epoch: number;
+  step: number;
+  batchIndex: number;
+  sampleIndices: readonly number[] | null;
+  sample_indices: readonly number[] | null;
+}>;
+
+type PackageSmokeTrainStepEvidence = Readonly<{
+  kind: string;
+  signature: string;
+  step: number;
+  afterStep?: number;
+  loss?: number;
+  output?: PackageSmokeTensor;
+  sampleIndices: readonly number[];
+  sample_indices: readonly number[];
+  stepEvidence?: Readonly<{
+    kind: string;
+    zeroGradApplied?: boolean;
+    gradientsCleared?: boolean;
+  }>;
+}>;
+
+type PackageSmokeNullableTrainStepEvidence =
+  Omit<PackageSmokeTrainStepEvidence, "sampleIndices" | "sample_indices"> &
+  Readonly<{
+    sampleIndices: readonly number[] | null;
+    sample_indices: readonly number[] | null;
+  }>;
 
 function withTempCheckpointPath<T>(name: string, fn: (path: string, fs: any) => T): T {
   const fs = require("node:fs");
@@ -5704,14 +5758,14 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   ) {
     throw new Error(`${label} expected DataLoader batchCount/batch_count to match emitted batches`);
   }
-  const shuffledBatchList = Array.from(shuffledBatches) as any[];
+  const shuffledBatchList = Array.from(shuffledBatches) as PackageSmokeTrainBatch[];
   if (shuffledBatchList.length !== 2 || shuffledBatchList[0].indices.length !== 1 || shuffledBatchList[1].indices.length !== 1) {
     throw new Error(`${label} expected data.batches to yield one-row batches`);
   }
   const fitModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
   const fitOptimizer = adapter.optim.sgd(fitModel, { lr: 0.05 });
-  const fitSteps: any[] = [];
-  const fitEvidence = adapter.train.fit(fitOptimizer, shuffledBatches, (batch: any, context: any) => {
+  const fitSteps: PackageSmokeTrainStepEvidence[] = [];
+  const fitEvidence = adapter.train.fit(fitOptimizer, shuffledBatches, (batch: PackageSmokeTrainBatch, context: PackageSmokeTrainContext) => {
     if (!Object.isFrozen(context) || context.epoch !== 0 || context.step !== context.batchIndex) {
       throw new Error(`${label} expected train.fit to pass frozen epoch/batch/step context`);
     }
@@ -5727,7 +5781,7 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   }, {
     epochs: 2,
     maxSteps: 2,
-    onStep: (evidence: any) => fitSteps.push(evidence),
+    onStep: (evidence: PackageSmokeTrainStepEvidence) => fitSteps.push(evidence),
   });
   if (
     !Object.isFrozen(fitEvidence) ||
@@ -5775,13 +5829,13 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   ) {
     throw new Error(`${label} expected train namespace TrainFitEvidence validators to accept only frozen signed evidence`);
   }
-  const sampleAliasFitSteps: any[] = [];
-  const sampleAliasFitEvidence = adapter.train.fit(adapter.optim.sgd(fitModel, { lr: 0.01 }), shuffledBatchList.map((batch: any) => Object.freeze({
+  const sampleAliasFitSteps: PackageSmokeTrainStepEvidence[] = [];
+  const sampleAliasFitEvidence = adapter.train.fit(adapter.optim.sgd(fitModel, { lr: 0.01 }), shuffledBatchList.map((batch): PackageSmokeSampleAliasBatch => Object.freeze({
     input: batch.input,
     target: batch.target,
     sampleIndices: batch.indices,
     sample_indices: batch.indices,
-  })), (batch: any, context: any) => {
+  })), (batch: PackageSmokeSampleAliasBatch, context: PackageSmokeTrainContext) => {
     if (
       !Object.isFrozen(context.sampleIndices) ||
       context.sampleIndices !== context.sample_indices ||
@@ -5790,7 +5844,7 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       throw new Error(`${label} expected train.fit context to accept sampleIndices/sample_indices aliases`);
     }
     return adapter.loss.mse(fitModel.forward(batch.input.select(0, 0)), batch.target.select(0, 0));
-  }, { maxSteps: 1, onStep: (evidence: any) => sampleAliasFitSteps.push(evidence) });
+  }, { maxSteps: 1, onStep: (evidence: PackageSmokeTrainStepEvidence) => sampleAliasFitSteps.push(evidence) });
   if (
     sampleAliasFitEvidence.steps !== 1 ||
     sampleAliasFitSteps[0]?.sampleIndices?.[0] !== shuffledBatchList[0].indices[0]
@@ -5851,8 +5905,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     throw new Error(`${label} expected train namespace TrainFitStepEvidence validators to accept only frozen signed evidence`);
   }
   if (!(fitEvidence.losses[1] < fitEvidence.losses[0])) throw new Error(`${label} expected train.fit loss to improve over simple batches`);
-  const evaluateSteps: any[] = [];
-  const evaluateEvidence = adapter.train.evaluate(shuffledBatches, (batch: any, context: any) => {
+  const evaluateSteps: PackageSmokeTrainStepEvidence[] = [];
+  const evaluateEvidence = adapter.train.evaluate(shuffledBatches, (batch: PackageSmokeTrainBatch, context: PackageSmokeTrainContext) => {
     if (
       !Object.isFrozen(context) ||
       context.batchIndex !== context.step ||
@@ -5865,7 +5919,7 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     return adapter.loss.mse(fitModel.forward(batch.input.select(0, 0)), batch.target.select(0, 0));
   }, {
     maxSteps: 1,
-    onStep: (evidence: any) => evaluateSteps.push(evidence),
+    onStep: (evidence: PackageSmokeTrainStepEvidence) => evaluateSteps.push(evidence),
   });
   if (
     !Object.isFrozen(evaluateEvidence) ||
@@ -5916,7 +5970,7 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   ) {
     throw new Error(`${label} expected train namespace TrainEvaluateStepEvidence validators to accept only frozen signed evidence`);
   }
-  const evaluateAliasEvidence = adapter.train.evaluate_loss(shuffledBatchList, (batch: any) => (
+  const evaluateAliasEvidence = adapter.train.evaluate_loss(shuffledBatchList, (batch: PackageSmokeTrainBatch) => (
     adapter.loss.mse(fitModel.forward(batch.input.select(0, 0)), batch.target.select(0, 0))
   ), { max_steps: 1 });
   const evaluateModuleEvidence = adapter.train.evaluateModule(fitModel, shuffledBatches, new adapter.nn.MSELoss(), { maxSteps: 1 });
@@ -5936,8 +5990,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   ) {
     throw new Error(`${label} expected train.evaluate_loss/evaluateModule aliases to preserve signed evaluation evidence`);
   }
-  const predictSteps: any[] = [];
-  const predictEvidence = adapter.train.predict(shuffledBatches, (batch: any, context: any) => {
+  const predictSteps: PackageSmokeTrainStepEvidence[] = [];
+  const predictEvidence = adapter.train.predict(shuffledBatches, (batch: PackageSmokeTrainBatch, context: PackageSmokeTrainContext) => {
     if (
       !Object.isFrozen(context) ||
       context.batchIndex !== context.step ||
@@ -5950,9 +6004,9 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     return fitModel.forward(batch.input.select(0, 0));
   }, {
     maxSteps: 1,
-    onStep: (evidence: any) => predictSteps.push(evidence),
+    onStep: (evidence: PackageSmokeTrainStepEvidence) => predictSteps.push(evidence),
   });
-  const predictAliasEvidence = adapter.train.predict_batches(shuffledBatchList, (batch: any) => (
+  const predictAliasEvidence = adapter.train.predict_batches(shuffledBatchList, (batch: PackageSmokeTrainBatch) => (
     fitModel.forward(batch.input.select(0, 0))
   ), { max_steps: 1 });
   const predictModuleEvidence = adapter.train.predictModule(fitModel, shuffledBatches, { maxSteps: 1 });
@@ -6021,13 +6075,13 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   }
   const snakeFitModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
   const snakeFitOptimizer = adapter.optim.sgd(snakeFitModel, { lr: 0.05 });
-  const snakeFitSteps: any[] = [];
-  const snakeFitEvidence = adapter.train.fit(snakeFitOptimizer, shuffledBatches, (batch: any) => (
+  const snakeFitSteps: PackageSmokeTrainStepEvidence[] = [];
+  const snakeFitEvidence = adapter.train.fit(snakeFitOptimizer, shuffledBatches, (batch: PackageSmokeTrainBatch) => (
     adapter.loss.mse(snakeFitModel.forward(batch.input.select(0, 0)), batch.target.select(0, 0))
   ), {
     max_steps: 1,
     zero_grad: true,
-    on_step: (evidence: any) => snakeFitSteps.push(evidence),
+    on_step: (evidence: PackageSmokeTrainStepEvidence) => snakeFitSteps.push(evidence),
   });
   if (
     snakeFitEvidence.steps !== 1 ||
@@ -6039,12 +6093,12 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     snakeFitSteps.length !== 1 ||
     !Object.isFrozen(snakeFitSteps[0].sampleIndices) ||
     snakeFitSteps[0].sampleIndices !== snakeFitSteps[0].sample_indices ||
-    snakeFitSteps[0].stepEvidence.zeroGradApplied !== true ||
-    snakeFitSteps[0].stepEvidence.gradientsCleared !== true
+    snakeFitSteps[0].stepEvidence?.zeroGradApplied !== true ||
+    snakeFitSteps[0].stepEvidence?.gradientsCleared !== true
   ) {
     throw new Error(`${label} expected train.fit max_steps/on_step/zero_grad aliases to drive fit evidence`);
   }
-  const plainFitEvidence = adapter.train.fit(snakeFitOptimizer, shuffledBatchList, (batch: any) => (
+  const plainFitEvidence = adapter.train.fit(snakeFitOptimizer, shuffledBatchList, (batch: PackageSmokeTrainBatch) => (
     adapter.loss.mse(snakeFitModel.forward(batch.input.select(0, 0)), batch.target.select(0, 0))
   ), { max_steps: 1 });
   if (
@@ -6056,8 +6110,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   ) {
     throw new Error(`${label} expected train.fit plain iterable count evidence to stay nullable`);
   }
-  const plainFitSteps: any[] = [];
-  adapter.train.fit(snakeFitOptimizer, shuffledBatchList, (batch: any, context: any) => {
+  const plainFitSteps: PackageSmokeTrainStepEvidence[] = [];
+  adapter.train.fit(snakeFitOptimizer, shuffledBatchList, (batch: PackageSmokeTrainBatch, context: PackageSmokeTrainContext) => {
     if (
       !Object.isFrozen(context.sampleIndices) ||
       context.sampleIndices !== context.sample_indices ||
@@ -6067,7 +6121,7 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       throw new Error(`${label} expected train.fit plain iterable to preserve batch-provided sample indices`);
     }
     return adapter.loss.mse(snakeFitModel.forward(batch.input.select(0, 0)), batch.target.select(0, 0));
-  }, { max_steps: 1, onStep: (evidence: any) => plainFitSteps.push(evidence) });
+  }, { max_steps: 1, onStep: (evidence: PackageSmokeTrainStepEvidence) => plainFitSteps.push(evidence) });
   if (
     plainFitSteps.length !== 1 ||
     !Object.isFrozen(plainFitSteps[0].sampleIndices) ||
@@ -6075,13 +6129,13 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   ) {
     throw new Error(`${label} expected train.fit plain iterable step to preserve batch-provided sample indices`);
   }
-  const unindexedFitSteps: any[] = [];
-  adapter.train.fit(snakeFitOptimizer, [{ input: shuffledBatchList[0].input, target: shuffledBatchList[0].target }], (batch: any, context: any) => {
+  const unindexedFitSteps: PackageSmokeNullableTrainStepEvidence[] = [];
+  adapter.train.fit(snakeFitOptimizer, [{ input: shuffledBatchList[0].input, target: shuffledBatchList[0].target }], (batch: PackageSmokeUnindexedBatch, context: PackageSmokeNullableTrainContext) => {
     if (context.sampleIndices !== null || context.sample_indices !== null) {
       throw new Error(`${label} expected train.fit unindexed batch context sample indices to stay nullable`);
     }
     return adapter.loss.mse(snakeFitModel.forward(batch.input.select(0, 0)), batch.target.select(0, 0));
-  }, { max_steps: 1, onStep: (evidence: any) => unindexedFitSteps.push(evidence) });
+  }, { max_steps: 1, onStep: (evidence: PackageSmokeNullableTrainStepEvidence) => unindexedFitSteps.push(evidence) });
   if (unindexedFitSteps.length !== 1 || unindexedFitSteps[0].sampleIndices !== null || unindexedFitSteps[0].sample_indices !== null) {
     throw new Error(`${label} expected train.fit unindexed batch step sample indices to stay nullable`);
   }
@@ -6099,7 +6153,7 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   const scheduledFitEvidence = adapter.train.fit(
     scheduledFitOptimizer,
     adapter.data.dataLoader(scheduledFitDataset, { batchSize: 2, shuffle: true, seed: 19 }),
-    (batch: any) => {
+    (batch: PackageSmokeTrainBatch) => {
       if (!batch.target) throw new Error(`${label} expected scheduled fit batch targets`);
       return adapter.loss.mseLoss().__call__(scheduledFitModel.call(batch.input), batch.target);
     },
