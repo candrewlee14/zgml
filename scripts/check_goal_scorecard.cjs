@@ -954,6 +954,11 @@ function checkPortableWasmRuntimeEvidence() {
       notes.push(nodeWasiOutput.trim().split("\n").at(-1));
       return;
     }
+    if (browserOutput.includes("Chrome/Chromium not usable: exited before DevTools started")) {
+      notes.push("portable browser Wasm smoke skipped: Chrome/Chromium exited before DevTools started");
+      notes.push(nodeWasiOutput.trim().split("\n").at(-1));
+      return;
+    }
     errors.push(`portable browser Wasm smoke failed:\n${browserOutput.trim()}`);
     return;
   }

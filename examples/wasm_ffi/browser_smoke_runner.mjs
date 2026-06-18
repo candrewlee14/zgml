@@ -150,10 +150,16 @@ async function findPageTarget(debugPort) {
   return fetch(`http://127.0.0.1:${debugPort}/json/new?${encodeURIComponent("about:blank")}`, { method: "PUT" }).then((res) => res.json());
 }
 
-async function waitForDevTools(port, timeoutMs) {
+async function waitForDevTools(port, timeoutMs, chromeStatus = null) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
   while (Date.now() < deadline) {
+    if (chromeStatus?.exited === true) {
+      throw new Error(
+        `Chrome/Chromium not usable: exited before DevTools started ` +
+        `(exit=${chromeStatus.exitCode ?? "null"} signal=${chromeStatus.signalCode ?? "null"})`,
+      );
+    }
     try {
       const response = await fetch(`http://127.0.0.1:${port}/json/version`);
       if (response.ok) return response.json();
@@ -287,12 +293,18 @@ async function runBrowserSmoke(options) {
   const chrome = spawn(chromePath, chromeArgs(options, userDataDir, debugPort), {
     stdio: ["ignore", "pipe", "pipe"],
   });
+  const chromeStatus = { exitCode: null, exited: false, signalCode: null };
+  chrome.once("exit", (code, signal) => {
+    chromeStatus.exitCode = code;
+    chromeStatus.exited = true;
+    chromeStatus.signalCode = signal;
+  });
   const chromeLog = [];
   chrome.stdout.on("data", (chunk) => chromeLog.push(String(chunk)));
   chrome.stderr.on("data", (chunk) => chromeLog.push(String(chunk)));
   let session;
   try {
-    await waitForDevTools(debugPort, 15_000);
+    await waitForDevTools(debugPort, 15_000, chromeStatus);
     const page = new URL(`http://127.0.0.1:${httpPort}/examples/wasm_ffi/browser.html`);
     for (const label of options.llamaProfileLabels) page.searchParams.append("llamaProfileLabel", label);
     const pageUrl = String(page);
