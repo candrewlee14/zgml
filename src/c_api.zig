@@ -1903,11 +1903,7 @@ fn moduleBroadcastSpec(op: zgml_module_op_desc, current: *const TensorF32, curre
     for (0..spec.rank) |axis| {
         const target_dim = try moduleNativeShapeDim(spec, axis);
         const src_dim = if (axis < src_offset) 1 else try moduleRowMajorDim(current, current_rank, axis - src_offset);
-        if (src_dim != target_dim and src_dim != 1) {
-            if (!(current_rank == 1 and spec.rank == 1 and target_dim > 0 and target_dim % src_dim == 0)) {
-                return error.ShapeMismatch;
-            }
-        }
+        if (target_dim == 0 or target_dim % src_dim != 0) return error.ShapeMismatch;
     }
     return spec;
 }
@@ -7454,12 +7450,13 @@ test "C ABI module program compiles traced sequential ops" {
     }
 
     {
-        const tiled_input_shape = [_]usize{3};
+        const tiled_input_shape = [_]usize{ 2, 3 };
         const tiled_ops = [_]zgml_module_op_desc{
             .{
                 .kind = module_op_broadcast_to,
-                .a = 1,
-                .b = 6,
+                .a = 2,
+                .b = 4,
+                .c = 9,
             },
         };
         var tiled_program: ?*zgml_program = null;
@@ -7478,8 +7475,8 @@ test "C ABI module program compiles traced sequential ops" {
         var tiled_requirements = zgml_program_requirements{};
         try std.testing.expectEqual(status(.ok), zgml_program_get_requirements(tiled_program, &tiled_requirements));
         try std.testing.expectEqual(module_kind, tiled_requirements.model_kind);
-        try std.testing.expectEqual(@as(usize, 3), tiled_requirements.input_len);
-        try std.testing.expectEqual(@as(usize, 6), tiled_requirements.output_len);
+        try std.testing.expectEqual(@as(usize, 6), tiled_requirements.input_len);
+        try std.testing.expectEqual(@as(usize, 36), tiled_requirements.output_len);
 
         try std.testing.expectEqual(status(.ok), zgml_session_bind(tiled_program, &.{
             .weights = null,
@@ -7487,8 +7484,8 @@ test "C ABI module program compiles traced sequential ops" {
         }, &tiled_session));
         try std.testing.expect(tiled_session != null);
 
-        const tiled_input = [_]f32{ 1, 2, 3 };
-        var tiled_output = [_]f32{0} ** 6;
+        const tiled_input = [_]f32{ 1, 2, 3, 4, 5, 6 };
+        var tiled_output = [_]f32{0} ** 36;
         result = .{};
         try std.testing.expectEqual(status(.ok), zgml_session_step(tiled_session, &.{
             .input = tiled_input[0..].ptr,
@@ -7496,8 +7493,13 @@ test "C ABI module program compiles traced sequential ops" {
             .output = tiled_output[0..].ptr,
             .output_len = tiled_output.len,
         }, &result));
-        try std.testing.expectEqual(@as(usize, 6), result.output_len);
-        try std.testing.expectEqualSlices(f32, &.{ 1, 2, 3, 1, 2, 3 }, &tiled_output);
+        try std.testing.expectEqual(@as(usize, 36), result.output_len);
+        try std.testing.expectEqualSlices(f32, &.{
+            1, 2, 3, 1, 2, 3, 1, 2, 3,
+            4, 5, 6, 4, 5, 6, 4, 5, 6,
+            1, 2, 3, 1, 2, 3, 1, 2, 3,
+            4, 5, 6, 4, 5, 6, 4, 5, 6,
+        }, &tiled_output);
     }
 
     {

@@ -3257,42 +3257,21 @@ function expectShapeMovementProgramEvidence(adapter: Record<string, any>, label:
   const matrix = adapter.tensor([1, 2, 3, 4, 5, 6], [2, 3]);
   const row = adapter.tensor([1, 2, 3], [1, 3]);
   const vector = adapter.tensor([1, 2, 3], [3]);
-  const repeatCases = [
-    { name: "repeat", module: adapter.nn.repeat([2, 3]), expectedShape: "4x9", evidence: "expected nn.repeat rank-2 repeat/tile to stay honest unsupported", expectedData: [1, 2, 3, 1, 2, 3, 1, 2, 3, 4, 5, 6, 4, 5, 6, 4, 5, 6, 1, 2, 3, 1, 2, 3, 1, 2, 3, 4, 5, 6, 4, 5, 6, 4, 5, 6] },
-    { name: "tile", module: new adapter.nn.Tile([2, 3]), expectedShape: "4x9", evidence: "expected nn.tile rank-2 repeat/tile to stay honest unsupported", expectedData: [1, 2, 3, 1, 2, 3, 1, 2, 3, 4, 5, 6, 4, 5, 6, 4, 5, 6, 1, 2, 3, 1, 2, 3, 1, 2, 3, 4, 5, 6, 4, 5, 6, 4, 5, 6] },
-  ];
-  for (const testCase of repeatCases) {
-    const eager = testCase.module.forward(matrix);
-    const trace = testCase.module.trace({ inputShape: [2, 3], backend: "cpu" });
-    const ir = testCase.module.tensorProgramIr({ inputShape: [2, 3], backend: "cpu" });
-    const support = testCase.module.compileSupport({ inputShape: [2, 3], backend: "cpu" });
-    const diagnostic = support.diagnostics?.[0];
-    if (
-      eager.shape.join("x") !== testCase.expectedShape ||
-      trace.outputShape?.join("x") !== testCase.expectedShape ||
-      trace.ops[0]?.op !== testCase.name ||
-      ir?.ops[0]?.op !== testCase.name ||
-      support.supported !== false ||
-      support.outputShape.join("x") !== testCase.expectedShape ||
-      diagnostic === undefined ||
-      diagnostic.stage !== "kernelizer" ||
-      diagnostic.code !== "unsupported-op" ||
-      diagnostic.op !== testCase.name
-    ) {
-      throw new Error(`${label} ${testCase.evidence}`);
-    }
-    expectClose(eager.data, testCase.expectedData, `${label} nn.${testCase.name} eager data`);
-  }
   const compiledRepeatCases = [
     { name: "repeat", module: adapter.nn.repeat([2]), evidence: "expected nn.repeat rank-1 repeat/tile native Program evidence", outputEvidence: "compiled nn.repeat rank-1 repeat/tile output", expectedData: [1, 2, 3, 1, 2, 3] },
     { name: "tile", module: new adapter.nn.Tile([2]), evidence: "expected nn.tile rank-1 repeat/tile native Program evidence", outputEvidence: "compiled nn.tile rank-1 repeat/tile output", expectedData: [1, 2, 3, 1, 2, 3] },
+    { name: "repeat", module: adapter.nn.repeat([2, 3]), input: matrix, inputShape: [2, 3], expectedShape: "4x9", evidence: "expected nn.repeat rank-2 repeat/tile native Program evidence", outputEvidence: "compiled nn.repeat rank-2 repeat/tile output", expectedData: [1, 2, 3, 1, 2, 3, 1, 2, 3, 4, 5, 6, 4, 5, 6, 4, 5, 6, 1, 2, 3, 1, 2, 3, 1, 2, 3, 4, 5, 6, 4, 5, 6, 4, 5, 6] },
+    { name: "tile", module: new adapter.nn.Tile([2, 3]), input: matrix, inputShape: [2, 3], expectedShape: "4x9", evidence: "expected nn.tile rank-2 repeat/tile native Program evidence", outputEvidence: "compiled nn.tile rank-2 repeat/tile output", expectedData: [1, 2, 3, 1, 2, 3, 1, 2, 3, 4, 5, 6, 4, 5, 6, 4, 5, 6, 1, 2, 3, 1, 2, 3, 1, 2, 3, 4, 5, 6, 4, 5, 6, 4, 5, 6] },
   ];
   for (const testCase of compiledRepeatCases) {
-    const support = testCase.module.compileSupport({ inputShape: [3], backend: "cpu" });
-    const kernelPlan = adapter.nn.kernelPlan(testCase.module, { inputShape: [3], backend: "cpu" });
+    const input = testCase.input ?? vector;
+    const inputShape = testCase.inputShape ?? [3];
+    const expectedShape = testCase.expectedShape ?? "6";
+    const support = testCase.module.compileSupport({ inputShape, backend: "cpu" });
+    const kernelPlan = adapter.nn.kernelPlan(testCase.module, { inputShape, backend: "cpu" });
     if (
       support.supported !== true ||
-      support.outputShape.join("x") !== "6" ||
+      support.outputShape.join("x") !== expectedShape ||
       kernelPlan.dispatchCount !== 1 ||
       kernelPlan.ops.length !== 1 ||
       kernelPlan.ops[0]?.op !== testCase.name ||
@@ -3300,9 +3279,9 @@ function expectShapeMovementProgramEvidence(adapter: Record<string, any>, label:
     ) {
       throw new Error(`${label} ${testCase.evidence}`);
     }
-    const program = testCase.module.compile({ inputShape: [3], backend: "cpu" });
+    const program = testCase.module.compile({ inputShape, backend: "cpu" });
     const session = program.bind({});
-    expectClose(session.stepTensor(vector).data, testCase.expectedData, `${label} ${testCase.outputEvidence}`);
+    expectClose(session.stepTensor(input).data, testCase.expectedData, `${label} ${testCase.outputEvidence}`);
   }
   const compiledCases = [
     { name: "broadcastTo", module: adapter.nn.broadcastTo([2, 3]), input: row, inputShape: [1, 3], expectedShape: "2x3", expectedKernels: "broadcast", expectedDispatches: 1, expectedElided: 0 },

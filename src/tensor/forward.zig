@@ -1866,7 +1866,13 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                     if (d < src0.n_dims and src0.ne[d] > 1) break;
                     chunk *= dst.ne[d];
                 }
-                simdBroadcastRepeat(T, src0.data, dst.data, src0.nElems(), chunk);
+                const flat_modulo_compatible = src0.n_dims <= 1 or
+                    (src0.ne[1] <= 1 and (src0.n_dims <= 2 or src0.ne[2] <= 1) and (src0.n_dims <= 3 or src0.ne[3] <= 1));
+                if (chunk != 1 or flat_modulo_compatible) {
+                    simdBroadcastRepeat(T, src0.data, dst.data, src0.nElems(), chunk);
+                    return;
+                }
+                computeRepeatGeneric(Self, dst, src0);
                 return;
             }
             for (0..dst.ne[3]) |ne3| {

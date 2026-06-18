@@ -562,14 +562,14 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
       };
     case "repeat":
     case "tile":
-      if (!op.outputShape || op.outputShape.length !== 1) return null;
+      if (!op.outputShape || op.outputShape.length < 1 || op.outputShape.length > 2) return null;
       return {
         kind: moduleOpIds.broadcastTo,
         activation: 0,
         flags: 0,
-        a: 1,
+        a: op.outputShape.length,
         b: op.outputShape[0],
-        c: 0,
+        c: op.outputShape.length === 2 ? op.outputShape[1] : 0,
         eps: 0,
       };
     case "narrow": {

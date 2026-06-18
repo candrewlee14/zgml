@@ -216,7 +216,7 @@ Current checked progress:
   reduce-min kernel later without changing user code. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence.
-- PyTorch-like replacement feel: ~95%. The TS-owned product frontend now has
+- PyTorch-like replacement feel: ~96%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
   checkpoints, eager debugging, eager/autograd `einsum` with ellipsis and
@@ -229,7 +229,7 @@ Current checked progress:
   `torch.compile.compile(lazyGraph)` and `lazyGraph.compile()` Program construction through Node/Bun
   adapters, eval-mode `BatchNorm1d` lowering through a derived native affine
   Program while training-mode BatchNorm remains honestly stateful/eager,
-  native Program lowering for rank-2 `diagonal`, rank-1 PyTorch-style
+  native Program lowering for rank-2 `diagonal`, rank-1/rank-2 PyTorch-style
   `repeat`/`tile` lowering through the native module Program ABI, and
   compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
@@ -1240,9 +1240,9 @@ Current frontend slice:
   through the native module Program ABI for rank-1/rank-2 shapes as materialized
   dense repeat ops. `nn.diagonal` now lowers through a native materialized
   stride-view descriptor for rank-2 matrices. `nn.repeat` and `nn.tile` now use that same ABI lane for
-  rank-1 positive-multiple tiled repeats, giving FFI callers a concrete
-  output-buffer contract while leaving zero-copy broadcast/tile views and true
-  rank-2 row-major tile lowering as future compiler work. Other multi-layer
+  rank-1/rank-2 positive-multiple tiled repeats, giving FFI callers a concrete
+  output-buffer contract while leaving zero-copy broadcast/tile views and
+  higher-rank row-major tile lowering as future compiler work. Other multi-layer
   JS/TS graphs still reject explicitly until a general tensor/program compiler
   exists.
 - Package smoke evidence now covers that shape/view family from the public

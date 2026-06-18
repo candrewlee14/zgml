@@ -841,11 +841,12 @@ const Context = struct {
                 if (rp.src_ne[dim] > 1) break;
                 chunk *= rp.dst_ne[dim];
             }
-            if (chunk == 1) {
+            const flat_modulo_compatible = rp.src_ne[1] <= 1 and rp.src_ne[2] <= 1 and rp.src_ne[3] <= 1;
+            if (chunk == 1 and flat_modulo_compatible) {
                 for (d[0..n], 0..) |*out, i| out.* = s[i % src_n];
                 return;
             }
-            if (n % chunk == 0) {
+            if (chunk != 1 and n % chunk == 0) {
                 const groups = n / chunk;
                 for (0..groups) |group| {
                     const base = group * chunk;
