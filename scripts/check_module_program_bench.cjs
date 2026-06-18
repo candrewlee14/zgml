@@ -37,6 +37,7 @@ const floors = Object.freeze({
   lazyMlpMeanBatchedSpeedup: 2.0,
   lazyMlpLogSoftmaxBatchedSpeedup: 2.0,
   lazyMlpSoftmaxMeanBatchedSpeedup: 2.0,
+  lazyRmsSiluFfnBatchedSpeedup: 1.5,
   lazyTokenHeadBatchedSpeedup: 1.2,
 });
 const expectedKeys = Object.freeze([
@@ -63,6 +64,7 @@ const expectedKeys = Object.freeze([
   "lazy_mlp_mean_batched",
   "lazy_mlp_log_softmax_batched",
   "lazy_mlp_softmax_mean_batched",
+  "lazy_rms_silu_ffn_batched",
   "lazy_token_head_batched",
 ]);
 
@@ -303,6 +305,44 @@ function lazyMlpSoftmaxMeanBatchedEager(input, firstWeights, firstBias, secondWe
     let rowTotal = 0;
     for (let col = 0; col < outputFeatures; col += 1) rowTotal += Math.exp(logits[col] - max) / denominator;
     out[row] = rowTotal / outputFeatures;
+  }
+  return out;
+}
+
+function lazyRmsSiluFfnBatchedEager(input, rmsWeight, upWeight, upBias, downWeight, downBias, batch, inFeatures, hiddenFeatures, outputFeatures) {
+  const normalized = new Float32Array(batch * inFeatures);
+  const eps = 1e-5;
+  for (let row = 0; row < batch; row += 1) {
+    const rowOffset = row * inFeatures;
+    let secondMoment = 0;
+    for (let feature = 0; feature < inFeatures; feature += 1) {
+      const value = input.data[rowOffset + feature];
+      secondMoment += value * value;
+    }
+    const scale = 1 / Math.sqrt(secondMoment / inFeatures + eps);
+    for (let feature = 0; feature < inFeatures; feature += 1) {
+      normalized[rowOffset + feature] = input.data[rowOffset + feature] * scale * rmsWeight[feature];
+    }
+  }
+  const hidden = new Float32Array(batch * hiddenFeatures);
+  for (let row = 0; row < batch; row += 1) {
+    for (let col = 0; col < hiddenFeatures; col += 1) {
+      let sum = upBias[col];
+      for (let feature = 0; feature < inFeatures; feature += 1) {
+        sum += normalized[row * inFeatures + feature] * upWeight[feature * hiddenFeatures + col];
+      }
+      hidden[row * hiddenFeatures + col] = sum / (1 + Math.exp(-sum));
+    }
+  }
+  const out = new Float32Array(batch * outputFeatures);
+  for (let row = 0; row < batch; row += 1) {
+    for (let col = 0; col < outputFeatures; col += 1) {
+      let sum = downBias[col];
+      for (let feature = 0; feature < hiddenFeatures; feature += 1) {
+        sum += hidden[row * hiddenFeatures + feature] * downWeight[feature * outputFeatures + col];
+      }
+      out[row * outputFeatures + col] = sum;
+    }
   }
   return out;
 }
@@ -1218,6 +1258,64 @@ const benchSpecs = [
       },
     },
     summary: (result) => `lazy_mlp_softmax_mean_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyMlpSoftmaxMeanBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=5 dispatch=4 fused=2 kernels=linear|relu|linear|softmax|mean batched=rank2-reduced parameters=0.weight|0.bias|2.weight|2.bias hot=allocation-free`,
+  },
+  {
+    key: "lazy_rms_silu_ffn_batched",
+    label: "lazy-rms-silu-ffn-batched",
+    floor: floors.lazyRmsSiluFfnBatchedSpeedup,
+    inputShape: [128, 64],
+    inputShapeText: "128x64",
+    outputShapeText: "128x64",
+    inputLen: 128 * 64,
+    outputLen: 128 * 64,
+    layerCount: 4,
+    parameterNames: "0.weight|up.weight|up.bias|down.weight|down.bias",
+    input: () => adapter.tensor(values(128 * 64, 13), [128, 64]),
+    model: () => adapter.lazy.input([128, 64])
+      .rmsNorm(64)
+      .linear(128, { name: "up" })
+      .silu()
+      .linear(64, { name: "down" }),
+    eager: (input) => lazyRmsSiluFfnBatchedEager(
+      input,
+      values(64, 32).map((value) => value + 1),
+      values(64 * 128, 48),
+      values(128, 80),
+      values(128 * 64, 64),
+      values(64, 96),
+      128,
+      64,
+      128,
+      64,
+    ),
+    bindSession: (program) => program.bind({
+      weights: new Float32Array([
+        ...values(64, 32).map((value) => value + 1),
+        ...values(64 * 128, 48),
+        ...values(128 * 64, 64),
+      ]),
+      bias: new Float32Array([...values(128, 80), ...values(64, 96)]),
+    }),
+    ir: { opCount: 4, parameterCount: 5 },
+    iterations: 80,
+    tolerance: 1e-4,
+    plan: {
+      opCount: 4,
+      dispatchCount: 3,
+      publicOps: 3,
+      description: "lazy Tensor IR RMSNorm -> Linear+SiLU -> Linear Program kernel plan",
+      check: (plan) => {
+        if (
+          ops(plan) !== "rmsNorm|linear|linear" ||
+          kernels(plan) !== "rms-norm|linear|silu|linear" ||
+          plan.ops[1].fusedOpCount !== 2 ||
+          plan.parameterLayout.parameters.map((param) => param.name).join("|") !== "0.weight|up.weight|up.bias|down.weight|down.bias"
+        ) {
+          throw new Error("lazy rms-silu-ffn expected RMSNorm -> fused Linear+SiLU -> Linear kernel plan with named parameters");
+        }
+      },
+    },
+    summary: (result) => `lazy_rms_silu_ffn_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyRmsSiluFfnBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=4 dispatch=3 fused=2 kernels=rms-norm|linear|silu|linear batched=rank2 parameters=0.weight|up.weight|up.bias|down.weight|down.bias hot=allocation-free`,
   },
   {
     key: "lazy_token_head_batched",
