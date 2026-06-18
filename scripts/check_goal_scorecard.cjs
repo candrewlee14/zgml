@@ -559,6 +559,7 @@ function checkScripts() {
     "mlp_batched=",
     "norm_gelu_mlp=",
     "norm_gelu_mlp_batched=",
+    "rms_gelu_linear_batched=",
     "token_head=",
     "shape_linear=",
     "conv2d=",
@@ -587,6 +588,7 @@ function checkScripts() {
     "ops=3 dispatch=2 fused=2",
     "batched=rank2",
     "ops=4 dispatch=3 fused=2 kernels=linear|layer-norm|gelu|linear",
+    "ops=3 dispatch=2 fused=2 kernels=rms-norm|gelu|linear",
     "ops=3 dispatch=3 kernels=embedding|linear|log-softmax",
     "ops=3 dispatch=2 fused_shape=2 kernels=reshape|linear",
     "ops=1 dispatch=1 kernels=conv2d",
@@ -971,6 +973,7 @@ function checkModuleProgramBenchEvidence() {
     "mlp_batched=",
     "norm_gelu_mlp=",
     "norm_gelu_mlp_batched=",
+    "rms_gelu_linear_batched=",
     "token_head=",
     "shape_linear=",
     "conv2d=",
@@ -988,6 +991,7 @@ function checkModuleProgramBenchEvidence() {
     "ops=3 dispatch=2 fused=2",
     "batched=rank2",
     "ops=4 dispatch=3 fused=2 kernels=linear|layer-norm|gelu|linear",
+    "ops=3 dispatch=2 fused=2 kernels=rms-norm|gelu|linear",
     "ops=3 dispatch=3 kernels=embedding|linear|log-softmax",
     "ops=3 dispatch=2 fused_shape=2 kernels=reshape|linear",
     "ops=1 dispatch=1 kernels=conv2d",
@@ -1009,6 +1013,7 @@ function checkModuleProgramBenchEvidence() {
   requirePattern(line, "module Program bench gate output", "batched mlp speedup floor", /mlp_batched=[0-9.]+x floor=3\.00x/);
   requirePattern(line, "module Program bench gate output", "norm gelu mlp speedup floor", /norm_gelu_mlp=[0-9.]+x floor=1\.10x.*ops=4 dispatch=3 fused=2 kernels=linear\|layer-norm\|gelu\|linear/);
   requirePattern(line, "module Program bench gate output", "batched norm gelu mlp speedup floor", /norm_gelu_mlp_batched=[0-9.]+x floor=1\.30x.*ops=4 dispatch=3 fused=2 kernels=linear\|layer-norm\|gelu\|linear/);
+  requirePattern(line, "module Program bench gate output", "batched RMS GELU Linear speedup floor", /rms_gelu_linear_batched=[0-9.]+x floor=1\.05x.*ops=3 dispatch=2 fused=2 kernels=rms-norm\|gelu\|linear batched=rank2 parameters=0\.weight\|2\.weight\|2\.bias hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "token head speedup floor", /token_head=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "shape linear speedup floor", /shape_linear=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "conv2d speedup floor", /conv2d=[0-9.]+x floor=1\.05x/);
@@ -4259,6 +4264,7 @@ function checkDocs() {
     "Current checked progress:",
     "Program/Session performance substrate: ~75%",
     "LayerNorm/RMSNorm descriptors can carry post-affine activations",
+    "A batched `RMSNorm+GELU -> Linear`",
     "Compile-capable lazy graphs can now lower through the host adapter into a",
     "native Program with preserved KernelPlan evidence.",
     "PyTorch-like replacement feel: ~92%",

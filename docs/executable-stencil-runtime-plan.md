@@ -204,7 +204,9 @@ Current checked progress:
   original three-op Tensor IR evidence. LayerNorm/RMSNorm descriptors can carry post-affine activations,
   and the norm-GELU MLP module benchmarks now prove
   `Linear -> LayerNorm(+affine)+GELU -> Linear` as a three-dispatch Program
-  path for scalar and batched inputs. The remaining substrate jump is not another compatibility lane; it is a real
+  path for scalar and batched inputs. A batched `RMSNorm+GELU -> Linear`
+  Program benchmark now proves the RMSNorm side of that descriptor path on a
+  profitable workload. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence.
 - PyTorch-like replacement feel: ~92%. The TS-owned product frontend now has

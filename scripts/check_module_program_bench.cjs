@@ -22,6 +22,7 @@ const floors = Object.freeze({
   mlpBatchedSpeedup: 3.0,
   normGeluMlpSpeedup: 1.1,
   normGeluMlpBatchedSpeedup: 1.3,
+  rmsGeluLinearBatchedSpeedup: 1.05,
   tokenHeadSpeedup: 1.2,
   shapeLinearSpeedup: 1.2,
   conv2dSpeedup: 1.05,
@@ -54,6 +55,7 @@ const expectedKeys = Object.freeze([
   "mlp_batched",
   "norm_gelu_mlp",
   "norm_gelu_mlp_batched",
+  "rms_gelu_linear_batched",
   "token_head",
   "shape_linear",
   "conv2d",
@@ -823,6 +825,44 @@ const benchSpecs = [
       },
     },
     summary: (result) => `norm_gelu_mlp_batched=${result.speedup.toFixed(2)}x floor=${floors.normGeluMlpBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=4 dispatch=3 fused=2 kernels=linear|layer-norm|gelu|linear batched=rank2 hot=allocation-free`,
+  },
+  {
+    key: "rms_gelu_linear_batched",
+    label: "rms-gelu-linear-batched",
+    floor: floors.rmsGeluLinearBatchedSpeedup,
+    inputShape: [512, 64],
+    inputShapeText: "512x64",
+    outputShapeText: "512x64",
+    inputLen: 512 * 64,
+    outputLen: 512 * 64,
+    layerCount: 3,
+    parameterNames: "0.weight|2.weight|2.bias",
+    input: () => adapter.tensor(values(512 * 64, 13), [512, 64]),
+    model: () => adapter.nn.sequential([
+      adapter.nn.rmsNorm(64, { weight: values(64, 32).map((value) => value + 1) }),
+      adapter.nn.gelu(),
+      adapter.nn.linear(64, 64, { weights: values(64 * 64, 48), bias: values(64, 80) }),
+    ]),
+    ir: { opCount: 3, parameterCount: 3 },
+    iterations: 80,
+    tolerance: 1e-4,
+    plan: {
+      opCount: 3,
+      dispatchCount: 2,
+      publicOps: 2,
+      description: "fused feature-norm activation batched RMSNorm+GELU -> Linear kernel plan",
+      check: (plan) => {
+        if (
+          ops(plan) !== "rmsNorm|linear" ||
+          kernels(plan) !== "rms-norm|gelu|linear" ||
+          plan.ops[0].fusedOpCount !== 2 ||
+          plan.parameterLayout.parameters.map((param) => param.name).join("|") !== "0.weight|2.weight|2.bias"
+        ) {
+          throw new Error("rms-gelu-linear-batched expected fused feature-norm activation RMSNorm+GELU -> Linear kernel plan");
+        }
+      },
+    },
+    summary: (result) => `rms_gelu_linear_batched=${result.speedup.toFixed(2)}x floor=${floors.rmsGeluLinearBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=2 fused=2 kernels=rms-norm|gelu|linear batched=rank2 parameters=0.weight|2.weight|2.bias hot=allocation-free`,
   },
   {
     key: "token_head",
