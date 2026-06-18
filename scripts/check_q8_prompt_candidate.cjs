@@ -13,6 +13,7 @@ const build = process.env.BENCH_BUILD_ZGML ?? "1";
 const binary = "./zig-out/bin/bench-llama-smollm";
 const speedupFloor = Number(process.env.BENCH_CANDIDATE_SPEEDUP_FLOOR || "1.05");
 const attempts = positiveInt(process.env.BENCH_CANDIDATE_ATTEMPTS || "3", "BENCH_CANDIDATE_ATTEMPTS");
+const rowChainKernel = "scalar_per_row_col";
 const requiredNextTarget = "tiled_qmatmul_row_chain_throughput";
 const defaultCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "181");
 const defaultProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_ROW_CHAIN_FLOOR || "60");
@@ -184,6 +185,7 @@ console.log(
     `excess_dispatch=${format(best.defaultProjectionRowChainDispatchExcess, 0)}->${format(best.candidateProjectionRowChainDispatchExcess, 0)} target=0 ` +
     `dispatch_only_trap=${dispatchOnlyTrap ? "yes" : "no"} ` +
     `fallback=${format(best.defaultFallback, 0)}->${format(best.candidateFallback, 0)} ` +
+    `row_chain_kernel=${rowChainKernel} row_chain_next=${requiredNextTarget} ` +
     `next=${requiredNextTarget}`,
 );
 

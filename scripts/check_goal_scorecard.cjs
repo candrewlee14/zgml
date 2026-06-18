@@ -136,6 +136,7 @@ function checkScripts() {
     "`dispatch_only_trap=${dispatchOnlyTrap ? \"yes\" : \"no\"} `",
     "defaultCommandCeil",
     "defaultProjectionRowChainFloor",
+    "const rowChainKernel = \"scalar_per_row_col\"",
     "defaultSemanticReady",
     "candidateMatchesDefault",
     "fallbackOk",
@@ -143,6 +144,7 @@ function checkScripts() {
     "throughputReady",
     "default_semantic_row_chain_needs_throughput_kernel",
     "const requiredNextTarget = \"tiled_qmatmul_row_chain_throughput\"",
+    "`row_chain_kernel=${rowChainKernel} row_chain_next=${requiredNextTarget} `",
     "`next=${requiredNextTarget}`",
     "candidateReady",
     "q8 prompt semantic row-chain gate:",
@@ -848,6 +850,8 @@ function checkQ8PromptCandidateEvidence() {
     "split=2.00->2.00",
     "excess_dispatch=60->60 target=0",
     "dispatch_only_trap=no",
+    "row_chain_kernel=scalar_per_row_col",
+    "row_chain_next=tiled_qmatmul_row_chain_throughput",
     "next=tiled_qmatmul_row_chain_throughput",
   ]);
   notes.push(output.trim());
