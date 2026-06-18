@@ -35,6 +35,7 @@ const floors = Object.freeze({
   lazyMatmulAddReluBatchedSpeedup: 1.5,
   lazyMlpBatchedSpeedup: 2.5,
   lazyMlpMeanBatchedSpeedup: 2.0,
+  lazyMlpLogSoftmaxBatchedSpeedup: 2.0,
   lazyTokenHeadBatchedSpeedup: 1.2,
 });
 const expectedKeys = Object.freeze([
@@ -59,6 +60,7 @@ const expectedKeys = Object.freeze([
   "lazy_matmul_add_relu_batched",
   "lazy_mlp_batched",
   "lazy_mlp_mean_batched",
+  "lazy_mlp_log_softmax_batched",
   "lazy_token_head_batched",
 ]);
 
@@ -236,6 +238,37 @@ function lazyMlpMeanBatchedEager(input, weightValues, biasValues, batch, inFeatu
       rowTotal += Math.max(0, sum);
     }
     out[row] = rowTotal / outFeatures;
+  }
+  return out;
+}
+
+function lazyMlpLogSoftmaxBatchedEager(input, firstWeights, firstBias, secondWeights, secondBias, batch, inFeatures, hiddenFeatures, outputFeatures) {
+  const hidden = new Float32Array(batch * hiddenFeatures);
+  for (let row = 0; row < batch; row += 1) {
+    for (let col = 0; col < hiddenFeatures; col += 1) {
+      let sum = firstBias[col];
+      for (let feature = 0; feature < inFeatures; feature += 1) {
+        sum += input.data[row * inFeatures + feature] * firstWeights[feature * hiddenFeatures + col];
+      }
+      hidden[row * hiddenFeatures + col] = Math.max(0, sum);
+    }
+  }
+  const out = new Float32Array(batch * outputFeatures);
+  const logits = new Float32Array(outputFeatures);
+  for (let row = 0; row < batch; row += 1) {
+    for (let col = 0; col < outputFeatures; col += 1) {
+      let sum = secondBias[col];
+      for (let feature = 0; feature < hiddenFeatures; feature += 1) {
+        sum += hidden[row * hiddenFeatures + feature] * secondWeights[feature * outputFeatures + col];
+      }
+      logits[col] = sum;
+    }
+    let max = -Infinity;
+    for (let col = 0; col < outputFeatures; col += 1) max = Math.max(max, logits[col]);
+    let denominator = 0;
+    for (let col = 0; col < outputFeatures; col += 1) denominator += Math.exp(logits[col] - max);
+    const logDenominator = max + Math.log(denominator);
+    for (let col = 0; col < outputFeatures; col += 1) out[row * outputFeatures + col] = logits[col] - logDenominator;
   }
   return out;
 }
@@ -1044,6 +1077,59 @@ const benchSpecs = [
       },
     },
     summary: (result) => `lazy_mlp_mean_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyMlpMeanBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=2 fused=2 kernels=linear|relu|mean batched=rank2-reduced parameters=0.weight|0.bias hot=allocation-free`,
+  },
+  {
+    key: "lazy_mlp_log_softmax_batched",
+    label: "lazy-mlp-log-softmax-batched",
+    floor: floors.lazyMlpLogSoftmaxBatchedSpeedup,
+    inputShape: [128, 64],
+    inputShapeText: "128x64",
+    outputShapeText: "128x32",
+    inputLen: 128 * 64,
+    outputLen: 128 * 32,
+    layerCount: 4,
+    parameterNames: "0.weight|0.bias|2.weight|2.bias",
+    input: () => adapter.tensor(values(128 * 64, 13), [128, 64]),
+    model: () => adapter.lazy.input([128, 64])
+      .linear(64, { name: "0" })
+      .relu()
+      .linear(32, { name: "2" })
+      .logSoftmax(-1),
+    eager: (input) => lazyMlpLogSoftmaxBatchedEager(
+      input,
+      values(64 * 64, 32),
+      values(64, 64),
+      values(64 * 32, 48),
+      values(32, 80),
+      128,
+      64,
+      64,
+      32,
+    ),
+    bindSession: (program) => program.bind({
+      weights: new Float32Array([...values(64 * 64, 32), ...values(64 * 32, 48)]),
+      bias: new Float32Array([...values(64, 64), ...values(32, 80)]),
+    }),
+    ir: { opCount: 4, parameterCount: 4 },
+    iterations: 100,
+    tolerance: 1e-4,
+    plan: {
+      opCount: 4,
+      dispatchCount: 3,
+      publicOps: 3,
+      description: "lazy Tensor IR Linear+ReLU -> Linear -> LogSoftmax Program kernel plan",
+      check: (plan) => {
+        if (
+          ops(plan) !== "linear|linear|logSoftmax" ||
+          kernels(plan) !== "linear|relu|linear|log-softmax" ||
+          plan.ops[0].fusedOpCount !== 2 ||
+          plan.parameterLayout.parameters.map((param) => param.name).join("|") !== "0.weight|0.bias|2.weight|2.bias"
+        ) {
+          throw new Error("lazy mlp-log-softmax expected fused Linear+ReLU -> Linear -> LogSoftmax kernel plan with named parameters");
+        }
+      },
+    },
+    summary: (result) => `lazy_mlp_log_softmax_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyMlpLogSoftmaxBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=4 dispatch=3 fused=2 kernels=linear|relu|linear|log-softmax batched=rank2 parameters=0.weight|0.bias|2.weight|2.bias hot=allocation-free`,
   },
   {
     key: "lazy_token_head_batched",
