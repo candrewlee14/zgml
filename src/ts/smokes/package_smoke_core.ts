@@ -4443,7 +4443,15 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   expectClose(einsumRhs.grad, [4, 4, 6, 6], `${label} einsum rhs autograd backward`);
   expectClose(adapter.Tensor.einsum("ii->", nested).data, [5], `${label} Tensor.einsum trace scalar`);
   expectClose(adapter.torch.einsum("ij,jk->ik", einsumLhs.detach(), einsumRhs.detach()).data, [19, 22, 43, 50], `${label} torch.einsum variadic matrix product`);
-  expectThrowIncludes(() => adapter.einsum("i...->i", [rowA]), "einsum ellipsis is not supported yet", `${label} einsum rejects unsupported ellipsis`);
+  const einsumBatchLhs = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2]).requiresGrad_();
+  const einsumBatchRhs = adapter.tensor([1, 2, 3, 4], [2, 2]).requiresGrad_();
+  const einsumEllipsis = adapter.einsum("...ij,jk->...ik", [einsumBatchLhs, einsumBatchRhs]);
+  if (einsumEllipsis.shape.join("x") !== "2x2x2") throw new Error(`${label} expected einsum ellipsis batch matmul shape`);
+  expectClose(einsumEllipsis.data, [7, 10, 15, 22, 23, 34, 31, 46], `${label} einsum ellipsis batch matmul`);
+  einsumEllipsis.sum().backward();
+  expectClose(einsumBatchLhs.grad, [3, 7, 3, 7, 3, 7, 3, 7], `${label} einsum ellipsis backward lhs`);
+  expectClose(einsumBatchRhs.grad, [16, 16, 20, 20], `${label} einsum ellipsis backward rhs`);
+  expectClose(adapter.Tensor.einsum("...i->...", adapter.tensor([1, 2, 3, 4, 5, 6], [2, 3])).data, [6, 15], `${label} Tensor.einsum implicit ellipsis reduction`);
   const indexSelectInput = adapter.tensor([1, 2, 3, 4, 5, 6], [3, 2]).requiresGrad_();
   const indexSelectOutput = indexSelectInput.indexSelect(0, [2, 0, 2]);
   if (indexSelectOutput.shape.join("x") !== "3x2") throw new Error(`${label} expected indexSelect to replace the selected axis length`);

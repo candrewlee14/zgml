@@ -1100,6 +1100,7 @@ const packageStack3dDim2Tensor: PackageTensor<readonly [2, 3, 2, 4]> = PackageNo
 const packageStack4dDim2Tensor: PackageTensor<readonly [2, 3, 2, 4, 5]> = PackageNodeTensor.stack([packageTensor4d, packageTensor4d] as const, 2);
 const packageEinsumMatmulTensor: PackageTensor = PackageNodeTensor.einsum("ij,jk->ik", [packageElementwiseInputTensor, packageElementwiseOtherTensor]);
 const packageEinsumTraceTensor: PackageTensor = PackageNodeTensor.einsum("ii->", PackageNodeTensor.tensor([1, 2, 3, 4], [2, 2] as const));
+const packageEinsumEllipsisTensor: PackageTensor = PackageNodeTensor.einsum("...i->...", PackageNodeTensor.tensor([1, 2, 3, 4, 5, 6], [2, 3] as const));
 const packageNodeLinspaceTensor: PackageTensor<readonly [4]> = PackageNodeTensor.linspace(0, 1, 4);
 const packageNodeArangeTensor: PackageTensor<readonly [4]> = PackageNodeTensor.arange(4);
 const packageNodeArangeRangeTensor: PackageTensor<readonly [3]> = PackageNodeTensor.arange(2, 5);
@@ -1285,6 +1286,7 @@ void [
   packageStack4dDim2Tensor,
   packageEinsumMatmulTensor,
   packageEinsumTraceTensor,
+  packageEinsumEllipsisTensor,
   packageNodeLinspaceTensor,
   packageNodeArangeTensor,
   packageNodeArangeRangeTensor,

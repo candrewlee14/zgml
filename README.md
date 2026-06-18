@@ -551,7 +551,7 @@ factories (`zeros`, `ones`, `full`, `rand`, `randn`, `linspace`, `arange`,
   `scalar`, `parameter`, `param`), nested JS array tensor construction with
   rectangular-shape validation, shape-validated nested module parameters and
   Program/Session inputs/outputs,
-  differentiable tensor joins (`cat`, `concat`, `concatenate`, `stack`, `vstack`, `hstack`) and eager/autograd `einsum`,
+  differentiable tensor joins (`cat`, `concat`, `concatenate`, `stack`, `vstack`, `hstack`) and eager/autograd `einsum` with ellipsis and broadcast semantics,
 JSON serialization, PyTorch-like dim
 reductions (`sum(dim)`, `prod(dim)`, `mean(dim)`,
 `max(dim)`, eager tensor `min(dim)` / `minDim(dim)`, `variance(dim)`, `std(dim)`, `norm(dim, p)`, `cumsum(dim)`), batched `nn.linear`, `nn.embedding`, shape modules
@@ -868,11 +868,11 @@ long-form smoke and benchmark gates.
 library goal. It requires a passing no-fallback Program/Session substrate gate
 with a latest-vs-checked-baseline delta report for the selected native lanes,
 and checks that the public type smokes still cover the PyTorch-like surface:
-`goal progress: Program/Session substrate=70% floor=65%; PyTorch-like surface=67% floor=60%`.
+`goal progress: Program/Session substrate=70% floor=65%; PyTorch-like surface=68% floor=60%`.
 Those numbers are deliberately conservative: q8 prompt execution still needs a
 real tiled row-chain throughput kernel, while the PyTorch-like surface now has
-runtime and type evidence for the core replacement loop and eager/autograd
-`einsum` rather than only API exports.
+runtime and type evidence for the core replacement loop and PyTorch-like
+eager/autograd `einsum` semantics rather than only API exports.
 Tensor, `nn`, `optim`, `train`, `data`, loss modules, state dicts,
 manual `backward`/`step` loops, train helper verbs (`backward`, `lossStep`,
 `clipGradNorm`, `clipGradValue`), checkpoints, compile support, and compiled

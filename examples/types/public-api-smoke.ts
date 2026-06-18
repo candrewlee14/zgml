@@ -1280,6 +1280,8 @@ const initKaimingNormalCamelParameter: NnParameter<readonly [2, 2]> = nn.init.ka
 const einsumRootTensor: Tensor = einsum("ij,jk->ik", [tensor([1, 2, 3, 4], [2, 2] as const), tensor([5, 6, 7, 8], [2, 2] as const)]);
 const einsumStaticTensor: Tensor = Tensor.einsum("ii->", tensor([1, 2, 3, 4], [2, 2] as const));
 const einsumTorchTensor: Tensor = torch.einsum("ij,jk->ik", tensor([1, 2, 3, 4], [2, 2] as const), tensor([5, 6, 7, 8], [2, 2] as const));
+const einsumEllipsisTensor: Tensor = einsum("...ij,jk->...ik", tensor([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2] as const), tensor([1, 2, 3, 4], [2, 2] as const));
+const einsumImplicitEllipsisTensor: Tensor = Tensor.einsum("...i->...", tensor([1, 2, 3, 4, 5, 6], [2, 3] as const));
 const customParameterModule: CustomModule<readonly [2], readonly [1]> = nn.module({
   kind: "custom-parameter-head",
   parameters: [customWeightParameter, customBiasParameter],
@@ -6051,6 +6053,8 @@ void initKaimingNormalCamelParameter;
 void einsumRootTensor;
 void einsumStaticTensor;
 void einsumTorchTensor;
+void einsumEllipsisTensor;
+void einsumImplicitEllipsisTensor;
 void customParameterModule;
 void customParameterState;
 void customParameterOptimizer;

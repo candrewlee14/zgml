@@ -602,6 +602,26 @@ expectSame({ data: einsumTrace.data, shape: einsumTrace.shape }, { data: [5], sh
 einsumTrace._backward(Float32Array.of(2));
 expectSame(joinA.grad, [2, 0, 0, 2], "tensor join einsum trace backward diagonal");
 expectSame(tensorJoin.einsum("ij,jk->ik", joinA, joinB).data, [19, 22, 43, 50], "tensor join einsum variadic operands");
+const einsumBatchLhs = new TensorDataSmokeTensor(Float32Array.from({ length: 8 }, (_value, index) => index + 1), [2, 2, 2], { requiresGrad: true });
+const einsumBatchRhs = new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4), [2, 2], { requiresGrad: true });
+const einsumEllipsis = tensorJoin.einsum("...ij,jk->...ik", [einsumBatchLhs, einsumBatchRhs]);
+expectSame({ data: einsumEllipsis.data, shape: einsumEllipsis.shape }, {
+  data: [7, 10, 15, 22, 23, 34, 31, 46],
+  shape: [2, 2, 2],
+}, "tensor join einsum ellipsis batch matmul");
+einsumEllipsis._backward(Float32Array.from({ length: 8 }, () => 1));
+expectSame(einsumBatchLhs.grad, [3, 7, 3, 7, 3, 7, 3, 7], "tensor join einsum ellipsis backward lhs");
+expectSame(einsumBatchRhs.grad, [16, 16, 20, 20], "tensor join einsum ellipsis backward rhs");
+expectSame(tensorJoin.einsum("...i->...", [new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4, 5, 6), [2, 3])]).data, [6, 15], "tensor join einsum implicit ellipsis reduction");
+const einsumBroadcastLhs = new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4), [1, 2, 2], { requiresGrad: true });
+const einsumBroadcastRhs = new TensorDataSmokeTensor(Float32Array.of(5, 6, 7, 8, 1, 0, 0, 1), [2, 2, 2], { requiresGrad: true });
+const einsumBroadcast = tensorJoin.einsum("bij,bjk->bik", [einsumBroadcastLhs, einsumBroadcastRhs]);
+expectSame({ data: einsumBroadcast.data, shape: einsumBroadcast.shape }, {
+  data: [19, 22, 43, 50, 1, 2, 3, 4],
+  shape: [2, 2, 2],
+}, "tensor join einsum broadcast batch matmul");
+einsumBroadcast._backward(Float32Array.from({ length: 8 }, () => 1));
+expectSame(einsumBroadcastLhs.grad, [12, 16, 12, 16], "tensor join einsum broadcast backward accumulates size-one axis");
 expectThrow(
   () => tensorJoin.cat([joinA, new TensorDataSmokeTensor(Float32Array.of(1, 2, 3), [3])], 0),
   "cat input 1 rank must be 2, got 1",
@@ -613,9 +633,9 @@ expectThrow(
   "tensor join stack rejects shape mismatch",
 );
 expectThrow(
-  () => tensorJoin.einsum("i...->i", [joinA]),
-  "einsum ellipsis is not supported yet",
-  "tensor join einsum rejects ellipsis honestly",
+  () => tensorJoin.einsum("ij,jk->ik", [joinA, new TensorDataSmokeTensor(Float32Array.of(1, 2, 3), [3, 1])]),
+  "einsum label j has inconsistent dimensions 2 and 3",
+  "tensor join einsum rejects non-broadcast dimensions",
 );
 
 const dataNs = dataNamespace.createDataNamespace({

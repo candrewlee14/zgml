@@ -183,96 +183,129 @@ export function createTensorJoinHelpers(options: TensorJoinHelpersOptions) {
     return out;
   }
 
-  function parseEinsumEquation(equation: unknown, operandCount: number) {
+  function parseEinsumSpec(spec: string, label: string) {
+    if (spec.split("...").length > 2) throw new Error(`einsum ${label} subscript may contain at most one ellipsis`);
+    const compact = spec.replace("...", "");
+    if (!/^[A-Za-z]*$/.test(compact)) throw new Error(`invalid einsum ${label} subscript: ${spec}`);
+    return {
+      labels: [...compact],
+      hasEllipsis: spec.includes("..."),
+      parts: spec.split("...") as [string] | [string, string],
+    };
+  }
+
+  function parseEinsumEquation(equation: unknown, operands: readonly TensorJoinTensor[]) {
     if (typeof equation !== "string" || equation.trim().length === 0) {
       throw new Error("einsum equation must be a non-empty string");
     }
     const compact = equation.replace(/\s+/g, "");
-    if (compact.includes("...")) {
-      throw new Error("einsum ellipsis is not supported yet");
-    }
     const parts = compact.split("->");
     if (parts.length > 2) throw new Error(`invalid einsum equation: ${equation}`);
-    const inputSpecs = parts[0].split(",");
-    if (inputSpecs.length !== operandCount) {
-      throw new Error(`einsum equation expects ${inputSpecs.length} operand(s), got ${operandCount}`);
+    const rawInputSpecs = parts[0].split(",");
+    if (rawInputSpecs.length !== operands.length) {
+      throw new Error(`einsum equation expects ${rawInputSpecs.length} operand(s), got ${operands.length}`);
     }
-    for (const spec of inputSpecs) {
-      if (!/^[A-Za-z]*$/.test(spec)) throw new Error(`invalid einsum input subscript: ${spec}`);
-    }
-    let outputSpec = parts[1];
-    if (outputSpec !== undefined) {
-      if (!/^[A-Za-z]*$/.test(outputSpec)) throw new Error(`invalid einsum output subscript: ${outputSpec}`);
-      const seen = new Set();
-      for (const label of outputSpec) {
+
+    const parsedInputs = rawInputSpecs.map((spec) => parseEinsumSpec(spec, "input"));
+    const ellipsisRanks = parsedInputs.map((parsed, index) => {
+      const rank = operands[index].shape.length - parsed.labels.length;
+      if (rank < 0) {
+        throw new Error(`einsum operand ${index} rank ${operands[index].shape.length} does not match subscript ${rawInputSpecs[index]}`);
+      }
+      if (!parsed.hasEllipsis && rank !== 0) {
+        throw new Error(`einsum operand ${index} rank ${operands[index].shape.length} does not match subscript ${rawInputSpecs[index]}`);
+      }
+      return parsed.hasEllipsis ? rank : 0;
+    });
+    const maxEllipsisRank = Math.max(0, ...ellipsisRanks);
+    const ellipsisLabels = Array.from({ length: maxEllipsisRank }, (_value, index) => `...${index}`);
+
+    const inputLabels = parsedInputs.map((parsed, operandIndex) => {
+      if (!parsed.hasEllipsis) return parsed.labels;
+      const [left, right = ""] = parsed.parts;
+      const localEllipsis = ellipsisLabels.slice(maxEllipsisRank - ellipsisRanks[operandIndex]);
+      return [...left, ...localEllipsis, ...right];
+    });
+
+    let outputLabels: string[];
+    if (parts[1] !== undefined) {
+      const parsedOutput = parseEinsumSpec(parts[1], "output");
+      const [left, right = ""] = parsedOutput.parts;
+      outputLabels = parsedOutput.hasEllipsis
+        ? [...left, ...ellipsisLabels, ...right]
+        : parsedOutput.labels;
+      const seen = new Set<string>();
+      for (const label of outputLabels) {
         if (seen.has(label)) throw new Error(`einsum output label ${label} appears more than once`);
         seen.add(label);
       }
     } else {
       const counts = new Map<string, number>();
-      for (const spec of inputSpecs) {
-        for (const label of spec) counts.set(label, (counts.get(label) ?? 0) + 1);
+      for (const labels of inputLabels) {
+        for (const label of labels) {
+          if (!label.startsWith("...")) counts.set(label, (counts.get(label) ?? 0) + 1);
+        }
       }
-      outputSpec = [...counts.entries()]
-        .filter((entry) => entry[1] === 1)
-        .map((entry) => entry[0])
-        .sort()
-        .join("");
+      outputLabels = [
+        ...ellipsisLabels,
+        ...[...counts.entries()]
+          .filter((entry) => entry[1] === 1)
+          .map((entry) => entry[0])
+          .sort(),
+      ];
     }
-    return { inputSpecs, outputSpec };
-  }
-
-  function coordsForFlat(flat: number, shape: readonly number[], strides: readonly number[]) {
-    const coords = new Array(shape.length);
-    for (let dim = 0; dim < shape.length; dim += 1) coords[dim] = Math.floor(flat / strides[dim]) % shape[dim];
-    return coords;
+    return { inputLabels, outputLabels };
   }
 
   function einsum(equation: unknown, tensorValues: unknown, ...moreTensorValues: unknown[]) {
     const operands = Array.isArray(tensorValues) && moreTensorValues.length === 0
       ? requireTensorList(tensorValues, "einsum")
       : requireTensorList([tensorValues, ...moreTensorValues], "einsum");
-    const { inputSpecs, outputSpec } = parseEinsumEquation(equation, operands.length);
+    const { inputLabels, outputLabels } = parseEinsumEquation(equation, operands);
     const labelSizes = new Map<string, number>();
     const labelOrder: string[] = [];
     const operandStrides = operands.map((operand) => rowMajorStrides(operand.shape));
     for (let operandIndex = 0; operandIndex < operands.length; operandIndex += 1) {
       const operand = operands[operandIndex];
-      const spec = inputSpecs[operandIndex];
-      if (spec.length !== operand.shape.length) {
-        throw new Error(`einsum operand ${operandIndex} rank ${operand.shape.length} does not match subscript ${spec}`);
-      }
-      for (let dim = 0; dim < spec.length; dim += 1) {
-        const label = spec[dim];
+      const labels = inputLabels[operandIndex];
+      if (labels.length !== operand.shape.length) throw new Error(`einsum operand ${operandIndex} rank ${operand.shape.length} does not match expanded subscript`);
+      for (let dim = 0; dim < labels.length; dim += 1) {
+        const label = labels[dim];
         const size = operand.shape[dim];
         if (!labelSizes.has(label)) {
           labelSizes.set(label, size);
           labelOrder.push(label);
-        } else if (labelSizes.get(label) !== size) {
+        } else if (labelSizes.get(label) !== size && labelSizes.get(label) !== 1 && size !== 1) {
           throw new Error(`einsum label ${label} has inconsistent dimensions ${labelSizes.get(label)} and ${size}`);
+        } else if (labelSizes.get(label) === 1 && size !== 1) {
+          labelSizes.set(label, size);
         }
       }
     }
-    for (const label of outputSpec) {
+    for (const label of outputLabels) {
       if (!labelSizes.has(label)) throw new Error(`einsum output label ${label} does not appear in any input`);
     }
-    const outputShape = outputSpec.length === 0 ? [1] : [...outputSpec].map((label) => labelSizes.get(label)!);
+    const outputShape = outputLabels.length === 0 ? [1] : outputLabels.map((label) => labelSizes.get(label)!);
     const outputStrides = rowMajorStrides(outputShape);
     const outData = new Float32Array(shapeProduct(outputShape));
     const assignment = new Map<string, number>();
 
     function operandFlatIndex(operandIndex: number) {
-      const spec = inputSpecs[operandIndex];
+      const labels = inputLabels[operandIndex];
       const strides = operandStrides[operandIndex];
+      const shape = operands[operandIndex].shape;
       let index = 0;
-      for (let dim = 0; dim < spec.length; dim += 1) index += assignment.get(spec[dim])! * strides[dim];
+      for (let dim = 0; dim < labels.length; dim += 1) {
+        const coord = shape[dim] === 1 ? 0 : assignment.get(labels[dim])!;
+        index += coord * strides[dim];
+      }
       return index;
     }
 
     function outputFlatIndex() {
-      if (outputSpec.length === 0) return 0;
+      if (outputLabels.length === 0) return 0;
       let index = 0;
-      for (let dim = 0; dim < outputSpec.length; dim += 1) index += assignment.get(outputSpec[dim])! * outputStrides[dim];
+      for (let dim = 0; dim < outputLabels.length; dim += 1) index += assignment.get(outputLabels[dim])! * outputStrides[dim];
       return index;
     }
 
