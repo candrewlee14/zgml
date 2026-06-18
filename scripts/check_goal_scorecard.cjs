@@ -7,6 +7,12 @@ const { join, resolve } = require("node:path");
 const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
+const goalProgress = Object.freeze({
+  substratePct: 70,
+  substrateFloorPct: 65,
+  pytorchLikePct: 65,
+  pytorchLikeFloorPct: 60,
+});
 
 function read(relativePath) {
   return readFileSync(join(root, relativePath), "utf8");
@@ -4035,6 +4041,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
+    "goal progress: Program/Session substrate=70% floor=65%; PyTorch-like surface=65% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4067,6 +4074,17 @@ function checkDocs() {
   if (staleReadmeSurface.length !== 0) {
     errors.push(`README.md must not advertise stale public surface lanes: ${staleReadmeSurface.join(", ")}`);
   }
+
+  const plan = read("docs/executable-stencil-runtime-plan.md");
+  requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
+    "Current checked progress:",
+    "Program/Session performance substrate: ~70%",
+    "PyTorch-like replacement feel: ~65%",
+    "The remaining substrate jump is not another compatibility lane;",
+    "tiled quantized row-chain throughput kernel",
+    "The remaining frontend jump is polish and",
+    "compile hooks exist.",
+  ]);
 }
 
 checkScripts();
@@ -4085,4 +4103,8 @@ if (errors.length > 0) {
 }
 
 console.log("zgml goal scorecard ok");
+console.log(
+  `goal progress: Program/Session substrate=${goalProgress.substratePct}% floor=${goalProgress.substrateFloorPct}%; ` +
+    `PyTorch-like surface=${goalProgress.pytorchLikePct}% floor=${goalProgress.pytorchLikeFloorPct}%`,
+);
 for (const note of notes) console.log(note);

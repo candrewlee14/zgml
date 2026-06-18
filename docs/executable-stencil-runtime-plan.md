@@ -190,6 +190,23 @@ that contract: callers can narrow literal Tensor shapes or fail before compile,
 bind, or FFI handoff. Eager execution is the reference/debug mode; compiled
 execution is the performance claim. Silent eager fallback is not allowed.
 
+Current checked progress:
+
+- Program/Session performance substrate: ~70%. The Program/Session shape,
+  runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
+  native Metal execution, optional native wgpu execution slices, and ggml
+  benchmark gates are real enough that the substrate is past "architecture".
+  The remaining substrate jump is not another compatibility lane; it is a real
+  tiled quantized row-chain throughput kernel, plus wider default browser/WebGPU
+  execution evidence.
+- PyTorch-like replacement feel: ~65%. The TS-owned product frontend now has
+  typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
+  `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
+  checkpoints, eager debugging, and compile/bind/session hooks through Node,
+  Bun, package, and type smokes. The remaining frontend jump is polish and
+  breadth, not proof that `nn.Linear`, training, state dicts, data loaders, or
+  compile hooks exist.
+
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS
 library. The product API for JS, Node, Bun, browser, and the future JS FFI
