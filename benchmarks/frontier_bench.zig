@@ -878,6 +878,154 @@ fn benchProjectionRowChainMetalCase(
     try printRatio(w, ratio_name, default_stats, fused_stats, maxAbsDiff(default_out, fused_out));
 }
 
+fn benchProjectionRowChainGroupMetalCase(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    w: *std.Io.Writer,
+    metal: *internal.backend_metal.MetalBackend,
+    case: ProjectionRowChainCase,
+) !void {
+    const n_slots: usize = 4;
+    const elems = case.m * case.n;
+    const input_len = case.m * case.k;
+    const block_size: usize = 32;
+    const scale_len = (case.k * case.n + block_size - 1) / block_size;
+
+    const input = try allocF32(alloc, input_len, 801, 0.25);
+    defer alloc.free(input);
+    const q_out = try allocF32(alloc, n_slots * elems, 802, 0.0);
+    defer alloc.free(q_out);
+    const residual = try allocF32(alloc, n_slots * elems, 803, 0.20);
+    defer alloc.free(residual);
+    const norm_out = try allocF32(alloc, n_slots * elems, 804, 0.0);
+    defer alloc.free(norm_out);
+    const scale = try allocF32(alloc, n_slots * case.n, 805, 0.30);
+    defer alloc.free(scale);
+    const repeat_out = try allocF32(alloc, n_slots * elems, 806, 0.0);
+    defer alloc.free(repeat_out);
+    const staged_out = try allocF32(alloc, n_slots * elems, 807, 0.0);
+    defer alloc.free(staged_out);
+    const grouped_out = try allocF32(alloc, n_slots * elems, 808, 0.0);
+    defer alloc.free(grouped_out);
+    const qdata = try allocI8Weights(alloc, n_slots * case.k * case.n, 809);
+    defer alloc.free(qdata);
+    const qscales = try allocF32(alloc, n_slots * scale_len, 810, 0.02);
+    defer alloc.free(qscales);
+    for (qscales) |*v| v.* = 0.02;
+
+    var ops: [n_slots * 5]backend_mod.DeviceOp = undefined;
+    var buffer_sizes: [1 + n_slots * 6]usize = undefined;
+    var uploads: [1 + n_slots * 6]backend_mod.ProgramIO = undefined;
+    var qweights: [n_slots]backend_mod.QuantizedWeightUpload = undefined;
+
+    buffer_sizes[0] = input_len;
+    uploads[0] = programIo(0, input);
+    for (0..n_slots) |slot| {
+        const q_buf: u16 = @intCast(1 + slot * 6);
+        const residual_buf: u16 = @intCast(2 + slot * 6);
+        const norm_buf: u16 = @intCast(3 + slot * 6);
+        const scale_buf: u16 = @intCast(4 + slot * 6);
+        const repeat_buf: u16 = @intCast(5 + slot * 6);
+        const out_buf: u16 = @intCast(6 + slot * 6);
+        const elem_base = slot * elems;
+        const scale_base = slot * case.n;
+        const weight_base = slot * case.k * case.n;
+        const qscale_base = slot * scale_len;
+        const op_base = slot * 5;
+
+        ops[op_base] = .{ .qmatmul = .{ .dst = q_buf, .input = 0, .weight_idx = @intCast(slot), .M = @intCast(case.m), .N = @intCast(case.n), .K = @intCast(case.k) } };
+        ops[op_base + 1] = .{ .elementwise = .{ .op = .add, .dst = residual_buf, .src0 = q_buf, .src1 = residual_buf, .n = @intCast(elems) } };
+        ops[op_base + 2] = .{ .rmsnorm = .{ .dst = norm_buf, .src = residual_buf, .rows = @intCast(case.m), .cols = @intCast(case.n), .eps = 1e-5 } };
+        ops[op_base + 3] = .{ .repeat = .{
+            .dst = repeat_buf,
+            .src = scale_buf,
+            .n = @intCast(elems),
+            .src_ne = .{ @intCast(case.n), 1, 1, 1 },
+            .dst_ne = .{ @intCast(case.n), @intCast(case.m), 1, 1 },
+            .src_strides = .{ 1, @intCast(case.n), @intCast(case.n), @intCast(case.n) },
+            .dst_strides = .{ 1, @intCast(case.n), @intCast(elems), @intCast(elems) },
+        } };
+        ops[op_base + 4] = .{ .elementwise = .{ .op = .mul, .dst = out_buf, .src0 = norm_buf, .src1 = repeat_buf, .n = @intCast(elems) } };
+
+        buffer_sizes[1 + slot * 6] = elems;
+        buffer_sizes[2 + slot * 6] = elems;
+        buffer_sizes[3 + slot * 6] = elems;
+        buffer_sizes[4 + slot * 6] = case.n;
+        buffer_sizes[5 + slot * 6] = elems;
+        buffer_sizes[6 + slot * 6] = elems;
+        uploads[1 + slot * 6] = programIo(q_buf, q_out[elem_base .. elem_base + elems]);
+        uploads[2 + slot * 6] = programIo(residual_buf, residual[elem_base .. elem_base + elems]);
+        uploads[3 + slot * 6] = programIo(norm_buf, norm_out[elem_base .. elem_base + elems]);
+        uploads[4 + slot * 6] = programIo(scale_buf, scale[scale_base .. scale_base + case.n]);
+        uploads[5 + slot * 6] = programIo(repeat_buf, repeat_out[elem_base .. elem_base + elems]);
+        uploads[6 + slot * 6] = programIo(out_buf, staged_out[elem_base .. elem_base + elems]);
+        qweights[slot] = .{
+            .data = qdata[weight_base .. weight_base + case.k * case.n],
+            .scales = qscales[qscale_base .. qscale_base + scale_len],
+            .rows = case.k,
+            .cols = case.n,
+            .block_size = block_size,
+        };
+    }
+
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = buffer_sizes.len,
+        .buffer_sizes = &buffer_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const be = metal.backend();
+    var staged_policy = program_mod.CommandStreamPolicy.default();
+    staged_policy.fuse_projection_row_chain = false;
+    const staged_handle = metal.compileProgramWithCommandPolicy(program, staged_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(staged_handle);
+    var grouped_policy = program_mod.CommandStreamPolicy.default();
+    grouped_policy.fuse_projection_row_chain = true;
+    grouped_policy.fuse_projection_row_chain_qmatvec = true;
+    const grouped_handle = metal.compileProgramWithCommandPolicy(program, grouped_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(grouped_handle);
+
+    var staged_outputs: [n_slots]backend_mod.ProgramIO = undefined;
+    var grouped_outputs: [n_slots]backend_mod.ProgramIO = undefined;
+    for (0..n_slots) |slot| {
+        const out_buf: u16 = @intCast(6 + slot * 6);
+        const base = slot * elems;
+        staged_outputs[slot] = programIo(out_buf, staged_out[base .. base + elems]);
+        grouped_outputs[slot] = programIo(out_buf, grouped_out[base .. base + elems]);
+    }
+
+    var staged_bench = ProjectionRowChainMetalBench{
+        .be = be,
+        .handle = staged_handle,
+        .out = staged_out,
+        .output_io = &staged_outputs,
+    };
+    var grouped_bench = ProjectionRowChainMetalBench{
+        .be = be,
+        .handle = grouped_handle,
+        .out = grouped_out,
+        .output_io = &grouped_outputs,
+    };
+
+    const staged_stats = measure(io, &staged_bench);
+    const grouped_stats = measure(io, &grouped_bench);
+    const approx_work = 2.0 * @as(f64, @floatFromInt(n_slots * case.m * case.n * case.k));
+
+    var staged_name_buf: [112]u8 = undefined;
+    const staged_name = try std.fmt.bufPrint(&staged_name_buf, "{s} staged", .{case.name});
+    try printStats(w, staged_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", staged_stats);
+
+    var grouped_name_buf: [112]u8 = undefined;
+    const grouped_name = try std.fmt.bufPrint(&grouped_name_buf, "{s} projection_row_chain_group", .{case.name});
+    try printStats(w, grouped_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", grouped_stats);
+
+    var ratio_name_buf: [112]u8 = undefined;
+    const ratio_name = try std.fmt.bufPrint(&ratio_name_buf, "{s} projection_row_chain_group", .{case.name});
+    try printRatio(w, ratio_name, staged_stats, grouped_stats, maxAbsDiff(staged_out, grouped_out));
+}
+
 fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
     try w.print("\nMetal Projection Row-Chain Command\n", .{});
     try w.print("----------------------------------\n", .{});
@@ -906,6 +1054,11 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
         .{ .name = "qproj group full-prefill x4 m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
     };
     for (projection_group_cases) |case| try benchProjectionGroupMetalCase(io, alloc, w, &metal, case);
+
+    const row_chain_group_cases = [_]ProjectionRowChainCase{
+        .{ .name = "qrow group full-prefill x4 m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
+    };
+    for (row_chain_group_cases) |case| try benchProjectionRowChainGroupMetalCase(io, alloc, w, &metal, case);
 
     const cases = [_]ProjectionRowChainCase{
         .{ .name = "qrow decode m=1 n=512 k=512", .m = 1, .n = 512, .k = 512 },

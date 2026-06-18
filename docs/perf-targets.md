@@ -212,6 +212,14 @@ machine for both prompt/prefill and decode.
   1.05x because current runs show this shape is exact but not reliably faster.
   This keeps projection grouping visible as a potential planner target without
   pretending it already moves the full Q8 prompt lane.
+- The frontier gate now also reports the paired row-chain diagnostic
+  `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
+  This compares four staged qmatmul+residual+RMSNorm-scale row chains against
+  the current semantic `projection_row_chain` lowering and enforces the same
+  row-chain correctness ceiling. It is intentionally diagnostic: it tells us
+  whether a larger semantic sublayer is promising before we write a tiled
+  row-wide reduction kernel, but it does not lower the full-model dispatch split
+  or promote the scalar row-chain Adapter.
 - Q8_0 tied LM-head logits are a standalone backend qmatvec dispatch outside
   the ProgramCommand stream. Current Q8_0 prompt evidence is gated at 181
   ProgramCommands and 242 dispatches because each of the 60 semantic

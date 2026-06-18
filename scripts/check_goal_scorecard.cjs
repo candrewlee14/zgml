@@ -806,6 +806,7 @@ function checkFrontierEvidence() {
     "projection_chain_prompt=",
     "projection_chain_full_prefill=",
     "projection_group_full_prefill=",
+    "projection_row_chain_group_full_prefill=",
     "candidate=",
     "floor=0.95",
     "floor=0.90",
