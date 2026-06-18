@@ -200,12 +200,13 @@ Current checked progress:
   native Program with preserved KernelPlan evidence. The remaining substrate
   jump is not another compatibility lane; it is a real tiled quantized row-chain
   throughput kernel, plus wider default browser/WebGPU execution evidence.
-- PyTorch-like replacement feel: ~74%. The TS-owned product frontend now has
+- PyTorch-like replacement feel: ~76%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
   checkpoints, eager debugging, eager/autograd `einsum` with ellipsis and
   broadcast semantics plus literal-equation shape inference, compile-aware lazy
-  parameter slots plus `matmul`/`mm`/parameterized-add lowering evidence,
+  parameter slots plus `matmul`/`mm`/parameterized-add lowering evidence and a
+  benchmarked allocation-free lazy `matmul -> add -> relu` Session path,
   `torch.compile.compile(lazyGraph)` and `lazyGraph.compile()` Program construction through Node/Bun
   adapters, and compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or

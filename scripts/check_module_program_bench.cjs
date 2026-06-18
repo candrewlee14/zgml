@@ -32,6 +32,7 @@ const floors = Object.freeze({
   softmaxClassifierSpeedup: 1.2,
   softmaxClassifierBatchedSpeedup: 3.0,
   logSoftmaxClassifierBatchedSpeedup: 3.0,
+  lazyMatmulAddReluBatchedSpeedup: 1.5,
 });
 const expectedKeys = Object.freeze([
   "activation_chain",
@@ -52,6 +53,7 @@ const expectedKeys = Object.freeze([
   "softmax_classifier",
   "softmax_classifier_batched",
   "log_softmax_classifier_batched",
+  "lazy_matmul_add_relu_batched",
 ]);
 
 function msNow() {
@@ -115,18 +117,23 @@ function requireHotPath(label, session, input, output) {
 }
 
 function requireCompileEvidence(spec, support) {
+  const layerCount = support.layerCount ?? support.trace?.layerCount;
+  const inputLen = support.inputLen ?? support.ir?.inputLen;
+  const outputLen = support.outputLen ?? support.ir?.outputLen;
+  const inputShape = support.inputShape ?? support.ir?.inputShape;
+  const outputShape = support.outputShape ?? support.ir?.outputShape;
   if (
     support.supported !== true ||
-    support.layerCount !== spec.layerCount ||
-    support.inputLen !== spec.inputLen ||
-    support.outputLen !== spec.outputLen
+    layerCount !== spec.layerCount ||
+    inputLen !== spec.inputLen ||
+    outputLen !== spec.outputLen
   ) {
     throw new Error(`${spec.label} expected supported compile evidence`);
   }
-  if (spec.inputShapeText && support.inputShape.join("x") !== spec.inputShapeText) {
+  if (spec.inputShapeText && inputShape.join("x") !== spec.inputShapeText) {
     throw new Error(`${spec.label} expected input shape ${spec.inputShapeText}`);
   }
-  if (spec.outputShapeText && support.outputShape.join("x") !== spec.outputShapeText) {
+  if (spec.outputShapeText && outputShape.join("x") !== spec.outputShapeText) {
     throw new Error(`${spec.label} expected output shape ${spec.outputShapeText}`);
   }
 }
@@ -173,28 +180,44 @@ function requireBenchSpecCoverage(specs) {
   }
 }
 
+function lazyMatmulAddReluEager(input, weightValues, biasValues, batch, inFeatures, outFeatures) {
+  const out = new Float32Array(batch * outFeatures);
+  for (let row = 0; row < batch; row += 1) {
+    for (let col = 0; col < outFeatures; col += 1) {
+      let sum = biasValues[col];
+      for (let feature = 0; feature < inFeatures; feature += 1) {
+        sum += input.data[row * inFeatures + feature] * weightValues[feature * outFeatures + col];
+      }
+      out[row * outFeatures + col] = Math.max(0, sum);
+    }
+  }
+  return out;
+}
+
 function runBenchSpec(spec) {
   const input = spec.input();
   const output = new Float32Array(spec.outputLen);
   const model = spec.model();
-  const support = model.compileSupport({ inputShape: spec.inputShape, backend: "cpu" });
+  const compileOptions = { inputShape: spec.inputShape, backend: "cpu" };
+  const support = model.compileSupport(compileOptions);
   requireCompileEvidence(spec, support);
   const program = model.compile({ inputShape: spec.inputShape, backend: "cpu" });
-  const session = program.bindModule(model);
+  const session = typeof spec.bindSession === "function" ? spec.bindSession(program) : program.bindModule(model);
   try {
     requireKernelPlan(spec, program.kernelPlan());
     requireIrAndParams(spec, program);
     requireHotPath(spec.label, session, input, output);
-    const eager = () => model.forward(input);
+    const eager = () => typeof spec.eager === "function" ? spec.eager(input) : model.forward(input);
     const compiledTensor = () => session.stepTensor(input);
     const compiled = () => session.executeInto(output, { input });
     const eagerOutput = eager();
     const compiledTensorOutput = compiledTensor();
     const compiledOutput = compiled();
     if (compiledOutput !== output) throw new Error(`${spec.label} expected executeInto to reuse caller output`);
-    const tensorError = maxAbsDiff(eagerOutput.data, compiledTensorOutput.data);
+    const eagerData = eagerOutput.data ?? eagerOutput;
+    const tensorError = maxAbsDiff(eagerData, compiledTensorOutput.data);
     if (tensorError > spec.tolerance) throw new Error(`${spec.label} eager/stepTensor mismatch ${tensorError}`);
-    const error = maxAbsDiff(eagerOutput.data, compiledOutput);
+    const error = maxAbsDiff(eagerData, compiledOutput);
     if (error > spec.tolerance) throw new Error(`${spec.label} eager/compiled mismatch ${error}`);
     session.resetSessionCallProfile();
     const eagerRuns = [];
@@ -811,6 +834,47 @@ const benchSpecs = [
       },
     },
     summary: (result) => `log_softmax_classifier_batched=${result.speedup.toFixed(2)}x floor=${floors.logSoftmaxClassifierBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=2 dispatch=2 kernels=linear|log-softmax batched=rank2 hot=allocation-free`,
+  },
+  {
+    key: "lazy_matmul_add_relu_batched",
+    label: "lazy-matmul-add-relu-batched",
+    floor: floors.lazyMatmulAddReluBatchedSpeedup,
+    inputShape: [128, 64],
+    inputShapeText: "128x64",
+    outputShapeText: "128x64",
+    inputLen: 128 * 64,
+    outputLen: 128 * 64,
+    layerCount: 3,
+    parameterNames: "w|b",
+    input: () => adapter.tensor(values(128 * 64, 13), [128, 64]),
+    model: () => adapter.lazy.input([128, 64])
+      .matmul(adapter.lazy.parameter([64, 64], "w"))
+      .add(adapter.lazy.parameter([64], "b"))
+      .relu(),
+    eager: (input) => lazyMatmulAddReluEager(input, values(64 * 64, 32), values(64, 64), 128, 64, 64),
+    bindSession: (program) => program.bind({
+      weights: new Float32Array(values(64 * 64, 32)),
+      bias: new Float32Array(values(64, 64)),
+    }),
+    ir: { opCount: 3, parameterCount: 2 },
+    iterations: 100,
+    tolerance: 1e-4,
+    plan: {
+      opCount: 3,
+      dispatchCount: 3,
+      publicOps: 3,
+      description: "lazy Tensor IR Matmul -> Add -> ReLU Program kernel plan",
+      check: (plan) => {
+        if (
+          ops(plan) !== "matmul|add|activation" ||
+          kernels(plan) !== "linear|add|relu" ||
+          plan.parameterLayout.parameters.map((param) => param.name).join("|") !== "w|b"
+        ) {
+          throw new Error("lazy matmul-add-relu expected Matmul -> Add -> ReLU kernel plan with named parameters");
+        }
+      },
+    },
+    summary: (result) => `lazy_matmul_add_relu_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyMatmulAddReluBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=3 kernels=linear|add|relu batched=rank2 parameters=w|b hot=allocation-free`,
   },
 ];
 
