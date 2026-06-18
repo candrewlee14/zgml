@@ -45,6 +45,7 @@ export const moduleOpIds: NumericMap = Object.freeze({
   maxPool2d: 17,
   avgPool2d: 18,
   conv2d: 19,
+  add: 20,
 });
 
 export const moduleFlags: NumericMap = Object.freeze({

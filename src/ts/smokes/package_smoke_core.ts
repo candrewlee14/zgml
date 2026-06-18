@@ -4010,8 +4010,11 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   const lazySigmoid = torch.lazy.input([2]).linear(3).sigmoid().linear(1);
   const lazyNamespaceSigmoid = torch.lazy.sigmoid(torch.lazy.input([2]).linear(3)).linear(1);
   const lazyMatmulWeight = torch.lazy.parameter([2, 3], "head.weight", "row-major:matmul.weight[in_features,out_features]");
+  const lazyMatmulBias = torch.lazy.parameter([3], "head.bias", "row-major:add.bias[features]");
   const lazyMatmulGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).relu();
+  const lazyMatmulBiasGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).add(lazyMatmulBias).relu();
   const lazyNamespaceMatmulGraph = torch.lazy.relu(torch.lazy.matmul(torch.lazy.input([2]), lazyMatmulWeight));
+  const lazyNamespaceMatmulBiasGraph = torch.lazy.relu(torch.lazy.add(torch.lazy.matmul(torch.lazy.input([2]), lazyMatmulWeight), lazyMatmulBias));
   const lazyMmGraph = torch.lazy.input([1, 2]).mm(lazyMatmulWeight);
   const lazyActivationChain = torch.lazy.input([2]).exp().log().neg().recip().abs().sqrt().square().sgn().step();
   const lazyNamespaceActivationChain = torch.lazy.step(torch.lazy.sgn(torch.lazy.square(torch.lazy.sqrt(torch.lazy.abs(torch.lazy.recip(torch.lazy.neg(torch.lazy.log(torch.lazy.exp(torch.lazy.input([2]))))))))));
@@ -4064,13 +4067,20 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazySigmoid.compileSupport().supported !== true ||
     lazyNamespaceSigmoid.compileSupport().supported !== true ||
     lazyMatmulGraph.compileSupport().supported !== true ||
+    lazyMatmulBiasGraph.compileSupport().supported !== true ||
     lazyNamespaceMatmulGraph.compileSupport().supported !== true ||
+    lazyNamespaceMatmulBiasGraph.compileSupport().supported !== true ||
     lazyMmGraph.compileSupport().supported !== true ||
     lazyMatmulGraph.trace().ops[0]?.op !== "matmul" ||
     lazyMatmulGraph.tensorProgramIr()?.ops[0]?.op !== "matmul" ||
     lazyMatmulGraph.kernelPlan()?.ops[0]?.kernel !== "matmul" ||
     lazyMatmulGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "linear" ||
     lazyMatmulGraph.kernelPlan()?.parameterLayout.parameters[0]?.name !== "head.weight" ||
+    lazyMatmulBiasGraph.trace().ops.map((op: Record<string, any>) => op.op).join("|") !== "matmul|add|activation" ||
+    lazyMatmulBiasGraph.tensorProgramIr()?.ops[1]?.op !== "add" ||
+    lazyMatmulBiasGraph.kernelPlan()?.ops[1]?.kernel !== "add" ||
+    lazyMatmulBiasGraph.kernelPlan()?.ops[1]?.nativeKernels.join("|") !== "add" ||
+    lazyMatmulBiasGraph.kernelPlan()?.parameterLayout.parameters.map((param: Record<string, any>) => param.name).join("|") !== "head.weight|head.bias" ||
     lazyActivationChain.compileSupport().supported !== true ||
     lazyNamespaceActivationChain.compileSupport().supported !== true ||
     lazySnakeSoftmaxGraph.compileSupport().supported !== true ||

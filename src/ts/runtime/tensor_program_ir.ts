@@ -114,6 +114,11 @@ function normalizedTraceOpAttrs(op: AnyRecord) {
         outFeatures: op.outFeatures,
         bias: false,
       };
+    case "add":
+      return {
+        features: op.features,
+        hasBias: parameterListHasName(op.parameters ?? [], "bias"),
+      };
     case "embedding":
       return {
         numEmbeddings: op.numEmbeddings,

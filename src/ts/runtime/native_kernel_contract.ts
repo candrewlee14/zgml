@@ -53,6 +53,7 @@ export function kernelNameForNativeModuleDesc(desc: NativeModuleOpDesc | null | 
     case moduleOpIds.maxPool2d: return "max-pool2d";
     case moduleOpIds.avgPool2d: return "avg-pool2d";
     case moduleOpIds.conv2d: return "conv2d";
+    case moduleOpIds.add: return "add";
     default: return "unknown";
   }
 }

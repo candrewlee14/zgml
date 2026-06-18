@@ -162,6 +162,7 @@ const module_op_activation_chain: u32 = 16;
 const module_op_max_pool2d: u32 = 17;
 const module_op_avg_pool2d: u32 = 18;
 const module_op_conv2d: u32 = 19;
+const module_op_add: u32 = 20;
 const module_activation_relu: u32 = 1;
 const module_activation_gelu: u32 = 2;
 const module_activation_silu: u32 = 3;
@@ -2075,6 +2076,21 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
                     current = try moduleActivate(current, op.activation);
                 }
                 current_len = out_features;
+            },
+            module_op_add => {
+                const features = op.a;
+                if (features == 0 or features != current_len) return error.ShapeMismatch;
+                if (op.activation != 0 or op.b != 0 or op.c != 0 or op.eps != 0) return error.InvalidArgument;
+                if (op.flags != module_flag_bias) return error.InvalidArgument;
+                const bias = try moduleAddParam(
+                    graph_alloc,
+                    &persistent_tensors_list,
+                    &persistent_params_list,
+                    .bias,
+                    &.{features},
+                    &bias_len,
+                );
+                current = current.add(bias.repeatLike(current));
             },
             module_op_activation => {
                 if (op.flags != 0 or op.a != 0 or op.b != 0 or op.c != 0) return error.InvalidArgument;
@@ -6397,6 +6413,56 @@ test "C ABI module program compiles traced sequential ops" {
         try std.testing.expectEqual(@as(u64, 2), mlp_runtime_profile.command_count);
         try std.testing.expectEqual(@as(u64, 2), mlp_runtime_profile.command_projection_count);
         try std.testing.expectEqual(@as(u64, 0), mlp_runtime_profile.command_op_count);
+    }
+
+    {
+        const add_ops = [_]zgml_module_op_desc{.{
+            .kind = module_op_add,
+            .flags = module_flag_bias,
+            .a = 2,
+        }};
+        var add_program: ?*zgml_program = null;
+        var add_session: ?*zgml_session = null;
+        defer zgml_session_free(add_session);
+        defer zgml_program_free(add_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = input_shape[0..].ptr,
+            .input_rank = input_shape.len,
+            .ops = add_ops[0..].ptr,
+            .op_count = add_ops.len,
+        }, &.{ .backend = backend_cpu }, &add_program));
+        try std.testing.expect(add_program != null);
+
+        var add_requirements = zgml_program_requirements{};
+        try std.testing.expectEqual(status(.ok), zgml_program_get_requirements(add_program, &add_requirements));
+        try std.testing.expectEqual(module_kind, add_requirements.model_kind);
+        try std.testing.expectEqual(@as(usize, 2), add_requirements.input_len);
+        try std.testing.expectEqual(@as(usize, 2), add_requirements.output_len);
+        try std.testing.expectEqual(@as(usize, 0), add_requirements.weights_len);
+        try std.testing.expectEqual(@as(usize, 2), add_requirements.bias_len);
+
+        const add_bias = [_]f32{ 10, -5 };
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(add_program, &.{
+            .weights = null,
+            .weights_len = 0,
+            .bias = add_bias[0..].ptr,
+            .bias_len = add_bias.len,
+        }, &add_session));
+        try std.testing.expect(add_session != null);
+
+        const add_input = [_]f32{ 1.5, 7 };
+        var add_output = [_]f32{0} ** 2;
+        var add_result = zgml_step_result{};
+        try std.testing.expectEqual(status(.ok), zgml_session_step(add_session, &.{
+            .input = add_input[0..].ptr,
+            .input_len = add_input.len,
+            .output = add_output[0..].ptr,
+            .output_len = add_output.len,
+        }, &add_result));
+        try std.testing.expectEqual(@as(usize, add_output.len), add_result.output_len);
+        try std.testing.expectApproxEqAbs(@as(f32, 11.5), add_output[0], 1e-6);
+        try std.testing.expectApproxEqAbs(@as(f32, 2), add_output[1], 1e-6);
     }
 
     const ops = [_]zgml_module_op_desc{

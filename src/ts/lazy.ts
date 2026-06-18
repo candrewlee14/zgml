@@ -33,6 +33,7 @@ type AnyRecord = Record<string, any>;
 type LazyOpKind =
   | "linear"
   | "matmul"
+  | "add"
   | "embedding"
   | "conv2d"
   | "maxPool2d"
@@ -169,6 +170,10 @@ export class LazyTensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
 
   mm<const WeightShape extends TensorShapeTuple>(weight: LazyTensor<WeightShape>): LazyTensor<LazyMatmulShape<Shape, WeightShape>> {
     return matmul(this, weight);
+  }
+
+  add<const BiasShape extends TensorShapeTuple>(bias: LazyTensor<BiasShape>): LazyTensor<Shape> {
+    return add(this, bias);
   }
 
   embedding<EmbeddingDim extends number>(numEmbeddings: number, embeddingDim: EmbeddingDim, options: Readonly<{ name?: string }> = {}): LazyTensor<LazyEmbeddingShape<Shape, EmbeddingDim>> {
@@ -880,6 +885,29 @@ export function mm<const Shape extends TensorShapeTuple, const WeightShape exten
   weight: LazyTensor<WeightShape>,
 ): LazyTensor<LazyMatmulShape<Shape, WeightShape>> {
   return matmul(tensor, weight);
+}
+
+export function add<const Shape extends TensorShapeTuple, const BiasShape extends TensorShapeTuple>(
+  tensor: LazyTensor<Shape>,
+  bias: LazyTensor<BiasShape>,
+): LazyTensor<Shape> {
+  if (bias.ops.length !== 0 || bias.source.role !== "parameter") {
+    throw new Error("lazy add currently expects a lazy.parameter(...) rhs so the compiled Program can bind the addend explicitly");
+  }
+  const biasShape = bias.shape;
+  if (biasShape.length !== 1) {
+    throw new Error(`lazy add expects rank-1 rhs parameter [features], got rank ${biasShape.length}`);
+  }
+  const features = positiveInteger(tensor.shape[tensor.shape.length - 1], "lazy add features");
+  if (biasShape[0] !== features) {
+    throw new Error(`lazy add lhs last dimension ${features} must match rhs dimension ${biasShape[0]}`);
+  }
+  return appendOp(tensor, {
+    op: "add",
+    outputShape: tensor.shape,
+    parameters: [lazyParameter(bias.source.name, biasShape, bias.source.layout)],
+    attrs: { features },
+  }, tensor.shape);
 }
 
 export function embedding<const Shape extends TensorShapeTuple, const EmbeddingDim extends number>(

@@ -199,13 +199,13 @@ Current checked progress:
   The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default browser/WebGPU
   execution evidence.
-- PyTorch-like replacement feel: ~70%. The TS-owned product frontend now has
+- PyTorch-like replacement feel: ~71%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
   checkpoints, eager debugging, eager/autograd `einsum` with ellipsis and
   broadcast semantics plus literal-equation shape inference, compile-aware lazy
-  parameter slots plus `matmul`/`mm` lowering evidence, and compile/bind/session
-  hooks through Node, Bun, package, and type smokes. The
+  parameter slots plus `matmul`/`mm`/parameterized-add lowering evidence, and
+  compile/bind/session hooks through Node, Bun, package, and type smokes. The
   remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
   compile hooks exist.
@@ -764,7 +764,7 @@ Current frontend slice:
   `setGradEnabled`, `noGrad`, `inferenceMode`, `enableGrad`) that suppress
   tensor/module/loss autograd edges while preserving explicit parameter
   construction,
-  indexed selection/gather/take/argsort/sort/topk/scatter-add (`indexSelect`, `index_select`, `gather`, `take`, `argsort`, `sort`, `topk`, `scatterAdd`, `scatter_add`), tensor joins (`cat`, `concat`, `concatenate`, `stack`, `vstack`, `hstack`) and eager/autograd `einsum` for explicit-output contractions, repeated-label traces, ellipsis batch axes, implicit ellipsis reductions, broadcast dimensions, and TS literal-equation shape inference, compile-aware lazy parameter slots with `matmul`/`mm` lowering evidence, JSON serialization, deterministic seeded
+  indexed selection/gather/take/argsort/sort/topk/scatter-add (`indexSelect`, `index_select`, `gather`, `take`, `argsort`, `sort`, `topk`, `scatterAdd`, `scatter_add`), tensor joins (`cat`, `concat`, `concatenate`, `stack`, `vstack`, `hstack`) and eager/autograd `einsum` for explicit-output contractions, repeated-label traces, ellipsis batch axes, implicit ellipsis reductions, broadcast dimensions, and TS literal-equation shape inference, compile-aware lazy parameter slots with `matmul`/`mm`/parameterized-add lowering evidence, JSON serialization, deterministic seeded
   randomness (`manualSeed` / `manual_seed`, `initialSeed`, `seededRng`, and
   per-call `seed` options), and
   PyTorch-familiar construction helpers (`zeros`, `ones`, `full`, `rand`,
