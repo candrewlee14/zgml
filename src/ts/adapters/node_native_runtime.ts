@@ -66,6 +66,7 @@ export const concatenate = nativeNodeRuntime.concatenate;
 export const stack = nativeNodeRuntime.stack;
 export const vstack = nativeNodeRuntime.vstack;
 export const hstack = nativeNodeRuntime.hstack;
+export const einsum = nativeNodeRuntime.einsum;
 export const allclose = nativeNodeRuntime.allclose;
 export const equal = nativeNodeRuntime.equal;
 export const to = nativeNodeRuntime.to;

@@ -493,6 +493,7 @@ export const parameter_layout = parameterLayout;
 
 export function compile<const Target extends EmbeddingModule, const S extends TensorShapeTuple>(target: Target, options: EmbeddingCompileOptions<S>): Program<S, ModuleForwardShape<Target, S>>;
 export function compile<const Target extends NnCompilableModule, const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>): Program<S, ModuleForwardShape<Target, S>>;
+export function compile<const Shape extends TensorShapeTuple>(target: LazyTensor<Shape>, options?: CompileOptions): Program<TensorShapeTuple, Shape>;
 export function compile(target: NnCompilableModule, options?: CompileOptions): Program;
 export function compile(target: readonly NnModule[], options?: CompileOptions): RawSequentialLayerListCompileDiagnostic;
 export function compile(target: unknown, options?: CompileNamespaceOptions): unknown;

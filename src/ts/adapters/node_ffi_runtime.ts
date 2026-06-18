@@ -1144,6 +1144,7 @@ const F = nn.F;
 const compile = createAdapterCompileNamespace({
   traceSequentialProgram,
   analyzeSequentialProgram,
+  compileModuleProgram,
 });
 const torchCheckpointIo = createAdapterTorchCheckpointIo(checkpoint, {
   readTextFile: (path) => readFileSync(path, "utf8"),

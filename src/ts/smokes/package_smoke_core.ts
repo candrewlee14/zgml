@@ -4055,6 +4055,8 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     torch.nn.avg_pool2d(2),
   ]), { inputShape: [1, 4, 4] });
   const lazyTrainingDropoutModuleGraph = torch.lazy.fromModule(torch.nn.dropout(0.5, { training: true }), { inputShape: [2] });
+  const lazyCompiledProgram = torch.compile.compile(lazy, { backend: "cpu" });
+  const lazyMatmulBiasCompiledProgram = torch.compile.compile(lazyMatmulBiasGraph, { backend: "cpu" });
   if (
     lazy.compileSupport().supported !== true ||
     lazyEmbeddingGraph.compileSupport().supported !== true ||
@@ -4108,6 +4110,10 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     torch.compile.inputShape(lazy).join("x") !== "2" ||
     torch.compile.outputShape(lazy).join("x") !== "1" ||
     torch.compile.parameterLayout(lazy).parameters.length !== 4 ||
+    lazyCompiledProgram.outputShape().join("x") !== "1" ||
+    lazyCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 3 ||
+    lazyMatmulBiasCompiledProgram.outputShape().join("x") !== "3" ||
+    lazyMatmulBiasCompiledProgram.compileEvidence()?.kernelPlan?.ops[1]?.kernel !== "add" ||
     lazyReductionChain.compileSupport().supported !== true ||
     lazyNamespaceReduction.compileSupport().supported !== true ||
     lazyShapeChain.compileSupport().supported !== true ||
@@ -4125,6 +4131,8 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   ) {
     throw new Error(`${label} expected torch.lazy to expose compile-capable typed graph evidence`);
   }
+  lazyCompiledProgram.free();
+  lazyMatmulBiasCompiledProgram.free();
   expectThrowIncludes(() => lazyTrainingDropoutGraph.requireCompileSupport(), "lazy graph cannot compile", `${label} lazy requireCompileSupport unsupported graph`);
   expectThrowIncludes(() => torch.lazy.require_compile_support(lazyTrainingDropoutGraph), "lazy graph cannot compile", `${label} lazy namespace require_compile_support unsupported graph`);
   expectThrowIncludes(() => torch.compile.requireCompileSupport(lazyTrainingDropoutGraph), "compile.requireCompileSupport rejected unsupported target", `${label} compile namespace lazy require unsupported graph`);

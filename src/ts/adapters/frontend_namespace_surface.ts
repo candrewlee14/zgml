@@ -14,6 +14,9 @@ import {
   programCompilerSignaturesFromCompileEvidence,
   requireProgramCompileEvidence,
 } from "../runtime/compiler_signatures.js";
+import {
+  compiledSequentialModuleSpecFromTrace,
+} from "../runtime/trace_compiler.js";
 
 type LossTrainHelpersOptions = Parameters<SharedFrontendRuntime["createLossTrainHelpers"]>[0];
 type OptimizerClassesOptions = Parameters<SharedFrontendRuntime["createOptimizerClasses"]>[0];
@@ -146,6 +149,7 @@ type TensorMethodSource = Readonly<Record<string, unknown>>;
 type AdapterCompileNamespaceOptions = Readonly<{
   traceSequentialProgram: (...args: any[]) => unknown;
   analyzeSequentialProgram: (...args: any[]) => unknown;
+  compileModuleProgram?: (spec: unknown, compileOptions?: unknown) => unknown;
 }>;
 
 const compileManifest = Object.freeze({
@@ -563,6 +567,23 @@ function nestedCompileEvidence(value: unknown): CompileEvidenceRecord | null {
   return value && typeof value === "object" ? value as CompileEvidenceRecord : null;
 }
 
+function lazyModuleSpecFromSupport(support: unknown) {
+  const evidence = compileObjectEvidence(support);
+  if (
+    evidence?.supported !== true ||
+    !evidence.trace ||
+    !evidence.ir ||
+    !evidence.kernelPlan
+  ) {
+    return null;
+  }
+  return compiledSequentialModuleSpecFromTrace([], evidence.trace, {
+    ir: evidence.ir,
+    kernelPlan: evidence.kernelPlan,
+    diagnostic: evidence.diagnostic ?? null,
+  });
+}
+
 function compileRejectionReason(value: unknown): string {
   const evidence = compileObjectEvidence(value);
   const diagnostic = compileObjectEvidence(evidence?.diagnostic);
@@ -712,8 +733,11 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       });
     }
     const method = compileTargetMethod(target, "compile");
-    if (!method) throw new Error("torch.compile.compile requires a module with compile()");
-    return method(compileOptions);
+    if (method) return method(compileOptions);
+    const lazySpec = lazyModuleSpecFromSupport(compileSupport(target, compileOptions));
+    if (lazySpec && options.compileModuleProgram) return options.compileModuleProgram(lazySpec, compileOptions);
+    if (lazySpec) throw new Error("torch.compile.compile requires a native module Program compiler for lazy graphs");
+    throw new Error("torch.compile.compile requires a module with compile() or a compile-capable lazy graph");
   }
 
   return Object.freeze(Object.assign(compile, {

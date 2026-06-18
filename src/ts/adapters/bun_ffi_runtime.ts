@@ -2489,6 +2489,7 @@ export const F = publicNamespaces.nn.F;
 export const compile = createAdapterCompileNamespace({
   traceSequentialProgram,
   analyzeSequentialProgram,
+  compileModuleProgram,
 });
 export const optim = publicNamespaces.optim;
 export const checkpoint: CheckpointNamespace = publicNamespaces.checkpoint as unknown as CheckpointNamespace;

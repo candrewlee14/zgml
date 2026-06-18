@@ -69,6 +69,7 @@ export const concatenate = nativeBunRuntime.concatenate;
 export const stack = nativeBunRuntime.stack;
 export const vstack = nativeBunRuntime.vstack;
 export const hstack = nativeBunRuntime.hstack;
+export const einsum = nativeBunRuntime.einsum;
 export const allclose = nativeBunRuntime.allclose;
 export const equal = nativeBunRuntime.equal;
 export const to = nativeBunRuntime.to;

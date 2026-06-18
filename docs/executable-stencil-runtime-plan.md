@@ -192,20 +192,22 @@ execution is the performance claim. Silent eager fallback is not allowed.
 
 Current checked progress:
 
-- Program/Session performance substrate: ~70%. The Program/Session shape,
+- Program/Session performance substrate: ~71%. The Program/Session shape,
   runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
   native Metal execution, optional native wgpu execution slices, and ggml
   benchmark gates are real enough that the substrate is past "architecture".
-  The remaining substrate jump is not another compatibility lane; it is a real
-  tiled quantized row-chain throughput kernel, plus wider default browser/WebGPU
-  execution evidence.
-- PyTorch-like replacement feel: ~71%. The TS-owned product frontend now has
+  Compile-capable lazy graphs can now lower through the host adapter into a
+  native Program with preserved KernelPlan evidence. The remaining substrate
+  jump is not another compatibility lane; it is a real tiled quantized row-chain
+  throughput kernel, plus wider default browser/WebGPU execution evidence.
+- PyTorch-like replacement feel: ~73%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
   checkpoints, eager debugging, eager/autograd `einsum` with ellipsis and
   broadcast semantics plus literal-equation shape inference, compile-aware lazy
-  parameter slots plus `matmul`/`mm`/parameterized-add lowering evidence, and
-  compile/bind/session hooks through Node, Bun, package, and type smokes. The
+  parameter slots plus `matmul`/`mm`/parameterized-add lowering evidence,
+  `torch.compile.compile(lazyGraph)` Program construction through Node/Bun
+  adapters, and compile/bind/session hooks through package and type smokes. The
   remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
   compile hooks exist.

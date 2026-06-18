@@ -8,9 +8,9 @@ const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
 const goalProgress = Object.freeze({
-  substratePct: 70,
+  substratePct: 71,
   substrateFloorPct: 65,
-  pytorchLikePct: 71,
+  pytorchLikePct: 73,
   pytorchLikeFloorPct: 60,
 });
 
@@ -2843,6 +2843,8 @@ function checkPytorchLikeSurface() {
     "const lazyNamespaceMatmulGraph = lazy.relu(lazy.matmul(lazyInput, lazyMatmulWeight))",
     "const lazyNamespaceMatmulBiasGraph = lazy.relu(lazy.add(lazy.matmul(lazyInput, lazyMatmulWeight), lazyMatmulBias))",
     "const lazyMmGraph = lazy.input([1, 2] as const).mm(lazyMatmulWeight)",
+    "const lazyCompiledProgram: Program<TensorShapeTuple, readonly [1]> = compile.compile(lazyGraph, { backend: \"cpu\" })",
+    "const lazyCompiledProgramOutputShape: readonly [1] = lazyCompiledProgram.outputShape()",
     "type LazyMatmulGraphShape = Expect<Equal<typeof lazyMatmulGraph.shape, readonly [3]>>",
     "type LazyMatmulBiasGraphShape = Expect<Equal<typeof lazyMatmulBiasGraph.shape, readonly [3]>>",
     "type LazyMmGraphShape = Expect<Equal<typeof lazyMmGraph.shape, readonly [1, 3]>>",
@@ -3977,6 +3979,10 @@ function checkPytorchLikeSurface() {
     "lazyMatmulBiasGraph.trace().ops.map((op: Record<string, any>) => op.op).join(\"|\") !== \"matmul|add|activation\"",
     "lazyMatmulBiasGraph.kernelPlan()?.ops[1]?.nativeKernels.join(\"|\") !== \"add\"",
     "lazyMatmulBiasGraph.kernelPlan()?.parameterLayout.parameters.map((param: Record<string, any>) => param.name).join(\"|\") !== \"head.weight|head.bias\"",
+    "const lazyCompiledProgram = torch.compile.compile(lazy, { backend: \"cpu\" })",
+    "const lazyMatmulBiasCompiledProgram = torch.compile.compile(lazyMatmulBiasGraph, { backend: \"cpu\" })",
+    "lazyCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 3",
+    "lazyMatmulBiasCompiledProgram.compileEvidence()?.kernelPlan?.ops[1]?.kernel !== \"add\"",
     "typeof adapter.compile !== \"function\"",
     "typeof torch.utils?.data?.Dataset !== \"function\"",
     "typeof torch.utils?.data?.SequentialSampler !== \"function\"",
@@ -4160,10 +4166,13 @@ function checkDocs() {
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
-    "Program/Session performance substrate: ~70%",
-    "PyTorch-like replacement feel: ~71%",
-    "The remaining substrate jump is not another compatibility lane;",
-    "tiled quantized row-chain throughput kernel",
+    "Program/Session performance substrate: ~71%",
+    "Compile-capable lazy graphs can now lower through the host adapter into a",
+    "native Program with preserved KernelPlan evidence.",
+    "PyTorch-like replacement feel: ~73%",
+    "`torch.compile.compile(lazyGraph)` Program construction through Node/Bun",
+    "The remaining substrate",
+    "tiled quantized row-chain",
     "remaining frontend jump is native lowering and breadth,",
     "compile hooks exist.",
   ]);

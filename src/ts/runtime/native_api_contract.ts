@@ -88,6 +88,7 @@ export const requiredNativeTensorFactoryExports = Object.freeze([
   "stack",
   "vstack",
   "hstack",
+  "einsum",
   "allclose",
   "equal",
 ] as const);
