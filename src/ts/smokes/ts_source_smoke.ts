@@ -56,6 +56,7 @@ const tensorProgramIr = require(["..", "runtime", "tensor_program_ir.cjs"].join(
 const kernelPlanPolicy = require(["..", "runtime", "kernel_plan.cjs"].join("/"));
 const traceCompiler = require(["..", "runtime", "trace_compiler.cjs"].join("/"));
 const compileNamespace = require(["..", "compile.cjs"].join("/"));
+const lazyNamespace = require(["..", "lazy.cjs"].join("/"));
 const inspectionNamespace = require(["..", "inspection.cjs"].join("/"));
 const sessionNamespace = require(["..", "session.cjs"].join("/"));
 const tensorPlacement = require(["..", "runtime", "tensor_placement.cjs"].join("/"));
@@ -6469,6 +6470,11 @@ expectThrow(
   () => compilerSignatures.requireProgramCompileEvidence(Object.freeze({ ...programCompileEvidence, signature: "wrong" })),
   "expected frozen ProgramCompileEvidence",
   "program compile evidence rejects mismatched signature",
+);
+expectThrow(
+  () => lazyNamespace.input([2]).linear(1).compile({ backend: "cpu" }),
+  "LazyTensor.compile requires a native adapter Program compiler; use torch.compile.compile(lazyGraph) in Node/Bun or inspect compileSupport() in source-only runtimes",
+  "source-only LazyTensor.compile rejects missing native compiler",
 );
 const permuteTrace = {
   kind: "sequential",

@@ -584,6 +584,14 @@ function lazyModuleSpecFromSupport(support: unknown) {
   });
 }
 
+function looksLikeLazyTensor(target: unknown) {
+  if (!target || typeof target !== "object") return false;
+  const record = target as Readonly<Record<string, unknown>>;
+  return Array.isArray(record.ops) &&
+    typeof record.trace === "function" &&
+    typeof record.compileSupport === "function";
+}
+
 function compileRejectionReason(value: unknown): string {
   const evidence = compileObjectEvidence(value);
   const diagnostic = compileObjectEvidence(evidence?.diagnostic);
@@ -721,6 +729,17 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     return evidence.outputShape ?? evidence.trace?.outputShape ?? kernelPlanField(target, "outputShape", compileOptions);
   }
 
+  function compileLazyTarget(target: unknown, compileOptions: CompileNamespaceOptions, requireLazyGraph = false) {
+    const support = compileSupport(target, compileOptions);
+    const lazySpec = lazyModuleSpecFromSupport(support);
+    if (lazySpec && options.compileModuleProgram) return options.compileModuleProgram(lazySpec, compileOptions);
+    if (lazySpec) throw new Error("torch.compile.compile requires a native module Program compiler for lazy graphs");
+    if (requireLazyGraph) {
+      throw new Error(`lazy graph cannot compile to native Program: ${compileRejectionReason(support)}`);
+    }
+    return null;
+  }
+
   function compile(target: unknown, compileOptions: CompileNamespaceOptions = {}) {
     if (Array.isArray(target)) {
       return Object.freeze({
@@ -732,11 +751,14 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
         }),
       });
     }
+    if (looksLikeLazyTensor(target)) {
+      const compiled = compileLazyTarget(target, compileOptions, true);
+      if (compiled) return compiled;
+    }
     const method = compileTargetMethod(target, "compile");
     if (method) return method(compileOptions);
-    const lazySpec = lazyModuleSpecFromSupport(compileSupport(target, compileOptions));
-    if (lazySpec && options.compileModuleProgram) return options.compileModuleProgram(lazySpec, compileOptions);
-    if (lazySpec) throw new Error("torch.compile.compile requires a native module Program compiler for lazy graphs");
+    const compiled = compileLazyTarget(target, compileOptions);
+    if (compiled) return compiled;
     throw new Error("torch.compile.compile requires a module with compile() or a compile-capable lazy graph");
   }
 

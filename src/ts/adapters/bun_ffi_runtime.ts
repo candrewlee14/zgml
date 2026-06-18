@@ -2491,6 +2491,7 @@ export const compile = createAdapterCompileNamespace({
   analyzeSequentialProgram,
   compileModuleProgram,
 });
+sharedFrontend.lazy.setLazyTensorProgramCompiler((lazyGraph, compileOptions) => compile.compile(lazyGraph, compileOptions) as any);
 export const optim = publicNamespaces.optim;
 export const checkpoint: CheckpointNamespace = publicNamespaces.checkpoint as unknown as CheckpointNamespace;
 const bunCheckpointFs = requireSharedFrontend("node:fs") as {

@@ -186,6 +186,7 @@ const lazyConvPoolModuleGraph = torch.lazy.fromModule(torch.nn.sequential([
   torch.nn.avg_pool2d(2),
 ]), { inputShape: [1, 4, 4] });
 const lazyTrainingDropoutModuleGraph = torch.lazy.fromModule(torch.nn.dropout(0.5, { training: true }), { inputShape: [2] });
+const lazyMethodCompiledProgram = lazy.compile({ backend: "cpu" });
 if (
   lazy.compileSupport().supported !== true ||
   lazyEmbeddingGraph.compileSupport().supported !== true ||
@@ -217,6 +218,8 @@ if (
   torch.compile.inputShape(lazy).join("x") !== "2" ||
   torch.compile.outputShape(lazy).join("x") !== "1" ||
   torch.compile.parameterLayout(lazy).parameters.length !== 4 ||
+  lazyMethodCompiledProgram.outputShape().join("x") !== "1" ||
+  lazyMethodCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 3 ||
   lazyTrainingDropoutGraph.canCompile() !== false ||
   lazyTrainingDropoutGraph.can_compile() !== false ||
   lazyReductionChain.compileSupport().supported !== true ||
@@ -232,7 +235,9 @@ if (
 ) {
   throw new Error("torch.lazy should expose compile-capable quickstart graph evidence");
 }
+lazyMethodCompiledProgram.free();
 assertThrows(() => lazyTrainingDropoutGraph.requireCompileSupport(), "lazy graph cannot compile", "lazy requireCompileSupport unsupported graph");
+assertThrows(() => lazyTrainingDropoutGraph.compile({ backend: "cpu" }), "lazy graph cannot compile", "lazy compile rejects unsupported graph");
 assertThrows(() => torch.lazy.require_compile_support(lazyTrainingDropoutGraph), "lazy graph cannot compile", "lazy namespace require_compile_support unsupported graph");
 assertThrows(() => torch.compile.requireCompileSupport(lazyTrainingDropoutGraph), "compile.requireCompileSupport rejected unsupported target", "compile namespace lazy require unsupported graph");
 

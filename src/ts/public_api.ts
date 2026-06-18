@@ -5650,6 +5650,7 @@ export interface LazyTensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
   can_compile(): boolean;
   requireCompileSupport(): LazyCompileSupport;
   require_compile_support(): LazyCompileSupport;
+  compile(options?: CompileOptions): Program<TensorShapeTuple, Shape>;
 }
 export type LazyModuleTarget = NnModule | readonly NnModule[];
 export interface LazyNamespace {

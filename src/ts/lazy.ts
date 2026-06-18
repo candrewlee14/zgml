@@ -15,6 +15,8 @@ import type {
   ModuleTargetForwardShape,
   NnModule,
   PermuteShape,
+  Program,
+  CompileOptions,
   SelectShape,
   SliceShape,
   SqueezeShape,
@@ -141,6 +143,13 @@ export type LazyCompilerArtifacts = Readonly<{
   kernelPlan: ModuleKernelPlan | null;
   diagnostic: CompileDiagnostic | null;
 }>;
+export type LazyTensorProgramCompiler = <const Shape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, options?: CompileOptions) => Program<TensorShapeTuple, Shape>;
+
+let lazyTensorProgramCompiler: LazyTensorProgramCompiler | null = null;
+
+export function setLazyTensorProgramCompiler(compiler: LazyTensorProgramCompiler | null): void {
+  lazyTensorProgramCompiler = compiler;
+}
 
 export class LazyTensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
   readonly shape: Shape;
@@ -418,6 +427,13 @@ export class LazyTensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
 
   require_compile_support(): LazyCompileSupport {
     return requireCompileSupport(this);
+  }
+
+  compile(options?: CompileOptions): Program<TensorShapeTuple, Shape> {
+    if (!lazyTensorProgramCompiler) {
+      throw new Error("LazyTensor.compile requires a native adapter Program compiler; use torch.compile.compile(lazyGraph) in Node/Bun or inspect compileSupport() in source-only runtimes");
+    }
+    return lazyTensorProgramCompiler(this, options);
   }
 }
 

@@ -1146,6 +1146,7 @@ const compile = createAdapterCompileNamespace({
   analyzeSequentialProgram,
   compileModuleProgram,
 });
+sharedFrontend.lazy.setLazyTensorProgramCompiler((lazyGraph, compileOptions) => compile.compile(lazyGraph, compileOptions));
 const torchCheckpointIo = createAdapterTorchCheckpointIo(checkpoint, {
   readTextFile: (path) => readFileSync(path, "utf8"),
   writeTextFile: (path, text) => writeFileSync(path, text, "utf8"),

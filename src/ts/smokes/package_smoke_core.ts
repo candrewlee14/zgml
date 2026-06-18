@@ -4056,6 +4056,7 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   ]), { inputShape: [1, 4, 4] });
   const lazyTrainingDropoutModuleGraph = torch.lazy.fromModule(torch.nn.dropout(0.5, { training: true }), { inputShape: [2] });
   const lazyCompiledProgram = torch.compile.compile(lazy, { backend: "cpu" });
+  const lazyMethodCompiledProgram = lazy.compile({ backend: "cpu" });
   const lazyMatmulBiasCompiledProgram = torch.compile.compile(lazyMatmulBiasGraph, { backend: "cpu" });
   if (
     lazy.compileSupport().supported !== true ||
@@ -4112,6 +4113,8 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     torch.compile.parameterLayout(lazy).parameters.length !== 4 ||
     lazyCompiledProgram.outputShape().join("x") !== "1" ||
     lazyCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 3 ||
+    lazyMethodCompiledProgram.outputShape().join("x") !== "1" ||
+    lazyMethodCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 3 ||
     lazyMatmulBiasCompiledProgram.outputShape().join("x") !== "3" ||
     lazyMatmulBiasCompiledProgram.compileEvidence()?.kernelPlan?.ops[1]?.kernel !== "add" ||
     lazyReductionChain.compileSupport().supported !== true ||
@@ -4132,8 +4135,10 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     throw new Error(`${label} expected torch.lazy to expose compile-capable typed graph evidence`);
   }
   lazyCompiledProgram.free();
+  lazyMethodCompiledProgram.free();
   lazyMatmulBiasCompiledProgram.free();
   expectThrowIncludes(() => lazyTrainingDropoutGraph.requireCompileSupport(), "lazy graph cannot compile", `${label} lazy requireCompileSupport unsupported graph`);
+  expectThrowIncludes(() => lazyTrainingDropoutGraph.compile({ backend: "cpu" }), "lazy graph cannot compile", `${label} lazy compile rejects unsupported graph`);
   expectThrowIncludes(() => torch.lazy.require_compile_support(lazyTrainingDropoutGraph), "lazy graph cannot compile", `${label} lazy namespace require_compile_support unsupported graph`);
   expectThrowIncludes(() => torch.compile.requireCompileSupport(lazyTrainingDropoutGraph), "compile.requireCompileSupport rejected unsupported target", `${label} compile namespace lazy require unsupported graph`);
 
