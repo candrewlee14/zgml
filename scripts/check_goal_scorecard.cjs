@@ -10,7 +10,7 @@ const notes = [];
 const goalProgress = Object.freeze({
   substratePct: 77,
   substrateFloorPct: 65,
-  pytorchLikePct: 94,
+  pytorchLikePct: 95,
   pytorchLikeFloorPct: 60,
 });
 
@@ -3667,7 +3667,8 @@ function checkPytorchLikeSurface() {
     "activationChainPlan.ops[0]?.fusedOpCount !== 3",
     "activationChainPlan.ops[0]?.nativeKernels?.join(\"|\") !== \"relu|square|sqrt\"",
     "expected activation-chain fusion compile evidence",
-    "expected nn.diagonal trace/IR plus honest unsupported compile evidence",
+    "expected nn.diagonal native Program evidence",
+    "compiled nn.diagonal output",
     "expected nn.repeat rank-2 repeat/tile to stay honest unsupported",
     "expected nn.repeat rank-1 repeat/tile native Program evidence",
     "compiled nn.repeat rank-1 repeat/tile output",
@@ -4259,7 +4260,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=77% floor=65%; PyTorch-like surface=94% floor=60%",
+    "goal progress: Program/Session substrate=77% floor=65%; PyTorch-like surface=95% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4304,7 +4305,7 @@ function checkDocs() {
     "capability-disabled test still proves the composite fallback",
     "Compile-capable lazy graphs can now lower through the host adapter into a",
     "native Program with preserved KernelPlan evidence.",
-    "PyTorch-like replacement feel: ~94%",
+    "PyTorch-like replacement feel: ~95%",
     "`torch.compile.compile(lazyGraph)` and `lazyGraph.compile()` Program construction through Node/Bun",
     "The remaining substrate",
     "tiled quantized row-chain",

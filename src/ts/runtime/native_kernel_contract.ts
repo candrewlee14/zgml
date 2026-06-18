@@ -48,6 +48,7 @@ export function kernelNameForNativeModuleDesc(desc: NativeModuleOpDesc | null | 
     case moduleOpIds.narrow: return "narrow";
     case moduleOpIds.slice: return "slice";
     case moduleOpIds.transpose: return "transpose";
+    case moduleOpIds.diagonal: return "diagonal";
     case moduleOpIds.layerNorm: return "layer-norm";
     case moduleOpIds.rmsNorm: return "rms-norm";
     case moduleOpIds.embedding: return "embedding";

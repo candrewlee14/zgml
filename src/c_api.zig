@@ -159,6 +159,7 @@ const module_op_reduce_mean: u32 = 13;
 const module_op_reduce_max: u32 = 14;
 const module_op_reduce_min: u32 = 21;
 const module_op_feature_affine: u32 = 22;
+const module_op_diagonal: u32 = 23;
 const module_op_slice: u32 = 15;
 const module_op_activation_chain: u32 = 16;
 const module_op_max_pool2d: u32 = 17;
@@ -1992,6 +1993,21 @@ fn moduleTranspose(op: zgml_module_op_desc, graph_alloc: std.mem.Allocator, curr
     };
 }
 
+fn moduleDiagonal(op: zgml_module_op_desc, graph_alloc: std.mem.Allocator, current: *TensorF32, current_rank: usize) !ModuleNarrowResult {
+    if (op.activation != 0 or op.flags != 0 or op.a != 0 or op.b != 0 or op.c != 0 or op.eps != 0) return error.InvalidArgument;
+    if (current_rank != 2) return error.Unsupported;
+    const diag_len = @min(current.ne[0], current.ne[1]);
+    if (diag_len == 0) return error.ShapeMismatch;
+    const ne = [_]usize{diag_len};
+    const stride = std.math.add(usize, current.strides[0], current.strides[1]) catch return error.ShapeMismatch;
+    const strides = [_]usize{stride};
+    const diagonal = current.asStrided(ne[0..], strides[0..], 0);
+    return .{
+        .tensor = try moduleMaterializeDense(graph_alloc, diagonal),
+        .feature_len = diag_len,
+    };
+}
+
 fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBackend) !ModuleProgramHandle {
     if ((desc.input_rank < 1 or desc.input_rank > 4) or desc.input_shape == null) return error.InvalidArgument;
     if (desc.op_count > 0 and desc.ops == null) return error.InvalidArgument;
@@ -2188,6 +2204,12 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
                 const transposed = try moduleTranspose(op, graph_alloc, current, current_rank);
                 current = transposed.tensor;
                 current_len = transposed.feature_len;
+            },
+            module_op_diagonal => {
+                const diagonal = try moduleDiagonal(op, graph_alloc, current, current_rank);
+                current = diagonal.tensor;
+                current_rank = 1;
+                current_len = diagonal.feature_len;
             },
             module_op_layer_norm => {
                 const features = op.a;
@@ -7231,6 +7253,49 @@ test "C ABI module program compiles traced sequential ops" {
         }, &result));
         try std.testing.expectEqual(@as(usize, 2), result.output_len);
         try std.testing.expectEqualSlices(f32, &.{ 1, 4 }, &strided_feature_output);
+    }
+
+    {
+        const diagonal_shape = [_]usize{ 2, 3 };
+        const diagonal_ops = [_]zgml_module_op_desc{.{
+            .kind = module_op_diagonal,
+        }};
+        var diagonal_program: ?*zgml_program = null;
+        var diagonal_session: ?*zgml_session = null;
+        defer zgml_session_free(diagonal_session);
+        defer zgml_program_free(diagonal_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = diagonal_shape[0..].ptr,
+            .input_rank = diagonal_shape.len,
+            .ops = diagonal_ops[0..].ptr,
+            .op_count = diagonal_ops.len,
+        }, &.{ .backend = backend_cpu }, &diagonal_program));
+        try std.testing.expect(diagonal_program != null);
+
+        var diagonal_requirements = zgml_program_requirements{};
+        try std.testing.expectEqual(status(.ok), zgml_program_get_requirements(diagonal_program, &diagonal_requirements));
+        try std.testing.expectEqual(module_kind, diagonal_requirements.model_kind);
+        try std.testing.expectEqual(@as(usize, 6), diagonal_requirements.input_len);
+        try std.testing.expectEqual(@as(usize, 2), diagonal_requirements.output_len);
+
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(diagonal_program, &.{
+            .weights = null,
+            .weights_len = 0,
+        }, &diagonal_session));
+        try std.testing.expect(diagonal_session != null);
+
+        const diagonal_input = [_]f32{ 1, 2, 3, 4, 5, 6 };
+        var diagonal_output = [_]f32{0} ** 2;
+        result = .{};
+        try std.testing.expectEqual(status(.ok), zgml_session_step(diagonal_session, &.{
+            .input = diagonal_input[0..].ptr,
+            .input_len = diagonal_input.len,
+            .output = diagonal_output[0..].ptr,
+            .output_len = diagonal_output.len,
+        }, &result));
+        try std.testing.expectEqual(@as(usize, 2), result.output_len);
+        try std.testing.expectEqualSlices(f32, &.{ 1, 5 }, &diagonal_output);
     }
 
     {

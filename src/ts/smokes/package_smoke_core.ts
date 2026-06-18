@@ -3228,18 +3228,28 @@ function expectDiagonalModuleEvidence(adapter: Record<string, any>, label: strin
   const trace = diagonal.trace({ inputShape: [2, 3], backend: "cpu" });
   const support = diagonal.compileSupport({ inputShape: [2, 3], backend: "cpu" });
   const ir = diagonal.tensorProgramIr({ inputShape: [2, 3], backend: "cpu" });
-  const diagnostic = Array.isArray(support.diagnostics) ? support.diagnostics[0] : undefined;
+  const kernelPlan = adapter.nn.kernelPlan(diagonal, { inputShape: [2, 3], backend: "cpu" });
   if (
     trace.outputShape.join("x") !== "2" ||
     !ir ||
     ir.ops[0]?.op !== "diagonal" ||
-    support.supported !== false ||
-    diagnostic === undefined ||
-    diagnostic.stage !== "kernelizer" ||
-    diagnostic.code !== "unsupported-op" ||
-    diagnostic.op !== "diagonal"
+    support.supported !== true ||
+    support.outputShape.join("x") !== "2" ||
+    kernelPlan.dispatchCount !== 1 ||
+    kernelPlan.ops.length !== 1 ||
+    kernelPlan.ops[0]?.op !== "diagonal" ||
+    kernelPlan.ops[0]?.nativeKernels.join("|") !== "diagonal"
   ) {
-    throw new Error(`${label} expected nn.diagonal trace/IR plus honest unsupported compile evidence`);
+    throw new Error(`${label} expected nn.diagonal native Program evidence`);
+  }
+  const program = diagonal.compile({ inputShape: [2, 3], backend: "cpu" });
+  const session = program.bind({});
+  try {
+    const compiled = session.stepTensor(input);
+    expectClose(compiled.data, [1, 5], `${label} compiled nn.diagonal output`);
+  } finally {
+    session.dispose();
+    program.dispose();
   }
 }
 

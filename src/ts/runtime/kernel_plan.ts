@@ -615,6 +615,17 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
         eps: 0,
       };
     }
+    case "diagonal":
+      if (!op.inputShape || op.inputShape.length !== 2) return null;
+      return {
+        kind: moduleOpIds.diagonal,
+        activation: 0,
+        flags: 0,
+        a: 0,
+        b: 0,
+        c: 0,
+        eps: 0,
+      };
     case "permute":
       return permuteDescForIrOp(op);
     case "layerNorm":
@@ -862,6 +873,7 @@ function kernelNameForIrOp(op: any) {
     case "slice": return "slice";
     case "transpose": return "transpose";
     case "permute": return "transpose";
+    case "diagonal": return "diagonal";
     case "layerNorm": return "layer-norm";
     case "rmsNorm": return "rms-norm";
     case "batchNorm1d": return "affine";
