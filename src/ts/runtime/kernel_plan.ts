@@ -560,6 +560,18 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
         c: op.outputShape.length === 2 ? op.outputShape[1] : 0,
         eps: 0,
       };
+    case "repeat":
+    case "tile":
+      if (!op.outputShape || op.outputShape.length !== 1) return null;
+      return {
+        kind: moduleOpIds.broadcastTo,
+        activation: 0,
+        flags: 0,
+        a: 1,
+        b: op.outputShape[0],
+        c: 0,
+        eps: 0,
+      };
     case "narrow": {
       const shape = narrowIrShape(op);
       if (!shape || !narrowIrCanLower(op)) return null;
@@ -842,7 +854,9 @@ function kernelNameForIrOp(op: any) {
     case "unsqueeze":
     case "dropout": return "reshape";
     case "broadcastTo":
-    case "expand": return "broadcast";
+    case "expand":
+    case "repeat":
+    case "tile": return "broadcast";
     case "narrow": return "narrow";
     case "select": return "select";
     case "slice": return "slice";

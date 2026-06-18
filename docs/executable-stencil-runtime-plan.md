@@ -216,7 +216,7 @@ Current checked progress:
   reduce-min kernel later without changing user code. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence.
-- PyTorch-like replacement feel: ~93%. The TS-owned product frontend now has
+- PyTorch-like replacement feel: ~94%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
   checkpoints, eager debugging, eager/autograd `einsum` with ellipsis and
@@ -228,7 +228,9 @@ Current checked progress:
   normalized transformer classifier, and token-head Session paths,
   `torch.compile.compile(lazyGraph)` and `lazyGraph.compile()` Program construction through Node/Bun
   adapters, eval-mode `BatchNorm1d` lowering through a derived native affine
-  Program while training-mode BatchNorm remains honestly stateful/eager, and
+  Program while training-mode BatchNorm remains honestly stateful/eager,
+  rank-1 PyTorch-style `repeat`/`tile` lowering through the native module
+  Program ABI, and
   compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
   compile hooks exist.
@@ -1236,13 +1238,15 @@ Current frontend slice:
   movement kernel. Higher-rank transpose and zero-copy strided output bindings
   remain future compiler work. `nn.broadcastTo` and `nn.expand` also lower
   through the native module Program ABI for rank-1/rank-2 shapes as materialized
-  dense repeat ops, giving FFI callers a concrete output-buffer contract while
-  leaving zero-copy broadcast views as future compiler work. Other multi-layer
+  dense repeat ops. `nn.repeat` and `nn.tile` now use that same ABI lane for
+  rank-1 positive-multiple tiled repeats, giving FFI callers a concrete
+  output-buffer contract while leaving zero-copy broadcast/tile views and true
+  rank-2 row-major tile lowering as future compiler work. Other multi-layer
   JS/TS graphs still reject explicitly until a general tensor/program compiler
   exists.
 - Package smoke evidence now covers that shape/view family from the public
   Node/Bun product runtime, not only internal compiler helpers:
-  `broadcastTo`, `expand`, row/feature-axis `narrow`, row/feature-axis
+  `broadcastTo`, `expand`, `repeat`, `tile`, row/feature-axis `narrow`, row/feature-axis
   `select`, contiguous and stepped `slice`, plus terminal zero-dispatch
   `flatten`, `squeeze`, and `unsqueeze` all prove frozen compile evidence,
   kernel-plan dispatch/elision counts, and eager/compiled output parity; the

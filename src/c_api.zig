@@ -1902,7 +1902,11 @@ fn moduleBroadcastSpec(op: zgml_module_op_desc, current: *const TensorF32, curre
     for (0..spec.rank) |axis| {
         const target_dim = try moduleNativeShapeDim(spec, axis);
         const src_dim = if (axis < src_offset) 1 else try moduleRowMajorDim(current, current_rank, axis - src_offset);
-        if (src_dim != target_dim and src_dim != 1) return error.ShapeMismatch;
+        if (src_dim != target_dim and src_dim != 1) {
+            if (!(current_rank == 1 and spec.rank == 1 and target_dim > 0 and target_dim % src_dim == 0)) {
+                return error.ShapeMismatch;
+            }
+        }
     }
     return spec;
 }
@@ -7382,6 +7386,53 @@ test "C ABI module program compiles traced sequential ops" {
         for (broadcast_output, expected) |actual, want| {
             try std.testing.expectApproxEqAbs(want, actual, 1e-6);
         }
+    }
+
+    {
+        const tiled_input_shape = [_]usize{3};
+        const tiled_ops = [_]zgml_module_op_desc{
+            .{
+                .kind = module_op_broadcast_to,
+                .a = 1,
+                .b = 6,
+            },
+        };
+        var tiled_program: ?*zgml_program = null;
+        var tiled_session: ?*zgml_session = null;
+        defer zgml_session_free(tiled_session);
+        defer zgml_program_free(tiled_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = tiled_input_shape[0..].ptr,
+            .input_rank = tiled_input_shape.len,
+            .ops = tiled_ops[0..].ptr,
+            .op_count = tiled_ops.len,
+        }, &.{ .backend = backend_cpu }, &tiled_program));
+        try std.testing.expect(tiled_program != null);
+
+        var tiled_requirements = zgml_program_requirements{};
+        try std.testing.expectEqual(status(.ok), zgml_program_get_requirements(tiled_program, &tiled_requirements));
+        try std.testing.expectEqual(module_kind, tiled_requirements.model_kind);
+        try std.testing.expectEqual(@as(usize, 3), tiled_requirements.input_len);
+        try std.testing.expectEqual(@as(usize, 6), tiled_requirements.output_len);
+
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(tiled_program, &.{
+            .weights = null,
+            .weights_len = 0,
+        }, &tiled_session));
+        try std.testing.expect(tiled_session != null);
+
+        const tiled_input = [_]f32{ 1, 2, 3 };
+        var tiled_output = [_]f32{0} ** 6;
+        result = .{};
+        try std.testing.expectEqual(status(.ok), zgml_session_step(tiled_session, &.{
+            .input = tiled_input[0..].ptr,
+            .input_len = tiled_input.len,
+            .output = tiled_output[0..].ptr,
+            .output_len = tiled_output.len,
+        }, &result));
+        try std.testing.expectEqual(@as(usize, 6), result.output_len);
+        try std.testing.expectEqualSlices(f32, &.{ 1, 2, 3, 1, 2, 3 }, &tiled_output);
     }
 
     {
