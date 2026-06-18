@@ -264,6 +264,7 @@ function checkScripts() {
     "zgml wasm ffi tiny llama smoke ok",
     "zgml wasm ffi tiny checkpoint data load smoke ok",
     "zgml wasm ffi webgpu compile/resource-probe tiny linear + mock host execution smoke ok",
+    "zgml wasm ffi webgpu LLaMA packed proof ok: labels=",
     "zgml wasm ffi webgpu resource-probe tiny llama smoke ok",
     "gguf-smollm3-nope-gqa-pipeline",
   ]);
@@ -948,6 +949,7 @@ function checkPortableWasmRuntimeEvidence() {
     "zgml wasm ffi smoke ok:",
     "zgml wasm ffi webgpu compile/resource-probe tiny linear + mock host execution smoke ok",
     "zgml wasm ffi tiny llama smoke ok:",
+    "zgml wasm ffi webgpu LLaMA packed proof ok: labels=",
     "zgml wasm ffi webgpu resource-probe tiny llama smoke ok",
   ]);
 

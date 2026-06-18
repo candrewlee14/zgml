@@ -13355,6 +13355,13 @@ async function runTinyLlamaWebGpuCompileOnlySmoke() {
 	      "metadata-mha-pipeline",
 	      "config-json-mqa-pipeline",
 	    ]);
+      const packedLlamaProfileLabels = [];
+      const recordPackedLlamaProfileLabel = (label) => {
+        if (packedLlamaProfileLabels.includes(label)) {
+          throw new Error(`duplicate portable LLaMA packed profile label: ${label}`);
+        }
+        packedLlamaProfileLabels.push(label);
+      };
 
 		    {
 		      let nativeOutputMismatchModel = 0;
@@ -13899,6 +13906,7 @@ async function runTinyLlamaWebGpuCompileOnlySmoke() {
           ) {
             throw new Error(`native-backed WebGPU grouped LLaMA ${packedTinyLlamaProof.label} default safetensors pipeline evidence mismatch`);
           }
+          recordPackedLlamaProfileLabel(`native-${packedTinyLlamaProof.label}`);
         } finally {
           if (nativeFamilySessionHandle !== 0) exports.zgml_session_free(nativeFamilySessionHandle);
           if (nativeFamilySession && nativeFamilySession.ownedResources.length !== 0) {
@@ -14154,6 +14162,7 @@ async function runTinyLlamaWebGpuCompileOnlySmoke() {
       ) {
         throw new Error("host-only WebGPU grouped LLaMA block pipeline evidence mismatch");
       }
+      recordPackedLlamaProfileLabel(packedTinyLlamaProof.label);
       const groupedGreedyCallStart = groupedPipelineExecutorCalls.length;
       const groupedGreedySession = groupedPipelineProgram.bindHostResources();
       const groupedGreedyHandle = groupedGreedySession.handle;
@@ -14306,6 +14315,7 @@ async function runTinyLlamaWebGpuCompileOnlySmoke() {
         ) {
           throw new Error(`host-only WebGPU grouped LLaMA ${packedTinyLlamaProof.label} ergonomic greedy executor evidence mismatch`);
         }
+        recordPackedLlamaProfileLabel(`greedy-${packedTinyLlamaProof.label}`);
       } finally {
         expectStatus(groupedHostExports.zgml_session_free(groupedGreedyHandle), ok, `host-only WebGPU grouped LLaMA ${packedTinyLlamaProof.label} ergonomic greedy Session free`);
       }
@@ -14314,6 +14324,16 @@ async function runTinyLlamaWebGpuCompileOnlySmoke() {
         groupedPipelineProgram.tokenExecutor?.destroy?.();
       }
     }
+    const requiredPackedLlamaProfileLabels = packedTinyLlamaProofs.flatMap((proof) => [
+      proof.label,
+      `greedy-${proof.label}`,
+      ...(nativeBackedDefaultFamilyLabels.has(proof.label) ? [`native-${proof.label}`] : []),
+    ]);
+    const missingPackedLlamaProfileLabels = requiredPackedLlamaProfileLabels.filter((label) => !packedLlamaProfileLabels.includes(label));
+    if (missingPackedLlamaProfileLabels.length !== 0 || packedLlamaProfileLabels.length !== requiredPackedLlamaProfileLabels.length) {
+      throw new Error(`portable LLaMA packed profile labels mismatch: missing=${missingPackedLlamaProfileLabels.join(",")} actual=${packedLlamaProfileLabels.join(",")}`);
+    }
+    console.log(`zgml wasm ffi webgpu LLaMA packed proof ok: labels=${packedLlamaProfileLabels.length}`);
 
     const ropeConflictBytes = tinyLlamaModelResourceFileBytes(mhaTinyLlamaTwoLayerTensorSpecs, {
       metadata: {

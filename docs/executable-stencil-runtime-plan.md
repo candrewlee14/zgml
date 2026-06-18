@@ -3577,6 +3577,9 @@ Current first slice:
   current no-adapter browser mock gate records the expanded 74-profile-label
   matrix, storage-mode call splits, output reads, and explicit mock fallback
   work.
+  The Node/WASI portable Wasm smoke now keeps a matching packed-family LLaMA
+  profile ledger and fails on missing or duplicate normal/native/greedy labels
+  before printing `zgml wasm ffi webgpu LLaMA packed proof ok: labels=...`.
   For debugging one packed-family browser path without redefining the proof
   gate, `examples/wasm_ffi/browser_smoke_runner.mjs` accepts
   `--llama-profile-label=<label>`; the filtered page now skips unrelated
