@@ -7557,8 +7557,8 @@ test "C ABI module program compiles traced sequential ops" {
         try std.testing.expectEqual(@as(u64, backend_webgpu), webgpu_log_inspection.backend);
         try std.testing.expectEqual(@as(u64, @intFromBool(build_options.use_wgpu)), webgpu_log_inspection.execution_supported);
         try std.testing.expectEqual(@as(u64, 1), webgpu_log_inspection.external_resources_supported);
-        try std.testing.expect(webgpu_log_inspection.op_count > 1);
-        try std.testing.expect(webgpu_log_inspection.command_count > 1);
+        try std.testing.expectEqual(@as(u64, 1), webgpu_log_inspection.op_count);
+        try std.testing.expectEqual(@as(u64, 1), webgpu_log_inspection.command_count);
         try std.testing.expect(webgpu_log_inspection.command_stencil_hash != 0);
 
         if (build_options.use_wgpu) {
@@ -7583,8 +7583,8 @@ test "C ABI module program compiles traced sequential ops" {
 
             var webgpu_log_profile = zgml_runtime_profile{};
             try std.testing.expectEqual(status(.ok), zgml_session_runtime_profile(webgpu_log_softmax_session, &webgpu_log_profile));
-            try std.testing.expect(webgpu_log_profile.backend_op_count > 1);
-            try std.testing.expect(webgpu_log_profile.backend_dispatch_count > 1);
+            try std.testing.expectEqual(@as(u64, 1), webgpu_log_profile.backend_op_count);
+            try std.testing.expectEqual(@as(u64, 1), webgpu_log_profile.backend_dispatch_count);
             try std.testing.expectEqual(@as(u64, 1), webgpu_log_profile.sync_count);
 
             var webgpu_device_input: ?*zgml_buffer = null;
@@ -7630,8 +7630,8 @@ test "C ABI module program compiles traced sequential ops" {
             var webgpu_device_profile = zgml_runtime_profile{};
             try std.testing.expectEqual(status(.ok), zgml_session_runtime_profile(webgpu_device_session, &webgpu_device_profile));
             try std.testing.expectEqual(@as(u64, 1), webgpu_device_profile.call_count);
-            try std.testing.expect(webgpu_device_profile.backend_op_count > 1);
-            try std.testing.expect(webgpu_device_profile.backend_dispatch_count > 1);
+            try std.testing.expectEqual(@as(u64, 1), webgpu_device_profile.backend_op_count);
+            try std.testing.expectEqual(@as(u64, 1), webgpu_device_profile.backend_dispatch_count);
             try std.testing.expectEqual(@as(u64, 0), webgpu_device_profile.sync_count);
         } else {
             try std.testing.expectEqual(status(.unsupported), zgml_session_bind(webgpu_log_softmax_program, &.{

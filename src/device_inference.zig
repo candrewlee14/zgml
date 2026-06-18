@@ -2211,9 +2211,11 @@ test "DeviceInference keeps log softmax fusion sub-ops without native row op sup
     try graph.infer(y);
 
     var state = TestBackendState{};
+    var be = testBackend(&state);
+    be.capabilities.logsoftmax = false;
     var program = try DeviceF32.Program.compile(.{
         .graph = &graph,
-        .be = testBackendForDevice(&state, .metal),
+        .be = be,
         .alloc = testing.allocator,
         .input_tensors = &.{x},
         .output_tensors = &.{y},

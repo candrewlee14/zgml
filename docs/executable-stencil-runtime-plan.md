@@ -192,7 +192,7 @@ execution is the performance claim. Silent eager fallback is not allowed.
 
 Current checked progress:
 
-- Program/Session performance substrate: ~76%. The Program/Session shape,
+- Program/Session performance substrate: ~77%. The Program/Session shape,
   runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
   native Metal execution, optional native wgpu execution slices, and ggml
   benchmark gates are real enough that the substrate is past "architecture".
@@ -207,9 +207,9 @@ Current checked progress:
   path for scalar and batched inputs. A batched `RMSNorm+GELU -> Linear`
   Program benchmark now proves the RMSNorm side of that descriptor path on a
   profitable workload. Common classifier/token-head `LogSoftmax` tails now
-  lower to a native reference row op instead of replaying ten composite
-  Tensor Program IR sub-ops, while backends without that capability still take
-  the explicit composite fallback. The remaining substrate jump is not another compatibility lane; it is a real
+  lower to a native row op on reference CPU, Metal, and WGPU instead of
+  replaying ten composite Tensor Program IR sub-ops, while an explicit
+  capability-disabled test still proves the composite fallback. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence.
 - PyTorch-like replacement feel: ~92%. The TS-owned product frontend now has

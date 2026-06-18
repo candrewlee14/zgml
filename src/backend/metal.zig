@@ -16,6 +16,7 @@ const DeviceOpTag = std.meta.Tag(backend_mod.DeviceOp);
 const compute_op_softmax: u32 = 100;
 const compute_op_layernorm: u32 = 101;
 const compute_op_rmsnorm: u32 = 102;
+const compute_op_logsoftmax: u32 = 103;
 
 fn DeviceOpPayload(comptime tag: DeviceOpTag) type {
     inline for (@typeInfo(backend_mod.DeviceOp).@"union".fields) |field| {
@@ -2474,7 +2475,7 @@ const shader_source =
     \\//   sqrt=14 recip=15 exp=16 log=17 gelu=18 sqr=34
     \\//   sum=19 max=20 repeat=21 slice_assign=27
     \\// Fused ops use codes 100+:
-    \\//   fused_softmax=100 fused_layernorm=101 fused_rmsnorm=102
+    \\//   fused_softmax=100 fused_layernorm=101 fused_rmsnorm=102 fused_logsoftmax=103
     \\
     \\kernel void compute_f32(
     \\    device const float* src0 [[buffer(0)]],
@@ -2557,6 +2558,20 @@ const shader_source =
     \\            }
     \\            float inv = 1.0f / s;
     \\            for (uint j = 0; j < cols; j++) dst[dst_base + j] *= inv;
+    \\            break;
+    \\        }
+    \\        // ── Fused log-softmax: one thread per row ──
+    \\        // n_elements = rows, src0_ne[0] = cols
+    \\        case 103: {
+    \\            uint cols = p.src0_ne[0];
+    \\            uint src_base = p.src0_offset + gid * cols;
+    \\            uint dst_base = p.dst_offset + gid * cols;
+    \\            float m = -INFINITY;
+    \\            for (uint j = 0; j < cols; j++) m = max(m, src0[src_base + j]);
+    \\            float s = 0.0f;
+    \\            for (uint j = 0; j < cols; j++) s += exp(src0[src_base + j] - m);
+    \\            float log_denom = m + log(s);
+    \\            for (uint j = 0; j < cols; j++) dst[dst_base + j] = src0[src_base + j] - log_denom;
     \\            break;
     \\        }
     \\        // ── Fused layer norm: one thread per row ──
@@ -4535,6 +4550,13 @@ fn computeDispatchSpec(op: backend_mod.DeviceOp) ?ComputeDispatchSpec {
             .dst = s.dst,
             .grid = .{ .gx = linearGrid(s.rows) },
         },
+        .logsoftmax => |s| return .{
+            .params = rowComputeParams(compute_op_logsoftmax, s.rows, s.cols, s.src_offset, s.dst_offset),
+            .src0 = s.src,
+            .src1 = s.src,
+            .dst = s.dst,
+            .grid = .{ .gx = linearGrid(s.rows) },
+        },
         .layernorm => |l| return .{
             .params = epsilonRowComputeParams(compute_op_layernorm, l.rows, l.cols, l.eps, l.src_offset, l.dst_offset),
             .src0 = l.src,
@@ -4578,6 +4600,24 @@ fn computeDispatchSpec(op: backend_mod.DeviceOp) ?ComputeDispatchSpec {
         },
         else => return null,
     }
+}
+
+test "metal compute dispatch supports native logsoftmax row op" {
+    const spec = computeDispatchSpec(.{ .logsoftmax = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 2,
+        .cols = 4,
+        .src_offset = 3,
+        .dst_offset = 5,
+    } }) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(compute_op_logsoftmax, spec.params.op);
+    try std.testing.expectEqual(@as(u32, 2), spec.params.n_elements);
+    try std.testing.expectEqual(@as(u32, 4), spec.params.src0_ne[0]);
+    try std.testing.expectEqual(@as(u32, 3), spec.params.src0_offset);
+    try std.testing.expectEqual(@as(u32, 5), spec.params.dst_offset);
+    try std.testing.expectEqual(@as(u16, 0), spec.src0);
+    try std.testing.expectEqual(@as(u16, 1), spec.dst);
 }
 
 fn attentionParams(att: anytype) AttentionParams {

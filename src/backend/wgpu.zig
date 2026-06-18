@@ -2060,6 +2060,89 @@ const wgsl_softmax =
     \\  }
     \\}
 ;
+const wgsl_logsoftmax =
+    \\struct Values {
+    \\  data: array<f32>,
+    \\};
+    \\struct Params {
+    \\  rows: u32,
+    \\  cols: u32,
+    \\  src_offset: u32,
+    \\  dst_offset: u32,
+    \\};
+    \\@group(0) @binding(0) var<storage, read> src: Values;
+    \\@group(0) @binding(1) var<storage, read_write> output: Values;
+    \\@group(0) @binding(2) var<uniform> params: Params;
+    \\var<workgroup> scratch: array<f32, 256>;
+    \\
+    \\@compute @workgroup_size(256)
+    \\fn main(
+    \\  @builtin(workgroup_id) wid: vec3<u32>,
+    \\  @builtin(local_invocation_id) lid3: vec3<u32>,
+    \\) {
+    \\  let row = wid.x;
+    \\  let lid = lid3.x;
+    \\  if (row >= params.rows) {
+    \\    return;
+    \\  }
+    \\  let src_base = params.src_offset + row * params.cols;
+    \\  let dst_base = params.dst_offset + row * params.cols;
+    \\  var row_max = -3.4028234663852886e38f;
+    \\  var col = lid;
+    \\  loop {
+    \\    if (col >= params.cols) {
+    \\      break;
+    \\    }
+    \\    row_max = max(row_max, src.data[src_base + col]);
+    \\    col = col + 256u;
+    \\  }
+    \\  scratch[lid] = row_max;
+    \\  workgroupBarrier();
+    \\  var stride = 128u;
+    \\  loop {
+    \\    if (stride == 0u) {
+    \\      break;
+    \\    }
+    \\    if (lid < stride) {
+    \\      scratch[lid] = max(scratch[lid], scratch[lid + stride]);
+    \\    }
+    \\    workgroupBarrier();
+    \\    stride = stride / 2u;
+    \\  }
+    \\  let max_value = scratch[0];
+    \\  var row_sum = 0.0f;
+    \\  col = lid;
+    \\  loop {
+    \\    if (col >= params.cols) {
+    \\      break;
+    \\    }
+    \\    row_sum = row_sum + exp(src.data[src_base + col] - max_value);
+    \\    col = col + 256u;
+    \\  }
+    \\  scratch[lid] = row_sum;
+    \\  workgroupBarrier();
+    \\  stride = 128u;
+    \\  loop {
+    \\    if (stride == 0u) {
+    \\      break;
+    \\    }
+    \\    if (lid < stride) {
+    \\      scratch[lid] = scratch[lid] + scratch[lid + stride];
+    \\    }
+    \\    workgroupBarrier();
+    \\    stride = stride / 2u;
+    \\  }
+    \\  let log_denom = max_value + log(scratch[0]);
+    \\  col = lid;
+    \\  loop {
+    \\    if (col >= params.cols) {
+    \\      break;
+    \\    }
+    \\    output.data[dst_base + col] = src.data[src_base + col] - log_denom;
+    \\    col = col + 256u;
+    \\  }
+    \\}
+;
 const wgsl_reduce =
     \\struct Values {
     \\  data: array<f32>,
@@ -2500,6 +2583,7 @@ fn tinyLinearCapabilities() backend_mod.Capabilities {
     caps.qmatmul = true;
     caps.runtime_qweights = true;
     caps.softmax = true;
+    caps.logsoftmax = true;
     caps.layernorm = true;
     caps.rmsnorm = true;
     caps.reduce = true;
@@ -2940,6 +3024,7 @@ const ProgramShape = union(enum) {
     layernorm: LayerNormShape,
     rmsnorm: RmsNormShape,
     softmax: SoftmaxShape,
+    logsoftmax: SoftmaxShape,
     reduce: ReduceShape,
     rope: RopeShape,
     slice_assign: SliceAssignShape,
@@ -2968,6 +3053,7 @@ const ProgramShape = union(enum) {
             .layernorm => wgsl_layernorm,
             .rmsnorm => wgsl_rmsnorm,
             .softmax => wgsl_softmax,
+            .logsoftmax => wgsl_logsoftmax,
             .reduce => wgsl_reduce,
             .rope => wgsl_rope,
             .slice_assign => wgsl_slice_assign,
@@ -2998,6 +3084,7 @@ const ProgramShape = union(enum) {
             .layernorm => @sizeOf(LayerNormParams),
             .rmsnorm => @sizeOf(RmsNormParams),
             .softmax => @sizeOf(SoftmaxParams),
+            .logsoftmax => @sizeOf(SoftmaxParams),
             .reduce => @sizeOf(ReduceParams),
             .rope => @sizeOf(RopeParams),
             .slice_assign => @sizeOf(SliceAssignParams),
@@ -3028,6 +3115,7 @@ const ProgramShape = union(enum) {
             .layernorm => |shape| shape.output,
             .rmsnorm => |shape| shape.output,
             .softmax => |shape| shape.output,
+            .logsoftmax => |shape| shape.output,
             .reduce => |shape| shape.output,
             .rope => |shape| shape.output,
             .slice_assign => |shape| shape.output,
@@ -3058,13 +3146,14 @@ const ProgramShape = union(enum) {
             .layernorm => |shape| shape.rows,
             .rmsnorm => |shape| shape.rows,
             .softmax => |shape| shape.rows,
+            .logsoftmax => |shape| shape.rows,
             .reduce => |shape| shape.n_out,
             .rope => |shape| shape.cells,
             .slice_assign => |shape| shape.cells,
             .attention => |shape| shape.seq_q,
         };
         return switch (self) {
-            .layernorm, .rmsnorm, .softmax, .reduce, .attention => invocations,
+            .layernorm, .rmsnorm, .softmax, .logsoftmax, .reduce, .attention => invocations,
             else => invocations / 64 + @intFromBool(invocations % 64 != 0),
         };
     }
@@ -3364,6 +3453,15 @@ const ProgramShape = union(enum) {
                 c.wgpuQueueWriteBuffer(queue, buffer, 0, &params, @sizeOf(RmsNormParams));
             },
             .softmax => |shape| {
+                const params = SoftmaxParams{
+                    .rows = shape.rows,
+                    .cols = shape.cols,
+                    .src_offset = shape.src_offset,
+                    .dst_offset = shape.dst_offset,
+                };
+                c.wgpuQueueWriteBuffer(queue, buffer, 0, &params, @sizeOf(SoftmaxParams));
+            },
+            .logsoftmax => |shape| {
                 const params = SoftmaxParams{
                     .rows = shape.rows,
                     .cols = shape.cols,
@@ -4049,6 +4147,7 @@ const RuntimeBindings = struct {
                 .layernorm => |shape| try self.rebuildLayerNormBindGroup(compiled, i, shape),
                 .rmsnorm => |shape| try self.rebuildRmsNormBindGroup(compiled, i, shape),
                 .softmax => |shape| try self.rebuildSoftmaxBindGroup(compiled, i, shape),
+                .logsoftmax => |shape| try self.rebuildSoftmaxBindGroup(compiled, i, shape),
                 .reduce => |shape| try self.rebuildReduceBindGroup(compiled, i, shape),
                 .rope => |shape| try self.rebuildRopeBindGroup(compiled, i, shape),
                 .slice_assign => |shape| try self.rebuildSliceAssignBindGroup(compiled, i, shape),
@@ -5078,6 +5177,7 @@ fn detectExecutableShape(program: backend_mod.DeviceProgram) ?ProgramShape {
     if (detectLayerNorm(program)) |shape| return .{ .layernorm = shape };
     if (detectRmsNorm(program)) |shape| return .{ .rmsnorm = shape };
     if (detectSoftmax(program)) |shape| return .{ .softmax = shape };
+    if (detectLogSoftmax(program)) |shape| return .{ .logsoftmax = shape };
     if (detectReduce(program)) |shape| return .{ .reduce = shape };
     if (detectRope(program)) |shape| return .{ .rope = shape };
     if (detectSliceAssign(program)) |shape| return .{ .slice_assign = shape };
@@ -5189,6 +5289,7 @@ fn addDispatchShape(families: *DispatchFamilyCounts, shape: ProgramShape) void {
         .layernorm => families.layernorm += 1,
         .rmsnorm => families.rmsnorm += 1,
         .softmax => families.softmax += 1,
+        .logsoftmax => families.softmax += 1,
         .reduce => families.reduce += 1,
         .rope => families.rope += 1,
         .slice_assign => families.slice_assign += 1,
@@ -6199,6 +6300,26 @@ fn detectSoftmax(program: backend_mod.DeviceProgram) ?SoftmaxShape {
     if (program.ops.len != 1) return null;
     const soft = switch (program.ops[0]) {
         .softmax => |s| s,
+        else => return null,
+    };
+    if (soft.rows == 0 or soft.cols == 0) return null;
+    _ = std.math.mul(u32, soft.rows, soft.cols) catch return null;
+    _ = program.buffer_sizes[soft.src];
+    _ = program.buffer_sizes[soft.dst];
+    return .{
+        .src = soft.src,
+        .output = soft.dst,
+        .rows = soft.rows,
+        .cols = soft.cols,
+        .src_offset = soft.src_offset,
+        .dst_offset = soft.dst_offset,
+    };
+}
+
+fn detectLogSoftmax(program: backend_mod.DeviceProgram) ?SoftmaxShape {
+    if (program.ops.len != 1) return null;
+    const soft = switch (program.ops[0]) {
+        .logsoftmax => |s| s,
         else => return null,
     };
     if (soft.rows == 0 or soft.cols == 0) return null;
@@ -9808,9 +9929,9 @@ test "wgpu backend executes DeviceInference log-softmax lowering" {
     defer program.deinit();
 
     const inspection = program.inspect();
-    try std.testing.expect(inspection.op_count > 1);
+    try std.testing.expectEqual(@as(u64, 1), inspection.op_count);
     try std.testing.expect(inspection.execution_supported);
-    try std.testing.expect(inspection.command_shape.command_count > 1);
+    try std.testing.expectEqual(@as(u32, 1), inspection.command_shape.command_count);
 
     var input_values = [_]f32{
         1, 2,  3,  4,
@@ -11139,6 +11260,20 @@ test "wgpu executable capabilities remain shape-aware" {
         .initial_uploads = &.{},
     };
     try std.testing.expect(be.supportsProgram(softmax_program));
+
+    const logsoftmax_ops = [_]backend_mod.DeviceOp{.{ .logsoftmax = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 1,
+        .cols = 4,
+    } }};
+    const logsoftmax_program = backend_mod.DeviceProgram{
+        .ops = &logsoftmax_ops,
+        .n_buffers = 2,
+        .buffer_sizes = &.{ 4, 4 },
+        .initial_uploads = &.{},
+    };
+    try std.testing.expect(be.supportsProgram(logsoftmax_program));
 
     const reduce_ops = [_]backend_mod.DeviceOp{.{ .reduce = .{
         .op = .sum,
