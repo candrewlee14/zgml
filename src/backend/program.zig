@@ -4909,6 +4909,7 @@ fn opReadsBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
         .qmatmul => |q| q.input == buf,
         .conv2d => |c| c.src == buf or c.weight == buf or c.bias == buf,
         .softmax => |s| s.src == buf,
+        .logsoftmax => |s| s.src == buf,
         .layernorm => |l| l.src == buf,
         .rmsnorm => |r| r.src == buf,
         .reduce => |r| r.src == buf,
@@ -4936,6 +4937,7 @@ fn opWritesBuffer(op: backend_mod.DeviceOp, buf: u16) bool {
         .qmatmul => |q| q.dst == buf,
         .conv2d => |c| c.dst == buf,
         .softmax => |s| s.dst == buf,
+        .logsoftmax => |s| s.dst == buf,
         .layernorm => |l| l.dst == buf,
         .rmsnorm => |r| r.dst == buf,
         .reduce => |r| r.dst == buf,
@@ -5007,6 +5009,10 @@ fn opAccessSpans(op: backend_mod.DeviceOp) OpAccessSpans {
             access.addWrite(bufferSpan(c.dst, c.dst_offset, c.out_w * c.out_h * c.out_channels * c.batch));
         },
         .softmax => |s| {
+            access.addRead(bufferSpan(s.src, s.src_offset, s.rows * s.cols));
+            access.addWrite(bufferSpan(s.dst, s.dst_offset, s.rows * s.cols));
+        },
+        .logsoftmax => |s| {
             access.addRead(bufferSpan(s.src, s.src_offset, s.rows * s.cols));
             access.addWrite(bufferSpan(s.dst, s.dst_offset, s.rows * s.cols));
         },
@@ -5858,7 +5864,7 @@ fn kernelFamily(op: backend_mod.DeviceOp) KernelFamily {
     return switch (op) {
         .elementwise => .elementwise,
         .fused_elementwise => .fused_elementwise,
-        .softmax, .layernorm, .rmsnorm => .row,
+        .softmax, .logsoftmax, .layernorm, .rmsnorm => .row,
         .reduce => .reduce,
         .repeat, .conv2d, .max_pool2d, .avg_pool2d, .gather_rows, .slice_assign => .movement,
         .matmul => .matmul,
@@ -5880,6 +5886,7 @@ fn executionClass(op: backend_mod.DeviceOp, policy: SchedulePolicy) ExecutionCla
         .elementwise,
         .fused_elementwise,
         .softmax,
+        .logsoftmax,
         .layernorm,
         .rmsnorm,
         .reduce,

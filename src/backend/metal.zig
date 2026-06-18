@@ -8440,7 +8440,7 @@ const CompiledProgram = struct {
                 self.encodeAttention(exec, view, att);
                 return true;
             },
-            .elementwise, .softmax, .layernorm, .rmsnorm, .reduce, .repeat, .slice_assign => return false,
+            .elementwise, .softmax, .logsoftmax, .layernorm, .rmsnorm, .reduce, .repeat, .slice_assign => return false,
             .fused_elementwise => |fe| return self.tryEncodeFusedElementwise(exec, view, fe),
         }
     }

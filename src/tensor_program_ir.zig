@@ -126,7 +126,7 @@ pub fn TensorProgramIr(comptime T: type) type {
             input_start: usize,
             input_count: usize,
 
-            fn inputs(self: IrOp, ir: Ir) []const ValueId {
+            pub fn inputs(self: IrOp, ir: Ir) []const ValueId {
                 return ir.op_inputs[self.input_start..][0..self.input_count];
             }
         };

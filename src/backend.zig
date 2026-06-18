@@ -19,6 +19,7 @@ pub const Capabilities = struct {
     qmatmul: bool = false,
     runtime_qweights: bool = false,
     softmax: bool = false,
+    logsoftmax: bool = false,
     layernorm: bool = false,
     rmsnorm: bool = false,
     reduce: bool = false,
@@ -53,6 +54,7 @@ pub const Capabilities = struct {
         .qmatmul = true,
         .runtime_qweights = true,
         .softmax = true,
+        .logsoftmax = true,
         .layernorm = true,
         .rmsnorm = true,
         .reduce = true,
@@ -131,6 +133,7 @@ pub const Capabilities = struct {
             .matmul => self.dense_matmul_f32,
             .qmatmul => self.qmatmul,
             .softmax => self.softmax,
+            .logsoftmax => self.logsoftmax,
             .layernorm => self.layernorm,
             .rmsnorm => self.rmsnorm,
             .repeat => self.repeat,
@@ -208,6 +211,7 @@ pub const DeviceOp = union(enum) {
         dst_row_stride: u32 = 0,
     },
     softmax: struct { dst: u16, src: u16, rows: u32, cols: u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
+    logsoftmax: struct { dst: u16, src: u16, rows: u32, cols: u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
     layernorm: struct { dst: u16, src: u16, rows: u32, cols: u32, eps: f32 = 1e-5, src_offset: u32 = 0, dst_offset: u32 = 0 },
     rmsnorm: struct { dst: u16, src: u16, rows: u32, cols: u32, eps: f32 = 1e-5, src_offset: u32 = 0, dst_offset: u32 = 0 },
     reduce: struct { op: Op, dst: u16, src: u16, n_out: u32, reduce_size: u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
@@ -549,6 +553,9 @@ pub const DeviceProgram = struct {
             .softmax => |s| self.hasBuffer(s.dst) and self.hasBuffer(s.src) and
                 self.dense2Fits(s.src, s.src_offset, @intCast(s.rows), @intCast(s.cols)) and
                 self.dense2Fits(s.dst, s.dst_offset, @intCast(s.rows), @intCast(s.cols)),
+            .logsoftmax => |s| self.hasBuffer(s.dst) and self.hasBuffer(s.src) and
+                self.dense2Fits(s.src, s.src_offset, @intCast(s.rows), @intCast(s.cols)) and
+                self.dense2Fits(s.dst, s.dst_offset, @intCast(s.rows), @intCast(s.cols)),
             .layernorm => |l| self.hasBuffer(l.dst) and self.hasBuffer(l.src) and
                 self.dense2Fits(l.src, l.src_offset, @intCast(l.rows), @intCast(l.cols)) and
                 self.dense2Fits(l.dst, l.dst_offset, @intCast(l.rows), @intCast(l.cols)),
@@ -726,6 +733,7 @@ pub const ExecutionFamilyCounts = struct {
     layernorm: u64 = 0,
     rmsnorm: u64 = 0,
     softmax: u64 = 0,
+    logsoftmax: u64 = 0,
     reduce: u64 = 0,
     rope: u64 = 0,
     slice_assign: u64 = 0,
@@ -760,7 +768,7 @@ pub const ExecutionFamilyCounts = struct {
     }
 
     pub fn rowCount(self: ExecutionFamilyCounts) u64 {
-        return self.layernorm + self.rmsnorm + self.softmax + self.reduce;
+        return self.layernorm + self.rmsnorm + self.softmax + self.logsoftmax + self.reduce;
     }
 
     pub fn movementCount(self: ExecutionFamilyCounts) u64 {

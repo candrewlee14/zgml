@@ -8,7 +8,7 @@ const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
 const goalProgress = Object.freeze({
-  substratePct: 75,
+  substratePct: 76,
   substrateFloorPct: 65,
   pytorchLikePct: 92,
   pytorchLikeFloorPct: 60,
@@ -192,6 +192,21 @@ function checkScripts() {
     "for (uint col = tid; col < p.N; col += QMATVEC_DOT_THREADS)",
     "for (uint k = 0; k < p.K; k++)",
     ".qmatmul_row_chain_f32, &buffers, params, 7, .{ .gx = q.M }, QMATVEC_DOT_THREADS",
+  ]);
+  requireIncludes(read("src/backend.zig"), "src/backend.zig", "native reference logsoftmax capability", [
+    "logsoftmax: bool = false",
+    ".logsoftmax = true",
+    "logsoftmax: struct",
+  ]);
+  requireIncludes(read("src/device_inference.zig"), "src/device_inference.zig", "native logsoftmax lowering with explicit fallback", [
+    "self.capabilities.logsoftmax",
+    "logsoftmaxDeviceOp(self.buffers",
+    "DeviceInference keeps log softmax fusion sub-ops without native row op support",
+  ]);
+  requireIncludes(read("src/backend/reference.zig"), "src/backend/reference.zig", "reference executor logsoftmax row kernel", [
+    ".logsoftmax => executeLogSoftmax",
+    "fn logsoftmax(self: Context, s: anytype) void",
+    "reference executor logsoftmax normalizes rows in log space",
   ]);
   if (scripts["smoke:adapters"] !== "npm run build:package && npm run smoke:node && npm run smoke:bun:dist") {
     errors.push("package.json smoke:adapters must keep the one-build Node/Bun adapter gate");
@@ -4225,7 +4240,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=75% floor=65%; PyTorch-like surface=92% floor=60%",
+    "goal progress: Program/Session substrate=76% floor=65%; PyTorch-like surface=92% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4262,9 +4277,12 @@ function checkDocs() {
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
-    "Program/Session performance substrate: ~75%",
+    "Program/Session performance substrate: ~76%",
     "LayerNorm/RMSNorm descriptors can carry post-affine activations",
     "A batched `RMSNorm+GELU -> Linear`",
+    "Common classifier/token-head `LogSoftmax` tails now",
+    "native reference row op instead of replaying ten composite",
+    "explicit composite fallback",
     "Compile-capable lazy graphs can now lower through the host adapter into a",
     "native Program with preserved KernelPlan evidence.",
     "PyTorch-like replacement feel: ~92%",

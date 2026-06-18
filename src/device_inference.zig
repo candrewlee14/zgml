@@ -609,6 +609,15 @@ pub fn DeviceInference(comptime T: type) type {
                     .log_softmax => |log_softmax| log_softmax,
                     else => return error.UnsupportedDeviceOp,
                 };
+                const inputs = ir_op.inputs(ir);
+                if (inputs.len == 1) {
+                    const src = ir.valueTensor(inputs[0]);
+                    const dst = ir.opOutputTensor(ir_op);
+                    if (self.capabilities.logsoftmax and isCanonicalRowSoftmaxInput(dst, src)) {
+                        try self.ops.append(self.alloc, logsoftmaxDeviceOp(self.buffers, dst, src, self.buffers.idx(dst), self.buffers.idx(src)));
+                        return;
+                    }
+                }
                 for (ir.ops[log_softmax.op_start..][0..log_softmax.op_count]) |sub_op| {
                     try self.lowerNodeOp(ir, sub_op);
                 }
@@ -1492,6 +1501,17 @@ pub fn DeviceInference(comptime T: type) type {
             } };
         }
 
+        fn logsoftmaxDeviceOp(buffers: *const BufferMap, node: *Tensor, src: *const Tensor, dst_idx: u16, src_idx: u16) backend_mod.DeviceOp {
+            return .{ .logsoftmax = .{
+                .dst = dst_idx,
+                .src = src_idx,
+                .rows = @intCast(src.nElems() / src.ne[0]),
+                .cols = @intCast(src.ne[0]),
+                .src_offset = @intCast(buffers.offset(src)),
+                .dst_offset = @intCast(buffers.offset(node)),
+            } };
+        }
+
         fn rmsnormDeviceOp(buffers: *const BufferMap, node: *Tensor, src: *const Tensor, dst_idx: u16, src_idx: u16) backend_mod.DeviceOp {
             return .{ .rmsnorm = .{
                 .dst = dst_idx,
@@ -2143,7 +2163,7 @@ test "DeviceInference lowers layer norm fusion through TensorProgramIr attrs" {
     try testing.expectApproxEqAbs(@as(f32, 1e-3), op.eps, 1e-8);
 }
 
-test "DeviceInference lowers log softmax fusion through TensorProgramIr sub-ops" {
+test "DeviceInference lowers log softmax fusion to native row op when supported" {
     const DeviceF32 = DeviceInference(f32);
     var graph = ComputeGraphF32.init(testing.allocator);
     defer graph.deinit();
@@ -2173,6 +2193,35 @@ test "DeviceInference lowers log softmax fusion through TensorProgramIr sub-ops"
     try testing.expect(ir.input_edge_count > ir.step_count);
     try testing.expect(ir.normalized_step_hash != 0);
     try testing.expect(ir.normalized_shape_hash != 0);
+    try testing.expectEqual(@as(usize, 1), state.compiled_ops.len);
+    try testing.expectEqual(backend_mod.DeviceOp.logsoftmax, std.meta.activeTag(state.compiled_ops[0]));
+    try testing.expectEqual(@as(u32, 1), state.compiled_ops[0].logsoftmax.rows);
+    try testing.expectEqual(@as(u32, 3), state.compiled_ops[0].logsoftmax.cols);
+}
+
+test "DeviceInference keeps log softmax fusion sub-ops without native row op support" {
+    const DeviceF32 = DeviceInference(f32);
+    var graph = ComputeGraphF32.init(testing.allocator);
+    defer graph.deinit();
+    const a = graph.allocator();
+
+    const x = try TensorF32.init(a, &.{3});
+    x.setData(&.{ 1, 2, 3 });
+    const y = x.logSoftmax(&.{1});
+    try graph.infer(y);
+
+    var state = TestBackendState{};
+    var program = try DeviceF32.Program.compile(.{
+        .graph = &graph,
+        .be = testBackendForDevice(&state, .metal),
+        .alloc = testing.allocator,
+        .input_tensors = &.{x},
+        .output_tensors = &.{y},
+    });
+    defer program.deinit();
+
+    const ir = program.inspect().ir;
+    try testing.expectEqual(@as(usize, 1), ir.log_softmax_step_count);
     try testing.expectEqual(@as(usize, 10), state.compiled_ops.len);
     try testing.expectEqual(backend_mod.DeviceOp.reduce, std.meta.activeTag(state.compiled_ops[0]));
     try testing.expectEqual(backend_mod.DeviceOp.elementwise, std.meta.activeTag(state.compiled_ops[state.compiled_ops.len - 1]));

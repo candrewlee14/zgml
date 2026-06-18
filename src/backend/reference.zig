@@ -284,6 +284,7 @@ fn executeFnForOp(op: backend_mod.DeviceOp) ExecuteFn {
         .qmatmul => executeQMatmul,
         .elementwise => executeElementwise,
         .softmax => executeSoftmax,
+        .logsoftmax => executeLogSoftmax,
         .layernorm => executeLayerNorm,
         .rmsnorm => executeRmsNorm,
         .reduce => executeReduce,
@@ -313,6 +314,10 @@ fn executeElementwise(ctx: Context, op: backend_mod.DeviceOp) void {
 
 fn executeSoftmax(ctx: Context, op: backend_mod.DeviceOp) void {
     ctx.softmax(op.softmax);
+}
+
+fn executeLogSoftmax(ctx: Context, op: backend_mod.DeviceOp) void {
+    ctx.logsoftmax(op.logsoftmax);
 }
 
 fn executeLayerNorm(ctx: Context, op: backend_mod.DeviceOp) void {
@@ -392,6 +397,7 @@ const Context = struct {
             .qmatmul => |q| self.qmatmul(q),
             .elementwise => |e| self.elementwise(e),
             .softmax => |s| self.softmax(s),
+            .logsoftmax => |s| self.logsoftmax(s),
             .layernorm => |l| self.layernorm(l),
             .rmsnorm => |r| self.rmsnorm(r),
             .reduce => |rd| self.reduce(rd),
@@ -582,6 +588,22 @@ const Context = struct {
             }
             const inv = if (sum > 0.0) 1.0 / sum else 0.0;
             for (0..cols) |j| dst[db + j] *= inv;
+        }
+    }
+
+    fn logsoftmax(self: Context, s: anytype) void {
+        const src = self.bufF32(s.src);
+        const dst = self.bufF32(s.dst);
+        const cols: usize = s.cols;
+        for (0..@as(usize, s.rows)) |row| {
+            const sb: usize = @as(usize, s.src_offset) + row * cols;
+            const db: usize = @as(usize, s.dst_offset) + row * cols;
+            var m: f32 = -std.math.inf(f32);
+            for (0..cols) |j| m = @max(m, src[sb + j]);
+            var sum: f32 = 0;
+            for (0..cols) |j| sum += @exp(src[sb + j] - m);
+            const log_denom = m + @log(sum);
+            for (0..cols) |j| dst[db + j] = src[sb + j] - log_denom;
         }
     }
 
@@ -1159,6 +1181,36 @@ test "reference executor fused elementwise sgn and step" {
     executeOp(&buffers, &.{}, .{ .fused_elementwise = .{ .steps = &steps, .dst = 1, .src = 0, .n = 4, .dst_offset = 0, .src_offset = 0 } });
 
     try std.testing.expectEqualSlices(f32, &.{ 0, 0, 1, 0 }, &dst);
+}
+
+test "reference executor logsoftmax normalizes rows in log space" {
+    var src = [_]f32{ 1, 2, 3, 2, 0, -1 };
+    var dst = [_]f32{9} ** 6;
+    const buffers = [_]Buffer{
+        .{ .ptr = &src, .len = src.len },
+        .{ .ptr = &dst, .len = dst.len },
+    };
+
+    executeOp(&buffers, &.{}, .{ .logsoftmax = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 2,
+        .cols = 3,
+        .dst_offset = 0,
+        .src_offset = 0,
+    } });
+
+    for (0..2) |row| {
+        const base = row * 3;
+        var max_value: f32 = -std.math.inf(f32);
+        for (src[base..][0..3]) |value| max_value = @max(max_value, value);
+        var sum: f32 = 0;
+        for (src[base..][0..3]) |value| sum += @exp(value - max_value);
+        const log_denom = max_value + @log(sum);
+        for (0..3) |col| {
+            try std.testing.expectApproxEqAbs(src[base + col] - log_denom, dst[base + col], 1e-6);
+        }
+    }
 }
 
 test "reference executor matmul" {
