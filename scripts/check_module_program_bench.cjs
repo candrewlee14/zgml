@@ -34,6 +34,7 @@ const floors = Object.freeze({
   logSoftmaxClassifierBatchedSpeedup: 3.0,
   lazyMatmulAddReluBatchedSpeedup: 1.5,
   lazyMlpBatchedSpeedup: 2.5,
+  lazyTokenHeadBatchedSpeedup: 1.2,
 });
 const expectedKeys = Object.freeze([
   "activation_chain",
@@ -56,6 +57,7 @@ const expectedKeys = Object.freeze([
   "log_softmax_classifier_batched",
   "lazy_matmul_add_relu_batched",
   "lazy_mlp_batched",
+  "lazy_token_head_batched",
 ]);
 
 function msNow() {
@@ -216,6 +218,28 @@ function lazyMlpBatchedEager(input, firstWeights, firstBias, secondWeights, seco
       }
       out[row * outFeatures + col] = sum;
     }
+  }
+  return out;
+}
+
+function lazyTokenHeadBatchedEager(input, embeddingWeights, headWeights, headBias, batch, embeddingDim, outputFeatures) {
+  const out = new Float32Array(batch * outputFeatures);
+  const logits = new Float32Array(outputFeatures);
+  for (let row = 0; row < batch; row += 1) {
+    const token = input.data[row] | 0;
+    for (let col = 0; col < outputFeatures; col += 1) {
+      let sum = headBias[col];
+      for (let feature = 0; feature < embeddingDim; feature += 1) {
+        sum += embeddingWeights[token * embeddingDim + feature] * headWeights[feature * outputFeatures + col];
+      }
+      logits[col] = sum;
+    }
+    let max = -Infinity;
+    for (let col = 0; col < outputFeatures; col += 1) max = Math.max(max, logits[col]);
+    let denominator = 0;
+    for (let col = 0; col < outputFeatures; col += 1) denominator += Math.exp(logits[col] - max);
+    const logDenominator = max + Math.log(denominator);
+    for (let col = 0; col < outputFeatures; col += 1) out[row * outputFeatures + col] = logits[col] - logDenominator;
   }
   return out;
 }
@@ -953,6 +977,55 @@ const benchSpecs = [
       },
     },
     summary: (result) => `lazy_mlp_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyMlpBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=2 fused=2 kernels=linear|relu|linear batched=rank2 parameters=0.weight|0.bias|2.weight|2.bias hot=allocation-free`,
+  },
+  {
+    key: "lazy_token_head_batched",
+    label: "lazy-token-head-batched",
+    floor: floors.lazyTokenHeadBatchedSpeedup,
+    inputShape: [128],
+    inputShapeText: "128",
+    outputShapeText: "128x32",
+    inputLen: 128,
+    outputLen: 128 * 32,
+    layerCount: 3,
+    parameterNames: "tok.weight|head.weight|head.bias",
+    input: () => adapter.tensor(Array.from({ length: 128 }, (_, index) => index % 256), [128]),
+    model: () => adapter.lazy.input([128])
+      .embedding(256, 64, { name: "tok" })
+      .linear(32, { name: "head" })
+      .logSoftmax(-1),
+    eager: (input) => lazyTokenHeadBatchedEager(
+      input,
+      values(256 * 64, 32),
+      values(64 * 32, 48),
+      values(32, 80),
+      128,
+      64,
+      32,
+    ),
+    bindSession: (program) => program.bind({
+      weights: new Float32Array([...values(256 * 64, 32), ...values(64 * 32, 48)]),
+      bias: new Float32Array(values(32, 80)),
+    }),
+    ir: { opCount: 3, parameterCount: 3 },
+    iterations: 200,
+    tolerance: 1e-4,
+    plan: {
+      opCount: 3,
+      dispatchCount: 3,
+      publicOps: 3,
+      description: "lazy Tensor IR Embedding -> Linear -> LogSoftmax Program kernel plan",
+      check: (plan) => {
+        if (
+          ops(plan) !== "embedding|linear|logSoftmax" ||
+          kernels(plan) !== "embedding|linear|log-softmax" ||
+          plan.parameterLayout.parameters.map((param) => param.name).join("|") !== "tok.weight|head.weight|head.bias"
+        ) {
+          throw new Error("lazy token-head expected Embedding -> Linear -> LogSoftmax kernel plan with named parameters");
+        }
+      },
+    },
+    summary: (result) => `lazy_token_head_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyTokenHeadBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=3 kernels=embedding|linear|log-softmax batched=rank1-token parameters=tok.weight|head.weight|head.bias hot=allocation-free`,
   },
 ];
 
