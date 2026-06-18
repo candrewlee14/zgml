@@ -149,7 +149,16 @@ type PackageSmokeNullableTrainStepEvidence =
     sample_indices: readonly number[] | null;
   }>;
 
-function withTempCheckpointPath<T>(name: string, fn: (path: string, fs: any) => T): T {
+type PackageSmokeNodeFs = Readonly<{
+  mkdtempSync(prefix: string): string;
+  rmSync(path: string, options: Readonly<{ recursive: boolean; force: boolean }>): void;
+  existsSync(path: string): boolean;
+  readFileSync(path: string): Uint8Array;
+  readFileSync(path: string, encoding: "utf8"): string;
+  statSync(path: string): Readonly<{ size: number }>;
+}>;
+
+function withTempCheckpointPath<T>(name: string, fn: (path: string, fs: PackageSmokeNodeFs) => T): T {
   const fs = require("node:fs");
   const os = require("node:os");
   const path = require("node:path");
@@ -543,7 +552,7 @@ function expectLossAndAdamWEvidence(adapter: Record<string, any>, label: string)
     throw new Error(`${label} expected PyTorch-style MSELoss helpers to wrap loss.mse from loss and nn`);
   }
   expectThrowIncludes(
-    () => adapter.loss.mse([1], [1], { reduction: "none" } as any),
+    () => adapter.loss.mse([1], [1], { reduction: "none" }),
     'MSELoss reduction must be "mean" or "sum"',
     `${label} unsupported loss reduction`
   );
@@ -5367,7 +5376,7 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   expectClose(groupedModel.bias, [0.9900000095367432], `${label} grouped optimizer bias lr`);
   adapter.optim.setLearningRate(groupedOptimizer, 0.02);
   if (
-    groupedOptimizer.config().paramGroups.some((group: any) => group.lr !== 0.02) ||
+    groupedOptimizer.config().paramGroups.some((group: Readonly<{ lr: number }>) => group.lr !== 0.02) ||
     groupedOptimizer.getLearningRate() !== 0.02 ||
     groupedOptimizer.get_lr() !== 0.02 ||
     adapter.optim.getLearningRate(groupedOptimizer) !== 0.02 ||
