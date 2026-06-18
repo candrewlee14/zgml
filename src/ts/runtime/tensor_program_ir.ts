@@ -108,6 +108,12 @@ function normalizedTraceOpAttrs(op: AnyRecord) {
         outFeatures: op.outFeatures,
         bias: Boolean(op.bias),
       };
+    case "matmul":
+      return {
+        inFeatures: op.inFeatures,
+        outFeatures: op.outFeatures,
+        bias: false,
+      };
     case "embedding":
       return {
         numEmbeddings: op.numEmbeddings,

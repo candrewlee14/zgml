@@ -32,6 +32,7 @@ import type {
 type AnyRecord = Record<string, any>;
 type LazyOpKind =
   | "linear"
+  | "matmul"
   | "embedding"
   | "conv2d"
   | "maxPool2d"
@@ -58,11 +59,17 @@ type LazyOpKind =
   | "permute";
 type ActivationKind = "relu" | "gelu" | "silu" | "sigmoid" | "tanh" | "step" | "exp" | "log" | "neg" | "recip" | "abs" | "sqrt" | "square" | "sgn";
 type LazyTensorRole = "input" | "op-output";
+type LazyParameterSource = Readonly<{
+  role: "parameter";
+  name: string;
+  shape: readonly number[];
+  layout: string | null;
+}>;
 type LazyTensorSource = Readonly<{
   role: LazyTensorRole;
   name: string | null;
   shape: readonly number[];
-}>;
+}> | LazyParameterSource;
 type LazyGraphOp = Readonly<{
   index: number;
   path: string;
@@ -154,6 +161,14 @@ export class LazyTensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
 
   linear<OutFeatures extends number>(outFeatures: OutFeatures, options: LazyLinearOptions = {}): LazyTensor<LazyLinearShape<Shape, OutFeatures>> {
     return linear(this, outFeatures, options);
+  }
+
+  matmul<const WeightShape extends TensorShapeTuple>(weight: LazyTensor<WeightShape>): LazyTensor<LazyMatmulShape<Shape, WeightShape>> {
+    return matmul(this, weight);
+  }
+
+  mm<const WeightShape extends TensorShapeTuple>(weight: LazyTensor<WeightShape>): LazyTensor<LazyMatmulShape<Shape, WeightShape>> {
+    return matmul(this, weight);
   }
 
   embedding<EmbeddingDim extends number>(numEmbeddings: number, embeddingDim: EmbeddingDim, options: Readonly<{ name?: string }> = {}): LazyTensor<LazyEmbeddingShape<Shape, EmbeddingDim>> {
@@ -409,6 +424,16 @@ type LazyLinearShape<InputShape extends TensorShapeTuple, OutFeatures extends nu
       : TensorShapeTuple;
 type LazyEmbeddingShape<InputShape extends TensorShapeTuple, EmbeddingDim extends number> =
   readonly [...InputShape, EmbeddingDim];
+type LazyMatmulShape<InputShape extends TensorShapeTuple, WeightShape extends TensorShapeTuple> =
+  InputShape extends readonly [infer InFeatures extends number]
+    ? WeightShape extends readonly [InFeatures, infer OutFeatures extends number]
+      ? readonly [OutFeatures]
+      : TensorShapeTuple
+    : InputShape extends readonly [infer Batch extends number, infer InFeatures extends number]
+      ? WeightShape extends readonly [InFeatures, infer OutFeatures extends number]
+        ? readonly [Batch, OutFeatures]
+        : TensorShapeTuple
+      : TensorShapeTuple;
 
 function positiveInteger(value: unknown, label: string): number {
   if (!Number.isSafeInteger(value) || (value as number) <= 0) {
@@ -781,6 +806,19 @@ export function input<const Shape extends TensorShapeTuple>(shape: Shape, name =
   return new LazyTensor(normalizedShape, { name });
 }
 
+export function parameter<const Shape extends TensorShapeTuple>(shape: Shape, name = "weight", layout: string | null = "row-major"): LazyTensor<Shape> {
+  const normalizedShape = normalizeShape(shape, "lazy parameter shape") as unknown as Shape;
+  return new LazyTensor(normalizedShape, {
+    name,
+    source: Object.freeze({
+      role: "parameter",
+      name,
+      shape: Object.freeze(normalizedShape.slice()),
+      layout,
+    }),
+  });
+}
+
 export function linear<const Shape extends TensorShapeTuple, const OutFeatures extends number>(
   tensor: LazyTensor<Shape>,
   outFeatures: OutFeatures,
@@ -806,6 +844,42 @@ export function linear<const Shape extends TensorShapeTuple, const OutFeatures e
     parameters,
     attrs: { inFeatures, outFeatures: outputFeatures, bias: options.bias !== false },
   }, outputShape);
+}
+
+export function matmul<const Shape extends TensorShapeTuple, const WeightShape extends TensorShapeTuple>(
+  tensor: LazyTensor<Shape>,
+  weight: LazyTensor<WeightShape>,
+): LazyTensor<LazyMatmulShape<Shape, WeightShape>> {
+  if (weight.ops.length !== 0 || weight.source.role !== "parameter") {
+    throw new Error("lazy matmul currently expects a lazy.parameter(...) rhs so the compiled Program can bind weights explicitly");
+  }
+  const inputShape = tensor.shape;
+  const weightShape = weight.shape;
+  if (inputShape.length !== 1 && inputShape.length !== 2) {
+    throw new Error(`lazy matmul expects rank-1 or rank-2 lhs input, got rank ${inputShape.length}`);
+  }
+  if (weightShape.length !== 2) {
+    throw new Error(`lazy matmul expects rank-2 rhs weight [in_features,out_features], got rank ${weightShape.length}`);
+  }
+  const inFeatures = positiveInteger(inputShape[inputShape.length - 1], "lazy matmul inFeatures");
+  if (weightShape[0] !== inFeatures) {
+    throw new Error(`lazy matmul lhs last dimension ${inFeatures} must match rhs first dimension ${weightShape[0]}`);
+  }
+  const outFeatures = positiveInteger(weightShape[1], "lazy matmul outFeatures");
+  const outputShape = (inputShape.length === 1 ? [outFeatures] : [inputShape[0], outFeatures]) as unknown as LazyMatmulShape<Shape, WeightShape>;
+  return appendOp(tensor, {
+    op: "matmul",
+    outputShape,
+    parameters: [lazyParameter(weight.source.name, weightShape, weight.source.layout)],
+    attrs: { inFeatures, outFeatures },
+  }, outputShape);
+}
+
+export function mm<const Shape extends TensorShapeTuple, const WeightShape extends TensorShapeTuple>(
+  tensor: LazyTensor<Shape>,
+  weight: LazyTensor<WeightShape>,
+): LazyTensor<LazyMatmulShape<Shape, WeightShape>> {
+  return matmul(tensor, weight);
 }
 
 export function embedding<const Shape extends TensorShapeTuple, const EmbeddingDim extends number>(

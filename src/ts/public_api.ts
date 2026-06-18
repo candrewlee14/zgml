@@ -2514,6 +2514,7 @@ export type ModuleShapeOpKind =
   | "slice";
 export type ModuleTraceOpKind =
   | "linear"
+  | "matmul"
   | "embedding"
   | "conv2d"
   | "avgPool2d"
@@ -2530,6 +2531,7 @@ export type ModuleTraceOpKind =
   | "unknown";
 export type ModuleTensorProgramIrOpKind =
   | "linear"
+  | "matmul"
   | "embedding"
   | "conv2d"
   | "avgPool2d"
@@ -2547,6 +2549,7 @@ export type ModuleTensorProgramIrOpKind =
 export type ModuleKernelFusedOpKind = "identity" | "reshape" | "view" | "flatten" | "squeeze" | "unsqueeze" | "dropout";
 export type ModuleKernelPlanOpKind =
   | "linear"
+  | "matmul"
   | "embedding"
   | "avgPool2d"
   | "maxPool2d"
@@ -2562,6 +2565,7 @@ export type ModuleKernelPlanOpKind =
   | "activation-chain";
 export type ModuleKernelName =
   | "linear"
+  | "matmul"
   | "activation-chain"
   | ModuleActivationKind
   | "softmax"
@@ -2726,6 +2730,10 @@ export type ModuleLinearTraceOp = ModuleTraceOpBase<"linear"> & Readonly<{
   outFeatures: number;
   bias: boolean;
 }>;
+export type ModuleMatmulTraceOp = ModuleTraceOpBase<"matmul"> & Readonly<{
+  inFeatures: number;
+  outFeatures: number;
+}>;
 export type ModuleEmbeddingTraceOp = ModuleTraceOpBase<"embedding"> & Readonly<{
   numEmbeddings: number;
   embeddingDim: number;
@@ -2818,6 +2826,7 @@ export type ModuleUnknownTraceOp = ModuleTraceOpBase<"unknown"> & Readonly<{
 }>;
 export type ModuleTraceOp =
   | ModuleLinearTraceOp
+  | ModuleMatmulTraceOp
   | ModuleEmbeddingTraceOp
   | ModuleConv2dTraceOp
   | ModuleAvgPool2dTraceOp
@@ -2974,6 +2983,7 @@ export type ModuleTensorProgramIrOpBase<Op extends ModuleTensorProgramIrOpKind, 
 }>;
 export type ModuleTensorProgramIrOp =
   | ModuleTensorProgramIrOpBase<"linear", ModuleTensorProgramIrLinearAttrs>
+  | ModuleTensorProgramIrOpBase<"matmul", ModuleTensorProgramIrLinearAttrs>
   | ModuleTensorProgramIrOpBase<"embedding", ModuleTensorProgramIrEmbeddingAttrs>
   | ModuleTensorProgramIrOpBase<"conv2d", ModuleTensorProgramIrConv2dAttrs>
   | ModuleTensorProgramIrOpBase<"avgPool2d", ModuleTensorProgramIrAvgPool2dAttrs>
@@ -3042,6 +3052,7 @@ export type ModuleKernelPlanLinearOp = ModuleKernelPlanOpBase<"linear", "linear"
   fusedOps?: readonly ("linear" | "activation")[];
   fusedIndices?: readonly number[];
 }>;
+export type ModuleKernelPlanMatmulOp = ModuleKernelPlanOpBase<"matmul", "matmul">;
 export type ModuleKernelPlanEmbeddingOp = ModuleKernelPlanOpBase<"embedding", "embedding">;
 export type ModuleKernelPlanAvgPool2dOp = ModuleKernelPlanOpBase<"avgPool2d", "avg-pool2d">;
 export type ModuleKernelPlanMaxPool2dOp = ModuleKernelPlanOpBase<"maxPool2d", "max-pool2d">;
@@ -3073,6 +3084,7 @@ export type ModuleKernelPlanShapeChainOp = ModuleKernelPlanOpBase<"shape-chain",
 export type ModuleKernelPlanElidedOp = ModuleKernelPlanReshapeOp | ModuleKernelPlanShapeChainOp;
 export type ModuleKernelPlanOp =
   | ModuleKernelPlanLinearOp
+  | ModuleKernelPlanMatmulOp
   | ModuleKernelPlanEmbeddingOp
   | ModuleKernelPlanAvgPool2dOp
   | ModuleKernelPlanMaxPool2dOp
@@ -5488,6 +5500,16 @@ export type LazyLinearShape<InputShape extends TensorShapeTuple, OutFeatures ext
       : TensorShapeTuple;
 export type LazyEmbeddingShape<InputShape extends TensorShapeTuple, EmbeddingDim extends number> =
   readonly [...InputShape, EmbeddingDim];
+export type LazyMatmulShape<InputShape extends TensorShapeTuple, WeightShape extends TensorShapeTuple> =
+  InputShape extends readonly [infer InFeatures extends number]
+    ? WeightShape extends readonly [InFeatures, infer OutFeatures extends number]
+      ? readonly [OutFeatures]
+      : TensorShapeTuple
+    : InputShape extends readonly [infer Batch extends number, infer InFeatures extends number]
+      ? WeightShape extends readonly [InFeatures, infer OutFeatures extends number]
+        ? readonly [Batch, OutFeatures]
+        : TensorShapeTuple
+      : TensorShapeTuple;
 export type LazyLinearOptions = Readonly<{
   name?: string;
   bias?: boolean;
@@ -5545,6 +5567,8 @@ export interface LazyTensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
   readonly shape: Shape;
   readonly name: string | null;
   linear<const OutFeatures extends number>(outFeatures: OutFeatures, options?: LazyLinearOptions): LazyTensor<LazyLinearShape<Shape, OutFeatures>>;
+  matmul<const WeightShape extends TensorShapeTuple>(weight: LazyTensor<WeightShape>): LazyTensor<LazyMatmulShape<Shape, WeightShape>>;
+  mm<const WeightShape extends TensorShapeTuple>(weight: LazyTensor<WeightShape>): LazyTensor<LazyMatmulShape<Shape, WeightShape>>;
   embedding<const EmbeddingDim extends number>(numEmbeddings: number, embeddingDim: EmbeddingDim, options?: Readonly<{ name?: string }>): LazyTensor<LazyEmbeddingShape<Shape, EmbeddingDim>>;
   layerNorm(features: number, options?: LazyNormOptions): LazyTensor<Shape>;
   layer_norm(features: number, options?: LazyNormOptions): LazyTensor<Shape>;
@@ -5625,7 +5649,10 @@ export interface LazyNamespace {
   }>;
   LazyTensor: new <const Shape extends TensorShapeTuple>(shape: Shape, options?: Readonly<{ name?: string | null }>) => LazyTensor<Shape>;
   input<const Shape extends TensorShapeTuple>(shape: Shape, name?: string): LazyTensor<Shape>;
+  parameter<const Shape extends TensorShapeTuple>(shape: Shape, name?: string, layout?: string | null): LazyTensor<Shape>;
   linear<const Shape extends TensorShapeTuple, const OutFeatures extends number>(tensor: LazyTensor<Shape>, outFeatures: OutFeatures, options?: LazyLinearOptions): LazyTensor<LazyLinearShape<Shape, OutFeatures>>;
+  matmul<const Shape extends TensorShapeTuple, const WeightShape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, weight: LazyTensor<WeightShape>): LazyTensor<LazyMatmulShape<Shape, WeightShape>>;
+  mm<const Shape extends TensorShapeTuple, const WeightShape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, weight: LazyTensor<WeightShape>): LazyTensor<LazyMatmulShape<Shape, WeightShape>>;
   embedding<const Shape extends TensorShapeTuple, const EmbeddingDim extends number>(tensor: LazyTensor<Shape>, numEmbeddings: number, embeddingDim: EmbeddingDim, options?: Readonly<{ name?: string }>): LazyTensor<LazyEmbeddingShape<Shape, EmbeddingDim>>;
   layerNorm<const Shape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, features: number, options?: LazyNormOptions): LazyTensor<Shape>;
   layer_norm<const Shape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, features: number, options?: LazyNormOptions): LazyTensor<Shape>;

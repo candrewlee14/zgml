@@ -484,6 +484,16 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
         c: 0,
         eps: 0,
       };
+    case "matmul":
+      return {
+        kind: moduleOpIds.linear,
+        activation: 0,
+        flags: 0,
+        a: attrs.inFeatures,
+        b: attrs.outFeatures,
+        c: 0,
+        eps: 0,
+      };
     case "activation": {
       const activation = moduleActivationIds[attrs.activation];
       if (!activation) return null;
@@ -793,6 +803,7 @@ function kernelNameForIrOp(op: any) {
   const attrs = op.attrs ?? {};
   switch (op.op) {
     case "linear": return "linear";
+    case "matmul": return "matmul";
     case "activation": return attrs.activation;
     case "softmax": return "softmax";
     case "logSoftmax": return "log-softmax";

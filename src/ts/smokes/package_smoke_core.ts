@@ -4009,6 +4009,10 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   const lazySnakeConvPoolGraph = torch.lazy.avg_pool2d(torch.lazy.max_pool2d(torch.lazy.input([1, 4, 4]).conv2d(2, 1), 2), 2);
   const lazySigmoid = torch.lazy.input([2]).linear(3).sigmoid().linear(1);
   const lazyNamespaceSigmoid = torch.lazy.sigmoid(torch.lazy.input([2]).linear(3)).linear(1);
+  const lazyMatmulWeight = torch.lazy.parameter([2, 3], "head.weight", "row-major:matmul.weight[in_features,out_features]");
+  const lazyMatmulGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).relu();
+  const lazyNamespaceMatmulGraph = torch.lazy.relu(torch.lazy.matmul(torch.lazy.input([2]), lazyMatmulWeight));
+  const lazyMmGraph = torch.lazy.input([1, 2]).mm(lazyMatmulWeight);
   const lazyActivationChain = torch.lazy.input([2]).exp().log().neg().recip().abs().sqrt().square().sgn().step();
   const lazyNamespaceActivationChain = torch.lazy.step(torch.lazy.sgn(torch.lazy.square(torch.lazy.sqrt(torch.lazy.abs(torch.lazy.recip(torch.lazy.neg(torch.lazy.log(torch.lazy.exp(torch.lazy.input([2]))))))))));
   const lazySnakeSoftmaxGraph = torch.lazy.input([2, 3]).log_softmax(1);
@@ -4059,6 +4063,14 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazySnakeConvPoolGraph.compileSupport().supported !== true ||
     lazySigmoid.compileSupport().supported !== true ||
     lazyNamespaceSigmoid.compileSupport().supported !== true ||
+    lazyMatmulGraph.compileSupport().supported !== true ||
+    lazyNamespaceMatmulGraph.compileSupport().supported !== true ||
+    lazyMmGraph.compileSupport().supported !== true ||
+    lazyMatmulGraph.trace().ops[0]?.op !== "matmul" ||
+    lazyMatmulGraph.tensorProgramIr()?.ops[0]?.op !== "matmul" ||
+    lazyMatmulGraph.kernelPlan()?.ops[0]?.kernel !== "matmul" ||
+    lazyMatmulGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "linear" ||
+    lazyMatmulGraph.kernelPlan()?.parameterLayout.parameters[0]?.name !== "head.weight" ||
     lazyActivationChain.compileSupport().supported !== true ||
     lazyNamespaceActivationChain.compileSupport().supported !== true ||
     lazySnakeSoftmaxGraph.compileSupport().supported !== true ||
