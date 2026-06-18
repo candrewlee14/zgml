@@ -59,6 +59,7 @@ function numericSnapshot(values: ArrayLike<number>): number[] {
 type PackageSmokeTensor = Readonly<{
   data: ArrayLike<number>;
   shape: readonly number[];
+  mul(value: number): PackageSmokeTensor;
 }>;
 
 type PackageSmokeDatasetSample = Readonly<{
@@ -80,6 +81,18 @@ type PackageSmokeCustomCollateBatch = Readonly<{
   sampleIndices: readonly number[];
   sample_indices: readonly number[];
   batchIndex: number;
+}>;
+
+type PackageSmokeDatasetBatch = Readonly<{
+  kind: "zgml.data.batch";
+  batchIndex: number;
+  indices: readonly number[];
+  input: PackageSmokeTensor;
+  target: PackageSmokeTensor;
+}>;
+
+type PackageSmokeMappedSample = PackageSmokeDatasetSample & Readonly<{
+  sourceIndex?: number;
 }>;
 
 function withTempCheckpointPath<T>(name: string, fn: (path: string, fs: any) => T): T {
@@ -5467,7 +5480,15 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     sampler: [1, 0],
     batch_size: 2,
     collate_fn: adapter.data.defaultCollate,
-  }))[0] as any;
+  }))[0] as PackageSmokeDatasetBatch;
+  const samplerLoaderIndices = Array.from(
+    new adapter.data.DataLoader(customDataset, { sampler: [1, 0], batch_size: 1 }),
+    (batch) => (batch as PackageSmokeDatasetBatch).indices,
+  );
+  const batchSamplerLoaderIndices = Array.from(
+    new adapter.torch.utils.data.DataLoader(customDataset, { batch_sampler: batchSampler }),
+    (batch) => (batch as PackageSmokeDatasetBatch).indices,
+  );
   if (
     customDataset.kind !== "zgml.data.dataset" ||
     customDataset.__len__() !== 2 ||
@@ -5486,8 +5507,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     batchSampler.__len__() !== 2 ||
     JSON.stringify(Array.from(batchSampler)) !== "[[0],[1]]" ||
     JSON.stringify(Array.from(torchBatchSampler)) !== "[[0,1]]" ||
-    JSON.stringify(Array.from(new adapter.data.DataLoader(customDataset, { sampler: [1, 0], batch_size: 1 })).map((batch: any) => batch.indices)) !== "[[1],[0]]" ||
-    JSON.stringify(Array.from(new adapter.torch.utils.data.DataLoader(customDataset, { batch_sampler: batchSampler })).map((batch: any) => batch.indices)) !== "[[0],[1]]" ||
+    JSON.stringify(samplerLoaderIndices) !== "[[1],[0]]" ||
+    JSON.stringify(batchSamplerLoaderIndices) !== "[[0],[1]]" ||
     defaultCollatedBatch.kind !== "zgml.data.batch" ||
     defaultCollatedBatch.batchIndex !== 4 ||
     defaultCollatedBatch.indices.join(",") !== "1,0" ||
@@ -5511,8 +5532,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   }
   if (
     typeof dataset.__iter__ !== "function" ||
-    Array.from(dataset).map((entry: any) => entry.index).join(",") !== "0,1" ||
-    Array.from(dataset.__iter__()).map((entry: any) => entry.index).join(",") !== "0,1"
+    Array.from(dataset as Iterable<PackageSmokeDatasetSample>, (entry) => entry.index).join(",") !== "0,1" ||
+    Array.from(dataset.__iter__() as Iterable<PackageSmokeDatasetSample>, (entry) => entry.index).join(",") !== "0,1"
   ) {
     throw new Error(`${label} expected data.tensorDataset to expose iterable sample accessors`);
   }
@@ -5574,14 +5595,15 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   const concatAliasDataset = adapter.data.concat_dataset([subsetDataset, takenDataset]);
   const concatClassDataset = new adapter.data.ConcatDataset([takenDataset, subsetDataset]);
   const torchConcatClassDataset = new adapter.torch.utils.data.ConcatDataset([takenDataset, subsetDataset]);
-  const mappedDataset = adapter.data.mapDataset(dataset, (entry: any) => ({
+  const mappedDataset = adapter.data.mapDataset(dataset, (entry: PackageSmokeDatasetSample): PackageSmokeMappedSample => ({
+    ...entry,
     input: entry.input.mul(2),
     target: entry.target,
     sourceIndex: entry.index,
   }));
-  const mappedAliasDataset = adapter.data.map_dataset(dataset, (entry: any) => ({ input: entry.input, target: entry.target }));
-  const mappedClassDataset = new adapter.data.MapDataset(dataset, (entry: any) => ({ input: entry.input, target: entry.target }));
-  const torchMappedClassDataset = new adapter.torch.utils.data.MapDataset(dataset, (entry: any) => ({ input: entry.input, target: entry.target }));
+  const mappedAliasDataset = adapter.data.map_dataset(dataset, (entry: PackageSmokeDatasetSample): PackageSmokeDatasetSample => entry);
+  const mappedClassDataset = new adapter.data.MapDataset(dataset, (entry: PackageSmokeDatasetSample): PackageSmokeDatasetSample => entry);
+  const torchMappedClassDataset = new adapter.torch.utils.data.MapDataset(dataset, (entry: PackageSmokeDatasetSample): PackageSmokeDatasetSample => entry);
   const torchSplitPair = adapter.torch.utils.data.random_split(splitDataset, [2, 2], { shuffle: false });
   if (
     !Object.isFrozen(subsetDataset) ||
