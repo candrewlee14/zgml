@@ -8,7 +8,7 @@ const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
 const goalProgress = Object.freeze({
-  substratePct: 73,
+  substratePct: 74,
   substrateFloorPct: 65,
   pytorchLikePct: 92,
   pytorchLikeFloorPct: 60,
@@ -554,6 +554,7 @@ function checkScripts() {
     "activation_chain=",
     "linear_relu=",
     "linear_batched=",
+    "lazy_linear_gelu_batched=",
     "mlp=",
     "mlp_batched=",
     "norm_gelu_mlp=",
@@ -582,6 +583,7 @@ function checkScripts() {
     "lazy_token_head_batched=",
     "dispatch=1 fused=3",
     "dispatch=1 fused=2",
+    "ops=2 dispatch=1 fused=2 kernels=linear|gelu",
     "ops=3 dispatch=2 fused=2",
     "batched=rank2",
     "ops=4 dispatch=4 kernels=linear|layer-norm|gelu|linear",
@@ -606,6 +608,7 @@ function checkScripts() {
     "floors.activationChainSpeedup",
     "floors.linearReluSpeedup",
     "floors.linearBatchedSpeedup",
+    "floors.lazyLinearGeluBatchedSpeedup",
     "floors.mlpSpeedup",
     "floors.mlpBatchedSpeedup",
     "floors.normGeluMlpSpeedup",
@@ -1000,6 +1003,8 @@ function checkModuleProgramBenchEvidence() {
   requirePattern(line, "module Program bench gate output", "activation-chain speedup floor", /activation_chain=[0-9.]+x floor=1\.25x/);
   requirePattern(line, "module Program bench gate output", "linear-relu speedup floor", /linear_relu=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "batched linear speedup floor", /linear_batched=[0-9.]+x floor=3\.00x/);
+  requirePattern(line, "module Program bench gate output", "lazy linear-gelu speedup floor", /lazy_linear_gelu_batched=[0-9.]+x floor=2\.00x/);
+  requirePattern(line, "module Program bench gate output", "lazy Tensor IR Linear GELU kernel proof", /ops=2 dispatch=1 fused=2 kernels=linear\|gelu batched=rank2 parameters=0\.weight\|0\.bias hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "mlp speedup floor", /mlp=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "batched mlp speedup floor", /mlp_batched=[0-9.]+x floor=3\.00x/);
   requirePattern(line, "module Program bench gate output", "norm gelu mlp speedup floor", /norm_gelu_mlp=[0-9.]+x floor=1\.10x/);
@@ -4215,7 +4220,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=73% floor=65%; PyTorch-like surface=92% floor=60%",
+    "goal progress: Program/Session substrate=74% floor=65%; PyTorch-like surface=92% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4252,7 +4257,7 @@ function checkDocs() {
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
-    "Program/Session performance substrate: ~73%",
+    "Program/Session performance substrate: ~74%",
     "Compile-capable lazy graphs can now lower through the host adapter into a",
     "native Program with preserved KernelPlan evidence.",
     "PyTorch-like replacement feel: ~92%",

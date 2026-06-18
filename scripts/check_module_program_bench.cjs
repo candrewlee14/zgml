@@ -17,6 +17,7 @@ const floors = Object.freeze({
   activationChainSpeedup: 1.25,
   linearReluSpeedup: 1.2,
   linearBatchedSpeedup: 3.0,
+  lazyLinearGeluBatchedSpeedup: 2.0,
   mlpSpeedup: 1.2,
   mlpBatchedSpeedup: 3.0,
   normGeluMlpSpeedup: 1.1,
@@ -48,6 +49,7 @@ const expectedKeys = Object.freeze([
   "activation_chain",
   "linear_relu",
   "linear_batched",
+  "lazy_linear_gelu_batched",
   "mlp",
   "mlp_batched",
   "norm_gelu_mlp",
@@ -287,6 +289,20 @@ function lazyMlpBatchedEager(input, firstWeights, firstBias, secondWeights, seco
         sum += hidden[row * hiddenFeatures + feature] * secondWeights[feature * outFeatures + col];
       }
       out[row * outFeatures + col] = sum;
+    }
+  }
+  return out;
+}
+
+function lazyLinearGeluBatchedEager(input, weightValues, biasValues, batch, inFeatures, outFeatures) {
+  const out = new Float32Array(batch * outFeatures);
+  for (let row = 0; row < batch; row += 1) {
+    for (let col = 0; col < outFeatures; col += 1) {
+      let sum = biasValues[col];
+      for (let feature = 0; feature < inFeatures; feature += 1) {
+        sum += input.data[row * inFeatures + feature] * weightValues[feature * outFeatures + col];
+      }
+      out[row * outFeatures + col] = geluScalar(sum);
     }
   }
   return out;
@@ -621,6 +637,49 @@ const benchSpecs = [
       },
     },
     summary: (result) => `linear_batched=${result.speedup.toFixed(2)}x floor=${floors.linearBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=1 dispatch=1 kernels=linear batched=rank2 hot=allocation-free`,
+  },
+  {
+    key: "lazy_linear_gelu_batched",
+    label: "lazy-linear-gelu-batched",
+    floor: floors.lazyLinearGeluBatchedSpeedup,
+    inputShape: [128, 64],
+    inputShapeText: "128x64",
+    outputShapeText: "128x64",
+    inputLen: 128 * 64,
+    outputLen: 128 * 64,
+    layerCount: 2,
+    parameterNames: "0.weight|0.bias",
+    input: () => adapter.tensor(values(128 * 64, 13), [128, 64]),
+    model: () => adapter.lazy.input([128, 64])
+      .linear(64, { name: "0" })
+      .gelu(),
+    eager: (input) => lazyLinearGeluBatchedEager(input, values(64 * 64, 32), values(64, 64), 128, 64, 64),
+    bindSession: (program) => program.bind({
+      weights: new Float32Array(values(64 * 64, 32)),
+      bias: new Float32Array(values(64, 64)),
+    }),
+    ir: { opCount: 2, parameterCount: 2 },
+    iterations: 100,
+    tolerance: 1e-4,
+    plan: {
+      opCount: 2,
+      dispatchCount: 1,
+      publicOps: 1,
+      description: "lazy Tensor IR Linear+GELU Program kernel plan",
+      check: (plan) => {
+        const op = plan.ops[0];
+        if (
+          op.op !== "linear" ||
+          op.fusedOpCount !== 2 ||
+          op.nativeDispatchCount !== 1 ||
+          op.nativeKernels.join("|") !== "linear|gelu" ||
+          plan.parameterLayout.parameters.map((param) => param.name).join("|") !== "0.weight|0.bias"
+        ) {
+          throw new Error("lazy linear-gelu expected one fused Linear+GELU kernel plan with named parameters");
+        }
+      },
+    },
+    summary: (result) => `lazy_linear_gelu_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyLinearGeluBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=2 dispatch=1 fused=2 kernels=linear|gelu batched=rank2 parameters=0.weight|0.bias hot=allocation-free`,
   },
   {
     key: "mlp",
