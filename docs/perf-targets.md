@@ -213,10 +213,13 @@ machine for both prompt/prefill and decode.
   This keeps projection grouping visible as a potential planner target without
   pretending it already moves the full Q8 prompt lane.
 - Q8_0 tied LM-head logits are a standalone backend qmatvec dispatch outside
-  the ProgramCommand stream: Q8_0 prompt is gated at 242 dispatches and 241
-  ProgramCommands, while Q8_0 decode is gated at 212 dispatches and 211
-  ProgramCommands. Removing the dense `op` command is a structural win only when
-  fallback remains zero.
+  the ProgramCommand stream. Current Q8_0 prompt evidence is gated at 181
+  ProgramCommands and 242 dispatches because each of the 60 semantic
+  `projection_row_chain` commands still lowers through two fast tiled/row-chain
+  dispatches plus the standalone logits dispatch. Q8_0 decode is gated at 212
+  dispatches and 211 ProgramCommands. Removing the dense `op` command is a
+  structural win only when fallback remains zero and dispatch-accounting stays
+  explicit.
 - Do not enable prefill projection RoPE-store sidecars by default until the
   Adapter is tiled enough to win throughput. The scalar pair-column experiment
   in `bench-results/smollm-20260601T162410Z-p128-g200-r3.json` lowered the

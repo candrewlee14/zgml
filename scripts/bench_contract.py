@@ -395,9 +395,10 @@ def command_metric(action, kind):
     return f"program_command_{action}_{kind}_per_call"
 
 
-def command_budget_with_extra_dispatch(shape, extra_dispatches=0):
-    total = sum(shape.values())
-    return {"dispatches_per_call": total + extra_dispatches, "commands_per_call": total}
+def command_budget_with_extra_dispatch(shape, extra_dispatches=0, dispatch_shape=None):
+    command_total = sum(shape.values())
+    dispatch_total = sum((dispatch_shape or shape).values())
+    return {"dispatches_per_call": dispatch_total + extra_dispatches, "commands_per_call": command_total}
 
 
 def native_command_dispatch_shape(fmt, phase):
@@ -455,6 +456,7 @@ def native_command_budget(fmt, phase):
     return command_budget_with_extra_dispatch(
         NATIVE_EXECUTION_COMMAND_SHAPES[fmt][phase],
         NATIVE_EXECUTION_EXTRA_DISPATCHES[fmt][phase],
+        native_command_dispatch_shape(fmt, phase),
     )
 
 
