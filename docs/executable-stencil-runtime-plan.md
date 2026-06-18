@@ -192,14 +192,16 @@ execution is the performance claim. Silent eager fallback is not allowed.
 
 Current checked progress:
 
-- Program/Session performance substrate: ~71%. The Program/Session shape,
+- Program/Session performance substrate: ~72%. The Program/Session shape,
   runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
   native Metal execution, optional native wgpu execution slices, and ggml
   benchmark gates are real enough that the substrate is past "architecture".
   Compile-capable lazy graphs can now lower through the host adapter into a
-  native Program with preserved KernelPlan evidence. The remaining substrate
-  jump is not another compatibility lane; it is a real tiled quantized row-chain
-  throughput kernel, plus wider default browser/WebGPU execution evidence.
+  native Program with preserved KernelPlan evidence. Lazy
+  `matmul -> add(bias) -> activation` now collapses to one native Program
+  dispatch while preserving the original three-op Tensor IR evidence. The remaining substrate jump is not another compatibility lane; it is a real
+  tiled quantized row-chain throughput kernel, plus wider default
+  browser/WebGPU execution evidence.
 - PyTorch-like replacement feel: ~92%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,

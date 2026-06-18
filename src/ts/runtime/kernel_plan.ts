@@ -1147,6 +1147,72 @@ function fusedLinearActivationKernelPlanOp(linearOp: any, activationOp: any, des
   };
 }
 
+function biasParameterValueForAddIrOp(addOp: any, values: any) {
+  if (!addOp || addOp.op !== "add" || addOp.parameterValueIds.length !== 1) return null;
+  const parameterValueId = addOp.parameterValueIds[0];
+  const parameter = values && values[parameterValueId];
+  if (!parameter || parameter.role !== "parameter" || parameter.binding !== "bias") return null;
+  return parameter;
+}
+
+function canFuseMatmulAddActivationIrOps(matmulOp: any, addOp: any, activationOp: any, values: any) {
+  if (!matmulOp || !addOp) return false;
+  if (matmulOp.op !== "matmul" || addOp.op !== "add") return false;
+  const bias = biasParameterValueForAddIrOp(addOp, values);
+  if (!bias) return false;
+  if (
+    addOp.inputValueIds.length !== 2 ||
+    addOp.inputValueIds[0] !== matmulOp.outputValueId ||
+    !traceShapesEqual(matmulOp.outputShape, addOp.inputShape) ||
+    !traceShapesEqual(matmulOp.outputShape, addOp.outputShape)
+  ) {
+    return false;
+  }
+  const outFeatures = matmulOp.attrs?.outFeatures;
+  if (!Number.isSafeInteger(outFeatures) || bias.scalarCount !== outFeatures) return false;
+  if (Array.isArray(bias.shape) && bias.shape.length !== 1) return false;
+  if (!activationOp) return true;
+  const activation = moduleActivationIds[activationOp.attrs?.activation];
+  if (!activation) return false;
+  return activationOp.op === "activation" &&
+    activationOp.inputValueIds.length === 1 &&
+    activationOp.parameterValueIds.length === 0 &&
+    activationOp.inputValueIds[0] === addOp.outputValueId &&
+    traceShapesEqual(addOp.outputShape, activationOp.inputShape) &&
+    traceShapesEqual(activationOp.inputShape, activationOp.outputShape);
+}
+
+function fusedMatmulAddActivationKernelPlanOp(matmulOp: any, addOp: any, activationOp: any | null, desc: any, values: any) {
+  const fusedOps = activationOp ? [matmulOp, addOp, activationOp] : [matmulOp, addOp];
+  const last = fusedOps[fusedOps.length - 1];
+  return {
+    index: matmulOp.index,
+    path: `${matmulOp.path}..${last.path}`,
+    op: "matmul",
+    kernel: "linear",
+    inputShape: matmulOp.inputShape.slice(),
+    outputShape: last.outputShape.slice(),
+    inputLen: matmulOp.inputLen,
+    outputLen: last.outputLen,
+    ...scalarEvidenceForIrOp(last, values),
+    inputValueIds: Object.freeze([
+      ...matmulOp.inputValueIds,
+      addOp.parameterValueIds[0],
+    ]),
+    outputValueId: last.outputValueId,
+    parameterScalarCount: matmulOp.parameterScalarCount + addOp.parameterScalarCount,
+    nativeDispatchCount: 1,
+    nativeDescriptorCount: 1,
+    nativeKernels: activationOp ? ["linear", "add", kernelNameForIrOp(activationOp)] : ["linear", "add"],
+    nativeDescriptorSignatures: [nativeModuleDescSignature(desc)],
+    fusedOpCount: fusedOps.length,
+    fusedOps: fusedOps.map((op: any) => op.op),
+    fusedIndices: fusedOps.map((op: any) => op.index),
+    fusedValueEdges: fusedValueEdgesForIrOps(fusedOps),
+    desc,
+  };
+}
+
 function canFuseConv2dActivationIrOps(convOp: any, activationOp: any) {
   if (!convOp || !activationOp) return false;
   if (convOp.op !== "conv2d" || activationOp.op !== "activation") return false;
@@ -1344,6 +1410,46 @@ function kernelizeTensorProgramIr(ir: any) {
       nativeOps.push(desc);
       ops.push(fusedActivationChainKernelPlanOp(activationChain, desc, ir.values));
       index += activationChain.length - 1;
+      continue;
+    }
+
+    if (canFuseMatmulAddActivationIrOps(op, ir.ops[index + 1], ir.ops[index + 2], ir.values)) {
+      const addOp = ir.ops[index + 1];
+      const activationOp = ir.ops[index + 2];
+      const desc = moduleOpDescForIrOp(op);
+      if (!desc) {
+        return {
+          kernelPlan: null,
+          diagnostic: kernelizerDiagnosticForIrOp(op),
+        };
+      }
+      const fusedDesc = Object.freeze({
+        ...desc,
+        flags: (desc.flags ?? 0) | moduleFlags.bias,
+        activation: moduleActivationIds[activationOp.attrs.activation],
+      });
+      nativeOps.push(fusedDesc);
+      ops.push(fusedMatmulAddActivationKernelPlanOp(op, addOp, activationOp, fusedDesc, ir.values));
+      index += 2;
+      continue;
+    }
+
+    if (canFuseMatmulAddActivationIrOps(op, ir.ops[index + 1], null, ir.values)) {
+      const addOp = ir.ops[index + 1];
+      const desc = moduleOpDescForIrOp(op);
+      if (!desc) {
+        return {
+          kernelPlan: null,
+          diagnostic: kernelizerDiagnosticForIrOp(op),
+        };
+      }
+      const fusedDesc = Object.freeze({
+        ...desc,
+        flags: (desc.flags ?? 0) | moduleFlags.bias,
+      });
+      nativeOps.push(fusedDesc);
+      ops.push(fusedMatmulAddActivationKernelPlanOp(op, addOp, null, fusedDesc, ir.values));
+      index += 1;
       continue;
     }
 

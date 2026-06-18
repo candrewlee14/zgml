@@ -4086,9 +4086,9 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyMatmulGraph.kernelPlan()?.parameterLayout.parameters[0]?.name !== "head.weight" ||
     lazyMatmulBiasGraph.trace().ops.map((op: Record<string, any>) => op.op).join("|") !== "matmul|add|activation" ||
     lazyMatmulBiasGraph.tensorProgramIr()?.ops[1]?.op !== "add" ||
-    lazyMatmulBiasGraph.kernelPlan()?.ops[1]?.kernel !== "add" ||
-    lazyMatmulBiasGraph.kernelPlan()?.ops[1]?.nativeKernels.join("|") !== "add" ||
-    lazyMatmulBiasGraph.kernelPlan()?.parameterLayout.parameters.map((param: Record<string, any>) => param.name).join("|") !== "head.weight|head.bias" ||
+    lazyMatmulBiasGraph.kernelPlan()?.ops[0]?.fusedOpCount !== 3 ||
+    lazyMatmulBiasGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "linear|add|relu" ||
+    lazyMatmulBiasGraph.kernelPlan()?.parameterLayout.parameters.map((param: Record<string, any>) => `${param.name}:${param.binding}`).join("|") !== "head.weight:weights|head.bias:bias" ||
     lazyActivationChain.compileSupport().supported !== true ||
     lazyNamespaceActivationChain.compileSupport().supported !== true ||
     lazySnakeSoftmaxGraph.compileSupport().supported !== true ||
@@ -4121,7 +4121,8 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyMethodCompiledProgram.outputShape().join("x") !== "1" ||
     lazyMethodCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 3 ||
     lazyMatmulBiasCompiledProgram.outputShape().join("x") !== "3" ||
-    lazyMatmulBiasCompiledProgram.compileEvidence()?.kernelPlan?.ops[1]?.kernel !== "add" ||
+    lazyMatmulBiasCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.fusedOpCount !== 3 ||
+    lazyMatmulBiasCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "linear|add|relu" ||
     lazyMultiChannelConvReluProgram.outputShape().join("x") !== "2x2x2x2" ||
     lazyMultiChannelConvReluProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "conv2d|relu" ||
     lazyReductionChain.compileSupport().supported !== true ||

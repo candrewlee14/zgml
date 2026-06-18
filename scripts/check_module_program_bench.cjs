@@ -1158,20 +1158,21 @@ const benchSpecs = [
     tolerance: 1e-4,
     plan: {
       opCount: 3,
-      dispatchCount: 3,
-      publicOps: 3,
-      description: "lazy Tensor IR Matmul -> Add -> ReLU Program kernel plan",
+      dispatchCount: 1,
+      publicOps: 1,
+      description: "fused lazy Tensor IR Matmul -> Add -> ReLU Program kernel plan",
       check: (plan) => {
         if (
-          ops(plan) !== "matmul|add|activation" ||
+          ops(plan) !== "matmul" ||
           kernels(plan) !== "linear|add|relu" ||
-          plan.parameterLayout.parameters.map((param) => param.name).join("|") !== "w|b"
+          plan.ops[0].fusedOpCount !== 3 ||
+          plan.parameterLayout.parameters.map((param) => `${param.name}:${param.binding}`).join("|") !== "w:weights|b:bias"
         ) {
-          throw new Error("lazy matmul-add-relu expected Matmul -> Add -> ReLU kernel plan with named parameters");
+          throw new Error("lazy matmul-add-relu expected one fused Matmul -> Add -> ReLU kernel plan with named parameters");
         }
       },
     },
-    summary: (result) => `lazy_matmul_add_relu_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyMatmulAddReluBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=3 kernels=linear|add|relu batched=rank2 parameters=w|b hot=allocation-free`,
+    summary: (result) => `lazy_matmul_add_relu_batched=${result.speedup.toFixed(2)}x floor=${floors.lazyMatmulAddReluBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=1 fused=3 kernels=linear|add|relu batched=rank2 parameters=w:weights|b:bias hot=allocation-free`,
   },
   {
     key: "lazy_mlp_batched",
