@@ -728,32 +728,36 @@ const Context = struct {
         const bias_base: usize = c.bias_offset;
         const dst_base: usize = c.dst_offset;
         const relu = c.relu;
-        if (in_channels == 1 and out_channels == 1 and kernel_w == 3 and kernel_h == 3) {
-            const b: f32 = if (has_bias) bias[bias_base] else 0;
-            const w0 = weight[weight_base + 0];
-            const w1 = weight[weight_base + 1];
-            const w2 = weight[weight_base + 2];
-            const w3 = weight[weight_base + 3];
-            const w4 = weight[weight_base + 4];
-            const w5 = weight[weight_base + 5];
-            const w6 = weight[weight_base + 6];
-            const w7 = weight[weight_base + 7];
-            const w8 = weight[weight_base + 8];
+        if (in_channels == 1 and kernel_w == 3 and kernel_h == 3) {
             for (0..batch) |n| {
                 const src_batch_base = src_base + n * in_w * in_h;
-                const dst_batch_base = dst_base + n * out_w * out_h;
-                for (0..out_h) |oy| {
-                    const r0 = src_batch_base + oy * in_w;
-                    const r1 = r0 + in_w;
-                    const r2 = r1 + in_w;
-                    const drow = dst_batch_base + oy * out_w;
-                    for (0..out_w) |ox| {
-                        var sum =
-                            src[r0 + ox] * w0 + src[r0 + ox + 1] * w1 + src[r0 + ox + 2] * w2 +
-                            src[r1 + ox] * w3 + src[r1 + ox + 1] * w4 + src[r1 + ox + 2] * w5 +
-                            src[r2 + ox] * w6 + src[r2 + ox + 1] * w7 + src[r2 + ox + 2] * w8 + b;
-                        if (relu and sum < 0) sum = 0;
-                        dst[drow + ox] = sum;
+                const dst_batch_base = dst_base + n * out_w * out_h * out_channels;
+                for (0..out_channels) |oc| {
+                    const b: f32 = if (has_bias) bias[bias_base + oc] else 0;
+                    const weight_channel_base = weight_base + oc * 9;
+                    const w0 = weight[weight_channel_base + 0];
+                    const w1 = weight[weight_channel_base + 1];
+                    const w2 = weight[weight_channel_base + 2];
+                    const w3 = weight[weight_channel_base + 3];
+                    const w4 = weight[weight_channel_base + 4];
+                    const w5 = weight[weight_channel_base + 5];
+                    const w6 = weight[weight_channel_base + 6];
+                    const w7 = weight[weight_channel_base + 7];
+                    const w8 = weight[weight_channel_base + 8];
+                    const dst_channel_base = dst_batch_base + oc * out_w * out_h;
+                    for (0..out_h) |oy| {
+                        const r0 = src_batch_base + oy * in_w;
+                        const r1 = r0 + in_w;
+                        const r2 = r1 + in_w;
+                        const drow = dst_channel_base + oy * out_w;
+                        for (0..out_w) |ox| {
+                            var sum =
+                                src[r0 + ox] * w0 + src[r0 + ox + 1] * w1 + src[r0 + ox + 2] * w2 +
+                                src[r1 + ox] * w3 + src[r1 + ox + 1] * w4 + src[r1 + ox + 2] * w5 +
+                                src[r2 + ox] * w6 + src[r2 + ox + 1] * w7 + src[r2 + ox + 2] * w8 + b;
+                            if (relu and sum < 0) sum = 0;
+                            dst[drow + ox] = sum;
+                        }
                     }
                 }
             }
@@ -1213,6 +1217,80 @@ test "reference execution tape uses patched op payloads" {
     try std.testing.expectEqual(@as(u64, 1), profile.program_command_attempt_counts[op_command]);
     try std.testing.expectEqual(@as(u64, 1), profile.program_command_dispatch_counts[op_command]);
     try std.testing.expectEqual(@as(u64, 0), profile.program_command_failed_counts[op_command]);
+}
+
+test "reference executor conv2d relu handles multiple output channels" {
+    const batch = 2;
+    const in_w = 4;
+    const in_h = 4;
+    const out_w = 2;
+    const out_h = 2;
+    const out_channels = 2;
+    var src = [_]f32{
+        1,  -2, 3,  4,
+        5,  6,  -7, 8,
+        9,  10, 11, -12,
+        13, 14, 15, 16,
+
+        -1, -2, -3, -4,
+        5,  6,  7,  8,
+        -9, 10, -11, 12,
+        13, -14, 15, -16,
+    };
+    var weight = [_]f32{
+        1,  0, -1,
+        0,  1, 0,
+        -1, 0, 1,
+
+        -1,   0.5, 0.25,
+        0,    -0.5, 0,
+        0.25, 0.5, -1,
+    };
+    var bias = [_]f32{ -1.5, 0.75 };
+    var dst = [_]f32{ -99 } ** (batch * out_channels * out_w * out_h);
+    const buffers = [_]Buffer{
+        .{ .ptr = &src, .len = src.len },
+        .{ .ptr = &weight, .len = weight.len },
+        .{ .ptr = &bias, .len = bias.len },
+        .{ .ptr = &dst, .len = dst.len },
+    };
+
+    executeOp(&buffers, &.{}, .{ .conv2d = .{
+        .dst = 3,
+        .src = 0,
+        .weight = 1,
+        .bias = 2,
+        .out_w = out_w,
+        .out_h = out_h,
+        .in_w = in_w,
+        .in_h = in_h,
+        .in_channels = 1,
+        .out_channels = out_channels,
+        .kernel_w = 3,
+        .kernel_h = 3,
+        .batch = batch,
+        .relu = true,
+    } });
+
+    for (0..batch) |n| {
+        for (0..out_channels) |oc| {
+            for (0..out_h) |oy| {
+                for (0..out_w) |ox| {
+                    var expected = bias[oc];
+                    for (0..3) |ky| {
+                        for (0..3) |kx| {
+                            const src_idx = n * in_w * in_h + (oy + ky) * in_w + ox + kx;
+                            const weight_idx = oc * 9 + ky * 3 + kx;
+                            expected += src[src_idx] * weight[weight_idx];
+                        }
+                    }
+                    if (expected < 0) expected = 0;
+                    const dst_idx = n * out_channels * out_w * out_h + oc * out_w * out_h + oy * out_w + ox;
+                    try std.testing.expectApproxEqAbs(expected, dst[dst_idx], 1e-6);
+                }
+            }
+        }
+    }
 }
 
 test "reference executor rope reads sine from packed second half" {
