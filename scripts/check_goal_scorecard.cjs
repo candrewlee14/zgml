@@ -207,6 +207,7 @@ function checkScripts() {
     "q8 prompt candidate gate\", process.execPath, args, result",
     "module Program bench gate\", process.execPath, args, result",
     "portable Wasm Node/WASI smoke\", \"zig\", nodeWasiArgs, nodeWasi",
+    "stdio: [\"ignore\", \"pipe\", process.stderr]",
   ]);
   requireIncludes(read("scripts/check_q8_prompt_candidate.cjs"), "scripts/check_q8_prompt_candidate.cjs", "full-model Q8 prompt candidate probe", [
     "metal scheduled prefill projection-row-chain command candidate",
@@ -221,6 +222,12 @@ function checkScripts() {
     "ProjectionRowChainDispatchExcess",
     "BENCH_CANDIDATE_ATTEMPTS",
     "const attempts = positiveInt(",
+    "function progress(message)",
+    "`[q8-prompt] ${message}\\n`",
+    "progress(`attempt ${index}/${attempts} command-candidate`)",
+    "progress(`attempt ${index}/${attempts} single-dispatch-candidate`)",
+    "progress(",
+    "`attempt ${index}/${attempts} result ` +",
     "function measureAttempt(index)",
     "attemptRows",
     "const rankedAscending = [...attemptRows].sort((left, right) => Number(left.speedup ?? Infinity) - Number(right.speedup ?? Infinity))",
@@ -1219,7 +1226,7 @@ function checkQ8PromptCandidateEvidence() {
       BENCH_BUILD_ZGML: "0",
       BENCH_CANDIDATE_ATTEMPTS: process.env.BENCH_CANDIDATE_ATTEMPTS ?? "3",
     },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", process.stderr],
   });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   if (result.status !== 0) {

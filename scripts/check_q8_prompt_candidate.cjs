@@ -39,6 +39,10 @@ function run(command, args, options = {}) {
   return output;
 }
 
+function progress(message) {
+  process.stderr.write(`[q8-prompt] ${message}\n`);
+}
+
 function parseRows(output) {
   const prefix = "ZGML_BENCH_JSON ";
   const rows = [];
@@ -81,17 +85,23 @@ if (!existsSync(resolve(root, model))) {
 }
 
 if (build === "1") {
+  progress("build bench binary");
   run("zig", ["build", "bench-build"]);
+  progress("built bench binary");
 } else if (build !== "0") {
   console.error("BENCH_BUILD_ZGML must be 0 or 1");
   process.exit(1);
 }
 
 const baseArgs = [model, promptTokens, genTokens, repetitions, "--metal-prefill-device", "--gate-only"];
+progress(`attempts=${attempts} model=${model} prompt=${promptTokens} gen=${genTokens} reps=${repetitions}`);
 
 function measureAttempt(index) {
+  progress(`attempt ${index}/${attempts} default`);
   const defaultOutput = run(binary, baseArgs);
+  progress(`attempt ${index}/${attempts} command-candidate`);
   const commandOutput = run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-command-candidate"]);
+  progress(`attempt ${index}/${attempts} single-dispatch-candidate`);
   const candidateOutput = run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-candidate"]);
   const defaultRow = rowFor(defaultOutput, "metal scheduled prefill");
   const commandRow = rowFor(commandOutput, "metal scheduled prefill projection-row-chain command candidate");
@@ -163,6 +173,13 @@ function measureAttempt(index) {
   const structuralReady = defaultFastPathReady && commandStructuralReady && candidateSemanticReady && candidateMatchesCommandShape && candidateDispatchShapeReady && fallbackOk;
   const commandThroughputReady = commandSpeedup !== null && commandSpeedup >= commandSpeedupFloor;
   const throughputReady = speedup !== null && speedup >= speedupFloor;
+  progress(
+    `attempt ${index}/${attempts} result ` +
+      `command=${format(commandSpeedup)}x single=${format(speedup)}x ` +
+      `dispatch=${format(defaultDispatches, 0)}->${format(candidateDispatches, 0)} ` +
+      `commands=${format(defaultCommands, 0)}->${format(candidateCommands, 0)} ` +
+      `fallback=${format(defaultFallback, 0)}->${format(candidateFallback, 0)}`,
+  );
   return {
     index,
     defaultTokS,
