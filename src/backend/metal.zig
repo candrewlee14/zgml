@@ -10625,8 +10625,7 @@ test "metal backend exact command fuses qmatmul residual into row chain" {
         .qweights = &qweights,
     };
 
-    var command_policy = program_mod.CommandStreamPolicy.default();
-    command_policy.fuse_projection_row_chain = true;
+    const command_policy = program_mod.CommandStreamPolicy.promptProjectionRowChainCommand();
     const handle = metal.compileProgramWithCommandPolicy(program, command_policy) orelse return error.CompileFailed;
     defer be.freeProgram(handle);
     const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
@@ -10678,7 +10677,7 @@ test "metal backend exact command fuses qmatmul residual into row chain" {
     try std.testing.expectEqual(@as(u64, 2), command_rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
     try std.testing.expectEqual(@as(u64, 0), command_rt.fallback_op_count);
 
-    const candidate_policy = program_mod.CommandStreamPolicy.promptProjectionRowChainCandidate();
+    const candidate_policy = program_mod.CommandStreamPolicy.promptProjectionRowChainSingleDispatchCandidate();
     const candidate_handle = metal.compileProgramWithCommandPolicy(program, candidate_policy) orelse return error.CompileFailed;
     defer be.freeProgram(candidate_handle);
     const candidate_compiled: *CompiledProgram = @ptrCast(@alignCast(candidate_handle));

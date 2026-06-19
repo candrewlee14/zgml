@@ -518,6 +518,17 @@ function checkPackageExports(errors) {
   }
   const llamaSmollmBenchSource = fs.readFileSync(path.join(root, "benchmarks", "llama_smollm_bench.zig"), "utf8");
   const metalBackendSource = fs.readFileSync(path.join(root, "src", "backend", "metal.zig"), "utf8");
+  const backendProgramSource = fs.readFileSync(path.join(root, "src", "backend", "program.zig"), "utf8");
+  for (const needle of [
+    "pub fn promptProjectionRowChainCommand() CommandStreamPolicy",
+    "policy.fuse_projection_row_chain_single_dispatch = false;",
+    "pub fn promptProjectionRowChainSingleDispatchCandidate() CommandStreamPolicy",
+    "policy.fuse_projection_row_chain_single_dispatch = true;",
+  ]) {
+    if (!backendProgramSource.includes(needle)) {
+      errors.push(`src/backend/program.zig must name the safe row-chain command policy separately from the single-dispatch diagnostic: ${needle}`);
+    }
+  }
   for (const needle of [
     "command_policy: program_mod.CommandStreamPolicy = program_mod.CommandStreamPolicy.default()",
     "pub fn setCommandStreamPolicy(self: *MetalBackend, command_policy: program_mod.CommandStreamPolicy) void",
@@ -529,7 +540,8 @@ function checkPackageExports(errors) {
   }
   for (const needle of [
     "--metal-prompt-projection-row-chain-candidate",
-    "setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainCandidate())",
+    "setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainSingleDispatchCandidate())",
+    "setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainCommand())",
     "metal scheduled prefill projection-row-chain candidate",
   ]) {
     if (!llamaSmollmBenchSource.includes(needle)) {

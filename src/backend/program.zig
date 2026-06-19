@@ -1299,6 +1299,19 @@ pub const CommandStreamPolicy = struct {
     }
 
     pub fn promptProjectionRowChainCandidate() CommandStreamPolicy {
+        return promptProjectionRowChainSingleDispatchCandidate();
+    }
+
+    pub fn promptProjectionRowChainCommand() CommandStreamPolicy {
+        var policy = CommandStreamPolicy.default();
+        policy.fuse_projection_row_chain = true;
+        policy.fuse_projection_row_chain_qmatvec = false;
+        policy.fuse_projection_row_chain_single_dispatch = false;
+        policy.min_projection_row_chain_rows = 8;
+        return policy;
+    }
+
+    pub fn promptProjectionRowChainSingleDispatchCandidate() CommandStreamPolicy {
         var policy = CommandStreamPolicy.default();
         policy.fuse_projection_row_chain = true;
         policy.fuse_projection_row_chain_qmatvec = false;
@@ -7542,12 +7555,12 @@ test "program command stream uses projection row-chain only for prompt-sized sem
     try std.testing.expectEqual(ProgramCommandKind.projection_chain, default_prompt_commands[0].kind);
     try std.testing.expectEqual(ProgramCommandKind.row_chain, default_prompt_commands[1].kind);
 
-    const prompt_candidate_commands = try buildProgramCommands(std.testing.allocator, &prompt_ops, CommandStreamPolicy.promptProjectionRowChainCandidate());
+    const prompt_candidate_commands = try buildProgramCommands(std.testing.allocator, &prompt_ops, CommandStreamPolicy.promptProjectionRowChainSingleDispatchCandidate());
     defer std.testing.allocator.free(prompt_candidate_commands);
     try std.testing.expectEqual(@as(usize, 1), prompt_candidate_commands.len);
     try std.testing.expectEqual(ProgramCommandKind.projection_row_chain, prompt_candidate_commands[0].kind);
 
-    const decode_candidate_commands = try buildProgramCommands(std.testing.allocator, &tiny_ops, CommandStreamPolicy.promptProjectionRowChainCandidate());
+    const decode_candidate_commands = try buildProgramCommands(std.testing.allocator, &tiny_ops, CommandStreamPolicy.promptProjectionRowChainSingleDispatchCandidate());
     defer std.testing.allocator.free(decode_candidate_commands);
     try std.testing.expectEqual(@as(usize, 2), decode_candidate_commands.len);
     try std.testing.expectEqual(ProgramCommandKind.projection_chain, decode_candidate_commands[0].kind);

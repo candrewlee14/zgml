@@ -551,14 +551,9 @@ pub fn main(init: std.process.Init) !void {
         else
             "metal scheduled prefill";
         if (run_metal_prompt_projection_row_chain_candidate) {
-            metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainCandidate());
+            metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainSingleDispatchCandidate());
         } else if (run_metal_prompt_projection_row_chain_command_candidate) {
-            var command_policy = program_mod.CommandStreamPolicy.default();
-            command_policy.fuse_projection_row_chain = true;
-            command_policy.fuse_projection_row_chain_qmatvec = false;
-            command_policy.fuse_projection_row_chain_single_dispatch = false;
-            command_policy.min_projection_row_chain_rows = 8;
-            metal_be.setCommandStreamPolicy(command_policy);
+            metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainCommand());
         }
         if (!gate_only) {
             try runVariant(if (model_is_gguf) "metal gguf      " else "metal f32        ", metal_be.backend(), false, false, cfg, &stdout.interface, io, alloc);
