@@ -216,8 +216,9 @@ Current checked progress:
   `matmul -> add(bias) -> activation` now collapse to one native Program
   dispatch and are benchmarked for both ReLU and GELU while preserving the
   original three-op Tensor IR evidence. Parameterless activation chains also
-  have decision-grade one-dispatch evidence for both arithmetic
-  `relu -> square -> sqrt` and sign-style `neg -> abs -> step` chains.
+  have decision-grade one-dispatch evidence for arithmetic
+  `relu -> square -> sqrt`, sign-style `neg -> abs -> step` chains, and
+  nonlinear `tanh -> sigmoid -> tanh` chains.
   LayerNorm/RMSNorm descriptors can carry post-affine activations,
   and the norm-GELU MLP module benchmarks now prove
   `Linear -> LayerNorm(+affine)+GELU -> Linear` as a three-dispatch Program

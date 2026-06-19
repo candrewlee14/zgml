@@ -16,6 +16,7 @@ const wholeBenchAttempts = 3;
 const floors = Object.freeze({
   activationChainSpeedup: 1.25,
   activationSignChainSpeedup: 1.25,
+  activationTanhChainSpeedup: 1.25,
   linearReluSpeedup: 1.2,
   linearBatchedSpeedup: 3.0,
   lazyLinearGeluBatchedSpeedup: 2.0,
@@ -57,6 +58,7 @@ const floors = Object.freeze({
 const expectedKeys = Object.freeze([
   "activation_chain",
   "activation_sign_chain",
+  "activation_tanh_chain",
   "linear_relu",
   "linear_batched",
   "lazy_linear_gelu_batched",
@@ -620,6 +622,34 @@ const benchSpecs = [
       },
     },
     summary: (result) => `activation_sign_chain=${result.speedup.toFixed(2)}x floor=${floors.activationSignChainSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms dispatch=1 fused=3 kernels=neg|abs|step hot=allocation-free`,
+  },
+  {
+    key: "activation_tanh_chain",
+    label: "activation-tanh-chain",
+    floor: floors.activationTanhChainSpeedup,
+    inputShape: [16384],
+    inputLen: 16384,
+    outputLen: 16384,
+    layerCount: 3,
+    parameterNames: "",
+    input: () => adapter.tensor(values(16384, 8), [16384]),
+    model: () => adapter.nn.sequential([adapter.nn.tanh(), adapter.nn.sigmoid(), adapter.nn.tanh()]),
+    ir: { opCount: 3, parameterCount: 0 },
+    iterations: 500,
+    tolerance: 1e-5,
+    plan: {
+      opCount: 3,
+      dispatchCount: 1,
+      publicOps: 1,
+      description: "single fused nonlinear activation-chain dispatch",
+      check: (plan) => {
+        const op = plan.ops[0];
+        if (op.op !== "activation-chain" || op.fusedOpCount !== 3 || op.nativeKernels.join("|") !== "tanh|sigmoid|tanh") {
+          throw new Error("activation-tanh-chain expected fused native kernels tanh|sigmoid|tanh");
+        }
+      },
+    },
+    summary: (result) => `activation_tanh_chain=${result.speedup.toFixed(2)}x floor=${floors.activationTanhChainSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms dispatch=1 fused=3 kernels=tanh|sigmoid|tanh hot=allocation-free`,
   },
   {
     key: "linear_relu",

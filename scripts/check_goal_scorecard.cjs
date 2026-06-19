@@ -846,6 +846,7 @@ function checkScripts() {
     "benchSpecs.map((spec) => ({ spec, result: runBenchSpec(spec) }))",
     "activation_chain=",
     "activation_sign_chain=",
+    "activation_tanh_chain=",
     "linear_relu=",
     "linear_batched=",
     "lazy_linear_gelu_batched=",
@@ -884,6 +885,7 @@ function checkScripts() {
     "lazy_rms_gelu_classifier_batched=",
     "lazy_token_head_batched=",
     "dispatch=1 fused=3",
+    "kernels=tanh|sigmoid|tanh",
     "dispatch=1 fused=2",
     "ops=2 dispatch=1 fused=2 kernels=linear|gelu",
     "ops=3 dispatch=2 fused=2",
@@ -916,6 +918,7 @@ function checkScripts() {
     "ops=5 dispatch=4 fused=2 kernels=rms-norm|linear|gelu|linear|log-softmax",
     "ops=3 dispatch=3 kernels=embedding|linear|log-softmax",
     "floors.activationChainSpeedup",
+    "floors.activationTanhChainSpeedup",
     "floors.linearReluSpeedup",
     "floors.linearBatchedSpeedup",
     "floors.lazyLinearGeluBatchedSpeedup",
@@ -1311,6 +1314,7 @@ function checkModuleProgramBenchEvidence() {
     "module Program bench gate: pass",
     "activation_chain=",
     "activation_sign_chain=",
+    "activation_tanh_chain=",
     "linear_relu=",
     "linear_batched=",
     "mlp=",
@@ -1339,6 +1343,7 @@ function checkModuleProgramBenchEvidence() {
     "log_softmax_classifier_batched=",
     "dispatch=1 fused=3",
     "kernels=neg|abs|step",
+    "kernels=tanh|sigmoid|tanh",
     "dispatch=1 fused=2",
     "ops=3 dispatch=2 fused=2",
     "batched=rank2",
@@ -1365,6 +1370,8 @@ function checkModuleProgramBenchEvidence() {
   requirePattern(line, "module Program bench gate output", "activation-chain speedup floor", /activation_chain=[0-9.]+x floor=1\.25x/);
   requirePattern(line, "module Program bench gate output", "sign activation-chain speedup floor", /activation_sign_chain=[0-9.]+x floor=1\.25x/);
   requirePattern(line, "module Program bench gate output", "sign activation-chain kernel proof", /activation_sign_chain=[^;]+dispatch=1 fused=3 kernels=neg\|abs\|step hot=allocation-free/);
+  requirePattern(line, "module Program bench gate output", "nonlinear activation-chain speedup floor", /activation_tanh_chain=[0-9.]+x floor=1\.25x/);
+  requirePattern(line, "module Program bench gate output", "nonlinear activation-chain kernel proof", /activation_tanh_chain=[^;]+dispatch=1 fused=3 kernels=tanh\|sigmoid\|tanh hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "linear-relu speedup floor", /linear_relu=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "batched linear speedup floor", /linear_batched=[0-9.]+x floor=3\.00x/);
   requirePattern(line, "module Program bench gate output", "lazy linear-gelu speedup floor", /lazy_linear_gelu_batched=[0-9.]+x floor=2\.00x/);

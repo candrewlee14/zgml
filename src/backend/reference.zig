@@ -516,6 +516,55 @@ const Context = struct {
         while (i < n) : (i += 1) dst[i] = op(@as(VecT, @splat(src[i])))[0];
     }
 
+    fn fusedUnaryStepCanSimd(op: backend_mod.Op) bool {
+        return switch (op) {
+            .neg, .abs, .sgn, .step, .relu, .sqr, .sqrt, .recip, .exp, .log, .gelu, .sigmoid, .silu, .tanh => true,
+            else => false,
+        };
+    }
+
+    fn fusedUnaryStepVec(op: backend_mod.Op, v: @Vector(V, f32)) @Vector(V, f32) {
+        const VecT = @Vector(V, f32);
+        const zero: VecT = @splat(0.0);
+        const one: VecT = @splat(1.0);
+        const two: VecT = @splat(2.0);
+        return switch (op) {
+            .neg => -v,
+            .abs => @abs(v),
+            .sgn => @select(f32, v > zero, one, @select(f32, v < zero, @as(VecT, @splat(-1.0)), zero)),
+            .step => @select(f32, v > zero, one, zero),
+            .relu => @max(v, zero),
+            .sqr => v * v,
+            .sqrt => @sqrt(v),
+            .recip => one / v,
+            .exp => @exp(v),
+            .log => @log(v),
+            .gelu => {
+                const k0: VecT = @splat(0.7978845608);
+                const k1: VecT = @splat(0.044715);
+                const half: VecT = @splat(0.5);
+                const k = k0 * (v + k1 * v * v * v);
+                const e2k = @exp(k + k);
+                return half * v * (one + (e2k - one) / (e2k + one));
+            },
+            .sigmoid => one / (one + @exp(-v)),
+            .silu => v / (one + @exp(-v)),
+            .tanh => {
+                const e2 = @exp(two * v);
+                return (e2 - one) / (e2 + one);
+            },
+            else => unreachable,
+        };
+    }
+
+    fn fusedElementwiseCanSimd(fe: anytype) bool {
+        if (fe.steps.len == 0) return false;
+        for (fe.steps) |step| {
+            if (!fusedUnaryStepCanSimd(step.op)) return false;
+        }
+        return true;
+    }
+
     fn unsupportedElementwiseOp(op: backend_mod.Op) noreturn {
         std.debug.panic("reference backend reached unsupported elementwise op: {s}", .{@tagName(op)});
     }
@@ -638,6 +687,44 @@ const Context = struct {
         const dst = self.bufF32(fe.dst) + @as(usize, fe.dst_offset);
         const src = self.bufF32(fe.src) + @as(usize, fe.src_offset);
         const n: usize = fe.n;
+        if (fusedElementwiseCanSimd(fe)) {
+            const VecT = @Vector(V, f32);
+            var i: usize = 0;
+            while (i + V <= n) : (i += V) {
+                var v: VecT = src[i..][0..V].*;
+                for (fe.steps) |step| {
+                    v = fusedUnaryStepVec(step.op, v);
+                }
+                dst[i..][0..V].* = v;
+            }
+            while (i < n) : (i += 1) {
+                var v = src[i];
+                for (fe.steps) |step| {
+                    switch (step.op) {
+                        .neg => v = -v,
+                        .abs => v = @abs(v),
+                        .sgn => v = if (v > 0) 1 else if (v < 0) -1 else 0,
+                        .step => v = if (v > 0) 1 else 0,
+                        .relu => v = @max(v, 0.0),
+                        .sqr => v = v * v,
+                        .sqrt => v = @sqrt(v),
+                        .recip => v = 1.0 / v,
+                        .exp => v = @exp(v),
+                        .log => v = @log(v),
+                        .gelu => {
+                            const kk = 0.7978845608 * (v + 0.044715 * v * v * v);
+                            v = 0.5 * v * (1.0 + std.math.tanh(kk));
+                        },
+                        .sigmoid => v = 1.0 / (1.0 + @exp(-v)),
+                        .silu => v = v / (1.0 + @exp(-v)),
+                        .tanh => v = std.math.tanh(v),
+                        else => unreachable,
+                    }
+                }
+                dst[i] = v;
+            }
+            return;
+        }
         for (0..n) |i| {
             var v = src[i];
             for (fe.steps) |step| {

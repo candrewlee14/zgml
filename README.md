@@ -600,7 +600,9 @@ parameterless `Sequential` work can stay in the compiled Program lane instead
 of bouncing back to eager host execution. Consecutive supported activations are
 packed into one bounded activation-chain descriptor with frozen fused value-edge
 evidence, matching the backend fused-elementwise path without growing the
-normal `nn` surface. SiLU is now a first-class native tensor op, so the
+normal `nn` surface. Arithmetic, sign-style, and nonlinear
+`tanh -> sigmoid -> tanh` activation chains have allocation-free native
+benchmark evidence. SiLU is now a first-class native tensor op, so the
 RMSNorm -> Linear+SiLU -> Linear FFN benchmark carries a stricter 5.00x native
 Program floor instead of relying on an expanded sigmoid graph. The KernelPlan also fuses supported
 `Linear -> activation` pairs into one native linear descriptor with fused
