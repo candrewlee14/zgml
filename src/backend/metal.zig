@@ -10352,40 +10352,42 @@ test "metal backend exact command fuses qmatmul residual into row chain" {
     metal.setRegionProgramDispatch(true);
     const be = metal.backend();
 
-    var input: [24]f32 = undefined;
+    const rows = 8;
+    const cols = 64;
+    const k_cols = 3;
+    const elems = rows * cols;
+    var input: [rows * k_cols]f32 = undefined;
     for (&input, 0..) |*x, i| x.* = @floatFromInt(i + 1);
-    var q_out = [_]f32{77} ** 32;
-    var residual = [_]f32{10} ** 32;
-    var norm_out = [_]f32{88} ** 32;
-    var scale = [_]f32{ 1, 2, 3, 4 };
-    var repeat_out = [_]f32{99} ** 32;
-    var fused_out = [_]f32{0} ** 32;
-    var zero = [_]f32{0} ** 32;
-    var residual_copy = [_]f32{0} ** 32;
-    const qdata = [_]i8{
-        1, 0, 0, 0,
-        0, 1, 0, 0,
-        0, 0, 1, 0,
-    };
-    const scales = [_]f32{ 1, 1, 1 };
-    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 3, .cols = 4, .block_size = 4 }};
+    var q_out = [_]f32{77} ** elems;
+    var residual = [_]f32{10} ** elems;
+    var norm_out = [_]f32{88} ** elems;
+    var scale: [cols]f32 = undefined;
+    for (&scale, 0..) |*x, col| x.* = @floatFromInt((col % 4) + 1);
+    var repeat_out = [_]f32{99} ** elems;
+    var fused_out = [_]f32{0} ** elems;
+    var zero = [_]f32{0} ** elems;
+    var residual_copy = [_]f32{0} ** elems;
+    var qdata = [_]i8{0} ** (k_cols * cols);
+    for (0..k_cols) |k| qdata[k * cols + k] = 1;
+    var scales = [_]f32{1} ** ((k_cols * cols) / 4);
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = k_cols, .cols = cols, .block_size = 4 }};
     const ops = [_]backend_mod.DeviceOp{
-        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = 8, .N = 4, .K = 3 } },
-        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 2, .n = 32 } },
-        .{ .rmsnorm = .{ .dst = 3, .src = 2, .rows = 8, .cols = 4, .eps = 1e-5 } },
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = rows, .N = cols, .K = k_cols } },
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 2, .n = elems } },
+        .{ .rmsnorm = .{ .dst = 3, .src = 2, .rows = rows, .cols = cols, .eps = 1e-5 } },
         .{ .repeat = .{
             .dst = 5,
             .src = 4,
-            .n = 32,
-            .src_ne = .{ 4, 1, 1, 1 },
-            .dst_ne = .{ 4, 8, 1, 1 },
-            .src_strides = .{ 1, 4, 4, 4 },
-            .dst_strides = .{ 1, 4, 32, 32 },
+            .n = elems,
+            .src_ne = .{ cols, 1, 1, 1 },
+            .dst_ne = .{ cols, rows, 1, 1 },
+            .src_strides = .{ 1, cols, cols, cols },
+            .dst_strides = .{ 1, cols, elems, elems },
         } },
-        .{ .elementwise = .{ .op = .mul, .dst = 6, .src0 = 3, .src1 = 5, .n = 32 } },
-        .{ .elementwise = .{ .op = .add, .dst = 8, .src0 = 2, .src1 = 7, .n = 32 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 6, .src0 = 3, .src1 = 5, .n = elems } },
+        .{ .elementwise = .{ .op = .add, .dst = 8, .src0 = 2, .src1 = 7, .n = elems } },
     };
-    const buf_sizes = [_]usize{ 24, 32, 32, 32, 4, 32, 32, 32, 32 };
+    const buf_sizes = [_]usize{ rows * k_cols, elems, elems, elems, cols, elems, elems, elems, elems };
     const uploads = [_]backend_mod.ProgramIO{
         .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
         .{ .buf_idx = 1, .host_ptr = @ptrCast(&q_out), .size = q_out.len * 4 },
@@ -10415,9 +10417,9 @@ test "metal backend exact command fuses qmatmul residual into row chain" {
     try std.testing.expectEqual(@as(usize, 2), kernel_plan.commands.len);
     try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_row_chain, kernel_plan.commands[0].kind);
 
-    var got: [32]f32 = undefined;
-    var got_residual: [32]f32 = undefined;
-    var got_residual_copy: [32]f32 = undefined;
+    var got: [elems]f32 = undefined;
+    var got_residual: [elems]f32 = undefined;
+    var got_residual_copy: [elems]f32 = undefined;
     const out = [_]backend_mod.ProgramIO{
         .{ .buf_idx = 6, .host_ptr = @ptrCast(&got), .size = got.len * 4 },
         .{ .buf_idx = 2, .host_ptr = @ptrCast(&got_residual), .size = got_residual.len * 4 },
@@ -10425,18 +10427,18 @@ test "metal backend exact command fuses qmatmul residual into row chain" {
     };
     be.executeProgram(handle, &.{}, &out);
 
-    var projection_plus_residual: [32]f32 = undefined;
-    for (0..8) |row| {
-        const input_base = row * 3;
-        const base = row * 4;
-        projection_plus_residual[base + 0] = input[input_base + 0] + 10;
-        projection_plus_residual[base + 1] = input[input_base + 1] + 10;
-        projection_plus_residual[base + 2] = input[input_base + 2] + 10;
-        projection_plus_residual[base + 3] = 10;
+    var projection_plus_residual: [elems]f32 = undefined;
+    for (0..rows) |row| {
+        const input_base = row * k_cols;
+        const base = row * cols;
+        for (0..cols) |col| {
+            const projected = if (col < k_cols) input[input_base + col] else 0;
+            projection_plus_residual[base + col] = projected + 10;
+        }
         var ss: f32 = 0;
-        for (projection_plus_residual[base..][0..4]) |x| ss += x * x;
-        const inv_rms = 1.0 / @sqrt(ss / 4.0 + 1e-5);
-        for (0..4) |col| {
+        for (projection_plus_residual[base..][0..cols]) |x| ss += x * x;
+        const inv_rms = 1.0 / @sqrt(ss / @as(f32, @floatFromInt(cols)) + 1e-5);
+        for (0..cols) |col| {
             const expected = projection_plus_residual[base + col] * inv_rms * scale[col];
             try std.testing.expectApproxEqAbs(expected, got[base + col], 1e-4);
             try std.testing.expectApproxEqAbs(projection_plus_residual[base + col], got_residual[base + col], 1e-4);

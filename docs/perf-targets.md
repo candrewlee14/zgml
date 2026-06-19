@@ -274,7 +274,11 @@ machine for both prompt/prefill and decode.
   `qrow full-prefill m=128 n=512 k=512 projection_row_chain` diagnostic because
   the current `qmatmul_row_chain_f32` Adapter still uses a scalar
   per-row/per-column dot loop with an explicit qmatmul-row-chain threadgroup
-  width rather than the tiled simdgroup qmatmul path.
+  width rather than the tiled simdgroup qmatmul path. Prompt-sized
+  qmatmul row-chain commands are protected by a multi-tile regression that
+  proves they route through tiled `qmatmul_elementwise_f32` plus the
+  RMSNorm-scale row pass, while the scalar kernel stays diagnostic for the
+  qmatvec/decode-style path.
   It caches the row input vector in threadgroup memory for eligible `K <= 2048`
   shapes, which slightly improves the isolated row-chain frontier but does not
   change the full-model promotion decision. A 256-thread row-wide variant was

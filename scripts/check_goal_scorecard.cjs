@@ -215,6 +215,10 @@ function checkScripts() {
     "projection_row_chain_next=${projectionRowChainNextTarget}",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "scalar qmatmul row-chain diagnosis until tiled replacement exists", [
+    "if (q.M != 1) {",
+    "const write_primary = program_mod.projectionPrimaryOutputHasExternalUsers(ops, q_idx, e_idx);",
+    "if (!self.encodeQMatmulElementwise(exec, view, q, e, write_primary)) return false;",
+    "return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, program_mod.rmsnormScaleChainHasExternalUsers(ops, rn_idx));",
     "const QMATMUL_ROW_CHAIN_THREADS: u32 = 64;",
     "\\\\constant uint QMATMUL_ROW_CHAIN_THREADS = 64;",
     "kernel void qmatmul_row_chain_f32",
