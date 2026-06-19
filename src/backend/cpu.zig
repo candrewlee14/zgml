@@ -162,16 +162,14 @@ fn programIOListHasResources(bindings: []const backend_mod.ProgramIO) bool {
 fn uploadHostBindings(buffer_table: reference.OwnedBufferTable, inputs: []const backend_mod.ProgramIO) void {
     for (inputs) |io| {
         if (!io.isHost()) continue;
-        const host_input = [_]backend_mod.ProgramIO{io};
-        buffer_table.upload(&host_input);
+        reference.uploadBindingToBuffers(buffer_table.buffers, io);
     }
 }
 
 fn downloadHostBindings(buffer_table: reference.OwnedBufferTable, outputs: []const backend_mod.ProgramIO) void {
     for (outputs) |io| {
         if (!io.isHost()) continue;
-        const host_output = [_]backend_mod.ProgramIO{io};
-        buffer_table.download(&host_output);
+        reference.downloadBindingFromBuffers(buffer_table.buffers, io);
     }
 }
 

@@ -132,36 +132,44 @@ pub const OwnedBufferTable = struct {
 
 pub fn uploadToBuffers(buffers: []const Buffer, inputs: []const backend_mod.ProgramIO) void {
     for (inputs) |io| {
-        const idx: usize = io.buf_idx;
-        if (idx >= buffers.len) {
-            std.debug.panic("reference backend upload buffer index out of range: {} >= {}", .{ idx, buffers.len });
-        }
-        const bytes = bufferBytes(buffers[idx]);
-        const offset: usize = io.offset;
-        const size: usize = io.size;
-        if (offset > bytes.len or size > bytes.len - offset) {
-            std.debug.panic("reference backend upload range out of bounds: offset={} size={} buffer_size={}", .{ offset, size, bytes.len });
-        }
-        const host = io.hostSlice() orelse std.debug.panic("reference backend upload received external resource binding", .{});
-        @memcpy(bytes[offset..][0..size], host);
+        uploadBindingToBuffers(buffers, io);
     }
 }
 
 pub fn downloadFromBuffers(buffers: []const Buffer, outputs: []const backend_mod.ProgramIO) void {
     for (outputs) |io| {
-        const idx: usize = io.buf_idx;
-        if (idx >= buffers.len) {
-            std.debug.panic("reference backend download buffer index out of range: {} >= {}", .{ idx, buffers.len });
-        }
-        const bytes = bufferConstBytes(buffers[idx]);
-        const offset: usize = io.offset;
-        const size: usize = io.size;
-        if (offset > bytes.len or size > bytes.len - offset) {
-            std.debug.panic("reference backend download range out of bounds: offset={} size={} buffer_size={}", .{ offset, size, bytes.len });
-        }
-        const host = io.hostSlice() orelse std.debug.panic("reference backend download received external resource binding", .{});
-        @memcpy(host, bytes[offset..][0..size]);
+        downloadBindingFromBuffers(buffers, io);
     }
+}
+
+pub fn uploadBindingToBuffers(buffers: []const Buffer, io: backend_mod.ProgramIO) void {
+    const idx: usize = io.buf_idx;
+    if (idx >= buffers.len) {
+        std.debug.panic("reference backend upload buffer index out of range: {} >= {}", .{ idx, buffers.len });
+    }
+    const bytes = bufferBytes(buffers[idx]);
+    const offset: usize = io.offset;
+    const size: usize = io.size;
+    if (offset > bytes.len or size > bytes.len - offset) {
+        std.debug.panic("reference backend upload range out of bounds: offset={} size={} buffer_size={}", .{ offset, size, bytes.len });
+    }
+    const host = io.hostSlice() orelse std.debug.panic("reference backend upload received external resource binding", .{});
+    @memcpy(bytes[offset..][0..size], host);
+}
+
+pub fn downloadBindingFromBuffers(buffers: []const Buffer, io: backend_mod.ProgramIO) void {
+    const idx: usize = io.buf_idx;
+    if (idx >= buffers.len) {
+        std.debug.panic("reference backend download buffer index out of range: {} >= {}", .{ idx, buffers.len });
+    }
+    const bytes = bufferConstBytes(buffers[idx]);
+    const offset: usize = io.offset;
+    const size: usize = io.size;
+    if (offset > bytes.len or size > bytes.len - offset) {
+        std.debug.panic("reference backend download range out of bounds: offset={} size={} buffer_size={}", .{ offset, size, bytes.len });
+    }
+    const host = io.hostSlice() orelse std.debug.panic("reference backend download received external resource binding", .{});
+    @memcpy(host, bytes[offset..][0..size]);
 }
 
 const ExecuteFn = *const fn (Context, backend_mod.DeviceOp) void;
