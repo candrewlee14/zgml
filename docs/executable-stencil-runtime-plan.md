@@ -5288,6 +5288,12 @@ registered-resource proof now has public owned-buffer and C import surfaces:
   same-device resource-bound decode, records a hot runtime backend dispatch
   count exactly equal to the compiled executable dispatch count, rather than
   merely proving that some GPU dispatch occurred.
+  That optional gate now also runs the native WebGPU LLaMA execution proofs for
+  runtime quantized-weight rebinding, resource-bound decode/prefill handoff,
+  long-prompt prefill, GQA long-prompt prefill, and a realistic head-width
+  resource-handoff shape, so `-Duse-wgpu=true` validates real same-device
+  execution breadth instead of only compiling those paths in the full test
+  suite.
   Runtime-info now exposes that native lane separately:
   `ZGML_FEATURE_NATIVE_WGPU_EXECUTION` means the native wgpu executor exists,
   while `ZGML_FEATURE_EXPERIMENTAL_LLAMA_WGPU_EXECUTION` means the

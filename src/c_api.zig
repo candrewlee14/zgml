@@ -7950,51 +7950,99 @@ test "C ABI module program compiles traced sequential ops" {
     }, &.{ .backend = backend_webgpu }, &webgpu_program));
     try std.testing.expect(webgpu_program != null);
 
-    var resource_weights: ?*zgml_buffer = null;
-    var resource_input: ?*zgml_buffer = null;
-    var resource_output: ?*zgml_buffer = null;
-    defer zgml_buffer_free(resource_output);
-    defer zgml_buffer_free(resource_input);
-    defer zgml_buffer_free(resource_weights);
-    try std.testing.expectEqual(status(.ok), zgml_buffer_wrap_resource(&.{
-        .placement = backend_webgpu,
-        .access_flags = resource_access_read,
-        .handle = 801,
-        .byte_len = weights.len * @sizeOf(f32),
-    }, &resource_weights));
-    try std.testing.expectEqual(status(.ok), zgml_buffer_wrap_resource(&.{
-        .placement = backend_webgpu,
-        .access_flags = resource_access_read,
-        .handle = 802,
-        .byte_len = input.len * @sizeOf(f32),
-    }, &resource_input));
-    try std.testing.expectEqual(status(.ok), zgml_buffer_wrap_resource(&.{
-        .placement = backend_webgpu,
-        .access_flags = resource_access_write,
-        .handle = 803,
-        .byte_len = output.len * @sizeOf(f32),
-    }, &resource_output));
-    try std.testing.expectEqual(status(.ok), zgml_session_bind_buffers(webgpu_program, &.{
-        .weights = resource_weights,
-        .weights_len = weights.len,
-        .input = resource_input,
-        .input_len = input.len,
-        .output = resource_output,
-        .output_len = output.len,
-    }, &webgpu_session));
-    try std.testing.expectEqual(status(.ok), zgml_session_inspect(webgpu_session, &session_inspection));
-    try std.testing.expectEqual(module_kind, session_inspection.model_kind);
-    try std.testing.expectEqual(backend_webgpu, session_inspection.backend);
-    try std.testing.expectEqual(buffer_storage_external_resource, session_inspection.output_storage);
-    try std.testing.expectEqual(@as(u64, 1), session_inspection.persistent_binding_count);
-    try std.testing.expectEqual(@as(u64, 1), session_inspection.step_input_count);
-    try std.testing.expectEqual(@as(u64, 1), session_inspection.step_output_count);
-    try std.testing.expectEqual(@as(u64, 0), session_inspection.host_binding_count);
-    try std.testing.expectEqual(@as(u64, 3), session_inspection.resource_binding_count);
-    try std.testing.expect(session_inspection.binding_shape_hash != 0);
-    result = .{};
-    try std.testing.expectEqual(status(.unsupported), zgml_session_step(webgpu_session, null, &result));
-    try std.testing.expectEqual(@as(usize, 0), result.output_len);
+    if (build_options.use_wgpu) {
+        var device_weights: ?*zgml_buffer = null;
+        var device_input: ?*zgml_buffer = null;
+        var device_output: ?*zgml_buffer = null;
+        defer zgml_buffer_free(device_output);
+        defer zgml_buffer_free(device_input);
+        defer zgml_buffer_free(device_weights);
+        try std.testing.expectEqual(status(.ok), zgml_program_create_device_buffer(webgpu_program, program_buffer_weights, backend_webgpu, &device_weights));
+        try std.testing.expectEqual(status(.ok), zgml_program_create_device_buffer(webgpu_program, program_buffer_input, backend_webgpu, &device_input));
+        try std.testing.expectEqual(status(.ok), zgml_program_create_device_buffer(webgpu_program, program_buffer_output, backend_webgpu, &device_output));
+        try std.testing.expectEqual(status(.ok), zgml_buffer_write(device_weights, 0, weights[0..].ptr, weights.len * @sizeOf(f32)));
+        try std.testing.expectEqual(status(.ok), zgml_buffer_write(device_input, 0, input[0..].ptr, input.len * @sizeOf(f32)));
+        try std.testing.expectEqual(status(.ok), zgml_session_bind_buffers(webgpu_program, &.{
+            .weights = device_weights,
+            .weights_len = weights.len,
+            .input = device_input,
+            .input_len = input.len,
+            .output = device_output,
+            .output_len = output.len,
+        }, &webgpu_session));
+        try std.testing.expectEqual(status(.ok), zgml_session_inspect(webgpu_session, &session_inspection));
+        try std.testing.expectEqual(module_kind, session_inspection.model_kind);
+        try std.testing.expectEqual(backend_webgpu, session_inspection.backend);
+        try std.testing.expectEqual(buffer_storage_external_resource, session_inspection.output_storage);
+        try std.testing.expectEqual(@as(u64, 1), session_inspection.persistent_binding_count);
+        try std.testing.expectEqual(@as(u64, 1), session_inspection.step_input_count);
+        try std.testing.expectEqual(@as(u64, 1), session_inspection.step_output_count);
+        try std.testing.expectEqual(@as(u64, 0), session_inspection.host_binding_count);
+        try std.testing.expectEqual(@as(u64, 3), session_inspection.resource_binding_count);
+        try std.testing.expect(session_inspection.binding_shape_hash != 0);
+
+        result = .{};
+        try std.testing.expectEqual(status(.ok), zgml_session_step(webgpu_session, null, &result));
+        try std.testing.expectEqual(@as(usize, 2), result.output_len);
+        var device_output_values = [_]f32{ -1, -1 };
+        try std.testing.expectEqual(status(.ok), zgml_buffer_read(device_output, 0, device_output_values[0..].ptr, device_output_values.len * @sizeOf(f32)));
+        try std.testing.expectApproxEqAbs(@exp(@as(f32, 2)) / (@exp(@as(f32, 2)) + @exp(@as(f32, 3))), device_output_values[0], 1e-5);
+        try std.testing.expectApproxEqAbs(@exp(@as(f32, 3)) / (@exp(@as(f32, 2)) + @exp(@as(f32, 3))), device_output_values[1], 1e-5);
+
+        var device_profile = zgml_runtime_profile{};
+        try std.testing.expectEqual(status(.ok), zgml_session_runtime_profile(webgpu_session, &device_profile));
+        try std.testing.expectEqual(@as(u64, 1), device_profile.call_count);
+        try std.testing.expect(device_profile.backend_op_count > 0);
+        try std.testing.expect(device_profile.backend_dispatch_count > 0);
+        try std.testing.expectEqual(@as(u64, 0), device_profile.fallback_op_count);
+        try std.testing.expectEqual(@as(u64, 0), device_profile.sync_count);
+    } else {
+        var resource_weights: ?*zgml_buffer = null;
+        var resource_input: ?*zgml_buffer = null;
+        var resource_output: ?*zgml_buffer = null;
+        defer zgml_buffer_free(resource_output);
+        defer zgml_buffer_free(resource_input);
+        defer zgml_buffer_free(resource_weights);
+        try std.testing.expectEqual(status(.ok), zgml_buffer_wrap_resource(&.{
+            .placement = backend_webgpu,
+            .access_flags = resource_access_read,
+            .handle = 801,
+            .byte_len = weights.len * @sizeOf(f32),
+        }, &resource_weights));
+        try std.testing.expectEqual(status(.ok), zgml_buffer_wrap_resource(&.{
+            .placement = backend_webgpu,
+            .access_flags = resource_access_read,
+            .handle = 802,
+            .byte_len = input.len * @sizeOf(f32),
+        }, &resource_input));
+        try std.testing.expectEqual(status(.ok), zgml_buffer_wrap_resource(&.{
+            .placement = backend_webgpu,
+            .access_flags = resource_access_write,
+            .handle = 803,
+            .byte_len = output.len * @sizeOf(f32),
+        }, &resource_output));
+        try std.testing.expectEqual(status(.ok), zgml_session_bind_buffers(webgpu_program, &.{
+            .weights = resource_weights,
+            .weights_len = weights.len,
+            .input = resource_input,
+            .input_len = input.len,
+            .output = resource_output,
+            .output_len = output.len,
+        }, &webgpu_session));
+        try std.testing.expectEqual(status(.ok), zgml_session_inspect(webgpu_session, &session_inspection));
+        try std.testing.expectEqual(module_kind, session_inspection.model_kind);
+        try std.testing.expectEqual(backend_webgpu, session_inspection.backend);
+        try std.testing.expectEqual(buffer_storage_external_resource, session_inspection.output_storage);
+        try std.testing.expectEqual(@as(u64, 1), session_inspection.persistent_binding_count);
+        try std.testing.expectEqual(@as(u64, 1), session_inspection.step_input_count);
+        try std.testing.expectEqual(@as(u64, 1), session_inspection.step_output_count);
+        try std.testing.expectEqual(@as(u64, 0), session_inspection.host_binding_count);
+        try std.testing.expectEqual(@as(u64, 3), session_inspection.resource_binding_count);
+        try std.testing.expect(session_inspection.binding_shape_hash != 0);
+        result = .{};
+        try std.testing.expectEqual(status(.unsupported), zgml_session_step(webgpu_session, null, &result));
+        try std.testing.expectEqual(@as(usize, 0), result.output_len);
+    }
 }
 
 test "C ABI rebinds a compiled tiny linear program with new persistent weights" {

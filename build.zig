@@ -365,7 +365,12 @@ fn addLlamaWgpuExperimentalSmoke(
             "llm facade WebGPU resource handoff covers quantized projections",
             "llm facade WebGPU resource handoff uses compiled context envelope",
             "llm facade WebGPU resource handoff rejects over-context without GPU work",
+            "native WebGPU tiny llama quantized decode uses runtime qweights internally",
+            "native WebGPU tiny llama resource bindings execute internally",
             "native WebGPU tiny llama MQA multilayer resource handoff matches CPU",
+            "native WebGPU tiny llama long prompt resource handoff matches CPU",
+            "native WebGPU tiny llama GQA multilayer long prompt resource handoff matches CPU",
+            "native WebGPU LLaMA realistic head width resource handoff matches CPU",
         },
     });
     linkConfiguredBackends(b, target, options, tests, .{});
