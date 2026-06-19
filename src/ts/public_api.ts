@@ -842,6 +842,17 @@ export type TensorNativeBufferOptions = ProgramCreateBufferOptions & {
   program?: Program;
   kind?: ProgramDeviceBufferKind;
 };
+export type TensorNativePlacement = Readonly<{
+  kind: "zgml.tensor.native-placement";
+  storage: "host" | "program";
+  bufferKind: ProgramDeviceBufferKind | null;
+  dtype: "f32";
+  device: "cpu" | "program" | string;
+  shape: readonly number[];
+  length: number;
+  byteLength: number;
+  signature: string;
+}>;
 export type TensorDType = "f32";
 export type TensorDTypeLike = TensorDType | "float32";
 export type TensorDevice = "cpu";
@@ -1156,6 +1167,8 @@ export declare class Tensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
   newFull<const S extends TensorShape>(shape: S, value: number, options?: TensorOptions): Tensor<TensorShapeOf<S>>;
   inspect(): TensorInspection;
   toNativeBuffer(options?: TensorNativeBufferOptions): NativeBuffer;
+  nativePlacement(options?: TensorNativeBufferOptions): TensorNativePlacement;
+  native_placement(options?: TensorNativeBufferOptions): TensorNativePlacement;
   place(program: Program, kind?: ProgramDeviceBufferKind, options?: ProgramCreateBufferOptions): NativeBuffer;
   toJSON(): TensorJSON;
   item(): number;

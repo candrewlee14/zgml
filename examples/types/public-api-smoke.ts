@@ -303,6 +303,7 @@ import {
   type ProgramOutputBinding,
   type ProgramRequirements,
   type ProgramRuntimeDiagnostic,
+  type TensorNativePlacement,
   type RuntimeProfile,
   type RuntimeProfileExpectation,
   type RuntimeFeatures,
@@ -2402,6 +2403,11 @@ const linearSessionParameterInfoByIndex: ModuleKernelParameterLayoutEntry | null
 const linearInput = tensor([1, 2], [2] as const);
 const placementKind: ProgramDeviceBufferKind = "input";
 const linearBufferPlacedSlot: ProgramBufferLayoutSlot | null = linearProgram.bufferSlot(placementKind);
+const hostNativePlacement: TensorNativePlacement = linearInput.nativePlacement();
+const hostNativePlacementKind: "zgml.tensor.native-placement" = hostNativePlacement.kind;
+const programNativePlacement: TensorNativePlacement = linearInput.nativePlacement({ program: linearProgram, kind: "input" });
+const programNativePlacementBufferKind: ProgramDeviceBufferKind | null = programNativePlacement.bufferKind;
+const snakeNativePlacement: TensorNativePlacement = linearInput.native_placement({ program: linearProgram, kind: "input" });
 const placedInput: NativeBuffer = linearInput.place(linearProgram, placementKind);
 const nativeInput: NativeBuffer = linearInput.toNativeBuffer({ program: linearProgram, kind: "input" });
 const fromNative = Tensor.fromNativeBuffer(nativeInput, [2] as const);

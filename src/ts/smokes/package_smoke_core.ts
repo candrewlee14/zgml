@@ -2091,6 +2091,21 @@ function expectProgramBufferEvidence(compiledProgram: Record<string, any>, label
 
 function expectTensorNativeBufferEvidence(compiledProgram: Record<string, any>, adapter: Record<string, any>, label: string) {
   const tensorInput = adapter.tensor([3, 4], [2]);
+  const hostPlacement = tensorInput.nativePlacement();
+  if (
+    !Object.isFrozen(hostPlacement) ||
+    hostPlacement.kind !== "zgml.tensor.native-placement" ||
+    hostPlacement.storage !== "host" ||
+    hostPlacement.bufferKind !== null ||
+    hostPlacement.device !== "cpu" ||
+    hostPlacement.shape.join("x") !== "2" ||
+    hostPlacement.length !== 2 ||
+    hostPlacement.byteLength !== 8 ||
+    hostPlacement.signature !== "tensor-native-placement|storage=host|buffer=none|device=cpu|shape=2|length=2|bytes=8" ||
+    tensorInput.native_placement().signature !== hostPlacement.signature
+  ) {
+    throw new Error(`${label} expected Tensor.nativePlacement host evidence`);
+  }
   const nativeBuffer = tensorInput.toNativeBuffer();
   try {
     if (nativeBuffer.byteLength !== 8 || nativeBuffer.size() !== 8) {
@@ -2112,7 +2127,20 @@ function expectTensorNativeBufferEvidence(compiledProgram: Record<string, any>, 
 
   const placedInput = tensorInput.place(compiledProgram, "input");
   const optionPlacedInput = tensorInput.toNativeBuffer({ program: compiledProgram, kind: "input" });
+  const programPlacement = tensorInput.nativePlacement({ program: compiledProgram, kind: "input" });
   try {
+    if (
+      !Object.isFrozen(programPlacement) ||
+      programPlacement.storage !== "program" ||
+      programPlacement.bufferKind !== "input" ||
+      programPlacement.device !== "program" ||
+      programPlacement.shape.join("x") !== "2" ||
+      programPlacement.length !== 2 ||
+      programPlacement.byteLength !== 8 ||
+      programPlacement.signature !== "tensor-native-placement|storage=program|buffer=input|device=program|shape=2|length=2|bytes=8"
+    ) {
+      throw new Error(`${label} expected Tensor.nativePlacement Program input evidence`);
+    }
     expectClose(placedInput.readFloat32(2), [3, 4], `${label} Tensor.place input readback`);
     expectClose(optionPlacedInput.readFloat32(2), [3, 4], `${label} Tensor.toNativeBuffer program input readback`);
   } finally {

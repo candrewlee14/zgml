@@ -192,6 +192,14 @@ export class Tensor {
     return surface().tensorNativeSurfaceHelpers.toNativeBuffer(this, options);
   }
 
+  nativePlacement(options: unknown = {}) {
+    return surface().tensorNativeSurfaceHelpers.nativePlacement(this, options);
+  }
+
+  native_placement(options: unknown = {}) {
+    return this.nativePlacement(options);
+  }
+
   place(program: unknown, kind: unknown = "input", options: unknown = {}) {
     return surface().tensorNativeSurfaceHelpers.place(this, program, kind, options);
   }

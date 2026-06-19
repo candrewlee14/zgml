@@ -11,6 +11,7 @@ import type {
   RandomUniformTensorOptions,
   TensorFromNativeBufferOptions,
   TensorNativeBufferOptions,
+  TensorNativePlacement,
   TensorOptions,
 } from "../public_api.js";
 
@@ -188,6 +189,35 @@ export function createTensorFacadeHelpers(options: TensorFacadeHelpersOptions) {
     return nativeBufferFromFloat32(tensorValue.data);
   }
 
+  function nativePlacement(tensorValue: AnyRecord, bufferOptions: TensorNativeBufferOptions = {}): TensorNativePlacement {
+    const opts = bufferOptions || {};
+    const kind = opts.kind ?? "input";
+    const placement = opts.placement ?? opts.backend ?? opts.device ?? null;
+    if (opts.program !== undefined) {
+      tensorPlacement.validateProgramPlacement(tensorValue, opts.program, kind);
+    }
+    const shape = Array.from(tensorValue.shape ?? [], Number);
+    return Object.freeze({
+      kind: "zgml.tensor.native-placement",
+      storage: opts.program === undefined ? "host" : "program",
+      bufferKind: opts.program === undefined ? null : kind,
+      dtype: "f32",
+      device: placement === null ? (opts.program === undefined ? "cpu" : "program") : String(placement),
+      shape: Object.freeze(shape),
+      length: tensorValue.data.length,
+      byteLength: tensorValue.data.length * Float32Array.BYTES_PER_ELEMENT,
+      signature: [
+        "tensor-native-placement",
+        `storage=${opts.program === undefined ? "host" : "program"}`,
+        `buffer=${opts.program === undefined ? "none" : kind}`,
+        `device=${placement === null ? (opts.program === undefined ? "cpu" : "program") : String(placement)}`,
+        `shape=${shape.join("x")}`,
+        `length=${tensorValue.data.length}`,
+        `bytes=${tensorValue.data.length * Float32Array.BYTES_PER_ELEMENT}`,
+      ].join("|"),
+    });
+  }
+
   function place(tensorValue: AnyRecord, program: AnyRecord, kind = "input", options: TensorNativeBufferOptions = {}) {
     if (!program || typeof program.createBuffer !== "function") {
       throw new Error("Tensor.place requires a compiled zgml Program");
@@ -246,6 +276,7 @@ export function createTensorFacadeHelpers(options: TensorFacadeHelpersOptions) {
     parameter,
     param: parameter,
     toNativeBuffer,
+    nativePlacement,
     place,
     fromNativeBuffer,
     cat: (tensors: unknown, dim = 0) => tensorJoin.cat(tensors, dim),
@@ -281,6 +312,9 @@ export function createTensorNativeSurfaceHelpers<TTensor>(options: TensorNativeS
   return Object.freeze({
     toNativeBuffer: (tensor: TTensor, nativeOptions?: unknown) => (
       tensorFacade.toNativeBuffer(tensor, nativeOptions)
+    ),
+    nativePlacement: (tensor: TTensor, nativeOptions?: unknown) => (
+      tensorFacade.nativePlacement(tensor, nativeOptions)
     ),
     place: (tensor: TTensor, program: unknown, kind = "input", placeOptions?: unknown) => (
       tensorFacade.place(tensor, program, kind, placeOptions)

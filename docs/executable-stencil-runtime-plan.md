@@ -723,7 +723,12 @@ High-bang architecture moves from here:
   model. Users should opt into placement and evidence, not hand-author backend
   binding records for normal model work. The first JS/TS host-buffer rung is in
   place: `Tensor.toNativeBuffer()`, `Tensor.place(program, kind)`, and
-  `Tensor.fromNativeBuffer(...)`.
+  `Tensor.fromNativeBuffer(...)`. The next rung is now source-level placement
+  evidence: `Tensor.nativePlacement(...)` / `Tensor.native_placement(...)`
+  returns a frozen no-allocation host/program placement descriptor with shape,
+  byte length, buffer kind, and a stable signature, and the package/type smokes
+  pin that normal model code can inspect placement without building backend
+  binding records by hand.
 
 Current frontend slice:
 
