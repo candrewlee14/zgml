@@ -425,7 +425,8 @@ Current groundwork:
   minutes with 63 LLaMA profile labels, 211 backend dispatches, 207 executor
   dispatches, 4 device-selection dispatches, 98/98/0/0/0 storage-mode calls, and
   zero fallback ops before the structural-QKNorm and structural-bias matrix
-  widening. The current no-adapter browser mock gate records 72 profile labels,
+  widening. The current no-adapter browser mock gate records the 74-label
+  required profile matrix,
   122/0/122/0/0 storage-mode calls, 43 output reads, and 482 explicit mock
   fallback ops. For
   focused debugging, the underlying
@@ -1506,7 +1507,7 @@ Current groundwork:
   Logits-producing token windows also split terminal block stages into a
   batched no-output prefix plus one final logits dispatch, so prompt-style
   decode windows no longer submit every prefix token separately.
-	  The required-GPU browser gate now requires 72 LLaMA labels, adding
+	  The required-GPU browser gate now requires 74 LLaMA labels, adding
 	  strict-default safetensors execution evidence,
 	  standalone Mistral sliding-window, Llama 3 RoPE, SmolLM3-NoPE block,
 	  and structural Qwen3 Q/K-norm checkpoint inference

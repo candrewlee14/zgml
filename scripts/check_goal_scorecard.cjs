@@ -8,7 +8,7 @@ const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
 const goalProgress = Object.freeze({
-  substratePct: 77,
+  substratePct: 79,
   substrateFloorPct: 65,
   pytorchLikePct: 100,
   pytorchLikeFloorPct: 60,
@@ -59,6 +59,32 @@ function requirePattern(source, relativePath, label, pattern) {
   if (!pattern.test(source)) {
     errors.push(`${relativePath} must keep ${label}: ${pattern}`);
   }
+}
+
+function requireConstArrayCount(source, relativePath, constName, expectedCount) {
+  const match = source.match(new RegExp(`const ${constName} = \\[([\\s\\S]*?)\\n\\s*\\];`));
+  if (!match) {
+    errors.push(`${relativePath} must keep const ${constName} array`);
+    return "";
+  }
+  const count = [...match[1].matchAll(/"[^"]+"/g)].length;
+  if (count !== expectedCount) {
+    errors.push(`${relativePath} const ${constName} must keep ${expectedCount} entries, found ${count}`);
+  }
+  return match[1];
+}
+
+function requireArrayPatternCount(source, relativePath, label, pattern, expectedCount) {
+  const match = source.match(pattern);
+  if (!match) {
+    errors.push(`${relativePath} must keep ${label}`);
+    return "";
+  }
+  const count = [...match[1].matchAll(/"[^"]+"/g)].length;
+  if (count !== expectedCount) {
+    errors.push(`${relativePath} ${label} must keep ${expectedCount} entries, found ${count}`);
+  }
+  return match[1];
 }
 
 function commandLine(command, args) {
@@ -395,7 +421,8 @@ function checkScripts() {
     "fullDefaultExecutionSupported: false",
     "modelKind: options.modelKind ?? options.model_kind ?? options.kind",
   ]);
-  requireIncludes(read("examples/wasm_ffi/browser_smoke_runner.mjs"), "examples/wasm_ffi/browser_smoke_runner.mjs", "browser Wasm FFI CDP smoke runner", [
+  const browserSmokeRunner = read("examples/wasm_ffi/browser_smoke_runner.mjs");
+  requireIncludes(browserSmokeRunner, "examples/wasm_ffi/browser_smoke_runner.mjs", "browser Wasm FFI CDP smoke runner", [
     "Chrome/Chromium not found; set CHROME_PATH or pass --chrome=/path/to/chrome",
     "options.enableUnsafeWebGpu = true",
     "options.requireGpu = true",
@@ -406,6 +433,51 @@ function checkScripts() {
     "llamaProfileLabels",
     "gguf-smollm3-nope-gqa-pipeline",
     "greedy-gguf-smollm3-nope-gqa-pipeline",
+    "if (options.requireGpu && !focusedLlamaLabels && llamaScalarDispatches <= 0)",
+    "if (options.requireGpu && !focusedLlamaLabels && llamaWindowDispatches <= 0)",
+    "if (options.requireGpu && !focusedLlamaLabels && llamaStorageCallCount <= 0)",
+    "if (options.requireGpu && !focusedLlamaLabels && llamaGpuStorageCalls <= 0)",
+    "llamaBackendDispatches !== llamaExecutorBackendDispatches + llamaSelectionBackendDispatches",
+    "if (options.requireGpu && llamaFallbackOps !== 0)",
+    "if (options.requireGpu && llamaMockStorageCalls !== 0)",
+    "if (options.requireGpu && llamaAdapterLimitStorageCalls !== 0)",
+    "if (options.requireGpu && llamaUnknownStorageCalls !== 0)",
+    "llamaStorageCallCount !== llamaGpuStorageCalls + llamaMockStorageCalls + llamaAdapterLimitStorageCalls + llamaUnknownStorageCalls",
+    "llamaStorageCallCount !== storageLabelList.length",
+    "if (options.requireGpu && (!focusedLlamaLabels || llamaStorageCallCount > 0) && llamaMaxRequiredStorageBuffers < 6)",
+    "if (options.requireGpu && !focusedLlamaLabels)",
+    "const unexpectedLabels = labelList.filter((label) => !focusedRequiredLabels.has(label))",
+    "llamaFamilyDispatches=${value.llamaGenericDispatches || \"0\"}/${value.llamaScalarDispatches || \"0\"}/${value.llamaWindowDispatches || \"0\"}",
+    "llamaSelectionReads=${value.llamaSelectionReads || \"0\"}",
+  ]);
+  const requiredStorageLabels = requireConstArrayCount(browserSmokeRunner, "examples/wasm_ffi/browser_smoke_runner.mjs", "requiredStorageLabels", 46);
+  requireIncludes(requiredStorageLabels, "examples/wasm_ffi/browser_smoke_runner.mjs", "required-GPU browser storage-mode label matrix", [
+    "\"strict-default-two-layer\"",
+    "\"native-sharded-two-layer\"",
+    "\"native-f16-materialized-pipeline\"",
+    "\"native-bf16-materialized-pipeline\"",
+    "\"long-sliding-window-mistral-pipeline\"",
+    "\"native-structural-qwen3-qknorm-gqa-pipeline\"",
+    "\"tied-lm-head-pipeline\"",
+  ]);
+  const requiredLabels = requireArrayPatternCount(
+    browserSmokeRunner,
+    "examples/wasm_ffi/browser_smoke_runner.mjs",
+    "required-GPU browser LLaMA profile label matrix",
+    /const requiredLabels = focusedRequiredLabels \? \[...focusedRequiredLabels\] : \[([\s\S]*?)\n\s*\];/,
+    74,
+  );
+  requireIncludes(requiredLabels, "examples/wasm_ffi/browser_smoke_runner.mjs", "required-GPU browser LLaMA profile label matrix", [
+    "\"strict-default-two-layer\"",
+    "\"device-greedy\"",
+    "\"device-sampled\"",
+    "\"long-sliding-window-mistral-pipeline\"",
+    "\"greedy-long-sliding-window-mistral-pipeline\"",
+    "\"block-projection-sliding-window\"",
+    "\"block-projection-llama3-rope\"",
+    "\"block-projection-smollm3-nope\"",
+    "\"greedy-gguf-smollm3-nope-gqa-pipeline\"",
+    "\"tied-lm-head-pipeline\"",
   ]);
   requireIncludes(read("examples/wasm_ffi/browser_smoke.js"), "examples/wasm_ffi/browser_smoke.js", "browser Wasm FFI runtime proof", [
     "document.documentElement.dataset.zgmlWasmSmoke = \"passed\"",
@@ -1173,8 +1245,10 @@ function checkPortableWasmRuntimeEvidence() {
     "llamaExecutorDispatches=",
     "llamaFallbackOps=",
     "llamaCommandCount=",
+    "llamaFamilyDispatches=",
     "llamaStorageCalls=",
     "llamaOutputReads=",
+    "llamaSelectionReads=",
     "llamaSyncs=",
     "llamaProfileLabels=",
   ]);
@@ -4316,7 +4390,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=77% floor=65%; PyTorch-like surface=100% floor=60%",
+    "goal progress: Program/Session substrate=79% floor=65%; PyTorch-like surface=100% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4353,7 +4427,7 @@ function checkDocs() {
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
-    "Program/Session performance substrate: ~77%",
+    "Program/Session performance substrate: ~79%",
     "LayerNorm/RMSNorm descriptors can carry post-affine activations",
     "A batched `RMSNorm+GELU -> Linear`",
     "Common classifier/token-head `LogSoftmax` tails now",
@@ -4368,6 +4442,8 @@ function checkDocs() {
     "and rank-3 `narrow`/`select`/`slice`",
     "`torch.compile.compile(lazyGraph)` and `lazyGraph.compile()` Program construction through Node/Bun",
     "The remaining substrate",
+    "required-GPU browser runner's full",
+    "dispatch-family and selection-read summary fields",
     "tiled quantized row-chain",
     "remaining frontend jump is native lowering and breadth,",
     "compile hooks exist.",

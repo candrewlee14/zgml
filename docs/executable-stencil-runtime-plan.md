@@ -192,7 +192,7 @@ execution is the performance claim. Silent eager fallback is not allowed.
 
 Current checked progress:
 
-- Program/Session performance substrate: ~77%. The Program/Session shape,
+- Program/Session performance substrate: ~79%. The Program/Session shape,
   runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
   native Metal execution, optional native wgpu execution slices, and ggml
   benchmark gates are real enough that the substrate is past "architecture".
@@ -214,7 +214,10 @@ Current checked progress:
   direct backend reduce-min command on reference CPU, Metal, and WGPU instead
   of exposing or executing its old `neg -> max -> neg` decomposition. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
-  browser/WebGPU execution evidence.
+  browser/WebGPU execution evidence. The required-GPU browser runner's full
+  LLaMA profile and storage-mode matrices are now scorecard-checked source
+  contracts, and the cheap focused browser smoke also has checked
+  dispatch-family and selection-read summary fields.
 - PyTorch-like replacement feel: ~100%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
