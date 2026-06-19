@@ -178,15 +178,19 @@ function checkScripts() {
   if (scripts["bench:pytorch"] !== "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch must remain the ReleaseFast upstream PyTorch comparison evidence gate");
   }
-  if (scripts["bench:pytorch:parity"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 node scripts/check_pytorch_comparison.cjs") {
-    errors.push("package.json bench:pytorch:parity must remain the hard ReleaseFast upstream PyTorch parity gate");
+  if (scripts["bench:pytorch:parity"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_INSTALL=1 node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:parity must remain the hard ReleaseFast upstream PyTorch parity gate with uv bootstrap");
   }
   if (scripts["check:goal-scorecard"] !== "node scripts/check_goal_scorecard.cjs") {
     errors.push("package.json must expose check:goal-scorecard for goal evidence");
   }
   requireIncludes(read("scripts/check_pytorch_comparison.cjs"), "scripts/check_pytorch_comparison.cjs", "honest PyTorch parity evidence gate", [
     "BENCH_PYTORCH_REQUIRE_PARITY",
+    "BENCH_PYTORCH_INSTALL",
     "BENCH_PYTORCH_MIN_RATIO",
+    "function installPythonTorchWithUv()",
+    "uv_install=${installTorch ? \"enabled\" : \"disabled\"}",
+    "set BENCH_PYTORCH_INSTALL=1 to bootstrap .venv with uv",
     "parity-pass",
     "parity-miss",
     "required=${requireParity ? \"yes\" : \"no\"}",

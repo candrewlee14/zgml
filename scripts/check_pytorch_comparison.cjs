@@ -9,6 +9,7 @@ const nodeEntry = join(root, "dist", "node.cjs");
 const venvPython = join(root, ".venv", "bin", "python");
 const python = process.env.PYTHON || (existsSync(venvPython) ? venvPython : "python3");
 const requireParity = process.env.BENCH_PYTORCH_REQUIRE_PARITY === "1";
+const installTorch = process.env.BENCH_PYTORCH_INSTALL === "1";
 const minRatio = Number(process.env.BENCH_PYTORCH_MIN_RATIO || "1.0");
 
 function run(command, args, options = {}) {
@@ -33,6 +34,14 @@ function hasPythonTorch() {
     stdio: ["ignore", "pipe", "pipe"],
   });
   return result.status === 0 ? result.stdout.trim() : null;
+}
+
+function installPythonTorchWithUv() {
+  const uv = process.env.UV || "uv";
+  if (!existsSync(venvPython)) {
+    run(uv, ["venv", ".venv"]);
+  }
+  run(uv, ["pip", "install", "torch", "--python", venvPython], { stdio: "inherit" });
 }
 
 function parseZgmlModuleBench(output) {
@@ -117,9 +126,14 @@ if (!existsSync(nodeEntry)) {
   throw new Error("pytorch comparison requires dist/node.cjs; run npm run build:package first");
 }
 
-const pytorchVersion = hasPythonTorch();
+let pytorchVersion = hasPythonTorch();
+if (!pytorchVersion && installTorch) {
+  installPythonTorchWithUv();
+  pytorchVersion = hasPythonTorch();
+}
 if (!pytorchVersion) {
-  console.log(`pytorch comparison skipped: ${python} import torch failed; install upstream PyTorch to run bench:pytorch`);
+  const installHint = installTorch ? "uv install attempt did not make torch importable" : "set BENCH_PYTORCH_INSTALL=1 to bootstrap .venv with uv";
+  console.log(`pytorch comparison skipped: ${python} import torch failed; ${installHint}`);
   process.exit(0);
 }
 if (!Number.isFinite(minRatio) || minRatio < 0) {
@@ -142,6 +156,7 @@ const parts = [
   `pytorch comparison: ${requireParity ? (parityReady ? "parity-pass" : "parity-miss") : "evidence"}`,
   `python=${python}`,
   `pytorch=${pytorchVersion}`,
+  `uv_install=${installTorch ? "enabled" : "disabled"}`,
   "gelu=approximate-tanh",
   `required=${requireParity ? "yes" : "no"}`,
   `floor=${minRatio.toFixed(2)}x`,

@@ -339,9 +339,15 @@ materialized row-chain entries. Latest June 19, 2026 PyTorch evidence:
 A direct-session CPU fast-path pass then made the hard parity gate pass across
 all tracked workloads. Current June 19, 2026 evidence from
 `npm run bench:pytorch:parity`: worst tracked workload is
-`lazy_rms_silu_ffn_batched` at about `1.01x`; `linear_batched` is about
-`1.23x`, `lazy_matmul_add_gelu_batched` is about `1.67x`, and
-`lazy_mlp_batched` is about `1.57x`.
+`lazy_rms_silu_ffn_batched` at about `1.02x`; `linear_batched` is about
+`1.19x`, `lazy_matmul_add_gelu_batched` is about `1.63x`, and
+`lazy_mlp_batched` is about `1.46x`.
+The hard parity command now bootstraps upstream PyTorch into the repo-local
+`.venv` with `uv` (`BENCH_PYTORCH_INSTALL=1`) before comparing, so the PyTorch
+gate is no longer a soft local-environment skip when the reference package has
+not been installed yet. The lightweight `bench:pytorch` evidence command still
+uses the active Python environment and reports a skip instead of unexpectedly
+downloading PyTorch.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS

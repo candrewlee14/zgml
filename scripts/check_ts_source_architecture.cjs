@@ -303,8 +303,8 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:pytorch"] !== "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch must stay the ReleaseFast upstream PyTorch comparison probe");
   }
-  if (packageJson.scripts?.["bench:pytorch:parity"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 node scripts/check_pytorch_comparison.cjs") {
-    errors.push("package.json bench:pytorch:parity must stay the hard ReleaseFast upstream PyTorch parity probe");
+  if (packageJson.scripts?.["bench:pytorch:parity"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_INSTALL=1 node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:parity must stay the hard ReleaseFast upstream PyTorch parity probe with uv bootstrap");
   }
   const benchStatusSource = fs.readFileSync(path.join(root, "scripts", "bench_status.cjs"), "utf8");
   for (const needle of [
