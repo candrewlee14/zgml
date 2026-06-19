@@ -8,7 +8,7 @@ const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
 const goalProgress = Object.freeze({
-  substratePct: 79,
+  substratePct: 80,
   substrateFloorPct: 65,
   pytorchLikePct: 100,
   pytorchLikeFloorPct: 60,
@@ -1281,6 +1281,32 @@ function checkPortableWasmRuntimeEvidence() {
   requirePattern(browserOutput, "portable browser Wasm smoke output", "focused browser SmolLM3 GGUF LLaMA proof", /llamaProfileLabels=2\b/);
   notes.push(nodeWasiOutput.trim().split("\n").at(-1));
   notes.push(browserOutput.trim().split("\n").at(-1));
+}
+
+function checkNativeWgpuRuntimeEvidence() {
+  const args = ["run", "smoke:native-wgpu"];
+  const nativeWgpu = spawnSync("npm", args, {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const output = `${nativeWgpu.stdout ?? ""}${nativeWgpu.stderr ?? ""}`;
+  if (nativeWgpu.status !== 0) {
+    errors.push(spawnFailure("native WebGPU smoke", "npm", args, nativeWgpu));
+    return;
+  }
+  requireIncludes(output, "native WebGPU smoke output", "C/Node/Bun native WebGPU execution proof", [
+    "smoke:native-wgpu",
+    "zig build wgpu-check -Duse-wgpu=true",
+    "zgml node ffi smoke ok:",
+    "zgml node ffi tiny llama smoke ok:",
+    "zgml node ffi executable webgpu tiny llama smoke ok",
+    "zgml bun ffi smoke ok:",
+    "zgml bun ffi tiny llama smoke ok:",
+    "zgml bun ffi executable webgpu tiny llama smoke ok",
+    "zgml c ffi smoke ok:",
+  ]);
+  notes.push("native WebGPU smoke ok: C/Node/Bun tiny-linear + LLaMA execution");
 }
 
 function checkPytorchLikeSurface() {
@@ -4416,7 +4442,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=79% floor=65%; PyTorch-like surface=100% floor=60%",
+    "goal progress: Program/Session substrate=80% floor=65%; PyTorch-like surface=100% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4453,7 +4479,7 @@ function checkDocs() {
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
-    "Program/Session performance substrate: ~79%",
+    "Program/Session performance substrate: ~80%",
     "LayerNorm/RMSNorm descriptors can carry post-affine activations",
     "A batched `RMSNorm+GELU -> Linear`",
     "Common classifier/token-head `LogSoftmax` tails now",
@@ -4482,6 +4508,7 @@ checkFrontierEvidence();
 checkQ8PromptCandidateEvidence();
 checkModuleProgramBenchEvidence();
 checkPortableWasmRuntimeEvidence();
+checkNativeWgpuRuntimeEvidence();
 checkPytorchLikeSurface();
 checkDocs();
 

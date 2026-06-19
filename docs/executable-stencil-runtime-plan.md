@@ -192,10 +192,10 @@ execution is the performance claim. Silent eager fallback is not allowed.
 
 Current checked progress:
 
-- Program/Session performance substrate: ~79%. The Program/Session shape,
+- Program/Session performance substrate: ~80%. The Program/Session shape,
   runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
-  native Metal execution, optional native wgpu execution slices, and ggml
-  benchmark gates are real enough that the substrate is past "architecture".
+  native Metal execution, a scorecard-run optional native wgpu validation gate,
+  and ggml benchmark gates are real enough that the substrate is past "architecture".
   Compile-capable lazy graphs can now lower through the host adapter into a
   native Program with preserved KernelPlan evidence. Lazy
   Linear+GELU and
