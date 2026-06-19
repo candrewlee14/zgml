@@ -382,6 +382,15 @@ The PyTorch parity set is no longer only dense/transformer-shaped CPU work: it
 also compares batched `max_pool2d` and `avg_pool2d` against upstream
 `torch.nn.functional`, so the parity gate covers common compiled tensor kernels
 outside matmul/linear dispatches.
+The June 19, 2026 PyTorch parity push found the remaining FFN miss was not
+RMSNorm or SiLU but the `128x128 @ 128x64` down projection. The fix routes that
+larger contiguous dense projection through a column-major BLAS view of the same
+row-major buffers (`C^T = B^T A^T`) and keeps the small hand projection lane for
+`K <= 64`. Current hard-gate evidence against PyTorch `2.12.1`:
+`bench:pytorch:parity` passed on attempt `1/3` with zero noisy attempts;
+`linear_batched` about `1.09x`, `lazy_matmul_add_gelu_batched` about `1.70x`,
+`lazy_mlp_batched` about `1.64x`, `lazy_rms_silu_ffn_batched` about `1.80x`,
+`max_pool2d_batched` about `8.47x`, and `avg_pool2d_batched` about `4.53x`.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS

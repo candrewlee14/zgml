@@ -1341,7 +1341,7 @@ const Context = struct {
 
     fn smallDenseProjectionBiasRows(self: Context, m: anytype, rp: anytype, e: anytype) bool {
         const g = m.geom;
-        if (g.M > 256 or g.N < 64 or g.N > 64 or g.K > 128 or g.N % V != 0) return false;
+        if (g.M > 256 or g.N < 64 or g.N > 64 or g.K > 64 or g.N % V != 0) return false;
         if (g.a_col_stride != 1 or g.b_col_stride != 1) return false;
         if (g.a_row_stride != g.K or g.b_row_stride != g.N or g.dst_row_stride != g.N) return false;
 

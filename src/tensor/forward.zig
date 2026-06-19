@@ -777,6 +777,29 @@ pub fn blasSgemm(
             return;
         };
 
+        // Row-major C = A * B has the same memory layout as column-major
+        // C^T = B^T * A^T. Accelerate's column-major path is much faster for
+        // medium contiguous projections than its row-major wrapper path.
+        if (a_col_stride == 1 and a_row_stride == K and b_col_stride == 1 and b_row_stride == N and dst_row_stride == N) {
+            c.cblas_sgemm(
+                c.CblasColMajor,
+                c.CblasNoTrans,
+                c.CblasNoTrans,
+                @intCast(N),
+                @intCast(M),
+                @intCast(K),
+                1.0,
+                B[b_offset..].ptr,
+                @intCast(N),
+                A[a_offset..].ptr,
+                @intCast(K),
+                0.0,
+                dst[dst_offset..].ptr,
+                @intCast(N),
+            );
+            return;
+        }
+
         c.cblas_sgemm(
             c.CblasRowMajor,
             a_layout.trans,
