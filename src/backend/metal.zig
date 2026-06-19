@@ -244,6 +244,7 @@ const shader_source =
     \\    uint ew_is_swapped;
     \\    uint ew_secondary_offset;
     \\    uint ew_dst_offset;
+    \\    uint write_ew_output;
     \\    float rms_eps;
     \\    uint scale_src_offset;
     \\    uint scaled_dst_offset;
@@ -291,7 +292,7 @@ const shader_source =
     \\    for (uint col = tid; col < p.N; col += QMATVEC_DOT_THREADS) {
     \\        uint linear = row * p.N + col;
     \\        float ew = row_values[col];
-    \\        ew_output[p.ew_dst_offset + linear] = ew;
+    \\        if (p.write_ew_output != 0) ew_output[p.ew_dst_offset + linear] = ew;
     \\        scaled_dst[p.scaled_dst_offset + linear] = ew * inv_rms * scale_src[p.scale_src_offset + col];
     \\    }
     \\}
@@ -1446,6 +1447,7 @@ const shader_source =
     \\    uint ew_is_swapped;
     \\    uint ew_secondary_offset;
     \\    uint ew_dst_offset;
+    \\    uint write_ew_output;
     \\    float rms_eps;
     \\    uint scale_src_offset;
     \\    uint scaled_dst_offset;
@@ -1593,7 +1595,8 @@ const shader_source =
     \\                        float ew = val;
     \\                        if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
     \\                        else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
-    \\                        ew_output[p.ew_dst_offset + linear] = ew;
+    \\                        if (p.write_ew_output != 0) ew_output[p.ew_dst_offset + linear] = ew;
+    \\                        else scaled_dst[p.scaled_dst_offset + linear] = ew;
     \\                        ss += ew * ew;
     \\                    }
     \\                }
@@ -1615,7 +1618,7 @@ const shader_source =
     \\        uint cr = gRow + r;
     \\        if (cr < p.M) {
     \\            uint linear = cr * p.N + col;
-    \\            float ew = ew_output[p.ew_dst_offset + linear];
+    \\            float ew = (p.write_ew_output != 0) ? ew_output[p.ew_dst_offset + linear] : scaled_dst[p.scaled_dst_offset + linear];
     \\            scaled_dst[p.scaled_dst_offset + linear] = ew * inv_rms[r] * scale_src[p.scale_src_offset + col];
     \\        }
     \\    }
@@ -3748,6 +3751,7 @@ const MatmulRowChainParams = extern struct {
     ew_is_swapped: u32,
     ew_secondary_offset: u32,
     ew_dst_offset: u32,
+    write_ew_output: u32,
     rms_eps: f32,
     scale_src_offset: u32,
     scaled_dst_offset: u32,
@@ -4159,6 +4163,7 @@ const QMatmulRowChainParams = extern struct {
     ew_is_swapped: u32,
     ew_secondary_offset: u32,
     ew_dst_offset: u32,
+    write_ew_output: u32,
     rms_eps: f32,
     scale_src_offset: u32,
     scaled_dst_offset: u32,
@@ -5183,6 +5188,14 @@ const RuntimeView = struct {
     qweight_views: []DeviceQWeight,
     ref_qweights: []reference.QWeight,
     program_stencil: *program_mod.ProgramStencil,
+    outputs: []const backend_mod.ProgramIO = &.{},
+
+    fn outputReadsBuffer(self: RuntimeView, buf_idx: u16) bool {
+        for (self.outputs) |output| {
+            if (output.buf_idx == buf_idx) return true;
+        }
+        return false;
+    }
 };
 
 fn releaseDeviceBuffers(device_bufs: []const DeviceBuffer) void {
@@ -5353,22 +5366,24 @@ const CompiledProgram = struct {
 
     fn executeView(self: *CompiledProgram, view: RuntimeView, inputs: []const backend_mod.ProgramIO, outputs: []const backend_mod.ProgramIO) ?profile_mod.RuntimeProfile {
         if (!view.program_stencil.ioValid(inputs, outputs)) return null;
+        var runtime_view = view;
+        runtime_view.outputs = outputs;
         var exec = MetalExecutionContext.init(self.backend);
         defer exec.deinit();
 
         // Upload per-step inputs (token embed, pos, mask) via shared memory.
-        reference.uploadToBuffers(view.ref_buffers, inputs);
+        reference.uploadToBuffers(runtime_view.ref_buffers, inputs);
 
-        if (self.plan.schedule.len == 0 and view.program_stencil.ops.len > 0) {
-            self.executeUnscheduled(&exec, view);
+        if (self.plan.schedule.len == 0 and runtime_view.program_stencil.ops.len > 0) {
+            self.executeUnscheduled(&exec, runtime_view);
         } else {
-            self.executeScheduled(&exec, view);
+            self.executeScheduled(&exec, runtime_view);
         }
         exec.flushCommandsProfiled();
         exec.profile.call_count += 1;
 
         // Download outputs (logits) via shared memory.
-        reference.downloadFromBuffers(view.ref_buffers, outputs);
+        reference.downloadFromBuffers(runtime_view.ref_buffers, outputs);
         return exec.profile;
     }
 
@@ -5565,7 +5580,7 @@ const CompiledProgram = struct {
         return canFuseRmsnormRepeatMul(rn, rp, out);
     }
 
-    fn encodeMatmulRowChain(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, m: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype) bool {
+    fn encodeMatmulRowChain(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, m: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool) bool {
         if (!self.canFuseMatmulRowChain(m, e, rn, rp, out)) return false;
         const g = m.geom;
         const primary_is_src0 = e.src0 == m.dst and e.src0_offset == g.dst_offset;
@@ -5594,6 +5609,7 @@ const CompiledProgram = struct {
             .ew_is_swapped = if (primary_is_src0) 0 else 1,
             .ew_secondary_offset = secondary_offset,
             .ew_dst_offset = e.dst_offset,
+            .write_ew_output = @intFromBool(write_ew_output),
             .rms_eps = rn.eps,
             .scale_src_offset = rp.src_offset,
             .scaled_dst_offset = out.dst_offset,
@@ -7100,7 +7116,7 @@ const CompiledProgram = struct {
         return canFuseRmsnormRepeatMul(rn, rp, out);
     }
 
-    fn encodeQMatmulRowChain(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype) bool {
+    fn encodeQMatmulRowChain(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool) bool {
         if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
         const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
         const secondary_buf = if (q_is_src0) e.src1 else e.src0;
@@ -7127,6 +7143,7 @@ const CompiledProgram = struct {
             .ew_is_swapped = if (q_is_src0) 0 else 1,
             .ew_secondary_offset = secondary_offset,
             .ew_dst_offset = e.dst_offset,
+            .write_ew_output = @intFromBool(write_ew_output),
             .rms_eps = rn.eps,
             .scale_src_offset = rp.src_offset,
             .scaled_dst_offset = out.dst_offset,
@@ -7135,7 +7152,7 @@ const CompiledProgram = struct {
         return true;
     }
 
-    fn encodeQMatmulRowChainTiledLeaf(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype) bool {
+    fn encodeQMatmulRowChainTiledLeaf(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool) bool {
         if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
         if (q.M <= 1) return false;
         const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
@@ -7163,6 +7180,7 @@ const CompiledProgram = struct {
             .ew_is_swapped = if (q_is_src0) 0 else 1,
             .ew_secondary_offset = secondary_offset,
             .ew_dst_offset = e.dst_offset,
+            .write_ew_output = @intFromBool(write_ew_output),
             .rms_eps = rn.eps,
             .scale_src_offset = rp.src_offset,
             .scaled_dst_offset = out.dst_offset,
@@ -8275,10 +8293,11 @@ const CompiledProgram = struct {
         const rn = deviceOpAt(.rmsnorm, ops, rn_idx) orelse return false;
         const rp = deviceOpAt(.repeat, ops, rp_idx) orelse return false;
         const out = deviceOpAt(.elementwise, ops, out_idx) orelse return false;
+        const write_ew_output = program_mod.projectionRowChainElementwiseHasExternalUsers(ops, command) or view.outputReadsBuffer(e.dst);
         if (q.M != 1) {
             if (self.command_policy.fuse_projection_row_chain_single_dispatch and
                 !projectionRowChainScaleHasExternalUsers(ops, command) and
-                self.encodeQMatmulRowChainTiledLeaf(exec, view, q, e, rn, rp, out))
+                self.encodeQMatmulRowChainTiledLeaf(exec, view, q, e, rn, rp, out, write_ew_output))
             {
                 return true;
             }
@@ -8286,7 +8305,7 @@ const CompiledProgram = struct {
             if (!self.encodeQMatmulElementwise(exec, view, q, e, write_primary)) return false;
             return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, projectionRowChainScaleHasExternalUsers(ops, command));
         }
-        return self.encodeQMatmulRowChain(exec, view, q, e, rn, rp, out);
+        return self.encodeQMatmulRowChain(exec, view, q, e, rn, rp, out, write_ew_output);
     }
 
     fn tryEncodeDenseProjectionRowChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
@@ -8302,7 +8321,8 @@ const CompiledProgram = struct {
         const rn = deviceOpAt(.rmsnorm, ops, rn_idx) orelse return false;
         const rp = deviceOpAt(.repeat, ops, rp_idx) orelse return false;
         const out = deviceOpAt(.elementwise, ops, out_idx) orelse return false;
-        return self.encodeMatmulRowChain(exec, view, m, e, rn, rp, out);
+        const write_ew_output = program_mod.projectionRowChainElementwiseHasExternalUsers(ops, command) or view.outputReadsBuffer(e.dst);
+        return self.encodeMatmulRowChain(exec, view, m, e, rn, rp, out, write_ew_output);
     }
 
     fn tryEncodeRegionGpuOp(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, op: backend_mod.DeviceOp) bool {

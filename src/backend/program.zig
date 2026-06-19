@@ -3780,6 +3780,24 @@ pub fn rmsnormScaleChainHasExternalUsers(
     return false;
 }
 
+pub fn projectionRowChainElementwiseHasExternalUsers(
+    ops: []const backend_mod.DeviceOp,
+    command: ProgramCommand,
+) bool {
+    if (command.sidecar_count < 4) return true;
+    const e_idx = command.sidecar_indices[0] orelse return true;
+    const rn_idx = command.sidecar_indices[1] orelse return true;
+    const rp_idx = command.sidecar_indices[2] orelse return true;
+    const out_idx = command.sidecar_indices[3] orelse return true;
+    if (e_idx >= ops.len or rn_idx >= ops.len or rp_idx >= ops.len or out_idx >= ops.len) return true;
+    const e = switch (ops[e_idx]) {
+        .elementwise => |e| e,
+        else => return true,
+    };
+    if (rn_idx != e_idx + 1 or rp_idx != rn_idx + 1 or out_idx != rp_idx + 1) return true;
+    return spanHasExternalReadAfter(ops, e_idx, rn_idx, out_idx + 1, bufferSpan(e.dst, e.dst_offset, e.n));
+}
+
 fn repeatOutputHasExternalUsers(
     ops: []const backend_mod.DeviceOp,
     repeat_index: usize,
