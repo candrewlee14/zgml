@@ -60,6 +60,7 @@ import {
   scalarTokenExecuteOptions,
   scalarTokenOutputOptions,
   scalarTokenSampleOptions,
+  stepParamsValidationError,
   validateLogitsOutputBuffer,
 } from "./step_params.js";
 
@@ -1108,6 +1109,24 @@ export function createGenericSessionCoreStepFacadeHelpers<TSession extends AnyRe
     return genericSessionExplicitOutput(session.desc, outputValues, label, valueDeps);
   }
 
+  function explicitStepIntoOutput(session: TSession, outputValues: unknown) {
+    if (outputValues instanceof Float32Array) {
+      if (outputValues.length < session.desc.outputLen) {
+        throw stepParamsValidationError(
+          "invalid-output",
+          `session.step output length ${outputValues.length} is smaller than Program output length ${session.desc.outputLen}`,
+          { actualLength: outputValues.length, expectedLength: session.desc.outputLen },
+        );
+      }
+      return outputValues;
+    }
+    const output = explicitOutput(session, outputValues, "session.step output");
+    if (output === null) {
+      throw new Error("session.step output requires an output buffer");
+    }
+    return output;
+  }
+
   function stepCore(session: TSession, inputValues: unknown, outputValues?: unknown) {
     assertLiveSession(session);
     const input = explicitInput(session, inputValues, "session.step input");
@@ -1126,10 +1145,7 @@ export function createGenericSessionCoreStepFacadeHelpers<TSession extends AnyRe
   function stepIntoCore(session: TSession, outputValues: unknown, inputValues?: unknown) {
     assertLiveSession(session);
     const input = explicitInput(session, inputValues, "session.step input");
-    const output = explicitOutput(session, outputValues, "session.step output");
-    if (output === null) {
-      throw new Error("session.step output requires an output buffer");
-    }
+    const output = explicitStepIntoOutput(session, outputValues);
     const outputLen = stepSession(session.handle, input, output, session.desc.outputLen);
     return outputLen === output.length ? output : output.subarray(0, outputLen);
   }

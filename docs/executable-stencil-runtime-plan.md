@@ -342,17 +342,29 @@ materialized row-chain entries. Latest June 19, 2026 PyTorch evidence:
 `lazy_matmul_add_gelu_batched` is about `1.69x`, `lazy_mlp_batched` is about
 `1.43x`, and `lazy_rms_silu_ffn_batched` now reaches about `1.01x`.
 A direct-session CPU fast-path pass then tightened the direct `executeInto`
-path and made it allocation-free with lighter profile bookkeeping, but the hard
-parity gate remains noisy rather than complete. Current June 19, 2026 evidence:
-one lightweight run matched `linear_batched` at about `1.01x` while missing
-`lazy_mlp_batched` and `lazy_rms_silu_ffn_batched`; a required three-attempt
-run still missed with `linear_batched` around `0.94x` even though
+path and made it allocation-free with lighter profile bookkeeping. That pass
+improved the contract and some lightweight samples, but did not yet make the
+hard parity gate green: one lightweight run matched `linear_batched` at about
+`1.01x` while missing `lazy_mlp_batched` and `lazy_rms_silu_ffn_batched`; a
+required three-attempt run still missed with `linear_batched` around `0.94x`
+even though
 `lazy_matmul_add_gelu_batched`, pooling lanes, and most fused module lanes beat
-PyTorch. The right next move is more native headroom and a stronger benchmark
-harness, not lowering the parity floor or treating a lucky sample as success.
+PyTorch. That confirmed the right next move was more native/public hot-path
+headroom, not lowering the parity floor or treating a lucky sample as success.
 The direct-session fix did land an important runtime contract improvement:
 borrowed NativeBuffer parameters no longer bypass explicit persistent upload on
 the direct linear fast path.
+The next pass removed duplicate output-buffer validation from the generic
+`executeInto` hot path while preserving structured StepParams diagnostics for
+invalid output buffers. That finally turned the hard PyTorch parity command
+green on the checked CPU workload set. Current June 19, 2026 hard-gate
+evidence: `bench:pytorch:parity` passed on attempt `2/3` with one noisy attempt;
+`linear_batched` reached about `1.05x` vs PyTorch,
+`lazy_matmul_add_gelu_batched` about `1.69x`, `lazy_mlp_batched` about `1.62x`,
+`lazy_rms_silu_ffn_batched` about `1.03x`, `max_pool2d_batched` about `8.45x`,
+and `avg_pool2d_batched` about `4.85x`. Treat this as current evidence for the
+checked CPU lanes, not a claim that every future PyTorch-shaped workload is
+already faster.
 The hard parity command now bootstraps upstream PyTorch into the repo-local
 `.venv` with `uv` (`BENCH_PYTORCH_INSTALL=1`) before comparing, so the PyTorch
 gate is no longer a soft local-environment skip when the reference package has
