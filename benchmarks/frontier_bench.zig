@@ -12,6 +12,7 @@ const opts = @import("zgml_options");
 const internal = @import("zgml_internal");
 const backend_mod = internal.backend;
 const program_mod = internal.backend_program;
+const profile_mod = internal.profile;
 
 const Tensor = internal.Tensor;
 
@@ -162,6 +163,26 @@ fn printCommandShape(
             shape.projection_row_chains,
             shape.covered_ops,
             shape.estimated_saved_dispatches,
+        },
+    );
+}
+
+fn printProjectionRowChainRuntimeProfile(
+    w: *std.Io.Writer,
+    name: []const u8,
+    be: backend_mod.Backend,
+    handle: backend_mod.Backend.CompiledHandle,
+    output_io: []const backend_mod.ProgramIO,
+) !void {
+    be.resetRuntimeProfile(handle);
+    be.executeProgram(handle, &.{}, output_io);
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try w.print(
+        "  {s:<28} runtime_command_dispatches={d}\n",
+        .{
+            name,
+            rt.backend_dispatch_count,
         },
     );
 }
@@ -900,6 +921,7 @@ fn benchProjectionRowChainMetalCase(
     var profile_name_buf: [112]u8 = undefined;
     const profile_name = try std.fmt.bufPrint(&profile_name_buf, "{s} projection_row_chain dispatch_profile", .{case.name});
     try printCommandShape(w, profile_name, fused_commands);
+    try printProjectionRowChainRuntimeProfile(w, profile_name, be, fused_handle, &fused_output_io);
 }
 
 fn benchProjectionRowChainGroupMetalCase(
@@ -1054,6 +1076,7 @@ fn benchProjectionRowChainGroupMetalCase(
     var profile_name_buf: [128]u8 = undefined;
     const profile_name = try std.fmt.bufPrint(&profile_name_buf, "{s} projection_row_chain_group dispatch_profile", .{case.name});
     try printCommandShape(w, profile_name, grouped_commands);
+    try printProjectionRowChainRuntimeProfile(w, profile_name, be, grouped_handle, &grouped_outputs);
 }
 
 fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
@@ -1073,6 +1096,7 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
         else => return err,
     };
     defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
 
     const projection_chain_cases = [_]ProjectionRowChainCase{
         .{ .name = "qproj prompt m=32 n=512 k=512", .m = 32, .n = 512, .k = 512 },

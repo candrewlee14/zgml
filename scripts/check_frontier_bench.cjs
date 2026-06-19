@@ -92,18 +92,22 @@ function score(output, attempt) {
   const projectionRowChainGroupFullPrefillShapeRowChains = metric(output, projectionRowChainGroupFullPrefillProfileLabel, "shape_projection_row_chains");
   const projectionRowChainGroupFullPrefillShapeCoveredOps = metric(output, projectionRowChainGroupFullPrefillProfileLabel, "shape_covered_ops");
   const projectionRowChainGroupFullPrefillShapeSavedDispatches = metric(output, projectionRowChainGroupFullPrefillProfileLabel, "shape_saved_dispatches");
+  const projectionRowChainGroupFullPrefillRuntimeCommandDispatches = metric(output, projectionRowChainGroupFullPrefillProfileLabel, "runtime_command_dispatches");
   const projectionDecodeShapeCommands = metric(output, projectionDecodeProfileLabel, "shape_commands");
   const projectionDecodeShapeRowChains = metric(output, projectionDecodeProfileLabel, "shape_projection_row_chains");
   const projectionDecodeShapeCoveredOps = metric(output, projectionDecodeProfileLabel, "shape_covered_ops");
   const projectionDecodeShapeSavedDispatches = metric(output, projectionDecodeProfileLabel, "shape_saved_dispatches");
+  const projectionDecodeRuntimeCommandDispatches = metric(output, projectionDecodeProfileLabel, "runtime_command_dispatches");
   const projectionPromptShapeCommands = metric(output, projectionPromptProfileLabel, "shape_commands");
   const projectionPromptShapeRowChains = metric(output, projectionPromptProfileLabel, "shape_projection_row_chains");
   const projectionPromptShapeCoveredOps = metric(output, projectionPromptProfileLabel, "shape_covered_ops");
   const projectionPromptShapeSavedDispatches = metric(output, projectionPromptProfileLabel, "shape_saved_dispatches");
+  const projectionPromptRuntimeCommandDispatches = metric(output, projectionPromptProfileLabel, "runtime_command_dispatches");
   const projectionFullPrefillShapeCommands = metric(output, projectionFullPrefillProfileLabel, "shape_commands");
   const projectionFullPrefillShapeRowChains = metric(output, projectionFullPrefillProfileLabel, "shape_projection_row_chains");
   const projectionFullPrefillShapeCoveredOps = metric(output, projectionFullPrefillProfileLabel, "shape_covered_ops");
   const projectionFullPrefillShapeSavedDispatches = metric(output, projectionFullPrefillProfileLabel, "shape_saved_dispatches");
+  const projectionFullPrefillRuntimeCommandDispatches = metric(output, projectionFullPrefillProfileLabel, "runtime_command_dispatches");
   const projectionCandidateReady =
     projectionDecodeSpeedup !== null &&
     projectionPromptSpeedup !== null &&
@@ -139,6 +143,30 @@ function score(output, attempt) {
   if (projectionDecodeShapeCommands !== 1 || projectionDecodeShapeRowChains !== 1 || projectionDecodeShapeCoveredOps !== 5 || projectionDecodeShapeSavedDispatches !== 4) failures.push("projection_row_chain decode shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4");
   if (projectionPromptShapeCommands !== 1 || projectionPromptShapeRowChains !== 1 || projectionPromptShapeCoveredOps !== 5 || projectionPromptShapeSavedDispatches !== 4) failures.push("projection_row_chain prompt shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4");
   if (projectionFullPrefillShapeCommands !== 1 || projectionFullPrefillShapeRowChains !== 1 || projectionFullPrefillShapeCoveredOps !== 5 || projectionFullPrefillShapeSavedDispatches !== 4) failures.push("projection_row_chain full-prefill shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4");
+  if (projectionRowChainGroupFullPrefillRuntimeCommandDispatches !== 4) failures.push("projection_row_chain group full-prefill runtime profile must stay at 4 command dispatches");
+  if (projectionDecodeRuntimeCommandDispatches !== 1) failures.push("projection_row_chain decode runtime profile must stay at 1 command dispatch");
+  if (projectionPromptRuntimeCommandDispatches !== 1) failures.push("projection_row_chain prompt runtime profile must stay at 1 command dispatch");
+  if (projectionFullPrefillRuntimeCommandDispatches !== 1) failures.push("projection_row_chain full-prefill runtime profile must stay at 1 command dispatch");
+
+  const line = [
+    `frontier bench gate: ${failures.length === 0 ? "pass" : "fail"}`,
+    `attempt=${attempt}/${maxAttempts}`,
+    `small_chain=${smallSpeedup.toFixed(2)}x floor=2.00x`,
+    `large_chain=${largeSpeedup.toFixed(2)}x floor=3.00x`,
+    `decodeish=${decodeTokS.toFixed(2)} tok/s floor=${decodeishTokSFloor}`,
+    `projection_chain_prompt=${projectionChainSpeedup.toFixed(2)}x observed max_abs_diff=${projectionChainMaxAbsDiff.toFixed(6)} floor=${projectionChainTileSpeedupFloor.toFixed(2)} diff_ceil=${projectionChainMaxAbsDiffCeil.toFixed(6)}`,
+    `projection_chain_full_prefill=${projectionChainFullPrefillSpeedup.toFixed(2)}x observed max_abs_diff=${projectionChainFullPrefillMaxAbsDiff.toFixed(6)} candidate=${projectionChainFullPrefillSpeedup >= projectionChainFullPrefillCandidateSpeedupFloor ? "ready" : "off"} floor=${projectionChainFullPrefillSpeedupFloor.toFixed(2)} candidate_floor=${projectionChainFullPrefillCandidateSpeedupFloor.toFixed(2)} diff_ceil=${projectionChainMaxAbsDiffCeil.toFixed(6)}`,
+    `projection_group_full_prefill=${projectionGroupFullPrefillSpeedup.toFixed(2)}x observed max_abs_diff=${projectionGroupFullPrefillMaxAbsDiff.toFixed(6)} candidate=${projectionGroupFullPrefillSpeedup >= projectionGroupCandidateSpeedupFloor ? "ready" : "off"} floor=${projectionGroupCandidateSpeedupFloor.toFixed(2)} diff_ceil=${projectionChainMaxAbsDiffCeil.toFixed(6)}`,
+    `projection_row_chain_group_full_prefill=${projectionRowChainGroupFullPrefillSpeedup.toFixed(2)}x observed max_abs_diff=${projectionRowChainGroupFullPrefillMaxAbsDiff.toFixed(6)} shape_commands=${projectionRowChainGroupFullPrefillShapeCommands} shape_projection_row_chains=${projectionRowChainGroupFullPrefillShapeRowChains} shape_covered_ops=${projectionRowChainGroupFullPrefillShapeCoveredOps} shape_saved_dispatches=${projectionRowChainGroupFullPrefillShapeSavedDispatches} runtime_command_dispatches=${projectionRowChainGroupFullPrefillRuntimeCommandDispatches} candidate=${projectionRowChainGroupFullPrefillSpeedup >= projectionRowChainDefaultSpeedupFloor ? "ready" : "off"} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
+    `projection_row_chain_decode=${projectionDecodeSpeedup === null ? "unavailable" : `${projectionDecodeSpeedup.toFixed(2)}x observed max_abs_diff=${projectionDecodeMaxAbsDiff.toFixed(6)} shape_commands=${projectionDecodeShapeCommands} shape_projection_row_chains=${projectionDecodeShapeRowChains} shape_covered_ops=${projectionDecodeShapeCoveredOps} shape_saved_dispatches=${projectionDecodeShapeSavedDispatches} runtime_command_dispatches=${projectionDecodeRuntimeCommandDispatches} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`}`,
+    `projection_row_chain_prompt=${projectionPromptSpeedup === null ? "unavailable" : `${projectionPromptSpeedup.toFixed(2)}x observed max_abs_diff=${projectionPromptMaxAbsDiff.toFixed(6)} shape_commands=${projectionPromptShapeCommands} shape_projection_row_chains=${projectionPromptShapeRowChains} shape_covered_ops=${projectionPromptShapeCoveredOps} shape_saved_dispatches=${projectionPromptShapeSavedDispatches} runtime_command_dispatches=${projectionPromptRuntimeCommandDispatches} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`}`,
+    `projection_row_chain_full_prefill=${projectionFullPrefillSpeedup === null ? "unavailable" : `${projectionFullPrefillSpeedup.toFixed(2)}x observed max_abs_diff=${projectionFullPrefillMaxAbsDiff.toFixed(6)} shape_commands=${projectionFullPrefillShapeCommands} shape_projection_row_chains=${projectionFullPrefillShapeRowChains} shape_covered_ops=${projectionFullPrefillShapeCoveredOps} shape_saved_dispatches=${projectionFullPrefillShapeSavedDispatches} runtime_command_dispatches=${projectionFullPrefillRuntimeCommandDispatches} candidate=${projectionFullPrefillSpeedup >= projectionRowChainDefaultSpeedupFloor ? "ready" : "off"} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`}`,
+    `projection_row_chain_prompt_candidate=${projectionPromptCandidateReady ? "ready" : "off"} floor=${projectionRowChainDefaultSpeedupFloor.toFixed(2)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
+    `projection_row_chain_candidate=${projectionCandidateReady ? "ready" : "off"} floor=${projectionRowChainDefaultSpeedupFloor.toFixed(2)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
+    `projection_row_chain_kernel=${projectionRowChainKernel}`,
+    `projection_row_chain_next=${projectionRowChainNextTarget}`,
+    `projection_row_chain_default=${projectionDefaultDecision} floor=${projectionRowChainDefaultSpeedupFloor.toFixed(2)} reason=${projectionDefaultReason}`,
+  ].join("; ");
 
   return {
     attempt,
@@ -163,22 +191,26 @@ function score(output, attempt) {
     projectionRowChainGroupFullPrefillShapeRowChains,
     projectionRowChainGroupFullPrefillShapeCoveredOps,
     projectionRowChainGroupFullPrefillShapeSavedDispatches,
+    projectionRowChainGroupFullPrefillRuntimeCommandDispatches,
     projectionDecodeShapeCommands,
     projectionDecodeShapeRowChains,
     projectionDecodeShapeCoveredOps,
     projectionDecodeShapeSavedDispatches,
+    projectionDecodeRuntimeCommandDispatches,
     projectionPromptShapeCommands,
     projectionPromptShapeRowChains,
     projectionPromptShapeCoveredOps,
     projectionPromptShapeSavedDispatches,
+    projectionPromptRuntimeCommandDispatches,
     projectionFullPrefillShapeCommands,
     projectionFullPrefillShapeRowChains,
     projectionFullPrefillShapeCoveredOps,
     projectionFullPrefillShapeSavedDispatches,
+    projectionFullPrefillRuntimeCommandDispatches,
     projectionDefaultDecision,
     projectionDefaultReason,
     failures,
-    line: `frontier bench gate: ${failures.length === 0 ? "pass" : "fail"}; attempt=${attempt}/${maxAttempts}; small_chain=${smallSpeedup.toFixed(2)}x floor=2.00x; large_chain=${largeSpeedup.toFixed(2)}x floor=3.00x; decodeish=${decodeTokS.toFixed(2)} tok/s floor=${decodeishTokSFloor}; projection_chain_prompt=${projectionChainSpeedup.toFixed(2)}x observed max_abs_diff=${projectionChainMaxAbsDiff.toFixed(6)} floor=${projectionChainTileSpeedupFloor.toFixed(2)} diff_ceil=${projectionChainMaxAbsDiffCeil.toFixed(6)}; projection_chain_full_prefill=${projectionChainFullPrefillSpeedup.toFixed(2)}x observed max_abs_diff=${projectionChainFullPrefillMaxAbsDiff.toFixed(6)} candidate=${projectionChainFullPrefillSpeedup >= projectionChainFullPrefillCandidateSpeedupFloor ? "ready" : "off"} floor=${projectionChainFullPrefillSpeedupFloor.toFixed(2)} candidate_floor=${projectionChainFullPrefillCandidateSpeedupFloor.toFixed(2)} diff_ceil=${projectionChainMaxAbsDiffCeil.toFixed(6)}; projection_group_full_prefill=${projectionGroupFullPrefillSpeedup.toFixed(2)}x observed max_abs_diff=${projectionGroupFullPrefillMaxAbsDiff.toFixed(6)} candidate=${projectionGroupFullPrefillSpeedup >= projectionGroupCandidateSpeedupFloor ? "ready" : "off"} floor=${projectionGroupCandidateSpeedupFloor.toFixed(2)} diff_ceil=${projectionChainMaxAbsDiffCeil.toFixed(6)}; projection_row_chain_group_full_prefill=${projectionRowChainGroupFullPrefillSpeedup.toFixed(2)}x observed max_abs_diff=${projectionRowChainGroupFullPrefillMaxAbsDiff.toFixed(6)} shape_commands=${projectionRowChainGroupFullPrefillShapeCommands} shape_projection_row_chains=${projectionRowChainGroupFullPrefillShapeRowChains} shape_covered_ops=${projectionRowChainGroupFullPrefillShapeCoveredOps} shape_saved_dispatches=${projectionRowChainGroupFullPrefillShapeSavedDispatches} candidate=${projectionRowChainGroupFullPrefillSpeedup >= projectionRowChainDefaultSpeedupFloor ? "ready" : "off"} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}; projection_row_chain_decode=${projectionDecodeSpeedup === null ? "unavailable" : `${projectionDecodeSpeedup.toFixed(2)}x observed max_abs_diff=${projectionDecodeMaxAbsDiff.toFixed(6)} shape_commands=${projectionDecodeShapeCommands} shape_projection_row_chains=${projectionDecodeShapeRowChains} shape_covered_ops=${projectionDecodeShapeCoveredOps} shape_saved_dispatches=${projectionDecodeShapeSavedDispatches} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`}; projection_row_chain_prompt=${projectionPromptSpeedup === null ? "unavailable" : `${projectionPromptSpeedup.toFixed(2)}x observed max_abs_diff=${projectionPromptMaxAbsDiff.toFixed(6)} shape_commands=${projectionPromptShapeCommands} shape_projection_row_chains=${projectionPromptShapeRowChains} shape_covered_ops=${projectionPromptShapeCoveredOps} shape_saved_dispatches=${projectionPromptShapeSavedDispatches} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`}; projection_row_chain_full_prefill=${projectionFullPrefillSpeedup === null ? "unavailable" : `${projectionFullPrefillSpeedup.toFixed(2)}x observed max_abs_diff=${projectionFullPrefillMaxAbsDiff.toFixed(6)} shape_commands=${projectionFullPrefillShapeCommands} shape_projection_row_chains=${projectionFullPrefillShapeRowChains} shape_covered_ops=${projectionFullPrefillShapeCoveredOps} shape_saved_dispatches=${projectionFullPrefillShapeSavedDispatches} candidate=${projectionFullPrefillSpeedup >= projectionRowChainDefaultSpeedupFloor ? "ready" : "off"} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`}; projection_row_chain_prompt_candidate=${projectionPromptCandidateReady ? "ready" : "off"} floor=${projectionRowChainDefaultSpeedupFloor.toFixed(2)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}; projection_row_chain_candidate=${projectionCandidateReady ? "ready" : "off"} floor=${projectionRowChainDefaultSpeedupFloor.toFixed(2)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}; projection_row_chain_kernel=${projectionRowChainKernel}; projection_row_chain_next=${projectionRowChainNextTarget}; projection_row_chain_default=${projectionDefaultDecision} floor=${projectionRowChainDefaultSpeedupFloor.toFixed(2)} reason=${projectionDefaultReason}`,
+    line,
   };
 }
 

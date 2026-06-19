@@ -224,7 +224,11 @@ machine for both prompt/prefill and decode.
   diagnostic via `ProgramCommandStreamShape.fromCommands`: a single row-chain
   command covers 5 ops and records `shape_saved_dispatches=4`, while the x4
   full-prefill group records 4 row-chain commands, 20 covered ops, and
-  `shape_saved_dispatches=16`. This keeps the semantic scheduler win explicit
+  `shape_saved_dispatches=16`. It also executes the compiled Metal Program once
+  with region ProgramCommand dispatch enabled and prints
+  `runtime_command_dispatches`, proving the public runtime profile sees one
+  command dispatch for each single row-chain diagnostic and four command
+  dispatches for the x4 group. This keeps the semantic scheduler win explicit
   without confusing it for the still-missing tiled qmatmul row-chain throughput
   kernel.
 - Q8_0 tied LM-head logits are a standalone backend qmatvec dispatch outside
