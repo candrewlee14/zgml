@@ -247,7 +247,13 @@ Current checked progress:
   two-dispatch projection-row-chain command candidate keeps the fast tiled
   qmatmul column parallelism while reducing command shape from `301->241`,
   whereas the single-dispatch candidate remains a diagnostic for the needed
-  tiled row-chain kernel. The remaining substrate jump is not another
+  tiled row-chain kernel. The frontier benchmark now exposes that
+  single-dispatch tiled candidate directly as
+  `projection_row_chain_single_dispatch` prompt/full-prefill/SmolLM-prompt
+  lanes, with correctness, command-shape, and runtime-dispatch evidence. Current
+  evidence keeps it diagnostic: it can help smaller prompt tiles, but
+  full-prefill and SmolLM-prompt shapes remain effectively neutral or slower
+  than the split command path. The remaining substrate jump is not another
   compatibility lane; it is a real tiled quantized row-chain throughput kernel,
   plus wider default
   browser/WebGPU execution evidence. The required-GPU browser runner's full

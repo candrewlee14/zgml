@@ -828,6 +828,8 @@ fn benchProjectionRowChainMetalCase(
     defer alloc.free(default_out);
     const fused_out = try allocF32(alloc, elems, 508, 0.0);
     defer alloc.free(fused_out);
+    const single_dispatch_out = try allocF32(alloc, elems, 511, 0.0);
+    defer alloc.free(single_dispatch_out);
     const qdata = try allocI8Weights(alloc, case.k * case.n, 509);
     defer alloc.free(qdata);
     const qscales = try allocF32(alloc, scale_len, 510, 0.02);
@@ -884,9 +886,14 @@ fn benchProjectionRowChainMetalCase(
     fused_policy.fuse_projection_row_chain_qmatvec = true;
     const fused_handle = metal.compileProgramWithCommandPolicy(program, fused_policy) orelse return error.CompileFailed;
     defer be.freeProgram(fused_handle);
+    var single_dispatch_policy = fused_policy;
+    single_dispatch_policy.fuse_projection_row_chain_single_dispatch = true;
+    const single_dispatch_handle = metal.compileProgramWithCommandPolicy(program, single_dispatch_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(single_dispatch_handle);
 
     const default_output_io = [_]backend_mod.ProgramIO{programIo(6, default_out)};
     const fused_output_io = [_]backend_mod.ProgramIO{programIo(6, fused_out)};
+    const single_dispatch_output_io = [_]backend_mod.ProgramIO{programIo(6, single_dispatch_out)};
     var default_bench = ProjectionRowChainMetalBench{
         .be = be,
         .handle = default_handle,
@@ -899,9 +906,16 @@ fn benchProjectionRowChainMetalCase(
         .out = fused_out,
         .output_io = &fused_output_io,
     };
+    var single_dispatch_bench = ProjectionRowChainMetalBench{
+        .be = be,
+        .handle = single_dispatch_handle,
+        .out = single_dispatch_out,
+        .output_io = &single_dispatch_output_io,
+    };
 
     const default_stats = measure(io, &default_bench);
     const fused_stats = measure(io, &fused_bench);
+    const single_dispatch_stats = measure(io, &single_dispatch_bench);
     const approx_work = 2.0 * @as(f64, @floatFromInt(case.m * case.n * case.k));
 
     var default_name_buf: [96]u8 = undefined;
@@ -912,9 +926,17 @@ fn benchProjectionRowChainMetalCase(
     const fused_name = try std.fmt.bufPrint(&fused_name_buf, "{s} projection_row_chain", .{case.name});
     try printStats(w, fused_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", fused_stats);
 
+    var single_dispatch_name_buf: [112]u8 = undefined;
+    const single_dispatch_name = try std.fmt.bufPrint(&single_dispatch_name_buf, "{s} projection_row_chain_single_dispatch", .{case.name});
+    try printStats(w, single_dispatch_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", single_dispatch_stats);
+
     var ratio_name_buf: [96]u8 = undefined;
     const ratio_name = try std.fmt.bufPrint(&ratio_name_buf, "{s} projection_row_chain", .{case.name});
     try printRatio(w, ratio_name, default_stats, fused_stats, maxAbsDiff(default_out, fused_out));
+
+    var single_dispatch_ratio_name_buf: [128]u8 = undefined;
+    const single_dispatch_ratio_name = try std.fmt.bufPrint(&single_dispatch_ratio_name_buf, "{s} projection_row_chain_single_dispatch", .{case.name});
+    try printRatio(w, single_dispatch_ratio_name, default_stats, single_dispatch_stats, maxAbsDiff(default_out, single_dispatch_out));
 
     const fused_commands = try program_mod.buildProgramCommands(alloc, &ops, fused_policy);
     defer alloc.free(fused_commands);
@@ -922,6 +944,13 @@ fn benchProjectionRowChainMetalCase(
     const profile_name = try std.fmt.bufPrint(&profile_name_buf, "{s} projection_row_chain dispatch_profile", .{case.name});
     try printCommandShape(w, profile_name, fused_commands);
     try printProjectionRowChainRuntimeProfile(w, profile_name, be, fused_handle, &fused_output_io);
+
+    const single_dispatch_commands = try program_mod.buildProgramCommands(alloc, &ops, single_dispatch_policy);
+    defer alloc.free(single_dispatch_commands);
+    var single_dispatch_profile_name_buf: [128]u8 = undefined;
+    const single_dispatch_profile_name = try std.fmt.bufPrint(&single_dispatch_profile_name_buf, "{s} projection_row_chain_single_dispatch dispatch_profile", .{case.name});
+    try printCommandShape(w, single_dispatch_profile_name, single_dispatch_commands);
+    try printProjectionRowChainRuntimeProfile(w, single_dispatch_profile_name, be, single_dispatch_handle, &single_dispatch_output_io);
 }
 
 fn benchProjectionRowChainGroupMetalCase(

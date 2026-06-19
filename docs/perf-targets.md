@@ -220,7 +220,7 @@ machine for both prompt/prefill and decode.
   row-chain correctness ceiling. It is intentionally diagnostic: it tells us
   whether a larger semantic sublayer is promising before we write a tiled
   row-wide reduction kernel, but it does not lower the full-model dispatch split
-  or promote the scalar row-chain Adapter.
+  or promote projection row-chain fusion by default.
   The gate also prints canonical scheduler shape evidence for each row-chain
   diagnostic via `ProgramCommandStreamShape.fromCommands`: a single row-chain
   command covers 5 ops and records `shape_saved_dispatches=4`, while the x4
@@ -232,6 +232,12 @@ machine for both prompt/prefill and decode.
   dispatches for the x4 group. This keeps the semantic scheduler win explicit
   without confusing it for the still-missing tiled qmatmul row-chain throughput
   kernel.
+  The same frontier gate now reports
+  `projection_row_chain_single_dispatch` prompt/full-prefill/SmolLM-prompt
+  lanes for the tiled single-dispatch candidate. Those lanes are correctness-
+  and dispatch-profile checked, but remain diagnostic until they beat the
+  full-prefill and SmolLM-prompt promotion floor instead of only improving
+  smaller prompt tiles.
 - Q8_0 tied LM-head logits are a standalone backend qmatvec dispatch outside
   the ProgramCommand stream. Accepted default Q8_0 prompt evidence is gated at
   241 ProgramCommands and 242 dispatches because the prompt path keeps
@@ -271,25 +277,20 @@ machine for both prompt/prefill and decode.
   but the substrate gate must still distinguish that command-shape win from a
   throughput win. The frontier microbench also requires local speedup and
   max-absolute-difference correctness before reporting the single-kernel
-  candidate as ready; it includes a full-prefill
-  `qrow full-prefill m=128 n=512 k=512 projection_row_chain` diagnostic because
-  the current `qmatmul_row_chain_f32` Adapter still uses a scalar
-  per-row/per-column dot loop with an explicit qmatmul-row-chain threadgroup
-  width rather than the tiled simdgroup qmatmul path. Prompt-sized
-  qmatmul row-chain commands are protected by a multi-tile regression that
-  proves they route through tiled `qmatmul_elementwise_f32` plus the
-  RMSNorm-scale row pass, while the scalar kernel stays diagnostic for the
-  qmatvec/decode-style path.
-  It caches the row input vector in threadgroup memory for eligible `K <= 2048`
-  shapes, and now uses a 256-thread row-wide diagnostic variant that slightly
-  improves the isolated row-chain frontier without changing the full-model
-  promotion decision. Decode/tiny cases remain effectively neutral and
-  full-prefill remains below the default promotion floor, so the next throughput
-  target needs a single-dispatch tiled qmatmul row-chain design with an
-  explicit row-reduction strategy rather than another scalar threadgroup-width
-  tweak. The prompt-sized candidate
-  path now keeps decode qmatvec unfused while preserving prompt qmatmul
-  evidence. The active frontier is tiled row-chain throughput or a larger
+  candidate as ready; it includes full-prefill and SmolLM-prompt diagnostics for
+  both the current two-dispatch semantic command and the tiled single-dispatch
+  candidate. Prompt-sized qmatmul row-chain commands are protected by a
+  multi-tile regression that proves the safe command path routes through tiled
+  `qmatmul_elementwise_f32` plus the RMSNorm-scale row pass, while
+  `projection_row_chain_single_dispatch` exposes the tiled row-chain hook
+  directly. The scalar kernel stays diagnostic for the qmatvec/decode-style
+  path, and the prompt-sized candidate path still keeps decode qmatvec unfused
+  while preserving prompt qmatmul evidence.
+  Current local frontier evidence shows the single-dispatch tiled candidate is
+  correct and can improve the smaller prompt tile, but full-prefill and
+  SmolLM-prompt shapes remain effectively neutral or slower than the split
+  command path. The active frontier is therefore still tiled row-chain
+  throughput or a larger
   semantic sublayer, not command-count reduction by itself.
 - Benchmark artifacts keep raw outputs, gate-selected summaries, and gate
   decisions so this document does not become a changelog.
