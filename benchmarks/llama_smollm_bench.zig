@@ -499,6 +499,7 @@ pub fn main(init: std.process.Init) !void {
     const run_metal_prefill_device = hasFlag(args, "--metal-prefill-device");
     const run_metal_decode_region = hasFlag(args, "--metal-decode-region");
     const run_metal_decode_no_readback = hasFlag(args, "--metal-decode-no-readback");
+    const run_metal_prompt_projection_row_chain_command_candidate = hasFlag(args, "--metal-prompt-projection-row-chain-command-candidate");
     const run_metal_prompt_projection_row_chain_candidate = hasFlag(args, "--metal-prompt-projection-row-chain-candidate");
     const stencil_only = hasFlag(args, "--stencil-only");
     const debug_row_chain = hasFlag(args, "--debug-row-chain");
@@ -545,10 +546,19 @@ pub fn main(init: std.process.Init) !void {
         defer metal_be.deinit();
         const metal_prefill_label = if (run_metal_prompt_projection_row_chain_candidate)
             "metal scheduled prefill projection-row-chain candidate"
+        else if (run_metal_prompt_projection_row_chain_command_candidate)
+            "metal scheduled prefill projection-row-chain command candidate"
         else
             "metal scheduled prefill";
         if (run_metal_prompt_projection_row_chain_candidate) {
             metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainCandidate());
+        } else if (run_metal_prompt_projection_row_chain_command_candidate) {
+            var command_policy = program_mod.CommandStreamPolicy.default();
+            command_policy.fuse_projection_row_chain = true;
+            command_policy.fuse_projection_row_chain_qmatvec = false;
+            command_policy.fuse_projection_row_chain_single_dispatch = false;
+            command_policy.min_projection_row_chain_rows = 8;
+            metal_be.setCommandStreamPolicy(command_policy);
         }
         if (!gate_only) {
             try runVariant(if (model_is_gguf) "metal gguf      " else "metal f32        ", metal_be.backend(), false, false, cfg, &stdout.interface, io, alloc);

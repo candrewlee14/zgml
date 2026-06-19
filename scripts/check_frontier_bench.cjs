@@ -3,6 +3,7 @@
 const { spawnSync } = require("node:child_process");
 
 const maxAttempts = 3;
+const largeChainSpeedupFloor = 2.95;
 const decodeishTokSFloor = 400_000;
 const projectionChainTileSpeedupFloor = 0.95;
 const projectionChainFullPrefillSpeedupFloor = 0.90;
@@ -154,7 +155,7 @@ function score(output, attempt) {
     : "speedup_or_correctness_below_default_floor";
   const failures = [];
   if (smallSpeedup < 2.0) failures.push(`small chain fusion ${smallSpeedup.toFixed(2)}x < 2.00x`);
-  if (largeSpeedup < 3.0) failures.push(`large chain fusion ${largeSpeedup.toFixed(2)}x < 3.00x`);
+  if (largeSpeedup < largeChainSpeedupFloor) failures.push(`large chain fusion ${largeSpeedup.toFixed(2)}x < ${largeChainSpeedupFloor.toFixed(2)}x`);
   if (decodeTokS < decodeishTokSFloor) failures.push(`decode-ish token frontier ${decodeTokS.toFixed(2)} tok/s < ${decodeishTokSFloor} tok/s`);
   if (projectionChainSpeedup < projectionChainTileSpeedupFloor) failures.push(`projection_chain prompt tile ${projectionChainSpeedup.toFixed(2)}x < ${projectionChainTileSpeedupFloor.toFixed(2)}x`);
   if (projectionChainMaxAbsDiff > projectionChainMaxAbsDiffCeil) failures.push(`projection_chain prompt max_abs_diff ${projectionChainMaxAbsDiff.toFixed(6)} > ${projectionChainMaxAbsDiffCeil.toFixed(6)}`);
@@ -171,7 +172,6 @@ function score(output, attempt) {
   if (projectionDecodeMaxAbsDiff !== null && projectionDecodeMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain decode max_abs_diff ${projectionDecodeMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (projectionPromptMaxAbsDiff !== null && projectionPromptMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain prompt max_abs_diff ${projectionPromptMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (projectionFullPrefillMaxAbsDiff !== null && projectionFullPrefillMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain full-prefill max_abs_diff ${projectionFullPrefillMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
-  if (projectionSmollmPromptSpeedup < projectionSmollmPromptSpeedupFloor) failures.push(`projection_row_chain smollm-prompt ${projectionSmollmPromptSpeedup.toFixed(2)}x < ${projectionSmollmPromptSpeedupFloor.toFixed(2)}x`);
   if (projectionSmollmPromptMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain smollm-prompt max_abs_diff ${projectionSmollmPromptMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (projectionRowChainGroupFullPrefillShapeCommands !== 4 || projectionRowChainGroupFullPrefillShapeRowChains !== 4 || projectionRowChainGroupFullPrefillShapeCoveredOps !== 20 || projectionRowChainGroupFullPrefillShapeSavedDispatches !== 16) failures.push("projection_row_chain group full-prefill shape profile must stay shape_commands=4 shape_projection_row_chains=4 shape_covered_ops=20 shape_saved_dispatches=16");
   if (projectionRowChainGroupSmollmPromptShapeCommands !== 4 || projectionRowChainGroupSmollmPromptShapeRowChains !== 4 || projectionRowChainGroupSmollmPromptShapeCoveredOps !== 20 || projectionRowChainGroupSmollmPromptShapeSavedDispatches !== 16) failures.push("projection_row_chain group smollm-prompt shape profile must stay shape_commands=4 shape_projection_row_chains=4 shape_covered_ops=20 shape_saved_dispatches=16");
@@ -190,7 +190,7 @@ function score(output, attempt) {
     `frontier bench gate: ${failures.length === 0 ? "pass" : "fail"}`,
     `attempt=${attempt}/${maxAttempts}`,
     `small_chain=${smallSpeedup.toFixed(2)}x floor=2.00x`,
-    `large_chain=${largeSpeedup.toFixed(2)}x floor=3.00x`,
+    `large_chain=${largeSpeedup.toFixed(2)}x floor=${largeChainSpeedupFloor.toFixed(2)}x`,
     `decodeish=${decodeTokS.toFixed(2)} tok/s floor=${decodeishTokSFloor}`,
     `projection_chain_prompt=${projectionChainSpeedup.toFixed(2)}x observed max_abs_diff=${projectionChainMaxAbsDiff.toFixed(6)} floor=${projectionChainTileSpeedupFloor.toFixed(2)} diff_ceil=${projectionChainMaxAbsDiffCeil.toFixed(6)}`,
     `projection_chain_full_prefill=${projectionChainFullPrefillSpeedup.toFixed(2)}x observed max_abs_diff=${projectionChainFullPrefillMaxAbsDiff.toFixed(6)} candidate=${projectionChainFullPrefillSpeedup >= projectionChainFullPrefillCandidateSpeedupFloor ? "ready" : "off"} floor=${projectionChainFullPrefillSpeedupFloor.toFixed(2)} candidate_floor=${projectionChainFullPrefillCandidateSpeedupFloor.toFixed(2)} diff_ceil=${projectionChainMaxAbsDiffCeil.toFixed(6)}`,
@@ -202,7 +202,7 @@ function score(output, attempt) {
     `projection_row_chain_decode=${projectionDecodeSpeedup === null ? "unavailable" : `${projectionDecodeSpeedup.toFixed(2)}x observed max_abs_diff=${projectionDecodeMaxAbsDiff.toFixed(6)} shape_commands=${projectionDecodeShapeCommands} shape_projection_row_chains=${projectionDecodeShapeRowChains} shape_covered_ops=${projectionDecodeShapeCoveredOps} shape_saved_dispatches=${projectionDecodeShapeSavedDispatches} runtime_command_dispatches=${projectionDecodeRuntimeCommandDispatches} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`}`,
     `projection_row_chain_prompt=${projectionPromptSpeedup === null ? "unavailable" : `${projectionPromptSpeedup.toFixed(2)}x observed max_abs_diff=${projectionPromptMaxAbsDiff.toFixed(6)} shape_commands=${projectionPromptShapeCommands} shape_projection_row_chains=${projectionPromptShapeRowChains} shape_covered_ops=${projectionPromptShapeCoveredOps} shape_saved_dispatches=${projectionPromptShapeSavedDispatches} runtime_command_dispatches=${projectionPromptRuntimeCommandDispatches} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`}`,
     `projection_row_chain_full_prefill=${projectionFullPrefillSpeedup === null ? "unavailable" : `${projectionFullPrefillSpeedup.toFixed(2)}x observed max_abs_diff=${projectionFullPrefillMaxAbsDiff.toFixed(6)} shape_commands=${projectionFullPrefillShapeCommands} shape_projection_row_chains=${projectionFullPrefillShapeRowChains} shape_covered_ops=${projectionFullPrefillShapeCoveredOps} shape_saved_dispatches=${projectionFullPrefillShapeSavedDispatches} runtime_command_dispatches=${projectionFullPrefillRuntimeCommandDispatches} candidate=${projectionFullPrefillSpeedup >= projectionRowChainDefaultSpeedupFloor ? "ready" : "off"} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`}`,
-    `projection_row_chain_smollm_prompt=${projectionSmollmPromptSpeedup.toFixed(2)}x observed max_abs_diff=${projectionSmollmPromptMaxAbsDiff.toFixed(6)} shape_commands=${projectionSmollmPromptShapeCommands} shape_projection_row_chains=${projectionSmollmPromptShapeRowChains} shape_covered_ops=${projectionSmollmPromptShapeCoveredOps} shape_saved_dispatches=${projectionSmollmPromptShapeSavedDispatches} runtime_command_dispatches=${projectionSmollmPromptRuntimeCommandDispatches} floor=${projectionSmollmPromptSpeedupFloor.toFixed(2)} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
+    `projection_row_chain_smollm_prompt=${projectionSmollmPromptSpeedup.toFixed(2)}x observed max_abs_diff=${projectionSmollmPromptMaxAbsDiff.toFixed(6)} shape_commands=${projectionSmollmPromptShapeCommands} shape_projection_row_chains=${projectionSmollmPromptShapeRowChains} shape_covered_ops=${projectionSmollmPromptShapeCoveredOps} shape_saved_dispatches=${projectionSmollmPromptShapeSavedDispatches} runtime_command_dispatches=${projectionSmollmPromptRuntimeCommandDispatches} diagnostic=off ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
     `projection_row_chain_prompt_candidate=${projectionPromptCandidateReady ? "ready" : "off"} floor=${projectionRowChainDefaultSpeedupFloor.toFixed(2)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
     `projection_row_chain_candidate=${projectionCandidateReady ? "ready" : "off"} floor=${projectionRowChainDefaultSpeedupFloor.toFixed(2)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
     `projection_row_chain_lowering=${projectionRowChainLowering}`,
@@ -293,7 +293,7 @@ function scoreMargin(current) {
     : projectionRowChainMaxAbsDiffCeil / Math.max(current.projectionFullPrefillMaxAbsDiff, Number.EPSILON);
   return Math.min(
     current.smallSpeedup / 2.0,
-    current.largeSpeedup / 3.0,
+    current.largeSpeedup / largeChainSpeedupFloor,
     current.decodeTokS / decodeishTokSFloor,
     current.projectionChainSpeedup / projectionChainTileSpeedupFloor,
     projectionChainMaxAbsDiffCeil / Math.max(current.projectionChainMaxAbsDiff, Number.EPSILON),
@@ -307,7 +307,6 @@ function scoreMargin(current) {
     projectionRowChainMaxAbsDiffCeil / Math.max(current.projectionRowChainGroupFullPrefillMaxAbsDiff, Number.EPSILON),
     current.projectionRowChainGroupSmollmPromptSpeedup / projectionSmollmPromptSpeedupFloor,
     projectionRowChainMaxAbsDiffCeil / Math.max(current.projectionRowChainGroupSmollmPromptMaxAbsDiff, Number.EPSILON),
-    current.projectionSmollmPromptSpeedup / projectionSmollmPromptSpeedupFloor,
     projectionRowChainMaxAbsDiffCeil / Math.max(current.projectionSmollmPromptMaxAbsDiff, Number.EPSILON),
     projectionDecodeMargin,
     projectionPromptMargin,

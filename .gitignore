@@ -22,6 +22,7 @@ zig-out/
 # Local package/cache artifacts.
 /zig-pkg/
 node_modules/
+.venv/
 
 # Ad hoc root-level test binaries/scratch files.
 /test_mach

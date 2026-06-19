@@ -858,9 +858,10 @@ npm run smoke:training    # run the public JS training/checkpoint smoke
 npm run smoke:training:bun # run the public Bun training/checkpoint smoke
 npm run smoke:node        # run Node package, training, and Program/Session smokes
 npm run smoke:bun         # run Bun package, training, Program/Session, and bundle smokes
-npm run check:goal-scorecard # verify Program/Session substrate and PyTorch-like surface evidence
+npm run check:goal-scorecard # verify Program/Session substrate and zgml frontend evidence
 npm run bench             # verify checked benchmark baseline artifacts
 npm run bench:status      # summarize source-checkout baseline/latest ggml artifact evidence
+npm run bench:pytorch     # compare selected zgml compiled module paths against upstream Python PyTorch when installed
 npm run bench:ggml        # run the local ggml/llama.cpp artifact gate with baseline regression protection
 zig build bench-frontier  # run decision-grade local benchmarks
 zig build -Duse-blas      # enable BLAS for matmul
@@ -880,17 +881,20 @@ long-form smoke and benchmark gates.
 `npm run check:goal-scorecard` is the lightweight progress guard for the current
 library goal. It requires a passing no-fallback Program/Session substrate gate
 with a latest-vs-checked-baseline delta report for the selected native lanes,
-and checks that the public type smokes still cover the PyTorch-like surface:
-`goal progress: Program/Session substrate=88% floor=65%; PyTorch-like surface=100% floor=60%`.
+and checks that the public type smokes still cover the zgml frontend surface:
+`goal progress: Program/Session substrate=90% floor=65%; zgml frontend surface=100% floor=60%`.
 Those numbers are deliberately conservative: q8 prompt execution still needs a
 real tiled row-chain throughput kernel. The frontier gate now measures the
 actual SmolLM prompt geometry (`m=128 n=576 k=576`) for projection-chain and
 projection-row-chain variants, so the remaining row-chain work is a measured
-throughput problem rather than a shape-evidence guess. Native WebGPU now has
+throughput problem rather than a shape-evidence guess. The q8 prompt gate also
+keeps a usable two-dispatch projection-row-chain command candidate distinct
+from the slower single-dispatch diagnostic, so command simplification can land
+without pretending the tiled row-chain kernel is solved. Native WebGPU now has
 broader default optional LLaMA execution proof for quantized qweights,
 resource-bound decode/prefill, long prompts, GQA long prompts, and realistic
-head-width resource handoff. The PyTorch-like surface now has
-runtime and type evidence for the core replacement loop and PyTorch-like
+head-width resource handoff. The zgml frontend surface now has
+runtime and type evidence for the core replacement loop, plus PyTorch-compatible
 eager/autograd `einsum` semantics with typed output shapes plus lazy
 parameterized `matmul`/`mm`/add compile evidence, direct `lazyGraph.compile()`
 native Program construction, and benchmarked allocation-free lazy

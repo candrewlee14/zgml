@@ -206,7 +206,7 @@ execution is the performance claim. Silent eager fallback is not allowed.
 
 Current checked progress:
 
-- Program/Session performance substrate: ~88%. The Program/Session shape,
+- Program/Session performance substrate: ~90%. The Program/Session shape,
   runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
   native Metal execution, a scorecard-run optional native wgpu validation gate,
   and ggml benchmark gates are real enough that the substrate is past "architecture".
@@ -242,13 +242,19 @@ Current checked progress:
   (`m=128 n=576 k=576`) for projection-chain, grouped projection-chain,
   grouped projection-row-chain, and single projection-row-chain paths, with
   command-shape evidence proving the row-chain lowering covers the intended
-  five-op chains. The remaining substrate jump is not another compatibility
-  lane; it is a real tiled quantized row-chain throughput kernel, plus wider default
+  five-op chains. The full-model Q8 prompt gate now separates the usable
+  command-fusion path from the slower single-dispatch experiment: the
+  two-dispatch projection-row-chain command candidate keeps the fast tiled
+  qmatmul column parallelism while reducing command shape from `301->241`,
+  whereas the single-dispatch candidate remains a diagnostic for the needed
+  tiled row-chain kernel. The remaining substrate jump is not another
+  compatibility lane; it is a real tiled quantized row-chain throughput kernel,
+  plus wider default
   browser/WebGPU execution evidence. The required-GPU browser runner's full
   LLaMA profile and storage-mode matrices are now scorecard-checked source
   contracts, and the cheap focused browser smoke also has checked
   dispatch-family and selection-read summary fields.
-- PyTorch-like replacement feel: ~100%. The TS-owned product frontend now has
+- zgml frontend replacement feel: ~100%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
   checkpoints, eager debugging, eager/autograd `einsum` with ellipsis and
@@ -258,7 +264,8 @@ Current checked progress:
   `matmul -> add -> relu/gelu`, Conv2d+ReLU, MLP,
   reduced MLP, classifier log-softmax, classifier softmax-reduction, transformer FFN,
   normalized transformer classifier, and token-head Session paths,
-  `torch.compile.compile(lazyGraph)` and `lazyGraph.compile()` Program construction through Node/Bun
+  `lazyGraph.compile()` and compatibility `torch.compile.compile(lazyGraph)`
+  Program construction paths through Node/Bun
   adapters, eval-mode `BatchNorm1d` lowering through a derived native affine
   Program while training-mode BatchNorm remains honestly stateful/eager,
   native Program lowering for rank-2 `diagonal`, rank-1/rank-2 PyTorch-style
@@ -271,6 +278,13 @@ Current checked progress:
   compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
   compile hooks exist.
+
+PyTorch remains an important comparison target and useful compatibility
+vocabulary, but it is not the identity of the library. The primary product
+surface is zgml: `Tensor`, `nn`, `F`, `loss`, `optim`, `train`, lazy graphs,
+compiled Programs, Sessions, and model-source helpers. Any `torch` namespace
+should be treated as a compatibility alias/lane and should not own roadmap
+language, benchmark names, or the default mental model.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS

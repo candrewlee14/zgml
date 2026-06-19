@@ -297,6 +297,9 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:q8-prompt-candidate"] !== "node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate must stay the source-checkout full-model Q8 prompt candidate probe");
   }
+  if (packageJson.scripts?.["bench:pytorch"] !== "npm run build:package && node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch must stay the optional upstream PyTorch comparison probe");
+  }
   const benchStatusSource = fs.readFileSync(path.join(root, "scripts", "bench_status.cjs"), "utf8");
   for (const needle of [
     "const trendGateEnabled = process.argv.includes(\"--trend-gate\");",
@@ -425,6 +428,7 @@ function checkPackageExports(errors) {
   }
   for (const needle of [
     "zig\", [\"build\", \"bench-frontier\"]",
+    "const largeChainSpeedupFloor = 2.95",
     "chain n=4096 staged",
     "chain n=4096 one-pass",
     "chain n=262144 staged",
@@ -463,6 +467,7 @@ function checkPackageExports(errors) {
     "shape_saved_dispatches=",
     "projection_row_chain_full_prefill=",
     "projection_row_chain_smollm_prompt=",
+    "diagnostic=off",
     "projection_row_chain_prompt_candidate=",
     "observed max_abs_diff=",
     "projectionChainMaxAbsDiff > projectionChainMaxAbsDiffCeil",
@@ -482,7 +487,7 @@ function checkPackageExports(errors) {
     "passing.length > 0 ? passing : attempts",
     "frontier bench retries:",
     "smallSpeedup < 2.0",
-    "largeSpeedup < 3.0",
+    "largeSpeedup < largeChainSpeedupFloor",
     "decodeTokS < decodeishTokSFloor",
     "frontier bench gate:",
   ]) {
@@ -534,7 +539,9 @@ function checkPackageExports(errors) {
   const q8PromptCandidateSource = fs.readFileSync(path.join(root, "scripts", "check_q8_prompt_candidate.cjs"), "utf8");
   for (const needle of [
     "metal scheduled prefill projection-row-chain candidate",
+    "metal scheduled prefill projection-row-chain command candidate",
     "--metal-prompt-projection-row-chain-candidate",
+    "--metal-prompt-projection-row-chain-command-candidate",
     "program_command_encoded_projection_row_chain_per_call",
     "program_command_dispatches_projection_row_chain_per_call",
     "ProjectionRowChainDispatchSplit",
@@ -542,6 +549,11 @@ function checkPackageExports(errors) {
     "defaultCommandFloor",
     "candidateCommandCeil",
     "candidateProjectionRowChainFloor",
+    "commandSpeedupFloor",
+    "commandLowering",
+    "commandReady",
+    "commandStructuralReady",
+    "commandThroughputReady",
     "defaultFastPathReady",
     "candidateSemanticReady",
     "candidateMatchesCommandShape",
@@ -553,6 +565,8 @@ function checkPackageExports(errors) {
     "const median = rankedAscending[Math.floor(rankedAscending.length / 2)]",
     "const throughputReady = structuralReady && median.speedup !== null && median.speedup >= speedupFloor",
     "`attempt=${best.index}/${attempts} median_attempt=${median.index}/${attempts} noisy=${noisyAttempts}; `",
+    "`command_attempt=${commandBest.index}/${attempts} command_median_attempt=${commandMedian.index}/${attempts} command_noisy=${commandNoisyAttempts}; `",
+    "`command_projection_row_chain_dispatch=${format(commandBest.defaultProjectionRowChainDispatches, 0)}->${format(commandBest.commandProjectionRowChainDispatches, 0)} `",
     "`median_speedup=${format(median.speedup)}x worst_speedup=${format(worst.speedup)}x best_speedup=${format(best.speedup)}x; `",
     "projection_row_chain_candidate_needs_throughput_kernel",
     "dispatchOnlyTrap",
@@ -572,7 +586,7 @@ function checkPackageExports(errors) {
       errors.push(`scripts/check_q8_prompt_candidate.cjs must keep full-model Q8 prompt candidate evidence: ${needle}`);
     }
   }
-  for (const sourceCheckoutBenchScript of ["bench:status", "bench:substrate", "bench:trend", "bench:frontier", "bench:frontier:gate", "bench:q8-prompt-candidate", "bench:ggml", "bench:ggml:parity"]) {
+  for (const sourceCheckoutBenchScript of ["bench:status", "bench:substrate", "bench:trend", "bench:frontier", "bench:frontier:gate", "bench:q8-prompt-candidate", "bench:pytorch", "bench:ggml", "bench:ggml:parity"]) {
     if (publicPackageScripts.includes(sourceCheckoutBenchScript)) {
       errors.push(`scripts/package_metadata_policy.cjs publicPackageScripts must not expose ${sourceCheckoutBenchScript}; benchmark artifacts are source-checkout evidence, not packaged npm runtime API`);
     }

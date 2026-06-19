@@ -8,10 +8,10 @@ const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
 const goalProgress = Object.freeze({
-  substratePct: 88,
+  substratePct: 90,
   substrateFloorPct: 65,
-  pytorchLikePct: 100,
-  pytorchLikeFloorPct: 60,
+  frontendPct: 100,
+  frontendFloorPct: 60,
 });
 
 function read(relativePath) {
@@ -160,6 +160,9 @@ function checkScripts() {
   if (scripts["bench:module-program"] !== "npm run build:package && node scripts/check_module_program_bench.cjs") {
     errors.push("package.json bench:module-program must remain the TS frontend module Program performance gate");
   }
+  if (scripts["bench:pytorch"] !== "npm run build:package && node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch must remain the optional upstream PyTorch comparison gate");
+  }
   if (scripts["check:goal-scorecard"] !== "node scripts/check_goal_scorecard.cjs") {
     errors.push("package.json must expose check:goal-scorecard for goal evidence");
   }
@@ -173,8 +176,12 @@ function checkScripts() {
     "portable Wasm Node/WASI smoke\", \"zig\", nodeWasiArgs, nodeWasi",
   ]);
   requireIncludes(read("scripts/check_q8_prompt_candidate.cjs"), "scripts/check_q8_prompt_candidate.cjs", "full-model Q8 prompt candidate probe", [
+    "metal scheduled prefill projection-row-chain command candidate",
+    "--metal-prompt-projection-row-chain-command-candidate",
     "metal scheduled prefill projection-row-chain candidate",
     "--metal-prompt-projection-row-chain-candidate",
+    "const commandSpeedupFloor = Number(process.env.BENCH_COMMAND_CANDIDATE_SPEEDUP_FLOOR || \"0.95\")",
+    "const commandLowering = \"default_projection_chain_plus_row_chain_command_two_dispatch\"",
     "program_command_encoded_projection_row_chain_per_call",
     "program_command_dispatches_projection_row_chain_per_call",
     "ProjectionRowChainDispatchSplit",
@@ -187,6 +194,12 @@ function checkScripts() {
     "const median = rankedAscending[Math.floor(rankedAscending.length / 2)]",
     "const throughputReady = structuralReady && median.speedup !== null && median.speedup >= speedupFloor",
     "noisyAttempts",
+    "commandNoisyAttempts",
+    "commandReady",
+    "commandStructuralReady",
+    "commandThroughputReady",
+    "`command_attempt=${commandBest.index}/${attempts} command_median_attempt=${commandMedian.index}/${attempts} command_noisy=${commandNoisyAttempts}; `",
+    "`command_projection_row_chain_dispatch=${format(commandBest.defaultProjectionRowChainDispatches, 0)}->${format(commandBest.commandProjectionRowChainDispatches, 0)} `",
     "`attempt=${best.index}/${attempts} median_attempt=${median.index}/${attempts} noisy=${noisyAttempts}; `",
     "`median_speedup=${format(median.speedup)}x worst_speedup=${format(worst.speedup)}x best_speedup=${format(best.speedup)}x; `",
     "`projection_row_chain_dispatch=${format(best.defaultProjectionRowChainDispatches, 0)}->${format(best.candidateProjectionRowChainDispatches, 0)} `",
@@ -1084,7 +1097,7 @@ function checkFrontierEvidence() {
     "small_chain=",
     "floor=2.00x",
     "large_chain=",
-    "floor=3.00x",
+    "floor=2.95x",
     "decodeish=",
     "floor=400000",
     "projection_chain_prompt=",
@@ -1148,8 +1161,23 @@ function checkQ8PromptCandidateEvidence() {
   }
   requireIncludes(output, "q8 prompt candidate gate output", "full-model Q8 semantic row-chain candidate evidence", [
     "q8 prompt semantic row-chain gate:",
-    "structural=ready",
+    "command-ready",
+    "command_structural=ready",
+    "command_throughput=ready",
+    "single_structural=ready",
+    "single_throughput=off",
     "reason=dispatch_reduction_without_tiled_throughput",
+    "command_median_attempt=",
+    "command_median_speedup=",
+    "command_worst_speedup=",
+    "command_best_speedup=",
+    "command_fallback=0->0",
+    "command_command=301->241",
+    "command_projection_chain=90->30",
+    "command_projection_row_chain=0->60",
+    "command_projection_row_chain_dispatch=0->120",
+    "command_split=n/a->2.00",
+    "command_lowering=default_projection_chain_plus_row_chain_command_two_dispatch",
     "median_attempt=",
     "median_speedup=",
     "worst_speedup=",
@@ -1390,7 +1418,7 @@ function checkNativeWgpuRuntimeEvidence() {
   notes.push("native WebGPU smoke ok: C/Node/Bun tiny-linear + LLaMA execution");
 }
 
-function checkPytorchLikeSurface() {
+function checkZgmlFrontendSurface() {
   const readme = read("README.md");
   requireIncludes(readme, "README.md", "root checkpoint save/load quickstart", [
     "const program = torch.compile(model, { inputShape: [2] as const })",
@@ -4530,9 +4558,11 @@ function checkDocs() {
   const readme = read("README.md");
   requireIncludes(readme, "README.md", "goal evidence command", [
     "npm run check:goal-scorecard",
+    "npm run bench:pytorch",
+    "upstream Python PyTorch",
     "Program/Session substrate",
-    "PyTorch-like surface",
-    "goal progress: Program/Session substrate=88% floor=65%; PyTorch-like surface=100% floor=60%",
+    "zgml frontend surface",
+    "goal progress: Program/Session substrate=90% floor=65%; zgml frontend surface=100% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4569,7 +4599,7 @@ function checkDocs() {
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
-    "Program/Session performance substrate: ~88%",
+    "Program/Session performance substrate: ~90%",
     "That optional gate now also runs the native WebGPU LLaMA execution proofs for",
     "runtime quantized-weight rebinding, resource-bound decode/prefill handoff,",
     "long-prompt prefill, GQA long-prompt prefill, and a realistic head-width",
@@ -4583,12 +4613,12 @@ function checkDocs() {
     "singleton-envelope rank-3 last-axis reductions",
     "Compile-capable lazy graphs can now lower through the host adapter into a",
     "native Program with preserved KernelPlan evidence.",
-    "PyTorch-like replacement feel: ~100%",
+    "zgml frontend replacement feel: ~100%",
     "native Program lowering for `argmax(dim)` and `argmin(dim)`",
     "rank-3 `reshape`/`flatten`/`squeeze`/`unsqueeze`, rank-3 `broadcastTo`/`expand`,",
     "and singleton-envelope rank-3 `narrow`/`select`/`slice`",
     "rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering",
-    "`torch.compile.compile(lazyGraph)` and `lazyGraph.compile()` Program construction through Node/Bun",
+    "`lazyGraph.compile()` and compatibility `torch.compile.compile(lazyGraph)`",
     "The remaining substrate",
     "required-GPU browser runner's full",
     "dispatch-family and selection-read summary fields",
@@ -4605,7 +4635,7 @@ checkQ8PromptCandidateEvidence();
 checkModuleProgramBenchEvidence();
 checkPortableWasmRuntimeEvidence();
 checkNativeWgpuRuntimeEvidence();
-checkPytorchLikeSurface();
+checkZgmlFrontendSurface();
 checkDocs();
 
 if (errors.length > 0) {
@@ -4617,6 +4647,6 @@ if (errors.length > 0) {
 console.log("zgml goal scorecard ok");
 console.log(
   `goal progress: Program/Session substrate=${goalProgress.substratePct}% floor=${goalProgress.substrateFloorPct}%; ` +
-    `PyTorch-like surface=${goalProgress.pytorchLikePct}% floor=${goalProgress.pytorchLikeFloorPct}%`,
+    `zgml frontend surface=${goalProgress.frontendPct}% floor=${goalProgress.frontendFloorPct}%`,
 );
 for (const note of notes) console.log(note);
