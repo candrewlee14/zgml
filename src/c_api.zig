@@ -5166,15 +5166,32 @@ export fn zgml_session_step_direct(session: ?*zgml_session, input_ptr: ?[*]const
     const input = input_ptr orelse return status(.invalid_argument);
     const output = output_ptr orelse return status(.invalid_argument);
     if (input_len != linear.input_len or output_len < linear.output_len) return status(.shape_mismatch);
-    if (input != linear.input_buf.ptr) {
-        @memcpy(linear.input_buf[0..linear.input_len], input[0..linear.input_len]);
+    if (linear.session.bindings.step_inputs.len != 1 or linear.session.bindings.step_outputs.len != 1) return status(.unsupported);
+
+    const original_input = linear.session.bindings.step_inputs[0];
+    const original_output = linear.session.bindings.step_outputs[0];
+    defer {
+        linear.session.bindings.step_inputs[0] = original_input;
+        linear.session.bindings.step_outputs[0] = original_output;
     }
 
+    const input_bytes = std.math.mul(usize, input_len, @sizeOf(f32)) catch return status(.shape_mismatch);
+    const output_bytes = std.math.mul(usize, linear.output_len, @sizeOf(f32)) catch return status(.shape_mismatch);
+    linear.session.bindings.step_inputs[0] = backend_mod.ProgramIO.host(
+        original_input.buf_idx,
+        original_input.offset,
+        @ptrCast(@constCast(input)),
+        std.math.cast(u32, input_bytes) orelse return status(.shape_mismatch),
+    );
+    linear.session.bindings.step_outputs[0] = backend_mod.ProgramIO.host(
+        original_output.buf_idx,
+        original_output.offset,
+        @ptrCast(output),
+        std.math.cast(u32, output_bytes) orelse return status(.shape_mismatch),
+    );
+
     const window = backend_mod.RuntimeWindow.init(0, 0) catch return status(.shape_mismatch);
-    p.program.executeStep(&linear.session, .{ .window = window }) catch return status(.shape_mismatch);
-    if (output != linear.output_buf.ptr) {
-        @memcpy(output[0..linear.output_len], linear.output_buf[0..linear.output_len]);
-    }
+    p.program.executeStep(&linear.session, .{ .window = window, .dynamic_io = true }) catch |err| return compileErrorStatus(err);
     return status(.ok);
 }
 
