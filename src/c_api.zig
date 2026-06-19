@@ -14,6 +14,7 @@ const profile_mod = @import("profile.zig");
 const safetensors_mod = @import("safetensors.zig");
 const stencil_mod = @import("backend/stencil.zig");
 const tensor_mod = @import("tensor.zig");
+const forward = @import("tensor/forward.zig");
 const build_options = @import("zgml_options");
 const wgpu_mod = if (build_options.use_wgpu) @import("backend/wgpu.zig") else struct {};
 
@@ -804,6 +805,12 @@ const ModuleParamBinding = struct {
     len: usize,
 };
 
+const DirectLinearModule = struct {
+    in_features: usize,
+    out_features: usize,
+    has_bias: bool,
+};
+
 const ModuleProgramHandle = struct {
     input_len: usize,
     output_len: usize,
@@ -811,6 +818,7 @@ const ModuleProgramHandle = struct {
     bias_len: usize,
     backend: u32,
     execution_supported: bool,
+    direct_linear: ?DirectLinearModule = null,
     graph: GraphF32,
     program: DeviceF32.Program,
     input: *TensorF32,
@@ -2466,6 +2474,17 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
     };
     errdefer program.deinit();
     const inspection = program.inspect();
+    const direct_linear: ?DirectLinearModule = if (ops.len == 1 and
+        ops[0].kind == module_op_linear and
+        ops[0].activation == 0 and
+        (ops[0].flags & ~module_flag_bias) == 0)
+        .{
+            .in_features = ops[0].a,
+            .out_features = ops[0].b,
+            .has_bias = (ops[0].flags & module_flag_bias) != 0,
+        }
+    else
+        null;
 
     return .{
         .input_len = input.nElems(),
@@ -2474,6 +2493,7 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
         .bias_len = bias_len,
         .backend = backend_id,
         .execution_supported = inspection.execution_supported,
+        .direct_linear = direct_linear,
         .graph = graph,
         .program = program,
         .input = input,
@@ -5153,6 +5173,92 @@ export fn zgml_session_step(session: ?*zgml_session, desc_ptr: ?*const zgml_step
     return status(.ok);
 }
 
+const DirectLinearStepShape = struct {
+    M: usize,
+    N: usize,
+    K: usize,
+    has_bias: bool,
+};
+
+fn directLinearShapeForSession(s: *SessionHandle, linear: *const TinyLinearSessionHandle) ?DirectLinearStepShape {
+    return switch (s.data) {
+        .tiny_linear => blk: {
+            const expected_weights = std.math.mul(usize, linear.input_len, linear.output_len) catch break :blk null;
+            if (linear.weights_buf.len != expected_weights) break :blk null;
+            if (linear.bias_buf.len != linear.output_len) break :blk null;
+            break :blk .{
+                .M = 1,
+                .N = linear.output_len,
+                .K = linear.input_len,
+                .has_bias = true,
+            };
+        },
+        .module => blk: {
+            const module_program = switch (linear.program.data) {
+                .module => |*module| module,
+                else => break :blk null,
+            };
+            const direct = module_program.direct_linear orelse break :blk null;
+            if (direct.in_features == 0 or direct.out_features == 0) break :blk null;
+            const expected_weights = std.math.mul(usize, direct.in_features, direct.out_features) catch break :blk null;
+            if (linear.weights_buf.len != expected_weights) break :blk null;
+            if (direct.has_bias and linear.bias_buf.len != direct.out_features) break :blk null;
+            if (!direct.has_bias and linear.bias_buf.len != 0) break :blk null;
+            if (linear.input_len % direct.in_features != 0) break :blk null;
+            const M = linear.input_len / direct.in_features;
+            const expected_output = std.math.mul(usize, M, direct.out_features) catch break :blk null;
+            if (linear.output_len != expected_output) break :blk null;
+            break :blk .{
+                .M = M,
+                .N = direct.out_features,
+                .K = direct.in_features,
+                .has_bias = direct.has_bias,
+            };
+        },
+        else => null,
+    };
+}
+
+fn addDenseBiasRows(dst: []f32, bias: []const f32, M: usize, N: usize) void {
+    const VecT = @Vector(8, f32);
+    for (0..M) |row| {
+        const dst_row = dst[row * N ..][0..N];
+        var i: usize = 0;
+        while (i + 8 <= N) : (i += 8) {
+            const a: VecT = dst_row[i..][0..8].*;
+            const b: VecT = bias[i..][0..8].*;
+            dst_row[i..][0..8].* = a + b;
+        }
+        while (i < N) : (i += 1) {
+            dst_row[i] += bias[i];
+        }
+    }
+}
+
+fn executeDirectLinearStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32) void {
+    const input_slice = input[0..linear.input_len];
+    const output_slice = output[0..linear.output_len];
+    forward.blasSgemm(
+        output_slice,
+        input_slice,
+        linear.weights_buf,
+        shape.M,
+        shape.N,
+        shape.K,
+        shape.K,
+        1,
+        shape.N,
+        1,
+        0,
+        0,
+        0,
+        shape.N,
+    );
+    if (shape.has_bias) {
+        addDenseBiasRows(output_slice, linear.bias_buf, shape.M, shape.N);
+    }
+}
+
 export fn zgml_session_step_direct(session: ?*zgml_session, input_ptr: ?[*]const f32, input_len: usize, output_ptr: ?[*]f32, output_len: usize) c_int {
     const s = sessionHandle(session) orelse return status(.invalid_argument);
     const linear = switch (s.data) {
@@ -5167,6 +5273,13 @@ export fn zgml_session_step_direct(session: ?*zgml_session, input_ptr: ?[*]const
     const output = output_ptr orelse return status(.invalid_argument);
     if (input_len != linear.input_len or output_len < linear.output_len) return status(.shape_mismatch);
     if (linear.session.bindings.step_inputs.len != 1 or linear.session.bindings.step_outputs.len != 1) return status(.unsupported);
+    if (p.backend == backend_cpu) {
+        if (directLinearShapeForSession(s, linear)) |shape| {
+            executeDirectLinearStep(linear, shape, input, output);
+            cpu_mod.recordDirectLinearRuntimeProfile(linear.session.program_handle, linear.session.runtime_handle);
+            return status(.ok);
+        }
+    }
 
     const original_input = linear.session.bindings.step_inputs[0];
     const original_output = linear.session.bindings.step_outputs[0];

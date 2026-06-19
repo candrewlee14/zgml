@@ -370,6 +370,16 @@ fn addRuntimeBindingsProfileTo(_: *anyopaque, _: backend_mod.Backend.CompiledHan
     dest.add(runtimeBindings(runtime).runtime_profile);
 }
 
+pub fn recordDirectLinearRuntimeProfile(handle: backend_mod.Backend.CompiledHandle, runtime_handle: backend_mod.Backend.RuntimeHandle) void {
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    const runtime = runtimeBindings(runtime_handle);
+    const window = backend_mod.RuntimeWindow.init(0, 0) catch return;
+    _ = compiled.patchRuntimeWindow(runtime, window);
+    runtime.runtime_profile.backend_op_count +%= @intCast(runtime.program_stencil.ops.len);
+    runtime.runtime_profile.backend_dispatch_count +%= @intCast(compiled.execution_tape.commandLen());
+    runtime.runtime_profile.call_count +%= 1;
+}
+
 const vtable = backend_mod.Backend.VTable{
     .dense_matmul_f32 = denseMatMulF32,
     .compile_program = compileProgram,
