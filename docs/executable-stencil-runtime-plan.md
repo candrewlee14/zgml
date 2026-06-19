@@ -217,7 +217,7 @@ Current checked progress:
   direct backend reduce-min command on reference CPU, Metal, and WGPU instead
   of exposing or executing its old `neg -> max -> neg` decomposition.
   singleton-envelope rank-3 last-axis reductions now also compile and execute
-  as native Program kernels for `sum`/`mean`/`max`/`min`/`argmax`/`argmin`,
+  as native Program kernels for `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin`,
   while non-envelope rank-3 reductions remain honestly unsupported instead of
   crossing the C ABI with a shape the native Program compiler rejects. The
   optional native WebGPU validation gate now also runs LLaMA execution proofs
@@ -248,7 +248,7 @@ Current checked progress:
   rank-3 `reshape`/`flatten`/`squeeze`/`unsqueeze`, rank-3 `broadcastTo`/`expand`,
   and singleton-envelope rank-3 `narrow`/`select`/`slice`
   lowering through the native module Program ABI,
-  rank-3 last-axis `sum`/`mean`/`max`/`min`/`argmax`/`argmin` Program lowering, and
+  rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering, and
   compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
   compile hooks exist.
@@ -1167,7 +1167,7 @@ Current frontend slice:
   capabilities.
   JS/TS standalone and Sequential native module Programs now cover Linear,
   supported activations, small unary elementwise modules, dim-aware rank-2
-  Softmax/LogSoftmax, dim-aware rank-1/rank-2 `sum`/`mean`/`max` reductions,
+  Softmax/LogSoftmax, dim-aware rank-1/rank-2 `sum`/`mean`/`prod`/`max` reductions,
   eager/trace-visible `min`, `argmax`, and `argmin` reductions,
   LayerNorm, and RMSNorm. Batch-axis Softmax/LogSoftmax and batch-axis rank-2
   reductions lower through the same materialized transpose movement path as

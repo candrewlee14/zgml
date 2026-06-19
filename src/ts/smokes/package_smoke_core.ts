@@ -3167,6 +3167,7 @@ function expectReductionProgramEvidence(adapter: Record<string, any>, label: str
   const compiledCases = [
     { name: "sum-last", module: adapter.nn.sum(-1), expectedShape: "2x1", expectedKernels: "sum" },
     { name: "mean-batch", module: adapter.nn.mean(0), expectedShape: "1x3", expectedKernels: "transpose|mean|transpose" },
+    { name: "prod-last", module: adapter.nn.prod(-1), expectedShape: "2x1", expectedKernels: "prod" },
     { name: "max-last", module: adapter.nn.max(-1), expectedShape: "2x1", expectedKernels: "max" },
     { name: "min-last", module: adapter.nn.min(-1), expectedShape: "2x1", expectedKernels: "min" },
     { name: "min-batch", module: adapter.nn.min(0), expectedShape: "1x3", expectedKernels: "transpose|min|transpose" },
@@ -3176,6 +3177,7 @@ function expectReductionProgramEvidence(adapter: Record<string, any>, label: str
   const rank3CompiledCases = [
     { name: "sum-rank3-last", module: adapter.nn.sum(-1), expectedShape: "1x2x1", expectedKernels: "sum" },
     { name: "mean-rank3-last", module: adapter.nn.mean(-1), expectedShape: "1x2x1", expectedKernels: "mean" },
+    { name: "prod-rank3-last", module: adapter.nn.prod(-1), expectedShape: "1x2x1", expectedKernels: "prod" },
     { name: "max-rank3-last", module: adapter.nn.max(-1), expectedShape: "1x2x1", expectedKernels: "max" },
     { name: "min-rank3-last", module: adapter.nn.min(-1), expectedShape: "1x2x1", expectedKernels: "min" },
     { name: "argmax-rank3-last", module: adapter.nn.argmax(-1), expectedShape: "1x2x1", expectedKernels: "argmax" },
@@ -4996,6 +4998,9 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   const minReduction = adapter.nn.min(0).forward(adapter.tensor([1, 3, 2, 4, 0, -1], [2, 3]));
   if (!(minReduction instanceof adapter.Tensor)) throw new Error(`${label} expected nn.min to return a Tensor`);
   expectClose(minReduction.data, [1, 0, -1], `${label} nn.min dim0`);
+  const prodReduction = adapter.nn.prod(1).forward(adapter.tensor([1, 3, 2, 4, 0, -1], [2, 3]));
+  if (!(prodReduction instanceof adapter.Tensor)) throw new Error(`${label} expected nn.prod to return a Tensor`);
+  expectClose(prodReduction.data, [6, 0], `${label} nn.prod dim1`);
   const argmaxReduction = adapter.nn.argmax(1).forward(adapter.tensor([1, 3, 2, 4, 0, -1], [2, 3]));
   if (!(argmaxReduction instanceof adapter.Tensor)) throw new Error(`${label} expected nn.argmax to return a Tensor`);
   expectClose(argmaxReduction.data, [1, 0], `${label} nn.argmax dim1`);

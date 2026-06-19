@@ -187,6 +187,10 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn sumAll(self: *Self) *Self {
             return sum(self, &.{1});
         }
+        /// Product-reduce all elements into a scalar.
+        pub fn prodAll(self: *Self) *Self {
+            return prod(self, &.{1});
+        }
         /// Max-reduce all elements into a scalar.
         pub fn maxAll(self: *Self) *Self {
             return max(self, &.{1});
@@ -212,6 +216,19 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const is_node: bool = self.grad != null;
             const res = Self.init(alloc, ne) catch unreachable;
             res.op = .sum;
+            res.grad = if (is_node) copyTensorShape(res) else null;
+            res.src0 = self;
+            return res;
+        }
+
+        /// Product-reduce elements into the given target shape.
+        pub fn prod(self: *Self, ne: []const usize) *Self {
+            const alloc = a(self);
+            assert(ne.len <= max_dims);
+            assert(self.canSumToShape(ne));
+            const is_node: bool = self.grad != null;
+            const res = Self.init(alloc, ne) catch unreachable;
+            res.op = .prod;
             res.grad = if (is_node) copyTensorShape(res) else null;
             res.src0 = self;
             return res;
@@ -276,6 +293,12 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn sumDim(self: *Self, dim: usize) *Self {
             const out_ne = reduceShapeForDim(self, dim);
             return self.sum(out_ne[0..self.n_dims]);
+        }
+
+        /// Product-reduce one dimension while preserving rank.
+        pub fn prodDim(self: *Self, dim: usize) *Self {
+            const out_ne = reduceShapeForDim(self, dim);
+            return self.prod(out_ne[0..self.n_dims]);
         }
 
         /// Max-reduce one dimension while preserving rank.
@@ -565,9 +588,9 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn reshape(self: *Self, ne: []const usize) *Self {
             const target = if (self.isContiguous()) self else aux(self.contiguous());
             const ne_prod = blk: {
-                var prod: usize = 1;
-                for (ne) |item| prod *= item;
-                break :blk prod;
+                var product: usize = 1;
+                for (ne) |item| product *= item;
+                break :blk product;
             };
             assert(target.nElems() == ne_prod);
             var strides: [max_dims]usize = [_]usize{0} ** max_dims;
@@ -825,8 +848,8 @@ pub fn Api(comptime Self: type, comptime T: type) type {
                 0,
             ));
 
-            const prod = aux(windows_expanded.mul(kernel_view));
-            return prod.sum(&.{ out_w, out_h, 1, 1, 1, c_out, batch }).reshape(&.{ out_w, out_h, c_out, batch });
+            const product = aux(windows_expanded.mul(kernel_view));
+            return product.sum(&.{ out_w, out_h, 1, 1, 1, c_out, batch }).reshape(&.{ out_w, out_h, c_out, batch });
         }
 
         /// 2×2 max pooling with stride 2. Composite op.

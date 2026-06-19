@@ -238,7 +238,7 @@ function isLogSoftmaxLayer(layer: AnyRecord, ctor: Function | undefined): boolea
 
 function isReductionLayer(layer: AnyRecord, ctor: Function | undefined): boolean {
   if (typeof ctor === "function" && layer instanceof ctor) return true;
-  return typeof layer?.kind === "string" && ["sum", "mean", "max", "min", "argmax", "argmin"].includes(layer.kind) && "dim" in layer;
+  return typeof layer?.kind === "string" && ["sum", "mean", "prod", "max", "min", "argmax", "argmin"].includes(layer.kind) && "dim" in layer;
 }
 
 function isDropoutLayer(layer: AnyRecord, ctor: Function | undefined): boolean {

@@ -7079,6 +7079,7 @@ class ParameterlessModuleSmokeTensor {
   logSoftmaxDim(dim) { return { op: "logSoftmaxDim", dim }; }
   sumDim(dim) { return { op: "sumDim", dim }; }
   meanDim(dim) { return { op: "meanDim", dim }; }
+  prodDim(dim) { return { op: "prodDim", dim }; }
   maxDim(dim) { return { op: "maxDim", dim }; }
   minDim(dim) { return { op: "minDim", dim }; }
   argmaxDim(dim) { return { op: "argmaxDim", dim }; }
@@ -7192,6 +7193,7 @@ expectThrow(
 const sumModule = new ReductionModule("sum", 0);
 expectSame(sumModule.forward(new ParameterlessModuleSmokeTensor(Float32Array.of(1, 2), [2])), { op: "sumDim", dim: 0 }, "nn reduction tensor forward");
 expectSame(new ReductionModule("mean", -1).forward([1, 2]), { op: "meanDim", dim: -1 }, "nn reduction host forward");
+expectSame(new ReductionModule("prod", 1).forward(new ParameterlessModuleSmokeTensor(Float32Array.of(1, 2), [1, 2])), { op: "prodDim", dim: 1 }, "nn reduction prod forward");
 expectSame(new ReductionModule("max", 1).forward(new ParameterlessModuleSmokeTensor(Float32Array.of(1, 2), [1, 2])), { op: "maxDim", dim: 1 }, "nn reduction max forward");
 expectSame(new ReductionModule("min", 0).forward(new ParameterlessModuleSmokeTensor(Float32Array.of(1, 2), [1, 2])), { op: "minDim", dim: 0 }, "nn reduction min forward");
 expectSame(new ReductionModule("argmax", 0).forward(new ParameterlessModuleSmokeTensor(Float32Array.of(1, 2), [1, 2])), { op: "argmaxDim", dim: 0 }, "nn reduction argmax forward");

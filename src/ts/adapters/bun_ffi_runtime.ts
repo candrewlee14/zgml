@@ -2141,7 +2141,7 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
 export const ActivationModule = adapterFrontendModuleSurface.ActivationModule as unknown as new(kind: ActivationModule["kind"]) => ActivationModule;
 export const SoftmaxModule = adapterFrontendModuleSurface.SoftmaxModule as new(dim?: number) => SoftmaxModule;
 export const LogSoftmaxModule = adapterFrontendModuleSurface.LogSoftmaxModule as new(dim?: number) => LogSoftmaxModule;
-export const ReductionModule = adapterFrontendModuleSurface.ReductionModule as new(kind: "sum" | "mean" | "max" | "min" | "argmax" | "argmin", dim?: number) => ReductionModule;
+export const ReductionModule = adapterFrontendModuleSurface.ReductionModule as new(kind: "sum" | "mean" | "prod" | "max" | "min" | "argmax" | "argmin", dim?: number) => ReductionModule;
 export const DropoutModule = adapterFrontendModuleSurface.DropoutModule as unknown as new(p?: number, config?: NnDropoutConfig) => DropoutModule;
 export const LinearModule = adapterFrontendModuleSurface.LinearModule as unknown as {
   new(inFeatures: number, outFeatures: number, config?: NnLinearConfig): LinearModule;
@@ -2205,7 +2205,7 @@ export interface FeatureNormModule extends ModuleMode {
 }
 
 export interface ReductionModule extends ModuleMode {
-  readonly kind: "sum" | "mean" | "max";
+  readonly kind: "sum" | "mean" | "prod" | "max" | "min" | "argmax" | "argmin";
   readonly dim: number;
   forward(inputValues: TensorLike): Tensor;
   parameters(): NnParameter[];

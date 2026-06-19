@@ -66,6 +66,7 @@ pub const Op = enum {
     min,
     argmax,
     argmin,
+    prod,
 
     /// True if this op is elementwise (shape-preserving) and can participate in fusion.
     pub fn isFusible(self: Self) bool {
@@ -106,6 +107,7 @@ pub const Op = enum {
             .log => "log(x)",
             .gelu => "gelu(x)",
             .sum => "Σx",
+            .prod => "prod(x)",
             .max => "max(x)",
             .min => "min(x)",
             .argmax => "argmax(x)",

@@ -145,7 +145,7 @@ pub const Capabilities = struct {
             .gather_rows => self.gather_rows,
             .slice_assign => self.slice_assign,
             .rope => self.rope,
-            .reduce => |r| self.reduce and (r.op == .sum or r.op == .max or r.op == .min or r.op == .argmax or r.op == .argmin),
+            .reduce => |r| self.reduce and (r.op == .sum or r.op == .prod or r.op == .max or r.op == .min or r.op == .argmax or r.op == .argmin),
             .attention => |att| self.attention.supports(att.seq_kv, att.d_head),
             .fused_elementwise => |fe| {
                 if (!self.fused_elementwise) return false;

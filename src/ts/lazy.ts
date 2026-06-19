@@ -1452,7 +1452,7 @@ export function apply<const Target extends LazyModuleTarget, const Shape extends
       out = softmax(out, Number(layer.dim ?? -1));
     } else if (kind === "logSoftmax") {
       out = logSoftmax(out, Number(layer.dim ?? -1));
-    } else if (kind === "sum" || kind === "mean" || kind === "max" || kind === "min" || kind === "argmax" || kind === "argmin") {
+    } else if (kind === "sum" || kind === "mean" || kind === "prod" || kind === "max" || kind === "min" || kind === "argmax" || kind === "argmin") {
       out = reduction(out, kind, Number(layer.dim ?? -1));
     } else {
       const activationResult = applyActivationModule(out, layer);

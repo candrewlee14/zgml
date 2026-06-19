@@ -167,6 +167,7 @@ function normalizedTraceOpAttrs(op: AnyRecord) {
     case "logSoftmax":
     case "sum":
     case "mean":
+    case "prod":
     case "max":
     case "min":
     case "argmax":

@@ -28,6 +28,7 @@ const floors = Object.freeze({
   shapeLinearSpeedup: 1.2,
   rank3SumReductionSpeedup: 1.2,
   rank3MeanReductionSpeedup: 1.2,
+  rank3ProdReductionSpeedup: 1.2,
   rank3MaxReductionSpeedup: 1.2,
   rank3MinReductionSpeedup: 1.2,
   rank3ArgmaxReductionSpeedup: 1.2,
@@ -68,6 +69,7 @@ const expectedKeys = Object.freeze([
   "shape_linear",
   "rank3_sum_reduction",
   "rank3_mean_reduction",
+  "rank3_prod_reduction",
   "rank3_max_reduction",
   "rank3_min_reduction",
   "rank3_argmax_reduction",
@@ -100,6 +102,10 @@ function msNow() {
 
 function values(length, scale) {
   return Array.from({ length }, (_, index) => ((index % 17) - 8) / scale);
+}
+
+function productValues(length) {
+  return Array.from({ length }, (_, index) => 1 + ((index % 5) - 2) * 0.001);
 }
 
 function maxAbsDiff(a, b) {
@@ -1045,6 +1051,41 @@ const benchSpecs = [
       },
     },
     summary: (result) => `rank3_mean_reduction=${result.speedup.toFixed(2)}x floor=${floors.rank3MeanReductionSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=1 dispatch=1 kernels=mean batched=rank3-last-axis hot=allocation-free`,
+  },
+  {
+    key: "rank3_prod_reduction",
+    label: "rank3-prod-reduction",
+    floor: floors.rank3ProdReductionSpeedup,
+    inputShape: [1, 512, 128],
+    inputShapeText: "1x512x128",
+    outputShapeText: "1x512x1",
+    inputLen: 512 * 128,
+    outputLen: 512,
+    layerCount: 1,
+    parameterNames: "",
+    input: () => adapter.tensor(productValues(512 * 128), [1, 512, 128]),
+    model: () => adapter.nn.prod(-1),
+    ir: { opCount: 1, parameterCount: 0 },
+    iterations: 120,
+    tolerance: 1e-4,
+    plan: {
+      opCount: 1,
+      dispatchCount: 1,
+      publicOps: 1,
+      description: "single native rank-3 last-axis Product reduction dispatch",
+      check: (plan) => {
+        const op = plan.ops[0];
+        if (
+          op.op !== "prod" ||
+          op.kernel !== "prod" ||
+          op.nativeKernels.join("|") !== "prod" ||
+          op.nativeDispatchCount !== 1
+        ) {
+          throw new Error("rank3-prod-reduction expected native prod kernel plan");
+        }
+      },
+    },
+    summary: (result) => `rank3_prod_reduction=${result.speedup.toFixed(2)}x floor=${floors.rank3ProdReductionSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=1 dispatch=1 kernels=prod batched=rank3-last-axis hot=allocation-free`,
   },
   {
     key: "rank3_max_reduction",

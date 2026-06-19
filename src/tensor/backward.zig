@@ -343,6 +343,10 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
 
                 .scatter_add_picks, .argmax, .argmin => {},
 
+                .prod => {
+                    if (src0_o.?.gradOrNull() != null) @panic("prod backward not implemented");
+                },
+
                 // Slice assign: inference-only, no gradient needed
                 .slice_assign, .slice_assign_rows => {},
 

@@ -184,6 +184,7 @@ const kernelizerRankCheckedOps = new Set([
   "maxPool2d",
   "sum",
   "mean",
+  "prod",
   "max",
   "min",
   "argmax",

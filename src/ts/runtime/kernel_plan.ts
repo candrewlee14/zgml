@@ -530,6 +530,7 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
     }
     case "sum":
     case "mean":
+    case "prod":
     case "max":
     case "min":
     case "argmax":
@@ -543,13 +544,15 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
         ? moduleOpIds.reduceSum
         : op.op === "mean"
           ? moduleOpIds.reduceMean
-          : op.op === "max"
-            ? moduleOpIds.reduceMax
-            : op.op === "min"
-              ? moduleOpIds.reduceMin
-              : op.op === "argmax"
-                ? moduleOpIds.reduceArgmax
-                : moduleOpIds.reduceArgmin;
+          : op.op === "prod"
+            ? moduleOpIds.reduceProd
+            : op.op === "max"
+              ? moduleOpIds.reduceMax
+              : op.op === "min"
+                ? moduleOpIds.reduceMin
+                : op.op === "argmax"
+                  ? moduleOpIds.reduceArgmax
+                  : moduleOpIds.reduceArgmin;
       return { kind, activation: 0, flags: 0, a: nativeAxis, b: 0, c: 0, eps: 0 };
     }
     case "identity":
@@ -789,6 +792,7 @@ function reduceModuleOpKind(op: string): number | null {
   switch (op) {
     case "sum": return moduleOpIds.reduceSum;
     case "mean": return moduleOpIds.reduceMean;
+    case "prod": return moduleOpIds.reduceProd;
     case "max": return moduleOpIds.reduceMax;
     case "min": return moduleOpIds.reduceMin;
     case "argmax": return moduleOpIds.reduceArgmax;
@@ -815,7 +819,7 @@ function reduceDimModuleOpDescs(op: any, attrs: any): readonly NativeModuleOpDes
 
 function moduleOpDescsForIrOp(op: any): readonly NativeModuleOpDesc[] | null {
   const attrs = op.attrs ?? {};
-  if (op.op === "sum" || op.op === "mean" || op.op === "max" || op.op === "min" || op.op === "argmax" || op.op === "argmin") {
+  if (op.op === "sum" || op.op === "mean" || op.op === "prod" || op.op === "max" || op.op === "min" || op.op === "argmax" || op.op === "argmin") {
     const desc = moduleOpDescForIrOp(op);
     if (desc) return [desc];
     return reduceDimModuleOpDescs(op, attrs);
@@ -871,6 +875,7 @@ function kernelNameForIrOp(op: any) {
     case "logSoftmax": return "log-softmax";
     case "sum": return "sum";
     case "mean": return "mean";
+    case "prod": return "prod";
     case "max": return "max";
     case "min": return "min";
     case "argmax": return "argmax";

@@ -9793,7 +9793,7 @@ function checkConcreteFfiRuntimesAvoidLegacySharedFrontend(errors) {
     "export type TinyLinearWeights = ProgramBindings;",
     "export type ModuleParameterPlacementOptions = CompileOptions & ProgramCreateBufferOptions & {",
     "export type ModuleActivationKind =\n  | \"gelu\"",
-    "export type ModuleReductionKind = \"sum\" | \"mean\" | \"max\" | \"min\" | \"argmax\" | \"argmin\";",
+    "export type ModuleReductionKind = \"sum\" | \"mean\" | \"prod\" | \"max\" | \"min\" | \"argmax\" | \"argmin\";",
     "export type ModuleShapeOpKind =\n  | \"identity\"",
     "export type ModuleTraceOpKind =\n  | \"linear\"",
     "| \"avgPool2d\"",
@@ -14779,9 +14779,10 @@ function checkPublicApiTypesAreTsOwned(errors) {
     errors.push("src/ts/public_api.ts must expose prefixed nn module traversal and parameter helpers in the TS-owned public API contract");
   }
   if (
-    !publicApiSource.includes('ModuleReductionKind = "sum" | "mean" | "max" | "min" | "argmax" | "argmin"') ||
+    !publicApiSource.includes('ModuleReductionKind = "sum" | "mean" | "prod" | "max" | "min" | "argmax" | "argmin"') ||
     !publicApiSource.includes("export interface ReductionModule<Dim extends number = number> extends NnModule") ||
     !publicApiSource.includes("forward<const S extends TensorShapeTuple>(input: Tensor<S>): Tensor<ReductionShape<S, Dim>>") ||
+    !publicApiSource.includes("prod<const Dim extends number = number>(dim?: Dim): ReductionModule<Dim>") ||
     !publicApiSource.includes("min<const Dim extends number = number>(dim?: Dim): ReductionModule<Dim>") ||
     !publicApiSource.includes("argmax<const Dim extends number = number>(dim?: Dim): ReductionModule<Dim>") ||
     !publicApiSource.includes("argmin<const Dim extends number = number>(dim?: Dim): ReductionModule<Dim>") ||

@@ -188,6 +188,7 @@ export function createReductionModuleClass(options: ReductionModuleClassOptions)
   const reductions = Object.freeze({
     sum: "sumDim",
     mean: "meanDim",
+    prod: "prodDim",
     max: "maxDim",
     min: "minDim",
     argmax: "argmaxDim",

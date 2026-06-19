@@ -271,31 +271,36 @@ function checkScripts() {
   ]);
   requireIncludes(read("src/op.zig"), "src/op.zig", "direct primitive reduction ops", [
     "min,",
+    "prod,",
     ".min => \"min(x)\"",
+    ".prod => \"prod(x)\"",
     "argmax,",
     "argmin,",
     ".argmax => \"argmax(x)\"",
     ".argmin => \"argmin(x)\"",
   ]);
   requireIncludes(read("src/device_inference.zig"), "src/device_inference.zig", "native reduction lowering", [
-    ".sum, .max, .min, .argmax, .argmin =>",
+    ".sum, .prod, .max, .min, .argmax, .argmin =>",
     "DeviceInference lowers min reduction directly",
     "try testing.expectEqual(Op.min, reduce.op)",
   ]);
   requireIncludes(read("src/backend.zig"), "src/backend.zig", "backend reduction capability", [
-    ".reduce => |r| self.reduce and (r.op == .sum or r.op == .max or r.op == .min or r.op == .argmax or r.op == .argmin)",
+    ".reduce => |r| self.reduce and (r.op == .sum or r.op == .prod or r.op == .max or r.op == .min or r.op == .argmax or r.op == .argmin)",
   ]);
   requireIncludes(read("src/backend/reference.zig"), "src/backend/reference.zig", "reference reduction kernel", [
     ".min => std.math.inf(f32)",
+    ".prod => 1.0",
     ".argmax => -std.math.inf(f32)",
     ".argmin => std.math.inf(f32)",
     ".min => val = @min(val, v)",
+    ".prod => val *= v",
     ".argmax => if (v > val)",
     ".argmin => if (v < val)",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "Metal reduction kernel", [
-    "sum(19), max(20), min(35), argmax(36), or argmin(37)",
-    "case 19: case 20: case 35: case 36: case 37:",
+    "sum(19), max(20), min(35), argmax(36), argmin(37), or prod(38)",
+    "case 19: case 20: case 35: case 36: case 37: case 38:",
+    "else if (p.op == 38) val *= v",
     "else if (p.op == 35) val = min(val, v)",
     "best_idx = k",
   ]);
@@ -303,7 +308,9 @@ function checkScripts() {
     ".min => 3",
     ".argmax => 4",
     ".argmin => 5",
+    ".prod => 6",
     "params.op == 3u",
+    "params.op == 6u",
     "acc = min(acc, value)",
     "output.data[params.dst_offset + row] = f32(best_index)",
   ]);
@@ -742,6 +749,7 @@ function checkScripts() {
     "shape_linear=",
     "rank3_sum_reduction=",
     "rank3_mean_reduction=",
+    "rank3_prod_reduction=",
     "rank3_max_reduction=",
     "rank3_min_reduction=",
     "rank3_argmax_reduction=",
@@ -777,6 +785,7 @@ function checkScripts() {
     "ops=3 dispatch=2 fused_shape=2 kernels=reshape|linear",
     "ops=1 dispatch=1 kernels=sum batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=mean batched=rank3-last-axis",
+    "ops=1 dispatch=1 kernels=prod batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=max batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=min batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=argmax batched=rank3-last-axis",
@@ -809,6 +818,7 @@ function checkScripts() {
     "floors.shapeLinearSpeedup",
     "floors.rank3SumReductionSpeedup",
     "floors.rank3MeanReductionSpeedup",
+    "floors.rank3ProdReductionSpeedup",
     "floors.rank3MaxReductionSpeedup",
     "floors.rank3MinReductionSpeedup",
     "floors.rank3ArgmaxReductionSpeedup",
@@ -1182,6 +1192,7 @@ function checkModuleProgramBenchEvidence() {
     "shape_linear=",
     "rank3_sum_reduction=",
     "rank3_mean_reduction=",
+    "rank3_prod_reduction=",
     "rank3_max_reduction=",
     "rank3_min_reduction=",
     "rank3_argmax_reduction=",
@@ -1239,6 +1250,8 @@ function checkModuleProgramBenchEvidence() {
   requirePattern(line, "module Program bench gate output", "rank-3 native sum reduction proof", /rank3_sum_reduction=[^;]+ops=1 dispatch=1 kernels=sum batched=rank3-last-axis hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "rank-3 mean reduction speedup floor", /rank3_mean_reduction=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "rank-3 native mean reduction proof", /rank3_mean_reduction=[^;]+ops=1 dispatch=1 kernels=mean batched=rank3-last-axis hot=allocation-free/);
+  requirePattern(line, "module Program bench gate output", "rank-3 prod reduction speedup floor", /rank3_prod_reduction=[0-9.]+x floor=1\.20x/);
+  requirePattern(line, "module Program bench gate output", "rank-3 native prod reduction proof", /rank3_prod_reduction=[^;]+ops=1 dispatch=1 kernels=prod batched=rank3-last-axis hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "rank-3 max reduction speedup floor", /rank3_max_reduction=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "rank-3 native max reduction proof", /rank3_max_reduction=[^;]+ops=1 dispatch=1 kernels=max batched=rank3-last-axis hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "rank-3 min reduction speedup floor", /rank3_min_reduction=[0-9.]+x floor=1\.20x/);
@@ -1389,7 +1402,7 @@ function checkPytorchLikeSurface() {
     "`checkpoint.stringify(...)` and `checkpoint.parse(...)` expose the same validated",
     "fixed native-subset `Conv2d`, `MaxPool2d(2)`, and",
     "`AvgPool2d(2)` shapes with structured diagnostics for unsupported configs",
-    "`Softmax`, `LogSoftmax`, `sum`/`mean`/`max`, `Conv2d`, `MaxPool2d`,",
+    "`Softmax`, `LogSoftmax`, `sum`/`mean`/`prod`/`max`, `Conv2d`, `MaxPool2d`,",
     "`AvgPool2d`, `LayerNorm`, and `RMSNorm`",
   ]);
   const readmeSmoke = read("examples/types/readme-quickstart-smoke.ts");
@@ -4570,7 +4583,7 @@ function checkDocs() {
     "native Program lowering for `argmax(dim)` and `argmin(dim)`",
     "rank-3 `reshape`/`flatten`/`squeeze`/`unsqueeze`, rank-3 `broadcastTo`/`expand`,",
     "and singleton-envelope rank-3 `narrow`/`select`/`slice`",
-    "rank-3 last-axis `sum`/`mean`/`max`/`min`/`argmax`/`argmin` Program lowering",
+    "rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering",
     "`torch.compile.compile(lazyGraph)` and `lazyGraph.compile()` Program construction through Node/Bun",
     "The remaining substrate",
     "required-GPU browser runner's full",

@@ -2759,6 +2759,7 @@ export function createNnNamespace(options: NnNamespaceOptions) {
     log_softmax: (dim = -1) => new LogSoftmaxModule(dim),
     sum: (dim = -1) => new ReductionModule("sum", dim),
     mean: (dim = -1) => new ReductionModule("mean", dim),
+    prod: (dim = -1) => new ReductionModule("prod", dim),
     max: (dim = -1) => new ReductionModule("max", dim),
     min: (dim = -1) => new ReductionModule("min", dim),
     argmax: (dim = -1) => new ReductionModule("argmax", dim),

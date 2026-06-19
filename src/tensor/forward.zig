@@ -349,9 +349,10 @@ fn vecBinaryOp(comptime Tt: type, comptime f: fn (Tt, Tt) Tt, a: anytype, b: any
     return result;
 }
 
-fn computeReduceGeneric(comptime Self: type, comptime Tt: type, dst: *Self, src0: *const Self, comptime op: enum { sum, max, min, argmax, argmin }, mean_divisor: ?Tt) void {
+fn computeReduceGeneric(comptime Self: type, comptime Tt: type, dst: *Self, src0: *const Self, comptime op: enum { sum, prod, max, min, argmax, argmin }, mean_divisor: ?Tt) void {
     switch (op) {
         .sum => @memset(dst.data, 0),
+        .prod => @memset(dst.data, 1),
         .max => @memset(dst.data, -std.math.inf(Tt)),
         .min => @memset(dst.data, std.math.inf(Tt)),
         .argmax, .argmin => @memset(dst.data, 0),
@@ -376,6 +377,7 @@ fn computeReduceGeneric(comptime Self: type, comptime Tt: type, dst: *Self, src0
         const dst_idx = offsetFor(Self, dst, dst_coords[0..dst.n_dims]);
         switch (op) {
             .sum => dst.data[dst_idx] += if (mean_divisor) |div| src0.data[src_idx] / div else src0.data[src_idx],
+            .prod => dst.data[dst_idx] *= src0.data[src_idx],
             .max => dst.data[dst_idx] = @max(dst.data[dst_idx], src0.data[src_idx]),
             .min => dst.data[dst_idx] = @min(dst.data[dst_idx], src0.data[src_idx]),
             .argmax => if (src0.data[src_idx] > best[dst_idx]) {
@@ -1300,6 +1302,11 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
+        pub fn computeProd(dst: *Self, src0: *const Self) void {
+            assert(src0.canSumTo(dst));
+            computeReduceGeneric(Self, T, dst, src0, .prod, null);
+        }
+
         pub fn computeMax(dst: *Self, src0: *const Self) void {
             assert(src0.canSumTo(dst));
             if (src0.n_dims > 4 or dst.n_dims > 4) {
@@ -2207,6 +2214,7 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .gelu => computeGelu(tensor, src0.?),
                 .sqr => computeSqr(tensor, src0.?),
                 .sum => tensor.computeSum(src0.?),
+                .prod => computeProd(tensor, src0.?),
                 .max => computeMax(tensor, src0.?),
                 .min => computeMin(tensor, src0.?),
                 .argmax => computeArgReduce(tensor, src0.?, true),

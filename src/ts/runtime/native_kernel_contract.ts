@@ -41,6 +41,7 @@ export function kernelNameForNativeModuleDesc(desc: NativeModuleOpDesc | null | 
     case moduleOpIds.logSoftmax: return "log-softmax";
     case moduleOpIds.reduceSum: return "sum";
     case moduleOpIds.reduceMean: return "mean";
+    case moduleOpIds.reduceProd: return "prod";
     case moduleOpIds.reduceMax: return "max";
     case moduleOpIds.reduceMin: return "min";
     case moduleOpIds.reduceArgmax: return "argmax";

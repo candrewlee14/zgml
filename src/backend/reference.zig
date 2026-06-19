@@ -662,6 +662,7 @@ const Context = struct {
             const sb: usize = @as(usize, rd.src_offset) + i * rs;
             var val: f32 = switch (rd.op) {
                 .sum => 0.0,
+                .prod => 1.0,
                 .max => -std.math.inf(f32),
                 .min => std.math.inf(f32),
                 .argmax => -std.math.inf(f32),
@@ -672,6 +673,7 @@ const Context = struct {
                 const v = src[sb + k];
                 switch (rd.op) {
                     .sum => val += v,
+                    .prod => val *= v,
                     .max => val = @max(val, v),
                     .min => val = @min(val, v),
                     .argmax => if (v > val) {
@@ -685,7 +687,7 @@ const Context = struct {
                     else => unreachable,
                 }
             }
-            if (rd.op == .sum or rd.op == .max or rd.op == .min) dst[@as(usize, rd.dst_offset) + i] = val;
+            if (rd.op == .sum or rd.op == .prod or rd.op == .max or rd.op == .min) dst[@as(usize, rd.dst_offset) + i] = val;
         }
     }
 

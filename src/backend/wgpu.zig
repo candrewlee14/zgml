@@ -2194,7 +2194,9 @@ const wgsl_reduce =
     \\    return;
     \\  }
     \\  var acc = 0.0f;
-    \\  if (params.op == 2u) {
+    \\  if (params.op == 6u) {
+    \\    acc = 1.0f;
+    \\  } else if (params.op == 2u) {
     \\    acc = -3.4028234663852886e38f;
     \\  } else if (params.op == 3u) {
     \\    acc = 3.4028234663852886e38f;
@@ -2205,7 +2207,9 @@ const wgsl_reduce =
     \\      break;
     \\    }
     \\    let value = src.data[src_base + col];
-    \\    if (params.op == 2u) {
+    \\    if (params.op == 6u) {
+    \\      acc = acc * value;
+    \\    } else if (params.op == 2u) {
     \\      acc = max(acc, value);
     \\    } else if (params.op == 3u) {
     \\      acc = min(acc, value);
@@ -2222,7 +2226,9 @@ const wgsl_reduce =
     \\      break;
     \\    }
     \\    if (lid < stride) {
-    \\      if (params.op == 2u) {
+    \\      if (params.op == 6u) {
+    \\        scratch[lid] = scratch[lid] * scratch[lid + stride];
+    \\      } else if (params.op == 2u) {
     \\        scratch[lid] = max(scratch[lid], scratch[lid + stride]);
     \\      } else if (params.op == 3u) {
     \\        scratch[lid] = min(scratch[lid], scratch[lid + stride]);
@@ -6369,6 +6375,7 @@ fn reduceOpCode(op: backend_mod.Op) ?u32 {
         .min => 3,
         .argmax => 4,
         .argmin => 5,
+        .prod => 6,
         else => null,
     };
 }

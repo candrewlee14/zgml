@@ -2494,7 +2494,7 @@ export type ModuleActivationKind =
   | "square"
   | "step"
   | "sgn";
-export type ModuleReductionKind = "sum" | "mean" | "max" | "min" | "argmax" | "argmin";
+export type ModuleReductionKind = "sum" | "mean" | "prod" | "max" | "min" | "argmax" | "argmin";
 export type ModuleShapeOpKind =
   | "identity"
   | "diagonal"
@@ -5991,6 +5991,7 @@ export type NnNamespace = Readonly<{
   log_softmax(dim?: number): LogSoftmaxModule;
   sum<const Dim extends number = number>(dim?: Dim): ReductionModule<Dim>;
   mean<const Dim extends number = number>(dim?: Dim): ReductionModule<Dim>;
+  prod<const Dim extends number = number>(dim?: Dim): ReductionModule<Dim>;
   max<const Dim extends number = number>(dim?: Dim): ReductionModule<Dim>;
   min<const Dim extends number = number>(dim?: Dim): ReductionModule<Dim>;
   argmax<const Dim extends number = number>(dim?: Dim): ReductionModule<Dim>;

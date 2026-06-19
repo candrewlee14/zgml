@@ -370,7 +370,7 @@ native compile evidence for training-mode stochastic Dropout. `nn.Sequential` gr
 native traced module Program path. Native module Programs cover standalone and
 Sequential `Linear`, shape-specialized `Embedding`, `Identity`, shape glue,
 `relu`/`gelu`/`silu`/`sigmoid`,
-`Softmax`, `LogSoftmax`, `sum`/`mean`/`max`, `Conv2d`, `MaxPool2d`,
+`Softmax`, `LogSoftmax`, `sum`/`mean`/`prod`/`max`, `Conv2d`, `MaxPool2d`,
 `AvgPool2d`, `LayerNorm`, and `RMSNorm`; `Linear.compile({
 input_shape: &.{features, batch} })` in Zig feature-major form,
 `Linear.compile({ inputShape: [batch, features] })` in JS/TS row-major form,
@@ -885,7 +885,7 @@ native `diagonal`,
 rank-1/rank-2 repeat/tile Program lowering, native `argmax(dim)` /
 `argmin(dim)` Program lowering, and rank-3 native shape/view lowering for
 reshape-family plus broadcast/expand/narrow/select/slice, rank-3 last-axis
-`sum`/`mean`/`max`/`min`/`argmax`/`argmin` Program lowering,
+`sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering,
 direct backend `min(dim)`, eval-mode `BatchNorm1d`, classifier softmax-reduction, transformer FFN, normalized transformer
 classifier, and token-head Session paths rather than only API exports.
 Tensor, `nn`, `optim`, `train`, `data`, loss modules, state dicts,
