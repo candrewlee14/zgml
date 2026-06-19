@@ -8,7 +8,7 @@ const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
 const goalProgress = Object.freeze({
-  substratePct: 85,
+  substratePct: 88,
   substrateFloorPct: 65,
   pytorchLikePct: 100,
   pytorchLikeFloorPct: 60,
@@ -730,6 +730,9 @@ function checkScripts() {
     "rms_gelu_linear_batched=",
     "token_head=",
     "shape_linear=",
+    "rank3_sum_reduction=",
+    "rank3_mean_reduction=",
+    "rank3_max_reduction=",
     "rank3_min_reduction=",
     "rank3_argmax_reduction=",
     "rank3_argmin_reduction=",
@@ -762,6 +765,9 @@ function checkScripts() {
     "ops=3 dispatch=2 fused=2 kernels=rms-norm|gelu|linear",
     "ops=3 dispatch=3 kernels=embedding|linear|log-softmax",
     "ops=3 dispatch=2 fused_shape=2 kernels=reshape|linear",
+    "ops=1 dispatch=1 kernels=sum batched=rank3-last-axis",
+    "ops=1 dispatch=1 kernels=mean batched=rank3-last-axis",
+    "ops=1 dispatch=1 kernels=max batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=min batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=argmax batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=argmin batched=rank3-last-axis",
@@ -791,6 +797,9 @@ function checkScripts() {
     "floors.normGeluMlpBatchedSpeedup",
     "floors.tokenHeadSpeedup",
     "floors.shapeLinearSpeedup",
+    "floors.rank3SumReductionSpeedup",
+    "floors.rank3MeanReductionSpeedup",
+    "floors.rank3MaxReductionSpeedup",
     "floors.rank3MinReductionSpeedup",
     "floors.rank3ArgmaxReductionSpeedup",
     "floors.rank3ArgminReductionSpeedup",
@@ -1159,6 +1168,9 @@ function checkModuleProgramBenchEvidence() {
     "rms_gelu_linear_batched=",
     "token_head=",
     "shape_linear=",
+    "rank3_sum_reduction=",
+    "rank3_mean_reduction=",
+    "rank3_max_reduction=",
     "rank3_min_reduction=",
     "rank3_argmax_reduction=",
     "rank3_argmin_reduction=",
@@ -1181,6 +1193,9 @@ function checkModuleProgramBenchEvidence() {
     "ops=3 dispatch=2 fused=2 kernels=rms-norm|gelu|linear",
     "ops=3 dispatch=3 kernels=embedding|linear|log-softmax",
     "ops=3 dispatch=2 fused_shape=2 kernels=reshape|linear",
+    "ops=1 dispatch=1 kernels=sum batched=rank3-last-axis",
+    "ops=1 dispatch=1 kernels=mean batched=rank3-last-axis",
+    "ops=1 dispatch=1 kernels=max batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=min batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=argmax batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=argmin batched=rank3-last-axis",
@@ -1208,6 +1223,12 @@ function checkModuleProgramBenchEvidence() {
   requirePattern(line, "module Program bench gate output", "batched RMS GELU Linear speedup floor", /rms_gelu_linear_batched=[0-9.]+x floor=1\.05x.*ops=3 dispatch=2 fused=2 kernels=rms-norm\|gelu\|linear batched=rank2 parameters=0\.weight\|2\.weight\|2\.bias hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "token head speedup floor", /token_head=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "shape linear speedup floor", /shape_linear=[0-9.]+x floor=1\.20x/);
+  requirePattern(line, "module Program bench gate output", "rank-3 sum reduction speedup floor", /rank3_sum_reduction=[0-9.]+x floor=1\.20x/);
+  requirePattern(line, "module Program bench gate output", "rank-3 native sum reduction proof", /rank3_sum_reduction=[^;]+ops=1 dispatch=1 kernels=sum batched=rank3-last-axis hot=allocation-free/);
+  requirePattern(line, "module Program bench gate output", "rank-3 mean reduction speedup floor", /rank3_mean_reduction=[0-9.]+x floor=1\.20x/);
+  requirePattern(line, "module Program bench gate output", "rank-3 native mean reduction proof", /rank3_mean_reduction=[^;]+ops=1 dispatch=1 kernels=mean batched=rank3-last-axis hot=allocation-free/);
+  requirePattern(line, "module Program bench gate output", "rank-3 max reduction speedup floor", /rank3_max_reduction=[0-9.]+x floor=1\.20x/);
+  requirePattern(line, "module Program bench gate output", "rank-3 native max reduction proof", /rank3_max_reduction=[^;]+ops=1 dispatch=1 kernels=max batched=rank3-last-axis hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "rank-3 min reduction speedup floor", /rank3_min_reduction=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "rank-3 native min reduction proof", /rank3_min_reduction=[^;]+ops=1 dispatch=1 kernels=min batched=rank3-last-axis hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "rank-3 argmax reduction speedup floor", /rank3_argmax_reduction=[0-9.]+x floor=1\.20x/);
@@ -4479,7 +4500,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=85% floor=65%; PyTorch-like surface=100% floor=60%",
+    "goal progress: Program/Session substrate=88% floor=65%; PyTorch-like surface=100% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4516,7 +4537,7 @@ function checkDocs() {
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
-    "Program/Session performance substrate: ~85%",
+    "Program/Session performance substrate: ~88%",
     "That optional gate now also runs the native WebGPU LLaMA execution proofs for",
     "runtime quantized-weight rebinding, resource-bound decode/prefill handoff,",
     "long-prompt prefill, GQA long-prompt prefill, and a realistic head-width",

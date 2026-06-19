@@ -26,6 +26,9 @@ const floors = Object.freeze({
   rmsGeluLinearBatchedSpeedup: 1.05,
   tokenHeadSpeedup: 1.2,
   shapeLinearSpeedup: 1.2,
+  rank3SumReductionSpeedup: 1.2,
+  rank3MeanReductionSpeedup: 1.2,
+  rank3MaxReductionSpeedup: 1.2,
   rank3MinReductionSpeedup: 1.2,
   rank3ArgmaxReductionSpeedup: 1.2,
   rank3ArgminReductionSpeedup: 1.2,
@@ -63,6 +66,9 @@ const expectedKeys = Object.freeze([
   "rms_gelu_linear_batched",
   "token_head",
   "shape_linear",
+  "rank3_sum_reduction",
+  "rank3_mean_reduction",
+  "rank3_max_reduction",
   "rank3_min_reduction",
   "rank3_argmax_reduction",
   "rank3_argmin_reduction",
@@ -969,6 +975,111 @@ const benchSpecs = [
       },
     },
     summary: (result) => `shape_linear=${result.speedup.toFixed(2)}x floor=${floors.shapeLinearSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=2 fused_shape=2 kernels=reshape|linear hot=allocation-free`,
+  },
+  {
+    key: "rank3_sum_reduction",
+    label: "rank3-sum-reduction",
+    floor: floors.rank3SumReductionSpeedup,
+    inputShape: [1, 512, 128],
+    inputShapeText: "1x512x128",
+    outputShapeText: "1x512x1",
+    inputLen: 512 * 128,
+    outputLen: 512,
+    layerCount: 1,
+    parameterNames: "",
+    input: () => adapter.tensor(values(512 * 128, 13), [1, 512, 128]),
+    model: () => adapter.nn.sum(-1),
+    ir: { opCount: 1, parameterCount: 0 },
+    iterations: 120,
+    tolerance: 1e-4,
+    plan: {
+      opCount: 1,
+      dispatchCount: 1,
+      publicOps: 1,
+      description: "single native rank-3 last-axis Sum reduction dispatch",
+      check: (plan) => {
+        const op = plan.ops[0];
+        if (
+          op.op !== "sum" ||
+          op.kernel !== "sum" ||
+          op.nativeKernels.join("|") !== "sum" ||
+          op.nativeDispatchCount !== 1
+        ) {
+          throw new Error("rank3-sum-reduction expected native sum kernel plan");
+        }
+      },
+    },
+    summary: (result) => `rank3_sum_reduction=${result.speedup.toFixed(2)}x floor=${floors.rank3SumReductionSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=1 dispatch=1 kernels=sum batched=rank3-last-axis hot=allocation-free`,
+  },
+  {
+    key: "rank3_mean_reduction",
+    label: "rank3-mean-reduction",
+    floor: floors.rank3MeanReductionSpeedup,
+    inputShape: [1, 512, 128],
+    inputShapeText: "1x512x128",
+    outputShapeText: "1x512x1",
+    inputLen: 512 * 128,
+    outputLen: 512,
+    layerCount: 1,
+    parameterNames: "",
+    input: () => adapter.tensor(values(512 * 128, 13), [1, 512, 128]),
+    model: () => adapter.nn.mean(-1),
+    ir: { opCount: 1, parameterCount: 0 },
+    iterations: 120,
+    tolerance: 1e-4,
+    plan: {
+      opCount: 1,
+      dispatchCount: 1,
+      publicOps: 1,
+      description: "single native rank-3 last-axis Mean reduction dispatch",
+      check: (plan) => {
+        const op = plan.ops[0];
+        if (
+          op.op !== "mean" ||
+          op.kernel !== "mean" ||
+          op.nativeKernels.join("|") !== "mean" ||
+          op.nativeDispatchCount !== 1
+        ) {
+          throw new Error("rank3-mean-reduction expected native mean kernel plan");
+        }
+      },
+    },
+    summary: (result) => `rank3_mean_reduction=${result.speedup.toFixed(2)}x floor=${floors.rank3MeanReductionSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=1 dispatch=1 kernels=mean batched=rank3-last-axis hot=allocation-free`,
+  },
+  {
+    key: "rank3_max_reduction",
+    label: "rank3-max-reduction",
+    floor: floors.rank3MaxReductionSpeedup,
+    inputShape: [1, 512, 128],
+    inputShapeText: "1x512x128",
+    outputShapeText: "1x512x1",
+    inputLen: 512 * 128,
+    outputLen: 512,
+    layerCount: 1,
+    parameterNames: "",
+    input: () => adapter.tensor(values(512 * 128, 13), [1, 512, 128]),
+    model: () => adapter.nn.max(-1),
+    ir: { opCount: 1, parameterCount: 0 },
+    iterations: 120,
+    tolerance: 1e-6,
+    plan: {
+      opCount: 1,
+      dispatchCount: 1,
+      publicOps: 1,
+      description: "single native rank-3 last-axis Max reduction dispatch",
+      check: (plan) => {
+        const op = plan.ops[0];
+        if (
+          op.op !== "max" ||
+          op.kernel !== "max" ||
+          op.nativeKernels.join("|") !== "max" ||
+          op.nativeDispatchCount !== 1
+        ) {
+          throw new Error("rank3-max-reduction expected native max kernel plan");
+        }
+      },
+    },
+    summary: (result) => `rank3_max_reduction=${result.speedup.toFixed(2)}x floor=${floors.rank3MaxReductionSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=1 dispatch=1 kernels=max batched=rank3-last-axis hot=allocation-free`,
   },
   {
     key: "rank3_min_reduction",
