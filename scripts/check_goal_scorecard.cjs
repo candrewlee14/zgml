@@ -161,11 +161,24 @@ function checkScripts() {
     errors.push("package.json bench:module-program must remain the TS frontend module Program performance gate");
   }
   if (scripts["bench:pytorch"] !== "npm run build:package && node scripts/check_pytorch_comparison.cjs") {
-    errors.push("package.json bench:pytorch must remain the optional upstream PyTorch comparison gate");
+    errors.push("package.json bench:pytorch must remain the upstream PyTorch comparison evidence gate");
+  }
+  if (scripts["bench:pytorch:parity"] !== "npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:parity must remain the hard upstream PyTorch parity gate");
   }
   if (scripts["check:goal-scorecard"] !== "node scripts/check_goal_scorecard.cjs") {
     errors.push("package.json must expose check:goal-scorecard for goal evidence");
   }
+  requireIncludes(read("scripts/check_pytorch_comparison.cjs"), "scripts/check_pytorch_comparison.cjs", "honest PyTorch parity evidence gate", [
+    "BENCH_PYTORCH_REQUIRE_PARITY",
+    "BENCH_PYTORCH_MIN_RATIO",
+    "parity-pass",
+    "parity-miss",
+    "required=${requireParity ? \"yes\" : \"no\"}",
+    "floor=${minRatio.toFixed(2)}x",
+    "worst=${worst.key}:${worst.ratio.toFixed(2)}x",
+    "if (requireParity && !parityReady)",
+  ]);
   requireIncludes(read("scripts/check_goal_scorecard.cjs"), "scripts/check_goal_scorecard.cjs", "diagnostic child-process failure reporting", [
     "function spawnFailure(label, command, args, result)",
     "status=${status}",

@@ -6,7 +6,10 @@ const { join, resolve } = require("node:path");
 
 const root = resolve(__dirname, "..");
 const nodeEntry = join(root, "dist", "node.cjs");
-const python = process.env.PYTHON || "python3";
+const venvPython = join(root, ".venv", "bin", "python");
+const python = process.env.PYTHON || (existsSync(venvPython) ? venvPython : "python3");
+const requireParity = process.env.BENCH_PYTORCH_REQUIRE_PARITY === "1";
+const minRatio = Number(process.env.BENCH_PYTORCH_MIN_RATIO || "1.0");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -115,15 +118,35 @@ if (!pytorchVersion) {
   console.log(`pytorch comparison skipped: ${python} import torch failed; install upstream PyTorch to run bench:pytorch`);
   process.exit(0);
 }
+if (!Number.isFinite(minRatio) || minRatio < 0) {
+  throw new Error(`BENCH_PYTORCH_MIN_RATIO must be a non-negative number, got ${process.env.BENCH_PYTORCH_MIN_RATIO}`);
+}
 
 const zgmlTimings = parseZgmlModuleBench(run(process.execPath, ["scripts/check_module_program_bench.cjs"]));
 const pytorchTimings = JSON.parse(run(python, ["-c", pytorchCode]));
 
-const parts = [`pytorch comparison: pass; python=${python} pytorch=${pytorchVersion}`];
+const ratioEntries = [];
 for (const [key, zgmlMs] of Object.entries(zgmlTimings)) {
   const pytorchMs = pytorchTimings[key];
   const ratio = pytorchMs / zgmlMs;
-  parts.push(`${key}=zgml:${zgmlMs.toFixed(4)}ms pytorch:${pytorchMs.toFixed(4)}ms zgml_vs_pytorch=${ratio.toFixed(2)}x`);
+  ratioEntries.push({ key, zgmlMs, pytorchMs, ratio });
 }
 
+const worst = ratioEntries.reduce((current, entry) => (entry.ratio < current.ratio ? entry : current), ratioEntries[0]);
+const parityReady = ratioEntries.every((entry) => entry.ratio >= minRatio);
+const parts = [
+  `pytorch comparison: ${requireParity ? (parityReady ? "parity-pass" : "parity-miss") : "evidence"}`,
+  `python=${python}`,
+  `pytorch=${pytorchVersion}`,
+  `required=${requireParity ? "yes" : "no"}`,
+  `floor=${minRatio.toFixed(2)}x`,
+  `worst=${worst.key}:${worst.ratio.toFixed(2)}x`,
+  `parity=${parityReady ? "pass" : "miss"}`,
+];
+for (const { key, zgmlMs, pytorchMs, ratio } of ratioEntries) {
+  parts.push(`${key}=zgml:${zgmlMs.toFixed(4)}ms pytorch:${pytorchMs.toFixed(4)}ms zgml_vs_pytorch=${ratio.toFixed(2)}x`);
+}
 console.log(parts.join("; "));
+if (requireParity && !parityReady) {
+  process.exit(1);
+}

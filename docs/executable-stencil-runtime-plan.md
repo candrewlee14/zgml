@@ -284,7 +284,11 @@ vocabulary, but it is not the identity of the library. The primary product
 surface is zgml: `Tensor`, `nn`, `F`, `loss`, `optim`, `train`, lazy graphs,
 compiled Programs, Sessions, and model-source helpers. Any `torch` namespace
 should be treated as a compatibility alias/lane and should not own roadmap
-language, benchmark names, or the default mental model.
+language, benchmark names, or the default mental model. The PyTorch performance
+target is now explicit: `bench:pytorch` is an evidence command that always
+prints the worst `zgml_vs_pytorch` ratio, while `bench:pytorch:parity` is the
+hard parity gate (`BENCH_PYTORCH_REQUIRE_PARITY=1`) and is expected to fail
+until fused/specialized CPU kernels and backend lowering close the current gap.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS
