@@ -60,6 +60,8 @@ function parseZgmlModuleBench(output) {
     "lazy_matmul_add_gelu_batched",
     "lazy_mlp_batched",
     "lazy_rms_silu_ffn_batched",
+    "max_pool2d_batched",
+    "avg_pool2d_batched",
   ];
   const timings = {};
   for (const key of keys) {
@@ -107,6 +109,7 @@ b128 = values((128,), 80.0)
 w64_128 = values((64, 128), 64.0)
 b64_down = values((64,), 96.0)
 rms_weight = values((64,), 48.0) + 1.0
+pool_x = values((2, 2, 128, 128), 10.0)
 
 def linear_batched():
     return torch.nn.functional.linear(x128_64, w32_64, b32)
@@ -124,11 +127,19 @@ def lazy_rms_silu_ffn_batched():
     hidden = torch.nn.functional.silu(torch.matmul(normed, w128_64.T) + b128)
     return torch.matmul(hidden, w64_128.T) + b64_down
 
+def max_pool2d_batched():
+    return torch.nn.functional.max_pool2d(pool_x, 2)
+
+def avg_pool2d_batched():
+    return torch.nn.functional.avg_pool2d(pool_x, 2, count_include_pad=True)
+
 print(json.dumps({
     "linear_batched": bench(linear_batched),
     "lazy_matmul_add_gelu_batched": bench(lazy_matmul_add_gelu_batched),
     "lazy_mlp_batched": bench(lazy_mlp_batched),
     "lazy_rms_silu_ffn_batched": bench(lazy_rms_silu_ffn_batched),
+    "max_pool2d_batched": bench(max_pool2d_batched, 300),
+    "avg_pool2d_batched": bench(avg_pool2d_batched, 300),
 }))
 `;
 

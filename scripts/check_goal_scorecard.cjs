@@ -206,6 +206,11 @@ function checkScripts() {
     "w128_64 = values((128, 64), 48.0)",
     "w64_128 = values((64, 128), 64.0)",
     "hidden = torch.nn.functional.silu(torch.matmul(normed, w128_64.T) + b128)",
+    "pool_x = values((2, 2, 128, 128), 10.0)",
+    "torch.nn.functional.max_pool2d(pool_x, 2)",
+    "torch.nn.functional.avg_pool2d(pool_x, 2, count_include_pad=True)",
+    "\"max_pool2d_batched\": bench(max_pool2d_batched, 300)",
+    "\"avg_pool2d_batched\": bench(avg_pool2d_batched, 300)",
     "if (requireParity && !parityReady)",
   ]);
   requireIncludes(read("scripts/check_goal_scorecard.cjs"), "scripts/check_goal_scorecard.cjs", "diagnostic child-process failure reporting", [

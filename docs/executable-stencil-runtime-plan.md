@@ -354,6 +354,10 @@ contract. `BENCH_PYTORCH_ATTEMPTS` defaults to `3` for required parity and `1`
 for lightweight evidence, the report prints the selected `attempt=x/y` plus
 `noisy=n`, and the gate only passes when at least one measured attempt clears
 the requested per-workload ratio floor.
+The PyTorch parity set is no longer only dense/transformer-shaped CPU work: it
+also compares batched `max_pool2d` and `avg_pool2d` against upstream
+`torch.nn.functional`, so the parity gate covers common compiled tensor kernels
+outside matmul/linear dispatches.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS
