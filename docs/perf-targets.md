@@ -169,8 +169,10 @@ machine for both prompt/prefill and decode.
   candidate flag matches the default semantic command shape rather than proving
   a separate default flip. `npm run bench:q8-prompt-candidate` runs paired
   default/candidate attempts (`BENCH_CANDIDATE_ATTEMPTS`, default 3), requires
-  structural readiness on every attempt, and reports the best throughput attempt
-  plus the number of noisy attempts below floor. On Q8_0 SmolLM p128/g40/r1, the
+  structural readiness on every attempt, and requires the median throughput
+  attempt to clear the speedup floor before reporting throughput ready. It still
+  prints best/median/worst speedup plus the number of noisy attempts below floor
+  so a single lucky run cannot promote the candidate. On Q8_0 SmolLM p128/g40/r1, the
   multi-attempt probe keeps dispatches at 242, commands at 181,
   `projection_row_chain` at 60, `projection_row_chain_dispatch` at 120
   (`split=2.00` dispatches per semantic row-chain), and fallback at zero. The

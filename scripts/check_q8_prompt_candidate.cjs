@@ -153,18 +153,21 @@ for (let i = 0; i < attempts; i += 1) {
 
 const structuralReady = attemptRows.every((row) => row.structuralReady);
 const ranked = [...attemptRows].sort((left, right) => Number(right.speedup ?? -Infinity) - Number(left.speedup ?? -Infinity));
+const rankedAscending = [...attemptRows].sort((left, right) => Number(left.speedup ?? Infinity) - Number(right.speedup ?? Infinity));
 const best = ranked[0];
-const throughputReady = structuralReady && best.speedup !== null && best.speedup >= speedupFloor;
+const median = rankedAscending[Math.floor(rankedAscending.length / 2)];
+const worst = rankedAscending[0];
+const throughputReady = structuralReady && median.speedup !== null && median.speedup >= speedupFloor;
 const candidateReady = structuralReady && throughputReady;
 const noisyAttempts = attemptRows.filter((row) => row.speedup === null || row.speedup < speedupFloor).length;
 const dispatchOnlyTrap =
-  best.speedup !== null &&
-  best.speedup < speedupFloor &&
-  ((best.defaultDispatches !== null && best.candidateDispatches !== null && best.candidateDispatches < best.defaultDispatches) ||
-    (best.defaultProjectionRowChainDispatchSplit !== null &&
-      best.candidateProjectionRowChainDispatchSplit !== null &&
-      best.candidateProjectionRowChainDispatchSplit < best.defaultProjectionRowChainDispatchSplit) ||
-    best.candidateProjectionRowChainDispatchExcess < best.defaultProjectionRowChainDispatchExcess);
+  median.speedup !== null &&
+  median.speedup < speedupFloor &&
+  ((median.defaultDispatches !== null && median.candidateDispatches !== null && median.candidateDispatches < median.defaultDispatches) ||
+    (median.defaultProjectionRowChainDispatchSplit !== null &&
+      median.candidateProjectionRowChainDispatchSplit !== null &&
+      median.candidateProjectionRowChainDispatchSplit < median.defaultProjectionRowChainDispatchSplit) ||
+    median.candidateProjectionRowChainDispatchExcess < median.defaultProjectionRowChainDispatchExcess);
 const reason = candidateReady
   ? "default_semantic_row_chain_meets_structure_and_speed"
   : dispatchOnlyTrap
@@ -176,8 +179,9 @@ const reason = candidateReady
 console.log(
   `q8 prompt semantic row-chain gate: ${candidateReady ? "ready" : "structural"}; ` +
     `structural=${structuralReady ? "ready" : "off"} throughput=${throughputReady ? "ready" : "off"} reason=${reason}; ` +
-    `attempt=${best.index}/${attempts} noisy=${noisyAttempts}; ` +
+    `attempt=${best.index}/${attempts} median_attempt=${median.index}/${attempts} noisy=${noisyAttempts}; ` +
     `default=${format(best.defaultTokS)} tok/s candidate=${format(best.candidateTokS)} tok/s speedup=${format(best.speedup)}x floor=${format(speedupFloor)}x; ` +
+    `median_speedup=${format(median.speedup)}x worst_speedup=${format(worst.speedup)}x best_speedup=${format(best.speedup)}x; ` +
     `dispatch=${format(best.defaultDispatches, 0)}->${format(best.candidateDispatches, 0)} command=${format(best.defaultCommands, 0)}->${format(best.candidateCommands, 0)} ` +
     `projection_row_chain=${format(best.defaultProjectionRowChains, 0)}->${format(best.candidateProjectionRowChains, 0)} ` +
     `projection_row_chain_dispatch=${format(best.defaultProjectionRowChainDispatches, 0)}->${format(best.candidateProjectionRowChainDispatches, 0)} ` +
