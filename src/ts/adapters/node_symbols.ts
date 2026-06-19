@@ -50,6 +50,7 @@ export type NodeNativeSymbols = Readonly<{
   sessionUploadPersistent: NativeFunction;
   sessionUploadPersistentRange: NativeFunction;
   sessionStep: NativeFunction;
+  sessionStepDirect: NativeFunction;
   sessionStepNoOutput: NativeFunction;
   sessionStepToken: NativeFunction;
   sessionAdvanceToken: NativeFunction;
@@ -123,6 +124,7 @@ export function bindNodeSymbols(nativeLibrary: unknown): NodeNativeSymbols {
     sessionUploadPersistent: lib.func("int zgml_session_upload_persistent(void *session)"),
     sessionUploadPersistentRange: lib.func("int zgml_session_upload_persistent_range(void *session, size_t first, size_t len)"),
     sessionStep: lib.func("int zgml_session_step(void *session, const zgml_step_desc *desc, _Out_ zgml_step_result *out_result)"),
+    sessionStepDirect: lib.func("int zgml_session_step_direct(void *session, const float *input, size_t input_len, float *output, size_t output_len)"),
     sessionStepNoOutput: lib.func("int zgml_session_step_no_output(void *session, const zgml_step_desc *desc, _Out_ zgml_step_result *out_result)"),
     sessionStepToken: lib.func("int zgml_session_step_token(void *session, const zgml_token_step_desc *desc, _Out_ zgml_step_result *out_result)"),
     sessionAdvanceToken: lib.func("int zgml_session_advance_token(void *session, const zgml_token_advance_desc *desc)"),

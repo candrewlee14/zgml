@@ -60,6 +60,7 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
       sessionUploadPersistent: symbols.sessionUploadPersistent,
       sessionUploadPersistentRange: symbols.sessionUploadPersistentRange,
       sessionStep: symbols.sessionStep,
+      sessionStepDirect: symbols.sessionStepDirect,
       sessionStepNoOutput: symbols.sessionStepNoOutput,
     }),
     nativeLifecycle: Object.freeze({

@@ -254,6 +254,22 @@ pub const ExecutionTape = struct {
                 if (runtime_profile) |profile| profile.recordProgramCommandFailed(command.kind);
                 std.debug.panic("reference execution tape command range out of bounds: start={} count={} entries={}", .{ start, count, self.entries.len });
             }
+            if (command.kind == .dense_projection_chain and count == 2) {
+                const matmul_entry = self.entries[start];
+                const sidecar_entry = self.entries[start + 1];
+                const matmul_index: usize = matmul_entry.op_index;
+                const sidecar_index: usize = sidecar_entry.op_index;
+                if (matmul_index >= ops.len or sidecar_index >= ops.len) {
+                    std.debug.panic("reference execution tape dense projection index out of range", .{});
+                }
+                if (ctx.denseProjectionChain(ops[matmul_index], ops[sidecar_index])) {
+                    if (runtime_profile) |profile| {
+                        profile.recordProgramCommand(command.kind);
+                        profile.recordProgramCommandDispatch(command.kind);
+                    }
+                    continue;
+                }
+            }
             for (self.entries[start..end]) |entry| {
                 const idx: usize = entry.op_index;
                 if (idx >= ops.len) {
@@ -1007,6 +1023,83 @@ const Context = struct {
             m.geom.dst_offset,
             m.geom.dst_row_stride,
         );
+    }
+
+    fn denseProjectionChain(self: Context, matmul_op: backend_mod.DeviceOp, sidecar_op: backend_mod.DeviceOp) bool {
+        const m = switch (matmul_op) {
+            .matmul => |m| m,
+            else => return false,
+        };
+        switch (sidecar_op) {
+            .fused_elementwise => |fe| {
+                if (fe.src != m.dst or fe.src_offset != m.geom.dst_offset) return false;
+                const expected_n = m.geom.M * m.geom.N;
+                if (fe.n != expected_n) return false;
+                forward.blasSgemm(
+                    self.bufSlice(fe.dst),
+                    self.bufSlice(m.a),
+                    self.bufSlice(m.b),
+                    m.geom.M,
+                    m.geom.N,
+                    m.geom.K,
+                    m.geom.a_row_stride,
+                    m.geom.a_col_stride,
+                    m.geom.b_row_stride,
+                    m.geom.b_col_stride,
+                    m.geom.a_offset,
+                    m.geom.b_offset,
+                    fe.dst_offset,
+                    m.geom.dst_row_stride,
+                );
+                self.fusedElementwise(.{
+                    .steps = fe.steps,
+                    .n = fe.n,
+                    .dst = fe.dst,
+                    .src = fe.dst,
+                    .dst_offset = fe.dst_offset,
+                    .src_offset = fe.dst_offset,
+                });
+                return true;
+            },
+            .elementwise => |e| {
+                if (e.n != m.geom.M * m.geom.N) return false;
+                const src_is_left = e.src0 == m.dst and e.src0_offset == m.geom.dst_offset;
+                const src_is_right = e.src1 == m.dst and e.src1_offset == m.geom.dst_offset;
+                if (!src_is_left and !src_is_right) return false;
+                forward.blasSgemm(
+                    self.bufSlice(e.dst),
+                    self.bufSlice(m.a),
+                    self.bufSlice(m.b),
+                    m.geom.M,
+                    m.geom.N,
+                    m.geom.K,
+                    m.geom.a_row_stride,
+                    m.geom.a_col_stride,
+                    m.geom.b_row_stride,
+                    m.geom.b_col_stride,
+                    m.geom.a_offset,
+                    m.geom.b_offset,
+                    e.dst_offset,
+                    m.geom.dst_row_stride,
+                );
+                const step = backend_mod.FusedEwStep{
+                    .op = e.op,
+                    .is_swapped = src_is_right,
+                    .secondary_buf = if (src_is_left) e.src1 else e.src0,
+                    .secondary_offset = if (src_is_left) e.src1_offset else e.src0_offset,
+                };
+                self.fusedElementwise(.{
+                    .steps = @as([]const backend_mod.FusedEwStep, &.{step}),
+                    .n = e.n,
+                    .dst = e.dst,
+                    .src = e.dst,
+                    .dst_offset = e.dst_offset,
+                    .src_offset = e.dst_offset,
+                });
+                return true;
+            },
+            else => return false,
+        }
     }
 
     fn qmatmul(self: Context, q: anytype) void {

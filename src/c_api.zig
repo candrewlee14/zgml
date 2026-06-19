@@ -5153,6 +5153,31 @@ export fn zgml_session_step(session: ?*zgml_session, desc_ptr: ?*const zgml_step
     return status(.ok);
 }
 
+export fn zgml_session_step_direct(session: ?*zgml_session, input_ptr: ?[*]const f32, input_len: usize, output_ptr: ?[*]f32, output_len: usize) c_int {
+    const s = sessionHandle(session) orelse return status(.invalid_argument);
+    const linear = switch (s.data) {
+        .tiny_linear => |*linear| linear,
+        .tiny_mlp => |*mlp| mlp,
+        .module => |*module| module,
+        .tiny_llama, .tiny_llama_2layer, .smollm_135m => return status(.unsupported),
+    };
+    const p = deviceProgramRuntime(linear.program) orelse return status(.invalid_argument);
+    if (!p.execution_supported) return status(.unsupported);
+    const input = input_ptr orelse return status(.invalid_argument);
+    const output = output_ptr orelse return status(.invalid_argument);
+    if (input_len != linear.input_len or output_len < linear.output_len) return status(.shape_mismatch);
+    if (input != linear.input_buf.ptr) {
+        @memcpy(linear.input_buf[0..linear.input_len], input[0..linear.input_len]);
+    }
+
+    const window = backend_mod.RuntimeWindow.init(0, 0) catch return status(.shape_mismatch);
+    p.program.executeStep(&linear.session, .{ .window = window }) catch return status(.shape_mismatch);
+    if (output != linear.output_buf.ptr) {
+        @memcpy(output[0..linear.output_len], linear.output_buf[0..linear.output_len]);
+    }
+    return status(.ok);
+}
+
 export fn zgml_session_step_no_output(session: ?*zgml_session, desc_ptr: ?*const zgml_step_desc, result_ptr: ?*zgml_step_result) c_int {
     const s = sessionHandle(session) orelse return status(.invalid_argument);
     const linear = switch (s.data) {
