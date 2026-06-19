@@ -306,9 +306,11 @@ language, benchmark names, or the default mental model. The PyTorch performance
 target is now explicit: `bench:pytorch` is an evidence command that always
 prints the worst `zgml_vs_pytorch` ratio, while `bench:pytorch:parity` is the
 hard parity gate (`BENCH_PYTORCH_REQUIRE_PARITY=1`). That gate is now expected
-to be the proof target for checked CPU workloads. It is not yet stable-green:
-the current work has made several lanes competitive or faster, but the measured
-floor still moves with microbenchmark noise and small-shape CPU overhead.
+to be the proof target for checked CPU workloads. The current checked set is
+green for linear, MLP, fused GELU matmul, and pooling lanes, while the remaining
+known miss is the RMSNorm -> SiLU FFN lane on current PyTorch. The report treats
+microbenchmark noise as part of the contract by printing the selected attempt
+and noisy-attempt count.
 Both commands build the native C ABI with `-Doptimize=ReleaseFast` first; PyTorch
 comparisons must not silently measure a stale Debug dylib.
 The PyTorch comparison must also match the zgml workload shape exactly. The

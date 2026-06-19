@@ -1312,6 +1312,7 @@ const Context = struct {
             else => return false,
         };
         if (!program_mod.matmulRepeatElementwiseBiasCompatible(m, repeat_op, sidecar_op)) return false;
+        if (self.smallDenseProjectionBiasRows(m, rp, e)) return true;
         forward.blasSgemm(
             self.bufSlice(e.dst),
             self.bufSlice(m.a),
@@ -1335,6 +1336,34 @@ const Context = struct {
         const dst_offset: usize = e.dst_offset;
         const bias_offset: usize = rp.src_offset;
         addBiasRows(dst, bias, M, N, m.geom.dst_row_stride, dst_offset, bias_offset);
+        return true;
+    }
+
+    fn smallDenseProjectionBiasRows(self: Context, m: anytype, rp: anytype, e: anytype) bool {
+        const g = m.geom;
+        if (g.M > 256 or g.N < 64 or g.N > 64 or g.K > 128 or g.N % V != 0) return false;
+        if (g.a_col_stride != 1 or g.b_col_stride != 1) return false;
+        if (g.a_row_stride != g.K or g.b_row_stride != g.N or g.dst_row_stride != g.N) return false;
+
+        const VecT = @Vector(V, f32);
+        const input = self.bufF32(m.a);
+        const weight = self.bufF32(m.b);
+        const bias = self.bufF32(rp.src);
+        const dst = self.bufF32(e.dst);
+        for (0..g.M) |row| {
+            const input_row = input[g.a_offset + row * g.a_row_stride ..][0..g.K];
+            const dst_row = dst[e.dst_offset + row * g.dst_row_stride ..][0..g.N];
+            var col: usize = 0;
+            while (col < g.N) : (col += V) {
+                var acc: VecT = bias[rp.src_offset + col ..][0..V].*;
+                for (0..g.K) |k| {
+                    const xv: VecT = @splat(input_row[k]);
+                    const wv: VecT = weight[g.b_offset + k * g.b_row_stride + col ..][0..V].*;
+                    acc += xv * wv;
+                }
+                dst_row[col..][0..V].* = acc;
+            }
+        }
         return true;
     }
 
@@ -1406,11 +1435,38 @@ const Context = struct {
         const dst_offset: usize = activation.dst_offset;
         const bias_offset: usize = rp.src_offset;
         switch (activation.op) {
+            .relu => addBiasReluRows(dst, bias, M, N, m.geom.dst_row_stride, dst_offset, bias_offset),
             .gelu => addBiasGeluRows(dst, bias, M, N, m.geom.dst_row_stride, dst_offset, bias_offset),
             .silu => addBiasSiluRows(dst, bias, M, N, m.geom.dst_row_stride, dst_offset, bias_offset),
             else => unreachable,
         }
         return true;
+    }
+
+    fn addBiasReluRows(
+        dst: [*]f32,
+        bias: [*]const f32,
+        M: usize,
+        N: usize,
+        dst_row_stride: usize,
+        dst_offset: usize,
+        bias_offset: usize,
+    ) void {
+        const VecT = @Vector(V, f32);
+        const zero: VecT = @splat(0.0);
+        for (0..M) |row| {
+            const dst_row = dst[dst_offset + row * dst_row_stride ..][0..N];
+            const bias_row = bias[bias_offset..][0..N];
+            var i: usize = 0;
+            while (i + V <= N) : (i += V) {
+                const gemm_v: VecT = dst_row[i..][0..V].*;
+                const bias_v: VecT = bias_row[i..][0..V].*;
+                dst_row[i..][0..V].* = @max(gemm_v + bias_v, zero);
+            }
+            while (i < N) : (i += 1) {
+                dst_row[i] = @max(dst_row[i] + bias_row[i], 0.0);
+            }
+        }
     }
 
     fn addBiasGeluRows(
@@ -1466,13 +1522,34 @@ const Context = struct {
                 const gemm_v: VecT = dst_row[i..][0..V].*;
                 const bias_v: VecT = bias_row[i..][0..V].*;
                 const a: VecT = gemm_v + bias_v;
-                dst_row[i..][0..V].* = a * (one / (one + @exp(-a)));
+                dst_row[i..][0..V].* = a * (one / (one + fastExpApproxVec(-a)));
             }
             while (i < N) : (i += 1) {
                 const a = dst_row[i] + bias_row[i];
                 dst_row[i] = a / (1.0 + @exp(-a));
             }
         }
+    }
+
+    fn fastExpApproxVec(x: @Vector(V, f32)) @Vector(V, f32) {
+        const VecT = @Vector(V, f32);
+        const IVecT = @Vector(V, i32);
+        const UVecT = @Vector(V, u32);
+        const inv_ln2: VecT = @splat(1.4426950408889634);
+        const ln2: VecT = @splat(0.6931471805599453);
+        const half: VecT = @splat(0.5);
+        const one: VecT = @splat(1.0);
+        const kf = @floor(x * inv_ln2 + half);
+        const r = x - kf * ln2;
+        const r2 = r * r;
+        const r3 = r2 * r;
+        const r4 = r2 * r2;
+        const r5 = r4 * r;
+        const poly = one + r + r2 * @as(VecT, @splat(0.5)) + r3 * @as(VecT, @splat(0.16666666666666666)) + r4 * @as(VecT, @splat(0.041666666666666664)) + r5 * @as(VecT, @splat(0.008333333333333333));
+        const ki: IVecT = @intFromFloat(kf);
+        const exponent_bits: UVecT = @as(UVecT, @intCast(ki + @as(IVecT, @splat(127)))) << @as(UVecT, @splat(23));
+        const pow2: VecT = @bitCast(exponent_bits);
+        return poly * pow2;
     }
 
     fn qmatmul(self: Context, q: anytype) void {

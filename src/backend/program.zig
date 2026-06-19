@@ -5558,7 +5558,7 @@ pub fn matmulRepeatElementwiseBiasActivationCompatible(
         .elementwise => |e| e,
         else => return false,
     };
-    if (activation.op != .gelu and activation.op != .silu) return false;
+    if (activation.op != .relu and activation.op != .gelu and activation.op != .silu) return false;
     if (activation.n != bias.n) return false;
     return activation.src0 == bias.dst and activation.src0_offset == bias.dst_offset;
 }

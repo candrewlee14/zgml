@@ -2342,6 +2342,16 @@ expectSame(genericCoreStepHelpers.hostBoundOutput(genericCoreStepSession), [0, 0
 expectSame(genericCoreStepHelpers.explicitInput(genericCoreStepSession, undefined, "session.step input"), [1, 2], "generic core step explicit bound input");
 expectSame(genericCoreStepHelpers.explicitOutput(genericCoreStepSession, new Float32Array(2), "session.step output"), [0, 0], "generic core step explicit output");
 expectSame(genericCoreStepHelpers.stepCore(genericCoreStepSession, undefined), [7, 8], "generic core step stepCore host output");
+const genericCoreStepIntoOutput = new Float32Array(2);
+expectSame(genericCoreStepHelpers.stepIntoCore(genericCoreStepSession, genericCoreStepIntoOutput, [5, 6]), genericCoreStepIntoOutput, "generic core stepIntoCore returns caller Float32Array");
+expectSame(genericCoreStepIntoOutput, [7, 8], "generic core stepIntoCore writes caller Float32Array");
+try {
+  genericCoreStepHelpers.stepIntoCore(genericCoreStepSession, new Float32Array(1), [5, 6]);
+  throw new Error("generic core stepIntoCore small Float32Array did not throw");
+} catch (error) {
+  expectSame(error.stepParamsDiagnosticCode, "invalid-output", "generic core stepIntoCore small Float32Array diagnostic code");
+  expectSame(error.stepParamsDiagnosticDetails, { actualLength: 1, expectedLength: 2 }, "generic core stepIntoCore small Float32Array diagnostic details");
+}
 expectSame(genericCoreStepHelpers.advanceCore(genericCoreStepSession, [3, 4]), undefined, "generic core step advanceCore");
 const genericCoreNativeSession = {
   ...genericCoreStepSession,
