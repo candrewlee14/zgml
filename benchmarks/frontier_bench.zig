@@ -18,7 +18,7 @@ const Tensor = internal.Tensor;
 
 const SampleCount = 15;
 const WarmupSamples = 3;
-const MinSampleNs: u64 = 2_000_000;
+const MinSampleNs: u64 = 8_000_000;
 const MinRepeats: usize = 8;
 const MaxRepeats: usize = 1 << 20;
 const FrontierStencilVecLen = 16;

@@ -203,6 +203,9 @@ machine for both prompt/prefill and decode.
   within 10%. The full-prefill line also reports a parity candidate signal at
   1.00x. Both must keep max absolute
   difference below 0.002.
+  Frontier samples now run against an 8ms minimum timing window so the
+  near-parity prompt tile gate is less likely to pass or fail on timer noise
+  rather than kernel behavior.
   Observed runs are often faster, but the gate treats this as local
   non-regression evidence because Metal command timing is noisy at these sizes.
   This proves the current weak-lane command is locally justified across tile

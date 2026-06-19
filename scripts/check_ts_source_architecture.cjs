@@ -478,6 +478,7 @@ function checkPackageExports(errors) {
     }
   }
   for (const needle of [
+    "const MinSampleNs: u64 = 8_000_000",
     "const MinRepeats: usize = 8",
     "qproj prompt m=32 n=512 k=512",
     "qproj full-prefill m=128 n=512 k=512",
