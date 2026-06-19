@@ -559,6 +559,20 @@ pub fn build(b: *std.Build) void {
         wasm_browser_gpu_smoke.step.dependOn(&c_api_wasm.step);
         ffi_wasm_browser_gpu_smoke_step.dependOn(&wasm_browser_gpu_smoke.step);
     }
+    const ffi_wasm_browser_gpu_focused_smoke_step = b.step("ffi-wasm-browser-gpu-focused-smoke", "Run focused browser Wasm LLaMA proof and require real GPUBuffer mode");
+    if (pathExists("examples/wasm_ffi/browser_smoke_runner.mjs")) {
+        const wasm_browser_gpu_focused_smoke = b.addSystemCommand(&.{
+            "node",
+            "--no-warnings",
+            "examples/wasm_ffi/browser_smoke_runner.mjs",
+            "--enable-unsafe-webgpu",
+            "--require-gpu",
+            "--llama-profile-label=gguf-smollm3-nope-gqa-pipeline",
+            "--timeout-ms=300000",
+        });
+        wasm_browser_gpu_focused_smoke.step.dependOn(&c_api_wasm.step);
+        ffi_wasm_browser_gpu_focused_smoke_step.dependOn(&wasm_browser_gpu_focused_smoke.step);
+    }
     const c_api_smoke = addCApiSmoke(b, target, optimize, c_api.lib);
     const ffi_c_step = b.step("ffi-c", "Build the dynamic C ABI library for FFI hosts");
     ffi_c_step.dependOn(&c_api.install.step);

@@ -207,6 +207,7 @@ function checkScripts() {
     "q8 prompt candidate gate\", process.execPath, args, result",
     "module Program bench gate\", process.execPath, args, result",
     "portable Wasm Node/WASI smoke\", \"zig\", nodeWasiArgs, nodeWasi",
+    "portable browser required-GPU focused smoke\", \"zig\", browserGpuFocusedArgs, browserGpuFocused",
     "stdio: [\"ignore\", \"pipe\", process.stderr]",
   ]);
   requireIncludes(read("scripts/check_q8_prompt_candidate.cjs"), "scripts/check_q8_prompt_candidate.cjs", "full-model Q8 prompt candidate probe", [
@@ -419,6 +420,9 @@ function checkScripts() {
   if (scripts["smoke:portable-ffi:browser-llama"] !== "zig build ffi-wasm-browser-llama-focused-smoke") {
     errors.push("package.json smoke:portable-ffi:browser-llama must keep the focused browser LLaMA family proof gate");
   }
+  if (scripts["smoke:portable-ffi:browser-gpu-focused"] !== "zig build ffi-wasm-browser-gpu-focused-smoke") {
+    errors.push("package.json smoke:portable-ffi:browser-gpu-focused must keep the focused required-GPU browser LLaMA proof gate");
+  }
   if (scripts["smoke:portable-ffi:browser-gpu"] !== "zig build ffi-wasm-browser-gpu-smoke") {
     errors.push("package.json smoke:portable-ffi:browser-gpu must keep the required-GPU browser Wasm FFI gate");
   }
@@ -486,7 +490,9 @@ function checkScripts() {
     "examples/wasm_ffi/smoke.mjs",
     "const ffi_wasm_browser_smoke_step = b.step(\"ffi-wasm-browser-smoke\", \"Run browser Wasm C ABI smoke with Chrome/Chromium\")",
     "const ffi_wasm_browser_llama_focused_smoke_step = b.step(\"ffi-wasm-browser-llama-focused-smoke\", \"Run focused browser Wasm LLaMA family proof with Chrome/Chromium\")",
+    "const ffi_wasm_browser_gpu_focused_smoke_step = b.step(\"ffi-wasm-browser-gpu-focused-smoke\", \"Run focused browser Wasm LLaMA proof and require real GPUBuffer mode\")",
     "--llama-profile-label=gguf-smollm3-nope-gqa-pipeline",
+    "--require-gpu",
     "const ffi_wasm_browser_gpu_smoke_step = b.step(\"ffi-wasm-browser-gpu-smoke\", \"Run browser Wasm C ABI smoke and require real GPUBuffer mode\")",
     "examples/wasm_ffi/browser_smoke_runner.mjs",
     "check_step.dependOn(ffi_wasm_browser_smoke_step)",
@@ -583,6 +589,15 @@ function checkScripts() {
     "const unexpectedLabels = labelList.filter((label) => !focusedRequiredLabels.has(label))",
     "llamaFamilyDispatches=${value.llamaGenericDispatches || \"0\"}/${value.llamaScalarDispatches || \"0\"}/${value.llamaWindowDispatches || \"0\"}",
     "llamaSelectionReads=${value.llamaSelectionReads || \"0\"}",
+  ]);
+  requireIncludes(read("scripts/check_goal_scorecard.cjs"), "scripts/check_goal_scorecard.cjs", "optional focused browser real-GPU execution evidence", [
+    "const browserGpuFocusedArgs = [\"build\", \"ffi-wasm-browser-gpu-focused-smoke\"]",
+    "portable browser required-GPU focused smoke skipped:",
+    "browser smoke passed without real GPUBuffer mode",
+    "browser GPUBuffer smoke cannot bind LLaMA block pipeline",
+    "mode=gpu-buffer",
+    "llamaProfiles=2",
+    "llamaProfileLabels=2",
   ]);
   const requiredStorageLabels = requireConstArrayCount(browserSmokeRunner, "examples/wasm_ffi/browser_smoke_runner.mjs", "requiredStorageLabels", 46);
   requireIncludes(requiredStorageLabels, "examples/wasm_ffi/browser_smoke_runner.mjs", "required-GPU browser storage-mode label matrix", [
@@ -1467,6 +1482,42 @@ function checkPortableWasmRuntimeEvidence() {
     "llamaProfileLabels=",
   ]);
   requirePattern(browserOutput, "portable browser Wasm smoke output", "focused browser SmolLM3 GGUF LLaMA proof", /llamaProfileLabels=2\b/);
+
+  const browserGpuFocusedArgs = ["build", "ffi-wasm-browser-gpu-focused-smoke"];
+  const browserGpuFocused = spawnSync("zig", browserGpuFocusedArgs, {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const browserGpuFocusedOutput = `${browserGpuFocused.stdout ?? ""}${browserGpuFocused.stderr ?? ""}`;
+  if (browserGpuFocused.status !== 0) {
+    if (
+      browserGpuFocusedOutput.includes("Chrome/Chromium not found") ||
+      browserGpuFocusedOutput.includes("Chrome/Chromium not usable: exited before DevTools started") ||
+      browserGpuFocusedOutput.includes("browser smoke passed without real GPUBuffer mode") ||
+      browserGpuFocusedOutput.includes("browser GPUBuffer smoke cannot bind LLaMA block pipeline")
+    ) {
+      notes.push(`portable browser required-GPU focused smoke skipped: ${browserGpuFocusedOutput.trim().split("\n").at(-1) ?? "unavailable"}`);
+    } else {
+      errors.push(spawnFailure("portable browser required-GPU focused smoke", "zig", browserGpuFocusedArgs, browserGpuFocused));
+      return;
+    }
+  } else {
+    requireIncludes(browserGpuFocusedOutput, "portable browser required-GPU focused smoke output", "focused browser real-GPU LLaMA proof", [
+      "zgml browser wasm smoke ok:",
+      "mode=gpu-buffer",
+      "available=true",
+      "canBindBlockPipeline=true",
+      "llamaProfiles=2",
+      "llamaBackendDispatches=",
+      "llamaExecutorDispatches=",
+      "llamaFallbackOps=0",
+      "llamaStorageCalls=",
+      "llamaSelectionReads=",
+      "llamaProfileLabels=2",
+    ]);
+    notes.push(browserGpuFocusedOutput.trim().split("\n").at(-1));
+  }
   notes.push(nodeWasiOutput.trim().split("\n").at(-1));
   notes.push(browserOutput.trim().split("\n").at(-1));
 }
@@ -4706,7 +4757,11 @@ function checkDocs() {
     "`lazyGraph.compile()` and compatibility `torch.compile.compile(lazyGraph)`",
     "The remaining substrate",
     "required-GPU browser runner's full",
-    "dispatch-family and selection-read summary fields",
+    "selection-read summary fields",
+    "the goal scorecard now attempts a focused",
+    "required-GPU browser LLaMA run for `gguf-smollm3-nope-gqa-pipeline`",
+    "zig build ffi-wasm-browser-gpu-focused-smoke",
+    "mode=gpu-buffer",
     "tiled quantized row-chain",
     "remaining frontend jump is native lowering and breadth,",
     "compile hooks exist.",

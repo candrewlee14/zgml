@@ -264,8 +264,10 @@ Current checked progress:
   plus wider default
   browser/WebGPU execution evidence. The required-GPU browser runner's full
   LLaMA profile and storage-mode matrices are now scorecard-checked source
-  contracts, and the cheap focused browser smoke also has checked
-  dispatch-family and selection-read summary fields.
+  contracts, the cheap focused browser smoke has checked dispatch-family and
+  selection-read summary fields, and the goal scorecard now attempts a focused
+  required-GPU browser LLaMA run for `gguf-smollm3-nope-gqa-pipeline` when
+  Chrome/WebGPU is locally available.
 - zgml frontend replacement feel: ~100%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
@@ -3756,6 +3758,13 @@ Current first slice:
   scorecard a narrower SmolLM3 GGUF LLaMA-family proof that checks focused
   browser execution without requiring the full browser profile matrix on every
   scorecard run.
+- `zig build ffi-wasm-browser-gpu-focused-smoke` runs that same focused browser
+  LLaMA proof with Chrome WebGPU flags and `--require-gpu`. The goal scorecard
+  attempts this lane after the portable focused browser smoke: on machines with
+  usable Chrome/WebGPU it must report `mode=gpu-buffer`, `canBindBlockPipeline=true`,
+  two focused LLaMA profile labels, backend dispatch evidence, and zero fallback
+  ops; on machines without that local browser/GPU path it records an explicit
+  skip note instead of pretending mock storage is real GPU execution.
 - `zig build ffi-wasm-browser-gpu-smoke` runs the same page with Chrome WebGPU
   flags, requires real `GPUBuffer` mode, and fails if the adapter cannot bind
   the six-storage-buffer LLaMA block-pipeline proof. It is an exhaustive
