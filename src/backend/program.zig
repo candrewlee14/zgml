@@ -4680,6 +4680,23 @@ fn findDenseProjectionChainCommand(
         .matmul => |m| m,
         else => return null,
     };
+    if (start + 3 < ops.len and !commandRangeTouchesUsed(@intCast(start), 4, used)) {
+        if (matmulRepeatElementwiseBiasActivationCompatible(m, ops[start + 1], ops[start + 2], ops[start + 3])) {
+            var command = ProgramCommand{
+                .kind = .dense_projection_chain,
+                .op_start = @intCast(start),
+                .op_count = 4,
+                .anchor_count = 1,
+                .sidecar_count = 3,
+            };
+            command.indices[0] = start;
+            command.sidecar_indices[0] = start + 1;
+            command.sidecar_indices[1] = start + 2;
+            command.sidecar_indices[2] = start + 3;
+            return command;
+        }
+    }
+
     if (start + 2 < ops.len and !commandRangeTouchesUsed(@intCast(start), 3, used)) {
         if (matmulRepeatElementwiseBiasCompatible(m, ops[start + 1], ops[start + 2])) {
             var command = ProgramCommand{
@@ -5524,6 +5541,26 @@ pub fn matmulRepeatElementwiseBiasCompatible(m: anytype, repeat_op: backend_mod.
     if (rp.src_strides[0] != 1 or rp.dst_strides[0] != 1) return false;
     if (rp.dst_ne[1] > 1 and rp.dst_strides[1] != g.N) return false;
     return true;
+}
+
+pub fn matmulRepeatElementwiseBiasActivationCompatible(
+    m: anytype,
+    repeat_op: backend_mod.DeviceOp,
+    bias_op: backend_mod.DeviceOp,
+    activation_op: backend_mod.DeviceOp,
+) bool {
+    if (!matmulRepeatElementwiseBiasCompatible(m, repeat_op, bias_op)) return false;
+    const bias = switch (bias_op) {
+        .elementwise => |e| e,
+        else => return false,
+    };
+    const activation = switch (activation_op) {
+        .elementwise => |e| e,
+        else => return false,
+    };
+    if (activation.op != .gelu) return false;
+    if (activation.n != bias.n) return false;
+    return activation.src0 == bias.dst and activation.src0_offset == bias.dst_offset;
 }
 
 pub fn matmulFusedElementwiseSidecarCompatible(m: anytype, fe: anytype) bool {
@@ -7823,6 +7860,44 @@ test "program command stream fuses dense matmul repeated bias add" {
     try std.testing.expectEqual(@as(u32, 2), summary.estimated_saved_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.dense_projection_chains);
     try std.testing.expectEqual(@as(u32, 2), summary.projection_chain_sidecars);
+}
+
+test "program command stream fuses dense matmul repeated bias gelu" {
+    var matmul = testMatmul(4);
+    matmul.matmul.dst = 1;
+    matmul.matmul.geom.N = 3;
+    matmul.matmul.geom.dst_row_stride = 3;
+    const ops = [_]backend_mod.DeviceOp{
+        matmul,
+        .{ .repeat = .{
+            .dst = 2,
+            .src = 3,
+            .n = 12,
+            .src_ne = .{ 3, 1, 1, 1 },
+            .dst_ne = .{ 3, 4, 1, 1 },
+            .src_strides = .{ 1, 3, 3, 3 },
+            .dst_strides = .{ 1, 3, 12, 12 },
+        } },
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 2, .n = 12 } },
+        .{ .elementwise = .{ .op = .gelu, .dst = 4, .src0 = 2, .src1 = 2, .n = 12 } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.dense_projection_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].coveredOpCount());
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.commands);
+    try std.testing.expectEqual(@as(u32, 4), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.dense_projection_chains);
+    try std.testing.expectEqual(@as(u32, 3), summary.projection_chain_sidecars);
 }
 
 test "program command stream batches dense matvec elementwise sidecars" {

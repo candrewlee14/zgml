@@ -300,6 +300,10 @@ linear-bias command path into one dense projection dispatch. Current evidence:
 `linear_batched` improved to about `0.71x` of PyTorch, `lazy_mlp_batched`
 reached about `1.03x`, the FFN case moved to about `0.71x`, and the worst
 observed PyTorch ratio moved to about `0.58x` (`lazy_matmul_add_gelu_batched`).
+A follow-up pass fused the trailing GELU in the same dense projection command
+for the lazy `matmul -> add(bias) -> gelu` path, reducing that runtime profile
+from two commands to one and moving the observed worst PyTorch ratio to about
+`0.62x`.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS

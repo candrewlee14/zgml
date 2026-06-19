@@ -288,6 +288,26 @@ pub const ExecutionTape = struct {
                     continue;
                 }
             }
+            if (command.kind == .dense_projection_chain and count == 4) {
+                const matmul_entry = self.entries[start];
+                const repeat_entry = self.entries[start + 1];
+                const bias_entry = self.entries[start + 2];
+                const activation_entry = self.entries[start + 3];
+                const matmul_index: usize = matmul_entry.op_index;
+                const repeat_index: usize = repeat_entry.op_index;
+                const bias_index: usize = bias_entry.op_index;
+                const activation_index: usize = activation_entry.op_index;
+                if (matmul_index >= ops.len or repeat_index >= ops.len or bias_index >= ops.len or activation_index >= ops.len) {
+                    std.debug.panic("reference execution tape dense projection bias activation index out of range", .{});
+                }
+                if (ctx.denseProjectionBiasActivationChain(ops[matmul_index], ops[repeat_index], ops[bias_index], ops[activation_index])) {
+                    if (runtime_profile) |profile| {
+                        profile.recordProgramCommand(command.kind);
+                        profile.recordProgramCommandDispatch(command.kind);
+                    }
+                    continue;
+                }
+            }
             for (self.entries[start..end]) |entry| {
                 const idx: usize = entry.op_index;
                 if (idx >= ops.len) {
@@ -1160,6 +1180,74 @@ const Context = struct {
             const dst_row = dst[dst_offset + row * m.geom.dst_row_stride ..][0..N];
             const bias_row = bias[bias_offset..][0..N];
             for (dst_row, bias_row) |*out, b| out.* += b;
+        }
+        return true;
+    }
+
+    fn denseProjectionBiasActivationChain(
+        self: Context,
+        matmul_op: backend_mod.DeviceOp,
+        repeat_op: backend_mod.DeviceOp,
+        bias_op: backend_mod.DeviceOp,
+        activation_op: backend_mod.DeviceOp,
+    ) bool {
+        const m = switch (matmul_op) {
+            .matmul => |m| m,
+            else => return false,
+        };
+        const rp = switch (repeat_op) {
+            .repeat => |rp| rp,
+            else => return false,
+        };
+        const activation = switch (activation_op) {
+            .elementwise => |e| e,
+            else => return false,
+        };
+        if (!program_mod.matmulRepeatElementwiseBiasActivationCompatible(m, repeat_op, bias_op, activation_op)) return false;
+        forward.blasSgemm(
+            self.bufSlice(activation.dst),
+            self.bufSlice(m.a),
+            self.bufSlice(m.b),
+            m.geom.M,
+            m.geom.N,
+            m.geom.K,
+            m.geom.a_row_stride,
+            m.geom.a_col_stride,
+            m.geom.b_row_stride,
+            m.geom.b_col_stride,
+            m.geom.a_offset,
+            m.geom.b_offset,
+            activation.dst_offset,
+            m.geom.dst_row_stride,
+        );
+        const dst = self.bufF32(activation.dst);
+        const bias = self.bufF32(rp.src);
+        const M: usize = m.geom.M;
+        const N: usize = m.geom.N;
+        const dst_offset: usize = activation.dst_offset;
+        const bias_offset: usize = rp.src_offset;
+        const VecT = @Vector(V, f32);
+        const k0: VecT = @splat(0.7978845608);
+        const k1: VecT = @splat(0.044715);
+        const half: VecT = @splat(0.5);
+        const one: VecT = @splat(1.0);
+        for (0..M) |row| {
+            const dst_row = dst[dst_offset + row * m.geom.dst_row_stride ..][0..N];
+            const bias_row = bias[bias_offset..][0..N];
+            var i: usize = 0;
+            while (i + V <= N) : (i += V) {
+                const gemm_v: VecT = dst_row[i..][0..V].*;
+                const bias_v: VecT = bias_row[i..][0..V].*;
+                const a: VecT = gemm_v + bias_v;
+                const k = k0 * (a + k1 * a * a * a);
+                const e2k = @exp(k + k);
+                dst_row[i..][0..V].* = half * a * (one + (e2k - one) / (e2k + one));
+            }
+            while (i < N) : (i += 1) {
+                const a = dst_row[i] + bias_row[i];
+                const kk = 0.7978845608 * (a + 0.044715 * a * a * a);
+                dst_row[i] = 0.5 * a * (1.0 + std.math.tanh(kk));
+            }
         }
         return true;
     }

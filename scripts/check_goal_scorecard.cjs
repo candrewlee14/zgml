@@ -293,14 +293,20 @@ function checkScripts() {
   ]);
   requireIncludes(read("src/backend/program.zig"), "src/backend/program.zig", "dense linear bias command compression", [
     "matmulRepeatElementwiseBiasCompatible",
+    "matmulRepeatElementwiseBiasActivationCompatible",
     "program command stream fuses dense matmul repeated bias add",
+    "program command stream fuses dense matmul repeated bias gelu",
     "sidecar_count = 2",
+    "sidecar_count = 3",
     "summary.estimated_saved_dispatches",
   ]);
   requireIncludes(read("src/backend/reference.zig"), "src/backend/reference.zig", "reference executor dense linear bias fast path", [
     "ctx.denseProjectionBiasChain",
     "fn denseProjectionBiasChain",
+    "ctx.denseProjectionBiasActivationChain",
+    "fn denseProjectionBiasActivationChain",
     "program_mod.matmulRepeatElementwiseBiasCompatible",
+    "program_mod.matmulRepeatElementwiseBiasActivationCompatible",
     "out.* += b",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "Metal native logsoftmax row kernel", [
