@@ -3176,16 +3176,43 @@ function expectZeroParameterProgramEvidence(adapter: Record<string, any>, label:
     permuteProgram.dispose();
   }
 
-  const rank3PermuteSupport = adapter.nn.permute([1, 0, 2]).compileSupport({ inputShape: [2, 3, 1], backend: "cpu" });
-  const rank3PermuteDiagnostic = rank3PermuteSupport.diagnostics && rank3PermuteSupport.diagnostics[0];
+  const rank3Permute = adapter.nn.permute([0, 2, 1]);
+  const rank3PermuteInput = adapter.tensor([1, 2, 3, 4, 5, 6], [1, 2, 3]);
+  const rank3PermuteEager = rank3Permute.forward(rank3PermuteInput);
+  const rank3PermuteSupport = rank3Permute.compileSupport({ inputShape: [1, 2, 3], backend: "cpu" });
+  const rank3PermuteKernelPlan = adapter.nn.kernelPlan(rank3Permute, { inputShape: [1, 2, 3], backend: "cpu" });
   if (
-    rank3PermuteSupport.supported !== false ||
-    rank3PermuteDiagnostic === undefined ||
-    rank3PermuteDiagnostic.stage !== "kernelizer" ||
-    rank3PermuteDiagnostic.code !== "unsupported-view" ||
-    rank3PermuteDiagnostic.op !== "permute"
+    rank3PermuteSupport.supported !== true ||
+    rank3PermuteSupport.outputShape.join("x") !== "1x3x2" ||
+    rank3PermuteKernelPlan.ops.length !== 1 ||
+    rank3PermuteKernelPlan.ops[0].op !== "permute" ||
+    rank3PermuteKernelPlan.ops[0].nativeKernels.join("|") !== "transpose"
   ) {
-    throw new Error(`${label} expected honest unsupported rank-3 permute compile evidence; unsupported compile evidence must stay explicit`);
+    throw new Error(`${label} expected rank-3 single-axis permute to lower through transpose Program evidence`);
+  }
+  const rank3PermuteProgram = rank3Permute.compile({ inputShape: [1, 2, 3], backend: "cpu" });
+  const rank3PermuteSession = rank3PermuteProgram.bind({});
+  try {
+    const compiledRank3Permute = rank3PermuteSession.stepTensor(rank3PermuteInput);
+    if (compiledRank3Permute.shape.join("x") !== "1x3x2") {
+      throw new Error(`${label} expected compiled rank-3 permute output shape`);
+    }
+    expectClose(compiledRank3Permute.data, rank3PermuteEager.data, `${label} rank-3 permute eager/compiled parity`);
+  } finally {
+    rank3PermuteSession.dispose();
+    rank3PermuteProgram.dispose();
+  }
+
+  const rank3CyclePermuteSupport = adapter.nn.permute([1, 2, 0]).compileSupport({ inputShape: [1, 2, 3], backend: "cpu" });
+  const rank3CyclePermuteDiagnostic = rank3CyclePermuteSupport.diagnostics && rank3CyclePermuteSupport.diagnostics[0];
+  if (
+    rank3CyclePermuteSupport.supported !== false ||
+    rank3CyclePermuteDiagnostic === undefined ||
+    rank3CyclePermuteDiagnostic.stage !== "kernelizer" ||
+    rank3CyclePermuteDiagnostic.code !== "unsupported-view" ||
+    rank3CyclePermuteDiagnostic.op !== "permute"
+  ) {
+    throw new Error(`${label} expected honest unsupported rank-3 cycle permute compile evidence; unsupported compile evidence must stay explicit`);
   }
 }
 

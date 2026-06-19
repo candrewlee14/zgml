@@ -369,17 +369,20 @@ function reshapeDescForShape(outputShape: any) {
 function permuteDescForIrOp(op: any): NativeModuleOpDesc | null {
   const attrs = op.attrs ?? {};
   const rank = op.inputShape ? op.inputShape.length : 0;
-  if (rank !== 2 || !Array.isArray(attrs.dims) || attrs.dims.length !== 2) return null;
-  const axis0 = frontendAxisForRank(attrs.dims[0], rank);
-  const axis1 = frontendAxisForRank(attrs.dims[1], rank);
-  if (axis0 === 0 && axis1 === 1) return reshapeDescForShape(op.outputShape);
-  if (!(axis0 === 1 && axis1 === 0)) return null;
+  if ((rank !== 2 && rank !== 3) || !Array.isArray(attrs.dims) || attrs.dims.length !== rank) return null;
+  if (rank === 3 && op.inputShape[0] !== 1) return null;
+  const axes = attrs.dims.map((dim: any) => frontendAxisForRank(dim, rank));
+  if (axes.every((axis: number, index: number) => axis === index)) return reshapeDescForShape(op.outputShape);
+  const changed = axes.map((axis: number, index: number) => axis === index ? -1 : index).filter((index: number) => index >= 0);
+  if (changed.length !== 2) return null;
+  const [axis0, axis1] = changed;
+  if (axes[axis0] !== axis1 || axes[axis1] !== axis0) return null;
   return {
     kind: moduleOpIds.transpose,
     activation: 0,
     flags: 0,
-    a: 0,
-    b: 1,
+    a: axis0,
+    b: axis1,
     c: 0,
     eps: 0,
   };
@@ -619,10 +622,11 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
     }
     case "transpose": {
       const rank = op.inputShape ? op.inputShape.length : 0;
-      if (rank !== 2) return null;
+      if (rank !== 2 && rank !== 3) return null;
+      if (rank === 3 && op.inputShape[0] !== 1) return null;
       const axis0 = frontendAxisForRank(attrs.dim0, rank);
       const axis1 = frontendAxisForRank(attrs.dim1, rank);
-      if (!((axis0 === 0 && axis1 === 1) || (axis0 === 1 && axis1 === 0))) return null;
+      if (axis0 === axis1) return reshapeDescForShape(op.outputShape);
       return {
         kind: moduleOpIds.transpose,
         activation: 0,
@@ -1439,14 +1443,14 @@ function kernelizerDiagnosticForIrOp(op: any) {
     return diagnosticForKernelizerOp(
       op,
       "unsupported-view",
-      "native module Program transpose currently supports rank-2 axis swaps only",
+      "native module Program transpose currently supports rank-2/rank-3 axis swaps only",
     );
   }
   if (op.op === "permute") {
     return diagnosticForKernelizerOp(
       op,
       "unsupported-view",
-      "native module Program permute currently supports rank-2 identity or axis swaps only",
+      "native module Program permute currently supports rank-2/rank-3 identity or single axis swaps only",
     );
   }
   if (op.op === "maxPool2d") {

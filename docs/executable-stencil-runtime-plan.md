@@ -289,6 +289,9 @@ Current checked progress:
   rank-3 `reshape`/`flatten`/`squeeze`/`unsqueeze`, rank-3 `broadcastTo`/`expand`,
   and singleton-envelope rank-3 `narrow`/`select`/`slice`
   lowering through the native module Program ABI,
+  singleton-envelope rank-3 `transpose` and single-axis-swap `permute`
+  lowering through the native module Program ABI while three-cycle permutes
+  still reject honestly,
   rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering, and
   compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or

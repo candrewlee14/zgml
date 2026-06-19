@@ -6512,22 +6512,35 @@ expectSame(permuteArtifacts.ir.ops[0].attrs, { dims: [1, 0] }, "trace compiler r
 expectSame(permuteArtifacts.kernelPlan.ops[0].nativeKernels, ["transpose"], "trace compiler rank-2 permute kernel");
 const rank3PermuteArtifacts = traceCompiler.traceCompilerArtifacts({
   ...permuteTrace,
-  inputShape: [2, 3, 1],
-  outputShape: [3, 2, 1],
+  inputShape: [1, 2, 3],
+  outputShape: [1, 3, 2],
   ops: [{
     ...permuteTrace.ops[0],
-    dims: [1, 0, 2],
-    inputShape: [2, 3, 1],
-    outputShape: [3, 2, 1],
+    dims: [0, 2, 1],
+    inputShape: [1, 2, 3],
+    outputShape: [1, 3, 2],
+  }],
+});
+expectSame(rank3PermuteArtifacts.diagnostic, null, "trace compiler rank-3 single-axis permute lowers");
+expectSame(rank3PermuteArtifacts.kernelPlan.ops[0].nativeKernels, ["transpose"], "trace compiler rank-3 single-axis permute kernel");
+const rank3CyclePermuteArtifacts = traceCompiler.traceCompilerArtifacts({
+  ...permuteTrace,
+  inputShape: [1, 2, 3],
+  outputShape: [2, 3, 1],
+  ops: [{
+    ...permuteTrace.ops[0],
+    dims: [1, 2, 0],
+    inputShape: [1, 2, 3],
+    outputShape: [2, 3, 1],
   }],
 });
 expectSame({
-  code: rank3PermuteArtifacts.diagnostic.code,
-  stage: rank3PermuteArtifacts.diagnostic.stage,
+  code: rank3CyclePermuteArtifacts.diagnostic.code,
+  stage: rank3CyclePermuteArtifacts.diagnostic.stage,
 }, {
   code: "unsupported-view",
   stage: "kernelizer",
-}, "trace compiler rank-3 permute unsupported diagnostic");
+}, "trace compiler rank-3 cycle permute unsupported diagnostic");
 const supportDetails = traceCompiler.supportDetailsWithTrace({ composable: true }, irOnlyTrace, traceIrResult.ir, null);
 expectSame(supportDetails.inputShape, [1, 2], "trace compiler support input shape");
 expectSame(Object.isFrozen(supportDetails.trace.ops[0]), true, "trace compiler support frozen trace op");

@@ -2046,9 +2046,15 @@ fn moduleMaterializeDense(graph_alloc: std.mem.Allocator, source: *TensorF32) !*
 
 fn moduleTranspose(op: zgml_module_op_desc, graph_alloc: std.mem.Allocator, current: *TensorF32, current_rank: usize) !ModuleNarrowResult {
     if (op.activation != 0 or op.flags != 0 or op.c != 0 or op.eps != 0) return error.InvalidArgument;
-    if (current_rank != 2) return error.Unsupported;
-    if (!((op.a == 0 and op.b == 1) or (op.a == 1 and op.b == 0))) return error.Unsupported;
-    const transposed = current.transpose();
+    if (current_rank != 2 and current_rank != 3) return error.Unsupported;
+    if (op.a >= current_rank or op.b >= current_rank or op.a == op.b) return error.Unsupported;
+    var axes = [_]usize{0} ** tensor_mod.max_dims;
+    for (0..current.n_dims) |axis| axes[axis] = axis;
+    const native_axis_a = current_rank - 1 - op.a;
+    const native_axis_b = current_rank - 1 - op.b;
+    axes[native_axis_a] = native_axis_b;
+    axes[native_axis_b] = native_axis_a;
+    const transposed = current.permute(axes[0..current.n_dims]);
     return .{
         .tensor = try moduleMaterializeDense(graph_alloc, transposed),
         .feature_len = transposed.ne[0],
@@ -7020,6 +7026,51 @@ test "C ABI module program compiles traced sequential ops" {
         }, &result));
         try std.testing.expectEqual(@as(usize, 6), result.output_len);
         try std.testing.expectEqualSlices(f32, &.{ 1, 4, 2, 5, 3, 6 }, &transpose_output);
+    }
+
+    {
+        const transpose3_input_shape = [_]usize{ 1, 2, 3 };
+        const transpose3_ops = [_]zgml_module_op_desc{.{
+            .kind = module_op_transpose,
+            .a = 1,
+            .b = 2,
+        }};
+        var transpose3_program: ?*zgml_program = null;
+        var transpose3_session: ?*zgml_session = null;
+        defer zgml_session_free(transpose3_session);
+        defer zgml_program_free(transpose3_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = transpose3_input_shape[0..].ptr,
+            .input_rank = transpose3_input_shape.len,
+            .ops = transpose3_ops[0..].ptr,
+            .op_count = transpose3_ops.len,
+        }, &.{ .backend = backend_cpu }, &transpose3_program));
+        try std.testing.expect(transpose3_program != null);
+
+        var transpose3_requirements = zgml_program_requirements{};
+        try std.testing.expectEqual(status(.ok), zgml_program_get_requirements(transpose3_program, &transpose3_requirements));
+        try std.testing.expectEqual(module_kind, transpose3_requirements.model_kind);
+        try std.testing.expectEqual(@as(usize, 6), transpose3_requirements.input_len);
+        try std.testing.expectEqual(@as(usize, 6), transpose3_requirements.output_len);
+
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(transpose3_program, &.{
+            .weights = null,
+            .weights_len = 0,
+        }, &transpose3_session));
+        try std.testing.expect(transpose3_session != null);
+
+        const transpose3_input = [_]f32{ 1, 2, 3, 4, 5, 6 };
+        var transpose3_output = [_]f32{0} ** 6;
+        result = .{};
+        try std.testing.expectEqual(status(.ok), zgml_session_step(transpose3_session, &.{
+            .input = transpose3_input[0..].ptr,
+            .input_len = transpose3_input.len,
+            .output = transpose3_output[0..].ptr,
+            .output_len = transpose3_output.len,
+        }, &result));
+        try std.testing.expectEqual(@as(usize, 6), result.output_len);
+        try std.testing.expectEqualSlices(f32, &.{ 1, 4, 2, 5, 3, 6 }, &transpose3_output);
     }
 
     {

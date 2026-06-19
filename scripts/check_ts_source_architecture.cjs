@@ -15784,7 +15784,9 @@ function checkDistSmokeIsTsOwned(errors) {
       "unsupported compile evidence",
       "expected rank-2 permute to lower through transpose Program evidence",
       "rank-2 permute eager/compiled parity",
-      "expected honest unsupported rank-3 permute compile evidence",
+      "expected rank-3 single-axis permute to lower through transpose Program evidence",
+      "rank-3 permute eager/compiled parity",
+      "expected honest unsupported rank-3 cycle permute compile evidence",
       "unsupportedRank3ShapeCases",
       "singleton-envelope rank-3 materialized output views",
       "compile rejects before native shape_mismatch",
@@ -15829,7 +15831,9 @@ function checkDistSmokeIsTsOwned(errors) {
   }
   for (const needle of [
     "trace compiler rank-2 permute kernel",
-    "trace compiler rank-3 permute unsupported diagnostic",
+    "trace compiler rank-3 single-axis permute lowers",
+    "trace compiler rank-3 single-axis permute kernel",
+    "trace compiler rank-3 cycle permute unsupported diagnostic",
   ]) {
     if (!permuteTsSourceSmoke.includes(needle)) {
       errors.push(`src/ts/smokes/ts_source_smoke.ts must pin source trace compiler permute lowering behavior: ${needle}`);
