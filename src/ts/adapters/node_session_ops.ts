@@ -86,10 +86,11 @@ export function createNodeSessionOps(options: NodeSessionOpsOptions) {
     handle: NativeHandle,
     input: SessionStepArrayLike | null | undefined,
     output: SessionStepArrayLike | null | undefined,
+    outputLen: number,
   ): number {
     if (input && output) {
       check(symbols.sessionStepDirect(handle, input, input.length, output, output.length));
-      return output.length;
+      return outputLen;
     }
     const result = resultRecord(handle);
     check(symbols.sessionStep(handle, cachedStepRecord(input, output), result));

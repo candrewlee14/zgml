@@ -2378,6 +2378,11 @@ const genericExecutionFacadeHelpers = sessionFacade.createGenericSessionExecutio
     }
     return new Float32Array([1, 2]);
   },
+  stepIntoCore(session, outputValues, inputValues) {
+    genericExecutionFacadeSteps.push({ handle: session.handle, inputValues, outputValues });
+    outputValues.set([3, 4]);
+    return outputValues;
+  },
   advanceCore(session, inputValues) {
     genericExecutionFacadeAdvances.push({ handle: session.handle, inputValues });
   },
@@ -2423,7 +2428,7 @@ expectThrow(
 );
 expectThrow(
   () => sessionFacade.createGenericSessionExecutionFacadeHelpers({ bumpSessionCallProfile() {}, stepCore() {} }),
-  "createGenericSessionExecutionFacadeHelpers requires bumpSessionCallProfile, stepCore, advanceCore, and outputTensorForSession callbacks",
+  "createGenericSessionExecutionFacadeHelpers requires bumpSessionCallProfile, stepCore, stepIntoCore, advanceCore, and outputTensorForSession callbacks",
   "generic execution facade requires callbacks",
 );
 const genericStepFacadeBumps = [];
@@ -2439,6 +2444,11 @@ const genericStepFacadeHelpers = sessionFacade.createGenericSessionStepFacadeHel
       return outputValues;
     }
     return new Float32Array([11, 12]);
+  },
+  stepIntoCore(session, outputValues, inputValues) {
+    genericStepFacadeSteps.push({ handle: session.handle, inputValues, outputValues });
+    outputValues.set([9, 10]);
+    return outputValues;
   },
   outputTensorForSession(desc, values, options, boundOutputShape) {
     return { desc, values, options, boundOutputShape };
@@ -2469,7 +2479,7 @@ expectThrow(
 );
 expectThrow(
   () => sessionFacade.createGenericSessionStepFacadeHelpers({ bumpSessionCallProfile() {}, stepCore() {} }),
-  "createGenericSessionStepFacadeHelpers requires bumpSessionCallProfile, stepCore, and outputTensorForSession callbacks",
+  "createGenericSessionStepFacadeHelpers requires bumpSessionCallProfile, stepCore, stepIntoCore, and outputTensorForSession callbacks",
   "generic step facade requires callbacks",
 );
 const llamaStepFacadeBumps = [];

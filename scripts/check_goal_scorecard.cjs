@@ -103,6 +103,18 @@ function spawnFailure(label, command, args, result) {
   return `${label} failed: ${commandLine(command, args)} status=${status}${signal}${error}\n${spawnOutput(result)}`;
 }
 
+function runScorecardCheck(label, fn) {
+  process.stderr.write(`[scorecard] start ${label}\n`);
+  const beforeErrorCount = errors.length;
+  try {
+    fn();
+  } catch (err) {
+    errors.push(`${label} threw: ${err && err.stack ? err.stack : String(err)}`);
+  }
+  const status = errors.length === beforeErrorCount ? "done" : "issues";
+  process.stderr.write(`[scorecard] ${status} ${label}\n`);
+}
+
 function checkScripts() {
   const packageJson = JSON.parse(read("package.json"));
   const scripts = packageJson.scripts ?? {};
@@ -4689,15 +4701,15 @@ function checkDocs() {
   ]);
 }
 
-checkScripts();
-checkSubstrateEvidence();
-checkFrontierEvidence();
-checkQ8PromptCandidateEvidence();
-checkModuleProgramBenchEvidence();
-checkPortableWasmRuntimeEvidence();
-checkNativeWgpuRuntimeEvidence();
-checkZgmlFrontendSurface();
-checkDocs();
+runScorecardCheck("static scripts", checkScripts);
+runScorecardCheck("substrate evidence", checkSubstrateEvidence);
+runScorecardCheck("frontier evidence", checkFrontierEvidence);
+runScorecardCheck("q8 prompt candidate evidence", checkQ8PromptCandidateEvidence);
+runScorecardCheck("module Program bench evidence", checkModuleProgramBenchEvidence);
+runScorecardCheck("portable Wasm runtime evidence", checkPortableWasmRuntimeEvidence);
+runScorecardCheck("native WebGPU runtime evidence", checkNativeWgpuRuntimeEvidence);
+runScorecardCheck("zgml frontend surface", checkZgmlFrontendSurface);
+runScorecardCheck("docs", checkDocs);
 
 if (errors.length > 0) {
   console.error(`zgml goal scorecard failed with ${errors.length} issue(s):`);

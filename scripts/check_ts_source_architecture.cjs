@@ -7336,7 +7336,7 @@ function checkTsSessionCompositionAvoidsRepoOnlyJs(errors) {
     "readonly executeTokenWindow: BoundaryCallback<[handle: NativeHandle, window: TokenWindow, wantsLogits: boolean, output: SessionStepValue], number>;",
     "readonly sessionRuntimeProfile: BoundaryCallback<[handle: NativeHandle], RuntimeProfileEvidence>;",
     "readonly prepareF32: BoundaryCallback<[value: unknown], PreparedF32>;",
-    "readonly stepSession: BoundaryCallback<[handle: NativeHandle, input: SessionStepValue, output: SessionStepValue], number>;",
+    "readonly stepSession: BoundaryCallback<[handle: NativeHandle, input: SessionStepValue, output: SessionStepValue, outputLen: number], number>;",
     "readonly sessionUploadPersistentRange: BoundaryCallback<[handle: NativeHandle, first: number, len: number], unknown>;",
     "function normalizeLlamaBindOptions(programHandle: unknown, optionsForBind: LlamaBindOptionsRecord = {})",
     "optionsForBind: LlamaBindOptionsRecord,",

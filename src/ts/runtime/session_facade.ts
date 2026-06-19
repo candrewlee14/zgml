@@ -158,7 +158,7 @@ function inputOnlyExecuteIntoParam(params: unknown): unknown | typeof noFastExec
   }
   return record.input;
 }
-type GenericStepSessionFn = (handle: unknown, input: unknown, output: unknown) => number;
+type GenericStepSessionFn = (handle: unknown, input: unknown, output: unknown, outputLen: number) => number;
 type GenericStepNoOutputFn = (handle: unknown, input: unknown) => number;
 type GenericSessionOutputTensorForSessionFn = (
   desc: unknown,
@@ -1119,7 +1119,7 @@ export function createGenericSessionCoreStepFacadeHelpers<TSession extends AnyRe
       "session.step output",
       valueDeps,
     );
-    const outputLen = stepSession(session.handle, input, target.descOutput);
+    const outputLen = stepSession(session.handle, input, target.descOutput, session.desc.outputLen);
     return genericSessionStepResult(outputLen, target.output, nativeBoundOutput(session), target.useNativeOutput);
   }
 
@@ -1130,7 +1130,7 @@ export function createGenericSessionCoreStepFacadeHelpers<TSession extends AnyRe
     if (output === null) {
       throw new Error("session.step output requires an output buffer");
     }
-    const outputLen = stepSession(session.handle, input, output);
+    const outputLen = stepSession(session.handle, input, output, session.desc.outputLen);
     return outputLen === output.length ? output : output.subarray(0, outputLen);
   }
 

@@ -149,7 +149,7 @@ export type GenericSessionFacadeOptions = {
   readonly prepareF32: BoundaryCallback<[value: unknown], PreparedF32>;
   readonly valueShape?: BoundaryCallback<[value: unknown], readonly number[] | null>;
   readonly sessionTensorHelpers: SessionTensorHelpers;
-  readonly stepSession: BoundaryCallback<[handle: NativeHandle, input: SessionStepValue, output: SessionStepValue], number>;
+  readonly stepSession: BoundaryCallback<[handle: NativeHandle, input: SessionStepValue, output: SessionStepValue, outputLen: number], number>;
   readonly stepNoOutput: BoundaryCallback<[handle: NativeHandle, input: SessionStepValue], number>;
   readonly assertSessionAlive: BoundaryCallback<[handle: NativeHandle], void>;
   readonly sessionInspect: BoundaryCallback<[handle: NativeHandle], SessionInspectionEvidence>;
