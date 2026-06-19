@@ -7643,17 +7643,21 @@ function checkSessionFacadeHelpersUseNamedContracts(errors) {
     if (typeName === "GenericSessionExecutionFacadeHelpersOptions") {
       for (const needle of [
         "type GenericSessionStepCoreFn<TSession = unknown> = (session: TSession, inputValues: unknown, outputValues?: unknown) => unknown;",
+        "type GenericSessionStepIntoCoreFn<TSession = unknown> = (session: TSession, outputValues: unknown, inputValues?: unknown) => unknown;",
         "type GenericSessionAdvanceCoreFn<TSession = unknown> = (session: TSession, inputValues: unknown) => unknown;",
         "export type GenericSessionExecutionFacadeHelpersOptions<TSession extends AnyRecord = AnyRecord> = Readonly<{",
         "readonly bumpSessionCallProfile: BumpSessionCallProfileFn<TSession>;",
         "readonly stepCore: GenericSessionStepCoreFn<TSession>;",
+        "readonly stepIntoCore: GenericSessionStepIntoCoreFn<TSession>;",
         "readonly advanceCore: GenericSessionAdvanceCoreFn<TSession>;",
         "export function createGenericSessionExecutionFacadeHelpers<TSession extends AnyRecord = AnyRecord>(options: GenericSessionExecutionFacadeHelpersOptions<TSession>)",
         "SessionExecuteIntoParams,",
         "SessionExecuteParams,",
         "function execute(session: TSession, params: SessionExecuteParams = {})",
         "function executeTensor(session: TSession, params: SessionExecuteTensorParams = {})",
-        "function executeInto(session: TSession, outputValues: unknown, params: SessionExecuteIntoParams = {})",
+        "function executeInto(session: TSession, outputValues: unknown, params?: SessionExecuteIntoParams)",
+        "const out = stepIntoCore(session, outputValues, undefined);",
+        "const out = stepIntoCore(session, outputValues, plan.input);",
       ]) {
         if (!source.includes(needle)) {
           errors.push(`${relativePath} must expose generic TS-owned Generic Session execution facade contracts: ${needle}`);
@@ -7678,6 +7682,7 @@ function checkSessionFacadeHelpersUseNamedContracts(errors) {
         "function hostBoundInput(session: TSession)",
         "function explicitInput(session: TSession, inputValues: unknown, label: string)",
         "function stepCore(session: TSession, inputValues: unknown, outputValues?: unknown)",
+        "function stepIntoCore(session: TSession, outputValues: unknown, inputValues?: unknown)",
         "function stepParamsCompatibility(session: TSession, params: unknown = {})",
       ]) {
         if (!source.includes(needle)) {
@@ -7691,6 +7696,7 @@ function checkSessionFacadeHelpersUseNamedContracts(errors) {
         "export type GenericSessionStepFacadeHelpersOptions<TSession extends AnyRecord = AnyRecord> = Readonly<{",
         "readonly bumpSessionCallProfile: BumpSessionCallProfileFn<TSession>;",
         "readonly stepCore: GenericSessionStepCoreFn<TSession>;",
+        "readonly stepIntoCore: GenericSessionStepIntoCoreFn<TSession>;",
         "export function createGenericSessionStepFacadeHelpers<TSession extends AnyRecord = AnyRecord>(options: GenericSessionStepFacadeHelpersOptions<TSession>)",
         "function step(session: TSession, inputValues: unknown, outputValues?: unknown)",
         "function stepTensor(session: TSession, inputValues: unknown, tensorOptions: SessionStepTensorOptions = {})",

@@ -980,6 +980,7 @@ export function createGenericSessionFacadeHelpers(options: GenericSessionFacadeO
   });
   const {
     stepCore,
+    stepIntoCore,
     advanceCore,
     stepParamsCompatibility,
   } = coreStepFacade;
@@ -987,6 +988,7 @@ export function createGenericSessionFacadeHelpers(options: GenericSessionFacadeO
   const stepFacade = createGenericSessionStepFacadeHelpers<GenericSessionRecord>({
     bumpSessionCallProfile,
     stepCore,
+    stepIntoCore,
     outputTensorForSession: sessionTensorHelpers.outputTensorForSession,
   });
   const {
@@ -1068,6 +1070,7 @@ export function createGenericSessionFacadeHelpers(options: GenericSessionFacadeO
   const executionFacade = createGenericSessionExecutionFacadeHelpers<GenericSessionRecord>({
     bumpSessionCallProfile,
     stepCore,
+    stepIntoCore,
     advanceCore,
     outputTensorForSession: sessionTensorHelpers.outputTensorForSession,
   });

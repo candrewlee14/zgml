@@ -136,6 +136,7 @@ type SessionReadOutputTensorTargetFn<TSession = unknown> = (session: TSession, o
 type SessionActiveOutputValuesFn = (values: Float32Array, length: number) => Float32Array;
 type SessionOutputTensorFn<TSession = unknown> = (session: TSession, values: Float32Array, options: TensorOutputOptions, target: AnyRecord) => unknown;
 type GenericSessionStepCoreFn<TSession = unknown> = (session: TSession, inputValues: unknown, outputValues?: unknown) => unknown;
+type GenericSessionStepIntoCoreFn<TSession = unknown> = (session: TSession, outputValues: unknown, inputValues?: unknown) => unknown;
 type GenericSessionAdvanceCoreFn<TSession = unknown> = (session: TSession, inputValues: unknown) => unknown;
 type GenericPrepareHostValueFn = (value: unknown) => { data: Float32Array; shape: number[] };
 type GenericValidateHostValueShapeFn = (
@@ -279,6 +280,7 @@ export type SessionReadbackFacadeHelpersOptions<TSession = unknown> = Readonly<{
 export type GenericSessionExecutionFacadeHelpersOptions<TSession extends AnyRecord = AnyRecord> = Readonly<{
   readonly bumpSessionCallProfile: BumpSessionCallProfileFn<TSession>;
   readonly stepCore: GenericSessionStepCoreFn<TSession>;
+  readonly stepIntoCore: GenericSessionStepIntoCoreFn<TSession>;
   readonly advanceCore: GenericSessionAdvanceCoreFn<TSession>;
   readonly outputTensorForSession: GenericSessionOutputTensorForSessionFn;
 }>;
@@ -296,6 +298,7 @@ export type GenericSessionCoreStepFacadeHelpersOptions<TSession extends AnyRecor
 export type GenericSessionStepFacadeHelpersOptions<TSession extends AnyRecord = AnyRecord> = Readonly<{
   readonly bumpSessionCallProfile: BumpSessionCallProfileFn<TSession>;
   readonly stepCore: GenericSessionStepCoreFn<TSession>;
+  readonly stepIntoCore: GenericSessionStepIntoCoreFn<TSession>;
   readonly outputTensorForSession: GenericSessionOutputTensorForSessionFn;
 }>;
 
@@ -981,15 +984,17 @@ export function createSessionReadbackFacadeHelpers<TSession = unknown>(options: 
 export function createGenericSessionExecutionFacadeHelpers<TSession extends AnyRecord = AnyRecord>(options: GenericSessionExecutionFacadeHelpersOptions<TSession>) {
   const bumpSessionCallProfile = options && options.bumpSessionCallProfile;
   const stepCore = options && options.stepCore;
+  const stepIntoCore = options && options.stepIntoCore;
   const advanceCore = options && options.advanceCore;
   const outputTensorForSession = options && options.outputTensorForSession;
   if (
     typeof bumpSessionCallProfile !== "function" ||
     typeof stepCore !== "function" ||
+    typeof stepIntoCore !== "function" ||
     typeof advanceCore !== "function" ||
     typeof outputTensorForSession !== "function"
   ) {
-    throw new Error("createGenericSessionExecutionFacadeHelpers requires bumpSessionCallProfile, stepCore, advanceCore, and outputTensorForSession callbacks");
+    throw new Error("createGenericSessionExecutionFacadeHelpers requires bumpSessionCallProfile, stepCore, stepIntoCore, advanceCore, and outputTensorForSession callbacks");
   }
 
   function execute(session: TSession, params: SessionExecuteParams = {}) {
@@ -1012,10 +1017,15 @@ export function createGenericSessionExecutionFacadeHelpers<TSession extends AnyR
     return out;
   }
 
-  function executeInto(session: TSession, outputValues: unknown, params: SessionExecuteIntoParams = {}) {
+  function executeInto(session: TSession, outputValues: unknown, params?: SessionExecuteIntoParams) {
     assertFloat32OutputBuffer(outputValues, "executeInto");
+    if (params === undefined || params === null) {
+      const out = stepIntoCore(session, outputValues, undefined);
+      bumpSessionCallProfile(session, "executeIntoCount");
+      return out;
+    }
     const plan = genericSessionExecuteIntoPlan(params);
-    const out = stepCore(session, plan.input, outputValues);
+    const out = stepIntoCore(session, outputValues, plan.input);
     bumpSessionCallProfile(session, "executeIntoCount");
     return out;
   }
@@ -1094,6 +1104,17 @@ export function createGenericSessionCoreStepFacadeHelpers<TSession extends AnyRe
     return genericSessionStepResult(outputLen, target.output, nativeBoundOutput(session), target.useNativeOutput);
   }
 
+  function stepIntoCore(session: TSession, outputValues: unknown, inputValues?: unknown) {
+    assertLiveSession(session);
+    const input = explicitInput(session, inputValues, "session.step input");
+    const output = explicitOutput(session, outputValues, "session.step output");
+    if (output === null) {
+      throw new Error("session.step output requires an output buffer");
+    }
+    const outputLen = stepSession(session.handle, input, output);
+    return outputLen === output.length ? output : output.subarray(0, outputLen);
+  }
+
   function advanceCore(session: TSession, inputValues: unknown) {
     assertLiveSession(session);
     const input = explicitInput(session, inputValues, "session.advance input");
@@ -1116,6 +1137,7 @@ export function createGenericSessionCoreStepFacadeHelpers<TSession extends AnyRe
     explicitInput,
     explicitOutput,
     stepCore,
+    stepIntoCore,
     advanceCore,
     stepParamsCompatibility,
   });
@@ -1124,13 +1146,15 @@ export function createGenericSessionCoreStepFacadeHelpers<TSession extends AnyRe
 export function createGenericSessionStepFacadeHelpers<TSession extends AnyRecord = AnyRecord>(options: GenericSessionStepFacadeHelpersOptions<TSession>) {
   const bumpSessionCallProfile = options && options.bumpSessionCallProfile;
   const stepCore = options && options.stepCore;
+  const stepIntoCore = options && options.stepIntoCore;
   const outputTensorForSession = options && options.outputTensorForSession;
   if (
     typeof bumpSessionCallProfile !== "function" ||
     typeof stepCore !== "function" ||
+    typeof stepIntoCore !== "function" ||
     typeof outputTensorForSession !== "function"
   ) {
-    throw new Error("createGenericSessionStepFacadeHelpers requires bumpSessionCallProfile, stepCore, and outputTensorForSession callbacks");
+    throw new Error("createGenericSessionStepFacadeHelpers requires bumpSessionCallProfile, stepCore, stepIntoCore, and outputTensorForSession callbacks");
   }
 
   function step(session: TSession, inputValues: unknown, outputValues?: unknown) {
@@ -1150,7 +1174,7 @@ export function createGenericSessionStepFacadeHelpers<TSession extends AnyRecord
 
   function stepInto(session: TSession, outputValues: unknown, inputValues: unknown) {
     assertFloat32OutputBuffer(outputValues, "stepInto");
-    const out = stepCore(session, inputValues, outputValues);
+    const out = stepIntoCore(session, outputValues, inputValues);
     bumpSessionCallProfile(session, "stepIntoCount");
     return out;
   }
