@@ -26,6 +26,7 @@ const floors = Object.freeze({
   rmsGeluLinearBatchedSpeedup: 1.05,
   tokenHeadSpeedup: 1.2,
   shapeLinearSpeedup: 1.2,
+  rank3MinReductionSpeedup: 1.2,
   conv2dSpeedup: 1.05,
   conv2dBatchedSpeedup: 1.05,
   lazyConv2dReluBatchedSpeedup: 1.05,
@@ -60,6 +61,7 @@ const expectedKeys = Object.freeze([
   "rms_gelu_linear_batched",
   "token_head",
   "shape_linear",
+  "rank3_min_reduction",
   "conv2d",
   "conv2d_batched",
   "lazy_conv2d_relu_batched",
@@ -963,6 +965,41 @@ const benchSpecs = [
       },
     },
     summary: (result) => `shape_linear=${result.speedup.toFixed(2)}x floor=${floors.shapeLinearSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=3 dispatch=2 fused_shape=2 kernels=reshape|linear hot=allocation-free`,
+  },
+  {
+    key: "rank3_min_reduction",
+    label: "rank3-min-reduction",
+    floor: floors.rank3MinReductionSpeedup,
+    inputShape: [1, 512, 128],
+    inputShapeText: "1x512x128",
+    outputShapeText: "1x512x1",
+    inputLen: 512 * 128,
+    outputLen: 512,
+    layerCount: 1,
+    parameterNames: "",
+    input: () => adapter.tensor(values(512 * 128, 13), [1, 512, 128]),
+    model: () => adapter.nn.min(-1),
+    ir: { opCount: 1, parameterCount: 0 },
+    iterations: 120,
+    tolerance: 1e-6,
+    plan: {
+      opCount: 1,
+      dispatchCount: 1,
+      publicOps: 1,
+      description: "single native rank-3 last-axis Min reduction dispatch",
+      check: (plan) => {
+        const op = plan.ops[0];
+        if (
+          op.op !== "min" ||
+          op.kernel !== "min" ||
+          op.nativeKernels.join("|") !== "min" ||
+          op.nativeDispatchCount !== 1
+        ) {
+          throw new Error("rank3-min-reduction expected native min kernel plan");
+        }
+      },
+    },
+    summary: (result) => `rank3_min_reduction=${result.speedup.toFixed(2)}x floor=${floors.rank3MinReductionSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=1 dispatch=1 kernels=min batched=rank3-last-axis hot=allocation-free`,
   },
   {
     key: "conv2d",

@@ -701,18 +701,23 @@ const Context = struct {
         const src_base: usize = mp.src_offset;
         const dst_base: usize = mp.dst_offset;
         for (0..batch) |n| {
+            const src_batch_base = src_base + n * src_w * src_h * channels;
+            const dst_batch_base = dst_base + n * out_w * out_h * channels;
             for (0..channels) |c| {
+                const src_channel_base = src_batch_base + c * src_w * src_h;
+                const dst_channel_base = dst_batch_base + c * out_w * out_h;
                 for (0..out_h) |y| {
+                    const sy = y * 2;
+                    const src_row0 = src_channel_base + sy * src_w;
+                    const src_row1 = src_row0 + src_w;
+                    const dst_row = dst_channel_base + y * out_w;
                     for (0..out_w) |x| {
                         const sx = x * 2;
-                        const sy = y * 2;
-                        const src_channel_base = src_base + n * src_w * src_h * channels + c * src_w * src_h;
-                        const dst_channel_base = dst_base + n * out_w * out_h * channels + c * out_w * out_h;
-                        const a = src[src_channel_base + sx + sy * src_w];
-                        const b = src[src_channel_base + sx + 1 + sy * src_w];
-                        const c0 = src[src_channel_base + sx + (sy + 1) * src_w];
-                        const d = src[src_channel_base + sx + 1 + (sy + 1) * src_w];
-                        dst[dst_channel_base + x + y * out_w] = @max(@max(a, b), @max(c0, d));
+                        const a = src[src_row0 + sx];
+                        const b = src[src_row0 + sx + 1];
+                        const c0 = src[src_row1 + sx];
+                        const d = src[src_row1 + sx + 1];
+                        dst[dst_row + x] = @max(@max(a, b), @max(c0, d));
                     }
                 }
             }

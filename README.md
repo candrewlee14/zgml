@@ -870,7 +870,7 @@ long-form smoke and benchmark gates.
 library goal. It requires a passing no-fallback Program/Session substrate gate
 with a latest-vs-checked-baseline delta report for the selected native lanes,
 and checks that the public type smokes still cover the PyTorch-like surface:
-`goal progress: Program/Session substrate=82% floor=65%; PyTorch-like surface=100% floor=60%`.
+`goal progress: Program/Session substrate=83% floor=65%; PyTorch-like surface=100% floor=60%`.
 Those numbers are deliberately conservative: q8 prompt execution still needs a
 real tiled row-chain throughput kernel, while native WebGPU now has broader
 default optional LLaMA execution proof for quantized qweights,
