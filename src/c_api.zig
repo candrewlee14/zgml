@@ -5190,6 +5190,7 @@ fn directLinearShapeForSession(s: *SessionHandle, linear: *const TinyLinearSessi
     return switch (s.data) {
         .tiny_linear => blk: {
             const expected_weights = std.math.mul(usize, linear.input_len, linear.output_len) catch break :blk null;
+            if (!linear.owns_weights_buf or !linear.owns_bias_buf) break :blk null;
             if (linear.weights_buf.len != expected_weights) break :blk null;
             if (linear.bias_buf.len != linear.output_len) break :blk null;
             break :blk .{
@@ -5206,6 +5207,7 @@ fn directLinearShapeForSession(s: *SessionHandle, linear: *const TinyLinearSessi
             };
             const direct = module_program.direct_linear orelse break :blk null;
             if (direct.in_features == 0 or direct.out_features == 0) break :blk null;
+            if (!linear.owns_weights_buf or (direct.has_bias and !linear.owns_bias_buf)) break :blk null;
             const expected_weights = std.math.mul(usize, direct.in_features, direct.out_features) catch break :blk null;
             if (linear.weights_buf.len != expected_weights) break :blk null;
             if (direct.has_bias and linear.bias_buf.len != direct.out_features) break :blk null;
@@ -8468,10 +8470,16 @@ test "C ABI buffers can back tiny linear session bindings" {
     try std.testing.expectEqual(status(.ok), zgml_session_step(session, null, &result));
     try std.testing.expectEqual(status(.ok), zgml_buffer_read(output_buffer, 0, &output, @sizeOf(@TypeOf(output))));
     try std.testing.expectEqualSlices(f32, &.{ 2, 3 }, output[0..2]);
+    var direct_output = [_]f32{0} ** 2;
+    try std.testing.expectEqual(status(.ok), zgml_session_step_direct(session, &input, input.len, &direct_output, direct_output.len));
+    try std.testing.expectEqualSlices(f32, &.{ 2, 3 }, &direct_output);
     try std.testing.expectEqual(status(.ok), zgml_session_upload_persistent_range(session, 0, 1));
     try std.testing.expectEqual(status(.ok), zgml_session_step(session, null, &result));
     try std.testing.expectEqual(status(.ok), zgml_buffer_read(output_buffer, 0, &output, @sizeOf(@TypeOf(output))));
     try std.testing.expectEqualSlices(f32, &.{ 4, 6 }, output[0..2]);
+    direct_output = .{ 0, 0 };
+    try std.testing.expectEqual(status(.ok), zgml_session_step_direct(session, &input, input.len, &direct_output, direct_output.len));
+    try std.testing.expectEqualSlices(f32, &.{ 4, 6 }, &direct_output);
     try std.testing.expectEqual(status(.shape_mismatch), zgml_session_upload_persistent_range(session, 2, 1));
 
     const identity_weights = [_]f32{ 1, 0, 0, 1 };
