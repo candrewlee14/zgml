@@ -8,7 +8,7 @@ const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
 const goalProgress = Object.freeze({
-  substratePct: 81,
+  substratePct: 82,
   substrateFloorPct: 65,
   pytorchLikePct: 100,
   pytorchLikeFloorPct: 60,
@@ -4458,7 +4458,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=81% floor=65%; PyTorch-like surface=100% floor=60%",
+    "goal progress: Program/Session substrate=82% floor=65%; PyTorch-like surface=100% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4495,7 +4495,10 @@ function checkDocs() {
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
-    "Program/Session performance substrate: ~81%",
+    "Program/Session performance substrate: ~82%",
+    "That optional gate now also runs the native WebGPU LLaMA execution proofs for",
+    "runtime quantized-weight rebinding, resource-bound decode/prefill handoff,",
+    "long-prompt prefill, GQA long-prompt prefill, and a realistic head-width",
     "LayerNorm/RMSNorm descriptors can carry post-affine activations",
     "A batched `RMSNorm+GELU -> Linear`",
     "sign-style `neg -> abs -> step` chains",

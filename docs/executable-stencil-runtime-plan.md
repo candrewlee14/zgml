@@ -192,7 +192,7 @@ execution is the performance claim. Silent eager fallback is not allowed.
 
 Current checked progress:
 
-- Program/Session performance substrate: ~81%. The Program/Session shape,
+- Program/Session performance substrate: ~82%. The Program/Session shape,
   runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
   native Metal execution, a scorecard-run optional native wgpu validation gate,
   and ggml benchmark gates are real enough that the substrate is past "architecture".
@@ -219,7 +219,11 @@ Current checked progress:
   singleton-envelope rank-3 last-axis reductions now also compile and execute
   as native Program kernels for `sum`/`mean`/`max`/`min`/`argmax`/`argmin`,
   while non-envelope rank-3 reductions remain honestly unsupported instead of
-  crossing the C ABI with a shape the native Program compiler rejects. The remaining substrate jump is not another compatibility lane; it is a real
+  crossing the C ABI with a shape the native Program compiler rejects. The
+  optional native WebGPU validation gate now also runs LLaMA execution proofs
+  for runtime quantized-weight rebinding, resource-bound decode/prefill
+  handoff, long-prompt prefill, GQA long-prompt prefill, and realistic
+  head-width resource handoff instead of merely compiling those paths. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence. The required-GPU browser runner's full
   LLaMA profile and storage-mode matrices are now scorecard-checked source
