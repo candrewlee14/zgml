@@ -1239,14 +1239,26 @@ const Context = struct {
                 const gemm_v: VecT = dst_row[i..][0..V].*;
                 const bias_v: VecT = bias_row[i..][0..V].*;
                 const a: VecT = gemm_v + bias_v;
-                const k = k0 * (a + k1 * a * a * a);
-                const e2k = @exp(k + k);
-                dst_row[i..][0..V].* = half * a * (one + (e2k - one) / (e2k + one));
+                dst_row[i..][0..V].* = switch (activation.op) {
+                    .gelu => blk: {
+                        const k = k0 * (a + k1 * a * a * a);
+                        const e2k = @exp(k + k);
+                        break :blk half * a * (one + (e2k - one) / (e2k + one));
+                    },
+                    .silu => a * (one / (one + @exp(-a))),
+                    else => unreachable,
+                };
             }
             while (i < N) : (i += 1) {
                 const a = dst_row[i] + bias_row[i];
-                const kk = 0.7978845608 * (a + 0.044715 * a * a * a);
-                dst_row[i] = 0.5 * a * (1.0 + std.math.tanh(kk));
+                dst_row[i] = switch (activation.op) {
+                    .gelu => blk: {
+                        const kk = 0.7978845608 * (a + 0.044715 * a * a * a);
+                        break :blk 0.5 * a * (1.0 + std.math.tanh(kk));
+                    },
+                    .silu => a / (1.0 + @exp(-a)),
+                    else => unreachable,
+                };
             }
         }
         return true;

@@ -296,6 +296,7 @@ function checkScripts() {
     "matmulRepeatElementwiseBiasActivationCompatible",
     "program command stream fuses dense matmul repeated bias add",
     "program command stream fuses dense matmul repeated bias gelu",
+    "program command stream fuses dense matmul repeated bias silu",
     "sidecar_count = 2",
     "sidecar_count = 3",
     "summary.estimated_saved_dispatches",

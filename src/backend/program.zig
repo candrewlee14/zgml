@@ -5558,7 +5558,7 @@ pub fn matmulRepeatElementwiseBiasActivationCompatible(
         .elementwise => |e| e,
         else => return false,
     };
-    if (activation.op != .gelu) return false;
+    if (activation.op != .gelu and activation.op != .silu) return false;
     if (activation.n != bias.n) return false;
     return activation.src0 == bias.dst and activation.src0_offset == bias.dst_offset;
 }
@@ -7898,6 +7898,36 @@ test "program command stream fuses dense matmul repeated bias gelu" {
     try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.dense_projection_chains);
     try std.testing.expectEqual(@as(u32, 3), summary.projection_chain_sidecars);
+}
+
+test "program command stream fuses dense matmul repeated bias silu" {
+    var matmul = testMatmul(4);
+    matmul.matmul.dst = 1;
+    matmul.matmul.geom.N = 3;
+    matmul.matmul.geom.dst_row_stride = 3;
+    const ops = [_]backend_mod.DeviceOp{
+        matmul,
+        .{ .repeat = .{
+            .dst = 2,
+            .src = 3,
+            .n = 12,
+            .src_ne = .{ 3, 1, 1, 1 },
+            .dst_ne = .{ 3, 4, 1, 1 },
+            .src_strides = .{ 1, 3, 3, 3 },
+            .dst_strides = .{ 1, 3, 12, 12 },
+        } },
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 2, .n = 12 } },
+        .{ .elementwise = .{ .op = .silu, .dst = 4, .src0 = 2, .src1 = 2, .n = 12 } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.dense_projection_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].coveredOpCount());
 }
 
 test "program command stream batches dense matvec elementwise sidecars" {

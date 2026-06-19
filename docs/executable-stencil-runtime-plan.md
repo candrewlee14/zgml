@@ -304,6 +304,9 @@ A follow-up pass fused the trailing GELU in the same dense projection command
 for the lazy `matmul -> add(bias) -> gelu` path, reducing that runtime profile
 from two commands to one and moving the observed worst PyTorch ratio to about
 `0.62x`.
+The same dense projection activation path now handles SiLU for FFN blocks,
+dropping the lazy RMS/SiLU/FFN runtime profile from four commands to three and
+moving that observed PyTorch ratio to about `0.79x`.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS
