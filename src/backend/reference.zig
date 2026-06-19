@@ -270,6 +270,24 @@ pub const ExecutionTape = struct {
                     continue;
                 }
             }
+            if (command.kind == .dense_projection_chain and count == 3) {
+                const matmul_entry = self.entries[start];
+                const repeat_entry = self.entries[start + 1];
+                const sidecar_entry = self.entries[start + 2];
+                const matmul_index: usize = matmul_entry.op_index;
+                const repeat_index: usize = repeat_entry.op_index;
+                const sidecar_index: usize = sidecar_entry.op_index;
+                if (matmul_index >= ops.len or repeat_index >= ops.len or sidecar_index >= ops.len) {
+                    std.debug.panic("reference execution tape dense projection bias index out of range", .{});
+                }
+                if (ctx.denseProjectionBiasChain(ops[matmul_index], ops[repeat_index], ops[sidecar_index])) {
+                    if (runtime_profile) |profile| {
+                        profile.recordProgramCommand(command.kind);
+                        profile.recordProgramCommandDispatch(command.kind);
+                    }
+                    continue;
+                }
+            }
             for (self.entries[start..end]) |entry| {
                 const idx: usize = entry.op_index;
                 if (idx >= ops.len) {
@@ -1100,6 +1118,50 @@ const Context = struct {
             },
             else => return false,
         }
+    }
+
+    fn denseProjectionBiasChain(self: Context, matmul_op: backend_mod.DeviceOp, repeat_op: backend_mod.DeviceOp, sidecar_op: backend_mod.DeviceOp) bool {
+        const m = switch (matmul_op) {
+            .matmul => |m| m,
+            else => return false,
+        };
+        const rp = switch (repeat_op) {
+            .repeat => |rp| rp,
+            else => return false,
+        };
+        const e = switch (sidecar_op) {
+            .elementwise => |e| e,
+            else => return false,
+        };
+        if (!program_mod.matmulRepeatElementwiseBiasCompatible(m, repeat_op, sidecar_op)) return false;
+        forward.blasSgemm(
+            self.bufSlice(e.dst),
+            self.bufSlice(m.a),
+            self.bufSlice(m.b),
+            m.geom.M,
+            m.geom.N,
+            m.geom.K,
+            m.geom.a_row_stride,
+            m.geom.a_col_stride,
+            m.geom.b_row_stride,
+            m.geom.b_col_stride,
+            m.geom.a_offset,
+            m.geom.b_offset,
+            e.dst_offset,
+            m.geom.dst_row_stride,
+        );
+        const dst = self.bufF32(e.dst);
+        const bias = self.bufF32(rp.src);
+        const M: usize = m.geom.M;
+        const N: usize = m.geom.N;
+        const dst_offset: usize = e.dst_offset;
+        const bias_offset: usize = rp.src_offset;
+        for (0..M) |row| {
+            const dst_row = dst[dst_offset + row * m.geom.dst_row_stride ..][0..N];
+            const bias_row = bias[bias_offset..][0..N];
+            for (dst_row, bias_row) |*out, b| out.* += b;
+        }
+        return true;
     }
 
     fn qmatmul(self: Context, q: anytype) void {

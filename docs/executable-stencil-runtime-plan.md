@@ -295,6 +295,11 @@ The PyTorch comparison must also match the zgml workload shape exactly. The
 current corrected evidence compares the lazy RMS/SiLU/FFN case as 64->128->64
 instead of a smaller 64->64->64 PyTorch proxy; on June 19, 2026 this moved the
 honest worst observed ratio to about `0.40x`, with the FFN case at about `0.54x`.
+A later June 19, 2026 pass fused the dense `matmul -> repeat(bias) -> add`
+linear-bias command path into one dense projection dispatch. Current evidence:
+`linear_batched` improved to about `0.71x` of PyTorch, `lazy_mlp_batched`
+reached about `1.03x`, the FFN case moved to about `0.71x`, and the worst
+observed PyTorch ratio moved to about `0.58x` (`lazy_matmul_add_gelu_batched`).
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS

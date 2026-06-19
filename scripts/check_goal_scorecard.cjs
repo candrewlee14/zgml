@@ -291,6 +291,18 @@ function checkScripts() {
     "fn logsoftmax(self: Context, s: anytype) void",
     "reference executor logsoftmax normalizes rows in log space",
   ]);
+  requireIncludes(read("src/backend/program.zig"), "src/backend/program.zig", "dense linear bias command compression", [
+    "matmulRepeatElementwiseBiasCompatible",
+    "program command stream fuses dense matmul repeated bias add",
+    "sidecar_count = 2",
+    "summary.estimated_saved_dispatches",
+  ]);
+  requireIncludes(read("src/backend/reference.zig"), "src/backend/reference.zig", "reference executor dense linear bias fast path", [
+    "ctx.denseProjectionBiasChain",
+    "fn denseProjectionBiasChain",
+    "program_mod.matmulRepeatElementwiseBiasCompatible",
+    "out.* += b",
+  ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "Metal native logsoftmax row kernel", [
     "const compute_op_logsoftmax: u32 = 103",
     "fused_logsoftmax=103",

@@ -1187,6 +1187,11 @@ pub const ProgramCommandKind = enum {
             },
 
             .dense_projection_chain,
+            => .{
+                .coverage = .anchor_sidecars,
+                .sidecars = .flat,
+            },
+
             .projection_chain,
             .attention_chain,
             => .{ .coverage = .anchor_sidecars },
@@ -4671,11 +4676,27 @@ fn findDenseProjectionChainCommand(
     used: ?[]const bool,
 ) ?ProgramCommand {
     if (start + 1 >= ops.len) return null;
-    if (commandRangeTouchesUsed(@intCast(start), 2, used)) return null;
     const m = switch (ops[start]) {
         .matmul => |m| m,
         else => return null,
     };
+    if (start + 2 < ops.len and !commandRangeTouchesUsed(@intCast(start), 3, used)) {
+        if (matmulRepeatElementwiseBiasCompatible(m, ops[start + 1], ops[start + 2])) {
+            var command = ProgramCommand{
+                .kind = .dense_projection_chain,
+                .op_start = @intCast(start),
+                .op_count = 3,
+                .anchor_count = 1,
+                .sidecar_count = 2,
+            };
+            command.indices[0] = start;
+            command.sidecar_indices[0] = start + 1;
+            command.sidecar_indices[1] = start + 2;
+            return command;
+        }
+    }
+
+    if (commandRangeTouchesUsed(@intCast(start), 2, used)) return null;
     switch (ops[start + 1]) {
         .elementwise => |e| if (!matmulElementwiseSidecarCompatible(m, e)) return null,
         .fused_elementwise => |fe| if (!matmulFusedElementwiseSidecarCompatible(m, fe)) return null,
@@ -5473,6 +5494,36 @@ pub fn matmulElementwiseSidecarCompatible(m: anytype, e: anytype) bool {
     const src0_primary = e.src0 == m.dst and e.src0_offset == g.dst_offset;
     const src1_primary = e.src1 == m.dst and e.src1_offset == g.dst_offset;
     return src0_primary != src1_primary;
+}
+
+pub fn matmulRepeatElementwiseBiasCompatible(m: anytype, repeat_op: backend_mod.DeviceOp, elementwise_op: backend_mod.DeviceOp) bool {
+    const rp = switch (repeat_op) {
+        .repeat => |rp| rp,
+        else => return false,
+    };
+    const e = switch (elementwise_op) {
+        .elementwise => |e| e,
+        else => return false,
+    };
+    const g = m.geom;
+    if (g.M == 0 or g.N == 0 or g.dst_row_stride != g.N) return false;
+    if (e.op != .add) return false;
+    if (e.n != g.M * g.N or rp.n != e.n) return false;
+    if (rp.dst != e.dst or rp.dst_offset != e.dst_offset) return false;
+
+    const src0_primary = e.src0 == m.dst and e.src0_offset == g.dst_offset;
+    const src1_primary = e.src1 == m.dst and e.src1_offset == g.dst_offset;
+    const src0_repeat = e.src0 == rp.dst and e.src0_offset == rp.dst_offset;
+    const src1_repeat = e.src1 == rp.dst and e.src1_offset == rp.dst_offset;
+    if (src0_primary == src1_primary) return false;
+    if (src0_repeat == src1_repeat) return false;
+    if (src0_primary == src0_repeat) return false;
+
+    if (rp.src_ne[0] != g.N) return false;
+    if (rp.dst_ne[0] != g.N or rp.dst_ne[1] != g.M) return false;
+    if (rp.src_strides[0] != 1 or rp.dst_strides[0] != 1) return false;
+    if (rp.dst_ne[1] > 1 and rp.dst_strides[1] != g.N) return false;
+    return true;
 }
 
 pub fn matmulFusedElementwiseSidecarCompatible(m: anytype, fe: anytype) bool {
@@ -7735,6 +7786,43 @@ test "dense matmul sidecar chains accept prefill geometry and reject mismatched 
     const commands_mismatched = try buildProgramCommands(std.testing.allocator, &mismatched, CommandStreamPolicy.grouped(4, 4));
     defer std.testing.allocator.free(commands_mismatched);
     try std.testing.expectEqual(ProgramCommandKind.op, commands_mismatched[0].kind);
+}
+
+test "program command stream fuses dense matmul repeated bias add" {
+    var matmul = testMatmul(4);
+    matmul.matmul.dst = 1;
+    matmul.matmul.geom.N = 3;
+    matmul.matmul.geom.dst_row_stride = 3;
+    const ops = [_]backend_mod.DeviceOp{
+        matmul,
+        .{ .repeat = .{
+            .dst = 2,
+            .src = 3,
+            .n = 12,
+            .src_ne = .{ 3, 1, 1, 1 },
+            .dst_ne = .{ 3, 4, 1, 1 },
+            .src_strides = .{ 1, 3, 3, 3 },
+            .dst_strides = .{ 1, 3, 12, 12 },
+        } },
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 2, .n = 12 } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.dense_projection_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].coveredOpCount());
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.commands);
+    try std.testing.expectEqual(@as(u32, 3), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 1), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.dense_projection_chains);
+    try std.testing.expectEqual(@as(u32, 2), summary.projection_chain_sidecars);
 }
 
 test "program command stream batches dense matvec elementwise sidecars" {
