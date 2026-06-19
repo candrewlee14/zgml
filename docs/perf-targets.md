@@ -282,12 +282,12 @@ machine for both prompt/prefill and decode.
   RMSNorm-scale row pass, while the scalar kernel stays diagnostic for the
   qmatvec/decode-style path.
   It caches the row input vector in threadgroup memory for eligible `K <= 2048`
-  shapes, which slightly improves the isolated row-chain frontier but does not
-  change the full-model promotion decision. A 256-thread row-wide variant was
-  tested and rejected: it left decode/tiny cases effectively neutral and
-  regressed the full-prefill row-chain diagnostic, so the next throughput target
-  needs a tiled qmatmul row-chain design with an explicit row-reduction
-  strategy rather than a larger scalar threadgroup. The prompt-sized candidate
+  shapes, and now uses a 256-thread row-wide diagnostic variant that slightly
+  improves the isolated row-chain frontier without changing the full-model
+  promotion decision. Decode/tiny cases remain effectively neutral and
+  full-prefill remains below the default promotion floor, so the next throughput
+  target needs a tiled qmatmul row-chain design with an explicit row-reduction
+  strategy rather than another scalar threadgroup-width tweak. The prompt-sized candidate
   path now keeps decode qmatvec unfused while preserving prompt qmatmul
   evidence. The active frontier is tiled row-chain throughput or a larger
   semantic sublayer, not command-count reduction by itself.

@@ -42,7 +42,7 @@ fn deviceOpAt(comptime tag: DeviceOpTag, ops: []const backend_mod.DeviceOp, idx:
 const TILE: u32 = 32; // output tile per threadgroup (TILE x TILE)
 const MAX_ROW_CHAIN_COLS: u32 = 4096;
 const MAX_ROW_CHAIN_K: u32 = 2048;
-const QMATMUL_ROW_CHAIN_THREADS: u32 = 64;
+const QMATMUL_ROW_CHAIN_THREADS: u32 = 256;
 // 4 simdgroups per threadgroup (128 threads), each handles 8x8 sub-tiles
 // Shared memory per K step: TILE*8 + 8*TILE = 512 floats = 2 KB
 
@@ -56,7 +56,7 @@ const shader_source =
     \\constant uint TILE = 32;
     \\constant uint NSUB = 4; // 2x2 arrangement of 8x8 sub-tiles per simdgroup
     \\constant uint QMATVEC_DOT_THREADS = 64;
-    \\constant uint QMATMUL_ROW_CHAIN_THREADS = 64;
+    \\constant uint QMATMUL_ROW_CHAIN_THREADS = 256;
     \\constant uint MAX_ROW_CHAIN_COLS = 4096;
     \\constant uint MAX_ROW_CHAIN_K = 2048;
     \\
