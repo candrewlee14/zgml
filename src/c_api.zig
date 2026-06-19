@@ -5243,7 +5243,34 @@ fn addDenseBiasRows(dst: []f32, bias: []const f32, M: usize, N: usize) void {
     }
 }
 
+fn executeSmallDirectLinearBiasStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32) bool {
+    if (!shape.has_bias) return false;
+    if (shape.M > 256 or shape.N > 64 or shape.K > 128 or shape.N % 8 != 0) return false;
+
+    const VecT = @Vector(8, f32);
+    const input_slice = input[0..linear.input_len];
+    const output_slice = output[0..linear.output_len];
+
+    for (0..shape.M) |row| {
+        const input_row = input_slice[row * shape.K ..][0..shape.K];
+        const output_row = output_slice[row * shape.N ..][0..shape.N];
+        var col: usize = 0;
+        while (col < shape.N) : (col += 8) {
+            var acc: VecT = linear.bias_buf[col..][0..8].*;
+            for (0..shape.K) |k| {
+                const xv: VecT = @splat(input_row[k]);
+                const wv: VecT = linear.weights_buf[k * shape.N + col ..][0..8].*;
+                acc += xv * wv;
+            }
+            output_row[col..][0..8].* = acc;
+        }
+    }
+    return true;
+}
+
 fn executeDirectLinearStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32) void {
+    if (executeSmallDirectLinearBiasStep(linear, shape, input, output)) return;
+
     const input_slice = input[0..linear.input_len];
     const output_slice = output[0..linear.output_len];
     forward.blasSgemm(
