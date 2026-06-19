@@ -182,6 +182,12 @@ const kernelizerRankCheckedOps = new Set([
   "conv2d",
   "avgPool2d",
   "maxPool2d",
+  "sum",
+  "mean",
+  "max",
+  "min",
+  "argmax",
+  "argmin",
 ]);
 
 function tensorProgramIrUnsupportedDiagnostic(trace: TraceCompilerTraceInput): CompileDiagnostic | null {

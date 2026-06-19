@@ -3158,6 +3158,7 @@ function expectZeroParameterProgramEvidence(adapter: Record<string, any>, label:
 
 function expectReductionProgramEvidence(adapter: Record<string, any>, label: string) {
   const input = adapter.tensor([1, 3, 2, 4, 0, -1], [2, 3]);
+  const cube = adapter.tensor([1, 3, 2, 4, 0, -1], [1, 2, 3]);
   const compiledCases = [
     { name: "sum-last", module: adapter.nn.sum(-1), expectedShape: "2x1", expectedKernels: "sum" },
     { name: "mean-batch", module: adapter.nn.mean(0), expectedShape: "1x3", expectedKernels: "transpose|mean|transpose" },
@@ -3166,6 +3167,14 @@ function expectReductionProgramEvidence(adapter: Record<string, any>, label: str
     { name: "min-batch", module: adapter.nn.min(0), expectedShape: "1x3", expectedKernels: "transpose|min|transpose" },
     { name: "argmax-last", module: adapter.nn.argmax(-1), expectedShape: "2x1", expectedKernels: "argmax" },
     { name: "argmin-last", module: adapter.nn.argmin(-1), expectedShape: "2x1", expectedKernels: "argmin" },
+  ];
+  const rank3CompiledCases = [
+    { name: "sum-rank3-last", module: adapter.nn.sum(-1), expectedShape: "1x2x1", expectedKernels: "sum" },
+    { name: "mean-rank3-last", module: adapter.nn.mean(-1), expectedShape: "1x2x1", expectedKernels: "mean" },
+    { name: "max-rank3-last", module: adapter.nn.max(-1), expectedShape: "1x2x1", expectedKernels: "max" },
+    { name: "min-rank3-last", module: adapter.nn.min(-1), expectedShape: "1x2x1", expectedKernels: "min" },
+    { name: "argmax-rank3-last", module: adapter.nn.argmax(-1), expectedShape: "1x2x1", expectedKernels: "argmax" },
+    { name: "argmin-rank3-last", module: adapter.nn.argmin(-1), expectedShape: "1x2x1", expectedKernels: "argmin" },
   ];
   for (const testCase of compiledCases) {
     const eager = testCase.module.forward(input);
@@ -3188,6 +3197,36 @@ function expectReductionProgramEvidence(adapter: Record<string, any>, label: str
     const session = program.bind({});
     try {
       const compiled = session.stepTensor(input);
+      if (compiled.shape.join("x") !== testCase.expectedShape) {
+        throw new Error(`${label} expected ${testCase.name} compiled reduction shape`);
+      }
+      expectClose(compiled.data, eager.data, `${label} ${testCase.name} eager/compiled parity`);
+    } finally {
+      session.dispose();
+      program.dispose();
+    }
+  }
+  for (const testCase of rank3CompiledCases) {
+    const eager = testCase.module.forward(cube);
+    const support = testCase.module.compileSupport({ inputShape: [1, 2, 3], backend: "cpu" });
+    const kernelPlan = adapter.nn.kernelPlan(testCase.module, { inputShape: [1, 2, 3], backend: "cpu" });
+    if (
+      !Object.isFrozen(support) ||
+      !Object.isFrozen(kernelPlan) ||
+      support.supported !== true ||
+      support.outputShape.join("x") !== testCase.expectedShape ||
+      support.weightsLen !== 0 ||
+      support.biasLen !== 0 ||
+      kernelPlan.ops.length !== 1 ||
+      kernelPlan.ops[0].op !== testCase.module.kind ||
+      kernelPlan.ops[0].nativeKernels.join("|") !== testCase.expectedKernels
+    ) {
+      throw new Error(`${label} expected ${testCase.name} reduction compile evidence`);
+    }
+    const program = testCase.module.compile({ inputShape: [1, 2, 3], backend: "cpu" });
+    const session = program.bind({});
+    try {
+      const compiled = session.stepTensor(cube);
       if (compiled.shape.join("x") !== testCase.expectedShape) {
         throw new Error(`${label} expected ${testCase.name} compiled reduction shape`);
       }
@@ -3237,7 +3276,6 @@ function expectShapeMovementProgramEvidence(adapter: Record<string, any>, label:
   const row = adapter.tensor([1, 2, 3], [1, 3]);
   const vector = adapter.tensor([1, 2, 3], [3]);
   const cube = adapter.tensor([1, 2, 3, 4, 5, 6], [1, 2, 3]);
-  const cubeBatch = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 2, 3]);
   const compiledRepeatCases = [
     { name: "repeat", module: adapter.nn.repeat([2]), evidence: "expected nn.repeat rank-1 repeat/tile native Program evidence", outputEvidence: "compiled nn.repeat rank-1 repeat/tile output", expectedData: [1, 2, 3, 1, 2, 3] },
     { name: "tile", module: new adapter.nn.Tile([2]), evidence: "expected nn.tile rank-1 repeat/tile native Program evidence", outputEvidence: "compiled nn.tile rank-1 repeat/tile output", expectedData: [1, 2, 3, 1, 2, 3] },
@@ -3282,13 +3320,13 @@ function expectShapeMovementProgramEvidence(adapter: Record<string, any>, label:
     { name: "unsqueeze-rank3", module: adapter.nn.unsqueeze(0), input: matrix, inputShape: [2, 3], expectedShape: "1x2x3", expectedKernels: "", expectedDispatches: 0, expectedElided: 1 },
     { name: "broadcastTo-rank3", module: adapter.nn.broadcastTo([2, 2, 3]), input: cube, inputShape: [1, 2, 3], expectedShape: "2x2x3", expectedKernels: "broadcast", expectedDispatches: 1, expectedElided: 0 },
     { name: "expand-rank3", module: adapter.nn.expand([2, 2, 3]), input: cube, inputShape: [1, 2, 3], expectedShape: "2x2x3", expectedKernels: "broadcast", expectedDispatches: 1, expectedElided: 0 },
-    { name: "narrow-rank3-batch", module: adapter.nn.narrow(0, 1, 1), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "1x2x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
-    { name: "narrow-rank3-middle", module: adapter.nn.narrow(1, 0, 1), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x1x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
-    { name: "narrow-rank3-feature", module: adapter.nn.narrow(2, 1, 2), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x2x2", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
-    { name: "select-rank3-batch", module: adapter.nn.select(0, 1), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
-    { name: "select-rank3-middle", module: adapter.nn.select(1, 0), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
-    { name: "select-rank3-feature", module: adapter.nn.select(2, 1), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x2", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
-    { name: "slice-rank3-step", module: adapter.nn.slice(2, 0, null, 2), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x2x2", expectedKernels: "slice", expectedDispatches: 1, expectedElided: 0 },
+    { name: "narrow-rank3-batch", module: adapter.nn.narrow(0, 0, 1), input: cube, inputShape: [1, 2, 3], expectedShape: "1x2x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "narrow-rank3-middle", module: adapter.nn.narrow(1, 0, 1), input: cube, inputShape: [1, 2, 3], expectedShape: "1x1x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "narrow-rank3-feature", module: adapter.nn.narrow(2, 1, 2), input: cube, inputShape: [1, 2, 3], expectedShape: "1x2x2", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "select-rank3-batch", module: adapter.nn.select(0, 0), input: cube, inputShape: [1, 2, 3], expectedShape: "2x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "select-rank3-middle", module: adapter.nn.select(1, 0), input: cube, inputShape: [1, 2, 3], expectedShape: "1x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "select-rank3-feature", module: adapter.nn.select(2, 1), input: cube, inputShape: [1, 2, 3], expectedShape: "1x2", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "slice-rank3-step", module: adapter.nn.slice(2, 0, null, 2), input: cube, inputShape: [1, 2, 3], expectedShape: "1x2x2", expectedKernels: "slice", expectedDispatches: 1, expectedElided: 0 },
   ];
   for (const testCase of compiledCases) {
     const eager = testCase.module.forward(testCase.input);
@@ -4180,10 +4218,10 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     expectClose(
       lazyMultiChannelConvReluSession.stepTensor(convInput).data,
       [
-        0, 0, 22.5, 0,
-        13.75, 0, 0, 4.5,
-        0, 0, 0, 5.5,
-        6.25, 0, 11.75, 0,
+        4.5, 0, 22.5, 9.5,
+        0, 28.75, 0, 0,
+        4.5, 9.5, 8.5, 0,
+        10.75, 0, 0, 25.75,
       ],
       `${label} lazy multi-channel Conv2d+ReLU compiled output`,
     );

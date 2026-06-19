@@ -870,7 +870,7 @@ long-form smoke and benchmark gates.
 library goal. It requires a passing no-fallback Program/Session substrate gate
 with a latest-vs-checked-baseline delta report for the selected native lanes,
 and checks that the public type smokes still cover the PyTorch-like surface:
-`goal progress: Program/Session substrate=80% floor=65%; PyTorch-like surface=100% floor=60%`.
+`goal progress: Program/Session substrate=81% floor=65%; PyTorch-like surface=100% floor=60%`.
 Those numbers are deliberately conservative: q8 prompt execution still needs a
 real tiled row-chain throughput kernel, while the PyTorch-like surface now has
 runtime and type evidence for the core replacement loop and PyTorch-like
@@ -881,7 +881,8 @@ Linear+GELU, `matmul -> add -> relu/gelu`, Conv2d+ReLU, MLP, reduced MLP, classi
 native `diagonal`,
 rank-1/rank-2 repeat/tile Program lowering, native `argmax(dim)` /
 `argmin(dim)` Program lowering, and rank-3 native shape/view lowering for
-reshape-family plus broadcast/expand/narrow/select/slice,
+reshape-family plus broadcast/expand/narrow/select/slice, rank-3 last-axis
+`sum`/`mean`/`max`/`min`/`argmax`/`argmin` Program lowering,
 direct backend `min(dim)`, eval-mode `BatchNorm1d`, classifier softmax-reduction, transformer FFN, normalized transformer
 classifier, and token-head Session paths rather than only API exports.
 Tensor, `nn`, `optim`, `train`, `data`, loss modules, state dicts,

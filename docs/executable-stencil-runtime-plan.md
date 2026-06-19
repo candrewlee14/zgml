@@ -192,7 +192,7 @@ execution is the performance claim. Silent eager fallback is not allowed.
 
 Current checked progress:
 
-- Program/Session performance substrate: ~80%. The Program/Session shape,
+- Program/Session performance substrate: ~81%. The Program/Session shape,
   runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
   native Metal execution, a scorecard-run optional native wgpu validation gate,
   and ggml benchmark gates are real enough that the substrate is past "architecture".
@@ -215,7 +215,11 @@ Current checked progress:
   capability-disabled test still proves the composite fallback. Module
   `min(dim)` now lowers through a first-class `reduceMin` descriptor and a
   direct backend reduce-min command on reference CPU, Metal, and WGPU instead
-  of exposing or executing its old `neg -> max -> neg` decomposition. The remaining substrate jump is not another compatibility lane; it is a real
+  of exposing or executing its old `neg -> max -> neg` decomposition.
+  singleton-envelope rank-3 last-axis reductions now also compile and execute
+  as native Program kernels for `sum`/`mean`/`max`/`min`/`argmax`/`argmin`,
+  while non-envelope rank-3 reductions remain honestly unsupported instead of
+  crossing the C ABI with a shape the native Program compiler rejects. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence. The required-GPU browser runner's full
   LLaMA profile and storage-mode matrices are now scorecard-checked source
@@ -239,7 +243,8 @@ Current checked progress:
   native Program lowering for `argmax(dim)` and `argmin(dim)`,
   rank-3 `reshape`/`flatten`/`squeeze`/`unsqueeze`, rank-3 `broadcastTo`/`expand`,
   and rank-3 `narrow`/`select`/`slice`
-  lowering through the native module Program ABI, and
+  lowering through the native module Program ABI,
+  rank-3 last-axis `sum`/`mean`/`max`/`min`/`argmax`/`argmin` Program lowering, and
   compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
   compile hooks exist.

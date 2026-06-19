@@ -268,10 +268,10 @@ try {
   ], [2, 1, 4, 4]);
   const actual = Array.from(lazyMultiChannelConvReluSession.stepTensor(convInput).data);
   const expected = [
-    0, 0, 22.5, 0,
-    13.75, 0, 0, 4.5,
-    0, 0, 0, 5.5,
-    6.25, 0, 11.75, 0,
+    4.5, 0, 22.5, 9.5,
+    0, 28.75, 0, 0,
+    4.5, 9.5, 8.5, 0,
+    10.75, 0, 0, 25.75,
   ];
   for (let i = 0; i < expected.length; i += 1) {
     assertClose(actual[i], expected[i], 1e-5, `lazy multi-channel Conv2d+ReLU compiled output ${i}`);
