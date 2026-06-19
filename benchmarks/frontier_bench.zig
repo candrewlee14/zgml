@@ -1101,16 +1101,19 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
     const projection_chain_cases = [_]ProjectionRowChainCase{
         .{ .name = "qproj prompt m=32 n=512 k=512", .m = 32, .n = 512, .k = 512 },
         .{ .name = "qproj full-prefill m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
+        .{ .name = "qproj smollm-prompt m=128 n=576 k=576", .m = 128, .n = 576, .k = 576 },
     };
     for (projection_chain_cases) |case| try benchProjectionChainMetalCase(io, alloc, w, &metal, case);
 
     const projection_group_cases = [_]ProjectionRowChainCase{
         .{ .name = "qproj group full-prefill x4 m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
+        .{ .name = "qproj group smollm-prompt x4 m=128 n=576 k=576", .m = 128, .n = 576, .k = 576 },
     };
     for (projection_group_cases) |case| try benchProjectionGroupMetalCase(io, alloc, w, &metal, case);
 
     const row_chain_group_cases = [_]ProjectionRowChainCase{
         .{ .name = "qrow group full-prefill x4 m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
+        .{ .name = "qrow group smollm-prompt x4 m=128 n=576 k=576", .m = 128, .n = 576, .k = 576 },
     };
     for (row_chain_group_cases) |case| try benchProjectionRowChainGroupMetalCase(io, alloc, w, &metal, case);
 
@@ -1119,6 +1122,7 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
         .{ .name = "qrow tiny m=2 n=128 k=128", .m = 2, .n = 128, .k = 128 },
         .{ .name = "qrow prompt m=32 n=512 k=512", .m = 32, .n = 512, .k = 512 },
         .{ .name = "qrow full-prefill m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
+        .{ .name = "qrow smollm-prompt m=128 n=576 k=576", .m = 128, .n = 576, .k = 576 },
     };
     for (cases) |case| try benchProjectionRowChainMetalCase(io, alloc, w, &metal, case);
 }

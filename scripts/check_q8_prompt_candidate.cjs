@@ -15,9 +15,11 @@ const speedupFloor = Number(process.env.BENCH_CANDIDATE_SPEEDUP_FLOOR || "1.05")
 const attempts = positiveInt(process.env.BENCH_CANDIDATE_ATTEMPTS || "3", "BENCH_CANDIDATE_ATTEMPTS");
 const rowChainLowering = "default_projection_chain_plus_row_chain_candidate_single_dispatch_tiled_row_chain";
 const requiredNextTarget = "single_dispatch_tiled_qmatmul_row_chain_throughput";
-const defaultCommandFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_COMMAND_FLOOR || "241");
-const candidateCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "181");
+const defaultCommandFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_COMMAND_FLOOR || "301");
+const candidateCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "241");
 const candidateProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_ROW_CHAIN_FLOOR || "60");
+const defaultProjectionChainFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_PROJECTION_CHAIN_FLOOR || "90");
+const candidateProjectionChainCeil = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_CHAIN_CEIL || "30");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -100,6 +102,8 @@ function measureAttempt(index) {
   const candidateCommands = number(candidateRow, "commands_per_call");
   const defaultProjectionRowChains = number(defaultRow, "program_command_encoded_projection_row_chain_per_call") ?? 0;
   const candidateProjectionRowChains = number(candidateRow, "program_command_encoded_projection_row_chain_per_call") ?? 0;
+  const defaultProjectionChains = number(defaultRow, "program_command_encoded_projection_chain_per_call") ?? 0;
+  const candidateProjectionChains = number(candidateRow, "program_command_encoded_projection_chain_per_call") ?? 0;
   const defaultProjectionRowChainDispatches = number(defaultRow, "program_command_dispatches_projection_row_chain_per_call") ?? 0;
   const candidateProjectionRowChainDispatches = number(candidateRow, "program_command_dispatches_projection_row_chain_per_call") ?? 0;
   const defaultProjectionRowChainDispatchSplit = defaultProjectionRowChains > 0 ? defaultProjectionRowChainDispatches / defaultProjectionRowChains : null;
@@ -111,14 +115,17 @@ function measureAttempt(index) {
   const defaultFastPathReady =
     defaultCommands !== null &&
     defaultCommands >= defaultCommandFloor &&
+    defaultProjectionChains >= defaultProjectionChainFloor &&
     defaultProjectionRowChains === 0;
   const candidateSemanticReady =
     candidateCommands !== null &&
     candidateCommands <= candidateCommandCeil &&
+    candidateProjectionChains <= candidateProjectionChainCeil &&
     candidateProjectionRowChains >= candidateProjectionRowChainFloor;
   const candidateMatchesCommandShape =
     candidateCommands !== null &&
     candidateCommands <= candidateCommandCeil &&
+    candidateProjectionChains <= candidateProjectionChainCeil &&
     candidateProjectionRowChains >= candidateProjectionRowChainFloor;
   const candidateDispatchShapeReady =
     defaultDispatches !== null &&
@@ -139,6 +146,8 @@ function measureAttempt(index) {
     candidateCommands,
     defaultProjectionRowChains,
     candidateProjectionRowChains,
+    defaultProjectionChains,
+    candidateProjectionChains,
     defaultProjectionRowChainDispatches,
     candidateProjectionRowChainDispatches,
     defaultProjectionRowChainDispatchSplit,
@@ -191,6 +200,7 @@ console.log(
     `default=${format(best.defaultTokS)} tok/s candidate=${format(best.candidateTokS)} tok/s speedup=${format(best.speedup)}x floor=${format(speedupFloor)}x; ` +
     `median_speedup=${format(median.speedup)}x worst_speedup=${format(worst.speedup)}x best_speedup=${format(best.speedup)}x; ` +
     `dispatch=${format(best.defaultDispatches, 0)}->${format(best.candidateDispatches, 0)} command=${format(best.defaultCommands, 0)}->${format(best.candidateCommands, 0)} ` +
+    `projection_chain=${format(best.defaultProjectionChains, 0)}->${format(best.candidateProjectionChains, 0)} ` +
     `projection_row_chain=${format(best.defaultProjectionRowChains, 0)}->${format(best.candidateProjectionRowChains, 0)} ` +
     `projection_row_chain_dispatch=${format(best.defaultProjectionRowChainDispatches, 0)}->${format(best.candidateProjectionRowChainDispatches, 0)} ` +
     `split=${format(best.defaultProjectionRowChainDispatchSplit)}->${format(best.candidateProjectionRowChainDispatchSplit)} ` +

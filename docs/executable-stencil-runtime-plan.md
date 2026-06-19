@@ -237,8 +237,13 @@ Current checked progress:
   optional native WebGPU validation gate now also runs LLaMA execution proofs
   for runtime quantized-weight rebinding, resource-bound decode/prefill
   handoff, long-prompt prefill, GQA long-prompt prefill, and realistic
-  head-width resource handoff instead of merely compiling those paths. The remaining substrate jump is not another compatibility lane; it is a real
-  tiled quantized row-chain throughput kernel, plus wider default
+  head-width resource handoff instead of merely compiling those paths. The
+  frontier benchmark gate now also includes the real SmolLM prompt geometry
+  (`m=128 n=576 k=576`) for projection-chain, grouped projection-chain,
+  grouped projection-row-chain, and single projection-row-chain paths, with
+  command-shape evidence proving the row-chain lowering covers the intended
+  five-op chains. The remaining substrate jump is not another compatibility
+  lane; it is a real tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence. The required-GPU browser runner's full
   LLaMA profile and storage-mode matrices are now scorecard-checked source
   contracts, and the cheap focused browser smoke also has checked

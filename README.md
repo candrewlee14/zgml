@@ -883,8 +883,11 @@ with a latest-vs-checked-baseline delta report for the selected native lanes,
 and checks that the public type smokes still cover the PyTorch-like surface:
 `goal progress: Program/Session substrate=88% floor=65%; PyTorch-like surface=100% floor=60%`.
 Those numbers are deliberately conservative: q8 prompt execution still needs a
-real tiled row-chain throughput kernel, while native WebGPU now has broader
-default optional LLaMA execution proof for quantized qweights,
+real tiled row-chain throughput kernel. The frontier gate now measures the
+actual SmolLM prompt geometry (`m=128 n=576 k=576`) for projection-chain and
+projection-row-chain variants, so the remaining row-chain work is a measured
+throughput problem rather than a shape-evidence guess. Native WebGPU now has
+broader default optional LLaMA execution proof for quantized qweights,
 resource-bound decode/prefill, long prompts, GQA long prompts, and realistic
 head-width resource handoff. The PyTorch-like surface now has
 runtime and type evidence for the core replacement loop and PyTorch-like
