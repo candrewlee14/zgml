@@ -861,7 +861,7 @@ npm run smoke:bun         # run Bun package, training, Program/Session, and bund
 npm run check:goal-scorecard # verify Program/Session substrate and zgml frontend evidence
 npm run bench             # verify checked benchmark baseline artifacts
 npm run bench:status      # summarize source-checkout baseline/latest ggml artifact evidence
-npm run bench:pytorch     # compare selected zgml compiled module paths against upstream Python PyTorch when installed
+npm run bench:pytorch     # build ReleaseFast native, then compare selected compiled paths against upstream Python PyTorch
 npm run bench:ggml        # run the local ggml/llama.cpp artifact gate with baseline regression protection
 zig build bench-frontier  # run decision-grade local benchmarks
 zig build -Duse-blas      # enable BLAS for matmul

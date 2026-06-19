@@ -297,8 +297,14 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:q8-prompt-candidate"] !== "node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate must stay the source-checkout full-model Q8 prompt candidate probe");
   }
-  if (packageJson.scripts?.["bench:pytorch"] !== "npm run build:package && node scripts/check_pytorch_comparison.cjs") {
-    errors.push("package.json bench:pytorch must stay the optional upstream PyTorch comparison probe");
+  if (packageJson.scripts?.["build:native:release"] !== "zig build ffi-c -Doptimize=ReleaseFast") {
+    errors.push("package.json build:native:release must stay the benchmark-grade native C ABI build");
+  }
+  if (packageJson.scripts?.["bench:pytorch"] !== "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch must stay the ReleaseFast upstream PyTorch comparison probe");
+  }
+  if (packageJson.scripts?.["bench:pytorch:parity"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:parity must stay the hard ReleaseFast upstream PyTorch parity probe");
   }
   const benchStatusSource = fs.readFileSync(path.join(root, "scripts", "bench_status.cjs"), "utf8");
   for (const needle of [

@@ -160,11 +160,14 @@ function checkScripts() {
   if (scripts["bench:module-program"] !== "npm run build:package && node scripts/check_module_program_bench.cjs") {
     errors.push("package.json bench:module-program must remain the TS frontend module Program performance gate");
   }
-  if (scripts["bench:pytorch"] !== "npm run build:package && node scripts/check_pytorch_comparison.cjs") {
-    errors.push("package.json bench:pytorch must remain the upstream PyTorch comparison evidence gate");
+  if (scripts["build:native:release"] !== "zig build ffi-c -Doptimize=ReleaseFast") {
+    errors.push("package.json build:native:release must keep benchmark-grade native C ABI builds explicit");
   }
-  if (scripts["bench:pytorch:parity"] !== "npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 node scripts/check_pytorch_comparison.cjs") {
-    errors.push("package.json bench:pytorch:parity must remain the hard upstream PyTorch parity gate");
+  if (scripts["bench:pytorch"] !== "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch must remain the ReleaseFast upstream PyTorch comparison evidence gate");
+  }
+  if (scripts["bench:pytorch:parity"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:parity must remain the hard ReleaseFast upstream PyTorch parity gate");
   }
   if (scripts["check:goal-scorecard"] !== "node scripts/check_goal_scorecard.cjs") {
     errors.push("package.json must expose check:goal-scorecard for goal evidence");
