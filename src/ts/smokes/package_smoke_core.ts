@@ -2124,6 +2124,11 @@ function expectTensorNativeBufferEvidence(compiledProgram: Record<string, any>, 
     "Tensor.place input length 3 does not match Program input slot length 2",
     `${label} Tensor.place shape mismatch`,
   );
+  expectThrowIncludes(
+    () => tensorInput.place(compiledProgram, "missing-slot" as any),
+    "Tensor.place missing-slot is not a Program buffer slot",
+    `${label} Tensor.place missing slot`,
+  );
 }
 
 function expectNativeBufferBoundSessionEvidence(compiledProgram: Record<string, any>, adapter: Record<string, any>, label: string) {

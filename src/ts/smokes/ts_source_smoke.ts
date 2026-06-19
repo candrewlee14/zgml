@@ -6567,6 +6567,11 @@ const placementProgram = {
 };
 expectSame(placementHelpers.validateProgramPlacement(placementTensor, placementProgram, "input"), undefined, "tensor placement valid placement");
 expectThrow(
+  () => placementHelpers.validateProgramPlacement(placementTensor, placementProgram, "output"),
+  "Tensor.place output is not a Program buffer slot",
+  "tensor placement missing slot",
+);
+expectThrow(
   () => placementHelpers.to(placementTensor, "webgpu"),
   'Tensor.to device webgpu requires an explicit compiled Program; use Tensor.place(program, kind) or program.device("webgpu")',
   "tensor placement webgpu eager rejection",

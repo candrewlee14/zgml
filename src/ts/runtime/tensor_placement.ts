@@ -220,8 +220,21 @@ export function createTensorPlacementHelpers(options: TensorPlacementHelpersOpti
   function validateProgramPlacement(tensor: ProgramPlacementTensor, program: ProgramBindingPlanProgram, kind = "input") {
     if (!program || typeof program.bufferLayout !== "function") return;
     const layout = program.bufferLayout();
-    const slot = layout && typeof layout === "object" ? (layout as UnknownRecord)[kind] : null;
-    if (!slot || typeof slot !== "object") return;
+    if (!layout || typeof layout !== "object") return;
+    const layoutRecord = layout as UnknownRecord;
+    const keyedSlot = layoutRecord[kind];
+    const slot = keyedSlot && typeof keyedSlot === "object"
+      ? keyedSlot
+      : Array.isArray(layoutRecord.slots)
+        ? layoutRecord.slots.find((candidate) => (
+          candidate &&
+          typeof candidate === "object" &&
+          (candidate as UnknownRecord).name === kind
+        ))
+        : null;
+    if (!slot || typeof slot !== "object") {
+      throw new Error(`Tensor.place ${kind} is not a Program buffer slot`);
+    }
     const slotRecord = slot as UnknownRecord;
     if (slotRecord.scalarType !== "f32") {
       throw new Error(`Tensor.place ${kind} slot dtype ${slotRecord.scalarType} is unsupported; eager zgml Tensor stores f32 values`);
