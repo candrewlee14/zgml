@@ -161,9 +161,10 @@ machine for both prompt/prefill and decode.
   `qmatmul_elementwise_f32` dispatch plus the existing RMSNorm-scale row-chain
   dispatch under one executable command. This removes the old command-frontier
   split without promoting the slower row-wise qmatmul kernel. The scalar
-  `qmatmul_row_chain_f32` kernel remains available as diagnosis and as the next
-  throughput target, but default full-model prompt evidence must keep zero
-  fallback and avoid throughput regression.
+  `qmatmul_row_chain_f32` kernel remains available as a diagnostic candidate,
+  but the next throughput target is a single-dispatch tiled row-chain kernel,
+  not another scalar per-row/per-column variant. Default full-model prompt
+  evidence must keep zero fallback and avoid throughput regression.
 - The controlled full-model prompt hook remains:
   `--metal-prompt-projection-row-chain-candidate`. It now verifies that the
   candidate flag matches the default semantic command shape rather than proving
@@ -289,8 +290,9 @@ machine for both prompt/prefill and decode.
   improves the isolated row-chain frontier without changing the full-model
   promotion decision. Decode/tiny cases remain effectively neutral and
   full-prefill remains below the default promotion floor, so the next throughput
-  target needs a tiled qmatmul row-chain design with an explicit row-reduction
-  strategy rather than another scalar threadgroup-width tweak. The prompt-sized candidate
+  target needs a single-dispatch tiled qmatmul row-chain design with an
+  explicit row-reduction strategy rather than another scalar threadgroup-width
+  tweak. The prompt-sized candidate
   path now keeps decode qmatvec unfused while preserving prompt qmatmul
   evidence. The active frontier is tiled row-chain throughput or a larger
   semantic sublayer, not command-count reduction by itself.

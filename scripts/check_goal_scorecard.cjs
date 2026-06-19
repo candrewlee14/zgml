@@ -197,25 +197,27 @@ function checkScripts() {
     "`dispatch_only_trap=${dispatchOnlyTrap ? \"yes\" : \"no\"} `",
     "defaultCommandCeil",
     "defaultProjectionRowChainFloor",
-    "const rowChainKernel = \"scalar_per_row_col\"",
+    "const rowChainLowering = \"prompt_split_tiled_qmatmul_plus_rmsnorm\"",
     "defaultSemanticReady",
     "candidateMatchesDefault",
     "fallbackOk",
     "structuralReady",
     "throughputReady",
     "default_semantic_row_chain_needs_throughput_kernel",
-    "const requiredNextTarget = \"tiled_qmatmul_row_chain_throughput\"",
-    "`row_chain_kernel=${rowChainKernel} row_chain_next=${requiredNextTarget} `",
+    "const requiredNextTarget = \"single_dispatch_tiled_qmatmul_row_chain_throughput\"",
+    "`row_chain_lowering=${rowChainLowering} row_chain_next=${requiredNextTarget} `",
     "`next=${requiredNextTarget}`",
     "candidateReady",
     "q8 prompt semantic row-chain gate:",
   ]);
   requireIncludes(read("scripts/check_frontier_bench.cjs"), "scripts/check_frontier_bench.cjs", "projection row-chain frontier diagnostic", [
-    "const projectionRowChainKernel = \"scalar_per_row_col\";",
-    "const projectionRowChainNextTarget = \"tiled_qmatmul_row_chain_throughput\";",
+    "const projectionRowChainLowering = \"prompt_split_tiled_qmatmul_plus_rmsnorm\";",
+    "const projectionRowChainDiagnosticKernel = \"scalar_per_row_col\";",
+    "const projectionRowChainNextTarget = \"single_dispatch_tiled_qmatmul_row_chain_throughput\";",
     "runtime_command_dispatches",
     "projection_row_chain prompt runtime profile must stay at 1 command dispatch",
-    "projection_row_chain_kernel=${projectionRowChainKernel}",
+    "projection_row_chain_lowering=${projectionRowChainLowering}",
+    "projection_row_chain_diagnostic_kernel=${projectionRowChainDiagnosticKernel}",
     "projection_row_chain_next=${projectionRowChainNextTarget}",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "scalar qmatmul row-chain diagnosis until tiled replacement exists", [
@@ -1004,7 +1006,7 @@ function checkSubstrateEvidence() {
   requirePattern(substrateLine, "bench substrate gate output", "q8 decode dispatch/stencil/fallback proof", /q8_0\/decode=[^;]+ggml=[^;]+to90=[^;]+ref=[^;]+dispatch=212 commands=211 cached=30 dynamic=0\/0 schedule_fail=0\/0 sync=1 patch_holes=450 patch_calls=600\/600 patch_changed=600 stencil=14405191909906507341\/14405191909906507341 fallback=0/);
   requirePercentAtLeast(substrateLine, "bench substrate gate output", "ggml-relative substrate evidence", "f16/prompt", 32);
   requirePercentAtLeast(substrateLine, "bench substrate gate output", "ggml-relative substrate evidence", "f16/decode", 31.0);
-  requirePattern(substrateLine, "bench substrate gate output", "frontier weakest command-pressure proof", /frontier weakest=q8_0\/prompt ggml=[0-9.]+% to90=[0-9.]+x dispatch=242 commands=(?:241 top=row_chain:61,projection_chain:60,[^;]+ pressure=151\/241 62\.7% target=projection_chain:60 chain_shape=[^;]+ next=semantic_sublayer_or_quantized_projection_chain rejected=projection_row_chain_default_off_needs_model_speedup sidecars=qmatmul_elementwise:60|181 top=projection_row_chain:120,[^;]+ pressure=180\/181 99\.4% target=projection_row_chain:120 chain_shape=[^;]+ next=tiled_qmatmul_row_chain_throughput rejected=default_semantic_row_chain_needs_throughput_kernel sidecars=projection_row_chain:60) q8_decode_sidecars=qmatvec_elementwise:60/);
+  requirePattern(substrateLine, "bench substrate gate output", "frontier weakest command-pressure proof", /frontier weakest=q8_0\/prompt ggml=[0-9.]+% to90=[0-9.]+x dispatch=242 commands=(?:241 top=row_chain:61,projection_chain:60,[^;]+ pressure=151\/241 62\.7% target=projection_chain:60 chain_shape=[^;]+ next=semantic_sublayer_or_quantized_projection_chain rejected=projection_row_chain_default_off_needs_model_speedup sidecars=qmatmul_elementwise:60|181 top=projection_row_chain:120,[^;]+ pressure=180\/181 99\.4% target=projection_row_chain:120 chain_shape=[^;]+ next=single_dispatch_tiled_qmatmul_row_chain_throughput rejected=default_semantic_row_chain_needs_throughput_kernel sidecars=projection_row_chain:60) q8_decode_sidecars=qmatvec_elementwise:60/);
   requirePercentAtLeast(substrateLine, "bench substrate gate output", "ggml-relative substrate evidence", "q8_0/prompt", 27);
   requirePercentAtLeast(substrateLine, "bench substrate gate output", "ggml-relative substrate evidence", "q8_0/decode", 32);
   requireIncludes(output, "bench substrate gate output", "full-run ggml artifact context", [
@@ -1090,8 +1092,9 @@ function checkFrontierEvidence() {
     "projection_row_chain_prompt_candidate=",
     "projection_row_chain_candidate=",
     "diff_ceil=0.020000",
-    "projection_row_chain_kernel=scalar_per_row_col",
-    "projection_row_chain_next=tiled_qmatmul_row_chain_throughput",
+    "projection_row_chain_lowering=prompt_split_tiled_qmatmul_plus_rmsnorm",
+    "projection_row_chain_diagnostic_kernel=scalar_per_row_col",
+    "projection_row_chain_next=single_dispatch_tiled_qmatmul_row_chain_throughput",
     "projection_row_chain_default=",
     "projection_row_chain_default=off",
     "reason=",
@@ -1136,9 +1139,9 @@ function checkQ8PromptCandidateEvidence() {
     "split=2.00->2.00",
     "excess_dispatch=60->60 target=0",
     "dispatch_only_trap=no",
-    "row_chain_kernel=scalar_per_row_col",
-    "row_chain_next=tiled_qmatmul_row_chain_throughput",
-    "next=tiled_qmatmul_row_chain_throughput",
+    "row_chain_lowering=prompt_split_tiled_qmatmul_plus_rmsnorm",
+    "row_chain_next=single_dispatch_tiled_qmatmul_row_chain_throughput",
+    "next=single_dispatch_tiled_qmatmul_row_chain_throughput",
   ]);
   notes.push(output.trim());
 }

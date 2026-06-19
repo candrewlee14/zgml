@@ -11,8 +11,9 @@ const projectionChainMaxAbsDiffCeil = 0.002;
 const projectionGroupCandidateSpeedupFloor = 1.05;
 const projectionRowChainDefaultSpeedupFloor = 1.10;
 const projectionRowChainMaxAbsDiffCeil = 0.02;
-const projectionRowChainKernel = "scalar_per_row_col";
-const projectionRowChainNextTarget = "tiled_qmatmul_row_chain_throughput";
+const projectionRowChainLowering = "prompt_split_tiled_qmatmul_plus_rmsnorm";
+const projectionRowChainDiagnosticKernel = "scalar_per_row_col";
+const projectionRowChainNextTarget = "single_dispatch_tiled_qmatmul_row_chain_throughput";
 
 function runBench() {
   const result = spawnSync("zig", ["build", "bench-frontier"], {
@@ -163,7 +164,8 @@ function score(output, attempt) {
     `projection_row_chain_full_prefill=${projectionFullPrefillSpeedup === null ? "unavailable" : `${projectionFullPrefillSpeedup.toFixed(2)}x observed max_abs_diff=${projectionFullPrefillMaxAbsDiff.toFixed(6)} shape_commands=${projectionFullPrefillShapeCommands} shape_projection_row_chains=${projectionFullPrefillShapeRowChains} shape_covered_ops=${projectionFullPrefillShapeCoveredOps} shape_saved_dispatches=${projectionFullPrefillShapeSavedDispatches} runtime_command_dispatches=${projectionFullPrefillRuntimeCommandDispatches} candidate=${projectionFullPrefillSpeedup >= projectionRowChainDefaultSpeedupFloor ? "ready" : "off"} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`}`,
     `projection_row_chain_prompt_candidate=${projectionPromptCandidateReady ? "ready" : "off"} floor=${projectionRowChainDefaultSpeedupFloor.toFixed(2)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
     `projection_row_chain_candidate=${projectionCandidateReady ? "ready" : "off"} floor=${projectionRowChainDefaultSpeedupFloor.toFixed(2)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
-    `projection_row_chain_kernel=${projectionRowChainKernel}`,
+    `projection_row_chain_lowering=${projectionRowChainLowering}`,
+    `projection_row_chain_diagnostic_kernel=${projectionRowChainDiagnosticKernel}`,
     `projection_row_chain_next=${projectionRowChainNextTarget}`,
     `projection_row_chain_default=${projectionDefaultDecision} floor=${projectionRowChainDefaultSpeedupFloor.toFixed(2)} reason=${projectionDefaultReason}`,
   ].join("; ");
