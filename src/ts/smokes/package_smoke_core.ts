@@ -3285,6 +3285,9 @@ function expectShapeMovementProgramEvidence(adapter: Record<string, any>, label:
     { name: "narrow-rank3-batch", module: adapter.nn.narrow(0, 1, 1), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "1x2x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
     { name: "narrow-rank3-middle", module: adapter.nn.narrow(1, 0, 1), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x1x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
     { name: "narrow-rank3-feature", module: adapter.nn.narrow(2, 1, 2), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x2x2", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "select-rank3-batch", module: adapter.nn.select(0, 1), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "select-rank3-middle", module: adapter.nn.select(1, 0), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "select-rank3-feature", module: adapter.nn.select(2, 1), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x2", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
     { name: "slice-rank3-step", module: adapter.nn.slice(2, 0, null, 2), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x2x2", expectedKernels: "slice", expectedDispatches: 1, expectedElided: 0 },
   ];
   for (const testCase of compiledCases) {

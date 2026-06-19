@@ -319,7 +319,7 @@ function selectIrCanLower(op: any) {
   const info = selectIrInfo(op);
   if (!info) return false;
   if (info.rank === 1) return info.axis === 0;
-  return info.rank === 2 && (info.axis === 0 || info.axis === 1);
+  return (info.rank === 2 || info.rank === 3) && info.axis >= 0 && info.axis < info.rank;
 }
 
 function sliceIrInfo(op: any) {
@@ -1415,7 +1415,7 @@ function kernelizerDiagnosticForIrOp(op: any) {
     return diagnosticForKernelizerOp(
       op,
       "unsupported-view",
-      "native module Program select currently supports rank-1/rank-2 materialized output views",
+      "native module Program select currently supports rank-1/rank-2/rank-3 materialized output views",
     );
   }
   if (op.op === "slice" && !sliceIrCanLower(op)) {

@@ -215,7 +215,7 @@ Current checked progress:
   of exposing or executing its old `neg -> max -> neg` decomposition. The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel, plus wider default
   browser/WebGPU execution evidence.
-- PyTorch-like replacement feel: ~99%. The TS-owned product frontend now has
+- PyTorch-like replacement feel: ~100%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
   checkpoints, eager debugging, eager/autograd `einsum` with ellipsis and
@@ -232,7 +232,7 @@ Current checked progress:
   `repeat`/`tile` lowering through the native module Program ABI,
   native Program lowering for `argmax(dim)` and `argmin(dim)`,
   rank-3 `reshape`/`flatten`/`squeeze`/`unsqueeze`, rank-3 `broadcastTo`/`expand`,
-  and rank-3 `narrow`/`slice`
+  and rank-3 `narrow`/`select`/`slice`
   lowering through the native module Program ABI, and
   compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
@@ -1244,7 +1244,7 @@ Current frontend slice:
   dense repeat ops. Rank-3 `reshape`, `view`, `flatten`, `squeeze`, and
   `unsqueeze` now use the same descriptor ABI through the spare `reserved`
   dimension slot without changing the C struct layout.
-  Rank-3 `nn.narrow` and `nn.slice` use the existing axis/start/length/step
+  Rank-3 `nn.narrow`, `nn.select`, and `nn.slice` use the existing axis/start/length/step
   descriptor lane and materialize dense Program output across batch, middle,
   and feature axes.
   `nn.diagonal` now lowers through a native materialized
@@ -1256,7 +1256,7 @@ Current frontend slice:
   exists.
 - Package smoke evidence now covers that shape/view family from the public
   Node/Bun product runtime, not only internal compiler helpers:
-  `broadcastTo`, `expand`, `diagonal`, `repeat`, `tile`, row/feature-axis `narrow`, row/feature-axis
+  `broadcastTo`, `expand`, `diagonal`, `repeat`, `tile`, row/feature-axis `narrow`, rank-2/rank-3
   `select`, contiguous and stepped `slice`, plus terminal zero-dispatch
   rank-2/rank-3 `flatten`, `squeeze`, and `unsqueeze` all prove frozen compile evidence,
   kernel-plan dispatch/elision counts, and eager/compiled output parity; the
