@@ -1505,6 +1505,122 @@ const shader_source =
     \\    }
     \\}
     \\
+    \\kernel void qmatmul_row_chain_tiled_f32(
+    \\    device const char*  weight_data   [[buffer(0)]],
+    \\    device const float* weight_scales [[buffer(1)]],
+    \\    device const float* input         [[buffer(2)]],
+    \\    device const float* secondary     [[buffer(3)]],
+    \\    device const float* scale_src     [[buffer(4)]],
+    \\    device float*       scaled_dst    [[buffer(5)]],
+    \\    device float*       ew_output     [[buffer(6)]],
+    \\    constant QMatmulRowChainParams& p [[buffer(7)]],
+    \\    uint row_tile [[threadgroup_position_in_grid]],
+    \\    uint simd_idx [[simdgroup_index_in_threadgroup]],
+    \\    uint lane     [[thread_index_in_simdgroup]],
+    \\    uint tid      [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = row_tile * TILE;
+    \\    const uint sRow = (simd_idx / 2) * 16;
+    \\    const uint sCol = (simd_idx % 2) * 16;
+    \\
+    \\    threadgroup float row_sums[TILE];
+    \\    threadgroup float inv_rms[TILE];
+    \\    if (tid < TILE) {
+    \\        row_sums[tid] = 0.0f;
+    \\        inv_rms[tid] = 0.0f;
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    threadgroup float tI[TILE * 8];
+    \\    threadgroup float tW[8 * TILE];
+    \\    threadgroup float tC[TILE * TILE];
+    \\
+    \\    for (uint gCol = 0; gCol < p.N; gCol += TILE) {
+    \\        simdgroup_float8x8 acc[4] = {
+    \\            simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\            simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\        };
+    \\
+    \\        for (uint kt = 0; kt < p.K; kt += 8) {
+    \\            for (uint i = tid; i < TILE * 8; i += 128) {
+    \\                uint r = i / 8, c = i % 8;
+    \\                uint ir = gRow + r, ic = kt + c;
+    \\                tI[i] = (ir < p.M && ic < p.K) ? input[p.input_offset + ir * p.input_row_stride + ic] : 0.0f;
+    \\            }
+    \\            for (uint i = tid; i < 8 * TILE; i += 128) {
+    \\                uint r = i / TILE, c = i % TILE;
+    \\                uint kr = kt + r, nc = gCol + c;
+    \\                if (kr < p.K && nc < p.N) {
+    \\                    uint w_idx = kr * p.N + nc;
+    \\                    tW[i] = float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
+    \\                } else {
+    \\                    tW[i] = 0.0f;
+    \\                }
+    \\            }
+    \\            threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\            simdgroup_float8x8 a0, a1, b0, b1;
+    \\            simdgroup_load(a0, tI + (sRow + 0) * 8, 8);
+    \\            simdgroup_load(a1, tI + (sRow + 8) * 8, 8);
+    \\            simdgroup_load(b0, tW + (sCol + 0), TILE);
+    \\            simdgroup_load(b1, tW + (sCol + 8), TILE);
+    \\
+    \\            simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\            simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\            simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\            simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
+    \\
+    \\            threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\        }
+    \\
+    \\        simdgroup_store(acc[0], tC + (sRow + 0) * TILE + sCol + 0, TILE);
+    \\        simdgroup_store(acc[1], tC + (sRow + 0) * TILE + sCol + 8, TILE);
+    \\        simdgroup_store(acc[2], tC + (sRow + 8) * TILE + sCol + 0, TILE);
+    \\        simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        if (tid < TILE) {
+    \\            uint r = tid;
+    \\            uint cr = gRow + r;
+    \\            if (cr < p.M) {
+    \\                float ss = row_sums[r];
+    \\                for (uint c = 0; c < TILE; c += 1) {
+    \\                    uint cc = gCol + c;
+    \\                    if (cc < p.N) {
+    \\                        float val = tC[r * TILE + c];
+    \\                        uint linear = cr * p.N + cc;
+    \\                        float other = secondary[p.ew_secondary_offset + linear];
+    \\                        float ew = val;
+    \\                        if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
+    \\                        else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
+    \\                        ew_output[p.ew_dst_offset + linear] = ew;
+    \\                        ss += ew * ew;
+    \\                    }
+    \\                }
+    \\                row_sums[r] = ss;
+    \\            }
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\
+    \\    if (tid < TILE) {
+    \\        uint cr = gRow + tid;
+    \\        if (cr < p.M) inv_rms[tid] = 1.0f / sqrt(row_sums[tid] / float(p.N) + p.rms_eps);
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < TILE * p.N; i += 128) {
+    \\        uint r = i / p.N;
+    \\        uint col = i - r * p.N;
+    \\        uint cr = gRow + r;
+    \\        if (cr < p.M) {
+    \\            uint linear = cr * p.N + col;
+    \\            float ew = ew_output[p.ew_dst_offset + linear];
+    \\            scaled_dst[p.scaled_dst_offset + linear] = ew * inv_rms[r] * scale_src[p.scale_src_offset + col];
+    \\        }
+    \\    }
+    \\}
+    \\
     \\kernel void qmatvec_slice_assign_f32(
     \\    device const char*  weight_data   [[buffer(0)]],
     \\    device const float* weight_scales [[buffer(1)]],
@@ -4772,6 +4888,7 @@ const MetalKernel = enum(u8) {
     qmatmul_slice_assign_f32,
     qmatmul_elementwise_f32,
     qmatmul_row_chain_f32,
+    qmatmul_row_chain_tiled_f32,
     qmatmul_fused_elementwise_f32,
     qmatmul_pair_fused_elementwise_f32,
     qmatvec_pair_fused_elementwise_f32,
@@ -5174,6 +5291,7 @@ const CompiledProgram = struct {
     qweight_shapes: []QWeightShape,
     program_stencil: program_mod.ProgramStencil,
     plan: program_mod.ExecutionPlan,
+    command_policy: program_mod.CommandStreamPolicy,
     alloc: std.mem.Allocator,
     runtime_profile: profile_mod.RuntimeProfile = .{},
     profile_mutex: std.Io.Mutex = .init,
@@ -6998,6 +7116,42 @@ const CompiledProgram = struct {
         return true;
     }
 
+    fn encodeQMatmulRowChainTiledLeaf(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype) bool {
+        if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
+        if (q.M <= 1) return false;
+        const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
+        const secondary_buf = if (q_is_src0) e.src1 else e.src0;
+        const secondary_offset = if (q_is_src0) e.src1_offset else e.src0_offset;
+        const w = view.qweight_views[q.weight_idx];
+        const qparams = qmatmulParams(q, w.block_size);
+        const buffers = [_]DeviceBuffer{
+            w.data,
+            w.scales,
+            view.device_bufs[q.input],
+            view.device_bufs[secondary_buf],
+            view.device_bufs[rp.src],
+            view.device_bufs[out.dst],
+            view.device_bufs[e.dst],
+        };
+        const params = QMatmulRowChainParams{
+            .M = qparams.M,
+            .N = qparams.N,
+            .K = qparams.K,
+            .block_size = qparams.block_size,
+            .input_offset = qparams.input_offset,
+            .input_row_stride = qparams.input_row_stride,
+            .ew_op = @intFromEnum(e.op),
+            .ew_is_swapped = if (q_is_src0) 0 else 1,
+            .ew_secondary_offset = secondary_offset,
+            .ew_dst_offset = e.dst_offset,
+            .rms_eps = rn.eps,
+            .scale_src_offset = rp.src_offset,
+            .scaled_dst_offset = out.dst_offset,
+        };
+        exec.encodeKernel(.qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS);
+        return true;
+    }
+
     fn canFuseQMatmulFusedElementwise(self: *CompiledProgram, q: anytype, fe: anytype) bool {
         if (@as(usize, q.weight_idx) >= self.qweight_views.len) return false;
         if (!canEncodeFusedElementwise(fe)) return false;
@@ -8103,6 +8257,12 @@ const CompiledProgram = struct {
         const rp = deviceOpAt(.repeat, ops, rp_idx) orelse return false;
         const out = deviceOpAt(.elementwise, ops, out_idx) orelse return false;
         if (q.M != 1) {
+            if (self.command_policy.fuse_projection_row_chain_single_dispatch and
+                !program_mod.rmsnormScaleChainHasExternalUsers(ops, rn_idx) and
+                self.encodeQMatmulRowChainTiledLeaf(exec, view, q, e, rn, rp, out))
+            {
+                return true;
+            }
             const write_primary = program_mod.projectionPrimaryOutputHasExternalUsers(ops, q_idx, e_idx);
             if (!self.encodeQMatmulElementwise(exec, view, q, e, write_primary)) return false;
             return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, program_mod.rmsnormScaleChainHasExternalUsers(ops, rn_idx));
@@ -8727,6 +8887,7 @@ fn compileProgramInner(self: *MetalBackend, program: backend_mod.DeviceProgram, 
         .qweight_shapes = qweight_shapes,
         .program_stencil = program_stencil,
         .plan = plan,
+        .command_policy = kernelizer.command_policy,
         .alloc = alloc,
         .runtime_profile = .{
             .runtime_patch_shape = inspection.runtime_patch_shape,
@@ -10458,6 +10619,25 @@ test "metal backend exact command fuses qmatmul residual into row chain" {
     try std.testing.expectEqual(@as(u64, 1), command_rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
     try std.testing.expectEqual(@as(u64, 2), command_rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
     try std.testing.expectEqual(@as(u64, 0), command_rt.fallback_op_count);
+
+    const candidate_policy = program_mod.CommandStreamPolicy.promptProjectionRowChainCandidate();
+    const candidate_handle = metal.compileProgramWithCommandPolicy(program, candidate_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(candidate_handle);
+    const candidate_compiled: *CompiledProgram = @ptrCast(@alignCast(candidate_handle));
+
+    var candidate_plan = try program_mod.Kernelizer.init(candidate_policy).kernelize(std.testing.allocator, &ops);
+    defer candidate_plan.deinit(std.testing.allocator);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_row_chain, candidate_plan.commands[0].kind);
+
+    be.resetRuntimeProfile(candidate_handle);
+    try std.testing.expect(candidate_compiled.tryEncodeExactProgramCommand(&ops, candidate_plan.commands[0]));
+    metal.flushCommands();
+
+    var candidate_rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(candidate_handle, &candidate_rt);
+    try std.testing.expectEqual(@as(u64, 1), candidate_rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), candidate_rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
+    try std.testing.expectEqual(@as(u64, 0), candidate_rt.fallback_op_count);
 }
 
 test "metal backend region fuses dense matmul elementwise sidecar" {

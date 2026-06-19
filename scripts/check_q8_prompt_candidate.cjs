@@ -13,7 +13,7 @@ const build = process.env.BENCH_BUILD_ZGML ?? "1";
 const binary = "./zig-out/bin/bench-llama-smollm";
 const speedupFloor = Number(process.env.BENCH_CANDIDATE_SPEEDUP_FLOOR || "1.05");
 const attempts = positiveInt(process.env.BENCH_CANDIDATE_ATTEMPTS || "3", "BENCH_CANDIDATE_ATTEMPTS");
-const rowChainLowering = "prompt_split_tiled_qmatmul_plus_rmsnorm";
+const rowChainLowering = "default_split_tiled_qmatmul_plus_rmsnorm_candidate_single_dispatch_tiled_row_chain";
 const requiredNextTarget = "single_dispatch_tiled_qmatmul_row_chain_throughput";
 const defaultCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "181");
 const defaultProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_ROW_CHAIN_FLOOR || "60");
@@ -111,16 +111,17 @@ function measureAttempt(index) {
     defaultCommands !== null &&
     defaultCommands <= defaultCommandCeil &&
     defaultProjectionRowChains >= defaultProjectionRowChainFloor;
-  const candidateMatchesDefault =
-    defaultDispatches !== null &&
-    candidateDispatches !== null &&
+  const candidateMatchesCommandShape =
     defaultCommands !== null &&
     candidateCommands !== null &&
-    candidateDispatches === defaultDispatches &&
     candidateCommands === defaultCommands &&
     candidateProjectionRowChains === defaultProjectionRowChains;
+  const candidateDispatchShapeReady =
+    defaultDispatches !== null &&
+    candidateDispatches !== null &&
+    candidateProjectionRowChainDispatches <= defaultProjectionRowChainDispatches;
   const fallbackOk = defaultFallback === 0 && candidateFallback === 0;
-  const structuralReady = defaultSemanticReady && candidateMatchesDefault && fallbackOk;
+  const structuralReady = defaultSemanticReady && candidateMatchesCommandShape && candidateDispatchShapeReady && fallbackOk;
   const throughputReady = speedup !== null && speedup >= speedupFloor;
   return {
     index,
@@ -141,6 +142,8 @@ function measureAttempt(index) {
     candidateProjectionRowChainDispatchExcess,
     defaultFallback,
     candidateFallback,
+    candidateMatchesCommandShape,
+    candidateDispatchShapeReady,
     structuralReady,
     throughputReady,
   };

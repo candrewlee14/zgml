@@ -1290,6 +1290,7 @@ pub const CommandStreamPolicy = struct {
     fuse_projection_chain: bool = true,
     fuse_projection_row_chain: bool = true,
     fuse_projection_row_chain_qmatvec: bool = false,
+    fuse_projection_row_chain_single_dispatch: bool = false,
     fuse_dense_projection_row_chain: bool = false,
     min_projection_row_chain_rows: u32 = 8,
 
@@ -1301,6 +1302,7 @@ pub const CommandStreamPolicy = struct {
         var policy = CommandStreamPolicy.default();
         policy.fuse_projection_row_chain = true;
         policy.fuse_projection_row_chain_qmatvec = false;
+        policy.fuse_projection_row_chain_single_dispatch = true;
         policy.min_projection_row_chain_rows = 8;
         return policy;
     }

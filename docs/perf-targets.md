@@ -166,27 +166,22 @@ machine for both prompt/prefill and decode.
   not another scalar per-row/per-column variant. Default full-model prompt
   evidence must keep zero fallback and avoid throughput regression.
 - The controlled full-model prompt hook remains:
-  `--metal-prompt-projection-row-chain-candidate`. It now verifies that the
-  candidate flag matches the default semantic command shape rather than proving
-  a separate default flip. `npm run bench:q8-prompt-candidate` runs paired
-  default/candidate attempts (`BENCH_CANDIDATE_ATTEMPTS`, default 3), requires
-  structural readiness on every attempt, and requires the median throughput
-  attempt to clear the speedup floor before reporting throughput ready. It still
-  prints best/median/worst speedup plus the number of noisy attempts below floor
-  so a single lucky run cannot promote the candidate. On Q8_0 SmolLM p128/g40/r1, the
-  multi-attempt probe keeps dispatches at 242, commands at 181,
-  `projection_row_chain` at 60, `projection_row_chain_dispatch` at 120
-  (`split=2.00` dispatches per semantic row-chain), and fallback at zero. The
-  exact single-kernel target is `excess_dispatch=60->0`: preserve the 60
-  semantic row-chain commands while reducing their two-dispatch lowering to one
-  dispatch each.
-  Throughput is still noisy:
-  recent runs include both a best `speedup=1.14x` and two below-floor attempts,
-  so this is candidate evidence, not an accepted full-artifact promotion. The
-  next target is either stabilizing this into a refreshed accepted ggml artifact
-  or building a tiled qmatmul row-chain throughput kernel that reduces the
-  semantic row-chain split below two dispatches while beating the split fast
-  path reliably.
+  `--metal-prompt-projection-row-chain-candidate`. It now enables the
+  opt-in single-dispatch tiled row-chain experiment. `npm run
+  bench:q8-prompt-candidate` runs paired default/candidate attempts
+  (`BENCH_CANDIDATE_ATTEMPTS`, default 3), requires structural readiness on
+  every attempt, and requires the median throughput attempt to clear the speedup
+  floor before reporting throughput ready. It still prints best/median/worst
+  speedup plus the number of noisy attempts below floor so a single lucky run
+  cannot promote the candidate. On Q8_0 SmolLM p128/g40/r1, the current
+  one-dispatch candidate preserves commands at 181 and `projection_row_chain`
+  at 60 while reducing `projection_row_chain_dispatch` from 120 to 60
+  (`split=2.00->1.00`, `excess_dispatch=60->0`) with fallback at zero.
+  Throughput is not ready: the latest focused run reported
+  `dispatch_reduction_without_tiled_throughput` because prompt speed fell to
+  0.19x of the default split tiled qmatmul plus RMSNorm path. This proves the
+  target shape and the trap at the same time: the next accepted kernel must keep
+  one dispatch per semantic row-chain while restoring tiled qmatmul throughput.
 - The current weakest checked lane is Q8_0 prompt at roughly 30% of llama.cpp.
   Its pressure is not an obvious wrong-kernel issue: the remaining
   `projection_chain:60` work is prefill-shaped qmatmul plus add/mul sidecars,
