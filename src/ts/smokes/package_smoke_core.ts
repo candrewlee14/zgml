@@ -3362,6 +3362,27 @@ function expectShapeMovementProgramEvidence(adapter: Record<string, any>, label:
       program.dispose();
     }
   }
+  const unsupportedRank3ShapeCases = [
+    { name: "narrow-rank3-non-envelope", module: adapter.nn.narrow(1, 0, 1), inputShape: [2, 2, 3], reason: "native module Program narrow currently supports rank-1/rank-2 and singleton-envelope rank-3 materialized output views" },
+    { name: "select-rank3-non-envelope", module: adapter.nn.select(1, 0), inputShape: [2, 2, 3], reason: "native module Program select currently supports rank-1/rank-2 and singleton-envelope rank-3 materialized output views" },
+    { name: "slice-rank3-non-envelope", module: adapter.nn.slice(2, 0, null, 2), inputShape: [2, 2, 3], reason: "native module Program slice currently supports rank-1/rank-2 and singleton-envelope rank-3 materialized output views" },
+  ];
+  for (const testCase of unsupportedRank3ShapeCases) {
+    const support = testCase.module.compileSupport({ inputShape: testCase.inputShape, backend: "cpu" });
+    if (
+      support.supported !== false ||
+      support.reason !== testCase.reason ||
+      support.diagnostics?.[0]?.code !== "unsupported-view" ||
+      support.diagnostics?.[0]?.message !== testCase.reason
+    ) {
+      throw new Error(`${label} expected ${testCase.name} to reject non-singleton rank-3 shape/view compile support`);
+    }
+    expectThrowIncludes(
+      () => testCase.module.compile({ inputShape: testCase.inputShape, backend: "cpu" }),
+      testCase.reason,
+      `${label} ${testCase.name} compile rejects before native shape_mismatch`,
+    );
+  }
 }
 
 function expectUnsupportedCompileExplanationEvidence(adapter: Record<string, any>, label: string) {

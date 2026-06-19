@@ -296,6 +296,7 @@ function narrowIrCanLower(op: any) {
   const shape = narrowIrShape(op);
   if (!shape) return false;
   if (shape.rank === 1) return shape.axis === 0;
+  if (shape.rank === 3 && op.inputShape[0] !== 1) return false;
   return (shape.rank === 2 || shape.rank === 3) && shape.axis >= 0 && shape.axis < shape.rank;
 }
 
@@ -319,6 +320,7 @@ function selectIrCanLower(op: any) {
   const info = selectIrInfo(op);
   if (!info) return false;
   if (info.rank === 1) return info.axis === 0;
+  if (info.rank === 3 && op.inputShape[0] !== 1) return false;
   return (info.rank === 2 || info.rank === 3) && info.axis >= 0 && info.axis < info.rank;
 }
 
@@ -345,6 +347,7 @@ function sliceIrCanLower(op: any) {
   const info = sliceIrInfo(op);
   if (!info) return false;
   if (info.rank === 1) return info.axis === 0;
+  if (info.rank === 3 && op.inputShape[0] !== 1) return false;
   return (info.rank === 2 || info.rank === 3) && info.axis >= 0 && info.axis < info.rank;
 }
 
@@ -1410,21 +1413,21 @@ function kernelizerDiagnosticForIrOp(op: any) {
     return diagnosticForKernelizerOp(
       op,
       "unsupported-view",
-      "native module Program narrow currently supports rank-1/rank-2/rank-3 materialized output views",
+      "native module Program narrow currently supports rank-1/rank-2 and singleton-envelope rank-3 materialized output views",
     );
   }
   if (op.op === "select" && !selectIrCanLower(op)) {
     return diagnosticForKernelizerOp(
       op,
       "unsupported-view",
-      "native module Program select currently supports rank-1/rank-2/rank-3 materialized output views",
+      "native module Program select currently supports rank-1/rank-2 and singleton-envelope rank-3 materialized output views",
     );
   }
   if (op.op === "slice" && !sliceIrCanLower(op)) {
     return diagnosticForKernelizerOp(
       op,
       "unsupported-view",
-      "native module Program slice currently supports rank-1/rank-2/rank-3 materialized output views",
+      "native module Program slice currently supports rank-1/rank-2 and singleton-envelope rank-3 materialized output views",
     );
   }
   if (op.op === "transpose") {
