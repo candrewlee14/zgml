@@ -265,7 +265,10 @@ function checkScripts() {
     "throughputReady",
     "projection_row_chain_candidate_needs_throughput_kernel",
     "const requiredNextTarget = \"single_dispatch_tiled_qmatmul_row_chain_throughput\"",
+    "const singleDispatchTrap = \"serial_n_tile_loop_without_cross_threadgroup_row_reduce\"",
+    "const viableNextTarget = \"semantic_sublayer_or_two_phase_tile_parallel_row_chain\"",
     "`row_chain_lowering=${rowChainLowering} row_chain_next=${requiredNextTarget} `",
+    "`single_dispatch_trap=${dispatchOnlyTrap ? singleDispatchTrap : \"none\"} viable_next=${viableNextTarget} `",
     "`next=${requiredNextTarget}`",
     "candidateReady",
     "q8 prompt semantic row-chain gate:",
@@ -1266,6 +1269,8 @@ function checkQ8PromptCandidateEvidence() {
     "dispatch_only_trap=yes",
     "row_chain_lowering=default_projection_chain_plus_row_chain_candidate_single_dispatch_tiled_row_chain",
     "row_chain_next=single_dispatch_tiled_qmatmul_row_chain_throughput",
+    "single_dispatch_trap=serial_n_tile_loop_without_cross_threadgroup_row_reduce",
+    "viable_next=semantic_sublayer_or_two_phase_tile_parallel_row_chain",
     "next=single_dispatch_tiled_qmatmul_row_chain_throughput",
   ]);
   notes.push(output.trim());

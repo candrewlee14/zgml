@@ -17,6 +17,8 @@ const attempts = positiveInt(process.env.BENCH_CANDIDATE_ATTEMPTS || "3", "BENCH
 const rowChainLowering = "default_projection_chain_plus_row_chain_candidate_single_dispatch_tiled_row_chain";
 const commandLowering = "default_projection_chain_plus_row_chain_command_two_dispatch";
 const requiredNextTarget = "single_dispatch_tiled_qmatmul_row_chain_throughput";
+const singleDispatchTrap = "serial_n_tile_loop_without_cross_threadgroup_row_reduce";
+const viableNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
 const defaultCommandFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_COMMAND_FLOOR || "301");
 const candidateCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "241");
 const candidateProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_ROW_CHAIN_FLOOR || "60");
@@ -285,6 +287,7 @@ console.log(
     `dispatch_only_trap=${dispatchOnlyTrap ? "yes" : "no"} ` +
     `fallback=${format(best.defaultFallback, 0)}->${format(best.candidateFallback, 0)} ` +
     `row_chain_lowering=${rowChainLowering} row_chain_next=${requiredNextTarget} ` +
+    `single_dispatch_trap=${dispatchOnlyTrap ? singleDispatchTrap : "none"} viable_next=${viableNextTarget} ` +
     `next=${requiredNextTarget}`,
 );
 

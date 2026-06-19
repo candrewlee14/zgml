@@ -182,6 +182,13 @@ machine for both prompt/prefill and decode.
   0.19x of the default split tiled qmatmul plus RMSNorm path. This proves the
   target shape and the trap at the same time: the next accepted kernel must keep
   one dispatch per semantic row-chain while restoring tiled qmatmul throughput.
+  A focused Metal tail-parallelization experiment confirmed the deeper trap:
+  the one-dispatch candidate owns only row-tile threadgroups and therefore loops
+  over N tiles inside each threadgroup instead of using the MxN tile parallelism
+  that makes `qmatmul_elementwise_f32` fast. The q8 prompt gate now names this as
+  `single_dispatch_trap=serial_n_tile_loop_without_cross_threadgroup_row_reduce`.
+  The viable next target is therefore either a larger semantic sublayer command or
+  a two-phase tile-parallel row-chain, not another local serial-tail variant.
 - The current weakest checked lane is Q8_0 prompt at roughly 30% of llama.cpp.
   Its pressure is not an obvious wrong-kernel issue: the remaining
   `projection_chain:60` work is prefill-shaped qmatmul plus add/mul sidecars,

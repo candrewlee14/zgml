@@ -253,8 +253,14 @@ Current checked progress:
   lanes, with correctness, command-shape, and runtime-dispatch evidence. Current
   evidence keeps it diagnostic: it can help smaller prompt tiles, but
   full-prefill and SmolLM-prompt shapes remain effectively neutral or slower
-  than the split command path. The remaining substrate jump is not another
-  compatibility lane; it is a real tiled quantized row-chain throughput kernel,
+  than the split command path. A focused Metal tail-parallelization experiment
+  confirmed that the single-dispatch trap is the loss of MxN tile parallelism:
+  row-tile threadgroups must loop over N tiles without cross-threadgroup row
+  reduction. The q8 prompt gate now records this as
+  `single_dispatch_trap=serial_n_tile_loop_without_cross_threadgroup_row_reduce`
+  and points at `viable_next=semantic_sublayer_or_two_phase_tile_parallel_row_chain`.
+  The remaining substrate jump is not another compatibility lane; it is a real
+  tiled quantized row-chain throughput kernel or larger semantic sublayer,
   plus wider default
   browser/WebGPU execution evidence. The required-GPU browser runner's full
   LLaMA profile and storage-mode matrices are now scorecard-checked source
