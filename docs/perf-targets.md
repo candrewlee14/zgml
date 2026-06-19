@@ -273,7 +273,8 @@ machine for both prompt/prefill and decode.
   reporting the single-kernel candidate as ready; it includes a full-prefill
   `qrow full-prefill m=128 n=512 k=512 projection_row_chain` diagnostic because
   the current `qmatmul_row_chain_f32` Adapter still uses a scalar
-  per-row/per-column dot loop rather than the tiled simdgroup qmatmul path.
+  per-row/per-column dot loop with an explicit qmatmul-row-chain threadgroup
+  width rather than the tiled simdgroup qmatmul path.
   It caches the row input vector in threadgroup memory for eligible `K <= 2048`
   shapes, which slightly improves the isolated row-chain frontier but does not
   change the full-model promotion decision. A 256-thread row-wide variant was

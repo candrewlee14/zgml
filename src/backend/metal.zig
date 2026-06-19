@@ -42,6 +42,7 @@ fn deviceOpAt(comptime tag: DeviceOpTag, ops: []const backend_mod.DeviceOp, idx:
 const TILE: u32 = 32; // output tile per threadgroup (TILE x TILE)
 const MAX_ROW_CHAIN_COLS: u32 = 4096;
 const MAX_ROW_CHAIN_K: u32 = 2048;
+const QMATMUL_ROW_CHAIN_THREADS: u32 = 64;
 // 4 simdgroups per threadgroup (128 threads), each handles 8x8 sub-tiles
 // Shared memory per K step: TILE*8 + 8*TILE = 512 floats = 2 KB
 
@@ -55,6 +56,7 @@ const shader_source =
     \\constant uint TILE = 32;
     \\constant uint NSUB = 4; // 2x2 arrangement of 8x8 sub-tiles per simdgroup
     \\constant uint QMATVEC_DOT_THREADS = 64;
+    \\constant uint QMATMUL_ROW_CHAIN_THREADS = 64;
     \\constant uint MAX_ROW_CHAIN_COLS = 4096;
     \\constant uint MAX_ROW_CHAIN_K = 2048;
     \\
@@ -1462,17 +1464,17 @@ const shader_source =
     \\    uint tid [[thread_index_in_threadgroup]]
     \\) {
     \\    if (row >= p.M) return;
-    \\    threadgroup float partial[QMATVEC_DOT_THREADS];
+    \\    threadgroup float partial[QMATMUL_ROW_CHAIN_THREADS];
     \\    threadgroup float row_values[MAX_ROW_CHAIN_COLS];
     \\    threadgroup float input_values[MAX_ROW_CHAIN_K];
     \\    float ss = 0.0f;
     \\
-    \\    for (uint k = tid; k < p.K; k += QMATVEC_DOT_THREADS) {
+    \\    for (uint k = tid; k < p.K; k += QMATMUL_ROW_CHAIN_THREADS) {
     \\        input_values[k] = input[p.input_offset + row * p.input_row_stride + k];
     \\    }
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
-    \\    for (uint col = tid; col < p.N; col += QMATVEC_DOT_THREADS) {
+    \\    for (uint col = tid; col < p.N; col += QMATMUL_ROW_CHAIN_THREADS) {
     \\        float sum = 0.0f;
     \\        for (uint k = 0; k < p.K; k++) {
     \\            uint w_idx = k * p.N + col;
@@ -1489,13 +1491,13 @@ const shader_source =
     \\
     \\    partial[tid] = ss;
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
-    \\    for (uint stride = QMATVEC_DOT_THREADS / 2; stride > 0; stride >>= 1) {
+    \\    for (uint stride = QMATMUL_ROW_CHAIN_THREADS / 2; stride > 0; stride >>= 1) {
     \\        if (tid < stride) partial[tid] += partial[tid + stride];
     \\        threadgroup_barrier(mem_flags::mem_threadgroup);
     \\    }
     \\    float inv_rms = 1.0f / sqrt(partial[0] / float(p.N) + p.rms_eps);
     \\
-    \\    for (uint col = tid; col < p.N; col += QMATVEC_DOT_THREADS) {
+    \\    for (uint col = tid; col < p.N; col += QMATMUL_ROW_CHAIN_THREADS) {
     \\        uint linear = row * p.N + col;
     \\        float ew = row_values[col];
     \\        ew_output[p.ew_dst_offset + linear] = ew;
@@ -3821,6 +3823,7 @@ comptime {
     requireShaderUintConst("MAX_QMATVEC_BATCH", MAX_QMATVEC_BATCH);
     requireShaderUintConst("MAX_QMATVEC_ROPE_STORES", MAX_QMATVEC_ROPE_STORES);
     requireShaderUintConst("QMATVEC_DOT_THREADS", QMATVEC_DOT_THREADS);
+    requireShaderUintConst("QMATMUL_ROW_CHAIN_THREADS", QMATMUL_ROW_CHAIN_THREADS);
     requireShaderUintConst("MAX_ROW_CHAIN_COLS", MAX_ROW_CHAIN_COLS);
     requireShaderUintConst("MAX_ROW_CHAIN_K", MAX_ROW_CHAIN_K);
     requireKernelBuffers(QMatvecBatchKernel, 24, "qmatvec_batch4_cols4_f32");
@@ -6991,7 +6994,7 @@ const CompiledProgram = struct {
             .scale_src_offset = rp.src_offset,
             .scaled_dst_offset = out.dst_offset,
         };
-        exec.encodeKernel(.qmatmul_row_chain_f32, &buffers, params, 7, .{ .gx = q.M }, QMATVEC_DOT_THREADS);
+        exec.encodeKernel(.qmatmul_row_chain_f32, &buffers, params, 7, .{ .gx = q.M }, QMATMUL_ROW_CHAIN_THREADS);
         return true;
     }
 

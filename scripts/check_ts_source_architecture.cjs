@@ -551,11 +551,13 @@ function checkPackageExports(errors) {
     }
   }
   for (const needle of [
+    "const QMATMUL_ROW_CHAIN_THREADS: u32 = 64;",
+    "\\\\constant uint QMATMUL_ROW_CHAIN_THREADS = 64;",
     "kernel void qmatmul_row_chain_f32",
     "threadgroup float row_values[MAX_ROW_CHAIN_COLS]",
-    "for (uint col = tid; col < p.N; col += QMATVEC_DOT_THREADS)",
+    "for (uint col = tid; col < p.N; col += QMATMUL_ROW_CHAIN_THREADS)",
     "for (uint k = 0; k < p.K; k++)",
-    ".qmatmul_row_chain_f32, &buffers, params, 7, .{ .gx = q.M }, QMATVEC_DOT_THREADS",
+    ".qmatmul_row_chain_f32, &buffers, params, 7, .{ .gx = q.M }, QMATMUL_ROW_CHAIN_THREADS",
   ]) {
     if (!metalBackendSource.includes(needle)) {
       errors.push(`src/backend/metal.zig must keep scalar qmatmul row-chain diagnosis until a tiled replacement updates candidate evidence: ${needle}`);

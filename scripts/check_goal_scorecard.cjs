@@ -215,11 +215,13 @@ function checkScripts() {
     "projection_row_chain_next=${projectionRowChainNextTarget}",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "scalar qmatmul row-chain diagnosis until tiled replacement exists", [
+    "const QMATMUL_ROW_CHAIN_THREADS: u32 = 64;",
+    "\\\\constant uint QMATMUL_ROW_CHAIN_THREADS = 64;",
     "kernel void qmatmul_row_chain_f32",
     "threadgroup float row_values[MAX_ROW_CHAIN_COLS]",
-    "for (uint col = tid; col < p.N; col += QMATVEC_DOT_THREADS)",
+    "for (uint col = tid; col < p.N; col += QMATMUL_ROW_CHAIN_THREADS)",
     "for (uint k = 0; k < p.K; k++)",
-    ".qmatmul_row_chain_f32, &buffers, params, 7, .{ .gx = q.M }, QMATVEC_DOT_THREADS",
+    ".qmatmul_row_chain_f32, &buffers, params, 7, .{ .gx = q.M }, QMATMUL_ROW_CHAIN_THREADS",
   ]);
   requireIncludes(read("src/backend.zig"), "src/backend.zig", "native row logsoftmax capability", [
     "logsoftmax: bool = false",
