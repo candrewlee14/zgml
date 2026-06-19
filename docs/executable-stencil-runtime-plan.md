@@ -38,7 +38,7 @@ Current goal, stated without the old sync trap:
 ```text
 write the product library once in TypeScript
 emit Node, Bun, browser, types, and subpaths with tsdown
-use Zig as the native runtime/kernel/ABI substrate
+use Zig as the native tensor-storage/runtime/kernel/ABI substrate
 surface native speed through Program -> Session -> StepParams
 never make JS/TS features wait on a mirrored Zig frontend
 ```
@@ -89,6 +89,20 @@ tsdown is the artifact fan-out.
 Zig is the native execution substrate.
 Contracts and tests keep the boundary honest.
 ```
+
+Read "native execution substrate" strongly: Zig is also the long-term tensor
+storage and single-op execution substrate for tensor-sized eager work.
+
+This is closer to PyTorch and NumPy than to a JS library with optional native
+plugins. Python does not own PyTorch tensor execution; it owns the user-facing
+semantics and calls into ATen/CUDA. Python does not own NumPy array math; it owns
+the ergonomic shell over native ndarray storage and kernels. zgml should follow
+that split for JS/TS: TypeScript owns the package API, type-level safety,
+autograd policy, module composition, optimizer/training ergonomics, and evidence
+records, while Zig owns tensor storage, executable programs, kernels, backend
+dispatch, ABI handles, and eventually the default large-tensor eager execution
+path. "TS-first" means authored and typed in TS, not that substantial tensor
+math should run in JS by default forever.
 
 Architecture decision: the product library is written in TypeScript, then
 emitted with `tsdown`. We do not keep a Zig frontend and TS frontend in sync.
@@ -266,9 +280,13 @@ The practical version is:
 
 ```text
 TS owns: Tensor ergonomics, nn modules, autograd policy, loss, optim, train,
-         checkpoint/state, compile support, package subpaths, JS FFI facade.
+         checkpoint/state, compile support, package subpaths, JS FFI facade,
+         and policy for when execution is eager, compiled, or unsupported.
 Zig owns: kernels, allocators, buffers, native tensor storage, Program handles,
-          Session handles, backend dispatch, ABI structs, C/Wasm exports.
+          Session handles, backend dispatch, ABI structs, C/Wasm exports, and
+          backend-specific execution. For tensor-sized eager work, that native
+          tensor storage should become the default execution lane rather than a
+          special compiled-only escape hatch.
 Shared: executable contracts, evidence records, signatures, tests, benchmarks.
 ```
 
@@ -296,8 +314,11 @@ native handles. If a feature is ordinary library policy, it belongs in TS. If it
 needs native speed, the TS surface should compile, bind, or call into
 Program/Session/runtime primitives. If it cannot compile yet, keep it
 eager-correct and honest about compile support instead of creating another API
-copy. Host-specific differences belong at the adapter edge; tensor, module,
-compiler, optimizer, loss, and training policy belong in `src/ts/**`.
+copy. Over time, eager tensor operations should also move from JS array math to
+native-backed storage and native single-op kernels where the data size or
+operation cost justifies crossing the boundary. Host-specific differences belong
+at the adapter edge; tensor, module, compiler, optimizer, loss, and training
+policy belong in `src/ts/**`.
 The ideal package has a single editable product language, not many source-level
 frontends pretending to be one API.
 
@@ -440,8 +461,11 @@ The PyTorch-replacement bar is explicit:
 - ordinary Zig and JS/TS users should be able to write small models with
   `Tensor`, `nn`, `loss`, `optim`, and `train` without thinking about C handles,
   backend descriptors, or stencil internals
-- eager host execution should be correct, differentiable for the curated
-  frontend ops, and useful for tests, small training jobs, and model shaping
+- eager execution should be correct, differentiable for the curated frontend
+  ops, and useful for tests, small training jobs, and model shaping; its default
+  storage/execution should become native-backed for tensor-sized work, with JS
+  array execution retained only as an explicit correctness, bootstrap, or tiny
+  scalar lane
 - compiled execution should be opt-in and obvious: `model.compile(...)` returns
   a `Program`, `program.bind(...)` returns a `Session`, and hot calls are
   `step`/`execute`

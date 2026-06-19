@@ -195,6 +195,9 @@ const ffOut = activated.mm(w2).add(b2);
 There is no frontend sync pass by design. If a feature is product semantics,
 add it in `src/ts/**`; if it needs native speed, lower or bind it through the
 Program/Session/ABI contract instead of re-authoring the same API in Zig.
+This is the PyTorch/NumPy-shaped split: TypeScript owns the ergonomic shell and
+type-level policy, while Zig owns tensor storage, kernels, executable handles,
+and backend dispatch for tensor-sized work.
 Graph-owned constructors use familiar names (`zeros`, `ones`, `full`,
 `arange`, `linspace`, `rand`, `randn`, `scalar`, `parameter`, `param`) so
 small JS/TS models can start from ordinary tensor vocabulary and only opt into
@@ -609,6 +612,10 @@ batched qmatmul add/mul sidecars.
 Eager tensors report `dtype: "f32"` and `device: "cpu"` and expose honest
 `to`/`cpu`/`float32` helpers; non-CPU movement is explicit through
 `Tensor.place(program, kind)` and Program-owned buffers, not a hidden fallback.
+The long-term direction is native-backed eager tensor storage and single-op
+kernels for work large enough to justify crossing the boundary; JS array
+execution remains a correctness, bootstrap, and tiny-scalar lane rather than
+the performance story.
 JS/TS `nn.embedding` remains eager/autograd-capable and now also compiles
 for explicit 1-D token windows with `inputShape: [tokens]`; compiled embedding
 Sessions accept ordinary number arrays plus `Uint32Array`/`Int32Array` token
@@ -774,10 +781,12 @@ train.step(optim.adamW(model, { lr: 1e-3 }), { loss: objective });
 ```
 
 The native side is intentionally lower-level. It owns executable handles,
-buffers, kernels, backend dispatch, and ABI records. Higher-level model,
+buffers, tensor storage, kernels, backend dispatch, and ABI records.
+Higher-level model,
 optimizer, loss, training, and package policy belong in TypeScript and reach
-native speed by compiling or binding through `Program`/`Session`, not by
-growing a second Zig-shaped product frontend.
+native speed by native-backed eager execution for individual tensor ops or by
+compiling/binding through `Program`/`Session`, not by growing a second Zig-shaped
+product frontend.
 
 The graph IR is deliberately small:
 
