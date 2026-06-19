@@ -296,7 +296,7 @@ function narrowIrCanLower(op: any) {
   const shape = narrowIrShape(op);
   if (!shape) return false;
   if (shape.rank === 1) return shape.axis === 0;
-  return shape.rank === 2 && (shape.axis === 0 || shape.axis === 1);
+  return (shape.rank === 2 || shape.rank === 3) && shape.axis >= 0 && shape.axis < shape.rank;
 }
 
 function selectIrInfo(op: any) {
@@ -345,7 +345,7 @@ function sliceIrCanLower(op: any) {
   const info = sliceIrInfo(op);
   if (!info) return false;
   if (info.rank === 1) return info.axis === 0;
-  return info.rank === 2 && (info.axis === 0 || info.axis === 1);
+  return (info.rank === 2 || info.rank === 3) && info.axis >= 0 && info.axis < info.rank;
 }
 
 function reshapeDescForShape(outputShape: any) {
@@ -1408,7 +1408,7 @@ function kernelizerDiagnosticForIrOp(op: any) {
     return diagnosticForKernelizerOp(
       op,
       "unsupported-view",
-      "native module Program narrow currently supports rank-1/rank-2 materialized output views",
+      "native module Program narrow currently supports rank-1/rank-2/rank-3 materialized output views",
     );
   }
   if (op.op === "select" && !selectIrCanLower(op)) {
@@ -1422,7 +1422,7 @@ function kernelizerDiagnosticForIrOp(op: any) {
     return diagnosticForKernelizerOp(
       op,
       "unsupported-view",
-      "native module Program slice currently supports rank-1/rank-2 materialized output views",
+      "native module Program slice currently supports rank-1/rank-2/rank-3 materialized output views",
     );
   }
   if (op.op === "transpose") {

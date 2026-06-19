@@ -3237,6 +3237,7 @@ function expectShapeMovementProgramEvidence(adapter: Record<string, any>, label:
   const row = adapter.tensor([1, 2, 3], [1, 3]);
   const vector = adapter.tensor([1, 2, 3], [3]);
   const cube = adapter.tensor([1, 2, 3, 4, 5, 6], [1, 2, 3]);
+  const cubeBatch = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 2, 3]);
   const compiledRepeatCases = [
     { name: "repeat", module: adapter.nn.repeat([2]), evidence: "expected nn.repeat rank-1 repeat/tile native Program evidence", outputEvidence: "compiled nn.repeat rank-1 repeat/tile output", expectedData: [1, 2, 3, 1, 2, 3] },
     { name: "tile", module: new adapter.nn.Tile([2]), evidence: "expected nn.tile rank-1 repeat/tile native Program evidence", outputEvidence: "compiled nn.tile rank-1 repeat/tile output", expectedData: [1, 2, 3, 1, 2, 3] },
@@ -3281,6 +3282,10 @@ function expectShapeMovementProgramEvidence(adapter: Record<string, any>, label:
     { name: "unsqueeze-rank3", module: adapter.nn.unsqueeze(0), input: matrix, inputShape: [2, 3], expectedShape: "1x2x3", expectedKernels: "", expectedDispatches: 0, expectedElided: 1 },
     { name: "broadcastTo-rank3", module: adapter.nn.broadcastTo([2, 2, 3]), input: cube, inputShape: [1, 2, 3], expectedShape: "2x2x3", expectedKernels: "broadcast", expectedDispatches: 1, expectedElided: 0 },
     { name: "expand-rank3", module: adapter.nn.expand([2, 2, 3]), input: cube, inputShape: [1, 2, 3], expectedShape: "2x2x3", expectedKernels: "broadcast", expectedDispatches: 1, expectedElided: 0 },
+    { name: "narrow-rank3-batch", module: adapter.nn.narrow(0, 1, 1), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "1x2x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "narrow-rank3-middle", module: adapter.nn.narrow(1, 0, 1), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x1x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "narrow-rank3-feature", module: adapter.nn.narrow(2, 1, 2), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x2x2", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "slice-rank3-step", module: adapter.nn.slice(2, 0, null, 2), input: cubeBatch, inputShape: [2, 2, 3], expectedShape: "2x2x2", expectedKernels: "slice", expectedDispatches: 1, expectedElided: 0 },
   ];
   for (const testCase of compiledCases) {
     const eager = testCase.module.forward(testCase.input);

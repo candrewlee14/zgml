@@ -574,8 +574,8 @@ snapshots with joint preflight before restore mutates either
 target, for host-side model checks and small training loops.
 `nn.identity`, `nn.reshape`, `nn.view`, `nn.flatten`, `nn.squeeze`, `nn.unsqueeze`, `nn.broadcastTo`, `nn.expand`, `nn.transpose`, bounded `nn.narrow`,
 bounded `nn.select`, and bounded `nn.slice` now lower through native module
-Programs for rank-1/rank-2 shapes, plus rank-3 reshape-family and
-broadcast/expand shapes, where their output shape has a dense
+Programs for rank-1/rank-2 shapes, plus rank-3 reshape-family,
+broadcast/expand, narrow, and slice shapes, where their output shape has a dense
 caller-visible buffer contract. Consecutive reshape-equivalent shape ops are
 kept in trace/IR evidence but coalesced into one native reshape descriptor by
 the kernel plan, so ergonomic model glue does not pay a dispatch per view.
@@ -587,8 +587,8 @@ module Program emits zero dispatches and keeps the skipped shape chain in
 `elidedOps`, so pure `Identity`, `View`, and eval/zero-probability `Dropout`
 Programs do not run a synthetic reshape command.
 Broadcast/expand and rank-2 transpose lower as materialized dense movement
-ops, and batched feature-axis narrow/select/slice plus stepped rank-1/rank-2
-slices use the same movement seam. Unsupported view-shaped traces
+ops, and batched feature-axis narrow/select/slice plus stepped rank-1/rank-2/rank-3
+slices use the same movement path. Unsupported view-shaped traces
 still keep frozen Tensor Program IR evidence, so callers can see what
 normalized compiler input failed to lower.
 The same native module Program compiler also lowers small unary elementwise
@@ -869,7 +869,7 @@ long-form smoke and benchmark gates.
 library goal. It requires a passing no-fallback Program/Session substrate gate
 with a latest-vs-checked-baseline delta report for the selected native lanes,
 and checks that the public type smokes still cover the PyTorch-like surface:
-`goal progress: Program/Session substrate=77% floor=65%; PyTorch-like surface=98% floor=60%`.
+`goal progress: Program/Session substrate=77% floor=65%; PyTorch-like surface=99% floor=60%`.
 Those numbers are deliberately conservative: q8 prompt execution still needs a
 real tiled row-chain throughput kernel, while the PyTorch-like surface now has
 runtime and type evidence for the core replacement loop and PyTorch-like
@@ -880,7 +880,7 @@ Linear+GELU, `matmul -> add -> relu/gelu`, Conv2d+ReLU, MLP, reduced MLP, classi
 native `diagonal`,
 rank-1/rank-2 repeat/tile Program lowering, native `argmax(dim)` /
 `argmin(dim)` Program lowering, and rank-3 native shape/view lowering for
-reshape-family plus broadcast/expand,
+reshape-family plus broadcast/expand/narrow/slice,
 direct backend `min(dim)`, eval-mode `BatchNorm1d`, classifier softmax-reduction, transformer FFN, normalized transformer
 classifier, and token-head Session paths rather than only API exports.
 Tensor, `nn`, `optim`, `train`, `data`, loss modules, state dicts,

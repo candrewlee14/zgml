@@ -1935,7 +1935,7 @@ const ModuleNarrowResult = struct {
 
 fn moduleNarrowWithStep(op: zgml_module_op_desc, graph_alloc: std.mem.Allocator, current: *TensorF32, current_rank: usize, step: usize) !ModuleNarrowResult {
     if (op.activation != 0 or op.flags != 0 or op.eps != 0) return error.InvalidArgument;
-    if (current_rank == 0 or current_rank > 2) return error.ShapeMismatch;
+    if (current_rank == 0 or current_rank > 3) return error.ShapeMismatch;
     const axis = op.a;
     if (axis >= current_rank or op.c == 0 or step == 0) return error.ShapeMismatch;
     const dim_len = try moduleRowMajorDim(current, current_rank, axis);
@@ -1954,6 +1954,43 @@ fn moduleNarrowWithStep(op: zgml_module_op_desc, graph_alloc: std.mem.Allocator,
             .tensor = if (step == 1) view else try moduleMaterializeDense(graph_alloc, view),
             .feature_len = op.c,
         };
+    }
+
+    if (current_rank == 3) {
+        if (axis == 0) {
+            const ne = [_]usize{ current.ne[0], current.ne[1], op.c };
+            const stride2 = std.math.mul(usize, current.strides[2], step) catch return error.ShapeMismatch;
+            const strides = [_]usize{ current.strides[0], current.strides[1], stride2 };
+            const offset = std.math.mul(usize, op.b, current.strides[2]) catch return error.ShapeMismatch;
+            const view = current.asStrided(ne[0..], strides[0..], offset);
+            return .{
+                .tensor = try moduleMaterializeDense(graph_alloc, view),
+                .feature_len = current.ne[0],
+            };
+        }
+        if (axis == 1) {
+            const ne = [_]usize{ current.ne[0], op.c, current.ne[2] };
+            const stride1 = std.math.mul(usize, current.strides[1], step) catch return error.ShapeMismatch;
+            const strides = [_]usize{ current.strides[0], stride1, current.strides[2] };
+            const offset = std.math.mul(usize, op.b, current.strides[1]) catch return error.ShapeMismatch;
+            const view = current.asStrided(ne[0..], strides[0..], offset);
+            return .{
+                .tensor = try moduleMaterializeDense(graph_alloc, view),
+                .feature_len = current.ne[0],
+            };
+        }
+        if (axis == 2) {
+            const ne = [_]usize{ op.c, current.ne[1], current.ne[2] };
+            const stride0 = std.math.mul(usize, current.strides[0], step) catch return error.ShapeMismatch;
+            const strides = [_]usize{ stride0, current.strides[1], current.strides[2] };
+            const offset = std.math.mul(usize, op.b, current.strides[0]) catch return error.ShapeMismatch;
+            const view = current.asStrided(ne[0..], strides[0..], offset);
+            return .{
+                .tensor = try moduleMaterializeDense(graph_alloc, view),
+                .feature_len = op.c,
+            };
+        }
+        return error.ShapeMismatch;
     }
 
     if (axis == 0) {
