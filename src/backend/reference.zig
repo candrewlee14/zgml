@@ -308,6 +308,24 @@ pub const ExecutionTape = struct {
                     continue;
                 }
             }
+            if (command.kind == .row_chain and count == 3) {
+                const rms_entry = self.entries[start];
+                const repeat_entry = self.entries[start + 1];
+                const scale_entry = self.entries[start + 2];
+                const rms_index: usize = rms_entry.op_index;
+                const repeat_index: usize = repeat_entry.op_index;
+                const scale_index: usize = scale_entry.op_index;
+                if (rms_index >= ops.len or repeat_index >= ops.len or scale_index >= ops.len) {
+                    std.debug.panic("reference execution tape rmsnorm scale index out of range", .{});
+                }
+                if (ctx.rmsnormScaleChain(ops[rms_index], ops[repeat_index], ops[scale_index])) {
+                    if (runtime_profile) |profile| {
+                        profile.recordProgramCommand(command.kind);
+                        profile.recordProgramCommandDispatch(command.kind);
+                    }
+                    continue;
+                }
+            }
             for (self.entries[start..end]) |entry| {
                 const idx: usize = entry.op_index;
                 if (idx >= ops.len) {
@@ -729,6 +747,51 @@ const Context = struct {
             const inv_s = inv_rms[0];
             while (i < cols) : (i += 1) d[i] = s[i] * inv_s;
         }
+    }
+
+    fn rmsnormScaleChain(self: Context, rms_op: backend_mod.DeviceOp, repeat_op: backend_mod.DeviceOp, scale_op: backend_mod.DeviceOp) bool {
+        const r = switch (rms_op) {
+            .rmsnorm => |r| r,
+            else => return false,
+        };
+        const rp = switch (repeat_op) {
+            .repeat => |rp| rp,
+            else => return false,
+        };
+        const e = switch (scale_op) {
+            .elementwise => |e| e,
+            else => return false,
+        };
+        if (!program_mod.isRmsnormScaleChain(rms_op, repeat_op, scale_op)) return false;
+        const src = self.bufF32(r.src);
+        const dst = self.bufF32(e.dst);
+        const scale = self.bufF32(rp.src);
+        const rows: usize = r.rows;
+        const cols: usize = r.cols;
+        const VecT = @Vector(V, f32);
+        for (0..rows) |row| {
+            const s = src + @as(usize, r.src_offset) + row * cols;
+            const d = dst + @as(usize, e.dst_offset) + row * cols;
+            const scale_row = scale[@as(usize, rp.src_offset)..][0..cols];
+            var acc: VecT = @splat(0);
+            var i: usize = 0;
+            while (i + V <= cols) : (i += V) {
+                const v: VecT = s[i..][0..V].*;
+                acc += v * v;
+            }
+            var ss: f32 = @reduce(.Add, acc);
+            while (i < cols) : (i += 1) ss += s[i] * s[i];
+            const inv_rms: VecT = @splat(1.0 / @sqrt(ss / @as(f32, @floatFromInt(cols)) + r.eps));
+            i = 0;
+            while (i + V <= cols) : (i += V) {
+                const v: VecT = s[i..][0..V].*;
+                const scale_v: VecT = scale_row[i..][0..V].*;
+                d[i..][0..V].* = v * inv_rms * scale_v;
+            }
+            const inv_s = inv_rms[0];
+            while (i < cols) : (i += 1) d[i] = s[i] * inv_s * scale_row[i];
+        }
+        return true;
     }
 
     fn reduce(self: Context, rd: anytype) void {
@@ -1628,6 +1691,78 @@ test "reference execution tape uses patched op payloads" {
     try std.testing.expectEqual(@as(u64, 1), profile.program_command_attempt_counts[op_command]);
     try std.testing.expectEqual(@as(u64, 1), profile.program_command_dispatch_counts[op_command]);
     try std.testing.expectEqual(@as(u64, 0), profile.program_command_failed_counts[op_command]);
+}
+
+test "reference execution tape fuses rmsnorm scale row chain" {
+    var src = [_]f32{ 3, 4, 0, 1, 2, 2 };
+    var scale = [_]f32{ 1, 2, 3 };
+    var norm_scratch = [_]f32{0} ** 6;
+    var repeat_scratch = [_]f32{0} ** 6;
+    var dst = [_]f32{0} ** 6;
+    const buffers = [_]Buffer{
+        .{ .ptr = &src, .len = src.len },
+        .{ .ptr = &scale, .len = scale.len },
+        .{ .ptr = &norm_scratch, .len = norm_scratch.len },
+        .{ .ptr = &repeat_scratch, .len = repeat_scratch.len },
+        .{ .ptr = &dst, .len = dst.len },
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .rmsnorm = .{
+            .dst = 2,
+            .src = 0,
+            .rows = 2,
+            .cols = 3,
+            .eps = 0,
+            .src_offset = 0,
+            .dst_offset = 0,
+        } },
+        .{ .repeat = .{
+            .dst = 3,
+            .src = 1,
+            .n = 6,
+            .src_offset = 0,
+            .dst_offset = 0,
+            .src_ne = .{ 3, 1, 1, 1 },
+            .dst_ne = .{ 3, 2, 1, 1 },
+            .src_strides = .{ 1, 3, 3, 3 },
+            .dst_strides = .{ 1, 3, 6, 6 },
+        } },
+        .{ .elementwise = .{
+            .op = .mul,
+            .dst = 4,
+            .src0 = 2,
+            .src1 = 3,
+            .n = 6,
+            .dst_offset = 0,
+            .src0_offset = 0,
+            .src1_offset = 0,
+        } },
+    };
+
+    var tape = try ExecutionTape.init(std.testing.allocator, &ops);
+    defer tape.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), tape.len());
+    try std.testing.expectEqual(@as(usize, 1), tape.commandLen());
+
+    var profile = profile_mod.RuntimeProfile{};
+    tape.executeProfiled(&buffers, &.{}, &ops, &profile);
+
+    for (0..2) |row| {
+        const base = row * 3;
+        const ss = src[base] * src[base] + src[base + 1] * src[base + 1] + src[base + 2] * src[base + 2];
+        const inv_rms = 1.0 / @sqrt(ss / 3.0);
+        for (0..3) |col| {
+            try std.testing.expectApproxEqAbs(src[base + col] * inv_rms * scale[col], dst[base + col], 1e-6);
+        }
+    }
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0, 0, 0, 0, 0 }, &norm_scratch);
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0, 0, 0, 0, 0 }, &repeat_scratch);
+
+    const row_chain = @intFromEnum(program_mod.ProgramCommandKind.row_chain);
+    try std.testing.expectEqual(@as(u64, 1), profile.program_command_counts[row_chain]);
+    try std.testing.expectEqual(@as(u64, 1), profile.program_command_attempt_counts[row_chain]);
+    try std.testing.expectEqual(@as(u64, 1), profile.program_command_dispatch_counts[row_chain]);
+    try std.testing.expectEqual(@as(u64, 0), profile.program_command_failed_counts[row_chain]);
 }
 
 test "reference executor conv2d relu handles multiple output channels" {

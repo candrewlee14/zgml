@@ -315,6 +315,12 @@ June 19, 2026 evidence: `linear_batched` is near parity at about `0.94x`,
 `lazy_matmul_add_gelu_batched` beats PyTorch at about `1.68x`,
 `lazy_mlp_batched` beats PyTorch at about `1.59x`, and the remaining worst
 case is `lazy_rms_silu_ffn_batched` at about `0.86x`.
+A subsequent row-chain executor pass taught the CPU reference tape to execute
+`rmsnorm -> repeat(weight) -> mul` as one scaled RMSNorm pass instead of three
+materialized row-chain entries. Latest June 19, 2026 PyTorch evidence:
+`linear_batched` is the only remaining miss at about `0.94x`, while
+`lazy_matmul_add_gelu_batched` is about `1.69x`, `lazy_mlp_batched` is about
+`1.43x`, and `lazy_rms_silu_ffn_batched` now reaches about `1.01x`.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS

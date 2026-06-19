@@ -310,7 +310,15 @@ function checkScripts() {
     "fn denseProjectionBiasActivationChain",
     "program_mod.matmulRepeatElementwiseBiasCompatible",
     "program_mod.matmulRepeatElementwiseBiasActivationCompatible",
-    "out.* += b",
+    "fn addBiasRows",
+    "fn addBiasGeluRows",
+    "fn addBiasSiluRows",
+  ]);
+  requireIncludes(read("src/backend/reference.zig"), "src/backend/reference.zig", "reference executor RMSNorm scale row-chain fast path", [
+    "ctx.rmsnormScaleChain",
+    "fn rmsnormScaleChain",
+    "program_mod.isRmsnormScaleChain",
+    "reference execution tape fuses rmsnorm scale row chain",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "Metal native logsoftmax row kernel", [
     "const compute_op_logsoftmax: u32 = 103",
