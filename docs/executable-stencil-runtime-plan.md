@@ -293,8 +293,9 @@ should be treated as a compatibility alias/lane and should not own roadmap
 language, benchmark names, or the default mental model. The PyTorch performance
 target is now explicit: `bench:pytorch` is an evidence command that always
 prints the worst `zgml_vs_pytorch` ratio, while `bench:pytorch:parity` is the
-hard parity gate (`BENCH_PYTORCH_REQUIRE_PARITY=1`) and is expected to fail
-until fused/specialized CPU kernels and backend lowering close the current gap.
+hard parity gate (`BENCH_PYTORCH_REQUIRE_PARITY=1`). That gate is now expected
+to pass on the checked CPU workloads and should fail again only when a
+performance regression drops any tracked workload below parity.
 Both commands build the native C ABI with `-Doptimize=ReleaseFast` first; PyTorch
 comparisons must not silently measure a stale Debug dylib.
 The PyTorch comparison must also match the zgml workload shape exactly. The
@@ -327,6 +328,12 @@ materialized row-chain entries. Latest June 19, 2026 PyTorch evidence:
 `linear_batched` is the only remaining miss at about `0.94x`, while
 `lazy_matmul_add_gelu_batched` is about `1.69x`, `lazy_mlp_batched` is about
 `1.43x`, and `lazy_rms_silu_ffn_batched` now reaches about `1.01x`.
+A direct-session CPU fast-path pass then made the hard parity gate pass across
+all tracked workloads. Current June 19, 2026 evidence from
+`npm run bench:pytorch:parity`: worst tracked workload is
+`lazy_rms_silu_ffn_batched` at about `1.01x`; `linear_batched` is about
+`1.23x`, `lazy_matmul_add_gelu_batched` is about `1.67x`, and
+`lazy_mlp_batched` is about `1.57x`.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS
