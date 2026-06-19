@@ -859,7 +859,8 @@ The npm source package keeps the native build inputs but excludes heavyweight
 repo-only examples, benchmark artifacts, and planning docs. After installing
 its dev dependencies, `npm run build:native`, `npm test`,
 `npm run test:adapters`, `zig build check`, and
-`zig build wgpu-check -Duse-wgpu=true` validate the included source subset.
+`npm run smoke:native-wgpu` / `zig build wgpu-check -Duse-wgpu=true` validate
+the included source subset.
 When `zgml` is installed as a dependency, the packed-install gate proves the
 shipped no-build Node and Bun smoke scripts against the emitted `dist`
 artifacts. Full repository checkouts additionally exercise the excluded

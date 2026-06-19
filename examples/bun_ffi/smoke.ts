@@ -2802,10 +2802,11 @@ try {
         webgpuLogSoftmaxInspection.backend !== "webgpu" ||
         webgpuLogSoftmaxInspection.executionSupported !== runtimeReportsNativeWgpu ||
         !webgpuLogSoftmaxInspection.externalResourcesSupported ||
-        webgpuLogSoftmaxInspection.opCount <= 1 ||
-        webgpuLogSoftmaxInspection.commandCount <= 1 ||
+        webgpuLogSoftmaxInspection.opCount !== 1 ||
+        webgpuLogSoftmaxInspection.commandCount !== 1 ||
         webgpuLogSoftmaxInspection.commandStencilHash === 0n ||
-        commandCategoryTotal(webgpuLogSoftmaxInspection) === 0
+        webgpuLogSoftmaxInspection.dispatchPlanRowCount !== 1 ||
+        commandCategoryTotal(webgpuLogSoftmaxInspection) !== 1
       ) {
         throw new Error(`unexpected TS standalone logSoftmax WebGPU inspection: ${json(webgpuLogSoftmaxInspection)}`);
       }
@@ -2847,7 +2848,7 @@ try {
             throw new Error(`unexpected executable standalone logSoftmax WebGPU session inspection: ${json(sessionInfo)}`);
           }
           const profile = webgpuLogSoftmaxSession.runtimeProfile();
-          if (profile.callCount !== 1 || profile.backendOpCount <= 1 || profile.backendDispatchCount <= 1 || profile.syncCount !== 1) {
+          if (profile.callCount !== 1 || profile.backendOpCount !== 1 || profile.backendDispatchCount !== 1 || profile.syncCount !== 1) {
             throw new Error(`unexpected executable standalone logSoftmax WebGPU profile: ${json(profile)}`);
           }
         } finally {
@@ -2883,7 +2884,7 @@ try {
             }
             expectCloseWithin(webgpuLogSoftmaxDeviceSession.step(), deviceExpected, 1e-5);
             const deviceProfile = webgpuLogSoftmaxDeviceSession.runtimeProfile();
-            if (deviceProfile.callCount !== 1 || deviceProfile.backendOpCount <= 1 || deviceProfile.backendDispatchCount <= 1 || deviceProfile.syncCount !== 0) {
+            if (deviceProfile.callCount !== 1 || deviceProfile.backendOpCount !== 1 || deviceProfile.backendDispatchCount !== 1 || deviceProfile.syncCount !== 0) {
               throw new Error(`unexpected executable standalone logSoftmax WebGPU device-buffer profile: ${json(deviceProfile)}`);
             }
           } finally {

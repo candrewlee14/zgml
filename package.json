@@ -216,6 +216,7 @@
     "smoke:frontend": "node dist/smokes/frontend_package_smoke.cjs",
     "smoke:native-contract": "node dist/smokes/native_bridge_contract_smoke.cjs",
     "smoke:portable-ffi": "npm run build:package && zig build ffi-c-smoke ffi-node-smoke ffi-bun-smoke ffi-wasm-smoke",
+    "smoke:native-wgpu": "zig build wgpu-check -Duse-wgpu=true",
     "smoke:portable-ffi:browser": "zig build ffi-wasm-browser-smoke",
     "smoke:portable-ffi:browser-llama": "zig build ffi-wasm-browser-llama-focused-smoke",
     "smoke:portable-ffi:browser-gpu": "zig build ffi-wasm-browser-gpu-smoke",

@@ -689,9 +689,9 @@ Current groundwork:
   `zig build wgpu-link-smoke -Duse-wgpu=true` proves the headers and exported
   `wgpuCreateInstance` symbol link. That seam now feeds the first
   tiny-linear/matmul execution slice instead of reviving stale backend code.
-  `zig build wgpu-check -Duse-wgpu=true` is the one-shot optional gate over
-  native WebGPU linkage, generic/tiny-linear execution, and the public LLaMA
-  WebGPU smokes.
+  `npm run smoke:native-wgpu` wraps `zig build wgpu-check -Duse-wgpu=true`,
+  the one-shot optional gate over native WebGPU linkage, generic/tiny-linear
+  execution, and the public LLaMA WebGPU smokes.
 - The first native executor prototype now exists too:
   `zig build wgpu-exec-smoke -Duse-wgpu=true` compiles `src/backend/wgpu.zig`,
   creates a wgpu-native device, lowers host-staged tiny-linear, standalone dense
@@ -864,8 +864,9 @@ Current groundwork:
   decode-after-cache-handoff parity, same-device resource-bound logits/K/V
   execution, and over-context rejection before extra runtime patching, dispatch,
   sync, fallback, or logits-resource mutation through the same handle APIs.
-  `zig build wgpu-check -Duse-wgpu=true` runs that LLaMA smoke together with the
-  native WebGPU link and generic executor smokes.
+  `npm run smoke:native-wgpu` / `zig build wgpu-check -Duse-wgpu=true` runs
+  that LLaMA smoke together with the native WebGPU link and generic executor
+  smokes.
   C, Node, and
   Bun allocate Program-owned WebGPU output and per-layer K/V buffers, bind them
   as Session resources, execute decode/prefill/decode-after-prefill, and read

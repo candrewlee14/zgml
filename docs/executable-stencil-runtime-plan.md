@@ -928,8 +928,8 @@ Current frontend slice:
   The root Zig build keeps the rich repo validation in full checkouts
   while treating absent repo-only smoke/benchmark files as skipped in the
   published source package, so `zig build check` and
-  `zig build wgpu-check -Duse-wgpu=true` work in both places without publishing
-  the heavyweight harnesses. Node and Bun also report a direct
+  `npm run smoke:native-wgpu` / `zig build wgpu-check -Duse-wgpu=true` work in
+  both places without publishing the heavyweight harnesses. Node and Bun also report a direct
   `ZGML_C_DYLIB` / `zig build ffi-c` recovery hint when the native library is
   missing. A tiny host autograd tape now covers the existing
   Tensor arithmetic with broadcast-gradient reduction, matmul, reductions,
@@ -4979,9 +4979,10 @@ current real state:
   Builds without native wgpu and portable Wasm/browser LLaMA WebGPU remain
   compile-only/resource-layout evidence; the optional `-Duse-wgpu=true` build now proves wgpu-native
   headers/native linkage via `zig build wgpu-link-smoke -Duse-wgpu=true`, and
-  `zig build wgpu-check -Duse-wgpu=true` runs the complete optional native
-  WebGPU validation suite: link smoke, generic/tiny-linear executor smoke, and
-  public LLaMA WebGPU smokes.
+  `npm run smoke:native-wgpu` wraps
+  `zig build wgpu-check -Duse-wgpu=true`, which runs the complete optional
+  native WebGPU validation suite: link smoke, generic/tiny-linear executor
+  smoke, and public LLaMA WebGPU smokes.
   The `src/backend/wgpu.zig` executor proves host-staged tiny-linear,
   standalone dense f32 matmul, dense matmul-elementwise add/mul sidecars,
   dense matmul-fused-elementwise sidecars,
@@ -5268,8 +5269,8 @@ registered-resource proof now has public owned-buffer and C import surfaces:
   no-output prompt advancement, decode-after-cache-handoff, and same-device
   resource-bound logits/KV cache execution through the same Program / Session
   APIs that callers would use. The Zig facade plus C/Node/Bun additionally
-  run under the one-shot `zig build wgpu-check -Duse-wgpu=true` optional
-  validation gate. They
+  run under the one-shot `npm run smoke:native-wgpu` /
+  `zig build wgpu-check -Duse-wgpu=true` optional validation gate. They
   prove resource-bound argmax/sample execution and greedy/top-k=1 generation
   parity, with logits read back from the bound output resource only for host
   token selection. The Zig facade, C ABI unit path, and Node/Bun

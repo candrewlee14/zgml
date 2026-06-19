@@ -405,7 +405,9 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const sum_t = aux(exps.sum(ne));
             const log_norm = aux(sum_t.log());
             const rep_log = aux(log_norm.repeatLike(shifted));
-            return shifted.sub(rep_log);
+            const res = shifted.sub(rep_log);
+            res.setReduceNe(ne);
+            return res;
         }
 
         /// Numerically stable log-softmax over one dimension.

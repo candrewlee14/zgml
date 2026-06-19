@@ -303,6 +303,9 @@ function checkScripts() {
   if (scripts["smoke:portable-ffi"] !== "npm run build:package && zig build ffi-c-smoke ffi-node-smoke ffi-bun-smoke ffi-wasm-smoke") {
     errors.push("package.json smoke:portable-ffi must keep the C/Node/Bun/Wasm FFI portability gate");
   }
+  if (scripts["smoke:native-wgpu"] !== "zig build wgpu-check -Duse-wgpu=true") {
+    errors.push("package.json smoke:native-wgpu must expose the optional native WebGPU validation gate");
+  }
   if (scripts["smoke:portable-ffi:browser"] !== "zig build ffi-wasm-browser-smoke") {
     errors.push("package.json smoke:portable-ffi:browser must keep the browser Wasm FFI portability gate");
   }
@@ -385,6 +388,15 @@ function checkScripts() {
     "examples/bun_ffi/smoke.ts",
     "const ffi_node_smoke_step = b.step(\"ffi-node-smoke\", \"Run Node package-adapter FFI smoke after npm --prefix examples/node_ffi install\")",
     "examples/node_ffi",
+  ]);
+  requireIncludes(read("build.zig"), "build.zig", "optional native WebGPU validation gate", [
+    "const wgpu_link_smoke_step = b.step(\"wgpu-link-smoke\", \"Compile and link the optional wgpu-native probe; pass -Duse-wgpu=true\")",
+    "const wgpu_exec_smoke_step = b.step(\"wgpu-exec-smoke\", \"Run the optional tiny-linear wgpu execution smoke; pass -Duse-wgpu=true\")",
+    "const llama_wgpu_experimental_smoke_step = b.step(\"llama-wgpu-experimental-smoke\", \"Run LLaMA WebGPU public Zig/C/Node/Bun smokes; pass -Duse-wgpu=true\")",
+    "const wgpu_check_step = b.step(\"wgpu-check\", \"Run all optional native WebGPU validation gates; pass -Duse-wgpu=true\")",
+    "wgpu_check_step.dependOn(wgpu_link_smoke_step)",
+    "wgpu_check_step.dependOn(wgpu_exec_smoke_step)",
+    "wgpu_check_step.dependOn(llama_wgpu_experimental_smoke_step)",
   ]);
   requireIncludes(read("examples/c_ffi_smoke.c"), "examples/c_ffi_smoke.c", "C ABI smoke executable proof", [
     "ZGML_FEATURE_WASM_EXPORTS",

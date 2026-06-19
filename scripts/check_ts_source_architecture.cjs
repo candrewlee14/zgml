@@ -16439,7 +16439,7 @@ function checkDocsUseTsdownArtifactLanguage(errors) {
     "Add native/Zig work only when the feature needs a kernel, buffer/runtime\n   primitive, ABI entry, or backend lowering",
     "npm run test:adapters     # typecheck, then run the one-build Node/Bun adapter gate",
     "npm run smoke:adapters    # build once, then run Node and Bun smokes against the same dist artifact",
-    "After installing\nits dev dependencies, `npm run build:native`, `npm test`,\n`npm run test:adapters`, `zig build check`, and\n`zig build wgpu-check -Duse-wgpu=true` validate the included source subset",
+    "After installing\nits dev dependencies, `npm run build:native`, `npm test`,\n`npm run test:adapters`, `zig build check`, and\n`npm run smoke:native-wgpu` / `zig build wgpu-check -Duse-wgpu=true` validate\nthe included source subset",
     "When `zgml` is installed as a dependency, the packed-install gate proves the\nshipped no-build Node and Bun smoke scripts against the emitted `dist`\nartifacts",
   ]) {
     if (!readmeSource.includes(needle)) {
