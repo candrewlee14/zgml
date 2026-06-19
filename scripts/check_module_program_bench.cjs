@@ -15,6 +15,7 @@ const attempts = 3;
 const wholeBenchAttempts = 3;
 const floors = Object.freeze({
   activationChainSpeedup: 1.25,
+  activationSignChainSpeedup: 1.25,
   linearReluSpeedup: 1.2,
   linearBatchedSpeedup: 3.0,
   lazyLinearGeluBatchedSpeedup: 2.0,
@@ -48,6 +49,7 @@ const floors = Object.freeze({
 });
 const expectedKeys = Object.freeze([
   "activation_chain",
+  "activation_sign_chain",
   "linear_relu",
   "linear_batched",
   "lazy_linear_gelu_batched",
@@ -572,6 +574,34 @@ const benchSpecs = [
       },
     },
     summary: (result) => `activation_chain=${result.speedup.toFixed(2)}x floor=${floors.activationChainSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms dispatch=1 fused=3 hot=allocation-free`,
+  },
+  {
+    key: "activation_sign_chain",
+    label: "activation-sign-chain",
+    floor: floors.activationSignChainSpeedup,
+    inputShape: [16384],
+    inputLen: 16384,
+    outputLen: 16384,
+    layerCount: 3,
+    parameterNames: "",
+    input: () => adapter.tensor(values(16384, 10), [16384]),
+    model: () => adapter.nn.sequential([adapter.nn.neg(), adapter.nn.abs(), adapter.nn.step()]),
+    ir: { opCount: 3, parameterCount: 0 },
+    iterations: 500,
+    tolerance: 1e-5,
+    plan: {
+      opCount: 3,
+      dispatchCount: 1,
+      publicOps: 1,
+      description: "single fused sign activation-chain dispatch",
+      check: (plan) => {
+        const op = plan.ops[0];
+        if (op.op !== "activation-chain" || op.fusedOpCount !== 3 || op.nativeKernels.join("|") !== "neg|abs|step") {
+          throw new Error("activation-sign-chain expected fused native kernels neg|abs|step");
+        }
+      },
+    },
+    summary: (result) => `activation_sign_chain=${result.speedup.toFixed(2)}x floor=${floors.activationSignChainSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms dispatch=1 fused=3 kernels=neg|abs|step hot=allocation-free`,
   },
   {
     key: "linear_relu",

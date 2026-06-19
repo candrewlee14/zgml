@@ -714,6 +714,7 @@ function checkScripts() {
     "requireIrAndParams(spec, program)",
     "benchSpecs.map((spec) => ({ spec, result: runBenchSpec(spec) }))",
     "activation_chain=",
+    "activation_sign_chain=",
     "linear_relu=",
     "linear_batched=",
     "lazy_linear_gelu_batched=",
@@ -1134,6 +1135,7 @@ function checkModuleProgramBenchEvidence() {
   requireIncludes(output, "module Program bench gate output", "TS frontend compiled Program speedup proof", [
     "module Program bench gate: pass",
     "activation_chain=",
+    "activation_sign_chain=",
     "linear_relu=",
     "linear_batched=",
     "mlp=",
@@ -1154,6 +1156,7 @@ function checkModuleProgramBenchEvidence() {
     "softmax_classifier_batched=",
     "log_softmax_classifier_batched=",
     "dispatch=1 fused=3",
+    "kernels=neg|abs|step",
     "dispatch=1 fused=2",
     "ops=3 dispatch=2 fused=2",
     "batched=rank2",
@@ -1172,6 +1175,8 @@ function checkModuleProgramBenchEvidence() {
   ]);
   const line = output.split("\n").find((current) => current.startsWith("module Program bench gate:")) ?? "";
   requirePattern(line, "module Program bench gate output", "activation-chain speedup floor", /activation_chain=[0-9.]+x floor=1\.25x/);
+  requirePattern(line, "module Program bench gate output", "sign activation-chain speedup floor", /activation_sign_chain=[0-9.]+x floor=1\.25x/);
+  requirePattern(line, "module Program bench gate output", "sign activation-chain kernel proof", /activation_sign_chain=[^;]+dispatch=1 fused=3 kernels=neg\|abs\|step hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "linear-relu speedup floor", /linear_relu=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "batched linear speedup floor", /linear_batched=[0-9.]+x floor=3\.00x/);
   requirePattern(line, "module Program bench gate output", "lazy linear-gelu speedup floor", /lazy_linear_gelu_batched=[0-9.]+x floor=2\.00x/);
@@ -4482,6 +4487,7 @@ function checkDocs() {
     "Program/Session performance substrate: ~80%",
     "LayerNorm/RMSNorm descriptors can carry post-affine activations",
     "A batched `RMSNorm+GELU -> Linear`",
+    "sign-style `neg -> abs -> step` chains",
     "Common classifier/token-head `LogSoftmax` tails now",
     "native row op on reference CPU, Metal, and WGPU",
     "capability-disabled test still proves the composite fallback",

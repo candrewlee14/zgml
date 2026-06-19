@@ -200,8 +200,11 @@ Current checked progress:
   native Program with preserved KernelPlan evidence. Lazy
   Linear+GELU and
   `matmul -> add(bias) -> activation` now collapse to one native Program
-  dispatch and is benchmarked for both ReLU and GELU while preserving the
-  original three-op Tensor IR evidence. LayerNorm/RMSNorm descriptors can carry post-affine activations,
+  dispatch and are benchmarked for both ReLU and GELU while preserving the
+  original three-op Tensor IR evidence. Parameterless activation chains also
+  have decision-grade one-dispatch evidence for both arithmetic
+  `relu -> square -> sqrt` and sign-style `neg -> abs -> step` chains.
+  LayerNorm/RMSNorm descriptors can carry post-affine activations,
   and the norm-GELU MLP module benchmarks now prove
   `Linear -> LayerNorm(+affine)+GELU -> Linear` as a three-dispatch Program
   path for scalar and batched inputs. A batched `RMSNorm+GELU -> Linear`
