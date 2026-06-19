@@ -337,6 +337,12 @@ const wgsl_matmul_fused_elementwise =
     \\    case 11u: { return log(x); }
     \\    case 12u: { return gelu(x); }
     \\    case 13u: { return x * x; }
+    \\    case 14u: { return 1.0f / (1.0f + exp(-x)); }
+    \\    case 15u: { return x / (1.0f + exp(-x)); }
+    \\    case 16u: { return tanh(x); }
+    \\    case 39u: { return 1.0f / (1.0f + exp(-x)); }
+    \\    case 40u: { return x / (1.0f + exp(-x)); }
+    \\    case 41u: { return tanh(x); }
     \\    default: { return x; }
     \\  }
     \\}
@@ -614,6 +620,12 @@ const wgsl_matvec_fused_elementwise =
     \\    case 11u: { return log(x); }
     \\    case 12u: { return gelu(x); }
     \\    case 13u: { return x * x; }
+    \\    case 14u: { return 1.0f / (1.0f + exp(-x)); }
+    \\    case 15u: { return x / (1.0f + exp(-x)); }
+    \\    case 16u: { return tanh(x); }
+    \\    case 39u: { return 1.0f / (1.0f + exp(-x)); }
+    \\    case 40u: { return x / (1.0f + exp(-x)); }
+    \\    case 41u: { return tanh(x); }
     \\    default: { return x; }
     \\  }
     \\}
@@ -1251,6 +1263,12 @@ const wgsl_qmatvec_fused_elementwise =
     \\    case 11u: { return log(x); }
     \\    case 12u: { return gelu(x); }
     \\    case 13u: { return x * x; }
+    \\    case 14u: { return 1.0f / (1.0f + exp(-x)); }
+    \\    case 15u: { return x / (1.0f + exp(-x)); }
+    \\    case 16u: { return tanh(x); }
+    \\    case 39u: { return 1.0f / (1.0f + exp(-x)); }
+    \\    case 40u: { return x / (1.0f + exp(-x)); }
+    \\    case 41u: { return tanh(x); }
     \\    default: { return x; }
     \\  }
     \\}
@@ -1432,6 +1450,18 @@ const wgsl_elementwise =
     \\    }
     \\    case 12u: {
     \\      v = gelu(x);
+    \\    }
+    \\    case 13u: {
+    \\      v = x * x;
+    \\    }
+    \\    case 14u, 39u: {
+    \\      v = 1.0f / (1.0f + exp(-x));
+    \\    }
+    \\    case 15u, 40u: {
+    \\      v = x / (1.0f + exp(-x));
+    \\    }
+    \\    case 16u, 41u: {
+    \\      v = tanh(x);
     \\    }
     \\    default: {
     \\      v = x;
@@ -1707,6 +1737,12 @@ const wgsl_fused_elementwise =
     \\    case 11u: { return log(x); }
     \\    case 12u: { return gelu(x); }
     \\    case 13u: { return x * x; }
+    \\    case 14u: { return 1.0f / (1.0f + exp(-x)); }
+    \\    case 15u: { return x / (1.0f + exp(-x)); }
+    \\    case 16u: { return tanh(x); }
+    \\    case 39u: { return 1.0f / (1.0f + exp(-x)); }
+    \\    case 40u: { return x / (1.0f + exp(-x)); }
+    \\    case 41u: { return tanh(x); }
     \\    default: { return x; }
     \\  }
     \\}
@@ -6117,6 +6153,9 @@ fn elementwiseOpCode(op: backend_mod.Op) ?u32 {
         .log => 11,
         .gelu => 12,
         .sqr => 13,
+        .sigmoid => 14,
+        .silu => 15,
+        .tanh => 16,
         else => null,
     };
 }

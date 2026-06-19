@@ -50,7 +50,7 @@ const floors = Object.freeze({
   lazyMlpMeanBatchedSpeedup: 2.0,
   lazyMlpLogSoftmaxBatchedSpeedup: 2.0,
   lazyMlpSoftmaxMeanBatchedSpeedup: 2.0,
-  lazyRmsSiluFfnBatchedSpeedup: 1.5,
+  lazyRmsSiluFfnBatchedSpeedup: 5.0,
   lazyRmsGeluClassifierBatchedSpeedup: 2.0,
   lazyTokenHeadBatchedSpeedup: 1.2,
 });

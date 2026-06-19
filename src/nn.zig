@@ -1344,24 +1344,15 @@ fn featureReduceNe(comptime T: type, x: *const Tensor(T), features: usize) [max_
 }
 
 fn sigmoidTensor(x: anytype) @TypeOf(x) {
-    const TensorT = @TypeOf(x.*);
-    const alloc = x.alloc.?;
-    const one = TensorT.initScalar(alloc, 1) catch unreachable;
-    const exp_neg = x.neg().exp();
-    return exp_neg.add(one.repeatLike(exp_neg)).recip();
+    return x.sigmoid();
 }
 
 fn siluTensor(x: anytype) @TypeOf(x) {
-    return x.mul(sigmoidTensor(x));
+    return x.silu();
 }
 
 fn tanhTensor(x: anytype) @TypeOf(x) {
-    const TensorT = @TypeOf(x.*);
-    const alloc = x.alloc.?;
-    const one = TensorT.initScalar(alloc, 1) catch unreachable;
-    const exp_two_x = x.add(x).exp();
-    const one_like = one.repeatLike(exp_two_x);
-    return exp_two_x.sub(one_like).div(exp_two_x.add(one_like));
+    return x.tanh();
 }
 
 /// Fully-connected layer: `x @ w + b`.

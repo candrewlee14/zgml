@@ -123,7 +123,7 @@ pub const Capabilities = struct {
 
     fn supportsElementwiseOp(_: Capabilities, op: Op) bool {
         return switch (op) {
-            .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu, .sqr => true,
+            .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu, .sqr, .sigmoid, .silu, .tanh => true,
             else => false,
         };
     }

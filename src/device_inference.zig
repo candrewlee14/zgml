@@ -643,7 +643,7 @@ pub fn DeviceInference(comptime T: type) type {
                 const src1_idx = if (src1) |s| self.buffers.idx(s) else src0_idx;
 
                 switch (op) {
-                    .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu, .sqr => {
+                    .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu, .sqr, .sigmoid, .silu, .tanh => {
                         try self.appendElementwiseIrOps(op, dst, src0, src1);
                     },
                     .sum, .prod, .max, .min, .argmax, .argmin => {

@@ -530,6 +530,26 @@ const Context = struct {
                     dst[i] = 0.5 * a * (1.0 + std.math.tanh(kk));
                 }
             },
+            .sigmoid => simdUnaryLoop(dst, src0, n, struct {
+                fn f(a: @Vector(V, f32)) @Vector(V, f32) {
+                    const one: @Vector(V, f32) = @splat(1.0);
+                    return one / (one + @exp(-a));
+                }
+            }.f),
+            .silu => simdUnaryLoop(dst, src0, n, struct {
+                fn f(a: @Vector(V, f32)) @Vector(V, f32) {
+                    const one: @Vector(V, f32) = @splat(1.0);
+                    return a * (one / (one + @exp(-a)));
+                }
+            }.f),
+            .tanh => simdUnaryLoop(dst, src0, n, struct {
+                fn f(a: @Vector(V, f32)) @Vector(V, f32) {
+                    const one: @Vector(V, f32) = @splat(1.0);
+                    const two: @Vector(V, f32) = @splat(2.0);
+                    const e2 = @exp(two * a);
+                    return (e2 - one) / (e2 + one);
+                }
+            }.f),
             else => unsupportedElementwiseOp(e.op),
         }
     }
@@ -556,6 +576,9 @@ const Context = struct {
                         const kk = 0.7978845608 * (v + 0.044715 * v * v * v);
                         v = 0.5 * v * (1.0 + std.math.tanh(kk));
                     },
+                    .sigmoid => v = 1.0 / (1.0 + @exp(-v)),
+                    .silu => v = v / (1.0 + @exp(-v)),
+                    .tanh => v = std.math.tanh(v),
                     .add => {
                         const s_ptr = self.bufF32(step.secondary_buf) + @as(usize, step.secondary_offset);
                         v = if (step.is_swapped) s_ptr[i] + v else v + s_ptr[i];

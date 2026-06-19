@@ -67,11 +67,14 @@ pub const Op = enum {
     argmax,
     argmin,
     prod,
+    sigmoid,
+    silu,
+    tanh,
 
     /// True if this op is elementwise (shape-preserving) and can participate in fusion.
     pub fn isFusible(self: Self) bool {
         return switch (self) {
-            .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu, .sqr => true,
+            .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu, .sqr, .sigmoid, .silu, .tanh => true,
             else => false,
         };
     }
@@ -106,6 +109,9 @@ pub const Op = enum {
             .exp => "exp(x)",
             .log => "log(x)",
             .gelu => "gelu(x)",
+            .sigmoid => "sigmoid(x)",
+            .silu => "silu(x)",
+            .tanh => "tanh(x)",
             .sum => "Σx",
             .prod => "prod(x)",
             .max => "max(x)",

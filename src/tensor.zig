@@ -485,6 +485,9 @@ pub fn Tensor(comptime T: type) type {
         pub const neg = api.neg;
         pub const relu = api.relu;
         pub const gelu = api.gelu;
+        pub const sigmoid = api.sigmoid;
+        pub const silu = api.silu;
+        pub const tanh = api.tanh;
         pub const sumAll = api.sumAll;
         pub const prodAll = api.prodAll;
         pub const maxAll = api.maxAll;

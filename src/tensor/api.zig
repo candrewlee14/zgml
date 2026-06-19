@@ -174,6 +174,15 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn gelu(self: *Self) *Self {
             return unaryOp(self, .gelu, false);
         }
+        pub fn sigmoid(self: *Self) *Self {
+            return unaryOp(self, .sigmoid, false);
+        }
+        pub fn silu(self: *Self) *Self {
+            return unaryOp(self, .silu, false);
+        }
+        pub fn tanh(self: *Self) *Self {
+            return unaryOp(self, .tanh, false);
+        }
         /// Element-wise ReLU primitive.
         pub fn relu(self: *Self) *Self {
             return unaryOp(self, .relu, false);

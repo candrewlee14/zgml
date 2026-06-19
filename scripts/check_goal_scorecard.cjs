@@ -1285,7 +1285,7 @@ function checkModuleProgramBenchEvidence() {
   requirePattern(line, "module Program bench gate output", "lazy Tensor IR MLP log-softmax kernel proof", /ops=4 dispatch=3 fused=2 kernels=linear\|relu\|linear\|log-softmax batched=rank2 parameters=0\.weight\|0\.bias\|2\.weight\|2\.bias hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "lazy MLP softmax-mean speedup floor", /lazy_mlp_softmax_mean_batched=[0-9.]+x floor=2\.00x/);
   requirePattern(line, "module Program bench gate output", "lazy Tensor IR MLP softmax-mean kernel proof", /ops=5 dispatch=4 fused=2 kernels=linear\|relu\|linear\|softmax\|mean batched=rank2-reduced parameters=0\.weight\|0\.bias\|2\.weight\|2\.bias hot=allocation-free/);
-  requirePattern(line, "module Program bench gate output", "lazy RMS SiLU FFN speedup floor", /lazy_rms_silu_ffn_batched=[0-9.]+x floor=1\.50x/);
+  requirePattern(line, "module Program bench gate output", "lazy RMS SiLU FFN speedup floor", /lazy_rms_silu_ffn_batched=[0-9.]+x floor=5\.00x/);
   requirePattern(line, "module Program bench gate output", "lazy Tensor IR RMS SiLU FFN kernel proof", /ops=4 dispatch=3 fused=2 kernels=rms-norm\|linear\|silu\|linear batched=rank2 parameters=0\.weight\|up\.weight\|up\.bias\|down\.weight\|down\.bias hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "lazy RMS GELU classifier speedup floor", /lazy_rms_gelu_classifier_batched=[0-9.]+x floor=2\.00x/);
   requirePattern(line, "module Program bench gate output", "lazy Tensor IR RMS GELU classifier kernel proof", /ops=5 dispatch=4 fused=2 kernels=rms-norm\|linear\|gelu\|linear\|log-softmax batched=rank2 parameters=0\.weight\|up\.weight\|up\.bias\|down\.weight\|down\.bias hot=allocation-free/);

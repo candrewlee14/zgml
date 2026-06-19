@@ -1763,8 +1763,8 @@ fn tinyMlpActivate(x: *TensorF32, activation: TinyMlpActivation) *TensorF32 {
     return switch (activation) {
         .relu => x.relu(),
         .gelu => x.gelu(),
-        .silu => nn.silu(f32, x),
-        .sigmoid => nn.sigmoid(f32, x),
+        .silu => x.silu(),
+        .sigmoid => x.sigmoid(),
     };
 }
 
@@ -1805,7 +1805,7 @@ fn moduleActivate(x: *TensorF32, activation: u32) !*TensorF32 {
         module_activation_square => x.sqr(),
         module_activation_sgn => x.sgn(),
         module_activation_step => x.step(),
-        module_activation_tanh => nn.tanh(f32, x),
+        module_activation_tanh => x.tanh(),
         else => error.InvalidArgument,
     };
 }

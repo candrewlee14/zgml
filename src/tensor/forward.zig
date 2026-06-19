@@ -1107,6 +1107,55 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
             }
         }
 
+        /// Element-wise sigmoid: 1 / (1 + exp(-x)).
+        pub fn computeSigmoid(dst: *Self, src0: *const Self) void {
+            assert(dst.isSameShape(src0));
+            const one: Vec = @splat(@as(T, 1.0));
+            const len = src0.data.len;
+            var i: usize = 0;
+            while (i + vec_size <= len) : (i += vec_size) {
+                const x: Vec = src0.data[i..][0..vec_size].*;
+                dst.data[i..][0..vec_size].* = one / (one + @exp(-x));
+            }
+            while (i < len) : (i += 1) {
+                const x: f32 = @floatCast(src0.data[i]);
+                dst.data[i] = @floatCast(1.0 / (1.0 + @exp(-x)));
+            }
+        }
+
+        /// Element-wise SiLU: x * sigmoid(x).
+        pub fn computeSilu(dst: *Self, src0: *const Self) void {
+            assert(dst.isSameShape(src0));
+            const one: Vec = @splat(@as(T, 1.0));
+            const len = src0.data.len;
+            var i: usize = 0;
+            while (i + vec_size <= len) : (i += vec_size) {
+                const x: Vec = src0.data[i..][0..vec_size].*;
+                dst.data[i..][0..vec_size].* = x * (one / (one + @exp(-x)));
+            }
+            while (i < len) : (i += 1) {
+                const x: f32 = @floatCast(src0.data[i]);
+                dst.data[i] = @floatCast(x / (1.0 + @exp(-x)));
+            }
+        }
+
+        /// Element-wise tanh.
+        pub fn computeTanh(dst: *Self, src0: *const Self) void {
+            assert(dst.isSameShape(src0));
+            const one: Vec = @splat(@as(T, 1.0));
+            const two: Vec = @splat(@as(T, 2.0));
+            const len = src0.data.len;
+            var i: usize = 0;
+            while (i + vec_size <= len) : (i += vec_size) {
+                const x: Vec = src0.data[i..][0..vec_size].*;
+                const e2x = @exp(two * x);
+                dst.data[i..][0..vec_size].* = (e2x - one) / (e2x + one);
+            }
+            while (i < len) : (i += 1) {
+                dst.data[i] = @floatCast(std.math.tanh(@as(f32, @floatCast(src0.data[i]))));
+            }
+        }
+
         pub fn computeNorm(dst: *Self, src0: *const Self) void {
             _ = src0;
             _ = dst;
@@ -2212,6 +2261,9 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                 .exp => computeExp(tensor, src0.?),
                 .log => computeLog(tensor, src0.?),
                 .gelu => computeGelu(tensor, src0.?),
+                .sigmoid => computeSigmoid(tensor, src0.?),
+                .silu => computeSilu(tensor, src0.?),
+                .tanh => computeTanh(tensor, src0.?),
                 .sqr => computeSqr(tensor, src0.?),
                 .sum => tensor.computeSum(src0.?),
                 .prod => computeProd(tensor, src0.?),

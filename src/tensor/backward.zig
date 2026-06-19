@@ -514,6 +514,49 @@ pub fn Ops(comptime Self: type, comptime T: type) type {
                         src0.setGrad(accumGrad(grad, contribution, inplace));
                     }
                 },
+
+                // d/dx[sigmoid(x)] = sigmoid(x) * (1 - sigmoid(x)).
+                .sigmoid => {
+                    const src0 = src0_o.?;
+                    if (src0.gradOrNull()) |grad| {
+                        const sigmoid_grad = try Self.init(src0.alloc.?, src0.ne[0..src0.n_dims]);
+                        for (tensor.data, sigmoid_grad.data) |y, *dst| {
+                            dst.* = y * (1.0 - y);
+                        }
+                        const contribution = sigmoid_grad.mul(out_grad);
+                        stripGrad(contribution);
+                        src0.setGrad(accumGrad(grad, contribution, inplace));
+                    }
+                },
+
+                // d/dx[silu(x)] = sigmoid(x) * (1 + x * (1 - sigmoid(x))).
+                .silu => {
+                    const src0 = src0_o.?;
+                    if (src0.gradOrNull()) |grad| {
+                        const silu_grad = try Self.init(src0.alloc.?, src0.ne[0..src0.n_dims]);
+                        for (src0.data, silu_grad.data) |x, *dst| {
+                            const sig = 1.0 / (1.0 + @exp(-x));
+                            dst.* = sig * (1.0 + x * (1.0 - sig));
+                        }
+                        const contribution = silu_grad.mul(out_grad);
+                        stripGrad(contribution);
+                        src0.setGrad(accumGrad(grad, contribution, inplace));
+                    }
+                },
+
+                // d/dx[tanh(x)] = 1 - tanh(x)^2.
+                .tanh => {
+                    const src0 = src0_o.?;
+                    if (src0.gradOrNull()) |grad| {
+                        const tanh_grad = try Self.init(src0.alloc.?, src0.ne[0..src0.n_dims]);
+                        for (tensor.data, tanh_grad.data) |y, *dst| {
+                            dst.* = 1.0 - y * y;
+                        }
+                        const contribution = tanh_grad.mul(out_grad);
+                        stripGrad(contribution);
+                        src0.setGrad(accumGrad(grad, contribution, inplace));
+                    }
+                },
             }
         }
     };

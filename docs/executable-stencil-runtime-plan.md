@@ -1180,7 +1180,10 @@ Current frontend slice:
   `nn.Sequential` graphs, including
   `nn.sequential([linear, relu|gelu|silu|sigmoid, linear])`, now lower through the
   native traced module Program path with the same eager parameters packed as
-  persistent Session state. Direct tiny-MLP handles still exist as a low-level
+  persistent Session state. SiLU is now a first-class native tensor op in the
+  Program substrate, which tightens the RMSNorm -> Linear+SiLU -> Linear FFN
+  proof to a 5.00x module Program benchmark floor instead of paying for an
+  expanded sigmoid graph. Direct tiny-MLP handles still exist as a low-level
   native Program/Session compatibility path, but `nn.Sequential` no longer
   routes ordinary MLPs through a hidden tiny-MLP matcher. Traced MLP/module Programs also
   compile for WebGPU: native `-Duse-wgpu=true` builds execute with host-bound

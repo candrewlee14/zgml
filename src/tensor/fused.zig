@@ -33,6 +33,9 @@ const FusedOp = enum {
     log,
     gelu,
     sqr,
+    sigmoid,
+    silu,
+    tanh,
     add_src1,
     add_src0,
     mul_src1,
@@ -52,6 +55,9 @@ pub const fusible_ops = [_]FusedOp{
     .log,
     .gelu,
     .sqr,
+    .sigmoid,
+    .silu,
+    .tanh,
     .add_src1,
     .add_src0,
     .mul_src1,
@@ -339,6 +345,9 @@ fn fusedOpForNode(comptime T: type, plan: ElementwiseFusionPlan(T), idx: usize) 
         .log => .log,
         .gelu => .gelu,
         .sqr => .sqr,
+        .sigmoid => .sigmoid,
+        .silu => .silu,
+        .tanh => .tanh,
         .add => if (plan.otherOperandRole(idx) == .src0) .add_src0 else .add_src1,
         .mul => if (plan.otherOperandRole(idx) == .src0) .mul_src0 else .mul_src1,
         else => null,
@@ -406,6 +415,9 @@ fn applyOp(comptime T: type, comptime op: FusedOp, val: T, node: anytype, i: usi
             break :blk @floatCast(0.5 * vf * (1.0 + t));
         },
         .sqr => val * val,
+        .sigmoid => 1.0 / (1.0 + @exp(-val)),
+        .silu => val / (1.0 + @exp(-val)),
+        .tanh => @floatCast(std.math.tanh(@as(f32, @floatCast(val)))),
         .add_src1 => val + loadOther(T, node.src1.?, i),
         .add_src0 => val + loadOther(T, node.src0.?, i),
         .mul_src1 => if (node.src0.? == node.src1.?) val * val else val * loadOther(T, node.src1.?, i),
@@ -437,6 +449,20 @@ fn applyOpVec(comptime T: type, comptime V: comptime_int, comptime op: FusedOp, 
             break :blk @as(VecT, @splat(@as(T, 0.5))) * val * (one + (e2 - one) / (e2 + one));
         },
         .sqr => val * val,
+        .sigmoid => blk: {
+            const one: VecT = @splat(@as(T, 1));
+            break :blk one / (one + @exp(-val));
+        },
+        .silu => blk: {
+            const one: VecT = @splat(@as(T, 1));
+            break :blk val * (one / (one + @exp(-val)));
+        },
+        .tanh => blk: {
+            const one: VecT = @splat(@as(T, 1));
+            const two: VecT = @splat(@as(T, 2));
+            const e2 = @exp(two * val);
+            break :blk (e2 - one) / (e2 + one);
+        },
         .add_src1 => val + loadOtherVec(T, V, node.src1.?, i),
         .add_src0 => val + loadOtherVec(T, V, node.src0.?, i),
         .mul_src1 => if (node.src0.? == node.src1.?) val * val else val * loadOtherVec(T, V, node.src1.?, i),

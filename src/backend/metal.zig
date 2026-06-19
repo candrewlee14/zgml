@@ -2627,6 +2627,21 @@ const shader_source =
     \\            dst[p.dst_offset + gid] = a * a;
     \\            break;
     \\        }
+    \\        case 39: {
+    \\            float a = src0[p.src0_offset + gid];
+    \\            dst[p.dst_offset + gid] = 1.0f / (1.0f + exp(-a));
+    \\            break;
+    \\        }
+    \\        case 40: {
+    \\            float a = src0[p.src0_offset + gid];
+    \\            dst[p.dst_offset + gid] = a / (1.0f + exp(-a));
+    \\            break;
+    \\        }
+    \\        case 41: {
+    \\            float a = src0[p.src0_offset + gid];
+    \\            dst[p.dst_offset + gid] = precise::tanh(a);
+    \\            break;
+    \\        }
     \\        // ── Reduce: sum(19), max(20), min(35), argmax(36), argmin(37), or prod(38), one thread per output ──
     \\        case 19: case 20: case 35: case 36: case 37: case 38: {
     \\            uint reduce_size = p.src0_ne[0];
@@ -2795,6 +2810,9 @@ const shader_source =
     \\            return 0.5f * v * (1.0f + precise::tanh(c));
     \\        }
     \\        case 34: return v * v;
+    \\        case 39: return 1.0f / (1.0f + exp(-v));
+    \\        case 40: return v / (1.0f + exp(-v));
+    \\        case 41: return precise::tanh(v);
     \\        default: return v;
     \\    }
     \\}
@@ -4650,7 +4668,7 @@ fn sliceAssignComputeParams(sa: anytype) ComputeParams {
 
 fn isSupportedElementwiseOp(op: backend_mod.Op) bool {
     return switch (op) {
-        .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu, .sqr => true,
+        .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu, .sqr, .sigmoid, .silu, .tanh => true,
         else => false,
     };
 }
