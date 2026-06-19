@@ -106,6 +106,7 @@ import type {
 } from "./session_tensor.js";
 
 type AnyRecord = Record<string, any>;
+const noFastExecuteIntoInput = Symbol("zgml.no-fast-execute-into-input");
 
 type StepParamsCompatibilityFn<TSession = unknown> = (session: TSession, params?: unknown) => AnyRecord;
 type StepContractFn<TSession = unknown> = (session: TSession) => AnyRecord;
@@ -145,6 +146,18 @@ type GenericValidateHostValueShapeFn = (
   label: string,
   options?: AnyRecord,
 ) => void;
+
+function inputOnlyExecuteIntoParam(params: unknown): unknown | typeof noFastExecuteIntoInput {
+  if (params === undefined || params === null) return noFastExecuteIntoInput;
+  if (typeof params !== "object" || Array.isArray(params) || ArrayBuffer.isView(params)) return noFastExecuteIntoInput;
+  const record = params as AnyRecord;
+  if (!Object.prototype.hasOwnProperty.call(record, "input")) return noFastExecuteIntoInput;
+  if (Object.prototype.hasOwnProperty.call(record, "output")) return noFastExecuteIntoInput;
+  for (const key in record) {
+    if (Object.prototype.hasOwnProperty.call(record, key) && key !== "input") return noFastExecuteIntoInput;
+  }
+  return record.input;
+}
 type GenericStepSessionFn = (handle: unknown, input: unknown, output: unknown) => number;
 type GenericStepNoOutputFn = (handle: unknown, input: unknown) => number;
 type GenericSessionOutputTensorForSessionFn = (
@@ -1021,6 +1034,12 @@ export function createGenericSessionExecutionFacadeHelpers<TSession extends AnyR
     assertFloat32OutputBuffer(outputValues, "executeInto");
     if (params === undefined || params === null) {
       const out = stepIntoCore(session, outputValues, undefined);
+      bumpSessionCallProfile(session, "executeIntoCount");
+      return out;
+    }
+    const fastInput = inputOnlyExecuteIntoParam(params);
+    if (fastInput !== noFastExecuteIntoInput) {
+      const out = stepIntoCore(session, outputValues, fastInput);
       bumpSessionCallProfile(session, "executeIntoCount");
       return out;
     }

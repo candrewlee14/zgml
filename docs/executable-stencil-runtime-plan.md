@@ -291,6 +291,10 @@ hard parity gate (`BENCH_PYTORCH_REQUIRE_PARITY=1`) and is expected to fail
 until fused/specialized CPU kernels and backend lowering close the current gap.
 Both commands build the native C ABI with `-Doptimize=ReleaseFast` first; PyTorch
 comparisons must not silently measure a stale Debug dylib.
+The PyTorch comparison must also match the zgml workload shape exactly. The
+current corrected evidence compares the lazy RMS/SiLU/FFN case as 64->128->64
+instead of a smaller 64->64->64 PyTorch proxy; on June 19, 2026 this moved the
+honest worst observed ratio to about `0.40x`, with the FFN case at about `0.54x`.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS

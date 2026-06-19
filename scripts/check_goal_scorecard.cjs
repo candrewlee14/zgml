@@ -180,6 +180,9 @@ function checkScripts() {
     "required=${requireParity ? \"yes\" : \"no\"}",
     "floor=${minRatio.toFixed(2)}x",
     "worst=${worst.key}:${worst.ratio.toFixed(2)}x",
+    "w128_64 = values((128, 64), 48.0)",
+    "w64_128 = values((64, 128), 64.0)",
+    "hidden = torch.nn.functional.silu(torch.matmul(normed, w128_64.T) + b128)",
     "if (requireParity && !parityReady)",
   ]);
   requireIncludes(read("scripts/check_goal_scorecard.cjs"), "scripts/check_goal_scorecard.cjs", "diagnostic child-process failure reporting", [

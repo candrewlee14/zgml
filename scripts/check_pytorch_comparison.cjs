@@ -83,6 +83,10 @@ w32_64 = values((32, 64), 24.0)
 b32 = values((32,), 32.0)
 w64_64 = values((64, 64), 24.0)
 b64 = values((64,), 32.0)
+w128_64 = values((128, 64), 48.0)
+b128 = values((128,), 80.0)
+w64_128 = values((64, 128), 64.0)
+b64_down = values((64,), 96.0)
 rms_weight = values((64,), 48.0) + 1.0
 
 def linear_batched():
@@ -98,8 +102,8 @@ def lazy_mlp_batched():
 def lazy_rms_silu_ffn_batched():
     ss = torch.mean(x128_64 * x128_64, dim=1, keepdim=True)
     normed = x128_64 * torch.rsqrt(ss + 1e-5) * rms_weight
-    hidden = torch.nn.functional.silu(torch.matmul(normed, w64_64) + b64)
-    return torch.matmul(hidden, w64_64) + b64
+    hidden = torch.nn.functional.silu(torch.matmul(normed, w128_64.T) + b128)
+    return torch.matmul(hidden, w64_128.T) + b64_down
 
 print(json.dumps({
     "linear_batched": bench(linear_batched),
