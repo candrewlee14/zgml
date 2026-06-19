@@ -8258,14 +8258,14 @@ const CompiledProgram = struct {
         const out = deviceOpAt(.elementwise, ops, out_idx) orelse return false;
         if (q.M != 1) {
             if (self.command_policy.fuse_projection_row_chain_single_dispatch and
-                !program_mod.rmsnormScaleChainHasExternalUsers(ops, rn_idx) and
+                !projectionRowChainScaleHasExternalUsers(ops, command) and
                 self.encodeQMatmulRowChainTiledLeaf(exec, view, q, e, rn, rp, out))
             {
                 return true;
             }
-            const write_primary = program_mod.projectionPrimaryOutputHasExternalUsers(ops, q_idx, e_idx);
+            const write_primary = projectionRowChainPrimaryHasExternalUsers(ops, command);
             if (!self.encodeQMatmulElementwise(exec, view, q, e, write_primary)) return false;
-            return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, program_mod.rmsnormScaleChainHasExternalUsers(ops, rn_idx));
+            return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, projectionRowChainScaleHasExternalUsers(ops, command));
         }
         return self.encodeQMatmulRowChain(exec, view, q, e, rn, rp, out);
     }
@@ -8430,6 +8430,24 @@ const CompiledProgram = struct {
         const up = deviceOpAt(.qmatmul, ops, start + 4) orelse return false;
         const product = deviceOpAt(.elementwise, ops, start + 5) orelse return false;
         return self.encodeQMatmulPairFusedElementwiseChain(exec, view, gate, first, rp, second, up, product);
+    }
+
+    fn projectionRowChainPrimaryHasExternalUsers(ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.anchor_count != 1 or command.sidecar_count < 1) return true;
+        const q_idx = command.indices[0];
+        const e_idx = command.sidecar_indices[0] orelse return true;
+        if (q_idx == @as(usize, @intCast(command.op_start)) and e_idx == q_idx + 1) return false;
+        const sidecars = [_]?usize{e_idx};
+        return program_mod.projectionPrimaryOutputHasExternalUsersExcept(ops, q_idx, sidecars[0..]);
+    }
+
+    fn projectionRowChainScaleHasExternalUsers(ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.sidecar_count < 4) return true;
+        const rn_idx = command.sidecar_indices[1] orelse return true;
+        const rp_idx = command.sidecar_indices[2] orelse return true;
+        const out_idx = command.sidecar_indices[3] orelse return true;
+        if (rn_idx == @as(usize, @intCast(command.op_start)) + 2 and rp_idx == rn_idx + 1 and out_idx == rp_idx + 1) return false;
+        return program_mod.rmsnormScaleChainHasExternalUsers(ops, rn_idx);
     }
 
     fn tryEncodeRowChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
@@ -10568,7 +10586,8 @@ test "metal backend exact command fuses qmatmul residual into row chain" {
         .qweights = &qweights,
     };
 
-    const command_policy = program_mod.CommandStreamPolicy.default();
+    var command_policy = program_mod.CommandStreamPolicy.default();
+    command_policy.fuse_projection_row_chain = true;
     const handle = metal.compileProgramWithCommandPolicy(program, command_policy) orelse return error.CompileFailed;
     defer be.freeProgram(handle);
     const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));

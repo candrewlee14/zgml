@@ -62,15 +62,13 @@ machine for both prompt/prefill and decode.
   baseline-regressing p128/g200/r3 artifacts can remain in `bench-results/` for
   diagnosis without becoming the substrate proof; status output reports the
   quarantined count and latest failed artifact explicitly.
-- `bench-results/failed/smollm-20260618T111533Z-p128-g200-r3.json` is the
-  first full-run diagnostic after the block-aligned Q8 scale-hoist work. It is
-  not accepted because every lane missed the checked M5 Pro baseline floor, and
-  llama.cpp reference throughput also drifted down to 68-77% of the checked
-  reference. The diagnostic still records useful shape evidence: zero fallback,
-  the same 242/212 dispatch roofs, Q8_0 prompt at 4011.09 tok/s and 31.14%
-  local parity, and Q8_0 decode at 115.12 tok/s and 37.86% local parity. Treat
-  this as "default-path kernel change survives full-model execution under a
-  noisy reference run," not as a new accepted baseline.
+- Quarantined full-run diagnostics are useful for explaining rejected changes,
+  but not for raising the substrate score. Recent failed artifacts include both
+  reference-drift runs and the unpromoted Q8_0 projection-row-chain default
+  experiment: they record zero fallback and useful shape evidence, but they
+  either miss the checked M5 Pro baseline floor or prove that a lower command
+  count did not preserve full-model throughput. Treat them as diagnosis, not as
+  accepted baseline evidence.
 - In artifacts, `gates.overall_pass` is the actual parity+baseline result.
   Without `BENCH_REQUIRE_PARITY=1` or `BENCH_BASELINE_JSON`, `gates.required_pass`
   is structural native-decode evidence rather than a throughput claim.
@@ -155,16 +153,18 @@ machine for both prompt/prefill and decode.
   the tiled dense matmul-elementwise kernel. This preserves the
   `dense_projection_chain` ProgramCommand evidence and dispatch roof while
   raising F16 decode from the old ~20% ggml lane into the checked >=31% floor.
-- Quantized prompt `projection_row_chain` is now a default semantic
-  ProgramCommand, but not a forced single-kernel throughput claim. Metal lowers
-  prompt-sized Q8 row chains through the existing fast tiled
+- Quantized prompt `projection_row_chain` is an opt-in semantic ProgramCommand,
+  not a default throughput claim. The accepted default keeps the faster
+  projection-chain plus row-chain split. The candidate path can lower
+  prompt-sized Q8 row chains through either the existing fast tiled
   `qmatmul_elementwise_f32` dispatch plus the existing RMSNorm-scale row-chain
-  dispatch under one executable command. This removes the old command-frontier
-  split without promoting the slower row-wise qmatmul kernel. The scalar
-  `qmatmul_row_chain_f32` kernel remains available as a diagnostic candidate,
-  but the next throughput target is a single-dispatch tiled row-chain kernel,
-  not another scalar per-row/per-column variant. Default full-model prompt
-  evidence must keep zero fallback and avoid throughput regression.
+  dispatch under one executable command, or the experimental single-dispatch
+  tiled row-chain hook. This keeps the command-frontier simplification visible
+  without promoting a slower full-model path. The scalar `qmatmul_row_chain_f32`
+  kernel remains available as a diagnostic candidate, but the next throughput
+  target is a single-dispatch tiled row-chain kernel, not another scalar
+  per-row/per-column variant. Default full-model prompt evidence must keep zero
+  fallback and avoid throughput regression.
 - The controlled full-model prompt hook remains:
   `--metal-prompt-projection-row-chain-candidate`. It now enables the
   opt-in single-dispatch tiled row-chain experiment. `npm run
@@ -174,9 +174,9 @@ machine for both prompt/prefill and decode.
   floor before reporting throughput ready. It still prints best/median/worst
   speedup plus the number of noisy attempts below floor so a single lucky run
   cannot promote the candidate. On Q8_0 SmolLM p128/g40/r1, the current
-  one-dispatch candidate preserves commands at 181 and `projection_row_chain`
-  at 60 while reducing `projection_row_chain_dispatch` from 120 to 60
-  (`split=2.00->1.00`, `excess_dispatch=60->0`) with fallback at zero.
+  one-dispatch candidate lowers commands from the default 241-command split to
+  181 commands with `projection_row_chain` at 60 while reducing total dispatches
+  from 242 to 182 and keeping fallback at zero.
   Throughput is not ready: the latest focused run reported
   `dispatch_reduction_without_tiled_throughput` because prompt speed fell to
   0.19x of the default split tiled qmatmul plus RMSNorm path. This proves the
@@ -233,13 +233,13 @@ machine for both prompt/prefill and decode.
   without confusing it for the still-missing tiled qmatmul row-chain throughput
   kernel.
 - Q8_0 tied LM-head logits are a standalone backend qmatvec dispatch outside
-  the ProgramCommand stream. Current Q8_0 prompt evidence is gated at 181
-  ProgramCommands and 242 dispatches because each of the 60 semantic
-  `projection_row_chain` commands still lowers through two fast tiled/row-chain
-  dispatches plus the standalone logits dispatch. Q8_0 decode is gated at 212
-  dispatches and 211 ProgramCommands. Removing the dense `op` command is a
-  structural win only when fallback remains zero and dispatch-accounting stays
-  explicit.
+  the ProgramCommand stream. Accepted default Q8_0 prompt evidence is gated at
+  241 ProgramCommands and 242 dispatches because the prompt path keeps
+  projection-chain plus row-chain commands until row-chain fusion proves
+  full-model speed. Q8_0 decode is gated at 212 dispatches and 211
+  ProgramCommands. Removing the dense `op` command or fusing projection
+  row-chains is a structural win only when fallback remains zero and
+  dispatch-accounting stays explicit.
 - Do not enable prefill projection RoPE-store sidecars by default until the
   Adapter is tiled enough to win throughput. The scalar pair-column experiment
   in `bench-results/smollm-20260601T162410Z-p128-g200-r3.json` lowered the
@@ -265,13 +265,13 @@ machine for both prompt/prefill and decode.
   current Q8 smoke runs it does not beat the normal native row, confirming that
   command depth, not logits download, is the first-order bottleneck.
 - Experimental perf knobs stay opt-in until model benchmarks prove a default win.
-- Quantized prompt projection-row-chain is now default as a semantic
-  ProgramCommand, but the scalar single-kernel implementation remains
-  diagnostic. It can make the command shape look better by removing
-  projection-chain row frontiers, but the substrate gate must still distinguish
-  that command-shape win from a throughput win. The frontier microbench also
-  requires local speedup and max-absolute-difference correctness before
-  reporting the single-kernel candidate as ready; it includes a full-prefill
+- Quantized prompt projection-row-chain remains a candidate semantic
+  ProgramCommand because the full-model default is performance-gated. It can
+  make the command shape look better by removing projection-chain row frontiers,
+  but the substrate gate must still distinguish that command-shape win from a
+  throughput win. The frontier microbench also requires local speedup and
+  max-absolute-difference correctness before reporting the single-kernel
+  candidate as ready; it includes a full-prefill
   `qrow full-prefill m=128 n=512 k=512 projection_row_chain` diagnostic because
   the current `qmatmul_row_chain_f32` Adapter still uses a scalar
   per-row/per-column dot loop with an explicit qmatmul-row-chain threadgroup

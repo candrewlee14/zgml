@@ -1288,7 +1288,7 @@ pub const CommandStreamPolicy = struct {
     max_elementwise_batch: u32 = 8,
     fuse_repeat_fused_elementwise: bool = true,
     fuse_projection_chain: bool = true,
-    fuse_projection_row_chain: bool = true,
+    fuse_projection_row_chain: bool = false,
     fuse_projection_row_chain_qmatvec: bool = false,
     fuse_projection_row_chain_single_dispatch: bool = false,
     fuse_dense_projection_row_chain: bool = false,
@@ -7511,7 +7511,8 @@ test "program command stream uses projection row-chain only for prompt-sized sem
         } },
         .{ .elementwise = .{ .op = .mul, .dst = 16, .src0 = 13, .src1 = 15, .n = 32 } },
     };
-    const prompt_policy = CommandStreamPolicy.grouped(4, 4);
+    var prompt_policy = CommandStreamPolicy.grouped(4, 4);
+    prompt_policy.fuse_projection_row_chain = true;
     const prompt_commands = try buildProgramCommands(std.testing.allocator, &prompt_ops, prompt_policy);
     defer std.testing.allocator.free(prompt_commands);
     try std.testing.expectEqual(@as(usize, 1), prompt_commands.len);
@@ -7519,8 +7520,9 @@ test "program command stream uses projection row-chain only for prompt-sized sem
 
     const default_prompt_commands = try buildProgramCommands(std.testing.allocator, &prompt_ops, CommandStreamPolicy.default());
     defer std.testing.allocator.free(default_prompt_commands);
-    try std.testing.expectEqual(@as(usize, 1), default_prompt_commands.len);
-    try std.testing.expectEqual(ProgramCommandKind.projection_row_chain, default_prompt_commands[0].kind);
+    try std.testing.expectEqual(@as(usize, 2), default_prompt_commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_chain, default_prompt_commands[0].kind);
+    try std.testing.expectEqual(ProgramCommandKind.row_chain, default_prompt_commands[1].kind);
 
     const prompt_candidate_commands = try buildProgramCommands(std.testing.allocator, &prompt_ops, CommandStreamPolicy.promptProjectionRowChainCandidate());
     defer std.testing.allocator.free(prompt_candidate_commands);

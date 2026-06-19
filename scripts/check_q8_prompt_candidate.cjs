@@ -13,10 +13,11 @@ const build = process.env.BENCH_BUILD_ZGML ?? "1";
 const binary = "./zig-out/bin/bench-llama-smollm";
 const speedupFloor = Number(process.env.BENCH_CANDIDATE_SPEEDUP_FLOOR || "1.05");
 const attempts = positiveInt(process.env.BENCH_CANDIDATE_ATTEMPTS || "3", "BENCH_CANDIDATE_ATTEMPTS");
-const rowChainLowering = "default_split_tiled_qmatmul_plus_rmsnorm_candidate_single_dispatch_tiled_row_chain";
+const rowChainLowering = "default_projection_chain_plus_row_chain_candidate_single_dispatch_tiled_row_chain";
 const requiredNextTarget = "single_dispatch_tiled_qmatmul_row_chain_throughput";
-const defaultCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "181");
-const defaultProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_ROW_CHAIN_FLOOR || "60");
+const defaultCommandFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_COMMAND_FLOOR || "241");
+const candidateCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "181");
+const candidateProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_ROW_CHAIN_FLOOR || "60");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -107,21 +108,25 @@ function measureAttempt(index) {
   const candidateProjectionRowChainDispatchExcess = Math.max(0, candidateProjectionRowChainDispatches - candidateProjectionRowChains);
   const candidateFallback = number(candidateRow, "fallback_ops") ?? 0;
   const defaultFallback = number(defaultRow, "fallback_ops") ?? 0;
-  const defaultSemanticReady =
+  const defaultFastPathReady =
     defaultCommands !== null &&
-    defaultCommands <= defaultCommandCeil &&
-    defaultProjectionRowChains >= defaultProjectionRowChainFloor;
-  const candidateMatchesCommandShape =
-    defaultCommands !== null &&
+    defaultCommands >= defaultCommandFloor &&
+    defaultProjectionRowChains === 0;
+  const candidateSemanticReady =
     candidateCommands !== null &&
-    candidateCommands === defaultCommands &&
-    candidateProjectionRowChains === defaultProjectionRowChains;
+    candidateCommands <= candidateCommandCeil &&
+    candidateProjectionRowChains >= candidateProjectionRowChainFloor;
+  const candidateMatchesCommandShape =
+    candidateCommands !== null &&
+    candidateCommands <= candidateCommandCeil &&
+    candidateProjectionRowChains >= candidateProjectionRowChainFloor;
   const candidateDispatchShapeReady =
     defaultDispatches !== null &&
     candidateDispatches !== null &&
-    candidateProjectionRowChainDispatches <= defaultProjectionRowChainDispatches;
+    candidateDispatches < defaultDispatches &&
+    candidateProjectionRowChainDispatches <= candidateProjectionRowChains;
   const fallbackOk = defaultFallback === 0 && candidateFallback === 0;
-  const structuralReady = defaultSemanticReady && candidateMatchesCommandShape && candidateDispatchShapeReady && fallbackOk;
+  const structuralReady = defaultFastPathReady && candidateSemanticReady && candidateMatchesCommandShape && candidateDispatchShapeReady && fallbackOk;
   const throughputReady = speedup !== null && speedup >= speedupFloor;
   return {
     index,
@@ -172,12 +177,12 @@ const dispatchOnlyTrap =
       median.candidateProjectionRowChainDispatchSplit < median.defaultProjectionRowChainDispatchSplit) ||
     median.candidateProjectionRowChainDispatchExcess < median.defaultProjectionRowChainDispatchExcess);
 const reason = candidateReady
-  ? "default_semantic_row_chain_meets_structure_and_speed"
+  ? "projection_row_chain_candidate_meets_structure_and_speed"
   : dispatchOnlyTrap
     ? "dispatch_reduction_without_tiled_throughput"
     : !structuralReady
-      ? "default_semantic_row_chain_failed_structure_or_fallback"
-      : "default_semantic_row_chain_needs_throughput_kernel";
+      ? "projection_row_chain_candidate_failed_structure_or_fallback"
+      : "projection_row_chain_candidate_needs_throughput_kernel";
 
 console.log(
   `q8 prompt semantic row-chain gate: ${candidateReady ? "ready" : "structural"}; ` +
