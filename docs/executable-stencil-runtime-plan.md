@@ -307,6 +307,14 @@ from two commands to one and moving the observed worst PyTorch ratio to about
 The same dense projection activation path now handles SiLU for FFN blocks,
 dropping the lazy RMS/SiLU/FFN runtime profile from four commands to three and
 moving that observed PyTorch ratio to about `0.79x`.
+A focused PyTorch-parity pass then specialized the dense bias and bias+activation
+post-op loops so they branch once per fused command instead of inside each
+vector chunk, and made the PyTorch GELU comparison explicitly use
+`approximate="tanh"` to match zgml's documented GELU semantics. Latest
+June 19, 2026 evidence: `linear_batched` is near parity at about `0.94x`,
+`lazy_matmul_add_gelu_batched` beats PyTorch at about `1.68x`,
+`lazy_mlp_batched` beats PyTorch at about `1.59x`, and the remaining worst
+case is `lazy_rms_silu_ffn_batched` at about `0.86x`.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS

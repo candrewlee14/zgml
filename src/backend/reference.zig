@@ -1176,12 +1176,33 @@ const Context = struct {
         const N: usize = m.geom.N;
         const dst_offset: usize = e.dst_offset;
         const bias_offset: usize = rp.src_offset;
-        for (0..M) |row| {
-            const dst_row = dst[dst_offset + row * m.geom.dst_row_stride ..][0..N];
-            const bias_row = bias[bias_offset..][0..N];
-            for (dst_row, bias_row) |*out, b| out.* += b;
-        }
+        addBiasRows(dst, bias, M, N, m.geom.dst_row_stride, dst_offset, bias_offset);
         return true;
+    }
+
+    fn addBiasRows(
+        dst: [*]f32,
+        bias: [*]const f32,
+        M: usize,
+        N: usize,
+        dst_row_stride: usize,
+        dst_offset: usize,
+        bias_offset: usize,
+    ) void {
+        const VecT = @Vector(V, f32);
+        for (0..M) |row| {
+            const dst_row = dst[dst_offset + row * dst_row_stride ..][0..N];
+            const bias_row = bias[bias_offset..][0..N];
+            var i: usize = 0;
+            while (i + V <= N) : (i += V) {
+                const out_v: VecT = dst_row[i..][0..V].*;
+                const bias_v: VecT = bias_row[i..][0..V].*;
+                dst_row[i..][0..V].* = out_v + bias_v;
+            }
+            while (i < N) : (i += 1) {
+                dst_row[i] += bias_row[i];
+            }
+        }
     }
 
     fn denseProjectionBiasActivationChain(
@@ -1226,42 +1247,74 @@ const Context = struct {
         const N: usize = m.geom.N;
         const dst_offset: usize = activation.dst_offset;
         const bias_offset: usize = rp.src_offset;
+        switch (activation.op) {
+            .gelu => addBiasGeluRows(dst, bias, M, N, m.geom.dst_row_stride, dst_offset, bias_offset),
+            .silu => addBiasSiluRows(dst, bias, M, N, m.geom.dst_row_stride, dst_offset, bias_offset),
+            else => unreachable,
+        }
+        return true;
+    }
+
+    fn addBiasGeluRows(
+        dst: [*]f32,
+        bias: [*]const f32,
+        M: usize,
+        N: usize,
+        dst_row_stride: usize,
+        dst_offset: usize,
+        bias_offset: usize,
+    ) void {
         const VecT = @Vector(V, f32);
         const k0: VecT = @splat(0.7978845608);
         const k1: VecT = @splat(0.044715);
         const half: VecT = @splat(0.5);
         const one: VecT = @splat(1.0);
         for (0..M) |row| {
-            const dst_row = dst[dst_offset + row * m.geom.dst_row_stride ..][0..N];
+            const dst_row = dst[dst_offset + row * dst_row_stride ..][0..N];
             const bias_row = bias[bias_offset..][0..N];
             var i: usize = 0;
             while (i + V <= N) : (i += V) {
                 const gemm_v: VecT = dst_row[i..][0..V].*;
                 const bias_v: VecT = bias_row[i..][0..V].*;
                 const a: VecT = gemm_v + bias_v;
-                dst_row[i..][0..V].* = switch (activation.op) {
-                    .gelu => blk: {
-                        const k = k0 * (a + k1 * a * a * a);
-                        const e2k = @exp(k + k);
-                        break :blk half * a * (one + (e2k - one) / (e2k + one));
-                    },
-                    .silu => a * (one / (one + @exp(-a))),
-                    else => unreachable,
-                };
+                const k = k0 * (a + k1 * a * a * a);
+                const e2k = @exp(k + k);
+                dst_row[i..][0..V].* = half * a * (one + (e2k - one) / (e2k + one));
             }
             while (i < N) : (i += 1) {
                 const a = dst_row[i] + bias_row[i];
-                dst_row[i] = switch (activation.op) {
-                    .gelu => blk: {
-                        const kk = 0.7978845608 * (a + 0.044715 * a * a * a);
-                        break :blk 0.5 * a * (1.0 + std.math.tanh(kk));
-                    },
-                    .silu => a / (1.0 + @exp(-a)),
-                    else => unreachable,
-                };
+                const kk = 0.7978845608 * (a + 0.044715 * a * a * a);
+                dst_row[i] = 0.5 * a * (1.0 + std.math.tanh(kk));
             }
         }
-        return true;
+    }
+
+    fn addBiasSiluRows(
+        dst: [*]f32,
+        bias: [*]const f32,
+        M: usize,
+        N: usize,
+        dst_row_stride: usize,
+        dst_offset: usize,
+        bias_offset: usize,
+    ) void {
+        const VecT = @Vector(V, f32);
+        const one: VecT = @splat(1.0);
+        for (0..M) |row| {
+            const dst_row = dst[dst_offset + row * dst_row_stride ..][0..N];
+            const bias_row = bias[bias_offset..][0..N];
+            var i: usize = 0;
+            while (i + V <= N) : (i += V) {
+                const gemm_v: VecT = dst_row[i..][0..V].*;
+                const bias_v: VecT = bias_row[i..][0..V].*;
+                const a: VecT = gemm_v + bias_v;
+                dst_row[i..][0..V].* = a * (one / (one + @exp(-a)));
+            }
+            while (i < N) : (i += 1) {
+                const a = dst_row[i] + bias_row[i];
+                dst_row[i] = a / (1.0 + @exp(-a));
+            }
+        }
     }
 
     fn qmatmul(self: Context, q: anytype) void {

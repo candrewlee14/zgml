@@ -93,7 +93,7 @@ def linear_batched():
     return torch.nn.functional.linear(x128_64, w32_64, b32)
 
 def lazy_matmul_add_gelu_batched():
-    return torch.nn.functional.gelu(torch.matmul(x128_64, w64_64) + b64)
+    return torch.nn.functional.gelu(torch.matmul(x128_64, w64_64) + b64, approximate="tanh")
 
 def lazy_mlp_batched():
     hidden = torch.relu(torch.nn.functional.linear(x128_64, w64_64, b64))
@@ -142,6 +142,7 @@ const parts = [
   `pytorch comparison: ${requireParity ? (parityReady ? "parity-pass" : "parity-miss") : "evidence"}`,
   `python=${python}`,
   `pytorch=${pytorchVersion}`,
+  "gelu=approximate-tanh",
   `required=${requireParity ? "yes" : "no"}`,
   `floor=${minRatio.toFixed(2)}x`,
   `worst=${worst.key}:${worst.ratio.toFixed(2)}x`,
