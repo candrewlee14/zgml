@@ -8,7 +8,7 @@ const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
 const goalProgress = Object.freeze({
-  substratePct: 84,
+  substratePct: 85,
   substrateFloorPct: 65,
   pytorchLikePct: 100,
   pytorchLikeFloorPct: 60,
@@ -732,6 +732,7 @@ function checkScripts() {
     "shape_linear=",
     "rank3_min_reduction=",
     "rank3_argmax_reduction=",
+    "rank3_argmin_reduction=",
     "conv2d=",
     "conv2d_batched=",
     "lazy_conv2d_relu_batched=",
@@ -763,6 +764,7 @@ function checkScripts() {
     "ops=3 dispatch=2 fused_shape=2 kernels=reshape|linear",
     "ops=1 dispatch=1 kernels=min batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=argmax batched=rank3-last-axis",
+    "ops=1 dispatch=1 kernels=argmin batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=conv2d",
     "ops=2 dispatch=1 fused=2 kernels=conv2d|relu",
     "ops=1 dispatch=1 kernels=max-pool2d",
@@ -791,6 +793,7 @@ function checkScripts() {
     "floors.shapeLinearSpeedup",
     "floors.rank3MinReductionSpeedup",
     "floors.rank3ArgmaxReductionSpeedup",
+    "floors.rank3ArgminReductionSpeedup",
     "floors.conv2dSpeedup",
     "floors.conv2dBatchedSpeedup",
     "floors.lazyConv2dReluBatchedSpeedup",
@@ -1158,6 +1161,7 @@ function checkModuleProgramBenchEvidence() {
     "shape_linear=",
     "rank3_min_reduction=",
     "rank3_argmax_reduction=",
+    "rank3_argmin_reduction=",
     "conv2d=",
     "conv2d_batched=",
     "lazy_conv2d_relu_batched=",
@@ -1179,6 +1183,7 @@ function checkModuleProgramBenchEvidence() {
     "ops=3 dispatch=2 fused_shape=2 kernels=reshape|linear",
     "ops=1 dispatch=1 kernels=min batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=argmax batched=rank3-last-axis",
+    "ops=1 dispatch=1 kernels=argmin batched=rank3-last-axis",
     "ops=1 dispatch=1 kernels=conv2d",
     "ops=2 dispatch=1 fused=2 kernels=conv2d|relu",
     "ops=1 dispatch=1 kernels=max-pool2d",
@@ -1207,6 +1212,8 @@ function checkModuleProgramBenchEvidence() {
   requirePattern(line, "module Program bench gate output", "rank-3 native min reduction proof", /rank3_min_reduction=[^;]+ops=1 dispatch=1 kernels=min batched=rank3-last-axis hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "rank-3 argmax reduction speedup floor", /rank3_argmax_reduction=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "rank-3 native argmax reduction proof", /rank3_argmax_reduction=[^;]+ops=1 dispatch=1 kernels=argmax batched=rank3-last-axis hot=allocation-free/);
+  requirePattern(line, "module Program bench gate output", "rank-3 argmin reduction speedup floor", /rank3_argmin_reduction=[0-9.]+x floor=1\.20x/);
+  requirePattern(line, "module Program bench gate output", "rank-3 native argmin reduction proof", /rank3_argmin_reduction=[^;]+ops=1 dispatch=1 kernels=argmin batched=rank3-last-axis hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "conv2d speedup floor", /conv2d=[0-9.]+x floor=1\.05x/);
   requirePattern(line, "module Program bench gate output", "batched conv2d speedup floor", /conv2d_batched=[0-9.]+x floor=1\.05x/);
   requirePattern(line, "module Program bench gate output", "lazy Conv2d ReLU speedup floor", /lazy_conv2d_relu_batched=[0-9.]+x floor=1\.05x/);
@@ -4472,7 +4479,7 @@ function checkDocs() {
     "npm run check:goal-scorecard",
     "Program/Session substrate",
     "PyTorch-like surface",
-    "goal progress: Program/Session substrate=84% floor=65%; PyTorch-like surface=100% floor=60%",
+    "goal progress: Program/Session substrate=85% floor=65%; PyTorch-like surface=100% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4509,7 +4516,7 @@ function checkDocs() {
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
-    "Program/Session performance substrate: ~84%",
+    "Program/Session performance substrate: ~85%",
     "That optional gate now also runs the native WebGPU LLaMA execution proofs for",
     "runtime quantized-weight rebinding, resource-bound decode/prefill handoff,",
     "long-prompt prefill, GQA long-prompt prefill, and a realistic head-width",

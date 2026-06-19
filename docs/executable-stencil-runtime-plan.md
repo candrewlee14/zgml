@@ -192,7 +192,7 @@ execution is the performance claim. Silent eager fallback is not allowed.
 
 Current checked progress:
 
-- Program/Session performance substrate: ~84%. The Program/Session shape,
+- Program/Session performance substrate: ~85%. The Program/Session shape,
   runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
   native Metal execution, a scorecard-run optional native wgpu validation gate,
   and ggml benchmark gates are real enough that the substrate is past "architecture".
