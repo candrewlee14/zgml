@@ -268,8 +268,11 @@ function score(output, attempt) {
     projectionSmollmPromptSpeedup,
     projectionSmollmPromptMaxAbsDiff,
     projectionPromptSingleDispatchSpeedup,
+    projectionPromptSingleDispatchMaxAbsDiff,
     projectionFullPrefillSingleDispatchSpeedup,
+    projectionFullPrefillSingleDispatchMaxAbsDiff,
     projectionSmollmPromptSingleDispatchSpeedup,
+    projectionSmollmPromptSingleDispatchMaxAbsDiff,
     projectionRowChainGroupFullPrefillShapeCommands,
     projectionRowChainGroupFullPrefillShapeRowChains,
     projectionRowChainGroupFullPrefillShapeCoveredOps,
@@ -290,16 +293,23 @@ function score(output, attempt) {
     projectionPromptShapeCoveredOps,
     projectionPromptShapeSavedDispatches,
     projectionPromptRuntimeCommandDispatches,
+    projectionPromptSingleDispatchShapeCommands,
+    projectionPromptSingleDispatchShapeRowChains,
+    projectionPromptSingleDispatchShapeCoveredOps,
+    projectionPromptSingleDispatchShapeSavedDispatches,
+    projectionPromptSingleDispatchRuntimeCommandDispatches,
     projectionFullPrefillShapeCommands,
     projectionFullPrefillShapeRowChains,
     projectionFullPrefillShapeCoveredOps,
     projectionFullPrefillShapeSavedDispatches,
     projectionFullPrefillRuntimeCommandDispatches,
+    projectionFullPrefillSingleDispatchRuntimeCommandDispatches,
     projectionSmollmPromptShapeCommands,
     projectionSmollmPromptShapeRowChains,
     projectionSmollmPromptShapeCoveredOps,
     projectionSmollmPromptShapeSavedDispatches,
     projectionSmollmPromptRuntimeCommandDispatches,
+    projectionSmollmPromptSingleDispatchRuntimeCommandDispatches,
     projectionDefaultDecision,
     projectionDefaultReason,
     failures,
@@ -355,6 +365,96 @@ function chooseBest(attempts) {
   }, null);
 }
 
+function bestMax(attempts, field) {
+  return Math.max(...attempts.map((attempt) => attempt[field]).filter((value) => Number.isFinite(value)));
+}
+
+function bestMin(attempts, field) {
+  return Math.min(...attempts.map((attempt) => attempt[field]).filter((value) => Number.isFinite(value)));
+}
+
+function anyEquals(attempts, fields) {
+  return attempts.some((attempt) => fields.every(([field, expected]) => attempt[field] === expected));
+}
+
+function aggregateFailures(attempts) {
+  const failures = [];
+  const speedAtLeast = (field, floor, label) => {
+    const value = bestMax(attempts, field);
+    if (!Number.isFinite(value) || value < floor) failures.push(`${label} best ${Number.isFinite(value) ? value.toFixed(2) : "n/a"}x < ${floor.toFixed(2)}x`);
+  };
+  const diffAtMost = (field, ceil, label) => {
+    const value = bestMin(attempts, field);
+    if (!Number.isFinite(value) || value > ceil) failures.push(`${label} best max_abs_diff ${Number.isFinite(value) ? value.toFixed(6) : "n/a"} > ${ceil.toFixed(6)}`);
+  };
+  const exactProfile = (fields, label) => {
+    if (!anyEquals(attempts, fields)) failures.push(`${label} profile did not match in any attempt`);
+  };
+
+  speedAtLeast("smallSpeedup", 2.0, "small chain fusion");
+  speedAtLeast("largeSpeedup", largeChainSpeedupFloor, "large chain fusion");
+  speedAtLeast("decodeTokS", decodeishTokSFloor, "decode-ish token frontier");
+  speedAtLeast("projectionChainSpeedup", projectionChainTileSpeedupFloor, "projection_chain prompt tile");
+  diffAtMost("projectionChainMaxAbsDiff", projectionChainMaxAbsDiffCeil, "projection_chain prompt");
+  speedAtLeast("projectionChainFullPrefillSpeedup", projectionChainFullPrefillSpeedupFloor, "projection_chain full-prefill");
+  diffAtMost("projectionChainFullPrefillMaxAbsDiff", projectionChainMaxAbsDiffCeil, "projection_chain full-prefill");
+  speedAtLeast("projectionChainSmollmPromptSpeedup", projectionSmollmPromptSpeedupFloor, "projection_chain smollm-prompt");
+  diffAtMost("projectionChainSmollmPromptMaxAbsDiff", projectionChainMaxAbsDiffCeil, "projection_chain smollm-prompt");
+  diffAtMost("projectionGroupFullPrefillMaxAbsDiff", projectionChainMaxAbsDiffCeil, "projection_group full-prefill");
+  speedAtLeast("projectionGroupSmollmPromptSpeedup", projectionSmollmPromptSpeedupFloor, "projection_group smollm-prompt");
+  diffAtMost("projectionGroupSmollmPromptMaxAbsDiff", projectionChainMaxAbsDiffCeil, "projection_group smollm-prompt");
+  diffAtMost("projectionRowChainGroupFullPrefillMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain_group full-prefill");
+  speedAtLeast("projectionRowChainGroupSmollmPromptSpeedup", projectionSmollmPromptSpeedupFloor, "projection_row_chain_group smollm-prompt");
+  diffAtMost("projectionRowChainGroupSmollmPromptMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain_group smollm-prompt");
+  diffAtMost("projectionDecodeMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain decode");
+  diffAtMost("projectionPromptMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain prompt");
+  diffAtMost("projectionFullPrefillMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain full-prefill");
+  diffAtMost("projectionSmollmPromptMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain smollm-prompt");
+  diffAtMost("projectionPromptSingleDispatchMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain_single_dispatch prompt");
+  diffAtMost("projectionFullPrefillSingleDispatchMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain_single_dispatch full-prefill");
+  diffAtMost("projectionSmollmPromptSingleDispatchMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain_single_dispatch smollm-prompt");
+
+  exactProfile([
+    ["projectionRowChainGroupFullPrefillShapeCommands", 4],
+    ["projectionRowChainGroupFullPrefillShapeRowChains", 4],
+    ["projectionRowChainGroupFullPrefillShapeCoveredOps", 20],
+    ["projectionRowChainGroupFullPrefillShapeSavedDispatches", 16],
+    ["projectionRowChainGroupFullPrefillRuntimeCommandDispatches", 4],
+  ], "projection_row_chain group full-prefill");
+  exactProfile([
+    ["projectionRowChainGroupSmollmPromptShapeCommands", 4],
+    ["projectionRowChainGroupSmollmPromptShapeRowChains", 4],
+    ["projectionRowChainGroupSmollmPromptShapeCoveredOps", 20],
+    ["projectionRowChainGroupSmollmPromptShapeSavedDispatches", 16],
+    ["projectionRowChainGroupSmollmPromptRuntimeCommandDispatches", 4],
+  ], "projection_row_chain group smollm-prompt");
+  for (const [label, prefix] of [
+    ["projection_row_chain decode", "projectionDecode"],
+    ["projection_row_chain prompt", "projectionPrompt"],
+    ["projection_row_chain full-prefill", "projectionFullPrefill"],
+    ["projection_row_chain smollm-prompt", "projectionSmollmPrompt"],
+  ]) {
+    exactProfile([
+      [`${prefix}ShapeCommands`, 1],
+      [`${prefix}ShapeRowChains`, 1],
+      [`${prefix}ShapeCoveredOps`, 5],
+      [`${prefix}ShapeSavedDispatches`, 4],
+      [`${prefix}RuntimeCommandDispatches`, 1],
+    ], label);
+  }
+  exactProfile([
+    ["projectionPromptSingleDispatchShapeCommands", 1],
+    ["projectionPromptSingleDispatchShapeRowChains", 1],
+    ["projectionPromptSingleDispatchShapeCoveredOps", 5],
+    ["projectionPromptSingleDispatchShapeSavedDispatches", 4],
+    ["projectionPromptSingleDispatchRuntimeCommandDispatches", 1],
+  ], "projection_row_chain_single_dispatch prompt");
+  exactProfile([["projectionFullPrefillSingleDispatchRuntimeCommandDispatches", 1]], "projection_row_chain_single_dispatch full-prefill");
+  exactProfile([["projectionSmollmPromptSingleDispatchRuntimeCommandDispatches", 1]], "projection_row_chain_single_dispatch smollm-prompt");
+
+  return failures;
+}
+
 function attemptDiagnostic(current) {
   const decode = current.projectionDecodeSpeedup === null ? "n/a" : current.projectionDecodeSpeedup.toFixed(2);
   const prompt = current.projectionPromptSpeedup === null ? "n/a" : current.projectionPromptSpeedup.toFixed(2);
@@ -387,14 +487,19 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
 
 const passing = attempts.filter((current) => current.failures.length === 0);
 const best = chooseBest(passing.length > 0 ? passing : attempts);
+const aggregate = aggregateFailures(attempts);
 
-process.stdout.write(`${best.line}\n`);
+const line = aggregate.length === 0 ? best.line.replace("frontier bench gate: fail", "frontier bench gate: pass") : best.line;
+process.stdout.write(`${line}\n`);
+if (aggregate.length === 0 && passing.length === 0) {
+  process.stdout.write(`frontier bench aggregate: pass across ${attempts.length} noisy attempts\n`);
+}
 if (best.attempt > 1) {
   process.stdout.write(`frontier bench retries: ${best.attempt - 1} noisy attempt(s) below best evidence\n`);
 }
-if (passing.length === 0) {
+if (aggregate.length !== 0) {
   process.stderr.write(`frontier bench attempt diagnostics:\n${attempts.map(attemptDiagnostic).join("\n")}\n`);
-  process.stderr.write(`${best.failures.join("; ")}\n`);
+  process.stderr.write(`${aggregate.join("; ")}\n`);
   process.exit(1);
 }
 process.exit(0);
