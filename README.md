@@ -864,6 +864,8 @@ npm run check:goal-scorecard # verify Program/Session substrate and zgml fronten
 npm run bench             # verify checked benchmark baseline artifacts
 npm run bench:status      # summarize source-checkout baseline/latest ggml artifact evidence
 npm run bench:pytorch     # build ReleaseFast native, then compare selected compiled paths against upstream Python PyTorch
+npm run bench:pytorch:gaps # rebuild and measure the current PyTorch soft spots
+npm run bench:pytorch:gaps:run # rerun current PyTorch soft spots without rebuilding
 npm run bench:ggml        # run the local ggml/llama.cpp artifact gate with baseline regression protection
 zig build bench-frontier  # run decision-grade local benchmarks
 zig build -Duse-blas      # enable BLAS for matmul

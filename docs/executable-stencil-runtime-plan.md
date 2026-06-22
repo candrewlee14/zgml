@@ -399,7 +399,19 @@ For iteration speed, the benchmark probes now have opt-in narrow lanes:
 passing the same filter to the child module bench. The default `bench:pytorch`,
 `bench:pytorch:parity`, and `bench:module-program` commands still run their full
 evidence sets; the filters are for microscope work, not release claims. The
-PyTorch comparison microscope also accepts exploratory lanes such as
+named `bench:pytorch:gaps` and `bench:pytorch:gaps:run` scripts keep the current
+PyTorch soft spots as a one-command loop (`linear_batched` and
+`log_softmax_classifier_batched`) so kernel work can iterate without repeatedly
+typing benchmark key filters. The current June 22, 2026 focused evidence says
+PyTorch is only ahead on those tiny CPU lanes:
+`linear_batched=zgml:0.0026ms pytorch:0.0024ms zgml_vs_pytorch=0.93x` and
+`log_softmax_classifier_batched=zgml:0.0083ms pytorch:0.0070ms
+zgml_vs_pytorch=0.84x`, while the same run has
+`lazy_rms_silu_ffn_batched=1.65x`, `rms_gelu_linear_batched=2.53x`, and
+`lazy_token_head_batched=1.02x`. That keeps the next performance question
+concrete: close the tiny BLAS/row-log-softmax overhead gap, not redesign the
+library.
+The PyTorch comparison microscope also accepts exploratory lanes such as
 `rms_gelu_linear_batched`, `softmax_classifier_batched`,
 `log_softmax_classifier_batched`, and `lazy_token_head_batched`, so optimization
 work can rank PyTorch gaps without promoting those gaps into the hard parity
@@ -427,6 +439,8 @@ npm run bench:module-program:focus:run # rerun focused module benches without re
 npm run bench:pytorch:parity:run       # rerun hard PyTorch parity without rebuilding artifacts
 npm run bench:pytorch:focus
 npm run bench:pytorch:focus:run        # rerun focused PyTorch comparison without rebuilding artifacts
+npm run bench:pytorch:gaps             # rebuild and measure current PyTorch soft spots
+npm run bench:pytorch:gaps:run         # rerun current PyTorch soft spots without rebuilding artifacts
 npm run bench:ggml:parity:run          # rerun hard ggml parity without rebuilding artifacts
 ```
 

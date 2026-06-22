@@ -227,6 +227,12 @@ function checkScripts() {
   if (scripts["bench:pytorch:focus:run"] !== "BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:focus:run must remain the no-rebuild PyTorch microscope rerun");
   }
+  if (scripts["bench:pytorch:gaps"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:gaps must remain the ReleaseFast PyTorch current-gap microscope");
+  }
+  if (scripts["bench:pytorch:gaps:run"] !== "BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:gaps:run must remain the no-rebuild PyTorch current-gap rerun");
+  }
   if (scripts["bench:ggml:parity:run"] !== "BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json BENCH_REQUIRE_PARITY=1 ./scripts/bench_vs_ggml.sh 128 200 3") {
     errors.push("package.json bench:ggml:parity:run must remain the no-rebuild ggml parity rerun");
   }
