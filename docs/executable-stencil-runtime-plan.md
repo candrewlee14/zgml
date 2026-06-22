@@ -307,10 +307,12 @@ target is now explicit: `bench:pytorch` is an evidence command that always
 prints the worst `zgml_vs_pytorch` ratio, while `bench:pytorch:parity` is the
 hard parity gate (`BENCH_PYTORCH_REQUIRE_PARITY=1`). That gate is now expected
 to be the proof target for checked CPU workloads. The current checked set is
-green for linear, MLP, fused GELU matmul, and pooling lanes, while the remaining
-known miss is the RMSNorm -> SiLU FFN lane on current PyTorch. The report treats
-microbenchmark noise as part of the contract by printing the selected attempt
-and noisy-attempt count.
+green for linear, MLP, fused GELU matmul, RMSNorm+SiLU FFN, and pooling lanes.
+Exploratory focused lanes still track softer micro-workloads such as
+classifier `LogSoftmax` tails and token-head paths, but those are microscopes
+for ranking optimization opportunities rather than promoted hard-gate misses.
+The report treats microbenchmark noise as part of the contract by printing the
+selected attempt and noisy-attempt count.
 Both commands build the native C ABI with `-Doptimize=ReleaseFast` first; PyTorch
 comparisons must not silently measure a stale Debug dylib.
 The PyTorch comparison must also match the zgml workload shape exactly. The
@@ -450,6 +452,13 @@ linear through BLAS instead of the direct vector loop moved focused
 kept `lazy_token_head_batched` above parity in the same run. The direct linear
 kernel therefore stays a tiny-shape fast path, not a default replacement for
 BLAS-grade batched dense work.
+Current focused exploratory evidence after the ReleaseFast rebuild keeps
+`rms_gelu_linear_batched` comfortably ahead of PyTorch, keeps
+`lazy_token_head_batched` around parity, and identifies
+`log_softmax_classifier_batched` as the remaining tiny exploratory softness at
+roughly `0.91x`. A previous direct `Linear -> LogSoftmax` fusion attempt made
+that lane slower, so the next useful move there is a better native row-tail or
+larger semantic sublayer, not a shallow direct fast path.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS

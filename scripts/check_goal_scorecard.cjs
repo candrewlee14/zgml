@@ -4864,6 +4864,8 @@ function checkDocs() {
     "rank-3 `reshape`/`flatten`/`squeeze`/`unsqueeze`, rank-3 `broadcastTo`/`expand`,",
     "and singleton-envelope rank-3 `narrow`/`select`/`slice`",
     "rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering",
+    "Exploratory focused lanes still track softer micro-workloads",
+    "`log_softmax_classifier_batched` as the remaining tiny exploratory softness",
     "`lazyGraph.compile()` and compatibility `torch.compile.compile(lazyGraph)`",
     "The remaining substrate",
     "required-GPU browser runner's full",
@@ -4876,6 +4878,9 @@ function checkDocs() {
     "remaining frontend jump is native lowering and breadth,",
     "compile hooks exist.",
   ]);
+  if (plan.includes("remaining\nknown miss is the RMSNorm -> SiLU FFN lane") || plan.includes("remaining known miss is the RMSNorm -> SiLU FFN lane")) {
+    errors.push("docs/executable-stencil-runtime-plan.md must not describe the old RMSNorm -> SiLU FFN PyTorch lane as a current known miss");
+  }
 }
 
 runScorecardCheck("static scripts", checkScripts);
