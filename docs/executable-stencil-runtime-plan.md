@@ -260,6 +260,14 @@ Current checked progress:
   reduction. The q8 prompt gate now records this as
   `single_dispatch_trap=serial_n_tile_loop_without_cross_threadgroup_row_reduce`
   and points at `viable_next=semantic_sublayer_or_two_phase_tile_parallel_row_chain`.
+  A two-phase tile-parallel Metal experiment for the same candidate was also
+  tried and reverted: it compiled, passed the Metal command correctness test,
+  and moved the old `0.20x` single-dispatch trap up to about `1.00x`, but it
+  still did not beat the simpler command candidate at about `1.03x` and left
+  dispatch count effectively at the default `302->302`. The useful next move is
+  therefore not this shallow two-kernel variant; it is either a larger semantic
+  sublayer that removes surrounding work or a materially different row-chain
+  throughput kernel.
   The remaining substrate jump is not another compatibility lane; it is a real
   tiled quantized row-chain throughput kernel or larger semantic sublayer,
   plus wider default
