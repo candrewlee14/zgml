@@ -785,19 +785,41 @@ const Context = struct {
         const src = self.bufF32(s.src);
         const dst = self.bufF32(s.dst);
         const cols: usize = s.cols;
+        const VecT = @Vector(V, f32);
         for (0..@as(usize, s.rows)) |row| {
             const sb: usize = @as(usize, s.src_offset) + row * cols;
             const db: usize = @as(usize, s.dst_offset) + row * cols;
-            var m: f32 = -std.math.inf(f32);
-            for (0..cols) |j| m = @max(m, src[sb + j]);
-            var sum: f32 = 0;
-            for (0..cols) |j| {
-                const v = @exp(src[sb + j] - m);
-                dst[db + j] = v;
+            const src_row = src[sb..][0..cols];
+            const dst_row = dst[db..][0..cols];
+            var max_v: VecT = @splat(-std.math.inf(f32));
+            var i: usize = 0;
+            while (i + V <= cols) : (i += V) {
+                const v: VecT = src_row[i..][0..V].*;
+                max_v = @max(max_v, v);
+            }
+            var m: f32 = @reduce(.Max, max_v);
+            while (i < cols) : (i += 1) m = @max(m, src_row[i]);
+            const m_v: VecT = @splat(m);
+            var sum_v: VecT = @splat(0);
+            i = 0;
+            while (i + V <= cols) : (i += V) {
+                const v: VecT = @exp(src_row[i..][0..V].* - m_v);
+                dst_row[i..][0..V].* = v;
+                sum_v += v;
+            }
+            var sum: f32 = @reduce(.Add, sum_v);
+            while (i < cols) : (i += 1) {
+                const v = @exp(src_row[i] - m);
+                dst_row[i] = v;
                 sum += v;
             }
             const inv = if (sum > 0.0) 1.0 / sum else 0.0;
-            for (0..cols) |j| dst[db + j] *= inv;
+            const inv_v: VecT = @splat(inv);
+            i = 0;
+            while (i + V <= cols) : (i += V) {
+                dst_row[i..][0..V].* = dst_row[i..][0..V].* * inv_v;
+            }
+            while (i < cols) : (i += 1) dst_row[i] *= inv;
         }
     }
 
@@ -805,15 +827,35 @@ const Context = struct {
         const src = self.bufF32(s.src);
         const dst = self.bufF32(s.dst);
         const cols: usize = s.cols;
+        const VecT = @Vector(V, f32);
         for (0..@as(usize, s.rows)) |row| {
             const sb: usize = @as(usize, s.src_offset) + row * cols;
             const db: usize = @as(usize, s.dst_offset) + row * cols;
-            var m: f32 = -std.math.inf(f32);
-            for (0..cols) |j| m = @max(m, src[sb + j]);
-            var sum: f32 = 0;
-            for (0..cols) |j| sum += @exp(src[sb + j] - m);
+            const src_row = src[sb..][0..cols];
+            const dst_row = dst[db..][0..cols];
+            var max_v: VecT = @splat(-std.math.inf(f32));
+            var i: usize = 0;
+            while (i + V <= cols) : (i += V) {
+                const v: VecT = src_row[i..][0..V].*;
+                max_v = @max(max_v, v);
+            }
+            var m: f32 = @reduce(.Max, max_v);
+            while (i < cols) : (i += 1) m = @max(m, src_row[i]);
+            const m_v: VecT = @splat(m);
+            var sum_v: VecT = @splat(0);
+            i = 0;
+            while (i + V <= cols) : (i += V) {
+                sum_v += @exp(src_row[i..][0..V].* - m_v);
+            }
+            var sum: f32 = @reduce(.Add, sum_v);
+            while (i < cols) : (i += 1) sum += @exp(src_row[i] - m);
             const log_denom = m + @log(sum);
-            for (0..cols) |j| dst[db + j] = src[sb + j] - log_denom;
+            const log_denom_v: VecT = @splat(log_denom);
+            i = 0;
+            while (i + V <= cols) : (i += V) {
+                dst_row[i..][0..V].* = src_row[i..][0..V].* - log_denom_v;
+            }
+            while (i < cols) : (i += 1) dst_row[i] = src_row[i] - log_denom;
         }
     }
 
@@ -1889,6 +1931,54 @@ test "reference executor logsoftmax normalizes rows in log space" {
         for (0..3) |col| {
             try std.testing.expectApproxEqAbs(src[base + col] - log_denom, dst[base + col], 1e-6);
         }
+    }
+}
+
+test "reference executor vector row softmax and logsoftmax handle full vector chunks" {
+    var src = [_]f32{
+        1, 2, 3, 4,  0, -1, -2, 5,
+        2, 0, 1, -3, 4, 3,  -1, 6,
+    };
+    var softmax_dst = [_]f32{9} ** 16;
+    var logsoftmax_dst = [_]f32{9} ** 16;
+    const buffers = [_]Buffer{
+        .{ .ptr = &src, .len = src.len },
+        .{ .ptr = &softmax_dst, .len = softmax_dst.len },
+        .{ .ptr = &logsoftmax_dst, .len = logsoftmax_dst.len },
+    };
+
+    executeOp(&buffers, &.{}, .{ .softmax = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 2,
+        .cols = 8,
+        .dst_offset = 0,
+        .src_offset = 0,
+    } });
+    executeOp(&buffers, &.{}, .{ .logsoftmax = .{
+        .dst = 2,
+        .src = 0,
+        .rows = 2,
+        .cols = 8,
+        .dst_offset = 0,
+        .src_offset = 0,
+    } });
+
+    for (0..2) |row| {
+        const base = row * 8;
+        var max_value: f32 = -std.math.inf(f32);
+        for (src[base..][0..8]) |value| max_value = @max(max_value, value);
+        var sum: f32 = 0;
+        for (src[base..][0..8]) |value| sum += @exp(value - max_value);
+        const log_denom = max_value + @log(sum);
+        var softmax_sum: f32 = 0;
+        for (0..8) |col| {
+            const expected_softmax = @exp(src[base + col] - max_value) / sum;
+            softmax_sum += softmax_dst[base + col];
+            try std.testing.expectApproxEqAbs(expected_softmax, softmax_dst[base + col], 1e-6);
+            try std.testing.expectApproxEqAbs(src[base + col] - log_denom, logsoftmax_dst[base + col], 1e-6);
+        }
+        try std.testing.expectApproxEqAbs(@as(f32, 1.0), softmax_sum, 1e-6);
     }
 }
 
