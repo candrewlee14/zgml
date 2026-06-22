@@ -405,7 +405,9 @@ These are not substitutes for `bench:pytorch:parity`, `bench:ggml:parity`, or
 discarding performance hypotheses quickly. The full gates remain the release
 proof. The practical workflow is: use Zig `-fincremental`/`--watch` and
 focused benchmark keys while changing hot code, then run the full evidence gate
-before claiming a new SOTA/simple/perf state.
+before claiming a new SOTA/simple/perf state. Focused module Program benchmarks
+also build the native C ABI in ReleaseFast first, so microscope results do not
+silently compare against a stale Debug dylib.
 The PyTorch parity set is no longer only dense/transformer-shaped CPU work: it
 also compares batched `max_pool2d` and `avg_pool2d` against upstream
 `torch.nn.functional`, so the parity gate covers common compiled tensor kernels

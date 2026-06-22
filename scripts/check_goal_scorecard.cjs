@@ -172,8 +172,8 @@ function checkScripts() {
   if (scripts["bench:module-program"] !== "npm run build:package && node scripts/check_module_program_bench.cjs") {
     errors.push("package.json bench:module-program must remain the TS frontend module Program performance gate");
   }
-  if (scripts["bench:module-program:focus"] !== "npm run build:package && BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
-    errors.push("package.json bench:module-program:focus must remain the narrow module Program microscope for fast iteration");
+  if (scripts["bench:module-program:focus"] !== "npm run build:native:release && npm run build:package && BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
+    errors.push("package.json bench:module-program:focus must remain the ReleaseFast narrow module Program microscope for fast iteration");
   }
   if (scripts["build:native:release"] !== "zig build ffi-c -Doptimize=ReleaseFast") {
     errors.push("package.json build:native:release must keep benchmark-grade native C ABI builds explicit");

@@ -318,8 +318,8 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:pytorch:parity"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_INSTALL=1 node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:parity must stay the hard ReleaseFast upstream PyTorch parity probe with uv bootstrap");
   }
-  if (packageJson.scripts?.["bench:module-program:focus"] !== "npm run build:package && BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
-    errors.push("package.json bench:module-program:focus must stay the narrow module Program microscope");
+  if (packageJson.scripts?.["bench:module-program:focus"] !== "npm run build:native:release && npm run build:package && BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
+    errors.push("package.json bench:module-program:focus must stay the ReleaseFast narrow module Program microscope");
   }
   if (packageJson.scripts?.["bench:pytorch:focus"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:focus must stay the narrow PyTorch microscope");
