@@ -380,10 +380,15 @@ for lightweight evidence, the report prints the selected `attempt=x/y` plus
 the requested per-workload ratio floor.
 For iteration speed, the benchmark probes now have opt-in narrow lanes:
 `BENCH_MODULE_PROGRAM_KEYS=<key>` runs only selected module Program specs, and
-`BENCH_PYTORCH_KEYS=<key>` compares only selected PyTorch parity keys while
+`BENCH_PYTORCH_KEYS=<key>` compares only selected PyTorch comparison keys while
 passing the same filter to the child module bench. The default `bench:pytorch`,
 `bench:pytorch:parity`, and `bench:module-program` commands still run their full
-evidence sets; the filters are for microscope work, not release claims.
+evidence sets; the filters are for microscope work, not release claims. The
+PyTorch comparison microscope also accepts explicitly exploratory known-miss
+lanes such as `rms_gelu_linear_batched`,
+`softmax_classifier_batched`, `log_softmax_classifier_batched`, and
+`lazy_token_head_batched`, so optimization work can rank PyTorch gaps without
+promoting those gaps into the hard parity gate.
 The PyTorch parity set is no longer only dense/transformer-shaped CPU work: it
 also compares batched `max_pool2d` and `avg_pool2d` against upstream
 `torch.nn.functional`, so the parity gate covers common compiled tensor kernels

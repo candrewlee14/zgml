@@ -21,7 +21,7 @@ function positiveInt(value, name) {
 }
 
 const attempts = positiveInt(process.env.BENCH_PYTORCH_ATTEMPTS || (requireParity ? "3" : "1"), "BENCH_PYTORCH_ATTEMPTS");
-const comparisonKeys = [
+const defaultComparisonKeys = [
   "linear_batched",
   "lazy_matmul_add_gelu_batched",
   "lazy_mlp_batched",
@@ -29,10 +29,17 @@ const comparisonKeys = [
   "max_pool2d_batched",
   "avg_pool2d_batched",
 ];
+const exploratoryComparisonKeys = [
+  "rms_gelu_linear_batched",
+  "softmax_classifier_batched",
+  "log_softmax_classifier_batched",
+  "lazy_token_head_batched",
+];
+const comparisonKeys = [...defaultComparisonKeys, ...exploratoryComparisonKeys];
 
 function selectedComparisonKeys() {
   const raw = process.env.BENCH_PYTORCH_KEYS;
-  if (!raw) return comparisonKeys;
+  if (!raw) return defaultComparisonKeys;
   const requested = raw.split(",").map((key) => key.trim()).filter(Boolean);
   if (requested.length === 0) {
     throw new Error("BENCH_PYTORCH_KEYS must list at least one comparison key when set");
@@ -94,6 +101,7 @@ function parseZgmlModuleBench(output, keys) {
 const pytorchCode = String.raw`
 import json
 import math
+import os
 import time
 
 import torch
@@ -116,16 +124,28 @@ def bench(fn, iterations=1000):
         return (time.perf_counter() - start) * 1000.0 / iterations
 
 x128_64 = values((128, 64), 16.0)
+x512_64 = values((512, 64), 13.0)
 w32_64 = values((32, 64), 24.0)
 b32 = values((32,), 32.0)
 w64_64 = values((64, 64), 24.0)
 b64 = values((64,), 32.0)
+w32_64_softmax = values((32, 64), 64.0)
+b32_softmax = values((32,), 32.0)
+w16_32 = values((16, 32), 48.0)
+b16 = values((16,), 80.0)
+w64_64_rms_gelu = values((64, 64), 48.0)
+b64_rms_gelu = values((64,), 80.0)
 w128_64 = values((128, 64), 48.0)
 b128 = values((128,), 80.0)
 w64_128 = values((64, 128), 64.0)
 b64_down = values((64,), 96.0)
 rms_weight = values((64,), 48.0) + 1.0
+rms_weight_32 = values((64,), 32.0) + 1.0
 pool_x = values((2, 2, 128, 128), 10.0)
+token_ids = torch.tensor([i % 256 for i in range(128)], dtype=torch.long)
+token_embedding = values((256, 64), 32.0)
+token_head_weight = values((32, 64), 48.0)
+token_head_bias = values((32,), 80.0)
 
 def linear_batched():
     return torch.nn.functional.linear(x128_64, w32_64, b32)
@@ -149,14 +169,36 @@ def max_pool2d_batched():
 def avg_pool2d_batched():
     return torch.nn.functional.avg_pool2d(pool_x, 2, count_include_pad=True)
 
-print(json.dumps({
-    "linear_batched": bench(linear_batched),
-    "lazy_matmul_add_gelu_batched": bench(lazy_matmul_add_gelu_batched),
-    "lazy_mlp_batched": bench(lazy_mlp_batched),
-    "lazy_rms_silu_ffn_batched": bench(lazy_rms_silu_ffn_batched),
-    "max_pool2d_batched": bench(max_pool2d_batched, 300),
-    "avg_pool2d_batched": bench(avg_pool2d_batched, 300),
-}))
+def rms_gelu_linear_batched():
+    ss = torch.mean(x512_64 * x512_64, dim=1, keepdim=True)
+    normed = x512_64 * torch.rsqrt(ss + 1e-5) * rms_weight_32
+    return torch.nn.functional.linear(torch.nn.functional.gelu(normed, approximate="tanh"), w64_64_rms_gelu, b64_rms_gelu)
+
+def softmax_classifier_batched():
+    hidden = torch.nn.functional.softmax(torch.nn.functional.linear(x128_64, w32_64_softmax, b32_softmax), dim=-1)
+    return torch.nn.functional.linear(hidden, w16_32, b16)
+
+def log_softmax_classifier_batched():
+    return torch.nn.functional.log_softmax(torch.nn.functional.linear(x128_64, w32_64_softmax, b32_softmax), dim=-1)
+
+def lazy_token_head_batched():
+    embedded = torch.nn.functional.embedding(token_ids, token_embedding)
+    return torch.nn.functional.log_softmax(torch.nn.functional.linear(embedded, token_head_weight, token_head_bias), dim=-1)
+
+bench_iterations = {
+    "linear_batched": 1000,
+    "lazy_matmul_add_gelu_batched": 1000,
+    "lazy_mlp_batched": 1000,
+    "lazy_rms_silu_ffn_batched": 1000,
+    "max_pool2d_batched": 300,
+    "avg_pool2d_batched": 300,
+    "rms_gelu_linear_batched": 300,
+    "softmax_classifier_batched": 300,
+    "log_softmax_classifier_batched": 300,
+    "lazy_token_head_batched": 300,
+}
+active_keys = [key for key in os.environ["BENCH_PYTORCH_ACTIVE_KEYS"].split(",") if key]
+print(json.dumps({key: bench(globals()[key], bench_iterations[key]) for key in active_keys}))
 `;
 
 if (!existsSync(nodeEntry)) {
@@ -185,7 +227,11 @@ function measureAttempt(index) {
       }
     : process.env;
   const zgmlTimings = parseZgmlModuleBench(run(process.execPath, ["scripts/check_module_program_bench.cjs"], { env: moduleBenchEnv }), activeComparisonKeys);
-  const pytorchTimings = JSON.parse(run(python, ["-c", pytorchCode]));
+  const pytorchEnv = {
+    ...process.env,
+    BENCH_PYTORCH_ACTIVE_KEYS: activeComparisonKeys.join(","),
+  };
+  const pytorchTimings = JSON.parse(run(python, ["-c", pytorchCode], { env: pytorchEnv }));
   const ratioEntries = [];
   for (const [key, zgmlMs] of Object.entries(zgmlTimings)) {
     const pytorchMs = pytorchTimings[key];
