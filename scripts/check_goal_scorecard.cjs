@@ -364,6 +364,9 @@ function checkScripts() {
     "projection_row_chain_lowering=${projectionRowChainLowering}",
     "projection_row_chain_diagnostic_kernel=${projectionRowChainDiagnosticKernel}",
     "projection_row_chain_next=${projectionRowChainNextTarget}",
+    "function attemptDiagnostic(current)",
+    "frontier bench attempt diagnostics:",
+    "margin=${scoreMargin(current).toFixed(2)}x",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "scalar qmatmul row-chain diagnosis until tiled replacement exists", [
     "if (q.M != 1) {",

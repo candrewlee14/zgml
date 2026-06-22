@@ -355,6 +355,25 @@ function chooseBest(attempts) {
   }, null);
 }
 
+function attemptDiagnostic(current) {
+  const decode = current.projectionDecodeSpeedup === null ? "n/a" : current.projectionDecodeSpeedup.toFixed(2);
+  const prompt = current.projectionPromptSpeedup === null ? "n/a" : current.projectionPromptSpeedup.toFixed(2);
+  const full = current.projectionFullPrefillSpeedup === null ? "n/a" : current.projectionFullPrefillSpeedup.toFixed(2);
+  return [
+    `attempt=${current.attempt}/${maxAttempts}`,
+    `margin=${scoreMargin(current).toFixed(2)}x`,
+    `projection_chain_prompt=${current.projectionChainSpeedup.toFixed(2)}x`,
+    `projection_chain_full=${current.projectionChainFullPrefillSpeedup.toFixed(2)}x`,
+    `projection_row_chain_decode=${decode}x`,
+    `projection_row_chain_prompt=${prompt}x`,
+    `projection_row_chain_full=${full}x`,
+    `single_dispatch_prompt=${current.projectionPromptSingleDispatchSpeedup.toFixed(2)}x`,
+    `single_dispatch_full=${current.projectionFullPrefillSingleDispatchSpeedup.toFixed(2)}x`,
+    `single_dispatch_smollm=${current.projectionSmollmPromptSingleDispatchSpeedup.toFixed(2)}x`,
+    `failures=${current.failures.length}`,
+  ].join(" ");
+}
+
 const attempts = [];
 for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   try {
@@ -374,6 +393,7 @@ if (best.attempt > 1) {
   process.stdout.write(`frontier bench retries: ${best.attempt - 1} noisy attempt(s) below best evidence\n`);
 }
 if (passing.length === 0) {
+  process.stderr.write(`frontier bench attempt diagnostics:\n${attempts.map(attemptDiagnostic).join("\n")}\n`);
   process.stderr.write(`${best.failures.join("; ")}\n`);
   process.exit(1);
 }
