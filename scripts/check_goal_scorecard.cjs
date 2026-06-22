@@ -175,6 +175,9 @@ function checkScripts() {
   if (scripts["bench:module-program:focus"] !== "npm run build:native:release && npm run build:package && BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
     errors.push("package.json bench:module-program:focus must remain the ReleaseFast narrow module Program microscope for fast iteration");
   }
+  if (scripts["bench:module-program:focus:run"] !== "BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
+    errors.push("package.json bench:module-program:focus:run must remain the no-rebuild module Program microscope rerun");
+  }
   if (scripts["build:native:release"] !== "zig build ffi-c -Doptimize=ReleaseFast") {
     errors.push("package.json build:native:release must keep benchmark-grade native C ABI builds explicit");
   }
@@ -183,6 +186,12 @@ function checkScripts() {
   }
   if (scripts["dev:zig:test:watch"] !== "zig build test -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
     errors.push("package.json dev:zig:test:watch must keep the incremental Zig watch test loop");
+  }
+  if (scripts["dev:zig:quick"] !== "zig build unit-tests -Duse-metal=false -Duse-blas=false -fincremental --summary failures") {
+    errors.push("package.json dev:zig:quick must keep the fast native unit loop without optional backend linking");
+  }
+  if (scripts["dev:zig:quick:watch"] !== "zig build unit-tests -Duse-metal=false -Duse-blas=false -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
+    errors.push("package.json dev:zig:quick:watch must keep the watched fast native unit loop without optional backend linking");
   }
   if (scripts["dev:zig:ffi"] !== "zig build ffi-c -fincremental --summary failures") {
     errors.push("package.json dev:zig:ffi must keep the incremental native FFI build loop");
@@ -198,6 +207,9 @@ function checkScripts() {
   }
   if (scripts["bench:pytorch:focus"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:focus must remain the narrow PyTorch microscope for fast iteration");
+  }
+  if (scripts["bench:pytorch:focus:run"] !== "BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:focus:run must remain the no-rebuild PyTorch microscope rerun");
   }
   if (scripts["check:goal-scorecard"] !== "node scripts/check_goal_scorecard.cjs") {
     errors.push("package.json must expose check:goal-scorecard for goal evidence");
@@ -610,6 +622,7 @@ function checkScripts() {
   const browserSmokeRunner = read("examples/wasm_ffi/browser_smoke_runner.mjs");
   requireIncludes(browserSmokeRunner, "examples/wasm_ffi/browser_smoke_runner.mjs", "browser Wasm FFI CDP smoke runner", [
     "Chrome/Chromium not found; set CHROME_PATH or pass --chrome=/path/to/chrome",
+    "Chrome DevTools did not start",
     "options.enableUnsafeWebGpu = true",
     "options.requireGpu = true",
     "focusedLlamaProfileLabelSet(options.llamaProfileLabels)",
@@ -639,6 +652,7 @@ function checkScripts() {
   requireIncludes(read("scripts/check_goal_scorecard.cjs"), "scripts/check_goal_scorecard.cjs", "optional focused browser real-GPU execution evidence", [
     "const browserGpuFocusedArgs = [\"build\", \"ffi-wasm-browser-gpu-focused-smoke\"]",
     "portable browser required-GPU focused smoke skipped:",
+    "Chrome DevTools did not start",
     "browser smoke passed without real GPUBuffer mode",
     "browser GPUBuffer smoke cannot bind LLaMA block pipeline",
     "mode=gpu-buffer",
@@ -1528,6 +1542,11 @@ function checkPortableWasmRuntimeEvidence() {
       notes.push(nodeWasiOutput.trim().split("\n").at(-1));
       return;
     }
+    if (browserOutput.includes("Chrome DevTools did not start")) {
+      notes.push("portable browser Wasm smoke skipped: Chrome DevTools did not start");
+      notes.push(nodeWasiOutput.trim().split("\n").at(-1));
+      return;
+    }
     errors.push(spawnFailure("portable browser Wasm smoke", "zig", browserArgs, browser));
     return;
   }
@@ -1560,6 +1579,7 @@ function checkPortableWasmRuntimeEvidence() {
     if (
       browserGpuFocusedOutput.includes("Chrome/Chromium not found") ||
       browserGpuFocusedOutput.includes("Chrome/Chromium not usable: exited before DevTools started") ||
+      browserGpuFocusedOutput.includes("Chrome DevTools did not start") ||
       browserGpuFocusedOutput.includes("browser smoke passed without real GPUBuffer mode") ||
       browserGpuFocusedOutput.includes("browser GPUBuffer smoke cannot bind LLaMA block pipeline")
     ) {

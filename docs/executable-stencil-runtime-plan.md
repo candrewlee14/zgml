@@ -394,10 +394,14 @@ The repo now exposes that inner loop directly:
 ```text
 npm run dev:zig:test        # incremental Zig tests while editing kernels/runtime
 npm run dev:zig:test:watch  # Zig 0.16 watch mode with incremental rebuilds
+npm run dev:zig:quick       # faster native unit loop without optional Metal/BLAS linking
+npm run dev:zig:quick:watch # watched version of the fast native unit loop
 npm run dev:zig:ffi         # incremental native FFI dylib build
 npm run dev:zig:ffi:watch   # watched native FFI dylib build
 npm run bench:module-program:focus
+npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
 npm run bench:pytorch:focus
+npm run bench:pytorch:focus:run        # rerun focused PyTorch comparison without rebuilding artifacts
 ```
 
 These are not substitutes for `bench:pytorch:parity`, `bench:ggml:parity`, or
