@@ -642,6 +642,8 @@ function checkScripts() {
   requireIncludes(browserSmokeRunner, "examples/wasm_ffi/browser_smoke_runner.mjs", "browser Wasm FFI CDP smoke runner", [
     "Chrome/Chromium not found; set CHROME_PATH or pass --chrome=/path/to/chrome",
     "Chrome DevTools did not start",
+    "Chrome launch command:",
+    "Chrome debug port:",
     "options.enableUnsafeWebGpu = true",
     "options.requireGpu = true",
     "focusedLlamaProfileLabelSet(options.llamaProfileLabels)",

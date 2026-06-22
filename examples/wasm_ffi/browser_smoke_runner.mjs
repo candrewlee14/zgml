@@ -290,7 +290,8 @@ async function runBrowserSmoke(options) {
   const userDataDir = await mkdtemp(join(tmpdir(), "zgml-browser-smoke-"));
   const { port: httpPort, server } = await startStaticServer();
   const debugPort = await freePort();
-  const chrome = spawn(chromePath, chromeArgs(options, userDataDir, debugPort), {
+  const launchArgs = chromeArgs(options, userDataDir, debugPort);
+  const chrome = spawn(chromePath, launchArgs, {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const chromeStatus = { exitCode: null, exited: false, signalCode: null };
@@ -616,6 +617,11 @@ async function runBrowserSmoke(options) {
     );
     return value;
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (options.showLog || message.includes("DevTools did not start")) {
+      console.error(`Chrome launch command: ${JSON.stringify([chromePath, ...launchArgs])}`);
+      console.error(`Chrome debug port: ${debugPort}`);
+    }
     if (chromeLog.length !== 0) {
       const tail = chromeLog.join("").split(/\r?\n/).filter(Boolean).slice(-20).join("\n");
       if (tail) console.error(`Chrome log tail:\n${tail}`);
