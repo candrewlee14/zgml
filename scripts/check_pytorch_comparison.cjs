@@ -254,6 +254,19 @@ const best = (passing.length > 0 ? passing : attemptRows).reduce((current, entry
 const worst = best.worst;
 const parityReady = best.parityReady;
 const noisyAttempts = attemptRows.filter((entry) => !entry.parityReady).length;
+const ratioStats = activeComparisonKeys.map((key) => {
+  const ratios = attemptRows.map((attempt) => attempt.ratioEntries.find((entry) => entry.key === key)?.ratio);
+  if (ratios.some((ratio) => !Number.isFinite(ratio))) {
+    throw new Error(`pytorch comparison missing ratio attempts for ${key}`);
+  }
+  const sorted = ratios.slice().sort((a, b) => a - b);
+  return {
+    key,
+    min: sorted[0],
+    median: sorted[Math.floor(sorted.length / 2)],
+    max: sorted[sorted.length - 1],
+  };
+});
 const parts = [
   `pytorch comparison: ${requireParity ? (parityReady ? "parity-pass" : "parity-miss") : "evidence"}`,
   `python=${python}`,
@@ -265,6 +278,8 @@ const parts = [
   `attempt=${best.index}/${attempts}`,
   `noisy=${noisyAttempts}`,
   `worst=${worst.key}:${worst.ratio.toFixed(2)}x`,
+  `ratio_range=${ratioStats.map((entry) => `${entry.key}:${entry.min.toFixed(2)}-${entry.max.toFixed(2)}x`).join(",")}`,
+  `ratio_median=${ratioStats.map((entry) => `${entry.key}:${entry.median.toFixed(2)}x`).join(",")}`,
   `parity=${parityReady ? "pass" : "miss"}`,
 ];
 for (const { key, zgmlMs, pytorchMs, ratio } of best.ratioEntries) {

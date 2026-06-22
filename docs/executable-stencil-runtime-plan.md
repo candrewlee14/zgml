@@ -411,6 +411,13 @@ zgml_vs_pytorch=0.84x`, while the same run has
 `lazy_token_head_batched=1.02x`. That keeps the next performance question
 concrete: close the tiny BLAS/row-log-softmax overhead gap, not redesign the
 library.
+The PyTorch comparison output now also prints `ratio_range` and `ratio_median`
+for each selected lane across repeated attempts, because these microsecond CPU
+lanes are noisy enough that a single lucky attempt can make a miss look like
+parity. A June 22, 2026 three-attempt gap rerun reported
+`ratio_range=linear_batched:0.28-0.86x,log_softmax_classifier_batched:0.39-0.91x`
+and `ratio_median=linear_batched:0.73x,log_softmax_classifier_batched:0.82x`;
+those median numbers are the better guide for the next tiny-kernel pass.
 The PyTorch comparison microscope also accepts exploratory lanes such as
 `rms_gelu_linear_batched`, `softmax_classifier_batched`,
 `log_softmax_classifier_batched`, and `lazy_token_head_batched`, so optimization
@@ -483,7 +490,7 @@ Current focused exploratory evidence after the ReleaseFast rebuild keeps
 `rms_gelu_linear_batched` comfortably ahead of PyTorch, keeps
 `lazy_token_head_batched` around parity, and identifies
 `log_softmax_classifier_batched` as the remaining tiny exploratory softness at
-roughly `0.91x`. A previous direct `Linear -> LogSoftmax` fusion attempt made
+roughly `0.82x` to `0.84x` in the current June 22, 2026 gap loop. A previous direct `Linear -> LogSoftmax` fusion attempt made
 that lane slower, so the next useful move there is a better native row-tail or
 larger semantic sublayer, not a shallow direct fast path.
 This was rechecked after the batched-linear BLAS threshold fix: a CPU-only
@@ -493,6 +500,13 @@ and the PyTorch ratio to about `0.81x`, so it was reverted. The evidence points
 away from another C ABI shortcut and toward improving the native row-tail
 kernel, reducing cross-command overhead generally, or folding the classifier
 tail into a broader semantic sublayer.
+A fixed-width native log-softmax micro-kernel for the exact `cols == 32` gap
+shape was also tried and rejected on June 22, 2026: the quick Zig tests passed,
+but `bench:pytorch:gaps` moved `log_softmax_classifier_batched` down to about
+`0.71x` (`zgml:0.0094ms pytorch:0.0067ms`) even though a noisy
+`linear_batched` sample cleared parity. That keeps the same conclusion: do not
+accumulate narrow row-tail special cases until a benchmark proves they beat the
+simple vector loop.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS
