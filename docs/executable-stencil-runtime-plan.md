@@ -405,18 +405,22 @@ npm run dev:zig:ffi         # incremental native FFI dylib build
 npm run dev:zig:ffi:watch   # watched native FFI dylib build
 npm run bench:module-program:focus
 npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
+npm run bench:pytorch:parity:run       # rerun hard PyTorch parity without rebuilding artifacts
 npm run bench:pytorch:focus
 npm run bench:pytorch:focus:run        # rerun focused PyTorch comparison without rebuilding artifacts
+npm run bench:ggml:parity:run          # rerun hard ggml parity without rebuilding artifacts
 ```
 
 These are not substitutes for `bench:pytorch:parity`, `bench:ggml:parity`, or
 `check:goal-scorecard`; they are the tight microscope loop for forming and
 discarding performance hypotheses quickly. The full gates remain the release
 proof. The practical workflow is: use Zig `-fincremental`/`--watch` and
-focused benchmark keys while changing hot code, then run the full evidence gate
-before claiming a new SOTA/simple/perf state. Focused module Program benchmarks
-also build the native C ABI in ReleaseFast first, so microscope results do not
-silently compare against a stale Debug dylib.
+focused benchmark keys while changing hot code, build the native/package
+artifacts once, use the `:run` parity reruns to check noisy hard gates quickly,
+then run the full evidence gate before claiming a new SOTA/simple/perf state.
+Focused module Program benchmarks also build the native C ABI in ReleaseFast
+first, so microscope results do not silently compare against a stale Debug
+dylib.
 The PyTorch parity set is no longer only dense/transformer-shaped CPU work: it
 also compares batched `max_pool2d` and `avg_pool2d` against upstream
 `torch.nn.functional`, so the parity gate covers common compiled tensor kernels

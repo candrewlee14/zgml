@@ -205,11 +205,17 @@ function checkScripts() {
   if (scripts["bench:pytorch:parity"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_INSTALL=1 node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:parity must remain the hard ReleaseFast upstream PyTorch parity gate with uv bootstrap");
   }
+  if (scripts["bench:pytorch:parity:run"] !== "BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:parity:run must remain the no-rebuild hard PyTorch parity rerun");
+  }
   if (scripts["bench:pytorch:focus"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:focus must remain the narrow PyTorch microscope for fast iteration");
   }
   if (scripts["bench:pytorch:focus:run"] !== "BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:focus:run must remain the no-rebuild PyTorch microscope rerun");
+  }
+  if (scripts["bench:ggml:parity:run"] !== "BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json BENCH_REQUIRE_PARITY=1 ./scripts/bench_vs_ggml.sh 128 200 3") {
+    errors.push("package.json bench:ggml:parity:run must remain the no-rebuild ggml parity rerun");
   }
   if (scripts["check:goal-scorecard"] !== "node scripts/check_goal_scorecard.cjs") {
     errors.push("package.json must expose check:goal-scorecard for goal evidence");
