@@ -8,7 +8,7 @@ const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
 const goalProgress = Object.freeze({
-  substratePct: 90,
+  substratePct: 92,
   substrateFloorPct: 65,
   frontendPct: 100,
   frontendFloorPct: 60,
@@ -4808,7 +4808,7 @@ function checkDocs() {
     "upstream Python PyTorch",
     "Program/Session substrate",
     "zgml frontend surface",
-    "goal progress: Program/Session substrate=90% floor=65%; zgml frontend surface=100% floor=60%",
+    "goal progress: Program/Session substrate=92% floor=65%; zgml frontend surface=100% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4845,7 +4845,7 @@ function checkDocs() {
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
-    "Program/Session performance substrate: ~90%",
+    "Program/Session performance substrate: ~92%",
     "That optional gate now also runs the native WebGPU LLaMA execution proofs for",
     "runtime quantized-weight rebinding, resource-bound decode/prefill handoff,",
     "long-prompt prefill, GQA long-prompt prefill, and a realistic head-width",
@@ -4877,6 +4877,11 @@ function checkDocs() {
     "dispatch count effectively at the default `302->302`",
     "`lazyGraph.compile()` and compatibility `torch.compile.compile(lazyGraph)`",
     "The remaining substrate",
+    "June 22, 2026 full required-GPU browser smoke",
+    "74 LLaMA profile labels, 253 backend dispatches",
+    "127/127/0/0/0",
+    "45 syncs, and zero",
+    "fallback ops in about 27.5 minutes",
     "required-GPU browser runner's full",
     "selection-read summary fields",
     "the goal scorecard now attempts a focused",

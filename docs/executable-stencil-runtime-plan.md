@@ -206,7 +206,7 @@ execution is the performance claim. Silent eager fallback is not allowed.
 
 Current checked progress:
 
-- Program/Session performance substrate: ~90%. The Program/Session shape,
+- Program/Session performance substrate: ~92%. The Program/Session shape,
   runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
   native Metal execution, a scorecard-run optional native wgpu validation gate,
   and ggml benchmark gates are real enough that the substrate is past "architecture".
@@ -268,15 +268,20 @@ Current checked progress:
   therefore not this shallow two-kernel variant; it is either a larger semantic
   sublayer that removes surrounding work or a materially different row-chain
   throughput kernel.
-  The remaining substrate jump is not another compatibility lane; it is a real
-  tiled quantized row-chain throughput kernel or larger semantic sublayer,
-  plus wider default
-  browser/WebGPU execution evidence. The required-GPU browser runner's full
+  The June 22, 2026 full required-GPU browser smoke also refreshed the wider
+  browser/WebGPU proof after the matrix expansion: it passed in real
+  `GPUBuffer` mode with `maxStorageBuffers=8`, `storageAlignment=256`,
+  `canBindBlockPipeline=true`, 74 LLaMA profile labels, 253 backend dispatches,
+  249 executor dispatches, 4 device-selection dispatches, 127/127/0/0/0
+  storage-mode calls, 41 output reads, 4 selection reads, 45 syncs, and zero
+  fallback ops in about 27.5 minutes. The required-GPU browser runner's full
   LLaMA profile and storage-mode matrices are now scorecard-checked source
   contracts, the cheap focused browser smoke has checked dispatch-family and
   selection-read summary fields, and the goal scorecard now attempts a focused
   required-GPU browser LLaMA run for `gguf-smollm3-nope-gqa-pipeline` when
-  Chrome/WebGPU is locally available.
+  Chrome/WebGPU is locally available. The remaining substrate jump is not
+  another compatibility lane; it is a real tiled quantized row-chain throughput
+  kernel or larger semantic sublayer.
 - zgml frontend replacement feel: ~100%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
@@ -3901,15 +3906,14 @@ Current first slice:
   flags, requires real `GPUBuffer` mode, and fails if the adapter cannot bind
   the six-storage-buffer LLaMA block-pipeline proof. It is an exhaustive
   opt-in gate with a 30-minute budget, not part of default `zig build check`.
-  The last local M5 Pro/Metal adapter pass before the structural-QKNorm and
-  structural-bias matrix widening took about 21 minutes and recorded
-  `maxStorageBuffers=8`,
-  `storageAlignment=256`, `canBindBlockPipeline=true`, 63 LLaMA profile labels,
-  211 backend dispatches, 207 executor dispatches, 4 device-selection
-  dispatches, 98/98/0/0/0 storage-mode calls, and zero fallback ops. The
-  current no-adapter browser mock gate records the expanded 74-profile-label
-  matrix, storage-mode call splits, output reads, and explicit mock fallback
-  work.
+  The June 22, 2026 local M5 Pro/Metal adapter pass took about 27.5 minutes
+  and recorded `maxStorageBuffers=8`, `storageAlignment=256`,
+  `canBindBlockPipeline=true`, 74 LLaMA profile labels, 253 backend dispatches,
+  249 executor dispatches, 4 device-selection dispatches, 127/127/0/0/0
+  storage-mode calls, 41 output reads, 4 selection reads, 45 syncs, and zero
+  fallback ops. The no-adapter browser mock gate still records the same
+  74-profile-label matrix, storage-mode call splits, output reads, and explicit
+  mock fallback work when a real browser GPU path is unavailable.
   The Node/WASI portable Wasm smoke now keeps a matching packed-family LLaMA
   profile ledger and fails on missing or duplicate normal/native/greedy labels
   before printing `zgml wasm ffi webgpu LLaMA packed proof ok: labels=...`.
@@ -5991,13 +5995,12 @@ registered-resource proof now has public owned-buffer and C import surfaces:
 	  proofs to the prior standalone Qwen3-QKNorm block, standalone biased-Qwen2
 	  block, standalone biased-Qwen2 attention, SmolLM3-NoPE attention, Llama 3 RoPE attention, and
 	  zero-fallback real-`GPUBuffer`
-	  evidence set; the last local M5 Pro/Metal required-GPU pass before this
-	  matrix widening recorded
-	  211 backend dispatches, 207 executor dispatches, 4 device-selection
-	  dispatches, 98 real `GPUBuffer` storage-mode calls, 63 labels, and zero
-	  fallback ops in about 21 minutes, while the current no-adapter mock evidence reports
-	  71 labels, 122 mock storage-mode calls, 43 output reads, and 482
-	  explicit fallback ops. Node/WASI and
+	  evidence set; the June 22, 2026 local M5 Pro/Metal required-GPU pass
+	  recorded 253 backend dispatches, 249 executor dispatches, 4
+	  device-selection dispatches, 127 real `GPUBuffer` storage-mode calls, 74
+	  labels, 41 output reads, 4 selection reads, 45 syncs, and zero fallback
+	  ops in about 27.5 minutes. The no-adapter mock evidence covers the same
+	  profile ledger with explicit mock fallback work. Node/WASI and
   browser smokes prove that dependency-exact cache contract, including K/V,
   activation-output, activation-input descriptor swaps, and the GPU-vs-mock
   command-count split, with a fake WebGPU device and the real required-GPU
