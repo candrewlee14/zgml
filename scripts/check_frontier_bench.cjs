@@ -2,7 +2,7 @@
 
 const { spawnSync } = require("node:child_process");
 
-const maxAttempts = 3;
+const maxAttempts = positiveInt(process.env.BENCH_FRONTIER_ATTEMPTS || "5", "BENCH_FRONTIER_ATTEMPTS");
 const largeChainSpeedupFloor = 2.95;
 const decodeishTokSFloor = 400_000;
 const projectionChainTileSpeedupFloor = 0.95;
@@ -16,9 +16,23 @@ const projectionRowChainMaxAbsDiffCeil = 0.02;
 const projectionRowChainLowering = "prompt_split_tiled_qmatmul_plus_rmsnorm";
 const projectionRowChainDiagnosticKernel = "single_dispatch_tiled_candidate";
 const projectionRowChainNextTarget = "single_dispatch_tiled_qmatmul_row_chain_throughput";
+const build = process.env.BENCH_FRONTIER_BUILD ?? "1";
+
+function positiveInt(value, label) {
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n <= 0) {
+    throw new Error(`${label} must be a positive integer, got ${value}`);
+  }
+  return n;
+}
 
 function runBench() {
-  const result = spawnSync("zig", ["build", "bench-frontier"], {
+  const command = build === "1" ? "zig" : build === "0" ? "./zig-out/bin/bench-frontier" : null;
+  const args = build === "1" ? ["build", "bench-frontier"] : build === "0" ? [] : null;
+  if (command === null || args === null) {
+    throw new Error(`BENCH_FRONTIER_BUILD must be 0 or 1, got ${build}`);
+  }
+  const result = spawnSync(command, args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });

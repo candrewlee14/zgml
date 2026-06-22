@@ -291,11 +291,17 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:trend"] !== "node scripts/bench_status.cjs --trend-gate") {
     errors.push("package.json bench:trend must stay the source-checkout latest-vs-best benchmark regression gate");
   }
-  if (packageJson.scripts?.["bench:frontier:gate"] !== "node scripts/check_frontier_bench.cjs") {
-    errors.push("package.json bench:frontier:gate must stay the scheduler/kernelizer frontier evidence gate");
+  if (packageJson.scripts?.["bench:frontier:gate"] !== "zig build bench-build && BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json bench:frontier:gate must stay the rebuild-backed scheduler/kernelizer frontier evidence gate");
   }
-  if (packageJson.scripts?.["bench:q8-prompt-candidate"] !== "node scripts/check_q8_prompt_candidate.cjs") {
-    errors.push("package.json bench:q8-prompt-candidate must stay the source-checkout full-model Q8 prompt candidate probe");
+  if (packageJson.scripts?.["bench:frontier:gate:run"] !== "BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json bench:frontier:gate:run must stay the no-rebuild scheduler/kernelizer frontier rerun");
+  }
+  if (packageJson.scripts?.["bench:q8-prompt-candidate"] !== "zig build bench-build && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json bench:q8-prompt-candidate must stay the rebuild-backed source-checkout full-model Q8 prompt candidate probe");
+  }
+  if (packageJson.scripts?.["bench:q8-prompt-candidate:run"] !== "BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json bench:q8-prompt-candidate:run must stay the no-rebuild source-checkout full-model Q8 prompt candidate rerun");
   }
   if (packageJson.scripts?.["build:native:release"] !== "zig build ffi-c -Doptimize=ReleaseFast") {
     errors.push("package.json build:native:release must stay the benchmark-grade native C ABI build");
@@ -451,7 +457,11 @@ function checkPackageExports(errors) {
     }
   }
   for (const needle of [
-    "zig\", [\"build\", \"bench-frontier\"]",
+    "BENCH_FRONTIER_ATTEMPTS",
+    "must be a positive integer",
+    "const build = process.env.BENCH_FRONTIER_BUILD ?? \"1\"",
+    "BENCH_FRONTIER_BUILD must be 0 or 1",
+    "./zig-out/bin/bench-frontier",
     "const largeChainSpeedupFloor = 2.95",
     "chain n=4096 staged",
     "chain n=4096 one-pass",
@@ -641,7 +651,7 @@ function checkPackageExports(errors) {
       errors.push(`scripts/check_q8_prompt_candidate.cjs must keep full-model Q8 prompt candidate evidence: ${needle}`);
     }
   }
-  for (const sourceCheckoutBenchScript of ["bench:status", "bench:substrate", "bench:trend", "bench:frontier", "bench:frontier:gate", "bench:q8-prompt-candidate", "bench:pytorch", "bench:ggml", "bench:ggml:parity"]) {
+  for (const sourceCheckoutBenchScript of ["bench:status", "bench:substrate", "bench:trend", "bench:frontier", "bench:frontier:gate", "bench:frontier:gate:run", "bench:q8-prompt-candidate", "bench:q8-prompt-candidate:run", "bench:pytorch", "bench:ggml", "bench:ggml:parity"]) {
     if (publicPackageScripts.includes(sourceCheckoutBenchScript)) {
       errors.push(`scripts/package_metadata_policy.cjs publicPackageScripts must not expose ${sourceCheckoutBenchScript}; benchmark artifacts are source-checkout evidence, not packaged npm runtime API`);
     }

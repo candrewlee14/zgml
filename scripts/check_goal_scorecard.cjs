@@ -163,11 +163,17 @@ function checkScripts() {
   if (scripts["bench:trend"] !== "node scripts/bench_status.cjs --trend-gate") {
     errors.push("package.json bench:trend must remain the local benchmark regression gate");
   }
-  if (scripts["bench:frontier:gate"] !== "node scripts/check_frontier_bench.cjs") {
-    errors.push("package.json bench:frontier:gate must remain the scheduler/kernelizer frontier evidence gate");
+  if (scripts["bench:frontier:gate"] !== "zig build bench-build && BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json bench:frontier:gate must remain the rebuild-backed scheduler/kernelizer frontier evidence gate");
   }
-  if (scripts["bench:q8-prompt-candidate"] !== "node scripts/check_q8_prompt_candidate.cjs") {
-    errors.push("package.json bench:q8-prompt-candidate must remain the full-model Q8 prompt candidate evidence probe");
+  if (scripts["bench:frontier:gate:run"] !== "BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json bench:frontier:gate:run must remain the no-rebuild scheduler/kernelizer frontier rerun");
+  }
+  if (scripts["bench:q8-prompt-candidate"] !== "zig build bench-build && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json bench:q8-prompt-candidate must remain the rebuild-backed full-model Q8 prompt candidate evidence probe");
+  }
+  if (scripts["bench:q8-prompt-candidate:run"] !== "BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json bench:q8-prompt-candidate:run must remain the no-rebuild full-model Q8 prompt candidate rerun");
   }
   if (scripts["bench:module-program"] !== "npm run build:package && node scripts/check_module_program_bench.cjs") {
     errors.push("package.json bench:module-program must remain the TS frontend module Program performance gate");
@@ -360,6 +366,11 @@ function checkScripts() {
     "q8 prompt semantic row-chain gate:",
   ]);
   requireIncludes(read("scripts/check_frontier_bench.cjs"), "scripts/check_frontier_bench.cjs", "projection row-chain frontier diagnostic", [
+    "BENCH_FRONTIER_ATTEMPTS",
+    "must be a positive integer",
+    "const build = process.env.BENCH_FRONTIER_BUILD ?? \"1\"",
+    "BENCH_FRONTIER_BUILD must be 0 or 1",
+    "./zig-out/bin/bench-frontier",
     "const projectionRowChainLowering = \"prompt_split_tiled_qmatmul_plus_rmsnorm\";",
     "const projectionRowChainDiagnosticKernel = \"single_dispatch_tiled_candidate\";",
     "const projectionRowChainNextTarget = \"single_dispatch_tiled_qmatmul_row_chain_throughput\";",

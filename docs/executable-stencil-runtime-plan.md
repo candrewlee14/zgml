@@ -459,6 +459,10 @@ npm run bench:pytorch:focus
 npm run bench:pytorch:focus:run        # rerun focused PyTorch comparison without rebuilding artifacts
 npm run bench:pytorch:gaps             # rebuild and measure current PyTorch soft spots
 npm run bench:pytorch:gaps:run         # rerun current PyTorch soft spots without rebuilding artifacts
+npm run bench:frontier:gate            # rebuild and measure scheduler/kernelizer frontier evidence
+npm run bench:frontier:gate:run        # rerun frontier evidence without rebuilding artifacts
+npm run bench:q8-prompt-candidate      # rebuild and measure full-model Q8 prompt candidate evidence
+npm run bench:q8-prompt-candidate:run  # rerun Q8 prompt candidate evidence without rebuilding artifacts
 npm run bench:ggml:parity:run          # rerun hard ggml parity without rebuilding artifacts
 ```
 
@@ -471,7 +475,9 @@ artifacts once, use the `:run` parity reruns to check noisy hard gates quickly,
 then run the full evidence gate before claiming a new SOTA/simple/perf state.
 Focused module Program benchmarks also build the native C ABI in ReleaseFast
 first, so microscope results do not silently compare against a stale Debug
-dylib.
+dylib. The frontier microscope uses `BENCH_FRONTIER_ATTEMPTS` (default `5`) so
+the row-chain kernel work can absorb local timing noise without falling back to
+the much slower full scorecard.
 The frontier benchmark gate keeps the same floors but now evaluates them across
 its repeated noisy attempts instead of requiring every independent microbench
 lane to pass in one lucky attempt. If no single attempt clears all floors but
