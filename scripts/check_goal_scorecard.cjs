@@ -219,6 +219,7 @@ function checkScripts() {
     "signal=${result.signal}",
     "<no output>",
     "q8 prompt candidate gate\", process.execPath, args, result",
+    "module Program bench native release build\", \"zig\", buildArgs, build",
     "module Program bench gate\", process.execPath, args, result",
     "portable Wasm Node/WASI smoke\", \"zig\", nodeWasiArgs, nodeWasi",
     "portable browser required-GPU focused smoke\", \"zig\", browserGpuFocusedArgs, browserGpuFocused",
@@ -849,11 +850,14 @@ function checkScripts() {
     "const expectedKeys = Object.freeze([",
     "function requireBenchSpecCoverage(specs)",
     "requireBenchSpecCoverage(benchSpecs)",
+    "function selectedBenchSpecs(specs)",
+    "BENCH_MODULE_PROGRAM_KEYS",
+    "const activeBenchSpecs = selectedBenchSpecs(benchSpecs)",
     "function runBenchSpec(spec)",
     "requireCompileEvidence(spec, support)",
     "requireKernelPlan(spec, program.kernelPlan())",
     "requireIrAndParams(spec, program)",
-    "benchSpecs.map((spec) => ({ spec, result: runBenchSpec(spec) }))",
+    "activeBenchSpecs.map((spec) => ({ spec, result: runBenchSpec(spec) }))",
     "activation_chain=",
     "activation_sign_chain=",
     "activation_tanh_chain=",
@@ -1309,6 +1313,16 @@ function checkQ8PromptCandidateEvidence() {
 }
 
 function checkModuleProgramBenchEvidence() {
+  const buildArgs = ["build", "ffi-c", "-Doptimize=ReleaseFast"];
+  const build = spawnSync("zig", buildArgs, {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (build.status !== 0) {
+    errors.push(spawnFailure("module Program bench native release build", "zig", buildArgs, build));
+    return;
+  }
   const args = ["scripts/check_module_program_bench.cjs"];
   const result = spawnSync(process.execPath, args, {
     cwd: root,

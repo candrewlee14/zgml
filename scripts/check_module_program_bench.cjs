@@ -226,6 +226,21 @@ function requireBenchSpecCoverage(specs) {
   }
 }
 
+function selectedBenchSpecs(specs) {
+  const raw = process.env.BENCH_MODULE_PROGRAM_KEYS;
+  if (!raw) return specs;
+  const requested = raw.split(",").map((key) => key.trim()).filter(Boolean);
+  if (requested.length === 0) {
+    throw new Error("BENCH_MODULE_PROGRAM_KEYS must list at least one benchmark key when set");
+  }
+  const byKey = new Map(specs.map((spec) => [spec.key, spec]));
+  const unknown = requested.filter((key) => !byKey.has(key));
+  if (unknown.length !== 0) {
+    throw new Error(`BENCH_MODULE_PROGRAM_KEYS contains unknown benchmark key(s): ${unknown.join(", ")}`);
+  }
+  return requested.map((key) => byKey.get(key));
+}
+
 function lazyMatmulAddReluEager(input, weightValues, biasValues, batch, inFeatures, outFeatures) {
   const out = new Float32Array(batch * outFeatures);
   for (let row = 0; row < batch; row += 1) {
@@ -2088,9 +2103,10 @@ const benchSpecs = [
 ];
 
 requireBenchSpecCoverage(benchSpecs);
+const activeBenchSpecs = selectedBenchSpecs(benchSpecs);
 
 function runAllSpecs(attempt) {
-  const results = benchSpecs.map((spec) => ({ spec, result: runBenchSpec(spec) }));
+  const results = activeBenchSpecs.map((spec) => ({ spec, result: runBenchSpec(spec) }));
   const failures = [];
   for (const { spec, result } of results) {
     if (result.speedup < spec.floor) {

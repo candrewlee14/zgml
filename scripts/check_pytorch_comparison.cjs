@@ -21,6 +21,30 @@ function positiveInt(value, name) {
 }
 
 const attempts = positiveInt(process.env.BENCH_PYTORCH_ATTEMPTS || (requireParity ? "3" : "1"), "BENCH_PYTORCH_ATTEMPTS");
+const comparisonKeys = [
+  "linear_batched",
+  "lazy_matmul_add_gelu_batched",
+  "lazy_mlp_batched",
+  "lazy_rms_silu_ffn_batched",
+  "max_pool2d_batched",
+  "avg_pool2d_batched",
+];
+
+function selectedComparisonKeys() {
+  const raw = process.env.BENCH_PYTORCH_KEYS;
+  if (!raw) return comparisonKeys;
+  const requested = raw.split(",").map((key) => key.trim()).filter(Boolean);
+  if (requested.length === 0) {
+    throw new Error("BENCH_PYTORCH_KEYS must list at least one comparison key when set");
+  }
+  const known = new Set(comparisonKeys);
+  const unknown = requested.filter((key) => !known.has(key));
+  if (unknown.length !== 0) {
+    throw new Error(`BENCH_PYTORCH_KEYS contains unknown comparison key(s): ${unknown.join(", ")}`);
+  }
+  return requested;
+}
+const activeComparisonKeys = selectedComparisonKeys();
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -54,15 +78,7 @@ function installPythonTorchWithUv() {
   run(uv, ["pip", "install", "torch", "--python", venvPython], { stdio: "inherit" });
 }
 
-function parseZgmlModuleBench(output) {
-  const keys = [
-    "linear_batched",
-    "lazy_matmul_add_gelu_batched",
-    "lazy_mlp_batched",
-    "lazy_rms_silu_ffn_batched",
-    "max_pool2d_batched",
-    "avg_pool2d_batched",
-  ];
+function parseZgmlModuleBench(output, keys) {
   const timings = {};
   for (const key of keys) {
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -162,7 +178,13 @@ if (!Number.isFinite(minRatio) || minRatio < 0) {
 }
 
 function measureAttempt(index) {
-  const zgmlTimings = parseZgmlModuleBench(run(process.execPath, ["scripts/check_module_program_bench.cjs"]));
+  const moduleBenchEnv = process.env.BENCH_PYTORCH_KEYS
+    ? {
+        ...process.env,
+        BENCH_MODULE_PROGRAM_KEYS: activeComparisonKeys.join(","),
+      }
+    : process.env;
+  const zgmlTimings = parseZgmlModuleBench(run(process.execPath, ["scripts/check_module_program_bench.cjs"], { env: moduleBenchEnv }), activeComparisonKeys);
   const pytorchTimings = JSON.parse(run(python, ["-c", pytorchCode]));
   const ratioEntries = [];
   for (const [key, zgmlMs] of Object.entries(zgmlTimings)) {
