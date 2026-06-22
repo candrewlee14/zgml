@@ -5412,7 +5412,7 @@ fn executeDirectRmsGeluLinearStep(linear: *const TinyLinearSessionHandle, shape:
 
 fn executeSmallDirectLinearBiasStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32) bool {
     if (!shape.has_bias) return false;
-    if (shape.M > 256 or shape.N > 64 or shape.K > 128 or shape.N % 8 != 0) return false;
+    if (shape.M > 64 or shape.N > 64 or shape.K > 128 or shape.N % 8 != 0) return false;
 
     const VecT = @Vector(8, f32);
     const input_slice = input[0..linear.input_len];

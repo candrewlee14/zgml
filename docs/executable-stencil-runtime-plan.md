@@ -443,6 +443,13 @@ exploratory `rms_gelu_linear_batched` miss: current evidence is
 `rms_gelu_linear_batched=zgml:0.0382ms pytorch:0.1005ms
 zgml_vs_pytorch=2.63x`, with the module hot path reporting
 `hot_execute_into=0.0369ms`.
+A later microscope pass found the small direct linear kernel was overreaching
+on the PyTorch comparison shape `M=128,N=32,K=64`: sending that larger batched
+linear through BLAS instead of the direct vector loop moved focused
+`linear_batched` evidence from roughly `0.78x` to `0.93x` versus PyTorch and
+kept `lazy_token_head_batched` above parity in the same run. The direct linear
+kernel therefore stays a tiny-shape fast path, not a default replacement for
+BLAS-grade batched dense work.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS
