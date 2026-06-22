@@ -459,6 +459,13 @@ Current focused exploratory evidence after the ReleaseFast rebuild keeps
 roughly `0.91x`. A previous direct `Linear -> LogSoftmax` fusion attempt made
 that lane slower, so the next useful move there is a better native row-tail or
 larger semantic sublayer, not a shallow direct fast path.
+This was rechecked after the batched-linear BLAS threshold fix: a CPU-only
+direct Session path that ran BLAS for `Linear` and then in-place row
+`LogSoftmax` still regressed the focused module hot path to about `0.0095ms`
+and the PyTorch ratio to about `0.81x`, so it was reverted. The evidence points
+away from another C ABI shortcut and toward improving the native row-tail
+kernel, reducing cross-command overhead generally, or folding the classifier
+tail into a broader semantic sublayer.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS
