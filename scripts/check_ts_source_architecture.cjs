@@ -15804,7 +15804,8 @@ function checkDistSmokeIsTsOwned(errors) {
       "rank-2 permute eager/compiled parity",
       "expected rank-3 single-axis permute to lower through transpose Program evidence",
       "rank-3 permute eager/compiled parity",
-      "expected honest unsupported rank-3 cycle permute compile evidence",
+      "expected rank-3 cycle permute to lower through transpose-chain Program evidence",
+      "rank-3 cycle permute eager/compiled parity",
       "unsupportedRank3ShapeCases",
       "singleton-envelope rank-3 materialized output views",
       "compile rejects before native shape_mismatch",
@@ -15840,7 +15841,8 @@ function checkDistSmokeIsTsOwned(errors) {
   const permuteKernelPlanSource = fs.readFileSync(path.join(root, "src", "ts", "runtime", "kernel_plan.ts"), "utf8");
   const permuteTsSourceSmoke = fs.readFileSync(path.join(root, "src", "ts", "smokes", "ts_source_smoke.ts"), "utf8");
   for (const needle of [
-    "permuteDescForIrOp",
+    "permuteDescsForIrOp",
+    "transposeModuleOpDesc(index, swapIndex)",
     'case "permute":',
   ]) {
     if (!permuteKernelPlanSource.includes(needle)) {
@@ -15851,7 +15853,7 @@ function checkDistSmokeIsTsOwned(errors) {
     "trace compiler rank-2 permute kernel",
     "trace compiler rank-3 single-axis permute lowers",
     "trace compiler rank-3 single-axis permute kernel",
-    "trace compiler rank-3 cycle permute unsupported diagnostic",
+    "trace compiler rank-3 cycle permute lowers through transpose chain",
   ]) {
     if (!permuteTsSourceSmoke.includes(needle)) {
       errors.push(`src/ts/smokes/ts_source_smoke.ts must pin source trace compiler permute lowering behavior: ${needle}`);

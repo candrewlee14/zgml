@@ -366,26 +366,33 @@ function reshapeDescForShape(outputShape: any) {
   };
 }
 
-function permuteDescForIrOp(op: any): NativeModuleOpDesc | null {
+function permuteDescsForIrOp(op: any): readonly NativeModuleOpDesc[] | null {
   const attrs = op.attrs ?? {};
   const rank = op.inputShape ? op.inputShape.length : 0;
   if ((rank !== 2 && rank !== 3) || !Array.isArray(attrs.dims) || attrs.dims.length !== rank) return null;
   if (rank === 3 && op.inputShape[0] !== 1) return null;
   const axes = attrs.dims.map((dim: any) => frontendAxisForRank(dim, rank));
-  if (axes.every((axis: number, index: number) => axis === index)) return reshapeDescForShape(op.outputShape);
-  const changed = axes.map((axis: number, index: number) => axis === index ? -1 : index).filter((index: number) => index >= 0);
-  if (changed.length !== 2) return null;
-  const [axis0, axis1] = changed;
-  if (axes[axis0] !== axis1 || axes[axis1] !== axis0) return null;
-  return {
-    kind: moduleOpIds.transpose,
-    activation: 0,
-    flags: 0,
-    a: axis0,
-    b: axis1,
-    c: 0,
-    eps: 0,
-  };
+  if (axes.every((axis: number, index: number) => axis === index)) {
+    const desc = reshapeDescForShape(op.outputShape);
+    return desc ? [desc] : null;
+  }
+  const seen = new Set<number>();
+  for (const axis of axes) {
+    if (axis < 0 || axis >= rank || seen.has(axis)) return null;
+    seen.add(axis);
+  }
+  const current = Array.from({ length: rank }, (_value, index) => index);
+  const descs: NativeModuleOpDesc[] = [];
+  for (let index = 0; index < rank; index++) {
+    if (current[index] === axes[index]) continue;
+    const swapIndex = current.indexOf(axes[index]);
+    if (swapIndex < 0 || swapIndex === index) return null;
+    const tmp = current[index];
+    current[index] = current[swapIndex];
+    current[swapIndex] = tmp;
+    descs.push(transposeModuleOpDesc(index, swapIndex));
+  }
+  return descs.length > 0 ? descs : null;
 }
 
 function isNoopDropoutIrOp(op: any) {
@@ -637,6 +644,8 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
         eps: 0,
       };
     }
+    case "permute":
+      return null;
     case "diagonal":
       if (!op.inputShape || op.inputShape.length !== 2) return null;
       return {
@@ -648,8 +657,6 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
         c: 0,
         eps: 0,
       };
-    case "permute":
-      return permuteDescForIrOp(op);
     case "layerNorm":
       if (!op.inputShape || op.inputShape[op.inputShape.length - 1] !== attrs.features) return null;
       return {
@@ -823,6 +830,8 @@ function reduceDimModuleOpDescs(op: any, attrs: any): readonly NativeModuleOpDes
 
 function moduleOpDescsForIrOp(op: any): readonly NativeModuleOpDesc[] | null {
   const attrs = op.attrs ?? {};
+  if (op.op === "permute") return permuteDescsForIrOp(op);
+
   if (op.op === "sum" || op.op === "mean" || op.op === "prod" || op.op === "max" || op.op === "min" || op.op === "argmax" || op.op === "argmin") {
     const desc = moduleOpDescForIrOp(op);
     if (desc) return [desc];
@@ -1450,7 +1459,7 @@ function kernelizerDiagnosticForIrOp(op: any) {
     return diagnosticForKernelizerOp(
       op,
       "unsupported-view",
-      "native module Program permute currently supports rank-2/rank-3 identity or single axis swaps only",
+      "native module Program permute currently supports rank-2/rank-3 materialized permutations only",
     );
   }
   if (op.op === "maxPool2d") {

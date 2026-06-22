@@ -6553,12 +6553,12 @@ const rank3CyclePermuteArtifacts = traceCompiler.traceCompilerArtifacts({
   }],
 });
 expectSame({
-  code: rank3CyclePermuteArtifacts.diagnostic.code,
-  stage: rank3CyclePermuteArtifacts.diagnostic.stage,
+  diagnostic: rank3CyclePermuteArtifacts.diagnostic,
+  nativeKernels: rank3CyclePermuteArtifacts.kernelPlan.ops[0].nativeKernels,
 }, {
-  code: "unsupported-view",
-  stage: "kernelizer",
-}, "trace compiler rank-3 cycle permute unsupported diagnostic");
+  diagnostic: null,
+  nativeKernels: ["transpose", "transpose"],
+}, "trace compiler rank-3 cycle permute lowers through transpose chain");
 const supportDetails = traceCompiler.supportDetailsWithTrace({ composable: true }, irOnlyTrace, traceIrResult.ir, null);
 expectSame(supportDetails.inputShape, [1, 2], "trace compiler support input shape");
 expectSame(Object.isFrozen(supportDetails.trace.ops[0]), true, "trace compiler support frozen trace op");

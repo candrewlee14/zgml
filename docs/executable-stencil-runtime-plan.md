@@ -302,9 +302,8 @@ Current checked progress:
   rank-3 `reshape`/`flatten`/`squeeze`/`unsqueeze`, rank-3 `broadcastTo`/`expand`,
   and singleton-envelope rank-3 `narrow`/`select`/`slice`
   lowering through the native module Program ABI,
-  singleton-envelope rank-3 `transpose` and single-axis-swap `permute`
-  lowering through the native module Program ABI while three-cycle permutes
-  still reject honestly,
+  singleton-envelope rank-3 `transpose` plus single-swap and cycle `permute`
+  lowering through the native module Program ABI,
   rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering, and
   compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
@@ -4699,9 +4698,9 @@ Migration slices:
    module factory for reshape/view/flatten/squeeze/unsqueeze/transpose/permute/broadcast/expand/narrow/select/slice,
    with `src/ts/shared_frontend.ts` injecting the placement hook for
    that constructor. `permute` is trace/Tensor Program IR visible; rank-2
-   identity/swap permutations lower through the existing reshape/transpose
-   native kernels, while higher-rank permutations still report an unsupported
-   view until the movement kernel supports arbitrary axis permutations. `src/ts/nn/parameterless_modules.ts` now owns stateless
+   identity/swap permutations and singleton-envelope rank-3 cycle permutations
+   lower through existing reshape/transpose native kernels, with a cycle
+   represented as a short transpose chain instead of a new ABI op. `src/ts/nn/parameterless_modules.ts` now owns stateless
    activation, softmax/logSoftmax, reduction, and Dropout module factories the same way.
    `src/ts/nn/linear_module.ts` now owns the trainable `nn.Linear` factory,
    including tiny-linear compile evidence and device-program fallback delegation

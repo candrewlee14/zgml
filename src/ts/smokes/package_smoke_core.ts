@@ -3218,16 +3218,30 @@ function expectZeroParameterProgramEvidence(adapter: Record<string, any>, label:
     rank3PermuteProgram.dispose();
   }
 
-  const rank3CyclePermuteSupport = adapter.nn.permute([1, 2, 0]).compileSupport({ inputShape: [1, 2, 3], backend: "cpu" });
-  const rank3CyclePermuteDiagnostic = rank3CyclePermuteSupport.diagnostics && rank3CyclePermuteSupport.diagnostics[0];
+  const rank3CyclePermute = adapter.nn.permute([1, 2, 0]);
+  const rank3CyclePermuteEager = rank3CyclePermute.forward(rank3PermuteInput);
+  const rank3CyclePermuteSupport = rank3CyclePermute.compileSupport({ inputShape: [1, 2, 3], backend: "cpu" });
+  const rank3CyclePermuteKernelPlan = adapter.nn.kernelPlan(rank3CyclePermute, { inputShape: [1, 2, 3], backend: "cpu" });
   if (
-    rank3CyclePermuteSupport.supported !== false ||
-    rank3CyclePermuteDiagnostic === undefined ||
-    rank3CyclePermuteDiagnostic.stage !== "kernelizer" ||
-    rank3CyclePermuteDiagnostic.code !== "unsupported-view" ||
-    rank3CyclePermuteDiagnostic.op !== "permute"
+    rank3CyclePermuteSupport.supported !== true ||
+    rank3CyclePermuteSupport.outputShape.join("x") !== "2x3x1" ||
+    rank3CyclePermuteKernelPlan.ops.length !== 1 ||
+    rank3CyclePermuteKernelPlan.ops[0].op !== "permute" ||
+    rank3CyclePermuteKernelPlan.ops[0].nativeKernels.join("|") !== "transpose|transpose"
   ) {
-    throw new Error(`${label} expected honest unsupported rank-3 cycle permute compile evidence; unsupported compile evidence must stay explicit`);
+    throw new Error(`${label} expected rank-3 cycle permute to lower through transpose-chain Program evidence`);
+  }
+  const rank3CyclePermuteProgram = rank3CyclePermute.compile({ inputShape: [1, 2, 3], backend: "cpu" });
+  const rank3CyclePermuteSession = rank3CyclePermuteProgram.bind({});
+  try {
+    const compiledRank3CyclePermute = rank3CyclePermuteSession.stepTensor(rank3PermuteInput);
+    if (compiledRank3CyclePermute.shape.join("x") !== "2x3x1") {
+      throw new Error(`${label} expected compiled rank-3 cycle permute output shape`);
+    }
+    expectClose(compiledRank3CyclePermute.data, rank3CyclePermuteEager.data, `${label} rank-3 cycle permute eager/compiled parity`);
+  } finally {
+    rank3CyclePermuteSession.dispose();
+    rank3CyclePermuteProgram.dispose();
   }
 }
 
@@ -3452,7 +3466,7 @@ function expectShapeMovementProgramEvidence(adapter: Record<string, any>, label:
       support.diagnostics?.[0]?.code !== "unsupported-view" ||
       support.diagnostics?.[0]?.message !== testCase.reason
     ) {
-      throw new Error(`${label} expected ${testCase.name} to reject non-singleton rank-3 shape/view compile support`);
+      throw new Error(`${label} expected ${testCase.name} unsupported compile evidence to reject non-singleton rank-3 shape/view compile support`);
     }
     expectThrowIncludes(
       () => testCase.module.compile({ inputShape: testCase.inputShape, backend: "cpu" }),
