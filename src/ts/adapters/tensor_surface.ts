@@ -204,6 +204,14 @@ export class Tensor {
     return surface().tensorNativeSurfaceHelpers.place(this, program, kind, options);
   }
 
+  copyFromNativeBuffer_(buffer: unknown, options: unknown = {}) {
+    return surface().tensorNativeSurfaceHelpers.copyFromNativeBuffer_(this, buffer, options);
+  }
+
+  copy_from_native_buffer_(buffer: unknown, options: unknown = {}) {
+    return surface().tensorNativeSurfaceHelpers.copy_from_native_buffer_(this, buffer, options);
+  }
+
   item() {
     return surface().tensorInfoSurfaceHelpers.item(this);
   }

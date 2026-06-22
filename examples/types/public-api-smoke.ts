@@ -2412,6 +2412,8 @@ const placedInput: NativeBuffer = linearInput.place(linearProgram, placementKind
 const nativeInput: NativeBuffer = linearInput.toNativeBuffer({ program: linearProgram, kind: "input" });
 const fromNative = Tensor.fromNativeBuffer(nativeInput, [2] as const);
 const fromNativeShape: readonly [2] = fromNative.shape;
+const copyFromNative: Tensor<readonly [2]> = linearInput.copyFromNativeBuffer_(nativeInput);
+const copyFromNativeSnake: Tensor<readonly [2]> = linearInput.copy_from_native_buffer_(nativeInput);
 const explicitOutputTensor = linearSession.stepTensor(linearInput, { shape: [3] as const });
 const explicitOutputShape: readonly [3] = explicitOutputTensor.shape;
 const typedLinearSessionOutputTensor: Tensor<readonly [3]> = typedLinearSession.stepTensor(linearInput);
@@ -5848,6 +5850,8 @@ void rootGradModeNamespace;
 void rootGradModeEnabled;
 void rootGradModeNoGradValue;
 void fromNativeShape;
+void copyFromNative;
+void copyFromNativeSnake;
 void explicitOutputShape;
 void typedLinearSessionOutputTensor;
 void typedLinearClone;

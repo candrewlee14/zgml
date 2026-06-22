@@ -1170,6 +1170,8 @@ export declare class Tensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
   nativePlacement(options?: TensorNativeBufferOptions): TensorNativePlacement;
   native_placement(options?: TensorNativeBufferOptions): TensorNativePlacement;
   place(program: Program, kind?: ProgramDeviceBufferKind, options?: ProgramCreateBufferOptions): NativeBuffer;
+  copyFromNativeBuffer_(buffer: NativeBuffer, options?: TensorFromNativeBufferOptions): this;
+  copy_from_native_buffer_(buffer: NativeBuffer, options?: TensorFromNativeBufferOptions): this;
   toJSON(): TensorJSON;
   item(): number;
   toNumber(): number;

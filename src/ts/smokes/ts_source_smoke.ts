@@ -481,6 +481,10 @@ function makeFacadeNativeBuffer(data, byteOffset = 0) {
     readFloat32(length, offset = 0) {
       return new Float32Array(backing, offset, length);
     },
+    readFloat32Into(target, length = target.length, offset = 0) {
+      target.set(new Float32Array(backing, offset, length));
+      return target;
+    },
     writeFloat32(value) {
       this.writes.push(Array.from(value));
     },
@@ -524,6 +528,10 @@ expectSame({
 expectSame(tensorFacadeHelpers.parameter([1, 2], [2]).requiresGrad, true, "tensor facade parameter requires grad");
 const facadeReadBuffer = makeFacadeNativeBuffer(Float32Array.of(5, 6), Float32Array.BYTES_PER_ELEMENT);
 expectSame(tensorFacadeHelpers.fromNativeBuffer(facadeReadBuffer, [2], { byteOffset: 4 }).data, [5, 6], "tensor facade fromNativeBuffer");
+const facadeCopyTarget = new TensorDataSmokeTensor(Float32Array.of(0, 0), [2]);
+expectSame(tensorFacadeHelpers.copyFromNativeBuffer_(facadeCopyTarget, facadeReadBuffer, { byteOffset: 4 }), facadeCopyTarget, "tensor facade copyFromNativeBuffer_ returns tensor");
+expectSame(facadeCopyTarget.data, [5, 6], "tensor facade copyFromNativeBuffer_ fills existing tensor");
+expectSame(tensorFacadeHelpers.copy_from_native_buffer_(facadeCopyTarget, facadeReadBuffer, { byteOffset: 4 }), facadeCopyTarget, "tensor facade copy_from_native_buffer_ returns tensor");
 const placedTensor = new TensorDataSmokeTensor(Float32Array.of(7, 8), [2]);
 const programBuffer = makeFacadeNativeBuffer(new Float32Array(2));
 const placedBuffer = tensorFacadeHelpers.place(placedTensor, {

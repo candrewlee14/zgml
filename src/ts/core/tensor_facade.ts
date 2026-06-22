@@ -66,6 +66,10 @@ type TensorJoinFacade = Readonly<{
   stack: BivariantCallback<[tensors: unknown, dim?: number], AnyRecord>;
   einsum: BivariantCallback<[equation: unknown, tensors: unknown, ...moreTensors: unknown[]], AnyRecord>;
 }>;
+type TensorNativeBufferLike = AnyRecord & {
+  byteLength: number;
+  readFloat32Into(target: Float32Array, length?: number, byteOffset?: number): Float32Array;
+};
 
 export type TensorFacadeHelpersOptions = Readonly<{
   Tensor: TensorConstructor;
@@ -270,6 +274,33 @@ export function createTensorFacadeHelpers(options: TensorFacadeHelpersOptions) {
     return new TensorCtor(buffer.readFloat32(length, byteOffset), tensorShape, tensorOptions);
   }
 
+  function copyFromNativeBuffer_(tensorValue: AnyRecord, buffer: AnyRecord, options: TensorFromNativeBufferOptions = {}) {
+    if (!isNativeBuffer(buffer)) {
+      throw new Error("Tensor.copyFromNativeBuffer_ requires a zgml NativeBuffer");
+    }
+    const { length: requestedLength, byteOffset = 0 } = options || {};
+    if (!Number.isSafeInteger(byteOffset) || byteOffset < 0 || byteOffset % Float32Array.BYTES_PER_ELEMENT !== 0) {
+      throw new Error(`invalid Tensor.copyFromNativeBuffer_ byteOffset: ${byteOffset}`);
+    }
+    const length = requestedLength ?? tensorValue.data.length;
+    if (!Number.isSafeInteger(length) || length <= 0) {
+      throw new Error(`invalid Tensor.copyFromNativeBuffer_ length: ${length}`);
+    }
+    if (length !== tensorValue.data.length) {
+      throw new Error(`Tensor.copyFromNativeBuffer_ length ${length} does not match tensor length ${tensorValue.data.length}`);
+    }
+    const source = buffer as TensorNativeBufferLike;
+    if (byteOffset + length * Float32Array.BYTES_PER_ELEMENT > source.byteLength) {
+      throw new Error(`invalid Tensor.copyFromNativeBuffer_ byte range: ${byteOffset}..${source.byteLength}`);
+    }
+    source.readFloat32Into(tensorValue.data, length, byteOffset);
+    return tensorValue;
+  }
+
+  function copy_from_native_buffer_(tensorValue: AnyRecord, buffer: AnyRecord, options: TensorFromNativeBufferOptions = {}) {
+    return copyFromNativeBuffer_(tensorValue, buffer, options);
+  }
+
   return Object.freeze({
     initialize,
     tensor,
@@ -279,6 +310,8 @@ export function createTensorFacadeHelpers(options: TensorFacadeHelpersOptions) {
     nativePlacement,
     place,
     fromNativeBuffer,
+    copyFromNativeBuffer_,
+    copy_from_native_buffer_,
     cat: (tensors: unknown, dim = 0) => tensorJoin.cat(tensors, dim),
     stack: (tensors: unknown, dim = 0) => tensorJoin.stack(tensors, dim),
     einsum: (equation: unknown, tensors: unknown, ...moreTensors: unknown[]) => tensorJoin.einsum(equation, tensors, ...moreTensors),
@@ -318,6 +351,12 @@ export function createTensorNativeSurfaceHelpers<TTensor>(options: TensorNativeS
     ),
     place: (tensor: TTensor, program: unknown, kind = "input", placeOptions?: unknown) => (
       tensorFacade.place(tensor, program, kind, placeOptions)
+    ),
+    copyFromNativeBuffer_: (tensor: TTensor, buffer: unknown, nativeOptions?: unknown) => (
+      tensorFacade.copyFromNativeBuffer_(tensor, buffer, nativeOptions)
+    ),
+    copy_from_native_buffer_: (tensor: TTensor, buffer: unknown, nativeOptions?: unknown) => (
+      tensorFacade.copy_from_native_buffer_(tensor, buffer, nativeOptions)
     ),
   });
 }

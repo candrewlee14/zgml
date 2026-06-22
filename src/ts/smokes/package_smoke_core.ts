@@ -2121,6 +2121,21 @@ function expectTensorNativeBufferEvidence(compiledProgram: Record<string, any>, 
       throw new Error(`${label} expected Tensor.fromNativeBuffer shaped tensor`);
     }
     expectClose(restored.data, [3, 4], `${label} Tensor.fromNativeBuffer readback`);
+    const reused = adapter.tensor([0, 0], [2]);
+    if (reused.copyFromNativeBuffer_(nativeBuffer) !== reused) {
+      throw new Error(`${label} expected Tensor.copyFromNativeBuffer_ to return this`);
+    }
+    expectClose(reused.data, [3, 4], `${label} Tensor.copyFromNativeBuffer_ readback`);
+    reused.zero_();
+    if (reused.copy_from_native_buffer_(nativeBuffer) !== reused) {
+      throw new Error(`${label} expected Tensor.copy_from_native_buffer_ to return this`);
+    }
+    expectClose(reused.data, [3, 4], `${label} Tensor.copy_from_native_buffer_ readback`);
+    expectThrowIncludes(
+      () => reused.copyFromNativeBuffer_(nativeBuffer, { length: 1 }),
+      "Tensor.copyFromNativeBuffer_ length 1 does not match tensor length 2",
+      `${label} Tensor.copyFromNativeBuffer_ rejects wrong length`,
+    );
   } finally {
     nativeBuffer.dispose();
   }
