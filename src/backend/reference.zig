@@ -560,12 +560,7 @@ const Context = struct {
             .exp => @exp(v),
             .log => @log(v),
             .gelu => {
-                const k0: VecT = @splat(0.7978845608);
-                const k1: VecT = @splat(0.044715);
-                const half: VecT = @splat(0.5);
-                const k = k0 * (v + k1 * v * v * v);
-                const e2k = @exp(k + k);
-                return half * v * (one + (e2k - one) / (e2k + one));
+                return geluApproxVec(v);
             },
             .sigmoid => one / (one + @exp(-v)),
             .silu => v / (one + @exp(-v)),
@@ -661,17 +656,9 @@ const Context = struct {
                 }
             }.f),
             .gelu => {
-                const VecT = @Vector(V, f32);
-                const k0: VecT = @splat(0.7978845608);
-                const k1: VecT = @splat(0.044715);
-                const half: VecT = @splat(0.5);
-                const one: VecT = @splat(1.0);
                 var i: usize = 0;
                 while (i + V <= n) : (i += V) {
-                    const a: VecT = src0[i..][0..V].*;
-                    const k = k0 * (a + k1 * a * a * a);
-                    const e2k = @exp(k + k);
-                    dst[i..][0..V].* = half * a * (one + (e2k - one) / (e2k + one));
+                    dst[i..][0..V].* = geluApproxVec(src0[i..][0..V].*);
                 }
                 while (i < n) : (i += 1) {
                     const a = src0[i];
@@ -988,13 +975,7 @@ const Context = struct {
         return switch (op) {
             .relu => @max(x, @as(VecT, @splat(0.0))),
             .gelu => blk: {
-                const k0: VecT = @splat(0.7978845608);
-                const k1: VecT = @splat(0.044715);
-                const half: VecT = @splat(0.5);
-                const one: VecT = @splat(1.0);
-                const k = k0 * (x + k1 * x * x * x);
-                const e2k = @exp(k + k);
-                break :blk half * x * (one + (e2k - one) / (e2k + one));
+                break :blk geluApproxVec(x);
             },
             .silu => blk: {
                 const one: VecT = @splat(1.0);
@@ -1606,10 +1587,6 @@ const Context = struct {
         bias_offset: usize,
     ) void {
         const VecT = @Vector(V, f32);
-        const k0: VecT = @splat(0.7978845608);
-        const k1: VecT = @splat(0.044715);
-        const half: VecT = @splat(0.5);
-        const one: VecT = @splat(1.0);
         for (0..M) |row| {
             const dst_row = dst[dst_offset + row * dst_row_stride ..][0..N];
             const bias_row = bias[bias_offset..][0..N];
@@ -1618,9 +1595,7 @@ const Context = struct {
                 const gemm_v: VecT = dst_row[i..][0..V].*;
                 const bias_v: VecT = bias_row[i..][0..V].*;
                 const a: VecT = gemm_v + bias_v;
-                const k = k0 * (a + k1 * a * a * a);
-                const e2k = @exp(k + k);
-                dst_row[i..][0..V].* = half * a * (one + (e2k - one) / (e2k + one));
+                dst_row[i..][0..V].* = geluApproxVec(a);
             }
             while (i < N) : (i += 1) {
                 const a = dst_row[i] + bias_row[i];
@@ -1677,6 +1652,17 @@ const Context = struct {
         const exponent_bits: UVecT = @as(UVecT, @intCast(ki + @as(IVecT, @splat(127)))) << @as(UVecT, @splat(23));
         const pow2: VecT = @bitCast(exponent_bits);
         return poly * pow2;
+    }
+
+    fn geluApproxVec(x: @Vector(V, f32)) @Vector(V, f32) {
+        const VecT = @Vector(V, f32);
+        const k0: VecT = @splat(0.7978845608);
+        const k1: VecT = @splat(0.044715);
+        const half: VecT = @splat(0.5);
+        const one: VecT = @splat(1.0);
+        const k = k0 * (x + k1 * x * x * x);
+        const e2k = fastExpApproxVec(k + k);
+        return half * x * (one + (e2k - one) / (e2k + one));
     }
 
     fn qmatmul(self: Context, q: anytype) void {
@@ -2000,6 +1986,32 @@ test "reference executor matmul" {
     } });
 
     try std.testing.expectEqualSlices(f32, &.{ 58, 64, 139, 154 }, &dst);
+}
+
+test "reference executor vector gelu stays within scalar tolerance" {
+    var src = [_]f32{ -3, -1.5, -0.5, 0, 0.5, 1, 2, 3 };
+    var dst = [_]f32{0} ** 8;
+    const buffers = [_]Buffer{
+        .{ .ptr = &src, .len = src.len },
+        .{ .ptr = &dst, .len = dst.len },
+    };
+
+    executeOp(&buffers, &.{}, .{ .elementwise = .{
+        .op = .gelu,
+        .dst = 1,
+        .src0 = 0,
+        .src1 = 0,
+        .n = src.len,
+        .dst_offset = 0,
+        .src0_offset = 0,
+        .src1_offset = 0,
+    } });
+
+    for (src, dst) |x, actual| {
+        const k = 0.7978845608 * (x + 0.044715 * x * x * x);
+        const expected = 0.5 * x * (1.0 + std.math.tanh(k));
+        try std.testing.expectApproxEqAbs(expected, actual, 1e-5);
+    }
 }
 
 test "reference execution tape uses patched op payloads" {
