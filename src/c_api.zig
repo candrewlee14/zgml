@@ -817,6 +817,12 @@ const DirectRmsGeluLinearModule = struct {
     eps: f32,
 };
 
+const DirectLinearLogSoftmaxModule = struct {
+    in_features: usize,
+    out_features: usize,
+    has_bias: bool,
+};
+
 const ModuleProgramHandle = struct {
     input_len: usize,
     output_len: usize,
@@ -826,6 +832,7 @@ const ModuleProgramHandle = struct {
     execution_supported: bool,
     direct_linear: ?DirectLinearModule = null,
     direct_rms_gelu_linear: ?DirectRmsGeluLinearModule = null,
+    direct_linear_log_softmax: ?DirectLinearLogSoftmaxModule = null,
     graph: GraphF32,
     program: DeviceF32.Program,
     input: *TensorF32,
@@ -2520,6 +2527,25 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
         }
     else
         null;
+    const direct_linear_log_softmax: ?DirectLinearLogSoftmaxModule = if (ops.len == 2 and
+        ops[0].kind == module_op_linear and
+        ops[0].activation == 0 and
+        (ops[0].flags & ~module_flag_bias) == 0 and
+        ops[0].a != 0 and
+        ops[0].b != 0 and
+        ops[1].kind == module_op_log_softmax and
+        ops[1].activation == 0 and
+        ops[1].flags == 0 and
+        ops[1].a == 0 and
+        ops[1].b == 0 and
+        ops[1].c == 0)
+        .{
+            .in_features = ops[0].a,
+            .out_features = ops[0].b,
+            .has_bias = (ops[0].flags & module_flag_bias) != 0,
+        }
+    else
+        null;
 
     return .{
         .input_len = input.nElems(),
@@ -2530,6 +2556,7 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
         .execution_supported = inspection.execution_supported,
         .direct_linear = direct_linear,
         .direct_rms_gelu_linear = direct_rms_gelu_linear,
+        .direct_linear_log_softmax = direct_linear_log_softmax,
         .graph = graph,
         .program = program,
         .input = input,
@@ -5239,6 +5266,13 @@ const DirectRmsGeluLinearStepShape = struct {
     eps: f32,
 };
 
+const DirectLinearLogSoftmaxStepShape = struct {
+    M: usize,
+    N: usize,
+    K: usize,
+    has_bias: bool,
+};
+
 fn directLinearShapeForSession(s: *SessionHandle, linear: *const TinyLinearSessionHandle) ?DirectLinearStepShape {
     return switch (s.data) {
         .tiny_linear => blk: {
@@ -5302,6 +5336,35 @@ fn directRmsGeluLinearShapeForSession(s: *SessionHandle, linear: *const TinyLine
                 .N = direct.out_features,
                 .K = direct.features,
                 .eps = direct.eps,
+            };
+        },
+        else => null,
+    };
+}
+
+fn directLinearLogSoftmaxShapeForSession(s: *SessionHandle, linear: *const TinyLinearSessionHandle) ?DirectLinearLogSoftmaxStepShape {
+    return switch (s.data) {
+        .module => blk: {
+            const module_program = switch (linear.program.data) {
+                .module => |*module| module,
+                else => break :blk null,
+            };
+            const direct = module_program.direct_linear_log_softmax orelse break :blk null;
+            if (direct.in_features == 0 or direct.out_features == 0) break :blk null;
+            if (!linear.owns_weights_buf or (direct.has_bias and !linear.owns_bias_buf)) break :blk null;
+            const expected_weights = std.math.mul(usize, direct.in_features, direct.out_features) catch break :blk null;
+            if (linear.weights_buf.len != expected_weights) break :blk null;
+            if (direct.has_bias and linear.bias_buf.len != direct.out_features) break :blk null;
+            if (!direct.has_bias and linear.bias_buf.len != 0) break :blk null;
+            if (linear.input_len % direct.in_features != 0) break :blk null;
+            const M = linear.input_len / direct.in_features;
+            const expected_output = std.math.mul(usize, M, direct.out_features) catch break :blk null;
+            if (linear.output_len != expected_output) break :blk null;
+            break :blk .{
+                .M = M,
+                .N = direct.out_features,
+                .K = direct.in_features,
+                .has_bias = direct.has_bias,
             };
         },
         else => null,
@@ -5412,7 +5475,7 @@ fn executeDirectRmsGeluLinearStep(linear: *const TinyLinearSessionHandle, shape:
 
 fn executeSmallDirectLinearBiasStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32) bool {
     if (!shape.has_bias) return false;
-    if (shape.M > 64 or shape.N > 64 or shape.K > 128 or shape.N % 8 != 0) return false;
+    if (shape.M > 128 or shape.N > 64 or shape.K > 128 or shape.N % 8 != 0) return false;
 
     const VecT = @Vector(8, f32);
     const input_slice = input[0..linear.input_len];
@@ -5461,6 +5524,34 @@ fn executeDirectLinearStep(linear: *const TinyLinearSessionHandle, shape: Direct
     }
 }
 
+fn logSoftmaxRowsInPlace(values: []f32, M: usize, N: usize) void {
+    for (0..M) |row| {
+        const out_row = values[row * N ..][0..N];
+        var max_val = out_row[0];
+        for (out_row[1..]) |value| {
+            if (value > max_val) max_val = value;
+        }
+        var sum_exp: f32 = 0;
+        for (out_row) |value| {
+            sum_exp += @exp(value - max_val);
+        }
+        const log_denom = max_val + @log(sum_exp);
+        for (out_row) |*value| {
+            value.* -= log_denom;
+        }
+    }
+}
+
+fn executeDirectLinearLogSoftmaxStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearLogSoftmaxStepShape, input: [*]const f32, output: [*]f32) void {
+    executeDirectLinearStep(linear, .{
+        .M = shape.M,
+        .N = shape.N,
+        .K = shape.K,
+        .has_bias = shape.has_bias,
+    }, input, output);
+    logSoftmaxRowsInPlace(output[0..linear.output_len], shape.M, shape.N);
+}
+
 export fn zgml_session_step_direct(session: ?*zgml_session, input_ptr: ?[*]const f32, input_len: usize, output_ptr: ?[*]f32, output_len: usize) c_int {
     const s = sessionHandle(session) orelse return status(.invalid_argument);
     const linear = switch (s.data) {
@@ -5483,6 +5574,11 @@ export fn zgml_session_step_direct(session: ?*zgml_session, input_ptr: ?[*]const
         }
         if (directRmsGeluLinearShapeForSession(s, linear)) |shape| {
             executeDirectRmsGeluLinearStep(linear, shape, input, output);
+            cpu_mod.recordDirectLinearRuntimeProfile(linear.session.program_handle, linear.session.runtime_handle);
+            return status(.ok);
+        }
+        if (directLinearLogSoftmaxShapeForSession(s, linear)) |shape| {
+            executeDirectLinearLogSoftmaxStep(linear, shape, input, output);
             cpu_mod.recordDirectLinearRuntimeProfile(linear.session.program_handle, linear.session.runtime_handle);
             return status(.ok);
         }
@@ -7943,6 +8039,69 @@ test "C ABI module program compiles traced sequential ops" {
         try std.testing.expectEqual(@as(u64, 1), direct_rms_profile.call_count);
         try std.testing.expectEqual(@as(u64, 1), direct_rms_profile.runtime_patch_call_count);
         try std.testing.expect(direct_rms_profile.command_count > 0);
+    }
+
+    {
+        const direct_log_softmax_shape = [_]usize{ 2, 2 };
+        const direct_log_softmax_ops = [_]zgml_module_op_desc{
+            .{
+                .kind = module_op_linear,
+                .flags = module_flag_bias,
+                .a = 2,
+                .b = 3,
+            },
+            .{
+                .kind = module_op_log_softmax,
+                .a = 0,
+            },
+        };
+        var direct_log_softmax_program: ?*zgml_program = null;
+        var direct_log_softmax_session: ?*zgml_session = null;
+        defer zgml_session_free(direct_log_softmax_session);
+        defer zgml_program_free(direct_log_softmax_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = direct_log_softmax_shape[0..].ptr,
+            .input_rank = direct_log_softmax_shape.len,
+            .ops = direct_log_softmax_ops[0..].ptr,
+            .op_count = direct_log_softmax_ops.len,
+        }, &.{ .backend = backend_cpu }, &direct_log_softmax_program));
+        try std.testing.expect(direct_log_softmax_program != null);
+
+        const direct_log_softmax_weights = [_]f32{
+            1, 0, 0.5,
+            0, 1, -0.5,
+        };
+        const direct_log_softmax_bias = [_]f32{ 0.1, -0.2, 0.3 };
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(direct_log_softmax_program, &.{
+            .weights = direct_log_softmax_weights[0..].ptr,
+            .weights_len = direct_log_softmax_weights.len,
+            .bias = direct_log_softmax_bias[0..].ptr,
+            .bias_len = direct_log_softmax_bias.len,
+        }, &direct_log_softmax_session));
+        try std.testing.expect(direct_log_softmax_session != null);
+
+        const direct_log_softmax_input = [_]f32{ 1, 2, 3, 4 };
+        var direct_log_softmax_output = [_]f32{0} ** 6;
+        try std.testing.expectEqual(status(.ok), zgml_session_step_direct(
+            direct_log_softmax_session,
+            direct_log_softmax_input[0..].ptr,
+            direct_log_softmax_input.len,
+            direct_log_softmax_output[0..].ptr,
+            direct_log_softmax_output.len,
+        ));
+
+        const expectLogSoftmaxRow = struct {
+            fn call(logits: [3]f32, actual: []const f32) !void {
+                const max_val = @max(logits[0], @max(logits[1], logits[2]));
+                const log_denom = max_val + @log(@exp(logits[0] - max_val) + @exp(logits[1] - max_val) + @exp(logits[2] - max_val));
+                try std.testing.expectApproxEqAbs(logits[0] - log_denom, actual[0], 1e-6);
+                try std.testing.expectApproxEqAbs(logits[1] - log_denom, actual[1], 1e-6);
+                try std.testing.expectApproxEqAbs(logits[2] - log_denom, actual[2], 1e-6);
+            }
+        }.call;
+        try expectLogSoftmaxRow(.{ 1.1, 1.8, -0.2 }, direct_log_softmax_output[0..3]);
+        try expectLogSoftmaxRow(.{ 3.1, 3.8, -0.2 }, direct_log_softmax_output[3..6]);
     }
 
     {

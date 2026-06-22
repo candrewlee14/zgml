@@ -412,6 +412,14 @@ function checkScripts() {
     "fn logsoftmax(self: Context, s: anytype) void",
     "reference executor logsoftmax normalizes rows in log space",
   ]);
+  requireIncludes(read("src/c_api.zig"), "src/c_api.zig", "direct CPU Linear LogSoftmax classifier tail", [
+    "DirectLinearLogSoftmaxModule",
+    "direct_linear_log_softmax",
+    "directLinearLogSoftmaxShapeForSession",
+    "executeDirectLinearLogSoftmaxStep",
+    "logSoftmaxRowsInPlace",
+    "direct_log_softmax_output",
+  ]);
   requireIncludes(read("src/backend/program.zig"), "src/backend/program.zig", "dense linear bias command compression", [
     "matmulRepeatElementwiseBiasCompatible",
     "matmulRepeatElementwiseBiasActivationCompatible",
@@ -1001,7 +1009,7 @@ function checkScripts() {
     "ops=1 dispatch=1 kernels=max-pool2d",
     "ops=1 dispatch=1 kernels=avg-pool2d",
     "ops=3 dispatch=3 kernels=linear|softmax|linear",
-    "ops=2 dispatch=2 kernels=linear|log-softmax",
+    "ops=2 plan_dispatch=2 direct_cpu=linear-log-softmax kernels=linear|log-softmax",
     "ops=2 dispatch=1 fused=2 kernels=linear|add",
     "ops=3 dispatch=1 fused=3 kernels=linear|add|relu",
     "ops=3 dispatch=1 fused=3 kernels=linear|add|gelu",
@@ -1467,7 +1475,7 @@ function checkModuleProgramBenchEvidence() {
     "ops=1 dispatch=1 kernels=max-pool2d",
     "ops=1 dispatch=1 kernels=avg-pool2d",
     "ops=3 dispatch=3 kernels=linear|softmax|linear",
-    "ops=2 dispatch=2 kernels=linear|log-softmax",
+    "ops=2 plan_dispatch=2 direct_cpu=linear-log-softmax kernels=linear|log-softmax",
     "hot_execute_into=",
     "hot=allocation-free",
   ]);
@@ -1513,6 +1521,7 @@ function checkModuleProgramBenchEvidence() {
   requirePattern(line, "module Program bench gate output", "softmax classifier speedup floor", /softmax_classifier=[0-9.]+x floor=1\.20x/);
   requirePattern(line, "module Program bench gate output", "batched softmax classifier speedup floor", /softmax_classifier_batched=[0-9.]+x floor=3\.00x/);
   requirePattern(line, "module Program bench gate output", "batched log-softmax classifier speedup floor", /log_softmax_classifier_batched=[0-9.]+x floor=3\.00x/);
+  requirePattern(line, "module Program bench gate output", "direct CPU log-softmax classifier tail proof", /log_softmax_classifier_batched=[^;]+ops=2 plan_dispatch=2 direct_cpu=linear-log-softmax kernels=linear\|log-softmax batched=rank2 hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "lazy matmul-add speedup floor", /lazy_matmul_add_batched=[0-9.]+x floor=1\.50x/);
   requirePattern(line, "module Program bench gate output", "lazy Tensor IR add-only fusion kernel proof", /ops=2 dispatch=1 fused=2 kernels=linear\|add batched=rank2 parameters=w:weights\|b:bias hot=allocation-free/);
   requirePattern(line, "module Program bench gate output", "lazy matmul-add-relu speedup floor", /lazy_matmul_add_relu_batched=[0-9.]+x floor=1\.50x/);
@@ -4877,14 +4886,19 @@ function checkDocs() {
     "and singleton-envelope rank-3 `narrow`/`select`/`slice`",
     "rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering",
     "Exploratory focused lanes still track softer micro-workloads",
-    "`log_softmax_classifier_batched` as the remaining tiny exploratory softness",
+    "closes the previous",
+    "`log_softmax_classifier_batched` softness with a direct CPU",
     "PyTorch comparison output now also prints `ratio_range` and `ratio_median`",
     "ratio_median=linear_batched:0.73x,log_softmax_classifier_batched:0.82x",
+    "direct CPU `Linear -> LogSoftmax` classifier",
+    "Program plan still reports `linear|log-softmax`",
+    "post-change three-attempt microscope",
+    "found a passing attempt at `3.97x`",
     "This was rechecked after the batched-linear BLAS threshold fix",
     "direct Session path that ran BLAS for `Linear` and then in-place row",
     "`LogSoftmax` still regressed the focused module hot path to about `0.0095ms`",
     "PyTorch ratio to about `0.81x`, so it was reverted",
-    "away from another C ABI shortcut and toward improving the native row-tail",
+    "small-direct-linear variant is different and now has benchmark evidence",
     "fixed-width native log-softmax micro-kernel for the exact `cols == 32` gap",
     "moved `log_softmax_classifier_batched` down to about",
     "accumulate narrow row-tail special cases until a benchmark proves",

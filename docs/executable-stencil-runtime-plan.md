@@ -426,7 +426,19 @@ miss" to proof of the intended loop: the focused benchmark exposed a PyTorch
 gap, then a direct CPU Session fast path for
 `RMSNorm(weight)+GELU -> Linear(weight,bias)` moved that lane from about `0.45x`
 to about `2.63x` versus PyTorch while keeping the public Program plan
-unchanged.
+unchanged. A later June 22, 2026 direct CPU `Linear -> LogSoftmax` classifier
+tail pass did the same for the tiny row-tail gap without adding a public ABI
+op: the Program plan still reports `linear|log-softmax`, but CPU
+`executeInto` recognizes that exact shape and runs small direct linear plus
+in-place stable row log-softmax. A fresh ReleaseFast pre-change run measured
+`log_softmax_classifier_batched` at `0.61x` (`zgml:0.0159ms`,
+`pytorch:0.0098ms`). After extending the small direct linear threshold to the
+actual `M=128,N=32,K=64` gap shape, the post-change three-attempt microscope
+found a passing attempt at `3.97x` (`zgml:0.0151ms`, `pytorch:0.0599ms`) with
+median `1.57x`; the same pass kept `linear_batched` at a `2.23x` selected ratio
+with median `0.81x`. That is useful progress, but still noisy enough that the
+ratio range remains the honest contract rather than a permanent universal
+parity claim.
 The repo now exposes that inner loop directly:
 
 ```text
@@ -493,18 +505,21 @@ kernel therefore stays a tiny-shape fast path, not a default replacement for
 BLAS-grade batched dense work.
 Current focused exploratory evidence after the ReleaseFast rebuild keeps
 `rms_gelu_linear_batched` comfortably ahead of PyTorch, keeps
-`lazy_token_head_batched` around parity, and identifies
-`log_softmax_classifier_batched` as the remaining tiny exploratory softness at
-roughly `0.82x` to `0.84x` in the current June 22, 2026 gap loop. A previous direct `Linear -> LogSoftmax` fusion attempt made
-that lane slower, so the next useful move there is a better native row-tail or
-larger semantic sublayer, not a shallow direct fast path.
+`lazy_token_head_batched` around parity, and closes the previous
+`log_softmax_classifier_batched` softness with a direct CPU
+`Linear -> LogSoftmax` execute path whose public Program plan remains
+`linear|log-softmax`. A previous BLAS-backed direct `Linear -> LogSoftmax`
+fusion attempt made that lane slower, so the lesson is not "add every shortcut";
+it is "only keep the shortcut when the exact shape has ReleaseFast evidence and
+the public operation story stays simple."
 This was rechecked after the batched-linear BLAS threshold fix: a CPU-only
 direct Session path that ran BLAS for `Linear` and then in-place row
 `LogSoftmax` still regressed the focused module hot path to about `0.0095ms`
-and the PyTorch ratio to about `0.81x`, so it was reverted. The evidence points
-away from another C ABI shortcut and toward improving the native row-tail
-kernel, reducing cross-command overhead generally, or folding the classifier
-tail into a broader semantic sublayer.
+and the PyTorch ratio to about `0.81x`, so it was reverted. The narrower
+small-direct-linear variant is different and now has benchmark evidence, but
+the larger lesson remains: do not accumulate row-tail special cases unless a
+focused ReleaseFast benchmark proves the exact shortcut beats the simple
+vector loop and the existing Program plan stays readable.
 A fixed-width native log-softmax micro-kernel for the exact `cols == 32` gap
 shape was also tried and rejected on June 22, 2026: the quick Zig tests passed,
 but `bench:pytorch:gaps` moved `log_softmax_classifier_batched` down to about

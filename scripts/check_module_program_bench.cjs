@@ -1592,14 +1592,14 @@ const benchSpecs = [
       opCount: 2,
       dispatchCount: 2,
       publicOps: 2,
-      description: "honest two-dispatch batched Linear -> LogSoftmax kernel plan",
+      description: "two-kernel batched Linear -> LogSoftmax Program plan with a direct CPU executeInto fast path",
       check: (plan) => {
         if (ops(plan) !== "linear|logSoftmax" || kernels(plan) !== "linear|log-softmax") {
-          throw new Error("batched log-softmax-classifier expected honest two-dispatch Linear -> LogSoftmax kernel plan");
+          throw new Error("batched log-softmax-classifier expected Linear -> LogSoftmax Program plan with direct CPU executeInto evidence");
         }
       },
     },
-    summary: (result) => `log_softmax_classifier_batched=${result.speedup.toFixed(2)}x floor=${floors.logSoftmaxClassifierBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=2 dispatch=2 kernels=linear|log-softmax batched=rank2 hot=allocation-free`,
+    summary: (result) => `log_softmax_classifier_batched=${result.speedup.toFixed(2)}x floor=${floors.logSoftmaxClassifierBatchedSpeedup.toFixed(2)}x eager=${result.eagerMs.toFixed(4)}ms hot_execute_into=${result.compiledMs.toFixed(4)}ms ops=2 plan_dispatch=2 direct_cpu=linear-log-softmax kernels=linear|log-softmax batched=rank2 hot=allocation-free`,
   },
   {
     key: "lazy_matmul_add_batched",
