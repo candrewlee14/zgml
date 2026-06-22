@@ -334,6 +334,26 @@ pub const ExecutionTape = struct {
                     continue;
                 }
             }
+            if (command.kind == .row_chain and count == 4) {
+                const rms_entry = self.entries[start];
+                const repeat_entry = self.entries[start + 1];
+                const scale_entry = self.entries[start + 2];
+                const activation_entry = self.entries[start + 3];
+                const rms_index: usize = rms_entry.op_index;
+                const repeat_index: usize = repeat_entry.op_index;
+                const scale_index: usize = scale_entry.op_index;
+                const activation_index: usize = activation_entry.op_index;
+                if (rms_index >= ops.len or repeat_index >= ops.len or scale_index >= ops.len or activation_index >= ops.len) {
+                    std.debug.panic("reference execution tape rmsnorm scale activation index out of range", .{});
+                }
+                if (ctx.rmsnormScaleActivationChain(ops[rms_index], ops[repeat_index], ops[scale_index], ops[activation_index])) {
+                    if (runtime_profile) |profile| {
+                        profile.recordProgramCommand(command.kind);
+                        profile.recordProgramCommandDispatch(command.kind);
+                    }
+                    continue;
+                }
+            }
             for (self.entries[start..end]) |entry| {
                 const idx: usize = entry.op_index;
                 if (idx >= ops.len) {
@@ -858,15 +878,44 @@ const Context = struct {
             else => return false,
         };
         if (!program_mod.isRmsnormScaleChain(rms_op, repeat_op, scale_op)) return false;
+        self.rmsnormScaleRows(r, rp, e.dst, e.dst_offset, null);
+        return true;
+    }
+
+    fn rmsnormScaleActivationChain(
+        self: Context,
+        rms_op: backend_mod.DeviceOp,
+        repeat_op: backend_mod.DeviceOp,
+        scale_op: backend_mod.DeviceOp,
+        activation_op: backend_mod.DeviceOp,
+    ) bool {
+        const r = switch (rms_op) {
+            .rmsnorm => |r| r,
+            else => return false,
+        };
+        const rp = switch (repeat_op) {
+            .repeat => |rp| rp,
+            else => return false,
+        };
+        const activation = switch (activation_op) {
+            .elementwise => |e| e,
+            else => return false,
+        };
+        if (!program_mod.isRmsnormScaleActivationChain(rms_op, repeat_op, scale_op, activation_op)) return false;
+        self.rmsnormScaleRows(r, rp, activation.dst, activation.dst_offset, activation.op);
+        return true;
+    }
+
+    fn rmsnormScaleRows(self: Context, r: anytype, rp: anytype, dst_buf: u16, dst_offset: u32, activation: ?backend_mod.Op) void {
         const src = self.bufF32(r.src);
-        const dst = self.bufF32(e.dst);
+        const dst = self.bufF32(dst_buf);
         const scale = self.bufF32(rp.src);
         const rows: usize = r.rows;
         const cols: usize = r.cols;
         const VecT = @Vector(V, f32);
         for (0..rows) |row| {
             const s = src + @as(usize, r.src_offset) + row * cols;
-            const d = dst + @as(usize, e.dst_offset) + row * cols;
+            const d = dst + @as(usize, dst_offset) + row * cols;
             const scale_row = scale[@as(usize, rp.src_offset)..][0..cols];
             var acc: VecT = @splat(0);
             var i: usize = 0;
@@ -881,12 +930,48 @@ const Context = struct {
             while (i + V <= cols) : (i += V) {
                 const v: VecT = s[i..][0..V].*;
                 const scale_v: VecT = scale_row[i..][0..V].*;
-                d[i..][0..V].* = v * inv_rms * scale_v;
+                const scaled = v * inv_rms * scale_v;
+                d[i..][0..V].* = if (activation) |op| activationVec(op, scaled) else scaled;
             }
             const inv_s = inv_rms[0];
-            while (i < cols) : (i += 1) d[i] = s[i] * inv_s * scale_row[i];
+            while (i < cols) : (i += 1) {
+                const scaled = s[i] * inv_s * scale_row[i];
+                d[i] = if (activation) |op| activationScalar(op, scaled) else scaled;
+            }
         }
-        return true;
+    }
+
+    fn activationVec(op: backend_mod.Op, x: @Vector(V, f32)) @Vector(V, f32) {
+        const VecT = @Vector(V, f32);
+        return switch (op) {
+            .relu => @max(x, @as(VecT, @splat(0.0))),
+            .gelu => blk: {
+                const k0: VecT = @splat(0.7978845608);
+                const k1: VecT = @splat(0.044715);
+                const half: VecT = @splat(0.5);
+                const one: VecT = @splat(1.0);
+                const k = k0 * (x + k1 * x * x * x);
+                const e2k = @exp(k + k);
+                break :blk half * x * (one + (e2k - one) / (e2k + one));
+            },
+            .silu => blk: {
+                const one: VecT = @splat(1.0);
+                break :blk x * (one / (one + fastExpApproxVec(-x)));
+            },
+            else => x,
+        };
+    }
+
+    fn activationScalar(op: backend_mod.Op, x: f32) f32 {
+        return switch (op) {
+            .relu => @max(x, 0.0),
+            .gelu => blk: {
+                const k = 0.7978845608 * (x + 0.044715 * x * x * x);
+                break :blk 0.5 * x * (1.0 + std.math.tanh(k));
+            },
+            .silu => x / (1.0 + @exp(-x)),
+            else => x,
+        };
     }
 
     fn reduce(self: Context, rd: anytype) void {
@@ -1937,6 +2022,94 @@ test "reference execution tape fuses rmsnorm scale row chain" {
     try std.testing.expectEqual(@as(u64, 0), profile.program_command_failed_counts[row_chain]);
 }
 
+test "reference execution tape fuses rmsnorm scale activation row chain" {
+    var src = [_]f32{ 3, 4, 0, 1, 2, 2 };
+    var scale = [_]f32{ 1, 2, 3 };
+    var norm_scratch = [_]f32{0} ** 6;
+    var repeat_scratch = [_]f32{0} ** 6;
+    var scale_scratch = [_]f32{0} ** 6;
+    var dst = [_]f32{0} ** 6;
+    const buffers = [_]Buffer{
+        .{ .ptr = &src, .len = src.len },
+        .{ .ptr = &scale, .len = scale.len },
+        .{ .ptr = &norm_scratch, .len = norm_scratch.len },
+        .{ .ptr = &repeat_scratch, .len = repeat_scratch.len },
+        .{ .ptr = &scale_scratch, .len = scale_scratch.len },
+        .{ .ptr = &dst, .len = dst.len },
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .rmsnorm = .{
+            .dst = 2,
+            .src = 0,
+            .rows = 2,
+            .cols = 3,
+            .eps = 0,
+            .src_offset = 0,
+            .dst_offset = 0,
+        } },
+        .{ .repeat = .{
+            .dst = 3,
+            .src = 1,
+            .n = 6,
+            .src_offset = 0,
+            .dst_offset = 0,
+            .src_ne = .{ 3, 1, 1, 1 },
+            .dst_ne = .{ 3, 2, 1, 1 },
+            .src_strides = .{ 1, 3, 3, 3 },
+            .dst_strides = .{ 1, 3, 6, 6 },
+        } },
+        .{ .elementwise = .{
+            .op = .mul,
+            .dst = 4,
+            .src0 = 2,
+            .src1 = 3,
+            .n = 6,
+            .dst_offset = 0,
+            .src0_offset = 0,
+            .src1_offset = 0,
+        } },
+        .{ .elementwise = .{
+            .op = .gelu,
+            .dst = 5,
+            .src0 = 4,
+            .src1 = 4,
+            .n = 6,
+            .dst_offset = 0,
+            .src0_offset = 0,
+            .src1_offset = 0,
+        } },
+    };
+
+    var tape = try ExecutionTape.init(std.testing.allocator, &ops);
+    defer tape.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 4), tape.len());
+    try std.testing.expectEqual(@as(usize, 1), tape.commandLen());
+
+    var profile = profile_mod.RuntimeProfile{};
+    tape.executeProfiled(&buffers, &.{}, &ops, &profile);
+
+    for (0..2) |row| {
+        const base = row * 3;
+        const ss = src[base] * src[base] + src[base + 1] * src[base + 1] + src[base + 2] * src[base + 2];
+        const inv_rms = 1.0 / @sqrt(ss / 3.0);
+        for (0..3) |col| {
+            const scaled = src[base + col] * inv_rms * scale[col];
+            const k = 0.7978845608 * (scaled + 0.044715 * scaled * scaled * scaled);
+            const expected = 0.5 * scaled * (1.0 + std.math.tanh(k));
+            try std.testing.expectApproxEqAbs(expected, dst[base + col], 1e-6);
+        }
+    }
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0, 0, 0, 0, 0 }, &norm_scratch);
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0, 0, 0, 0, 0 }, &repeat_scratch);
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0, 0, 0, 0, 0 }, &scale_scratch);
+
+    const row_chain = @intFromEnum(program_mod.ProgramCommandKind.row_chain);
+    try std.testing.expectEqual(@as(u64, 1), profile.program_command_counts[row_chain]);
+    try std.testing.expectEqual(@as(u64, 1), profile.program_command_attempt_counts[row_chain]);
+    try std.testing.expectEqual(@as(u64, 1), profile.program_command_dispatch_counts[row_chain]);
+    try std.testing.expectEqual(@as(u64, 0), profile.program_command_failed_counts[row_chain]);
+}
+
 test "reference executor conv2d relu handles multiple output channels" {
     const batch = 2;
     const in_w = 4;
@@ -1945,27 +2118,27 @@ test "reference executor conv2d relu handles multiple output channels" {
     const out_h = 2;
     const out_channels = 2;
     var src = [_]f32{
-        1,  -2, 3,  4,
-        5,  6,  -7, 8,
-        9,  10, 11, -12,
-        13, 14, 15, 16,
+        1,  -2,  3,   4,
+        5,  6,   -7,  8,
+        9,  10,  11,  -12,
+        13, 14,  15,  16,
 
-        -1, -2, -3, -4,
-        5,  6,  7,  8,
-        -9, 10, -11, 12,
-        13, -14, 15, -16,
+        -1, -2,  -3,  -4,
+        5,  6,   7,   8,
+        -9, 10,  -11, 12,
+        13, -14, 15,  -16,
     };
     var weight = [_]f32{
-        1,  0, -1,
-        0,  1, 0,
-        -1, 0, 1,
+        1,    0,    -1,
+        0,    1,    0,
+        -1,   0,    1,
 
-        -1,   0.5, 0.25,
+        -1,   0.5,  0.25,
         0,    -0.5, 0,
-        0.25, 0.5, -1,
+        0.25, 0.5,  -1,
     };
     var bias = [_]f32{ -1.5, 0.75 };
-    var dst = [_]f32{ -99 } ** (batch * out_channels * out_w * out_h);
+    var dst = [_]f32{-99} ** (batch * out_channels * out_w * out_h);
     const buffers = [_]Buffer{
         .{ .ptr = &src, .len = src.len },
         .{ .ptr = &weight, .len = weight.len },

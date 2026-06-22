@@ -2960,6 +2960,11 @@ fn findRowRopeChainCommand(
 ) ?ProgramCommand {
     _ = executed;
     _ = policy;
+    if (start + 3 < ops.len and isRmsnormScaleActivationChain(ops[start], ops[start + 1], ops[start + 2], ops[start + 3])) {
+        if (commandRangeTouchesUsed(@intCast(start), 4, used)) return null;
+        if (rmsnormScaleActivationChainHasExternalUsers(ops, start)) return null;
+        return ProgramCommand.contiguous(.row_chain, start, 4);
+    }
     if (start + 2 < ops.len and isRmsnormScaleChain(ops[start], ops[start + 1], ops[start + 2])) {
         if (commandRangeTouchesUsed(@intCast(start), 3, used)) return null;
         return ProgramCommand.contiguous(.row_chain, start, 3);
@@ -3795,6 +3800,54 @@ pub fn rmsnormScaleChainHasExternalUsers(
     const included_end = start + 3;
     if (spanHasExternalReadAfter(ops, start, included_start, included_end, bufferSpan(rn.dst, rn.dst_offset, rn.rows * rn.cols))) return true;
     if (spanHasExternalReadAfter(ops, start + 1, included_start, included_end, bufferSpan(rp.dst, rp.dst_offset, rp.n))) return true;
+    return false;
+}
+
+pub fn isRmsnormScaleActivationChain(
+    rms_op: backend_mod.DeviceOp,
+    repeat_op: backend_mod.DeviceOp,
+    scale_op: backend_mod.DeviceOp,
+    activation_op: backend_mod.DeviceOp,
+) bool {
+    const scale = switch (scale_op) {
+        .elementwise => |e| e,
+        else => return false,
+    };
+    const activation = switch (activation_op) {
+        .elementwise => |e| e,
+        else => return false,
+    };
+    if (!isRmsnormScaleChain(rms_op, repeat_op, scale_op)) return false;
+    if (activation.op != .relu and activation.op != .gelu and activation.op != .silu) return false;
+    if (activation.n != scale.n) return false;
+    return activation.src0 == scale.dst and
+        activation.src0_offset == scale.dst_offset;
+}
+
+pub fn rmsnormScaleActivationChainHasExternalUsers(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+) bool {
+    if (start + 3 >= ops.len) return true;
+    const rn = switch (ops[start]) {
+        .rmsnorm => |r| r,
+        else => return true,
+    };
+    const rp = switch (ops[start + 1]) {
+        .repeat => |r| r,
+        else => return true,
+    };
+    const scale = switch (ops[start + 2]) {
+        .elementwise => |e| e,
+        else => return true,
+    };
+    if (!isRmsnormScaleActivationChain(ops[start], ops[start + 1], ops[start + 2], ops[start + 3])) return true;
+
+    const included_start = start + 1;
+    const included_end = start + 4;
+    if (spanHasExternalReadAfter(ops, start, included_start, included_end, bufferSpan(rn.dst, rn.dst_offset, rn.rows * rn.cols))) return true;
+    if (spanHasExternalReadAfter(ops, start + 1, included_start, included_end, bufferSpan(rp.dst, rp.dst_offset, rp.n))) return true;
+    if (spanHasExternalReadAfter(ops, start + 2, included_start, included_end, bufferSpan(scale.dst, scale.dst_offset, scale.n))) return true;
     return false;
 }
 
@@ -6651,6 +6704,17 @@ fn testRmsnormScaleOps() [3]backend_mod.DeviceOp {
     };
 }
 
+fn testRmsnormScaleActivationOps() [4]backend_mod.DeviceOp {
+    const row_chain = testRmsnormScaleOps();
+    return row_chain ++ [_]backend_mod.DeviceOp{.{ .elementwise = .{
+        .op = .gelu,
+        .dst = 5,
+        .src0 = 4,
+        .src1 = 4,
+        .n = 8,
+    } }};
+}
+
 fn expectKernelItem(item: KernelItem, family: KernelFamily, execution: ExecutionClass, start: u32, len: u32) !void {
     try std.testing.expectEqual(family, item.family);
     try std.testing.expectEqual(execution, item.execution);
@@ -7014,6 +7078,21 @@ test "program command stream emits row chains directly" {
     try std.testing.expectEqual(@as(u32, 3), summary.covered_ops);
 }
 
+test "program command stream emits rmsnorm scale activation row chains directly" {
+    const row_chain = testRmsnormScaleActivationOps();
+    const commands = try buildProgramCommands(std.testing.allocator, &row_chain, CommandStreamPolicy.default());
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.row_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 0), commands[0].op_start);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].op_count);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.row_chains);
+    try std.testing.expectEqual(@as(u32, 4), summary.covered_ops);
+}
+
 test "rmsnorm scale chain liveness distinguishes materialized intermediates" {
     const row_chain = testRmsnormScaleOps();
     try std.testing.expect(!rmsnormScaleChainHasExternalUsers(&row_chain, 0));
@@ -7041,6 +7120,20 @@ test "rmsnorm scale chain liveness distinguishes materialized intermediates" {
         .{ .elementwise = .{ .op = .add, .dst = 6, .src0 = 1, .src1 = 1, .n = 1 } },
     };
     try std.testing.expect(!rmsnormScaleChainHasExternalUsers(&overwritten, 0));
+}
+
+test "rmsnorm scale activation chain liveness includes activation consumer" {
+    const row_chain = testRmsnormScaleActivationOps();
+    try std.testing.expect(!rmsnormScaleActivationChainHasExternalUsers(&row_chain, 0));
+
+    const scale_read = row_chain ++ [_]backend_mod.DeviceOp{.{ .elementwise = .{
+        .op = .add,
+        .dst = 6,
+        .src0 = 4,
+        .src1 = 4,
+        .n = 1,
+    } }};
+    try std.testing.expect(rmsnormScaleActivationChainHasExternalUsers(&scale_read, 0));
 }
 
 test "projection groups batch independent prefill qmatmuls" {
