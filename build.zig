@@ -707,10 +707,22 @@ fn runTests(
     linkConfiguredBackends(b, target, options, conformance_test, .{});
     b.installArtifact(conformance_test);
 
-    const tests = b.step("unit-tests", "Run public and internal zgml tests");
-    tests.dependOn(&b.addRunArtifact(public_test).step);
-    tests.dependOn(&b.addRunArtifact(internal_test).step);
-    tests.dependOn(&b.addRunArtifact(conformance_test).step);
-    tests.dependOn(&b.addRunArtifact(c_api_test).step);
+    const public_tests = b.step("public-tests", "Run public zgml API tests");
+    public_tests.dependOn(&b.addRunArtifact(public_test).step);
+
+    const internal_tests = b.step("internal-tests", "Run internal zgml runtime tests");
+    internal_tests.dependOn(&b.addRunArtifact(internal_test).step);
+
+    const conformance_tests = b.step("conformance-tests", "Run backend conformance tests");
+    conformance_tests.dependOn(&b.addRunArtifact(conformance_test).step);
+
+    const c_api_tests = b.step("c-api-tests", "Run native C ABI tests");
+    c_api_tests.dependOn(&b.addRunArtifact(c_api_test).step);
+
+    const tests = b.step("unit-tests", "Run public, internal, conformance, and C ABI zgml tests");
+    tests.dependOn(public_tests);
+    tests.dependOn(internal_tests);
+    tests.dependOn(conformance_tests);
+    tests.dependOn(c_api_tests);
     return tests;
 }

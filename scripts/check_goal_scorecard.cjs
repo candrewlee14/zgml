@@ -193,6 +193,19 @@ function checkScripts() {
   if (scripts["dev:zig:quick:watch"] !== "zig build unit-tests -Duse-metal=false -Duse-blas=false -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
     errors.push("package.json dev:zig:quick:watch must keep the watched fast native unit loop without optional backend linking");
   }
+  for (const [name, step, label] of [
+    ["dev:zig:public", "public-tests", "public API"],
+    ["dev:zig:internal", "internal-tests", "internal runtime"],
+    ["dev:zig:conformance", "conformance-tests", "backend conformance"],
+    ["dev:zig:c-api", "c-api-tests", "C ABI"],
+  ]) {
+    if (scripts[name] !== `zig build ${step} -Duse-metal=false -Duse-blas=false -fincremental --summary failures`) {
+      errors.push(`package.json ${name} must keep the narrow incremental ${label} Zig loop`);
+    }
+    if (scripts[`${name}:watch`] !== `zig build ${step} -Duse-metal=false -Duse-blas=false -fincremental --watch --debounce 150 --summary line --error-style minimal_clear`) {
+      errors.push(`package.json ${name}:watch must keep the watched narrow incremental ${label} Zig loop`);
+    }
+  }
   if (scripts["dev:zig:ffi"] !== "zig build ffi-c -fincremental --summary failures") {
     errors.push("package.json dev:zig:ffi must keep the incremental native FFI build loop");
   }

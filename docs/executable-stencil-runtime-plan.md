@@ -401,6 +401,10 @@ npm run dev:zig:test        # incremental Zig tests while editing kernels/runtim
 npm run dev:zig:test:watch  # Zig 0.16 watch mode with incremental rebuilds
 npm run dev:zig:quick       # faster native unit loop without optional Metal/BLAS linking
 npm run dev:zig:quick:watch # watched version of the fast native unit loop
+npm run dev:zig:public      # narrow public API Zig test loop
+npm run dev:zig:internal    # narrow internal runtime Zig test loop
+npm run dev:zig:conformance # narrow backend conformance Zig test loop
+npm run dev:zig:c-api       # narrow C ABI Zig test loop
 npm run dev:zig:ffi         # incremental native FFI dylib build
 npm run dev:zig:ffi:watch   # watched native FFI dylib build
 npm run bench:module-program:focus
