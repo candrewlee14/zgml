@@ -172,14 +172,32 @@ function checkScripts() {
   if (scripts["bench:module-program"] !== "npm run build:package && node scripts/check_module_program_bench.cjs") {
     errors.push("package.json bench:module-program must remain the TS frontend module Program performance gate");
   }
+  if (scripts["bench:module-program:focus"] !== "npm run build:package && BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
+    errors.push("package.json bench:module-program:focus must remain the narrow module Program microscope for fast iteration");
+  }
   if (scripts["build:native:release"] !== "zig build ffi-c -Doptimize=ReleaseFast") {
     errors.push("package.json build:native:release must keep benchmark-grade native C ABI builds explicit");
+  }
+  if (scripts["dev:zig:test"] !== "zig build test -fincremental --summary failures") {
+    errors.push("package.json dev:zig:test must keep the incremental Zig test loop");
+  }
+  if (scripts["dev:zig:test:watch"] !== "zig build test -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
+    errors.push("package.json dev:zig:test:watch must keep the incremental Zig watch test loop");
+  }
+  if (scripts["dev:zig:ffi"] !== "zig build ffi-c -fincremental --summary failures") {
+    errors.push("package.json dev:zig:ffi must keep the incremental native FFI build loop");
+  }
+  if (scripts["dev:zig:ffi:watch"] !== "zig build ffi-c -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
+    errors.push("package.json dev:zig:ffi:watch must keep the incremental native FFI watch loop");
   }
   if (scripts["bench:pytorch"] !== "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch must remain the ReleaseFast upstream PyTorch comparison evidence gate");
   }
   if (scripts["bench:pytorch:parity"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_INSTALL=1 node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:parity must remain the hard ReleaseFast upstream PyTorch parity gate with uv bootstrap");
+  }
+  if (scripts["bench:pytorch:focus"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:focus must remain the narrow PyTorch microscope for fast iteration");
   }
   if (scripts["check:goal-scorecard"] !== "node scripts/check_goal_scorecard.cjs") {
     errors.push("package.json must expose check:goal-scorecard for goal evidence");

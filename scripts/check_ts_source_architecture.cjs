@@ -300,11 +300,29 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["build:native:release"] !== "zig build ffi-c -Doptimize=ReleaseFast") {
     errors.push("package.json build:native:release must stay the benchmark-grade native C ABI build");
   }
+  if (packageJson.scripts?.["dev:zig:test"] !== "zig build test -fincremental --summary failures") {
+    errors.push("package.json dev:zig:test must stay the incremental Zig test loop");
+  }
+  if (packageJson.scripts?.["dev:zig:test:watch"] !== "zig build test -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
+    errors.push("package.json dev:zig:test:watch must stay the incremental Zig watch test loop");
+  }
+  if (packageJson.scripts?.["dev:zig:ffi"] !== "zig build ffi-c -fincremental --summary failures") {
+    errors.push("package.json dev:zig:ffi must stay the incremental native FFI build loop");
+  }
+  if (packageJson.scripts?.["dev:zig:ffi:watch"] !== "zig build ffi-c -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
+    errors.push("package.json dev:zig:ffi:watch must stay the incremental native FFI watch loop");
+  }
   if (packageJson.scripts?.["bench:pytorch"] !== "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch must stay the ReleaseFast upstream PyTorch comparison probe");
   }
   if (packageJson.scripts?.["bench:pytorch:parity"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_INSTALL=1 node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:parity must stay the hard ReleaseFast upstream PyTorch parity probe with uv bootstrap");
+  }
+  if (packageJson.scripts?.["bench:module-program:focus"] !== "npm run build:package && BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
+    errors.push("package.json bench:module-program:focus must stay the narrow module Program microscope");
+  }
+  if (packageJson.scripts?.["bench:pytorch:focus"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:focus must stay the narrow PyTorch microscope");
   }
   const benchStatusSource = fs.readFileSync(path.join(root, "scripts", "bench_status.cjs"), "utf8");
   for (const needle of [

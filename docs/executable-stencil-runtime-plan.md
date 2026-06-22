@@ -389,6 +389,23 @@ lanes such as `rms_gelu_linear_batched`,
 `softmax_classifier_batched`, `log_softmax_classifier_batched`, and
 `lazy_token_head_batched`, so optimization work can rank PyTorch gaps without
 promoting those gaps into the hard parity gate.
+The repo now exposes that inner loop directly:
+
+```text
+npm run dev:zig:test        # incremental Zig tests while editing kernels/runtime
+npm run dev:zig:test:watch  # Zig 0.16 watch mode with incremental rebuilds
+npm run dev:zig:ffi         # incremental native FFI dylib build
+npm run dev:zig:ffi:watch   # watched native FFI dylib build
+npm run bench:module-program:focus
+npm run bench:pytorch:focus
+```
+
+These are not substitutes for `bench:pytorch:parity`, `bench:ggml:parity`, or
+`check:goal-scorecard`; they are the tight microscope loop for forming and
+discarding performance hypotheses quickly. The full gates remain the release
+proof. The practical workflow is: use Zig `-fincremental`/`--watch` and
+focused benchmark keys while changing hot code, then run the full evidence gate
+before claiming a new SOTA/simple/perf state.
 The PyTorch parity set is no longer only dense/transformer-shaped CPU work: it
 also compares batched `max_pool2d` and `avg_pool2d` against upstream
 `torch.nn.functional`, so the parity gate covers common compiled tensor kernels
