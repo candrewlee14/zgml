@@ -811,6 +811,12 @@ const DirectLinearModule = struct {
     has_bias: bool,
 };
 
+const DirectRmsGeluLinearModule = struct {
+    features: usize,
+    out_features: usize,
+    eps: f32,
+};
+
 const ModuleProgramHandle = struct {
     input_len: usize,
     output_len: usize,
@@ -819,6 +825,7 @@ const ModuleProgramHandle = struct {
     backend: u32,
     execution_supported: bool,
     direct_linear: ?DirectLinearModule = null,
+    direct_rms_gelu_linear: ?DirectRmsGeluLinearModule = null,
     graph: GraphF32,
     program: DeviceF32.Program,
     input: *TensorF32,
@@ -907,13 +914,16 @@ const TinyLinearSessionHandle = struct {
     bias_buf: []f32,
     input_buf: []f32,
     output_buf: []f32,
+    scratch_buf: []f32 = &.{},
     owns_weights_buf: bool,
     owns_bias_buf: bool,
     owns_input_buf: bool,
     owns_output_buf: bool,
+    owns_scratch_buf: bool = false,
 
     fn deinit(self: *TinyLinearSessionHandle, allocator: std.mem.Allocator) void {
         self.session.deinit();
+        if (self.owns_scratch_buf) allocator.free(self.scratch_buf);
         if (self.owns_output_buf) allocator.free(self.output_buf);
         if (self.owns_input_buf) allocator.free(self.input_buf);
         if (self.owns_bias_buf) allocator.free(self.bias_buf);
@@ -2491,6 +2501,25 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
         }
     else
         null;
+    const direct_rms_gelu_linear: ?DirectRmsGeluLinearModule = if (ops.len == 2 and
+        ops[0].kind == module_op_rms_norm and
+        ops[0].activation == module_activation_gelu and
+        ops[0].flags == module_flag_weight and
+        ops[0].a != 0 and
+        ops[0].b == 0 and
+        ops[0].c == 0 and
+        ops[1].kind == module_op_linear and
+        ops[1].activation == 0 and
+        ops[1].flags == module_flag_bias and
+        ops[1].a == ops[0].a and
+        ops[1].b != 0)
+        .{
+            .features = ops[0].a,
+            .out_features = ops[1].b,
+            .eps = @floatCast(ops[0].eps),
+        }
+    else
+        null;
 
     return .{
         .input_len = input.nElems(),
@@ -2500,6 +2529,7 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
         .backend = backend_id,
         .execution_supported = inspection.execution_supported,
         .direct_linear = direct_linear,
+        .direct_rms_gelu_linear = direct_rms_gelu_linear,
         .graph = graph,
         .program = program,
         .input = input,
@@ -4873,6 +4903,13 @@ fn bindModuleSession(p: *ProgramHandle, module: *ModuleProgramHandle, desc: *con
     };
     errdefer if (owns_output_buf) alloc.free(output_buf);
 
+    const scratch_buf, const owns_scratch_buf = if (module.direct_rms_gelu_linear) |_| blk: {
+        const buf = try alloc.alloc(f32, module.input_len);
+        errdefer alloc.free(buf);
+        break :blk .{ buf, true };
+    } else .{ @as([]f32, &.{}), false };
+    errdefer if (owns_scratch_buf) alloc.free(scratch_buf);
+
     const persistent_bindings = try alloc.alloc(DeviceF32.TensorBinding, module.persistent_params.len);
     defer alloc.free(persistent_bindings);
     for (module.persistent_params, 0..) |param, i| {
@@ -4904,10 +4941,12 @@ fn bindModuleSession(p: *ProgramHandle, module: *ModuleProgramHandle, desc: *con
         .bias_buf = bias_buf,
         .input_buf = input_buf,
         .output_buf = output_buf,
+        .scratch_buf = scratch_buf,
         .owns_weights_buf = owns_weights_buf,
         .owns_bias_buf = owns_bias_buf,
         .owns_input_buf = owns_input_buf,
         .owns_output_buf = owns_output_buf,
+        .owns_scratch_buf = owns_scratch_buf,
     };
 }
 
@@ -4924,7 +4963,9 @@ fn bindModuleBufferSession(p: *ProgramHandle, module: *ModuleProgramHandle, desc
     var owned_bias: []f32 = &.{};
     var owned_input: []f32 = &.{};
     var owned_output: []f32 = &.{};
+    var owned_scratch: []f32 = &.{};
     errdefer {
+        if (owned_scratch.len != 0) alloc.free(owned_scratch);
         if (owned_output.len != 0) alloc.free(owned_output);
         if (owned_input.len != 0) alloc.free(owned_input);
         if (owned_bias.len != 0) alloc.free(owned_bias);
@@ -4997,6 +5038,9 @@ fn bindModuleBufferSession(p: *ProgramHandle, module: *ModuleProgramHandle, desc
         owned_output
     else
         bufferF32HostSlice(desc.output, module.output_len) catch @as([]f32, &.{});
+    if (module.direct_rms_gelu_linear != null) {
+        owned_scratch = try alloc.alloc(f32, module.input_len);
+    }
 
     p.retain();
     return .{
@@ -5008,10 +5052,12 @@ fn bindModuleBufferSession(p: *ProgramHandle, module: *ModuleProgramHandle, desc
         .bias_buf = bias_buf,
         .input_buf = input_buf,
         .output_buf = output_buf,
+        .scratch_buf = owned_scratch,
         .owns_weights_buf = false,
         .owns_bias_buf = owned_bias.len != 0,
         .owns_input_buf = owned_input.len != 0,
         .owns_output_buf = owned_output.len != 0,
+        .owns_scratch_buf = owned_scratch.len != 0,
     };
 }
 
@@ -5186,6 +5232,13 @@ const DirectLinearStepShape = struct {
     has_bias: bool,
 };
 
+const DirectRmsGeluLinearStepShape = struct {
+    M: usize,
+    N: usize,
+    K: usize,
+    eps: f32,
+};
+
 fn directLinearShapeForSession(s: *SessionHandle, linear: *const TinyLinearSessionHandle) ?DirectLinearStepShape {
     return switch (s.data) {
         .tiny_linear => blk: {
@@ -5227,6 +5280,34 @@ fn directLinearShapeForSession(s: *SessionHandle, linear: *const TinyLinearSessi
     };
 }
 
+fn directRmsGeluLinearShapeForSession(s: *SessionHandle, linear: *const TinyLinearSessionHandle) ?DirectRmsGeluLinearStepShape {
+    return switch (s.data) {
+        .module => blk: {
+            const module_program = switch (linear.program.data) {
+                .module => |*module| module,
+                else => break :blk null,
+            };
+            const direct = module_program.direct_rms_gelu_linear orelse break :blk null;
+            if (direct.features == 0 or direct.out_features == 0) break :blk null;
+            if (linear.input_len % direct.features != 0) break :blk null;
+            const M = linear.input_len / direct.features;
+            const expected_output = std.math.mul(usize, M, direct.out_features) catch break :blk null;
+            const expected_weights = std.math.add(usize, direct.features, std.math.mul(usize, direct.features, direct.out_features) catch break :blk null) catch break :blk null;
+            if (linear.output_len != expected_output) break :blk null;
+            if (linear.weights_buf.len != expected_weights) break :blk null;
+            if (linear.bias_buf.len != direct.out_features) break :blk null;
+            if (linear.scratch_buf.len != linear.input_len) break :blk null;
+            break :blk .{
+                .M = M,
+                .N = direct.out_features,
+                .K = direct.features,
+                .eps = direct.eps,
+            };
+        },
+        else => null,
+    };
+}
+
 fn addDenseBiasRows(dst: []f32, bias: []const f32, M: usize, N: usize) void {
     const VecT = @Vector(8, f32);
     for (0..M) |row| {
@@ -5241,6 +5322,92 @@ fn addDenseBiasRows(dst: []f32, bias: []const f32, M: usize, N: usize) void {
             dst_row[i] += bias[i];
         }
     }
+}
+
+fn fastExpApproxVec8(x: @Vector(8, f32)) @Vector(8, f32) {
+    const VecT = @Vector(8, f32);
+    const IVecT = @Vector(8, i32);
+    const UVecT = @Vector(8, u32);
+    const inv_ln2: VecT = @splat(1.4426950408889634);
+    const ln2: VecT = @splat(0.6931471805599453);
+    const half: VecT = @splat(0.5);
+    const one: VecT = @splat(1.0);
+    const kf = @floor(x * inv_ln2 + half);
+    const r = x - kf * ln2;
+    const r2 = r * r;
+    const r3 = r2 * r;
+    const r4 = r2 * r2;
+    const r5 = r4 * r;
+    const poly = one + r + r2 * @as(VecT, @splat(0.5)) + r3 * @as(VecT, @splat(0.16666666666666666)) + r4 * @as(VecT, @splat(0.041666666666666664)) + r5 * @as(VecT, @splat(0.008333333333333333));
+    const ki: IVecT = @intFromFloat(kf);
+    const exponent_bits: UVecT = @as(UVecT, @intCast(ki + @as(IVecT, @splat(127)))) << @as(UVecT, @splat(23));
+    const pow2: VecT = @bitCast(exponent_bits);
+    return poly * pow2;
+}
+
+fn geluApproxVec8(x: @Vector(8, f32)) @Vector(8, f32) {
+    const VecT = @Vector(8, f32);
+    const k0: VecT = @splat(0.7978845608);
+    const k1: VecT = @splat(0.044715);
+    const half: VecT = @splat(0.5);
+    const one: VecT = @splat(1.0);
+    const k = k0 * (x + k1 * x * x * x);
+    const e2k = fastExpApproxVec8(k + k);
+    return half * x * (one + (e2k - one) / (e2k + one));
+}
+
+fn geluApproxScalar(x: f32) f32 {
+    const kk = 0.7978845608 * (x + 0.044715 * x * x * x);
+    return 0.5 * x * (1.0 + std.math.tanh(kk));
+}
+
+fn executeDirectRmsGeluLinearStep(linear: *const TinyLinearSessionHandle, shape: DirectRmsGeluLinearStepShape, input: [*]const f32, output: [*]f32) void {
+    const VecT = @Vector(8, f32);
+    const input_slice = input[0..linear.input_len];
+    const scratch = linear.scratch_buf[0..linear.input_len];
+    const rms_weight = linear.weights_buf[0..shape.K];
+    const dense_weight = linear.weights_buf[shape.K..][0 .. shape.K * shape.N];
+    for (0..shape.M) |row| {
+        const input_row = input_slice[row * shape.K ..][0..shape.K];
+        const scratch_row = scratch[row * shape.K ..][0..shape.K];
+        var acc: VecT = @splat(0);
+        var i: usize = 0;
+        while (i + 8 <= shape.K) : (i += 8) {
+            const v: VecT = input_row[i..][0..8].*;
+            acc += v * v;
+        }
+        var ss: f32 = @reduce(.Add, acc);
+        while (i < shape.K) : (i += 1) ss += input_row[i] * input_row[i];
+        const inv_rms: VecT = @splat(1.0 / @sqrt(ss / @as(f32, @floatFromInt(shape.K)) + shape.eps));
+        i = 0;
+        while (i + 8 <= shape.K) : (i += 8) {
+            const v: VecT = input_row[i..][0..8].*;
+            const w: VecT = rms_weight[i..][0..8].*;
+            scratch_row[i..][0..8].* = geluApproxVec8(v * inv_rms * w);
+        }
+        const inv_s = inv_rms[0];
+        while (i < shape.K) : (i += 1) {
+            scratch_row[i] = geluApproxScalar(input_row[i] * inv_s * rms_weight[i]);
+        }
+    }
+    const output_slice = output[0..linear.output_len];
+    forward.blasSgemm(
+        output_slice,
+        scratch,
+        dense_weight,
+        shape.M,
+        shape.N,
+        shape.K,
+        shape.K,
+        1,
+        shape.N,
+        1,
+        0,
+        0,
+        0,
+        shape.N,
+    );
+    addDenseBiasRows(output_slice, linear.bias_buf, shape.M, shape.N);
 }
 
 fn executeSmallDirectLinearBiasStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32) bool {
@@ -5311,6 +5478,11 @@ export fn zgml_session_step_direct(session: ?*zgml_session, input_ptr: ?[*]const
     if (p.backend == backend_cpu) {
         if (directLinearShapeForSession(s, linear)) |shape| {
             executeDirectLinearStep(linear, shape, input, output);
+            cpu_mod.recordDirectLinearRuntimeProfile(linear.session.program_handle, linear.session.runtime_handle);
+            return status(.ok);
+        }
+        if (directRmsGeluLinearShapeForSession(s, linear)) |shape| {
+            executeDirectRmsGeluLinearStep(linear, shape, input, output);
             cpu_mod.recordDirectLinearRuntimeProfile(linear.session.program_handle, linear.session.runtime_handle);
             return status(.ok);
         }
@@ -7697,6 +7869,80 @@ test "C ABI module program compiles traced sequential ops" {
         }, &result));
         try std.testing.expectEqual(@as(usize, 4), result.output_len);
         try std.testing.expectEqualSlices(f32, &.{ 10, 30, 50, 70 }, &stepped_feature_slice_output);
+    }
+
+    {
+        const direct_rms_shape = [_]usize{ 2, 2 };
+        const direct_rms_ops = [_]zgml_module_op_desc{
+            .{
+                .kind = module_op_rms_norm,
+                .activation = module_activation_gelu,
+                .flags = module_flag_weight,
+                .a = 2,
+                .eps = 1e-5,
+            },
+            .{
+                .kind = module_op_linear,
+                .flags = module_flag_bias,
+                .a = 2,
+                .b = 2,
+            },
+        };
+        var direct_rms_program: ?*zgml_program = null;
+        var direct_rms_session: ?*zgml_session = null;
+        defer zgml_session_free(direct_rms_session);
+        defer zgml_program_free(direct_rms_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = direct_rms_shape[0..].ptr,
+            .input_rank = direct_rms_shape.len,
+            .ops = direct_rms_ops[0..].ptr,
+            .op_count = direct_rms_ops.len,
+        }, &.{ .backend = backend_cpu }, &direct_rms_program));
+        try std.testing.expect(direct_rms_program != null);
+
+        const direct_rms_weights = [_]f32{
+            1, 1.5,
+            1, 0,
+            0, 1,
+        };
+        const direct_rms_bias = [_]f32{ 0.1, -0.2 };
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(direct_rms_program, &.{
+            .weights = direct_rms_weights[0..].ptr,
+            .weights_len = direct_rms_weights.len,
+            .bias = direct_rms_bias[0..].ptr,
+            .bias_len = direct_rms_bias.len,
+        }, &direct_rms_session));
+        try std.testing.expect(direct_rms_session != null);
+
+        const direct_rms_input = [_]f32{ 1, 2, 3, 4 };
+        var direct_rms_output = [_]f32{0} ** 4;
+        try std.testing.expectEqual(status(.ok), zgml_session_step_direct(
+            direct_rms_session,
+            direct_rms_input[0..].ptr,
+            direct_rms_input.len,
+            direct_rms_output[0..].ptr,
+            direct_rms_output.len,
+        ));
+
+        const direct_gelu = struct {
+            fn call(x: f32) f32 {
+                const kk = 0.7978845608 * (x + 0.044715 * x * x * x);
+                return 0.5 * x * (1.0 + std.math.tanh(kk));
+            }
+        }.call;
+        const row0_inv = 1.0 / std.math.sqrt((@as(f32, 1 * 1 + 2 * 2) / 2.0) + 1e-5);
+        const row1_inv = 1.0 / std.math.sqrt((@as(f32, 3 * 3 + 4 * 4) / 2.0) + 1e-5);
+        try std.testing.expectApproxEqAbs(direct_gelu(1 * row0_inv) + direct_rms_bias[0], direct_rms_output[0], 1e-4);
+        try std.testing.expectApproxEqAbs(direct_gelu(2 * row0_inv * 1.5) + direct_rms_bias[1], direct_rms_output[1], 1e-4);
+        try std.testing.expectApproxEqAbs(direct_gelu(3 * row1_inv) + direct_rms_bias[0], direct_rms_output[2], 1e-4);
+        try std.testing.expectApproxEqAbs(direct_gelu(4 * row1_inv * 1.5) + direct_rms_bias[1], direct_rms_output[3], 1e-4);
+
+        var direct_rms_profile = zgml_runtime_profile{};
+        try std.testing.expectEqual(status(.ok), zgml_session_runtime_profile(direct_rms_session, &direct_rms_profile));
+        try std.testing.expectEqual(@as(u64, 1), direct_rms_profile.call_count);
+        try std.testing.expectEqual(@as(u64, 1), direct_rms_profile.runtime_patch_call_count);
+        try std.testing.expect(direct_rms_profile.command_count > 0);
     }
 
     {

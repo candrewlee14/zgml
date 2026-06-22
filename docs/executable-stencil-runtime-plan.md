@@ -384,11 +384,16 @@ For iteration speed, the benchmark probes now have opt-in narrow lanes:
 passing the same filter to the child module bench. The default `bench:pytorch`,
 `bench:pytorch:parity`, and `bench:module-program` commands still run their full
 evidence sets; the filters are for microscope work, not release claims. The
-PyTorch comparison microscope also accepts explicitly exploratory known-miss
-lanes such as `rms_gelu_linear_batched`,
-`softmax_classifier_batched`, `log_softmax_classifier_batched`, and
-`lazy_token_head_batched`, so optimization work can rank PyTorch gaps without
-promoting those gaps into the hard parity gate.
+PyTorch comparison microscope also accepts exploratory lanes such as
+`rms_gelu_linear_batched`, `softmax_classifier_batched`,
+`log_softmax_classifier_batched`, and `lazy_token_head_batched`, so optimization
+work can rank PyTorch gaps without promoting those gaps into the hard parity
+gate. The `rms_gelu_linear_batched` lane has already graduated from "known
+miss" to proof of the intended loop: the focused benchmark exposed a PyTorch
+gap, then a direct CPU Session fast path for
+`RMSNorm(weight)+GELU -> Linear(weight,bias)` moved that lane from about `0.45x`
+to about `2.63x` versus PyTorch while keeping the public Program plan
+unchanged.
 The repo now exposes that inner loop directly:
 
 ```text
@@ -425,6 +430,11 @@ row-major buffers (`C^T = B^T A^T`) and keeps the small hand projection lane for
 `linear_batched` about `1.09x`, `lazy_matmul_add_gelu_batched` about `1.70x`,
 `lazy_mlp_batched` about `1.64x`, `lazy_rms_silu_ffn_batched` about `1.80x`,
 `max_pool2d_batched` about `8.47x`, and `avg_pool2d_batched` about `4.53x`.
+The next focused PyTorch pass used the new microscope loop to close the
+exploratory `rms_gelu_linear_batched` miss: current evidence is
+`rms_gelu_linear_batched=zgml:0.0382ms pytorch:0.1005ms
+zgml_vs_pytorch=2.63x`, with the module hot path reporting
+`hot_execute_into=0.0369ms`.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS
