@@ -28,6 +28,9 @@ const defaultProjectionChainFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_P
 const candidateProjectionChainCeil = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_CHAIN_CEIL || "0");
 const defaultProjectionPairFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_PROJECTION_PAIR_FLOOR || "30");
 const candidateProjectionPairFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_PAIR_FLOOR || "30");
+const decodeCommandCeil = Number(process.env.BENCH_Q8_DECODE_COMMAND_CEIL || "211");
+const decodeProjectionPairFloor = Number(process.env.BENCH_Q8_DECODE_PROJECTION_PAIR_FLOOR || "30");
+const decodeProjectionChainFloor = Number(process.env.BENCH_Q8_DECODE_PROJECTION_CHAIN_FLOOR || "60");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -112,6 +115,7 @@ function measureAttempt(index) {
   progress(`attempt ${index}/${attempts} two-phase-candidate`);
   const twoPhaseOutput = run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-two-phase-candidate"]);
   const defaultRow = rowFor(defaultOutput, "metal scheduled prefill");
+  const defaultDecodeRow = rowFor(defaultOutput, "metal region decode");
   const commandRow = rowFor(commandOutput, "metal scheduled prefill projection-row-chain command candidate");
   const candidateRow = rowFor(candidateOutput, "metal scheduled prefill projection-row-chain candidate");
   const twoPhaseRow = rowFor(twoPhaseOutput, "metal scheduled prefill projection-row-chain two-phase candidate");
@@ -143,6 +147,10 @@ function measureAttempt(index) {
   const commandProjectionPairs = number(commandRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
   const candidateProjectionPairs = number(candidateRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
   const twoPhaseProjectionPairs = number(twoPhaseRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const defaultDecodeCommands = number(defaultDecodeRow, "commands_per_call");
+  const defaultDecodeProjectionChains = number(defaultDecodeRow, "program_command_encoded_projection_chain_per_call") ?? 0;
+  const defaultDecodeProjectionPairs = number(defaultDecodeRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const defaultDecodeFallback = number(defaultDecodeRow, "fallback_ops") ?? 0;
   const defaultProjectionPairDispatches = number(defaultRow, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
   const commandProjectionPairDispatches = number(commandRow, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
   const candidateProjectionPairDispatches = number(candidateRow, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
@@ -176,6 +184,12 @@ function measureAttempt(index) {
     defaultProjectionChains >= defaultProjectionChainFloor &&
     defaultProjectionPairs >= defaultProjectionPairFloor &&
     defaultProjectionRowChains === 0;
+  const defaultDecodeFastPathReady =
+    defaultDecodeCommands !== null &&
+    defaultDecodeCommands <= decodeCommandCeil &&
+    defaultDecodeProjectionChains >= decodeProjectionChainFloor &&
+    defaultDecodeProjectionPairs >= decodeProjectionPairFloor &&
+    defaultDecodeFallback === 0;
   const commandSemanticReady =
     commandCommands !== null &&
     commandCommands <= candidateCommandCeil &&
@@ -221,8 +235,8 @@ function measureAttempt(index) {
     twoPhaseProjectionRowChainDispatchSplit <= 2.0;
   const twoPhaseStructuralReady = defaultFastPathReady && twoPhaseSemanticReady && twoPhaseDispatchShapeReady && twoPhaseFallback === 0;
   const fallbackOk = defaultFallback === 0 && commandFallback === 0 && candidateFallback === 0 && twoPhaseFallback === 0;
-  const commandStructuralReady = defaultFastPathReady && commandSemanticReady && commandDispatchShapeReady && fallbackOk;
-  const structuralReady = defaultFastPathReady && commandStructuralReady && candidateSemanticReady && candidateMatchesCommandShape && candidateDispatchShapeReady && fallbackOk;
+  const commandStructuralReady = defaultFastPathReady && defaultDecodeFastPathReady && commandSemanticReady && commandDispatchShapeReady && fallbackOk;
+  const structuralReady = defaultFastPathReady && defaultDecodeFastPathReady && commandStructuralReady && candidateSemanticReady && candidateMatchesCommandShape && candidateDispatchShapeReady && fallbackOk;
   const commandThroughputReady = commandSpeedup !== null && commandSpeedup >= commandSpeedupFloor;
   const throughputReady = speedup !== null && speedup >= speedupFloor;
   progress(
@@ -262,6 +276,11 @@ function measureAttempt(index) {
     commandProjectionPairs,
     candidateProjectionPairs,
     twoPhaseProjectionPairs,
+    defaultDecodeCommands,
+    defaultDecodeProjectionChains,
+    defaultDecodeProjectionPairs,
+    defaultDecodeFallback,
+    defaultDecodeFastPathReady,
     defaultProjectionPairDispatches,
     commandProjectionPairDispatches,
     candidateProjectionPairDispatches,
@@ -368,6 +387,8 @@ console.log(
     `command_projection_chain=${format(commandBest.defaultProjectionChains, 0)}->${format(commandBest.commandProjectionChains, 0)} ` +
     `command_projection_pair=${format(commandBest.defaultProjectionPairs, 0)}->${format(commandBest.commandProjectionPairs, 0)} ` +
     `command_projection_pair_dispatch=${format(commandBest.defaultProjectionPairDispatches, 0)}->${format(commandBest.commandProjectionPairDispatches, 0)} ` +
+    `decode_command=${format(commandBest.defaultDecodeCommands, 0)} decode_projection_chain=${format(commandBest.defaultDecodeProjectionChains, 0)} ` +
+    `decode_projection_pair=${format(commandBest.defaultDecodeProjectionPairs, 0)} decode_fallback=${format(commandBest.defaultDecodeFallback, 0)} ` +
     `command_projection_row_chain=${format(commandBest.defaultProjectionRowChains, 0)}->${format(commandBest.commandProjectionRowChains, 0)} ` +
     `command_projection_row_chain_dispatch=${format(commandBest.defaultProjectionRowChainDispatches, 0)}->${format(commandBest.commandProjectionRowChainDispatches, 0)} ` +
     `command_split=${format(commandBest.defaultProjectionRowChainDispatchSplit)}->${format(commandBest.commandProjectionRowChainDispatchSplit)} ` +

@@ -12031,6 +12031,87 @@ test "metal backend exact-lowers paired qmatmul single activation product chain"
     try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain)]);
 }
 
+test "metal backend exact-lowers paired qmatvec single activation product chain" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4 };
+    var shared_q_out = [_]f32{99} ** 4;
+    var product_out = [_]f32{0} ** 4;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 5, .input = 0, .weight_idx = 0, .M = 1, .N = 4, .K = 4 } },
+        .{ .elementwise = .{
+            .op = .silu,
+            .dst = 6,
+            .src0 = 5,
+            .src1 = 5,
+            .n = 4,
+            .dst_offset = 0,
+            .src0_offset = 0,
+            .src1_offset = 0,
+        } },
+        .{ .qmatmul = .{ .dst = 5, .input = 0, .weight_idx = 0, .M = 1, .N = 4, .K = 4 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 7, .src0 = 6, .src1 = 5, .n = 4 } },
+    };
+
+    const buf_sizes = [_]usize{ 4, 4, 4, 4, 4, 4, 4, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&shared_q_out), .size = shared_q_out.len * 4 },
+        .{ .buf_idx = 7, .host_ptr = @ptrCast(&product_out), .size = product_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 8,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].op_count);
+    try std.testing.expectEqual(.qmatvec, commands[0].projection_kind);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[7].ptr)));
+    const primary_after: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[5].ptr)));
+    for (input, got[0..4]) |x, actual| {
+        const want = x * x / (1.0 + @exp(-x));
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
+    for (primary_after[0..4]) |actual| try std.testing.expectApproxEqAbs(@as(f32, 99), actual, 0);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 4), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain)]);
+}
+
 test "metal backend exact-lowers paired dense activation product prefill chain" {
     var metal = MetalBackend.init() catch |err| switch (err) {
         error.MetalNotAvailable => return,

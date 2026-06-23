@@ -5872,10 +5872,11 @@ pub fn matmulFusedElementwiseSidecarCompatible(m: anytype, fe: anytype) bool {
 
 pub fn qmatvecElementwiseSidecarCompatible(q: anytype, e: anytype) bool {
     if (q.M != 1) return false;
-    if (e.op != .add and e.op != .mul) return false;
+    if (!e.op.isFusible()) return false;
     if (e.n != q.N) return false;
     if (q.dst_row_stride != 0 and q.dst_row_stride != q.N) return false;
     const src0_primary = e.src0 == q.dst and e.src0_offset == q.dst_offset;
+    if (!e.op.isBinary()) return src0_primary;
     const src1_primary = e.src1 == q.dst and e.src1_offset == q.dst_offset;
     return src0_primary != src1_primary;
 }
@@ -9324,6 +9325,77 @@ test "program command stream fuses qmatmul paired projection unary activation pr
     try std.testing.expectEqual(@as(usize, 2), commands.len);
     try std.testing.expectEqual(ProgramCommandKind.projection_pair_fused_elementwise_chain, commands[0].kind);
     try std.testing.expectEqual(ProjectionGroupKind.qmatmul, commands[0].projection_kind);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].op_count);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_pair_fused_elementwise_chains);
+}
+
+test "program command stream fuses qmatvec paired projection single activation product chain" {
+    const silu_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .silu, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(2, 8, 1),
+        .{ .fused_elementwise = .{
+            .steps = &silu_steps,
+            .n = 4,
+            .dst = 3,
+            .src = 2,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+        testQMatmulWith(5, 8, 1),
+        .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 3, .src1 = 5, .n = 4 } },
+        testQMatmulWith(7, 8, 1),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(ProjectionGroupKind.qmatvec, commands[0].projection_kind);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].op_count);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_pair_fused_elementwise_chains);
+}
+
+test "program command stream fuses qmatvec paired projection unary activation product chain" {
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(2, 8, 1),
+        .{ .elementwise = .{
+            .op = .silu,
+            .dst = 3,
+            .src0 = 2,
+            .src1 = 2,
+            .n = 4,
+            .dst_offset = 0,
+            .src0_offset = 0,
+            .src1_offset = 0,
+        } },
+        testQMatmulWith(5, 8, 1),
+        .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 3, .src1 = 5, .n = 4 } },
+        testQMatmulWith(7, 8, 1),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(ProjectionGroupKind.qmatvec, commands[0].projection_kind);
     try std.testing.expectEqual(@as(u32, 4), commands[0].op_count);
     try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
 
