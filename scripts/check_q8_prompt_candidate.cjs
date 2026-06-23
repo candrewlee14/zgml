@@ -21,11 +21,13 @@ const requiredNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_cha
 const singleDispatchTrap = "serial_n_tile_loop_without_cross_threadgroup_row_reduce";
 const viableNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
 const semanticPairTarget = "projection_pair_fused_elementwise_or_larger_ffn_sublayer";
-const defaultCommandFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_COMMAND_FLOOR || "301");
-const candidateCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "241");
+const defaultCommandFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_COMMAND_FLOOR || "241");
+const candidateCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "181");
 const candidateProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_ROW_CHAIN_FLOOR || "60");
-const defaultProjectionChainFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_PROJECTION_CHAIN_FLOOR || "90");
-const candidateProjectionChainCeil = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_CHAIN_CEIL || "30");
+const defaultProjectionChainFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_PROJECTION_CHAIN_FLOOR || "60");
+const candidateProjectionChainCeil = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_CHAIN_CEIL || "0");
+const defaultProjectionPairFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_PROJECTION_PAIR_FLOOR || "30");
+const candidateProjectionPairFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_PAIR_FLOOR || "30");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -97,7 +99,7 @@ if (build === "1") {
   process.exit(1);
 }
 
-const baseArgs = [model, promptTokens, genTokens, repetitions, "--metal-prefill-device", "--gate-only"];
+const baseArgs = [model, promptTokens, genTokens, repetitions, "--metal-prefill-device", "--metal-decode-region", "--gate-only"];
 progress(`attempts=${attempts} model=${model} prompt=${promptTokens} gen=${genTokens} reps=${repetitions}`);
 
 function measureAttempt(index) {
@@ -172,11 +174,13 @@ function measureAttempt(index) {
     defaultCommands !== null &&
     defaultCommands >= defaultCommandFloor &&
     defaultProjectionChains >= defaultProjectionChainFloor &&
+    defaultProjectionPairs >= defaultProjectionPairFloor &&
     defaultProjectionRowChains === 0;
   const commandSemanticReady =
     commandCommands !== null &&
     commandCommands <= candidateCommandCeil &&
     commandProjectionChains <= candidateProjectionChainCeil &&
+    commandProjectionPairs >= candidateProjectionPairFloor &&
     commandProjectionRowChains >= candidateProjectionRowChainFloor;
   const commandDispatchShapeReady =
     defaultDispatches !== null &&
@@ -189,11 +193,13 @@ function measureAttempt(index) {
     candidateCommands !== null &&
     candidateCommands <= candidateCommandCeil &&
     candidateProjectionChains <= candidateProjectionChainCeil &&
+    candidateProjectionPairs >= candidateProjectionPairFloor &&
     candidateProjectionRowChains >= candidateProjectionRowChainFloor;
   const candidateMatchesCommandShape =
     candidateCommands !== null &&
     candidateCommands <= candidateCommandCeil &&
     candidateProjectionChains <= candidateProjectionChainCeil &&
+    candidateProjectionPairs >= candidateProjectionPairFloor &&
     candidateProjectionRowChains >= candidateProjectionRowChainFloor;
   const candidateDispatchShapeReady =
     defaultDispatches !== null &&
@@ -205,6 +211,7 @@ function measureAttempt(index) {
     twoPhaseCommands !== null &&
     twoPhaseCommands <= candidateCommandCeil &&
     twoPhaseProjectionChains <= candidateProjectionChainCeil &&
+    twoPhaseProjectionPairs >= candidateProjectionPairFloor &&
     twoPhaseProjectionRowChains >= candidateProjectionRowChainFloor;
   const twoPhaseDispatchShapeReady =
     defaultDispatches !== null &&

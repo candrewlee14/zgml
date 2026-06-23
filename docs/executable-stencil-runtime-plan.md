@@ -250,7 +250,7 @@ Current checked progress:
   five-op chains. The full-model Q8 prompt gate now separates the usable
   command-fusion path from the slower single-dispatch experiment: the
   two-dispatch projection-row-chain command candidate keeps the fast tiled
-  qmatmul column parallelism while reducing command shape from `301->241`,
+  qmatmul column parallelism while reducing command shape from `241->181`,
   whereas the single-dispatch candidate remains a diagnostic for the needed
   tiled row-chain kernel. The frontier benchmark now exposes that
   single-dispatch tiled candidate directly as
@@ -303,13 +303,20 @@ Current checked progress:
   The Q8 prompt gate now also prints the existing quantized
   `projection_pair_fused_elementwise_chain` counters as `projection_pair`,
   `projection_pair_dispatch`, `semantic_pair_path`, and
-  `semantic_pair_target`. A June 23, 2026 raw default Q8 prompt row showed
-  `projection_chain=90`, `projection_pair=0`, `projection_row_chain=0`, and
-  `projection_chain_qmatmul_elementwise=90`, which means the existing
-  projection-pair Metal kernel is real but does not cover current SmolLM Q8
-  prompt shapes. The next semantic-sublayer move should therefore first explain
-  and close that shape gap, or deliberately supersede it with a larger FFN
-  sublayer command, before spending more time on the shallow row-chain tail.
+  `semantic_pair_target`. The first version of that gate accidentally omitted
+  `--metal-decode-region` and exposed source drift from the accepted artifact:
+  Q8 no-repeat FFN shapes were falling through as `projection_pair=0` and
+  `projection_chain=90` because only the dense path recognized the four-op
+  pair shape. The corrected gate now uses the same Metal decode-region shape as
+  the accepted substrate artifact, and the source restores the quantized
+  four-op pair path: default Q8 prompt has `projection_pair=30`,
+  `projection_chain=60`, and `commands_per_call=241`, while the row-chain
+  command candidate must keep `projection_pair>=30`, lower projection chains to
+  `0`, and reduce command shape toward `181` before it can claim the full-model
+  semantic row-chain path.
+  The next semantic-sublayer move should therefore build on the already-live
+  pair-fused FFN path, or deliberately supersede it with a larger FFN sublayer
+  command, before spending more time on the shallow row-chain tail.
   The useful next move is therefore not blindly promoting the shallow two-kernel variant;
   it is either a larger semantic sublayer that removes surrounding work
   or a materially different row-chain throughput kernel.

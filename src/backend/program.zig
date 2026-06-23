@@ -3060,6 +3060,30 @@ fn findProjectionPairFusedElementwiseChainCommand(
     start: usize,
     used: ?[]const bool,
 ) ?ProgramCommand {
+    if (start + 3 < ops.len and !commandRangeTouchesUsed(@intCast(start), 4, used)) four_op: {
+        const gate = switch (ops[start]) {
+            .qmatmul => |q| q,
+            else => break :four_op,
+        };
+        const up = switch (ops[start + 2]) {
+            .qmatmul => |q| q,
+            else => break :four_op,
+        };
+        const product = switch (ops[start + 3]) {
+            .elementwise => |e| e,
+            else => break :four_op,
+        };
+        const compatible = switch (ops[start + 1]) {
+            .fused_elementwise => |fe| projectionPairSingleFusedElementwiseChainCompatible(gate, fe, up, product),
+            .elementwise => |e| projectionPairSingleElementwiseChainCompatible(gate, e, up, product),
+            else => false,
+        };
+        if (!compatible) break :four_op;
+        if (projectionPairSingleFusedElementwiseChainHasExternalUsers(ops, start)) break :four_op;
+        var command = ProgramCommand.contiguous(.projection_pair_fused_elementwise_chain, start, 4);
+        command.projection_kind = if (gate.M == 1) .qmatvec else .qmatmul;
+        return command;
+    }
     if (start + 5 >= ops.len) return null;
     if (commandRangeTouchesUsed(@intCast(start), 6, used)) return null;
     const gate = switch (ops[start]) {
@@ -3758,6 +3782,53 @@ pub fn denseProjectionPairSingleFusedElementwiseChainCompatible(
     return true;
 }
 
+pub fn projectionPairSingleFusedElementwiseChainCompatible(
+    gate: anytype,
+    first: anytype,
+    up: anytype,
+    product: anytype,
+) bool {
+    const projection_compatible = if (gate.M == 1)
+        qmatvecFusedElementwiseSidecarCompatible(gate, first)
+    else
+        qmatmulFusedElementwiseSidecarCompatible(gate, first);
+    if (!projection_compatible) return false;
+    if (!projectionPairGeometryCompatible(gate, up)) return false;
+    if (product.op != .mul) return false;
+    if (product.n != gate.M * gate.N or product.n != first.n) return false;
+    const first_is_src0 = product.src0 == first.dst and product.src0_offset == first.dst_offset;
+    const first_is_src1 = product.src1 == first.dst and product.src1_offset == first.dst_offset;
+    const up_is_src0 = product.src0 == up.dst and product.src0_offset == up.dst_offset;
+    const up_is_src1 = product.src1 == up.dst and product.src1_offset == up.dst_offset;
+    if (!((first_is_src0 and up_is_src1) or (first_is_src1 and up_is_src0))) return false;
+    if (product.dst == gate.dst or product.dst == first.dst or product.dst == up.dst) return false;
+    return true;
+}
+
+pub fn projectionPairSingleElementwiseChainCompatible(
+    gate: anytype,
+    first: anytype,
+    up: anytype,
+    product: anytype,
+) bool {
+    const projection_compatible = if (gate.M == 1)
+        qmatvecElementwiseSidecarCompatible(gate, first)
+    else
+        qmatmulElementwiseSidecarCompatible(gate, first);
+    if (!projection_compatible) return false;
+    if (first.op.isBinary()) return false;
+    if (!projectionPairGeometryCompatible(gate, up)) return false;
+    if (product.op != .mul) return false;
+    if (product.n != gate.M * gate.N or product.n != first.n) return false;
+    const first_is_src0 = product.src0 == first.dst and product.src0_offset == first.dst_offset;
+    const first_is_src1 = product.src1 == first.dst and product.src1_offset == first.dst_offset;
+    const up_is_src0 = product.src0 == up.dst and product.src0_offset == up.dst_offset;
+    const up_is_src1 = product.src1 == up.dst and product.src1_offset == up.dst_offset;
+    if (!((first_is_src0 and up_is_src1) or (first_is_src1 and up_is_src0))) return false;
+    if (product.dst == gate.dst or product.dst == first.dst or product.dst == up.dst) return false;
+    return true;
+}
+
 pub fn denseProjectionPairSingleElementwiseChainCompatible(
     gate: anytype,
     first: anytype,
@@ -3874,6 +3945,44 @@ fn denseProjectionPairFusedElementwiseChainHasExternalUsers(
     if (spanHasExternalReadAfter(ops, matmul_index + 2, included_start, included_end, bufferSpan(rp.dst, rp.dst_offset, rp.n))) return true;
     if (spanHasExternalReadAfter(ops, matmul_index + 3, included_start, included_end, bufferSpan(second.dst, second.dst_offset, second.n))) return true;
     if (spanHasExternalReadAfter(ops, matmul_index + 4, included_start, included_end, bufferSpan(up.dst, up.geom.dst_offset, up.geom.M * up.geom.N))) return true;
+    return false;
+}
+
+fn projectionPairSingleFusedElementwiseChainHasExternalUsers(
+    ops: []const backend_mod.DeviceOp,
+    q_index: usize,
+) bool {
+    if (q_index + 3 >= ops.len) return true;
+    const gate = switch (ops[q_index]) {
+        .qmatmul => |q| q,
+        else => return true,
+    };
+    const up = switch (ops[q_index + 2]) {
+        .qmatmul => |q| q,
+        else => return true,
+    };
+    const product = switch (ops[q_index + 3]) {
+        .elementwise => |e| e,
+        else => return true,
+    };
+    const FirstSpan = struct { dst: u16, dst_offset: u32, n: u32 };
+    const first_span: FirstSpan = switch (ops[q_index + 1]) {
+        .fused_elementwise => |fe| blk: {
+            if (!projectionPairSingleFusedElementwiseChainCompatible(gate, fe, up, product)) return true;
+            break :blk .{ .dst = fe.dst, .dst_offset = fe.dst_offset, .n = fe.n };
+        },
+        .elementwise => |e| blk: {
+            if (!projectionPairSingleElementwiseChainCompatible(gate, e, up, product)) return true;
+            break :blk .{ .dst = e.dst, .dst_offset = e.dst_offset, .n = e.n };
+        },
+        else => return true,
+    };
+
+    const included_start = q_index + 1;
+    const included_end = q_index + 4;
+    if (spanHasExternalReadAfter(ops, q_index, included_start, included_end, bufferSpan(gate.dst, gate.dst_offset, gate.M * gate.N))) return true;
+    if (spanHasExternalReadAfter(ops, q_index + 1, included_start, included_end, bufferSpan(first_span.dst, first_span.dst_offset, first_span.n))) return true;
+    if (spanHasExternalReadAfter(ops, q_index + 2, included_start, included_end, bufferSpan(up.dst, up.dst_offset, up.M * up.N))) return true;
     return false;
 }
 
@@ -5683,11 +5792,13 @@ fn canHoistProjectionSidecarToGroup(
 
 pub fn qmatmulElementwiseSidecarCompatible(q: anytype, e: anytype) bool {
     if (q.M == 1) return false;
-    if (e.op != .add and e.op != .mul) return false;
+    if (!e.op.isFusible()) return false;
     if (e.n != q.M * q.N) return false;
     if (qmatmulDstRowStride(q) != q.N) return false;
-    return (e.src0 == q.dst and e.src0_offset == q.dst_offset) or
-        (e.src1 == q.dst and e.src1_offset == q.dst_offset);
+    const src0_primary = e.src0 == q.dst and e.src0_offset == q.dst_offset;
+    if (!e.op.isBinary()) return src0_primary;
+    const src1_primary = e.src1 == q.dst and e.src1_offset == q.dst_offset;
+    return src0_primary != src1_primary;
 }
 
 pub fn matmulElementwiseSidecarCompatible(m: anytype, e: anytype) bool {
@@ -9150,6 +9261,77 @@ test "program command stream fuses qmatvec paired projection activation product 
     try std.testing.expectEqual(@as(u32, 7), summary.covered_ops);
     try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
     try std.testing.expectEqual(@as(u32, 5), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_pair_fused_elementwise_chains);
+}
+
+test "program command stream fuses qmatmul paired projection single activation product chain" {
+    const silu_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .silu, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(2, 8, 2),
+        .{ .fused_elementwise = .{
+            .steps = &silu_steps,
+            .n = 8,
+            .dst = 3,
+            .src = 2,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+        testQMatmulWith(5, 8, 2),
+        .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 3, .src1 = 5, .n = 8 } },
+        testQMatmulWith(7, 8, 2),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(ProjectionGroupKind.qmatmul, commands[0].projection_kind);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].op_count);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_pair_fused_elementwise_chains);
+}
+
+test "program command stream fuses qmatmul paired projection unary activation product chain" {
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(2, 8, 2),
+        .{ .elementwise = .{
+            .op = .silu,
+            .dst = 3,
+            .src0 = 2,
+            .src1 = 2,
+            .n = 8,
+            .dst_offset = 0,
+            .src0_offset = 0,
+            .src1_offset = 0,
+        } },
+        testQMatmulWith(5, 8, 2),
+        .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 3, .src1 = 5, .n = 8 } },
+        testQMatmulWith(7, 8, 2),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(ProjectionGroupKind.qmatmul, commands[0].projection_kind);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].op_count);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.projection_pair_fused_elementwise_chains);
 }
 

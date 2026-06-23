@@ -7636,6 +7636,63 @@ const CompiledProgram = struct {
         return true;
     }
 
+    fn encodeQMatmulPairSingleFusedElementwiseChain(
+        self: *CompiledProgram,
+        exec: *MetalExecutionContext,
+        view: RuntimeView,
+        gate: anytype,
+        first: anytype,
+        up: anytype,
+        product: anytype,
+    ) bool {
+        if (@as(usize, gate.weight_idx) >= view.qweight_views.len) return false;
+        if (@as(usize, up.weight_idx) >= view.qweight_views.len) return false;
+        if (!program_mod.projectionPairSingleFusedElementwiseChainCompatible(gate, first, up, product)) return false;
+        if (first.steps.len > MAX_FUSED_EW_STEPS) return false;
+
+        const left_w = view.qweight_views[gate.weight_idx];
+        const right_w = view.qweight_views[up.weight_idx];
+        const gate_params = qmatmulParams(gate, left_w.block_size);
+        const up_params = qmatmulParams(up, right_w.block_size);
+        if (gate_params.M != up_params.M or gate_params.N != up_params.N or gate_params.K != up_params.K) return false;
+        if (gate_params.input_offset != up_params.input_offset or gate_params.input_row_stride != up_params.input_row_stride) return false;
+
+        var params = std.mem.zeroes(QMatmulPairFusedEwParams);
+        params.M = gate_params.M;
+        params.N = gate_params.N;
+        params.K = gate_params.K;
+        params.left_block_size = gate_params.block_size;
+        params.right_block_size = up_params.block_size;
+        params.input_offset = gate_params.input_offset;
+        params.input_row_stride = gate_params.input_row_stride;
+        params.dst_offset = product.dst_offset;
+        params.final_op = @intFromEnum(product.op);
+        params.n_steps = @intCast(first.steps.len);
+
+        var buffers: [6 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
+        buffers[0] = left_w.data;
+        buffers[1] = left_w.scales;
+        buffers[2] = right_w.data;
+        buffers[3] = right_w.scales;
+        buffers[4] = view.device_bufs[gate.input];
+        buffers[5] = view.device_bufs[product.dst];
+        for (buffers[6..]) |*buf| buf.* = view.device_bufs[product.dst];
+
+        var secondary_bufs: [MAX_FUSED_EW_SECONDARIES]u16 = undefined;
+        var secondary_count: usize = 0;
+        for (first.steps, 0..) |step, step_index| {
+            params.op[step_index] = @intFromEnum(step.op);
+            params.is_swapped[step_index] = @intFromBool(step.is_swapped);
+            if (!self.bindQMatmulPairFusedSecondary(exec, view, &buffers, &secondary_bufs, &secondary_count, &params, gate, up, step, step_index, null)) return false;
+        }
+
+        const kernel: MetalKernel = if (gate.M == 1) .qmatvec_pair_fused_elementwise_f32 else .qmatmul_pair_fused_elementwise_f32;
+        const grid = if (gate.M == 1) DispatchGrid{ .gx = gate.N } else matmulGrid(gate.M, gate.N);
+        const threads = if (gate.M == 1) QMATVEC_DOT_THREADS else MATMUL_THREADS;
+        exec.encodeKernel(kernel, &buffers, params, 14, grid, threads);
+        return true;
+    }
+
     fn encodeQMatvecPairElementwise(
         _: *CompiledProgram,
         exec: *MetalExecutionContext,
@@ -8809,6 +8866,29 @@ const CompiledProgram = struct {
 
     fn tryEncodeProjectionPairFusedElementwiseChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         const start: usize = @intCast(command.op_start);
+        if (command.op_count == 4) {
+            const gate = deviceOpAt(.qmatmul, ops, start) orelse return false;
+            const up = deviceOpAt(.qmatmul, ops, start + 2) orelse return false;
+            const product = deviceOpAt(.elementwise, ops, start + 3) orelse return false;
+            return switch (ops[start + 1]) {
+                .fused_elementwise => |first| self.encodeQMatmulPairSingleFusedElementwiseChain(exec, view, gate, first, up, product),
+                .elementwise => |first| blk: {
+                    if (!program_mod.projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) break :blk false;
+                    const steps = [_]backend_mod.FusedEwStep{.{ .op = first.op, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 }};
+                    const fe = .{
+                        .steps = steps[0..],
+                        .n = first.n,
+                        .dst = first.dst,
+                        .src = first.src0,
+                        .dst_offset = first.dst_offset,
+                        .src_offset = first.src0_offset,
+                    };
+                    break :blk self.encodeQMatmulPairSingleFusedElementwiseChain(exec, view, gate, fe, up, product);
+                },
+                else => false,
+            };
+        }
+        if (command.op_count != 6) return false;
         const gate = deviceOpAt(.qmatmul, ops, start) orelse return false;
         const first = deviceOpAt(.fused_elementwise, ops, start + 1) orelse return false;
         const rp = deviceOpAt(.repeat, ops, start + 2) orelse return false;
@@ -11864,6 +11944,87 @@ test "metal backend exact-lowers paired qmatvec activation product chain" {
     var rt = profile_mod.RuntimeProfile{};
     be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 6), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain)]);
+}
+
+test "metal backend exact-lowers paired qmatmul single activation product chain" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    var shared_q_out = [_]f32{99} ** 8;
+    var product_out = [_]f32{0} ** 8;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 5, .input = 0, .weight_idx = 0, .M = 2, .N = 4, .K = 4 } },
+        .{ .elementwise = .{
+            .op = .silu,
+            .dst = 6,
+            .src0 = 5,
+            .src1 = 5,
+            .n = 8,
+            .dst_offset = 0,
+            .src0_offset = 0,
+            .src1_offset = 0,
+        } },
+        .{ .qmatmul = .{ .dst = 5, .input = 0, .weight_idx = 0, .M = 2, .N = 4, .K = 4 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 7, .src0 = 6, .src1 = 5, .n = 8 } },
+    };
+
+    const buf_sizes = [_]usize{ 8, 4, 4, 4, 4, 8, 8, 8 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&shared_q_out), .size = shared_q_out.len * 4 },
+        .{ .buf_idx = 7, .host_ptr = @ptrCast(&product_out), .size = product_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 8,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].op_count);
+    try std.testing.expectEqual(.qmatmul, commands[0].projection_kind);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[7].ptr)));
+    const primary_after: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[5].ptr)));
+    for (input, got[0..8]) |x, actual| {
+        const want = x * x / (1.0 + @exp(-x));
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
+    for (primary_after[0..8]) |actual| try std.testing.expectApproxEqAbs(@as(f32, 99), actual, 0);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 4), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
     try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain)]);
