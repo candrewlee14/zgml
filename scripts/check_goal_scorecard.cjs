@@ -383,6 +383,11 @@ function checkScripts() {
     "const moduleBenchEnv = {",
     "BENCH_MODULE_PROGRAM_KEYS: activeComparisonKeys.join(\",\")",
     "const zgmlTimings = parseZgmlModuleBench(run(process.execPath, [\"scripts/check_module_program_bench.cjs\"], { env: moduleBenchEnv }), activeComparisonKeys)",
+    "const prefix = \"ZGML_MODULE_BENCH_JSON \"",
+    "hot_execute_into_ms",
+    "pytorch comparison could not find exact zgml timing",
+    "min_timing_ms = float(os.environ.get(\"BENCH_PYTORCH_MIN_TIMING_MS\", \"8\"))",
+    "total_iterations += iterations",
     "const passing = attemptRows.filter((entry) => entry.parityReady)",
     "`attempt=${best.index}/${attempts}`",
     "`noisy=${noisyAttempts}`",
@@ -415,6 +420,15 @@ function checkScripts() {
   ]);
   forbidIncludes(read("scripts/check_pytorch_comparison.cjs"), "scripts/check_pytorch_comparison.cjs", "PyTorch comparison child module bench must always be filtered to active comparison keys", [
     "const moduleBenchEnv = process.env.BENCH_PYTORCH_KEYS",
+  ]);
+  requireIncludes(read("scripts/check_module_program_bench.cjs"), "scripts/check_module_program_bench.cjs", "exact machine-readable module bench timing output", [
+    "ZGML_MODULE_BENCH_JSON",
+    "const minTimingMs = Number(process.env.BENCH_MODULE_PROGRAM_MIN_TIMING_MS || \"8\")",
+    "totalIterations += iterations",
+    "hot_execute_into_ms: result.compiledMs",
+    "eager_ms: result.eagerMs",
+    "speedup: result.speedup",
+    "native: nativeFreshness.label",
   ]);
   requireIncludes(read("scripts/check_goal_scorecard.cjs"), "scripts/check_goal_scorecard.cjs", "diagnostic child-process failure reporting", [
     "function spawnFailure(label, command, args, result)",
@@ -5260,9 +5274,16 @@ function checkDocs() {
     "in-place row `LogSoftmax` still regressed the focused module hot path to about",
     "uses a measured native row log-softmax implementation",
     "`N=32` specialization",
-    "`0.0082ms-0.0085ms` for `log_softmax_classifier_batched`",
-    "focused PyTorch gate remains a noisy soft spot",
-    "ratio_median=linear_batched:0.91x,log_softmax_classifier_batched:0.82x",
+    "`0.013ms` for `linear_batched`",
+    "`0.039ms` for",
+    "PyTorch comparison",
+    "remains a real soft",
+    "ratio_median=linear_batched:0.30x,log_softmax_classifier_batched:0.22x",
+    "PyTorch comparison now consumes exact `ZGML_MODULE_BENCH_JSON`",
+    "`hot_execute_into_ms`",
+    "rounding sub-`0.05ms`",
+    "8ms minimum timing window",
+    "not judged from a single too-short iteration batch",
     "fast vector exp approximation",
     "native module hot path",
     "benchmark binaries with `-Doptimize=ReleaseFast`",

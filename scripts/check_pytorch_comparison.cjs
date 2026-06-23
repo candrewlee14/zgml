@@ -87,6 +87,21 @@ function installPythonTorchWithUv() {
 }
 
 function parseZgmlModuleBench(output, keys) {
+  const prefix = "ZGML_MODULE_BENCH_JSON ";
+  const jsonLine = output.split(/\r?\n/).find((line) => line.startsWith(prefix));
+  if (jsonLine) {
+    const row = JSON.parse(jsonLine.slice(prefix.length));
+    const timings = {};
+    for (const key of keys) {
+      const timing = row.timings?.[key];
+      const value = Number(timing?.hot_execute_into_ms);
+      if (!Number.isFinite(value)) {
+        throw new Error(`pytorch comparison could not find exact zgml timing for ${key}`);
+      }
+      timings[key] = value;
+    }
+    return timings;
+  }
   const timings = {};
   for (const key of keys) {
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -110,6 +125,7 @@ import torch
 torch.set_num_threads(1)
 torch.set_num_interop_threads(1)
 torch.manual_seed(0)
+min_timing_ms = float(os.environ.get("BENCH_PYTORCH_MIN_TIMING_MS", "8"))
 
 def values(shape, scale):
     n = math.prod(shape)
@@ -121,9 +137,14 @@ def bench(fn, iterations=1000):
         for _ in range(min(100, iterations)):
             fn()
         start = time.perf_counter()
-        for _ in range(iterations):
-            fn()
-        return (time.perf_counter() - start) * 1000.0 / iterations
+        total_iterations = 0
+        while True:
+            for _ in range(iterations):
+                fn()
+            total_iterations += iterations
+            elapsed = time.perf_counter() - start
+            if elapsed * 1000.0 >= min_timing_ms:
+                return elapsed * 1000.0 / total_iterations
 
 x128_64 = values((128, 64), 16.0)
 x512_64 = values((512, 64), 13.0)

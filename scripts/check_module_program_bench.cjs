@@ -19,6 +19,7 @@ const adapter = require(nodeEntry);
 
 const attempts = 3;
 const wholeBenchAttempts = 3;
+const minTimingMs = Number(process.env.BENCH_MODULE_PROGRAM_MIN_TIMING_MS || "8");
 const floors = Object.freeze({
   activationChainSpeedup: 1.25,
   activationSignChainSpeedup: 1.25,
@@ -125,10 +126,17 @@ function maxAbsDiff(a, b) {
 }
 
 function bench(fn, iterations) {
-  for (let index = 0; index < Math.min(100, iterations); index += 1) fn();
+  const warmupIterations = Math.min(100, iterations);
+  for (let index = 0; index < warmupIterations; index += 1) fn();
+  let elapsed = 0;
+  let totalIterations = 0;
   const start = msNow();
-  for (let index = 0; index < iterations; index += 1) fn();
-  return (msNow() - start) / iterations;
+  do {
+    for (let index = 0; index < iterations; index += 1) fn();
+    totalIterations += iterations;
+    elapsed = msNow() - start;
+  } while (elapsed < minTimingMs);
+  return { ms: elapsed / totalIterations, calls: warmupIterations + totalIterations };
 }
 
 function median(valuesToSort) {
@@ -569,11 +577,13 @@ function runBenchSpec(spec) {
     session.resetSessionCallProfile();
     const eagerRuns = [];
     const compiledRuns = [];
+    let expectedCalls = 0;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
-      eagerRuns.push(bench(eager, spec.iterations));
-      compiledRuns.push(bench(compiled, spec.iterations));
+      eagerRuns.push(bench(eager, spec.iterations).ms);
+      const compiledRun = bench(compiled, spec.iterations);
+      compiledRuns.push(compiledRun.ms);
+      expectedCalls += compiledRun.calls;
     }
-    const expectedCalls = attempts * spec.iterations + Math.min(100, spec.iterations) * attempts;
     const profile = session.sessionCallProfile();
     if (profile.executeIntoCount !== expectedCalls) {
       throw new Error(`${spec.label} expected executeInto-only hot bench profile, got ${profile.signature}`);
@@ -2124,8 +2134,20 @@ function runAllSpecs(attempt) {
     `native=${nativeFreshness.label}`,
     ...results.map(({ spec, result }) => spec.summary(result)),
   ].join("; ");
+  const json = {
+    label: "module Program bench gate",
+    attempt,
+    passed: failures.length === 0,
+    native: nativeFreshness.label,
+    timings: Object.fromEntries(results.map(({ spec, result }) => [spec.key, {
+      eager_ms: result.eagerMs,
+      hot_execute_into_ms: result.compiledMs,
+      speedup: result.speedup,
+      floor: spec.floor,
+    }])),
+  };
   const margin = Math.min(...results.map(({ spec, result }) => result.speedup / spec.floor));
-  return { attempt, results, failures, line, margin };
+  return { attempt, results, failures, line, json, margin };
 }
 
 const runs = [];
@@ -2133,6 +2155,7 @@ for (let attempt = 1; attempt <= wholeBenchAttempts; attempt += 1) {
   const run = runAllSpecs(attempt);
   runs.push(run);
   if (run.failures.length === 0) {
+    process.stdout.write(`ZGML_MODULE_BENCH_JSON ${JSON.stringify(run.json)}\n`);
     process.stdout.write(`${run.line}\n`);
     if (attempt > 1) {
       process.stdout.write(`module Program bench retries: ${attempt - 1} noisy attempt(s) below floor\n`);
@@ -2142,6 +2165,7 @@ for (let attempt = 1; attempt <= wholeBenchAttempts; attempt += 1) {
 }
 
 const best = runs.reduce((acc, run) => (run.margin > acc.margin ? run : acc), runs[0]);
+process.stdout.write(`ZGML_MODULE_BENCH_JSON ${JSON.stringify(best.json)}\n`);
 process.stdout.write(`${best.line}\n`);
 process.stderr.write(`${best.failures.join("; ")}\n`);
 process.exit(1);

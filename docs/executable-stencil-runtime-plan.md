@@ -633,12 +633,20 @@ preference for plain dense projection, while the fused classifier tail keeps a
 native row log-softmax path with a fast vector exp approximation and a measured
 `N=32` specialization for the current classifier shape. On the focused PyTorch
 gap microscope this reduced the native module hot path to roughly
-`0.0082ms-0.0085ms` for `log_softmax_classifier_batched`, while the hard
-focused PyTorch gate remains a noisy soft spot: a required three-attempt rerun
-still missed at about
-`ratio_median=linear_batched:0.91x,log_softmax_classifier_batched:0.82x`.
+`0.013ms` for `linear_batched` and `0.039ms` for
+`log_softmax_classifier_batched` under the 8ms minimum timing window. That is
+good module-vs-eager evidence, but the PyTorch comparison remains a real soft
+spot: the stabilized three-attempt rerun reported
+`ratio_median=linear_batched:0.30x,log_softmax_classifier_batched:0.22x`.
 The public Program plan still reports `linear|log-softmax`; the shortcut is an
 implementation detail of the CPU Session hot path.
+The PyTorch comparison now consumes exact `ZGML_MODULE_BENCH_JSON` module-bench
+timings (`hot_execute_into_ms`) before falling back to the human summary line,
+because rounding sub-`0.05ms` hot-path timings to four decimals can move
+the reported PyTorch ratio by enough to obscure small real kernel changes. Both
+the zgml module bench and the embedded PyTorch comparison now also run each
+tiny lane until an 8ms minimum timing window is reached, so sub-0.01ms paths are
+not judged from a single too-short iteration batch.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier
