@@ -15852,6 +15852,8 @@ function checkDistSmokeIsTsOwned(errors) {
       "broadcastTo",
       "expected nn.repeat rank-3 repeat/tile native Program evidence",
       "compiled nn.tile rank-3 repeat/tile output",
+      "expected nn.repeat batched rank-3 repeat/tile native Program evidence",
+      "compiled nn.tile batched rank-3 repeat/tile output",
       "slice-col-step",
       "expectedElided",
       "expected root compile namespace to delegate full module compile evidence",

@@ -1602,14 +1602,16 @@ Current frontend slice:
   across batch, middle, and feature axes, including non-envelope batched inputs.
   `nn.diagonal` now lowers through a native materialized
   stride-view descriptor for rank-2 matrices. `nn.repeat` and `nn.tile` now use that same ABI lane for
-  rank-1/rank-2/rank-3 positive-multiple tiled repeats, giving FFI callers a concrete
+  rank-1/rank-2/rank-3 positive-multiple tiled repeats, including non-envelope
+  batched rank-3 inputs, giving FFI callers a concrete
   output-buffer contract while leaving zero-copy broadcast/tile views and
   rank-4+ row-major tile lowering as future compiler work. Other multi-layer
   JS/TS graphs still reject explicitly until a general tensor/program compiler
   exists.
 - Package smoke evidence now covers that shape/view family from the public
   Node/Bun product runtime, not only internal compiler helpers:
-  `broadcastTo`, `expand`, `diagonal`, rank-1/rank-2/rank-3 `repeat`/`tile`,
+  `broadcastTo`, `expand`, `diagonal`, rank-1/rank-2/rank-3 `repeat`/`tile`
+  including batched rank-3 inputs,
   row/feature-axis `narrow`, rank-2/rank-3 `select`, contiguous and stepped `slice`,
   plus terminal zero-dispatch
   rank-2/rank-3 `flatten`, `squeeze`, and `unsqueeze` all prove frozen compile evidence,
