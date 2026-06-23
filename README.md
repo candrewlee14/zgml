@@ -879,6 +879,12 @@ npm run bench:q8-prompt-candidate # rebuild ReleaseFast and measure full-model Q
 npm run bench:q8-prompt-candidate:run # rerun Q8 prompt candidate evidence without rebuilding artifacts
 npm run dev:zig:bench   # incrementally build benchmark binaries while editing kernels/runtime
 npm run dev:zig:bench:watch # watched incremental benchmark-binary build loop
+npm run dev:perf:pytorch:gaps # incremental ReleaseFast native rebuild, package build, and focused PyTorch-gap bench
+npm run dev:perf:pytorch:gaps:run # rerun focused PyTorch-gap bench against existing native/package artifacts
+npm run dev:perf:q8-prompt # incremental ReleaseFast benchmark rebuild plus Q8 prompt candidate evidence
+npm run dev:perf:q8-prompt:run # rerun Q8 prompt candidate evidence against existing benchmark artifact
+npm run dev:perf:ggml:smoke # incremental ReleaseFast benchmark rebuild plus one-sample ggml smoke
+npm run dev:perf:ggml:smoke:run # rerun one-sample ggml smoke against existing benchmark artifact
 zig build bench-frontier  # run decision-grade local benchmarks
 zig build -Duse-blas      # enable BLAS for matmul
 ```
@@ -907,7 +913,24 @@ throughput problem rather than a shape-evidence guess. Frontier, q8 prompt
 candidate, and ggml comparison rebuild commands force ReleaseFast artifacts;
 the `:run` frontier and q8 prompt candidate scripts reuse the last
 `bench-build` artifact so kernel hypotheses can be repeated quickly after one
-benchmark-grade build. The frontier binary also accepts
+benchmark-grade build.
+
+For performance work, use the `dev:perf:*` scripts as the inner loop and the
+`bench:*` scripts as gates. `dev:perf:pytorch:gaps` uses Zig's incremental
+ReleaseFast build for the native FFI library before comparing the current
+PyTorch soft spots; its `:run` variant avoids rebuilding and defaults to one
+attempt for fast noise checks. `dev:perf:q8-prompt` does the same for
+`bench-build`, then reruns the Q8 prompt candidate evidence. `dev:perf:ggml:smoke`
+keeps the llama.cpp comparison cheap by defaulting to prompt 128, generation 40,
+one repetition, and one zgml sample. It also sets `BENCH_ALLOW_QUARANTINED=1`,
+so known parity/perf misses still write artifacts without failing the local
+shell command. Set `BENCH_GGML_PROMPT`, `BENCH_GGML_GEN`, `BENCH_GGML_REPS`,
+`BENCH_ZGML_SAMPLES`, or `ZGML_EXTRA_ARGS` when a local hypothesis needs a wider
+or different sample. Once a change survives that loop, promote it through
+`npm run bench:pytorch:parity`, `npm run bench:q8-prompt-candidate`, and
+`npm run bench:ggml`.
+
+The frontier binary also accepts
 `BENCH_FRONTIER_FILTER=<label-substring>` for microscope loops, and the named
 row-chain scripts set `BENCH_FRONTIER_FILTER=qrow` so tiled row-chain kernel
 work does not rerun unrelated benchmark families. Set `BENCH_FRONTIER_ATTEMPTS`

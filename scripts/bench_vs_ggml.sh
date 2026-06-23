@@ -4,6 +4,8 @@
 # Usage: ./scripts/bench_vs_ggml.sh [prompt_tokens] [gen_tokens] [repetitions]
 # Useful env: ZGML_EXTRA_ARGS, BENCH_AUTO_DOWNLOAD=0,
 # BENCH_BASELINE_JSON=<artifact.json>, BENCH_REQUIRE_PARITY=1,
+# BENCH_ALLOW_QUARANTINED=1 for local smoke loops that should write artifacts
+# without failing the shell command on known parity/perf misses,
 # BENCH_ZGML_SAMPLES=1 for a quick smoke, BENCH_BUILD_ZGML=0 to reuse
 # an already-built zig-out/bin/bench-llama-smollm.
 # Artifact: bench-results/smollm-<timestamp>-p<PROMPT>-g<GEN>-r<REPS>.json
@@ -28,8 +30,13 @@ HF_GGUF_REPO="${HF_GGUF_REPO:-mradermacher/SmolLM-135M-GGUF}"
 BENCH_AUTO_DOWNLOAD="${BENCH_AUTO_DOWNLOAD:-1}"
 BENCH_BASELINE_JSON="${BENCH_BASELINE_JSON:-}"
 BENCH_REQUIRE_PARITY="${BENCH_REQUIRE_PARITY:-0}"
+BENCH_ALLOW_QUARANTINED="${BENCH_ALLOW_QUARANTINED:-0}"
 BENCH_ZGML_SAMPLES="${BENCH_ZGML_SAMPLES:-3}"
 BENCH_BUILD_ZGML="${BENCH_BUILD_ZGML:-1}"
+if [ "$BENCH_ALLOW_QUARANTINED" != "0" ] && [ "$BENCH_ALLOW_QUARANTINED" != "1" ]; then
+    echo "BENCH_ALLOW_QUARANTINED must be 0 or 1"
+    exit 1
+fi
 case "$BENCH_ZGML_SAMPLES" in
     ''|*[!0-9]*) echo "BENCH_ZGML_SAMPLES must be a positive integer"; exit 1 ;;
 esac
@@ -760,5 +767,9 @@ else
     else
         echo "No failed artifact was written."
     fi
+fi
+if [ "$GATE_STATUS" -ne 0 ] && [ "$BENCH_ALLOW_QUARANTINED" = "1" ]; then
+    echo "BENCH_ALLOW_QUARANTINED=1: retaining quarantined artifact but returning success for local iteration."
+    exit 0
 fi
 exit "$GATE_STATUS"
