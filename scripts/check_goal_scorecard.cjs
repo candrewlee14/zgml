@@ -287,6 +287,9 @@ function checkScripts() {
   if (scripts["dev:wasm:browser-llama"] !== "zig build ffi-wasm -fincremental --summary failures && npm run smoke:portable-ffi:browser-llama:run") {
     errors.push("package.json dev:wasm:browser-llama must keep the incremental Wasm build plus focused browser LLaMA rerun loop");
   }
+  if (scripts["dev:wasm:browser-llama-families"] !== "zig build ffi-wasm -fincremental --summary failures && npm run smoke:portable-ffi:browser-llama-families:run") {
+    errors.push("package.json dev:wasm:browser-llama-families must keep the incremental Wasm build plus representative browser LLaMA family rerun loop");
+  }
   if (scripts["dev:zig:metal-row-chain"] !== "zig build test -Duse-metal=true -fincremental --summary failures -- --test-filter \"metal backend exact command fuses qmatmul residual into row chain\"") {
     errors.push("package.json dev:zig:metal-row-chain must keep the focused incremental Metal row-chain kernel loop");
   }
@@ -686,6 +689,12 @@ function checkScripts() {
   if (scripts["smoke:portable-ffi:browser-llama:run"] !== "node --no-warnings examples/wasm_ffi/browser_smoke_runner.mjs --llama-profile-label=gguf-smollm3-nope-gqa-pipeline --timeout-ms=300000") {
     errors.push("package.json smoke:portable-ffi:browser-llama:run must keep the no-Zig-build focused browser LLaMA family proof rerun");
   }
+  if (scripts["smoke:portable-ffi:browser-llama-families"] !== "zig build ffi-wasm-browser-llama-family-focused-smoke") {
+    errors.push("package.json smoke:portable-ffi:browser-llama-families must keep the representative browser LLaMA checkpoint-family proof gate");
+  }
+  if (scripts["smoke:portable-ffi:browser-llama-families:run"] !== "node --no-warnings examples/wasm_ffi/browser_smoke_runner.mjs --llama-profile-label=gguf-smollm3-nope-gqa-pipeline,long-sliding-window-mistral-pipeline,qwen3-qknorm-gqa-pipeline --timeout-ms=300000") {
+    errors.push("package.json smoke:portable-ffi:browser-llama-families:run must keep the no-Zig-build representative browser LLaMA family proof rerun");
+  }
   if (scripts["smoke:portable-ffi:browser-gpu-focused"] !== "zig build ffi-wasm-browser-gpu-focused-smoke") {
     errors.push("package.json smoke:portable-ffi:browser-gpu-focused must keep the focused required-GPU browser LLaMA proof gate");
   }
@@ -763,6 +772,8 @@ function checkScripts() {
     "examples/wasm_ffi/smoke.mjs",
     "const ffi_wasm_browser_smoke_step = b.step(\"ffi-wasm-browser-smoke\", \"Run browser Wasm C ABI smoke with Chrome/Chromium\")",
     "const ffi_wasm_browser_llama_focused_smoke_step = b.step(\"ffi-wasm-browser-llama-focused-smoke\", \"Run focused browser Wasm LLaMA family proof with Chrome/Chromium\")",
+    "const ffi_wasm_browser_llama_family_focused_smoke_step = b.step(\"ffi-wasm-browser-llama-family-focused-smoke\", \"Run representative browser Wasm LLaMA checkpoint-family proof with Chrome/Chromium\")",
+    "--llama-profile-label=gguf-smollm3-nope-gqa-pipeline,long-sliding-window-mistral-pipeline,qwen3-qknorm-gqa-pipeline",
     "const ffi_wasm_browser_gpu_focused_smoke_step = b.step(\"ffi-wasm-browser-gpu-focused-smoke\", \"Run focused browser Wasm LLaMA proof and require real GPUBuffer mode\")",
     "--llama-profile-label=gguf-smollm3-nope-gqa-pipeline",
     "--require-gpu",

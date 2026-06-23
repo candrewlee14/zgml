@@ -542,6 +542,7 @@ npm run dev:zig:time-report # one-off Zig compile-time report when build latency
 npm run dev:zig:metal-row-chain       # focused incremental Metal row-chain kernel test
 npm run dev:zig:metal-row-chain:watch # watched focused Metal row-chain kernel test
 npm run dev:wasm:browser-llama        # incremental Wasm C ABI build, then focused browser LLaMA proof rerun
+npm run dev:wasm:browser-llama-families # incremental Wasm build, then representative SmolLM3/Mistral/Qwen3 browser proof
 npm run dev:perf:module-program       # incremental ReleaseFast native rebuild plus focused Program/Session bench
 npm run dev:perf:module-program:run   # rerun focused Program/Session bench without rebuilding artifacts
 npm run dev:perf:pytorch:focus        # incremental ReleaseFast native rebuild plus focused PyTorch comparison
@@ -573,6 +574,7 @@ npm run bench:ggml:parity:run          # rerun hard ggml parity; bench script re
 npm run dev:perf:ggml:q8-command-smoke # cheap ggml smoke with explicit Q8 projection-row-chain command path
 npm run dev:perf:ggml:q8-command-smoke:run # rerun explicit Q8 command-path ggml smoke without rebuilding artifacts
 npm run smoke:portable-ffi:browser-llama:run # rerun the focused browser LLaMA proof after Wasm artifacts already exist
+npm run smoke:portable-ffi:browser-llama-families:run # rerun representative SmolLM3/Mistral/Qwen3 browser proof after Wasm artifacts exist
 zig build -Doptimize=ReleaseFast bench-build && ./zig-out/bin/bench-llama-smollm ignored 128 1 1 --stencil-only --debug-row-chain
 ```
 
@@ -4113,6 +4115,12 @@ Current first slice:
   scorecard a narrower SmolLM3 GGUF LLaMA-family proof that checks focused
   browser execution without requiring the full browser profile matrix on every
   scorecard run.
+- `zig build ffi-wasm-browser-llama-family-focused-smoke` runs a compact
+  representative browser family proof over SmolLM3 GGUF NoPE/GQA,
+  long-sliding-window Mistral, and Qwen3 Q/K-norm labels. The runner expands
+  each label to its normal and greedy generation profile, so this six-profile
+  proof exercises broader checkpoint-family execution without paying the
+  full required-GPU matrix cost on every iteration.
 - `zig build ffi-wasm-browser-gpu-focused-smoke` runs that same focused browser
   LLaMA proof with Chrome WebGPU flags and `--require-gpu`. The goal scorecard
   attempts this lane after the portable focused browser smoke: on machines with
