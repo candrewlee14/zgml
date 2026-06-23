@@ -1448,18 +1448,34 @@ const shader_source =
     \\    simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
-    \\    for (uint i = tid; i < TILE * TILE; i += 128) {
-    \\        uint r = i / TILE, c = i % TILE;
-    \\        uint cr = gRow + r, cc = gCol + c;
-    \\        if (cr < p.M && cc < p.N) {
-    \\            float val = tC[i];
-    \\            uint linear = cr * p.N + cc;
-    \\            float other = secondary[p.ew_secondary_offset + linear];
-    \\            float ew = val;
-    \\            if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
-    \\            else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
-    \\            if (p.write_primary != 0) output[p.dst_offset + cr * p.dst_row_stride + cc] = val;
-    \\            ew_output[p.ew_dst_offset + linear] = ew;
+    \\    if (p.write_primary != 0) {
+    \\        for (uint i = tid; i < TILE * TILE; i += 128) {
+    \\            uint r = i / TILE, c = i % TILE;
+    \\            uint cr = gRow + r, cc = gCol + c;
+    \\            if (cr < p.M && cc < p.N) {
+    \\                float val = tC[i];
+    \\                uint linear = cr * p.N + cc;
+    \\                float other = secondary[p.ew_secondary_offset + linear];
+    \\                float ew = val;
+    \\                if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
+    \\                else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
+    \\                output[p.dst_offset + cr * p.dst_row_stride + cc] = val;
+    \\                ew_output[p.ew_dst_offset + linear] = ew;
+    \\            }
+    \\        }
+    \\    } else {
+    \\        for (uint i = tid; i < TILE * TILE; i += 128) {
+    \\            uint r = i / TILE, c = i % TILE;
+    \\            uint cr = gRow + r, cc = gCol + c;
+    \\            if (cr < p.M && cc < p.N) {
+    \\                float val = tC[i];
+    \\                uint linear = cr * p.N + cc;
+    \\                float other = secondary[p.ew_secondary_offset + linear];
+    \\                float ew = val;
+    \\                if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
+    \\                else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
+    \\                ew_output[p.ew_dst_offset + linear] = ew;
+    \\            }
     \\        }
     \\    }
     \\}
