@@ -260,6 +260,15 @@ Current checked progress:
   reduction. The q8 prompt gate now records this as
   `single_dispatch_trap=serial_n_tile_loop_without_cross_threadgroup_row_reduce`
   and points at `viable_next=semantic_sublayer_or_two_phase_tile_parallel_row_chain`.
+  The frontier and q8 prompt candidate gates now rebuild benchmark binaries with `-Doptimize=ReleaseFast` before any no-rebuild rerun evidence.
+  That sharper ReleaseFast microscope found the row-chain candidate can look
+  ready in isolated frontier lanes (`projection_row_chain_candidate=ready`),
+  but the full-model Q8 prompt gate still keeps `single_throughput=off`:
+  command fusion holds at `0.98x` to `1.02x` while the single-dispatch candidate
+  remains around `0.19x` to `0.21x`. That makes the next move clearer, not
+  fuzzier: the candidate is structurally right, but still needs a materially
+  different throughput kernel or larger semantic sublayer before becoming the
+  default full-model path.
   A two-phase tile-parallel Metal experiment for the same candidate was also
   tried and reverted: it compiled, passed the Metal command correctness test,
   and moved the old `0.20x` single-dispatch trap up to about `1.00x`, but it
@@ -459,9 +468,9 @@ npm run bench:pytorch:focus
 npm run bench:pytorch:focus:run        # rerun focused PyTorch comparison without rebuilding artifacts
 npm run bench:pytorch:gaps             # rebuild and measure current PyTorch soft spots
 npm run bench:pytorch:gaps:run         # rerun current PyTorch soft spots without rebuilding artifacts
-npm run bench:frontier:gate            # rebuild and measure scheduler/kernelizer frontier evidence
+npm run bench:frontier:gate            # rebuild ReleaseFast and measure scheduler/kernelizer frontier evidence
 npm run bench:frontier:gate:run        # rerun frontier evidence without rebuilding artifacts
-npm run bench:q8-prompt-candidate      # rebuild and measure full-model Q8 prompt candidate evidence
+npm run bench:q8-prompt-candidate      # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
 npm run bench:q8-prompt-candidate:run  # rerun Q8 prompt candidate evidence without rebuilding artifacts
 npm run bench:ggml:parity:run          # rerun hard ggml parity without rebuilding artifacts
 ```
@@ -475,9 +484,11 @@ artifacts once, use the `:run` parity reruns to check noisy hard gates quickly,
 then run the full evidence gate before claiming a new SOTA/simple/perf state.
 Focused module Program benchmarks also build the native C ABI in ReleaseFast
 first, so microscope results do not silently compare against a stale Debug
-dylib. The frontier microscope uses `BENCH_FRONTIER_ATTEMPTS` (default `5`) so
-the row-chain kernel work can absorb local timing noise without falling back to
-the much slower full scorecard.
+dylib. Frontier, Q8 prompt candidate, and ggml comparison rebuild commands now
+also force `-Doptimize=ReleaseFast`; their `:run` variants are explicitly
+artifact reruns after that benchmark-grade build. The frontier microscope uses
+`BENCH_FRONTIER_ATTEMPTS` (default `5`) so the row-chain kernel work can absorb
+local timing noise without falling back to the much slower full scorecard.
 The frontier benchmark gate keeps the same floors but now evaluates them across
 its repeated noisy attempts instead of requiring every independent microbench
 lane to pass in one lucky attempt. If no single attempt clears all floors but

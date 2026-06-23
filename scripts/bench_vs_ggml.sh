@@ -79,7 +79,7 @@ fi
 command -v llama-bench >/dev/null || { echo "llama-bench not found. Run: brew install llama.cpp"; exit 1; }
 command -v python3 >/dev/null || { echo "python3 not found."; exit 1; }
 if [ "$BENCH_BUILD_ZGML" = "1" ]; then
-    zig build bench-build >/dev/null
+    zig build -Doptimize=ReleaseFast bench-build >/dev/null
 elif [ "$BENCH_BUILD_ZGML" != "0" ]; then
     echo "BENCH_BUILD_ZGML must be 0 or 1"
     exit 1

@@ -866,10 +866,10 @@ npm run bench:status      # summarize source-checkout baseline/latest ggml artif
 npm run bench:pytorch     # build ReleaseFast native, then compare selected compiled paths against upstream Python PyTorch
 npm run bench:pytorch:gaps # rebuild and measure the current PyTorch soft spots
 npm run bench:pytorch:gaps:run # rerun current PyTorch soft spots without rebuilding
-npm run bench:ggml        # run the local ggml/llama.cpp artifact gate with baseline regression protection
-npm run bench:frontier:gate # rebuild and measure scheduler/kernelizer frontier evidence
+npm run bench:ggml        # build ReleaseFast and run the ggml/llama.cpp artifact gate with baseline regression protection
+npm run bench:frontier:gate # rebuild ReleaseFast and measure scheduler/kernelizer frontier evidence
 npm run bench:frontier:gate:run # rerun frontier evidence without rebuilding artifacts
-npm run bench:q8-prompt-candidate # rebuild and measure full-model Q8 prompt candidate evidence
+npm run bench:q8-prompt-candidate # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
 npm run bench:q8-prompt-candidate:run # rerun Q8 prompt candidate evidence without rebuilding artifacts
 zig build bench-frontier  # run decision-grade local benchmarks
 zig build -Duse-blas      # enable BLAS for matmul
@@ -895,11 +895,12 @@ Those numbers are deliberately conservative: q8 prompt execution still needs a
 real tiled row-chain throughput kernel. The frontier gate now measures the
 actual SmolLM prompt geometry (`m=128 n=576 k=576`) for projection-chain and
 projection-row-chain variants, so the remaining row-chain work is a measured
-throughput problem rather than a shape-evidence guess. The `:run` frontier and
-q8 prompt candidate scripts reuse the last `bench-build` artifact so kernel
-hypotheses can be repeated quickly after one benchmark-grade build; set
-`BENCH_FRONTIER_ATTEMPTS` when the local frontier lanes need more or fewer
-noise samples. The q8 prompt gate also
+throughput problem rather than a shape-evidence guess. Frontier, q8 prompt
+candidate, and ggml comparison rebuild commands force ReleaseFast artifacts;
+the `:run` frontier and q8 prompt candidate scripts reuse the last
+`bench-build` artifact so kernel hypotheses can be repeated quickly after one
+benchmark-grade build. Set `BENCH_FRONTIER_ATTEMPTS` when the local frontier
+lanes need more or fewer noise samples. The q8 prompt gate also
 keeps a usable two-dispatch projection-row-chain command candidate distinct
 from the slower single-dispatch diagnostic, so command simplification can land
 without pretending the tiled row-chain kernel is solved. Native WebGPU now has

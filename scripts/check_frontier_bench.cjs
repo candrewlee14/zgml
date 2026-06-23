@@ -28,7 +28,7 @@ function positiveInt(value, label) {
 
 function runBench() {
   const command = build === "1" ? "zig" : build === "0" ? "./zig-out/bin/bench-frontier" : null;
-  const args = build === "1" ? ["build", "bench-frontier"] : build === "0" ? [] : null;
+  const args = build === "1" ? ["build", "-Doptimize=ReleaseFast", "bench-frontier"] : build === "0" ? [] : null;
   if (command === null || args === null) {
     throw new Error(`BENCH_FRONTIER_BUILD must be 0 or 1, got ${build}`);
   }

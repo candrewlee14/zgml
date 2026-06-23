@@ -122,15 +122,15 @@ function checkScripts() {
   if (scripts["bench:substrate"] !== "node scripts/bench_status.cjs --substrate-gate") {
     errors.push("package.json bench:substrate must remain the Program/Session substrate evidence gate");
   }
-  if (!String(scripts["bench:ggml"] ?? "").includes("BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json")) {
+  if (!String(scripts["bench:ggml"] ?? "").includes("zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json")) {
     errors.push("package.json bench:ggml must baseline-gate new full ggml artifacts against the checked M5 Pro substrate artifact");
   }
-  if (!String(scripts["bench:ggml:parity"] ?? "").includes("BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json BENCH_REQUIRE_PARITY=1")) {
+  if (!String(scripts["bench:ggml:parity"] ?? "").includes("zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json BENCH_REQUIRE_PARITY=1")) {
     errors.push("package.json bench:ggml:parity must keep both baseline regression and 90% parity gates");
   }
   requireIncludes(read("scripts/bench_vs_ggml.sh"), "scripts/bench_vs_ggml.sh", "failed ggml artifact quarantine", [
     "BENCH_BUILD_ZGML=\"${BENCH_BUILD_ZGML:-1}\"",
-    "zig build bench-build >/dev/null",
+    "zig build -Doptimize=ReleaseFast bench-build >/dev/null",
     "BENCH_BUILD_ZGML must be 0 or 1",
     "Wrote accepted artifact:",
     "FAILED_DIR=\"$OUT_DIR/failed\"",
@@ -163,13 +163,13 @@ function checkScripts() {
   if (scripts["bench:trend"] !== "node scripts/bench_status.cjs --trend-gate") {
     errors.push("package.json bench:trend must remain the local benchmark regression gate");
   }
-  if (scripts["bench:frontier:gate"] !== "zig build bench-build && BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
+  if (scripts["bench:frontier:gate"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:gate must remain the rebuild-backed scheduler/kernelizer frontier evidence gate");
   }
   if (scripts["bench:frontier:gate:run"] !== "BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:gate:run must remain the no-rebuild scheduler/kernelizer frontier rerun");
   }
-  if (scripts["bench:q8-prompt-candidate"] !== "zig build bench-build && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
+  if (scripts["bench:q8-prompt-candidate"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate must remain the rebuild-backed full-model Q8 prompt candidate evidence probe");
   }
   if (scripts["bench:q8-prompt-candidate:run"] !== "BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
@@ -310,6 +310,7 @@ function checkScripts() {
     "const commandLowering = \"default_projection_chain_plus_row_chain_command_two_dispatch\"",
     "program_command_encoded_projection_row_chain_per_call",
     "program_command_dispatches_projection_row_chain_per_call",
+    "\"-Doptimize=ReleaseFast\"",
     "ProjectionRowChainDispatchSplit",
     "ProjectionRowChainDispatchExcess",
     "BENCH_CANDIDATE_ATTEMPTS",
@@ -370,6 +371,7 @@ function checkScripts() {
     "must be a positive integer",
     "const build = process.env.BENCH_FRONTIER_BUILD ?? \"1\"",
     "BENCH_FRONTIER_BUILD must be 0 or 1",
+    "\"-Doptimize=ReleaseFast\"",
     "./zig-out/bin/bench-frontier",
     "const projectionRowChainLowering = \"prompt_split_tiled_qmatmul_plus_rmsnorm\";",
     "const projectionRowChainDiagnosticKernel = \"single_dispatch_tiled_candidate\";",
@@ -4913,6 +4915,12 @@ function checkDocs() {
     "fixed-width native log-softmax micro-kernel for the exact `cols == 32` gap",
     "moved `log_softmax_classifier_batched` down to about",
     "accumulate narrow row-tail special cases until a benchmark proves",
+    "benchmark binaries with `-Doptimize=ReleaseFast`",
+    "projection_row_chain_candidate=ready",
+    "single_throughput=off",
+    "command fusion holds at `0.98x` to `1.02x`",
+    "single-dispatch candidate",
+    "around `0.19x` to `0.21x`",
     "two-phase tile-parallel Metal experiment",
     "moved the old `0.20x` single-dispatch trap up to about `1.00x`",
     "did not beat the simpler command candidate at about `1.03x`",

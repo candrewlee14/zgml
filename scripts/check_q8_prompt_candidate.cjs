@@ -88,7 +88,7 @@ if (!existsSync(resolve(root, model))) {
 
 if (build === "1") {
   progress("build bench binary");
-  run("zig", ["build", "bench-build"]);
+  run("zig", ["build", "-Doptimize=ReleaseFast", "bench-build"]);
   progress("built bench binary");
 } else if (build !== "0") {
   console.error("BENCH_BUILD_ZGML must be 0 or 1");

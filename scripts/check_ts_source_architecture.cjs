@@ -291,13 +291,13 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:trend"] !== "node scripts/bench_status.cjs --trend-gate") {
     errors.push("package.json bench:trend must stay the source-checkout latest-vs-best benchmark regression gate");
   }
-  if (packageJson.scripts?.["bench:frontier:gate"] !== "zig build bench-build && BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
+  if (packageJson.scripts?.["bench:frontier:gate"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:gate must stay the rebuild-backed scheduler/kernelizer frontier evidence gate");
   }
   if (packageJson.scripts?.["bench:frontier:gate:run"] !== "BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:gate:run must stay the no-rebuild scheduler/kernelizer frontier rerun");
   }
-  if (packageJson.scripts?.["bench:q8-prompt-candidate"] !== "zig build bench-build && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
+  if (packageJson.scripts?.["bench:q8-prompt-candidate"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate must stay the rebuild-backed source-checkout full-model Q8 prompt candidate probe");
   }
   if (packageJson.scripts?.["bench:q8-prompt-candidate:run"] !== "BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
@@ -329,6 +329,12 @@ function checkPackageExports(errors) {
   }
   if (packageJson.scripts?.["bench:pytorch:focus"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:focus must stay the narrow PyTorch microscope");
+  }
+  if (packageJson.scripts?.["bench:ggml"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json ./scripts/bench_vs_ggml.sh 128 200 3") {
+    errors.push("package.json bench:ggml must stay the ReleaseFast ggml comparison probe without double-building");
+  }
+  if (packageJson.scripts?.["bench:ggml:parity"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json BENCH_REQUIRE_PARITY=1 ./scripts/bench_vs_ggml.sh 128 200 3") {
+    errors.push("package.json bench:ggml:parity must stay the ReleaseFast hard ggml parity probe without double-building");
   }
   const benchStatusSource = fs.readFileSync(path.join(root, "scripts", "bench_status.cjs"), "utf8");
   for (const needle of [
@@ -446,7 +452,7 @@ function checkPackageExports(errors) {
   const benchVsGgmlSource = fs.readFileSync(path.join(root, "scripts", "bench_vs_ggml.sh"), "utf8");
   for (const needle of [
     "BENCH_BUILD_ZGML=\"${BENCH_BUILD_ZGML:-1}\"",
-    "zig build bench-build >/dev/null",
+    "zig build -Doptimize=ReleaseFast bench-build >/dev/null",
     "BENCH_BUILD_ZGML must be 0 or 1",
     "[ -x \"$ZGML_BIN\" ]",
     "Reference drift diagnostic: llama.cpp reference is also below the baseline floor",
@@ -461,6 +467,7 @@ function checkPackageExports(errors) {
     "must be a positive integer",
     "const build = process.env.BENCH_FRONTIER_BUILD ?? \"1\"",
     "BENCH_FRONTIER_BUILD must be 0 or 1",
+    "\"-Doptimize=ReleaseFast\"",
     "./zig-out/bin/bench-frontier",
     "const largeChainSpeedupFloor = 2.95",
     "chain n=4096 staged",
@@ -601,6 +608,7 @@ function checkPackageExports(errors) {
     "--metal-prompt-projection-row-chain-command-candidate",
     "program_command_encoded_projection_row_chain_per_call",
     "program_command_dispatches_projection_row_chain_per_call",
+    "\"-Doptimize=ReleaseFast\"",
     "ProjectionRowChainDispatchSplit",
     "ProjectionRowChainDispatchExcess",
     "defaultCommandFloor",
