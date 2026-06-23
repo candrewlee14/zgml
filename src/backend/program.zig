@@ -1795,6 +1795,8 @@ pub const ProjectionElementwiseChainDebug = struct {
     elementwise_src1: u16 = 0,
     elementwise_n: u32 = 0,
     primary_has_external_users: bool = false,
+    local_op_base: u32 = 0,
+    local_op_tags: [8]DeviceOpTag = .{.elementwise} ** 8,
 
     pub const Reason = enum {
         no_projection_elementwise_chain,
@@ -1820,6 +1822,12 @@ pub fn firstProjectionElementwiseChainDebug(
         out.command_index = @intCast(command_index);
         out.op_start = command.op_start;
         out.op_count = command.op_count;
+        const local_base = command.op_start -| 3;
+        out.local_op_base = local_base;
+        for (out.local_op_tags[0..], 0..) |*tag, offset| {
+            const op_index = @as(usize, local_base) + offset;
+            if (op_index < ops.len) tag.* = std.meta.activeTag(ops[op_index]);
+        }
         out.prev_kind = if (command_index > 0) commands[command_index - 1].kind else .op;
         out.kind = command.kind;
         out.next_kind = next_kind;
@@ -3137,10 +3145,6 @@ fn findDenseProjectionPairFusedElementwiseChainCommand(
             .matmul => |m| m,
             else => break :four_op,
         };
-        const first = switch (ops[start + 1]) {
-            .fused_elementwise => |fe| fe,
-            else => break :four_op,
-        };
         const up = switch (ops[start + 2]) {
             .matmul => |m| m,
             else => break :four_op,
@@ -3149,7 +3153,12 @@ fn findDenseProjectionPairFusedElementwiseChainCommand(
             .elementwise => |e| e,
             else => break :four_op,
         };
-        if (!denseProjectionPairSingleFusedElementwiseChainCompatible(gate, first, up, product)) break :four_op;
+        const compatible = switch (ops[start + 1]) {
+            .fused_elementwise => |fe| denseProjectionPairSingleFusedElementwiseChainCompatible(gate, fe, up, product),
+            .elementwise => |e| denseProjectionPairSingleElementwiseChainCompatible(gate, e, up, product),
+            else => false,
+        };
+        if (!compatible) break :four_op;
         if (denseProjectionPairSingleFusedElementwiseChainHasExternalUsers(ops, start)) break :four_op;
         return ProgramCommand.contiguous(.dense_projection_pair_fused_elementwise_chain, start, 4);
     }
@@ -3734,6 +3743,27 @@ pub fn denseProjectionPairSingleFusedElementwiseChainCompatible(
     return true;
 }
 
+pub fn denseProjectionPairSingleElementwiseChainCompatible(
+    gate: anytype,
+    first: anytype,
+    up: anytype,
+    product: anytype,
+) bool {
+    const g = gate.geom;
+    if (!matmulElementwiseSidecarCompatible(gate, first)) return false;
+    if (first.op.isBinary()) return false;
+    if (!denseProjectionPairGeometryCompatible(gate, up)) return false;
+    if (product.op != .mul) return false;
+    if (product.n != g.M * g.N or product.n != first.n) return false;
+    const first_is_src0 = product.src0 == first.dst and product.src0_offset == first.dst_offset;
+    const first_is_src1 = product.src1 == first.dst and product.src1_offset == first.dst_offset;
+    const up_is_src0 = product.src0 == up.dst and product.src0_offset == up.geom.dst_offset;
+    const up_is_src1 = product.src1 == up.dst and product.src1_offset == up.geom.dst_offset;
+    if (!((first_is_src0 and up_is_src1) or (first_is_src1 and up_is_src0))) return false;
+    if (product.dst == gate.dst or product.dst == first.dst or product.dst == up.dst) return false;
+    return true;
+}
+
 fn spanHasExternalReadAfter(
     ops: []const backend_mod.DeviceOp,
     producer_index: usize,
@@ -3841,10 +3871,6 @@ fn denseProjectionPairSingleFusedElementwiseChainHasExternalUsers(
         .matmul => |m| m,
         else => return true,
     };
-    const first = switch (ops[matmul_index + 1]) {
-        .fused_elementwise => |fe| fe,
-        else => return true,
-    };
     const up = switch (ops[matmul_index + 2]) {
         .matmul => |m| m,
         else => return true,
@@ -3853,12 +3879,23 @@ fn denseProjectionPairSingleFusedElementwiseChainHasExternalUsers(
         .elementwise => |e| e,
         else => return true,
     };
-    if (!denseProjectionPairSingleFusedElementwiseChainCompatible(gate, first, up, product)) return true;
+    const FirstSpan = struct { dst: u16, dst_offset: u32, n: u32 };
+    const first_span: FirstSpan = switch (ops[matmul_index + 1]) {
+        .fused_elementwise => |fe| blk: {
+            if (!denseProjectionPairSingleFusedElementwiseChainCompatible(gate, fe, up, product)) return true;
+            break :blk .{ .dst = fe.dst, .dst_offset = fe.dst_offset, .n = fe.n };
+        },
+        .elementwise => |e| blk: {
+            if (!denseProjectionPairSingleElementwiseChainCompatible(gate, e, up, product)) return true;
+            break :blk .{ .dst = e.dst, .dst_offset = e.dst_offset, .n = e.n };
+        },
+        else => return true,
+    };
 
     const included_start = matmul_index + 1;
     const included_end = matmul_index + 4;
     if (spanHasExternalReadAfter(ops, matmul_index, included_start, included_end, bufferSpan(gate.dst, gate.geom.dst_offset, gate.geom.M * gate.geom.N))) return true;
-    if (spanHasExternalReadAfter(ops, matmul_index + 1, included_start, included_end, bufferSpan(first.dst, first.dst_offset, first.n))) return true;
+    if (spanHasExternalReadAfter(ops, matmul_index + 1, included_start, included_end, bufferSpan(first_span.dst, first_span.dst_offset, first_span.n))) return true;
     if (spanHasExternalReadAfter(ops, matmul_index + 2, included_start, included_end, bufferSpan(up.dst, up.geom.dst_offset, up.geom.M * up.geom.N))) return true;
     return false;
 }
@@ -5641,9 +5678,10 @@ pub fn qmatmulElementwiseSidecarCompatible(q: anytype, e: anytype) bool {
 pub fn matmulElementwiseSidecarCompatible(m: anytype, e: anytype) bool {
     const g = m.geom;
     if (g.M == 0 or g.N == 0 or g.dst_row_stride != g.N) return false;
-    if (e.op != .add and e.op != .mul) return false;
+    if (!e.op.isFusible()) return false;
     if (e.n != g.M * g.N) return false;
     const src0_primary = e.src0 == m.dst and e.src0_offset == g.dst_offset;
+    if (!e.op.isBinary()) return src0_primary;
     const src1_primary = e.src1 == m.dst and e.src1_offset == g.dst_offset;
     return src0_primary != src1_primary;
 }
@@ -9233,6 +9271,40 @@ test "program command stream fuses dense paired projection single activation pro
         testMatmulWith(5, 8, 10, 2),
         .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 3, .src1 = 5, .n = 8 } },
         testMatmulWith(7, 8, 11, 2),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.dense_projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].op_count);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_pair_fused_elementwise_chains);
+}
+
+test "program command stream fuses dense paired projection unary activation product chain" {
+    const ops = [_]backend_mod.DeviceOp{
+        testMatmulWith(2, 8, 9, 1),
+        .{ .elementwise = .{
+            .op = .silu,
+            .dst = 3,
+            .src0 = 2,
+            .src1 = 2,
+            .n = 4,
+            .dst_offset = 0,
+            .src0_offset = 0,
+            .src1_offset = 0,
+        } },
+        testMatmulWith(5, 8, 10, 1),
+        .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 3, .src1 = 5, .n = 4 } },
+        testMatmulWith(7, 8, 11, 1),
     };
 
     const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));

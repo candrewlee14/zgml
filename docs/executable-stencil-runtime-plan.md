@@ -352,6 +352,16 @@ from two commands to one and moving the observed worst PyTorch ratio to about
 The same dense projection activation path now handles SiLU for FFN blocks,
 dropping the lazy RMS/SiLU/FFN runtime profile from four commands to three and
 moving that observed PyTorch ratio to about `0.79x`.
+A later full-model F16 SmolLM pass extended that same idea to the real FFN
+shape where the gate projection is followed by a standalone unary SiLU before
+the up-projection product. The dense projection-pair command now accepts
+`matmul -> silu -> matmul -> mul` directly, and the Metal sidecar kernels can
+apply unary activation post-ops without materializing an extra dispatch. Focused
+ReleaseFast evidence on June 22, 2026 moved F16 SmolLM prompt/decode command
+pressure to `242/212`, with `30` dense FFN pair commands, `60` dense projection
+chains, and zero fallback ops. This is the preferred iteration pattern:
+discover shape misses with the narrow incremental Zig loops and debug
+microscopes, then promote only the ReleaseFast full-model evidence.
 A focused PyTorch-parity pass then specialized the dense bias and bias+activation
 post-op loops so they branch once per fused command instead of inside each
 vector chunk, and made the PyTorch GELU comparison explicitly use

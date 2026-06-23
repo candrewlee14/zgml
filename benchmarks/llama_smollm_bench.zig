@@ -370,7 +370,7 @@ fn runStencilProbe(
         );
         const projection_debug = internal.backend_stencil.firstProjectionElementwiseChainDebug(decode.program.handle);
         try writer.print(
-            "ZGML_PROJECTION_CHAIN_DEBUG phase=decode reason={s} command_count={d} command_index={d} prev={s} kind={s} next={s} op_start={d} op_count={d} q_m={d} q_n={d} q_dst={d} q_input={d} weight_idx={d} ew_op={s} ew_dst={d} ew_src0={d} ew_src1={d} ew_n={d} primary_external={any}\n",
+            "ZGML_PROJECTION_CHAIN_DEBUG phase=decode reason={s} command_count={d} command_index={d} prev={s} kind={s} next={s} op_start={d} op_count={d} local_base={d} local_ops={s},{s},{s},{s},{s},{s},{s},{s} q_m={d} q_n={d} q_dst={d} q_input={d} weight_idx={d} ew_op={s} ew_dst={d} ew_src0={d} ew_src1={d} ew_n={d} primary_external={any}\n",
             .{
                 @tagName(projection_debug.reason),
                 projection_debug.command_count,
@@ -380,6 +380,15 @@ fn runStencilProbe(
                 @tagName(projection_debug.next_kind),
                 projection_debug.op_start,
                 projection_debug.op_count,
+                projection_debug.local_op_base,
+                @tagName(projection_debug.local_op_tags[0]),
+                @tagName(projection_debug.local_op_tags[1]),
+                @tagName(projection_debug.local_op_tags[2]),
+                @tagName(projection_debug.local_op_tags[3]),
+                @tagName(projection_debug.local_op_tags[4]),
+                @tagName(projection_debug.local_op_tags[5]),
+                @tagName(projection_debug.local_op_tags[6]),
+                @tagName(projection_debug.local_op_tags[7]),
                 projection_debug.q_m,
                 projection_debug.q_n,
                 projection_debug.q_dst,
@@ -439,7 +448,7 @@ fn runStencilProbe(
         );
         const projection_debug = internal.backend_stencil.firstProjectionElementwiseChainDebug(prefill.program.handle);
         try writer.print(
-            "ZGML_PROJECTION_CHAIN_DEBUG phase=prompt reason={s} command_count={d} command_index={d} prev={s} kind={s} next={s} op_start={d} op_count={d} q_m={d} q_n={d} q_dst={d} q_input={d} weight_idx={d} ew_op={s} ew_dst={d} ew_src0={d} ew_src1={d} ew_n={d} primary_external={any}\n",
+            "ZGML_PROJECTION_CHAIN_DEBUG phase=prompt reason={s} command_count={d} command_index={d} prev={s} kind={s} next={s} op_start={d} op_count={d} local_base={d} local_ops={s},{s},{s},{s},{s},{s},{s},{s} q_m={d} q_n={d} q_dst={d} q_input={d} weight_idx={d} ew_op={s} ew_dst={d} ew_src0={d} ew_src1={d} ew_n={d} primary_external={any}\n",
             .{
                 @tagName(projection_debug.reason),
                 projection_debug.command_count,
@@ -449,6 +458,15 @@ fn runStencilProbe(
                 @tagName(projection_debug.next_kind),
                 projection_debug.op_start,
                 projection_debug.op_count,
+                projection_debug.local_op_base,
+                @tagName(projection_debug.local_op_tags[0]),
+                @tagName(projection_debug.local_op_tags[1]),
+                @tagName(projection_debug.local_op_tags[2]),
+                @tagName(projection_debug.local_op_tags[3]),
+                @tagName(projection_debug.local_op_tags[4]),
+                @tagName(projection_debug.local_op_tags[5]),
+                @tagName(projection_debug.local_op_tags[6]),
+                @tagName(projection_debug.local_op_tags[7]),
                 projection_debug.q_m,
                 projection_debug.q_n,
                 projection_debug.q_dst,

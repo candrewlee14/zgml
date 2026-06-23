@@ -145,6 +145,29 @@ const shader_source =
     \\    }
     \\}
     \\
+    \\float matmul_elementwise_unary(uint op, float v) {
+    \\    switch (op) {
+    \\        case 9: return -v;
+    \\        case 10: return abs(v);
+    \\        case 11: return sign(v);
+    \\        case 12: return (v > 0.0f) ? 1.0f : 0.0f;
+    \\        case 13: return max(v, 0.0f);
+    \\        case 14: return sqrt(v);
+    \\        case 15: return 1.0f / v;
+    \\        case 16: return exp(v);
+    \\        case 17: return log(v);
+    \\        case 18: {
+    \\            float c = 0.7978845608f * (v + 0.044715f * v * v * v);
+    \\            return 0.5f * v * (1.0f + precise::tanh(c));
+    \\        }
+    \\        case 34: return v * v;
+    \\        case 39: return 1.0f / (1.0f + exp(-v));
+    \\        case 40: return v / (1.0f + exp(-v));
+    \\        case 41: return precise::tanh(v);
+    \\        default: return v;
+    \\    }
+    \\}
+    \\
     \\struct MatmulElementwiseParams {
     \\    uint M; uint N; uint K;
     \\    uint a_row_stride; uint a_col_stride;
@@ -229,6 +252,7 @@ const shader_source =
     \\            float ew = val;
     \\            if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
     \\            else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
+    \\            else ew = matmul_elementwise_unary(p.ew_op, val);
     \\            if (p.write_primary != 0) C[p.dst_offset + cr * p.dst_row_stride + cc] = val;
     \\            ew_output[p.ew_dst_offset + linear] = ew;
     \\        }
@@ -277,6 +301,7 @@ const shader_source =
     \\        float ew = sum;
     \\        if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + sum : sum + other;
     \\        else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * sum : sum * other;
+    \\        else ew = matmul_elementwise_unary(p.ew_op, sum);
     \\        row_values[col] = ew;
     \\        ss += ew * ew;
     \\    }
@@ -862,6 +887,7 @@ const shader_source =
     \\            float ew = sum;
     \\            if (p.ew_op[slot] == 7) ew = (p.ew_is_swapped[slot] != 0) ? other + sum : sum + other;
     \\            else if (p.ew_op[slot] == 8) ew = (p.ew_is_swapped[slot] != 0) ? other * sum : sum * other;
+    \\            else ew = matmul_elementwise_unary(p.ew_op[slot], sum);
     \\            sidecar_dst[p.ew_dst_offset[slot] + col] = ew;
     \\        } else if (ropes[lane]) {
     \\            uint r = rope_sidecars[lane];
@@ -5492,8 +5518,8 @@ const CompiledProgram = struct {
         if (!self.canEncodeDenseMatvecElementwiseSidecar(m, e)) return false;
         const g = m.geom;
         const primary_is_src0 = e.src0 == m.dst and e.src0_offset == g.dst_offset;
-        const secondary_buf = if (primary_is_src0) e.src1 else e.src0;
-        const secondary_offset = if (primary_is_src0) e.src1_offset else e.src0_offset;
+        const secondary_buf = if (e.op.isBinary()) (if (primary_is_src0) e.src1 else e.src0) else e.src0;
+        const secondary_offset = if (e.op.isBinary()) (if (primary_is_src0) e.src1_offset else e.src0_offset) else e.src0_offset;
 
         var buffers: [DenseMatvecBatchKernel.buffer_count]DeviceBuffer = undefined;
         for (0..MAX_DENSE_MATVEC_BATCH) |slot| {
@@ -5538,9 +5564,9 @@ const CompiledProgram = struct {
         const g = m.geom;
         if (g.M == 1 and self.encodeMatvecElementwise(exec, view, m, e, write_primary)) return true;
         const primary_is_src0 = e.src0 == m.dst and e.src0_offset == g.dst_offset;
-        const secondary_buf = if (primary_is_src0) e.src1 else e.src0;
-        if (secondary_buf == m.dst) return false;
-        const secondary_offset = if (primary_is_src0) e.src1_offset else e.src0_offset;
+        const secondary_buf = if (e.op.isBinary()) (if (primary_is_src0) e.src1 else e.src0) else e.src0;
+        if (e.op.isBinary() and secondary_buf == m.dst) return false;
+        const secondary_offset = if (e.op.isBinary()) (if (primary_is_src0) e.src1_offset else e.src0_offset) else e.src0_offset;
         const buffers = [_]DeviceBuffer{
             view.device_bufs[m.a],
             view.device_bufs[m.b],
@@ -6491,8 +6517,8 @@ const CompiledProgram = struct {
         if (!program_mod.matmulElementwiseSidecarCompatible(m, e)) return false;
         if (m.geom.M != 1) return false;
         const primary_is_src0 = e.src0 == m.dst and e.src0_offset == m.geom.dst_offset;
-        const secondary_buf = if (primary_is_src0) e.src1 else e.src0;
-        return secondary_buf != m.dst;
+        const secondary_buf = if (e.op.isBinary()) (if (primary_is_src0) e.src1 else e.src0) else e.src0;
+        return !e.op.isBinary() or secondary_buf != m.dst;
     }
 
     fn canEncodeDenseMatmulBatchOp(_: *CompiledProgram, m: anytype) bool {
@@ -6742,9 +6768,9 @@ const CompiledProgram = struct {
                     const e = ops[sidecar_index].elementwise;
                     if (!program_mod.matmulElementwiseSidecarCompatible(m, e)) return;
                     const primary_is_src0 = e.src0 == m.dst and e.src0_offset == g.dst_offset;
-                    const secondary_buf = if (primary_is_src0) e.src1 else e.src0;
-                    const secondary_offset = if (primary_is_src0) e.src1_offset else e.src0_offset;
-                    if (secondary_buf == m.dst) return;
+                    const secondary_buf = if (e.op.isBinary()) (if (primary_is_src0) e.src1 else e.src0) else e.src0;
+                    const secondary_offset = if (e.op.isBinary()) (if (primary_is_src0) e.src1_offset else e.src0_offset) else e.src0_offset;
+                    if (e.op.isBinary() and secondary_buf == m.dst) return;
                     const carried = [_]?usize{sidecar_index};
                     params.write_primary[slot] = @intFromBool(program_mod.matmulPrimaryOutputHasExternalUsersExcept(ops, op_index, &carried));
                     params.sidecar_kind[slot] = @intFromEnum(QMatvecBatchSidecarKind.elementwise);
@@ -8371,10 +8397,25 @@ const CompiledProgram = struct {
         const start: usize = @intCast(command.op_start);
         if (command.op_count == 4) {
             const gate = deviceOpAt(.matmul, ops, start) orelse return false;
-            const first = deviceOpAt(.fused_elementwise, ops, start + 1) orelse return false;
             const up = deviceOpAt(.matmul, ops, start + 2) orelse return false;
             const product = deviceOpAt(.elementwise, ops, start + 3) orelse return false;
-            return self.encodeMatmulPairSingleFusedElementwiseChain(exec, view, gate, first, up, product);
+            return switch (ops[start + 1]) {
+                .fused_elementwise => |first| self.encodeMatmulPairSingleFusedElementwiseChain(exec, view, gate, first, up, product),
+                .elementwise => |first| blk: {
+                    if (!program_mod.denseProjectionPairSingleElementwiseChainCompatible(gate, first, up, product)) break :blk false;
+                    const steps = [_]backend_mod.FusedEwStep{.{ .op = first.op, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 }};
+                    const fe = .{
+                        .steps = steps[0..],
+                        .n = first.n,
+                        .dst = first.dst,
+                        .src = first.src0,
+                        .dst_offset = first.dst_offset,
+                        .src_offset = first.src0_offset,
+                    };
+                    break :blk self.encodeMatmulPairSingleFusedElementwiseChain(exec, view, gate, fe, up, product);
+                },
+                else => false,
+            };
         }
         if (command.op_count != 6) return false;
         const gate = deviceOpAt(.matmul, ops, start) orelse return false;
