@@ -378,8 +378,8 @@ June 19, 2026 evidence: `linear_batched` is near parity at about `0.94x`,
 case is `lazy_rms_silu_ffn_batched` at about `0.86x`.
 A subsequent row-chain executor pass taught the CPU reference tape to execute
 `rmsnorm -> repeat(weight) -> mul` as one scaled RMSNorm pass instead of three
-materialized row-chain entries. Latest June 19, 2026 PyTorch evidence:
-`linear_batched` is the only remaining miss at about `0.94x`, while
+materialized row-chain entries. At that June 19, 2026 checkpoint,
+`linear_batched` was the only remaining miss at about `0.94x`, while
 `lazy_matmul_add_gelu_batched` is about `1.69x`, `lazy_mlp_batched` is about
 `1.43x`, and `lazy_rms_silu_ffn_batched` now reaches about `1.01x`.
 A direct-session CPU fast-path pass then tightened the direct `executeInto`
@@ -397,15 +397,16 @@ borrowed NativeBuffer parameters no longer bypass explicit persistent upload on
 the direct linear fast path.
 The next pass removed duplicate output-buffer validation from the generic
 `executeInto` hot path while preserving structured StepParams diagnostics for
-invalid output buffers. That finally turned the hard PyTorch parity command
-green on the checked CPU workload set. Current June 19, 2026 hard-gate
-evidence: `bench:pytorch:parity` passed on attempt `2/3` with one noisy attempt;
-`linear_batched` reached about `1.05x` vs PyTorch,
-`lazy_matmul_add_gelu_batched` about `1.69x`, `lazy_mlp_batched` about `1.62x`,
-`lazy_rms_silu_ffn_batched` about `1.03x`, `max_pool2d_batched` about `8.45x`,
-and `avg_pool2d_batched` about `4.85x`. Treat this as current evidence for the
-checked CPU lanes, not a claim that every future PyTorch-shaped workload is
-already faster.
+invalid output buffers. That turned the hard PyTorch parity command green on
+the checked CPU workload set, and the current June 23, 2026 hard-gate evidence
+keeps it green: `bench:pytorch:parity` passed against PyTorch `2.12.1` with
+`BENCH_PYTORCH_INSTALL=1`, zero noisy attempts, and a worst checked lane
+(`linear_batched`) still at `1.06x` vs PyTorch. The same run measured
+`lazy_matmul_add_gelu_batched` at `2.70x`, `lazy_mlp_batched` at `1.70x`,
+`lazy_rms_silu_ffn_batched` at `1.66x`, `max_pool2d_batched` at `8.59x`, and
+`avg_pool2d_batched` at `4.81x`. Treat this as current evidence for the checked
+CPU lanes, not a claim that every future PyTorch-shaped workload is already
+faster.
 The hard parity command now bootstraps upstream PyTorch into the repo-local
 `.venv` with `uv` (`BENCH_PYTORCH_INSTALL=1`) before comparing, so the PyTorch
 gate is no longer a soft local-environment skip when the reference package has
@@ -423,18 +424,13 @@ For iteration speed, the benchmark probes now have opt-in narrow lanes:
 passing the same filter to the child module bench. The default `bench:pytorch`,
 `bench:pytorch:parity`, and `bench:module-program` commands still run their full
 evidence sets; the filters are for microscope work, not release claims. The
-named `bench:pytorch:gaps` and `bench:pytorch:gaps:run` scripts keep the current
+named `bench:pytorch:gaps` and `bench:pytorch:gaps:run` scripts keep the former
 PyTorch soft spots as a one-command loop (`linear_batched` and
-`log_softmax_classifier_batched`) so kernel work can iterate without repeatedly
-typing benchmark key filters. The current June 22, 2026 focused evidence says
-PyTorch is only ahead on those tiny CPU lanes:
-`linear_batched=zgml:0.0026ms pytorch:0.0024ms zgml_vs_pytorch=0.93x` and
-`log_softmax_classifier_batched=zgml:0.0083ms pytorch:0.0070ms
-zgml_vs_pytorch=0.84x`, while the same run has
-`lazy_rms_silu_ffn_batched=1.65x`, `rms_gelu_linear_batched=2.53x`, and
-`lazy_token_head_batched=1.02x`. That keeps the next performance question
-concrete: close the tiny BLAS/row-log-softmax overhead gap, not redesign the
-library.
+`log_softmax_classifier_batched`) so kernel work can still iterate without
+repeatedly typing benchmark key filters. They are now microscopes, not current
+hard-gate blockers: the June 23, 2026 hard parity run has no PyTorch lane below
+parity in the required set. That shifts the next performance question away from
+PyTorch catch-up and back to the Q8/ggml substrate frontier.
 The PyTorch comparison output now also prints `ratio_range` and `ratio_median`
 for each selected lane across repeated attempts, because these microsecond CPU
 lanes are noisy enough that a single lucky attempt can make a miss look like
@@ -464,17 +460,12 @@ median `1.57x`; the same pass kept `linear_batched` at a `2.23x` selected ratio
 with median `0.81x`. That is useful progress, but still noisy enough that the
 ratio range remains the honest contract rather than a permanent universal
 parity claim. A June 23, 2026 small-direct CPU pass then made that gap less
-pathological without hiding the remaining miss: the direct `Linear` fast path
-now uses a 16-wide vector kernel for aligned small output rows while preserving
-the old 8-wide path for narrower rows, and the direct
-`Linear -> LogSoftmax` tail now vectorizes row max/sum/subtract work. The
-focused three-attempt microscope moved `linear_batched` to
-`ratio_median=0.83x` with a best parity attempt in one no-rebuild rerun, and
-kept `log_softmax_classifier_batched` around `ratio_median=0.82x` while showing
-best attempts above parity. This is incremental headroom, not a parity claim:
-the next real win still needs either a tighter small-GEMM+bias kernel or a
-better row-log-softmax micro-kernel that improves the median, not just the best
-attempt.
+pathological: the direct `Linear` fast path now uses a 16-wide vector kernel for
+aligned small output rows while preserving the old 8-wide path for narrower
+rows, and the direct `Linear -> LogSoftmax` tail now vectorizes row
+max/sum/subtract work. The later hard parity rerun moved this from "best attempt
+can clear parity" to "required PyTorch parity is green"; further tiny-kernel
+work is still useful, but it is no longer the main plan blocker.
 The repo now exposes that inner loop directly:
 
 ```text
