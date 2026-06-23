@@ -175,6 +175,12 @@ function checkScripts() {
   if (scripts["bench:frontier:row-chain:run"] !== "BENCH_FRONTIER_FILTER=qrow ./zig-out/bin/bench-frontier") {
     errors.push("package.json bench:frontier:row-chain:run must remain the no-rebuild row-chain-only frontier microscope");
   }
+  if (scripts["bench:frontier:row-chain-region"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_FILTER=\"qrow region\" ./zig-out/bin/bench-frontier") {
+    errors.push("package.json bench:frontier:row-chain-region must remain the ReleaseFast x7 row-chain region microscope");
+  }
+  if (scripts["bench:frontier:row-chain-region:run"] !== "BENCH_FRONTIER_FILTER=\"qrow region\" ./zig-out/bin/bench-frontier") {
+    errors.push("package.json bench:frontier:row-chain-region:run must remain the no-rebuild x7 row-chain region microscope");
+  }
   if (scripts["bench:q8-prompt-candidate"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate must remain the rebuild-backed full-model Q8 prompt candidate evidence probe");
   }
@@ -404,6 +410,9 @@ function checkScripts() {
     "projection_row_chain_single_dispatch_prompt=",
     "projection_row_chain_single_dispatch_full_prefill=",
     "projection_row_chain_single_dispatch_smollm_prompt=",
+    "projection_row_chain_two_phase_region_full_prefill=",
+    "projection_row_chain_two_phase_region_smollm_prompt=",
+    "projection_row_chain two-phase group full-prefill region runtime profile must stay at 14 command dispatches with two_phase_count=7",
     "runtime_command_dispatches",
     "projection_row_chain prompt runtime profile must stay at 1 command dispatch",
     "projection_row_chain_single_dispatch prompt runtime profile must stay at 1 command dispatch",
@@ -422,6 +431,8 @@ function checkScripts() {
     "BENCH_FRONTIER_FILTER",
     "filter={s}",
     "filter.matchesAny",
+    "qrow region",
+    "projection_row_chain_two_phase_group",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "scalar qmatmul row-chain diagnosis until tiled replacement exists", [
     "if (q.M != 1) {",
@@ -1370,6 +1381,9 @@ function checkFrontierEvidence() {
     "projection_chain_full_prefill=",
     "projection_group_full_prefill=",
     "projection_row_chain_group_full_prefill=",
+    "projection_row_chain_two_phase_region_full_prefill=",
+    "projection_row_chain_two_phase_region_smollm_prompt=",
+    "shape_commands=7 shape_projection_row_chains=7 shape_covered_ops=35 shape_saved_dispatches=28 runtime_command_dispatches=14 two_phase_count=7 selected=yes",
     "shape_commands=",
     "shape_projection_row_chains=",
     "shape_covered_ops=",
@@ -4991,6 +5005,8 @@ function checkDocs() {
     "benchmark binaries with `-Doptimize=ReleaseFast`",
     "BENCH_FRONTIER_FILTER=<label-substring>",
     "BENCH_FRONTIER_FILTER=qrow",
+    "BENCH_FRONTIER_FILTER=\"qrow region\"",
+    "same anchored\nregion-command shape",
     "projection_row_chain_candidate=ready",
     "single_throughput=off",
     "command fusion holds at `0.98x` to `1.02x`",

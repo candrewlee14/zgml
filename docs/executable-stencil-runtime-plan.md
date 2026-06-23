@@ -284,7 +284,11 @@ Current checked progress:
   while the simpler command candidate landed at `1.02x`. That is useful
   evidence, not a default path: the prototype fixed the old single-dispatch
   `0.20x` trap materially, but the extra partial/finalize work still loses to
-  the simpler two-dispatch command lowering.
+  the simpler two-dispatch command lowering. The frontier gate now also has an
+  x7 anchored-region microscope that selects the actual region-command two-phase
+  path (`two_phase_count=7`) with zero observed diff for full-prefill and
+  SmolLM-prompt shapes, while labeling it diagnostic because it still lands
+  below the staged baseline in that isolated geometry.
   The single-dispatch tiled kernel remains a diagnostic for the dispatch-only
   trap, not the design center for the next performance pass.
   The frontier and q8 prompt candidate gates now rebuild benchmark binaries with `-Doptimize=ReleaseFast` before any no-rebuild rerun evidence.
@@ -512,6 +516,8 @@ npm run bench:frontier:gate            # rebuild ReleaseFast and measure schedul
 npm run bench:frontier:gate:run        # rerun frontier evidence without rebuilding artifacts
 npm run bench:frontier:row-chain       # rebuild ReleaseFast and run only row-chain frontier labels
 npm run bench:frontier:row-chain:run   # rerun only row-chain frontier labels without rebuilding artifacts
+npm run bench:frontier:row-chain-region      # rebuild ReleaseFast and run only x7 row-chain region labels
+npm run bench:frontier:row-chain-region:run  # rerun only x7 row-chain region labels without rebuilding artifacts
 npm run bench:q8-prompt-candidate      # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
 npm run bench:q8-prompt-candidate:run  # rerun Q8 prompt candidate evidence without rebuilding artifacts
 npm run bench:ggml:parity:run          # rerun hard ggml parity without rebuilding artifacts
@@ -537,7 +543,10 @@ artifact reruns after that benchmark-grade build. The frontier binary now also
 accepts `BENCH_FRONTIER_FILTER=<label-substring>` for microscope loops; the
 named row-chain scripts use `BENCH_FRONTIER_FILTER=qrow` so the remaining tiled
 row-chain kernel work can skip unrelated elementwise/matmul/norm frontier
-families while preserving the full unfiltered release gate. The frontier
+families while preserving the full unfiltered release gate. The x7 region
+scripts use `BENCH_FRONTIER_FILTER="qrow region"` to hit the same anchored
+region-command shape that full-model prompt scheduling selects, which keeps the
+two-phase kernel loop tight while still proving the real region path. The frontier
 microscope uses `BENCH_FRONTIER_ATTEMPTS` (default `5`) so the row-chain kernel
 work can absorb local timing noise without falling back to the much slower full
 scorecard.

@@ -1017,13 +1017,13 @@ fn benchProjectionRowChainMetalCase(
 }
 
 fn benchProjectionRowChainGroupMetalCase(
+    comptime n_slots: usize,
     io: std.Io,
     alloc: std.mem.Allocator,
     w: *std.Io.Writer,
     metal: *internal.backend_metal.MetalBackend,
     case: ProjectionRowChainCase,
 ) !void {
-    const n_slots: usize = 4;
     const elems = case.m * case.n;
     const input_len = case.m * case.k;
     const block_size: usize = 32;
@@ -1045,6 +1045,8 @@ fn benchProjectionRowChainGroupMetalCase(
     defer alloc.free(staged_out);
     const grouped_out = try allocF32(alloc, n_slots * elems, 808, 0.0);
     defer alloc.free(grouped_out);
+    const two_phase_out = try allocF32(alloc, n_slots * elems, 811, 0.0);
+    defer alloc.free(two_phase_out);
     const qdata = try allocI8Weights(alloc, n_slots * case.k * case.n, 809);
     defer alloc.free(qdata);
     const qscales = try allocF32(alloc, n_slots * scale_len, 810, 0.02);
@@ -1124,14 +1126,19 @@ fn benchProjectionRowChainGroupMetalCase(
     grouped_policy.fuse_projection_row_chain_qmatvec = true;
     const grouped_handle = metal.compileProgramWithCommandPolicy(program, grouped_policy) orelse return error.CompileFailed;
     defer be.freeProgram(grouped_handle);
+    const two_phase_policy = program_mod.CommandStreamPolicy.promptProjectionRowChainTwoPhaseCandidate();
+    const two_phase_handle = metal.compileProgramWithCommandPolicy(program, two_phase_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(two_phase_handle);
 
     var staged_outputs: [n_slots]backend_mod.ProgramIO = undefined;
     var grouped_outputs: [n_slots]backend_mod.ProgramIO = undefined;
+    var two_phase_outputs: [n_slots]backend_mod.ProgramIO = undefined;
     for (0..n_slots) |slot| {
         const out_buf: u16 = @intCast(6 + slot * 6);
         const base = slot * elems;
         staged_outputs[slot] = programIo(out_buf, staged_out[base .. base + elems]);
         grouped_outputs[slot] = programIo(out_buf, grouped_out[base .. base + elems]);
+        two_phase_outputs[slot] = programIo(out_buf, two_phase_out[base .. base + elems]);
     }
 
     var staged_bench = ProjectionRowChainMetalBench{
@@ -1146,9 +1153,22 @@ fn benchProjectionRowChainGroupMetalCase(
         .out = grouped_out,
         .output_io = &grouped_outputs,
     };
+    var two_phase_bench = ProjectionRowChainMetalBench{
+        .be = be,
+        .handle = two_phase_handle,
+        .out = two_phase_out,
+        .output_io = &two_phase_outputs,
+    };
+
+    be.executeProgram(staged_handle, &.{}, &staged_outputs);
+    be.executeProgram(grouped_handle, &.{}, &grouped_outputs);
+    be.executeProgram(two_phase_handle, &.{}, &two_phase_outputs);
+    const grouped_max_abs_diff = maxAbsDiff(staged_out, grouped_out);
+    const two_phase_max_abs_diff = maxAbsDiff(staged_out, two_phase_out);
 
     const staged_stats = measure(io, &staged_bench);
     const grouped_stats = measure(io, &grouped_bench);
+    const two_phase_stats = measure(io, &two_phase_bench);
     const approx_work = 2.0 * @as(f64, @floatFromInt(n_slots * case.m * case.n * case.k));
 
     var staged_name_buf: [112]u8 = undefined;
@@ -1159,9 +1179,17 @@ fn benchProjectionRowChainGroupMetalCase(
     const grouped_name = try std.fmt.bufPrint(&grouped_name_buf, "{s} projection_row_chain_group", .{case.name});
     try printStats(w, grouped_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", grouped_stats);
 
+    var two_phase_name_buf: [128]u8 = undefined;
+    const two_phase_name = try std.fmt.bufPrint(&two_phase_name_buf, "{s} projection_row_chain_two_phase_group", .{case.name});
+    try printStats(w, two_phase_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", two_phase_stats);
+
     var ratio_name_buf: [112]u8 = undefined;
     const ratio_name = try std.fmt.bufPrint(&ratio_name_buf, "{s} projection_row_chain_group", .{case.name});
-    try printRatio(w, ratio_name, staged_stats, grouped_stats, maxAbsDiff(staged_out, grouped_out));
+    try printRatio(w, ratio_name, staged_stats, grouped_stats, grouped_max_abs_diff);
+
+    var two_phase_ratio_name_buf: [144]u8 = undefined;
+    const two_phase_ratio_name = try std.fmt.bufPrint(&two_phase_ratio_name_buf, "{s} projection_row_chain_two_phase_group", .{case.name});
+    try printRatio(w, two_phase_ratio_name, staged_stats, two_phase_stats, two_phase_max_abs_diff);
 
     const grouped_commands = try program_mod.buildProgramCommands(alloc, &ops, grouped_policy);
     defer alloc.free(grouped_commands);
@@ -1169,6 +1197,13 @@ fn benchProjectionRowChainGroupMetalCase(
     const profile_name = try std.fmt.bufPrint(&profile_name_buf, "{s} projection_row_chain_group dispatch_profile", .{case.name});
     try printCommandShape(w, profile_name, grouped_commands);
     try printProjectionRowChainRuntimeProfile(w, profile_name, be, grouped_handle, &grouped_outputs);
+
+    const two_phase_commands = try program_mod.buildProgramCommands(alloc, &ops, two_phase_policy);
+    defer alloc.free(two_phase_commands);
+    var two_phase_profile_name_buf: [144]u8 = undefined;
+    const two_phase_profile_name = try std.fmt.bufPrint(&two_phase_profile_name_buf, "{s} projection_row_chain_two_phase_group dispatch_profile", .{case.name});
+    try printCommandShape(w, two_phase_profile_name, two_phase_commands);
+    try printProjectionRowChainRuntimeProfile(w, two_phase_profile_name, be, two_phase_handle, &two_phase_outputs);
 }
 
 fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer, filter: FrontierFilter) !void {
@@ -1179,6 +1214,8 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
         "projection_chain",
         "projection_group",
         "projection_row_chain",
+        "qrow region",
+        "projection_row_chain_two_phase_group",
     })) return;
     try w.print("\nMetal Projection Row-Chain Command\n", .{});
     try w.print("----------------------------------\n", .{});
@@ -1225,7 +1262,17 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
     };
     for (row_chain_group_cases) |case| {
         if (filter.matchesAny(&.{ case.name, "qrow group", "projection_row_chain_group" })) {
-            try benchProjectionRowChainGroupMetalCase(io, alloc, w, &metal, case);
+            try benchProjectionRowChainGroupMetalCase(4, io, alloc, w, &metal, case);
+        }
+    }
+
+    const row_chain_region_cases = [_]ProjectionRowChainCase{
+        .{ .name = "qrow region full-prefill x7 m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
+        .{ .name = "qrow region smollm-prompt x7 m=128 n=576 k=576", .m = 128, .n = 576, .k = 576 },
+    };
+    for (row_chain_region_cases) |case| {
+        if (filter.matchesAny(&.{ case.name, "qrow region", "projection_row_chain_two_phase_group" })) {
+            try benchProjectionRowChainGroupMetalCase(7, io, alloc, w, &metal, case);
         }
     }
 
