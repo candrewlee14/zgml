@@ -367,9 +367,7 @@ const shader_source =
     \\            uint kr = kt + r, nc = gCol + c;
     \\            if (kr < p.K && nc < p.N) {
     \\                uint w_idx = kr * p.N + nc;
-    \\                bool tile_aligned_q8 = p.block_size == TILE && (p.N % TILE) == 0;
-    \\                uint scale_idx = tile_aligned_q8 ? ((kr * p.N + gCol) / TILE) : (w_idx / p.block_size);
-    \\                tW[i] = float(weight_data[w_idx]) * weight_scales[scale_idx];
+    \\                tW[i] = float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
     \\            } else {
     \\                tW[i] = 0.0f;
     \\            }
@@ -1329,9 +1327,7 @@ const shader_source =
     \\            uint kr = kt + r, nc = gCol + c;
     \\            if (kr < p.K && nc < p.N) {
     \\                uint w_idx = kr * p.N + nc;
-    \\                bool tile_aligned_q8 = p.block_size == TILE && (p.N % TILE) == 0;
-    \\                uint scale_idx = tile_aligned_q8 ? ((kr * p.N + gCol) / TILE) : (w_idx / p.block_size);
-    \\                tW[i] = float(weight_data[w_idx]) * weight_scales[scale_idx];
+    \\                tW[i] = float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
     \\            } else {
     \\                tW[i] = 0.0f;
     \\            }
@@ -1424,9 +1420,7 @@ const shader_source =
     \\            uint kr = kt + r, nc = gCol + c;
     \\            if (kr < p.K && nc < p.N) {
     \\                uint w_idx = kr * p.N + nc;
-    \\                bool tile_aligned_q8 = p.block_size == TILE && (p.N % TILE) == 0;
-    \\                uint scale_idx = tile_aligned_q8 ? ((kr * p.N + gCol) / TILE) : (w_idx / p.block_size);
-    \\                tW[i] = float(weight_data[w_idx]) * weight_scales[scale_idx];
+    \\                tW[i] = float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
     \\            } else {
     \\                tW[i] = 0.0f;
     \\            }
@@ -1588,9 +1582,7 @@ const shader_source =
     \\                uint kr = kt + r, nc = gCol + c;
     \\                if (kr < p.K && nc < p.N) {
     \\                    uint w_idx = kr * p.N + nc;
-    \\                    bool tile_aligned_q8 = p.block_size == TILE && (p.N % TILE) == 0;
-    \\                    uint scale_idx = tile_aligned_q8 ? ((kr * p.N + gCol) / TILE) : (w_idx / p.block_size);
-    \\                    tW[i] = float(weight_data[w_idx]) * weight_scales[scale_idx];
+    \\                    tW[i] = float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
     \\                } else {
     \\                    tW[i] = 0.0f;
     \\                }
@@ -1700,9 +1692,7 @@ const shader_source =
     \\            uint kr = kt + r, nc = gCol + c;
     \\            if (kr < p.K && nc < p.N) {
     \\                uint w_idx = kr * p.N + nc;
-    \\                bool tile_aligned_q8 = p.block_size == TILE && (p.N % TILE) == 0;
-    \\                uint scale_idx = tile_aligned_q8 ? ((kr * p.N + gCol) / TILE) : (w_idx / p.block_size);
-    \\                tW[i] = float(weight_data[w_idx]) * weight_scales[scale_idx];
+    \\                tW[i] = float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
     \\            } else {
     \\                tW[i] = 0.0f;
     \\            }
@@ -3252,9 +3242,7 @@ const shader_source =
     \\            uint kr = kt + r, nc = gCol + c;
     \\            if (kr < p.K && nc < p.N) {
     \\                uint w_idx = kr * p.N + nc;
-    \\                bool tile_aligned_q8 = p.block_size == TILE && (p.N % TILE) == 0;
-    \\                uint scale_idx = tile_aligned_q8 ? ((kr * p.N + gCol) / TILE) : (w_idx / p.block_size);
-    \\                tW[i] = float(weight_data[w_idx]) * weight_scales[scale_idx];
+    \\                tW[i] = float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
     \\            } else {
     \\                tW[i] = 0.0f;
     \\            }
