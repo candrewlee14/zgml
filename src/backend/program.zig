@@ -1611,6 +1611,8 @@ pub const ProjectionRowChainFrontierDebug = struct {
     q_m: u32 = 0,
     q_n: u32 = 0,
     q_dst: u16 = 0,
+    q_input: u16 = 0,
+    weight_idx: u32 = 0,
     elementwise_dst: u16 = 0,
     elementwise_src0: u16 = 0,
     elementwise_src1: u16 = 0,
@@ -1689,6 +1691,8 @@ pub fn firstProjectionRowChainFrontierDebug(
             out.q_m = q.M;
             out.q_n = q.N;
             out.q_dst = q.dst;
+            out.q_input = q.input;
+            out.weight_idx = q.weight_idx;
         } else {
             const m = switch (ops[start]) {
                 .matmul => |m| m,
@@ -1697,6 +1701,7 @@ pub fn firstProjectionRowChainFrontierDebug(
             out.q_m = @intCast(m.geom.M);
             out.q_n = @intCast(m.geom.N);
             out.q_dst = m.dst;
+            out.q_input = m.a;
         }
         out.elementwise_dst = e.dst;
         out.elementwise_src0 = e.src0;
