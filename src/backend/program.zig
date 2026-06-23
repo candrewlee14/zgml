@@ -8041,6 +8041,36 @@ test "program command stream batches qmatvec elementwise sidecars" {
     try std.testing.expectEqual(@as(u32, 4), summary.estimated_saved_dispatches);
 }
 
+test "program command stream batches qmatvec unary elementwise sidecars" {
+    const ops = [_]backend_mod.DeviceOp{
+        testQMatmulWith(1, 0, 1),
+        testQMatmulWith(2, 0, 1),
+        testQMatmulWith(3, 0, 1),
+        .{ .elementwise = .{ .op = .silu, .dst = 4, .src0 = 1, .src1 = 1, .n = 4 } },
+        .{ .elementwise = .{ .op = .gelu, .dst = 5, .src0 = 2, .src1 = 2, .n = 4 } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_cache_group, commands[0].kind);
+    try std.testing.expectEqual(ProjectionGroupKind.qmatvec, commands[0].projection_kind);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].sidecar_count);
+    try std.testing.expectEqual(@as(?usize, 3), commands[0].sidecar_indices[0]);
+    try std.testing.expectEqual(@as(?usize, 4), commands[0].sidecar_indices[1]);
+    try std.testing.expectEqual(@as(?usize, 0), commands[0].sidecarAnchorSlot(0));
+    try std.testing.expectEqual(@as(?usize, 1), commands[0].sidecarAnchorSlot(1));
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_cache_groups);
+    try std.testing.expectEqual(@as(u32, 3), summary.projection_cache_anchors);
+    try std.testing.expectEqual(@as(u32, 2), summary.projection_cache_sidecars);
+    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 4), summary.estimated_saved_dispatches);
+}
+
 test "program command stream fuses sibling qmatvec elementwise chain" {
     var ops: [8]backend_mod.DeviceOp = undefined;
     for (ops[0..7], 0..) |*op, i| {

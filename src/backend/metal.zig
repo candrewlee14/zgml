@@ -6455,8 +6455,8 @@ const CompiledProgram = struct {
     fn canEncodeQMatvecElementwiseSidecar(_: *CompiledProgram, q: anytype, e: anytype) bool {
         if (!program_mod.qmatvecElementwiseSidecarCompatible(q, e)) return false;
         const primary_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
-        const secondary_buf = if (primary_is_src0) e.src1 else e.src0;
-        return secondary_buf != q.dst;
+        const secondary_buf = if (e.op.isBinary()) (if (primary_is_src0) e.src1 else e.src0) else e.src0;
+        return !e.op.isBinary() or secondary_buf != q.dst;
     }
 
     fn planQMatvecProjectionCacheCommand(
@@ -6577,9 +6577,9 @@ const CompiledProgram = struct {
                     const e = ops[sidecar_index].elementwise;
                     if (!program_mod.qmatvecElementwiseSidecarCompatible(q, e)) return;
                     const primary_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
-                    const secondary_buf = if (primary_is_src0) e.src1 else e.src0;
-                    const secondary_offset = if (primary_is_src0) e.src1_offset else e.src0_offset;
-                    if (secondary_buf == q.dst) return;
+                    const secondary_buf = if (e.op.isBinary()) (if (primary_is_src0) e.src1 else e.src0) else e.src0;
+                    const secondary_offset = if (e.op.isBinary()) (if (primary_is_src0) e.src1_offset else e.src0_offset) else e.src0_offset;
+                    if (e.op.isBinary() and secondary_buf == q.dst) return;
                     const carried = [_]?usize{sidecar_index};
                     params.write_primary[slot] = @intFromBool(program_mod.projectionPrimaryOutputHasExternalUsersExcept(ops, op_index, &carried));
                     params.sidecar_kind[slot] = @intFromEnum(QMatvecBatchSidecarKind.elementwise);
@@ -10275,6 +10275,85 @@ test "metal backend qmatvec projection group carries elementwise sidecars" {
     be.executeProgram(handle, &.{}, &out);
 
     try std.testing.expectEqualSlices(f32, &.{ 11, 22, 33, 44 }, &got);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.region_command_plan_cached_count);
+    try std.testing.expectEqual(@as(u64, 2), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_group)]);
+}
+
+test "metal backend qmatvec projection group carries unary elementwise sidecars" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4 };
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+
+    var ops: [8]backend_mod.DeviceOp = undefined;
+    ops[0] = .{ .qmatmul = .{
+        .dst = 1,
+        .input = 0,
+        .weight_idx = 0,
+        .M = 1,
+        .N = 4,
+        .K = 4,
+    } };
+    ops[1] = .{ .elementwise = .{
+        .op = .silu,
+        .dst = 9,
+        .src0 = 1,
+        .src1 = 1,
+        .n = 4,
+    } };
+    for (ops[2..], 0..) |*op, i| {
+        op.* = .{ .qmatmul = .{
+            .dst = @intCast(i + 2),
+            .input = 0,
+            .weight_idx = 0,
+            .M = 1,
+            .N = 4,
+            .K = 4,
+        } };
+    }
+
+    const buf_sizes = [_]usize{ 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 10,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var got: [4]f32 = undefined;
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 9, .host_ptr = @ptrCast(&got), .size = got.len * 4 }};
+    be.executeProgram(handle, &.{}, &out);
+
+    for (input, got) |x, actual| {
+        const want = x / (1.0 + @exp(-x));
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
 
     var rt = profile_mod.RuntimeProfile{};
     be.addRuntimeProfileTo(handle, &rt);
