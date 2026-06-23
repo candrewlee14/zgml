@@ -551,6 +551,8 @@ npm run bench:stencil:shape:run        # rerun current source stencil shape/hash
 npm run bench:q8-prompt-candidate      # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
 npm run bench:q8-prompt-candidate:run  # rerun Q8 prompt candidate evidence without rebuilding artifacts
 npm run bench:ggml:parity:run          # rerun hard ggml parity; bench script rebuilds ReleaseFast by default
+npm run dev:perf:ggml:q8-command-smoke # cheap ggml smoke with Q8-only projection-row-chain command candidate
+npm run dev:perf:ggml:q8-command-smoke:run # rerun Q8-only command-candidate ggml smoke without rebuilding artifacts
 zig build -Doptimize=ReleaseFast bench-build && ./zig-out/bin/bench-llama-smollm ignored 128 1 1 --stencil-only --debug-row-chain
 ```
 
@@ -593,6 +595,11 @@ can check the current Q8 prompt frontier without paying for unrelated rows,
 norms, and matmuls. The frontier microscope uses `BENCH_FRONTIER_ATTEMPTS`
 (default `5`) so the row-chain and qproj kernel work can absorb local timing
 noise without falling back to the much slower full scorecard.
+The ggml script now also accepts per-format `ZGML_F16_EXTRA_ARGS` and
+`ZGML_Q8_EXTRA_ARGS`, so Q8 prompt candidates can be measured against llama.cpp
+without mutating the F16 evidence lane. The `dev:perf:ggml:q8-command-smoke`
+loop uses this for the projection-row-chain command candidate; it is a cheap
+artifact-producing microscope, not a replacement for the hard ggml parity gate.
 The frontier benchmark gate keeps the same floors but now evaluates them across
 its repeated noisy attempts instead of requiring every independent microbench
 lane to pass in one lucky attempt. If no single attempt clears all floors but

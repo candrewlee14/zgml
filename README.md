@@ -885,6 +885,8 @@ npm run dev:perf:q8-prompt # incremental ReleaseFast benchmark rebuild plus Q8 p
 npm run dev:perf:q8-prompt:run # rerun Q8 prompt candidate evidence against existing benchmark artifact
 npm run dev:perf:ggml:smoke # incremental ReleaseFast benchmark rebuild plus one-sample ggml smoke
 npm run dev:perf:ggml:smoke:run # rerun one-sample ggml smoke against existing benchmark artifact
+npm run dev:perf:ggml:q8-command-smoke # one-sample ggml smoke with Q8-only projection-row-chain command candidate
+npm run dev:perf:ggml:q8-command-smoke:run # rerun Q8-only command-candidate ggml smoke against existing benchmark artifact
 zig build bench-frontier  # run decision-grade local benchmarks
 zig build -Duse-blas      # enable BLAS for matmul
 ```
@@ -926,7 +928,10 @@ one repetition, and one zgml sample. It also sets `BENCH_ALLOW_QUARANTINED=1`,
 so known parity/perf misses still write artifacts without failing the local
 shell command. Set `BENCH_GGML_PROMPT`, `BENCH_GGML_GEN`, `BENCH_GGML_REPS`,
 `BENCH_ZGML_SAMPLES`, or `ZGML_EXTRA_ARGS` when a local hypothesis needs a wider
-or different sample. Once a change survives that loop, promote it through
+or different sample. `dev:perf:ggml:q8-command-smoke` uses the same cheap loop
+but appends `--metal-prompt-projection-row-chain-command-candidate` only to the
+Q8 zgml lane through `ZGML_Q8_EXTRA_ARGS`, leaving the F16 lane on the default
+shape. Once a change survives that loop, promote it through
 `npm run bench:pytorch:parity`, `npm run bench:q8-prompt-candidate`, and
 `npm run bench:ggml`.
 

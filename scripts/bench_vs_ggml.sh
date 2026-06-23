@@ -2,7 +2,7 @@
 # Benchmark zgml vs ggml/llama.cpp on SmolLM-135M.
 # Requires llama-bench, curl, python3, and a ReleaseFast build.
 # Usage: ./scripts/bench_vs_ggml.sh [prompt_tokens] [gen_tokens] [repetitions]
-# Useful env: ZGML_EXTRA_ARGS, BENCH_AUTO_DOWNLOAD=0,
+# Useful env: ZGML_EXTRA_ARGS, ZGML_F16_EXTRA_ARGS, ZGML_Q8_EXTRA_ARGS, BENCH_AUTO_DOWNLOAD=0,
 # BENCH_BASELINE_JSON=<artifact.json>, BENCH_REQUIRE_PARITY=1,
 # BENCH_ALLOW_QUARANTINED=1 for local smoke loops that should write artifacts
 # without failing the shell command on known parity/perf misses,
@@ -26,6 +26,8 @@ ZGML_F16_MODEL="${ZGML_F16_MODEL:-$GGUF_F16}"
 ZGML_Q8_MODEL="${ZGML_Q8_MODEL:-${ZGML_MODEL:-$GGUF_Q8}}"
 ZGML_DEFAULT_EXTRA_ARGS="${ZGML_DEFAULT_EXTRA_ARGS:---metal-prefill-device --metal-decode-region --gate-only}"
 ZGML_EXTRA_ARGS="${ZGML_EXTRA_ARGS-$ZGML_DEFAULT_EXTRA_ARGS}"
+ZGML_F16_EXTRA_ARGS="${ZGML_F16_EXTRA_ARGS:-}"
+ZGML_Q8_EXTRA_ARGS="${ZGML_Q8_EXTRA_ARGS:-}"
 HF_GGUF_REPO="${HF_GGUF_REPO:-mradermacher/SmolLM-135M-GGUF}"
 BENCH_AUTO_DOWNLOAD="${BENCH_AUTO_DOWNLOAD:-1}"
 BENCH_BASELINE_JSON="${BENCH_BASELINE_JSON:-}"
@@ -140,18 +142,35 @@ PY
 
 run_zgml() {
     local model="$1"
-    if [ -n "$ZGML_EXTRA_ARGS" ]; then
-        "$ZGML_BIN" "$model" "$PROMPT" "$GEN" "$REPS" "${ZGML_EXTRA_ARGV[@]}" 2>&1
-    else
-        "$ZGML_BIN" "$model" "$PROMPT" "$GEN" "$REPS" 2>&1
-    fi
+    local format="$2"
+    case "$format" in
+        f16)
+            if [ "${#ZGML_F16_EXTRA_ARGV[@]}" -gt 0 ]; then
+                "$ZGML_BIN" "$model" "$PROMPT" "$GEN" "$REPS" "${ZGML_F16_EXTRA_ARGV[@]}" 2>&1
+            else
+                "$ZGML_BIN" "$model" "$PROMPT" "$GEN" "$REPS" 2>&1
+            fi
+            ;;
+        q8)
+            if [ "${#ZGML_Q8_EXTRA_ARGV[@]}" -gt 0 ]; then
+                "$ZGML_BIN" "$model" "$PROMPT" "$GEN" "$REPS" "${ZGML_Q8_EXTRA_ARGV[@]}" 2>&1
+            else
+                "$ZGML_BIN" "$model" "$PROMPT" "$GEN" "$REPS" 2>&1
+            fi
+            ;;
+        *)
+            echo "unknown zgml benchmark format: $format" >&2
+            return 1
+            ;;
+    esac
 }
 
 run_zgml_samples() {
     local model="$1"
+    local format="$2"
     local i
     for ((i = 0; i < BENCH_ZGML_SAMPLES; i++)); do
-        run_zgml "$model"
+        run_zgml "$model" "$format"
     done
 }
 
@@ -287,12 +306,26 @@ raise SystemExit(1)
 PY
 }
 
+ZGML_EXTRA_ARGV=()
+ZGML_F16_EXTRA_ARGV=()
+ZGML_Q8_EXTRA_ARGV=()
 if [ -n "$ZGML_EXTRA_ARGS" ]; then
-    ZGML_EXTRA_ARGV=()
     read -r -a ZGML_EXTRA_ARGV <<< "$ZGML_EXTRA_ARGS"
 fi
+ZGML_F16_EXTRA_ARGV=("${ZGML_EXTRA_ARGV[@]}")
+ZGML_Q8_EXTRA_ARGV=("${ZGML_EXTRA_ARGV[@]}")
+if [ -n "$ZGML_F16_EXTRA_ARGS" ]; then
+    ZGML_FORMAT_EXTRA_ARGV=()
+    read -r -a ZGML_FORMAT_EXTRA_ARGV <<< "$ZGML_F16_EXTRA_ARGS"
+    ZGML_F16_EXTRA_ARGV+=("${ZGML_FORMAT_EXTRA_ARGV[@]}")
+fi
+if [ -n "$ZGML_Q8_EXTRA_ARGS" ]; then
+    ZGML_FORMAT_EXTRA_ARGV=()
+    read -r -a ZGML_FORMAT_EXTRA_ARGV <<< "$ZGML_Q8_EXTRA_ARGS"
+    ZGML_Q8_EXTRA_ARGV+=("${ZGML_FORMAT_EXTRA_ARGV[@]}")
+fi
 
-export DATE_UTC MACHINE PROMPT GEN REPS ZGML_F16_MODEL ZGML_Q8_MODEL ZGML_DEFAULT_EXTRA_ARGS ZGML_EXTRA_ARGS HF_GGUF_REPO BENCH_AUTO_DOWNLOAD BENCH_ZGML_SAMPLES ZGML_COMMIT ZGML_STATUS ZIG_VERSION
+export DATE_UTC MACHINE PROMPT GEN REPS ZGML_F16_MODEL ZGML_Q8_MODEL ZGML_DEFAULT_EXTRA_ARGS ZGML_EXTRA_ARGS ZGML_F16_EXTRA_ARGS ZGML_Q8_EXTRA_ARGS HF_GGUF_REPO BENCH_AUTO_DOWNLOAD BENCH_ZGML_SAMPLES ZGML_COMMIT ZGML_STATUS ZIG_VERSION
 export LLAMA_BENCH_PATH LLAMA_BREW_VERSION GGML_BREW_VERSION BENCH_BASELINE_JSON BENCH_REQUIRE_PARITY
 export LLAMA_CPP_F16_MODEL LLAMA_CPP_Q8_MODEL
 
@@ -301,10 +334,10 @@ preflight_llama_rows F16 "$GGUF_F16"
 preflight_llama_rows Q8_0 "$GGUF_Q8"
 
 echo "Running zgml F16 benchmark..."
-ZGML_F16_OUT="$(run_zgml_samples "$ZGML_F16_MODEL")"
+ZGML_F16_OUT="$(run_zgml_samples "$ZGML_F16_MODEL" f16)"
 
 echo "Running zgml Q8_0 benchmark..."
-ZGML_Q8_OUT="$(run_zgml_samples "$ZGML_Q8_MODEL")"
+ZGML_Q8_OUT="$(run_zgml_samples "$ZGML_Q8_MODEL" q8)"
 
 echo "Running llama.cpp F16 benchmark..."
 GGML_F16_OUT="$(run_llama_rows F16 "$GGUF_F16")"
@@ -474,10 +507,16 @@ def annotate_command_pressure(gate):
 
 def summarize(parsed, prompt, gen, reps):
     pp, tg = str(prompt), str(gen)
+    f16_prompt_label = PROMPT_LABEL
+    q8_prompt_label = PROMPT_LABEL
+    if "--metal-prompt-projection-row-chain-command-candidate" in os.environ.get("ZGML_F16_EXTRA_ARGS", ""):
+        f16_prompt_label = "metal scheduled prefill projection-row-chain command candidate"
+    if "--metal-prompt-projection-row-chain-command-candidate" in os.environ.get("ZGML_Q8_EXTRA_ARGS", ""):
+        q8_prompt_label = "metal scheduled prefill projection-row-chain command candidate"
     gate = {}
-    for fmt, key in (("f16", "zgml_f16"), ("q8_0", "zgml_q8_0")):
+    for fmt, key, prompt_label in (("f16", "zgml_f16", f16_prompt_label), ("q8_0", "zgml_q8_0", q8_prompt_label)):
         gate[fmt] = {
-            "prompt": select_lane(parsed[key], "prompt_tok_s", PROMPT_LABEL),
+            "prompt": select_lane(parsed[key], "prompt_tok_s", prompt_label),
             "decode": select_lane(parsed[key], "decode_tok_s", GATE_DECODE_LABEL),
         }
     annotate_profile_windows(gate, gen, reps)
