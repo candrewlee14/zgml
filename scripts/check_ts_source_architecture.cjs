@@ -324,6 +324,18 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["dev:zig:ffi:watch"] !== "zig build ffi-c -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
     errors.push("package.json dev:zig:ffi:watch must stay the incremental native FFI watch loop");
   }
+  if (packageJson.scripts?.["dev:zig:bench"] !== "zig build bench-build -fincremental --summary failures") {
+    errors.push("package.json dev:zig:bench must stay the incremental benchmark-binary build loop");
+  }
+  if (packageJson.scripts?.["dev:zig:bench:watch"] !== "zig build bench-build -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
+    errors.push("package.json dev:zig:bench:watch must stay the watched incremental benchmark-binary build loop");
+  }
+  if (packageJson.scripts?.["dev:zig:metal-row-chain"] !== "zig build test -Duse-metal=true -fincremental --summary failures -- --test-filter \"metal backend exact command fuses qmatmul residual into row chain\"") {
+    errors.push("package.json dev:zig:metal-row-chain must stay the focused incremental Metal row-chain kernel loop");
+  }
+  if (packageJson.scripts?.["dev:zig:metal-row-chain:watch"] !== "zig build test -Duse-metal=true -fincremental --watch --debounce 150 --summary line --error-style minimal_clear -- --test-filter \"metal backend exact command fuses qmatmul residual into row chain\"") {
+    errors.push("package.json dev:zig:metal-row-chain:watch must stay the watched focused Metal row-chain kernel loop");
+  }
   if (packageJson.scripts?.["bench:pytorch"] !== "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch must stay the ReleaseFast upstream PyTorch comparison probe");
   }
@@ -682,9 +694,15 @@ function checkPackageExports(errors) {
   for (const needle of [
     "if (q.M != 1) {",
     "fuse_projection_row_chain_single_dispatch",
+    "fuse_projection_row_chain_two_phase_candidate",
     "kernel void qmatmul_row_chain_tiled_f32",
+    "kernel void qmatmul_row_chain_tiled_partials_f32",
+    "kernel void qmatmul_row_chain_tiled_finalize_f32",
     ".qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS",
+    ".qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 8, .{ .gx = (q.M + TILE - 1) / TILE, .gy = partial_cols }, MATMUL_THREADS",
+    ".qmatmul_row_chain_tiled_finalize_f32, &finalize_buffers, params, 4, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS",
     "self.command_policy.fuse_projection_row_chain_single_dispatch",
+    "self.command_policy.fuse_projection_row_chain_two_phase_candidate",
     "const write_primary = projectionRowChainPrimaryHasExternalUsers(ops, command);",
     "if (!self.encodeQMatmulElementwise(exec, view, q, e, write_primary)) return false;",
     "return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, projectionRowChainScaleHasExternalUsers(ops, command));",

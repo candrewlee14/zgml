@@ -270,6 +270,13 @@ Current checked progress:
   the per-row/per-N-tile partial sums when `two_phase_scratch=ready`. The gate
   now makes the real next target explicit:
   `row_chain_next=semantic_sublayer_or_two_phase_tile_parallel_row_chain`.
+  A guarded Metal prototype now exists behind
+  `fuse_projection_row_chain_two_phase_candidate`: it dispatches a tiled
+  qmatmul/elementwise partial-sum kernel across `(row_tile, n_tile)` and then a
+  finalize kernel that reduces those partials into the RMS scale. This preserves
+  the MxN tile parallelism that the one-dispatch experiment lost while keeping
+  the old split command path as the default until full-model ReleaseFast evidence
+  says otherwise.
   The single-dispatch tiled kernel remains a diagnostic for the dispatch-only
   trap, not the design center for the next performance pass.
   The frontier and q8 prompt candidate gates now rebuild benchmark binaries with `-Doptimize=ReleaseFast` before any no-rebuild rerun evidence.
@@ -489,6 +496,8 @@ npm run dev:zig:ffi         # incremental native FFI dylib build
 npm run dev:zig:ffi:watch   # watched native FFI dylib build
 npm run dev:zig:bench       # incremental benchmark-binary build while editing kernels/runtime
 npm run dev:zig:bench:watch # watched incremental benchmark-binary build loop
+npm run dev:zig:metal-row-chain       # focused incremental Metal row-chain kernel test
+npm run dev:zig:metal-row-chain:watch # watched focused Metal row-chain kernel test
 npm run bench:module-program:focus
 npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
 npm run bench:pytorch:parity:run       # rerun hard PyTorch parity without rebuilding artifacts

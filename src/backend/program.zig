@@ -1296,6 +1296,7 @@ pub const CommandStreamPolicy = struct {
     fuse_projection_row_chain: bool = false,
     fuse_projection_row_chain_qmatvec: bool = false,
     fuse_projection_row_chain_single_dispatch: bool = false,
+    fuse_projection_row_chain_two_phase_candidate: bool = false,
     fuse_dense_projection_row_chain: bool = false,
     min_projection_row_chain_rows: u32 = 8,
 

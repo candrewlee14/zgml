@@ -218,6 +218,8 @@
     "dev:zig:ffi:watch": "zig build ffi-c -fincremental --watch --debounce 150 --summary line --error-style minimal_clear",
     "dev:zig:bench": "zig build bench-build -fincremental --summary failures",
     "dev:zig:bench:watch": "zig build bench-build -fincremental --watch --debounce 150 --summary line --error-style minimal_clear",
+    "dev:zig:metal-row-chain": "zig build test -Duse-metal=true -fincremental --summary failures -- --test-filter \"metal backend exact command fuses qmatmul residual into row chain\"",
+    "dev:zig:metal-row-chain:watch": "zig build test -Duse-metal=true -fincremental --watch --debounce 150 --summary line --error-style minimal_clear -- --test-filter \"metal backend exact command fuses qmatmul residual into row chain\"",
     "build:ts-source": "tsc -p tsconfig.source.json --noEmit",
     "build:package": "tsdown && node scripts/generate_package_declarations.cjs",
     "generate:native-runtime-wrappers": "node scripts/generate_native_runtime_wrappers.cjs",

@@ -1477,6 +1477,8 @@ const shader_source =
     \\    float rms_eps;
     \\    uint scale_src_offset;
     \\    uint scaled_dst_offset;
+    \\    uint partial_dst_offset;
+    \\    uint partial_cols;
     \\};
     \\
     \\kernel void qmatmul_row_chain_f32(
@@ -1645,6 +1647,133 @@ const shader_source =
     \\        if (cr < p.M) {
     \\            uint linear = cr * p.N + col;
     \\            float ew = (p.write_ew_output != 0) ? ew_output[p.ew_dst_offset + linear] : scaled_dst[p.scaled_dst_offset + linear];
+    \\            scaled_dst[p.scaled_dst_offset + linear] = ew * inv_rms[r] * scale_src[p.scale_src_offset + col];
+    \\        }
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_row_chain_tiled_partials_f32(
+    \\    device const char*  weight_data   [[buffer(0)]],
+    \\    device const float* weight_scales [[buffer(1)]],
+    \\    device const float* input         [[buffer(2)]],
+    \\    device const float* secondary     [[buffer(3)]],
+    \\    device const float* scale_src     [[buffer(4)]],
+    \\    device float*       scaled_dst    [[buffer(5)]],
+    \\    device float*       ew_output     [[buffer(6)]],
+    \\    device float*       partial_dst   [[buffer(7)]],
+    \\    constant QMatmulRowChainParams& p [[buffer(8)]],
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint simd_idx [[simdgroup_index_in_threadgroup]],
+    \\    uint lane     [[thread_index_in_simdgroup]],
+    \\    uint tid      [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = group.x * TILE;
+    \\    const uint gCol = group.y * TILE;
+    \\    const uint sRow = (simd_idx / 2) * 16;
+    \\    const uint sCol = (simd_idx % 2) * 16;
+    \\
+    \\    threadgroup float tI[TILE * 8];
+    \\    threadgroup float tW[8 * TILE];
+    \\    threadgroup float tC[TILE * TILE];
+    \\
+    \\    simdgroup_float8x8 acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\
+    \\    for (uint kt = 0; kt < p.K; kt += 8) {
+    \\        for (uint i = tid; i < TILE * 8; i += 128) {
+    \\            uint r = i / 8, c = i % 8;
+    \\            uint ir = gRow + r, ic = kt + c;
+    \\            tI[i] = (ir < p.M && ic < p.K) ? input[p.input_offset + ir * p.input_row_stride + ic] : 0.0f;
+    \\        }
+    \\        for (uint i = tid; i < 8 * TILE; i += 128) {
+    \\            uint r = i / TILE, c = i % TILE;
+    \\            uint kr = kt + r, nc = gCol + c;
+    \\            if (kr < p.K && nc < p.N) {
+    \\                uint w_idx = kr * p.N + nc;
+    \\                tW[i] = float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
+    \\            } else {
+    \\                tW[i] = 0.0f;
+    \\            }
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        simdgroup_float8x8 a0, a1, b0, b1;
+    \\        simdgroup_load(a0, tI + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tI + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(b0, tW + (sCol + 0), TILE);
+    \\        simdgroup_load(b1, tW + (sCol + 8), TILE);
+    \\
+    \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\
+    \\    simdgroup_store(acc[0], tC + (sRow + 0) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[1], tC + (sRow + 0) * TILE + sCol + 8, TILE);
+    \\    simdgroup_store(acc[2], tC + (sRow + 8) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    if (tid < TILE) {
+    \\        uint r = tid;
+    \\        uint cr = gRow + r;
+    \\        if (cr < p.M) {
+    \\            float ss = 0.0f;
+    \\            for (uint c = 0; c < TILE; c += 1) {
+    \\                uint cc = gCol + c;
+    \\                if (cc < p.N) {
+    \\                    float val = tC[r * TILE + c];
+    \\                    uint linear = cr * p.N + cc;
+    \\                    float other = secondary[p.ew_secondary_offset + linear];
+    \\                    float ew = val;
+    \\                    if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
+    \\                    else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
+    \\                    if (p.write_ew_output != 0) ew_output[p.ew_dst_offset + linear] = ew;
+    \\                    else scaled_dst[p.scaled_dst_offset + linear] = ew;
+    \\                    ss += ew * ew;
+    \\                }
+    \\            }
+    \\            partial_dst[p.partial_dst_offset + cr * p.partial_cols + group.y] = ss;
+    \\        }
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_row_chain_tiled_finalize_f32(
+    \\    device const float* ew_src        [[buffer(0)]],
+    \\    device const float* partial_src   [[buffer(1)]],
+    \\    device const float* scale_src     [[buffer(2)]],
+    \\    device float*       scaled_dst    [[buffer(3)]],
+    \\    constant QMatmulRowChainParams& p [[buffer(4)]],
+    \\    uint row_tile [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = row_tile * TILE;
+    \\    threadgroup float inv_rms[TILE];
+    \\    if (tid < TILE) {
+    \\        uint cr = gRow + tid;
+    \\        if (cr < p.M) {
+    \\            float ss = 0.0f;
+    \\            for (uint t = 0; t < p.partial_cols; t += 1) {
+    \\                ss += partial_src[p.partial_dst_offset + cr * p.partial_cols + t];
+    \\            }
+    \\            inv_rms[tid] = 1.0f / sqrt(ss / float(p.N) + p.rms_eps);
+    \\        } else {
+    \\            inv_rms[tid] = 0.0f;
+    \\        }
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < TILE * p.N; i += 128) {
+    \\        uint r = i / p.N;
+    \\        uint col = i - r * p.N;
+    \\        uint cr = gRow + r;
+    \\        if (cr < p.M) {
+    \\            uint linear = cr * p.N + col;
+    \\            float ew = ew_src[(p.write_ew_output != 0 ? p.ew_dst_offset : p.scaled_dst_offset) + linear];
     \\            scaled_dst[p.scaled_dst_offset + linear] = ew * inv_rms[r] * scale_src[p.scale_src_offset + col];
     \\        }
     \\    }
@@ -4193,6 +4322,8 @@ const QMatmulRowChainParams = extern struct {
     rms_eps: f32,
     scale_src_offset: u32,
     scaled_dst_offset: u32,
+    partial_dst_offset: u32,
+    partial_cols: u32,
 };
 
 const MAX_SLICE_ASSIGN_BATCH: usize = 16;
@@ -4939,6 +5070,8 @@ const MetalKernel = enum(u8) {
     qmatmul_elementwise_f32,
     qmatmul_row_chain_f32,
     qmatmul_row_chain_tiled_f32,
+    qmatmul_row_chain_tiled_partials_f32,
+    qmatmul_row_chain_tiled_finalize_f32,
     qmatmul_fused_elementwise_f32,
     qmatmul_pair_fused_elementwise_f32,
     qmatvec_pair_fused_elementwise_f32,
@@ -7173,8 +7306,65 @@ const CompiledProgram = struct {
             .rms_eps = rn.eps,
             .scale_src_offset = rp.src_offset,
             .scaled_dst_offset = out.dst_offset,
+            .partial_dst_offset = rn.dst_offset,
+            .partial_cols = 0,
         };
         exec.encodeKernel(.qmatmul_row_chain_f32, &buffers, params, 7, .{ .gx = q.M }, QMATMUL_ROW_CHAIN_THREADS);
+        return true;
+    }
+
+    fn encodeQMatmulRowChainTwoPhaseTiled(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool) bool {
+        if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
+        if (q.M <= 1) return false;
+        const partial_cols = (q.N + TILE - 1) / TILE;
+        const partial_len = @as(usize, q.M) * @as(usize, partial_cols);
+        const partial_end = @as(usize, rn.dst_offset) + partial_len;
+        if (partial_end * @sizeOf(f32) > view.device_bufs[rn.dst].size) return false;
+
+        const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
+        const secondary_buf = if (q_is_src0) e.src1 else e.src0;
+        const secondary_offset = if (q_is_src0) e.src1_offset else e.src0_offset;
+        const w = view.qweight_views[q.weight_idx];
+        const qparams = qmatmulParams(q, w.block_size);
+        const partial_buffers = [_]DeviceBuffer{
+            w.data,
+            w.scales,
+            view.device_bufs[q.input],
+            view.device_bufs[secondary_buf],
+            view.device_bufs[rp.src],
+            view.device_bufs[out.dst],
+            view.device_bufs[e.dst],
+            view.device_bufs[rn.dst],
+        };
+        const params = QMatmulRowChainParams{
+            .M = qparams.M,
+            .N = qparams.N,
+            .K = qparams.K,
+            .block_size = qparams.block_size,
+            .input_offset = qparams.input_offset,
+            .input_row_stride = qparams.input_row_stride,
+            .ew_op = @intFromEnum(e.op),
+            .ew_is_swapped = if (q_is_src0) 0 else 1,
+            .ew_secondary_offset = secondary_offset,
+            .ew_dst_offset = e.dst_offset,
+            .write_ew_output = @intFromBool(write_ew_output),
+            .rms_eps = rn.eps,
+            .scale_src_offset = rp.src_offset,
+            .scaled_dst_offset = out.dst_offset,
+            .partial_dst_offset = rn.dst_offset,
+            .partial_cols = partial_cols,
+        };
+        exec.profile.recordQMatmulRowChainTiled(q.M, q.N, TILE, write_ew_output);
+        exec.encodeKernel(.qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 8, .{ .gx = (q.M + TILE - 1) / TILE, .gy = partial_cols }, MATMUL_THREADS);
+
+        const ew_src = if (write_ew_output) view.device_bufs[e.dst] else view.device_bufs[out.dst];
+        const finalize_buffers = [_]DeviceBuffer{
+            ew_src,
+            view.device_bufs[rn.dst],
+            view.device_bufs[rp.src],
+            view.device_bufs[out.dst],
+        };
+        exec.encodeKernel(.qmatmul_row_chain_tiled_finalize_f32, &finalize_buffers, params, 4, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS);
         return true;
     }
 
@@ -7210,6 +7400,8 @@ const CompiledProgram = struct {
             .rms_eps = rn.eps,
             .scale_src_offset = rp.src_offset,
             .scaled_dst_offset = out.dst_offset,
+            .partial_dst_offset = rn.dst_offset,
+            .partial_cols = (q.N + TILE - 1) / TILE,
         };
         exec.profile.recordQMatmulRowChainTiled(q.M, q.N, TILE, write_ew_output);
         exec.encodeKernel(.qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS);
@@ -8444,6 +8636,12 @@ const CompiledProgram = struct {
         const out = deviceOpAt(.elementwise, ops, out_idx) orelse return false;
         const write_ew_output = program_mod.projectionRowChainElementwiseHasExternalUsers(ops, command) or view.outputReadsBuffer(e.dst);
         if (q.M != 1) {
+            if (self.command_policy.fuse_projection_row_chain_two_phase_candidate and
+                !projectionRowChainScaleHasExternalUsers(ops, command) and
+                self.encodeQMatmulRowChainTwoPhaseTiled(exec, view, q, e, rn, rp, out, write_ew_output))
+            {
+                return true;
+            }
             if (self.command_policy.fuse_projection_row_chain_single_dispatch and
                 !projectionRowChainScaleHasExternalUsers(ops, command) and
                 self.encodeQMatmulRowChainTiledLeaf(exec, view, q, e, rn, rp, out, write_ew_output))
@@ -10844,6 +11042,46 @@ test "metal backend exact command fuses qmatmul residual into row chain" {
     try std.testing.expectEqual(@as(u64, 1), candidate_rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
     try std.testing.expectEqual(@as(u64, 1), candidate_rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
     try std.testing.expectEqual(@as(u64, 0), candidate_rt.fallback_op_count);
+
+    var two_phase_policy = candidate_policy;
+    two_phase_policy.fuse_projection_row_chain_single_dispatch = false;
+    two_phase_policy.fuse_projection_row_chain_two_phase_candidate = true;
+    const two_phase_handle = metal.compileProgramWithCommandPolicy(program, two_phase_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(two_phase_handle);
+    const two_phase_compiled: *CompiledProgram = @ptrCast(@alignCast(two_phase_handle));
+
+    var two_phase_plan = try program_mod.Kernelizer.init(two_phase_policy).kernelize(std.testing.allocator, &ops);
+    defer two_phase_plan.deinit(std.testing.allocator);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_row_chain, two_phase_plan.commands[0].kind);
+
+    var two_phase_got: [elems]f32 = undefined;
+    var two_phase_residual: [elems]f32 = undefined;
+    var two_phase_residual_copy: [elems]f32 = undefined;
+    const two_phase_out = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 6, .host_ptr = @ptrCast(&two_phase_got), .size = two_phase_got.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&two_phase_residual), .size = two_phase_residual.len * 4 },
+        .{ .buf_idx = 8, .host_ptr = @ptrCast(&two_phase_residual_copy), .size = two_phase_residual_copy.len * 4 },
+    };
+    be.executeProgram(two_phase_handle, &.{}, &two_phase_out);
+    for (got, two_phase_got) |expected, actual| {
+        try std.testing.expectApproxEqAbs(expected, actual, 1e-4);
+    }
+    for (projection_plus_residual, two_phase_residual) |expected, actual| {
+        try std.testing.expectApproxEqAbs(expected, actual, 1e-4);
+    }
+    for (projection_plus_residual, two_phase_residual_copy) |expected, actual| {
+        try std.testing.expectApproxEqAbs(expected, actual, 1e-4);
+    }
+
+    be.resetRuntimeProfile(two_phase_handle);
+    try std.testing.expect(two_phase_compiled.tryEncodeExactProgramCommand(&ops, two_phase_plan.commands[0]));
+    metal.flushCommands();
+
+    var two_phase_rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(two_phase_handle, &two_phase_rt);
+    try std.testing.expectEqual(@as(u64, 1), two_phase_rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
+    try std.testing.expectEqual(@as(u64, 2), two_phase_rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
+    try std.testing.expectEqual(@as(u64, 0), two_phase_rt.fallback_op_count);
 }
 
 test "metal backend region fuses dense matmul elementwise sidecar" {
