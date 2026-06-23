@@ -1814,21 +1814,19 @@ pub fn firstProjectionElementwiseChainDebug(
     };
     for (commands, 0..) |command, command_index| {
         if (command.kind != .projection_chain and command.kind != .dense_projection_chain) continue;
+        const next_kind = if (command_index + 1 < commands.len) commands[command_index + 1].kind else .op;
+        if (next_kind == .row_chain) continue;
         out.reason = .malformed_chain;
         out.command_index = @intCast(command_index);
         out.op_start = command.op_start;
         out.op_count = command.op_count;
         out.prev_kind = if (command_index > 0) commands[command_index - 1].kind else .op;
         out.kind = command.kind;
-        out.next_kind = if (command_index + 1 < commands.len) commands[command_index + 1].kind else .op;
+        out.next_kind = next_kind;
         if (command.anchor_count != 1 or command.sidecar_count != 1) return out;
         const q_idx = command.indices[0];
         const sidecar_idx = command.sidecar_indices[0] orelse return out;
         if (q_idx >= ops.len or sidecar_idx >= ops.len) return out;
-        const e = switch (ops[sidecar_idx]) {
-            .elementwise => |e| e,
-            else => continue,
-        };
         if (command.kind == .projection_chain) {
             const q = switch (ops[q_idx]) {
                 .qmatmul => |q| q,
@@ -1853,11 +1851,23 @@ pub fn firstProjectionElementwiseChainDebug(
             out.q_input = m.a;
             out.primary_has_external_users = matmulPrimaryOutputHasExternalUsers(ops, q_idx, sidecar_idx);
         }
-        out.elementwise_op = e.op;
-        out.elementwise_dst = e.dst;
-        out.elementwise_src0 = e.src0;
-        out.elementwise_src1 = e.src1;
-        out.elementwise_n = e.n;
+        switch (ops[sidecar_idx]) {
+            .elementwise => |e| {
+                out.elementwise_op = e.op;
+                out.elementwise_dst = e.dst;
+                out.elementwise_src0 = e.src0;
+                out.elementwise_src1 = e.src1;
+                out.elementwise_n = e.n;
+            },
+            .fused_elementwise => |fe| {
+                out.elementwise_op = if (fe.steps.len > 0) fe.steps[0].op else .none;
+                out.elementwise_dst = fe.dst;
+                out.elementwise_src0 = fe.src;
+                out.elementwise_src1 = if (fe.steps.len > 0) fe.steps[0].secondary_buf else 0;
+                out.elementwise_n = fe.n;
+            },
+            else => continue,
+        }
         return out;
     }
     return out;
@@ -3122,6 +3132,27 @@ fn findDenseProjectionPairFusedElementwiseChainCommand(
     start: usize,
     used: ?[]const bool,
 ) ?ProgramCommand {
+    if (start + 3 < ops.len and !commandRangeTouchesUsed(@intCast(start), 4, used)) four_op: {
+        const gate = switch (ops[start]) {
+            .matmul => |m| m,
+            else => break :four_op,
+        };
+        const first = switch (ops[start + 1]) {
+            .fused_elementwise => |fe| fe,
+            else => break :four_op,
+        };
+        const up = switch (ops[start + 2]) {
+            .matmul => |m| m,
+            else => break :four_op,
+        };
+        const product = switch (ops[start + 3]) {
+            .elementwise => |e| e,
+            else => break :four_op,
+        };
+        if (!denseProjectionPairSingleFusedElementwiseChainCompatible(gate, first, up, product)) break :four_op;
+        if (denseProjectionPairSingleFusedElementwiseChainHasExternalUsers(ops, start)) break :four_op;
+        return ProgramCommand.contiguous(.dense_projection_pair_fused_elementwise_chain, start, 4);
+    }
     if (start + 5 >= ops.len) return null;
     if (commandRangeTouchesUsed(@intCast(start), 6, used)) return null;
     const gate = switch (ops[start]) {
@@ -3683,6 +3714,26 @@ pub fn denseProjectionPairFusedElementwiseChainCompatible(
     return true;
 }
 
+pub fn denseProjectionPairSingleFusedElementwiseChainCompatible(
+    gate: anytype,
+    first: anytype,
+    up: anytype,
+    product: anytype,
+) bool {
+    const g = gate.geom;
+    if (!matmulFusedElementwiseSidecarCompatible(gate, first)) return false;
+    if (!denseProjectionPairGeometryCompatible(gate, up)) return false;
+    if (product.op != .mul) return false;
+    if (product.n != g.M * g.N or product.n != first.n) return false;
+    const first_is_src0 = product.src0 == first.dst and product.src0_offset == first.dst_offset;
+    const first_is_src1 = product.src1 == first.dst and product.src1_offset == first.dst_offset;
+    const up_is_src0 = product.src0 == up.dst and product.src0_offset == up.geom.dst_offset;
+    const up_is_src1 = product.src1 == up.dst and product.src1_offset == up.geom.dst_offset;
+    if (!((first_is_src0 and up_is_src1) or (first_is_src1 and up_is_src0))) return false;
+    if (product.dst == gate.dst or product.dst == first.dst or product.dst == up.dst) return false;
+    return true;
+}
+
 fn spanHasExternalReadAfter(
     ops: []const backend_mod.DeviceOp,
     producer_index: usize,
@@ -3778,6 +3829,37 @@ fn denseProjectionPairFusedElementwiseChainHasExternalUsers(
     if (spanHasExternalReadAfter(ops, matmul_index + 2, included_start, included_end, bufferSpan(rp.dst, rp.dst_offset, rp.n))) return true;
     if (spanHasExternalReadAfter(ops, matmul_index + 3, included_start, included_end, bufferSpan(second.dst, second.dst_offset, second.n))) return true;
     if (spanHasExternalReadAfter(ops, matmul_index + 4, included_start, included_end, bufferSpan(up.dst, up.geom.dst_offset, up.geom.M * up.geom.N))) return true;
+    return false;
+}
+
+fn denseProjectionPairSingleFusedElementwiseChainHasExternalUsers(
+    ops: []const backend_mod.DeviceOp,
+    matmul_index: usize,
+) bool {
+    if (matmul_index + 3 >= ops.len) return true;
+    const gate = switch (ops[matmul_index]) {
+        .matmul => |m| m,
+        else => return true,
+    };
+    const first = switch (ops[matmul_index + 1]) {
+        .fused_elementwise => |fe| fe,
+        else => return true,
+    };
+    const up = switch (ops[matmul_index + 2]) {
+        .matmul => |m| m,
+        else => return true,
+    };
+    const product = switch (ops[matmul_index + 3]) {
+        .elementwise => |e| e,
+        else => return true,
+    };
+    if (!denseProjectionPairSingleFusedElementwiseChainCompatible(gate, first, up, product)) return true;
+
+    const included_start = matmul_index + 1;
+    const included_end = matmul_index + 4;
+    if (spanHasExternalReadAfter(ops, matmul_index, included_start, included_end, bufferSpan(gate.dst, gate.geom.dst_offset, gate.geom.M * gate.geom.N))) return true;
+    if (spanHasExternalReadAfter(ops, matmul_index + 1, included_start, included_end, bufferSpan(first.dst, first.dst_offset, first.n))) return true;
+    if (spanHasExternalReadAfter(ops, matmul_index + 2, included_start, included_end, bufferSpan(up.dst, up.geom.dst_offset, up.geom.M * up.geom.N))) return true;
     return false;
 }
 
@@ -9131,6 +9213,41 @@ test "program command stream fuses dense paired projection activation product pr
     try std.testing.expectEqual(@as(u32, 7), summary.covered_ops);
     try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
     try std.testing.expectEqual(@as(u32, 5), summary.estimated_saved_dispatches);
+    try std.testing.expectEqual(@as(u32, 1), summary.projection_pair_fused_elementwise_chains);
+}
+
+test "program command stream fuses dense paired projection single activation product chain" {
+    const silu_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .silu, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        testMatmulWith(2, 8, 9, 2),
+        .{ .fused_elementwise = .{
+            .steps = &silu_steps,
+            .n = 8,
+            .dst = 3,
+            .src = 2,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+        testMatmulWith(5, 8, 10, 2),
+        .{ .elementwise = .{ .op = .mul, .dst = 4, .src0 = 3, .src1 = 5, .n = 8 } },
+        testMatmulWith(7, 8, 11, 2),
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.grouped(4, 4));
+    defer std.testing.allocator.free(commands);
+
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.dense_projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].op_count);
+    try std.testing.expectEqual(ProgramCommandKind.op, commands[1].kind);
+
+    const summary = summarizeProgramCommands(commands);
+    try std.testing.expectEqual(@as(u32, 2), summary.commands);
+    try std.testing.expectEqual(@as(u32, 5), summary.covered_ops);
+    try std.testing.expectEqual(@as(u32, 2), summary.estimated_dispatches);
+    try std.testing.expectEqual(@as(u32, 3), summary.estimated_saved_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.projection_pair_fused_elementwise_chains);
 }
 

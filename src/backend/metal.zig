@@ -4972,7 +4972,7 @@ pub const MetalBackend = struct {
     alloc: std.mem.Allocator = std.heap.page_allocator,
     fine_grained_program_dispatch: bool = false,
     region_program_dispatch: bool = false,
-    command_policy: program_mod.CommandStreamPolicy = program_mod.CommandStreamPolicy.promptProjectionRowChainCommand(),
+    command_policy: program_mod.CommandStreamPolicy = program_mod.CommandStreamPolicy.default(),
 
     pub fn init() !MetalBackend {
         return initWithAllocator(std.heap.page_allocator);
@@ -7588,6 +7588,59 @@ const CompiledProgram = struct {
         return true;
     }
 
+    fn encodeMatmulPairSingleFusedElementwiseChain(
+        self: *CompiledProgram,
+        exec: *MetalExecutionContext,
+        view: RuntimeView,
+        gate: anytype,
+        first: anytype,
+        up: anytype,
+        product: anytype,
+    ) bool {
+        if (!program_mod.denseProjectionPairSingleFusedElementwiseChainCompatible(gate, first, up, product)) return false;
+        if (first.steps.len > MAX_FUSED_EW_STEPS) return false;
+
+        const gg = gate.geom;
+        const ug = up.geom;
+        var params = std.mem.zeroes(MatmulPairFusedEwParams);
+        params.M = @intCast(gg.M);
+        params.N = @intCast(gg.N);
+        params.K = @intCast(gg.K);
+        params.input_offset = @intCast(gg.a_offset);
+        params.input_row_stride = @intCast(gg.a_row_stride);
+        params.input_col_stride = @intCast(gg.a_col_stride);
+        params.left_b_offset = @intCast(gg.b_offset);
+        params.left_b_row_stride = @intCast(gg.b_row_stride);
+        params.left_b_col_stride = @intCast(gg.b_col_stride);
+        params.right_b_offset = @intCast(ug.b_offset);
+        params.right_b_row_stride = @intCast(ug.b_row_stride);
+        params.right_b_col_stride = @intCast(ug.b_col_stride);
+        params.dst_offset = product.dst_offset;
+        params.final_op = @intFromEnum(product.op);
+        params.n_steps = @intCast(first.steps.len);
+
+        var buffers: [4 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
+        buffers[0] = view.device_bufs[gate.b];
+        buffers[1] = view.device_bufs[up.b];
+        buffers[2] = view.device_bufs[gate.a];
+        buffers[3] = view.device_bufs[product.dst];
+        for (buffers[4..]) |*buf| buf.* = view.device_bufs[product.dst];
+
+        var secondary_bufs: [MAX_FUSED_EW_SECONDARIES]u16 = undefined;
+        var secondary_count: usize = 0;
+        for (first.steps, 0..) |step, step_index| {
+            params.op[step_index] = @intFromEnum(step.op);
+            params.is_swapped[step_index] = @intFromBool(step.is_swapped);
+            if (!self.bindMatmulPairFusedSecondary(exec, view, &buffers, &secondary_bufs, &secondary_count, &params, gate, up, step, step_index, null)) return false;
+        }
+
+        const kernel: MetalKernel = if (gg.M == 1) .matvec_pair_fused_elementwise_f32 else .matmul_pair_fused_elementwise_f32;
+        const grid = if (gg.M == 1) DispatchGrid{ .gx = @intCast(gg.N) } else matmulGrid(gg.M, gg.N);
+        const threads = if (gg.M == 1) QMATVEC_DOT_THREADS else MATMUL_THREADS;
+        exec.encodeKernel(kernel, &buffers, params, 12, grid, threads);
+        return true;
+    }
+
     fn encodeSliceAssignBatch(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, n: usize) void {
         var indices: [MAX_SLICE_ASSIGN_BATCH]usize = undefined;
         for (0..n) |i| indices[i] = i;
@@ -8254,22 +8307,76 @@ const CompiledProgram = struct {
     }
 
     fn tryEncodeDenseProjectionChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
-        if (command.anchor_count != 1 or command.sidecar_count != 1) return false;
+        if (command.anchor_count != 1) return false;
         const matmul_idx = command.indices[0];
-        const sidecar_idx = command.sidecar_indices[0] orelse return false;
-        if (matmul_idx >= ops.len or sidecar_idx >= ops.len) return false;
+        if (matmul_idx >= ops.len) return false;
         const m = deviceOpAt(.matmul, ops, matmul_idx) orelse return false;
-        const write_primary = program_mod.matmulPrimaryOutputHasExternalUsers(ops, matmul_idx, sidecar_idx);
-        return switch (ops[sidecar_idx]) {
-            .elementwise => |e| self.encodeMatmulElementwise(exec, view, m, e, write_primary),
-            .fused_elementwise => |fe| self.encodeMatmulFusedElementwise(exec, view, m, fe, write_primary),
-            else => false,
-        };
+        if (command.sidecar_count == 1) {
+            const sidecar_idx = command.sidecar_indices[0] orelse return false;
+            if (sidecar_idx >= ops.len) return false;
+            const write_primary = program_mod.matmulPrimaryOutputHasExternalUsers(ops, matmul_idx, sidecar_idx);
+            return switch (ops[sidecar_idx]) {
+                .elementwise => |e| self.encodeMatmulElementwise(exec, view, m, e, write_primary),
+                .fused_elementwise => |fe| self.encodeMatmulFusedElementwise(exec, view, m, fe, write_primary),
+                else => false,
+            };
+        }
+        if (command.sidecar_count == 2 or command.sidecar_count == 3) {
+            const repeat_idx = command.sidecar_indices[0] orelse return false;
+            const bias_idx = command.sidecar_indices[1] orelse return false;
+            if (repeat_idx >= ops.len or bias_idx >= ops.len) return false;
+            const rp = deviceOpAt(.repeat, ops, repeat_idx) orelse return false;
+            const bias = deviceOpAt(.elementwise, ops, bias_idx) orelse return false;
+            const activation = if (command.sidecar_count == 3) blk: {
+                const activation_idx = command.sidecar_indices[2] orelse return false;
+                if (activation_idx >= ops.len) return false;
+                break :blk deviceOpAt(.elementwise, ops, activation_idx) orelse return false;
+            } else null;
+            if (activation) |act| {
+                if (!program_mod.matmulRepeatElementwiseBiasActivationCompatible(m, ops[repeat_idx], ops[bias_idx], .{ .elementwise = act })) return false;
+            } else if (!program_mod.matmulRepeatElementwiseBiasCompatible(m, ops[repeat_idx], ops[bias_idx])) return false;
+
+            if (!self.tryEncodeRegionGpuOp(exec, view, .{ .repeat = rp })) return false;
+            const write_primary = program_mod.matmulPrimaryOutputHasExternalUsersExcept(ops, matmul_idx, command.sidecar_indices[0..command.sidecar_count]);
+            if (activation) |act| {
+                const steps = [_]backend_mod.FusedEwStep{
+                    .{ .op = bias.op, .is_swapped = bias.src0 != m.dst, .secondary_buf = rp.dst, .secondary_offset = rp.dst_offset },
+                    .{ .op = act.op, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+                };
+                const fe = .{
+                    .steps = steps[0..],
+                    .n = bias.n,
+                    .dst = act.dst,
+                    .src = m.dst,
+                    .dst_offset = act.dst_offset,
+                    .src_offset = m.geom.dst_offset,
+                };
+                return self.encodeMatmulFusedElementwise(exec, view, m, fe, write_primary);
+            }
+            const steps = [_]backend_mod.FusedEwStep{.{ .op = bias.op, .is_swapped = bias.src0 != m.dst, .secondary_buf = rp.dst, .secondary_offset = rp.dst_offset }};
+            const fe = .{
+                .steps = steps[0..],
+                .n = bias.n,
+                .dst = bias.dst,
+                .src = m.dst,
+                .dst_offset = bias.dst_offset,
+                .src_offset = m.geom.dst_offset,
+            };
+            return self.encodeMatmulFusedElementwise(exec, view, m, fe, write_primary);
+        }
+        return false;
     }
 
     fn tryEncodeDenseProjectionPairFusedElementwiseChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
-        if (command.op_count != 6) return false;
         const start: usize = @intCast(command.op_start);
+        if (command.op_count == 4) {
+            const gate = deviceOpAt(.matmul, ops, start) orelse return false;
+            const first = deviceOpAt(.fused_elementwise, ops, start + 1) orelse return false;
+            const up = deviceOpAt(.matmul, ops, start + 2) orelse return false;
+            const product = deviceOpAt(.elementwise, ops, start + 3) orelse return false;
+            return self.encodeMatmulPairSingleFusedElementwiseChain(exec, view, gate, first, up, product);
+        }
+        if (command.op_count != 6) return false;
         const gate = deviceOpAt(.matmul, ops, start) orelse return false;
         const first = deviceOpAt(.fused_elementwise, ops, start + 1) orelse return false;
         const rp = deviceOpAt(.repeat, ops, start + 2) orelse return false;

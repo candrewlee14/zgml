@@ -905,9 +905,9 @@ benchmark-grade build. The frontier binary also accepts
 `BENCH_FRONTIER_FILTER=<label-substring>` for microscope loops, and the named
 row-chain scripts set `BENCH_FRONTIER_FILTER=qrow` so tiled row-chain kernel
 work does not rerun unrelated benchmark families. Set `BENCH_FRONTIER_ATTEMPTS`
-when the local frontier lanes need more or fewer noise samples. Metal defaults
-to the usable two-dispatch projection-row-chain command path while keeping the
-slower single-dispatch path diagnostic, so command simplification is available
+when the local frontier lanes need more or fewer noise samples. The q8 prompt gate also
+keeps a usable two-dispatch projection-row-chain command candidate distinct
+from the slower single-dispatch diagnostic, so command simplification can land
 without pretending the tiled row-chain kernel is solved. Native WebGPU now has
 broader default optional LLaMA execution proof for quantized qweights,
 resource-bound decode/prefill, long prompts, GQA long prompts, and realistic

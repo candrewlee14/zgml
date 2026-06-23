@@ -597,7 +597,7 @@ function checkPackageExports(errors) {
     }
   }
   for (const needle of [
-    "command_policy: program_mod.CommandStreamPolicy = program_mod.CommandStreamPolicy.promptProjectionRowChainCommand()",
+    "command_policy: program_mod.CommandStreamPolicy = program_mod.CommandStreamPolicy.default()",
     "pub fn setCommandStreamPolicy(self: *MetalBackend, command_policy: program_mod.CommandStreamPolicy) void",
     "program_mod.Kernelizer.init(state.command_policy)",
   ]) {
@@ -626,7 +626,7 @@ function checkPackageExports(errors) {
     "\"-Doptimize=ReleaseFast\"",
     "ProjectionRowChainDispatchSplit",
     "ProjectionRowChainDispatchExcess",
-    "defaultCommandReady",
+    "defaultCommandFloor",
     "candidateCommandCeil",
     "candidateProjectionRowChainFloor",
     "commandSpeedupFloor",
@@ -639,7 +639,7 @@ function checkPackageExports(errors) {
     "progress(`attempt ${index}/${attempts} command-candidate`)",
     "progress(`attempt ${index}/${attempts} single-dispatch-candidate`)",
     "`attempt ${index}/${attempts} result ` +",
-    "defaultCommandReady",
+    "defaultFastPathReady",
     "candidateSemanticReady",
     "candidateMatchesCommandShape",
     "candidateDispatchShapeReady",

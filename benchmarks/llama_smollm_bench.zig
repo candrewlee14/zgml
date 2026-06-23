@@ -393,6 +393,7 @@ fn runStencilProbe(
                 projection_debug.primary_has_external_users,
             },
         );
+        writer.flush() catch {};
     }
     var decode_profile = internal.profile.RuntimeProfile{};
     decode.addRuntimeProfileTo(&decode_profile);
@@ -461,6 +462,7 @@ fn runStencilProbe(
                 projection_debug.primary_has_external_users,
             },
         );
+        writer.flush() catch {};
     }
     var prefill_profile = internal.profile.RuntimeProfile{};
     prefill.addRuntimeProfileTo(&prefill_profile);

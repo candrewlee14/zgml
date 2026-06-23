@@ -19,8 +19,10 @@ const commandLowering = "default_projection_chain_plus_row_chain_command_two_dis
 const requiredNextTarget = "single_dispatch_tiled_qmatmul_row_chain_throughput";
 const singleDispatchTrap = "serial_n_tile_loop_without_cross_threadgroup_row_reduce";
 const viableNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
+const defaultCommandFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_COMMAND_FLOOR || "301");
 const candidateCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "241");
 const candidateProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_ROW_CHAIN_FLOOR || "60");
+const defaultProjectionChainFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_PROJECTION_CHAIN_FLOOR || "90");
 const candidateProjectionChainCeil = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_CHAIN_CEIL || "30");
 
 function run(command, args, options = {}) {
@@ -136,13 +138,11 @@ function measureAttempt(index) {
   const commandFallback = number(commandRow, "fallback_ops") ?? 0;
   const candidateFallback = number(candidateRow, "fallback_ops") ?? 0;
   const defaultFallback = number(defaultRow, "fallback_ops") ?? 0;
-  const defaultCommandReady =
+  const defaultFastPathReady =
     defaultCommands !== null &&
-    defaultCommands <= candidateCommandCeil &&
-    defaultProjectionChains <= candidateProjectionChainCeil &&
-    defaultProjectionRowChains >= candidateProjectionRowChainFloor &&
-    defaultProjectionRowChainDispatchSplit !== null &&
-    defaultProjectionRowChainDispatchSplit <= 2.0;
+    defaultCommands >= defaultCommandFloor &&
+    defaultProjectionChains >= defaultProjectionChainFloor &&
+    defaultProjectionRowChains === 0;
   const commandSemanticReady =
     commandCommands !== null &&
     commandCommands <= candidateCommandCeil &&
@@ -171,8 +171,8 @@ function measureAttempt(index) {
     candidateDispatches < defaultDispatches &&
     candidateProjectionRowChainDispatches <= candidateProjectionRowChains;
   const fallbackOk = defaultFallback === 0 && commandFallback === 0 && candidateFallback === 0;
-  const commandStructuralReady = defaultCommandReady && commandSemanticReady && commandDispatchShapeReady && fallbackOk;
-  const structuralReady = defaultCommandReady && commandStructuralReady && candidateSemanticReady && candidateMatchesCommandShape && candidateDispatchShapeReady && fallbackOk;
+  const commandStructuralReady = defaultFastPathReady && commandSemanticReady && commandDispatchShapeReady && fallbackOk;
+  const structuralReady = defaultFastPathReady && commandStructuralReady && candidateSemanticReady && candidateMatchesCommandShape && candidateDispatchShapeReady && fallbackOk;
   const commandThroughputReady = commandSpeedup !== null && commandSpeedup >= commandSpeedupFloor;
   const throughputReady = speedup !== null && speedup >= speedupFloor;
   progress(

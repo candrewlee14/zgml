@@ -243,13 +243,12 @@ Current checked progress:
   (`m=128 n=576 k=576`) for projection-chain, grouped projection-chain,
   grouped projection-row-chain, and single projection-row-chain paths, with
   command-shape evidence proving the row-chain lowering covers the intended
-  five-op chains. The full-model Q8 prompt gate now separates the default
-  command-fusion path from the slower single-dispatch experiment: Metal now
-  defaults to the two-dispatch projection-row-chain command path, keeping the
-  fast tiled qmatmul column parallelism while using the reduced `241`-command
-  shape. The explicit command-candidate lane remains as a regression
-  microscope against that default, whereas the single-dispatch candidate remains
-  a diagnostic for the needed tiled row-chain kernel. The frontier benchmark now exposes that
+  five-op chains. The full-model Q8 prompt gate now separates the usable
+  command-fusion path from the slower single-dispatch experiment: the
+  two-dispatch projection-row-chain command candidate keeps the fast tiled
+  qmatmul column parallelism while reducing command shape from `301->241`,
+  whereas the single-dispatch candidate remains a diagnostic for the needed
+  tiled row-chain kernel. The frontier benchmark now exposes that
   single-dispatch tiled candidate directly as
   `projection_row_chain_single_dispatch` prompt/full-prefill/SmolLM-prompt
   lanes, with correctness, command-shape, and runtime-dispatch evidence. Current
@@ -265,11 +264,9 @@ Current checked progress:
   That sharper ReleaseFast microscope found the row-chain candidate can look
   ready in isolated frontier lanes (`projection_row_chain_candidate=ready`),
   but the full-model Q8 prompt gate still keeps `single_throughput=off`:
-  command fusion is the Metal default at `241` commands, with the explicit
-  command-candidate lane holding a noisy median around `0.96x` to `0.98x` and
-  observed range around `0.91x` to `1.10x`, while the single-dispatch candidate
-  remains around `0.19x` to `0.22x`. That makes the next move clearer, not fuzzier: the
-  single-dispatch candidate is structurally right, but still needs a materially
+  command fusion holds at `0.98x` to `1.02x` while the single-dispatch candidate
+  remains around `0.19x` to `0.21x`. That makes the next move clearer, not
+  fuzzier: the candidate is structurally right, but still needs a materially
   different throughput kernel or larger semantic sublayer before becoming the
   default full-model path.
   A two-phase tile-parallel Metal experiment for the same candidate was also
