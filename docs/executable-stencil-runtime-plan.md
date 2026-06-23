@@ -479,6 +479,8 @@ npm run dev:zig:conformance # narrow backend conformance Zig test loop
 npm run dev:zig:c-api       # narrow C ABI Zig test loop
 npm run dev:zig:ffi         # incremental native FFI dylib build
 npm run dev:zig:ffi:watch   # watched native FFI dylib build
+npm run dev:zig:bench       # incremental benchmark-binary build while editing kernels/runtime
+npm run dev:zig:bench:watch # watched incremental benchmark-binary build loop
 npm run bench:module-program:focus
 npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
 npm run bench:pytorch:parity:run       # rerun hard PyTorch parity without rebuilding artifacts

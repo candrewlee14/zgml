@@ -216,6 +216,8 @@
     "dev:zig:c-api:watch": "zig build c-api-tests -Duse-metal=false -Duse-blas=false -fincremental --watch --debounce 150 --summary line --error-style minimal_clear",
     "dev:zig:ffi": "zig build ffi-c -fincremental --summary failures",
     "dev:zig:ffi:watch": "zig build ffi-c -fincremental --watch --debounce 150 --summary line --error-style minimal_clear",
+    "dev:zig:bench": "zig build bench-build -fincremental --summary failures",
+    "dev:zig:bench:watch": "zig build bench-build -fincremental --watch --debounce 150 --summary line --error-style minimal_clear",
     "build:ts-source": "tsc -p tsconfig.source.json --noEmit",
     "build:package": "tsdown && node scripts/generate_package_declarations.cjs",
     "generate:native-runtime-wrappers": "node scripts/generate_native_runtime_wrappers.cjs",

@@ -873,6 +873,8 @@ npm run bench:frontier:row-chain # rebuild ReleaseFast and run only row-chain fr
 npm run bench:frontier:row-chain:run # rerun only row-chain frontier labels without rebuilding artifacts
 npm run bench:q8-prompt-candidate # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
 npm run bench:q8-prompt-candidate:run # rerun Q8 prompt candidate evidence without rebuilding artifacts
+npm run dev:zig:bench   # incrementally build benchmark binaries while editing kernels/runtime
+npm run dev:zig:bench:watch # watched incremental benchmark-binary build loop
 zig build bench-frontier  # run decision-grade local benchmarks
 zig build -Duse-blas      # enable BLAS for matmul
 ```
