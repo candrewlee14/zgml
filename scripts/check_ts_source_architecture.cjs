@@ -342,11 +342,27 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:pytorch:parity"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_INSTALL=1 node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:parity must stay the hard ReleaseFast upstream PyTorch parity probe with uv bootstrap");
   }
+  if (packageJson.scripts?.["bench:pytorch:parity:run"] !== "npm run build:native:release && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:parity:run must rebuild ReleaseFast native before the hard PyTorch parity rerun");
+  }
   if (packageJson.scripts?.["bench:module-program:focus"] !== "npm run build:native:release && npm run build:package && BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
     errors.push("package.json bench:module-program:focus must stay the ReleaseFast narrow module Program microscope");
   }
   if (packageJson.scripts?.["bench:pytorch:focus"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:focus must stay the narrow PyTorch microscope");
+  }
+  const pytorchComparisonSource = readSource(path.join("scripts", "check_pytorch_comparison.cjs"));
+  for (const required of [
+    "const moduleBenchEnv = {",
+    "BENCH_MODULE_PROGRAM_KEYS: activeComparisonKeys.join(\",\")",
+    "const zgmlTimings = parseZgmlModuleBench(run(process.execPath, [\"scripts/check_module_program_bench.cjs\"], { env: moduleBenchEnv }), activeComparisonKeys)",
+  ]) {
+    if (!pytorchComparisonSource.includes(required)) {
+      errors.push(`scripts/check_pytorch_comparison.cjs must keep PyTorch comparisons filtered to active child module bench keys: ${required}`);
+    }
+  }
+  if (pytorchComparisonSource.includes("const moduleBenchEnv = process.env.BENCH_PYTORCH_KEYS")) {
+    errors.push("scripts/check_pytorch_comparison.cjs must not let default PyTorch parity run the full module Program gate before comparing PyTorch");
   }
   if (packageJson.scripts?.["bench:ggml"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json ./scripts/bench_vs_ggml.sh 128 200 3") {
     errors.push("package.json bench:ggml must stay the ReleaseFast ggml comparison probe without double-building");

@@ -269,7 +269,7 @@
     "bench:module-program:focus:run": "BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs",
     "bench:pytorch": "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs",
     "bench:pytorch:parity": "npm run build:native:release && npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_INSTALL=1 node scripts/check_pytorch_comparison.cjs",
-    "bench:pytorch:parity:run": "BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} node scripts/check_pytorch_comparison.cjs",
+    "bench:pytorch:parity:run": "npm run build:native:release && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} node scripts/check_pytorch_comparison.cjs",
     "bench:pytorch:focus": "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs",
     "bench:pytorch:focus:run": "BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs",
     "bench:pytorch:gaps": "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs",

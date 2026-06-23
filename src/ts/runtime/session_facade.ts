@@ -730,7 +730,6 @@ export function createSessionCallProfileFacadeHelpers<TSession = unknown>(option
   }
 
   function bumpSessionCallProfile(session: TSession, field: string) {
-    assertLiveSession(session);
     bumpSessionCallProfileValue(session as AnyRecord, field);
   }
 

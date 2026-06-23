@@ -26,6 +26,14 @@ function requireIncludes(source, relativePath, label, needles) {
   }
 }
 
+function forbidIncludes(source, relativePath, label, needles) {
+  for (const needle of needles) {
+    if (source.includes(needle)) {
+      errors.push(`${relativePath} must avoid ${label}: ${needle}`);
+    }
+  }
+}
+
 function requireOrdered(source, relativePath, label, needles) {
   let cursor = -1;
   for (const needle of needles) {
@@ -248,8 +256,8 @@ function checkScripts() {
   if (scripts["bench:pytorch:parity"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_INSTALL=1 node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:parity must remain the hard ReleaseFast upstream PyTorch parity gate with uv bootstrap");
   }
-  if (scripts["bench:pytorch:parity:run"] !== "BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} node scripts/check_pytorch_comparison.cjs") {
-    errors.push("package.json bench:pytorch:parity:run must remain the no-rebuild hard PyTorch parity rerun");
+  if (scripts["bench:pytorch:parity:run"] !== "npm run build:native:release && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:parity:run must rebuild ReleaseFast native before the hard PyTorch parity rerun");
   }
   if (scripts["bench:pytorch:focus"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:focus must remain the narrow PyTorch microscope for fast iteration");
@@ -284,7 +292,9 @@ function checkScripts() {
     "\"log_softmax_classifier_batched\"",
     "\"lazy_token_head_batched\"",
     "if (!raw) return defaultComparisonKeys",
+    "const moduleBenchEnv = {",
     "BENCH_MODULE_PROGRAM_KEYS: activeComparisonKeys.join(\",\")",
+    "const zgmlTimings = parseZgmlModuleBench(run(process.execPath, [\"scripts/check_module_program_bench.cjs\"], { env: moduleBenchEnv }), activeComparisonKeys)",
     "const passing = attemptRows.filter((entry) => entry.parityReady)",
     "`attempt=${best.index}/${attempts}`",
     "`noisy=${noisyAttempts}`",
@@ -300,6 +310,8 @@ function checkScripts() {
     "worst=${worst.key}:${worst.ratio.toFixed(2)}x",
     "gelu=approximate-tanh",
     "approximate=\"tanh\"",
+    "torch.set_num_threads(1)",
+    "torch.set_num_interop_threads(1)",
     "w128_64 = values((128, 64), 48.0)",
     "w64_128 = values((64, 128), 64.0)",
     "hidden = torch.nn.functional.silu(torch.matmul(normed, w128_64.T) + b128)",
@@ -312,6 +324,9 @@ function checkScripts() {
     "active_keys = [key for key in os.environ[\"BENCH_PYTORCH_ACTIVE_KEYS\"].split(\",\") if key]",
     "print(json.dumps({key: bench(globals()[key], bench_iterations[key]) for key in active_keys}))",
     "if (requireParity && !parityReady)",
+  ]);
+  forbidIncludes(read("scripts/check_pytorch_comparison.cjs"), "scripts/check_pytorch_comparison.cjs", "PyTorch comparison child module bench must always be filtered to active comparison keys", [
+    "const moduleBenchEnv = process.env.BENCH_PYTORCH_KEYS",
   ]);
   requireIncludes(read("scripts/check_goal_scorecard.cjs"), "scripts/check_goal_scorecard.cjs", "diagnostic child-process failure reporting", [
     "function spawnFailure(label, command, args, result)",

@@ -419,16 +419,18 @@ borrowed NativeBuffer parameters no longer bypass explicit persistent upload on
 the direct linear fast path.
 The next pass removed duplicate output-buffer validation from the generic
 `executeInto` hot path while preserving structured StepParams diagnostics for
-invalid output buffers. That turned the hard PyTorch parity command green on
-the checked CPU workload set, and the current June 23, 2026 hard-gate evidence
-keeps it green: `bench:pytorch:parity` passed against PyTorch `2.12.1` with
-`BENCH_PYTORCH_INSTALL=1`, zero noisy attempts, and a worst checked lane
-(`linear_batched`) still at `1.06x` vs PyTorch. The same run measured
-`lazy_matmul_add_gelu_batched` at `2.70x`, `lazy_mlp_batched` at `1.70x`,
-`lazy_rms_silu_ffn_batched` at `1.66x`, `max_pool2d_batched` at `8.59x`, and
-`avg_pool2d_batched` at `4.81x`. Treat this as current evidence for the checked
-CPU lanes, not a claim that every future PyTorch-shaped workload is already
-faster.
+invalid output buffers. That was useful hot-path work, but a fresh June 23,
+2026 local rerun exposed that the no-rebuild hard parity shortcut could measure
+a stale non-ReleaseFast native dylib after other Zig targets ran. The hard
+`bench:pytorch:parity:run` command now rebuilds the native C ABI with
+`-Doptimize=ReleaseFast` before comparing. With that correction, the current
+hard PyTorch rerun against PyTorch `2.12.1` passes on the selected attempt:
+`linear_batched` is `1.04x`, `lazy_matmul_add_gelu_batched` is `2.75x`,
+`lazy_mlp_batched` is `1.61x`, `lazy_rms_silu_ffn_batched` is `1.63x`,
+`max_pool2d_batched` is `7.02x`, and `avg_pool2d_batched` is `4.45x`.
+Treat this as current evidence for the checked CPU lanes, with one important
+caveat: `linear_batched` remains a thin/noisy margin lane (`ratio_median=0.97x`)
+and still deserves more stable headroom.
 The hard parity command now bootstraps upstream PyTorch into the repo-local
 `.venv` with `uv` (`BENCH_PYTORCH_INSTALL=1`) before comparing, so the PyTorch
 gate is no longer a soft local-environment skip when the reference package has
@@ -443,9 +445,13 @@ the requested per-workload ratio floor.
 For iteration speed, the benchmark probes now have opt-in narrow lanes:
 `BENCH_MODULE_PROGRAM_KEYS=<key>` runs only selected module Program specs, and
 `BENCH_PYTORCH_KEYS=<key>` compares only selected PyTorch comparison keys while
-passing the same filter to the child module bench. The default `bench:pytorch`,
-`bench:pytorch:parity`, and `bench:module-program` commands still run their full
-evidence sets; the filters are for microscope work, not release claims. The
+passing the same filter to the child module bench. The default PyTorch
+comparison set also filters its child module bench to the PyTorch comparison
+lanes, so an unrelated full module Program floor cannot mask the PyTorch result;
+the full `bench:module-program` command remains the separate release proof for
+all module Program lanes. The default `bench:pytorch`, `bench:pytorch:parity`,
+and `bench:module-program` commands still run their owned evidence sets; the
+filters are for microscope work, not release claims. The
 named `bench:pytorch:gaps` and `bench:pytorch:gaps:run` scripts keep the former
 PyTorch soft spots as a one-command loop (`linear_batched` and
 `log_softmax_classifier_batched`) so kernel work can still iterate without
@@ -507,7 +513,7 @@ npm run dev:zig:metal-row-chain       # focused incremental Metal row-chain kern
 npm run dev:zig:metal-row-chain:watch # watched focused Metal row-chain kernel test
 npm run bench:module-program:focus
 npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
-npm run bench:pytorch:parity:run       # rerun hard PyTorch parity without rebuilding artifacts
+npm run bench:pytorch:parity:run       # rebuild ReleaseFast native, then rerun hard PyTorch parity
 npm run bench:pytorch:focus
 npm run bench:pytorch:focus:run        # rerun focused PyTorch comparison without rebuilding artifacts
 npm run bench:pytorch:gaps             # rebuild and measure current PyTorch soft spots
@@ -529,8 +535,10 @@ These are not substitutes for `bench:pytorch:parity`, `bench:ggml:parity`, or
 discarding performance hypotheses quickly. The full gates remain the release
 proof. The practical workflow is: use Zig `-fincremental`/`--watch` and
 focused benchmark keys while changing hot code, build the native/package
-artifacts once, use the `:run` parity reruns to check noisy hard gates quickly,
-then run the full evidence gate before claiming a new SOTA/simple/perf state.
+artifacts once, use the focused `:run` reruns to check noisy microscope lanes
+quickly, and let hard parity reruns rebuild ReleaseFast native before claiming
+a PyTorch comparison result. Then run the full evidence gate before claiming a
+new SOTA/simple/perf state.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier
@@ -564,11 +572,11 @@ The June 19, 2026 PyTorch parity push found the remaining FFN miss was not
 RMSNorm or SiLU but the `128x128 @ 128x64` down projection. The fix routes that
 larger contiguous dense projection through a column-major BLAS view of the same
 row-major buffers (`C^T = B^T A^T`) and keeps the small hand projection lane for
-`K <= 64`. Current hard-gate evidence against PyTorch `2.12.1`:
-`bench:pytorch:parity` passed on attempt `1/3` with zero noisy attempts;
-`linear_batched` about `1.09x`, `lazy_matmul_add_gelu_batched` about `1.70x`,
-`lazy_mlp_batched` about `1.64x`, `lazy_rms_silu_ffn_batched` about `1.80x`,
-`max_pool2d_batched` about `8.47x`, and `avg_pool2d_batched` about `4.53x`.
+`K <= 64`. Current hard-gate evidence against PyTorch `2.12.1` is green after
+forcing the hard rerun through a ReleaseFast native rebuild, while the caveat
+remains that `linear_batched` is the thinnest/noisiest lane. The right next
+move is more stable margin for the small batched linear hot path, not lowering
+the floor or hiding that lane.
 The next focused PyTorch pass used the new microscope loop to close the
 exploratory `rms_gelu_linear_batched` miss: current evidence is
 `rms_gelu_linear_batched=zgml:0.0382ms pytorch:0.1005ms

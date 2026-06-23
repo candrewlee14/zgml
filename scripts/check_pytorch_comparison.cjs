@@ -107,6 +107,7 @@ import time
 import torch
 
 torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
 torch.manual_seed(0)
 
 def values(shape, scale):
@@ -220,12 +221,10 @@ if (!Number.isFinite(minRatio) || minRatio < 0) {
 }
 
 function measureAttempt(index) {
-  const moduleBenchEnv = process.env.BENCH_PYTORCH_KEYS
-    ? {
-        ...process.env,
-        BENCH_MODULE_PROGRAM_KEYS: activeComparisonKeys.join(","),
-      }
-    : process.env;
+  const moduleBenchEnv = {
+    ...process.env,
+    BENCH_MODULE_PROGRAM_KEYS: activeComparisonKeys.join(","),
+  };
   const zgmlTimings = parseZgmlModuleBench(run(process.execPath, ["scripts/check_module_program_bench.cjs"], { env: moduleBenchEnv }), activeComparisonKeys);
   const pytorchEnv = {
     ...process.env,
