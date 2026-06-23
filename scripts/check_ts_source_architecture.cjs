@@ -15846,6 +15846,8 @@ function checkDistSmokeIsTsOwned(errors) {
       "shape/view compile evidence",
       "shape/view eager/compiled parity",
       "broadcastTo",
+      "expected nn.repeat rank-3 repeat/tile native Program evidence",
+      "compiled nn.tile rank-3 repeat/tile output",
       "slice-col-step",
       "expectedElided",
       "expected root compile namespace to delegate full module compile evidence",
@@ -15872,7 +15874,25 @@ function checkDistSmokeIsTsOwned(errors) {
     }
   }
   const permuteKernelPlanSource = fs.readFileSync(path.join(root, "src", "ts", "runtime", "kernel_plan.ts"), "utf8");
+  const traceCompilerSource = fs.readFileSync(path.join(root, "src", "ts", "runtime", "trace_compiler.ts"), "utf8");
   const permuteTsSourceSmoke = fs.readFileSync(path.join(root, "src", "ts", "smokes", "ts_source_smoke.ts"), "utf8");
+  for (const needle of [
+    '"repeat"',
+    '"tile"',
+  ]) {
+    if (!traceCompilerSource.includes(needle)) {
+      errors.push(`src/ts/runtime/trace_compiler.ts must delegate repeat/tile rank support to the Kernelizer: ${needle}`);
+    }
+  }
+  for (const needle of [
+    "op.outputShape.length > 3",
+    "reserved: op.outputShape.length === 3 ? op.outputShape[2] : 0",
+    "c: op.outputShape.length >= 2 ? op.outputShape[1] : 0",
+  ]) {
+    if (!permuteKernelPlanSource.includes(needle)) {
+      errors.push(`src/ts/runtime/kernel_plan.ts must lower rank-3 repeat/tile Programs through the native broadcast descriptor ABI: ${needle}`);
+    }
+  }
   for (const needle of [
     "permuteDescsForIrOp",
     "transposeModuleOpDesc(index, swapIndex)",

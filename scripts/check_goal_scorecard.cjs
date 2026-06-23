@@ -4926,6 +4926,8 @@ function checkDocs() {
     "native Program with preserved KernelPlan evidence.",
     "zgml frontend replacement feel: ~100%",
     "native Program lowering for `argmax(dim)` and `argmin(dim)`",
+    "rank-1/rank-2/rank-3 PyTorch-style",
+    "rank-1/rank-2/rank-3 `repeat`/`tile`",
     "rank-3 `reshape`/`flatten`/`squeeze`/`unsqueeze`, rank-3 `broadcastTo`/`expand`,",
     "and singleton-envelope rank-3 `narrow`/`select`/`slice`",
     "rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering",

@@ -173,6 +173,8 @@ const kernelizerRankCheckedOps = new Set([
   "unsqueeze",
   "broadcastTo",
   "expand",
+  "repeat",
+  "tile",
   "narrow",
   "select",
   "slice",
