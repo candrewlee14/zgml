@@ -869,6 +869,8 @@ npm run bench:pytorch:gaps:run # rerun current PyTorch soft spots without rebuil
 npm run bench:ggml        # build ReleaseFast and run the ggml/llama.cpp artifact gate with baseline regression protection
 npm run bench:frontier:gate # rebuild ReleaseFast and measure scheduler/kernelizer frontier evidence
 npm run bench:frontier:gate:run # rerun frontier evidence without rebuilding artifacts
+npm run bench:frontier:qproj # rebuild ReleaseFast and run the qproj frontier gate
+npm run bench:frontier:qproj:run # rerun the qproj frontier gate without rebuilding artifacts
 npm run bench:frontier:row-chain # rebuild ReleaseFast and run only row-chain frontier labels
 npm run bench:frontier:row-chain:run # rerun only row-chain frontier labels without rebuilding artifacts
 npm run bench:q8-prompt-candidate # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence

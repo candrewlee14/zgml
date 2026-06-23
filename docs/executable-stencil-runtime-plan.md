@@ -540,6 +540,8 @@ npm run bench:pytorch:gaps             # rebuild and measure current PyTorch sof
 npm run bench:pytorch:gaps:run         # rerun current PyTorch soft spots without rebuilding artifacts
 npm run bench:frontier:gate            # rebuild ReleaseFast and measure scheduler/kernelizer frontier evidence
 npm run bench:frontier:gate:run        # rerun frontier evidence without rebuilding artifacts
+npm run bench:frontier:qproj           # rebuild ReleaseFast and gate only qproj projection-chain/group labels
+npm run bench:frontier:qproj:run       # rerun only qproj frontier evidence without rebuilding artifacts
 npm run bench:frontier:row-chain       # rebuild ReleaseFast and run only row-chain frontier labels
 npm run bench:frontier:row-chain:run   # rerun only row-chain frontier labels without rebuilding artifacts
 npm run bench:frontier:row-chain-region      # rebuild ReleaseFast and run only x7 row-chain region labels
@@ -580,9 +582,11 @@ families while preserving the full unfiltered release gate. The x7 region
 scripts use `BENCH_FRONTIER_FILTER="qrow region"` to hit the same anchored
 region-command shape that full-model prompt scheduling selects, which keeps the
 two-phase kernel loop tight while still proving the real region path. The frontier
-microscope uses `BENCH_FRONTIER_ATTEMPTS` (default `5`) so the row-chain kernel
-work can absorb local timing noise without falling back to the much slower full
-scorecard.
+qproj scripts use `BENCH_FRONTIER_FILTER=qproj` so projection-chain/group work
+can check the current Q8 prompt frontier without paying for unrelated rows,
+norms, and matmuls. The frontier microscope uses `BENCH_FRONTIER_ATTEMPTS`
+(default `5`) so the row-chain and qproj kernel work can absorb local timing
+noise without falling back to the much slower full scorecard.
 The frontier benchmark gate keeps the same floors but now evaluates them across
 its repeated noisy attempts instead of requiring every independent microbench
 lane to pass in one lucky attempt. If no single attempt clears all floors but

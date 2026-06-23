@@ -303,6 +303,12 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:frontier:row-chain:run"] !== "BENCH_FRONTIER_FILTER=qrow ./zig-out/bin/bench-frontier") {
     errors.push("package.json bench:frontier:row-chain:run must stay the no-rebuild row-chain-only frontier microscope");
   }
+  if (packageJson.scripts?.["bench:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json bench:frontier:qproj must stay the ReleaseFast qproj-only frontier evidence gate");
+  }
+  if (packageJson.scripts?.["bench:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json bench:frontier:qproj:run must stay the no-rebuild qproj-only frontier evidence rerun");
+  }
   if (packageJson.scripts?.["bench:q8-prompt-candidate"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate must stay the rebuild-backed source-checkout full-model Q8 prompt candidate probe");
   }

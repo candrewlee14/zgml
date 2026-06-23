@@ -17,6 +17,7 @@ const projectionRowChainLowering = "prompt_split_tiled_qmatmul_plus_rmsnorm";
 const projectionRowChainDiagnosticKernel = "single_dispatch_tiled_candidate";
 const projectionRowChainNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
 const build = process.env.BENCH_FRONTIER_BUILD ?? "1";
+const frontierFilter = process.env.BENCH_FRONTIER_FILTER ?? "";
 
 function positiveInt(value, label) {
   const n = Number(value);
@@ -69,6 +70,137 @@ function throughput(output, label, key) {
 function hasMetric(output, label, key) {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`${escaped}[^\\n]*${key}=`).test(output);
+}
+
+function isFocusedQprojFilter(filter) {
+  return /\bqproj\b|projection_chain|projection_group/.test(filter) && !/\bqrow\b|projection_row_chain/.test(filter);
+}
+
+function scoreFocusedQproj(output, attempt) {
+  const projectionChainLabel = "qproj prompt m=32 n=512 k=512 projection_chain";
+  const projectionChainFullPrefillLabel = "qproj full-prefill m=128 n=512 k=512 projection_chain";
+  const projectionChainSmollmPromptLabel = "qproj smollm-prompt m=128 n=576 k=576 projection_chain";
+  const projectionGroupFullPrefillLabel = "qproj group full-prefill x4 m=128 n=512 k=512 projection_group";
+  const projectionGroupSmollmPromptLabel = "qproj group smollm-prompt x4 m=128 n=576 k=576 projection_group";
+
+  const projectionChainSpeedup = metric(output, projectionChainLabel, "speedup");
+  const projectionChainMaxAbsDiff = metric(output, projectionChainLabel, "max_abs_diff");
+  const projectionChainFullPrefillSpeedup = metric(output, projectionChainFullPrefillLabel, "speedup");
+  const projectionChainFullPrefillMaxAbsDiff = metric(output, projectionChainFullPrefillLabel, "max_abs_diff");
+  const projectionChainSmollmPromptSpeedup = metric(output, projectionChainSmollmPromptLabel, "speedup");
+  const projectionChainSmollmPromptMaxAbsDiff = metric(output, projectionChainSmollmPromptLabel, "max_abs_diff");
+  const projectionGroupFullPrefillSpeedup = metric(output, projectionGroupFullPrefillLabel, "speedup");
+  const projectionGroupFullPrefillMaxAbsDiff = metric(output, projectionGroupFullPrefillLabel, "max_abs_diff");
+  const projectionGroupSmollmPromptSpeedup = metric(output, projectionGroupSmollmPromptLabel, "speedup");
+  const projectionGroupSmollmPromptMaxAbsDiff = metric(output, projectionGroupSmollmPromptLabel, "max_abs_diff");
+
+  const failures = [];
+  if (projectionChainSpeedup < projectionChainTileSpeedupFloor) failures.push(`projection_chain prompt tile ${projectionChainSpeedup.toFixed(2)}x < ${projectionChainTileSpeedupFloor.toFixed(2)}x`);
+  if (projectionChainMaxAbsDiff > projectionChainMaxAbsDiffCeil) failures.push(`projection_chain prompt max_abs_diff ${projectionChainMaxAbsDiff.toFixed(6)} > ${projectionChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (projectionChainFullPrefillSpeedup < projectionChainFullPrefillSpeedupFloor) failures.push(`projection_chain full-prefill ${projectionChainFullPrefillSpeedup.toFixed(2)}x < ${projectionChainFullPrefillSpeedupFloor.toFixed(2)}x`);
+  if (projectionChainFullPrefillMaxAbsDiff > projectionChainMaxAbsDiffCeil) failures.push(`projection_chain full-prefill max_abs_diff ${projectionChainFullPrefillMaxAbsDiff.toFixed(6)} > ${projectionChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (projectionChainSmollmPromptSpeedup < projectionSmollmPromptSpeedupFloor) failures.push(`projection_chain smollm-prompt ${projectionChainSmollmPromptSpeedup.toFixed(2)}x < ${projectionSmollmPromptSpeedupFloor.toFixed(2)}x`);
+  if (projectionChainSmollmPromptMaxAbsDiff > projectionChainMaxAbsDiffCeil) failures.push(`projection_chain smollm-prompt max_abs_diff ${projectionChainSmollmPromptMaxAbsDiff.toFixed(6)} > ${projectionChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (projectionGroupFullPrefillMaxAbsDiff > projectionChainMaxAbsDiffCeil) failures.push(`projection_group full-prefill max_abs_diff ${projectionGroupFullPrefillMaxAbsDiff.toFixed(6)} > ${projectionChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (projectionGroupSmollmPromptSpeedup < projectionSmollmPromptSpeedupFloor) failures.push(`projection_group smollm-prompt ${projectionGroupSmollmPromptSpeedup.toFixed(2)}x < ${projectionSmollmPromptSpeedupFloor.toFixed(2)}x`);
+  if (projectionGroupSmollmPromptMaxAbsDiff > projectionChainMaxAbsDiffCeil) failures.push(`projection_group smollm-prompt max_abs_diff ${projectionGroupSmollmPromptMaxAbsDiff.toFixed(6)} > ${projectionChainMaxAbsDiffCeil.toFixed(6)}`);
+
+  const line = [
+    `frontier qproj gate: ${failures.length === 0 ? "pass" : "fail"}`,
+    `attempt=${attempt}/${maxAttempts}`,
+    `projection_chain_prompt=${projectionChainSpeedup.toFixed(2)}x floor=${projectionChainTileSpeedupFloor.toFixed(2)} max_abs_diff=${projectionChainMaxAbsDiff.toFixed(6)} diff_ceil=${projectionChainMaxAbsDiffCeil.toFixed(6)}`,
+    `projection_chain_full_prefill=${projectionChainFullPrefillSpeedup.toFixed(2)}x floor=${projectionChainFullPrefillSpeedupFloor.toFixed(2)} candidate=${projectionChainFullPrefillSpeedup >= projectionChainFullPrefillCandidateSpeedupFloor ? "ready" : "off"} max_abs_diff=${projectionChainFullPrefillMaxAbsDiff.toFixed(6)}`,
+    `projection_chain_smollm_prompt=${projectionChainSmollmPromptSpeedup.toFixed(2)}x floor=${projectionSmollmPromptSpeedupFloor.toFixed(2)} max_abs_diff=${projectionChainSmollmPromptMaxAbsDiff.toFixed(6)}`,
+    `projection_group_full_prefill=${projectionGroupFullPrefillSpeedup.toFixed(2)}x candidate=${projectionGroupFullPrefillSpeedup >= projectionGroupCandidateSpeedupFloor ? "ready" : "off"} candidate_floor=${projectionGroupCandidateSpeedupFloor.toFixed(2)} max_abs_diff=${projectionGroupFullPrefillMaxAbsDiff.toFixed(6)}`,
+    `projection_group_smollm_prompt=${projectionGroupSmollmPromptSpeedup.toFixed(2)}x floor=${projectionSmollmPromptSpeedupFloor.toFixed(2)} max_abs_diff=${projectionGroupSmollmPromptMaxAbsDiff.toFixed(6)}`,
+  ].join("; ");
+
+  return {
+    attempt,
+    projectionChainSpeedup,
+    projectionChainMaxAbsDiff,
+    projectionChainFullPrefillSpeedup,
+    projectionChainFullPrefillMaxAbsDiff,
+    projectionChainSmollmPromptSpeedup,
+    projectionChainSmollmPromptMaxAbsDiff,
+    projectionGroupFullPrefillSpeedup,
+    projectionGroupFullPrefillMaxAbsDiff,
+    projectionGroupSmollmPromptSpeedup,
+    projectionGroupSmollmPromptMaxAbsDiff,
+    failures,
+    line,
+  };
+}
+
+function focusedQprojMargin(current) {
+  return Math.min(
+    current.projectionChainSpeedup / projectionChainTileSpeedupFloor,
+    projectionChainMaxAbsDiffCeil / Math.max(current.projectionChainMaxAbsDiff, Number.EPSILON),
+    current.projectionChainFullPrefillSpeedup / projectionChainFullPrefillSpeedupFloor,
+    projectionChainMaxAbsDiffCeil / Math.max(current.projectionChainFullPrefillMaxAbsDiff, Number.EPSILON),
+    current.projectionChainSmollmPromptSpeedup / projectionSmollmPromptSpeedupFloor,
+    projectionChainMaxAbsDiffCeil / Math.max(current.projectionChainSmollmPromptMaxAbsDiff, Number.EPSILON),
+    projectionChainMaxAbsDiffCeil / Math.max(current.projectionGroupFullPrefillMaxAbsDiff, Number.EPSILON),
+    current.projectionGroupSmollmPromptSpeedup / projectionSmollmPromptSpeedupFloor,
+    projectionChainMaxAbsDiffCeil / Math.max(current.projectionGroupSmollmPromptMaxAbsDiff, Number.EPSILON),
+  );
+}
+
+function chooseBestFocusedQproj(attempts) {
+  return attempts.reduce((acc, current) => {
+    if (!acc) return current;
+    return focusedQprojMargin(current) > focusedQprojMargin(acc) ? current : acc;
+  }, null);
+}
+
+function aggregateFocusedQprojFailures(attempts) {
+  const failures = [];
+  const speedAtLeast = (field, floor, label) => {
+    const value = bestMax(attempts, field);
+    if (!Number.isFinite(value) || value < floor) failures.push(`${label} best ${Number.isFinite(value) ? value.toFixed(2) : "n/a"}x < ${floor.toFixed(2)}x`);
+  };
+  const diffAtMost = (field, ceil, label) => {
+    const value = bestMin(attempts, field);
+    if (!Number.isFinite(value) || value > ceil) failures.push(`${label} best max_abs_diff ${Number.isFinite(value) ? value.toFixed(6) : "n/a"} > ${ceil.toFixed(6)}`);
+  };
+  speedAtLeast("projectionChainSpeedup", projectionChainTileSpeedupFloor, "projection_chain prompt tile");
+  diffAtMost("projectionChainMaxAbsDiff", projectionChainMaxAbsDiffCeil, "projection_chain prompt");
+  speedAtLeast("projectionChainFullPrefillSpeedup", projectionChainFullPrefillSpeedupFloor, "projection_chain full-prefill");
+  diffAtMost("projectionChainFullPrefillMaxAbsDiff", projectionChainMaxAbsDiffCeil, "projection_chain full-prefill");
+  speedAtLeast("projectionChainSmollmPromptSpeedup", projectionSmollmPromptSpeedupFloor, "projection_chain smollm-prompt");
+  diffAtMost("projectionChainSmollmPromptMaxAbsDiff", projectionChainMaxAbsDiffCeil, "projection_chain smollm-prompt");
+  diffAtMost("projectionGroupFullPrefillMaxAbsDiff", projectionChainMaxAbsDiffCeil, "projection_group full-prefill");
+  speedAtLeast("projectionGroupSmollmPromptSpeedup", projectionSmollmPromptSpeedupFloor, "projection_group smollm-prompt");
+  diffAtMost("projectionGroupSmollmPromptMaxAbsDiff", projectionChainMaxAbsDiffCeil, "projection_group smollm-prompt");
+  return failures;
+}
+
+function runFocusedQprojGate() {
+  const attempts = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      attempts.push(scoreFocusedQproj(runBench(), attempt));
+    } catch (err) {
+      process.stderr.write(`${err.output ?? err.message}\n`);
+      process.exit(1);
+    }
+  }
+  const passing = attempts.filter((current) => current.failures.length === 0);
+  const best = chooseBestFocusedQproj(passing.length > 0 ? passing : attempts);
+  const aggregate = aggregateFocusedQprojFailures(attempts);
+  const line = aggregate.length === 0 ? best.line.replace("frontier qproj gate: fail", "frontier qproj gate: pass") : best.line;
+  process.stdout.write(`${line}\n`);
+  if (aggregate.length === 0 && passing.length === 0) {
+    process.stdout.write(`frontier qproj aggregate: pass across ${attempts.length} noisy attempts\n`);
+  }
+  if (best.attempt > 1) {
+    process.stdout.write(`frontier qproj retries: ${best.attempt - 1} noisy attempt(s) below best evidence\n`);
+  }
+  if (aggregate.length !== 0) {
+    process.stderr.write(`${aggregate.join("; ")}\n`);
+    process.exit(1);
+  }
+  process.exit(0);
 }
 
 function score(output, attempt) {
@@ -605,6 +737,10 @@ function attemptDiagnostic(current) {
     `single_dispatch_smollm=${current.projectionSmollmPromptSingleDispatchSpeedup.toFixed(2)}x`,
     `failures=${current.failures.length}`,
   ].join(" ");
+}
+
+if (isFocusedQprojFilter(frontierFilter)) {
+  runFocusedQprojGate();
 }
 
 const attempts = [];

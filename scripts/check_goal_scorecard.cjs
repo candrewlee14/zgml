@@ -189,6 +189,12 @@ function checkScripts() {
   if (scripts["bench:frontier:row-chain-region:run"] !== "BENCH_FRONTIER_FILTER=\"qrow region\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json bench:frontier:row-chain-region:run must remain the no-rebuild x7 row-chain region microscope");
   }
+  if (scripts["bench:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json bench:frontier:qproj must remain the ReleaseFast qproj-only frontier evidence gate");
+  }
+  if (scripts["bench:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json bench:frontier:qproj:run must remain the no-rebuild qproj-only frontier evidence rerun");
+  }
   if (scripts["bench:q8-prompt-candidate"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate must remain the rebuild-backed full-model Q8 prompt candidate evidence probe");
   }
@@ -5064,6 +5070,9 @@ function checkDocs() {
     "BENCH_FRONTIER_FILTER=<label-substring>",
     "BENCH_FRONTIER_FILTER=qrow",
     "BENCH_FRONTIER_FILTER=\"qrow region\"",
+    "BENCH_FRONTIER_FILTER=qproj",
+    "bench:frontier:qproj",
+    "bench:frontier:qproj:run",
     "same anchored\nregion-command shape",
     "projection_row_chain_candidate=ready",
     "single_throughput=off",
