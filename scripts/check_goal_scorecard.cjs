@@ -195,6 +195,23 @@ function checkScripts() {
   if (scripts["bench:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:qproj:run must remain the no-rebuild qproj-only frontier evidence rerun");
   }
+  if (scripts["bench:stencil:shape"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_STENCIL_BUILD=0 node scripts/check_stencil_shape.cjs") {
+    errors.push("package.json bench:stencil:shape must remain the ReleaseFast current-source stencil shape gate");
+  }
+  if (scripts["bench:stencil:shape:run"] !== "BENCH_STENCIL_BUILD=0 node scripts/check_stencil_shape.cjs") {
+    errors.push("package.json bench:stencil:shape:run must remain the no-rebuild current-source stencil shape rerun");
+  }
+  requireIncludes(read("scripts/check_stencil_shape.cjs"), "scripts/check_stencil_shape.cjs", "current-source stencil shape gate", [
+    "ZGML_STENCIL_JSON ",
+    "--stencil-only",
+    "--debug-row-chain",
+    "program_command_shape_commands",
+    "program_command_shape_covered_ops",
+    "program_command_shape_projection_chains",
+    "program_command_shape_projection_cache_groups",
+    "runtime_patch_stencil_hash",
+    "stencil shape gate: pass",
+  ]);
   if (scripts["bench:q8-prompt-candidate"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate must remain the rebuild-backed full-model Q8 prompt candidate evidence probe");
   }
@@ -5071,6 +5088,9 @@ function checkDocs() {
     "BENCH_FRONTIER_FILTER=qrow",
     "BENCH_FRONTIER_FILTER=\"qrow region\"",
     "BENCH_FRONTIER_FILTER=qproj",
+    "bench:stencil:shape",
+    "bench:stencil:shape:run",
+    "source-current stencil shape gate",
     "bench:frontier:qproj",
     "bench:frontier:qproj:run",
     "same anchored\nregion-command shape",

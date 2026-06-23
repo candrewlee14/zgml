@@ -309,6 +309,12 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:qproj:run must stay the no-rebuild qproj-only frontier evidence rerun");
   }
+  if (packageJson.scripts?.["bench:stencil:shape"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_STENCIL_BUILD=0 node scripts/check_stencil_shape.cjs") {
+    errors.push("package.json bench:stencil:shape must stay the ReleaseFast current-source stencil shape gate");
+  }
+  if (packageJson.scripts?.["bench:stencil:shape:run"] !== "BENCH_STENCIL_BUILD=0 node scripts/check_stencil_shape.cjs") {
+    errors.push("package.json bench:stencil:shape:run must stay the no-rebuild current-source stencil shape rerun");
+  }
   if (packageJson.scripts?.["bench:q8-prompt-candidate"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate must stay the rebuild-backed source-checkout full-model Q8 prompt candidate probe");
   }

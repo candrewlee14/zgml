@@ -546,6 +546,8 @@ npm run bench:frontier:row-chain       # rebuild ReleaseFast and run only row-ch
 npm run bench:frontier:row-chain:run   # rerun only row-chain frontier labels without rebuilding artifacts
 npm run bench:frontier:row-chain-region      # rebuild ReleaseFast and run only x7 row-chain region labels
 npm run bench:frontier:row-chain-region:run  # rerun only x7 row-chain region labels without rebuilding artifacts
+npm run bench:stencil:shape            # rebuild ReleaseFast and prove current source stencil shape/hashes
+npm run bench:stencil:shape:run        # rerun current source stencil shape/hashes without rebuilding artifacts
 npm run bench:q8-prompt-candidate      # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
 npm run bench:q8-prompt-candidate:run  # rerun Q8 prompt candidate evidence without rebuilding artifacts
 npm run bench:ggml:parity:run          # rerun hard ggml parity; bench script rebuilds ReleaseFast by default
@@ -567,6 +569,10 @@ The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier
 shape needed for Q8 projection-chain work.
+The source-current stencil shape gate parses those `ZGML_STENCIL_JSON` rows and
+checks prompt/decode command counts, covered ops, patch holes, projection-chain
+shape, cache-group shape, and nonzero runtime/command stencil hashes without
+waiting for a hard ggml artifact to pass on a quiet machine.
 Focused module Program benchmarks also build the native C ABI in ReleaseFast
 first, so microscope results do not silently compare against a stale Debug
 dylib. Frontier, Q8 prompt candidate, and ggml comparison rebuild commands now

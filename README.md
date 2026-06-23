@@ -873,6 +873,8 @@ npm run bench:frontier:qproj # rebuild ReleaseFast and run the qproj frontier ga
 npm run bench:frontier:qproj:run # rerun the qproj frontier gate without rebuilding artifacts
 npm run bench:frontier:row-chain # rebuild ReleaseFast and run only row-chain frontier labels
 npm run bench:frontier:row-chain:run # rerun only row-chain frontier labels without rebuilding artifacts
+npm run bench:stencil:shape # rebuild ReleaseFast and prove current source stencil shape/hashes
+npm run bench:stencil:shape:run # rerun current source stencil shape/hashes without rebuilding
 npm run bench:q8-prompt-candidate # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
 npm run bench:q8-prompt-candidate:run # rerun Q8 prompt candidate evidence without rebuilding artifacts
 npm run dev:zig:bench   # incrementally build benchmark binaries while editing kernels/runtime
