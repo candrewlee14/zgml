@@ -322,6 +322,14 @@ Current checked progress:
   The useful next move is therefore not blindly promoting the shallow two-kernel variant;
   it is either a larger semantic sublayer that removes surrounding work
   or a materially different row-chain throughput kernel.
+  A June 23, 2026 qmatvec/decode row-chain command probe confirmed that decode
+  has the same dispatch-only trap in sharper form: forcing Q8 decode through
+  projection-row-chain command shape reduced commands from `211` to `151`, but
+  collapsed throughput to about `14 tok/s` versus the ordinary region decode's
+  roughly `159 tok/s` in the same short smoke. That disqualifies shallow
+  qmatvec row-chain command fusion as a decode default; decode needs either the
+  ordinary staged projection-chain path, a larger semantic sublayer, or a
+  genuinely different qmatvec throughput kernel.
   The June 22, 2026 full required-GPU browser smoke also refreshed the wider
   browser/WebGPU proof after the matrix expansion: it passed in real
   `GPUBuffer` mode with `maxStorageBuffers=8`, `storageAlignment=256`,
