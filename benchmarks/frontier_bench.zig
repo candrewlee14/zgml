@@ -23,6 +23,33 @@ const MinRepeats: usize = 8;
 const MaxRepeats: usize = 1 << 20;
 const FrontierStencilVecLen = 16;
 
+const FrontierFilter = struct {
+    query: ?[]const u8,
+
+    fn init() FrontierFilter {
+        const raw = std.c.getenv("BENCH_FRONTIER_FILTER") orelse return .{ .query = null };
+        const query = std.mem.span(raw);
+        return .{ .query = if (query.len == 0) null else query };
+    }
+
+    fn enabled(self: FrontierFilter) bool {
+        return self.query != null;
+    }
+
+    fn matches(self: FrontierFilter, name: []const u8) bool {
+        const query = self.query orelse return true;
+        return std.mem.indexOf(u8, name, query) != null;
+    }
+
+    fn matchesAny(self: FrontierFilter, names: []const []const u8) bool {
+        if (!self.enabled()) return true;
+        for (names) |name| {
+            if (self.matches(name)) return true;
+        }
+        return false;
+    }
+};
+
 fn nowNs(io: std.Io) u64 {
     return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
 }
@@ -324,12 +351,19 @@ const FusedChainBench = struct {
     }
 };
 
-fn benchElementwise(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
+fn benchElementwise(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer, filter: FrontierFilter) !void {
+    if (!filter.matchesAny(&.{ "Elementwise", "chain" })) return;
     try w.print("\nElementwise Chain And Fusion\n", .{});
     try w.print("----------------------------\n", .{});
 
     const sizes = [_]usize{ 4_096, 262_144 };
     for (sizes) |n| {
+        var unfused_name_buf: [64]u8 = undefined;
+        const unfused_name = try std.fmt.bufPrint(&unfused_name_buf, "chain n={d} staged", .{n});
+        var fused_name_buf: [64]u8 = undefined;
+        const fused_name = try std.fmt.bufPrint(&fused_name_buf, "chain n={d} one-pass", .{n});
+        if (!filter.matchesAny(&.{ unfused_name, fused_name })) continue;
+
         var unfused = try ChainBench.init(alloc, n);
         defer unfused.deinit();
         var fused = try FusedChainBench.init(alloc, n);
@@ -338,12 +372,8 @@ fn benchElementwise(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !vo
         const unfused_stats = measure(io, &unfused);
         const fused_stats = measure(io, &fused);
         const elems = @as(f64, @floatFromInt(n));
-        var name_buf: [64]u8 = undefined;
-
-        const unfused_name = try std.fmt.bufPrint(&name_buf, "chain n={d} staged", .{n});
         try printStats(w, unfused_name, "elems", elems, "elem", unfused_stats);
 
-        const fused_name = try std.fmt.bufPrint(&name_buf, "chain n={d} one-pass", .{n});
         try printStats(w, fused_name, "elems", elems, "elem", fused_stats);
     }
 }
@@ -356,7 +386,8 @@ const MatmulCase = struct {
     trans_b: bool = false,
 };
 
-fn benchMatmul(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
+fn benchMatmul(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer, filter: FrontierFilter) !void {
+    if (!filter.matchesAny(&.{ "Matmul", "gemv", "projection", "attention" })) return;
     try w.print("\nMatmul Shape Regimes\n", .{});
     try w.print("--------------------\n", .{});
 
@@ -368,6 +399,7 @@ fn benchMatmul(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
     };
 
     for (cases) |case| {
+        if (!filter.matches(case.name)) continue;
         const a = try Tensor(f32).init(alloc, &.{ case.k, case.m });
         defer a.deinit();
         const b_shape = if (case.trans_b) [_]usize{ case.k, case.n } else [_]usize{ case.n, case.k };
@@ -385,11 +417,12 @@ fn benchMatmul(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
     }
 }
 
-fn benchNorms(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
+fn benchNorms(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer, filter: FrontierFilter) !void {
+    if (!filter.matchesAny(&.{ "Softmax", "RMSNorm", "softmax", "rmsnorm" })) return;
     try w.print("\nSoftmax And RMSNorm\n", .{});
     try w.print("-------------------\n", .{});
 
-    {
+    if (filter.matches("softmax 1024 x 32")) {
         const rows: usize = 1024;
         const cols: usize = 32;
         const logits = try Tensor(f32).init(alloc, &.{ rows, cols });
@@ -402,7 +435,7 @@ fn benchNorms(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
         try printStats(w, "softmax 1024 x 32", "elems", @floatFromInt(rows * cols), "elem", stats);
     }
 
-    {
+    if (filter.matches("rmsnorm 768 x 64")) {
         const hidden: usize = 768;
         const tokens: usize = 64;
         const x = try Tensor(f32).init(alloc, &.{ hidden, tokens });
@@ -531,7 +564,8 @@ const DecodeBench = struct {
     }
 };
 
-fn benchDecodeGraph(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
+fn benchDecodeGraph(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer, filter: FrontierFilter) !void {
+    if (!filter.matchesAny(&.{ "Decode", "rmsnorm-attn-logits token" })) return;
     try w.print("\nDecode-ish Inference Path\n", .{});
     try w.print("-------------------------\n", .{});
 
@@ -1108,7 +1142,15 @@ fn benchProjectionRowChainGroupMetalCase(
     try printProjectionRowChainRuntimeProfile(w, profile_name, be, grouped_handle, &grouped_outputs);
 }
 
-fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
+fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer, filter: FrontierFilter) !void {
+    if (!filter.matchesAny(&.{
+        "Metal",
+        "qproj",
+        "qrow",
+        "projection_chain",
+        "projection_group",
+        "projection_row_chain",
+    })) return;
     try w.print("\nMetal Projection Row-Chain Command\n", .{});
     try w.print("----------------------------------\n", .{});
 
@@ -1132,19 +1174,31 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
         .{ .name = "qproj full-prefill m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
         .{ .name = "qproj smollm-prompt m=128 n=576 k=576", .m = 128, .n = 576, .k = 576 },
     };
-    for (projection_chain_cases) |case| try benchProjectionChainMetalCase(io, alloc, w, &metal, case);
+    for (projection_chain_cases) |case| {
+        if (filter.matchesAny(&.{ case.name, "qproj", "projection_chain" })) {
+            try benchProjectionChainMetalCase(io, alloc, w, &metal, case);
+        }
+    }
 
     const projection_group_cases = [_]ProjectionRowChainCase{
         .{ .name = "qproj group full-prefill x4 m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
         .{ .name = "qproj group smollm-prompt x4 m=128 n=576 k=576", .m = 128, .n = 576, .k = 576 },
     };
-    for (projection_group_cases) |case| try benchProjectionGroupMetalCase(io, alloc, w, &metal, case);
+    for (projection_group_cases) |case| {
+        if (filter.matchesAny(&.{ case.name, "qproj group", "projection_group" })) {
+            try benchProjectionGroupMetalCase(io, alloc, w, &metal, case);
+        }
+    }
 
     const row_chain_group_cases = [_]ProjectionRowChainCase{
         .{ .name = "qrow group full-prefill x4 m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
         .{ .name = "qrow group smollm-prompt x4 m=128 n=576 k=576", .m = 128, .n = 576, .k = 576 },
     };
-    for (row_chain_group_cases) |case| try benchProjectionRowChainGroupMetalCase(io, alloc, w, &metal, case);
+    for (row_chain_group_cases) |case| {
+        if (filter.matchesAny(&.{ case.name, "qrow group", "projection_row_chain_group" })) {
+            try benchProjectionRowChainGroupMetalCase(io, alloc, w, &metal, case);
+        }
+    }
 
     const cases = [_]ProjectionRowChainCase{
         .{ .name = "qrow decode m=1 n=512 k=512", .m = 1, .n = 512, .k = 512 },
@@ -1153,7 +1207,11 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
         .{ .name = "qrow full-prefill m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
         .{ .name = "qrow smollm-prompt m=128 n=576 k=576", .m = 128, .n = 576, .k = 576 },
     };
-    for (cases) |case| try benchProjectionRowChainMetalCase(io, alloc, w, &metal, case);
+    for (cases) |case| {
+        if (filter.matchesAny(&.{ case.name, "qrow", "projection_row_chain" })) {
+            try benchProjectionRowChainMetalCase(io, alloc, w, &metal, case);
+        }
+    }
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -1172,12 +1230,16 @@ pub fn main(init: std.process.Init) !void {
         SampleCount,
         @as(f64, @floatFromInt(MinSampleNs)) / 1_000_000.0,
     });
+    const filter = FrontierFilter.init();
+    if (filter.query) |query| {
+        try w.print("filter={s}\n", .{query});
+    }
 
-    try benchElementwise(io, alloc, w);
-    try benchMatmul(io, alloc, w);
-    try benchNorms(io, alloc, w);
-    try benchDecodeGraph(io, alloc, w);
-    try benchProjectionRowChainMetal(io, alloc, w);
+    try benchElementwise(io, alloc, w, filter);
+    try benchMatmul(io, alloc, w, filter);
+    try benchNorms(io, alloc, w, filter);
+    try benchDecodeGraph(io, alloc, w, filter);
+    try benchProjectionRowChainMetal(io, alloc, w, filter);
 
     try w.print("\n", .{});
     writer.interface.flush() catch {};

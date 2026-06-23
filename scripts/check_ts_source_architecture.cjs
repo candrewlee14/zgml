@@ -297,6 +297,12 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:frontier:gate:run"] !== "BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:gate:run must stay the no-rebuild scheduler/kernelizer frontier rerun");
   }
+  if (packageJson.scripts?.["bench:frontier:row-chain"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_FILTER=qrow ./zig-out/bin/bench-frontier") {
+    errors.push("package.json bench:frontier:row-chain must stay the ReleaseFast row-chain-only frontier microscope");
+  }
+  if (packageJson.scripts?.["bench:frontier:row-chain:run"] !== "BENCH_FRONTIER_FILTER=qrow ./zig-out/bin/bench-frontier") {
+    errors.push("package.json bench:frontier:row-chain:run must stay the no-rebuild row-chain-only frontier microscope");
+  }
   if (packageJson.scripts?.["bench:q8-prompt-candidate"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate must stay the rebuild-backed source-checkout full-model Q8 prompt candidate probe");
   }
@@ -460,6 +466,15 @@ function checkPackageExports(errors) {
   ]) {
     if (!benchVsGgmlSource.includes(needle)) {
       errors.push(`scripts/bench_vs_ggml.sh must build a fresh benchmark binary before full ggml evidence: ${needle}`);
+    }
+  }
+  for (const needle of [
+    "BENCH_FRONTIER_FILTER",
+    "filter={s}",
+    "filter.matchesAny",
+  ]) {
+    if (!frontierBenchZigSource.includes(needle)) {
+      errors.push(`benchmarks/frontier_bench.zig must keep frontier microscope filter needle: ${needle}`);
     }
   }
   for (const needle of [

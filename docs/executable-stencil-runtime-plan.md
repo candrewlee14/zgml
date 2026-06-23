@@ -470,6 +470,8 @@ npm run bench:pytorch:gaps             # rebuild and measure current PyTorch sof
 npm run bench:pytorch:gaps:run         # rerun current PyTorch soft spots without rebuilding artifacts
 npm run bench:frontier:gate            # rebuild ReleaseFast and measure scheduler/kernelizer frontier evidence
 npm run bench:frontier:gate:run        # rerun frontier evidence without rebuilding artifacts
+npm run bench:frontier:row-chain       # rebuild ReleaseFast and run only row-chain frontier labels
+npm run bench:frontier:row-chain:run   # rerun only row-chain frontier labels without rebuilding artifacts
 npm run bench:q8-prompt-candidate      # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
 npm run bench:q8-prompt-candidate:run  # rerun Q8 prompt candidate evidence without rebuilding artifacts
 npm run bench:ggml:parity:run          # rerun hard ggml parity without rebuilding artifacts
@@ -486,9 +488,14 @@ Focused module Program benchmarks also build the native C ABI in ReleaseFast
 first, so microscope results do not silently compare against a stale Debug
 dylib. Frontier, Q8 prompt candidate, and ggml comparison rebuild commands now
 also force `-Doptimize=ReleaseFast`; their `:run` variants are explicitly
-artifact reruns after that benchmark-grade build. The frontier microscope uses
-`BENCH_FRONTIER_ATTEMPTS` (default `5`) so the row-chain kernel work can absorb
-local timing noise without falling back to the much slower full scorecard.
+artifact reruns after that benchmark-grade build. The frontier binary now also
+accepts `BENCH_FRONTIER_FILTER=<label-substring>` for microscope loops; the
+named row-chain scripts use `BENCH_FRONTIER_FILTER=qrow` so the remaining tiled
+row-chain kernel work can skip unrelated elementwise/matmul/norm frontier
+families while preserving the full unfiltered release gate. The frontier
+microscope uses `BENCH_FRONTIER_ATTEMPTS` (default `5`) so the row-chain kernel
+work can absorb local timing noise without falling back to the much slower full
+scorecard.
 The frontier benchmark gate keeps the same floors but now evaluates them across
 its repeated noisy attempts instead of requiring every independent microbench
 lane to pass in one lucky attempt. If no single attempt clears all floors but

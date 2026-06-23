@@ -169,6 +169,12 @@ function checkScripts() {
   if (scripts["bench:frontier:gate:run"] !== "BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:gate:run must remain the no-rebuild scheduler/kernelizer frontier rerun");
   }
+  if (scripts["bench:frontier:row-chain"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_FILTER=qrow ./zig-out/bin/bench-frontier") {
+    errors.push("package.json bench:frontier:row-chain must remain the ReleaseFast row-chain-only frontier microscope");
+  }
+  if (scripts["bench:frontier:row-chain:run"] !== "BENCH_FRONTIER_FILTER=qrow ./zig-out/bin/bench-frontier") {
+    errors.push("package.json bench:frontier:row-chain:run must remain the no-rebuild row-chain-only frontier microscope");
+  }
   if (scripts["bench:q8-prompt-candidate"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate must remain the rebuild-backed full-model Q8 prompt candidate evidence probe");
   }
@@ -392,6 +398,11 @@ function checkScripts() {
     "function attemptDiagnostic(current)",
     "frontier bench attempt diagnostics:",
     "margin=${scoreMargin(current).toFixed(2)}x",
+  ]);
+  requireIncludes(read("benchmarks/frontier_bench.zig"), "benchmarks/frontier_bench.zig", "frontier benchmark must keep row-chain microscope filtering", [
+    "BENCH_FRONTIER_FILTER",
+    "filter={s}",
+    "filter.matchesAny",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "scalar qmatmul row-chain diagnosis until tiled replacement exists", [
     "if (q.M != 1) {",
@@ -4916,6 +4927,8 @@ function checkDocs() {
     "moved `log_softmax_classifier_batched` down to about",
     "accumulate narrow row-tail special cases until a benchmark proves",
     "benchmark binaries with `-Doptimize=ReleaseFast`",
+    "BENCH_FRONTIER_FILTER=<label-substring>",
+    "BENCH_FRONTIER_FILTER=qrow",
     "projection_row_chain_candidate=ready",
     "single_throughput=off",
     "command fusion holds at `0.98x` to `1.02x`",

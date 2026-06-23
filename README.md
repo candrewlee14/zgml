@@ -869,6 +869,8 @@ npm run bench:pytorch:gaps:run # rerun current PyTorch soft spots without rebuil
 npm run bench:ggml        # build ReleaseFast and run the ggml/llama.cpp artifact gate with baseline regression protection
 npm run bench:frontier:gate # rebuild ReleaseFast and measure scheduler/kernelizer frontier evidence
 npm run bench:frontier:gate:run # rerun frontier evidence without rebuilding artifacts
+npm run bench:frontier:row-chain # rebuild ReleaseFast and run only row-chain frontier labels
+npm run bench:frontier:row-chain:run # rerun only row-chain frontier labels without rebuilding artifacts
 npm run bench:q8-prompt-candidate # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
 npm run bench:q8-prompt-candidate:run # rerun Q8 prompt candidate evidence without rebuilding artifacts
 zig build bench-frontier  # run decision-grade local benchmarks
@@ -899,8 +901,11 @@ throughput problem rather than a shape-evidence guess. Frontier, q8 prompt
 candidate, and ggml comparison rebuild commands force ReleaseFast artifacts;
 the `:run` frontier and q8 prompt candidate scripts reuse the last
 `bench-build` artifact so kernel hypotheses can be repeated quickly after one
-benchmark-grade build. Set `BENCH_FRONTIER_ATTEMPTS` when the local frontier
-lanes need more or fewer noise samples. The q8 prompt gate also
+benchmark-grade build. The frontier binary also accepts
+`BENCH_FRONTIER_FILTER=<label-substring>` for microscope loops, and the named
+row-chain scripts set `BENCH_FRONTIER_FILTER=qrow` so tiled row-chain kernel
+work does not rerun unrelated benchmark families. Set `BENCH_FRONTIER_ATTEMPTS`
+when the local frontier lanes need more or fewer noise samples. The q8 prompt gate also
 keeps a usable two-dispatch projection-row-chain command candidate distinct
 from the slower single-dispatch diagnostic, so command simplification can land
 without pretending the tiled row-chain kernel is solved. Native WebGPU now has
