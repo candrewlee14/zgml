@@ -284,6 +284,9 @@ function checkScripts() {
   if (scripts["dev:zig:time-report"] !== "zig build unit-tests -Duse-metal=false -Duse-blas=false --time-report --summary failures") {
     errors.push("package.json dev:zig:time-report must expose Zig --time-report for compile-time bottleneck diagnosis");
   }
+  if (scripts["dev:wasm:browser-llama"] !== "zig build ffi-wasm -fincremental --summary failures && npm run smoke:portable-ffi:browser-llama:run") {
+    errors.push("package.json dev:wasm:browser-llama must keep the incremental Wasm build plus focused browser LLaMA rerun loop");
+  }
   if (scripts["dev:zig:metal-row-chain"] !== "zig build test -Duse-metal=true -fincremental --summary failures -- --test-filter \"metal backend exact command fuses qmatmul residual into row chain\"") {
     errors.push("package.json dev:zig:metal-row-chain must keep the focused incremental Metal row-chain kernel loop");
   }
@@ -677,6 +680,9 @@ function checkScripts() {
   }
   if (scripts["smoke:portable-ffi:browser-llama"] !== "zig build ffi-wasm-browser-llama-focused-smoke") {
     errors.push("package.json smoke:portable-ffi:browser-llama must keep the focused browser LLaMA family proof gate");
+  }
+  if (scripts["smoke:portable-ffi:browser-llama:run"] !== "node --no-warnings examples/wasm_ffi/browser_smoke_runner.mjs --llama-profile-label=gguf-smollm3-nope-gqa-pipeline --timeout-ms=300000") {
+    errors.push("package.json smoke:portable-ffi:browser-llama:run must keep the no-Zig-build focused browser LLaMA family proof rerun");
   }
   if (scripts["smoke:portable-ffi:browser-gpu-focused"] !== "zig build ffi-wasm-browser-gpu-focused-smoke") {
     errors.push("package.json smoke:portable-ffi:browser-gpu-focused must keep the focused required-GPU browser LLaMA proof gate");

@@ -354,6 +354,9 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["dev:zig:bench:watch"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
     errors.push("package.json dev:zig:bench:watch must stay the watched explicit ReleaseFast incremental benchmark-binary build loop");
   }
+  if (packageJson.scripts?.["dev:wasm:browser-llama"] !== "zig build ffi-wasm -fincremental --summary failures && npm run smoke:portable-ffi:browser-llama:run") {
+    errors.push("package.json dev:wasm:browser-llama must stay the incremental Wasm build plus focused browser LLaMA rerun loop");
+  }
   if (packageJson.scripts?.["dev:zig:metal-row-chain"] !== "zig build test -Duse-metal=true -fincremental --summary failures -- --test-filter \"metal backend exact command fuses qmatmul residual into row chain\"") {
     errors.push("package.json dev:zig:metal-row-chain must stay the focused incremental Metal row-chain kernel loop");
   }

@@ -541,6 +541,7 @@ npm run dev:zig:bench:webui # watched ReleaseFast benchmark build with Zig build
 npm run dev:zig:time-report # one-off Zig compile-time report when build latency itself is the bottleneck
 npm run dev:zig:metal-row-chain       # focused incremental Metal row-chain kernel test
 npm run dev:zig:metal-row-chain:watch # watched focused Metal row-chain kernel test
+npm run dev:wasm:browser-llama        # incremental Wasm C ABI build, then focused browser LLaMA proof rerun
 npm run dev:perf:module-program       # incremental ReleaseFast native rebuild plus focused Program/Session bench
 npm run dev:perf:module-program:run   # rerun focused Program/Session bench without rebuilding artifacts
 npm run dev:perf:pytorch:focus        # incremental ReleaseFast native rebuild plus focused PyTorch comparison
@@ -571,6 +572,7 @@ npm run bench:q8-prompt-candidate:run  # rerun Q8 prompt candidate evidence with
 npm run bench:ggml:parity:run          # rerun hard ggml parity; bench script rebuilds ReleaseFast by default
 npm run dev:perf:ggml:q8-command-smoke # cheap ggml smoke with explicit Q8 projection-row-chain command path
 npm run dev:perf:ggml:q8-command-smoke:run # rerun explicit Q8 command-path ggml smoke without rebuilding artifacts
+npm run smoke:portable-ffi:browser-llama:run # rerun the focused browser LLaMA proof after Wasm artifacts already exist
 zig build -Doptimize=ReleaseFast bench-build && ./zig-out/bin/bench-llama-smollm ignored 128 1 1 --stencil-only --debug-row-chain
 ```
 
