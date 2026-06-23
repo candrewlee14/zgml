@@ -461,7 +461,18 @@ found a passing attempt at `3.97x` (`zgml:0.0151ms`, `pytorch:0.0599ms`) with
 median `1.57x`; the same pass kept `linear_batched` at a `2.23x` selected ratio
 with median `0.81x`. That is useful progress, but still noisy enough that the
 ratio range remains the honest contract rather than a permanent universal
-parity claim.
+parity claim. A June 23, 2026 small-direct CPU pass then made that gap less
+pathological without hiding the remaining miss: the direct `Linear` fast path
+now uses a 16-wide vector kernel for aligned small output rows while preserving
+the old 8-wide path for narrower rows, and the direct
+`Linear -> LogSoftmax` tail now vectorizes row max/sum/subtract work. The
+focused three-attempt microscope moved `linear_batched` to
+`ratio_median=0.83x` with a best parity attempt in one no-rebuild rerun, and
+kept `log_softmax_classifier_batched` around `ratio_median=0.82x` while showing
+best attempts above parity. This is incremental headroom, not a parity claim:
+the next real win still needs either a tighter small-GEMM+bias kernel or a
+better row-log-softmax micro-kernel that improves the median, not just the best
+attempt.
 The repo now exposes that inner loop directly:
 
 ```text
@@ -534,13 +545,12 @@ exploratory `rms_gelu_linear_batched` miss: current evidence is
 `rms_gelu_linear_batched=zgml:0.0382ms pytorch:0.1005ms
 zgml_vs_pytorch=2.63x`, with the module hot path reporting
 `hot_execute_into=0.0369ms`.
-A later microscope pass found the small direct linear kernel was overreaching
-on the PyTorch comparison shape `M=128,N=32,K=64`: sending that larger batched
-linear through BLAS instead of the direct vector loop moved focused
-`linear_batched` evidence from roughly `0.78x` to `0.93x` versus PyTorch and
-kept `lazy_token_head_batched` above parity in the same run. The direct linear
-kernel therefore stays a tiny-shape fast path, not a default replacement for
-BLAS-grade batched dense work.
+A later microscope pass found that the small direct linear kernel needed a
+shape-specific implementation rather than a blanket BLAS escape hatch. Sending
+the PyTorch comparison shape `M=128,N=32,K=64` through BLAS could make one noisy
+sample look better, but it regressed the focused module hot path. The current
+shape is better served by a native small-direct kernel that uses 16-wide column
+vectors when aligned and keeps the old 8-wide path for narrower rows.
 Current focused exploratory evidence after the ReleaseFast rebuild keeps
 `rms_gelu_linear_batched` comfortably ahead of PyTorch, keeps
 `lazy_token_head_batched` around parity, and closes the previous
@@ -550,21 +560,17 @@ Current focused exploratory evidence after the ReleaseFast rebuild keeps
 fusion attempt made that lane slower, so the lesson is not "add every shortcut";
 it is "only keep the shortcut when the exact shape has ReleaseFast evidence and
 the public operation story stays simple."
-This was rechecked after the batched-linear BLAS threshold fix: a CPU-only
-direct Session path that ran BLAS for `Linear` and then in-place row
-`LogSoftmax` still regressed the focused module hot path to about `0.0095ms`
-and the PyTorch ratio to about `0.81x`, so it was reverted. The narrower
-small-direct-linear variant is different and now has benchmark evidence, but
-the larger lesson remains: do not accumulate row-tail special cases unless a
-focused ReleaseFast benchmark proves the exact shortcut beats the simple
-vector loop and the existing Program plan stays readable.
-A fixed-width native log-softmax micro-kernel for the exact `cols == 32` gap
-shape was also tried and rejected on June 22, 2026: the quick Zig tests passed,
-but `bench:pytorch:gaps` moved `log_softmax_classifier_batched` down to about
-`0.71x` (`zgml:0.0094ms pytorch:0.0067ms`) even though a noisy
-`linear_batched` sample cleared parity. That keeps the same conclusion: do not
-accumulate narrow row-tail special cases until a benchmark proves they beat the
-simple vector loop.
+This was rechecked against the BLAS-backed direct `Linear -> LogSoftmax`
+variant: a CPU-only direct Session path that ran BLAS for `Linear` and then
+in-place row `LogSoftmax` still regressed the focused module hot path to about
+`0.0095ms`, so it was reverted. A fixed-width native log-softmax micro-kernel
+for the exact `cols == 32` gap was also tried and rejected on June 22, 2026.
+The current June 23, 2026 version keeps the simpler public Program plan and
+uses a general vectorized row log-softmax loop instead: vector max, vector exp
+sum, and vector subtract for each row, with scalar tails. The larger lesson
+remains: keep measured broad-ish kernels that improve the exact hot lane while
+preserving coverage, but do not accumulate one-off row-tail special cases unless
+the median benchmark proves they beat the simple vector loop.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS

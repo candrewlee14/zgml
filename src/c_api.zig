@@ -5473,11 +5473,8 @@ fn executeDirectRmsGeluLinearStep(linear: *const TinyLinearSessionHandle, shape:
     addDenseBiasRows(output_slice, linear.bias_buf, shape.M, shape.N);
 }
 
-fn executeSmallDirectLinearBiasStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32) bool {
-    if (!shape.has_bias) return false;
-    if (shape.M > 128 or shape.N > 64 or shape.K > 128 or shape.N % 8 != 0) return false;
-
-    const VecT = @Vector(8, f32);
+fn executeSmallDirectLinearBiasStepLanes(comptime lanes: usize, linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32) void {
+    const VecT = @Vector(lanes, f32);
     const input_slice = input[0..linear.input_len];
     const output_slice = output[0..linear.output_len];
 
@@ -5485,17 +5482,31 @@ fn executeSmallDirectLinearBiasStep(linear: *const TinyLinearSessionHandle, shap
         const input_row = input_slice[row * shape.K ..][0..shape.K];
         const output_row = output_slice[row * shape.N ..][0..shape.N];
         var col: usize = 0;
-        while (col < shape.N) : (col += 8) {
-            var acc: VecT = linear.bias_buf[col..][0..8].*;
+        while (col < shape.N) : (col += lanes) {
+            var acc: VecT = linear.bias_buf[col..][0..lanes].*;
             for (0..shape.K) |k| {
                 const xv: VecT = @splat(input_row[k]);
-                const wv: VecT = linear.weights_buf[k * shape.N + col ..][0..8].*;
+                const wv: VecT = linear.weights_buf[k * shape.N + col ..][0..lanes].*;
                 acc += xv * wv;
             }
-            output_row[col..][0..8].* = acc;
+            output_row[col..][0..lanes].* = acc;
         }
     }
-    return true;
+}
+
+fn executeSmallDirectLinearBiasStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32) bool {
+    if (!shape.has_bias) return false;
+    if (shape.M > 128 or shape.N > 64 or shape.K > 128) return false;
+
+    if (shape.N % 16 == 0) {
+        executeSmallDirectLinearBiasStepLanes(16, linear, shape, input, output);
+        return true;
+    }
+    if (shape.N % 8 == 0) {
+        executeSmallDirectLinearBiasStepLanes(8, linear, shape, input, output);
+        return true;
+    }
+    return false;
 }
 
 fn executeDirectLinearStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32) void {
@@ -5525,19 +5536,39 @@ fn executeDirectLinearStep(linear: *const TinyLinearSessionHandle, shape: Direct
 }
 
 fn logSoftmaxRowsInPlace(values: []f32, M: usize, N: usize) void {
+    const VecT = @Vector(8, f32);
     for (0..M) |row| {
         const out_row = values[row * N ..][0..N];
-        var max_val = out_row[0];
-        for (out_row[1..]) |value| {
-            if (value > max_val) max_val = value;
+        var max_vec: VecT = @splat(-std.math.inf(f32));
+        var i: usize = 0;
+        while (i + 8 <= N) : (i += 8) {
+            const v: VecT = out_row[i..][0..8].*;
+            max_vec = @max(max_vec, v);
         }
-        var sum_exp: f32 = 0;
-        for (out_row) |value| {
-            sum_exp += @exp(value - max_val);
+        var max_val: f32 = @reduce(.Max, max_vec);
+        while (i < N) : (i += 1) {
+            if (out_row[i] > max_val) max_val = out_row[i];
+        }
+        const max_broadcast: VecT = @splat(max_val);
+        var sum_vec: VecT = @splat(0);
+        i = 0;
+        while (i + 8 <= N) : (i += 8) {
+            const v: VecT = out_row[i..][0..8].*;
+            sum_vec += @exp(v - max_broadcast);
+        }
+        var sum_exp: f32 = @reduce(.Add, sum_vec);
+        while (i < N) : (i += 1) {
+            sum_exp += @exp(out_row[i] - max_val);
         }
         const log_denom = max_val + @log(sum_exp);
-        for (out_row) |*value| {
-            value.* -= log_denom;
+        const log_denom_vec: VecT = @splat(log_denom);
+        i = 0;
+        while (i + 8 <= N) : (i += 8) {
+            const v: VecT = out_row[i..][0..8].*;
+            out_row[i..][0..8].* = v - log_denom_vec;
+        }
+        while (i < N) : (i += 1) {
+            out_row[i] -= log_denom;
         }
     }
 }
