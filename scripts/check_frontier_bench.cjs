@@ -273,6 +273,7 @@ function scoreFocusedQrowRegion(output, attempt) {
 }
 
 function focusedQrowRegionMargin(current) {
+  const throughputScore = Math.min(current.fullPrefillSpeedup, current.smollmPromptSpeedup);
   return Math.min(
     projectionRowChainMaxAbsDiffCeil / Math.max(current.fullPrefillMaxAbsDiff, Number.EPSILON),
     projectionRowChainMaxAbsDiffCeil / Math.max(current.smollmPromptMaxAbsDiff, Number.EPSILON),
@@ -280,7 +281,7 @@ function focusedQrowRegionMargin(current) {
     current.fullPrefillTwoPhaseCount === 7 ? 1 : 0,
     current.smollmPromptShapeCommands === 7 ? 1 : 0,
     current.smollmPromptTwoPhaseCount === 7 ? 1 : 0,
-  );
+  ) + throughputScore;
 }
 
 function chooseBestFocusedQrowRegion(attempts) {

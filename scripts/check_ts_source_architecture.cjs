@@ -588,6 +588,8 @@ function checkPackageExports(errors) {
     "projection_row_chain_group_smollm_prompt=",
     "frontier qrow region gate:",
     "diagnostic_floor=not-yet",
+    "const throughputScore = Math.min(current.fullPrefillSpeedup, current.smollmPromptSpeedup);",
+    "frontier qrow region retries:",
     "function runFocusedQrowRegionGate()",
     "function isFocusedQrowRegionFilter(filter)",
     "shape_commands=",

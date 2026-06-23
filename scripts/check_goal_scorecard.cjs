@@ -506,6 +506,8 @@ function checkScripts() {
     "projection_row_chain_two_phase_region_smollm_prompt=",
     "frontier qrow region gate:",
     "diagnostic_floor=not-yet",
+    "const throughputScore = Math.min(current.fullPrefillSpeedup, current.smollmPromptSpeedup);",
+    "frontier qrow region retries:",
     "function runFocusedQrowRegionGate()",
     "function isFocusedQrowRegionFilter(filter)",
     "projection_row_chain two-phase group full-prefill region runtime profile must stay at 14 command dispatches with two_phase_count=7",

@@ -612,7 +612,9 @@ checker now also has a focused `qrow region` branch, so
 `dev:perf:frontier:row-chain-region` can validate the exact two-phase row-chain
 dispatch/profile shape and correctness without requiring unrelated frontier
 labels; its speed output is diagnostic until the two-phase kernel earns a real
-throughput floor. The frontier
+throughput floor, and repeated attempts choose the best minimum throughput across
+full-prefill and SmolLM-prompt rows while still failing only on correctness or
+profile drift. The frontier
 qproj scripts use `BENCH_FRONTIER_FILTER=qproj` so projection-chain/group work
 can check the current Q8 prompt frontier without paying for unrelated rows,
 norms, and matmuls. The frontier microscope uses `BENCH_FRONTIER_ATTEMPTS`
