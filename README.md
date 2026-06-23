@@ -882,8 +882,10 @@ npm run dev:zig:bench:watch # watched incremental benchmark-binary build loop
 npm run dev:perf:module-program # incremental ReleaseFast native rebuild plus focused Program/Session bench
 npm run dev:perf:module-program:run # rerun focused Program/Session bench against existing artifacts
 npm run dev:perf:pytorch:focus # incremental ReleaseFast native rebuild plus focused PyTorch comparison
+npm run dev:perf:pytorch:focus:native # native-only focused PyTorch loop after dist exists
 npm run dev:perf:pytorch:focus:run # rerun focused PyTorch comparison against existing artifacts
 npm run dev:perf:pytorch:gaps # incremental ReleaseFast native rebuild, package build, and focused PyTorch-gap bench
+npm run dev:perf:pytorch:gaps:native # native-only focused PyTorch-gap loop after dist exists
 npm run dev:perf:pytorch:gaps:run # rerun focused PyTorch-gap bench against existing native/package artifacts
 npm run dev:perf:q8-prompt # incremental ReleaseFast benchmark rebuild plus Q8 prompt candidate evidence
 npm run dev:perf:q8-prompt:run # rerun Q8 prompt candidate evidence against existing benchmark artifact

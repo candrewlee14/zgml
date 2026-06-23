@@ -544,7 +544,9 @@ npm run dev:zig:metal-row-chain:watch # watched focused Metal row-chain kernel t
 npm run dev:perf:module-program       # incremental ReleaseFast native rebuild plus focused Program/Session bench
 npm run dev:perf:module-program:run   # rerun focused Program/Session bench without rebuilding artifacts
 npm run dev:perf:pytorch:focus        # incremental ReleaseFast native rebuild plus focused PyTorch comparison
+npm run dev:perf:pytorch:focus:native # native-only focused PyTorch loop after dist exists
 npm run dev:perf:pytorch:focus:run    # rerun focused PyTorch comparison without rebuilding artifacts
+npm run dev:perf:pytorch:gaps:native   # native-only current-gap loop after dist exists
 npm run bench:module-program:focus
 npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
 npm run bench:pytorch:parity:run       # rebuild ReleaseFast native, then rerun hard PyTorch parity
