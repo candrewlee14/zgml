@@ -533,6 +533,10 @@ npm run dev:zig:bench:webui # watched ReleaseFast benchmark build with Zig build
 npm run dev:zig:time-report # one-off Zig compile-time report when build latency itself is the bottleneck
 npm run dev:zig:metal-row-chain       # focused incremental Metal row-chain kernel test
 npm run dev:zig:metal-row-chain:watch # watched focused Metal row-chain kernel test
+npm run dev:perf:module-program       # incremental ReleaseFast native rebuild plus focused Program/Session bench
+npm run dev:perf:module-program:run   # rerun focused Program/Session bench without rebuilding artifacts
+npm run dev:perf:pytorch:focus        # incremental ReleaseFast native rebuild plus focused PyTorch comparison
+npm run dev:perf:pytorch:focus:run    # rerun focused PyTorch comparison without rebuilding artifacts
 npm run bench:module-program:focus
 npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
 npm run bench:pytorch:parity:run       # rebuild ReleaseFast native, then rerun hard PyTorch parity

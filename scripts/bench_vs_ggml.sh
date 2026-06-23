@@ -8,7 +8,7 @@
 # without failing the shell command on known parity/perf misses,
 # BENCH_ZGML_SAMPLES=1 for a quick smoke, BENCH_BUILD_ZGML=0 to reuse
 # an already-built zig-out/bin/bench-llama-smollm.
-# Artifact: bench-results/smollm-<timestamp>-p<PROMPT>-g<GEN>-r<REPS>.json
+# Artifact: bench-results/smollm-<timestamp>-<pid>-p<PROMPT>-g<GEN>-r<REPS>.json
 
 set -euo pipefail
 
@@ -52,7 +52,7 @@ if { [ -n "$BENCH_BASELINE_JSON" ] || [ "$BENCH_REQUIRE_PARITY" = "1" ]; } && [ 
 fi
 ZGML_BIN="./zig-out/bin/bench-llama-smollm"
 OUT_DIR="${OUT_DIR:-bench-results}"
-STAMP="$(date -u +"%Y%m%dT%H%M%SZ")"
+STAMP="$(date -u +"%Y%m%dT%H%M%SZ")-$$"
 BASE="$OUT_DIR/smollm-${STAMP}-p${PROMPT}-g${GEN}-r${REPS}"
 JSON_OUT="${BASE}.json"
 

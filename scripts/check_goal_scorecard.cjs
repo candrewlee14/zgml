@@ -150,6 +150,8 @@ function checkScripts() {
   const benchStatus = read("scripts/bench_status.cjs");
   requireIncludes(benchStatus, "scripts/bench_status.cjs", "accepted full-run artifact selection", [
     "function isAcceptedFullRunArtifact(path)",
+    "const fullRunArtifactPattern = /^smollm-\\d{8}T\\d{6}Z(?:-\\d+)?-p128-g200-r3\\.json$/",
+    "fullRunArtifactPattern.test(name)",
     "data.gates.required_pass === true",
     "const baseline = baselineEvidence(path)",
     "baseline.rows.every((row) => row.ok)",
@@ -281,6 +283,18 @@ function checkScripts() {
   }
   if (scripts["dev:zig:metal-row-chain:watch"] !== "zig build test -Duse-metal=true -fincremental --watch --debounce 150 --summary line --error-style minimal_clear -- --test-filter \"metal backend exact command fuses qmatmul residual into row chain\"") {
     errors.push("package.json dev:zig:metal-row-chain:watch must keep the watched focused Metal row-chain kernel loop");
+  }
+  if (scripts["dev:perf:module-program"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && npm run build:package && BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
+    errors.push("package.json dev:perf:module-program must keep the incremental native module Program performance loop");
+  }
+  if (scripts["dev:perf:module-program:run"] !== "BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
+    errors.push("package.json dev:perf:module-program:run must keep the no-rebuild module Program performance rerun");
+  }
+  if (scripts["dev:perf:pytorch:focus"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json dev:perf:pytorch:focus must keep the incremental native PyTorch focus loop");
+  }
+  if (scripts["dev:perf:pytorch:focus:run"] !== "BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json dev:perf:pytorch:focus:run must keep the no-rebuild PyTorch focus rerun");
   }
   if (scripts["bench:pytorch"] !== "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch must remain the ReleaseFast upstream PyTorch comparison evidence gate");

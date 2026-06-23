@@ -17,6 +17,7 @@ const baselineArtifacts = [
   "benchmarks/baselines/smollm-m5pro-p128-g200-r3.json",
   "benchmarks/baselines/smollm-stencil-p128.json",
 ];
+const fullRunArtifactPattern = /^smollm-\d{8}T\d{6}Z(?:-\d+)?-p128-g200-r3\.json$/;
 
 function latestFullRunArtifact() {
   const artifacts = fullRunArtifacts();
@@ -48,7 +49,7 @@ function fullRunArtifacts() {
   const dir = "bench-results";
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
-    .filter((name) => /^smollm-\d{8}T\d{6}Z-p128-g200-r3\.json$/.test(name))
+    .filter((name) => fullRunArtifactPattern.test(name))
     .sort()
     .map((name) => join(dir, name))
     .filter(isAcceptedFullRunArtifact);
@@ -58,7 +59,7 @@ function quarantinedFullRunArtifacts() {
   const dir = join("bench-results", "failed");
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
-    .filter((name) => /^smollm-\d{8}T\d{6}Z-p128-g200-r3\.json$/.test(name))
+    .filter((name) => fullRunArtifactPattern.test(name))
     .sort()
     .map((name) => join(dir, name));
 }
