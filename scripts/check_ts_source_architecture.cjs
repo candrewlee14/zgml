@@ -715,14 +715,29 @@ function checkPackageExports(errors) {
   const llamaSmollmBenchSource = fs.readFileSync(path.join(root, "benchmarks", "llama_smollm_bench.zig"), "utf8");
   const metalBackendSource = fs.readFileSync(path.join(root, "src", "backend", "metal.zig"), "utf8");
   const backendProgramSource = fs.readFileSync(path.join(root, "src", "backend", "program.zig"), "utf8");
+  const planSource = readSource(path.join("docs", "executable-stencil-runtime-plan.md"));
   for (const needle of [
     "pub fn promptProjectionRowChainCommand() CommandStreamPolicy",
+    "policy.fuse_projection_row_chain_qmatvec = false;",
     "policy.fuse_projection_row_chain_single_dispatch = false;",
     "pub fn promptProjectionRowChainSingleDispatchCandidate() CommandStreamPolicy",
     "policy.fuse_projection_row_chain_single_dispatch = true;",
+    "const decode_candidate_commands = try buildProgramCommands(std.testing.allocator, &tiny_ops, CommandStreamPolicy.promptProjectionRowChainSingleDispatchCandidate())",
+    "try std.testing.expectEqual(ProgramCommandKind.projection_chain, decode_candidate_commands[0].kind)",
+    "try std.testing.expectEqual(ProgramCommandKind.row_chain, decode_candidate_commands[1].kind)",
   ]) {
     if (!backendProgramSource.includes(needle)) {
-      errors.push(`src/backend/program.zig must name the safe row-chain command policy separately from the single-dispatch diagnostic: ${needle}`);
+      errors.push(`src/backend/program.zig must keep the safe prompt row-chain command policy separate from qmatvec/decode and single-dispatch diagnostics: ${needle}`);
+    }
+  }
+  for (const needle of [
+    "forcing Q8 decode through",
+    "reduced commands from `211` to `151`",
+    "collapsed throughput to about `14 tok/s`",
+    "qmatvec row-chain command fusion as a decode default",
+  ]) {
+    if (!planSource.includes(needle)) {
+      errors.push(`docs/executable-stencil-runtime-plan.md must keep qmatvec decode row-chain negative evidence: ${needle}`);
     }
   }
   for (const needle of [

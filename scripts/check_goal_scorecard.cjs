@@ -1,8 +1,9 @@
 "use strict";
 
 const { spawnSync } = require("node:child_process");
-const { existsSync, readFileSync } = require("node:fs");
+const { existsSync, readFileSync, utimesSync } = require("node:fs");
 const { join, resolve } = require("node:path");
+const { nativeLibraryPath } = require("./native_freshness.cjs");
 
 const root = resolve(__dirname, "..");
 const errors = [];
@@ -422,6 +423,7 @@ function checkScripts() {
     "<no output>",
     "q8 prompt candidate gate\", process.execPath, args, result",
     "module Program bench native release build\", \"zig\", buildArgs, build",
+    "utimesSync(nativeLibraryPath(root), now, now)",
     "module Program bench gate\", process.execPath, args, result",
     "portable Wasm Node/WASI smoke\", \"zig\", nodeWasiArgs, nodeWasi",
     "portable browser required-GPU focused smoke\", \"zig\", browserGpuFocusedArgs, browserGpuFocused",
@@ -517,6 +519,14 @@ function checkScripts() {
     "`next=${requiredNextTarget}`",
     "candidateReady",
     "q8 prompt semantic row-chain gate:",
+  ]);
+  requireIncludes(read("src/backend/program.zig"), "src/backend/program.zig", "prompt row-chain policy must not promote qmatvec decode trap", [
+    "pub fn promptProjectionRowChainCommand() CommandStreamPolicy",
+    "policy.fuse_projection_row_chain_qmatvec = false;",
+    "policy.fuse_projection_row_chain_single_dispatch = false;",
+    "const decode_candidate_commands = try buildProgramCommands(std.testing.allocator, &tiny_ops, CommandStreamPolicy.promptProjectionRowChainSingleDispatchCandidate())",
+    "try std.testing.expectEqual(ProgramCommandKind.projection_chain, decode_candidate_commands[0].kind)",
+    "try std.testing.expectEqual(ProgramCommandKind.row_chain, decode_candidate_commands[1].kind)",
   ]);
   requireIncludes(read("scripts/check_frontier_bench.cjs"), "scripts/check_frontier_bench.cjs", "projection row-chain frontier diagnostic", [
     "BENCH_FRONTIER_ATTEMPTS",
@@ -1687,6 +1697,8 @@ function checkModuleProgramBenchEvidence() {
     errors.push(spawnFailure("module Program bench native release build", "zig", buildArgs, build));
     return;
   }
+  const now = new Date();
+  utimesSync(nativeLibraryPath(root), now, now);
   const args = ["scripts/check_module_program_bench.cjs"];
   const result = spawnSync(process.execPath, args, {
     cwd: root,
@@ -5199,6 +5211,10 @@ function checkDocs() {
     "Full-model F16 SmolLM FFN blocks now",
     "form dense projection-pair commands for `matmul -> silu -> matmul -> mul`",
     "prompt/decode command pressure `242/212`, `30` dense FFN pair commands",
+    "forcing Q8 decode through",
+    "reduced commands from `211` to `151`",
+    "collapsed throughput to about `14 tok/s`",
+    "qmatvec row-chain command fusion as a decode default",
     "A batched `RMSNorm+GELU -> Linear`",
     "sign-style `neg -> abs -> step` chains",
     "Common classifier/token-head `LogSoftmax` tails now",
