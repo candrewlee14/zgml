@@ -73,6 +73,11 @@ pub const RuntimeProfile = struct {
     runtime_patch_invalid_count: u64 = 0,
     runtime_patch_shape: backend.RuntimePatchShape = .{},
     program_command_shape: program_mod.ProgramCommandStreamShape = .{},
+    qmatmul_row_chain_tiled_count: u64 = 0,
+    qmatmul_row_chain_tiled_row_tile_groups: u64 = 0,
+    qmatmul_row_chain_tiled_n_tiles: u64 = 0,
+    qmatmul_row_chain_tiled_serial_tile_loops: u64 = 0,
+    qmatmul_row_chain_tiled_spilled_elementwise: u64 = 0,
     call_count: u32 = 0,
 
     pub fn reset(self: *RuntimeProfile) void {
@@ -106,6 +111,11 @@ pub const RuntimeProfile = struct {
         self.runtime_patch_invalid_count +%= other.runtime_patch_invalid_count;
         self.runtime_patch_shape = self.runtime_patch_shape.merge(other.runtime_patch_shape);
         self.program_command_shape = self.program_command_shape.merge(other.program_command_shape);
+        self.qmatmul_row_chain_tiled_count +%= other.qmatmul_row_chain_tiled_count;
+        self.qmatmul_row_chain_tiled_row_tile_groups +%= other.qmatmul_row_chain_tiled_row_tile_groups;
+        self.qmatmul_row_chain_tiled_n_tiles +%= other.qmatmul_row_chain_tiled_n_tiles;
+        self.qmatmul_row_chain_tiled_serial_tile_loops +%= other.qmatmul_row_chain_tiled_serial_tile_loops;
+        self.qmatmul_row_chain_tiled_spilled_elementwise +%= other.qmatmul_row_chain_tiled_spilled_elementwise;
         self.call_count +%= other.call_count;
     }
 
@@ -185,10 +195,25 @@ pub const RuntimeProfile = struct {
             .unchanged => {},
         }
     }
+
+    pub fn recordQMatmulRowChainTiled(self: *RuntimeProfile, m: u32, n: u32, tile: u32, write_elementwise_output: bool) void {
+        const row_tiles = divCeilU64(m, tile);
+        const n_tiles = divCeilU64(n, tile);
+        self.qmatmul_row_chain_tiled_count +%= 1;
+        self.qmatmul_row_chain_tiled_row_tile_groups +%= row_tiles;
+        self.qmatmul_row_chain_tiled_n_tiles +%= n_tiles;
+        self.qmatmul_row_chain_tiled_serial_tile_loops +%= row_tiles *% n_tiles;
+        if (write_elementwise_output) self.qmatmul_row_chain_tiled_spilled_elementwise +%= 1;
+    }
 };
 
 fn perCall(count: u64, calls_f: f64) f64 {
     return if (calls_f > 0.0) @as(f64, @floatFromInt(count)) / calls_f else 0.0;
+}
+
+fn divCeilU64(n: u32, d: u32) u64 {
+    if (d == 0) return 0;
+    return (@as(u64, n) + @as(u64, d) - 1) / @as(u64, d);
 }
 
 fn writeJsonField(jw: *std.json.Stringify, key: []const u8, value: anytype) !void {
@@ -308,6 +333,13 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
     for (rt.projection_chain_qmatmul_sidecars, 0..) |count, i| {
         if (count == 0) continue;
         try writeCountAndPerCall(jw, "projection_chain_qmatmul_", tag_names[i], count, calls_f);
+    }
+    if (rt.qmatmul_row_chain_tiled_count > 0) {
+        try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "count", rt.qmatmul_row_chain_tiled_count, calls_f);
+        try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "row_tile_groups", rt.qmatmul_row_chain_tiled_row_tile_groups, calls_f);
+        try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "n_tiles", rt.qmatmul_row_chain_tiled_n_tiles, calls_f);
+        try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "serial_tile_loops", rt.qmatmul_row_chain_tiled_serial_tile_loops, calls_f);
+        try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "spilled_elementwise", rt.qmatmul_row_chain_tiled_spilled_elementwise, calls_f);
     }
 }
 
@@ -493,6 +525,7 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     rt.recordScheduleRegionAttempt(unit);
     rt.recordCachedRegionCommandPlan(3);
     rt.recordDynamicRegionCommandPlan();
+    rt.recordQMatmulRowChainTiled(128, 576, 32, true);
     rt.call_count = 2;
 
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
@@ -505,6 +538,11 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     const out = aw.writer.buffer[0..aw.writer.end];
     try std.testing.expect(std.mem.indexOf(u8, out, "\"dynamic_region_command_plans\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"dynamic_region_command_plans_per_call\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_row_tile_groups\":4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_n_tiles\":18") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_serial_tile_loops\":72") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_spilled_elementwise\":1") != null);
 }
 
 test "RuntimeProfile accumulates evidence windows" {
@@ -530,6 +568,7 @@ test "RuntimeProfile accumulates evidence windows" {
     window.runtime_patch_changed_count = 27;
     window.runtime_patch_invalid_count = 28;
     window.runtime_patch_shape = backend.RuntimePatchShape.actual(17, 24, 4242);
+    window.recordQMatmulRowChainTiled(128, 576, 32, true);
     window.call_count = 37;
 
     total.add(window);
@@ -557,6 +596,11 @@ test "RuntimeProfile accumulates evidence windows" {
     try std.testing.expectEqual(@as(u64, 54), total.runtime_patch_changed_count);
     try std.testing.expectEqual(@as(u64, 56), total.runtime_patch_invalid_count);
     try std.testing.expectEqual(backend.RuntimePatchShape.actual(17, 24, 4242), total.runtime_patch_shape);
+    try std.testing.expectEqual(@as(u64, 2), total.qmatmul_row_chain_tiled_count);
+    try std.testing.expectEqual(@as(u64, 8), total.qmatmul_row_chain_tiled_row_tile_groups);
+    try std.testing.expectEqual(@as(u64, 36), total.qmatmul_row_chain_tiled_n_tiles);
+    try std.testing.expectEqual(@as(u64, 144), total.qmatmul_row_chain_tiled_serial_tile_loops);
+    try std.testing.expectEqual(@as(u64, 2), total.qmatmul_row_chain_tiled_spilled_elementwise);
     try std.testing.expectEqual(@as(u32, 74), total.call_count);
 }
 

@@ -262,8 +262,11 @@ Current checked progress:
   confirmed that the single-dispatch trap is the loss of MxN tile parallelism:
   row-tile threadgroups must loop over N tiles without cross-threadgroup row
   reduction. The q8 prompt gate now records this as
-  `single_dispatch_trap=serial_n_tile_loop_without_cross_threadgroup_row_reduce`
-  and points at `viable_next=semantic_sublayer_or_two_phase_tile_parallel_row_chain`.
+  `single_dispatch_trap=serial_n_tile_loop_without_cross_threadgroup_row_reduce`,
+  and the benchmark JSON carries `qmatmul_row_chain_tiled_*` counters so the
+  gate prints actual row groups, N tiles, serial tile loops, and elementwise
+  spills for the candidate. The gate points at
+  `viable_next=semantic_sublayer_or_two_phase_tile_parallel_row_chain`.
   The frontier and q8 prompt candidate gates now rebuild benchmark binaries with `-Doptimize=ReleaseFast` before any no-rebuild rerun evidence.
   That sharper ReleaseFast microscope found the row-chain candidate can look
   ready in isolated frontier lanes (`projection_row_chain_candidate=ready`),
@@ -570,7 +573,8 @@ uses a general vectorized row log-softmax loop instead: vector max, vector exp
 sum, and vector subtract for each row, with scalar tails. The larger lesson
 remains: keep measured broad-ish kernels that improve the exact hot lane while
 preserving coverage, but do not accumulate one-off row-tail special cases unless
-the median benchmark proves they beat the simple vector loop.
+focused evidence shows best attempts above parity and the noisy median remains
+honest (`ratio_median=0.83x` in the latest soft-spot microscope).
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS

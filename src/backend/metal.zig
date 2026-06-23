@@ -7211,6 +7211,7 @@ const CompiledProgram = struct {
             .scale_src_offset = rp.src_offset,
             .scaled_dst_offset = out.dst_offset,
         };
+        exec.profile.recordQMatmulRowChainTiled(q.M, q.N, TILE, write_ew_output);
         exec.encodeKernel(.qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS);
         return true;
     }

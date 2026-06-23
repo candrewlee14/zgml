@@ -344,6 +344,7 @@ function checkScripts() {
     "`projection_row_chain_dispatch=${format(best.defaultProjectionRowChainDispatches, 0)}->${format(best.candidateProjectionRowChainDispatches, 0)} `",
     "`split=${format(best.defaultProjectionRowChainDispatchSplit)}->${format(best.candidateProjectionRowChainDispatchSplit)} `",
     "`excess_dispatch=${format(best.defaultProjectionRowChainDispatchExcess, 0)}->${format(best.candidateProjectionRowChainDispatchExcess, 0)} target=0 `",
+    "`tiled_work=${format(best.candidateTiledCount, 0)} chains row_groups=${format(best.candidateTiledRowTileGroups, 0)} n_tiles=${format(best.candidateTiledNTiles, 0)} serial_tile_loops=${format(best.candidateTiledSerialLoops, 0)} spills=${format(best.candidateTiledSpills, 0)} `",
     "dispatchOnlyTrap",
     "dispatch_reduction_without_tiled_throughput",
     "`dispatch_only_trap=${dispatchOnlyTrap ? \"yes\" : \"no\"} `",
