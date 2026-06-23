@@ -9,6 +9,7 @@
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-prefill-device --gate-only
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-prefill-device --metal-decode-region --gate-only
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-prefill-device --metal-prompt-projection-row-chain-candidate --gate-only
+//!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-prefill-device --metal-prompt-projection-row-chain-two-phase-candidate --gate-only
 //!   ./zig-out/bin/bench-llama-smollm model.gguf 128 200 3 --metal-decode-no-readback
 //!   ./zig-out/bin/bench-llama-smollm ignored 128 1 1 --stencil-only
 
@@ -501,6 +502,7 @@ pub fn main(init: std.process.Init) !void {
     const run_metal_decode_no_readback = hasFlag(args, "--metal-decode-no-readback");
     const run_metal_prompt_projection_row_chain_command_candidate = hasFlag(args, "--metal-prompt-projection-row-chain-command-candidate");
     const run_metal_prompt_projection_row_chain_candidate = hasFlag(args, "--metal-prompt-projection-row-chain-candidate");
+    const run_metal_prompt_projection_row_chain_two_phase_candidate = hasFlag(args, "--metal-prompt-projection-row-chain-two-phase-candidate");
     const stencil_only = hasFlag(args, "--stencil-only");
     const debug_row_chain = hasFlag(args, "--debug-row-chain");
     const gate_only = hasFlag(args, "--gate-only");
@@ -546,12 +548,16 @@ pub fn main(init: std.process.Init) !void {
         defer metal_be.deinit();
         const metal_prefill_label = if (run_metal_prompt_projection_row_chain_candidate)
             "metal scheduled prefill projection-row-chain candidate"
+        else if (run_metal_prompt_projection_row_chain_two_phase_candidate)
+            "metal scheduled prefill projection-row-chain two-phase candidate"
         else if (run_metal_prompt_projection_row_chain_command_candidate)
             "metal scheduled prefill projection-row-chain command candidate"
         else
             "metal scheduled prefill";
         if (run_metal_prompt_projection_row_chain_candidate) {
             metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainSingleDispatchCandidate());
+        } else if (run_metal_prompt_projection_row_chain_two_phase_candidate) {
+            metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainTwoPhaseCandidate());
         } else if (run_metal_prompt_projection_row_chain_command_candidate) {
             metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainCommand());
         }

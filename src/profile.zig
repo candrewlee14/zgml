@@ -80,6 +80,7 @@ pub const RuntimeProfile = struct {
     qmatmul_row_chain_tiled_partial_slots: u64 = 0,
     qmatmul_row_chain_tiled_scratch_capacity: u64 = 0,
     qmatmul_row_chain_tiled_spilled_elementwise: u64 = 0,
+    qmatmul_row_chain_tiled_two_phase_count: u64 = 0,
     call_count: u32 = 0,
 
     pub fn reset(self: *RuntimeProfile) void {
@@ -120,6 +121,7 @@ pub const RuntimeProfile = struct {
         self.qmatmul_row_chain_tiled_partial_slots +%= other.qmatmul_row_chain_tiled_partial_slots;
         self.qmatmul_row_chain_tiled_scratch_capacity +%= other.qmatmul_row_chain_tiled_scratch_capacity;
         self.qmatmul_row_chain_tiled_spilled_elementwise +%= other.qmatmul_row_chain_tiled_spilled_elementwise;
+        self.qmatmul_row_chain_tiled_two_phase_count +%= other.qmatmul_row_chain_tiled_two_phase_count;
         self.call_count +%= other.call_count;
     }
 
@@ -210,6 +212,11 @@ pub const RuntimeProfile = struct {
         self.qmatmul_row_chain_tiled_partial_slots +%= row_tiles *% @as(u64, tile) *% n_tiles;
         self.qmatmul_row_chain_tiled_scratch_capacity +%= @as(u64, m) *% @as(u64, n);
         if (write_elementwise_output) self.qmatmul_row_chain_tiled_spilled_elementwise +%= 1;
+    }
+
+    pub fn recordQMatmulRowChainTwoPhaseTiled(self: *RuntimeProfile, m: u32, n: u32, tile: u32, write_elementwise_output: bool) void {
+        self.recordQMatmulRowChainTiled(m, n, tile, write_elementwise_output);
+        self.qmatmul_row_chain_tiled_two_phase_count +%= 1;
     }
 };
 
@@ -348,6 +355,7 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "partial_slots", rt.qmatmul_row_chain_tiled_partial_slots, calls_f);
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "scratch_capacity", rt.qmatmul_row_chain_tiled_scratch_capacity, calls_f);
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "spilled_elementwise", rt.qmatmul_row_chain_tiled_spilled_elementwise, calls_f);
+        try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "two_phase_count", rt.qmatmul_row_chain_tiled_two_phase_count, calls_f);
     }
 }
 
@@ -553,6 +561,7 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_partial_slots\":2304") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_scratch_capacity\":73728") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_spilled_elementwise\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_two_phase_count\":0") != null);
 }
 
 test "RuntimeProfile accumulates evidence windows" {

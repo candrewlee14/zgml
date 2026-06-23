@@ -7354,7 +7354,7 @@ const CompiledProgram = struct {
             .partial_dst_offset = rn.dst_offset,
             .partial_cols = partial_cols,
         };
-        exec.profile.recordQMatmulRowChainTiled(q.M, q.N, TILE, write_ew_output);
+        exec.profile.recordQMatmulRowChainTwoPhaseTiled(q.M, q.N, TILE, write_ew_output);
         exec.encodeKernel(.qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 8, .{ .gx = (q.M + TILE - 1) / TILE, .gy = partial_cols }, MATMUL_THREADS);
 
         const ew_src = if (write_ew_output) view.device_bufs[e.dst] else view.device_bufs[out.dst];

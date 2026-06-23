@@ -276,7 +276,15 @@ Current checked progress:
   finalize kernel that reduces those partials into the RMS scale. This preserves
   the MxN tile parallelism that the one-dispatch experiment lost while keeping
   the old split command path as the default until full-model ReleaseFast evidence
-  says otherwise.
+  says otherwise. The q8 prompt candidate gate now measures this as a fourth
+  lane and prints `two_phase_count`/`two_phase_selected` so selection is proven
+  rather than inferred from a flag. A June 23, 2026 one-attempt probe selected
+  the two-phase path for all 60 full-model prompt row-chain commands
+  (`two_phase_count=60`, `two_phase_selected=yes`) and landed at `0.86x` versus default
+  while the simpler command candidate landed at `1.02x`. That is useful
+  evidence, not a default path: the prototype fixed the old single-dispatch
+  `0.20x` trap materially, but the extra partial/finalize work still loses to
+  the simpler two-dispatch command lowering.
   The single-dispatch tiled kernel remains a diagnostic for the dispatch-only
   trap, not the design center for the next performance pass.
   The frontier and q8 prompt candidate gates now rebuild benchmark binaries with `-Doptimize=ReleaseFast` before any no-rebuild rerun evidence.
@@ -288,14 +296,9 @@ Current checked progress:
   fuzzier: the candidate is structurally right, but still needs a materially
   different throughput kernel or larger semantic sublayer before becoming the
   default full-model path.
-  A two-phase tile-parallel Metal experiment for the same candidate was also
-  tried and reverted: it compiled, passed the Metal command correctness test,
-  and moved the old `0.20x` single-dispatch trap up to about `1.00x`, but it
-  still did not beat the simpler command candidate at about `1.03x` and left
-  dispatch count effectively at the default `302->302`. The useful next move is
-  therefore not this shallow two-kernel variant; it is either a larger semantic
-  sublayer that removes surrounding work or a materially different row-chain
-  throughput kernel.
+  The useful next move is therefore not blindly promoting the shallow two-kernel variant;
+  it is either a larger semantic sublayer that removes surrounding work
+  or a materially different row-chain throughput kernel.
   The June 22, 2026 full required-GPU browser smoke also refreshed the wider
   browser/WebGPU proof after the matrix expansion: it passed in real
   `GPUBuffer` mode with `maxStorageBuffers=8`, `storageAlignment=256`,

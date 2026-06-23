@@ -1326,6 +1326,15 @@ pub const CommandStreamPolicy = struct {
         return policy;
     }
 
+    pub fn promptProjectionRowChainTwoPhaseCandidate() CommandStreamPolicy {
+        var policy = CommandStreamPolicy.default();
+        policy.fuse_projection_row_chain = true;
+        policy.fuse_projection_row_chain_qmatvec = false;
+        policy.fuse_projection_row_chain_two_phase_candidate = true;
+        policy.min_projection_row_chain_rows = 8;
+        return policy;
+    }
+
     fn grouped(qmatvec_group_size: u32, qmatmul_group_size: u32) CommandStreamPolicy {
         var policy = CommandStreamPolicy.default();
         policy.qmatvec_group_size = qmatvec_group_size;

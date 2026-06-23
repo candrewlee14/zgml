@@ -91,6 +91,9 @@ function score(output, attempt) {
   const projectionPromptSingleDispatchLabel = "qrow prompt m=32 n=512 k=512 projection_row_chain_single_dispatch";
   const projectionFullPrefillSingleDispatchLabel = "qrow full-prefill m=128 n=512 k=512 projection_row_chain_single_dispatch";
   const projectionSmollmPromptSingleDispatchLabel = "qrow smollm-prompt m=128 n=576 k=576 projection_row_chain_single_dispatch";
+  const projectionPromptTwoPhaseLabel = "qrow prompt m=32 n=512 k=512 projection_row_chain_two_phase";
+  const projectionFullPrefillTwoPhaseLabel = "qrow full-prefill m=128 n=512 k=512 projection_row_chain_two_phase";
+  const projectionSmollmPromptTwoPhaseLabel = "qrow smollm-prompt m=128 n=576 k=576 projection_row_chain_two_phase";
   const projectionRowChainGroupFullPrefillProfileLabel = `${projectionRowChainGroupFullPrefillLabel} dispatch_profile`;
   const projectionRowChainGroupSmollmPromptProfileLabel = `${projectionRowChainGroupSmollmPromptLabel} dispatch_profile`;
   const projectionDecodeProfileLabel = `${projectionDecodeLabel} dispatch_profile`;
@@ -100,6 +103,9 @@ function score(output, attempt) {
   const projectionPromptSingleDispatchProfileLabel = `${projectionPromptSingleDispatchLabel} dispatch_profile`;
   const projectionFullPrefillSingleDispatchProfileLabel = `${projectionFullPrefillSingleDispatchLabel} dispatch_profile`;
   const projectionSmollmPromptSingleDispatchProfileLabel = `${projectionSmollmPromptSingleDispatchLabel} dispatch_profile`;
+  const projectionPromptTwoPhaseProfileLabel = `${projectionPromptTwoPhaseLabel} dispatch_profile`;
+  const projectionFullPrefillTwoPhaseProfileLabel = `${projectionFullPrefillTwoPhaseLabel} dispatch_profile`;
+  const projectionSmollmPromptTwoPhaseProfileLabel = `${projectionSmollmPromptTwoPhaseLabel} dispatch_profile`;
 
   const smallSpeedup = smallStaged / smallFused;
   const largeSpeedup = largeStaged / largeFused;
@@ -131,6 +137,12 @@ function score(output, attempt) {
   const projectionFullPrefillSingleDispatchMaxAbsDiff = metric(output, projectionFullPrefillSingleDispatchLabel, "max_abs_diff");
   const projectionSmollmPromptSingleDispatchSpeedup = metric(output, projectionSmollmPromptSingleDispatchLabel, "speedup");
   const projectionSmollmPromptSingleDispatchMaxAbsDiff = metric(output, projectionSmollmPromptSingleDispatchLabel, "max_abs_diff");
+  const projectionPromptTwoPhaseSpeedup = metric(output, projectionPromptTwoPhaseLabel, "speedup");
+  const projectionPromptTwoPhaseMaxAbsDiff = metric(output, projectionPromptTwoPhaseLabel, "max_abs_diff");
+  const projectionFullPrefillTwoPhaseSpeedup = metric(output, projectionFullPrefillTwoPhaseLabel, "speedup");
+  const projectionFullPrefillTwoPhaseMaxAbsDiff = metric(output, projectionFullPrefillTwoPhaseLabel, "max_abs_diff");
+  const projectionSmollmPromptTwoPhaseSpeedup = metric(output, projectionSmollmPromptTwoPhaseLabel, "speedup");
+  const projectionSmollmPromptTwoPhaseMaxAbsDiff = metric(output, projectionSmollmPromptTwoPhaseLabel, "max_abs_diff");
   const projectionRowChainGroupFullPrefillShapeCommands = metric(output, projectionRowChainGroupFullPrefillProfileLabel, "shape_commands");
   const projectionRowChainGroupFullPrefillShapeRowChains = metric(output, projectionRowChainGroupFullPrefillProfileLabel, "shape_projection_row_chains");
   const projectionRowChainGroupFullPrefillShapeCoveredOps = metric(output, projectionRowChainGroupFullPrefillProfileLabel, "shape_covered_ops");
@@ -156,18 +168,28 @@ function score(output, attempt) {
   const projectionPromptSingleDispatchShapeCoveredOps = metric(output, projectionPromptSingleDispatchProfileLabel, "shape_covered_ops");
   const projectionPromptSingleDispatchShapeSavedDispatches = metric(output, projectionPromptSingleDispatchProfileLabel, "shape_saved_dispatches");
   const projectionPromptSingleDispatchRuntimeCommandDispatches = metric(output, projectionPromptSingleDispatchProfileLabel, "runtime_command_dispatches");
+  const projectionPromptTwoPhaseShapeCommands = metric(output, projectionPromptTwoPhaseProfileLabel, "shape_commands");
+  const projectionPromptTwoPhaseShapeRowChains = metric(output, projectionPromptTwoPhaseProfileLabel, "shape_projection_row_chains");
+  const projectionPromptTwoPhaseShapeCoveredOps = metric(output, projectionPromptTwoPhaseProfileLabel, "shape_covered_ops");
+  const projectionPromptTwoPhaseShapeSavedDispatches = metric(output, projectionPromptTwoPhaseProfileLabel, "shape_saved_dispatches");
+  const projectionPromptTwoPhaseRuntimeCommandDispatches = metric(output, projectionPromptTwoPhaseProfileLabel, "runtime_command_dispatches");
+  const projectionPromptTwoPhaseRuntimeCount = metric(output, projectionPromptTwoPhaseProfileLabel, "qmatmul_row_chain_tiled_two_phase_count");
   const projectionFullPrefillShapeCommands = metric(output, projectionFullPrefillProfileLabel, "shape_commands");
   const projectionFullPrefillShapeRowChains = metric(output, projectionFullPrefillProfileLabel, "shape_projection_row_chains");
   const projectionFullPrefillShapeCoveredOps = metric(output, projectionFullPrefillProfileLabel, "shape_covered_ops");
   const projectionFullPrefillShapeSavedDispatches = metric(output, projectionFullPrefillProfileLabel, "shape_saved_dispatches");
   const projectionFullPrefillRuntimeCommandDispatches = metric(output, projectionFullPrefillProfileLabel, "runtime_command_dispatches");
   const projectionFullPrefillSingleDispatchRuntimeCommandDispatches = metric(output, projectionFullPrefillSingleDispatchProfileLabel, "runtime_command_dispatches");
+  const projectionFullPrefillTwoPhaseRuntimeCommandDispatches = metric(output, projectionFullPrefillTwoPhaseProfileLabel, "runtime_command_dispatches");
+  const projectionFullPrefillTwoPhaseRuntimeCount = metric(output, projectionFullPrefillTwoPhaseProfileLabel, "qmatmul_row_chain_tiled_two_phase_count");
   const projectionSmollmPromptShapeCommands = metric(output, projectionSmollmPromptProfileLabel, "shape_commands");
   const projectionSmollmPromptShapeRowChains = metric(output, projectionSmollmPromptProfileLabel, "shape_projection_row_chains");
   const projectionSmollmPromptShapeCoveredOps = metric(output, projectionSmollmPromptProfileLabel, "shape_covered_ops");
   const projectionSmollmPromptShapeSavedDispatches = metric(output, projectionSmollmPromptProfileLabel, "shape_saved_dispatches");
   const projectionSmollmPromptRuntimeCommandDispatches = metric(output, projectionSmollmPromptProfileLabel, "runtime_command_dispatches");
   const projectionSmollmPromptSingleDispatchRuntimeCommandDispatches = metric(output, projectionSmollmPromptSingleDispatchProfileLabel, "runtime_command_dispatches");
+  const projectionSmollmPromptTwoPhaseRuntimeCommandDispatches = metric(output, projectionSmollmPromptTwoPhaseProfileLabel, "runtime_command_dispatches");
+  const projectionSmollmPromptTwoPhaseRuntimeCount = metric(output, projectionSmollmPromptTwoPhaseProfileLabel, "qmatmul_row_chain_tiled_two_phase_count");
   const projectionCandidateReady =
     projectionDecodeSpeedup !== null &&
     projectionPromptSpeedup !== null &&
@@ -209,11 +231,15 @@ function score(output, attempt) {
   if (projectionPromptSingleDispatchMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_single_dispatch prompt max_abs_diff ${projectionPromptSingleDispatchMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (projectionFullPrefillSingleDispatchMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_single_dispatch full-prefill max_abs_diff ${projectionFullPrefillSingleDispatchMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (projectionSmollmPromptSingleDispatchMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_single_dispatch smollm-prompt max_abs_diff ${projectionSmollmPromptSingleDispatchMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (projectionPromptTwoPhaseMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_two_phase prompt max_abs_diff ${projectionPromptTwoPhaseMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (projectionFullPrefillTwoPhaseMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_two_phase full-prefill max_abs_diff ${projectionFullPrefillTwoPhaseMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (projectionSmollmPromptTwoPhaseMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_two_phase smollm-prompt max_abs_diff ${projectionSmollmPromptTwoPhaseMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (projectionRowChainGroupFullPrefillShapeCommands !== 4 || projectionRowChainGroupFullPrefillShapeRowChains !== 4 || projectionRowChainGroupFullPrefillShapeCoveredOps !== 20 || projectionRowChainGroupFullPrefillShapeSavedDispatches !== 16) failures.push("projection_row_chain group full-prefill shape profile must stay shape_commands=4 shape_projection_row_chains=4 shape_covered_ops=20 shape_saved_dispatches=16");
   if (projectionRowChainGroupSmollmPromptShapeCommands !== 4 || projectionRowChainGroupSmollmPromptShapeRowChains !== 4 || projectionRowChainGroupSmollmPromptShapeCoveredOps !== 20 || projectionRowChainGroupSmollmPromptShapeSavedDispatches !== 16) failures.push("projection_row_chain group smollm-prompt shape profile must stay shape_commands=4 shape_projection_row_chains=4 shape_covered_ops=20 shape_saved_dispatches=16");
   if (projectionDecodeShapeCommands !== 1 || projectionDecodeShapeRowChains !== 1 || projectionDecodeShapeCoveredOps !== 5 || projectionDecodeShapeSavedDispatches !== 4) failures.push("projection_row_chain decode shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4");
   if (projectionPromptShapeCommands !== 1 || projectionPromptShapeRowChains !== 1 || projectionPromptShapeCoveredOps !== 5 || projectionPromptShapeSavedDispatches !== 4) failures.push("projection_row_chain prompt shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4");
   if (projectionPromptSingleDispatchShapeCommands !== 1 || projectionPromptSingleDispatchShapeRowChains !== 1 || projectionPromptSingleDispatchShapeCoveredOps !== 5 || projectionPromptSingleDispatchShapeSavedDispatches !== 4) failures.push("projection_row_chain_single_dispatch prompt shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4");
+  if (projectionPromptTwoPhaseShapeCommands !== 1 || projectionPromptTwoPhaseShapeRowChains !== 1 || projectionPromptTwoPhaseShapeCoveredOps !== 5 || projectionPromptTwoPhaseShapeSavedDispatches !== 4) failures.push("projection_row_chain_two_phase prompt shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4");
   if (projectionFullPrefillShapeCommands !== 1 || projectionFullPrefillShapeRowChains !== 1 || projectionFullPrefillShapeCoveredOps !== 5 || projectionFullPrefillShapeSavedDispatches !== 4) failures.push("projection_row_chain full-prefill shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4");
   if (projectionSmollmPromptShapeCommands !== 1 || projectionSmollmPromptShapeRowChains !== 1 || projectionSmollmPromptShapeCoveredOps !== 5 || projectionSmollmPromptShapeSavedDispatches !== 4) failures.push("projection_row_chain smollm-prompt shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4");
   if (projectionRowChainGroupFullPrefillRuntimeCommandDispatches !== 4) failures.push("projection_row_chain group full-prefill runtime profile must stay at 4 command dispatches");
@@ -242,10 +268,13 @@ function score(output, attempt) {
     `projection_row_chain_decode=${projectionDecodeSpeedup === null ? "unavailable" : `${projectionDecodeSpeedup.toFixed(2)}x observed max_abs_diff=${projectionDecodeMaxAbsDiff.toFixed(6)} shape_commands=${projectionDecodeShapeCommands} shape_projection_row_chains=${projectionDecodeShapeRowChains} shape_covered_ops=${projectionDecodeShapeCoveredOps} shape_saved_dispatches=${projectionDecodeShapeSavedDispatches} runtime_command_dispatches=${projectionDecodeRuntimeCommandDispatches} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`}`,
     `projection_row_chain_prompt=${projectionPromptSpeedup === null ? "unavailable" : `${projectionPromptSpeedup.toFixed(2)}x observed max_abs_diff=${projectionPromptMaxAbsDiff.toFixed(6)} shape_commands=${projectionPromptShapeCommands} shape_projection_row_chains=${projectionPromptShapeRowChains} shape_covered_ops=${projectionPromptShapeCoveredOps} shape_saved_dispatches=${projectionPromptShapeSavedDispatches} runtime_command_dispatches=${projectionPromptRuntimeCommandDispatches} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`}`,
     `projection_row_chain_single_dispatch_prompt=${projectionPromptSingleDispatchSpeedup.toFixed(2)}x observed max_abs_diff=${projectionPromptSingleDispatchMaxAbsDiff.toFixed(6)} shape_commands=${projectionPromptSingleDispatchShapeCommands} shape_projection_row_chains=${projectionPromptSingleDispatchShapeRowChains} shape_covered_ops=${projectionPromptSingleDispatchShapeCoveredOps} shape_saved_dispatches=${projectionPromptSingleDispatchShapeSavedDispatches} runtime_command_dispatches=${projectionPromptSingleDispatchRuntimeCommandDispatches} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
+    `projection_row_chain_two_phase_prompt=${projectionPromptTwoPhaseSpeedup.toFixed(2)}x observed max_abs_diff=${projectionPromptTwoPhaseMaxAbsDiff.toFixed(6)} shape_commands=${projectionPromptTwoPhaseShapeCommands} shape_projection_row_chains=${projectionPromptTwoPhaseShapeRowChains} shape_covered_ops=${projectionPromptTwoPhaseShapeCoveredOps} shape_saved_dispatches=${projectionPromptTwoPhaseShapeSavedDispatches} runtime_command_dispatches=${projectionPromptTwoPhaseRuntimeCommandDispatches} two_phase_count=${projectionPromptTwoPhaseRuntimeCount} selected=${projectionPromptTwoPhaseRuntimeCount > 0 ? "yes" : "off"} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
     `projection_row_chain_full_prefill=${projectionFullPrefillSpeedup === null ? "unavailable" : `${projectionFullPrefillSpeedup.toFixed(2)}x observed max_abs_diff=${projectionFullPrefillMaxAbsDiff.toFixed(6)} shape_commands=${projectionFullPrefillShapeCommands} shape_projection_row_chains=${projectionFullPrefillShapeRowChains} shape_covered_ops=${projectionFullPrefillShapeCoveredOps} shape_saved_dispatches=${projectionFullPrefillShapeSavedDispatches} runtime_command_dispatches=${projectionFullPrefillRuntimeCommandDispatches} candidate=${projectionFullPrefillSpeedup >= projectionRowChainDefaultSpeedupFloor ? "ready" : "off"} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`}`,
     `projection_row_chain_single_dispatch_full_prefill=${projectionFullPrefillSingleDispatchSpeedup.toFixed(2)}x observed max_abs_diff=${projectionFullPrefillSingleDispatchMaxAbsDiff.toFixed(6)} runtime_command_dispatches=${projectionFullPrefillSingleDispatchRuntimeCommandDispatches} candidate=${projectionFullPrefillSingleDispatchSpeedup >= projectionRowChainDefaultSpeedupFloor ? "ready" : "off"} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
+    `projection_row_chain_two_phase_full_prefill=${projectionFullPrefillTwoPhaseSpeedup.toFixed(2)}x observed max_abs_diff=${projectionFullPrefillTwoPhaseMaxAbsDiff.toFixed(6)} runtime_command_dispatches=${projectionFullPrefillTwoPhaseRuntimeCommandDispatches} two_phase_count=${projectionFullPrefillTwoPhaseRuntimeCount} selected=${projectionFullPrefillTwoPhaseRuntimeCount > 0 ? "yes" : "off"} candidate=${projectionFullPrefillTwoPhaseSpeedup >= projectionRowChainDefaultSpeedupFloor ? "ready" : "off"} ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
     `projection_row_chain_smollm_prompt=${projectionSmollmPromptSpeedup.toFixed(2)}x observed max_abs_diff=${projectionSmollmPromptMaxAbsDiff.toFixed(6)} shape_commands=${projectionSmollmPromptShapeCommands} shape_projection_row_chains=${projectionSmollmPromptShapeRowChains} shape_covered_ops=${projectionSmollmPromptShapeCoveredOps} shape_saved_dispatches=${projectionSmollmPromptShapeSavedDispatches} runtime_command_dispatches=${projectionSmollmPromptRuntimeCommandDispatches} diagnostic=off ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
     `projection_row_chain_single_dispatch_smollm_prompt=${projectionSmollmPromptSingleDispatchSpeedup.toFixed(2)}x observed max_abs_diff=${projectionSmollmPromptSingleDispatchMaxAbsDiff.toFixed(6)} runtime_command_dispatches=${projectionSmollmPromptSingleDispatchRuntimeCommandDispatches} diagnostic=off ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
+    `projection_row_chain_two_phase_smollm_prompt=${projectionSmollmPromptTwoPhaseSpeedup.toFixed(2)}x observed max_abs_diff=${projectionSmollmPromptTwoPhaseMaxAbsDiff.toFixed(6)} runtime_command_dispatches=${projectionSmollmPromptTwoPhaseRuntimeCommandDispatches} two_phase_count=${projectionSmollmPromptTwoPhaseRuntimeCount} selected=${projectionSmollmPromptTwoPhaseRuntimeCount > 0 ? "yes" : "off"} diagnostic=off ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
     `projection_row_chain_prompt_candidate=${projectionPromptCandidateReady ? "ready" : "off"} floor=${projectionRowChainDefaultSpeedupFloor.toFixed(2)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
     `projection_row_chain_candidate=${projectionCandidateReady ? "ready" : "off"} floor=${projectionRowChainDefaultSpeedupFloor.toFixed(2)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`,
     `projection_row_chain_lowering=${projectionRowChainLowering}`,
@@ -287,6 +316,12 @@ function score(output, attempt) {
     projectionFullPrefillSingleDispatchMaxAbsDiff,
     projectionSmollmPromptSingleDispatchSpeedup,
     projectionSmollmPromptSingleDispatchMaxAbsDiff,
+    projectionPromptTwoPhaseSpeedup,
+    projectionPromptTwoPhaseMaxAbsDiff,
+    projectionFullPrefillTwoPhaseSpeedup,
+    projectionFullPrefillTwoPhaseMaxAbsDiff,
+    projectionSmollmPromptTwoPhaseSpeedup,
+    projectionSmollmPromptTwoPhaseMaxAbsDiff,
     projectionRowChainGroupFullPrefillShapeCommands,
     projectionRowChainGroupFullPrefillShapeRowChains,
     projectionRowChainGroupFullPrefillShapeCoveredOps,
@@ -312,18 +347,28 @@ function score(output, attempt) {
     projectionPromptSingleDispatchShapeCoveredOps,
     projectionPromptSingleDispatchShapeSavedDispatches,
     projectionPromptSingleDispatchRuntimeCommandDispatches,
+    projectionPromptTwoPhaseShapeCommands,
+    projectionPromptTwoPhaseShapeRowChains,
+    projectionPromptTwoPhaseShapeCoveredOps,
+    projectionPromptTwoPhaseShapeSavedDispatches,
+    projectionPromptTwoPhaseRuntimeCommandDispatches,
+    projectionPromptTwoPhaseRuntimeCount,
     projectionFullPrefillShapeCommands,
     projectionFullPrefillShapeRowChains,
     projectionFullPrefillShapeCoveredOps,
     projectionFullPrefillShapeSavedDispatches,
     projectionFullPrefillRuntimeCommandDispatches,
     projectionFullPrefillSingleDispatchRuntimeCommandDispatches,
+    projectionFullPrefillTwoPhaseRuntimeCommandDispatches,
+    projectionFullPrefillTwoPhaseRuntimeCount,
     projectionSmollmPromptShapeCommands,
     projectionSmollmPromptShapeRowChains,
     projectionSmollmPromptShapeCoveredOps,
     projectionSmollmPromptShapeSavedDispatches,
     projectionSmollmPromptRuntimeCommandDispatches,
     projectionSmollmPromptSingleDispatchRuntimeCommandDispatches,
+    projectionSmollmPromptTwoPhaseRuntimeCommandDispatches,
+    projectionSmollmPromptTwoPhaseRuntimeCount,
     projectionDefaultDecision,
     projectionDefaultReason,
     failures,
@@ -465,6 +510,12 @@ function aggregateFailures(attempts) {
   ], "projection_row_chain_single_dispatch prompt");
   exactProfile([["projectionFullPrefillSingleDispatchRuntimeCommandDispatches", 1]], "projection_row_chain_single_dispatch full-prefill");
   exactProfile([["projectionSmollmPromptSingleDispatchRuntimeCommandDispatches", 1]], "projection_row_chain_single_dispatch smollm-prompt");
+  exactProfile([
+    ["projectionPromptTwoPhaseShapeCommands", 1],
+    ["projectionPromptTwoPhaseShapeRowChains", 1],
+    ["projectionPromptTwoPhaseShapeCoveredOps", 5],
+    ["projectionPromptTwoPhaseShapeSavedDispatches", 4],
+  ], "projection_row_chain_two_phase prompt");
 
   return failures;
 }
