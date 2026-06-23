@@ -2178,9 +2178,20 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
                     )
                 else
                     null;
-                current = nn.linear(f32, current, weight, bias);
-                if (op.activation != 0) {
-                    current = try moduleActivate(current, op.activation);
+                if (current_rank == 3) {
+                    const restore_dim1 = current.ne[1];
+                    const restore_dim2 = current.ne[2];
+                    const rows = try std.math.mul(usize, restore_dim1, restore_dim2);
+                    var linear_output = nn.linear(f32, current.reshape(&.{ current.ne[0], rows }), weight, bias);
+                    if (op.activation != 0) {
+                        linear_output = try moduleActivate(linear_output, op.activation);
+                    }
+                    current = linear_output.reshape(&.{ out_features, restore_dim1, restore_dim2 });
+                } else {
+                    current = nn.linear(f32, current, weight, bias);
+                    if (op.activation != 0) {
+                        current = try moduleActivate(current, op.activation);
+                    }
                 }
                 current_len = out_features;
             },

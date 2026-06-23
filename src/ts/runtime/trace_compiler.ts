@@ -166,6 +166,7 @@ function freezeShapeEvidence(shape: readonly unknown[]) {
 }
 
 const kernelizerRankCheckedOps = new Set([
+  "linear",
   "reshape",
   "view",
   "flatten",

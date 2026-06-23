@@ -309,6 +309,8 @@ Current checked progress:
   Program construction paths through Node/Bun
   adapters, eval-mode `BatchNorm1d` lowering through a derived native affine
   Program while training-mode BatchNorm remains honestly stateful/eager,
+  rank-3 `nn.Linear` eager/compiled parity by flattening leading dimensions
+  into the native Linear row contract and restoring the output shape,
   native Program lowering for rank-2 `diagonal`, rank-1/rank-2/rank-3 PyTorch-style
   `repeat`/`tile` lowering through the native module Program ABI,
   native Program lowering for `argmax(dim)` and `argmin(dim)`,
@@ -1610,6 +1612,7 @@ Current frontend slice:
   exists.
 - Package smoke evidence now covers that shape/view family from the public
   Node/Bun product runtime, not only internal compiler helpers:
+  rank-3 `nn.Linear` modules,
   `broadcastTo`, `expand`, `diagonal`, rank-1/rank-2/rank-3 `repeat`/`tile`
   including batched rank-3 inputs,
   row/feature-axis `narrow`, rank-2/rank-3 `select`, contiguous and stepped `slice`,

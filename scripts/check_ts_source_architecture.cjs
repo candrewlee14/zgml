@@ -15834,6 +15834,8 @@ function checkDistSmokeIsTsOwned(errors) {
       "min-last",
       "min-batch",
       "unsupported compile evidence",
+      "expected rank-3 nn.Linear to compile to native Program",
+      "compiled nn.Linear rank-3 output",
       "expected rank-2 permute to lower through transpose Program evidence",
       "rank-2 permute eager/compiled parity",
       "expected rank-3 single-axis permute to lower through transpose Program evidence",

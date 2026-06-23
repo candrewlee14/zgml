@@ -4200,6 +4200,8 @@ function checkZgmlFrontendSurface() {
     "expected training nn.BatchNorm1d compileSupport to remain honest unsupported with partial IR",
     "expected batched nn.Linear to compile to native Program",
     "compiled nn.Linear batched output",
+    "expected rank-3 nn.Linear to compile to native Program",
+    "compiled nn.Linear rank-3 output",
     "new adapter.nn.Conv2d(1, 1, 2",
     "expectClose(conv2d.forward(adapter.tensor([1, 2, 3, 4], [1, 2, 2])).data, [5]",
     "expectClose(\n    conv2dSpatial.forward",

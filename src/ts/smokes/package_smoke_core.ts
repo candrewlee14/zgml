@@ -2715,6 +2715,28 @@ function expectSequentialProgramEvidence(adapter: Record<string, any>, label: st
     batchedLinearSession.dispose();
     batchedLinearProgram.dispose();
   }
+  const rank3LinearSupport = batchedLinearModule.compileSupport({ inputShape: [2, 2, 2], backend: "cpu" });
+  if (
+    rank3LinearSupport.supported !== true ||
+    rank3LinearSupport.outputShape?.join("x") !== "2x2x3" ||
+    rank3LinearSupport.kernelPlan?.ops[0]?.op !== "linear" ||
+    rank3LinearSupport.kernelPlan?.ops[0]?.kernel !== "linear"
+  ) {
+    throw new Error(`${label} expected rank-3 nn.Linear to compile to native Program`);
+  }
+  const rank3LinearProgram = batchedLinearModule.compile({ inputShape: [2, 2, 2], backend: "cpu" });
+  const rank3LinearSession = rank3LinearProgram.bindModule(batchedLinearModule);
+  try {
+    const rank3LinearInput = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2]);
+    expectClose(
+      rank3LinearSession.executeInto(new Float32Array(12), { input: rank3LinearInput }),
+      batchedLinearModule.forward(rank3LinearInput).data,
+      `${label} compiled nn.Linear rank-3 output`,
+    );
+  } finally {
+    rank3LinearSession.dispose();
+    rank3LinearProgram.dispose();
+  }
   const namespaceTrace = adapter.compile.trace(linearModule, { inputShape: [2], backend: "cpu" });
   const namespaceSupport = adapter.compile.compileSupport(linearModule, { inputShape: [2], backend: "cpu" });
   const namespaceSupportAlias = adapter.compile.compile_support(linearModule, { inputShape: [2], backend: "cpu" });

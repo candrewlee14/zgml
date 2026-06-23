@@ -158,12 +158,14 @@ export function createLinearModuleClass(options: LinearModuleClassOptions) {
         if (this.biasParam) out = out.add(this.biasParam.tensor);
         return out;
       }
-      if (input.rank !== 2 || input.shape[1] !== this.inFeatures) {
-        throw new Error(`linear input shape must be [${this.inFeatures}] or [batch, ${this.inFeatures}], got [${input.shape.join(",")}]`);
+      if (input.rank < 2 || input.shape[input.shape.length - 1] !== this.inFeatures) {
+        throw new Error(`linear input shape must end with ${this.inFeatures}, got [${input.shape.join(",")}]`);
       }
-      let out = input.matmul(this.weightParam.tensor as LinearTensor, undefined);
+      const leadingShape = input.shape.slice(0, -1);
+      const rowCount = leadingShape.reduce((acc: number, dim: number) => acc * dim, 1);
+      let out = input.reshape([rowCount, this.inFeatures]).matmul(this.weightParam.tensor as LinearTensor, undefined);
       if (this.biasParam) out = out.add(this.biasParam.tensor);
-      return out;
+      return out.reshape([...leadingShape, this.outFeatures]);
     }
 
     parameters(prefixOrOptions: unknown = "", options = {}) {
