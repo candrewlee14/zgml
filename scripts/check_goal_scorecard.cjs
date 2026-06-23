@@ -191,6 +191,12 @@ function checkScripts() {
   if (scripts["bench:frontier:row-chain-region:run"] !== "BENCH_FRONTIER_FILTER=\"qrow region\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json bench:frontier:row-chain-region:run must remain the no-rebuild x7 row-chain region microscope");
   }
+  if (scripts["dev:perf:frontier:row-chain-region"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=\"qrow region\" node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:row-chain-region must remain the incremental checked x7 row-chain region microscope");
+  }
+  if (scripts["dev:perf:frontier:row-chain-region:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=\"qrow region\" node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:row-chain-region:run must remain the no-rebuild checked x7 row-chain region microscope");
+  }
   if (scripts["bench:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:qproj must remain the ReleaseFast qproj-only frontier evidence gate");
   }
@@ -498,6 +504,10 @@ function checkScripts() {
     "projection_row_chain_single_dispatch_smollm_prompt=",
     "projection_row_chain_two_phase_region_full_prefill=",
     "projection_row_chain_two_phase_region_smollm_prompt=",
+    "frontier qrow region gate:",
+    "diagnostic_floor=not-yet",
+    "function runFocusedQrowRegionGate()",
+    "function isFocusedQrowRegionFilter(filter)",
     "projection_row_chain two-phase group full-prefill region runtime profile must stay at 14 command dispatches with two_phase_count=7",
     "runtime_command_dispatches",
     "projection_row_chain prompt runtime profile must stay at 1 command dispatch",

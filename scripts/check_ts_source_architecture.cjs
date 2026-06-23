@@ -303,6 +303,18 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:frontier:row-chain:run"] !== "BENCH_FRONTIER_FILTER=qrow ./zig-out/bin/bench-frontier") {
     errors.push("package.json bench:frontier:row-chain:run must stay the no-rebuild row-chain-only frontier microscope");
   }
+  if (packageJson.scripts?.["bench:frontier:row-chain-region"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_FILTER=\"qrow region\" ./zig-out/bin/bench-frontier") {
+    errors.push("package.json bench:frontier:row-chain-region must stay the ReleaseFast x7 row-chain region microscope");
+  }
+  if (packageJson.scripts?.["bench:frontier:row-chain-region:run"] !== "BENCH_FRONTIER_FILTER=\"qrow region\" ./zig-out/bin/bench-frontier") {
+    errors.push("package.json bench:frontier:row-chain-region:run must stay the no-rebuild x7 row-chain region microscope");
+  }
+  if (packageJson.scripts?.["dev:perf:frontier:row-chain-region"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=\"qrow region\" node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:row-chain-region must stay the incremental checked x7 row-chain region microscope");
+  }
+  if (packageJson.scripts?.["dev:perf:frontier:row-chain-region:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=\"qrow region\" node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:row-chain-region:run must stay the no-rebuild checked x7 row-chain region microscope");
+  }
   if (packageJson.scripts?.["bench:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:qproj must stay the ReleaseFast qproj-only frontier evidence gate");
   }
@@ -549,6 +561,8 @@ function checkPackageExports(errors) {
     "qproj group smollm-prompt x4 m=128 n=576 k=576 projection_group",
     "qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group",
     "qrow group smollm-prompt x4 m=128 n=576 k=576 projection_row_chain_group",
+    "qrow region full-prefill x7 m=128 n=512 k=512 projection_row_chain_two_phase_group",
+    "qrow region smollm-prompt x7 m=128 n=576 k=576 projection_row_chain_two_phase_group",
     "qrow decode m=1 n=512 k=512 projection_row_chain",
     "qrow prompt m=32 n=512 k=512 projection_row_chain",
     "qrow full-prefill m=128 n=512 k=512 projection_row_chain",
@@ -572,6 +586,10 @@ function checkPackageExports(errors) {
     "projection_group_smollm_prompt=",
     "projection_row_chain_group_full_prefill=",
     "projection_row_chain_group_smollm_prompt=",
+    "frontier qrow region gate:",
+    "diagnostic_floor=not-yet",
+    "function runFocusedQrowRegionGate()",
+    "function isFocusedQrowRegionFilter(filter)",
     "shape_commands=",
     "shape_projection_row_chains=",
     "shape_covered_ops=",

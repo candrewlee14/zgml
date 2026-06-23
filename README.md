@@ -889,6 +889,8 @@ npm run dev:perf:pytorch:gaps:native # native-only focused PyTorch-gap loop afte
 npm run dev:perf:pytorch:gaps:run # rerun focused PyTorch-gap bench against existing native/package artifacts
 npm run dev:perf:q8-prompt # incremental ReleaseFast benchmark rebuild plus Q8 prompt candidate evidence
 npm run dev:perf:q8-prompt:run # rerun Q8 prompt candidate evidence against existing benchmark artifact
+npm run dev:perf:frontier:row-chain-region # incremental checked x7 row-chain region microscope
+npm run dev:perf:frontier:row-chain-region:run # rerun checked x7 row-chain region microscope
 npm run dev:perf:ggml:smoke # incremental ReleaseFast benchmark rebuild plus one-sample ggml smoke
 npm run dev:perf:ggml:smoke:run # rerun one-sample ggml smoke against existing benchmark artifact
 npm run dev:perf:ggml:q8-command-smoke # one-sample ggml smoke with explicit Q8 projection-row-chain command path

@@ -76,6 +76,10 @@ function isFocusedQprojFilter(filter) {
   return /\bqproj\b|projection_chain|projection_group/.test(filter) && !/\bqrow\b|projection_row_chain/.test(filter);
 }
 
+function isFocusedQrowRegionFilter(filter) {
+  return /\bqrow\b/.test(filter) && /\bregion\b|two_phase_group/.test(filter);
+}
+
 function scoreFocusedQproj(output, attempt) {
   const projectionChainLabel = "qproj prompt m=32 n=512 k=512 projection_chain";
   const projectionChainFullPrefillLabel = "qproj full-prefill m=128 n=512 k=512 projection_chain";
@@ -195,6 +199,147 @@ function runFocusedQprojGate() {
   }
   if (best.attempt > 1) {
     process.stdout.write(`frontier qproj retries: ${best.attempt - 1} noisy attempt(s) below best evidence\n`);
+  }
+  if (aggregate.length !== 0) {
+    process.stderr.write(`${aggregate.join("; ")}\n`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+function scoreFocusedQrowRegion(output, attempt) {
+  const fullPrefillLabel = "qrow region full-prefill x7 m=128 n=512 k=512 projection_row_chain_two_phase_group";
+  const smollmPromptLabel = "qrow region smollm-prompt x7 m=128 n=576 k=576 projection_row_chain_two_phase_group";
+  const fullPrefillProfileLabel = `${fullPrefillLabel} dispatch_profile`;
+  const smollmPromptProfileLabel = `${smollmPromptLabel} dispatch_profile`;
+
+  const fullPrefillSpeedup = metric(output, fullPrefillLabel, "speedup");
+  const fullPrefillMaxAbsDiff = metric(output, fullPrefillLabel, "max_abs_diff");
+  const fullPrefillShapeCommands = metric(output, fullPrefillProfileLabel, "shape_commands");
+  const fullPrefillShapeRowChains = metric(output, fullPrefillProfileLabel, "shape_projection_row_chains");
+  const fullPrefillShapeCoveredOps = metric(output, fullPrefillProfileLabel, "shape_covered_ops");
+  const fullPrefillShapeSavedDispatches = metric(output, fullPrefillProfileLabel, "shape_saved_dispatches");
+  const fullPrefillRuntimeCommandDispatches = metric(output, fullPrefillProfileLabel, "runtime_command_dispatches");
+  const fullPrefillTwoPhaseCount = metric(output, fullPrefillProfileLabel, "qmatmul_row_chain_tiled_two_phase_count");
+
+  const smollmPromptSpeedup = metric(output, smollmPromptLabel, "speedup");
+  const smollmPromptMaxAbsDiff = metric(output, smollmPromptLabel, "max_abs_diff");
+  const smollmPromptShapeCommands = metric(output, smollmPromptProfileLabel, "shape_commands");
+  const smollmPromptShapeRowChains = metric(output, smollmPromptProfileLabel, "shape_projection_row_chains");
+  const smollmPromptShapeCoveredOps = metric(output, smollmPromptProfileLabel, "shape_covered_ops");
+  const smollmPromptShapeSavedDispatches = metric(output, smollmPromptProfileLabel, "shape_saved_dispatches");
+  const smollmPromptRuntimeCommandDispatches = metric(output, smollmPromptProfileLabel, "runtime_command_dispatches");
+  const smollmPromptTwoPhaseCount = metric(output, smollmPromptProfileLabel, "qmatmul_row_chain_tiled_two_phase_count");
+
+  const failures = [];
+  if (fullPrefillMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`qrow region full-prefill max_abs_diff ${fullPrefillMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (smollmPromptMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`qrow region smollm-prompt max_abs_diff ${smollmPromptMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (fullPrefillShapeCommands !== 7 || fullPrefillShapeRowChains !== 7 || fullPrefillShapeCoveredOps !== 35 || fullPrefillShapeSavedDispatches !== 28 || fullPrefillRuntimeCommandDispatches !== 14 || fullPrefillTwoPhaseCount !== 7) {
+    failures.push("qrow region full-prefill profile must stay shape_commands=7 shape_projection_row_chains=7 shape_covered_ops=35 shape_saved_dispatches=28 runtime_command_dispatches=14 two_phase_count=7");
+  }
+  if (smollmPromptShapeCommands !== 7 || smollmPromptShapeRowChains !== 7 || smollmPromptShapeCoveredOps !== 35 || smollmPromptShapeSavedDispatches !== 28 || smollmPromptRuntimeCommandDispatches !== 14 || smollmPromptTwoPhaseCount !== 7) {
+    failures.push("qrow region smollm-prompt profile must stay shape_commands=7 shape_projection_row_chains=7 shape_covered_ops=35 shape_saved_dispatches=28 runtime_command_dispatches=14 two_phase_count=7");
+  }
+
+  const line = [
+    `frontier qrow region gate: ${failures.length === 0 ? "pass" : "fail"}`,
+    `attempt=${attempt}/${maxAttempts}`,
+    `full_prefill=${fullPrefillSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)} shape_commands=${fullPrefillShapeCommands} runtime_command_dispatches=${fullPrefillRuntimeCommandDispatches} two_phase_count=${fullPrefillTwoPhaseCount}`,
+    `smollm_prompt=${smollmPromptSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${smollmPromptMaxAbsDiff.toFixed(6)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)} shape_commands=${smollmPromptShapeCommands} runtime_command_dispatches=${smollmPromptRuntimeCommandDispatches} two_phase_count=${smollmPromptTwoPhaseCount}`,
+    `next=${projectionRowChainNextTarget}`,
+  ].join("; ");
+
+  return {
+    attempt,
+    fullPrefillSpeedup,
+    fullPrefillMaxAbsDiff,
+    fullPrefillShapeCommands,
+    fullPrefillShapeRowChains,
+    fullPrefillShapeCoveredOps,
+    fullPrefillShapeSavedDispatches,
+    fullPrefillRuntimeCommandDispatches,
+    fullPrefillTwoPhaseCount,
+    smollmPromptSpeedup,
+    smollmPromptMaxAbsDiff,
+    smollmPromptShapeCommands,
+    smollmPromptShapeRowChains,
+    smollmPromptShapeCoveredOps,
+    smollmPromptShapeSavedDispatches,
+    smollmPromptRuntimeCommandDispatches,
+    smollmPromptTwoPhaseCount,
+    failures,
+    line,
+  };
+}
+
+function focusedQrowRegionMargin(current) {
+  return Math.min(
+    projectionRowChainMaxAbsDiffCeil / Math.max(current.fullPrefillMaxAbsDiff, Number.EPSILON),
+    projectionRowChainMaxAbsDiffCeil / Math.max(current.smollmPromptMaxAbsDiff, Number.EPSILON),
+    current.fullPrefillShapeCommands === 7 ? 1 : 0,
+    current.fullPrefillTwoPhaseCount === 7 ? 1 : 0,
+    current.smollmPromptShapeCommands === 7 ? 1 : 0,
+    current.smollmPromptTwoPhaseCount === 7 ? 1 : 0,
+  );
+}
+
+function chooseBestFocusedQrowRegion(attempts) {
+  return attempts.reduce((acc, current) => {
+    if (!acc) return current;
+    return focusedQrowRegionMargin(current) > focusedQrowRegionMargin(acc) ? current : acc;
+  }, null);
+}
+
+function aggregateFocusedQrowRegionFailures(attempts) {
+  const failures = [];
+  const diffAtMost = (field, ceil, label) => {
+    const value = bestMin(attempts, field);
+    if (!Number.isFinite(value) || value > ceil) failures.push(`${label} best max_abs_diff ${Number.isFinite(value) ? value.toFixed(6) : "n/a"} > ${ceil.toFixed(6)}`);
+  };
+  const exactProfile = (fields, label) => {
+    if (!anyEquals(attempts, fields)) failures.push(`${label} profile did not match in any attempt`);
+  };
+  diffAtMost("fullPrefillMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "qrow region full-prefill");
+  diffAtMost("smollmPromptMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "qrow region smollm-prompt");
+  exactProfile([
+    ["fullPrefillShapeCommands", 7],
+    ["fullPrefillShapeRowChains", 7],
+    ["fullPrefillShapeCoveredOps", 35],
+    ["fullPrefillShapeSavedDispatches", 28],
+    ["fullPrefillRuntimeCommandDispatches", 14],
+    ["fullPrefillTwoPhaseCount", 7],
+  ], "qrow region full-prefill");
+  exactProfile([
+    ["smollmPromptShapeCommands", 7],
+    ["smollmPromptShapeRowChains", 7],
+    ["smollmPromptShapeCoveredOps", 35],
+    ["smollmPromptShapeSavedDispatches", 28],
+    ["smollmPromptRuntimeCommandDispatches", 14],
+    ["smollmPromptTwoPhaseCount", 7],
+  ], "qrow region smollm-prompt");
+  return failures;
+}
+
+function runFocusedQrowRegionGate() {
+  const attempts = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      attempts.push(scoreFocusedQrowRegion(runBench(), attempt));
+    } catch (err) {
+      process.stderr.write(`${err.output ?? err.message}\n`);
+      process.exit(1);
+    }
+  }
+  const passing = attempts.filter((current) => current.failures.length === 0);
+  const best = chooseBestFocusedQrowRegion(passing.length > 0 ? passing : attempts);
+  const aggregate = aggregateFocusedQrowRegionFailures(attempts);
+  const line = aggregate.length === 0 ? best.line.replace("frontier qrow region gate: fail", "frontier qrow region gate: pass") : best.line;
+  process.stdout.write(`${line}\n`);
+  if (aggregate.length === 0 && passing.length === 0) {
+    process.stdout.write(`frontier qrow region aggregate: pass across ${attempts.length} noisy attempts\n`);
+  }
+  if (best.attempt > 1) {
+    process.stdout.write(`frontier qrow region retries: ${best.attempt - 1} noisy attempt(s) below best evidence\n`);
   }
   if (aggregate.length !== 0) {
     process.stderr.write(`${aggregate.join("; ")}\n`);
@@ -741,6 +886,10 @@ function attemptDiagnostic(current) {
 
 if (isFocusedQprojFilter(frontierFilter)) {
   runFocusedQprojGate();
+}
+
+if (isFocusedQrowRegionFilter(frontierFilter)) {
+  runFocusedQrowRegionGate();
 }
 
 const attempts = [];

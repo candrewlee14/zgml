@@ -562,6 +562,8 @@ npm run bench:frontier:row-chain       # rebuild ReleaseFast and run only row-ch
 npm run bench:frontier:row-chain:run   # rerun only row-chain frontier labels without rebuilding artifacts
 npm run bench:frontier:row-chain-region      # rebuild ReleaseFast and run only x7 row-chain region labels
 npm run bench:frontier:row-chain-region:run  # rerun only x7 row-chain region labels without rebuilding artifacts
+npm run dev:perf:frontier:row-chain-region      # incremental checked x7 row-chain region microscope
+npm run dev:perf:frontier:row-chain-region:run  # rerun checked x7 row-chain region microscope without rebuilding artifacts
 npm run bench:stencil:shape            # rebuild ReleaseFast and prove current source stencil shape/hashes
 npm run bench:stencil:shape:run        # rerun current source stencil shape/hashes without rebuilding artifacts
 npm run bench:q8-prompt-candidate      # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
@@ -606,6 +608,11 @@ families while preserving the full unfiltered release gate. The x7 region
 scripts use `BENCH_FRONTIER_FILTER="qrow region"` to hit the same anchored
 region-command shape that full-model prompt scheduling selects, which keeps the
 two-phase kernel loop tight while still proving the real region path. The frontier
+checker now also has a focused `qrow region` branch, so
+`dev:perf:frontier:row-chain-region` can validate the exact two-phase row-chain
+dispatch/profile shape and correctness without requiring unrelated frontier
+labels; its speed output is diagnostic until the two-phase kernel earns a real
+throughput floor. The frontier
 qproj scripts use `BENCH_FRONTIER_FILTER=qproj` so projection-chain/group work
 can check the current Q8 prompt frontier without paying for unrelated rows,
 norms, and matmuls. The frontier microscope uses `BENCH_FRONTIER_ATTEMPTS`
