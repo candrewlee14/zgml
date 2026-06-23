@@ -1428,6 +1428,27 @@ function checkSubstrateEvidence() {
   requirePercentAtLeast(trendGateLine, "bench substrate gate output", "trend regression evidence", "Q8 pp", 80);
   requirePercentAtLeast(trendGateLine, "bench substrate gate output", "trend regression evidence", "Q8 tg", 90);
   notes.push(output.trim().split("\n").at(-1));
+
+  const stencilResult = spawnSync(process.execPath, ["scripts/check_stencil_shape.cjs"], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, BENCH_STENCIL_BUILD: "0" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const stencilOutput = `${stencilResult.stdout ?? ""}${stencilResult.stderr ?? ""}`;
+  if (stencilResult.status !== 0) {
+    errors.push(spawnFailure("current-source stencil shape gate", process.execPath, ["scripts/check_stencil_shape.cjs"], stencilResult));
+    return;
+  }
+  requireIncludes(stencilOutput, "current-source stencil shape gate output", "current source stencil shape evidence", [
+    "stencil shape gate: pass",
+    "prompt_commands=242",
+    "decode_commands=212",
+    "covered_ops=1594/1594",
+    "projection_chains=60/60",
+    "cache_groups=30/30",
+  ]);
+  notes.push(stencilOutput.trim());
 }
 
 function checkFrontierEvidence() {
