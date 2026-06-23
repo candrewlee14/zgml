@@ -526,7 +526,7 @@ npm run bench:frontier:row-chain-region      # rebuild ReleaseFast and run only 
 npm run bench:frontier:row-chain-region:run  # rerun only x7 row-chain region labels without rebuilding artifacts
 npm run bench:q8-prompt-candidate      # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
 npm run bench:q8-prompt-candidate:run  # rerun Q8 prompt candidate evidence without rebuilding artifacts
-npm run bench:ggml:parity:run          # rerun hard ggml parity without rebuilding artifacts
+npm run bench:ggml:parity:run          # rerun hard ggml parity; bench script rebuilds ReleaseFast by default
 zig build -Doptimize=ReleaseFast bench-build && ./zig-out/bin/bench-llama-smollm ignored 128 1 1 --stencil-only --debug-row-chain
 ```
 
@@ -547,7 +547,10 @@ Focused module Program benchmarks also build the native C ABI in ReleaseFast
 first, so microscope results do not silently compare against a stale Debug
 dylib. Frontier, Q8 prompt candidate, and ggml comparison rebuild commands now
 also force `-Doptimize=ReleaseFast`; their `:run` variants are explicitly
-artifact reruns after that benchmark-grade build. The frontier binary now also
+artifact reruns after that benchmark-grade build, except `bench:ggml:parity:run`
+which deliberately leaves `BENCH_BUILD_ZGML` at the `bench_vs_ggml.sh` default
+so the hard ggml rerun rebuilds ReleaseFast unless the caller explicitly opts
+into reuse with `BENCH_BUILD_ZGML=0`. The frontier binary now also
 accepts `BENCH_FRONTIER_FILTER=<label-substring>` for microscope loops; the
 named row-chain scripts use `BENCH_FRONTIER_FILTER=qrow` so the remaining tiled
 row-chain kernel work can skip unrelated elementwise/matmul/norm frontier
@@ -576,7 +579,12 @@ row-major buffers (`C^T = B^T A^T`) and keeps the small hand projection lane for
 forcing the hard rerun through a ReleaseFast native rebuild, while the caveat
 remains that `linear_batched` is the thinnest/noisiest lane. The right next
 move is more stable margin for the small batched linear hot path, not lowering
-the floor or hiding that lane.
+the floor or hiding that lane. A June 23, 2026 exact-shape
+`M=128,N=32,K=64` unrolled direct-linear kernel was tested and rejected: it made
+the module hot path slower (`hot_execute_into` around `0.0032ms` instead of the
+existing `~0.0024-0.0025ms`) and did not give stable PyTorch median margin.
+Do not repeat that as the next linear fix; the next small-linear move needs
+better structure than a one-off K-loop unroll.
 The next focused PyTorch pass used the new microscope loop to close the
 exploratory `rms_gelu_linear_batched` miss: current evidence is
 `rms_gelu_linear_batched=zgml:0.0382ms pytorch:0.1005ms

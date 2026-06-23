@@ -272,7 +272,7 @@ function checkScripts() {
     errors.push("package.json bench:pytorch:gaps:run must remain the no-rebuild PyTorch current-gap rerun");
   }
   if (scripts["bench:ggml:parity:run"] !== "BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json BENCH_REQUIRE_PARITY=1 ./scripts/bench_vs_ggml.sh 128 200 3") {
-    errors.push("package.json bench:ggml:parity:run must remain the no-rebuild ggml parity rerun");
+    errors.push("package.json bench:ggml:parity:run must leave BENCH_BUILD_ZGML at the bench script default so hard ggml parity rebuilds ReleaseFast unless the caller opts into reuse");
   }
   if (scripts["check:goal-scorecard"] !== "node scripts/check_goal_scorecard.cjs") {
     errors.push("package.json must expose check:goal-scorecard for goal evidence");
@@ -5013,6 +5013,12 @@ function checkDocs() {
     "`log_softmax_classifier_batched` softness with a direct CPU",
     "PyTorch comparison output now also prints `ratio_range` and `ratio_median`",
     "ratio_median=linear_batched:0.73x,log_softmax_classifier_batched:0.82x",
+    "bench:ggml:parity:run          # rerun hard ggml parity; bench script rebuilds ReleaseFast by default",
+    "BENCH_BUILD_ZGML=0",
+    "exact-shape",
+    "`M=128,N=32,K=64` unrolled direct-linear kernel was tested and rejected",
+    "hot_execute_into` around `0.0032ms` instead of the",
+    "one-off K-loop unroll",
     "direct CPU `Linear -> LogSoftmax` classifier",
     "Program plan still reports `linear|log-softmax`",
     "post-change three-attempt microscope",
