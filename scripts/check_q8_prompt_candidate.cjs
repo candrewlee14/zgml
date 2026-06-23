@@ -133,7 +133,10 @@ function measureAttempt(index) {
   const candidateTiledRowTileGroups = number(candidateRow, "qmatmul_row_chain_tiled_row_tile_groups_per_call") ?? 0;
   const candidateTiledNTiles = number(candidateRow, "qmatmul_row_chain_tiled_n_tiles_per_call") ?? 0;
   const candidateTiledSerialLoops = number(candidateRow, "qmatmul_row_chain_tiled_serial_tile_loops_per_call") ?? 0;
+  const candidateTiledPartialSlots = number(candidateRow, "qmatmul_row_chain_tiled_partial_slots_per_call") ?? 0;
+  const candidateTiledScratchCapacity = number(candidateRow, "qmatmul_row_chain_tiled_scratch_capacity_per_call") ?? 0;
   const candidateTiledSpills = number(candidateRow, "qmatmul_row_chain_tiled_spilled_elementwise_per_call") ?? 0;
+  const twoPhaseScratchReady = candidateTiledPartialSlots > 0 && candidateTiledScratchCapacity >= candidateTiledPartialSlots;
   const defaultProjectionRowChainDispatchSplit = defaultProjectionRowChains > 0 ? defaultProjectionRowChainDispatches / defaultProjectionRowChains : null;
   const commandProjectionRowChainDispatchSplit = commandProjectionRowChains > 0 ? commandProjectionRowChainDispatches / commandProjectionRowChains : null;
   const candidateProjectionRowChainDispatchSplit = candidateProjectionRowChains > 0 ? candidateProjectionRowChainDispatches / candidateProjectionRowChains : null;
@@ -213,7 +216,10 @@ function measureAttempt(index) {
     candidateTiledRowTileGroups,
     candidateTiledNTiles,
     candidateTiledSerialLoops,
+    candidateTiledPartialSlots,
+    candidateTiledScratchCapacity,
     candidateTiledSpills,
+    twoPhaseScratchReady,
     defaultProjectionRowChainDispatchSplit,
     commandProjectionRowChainDispatchSplit,
     candidateProjectionRowChainDispatchSplit,
@@ -294,7 +300,7 @@ console.log(
     `projection_row_chain_dispatch=${format(best.defaultProjectionRowChainDispatches, 0)}->${format(best.candidateProjectionRowChainDispatches, 0)} ` +
     `split=${format(best.defaultProjectionRowChainDispatchSplit)}->${format(best.candidateProjectionRowChainDispatchSplit)} ` +
     `excess_dispatch=${format(best.defaultProjectionRowChainDispatchExcess, 0)}->${format(best.candidateProjectionRowChainDispatchExcess, 0)} target=0 ` +
-    `tiled_work=${format(best.candidateTiledCount, 0)} chains row_groups=${format(best.candidateTiledRowTileGroups, 0)} n_tiles=${format(best.candidateTiledNTiles, 0)} serial_tile_loops=${format(best.candidateTiledSerialLoops, 0)} spills=${format(best.candidateTiledSpills, 0)} ` +
+    `tiled_work=${format(best.candidateTiledCount, 0)} chains row_groups=${format(best.candidateTiledRowTileGroups, 0)} n_tiles=${format(best.candidateTiledNTiles, 0)} serial_tile_loops=${format(best.candidateTiledSerialLoops, 0)} partial_slots=${format(best.candidateTiledPartialSlots, 0)} scratch_capacity=${format(best.candidateTiledScratchCapacity, 0)} two_phase_scratch=${best.twoPhaseScratchReady ? "ready" : "off"} spills=${format(best.candidateTiledSpills, 0)} ` +
     `dispatch_only_trap=${dispatchOnlyTrap ? "yes" : "no"} ` +
     `fallback=${format(best.defaultFallback, 0)}->${format(best.candidateFallback, 0)} ` +
     `row_chain_lowering=${rowChainLowering} row_chain_next=${requiredNextTarget} ` +

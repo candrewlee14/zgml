@@ -265,7 +265,10 @@ Current checked progress:
   `single_dispatch_trap=serial_n_tile_loop_without_cross_threadgroup_row_reduce`,
   and the benchmark JSON carries `qmatmul_row_chain_tiled_*` counters so the
   gate prints actual row groups, N tiles, serial tile loops, and elementwise
-  spills for the candidate. The gate now makes the real next target explicit:
+  spills for the candidate. It also reports the ABI-preserving scratch
+  precondition for the two-phase design: the fused `rmsnorm.dst` buffer can hold
+  the per-row/per-N-tile partial sums when `two_phase_scratch=ready`. The gate
+  now makes the real next target explicit:
   `row_chain_next=semantic_sublayer_or_two_phase_tile_parallel_row_chain`.
   The single-dispatch tiled kernel remains a diagnostic for the dispatch-only
   trap, not the design center for the next performance pass.
