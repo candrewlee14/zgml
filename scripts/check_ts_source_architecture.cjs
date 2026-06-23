@@ -10377,6 +10377,38 @@ function checkAdapterGradModeSurfaceIsShared(errors) {
   }
 }
 
+function checkAdapterTorchNamespaceIsShared(errors) {
+  const helperPath = path.join(root, "src", "ts", "adapters", "frontend_namespace_surface.ts");
+  const helperSource = fs.readFileSync(helperPath, "utf8");
+  for (const needle of [
+    "type AdapterTorchNamespaceOptions = Readonly<{",
+    "export function createAdapterTorchNamespace(options: AdapterTorchNamespaceOptions)",
+    "const tensorOps = createAdapterTorchTensorOps();",
+    "utils: Object.freeze({",
+    "save: options.checkpointIo.save",
+    "load: options.checkpointIo.load",
+  ]) {
+    if (!helperSource.includes(needle)) {
+      errors.push(`frontend_namespace_surface.ts must own shared torch namespace assembly: ${needle}`);
+    }
+  }
+  for (const relativePath of [
+    path.join("src", "ts", "adapters", "node_ffi_runtime.ts"),
+    path.join("src", "ts", "adapters", "bun_ffi_runtime.ts"),
+  ]) {
+    const source = fs.readFileSync(path.join(root, relativePath), "utf8");
+    if (!source.includes("createAdapterTorchNamespace")) {
+      errors.push(`${relativePath} must consume shared createAdapterTorchNamespace instead of hand-assembling torch aliases`);
+    }
+    if (source.includes("const torchTensorOps = createAdapterTorchTensorOps()")) {
+      errors.push(`${relativePath} must not own torch tensor-op forwarding; use createAdapterTorchNamespace`);
+    }
+    if (source.includes("torch = Object.freeze({") && source.includes("utils: Object.freeze({")) {
+      errors.push(`${relativePath} must not hand-copy the torch namespace object; use createAdapterTorchNamespace`);
+    }
+  }
+}
+
 function checkNativeLibraryLoadInfoIsShared(errors) {
   const nativePath = path.join(root, "src", "ts", "adapters", "native.ts");
   const nativeSource = fs.readFileSync(nativePath, "utf8");
@@ -16919,6 +16951,7 @@ try {
   checkAdapterAbiConstantsAreTsOwned(errors);
   checkAdapterIndexValuesAreTsOwned(errors);
   checkAdapterGradModeSurfaceIsShared(errors);
+  checkAdapterTorchNamespaceIsShared(errors);
   checkNativeLibraryLoadInfoIsShared(errors);
   checkHostRuntimesAreTsOwned(errors);
   checkBunSymbolsAreTsOwned(errors);

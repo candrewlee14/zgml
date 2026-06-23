@@ -159,7 +159,7 @@ export function createLinearModuleClass(options: LinearModuleClassOptions) {
         return out;
       }
       if (input.rank < 2 || input.shape[input.shape.length - 1] !== this.inFeatures) {
-        throw new Error(`linear input shape must end with ${this.inFeatures}, got [${input.shape.join(",")}]`);
+        throw new Error(`linear input shape must be [${this.inFeatures}] or [batch, ${this.inFeatures}], got [${input.shape.join(",")}]`);
       }
       const leadingShape = input.shape.slice(0, -1);
       const rowCount = leadingShape.reduce((acc: number, dim: number) => acc * dim, 1);

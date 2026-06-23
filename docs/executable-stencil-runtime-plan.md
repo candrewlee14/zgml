@@ -4672,8 +4672,11 @@ shared supported-checkpoint catalog count validation/iteration lives in
 `src/ts/runtime/model_source_catalog.ts`, checked native inspection/compile
 descriptor/runtime-profile ABI calls live in
 `src/ts/adapters/node_inspection_ops.ts`, and native symbol binding lives in
-`src/ts/adapters/node_symbols.ts`; its remaining cleanup is
-replacing the temporary unchecked CommonJS body with typed TS modules. `zgml/bun` now
+`src/ts/adapters/node_symbols.ts`, and the PyTorch-compatible `torch` namespace
+assembly now lives in typed `src/ts/adapters/frontend_namespace_surface.ts`
+instead of being hand-copied by Node and Bun concrete runtimes; its remaining
+cleanup is replacing the temporary unchecked CommonJS body with typed TS
+modules. `zgml/bun` now
 resolves to the TS-built Bun native bridge under Bun; that bridge loads
 `src/ts/adapters/bun_ffi_runtime.ts`, checks it against the same contract, and
 re-exports the native surface with identity parity.
@@ -5222,7 +5225,9 @@ Migration slices:
    `public_runtime_exports_surface.ts` instead of owning a raw unchecked native API
    object literal, requires Node and Bun concrete runtimes to consume
    `frontend_namespace_surface.ts` instead of separately assembling public
-   `nn`/`loss`/`train`/`data`/`optim`/`checkpoint` namespaces, requires
+   `nn`/`loss`/`train`/`data`/`optim`/`checkpoint` namespaces, requires both
+   concrete runtimes to consume `createAdapterTorchNamespace` instead of owning
+   separate `torch` compatibility alias objects, requires
    `node_ffi_runtime.ts` and `bun_ffi_runtime.ts` to consume
    `safetensors_file_header.ts` instead of owning inline safetensors
    `fs`/byte-reader callbacks, requires `node_ffi_runtime.ts` and

@@ -411,7 +411,7 @@ export function inferLinearShape(layer: AnyRecord, inputShape: readonly number[]
   if (inputShape.length === 3 && inputShape[2] === layer.inFeatures) {
     return [inputShape[0], inputShape[1], layer.outFeatures];
   }
-  throw new Error(`linear trace input shape must end with ${layer.inFeatures}, got [${inputShape.join(",")}]`);
+  throw new Error(`linear trace input shape must be [${layer.inFeatures}] or [batch, ${layer.inFeatures}], got [${inputShape.join(",")}]`);
 }
 
 export function inferEmbeddingShape(layer: AnyRecord, inputShape: readonly number[] | null): number[] | null {

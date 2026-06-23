@@ -28,6 +28,35 @@ type TorchCheckpointIoOptions = Readonly<{
   readTextFile?: (path: string) => string;
   writeTextFile?: (path: string, text: string) => void;
 }>;
+type AdapterTorchNamespaceOptions = Readonly<{
+  Tensor: LossTrainHelpersOptions["Tensor"];
+  tensor: (...args: any[]) => any;
+  parameter: (...args: any[]) => any;
+  param: (...args: any[]) => any;
+  factories: Readonly<Record<string, unknown>>;
+  shape: Readonly<{
+    hasShape: unknown;
+    requireShape: unknown;
+  }>;
+  grad: Readonly<Record<string, unknown>>;
+  gradMode: unknown;
+  nn: unknown;
+  F: unknown;
+  compile: unknown;
+  lazy: unknown;
+  optim: unknown;
+  data: Readonly<Record<string, unknown>>;
+  loss: unknown;
+  train: unknown;
+  checkpoint: CheckpointNamespaceLike;
+  checkpointIo: Readonly<{
+    save: unknown;
+    load: unknown;
+  }>;
+  Program: unknown;
+  Session: unknown;
+  NativeBuffer: unknown;
+}>;
 type AdapterDataNamespaceOptions<TTensor> = Readonly<{
   tensor: (data: unknown, shape?: unknown, options?: unknown) => TTensor;
   stack: (tensors: readonly TTensor[], dim?: number) => TTensor;
@@ -965,5 +994,169 @@ export function createAdapterTorchTensorOps() {
     topk: (input: unknown, k: number, dim?: number, largest?: boolean, sorted?: boolean) => call(input, "topk", k, dim, largest, sorted),
     split: (input: unknown, splitSizeOrSections: number | readonly number[], dim?: number) => call(input, "split", splitSizeOrSections, dim),
     chunk: (input: unknown, chunks: number, dim?: number) => call(input, "chunk", chunks, dim),
+  });
+}
+
+export function createAdapterTorchNamespace(options: AdapterTorchNamespaceOptions) {
+  const tensorOps = createAdapterTorchTensorOps();
+  const data = options.data;
+  return Object.freeze({
+    Tensor: options.Tensor,
+    tensor: options.tensor,
+    asTensor: options.tensor,
+    as_tensor: options.tensor,
+    asarray: options.tensor,
+    fromNumpy: options.tensor,
+    from_numpy: options.tensor,
+    parameter: options.parameter,
+    param: options.param,
+    ...options.factories,
+    relu: tensorOps.relu,
+    gelu: tensorOps.gelu,
+    silu: tensorOps.silu,
+    sigmoid: tensorOps.sigmoid,
+    tanh: tensorOps.tanh,
+    softmax: tensorOps.softmax,
+    softmax_dim: tensorOps.softmax_dim,
+    softmaxDim: tensorOps.softmaxDim,
+    logSoftmax: tensorOps.logSoftmax,
+    log_softmax: tensorOps.log_softmax,
+    log_softmax_dim: tensorOps.log_softmax_dim,
+    logSoftmaxDim: tensorOps.logSoftmaxDim,
+    to: tensorOps.to,
+    cpu: tensorOps.cpu,
+    float: tensorOps.float,
+    float32: tensorOps.float32,
+    typeAs: tensorOps.typeAs,
+    type_as: tensorOps.type_as,
+    sum: tensorOps.sum,
+    prod: tensorOps.prod,
+    cumsum: tensorOps.cumsum,
+    mean: tensorOps.mean,
+    max: tensorOps.max,
+    min: tensorOps.min,
+    argmax: tensorOps.argmax,
+    argmin: tensorOps.argmin,
+    any: tensorOps.any,
+    all: tensorOps.all,
+    logsumexp: tensorOps.logsumexp,
+    logSumExp: tensorOps.logSumExp,
+    variance: tensorOps.variance,
+    var: tensorOps.var,
+    std: tensorOps.std,
+    norm: tensorOps.norm,
+    neg: tensorOps.neg,
+    negative: tensorOps.negative,
+    expm1: tensorOps.expm1,
+    log1p: tensorOps.log1p,
+    sqr: tensorOps.sqr,
+    square: tensorOps.square,
+    recip: tensorOps.recip,
+    reciprocal: tensorOps.reciprocal,
+    sgn: tensorOps.sgn,
+    sign: tensorOps.sign,
+    step: tensorOps.step,
+    isnan: tensorOps.isnan,
+    isinf: tensorOps.isinf,
+    isfinite: tensorOps.isfinite,
+    floor: tensorOps.floor,
+    ceil: tensorOps.ceil,
+    round: tensorOps.round,
+    trunc: tensorOps.trunc,
+    sin: tensorOps.sin,
+    cos: tensorOps.cos,
+    tan: tensorOps.tan,
+    sqrt: tensorOps.sqrt,
+    rsqrt: tensorOps.rsqrt,
+    exp: tensorOps.exp,
+    log: tensorOps.log,
+    abs: tensorOps.abs,
+    pow: tensorOps.pow,
+    clamp: tensorOps.clamp,
+    clip: tensorOps.clip,
+    flatten: tensorOps.flatten,
+    reshape: tensorOps.reshape,
+    view: tensorOps.view,
+    squeeze: tensorOps.squeeze,
+    unsqueeze: tensorOps.unsqueeze,
+    transpose: tensorOps.transpose,
+    permute: tensorOps.permute,
+    flip: tensorOps.flip,
+    roll: tensorOps.roll,
+    select: tensorOps.select,
+    narrow: tensorOps.narrow,
+    slice: tensorOps.slice,
+    indexSelect: tensorOps.indexSelect,
+    index_select: tensorOps.index_select,
+    gather: tensorOps.gather,
+    take: tensorOps.take,
+    unbind: tensorOps.unbind,
+    maximum: tensorOps.maximum,
+    minimum: tensorOps.minimum,
+    where: tensorOps.where,
+    maskedFill: tensorOps.maskedFill,
+    masked_fill: tensorOps.masked_fill,
+    allclose: tensorOps.allclose,
+    equal: tensorOps.equal,
+    argsort: tensorOps.argsort,
+    sort: tensorOps.sort,
+    topk: tensorOps.topk,
+    split: tensorOps.split,
+    chunk: tensorOps.chunk,
+    hasShape: options.shape.hasShape,
+    requireShape: options.shape.requireShape,
+    no_grad: options.grad.no_grad,
+    noGrad: options.grad.noGrad,
+    inference_mode: options.grad.inference_mode,
+    inferenceMode: options.grad.inferenceMode,
+    enable_grad: options.grad.enable_grad,
+    enableGrad: options.grad.enableGrad,
+    is_grad_enabled: options.grad.is_grad_enabled,
+    isGradEnabled: options.grad.isGradEnabled,
+    set_grad_enabled: options.grad.set_grad_enabled,
+    setGradEnabled: options.grad.setGradEnabled,
+    gradMode: options.gradMode,
+    nn: options.nn,
+    F: options.F,
+    functional: options.F,
+    compile: options.compile,
+    lazy: options.lazy,
+    optim: options.optim,
+    data,
+    utils: Object.freeze({
+      data: Object.freeze({
+        Dataset: data.Dataset,
+        TensorDataset: data.TensorDataset,
+        DataLoader: data.DataLoader,
+        Subset: data.Subset,
+        ConcatDataset: data.ConcatDataset,
+        MapDataset: data.MapDataset,
+        SequentialSampler: data.SequentialSampler,
+        RandomSampler: data.RandomSampler,
+        BatchSampler: data.BatchSampler,
+        tensorDataset: data.tensorDataset,
+        tensor_dataset: data.tensor_dataset,
+        defaultCollate: data.defaultCollate,
+        default_collate: data.default_collate,
+        dataLoader: data.dataLoader,
+        dataloader: data.dataloader,
+        randomSplit: data.randomSplit,
+        random_split: data.random_split,
+        subset: data.subset,
+        take: data.take,
+        concatDataset: data.concatDataset,
+        concat_dataset: data.concat_dataset,
+        mapDataset: data.mapDataset,
+        map_dataset: data.map_dataset,
+      }),
+    }),
+    loss: options.loss,
+    train: options.train,
+    checkpoint: options.checkpoint,
+    save: options.checkpointIo.save,
+    load: options.checkpointIo.load,
+    Program: options.Program,
+    Session: options.Session,
+    NativeBuffer: options.NativeBuffer,
   });
 }
