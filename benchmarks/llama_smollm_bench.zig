@@ -265,6 +265,44 @@ fn runDeviceVariant(
     try writeProfileJson(writer, label, .{ .bench = .{ .prompt_tok_s = null, .decode_tok_s = gen_tok_s } }, gen_profile, decode.semanticShape());
 }
 
+fn printProjectionRowChainDebug(writer: anytype, phase: []const u8, debug: anytype) !void {
+    try writer.print(
+        "ZGML_ROW_CHAIN_DEBUG phase={s} reason={s} command_count={d} first_kind={s} first_projection={d}/{s}/{s}/{s}/op_start={d}/op_count={d}/sidecars={d}/ops={s},{s},{s},{s},{s},{s} command_index={d} op_start={d} row_start={d} q_m={d} q_n={d} q_dst={d} q_input={d} weight_idx={d} ew_dst={d} ew_src0={d} ew_src1={d} rms_src={d} rms_dst={d}\n",
+        .{
+            phase,
+            @tagName(debug.reason),
+            debug.command_count,
+            @tagName(debug.first_command_kind),
+            debug.first_projection_command_index,
+            @tagName(debug.first_projection_prev_kind),
+            @tagName(debug.first_projection_kind),
+            @tagName(debug.first_projection_next_kind),
+            debug.first_projection_op_start,
+            debug.first_projection_op_count,
+            debug.first_projection_sidecars,
+            @tagName(debug.first_projection_op_tags[0]),
+            @tagName(debug.first_projection_op_tags[1]),
+            @tagName(debug.first_projection_op_tags[2]),
+            @tagName(debug.first_projection_op_tags[3]),
+            @tagName(debug.first_projection_op_tags[4]),
+            @tagName(debug.first_projection_op_tags[5]),
+            debug.projection_command_index,
+            debug.projection_op_start,
+            debug.row_op_start,
+            debug.q_m,
+            debug.q_n,
+            debug.q_dst,
+            debug.q_input,
+            debug.weight_idx,
+            debug.elementwise_dst,
+            debug.elementwise_src0,
+            debug.elementwise_src1,
+            debug.rms_src,
+            debug.rms_dst,
+        },
+    );
+}
+
 /// Run prompt/prefill through the reusable device prefill path.
 fn runDevicePrefillVariant(
     label: []const u8,
@@ -336,40 +374,7 @@ fn runStencilProbe(
     defer decode.deinit();
     if (debug_row_chain) {
         const debug = internal.backend_stencil.firstProjectionRowChainFrontierDebug(decode.program.handle);
-        try writer.print(
-            "ZGML_ROW_CHAIN_DEBUG phase=decode reason={s} command_count={d} first_kind={s} first_projection={d}/{s}/{s}/{s}/op_start={d}/op_count={d}/sidecars={d}/ops={s},{s},{s},{s},{s},{s} command_index={d} op_start={d} row_start={d} q_m={d} q_n={d} q_dst={d} q_input={d} weight_idx={d} ew_dst={d} ew_src0={d} ew_src1={d} rms_src={d} rms_dst={d}\n",
-            .{
-                @tagName(debug.reason),
-                debug.command_count,
-                @tagName(debug.first_command_kind),
-                debug.first_projection_command_index,
-                @tagName(debug.first_projection_prev_kind),
-                @tagName(debug.first_projection_kind),
-                @tagName(debug.first_projection_next_kind),
-                debug.first_projection_op_start,
-                debug.first_projection_op_count,
-                debug.first_projection_sidecars,
-                @tagName(debug.first_projection_op_tags[0]),
-                @tagName(debug.first_projection_op_tags[1]),
-                @tagName(debug.first_projection_op_tags[2]),
-                @tagName(debug.first_projection_op_tags[3]),
-                @tagName(debug.first_projection_op_tags[4]),
-                @tagName(debug.first_projection_op_tags[5]),
-                debug.projection_command_index,
-                debug.projection_op_start,
-                debug.row_op_start,
-                debug.q_m,
-                debug.q_n,
-                debug.q_dst,
-                debug.q_input,
-                debug.weight_idx,
-                debug.elementwise_dst,
-                debug.elementwise_src0,
-                debug.elementwise_src1,
-                debug.rms_src,
-                debug.rms_dst,
-            },
-        );
+        try printProjectionRowChainDebug(writer, "decode", debug);
         const projection_debug = internal.backend_stencil.firstProjectionElementwiseChainDebug(decode.program.handle);
         try writer.print(
             "ZGML_PROJECTION_CHAIN_DEBUG phase=decode reason={s} command_count={d} command_index={d} prev={s} kind={s} next={s} op_start={d} op_count={d} local_base={d} local_ops={s},{s},{s},{s},{s},{s},{s},{s} q_m={d} q_n={d} q_dst={d} q_input={d} weight_idx={d} ew_op={s} ew_dst={d} ew_src0={d} ew_src1={d} ew_n={d} primary_external={any}\n",
@@ -419,40 +424,7 @@ fn runStencilProbe(
     defer prefill.deinit();
     if (debug_row_chain) {
         const debug = internal.backend_stencil.firstProjectionRowChainFrontierDebug(prefill.program.handle);
-        try writer.print(
-            "ZGML_ROW_CHAIN_DEBUG phase=prompt reason={s} command_count={d} first_kind={s} first_projection={d}/{s}/{s}/{s}/op_start={d}/op_count={d}/sidecars={d}/ops={s},{s},{s},{s},{s},{s} command_index={d} op_start={d} row_start={d} q_m={d} q_n={d} q_dst={d} q_input={d} weight_idx={d} ew_dst={d} ew_src0={d} ew_src1={d} rms_src={d} rms_dst={d}\n",
-            .{
-                @tagName(debug.reason),
-                debug.command_count,
-                @tagName(debug.first_command_kind),
-                debug.first_projection_command_index,
-                @tagName(debug.first_projection_prev_kind),
-                @tagName(debug.first_projection_kind),
-                @tagName(debug.first_projection_next_kind),
-                debug.first_projection_op_start,
-                debug.first_projection_op_count,
-                debug.first_projection_sidecars,
-                @tagName(debug.first_projection_op_tags[0]),
-                @tagName(debug.first_projection_op_tags[1]),
-                @tagName(debug.first_projection_op_tags[2]),
-                @tagName(debug.first_projection_op_tags[3]),
-                @tagName(debug.first_projection_op_tags[4]),
-                @tagName(debug.first_projection_op_tags[5]),
-                debug.projection_command_index,
-                debug.projection_op_start,
-                debug.row_op_start,
-                debug.q_m,
-                debug.q_n,
-                debug.q_dst,
-                debug.q_input,
-                debug.weight_idx,
-                debug.elementwise_dst,
-                debug.elementwise_src0,
-                debug.elementwise_src1,
-                debug.rms_src,
-                debug.rms_dst,
-            },
-        );
+        try printProjectionRowChainDebug(writer, "prompt", debug);
         const projection_debug = internal.backend_stencil.firstProjectionElementwiseChainDebug(prefill.program.handle);
         try writer.print(
             "ZGML_PROJECTION_CHAIN_DEBUG phase=prompt reason={s} command_count={d} command_index={d} prev={s} kind={s} next={s} op_start={d} op_count={d} local_base={d} local_ops={s},{s},{s},{s},{s},{s},{s},{s} q_m={d} q_n={d} q_dst={d} q_input={d} weight_idx={d} ew_op={s} ew_dst={d} ew_src0={d} ew_src1={d} ew_n={d} primary_external={any}\n",
