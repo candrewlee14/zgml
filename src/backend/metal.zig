@@ -7235,8 +7235,8 @@ const CompiledProgram = struct {
     fn encodeQMatmulElementwise(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, write_primary: bool) bool {
         if (!self.canFuseQMatmulElementwise(q, e)) return false;
         const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
-        const secondary_buf = if (q_is_src0) e.src1 else e.src0;
-        const secondary_offset = if (q_is_src0) e.src1_offset else e.src0_offset;
+        const secondary_buf = if (e.op.isBinary()) (if (q_is_src0) e.src1 else e.src0) else e.src0;
+        const secondary_offset = if (e.op.isBinary()) (if (q_is_src0) e.src1_offset else e.src0_offset) else e.src0_offset;
         const w = view.qweight_views[q.weight_idx];
         const qparams = qmatmulParams(q, w.block_size);
         const buffers = [_]DeviceBuffer{
@@ -10362,6 +10362,88 @@ test "metal backend qmatvec projection group carries unary elementwise sidecars"
     try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
     try std.testing.expectEqual(@as(u64, 1), rt.region_command_plan_cached_count);
     try std.testing.expectEqual(@as(u64, 2), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_group)]);
+}
+
+test "metal backend exact-lowers qmatvec unary elementwise sidecar" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4 };
+    var q_out = [_]f32{99} ** 4;
+    var silu_out = [_]f32{0} ** 4;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{
+            .dst = 1,
+            .input = 0,
+            .weight_idx = 0,
+            .M = 1,
+            .N = 4,
+            .K = 4,
+        } },
+        .{ .elementwise = .{
+            .op = .silu,
+            .dst = 2,
+            .src0 = 1,
+            .src1 = 1,
+            .n = 4,
+        } },
+    };
+    try std.testing.expect(!program_mod.projectionPrimaryOutputHasExternalUsers(&ops, 0, 1));
+
+    const buf_sizes = [_]usize{ 4, 4, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&q_out), .size = q_out.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&silu_out), .size = silu_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 3,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_chain, commands[0].kind);
+    try std.testing.expectEqual(.qmatvec, commands[0].projection_kind);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got_q: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[1].ptr)));
+    const got_silu: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[2].ptr)));
+    try std.testing.expectEqualSlices(f32, &.{ 99, 99, 99, 99 }, got_q[0..4]);
+    for (input, got_silu[0..4]) |x, actual| {
+        const want = x / (1.0 + @exp(-x));
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 2), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.projection_chain_qmatvec_sidecars[@intFromEnum(std.meta.Tag(backend_mod.DeviceOp).elementwise)]);
 }
 
 test "metal backend region fuses qmatvec fused-elementwise sidecar" {
