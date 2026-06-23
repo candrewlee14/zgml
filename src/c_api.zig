@@ -5399,9 +5399,13 @@ fn addDenseBiasRows(dst: []f32, bias: []const f32, M: usize, N: usize) void {
 }
 
 fn fastExpApproxVec8(x: @Vector(8, f32)) @Vector(8, f32) {
-    const VecT = @Vector(8, f32);
-    const IVecT = @Vector(8, i32);
-    const UVecT = @Vector(8, u32);
+    return fastExpApproxVec(8, x);
+}
+
+fn fastExpApproxVec(comptime lanes: usize, x: @Vector(lanes, f32)) @Vector(lanes, f32) {
+    const VecT = @Vector(lanes, f32);
+    const IVecT = @Vector(lanes, i32);
+    const UVecT = @Vector(lanes, u32);
     const inv_ln2: VecT = @splat(1.4426950408889634);
     const ln2: VecT = @splat(0.6931471805599453);
     const half: VecT = @splat(0.5);
@@ -5570,7 +5574,7 @@ fn logSoftmaxRowsInPlaceLanes(comptime lanes: usize, values: []f32, M: usize, N:
         i = 0;
         while (i + lanes <= N) : (i += lanes) {
             const v: VecT = out_row[i..][0..lanes].*;
-            sum_vec += @exp(v - max_broadcast);
+            sum_vec += fastExpApproxVec(lanes, v - max_broadcast);
         }
         var sum_exp: f32 = @reduce(.Add, sum_vec);
         while (i < N) : (i += 1) {
@@ -5589,9 +5593,49 @@ fn logSoftmaxRowsInPlaceLanes(comptime lanes: usize, values: []f32, M: usize, N:
     }
 }
 
+fn logSoftmaxRowsInPlace32(values: []f32, M: usize) void {
+    const VecT = @Vector(16, f32);
+    for (0..M) |row| {
+        const out_row = values[row * 32 ..][0..32];
+        const v0: VecT = out_row[0..16].*;
+        const v1: VecT = out_row[16..32].*;
+        const max_val = @max(@reduce(.Max, v0), @reduce(.Max, v1));
+        const max_broadcast: VecT = @splat(max_val);
+        const e0 = fastExpApproxVec(16, v0 - max_broadcast);
+        const e1 = fastExpApproxVec(16, v1 - max_broadcast);
+        const sum_exp = @reduce(.Add, e0) + @reduce(.Add, e1);
+        const log_denom_vec: VecT = @splat(max_val + @log(sum_exp));
+        out_row[0..16].* = v0 - log_denom_vec;
+        out_row[16..32].* = v1 - log_denom_vec;
+    }
+}
+
 fn logSoftmaxRowsInPlace(values: []f32, M: usize, N: usize) void {
+    if (N == 32) return logSoftmaxRowsInPlace32(values, M);
     if (N % 16 == 0) return logSoftmaxRowsInPlaceLanes(16, values, M, N);
     return logSoftmaxRowsInPlaceLanes(8, values, M, N);
+}
+
+test "direct log softmax n32 specialization matches stable row math" {
+    var values_buf: [64]f32 = undefined;
+    var expected_buf: [64]f32 = undefined;
+    for (&values_buf, 0..) |*value, index| {
+        const centered: i32 = @as(i32, @intCast(index % 17)) - 8;
+        value.* = @as(f32, @floatFromInt(centered)) / 9.0;
+    }
+    @memcpy(expected_buf[0..], values_buf[0..]);
+    logSoftmaxRowsInPlace(values_buf[0..], 2, 32);
+    for (0..2) |row| {
+        const row_values = expected_buf[row * 32 ..][0..32];
+        var max_val = -std.math.inf(f32);
+        for (row_values) |value| max_val = @max(max_val, value);
+        var sum_exp: f32 = 0;
+        for (row_values) |value| sum_exp += @exp(value - max_val);
+        const log_denom = max_val + @log(sum_exp);
+        for (row_values, 0..) |value, col| {
+            try std.testing.expectApproxEqAbs(value - log_denom, values_buf[row * 32 + col], 1e-4);
+        }
+    }
 }
 
 fn executeDirectLinearLogSoftmaxStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearLogSoftmaxStepShape, input: [*]const f32, output: [*]f32) void {

@@ -629,13 +629,16 @@ microscopes, and `check:goal-scorecard` after the local hypothesis is shaped.
 Watch variants of those commands are the preferred long-running loop when
 iterating on a kernel or runtime contract.
 The direct `Linear -> LogSoftmax` CPU tail now shares the batched-linear BLAS
-preference for its dense projection and uses a 16-wide vector log-softmax row
-kernel when row width permits. On the focused PyTorch gap microscope this moved
-the soft spot from roughly `0.81x` median / `0.84x` best to about `0.83x`
-median / `0.85x` best against PyTorch `2.12.1` for the current
-`log_softmax_classifier_batched` lane. That is incremental progress, not
-parity; the remaining gap is still the log-softmax row math and call overhead,
-not frontend architecture.
+preference for plain dense projection, while the fused classifier tail keeps a
+native row log-softmax path with a fast vector exp approximation and a measured
+`N=32` specialization for the current classifier shape. On the focused PyTorch
+gap microscope this reduced the native module hot path to roughly
+`0.0082ms-0.0085ms` for `log_softmax_classifier_batched`, while the hard
+focused PyTorch gate remains a noisy soft spot: a required three-attempt rerun
+still missed at about
+`ratio_median=linear_batched:0.91x,log_softmax_classifier_batched:0.82x`.
+The public Program plan still reports `linear|log-softmax`; the shortcut is an
+implementation detail of the CPU Session hot path.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier
@@ -735,12 +738,13 @@ in-place row `LogSoftmax` still regressed the focused module hot path to about
 `0.0095ms`, so it was reverted. A fixed-width native log-softmax micro-kernel
 for the exact `cols == 32` gap was also tried and rejected on June 22, 2026.
 The current June 23, 2026 version keeps the simpler public Program plan and
-uses a general vectorized row log-softmax loop instead: vector max, vector exp
-sum, and vector subtract for each row, with scalar tails. The larger lesson
-remains: keep measured broad-ish kernels that improve the exact hot lane while
-preserving coverage, but do not accumulate one-off row-tail special cases unless
-focused evidence shows best attempts above parity and the noisy median remains
-honest (`ratio_median=0.83x` in the latest soft-spot microscope).
+uses a measured native row log-softmax implementation instead: vector max, fast
+vector exp sum, vector subtract, scalar tails for general widths, and an exact
+`N=32` specialization for the classifier shape that PyTorch comparison tracks.
+The larger lesson remains: keep measured kernels that improve the exact hot
+lane while preserving coverage, and allow a narrow shape specialization only
+when focused ReleaseFast evidence improves both the module hot path and the
+PyTorch comparison gate without changing the public operation story.
 
 The JS/TS face has one source of truth: TypeScript. The answer to "how do we
 keep these in sync?" is: we do not. Do not build a sync system. Build one TS
