@@ -21,6 +21,9 @@ const requiredNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_cha
 const singleDispatchTrap = "serial_n_tile_loop_without_cross_threadgroup_row_reduce";
 const viableNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
 const semanticPairTarget = "projection_pair_fused_elementwise_or_larger_ffn_sublayer";
+const decodeLowering = "staged_qmatvec_projection_chain_plus_row_chain";
+const decodeRowChainDefault = "off";
+const decodeNextTarget = "larger_semantic_sublayer_or_qmatvec_throughput_kernel";
 const defaultCommandFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_COMMAND_FLOOR || "241");
 const candidateCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "181");
 const candidateProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_ROW_CHAIN_FLOOR || "60");
@@ -389,6 +392,8 @@ console.log(
     `command_projection_pair_dispatch=${format(commandBest.defaultProjectionPairDispatches, 0)}->${format(commandBest.commandProjectionPairDispatches, 0)} ` +
     `decode_command=${format(commandBest.defaultDecodeCommands, 0)} decode_projection_chain=${format(commandBest.defaultDecodeProjectionChains, 0)} ` +
     `decode_projection_pair=${format(commandBest.defaultDecodeProjectionPairs, 0)} decode_fallback=${format(commandBest.defaultDecodeFallback, 0)} ` +
+    `decode_fast_path=${commandBest.defaultDecodeFastPathReady ? "ready" : "off"} decode_lowering=${decodeLowering} ` +
+    `decode_row_chain_default=${decodeRowChainDefault} decode_next=${decodeNextTarget} ` +
     `command_projection_row_chain=${format(commandBest.defaultProjectionRowChains, 0)}->${format(commandBest.commandProjectionRowChains, 0)} ` +
     `command_projection_row_chain_dispatch=${format(commandBest.defaultProjectionRowChainDispatches, 0)}->${format(commandBest.commandProjectionRowChainDispatches, 0)} ` +
     `command_split=${format(commandBest.defaultProjectionRowChainDispatchSplit)}->${format(commandBest.commandProjectionRowChainDispatchSplit)} ` +
@@ -425,6 +430,6 @@ console.log(
     `next=${requiredNextTarget}`,
 );
 
-if (!commandReady || !structuralReady || !twoPhaseStructuralReady) {
+if (!commandStructuralReady || !structuralReady || !twoPhaseStructuralReady) {
   process.exit(1);
 }

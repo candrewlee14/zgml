@@ -169,11 +169,13 @@ machine for both prompt/prefill and decode.
   `--metal-prompt-projection-row-chain-candidate`. It now enables the
   opt-in single-dispatch tiled row-chain experiment. `npm run
   bench:q8-prompt-candidate` runs paired default/candidate attempts
-  (`BENCH_CANDIDATE_ATTEMPTS`, default 3), requires structural readiness on
-  every attempt, and requires the median throughput attempt to clear the speedup
-  floor before reporting throughput ready. It still prints best/median/worst
-  speedup plus the number of noisy attempts below floor so a single lucky run
-  cannot promote the candidate. On Q8_0 SmolLM p128/g40/r1, the current
+  (`BENCH_CANDIDATE_ATTEMPTS`, default 3), requires structural readiness and
+  zero fallback on every attempt, and reports command/candidate throughput
+  readiness separately. Median throughput must still clear the speedup floor
+  before the output is labeled throughput-ready, but a noisy command median no
+  longer hides otherwise valid structural evidence. It still prints
+  best/median/worst speedup plus the number of noisy attempts below floor so a
+  single lucky run cannot promote the candidate. On Q8_0 SmolLM p128/g40/r1, the current
   one-dispatch candidate lowers commands from the default 241-command split to
   181 commands with `projection_row_chain` at 60 while reducing total dispatches
   from 242 to 182 and keeping fallback at zero.

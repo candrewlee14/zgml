@@ -299,7 +299,9 @@ Current checked progress:
   remains around `0.19x` to `0.21x`. That makes the next move clearer, not
   fuzzier: the command path is structurally right, but the remaining full-model
   throughput gap still needs a materially different throughput kernel or larger
-  semantic sublayer.
+  semantic sublayer. The gate treats structural/no-fallback evidence as the
+  hard pass condition and reports command throughput readiness separately, so a
+  noisy command median cannot promote or erase the measured command shape.
   The Q8 prompt gate now also prints the existing quantized
   `projection_pair_fused_elementwise_chain` counters as `projection_pair`,
   `projection_pair_dispatch`, `semantic_pair_path`, and
