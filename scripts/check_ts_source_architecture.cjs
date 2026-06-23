@@ -15840,6 +15840,10 @@ function checkDistSmokeIsTsOwned(errors) {
       "rank-3 permute eager/compiled parity",
       "expected rank-3 cycle permute to lower through transpose-chain Program evidence",
       "rank-3 cycle permute eager/compiled parity",
+      "expected batched rank-3 transpose to lower through transpose Program evidence",
+      "batched rank-3 transpose eager/compiled parity",
+      "expected batched rank-3 permute to lower through transpose Program evidence",
+      "batched rank-3 permute eager/compiled parity",
       "narrow-rank3-batched-middle",
       "rank-3 materialized output views",
       "expectShapeMovementProgramEvidence",
@@ -15901,6 +15905,17 @@ function checkDistSmokeIsTsOwned(errors) {
     if (!permuteKernelPlanSource.includes(needle)) {
       errors.push(`src/ts/runtime/kernel_plan.ts must lower supported permute Programs through native kernels: ${needle}`);
     }
+  }
+  const permuteDescSlice = permuteKernelPlanSource.slice(
+    permuteKernelPlanSource.indexOf("function permuteDescsForIrOp"),
+    permuteKernelPlanSource.indexOf("function isNoopDropoutIrOp"),
+  );
+  const transposeDescSlice = permuteKernelPlanSource.slice(
+    permuteKernelPlanSource.indexOf('case "transpose":'),
+    permuteKernelPlanSource.indexOf('case "permute":'),
+  );
+  if (permuteDescSlice.includes("rank === 3 && op.inputShape[0] !== 1") || transposeDescSlice.includes("rank === 3 && op.inputShape[0] !== 1")) {
+    errors.push("src/ts/runtime/kernel_plan.ts must not reintroduce singleton-envelope guards for rank-3 transpose/permute lowering");
   }
   for (const needle of [
     "trace compiler rank-2 permute kernel",

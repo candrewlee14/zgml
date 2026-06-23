@@ -315,7 +315,7 @@ Current checked progress:
   rank-3 `reshape`/`flatten`/`squeeze`/`unsqueeze`, rank-3 `broadcastTo`/`expand`,
   and rank-3 `narrow`/`select`/`slice`
   lowering through the native module Program ABI,
-  singleton-envelope rank-3 `transpose` plus single-swap and cycle `permute`
+  rank-3 `transpose` plus single-swap and cycle `permute`
   lowering through the native module Program ABI,
   rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering, and
   compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
@@ -1583,14 +1583,15 @@ Current frontend slice:
   erasing the normalized compiler input. The trace compiler now defers
   higher-rank shape/view rank decisions for reshape/view/flatten/squeeze/
   unsqueeze/broadcast/expand/narrow/select/slice/transpose/permute to the
-  Kernelizer, so a rank-3 `permute` reports an op-specific
-  `kernelizer:unsupported-view` diagnostic instead of being hidden behind a
+  Kernelizer, so unsupported shape/view ops report op-specific
+  `kernelizer:unsupported-view` diagnostics instead of being hidden behind a
   coarse IR rank rejection. `nn.transpose` now joins the native
   module Program path for
-  rank-2 axis swaps: it runs eagerly, carries trace plus Tensor Program IR
+  rank-2/rank-3 axis swaps: it runs eagerly, carries trace plus Tensor Program IR
   evidence, lowers through a `transpose` kernel-plan entry, and materializes the
   transposed view into a dense output buffer through the existing stride-aware
-  movement kernel. Higher-rank transpose and zero-copy strided output bindings
+  movement kernel. Rank-3 `permute` also lowers through a short transpose chain,
+  including non-envelope batched inputs. Rank-4+ transpose/permute and zero-copy strided output bindings
   remain future compiler work. `nn.broadcastTo` and `nn.expand` also lower
   through the native module Program ABI for rank-1/rank-2/rank-3 shapes as materialized
   dense repeat ops. Rank-3 `reshape`, `view`, `flatten`, `squeeze`, and
@@ -1613,8 +1614,9 @@ Current frontend slice:
   plus terminal zero-dispatch
   rank-2/rank-3 `flatten`, `squeeze`, and `unsqueeze` all prove frozen compile evidence,
   kernel-plan dispatch/elision counts, and eager/compiled output parity; the
-  same package smoke also proves rank-3 `permute` single-swap and cycle lowering
-  through frozen Tensor Program IR, KernelPlan evidence, and eager/compiled parity.
+  same package smoke also proves batched rank-3 `transpose` plus rank-3 `permute`
+  single-swap and cycle lowering through frozen Tensor Program IR, KernelPlan
+  evidence, and eager/compiled parity.
 - The shallowest PyTorch-like frontend seam is JS/TS module compilation beyond
   recognized native patterns. The live frontend Adapter now starts in
   `src/ts/shared_frontend.ts`: it wires the TS-authored module/compiler/runtime
@@ -4753,8 +4755,8 @@ Migration slices:
    started for `nn`: `src/ts/nn/shape_module.ts` now owns the parameterless shape
    module factory for reshape/view/flatten/squeeze/unsqueeze/transpose/permute/broadcast/expand/narrow/select/slice,
    with `src/ts/shared_frontend.ts` injecting the placement hook for
-   that constructor. `permute` is trace/Tensor Program IR visible; rank-2
-   identity/swap permutations and singleton-envelope rank-3 cycle permutations
+   that constructor. `permute` is trace/Tensor Program IR visible; rank-2/rank-3
+   identity/swap permutations and rank-3 cycle permutations
    lower through existing reshape/transpose native kernels, with a cycle
    represented as a short transpose chain instead of a new ABI op. `src/ts/nn/parameterless_modules.ts` now owns stateless
    activation, softmax/logSoftmax, reduction, and Dropout module factories the same way.

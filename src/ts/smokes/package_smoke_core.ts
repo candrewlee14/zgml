@@ -3191,6 +3191,33 @@ function expectZeroParameterProgramEvidence(adapter: Record<string, any>, label:
     permuteProgram.dispose();
   }
 
+  const rank3BatchedTranspose = adapter.nn.transpose(1, 2);
+  const rank3BatchedInput = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 2, 3]);
+  const rank3BatchedTransposeEager = rank3BatchedTranspose.forward(rank3BatchedInput);
+  const rank3BatchedTransposeSupport = rank3BatchedTranspose.compileSupport({ inputShape: [2, 2, 3], backend: "cpu" });
+  const rank3BatchedTransposeKernelPlan = adapter.nn.kernelPlan(rank3BatchedTranspose, { inputShape: [2, 2, 3], backend: "cpu" });
+  if (
+    rank3BatchedTransposeSupport.supported !== true ||
+    rank3BatchedTransposeSupport.outputShape.join("x") !== "2x3x2" ||
+    rank3BatchedTransposeKernelPlan.ops.length !== 1 ||
+    rank3BatchedTransposeKernelPlan.ops[0].op !== "transpose" ||
+    rank3BatchedTransposeKernelPlan.ops[0].nativeKernels.join("|") !== "transpose"
+  ) {
+    throw new Error(`${label} expected batched rank-3 transpose to lower through transpose Program evidence`);
+  }
+  const rank3BatchedTransposeProgram = rank3BatchedTranspose.compile({ inputShape: [2, 2, 3], backend: "cpu" });
+  const rank3BatchedTransposeSession = rank3BatchedTransposeProgram.bind({});
+  try {
+    const compiledRank3BatchedTranspose = rank3BatchedTransposeSession.stepTensor(rank3BatchedInput);
+    if (compiledRank3BatchedTranspose.shape.join("x") !== "2x3x2") {
+      throw new Error(`${label} expected compiled batched rank-3 transpose output shape`);
+    }
+    expectClose(compiledRank3BatchedTranspose.data, rank3BatchedTransposeEager.data, `${label} batched rank-3 transpose eager/compiled parity`);
+  } finally {
+    rank3BatchedTransposeSession.dispose();
+    rank3BatchedTransposeProgram.dispose();
+  }
+
   const rank3Permute = adapter.nn.permute([0, 2, 1]);
   const rank3PermuteInput = adapter.tensor([1, 2, 3, 4, 5, 6], [1, 2, 3]);
   const rank3PermuteEager = rank3Permute.forward(rank3PermuteInput);
@@ -3242,6 +3269,32 @@ function expectZeroParameterProgramEvidence(adapter: Record<string, any>, label:
   } finally {
     rank3CyclePermuteSession.dispose();
     rank3CyclePermuteProgram.dispose();
+  }
+
+  const rank3BatchedPermute = adapter.nn.permute([0, 2, 1]);
+  const rank3BatchedPermuteEager = rank3BatchedPermute.forward(rank3BatchedInput);
+  const rank3BatchedPermuteSupport = rank3BatchedPermute.compileSupport({ inputShape: [2, 2, 3], backend: "cpu" });
+  const rank3BatchedPermuteKernelPlan = adapter.nn.kernelPlan(rank3BatchedPermute, { inputShape: [2, 2, 3], backend: "cpu" });
+  if (
+    rank3BatchedPermuteSupport.supported !== true ||
+    rank3BatchedPermuteSupport.outputShape.join("x") !== "2x3x2" ||
+    rank3BatchedPermuteKernelPlan.ops.length !== 1 ||
+    rank3BatchedPermuteKernelPlan.ops[0].op !== "permute" ||
+    rank3BatchedPermuteKernelPlan.ops[0].nativeKernels.join("|") !== "transpose"
+  ) {
+    throw new Error(`${label} expected batched rank-3 permute to lower through transpose Program evidence`);
+  }
+  const rank3BatchedPermuteProgram = rank3BatchedPermute.compile({ inputShape: [2, 2, 3], backend: "cpu" });
+  const rank3BatchedPermuteSession = rank3BatchedPermuteProgram.bind({});
+  try {
+    const compiledRank3BatchedPermute = rank3BatchedPermuteSession.stepTensor(rank3BatchedInput);
+    if (compiledRank3BatchedPermute.shape.join("x") !== "2x3x2") {
+      throw new Error(`${label} expected compiled batched rank-3 permute output shape`);
+    }
+    expectClose(compiledRank3BatchedPermute.data, rank3BatchedPermuteEager.data, `${label} batched rank-3 permute eager/compiled parity`);
+  } finally {
+    rank3BatchedPermuteSession.dispose();
+    rank3BatchedPermuteProgram.dispose();
   }
 }
 

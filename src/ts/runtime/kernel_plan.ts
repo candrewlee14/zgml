@@ -367,7 +367,6 @@ function permuteDescsForIrOp(op: any): readonly NativeModuleOpDesc[] | null {
   const attrs = op.attrs ?? {};
   const rank = op.inputShape ? op.inputShape.length : 0;
   if ((rank !== 2 && rank !== 3) || !Array.isArray(attrs.dims) || attrs.dims.length !== rank) return null;
-  if (rank === 3 && op.inputShape[0] !== 1) return null;
   const axes = attrs.dims.map((dim: any) => frontendAxisForRank(dim, rank));
   if (axes.every((axis: number, index: number) => axis === index)) {
     const desc = reshapeDescForShape(op.outputShape);
@@ -628,7 +627,6 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
     case "transpose": {
       const rank = op.inputShape ? op.inputShape.length : 0;
       if (rank !== 2 && rank !== 3) return null;
-      if (rank === 3 && op.inputShape[0] !== 1) return null;
       const axis0 = frontendAxisForRank(attrs.dim0, rank);
       const axis1 = frontendAxisForRank(attrs.dim1, rank);
       if (axis0 === axis1) return reshapeDescForShape(op.outputShape);
