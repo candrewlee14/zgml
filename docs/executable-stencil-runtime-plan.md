@@ -558,6 +558,10 @@ npm run dev:perf:pytorch:focus        # incremental ReleaseFast native rebuild p
 npm run dev:perf:pytorch:focus:native # native-only focused PyTorch loop after dist exists
 npm run dev:perf:pytorch:focus:run    # rerun focused PyTorch comparison without rebuilding artifacts
 npm run dev:perf:pytorch:gaps:native   # native-only current-gap loop after dist exists
+npm run dev:perf:pytorch:linear:native # native-only ReleaseFast microscope for the linear_batched PyTorch miss
+npm run dev:perf:pytorch:linear:run    # no-rebuild rerun for the linear_batched PyTorch miss
+npm run dev:perf:pytorch:logsoftmax:native # native-only ReleaseFast microscope for the logSoftmax classifier miss
+npm run dev:perf:pytorch:logsoftmax:run    # no-rebuild rerun for the logSoftmax classifier miss
 npm run bench:module-program:focus
 npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
 npm run bench:pytorch:parity:run       # rebuild ReleaseFast native, then rerun hard PyTorch parity
