@@ -1,6 +1,6 @@
 "use strict";
 
-const { existsSync } = require("node:fs");
+const { existsSync, readdirSync, statSync } = require("node:fs");
 const { join, resolve } = require("node:path");
 
 const root = resolve(__dirname, "..");
@@ -8,6 +8,47 @@ const nodeEntry = join(root, "dist", "node.cjs");
 if (!existsSync(nodeEntry)) {
   throw new Error("module Program bench requires dist/node.cjs; run npm run build:package first");
 }
+const allowStaleNative = process.env.BENCH_MODULE_PROGRAM_ALLOW_STALE_NATIVE === "1";
+
+function nativeLibraryPath() {
+  if (process.env.ZGML_C_DYLIB) return resolve(root, process.env.ZGML_C_DYLIB);
+  const extension = process.platform === "darwin" ? "dylib" : process.platform === "win32" ? "dll" : "so";
+  return join(root, "zig-out", "lib", `libzgml_c.${extension}`);
+}
+
+function newestNativeSourceMtimeMs(paths) {
+  let newest = { path: "", mtimeMs: 0 };
+  const visit = (path) => {
+    if (!existsSync(path)) return;
+    const stat = statSync(path);
+    if (stat.isDirectory()) {
+      for (const entry of readdirSync(path)) visit(join(path, entry));
+      return;
+    }
+    if (!path.endsWith(".zig") && !path.endsWith(".h") && !path.endsWith(".metal")) return;
+    if (stat.mtimeMs > newest.mtimeMs) newest = { path, mtimeMs: stat.mtimeMs };
+  };
+  for (const path of paths) visit(path);
+  return newest;
+}
+
+function verifyFreshNativeLibrary() {
+  const libPath = nativeLibraryPath();
+  if (!existsSync(libPath)) {
+    throw new Error(`module Program bench requires native library ${libPath}; run npm run build:native:release first`);
+  }
+  const libStat = statSync(libPath);
+  const newestSource = newestNativeSourceMtimeMs([join(root, "build.zig"), join(root, "src")]);
+  const stale = newestSource.mtimeMs > libStat.mtimeMs + 1;
+  if (stale) {
+    const message = `module Program bench native library is older than Zig source (${libPath} < ${newestSource.path}); run npm run build:native:release or set BENCH_MODULE_PROGRAM_ALLOW_STALE_NATIVE=1 for an explicitly stale diagnostic`;
+    if (!allowStaleNative) throw new Error(message);
+    console.warn(`warning: ${message}`);
+  }
+  return Object.freeze({ libPath, stale });
+}
+
+const nativeFreshness = verifyFreshNativeLibrary();
 
 const adapter = require(nodeEntry);
 
@@ -2115,6 +2156,7 @@ function runAllSpecs(attempt) {
   }
   const line = [
     `module Program bench gate: ${failures.length === 0 ? "pass" : "fail"}`,
+    `native=${nativeFreshness.stale ? "stale" : "fresh"}`,
     ...results.map(({ spec, result }) => spec.summary(result)),
   ].join("; ");
   const margin = Math.min(...results.map(({ spec, result }) => result.speedup / spec.floor));

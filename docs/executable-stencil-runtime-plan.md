@@ -629,7 +629,11 @@ shape, cache-group shape, and nonzero runtime/command stencil hashes without
 waiting for a hard ggml artifact to pass on a quiet machine.
 Focused module Program benchmarks also build the native C ABI in ReleaseFast
 first, so microscope results do not silently compare against a stale Debug
-dylib. Frontier, Q8 prompt candidate, and ggml comparison rebuild commands now
+dylib. The module Program bench itself now mirrors the PyTorch freshness rule:
+direct `:run` reruns check `zig-out/lib/libzgml_c.*` against native sources,
+print `native=fresh` in benchmark output, and require
+`BENCH_MODULE_PROGRAM_ALLOW_STALE_NATIVE=1` for an explicitly stale diagnostic.
+Frontier, Q8 prompt candidate, and ggml comparison rebuild commands now
 also force `-Doptimize=ReleaseFast`; their `:run` variants are explicitly
 artifact reruns after that benchmark-grade build, except `bench:ggml:parity:run`
 which deliberately leaves `BENCH_BUILD_ZGML` at the `bench_vs_ggml.sh` default

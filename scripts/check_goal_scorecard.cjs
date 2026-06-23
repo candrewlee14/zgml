@@ -1154,6 +1154,10 @@ function checkScripts() {
   ]);
   requireIncludes(read("scripts/check_module_program_bench.cjs"), "scripts/check_module_program_bench.cjs", "TS frontend module Program performance gate", [
     "module Program bench gate:",
+    "BENCH_MODULE_PROGRAM_ALLOW_STALE_NATIVE",
+    "function verifyFreshNativeLibrary()",
+    "module Program bench native library is older than Zig source",
+    "native=${nativeFreshness.stale ? \"stale\" : \"fresh\"}",
     "const benchSpecs = [",
     "const expectedKeys = Object.freeze([",
     "function requireBenchSpecCoverage(specs)",
