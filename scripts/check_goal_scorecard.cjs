@@ -306,6 +306,9 @@ function checkScripts() {
   if (scripts["dev:wasm:browser-llama-families"] !== "zig build ffi-wasm -fincremental --summary failures && npm run smoke:portable-ffi:browser-llama-families:run") {
     errors.push("package.json dev:wasm:browser-llama-families must keep the incremental Wasm build plus representative browser LLaMA family rerun loop");
   }
+  if (scripts["dev:wasm:browser-gpu-llama-families"] !== "zig build ffi-wasm -fincremental --summary failures && npm run smoke:portable-ffi:browser-gpu-llama-families:run") {
+    errors.push("package.json dev:wasm:browser-gpu-llama-families must keep the incremental required-GPU representative browser LLaMA family rerun loop");
+  }
   if (scripts["dev:zig:metal-row-chain"] !== "zig build test -Duse-metal=true -Dtest-filter=\"metal backend exact command fuses qmatmul residual into row chain\" -fincremental --summary failures") {
     errors.push("package.json dev:zig:metal-row-chain must keep the focused incremental Metal row-chain kernel loop");
   }
@@ -714,6 +717,12 @@ function checkScripts() {
   if (scripts["smoke:portable-ffi:browser-gpu-focused"] !== "zig build ffi-wasm-browser-gpu-focused-smoke") {
     errors.push("package.json smoke:portable-ffi:browser-gpu-focused must keep the focused required-GPU browser LLaMA proof gate");
   }
+  if (scripts["smoke:portable-ffi:browser-gpu-llama-families"] !== "zig build ffi-wasm-browser-gpu-llama-family-focused-smoke") {
+    errors.push("package.json smoke:portable-ffi:browser-gpu-llama-families must keep the required-GPU representative browser LLaMA family proof gate");
+  }
+  if (scripts["smoke:portable-ffi:browser-gpu-llama-families:run"] !== "node --no-warnings examples/wasm_ffi/browser_smoke_runner.mjs --enable-unsafe-webgpu --require-gpu --llama-profile-label=gguf-smollm3-nope-gqa-pipeline,long-sliding-window-mistral-pipeline,qwen3-qknorm-gqa-pipeline --timeout-ms=420000") {
+    errors.push("package.json smoke:portable-ffi:browser-gpu-llama-families:run must keep the no-Zig-build required-GPU representative browser LLaMA family proof rerun");
+  }
   if (scripts["smoke:portable-ffi:browser-gpu"] !== "zig build ffi-wasm-browser-gpu-smoke") {
     errors.push("package.json smoke:portable-ffi:browser-gpu must keep the required-GPU browser Wasm FFI gate");
   }
@@ -789,6 +798,8 @@ function checkScripts() {
     "const ffi_wasm_browser_smoke_step = b.step(\"ffi-wasm-browser-smoke\", \"Run browser Wasm C ABI smoke with Chrome/Chromium\")",
     "const ffi_wasm_browser_llama_focused_smoke_step = b.step(\"ffi-wasm-browser-llama-focused-smoke\", \"Run focused browser Wasm LLaMA family proof with Chrome/Chromium\")",
     "const ffi_wasm_browser_llama_family_focused_smoke_step = b.step(\"ffi-wasm-browser-llama-family-focused-smoke\", \"Run representative browser Wasm LLaMA checkpoint-family proof with Chrome/Chromium\")",
+    "const ffi_wasm_browser_gpu_llama_family_focused_smoke_step = b.step(\"ffi-wasm-browser-gpu-llama-family-focused-smoke\", \"Run representative browser Wasm LLaMA checkpoint-family proof and require real GPUBuffer mode\")",
+    "const representative_llama_family_labels = \"--llama-profile-label=gguf-smollm3-nope-gqa-pipeline,long-sliding-window-mistral-pipeline,qwen3-qknorm-gqa-pipeline\"",
     "--llama-profile-label=gguf-smollm3-nope-gqa-pipeline,long-sliding-window-mistral-pipeline,qwen3-qknorm-gqa-pipeline",
     "const ffi_wasm_browser_gpu_focused_smoke_step = b.step(\"ffi-wasm-browser-gpu-focused-smoke\", \"Run focused browser Wasm LLaMA proof and require real GPUBuffer mode\")",
     "--llama-profile-label=gguf-smollm3-nope-gqa-pipeline",
@@ -895,13 +906,17 @@ function checkScripts() {
   ]);
   requireIncludes(read("scripts/check_goal_scorecard.cjs"), "scripts/check_goal_scorecard.cjs", "optional focused browser real-GPU execution evidence", [
     "const browserGpuFocusedArgs = [\"build\", \"ffi-wasm-browser-gpu-focused-smoke\"]",
+    "const browserGpuFamilyFocusedArgs = [\"build\", \"ffi-wasm-browser-gpu-llama-family-focused-smoke\"]",
     "portable browser required-GPU focused smoke skipped:",
+    "portable browser required-GPU family smoke skipped:",
     "Chrome DevTools did not start",
     "browser smoke passed without real GPUBuffer mode",
     "browser GPUBuffer smoke cannot bind LLaMA block pipeline",
     "mode=gpu-buffer",
     "llamaProfiles=2",
+    "llamaProfiles=6",
     "llamaProfileLabels=2",
+    "llamaProfileLabels=6",
   ]);
   const requiredStorageLabels = requireConstArrayCount(browserSmokeRunner, "examples/wasm_ffi/browser_smoke_runner.mjs", "requiredStorageLabels", 46);
   requireIncludes(requiredStorageLabels, "examples/wasm_ffi/browser_smoke_runner.mjs", "required-GPU browser storage-mode label matrix", [
@@ -1893,6 +1908,43 @@ function checkPortableWasmRuntimeEvidence() {
       "llamaProfileLabels=2",
     ]);
     notes.push(browserGpuFocusedOutput.trim().split("\n").at(-1));
+  }
+
+  const browserGpuFamilyFocusedArgs = ["build", "ffi-wasm-browser-gpu-llama-family-focused-smoke"];
+  const browserGpuFamilyFocused = spawnSync("zig", browserGpuFamilyFocusedArgs, {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const browserGpuFamilyFocusedOutput = `${browserGpuFamilyFocused.stdout ?? ""}${browserGpuFamilyFocused.stderr ?? ""}`;
+  if (browserGpuFamilyFocused.status !== 0) {
+    if (
+      browserGpuFamilyFocusedOutput.includes("Chrome/Chromium not found") ||
+      browserGpuFamilyFocusedOutput.includes("Chrome/Chromium not usable: exited before DevTools started") ||
+      browserGpuFamilyFocusedOutput.includes("Chrome DevTools did not start") ||
+      browserGpuFamilyFocusedOutput.includes("browser smoke passed without real GPUBuffer mode") ||
+      browserGpuFamilyFocusedOutput.includes("browser GPUBuffer smoke cannot bind LLaMA block pipeline")
+    ) {
+      notes.push(`portable browser required-GPU family smoke skipped: ${browserGpuFamilyFocusedOutput.trim().split("\n").at(-1) ?? "unavailable"}`);
+    } else {
+      errors.push(spawnFailure("portable browser required-GPU family smoke", "zig", browserGpuFamilyFocusedArgs, browserGpuFamilyFocused));
+      return;
+    }
+  } else {
+    requireIncludes(browserGpuFamilyFocusedOutput, "portable browser required-GPU family smoke output", "representative browser real-GPU LLaMA family proof", [
+      "zgml browser wasm smoke ok:",
+      "mode=gpu-buffer",
+      "available=true",
+      "canBindBlockPipeline=true",
+      "llamaProfiles=6",
+      "llamaBackendDispatches=",
+      "llamaExecutorDispatches=",
+      "llamaFallbackOps=0",
+      "llamaStorageCalls=",
+      "llamaSelectionReads=",
+      "llamaProfileLabels=6",
+    ]);
+    notes.push(browserGpuFamilyFocusedOutput.trim().split("\n").at(-1));
   }
   notes.push(nodeWasiOutput.trim().split("\n").at(-1));
   notes.push(browserOutput.trim().split("\n").at(-1));

@@ -366,6 +366,9 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["dev:wasm:browser-llama-families"] !== "zig build ffi-wasm -fincremental --summary failures && npm run smoke:portable-ffi:browser-llama-families:run") {
     errors.push("package.json dev:wasm:browser-llama-families must stay the incremental Wasm build plus representative browser LLaMA family rerun loop");
   }
+  if (packageJson.scripts?.["dev:wasm:browser-gpu-llama-families"] !== "zig build ffi-wasm -fincremental --summary failures && npm run smoke:portable-ffi:browser-gpu-llama-families:run") {
+    errors.push("package.json dev:wasm:browser-gpu-llama-families must stay the incremental required-GPU representative browser LLaMA family rerun loop");
+  }
   if (packageJson.scripts?.["dev:zig:metal-row-chain"] !== "zig build test -Duse-metal=true -Dtest-filter=\"metal backend exact command fuses qmatmul residual into row chain\" -fincremental --summary failures") {
     errors.push("package.json dev:zig:metal-row-chain must stay the focused incremental Metal row-chain kernel loop");
   }

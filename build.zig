@@ -551,16 +551,29 @@ pub fn build(b: *std.Build) void {
         ffi_wasm_browser_llama_focused_smoke_step.dependOn(&wasm_browser_llama_focused_smoke.step);
     }
     const ffi_wasm_browser_llama_family_focused_smoke_step = b.step("ffi-wasm-browser-llama-family-focused-smoke", "Run representative browser Wasm LLaMA checkpoint-family proof with Chrome/Chromium");
+    const ffi_wasm_browser_gpu_llama_family_focused_smoke_step = b.step("ffi-wasm-browser-gpu-llama-family-focused-smoke", "Run representative browser Wasm LLaMA checkpoint-family proof and require real GPUBuffer mode");
     if (pathExists("examples/wasm_ffi/browser_smoke_runner.mjs")) {
+        const representative_llama_family_labels = "--llama-profile-label=gguf-smollm3-nope-gqa-pipeline,long-sliding-window-mistral-pipeline,qwen3-qknorm-gqa-pipeline";
         const wasm_browser_llama_family_focused_smoke = b.addSystemCommand(&.{
             "node",
             "--no-warnings",
             "examples/wasm_ffi/browser_smoke_runner.mjs",
-            "--llama-profile-label=gguf-smollm3-nope-gqa-pipeline,long-sliding-window-mistral-pipeline,qwen3-qknorm-gqa-pipeline",
+            representative_llama_family_labels,
             "--timeout-ms=300000",
         });
         wasm_browser_llama_family_focused_smoke.step.dependOn(&c_api_wasm.step);
         ffi_wasm_browser_llama_family_focused_smoke_step.dependOn(&wasm_browser_llama_family_focused_smoke.step);
+        const wasm_browser_gpu_llama_family_focused_smoke = b.addSystemCommand(&.{
+            "node",
+            "--no-warnings",
+            "examples/wasm_ffi/browser_smoke_runner.mjs",
+            "--enable-unsafe-webgpu",
+            "--require-gpu",
+            representative_llama_family_labels,
+            "--timeout-ms=420000",
+        });
+        wasm_browser_gpu_llama_family_focused_smoke.step.dependOn(&c_api_wasm.step);
+        ffi_wasm_browser_gpu_llama_family_focused_smoke_step.dependOn(&wasm_browser_gpu_llama_family_focused_smoke.step);
     }
     const ffi_wasm_browser_gpu_smoke_step = b.step("ffi-wasm-browser-gpu-smoke", "Run browser Wasm C ABI smoke and require real GPUBuffer mode");
     if (pathExists("examples/wasm_ffi/browser_smoke_runner.mjs")) {

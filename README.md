@@ -879,6 +879,7 @@ npm run bench:q8-prompt-candidate # rebuild ReleaseFast and measure full-model Q
 npm run bench:q8-prompt-candidate:run # rerun Q8 prompt candidate evidence without rebuilding artifacts
 npm run dev:zig:filter -- "test name substring" # fastest focused Zig test loop; applies -Dtest-filter
 npm run dev:zig:filter:watch -- "test name substring" # watched focused Zig test loop while editing
+npm run dev:wasm:browser-gpu-llama-families # incremental Wasm build plus required-GPU representative browser LLaMA family proof
 npm run dev:zig:bench   # incrementally build benchmark binaries while editing kernels/runtime
 npm run dev:zig:bench:watch # watched incremental benchmark-binary build loop
 npm run dev:perf:module-program # incremental ReleaseFast native rebuild plus focused Program/Session bench

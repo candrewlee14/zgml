@@ -333,9 +333,16 @@ Current checked progress:
   contracts, the cheap focused browser smoke has checked dispatch-family and
   selection-read summary fields, and the goal scorecard now attempts a focused
   required-GPU browser LLaMA run for `gguf-smollm3-nope-gqa-pipeline` when
-  Chrome/WebGPU is locally available. The remaining substrate jump is not
-  another compatibility lane; it is a real tiled quantized row-chain throughput
-  kernel or larger semantic sublayer.
+  Chrome/WebGPU is locally available. A June 23, 2026 follow-up added the
+  matching required-GPU representative family lane for SmolLM3 GGUF NoPE/GQA,
+  long-sliding-window Mistral, and Qwen3 Q/K-norm. On the local Chrome/WebGPU
+  path it passed in real `GPUBuffer` mode with `llamaProfiles=6`,
+  `llamaBackendDispatches=24`, `llamaFamilyDispatches=22/0/2`,
+  `llamaStorageCalls=14/14/0/0/0`, `llamaFallbackOps=0`, and
+  `llamaProfileLabels=6` in about 285 seconds. The remaining substrate jump is
+  not another compatibility lane; it is a real tiled quantized row-chain
+  throughput kernel, a larger semantic sublayer, or broad full/default browser
+  execution beyond these bounded family proofs.
 - zgml frontend replacement feel: ~100%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
@@ -544,6 +551,7 @@ npm run dev:zig:metal-row-chain       # focused incremental Metal row-chain kern
 npm run dev:zig:metal-row-chain:watch # watched focused Metal row-chain kernel test
 npm run dev:wasm:browser-llama        # incremental Wasm C ABI build, then focused browser LLaMA proof rerun
 npm run dev:wasm:browser-llama-families # incremental Wasm build, then representative SmolLM3/Mistral/Qwen3 browser proof
+npm run dev:wasm:browser-gpu-llama-families # incremental Wasm build, then require real-GPU representative family proof
 npm run dev:perf:module-program       # incremental ReleaseFast native rebuild plus focused Program/Session bench
 npm run dev:perf:module-program:run   # rerun focused Program/Session bench without rebuilding artifacts
 npm run dev:perf:pytorch:focus        # incremental ReleaseFast native rebuild plus focused PyTorch comparison
@@ -576,6 +584,7 @@ npm run dev:perf:ggml:q8-command-smoke # cheap ggml smoke with explicit Q8 proje
 npm run dev:perf:ggml:q8-command-smoke:run # rerun explicit Q8 command-path ggml smoke without rebuilding artifacts
 npm run smoke:portable-ffi:browser-llama:run # rerun the focused browser LLaMA proof after Wasm artifacts already exist
 npm run smoke:portable-ffi:browser-llama-families:run # rerun representative SmolLM3/Mistral/Qwen3 browser proof after Wasm artifacts exist
+npm run smoke:portable-ffi:browser-gpu-llama-families:run # rerun representative family proof and require real GPUBuffer mode
 zig build -Doptimize=ReleaseFast bench-build && ./zig-out/bin/bench-llama-smollm ignored 128 1 1 --stencil-only --debug-row-chain
 ```
 
@@ -4129,6 +4138,12 @@ Current first slice:
   two focused LLaMA profile labels, backend dispatch evidence, and zero fallback
   ops; on machines without that local browser/GPU path it records an explicit
   skip note instead of pretending mock storage is real GPU execution.
+- `zig build ffi-wasm-browser-gpu-llama-family-focused-smoke` is the matching
+  required-GPU representative family lane. It runs the compact SmolLM3 GGUF
+  NoPE/GQA, long-sliding-window Mistral, and Qwen3 Q/K-norm family proof in
+  real `GPUBuffer` mode, with the same normal plus greedy expansion as the
+  portable representative family smoke. This is still a bounded proof lane, not
+  a claim that full/default browser LLaMA-family execution is complete.
 - `zig build ffi-wasm-browser-gpu-smoke` runs the same page with Chrome WebGPU
   flags, requires real `GPUBuffer` mode, and fails if the adapter cannot bind
   the six-storage-buffer LLaMA block-pipeline proof. It is an exhaustive
