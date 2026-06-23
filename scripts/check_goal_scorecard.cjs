@@ -373,8 +373,8 @@ function checkScripts() {
     "stdio: [\"ignore\", \"pipe\", process.stderr]",
   ]);
   requireIncludes(read("scripts/check_q8_prompt_candidate.cjs"), "scripts/check_q8_prompt_candidate.cjs", "full-model Q8 prompt candidate probe", [
-    "metal scheduled prefill projection-row-chain command candidate",
-    "--metal-prompt-projection-row-chain-command-candidate",
+    "metal scheduled prefill projection-row-chain command",
+    "--metal-prompt-projection-row-chain-command",
     "metal scheduled prefill projection-row-chain candidate",
     "--metal-prompt-projection-row-chain-candidate",
     "const commandSpeedupFloor = Number(process.env.BENCH_COMMAND_CANDIDATE_SPEEDUP_FLOOR || \"0.95\")",
@@ -407,7 +407,7 @@ function checkScripts() {
     "const attempts = positiveInt(",
     "function progress(message)",
     "`[q8-prompt] ${message}\\n`",
-    "progress(`attempt ${index}/${attempts} command-candidate`)",
+    "progress(`attempt ${index}/${attempts} command`)",
     "progress(`attempt ${index}/${attempts} single-dispatch-candidate`)",
     "progress(`attempt ${index}/${attempts} two-phase-candidate`)",
     "\"--metal-prompt-projection-row-chain-two-phase-candidate\"",
@@ -5123,7 +5123,7 @@ function checkDocs() {
     "`two_phase_count`/`two_phase_selected`",
     "`two_phase_count=60`, `two_phase_selected=yes`",
     "landed at `0.86x` versus default",
-    "the simpler command candidate landed at `1.02x`",
+    "the simpler command path landed at `1.02x`",
     "not blindly promoting the shallow two-kernel variant",
     "`lazyGraph.compile()` and compatibility `torch.compile.compile(lazyGraph)`",
     "The remaining substrate",

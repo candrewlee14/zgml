@@ -108,15 +108,15 @@ progress(`attempts=${attempts} model=${model} prompt=${promptTokens} gen=${genTo
 function measureAttempt(index) {
   progress(`attempt ${index}/${attempts} default`);
   const defaultOutput = run(binary, baseArgs);
-  progress(`attempt ${index}/${attempts} command-candidate`);
-  const commandOutput = run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-command-candidate"]);
+  progress(`attempt ${index}/${attempts} command`);
+  const commandOutput = run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-command"]);
   progress(`attempt ${index}/${attempts} single-dispatch-candidate`);
   const candidateOutput = run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-candidate"]);
   progress(`attempt ${index}/${attempts} two-phase-candidate`);
   const twoPhaseOutput = run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-two-phase-candidate"]);
   const defaultRow = rowFor(defaultOutput, "metal scheduled prefill");
   const defaultDecodeRow = rowFor(defaultOutput, "metal region decode");
-  const commandRow = rowFor(commandOutput, "metal scheduled prefill projection-row-chain command candidate");
+  const commandRow = rowFor(commandOutput, "metal scheduled prefill projection-row-chain command");
   const candidateRow = rowFor(candidateOutput, "metal scheduled prefill projection-row-chain candidate");
   const twoPhaseRow = rowFor(twoPhaseOutput, "metal scheduled prefill projection-row-chain two-phase candidate");
 

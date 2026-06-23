@@ -27,7 +27,7 @@ ZGML_Q8_MODEL="${ZGML_Q8_MODEL:-${ZGML_MODEL:-$GGUF_Q8}}"
 ZGML_DEFAULT_EXTRA_ARGS="${ZGML_DEFAULT_EXTRA_ARGS:---metal-prefill-device --metal-decode-region --gate-only}"
 ZGML_EXTRA_ARGS="${ZGML_EXTRA_ARGS-$ZGML_DEFAULT_EXTRA_ARGS}"
 ZGML_F16_EXTRA_ARGS="${ZGML_F16_EXTRA_ARGS:-}"
-ZGML_Q8_EXTRA_ARGS="${ZGML_Q8_EXTRA_ARGS:-}"
+ZGML_Q8_EXTRA_ARGS="${ZGML_Q8_EXTRA_ARGS:---metal-prompt-projection-row-chain-command}"
 HF_GGUF_REPO="${HF_GGUF_REPO:-mradermacher/SmolLM-135M-GGUF}"
 BENCH_AUTO_DOWNLOAD="${BENCH_AUTO_DOWNLOAD:-1}"
 BENCH_BASELINE_JSON="${BENCH_BASELINE_JSON:-}"
@@ -509,9 +509,17 @@ def summarize(parsed, prompt, gen, reps):
     pp, tg = str(prompt), str(gen)
     f16_prompt_label = PROMPT_LABEL
     q8_prompt_label = PROMPT_LABEL
-    if "--metal-prompt-projection-row-chain-command-candidate" in os.environ.get("ZGML_F16_EXTRA_ARGS", ""):
+    f16_extra = os.environ.get("ZGML_F16_EXTRA_ARGS", "")
+    q8_extra = os.environ.get("ZGML_Q8_EXTRA_ARGS", "")
+    def has_extra_arg(raw, flag):
+        return flag in raw.split()
+    if has_extra_arg(f16_extra, "--metal-prompt-projection-row-chain-command"):
+        f16_prompt_label = "metal scheduled prefill projection-row-chain command"
+    elif has_extra_arg(f16_extra, "--metal-prompt-projection-row-chain-command-candidate"):
         f16_prompt_label = "metal scheduled prefill projection-row-chain command candidate"
-    if "--metal-prompt-projection-row-chain-command-candidate" in os.environ.get("ZGML_Q8_EXTRA_ARGS", ""):
+    if has_extra_arg(q8_extra, "--metal-prompt-projection-row-chain-command"):
+        q8_prompt_label = "metal scheduled prefill projection-row-chain command"
+    elif has_extra_arg(q8_extra, "--metal-prompt-projection-row-chain-command-candidate"):
         q8_prompt_label = "metal scheduled prefill projection-row-chain command candidate"
     gate = {}
     for fmt, key, prompt_label in (("f16", "zgml_f16", f16_prompt_label), ("q8_0", "zgml_q8_0", q8_prompt_label)):

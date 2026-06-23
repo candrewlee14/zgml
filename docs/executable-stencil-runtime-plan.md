@@ -249,7 +249,7 @@ Current checked progress:
   command-shape evidence proving the row-chain lowering covers the intended
   five-op chains. The full-model Q8 prompt gate now separates the usable
   command-fusion path from the slower single-dispatch experiment: the
-  two-dispatch projection-row-chain command candidate keeps the fast tiled
+  two-dispatch projection-row-chain command path keeps the fast tiled
   qmatmul column parallelism while reducing command shape from `241->181`,
   whereas the single-dispatch candidate remains a diagnostic for the needed
   tiled row-chain kernel. The frontier benchmark now exposes that
@@ -281,7 +281,7 @@ Current checked progress:
   rather than inferred from a flag. A June 23, 2026 one-attempt probe selected
   the two-phase path for all 60 full-model prompt row-chain commands
   (`two_phase_count=60`, `two_phase_selected=yes`) and landed at `0.86x` versus default
-  while the simpler command candidate landed at `1.02x`. That is useful
+  while the simpler command path landed at `1.02x`. That is useful
   evidence, not a default path: the prototype fixed the old single-dispatch
   `0.20x` trap materially, but the extra partial/finalize work still loses to
   the simpler two-dispatch command lowering. The frontier gate now also has an
@@ -297,9 +297,9 @@ Current checked progress:
   but the full-model Q8 prompt gate still keeps `single_throughput=off`:
   command fusion holds at `0.98x` to `1.02x` while the single-dispatch candidate
   remains around `0.19x` to `0.21x`. That makes the next move clearer, not
-  fuzzier: the candidate is structurally right, but still needs a materially
-  different throughput kernel or larger semantic sublayer before becoming the
-  default full-model path.
+  fuzzier: the command path is structurally right, but the remaining full-model
+  throughput gap still needs a materially different throughput kernel or larger
+  semantic sublayer.
   The Q8 prompt gate now also prints the existing quantized
   `projection_pair_fused_elementwise_chain` counters as `projection_pair`,
   `projection_pair_dispatch`, `semantic_pair_path`, and
@@ -309,11 +309,13 @@ Current checked progress:
   `projection_chain=90` because only the dense path recognized the four-op
   pair shape. The corrected gate now uses the same Metal decode-region shape as
   the accepted substrate artifact, and the source restores the quantized
-  four-op pair path: default Q8 prompt has `projection_pair=30`,
-  `projection_chain=60`, and `commands_per_call=241`, while the row-chain
-  command candidate must keep `projection_pair>=30`, lower projection chains to
-  `0`, and reduce command shape toward `181` before it can claim the full-model
-  semantic row-chain path.
+  four-op pair path: the raw Q8 prompt comparison baseline has
+  `projection_pair=30`, `projection_chain=60`, and `commands_per_call=241`,
+  while the row-chain command path must keep `projection_pair>=30`, lower
+  projection chains to `0`, and reduce command shape toward `181` before it can
+  claim the full-model semantic row-chain path. The ggml comparison's Q8 prompt
+  lane now uses that command path by default, so formal artifacts can prove the
+  cleaner command shape without mutating the F16 lane.
   The next semantic-sublayer move should therefore build on the already-live
   pair-fused FFN path, or deliberately supersede it with a larger FFN sublayer
   command, before spending more time on the shallow row-chain tail.
@@ -551,8 +553,8 @@ npm run bench:stencil:shape:run        # rerun current source stencil shape/hash
 npm run bench:q8-prompt-candidate      # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
 npm run bench:q8-prompt-candidate:run  # rerun Q8 prompt candidate evidence without rebuilding artifacts
 npm run bench:ggml:parity:run          # rerun hard ggml parity; bench script rebuilds ReleaseFast by default
-npm run dev:perf:ggml:q8-command-smoke # cheap ggml smoke with Q8-only projection-row-chain command candidate
-npm run dev:perf:ggml:q8-command-smoke:run # rerun Q8-only command-candidate ggml smoke without rebuilding artifacts
+npm run dev:perf:ggml:q8-command-smoke # cheap ggml smoke with explicit Q8 projection-row-chain command path
+npm run dev:perf:ggml:q8-command-smoke:run # rerun explicit Q8 command-path ggml smoke without rebuilding artifacts
 zig build -Doptimize=ReleaseFast bench-build && ./zig-out/bin/bench-llama-smollm ignored 128 1 1 --stencil-only --debug-row-chain
 ```
 
@@ -596,10 +598,14 @@ norms, and matmuls. The frontier microscope uses `BENCH_FRONTIER_ATTEMPTS`
 (default `5`) so the row-chain and qproj kernel work can absorb local timing
 noise without falling back to the much slower full scorecard.
 The ggml script now also accepts per-format `ZGML_F16_EXTRA_ARGS` and
-`ZGML_Q8_EXTRA_ARGS`, so Q8 prompt candidates can be measured against llama.cpp
-without mutating the F16 evidence lane. The `dev:perf:ggml:q8-command-smoke`
-loop uses this for the projection-row-chain command candidate; it is a cheap
-artifact-producing microscope, not a replacement for the hard ggml parity gate.
+`ZGML_Q8_EXTRA_ARGS`, so Q8 prompt paths can be measured against llama.cpp
+without mutating the F16 evidence lane. Its Q8 comparison lane defaults to the
+two-dispatch projection-row-chain command path because that is the structurally
+clean `181`-command prompt shape; the older
+`--metal-prompt-projection-row-chain-command-candidate` flag remains an alias.
+The `dev:perf:ggml:q8-command-smoke` loop keeps this Q8 command path explicit
+for cheap artifact-producing microscope runs, not as a replacement for the hard
+ggml parity gate.
 The frontier benchmark gate keeps the same floors but now evaluates them across
 its repeated noisy attempts instead of requiring every independent microbench
 lane to pass in one lucky attempt. If no single attempt clears all floors but

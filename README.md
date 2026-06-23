@@ -885,8 +885,8 @@ npm run dev:perf:q8-prompt # incremental ReleaseFast benchmark rebuild plus Q8 p
 npm run dev:perf:q8-prompt:run # rerun Q8 prompt candidate evidence against existing benchmark artifact
 npm run dev:perf:ggml:smoke # incremental ReleaseFast benchmark rebuild plus one-sample ggml smoke
 npm run dev:perf:ggml:smoke:run # rerun one-sample ggml smoke against existing benchmark artifact
-npm run dev:perf:ggml:q8-command-smoke # one-sample ggml smoke with Q8-only projection-row-chain command candidate
-npm run dev:perf:ggml:q8-command-smoke:run # rerun Q8-only command-candidate ggml smoke against existing benchmark artifact
+npm run dev:perf:ggml:q8-command-smoke # one-sample ggml smoke with explicit Q8 projection-row-chain command path
+npm run dev:perf:ggml:q8-command-smoke:run # rerun explicit Q8 command-path ggml smoke against existing benchmark artifact
 zig build bench-frontier  # run decision-grade local benchmarks
 zig build -Duse-blas      # enable BLAS for matmul
 ```
@@ -928,10 +928,11 @@ one repetition, and one zgml sample. It also sets `BENCH_ALLOW_QUARANTINED=1`,
 so known parity/perf misses still write artifacts without failing the local
 shell command. Set `BENCH_GGML_PROMPT`, `BENCH_GGML_GEN`, `BENCH_GGML_REPS`,
 `BENCH_ZGML_SAMPLES`, or `ZGML_EXTRA_ARGS` when a local hypothesis needs a wider
-or different sample. `dev:perf:ggml:q8-command-smoke` uses the same cheap loop
-but appends `--metal-prompt-projection-row-chain-command-candidate` only to the
-Q8 zgml lane through `ZGML_Q8_EXTRA_ARGS`, leaving the F16 lane on the default
-shape. Once a change survives that loop, promote it through
+or different sample. ggml comparison runs now use the two-dispatch
+projection-row-chain command path for Q8 prompt by default through
+`ZGML_Q8_EXTRA_ARGS`, leaving F16 on the default shape. The
+`dev:perf:ggml:q8-command-smoke` command keeps that Q8 command path explicit for
+microscope runs. Once a change survives that loop, promote it through
 `npm run bench:pytorch:parity`, `npm run bench:q8-prompt-candidate`, and
 `npm run bench:ggml`.
 
@@ -940,7 +941,7 @@ The frontier binary also accepts
 row-chain scripts set `BENCH_FRONTIER_FILTER=qrow` so tiled row-chain kernel
 work does not rerun unrelated benchmark families. Set `BENCH_FRONTIER_ATTEMPTS`
 when the local frontier lanes need more or fewer noise samples. The q8 prompt gate also
-keeps a usable two-dispatch projection-row-chain command candidate distinct
+keeps a usable two-dispatch projection-row-chain command path distinct
 from the slower single-dispatch diagnostic, so command simplification can land
 without pretending the tiled row-chain kernel is solved. Native WebGPU now has
 broader default optional LLaMA execution proof for quantized qweights,

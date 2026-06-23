@@ -658,9 +658,9 @@ function checkPackageExports(errors) {
   const q8PromptCandidateSource = fs.readFileSync(path.join(root, "scripts", "check_q8_prompt_candidate.cjs"), "utf8");
   for (const needle of [
     "metal scheduled prefill projection-row-chain candidate",
-    "metal scheduled prefill projection-row-chain command candidate",
+    "metal scheduled prefill projection-row-chain command",
     "--metal-prompt-projection-row-chain-candidate",
-    "--metal-prompt-projection-row-chain-command-candidate",
+    "--metal-prompt-projection-row-chain-command",
     "program_command_encoded_projection_row_chain_per_call",
     "program_command_dispatches_projection_row_chain_per_call",
     "program_command_encoded_projection_pair_fused_elementwise_chain_per_call",
@@ -695,7 +695,7 @@ function checkPackageExports(errors) {
     "commandThroughputReady",
     "function progress(message)",
     "`[q8-prompt] ${message}\\n`",
-    "progress(`attempt ${index}/${attempts} command-candidate`)",
+    "progress(`attempt ${index}/${attempts} command`)",
     "progress(`attempt ${index}/${attempts} single-dispatch-candidate`)",
     "`attempt ${index}/${attempts} result ` +",
     "defaultFastPathReady",

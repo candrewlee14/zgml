@@ -500,7 +500,8 @@ pub fn main(init: std.process.Init) !void {
     const run_metal_prefill_device = hasFlag(args, "--metal-prefill-device");
     const run_metal_decode_region = hasFlag(args, "--metal-decode-region");
     const run_metal_decode_no_readback = hasFlag(args, "--metal-decode-no-readback");
-    const run_metal_prompt_projection_row_chain_command_candidate = hasFlag(args, "--metal-prompt-projection-row-chain-command-candidate");
+    const run_metal_prompt_projection_row_chain_command = hasFlag(args, "--metal-prompt-projection-row-chain-command");
+    const run_metal_prompt_projection_row_chain_command_candidate = run_metal_prompt_projection_row_chain_command or hasFlag(args, "--metal-prompt-projection-row-chain-command-candidate");
     const run_metal_prompt_projection_row_chain_candidate = hasFlag(args, "--metal-prompt-projection-row-chain-candidate");
     const run_metal_prompt_projection_row_chain_two_phase_candidate = hasFlag(args, "--metal-prompt-projection-row-chain-two-phase-candidate");
     const stencil_only = hasFlag(args, "--stencil-only");
@@ -550,6 +551,8 @@ pub fn main(init: std.process.Init) !void {
             "metal scheduled prefill projection-row-chain candidate"
         else if (run_metal_prompt_projection_row_chain_two_phase_candidate)
             "metal scheduled prefill projection-row-chain two-phase candidate"
+        else if (run_metal_prompt_projection_row_chain_command)
+            "metal scheduled prefill projection-row-chain command"
         else if (run_metal_prompt_projection_row_chain_command_candidate)
             "metal scheduled prefill projection-row-chain command candidate"
         else
