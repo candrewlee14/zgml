@@ -313,7 +313,7 @@ Current checked progress:
   `repeat`/`tile` lowering through the native module Program ABI,
   native Program lowering for `argmax(dim)` and `argmin(dim)`,
   rank-3 `reshape`/`flatten`/`squeeze`/`unsqueeze`, rank-3 `broadcastTo`/`expand`,
-  and singleton-envelope rank-3 `narrow`/`select`/`slice`
+  and rank-3 `narrow`/`select`/`slice`
   lowering through the native module Program ABI,
   singleton-envelope rank-3 `transpose` plus single-swap and cycle `permute`
   lowering through the native module Program ABI,
@@ -1575,9 +1575,9 @@ Current frontend slice:
   same stride-aware movement seam used by transpose. `nn.select` lowers through
   the same native ABI as a one-element `narrow` span while preserving
   rank-dropping frontend evidence, including batched feature-axis selection.
-	  `nn.slice` lowers through a native slice ABI for rank-1/rank-2 ranges and
-	  singleton-envelope rank-3 ranges, including positive stepped slices that
-	  materialize dense Program output when the view stride is not contiguous.
+	  `nn.slice` lowers through a native slice ABI for rank-1/rank-2/rank-3 ranges,
+	  including positive stepped slices that materialize dense Program output when
+	  the view stride is not contiguous.
 	  Unsupported view-shaped ops still keep frozen Tensor
   Program IR evidence, so the rejection is owned by the Kernelizer instead of
   erasing the normalized compiler input. The trace compiler now defers
@@ -1596,12 +1596,9 @@ Current frontend slice:
   dense repeat ops. Rank-3 `reshape`, `view`, `flatten`, `squeeze`, and
   `unsqueeze` now use the same descriptor ABI through the spare `reserved`
   dimension slot without changing the C struct layout.
-  Singleton-envelope rank-3 `nn.narrow`, `nn.select`, and `nn.slice` use the
-  existing axis/start/length/step descriptor lane and materialize dense Program
-  output across batch, middle, and feature axes. Non-envelope rank-3
-  `narrow`/`select`/`slice` now report `kernelizer:unsupported-view` before
-  compile instead of claiming support and crossing the native ABI into
-  `shape_mismatch`.
+  Rank-3 `nn.narrow`, `nn.select`, and `nn.slice` use the existing
+  axis/start/length/step descriptor lane and materialize dense Program output
+  across batch, middle, and feature axes, including non-envelope batched inputs.
   `nn.diagonal` now lowers through a native materialized
   stride-view descriptor for rank-2 matrices. `nn.repeat` and `nn.tile` now use that same ABI lane for
   rank-1/rank-2/rank-3 positive-multiple tiled repeats, giving FFI callers a concrete
@@ -1611,13 +1608,13 @@ Current frontend slice:
   exists.
 - Package smoke evidence now covers that shape/view family from the public
   Node/Bun product runtime, not only internal compiler helpers:
-  `broadcastTo`, `expand`, `diagonal`, rank-1/rank-2/rank-3 `repeat`/`tile`, row/feature-axis `narrow`, rank-2 and
-  singleton-envelope rank-3 `select`, contiguous and stepped `slice`, plus terminal zero-dispatch
+  `broadcastTo`, `expand`, `diagonal`, rank-1/rank-2/rank-3 `repeat`/`tile`,
+  row/feature-axis `narrow`, rank-2/rank-3 `select`, contiguous and stepped `slice`,
+  plus terminal zero-dispatch
   rank-2/rank-3 `flatten`, `squeeze`, and `unsqueeze` all prove frozen compile evidence,
   kernel-plan dispatch/elision counts, and eager/compiled output parity; the
-  same package smoke also proves honest rank-3 `permute` and non-envelope
-  rank-3 `narrow`/`select`/`slice` rejection with frozen Tensor Program IR and
-  Kernelizer diagnostics.
+  same package smoke also proves rank-3 `permute` single-swap and cycle lowering
+  through frozen Tensor Program IR, KernelPlan evidence, and eager/compiled parity.
 - The shallowest PyTorch-like frontend seam is JS/TS module compilation beyond
   recognized native patterns. The live frontend Adapter now starts in
   `src/ts/shared_frontend.ts`: it wires the TS-authored module/compiler/runtime

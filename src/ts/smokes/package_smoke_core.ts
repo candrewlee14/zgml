@@ -3367,6 +3367,7 @@ function expectShapeMovementProgramEvidence(adapter: Record<string, any>, label:
   const row = adapter.tensor([1, 2, 3], [1, 3]);
   const vector = adapter.tensor([1, 2, 3], [3]);
   const cube = adapter.tensor([1, 2, 3, 4, 5, 6], [1, 2, 3]);
+  const batchedCube = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 2, 3]);
   const compiledRepeatCases = [
     { name: "repeat", module: adapter.nn.repeat([2]), evidence: "expected nn.repeat rank-1 repeat/tile native Program evidence", outputEvidence: "compiled nn.repeat rank-1 repeat/tile output", expectedData: [1, 2, 3, 1, 2, 3] },
     { name: "tile", module: new adapter.nn.Tile([2]), evidence: "expected nn.tile rank-1 repeat/tile native Program evidence", outputEvidence: "compiled nn.tile rank-1 repeat/tile output", expectedData: [1, 2, 3, 1, 2, 3] },
@@ -3420,6 +3421,12 @@ function expectShapeMovementProgramEvidence(adapter: Record<string, any>, label:
     { name: "select-rank3-middle", module: adapter.nn.select(1, 0), input: cube, inputShape: [1, 2, 3], expectedShape: "1x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
     { name: "select-rank3-feature", module: adapter.nn.select(2, 1), input: cube, inputShape: [1, 2, 3], expectedShape: "1x2", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
     { name: "slice-rank3-step", module: adapter.nn.slice(2, 0, null, 2), input: cube, inputShape: [1, 2, 3], expectedShape: "1x2x2", expectedKernels: "slice", expectedDispatches: 1, expectedElided: 0 },
+    { name: "narrow-rank3-batched-batch", module: adapter.nn.narrow(0, 1, 1), input: batchedCube, inputShape: [2, 2, 3], expectedShape: "1x2x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "narrow-rank3-batched-middle", module: adapter.nn.narrow(1, 0, 1), input: batchedCube, inputShape: [2, 2, 3], expectedShape: "2x1x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "narrow-rank3-batched-feature", module: adapter.nn.narrow(2, 1, 2), input: batchedCube, inputShape: [2, 2, 3], expectedShape: "2x2x2", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "select-rank3-batched-middle", module: adapter.nn.select(1, 0), input: batchedCube, inputShape: [2, 2, 3], expectedShape: "2x3", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "select-rank3-batched-feature", module: adapter.nn.select(2, 1), input: batchedCube, inputShape: [2, 2, 3], expectedShape: "2x2", expectedKernels: "narrow", expectedDispatches: 1, expectedElided: 0 },
+    { name: "slice-rank3-batched-feature-step", module: adapter.nn.slice(2, 0, null, 2), input: batchedCube, inputShape: [2, 2, 3], expectedShape: "2x2x2", expectedKernels: "slice", expectedDispatches: 1, expectedElided: 0 },
   ];
   for (const testCase of compiledCases) {
     const eager = testCase.module.forward(testCase.input);
@@ -3440,7 +3447,7 @@ function expectShapeMovementProgramEvidence(adapter: Record<string, any>, label:
       kernelPlan.dispatchCount !== testCase.expectedDispatches ||
       kernelPlan.elidedOpCount !== testCase.expectedElided
     ) {
-      throw new Error(`${label} expected ${testCase.name} shape/view compile evidence`);
+      throw new Error(`${label} expected ${testCase.name} shape/view compile evidence with rank-3 materialized output views`);
     }
     const program = testCase.module.compile({ inputShape: testCase.inputShape, backend: "cpu" });
     const session = program.bind({});
@@ -3454,27 +3461,6 @@ function expectShapeMovementProgramEvidence(adapter: Record<string, any>, label:
       session.dispose();
       program.dispose();
     }
-  }
-  const unsupportedRank3ShapeCases = [
-    { name: "narrow-rank3-non-envelope", module: adapter.nn.narrow(1, 0, 1), inputShape: [2, 2, 3], reason: "native module Program narrow currently supports rank-1/rank-2 and singleton-envelope rank-3 materialized output views" },
-    { name: "select-rank3-non-envelope", module: adapter.nn.select(1, 0), inputShape: [2, 2, 3], reason: "native module Program select currently supports rank-1/rank-2 and singleton-envelope rank-3 materialized output views" },
-    { name: "slice-rank3-non-envelope", module: adapter.nn.slice(2, 0, null, 2), inputShape: [2, 2, 3], reason: "native module Program slice currently supports rank-1/rank-2 and singleton-envelope rank-3 materialized output views" },
-  ];
-  for (const testCase of unsupportedRank3ShapeCases) {
-    const support = testCase.module.compileSupport({ inputShape: testCase.inputShape, backend: "cpu" });
-    if (
-      support.supported !== false ||
-      support.reason !== testCase.reason ||
-      support.diagnostics?.[0]?.code !== "unsupported-view" ||
-      support.diagnostics?.[0]?.message !== testCase.reason
-    ) {
-      throw new Error(`${label} expected ${testCase.name} unsupported compile evidence to reject non-singleton rank-3 shape/view compile support`);
-    }
-    expectThrowIncludes(
-      () => testCase.module.compile({ inputShape: testCase.inputShape, backend: "cpu" }),
-      testCase.reason,
-      `${label} ${testCase.name} compile rejects before native shape_mismatch`,
-    );
   }
 }
 
@@ -3586,7 +3572,7 @@ function expectUnsupportedCompileExplanationEvidence(adapter: Record<string, any
     diagnostic.op !== "dropout" ||
     diagnostic.path !== "0"
   ) {
-    throw new Error(`${label} expected unsupported dropout nn.explain evidence with partial IR and no KernelPlan`);
+    throw new Error(`${label} expected unsupported dropout nn.explain evidence with partial IR and no KernelPlan; expected unsupported compile evidence`);
   }
   expectThrowIncludes(
     () => trainingDropout.compile({ inputShape: [2], backend: "cpu" }),
