@@ -417,6 +417,10 @@ function checkPackageExports(errors) {
     "const moduleBenchEnv = {",
     "BENCH_MODULE_PROGRAM_KEYS: activeComparisonKeys.join(\",\")",
     "const zgmlTimings = parseZgmlModuleBench(run(process.execPath, [\"scripts/check_module_program_bench.cjs\"], { env: moduleBenchEnv }), activeComparisonKeys)",
+    "BENCH_PYTORCH_ALLOW_STALE_NATIVE",
+    "function verifyFreshNativeLibrary()",
+    "pytorch comparison native library is older than Zig source",
+    "native=${nativeFreshness.stale ? \"stale\" : \"fresh\"}",
   ]) {
     if (!pytorchComparisonSource.includes(required)) {
       errors.push(`scripts/check_pytorch_comparison.cjs must keep PyTorch comparisons filtered to active child module bench keys: ${required}`);

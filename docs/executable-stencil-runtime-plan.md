@@ -493,6 +493,14 @@ parity. A June 22, 2026 three-attempt gap rerun reported
 `ratio_range=linear_batched:0.28-0.86x,log_softmax_classifier_batched:0.39-0.91x`
 and `ratio_median=linear_batched:0.73x,log_softmax_classifier_batched:0.82x`;
 those median numbers are the better guide for the next tiny-kernel pass.
+The PyTorch comparison gate now also refuses stale native evidence by default:
+before timing it checks the loaded `zig-out/lib/libzgml_c.*` timestamp against
+`build.zig` and Zig/Metal/C-header sources, prints `native=fresh` in accepted
+reports, and throws with an explicit rebuild instruction when the library is
+older than source. `BENCH_PYTORCH_ALLOW_STALE_NATIVE=1` is reserved for
+intentional diagnostics and prints `native=stale`, not a normal evidence claim.
+This matters because a stale no-rebuild microscope can make a near-parity
+kernel look several times slower than it is.
 The PyTorch comparison microscope also accepts exploratory lanes such as
 `rms_gelu_linear_batched`, `softmax_classifier_batched`,
 `log_softmax_classifier_batched`, and `lazy_token_head_batched`, so optimization
