@@ -219,6 +219,9 @@ function checkScripts() {
   if (scripts["dev:zig:quick:watch"] !== "zig build unit-tests -Duse-metal=false -Duse-blas=false -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
     errors.push("package.json dev:zig:quick:watch must keep the watched fast native unit loop without optional backend linking");
   }
+  if (scripts["dev:zig:quick:webui"] !== "zig build unit-tests -Duse-metal=false -Duse-blas=false -fincremental --watch --debounce 150 --summary line --error-style minimal_clear --webui=127.0.0.1") {
+    errors.push("package.json dev:zig:quick:webui must keep the watched incremental unit loop with the Zig build Web UI for compile-latency debugging");
+  }
   for (const [name, step, label] of [
     ["dev:zig:public", "public-tests", "public API"],
     ["dev:zig:internal", "internal-tests", "internal runtime"],
@@ -238,11 +241,17 @@ function checkScripts() {
   if (scripts["dev:zig:ffi:watch"] !== "zig build ffi-c -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
     errors.push("package.json dev:zig:ffi:watch must keep the incremental native FFI watch loop");
   }
-  if (scripts["dev:zig:bench"] !== "zig build bench-build -fincremental --summary failures") {
-    errors.push("package.json dev:zig:bench must keep the incremental benchmark-binary build loop");
+  if (scripts["dev:zig:bench"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures") {
+    errors.push("package.json dev:zig:bench must keep the explicit ReleaseFast incremental benchmark-binary build loop");
   }
-  if (scripts["dev:zig:bench:watch"] !== "zig build bench-build -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
-    errors.push("package.json dev:zig:bench:watch must keep the watched incremental benchmark-binary build loop");
+  if (scripts["dev:zig:bench:watch"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
+    errors.push("package.json dev:zig:bench:watch must keep the watched explicit ReleaseFast incremental benchmark-binary build loop");
+  }
+  if (scripts["dev:zig:bench:webui"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --watch --debounce 150 --summary line --error-style minimal_clear --webui=127.0.0.1") {
+    errors.push("package.json dev:zig:bench:webui must keep the watched ReleaseFast benchmark build with the Zig build Web UI");
+  }
+  if (scripts["dev:zig:time-report"] !== "zig build unit-tests -Duse-metal=false -Duse-blas=false --time-report --summary failures") {
+    errors.push("package.json dev:zig:time-report must expose Zig --time-report for compile-time bottleneck diagnosis");
   }
   if (scripts["dev:zig:metal-row-chain"] !== "zig build test -Duse-metal=true -fincremental --summary failures -- --test-filter \"metal backend exact command fuses qmatmul residual into row chain\"") {
     errors.push("package.json dev:zig:metal-row-chain must keep the focused incremental Metal row-chain kernel loop");

@@ -501,14 +501,17 @@ npm run dev:zig:test        # incremental Zig tests while editing kernels/runtim
 npm run dev:zig:test:watch  # Zig 0.16 watch mode with incremental rebuilds
 npm run dev:zig:quick       # faster native unit loop without optional Metal/BLAS linking
 npm run dev:zig:quick:watch # watched version of the fast native unit loop
+npm run dev:zig:quick:webui # watched fast unit loop with Zig build Web UI for compile-latency diagnosis
 npm run dev:zig:public      # narrow public API Zig test loop
 npm run dev:zig:internal    # narrow internal runtime Zig test loop
 npm run dev:zig:conformance # narrow backend conformance Zig test loop
 npm run dev:zig:c-api       # narrow C ABI Zig test loop
 npm run dev:zig:ffi         # incremental native FFI dylib build
 npm run dev:zig:ffi:watch   # watched native FFI dylib build
-npm run dev:zig:bench       # incremental benchmark-binary build while editing kernels/runtime
-npm run dev:zig:bench:watch # watched incremental benchmark-binary build loop
+npm run dev:zig:bench       # explicit ReleaseFast incremental benchmark-binary build while editing hot code
+npm run dev:zig:bench:watch # watched ReleaseFast incremental benchmark-binary build loop
+npm run dev:zig:bench:webui # watched ReleaseFast benchmark build with Zig build Web UI
+npm run dev:zig:time-report # one-off Zig compile-time report when build latency itself is the bottleneck
 npm run dev:zig:metal-row-chain       # focused incremental Metal row-chain kernel test
 npm run dev:zig:metal-row-chain:watch # watched focused Metal row-chain kernel test
 npm run bench:module-program:focus
@@ -533,12 +536,14 @@ zig build -Doptimize=ReleaseFast bench-build && ./zig-out/bin/bench-llama-smollm
 These are not substitutes for `bench:pytorch:parity`, `bench:ggml:parity`, or
 `check:goal-scorecard`; they are the tight microscope loop for forming and
 discarding performance hypotheses quickly. The full gates remain the release
-proof. The practical workflow is: use Zig `-fincremental`/`--watch` and
-focused benchmark keys while changing hot code, build the native/package
-artifacts once, use the focused `:run` reruns to check noisy microscope lanes
-quickly, and let hard parity reruns rebuild ReleaseFast native before claiming
-a PyTorch comparison result. Then run the full evidence gate before claiming a
-new SOTA/simple/perf state.
+proof. The practical workflow is: use Zig `-fincremental`/`--watch` while
+changing kernel/runtime code, keep benchmark binaries explicit `ReleaseFast`,
+use `--webui` when rebuild latency needs inspection, reserve `--time-report`
+for one-off compile-time diagnosis because it forces a full rebuild, build the
+native/package artifacts once, use the focused `:run` reruns to check noisy
+microscope lanes quickly, and let hard parity reruns rebuild ReleaseFast native
+before claiming a PyTorch comparison result. Then run the full evidence gate
+before claiming a new SOTA/simple/perf state.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier
