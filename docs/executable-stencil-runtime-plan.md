@@ -300,6 +300,16 @@ Current checked progress:
   fuzzier: the candidate is structurally right, but still needs a materially
   different throughput kernel or larger semantic sublayer before becoming the
   default full-model path.
+  The Q8 prompt gate now also prints the existing quantized
+  `projection_pair_fused_elementwise_chain` counters as `projection_pair`,
+  `projection_pair_dispatch`, `semantic_pair_path`, and
+  `semantic_pair_target`. A June 23, 2026 raw default Q8 prompt row showed
+  `projection_chain=90`, `projection_pair=0`, `projection_row_chain=0`, and
+  `projection_chain_qmatmul_elementwise=90`, which means the existing
+  projection-pair Metal kernel is real but does not cover current SmolLM Q8
+  prompt shapes. The next semantic-sublayer move should therefore first explain
+  and close that shape gap, or deliberately supersede it with a larger FFN
+  sublayer command, before spending more time on the shallow row-chain tail.
   The useful next move is therefore not blindly promoting the shallow two-kernel variant;
   it is either a larger semantic sublayer that removes surrounding work
   or a materially different row-chain throughput kernel.

@@ -324,11 +324,11 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["dev:zig:ffi:watch"] !== "zig build ffi-c -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
     errors.push("package.json dev:zig:ffi:watch must stay the incremental native FFI watch loop");
   }
-  if (packageJson.scripts?.["dev:zig:bench"] !== "zig build bench-build -fincremental --summary failures") {
-    errors.push("package.json dev:zig:bench must stay the incremental benchmark-binary build loop");
+  if (packageJson.scripts?.["dev:zig:bench"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures") {
+    errors.push("package.json dev:zig:bench must stay the explicit ReleaseFast incremental benchmark-binary build loop");
   }
-  if (packageJson.scripts?.["dev:zig:bench:watch"] !== "zig build bench-build -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
-    errors.push("package.json dev:zig:bench:watch must stay the watched incremental benchmark-binary build loop");
+  if (packageJson.scripts?.["dev:zig:bench:watch"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
+    errors.push("package.json dev:zig:bench:watch must stay the watched explicit ReleaseFast incremental benchmark-binary build loop");
   }
   if (packageJson.scripts?.["dev:zig:metal-row-chain"] !== "zig build test -Duse-metal=true -fincremental --summary failures -- --test-filter \"metal backend exact command fuses qmatmul residual into row chain\"") {
     errors.push("package.json dev:zig:metal-row-chain must stay the focused incremental Metal row-chain kernel loop");
@@ -651,6 +651,11 @@ function checkPackageExports(errors) {
     "--metal-prompt-projection-row-chain-command-candidate",
     "program_command_encoded_projection_row_chain_per_call",
     "program_command_dispatches_projection_row_chain_per_call",
+    "program_command_encoded_projection_pair_fused_elementwise_chain_per_call",
+    "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call",
+    "const semanticPairTarget = \"projection_pair_fused_elementwise_or_larger_ffn_sublayer\"",
+    "semantic_pair_path=",
+    "semantic_pair_target=${semanticPairTarget}",
     "\"-Doptimize=ReleaseFast\"",
     "ProjectionRowChainDispatchSplit",
     "ProjectionRowChainDispatchExcess",

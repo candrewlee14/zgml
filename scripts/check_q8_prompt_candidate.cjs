@@ -20,6 +20,7 @@ const twoPhaseLowering = "default_projection_chain_plus_row_chain_candidate_two_
 const requiredNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
 const singleDispatchTrap = "serial_n_tile_loop_without_cross_threadgroup_row_reduce";
 const viableNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
+const semanticPairTarget = "projection_pair_fused_elementwise_or_larger_ffn_sublayer";
 const defaultCommandFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_COMMAND_FLOOR || "301");
 const candidateCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "241");
 const candidateProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_ROW_CHAIN_FLOOR || "60");
@@ -136,6 +137,14 @@ function measureAttempt(index) {
   const commandProjectionChains = number(commandRow, "program_command_encoded_projection_chain_per_call") ?? 0;
   const candidateProjectionChains = number(candidateRow, "program_command_encoded_projection_chain_per_call") ?? 0;
   const twoPhaseProjectionChains = number(twoPhaseRow, "program_command_encoded_projection_chain_per_call") ?? 0;
+  const defaultProjectionPairs = number(defaultRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const commandProjectionPairs = number(commandRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const candidateProjectionPairs = number(candidateRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const twoPhaseProjectionPairs = number(twoPhaseRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const defaultProjectionPairDispatches = number(defaultRow, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const commandProjectionPairDispatches = number(commandRow, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const candidateProjectionPairDispatches = number(candidateRow, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const twoPhaseProjectionPairDispatches = number(twoPhaseRow, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
   const defaultProjectionRowChainDispatches = number(defaultRow, "program_command_dispatches_projection_row_chain_per_call") ?? 0;
   const commandProjectionRowChainDispatches = number(commandRow, "program_command_dispatches_projection_row_chain_per_call") ?? 0;
   const candidateProjectionRowChainDispatches = number(candidateRow, "program_command_dispatches_projection_row_chain_per_call") ?? 0;
@@ -242,6 +251,14 @@ function measureAttempt(index) {
     commandProjectionChains,
     candidateProjectionChains,
     twoPhaseProjectionChains,
+    defaultProjectionPairs,
+    commandProjectionPairs,
+    candidateProjectionPairs,
+    twoPhaseProjectionPairs,
+    defaultProjectionPairDispatches,
+    commandProjectionPairDispatches,
+    candidateProjectionPairDispatches,
+    twoPhaseProjectionPairDispatches,
     defaultProjectionRowChainDispatches,
     commandProjectionRowChainDispatches,
     candidateProjectionRowChainDispatches,
@@ -316,6 +333,13 @@ const dispatchOnlyTrap =
       median.candidateProjectionRowChainDispatchSplit !== null &&
       median.candidateProjectionRowChainDispatchSplit < median.defaultProjectionRowChainDispatchSplit) ||
     median.candidateProjectionRowChainDispatchExcess < median.defaultProjectionRowChainDispatchExcess);
+const semanticPairActive =
+  Math.max(
+    best.defaultProjectionPairs,
+    best.commandProjectionPairs,
+    best.candidateProjectionPairs,
+    best.twoPhaseProjectionPairs,
+  ) > 0;
 const reason = candidateReady
   ? "projection_row_chain_candidate_meets_structure_and_speed"
   : dispatchOnlyTrap
@@ -335,6 +359,8 @@ console.log(
     `command_median_speedup=${format(commandMedian.commandSpeedup)}x command_worst_speedup=${format(commandWorst.commandSpeedup)}x command_best_speedup=${format(commandBest.commandSpeedup)}x; ` +
     `command_dispatch=${format(commandBest.defaultDispatches, 0)}->${format(commandBest.commandDispatches, 0)} command_command=${format(commandBest.defaultCommands, 0)}->${format(commandBest.commandCommands, 0)} ` +
     `command_projection_chain=${format(commandBest.defaultProjectionChains, 0)}->${format(commandBest.commandProjectionChains, 0)} ` +
+    `command_projection_pair=${format(commandBest.defaultProjectionPairs, 0)}->${format(commandBest.commandProjectionPairs, 0)} ` +
+    `command_projection_pair_dispatch=${format(commandBest.defaultProjectionPairDispatches, 0)}->${format(commandBest.commandProjectionPairDispatches, 0)} ` +
     `command_projection_row_chain=${format(commandBest.defaultProjectionRowChains, 0)}->${format(commandBest.commandProjectionRowChains, 0)} ` +
     `command_projection_row_chain_dispatch=${format(commandBest.defaultProjectionRowChainDispatches, 0)}->${format(commandBest.commandProjectionRowChainDispatches, 0)} ` +
     `command_split=${format(commandBest.defaultProjectionRowChainDispatchSplit)}->${format(commandBest.commandProjectionRowChainDispatchSplit)} ` +
@@ -346,6 +372,8 @@ console.log(
     `two_phase_dispatch=${format(twoPhaseBest.defaultDispatches, 0)}->${format(twoPhaseBest.twoPhaseDispatches, 0)} two_phase_command=${format(twoPhaseBest.defaultCommands, 0)}->${format(twoPhaseBest.twoPhaseCommands, 0)} ` +
     `two_phase_count=${format(twoPhaseBest.twoPhaseTiledTwoPhaseCount, 0)} two_phase_selected=${twoPhaseBest.twoPhaseTiledTwoPhaseCount > 0 ? "yes" : "off"} ` +
     `two_phase_projection_chain=${format(twoPhaseBest.defaultProjectionChains, 0)}->${format(twoPhaseBest.twoPhaseProjectionChains, 0)} ` +
+    `two_phase_projection_pair=${format(twoPhaseBest.defaultProjectionPairs, 0)}->${format(twoPhaseBest.twoPhaseProjectionPairs, 0)} ` +
+    `two_phase_projection_pair_dispatch=${format(twoPhaseBest.defaultProjectionPairDispatches, 0)}->${format(twoPhaseBest.twoPhaseProjectionPairDispatches, 0)} ` +
     `two_phase_projection_row_chain=${format(twoPhaseBest.defaultProjectionRowChains, 0)}->${format(twoPhaseBest.twoPhaseProjectionRowChains, 0)} ` +
     `two_phase_projection_row_chain_dispatch=${format(twoPhaseBest.defaultProjectionRowChainDispatches, 0)}->${format(twoPhaseBest.twoPhaseProjectionRowChainDispatches, 0)} ` +
     `two_phase_split=${format(twoPhaseBest.defaultProjectionRowChainDispatchSplit)}->${format(twoPhaseBest.twoPhaseProjectionRowChainDispatchSplit)} ` +
@@ -354,6 +382,9 @@ console.log(
     `median_speedup=${format(median.speedup)}x worst_speedup=${format(worst.speedup)}x best_speedup=${format(best.speedup)}x; ` +
     `dispatch=${format(best.defaultDispatches, 0)}->${format(best.candidateDispatches, 0)} command=${format(best.defaultCommands, 0)}->${format(best.candidateCommands, 0)} ` +
     `projection_chain=${format(best.defaultProjectionChains, 0)}->${format(best.candidateProjectionChains, 0)} ` +
+    `projection_pair=${format(best.defaultProjectionPairs, 0)}->${format(best.candidateProjectionPairs, 0)} ` +
+    `projection_pair_dispatch=${format(best.defaultProjectionPairDispatches, 0)}->${format(best.candidateProjectionPairDispatches, 0)} ` +
+    `semantic_pair_path=${semanticPairActive ? "active" : "absent"} semantic_pair_target=${semanticPairTarget} ` +
     `projection_row_chain=${format(best.defaultProjectionRowChains, 0)}->${format(best.candidateProjectionRowChains, 0)} ` +
     `projection_row_chain_dispatch=${format(best.defaultProjectionRowChainDispatches, 0)}->${format(best.candidateProjectionRowChainDispatches, 0)} ` +
     `split=${format(best.defaultProjectionRowChainDispatchSplit)}->${format(best.candidateProjectionRowChainDispatchSplit)} ` +
