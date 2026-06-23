@@ -892,7 +892,7 @@ long-form smoke and benchmark gates.
 library goal. It requires a passing no-fallback Program/Session substrate gate
 with a latest-vs-checked-baseline delta report for the selected native lanes,
 and checks that the public type smokes still cover the zgml frontend surface:
-`goal progress: Program/Session substrate=92% floor=65%; zgml frontend surface=100% floor=60%`.
+`goal progress: Program/Session substrate=93% floor=65%; zgml frontend surface=100% floor=60%`.
 Those numbers are deliberately conservative: q8 prompt execution still needs a
 real tiled row-chain throughput kernel. The frontier gate now measures the
 actual SmolLM prompt geometry (`m=128 n=576 k=576`) for projection-chain and

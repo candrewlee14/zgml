@@ -206,7 +206,7 @@ execution is the performance claim. Silent eager fallback is not allowed.
 
 Current checked progress:
 
-- Program/Session performance substrate: ~92%. The Program/Session shape,
+- Program/Session performance substrate: ~93%. The Program/Session shape,
   runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
   native Metal execution, a scorecard-run optional native wgpu validation gate,
   and ggml benchmark gates are real enough that the substrate is past "architecture".
@@ -222,7 +222,11 @@ Current checked progress:
   LayerNorm/RMSNorm descriptors can carry post-affine activations,
   and the norm-GELU MLP module benchmarks now prove
   `Linear -> LayerNorm(+affine)+GELU -> Linear` as a three-dispatch Program
-  path for scalar and batched inputs. A batched `RMSNorm+GELU -> Linear`
+  path for scalar and batched inputs. Full-model F16 SmolLM FFN blocks now
+  form dense projection-pair commands for `matmul -> silu -> matmul -> mul`,
+  with Metal unary sidecar lowering and focused ReleaseFast evidence at
+  prompt/decode command pressure `242/212`, `30` dense FFN pair commands, and
+  zero fallback ops. A batched `RMSNorm+GELU -> Linear`
   Program benchmark now proves the RMSNorm side of that descriptor path on a
   profitable workload. Common classifier/token-head `LogSoftmax` tails now
   lower to a native row op on reference CPU, Metal, and WGPU instead of

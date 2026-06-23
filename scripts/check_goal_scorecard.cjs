@@ -8,7 +8,7 @@ const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
 const goalProgress = Object.freeze({
-  substratePct: 92,
+  substratePct: 93,
   substrateFloorPct: 65,
   frontendPct: 100,
   frontendFloorPct: 60,
@@ -1212,6 +1212,24 @@ function checkScripts() {
 }
 
 function checkSubstrateEvidence() {
+  requireIncludes(read("src/backend/program.zig"), "src/backend/program.zig", "dense FFN unary projection-pair command formation", [
+    "denseProjectionPairSingleElementwiseChainCompatible",
+    "matmulElementwiseSidecarCompatible(gate, first)",
+    "if (first.op.isBinary()) return false",
+    "test \"program command stream fuses dense paired projection unary activation product chain\"",
+  ]);
+  requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "Metal unary projection sidecar lowering", [
+    "float matmul_elementwise_unary(uint op, float v)",
+    "case 40: return v / (1.0f + exp(-v));",
+    "else ew = matmul_elementwise_unary(p.ew_op, val);",
+    "denseProjectionPairSingleElementwiseChainCompatible(gate, first, up, product)",
+  ]);
+  requireIncludes(read("benchmarks/llama_smollm_bench.zig"), "benchmarks/llama_smollm_bench.zig", "projection chain local-op debug microscope", [
+    "local_base={d} local_ops={s},{s},{s},{s},{s},{s},{s},{s}",
+    "projection_debug.local_op_base",
+    "projection_debug.local_op_tags[7]",
+  ]);
+
   const args = ["scripts/bench_status.cjs", "--trend-gate", "--substrate-gate"];
   const result = spawnSync(process.execPath, args, {
     cwd: root,
@@ -4852,7 +4870,7 @@ function checkDocs() {
     "upstream Python PyTorch",
     "Program/Session substrate",
     "zgml frontend surface",
-    "goal progress: Program/Session substrate=92% floor=65%; zgml frontend surface=100% floor=60%",
+    "goal progress: Program/Session substrate=93% floor=65%; zgml frontend surface=100% floor=60%",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -4889,11 +4907,14 @@ function checkDocs() {
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
-    "Program/Session performance substrate: ~92%",
+    "Program/Session performance substrate: ~93%",
     "That optional gate now also runs the native WebGPU LLaMA execution proofs for",
     "runtime quantized-weight rebinding, resource-bound decode/prefill handoff,",
     "long-prompt prefill, GQA long-prompt prefill, and a realistic head-width",
     "LayerNorm/RMSNorm descriptors can carry post-affine activations",
+    "Full-model F16 SmolLM FFN blocks now",
+    "form dense projection-pair commands for `matmul -> silu -> matmul -> mul`",
+    "prompt/decode command pressure `242/212`, `30` dense FFN pair commands",
     "A batched `RMSNorm+GELU -> Linear`",
     "sign-style `neg -> abs -> step` chains",
     "Common classifier/token-head `LogSoftmax` tails now",
