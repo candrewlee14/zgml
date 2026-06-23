@@ -1546,7 +1546,7 @@ const shader_source =
     \\    for (uint col = tid; col < p.N; col += QMATMUL_ROW_CHAIN_THREADS) {
     \\        uint linear = row * p.N + col;
     \\        float ew = row_values[col];
-    \\        ew_output[p.ew_dst_offset + linear] = ew;
+    \\        if (p.write_ew_output != 0) ew_output[p.ew_dst_offset + linear] = ew;
     \\        scaled_dst[p.scaled_dst_offset + linear] = ew * inv_rms * scale_src[p.scale_src_offset + col];
     \\    }
     \\}
