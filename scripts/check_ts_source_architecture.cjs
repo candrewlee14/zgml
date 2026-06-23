@@ -657,7 +657,7 @@ function checkPackageExports(errors) {
     "dispatchOnlyTrap",
     "dispatch_reduction_without_tiled_throughput",
     "const rowChainLowering = \"default_projection_chain_plus_row_chain_candidate_single_dispatch_tiled_row_chain\"",
-    "const requiredNextTarget = \"single_dispatch_tiled_qmatmul_row_chain_throughput\"",
+    "const requiredNextTarget = \"semantic_sublayer_or_two_phase_tile_parallel_row_chain\"",
     "const singleDispatchTrap = \"serial_n_tile_loop_without_cross_threadgroup_row_reduce\"",
     "const viableNextTarget = \"semantic_sublayer_or_two_phase_tile_parallel_row_chain\"",
     "`next=${requiredNextTarget}`",

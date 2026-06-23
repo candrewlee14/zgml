@@ -265,8 +265,10 @@ Current checked progress:
   `single_dispatch_trap=serial_n_tile_loop_without_cross_threadgroup_row_reduce`,
   and the benchmark JSON carries `qmatmul_row_chain_tiled_*` counters so the
   gate prints actual row groups, N tiles, serial tile loops, and elementwise
-  spills for the candidate. The gate points at
-  `viable_next=semantic_sublayer_or_two_phase_tile_parallel_row_chain`.
+  spills for the candidate. The gate now makes the real next target explicit:
+  `row_chain_next=semantic_sublayer_or_two_phase_tile_parallel_row_chain`.
+  The single-dispatch tiled kernel remains a diagnostic for the dispatch-only
+  trap, not the design center for the next performance pass.
   The frontier and q8 prompt candidate gates now rebuild benchmark binaries with `-Doptimize=ReleaseFast` before any no-rebuild rerun evidence.
   That sharper ReleaseFast microscope found the row-chain candidate can look
   ready in isolated frontier lanes (`projection_row_chain_candidate=ready`),

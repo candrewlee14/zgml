@@ -339,7 +339,7 @@ function frontierNextTarget(weakest) {
     return "semantic_sublayer_or_quantized_projection_chain";
   }
   if (weakest.label === "q8_0/prompt" && weakest.pressureTarget.startsWith("projection_row_chain:")) {
-    return "single_dispatch_tiled_qmatmul_row_chain_throughput";
+    return "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
   }
   if (weakest.label === "f16/decode" && weakest.pressureTarget === "dense_projection_chain:60") {
     return "semantic_sublayer_or_dense_projection_chain";

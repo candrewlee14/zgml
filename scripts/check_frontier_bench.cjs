@@ -15,7 +15,7 @@ const projectionRowChainDefaultSpeedupFloor = 1.10;
 const projectionRowChainMaxAbsDiffCeil = 0.02;
 const projectionRowChainLowering = "prompt_split_tiled_qmatmul_plus_rmsnorm";
 const projectionRowChainDiagnosticKernel = "single_dispatch_tiled_candidate";
-const projectionRowChainNextTarget = "single_dispatch_tiled_qmatmul_row_chain_throughput";
+const projectionRowChainNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
 const build = process.env.BENCH_FRONTIER_BUILD ?? "1";
 
 function positiveInt(value, label) {
