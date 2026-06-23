@@ -407,8 +407,9 @@ apply unary activation post-ops without materializing an extra dispatch. Focused
 ReleaseFast evidence on June 22, 2026 moved F16 SmolLM prompt/decode command
 pressure to `242/212`, with `30` dense FFN pair commands, `60` dense projection
 chains, and zero fallback ops. This is the preferred iteration pattern:
-discover shape misses with the narrow incremental Zig loops and debug
-microscopes, then promote only the ReleaseFast full-model evidence.
+discover shape misses with `npm run dev:zig:filter -- "<test name>"`, the
+narrow incremental Zig loops, and debug microscopes, then promote only the
+ReleaseFast full-model evidence.
 A focused PyTorch-parity pass then specialized the dense bias and bias+activation
 post-op loops so they branch once per fused command instead of inside each
 vector chunk, and made the PyTorch GELU comparison explicitly use

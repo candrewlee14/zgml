@@ -244,6 +244,12 @@ function checkScripts() {
   if (scripts["dev:zig:test:watch"] !== "zig build test -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
     errors.push("package.json dev:zig:test:watch must keep the incremental Zig watch test loop");
   }
+  if (scripts["dev:zig:filter"] !== "sh -c 'zig build test -Duse-metal=false -Duse-blas=false -Dtest-filter=\"$*\" -fincremental --summary failures' --") {
+    errors.push("package.json dev:zig:filter must keep the generic focused incremental Zig test-filter loop");
+  }
+  if (scripts["dev:zig:filter:watch"] !== "sh -c 'zig build test -Duse-metal=false -Duse-blas=false -Dtest-filter=\"$*\" -fincremental --watch --debounce 150 --summary line --error-style minimal_clear' --") {
+    errors.push("package.json dev:zig:filter:watch must keep the watched generic focused Zig test-filter loop");
+  }
   if (scripts["dev:zig:quick"] !== "zig build unit-tests -Duse-metal=false -Duse-blas=false -fincremental --summary failures") {
     errors.push("package.json dev:zig:quick must keep the fast native unit loop without optional backend linking");
   }
@@ -284,16 +290,26 @@ function checkScripts() {
   if (scripts["dev:zig:time-report"] !== "zig build unit-tests -Duse-metal=false -Duse-blas=false --time-report --summary failures") {
     errors.push("package.json dev:zig:time-report must expose Zig --time-report for compile-time bottleneck diagnosis");
   }
+  const buildZig = read("build.zig");
+  for (const needle of [
+    "const test_filter = b.option([]const u8, \"test-filter\", \"Run only Zig tests whose names match this substring\");",
+    ".test_filter = test_filter,",
+    ".filters = if (options.test_filter) |filter| &.{filter} else &.{},",
+  ]) {
+    if (!buildZig.includes(needle)) {
+      errors.push(`build.zig must apply Zig test-filter at test artifact construction for fast focused iteration: ${needle}`);
+    }
+  }
   if (scripts["dev:wasm:browser-llama"] !== "zig build ffi-wasm -fincremental --summary failures && npm run smoke:portable-ffi:browser-llama:run") {
     errors.push("package.json dev:wasm:browser-llama must keep the incremental Wasm build plus focused browser LLaMA rerun loop");
   }
   if (scripts["dev:wasm:browser-llama-families"] !== "zig build ffi-wasm -fincremental --summary failures && npm run smoke:portable-ffi:browser-llama-families:run") {
     errors.push("package.json dev:wasm:browser-llama-families must keep the incremental Wasm build plus representative browser LLaMA family rerun loop");
   }
-  if (scripts["dev:zig:metal-row-chain"] !== "zig build test -Duse-metal=true -fincremental --summary failures -- --test-filter \"metal backend exact command fuses qmatmul residual into row chain\"") {
+  if (scripts["dev:zig:metal-row-chain"] !== "zig build test -Duse-metal=true -Dtest-filter=\"metal backend exact command fuses qmatmul residual into row chain\" -fincremental --summary failures") {
     errors.push("package.json dev:zig:metal-row-chain must keep the focused incremental Metal row-chain kernel loop");
   }
-  if (scripts["dev:zig:metal-row-chain:watch"] !== "zig build test -Duse-metal=true -fincremental --watch --debounce 150 --summary line --error-style minimal_clear -- --test-filter \"metal backend exact command fuses qmatmul residual into row chain\"") {
+  if (scripts["dev:zig:metal-row-chain:watch"] !== "zig build test -Duse-metal=true -Dtest-filter=\"metal backend exact command fuses qmatmul residual into row chain\" -fincremental --watch --debounce 150 --summary line --error-style minimal_clear") {
     errors.push("package.json dev:zig:metal-row-chain:watch must keep the watched focused Metal row-chain kernel loop");
   }
   if (scripts["dev:perf:module-program"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && npm run build:package && BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {

@@ -10,6 +10,7 @@ pub const Options = struct {
     use_metal: bool = true,
     use_wgpu: bool = false,
     experimental_llama_wgpu_execution: bool = false,
+    test_filter: ?[]const u8 = null,
 };
 
 pub const Package = struct {
@@ -279,6 +280,7 @@ fn addCApi(
     const tests = b.addTest(.{
         .name = "zgml-c-api-tests",
         .root_module = mod,
+        .filters = if (options.test_filter) |filter| &.{filter} else &.{},
     });
     b.installArtifact(tests);
 
@@ -500,12 +502,14 @@ pub fn build(b: *std.Build) void {
     const use_metal = b.option(bool, "use-metal", "Enable Metal backend on macOS") orelse (target.result.os.tag == .macos);
     const use_wgpu = b.option(bool, "use-wgpu", "Enable wgpu-native dependency and probes") orelse false;
     const experimental_llama_wgpu_execution = b.option(bool, "experimental-llama-wgpu-execution", "Enable LLaMA-family native WebGPU execution; defaults to -Duse-wgpu=true and can be set false for resource-probe-only builds") orelse use_wgpu;
+    const test_filter = b.option([]const u8, "test-filter", "Run only Zig tests whose names match this substring");
 
     const build_opts = Options{
         .use_blas = use_blas,
         .use_metal = use_metal,
         .use_wgpu = use_wgpu,
         .experimental_llama_wgpu_execution = use_wgpu and experimental_llama_wgpu_execution,
+        .test_filter = test_filter,
     };
 
     _ = package(b, target, optimize, build_opts);
@@ -699,6 +703,7 @@ fn runTests(
     const public_test = b.addTest(.{
         .name = "zgml-tests",
         .root_module = zgml_pkg.zgml,
+        .filters = if (options.test_filter) |filter| &.{filter} else &.{},
     });
     linkConfiguredBackends(b, target, options, public_test, .{});
     b.installArtifact(public_test);
@@ -707,6 +712,7 @@ fn runTests(
     const internal_test = b.addTest(.{
         .name = "zgml-internal-tests",
         .root_module = internal_pkg.module,
+        .filters = if (options.test_filter) |filter| &.{filter} else &.{},
     });
     linkConfiguredBackends(b, target, options, internal_test, .{});
     b.installArtifact(internal_test);
@@ -715,21 +721,26 @@ fn runTests(
     const conformance_test = b.addTest(.{
         .name = "zgml-backend-conformance-tests",
         .root_module = conformance_pkg.module,
+        .filters = if (options.test_filter) |filter| &.{filter} else &.{},
     });
     linkConfiguredBackends(b, target, options, conformance_test, .{});
     b.installArtifact(conformance_test);
 
+    const public_run = b.addRunArtifact(public_test);
     const public_tests = b.step("public-tests", "Run public zgml API tests");
-    public_tests.dependOn(&b.addRunArtifact(public_test).step);
+    public_tests.dependOn(&public_run.step);
 
+    const internal_run = b.addRunArtifact(internal_test);
     const internal_tests = b.step("internal-tests", "Run internal zgml runtime tests");
-    internal_tests.dependOn(&b.addRunArtifact(internal_test).step);
+    internal_tests.dependOn(&internal_run.step);
 
+    const conformance_run = b.addRunArtifact(conformance_test);
     const conformance_tests = b.step("conformance-tests", "Run backend conformance tests");
-    conformance_tests.dependOn(&b.addRunArtifact(conformance_test).step);
+    conformance_tests.dependOn(&conformance_run.step);
 
+    const c_api_run = b.addRunArtifact(c_api_test);
     const c_api_tests = b.step("c-api-tests", "Run native C ABI tests");
-    c_api_tests.dependOn(&b.addRunArtifact(c_api_test).step);
+    c_api_tests.dependOn(&c_api_run.step);
 
     const tests = b.step("unit-tests", "Run public, internal, conformance, and C ABI zgml tests");
     tests.dependOn(public_tests);
