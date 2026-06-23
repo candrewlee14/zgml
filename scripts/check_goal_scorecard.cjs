@@ -578,7 +578,9 @@ function checkScripts() {
     "direct_linear_log_softmax",
     "directLinearLogSoftmaxShapeForSession",
     "executeDirectLinearLogSoftmaxStep",
+    "logSoftmaxRowsInPlaceLanes(16",
     "logSoftmaxRowsInPlace",
+    "}, input, output, true)",
     "direct_log_softmax_output",
   ]);
   requireIncludes(read("src/backend/program.zig"), "src/backend/program.zig", "dense linear bias command compression", [

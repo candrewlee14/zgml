@@ -5551,14 +5551,14 @@ fn executeDirectLinearStep(linear: *const TinyLinearSessionHandle, shape: Direct
     }
 }
 
-fn logSoftmaxRowsInPlace(values: []f32, M: usize, N: usize) void {
-    const VecT = @Vector(8, f32);
+fn logSoftmaxRowsInPlaceLanes(comptime lanes: usize, values: []f32, M: usize, N: usize) void {
+    const VecT = @Vector(lanes, f32);
     for (0..M) |row| {
         const out_row = values[row * N ..][0..N];
         var max_vec: VecT = @splat(-std.math.inf(f32));
         var i: usize = 0;
-        while (i + 8 <= N) : (i += 8) {
-            const v: VecT = out_row[i..][0..8].*;
+        while (i + lanes <= N) : (i += lanes) {
+            const v: VecT = out_row[i..][0..lanes].*;
             max_vec = @max(max_vec, v);
         }
         var max_val: f32 = @reduce(.Max, max_vec);
@@ -5568,8 +5568,8 @@ fn logSoftmaxRowsInPlace(values: []f32, M: usize, N: usize) void {
         const max_broadcast: VecT = @splat(max_val);
         var sum_vec: VecT = @splat(0);
         i = 0;
-        while (i + 8 <= N) : (i += 8) {
-            const v: VecT = out_row[i..][0..8].*;
+        while (i + lanes <= N) : (i += lanes) {
+            const v: VecT = out_row[i..][0..lanes].*;
             sum_vec += @exp(v - max_broadcast);
         }
         var sum_exp: f32 = @reduce(.Add, sum_vec);
@@ -5579,14 +5579,19 @@ fn logSoftmaxRowsInPlace(values: []f32, M: usize, N: usize) void {
         const log_denom = max_val + @log(sum_exp);
         const log_denom_vec: VecT = @splat(log_denom);
         i = 0;
-        while (i + 8 <= N) : (i += 8) {
-            const v: VecT = out_row[i..][0..8].*;
-            out_row[i..][0..8].* = v - log_denom_vec;
+        while (i + lanes <= N) : (i += lanes) {
+            const v: VecT = out_row[i..][0..lanes].*;
+            out_row[i..][0..lanes].* = v - log_denom_vec;
         }
         while (i < N) : (i += 1) {
             out_row[i] -= log_denom;
         }
     }
+}
+
+fn logSoftmaxRowsInPlace(values: []f32, M: usize, N: usize) void {
+    if (N % 16 == 0) return logSoftmaxRowsInPlaceLanes(16, values, M, N);
+    return logSoftmaxRowsInPlaceLanes(8, values, M, N);
 }
 
 fn executeDirectLinearLogSoftmaxStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearLogSoftmaxStepShape, input: [*]const f32, output: [*]f32) void {
@@ -5595,7 +5600,7 @@ fn executeDirectLinearLogSoftmaxStep(linear: *const TinyLinearSessionHandle, sha
         .N = shape.N,
         .K = shape.K,
         .has_bias = shape.has_bias,
-    }, input, output, false);
+    }, input, output, true);
     logSoftmaxRowsInPlace(output[0..linear.output_len], shape.M, shape.N);
 }
 

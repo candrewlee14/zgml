@@ -587,6 +587,14 @@ native/package artifacts once, use the focused `:run` reruns to check noisy
 microscope lanes quickly, and let hard parity reruns rebuild ReleaseFast native
 before claiming a PyTorch comparison result. Then run the full evidence gate
 before claiming a new SOTA/simple/perf state.
+The direct `Linear -> LogSoftmax` CPU tail now shares the batched-linear BLAS
+preference for its dense projection and uses a 16-wide vector log-softmax row
+kernel when row width permits. On the focused PyTorch gap microscope this moved
+the soft spot from roughly `0.81x` median / `0.84x` best to about `0.83x`
+median / `0.85x` best against PyTorch `2.12.1` for the current
+`log_softmax_classifier_batched` lane. That is incremental progress, not
+parity; the remaining gap is still the log-softmax row math and call overhead,
+not frontend architecture.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier
