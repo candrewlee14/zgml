@@ -513,6 +513,14 @@ rows, and the direct `Linear -> LogSoftmax` tail now vectorizes row
 max/sum/subtract work. The later hard parity rerun moved this from "best attempt
 can clear parity" to "required PyTorch parity is green"; further tiny-kernel
 work is still useful, but it is no longer the main plan blocker.
+A later microscope pass split the tiny CPU policy more carefully: plain batched
+direct `Linear` now lets the BLAS-backed path handle sufficiently batched small
+dense shapes (`M>=64,N<=64,K<=128`), while the fused `Linear -> LogSoftmax`
+tail keeps the hand-written small direct kernel because that tail regressed when
+the linear portion was forced through BLAS. In the focused PyTorch microscope
+this moved `linear_batched` from a noisy below-parity median to a measured
+`1.05x` median against PyTorch `2.12.1`, without changing the public Program
+plan or promoting the exploratory log-softmax lane into the hard parity set.
 The repo now exposes that inner loop directly:
 
 ```text

@@ -5505,9 +5505,14 @@ fn executeSmallDirectLinearBiasStepLanes(comptime lanes: usize, linear: *const T
     }
 }
 
-fn executeSmallDirectLinearBiasStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32) bool {
+fn shouldUseBlasForBatchedDirectLinear(shape: DirectLinearStepShape) bool {
+    return shape.M >= 64 and shape.N <= 64 and shape.K <= 128;
+}
+
+fn executeSmallDirectLinearBiasStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32, prefer_blas_for_batched: bool) bool {
     if (!shape.has_bias) return false;
     if (shape.M > 128 or shape.N > 64 or shape.K > 128) return false;
+    if (prefer_blas_for_batched and shouldUseBlasForBatchedDirectLinear(shape)) return false;
 
     if (shape.N % 16 == 0) {
         executeSmallDirectLinearBiasStepLanes(16, linear, shape, input, output);
@@ -5520,8 +5525,8 @@ fn executeSmallDirectLinearBiasStep(linear: *const TinyLinearSessionHandle, shap
     return false;
 }
 
-fn executeDirectLinearStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32) void {
-    if (executeSmallDirectLinearBiasStep(linear, shape, input, output)) return;
+fn executeDirectLinearStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearStepShape, input: [*]const f32, output: [*]f32, prefer_blas_for_batched: bool) void {
+    if (executeSmallDirectLinearBiasStep(linear, shape, input, output, prefer_blas_for_batched)) return;
 
     const input_slice = input[0..linear.input_len];
     const output_slice = output[0..linear.output_len];
@@ -5590,7 +5595,7 @@ fn executeDirectLinearLogSoftmaxStep(linear: *const TinyLinearSessionHandle, sha
         .N = shape.N,
         .K = shape.K,
         .has_bias = shape.has_bias,
-    }, input, output);
+    }, input, output, false);
     logSoftmaxRowsInPlace(output[0..linear.output_len], shape.M, shape.N);
 }
 
@@ -5610,7 +5615,7 @@ export fn zgml_session_step_direct(session: ?*zgml_session, input_ptr: ?[*]const
     if (linear.session.bindings.step_inputs.len != 1 or linear.session.bindings.step_outputs.len != 1) return status(.unsupported);
     if (p.backend == backend_cpu) {
         if (directLinearShapeForSession(s, linear)) |shape| {
-            executeDirectLinearStep(linear, shape, input, output);
+            executeDirectLinearStep(linear, shape, input, output, true);
             cpu_mod.recordDirectLinearRuntimeProfile(linear.session.program_handle, linear.session.runtime_handle);
             return status(.ok);
         }
