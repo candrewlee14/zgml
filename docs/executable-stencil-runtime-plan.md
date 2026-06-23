@@ -493,6 +493,7 @@ npm run bench:frontier:row-chain:run   # rerun only row-chain frontier labels wi
 npm run bench:q8-prompt-candidate      # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
 npm run bench:q8-prompt-candidate:run  # rerun Q8 prompt candidate evidence without rebuilding artifacts
 npm run bench:ggml:parity:run          # rerun hard ggml parity without rebuilding artifacts
+zig build -Doptimize=ReleaseFast bench-build && ./zig-out/bin/bench-llama-smollm ignored 128 1 1 --stencil-only --debug-row-chain
 ```
 
 These are not substitutes for `bench:pytorch:parity`, `bench:ggml:parity`, or
@@ -502,6 +503,10 @@ proof. The practical workflow is: use Zig `-fincremental`/`--watch` and
 focused benchmark keys while changing hot code, build the native/package
 artifacts once, use the `:run` parity reruns to check noisy hard gates quickly,
 then run the full evidence gate before claiming a new SOTA/simple/perf state.
+The model-free stencil-only debug microscope now also prints both decode and
+prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
+hash contract, so a stale decode hash no longer hides the prompt-side frontier
+shape needed for Q8 projection-chain work.
 Focused module Program benchmarks also build the native C ABI in ReleaseFast
 first, so microscope results do not silently compare against a stale Debug
 dylib. Frontier, Q8 prompt candidate, and ggml comparison rebuild commands now

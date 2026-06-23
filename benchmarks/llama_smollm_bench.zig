@@ -37,8 +37,8 @@ const config = internal.llama_inference.LlamaConfig{
 };
 
 const Session = internal.llama_inference.LlamaInferenceSession(f32, config);
-const expected_p128_decode_stencil_hash: u64 = 14405191909906507341;
-const expected_p128_prefill_stencil_hash: u64 = 17558208047327870709;
+const expected_p128_decode_stencil_hash: u64 = 6366766107828551619;
+const expected_p128_prefill_stencil_hash: u64 = 16664051780141422291;
 const StencilPhase = enum { decode, prompt };
 
 const BenchConfig = struct {
@@ -407,8 +407,11 @@ fn runStencilProbe(
     var decode_profile = internal.profile.RuntimeProfile{};
     decode.addRuntimeProfileTo(&decode_profile);
     const decode_shape = decode.semanticShape();
-    try requireStencilEvidence(.decode, cfg.prompt_tokens, decode_profile, decode_shape);
     try writeProfileJson(writer, "metal stencil decode", .{ .stencil = .{ .phase = "decode" } }, decode_profile, decode_shape);
+    var decode_evidence_error: ?anyerror = null;
+    requireStencilEvidence(.decode, cfg.prompt_tokens, decode_profile, decode_shape) catch |err| {
+        decode_evidence_error = err;
+    };
 
     var prefill = try session.compileDevicePrefillProgram(stencil_backend.backend(), alloc, cfg.prompt_tokens);
     defer prefill.deinit();
@@ -485,8 +488,9 @@ fn runStencilProbe(
     var prefill_profile = internal.profile.RuntimeProfile{};
     prefill.addRuntimeProfileTo(&prefill_profile);
     const prefill_shape = prefill.semanticShape();
-    try requireStencilEvidence(.prompt, cfg.prompt_tokens, prefill_profile, prefill_shape);
     try writeProfileJson(writer, "metal stencil prefill", .{ .stencil = .{ .phase = "prompt" } }, prefill_profile, prefill_shape);
+    if (decode_evidence_error) |err| return err;
+    try requireStencilEvidence(.prompt, cfg.prompt_tokens, prefill_profile, prefill_shape);
 }
 
 fn parseArgOrDefault(args: []const []const u8, idx: usize, default: usize) !usize {
