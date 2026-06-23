@@ -28,6 +28,51 @@ const max_dispatch_ops: usize = 3;
 const max_attention_seq_kv: u32 = 2048;
 const max_attention_d_head: u32 = 256;
 const storage_buffer_binding_alignment: u64 = 256;
+const wgsl_unary_helpers =
+    \\fn gelu(x: f32) -> f32 {
+    \\  let c = 0.7978845608f * (x + 0.044715f * x * x * x);
+    \\  let e2c = exp(c + c);
+    \\  return 0.5f * x * (1.0f + (e2c - 1.0f) / (e2c + 1.0f));
+    \\}
+    \\
+    \\fn sgn(x: f32) -> f32 {
+    \\  if (x > 0.0f) {
+    \\    return 1.0f;
+    \\  }
+    \\  if (x < 0.0f) {
+    \\    return -1.0f;
+    \\  }
+    \\  return 0.0f;
+    \\}
+    \\
+    \\fn step_value(x: f32) -> f32 {
+    \\  return select(0.0f, 1.0f, x > 0.0f);
+    \\}
+    \\
+    \\fn apply_unary(op: u32, x: f32) -> f32 {
+    \\  switch (op) {
+    \\    case 3u: { return -x; }
+    \\    case 4u: { return abs(x); }
+    \\    case 5u: { return sgn(x); }
+    \\    case 6u: { return step_value(x); }
+    \\    case 7u: { return max(x, 0.0f); }
+    \\    case 8u: { return sqrt(x); }
+    \\    case 9u: { return 1.0f / x; }
+    \\    case 10u: { return exp(x); }
+    \\    case 11u: { return log(x); }
+    \\    case 12u: { return gelu(x); }
+    \\    case 13u: { return x * x; }
+    \\    case 14u: { return 1.0f / (1.0f + exp(-x)); }
+    \\    case 15u: { return x / (1.0f + exp(-x)); }
+    \\    case 16u: { return tanh(x); }
+    \\    case 39u: { return 1.0f / (1.0f + exp(-x)); }
+    \\    case 40u: { return x / (1.0f + exp(-x)); }
+    \\    case 41u: { return tanh(x); }
+    \\    default: { return x; }
+    \\  }
+    \\}
+    \\
+;
 const wgsl_linear =
     \\struct Values {
     \\  data: array<f32>,
@@ -869,6 +914,7 @@ const wgsl_qmatmul_elementwise =
     \\  return f32(i32(byte));
     \\}
     \\
+++ wgsl_unary_helpers ++
     \\@compute @workgroup_size(64)
     \\fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     \\  let idx = gid.x;
@@ -892,6 +938,8 @@ const wgsl_qmatmul_elementwise =
     \\    value = select(projected + other, other + projected, params.is_swapped != 0u);
     \\  } else if (params.op == 2u) {
     \\    value = select(projected * other, other * projected, params.is_swapped != 0u);
+    \\  } else {
+    \\    value = apply_unary(params.op, projected);
     \\  }
     \\  output.data[params.dst_offset + idx] = value;
     \\}
@@ -1050,6 +1098,7 @@ const wgsl_qmatvec_elementwise =
     \\  return f32(i32(byte));
     \\}
     \\
+++ wgsl_unary_helpers ++
     \\@compute @workgroup_size(64)
     \\fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     \\  let col = gid.x;
@@ -1069,6 +1118,8 @@ const wgsl_qmatvec_elementwise =
     \\    value = select(projected + other, other + projected, params.is_swapped != 0u);
     \\  } else if (params.op == 2u) {
     \\    value = select(projected * other, other * projected, params.is_swapped != 0u);
+    \\  } else {
+    \\    value = apply_unary(params.op, projected);
     \\  }
     \\  output.data[params.dst_offset + col] = value;
     \\}
@@ -5983,9 +6034,10 @@ fn detectQMatmulElementwise(program: backend_mod.DeviceProgram) ?QMatmulElementw
     if (!program_mod.qmatmulElementwiseSidecarCompatible(q, ew)) return null;
     if (q.M <= 1 or q.N == 0 or q.K == 0) return null;
     const q_is_src0 = ew.src0 == q.dst and ew.src0_offset == q.dst_offset;
-    const secondary_buf = if (q_is_src0) ew.src1 else ew.src0;
-    const secondary_offset = if (q_is_src0) ew.src1_offset else ew.src0_offset;
-    if (secondary_buf == q.dst or ew.dst == q.input or ew.dst == secondary_buf) return null;
+    const secondary_buf = if (ew.op.isBinary()) (if (q_is_src0) ew.src1 else ew.src0) else q.input;
+    const secondary_offset = if (ew.op.isBinary()) (if (q_is_src0) ew.src1_offset else ew.src0_offset) else q.input_offset;
+    if (ew.op.isBinary() and secondary_buf == q.dst) return null;
+    if (ew.dst == q.input or (ew.op.isBinary() and ew.dst == secondary_buf)) return null;
     const op_code = elementwiseOpCode(ew.op) orelse return null;
     const qidx: usize = q.weight_idx;
     if (qidx >= program.qweights.len) return null;
@@ -6031,9 +6083,10 @@ fn detectQMatvecElementwise(program: backend_mod.DeviceProgram) ?QMatvecElementw
     };
     if (!program_mod.qmatvecElementwiseSidecarCompatible(q, ew)) return null;
     const q_is_src0 = ew.src0 == q.dst and ew.src0_offset == q.dst_offset;
-    const secondary_buf = if (q_is_src0) ew.src1 else ew.src0;
-    const secondary_offset = if (q_is_src0) ew.src1_offset else ew.src0_offset;
-    if (secondary_buf == q.dst or ew.dst == q.input or ew.dst == secondary_buf) return null;
+    const secondary_buf = if (ew.op.isBinary()) (if (q_is_src0) ew.src1 else ew.src0) else q.input;
+    const secondary_offset = if (ew.op.isBinary()) (if (q_is_src0) ew.src1_offset else ew.src0_offset) else q.input_offset;
+    if (ew.op.isBinary() and secondary_buf == q.dst) return null;
+    if (ew.dst == q.input or (ew.op.isBinary() and ew.dst == secondary_buf)) return null;
     const op_code = elementwiseOpCode(ew.op) orelse return null;
     if (q.N == 0 or q.K == 0) return null;
     const qidx: usize = q.weight_idx;
@@ -7728,6 +7781,85 @@ test "wgpu backend configured qmatmul elementwise supports host and resource bin
     try std.testing.expectEqual(@as(u64, 3), rt.backend_dispatch_count);
 }
 
+test "wgpu backend configured qmatmul unary elementwise executes silu" {
+    if (!options.use_wgpu) return error.SkipZigTest;
+
+    var backend = WgpuBackend.init(std.testing.allocator);
+    defer backend.deinit();
+    const be = backend.backend();
+
+    const qdata = [_]i8{
+        1, 0, 0,
+        0, 1, 0,
+        0, 0, 1,
+    };
+    const scales = [_]f32{1};
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{
+        .data = &qdata,
+        .scales = &scales,
+        .rows = 3,
+        .cols = 3,
+        .block_size = 9,
+    }};
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{
+            .dst = 1,
+            .input = 0,
+            .weight_idx = 0,
+            .M = 2,
+            .N = 3,
+            .K = 3,
+            .input_row_stride = 3,
+            .dst_row_stride = 3,
+        } },
+        .{ .elementwise = .{
+            .op = .silu,
+            .dst = 2,
+            .src0 = 1,
+            .src1 = 1,
+            .n = 6,
+        } },
+    };
+    const buffer_sizes = [_]usize{ 6, 6, 6 };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = buffer_sizes.len,
+        .buffer_sizes = &buffer_sizes,
+        .initial_uploads = &.{},
+        .qweights = &qweights,
+    };
+
+    try std.testing.expect(be.supportsProgram(program));
+    const dispatch_plan = inspectDispatchPlan(program);
+    try std.testing.expect(dispatch_plan.supported);
+    try std.testing.expectEqual(@as(u64, 1), dispatch_plan.dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), dispatch_plan.family_counts.qmatmul_elementwise);
+
+    const handle = be.compileProgram(program) orelse return error.SkipZigTest;
+    defer be.freeProgram(handle);
+    const runtime = be.bindProgram(handle) orelse return error.SkipZigTest;
+    defer be.freeBindings(handle, runtime);
+
+    var input = [_]f32{ 1, 2, 3, -1, 0.5, 4 };
+    var output = [_]f32{ -1, -1, -1, -1, -1, -1 };
+    const inputs = [_]backend_mod.ProgramIO{.host(0, 0, @ptrCast(&input), input.len * @sizeOf(f32))};
+    const outputs = [_]backend_mod.ProgramIO{.host(2, 0, @ptrCast(&output), output.len * @sizeOf(f32))};
+
+    try std.testing.expect(be.configureBindings(handle, runtime, &.{}, &inputs, &outputs));
+    try std.testing.expect(be.uploadQWeights(handle, runtime, &qweights));
+    be.executeConfiguredBindings(handle, runtime, true);
+
+    for (input, output) |x, got| {
+        const want = x / (1.0 + @exp(-x));
+        try std.testing.expectApproxEqAbs(want, got, 0.001);
+    }
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeBindingsProfileTo(handle, runtime, &rt);
+    try std.testing.expectEqual(@as(u64, 2), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+}
+
 test "wgpu backend runtime bindings own independent qweight state" {
     if (!options.use_wgpu) return error.SkipZigTest;
 
@@ -8428,6 +8560,83 @@ test "wgpu backend configured qmatvec elementwise supports host and resource bin
     try std.testing.expectEqual(@as(u32, 3), rt.call_count);
     try std.testing.expectEqual(@as(u64, 1), rt.sync_count);
     try std.testing.expectEqual(@as(u64, 6), rt.backend_op_count);
+}
+
+test "wgpu backend configured qmatvec unary elementwise executes silu" {
+    if (!options.use_wgpu) return error.SkipZigTest;
+
+    var backend = WgpuBackend.init(std.testing.allocator);
+    defer backend.deinit();
+    const be = backend.backend();
+
+    const qdata = [_]i8{
+        1, 2, 3,
+        4, 5, 6,
+    };
+    const scales = [_]f32{1};
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{
+        .data = &qdata,
+        .scales = &scales,
+        .rows = 2,
+        .cols = 3,
+        .block_size = 6,
+    }};
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{
+            .dst = 2,
+            .input = 0,
+            .weight_idx = 0,
+            .M = 1,
+            .N = 3,
+            .K = 2,
+        } },
+        .{ .elementwise = .{
+            .op = .silu,
+            .dst = 3,
+            .src0 = 2,
+            .src1 = 2,
+            .n = 3,
+        } },
+    };
+    const buffer_sizes = [_]usize{ 2, 3, 3, 3 };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = buffer_sizes.len,
+        .buffer_sizes = &buffer_sizes,
+        .initial_uploads = &.{},
+        .qweights = &qweights,
+    };
+
+    try std.testing.expect(be.supportsProgram(program));
+    const dispatch_plan = inspectDispatchPlan(program);
+    try std.testing.expect(dispatch_plan.supported);
+    try std.testing.expectEqual(@as(u64, 1), dispatch_plan.dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), dispatch_plan.family_counts.qmatvec_elementwise);
+
+    const handle = be.compileProgram(program) orelse return error.SkipZigTest;
+    defer be.freeProgram(handle);
+    const runtime = be.bindProgram(handle) orelse return error.SkipZigTest;
+    defer be.freeBindings(handle, runtime);
+
+    var input = [_]f32{ 2, 3 };
+    var output = [_]f32{ -1, -1, -1 };
+    const projected = [_]f32{ 14, 19, 24 };
+    const inputs = [_]backend_mod.ProgramIO{.host(0, 0, @ptrCast(&input), input.len * @sizeOf(f32))};
+    const outputs = [_]backend_mod.ProgramIO{.host(3, 0, @ptrCast(&output), output.len * @sizeOf(f32))};
+
+    try std.testing.expect(be.configureBindings(handle, runtime, &.{}, &inputs, &outputs));
+    try std.testing.expect(be.uploadQWeights(handle, runtime, &qweights));
+    be.executeConfiguredBindings(handle, runtime, true);
+
+    for (projected, output) |x, got| {
+        const want = x / (1.0 + @exp(-x));
+        try std.testing.expectApproxEqAbs(want, got, 0.001);
+    }
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeBindingsProfileTo(handle, runtime, &rt);
+    try std.testing.expectEqual(@as(u64, 2), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
 }
 
 test "wgpu backend configured qmatvec fused elementwise supports host and resource bindings" {
