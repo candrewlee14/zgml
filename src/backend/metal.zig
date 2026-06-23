@@ -4972,7 +4972,7 @@ pub const MetalBackend = struct {
     alloc: std.mem.Allocator = std.heap.page_allocator,
     fine_grained_program_dispatch: bool = false,
     region_program_dispatch: bool = false,
-    command_policy: program_mod.CommandStreamPolicy = program_mod.CommandStreamPolicy.default(),
+    command_policy: program_mod.CommandStreamPolicy = program_mod.CommandStreamPolicy.promptProjectionRowChainCommand(),
 
     pub fn init() !MetalBackend {
         return initWithAllocator(std.heap.page_allocator);
