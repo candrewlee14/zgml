@@ -611,6 +611,13 @@ native/package artifacts once, use the focused `:run` reruns to check noisy
 microscope lanes quickly, and let hard parity reruns rebuild ReleaseFast native
 before claiming a PyTorch comparison result. Then run the full evidence gate
 before claiming a new SOTA/simple/perf state.
+The default edit loop should stay fast: start with `npm run dev:zig:quick` for
+no-Metal/no-BLAS unit coverage, narrow failures with
+`npm run dev:zig:filter -- "<test substring>"`, keep `npm run dev:zig:ffi` for
+native ABI work, and only escalate to `dev:zig:bench`, focused PyTorch
+microscopes, and `check:goal-scorecard` after the local hypothesis is shaped.
+Watch variants of those commands are the preferred long-running loop when
+iterating on a kernel or runtime contract.
 The direct `Linear -> LogSoftmax` CPU tail now shares the batched-linear BLAS
 preference for its dense projection and uses a 16-wide vector log-softmax row
 kernel when row width permits. On the focused PyTorch gap microscope this moved
@@ -629,10 +636,11 @@ shape, cache-group shape, and nonzero runtime/command stencil hashes without
 waiting for a hard ggml artifact to pass on a quiet machine.
 Focused module Program benchmarks also build the native C ABI in ReleaseFast
 first, so microscope results do not silently compare against a stale Debug
-dylib. The module Program bench itself now mirrors the PyTorch freshness rule:
-direct `:run` reruns check `zig-out/lib/libzgml_c.*` against native sources,
-print `native=fresh` in benchmark output, and require
-`BENCH_MODULE_PROGRAM_ALLOW_STALE_NATIVE=1` for an explicitly stale diagnostic.
+dylib. `scripts/native_freshness.cjs` owns the shared freshness policy for both
+the module Program and PyTorch comparison benches: direct `:run` reruns check
+`zig-out/lib/libzgml_c.*` against native sources, print `native=fresh` in
+benchmark output, and require bench-specific `*_ALLOW_STALE_NATIVE=1` flags for
+explicitly stale diagnostics.
 Frontier, Q8 prompt candidate, and ggml comparison rebuild commands now
 also force `-Doptimize=ReleaseFast`; their `:run` variants are explicitly
 artifact reruns after that benchmark-grade build, except `bench:ggml:parity:run`

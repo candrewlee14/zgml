@@ -1,8 +1,9 @@
 "use strict";
 
-const { existsSync, readdirSync, statSync } = require("node:fs");
+const { existsSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const { join, resolve } = require("node:path");
+const { verifyFreshNativeLibrary } = require("./native_freshness.cjs");
 
 const root = resolve(__dirname, "..");
 const nodeEntry = join(root, "dist", "node.cjs");
@@ -11,7 +12,6 @@ const python = process.env.PYTHON || (existsSync(venvPython) ? venvPython : "pyt
 const requireParity = process.env.BENCH_PYTORCH_REQUIRE_PARITY === "1";
 const installTorch = process.env.BENCH_PYTORCH_INSTALL === "1";
 const minRatio = Number(process.env.BENCH_PYTORCH_MIN_RATIO || "1.0");
-const allowStaleNative = process.env.BENCH_PYTORCH_ALLOW_STALE_NATIVE === "1";
 
 function positiveInt(value, name) {
   const parsed = Number(value);
@@ -53,49 +53,6 @@ function selectedComparisonKeys() {
   return requested;
 }
 const activeComparisonKeys = selectedComparisonKeys();
-
-function nativeLibraryPath() {
-  if (process.env.ZGML_C_DYLIB) return resolve(root, process.env.ZGML_C_DYLIB);
-  const extension = process.platform === "darwin" ? "dylib" : process.platform === "win32" ? "dll" : "so";
-  return join(root, "zig-out", "lib", `libzgml_c.${extension}`);
-}
-
-function newestMtimeMs(paths) {
-  let newest = { path: "", mtimeMs: 0 };
-  const visit = (path) => {
-    if (!existsSync(path)) return;
-    const stat = statSync(path);
-    if (stat.isDirectory()) {
-      for (const entry of readdirSync(path)) visit(join(path, entry));
-      return;
-    }
-    if (!path.endsWith(".zig") && !path.endsWith(".h") && !path.endsWith(".metal")) return;
-    if (stat.mtimeMs > newest.mtimeMs) newest = { path, mtimeMs: stat.mtimeMs };
-  };
-  for (const path of paths) visit(path);
-  return newest;
-}
-
-function verifyFreshNativeLibrary() {
-  const libPath = nativeLibraryPath();
-  if (!existsSync(libPath)) {
-    throw new Error(`pytorch comparison requires native library ${libPath}; run npm run build:native:release first`);
-  }
-  const libStat = statSync(libPath);
-  const newestSource = newestMtimeMs([join(root, "build.zig"), join(root, "src")]);
-  if (newestSource.mtimeMs > libStat.mtimeMs + 1) {
-    const message = `pytorch comparison native library is older than Zig source (${libPath} < ${newestSource.path}); run npm run build:native:release or set BENCH_PYTORCH_ALLOW_STALE_NATIVE=1 for an explicitly stale diagnostic`;
-    if (!allowStaleNative) throw new Error(message);
-    console.warn(`warning: ${message}`);
-  }
-  return {
-    libPath,
-    libMtimeMs: libStat.mtimeMs,
-    newestSourcePath: newestSource.path,
-    newestSourceMtimeMs: newestSource.mtimeMs,
-    stale: newestSource.mtimeMs > libStat.mtimeMs + 1,
-  };
-}
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -249,7 +206,11 @@ print(json.dumps({key: bench(globals()[key], bench_iterations[key]) for key in a
 if (!existsSync(nodeEntry)) {
   throw new Error("pytorch comparison requires dist/node.cjs; run npm run build:package first");
 }
-const nativeFreshness = verifyFreshNativeLibrary();
+const nativeFreshness = verifyFreshNativeLibrary({
+  root,
+  label: "pytorch comparison",
+  allowStaleEnv: "BENCH_PYTORCH_ALLOW_STALE_NATIVE",
+});
 
 let pytorchVersion = hasPythonTorch();
 if (!pytorchVersion && installTorch) {
@@ -316,7 +277,7 @@ const parts = [
   `python=${python}`,
   `pytorch=${pytorchVersion}`,
   `uv_install=${installTorch ? "enabled" : "disabled"}`,
-  `native=${nativeFreshness.stale ? "stale" : "fresh"}`,
+  `native=${nativeFreshness.label}`,
   "gelu=approximate-tanh",
   `required=${requireParity ? "yes" : "no"}`,
   `floor=${minRatio.toFixed(2)}x`,

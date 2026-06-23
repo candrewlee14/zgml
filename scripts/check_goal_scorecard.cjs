@@ -368,9 +368,9 @@ function checkScripts() {
     "BENCH_PYTORCH_KEYS",
     "BENCH_PYTORCH_ACTIVE_KEYS",
     "BENCH_PYTORCH_ALLOW_STALE_NATIVE",
-    "function verifyFreshNativeLibrary()",
-    "pytorch comparison native library is older than Zig source",
-    "native=${nativeFreshness.stale ? \"stale\" : \"fresh\"}",
+    "require(\"./native_freshness.cjs\")",
+    "allowStaleEnv: \"BENCH_PYTORCH_ALLOW_STALE_NATIVE\"",
+    "native=${nativeFreshness.label}",
     "const attempts = positiveInt(process.env.BENCH_PYTORCH_ATTEMPTS || (requireParity ? \"3\" : \"1\"), \"BENCH_PYTORCH_ATTEMPTS\")",
     "const defaultComparisonKeys = [",
     "const exploratoryComparisonKeys = [",
@@ -1155,9 +1155,9 @@ function checkScripts() {
   requireIncludes(read("scripts/check_module_program_bench.cjs"), "scripts/check_module_program_bench.cjs", "TS frontend module Program performance gate", [
     "module Program bench gate:",
     "BENCH_MODULE_PROGRAM_ALLOW_STALE_NATIVE",
-    "function verifyFreshNativeLibrary()",
-    "module Program bench native library is older than Zig source",
-    "native=${nativeFreshness.stale ? \"stale\" : \"fresh\"}",
+    "require(\"./native_freshness.cjs\")",
+    "allowStaleEnv: \"BENCH_MODULE_PROGRAM_ALLOW_STALE_NATIVE\"",
+    "native=${nativeFreshness.label}",
     "const benchSpecs = [",
     "const expectedKeys = Object.freeze([",
     "function requireBenchSpecCoverage(specs)",
@@ -1300,6 +1300,13 @@ function checkScripts() {
     "session.hotPathPlan({ input, output })",
     "hotPathBlockers.length !== 0",
     "hot=allocation-free",
+  ]);
+  requireIncludes(read("scripts/native_freshness.cjs"), "scripts/native_freshness.cjs", "shared native benchmark freshness policy", [
+    "function verifyFreshNativeLibrary(options)",
+    "function newestNativeSourceMtimeMs(paths)",
+    "function nativeLibraryPath(root)",
+    "native library is older than Zig source",
+    "module.exports = {",
   ]);
   requireIncludes(read("src/ts/smokes/package_smoke_core.ts"), "src/ts/smokes/package_smoke_core.ts", "portable KernelPlan executable evidence assertions", [
     "const kernelPlanPolicy = require([\"..\", \"kernel_plan.cjs\"].join(\"/\"))",

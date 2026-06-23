@@ -394,9 +394,9 @@ function checkPackageExports(errors) {
   const moduleProgramBenchSource = readSource(path.join("scripts", "check_module_program_bench.cjs"));
   for (const required of [
     "BENCH_MODULE_PROGRAM_ALLOW_STALE_NATIVE",
-    "function verifyFreshNativeLibrary()",
-    "module Program bench native library is older than Zig source",
-    "native=${nativeFreshness.stale ? \"stale\" : \"fresh\"}",
+    "require(\"./native_freshness.cjs\")",
+    "allowStaleEnv: \"BENCH_MODULE_PROGRAM_ALLOW_STALE_NATIVE\"",
+    "native=${nativeFreshness.label}",
   ]) {
     if (!moduleProgramBenchSource.includes(required)) {
       errors.push(`scripts/check_module_program_bench.cjs must keep stale-native protection for module Program evidence: ${required}`);
@@ -429,12 +429,29 @@ function checkPackageExports(errors) {
     "BENCH_MODULE_PROGRAM_KEYS: activeComparisonKeys.join(\",\")",
     "const zgmlTimings = parseZgmlModuleBench(run(process.execPath, [\"scripts/check_module_program_bench.cjs\"], { env: moduleBenchEnv }), activeComparisonKeys)",
     "BENCH_PYTORCH_ALLOW_STALE_NATIVE",
-    "function verifyFreshNativeLibrary()",
-    "pytorch comparison native library is older than Zig source",
-    "native=${nativeFreshness.stale ? \"stale\" : \"fresh\"}",
+    "require(\"./native_freshness.cjs\")",
+    "allowStaleEnv: \"BENCH_PYTORCH_ALLOW_STALE_NATIVE\"",
+    "native=${nativeFreshness.label}",
   ]) {
     if (!pytorchComparisonSource.includes(required)) {
       errors.push(`scripts/check_pytorch_comparison.cjs must keep PyTorch comparisons filtered to active child module bench keys: ${required}`);
+    }
+  }
+  const nativeFreshnessSource = readSource(path.join("scripts", "native_freshness.cjs"));
+  for (const required of [
+    "function verifyFreshNativeLibrary(options)",
+    "function newestNativeSourceMtimeMs(paths)",
+    "function nativeLibraryPath(root)",
+    "native library is older than Zig source",
+    "module.exports = {",
+  ]) {
+    if (!nativeFreshnessSource.includes(required)) {
+      errors.push(`scripts/native_freshness.cjs must own shared benchmark native freshness policy: ${required}`);
+    }
+  }
+  for (const [label, source] of [["module Program bench", moduleProgramBenchSource], ["PyTorch comparison", pytorchComparisonSource]]) {
+    for (const forbidden of ["function newestNativeSourceMtimeMs(", "function nativeLibraryPath("]) {
+      if (source.includes(forbidden)) errors.push(`${label} must delegate benchmark native freshness policy to scripts/native_freshness.cjs`);
     }
   }
   if (pytorchComparisonSource.includes("const moduleBenchEnv = process.env.BENCH_PYTORCH_KEYS")) {
