@@ -548,7 +548,6 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
       const rank = op.inputShape ? op.inputShape.length : 0;
       const axis = frontendAxisForRank(attrs.dim, rank);
       const nativeAxis = nativeAxisForFrontendAxis(axis, rank);
-      if (rank === 3 && op.inputShape[0] !== 1) return null;
       if (axis < 0 || axis >= rank || nativeAxis !== 0) return null;
       const kind = op.op === "sum"
         ? moduleOpIds.reduceSum

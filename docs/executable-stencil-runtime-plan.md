@@ -235,10 +235,10 @@ Current checked progress:
   `min(dim)` now lowers through a first-class `reduceMin` descriptor and a
   direct backend reduce-min command on reference CPU, Metal, and WGPU instead
   of exposing or executing its old `neg -> max -> neg` decomposition.
-  singleton-envelope rank-3 last-axis reductions now also compile and execute
+  batched rank-3 last-axis reductions now also compile and execute
   as native Program kernels for `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin`,
-  while non-envelope rank-3 reductions remain honestly unsupported instead of
-  crossing the C ABI with a shape the native Program compiler rejects. The
+  so `[B, T, C]` reductions over the feature axis stay on the native Program
+  path instead of falling back through compatibility lanes. The
   optional native WebGPU validation gate now also runs LLaMA execution proofs
   for runtime quantized-weight rebinding, resource-bound decode/prefill
   handoff, long-prompt prefill, GQA long-prompt prefill, and realistic

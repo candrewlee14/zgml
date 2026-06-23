@@ -3247,7 +3247,7 @@ function expectZeroParameterProgramEvidence(adapter: Record<string, any>, label:
 
 function expectReductionProgramEvidence(adapter: Record<string, any>, label: string) {
   const input = adapter.tensor([1, 3, 2, 4, 0, -1], [2, 3]);
-  const cube = adapter.tensor([1, 3, 2, 4, 0, -1], [1, 2, 3]);
+  const batchedCube = adapter.tensor([1, 3, 2, 4, 0, -1, 10, 20, 30, 3, 2, 1], [2, 2, 3]);
   const compiledCases = [
     { name: "sum-last", module: adapter.nn.sum(-1), expectedShape: "2x1", expectedKernels: "sum" },
     { name: "mean-batch", module: adapter.nn.mean(0), expectedShape: "1x3", expectedKernels: "transpose|mean|transpose" },
@@ -3259,13 +3259,13 @@ function expectReductionProgramEvidence(adapter: Record<string, any>, label: str
     { name: "argmin-last", module: adapter.nn.argmin(-1), expectedShape: "2x1", expectedKernels: "argmin" },
   ];
   const rank3CompiledCases = [
-    { name: "sum-rank3-last", module: adapter.nn.sum(-1), expectedShape: "1x2x1", expectedKernels: "sum" },
-    { name: "mean-rank3-last", module: adapter.nn.mean(-1), expectedShape: "1x2x1", expectedKernels: "mean" },
-    { name: "prod-rank3-last", module: adapter.nn.prod(-1), expectedShape: "1x2x1", expectedKernels: "prod" },
-    { name: "max-rank3-last", module: adapter.nn.max(-1), expectedShape: "1x2x1", expectedKernels: "max" },
-    { name: "min-rank3-last", module: adapter.nn.min(-1), expectedShape: "1x2x1", expectedKernels: "min" },
-    { name: "argmax-rank3-last", module: adapter.nn.argmax(-1), expectedShape: "1x2x1", expectedKernels: "argmax" },
-    { name: "argmin-rank3-last", module: adapter.nn.argmin(-1), expectedShape: "1x2x1", expectedKernels: "argmin" },
+    { name: "sum-rank3-batched-last", module: adapter.nn.sum(-1), expectedShape: "2x2x1", expectedKernels: "sum" },
+    { name: "mean-rank3-batched-last", module: adapter.nn.mean(-1), expectedShape: "2x2x1", expectedKernels: "mean" },
+    { name: "prod-rank3-batched-last", module: adapter.nn.prod(-1), expectedShape: "2x2x1", expectedKernels: "prod" },
+    { name: "max-rank3-batched-last", module: adapter.nn.max(-1), expectedShape: "2x2x1", expectedKernels: "max" },
+    { name: "min-rank3-batched-last", module: adapter.nn.min(-1), expectedShape: "2x2x1", expectedKernels: "min" },
+    { name: "argmax-rank3-batched-last", module: adapter.nn.argmax(-1), expectedShape: "2x2x1", expectedKernels: "argmax" },
+    { name: "argmin-rank3-batched-last", module: adapter.nn.argmin(-1), expectedShape: "2x2x1", expectedKernels: "argmin" },
   ];
   for (const testCase of compiledCases) {
     const eager = testCase.module.forward(input);
@@ -3298,9 +3298,9 @@ function expectReductionProgramEvidence(adapter: Record<string, any>, label: str
     }
   }
   for (const testCase of rank3CompiledCases) {
-    const eager = testCase.module.forward(cube);
-    const support = testCase.module.compileSupport({ inputShape: [1, 2, 3], backend: "cpu" });
-    const kernelPlan = adapter.nn.kernelPlan(testCase.module, { inputShape: [1, 2, 3], backend: "cpu" });
+    const eager = testCase.module.forward(batchedCube);
+    const support = testCase.module.compileSupport({ inputShape: [2, 2, 3], backend: "cpu" });
+    const kernelPlan = adapter.nn.kernelPlan(testCase.module, { inputShape: [2, 2, 3], backend: "cpu" });
     if (
       !Object.isFrozen(support) ||
       !Object.isFrozen(kernelPlan) ||
@@ -3314,10 +3314,10 @@ function expectReductionProgramEvidence(adapter: Record<string, any>, label: str
     ) {
       throw new Error(`${label} expected ${testCase.name} reduction compile evidence`);
     }
-    const program = testCase.module.compile({ inputShape: [1, 2, 3], backend: "cpu" });
+    const program = testCase.module.compile({ inputShape: [2, 2, 3], backend: "cpu" });
     const session = program.bind({});
     try {
-      const compiled = session.stepTensor(cube);
+      const compiled = session.stepTensor(batchedCube);
       if (compiled.shape.join("x") !== testCase.expectedShape) {
         throw new Error(`${label} expected ${testCase.name} compiled reduction shape`);
       }

@@ -2111,7 +2111,7 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
             break :blk 2;
         },
         3 => blk: {
-            if (input_shape[0] != 1 or input_shape[1] == 0 or input_shape[2] == 0) return error.ShapeMismatch;
+            if (input_shape[0] == 0 or input_shape[1] == 0 or input_shape[2] == 0) return error.ShapeMismatch;
             input_ne[0] = input_shape[2];
             input_ne[1] = input_shape[1];
             input_ne[2] = input_shape[0];
@@ -7570,6 +7570,44 @@ test "C ABI module program compiles traced sequential ops" {
         }, &result));
         try std.testing.expectEqual(@as(usize, 2), result.output_len);
         try std.testing.expectEqualSlices(f32, &.{ 6, 15 }, &reduce_sum_output);
+
+        const reduce3_input_shape = [_]usize{ 2, 2, 3 };
+        var reduce3_sum_program: ?*zgml_program = null;
+        var reduce3_sum_session: ?*zgml_session = null;
+        defer zgml_session_free(reduce3_sum_session);
+        defer zgml_program_free(reduce3_sum_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = reduce3_input_shape[0..].ptr,
+            .input_rank = reduce3_input_shape.len,
+            .ops = reduce_sum_ops[0..].ptr,
+            .op_count = reduce_sum_ops.len,
+        }, &.{ .backend = backend_cpu }, &reduce3_sum_program));
+        try std.testing.expect(reduce3_sum_program != null);
+
+        var reduce3_sum_requirements = zgml_program_requirements{};
+        try std.testing.expectEqual(status(.ok), zgml_program_get_requirements(reduce3_sum_program, &reduce3_sum_requirements));
+        try std.testing.expectEqual(module_kind, reduce3_sum_requirements.model_kind);
+        try std.testing.expectEqual(@as(usize, 12), reduce3_sum_requirements.input_len);
+        try std.testing.expectEqual(@as(usize, 4), reduce3_sum_requirements.output_len);
+
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(reduce3_sum_program, &.{
+            .weights = null,
+            .weights_len = 0,
+        }, &reduce3_sum_session));
+        try std.testing.expect(reduce3_sum_session != null);
+
+        const reduce3_input = [_]f32{ 1, 3, 2, 4, 0, -1, 10, 20, 30, 3, 2, 1 };
+        var reduce3_sum_output = [_]f32{0} ** 4;
+        result = .{};
+        try std.testing.expectEqual(status(.ok), zgml_session_step(reduce3_sum_session, &.{
+            .input = reduce3_input[0..].ptr,
+            .input_len = reduce3_input.len,
+            .output = reduce3_sum_output[0..].ptr,
+            .output_len = reduce3_sum_output.len,
+        }, &result));
+        try std.testing.expectEqual(@as(usize, 4), result.output_len);
+        try std.testing.expectEqualSlices(f32, &.{ 6, 3, 60, 6 }, &reduce3_sum_output);
 
         const reduce_mean_ops = [_]zgml_module_op_desc{.{
             .kind = module_op_reduce_mean,

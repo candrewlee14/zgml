@@ -15828,6 +15828,7 @@ function checkDistSmokeIsTsOwned(errors) {
       "logSoftmax",
       "expectReductionProgramEvidence",
       "sum-last",
+      "sum-rank3-batched-last",
       "mean-batch",
       "max-last",
       "min-last",
