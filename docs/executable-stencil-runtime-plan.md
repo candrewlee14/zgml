@@ -897,6 +897,13 @@ default path. The next move still has to change the semantic FFN sublayer
 kernel's work partitioning or grow the semantic command to remove more
 surrounding work; merely selecting the existing throughput candidate would
 improve one frontier row and regress the SmolLM-shaped row.
+A follow-up shape-selective probe tried using the two-phase tiled tail only for
+the `512`-wide full-prefill geometry while keeping the `576`-wide SmolLM shape
+on the default tail. It was not kept: a three-attempt no-rebuild qsemantic run
+selected `candidate_vs_default=full:0.93x,smollm:1.00x`, so the policy avoided
+the SmolLM-specific tiled-tail regression but still failed to improve both
+geometries. Do not spend the next pass on static output-width gating; the useful
+move remains a better work partition or a larger semantic command.
 Evidence tag: semantic FFN sublayer throughput kernel; Metal now executes that exact command as a bounded one-dispatch diagnostic kernel; the default throughput lane remains the faster projection-pair product, down-projection residual add, then RMSNorm scale path; target dispatches `1` backend kernel.
 It also names the hard performance fact directly: the structurally useful
 two-dispatch command path is dispatch-neutral in the full model
