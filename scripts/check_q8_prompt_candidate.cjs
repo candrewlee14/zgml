@@ -152,6 +152,8 @@ function emptyLane(index) {
     tiledScratchCapacity: 0,
     tiledSpills: 0,
     tiledTwoPhaseCount: 0,
+    tiledFinalizeTileGroups: 0,
+    tiledFinalizeElements: 0,
     fallback: 0,
   };
 }
@@ -198,6 +200,8 @@ function readProjectionLane(row, defaultTokS, index) {
     tiledScratchCapacity: number(row, "qmatmul_row_chain_tiled_scratch_capacity_per_call") ?? 0,
     tiledSpills: number(row, "qmatmul_row_chain_tiled_spilled_elementwise_per_call") ?? 0,
     tiledTwoPhaseCount: number(row, "qmatmul_row_chain_tiled_two_phase_count_per_call") ?? 0,
+    tiledFinalizeTileGroups: number(row, "qmatmul_row_chain_tiled_finalize_tile_groups_per_call") ?? 0,
+    tiledFinalizeElements: number(row, "qmatmul_row_chain_tiled_finalize_elements_per_call") ?? 0,
     fallback: number(row, "fallback_ops") ?? 0,
   };
 }
@@ -471,6 +475,8 @@ function measureAttempt(index) {
     twoPhaseTiledScratchCapacity: twoPhaseLane.tiledScratchCapacity,
     twoPhaseTiledSpills: twoPhaseLane.tiledSpills,
     twoPhaseTiledTwoPhaseCount: twoPhaseLane.tiledTwoPhaseCount,
+    twoPhaseTiledFinalizeTileGroups: twoPhaseLane.tiledFinalizeTileGroups,
+    twoPhaseTiledFinalizeElements: twoPhaseLane.tiledFinalizeElements,
     semanticTiledCount: semanticLane.tiledCount,
     semanticTiledRowTileGroups: semanticLane.tiledRowTileGroups,
     semanticTiledNTiles: semanticLane.tiledNTiles,
@@ -479,6 +485,8 @@ function measureAttempt(index) {
     semanticTiledScratchCapacity: semanticLane.tiledScratchCapacity,
     semanticTiledSpills: semanticLane.tiledSpills,
     semanticTiledTwoPhaseCount: semanticLane.tiledTwoPhaseCount,
+    semanticTiledFinalizeTileGroups: semanticLane.tiledFinalizeTileGroups,
+    semanticTiledFinalizeElements: semanticLane.tiledFinalizeElements,
     twoPhaseScratchReady,
     defaultProjectionRowChainDispatchSplit,
     commandProjectionRowChainDispatchSplit: commandLane.projectionRowChainDispatchSplit,
@@ -789,7 +797,7 @@ console.log(
     `two_phase_dispatch=${format(twoPhaseBest.defaultDispatches, 0)}->${format(twoPhaseBest.twoPhaseDispatches, 0)} two_phase_command=${format(twoPhaseBest.defaultCommands, 0)}->${format(twoPhaseBest.twoPhaseCommands, 0)} ` +
     `two_phase_dispatch_reduced=${twoPhaseDispatchReduced ? "yes" : "no"} two_phase_runtime_target=${dispatchRealityTarget} ` +
     `two_phase_count=${format(twoPhaseBest.twoPhaseTiledTwoPhaseCount, 0)} two_phase_selected=${twoPhaseBest.twoPhaseTiledTwoPhaseCount > 0 ? "yes" : "off"} ` +
-    `two_phase_tiled_work=${format(twoPhaseBest.twoPhaseTiledCount, 0)} chains row_groups=${format(twoPhaseBest.twoPhaseTiledRowTileGroups, 0)} n_tiles=${format(twoPhaseBest.twoPhaseTiledNTiles, 0)} serial_tile_loops=${format(twoPhaseBest.twoPhaseTiledSerialLoops, 0)} partial_slots=${format(twoPhaseBest.twoPhaseTiledPartialSlots, 0)} scratch_capacity=${format(twoPhaseBest.twoPhaseTiledScratchCapacity, 0)} spills=${format(twoPhaseBest.twoPhaseTiledSpills, 0)} ` +
+    `two_phase_tiled_work=${format(twoPhaseBest.twoPhaseTiledCount, 0)} chains row_groups=${format(twoPhaseBest.twoPhaseTiledRowTileGroups, 0)} n_tiles=${format(twoPhaseBest.twoPhaseTiledNTiles, 0)} serial_tile_loops=${format(twoPhaseBest.twoPhaseTiledSerialLoops, 0)} partial_slots=${format(twoPhaseBest.twoPhaseTiledPartialSlots, 0)} scratch_capacity=${format(twoPhaseBest.twoPhaseTiledScratchCapacity, 0)} finalize_tile_groups=${format(twoPhaseBest.twoPhaseTiledFinalizeTileGroups, 0)} finalize_elements=${format(twoPhaseBest.twoPhaseTiledFinalizeElements, 0)} spills=${format(twoPhaseBest.twoPhaseTiledSpills, 0)} ` +
     `two_phase_projection_chain=${format(twoPhaseBest.defaultProjectionChains, 0)}->${format(twoPhaseBest.twoPhaseProjectionChains, 0)} ` +
     `two_phase_projection_pair=${format(twoPhaseBest.defaultProjectionPairs, 0)}->${format(twoPhaseBest.twoPhaseProjectionPairs, 0)} ` +
     `two_phase_projection_pair_dispatch=${format(twoPhaseBest.defaultProjectionPairDispatches, 0)}->${format(twoPhaseBest.twoPhaseProjectionPairDispatches, 0)} ` +
@@ -807,7 +815,7 @@ console.log(
     `semantic_dispatch=${format(semanticBest.defaultDispatches, 0)}->${format(semanticBest.semanticDispatches, 0)} semantic_command=${format(semanticBest.defaultCommands, 0)}->${format(semanticBest.semanticCommands, 0)} ` +
     `semantic_dispatch_reduced=${semanticDispatchReduced ? "yes" : "no"} semantic_runtime_target=${dispatchRealityTarget} ` +
     `semantic_count=${format(semanticBest.semanticTiledTwoPhaseCount, 0)} semantic_structural_selected=${semanticStructuralSelected ? "yes" : "off"} semantic_throughput_ready=${semanticThroughputReady ? "yes" : "off"} semantic_selected=${semanticStructuralSelected ? "yes" : "off"} ` +
-    `semantic_tiled_work=${format(semanticBest.semanticTiledCount, 0)} chains row_groups=${format(semanticBest.semanticTiledRowTileGroups, 0)} n_tiles=${format(semanticBest.semanticTiledNTiles, 0)} serial_tile_loops=${format(semanticBest.semanticTiledSerialLoops, 0)} partial_slots=${format(semanticBest.semanticTiledPartialSlots, 0)} scratch_capacity=${format(semanticBest.semanticTiledScratchCapacity, 0)} spills=${format(semanticBest.semanticTiledSpills, 0)} ` +
+    `semantic_tiled_work=${format(semanticBest.semanticTiledCount, 0)} chains row_groups=${format(semanticBest.semanticTiledRowTileGroups, 0)} n_tiles=${format(semanticBest.semanticTiledNTiles, 0)} serial_tile_loops=${format(semanticBest.semanticTiledSerialLoops, 0)} partial_slots=${format(semanticBest.semanticTiledPartialSlots, 0)} scratch_capacity=${format(semanticBest.semanticTiledScratchCapacity, 0)} finalize_tile_groups=${format(semanticBest.semanticTiledFinalizeTileGroups, 0)} finalize_elements=${format(semanticBest.semanticTiledFinalizeElements, 0)} spills=${format(semanticBest.semanticTiledSpills, 0)} ` +
     `semantic_projection_chain=${format(semanticBest.defaultProjectionChains, 0)}->${format(semanticBest.semanticProjectionChains, 0)} ` +
     `semantic_projection_pair=${format(semanticBest.defaultProjectionPairs, 0)}->${format(semanticBest.semanticProjectionPairs, 0)} ` +
     `semantic_projection_pair_dispatch=${format(semanticBest.defaultProjectionPairDispatches, 0)}->${format(semanticBest.semanticProjectionPairDispatches, 0)} ` +

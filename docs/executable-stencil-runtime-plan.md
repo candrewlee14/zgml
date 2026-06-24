@@ -907,6 +907,7 @@ while the fresh-native one-attempt proof now reports
 `command_throughput=ready`, `command_projection_row_chain=0->30`,
 `command_projection_row_chain_dispatch=0->60`, `two_phase_count=60`,
 `two_phase_speedup=0.97-0.99x`, `two_phase_tiled_work=60`,
+`finalize_tile_groups=4320`, `finalize_elements=4423680`,
 `semantic_speedup=0.96-1.00x`, `semantic_median_speedup=0.99x`,
 `semantic_throughput_ready=off`, and zero fallback. That
 is the intended iteration lens before spending time on the full all-lane gate:
@@ -1268,12 +1269,16 @@ report `qmatmul_row_chain_tiled_row_tile_groups=4`,
 `qmatmul_row_chain_tiled_n_tiles=16`,
 `qmatmul_row_chain_tiled_serial_tile_loops=64`,
 `qmatmul_row_chain_tiled_partial_slots=2048`, and
-`qmatmul_row_chain_tiled_scratch_capacity=65536`; SmolLM prompt reports
+`qmatmul_row_chain_tiled_scratch_capacity=65536`, with
+`qmatmul_row_chain_tiled_finalize_tile_groups=64` and
+`qmatmul_row_chain_tiled_finalize_elements=65536`; SmolLM prompt reports
 `qmatmul_row_chain_tiled_row_tile_groups=4`,
 `qmatmul_row_chain_tiled_n_tiles=18`,
 `qmatmul_row_chain_tiled_serial_tile_loops=72`,
 `qmatmul_row_chain_tiled_partial_slots=2304`, and
-`qmatmul_row_chain_tiled_scratch_capacity=73728`. That is real
+`qmatmul_row_chain_tiled_scratch_capacity=73728`, with
+`qmatmul_row_chain_tiled_finalize_tile_groups=72` and
+`qmatmul_row_chain_tiled_finalize_elements=73728`. That is real
 executable-stencil progress, but it is not a default promotion yet because the
 tiled leaf still loses throughput on the SmolLM prompt shape. The same gate now
 also exposes why the one-command semantic target is not the missing throughput

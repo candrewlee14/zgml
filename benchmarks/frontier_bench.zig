@@ -229,11 +229,13 @@ fn printProjectionRowChainRuntimeProfile(
     var rt = profile_mod.RuntimeProfile{};
     be.addRuntimeProfileTo(handle, &rt);
     try w.print(
-        "  {s:<28} runtime_command_dispatches={d}  qmatmul_row_chain_tiled_two_phase_count={d}  qmatmul_row_chain_tiled_spilled_elementwise={d}\n",
+        "  {s:<28} runtime_command_dispatches={d}  qmatmul_row_chain_tiled_two_phase_count={d}  qmatmul_row_chain_tiled_finalize_tile_groups={d}  qmatmul_row_chain_tiled_finalize_elements={d}  qmatmul_row_chain_tiled_spilled_elementwise={d}\n",
         .{
             name,
             rt.backend_dispatch_count,
             rt.qmatmul_row_chain_tiled_two_phase_count,
+            rt.qmatmul_row_chain_tiled_finalize_tile_groups,
+            rt.qmatmul_row_chain_tiled_finalize_elements,
             rt.qmatmul_row_chain_tiled_spilled_elementwise,
         },
     );
@@ -280,7 +282,7 @@ fn printSemanticSublayerRuntimeProfile(
     const semantic_row_serial_per_tile_group = if (semantic_tile_groups > 0) rt.semantic_ffn_sublayer_row_serial_dot_ops / semantic_tile_groups else 0;
     const semantic_total_row_serial_per_tile_group = if (semantic_tile_groups > 0) rt.semantic_ffn_sublayer_total_row_serial_dot_ops / semantic_tile_groups else 0;
     try w.print(
-        "  {s:<28} runtime_backend_dispatches={d}  semantic_target_dispatches=1  runtime_projection_row_chain_dispatches={d}  runtime_projection_row_chain_attempts={d}  runtime_projection_row_chain_refused={d}  runtime_semantic_ffn_dispatches={d}  qmatmul_row_chain_tiled_count={d}  qmatmul_row_chain_tiled_row_tile_groups={d}  qmatmul_row_chain_tiled_n_tiles={d}  qmatmul_row_chain_tiled_serial_tile_loops={d}  qmatmul_row_chain_tiled_partial_slots={d}  qmatmul_row_chain_tiled_scratch_capacity={d}  qmatmul_row_chain_tiled_two_phase_count={d}  qmatmul_row_chain_tiled_spilled_elementwise={d}  semantic_ffn_sublayer_count={d}  semantic_ffn_sublayer_rows={d}  semantic_ffn_sublayer_hidden={d}  semantic_ffn_sublayer_input={d}  semantic_ffn_sublayer_output={d}  semantic_ffn_sublayer_row_serial_dot_ops={d}  semantic_ffn_sublayer_total_row_serial_dot_ops={d}  semantic_ffn_sublayer_tile_row_groups={d}  semantic_ffn_sublayer_tile_hidden_tiles={d}  semantic_ffn_sublayer_tile_output_tiles={d}  semantic_ffn_sublayer_tile_parallel_groups={d}  semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group={d}  semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group={d}\n",
+        "  {s:<28} runtime_backend_dispatches={d}  semantic_target_dispatches=1  runtime_projection_row_chain_dispatches={d}  runtime_projection_row_chain_attempts={d}  runtime_projection_row_chain_refused={d}  runtime_semantic_ffn_dispatches={d}  qmatmul_row_chain_tiled_count={d}  qmatmul_row_chain_tiled_row_tile_groups={d}  qmatmul_row_chain_tiled_n_tiles={d}  qmatmul_row_chain_tiled_serial_tile_loops={d}  qmatmul_row_chain_tiled_partial_slots={d}  qmatmul_row_chain_tiled_scratch_capacity={d}  qmatmul_row_chain_tiled_two_phase_count={d}  qmatmul_row_chain_tiled_finalize_tile_groups={d}  qmatmul_row_chain_tiled_finalize_elements={d}  qmatmul_row_chain_tiled_spilled_elementwise={d}  semantic_ffn_sublayer_count={d}  semantic_ffn_sublayer_rows={d}  semantic_ffn_sublayer_hidden={d}  semantic_ffn_sublayer_input={d}  semantic_ffn_sublayer_output={d}  semantic_ffn_sublayer_row_serial_dot_ops={d}  semantic_ffn_sublayer_total_row_serial_dot_ops={d}  semantic_ffn_sublayer_tile_row_groups={d}  semantic_ffn_sublayer_tile_hidden_tiles={d}  semantic_ffn_sublayer_tile_output_tiles={d}  semantic_ffn_sublayer_tile_parallel_groups={d}  semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group={d}  semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group={d}\n",
         .{
             name,
             rt.backend_dispatch_count,
@@ -295,6 +297,8 @@ fn printSemanticSublayerRuntimeProfile(
             rt.qmatmul_row_chain_tiled_partial_slots,
             rt.qmatmul_row_chain_tiled_scratch_capacity,
             rt.qmatmul_row_chain_tiled_two_phase_count,
+            rt.qmatmul_row_chain_tiled_finalize_tile_groups,
+            rt.qmatmul_row_chain_tiled_finalize_elements,
             rt.qmatmul_row_chain_tiled_spilled_elementwise,
             rt.semantic_ffn_sublayer_count,
             rt.semantic_ffn_sublayer_rows,

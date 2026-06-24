@@ -81,6 +81,8 @@ pub const RuntimeProfile = struct {
     qmatmul_row_chain_tiled_scratch_capacity: u64 = 0,
     qmatmul_row_chain_tiled_spilled_elementwise: u64 = 0,
     qmatmul_row_chain_tiled_two_phase_count: u64 = 0,
+    qmatmul_row_chain_tiled_finalize_tile_groups: u64 = 0,
+    qmatmul_row_chain_tiled_finalize_elements: u64 = 0,
     semantic_ffn_sublayer_count: u64 = 0,
     semantic_ffn_sublayer_rows: u64 = 0,
     semantic_ffn_sublayer_hidden: u64 = 0,
@@ -133,6 +135,8 @@ pub const RuntimeProfile = struct {
         self.qmatmul_row_chain_tiled_scratch_capacity +%= other.qmatmul_row_chain_tiled_scratch_capacity;
         self.qmatmul_row_chain_tiled_spilled_elementwise +%= other.qmatmul_row_chain_tiled_spilled_elementwise;
         self.qmatmul_row_chain_tiled_two_phase_count +%= other.qmatmul_row_chain_tiled_two_phase_count;
+        self.qmatmul_row_chain_tiled_finalize_tile_groups +%= other.qmatmul_row_chain_tiled_finalize_tile_groups;
+        self.qmatmul_row_chain_tiled_finalize_elements +%= other.qmatmul_row_chain_tiled_finalize_elements;
         self.semantic_ffn_sublayer_count +%= other.semantic_ffn_sublayer_count;
         self.semantic_ffn_sublayer_rows +%= other.semantic_ffn_sublayer_rows;
         self.semantic_ffn_sublayer_hidden +%= other.semantic_ffn_sublayer_hidden;
@@ -239,6 +243,8 @@ pub const RuntimeProfile = struct {
     pub fn recordQMatmulRowChainTwoPhaseTiled(self: *RuntimeProfile, m: u32, n: u32, tile: u32, write_elementwise_output: bool) void {
         self.recordQMatmulRowChainTiled(m, n, tile, write_elementwise_output);
         self.qmatmul_row_chain_tiled_two_phase_count +%= 1;
+        self.qmatmul_row_chain_tiled_finalize_tile_groups +%= divCeilU64(m, tile) *% divCeilU64(n, tile);
+        self.qmatmul_row_chain_tiled_finalize_elements +%= @as(u64, m) *% @as(u64, n);
     }
 
     pub fn recordSemanticFfnSublayer(self: *RuntimeProfile, m: u32, h: u32, k: u32, o: u32) void {
@@ -401,6 +407,8 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "scratch_capacity", rt.qmatmul_row_chain_tiled_scratch_capacity, calls_f);
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "spilled_elementwise", rt.qmatmul_row_chain_tiled_spilled_elementwise, calls_f);
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "two_phase_count", rt.qmatmul_row_chain_tiled_two_phase_count, calls_f);
+        try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "finalize_tile_groups", rt.qmatmul_row_chain_tiled_finalize_tile_groups, calls_f);
+        try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "finalize_elements", rt.qmatmul_row_chain_tiled_finalize_elements, calls_f);
     }
     if (rt.semantic_ffn_sublayer_count > 0) {
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "count", rt.semantic_ffn_sublayer_count, calls_f);
@@ -633,6 +641,8 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_scratch_capacity\":73728") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_spilled_elementwise\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_two_phase_count\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_finalize_tile_groups\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_finalize_elements\":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_count\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_row_serial_dot_ops\":995328") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_total_row_serial_dot_ops\":127401984") != null);
@@ -664,7 +674,7 @@ test "RuntimeProfile accumulates evidence windows" {
     window.runtime_patch_changed_count = 27;
     window.runtime_patch_invalid_count = 28;
     window.runtime_patch_shape = backend.RuntimePatchShape.actual(17, 24, 4242);
-    window.recordQMatmulRowChainTiled(128, 576, 32, true);
+    window.recordQMatmulRowChainTwoPhaseTiled(128, 576, 32, true);
     window.call_count = 37;
 
     total.add(window);
@@ -699,6 +709,9 @@ test "RuntimeProfile accumulates evidence windows" {
     try std.testing.expectEqual(@as(u64, 4608), total.qmatmul_row_chain_tiled_partial_slots);
     try std.testing.expectEqual(@as(u64, 147456), total.qmatmul_row_chain_tiled_scratch_capacity);
     try std.testing.expectEqual(@as(u64, 2), total.qmatmul_row_chain_tiled_spilled_elementwise);
+    try std.testing.expectEqual(@as(u64, 2), total.qmatmul_row_chain_tiled_two_phase_count);
+    try std.testing.expectEqual(@as(u64, 144), total.qmatmul_row_chain_tiled_finalize_tile_groups);
+    try std.testing.expectEqual(@as(u64, 147456), total.qmatmul_row_chain_tiled_finalize_elements);
     try std.testing.expectEqual(@as(u32, 74), total.call_count);
 }
 
