@@ -1252,7 +1252,11 @@ diagnostic and did not beat the default throughput path; a fresh focused
 rerun on June 24, 2026 still reported `target_vs_default=full_prefill:0.29x`
 and `smollm_prompt:0.26x`, with full-prefill target speed about `0.77x`.
 `SEMANTIC_FFN_THREADS=128` made the semantic target slower, especially on the
-SmolLM prompt shape. Keep the current `QMATMUL_ROW_CHAIN_THREADS=256`
+SmolLM prompt shape. A later `SEMANTIC_FFN_THREADS=1024` probe improved the raw
+target-only p50 samples (`full-prefill` near `0.96ms`, `smollm_prompt` near
+`1.15ms`) but did not survive the steady qsemantic artifact selection:
+`target_vs_default=full_prefill:0.27x,smollm_prompt:0.26x` with selected
+`target_speedup=0.74x/0.68x`. Keep the current `QMATMUL_ROW_CHAIN_THREADS=256`
 diagnostic until the implementation changes the work shape rather than merely
 retuning threadgroup width. The qsemantic gate now reports
 `target_vs_default=full_prefill:...x,smollm_prompt:...x` so the dispatch
