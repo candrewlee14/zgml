@@ -1045,9 +1045,14 @@ prepared-direct C ABI entry to skip repeated direct-call length arguments also
 failed to move the measured prepared path, selecting `0.92x` with
 `ratio_median=0.91x`. Do not spend the next pass on larger small-direct row
 unrolls or prepared ABI bypasses for this lane.
+The post-BLAS row tail was checked too: unrolling
+`logSoftmaxRowsInPlaceBias32` in four-row chunks compiled and ran, but the
+fresh-native three-attempt microscope regressed the selected attempt from the
+baseline `0.94x` sample to `0.92x`, with `ratio_median=0.91x`. That rules out
+simple row-loop unrolling as the missing PyTorch-parity move for this lane.
 That reinforces the current rule for this soft spot: isolated vForce swaps,
-shorter scalar approximations, wider small-direct row unrolls, and prepared ABI
-bypasses are not the missing move; the next credible
+shorter scalar approximations, wider small-direct row unrolls, post-BLAS row
+tail unrolls, and prepared ABI bypasses are not the missing move; the next credible
 improvement needs a more substantial classifier-tail kernel or a backend path
 that changes the row-normalization shape. A steadier 150ms-window,
 three-attempt PyTorch rerun of only the
