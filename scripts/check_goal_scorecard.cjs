@@ -485,11 +485,17 @@ function checkScripts() {
   if (scripts["dev:perf:pytorch:broad:run"] !== `BENCH_PYTORCH_KEYS=\${BENCH_PYTORCH_KEYS:-${broadPytorchKeys}} node scripts/check_pytorch_comparison.cjs`) {
     errors.push("package.json dev:perf:pytorch:broad:run must keep the no-rebuild broad PyTorch replacement evidence loop");
   }
+  if (scripts["dev:perf:pytorch:broad:steady:native"] !== `zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && BENCH_PYTORCH_ATTEMPTS=\${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=\${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=\${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=\${BENCH_PYTORCH_KEYS:-${broadPytorchKeys}} node scripts/check_pytorch_comparison.cjs`) {
+    errors.push("package.json dev:perf:pytorch:broad:steady:native must keep the fresh-native steady broad PyTorch replacement evidence loop");
+  }
   if (scripts["dev:perf:pytorch:broad:steady:run"] !== `BENCH_PYTORCH_ATTEMPTS=\${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=\${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=\${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=\${BENCH_PYTORCH_KEYS:-${broadPytorchKeys}} node scripts/check_pytorch_comparison.cjs`) {
     errors.push("package.json dev:perf:pytorch:broad:steady:run must keep the steady broad PyTorch replacement evidence loop");
   }
   if (scripts["dev:perf:pytorch:gaps:native"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-1} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:gaps:native must keep the native-only PyTorch current-gap loop after dist exists");
+  }
+  if (scripts["dev:perf:pytorch:gaps:steady:native"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json dev:perf:pytorch:gaps:steady:native must keep the fresh-native steady PyTorch current-gap evidence loop");
   }
   if (scripts["dev:perf:pytorch:gaps:steady:run"] !== "BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:gaps:steady:run must keep the no-rebuild steady PyTorch current-gap evidence loop");

@@ -670,8 +670,10 @@ npm run dev:perf:pytorch:focus:run    # rerun focused PyTorch comparison without
 npm run dev:perf:pytorch:broad        # incremental ten-lane PyTorch replacement evidence loop
 npm run dev:perf:pytorch:broad:native # native-only ten-lane PyTorch loop after dist exists
 npm run dev:perf:pytorch:broad:run    # rerun ten-lane PyTorch comparison without rebuilding artifacts
+npm run dev:perf:pytorch:broad:steady:native # fresh-native 150ms-window ten-lane PyTorch replacement evidence
 npm run dev:perf:pytorch:broad:steady:run # no-rebuild 150ms-window ten-lane PyTorch replacement evidence
 npm run dev:perf:pytorch:gaps:native   # native-only current-gap loop after dist exists
+npm run dev:perf:pytorch:gaps:steady:native # fresh-native 150ms-window current-gap evidence
 npm run dev:perf:pytorch:linear:native # native-only ReleaseFast microscope for the linear_batched PyTorch miss
 npm run dev:perf:pytorch:linear:run    # no-rebuild rerun for the linear_batched PyTorch miss
 npm run dev:perf:pytorch:logsoftmax:native # native-only ReleaseFast microscope for the logSoftmax classifier miss
