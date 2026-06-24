@@ -130,9 +130,11 @@ tiny-linear, tiny-MLP, and module Programs. It also advertises
 packed activation-chain module descriptor. C embedders build those module Programs with
 `zgml_module_program_compile` and the public `ZGML_MODULE_OP_*` vocabulary:
 Linear, activation, Softmax, LogSoftmax, LayerNorm, RMSNorm, Embedding, Reshape,
-BroadcastTo, bounded Narrow, and bounded activation chains. Activation ops use
+BroadcastTo, bounded Narrow, Slice, activation chains, pooling, Conv2d, Add,
+dim-aware reductions, feature-affine, diagonal, and ArgMax/ArgMin reductions.
+Activation ops use
 `ZGML_MODULE_ACTIVATION_*`, currently ReLU, GELU, SiLU, Sigmoid, Exp, Log, Neg,
-Recip, Abs, Sqrt, Square, Sgn, and Step. For
+Recip, Abs, Sqrt, Square, Sgn, Step, and Tanh. For
 `ZGML_MODULE_OP_ACTIVATION_CHAIN`, `flags` is the activation count and
 `activation`/`a`/`b`/`c` carry up to four activation IDs. Program inspection
 feature bits distinguish external-resource capability, cold memory layout,

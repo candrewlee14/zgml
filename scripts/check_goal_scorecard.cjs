@@ -632,6 +632,20 @@ function checkScripts() {
     "C ABI native eager linear writes caller output",
     "C ABI native eager linear activation writes caller output",
   ]);
+  requireIncludes(read("include/zgml.h"), "include/zgml.h", "public C ABI constants aligned with native/TS runtime", [
+    "ZGML_FEATURE_NATIVE_EAGER_LINEAR = 1ull << 45",
+    "ZGML_FEATURE_NATIVE_EAGER_LINEAR_ACTIVATION = 1ull << 46",
+    "ZGML_MODULE_OP_MAX_POOL2D = 17",
+    "ZGML_MODULE_OP_AVG_POOL2D = 18",
+    "ZGML_MODULE_OP_CONV2D = 19",
+    "ZGML_MODULE_OP_ADD = 20",
+    "ZGML_MODULE_OP_REDUCE_MIN = 21",
+    "ZGML_MODULE_OP_FEATURE_AFFINE = 22",
+    "ZGML_MODULE_OP_DIAGONAL = 23",
+    "ZGML_MODULE_OP_REDUCE_ARGMAX = 24",
+    "ZGML_MODULE_OP_REDUCE_ARGMIN = 25",
+    "ZGML_MODULE_ACTIVATION_TANH = 14",
+  ]);
   requireIncludes(read("src/ts/public_api.ts"), "src/ts/public_api.ts", "native eager public API types", [
     "PublicNativeEagerNamespace",
     "NativeEagerLinearActivationIntoOptions",

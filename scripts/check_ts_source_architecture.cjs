@@ -587,6 +587,25 @@ function checkPackageExports(errors) {
       errors.push(`src/c_api.zig must keep native eager linear ABI evidence: ${required}`);
     }
   }
+  const publicHeaderSource = readSource(path.join("include", "zgml.h"));
+  for (const required of [
+    "ZGML_FEATURE_NATIVE_EAGER_LINEAR = 1ull << 45",
+    "ZGML_FEATURE_NATIVE_EAGER_LINEAR_ACTIVATION = 1ull << 46",
+    "ZGML_MODULE_OP_MAX_POOL2D = 17",
+    "ZGML_MODULE_OP_AVG_POOL2D = 18",
+    "ZGML_MODULE_OP_CONV2D = 19",
+    "ZGML_MODULE_OP_ADD = 20",
+    "ZGML_MODULE_OP_REDUCE_MIN = 21",
+    "ZGML_MODULE_OP_FEATURE_AFFINE = 22",
+    "ZGML_MODULE_OP_DIAGONAL = 23",
+    "ZGML_MODULE_OP_REDUCE_ARGMAX = 24",
+    "ZGML_MODULE_OP_REDUCE_ARGMIN = 25",
+    "ZGML_MODULE_ACTIVATION_TANH = 14",
+  ]) {
+    if (!publicHeaderSource.includes(required)) {
+      errors.push(`include/zgml.h must keep public C ABI constants aligned with native/TS runtime: ${required}`);
+    }
+  }
   const publicApiSource = readSource(path.join("src", "ts", "public_api.ts"));
   for (const required of [
     "PublicNativeEagerNamespace",
@@ -1038,7 +1057,7 @@ function checkPackageExports(errors) {
     "benchProjectionChainMetalCase",
     "projection_row_chain_single_dispatch",
     "printCommandShape",
-    "ProgramCommandStreamShape.fromCommands",
+    "ProgramCommandStreamShape.fromOpsCommands",
   ]) {
     if (!frontierBenchZigSource.includes(needle)) {
       errors.push(`benchmarks/frontier_bench.zig must keep stable qmatmul projection-chain frontier evidence: ${needle}`);
@@ -1180,7 +1199,7 @@ function checkPackageExports(errors) {
     "`two_phase_attempt=${twoPhaseBest.index}/${attempts} two_phase_median_attempt=${twoPhaseMedian.index}/${attempts} two_phase_noisy=${twoPhaseNoisyAttempts}; `",
     "`semantic_attempt=${semanticBest.index}/${attempts} semantic_median_attempt=${semanticMedian.index}/${attempts} semantic_noisy=${semanticNoisyAttempts}; `",
     "semantic_structural=${semanticStructuralStatus}",
-    "semantic_throughput=${semanticThroughputStatus}",
+    "semantic_throughput=${reportedSemanticThroughputStatus}",
     "const semanticLowering = \"semantic_ffn_sublayer_command_plus_two_phase_tiled_row_chain_tail\"",
     "semantic_lowering=${semanticLowering}",
     "`two_phase_count=${format(twoPhaseBest.twoPhaseTiledTwoPhaseCount, 0)} two_phase_selected=${twoPhaseBest.twoPhaseTiledTwoPhaseCount > 0 ? \"yes\" : \"off\"} `",
