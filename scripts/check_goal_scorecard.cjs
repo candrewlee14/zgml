@@ -646,7 +646,7 @@ function checkScripts() {
     "fn logSoftmaxRowsInPlace32",
     "if (N == 32) return logSoftmaxRowsInPlace32(values, M)",
     "logSoftmaxRowsInPlace",
-    "}, input, output, true)",
+    "}, input, output, false)",
     "direct_log_softmax_output",
   ]);
   requireIncludes(read("src/backend/program.zig"), "src/backend/program.zig", "dense linear bias command compression", [
@@ -5312,6 +5312,11 @@ function checkDocs() {
     "log_softmax_classifier_batched=zgml:0.0301ms",
     "pytorch:0.0072ms",
     "dense/log-softmax native kernels and dispatch granularity",
+    "direct `Linear -> LogSoftmax` tail now forces the native small-direct linear path",
+    "`0.0310ms` to the `0.008-0.010ms` range",
+    "ratio_median=linear_batched:1.30x,log_softmax_classifier_batched:0.95x",
+    "linear_batched=zgml:0.0021ms pytorch:0.0027ms",
+    "log_softmax_classifier_batched=zgml:0.0077ms pytorch:0.0076ms",
     "fast vector exp approximation",
     "native module hot path",
     "benchmark binaries with `-Doptimize=ReleaseFast`",

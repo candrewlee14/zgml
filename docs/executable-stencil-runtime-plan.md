@@ -676,6 +676,19 @@ pytorch:0.0035ms` and `log_softmax_classifier_batched=zgml:0.0301ms
 pytorch:0.0072ms`. That confirms prepared host calls help but do not change the
 next target: the dense/log-softmax native kernels and dispatch granularity must
 get better.
+The next native cut did exactly that for the tracked classifier shape: the
+direct `Linear -> LogSoftmax` tail now forces the native small-direct linear path
+before the row log-softmax pass instead of preferring BLAS for that fused tail.
+Under a 50ms timing window this moved `log_softmax_classifier_batched` prepared
+time from roughly `0.0310ms` to the `0.008-0.010ms` range. The focused
+three-attempt PyTorch rerun stayed noisy but moved the tracked soft spot from far
+behind to roughly parity:
+`ratio_median=linear_batched:1.30x,log_softmax_classifier_batched:0.95x`, with
+the selected attempt at `linear_batched=zgml:0.0021ms pytorch:0.0027ms` and
+`log_softmax_classifier_batched=zgml:0.0077ms pytorch:0.0076ms`. This does not
+prove broad PyTorch superiority, but it does prove the right kind of
+improvement: exact-shape native execution beats wrapper work for these micro
+gaps.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier
