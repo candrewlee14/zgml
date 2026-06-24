@@ -107,7 +107,8 @@ export function createNodeSessionOps(options: NodeSessionOpsOptions) {
       const inputLen = input.length;
       const directOutputLen = output.length;
       return function preparedDirectStepSession() {
-        check(symbols.sessionStepDirect(handle, input, inputLen, output, directOutputLen));
+        const code = symbols.sessionStepDirect(handle, input, inputLen, output, directOutputLen);
+        if (code !== 0) check(code);
         return outputLen;
       };
     }
