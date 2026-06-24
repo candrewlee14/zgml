@@ -1,8 +1,9 @@
 "use strict";
 
-const { existsSync } = require("node:fs");
+const { existsSync, mkdirSync, writeFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const { join, resolve } = require("node:path");
+const os = require("node:os");
 const { verifyFreshNativeLibrary } = require("./native_freshness.cjs");
 
 const root = resolve(__dirname, "..");
@@ -12,6 +13,8 @@ const python = process.env.PYTHON || (existsSync(venvPython) ? venvPython : "pyt
 const requireParity = process.env.BENCH_PYTORCH_REQUIRE_PARITY === "1";
 const requireMedianParity = process.env.BENCH_PYTORCH_REQUIRE_MEDIAN_PARITY === "1";
 const installTorch = process.env.BENCH_PYTORCH_INSTALL === "1";
+const writeArtifact = process.env.BENCH_PYTORCH_WRITE_ARTIFACT !== "0";
+const artifactDir = process.env.BENCH_PYTORCH_ARTIFACT_DIR || join("bench-results", "pytorch");
 const minRatio = Number(process.env.BENCH_PYTORCH_MIN_RATIO || "1.0");
 const zgmlTimingMetric = process.env.BENCH_PYTORCH_ZGML_TIMING || "prepared_execute_into_ms";
 const allowedZgmlTimingMetrics = new Set(["hot_execute_into_ms", "prepared_execute_into_ms"]);
@@ -121,6 +124,14 @@ function parseZgmlModuleBench(output, keys) {
     timings[key] = Number(match[1]);
   }
   return timings;
+}
+
+function timestampForArtifact(date = new Date()) {
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function roundMetric(value) {
+  return Number.isFinite(value) ? Number(value.toFixed(6)) : null;
 }
 
 const pytorchCode = String.raw`
@@ -325,6 +336,86 @@ const parts = [
 ];
 for (const { key, zgmlMs, pytorchMs, ratio } of best.ratioEntries) {
   parts.push(`${key}=zgml:${zgmlMs.toFixed(4)}ms pytorch:${pytorchMs.toFixed(4)}ms zgml_vs_pytorch=${ratio.toFixed(2)}x`);
+}
+let artifactPath = null;
+if (writeArtifact) {
+  const resolvedArtifactDir = resolve(root, artifactDir);
+  mkdirSync(resolvedArtifactDir, { recursive: true });
+  artifactPath = join(resolvedArtifactDir, `pytorch-${timestampForArtifact()}-${process.pid}.json`);
+  const artifact = {
+    schema: "zgml.pytorch-comparison.v1",
+    createdAt: new Date().toISOString(),
+    command: "scripts/check_pytorch_comparison.cjs",
+    python,
+    pytorchVersion,
+    nodeVersion: process.version,
+    platform: {
+      type: os.type(),
+      platform: os.platform(),
+      arch: os.arch(),
+      release: os.release(),
+      cpus: os.cpus().length,
+    },
+    native: nativeFreshness,
+    config: {
+      activeComparisonKeys,
+      attempts,
+      minRatio,
+      requireParity,
+      requireMedianParity,
+      installTorch,
+      zgmlTimingMetric,
+      minTimingMs: Number(process.env.BENCH_PYTORCH_MIN_TIMING_MS || "8"),
+      moduleProgramMinTimingMs: Number(process.env.BENCH_MODULE_PROGRAM_MIN_TIMING_MS || "8"),
+      gelu: "approximate-tanh",
+    },
+    selectedAttempt: best.index,
+    noisyAttempts,
+    parityReady,
+    medianParityReady,
+    comparisonReady,
+    worst: {
+      key: worst.key,
+      ratio: roundMetric(worst.ratio),
+      zgmlMs: roundMetric(worst.zgmlMs),
+      pytorchMs: roundMetric(worst.pytorchMs),
+    },
+    ratioStats: Object.fromEntries(ratioStats.map((entry) => [entry.key, {
+      min: roundMetric(entry.min),
+      median: roundMetric(entry.median),
+      max: roundMetric(entry.max),
+    }])),
+    selectedRatios: Object.fromEntries(best.ratioEntries.map((entry) => [entry.key, {
+      zgmlMs: roundMetric(entry.zgmlMs),
+      pytorchMs: roundMetric(entry.pytorchMs),
+      zgmlVsPytorch: roundMetric(entry.ratio),
+    }])),
+    attempts: attemptRows.map((attempt) => ({
+      index: attempt.index,
+      parityReady: attempt.parityReady,
+      margin: roundMetric(attempt.margin),
+      worst: {
+        key: attempt.worst.key,
+        ratio: roundMetric(attempt.worst.ratio),
+      },
+      ratios: Object.fromEntries(attempt.ratioEntries.map((entry) => [entry.key, {
+        zgmlMs: roundMetric(entry.zgmlMs),
+        pytorchMs: roundMetric(entry.pytorchMs),
+        zgmlVsPytorch: roundMetric(entry.ratio),
+      }])),
+    })),
+  };
+  writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  parts.push(`artifact=${artifactPath}`);
+  console.log(`PYTORCH_COMPARISON_JSON ${JSON.stringify({
+    artifact: artifactPath,
+    parity: comparisonReady ? "pass" : "miss",
+    medianParity: medianParityReady ? "pass" : "miss",
+    worst: `${worst.key}:${worst.ratio.toFixed(2)}x`,
+    selectedAttempt: best.index,
+    attempts,
+    native: nativeFreshness.label,
+  })}`);
 }
 console.log(parts.join("; "));
 if (requireParity && !comparisonReady) {

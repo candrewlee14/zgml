@@ -549,6 +549,15 @@ older than source. `BENCH_PYTORCH_ALLOW_STALE_NATIVE=1` is reserved for
 intentional diagnostics and prints `native=stale`, not a normal evidence claim.
 This matters because a stale no-rebuild microscope can make a near-parity
 kernel look several times slower than it is.
+The PyTorch checker now also writes an ignored JSON artifact by default under
+`bench-results/pytorch/` (`schema: "zgml.pytorch-comparison.v1"`) and prints a
+machine-readable `PYTORCH_COMPARISON_JSON` line with the artifact path, selected
+attempt, native freshness, parity status, and worst ratio. Set
+`BENCH_PYTORCH_WRITE_ARTIFACT=0` only for throwaway local diagnostics. This
+keeps PyTorch competitiveness evidence closer to the ggml artifact model:
+checked claims should have preserved keys, attempts, medians, timing windows,
+Torch version, machine metadata, and native freshness, not just a console line
+or a dated sentence in this plan.
 The PyTorch comparison microscope also accepts exploratory lanes such as
 `rms_gelu_linear_batched`, `softmax_classifier_batched`,
 `log_softmax_classifier_batched`, and `lazy_token_head_batched`, so optimization
