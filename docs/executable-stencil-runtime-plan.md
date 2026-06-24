@@ -1331,14 +1331,15 @@ than only retune threadgroup size. In the full-model Q8 prompt gate this same
 lane still sits in the `semantic_speedup=0.95-0.98x` diagnostic band; the next
 real win still needs to change the semantic kernel's work partitioning before
 promotion is honest. Put plainly: the next real win still needs to change the semantic kernel's work partitioning.
-A later fresh no-build throughput artifact
-made the work-partitioning problem explicit: full-prefill reached
-`full_prefill=1.06x` with `thread_lane_utilization_x1000=1000`, while the
-SmolLM prompt shape remained below default at `smollm_prompt=0.80x` with
+A later fresh no-build throughput artifact made the work-partitioning problem
+explicit: full-prefill can hit `width_lane_utilization_x1000=1000` and
+`thread_lane_utilization_x1000=1000`, while the 576-wide SmolLM prompt shape
+only reaches `width_lane_utilization_x1000=562` and
 `thread_lane_utilization_x1000=611`. The serial math gap is only
-`serial_gap=1.13x`, but the fixed-thread lane footprint is
-`thread_slot_gap=1.80x`; the next semantic throughput pass should therefore be
-a 576-aware work-partitioning/vectorization change, not another blind
+`serial_gap=1.13x`, but the fixed-thread lane footprint is now split into
+`width_slot_gap=2.00x` and `thread_slot_gap=1.80x`; the next semantic
+throughput pass should therefore be a 576-aware work-partitioning/vectorization
+change, not another blind
 `SEMANTIC_FFN_THREADS` probe. A 576-only `SEMANTIC_FFN_THREADS=256` narrow
 kernel probe reduced the measured thread-slot footprint
 (`thread_slot_gap` roughly `1.80x -> 1.30x`) but made throughput worse

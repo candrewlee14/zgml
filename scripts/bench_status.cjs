@@ -380,6 +380,13 @@ function qsemanticThroughputStatusLine(path) {
   const semanticSerialGap = Number(fullSemanticRowSerial) > 0 && Number.isFinite(Number(smollmSemanticRowSerial))
     ? formatRatio(Number(smollmSemanticRowSerial) / Number(fullSemanticRowSerial))
     : "n/a";
+  const fullWidthLaneSlots = data?.fullPrefill?.semanticWidthLaneSlots ?? "n/a";
+  const smollmWidthLaneSlots = data?.smollmPrompt?.semanticWidthLaneSlots ?? "n/a";
+  const fullWidthLaneUtilization = data?.fullPrefill?.semanticWidthLaneUtilizationX1000 ?? "n/a";
+  const smollmWidthLaneUtilization = data?.smollmPrompt?.semanticWidthLaneUtilizationX1000 ?? "n/a";
+  const semanticWidthSlotGap = Number(fullWidthLaneSlots) > 0 && Number.isFinite(Number(smollmWidthLaneSlots))
+    ? formatRatio(Number(smollmWidthLaneSlots) / Number(fullWidthLaneSlots))
+    : "n/a";
   const fullThreadLaneSlots = data?.fullPrefill?.semanticThreadLaneSlots ?? "n/a";
   const smollmThreadLaneSlots = data?.smollmPrompt?.semanticThreadLaneSlots ?? "n/a";
   const fullThreadLaneUtilization = data?.fullPrefill?.semanticThreadLaneUtilizationX1000 ?? "n/a";
@@ -393,7 +400,7 @@ function qsemanticThroughputStatusLine(path) {
   const smollmOutputSpills = data?.smollmPrompt?.outputSpills ?? "n/a";
   const next = typeof data?.next === "string" ? data.next : "unknown";
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
-  return `qsemantic-throughput-results: latest=${compactName(path)} status=${status} gate=${gate} bottleneck=${bottleneck} serial_gap=${semanticSerialGap} thread_slot_gap=${semanticThreadSlotGap} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill}:dispatches:${fullDispatches}:semantic_count:${fullSemanticCount}:semantic_tile_groups:${fullSemanticTileGroups}:row_serial_per_group:${fullSemanticRowSerial}:total_row_serial_per_group:${fullSemanticTotalRowSerial}:thread_lane_slots:${fullThreadLaneSlots}:thread_lane_utilization_x1000:${fullThreadLaneUtilization}:spilled_input:${fullSpilledInput}:output_spills:${fullOutputSpills} smollm_prompt=${smollmPrompt}:dispatches:${smollmDispatches}:semantic_count:${smollmSemanticCount}:semantic_tile_groups:${smollmSemanticTileGroups}:row_serial_per_group:${smollmSemanticRowSerial}:total_row_serial_per_group:${smollmSemanticTotalRowSerial}:thread_lane_slots:${smollmThreadLaneSlots}:thread_lane_utilization_x1000:${smollmThreadLaneUtilization}:spilled_input:${smollmSpilledInput}:output_spills:${smollmOutputSpills} next=${next} source=${source}`;
+  return `qsemantic-throughput-results: latest=${compactName(path)} status=${status} gate=${gate} bottleneck=${bottleneck} serial_gap=${semanticSerialGap} width_slot_gap=${semanticWidthSlotGap} thread_slot_gap=${semanticThreadSlotGap} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill}:dispatches:${fullDispatches}:semantic_count:${fullSemanticCount}:semantic_tile_groups:${fullSemanticTileGroups}:row_serial_per_group:${fullSemanticRowSerial}:total_row_serial_per_group:${fullSemanticTotalRowSerial}:width_lane_slots:${fullWidthLaneSlots}:width_lane_utilization_x1000:${fullWidthLaneUtilization}:thread_lane_slots:${fullThreadLaneSlots}:thread_lane_utilization_x1000:${fullThreadLaneUtilization}:spilled_input:${fullSpilledInput}:output_spills:${fullOutputSpills} smollm_prompt=${smollmPrompt}:dispatches:${smollmDispatches}:semantic_count:${smollmSemanticCount}:semantic_tile_groups:${smollmSemanticTileGroups}:row_serial_per_group:${smollmSemanticRowSerial}:total_row_serial_per_group:${smollmSemanticTotalRowSerial}:width_lane_slots:${smollmWidthLaneSlots}:width_lane_utilization_x1000:${smollmWidthLaneUtilization}:thread_lane_slots:${smollmThreadLaneSlots}:thread_lane_utilization_x1000:${smollmThreadLaneUtilization}:spilled_input:${smollmSpilledInput}:output_spills:${smollmOutputSpills} next=${next} source=${source}`;
 }
 
 function ggmlSmokeStatusLine(path) {
@@ -913,9 +920,13 @@ function frontierNextTargetLine(path, pressurePath = path) {
           ? "ready"
           : "below_default"
         : "n/a";
+    const freshWidth =
+      pressureData?.kind === "qsemantic-throughput"
+        ? `,width_util=smollm:${pressureData?.smollmPrompt?.semanticWidthLaneUtilizationX1000 ?? "n/a"},full:${pressureData?.fullPrefill?.semanticWidthLaneUtilizationX1000 ?? "n/a"}`
+        : "";
     const fresh = hasFreshPressure
       ? pressureData?.kind === "qsemantic-throughput"
-        ? `:fresh=source:${typeof pressureData?.source?.label === "string" ? pressureData.source.label : "unknown"},throughput=smollm:${formatRatio(pressureData?.smollmPrompt?.speedup)},full:${formatRatio(pressureData?.fullPrefill?.speedup)},gate=${freshThroughputGate},spilled_input=smollm:${pressureData?.smollmPrompt?.spilledInput ?? "n/a"},full:${pressureData?.fullPrefill?.spilledInput ?? "n/a"}`
+        ? `:fresh=source:${typeof pressureData?.source?.label === "string" ? pressureData.source.label : "unknown"},throughput=smollm:${formatRatio(pressureData?.smollmPrompt?.speedup)},full:${formatRatio(pressureData?.fullPrefill?.speedup)},gate=${freshThroughputGate},spilled_input=smollm:${pressureData?.smollmPrompt?.spilledInput ?? "n/a"},full:${pressureData?.fullPrefill?.spilledInput ?? "n/a"}${freshWidth}`
         : `:fresh=source:${typeof pressureData?.source?.label === "string" ? pressureData.source.label : "unknown"},vs_default=smollm:${formatRatio(pressureData?.smollmPrompt?.throughputCandidateVsDefault)},full:${formatRatio(pressureData?.fullPrefill?.throughputCandidateVsDefault)}`
       : "";
     return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}:target_tiles=smollm:${smollmTargetTileGroups},full:${fullTargetTileGroups}:target_shape=smollm:${smollmTargetTileShape},full:${fullTargetTileShape}:candidate_tiles=smollm:${smollmCandidateTileGroups},full:${fullCandidateTileGroups}:candidate_finalize_groups=smollm:${smollmCandidateFinalizeTileGroups},full:${fullCandidateFinalizeTileGroups}:candidate_finalize_elements=smollm:${smollmCandidateFinalizeElements},full:${fullCandidateFinalizeElements}:tile_gap=smollm:${smollmTileGap},full:${fullTileGap}:target_serial_per_tile=smollm:${smollmTargetSerialPerTile},full:${fullTargetSerialPerTile}${fresh}`;

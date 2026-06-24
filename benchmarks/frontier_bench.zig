@@ -349,6 +349,7 @@ fn printSemanticSublayerRuntimeProfile(
     const semantic_tile_groups = rt.semantic_ffn_sublayer_tile_parallel_groups;
     const semantic_row_serial_per_tile_group = if (semantic_tile_groups > 0) rt.semantic_ffn_sublayer_row_serial_dot_ops / semantic_tile_groups else 0;
     const semantic_total_row_serial_per_tile_group = if (semantic_tile_groups > 0) rt.semantic_ffn_sublayer_total_row_serial_dot_ops / semantic_tile_groups else 0;
+    const semantic_width_lane_utilization_x1000 = if (rt.semantic_ffn_sublayer_width_lane_slots > 0) rt.semantic_ffn_sublayer_active_width_lanes * 1000 / rt.semantic_ffn_sublayer_width_lane_slots else 0;
     const semantic_thread_lane_utilization_x1000 = if (rt.semantic_ffn_sublayer_thread_lane_slots > 0) rt.semantic_ffn_sublayer_active_thread_lanes * 1000 / rt.semantic_ffn_sublayer_thread_lane_slots else 0;
     try writeSemanticSublayerRuntimeMetricJson(w, name, rt, semantic_row_serial_per_tile_group, semantic_total_row_serial_per_tile_group);
     try w.print(
@@ -375,7 +376,7 @@ fn printSemanticSublayerRuntimeProfile(
         },
     );
     try w.print(
-        "  {s:<28} semantic_ffn_sublayer_count={d}  semantic_ffn_sublayer_rows={d}  semantic_ffn_sublayer_hidden={d}  semantic_ffn_sublayer_input={d}  semantic_ffn_sublayer_output={d}  semantic_ffn_sublayer_row_serial_dot_ops={d}  semantic_ffn_sublayer_total_row_serial_dot_ops={d}  semantic_ffn_sublayer_tile_row_groups={d}  semantic_ffn_sublayer_tile_hidden_tiles={d}  semantic_ffn_sublayer_tile_output_tiles={d}  semantic_ffn_sublayer_tile_parallel_groups={d}  semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group={d}  semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group={d}  semantic_ffn_sublayer_thread_lane_slots={d}  semantic_ffn_sublayer_active_thread_lanes={d}  semantic_ffn_sublayer_thread_lane_utilization_x1000={d}\n",
+        "  {s:<28} semantic_ffn_sublayer_count={d}  semantic_ffn_sublayer_rows={d}  semantic_ffn_sublayer_hidden={d}  semantic_ffn_sublayer_input={d}  semantic_ffn_sublayer_output={d}  semantic_ffn_sublayer_row_serial_dot_ops={d}  semantic_ffn_sublayer_total_row_serial_dot_ops={d}  semantic_ffn_sublayer_tile_row_groups={d}  semantic_ffn_sublayer_tile_hidden_tiles={d}  semantic_ffn_sublayer_tile_output_tiles={d}  semantic_ffn_sublayer_tile_parallel_groups={d}  semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group={d}  semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group={d}  semantic_ffn_sublayer_width_lane_slots={d}  semantic_ffn_sublayer_active_width_lanes={d}  semantic_ffn_sublayer_width_lane_utilization_x1000={d}  semantic_ffn_sublayer_thread_lane_slots={d}  semantic_ffn_sublayer_active_thread_lanes={d}  semantic_ffn_sublayer_thread_lane_utilization_x1000={d}\n",
         .{
             name,
             rt.semantic_ffn_sublayer_count,
@@ -391,6 +392,9 @@ fn printSemanticSublayerRuntimeProfile(
             rt.semantic_ffn_sublayer_tile_parallel_groups,
             semantic_row_serial_per_tile_group,
             semantic_total_row_serial_per_tile_group,
+            rt.semantic_ffn_sublayer_width_lane_slots,
+            rt.semantic_ffn_sublayer_active_width_lanes,
+            semantic_width_lane_utilization_x1000,
             rt.semantic_ffn_sublayer_thread_lane_slots,
             rt.semantic_ffn_sublayer_active_thread_lanes,
             semantic_thread_lane_utilization_x1000,
@@ -439,6 +443,9 @@ fn writeSemanticSublayerRuntimeMetricJson(
     try writeMetricJsonField(&jw, "semantic_ffn_sublayer_tile_parallel_groups", rt.semantic_ffn_sublayer_tile_parallel_groups);
     try writeMetricJsonField(&jw, "semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group", semantic_row_serial_per_tile_group);
     try writeMetricJsonField(&jw, "semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group", semantic_total_row_serial_per_tile_group);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_width_lane_slots", rt.semantic_ffn_sublayer_width_lane_slots);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_active_width_lanes", rt.semantic_ffn_sublayer_active_width_lanes);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_width_lane_utilization_x1000", if (rt.semantic_ffn_sublayer_width_lane_slots > 0) rt.semantic_ffn_sublayer_active_width_lanes * 1000 / rt.semantic_ffn_sublayer_width_lane_slots else 0);
     try writeMetricJsonField(&jw, "semantic_ffn_sublayer_thread_lane_slots", rt.semantic_ffn_sublayer_thread_lane_slots);
     try writeMetricJsonField(&jw, "semantic_ffn_sublayer_active_thread_lanes", rt.semantic_ffn_sublayer_active_thread_lanes);
     try writeMetricJsonField(&jw, "semantic_ffn_sublayer_thread_lane_utilization_x1000", if (rt.semantic_ffn_sublayer_thread_lane_slots > 0) rt.semantic_ffn_sublayer_active_thread_lanes * 1000 / rt.semantic_ffn_sublayer_thread_lane_slots else 0);

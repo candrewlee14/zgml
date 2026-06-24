@@ -1259,6 +1259,9 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
   const fullPrefillSemanticTileGroups = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_tile_parallel_groups");
   const fullPrefillSemanticRowSerialPerTileGroup = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group");
   const fullPrefillSemanticTotalRowSerialPerTileGroup = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group");
+  const fullPrefillSemanticWidthLaneSlots = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_width_lane_slots");
+  const fullPrefillSemanticActiveWidthLanes = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_active_width_lanes");
+  const fullPrefillSemanticWidthLaneUtilization = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_width_lane_utilization_x1000");
   const fullPrefillSemanticThreadLaneSlots = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_thread_lane_slots");
   const fullPrefillSemanticActiveThreadLanes = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_active_thread_lanes");
   const fullPrefillSemanticThreadLaneUtilization = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_thread_lane_utilization_x1000");
@@ -1277,6 +1280,9 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
   const smollmPromptSemanticTileGroups = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_tile_parallel_groups");
   const smollmPromptSemanticRowSerialPerTileGroup = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group");
   const smollmPromptSemanticTotalRowSerialPerTileGroup = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group");
+  const smollmPromptSemanticWidthLaneSlots = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_width_lane_slots");
+  const smollmPromptSemanticActiveWidthLanes = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_active_width_lanes");
+  const smollmPromptSemanticWidthLaneUtilization = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_width_lane_utilization_x1000");
   const smollmPromptSemanticThreadLaneSlots = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_thread_lane_slots");
   const smollmPromptSemanticActiveThreadLanes = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_active_thread_lanes");
   const smollmPromptSemanticThreadLaneUtilization = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_thread_lane_utilization_x1000");
@@ -1296,8 +1302,8 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
   const line = [
     `frontier qsemantic throughput gate: ${failures.length === 0 ? "pass" : "fail"}`,
     `attempt=${attempt}/${maxAttempts}`,
-    `full_prefill=${fullPrefillSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillRuntimeDispatches} semantic_ffn_sublayer_count=${fullPrefillSemanticCount} semantic_tile_parallel_groups=${fullPrefillSemanticTileGroups} semantic_row_serial_per_group=${fullPrefillSemanticRowSerialPerTileGroup} semantic_total_row_serial_per_group=${fullPrefillSemanticTotalRowSerialPerTileGroup} semantic_thread_lane_slots=${fullPrefillSemanticThreadLaneSlots} semantic_active_thread_lanes=${fullPrefillSemanticActiveThreadLanes} semantic_thread_lane_utilization_x1000=${fullPrefillSemanticThreadLaneUtilization} qmatmul_row_chain_tiled_count=${fullPrefillRuntimeRowChainTiled} qmatmul_row_chain_tiled_spilled_input=${fullPrefillSpilledInput} qmatmul_row_chain_tiled_output_spills=${fullPrefillOutputSpills}`,
-    `smollm_prompt=${smollmPromptSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${smollmPromptMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${smollmPromptRuntimeDispatches} semantic_ffn_sublayer_count=${smollmPromptSemanticCount} semantic_tile_parallel_groups=${smollmPromptSemanticTileGroups} semantic_row_serial_per_group=${smollmPromptSemanticRowSerialPerTileGroup} semantic_total_row_serial_per_group=${smollmPromptSemanticTotalRowSerialPerTileGroup} semantic_thread_lane_slots=${smollmPromptSemanticThreadLaneSlots} semantic_active_thread_lanes=${smollmPromptSemanticActiveThreadLanes} semantic_thread_lane_utilization_x1000=${smollmPromptSemanticThreadLaneUtilization} qmatmul_row_chain_tiled_count=${smollmPromptRuntimeRowChainTiled} qmatmul_row_chain_tiled_spilled_input=${smollmPromptSpilledInput} qmatmul_row_chain_tiled_output_spills=${smollmPromptOutputSpills}`,
+    `full_prefill=${fullPrefillSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillRuntimeDispatches} semantic_ffn_sublayer_count=${fullPrefillSemanticCount} semantic_tile_parallel_groups=${fullPrefillSemanticTileGroups} semantic_row_serial_per_group=${fullPrefillSemanticRowSerialPerTileGroup} semantic_total_row_serial_per_group=${fullPrefillSemanticTotalRowSerialPerTileGroup} semantic_width_lane_slots=${fullPrefillSemanticWidthLaneSlots} semantic_active_width_lanes=${fullPrefillSemanticActiveWidthLanes} semantic_width_lane_utilization_x1000=${fullPrefillSemanticWidthLaneUtilization} semantic_thread_lane_slots=${fullPrefillSemanticThreadLaneSlots} semantic_active_thread_lanes=${fullPrefillSemanticActiveThreadLanes} semantic_thread_lane_utilization_x1000=${fullPrefillSemanticThreadLaneUtilization} qmatmul_row_chain_tiled_count=${fullPrefillRuntimeRowChainTiled} qmatmul_row_chain_tiled_spilled_input=${fullPrefillSpilledInput} qmatmul_row_chain_tiled_output_spills=${fullPrefillOutputSpills}`,
+    `smollm_prompt=${smollmPromptSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${smollmPromptMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${smollmPromptRuntimeDispatches} semantic_ffn_sublayer_count=${smollmPromptSemanticCount} semantic_tile_parallel_groups=${smollmPromptSemanticTileGroups} semantic_row_serial_per_group=${smollmPromptSemanticRowSerialPerTileGroup} semantic_total_row_serial_per_group=${smollmPromptSemanticTotalRowSerialPerTileGroup} semantic_width_lane_slots=${smollmPromptSemanticWidthLaneSlots} semantic_active_width_lanes=${smollmPromptSemanticActiveWidthLanes} semantic_width_lane_utilization_x1000=${smollmPromptSemanticWidthLaneUtilization} semantic_thread_lane_slots=${smollmPromptSemanticThreadLaneSlots} semantic_active_thread_lanes=${smollmPromptSemanticActiveThreadLanes} semantic_thread_lane_utilization_x1000=${smollmPromptSemanticThreadLaneUtilization} qmatmul_row_chain_tiled_count=${smollmPromptRuntimeRowChainTiled} qmatmul_row_chain_tiled_spilled_input=${smollmPromptSpilledInput} qmatmul_row_chain_tiled_output_spills=${smollmPromptOutputSpills}`,
     "next=semantic_ffn_sublayer_throughput_kernel",
   ].join("; ");
 
@@ -1315,6 +1321,9 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
     fullPrefillSemanticTileGroups,
     fullPrefillSemanticRowSerialPerTileGroup,
     fullPrefillSemanticTotalRowSerialPerTileGroup,
+    fullPrefillSemanticWidthLaneSlots,
+    fullPrefillSemanticActiveWidthLanes,
+    fullPrefillSemanticWidthLaneUtilization,
     fullPrefillSemanticThreadLaneSlots,
     fullPrefillSemanticActiveThreadLanes,
     fullPrefillSemanticThreadLaneUtilization,
@@ -1332,6 +1341,9 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
     smollmPromptSemanticTileGroups,
     smollmPromptSemanticRowSerialPerTileGroup,
     smollmPromptSemanticTotalRowSerialPerTileGroup,
+    smollmPromptSemanticWidthLaneSlots,
+    smollmPromptSemanticActiveWidthLanes,
+    smollmPromptSemanticWidthLaneUtilization,
     smollmPromptSemanticThreadLaneSlots,
     smollmPromptSemanticActiveThreadLanes,
     smollmPromptSemanticThreadLaneUtilization,
@@ -1370,6 +1382,9 @@ function selectedSemanticThroughputAttemptSummary(attempt) {
       semanticTileParallelGroups: attempt.fullPrefillSemanticTileGroups,
       semanticRowSerialDotOpsPerTileGroup: attempt.fullPrefillSemanticRowSerialPerTileGroup,
       semanticTotalRowSerialDotOpsPerTileGroup: attempt.fullPrefillSemanticTotalRowSerialPerTileGroup,
+      semanticWidthLaneSlots: attempt.fullPrefillSemanticWidthLaneSlots,
+      semanticActiveWidthLanes: attempt.fullPrefillSemanticActiveWidthLanes,
+      semanticWidthLaneUtilizationX1000: attempt.fullPrefillSemanticWidthLaneUtilization,
       semanticThreadLaneSlots: attempt.fullPrefillSemanticThreadLaneSlots,
       semanticActiveThreadLanes: attempt.fullPrefillSemanticActiveThreadLanes,
       semanticThreadLaneUtilizationX1000: attempt.fullPrefillSemanticThreadLaneUtilization,
@@ -1386,6 +1401,9 @@ function selectedSemanticThroughputAttemptSummary(attempt) {
       semanticTileParallelGroups: attempt.smollmPromptSemanticTileGroups,
       semanticRowSerialDotOpsPerTileGroup: attempt.smollmPromptSemanticRowSerialPerTileGroup,
       semanticTotalRowSerialDotOpsPerTileGroup: attempt.smollmPromptSemanticTotalRowSerialPerTileGroup,
+      semanticWidthLaneSlots: attempt.smollmPromptSemanticWidthLaneSlots,
+      semanticActiveWidthLanes: attempt.smollmPromptSemanticActiveWidthLanes,
+      semanticWidthLaneUtilizationX1000: attempt.smollmPromptSemanticWidthLaneUtilization,
       semanticThreadLaneSlots: attempt.smollmPromptSemanticThreadLaneSlots,
       semanticActiveThreadLanes: attempt.smollmPromptSemanticActiveThreadLanes,
       semanticThreadLaneUtilizationX1000: attempt.smollmPromptSemanticThreadLaneUtilization,

@@ -312,11 +312,13 @@ machine for both prompt/prefill and decode.
   correctness but stayed diagnostic (`target_vs_default` roughly
   `full_prefill:0.29x,smollm_prompt:0.26x`), so the useful target remains
   tiled/vectorized semantic dot work or a faster tiled row-chain leaf. The
-  throughput-only semantic artifact now also reports fixed-thread lane
-  utilization: full-prefill can hit `thread_lane_utilization_x1000=1000`, while
-  the 576-wide SmolLM prompt shape is still about `611/1000` with
-  `thread_slot_gap=1.80x`. Treat that as the next kernel-design target: reduce
-  the 576-wide lane-slot waste, not just the nominal row-serial math. A
+  throughput-only semantic artifact now also reports fixed-thread width-lane
+  utilization separately from the reduction lane: full-prefill can hit
+  `width_lane_utilization_x1000=1000`, while the 576-wide SmolLM prompt shape is
+  still about `562/1000` (`thread_lane_utilization_x1000=611`) with
+  `width_slot_gap=2.00x` and `thread_slot_gap=1.80x`. Treat that as the next
+  kernel-design target: reduce the 576-wide width-slot waste, not just the
+  nominal row-serial math. A
   576-only 256-thread narrow-kernel probe reduced the slot footprint but hurt
   throughput (`smollm_prompt=0.67x`). A 384-thread mid-width probe improved
   utilization to about `777/1000` but still lost throughput

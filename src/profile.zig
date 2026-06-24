@@ -96,6 +96,8 @@ pub const RuntimeProfile = struct {
     semantic_ffn_sublayer_tile_hidden_tiles: u64 = 0,
     semantic_ffn_sublayer_tile_output_tiles: u64 = 0,
     semantic_ffn_sublayer_tile_parallel_groups: u64 = 0,
+    semantic_ffn_sublayer_width_lane_slots: u64 = 0,
+    semantic_ffn_sublayer_active_width_lanes: u64 = 0,
     semantic_ffn_sublayer_thread_lane_slots: u64 = 0,
     semantic_ffn_sublayer_active_thread_lanes: u64 = 0,
     call_count: u32 = 0,
@@ -154,6 +156,8 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_sublayer_tile_hidden_tiles +%= other.semantic_ffn_sublayer_tile_hidden_tiles;
         self.semantic_ffn_sublayer_tile_output_tiles +%= other.semantic_ffn_sublayer_tile_output_tiles;
         self.semantic_ffn_sublayer_tile_parallel_groups +%= other.semantic_ffn_sublayer_tile_parallel_groups;
+        self.semantic_ffn_sublayer_width_lane_slots +%= other.semantic_ffn_sublayer_width_lane_slots;
+        self.semantic_ffn_sublayer_active_width_lanes +%= other.semantic_ffn_sublayer_active_width_lanes;
         self.semantic_ffn_sublayer_thread_lane_slots +%= other.semantic_ffn_sublayer_thread_lane_slots;
         self.semantic_ffn_sublayer_active_thread_lanes +%= other.semantic_ffn_sublayer_active_thread_lanes;
         self.call_count +%= other.call_count;
@@ -292,8 +296,12 @@ pub const RuntimeProfile = struct {
             const input_slots = divCeilU64(k, thread_lanes) *% threads;
             const hidden_slots = divCeilU64(h, thread_lanes) *% threads;
             const output_slots = divCeilU64(o, thread_lanes) *% threads;
-            const active_lanes_per_row = input +% hidden +% output *% 2 +% threads;
-            const lane_slots_per_row = input_slots +% hidden_slots +% output_slots *% 2 +% threads;
+            const active_width_lanes_per_row = input +% hidden +% output *% 2;
+            const width_lane_slots_per_row = input_slots +% hidden_slots +% output_slots *% 2;
+            const active_lanes_per_row = active_width_lanes_per_row +% threads;
+            const lane_slots_per_row = width_lane_slots_per_row +% threads;
+            self.semantic_ffn_sublayer_active_width_lanes +%= @as(u64, m) *% active_width_lanes_per_row;
+            self.semantic_ffn_sublayer_width_lane_slots +%= @as(u64, m) *% width_lane_slots_per_row;
             self.semantic_ffn_sublayer_active_thread_lanes +%= @as(u64, m) *% active_lanes_per_row;
             self.semantic_ffn_sublayer_thread_lane_slots +%= @as(u64, m) *% lane_slots_per_row;
         }
@@ -455,8 +463,17 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "tile_hidden_tiles", rt.semantic_ffn_sublayer_tile_hidden_tiles, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "tile_output_tiles", rt.semantic_ffn_sublayer_tile_output_tiles, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "tile_parallel_groups", rt.semantic_ffn_sublayer_tile_parallel_groups, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "width_lane_slots", rt.semantic_ffn_sublayer_width_lane_slots, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "active_width_lanes", rt.semantic_ffn_sublayer_active_width_lanes, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "thread_lane_slots", rt.semantic_ffn_sublayer_thread_lane_slots, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "active_thread_lanes", rt.semantic_ffn_sublayer_active_thread_lanes, calls_f);
+        if (rt.semantic_ffn_sublayer_width_lane_slots > 0) {
+            try writeJsonField(
+                jw,
+                "semantic_ffn_sublayer_width_lane_utilization",
+                @as(f64, @floatFromInt(rt.semantic_ffn_sublayer_active_width_lanes)) / @as(f64, @floatFromInt(rt.semantic_ffn_sublayer_width_lane_slots)),
+            );
+        }
         if (rt.semantic_ffn_sublayer_thread_lane_slots > 0) {
             try writeJsonField(
                 jw,
@@ -695,6 +712,9 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_tile_parallel_groups\":216") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group\":4608") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group\":589824") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_width_lane_slots\":524288") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_active_width_lanes\":294912") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_width_lane_utilization\":0.5625") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_thread_lane_slots\":589824") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_active_thread_lanes\":360448") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_thread_lane_utilization\":0.611111") != null);
