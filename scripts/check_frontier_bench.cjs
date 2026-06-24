@@ -10,6 +10,7 @@ const projectionChainFullPrefillSpeedupFloor = 0.90;
 const projectionChainFullPrefillCandidateSpeedupFloor = 1.00;
 const projectionChainMaxAbsDiffCeil = 0.002;
 const projectionGroupCandidateSpeedupFloor = 1.05;
+const projectionGroupRegionSpeedupFloor = 1.00;
 const projectionSmollmPromptSpeedupFloor = 0.90;
 const projectionRowChainDefaultSpeedupFloor = 1.10;
 const projectionRowChainMaxAbsDiffCeil = 0.02;
@@ -86,8 +87,12 @@ function scoreFocusedQproj(output, attempt) {
   const projectionChainSmollmPromptLabel = "qproj smollm-prompt m=128 n=576 k=576 projection_chain";
   const projectionGroupFullPrefillLabel = "qproj group full-prefill x4 m=128 n=512 k=512 projection_group";
   const projectionGroupSmollmPromptLabel = "qproj group smollm-prompt x4 m=128 n=576 k=576 projection_group";
+  const projectionGroupRegionFullPrefillLabel = "qproj region full-prefill x7 m=128 n=512 k=512 projection_group";
+  const projectionGroupRegionSmollmPromptLabel = "qproj region smollm-prompt x7 m=128 n=576 k=576 projection_group";
   const projectionGroupFullPrefillProfileLabel = `${projectionGroupFullPrefillLabel} dispatch_profile`;
   const projectionGroupSmollmPromptProfileLabel = `${projectionGroupSmollmPromptLabel} dispatch_profile`;
+  const projectionGroupRegionFullPrefillProfileLabel = `${projectionGroupRegionFullPrefillLabel} dispatch_profile`;
+  const projectionGroupRegionSmollmPromptProfileLabel = `${projectionGroupRegionSmollmPromptLabel} dispatch_profile`;
 
   const projectionChainSpeedup = metric(output, projectionChainLabel, "speedup");
   const projectionChainMaxAbsDiff = metric(output, projectionChainLabel, "max_abs_diff");
@@ -99,6 +104,10 @@ function scoreFocusedQproj(output, attempt) {
   const projectionGroupFullPrefillMaxAbsDiff = metric(output, projectionGroupFullPrefillLabel, "max_abs_diff");
   const projectionGroupSmollmPromptSpeedup = metric(output, projectionGroupSmollmPromptLabel, "speedup");
   const projectionGroupSmollmPromptMaxAbsDiff = metric(output, projectionGroupSmollmPromptLabel, "max_abs_diff");
+  const projectionGroupRegionFullPrefillSpeedup = metric(output, projectionGroupRegionFullPrefillLabel, "speedup");
+  const projectionGroupRegionFullPrefillMaxAbsDiff = metric(output, projectionGroupRegionFullPrefillLabel, "max_abs_diff");
+  const projectionGroupRegionSmollmPromptSpeedup = metric(output, projectionGroupRegionSmollmPromptLabel, "speedup");
+  const projectionGroupRegionSmollmPromptMaxAbsDiff = metric(output, projectionGroupRegionSmollmPromptLabel, "max_abs_diff");
   const projectionGroupFullPrefillShapeCommands = metric(output, projectionGroupFullPrefillProfileLabel, "shape_commands");
   const projectionGroupFullPrefillShapeGroups = metric(output, projectionGroupFullPrefillProfileLabel, "shape_projection_groups");
   const projectionGroupFullPrefillShapeCoveredOps = metric(output, projectionGroupFullPrefillProfileLabel, "shape_covered_ops");
@@ -111,6 +120,18 @@ function scoreFocusedQproj(output, attempt) {
   const projectionGroupSmollmPromptShapeSavedDispatches = metric(output, projectionGroupSmollmPromptProfileLabel, "shape_saved_dispatches");
   const projectionGroupSmollmPromptRuntimeDispatches = metric(output, projectionGroupSmollmPromptProfileLabel, "runtime_projection_group_dispatches");
   const projectionGroupSmollmPromptRuntimeCacheDispatches = metric(output, projectionGroupSmollmPromptProfileLabel, "runtime_projection_cache_group_dispatches");
+  const projectionGroupRegionFullPrefillShapeCommands = metric(output, projectionGroupRegionFullPrefillProfileLabel, "shape_commands");
+  const projectionGroupRegionFullPrefillShapeGroups = metric(output, projectionGroupRegionFullPrefillProfileLabel, "shape_projection_groups");
+  const projectionGroupRegionFullPrefillShapeCoveredOps = metric(output, projectionGroupRegionFullPrefillProfileLabel, "shape_covered_ops");
+  const projectionGroupRegionFullPrefillShapeSavedDispatches = metric(output, projectionGroupRegionFullPrefillProfileLabel, "shape_saved_dispatches");
+  const projectionGroupRegionFullPrefillRuntimeDispatches = metric(output, projectionGroupRegionFullPrefillProfileLabel, "runtime_projection_group_dispatches");
+  const projectionGroupRegionFullPrefillRuntimeCacheDispatches = metric(output, projectionGroupRegionFullPrefillProfileLabel, "runtime_projection_cache_group_dispatches");
+  const projectionGroupRegionSmollmPromptShapeCommands = metric(output, projectionGroupRegionSmollmPromptProfileLabel, "shape_commands");
+  const projectionGroupRegionSmollmPromptShapeGroups = metric(output, projectionGroupRegionSmollmPromptProfileLabel, "shape_projection_groups");
+  const projectionGroupRegionSmollmPromptShapeCoveredOps = metric(output, projectionGroupRegionSmollmPromptProfileLabel, "shape_covered_ops");
+  const projectionGroupRegionSmollmPromptShapeSavedDispatches = metric(output, projectionGroupRegionSmollmPromptProfileLabel, "shape_saved_dispatches");
+  const projectionGroupRegionSmollmPromptRuntimeDispatches = metric(output, projectionGroupRegionSmollmPromptProfileLabel, "runtime_projection_group_dispatches");
+  const projectionGroupRegionSmollmPromptRuntimeCacheDispatches = metric(output, projectionGroupRegionSmollmPromptProfileLabel, "runtime_projection_cache_group_dispatches");
 
   const failures = [];
   if (projectionChainSpeedup < projectionChainTileSpeedupFloor) failures.push(`projection_chain prompt tile ${projectionChainSpeedup.toFixed(2)}x < ${projectionChainTileSpeedupFloor.toFixed(2)}x`);
@@ -124,6 +145,12 @@ function scoreFocusedQproj(output, attempt) {
   if (projectionGroupSmollmPromptMaxAbsDiff > projectionChainMaxAbsDiffCeil) failures.push(`projection_group smollm-prompt max_abs_diff ${projectionGroupSmollmPromptMaxAbsDiff.toFixed(6)} > ${projectionChainMaxAbsDiffCeil.toFixed(6)}`);
   if (projectionGroupFullPrefillShapeCommands !== 1 || projectionGroupFullPrefillShapeGroups !== 1 || projectionGroupFullPrefillShapeCoveredOps !== 8 || projectionGroupFullPrefillShapeSavedDispatches !== 7) failures.push("projection_group full-prefill shape profile must stay shape_commands=1 shape_projection_groups=1 shape_covered_ops=8 shape_saved_dispatches=7");
   if (projectionGroupSmollmPromptShapeCommands !== 1 || projectionGroupSmollmPromptShapeGroups !== 1 || projectionGroupSmollmPromptShapeCoveredOps !== 8 || projectionGroupSmollmPromptShapeSavedDispatches !== 7) failures.push("projection_group smollm-prompt shape profile must stay shape_commands=1 shape_projection_groups=1 shape_covered_ops=8 shape_saved_dispatches=7");
+  if (projectionGroupRegionFullPrefillSpeedup < projectionGroupRegionSpeedupFloor) failures.push(`projection_group region full-prefill ${projectionGroupRegionFullPrefillSpeedup.toFixed(2)}x < ${projectionGroupRegionSpeedupFloor.toFixed(2)}x`);
+  if (projectionGroupRegionFullPrefillMaxAbsDiff > projectionChainMaxAbsDiffCeil) failures.push(`projection_group region full-prefill max_abs_diff ${projectionGroupRegionFullPrefillMaxAbsDiff.toFixed(6)} > ${projectionChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (projectionGroupRegionSmollmPromptSpeedup < projectionGroupRegionSpeedupFloor) failures.push(`projection_group region smollm-prompt ${projectionGroupRegionSmollmPromptSpeedup.toFixed(2)}x < ${projectionGroupRegionSpeedupFloor.toFixed(2)}x`);
+  if (projectionGroupRegionSmollmPromptMaxAbsDiff > projectionChainMaxAbsDiffCeil) failures.push(`projection_group region smollm-prompt max_abs_diff ${projectionGroupRegionSmollmPromptMaxAbsDiff.toFixed(6)} > ${projectionChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (projectionGroupRegionFullPrefillShapeCommands !== 2 || projectionGroupRegionFullPrefillShapeGroups !== 2 || projectionGroupRegionFullPrefillShapeCoveredOps !== 14 || projectionGroupRegionFullPrefillShapeSavedDispatches !== 12 || projectionGroupRegionFullPrefillRuntimeDispatches !== 2 || projectionGroupRegionFullPrefillRuntimeCacheDispatches !== 0) failures.push("projection_group region full-prefill runtime profile must stay shape_commands=2 shape_projection_groups=2 shape_covered_ops=14 shape_saved_dispatches=12 runtime_projection_group_dispatches=2 runtime_projection_cache_group_dispatches=0");
+  if (projectionGroupRegionSmollmPromptShapeCommands !== 2 || projectionGroupRegionSmollmPromptShapeGroups !== 2 || projectionGroupRegionSmollmPromptShapeCoveredOps !== 14 || projectionGroupRegionSmollmPromptShapeSavedDispatches !== 12 || projectionGroupRegionSmollmPromptRuntimeDispatches !== 2 || projectionGroupRegionSmollmPromptRuntimeCacheDispatches !== 0) failures.push("projection_group region smollm-prompt runtime profile must stay shape_commands=2 shape_projection_groups=2 shape_covered_ops=14 shape_saved_dispatches=12 runtime_projection_group_dispatches=2 runtime_projection_cache_group_dispatches=0");
 
   const line = [
     `frontier qproj gate: ${failures.length === 0 ? "pass" : "fail"}`,
@@ -133,6 +160,8 @@ function scoreFocusedQproj(output, attempt) {
     `projection_chain_smollm_prompt=${projectionChainSmollmPromptSpeedup.toFixed(2)}x floor=${projectionSmollmPromptSpeedupFloor.toFixed(2)} max_abs_diff=${projectionChainSmollmPromptMaxAbsDiff.toFixed(6)}`,
     `projection_group_full_prefill=${projectionGroupFullPrefillSpeedup.toFixed(2)}x candidate=${projectionGroupFullPrefillSpeedup >= projectionGroupCandidateSpeedupFloor ? "ready" : "off"} candidate_floor=${projectionGroupCandidateSpeedupFloor.toFixed(2)} max_abs_diff=${projectionGroupFullPrefillMaxAbsDiff.toFixed(6)} shape_commands=${projectionGroupFullPrefillShapeCommands} shape_projection_groups=${projectionGroupFullPrefillShapeGroups} shape_covered_ops=${projectionGroupFullPrefillShapeCoveredOps} shape_saved_dispatches=${projectionGroupFullPrefillShapeSavedDispatches} runtime=${projectionGroupFullPrefillRuntimeDispatches + projectionGroupFullPrefillRuntimeCacheDispatches > 0 ? "command" : "off"} runtime_projection_group_dispatches=${projectionGroupFullPrefillRuntimeDispatches} runtime_projection_cache_group_dispatches=${projectionGroupFullPrefillRuntimeCacheDispatches}`,
     `projection_group_smollm_prompt=${projectionGroupSmollmPromptSpeedup.toFixed(2)}x floor=${projectionSmollmPromptSpeedupFloor.toFixed(2)} max_abs_diff=${projectionGroupSmollmPromptMaxAbsDiff.toFixed(6)} shape_commands=${projectionGroupSmollmPromptShapeCommands} shape_projection_groups=${projectionGroupSmollmPromptShapeGroups} shape_covered_ops=${projectionGroupSmollmPromptShapeCoveredOps} shape_saved_dispatches=${projectionGroupSmollmPromptShapeSavedDispatches} runtime=${projectionGroupSmollmPromptRuntimeDispatches + projectionGroupSmollmPromptRuntimeCacheDispatches > 0 ? "command" : "off"} runtime_projection_group_dispatches=${projectionGroupSmollmPromptRuntimeDispatches} runtime_projection_cache_group_dispatches=${projectionGroupSmollmPromptRuntimeCacheDispatches}`,
+    `projection_group_region_full_prefill=${projectionGroupRegionFullPrefillSpeedup.toFixed(2)}x floor=${projectionGroupRegionSpeedupFloor.toFixed(2)} max_abs_diff=${projectionGroupRegionFullPrefillMaxAbsDiff.toFixed(6)} shape_commands=${projectionGroupRegionFullPrefillShapeCommands} shape_projection_groups=${projectionGroupRegionFullPrefillShapeGroups} shape_covered_ops=${projectionGroupRegionFullPrefillShapeCoveredOps} shape_saved_dispatches=${projectionGroupRegionFullPrefillShapeSavedDispatches} runtime=${projectionGroupRegionFullPrefillRuntimeDispatches > 0 ? "command" : "off"} runtime_projection_group_dispatches=${projectionGroupRegionFullPrefillRuntimeDispatches} runtime_projection_cache_group_dispatches=${projectionGroupRegionFullPrefillRuntimeCacheDispatches}`,
+    `projection_group_region_smollm_prompt=${projectionGroupRegionSmollmPromptSpeedup.toFixed(2)}x floor=${projectionGroupRegionSpeedupFloor.toFixed(2)} max_abs_diff=${projectionGroupRegionSmollmPromptMaxAbsDiff.toFixed(6)} shape_commands=${projectionGroupRegionSmollmPromptShapeCommands} shape_projection_groups=${projectionGroupRegionSmollmPromptShapeGroups} shape_covered_ops=${projectionGroupRegionSmollmPromptShapeCoveredOps} shape_saved_dispatches=${projectionGroupRegionSmollmPromptShapeSavedDispatches} runtime=${projectionGroupRegionSmollmPromptRuntimeDispatches > 0 ? "command" : "off"} runtime_projection_group_dispatches=${projectionGroupRegionSmollmPromptRuntimeDispatches} runtime_projection_cache_group_dispatches=${projectionGroupRegionSmollmPromptRuntimeCacheDispatches}`,
   ].join("; ");
 
   return {
@@ -159,6 +188,22 @@ function scoreFocusedQproj(output, attempt) {
     projectionGroupSmollmPromptShapeSavedDispatches,
     projectionGroupSmollmPromptRuntimeDispatches,
     projectionGroupSmollmPromptRuntimeCacheDispatches,
+    projectionGroupRegionFullPrefillSpeedup,
+    projectionGroupRegionFullPrefillMaxAbsDiff,
+    projectionGroupRegionSmollmPromptSpeedup,
+    projectionGroupRegionSmollmPromptMaxAbsDiff,
+    projectionGroupRegionFullPrefillShapeCommands,
+    projectionGroupRegionFullPrefillShapeGroups,
+    projectionGroupRegionFullPrefillShapeCoveredOps,
+    projectionGroupRegionFullPrefillShapeSavedDispatches,
+    projectionGroupRegionFullPrefillRuntimeDispatches,
+    projectionGroupRegionFullPrefillRuntimeCacheDispatches,
+    projectionGroupRegionSmollmPromptShapeCommands,
+    projectionGroupRegionSmollmPromptShapeGroups,
+    projectionGroupRegionSmollmPromptShapeCoveredOps,
+    projectionGroupRegionSmollmPromptShapeSavedDispatches,
+    projectionGroupRegionSmollmPromptRuntimeDispatches,
+    projectionGroupRegionSmollmPromptRuntimeCacheDispatches,
     failures,
     line,
   };
@@ -183,6 +228,22 @@ function focusedQprojMargin(current) {
     current.projectionGroupSmollmPromptShapeGroups === 1 ? 1 : 0,
     current.projectionGroupSmollmPromptShapeCoveredOps === 8 ? 1 : 0,
     current.projectionGroupSmollmPromptShapeSavedDispatches === 7 ? 1 : 0,
+    current.projectionGroupRegionFullPrefillSpeedup / projectionGroupRegionSpeedupFloor,
+    projectionChainMaxAbsDiffCeil / Math.max(current.projectionGroupRegionFullPrefillMaxAbsDiff, Number.EPSILON),
+    current.projectionGroupRegionFullPrefillShapeCommands === 2 ? 1 : 0,
+    current.projectionGroupRegionFullPrefillShapeGroups === 2 ? 1 : 0,
+    current.projectionGroupRegionFullPrefillShapeCoveredOps === 14 ? 1 : 0,
+    current.projectionGroupRegionFullPrefillShapeSavedDispatches === 12 ? 1 : 0,
+    current.projectionGroupRegionFullPrefillRuntimeDispatches === 2 ? 1 : 0,
+    current.projectionGroupRegionFullPrefillRuntimeCacheDispatches === 0 ? 1 : 0,
+    current.projectionGroupRegionSmollmPromptSpeedup / projectionGroupRegionSpeedupFloor,
+    projectionChainMaxAbsDiffCeil / Math.max(current.projectionGroupRegionSmollmPromptMaxAbsDiff, Number.EPSILON),
+    current.projectionGroupRegionSmollmPromptShapeCommands === 2 ? 1 : 0,
+    current.projectionGroupRegionSmollmPromptShapeGroups === 2 ? 1 : 0,
+    current.projectionGroupRegionSmollmPromptShapeCoveredOps === 14 ? 1 : 0,
+    current.projectionGroupRegionSmollmPromptShapeSavedDispatches === 12 ? 1 : 0,
+    current.projectionGroupRegionSmollmPromptRuntimeDispatches === 2 ? 1 : 0,
+    current.projectionGroupRegionSmollmPromptRuntimeCacheDispatches === 0 ? 1 : 0,
   );
 }
 
@@ -224,6 +285,26 @@ function aggregateFocusedQprojFailures(attempts) {
     ["projectionGroupSmollmPromptShapeCoveredOps", 8],
     ["projectionGroupSmollmPromptShapeSavedDispatches", 7],
   ])) failures.push("projection_group smollm-prompt shape profile did not match in any attempt");
+  speedAtLeast("projectionGroupRegionFullPrefillSpeedup", projectionGroupRegionSpeedupFloor, "projection_group region full-prefill");
+  diffAtMost("projectionGroupRegionFullPrefillMaxAbsDiff", projectionChainMaxAbsDiffCeil, "projection_group region full-prefill");
+  if (!anyEquals(attempts, [
+    ["projectionGroupRegionFullPrefillShapeCommands", 2],
+    ["projectionGroupRegionFullPrefillShapeGroups", 2],
+    ["projectionGroupRegionFullPrefillShapeCoveredOps", 14],
+    ["projectionGroupRegionFullPrefillShapeSavedDispatches", 12],
+    ["projectionGroupRegionFullPrefillRuntimeDispatches", 2],
+    ["projectionGroupRegionFullPrefillRuntimeCacheDispatches", 0],
+  ])) failures.push("projection_group region full-prefill runtime profile did not match in any attempt");
+  speedAtLeast("projectionGroupRegionSmollmPromptSpeedup", projectionGroupRegionSpeedupFloor, "projection_group region smollm-prompt");
+  diffAtMost("projectionGroupRegionSmollmPromptMaxAbsDiff", projectionChainMaxAbsDiffCeil, "projection_group region smollm-prompt");
+  if (!anyEquals(attempts, [
+    ["projectionGroupRegionSmollmPromptShapeCommands", 2],
+    ["projectionGroupRegionSmollmPromptShapeGroups", 2],
+    ["projectionGroupRegionSmollmPromptShapeCoveredOps", 14],
+    ["projectionGroupRegionSmollmPromptShapeSavedDispatches", 12],
+    ["projectionGroupRegionSmollmPromptRuntimeDispatches", 2],
+    ["projectionGroupRegionSmollmPromptRuntimeCacheDispatches", 0],
+  ])) failures.push("projection_group region smollm-prompt runtime profile did not match in any attempt");
   return failures;
 }
 

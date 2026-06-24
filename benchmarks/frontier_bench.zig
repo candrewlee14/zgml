@@ -744,13 +744,13 @@ fn benchProjectionChainMetalCase(
 }
 
 fn benchProjectionGroupMetalCase(
+    comptime n_slots: usize,
     io: std.Io,
     alloc: std.mem.Allocator,
     w: *std.Io.Writer,
     metal: *internal.backend_metal.MetalBackend,
     case: ProjectionRowChainCase,
 ) !void {
-    const n_slots: usize = 4;
     const elems = case.m * case.n;
     const input_len = case.m * case.k;
     const block_size: usize = 32;
@@ -1242,9 +1242,11 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
     if (!filter.matchesAny(&.{
         "Metal",
         "qproj",
+        "qproj region",
         "qrow",
         "projection_chain",
         "projection_group",
+        "projection_group_region",
         "projection_row_chain",
         "qrow region",
         "projection_row_chain_two_phase_group",
@@ -1284,7 +1286,17 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
     };
     for (projection_group_cases) |case| {
         if (filter.matchesAny(&.{ case.name, "qproj group", "projection_group" })) {
-            try benchProjectionGroupMetalCase(io, alloc, w, &metal, case);
+            try benchProjectionGroupMetalCase(4, io, alloc, w, &metal, case);
+        }
+    }
+
+    const projection_group_region_cases = [_]ProjectionRowChainCase{
+        .{ .name = "qproj region full-prefill x7 m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
+        .{ .name = "qproj region smollm-prompt x7 m=128 n=576 k=576", .m = 128, .n = 576, .k = 576 },
+    };
+    for (projection_group_region_cases) |case| {
+        if (filter.matchesAny(&.{ case.name, "qproj region", "projection_group_region" })) {
+            try benchProjectionGroupMetalCase(7, io, alloc, w, &metal, case);
         }
     }
 

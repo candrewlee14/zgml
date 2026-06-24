@@ -759,14 +759,20 @@ microscope uses `BENCH_FRONTIER_ATTEMPTS`
 (default `5`) so the row-chain and qproj kernel work can absorb local timing
 noise without falling back to the much slower full scorecard.
 The qproj group microscope now also prints command-shape and runtime-command
-profile evidence. Current local evidence is deliberately honest: the grouped
-shape is present (`shape_commands=1`, `shape_projection_groups=1`,
-`shape_covered_ops=8`, `shape_saved_dispatches=7`), but
-`runtime=off` with zero `runtime_projection_group_dispatches` and zero
-`runtime_projection_cache_group_dispatches`. That means qproj grouping is still
-a scheduler-shape diagnostic until the runtime actually dispatches a named
-projection group/cache-group command; do not count that lane as a solved
-executable-command throughput win.
+profile evidence. Current local evidence is deliberately two-lane and honest:
+the compact x4 grouped shape is present (`shape_commands=1`,
+`shape_projection_groups=1`, `shape_covered_ops=8`,
+`shape_saved_dispatches=7`), but `runtime=off` with zero
+`runtime_projection_group_dispatches` and zero
+`runtime_projection_cache_group_dispatches` because it is below the Metal
+executable-region threshold. The matching x7 qproj region microscope uses the
+same threshold as the runtime schedule and now proves named projection-group
+execution above the focused `1.00x` speed floor:
+`projection_group_region_full_prefill`, `projection_group_region_smollm_prompt`,
+`runtime=command`, `shape_commands=2`, `shape_projection_groups=2`,
+`shape_covered_ops=14`, `shape_saved_dispatches=12`, and
+`runtime_projection_group_dispatches=2` with zero cache-group dispatches. Count
+x4 as a scheduler-shape diagnostic and x7 as the executable-command proof.
 The ggml script now also accepts per-format `ZGML_F16_EXTRA_ARGS` and
 `ZGML_Q8_EXTRA_ARGS`, so Q8 prompt paths can be measured against llama.cpp
 without mutating the F16 evidence lane. Its Q8 comparison lane defaults to the

@@ -232,13 +232,18 @@ machine for both prompt/prefill and decode.
   kernel. Correctness is enforced, but speed only marks a candidate as ready at
   1.05x because current runs show this shape is exact but not reliably faster.
   The focused qproj gate now also reports command-shape and runtime-command
-  evidence for this lane: current shape evidence is `shape_commands=1`,
-  `shape_projection_groups=1`, `shape_covered_ops=8`, and
-  `shape_saved_dispatches=7`, but runtime evidence is still `runtime=off` with
+  evidence for this lane. The compact x4 diagnostic still reports
+  `shape_commands=1`, `shape_projection_groups=1`, `shape_covered_ops=8`, and
+  `shape_saved_dispatches=7`, but its runtime evidence is `runtime=off` with
   zero `runtime_projection_group_dispatches` and zero
-  `runtime_projection_cache_group_dispatches`. This keeps projection grouping
-  visible as a potential planner target without pretending it already moves the
-  full Q8 prompt lane or dispatches a named executable command.
+  `runtime_projection_cache_group_dispatches` because it sits below the Metal
+  executable-region threshold. The x7 qproj region microscope is the executable
+  proof: it reports `shape_commands=2`, `shape_projection_groups=2`,
+  `shape_covered_ops=14`, `shape_saved_dispatches=12`, `runtime=command`, and
+  `runtime_projection_group_dispatches=2`, with both region lanes required to
+  clear the focused `1.00x` speed floor. This keeps projection grouping visible
+  as a real planner target without pretending the smaller x4 diagnostic already
+  dispatches a named executable command.
 - The frontier gate now also reports the paired row-chain diagnostic
   `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
   This compares four staged qmatmul+residual+RMSNorm-scale row chains against
