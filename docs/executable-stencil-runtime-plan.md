@@ -445,7 +445,8 @@ Current checked progress:
   The new Node/Bun-selectable `NATIVE_EAGER_GAP_JSON` microscope measures the first targets directly:
   `linear_batched` eager TS tensor execution,
   `lazy_matmul_add_gelu_batched` eager fused matmul work, and
-  `lazy_matmul_add_relu_batched` eager fused matmul work versus allocation-free
+  `lazy_matmul_add_relu_batched` / `lazy_matmul_add_silu_batched` eager fused
+  matmul work versus allocation-free
   compiled `prepare/executeInto` for the same shape. It now also reports
   `nativeEagerIntoMs` for `linear_batched`, backed by the stateless
   `zgml_eager_linear_f32` C ABI and surfaced on Node and Bun as
@@ -456,16 +457,18 @@ Current checked progress:
   `zgml.native_eager.linear_activation_into`, so the first caller-owned
   native eager epilogue path covers `matmul -> add(bias) -> GELU` directly
   instead of only proving plain Linear.
-  The same microscope now also covers `matmul -> add(bias) -> ReLU`, proving
-  the activation hook for the most common production epilogue instead of only
-  GELU-shaped transformer work.
+  The same microscope now also covers `matmul -> add(bias) -> ReLU` and
+  `matmul -> add(bias) -> SiLU`, proving the activation hook for common
+  production and LLaMA-style epilogues instead of only GELU-shaped transformer
+  work.
   The same microscope reports `nativeEagerModuleForwardMs`,
   `nativeEagerModuleSpeedup`, and `nativeEagerModuleMaxAbsDiff` for
   both `zgml.noGrad(() => linearModel.forward(input))` and
   `zgml.noGrad(() => linearGeluModel.forward(input))`, plus
-  `zgml.noGrad(() => linearReluModel.forward(input))`, proving ordinary
+  `zgml.noGrad(() => linearReluModel.forward(input))` and
+  `zgml.noGrad(() => linearSiluModel.forward(input))`, proving ordinary
   `nn.Linear`, adjacent `nn.Sequential(Linear, GELU)`, and adjacent
-  `nn.Sequential(Linear, ReLU)` module surfaces can
+  `nn.Sequential(Linear, ReLU)` / `nn.Sequential(Linear, SiLU)` module surfaces can
   take the native eager lane without users calling the low-level primitive
   directly.
   These C ABI paths use the same shared native matmul substrate as compiled

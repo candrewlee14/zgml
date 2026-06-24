@@ -374,6 +374,12 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected nativeEager.linearActivationInto ReLU to reuse caller output`);
   }
   expectClose(reluOutput, Array.from(directOutput, (value) => value > 0 ? value : 0), `${label} nativeEager.linearActivationInto ReLU output`);
+  const siluOutput = new Float32Array(6);
+  const siluResult = nativeEager.linearActivationInto(siluOutput, input, weights, { bias, activation: "silu" });
+  if (siluResult !== siluOutput) {
+    throw new Error(`${label} expected nativeEager.linearActivationInto SiLU to reuse caller output`);
+  }
+  expectClose(siluOutput, Array.from(directOutput, (value) => value / (1 + Math.exp(-value))), `${label} nativeEager.linearActivationInto SiLU output`);
 
   const linear = adapter.nn.linear(2, 3, {
     weight: [1, 0, 0.5, 0, 1, -0.5],
@@ -404,6 +410,17 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const eagerReluSequential = reluSequential.forward(input);
   const nativeReluSequential = adapter.noGrad(() => reluSequential.forward(input));
   expectClose(nativeReluSequential.data, eagerReluSequential.data, `${label} noGrad nn.Sequential Linear+ReLU native eager module output`);
+
+  const siluSequential = new adapter.nn.Sequential(
+    new adapter.nn.Linear(2, 3, {
+      weight: [1, 0, 0.5, 0, 1, -0.5],
+      bias: [0.25, -0.25, 0.5],
+    }),
+    new adapter.nn.SiLU(),
+  );
+  const eagerSiluSequential = siluSequential.forward(input);
+  const nativeSiluSequential = adapter.noGrad(() => siluSequential.forward(input));
+  expectClose(nativeSiluSequential.data, eagerSiluSequential.data, `${label} noGrad nn.Sequential Linear+SiLU native eager module output`);
 }
 
 function expectLossAndAdamWEvidence(adapter: Record<string, any>, label: string) {
