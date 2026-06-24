@@ -917,8 +917,15 @@ report `qmatmul_row_chain_tiled_row_tile_groups=4`,
 `qmatmul_row_chain_tiled_partial_slots=2304`, and
 `qmatmul_row_chain_tiled_scratch_capacity=73728`. That is real
 executable-stencil progress, but it is not a default promotion yet because the
-tiled leaf still loses throughput on the SmolLM prompt shape. The next
-implementation target remains the
+tiled leaf still loses throughput on the SmolLM prompt shape. The same gate now
+also exposes why the one-command semantic target is not the missing throughput
+kernel yet: full-prefill reports `target_semantic_rows=128`,
+`target_semantic_hidden=512`, and
+`target_semantic_row_serial_dot_ops=786432`, while SmolLM prompt reports
+`target_semantic_rows=128`, `target_semantic_hidden=576`, and
+`target_semantic_row_serial_dot_ops=995328`. The command shape is ideal, but
+the implementation still performs a row-serial dot workload inside each
+threadgroup. The next implementation target remains the
 `semantic_ffn_sublayer_throughput_kernel` or a faster tiled row-chain leaf, not
 another command policy toggle.
 Use it when changing projection-pair, row-chain, residual, RMSNorm, or

@@ -81,6 +81,12 @@ pub const RuntimeProfile = struct {
     qmatmul_row_chain_tiled_scratch_capacity: u64 = 0,
     qmatmul_row_chain_tiled_spilled_elementwise: u64 = 0,
     qmatmul_row_chain_tiled_two_phase_count: u64 = 0,
+    semantic_ffn_sublayer_count: u64 = 0,
+    semantic_ffn_sublayer_rows: u64 = 0,
+    semantic_ffn_sublayer_hidden: u64 = 0,
+    semantic_ffn_sublayer_input: u64 = 0,
+    semantic_ffn_sublayer_output: u64 = 0,
+    semantic_ffn_sublayer_row_serial_dot_ops: u64 = 0,
     call_count: u32 = 0,
 
     pub fn reset(self: *RuntimeProfile) void {
@@ -122,6 +128,12 @@ pub const RuntimeProfile = struct {
         self.qmatmul_row_chain_tiled_scratch_capacity +%= other.qmatmul_row_chain_tiled_scratch_capacity;
         self.qmatmul_row_chain_tiled_spilled_elementwise +%= other.qmatmul_row_chain_tiled_spilled_elementwise;
         self.qmatmul_row_chain_tiled_two_phase_count +%= other.qmatmul_row_chain_tiled_two_phase_count;
+        self.semantic_ffn_sublayer_count +%= other.semantic_ffn_sublayer_count;
+        self.semantic_ffn_sublayer_rows +%= other.semantic_ffn_sublayer_rows;
+        self.semantic_ffn_sublayer_hidden +%= other.semantic_ffn_sublayer_hidden;
+        self.semantic_ffn_sublayer_input +%= other.semantic_ffn_sublayer_input;
+        self.semantic_ffn_sublayer_output +%= other.semantic_ffn_sublayer_output;
+        self.semantic_ffn_sublayer_row_serial_dot_ops +%= other.semantic_ffn_sublayer_row_serial_dot_ops;
         self.call_count +%= other.call_count;
     }
 
@@ -217,6 +229,18 @@ pub const RuntimeProfile = struct {
     pub fn recordQMatmulRowChainTwoPhaseTiled(self: *RuntimeProfile, m: u32, n: u32, tile: u32, write_elementwise_output: bool) void {
         self.recordQMatmulRowChainTiled(m, n, tile, write_elementwise_output);
         self.qmatmul_row_chain_tiled_two_phase_count +%= 1;
+    }
+
+    pub fn recordSemanticFfnSublayer(self: *RuntimeProfile, m: u32, h: u32, k: u32, o: u32) void {
+        const hidden: u64 = h;
+        const input: u64 = k;
+        const output: u64 = o;
+        self.semantic_ffn_sublayer_count +%= 1;
+        self.semantic_ffn_sublayer_rows +%= m;
+        self.semantic_ffn_sublayer_hidden +%= hidden;
+        self.semantic_ffn_sublayer_input +%= input;
+        self.semantic_ffn_sublayer_output +%= output;
+        self.semantic_ffn_sublayer_row_serial_dot_ops +%= (hidden *% input *% 2) +% (hidden *% output);
     }
 };
 

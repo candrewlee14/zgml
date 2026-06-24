@@ -9090,6 +9090,7 @@ const CompiledProgram = struct {
             .scale_src_offset = rp.src_offset,
             .scaled_dst_offset = out.dst_offset,
         };
+        exec.profile.recordSemanticFfnSublayer(params.M, params.H, params.K, params.O);
         exec.encodeKernel(.qmatmul_semantic_ffn_sublayer_f32, &buffers, params, 10, .{ .gx = gate.M }, QMATMUL_ROW_CHAIN_THREADS);
         return true;
     }
