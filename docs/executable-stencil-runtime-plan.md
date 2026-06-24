@@ -590,9 +590,12 @@ median status, worst ratio, selected/median lane pass counts, selected/median
 miss lists, selected attempt, native freshness, Torch version, timing metric,
 active keys, and ratio medians, so PyTorch evidence is now both written and
 discoverable through the normal source-checkout benchmark status
-surface. When the latest artifact is a narrow one-lane microscope,
-`bench:status` also prints the most recent six-lane focus artifact as
-`pytorch-focus-results:` so a local experiment cannot hide the broader CPU
+surface. When the latest artifact is a narrow microscope, `bench:status` also
+prints the most recent ten-lane broad artifact as `pytorch-broad-results:` and
+the most recent six-lane focus artifact as `pytorch-focus-results:`. This keeps
+three different facts visible at once: the freshest local experiment, the broad
+PyTorch-like replacement sample, and the focused current-hot-path sample. A
+one-lane log-softmax probe should not be able to hide the ten-lane CPU
 competitiveness signal.
 The PyTorch comparison microscope also accepts exploratory lanes such as
 `rms_gelu_linear_batched`, `softmax_classifier_batched`,
@@ -927,7 +930,10 @@ The broad PyTorch replacement loop is now named explicitly as
 `dev:perf:pytorch:broad*`. A fresh ten-lane sample showed nine lanes ahead of
 PyTorch while `log_softmax_classifier_batched` remained the only miss
 (`0.93x` one-attempt; steady focused median around `0.92x-0.97x` depending on
-the local timing sample). A June 24, 2026 policy experiment that forced the
+the local timing sample). `bench:status` now preserves that broad sample as a
+separate `pytorch-broad-results:` line even when the newest artifact is a
+one-lane microscope, so iteration on a soft spot no longer erases the current
+replacement-level scoreboard. A June 24, 2026 policy experiment that forced the
 `N=32` path through the small direct linear+bias kernel before the row
 log-softmax was also rejected: the module bench regressed
 `prepared_execute_into_ms` to about `0.0112ms`, and the three-attempt PyTorch

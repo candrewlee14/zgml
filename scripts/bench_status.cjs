@@ -29,6 +29,18 @@ const pytorchFocusKeys = [
   "log_softmax_classifier_batched",
   "lazy_token_head_batched",
 ];
+const pytorchBroadKeys = [
+  "linear_batched",
+  "lazy_matmul_add_gelu_batched",
+  "lazy_mlp_batched",
+  "lazy_rms_silu_ffn_batched",
+  "max_pool2d_batched",
+  "avg_pool2d_batched",
+  "rms_gelu_linear_batched",
+  "softmax_classifier_batched",
+  "log_softmax_classifier_batched",
+  "lazy_token_head_batched",
+];
 
 function latestFullRunArtifact() {
   const artifacts = fullRunArtifacts();
@@ -101,12 +113,20 @@ function latestPytorchComparisonArtifact() {
 }
 
 function isPytorchFocusArtifact(path) {
+  return isPytorchKeySetArtifact(path, pytorchFocusKeys);
+}
+
+function isPytorchBroadArtifact(path) {
+  return isPytorchKeySetArtifact(path, pytorchBroadKeys);
+}
+
+function isPytorchKeySetArtifact(path, expectedKeys) {
   try {
     const data = readJson(path);
     const keys = data?.config?.activeComparisonKeys;
     return Array.isArray(keys) &&
-      keys.length === pytorchFocusKeys.length &&
-      pytorchFocusKeys.every((key, index) => keys[index] === key);
+      keys.length === expectedKeys.length &&
+      expectedKeys.every((key, index) => keys[index] === key);
   } catch {
     return false;
   }
@@ -114,6 +134,10 @@ function isPytorchFocusArtifact(path) {
 
 function latestPytorchFocusArtifact() {
   return pytorchComparisonArtifacts().filter(isPytorchFocusArtifact).at(-1) ?? null;
+}
+
+function latestPytorchBroadArtifact() {
+  return pytorchComparisonArtifacts().filter(isPytorchBroadArtifact).at(-1) ?? null;
 }
 
 function q8PromptCandidateArtifacts() {
@@ -288,6 +312,11 @@ function pytorchComparisonStatusLine(path) {
 function pytorchFocusStatusLine(path, latestPath) {
   if (!path || path === latestPath) return null;
   return pytorchComparisonStatusLine(path).replace("pytorch-results: latest=", "pytorch-focus-results: latest=");
+}
+
+function pytorchBroadStatusLine(path, latestPath) {
+  if (!path || path === latestPath) return null;
+  return pytorchComparisonStatusLine(path).replace("pytorch-results: latest=", "pytorch-broad-results: latest=");
 }
 
 function q8PromptCandidateStatusLine(path) {
@@ -860,6 +889,8 @@ if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);
 const latestPytorch = latestPytorchComparisonArtifact();
 process.stdout.write(`${pytorchComparisonStatusLine(latestPytorch)}\n`);
+const broadPytorch = pytorchBroadStatusLine(latestPytorchBroadArtifact(), latestPytorch);
+if (broadPytorch) process.stdout.write(`${broadPytorch}\n`);
 const focusPytorch = pytorchFocusStatusLine(latestPytorchFocusArtifact(), latestPytorch);
 if (focusPytorch) process.stdout.write(`${focusPytorch}\n`);
 process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8PromptCandidateArtifact())}\n`);
