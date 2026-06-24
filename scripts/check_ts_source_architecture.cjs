@@ -185,6 +185,7 @@ function checkTsProductManifestsUseSharedPolicy(errors) {
     ["src/ts/optim.ts", "optimManifest", "src/ts/optim.ts"],
     ["src/ts/program.ts", "programManifest", "src/ts/program.ts"],
     ["src/ts/program_device.ts", "programDeviceManifest", "src/ts/program_device.ts"],
+    ["src/ts/public_surface.ts", "publicSurfaceManifest", "src/ts/public_surface.ts"],
     ["src/ts/session.ts", "sessionManifest", "src/ts/session.ts"],
     ["src/ts/shared_frontend.ts", "sharedFrontendManifest", "src/ts/shared_frontend.ts"],
     ["src/ts/step_params.ts", "stepParamsManifest", "src/ts/step_params.ts"],
@@ -212,6 +213,53 @@ function checkTsProductManifestsUseSharedPolicy(errors) {
         errors.push(`${relativePath} must not hand-copy TS product manifest policy; use tsProductManifestPolicy: ${forbidden}`);
       }
     }
+  }
+}
+
+function stringLiteralsFromExportedConstArray(source, relativePath, constName, errors) {
+  const match = source.match(new RegExp(`export const ${constName} = Object\\.freeze\\(\\[([\\s\\S]*?)\\] as const\\);`));
+  if (!match) {
+    errors.push(`${relativePath} must keep exported const array ${constName}`);
+    return [];
+  }
+  return [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
+}
+
+function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
+  const indexPath = "src/ts/index.ts";
+  const surfacePath = "src/ts/public_surface.ts";
+  const indexSource = fs.readFileSync(path.join(root, indexPath), "utf8");
+  const surfaceSource = fs.readFileSync(path.join(root, surfacePath), "utf8");
+
+  const rootNamespaceExports = [...indexSource.matchAll(/^export \* as ([A-Za-z0-9_]+) from /gm)]
+    .map((match) => match[1])
+    .sort();
+  const stable = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "stableRootNamespaces", errors);
+  const advanced = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "advancedRootNamespaces", errors);
+  const legacy = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "legacyCompatibleRootNamespaces", errors);
+  const classified = [...stable, ...advanced, ...legacy].sort();
+  const classifiedSet = new Set(classified);
+  const duplicateClassifications = classified.filter((name, index) => classified.indexOf(name) !== index);
+  const missing = rootNamespaceExports.filter((name) => !classifiedSet.has(name));
+  const stale = classified.filter((name) => !rootNamespaceExports.includes(name));
+
+  if (indexSource.includes('from "./public_surface.js"')) {
+    errors.push(`${indexPath} must not expose the internal root public-surface taxonomy as another user-facing root API`);
+  }
+  if (!surfaceSource.includes("internalPackagePolicyOnly: true")) {
+    errors.push(`${surfacePath} must classify the public-surface taxonomy as internal package policy`);
+  }
+  if (!surfaceSource.includes("classificationCoversRootNamespaceExports: true")) {
+    errors.push(`${surfacePath} must assert that the taxonomy covers root namespace exports`);
+  }
+  if (duplicateClassifications.length !== 0) {
+    errors.push(`${surfacePath} must classify each root namespace once: duplicate ${[...new Set(duplicateClassifications)].join(", ")}`);
+  }
+  if (missing.length !== 0) {
+    errors.push(`${surfacePath} must classify every root namespace export from ${indexPath}: missing ${missing.join(", ")}`);
+  }
+  if (stale.length !== 0) {
+    errors.push(`${surfacePath} must not classify stale root namespaces absent from ${indexPath}: ${stale.join(", ")}`);
   }
 }
 
@@ -700,15 +748,13 @@ function checkPackageExports(errors) {
     "projectionGroupSmollmPromptMaxAbsDiff > projectionChainMaxAbsDiffCeil",
     "projectionRowChainGroupFullPrefillMaxAbsDiff > projectionRowChainMaxAbsDiffCeil",
     "projectionRowChainGroupSmollmPromptMaxAbsDiff > projectionRowChainMaxAbsDiffCeil",
-    "projectionDecodeMaxAbsDiff > projectionRowChainMaxAbsDiffCeil",
     "projectionPromptMaxAbsDiff > projectionRowChainMaxAbsDiffCeil",
     "projectionSmollmPromptMaxAbsDiff > projectionRowChainMaxAbsDiffCeil",
-    "projectionPromptSingleDispatchMaxAbsDiff > projectionRowChainMaxAbsDiffCeil",
-    "projectionFullPrefillSingleDispatchMaxAbsDiff > projectionRowChainMaxAbsDiffCeil",
-    "projectionSmollmPromptSingleDispatchMaxAbsDiff > projectionRowChainMaxAbsDiffCeil",
     "projection_row_chain prompt shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4",
     "projection_row_chain_single_dispatch prompt shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4",
     "projection_row_chain decode shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4",
+    "projection_row_chain prompt runtime profile must stay at 2 command dispatches",
+    "projection_row_chain_single_dispatch prompt runtime profile must stay at 1 command dispatch",
     "function scoreMargin(current)",
     "function chooseBest(attempts)",
     "passing.length > 0 ? passing : attempts",
@@ -15428,7 +15474,7 @@ function checkDistSmokeIsTsOwned(errors) {
     "const packageRootRuntime = `./${packageMain}`;",
     "const packageRootTypes = `./${packageTypes}`;",
     "const excludedPackageEntries = Object.freeze([",
-    "const noDeclarationEntries = Object.freeze([...excludedPackageEntries]);",
+    "const noDeclarationEntries = Object.freeze([",
     "const excludedDeclarationGlobs = Object.freeze([",
     "...noDeclarationEntries.map((entry) => `!${entry}`)",
     "const dtsEntryGlobs = Object.freeze([",
@@ -17086,6 +17132,7 @@ try {
   checkSharedFrontendUsesAuthoredTsLanguage(errors);
   checkFrontendManifestHasSingleRuntimeOwner(errors);
   checkTsProductManifestsUseSharedPolicy(errors);
+  checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors);
   checkTsRuntimeManifestsUseSharedPolicy(errors);
   checkNoSharedKernelPlanShim(errors);
   checkCoreTensorSurfaceFactoriesUseNamedContracts(errors);

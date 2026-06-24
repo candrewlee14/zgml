@@ -406,7 +406,12 @@ Current checked progress:
   rank-3 `transpose` plus single-swap and cycle `permute`
   lowering through the native module Program ABI,
   rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering, and
-  compile/bind/session hooks through package and type smokes. The root-level product/API diet and native eager execution policy are still open work.
+  compile/bind/session hooks through package and type smokes. The root-level
+  product/API diet now has a checked internal non-breaking taxonomy:
+  `src/ts/public_surface.ts` names the stable root namespaces users should learn
+  first, separates advanced runtime/evidence namespaces, and keeps legacy
+  compatibility slices explicit while preserving existing exports without adding
+  another public package subpath. Native eager execution policy is still open work.
   The remaining frontend jump is native lowering, breadth, and first-contact
   simplicity, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or

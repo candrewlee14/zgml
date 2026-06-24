@@ -927,8 +927,9 @@ with a latest-vs-checked-baseline delta report for the selected native lanes,
 and checks that the public type smokes still cover the zgml frontend surface:
 `goal progress: Program/Session substrate=85% floor=65%; zgml frontend surface=85% floor=60%`.
 Those numbers are deliberately conservative: q8 prompt execution still needs a
-real tiled row-chain throughput kernel, the root-level product/API diet is still
-open, and native eager execution policy is not broad enough to claim a finished
+real tiled row-chain throughput kernel, the root-level product/API diet now has
+a checked internal stable-first taxonomy but has not removed compatibility
+exports, and native eager execution policy is not broad enough to claim a finished
 PyTorch-like replacement. The frontier gate now measures the
 actual SmolLM prompt geometry (`m=128 n=576 k=576`) for projection-chain and
 projection-row-chain variants, so the remaining row-chain work is a measured

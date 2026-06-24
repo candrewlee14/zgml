@@ -22,6 +22,7 @@ const excludedTopLevelSubpaths = new Set([
   "index",
   "node",
   "public_api",
+  "public_surface",
   "shared_frontend",
 ]);
 
@@ -31,8 +32,11 @@ const forbiddenPublicExportPrefixes = Object.freeze(["./internal"]);
 const nodeFfiRuntimeEntry = "src/ts/adapters/node_ffi_runtime.ts";
 const excludedPackageEntries = Object.freeze([
   nodeFfiRuntimeEntry,
+  "src/ts/public_surface.ts",
 ]);
-const noDeclarationEntries = Object.freeze([...excludedPackageEntries]);
+const noDeclarationEntries = Object.freeze([
+  nodeFfiRuntimeEntry,
+]);
 const excludedDeclarationGlobs = Object.freeze([
   ...noDeclarationEntries.map((entry) => `!${entry}`),
   "!src/ts/smokes/**/*.ts",
@@ -220,6 +224,20 @@ const sourceContracts = Object.freeze({
   ]),
   "src/ts/index.ts": Object.freeze([
     'export { frontendManifest } from "./frontend_manifest.js";',
+  ]),
+  "src/ts/public_surface.ts": Object.freeze([
+    'import { tsProductManifestPolicy } from "./internal/product_manifest.js";',
+    "export const stableRootNamespaces = Object.freeze([",
+    "export const advancedRootNamespaces = Object.freeze([",
+    "export const legacyCompatibleRootNamespaces = Object.freeze([",
+    "export const rootSurfacePolicy = Object.freeze({",
+    "export const publicSurfaceManifest = Object.freeze({",
+    'kind: "zgml-public-surface"',
+    '...tsProductManifestPolicy("src/ts/public_surface.ts")',
+    'rootEntry: "src/ts/index.ts"',
+    "internalPackagePolicyOnly: true",
+    "classificationCoversRootNamespaceExports: true",
+    "newProductSurfaceGoesThroughStableNamespaces: true",
   ]),
   "src/ts/browser.ts": Object.freeze([
     'export * from "./index.js";',
