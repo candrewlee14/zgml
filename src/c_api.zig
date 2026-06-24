@@ -5717,17 +5717,17 @@ fn executeSmallDirectLinearBiasLogSoftmax32(linear: *const TinyLinearSessionHand
 }
 
 fn shouldUseSmallDirectLinearBiasLogSoftmax32(shape: DirectLinearLogSoftmaxStepShape) bool {
-    return shape.has_bias and shape.M < 64 and shape.N == 32 and shape.K <= 128;
+    return shape.has_bias and shape.N == 32 and shape.K <= 128 and (shape.M < 64 or (shape.M == 128 and shape.K == 64));
 }
 
-test "direct linear logsoftmax n32 uses small fused path only for small batches" {
+test "direct linear logsoftmax n32 uses small fused path for small and tracked classifier batches" {
     try std.testing.expect(shouldUseSmallDirectLinearBiasLogSoftmax32(.{
         .M = 8,
         .N = 32,
         .K = 64,
         .has_bias = true,
     }));
-    try std.testing.expect(!shouldUseSmallDirectLinearBiasLogSoftmax32(.{
+    try std.testing.expect(shouldUseSmallDirectLinearBiasLogSoftmax32(.{
         .M = 128,
         .N = 32,
         .K = 64,

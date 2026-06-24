@@ -1035,6 +1035,14 @@ with the best selected log-softmax attempt at
 not move the corrected median and was not kept. The next PyTorch catch-up move
 is still a stronger classifier-tail kernel or a path that changes
 row-normalization amortization, not a timing-harness artifact.
+A fresh exact-shape direct-tail recheck then let the fused native
+`M=128,N=32,K=64` classifier helper cover the focused PyTorch comparison shape
+instead of forcing that case through the BLAS-plus-row-normalization path. The
+150ms three-attempt microscope moved the selected ratio only modestly
+(`0.91x -> 0.93x`, median `0.92x`) with zgml prepared times around
+`0.00755ms`; the lane remains a miss, but the direct path is no longer worse
+than the fallback on the local ReleaseFast evidence. Keep this as a small
+classifier-tail policy correction, not a parity claim.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier
