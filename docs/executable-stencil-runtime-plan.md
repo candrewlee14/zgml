@@ -578,16 +578,18 @@ kernel look several times slower than it is.
 The PyTorch checker now also writes an ignored JSON artifact by default under
 `bench-results/pytorch/` (`schema: "zgml.pytorch-comparison.v1"`) and prints a
 machine-readable `PYTORCH_COMPARISON_JSON` line with the artifact path, selected
-attempt, native freshness, parity status, and worst ratio. Set
+attempt, native freshness, parity status, lane pass counts, lane miss lists, and
+worst ratio. Set
 `BENCH_PYTORCH_WRITE_ARTIFACT=0` only for throwaway local diagnostics. This
 keeps PyTorch competitiveness evidence closer to the ggml artifact model:
 checked claims should have preserved keys, attempts, medians, timing windows,
 Torch version, machine metadata, and native freshness, not just a console line
 or a dated sentence in this plan. `bench:status` reads the latest matching
 PyTorch comparison artifact back out as a `pytorch-results:` line with status,
-median status, worst ratio, selected attempt, native freshness, Torch version,
-timing metric, active keys, and ratio medians, so PyTorch evidence is now both
-written and discoverable through the normal source-checkout benchmark status
+median status, worst ratio, selected/median lane pass counts, selected/median
+miss lists, selected attempt, native freshness, Torch version, timing metric,
+active keys, and ratio medians, so PyTorch evidence is now both written and
+discoverable through the normal source-checkout benchmark status
 surface. When the latest artifact is a narrow one-lane microscope,
 `bench:status` also prints the most recent six-lane focus artifact as
 `pytorch-focus-results:` so a local experiment cannot hide the broader CPU

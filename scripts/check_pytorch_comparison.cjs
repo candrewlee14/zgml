@@ -314,6 +314,12 @@ const ratioStats = activeComparisonKeys.map((key) => {
   };
 });
 const medianParityReady = ratioStats.every((entry) => entry.median >= minRatio);
+const selectedLanePassCount = best.ratioEntries.filter((entry) => entry.ratio >= minRatio).length;
+const selectedLaneTotal = best.ratioEntries.length;
+const selectedLaneMisses = best.ratioEntries.filter((entry) => entry.ratio < minRatio).map((entry) => entry.key);
+const medianLanePassCount = ratioStats.filter((entry) => entry.median >= minRatio).length;
+const medianLaneTotal = ratioStats.length;
+const medianLaneMisses = ratioStats.filter((entry) => entry.median < minRatio).map((entry) => entry.key);
 const comparisonReady = requireMedianParity ? parityReady && medianParityReady : parityReady;
 const parts = [
   `pytorch comparison: ${requireParity ? (comparisonReady ? "parity-pass" : "parity-miss") : "evidence"}`,
@@ -329,6 +335,10 @@ const parts = [
   `attempt=${best.index}/${attempts}`,
   `noisy=${noisyAttempts}`,
   `worst=${worst.key}:${worst.ratio.toFixed(2)}x`,
+  `lane_pass=${selectedLanePassCount}/${selectedLaneTotal}`,
+  `median_lane_pass=${medianLanePassCount}/${medianLaneTotal}`,
+  `lane_miss=${selectedLaneMisses.length === 0 ? "none" : selectedLaneMisses.join(",")}`,
+  `median_lane_miss=${medianLaneMisses.length === 0 ? "none" : medianLaneMisses.join(",")}`,
   `ratio_range=${ratioStats.map((entry) => `${entry.key}:${entry.min.toFixed(2)}-${entry.max.toFixed(2)}x`).join(",")}`,
   `ratio_median=${ratioStats.map((entry) => `${entry.key}:${entry.median.toFixed(2)}x`).join(",")}`,
   `median_parity=${medianParityReady ? "pass" : "miss"}`,
@@ -380,6 +390,14 @@ if (writeArtifact) {
       zgmlMs: roundMetric(worst.zgmlMs),
       pytorchMs: roundMetric(worst.pytorchMs),
     },
+    lanePass: {
+      selected: selectedLanePassCount,
+      selectedTotal: selectedLaneTotal,
+      selectedMisses: selectedLaneMisses,
+      median: medianLanePassCount,
+      medianTotal: medianLaneTotal,
+      medianMisses: medianLaneMisses,
+    },
     ratioStats: Object.fromEntries(ratioStats.map((entry) => [entry.key, {
       min: roundMetric(entry.min),
       median: roundMetric(entry.median),
@@ -412,6 +430,8 @@ if (writeArtifact) {
     parity: comparisonReady ? "pass" : "miss",
     medianParity: medianParityReady ? "pass" : "miss",
     worst: `${worst.key}:${worst.ratio.toFixed(2)}x`,
+    lanePass: `${selectedLanePassCount}/${selectedLaneTotal}`,
+    medianLanePass: `${medianLanePassCount}/${medianLaneTotal}`,
     selectedAttempt: best.index,
     attempts,
     native: nativeFreshness.label,

@@ -496,6 +496,10 @@ function checkPackageExports(errors) {
     "native=${nativeFreshness.label}",
     "schema: \"zgml.pytorch-comparison.v1\"",
     "PYTORCH_COMPARISON_JSON",
+    "lanePass: `${selectedLanePassCount}/${selectedLaneTotal}`",
+    "medianLanePass: `${medianLanePassCount}/${medianLaneTotal}`",
+    "selectedMisses: selectedLaneMisses",
+    "medianMisses: medianLaneMisses",
     "artifact=${artifactPath}",
   ]) {
     if (!pytorchComparisonSource.includes(required)) {
@@ -549,6 +553,10 @@ function checkPackageExports(errors) {
     "function pytorchComparisonStatusLine(path)",
     "pytorch-results: latest=",
     "pytorch-results: no local PyTorch comparison artifact found",
+    "lane_pass=${selectedLanePass}",
+    "median_lane_pass=${medianLanePass}",
+    "lane_miss=${laneMiss}",
+    "median_lane_miss=${medianLaneMiss}",
     "ratio_median=${medians}",
     "const q8PromptArtifactPattern = /^q8-prompt-\\d{8}T\\d{6}Z-\\d+\\.json$/",
     "function q8PromptCandidateArtifacts()",

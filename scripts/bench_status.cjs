@@ -193,6 +193,21 @@ function formatRatio(value) {
   return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(2)}x` : "n/a";
 }
 
+function ratioPassSummary(entries, minRatio) {
+  if (!entries || typeof entries !== "object") return null;
+  const rows = Object.entries(entries).flatMap(([key, value]) => {
+    const ratio = Number(value?.zgmlVsPytorch ?? value?.median);
+    return Number.isFinite(ratio) ? [{ key, ratio }] : [];
+  });
+  if (rows.length === 0 || !Number.isFinite(minRatio)) return null;
+  const misses = rows.filter((row) => row.ratio < minRatio).map((row) => row.key);
+  return {
+    pass: rows.length - misses.length,
+    total: rows.length,
+    misses,
+  };
+}
+
 function trendEvidence(latestPath) {
   const runs = fullRunArtifacts();
   if (!latestPath || runs.length === 0) return null;
@@ -247,12 +262,27 @@ function pytorchComparisonStatusLine(path) {
   const status = data?.comparisonReady === true ? "pass" : "miss";
   const medianStatus = data?.medianParityReady === true ? "pass" : "miss";
   const worst = data?.worst?.key ? `${data.worst.key}:${formatRatio(data.worst.ratio)}` : "missing";
+  const minRatio = Number(data?.config?.minRatio ?? 1);
+  const selectedFallback = ratioPassSummary(data?.selectedRatios, minRatio);
+  const medianFallback = ratioPassSummary(data?.ratioStats, minRatio);
+  const selectedLanePass = Number.isInteger(data?.lanePass?.selected) && Number.isInteger(data?.lanePass?.selectedTotal)
+    ? `${data.lanePass.selected}/${data.lanePass.selectedTotal}`
+    : selectedFallback ? `${selectedFallback.pass}/${selectedFallback.total}` : "n/a";
+  const medianLanePass = Number.isInteger(data?.lanePass?.median) && Number.isInteger(data?.lanePass?.medianTotal)
+    ? `${data.lanePass.median}/${data.lanePass.medianTotal}`
+    : medianFallback ? `${medianFallback.pass}/${medianFallback.total}` : "n/a";
+  const laneMiss = Array.isArray(data?.lanePass?.selectedMisses) && data.lanePass.selectedMisses.length !== 0
+    ? data.lanePass.selectedMisses.join(",")
+    : selectedFallback && selectedFallback.misses.length !== 0 ? selectedFallback.misses.join(",") : "none";
+  const medianLaneMiss = Array.isArray(data?.lanePass?.medianMisses) && data.lanePass.medianMisses.length !== 0
+    ? data.lanePass.medianMisses.join(",")
+    : medianFallback && medianFallback.misses.length !== 0 ? medianFallback.misses.join(",") : "none";
   const native = typeof data?.native?.label === "string" ? data.native.label : "unknown";
   const torch = typeof data?.pytorchVersion === "string" ? data.pytorchVersion : "unknown";
   const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
   const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
   const timing = typeof data?.config?.zgmlTimingMetric === "string" ? data.config.zgmlTimingMetric : "unknown";
-  return `pytorch-results: latest=${compactName(path)} status=${status} median=${medianStatus} worst=${worst} attempt=${selectedAttempt}/${attempts} native=${native} torch=${torch} timing=${timing} keys=${keys} ratio_median=${medians}`;
+  return `pytorch-results: latest=${compactName(path)} status=${status} median=${medianStatus} worst=${worst} lane_pass=${selectedLanePass} median_lane_pass=${medianLanePass} lane_miss=${laneMiss} median_lane_miss=${medianLaneMiss} attempt=${selectedAttempt}/${attempts} native=${native} torch=${torch} timing=${timing} keys=${keys} ratio_median=${medians}`;
 }
 
 function pytorchFocusStatusLine(path, latestPath) {
