@@ -435,7 +435,8 @@ function distStemForTsEntry(entry) {
 
 function requiredTsOwnedArtifacts() {
   const noDeclarations = new Set(noDeclarationEntries);
-  return tsSourceEntries(sourceRoot).flatMap((entry) => {
+  const excluded = new Set(excludedPackageEntries);
+  return tsSourceEntries(sourceRoot).filter((entry) => !excluded.has(entry)).flatMap((entry) => {
     const stem = distStemForTsEntry(entry);
     const artifacts = [`${stem}.cjs`];
     if (!entry.startsWith("src/ts/smokes/") && !noDeclarations.has(entry)) {

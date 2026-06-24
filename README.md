@@ -575,6 +575,12 @@ standalone/composable `compileSupport()`, SGD, Adam, and AdamW with optimizer
 Node/Bun root `save(snapshot, path)` / `load(path)` helpers for model+optimizer
 snapshots with joint preflight before restore mutates either
 target, for host-side model checks and small training loops.
+The checked frontend capability matrix in
+[`docs/frontend-capability-matrix.md`](docs/frontend-capability-matrix.md)
+keeps the PyTorch-like replacement claim honest by separating eager, autograd,
+TS shape-safety, native Program, package, browser/Wasm, and interop coverage
+from the remaining dtype/device, autograd-coverage, native-eager, and
+first-contact API gaps.
 `nn.identity`, `nn.reshape`, `nn.view`, `nn.flatten`, `nn.squeeze`, `nn.unsqueeze`, `nn.broadcastTo`, `nn.expand`, `nn.transpose`, bounded `nn.narrow`,
 bounded `nn.select`, and bounded `nn.slice` now lower through native module
 Programs for rank-1/rank-2 shapes, plus rank-3 reshape-family,

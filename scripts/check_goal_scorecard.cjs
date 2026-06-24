@@ -5644,6 +5644,9 @@ function checkDocs() {
     "The public root exports `Tensor`, tensor factories, `nn`, `F`, `data`, `loss`,",
     "`optim`, `train`, `checkpoint`, model-source helpers, and explicit",
     "`Program`/`Session` handles from the TS-authored product surface.",
+    "The checked frontend capability matrix in",
+    "`docs/frontend-capability-matrix.md`",
+    "keeps the PyTorch-like replacement claim honest",
     "LLM users go through model-source helpers such as `probeModel` / `loadModel`,",
   ]);
   const staleReadmeSurface = [
@@ -5891,6 +5894,38 @@ function checkDocs() {
     "tiled quantized row-chain",
     "The remaining frontend jump is native lowering, breadth, and first-contact",
     "compile hooks exist.",
+  ]);
+  requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "frontend capability matrix reference", [
+    "The current user-facing replacement claim is tracked in",
+    "`docs/frontend-capability-matrix.md`",
+    "is eager, autograd-capable, shape-typed, native-Program-backed, packaged,",
+    "the matrix should stay falsifiable.",
+  ]);
+
+  const frontendMatrix = read("docs/frontend-capability-matrix.md");
+  requireIncludes(frontendMatrix, "docs/frontend-capability-matrix.md", "PyTorch-like replacement trust matrix", [
+    "# Frontend Capability Matrix",
+    "| Capability | Eager | Autograd | TS Shape Safety | Native Program | Notes |",
+    "| Tensor factories and metadata | yes | n/a | yes | partial |",
+    "| Elementwise tensor math | yes | yes | partial | partial |",
+    "| Broadcasting | yes | partial | partial | partial |",
+    "| Views and movement ops | yes | partial | yes | partial |",
+    "| Reductions | yes | partial | partial | partial |",
+    "| Matmul and linear algebra | yes | yes | yes | yes |",
+    "| `einsum` | yes | partial | partial | no |",
+    "| Modules and containers | yes | yes | yes | partial |",
+    "| Common neural layers | yes | partial | yes | partial |",
+    "| Program/Session hot path | n/a | n/a | yes | yes |",
+    "| Browser/Wasm/WebGPU surface | partial | n/a | partial | partial |",
+    "## Replacement Gaps",
+    "`dtype` and `device` are honest but narrow.",
+    "Autograd coverage is broad enough for small model workflows",
+    "Native eager tensor storage is not the default.",
+    "Safetensors/checkpoint interop is strong for model-source runtime paths",
+    "The root public API is still wider than the ideal first-contact surface",
+    "## Evidence Bar",
+    "Raising the frontend replacement score should require one of these:",
+    "Raising the performance substrate score should require benchmark artifacts, not",
   ]);
   if (plan.includes("remaining\nknown miss is the RMSNorm -> SiLU FFN lane") || plan.includes("remaining known miss is the RMSNorm -> SiLU FFN lane")) {
     errors.push("docs/executable-stencil-runtime-plan.md must not describe the old RMSNorm -> SiLU FFN PyTorch lane as a current known miss");

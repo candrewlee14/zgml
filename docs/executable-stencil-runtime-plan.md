@@ -1303,6 +1303,12 @@ The ideal zgml is a small PyTorch-like replacement for JS/TS, plus a native
 execution core that PyTorch does not try to be. These are one product, not two
 tracks.
 
+The current user-facing replacement claim is tracked in
+`docs/frontend-capability-matrix.md`. That file is the compact source for what
+is eager, autograd-capable, shape-typed, native-Program-backed, packaged,
+browser/Wasm-ready, or still only partial. The plan should stay aspirational;
+the matrix should stay falsifiable.
+
 The public library should be judged by this ladder:
 
 ```text
