@@ -775,9 +775,11 @@ pytorch:0.0035ms` and `log_softmax_classifier_batched=zgml:0.0301ms
 pytorch:0.0072ms`. That confirms prepared host calls help but do not change the
 next target: the dense/log-softmax native kernels and dispatch granularity must
 get better.
-The next native cut did exactly that for the tracked classifier shape: the
-direct `Linear -> LogSoftmax` tail now forces the native small-direct linear path
-before the row log-softmax pass instead of preferring BLAS for that fused tail.
+The next native cuts did exactly that for the tracked classifier shape. Earlier
+experiments tested a forced native small-direct linear path before the row
+log-softmax pass; the current measured path now prefers the same BLAS-backed
+batched linear policy as `linear_batched`, then runs the measured `N=32` row
+log-softmax specialization for the fused direct `Linear -> LogSoftmax` tail.
 Under a 50ms timing window this moved `log_softmax_classifier_batched` prepared
 time from roughly `0.0310ms` to the `0.008-0.010ms` range. The focused
 three-attempt PyTorch rerun stayed noisy but moved the tracked soft spot from far
@@ -788,6 +790,12 @@ the selected attempt at `linear_batched=zgml:0.0021ms pytorch:0.0027ms` and
 prove broad PyTorch superiority, but it does prove the right kind of
 improvement: exact-shape native execution beats wrapper work for these micro
 gaps.
+The latest fresh-native three-attempt PyTorch gap microscope keeps the honest
+line: `linear_batched` is ahead of PyTorch (`ratio_median=linear_batched:1.25x`)
+while `log_softmax_classifier_batched` remains a real soft spot around
+`0.91x` median (`zgml:0.0078ms`, `pytorch:0.0071ms`). The next useful cut is
+therefore the row log-softmax tail itself, not another host wrapper tweak.
+Evidence tag: current measured path now prefers the same BLAS-backed batched linear policy as `linear_batched`; then runs the measured `N=32` row; latest fresh-native three-attempt PyTorch gap microscope; row log-softmax tail itself.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier

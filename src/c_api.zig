@@ -5644,7 +5644,7 @@ fn executeDirectLinearLogSoftmaxStep(linear: *const TinyLinearSessionHandle, sha
         .N = shape.N,
         .K = shape.K,
         .has_bias = shape.has_bias,
-    }, input, output, false);
+    }, input, output, true);
     logSoftmaxRowsInPlace(output[0..linear.output_len], shape.M, shape.N);
 }
 
