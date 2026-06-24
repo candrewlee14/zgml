@@ -244,7 +244,8 @@ function frontierFreshnessStatusLine(selectedPath, rawPath) {
     const fullPrefillTargetVsDefault = formatRatio(data?.fullPrefill?.targetSpeedup && data?.fullPrefill?.speedup ? data.fullPrefill.targetSpeedup / data.fullPrefill.speedup : null);
     const smollmPromptTargetVsDefault = formatRatio(data?.smollmPrompt?.targetSpeedup && data?.smollmPrompt?.speedup ? data.smollmPrompt.targetSpeedup / data.smollmPrompt.speedup : null);
     const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
-    latest = `target=${target} throughput_candidate=${throughputCandidate} candidate_vs_default=full:${fullPrefillCandidateVsDefault},smollm:${smollmPromptCandidateVsDefault} target_vs_default=full:${fullPrefillTargetVsDefault},smollm:${smollmPromptTargetVsDefault} attempts=${attempts}`;
+    const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
+    latest = `target=${target} throughput_candidate=${throughputCandidate} candidate_vs_default=full:${fullPrefillCandidateVsDefault},smollm:${smollmPromptCandidateVsDefault} target_vs_default=full:${fullPrefillTargetVsDefault},smollm:${smollmPromptTargetVsDefault} attempts=${attempts} source=${source}`;
   } catch {
     // Keep the freshness signal even if the newest artifact cannot be read.
   }

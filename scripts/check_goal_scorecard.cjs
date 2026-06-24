@@ -292,6 +292,7 @@ function checkScripts() {
     "reason=prefer_steady_attempts",
     "candidate_vs_default=full:",
     "target_vs_default=full:",
+    "source=${source}",
     "frontier-results: no local qsemantic artifact found",
     "const latestFrontier = latestFrontierArtifact()",
     "const latestRawFrontier = latestRawFrontierArtifact()",
