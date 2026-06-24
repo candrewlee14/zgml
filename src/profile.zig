@@ -375,6 +375,7 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeJsonField(jw, "program_command_shape_quantized_projection_chains", command_shape.quantized_projection_chains);
         try writeJsonField(jw, "program_command_shape_projection_chain_sidecars", command_shape.projection_chain_sidecars);
         try writeJsonField(jw, "program_command_shape_projection_chain_row_chain_frontiers", command_shape.projection_chain_row_chain_frontiers);
+        try writeJsonField(jw, "program_command_shape_projection_row_chain_semantic_residual_bridges", command_shape.projection_row_chain_semantic_residual_bridges);
         try writeJsonField(jw, "program_command_shape_projection_groups", command_shape.projection_groups);
         try writeJsonField(jw, "program_command_shape_projection_anchors", command_shape.projection_anchors);
         try writeJsonField(jw, "program_command_shape_projection_sidecars", command_shape.projection_sidecars);
@@ -596,6 +597,7 @@ test "RuntimeProfile serializes program command shape compression evidence" {
         .quantized_projection_chains = 2,
         .projection_chain_sidecars = 3,
         .projection_chain_row_chain_frontiers = 2,
+        .projection_row_chain_semantic_residual_bridges = 1,
         .projection_groups = 1,
         .projection_anchors = 4,
         .projection_sidecars = 2,
@@ -620,6 +622,7 @@ test "RuntimeProfile serializes program command shape compression evidence" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"program_command_shape_dense_projection_chains\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"program_command_shape_quantized_projection_chains\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"program_command_shape_projection_chain_row_chain_frontiers\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"program_command_shape_projection_row_chain_semantic_residual_bridges\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"program_command_shape_projection_cache_sidecars\":4") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"program_command_shape_stencil_hash\":12345") != null);
 }

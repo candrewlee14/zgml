@@ -200,16 +200,18 @@ fn printRatio(
 fn printCommandShape(
     w: *std.Io.Writer,
     name: []const u8,
+    ops: []const backend_mod.DeviceOp,
     commands: []const program_mod.ProgramCommand,
 ) !void {
-    const shape = try program_mod.ProgramCommandStreamShape.fromCommands(commands);
+    const shape = try program_mod.ProgramCommandStreamShape.fromOpsCommands(ops, commands);
     try w.print(
-        "  {s:<28} shape_commands={d}  shape_semantic_ffn_sublayers={d}  shape_projection_row_chains={d}  shape_covered_ops={d}  shape_saved_dispatches={d}  shape_projection_groups={d}\n",
+        "  {s:<28} shape_commands={d}  shape_semantic_ffn_sublayers={d}  shape_projection_row_chains={d}  shape_projection_row_chain_semantic_residual_bridges={d}  shape_covered_ops={d}  shape_saved_dispatches={d}  shape_projection_groups={d}\n",
         .{
             name,
             shape.command_count,
             shape.semantic_ffn_sublayers,
             shape.projection_row_chains,
+            shape.projection_row_chain_semantic_residual_bridges,
             shape.covered_ops,
             shape.estimated_saved_dispatches,
             shape.projection_groups,
@@ -944,7 +946,7 @@ fn benchProjectionGroupMetalCase(
     defer alloc.free(grouped_commands);
     var profile_name_buf: [112]u8 = undefined;
     const profile_name = try std.fmt.bufPrint(&profile_name_buf, "{s} projection_group dispatch_profile", .{case.name});
-    try printCommandShape(w, profile_name, grouped_commands);
+    try printCommandShape(w, profile_name, &ops, grouped_commands);
     try printProjectionGroupRuntimeProfile(w, profile_name, be, grouped_handle, &grouped_outputs);
 }
 
@@ -1111,21 +1113,21 @@ fn benchProjectionRowChainMetalCase(
     defer alloc.free(fused_commands);
     var profile_name_buf: [112]u8 = undefined;
     const profile_name = try std.fmt.bufPrint(&profile_name_buf, "{s} projection_row_chain dispatch_profile", .{case.name});
-    try printCommandShape(w, profile_name, fused_commands);
+    try printCommandShape(w, profile_name, &ops, fused_commands);
     try printProjectionRowChainRuntimeProfile(w, profile_name, be, fused_handle, &fused_output_io);
 
     const single_dispatch_commands = try program_mod.buildProgramCommands(alloc, &ops, single_dispatch_policy);
     defer alloc.free(single_dispatch_commands);
     var single_dispatch_profile_name_buf: [128]u8 = undefined;
     const single_dispatch_profile_name = try std.fmt.bufPrint(&single_dispatch_profile_name_buf, "{s} projection_row_chain_single_dispatch dispatch_profile", .{case.name});
-    try printCommandShape(w, single_dispatch_profile_name, single_dispatch_commands);
+    try printCommandShape(w, single_dispatch_profile_name, &ops, single_dispatch_commands);
     try printProjectionRowChainRuntimeProfile(w, single_dispatch_profile_name, be, single_dispatch_handle, &single_dispatch_output_io);
 
     const two_phase_commands = try program_mod.buildProgramCommands(alloc, &ops, two_phase_policy);
     defer alloc.free(two_phase_commands);
     var two_phase_profile_name_buf: [128]u8 = undefined;
     const two_phase_profile_name = try std.fmt.bufPrint(&two_phase_profile_name_buf, "{s} projection_row_chain_two_phase dispatch_profile", .{case.name});
-    try printCommandShape(w, two_phase_profile_name, two_phase_commands);
+    try printCommandShape(w, two_phase_profile_name, &ops, two_phase_commands);
     try printProjectionRowChainRuntimeProfile(w, two_phase_profile_name, be, two_phase_handle, &two_phase_output_io);
 }
 
@@ -1308,14 +1310,14 @@ fn benchProjectionRowChainGroupMetalCase(
     defer alloc.free(grouped_commands);
     var profile_name_buf: [128]u8 = undefined;
     const profile_name = try std.fmt.bufPrint(&profile_name_buf, "{s} projection_row_chain_group dispatch_profile", .{case.name});
-    try printCommandShape(w, profile_name, grouped_commands);
+    try printCommandShape(w, profile_name, &ops, grouped_commands);
     try printProjectionRowChainRuntimeProfile(w, profile_name, be, grouped_handle, &grouped_outputs);
 
     const two_phase_commands = try program_mod.buildProgramCommands(alloc, &ops, two_phase_policy);
     defer alloc.free(two_phase_commands);
     var two_phase_profile_name_buf: [144]u8 = undefined;
     const two_phase_profile_name = try std.fmt.bufPrint(&two_phase_profile_name_buf, "{s} projection_row_chain_two_phase_group dispatch_profile", .{case.name});
-    try printCommandShape(w, two_phase_profile_name, two_phase_commands);
+    try printCommandShape(w, two_phase_profile_name, &ops, two_phase_commands);
     try printProjectionRowChainRuntimeProfile(w, two_phase_profile_name, be, two_phase_handle, &two_phase_outputs);
 }
 
@@ -1499,7 +1501,7 @@ fn benchSemanticSublayerMetalCase(
         defer alloc.free(target_commands);
         var target_profile_name_buf: [160]u8 = undefined;
         const target_profile_name = try std.fmt.bufPrint(&target_profile_name_buf, "{s} semantic target dispatch_profile", .{case.name});
-        try printCommandShape(w, target_profile_name, target_commands);
+        try printCommandShape(w, target_profile_name, &ops, target_commands);
         try printSemanticSublayerRuntimeProfile(w, target_profile_name, be, target_handle, &target_output_io);
         return;
     }
@@ -1515,7 +1517,7 @@ fn benchSemanticSublayerMetalCase(
         defer alloc.free(throughput_commands);
         var throughput_profile_name_buf: [176]u8 = undefined;
         const throughput_profile_name = try std.fmt.bufPrint(&throughput_profile_name_buf, "{s} semantic throughput_candidate dispatch_profile", .{case.name});
-        try printCommandShape(w, throughput_profile_name, throughput_commands);
+        try printCommandShape(w, throughput_profile_name, &ops, throughput_commands);
         try printSemanticSublayerRuntimeProfile(w, throughput_profile_name, be, throughput_handle, &throughput_output_io);
         return;
     }
@@ -1561,35 +1563,35 @@ fn benchSemanticSublayerMetalCase(
     defer alloc.free(command_commands);
     var profile_name_buf: [144]u8 = undefined;
     const profile_name = try std.fmt.bufPrint(&profile_name_buf, "{s} semantic command dispatch_profile", .{case.name});
-    try printCommandShape(w, profile_name, command_commands);
+    try printCommandShape(w, profile_name, &ops, command_commands);
     try printSemanticSublayerRuntimeProfile(w, profile_name, be, command_handle, &command_output_io);
 
     const two_phase_commands = try program_mod.buildProgramCommands(alloc, &ops, two_phase_policy);
     defer alloc.free(two_phase_commands);
     var two_phase_profile_name_buf: [160]u8 = undefined;
     const two_phase_profile_name = try std.fmt.bufPrint(&two_phase_profile_name_buf, "{s} semantic pair_row_chain_two_phase dispatch_profile", .{case.name});
-    try printCommandShape(w, two_phase_profile_name, two_phase_commands);
+    try printCommandShape(w, two_phase_profile_name, &ops, two_phase_commands);
     try printSemanticSublayerRuntimeProfile(w, two_phase_profile_name, be, two_phase_handle, &two_phase_output_io);
 
     const single_dispatch_commands = try program_mod.buildProgramCommands(alloc, &ops, single_dispatch_policy);
     defer alloc.free(single_dispatch_commands);
     var single_dispatch_profile_name_buf: [176]u8 = undefined;
     const single_dispatch_profile_name = try std.fmt.bufPrint(&single_dispatch_profile_name_buf, "{s} semantic pair_row_chain_single_dispatch dispatch_profile", .{case.name});
-    try printCommandShape(w, single_dispatch_profile_name, single_dispatch_commands);
+    try printCommandShape(w, single_dispatch_profile_name, &ops, single_dispatch_commands);
     try printSemanticSublayerRuntimeProfile(w, single_dispatch_profile_name, be, single_dispatch_handle, &single_dispatch_output_io);
 
     const throughput_commands = try program_mod.buildProgramCommands(alloc, &ops, throughput_policy);
     defer alloc.free(throughput_commands);
     var throughput_profile_name_buf: [176]u8 = undefined;
     const throughput_profile_name = try std.fmt.bufPrint(&throughput_profile_name_buf, "{s} semantic throughput_candidate dispatch_profile", .{case.name});
-    try printCommandShape(w, throughput_profile_name, throughput_commands);
+    try printCommandShape(w, throughput_profile_name, &ops, throughput_commands);
     try printSemanticSublayerRuntimeProfile(w, throughput_profile_name, be, throughput_handle, &throughput_output_io);
 
     const target_commands = try program_mod.buildProgramCommands(alloc, &ops, target_policy);
     defer alloc.free(target_commands);
     var target_profile_name_buf: [160]u8 = undefined;
     const target_profile_name = try std.fmt.bufPrint(&target_profile_name_buf, "{s} semantic target dispatch_profile", .{case.name});
-    try printCommandShape(w, target_profile_name, target_commands);
+    try printCommandShape(w, target_profile_name, &ops, target_commands);
     try printSemanticSublayerRuntimeProfile(w, target_profile_name, be, target_handle, &target_output_io);
 }
 

@@ -277,7 +277,7 @@ pub const KernelPlan = struct {
     ) !KernelPlan {
         const commands = try buildProgramCommands(alloc, ops, policy);
         errdefer if (commands.len > 0) alloc.free(commands);
-        const command_shape = try ProgramCommandStreamShape.fromCommands(commands);
+        const command_shape = try ProgramCommandStreamShape.fromOpsCommands(ops, commands);
         return .{
             .commands = commands,
             .command_shape = command_shape,
@@ -1501,6 +1501,7 @@ pub const ProgramCommandStreamShape = struct {
     quantized_projection_chains: u32 = 0,
     projection_chain_sidecars: u32 = 0,
     projection_chain_row_chain_frontiers: u32 = 0,
+    projection_row_chain_semantic_residual_bridges: u32 = 0,
     projection_groups: u32 = 0,
     projection_anchors: u32 = 0,
     projection_sidecars: u32 = 0,
@@ -1514,10 +1515,14 @@ pub const ProgramCommandStreamShape = struct {
     fn init(alloc: std.mem.Allocator, ops: []const backend_mod.DeviceOp, policy: CommandStreamPolicy) !ProgramCommandStreamShape {
         const commands = try buildProgramCommands(alloc, ops, policy);
         defer if (commands.len > 0) alloc.free(commands);
-        return fromCommands(commands);
+        return fromOpsCommands(ops, commands);
     }
 
     pub fn fromCommands(commands: []const ProgramCommand) !ProgramCommandStreamShape {
+        return fromOpsCommands(&.{}, commands);
+    }
+
+    pub fn fromOpsCommands(ops: []const backend_mod.DeviceOp, commands: []const ProgramCommand) !ProgramCommandStreamShape {
         const summary = summarizeProgramCommands(commands);
         var shape = ProgramCommandStreamShape{
             .command_count = std.math.cast(u32, commands.len) orelse return error.UnsupportedDeviceOp,
@@ -1532,6 +1537,7 @@ pub const ProgramCommandStreamShape = struct {
             .quantized_projection_chains = summary.quantized_projection_chains,
             .projection_chain_sidecars = summary.projection_chain_sidecars,
             .projection_chain_row_chain_frontiers = summary.projection_chain_row_chain_frontiers,
+            .projection_row_chain_semantic_residual_bridges = countProjectionRowChainSemanticResidualBridges(ops, commands) orelse return error.UnsupportedDeviceOp,
             .projection_groups = summary.projection_groups,
             .projection_anchors = summary.projection_anchors,
             .projection_sidecars = summary.projection_sidecars,
@@ -1568,6 +1574,7 @@ pub const ProgramCommandStreamShape = struct {
             .quantized_projection_chains = @max(self.quantized_projection_chains, other.quantized_projection_chains),
             .projection_chain_sidecars = @max(self.projection_chain_sidecars, other.projection_chain_sidecars),
             .projection_chain_row_chain_frontiers = @max(self.projection_chain_row_chain_frontiers, other.projection_chain_row_chain_frontiers),
+            .projection_row_chain_semantic_residual_bridges = @max(self.projection_row_chain_semantic_residual_bridges, other.projection_row_chain_semantic_residual_bridges),
             .projection_groups = @max(self.projection_groups, other.projection_groups),
             .projection_anchors = @max(self.projection_anchors, other.projection_anchors),
             .projection_sidecars = @max(self.projection_sidecars, other.projection_sidecars),
@@ -5354,6 +5361,59 @@ fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommandSumm
     return summary;
 }
 
+fn countProjectionRowChainSemanticResidualBridges(ops: []const backend_mod.DeviceOp, commands: []const ProgramCommand) ?u32 {
+    if (ops.len == 0 or commands.len < 2) return 0;
+    var count: u32 = 0;
+    for (commands[0 .. commands.len - 1], commands[1..]) |row_command, semantic_command| {
+        if (!projectionRowChainBridgesSemanticResidual(ops, row_command, semantic_command)) continue;
+        count = std.math.add(u32, count, 1) catch return null;
+    }
+    return count;
+}
+
+fn projectionRowChainBridgesSemanticResidual(
+    ops: []const backend_mod.DeviceOp,
+    row_command: ProgramCommand,
+    semantic_command: ProgramCommand,
+) bool {
+    if (semantic_command.kind != .semantic_ffn_sublayer) return false;
+    if (row_command.kind != .projection_row_chain and row_command.kind != .dense_projection_row_chain) return false;
+    if (row_command.sidecar_count < 4 or semantic_command.op_count != 9) return false;
+
+    const row_elementwise_idx = row_command.sidecar_indices[0] orelse return false;
+    const row_out_idx = row_command.sidecar_indices[3] orelse return false;
+    const semantic_start: usize = @intCast(semantic_command.op_start);
+    if (row_elementwise_idx >= ops.len or row_out_idx >= ops.len or semantic_start + 8 >= ops.len) return false;
+
+    const row_elementwise = switch (ops[row_elementwise_idx]) {
+        .elementwise => |e| e,
+        else => return false,
+    };
+    const row_out = switch (ops[row_out_idx]) {
+        .elementwise => |e| e,
+        else => return false,
+    };
+    const gate = switch (ops[semantic_start]) {
+        .qmatmul => |q| q,
+        else => return false,
+    };
+    const up = switch (ops[semantic_start + 2]) {
+        .qmatmul => |q| q,
+        else => return false,
+    };
+    const residual = switch (ops[semantic_start + 5]) {
+        .elementwise => |e| e,
+        else => return false,
+    };
+
+    if (gate.input != row_out.dst or gate.input_offset != row_out.dst_offset) return false;
+    if (up.input != row_out.dst or up.input_offset != row_out.dst_offset) return false;
+    const residual_reads_row = (residual.src0 == row_elementwise.dst and residual.src0_offset == row_elementwise.dst_offset) or
+        (residual.src1 == row_elementwise.dst and residual.src1_offset == row_elementwise.dst_offset);
+    if (!residual_reads_row) return false;
+    return projectionRowChainElementwiseHasExternalUsers(ops, row_command);
+}
+
 pub fn markProgramCommandUsed(used: []bool, command: ProgramCommand) void {
     var indices = command.coveredIndexIterator();
     while (indices.next()) |idx| {
@@ -6783,6 +6843,11 @@ pub const ExecutionPlan = struct {
             shape.quantized_projection_chains = try std.math.add(u32, shape.quantized_projection_chains, summary.quantized_projection_chains);
             shape.projection_chain_sidecars = try std.math.add(u32, shape.projection_chain_sidecars, summary.projection_chain_sidecars);
             shape.projection_chain_row_chain_frontiers = try std.math.add(u32, shape.projection_chain_row_chain_frontiers, summary.projection_chain_row_chain_frontiers);
+            shape.projection_row_chain_semantic_residual_bridges = try std.math.add(
+                u32,
+                shape.projection_row_chain_semantic_residual_bridges,
+                region_plan.kernel_plan.command_shape.projection_row_chain_semantic_residual_bridges,
+            );
             shape.projection_groups = try std.math.add(u32, shape.projection_groups, summary.projection_groups);
             shape.projection_anchors = try std.math.add(u32, shape.projection_anchors, summary.projection_anchors);
             shape.projection_sidecars = try std.math.add(u32, shape.projection_sidecars, summary.projection_sidecars);
@@ -9353,6 +9418,74 @@ test "program command stream recognizes semantic FFN sublayer target" {
     try std.testing.expectEqual(@as(u32, 1), shape.semantic_ffn_sublayers);
     try std.testing.expectEqual(@as(u32, 9), shape.covered_ops);
     try std.testing.expectEqual(@as(u32, 8), shape.estimated_saved_dispatches);
+}
+
+test "program command stream counts projection row-chain semantic residual bridges" {
+    const m: u32 = 8;
+    const model: u32 = 4;
+    const hidden: u32 = 16;
+    const model_elems = m * model;
+    const hidden_elems = m * hidden;
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = m, .N = model, .K = model } },
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 10, .n = model_elems } },
+        .{ .rmsnorm = .{ .dst = 3, .src = 2, .rows = m, .cols = model } },
+        .{ .repeat = .{
+            .dst = 4,
+            .src = 11,
+            .n = model_elems,
+            .src_ne = .{ model, 1, 1, 1 },
+            .dst_ne = .{ model, m, 1, 1 },
+            .src_strides = .{ 1, model, model, model },
+            .dst_strides = .{ 1, model, model_elems, model_elems },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 5, .src0 = 3, .src1 = 4, .n = model_elems } },
+        .{ .qmatmul = .{ .dst = 6, .input = 5, .weight_idx = 1, .M = m, .N = hidden, .K = model } },
+        .{ .elementwise = .{ .op = .silu, .dst = 7, .src0 = 6, .src1 = 6, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 6, .input = 5, .weight_idx = 2, .M = m, .N = hidden, .K = model } },
+        .{ .elementwise = .{ .op = .mul, .dst = 8, .src0 = 7, .src1 = 6, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 9, .input = 8, .weight_idx = 3, .M = m, .N = model, .K = hidden } },
+        .{ .elementwise = .{ .op = .add, .dst = 12, .src0 = 9, .src1 = 2, .n = model_elems } },
+        .{ .rmsnorm = .{ .dst = 13, .src = 12, .rows = m, .cols = model } },
+        .{ .repeat = .{
+            .dst = 14,
+            .src = 15,
+            .n = model_elems,
+            .src_ne = .{ model, 1, 1, 1 },
+            .dst_ne = .{ model, m, 1, 1 },
+            .src_strides = .{ 1, model, model, model },
+            .dst_strides = .{ 1, model, model_elems, model_elems },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 16, .src0 = 13, .src1 = 14, .n = model_elems } },
+    };
+
+    var row_command = ProgramCommand{
+        .kind = .projection_row_chain,
+        .op_start = 0,
+        .op_count = 5,
+        .projection_kind = .qmatmul,
+        .anchor_count = 1,
+        .sidecar_count = 4,
+    };
+    row_command.indices[0] = 0;
+    row_command.sidecar_indices[0] = 1;
+    row_command.sidecar_indices[1] = 2;
+    row_command.sidecar_indices[2] = 3;
+    row_command.sidecar_indices[3] = 4;
+
+    const commands = [_]ProgramCommand{
+        row_command,
+        ProgramCommand.contiguous(.semantic_ffn_sublayer, 5, 9),
+    };
+
+    const shape = try ProgramCommandStreamShape.fromOpsCommands(&ops, &commands);
+    try std.testing.expectEqual(@as(u32, 2), shape.command_count);
+    try std.testing.expectEqual(@as(u32, 1), shape.projection_row_chains);
+    try std.testing.expectEqual(@as(u32, 1), shape.semantic_ffn_sublayers);
+    try std.testing.expectEqual(@as(u32, 1), shape.projection_row_chain_semantic_residual_bridges);
+
+    const command_only_shape = try ProgramCommandStreamShape.fromCommands(&commands);
+    try std.testing.expectEqual(@as(u32, 0), command_only_shape.projection_row_chain_semantic_residual_bridges);
 }
 
 test "program command stream fuses paired projection activation product chain" {

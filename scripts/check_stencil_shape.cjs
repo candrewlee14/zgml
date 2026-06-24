@@ -90,6 +90,7 @@ for (const row of [prompt, decode]) {
   requireEqual(row, "program_command_shape_quantized_projection_chains", 0, errors);
   requireEqual(row, "program_command_shape_projection_chain_sidecars", 60, errors);
   requireEqual(row, "program_command_shape_projection_chain_row_chain_frontiers", 60, errors);
+  requireEqual(row, "program_command_shape_projection_row_chain_semantic_residual_bridges", 0, errors);
   requireEqual(row, "program_command_shape_projection_cache_groups", 30, errors);
   requirePositive(row, "runtime_patch_stencil_hash", errors);
   requirePositive(row, "program_command_shape_stencil_hash", errors);
@@ -117,6 +118,7 @@ const line = [
   `prompt_hash=${rawNumber(prompt, "runtime_patch_stencil_hash")}/${rawNumber(prompt, "program_command_shape_stencil_hash")}`,
   `decode_hash=${rawNumber(decode, "runtime_patch_stencil_hash")}/${rawNumber(decode, "program_command_shape_stencil_hash")}`,
   `projection_chains=${prompt.program_command_shape_projection_chains}/${decode.program_command_shape_projection_chains}`,
+  `semantic_residual_bridges=${prompt.program_command_shape_projection_row_chain_semantic_residual_bridges}/${decode.program_command_shape_projection_row_chain_semantic_residual_bridges}`,
   `cache_groups=${prompt.program_command_shape_projection_cache_groups}/${decode.program_command_shape_projection_cache_groups}`,
 ].join("; ");
 

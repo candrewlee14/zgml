@@ -454,6 +454,7 @@ function checkScripts() {
     "program_command_shape_commands",
     "program_command_shape_covered_ops",
     "program_command_shape_projection_chains",
+    "program_command_shape_projection_row_chain_semantic_residual_bridges",
     "program_command_shape_projection_cache_groups",
     "runtime_patch_stencil_hash",
     "stencil shape gate: pass",
@@ -1206,10 +1207,13 @@ function checkScripts() {
     "findSemanticFfnSublayerCommand",
     "projectionPairSingleElementwiseChainCompatible(gate, first, up, product)",
     "program command stream recognizes semantic FFN sublayer target",
+    "program command stream counts projection row-chain semantic residual bridges",
     "shape.semantic_ffn_sublayers",
+    "shape.projection_row_chain_semantic_residual_bridges",
   ]);
   requireIncludes(read("src/profile.zig"), "src/profile.zig", "semantic FFN sublayer profile evidence", [
     "program_command_shape_semantic_ffn_sublayers",
+    "program_command_shape_projection_row_chain_semantic_residual_bridges",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "qmatmul row-chain diagnostics and tiled two-phase finalize", [
     "if (q.M != 1) {",
