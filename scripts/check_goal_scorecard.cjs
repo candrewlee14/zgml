@@ -437,13 +437,13 @@ function checkScripts() {
   if (scripts["dev:perf:ggml:q8-command-smoke:run"] !== "BENCH_BUILD_ZGML=0 node scripts/check_ggml_q8_command_smoke.cjs") {
     errors.push("package.json dev:perf:ggml:q8-command-smoke:run must keep the checked explicit Q8 command-path ggml smoke rerun");
   }
-  if (scripts["dev:perf:pytorch:focus"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
+  if (scripts["dev:perf:pytorch:focus"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:focus must keep the incremental native PyTorch focus loop");
   }
-  if (scripts["dev:perf:pytorch:focus:native"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
+  if (scripts["dev:perf:pytorch:focus:native"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:focus:native must keep the native-only PyTorch focus loop after dist exists");
   }
-  if (scripts["dev:perf:pytorch:focus:run"] !== "BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
+  if (scripts["dev:perf:pytorch:focus:run"] !== "BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:focus:run must keep the no-rebuild PyTorch focus rerun");
   }
   if (scripts["dev:perf:pytorch:gaps:native"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-1} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {
@@ -507,13 +507,13 @@ function checkScripts() {
   if (scripts["bench:pytorch:parity:run"] !== "npm run build:native:release && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:parity:run must rebuild ReleaseFast native before the hard PyTorch parity rerun");
   }
-  if (scripts["bench:pytorch:steady"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_INSTALL=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {
+  if (scripts["bench:pytorch:steady"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_INSTALL=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:steady must remain the hard-build steady PyTorch current-gap evidence loop");
   }
-  if (scripts["bench:pytorch:focus"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
+  if (scripts["bench:pytorch:focus"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:focus must remain the narrow PyTorch microscope for fast iteration");
   }
-  if (scripts["bench:pytorch:focus:run"] !== "BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
+  if (scripts["bench:pytorch:focus:run"] !== "BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:focus:run must remain the no-rebuild PyTorch microscope rerun");
   }
   if (scripts["bench:pytorch:gaps"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {

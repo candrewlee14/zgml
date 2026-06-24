@@ -952,7 +952,13 @@ runner.
 `dev:perf:pytorch:gaps` uses Zig's incremental
 ReleaseFast build for the native FFI library before comparing the current
 PyTorch soft spots; its `:run` variant avoids rebuilding and defaults to one
-attempt for fast noise checks. `dev:perf:q8-prompt` does the same for
+attempt for fast noise checks. `bench:pytorch:steady` is the broader CPU truth
+gate: by default it measures the current six compiled hot-path lanes
+(`linear_batched`, `lazy_matmul_add_gelu_batched`,
+`lazy_rms_silu_ffn_batched`, `rms_gelu_linear_batched`,
+`log_softmax_classifier_batched`, and `lazy_token_head_batched`) with a 150ms
+timing window and three attempts, while remaining non-fatal unless parity mode
+is explicitly requested. `dev:perf:q8-prompt` does the same for
 `bench-build`, then reruns the Q8 prompt candidate evidence. `dev:perf:ggml:smoke`
 keeps the llama.cpp comparison cheap by defaulting to prompt 128, generation 40,
 one repetition, and one zgml sample. It also sets `BENCH_ALLOW_QUARANTINED=1`,

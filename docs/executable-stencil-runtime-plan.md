@@ -537,9 +537,16 @@ The PyTorch checker now has an explicit median-parity mode
 (`BENCH_PYTORCH_REQUIRE_MEDIAN_PARITY=1`) for hard claims. The default current-gap
 rerun stays fast, while `dev:perf:pytorch:gaps:steady:run` and
 `bench:pytorch:steady` use a 150ms timing window, three attempts, and exact
-`prepared_execute_into_ms` zgml timings. A hard median-parity claim must opt
-into `BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_REQUIRE_MEDIAN_PARITY=1`;
-the current steady evidence remains intentionally non-fatal because
+`prepared_execute_into_ms` zgml timings. The default steady gate now covers the
+six current compiled hot-path lanes together:
+`linear_batched`, `lazy_matmul_add_gelu_batched`,
+`lazy_rms_silu_ffn_batched`, `rms_gelu_linear_batched`,
+`log_softmax_classifier_batched`, and `lazy_token_head_batched`. That makes the
+PyTorch evidence broader instead of easier: strong fused Program wins and the
+known classifier-tail/linear noise stay in the same artifact. A hard
+median-parity claim must opt into
+`BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_REQUIRE_MEDIAN_PARITY=1`; the
+current steady evidence remains intentionally non-fatal because
 `log_softmax_classifier_batched` still has noisy sub-parity reruns.
 The PyTorch comparison gate now also refuses stale native evidence by default:
 before timing it checks the loaded `zig-out/lib/libzgml_c.*` timestamp against
