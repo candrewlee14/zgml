@@ -35,6 +35,7 @@ const decodeRowChainDefault = "off";
 const decodeNextTarget = "larger_semantic_sublayer_or_qmatvec_throughput_kernel";
 const defaultCommandFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_COMMAND_FLOOR || "241");
 const candidateCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "181");
+const bridgeCommandCeil = Number(process.env.BENCH_Q8_PROMPT_BRIDGE_COMMAND_CEIL || "121");
 const candidateProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_ROW_CHAIN_FLOOR || "60");
 const semanticProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_SEMANTIC_PROJECTION_ROW_CHAIN_FLOOR || "30");
 const defaultProjectionChainFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_PROJECTION_CHAIN_FLOOR || "60");
@@ -214,6 +215,15 @@ function readProjectionLane(row, defaultTokS, index) {
   };
 }
 
+function bridgeAbsorbedLane(lane) {
+  return lane.commands !== null &&
+    lane.commands <= bridgeCommandCeil &&
+    lane.projectionChains <= candidateProjectionChainCeil &&
+    lane.projectionCacheGroups >= candidateProjectionPairFloor &&
+    lane.projectionRowChains === 0 &&
+    lane.projectionRowChainSemanticResidualBridges === 0;
+}
+
 function keepsProjectionPairOrSemanticCommand(lane) {
   return lane.projectionPairs >= candidateProjectionPairFloor ||
     (lane.projectionPairs === 0 && lane.projectionRowChains >= semanticProjectionRowChainFloor);
@@ -318,8 +328,16 @@ function measureAttempt(index) {
     defaultProjectionCacheGroups >= candidateProjectionPairFloor &&
     defaultProjectionRowChains >= semanticProjectionRowChainFloor &&
     defaultFallback === 0;
-  const defaultFastPathReady = defaultLegacyFastPathReady || defaultSemanticFastPathReady;
-  const defaultPromptPolicy = defaultSemanticFastPathReady ? "semantic-promoted" : defaultLegacyFastPathReady ? "legacy-projection-chain" : "unknown";
+  const defaultBridgeFastPathReady =
+    defaultCommands !== null &&
+    defaultCommands <= bridgeCommandCeil &&
+    defaultProjectionChains <= candidateProjectionChainCeil &&
+    defaultProjectionCacheGroups >= candidateProjectionPairFloor &&
+    defaultProjectionRowChains === 0 &&
+    defaultProjectionRowChainSemanticResidualBridges === 0 &&
+    defaultFallback === 0;
+  const defaultFastPathReady = defaultLegacyFastPathReady || defaultSemanticFastPathReady || defaultBridgeFastPathReady;
+  const defaultPromptPolicy = defaultBridgeFastPathReady ? "semantic-bridge-absorbed" : defaultSemanticFastPathReady ? "semantic-promoted" : defaultLegacyFastPathReady ? "legacy-projection-chain" : "unknown";
   const defaultDecodeFastPathReady =
     defaultDecodeCommands !== null &&
     defaultDecodeCommands <= decodeCommandCeil &&
@@ -329,6 +347,7 @@ function measureAttempt(index) {
     defaultDecodeFallback === 0;
   const commandSemanticReady =
     !measureCommand ||
+    bridgeAbsorbedLane(commandLane) ||
     (commandLane.commands !== null &&
       commandLane.commands <= candidateCommandCeil &&
       commandLane.projectionChains <= candidateProjectionChainCeil &&
@@ -340,9 +359,10 @@ function measureAttempt(index) {
     (defaultDispatches !== null &&
       commandLane.dispatches !== null &&
       commandLane.dispatches <= defaultDispatches &&
-      commandLane.projectionRowChainDispatches >= commandLane.projectionRowChains &&
-      commandLane.projectionRowChainDispatchSplit !== null &&
-      commandLane.projectionRowChainDispatchSplit <= 2.0);
+      (bridgeAbsorbedLane(commandLane) ||
+        (commandLane.projectionRowChainDispatches >= commandLane.projectionRowChains &&
+          commandLane.projectionRowChainDispatchSplit !== null &&
+          commandLane.projectionRowChainDispatchSplit <= 2.0)));
   const candidateSemanticReady =
     !measureSingle ||
     (singleLane.commands !== null &&
@@ -383,6 +403,7 @@ function measureAttempt(index) {
   const twoPhaseStructuralReady = defaultFastPathReady && twoPhaseSemanticReady && twoPhaseDispatchShapeReady && twoPhaseLane.fallback === 0;
   const semanticSemanticReady =
     !measureSemantic ||
+    bridgeAbsorbedLane(semanticLane) ||
     (semanticLane.commands !== null &&
       semanticLane.commands <= candidateCommandCeil &&
       semanticLane.projectionChains <= candidateProjectionChainCeil &&
@@ -394,8 +415,9 @@ function measureAttempt(index) {
     (defaultDispatches !== null &&
       semanticLane.dispatches !== null &&
       semanticLane.dispatches <= defaultDispatches &&
-      semanticLane.projectionRowChainDispatchSplit !== null &&
-      semanticLane.projectionRowChainDispatchSplit <= 2.0);
+      (bridgeAbsorbedLane(semanticLane) ||
+        (semanticLane.projectionRowChainDispatchSplit !== null &&
+          semanticLane.projectionRowChainDispatchSplit <= 2.0)));
   const semanticStructuralReady = defaultFastPathReady && semanticSemanticReady && semanticDispatchShapeReady && semanticLane.fallback === 0;
   const fallbackOk = defaultFallback === 0 && commandLane.fallback === 0 && singleLane.fallback === 0 && twoPhaseLane.fallback === 0 && semanticLane.fallback === 0;
   const commandStructuralReady = defaultFastPathReady && defaultDecodeFastPathReady && commandSemanticReady && commandDispatchShapeReady && fallbackOk;
@@ -541,6 +563,7 @@ function measureAttempt(index) {
     defaultProjectionRowChainDispatchExcess,
     defaultPromptPolicy,
     defaultSemanticFastPathReady,
+    defaultBridgeFastPathReady,
     commandProjectionRowChainDispatchExcess: commandLane.projectionRowChainDispatchExcess,
     candidateProjectionRowChainDispatchExcess: singleLane.projectionRowChainDispatchExcess,
     defaultFallback,
@@ -598,7 +621,7 @@ const throughputReady = structuralReady && median.speedup !== null && median.spe
 const commandThroughputReady = commandStructuralReady && commandMedian.commandSpeedup !== null && commandMedian.commandSpeedup >= commandSpeedupFloor;
 const commandReady = commandStructuralReady && commandThroughputReady;
 const promotedDefaultReady = attemptRows.every((row) =>
-  row.defaultSemanticFastPathReady &&
+  (row.defaultSemanticFastPathReady || row.defaultBridgeFastPathReady) &&
   row.defaultDecodeFastPathReady &&
   row.defaultFallback === 0
 );

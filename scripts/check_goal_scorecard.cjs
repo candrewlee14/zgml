@@ -400,6 +400,9 @@ function checkScripts() {
     "function q8PromptNextTarget(path, pressurePath = path)",
     "fresh=best:${formatRatio(pressureData?.lanes?.semantic?.speedup)},median:${formatRatio(freshStats?.median)},worst:${formatRatio(freshStats?.worst)},spills:${freshSpills},spill_k:${formatNumber(freshSpillK, 0)},spill_input:${freshSpillInput},output_spills:${freshOutputSpills},bridges:${freshBridges}",
     "const bridgeNext = Number(freshBridges) > 0 ? \"semantic_residual_bridge_command\" : \"semantic_ffn_sublayer_throughput_kernel\"",
+    "q8_prompt=semantic_bridge_candidate",
+    "steady_semantic_bridge_candidate",
+    "semantic_bridge_throughput_kernel",
     "bridges=${freshBridges}:next=${bridgeNext}",
     "function currentQ8SmokeNextTarget(path)",
     "q8_current=prompt:${formatPct(parityRow.parity)}:${required}",
@@ -1056,6 +1059,7 @@ function checkScripts() {
     "\"--metal-decode-region\"",
     "const defaultCommandFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_COMMAND_FLOOR || \"241\")",
     "const candidateCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || \"181\")",
+    "const bridgeCommandCeil = Number(process.env.BENCH_Q8_PROMPT_BRIDGE_COMMAND_CEIL || \"121\")",
     "const defaultProjectionPairFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_PROJECTION_PAIR_FLOOR || \"30\")",
     "const candidateProjectionPairFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_PAIR_FLOOR || \"30\")",
     "const semanticProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_SEMANTIC_PROJECTION_ROW_CHAIN_FLOOR || \"30\")",
@@ -1066,7 +1070,9 @@ function checkScripts() {
     "defaultProjectionPairs >= defaultProjectionPairFloor",
     "defaultProjectionCacheGroups >= defaultProjectionPairFloor",
     "const defaultSemanticFastPathReady",
-    "const defaultPromptPolicy = defaultSemanticFastPathReady ? \"semantic-promoted\"",
+    "const defaultBridgeFastPathReady",
+    "function bridgeAbsorbedLane(lane)",
+    "const defaultPromptPolicy = defaultBridgeFastPathReady ? \"semantic-bridge-absorbed\"",
     "defaultPromptPolicy: row.defaultPromptPolicy",
     "default_policy=${commandBest.defaultPromptPolicy}",
     "defaultDecodeProjectionPairs >= decodeProjectionPairFloor",
@@ -1344,16 +1350,21 @@ function checkScripts() {
   ]);
   requireIncludes(read("src/backend/program.zig"), "src/backend/program.zig", "semantic FFN sublayer target command shape", [
     "semantic_ffn_sublayer",
+    "semantic_ffn_sublayer_with_input_row_chain",
+    "fuse_semantic_ffn_sublayer_input_row_chain",
     "fuse_semantic_ffn_sublayer",
     "fuse_semantic_ffn_sublayer_single_dispatch",
     "promptSemanticFfnSublayerTarget",
     "promptSemanticFfnSublayerThroughputCandidate",
     "policy.fuse_projection_row_chain_two_phase_candidate = true",
+    "policy.fuse_semantic_ffn_sublayer_input_row_chain = true",
     "policy.fuse_semantic_ffn_sublayer_single_dispatch = true",
+    "findSemanticFfnSublayerWithInputRowChainCommand",
     "findSemanticFfnSublayerCommand",
     "projectionPairSingleElementwiseChainCompatible(gate, first, up, product)",
     "program command stream recognizes semantic FFN sublayer target",
     "program command stream counts projection row-chain semantic residual bridges",
+    "program command stream absorbs projection row-chain semantic residual bridge",
     "shape.semantic_ffn_sublayers",
     "shape.projection_row_chain_semantic_residual_bridges",
   ]);
@@ -1386,6 +1397,8 @@ function checkScripts() {
     "self.command_policy.fuse_projection_row_chain_two_phase_candidate",
     "self.command_policy.fuse_semantic_ffn_sublayer_single_dispatch",
     "tryEncodeSemanticFfnSublayerCommand",
+    "tryEncodeSemanticFfnSublayerWithInputRowChainCommand",
+    ".semantic_ffn_sublayer_with_input_row_chain => self.tryEncodeSemanticFfnSublayerWithInputRowChainCommand(exec, view, ops, command)",
     ".semantic_ffn_sublayer => self.tryEncodeSemanticFfnSublayerCommand(exec, view, ops, command)",
     "const write_primary = projectionRowChainPrimaryHasExternalUsers(ops, command);",
     "if (!self.encodeQMatmulElementwise(exec, view, q, e, write_primary)) return false;",
@@ -2545,6 +2558,12 @@ function checkQ8PromptCandidateEvidence() {
     return;
   }
   const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
+  const semanticShapeReady = artifact?.lanes?.semantic?.projectionPairs === 0 &&
+    ((artifact?.lanes?.semantic?.projectionRowChains === 30 &&
+      artifact?.lanes?.semantic?.residualBridges !== 0) ||
+      (artifact?.lanes?.semantic?.projectionRowChains === 0 &&
+        artifact?.lanes?.semantic?.residualBridges === 0 &&
+        artifact?.lanes?.semantic?.commands === 121));
   if (artifact?.schema !== "zgml.q8-prompt-candidate.v1" ||
     (artifact?.status !== "command-ready" && artifact?.status !== "promoted-default") ||
     artifact?.structural?.semantic !== "ready" ||
@@ -2554,10 +2573,9 @@ function checkQ8PromptCandidateEvidence() {
     typeof artifact?.lanes?.semantic?.speedupStats?.median !== "number" ||
     typeof artifact?.lanes?.semantic?.speedupStats?.worst !== "number" ||
     typeof artifact?.lanes?.twoPhase?.speedupStats?.median !== "number" ||
-    artifact?.lanes?.semantic?.projectionPairs !== 0 ||
-    artifact?.lanes?.semantic?.projectionRowChains !== 30 ||
+    !semanticShapeReady ||
     artifact?.lanes?.command?.commands !== 151 ||
-    !artifact?.attempts?.every((row) => row.defaultPromptPolicy === "legacy-projection-chain" || row.defaultPromptPolicy === "semantic-promoted")) {
+    !artifact?.attempts?.every((row) => row.defaultPromptPolicy === "legacy-projection-chain" || row.defaultPromptPolicy === "semantic-promoted" || row.defaultPromptPolicy === "semantic-bridge-absorbed")) {
     errors.push(`q8 prompt candidate artifact missing expected semantic full-model evidence: ${artifactPath}`);
     return;
   }

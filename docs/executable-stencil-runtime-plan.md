@@ -1548,6 +1548,15 @@ semantic command becoming the Metal scheduled Q8 prompt default, not as ggml
 parity. The next bottleneck is the remaining model-width spill/work shape: absorb
 the residual user into a larger semantic command if bridge evidence exists, or
 replace the two-dispatch tail with a true throughput kernel.
+The first bridge-absorbing command now exists as a measured candidate, not a
+default promotion: `semantic_ffn_sublayer_with_input_row_chain` covers the 14-op
+`projection_row_chain + semantic_ffn_sublayer` window. A focused Q8 prompt probe
+proved the desired command shape with zero fallback
+(`semantic_command=151->121`, `semantic_projection_row_chain=30->0`,
+`semantic_bridges=30->0`), while also proving that the conservative encoder is
+not the final performance answer (`semantic_speedup=0.96x` in that one-attempt
+probe). Keep the default on the 151-command semantic-promoted path until the
+bridge command owns a true throughput kernel.
 After the one-dispatch semantic throughput kernel became a real measured lane,
 the full-model default was kept on `promptProjectionRowChainCommand()` while
 `--metal-prompt-semantic-throughput-candidate` remains the explicit diagnostic

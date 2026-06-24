@@ -221,6 +221,15 @@ machine for both prompt/prefill and decode.
   from `program_command_shape_projection_row_chain_semantic_residual_bridges`,
   so the next pass can distinguish a bridgeable residual-use opportunity from
   generic row-chain materialization pressure.
+- The first semantic residual-bridge command is now a candidate shape rather
+  than the default: `semantic_ffn_sublayer_with_input_row_chain` recognizes the
+  14-op `projection_row_chain + semantic_ffn_sublayer` pattern. A focused Q8
+  prompt probe proved the structural target with zero fallback:
+  `semantic_command=151->121`, `semantic_projection_row_chain=30->0`, and
+  `semantic_bridges=30->0`. It is not a throughput promotion yet; the same
+  one-attempt probe reported `semantic_speedup=0.96x`, so the default stays on
+  the known 151-command semantic-promoted path until the bridge command gets a
+  real throughput kernel instead of just reusing the existing two-piece encoder.
 - The current weakest checked lane is still Q8_0 prompt, but its command
   pressure has moved from the old `projection_chain:60` baseline to the
   promoted semantic-default shape: 151 ProgramCommands, 30 semantic row-chain

@@ -9266,6 +9266,37 @@ const CompiledProgram = struct {
         return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, view.outputReadsSpan(rn.dst, rn.dst_offset, @as(u64, rn.rows) * rn.cols) or view.outputReadsSpan(rp.dst, rp.dst_offset, rp.n));
     }
 
+    fn tryEncodeSemanticFfnSublayerWithInputRowChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.op_count != 14) return false;
+        const start: usize = @intCast(command.op_start);
+        var row_command = program_mod.ProgramCommand{
+            .kind = .projection_row_chain,
+            .op_start = @intCast(start),
+            .op_count = 5,
+            .projection_kind = command.projection_kind,
+            .anchor_count = 1,
+            .sidecar_count = 4,
+        };
+        row_command.indices[0] = start;
+        row_command.sidecar_indices[0] = start + 1;
+        row_command.sidecar_indices[1] = start + 2;
+        row_command.sidecar_indices[2] = start + 3;
+        row_command.sidecar_indices[3] = start + 4;
+        row_command.sidecar_slots[0] = 0;
+        row_command.sidecar_slots[1] = 0;
+        row_command.sidecar_slots[2] = 0;
+        row_command.sidecar_slots[3] = 0;
+
+        const semantic_command = program_mod.ProgramCommand{
+            .kind = .semantic_ffn_sublayer,
+            .op_start = @intCast(start + 5),
+            .op_count = 9,
+            .projection_kind = command.projection_kind,
+        };
+        if (!self.tryEncodeProjectionRowChainCommand(exec, view, ops, row_command)) return false;
+        return self.tryEncodeSemanticFfnSublayerCommand(exec, view, ops, semantic_command);
+    }
+
     fn projectionRowChainPrimaryHasExternalUsers(ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (command.anchor_count != 1 or command.sidecar_count < 1) return true;
         const q_idx = command.indices[0];
@@ -9343,6 +9374,7 @@ const CompiledProgram = struct {
             .projection_pair_fused_elementwise_chain => self.tryEncodeProjectionPairFusedElementwiseChainCommand(exec, view, ops, command),
             .dense_projection_pair_fused_elementwise_chain => self.tryEncodeDenseProjectionPairFusedElementwiseChainCommand(exec, view, ops, command),
             .semantic_ffn_sublayer => self.tryEncodeSemanticFfnSublayerCommand(exec, view, ops, command),
+            .semantic_ffn_sublayer_with_input_row_chain => self.tryEncodeSemanticFfnSublayerWithInputRowChainCommand(exec, view, ops, command),
             .projection_row_chain => self.tryEncodeProjectionRowChainCommand(exec, view, ops, command),
             .dense_projection_row_chain => self.tryEncodeDenseProjectionRowChainCommand(exec, view, ops, command),
             .dense_projection_chain => self.tryEncodeDenseProjectionChainCommand(exec, view, ops, command),

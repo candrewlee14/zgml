@@ -1153,6 +1153,7 @@ pub const ProgramCommandKind = enum {
     projection_pair_fused_elementwise_chain,
     dense_projection_pair_fused_elementwise_chain,
     semantic_ffn_sublayer,
+    semantic_ffn_sublayer_with_input_row_chain,
     projection_row_chain,
     dense_projection_row_chain,
     dense_projection_chain,
@@ -1172,6 +1173,7 @@ pub const ProgramCommandKind = enum {
             .projection_pair_fused_elementwise_chain,
             .dense_projection_pair_fused_elementwise_chain,
             .semantic_ffn_sublayer,
+            .semantic_ffn_sublayer_with_input_row_chain,
             => .{},
 
             .projection_pair_elementwise_chain,
@@ -1296,6 +1298,7 @@ pub const CommandStreamPolicy = struct {
     fuse_repeat_fused_elementwise: bool = true,
     fuse_projection_chain: bool = true,
     fuse_semantic_ffn_sublayer: bool = false,
+    fuse_semantic_ffn_sublayer_input_row_chain: bool = false,
     fuse_projection_row_chain: bool = false,
     fuse_projection_row_chain_qmatvec: bool = false,
     fuse_projection_row_chain_single_dispatch: bool = false,
@@ -1332,6 +1335,7 @@ pub const CommandStreamPolicy = struct {
 
     pub fn promptSemanticFfnSublayerThroughputCandidate() CommandStreamPolicy {
         var policy = CommandStreamPolicy.promptProjectionRowChainCommand();
+        policy.fuse_semantic_ffn_sublayer_input_row_chain = true;
         policy.fuse_projection_row_chain_two_phase_candidate = true;
         policy.fuse_semantic_ffn_sublayer_single_dispatch = true;
         return policy;
@@ -1603,6 +1607,7 @@ pub const ProgramCommandStreamShape = struct {
                 .projection_pair_elementwise_chain,
                 .dense_projection_pair_fused_elementwise_chain,
                 .semantic_ffn_sublayer,
+                .semantic_ffn_sublayer_with_input_row_chain,
                 .projection_row_chain,
                 .dense_projection_row_chain,
                 .dense_projection_chain,
@@ -2922,6 +2927,7 @@ const ProgramCommandFinderFeature = enum {
     elementwise_batch,
     repeat_fused_elementwise,
     projection_chain,
+    semantic_ffn_sublayer_input_row_chain,
     semantic_ffn_sublayer,
     projection_row_chain,
     rope_batch,
@@ -2936,6 +2942,7 @@ const ProgramCommandFinderFeature = enum {
             .elementwise_batch => policy.max_elementwise_batch >= 2,
             .repeat_fused_elementwise => policy.fuse_repeat_fused_elementwise,
             .projection_chain => policy.fuse_projection_chain,
+            .semantic_ffn_sublayer_input_row_chain => policy.fuse_semantic_ffn_sublayer_input_row_chain,
             .semantic_ffn_sublayer => policy.fuse_semantic_ffn_sublayer,
             .projection_row_chain => policy.fuse_projection_row_chain,
             .rope_batch => policy.max_rope_batch >= 2,
@@ -2968,6 +2975,7 @@ const ProgramCommandFinder = struct {
 };
 
 const program_command_finders = [_]ProgramCommandFinder{
+    .{ .start_tag = .qmatmul, .feature = .semantic_ffn_sublayer_input_row_chain, .find = finderPolicyUsed(findSemanticFfnSublayerWithInputRowChainCommand) },
     .{ .start_tag = .qmatmul, .feature = .semantic_ffn_sublayer, .find = finderPolicyUsed(findSemanticFfnSublayerCommand) },
     .{ .start_tag = .qmatmul, .find = finderUsedOnly(findProjectionPairElementwiseChainCommand) },
     .{ .start_tag = .qmatmul, .find = finderUsedOnly(findProjectionPairFusedElementwiseChainCommand) },
@@ -3167,6 +3175,26 @@ fn findSemanticFfnSublayerCommand(
 
     var command = ProgramCommand.contiguous(.semantic_ffn_sublayer, start, 9);
     command.projection_kind = if (gate.M == 1) .qmatvec else .qmatmul;
+    return command;
+}
+
+fn findSemanticFfnSublayerWithInputRowChainCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: CommandStreamPolicy,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (!policy.fuse_semantic_ffn_sublayer_input_row_chain) return null;
+    if (start + 13 >= ops.len) return null;
+    if (commandRangeTouchesUsed(@intCast(start), 14, used)) return null;
+
+    const row_command = findProjectionRowChainCommand(ops, start, policy, null) orelse return null;
+    const semantic_start = start + 5;
+    const semantic_command = findSemanticFfnSublayerCommand(ops, semantic_start, policy, null) orelse return null;
+    if (!projectionRowChainBridgesSemanticResidual(ops, row_command, semantic_command)) return null;
+
+    var command = ProgramCommand.contiguous(.semantic_ffn_sublayer_with_input_row_chain, start, 14);
+    command.projection_kind = row_command.projection_kind;
     return command;
 }
 
@@ -5327,6 +5355,10 @@ fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommandSumm
             },
             .repeat_fused_elementwise_chain => summary.repeat_fused_elementwise_chains += 1,
             .semantic_ffn_sublayer => summary.semantic_ffn_sublayers += 1,
+            .semantic_ffn_sublayer_with_input_row_chain => {
+                summary.semantic_ffn_sublayers += 1;
+                summary.projection_row_chains += 1;
+            },
             .projection_pair_elementwise_chain,
             .dense_projection_pair_fused_elementwise_chain,
             .projection_pair_fused_elementwise_chain,
@@ -9487,6 +9519,60 @@ test "program command stream counts projection row-chain semantic residual bridg
 
     const command_only_shape = try ProgramCommandStreamShape.fromCommands(&commands);
     try std.testing.expectEqual(@as(u32, 0), command_only_shape.projection_row_chain_semantic_residual_bridges);
+}
+
+test "program command stream absorbs projection row-chain semantic residual bridge" {
+    const m: u32 = 8;
+    const model: u32 = 4;
+    const hidden: u32 = 16;
+    const model_elems = m * model;
+    const hidden_elems = m * hidden;
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = m, .N = model, .K = model } },
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 10, .n = model_elems } },
+        .{ .rmsnorm = .{ .dst = 3, .src = 2, .rows = m, .cols = model } },
+        .{ .repeat = .{
+            .dst = 4,
+            .src = 11,
+            .n = model_elems,
+            .src_ne = .{ model, 1, 1, 1 },
+            .dst_ne = .{ model, m, 1, 1 },
+            .src_strides = .{ 1, model, model, model },
+            .dst_strides = .{ 1, model, model_elems, model_elems },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 5, .src0 = 3, .src1 = 4, .n = model_elems } },
+        .{ .qmatmul = .{ .dst = 6, .input = 5, .weight_idx = 1, .M = m, .N = hidden, .K = model } },
+        .{ .elementwise = .{ .op = .silu, .dst = 7, .src0 = 6, .src1 = 6, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 6, .input = 5, .weight_idx = 2, .M = m, .N = hidden, .K = model } },
+        .{ .elementwise = .{ .op = .mul, .dst = 8, .src0 = 7, .src1 = 6, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 9, .input = 8, .weight_idx = 3, .M = m, .N = model, .K = hidden } },
+        .{ .elementwise = .{ .op = .add, .dst = 12, .src0 = 9, .src1 = 2, .n = model_elems } },
+        .{ .rmsnorm = .{ .dst = 13, .src = 12, .rows = m, .cols = model } },
+        .{ .repeat = .{
+            .dst = 14,
+            .src = 15,
+            .n = model_elems,
+            .src_ne = .{ model, 1, 1, 1 },
+            .dst_ne = .{ model, m, 1, 1 },
+            .src_strides = .{ 1, model, model, model },
+            .dst_strides = .{ 1, model, model_elems, model_elems },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 16, .src0 = 13, .src1 = 14, .n = model_elems } },
+    };
+
+    const commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate());
+    defer std.testing.allocator.free(commands);
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.semantic_ffn_sublayer_with_input_row_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 14), commands[0].coveredOpCount());
+
+    const shape = try ProgramCommandStreamShape.fromOpsCommands(&ops, commands);
+    try std.testing.expectEqual(@as(u32, 1), shape.command_count);
+    try std.testing.expectEqual(@as(u32, 1), shape.projection_row_chains);
+    try std.testing.expectEqual(@as(u32, 1), shape.semantic_ffn_sublayers);
+    try std.testing.expectEqual(@as(u32, 0), shape.projection_row_chain_semantic_residual_bridges);
+    try std.testing.expectEqual(@as(u32, 14), shape.covered_ops);
+    try std.testing.expectEqual(@as(u32, 13), shape.estimated_saved_dispatches);
 }
 
 test "program command stream fuses paired projection activation product chain" {

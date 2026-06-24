@@ -965,12 +965,22 @@ function q8PromptNextTarget(path, pressurePath = path) {
       : NaN;
     const freshOutputSpills = pressureData?.lanes?.semantic?.tiledOutputSpills ?? "n/a";
     const freshBridges = pressureData?.lanes?.semantic?.residualBridges ?? pressureData?.lanes?.semantic?.projectionRowChainSemanticResidualBridges ?? "n/a";
+    const semanticRowChains = pressureData?.lanes?.semantic?.projectionRowChains ?? "n/a";
+    const semanticCommands = pressureData?.lanes?.semantic?.commands ?? "n/a";
+    const semanticBridgeCandidate = Number(freshBridges) === 0 && Number(semanticRowChains) === 0 && Number(semanticCommands) <= 121;
+    const pressureSemanticSpeedup = Number(pressureData?.lanes?.semantic?.speedup);
     const bridgeNext = Number(freshBridges) > 0 ? "semantic_residual_bridge_command" : "semantic_ffn_sublayer_throughput_kernel";
     const fresh = hasFreshPressure
       ? `:fresh=best:${formatRatio(pressureData?.lanes?.semantic?.speedup)},median:${formatRatio(freshStats?.median)},worst:${formatRatio(freshStats?.worst)},spills:${freshSpills},spill_k:${formatNumber(freshSpillK, 0)},spill_input:${freshSpillInput},output_spills:${freshOutputSpills},bridges:${freshBridges}`
       : "";
+    if (hasFreshPressure && semanticBridgeCandidate) {
+      const next = Number.isFinite(pressureSemanticSpeedup) && pressureSemanticSpeedup >= 1
+        ? "steady_semantic_bridge_candidate"
+        : "semantic_bridge_throughput_kernel";
+      return `q8_prompt=semantic_bridge_candidate:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:speedup=${formatRatio(pressureSemanticSpeedup)}:next=${next}`;
+    }
     if (pressureStatus === "promoted-default" || pressureSemanticThroughput === "promoted") {
-      return `q8_prompt=promoted_semantic_default:commands=${pressureData?.lanes?.semantic?.commands ?? "n/a"}:row_chains=${pressureData?.lanes?.semantic?.projectionRowChains ?? "n/a"}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:next=${bridgeNext}`;
+      return `q8_prompt=promoted_semantic_default:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:next=${bridgeNext}`;
     }
     if (semanticThroughput === "ready" && Number.isFinite(semanticSpeedup) && semanticSpeedup >= 1) {
       return `q8_prompt=promote_semantic_candidate:${formatRatio(semanticSpeedup)}:median=${formatRatio(semanticStats?.median)}${fresh}`;
