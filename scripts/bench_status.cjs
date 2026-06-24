@@ -519,7 +519,7 @@ function q8PromptCandidateStatusLine(path) {
   return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} attempts=${attempts} lanes=${lanes} source=${source}`;
 }
 
-function frontierStatusLine(path) {
+function frontierStatusLine(path, pressurePath = path) {
   if (!path) {
     return "frontier-results: no local qsemantic artifact found; run npm run bench:frontier:qsemantic for Q8 semantic frontier evidence";
   }
@@ -528,6 +528,14 @@ function frontierStatusLine(path) {
     data = readJson(path);
   } catch {
     return `frontier-results: latest=${compactName(path)} unreadable`;
+  }
+  let pressureData = data;
+  if (pressurePath && pressurePath !== path) {
+    try {
+      pressureData = readJson(pressurePath);
+    } catch {
+      pressureData = data;
+    }
   }
   const status = typeof data?.status === "string" ? data.status : "unknown";
   const target = typeof data?.targetThroughputStatus === "string" ? data.targetThroughputStatus : "unknown";
@@ -544,8 +552,14 @@ function frontierStatusLine(path) {
   const smollmTargetTileGroups = data?.smollmPrompt?.targetTileParallelGroups ?? "n/a";
   const fullCandidateTileGroups = data?.fullPrefill?.throughputCandidateTileParallelGroups ?? "n/a";
   const smollmCandidateTileGroups = data?.smollmPrompt?.throughputCandidateTileParallelGroups ?? "n/a";
-  const fullTargetSerialPerTile = data?.fullPrefill?.targetRowSerialDotOpsPerTileGroup ?? "n/a";
-  const smollmTargetSerialPerTile = data?.smollmPrompt?.targetRowSerialDotOpsPerTileGroup ?? "n/a";
+  const fullTargetSerialPerTile =
+    data?.fullPrefill?.targetRowSerialDotOpsPerTileGroup ??
+    pressureData?.fullPrefill?.targetRowSerialDotOpsPerTileGroup ??
+    "n/a";
+  const smollmTargetSerialPerTile =
+    data?.smollmPrompt?.targetRowSerialDotOpsPerTileGroup ??
+    pressureData?.smollmPrompt?.targetRowSerialDotOpsPerTileGroup ??
+    "n/a";
   const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
   const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
   const next = typeof data?.next === "string" ? data.next : "unknown";
@@ -1260,7 +1274,7 @@ process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8Prompt)}\n`);
 const q8PromptFreshness = q8PromptFreshnessStatusLine(latestQ8Prompt, latestRawQ8Prompt);
 if (q8PromptFreshness) process.stdout.write(`${q8PromptFreshness}\n`);
 process.stdout.write(`${qprojFrontierStatusLine(latestQprojFrontier)}\n`);
-process.stdout.write(`${frontierStatusLine(latestFrontier)}\n`);
+process.stdout.write(`${frontierStatusLine(latestFrontier, latestRawFrontier)}\n`);
 const frontierFreshness = frontierFreshnessStatusLine(latestFrontier, latestRawFrontier);
 if (frontierFreshness) process.stdout.write(`${frontierFreshness}\n`);
 process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestRawFrontier })}\n`);
