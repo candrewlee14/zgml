@@ -464,6 +464,19 @@ function checkScripts() {
   if (scripts["dev:perf:pytorch:focus:run"] !== "BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:focus:run must keep the no-rebuild PyTorch focus rerun");
   }
+  const broadPytorchKeys = "linear_batched,lazy_matmul_add_gelu_batched,lazy_mlp_batched,lazy_rms_silu_ffn_batched,max_pool2d_batched,avg_pool2d_batched,rms_gelu_linear_batched,softmax_classifier_batched,log_softmax_classifier_batched,lazy_token_head_batched";
+  if (scripts["dev:perf:pytorch:broad"] !== `zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && npm run build:package && BENCH_PYTORCH_KEYS=\${BENCH_PYTORCH_KEYS:-${broadPytorchKeys}} node scripts/check_pytorch_comparison.cjs`) {
+    errors.push("package.json dev:perf:pytorch:broad must keep the broad ten-lane PyTorch replacement evidence loop");
+  }
+  if (scripts["dev:perf:pytorch:broad:native"] !== `zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && BENCH_PYTORCH_KEYS=\${BENCH_PYTORCH_KEYS:-${broadPytorchKeys}} node scripts/check_pytorch_comparison.cjs`) {
+    errors.push("package.json dev:perf:pytorch:broad:native must keep the native-only broad PyTorch replacement evidence loop after dist exists");
+  }
+  if (scripts["dev:perf:pytorch:broad:run"] !== `BENCH_PYTORCH_KEYS=\${BENCH_PYTORCH_KEYS:-${broadPytorchKeys}} node scripts/check_pytorch_comparison.cjs`) {
+    errors.push("package.json dev:perf:pytorch:broad:run must keep the no-rebuild broad PyTorch replacement evidence loop");
+  }
+  if (scripts["dev:perf:pytorch:broad:steady:run"] !== `BENCH_PYTORCH_ATTEMPTS=\${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=\${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=\${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=\${BENCH_PYTORCH_KEYS:-${broadPytorchKeys}} node scripts/check_pytorch_comparison.cjs`) {
+    errors.push("package.json dev:perf:pytorch:broad:steady:run must keep the steady broad PyTorch replacement evidence loop");
+  }
   if (scripts["dev:perf:pytorch:gaps:native"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-1} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:gaps:native must keep the native-only PyTorch current-gap loop after dist exists");
   }

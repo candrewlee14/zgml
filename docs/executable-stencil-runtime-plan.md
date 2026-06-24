@@ -656,6 +656,10 @@ npm run dev:perf:module-program:run   # rerun focused Program/Session bench with
 npm run dev:perf:pytorch:focus        # incremental ReleaseFast native rebuild plus focused PyTorch comparison
 npm run dev:perf:pytorch:focus:native # native-only focused PyTorch loop after dist exists
 npm run dev:perf:pytorch:focus:run    # rerun focused PyTorch comparison without rebuilding artifacts
+npm run dev:perf:pytorch:broad        # incremental ten-lane PyTorch replacement evidence loop
+npm run dev:perf:pytorch:broad:native # native-only ten-lane PyTorch loop after dist exists
+npm run dev:perf:pytorch:broad:run    # rerun ten-lane PyTorch comparison without rebuilding artifacts
+npm run dev:perf:pytorch:broad:steady:run # no-rebuild 150ms-window ten-lane PyTorch replacement evidence
 npm run dev:perf:pytorch:gaps:native   # native-only current-gap loop after dist exists
 npm run dev:perf:pytorch:linear:native # native-only ReleaseFast microscope for the linear_batched PyTorch miss
 npm run dev:perf:pytorch:linear:run    # no-rebuild rerun for the linear_batched PyTorch miss
@@ -917,6 +921,16 @@ classifier-tail kernel or a backend path that changes the row-normalization
 shape. A steadier 150ms-window, three-attempt PyTorch rerun of only the
 log-softmax classifier lane confirms the target: `ratio_median=0.89x` with the
 selected attempt at `zgml:0.0077ms` and `pytorch:0.0069ms`.
+The broad PyTorch replacement loop is now named explicitly as
+`dev:perf:pytorch:broad*`. A fresh ten-lane sample showed nine lanes ahead of
+PyTorch while `log_softmax_classifier_batched` remained the only miss
+(`0.93x` one-attempt; steady focused median around `0.92x-0.97x` depending on
+the local timing sample). A June 24, 2026 policy experiment that forced the
+`N=32` path through the small direct linear+bias kernel before the row
+log-softmax was also rejected: the module bench regressed
+`prepared_execute_into_ms` to about `0.0112ms`, and the three-attempt PyTorch
+comparison still missed median parity. Keep the BLAS-with-fused-bias row tail
+until a true classifier-tail kernel beats it.
 Evidence tag: current measured path now prefers the same BLAS-backed batched linear policy as `linear_batched`; then runs the measured `N=32` row; latest fresh-native three-attempt PyTorch gap microscope; row log-softmax tail itself; bias vector into the `N=32` row log-softmax normalization; `prepared_execute_into_ms=0.00759ms`; `vvlogf` over the 128 per-row denominators; `0.00765ms`; `ratio_median=0.89x`.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
