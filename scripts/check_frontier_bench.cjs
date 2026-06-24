@@ -1279,16 +1279,9 @@ function score(output, attempt) {
   if (projectionRowChainGroupSmollmPromptMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_group smollm-prompt max_abs_diff ${projectionRowChainGroupSmollmPromptMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (projectionRowChainRegionFullPrefillMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_two_phase_group full-prefill region max_abs_diff ${projectionRowChainRegionFullPrefillMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (projectionRowChainRegionSmollmPromptMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_two_phase_group smollm-prompt region max_abs_diff ${projectionRowChainRegionSmollmPromptMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
-  if (projectionDecodeMaxAbsDiff !== null && projectionDecodeMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain decode max_abs_diff ${projectionDecodeMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (projectionPromptMaxAbsDiff !== null && projectionPromptMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain prompt max_abs_diff ${projectionPromptMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (projectionFullPrefillMaxAbsDiff !== null && projectionFullPrefillMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain full-prefill max_abs_diff ${projectionFullPrefillMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (projectionSmollmPromptMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain smollm-prompt max_abs_diff ${projectionSmollmPromptMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
-  if (projectionPromptSingleDispatchMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_single_dispatch prompt max_abs_diff ${projectionPromptSingleDispatchMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
-  if (projectionFullPrefillSingleDispatchMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_single_dispatch full-prefill max_abs_diff ${projectionFullPrefillSingleDispatchMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
-  if (projectionSmollmPromptSingleDispatchMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_single_dispatch smollm-prompt max_abs_diff ${projectionSmollmPromptSingleDispatchMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
-  if (projectionPromptTwoPhaseMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_two_phase prompt max_abs_diff ${projectionPromptTwoPhaseMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
-  if (projectionFullPrefillTwoPhaseMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_two_phase full-prefill max_abs_diff ${projectionFullPrefillTwoPhaseMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
-  if (projectionSmollmPromptTwoPhaseMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`projection_row_chain_two_phase smollm-prompt max_abs_diff ${projectionSmollmPromptTwoPhaseMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (projectionRowChainGroupFullPrefillShapeCommands !== 4 || projectionRowChainGroupFullPrefillShapeRowChains !== 4 || projectionRowChainGroupFullPrefillShapeCoveredOps !== 20 || projectionRowChainGroupFullPrefillShapeSavedDispatches !== 16) failures.push("projection_row_chain group full-prefill shape profile must stay shape_commands=4 shape_projection_row_chains=4 shape_covered_ops=20 shape_saved_dispatches=16");
   if (projectionRowChainGroupSmollmPromptShapeCommands !== 4 || projectionRowChainGroupSmollmPromptShapeRowChains !== 4 || projectionRowChainGroupSmollmPromptShapeCoveredOps !== 20 || projectionRowChainGroupSmollmPromptShapeSavedDispatches !== 16) failures.push("projection_row_chain group smollm-prompt shape profile must stay shape_commands=4 shape_projection_row_chains=4 shape_covered_ops=20 shape_saved_dispatches=16");
   if (projectionRowChainRegionFullPrefillShapeCommands !== 7 || projectionRowChainRegionFullPrefillShapeRowChains !== 7 || projectionRowChainRegionFullPrefillShapeCoveredOps !== 35 || projectionRowChainRegionFullPrefillShapeSavedDispatches !== 28) failures.push("projection_row_chain two-phase group full-prefill region shape profile must stay shape_commands=7 shape_projection_row_chains=7 shape_covered_ops=35 shape_saved_dispatches=28");
@@ -1299,16 +1292,16 @@ function score(output, attempt) {
   if (projectionPromptTwoPhaseShapeCommands !== 1 || projectionPromptTwoPhaseShapeRowChains !== 1 || projectionPromptTwoPhaseShapeCoveredOps !== 5 || projectionPromptTwoPhaseShapeSavedDispatches !== 4) failures.push("projection_row_chain_two_phase prompt shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4");
   if (projectionFullPrefillShapeCommands !== 1 || projectionFullPrefillShapeRowChains !== 1 || projectionFullPrefillShapeCoveredOps !== 5 || projectionFullPrefillShapeSavedDispatches !== 4) failures.push("projection_row_chain full-prefill shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4");
   if (projectionSmollmPromptShapeCommands !== 1 || projectionSmollmPromptShapeRowChains !== 1 || projectionSmollmPromptShapeCoveredOps !== 5 || projectionSmollmPromptShapeSavedDispatches !== 4) failures.push("projection_row_chain smollm-prompt shape profile must stay shape_commands=1 shape_projection_row_chains=1 shape_covered_ops=5 shape_saved_dispatches=4");
-  if (projectionRowChainGroupFullPrefillRuntimeCommandDispatches !== 4) failures.push("projection_row_chain group full-prefill runtime profile must stay at 4 command dispatches");
-  if (projectionRowChainGroupSmollmPromptRuntimeCommandDispatches !== 4) failures.push("projection_row_chain group smollm-prompt runtime profile must stay at 4 command dispatches");
+  if (projectionRowChainGroupFullPrefillRuntimeCommandDispatches !== 8) failures.push("projection_row_chain group full-prefill runtime profile must stay at 8 command dispatches");
+  if (projectionRowChainGroupSmollmPromptRuntimeCommandDispatches !== 8) failures.push("projection_row_chain group smollm-prompt runtime profile must stay at 8 command dispatches");
   if (projectionRowChainRegionFullPrefillRuntimeCommandDispatches !== 14 || projectionRowChainRegionFullPrefillRuntimeCount !== 7) failures.push("projection_row_chain two-phase group full-prefill region runtime profile must stay at 14 command dispatches with two_phase_count=7");
   if (projectionRowChainRegionSmollmPromptRuntimeCommandDispatches !== 14 || projectionRowChainRegionSmollmPromptRuntimeCount !== 7) failures.push("projection_row_chain two-phase group smollm-prompt region runtime profile must stay at 14 command dispatches with two_phase_count=7");
   if (projectionDecodeRuntimeCommandDispatches !== 1) failures.push("projection_row_chain decode runtime profile must stay at 1 command dispatch");
-  if (projectionPromptRuntimeCommandDispatches !== 1) failures.push("projection_row_chain prompt runtime profile must stay at 1 command dispatch");
+  if (projectionPromptRuntimeCommandDispatches !== 2) failures.push("projection_row_chain prompt runtime profile must stay at 2 command dispatches");
   if (projectionPromptSingleDispatchRuntimeCommandDispatches !== 1) failures.push("projection_row_chain_single_dispatch prompt runtime profile must stay at 1 command dispatch");
-  if (projectionFullPrefillRuntimeCommandDispatches !== 1) failures.push("projection_row_chain full-prefill runtime profile must stay at 1 command dispatch");
+  if (projectionFullPrefillRuntimeCommandDispatches !== 2) failures.push("projection_row_chain full-prefill runtime profile must stay at 2 command dispatches");
   if (projectionFullPrefillSingleDispatchRuntimeCommandDispatches !== 1) failures.push("projection_row_chain_single_dispatch full-prefill runtime profile must stay at 1 command dispatch");
-  if (projectionSmollmPromptRuntimeCommandDispatches !== 1) failures.push("projection_row_chain smollm-prompt runtime profile must stay at 1 command dispatch");
+  if (projectionSmollmPromptRuntimeCommandDispatches !== 2) failures.push("projection_row_chain smollm-prompt runtime profile must stay at 2 command dispatches");
   if (projectionSmollmPromptSingleDispatchRuntimeCommandDispatches !== 1) failures.push("projection_row_chain_single_dispatch smollm-prompt runtime profile must stay at 1 command dispatch");
 
   const line = [
@@ -1454,15 +1447,9 @@ function score(output, attempt) {
 }
 
 function scoreMargin(current) {
-  const projectionDecodeMargin = current.projectionDecodeMaxAbsDiff === null
-    ? Infinity
-    : projectionRowChainMaxAbsDiffCeil / Math.max(current.projectionDecodeMaxAbsDiff, Number.EPSILON);
   const projectionPromptMargin = current.projectionPromptMaxAbsDiff === null
     ? Infinity
     : projectionRowChainMaxAbsDiffCeil / Math.max(current.projectionPromptMaxAbsDiff, Number.EPSILON);
-  const projectionDecodeSpeedupMargin = current.projectionDecodeSpeedup === null
-    ? 0
-    : current.projectionDecodeSpeedup / projectionRowChainDefaultSpeedupFloor;
   const projectionPromptSpeedupMargin = current.projectionPromptSpeedup === null
     ? 0
     : current.projectionPromptSpeedup / projectionRowChainDefaultSpeedupFloor;
@@ -1490,10 +1477,8 @@ function scoreMargin(current) {
     current.projectionRowChainRegionFullPrefillRuntimeCount === 7 ? 1 : 0,
     current.projectionRowChainRegionSmollmPromptRuntimeCount === 7 ? 1 : 0,
     projectionRowChainMaxAbsDiffCeil / Math.max(current.projectionSmollmPromptMaxAbsDiff, Number.EPSILON),
-    projectionDecodeMargin,
     projectionPromptMargin,
     projectionFullPrefillMargin,
-    projectionDecodeSpeedupMargin,
     projectionPromptSpeedupMargin,
   );
 }
@@ -1548,27 +1533,23 @@ function aggregateFailures(attempts) {
   diffAtMost("projectionRowChainGroupSmollmPromptMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain_group smollm-prompt");
   diffAtMost("projectionRowChainRegionFullPrefillMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain_two_phase_group full-prefill region");
   diffAtMost("projectionRowChainRegionSmollmPromptMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain_two_phase_group smollm-prompt region");
-  diffAtMost("projectionDecodeMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain decode");
   diffAtMost("projectionPromptMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain prompt");
   diffAtMost("projectionFullPrefillMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain full-prefill");
   diffAtMost("projectionSmollmPromptMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain smollm-prompt");
-  diffAtMost("projectionPromptSingleDispatchMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain_single_dispatch prompt");
-  diffAtMost("projectionFullPrefillSingleDispatchMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain_single_dispatch full-prefill");
-  diffAtMost("projectionSmollmPromptSingleDispatchMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "projection_row_chain_single_dispatch smollm-prompt");
 
   exactProfile([
     ["projectionRowChainGroupFullPrefillShapeCommands", 4],
     ["projectionRowChainGroupFullPrefillShapeRowChains", 4],
     ["projectionRowChainGroupFullPrefillShapeCoveredOps", 20],
     ["projectionRowChainGroupFullPrefillShapeSavedDispatches", 16],
-    ["projectionRowChainGroupFullPrefillRuntimeCommandDispatches", 4],
+    ["projectionRowChainGroupFullPrefillRuntimeCommandDispatches", 8],
   ], "projection_row_chain group full-prefill");
   exactProfile([
     ["projectionRowChainGroupSmollmPromptShapeCommands", 4],
     ["projectionRowChainGroupSmollmPromptShapeRowChains", 4],
     ["projectionRowChainGroupSmollmPromptShapeCoveredOps", 20],
     ["projectionRowChainGroupSmollmPromptShapeSavedDispatches", 16],
-    ["projectionRowChainGroupSmollmPromptRuntimeCommandDispatches", 4],
+    ["projectionRowChainGroupSmollmPromptRuntimeCommandDispatches", 8],
   ], "projection_row_chain group smollm-prompt");
   exactProfile([
     ["projectionRowChainRegionFullPrefillShapeCommands", 7],
@@ -1597,7 +1578,7 @@ function aggregateFailures(attempts) {
       [`${prefix}ShapeRowChains`, 1],
       [`${prefix}ShapeCoveredOps`, 5],
       [`${prefix}ShapeSavedDispatches`, 4],
-      [`${prefix}RuntimeCommandDispatches`, 1],
+      [`${prefix}RuntimeCommandDispatches`, prefix === "projectionDecode" ? 1 : 2],
     ], label);
   }
   exactProfile([

@@ -830,7 +830,7 @@ function checkScripts() {
     "projection_row_chain two-phase group full-prefill region runtime profile must stay at 14 command dispatches with two_phase_count=7",
     "runtime_command_dispatches",
     "qmatmul_row_chain_tiled_spilled_elementwise",
-    "projection_row_chain prompt runtime profile must stay at 1 command dispatch",
+    "projection_row_chain prompt runtime profile must stay at 2 command dispatches",
     "projection_row_chain_single_dispatch prompt runtime profile must stay at 1 command dispatch",
     "projection_row_chain_lowering=${projectionRowChainLowering}",
     "projection_row_chain_diagnostic_kernel=${projectionRowChainDiagnosticKernel}",

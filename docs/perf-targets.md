@@ -288,16 +288,17 @@ machine for both prompt/prefill and decode.
   `shape_saved_dispatches=16`. It also executes the compiled Metal Program once
   with region ProgramCommand dispatch enabled and prints
   `runtime_command_dispatches`, proving the public runtime profile sees one
-  command dispatch for each single row-chain diagnostic and four command
-  dispatches for the x4 group. This keeps the semantic scheduler win explicit
+  command object lower through two backend command dispatches for each split
+  row-chain diagnostic and eight backend command dispatches for the x4 group.
+  This keeps the semantic scheduler win explicit
   without confusing it for the still-missing tiled qmatmul row-chain throughput
   kernel.
   The same frontier gate now reports
   `projection_row_chain_single_dispatch` prompt/full-prefill/SmolLM-prompt
-  lanes for the tiled single-dispatch candidate. Those lanes are correctness-
-  and dispatch-profile checked, but remain diagnostic until they beat the
-  full-prefill and SmolLM-prompt promotion floor instead of only improving
-  smaller prompt tiles.
+  lanes for the tiled single-dispatch candidate. Those lanes are dispatch-profile
+  checked and print their observed max-abs-diff, but remain diagnostic until
+  they are both correct and faster at full-prefill and SmolLM-prompt promotion
+  shapes instead of only improving smaller prompt tiles.
 - Q8_0 tied LM-head logits are a standalone backend qmatvec dispatch outside
   the ProgramCommand stream. Accepted default Q8_0 prompt evidence is gated at
   241 ProgramCommands and 242 dispatches because the prompt path keeps
