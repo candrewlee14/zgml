@@ -964,11 +964,13 @@ function q8PromptNextTarget(path, pressurePath = path) {
       ? Number(pressureData?.lanes?.semantic?.tiledSpillInput) / Number(pressureData.lanes.semantic.tiledSpills)
       : NaN;
     const freshOutputSpills = pressureData?.lanes?.semantic?.tiledOutputSpills ?? "n/a";
+    const freshBridges = pressureData?.lanes?.semantic?.residualBridges ?? pressureData?.lanes?.semantic?.projectionRowChainSemanticResidualBridges ?? "n/a";
+    const bridgeNext = Number(freshBridges) > 0 ? "semantic_residual_bridge_command" : "semantic_ffn_sublayer_throughput_kernel";
     const fresh = hasFreshPressure
-      ? `:fresh=best:${formatRatio(pressureData?.lanes?.semantic?.speedup)},median:${formatRatio(freshStats?.median)},worst:${formatRatio(freshStats?.worst)},spills:${freshSpills},spill_k:${formatNumber(freshSpillK, 0)},spill_input:${freshSpillInput},output_spills:${freshOutputSpills}`
+      ? `:fresh=best:${formatRatio(pressureData?.lanes?.semantic?.speedup)},median:${formatRatio(freshStats?.median)},worst:${formatRatio(freshStats?.worst)},spills:${freshSpills},spill_k:${formatNumber(freshSpillK, 0)},spill_input:${freshSpillInput},output_spills:${freshOutputSpills},bridges:${freshBridges}`
       : "";
     if (pressureStatus === "promoted-default" || pressureSemanticThroughput === "promoted") {
-      return `q8_prompt=promoted_semantic_default:commands=${pressureData?.lanes?.semantic?.commands ?? "n/a"}:row_chains=${pressureData?.lanes?.semantic?.projectionRowChains ?? "n/a"}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}`;
+      return `q8_prompt=promoted_semantic_default:commands=${pressureData?.lanes?.semantic?.commands ?? "n/a"}:row_chains=${pressureData?.lanes?.semantic?.projectionRowChains ?? "n/a"}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:next=${bridgeNext}`;
     }
     if (semanticThroughput === "ready" && Number.isFinite(semanticSpeedup) && semanticSpeedup >= 1) {
       return `q8_prompt=promote_semantic_candidate:${formatRatio(semanticSpeedup)}:median=${formatRatio(semanticStats?.median)}${fresh}`;
