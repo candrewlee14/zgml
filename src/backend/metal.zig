@@ -9191,7 +9191,7 @@ const CompiledProgram = struct {
             .scale_src_offset = rp.src_offset,
             .scaled_dst_offset = out.dst_offset,
         };
-        exec.profile.recordSemanticFfnSublayer(params.M, params.H, params.K, params.O);
+        exec.profile.recordSemanticFfnSublayer(params.M, params.H, params.K, params.O, SEMANTIC_FFN_THREADS);
         exec.encodeKernel(.qmatmul_semantic_ffn_sublayer_f32, &buffers, params, 10, .{ .gx = gate.M }, SEMANTIC_FFN_THREADS);
         return true;
     }

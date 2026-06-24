@@ -96,6 +96,8 @@ pub const RuntimeProfile = struct {
     semantic_ffn_sublayer_tile_hidden_tiles: u64 = 0,
     semantic_ffn_sublayer_tile_output_tiles: u64 = 0,
     semantic_ffn_sublayer_tile_parallel_groups: u64 = 0,
+    semantic_ffn_sublayer_thread_lane_slots: u64 = 0,
+    semantic_ffn_sublayer_active_thread_lanes: u64 = 0,
     call_count: u32 = 0,
 
     pub fn reset(self: *RuntimeProfile) void {
@@ -152,6 +154,8 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_sublayer_tile_hidden_tiles +%= other.semantic_ffn_sublayer_tile_hidden_tiles;
         self.semantic_ffn_sublayer_tile_output_tiles +%= other.semantic_ffn_sublayer_tile_output_tiles;
         self.semantic_ffn_sublayer_tile_parallel_groups +%= other.semantic_ffn_sublayer_tile_parallel_groups;
+        self.semantic_ffn_sublayer_thread_lane_slots +%= other.semantic_ffn_sublayer_thread_lane_slots;
+        self.semantic_ffn_sublayer_active_thread_lanes +%= other.semantic_ffn_sublayer_active_thread_lanes;
         self.call_count +%= other.call_count;
     }
 
@@ -263,11 +267,12 @@ pub const RuntimeProfile = struct {
         self.qmatmul_row_chain_tiled_finalize_elements +%= @as(u64, m) *% @as(u64, n);
     }
 
-    pub fn recordSemanticFfnSublayer(self: *RuntimeProfile, m: u32, h: u32, k: u32, o: u32) void {
+    pub fn recordSemanticFfnSublayer(self: *RuntimeProfile, m: u32, h: u32, k: u32, o: u32, thread_lanes: u32) void {
         const hidden: u64 = h;
         const input: u64 = k;
         const output: u64 = o;
         const tile: u64 = 32;
+        const threads: u64 = thread_lanes;
         const row_groups = divCeilU64(m, tile);
         const hidden_tiles = divCeilU64(h, tile);
         const output_tiles = divCeilU64(o, tile);
@@ -283,6 +288,15 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_sublayer_tile_hidden_tiles +%= hidden_tiles;
         self.semantic_ffn_sublayer_tile_output_tiles +%= output_tiles;
         self.semantic_ffn_sublayer_tile_parallel_groups +%= row_groups *% (hidden_tiles *% 2 +% output_tiles);
+        if (threads > 0) {
+            const input_slots = divCeilU64(k, thread_lanes) *% threads;
+            const hidden_slots = divCeilU64(h, thread_lanes) *% threads;
+            const output_slots = divCeilU64(o, thread_lanes) *% threads;
+            const active_lanes_per_row = input +% hidden +% output *% 2 +% threads;
+            const lane_slots_per_row = input_slots +% hidden_slots +% output_slots *% 2 +% threads;
+            self.semantic_ffn_sublayer_active_thread_lanes +%= @as(u64, m) *% active_lanes_per_row;
+            self.semantic_ffn_sublayer_thread_lane_slots +%= @as(u64, m) *% lane_slots_per_row;
+        }
     }
 };
 
@@ -441,6 +455,15 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "tile_hidden_tiles", rt.semantic_ffn_sublayer_tile_hidden_tiles, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "tile_output_tiles", rt.semantic_ffn_sublayer_tile_output_tiles, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "tile_parallel_groups", rt.semantic_ffn_sublayer_tile_parallel_groups, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "thread_lane_slots", rt.semantic_ffn_sublayer_thread_lane_slots, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "active_thread_lanes", rt.semantic_ffn_sublayer_active_thread_lanes, calls_f);
+        if (rt.semantic_ffn_sublayer_thread_lane_slots > 0) {
+            try writeJsonField(
+                jw,
+                "semantic_ffn_sublayer_thread_lane_utilization",
+                @as(f64, @floatFromInt(rt.semantic_ffn_sublayer_active_thread_lanes)) / @as(f64, @floatFromInt(rt.semantic_ffn_sublayer_thread_lane_slots)),
+            );
+        }
         if (rt.semantic_ffn_sublayer_tile_parallel_groups > 0) {
             try writeJsonField(
                 jw,
@@ -641,7 +664,7 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     rt.recordCachedRegionCommandPlan(3);
     rt.recordDynamicRegionCommandPlan();
     rt.recordQMatmulRowChainTiledSpill(128, 576, 576, 32, true, true);
-    rt.recordSemanticFfnSublayer(128, 576, 576, 576);
+    rt.recordSemanticFfnSublayer(128, 576, 576, 576, 512);
     rt.call_count = 2;
 
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
@@ -672,6 +695,9 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_tile_parallel_groups\":216") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group\":4608") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group\":589824") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_thread_lane_slots\":589824") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_active_thread_lanes\":360448") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_thread_lane_utilization\":0.611111") != null);
 }
 
 test "RuntimeProfile accumulates evidence windows" {
