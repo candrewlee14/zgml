@@ -327,7 +327,11 @@ machine for both prompt/prefill and decode.
   `full_prefill=1.99x`, `smollm_prompt=1.04x`, `gate=ready`. The refreshed
   three-attempt Q8 prompt viable run also promotes the semantic lane with
   `semantic_speedup=1.18x`, `semantic_median=1.01x`, and
-  `semantic_worst=0.99x`.
+  `semantic_worst=0.99x`. A later semantic-only scale-index shift probe
+  preserved correctness but regressed the focused qsemantic throughput lane to
+  `full_prefill=1.34x`, `smollm_prompt=1.03x`, so do not spend the next pass on
+  block-scale division/shift spelling; the missing win is still work
+  partitioning.
 - The frontier gate now also reports the paired row-chain diagnostic
   `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
   This compares four staged qmatmul+residual+RMSNorm-scale row chains against
