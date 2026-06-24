@@ -5439,6 +5439,28 @@ fn geluApproxScalar(x: f32) f32 {
     return 0.5 * x * (1.0 + std.math.tanh(kk));
 }
 
+fn fastLogPositiveApprox(x: f32) f32 {
+    const bits: u32 = @bitCast(x);
+    const exp_bits = (bits >> 23) & 0xff;
+    const exponent = @as(i32, @intCast(exp_bits)) - 127;
+    const mantissa_bits = (bits & 0x7fffff) | 0x3f800000;
+    const m: f32 = @bitCast(mantissa_bits);
+    const y = (m - 1.0) / (m + 1.0);
+    const y2 = y * y;
+    const y3 = y * y2;
+    const y5 = y3 * y2;
+    const y7 = y5 * y2;
+    const y9 = y7 * y2;
+    return @as(f32, @floatFromInt(exponent)) * 0.6931471805599453 + 2.0 * (y + y3 / 3.0 + y5 / 5.0 + y7 / 7.0 + y9 / 9.0);
+}
+
+test "fast positive log approximation covers softmax denominators" {
+    const samples = [_]f32{ 1.0, 1.125, 1.5, 2.0, 3.25, 8.0, 16.0, 31.75, 32.0 };
+    for (samples) |value| {
+        try std.testing.expectApproxEqAbs(@log(value), fastLogPositiveApprox(value), 4e-6);
+    }
+}
+
 fn executeDirectRmsGeluLinearStep(linear: *const TinyLinearSessionHandle, shape: DirectRmsGeluLinearStepShape, input: [*]const f32, output: [*]f32) void {
     const VecT = @Vector(8, f32);
     const input_slice = input[0..linear.input_len];
@@ -5604,7 +5626,7 @@ fn logSoftmaxRowsInPlace32(values: []f32, M: usize) void {
         const e0 = fastExpApproxVec(16, v0 - max_broadcast);
         const e1 = fastExpApproxVec(16, v1 - max_broadcast);
         const sum_exp = @reduce(.Add, e0) + @reduce(.Add, e1);
-        const log_denom_vec: VecT = @splat(max_val + @log(sum_exp));
+        const log_denom_vec: VecT = @splat(max_val + fastLogPositiveApprox(sum_exp));
         out_row[0..16].* = v0 - log_denom_vec;
         out_row[16..32].* = v1 - log_denom_vec;
     }
@@ -5623,7 +5645,7 @@ fn logSoftmaxRowsInPlaceBias32(values: []f32, bias: []const f32, M: usize) void 
         const e0 = fastExpApproxVec(16, v0 - max_broadcast);
         const e1 = fastExpApproxVec(16, v1 - max_broadcast);
         const sum_exp = @reduce(.Add, e0) + @reduce(.Add, e1);
-        const log_denom_vec: VecT = @splat(max_val + @log(sum_exp));
+        const log_denom_vec: VecT = @splat(max_val + fastLogPositiveApprox(sum_exp));
         out_row[0..16].* = v0 - log_denom_vec;
         out_row[16..32].* = v1 - log_denom_vec;
     }
@@ -5635,7 +5657,7 @@ fn writeLogSoftmax32Row(output_row: []f32, v0: @Vector(16, f32), v1: @Vector(16,
     const max_broadcast: VecT = @splat(max_val);
     const e0 = fastExpApproxVec(16, v0 - max_broadcast);
     const e1 = fastExpApproxVec(16, v1 - max_broadcast);
-    const log_denom_vec: VecT = @splat(max_val + @log(@reduce(.Add, e0) + @reduce(.Add, e1)));
+    const log_denom_vec: VecT = @splat(max_val + fastLogPositiveApprox(@reduce(.Add, e0) + @reduce(.Add, e1)));
     output_row[0..16].* = v0 - log_denom_vec;
     output_row[16..32].* = v1 - log_denom_vec;
 }
