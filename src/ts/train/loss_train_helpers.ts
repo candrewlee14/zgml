@@ -1280,7 +1280,7 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     return value;
   }
 
-  function fit(optimizer: LossTrainOptimizer, batches: unknown, lossFn: unknown, fitOptions: TrainFitOptions = {}) {
+  function fitLoop(optimizer: LossTrainOptimizer, batches: unknown, lossFn: unknown, fitOptions: TrainFitOptions = {}) {
     if (!optimizer || typeof optimizer.step !== "function") throw new Error("train.fit requires an optimizer");
     if (!batches || typeof (batches as Iterable<unknown>)[Symbol.iterator] !== "function") {
       throw new Error("train.fit requires an iterable of batches");
@@ -1386,12 +1386,32 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     });
   }
 
+  function fit(targetOrOptimizer: unknown, batches: unknown, lossFnOrOptions: unknown, fitOptions: TrainFitOptions = {}) {
+    const maybeOptions = isRecord(lossFnOrOptions) ? lossFnOrOptions : null;
+    if (
+      maybeOptions &&
+      targetOrOptimizer &&
+      typeof (targetOrOptimizer as AnyRecord).forward === "function" &&
+      maybeOptions.optimizer &&
+      (maybeOptions.loss || maybeOptions.criterion)
+    ) {
+      return fitModule(
+        maybeOptions.optimizer as LossTrainOptimizer,
+        targetOrOptimizer,
+        batches,
+        maybeOptions.loss ?? maybeOptions.criterion,
+        maybeOptions as TrainFitOptions,
+      );
+    }
+    return fitLoop(targetOrOptimizer as LossTrainOptimizer, batches, lossFnOrOptions, fitOptions);
+  }
+
   function fitModule(optimizer: LossTrainOptimizer, module: unknown, batches: unknown, criterion: unknown, fitOptions: TrainFitOptions = {}) {
     const target = module as AnyRecord;
     const loss = criterion as AnyRecord;
     if (!target || typeof target.forward !== "function") throw new Error("train.fitModule requires a module with forward(input)");
     if (!loss || typeof loss.forward !== "function") throw new Error("train.fitModule requires a criterion with forward(prediction, target)");
-    return fit(optimizer, batches, (batch: unknown, context: TrainFitContext) => {
+    return fitLoop(optimizer, batches, (batch: unknown, context: TrainFitContext) => {
       const record = batch as AnyRecord;
       if (!isTensor(record?.input)) throw new Error("train.fitModule batch.input must be a Tensor");
       if (!isTensor(record?.target)) throw new Error("train.fitModule batch.target must be a Tensor");

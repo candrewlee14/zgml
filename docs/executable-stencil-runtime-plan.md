@@ -1788,6 +1788,12 @@ Current frontend slice:
   `clip_grad_value_`, so
   examples and future bindings can express the common loss/optimizer workflow
   without exposing graph internals or inventing a policy-heavy trainer.
+  `train.fit(model, loader, { optimizer, loss })` is now the documented
+  beginner path, while the older optimizer-first `fit(...)` and explicit
+  `fitModule(...)` / `fitClassifier(...)` forms remain available for manual or
+  compatibility-oriented loops. The public type smoke pins
+  `TrainModelFitOptions`, and the package smoke proves the model-first path
+  returns the same signed fit evidence as the explicit module helper.
   `zgml.data` now owns the matching tiny data rung: `tensorDataset` /
   `tensor_dataset` plus iterable `batches` / `batch` / `dataLoader` helpers
   that stack leading-dimension tensor rows into frozen batch evidence for

@@ -385,6 +385,7 @@ import {
   type TrainFitContext,
   type TrainFitEvidence,
   type TrainFitStepEvidence,
+  type TrainModelFitOptions,
   type TrainModuleOutputShape,
   type TrainSupervisedBatch,
   type TrainStepEvidence,
@@ -4239,6 +4240,12 @@ const fitDataEvidenceTyped: TrainFitEvidence<"adam"> = train.fit(checkpointOptim
     void fitStepOptimizerKind;
   },
 });
+const modelFirstFitOptions: TrainModelFitOptions<"adam", typeof checkpointModel, TensorDatasetBatch> = {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+};
+const modelFirstFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpointModel, tensorDatasetBatches, modelFirstFitOptions);
 const fitDataLastStepOptimizerKind: "adam" | null = fitDataEvidenceTyped.lastStep?.optimizerKind ?? null;
 const fitDataBatchCount: number | null = fitDataEvidence.batchCount;
 const fitDataBatchCountAlias: number | null = fitDataEvidence.batch_count;
@@ -5360,6 +5367,8 @@ void tensorDatasetLoaderSize;
 void tensorDatasetDataloaderDropLast;
 void tensorDatasetLoaderDropLastAlias;
 void fitDataEvidence;
+void modelFirstFitOptions;
+void modelFirstFitEvidence;
 void fitDataBatchCount;
 void fitDataBatchCountAlias;
 void fitDataSampleCount;

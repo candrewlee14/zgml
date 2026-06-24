@@ -6239,6 +6239,14 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     maxSteps: 1,
     zeroGrad: true,
   });
+  const fitModelFirstModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
+  const fitModelFirstOptimizer = adapter.optim.sgd(fitModelFirstModel, { lr: 0.05 });
+  const fitModelFirstEvidence = adapter.train.fit(fitModelFirstModel, shuffledBatches, {
+    optimizer: fitModelFirstOptimizer,
+    loss: fitModuleCriterion,
+    maxSteps: 1,
+    zeroGrad: true,
+  });
   const fitModuleSnakeEvidence = adapter.train.fit_module(fitModuleOptimizer, fitModuleModel, shuffledBatches, fitModuleCriterion, {
     max_steps: 1,
     zero_grad: true,
@@ -6247,11 +6255,14 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     fitModuleEvidence.kind !== "zgml.train.fit" ||
     fitModuleEvidence.steps !== 1 ||
     fitModuleEvidence.lastStep?.gradientsCleared !== true ||
+    fitModelFirstEvidence.kind !== "zgml.train.fit" ||
+    fitModelFirstEvidence.steps !== 1 ||
+    fitModelFirstEvidence.lastStep?.gradientsCleared !== true ||
     fitModuleSnakeEvidence.kind !== "zgml.train.fit" ||
     fitModuleSnakeEvidence.steps !== 1 ||
     fitModuleSnakeEvidence.lastStep?.gradientsCleared !== true
   ) {
-    throw new Error(`${label} expected train.fitModule/fit_module to train module+criterion batches`);
+    throw new Error(`${label} expected train.fit model-first and fitModule/fit_module to train module+criterion batches`);
   }
   if (
     !adapter.train.isTrainFitStepEvidence(fitSteps[0]) ||

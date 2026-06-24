@@ -43,7 +43,9 @@ const zgmlDataset = new zgml.utils.data.TensorDataset(
 );
 const zgmlLoader = new zgml.utils.data.DataLoader(zgmlDataset, { batch_size: 2, shuffle: true });
 const zgmlCriterion = new zgml.nn.MSELoss();
-const zgmlFit = zgml.train.fitModule(zgmlOptimizer, zgmlModel, zgmlLoader, zgmlCriterion, {
+const zgmlFit = zgml.train.fit(zgmlModel, zgmlLoader, {
+  optimizer: zgmlOptimizer,
+  loss: zgmlCriterion,
   epochs: 1,
   zero_grad: true,
   clip_grad_norm: 1,
@@ -72,7 +74,9 @@ const torchDataset = new torch.utils.data.TensorDataset(
 );
 const torchLoader = new torch.utils.data.DataLoader(torchDataset, { batch_size: 2, shuffle: true });
 
-const torchFit = torch.train.fitModule(torchOptimizer, torchModel, torchLoader, torchRegressionCriterion, {
+const torchFit = torch.train.fit(torchModel, torchLoader, {
+  optimizer: torchOptimizer,
+  loss: torchRegressionCriterion,
   epochs: 8,
   zero_grad: true,
   clip_grad_norm: 1,
@@ -150,7 +154,9 @@ const dataset = data.tensorDataset(
 );
 const loader = data.dataLoader(dataset, { batchSize: 2, shuffle: true });
 
-const fit = train.fitModule(optimizer, model, loader, regressionCriterion, {
+const fit = train.fit(model, loader, {
+  optimizer,
+  loss: regressionCriterion,
   epochs: 8,
   zeroGrad: true,
   clipGradNorm: 1,

@@ -39,7 +39,9 @@ const dataset = new zgml.utils.data.TensorDataset(
 );
 const loader = new zgml.utils.data.DataLoader(dataset, { batch_size: 2, shuffle: true });
 
-zgml.train.fitModule(optimizer, model, loader, criterion, {
+zgml.train.fit(model, loader, {
+  optimizer,
+  loss: criterion,
   epochs: 8,
   zero_grad: true,
   clip_grad_norm: 1,
@@ -81,7 +83,9 @@ const dataset = data.tensorDataset(
 );
 const loader = data.dataLoader(dataset, { batchSize: 2, shuffle: true });
 
-train.fitModule(optimizer, model, loader, criterion, {
+train.fit(model, loader, {
+  optimizer,
+  loss: criterion,
   epochs: 8,
   zeroGrad: true,
   clipGradNorm: 1,

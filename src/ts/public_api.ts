@@ -4859,6 +4859,19 @@ export type TrainFitOptions<OptimizerKind extends OptimizerStateKind | null = Op
   on_step?: (evidence: TrainFitStepEvidence<OptimizerKind>) => void;
 } & TrainGradientClipOptions;
 
+export type TrainModelFitOptions<
+  OptimizerKind extends OptimizerStateKind | null,
+  Target extends NnModule,
+  Batch,
+> = TrainFitOptions<OptimizerKind> & {
+  optimizer: OptimizerKind extends OptimizerStateKind
+    ? Optimizer<OptimizerKind>
+    : { step(): void; zeroGrad?(options?: ZeroGradOptions): void };
+} & (
+  | { loss: TrainSupervisedCriterion<Target, Batch>; criterion?: TrainSupervisedCriterion<Target, Batch> }
+  | { criterion: TrainSupervisedCriterion<Target, Batch>; loss?: TrainSupervisedCriterion<Target, Batch> }
+);
+
 export type TrainFitEvidence<OptimizerKind extends OptimizerStateKind | null = OptimizerStateKind | null> = Readonly<{
   kind: "zgml.train.fit";
   signature: string;
@@ -5355,11 +5368,21 @@ export interface TrainNamespace {
     lossFn: (batch: Batch, context: TrainFitContext) => Tensor,
     options?: TrainFitOptions<Kind>,
   ): TrainFitEvidence<Kind>;
+  fit<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    options: TrainModelFitOptions<Kind, Target, Batch>,
+  ): TrainFitEvidence<Kind>;
   fit<Batch>(
     optimizer: { step(): void; zeroGrad?(options?: ZeroGradOptions): void },
     batches: Iterable<Batch>,
     lossFn: (batch: Batch, context: TrainFitContext) => Tensor,
     options?: TrainFitOptions,
+  ): TrainFitEvidence;
+  fit<Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    options: TrainModelFitOptions<null, Target, Batch>,
   ): TrainFitEvidence;
   fitModule<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
     optimizer: Optimizer<Kind>,

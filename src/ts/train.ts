@@ -72,6 +72,7 @@ export type {
   TrainGradientClipOptions,
   TrainLossStepOptions,
   TrainModuleOutputShape,
+  TrainModelFitOptions,
   TrainNamespace,
   TrainClassificationCriterion,
   TrainStepOptions,
