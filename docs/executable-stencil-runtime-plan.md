@@ -471,6 +471,13 @@ Current checked progress:
   `nn.Sequential(Linear, ReLU)` / `nn.Sequential(Linear, SiLU)` module surfaces can
   take the native eager lane without users calling the low-level primitive
   directly.
+  Native eager microscope runs now write ignored
+  `bench-results/native-eager/native-eager-*.json` artifacts, and
+  `bench:status` reports both the latest native eager artifact and a
+  `native-eager-runtime-results:` summary with separate Node and Bun
+  minimum module/native-into speedups plus max module diff. That keeps the
+  normal-module native eager proof close to PyTorch/ggml evidence instead of
+  hidden in transient console output.
   These C ABI paths use the same shared native matmul substrate as compiled
   Program execution, then apply bias and optional activation into the
   caller-owned output buffer.

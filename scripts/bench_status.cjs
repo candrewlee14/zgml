@@ -159,6 +159,20 @@ function latestNativeEagerArtifact() {
   return nativeEagerArtifacts().at(-1) ?? null;
 }
 
+function nativeEagerArtifactsForRuntime(runtime) {
+  return nativeEagerArtifacts().filter((path) => {
+    try {
+      return readJson(path)?.runtime === runtime;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function latestNativeEagerArtifactForRuntime(runtime) {
+  return nativeEagerArtifactsForRuntime(runtime).at(-1) ?? null;
+}
+
 function isPytorchFocusArtifact(path) {
   return isPytorchKeySetArtifact(path, pytorchFocusKeys);
 }
@@ -726,6 +740,36 @@ function nativeEagerStatusLine(path) {
     return `${key}:module=${formatRatio(row?.nativeEagerModuleSpeedup)}:into=${formatRatio(row?.nativeEagerSpeedup)}:diff=${diff}`;
   }).join(",");
   return `native-eager-results: latest=${compactName(path)} status=${status} runtime=${runtime} native=${native} timing=${minTiming} rows=${rowSummary || "none"}`;
+}
+
+function nativeEagerRuntimeStatusLine() {
+  const parts = ["node", "bun"].map((runtime) => {
+    const path = latestNativeEagerArtifactForRuntime(runtime);
+    if (!path) return `${runtime}=missing`;
+    let data;
+    try {
+      data = readJson(path);
+    } catch {
+      return `${runtime}=unreadable:${compactName(path)}`;
+    }
+    const rows = Array.isArray(data?.rows) ? data.rows : [];
+    const moduleSpeedups = rows
+      .map((row) => row?.nativeEagerModuleSpeedup)
+      .filter((value) => typeof value === "number" && Number.isFinite(value));
+    const intoSpeedups = rows
+      .map((row) => row?.nativeEagerSpeedup)
+      .filter((value) => typeof value === "number" && Number.isFinite(value));
+    const diffs = rows
+      .map((row) => row?.nativeEagerModuleMaxAbsDiff)
+      .filter((value) => typeof value === "number" && Number.isFinite(value));
+    const minModule = moduleSpeedups.length > 0 ? Math.min(...moduleSpeedups) : null;
+    const minInto = intoSpeedups.length > 0 ? Math.min(...intoSpeedups) : null;
+    const maxDiff = diffs.length > 0 ? Math.max(...diffs) : null;
+    const native = typeof data?.nativeFreshness?.label === "string" ? data.nativeFreshness.label : "unknown";
+    const status = typeof data?.status === "string" ? data.status : "unknown";
+    return `${runtime}=latest:${compactName(path)}:status=${status}:native=${native}:module_min=${formatRatio(minModule)}:into_min=${formatRatio(minInto)}:diff_max=${maxDiff === null ? "n/a" : formatNumber(maxDiff, 6)}`;
+  });
+  return `native-eager-runtime-results: ${parts.join(" ")}`;
 }
 
 function q8PromptCandidateStatusLine(path) {
@@ -1571,6 +1615,7 @@ const latestPytorch = latestPytorchComparisonArtifact();
 const latestRawPytorch = latestRawPytorchComparisonArtifact();
 process.stdout.write(`${pytorchComparisonStatusLine(latestPytorch)}\n`);
 process.stdout.write(`${nativeEagerStatusLine(latestNativeEagerArtifact())}\n`);
+process.stdout.write(`${nativeEagerRuntimeStatusLine()}\n`);
 const broadPytorch = pytorchBroadStatusLine(latestPytorchBroadArtifact(), latestPytorch);
 if (broadPytorch) process.stdout.write(`${broadPytorch}\n`);
 const focusPytorch = pytorchFocusStatusLine(latestPytorchFocusArtifact(), latestPytorch);

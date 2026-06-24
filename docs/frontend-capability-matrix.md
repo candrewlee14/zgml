@@ -89,6 +89,10 @@ PyTorch replacement:
   `nn.Sequential(Linear, GELU)`, `nn.Sequential(Linear, ReLU)`, and
   `nn.Sequential(Linear, SiLU)` module calls, and the microscope records
   non-null fused-module `nativeEagerModuleForwardMs` rows on Node and Bun.
+  `bench:status` selects the latest ignored native-eager artifact and also
+  prints a per-runtime `native-eager-runtime-results:` line, so Node and Bun
+  native eager proof cannot be accidentally collapsed into whichever runtime ran
+  last.
 - Safetensors/model-source interop is strong for runtime paths, while ordinary
   TS module weights now have explicit state-dict/checkpoint save/load recipes;
   broader third-party weight-format adapters remain future work.
