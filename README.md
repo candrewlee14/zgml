@@ -867,6 +867,7 @@ npm run bench:pytorch     # build ReleaseFast native, then compare selected comp
 npm run bench:pytorch:steady # rebuild and measure steady PyTorch current-gap evidence
 npm run bench:pytorch:gaps # rebuild and measure the current PyTorch soft spots
 npm run bench:pytorch:gaps:run # rerun current PyTorch soft spots without rebuilding
+npm run bench:competitive # promoted PyTorch + qsemantic frontier + ggml competitiveness gate
 npm run bench:ggml        # build ReleaseFast and run the ggml/llama.cpp artifact gate with baseline regression protection
 npm run bench:frontier:gate # rebuild ReleaseFast and measure scheduler/kernelizer frontier evidence
 npm run bench:frontier:gate:run # rerun frontier evidence without rebuilding artifacts
@@ -893,6 +894,7 @@ npm run dev:perf:pytorch:gaps:native # native-only focused PyTorch-gap loop afte
 npm run dev:perf:pytorch:gaps:run # rerun focused PyTorch-gap bench against existing native/package artifacts
 npm run dev:perf:pytorch:logsoftmax:steady:native # native-only 150ms-window logSoftmax classifier microscope
 npm run dev:perf:pytorch:logsoftmax:steady:run # no-rebuild 150ms-window logSoftmax classifier microscope
+npm run dev:perf:competitive # incremental PyTorch + qsemantic frontier + cheap ggml competitiveness loop
 npm run dev:perf:q8-prompt # incremental ReleaseFast benchmark rebuild plus Q8 prompt candidate evidence
 npm run dev:perf:q8-prompt:run # rerun Q8 prompt candidate evidence against existing benchmark artifact
 npm run dev:perf:frontier:row-chain-region # incremental checked x7 row-chain region microscope
@@ -920,9 +922,11 @@ long-form smoke and benchmark gates.
 library goal. It requires a passing no-fallback Program/Session substrate gate
 with a latest-vs-checked-baseline delta report for the selected native lanes,
 and checks that the public type smokes still cover the zgml frontend surface:
-`goal progress: Program/Session substrate=93% floor=65%; zgml frontend surface=100% floor=60%`.
+`goal progress: Program/Session substrate=85% floor=65%; zgml frontend surface=85% floor=60%`.
 Those numbers are deliberately conservative: q8 prompt execution still needs a
-real tiled row-chain throughput kernel. The frontier gate now measures the
+real tiled row-chain throughput kernel, the root-level product/API diet is still
+open, and native eager execution policy is not broad enough to claim a finished
+PyTorch-like replacement. The frontier gate now measures the
 actual SmolLM prompt geometry (`m=128 n=576 k=576`) for projection-chain and
 projection-row-chain variants, so the remaining row-chain work is a measured
 throughput problem rather than a shape-evidence guess. Frontier, q8 prompt
@@ -934,7 +938,11 @@ frontier, and Q8 prompt candidate scorecard sections without paying for the long
 portable Wasm/browser evidence tail.
 
 For performance work, use the `dev:perf:*` scripts as the inner loop and the
-`bench:*` scripts as gates. `dev:perf:pytorch:gaps` uses Zig's incremental
+`bench:*` scripts as gates. `dev:perf:competitive` is the daily truth loop for
+iteration: one incremental native/package rebuild, steady PyTorch current-gap
+evidence, qsemantic frontier evidence, and a cheap ggml smoke. `bench:competitive`
+promotes the same PyTorch/frontier/ggml shape to the heavier gate lane.
+`dev:perf:pytorch:gaps` uses Zig's incremental
 ReleaseFast build for the native FFI library before comparing the current
 PyTorch soft spots; its `:run` variant avoids rebuilding and defaults to one
 attempt for fast noise checks. `dev:perf:q8-prompt` does the same for

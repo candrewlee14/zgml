@@ -206,10 +206,13 @@ execution is the performance claim. Silent eager fallback is not allowed.
 
 Current checked progress:
 
-- Program/Session performance substrate: ~93%. The Program/Session shape,
+- Program/Session performance substrate: ~85%. The Program/Session shape,
   runtime patching, C/Node/Bun/Wasm handles, portable LLaMA profile coverage,
   native Metal execution, a scorecard-run optional native wgpu validation gate,
   and ggml benchmark gates are real enough that the substrate is past "architecture".
+  This is not a headline throughput-complete score: accepted SmolLM evidence is
+  still materially behind llama.cpp/ggml, and the semantic Q8 target remains a
+  diagnostic until it grows real tile-parallel throughput.
   Compile-capable lazy graphs can now lower through the host adapter into a
   native Program with preserved KernelPlan evidence. Lazy
   Linear+GELU and
@@ -378,7 +381,7 @@ Current checked progress:
   not another compatibility lane; it is a real tiled quantized row-chain
   throughput kernel, a larger semantic sublayer, or broad full/default browser
   execution beyond these bounded family proofs.
-- zgml frontend replacement feel: ~100%. The TS-owned product frontend now has
+- zgml frontend replacement feel: ~85%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
   checkpoints, eager debugging, eager/autograd `einsum` with ellipsis and
@@ -403,7 +406,9 @@ Current checked progress:
   rank-3 `transpose` plus single-swap and cycle `permute`
   lowering through the native module Program ABI,
   rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering, and
-  compile/bind/session hooks through package and type smokes. The remaining frontend jump is native lowering and breadth, not proof that
+  compile/bind/session hooks through package and type smokes. The root-level product/API diet and native eager execution policy are still open work.
+  The remaining frontend jump is native lowering, breadth, and first-contact
+  simplicity, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
   compile hooks exist.
 
@@ -615,6 +620,7 @@ npm run dev:perf:pytorch:logsoftmax:native # native-only ReleaseFast microscope 
 npm run dev:perf:pytorch:logsoftmax:run    # no-rebuild rerun for the logSoftmax classifier miss
 npm run dev:perf:pytorch:logsoftmax:steady:native # native-only 150ms-window logSoftmax classifier microscope
 npm run dev:perf:pytorch:logsoftmax:steady:run    # no-rebuild 150ms-window logSoftmax classifier microscope
+npm run dev:perf:competitive        # incremental PyTorch + qsemantic frontier + cheap ggml competitiveness loop
 npm run bench:module-program:focus
 npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
 npm run bench:pytorch:parity:run       # rebuild ReleaseFast native, then rerun hard PyTorch parity
@@ -624,6 +630,7 @@ npm run bench:pytorch:focus:run        # rerun focused PyTorch comparison withou
 npm run bench:pytorch:gaps             # rebuild and measure current PyTorch soft spots
 npm run bench:pytorch:gaps:run         # rerun current PyTorch soft spots without rebuilding artifacts
 npm run dev:perf:pytorch:gaps:steady:run # no-rebuild steady PyTorch current-gap evidence
+npm run bench:competitive           # promoted PyTorch/frontier/ggml competitiveness gate
 npm run bench:frontier:gate            # rebuild ReleaseFast and measure scheduler/kernelizer frontier evidence
 npm run bench:frontier:gate:run        # rerun frontier evidence without rebuilding artifacts
 npm run bench:frontier:qproj           # rebuild ReleaseFast and gate only qproj projection-chain/group labels

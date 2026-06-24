@@ -9,9 +9,9 @@ const root = resolve(__dirname, "..");
 const errors = [];
 const notes = [];
 const goalProgress = Object.freeze({
-  substratePct: 93,
+  substratePct: 85,
   substrateFloorPct: 65,
-  frontendPct: 100,
+  frontendPct: 85,
   frontendFloorPct: 60,
 });
 const requestedScorecardChecks = parseScorecardChecks(process.env.ZGML_SCORECARD_CHECKS);
@@ -440,6 +440,12 @@ function checkScripts() {
   }
   if (scripts["dev:perf:pytorch:logsoftmax:steady:run"] !== "BENCH_PYTORCH_INSTALL=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=log_softmax_classifier_batched node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:logsoftmax:steady:run must keep the no-rebuild steady logSoftmax PyTorch microscope");
+  }
+  if (scripts["dev:perf:competitive"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && npm run build:package && BENCH_PYTORCH_INSTALL=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs && BENCH_BUILD_ZGML=0 BENCH_ALLOW_QUARANTINED=1 BENCH_ZGML_SAMPLES=${BENCH_ZGML_SAMPLES:-1} ./scripts/bench_vs_ggml.sh ${BENCH_GGML_PROMPT:-128} ${BENCH_GGML_GEN:-40} ${BENCH_GGML_REPS:-1}") {
+    errors.push("package.json dev:perf:competitive must keep the incremental PyTorch/frontier/ggml daily competitiveness loop");
+  }
+  if (scripts["bench:competitive"] !== "npm run bench:pytorch:steady && npm run bench:frontier:qsemantic && npm run dev:perf:ggml:smoke") {
+    errors.push("package.json bench:competitive must keep the promoted PyTorch/frontier/ggml competitiveness gate");
   }
   if (scripts["bench:pytorch"] !== "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch must remain the ReleaseFast upstream PyTorch comparison evidence gate");
@@ -5459,7 +5465,9 @@ function checkDocs() {
     "upstream Python PyTorch",
     "Program/Session substrate",
     "zgml frontend surface",
-    "goal progress: Program/Session substrate=93% floor=65%; zgml frontend surface=100% floor=60%",
+    "goal progress: Program/Session substrate=85% floor=65%; zgml frontend surface=85% floor=60%",
+    "npm run dev:perf:competitive",
+    "npm run bench:competitive",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -5496,7 +5504,7 @@ function checkDocs() {
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
-    "Program/Session performance substrate: ~93%",
+    "Program/Session performance substrate: ~85%",
     "That optional gate now also runs the native WebGPU LLaMA execution proofs for",
     "runtime quantized-weight rebinding, resource-bound decode/prefill handoff,",
     "long-prompt prefill, GQA long-prompt prefill, and a realistic head-width",
@@ -5517,7 +5525,8 @@ function checkDocs() {
     "batched rank-3 last-axis reductions",
     "Compile-capable lazy graphs can now lower through the host adapter into a",
     "native Program with preserved KernelPlan evidence.",
-    "zgml frontend replacement feel: ~100%",
+    "zgml frontend replacement feel: ~85%",
+    "The root-level product/API diet and native eager execution policy are still open work.",
     "native Program lowering for `argmax(dim)` and `argmin(dim)`",
     "rank-1/rank-2/rank-3 PyTorch-style",
     "rank-1/rank-2/rank-3 `repeat`/`tile`",
@@ -5659,6 +5668,8 @@ function checkDocs() {
     "bench:frontier:qsemantic",
     "bench:frontier:qsemantic:run",
     "dev:perf:frontier:qsemantic",
+    "dev:perf:competitive",
+    "bench:competitive",
     "semantic FFN sublayer throughput kernel",
     "`semantic_ffn_sublayer_throughput_kernel`",
     "The opt-in target compiler policy now recognizes the same work as one",
@@ -5707,7 +5718,7 @@ function checkDocs() {
     "zig build ffi-wasm-browser-gpu-focused-smoke",
     "mode=gpu-buffer",
     "tiled quantized row-chain",
-    "remaining frontend jump is native lowering and breadth,",
+    "The remaining frontend jump is native lowering, breadth, and first-contact",
     "compile hooks exist.",
   ]);
   if (plan.includes("remaining\nknown miss is the RMSNorm -> SiLU FFN lane") || plan.includes("remaining known miss is the RMSNorm -> SiLU FFN lane")) {
