@@ -41,6 +41,10 @@ function perfNextLine() {
 function chooseLane(line) {
   const forced = String(process.env.BENCH_NEXT_PERF_LANE ?? "").trim();
   if (forced) return forced;
+  if (
+    /frontier=semantic_ffn_sublayer_throughput_kernel:candidate=ready/.test(line) &&
+    /q8_prompt=semantic_throughput_kernel/.test(line)
+  ) return "q8_prompt";
   if (/frontier=semantic_ffn_sublayer_throughput_kernel/.test(line)) return "qsemantic";
   if (/q8_prompt=semantic_throughput_kernel/.test(line)) return "q8_prompt";
   if (/pytorch=(?!none\b)[^ ]+/.test(line)) return "pytorch";

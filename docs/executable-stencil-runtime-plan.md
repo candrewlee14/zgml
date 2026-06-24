@@ -1379,6 +1379,15 @@ exposes `candidate_tiles=full:64,smollm:72` against target
 semantic FFN throughput kernel that collapses the 3.00x tile gap and the
 `4096`/`4608` serial dot ops per target tile group, not a default policy flip
 based only on frontier evidence.
+A full Q8 prompt follow-up confirmed why that distinction matters. A
+one-attempt viable run reported `semantic_throughput=ready` at
+`semantic_speedup=1.03x`, but the three-attempt steady run stayed diagnostic:
+`semantic_best=1.33x`, `semantic_median=1.01x`, and
+`semantic_worst=0.77x`, with zero fallback and the expected
+`semantic_command=241->151`. The next-performance selector should therefore
+hand off from qsemantic to the Q8 prompt gate once frontier says
+`candidate=ready`, but the default policy still needs either steadier full-model
+semantic evidence or the true semantic FFN throughput kernel before promotion.
 A June 24, 2026 shape-gated policy experiment tried limiting the two-phase
 semantic throughput tail to the 512-wide full-prefill shape so the 576-wide
 SmolLM prompt shape would preserve the semantic command but skip the tiled tail.
