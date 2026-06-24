@@ -577,7 +577,7 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
 
 function requireCompileTarget(target: unknown, name: string): CompileNamespaceTarget {
   if (!target || typeof target !== "object") {
-    throw new Error(`torch.compile.${name} requires an nn module or Sequential layer list`);
+    throw new Error(`compile.${name} requires an nn module or Sequential layer list`);
   }
   return target as CompileNamespaceTarget;
 }
@@ -633,7 +633,7 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     const method = compileTargetMethod(target, "trace");
     if (method) return method(compileOptions);
     if (Array.isArray(target)) return options.traceSequentialProgram(target, compileOptions);
-    throw new Error("torch.compile.trace requires a module with trace() or a Sequential layer list");
+    throw new Error("compile.trace requires a module with trace() or a Sequential layer list");
   }
 
   function analyze(target: unknown, compileOptions: CompileNamespaceOptions = {}) {
@@ -663,10 +663,10 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
   function requireCompileSupport(target: unknown, compileOptions: CompileNamespaceOptions = {}) {
     const support = compileSupport(target, compileOptions);
     if (!support || typeof support !== "object") {
-      throw new Error("torch.compile.requireCompileSupport requires structured compileSupport evidence");
+      throw new Error("compile.requireCompileSupport requires structured compileSupport evidence");
     }
     if (compileObjectEvidence(support)?.supported !== true) {
-      throw new Error(`torch.compile.requireCompileSupport rejected unsupported target: ${compileRejectionReason(support)}`);
+      throw new Error(`compile.requireCompileSupport rejected unsupported target: ${compileRejectionReason(support)}`);
     }
     return support;
   }
@@ -700,10 +700,10 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
   function requireCompilePlan(target: unknown, compileOptions: CompileNamespaceOptions = {}) {
     const plan = explain(target, compileOptions);
     if (!plan || typeof plan !== "object") {
-      throw new Error("torch.compile.requireCompilePlan requires structured compile explanation evidence");
+      throw new Error("compile.requireCompilePlan requires structured compile explanation evidence");
     }
     if (compileObjectEvidence(plan)?.supported !== true) {
-      throw new Error(`torch.compile.requireCompilePlan rejected unsupported target: ${compileRejectionReason(plan)}`);
+      throw new Error(`compile.requireCompilePlan rejected unsupported target: ${compileRejectionReason(plan)}`);
     }
     return plan;
   }
@@ -762,7 +762,7 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     const support = compileSupport(target, compileOptions);
     const lazySpec = lazyModuleSpecFromSupport(support);
     if (lazySpec && options.compileModuleProgram) return options.compileModuleProgram(lazySpec, compileOptions);
-    if (lazySpec) throw new Error("torch.compile.compile requires a native module Program compiler for lazy graphs");
+    if (lazySpec) throw new Error("compile.compile requires a native module Program compiler for lazy graphs");
     if (requireLazyGraph) {
       throw new Error(`lazy graph cannot compile to native Program: ${compileRejectionReason(support)}`);
     }
@@ -776,7 +776,7 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
         reason: "layer-list-compile-requires-nn.Sequential",
         diagnostic: Object.freeze({
           code: "layer-list-compile-requires-sequential",
-          message: "torch.compile.compile requires an nn module with compile(); wrap layer lists in nn.Sequential",
+          message: "compile.compile requires an nn module with compile(); wrap layer lists in nn.Sequential",
         }),
       });
     }
@@ -788,7 +788,7 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     if (method) return method(compileOptions);
     const compiled = compileLazyTarget(target, compileOptions);
     if (compiled) return compiled;
-    throw new Error("torch.compile.compile requires a module with compile() or a compile-capable lazy graph");
+    throw new Error("compile.compile requires a module with compile() or a compile-capable lazy graph");
   }
 
   function compiledInferenceHandle(

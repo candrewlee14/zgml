@@ -5896,6 +5896,19 @@ function checkDocs() {
     errors.push(`README.md must not advertise stale public surface lanes: ${staleReadmeSurface.join(", ")}`);
   }
 
+  const frontendNamespaceSurface = read("src/ts/adapters/frontend_namespace_surface.ts");
+  requireIncludes(frontendNamespaceSurface, "src/ts/adapters/frontend_namespace_surface.ts", "canonical zgml compile diagnostics", [
+    "compile.trace requires a module with trace() or a Sequential layer list",
+    "compile.requireCompileSupport rejected unsupported target",
+    "compile.requireCompilePlan rejected unsupported target",
+    "compile.compile requires a native module Program compiler for lazy graphs",
+    "compile.compile requires an nn module with compile(); wrap layer lists in nn.Sequential",
+    "compile.compile requires a module with compile() or a compile-capable lazy graph",
+  ]);
+  forbidIncludes(frontendNamespaceSurface, "src/ts/adapters/frontend_namespace_surface.ts", "torch compile diagnostics leak", [
+    "torch.compile.",
+  ]);
+
   const plan = read("docs/executable-stencil-runtime-plan.md");
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "current goal progress accounting", [
     "Current checked progress:",
@@ -5928,6 +5941,7 @@ function checkDocs() {
     "`src/ts/public_surface.ts` names the stable root namespaces users should learn",
     "names `zgml` as the stable friendly root value",
     "compatibility slices such as `torch`",
+    "unsupported compile paths report canonical `compile.*` errors",
     "without adding",
     "package subpath.",
     "Native eager",

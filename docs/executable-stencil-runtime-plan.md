@@ -457,6 +457,10 @@ namespace and keeps `torch` as the compatibility alias to the same frozen object
 `README.md` leads with `import { zgml } from "zgml"`, while runtime smokes assert
 `adapter.zgml === adapter.torch` so this naming correction does not create a
 second frontend implementation.
+The shared adapter compile namespace now follows the same rule in diagnostics:
+unsupported compile paths report canonical `compile.*` errors, not
+`torch.compile.*`, even though the compatibility alias can still call the same
+functions.
 Exploratory focused lanes still track softer micro-workloads such as
 classifier `LogSoftmax` tails and token-head paths, but those are microscopes
 for ranking optimization opportunities rather than promoted hard-gate misses.
