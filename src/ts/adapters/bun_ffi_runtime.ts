@@ -2109,6 +2109,10 @@ const packedSequentialProgramParameters = bunModuleCompilerSurface.packedSequent
   spec: CompiledSequentialProgramSpec,
 ) => ModuleBindings;
 
+function nativeEagerLinearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options?: Record<string, unknown>) {
+  return nativeEager.linearInto(output, input, weights, options);
+}
+
 const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   sharedFrontend,
   Tensor,
@@ -2122,6 +2126,7 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   zerosF32,
   makeParameter,
   parameterView,
+  nativeEagerLinearInto,
   parameterNames,
   parameterInfos,
   parameterInfo,
@@ -2390,6 +2395,94 @@ const {
   requireBindingPlanForModuleBindings,
 } = adapterFrontendModuleSurface.moduleFacadeHelpers;
 
+function nativeEagerTensorData(value: unknown, label: string): Float32Array {
+  if (value instanceof Float32Array) return value;
+  if (value && typeof value === "object" && (value as { data?: unknown }).data instanceof Float32Array) {
+    return (value as { data: Float32Array }).data;
+  }
+  void label;
+  return f32(value as TensorLike);
+}
+
+function nativeEagerShape(value: unknown): readonly number[] | null {
+  if (value && typeof value === "object" && Array.isArray((value as { shape?: unknown }).shape)) {
+    return (value as { shape: readonly number[] }).shape;
+  }
+  return null;
+}
+
+function nativeEagerPositiveInteger(value: unknown, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive integer, got ${value}`);
+  }
+  return parsed;
+}
+
+function nativeEagerLinearShape(input: unknown, weights: unknown, options: Record<string, unknown> = {}) {
+  const inputShape = nativeEagerShape(input);
+  const weightShape = nativeEagerShape(weights);
+  const inFeatures = options.inFeatures ?? options.in_features ?? (weightShape && weightShape.length === 2 ? weightShape[0] : null);
+  const outFeatures = options.outFeatures ?? options.out_features ?? (weightShape && weightShape.length === 2 ? weightShape[1] : null);
+  const batch = options.batch ?? (
+    inputShape && inputShape.length === 2
+      ? inputShape[0]
+      : inputShape && inputShape.length === 1
+        ? 1
+        : null
+  );
+  return Object.freeze({
+    batch: nativeEagerPositiveInteger(batch, "nativeEager.linearInto batch"),
+    inFeatures: nativeEagerPositiveInteger(inFeatures, "nativeEager.linearInto inFeatures"),
+    outFeatures: nativeEagerPositiveInteger(outFeatures, "nativeEager.linearInto outFeatures"),
+  });
+}
+
+export const nativeEager = Object.freeze({
+  linearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: Record<string, unknown> = {}) {
+    if (!(output instanceof Float32Array)) {
+      throw new Error("nativeEager.linearInto output must be a Float32Array");
+    }
+    const inputData = nativeEagerTensorData(input, "nativeEager.linearInto input");
+    const weightData = nativeEagerTensorData(weights, "nativeEager.linearInto weights");
+    const biasValue = options.bias ?? null;
+    const biasData = biasValue == null ? null : nativeEagerTensorData(biasValue, "nativeEager.linearInto bias");
+    const shape = nativeEagerLinearShape(input, weights, options);
+    const expectedInput = shape.batch * shape.inFeatures;
+    const expectedWeights = shape.inFeatures * shape.outFeatures;
+    const expectedOutput = shape.batch * shape.outFeatures;
+    if (inputData.length !== expectedInput) {
+      throw new Error(`nativeEager.linearInto input length ${inputData.length} does not match ${shape.batch}x${shape.inFeatures}`);
+    }
+    if (weightData.length !== expectedWeights) {
+      throw new Error(`nativeEager.linearInto weights length ${weightData.length} does not match ${shape.inFeatures}x${shape.outFeatures}`);
+    }
+    if (biasData && biasData.length !== shape.outFeatures) {
+      throw new Error(`nativeEager.linearInto bias length ${biasData.length} does not match outFeatures ${shape.outFeatures}`);
+    }
+    if (output.length < expectedOutput) {
+      throw new Error(`nativeEager.linearInto output length ${output.length} is smaller than ${expectedOutput}`);
+    }
+    check(bunSymbolGroups.nativeEager.eagerLinearF32(
+      inputData,
+      BigInt(inputData.length),
+      weightData,
+      BigInt(weightData.length),
+      biasData,
+      BigInt(biasData ? biasData.length : 0),
+      output,
+      BigInt(expectedOutput),
+      BigInt(shape.batch),
+      BigInt(shape.inFeatures),
+      BigInt(shape.outFeatures),
+    ));
+    return output;
+  },
+  linear_into(output: Float32Array, input: TensorLike, weights: TensorLike, options?: Record<string, unknown>) {
+    return this.linearInto(output, input, weights, options);
+  },
+});
+
 const publicNamespaces = createAdapterFrontendNamespaces({
   sharedFrontend,
   Tensor,
@@ -2603,6 +2696,7 @@ export const torch = createAdapterTorchNamespace({
   Program,
   Session,
   NativeBuffer,
+  nativeEager,
 });
 export const zgml = torch;
 

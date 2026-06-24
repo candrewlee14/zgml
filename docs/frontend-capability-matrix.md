@@ -67,10 +67,10 @@ PyTorch replacement:
   `dev:perf:native-eager-gap{,:run}` microscope now measures the first
   `linear_batched` and `lazy_matmul_add_gelu_batched` targets as eager TS tensor
   execution versus compiled allocation-free `executeInto`; the first native eager storage slices have executable baselines.
-  Node also exposes the first stateless native eager primitive:
+  Node and Bun also expose the first stateless native eager primitive:
   `zgml.nativeEager.linearInto`, backed by the `zgml_eager_linear_f32` C ABI,
   for caller-owned f32 `Linear` output. That primitive routes through the shared
-  native matmul substrate instead of a JS or ABI-local matmul loop. On Node,
+  native matmul substrate instead of a JS or ABI-local matmul loop. On Node and Bun,
   eligible `nn.Linear.forward` calls inside `zgml.noGrad(...)` now route through
   that native eager hook as the normal module path; grad-enabled training keeps
   the TS/autograd graph path. The native eager gap microscope records

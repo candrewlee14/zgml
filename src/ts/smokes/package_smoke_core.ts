@@ -326,6 +326,40 @@ function expectPackageSelfReferenceExports(adapter: Record<string, any>, label: 
   expectTsProductManifest(inspection.inspectionManifest, "src/ts/inspection.ts", `${label} zgml/inspection`);
 }
 
+function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: string) {
+  const nativeEager = adapter.nativeEager ?? adapter.zgml?.nativeEager ?? adapter.torch?.nativeEager;
+  const nativeEagerAlias = adapter.native_eager ?? adapter.zgml?.native_eager ?? adapter.torch?.native_eager;
+  if (!nativeEager || typeof nativeEager.linearInto !== "function") {
+    throw new Error(`${label} expected nativeEager.linearInto`);
+  }
+  if (!nativeEagerAlias || typeof nativeEagerAlias.linear_into !== "function") {
+    throw new Error(`${label} expected native_eager.linear_into alias`);
+  }
+  const input = adapter.tensor([1, 2, 3, 4], [2, 2]);
+  const weights = adapter.tensor([1, 0, 0.5, 0, 1, -0.5], [2, 3]);
+  const bias = adapter.tensor([0.25, -0.25, 0.5], [3]);
+  const directOutput = new Float32Array(6);
+  const directResult = nativeEager.linearInto(directOutput, input, weights, { bias });
+  if (directResult !== directOutput) {
+    throw new Error(`${label} expected nativeEager.linearInto to reuse caller output`);
+  }
+  expectClose(directOutput, [1.25, 1.75, 0, 3.25, 3.75, 0], `${label} nativeEager.linearInto output`);
+  const aliasOutput = new Float32Array(6);
+  const aliasResult = nativeEagerAlias.linear_into(aliasOutput, input, weights, { bias });
+  if (aliasResult !== aliasOutput) {
+    throw new Error(`${label} expected native_eager.linear_into to reuse caller output`);
+  }
+  expectClose(aliasOutput, Array.from(directOutput), `${label} native_eager.linear_into output`);
+
+  const linear = adapter.nn.linear(2, 3, {
+    weight: [1, 0, 0.5, 0, 1, -0.5],
+    bias: [0.25, -0.25, 0.5],
+  });
+  const eager = linear.forward(input);
+  const nativeModule = adapter.noGrad(() => linear.forward(input));
+  expectClose(nativeModule.data, eager.data, `${label} noGrad nn.Linear native eager module output`);
+}
+
 function expectLossAndAdamWEvidence(adapter: Record<string, any>, label: string) {
   if (
     adapter.manualSeed(123) !== 123 ||
@@ -2754,6 +2788,7 @@ function expectSequentialProgramEvidence(adapter: Record<string, any>, label: st
     batchedLinearSession.dispose();
     batchedLinearProgram.dispose();
   }
+  expectNativeEagerLinearEvidence(adapter, label);
   const rank3LinearSupport = batchedLinearModule.compileSupport({ inputShape: [2, 2, 2], backend: "cpu" });
   if (
     rank3LinearSupport.supported !== true ||

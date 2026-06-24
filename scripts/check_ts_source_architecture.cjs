@@ -595,6 +595,55 @@ function checkPackageExports(errors) {
   if (!frontendModuleSurfaceSource.includes("nativeEagerLinearInto?: LinearModuleOptions[\"nativeEagerLinearInto\"]")) {
     errors.push("src/ts/adapters/frontend_module_surface.ts must pass the native eager Linear hook through the module surface");
   }
+  const packageSmokeCoreSource = readSource(path.join("src", "ts", "smokes", "package_smoke_core.ts"));
+  for (const required of [
+    "function expectNativeEagerLinearEvidence",
+    "adapter.nativeEager ?? adapter.zgml?.nativeEager ?? adapter.torch?.nativeEager",
+    "adapter.native_eager ?? adapter.zgml?.native_eager ?? adapter.torch?.native_eager",
+    "nativeEager.linearInto(directOutput, input, weights, { bias })",
+    "nativeEagerAlias.linear_into(aliasOutput, input, weights, { bias })",
+    "adapter.noGrad(() => linear.forward(input))",
+    "expectNativeEagerLinearEvidence(adapter, label);",
+  ]) {
+    if (!packageSmokeCoreSource.includes(required)) {
+      errors.push(`src/ts/smokes/package_smoke_core.ts must keep shared Node/Bun native eager Linear package smoke evidence: ${required}`);
+    }
+  }
+  const bunSymbolsSource = readSource(path.join("src", "ts", "adapters", "bun_symbols.ts"));
+  for (const required of [
+    "zgml_eager_linear_f32(",
+    "bias: Float32Array | null",
+    "FFIType.u64",
+    "returns: FFIType.i32",
+  ]) {
+    if (!bunSymbolsSource.includes(required)) {
+      errors.push(`src/ts/adapters/bun_symbols.ts must bind native eager Linear through Bun FFI: ${required}`);
+    }
+  }
+  const bunSymbolGroupsSource = readSource(path.join("src", "ts", "adapters", "bun_symbol_groups.ts"));
+  for (const required of [
+    "nativeEager: Object.freeze({",
+    "eagerLinearF32: symbols.zgml_eager_linear_f32",
+  ]) {
+    if (!bunSymbolGroupsSource.includes(required)) {
+      errors.push(`src/ts/adapters/bun_symbol_groups.ts must group the Bun native eager Linear symbol: ${required}`);
+    }
+  }
+  const bunFfiRuntimeSource = readSource(path.join("src", "ts", "adapters", "bun_ffi_runtime.ts"));
+  for (const required of [
+    "function nativeEagerLinearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options?: Record<string, unknown>)",
+    "nativeEagerLinearInto,",
+    "export const nativeEager = Object.freeze({",
+    "linearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: Record<string, unknown> = {})",
+    "check(bunSymbolGroups.nativeEager.eagerLinearF32(",
+    "BigInt(inputData.length)",
+    "linear_into(output: Float32Array, input: TensorLike, weights: TensorLike, options?: Record<string, unknown>)",
+    "nativeEager,",
+  ]) {
+    if (!bunFfiRuntimeSource.includes(required)) {
+      errors.push(`src/ts/adapters/bun_ffi_runtime.ts must expose Bun native eager Linear and route no-grad modules through it: ${required}`);
+    }
+  }
   const moduleProgramBenchSource = readSource(path.join("scripts", "check_module_program_bench.cjs"));
   for (const required of [
     "BENCH_MODULE_PROGRAM_ALLOW_STALE_NATIVE",
