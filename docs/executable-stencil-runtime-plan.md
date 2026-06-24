@@ -691,6 +691,8 @@ npm run dev:perf:pytorch:logsoftmax:steady:native # native-only 150ms-window log
 npm run dev:perf:pytorch:logsoftmax:steady:run    # no-rebuild 150ms-window logSoftmax classifier microscope
 npm run dev:perf:competitive        # incremental PyTorch + qsemantic + full-model Q8 prompt + cheap ggml competitiveness loop
 npm run dev:perf:competitive:run    # no-rebuild rerun of selected competitiveness lanes
+npm run dev:perf:next               # read perf-next and run the smallest current bottleneck microscope
+npm run dev:perf:next:build         # rebuild needed artifacts first, then run that microscope
 npm run dev:perf:competitive:qsemantic # incremental qsemantic-only competitiveness loop
 npm run dev:perf:competitive:q8-prompt # incremental full-model Q8 prompt competitiveness loop
 npm run bench:module-program:focus

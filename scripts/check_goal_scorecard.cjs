@@ -521,6 +521,12 @@ function checkScripts() {
   if (scripts["dev:perf:competitive:run"] !== "BENCH_COMPETITIVE_BUILD=0 node scripts/run_competitive_perf.cjs") {
     errors.push("package.json dev:perf:competitive:run must keep the no-rebuild lane-selectable competitiveness loop");
   }
+  if (scripts["dev:perf:next"] !== "node scripts/run_next_perf.cjs") {
+    errors.push("package.json dev:perf:next must keep the artifact-directed next bottleneck microscope");
+  }
+  if (scripts["dev:perf:next:build"] !== "BENCH_NEXT_PERF_BUILD=1 node scripts/run_next_perf.cjs") {
+    errors.push("package.json dev:perf:next:build must keep the rebuild-backed artifact-directed next bottleneck microscope");
+  }
   if (scripts["dev:perf:competitive:qsemantic"] !== "BENCH_COMPETITIVE_LANES=qsemantic node scripts/run_competitive_perf.cjs") {
     errors.push("package.json dev:perf:competitive:qsemantic must keep the one-command qsemantic competitiveness loop");
   }
@@ -550,6 +556,21 @@ function checkScripts() {
     "scripts/check_pytorch_comparison.cjs",
     "scripts/check_frontier_bench.cjs",
     "scripts/check_q8_prompt_candidate.cjs",
+    "scripts/bench_vs_ggml.sh",
+    "BENCH_FRONTIER_FILTER: \"qsemantic\"",
+    "BENCH_Q8_PROMPT_LANES: \"command,two_phase,semantic\"",
+    "BENCH_ALLOW_QUARANTINED: \"1\"",
+  ]);
+  requireIncludes(read("scripts/run_next_perf.cjs"), "scripts/run_next_perf.cjs", "artifact-directed next performance runner", [
+    "scripts/bench_status.cjs",
+    "perf-next:",
+    "BENCH_NEXT_PERF_LANE",
+    "BENCH_NEXT_PERF_BUILD",
+    "frontier=semantic_ffn_sublayer_throughput_kernel",
+    "q8_prompt=semantic_throughput_kernel",
+    "scripts/check_frontier_bench.cjs",
+    "scripts/check_q8_prompt_candidate.cjs",
+    "scripts/check_pytorch_comparison.cjs",
     "scripts/bench_vs_ggml.sh",
     "BENCH_FRONTIER_FILTER: \"qsemantic\"",
     "BENCH_Q8_PROMPT_LANES: \"command,two_phase,semantic\"",
