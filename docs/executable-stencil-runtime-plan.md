@@ -783,10 +783,12 @@ not yet a release promotion signal; repeated all-lane candidate evidence still
 has to prove the semantic path is stable before replacing the default. The Q8 prompt
 candidate checker now writes an ignored JSON artifact by default under
 `bench-results/q8-prompt/` (`schema: "zgml.q8-prompt-candidate.v1"`) and prints
-a machine-readable `Q8_PROMPT_CANDIDATE_JSON` line. `bench:status` reads the
-latest artifact back as `q8-prompt-results:` with status, semantic throughput,
-semantic structural selection, semantic throughput readiness, lane speedups,
-command shape, and active lanes. Set
+a machine-readable `Q8_PROMPT_CANDIDATE_JSON` line. Each measured lane now
+stores best/median/worst speedup stats and the attempt indices that produced
+them, so a selected lucky attempt cannot be mistaken for stable throughput.
+`bench:status` reads the latest artifact back as `q8-prompt-results:` with
+status, semantic throughput, semantic structural selection, semantic throughput
+readiness, lane speedups, median/worst throughput, command shape, and active lanes. Set
 `BENCH_Q8_PROMPT_WRITE_ARTIFACT=0` only for throwaway local diagnostics.
 A three-attempt no-rebuild proof remains useful as a noisier iteration lens,
 while the fresh-native one-attempt proof now reports

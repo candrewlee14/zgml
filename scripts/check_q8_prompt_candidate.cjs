@@ -614,6 +614,18 @@ function laneArtifact(row, prefix) {
   };
 }
 
+function laneSpeedupStats(bestRow, medianRow, worstRow, prefix) {
+  const speedupKey = prefix === "candidate" ? "speedup" : `${prefix}Speedup`;
+  return {
+    best: roundMetric(bestRow[speedupKey]),
+    median: roundMetric(medianRow[speedupKey]),
+    worst: roundMetric(worstRow[speedupKey]),
+    bestAttempt: bestRow.index,
+    medianAttempt: medianRow.index,
+    worstAttempt: worstRow.index,
+  };
+}
+
 let artifactPath = null;
 if (writeArtifact) {
   const resolvedArtifactDir = resolve(root, artifactDir);
@@ -675,10 +687,17 @@ if (writeArtifact) {
       semantic: semanticNoisyAttempts,
     },
     lanes: {
-      command: laneArtifact(commandBest, "command"),
-      single: laneArtifact(best, "candidate"),
+      command: {
+        ...laneArtifact(commandBest, "command"),
+        speedupStats: laneSpeedupStats(commandBest, commandMedian, commandWorst, "command"),
+      },
+      single: {
+        ...laneArtifact(best, "candidate"),
+        speedupStats: laneSpeedupStats(best, median, worst, "candidate"),
+      },
       twoPhase: {
         ...laneArtifact(twoPhaseBest, "twoPhase"),
+        speedupStats: laneSpeedupStats(twoPhaseBest, twoPhaseMedian, twoPhaseWorst, "twoPhase"),
         selected: twoPhaseStructuralSelected,
         structuralSelected: twoPhaseStructuralSelected,
         tiledTwoPhaseCount: twoPhaseBest.twoPhaseTiledTwoPhaseCount,
@@ -687,6 +706,7 @@ if (writeArtifact) {
       },
       semantic: {
         ...laneArtifact(semanticBest, "semantic"),
+        speedupStats: laneSpeedupStats(semanticBest, semanticMedian, semanticWorst, "semantic"),
         selected: semanticStructuralSelected,
         structuralSelected: semanticStructuralSelected,
         throughputReady: semanticThroughputReady,
@@ -719,7 +739,9 @@ if (writeArtifact) {
     semanticStructuralSelected,
     semanticThroughputReady,
     commandSpeedup: roundMetric(commandBest.commandSpeedup),
+    commandMedianSpeedup: roundMetric(commandMedian.commandSpeedup),
     semanticSpeedup: roundMetric(semanticBest.semanticSpeedup),
+    semanticMedianSpeedup: roundMetric(semanticMedian.semanticSpeedup),
     attempts,
   })}`);
 }

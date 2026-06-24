@@ -256,6 +256,23 @@ function attemptRatioStats(data, field) {
   };
 }
 
+function q8LaneSpeedupStats(data, lane, attemptField) {
+  const stats = data?.lanes?.[lane]?.speedupStats;
+  if (stats && typeof stats === "object") {
+    const best = Number(stats.best);
+    const median = Number(stats.median);
+    const worst = Number(stats.worst);
+    if (Number.isFinite(best) || Number.isFinite(median) || Number.isFinite(worst)) {
+      return {
+        best: Number.isFinite(best) ? best : null,
+        median: Number.isFinite(median) ? median : null,
+        worst: Number.isFinite(worst) ? worst : null,
+      };
+    }
+  }
+  return attemptRatioStats(data, attemptField);
+}
+
 function ratioPassSummary(entries, minRatio) {
   if (!entries || typeof entries !== "object") return null;
   const rows = Object.entries(entries).flatMap(([key, value]) => {
@@ -373,8 +390,8 @@ function q8PromptCandidateStatusLine(path) {
   const commandSpeedup = formatRatio(data?.lanes?.command?.speedup);
   const twoPhaseSpeedup = formatRatio(data?.lanes?.twoPhase?.speedup);
   const semanticSpeedup = formatRatio(data?.lanes?.semantic?.speedup);
-  const twoPhaseStats = attemptRatioStats(data, "twoPhaseSpeedup");
-  const semanticStats = attemptRatioStats(data, "semanticSpeedup");
+  const twoPhaseStats = q8LaneSpeedupStats(data, "twoPhase", "twoPhaseSpeedup");
+  const semanticStats = q8LaneSpeedupStats(data, "semantic", "semanticSpeedup");
   const semanticThroughput = typeof data?.throughput?.semantic === "string" ? data.throughput.semantic : "unknown";
   const semanticStructuralSelected = (data?.lanes?.semantic?.structuralSelected ?? data?.lanes?.semantic?.selected) === true ? "yes" : "off";
   const semanticThroughputReady = (data?.lanes?.semantic?.throughputReady ?? semanticThroughput === "ready") === true ? "yes" : "off";
@@ -460,7 +477,7 @@ function q8PromptNextTarget(path) {
   try {
     const data = readJson(path);
     const semanticSpeedup = Number(data?.lanes?.semantic?.speedup);
-    const semanticStats = attemptRatioStats(data, "semanticSpeedup");
+    const semanticStats = q8LaneSpeedupStats(data, "semantic", "semanticSpeedup");
     const semanticThroughput = typeof data?.throughput?.semantic === "string" ? data.throughput.semantic : "unknown";
     const status = typeof data?.status === "string" ? data.status : "unknown";
     if (semanticThroughput === "ready" && Number.isFinite(semanticSpeedup) && semanticSpeedup >= 1) {
