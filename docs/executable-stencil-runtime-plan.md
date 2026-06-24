@@ -773,6 +773,10 @@ npm run dev:perf:competitive:run    # no-rebuild rerun of selected competitivene
 npm run dev:perf:next               # read perf-next and run the smallest current bottleneck microscope
 npm run dev:perf:next:build         # rebuild needed artifacts first, then run that microscope
 npm run dev:perf:next:steady        # rerun that microscope with steadier attempts/windows
+npm run dev:perf:promotion          # qsemantic throughput + Q8 prompt viable + ggml smoke promotion path
+npm run dev:perf:promotion:run      # no-rebuild rerun of the promotion path
+npm run dev:perf:promotion:full     # escalate promotion to the baseline-gated p128/g200/r3 ggml artifact
+npm run dev:perf:promotion:parity   # same full artifact, but require the hard 90% ggml parity gate
 npm run dev:perf:competitive:qsemantic # incremental qsemantic-only competitiveness loop
 npm run dev:perf:competitive:q8-prompt # incremental full-model Q8 prompt competitiveness loop
 npm run bench:module-program:focus
@@ -841,6 +845,14 @@ native/package artifacts once, use the focused `:run` reruns to check noisy
 microscope lanes quickly, and let hard parity reruns rebuild ReleaseFast native
 before claiming a PyTorch comparison result. Then run the full evidence gate
 before claiming a new SOTA/simple/perf state.
+The promotion runner is the bridge between those two worlds. It first runs the
+checked qsemantic throughput frontier and the full-model Q8 prompt viable lane
+with steady attempts, then runs a ggml smoke artifact by default. When a kernel
+change survives that path, `dev:perf:promotion:full` escalates to the
+baseline-gated p128/g200/r3 ggml artifact, and `dev:perf:promotion:parity`
+turns the same path into the hard 90% parity claim. This keeps "candidate is
+ready" from lingering as an unpromoted microscope result after the full-model
+artifact should have moved.
 The default edit loop should stay fast: start with `npm run dev:zig:quick` for
 no-Metal/no-BLAS unit coverage, narrow failures with
 `npm run dev:zig:filter -- "<test substring>"`, keep `npm run dev:zig:ffi` for
