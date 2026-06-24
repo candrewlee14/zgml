@@ -50,6 +50,21 @@ function roundMetric(value) {
   return Number.isFinite(value) ? Number(value.toFixed(6)) : null;
 }
 
+function speedupStats(attempts, field) {
+  const values = attempts
+    .map((attempt) => Number(attempt[field]))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  if (values.length === 0) {
+    return Object.freeze({ best: null, median: null, worst: null });
+  }
+  return Object.freeze({
+    best: roundMetric(values[values.length - 1]),
+    median: roundMetric(values[Math.floor(values.length / 2)]),
+    worst: roundMetric(values[0]),
+  });
+}
+
 function runBench() {
   const command = build === "1" ? "zig" : build === "0" ? "./zig-out/bin/bench-frontier" : null;
   const args = build === "1" ? ["build", "-Doptimize=ReleaseFast", "bench-frontier"] : build === "0" ? [] : null;
@@ -1454,6 +1469,10 @@ function writeFocusedSemanticThroughputArtifact(best, attempts, aggregate, line)
     selectedAttempt: best.attempt,
     attempts: attempts.length,
     aggregateFailures: aggregate,
+    speedupStats: {
+      fullPrefill: speedupStats(attempts, "fullPrefillSpeedup"),
+      smollmPrompt: speedupStats(attempts, "smollmPromptSpeedup"),
+    },
     fullPrefill: bestSummary.fullPrefill,
     smollmPrompt: bestSummary.smollmPrompt,
     attemptSummaries: attempts.map(selectedSemanticThroughputAttemptSummary),

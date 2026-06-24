@@ -1361,6 +1361,10 @@ three-attempt Q8 prompt viable run refreshes the accepted steady prompt evidence
 `semantic=promoted`, while keeping the 151-command shape and zero fallbacks. The
 qsemantic gate now reports
 `target_vs_default=full_prefill:...x,smollm_prompt:...x` so the dispatch
+frontier can be separated from the throughput frontier. The throughput-only
+qsemantic artifact also records selected, median, and worst speedups for
+full-prefill and SmolLM prompt, matching the Q8 prompt promotion discipline:
+one lucky semantic attempt is evidence for a hypothesis, not a promotion signal.
 reduction is always interpreted against the current throughput path; a fresh
 no-rebuild run still prints both ratios, and the target remains diagnostic
 until both geometries beat the default path across repeated attempts.
