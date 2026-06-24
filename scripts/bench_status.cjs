@@ -21,6 +21,7 @@ const fullRunArtifactPattern = /^smollm-\d{8}T\d{6}Z(?:-\d+)?-p128-g200-r3\.json
 const pytorchArtifactPattern = /^pytorch-\d{8}T\d{6}Z-\d+\.json$/;
 const q8PromptArtifactPattern = /^q8-prompt-\d{8}T\d{6}Z-\d+\.json$/;
 const frontierArtifactPattern = /^frontier-qsemantic-\d{8}T\d{6}Z-\d+\.json$/;
+const qprojFrontierArtifactPattern = /^frontier-qproj-\d{8}T\d{6}Z-\d+\.json$/;
 const pytorchFocusKeys = [
   "linear_batched",
   "lazy_matmul_add_gelu_batched",
@@ -187,6 +188,30 @@ function frontierArtifacts() {
 
 function latestFrontierArtifact() {
   return frontierArtifacts().at(-1) ?? null;
+}
+
+function qprojFrontierArtifacts() {
+  const dir = join("bench-results", "frontier");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => qprojFrontierArtifactPattern.test(name))
+    .sort()
+    .map((name) => join(dir, name))
+    .filter((path) => {
+      try {
+        const data = readJson(path);
+        return data?.schema === "zgml.frontier-qproj.v1" &&
+          data?.kind === "qproj" &&
+          data?.selected?.projectionChain &&
+          data?.selected?.projectionGroupRegion;
+      } catch {
+        return false;
+      }
+    });
+}
+
+function latestQprojFrontierArtifact() {
+  return qprojFrontierArtifacts().at(-1) ?? null;
 }
 
 const trendMetrics = [
@@ -366,6 +391,30 @@ function frontierStatusLine(path) {
   const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
   const next = typeof data?.next === "string" ? data.next : "unknown";
   return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} next=${next}`;
+}
+
+function qprojFrontierStatusLine(path) {
+  if (!path) {
+    return "qproj-results: no local qproj artifact found; run npm run bench:frontier:qproj for projection-chain frontier evidence";
+  }
+  let data;
+  try {
+    data = readJson(path);
+  } catch {
+    return `qproj-results: latest=${compactName(path)} unreadable`;
+  }
+  const status = typeof data?.status === "string" ? data.status : "unknown";
+  const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
+  const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
+  const chainFull = formatRatio(data?.selected?.projectionChain?.fullPrefill?.speedup);
+  const chainSmollm = formatRatio(data?.selected?.projectionChain?.smollmPrompt?.speedup);
+  const chainReady = data?.selected?.projectionChain?.fullPrefill?.candidateReady === true ? "ready" : "off";
+  const groupRegionFull = formatRatio(data?.selected?.projectionGroupRegion?.fullPrefill?.speedup);
+  const groupRegionSmollm = formatRatio(data?.selected?.projectionGroupRegion?.smollmPrompt?.speedup);
+  const groupRegionFullDispatches = data?.selected?.projectionGroupRegion?.fullPrefill?.runtimeProjectionGroupDispatches ?? "n/a";
+  const groupRegionSmollmDispatches = data?.selected?.projectionGroupRegion?.smollmPrompt?.runtimeProjectionGroupDispatches ?? "n/a";
+  const next = typeof data?.next === "string" ? data.next : "unknown";
+  return `qproj-results: latest=${compactName(path)} status=${status} attempt=${selectedAttempt}/${attempts} projection_chain=full:${chainFull},smollm:${chainSmollm},candidate:${chainReady} projection_group_region=full:${groupRegionFull}:dispatches:${groupRegionFullDispatches},smollm:${groupRegionSmollm}:dispatches:${groupRegionSmollmDispatches} next=${next}`;
 }
 
 function pytorchNextTarget(path) {
@@ -998,7 +1047,9 @@ const focusPytorch = pytorchFocusStatusLine(latestPytorchFocusArtifact(), latest
 if (focusPytorch) process.stdout.write(`${focusPytorch}\n`);
 const latestQ8Prompt = latestQ8PromptCandidateArtifact();
 const latestFrontier = latestFrontierArtifact();
+const latestQprojFrontier = latestQprojFrontierArtifact();
 process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8Prompt)}\n`);
+process.stdout.write(`${qprojFrontierStatusLine(latestQprojFrontier)}\n`);
 process.stdout.write(`${frontierStatusLine(latestFrontier)}\n`);
 process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, frontierPath: latestFrontier })}\n`);
 const quarantined = quarantinedFullRunArtifacts();

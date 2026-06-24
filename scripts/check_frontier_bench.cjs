@@ -272,6 +272,114 @@ function chooseBestFocusedQproj(attempts) {
   }, null);
 }
 
+function selectedQprojAttemptSummary(attempt) {
+  return {
+    attempt: attempt.attempt,
+    projectionChain: {
+      prompt: {
+        speedup: roundMetric(attempt.projectionChainSpeedup),
+        maxAbsDiff: roundMetric(attempt.projectionChainMaxAbsDiff),
+      },
+      fullPrefill: {
+        speedup: roundMetric(attempt.projectionChainFullPrefillSpeedup),
+        maxAbsDiff: roundMetric(attempt.projectionChainFullPrefillMaxAbsDiff),
+        candidateReady: attempt.projectionChainFullPrefillSpeedup >= projectionChainFullPrefillCandidateSpeedupFloor,
+      },
+      smollmPrompt: {
+        speedup: roundMetric(attempt.projectionChainSmollmPromptSpeedup),
+        maxAbsDiff: roundMetric(attempt.projectionChainSmollmPromptMaxAbsDiff),
+      },
+    },
+    projectionGroup: {
+      fullPrefill: {
+        speedup: roundMetric(attempt.projectionGroupFullPrefillSpeedup),
+        maxAbsDiff: roundMetric(attempt.projectionGroupFullPrefillMaxAbsDiff),
+        shapeCommands: attempt.projectionGroupFullPrefillShapeCommands,
+        shapeProjectionGroups: attempt.projectionGroupFullPrefillShapeGroups,
+        shapeCoveredOps: attempt.projectionGroupFullPrefillShapeCoveredOps,
+        shapeSavedDispatches: attempt.projectionGroupFullPrefillShapeSavedDispatches,
+        runtimeProjectionGroupDispatches: attempt.projectionGroupFullPrefillRuntimeDispatches,
+        runtimeProjectionCacheGroupDispatches: attempt.projectionGroupFullPrefillRuntimeCacheDispatches,
+      },
+      smollmPrompt: {
+        speedup: roundMetric(attempt.projectionGroupSmollmPromptSpeedup),
+        maxAbsDiff: roundMetric(attempt.projectionGroupSmollmPromptMaxAbsDiff),
+        shapeCommands: attempt.projectionGroupSmollmPromptShapeCommands,
+        shapeProjectionGroups: attempt.projectionGroupSmollmPromptShapeGroups,
+        shapeCoveredOps: attempt.projectionGroupSmollmPromptShapeCoveredOps,
+        shapeSavedDispatches: attempt.projectionGroupSmollmPromptShapeSavedDispatches,
+        runtimeProjectionGroupDispatches: attempt.projectionGroupSmollmPromptRuntimeDispatches,
+        runtimeProjectionCacheGroupDispatches: attempt.projectionGroupSmollmPromptRuntimeCacheDispatches,
+      },
+    },
+    projectionGroupRegion: {
+      fullPrefill: {
+        speedup: roundMetric(attempt.projectionGroupRegionFullPrefillSpeedup),
+        maxAbsDiff: roundMetric(attempt.projectionGroupRegionFullPrefillMaxAbsDiff),
+        shapeCommands: attempt.projectionGroupRegionFullPrefillShapeCommands,
+        shapeProjectionGroups: attempt.projectionGroupRegionFullPrefillShapeGroups,
+        shapeCoveredOps: attempt.projectionGroupRegionFullPrefillShapeCoveredOps,
+        shapeSavedDispatches: attempt.projectionGroupRegionFullPrefillShapeSavedDispatches,
+        runtimeProjectionGroupDispatches: attempt.projectionGroupRegionFullPrefillRuntimeDispatches,
+        runtimeProjectionCacheGroupDispatches: attempt.projectionGroupRegionFullPrefillRuntimeCacheDispatches,
+      },
+      smollmPrompt: {
+        speedup: roundMetric(attempt.projectionGroupRegionSmollmPromptSpeedup),
+        maxAbsDiff: roundMetric(attempt.projectionGroupRegionSmollmPromptMaxAbsDiff),
+        shapeCommands: attempt.projectionGroupRegionSmollmPromptShapeCommands,
+        shapeProjectionGroups: attempt.projectionGroupRegionSmollmPromptShapeGroups,
+        shapeCoveredOps: attempt.projectionGroupRegionSmollmPromptShapeCoveredOps,
+        shapeSavedDispatches: attempt.projectionGroupRegionSmollmPromptShapeSavedDispatches,
+        runtimeProjectionGroupDispatches: attempt.projectionGroupRegionSmollmPromptRuntimeDispatches,
+        runtimeProjectionCacheGroupDispatches: attempt.projectionGroupRegionSmollmPromptRuntimeCacheDispatches,
+      },
+    },
+  };
+}
+
+function writeFocusedQprojArtifact(best, attempts, aggregate, line) {
+  if (!writeArtifact) return null;
+  mkdirSync(artifactDir, { recursive: true });
+  const artifactPath = join(artifactDir, `frontier-qproj-${timestampForArtifact()}-${process.pid}.json`);
+  const artifact = {
+    schema: "zgml.frontier-qproj.v1",
+    createdAt: new Date().toISOString(),
+    command: {
+      argv: process.argv,
+      cwd: process.cwd(),
+      build,
+      frontierFilter,
+    },
+    platform: {
+      node: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      cpus: os.cpus().length,
+    },
+    config: {
+      maxAttempts,
+      build,
+      frontierFilter,
+      projectionChainTileSpeedupFloor,
+      projectionChainFullPrefillSpeedupFloor,
+      projectionSmollmPromptSpeedupFloor,
+      projectionGroupRegionSpeedupFloor,
+      projectionChainMaxAbsDiffCeil,
+    },
+    kind: "qproj",
+    status: aggregate.length === 0 ? "pass" : "fail",
+    selectedAttempt: best.attempt,
+    attempts: attempts.length,
+    aggregateFailures: aggregate,
+    selected: selectedQprojAttemptSummary(best),
+    attemptSummaries: attempts.map(selectedQprojAttemptSummary),
+    next: "semantic_sublayer_or_quantized_projection_chain",
+    line,
+  };
+  writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return resolve(artifactPath);
+}
+
 function aggregateFocusedQprojFailures(attempts) {
   const failures = [];
   const speedAtLeast = (field, floor, label) => {
@@ -340,6 +448,21 @@ function runFocusedQprojGate() {
   const best = chooseBestFocusedQproj(passing.length > 0 ? passing : attempts);
   const aggregate = aggregateFocusedQprojFailures(attempts);
   const line = aggregate.length === 0 ? best.line.replace("frontier qproj gate: fail", "frontier qproj gate: pass") : best.line;
+  const artifactPath = writeFocusedQprojArtifact(best, attempts, aggregate, line);
+  if (artifactPath) {
+    process.stdout.write(`FRONTIER_BENCH_JSON ${JSON.stringify({
+      artifact: artifactPath,
+      status: aggregate.length === 0 ? "pass" : "fail",
+      kind: "qproj",
+      selectedAttempt: best.attempt,
+      attempts: attempts.length,
+      projectionChainFullPrefill: `${best.projectionChainFullPrefillSpeedup.toFixed(2)}x`,
+      projectionChainSmollmPrompt: `${best.projectionChainSmollmPromptSpeedup.toFixed(2)}x`,
+      projectionGroupRegionFullPrefill: `${best.projectionGroupRegionFullPrefillSpeedup.toFixed(2)}x`,
+      projectionGroupRegionSmollmPrompt: `${best.projectionGroupRegionSmollmPromptSpeedup.toFixed(2)}x`,
+      next: "semantic_sublayer_or_quantized_projection_chain",
+    })}\n`);
+  }
   process.stdout.write(`${line}\n`);
   if (aggregate.length === 0 && passing.length === 0) {
     process.stdout.write(`frontier qproj aggregate: pass across ${attempts.length} noisy attempts\n`);
