@@ -441,12 +441,31 @@ function checkScripts() {
   if (scripts["dev:perf:pytorch:logsoftmax:steady:run"] !== "BENCH_PYTORCH_INSTALL=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=log_softmax_classifier_batched node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:logsoftmax:steady:run must keep the no-rebuild steady logSoftmax PyTorch microscope");
   }
-  if (scripts["dev:perf:competitive"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && npm run build:package && BENCH_PYTORCH_INSTALL=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs && BENCH_BUILD_ZGML=0 BENCH_ALLOW_QUARANTINED=1 BENCH_ZGML_SAMPLES=${BENCH_ZGML_SAMPLES:-1} ./scripts/bench_vs_ggml.sh ${BENCH_GGML_PROMPT:-128} ${BENCH_GGML_GEN:-40} ${BENCH_GGML_REPS:-1}") {
-    errors.push("package.json dev:perf:competitive must keep the incremental PyTorch/frontier/ggml daily competitiveness loop");
+  if (scripts["dev:perf:competitive"] !== "node scripts/run_competitive_perf.cjs") {
+    errors.push("package.json dev:perf:competitive must keep the lane-selectable PyTorch/frontier/ggml daily competitiveness loop");
   }
-  if (scripts["bench:competitive"] !== "npm run bench:pytorch:steady && npm run bench:frontier:qsemantic && npm run dev:perf:ggml:smoke") {
+  if (scripts["dev:perf:competitive:run"] !== "BENCH_COMPETITIVE_BUILD=0 node scripts/run_competitive_perf.cjs") {
+    errors.push("package.json dev:perf:competitive:run must keep the no-rebuild lane-selectable competitiveness loop");
+  }
+  if (scripts["bench:competitive"] !== "node scripts/run_competitive_perf.cjs") {
     errors.push("package.json bench:competitive must keep the promoted PyTorch/frontier/ggml competitiveness gate");
   }
+  requireIncludes(read("scripts/run_competitive_perf.cjs"), "scripts/run_competitive_perf.cjs", "lane-selectable competitiveness runner", [
+    "BENCH_COMPETITIVE_LANES",
+    "BENCH_COMPETITIVE_BUILD",
+    "pytorch",
+    "qsemantic",
+    "ggml",
+    "zig",
+    "ffi-c",
+    "bench-build",
+    "build:package",
+    "scripts/check_pytorch_comparison.cjs",
+    "scripts/check_frontier_bench.cjs",
+    "scripts/bench_vs_ggml.sh",
+    "BENCH_FRONTIER_FILTER: \"qsemantic\"",
+    "BENCH_ALLOW_QUARANTINED: \"1\"",
+  ]);
   if (scripts["bench:pytorch"] !== "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch must remain the ReleaseFast upstream PyTorch comparison evidence gate");
   }
@@ -5467,7 +5486,10 @@ function checkDocs() {
     "zgml frontend surface",
     "goal progress: Program/Session substrate=85% floor=65%; zgml frontend surface=85% floor=60%",
     "npm run dev:perf:competitive",
+    "npm run dev:perf:competitive:run",
     "npm run bench:competitive",
+    "BENCH_COMPETITIVE_LANES=pytorch,qsemantic,ggml",
+    "BENCH_COMPETITIVE_BUILD=0",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
     "snapshots",
@@ -5669,7 +5691,9 @@ function checkDocs() {
     "bench:frontier:qsemantic:run",
     "dev:perf:frontier:qsemantic",
     "dev:perf:competitive",
+    "dev:perf:competitive:run",
     "bench:competitive",
+    "BENCH_COMPETITIVE_LANES",
     "semantic FFN sublayer throughput kernel",
     "`semantic_ffn_sublayer_throughput_kernel`",
     "The opt-in target compiler policy now recognizes the same work as one",

@@ -621,6 +621,7 @@ npm run dev:perf:pytorch:logsoftmax:run    # no-rebuild rerun for the logSoftmax
 npm run dev:perf:pytorch:logsoftmax:steady:native # native-only 150ms-window logSoftmax classifier microscope
 npm run dev:perf:pytorch:logsoftmax:steady:run    # no-rebuild 150ms-window logSoftmax classifier microscope
 npm run dev:perf:competitive        # incremental PyTorch + qsemantic frontier + cheap ggml competitiveness loop
+npm run dev:perf:competitive:run    # no-rebuild rerun of selected competitiveness lanes
 npm run bench:module-program:focus
 npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
 npm run bench:pytorch:parity:run       # rebuild ReleaseFast native, then rerun hard PyTorch parity
@@ -974,6 +975,13 @@ semantic lowering keeps the current default work shape. This is the useful
 near-term architecture: one semantic library command is now the promoted path,
 while the one-dispatch semantic target remains an explicit diagnostic until the
 true tiled semantic kernel exists.
+The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic, and
+cheap ggml smoke lanes behind `BENCH_COMPETITIVE_LANES`, so a kernel edit can
+run only `BENCH_COMPETITIVE_LANES=qsemantic npm run dev:perf:competitive` for a
+fresh benchmark artifact or `BENCH_COMPETITIVE_LANES=qsemantic npm run
+dev:perf:competitive:run` after the artifact is already fresh. That keeps the
+daily competitiveness loop explicit without forcing every local qsemantic edit
+to pay the PyTorch and llama.cpp smoke cost.
 The next implementation target remains the
 `semantic_ffn_sublayer_throughput_kernel` or a faster tiled row-chain leaf, not
 another command policy toggle.
