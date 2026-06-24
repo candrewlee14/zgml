@@ -1025,7 +1025,15 @@ until both geometries beat the default path across repeated attempts.
 It also reports the tiled work shape the real throughput kernel must expose:
 full-prefill has `target_semantic_tile_parallel_groups=192` and SmolLM prompt
 has `target_semantic_tile_parallel_groups=216`, corresponding to four row
-groups and 16/18 hidden-output tiles at the 32-wide tile shape.
+groups and 16/18 hidden-output tiles at the 32-wide tile shape. The latest
+qsemantic microscope also prints the row-serial gap per tile-parallel group:
+`target_semantic_row_serial_dot_ops_per_tile_parallel_group=4096` and
+`target_semantic_total_row_serial_dot_ops_per_tile_parallel_group=524288` for
+full-prefill, versus
+`target_semantic_row_serial_dot_ops_per_tile_parallel_group=4608` and
+`target_semantic_total_row_serial_dot_ops_per_tile_parallel_group=589824` for
+the SmolLM prompt geometry. Those are the concrete work-shape numbers the
+next throughput kernel has to collapse, not just descriptive counters.
 The qsemantic microscope now promotes that separation into the main semantic
 command path. `promptProjectionRowChainCommand()` recognizes the FFN/residual
 norm as one `semantic command` with `shape_commands=1`,

@@ -402,6 +402,31 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "spilled_elementwise", rt.qmatmul_row_chain_tiled_spilled_elementwise, calls_f);
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "two_phase_count", rt.qmatmul_row_chain_tiled_two_phase_count, calls_f);
     }
+    if (rt.semantic_ffn_sublayer_count > 0) {
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "count", rt.semantic_ffn_sublayer_count, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "rows", rt.semantic_ffn_sublayer_rows, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "hidden", rt.semantic_ffn_sublayer_hidden, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "input", rt.semantic_ffn_sublayer_input, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "output", rt.semantic_ffn_sublayer_output, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "row_serial_dot_ops", rt.semantic_ffn_sublayer_row_serial_dot_ops, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "total_row_serial_dot_ops", rt.semantic_ffn_sublayer_total_row_serial_dot_ops, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "tile_row_groups", rt.semantic_ffn_sublayer_tile_row_groups, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "tile_hidden_tiles", rt.semantic_ffn_sublayer_tile_hidden_tiles, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "tile_output_tiles", rt.semantic_ffn_sublayer_tile_output_tiles, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "tile_parallel_groups", rt.semantic_ffn_sublayer_tile_parallel_groups, calls_f);
+        if (rt.semantic_ffn_sublayer_tile_parallel_groups > 0) {
+            try writeJsonField(
+                jw,
+                "semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group",
+                @as(f64, @floatFromInt(rt.semantic_ffn_sublayer_row_serial_dot_ops)) / @as(f64, @floatFromInt(rt.semantic_ffn_sublayer_tile_parallel_groups)),
+            );
+            try writeJsonField(
+                jw,
+                "semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group",
+                @as(f64, @floatFromInt(rt.semantic_ffn_sublayer_total_row_serial_dot_ops)) / @as(f64, @floatFromInt(rt.semantic_ffn_sublayer_tile_parallel_groups)),
+            );
+        }
+    }
 }
 
 fn scheduleRegionPatternSlot(unit: program_mod.ScheduleUnit) ?usize {
@@ -587,6 +612,7 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     rt.recordCachedRegionCommandPlan(3);
     rt.recordDynamicRegionCommandPlan();
     rt.recordQMatmulRowChainTiled(128, 576, 32, true);
+    rt.recordSemanticFfnSublayer(128, 576, 576, 576);
     rt.call_count = 2;
 
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
@@ -607,6 +633,12 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_scratch_capacity\":73728") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_spilled_elementwise\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_two_phase_count\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_row_serial_dot_ops\":995328") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_total_row_serial_dot_ops\":127401984") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_tile_parallel_groups\":216") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group\":4608") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group\":589824") != null);
 }
 
 test "RuntimeProfile accumulates evidence windows" {
