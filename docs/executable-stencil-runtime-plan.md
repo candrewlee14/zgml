@@ -1368,6 +1368,17 @@ default; the fresh steady full-model Q8 prompt viable gate moved semantic
 median throughput to about `0.99x` with best evidence near `1.00x`, while still
 leaving `semantic_throughput_ready=off`. Keep this kernel shape, but do not
 promote it by default until a steady full-model run clears the readiness floor.
+A later source-current qsemantic steady run selected a stronger mixed tiled-tail
+attempt and now reports `throughput_candidate_status=ready` with
+`candidate_vs_default=full:1.02x,smollm:1.13x` and
+`candidate_vs_two_phase=full:1.60x,smollm:1.05x`. The status line also exposes
+the semantic target decomposition: full-prefill is `target_shape=4x16x16`, and
+SmolLM prompt is `target_shape=4x18x18`. The current candidate still only
+exposes `candidate_tiles=full:64,smollm:72` against target
+`target_tiles=full:192,smollm:216`, so the next Metal pass remains the true
+semantic FFN throughput kernel that collapses the 3.00x tile gap and the
+`4096`/`4608` serial dot ops per target tile group, not a default policy flip
+based only on frontier evidence.
 A June 24, 2026 shape-gated policy experiment tried limiting the two-phase
 semantic throughput tail to the 512-wide full-prefill shape so the 576-wide
 SmolLM prompt shape would preserve the semantic command but skip the tiled tail.
