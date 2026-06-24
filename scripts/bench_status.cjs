@@ -242,6 +242,20 @@ function formatRatio(value) {
   return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(2)}x` : "n/a";
 }
 
+function attemptRatioStats(data, field) {
+  if (!Array.isArray(data?.attempts)) return null;
+  const values = data.attempts
+    .map((row) => Number(row?.[field]))
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right);
+  if (values.length === 0) return null;
+  return {
+    best: values[values.length - 1],
+    median: values[Math.floor(values.length / 2)],
+    worst: values[0],
+  };
+}
+
 function ratioPassSummary(entries, minRatio) {
   if (!entries || typeof entries !== "object") return null;
   const rows = Object.entries(entries).flatMap(([key, value]) => {
@@ -359,13 +373,15 @@ function q8PromptCandidateStatusLine(path) {
   const commandSpeedup = formatRatio(data?.lanes?.command?.speedup);
   const twoPhaseSpeedup = formatRatio(data?.lanes?.twoPhase?.speedup);
   const semanticSpeedup = formatRatio(data?.lanes?.semantic?.speedup);
+  const twoPhaseStats = attemptRatioStats(data, "twoPhaseSpeedup");
+  const semanticStats = attemptRatioStats(data, "semanticSpeedup");
   const semanticThroughput = typeof data?.throughput?.semantic === "string" ? data.throughput.semantic : "unknown";
   const semanticStructuralSelected = (data?.lanes?.semantic?.structuralSelected ?? data?.lanes?.semantic?.selected) === true ? "yes" : "off";
   const semanticThroughputReady = (data?.lanes?.semantic?.throughputReady ?? semanticThroughput === "ready") === true ? "yes" : "off";
   const semanticShape = `${data?.lanes?.semantic?.projectionPairs ?? "n/a"}->${data?.lanes?.semantic?.projectionRowChains ?? "n/a"}`;
   const commandShape = `${data?.lanes?.command?.commands ?? "n/a"}`;
   const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
-  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} semantic_speedup=${semanticSpeedup} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} attempts=${attempts} lanes=${lanes}`;
+  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} attempts=${attempts} lanes=${lanes}`;
 }
 
 function frontierStatusLine(path) {
@@ -444,12 +460,13 @@ function q8PromptNextTarget(path) {
   try {
     const data = readJson(path);
     const semanticSpeedup = Number(data?.lanes?.semantic?.speedup);
+    const semanticStats = attemptRatioStats(data, "semanticSpeedup");
     const semanticThroughput = typeof data?.throughput?.semantic === "string" ? data.throughput.semantic : "unknown";
     const status = typeof data?.status === "string" ? data.status : "unknown";
     if (semanticThroughput === "ready" && Number.isFinite(semanticSpeedup) && semanticSpeedup >= 1) {
-      return `q8_prompt=promote_semantic_candidate:${formatRatio(semanticSpeedup)}`;
+      return `q8_prompt=promote_semantic_candidate:${formatRatio(semanticSpeedup)}:median=${formatRatio(semanticStats?.median)}`;
     }
-    return `q8_prompt=semantic_throughput_kernel:${status}:${semanticThroughput}:${formatRatio(semanticSpeedup)}`;
+    return `q8_prompt=semantic_throughput_kernel:${status}:${semanticThroughput}:best=${formatRatio(semanticSpeedup)}:median=${formatRatio(semanticStats?.median)}:worst=${formatRatio(semanticStats?.worst)}`;
   } catch {
     return "q8_prompt=unreadable_artifact";
   }
