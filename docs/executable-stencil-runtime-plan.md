@@ -957,7 +957,8 @@ diagnostic until the implementation changes the work shape rather than merely
 retuning threadgroup width. The qsemantic gate now reports
 `target_vs_default=full_prefill:...x,smollm_prompt:...x` so the dispatch
 reduction is always interpreted against the current throughput path; a fresh
-no-rebuild run printed `target_vs_default=full_prefill:0.28x,smollm_prompt:0.24x`.
+no-rebuild run still prints both ratios, and the target remains diagnostic
+until both geometries beat the default path across repeated attempts.
 It also reports the tiled work shape the real throughput kernel must expose:
 full-prefill has `target_semantic_tile_parallel_groups=192` and SmolLM prompt
 has `target_semantic_tile_parallel_groups=216`, corresponding to four row
@@ -976,6 +977,18 @@ semantic lowering keeps the current default work shape. This is the useful
 near-term architecture: one semantic library command is now the promoted path,
 while the one-dispatch semantic target remains an explicit diagnostic until the
 true tiled semantic kernel exists.
+The named `promptSemanticFfnSublayerThroughputCandidate()` policy now keeps the
+same one-command semantic shape but swaps the down-projection/residual/RMSNorm
+tail to the existing two-phase tiled row-chain leaf. The qsemantic gate reports
+that as `throughput_candidate_status=...` with
+`full_prefill_throughput_candidate=...x` and
+`smollm_prompt_throughput_candidate=...x`; fresh no-rebuild runs now show the
+candidate preserving correctness and tiled profile shape, with single-attempt
+throughput noisy enough to move between `mixed_tiled_tail_diagnostic` and
+`ready`. That is not yet an automatic promotion signal: it needs repeated
+attempts and the full Q8 prompt candidate gate before it can replace the
+default semantic command path. It does, however, give the next Metal pass a
+checked semantic-command lane instead of only separate row-chain experiments.
 The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic, and
 cheap ggml smoke lanes behind `BENCH_COMPETITIVE_LANES`, so a kernel edit can
 run only `BENCH_COMPETITIVE_LANES=qsemantic npm run dev:perf:competitive` for a

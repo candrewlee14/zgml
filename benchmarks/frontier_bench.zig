@@ -1324,6 +1324,8 @@ fn benchSemanticSublayerMetalCase(
     defer alloc.free(two_phase_out);
     const single_dispatch_out = try allocF32(alloc, elems, 920, 0.0);
     defer alloc.free(single_dispatch_out);
+    const throughput_out = try allocF32(alloc, elems, 921, 0.0);
+    defer alloc.free(throughput_out);
     const target_out = try allocF32(alloc, elems, 919, 0.0);
     defer alloc.free(target_out);
 
@@ -1402,6 +1404,9 @@ fn benchSemanticSublayerMetalCase(
     const single_dispatch_policy = program_mod.CommandStreamPolicy.promptProjectionRowChainSingleDispatchCandidate();
     const single_dispatch_handle = metal.compileProgramWithCommandPolicy(program, single_dispatch_policy) orelse return error.CompileFailed;
     defer be.freeProgram(single_dispatch_handle);
+    const throughput_policy = program_mod.CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate();
+    const throughput_handle = metal.compileProgramWithCommandPolicy(program, throughput_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(throughput_handle);
     const target_policy = program_mod.CommandStreamPolicy.promptSemanticFfnSublayerTarget();
     const target_handle = metal.compileProgramWithCommandPolicy(program, target_policy) orelse return error.CompileFailed;
     defer be.freeProgram(target_handle);
@@ -1410,27 +1415,32 @@ fn benchSemanticSublayerMetalCase(
     const command_output_io = [_]backend_mod.ProgramIO{programIo(9, command_out)};
     const two_phase_output_io = [_]backend_mod.ProgramIO{programIo(9, two_phase_out)};
     const single_dispatch_output_io = [_]backend_mod.ProgramIO{programIo(9, single_dispatch_out)};
+    const throughput_output_io = [_]backend_mod.ProgramIO{programIo(9, throughput_out)};
     const target_output_io = [_]backend_mod.ProgramIO{programIo(9, target_out)};
     var staged_bench = ProjectionRowChainMetalBench{ .be = be, .handle = staged_handle, .out = staged_out, .output_io = &staged_output_io };
     var command_bench = ProjectionRowChainMetalBench{ .be = be, .handle = command_handle, .out = command_out, .output_io = &command_output_io };
     var two_phase_bench = ProjectionRowChainMetalBench{ .be = be, .handle = two_phase_handle, .out = two_phase_out, .output_io = &two_phase_output_io };
     var single_dispatch_bench = ProjectionRowChainMetalBench{ .be = be, .handle = single_dispatch_handle, .out = single_dispatch_out, .output_io = &single_dispatch_output_io };
+    var throughput_bench = ProjectionRowChainMetalBench{ .be = be, .handle = throughput_handle, .out = throughput_out, .output_io = &throughput_output_io };
     var target_bench = ProjectionRowChainMetalBench{ .be = be, .handle = target_handle, .out = target_out, .output_io = &target_output_io };
 
     be.executeProgram(staged_handle, &.{}, &staged_output_io);
     be.executeProgram(command_handle, &.{}, &command_output_io);
     be.executeProgram(two_phase_handle, &.{}, &two_phase_output_io);
     be.executeProgram(single_dispatch_handle, &.{}, &single_dispatch_output_io);
+    be.executeProgram(throughput_handle, &.{}, &throughput_output_io);
     be.executeProgram(target_handle, &.{}, &target_output_io);
     const command_max_abs_diff = maxAbsDiff(staged_out, command_out);
     const two_phase_max_abs_diff = maxAbsDiff(staged_out, two_phase_out);
     const single_dispatch_max_abs_diff = maxAbsDiff(staged_out, single_dispatch_out);
+    const throughput_max_abs_diff = maxAbsDiff(staged_out, throughput_out);
     const target_max_abs_diff = maxAbsDiff(staged_out, target_out);
 
     const staged_stats = measure(io, &staged_bench);
     const command_stats = measure(io, &command_bench);
     const two_phase_stats = measure(io, &two_phase_bench);
     const single_dispatch_stats = measure(io, &single_dispatch_bench);
+    const throughput_stats = measure(io, &throughput_bench);
     const target_stats = measure(io, &target_bench);
     const approx_work = 2.0 * @as(f64, @floatFromInt(case.m * case.n * (case.k * 2 + case.n)));
 
@@ -1446,6 +1456,9 @@ fn benchSemanticSublayerMetalCase(
     var single_dispatch_name_buf: [160]u8 = undefined;
     const single_dispatch_name = try std.fmt.bufPrint(&single_dispatch_name_buf, "{s} semantic pair_row_chain_single_dispatch", .{case.name});
     try printStats(w, single_dispatch_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", single_dispatch_stats);
+    var throughput_name_buf: [160]u8 = undefined;
+    const throughput_name = try std.fmt.bufPrint(&throughput_name_buf, "{s} semantic throughput_candidate", .{case.name});
+    try printStats(w, throughput_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", throughput_stats);
     var target_name_buf: [128]u8 = undefined;
     const target_name = try std.fmt.bufPrint(&target_name_buf, "{s} semantic target", .{case.name});
     try printStats(w, target_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", target_stats);
@@ -1459,6 +1472,9 @@ fn benchSemanticSublayerMetalCase(
     var single_dispatch_ratio_name_buf: [160]u8 = undefined;
     const single_dispatch_ratio_name = try std.fmt.bufPrint(&single_dispatch_ratio_name_buf, "{s} semantic pair_row_chain_single_dispatch", .{case.name});
     try printRatio(w, single_dispatch_ratio_name, staged_stats, single_dispatch_stats, single_dispatch_max_abs_diff);
+    var throughput_ratio_name_buf: [160]u8 = undefined;
+    const throughput_ratio_name = try std.fmt.bufPrint(&throughput_ratio_name_buf, "{s} semantic throughput_candidate", .{case.name});
+    try printRatio(w, throughput_ratio_name, staged_stats, throughput_stats, throughput_max_abs_diff);
     var target_ratio_name_buf: [128]u8 = undefined;
     const target_ratio_name = try std.fmt.bufPrint(&target_ratio_name_buf, "{s} semantic target", .{case.name});
     try printRatio(w, target_ratio_name, staged_stats, target_stats, target_max_abs_diff);
@@ -1483,6 +1499,13 @@ fn benchSemanticSublayerMetalCase(
     const single_dispatch_profile_name = try std.fmt.bufPrint(&single_dispatch_profile_name_buf, "{s} semantic pair_row_chain_single_dispatch dispatch_profile", .{case.name});
     try printCommandShape(w, single_dispatch_profile_name, single_dispatch_commands);
     try printSemanticSublayerRuntimeProfile(w, single_dispatch_profile_name, be, single_dispatch_handle, &single_dispatch_output_io);
+
+    const throughput_commands = try program_mod.buildProgramCommands(alloc, &ops, throughput_policy);
+    defer alloc.free(throughput_commands);
+    var throughput_profile_name_buf: [176]u8 = undefined;
+    const throughput_profile_name = try std.fmt.bufPrint(&throughput_profile_name_buf, "{s} semantic throughput_candidate dispatch_profile", .{case.name});
+    try printCommandShape(w, throughput_profile_name, throughput_commands);
+    try printSemanticSublayerRuntimeProfile(w, throughput_profile_name, be, throughput_handle, &throughput_output_io);
 
     const target_commands = try program_mod.buildProgramCommands(alloc, &ops, target_policy);
     defer alloc.free(target_commands);

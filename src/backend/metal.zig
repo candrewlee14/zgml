@@ -9123,6 +9123,12 @@ const CompiledProgram = struct {
         };
         if (!self.encodeQMatmulPairSingleFusedElementwiseChain(exec, view, gate, fe, up, product)) return false;
 
+        if (self.command_policy.fuse_projection_row_chain_two_phase_candidate and
+            self.encodeQMatmulRowChainTwoPhaseTiled(exec, view, down, residual, rn, rp, out, view.outputReadsBuffer(residual.dst)))
+        {
+            return true;
+        }
+
         const write_down_primary = view.outputReadsBuffer(down.dst);
         if (!self.encodeQMatmulElementwise(exec, view, down, residual, write_down_primary)) return false;
         return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, view.outputReadsBuffer(rn.dst) or view.outputReadsBuffer(rp.dst));

@@ -1331,7 +1331,9 @@ pub const CommandStreamPolicy = struct {
     }
 
     pub fn promptSemanticFfnSublayerThroughputCandidate() CommandStreamPolicy {
-        return CommandStreamPolicy.promptProjectionRowChainCommand();
+        var policy = CommandStreamPolicy.promptProjectionRowChainCommand();
+        policy.fuse_projection_row_chain_two_phase_candidate = true;
+        return policy;
     }
 
     pub fn promptProjectionRowChainSingleDispatchCandidate() CommandStreamPolicy {
