@@ -695,12 +695,15 @@ the current runtime shape is still `2` commands covering `9` ops and saving `7`
 staged dispatches, and the current runtime still needs `3` backend dispatches.
 The opt-in target compiler policy now recognizes the same work as one
 `semantic_ffn_sublayer` command covering `9` ops and saving `8` staged
-dispatches. Metal now executes that exact command as a composed native path:
-projection-pair product, down-projection residual add, then RMSNorm scale. The
-target path is zero-diff and still dispatches `3` backend kernels, so the final
-missing performance move is replacing the composed internals with a true
-one-dispatch `semantic_ffn_sublayer_kernel`; this is not proof that full-model
-Q8 has been solved.
+dispatches. Metal now executes that exact command as a bounded one-dispatch
+diagnostic kernel. The target path is zero-diff, and the target dispatches `1`
+backend kernel. The default throughput lane remains the faster
+projection-pair product, down-projection residual add, then RMSNorm scale path.
+The final missing performance move is a semantic FFN sublayer throughput
+kernel, concretely replacing the scalar diagnostic with a
+true tiled/vectorized `semantic_ffn_sublayer_throughput_kernel`; this is not
+proof that full-model Q8 has been solved.
+Evidence tag: semantic FFN sublayer throughput kernel; Metal now executes that exact command as a bounded one-dispatch diagnostic kernel; the default throughput lane remains the faster projection-pair product, down-projection residual add, then RMSNorm scale path; target dispatches `1` backend kernel.
 It also names the hard performance fact directly: the structurally useful
 two-dispatch command path is dispatch-neutral in the full model
 (`command_dispatch=242->242`, `command_dispatch_reduced=no`), and the two-phase
@@ -833,10 +836,10 @@ x7 executable region proof remains healthy; three attempts keeps iteration fast
 without turning noise into a false architecture signal. The frontier
 qsemantic scripts use `BENCH_FRONTIER_FILTER=qsemantic` and default the
 checked dev loop to one attempt because the profile assertions are the value:
-they prove the current 3-dispatch boundary and the opt-in one-command semantic
+they prove the current 3-dispatch throughput boundary and the opt-in one-command semantic
 target (`target_shape_commands=1`,
 `target_semantic_ffn_sublayers=1`,
-`target_runtime_backend_dispatches=3`) without requiring the full Q8 prompt
+`target_runtime_backend_dispatches=1`) without requiring the full Q8 prompt
 artifact loop on every kernel edit.
 Use it when changing projection-pair, row-chain, residual, RMSNorm, or
 semantic-sublayer scheduling, then escalate to `dev:perf:q8-prompt:viable` and

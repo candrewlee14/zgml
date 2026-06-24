@@ -552,14 +552,14 @@ function scoreFocusedSemantic(output, attempt) {
   if (fullPrefillShapeCommands !== 2 || fullPrefillShapeRowChains !== 1 || fullPrefillShapeCoveredOps !== 9 || fullPrefillShapeSavedDispatches !== 7 || fullPrefillRuntimeDispatches !== 3 || fullPrefillTargetDispatches !== 1) {
     failures.push("semantic full-prefill profile must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 shape_saved_dispatches=7 runtime_backend_dispatches=3 semantic_target_dispatches=1");
   }
-  if (fullPrefillTargetShapeCommands !== 1 || fullPrefillTargetShapeSemantic !== 1 || fullPrefillTargetShapeCoveredOps !== 9 || fullPrefillTargetShapeSavedDispatches !== 8 || fullPrefillTargetRuntimeDispatches !== 3) {
-    failures.push("semantic full-prefill target profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=3");
+  if (fullPrefillTargetShapeCommands !== 1 || fullPrefillTargetShapeSemantic !== 1 || fullPrefillTargetShapeCoveredOps !== 9 || fullPrefillTargetShapeSavedDispatches !== 8 || fullPrefillTargetRuntimeDispatches !== 1) {
+    failures.push("semantic full-prefill target profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=1");
   }
   if (smollmPromptShapeCommands !== 2 || smollmPromptShapeRowChains !== 1 || smollmPromptShapeCoveredOps !== 9 || smollmPromptShapeSavedDispatches !== 7 || smollmPromptRuntimeDispatches !== 3 || smollmPromptTargetDispatches !== 1) {
     failures.push("semantic smollm-prompt profile must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 shape_saved_dispatches=7 runtime_backend_dispatches=3 semantic_target_dispatches=1");
   }
-  if (smollmPromptTargetShapeCommands !== 1 || smollmPromptTargetShapeSemantic !== 1 || smollmPromptTargetShapeCoveredOps !== 9 || smollmPromptTargetShapeSavedDispatches !== 8 || smollmPromptTargetRuntimeDispatches !== 3) {
-    failures.push("semantic smollm-prompt target profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=3");
+  if (smollmPromptTargetShapeCommands !== 1 || smollmPromptTargetShapeSemantic !== 1 || smollmPromptTargetShapeCoveredOps !== 9 || smollmPromptTargetShapeSavedDispatches !== 8 || smollmPromptTargetRuntimeDispatches !== 1) {
+    failures.push("semantic smollm-prompt target profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=1");
   }
 
   const line = [
@@ -569,7 +569,7 @@ function scoreFocusedSemantic(output, attempt) {
     `full_prefill_two_phase=${fullPrefillTwoPhaseSpeedup.toFixed(2)}x max_abs_diff=${fullPrefillTwoPhaseMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillTwoPhaseRuntimeDispatches}`,
     `smollm_prompt=${smollmPromptSpeedup.toFixed(2)}x max_abs_diff=${smollmPromptMaxAbsDiff.toFixed(6)} shape_commands=${smollmPromptShapeCommands} shape_covered_ops=${smollmPromptShapeCoveredOps} runtime_backend_dispatches=${smollmPromptRuntimeDispatches} semantic_target_dispatches=${smollmPromptTargetDispatches} target_speedup=${smollmPromptTargetSpeedup.toFixed(2)}x target_max_abs_diff=${smollmPromptTargetMaxAbsDiff.toFixed(6)} target_shape_commands=${smollmPromptTargetShapeCommands} target_semantic_ffn_sublayers=${smollmPromptTargetShapeSemantic} target_runtime_backend_dispatches=${smollmPromptTargetRuntimeDispatches}`,
     `smollm_prompt_two_phase=${smollmPromptTwoPhaseSpeedup.toFixed(2)}x max_abs_diff=${smollmPromptTwoPhaseMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${smollmPromptTwoPhaseRuntimeDispatches}`,
-    `next=semantic_ffn_sublayer_kernel`,
+    `next=semantic_ffn_sublayer_throughput_kernel`,
   ].join("; ");
 
   return {
@@ -669,7 +669,7 @@ function runFocusedSemanticGate() {
     ["fullPrefillTargetShapeSemantic", 1],
     ["fullPrefillTargetShapeCoveredOps", 9],
     ["fullPrefillTargetShapeSavedDispatches", 8],
-    ["fullPrefillTargetRuntimeDispatches", 3],
+    ["fullPrefillTargetRuntimeDispatches", 1],
   ])) aggregate.push("semantic full-prefill target profile did not match in any attempt");
   if (!anyEquals(attempts, [
     ["smollmPromptShapeCommands", 2],
@@ -684,7 +684,7 @@ function runFocusedSemanticGate() {
     ["smollmPromptTargetShapeSemantic", 1],
     ["smollmPromptTargetShapeCoveredOps", 9],
     ["smollmPromptTargetShapeSavedDispatches", 8],
-    ["smollmPromptTargetRuntimeDispatches", 3],
+    ["smollmPromptTargetRuntimeDispatches", 1],
   ])) aggregate.push("semantic smollm-prompt target profile did not match in any attempt");
 
   const line = aggregate.length === 0 ? best.line.replace("frontier qsemantic gate: fail", "frontier qsemantic gate: pass") : best.line;
