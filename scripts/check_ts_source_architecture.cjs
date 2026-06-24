@@ -315,10 +315,10 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["dev:perf:frontier:row-chain-region:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=\"qrow region\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:row-chain-region:run must stay the no-rebuild checked x7 row-chain region microscope");
   }
-  if (packageJson.scripts?.["dev:perf:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+  if (packageJson.scripts?.["dev:perf:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qproj must stay the incremental checked qproj frontier microscope");
   }
-  if (packageJson.scripts?.["dev:perf:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+  if (packageJson.scripts?.["dev:perf:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qproj:run must stay the no-rebuild checked qproj frontier microscope");
   }
   if (packageJson.scripts?.["bench:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
@@ -803,7 +803,8 @@ function checkPackageExports(errors) {
     "defaultDecodeProjectionPairs >= decodeProjectionPairFloor",
     "defaultDecodeFastPathReady",
     "`decode_command=${format(commandBest.defaultDecodeCommands, 0)} decode_projection_chain=${format(commandBest.defaultDecodeProjectionChains, 0)} `",
-    "`decode_projection_pair=${format(commandBest.defaultDecodeProjectionPairs, 0)} decode_fallback=${format(commandBest.defaultDecodeFallback, 0)} `",
+    "`decode_projection_pair=${format(commandBest.defaultDecodeProjectionPairs, 0)} decode_projection_group=${format(commandBest.defaultDecodeProjectionGroups, 0)} `",
+    "`decode_projection_cache_group=${format(commandBest.defaultDecodeProjectionCacheGroups, 0)} decode_fallback=${format(commandBest.defaultDecodeFallback, 0)} `",
     "decode_fast_path=${commandBest.defaultDecodeFastPathReady ? \"ready\" : \"off\"} decode_lowering=${decodeLowering}",
     "decode_row_chain_default=${decodeRowChainDefault} decode_next=${decodeNextTarget}",
     "commandLane.projectionPairs >= candidateProjectionPairFloor",
@@ -881,9 +882,9 @@ function checkPackageExports(errors) {
     "kernel void qmatmul_row_chain_tiled_f32",
     "kernel void qmatmul_row_chain_tiled_partials_f32",
     "kernel void qmatmul_row_chain_tiled_finalize_f32",
-    ".qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS",
-    ".qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 7, .{ .gx = (q.M + TILE - 1) / TILE, .gy = partial_cols }, MATMUL_THREADS",
-    ".qmatmul_row_chain_tiled_finalize_f32, &finalize_buffers, params, 4, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS",
+    ".qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE }, MATMUL_THREADS",
+    ".qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = partial_cols }, MATMUL_THREADS",
+    ".qmatmul_row_chain_tiled_finalize_f32, &finalize_buffers, params, 4, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE }, MATMUL_THREADS",
     "self.command_policy.fuse_projection_row_chain_single_dispatch",
     "self.command_policy.fuse_projection_row_chain_two_phase_candidate",
     "const write_primary = projectionRowChainPrimaryHasExternalUsers(ops, command);",
