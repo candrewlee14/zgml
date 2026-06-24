@@ -263,11 +263,15 @@ function frontierFreshnessStatusLine(selectedPath, rawPath) {
     const smollmTargetTileGroups = data?.smollmPrompt?.targetTileParallelGroups ?? "n/a";
     const fullCandidateTileGroups = data?.fullPrefill?.throughputCandidateTileParallelGroups ?? "n/a";
     const smollmCandidateTileGroups = data?.smollmPrompt?.throughputCandidateTileParallelGroups ?? "n/a";
+    const fullCandidateFinalizeTileGroups = data?.fullPrefill?.throughputCandidateFinalizeTileGroups ?? "n/a";
+    const smollmCandidateFinalizeTileGroups = data?.smollmPrompt?.throughputCandidateFinalizeTileGroups ?? "n/a";
+    const fullCandidateFinalizeElements = data?.fullPrefill?.throughputCandidateFinalizeElements ?? "n/a";
+    const smollmCandidateFinalizeElements = data?.smollmPrompt?.throughputCandidateFinalizeElements ?? "n/a";
     const fullTileGap = formatRatio(qsemanticTileGap(data?.fullPrefill));
     const smollmTileGap = formatRatio(qsemanticTileGap(data?.smollmPrompt));
     const fullTargetSerialPerTile = data?.fullPrefill?.targetRowSerialDotOpsPerTileGroup ?? "n/a";
     const smollmTargetSerialPerTile = data?.smollmPrompt?.targetRowSerialDotOpsPerTileGroup ?? "n/a";
-    latest = `target=${target} throughput_candidate=${throughputCandidate} candidate_vs_default=full:${fullPrefillCandidateVsDefault},smollm:${smollmPromptCandidateVsDefault} target_vs_default=full:${fullPrefillTargetVsDefault},smollm:${smollmPromptTargetVsDefault} target_tile_groups=full:${fullTargetTileGroups},smollm:${smollmTargetTileGroups} candidate_tile_groups=full:${fullCandidateTileGroups},smollm:${smollmCandidateTileGroups} tile_gap=full:${fullTileGap},smollm:${smollmTileGap} target_serial_per_tile=full:${fullTargetSerialPerTile},smollm:${smollmTargetSerialPerTile} attempts=${attempts} source=${source}`;
+    latest = `target=${target} throughput_candidate=${throughputCandidate} candidate_vs_default=full:${fullPrefillCandidateVsDefault},smollm:${smollmPromptCandidateVsDefault} target_vs_default=full:${fullPrefillTargetVsDefault},smollm:${smollmPromptTargetVsDefault} target_tile_groups=full:${fullTargetTileGroups},smollm:${smollmTargetTileGroups} candidate_tile_groups=full:${fullCandidateTileGroups},smollm:${smollmCandidateTileGroups} candidate_finalize_groups=full:${fullCandidateFinalizeTileGroups},smollm:${smollmCandidateFinalizeTileGroups} candidate_finalize_elements=full:${fullCandidateFinalizeElements},smollm:${smollmCandidateFinalizeElements} tile_gap=full:${fullTileGap},smollm:${smollmTileGap} target_serial_per_tile=full:${fullTargetSerialPerTile},smollm:${smollmTargetSerialPerTile} attempts=${attempts} source=${source}`;
   } catch {
     // Keep the freshness signal even if the newest artifact cannot be read.
   }
@@ -562,6 +566,10 @@ function frontierStatusLine(path, pressurePath = path) {
   const smollmTargetTileGroups = data?.smollmPrompt?.targetTileParallelGroups ?? "n/a";
   const fullCandidateTileGroups = data?.fullPrefill?.throughputCandidateTileParallelGroups ?? "n/a";
   const smollmCandidateTileGroups = data?.smollmPrompt?.throughputCandidateTileParallelGroups ?? "n/a";
+  const fullCandidateFinalizeTileGroups = data?.fullPrefill?.throughputCandidateFinalizeTileGroups ?? "n/a";
+  const smollmCandidateFinalizeTileGroups = data?.smollmPrompt?.throughputCandidateFinalizeTileGroups ?? "n/a";
+  const fullCandidateFinalizeElements = data?.fullPrefill?.throughputCandidateFinalizeElements ?? "n/a";
+  const smollmCandidateFinalizeElements = data?.smollmPrompt?.throughputCandidateFinalizeElements ?? "n/a";
   const fullTileGap = formatRatio(qsemanticTileGap(data?.fullPrefill));
   const smollmTileGap = formatRatio(qsemanticTileGap(data?.smollmPrompt));
   const fullTargetSerialPerTile =
@@ -576,7 +584,7 @@ function frontierStatusLine(path, pressurePath = path) {
   const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
   const next = typeof data?.next === "string" ? data.next : "unknown";
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
-  return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} vs_two_phase=full:${fullPrefillCandidateVsTwoPhase},smollm:${smollmPromptCandidateVsTwoPhase} target_tile_groups=full:${fullTargetTileGroups},smollm:${smollmTargetTileGroups} candidate_tile_groups=full:${fullCandidateTileGroups},smollm:${smollmCandidateTileGroups} tile_gap=full:${fullTileGap},smollm:${smollmTileGap} target_serial_per_tile=full:${fullTargetSerialPerTile},smollm:${smollmTargetSerialPerTile} next=${next} source=${source}`;
+  return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} vs_two_phase=full:${fullPrefillCandidateVsTwoPhase},smollm:${smollmPromptCandidateVsTwoPhase} target_tile_groups=full:${fullTargetTileGroups},smollm:${smollmTargetTileGroups} candidate_tile_groups=full:${fullCandidateTileGroups},smollm:${smollmCandidateTileGroups} candidate_finalize_groups=full:${fullCandidateFinalizeTileGroups},smollm:${smollmCandidateFinalizeTileGroups} candidate_finalize_elements=full:${fullCandidateFinalizeElements},smollm:${smollmCandidateFinalizeElements} tile_gap=full:${fullTileGap},smollm:${smollmTileGap} target_serial_per_tile=full:${fullTargetSerialPerTile},smollm:${smollmTargetSerialPerTile} next=${next} source=${source}`;
 }
 
 function qprojFrontierStatusLine(path) {
@@ -682,6 +690,10 @@ function frontierNextTargetLine(path, pressurePath = path) {
     const smollmTargetTileGroups = data?.smollmPrompt?.targetTileParallelGroups ?? "n/a";
     const fullCandidateTileGroups = data?.fullPrefill?.throughputCandidateTileParallelGroups ?? "n/a";
     const smollmCandidateTileGroups = data?.smollmPrompt?.throughputCandidateTileParallelGroups ?? "n/a";
+    const fullCandidateFinalizeTileGroups = data?.fullPrefill?.throughputCandidateFinalizeTileGroups ?? "n/a";
+    const smollmCandidateFinalizeTileGroups = data?.smollmPrompt?.throughputCandidateFinalizeTileGroups ?? "n/a";
+    const fullCandidateFinalizeElements = data?.fullPrefill?.throughputCandidateFinalizeElements ?? "n/a";
+    const smollmCandidateFinalizeElements = data?.smollmPrompt?.throughputCandidateFinalizeElements ?? "n/a";
     const fullTileGap = formatRatio(qsemanticTileGap(data?.fullPrefill));
     const smollmTileGap = formatRatio(qsemanticTileGap(data?.smollmPrompt));
     const fullTargetSerialPerTile =
@@ -695,7 +707,7 @@ function frontierNextTargetLine(path, pressurePath = path) {
     const fresh = hasFreshPressure
       ? `:fresh=source:${typeof pressureData?.source?.label === "string" ? pressureData.source.label : "unknown"},vs_default=smollm:${formatRatio(pressureData?.smollmPrompt?.throughputCandidateVsDefault)},full:${formatRatio(pressureData?.fullPrefill?.throughputCandidateVsDefault)}`
       : "";
-    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}:target_tiles=smollm:${smollmTargetTileGroups},full:${fullTargetTileGroups}:candidate_tiles=smollm:${smollmCandidateTileGroups},full:${fullCandidateTileGroups}:tile_gap=smollm:${smollmTileGap},full:${fullTileGap}:target_serial_per_tile=smollm:${smollmTargetSerialPerTile},full:${fullTargetSerialPerTile}${fresh}`;
+    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}:target_tiles=smollm:${smollmTargetTileGroups},full:${fullTargetTileGroups}:candidate_tiles=smollm:${smollmCandidateTileGroups},full:${fullCandidateTileGroups}:candidate_finalize_groups=smollm:${smollmCandidateFinalizeTileGroups},full:${fullCandidateFinalizeTileGroups}:candidate_finalize_elements=smollm:${smollmCandidateFinalizeElements},full:${fullCandidateFinalizeElements}:tile_gap=smollm:${smollmTileGap},full:${fullTileGap}:target_serial_per_tile=smollm:${smollmTargetSerialPerTile},full:${fullTargetSerialPerTile}${fresh}`;
   } catch {
     return "frontier=unreadable_artifact";
   }
