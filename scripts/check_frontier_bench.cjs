@@ -608,6 +608,8 @@ function scoreFocusedSemantic(output, attempt) {
   const targetThroughputStatus = smollmPromptTargetSpeedup >= smollmPromptSpeedup && fullPrefillTargetSpeedup >= fullPrefillSpeedup
     ? "ready"
     : "diagnostic_needs_throughput_kernel";
+  const fullPrefillTargetVsDefault = fullPrefillTargetSpeedup / fullPrefillSpeedup;
+  const smollmPromptTargetVsDefault = smollmPromptTargetSpeedup / smollmPromptSpeedup;
   const singleDispatchReduced = fullPrefillSingleDispatchRuntimeDispatches < fullPrefillRuntimeDispatches && smollmPromptSingleDispatchRuntimeDispatches < smollmPromptRuntimeDispatches;
   const singleDispatchBlocker = singleDispatchReduced ? "none" : "metal_row_chain_leaf_encoder_declined_semantic_shape";
   const singleDispatchThroughputStatus = singleDispatchReduced && fullPrefillSingleDispatchSpeedup >= fullPrefillSpeedup && smollmPromptSingleDispatchSpeedup >= smollmPromptSpeedup
@@ -662,6 +664,7 @@ function scoreFocusedSemantic(output, attempt) {
     `frontier qsemantic gate: ${failures.length === 0 ? "pass" : "fail"}`,
     `attempt=${attempt}/${maxAttempts}`,
     `target_throughput_status=${targetThroughputStatus}`,
+    `target_vs_default=full_prefill:${fullPrefillTargetVsDefault.toFixed(2)}x,smollm_prompt:${smollmPromptTargetVsDefault.toFixed(2)}x`,
     `single_dispatch_row_chain_dispatch_reduced=${singleDispatchReduced ? "yes" : "no"}`,
     `single_dispatch_row_chain_blocker=${singleDispatchBlocker}`,
     `single_dispatch_throughput_status=${singleDispatchThroughputStatus}`,

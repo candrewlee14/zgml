@@ -931,7 +931,11 @@ diagnostic and did not beat the default throughput path, while
 `SEMANTIC_FFN_THREADS=128` made the semantic target slower, especially on the
 SmolLM prompt shape. Keep the current `QMATMUL_ROW_CHAIN_THREADS=256`
 diagnostic until the implementation changes the work shape rather than merely
-retuning threadgroup width. The next implementation target remains the
+retuning threadgroup width. The qsemantic gate now reports
+`target_vs_default=full_prefill:...x,smollm_prompt:...x` so the dispatch
+reduction is always interpreted against the current throughput path; a fresh
+no-rebuild run printed `target_vs_default=full_prefill:0.28x,smollm_prompt:0.24x`.
+The next implementation target remains the
 `semantic_ffn_sublayer_throughput_kernel` or a faster tiled row-chain leaf, not
 another command policy toggle.
 Use it when changing projection-pair, row-chain, residual, RMSNorm, or
