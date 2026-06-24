@@ -64,7 +64,7 @@ PyTorch replacement:
   the checked family-level runtime evidence in `docs/frontend-autograd-coverage.md`.
 - Native eager tensor storage is not the default. Large tensor performance
   claims should continue to go through compiled Programs/Sessions. The
-  `dev:perf:native-eager-gap{,:run}` microscope now measures the first
+  `dev:perf:native-eager-gap{,:run,:bun,:bun:run}` microscope now measures the first
   `linear_batched` and `lazy_matmul_add_gelu_batched` targets as eager TS tensor
   execution versus compiled allocation-free `executeInto`; the first native eager storage slices have executable baselines.
   Node and Bun also expose the first stateless native eager primitive:

@@ -569,8 +569,20 @@ function checkScripts() {
   if (scripts["dev:perf:native-eager-gap:run"] !== "node scripts/check_native_eager_gap.cjs") {
     errors.push("package.json dev:perf:native-eager-gap:run must keep the no-rebuild native eager gap rerun");
   }
+  if (scripts["dev:perf:native-eager-gap:bun"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && npm run build:package && BENCH_NATIVE_EAGER_RUNTIME=bun bun scripts/check_native_eager_gap.cjs") {
+    errors.push("package.json dev:perf:native-eager-gap:bun must keep the incremental Bun native eager gap microscope");
+  }
+  if (scripts["dev:perf:native-eager-gap:bun:run"] !== "BENCH_NATIVE_EAGER_RUNTIME=bun bun scripts/check_native_eager_gap.cjs") {
+    errors.push("package.json dev:perf:native-eager-gap:bun:run must keep the no-rebuild Bun native eager gap rerun");
+  }
   requireIncludes(read("scripts/check_native_eager_gap.cjs"), "scripts/check_native_eager_gap.cjs", "native eager gap microscope", [
     "schema: \"zgml.native-eager-gap.v1\"",
+    "BENCH_NATIVE_EAGER_RUNTIME",
+    "const runtime = hostRuntime();",
+    "const runtimeEntry = join(root, \"dist\", runtime === \"bun\" ? \"bun_native.cjs\" : \"node.cjs\");",
+    "runtime,",
+    "entry: runtimeEntry",
+    "native eager gap: runtime=${runtime}",
     "NATIVE_EAGER_GAP_JSON",
     "lazy_matmul_add_gelu_batched",
     "nativeEagerIntoMs",
@@ -6344,7 +6356,7 @@ function checkDocs() {
     "Autograd coverage is broad enough for small model workflows",
     "`docs/frontend-autograd-coverage.md`",
     "Native eager tensor storage is not the default.",
-    "`dev:perf:native-eager-gap{,:run}` microscope",
+    "`dev:perf:native-eager-gap{,:run,:bun,:bun:run}` microscope",
     "`linear_batched` and `lazy_matmul_add_gelu_batched` targets",
     "first native eager storage slices have executable baselines",
     "Node and Bun also expose the first stateless native eager primitive",

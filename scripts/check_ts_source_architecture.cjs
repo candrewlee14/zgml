@@ -536,9 +536,21 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["dev:perf:native-eager-gap:run"] !== "node scripts/check_native_eager_gap.cjs") {
     errors.push("package.json dev:perf:native-eager-gap:run must stay the no-rebuild native eager gap rerun");
   }
+  if (packageJson.scripts?.["dev:perf:native-eager-gap:bun"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && npm run build:package && BENCH_NATIVE_EAGER_RUNTIME=bun bun scripts/check_native_eager_gap.cjs") {
+    errors.push("package.json dev:perf:native-eager-gap:bun must stay the incremental Bun native eager gap microscope");
+  }
+  if (packageJson.scripts?.["dev:perf:native-eager-gap:bun:run"] !== "BENCH_NATIVE_EAGER_RUNTIME=bun bun scripts/check_native_eager_gap.cjs") {
+    errors.push("package.json dev:perf:native-eager-gap:bun:run must stay the no-rebuild Bun native eager gap rerun");
+  }
   const nativeEagerGapSource = readSource(path.join("scripts", "check_native_eager_gap.cjs"));
   for (const required of [
     "schema: \"zgml.native-eager-gap.v1\"",
+    "BENCH_NATIVE_EAGER_RUNTIME",
+    "const runtime = hostRuntime();",
+    "const runtimeEntry = join(root, \"dist\", runtime === \"bun\" ? \"bun_native.cjs\" : \"node.cjs\");",
+    "runtime,",
+    "entry: runtimeEntry",
+    "native eager gap: runtime=${runtime}",
     "lazy_matmul_add_gelu_batched",
     "native_eager_linear_or_matmul_storage_slice",
     "native_eager_fused_matmul_add_gelu_storage_slice",

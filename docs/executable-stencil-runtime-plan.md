@@ -435,7 +435,7 @@ Current checked progress:
   normal-module route now exists on Node and Bun: eligible `nn.Linear.forward`
   calls inside `zgml.noGrad(...)` route through the native eager linear hook
   while grad-enabled training keeps the TS/autograd graph path.
-  The new `NATIVE_EAGER_GAP_JSON` microscope measures the first targets directly:
+  The new Node/Bun-selectable `NATIVE_EAGER_GAP_JSON` microscope measures the first targets directly:
   `linear_batched` eager TS tensor execution and
   `lazy_matmul_add_gelu_batched` eager fused matmul work versus allocation-free
   compiled `prepare/executeInto` for the same shape. It now also reports
@@ -739,6 +739,8 @@ npm run dev:perf:module-program       # incremental ReleaseFast native rebuild p
 npm run dev:perf:module-program:run   # rerun focused Program/Session bench without rebuilding artifacts
 npm run dev:perf:native-eager-gap     # incremental eager-vs-compiled native gap microscope
 npm run dev:perf:native-eager-gap:run # no-rebuild eager-vs-compiled native gap microscope
+npm run dev:perf:native-eager-gap:bun # incremental Bun native eager gap microscope
+npm run dev:perf:native-eager-gap:bun:run # no-rebuild Bun native eager gap microscope
 npm run dev:perf:pytorch:focus        # incremental ReleaseFast native rebuild plus focused PyTorch comparison
 npm run dev:perf:pytorch:focus:native # native-only focused PyTorch loop after dist exists
 npm run dev:perf:pytorch:focus:run    # rerun focused PyTorch comparison without rebuilding artifacts

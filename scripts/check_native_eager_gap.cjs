@@ -5,17 +5,30 @@ const { join, resolve } = require("node:path");
 const { verifyFreshNativeLibrary } = require("./native_freshness.cjs");
 
 const root = resolve(__dirname, "..");
-const nodeEntry = join(root, "dist", "node.cjs");
-if (!existsSync(nodeEntry)) {
-  throw new Error("native eager gap check requires dist/node.cjs; run npm run build:package first");
+function hostRuntime() {
+  const requested = String(process.env.BENCH_NATIVE_EAGER_RUNTIME || "").trim().toLowerCase();
+  if (requested.length > 0) {
+    if (requested !== "node" && requested !== "bun") {
+      throw new Error(`BENCH_NATIVE_EAGER_RUNTIME must be node or bun, got ${requested}`);
+    }
+    return requested;
+  }
+  return process.versions.bun ? "bun" : "node";
+}
+
+const runtime = hostRuntime();
+const runtimeEntry = join(root, "dist", runtime === "bun" ? "bun_native.cjs" : "node.cjs");
+if (!existsSync(runtimeEntry)) {
+  throw new Error(`native eager gap check requires ${runtimeEntry}; run npm run build:package first`);
 }
 const nativeFreshness = verifyFreshNativeLibrary({
   root,
-  label: "native eager gap check",
+  label: `native eager gap check (${runtime})`,
   allowStaleEnv: "BENCH_NATIVE_EAGER_ALLOW_STALE_NATIVE",
 });
 
-const { zgml } = require(nodeEntry);
+const runtimeExports = require(runtimeEntry);
+const zgml = runtimeExports.zgml ?? runtimeExports.torch ?? runtimeExports;
 const minTimingMs = Number(process.env.BENCH_NATIVE_EAGER_MIN_TIMING_MS || "8");
 if (!Number.isFinite(minTimingMs) || minTimingMs <= 0) {
   throw new Error(`BENCH_NATIVE_EAGER_MIN_TIMING_MS must be positive, got ${process.env.BENCH_NATIVE_EAGER_MIN_TIMING_MS}`);
@@ -257,6 +270,8 @@ const gapSpecs = Object.freeze([
 const rows = Object.freeze(gapSpecs.map(benchGap));
 const result = Object.freeze({
   schema: "zgml.native-eager-gap.v1",
+  runtime,
+  entry: runtimeEntry,
   nativeFreshness,
   status: "gap-measured",
   rows,
@@ -270,5 +285,5 @@ for (const row of rows) {
   const nativeEagerModule = row.nativeEagerModuleForwardMs === null
     ? "native_eager_module=n/a"
     : `native_eager_module=${row.nativeEagerModuleForwardMs}ms native_eager_module_speedup=${row.nativeEagerModuleSpeedup}x`;
-  process.stdout.write(`native eager gap: ${row.key} eager=${row.eagerMs}ms ${nativeEager} ${nativeEagerModule} prepared_execute_into=${row.preparedExecuteIntoMs}ms speedup=${row.nativeProgramSpeedup}x next=${row.next}\n`);
+  process.stdout.write(`native eager gap: runtime=${runtime} ${row.key} eager=${row.eagerMs}ms ${nativeEager} ${nativeEagerModule} prepared_execute_into=${row.preparedExecuteIntoMs}ms speedup=${row.nativeProgramSpeedup}x next=${row.next}\n`);
 }
