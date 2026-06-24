@@ -471,6 +471,12 @@ Current checked progress:
   `nn.Sequential(Linear, ReLU)` / `nn.Sequential(Linear, SiLU)` module surfaces can
   take the native eager lane without users calling the low-level primitive
   directly.
+  The native eager adapter policy now lives in
+  `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
+  shape inference, output validation, public aliases, and activation mapping,
+  while the concrete runtimes only provide the host-specific ABI calls and
+  status checks. That keeps the first native eager lane extensible without
+  duplicating user-facing semantics in each FFI adapter.
   Native eager microscope runs now write ignored
   `bench-results/native-eager/native-eager-*.json` artifacts, and
   `bench:status` reports both the latest native eager artifact and a

@@ -742,23 +742,53 @@ function checkPackageExports(errors) {
     }
   }
   const bunFfiRuntimeSource = readSource(path.join("src", "ts", "adapters", "bun_ffi_runtime.ts"));
+  const nodeFfiRuntimeSource = readSource(path.join("src", "ts", "adapters", "node_ffi_runtime.ts"));
+  const nativeEagerSurfaceSource = readSource(path.join("src", "ts", "adapters", "native_eager_surface.ts"));
+  for (const required of [
+    "export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptions)",
+    "function nativeEagerTensorData(value: unknown, label: string, f32: NativeEagerTensorFactory): Float32Array",
+    "function nativeEagerLinearInputs(",
+    "linearInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {})",
+    "linear_into(output: Float32Array, input: unknown, weights: unknown, callOptions?: Record<string, unknown>)",
+    "linearActivationInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {})",
+    "linear_activation_into(output: Float32Array, input: unknown, weights: unknown, callOptions?: Record<string, unknown>)",
+    "nativeEagerActivationId(callOptions.activation, \"nativeEager.linearActivationInto\")",
+    "activation must be relu, gelu, silu, sigmoid, or tanh",
+  ]) {
+    if (!nativeEagerSurfaceSource.includes(required)) {
+      errors.push(`src/ts/adapters/native_eager_surface.ts must own shared Node/Bun native eager policy: ${required}`);
+    }
+  }
+  for (const required of [
+    "createAdapterNativeEagerSurface",
+    "const { nativeEager } = createAdapterNativeEagerSurface({",
+    "f32: (value, label) => f32(value, label)",
+    "linearF32: (args) => nodeSymbolGroups.nativeEager.eagerLinearF32(",
+    "args.inputData.length",
+    "linearActivationF32: (args) => nodeSymbolGroups.nativeEager.eagerLinearActivationF32(",
+    "args.activation",
+    "nativeEager,",
+  ]) {
+    if (!nodeFfiRuntimeSource.includes(required)) {
+      errors.push(`src/ts/adapters/node_ffi_runtime.ts must expose Node native eager through the shared adapter policy: ${required}`);
+    }
+  }
   for (const required of [
     "function nativeEagerLinearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options?: Record<string, unknown>)",
     "function nativeEagerLinearActivationInto(output: Float32Array, input: unknown, weights: unknown, options: Record<string, unknown>)",
     "nativeEagerLinearInto,",
     "nativeEagerLinearActivationInto,",
-    "export const nativeEager = Object.freeze({",
-    "linearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: Record<string, unknown> = {})",
-    "check(bunSymbolGroups.nativeEager.eagerLinearF32(",
-    "linearActivationInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: Record<string, unknown> = {})",
-    "check(bunSymbolGroups.nativeEager.eagerLinearActivationF32(",
-    "BigInt(inputData.length)",
-    "linear_into(output: Float32Array, input: TensorLike, weights: TensorLike, options?: Record<string, unknown>)",
-    "linear_activation_into(output: Float32Array, input: TensorLike, weights: TensorLike, options?: Record<string, unknown>)",
+    "createAdapterNativeEagerSurface",
+    "export const { nativeEager } = createAdapterNativeEagerSurface({",
+    "f32: (value) => f32(value as TensorLike)",
+    "linearF32: (args) => bunSymbolGroups.nativeEager.eagerLinearF32(",
+    "BigInt(args.inputData.length)",
+    "linearActivationF32: (args) => bunSymbolGroups.nativeEager.eagerLinearActivationF32(",
+    "args.activation",
     "nativeEager,",
   ]) {
     if (!bunFfiRuntimeSource.includes(required)) {
-      errors.push(`src/ts/adapters/bun_ffi_runtime.ts must expose Bun native eager Linear and route no-grad modules through it: ${required}`);
+      errors.push(`src/ts/adapters/bun_ffi_runtime.ts must expose Bun native eager through the shared adapter policy: ${required}`);
     }
   }
   const moduleProgramBenchSource = readSource(path.join("scripts", "check_module_program_bench.cjs"));

@@ -588,6 +588,11 @@ dist, or wasm artifacts, but they are not a product implementation lane.
   `Sequential`, stateless modules, feature norms, shape modules, trace compiler
   wiring, and module-facade helper construction in one shared Adapter Module
   instead of repeating host-specific product module policy.
+  Adapter native eager public policy lives in typed
+  `src/ts/adapters/native_eager_surface.ts`, so Node and Bun share tensor
+  coercion, shape inference, output validation, activation mapping, and public
+  aliases for `nativeEager`, while concrete adapters supply only ABI calls and
+  status checking.
   Adapter module Program construction lives in typed
   `src/ts/adapters/program_factory_surface.ts`: Node and Bun concrete
   Adapters late-bind the current `Program` class, while the module compile
