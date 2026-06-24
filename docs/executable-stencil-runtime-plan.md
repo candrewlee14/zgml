@@ -681,6 +681,13 @@ dispatch count, but its tiled kernel is too slow. So the next target is not
 `reduce_actual_dispatch_or_larger_semantic_sublayer`: either a real
 throughput-preserving dispatch reduction or a larger semantic sublayer that
 removes surrounding work instead of merely renaming it.
+The obvious shared `TILE` retune is not that move. A focused June 24, 2026
+experiment rejected both sides: `TILE=16` made one isolated qrow-region ratio
+look less bad but cut full-model Q8 prompt throughput roughly in half, while
+`TILE=64` made the two-phase qrow-region path numerically wrong
+(`max_abs_diff` around `0.54`). Keep the shared Metal matmul tile at `32`
+unless a future change splits normal matmul tiling from row-chain tiling and
+proves correctness plus full-model absolute throughput.
 The two-phase partial kernel now also drops the unused scale buffer binding;
 the finalize kernel still owns scale application, while the partial pass binds
 only weight, input, residual, elementwise output, partial scratch, and params.

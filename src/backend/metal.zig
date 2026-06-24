@@ -39,6 +39,9 @@ fn deviceOpAt(comptime tag: DeviceOpTag, ops: []const backend_mod.DeviceOp, idx:
 
 // ── Tile size for simdgroup kernel ────────────────────────────────
 
+// Shared simdgroup matmul tile. Do not retune this as a row-chain-only knob:
+// TILE=16 hurt full-model Q8 prompt throughput, and TILE=64 broke row-chain
+// correctness in the focused qrow-region probe.
 const TILE: u32 = 32; // output tile per threadgroup (TILE x TILE)
 const MAX_ROW_CHAIN_COLS: u32 = 4096;
 const MAX_ROW_CHAIN_K: u32 = 2048;

@@ -591,6 +591,12 @@ function checkScripts() {
     "candidateReady",
     "q8 prompt semantic row-chain gate:",
   ]);
+  requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "shared Metal tile rejection evidence", [
+    "Shared simdgroup matmul tile. Do not retune this as a row-chain-only knob",
+    "TILE=16 hurt full-model Q8 prompt throughput",
+    "TILE=64 broke row-chain",
+    "const TILE: u32 = 32;",
+  ]);
   requireIncludes(read("src/backend/program.zig"), "src/backend/program.zig", "prompt row-chain policy must not promote qmatvec decode trap", [
     "pub fn promptProjectionRowChainCommand() CommandStreamPolicy",
     "policy.fuse_projection_row_chain_qmatvec = false;",
@@ -5414,6 +5420,10 @@ function checkDocs() {
     "`two_phase_count=60`",
     "`two_phase_median_speedup=0.95x`",
     "`two_phase_tiled_work=60`",
+    "The obvious shared `TILE` retune is not that move",
+    "`TILE=16` made one isolated qrow-region ratio",
+    "`TILE=64` made the two-phase qrow-region path numerically wrong",
+    "Keep the shared Metal matmul tile at `32`",
     "`projection_group=0->0`",
     "`projection_cache_group=30->30`",
     "`decode_projection_cache_group=30`",
