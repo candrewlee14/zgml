@@ -409,10 +409,20 @@ function frontierNextTargetLine(path) {
   try {
     const data = readJson(path);
     const next = typeof data?.next === "string" ? data.next : "unknown";
-    const smollmCandidate = formatRatio(data?.smollmPrompt?.throughputCandidateSpeedup);
-    const fullCandidate = formatRatio(data?.fullPrefill?.throughputCandidateSpeedup);
+    const smollmDefault = Number(data?.smollmPrompt?.speedup);
+    const smollmCandidateValue = Number(data?.smollmPrompt?.throughputCandidateSpeedup);
+    const fullDefault = Number(data?.fullPrefill?.speedup);
+    const fullCandidateValue = Number(data?.fullPrefill?.throughputCandidateSpeedup);
+    const smollmCandidate = formatRatio(smollmCandidateValue);
+    const fullCandidate = formatRatio(fullCandidateValue);
+    const smollmVsDefault = Number.isFinite(smollmCandidateValue) && Number.isFinite(smollmDefault) && smollmDefault !== 0
+      ? formatRatio(smollmCandidateValue / smollmDefault)
+      : "n/a";
+    const fullVsDefault = Number.isFinite(fullCandidateValue) && Number.isFinite(fullDefault) && fullDefault !== 0
+      ? formatRatio(fullCandidateValue / fullDefault)
+      : "n/a";
     const throughputCandidate = typeof data?.throughputCandidateStatus === "string" ? data.throughputCandidateStatus : "unknown";
-    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}`;
+    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}`;
   } catch {
     return "frontier=unreadable_artifact";
   }

@@ -275,6 +275,7 @@ function checkScripts() {
     "pytorchNextTarget(pytorchPath)",
     "q8PromptNextTarget(q8Path)",
     "frontierNextTargetLine(frontierPath)",
+    "vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}",
     "bench-results\", \"failed\"",
     "quarantined p128/g200/r3 artifact(s) ignored for accepted evidence",
     "function failedReferenceDriftLine(failedPath)",

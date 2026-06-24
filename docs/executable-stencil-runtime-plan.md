@@ -606,9 +606,12 @@ competitiveness signal.
 The same status readback now prints a compact `perf-next:` line that turns the
 current artifacts into an iteration target: weakest full-model ggml lane and
 distance-to-90%, PyTorch median misses, Q8 prompt semantic readiness, and the
-qsemantic frontier target. That keeps the next performance step evidence-led
-instead of plan-led: start with the line, run the focused microscope it points
-at, then only promote to full ggml/PyTorch gates after the bottleneck moves.
+qsemantic frontier target. The qsemantic field includes candidate-vs-default
+ratios, not only raw speedups, so a tiled diagnostic stays visibly diagnostic
+when it is faster than the staged baseline but slower than the current semantic
+command path. That keeps the next performance step evidence-led instead of
+plan-led: start with the line, run the focused microscope it points at, then
+only promote to full ggml/PyTorch gates after the bottleneck moves.
 The PyTorch comparison microscope also accepts exploratory lanes such as
 `rms_gelu_linear_batched`, `softmax_classifier_batched`,
 `log_softmax_classifier_batched`, and `lazy_token_head_batched`, so optimization
