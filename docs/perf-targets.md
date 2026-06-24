@@ -409,6 +409,11 @@ frontier segment prints both candidate speedup and candidate-vs-current-default
 speedup so a tiled diagnostic cannot look promotable merely because it beats the
 staged baseline. Use that line to choose the next focused microscope before
 paying for a full parity run.
+For Q8 prompt candidate artifacts, `bench:status` prefers the newest steady
+viable run (`attempts >= 3` with command, two-phase, and semantic lanes) over a
+newer one-attempt quick probe, and prints `q8-prompt-latest-results:` when it
+does so. That keeps `q8-prompt-results:` and `perf-next:` tied to stable
+throughput evidence while still making freshness visible.
 `npm run dev:perf:next` automates that choice: it reads `perf-next:` and runs
 the smallest no-rebuild microscope for the current bottleneck. Use
 `npm run dev:perf:next:build` when the native or benchmark artifact is stale,

@@ -789,8 +789,12 @@ stores best/median/worst speedup stats and the attempt indices that produced
 them, so a selected lucky attempt cannot be mistaken for stable throughput.
 `bench:status` reads the latest artifact back as `q8-prompt-results:` with
 status, semantic throughput, semantic structural selection, semantic throughput
-readiness, lane speedups, median/worst throughput, command shape, and active lanes. Set
-`BENCH_Q8_PROMPT_WRITE_ARTIFACT=0` only for throwaway local diagnostics.
+readiness, lane speedups, median/worst throughput, command shape, and active
+lanes. It now prefers the newest steady viable artifact (`attempts >= 3` with
+command, two-phase, and semantic lanes) for the selected `q8-prompt-results:`
+and `perf-next:` readbacks, while printing `q8-prompt-latest-results:` when a
+newer one-attempt quick probe exists. Set `BENCH_Q8_PROMPT_WRITE_ARTIFACT=0`
+only for throwaway local diagnostics.
 A three-attempt no-rebuild proof remains useful as a noisier iteration lens,
 while the fresh-native one-attempt proof now reports
 `command_structural=ready`, `single_structural=skipped`,

@@ -161,8 +161,32 @@ function q8PromptCandidateArtifacts() {
     });
 }
 
+function isQ8PromptSteadyArtifact(path) {
+  try {
+    const data = readJson(path);
+    const attempts = Number(data?.config?.attempts);
+    const lanes = data?.config?.measuredLanes;
+    return Number.isInteger(attempts) &&
+      attempts >= 3 &&
+      Array.isArray(lanes) &&
+      ["command", "two_phase", "semantic"].every((lane) => lanes.includes(lane));
+  } catch {
+    return false;
+  }
+}
+
 function latestQ8PromptCandidateArtifact() {
+  const artifacts = q8PromptCandidateArtifacts();
+  return artifacts.filter(isQ8PromptSteadyArtifact).at(-1) ?? artifacts.at(-1) ?? null;
+}
+
+function latestRawQ8PromptCandidateArtifact() {
   return q8PromptCandidateArtifacts().at(-1) ?? null;
+}
+
+function q8PromptFreshnessStatusLine(selectedPath, rawPath) {
+  if (!selectedPath || !rawPath || selectedPath === rawPath) return null;
+  return `q8-prompt-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts`;
 }
 
 function frontierArtifacts() {
@@ -1103,9 +1127,12 @@ if (broadPytorch) process.stdout.write(`${broadPytorch}\n`);
 const focusPytorch = pytorchFocusStatusLine(latestPytorchFocusArtifact(), latestPytorch);
 if (focusPytorch) process.stdout.write(`${focusPytorch}\n`);
 const latestQ8Prompt = latestQ8PromptCandidateArtifact();
+const latestRawQ8Prompt = latestRawQ8PromptCandidateArtifact();
 const latestFrontier = latestFrontierArtifact();
 const latestQprojFrontier = latestQprojFrontierArtifact();
 process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8Prompt)}\n`);
+const q8PromptFreshness = q8PromptFreshnessStatusLine(latestQ8Prompt, latestRawQ8Prompt);
+if (q8PromptFreshness) process.stdout.write(`${q8PromptFreshness}\n`);
 process.stdout.write(`${qprojFrontierStatusLine(latestQprojFrontier)}\n`);
 process.stdout.write(`${frontierStatusLine(latestFrontier)}\n`);
 process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, frontierPath: latestFrontier })}\n`);
