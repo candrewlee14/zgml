@@ -884,7 +884,13 @@ artifact loop on every kernel edit. It also prints
 `target_throughput_status=diagnostic_needs_throughput_kernel` when the
 one-dispatch semantic target is structurally correct but slower than the
 current throughput path, so dispatch-count evidence cannot be mistaken for a
-throughput promotion signal.
+throughput promotion signal. The qsemantic microscope now also measures the
+middle policy shape, `semantic pair_row_chain_single_dispatch`: it preserves the
+same two-command semantic shape but still reports
+`single_dispatch_row_chain_dispatch_reduced=no` and
+`runtime_backend_dispatches=3`, proving that flipping the existing row-chain
+single-dispatch candidate flag does not create the missing two-dispatch
+semantic throughput path.
 Use it when changing projection-pair, row-chain, residual, RMSNorm, or
 semantic-sublayer scheduling, then escalate to `dev:perf:q8-prompt:viable` and
 the full Q8 prompt candidate gate before making a model-level speed claim. The
