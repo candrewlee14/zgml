@@ -1063,6 +1063,15 @@ not yet an automatic promotion signal: it needs repeated attempts and the full
 Q8 prompt candidate gate before it can replace the default semantic command
 path. It does, however, give the next Metal pass a checked semantic-command lane
 instead of only separate row-chain experiments.
+A June 24, 2026 tail-loop micro-kernel experiment also rejected the tempting
+local cleanup of replacing the final row-chain scale loop's flattened
+`i / N`/`i % N` indexing with nested row/column loops. It preserved correctness,
+but the three-attempt full Q8 prompt viable gate still left the semantic lane
+diagnostic (`semantic_median_speedup=0.87x`, noisy attempts `2`) while the
+qsemantic microscope stayed mixed (`full_prefill:0.97x`,
+`smollm_prompt:1.03x`). Treat that as another sign that the next win must change
+the work shape of the semantic FFN/down/residual/norm kernel, not polish the
+existing tiled row-chain tail.
 The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic,
 full-model Q8 prompt viable, and cheap ggml smoke lanes behind
 `BENCH_COMPETITIVE_LANES`, so a kernel edit can run only
