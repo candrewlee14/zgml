@@ -865,7 +865,7 @@ honest: `command_structural=ready`, `two_phase_structural=ready`,
 `command_command=241->151`, `command_speedup=1.00-1.03x`,
 `semantic_command=241->151`, `semantic_projection_pair=30->0`,
 `semantic_projection_row_chain=0->30`, `two_phase_speedup=0.95-0.98x`,
-`semantic_speedup=0.95-0.98x`, and zero fallback. That is evidence that the
+`semantic_speedup=0.99-1.00x` after the tiled finalize pass, and zero fallback. That is evidence that the
 larger semantic command is wired into the full model, but the stricter steady
 readiness gate correctly keeps semantic throughput diagnostic until median
 throughput clears parity. It is not yet a release promotion signal; repeated
@@ -906,8 +906,9 @@ while the fresh-native one-attempt proof now reports
 `command_command=241->151`, `command_speedup=1.00-1.01x`,
 `command_throughput=ready`, `command_projection_row_chain=0->30`,
 `command_projection_row_chain_dispatch=0->60`, `two_phase_count=60`,
-`two_phase_speedup=0.95-0.98x`, `two_phase_tiled_work=60`,
-`semantic_speedup=0.95-0.98x`, `semantic_throughput_ready=off`, and zero fallback. That
+`two_phase_speedup=0.97-0.99x`, `two_phase_tiled_work=60`,
+`semantic_speedup=0.96-1.00x`, `semantic_median_speedup=0.99x`,
+`semantic_throughput_ready=off`, and zero fallback. That
 is the intended iteration lens before spending time on the full all-lane gate:
 it proves the command shape and confirms that the two-dispatch
 projection-row-chain command path is model-level viable at the structural level,
@@ -1347,12 +1348,21 @@ instead of only separate row-chain experiments.
 The qsemantic microscope now also prints
 `throughput_candidate_vs_two_phase=...`, which separates semantic-command
 overhead from the tiled row-chain tail itself. The latest three-attempt
-source-current rerun showed the throughput candidate roughly equal to the
-standalone two-phase tail (`full_prefill:1.00x`) and only slightly behind it on
-SmolLM (`0.98x`), while both remained below the default semantic command path.
-That points the next implementation work at the two-phase/tiled row-chain tail
-or a true semantic throughput kernel, not at removing wrapper overhead from the
-semantic command.
+source-current rerun after tiling the two-phase finalize pass showed the
+throughput candidate slightly ahead of the standalone two-phase tail
+(`full_prefill:1.02x`, `smollm_prompt:1.02x`) and roughly even with the default
+semantic command path (`full_prefill:0.98x`, `smollm_prompt:1.01x`). That is
+real movement, but still not a promotion: the next implementation work remains
+a true semantic throughput kernel or a row-chain tail that clears the steady
+full-model gate, not wrapper overhead around the semantic command.
+A June 24, 2026 tiled-finalize pass changed the two-phase row-chain finalize
+kernel from one threadgroup per row tile to a `(row_tile, col_tile)` grid. The
+fresh qsemantic steady gate stayed correct and moved the mixed tiled-tail
+candidate from below-default diagnostic evidence toward parity with the current
+default; the fresh steady full-model Q8 prompt viable gate moved semantic
+median throughput to about `0.99x` with best evidence near `1.00x`, while still
+leaving `semantic_throughput_ready=off`. Keep this kernel shape, but do not
+promote it by default until a steady full-model run clears the readiness floor.
 A June 24, 2026 shape-gated policy experiment tried limiting the two-phase
 semantic throughput tail to the 512-wide full-prefill shape so the 576-wide
 SmolLM prompt shape would preserve the semantic command but skip the tiled tail.

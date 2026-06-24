@@ -204,7 +204,7 @@ machine for both prompt/prefill and decode.
   (`semantic_structural_selected=yes`, `semantic_projection_pair=30->0`,
   `semantic_projection_row_chain=0->30`) with zero fallback. Repeated steady
   evidence now keeps semantic throughput diagnostic when median throughput is
-  below parity (`semantic_median=0.95-0.98x`,
+  below parity (`semantic_median=0.99x`, best near `1.00x`,
   `semantic_throughput_ready=off`). That separates command-shape viability from
   the still-missing throughput kernel before any default promotion.
   The
@@ -212,6 +212,12 @@ machine for both prompt/prefill and decode.
   The two-phase partial kernel does not bind the scale buffer anymore; scale is
   only needed by the finalize pass. This keeps the candidate ABI shape smaller
   without changing command semantics.
+  Its finalize pass now has a tiled `(row_tile, col_tile)` variant, so the
+  candidate no longer scales an entire prompt row tile through only one
+  threadgroup. Fresh steady evidence moved the semantic Q8 prompt median from
+  the older `0.95-0.98x` diagnostic range to `0.99x` while preserving zero
+  fallback and command shape, but it is still not a default promotion until the
+  median clears the readiness floor.
 - The current weakest checked lane is Q8_0 prompt at roughly 30% of llama.cpp.
   Its pressure is not an obvious wrong-kernel issue: the remaining
   `projection_chain:60` work is prefill-shaped qmatmul plus add/mul sidecars,

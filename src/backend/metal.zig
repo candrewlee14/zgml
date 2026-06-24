@@ -1883,6 +1883,45 @@ const shader_source =
     \\    }
     \\}
     \\
+    \\kernel void qmatmul_row_chain_tiled_finalize_tiles_f32(
+    \\    device const float* ew_src        [[buffer(0)]],
+    \\    device const float* partial_src   [[buffer(1)]],
+    \\    device const float* scale_src     [[buffer(2)]],
+    \\    device float*       scaled_dst    [[buffer(3)]],
+    \\    constant QMatmulRowChainParams& p [[buffer(4)]],
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = group.x * ROW_CHAIN_TILE;
+    \\    const uint gCol = group.y * ROW_CHAIN_TILE;
+    \\    threadgroup float inv_rms[ROW_CHAIN_TILE];
+    \\    if (tid < ROW_CHAIN_TILE) {
+    \\        uint cr = gRow + tid;
+    \\        if (cr < p.M) {
+    \\            float ss = 0.0f;
+    \\            for (uint t = 0; t < p.partial_cols; t += 1) {
+    \\                ss += partial_src[p.partial_dst_offset + cr * p.partial_cols + t];
+    \\            }
+    \\            inv_rms[tid] = 1.0f / sqrt(ss / float(p.N) + p.rms_eps);
+    \\        } else {
+    \\            inv_rms[tid] = 0.0f;
+    \\        }
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < ROW_CHAIN_TILE * ROW_CHAIN_TILE; i += 128) {
+    \\        uint r = i / ROW_CHAIN_TILE;
+    \\        uint c = i - r * ROW_CHAIN_TILE;
+    \\        uint cr = gRow + r;
+    \\        uint col = gCol + c;
+    \\        if (cr < p.M && col < p.N) {
+    \\            uint linear = cr * p.N + col;
+    \\            float ew = ew_src[(p.write_ew_output != 0 ? p.ew_dst_offset : p.scaled_dst_offset) + linear];
+    \\            scaled_dst[p.scaled_dst_offset + linear] = ew * inv_rms[r] * scale_src[p.scale_src_offset + col];
+    \\        }
+    \\    }
+    \\}
+    \\
     \\kernel void qmatvec_slice_assign_f32(
     \\    device const char*  weight_data   [[buffer(0)]],
     \\    device const float* weight_scales [[buffer(1)]],
@@ -5196,6 +5235,7 @@ const MetalKernel = enum(u8) {
     qmatmul_row_chain_tiled_f32,
     qmatmul_row_chain_tiled_partials_f32,
     qmatmul_row_chain_tiled_finalize_f32,
+    qmatmul_row_chain_tiled_finalize_tiles_f32,
     qmatmul_fused_elementwise_f32,
     qmatmul_pair_fused_elementwise_f32,
     qmatvec_pair_fused_elementwise_f32,
@@ -7497,7 +7537,14 @@ const CompiledProgram = struct {
             view.device_bufs[rp.src],
             view.device_bufs[out.dst],
         };
-        exec.encodeKernel(.qmatmul_row_chain_tiled_finalize_f32, &finalize_buffers, params, 4, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE }, MATMUL_THREADS);
+        exec.encodeKernel(
+            .qmatmul_row_chain_tiled_finalize_tiles_f32,
+            &finalize_buffers,
+            params,
+            4,
+            .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = partial_cols },
+            MATMUL_THREADS,
+        );
         return true;
     }
 

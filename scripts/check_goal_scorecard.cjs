@@ -1204,16 +1204,18 @@ function checkScripts() {
   requireIncludes(read("src/profile.zig"), "src/profile.zig", "semantic FFN sublayer profile evidence", [
     "program_command_shape_semantic_ffn_sublayers",
   ]);
-  requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "scalar qmatmul row-chain diagnosis until tiled replacement exists", [
+  requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "qmatmul row-chain diagnostics and tiled two-phase finalize", [
     "if (q.M != 1) {",
     "fuse_projection_row_chain_single_dispatch",
     "fuse_projection_row_chain_two_phase_candidate",
     "kernel void qmatmul_row_chain_tiled_f32",
     "kernel void qmatmul_row_chain_tiled_partials_f32",
     "kernel void qmatmul_row_chain_tiled_finalize_f32",
+    "kernel void qmatmul_row_chain_tiled_finalize_tiles_f32",
     ".qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE }, MATMUL_THREADS",
     ".qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = partial_cols }, MATMUL_THREADS",
-    ".qmatmul_row_chain_tiled_finalize_f32, &finalize_buffers, params, 4, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE }, MATMUL_THREADS",
+    ".qmatmul_row_chain_tiled_finalize_tiles_f32",
+    ".{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = partial_cols }",
     "self.command_policy.fuse_projection_row_chain_single_dispatch",
     "self.command_policy.fuse_projection_row_chain_two_phase_candidate",
     "self.command_policy.fuse_semantic_ffn_sublayer_single_dispatch",
