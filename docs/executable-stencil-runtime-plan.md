@@ -642,11 +642,14 @@ and throughput. A three-attempt no-rebuild proof ran in under a minute with
 `command_structural=ready`, `single_structural=skipped`,
 `two_phase_structural=ready`,
 `attempt=skipped median_attempt=skipped noisy=skipped`,
-`command_command=241->181`, `command_best_speedup=0.99x`,
-`command_median_speedup=0.93x`, `two_phase_count=60`,
-`two_phase_tiled_work=60`, and zero fallback. That is the intended iteration
-lens before spending time on the full all-lane gate: it proves the command
-shape while keeping throughput readiness honest.
+`command_command=241->181`, `command_best_speedup=1.02x`,
+`command_median_speedup=0.99x`, `two_phase_count=60`,
+`two_phase_median_speedup=0.95x`, `two_phase_tiled_work=60`, and zero fallback.
+That is the intended iteration lens before spending time on the full all-lane
+gate: it proves the command shape while keeping throughput readiness honest.
+The two-phase partial kernel now also drops the unused scale buffer binding;
+the finalize kernel still owns scale application, while the partial pass binds
+only weight, input, residual, elementwise output, partial scratch, and params.
 The direct `Linear -> LogSoftmax` CPU tail now shares the batched-linear BLAS
 preference for plain dense projection, while the fused classifier tail keeps a
 native row log-softmax path with a fast vector exp approximation and a measured

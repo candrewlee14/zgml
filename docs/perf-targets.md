@@ -196,6 +196,9 @@ machine for both prompt/prefill and decode.
   and default to one attempt, so command/two-phase changes can be checked
   without rerunning the known-bad single-dispatch diagnostic on every edit. The
   full all-lane candidate gate remains the release proof before promotion.
+  The two-phase partial kernel does not bind the scale buffer anymore; scale is
+  only needed by the finalize pass. This keeps the candidate ABI shape smaller
+  without changing command semantics.
 - The current weakest checked lane is Q8_0 prompt at roughly 30% of llama.cpp.
   Its pressure is not an obvious wrong-kernel issue: the remaining
   `projection_chain:60` work is prefill-shaped qmatmul plus add/mul sidecars,

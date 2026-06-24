@@ -1673,11 +1673,10 @@ const shader_source =
     \\    device const float* weight_scales [[buffer(1)]],
     \\    device const float* input         [[buffer(2)]],
     \\    device const float* secondary     [[buffer(3)]],
-    \\    device const float* scale_src     [[buffer(4)]],
-    \\    device float*       scaled_dst    [[buffer(5)]],
-    \\    device float*       ew_output     [[buffer(6)]],
-    \\    device float*       partial_dst   [[buffer(7)]],
-    \\    constant QMatmulRowChainParams& p [[buffer(8)]],
+    \\    device float*       scaled_dst    [[buffer(4)]],
+    \\    device float*       ew_output     [[buffer(5)]],
+    \\    device float*       partial_dst   [[buffer(6)]],
+    \\    constant QMatmulRowChainParams& p [[buffer(7)]],
     \\    uint2 group [[threadgroup_position_in_grid]],
     \\    uint simd_idx [[simdgroup_index_in_threadgroup]],
     \\    uint lane     [[thread_index_in_simdgroup]],
@@ -7347,7 +7346,6 @@ const CompiledProgram = struct {
             w.scales,
             view.device_bufs[q.input],
             view.device_bufs[secondary_buf],
-            view.device_bufs[rp.src],
             view.device_bufs[out.dst],
             view.device_bufs[e.dst],
             view.device_bufs[rn.dst],
@@ -7371,7 +7369,7 @@ const CompiledProgram = struct {
             .partial_cols = partial_cols,
         };
         exec.profile.recordQMatmulRowChainTwoPhaseTiled(q.M, q.N, TILE, write_ew_output);
-        exec.encodeKernel(.qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 8, .{ .gx = (q.M + TILE - 1) / TILE, .gy = partial_cols }, MATMUL_THREADS);
+        exec.encodeKernel(.qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 7, .{ .gx = (q.M + TILE - 1) / TILE, .gy = partial_cols }, MATMUL_THREADS);
 
         const ew_src = if (write_ew_output) view.device_bufs[e.dst] else view.device_bufs[out.dst];
         const finalize_buffers = [_]DeviceBuffer{

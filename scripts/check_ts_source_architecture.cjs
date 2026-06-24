@@ -876,7 +876,7 @@ function checkPackageExports(errors) {
     "kernel void qmatmul_row_chain_tiled_partials_f32",
     "kernel void qmatmul_row_chain_tiled_finalize_f32",
     ".qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS",
-    ".qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 8, .{ .gx = (q.M + TILE - 1) / TILE, .gy = partial_cols }, MATMUL_THREADS",
+    ".qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 7, .{ .gx = (q.M + TILE - 1) / TILE, .gy = partial_cols }, MATMUL_THREADS",
     ".qmatmul_row_chain_tiled_finalize_f32, &finalize_buffers, params, 4, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS",
     "self.command_policy.fuse_projection_row_chain_single_dispatch",
     "self.command_policy.fuse_projection_row_chain_two_phase_candidate",
