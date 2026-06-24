@@ -403,6 +403,11 @@ artifact commands are source-checkout evidence, not packaged npm runtime API.
 It also prints a latest-vs-checked-baseline delta for the selected native lanes,
 including throughput ratio plus dispatch/fallback shape, so a reader can tell
 whether the current full run is above the checked floor without opening JSON.
+The same status readback ends with a compact `perf-next:` line that ranks the
+current artifact-derived bottlenecks: weakest full-model ggml lane, PyTorch
+median misses, Q8 prompt semantic readiness, and qsemantic frontier target. Use
+that line to choose the next focused microscope before paying for a full parity
+run.
 `bench:ggml` builds the benchmark binaries in ReleaseFast, writes a full
 `bench-results/*.json` artifact, and requires the checked M5 Pro baseline so a
 new local artifact cannot improve a ggml percentage by merely running both

@@ -368,6 +368,92 @@ function frontierStatusLine(path) {
   return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} next=${next}`;
 }
 
+function pytorchNextTarget(path) {
+  if (!path) return "pytorch=missing_artifact";
+  try {
+    const data = readJson(path);
+    const minRatio = Number(data?.config?.minRatio ?? 1);
+    const misses = [];
+    if (data?.ratioStats && typeof data.ratioStats === "object") {
+      for (const [key, stats] of Object.entries(data.ratioStats)) {
+        const ratio = Number(stats?.median);
+        if (Number.isFinite(ratio) && ratio < minRatio) misses.push({ key, ratio });
+      }
+    }
+    misses.sort((a, b) => a.ratio - b.ratio || a.key.localeCompare(b.key));
+    if (misses.length === 0) return "pytorch=none";
+    return `pytorch=${misses.map((row) => `${row.key}:${formatRatio(row.ratio)}`).join(",")}`;
+  } catch {
+    return "pytorch=unreadable_artifact";
+  }
+}
+
+function q8PromptNextTarget(path) {
+  if (!path) return "q8_prompt=missing_artifact";
+  try {
+    const data = readJson(path);
+    const semanticSpeedup = Number(data?.lanes?.semantic?.speedup);
+    const semanticThroughput = typeof data?.throughput?.semantic === "string" ? data.throughput.semantic : "unknown";
+    const status = typeof data?.status === "string" ? data.status : "unknown";
+    if (semanticThroughput === "ready" && Number.isFinite(semanticSpeedup) && semanticSpeedup >= 1) {
+      return `q8_prompt=promote_semantic_candidate:${formatRatio(semanticSpeedup)}`;
+    }
+    return `q8_prompt=semantic_throughput_kernel:${status}:${semanticThroughput}:${formatRatio(semanticSpeedup)}`;
+  } catch {
+    return "q8_prompt=unreadable_artifact";
+  }
+}
+
+function frontierNextTargetLine(path) {
+  if (!path) return "frontier=missing_artifact";
+  try {
+    const data = readJson(path);
+    const next = typeof data?.next === "string" ? data.next : "unknown";
+    const smollmCandidate = formatRatio(data?.smollmPrompt?.throughputCandidateSpeedup);
+    const fullCandidate = formatRatio(data?.fullPrefill?.throughputCandidateSpeedup);
+    const throughputCandidate = typeof data?.throughputCandidateStatus === "string" ? data.throughputCandidateStatus : "unknown";
+    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}`;
+  } catch {
+    return "frontier=unreadable_artifact";
+  }
+}
+
+function fullModelNextTarget(latestPath) {
+  if (!latestPath) return "full_model=missing_artifact";
+  try {
+    const data = readJson(latestPath);
+    const rows = selectedLaneRows(data);
+    let weakest = null;
+    for (const [fmt, phase, row] of rows) {
+      if (!row || typeof row !== "object") continue;
+      const parityRow = parityRowFor(data, fmt, phase);
+      if (!parityRow || typeof parityRow.parity !== "number" || !Number.isFinite(parityRow.parity) || parityRow.parity <= 0) continue;
+      const candidate = {
+        label: `${fmt}/${phase}`,
+        parity: parityRow.parity,
+        dispatches: row.dispatches_per_call,
+        commands: row.commands_per_call,
+        pressureTarget: pressureReductionTarget(row),
+      };
+      if (!weakest || candidate.parity < weakest.parity) weakest = candidate;
+    }
+    if (!weakest) return "full_model=missing_parity";
+    return `full_model=${weakest.label}:${formatPct(weakest.parity)}:to90=${formatMultiplier(parityTarget / weakest.parity)}:dispatch=${weakest.dispatches}:commands=${weakest.commands}:target=${weakest.pressureTarget}:next=${frontierNextTarget(weakest)}`;
+  } catch {
+    return "full_model=unreadable_artifact";
+  }
+}
+
+function perfNextStatusLine({ latestPath, pytorchPath, q8Path, frontierPath }) {
+  return [
+    "perf-next:",
+    fullModelNextTarget(latestPath),
+    pytorchNextTarget(pytorchPath),
+    q8PromptNextTarget(q8Path),
+    frontierNextTargetLine(frontierPath),
+  ].join(" ");
+}
+
 function trendStatusLine(latestPath) {
   const trend = trendEvidence(latestPath);
   if (!trend) return null;
@@ -894,8 +980,11 @@ const broadPytorch = pytorchBroadStatusLine(latestPytorchBroadArtifact(), latest
 if (broadPytorch) process.stdout.write(`${broadPytorch}\n`);
 const focusPytorch = pytorchFocusStatusLine(latestPytorchFocusArtifact(), latestPytorch);
 if (focusPytorch) process.stdout.write(`${focusPytorch}\n`);
-process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8PromptCandidateArtifact())}\n`);
-process.stdout.write(`${frontierStatusLine(latestFrontierArtifact())}\n`);
+const latestQ8Prompt = latestQ8PromptCandidateArtifact();
+const latestFrontier = latestFrontierArtifact();
+process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8Prompt)}\n`);
+process.stdout.write(`${frontierStatusLine(latestFrontier)}\n`);
+process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, frontierPath: latestFrontier })}\n`);
 const quarantined = quarantinedFullRunArtifacts();
 if (quarantined.length > 0) {
   process.stdout.write(`bench-results: ${quarantined.length} quarantined p128/g200/r3 artifact(s) ignored for accepted evidence; latest_failed=${compactName(quarantined.at(-1))}\n`);
