@@ -211,11 +211,14 @@ function checkScripts() {
   ]);
   requireIncludes(read("scripts/check_frontend_capability_matrix.cjs"), "scripts/check_frontend_capability_matrix.cjs", "frontend capability matrix checker", [
     "docs/frontend-capability-matrix.md",
+    "docs/frontend-replacement-confidence.md",
     "src/ts/public_surface.ts",
     "firstContactRootNamespaces",
     "stableRootNamespaces",
     "compile.compileForInference(...)",
     "Program/Session hot path",
+    "requiredConfidenceWorkflows",
+    "Checkpointed compiled inference",
     "allowedStatuses",
     "frontend capability matrix ok:",
   ]);
@@ -6255,7 +6258,23 @@ function checkDocs() {
     "friendly namespace; `torch` remains a compatibility alias",
     "## Evidence Bar",
     "Raising the frontend replacement score should require one of these:",
+    "`docs/frontend-replacement-confidence.md`",
+    "linear regression, classifiers, Conv2d feature models, token heads, and",
     "Raising the performance substrate score should require benchmark artifacts, not",
+  ]);
+  requireIncludes(read("docs/frontend-replacement-confidence.md"), "docs/frontend-replacement-confidence.md", "workflow-level replacement confidence", [
+    "# Frontend Replacement Confidence",
+    "user workflow -> eager/autograd proof -> checkpoint or state proof -> compiled inference proof",
+    "| Workflow | User Story | Current Evidence | Remaining Gap |",
+    "| Linear regression |",
+    "| MLP classifier/regressor |",
+    "| Classifier with cross entropy |",
+    "| Conv2d feature model |",
+    "| Embedding/token classifier |",
+    "| Checkpointed compiled inference |",
+    "New replacement claims should attach to one of these workflows",
+    "`zgml` remains the canonical first-contact namespace",
+    "`torch` compatibility",
   ]);
   const autogradCoverage = read("docs/frontend-autograd-coverage.md");
   requireIncludes(autogradCoverage, "docs/frontend-autograd-coverage.md", "checked package-smoke-backed autograd coverage", [

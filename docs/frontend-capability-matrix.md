@@ -83,6 +83,12 @@ Raising the frontend replacement score should require one of these:
 - a README/tutorial example that exercises the full user workflow;
 - a scorecard check that keeps the capability from drifting.
 
+Workflow-level replacement confidence is tracked in
+`docs/frontend-replacement-confidence.md`. That matrix is deliberately narrower
+than this capability table: it asks whether complete user workflows such as
+linear regression, classifiers, Conv2d feature models, token heads, and
+checkpointed compiled inference have executable evidence.
+
 Raising the performance substrate score should require benchmark artifacts, not
 prose. The relevant proof is still `bench:status`, PyTorch comparison artifacts,
 frontier/q8 artifacts, and ggml/llama.cpp artifacts.
