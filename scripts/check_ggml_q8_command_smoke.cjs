@@ -39,9 +39,9 @@ function requireText(needle, label) {
 
 requireText("Metal Q8_0 prompt | metal scheduled prefill projection-row-chain command", "Q8 command parity lane");
 requireText("| q8_0 | prompt | metal scheduled prefill projection-row-chain command |", "Q8 command native evidence lane");
-requireText("242/242 dispatch, 181/181 command", "Q8 command shape");
-requireText("120/120 dispatched projection_row_chain", "Q8 projection row-chain dispatch proof");
-requireText("30/30 dispatched projection_pair_fused_elementwise_chain", "Q8 projection pair proof");
+requireText("242/242 dispatch, 151/151 command", "Q8 command shape");
+requireText("90/90 dispatched semantic_ffn_sublayer", "Q8 semantic FFN dispatch proof");
+requireText("60/60 dispatched projection_row_chain", "Q8 projection row-chain dispatch proof");
 requireText("30/30 dispatched projection_cache_group", "Q8 projection cache-group proof");
 requireText("Fallback", "fallback column");
 requireText("| pass |", "native evidence pass");
@@ -62,5 +62,5 @@ if (!Number.isFinite(q8PromptPct) || q8PromptPct < parityFloor) {
 
 const artifact = output.match(/Wrote accepted artifact:\s*\n\s*(\S+)/)?.[1] ?? "n/a";
 process.stdout.write(
-  `ggml q8 command smoke: pass q8_prompt=${q8PromptPct.toFixed(3)}% floor=${parityFloor.toFixed(3)} commands=181 projection_row_chain=120 projection_pair=30 projection_cache_group=30 artifact=${artifact}\n`,
+  `ggml q8 command smoke: pass q8_prompt=${q8PromptPct.toFixed(3)}% floor=${parityFloor.toFixed(3)} commands=151 semantic_ffn=90 projection_row_chain=60 projection_cache_group=30 artifact=${artifact}\n`,
 );

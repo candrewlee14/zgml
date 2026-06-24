@@ -1050,7 +1050,7 @@ const baselineComparisonMetrics = [
 const substrateLaneShape = {
   "f16/prompt": { dispatches: 242, commands: 242, cachedCommandPlansPerCall: 31 },
   "f16/decode": { dispatches: 212, commands: 212, cachedCommandPlansPerCall: 31 },
-  "q8_0/prompt": { dispatches: 242, commands: [181, 241], cachedCommandPlansPerCall: 30 },
+  "q8_0/prompt": { dispatches: 242, commands: [151, 181, 241], cachedCommandPlansPerCall: 30 },
   "q8_0/decode": { dispatches: 212, commands: 211, cachedCommandPlansPerCall: 30 },
 };
 
