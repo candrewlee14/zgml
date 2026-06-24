@@ -915,6 +915,8 @@ npm run dev:perf:module-program:run # rerun focused Program/Session bench agains
 npm run dev:perf:pytorch:focus # incremental ReleaseFast native rebuild plus focused PyTorch comparison
 npm run dev:perf:pytorch:focus:native # native-only focused PyTorch loop after dist exists
 npm run dev:perf:pytorch:focus:run # rerun focused PyTorch comparison against existing artifacts
+npm run dev:perf:pytorch:focus:steady:native # native-only 150ms-window focused PyTorch comparison
+npm run dev:perf:pytorch:focus:steady:run # no-rebuild 150ms-window focused PyTorch comparison
 npm run dev:perf:pytorch:gaps # incremental ReleaseFast native rebuild, package build, and focused PyTorch-gap bench
 npm run dev:perf:pytorch:gaps:native # native-only focused PyTorch-gap loop after dist exists
 npm run dev:perf:pytorch:gaps:run # rerun focused PyTorch-gap bench against existing native/package artifacts

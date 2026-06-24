@@ -691,6 +691,8 @@ npm run dev:perf:module-program:run   # rerun focused Program/Session bench with
 npm run dev:perf:pytorch:focus        # incremental ReleaseFast native rebuild plus focused PyTorch comparison
 npm run dev:perf:pytorch:focus:native # native-only focused PyTorch loop after dist exists
 npm run dev:perf:pytorch:focus:run    # rerun focused PyTorch comparison without rebuilding artifacts
+npm run dev:perf:pytorch:focus:steady:native # native-only 150ms-window focused PyTorch comparison
+npm run dev:perf:pytorch:focus:steady:run # no-rebuild 150ms-window focused PyTorch comparison
 npm run dev:perf:pytorch:broad        # incremental ten-lane PyTorch replacement evidence loop
 npm run dev:perf:pytorch:broad:native # native-only ten-lane PyTorch loop after dist exists
 npm run dev:perf:pytorch:broad:run    # rerun ten-lane PyTorch comparison without rebuilding artifacts

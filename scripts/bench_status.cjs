@@ -125,6 +125,18 @@ function isPytorchBroadArtifact(path) {
   return isPytorchKeySetArtifact(path, pytorchBroadKeys);
 }
 
+function isPytorchSteadyArtifact(path) {
+  try {
+    const data = readJson(path);
+    return Number.isInteger(data?.config?.attempts) &&
+      data.config.attempts >= 3 &&
+      Number(data?.config?.minTimingMs) >= 150 &&
+      Number(data?.config?.moduleProgramMinTimingMs) >= 150;
+  } catch {
+    return false;
+  }
+}
+
 function isPytorchKeySetArtifact(path, expectedKeys) {
   try {
     const data = readJson(path);
@@ -138,11 +150,13 @@ function isPytorchKeySetArtifact(path, expectedKeys) {
 }
 
 function latestPytorchFocusArtifact() {
-  return pytorchComparisonArtifacts().filter(isPytorchFocusArtifact).at(-1) ?? null;
+  const artifacts = pytorchComparisonArtifacts().filter(isPytorchFocusArtifact);
+  return artifacts.filter(isPytorchSteadyArtifact).at(-1) ?? artifacts.at(-1) ?? null;
 }
 
 function latestPytorchBroadArtifact() {
-  return pytorchComparisonArtifacts().filter(isPytorchBroadArtifact).at(-1) ?? null;
+  const artifacts = pytorchComparisonArtifacts().filter(isPytorchBroadArtifact);
+  return artifacts.filter(isPytorchSteadyArtifact).at(-1) ?? artifacts.at(-1) ?? null;
 }
 
 function q8PromptCandidateArtifacts() {
