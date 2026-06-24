@@ -563,6 +563,19 @@ function checkScripts() {
   if (scripts["dev:perf:module-program:run"] !== "BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
     errors.push("package.json dev:perf:module-program:run must keep the no-rebuild module Program performance rerun");
   }
+  if (scripts["dev:perf:native-eager-gap"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && npm run build:package && node scripts/check_native_eager_gap.cjs") {
+    errors.push("package.json dev:perf:native-eager-gap must keep the incremental native eager gap microscope");
+  }
+  if (scripts["dev:perf:native-eager-gap:run"] !== "node scripts/check_native_eager_gap.cjs") {
+    errors.push("package.json dev:perf:native-eager-gap:run must keep the no-rebuild native eager gap rerun");
+  }
+  requireIncludes(read("scripts/check_native_eager_gap.cjs"), "scripts/check_native_eager_gap.cjs", "native eager gap microscope", [
+    "schema: \"zgml.native-eager-gap.v1\"",
+    "NATIVE_EAGER_GAP_JSON",
+    "preparedExecuteIntoMs",
+    "nativeProgramSpeedup",
+    "native_eager_linear_or_matmul_storage_slice",
+  ]);
   if (scripts["dev:perf:q8-prompt:viable"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase,semantic node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json dev:perf:q8-prompt:viable must keep the incremental viable Q8 prompt microscope");
   }
@@ -6014,6 +6027,9 @@ function checkDocs() {
     "package subpath.",
     "Native eager",
     "execution policy is still open work.",
+    "`NATIVE_EAGER_GAP_JSON` microscope measures the first target directly",
+    "`nativeProgramSpeedup` as the executable target",
+    "`Linear`/`matmul` storage slice",
     "native Program lowering for `argmax(dim)` and `argmin(dim)`",
     "rank-1/rank-2/rank-3 PyTorch-style",
     "rank-1/rank-2/rank-3 `repeat`/`tile`",
@@ -6296,6 +6312,8 @@ function checkDocs() {
     "Autograd coverage is broad enough for small model workflows",
     "`docs/frontend-autograd-coverage.md`",
     "Native eager tensor storage is not the default.",
+    "`dev:perf:native-eager-gap{,:run}` microscope",
+    "`linear_batched` target as eager TS tensor execution versus compiled",
     "explicit state-dict/checkpoint save/load recipes",
     "broader third-party weight-format adapters remain future work",
     "The root public API is still wider than the ideal first-contact surface",

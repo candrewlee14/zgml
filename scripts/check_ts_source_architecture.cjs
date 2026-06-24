@@ -530,6 +530,25 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["dev:perf:module-program:run"] !== "BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
     errors.push("package.json dev:perf:module-program:run must stay the no-rebuild module Program performance rerun");
   }
+  if (packageJson.scripts?.["dev:perf:native-eager-gap"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && npm run build:package && node scripts/check_native_eager_gap.cjs") {
+    errors.push("package.json dev:perf:native-eager-gap must stay the incremental native eager gap microscope");
+  }
+  if (packageJson.scripts?.["dev:perf:native-eager-gap:run"] !== "node scripts/check_native_eager_gap.cjs") {
+    errors.push("package.json dev:perf:native-eager-gap:run must stay the no-rebuild native eager gap rerun");
+  }
+  const nativeEagerGapSource = readSource(path.join("scripts", "check_native_eager_gap.cjs"));
+  for (const required of [
+    "schema: \"zgml.native-eager-gap.v1\"",
+    "native_eager_linear_or_matmul_storage_slice",
+    "NATIVE_EAGER_GAP_JSON",
+    "preparedExecuteIntoMs",
+    "nativeProgramSpeedup",
+    "verifyFreshNativeLibrary",
+  ]) {
+    if (!nativeEagerGapSource.includes(required)) {
+      errors.push(`scripts/check_native_eager_gap.cjs must keep native eager gap evidence: ${required}`);
+    }
+  }
   const moduleProgramBenchSource = readSource(path.join("scripts", "check_module_program_bench.cjs"));
   for (const required of [
     "BENCH_MODULE_PROGRAM_ALLOW_STALE_NATIVE",

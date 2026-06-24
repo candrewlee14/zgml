@@ -63,7 +63,11 @@ PyTorch replacement:
   still needs deeper operation-by-operation numerical-gradient coverage beyond
   the checked family-level runtime evidence in `docs/frontend-autograd-coverage.md`.
 - Native eager tensor storage is not the default. Large tensor performance
-  claims should continue to go through compiled Programs/Sessions.
+  claims should continue to go through compiled Programs/Sessions. The
+  `dev:perf:native-eager-gap{,:run}` microscope now measures the first
+  `linear_batched` target as eager TS tensor execution versus compiled
+  allocation-free `executeInto`, so the first native eager storage slice has an
+  executable baseline.
 - Safetensors/model-source interop is strong for runtime paths, while ordinary
   TS module weights now have explicit state-dict/checkpoint save/load recipes;
   broader third-party weight-format adapters remain future work.
