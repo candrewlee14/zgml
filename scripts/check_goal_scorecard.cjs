@@ -811,6 +811,9 @@ function checkScripts() {
     "attemptRows",
     "const rankedAscending = [...attemptRows].sort((left, right) => Number(left.speedup ?? Infinity) - Number(right.speedup ?? Infinity))",
     "const median = rankedAscending[Math.floor(rankedAscending.length / 2)]",
+    "function laneSpeedupStats(bestRow, medianRow, worstRow, prefix)",
+    "speedupStats: laneSpeedupStats(semanticBest, semanticMedian, semanticWorst, \"semantic\")",
+    "semanticMedianSpeedup: roundMetric(semanticMedian.semanticSpeedup)",
     "const throughputReady = structuralReady && median.speedup !== null && median.speedup >= speedupFloor",
     "noisyAttempts",
     "commandNoisyAttempts",
@@ -2163,6 +2166,8 @@ function checkQ8PromptCandidateEvidence() {
     "semantic_throughput=",
     "semantic_structural_selected=yes",
     "semantic_throughput_ready=",
+    "semantic_median_speedup=",
+    "semantic_worst_speedup=",
     "semantic_command=241->151",
     "semantic_projection_pair=30->0",
     "semantic_projection_row_chain=0->30",
@@ -2204,6 +2209,9 @@ function checkQ8PromptCandidateEvidence() {
     artifact?.lanes?.semantic?.selected !== true ||
     artifact?.lanes?.semantic?.structuralSelected !== true ||
     typeof artifact?.lanes?.semantic?.throughputReady !== "boolean" ||
+    typeof artifact?.lanes?.semantic?.speedupStats?.median !== "number" ||
+    typeof artifact?.lanes?.semantic?.speedupStats?.worst !== "number" ||
+    typeof artifact?.lanes?.twoPhase?.speedupStats?.median !== "number" ||
     artifact?.lanes?.semantic?.projectionPairs !== 0 ||
     artifact?.lanes?.semantic?.projectionRowChains !== 30 ||
     artifact?.lanes?.command?.commands !== 151) {
@@ -2225,6 +2233,10 @@ function checkQ8PromptCandidateEvidence() {
     "status=command-ready",
     "semantic_structural_selected=yes",
     "semantic_throughput_ready=",
+    "semantic_median=",
+    "semantic_worst=",
+    "two_phase_median=",
+    "two_phase_worst=",
     "command_commands=151",
     "semantic_pair_to_row=0->30",
     "lanes=command,two_phase,semantic",
