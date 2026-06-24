@@ -409,6 +409,11 @@ frontier segment prints both candidate speedup and candidate-vs-current-default
 speedup so a tiled diagnostic cannot look promotable merely because it beats the
 staged baseline. Use that line to choose the next focused microscope before
 paying for a full parity run.
+For PyTorch comparison artifacts, `bench:status` prefers the newest six-lane
+focus artifact for `pytorch-results:` and `perf-next:` when one exists. Newer
+one-lane microscopes still appear as `pytorch-latest-results:`, so focused
+diagnostics stay visible without replacing the broader PyTorch-competitiveness
+scoreboard.
 For Q8 prompt candidate artifacts, `bench:status` prefers the newest steady
 viable run (`attempts >= 3` with command, two-phase, and semantic lanes) over a
 newer one-attempt quick probe, and prints `q8-prompt-latest-results:` when it

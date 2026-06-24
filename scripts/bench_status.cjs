@@ -110,6 +110,10 @@ function pytorchComparisonArtifacts() {
 }
 
 function latestPytorchComparisonArtifact() {
+  return latestPytorchFocusArtifact() ?? latestPytorchBroadArtifact() ?? pytorchComparisonArtifacts().at(-1) ?? null;
+}
+
+function latestRawPytorchComparisonArtifact() {
   return pytorchComparisonArtifacts().at(-1) ?? null;
 }
 
@@ -397,6 +401,11 @@ function pytorchFocusStatusLine(path, latestPath) {
 function pytorchBroadStatusLine(path, latestPath) {
   if (!path || path === latestPath) return null;
   return pytorchComparisonStatusLine(path).replace("pytorch-results: latest=", "pytorch-broad-results: latest=");
+}
+
+function pytorchFreshnessStatusLine(selectedPath, rawPath) {
+  if (!selectedPath || !rawPath || selectedPath === rawPath) return null;
+  return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_focus_keyset`;
 }
 
 function q8PromptCandidateStatusLine(path) {
@@ -1121,11 +1130,14 @@ const result = spawnSync("python3", ["scripts/verify_bench_artifact.py", "--stat
 if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);
 const latestPytorch = latestPytorchComparisonArtifact();
+const latestRawPytorch = latestRawPytorchComparisonArtifact();
 process.stdout.write(`${pytorchComparisonStatusLine(latestPytorch)}\n`);
 const broadPytorch = pytorchBroadStatusLine(latestPytorchBroadArtifact(), latestPytorch);
 if (broadPytorch) process.stdout.write(`${broadPytorch}\n`);
 const focusPytorch = pytorchFocusStatusLine(latestPytorchFocusArtifact(), latestPytorch);
 if (focusPytorch) process.stdout.write(`${focusPytorch}\n`);
+const pytorchFreshness = pytorchFreshnessStatusLine(latestPytorch, latestRawPytorch);
+if (pytorchFreshness) process.stdout.write(`${pytorchFreshness}\n`);
 const latestQ8Prompt = latestQ8PromptCandidateArtifact();
 const latestRawQ8Prompt = latestRawQ8PromptCandidateArtifact();
 const latestFrontier = latestFrontierArtifact();

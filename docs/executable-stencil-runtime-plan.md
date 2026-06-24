@@ -590,19 +590,17 @@ worst ratio. Set
 keeps PyTorch competitiveness evidence closer to the ggml artifact model:
 checked claims should have preserved keys, attempts, medians, timing windows,
 Torch version, machine metadata, and native freshness, not just a console line
-or a dated sentence in this plan. `bench:status` reads the latest matching
-PyTorch comparison artifact back out as a `pytorch-results:` line with status,
-median status, worst ratio, selected/median lane pass counts, selected/median
-miss lists, selected attempt, native freshness, Torch version, timing metric,
-active keys, and ratio medians, so PyTorch evidence is now both written and
-discoverable through the normal source-checkout benchmark status
-surface. When the latest artifact is a narrow microscope, `bench:status` also
-prints the most recent ten-lane broad artifact as `pytorch-broad-results:` and
-the most recent six-lane focus artifact as `pytorch-focus-results:`. This keeps
-three different facts visible at once: the freshest local experiment, the broad
-PyTorch-like replacement sample, and the focused current-hot-path sample. A
-one-lane log-softmax probe should not be able to hide the ten-lane CPU
-competitiveness signal.
+or a dated sentence in this plan. `bench:status` reads the newest six-lane focus
+artifact back out as the selected `pytorch-results:` line when one exists, with
+status, median status, worst ratio, selected/median lane pass counts,
+selected/median miss lists, selected attempt, native freshness, Torch version,
+timing metric, active keys, and ratio medians. When a narrower microscope is
+newer than that selected focus artifact, it prints `pytorch-latest-results:` so
+freshness stays visible without letting a one-lane probe hijack the PyTorch
+replacement scoreboard. The same status readback also prints the most recent
+ten-lane broad artifact as `pytorch-broad-results:` when it differs. This keeps
+three different facts visible at once: the selected current-hot-path sample, the
+freshest local experiment, and the broad PyTorch-like replacement sample.
 The same status readback now prints a compact `perf-next:` line that turns the
 current artifacts into an iteration target: weakest full-model ggml lane and
 distance-to-90%, PyTorch median misses, Q8 prompt semantic readiness, and the
