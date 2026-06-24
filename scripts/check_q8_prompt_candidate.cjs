@@ -360,6 +360,13 @@ function measureAttempt(index) {
     candidateTiledPartialSlots: singleLane.tiledPartialSlots,
     candidateTiledScratchCapacity: singleLane.tiledScratchCapacity,
     candidateTiledSpills: singleLane.tiledSpills,
+    twoPhaseTiledCount: twoPhaseLane.tiledCount,
+    twoPhaseTiledRowTileGroups: twoPhaseLane.tiledRowTileGroups,
+    twoPhaseTiledNTiles: twoPhaseLane.tiledNTiles,
+    twoPhaseTiledSerialLoops: twoPhaseLane.tiledSerialLoops,
+    twoPhaseTiledPartialSlots: twoPhaseLane.tiledPartialSlots,
+    twoPhaseTiledScratchCapacity: twoPhaseLane.tiledScratchCapacity,
+    twoPhaseTiledSpills: twoPhaseLane.tiledSpills,
     twoPhaseTiledTwoPhaseCount: twoPhaseLane.tiledTwoPhaseCount,
     twoPhaseScratchReady,
     defaultProjectionRowChainDispatchSplit,
@@ -444,13 +451,16 @@ const commandThroughputStatus = measureCommand ? (commandThroughputReady ? "read
 const singleStructuralStatus = measureSingle ? (structuralReady ? "ready" : "off") : "skipped";
 const singleThroughputStatus = measureSingle ? (throughputReady ? "ready" : "off") : "skipped";
 const twoPhaseStructuralStatus = measureTwoPhase ? (twoPhaseStructuralReady ? "ready" : "off") : "skipped";
+const singleAttemptSummary = measureSingle
+  ? `attempt=${best.index}/${attempts} median_attempt=${median.index}/${attempts} noisy=${noisyAttempts}`
+  : "attempt=skipped median_attempt=skipped noisy=skipped";
 
 console.log(
   `q8 prompt semantic row-chain gate: ${commandReady ? "command-ready" : candidateReady ? "ready" : "structural"}; ` +
     `command_structural=${commandStructuralStatus} command_throughput=${commandThroughputStatus} ` +
     `single_structural=${singleStructuralStatus} single_throughput=${singleThroughputStatus} ` +
     `two_phase_structural=${twoPhaseStructuralStatus} reason=${reason}; ` +
-    `attempt=${best.index}/${attempts} median_attempt=${median.index}/${attempts} noisy=${noisyAttempts}; ` +
+    `${singleAttemptSummary}; ` +
     `command_attempt=${commandBest.index}/${attempts} command_median_attempt=${commandMedian.index}/${attempts} command_noisy=${commandNoisyAttempts}; ` +
     `command_default=${format(commandBest.defaultTokS)} tok/s command_candidate=${format(commandBest.commandTokS)} tok/s command_speedup=${format(commandBest.commandSpeedup)}x command_floor=${format(commandSpeedupFloor)}x; ` +
     `command_median_speedup=${format(commandMedian.commandSpeedup)}x command_worst_speedup=${format(commandWorst.commandSpeedup)}x command_best_speedup=${format(commandBest.commandSpeedup)}x; ` +
@@ -472,6 +482,7 @@ console.log(
     `two_phase_median_speedup=${format(twoPhaseMedian.twoPhaseSpeedup)}x two_phase_worst_speedup=${format(twoPhaseWorst.twoPhaseSpeedup)}x two_phase_best_speedup=${format(twoPhaseBest.twoPhaseSpeedup)}x; ` +
     `two_phase_dispatch=${format(twoPhaseBest.defaultDispatches, 0)}->${format(twoPhaseBest.twoPhaseDispatches, 0)} two_phase_command=${format(twoPhaseBest.defaultCommands, 0)}->${format(twoPhaseBest.twoPhaseCommands, 0)} ` +
     `two_phase_count=${format(twoPhaseBest.twoPhaseTiledTwoPhaseCount, 0)} two_phase_selected=${twoPhaseBest.twoPhaseTiledTwoPhaseCount > 0 ? "yes" : "off"} ` +
+    `two_phase_tiled_work=${format(twoPhaseBest.twoPhaseTiledCount, 0)} chains row_groups=${format(twoPhaseBest.twoPhaseTiledRowTileGroups, 0)} n_tiles=${format(twoPhaseBest.twoPhaseTiledNTiles, 0)} serial_tile_loops=${format(twoPhaseBest.twoPhaseTiledSerialLoops, 0)} partial_slots=${format(twoPhaseBest.twoPhaseTiledPartialSlots, 0)} scratch_capacity=${format(twoPhaseBest.twoPhaseTiledScratchCapacity, 0)} spills=${format(twoPhaseBest.twoPhaseTiledSpills, 0)} ` +
     `two_phase_projection_chain=${format(twoPhaseBest.defaultProjectionChains, 0)}->${format(twoPhaseBest.twoPhaseProjectionChains, 0)} ` +
     `two_phase_projection_pair=${format(twoPhaseBest.defaultProjectionPairs, 0)}->${format(twoPhaseBest.twoPhaseProjectionPairs, 0)} ` +
     `two_phase_projection_pair_dispatch=${format(twoPhaseBest.defaultProjectionPairDispatches, 0)}->${format(twoPhaseBest.twoPhaseProjectionPairDispatches, 0)} ` +
