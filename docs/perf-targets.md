@@ -438,10 +438,14 @@ longer timing windows, or set
 For qsemantic kernel work, `BENCH_QSEMANTIC_VARIANTS=target` limits the raw
 frontier harness to the staged baseline plus the one-dispatch semantic target,
 while `BENCH_QSEMANTIC_VARIANTS=throughput_candidate` limits it to the staged
-baseline plus the mixed tiled-tail throughput candidate. Use
+baseline plus the mixed tiled-tail throughput candidate. Use the checked
+`npm run dev:perf:frontier:qsemantic:throughput{,:run}` loop first for the
+current throughput candidate; it writes a separate
+`frontier-qsemantic-throughput-*.json` diagnostic artifact so the normal
+`bench:status` qsemantic selector is not promoted by a variant-only run. Use
 `npm run dev:perf:frontier:qsemantic:target:raw{,:run}` for row-serial target
 diagnostics and `npm run dev:perf:frontier:qsemantic:throughput:raw{,:run}` for
-the next semantic throughput-kernel loop.
+raw benchmark text from the same semantic throughput-kernel loop.
 `bench:ggml` builds the benchmark binaries in ReleaseFast, writes a full
 `bench-results/*.json` artifact, and requires the checked M5 Pro baseline so a
 new local artifact cannot improve a ggml percentage by merely running both

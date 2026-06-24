@@ -801,6 +801,8 @@ npm run dev:perf:frontier:qsemantic:full:raw # incremental raw full-prefill qsem
 npm run dev:perf:frontier:qsemantic:full:raw:run # no-rebuild raw full-prefill qsemantic microscope
 npm run dev:perf:frontier:qsemantic:target:raw # incremental target-only qsemantic kernel microscope
 npm run dev:perf:frontier:qsemantic:target:raw:run # no-rebuild target-only qsemantic kernel microscope
+npm run dev:perf:frontier:qsemantic:throughput # incremental checked throughput-candidate-only qsemantic microscope
+npm run dev:perf:frontier:qsemantic:throughput:run # no-rebuild checked throughput-candidate-only qsemantic microscope
 npm run dev:perf:frontier:qsemantic:throughput:raw # incremental throughput-candidate-only qsemantic kernel microscope
 npm run dev:perf:frontier:qsemantic:throughput:raw:run # no-rebuild throughput-candidate-only qsemantic kernel microscope
 npm run dev:perf:frontier:qsemantic:smollm:raw # incremental raw SmolLM qsemantic microscope
