@@ -184,6 +184,9 @@ function checkScripts() {
   if (scripts["check:frontend-autograd-coverage"] !== "node scripts/check_frontend_autograd_coverage.cjs") {
     errors.push("package.json check:frontend-autograd-coverage must remain the fast TS autograd trust-matrix check");
   }
+  if (scripts["check:frontend-capabilities"] !== "node scripts/check_frontend_capability_matrix.cjs") {
+    errors.push("package.json check:frontend-capabilities must remain the fast frontend capability matrix check");
+  }
   if (scripts["check:goal-scorecard:q8"] !== "ZGML_SCORECARD_CHECKS=static,frontier,q8 node scripts/check_goal_scorecard.cjs") {
     errors.push("package.json check:goal-scorecard:q8 must remain the focused Q8 scorecard loop");
   }
@@ -192,6 +195,16 @@ function checkScripts() {
     "function shouldRunScorecardCheck(label)",
     "aliases.add(\"q8\");",
     "[scorecard] skip ${label}",
+  ]);
+  requireIncludes(read("scripts/check_frontend_capability_matrix.cjs"), "scripts/check_frontend_capability_matrix.cjs", "frontend capability matrix checker", [
+    "docs/frontend-capability-matrix.md",
+    "src/ts/public_surface.ts",
+    "firstContactRootNamespaces",
+    "stableRootNamespaces",
+    "compile.compileForInference(...)",
+    "Program/Session hot path",
+    "allowedStatuses",
+    "frontend capability matrix ok:",
   ]);
   if (scripts["bench:substrate"] !== "node scripts/bench_status.cjs --substrate-gate") {
     errors.push("package.json bench:substrate must remain the Program/Session substrate evidence gate");

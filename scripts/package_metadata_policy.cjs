@@ -245,6 +245,17 @@ const sourceContracts = Object.freeze({
     "firstContactIsSubsetOfStableSurface: true",
     "newProductSurfaceGoesThroughStableNamespaces: true",
   ]),
+  "scripts/check_frontend_capability_matrix.cjs": Object.freeze([
+    "docs/frontend-capability-matrix.md",
+    "src/ts/public_surface.ts",
+    "firstContactRootNamespaces",
+    "firstContactRootValues",
+    "stableRootNamespaces",
+    "allowedStatuses",
+    "requiredCapabilities",
+    "compile.compileForInference(...)",
+    "frontend capability matrix ok:",
+  ]),
   "src/ts/browser.ts": Object.freeze([
     'export * from "./index.js";',
     'import { tsProductManifestPolicy } from "./internal/product_manifest.js";',
