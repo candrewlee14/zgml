@@ -4,6 +4,7 @@ const { existsSync, mkdirSync, writeFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const { join, resolve } = require("node:path");
 const os = require("node:os");
+const { benchmarkBinaryMetadata } = require("./native_freshness.cjs");
 
 const root = resolve(__dirname, "..");
 const model = process.env.ZGML_Q8_MODEL || process.env.ZGML_MODEL || "data/smollm/SmolLM-135M.Q8_0.gguf";
@@ -648,6 +649,7 @@ if (writeArtifact) {
       release: os.release(),
       cpus: os.cpus().length,
     },
+    source: benchmarkBinaryMetadata({ root, binary, build }),
     config: {
       model,
       promptTokens,

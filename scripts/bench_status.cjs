@@ -480,7 +480,8 @@ function q8PromptCandidateStatusLine(path) {
   const semanticShape = `${data?.lanes?.semantic?.projectionPairs ?? "n/a"}->${data?.lanes?.semantic?.projectionRowChains ?? "n/a"}`;
   const commandShape = `${data?.lanes?.command?.commands ?? "n/a"}`;
   const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
-  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} attempts=${attempts} lanes=${lanes}`;
+  const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
+  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} attempts=${attempts} lanes=${lanes} source=${source}`;
 }
 
 function frontierStatusLine(path) {
@@ -507,7 +508,8 @@ function frontierStatusLine(path) {
   const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
   const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
   const next = typeof data?.next === "string" ? data.next : "unknown";
-  return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} vs_two_phase=full:${fullPrefillCandidateVsTwoPhase},smollm:${smollmPromptCandidateVsTwoPhase} next=${next}`;
+  const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
+  return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} vs_two_phase=full:${fullPrefillCandidateVsTwoPhase},smollm:${smollmPromptCandidateVsTwoPhase} next=${next} source=${source}`;
 }
 
 function qprojFrontierStatusLine(path) {
@@ -531,7 +533,8 @@ function qprojFrontierStatusLine(path) {
   const groupRegionFullDispatches = data?.selected?.projectionGroupRegion?.fullPrefill?.runtimeProjectionGroupDispatches ?? "n/a";
   const groupRegionSmollmDispatches = data?.selected?.projectionGroupRegion?.smollmPrompt?.runtimeProjectionGroupDispatches ?? "n/a";
   const next = typeof data?.next === "string" ? data.next : "unknown";
-  return `qproj-results: latest=${compactName(path)} status=${status} attempt=${selectedAttempt}/${attempts} projection_chain=full:${chainFull},smollm:${chainSmollm},candidate:${chainReady} projection_group_region=full:${groupRegionFull}:dispatches:${groupRegionFullDispatches},smollm:${groupRegionSmollm}:dispatches:${groupRegionSmollmDispatches} next=${next}`;
+  const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
+  return `qproj-results: latest=${compactName(path)} status=${status} attempt=${selectedAttempt}/${attempts} projection_chain=full:${chainFull},smollm:${chainSmollm},candidate:${chainReady} projection_group_region=full:${groupRegionFull}:dispatches:${groupRegionFullDispatches},smollm:${groupRegionSmollm}:dispatches:${groupRegionSmollmDispatches} next=${next} source=${source}`;
 }
 
 function pytorchNextTarget(path) {

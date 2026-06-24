@@ -1,5 +1,6 @@
 "use strict";
 
+const { spawnSync } = require("node:child_process");
 const { existsSync, readdirSync, statSync } = require("node:fs");
 const { join, resolve } = require("node:path");
 
@@ -52,7 +53,39 @@ function verifyFreshNativeLibrary(options) {
   });
 }
 
+function runGit(root, args) {
+  const result = spawnSync("git", args, {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
+function benchmarkBinaryMetadata(options) {
+  const root = options.root;
+  const binaryPath = resolve(root, options.binary);
+  const newestSource = newestNativeSourceMtimeMs([join(root, "build.zig"), join(root, "src"), join(root, "benchmarks")]);
+  const binaryExists = existsSync(binaryPath);
+  const binaryStat = binaryExists ? statSync(binaryPath) : null;
+  const stale = binaryStat ? newestSource.mtimeMs > binaryStat.mtimeMs + 1 : true;
+  const shortStatus = runGit(root, ["status", "--short"]);
+  return Object.freeze({
+    gitCommit: runGit(root, ["rev-parse", "HEAD"]),
+    gitDirty: shortStatus === null ? null : shortStatus.length !== 0,
+    build: options.build ?? null,
+    binaryPath,
+    binaryExists,
+    binaryMtimeMs: binaryStat ? binaryStat.mtimeMs : null,
+    newestSourcePath: newestSource.path,
+    newestSourceMtimeMs: newestSource.mtimeMs,
+    stale,
+    label: stale ? "stale" : "fresh",
+  });
+}
+
 module.exports = {
+  benchmarkBinaryMetadata,
   nativeLibraryPath,
   newestNativeSourceMtimeMs,
   verifyFreshNativeLibrary,

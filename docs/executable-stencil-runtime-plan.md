@@ -804,12 +804,16 @@ stores best/median/worst speedup stats and the attempt indices that produced
 them, so a selected lucky attempt cannot be mistaken for stable throughput.
 `bench:status` reads the latest artifact back as `q8-prompt-results:` with
 status, semantic throughput, semantic structural selection, semantic throughput
-readiness, lane speedups, median/worst throughput, command shape, and active
-lanes. It now prefers the newest steady viable artifact (`attempts >= 3` with
-command, two-phase, and semantic lanes) for the selected `q8-prompt-results:`
-and `perf-next:` readbacks, while printing `q8-prompt-latest-results:` when a
-newer one-attempt quick probe exists. Set `BENCH_Q8_PROMPT_WRITE_ARTIFACT=0`
-only for throwaway local diagnostics.
+readiness, lane speedups, median/worst throughput, command shape, active lanes,
+and source freshness when the artifact carries it. It now prefers the newest
+steady viable artifact (`attempts >= 3` with command, two-phase, and semantic
+lanes) for the selected `q8-prompt-results:` and `perf-next:` readbacks, while
+printing `q8-prompt-latest-results:` when a newer one-attempt quick probe
+exists. Set `BENCH_Q8_PROMPT_WRITE_ARTIFACT=0` only for throwaway local
+diagnostics. New Q8 and frontier artifacts also stamp generic benchmark-binary
+metadata: git commit, dirty state, build mode, binary mtime, newest native
+source path/mtime, and a fresh/stale label. This makes `BENCH_BUILD_ZGML=0`
+iteration fast without making stale binaries invisible.
 The qsemantic frontier selector now mirrors that stability rule: `bench:status`
 prefers the newest three-attempt qsemantic artifact for `frontier-results:` and
 `perf-next:`, while printing `frontier-latest-results:` when a newer one-attempt

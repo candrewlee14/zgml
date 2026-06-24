@@ -4,6 +4,10 @@ const { spawnSync } = require("node:child_process");
 const { mkdirSync, writeFileSync } = require("node:fs");
 const { join, resolve } = require("node:path");
 const os = require("node:os");
+const { benchmarkBinaryMetadata } = require("./native_freshness.cjs");
+
+const root = resolve(__dirname, "..");
+const frontierBinary = "./zig-out/bin/bench-frontier";
 
 const maxAttempts = positiveInt(process.env.BENCH_FRONTIER_ATTEMPTS || "5", "BENCH_FRONTIER_ATTEMPTS");
 const largeChainSpeedupFloor = 2.95;
@@ -356,6 +360,7 @@ function writeFocusedQprojArtifact(best, attempts, aggregate, line) {
       arch: process.arch,
       cpus: os.cpus().length,
     },
+    source: benchmarkBinaryMetadata({ root, binary: frontierBinary, build }),
     config: {
       maxAttempts,
       build,
@@ -1099,6 +1104,7 @@ function writeFocusedSemanticArtifact(best, attempts, aggregate, line) {
       arch: process.arch,
       cpus: os.cpus().length,
     },
+    source: benchmarkBinaryMetadata({ root, binary: frontierBinary, build }),
     config: {
       maxAttempts,
       build,
