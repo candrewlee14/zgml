@@ -204,7 +204,27 @@ function latestRawQ8PromptCandidateArtifact() {
 
 function q8PromptFreshnessStatusLine(selectedPath, rawPath) {
   if (!selectedPath || !rawPath || selectedPath === rawPath) return null;
-  return `q8-prompt-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts`;
+  let latest = "summary=unreadable";
+  try {
+    const data = readJson(rawPath);
+    const semanticThroughput = typeof data?.throughput?.semantic === "string" ? data.throughput.semantic : "unknown";
+    const semanticStats = q8LaneSpeedupStats(data, "semantic", "semanticSpeedup");
+    const semanticSpeedup = formatRatio(data?.lanes?.semantic?.speedup);
+    const semanticMedian = formatRatio(semanticStats?.median);
+    const semanticWorst = formatRatio(semanticStats?.worst);
+    const semanticSpills = data?.lanes?.semantic?.tiledSpills ?? "n/a";
+    const semanticSpillInput = data?.lanes?.semantic?.tiledSpillInput ?? "n/a";
+    const semanticSpillK = Number(data?.lanes?.semantic?.tiledSpills) > 0
+      ? Number(data?.lanes?.semantic?.tiledSpillInput) / Number(data.lanes.semantic.tiledSpills)
+      : NaN;
+    const semanticOutputSpills = data?.lanes?.semantic?.tiledOutputSpills ?? "n/a";
+    const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
+    const lanes = Array.isArray(data?.config?.measuredLanes) ? data.config.measuredLanes.join(",") : "unknown";
+    latest = `semantic=${semanticThroughput} semantic_speedup=${semanticSpeedup} semantic_median=${semanticMedian} semantic_worst=${semanticWorst} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} attempts=${attempts} lanes=${lanes}`;
+  } catch {
+    latest = "summary=unreadable";
+  }
+  return `q8-prompt-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts ${latest}`;
 }
 
 function frontierArtifacts() {
