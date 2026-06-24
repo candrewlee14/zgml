@@ -600,6 +600,19 @@ function checkScripts() {
   if (scripts["dev:perf:native-eager-gap:bun:run"] !== "BENCH_NATIVE_EAGER_RUNTIME=bun bun scripts/check_native_eager_gap.cjs") {
     errors.push("package.json dev:perf:native-eager-gap:bun:run must keep the no-rebuild Bun native eager gap rerun");
   }
+  if (scripts["check:c-abi-constants"] !== "node scripts/check_c_abi_constants.cjs") {
+    errors.push("package.json check:c-abi-constants must keep the executable C ABI constant alignment check");
+  }
+  requireIncludes(read("scripts/check_c_abi_constants.cjs"), "scripts/check_c_abi_constants.cjs", "C ABI constant alignment check", [
+    "parseZigConstants(zig, \"feature_\", \"u64\")",
+    "parseHeaderConstants(header, \"ZGML_FEATURE_\")",
+    "parseZigConstants(zig, \"module_op_\", \"u32\")",
+    "parseHeaderConstants(header, \"ZGML_MODULE_OP_\")",
+    "parseZigConstants(zig, \"module_activation_\", \"u32\")",
+    "parseHeaderConstants(header, \"ZGML_MODULE_ACTIVATION_\")",
+    "C ABI constant checks failed.",
+    "zgml C ABI constants ok",
+  ]);
   requireIncludes(read("scripts/check_native_eager_gap.cjs"), "scripts/check_native_eager_gap.cjs", "native eager gap microscope", [
     "schema: \"zgml.native-eager-gap.v1\"",
     "BENCH_NATIVE_EAGER_RUNTIME",
