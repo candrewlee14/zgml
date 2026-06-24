@@ -5629,6 +5629,67 @@ fn logSoftmaxRowsInPlaceBias32(values: []f32, bias: []const f32, M: usize) void 
     }
 }
 
+fn executeSmallDirectLinearBiasLogSoftmax32(linear: *const TinyLinearSessionHandle, shape: DirectLinearLogSoftmaxStepShape, input: [*]const f32, output: [*]f32) void {
+    const VecT = @Vector(16, f32);
+    const input_slice = input[0..linear.input_len];
+    const output_slice = output[0..linear.output_len];
+    const b0: VecT = linear.bias_buf[0..16].*;
+    const b1: VecT = linear.bias_buf[16..32].*;
+    var row: usize = 0;
+    while (row + 1 < shape.M) : (row += 2) {
+        const input_row0 = input_slice[row * shape.K ..][0..shape.K];
+        const input_row1 = input_slice[(row + 1) * shape.K ..][0..shape.K];
+        const output_row0 = output_slice[row * 32 ..][0..32];
+        const output_row1 = output_slice[(row + 1) * 32 ..][0..32];
+        var r0v0 = b0;
+        var r0v1 = b1;
+        var r1v0 = b0;
+        var r1v1 = b1;
+        for (0..shape.K) |k| {
+            const w0: VecT = linear.weights_buf[k * 32 ..][0..16].*;
+            const w1: VecT = linear.weights_buf[k * 32 + 16 ..][0..16].*;
+            const x0: VecT = @splat(input_row0[k]);
+            const x1: VecT = @splat(input_row1[k]);
+            r0v0 += x0 * w0;
+            r0v1 += x0 * w1;
+            r1v0 += x1 * w0;
+            r1v1 += x1 * w1;
+        }
+        const r0_max = @max(@reduce(.Max, r0v0), @reduce(.Max, r0v1));
+        const r1_max = @max(@reduce(.Max, r1v0), @reduce(.Max, r1v1));
+        const r0_max_broadcast: VecT = @splat(r0_max);
+        const r1_max_broadcast: VecT = @splat(r1_max);
+        const r0e0 = fastExpApproxVec(16, r0v0 - r0_max_broadcast);
+        const r0e1 = fastExpApproxVec(16, r0v1 - r0_max_broadcast);
+        const r1e0 = fastExpApproxVec(16, r1v0 - r1_max_broadcast);
+        const r1e1 = fastExpApproxVec(16, r1v1 - r1_max_broadcast);
+        const r0_log_denom: VecT = @splat(r0_max + @log(@reduce(.Add, r0e0) + @reduce(.Add, r0e1)));
+        const r1_log_denom: VecT = @splat(r1_max + @log(@reduce(.Add, r1e0) + @reduce(.Add, r1e1)));
+        output_row0[0..16].* = r0v0 - r0_log_denom;
+        output_row0[16..32].* = r0v1 - r0_log_denom;
+        output_row1[0..16].* = r1v0 - r1_log_denom;
+        output_row1[16..32].* = r1v1 - r1_log_denom;
+    }
+    while (row < shape.M) : (row += 1) {
+        const input_row = input_slice[row * shape.K ..][0..shape.K];
+        const output_row = output_slice[row * 32 ..][0..32];
+        var v0 = b0;
+        var v1 = b1;
+        for (0..shape.K) |k| {
+            const x: VecT = @splat(input_row[k]);
+            v0 += x * linear.weights_buf[k * 32 ..][0..16].*;
+            v1 += x * linear.weights_buf[k * 32 + 16 ..][0..16].*;
+        }
+        const max_val = @max(@reduce(.Max, v0), @reduce(.Max, v1));
+        const max_broadcast: VecT = @splat(max_val);
+        const e0 = fastExpApproxVec(16, v0 - max_broadcast);
+        const e1 = fastExpApproxVec(16, v1 - max_broadcast);
+        const log_denom_vec: VecT = @splat(max_val + @log(@reduce(.Add, e0) + @reduce(.Add, e1)));
+        output_row[0..16].* = v0 - log_denom_vec;
+        output_row[16..32].* = v1 - log_denom_vec;
+    }
+}
+
 fn logSoftmaxRowsInPlace(values: []f32, M: usize, N: usize) void {
     if (N == 32) return logSoftmaxRowsInPlace32(values, M);
     if (N % 16 == 0) return logSoftmaxRowsInPlaceLanes(16, values, M, N);
@@ -5686,15 +5747,8 @@ test "direct log softmax n32 bias specialization matches stable row math" {
 
 fn executeDirectLinearLogSoftmaxStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearLogSoftmaxStepShape, input: [*]const f32, output: [*]f32) void {
     if (shape.has_bias and shape.M <= 128 and shape.N == 32 and shape.K <= 128) {
-        if (executeSmallDirectLinearBiasStep(linear, .{
-            .M = shape.M,
-            .N = shape.N,
-            .K = shape.K,
-            .has_bias = true,
-        }, input, output, false)) {
-            logSoftmaxRowsInPlace32(output[0..linear.output_len], shape.M);
-            return;
-        }
+        executeSmallDirectLinearBiasLogSoftmax32(linear, shape, input, output);
+        return;
     }
 
     if (shape.has_bias and shape.N == 32) {
@@ -8305,6 +8359,86 @@ test "C ABI module program compiles traced sequential ops" {
         }.call;
         try expectLogSoftmaxRow(.{ 1.1, 1.8, -0.2 }, direct_log_softmax_output[0..3]);
         try expectLogSoftmaxRow(.{ 3.1, 3.8, -0.2 }, direct_log_softmax_output[3..6]);
+    }
+
+    {
+        const direct_log_softmax32_shape = [_]usize{ 2, 64 };
+        const direct_log_softmax32_ops = [_]zgml_module_op_desc{
+            .{
+                .kind = module_op_linear,
+                .flags = module_flag_bias,
+                .a = 64,
+                .b = 32,
+            },
+            .{
+                .kind = module_op_log_softmax,
+                .a = 0,
+            },
+        };
+        var direct_log_softmax32_program: ?*zgml_program = null;
+        var direct_log_softmax32_session: ?*zgml_session = null;
+        defer zgml_session_free(direct_log_softmax32_session);
+        defer zgml_program_free(direct_log_softmax32_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = direct_log_softmax32_shape[0..].ptr,
+            .input_rank = direct_log_softmax32_shape.len,
+            .ops = direct_log_softmax32_ops[0..].ptr,
+            .op_count = direct_log_softmax32_ops.len,
+        }, &.{ .backend = backend_cpu }, &direct_log_softmax32_program));
+        try std.testing.expect(direct_log_softmax32_program != null);
+
+        var direct_log_softmax32_weights: [64 * 32]f32 = undefined;
+        var direct_log_softmax32_bias: [32]f32 = undefined;
+        var direct_log_softmax32_input: [2 * 64]f32 = undefined;
+        for (&direct_log_softmax32_weights, 0..) |*value, index| {
+            const centered: i32 = @as(i32, @intCast(index % 23)) - 11;
+            value.* = @as(f32, @floatFromInt(centered)) / 97.0;
+        }
+        for (&direct_log_softmax32_bias, 0..) |*value, index| {
+            const centered: i32 = @as(i32, @intCast(index % 13)) - 6;
+            value.* = @as(f32, @floatFromInt(centered)) / 31.0;
+        }
+        for (&direct_log_softmax32_input, 0..) |*value, index| {
+            const centered: i32 = @as(i32, @intCast(index % 17)) - 8;
+            value.* = @as(f32, @floatFromInt(centered)) / 19.0;
+        }
+
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(direct_log_softmax32_program, &.{
+            .weights = direct_log_softmax32_weights[0..].ptr,
+            .weights_len = direct_log_softmax32_weights.len,
+            .bias = direct_log_softmax32_bias[0..].ptr,
+            .bias_len = direct_log_softmax32_bias.len,
+        }, &direct_log_softmax32_session));
+        try std.testing.expect(direct_log_softmax32_session != null);
+
+        var direct_log_softmax32_output = [_]f32{0} ** (2 * 32);
+        try std.testing.expectEqual(status(.ok), zgml_session_step_direct(
+            direct_log_softmax32_session,
+            direct_log_softmax32_input[0..].ptr,
+            direct_log_softmax32_input.len,
+            direct_log_softmax32_output[0..].ptr,
+            direct_log_softmax32_output.len,
+        ));
+
+        for (0..2) |row| {
+            var logits: [32]f32 = undefined;
+            for (&logits, 0..) |*logit, col| {
+                var acc = direct_log_softmax32_bias[col];
+                for (0..64) |k| {
+                    acc += direct_log_softmax32_input[row * 64 + k] * direct_log_softmax32_weights[k * 32 + col];
+                }
+                logit.* = acc;
+            }
+            var max_val = -std.math.inf(f32);
+            for (logits) |logit| max_val = @max(max_val, logit);
+            var sum_exp: f32 = 0;
+            for (logits) |logit| sum_exp += @exp(logit - max_val);
+            const log_denom = max_val + @log(sum_exp);
+            for (logits, 0..) |logit, col| {
+                try std.testing.expectApproxEqAbs(logit - log_denom, direct_log_softmax32_output[row * 32 + col], 1e-4);
+            }
+        }
     }
 
     {
