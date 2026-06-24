@@ -1419,6 +1419,13 @@ stronger current two-phase row-chain lane (`two_phase_median=1.06x`,
 `two_phase_worst=0.99x`) with `two_phase_output_spills=0`. Treat that as a
 useful current command/two-phase candidate, but not as proof that the semantic
 FFN path is ready for default promotion.
+The row-chain spill profile also tracks spilled input width. A source-current
+semantic quick probe reported `semantic_spill_input=17280` for `30` spills,
+so the average spilling row-chain is `K=576`. That identifies the materialized
+chain as the model-width attention/output-projection residual feeding the next
+FFN, not the `K=1536` FFN-down residual tail. The larger semantic command should
+therefore bridge attention-output residual plus following FFN gate/up inputs, or
+otherwise make that model-width residual materialization cheap enough to keep.
 A June 24, 2026 shape-gated policy experiment tried limiting the two-phase
 semantic throughput tail to the 512-wide full-prefill shape so the 576-wide
 SmolLM prompt shape would preserve the semantic command but skip the tiled tail.

@@ -291,6 +291,11 @@ machine for both prompt/prefill and decode.
   `semantic_median=0.98x`, `semantic_worst=0.94x`. Its two-phase lane is a
   current candidate (`two_phase_median=1.06x`, `two_phase_worst=0.99x`,
   `two_phase_output_spills=0`), but semantic FFN remains diagnostic.
+- Spill input-width evidence identifies the remaining materialized chains. A
+  source-current semantic quick probe reported `semantic_spill_input=17280`
+  across `30` spills, i.e. average `K=576`, so the spills are model-width
+  attention/output-projection residual chains feeding the next FFN, not the
+  `K=1536` FFN-down tails.
 - The full-model Q8 prompt probe now distinguishes general projection groups
   from attention/cache projection groups. Its Q8 evidence reports
   `projection_group=0->0`, `projection_cache_group=30->30`, and

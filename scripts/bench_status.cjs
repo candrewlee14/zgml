@@ -332,6 +332,10 @@ function formatRatio(value) {
   return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(2)}x` : "n/a";
 }
 
+function formatNumber(value, digits = 0) {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "n/a";
+}
+
 function qsemanticTileGap(lane) {
   const stored = Number(lane?.tileParallelGroupGap);
   if (Number.isFinite(stored)) return stored;
@@ -539,12 +543,16 @@ function q8PromptCandidateStatusLine(path) {
   const semanticShape = `${data?.lanes?.semantic?.projectionPairs ?? "n/a"}->${data?.lanes?.semantic?.projectionRowChains ?? "n/a"}`;
   const commandShape = `${data?.lanes?.command?.commands ?? "n/a"}`;
   const semanticSpills = data?.lanes?.semantic?.tiledSpills ?? "n/a";
+  const semanticSpillInput = data?.lanes?.semantic?.tiledSpillInput ?? "n/a";
+  const semanticSpillK = Number(data?.lanes?.semantic?.tiledSpills) > 0
+    ? Number(data?.lanes?.semantic?.tiledSpillInput) / Number(data.lanes.semantic.tiledSpills)
+    : NaN;
   const semanticOutputSpills = data?.lanes?.semantic?.tiledOutputSpills ?? "n/a";
   const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
   const pairDefaults = data?.config?.pairDefaults === true ? "yes" : "no";
   const baselineNoise = formatRatio(data?.baselineNoise?.maxOverMin);
-  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} semantic_spills=${semanticSpills} semantic_output_spills=${semanticOutputSpills} attempts=${attempts} lanes=${lanes} pair_defaults=${pairDefaults} baseline_noise=${baselineNoise} source=${source}`;
+  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} attempts=${attempts} lanes=${lanes} pair_defaults=${pairDefaults} baseline_noise=${baselineNoise} source=${source}`;
 }
 
 function frontierStatusLine(path, pressurePath = path) {

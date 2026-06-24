@@ -7572,7 +7572,7 @@ const CompiledProgram = struct {
             .partial_dst_offset = rn.dst_offset,
             .partial_cols = partial_cols,
         };
-        exec.profile.recordQMatmulRowChainTwoPhaseTiledSpill(q.M, q.N, ROW_CHAIN_TILE, write_ew_output, output_spill);
+        exec.profile.recordQMatmulRowChainTwoPhaseTiledSpill(q.M, q.N, q.K, ROW_CHAIN_TILE, write_ew_output, output_spill);
         exec.encodeKernel(.qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = partial_cols }, MATMUL_THREADS);
 
         const ew_src = if (write_ew_output) view.device_bufs[e.dst] else view.device_bufs[out.dst];
@@ -7628,7 +7628,7 @@ const CompiledProgram = struct {
             .partial_dst_offset = rn.dst_offset,
             .partial_cols = (q.N + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE,
         };
-        exec.profile.recordQMatmulRowChainTiledSpill(q.M, q.N, ROW_CHAIN_TILE, write_ew_output, output_spill);
+        exec.profile.recordQMatmulRowChainTiledSpill(q.M, q.N, q.K, ROW_CHAIN_TILE, write_ew_output, output_spill);
         exec.encodeKernel(.qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE }, MATMUL_THREADS);
         return true;
     }
