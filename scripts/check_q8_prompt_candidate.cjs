@@ -323,13 +323,19 @@ function measureAttempt(index) {
   const structuralReady = defaultFastPathReady && defaultDecodeFastPathReady && commandStructuralReady && candidateSemanticReady && candidateMatchesCommandShape && candidateDispatchShapeReady && fallbackOk;
   const commandThroughputReady = commandLane.speedup !== null && commandLane.speedup >= commandSpeedupFloor;
   const throughputReady = singleLane.speedup !== null && singleLane.speedup >= speedupFloor;
+  const progressLane = measureSingle
+    ? { name: "single", dispatches: singleLane.dispatches, commands: singleLane.commands, fallback: singleLane.fallback }
+    : measureTwoPhase
+      ? { name: "two_phase", dispatches: twoPhaseLane.dispatches, commands: twoPhaseLane.commands, fallback: twoPhaseLane.fallback }
+      : { name: "command", dispatches: commandLane.dispatches, commands: commandLane.commands, fallback: commandLane.fallback };
   progress(
     `attempt ${index}/${attempts} result ` +
       `command=${format(commandLane.speedup)}x single=${format(singleLane.speedup)}x ` +
       `two_phase=${format(twoPhaseLane.speedup)}x ` +
-      `dispatch=${format(defaultDispatches, 0)}->${format(singleLane.dispatches, 0)} ` +
-      `commands=${format(defaultCommands, 0)}->${format(singleLane.commands, 0)} ` +
-      `fallback=${format(defaultFallback, 0)}->${format(singleLane.fallback, 0)}/${format(twoPhaseLane.fallback, 0)}`,
+      `active_lane=${progressLane.name} ` +
+      `dispatch=${format(defaultDispatches, 0)}->${format(progressLane.dispatches, 0)} ` +
+      `commands=${format(defaultCommands, 0)}->${format(progressLane.commands, 0)} ` +
+      `fallback=${format(defaultFallback, 0)}->${format(progressLane.fallback, 0)}`,
   );
   return {
     index,

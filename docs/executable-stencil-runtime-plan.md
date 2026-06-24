@@ -674,6 +674,10 @@ and throughput. A three-attempt no-rebuild proof ran in under a minute with
 `two_phase_median_speedup=0.95x`, `two_phase_tiled_work=60`, and zero fallback.
 That is the intended iteration lens before spending time on the full all-lane
 gate: it proves the command shape while keeping throughput readiness honest.
+The per-attempt progress line now reports `active_lane`, `dispatch`, and
+`commands` for the measured command/two-phase lane when the known-bad
+single-dispatch diagnostic is skipped, so the fast loop no longer prints
+`242->n/a`/`241->n/a` while the useful lane evidence is present.
 It also names the hard performance fact directly: the structurally useful
 two-dispatch command path is dispatch-neutral in the full model
 (`command_dispatch=242->242`, `command_dispatch_reduced=no`), and the two-phase
