@@ -256,7 +256,7 @@ fn printSemanticSublayerRuntimeProfile(
     const projection_row_chain_idx = @intFromEnum(program_mod.ProgramCommandKind.projection_row_chain);
     const semantic_idx = @intFromEnum(program_mod.ProgramCommandKind.semantic_ffn_sublayer);
     try w.print(
-        "  {s:<28} runtime_backend_dispatches={d}  semantic_target_dispatches=1  runtime_projection_row_chain_dispatches={d}  runtime_projection_row_chain_attempts={d}  runtime_projection_row_chain_refused={d}  runtime_semantic_ffn_dispatches={d}  qmatmul_row_chain_tiled_count={d}  qmatmul_row_chain_tiled_two_phase_count={d}  qmatmul_row_chain_tiled_spilled_elementwise={d}\n",
+        "  {s:<28} runtime_backend_dispatches={d}  semantic_target_dispatches=1  runtime_projection_row_chain_dispatches={d}  runtime_projection_row_chain_attempts={d}  runtime_projection_row_chain_refused={d}  runtime_semantic_ffn_dispatches={d}  qmatmul_row_chain_tiled_count={d}  qmatmul_row_chain_tiled_row_tile_groups={d}  qmatmul_row_chain_tiled_n_tiles={d}  qmatmul_row_chain_tiled_serial_tile_loops={d}  qmatmul_row_chain_tiled_partial_slots={d}  qmatmul_row_chain_tiled_scratch_capacity={d}  qmatmul_row_chain_tiled_two_phase_count={d}  qmatmul_row_chain_tiled_spilled_elementwise={d}\n",
         .{
             name,
             rt.backend_dispatch_count,
@@ -265,6 +265,11 @@ fn printSemanticSublayerRuntimeProfile(
             rt.program_command_failed_counts[projection_row_chain_idx],
             rt.program_command_dispatch_counts[semantic_idx],
             rt.qmatmul_row_chain_tiled_count,
+            rt.qmatmul_row_chain_tiled_row_tile_groups,
+            rt.qmatmul_row_chain_tiled_n_tiles,
+            rt.qmatmul_row_chain_tiled_serial_tile_loops,
+            rt.qmatmul_row_chain_tiled_partial_slots,
+            rt.qmatmul_row_chain_tiled_scratch_capacity,
             rt.qmatmul_row_chain_tiled_two_phase_count,
             rt.qmatmul_row_chain_tiled_spilled_elementwise,
         },

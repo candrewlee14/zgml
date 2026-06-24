@@ -904,9 +904,21 @@ as attempted and dispatched (`runtime_projection_row_chain_attempts=1`,
 `runtime_projection_row_chain_dispatches=2`) while keeping
 `runtime_backend_dispatches=3`; the single-dispatch diagnostic lights up the
 tiled leaf (`qmatmul_row_chain_tiled_count=1`) and drops to
-`runtime_backend_dispatches=2`. That is real executable-stencil progress, but
-it is not a default promotion yet because the tiled leaf still loses throughput
-on the SmolLM prompt shape. The next implementation target remains the
+`runtime_backend_dispatches=2`. The qsemantic gate now prints the tiled-work
+shape directly: full-prefill single-dispatch/two-phase row-chain paths both
+report `qmatmul_row_chain_tiled_row_tile_groups=4`,
+`qmatmul_row_chain_tiled_n_tiles=16`,
+`qmatmul_row_chain_tiled_serial_tile_loops=64`,
+`qmatmul_row_chain_tiled_partial_slots=2048`, and
+`qmatmul_row_chain_tiled_scratch_capacity=65536`; SmolLM prompt reports
+`qmatmul_row_chain_tiled_row_tile_groups=4`,
+`qmatmul_row_chain_tiled_n_tiles=18`,
+`qmatmul_row_chain_tiled_serial_tile_loops=72`,
+`qmatmul_row_chain_tiled_partial_slots=2304`, and
+`qmatmul_row_chain_tiled_scratch_capacity=73728`. That is real
+executable-stencil progress, but it is not a default promotion yet because the
+tiled leaf still loses throughput on the SmolLM prompt shape. The next
+implementation target remains the
 `semantic_ffn_sublayer_throughput_kernel` or a faster tiled row-chain leaf, not
 another command policy toggle.
 Use it when changing projection-pair, row-chain, residual, RMSNorm, or
