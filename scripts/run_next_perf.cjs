@@ -41,7 +41,13 @@ function perfNextLine() {
 function chooseLane(line) {
   const forced = String(process.env.BENCH_NEXT_PERF_LANE ?? "").trim();
   if (forced) return forced;
+  const steady = process.env.BENCH_NEXT_PERF_STEADY === "1";
   if (
+    !steady &&
+    /frontier=semantic_ffn_sublayer_throughput_kernel:candidate=ready/.test(line)
+  ) return "qsemantic_throughput";
+  if (
+    steady &&
     /frontier=semantic_ffn_sublayer_throughput_kernel:candidate=ready/.test(line) &&
     /q8_prompt=semantic_throughput_kernel/.test(line)
   ) return "q8_prompt";
@@ -53,7 +59,7 @@ function chooseLane(line) {
 }
 
 function validateLane(lane) {
-  const known = new Set(["status", "pytorch", "qsemantic", "qproj", "q8_prompt", "ggml"]);
+  const known = new Set(["status", "pytorch", "qsemantic", "qsemantic_throughput", "qproj", "q8_prompt", "ggml"]);
   if (!known.has(lane)) throw new Error(`unknown BENCH_NEXT_PERF_LANE: ${lane}`);
 }
 
@@ -68,7 +74,7 @@ function main() {
 
   if (lane === "status") return;
 
-  if (shouldBuild && (lane === "qsemantic" || lane === "qproj" || lane === "q8_prompt" || lane === "ggml")) {
+  if (shouldBuild && (lane === "qsemantic" || lane === "qsemantic_throughput" || lane === "qproj" || lane === "q8_prompt" || lane === "ggml")) {
     runInherited("build benchmark artifacts", "zig", ["build", "-Doptimize=ReleaseFast", "bench-build", "-fincremental", "--summary", "failures"]);
   }
   if (shouldBuild && lane === "pytorch") {
@@ -83,6 +89,21 @@ function main() {
       envWithDefaults({
         BENCH_FRONTIER_BUILD: "0",
         BENCH_FRONTIER_ATTEMPTS: steady ? "3" : "1",
+        BENCH_FRONTIER_FILTER: "qsemantic",
+      }),
+    );
+    return;
+  }
+
+  if (lane === "qsemantic_throughput") {
+    runInherited(
+      "qsemantic throughput frontier",
+      process.execPath,
+      ["scripts/check_frontier_bench.cjs"],
+      envWithDefaults({
+        BENCH_FRONTIER_BUILD: "0",
+        BENCH_FRONTIER_ATTEMPTS: steady ? "3" : "1",
+        BENCH_QSEMANTIC_VARIANTS: "throughput_candidate",
         BENCH_FRONTIER_FILTER: "qsemantic",
       }),
     );

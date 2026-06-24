@@ -685,6 +685,15 @@ function checkScripts() {
   if (scripts["dev:perf:next"] !== "node scripts/run_next_perf.cjs") {
     errors.push("package.json dev:perf:next must keep the artifact-directed next bottleneck microscope");
   }
+  if (scripts["dev:perf:next:run"] !== "BENCH_NEXT_PERF_BUILD=0 node scripts/run_next_perf.cjs") {
+    errors.push("package.json dev:perf:next:run must keep the explicit no-rebuild artifact-directed next bottleneck microscope");
+  }
+  if (scripts["dev:perf:next:qsemantic-throughput"] !== "BENCH_NEXT_PERF_LANE=qsemantic_throughput BENCH_NEXT_PERF_BUILD=1 node scripts/run_next_perf.cjs") {
+    errors.push("package.json dev:perf:next:qsemantic-throughput must keep the rebuild-backed qsemantic throughput microscope");
+  }
+  if (scripts["dev:perf:next:qsemantic-throughput:run"] !== "BENCH_NEXT_PERF_LANE=qsemantic_throughput BENCH_NEXT_PERF_BUILD=0 node scripts/run_next_perf.cjs") {
+    errors.push("package.json dev:perf:next:qsemantic-throughput:run must keep the no-rebuild qsemantic throughput microscope");
+  }
   if (scripts["dev:perf:next:build"] !== "BENCH_NEXT_PERF_BUILD=1 node scripts/run_next_perf.cjs") {
     errors.push("package.json dev:perf:next:build must keep the rebuild-backed artifact-directed next bottleneck microscope");
   }
@@ -732,12 +741,14 @@ function checkScripts() {
     "BENCH_NEXT_PERF_BUILD",
     "BENCH_NEXT_PERF_STEADY",
     "frontier=semantic_ffn_sublayer_throughput_kernel",
+    "qsemantic_throughput",
     "q8_prompt=semantic_throughput_kernel",
     "scripts/check_frontier_bench.cjs",
     "scripts/check_q8_prompt_candidate.cjs",
     "scripts/check_pytorch_comparison.cjs",
     "scripts/bench_vs_ggml.sh",
     "BENCH_FRONTIER_FILTER: \"qsemantic\"",
+    "BENCH_QSEMANTIC_VARIANTS: \"throughput_candidate\"",
     "BENCH_FRONTIER_ATTEMPTS: steady ? \"3\" : \"1\"",
     "BENCH_Q8_PROMPT_LANES: \"command,two_phase,semantic\"",
     "BENCH_CANDIDATE_ATTEMPTS: steady ? \"3\" : \"1\"",
