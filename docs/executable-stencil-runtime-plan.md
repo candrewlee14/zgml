@@ -156,6 +156,19 @@ bind model state
 run hot loops through a tiny executable handle
 ```
 
+The first-contact API should be the tiny executable handle:
+
+```ts
+const fast = zgml.compileForInference(model, { inputShape: [2] as const });
+const y = fast.forward(input);
+const out = fast.into(new Float32Array(2), input);
+fast.dispose();
+```
+
+That handle is intentionally not a second runtime abstraction. It owns a
+`Program` and bound `Session`, exposes them for evidence and advanced control,
+and gives ordinary inference users the short path they actually want.
+
 The refined compiler shape is:
 
 ```text
@@ -891,6 +904,10 @@ PyTorch fix by itself (`linear_batched` moved only from about `0.0108ms` to
 `0.0428ms`). That evidence points the next PyTorch catch-up work below the StepParams facade:
 native kernel shape, FFI call granularity, and larger fused
 Programs matter more than further TS object parsing polish on these lanes.
+The public `compile.compileForInference(model, { inputShape })` helper now wraps
+the same Program/Session path into a frozen handle with `forward`, `into`,
+`prepareInto`, `dispose`, and `free`, so the simple inference API and the
+allocation-conscious hot path are the same object.
 The prepared runner now reaches one layer lower than the facade when an adapter
 can help: Node and Bun Session ops expose `prepareStepSession`, so
 `prepareExecuteInto` can precompute direct FFI lengths/records and, on Bun,

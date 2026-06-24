@@ -146,18 +146,15 @@ zgml.train.evaluate(classifierLoader, (batch) => {
 });
 const predictions = zgml.train.predictClassifier(classifier, classifierLoader);
 
-const program = zgml.compile(classifier, { inputShape: [2] as const });
-const session = program.bindModule(classifier);
+const fastClassifier = zgml.compileForInference(classifier, { inputShape: [2] as const });
 const input = zgml.tensor([1, -1], [2] as const);
-const logits = zgml.inference_mode(() => session.stepTensor(input));
+const logits = zgml.inference_mode(() => fastClassifier.forward(input));
 const output = new Float32Array(2);
-const hotParams = { input, output };
-session.requireHotStepParams(hotParams);
-session.hotPathPlan(hotParams);
-const logitsInto = zgml.inference_mode(() => session.executeInto(output, { input }));
+const logitsInto = zgml.inference_mode(() => fastClassifier.into(output, input));
 const probabilities = zgml.F.softmax(logits, -1);
 const classes = zgml.train.predictClasses(logits, { classes: 2 });
 const classesInto = zgml.train.predict_classes(logitsInto, { numClasses: 2 });
+fastClassifier.dispose();
 ```
 
 The composable namespace form is equivalent:
@@ -179,10 +176,12 @@ const classifier = new Classifier();
 const namespaceCriterion = new nn.CrossEntropyLoss({ classes: 2 });
 train.evaluate(loader, (batch) => namespaceCriterion.forward(classifier.forward(batch.input), batch.target));
 train.predictClassifier(classifier, loader);
-const namespaceProgram = classifier.compile({ inputShape: [2] as const });
-const namespaceSession = namespaceProgram.bindModule(classifier);
-const logits = namespaceSession.stepTensor(tensor([1, -1], [2] as const));
+const fastClassifier = compile.compileForInference(classifier, { inputShape: [2] as const });
+const logits = fastClassifier.forward(tensor([1, -1], [2] as const));
 const classes = train.predictClasses(logits, { classes: 2 });
+fastClassifier.dispose();
+
+const inspectedProgram = classifier.compile({ inputShape: [2] as const });
 ```
 
 For fully explicit loops, use the same PyTorch-shaped pieces directly:
@@ -218,9 +217,16 @@ small JS/TS models can start from ordinary tensor vocabulary and only opt into
 **Auto-fusion.** Stable lazy tensor work can lower through the runtime compiler
 into compact native kernels:
 ```ts
+const fast = compile.compileForInference(model, { inputShape: [2] as const });
+const y = fast.forward(tensor([1, 0], [2] as const));
+const out = fast.into(new Float32Array(2), tensor([1, 0], [2] as const));
+fast.dispose();
+
 const program = model.compile({ inputShape: [2] as const });
 const session = program.bindModule(model);
 const y = session.stepTensor(tensor([1, 0], [2] as const));
+session.dispose();
+program.dispose();
 ```
 
 **Executable LLM sessions.** LLaMA-family inference uses the explicit runtime

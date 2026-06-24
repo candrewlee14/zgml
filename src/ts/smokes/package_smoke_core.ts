@@ -3803,6 +3803,10 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     typeof torch.functional?.mse !== "function" ||
     typeof torch.compile !== "function" ||
     typeof torch.compile?.compile !== "function" ||
+    typeof torch.compileForInference !== "function" ||
+    torch.compileForInference !== torch.compile.compileForInference ||
+    typeof torch.compile_for_inference !== "function" ||
+    torch.compile_for_inference !== torch.compile.compile_for_inference ||
     typeof torch.lazy?.input !== "function" ||
     typeof torch.manual_seed !== "function" ||
     typeof torch.initial_seed !== "function" ||
@@ -4472,10 +4476,37 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     adapter.compile?.compileManifest?.policyOwner !== "src/ts/compile.ts" ||
     typeof adapter.compile !== "function" ||
     typeof adapter.compile.trace !== "function" ||
-    typeof adapter.compile.compile !== "function"
+    typeof adapter.compile.compile !== "function" ||
+    typeof adapter.compile.compileForInference !== "function" ||
+    typeof adapter.compile.compile_for_inference !== "function"
   ) {
     throw new Error(`${label} adapter root must expose the TS-authored compile namespace`);
   }
+  const inferenceModel = adapter.nn.linear(2, 1, { weights: [1, -1], bias: [0.5] });
+  const inferenceInput = adapter.tensor([1, 2], [2]);
+  const inference = adapter.compile.compileForInference(inferenceModel, { backend: "cpu", inputShape: [2] });
+  try {
+    if (!Object.isFrozen(inference) || inference.program.inputLen() !== 2 || inference.session.outputLen() !== 1) {
+      throw new Error(`${label} expected frozen compiled inference handle over Program/Session`);
+    }
+    expectClose(inference.forward(inferenceInput).data, [-0.5], `${label} compileForInference forward`);
+    expectClose(inference.stepTensor(inferenceInput).data, [-0.5], `${label} compileForInference stepTensor alias`);
+    const inferenceCarrier = new Float32Array(1);
+    if (inference.into(inferenceCarrier, inferenceInput) !== inferenceCarrier) {
+      throw new Error(`${label} expected compileForInference into to reuse caller output`);
+    }
+    expectClose(inferenceCarrier, [-0.5], `${label} compileForInference into`);
+    const preparedCarrier = new Float32Array(1);
+    const preparedInference = inference.prepareInto(preparedCarrier, inferenceInput);
+    if (preparedInference() !== preparedCarrier) {
+      throw new Error(`${label} expected compileForInference prepareInto to reuse caller output`);
+    }
+    expectClose(preparedCarrier, [-0.5], `${label} compileForInference prepareInto`);
+  } finally {
+    inference.dispose();
+  }
+  const inferenceAlias = adapter.compile.compile_for_inference(inferenceModel, { backend: "cpu", inputShape: [2] });
+  inferenceAlias.free();
   const nested = adapter.tensor([[1, 2], [3, 4]]);
   if (nested.shape.join("x") !== "2x2") throw new Error(`${label} nested tensor shape mismatch`);
   expectClose(nested.data, [1, 2, 3, 4], `${label} nested tensor data`);

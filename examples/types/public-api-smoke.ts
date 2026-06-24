@@ -167,6 +167,7 @@ import {
   type CheckpointTensorInspection,
   type CompileAnalysis,
   type CompileNamespace,
+  type CompiledInference,
   type BatchSampler,
   type BCELoss,
   type BCEWithLogitsLoss,
@@ -2404,6 +2405,18 @@ const linearSessionParameterInfos: readonly ModuleKernelParameterLayoutEntry[] =
 const linearSessionParameterInfoByName: ModuleKernelParameterLayoutEntry | null = linearSession.parameterInfo("0.weight");
 const linearSessionParameterInfoByIndex: ModuleKernelParameterLayoutEntry | null = linearSession.parameterInfo(0);
 const linearInput = tensor([1, 2], [2] as const);
+const compiledInference: CompiledInference<readonly [2], readonly [3]> = compile.compileForInference(linear, linearTypedCompileOptions);
+const compiledInferenceAlias: CompiledInference<readonly [2], readonly [3]> = compile.compile_for_inference(linear, linearTypedCompileOptions);
+const zgmlCompiledInference: CompiledInference<readonly [2], readonly [3]> = zgml.compileForInference(linear, linearTypedCompileOptions);
+const zgmlCompiledInferenceAlias: CompiledInference<readonly [2], readonly [3]> = zgml.compile_for_inference(linear, linearTypedCompileOptions);
+const compiledInferenceForward: Tensor<readonly [3]> = compiledInference.forward(linearInput);
+const compiledInferenceStepTensor: Tensor<readonly [3]> = compiledInference.stepTensor(linearInput);
+const compiledInferenceInto: Float32Array = compiledInference.into(new Float32Array(3), linearInput);
+const compiledInferencePrepared: () => Float32Array = compiledInference.prepareInto(new Float32Array(3), linearInput);
+compiledInference.dispose();
+compiledInferenceAlias.free();
+zgmlCompiledInference.dispose();
+zgmlCompiledInferenceAlias.free();
 const placementKind: ProgramDeviceBufferKind = "input";
 const linearBufferPlacedSlot: ProgramBufferLayoutSlot | null = linearProgram.bufferSlot(placementKind);
 const hostNativePlacement: TensorNativePlacement = linearInput.nativePlacement();
@@ -5427,6 +5440,14 @@ void compileNamespaceAssertedCompilePlan;
 void compileNamespaceAssertedCompilePlanAlias;
 void compileNamespaceCanCompile;
 void compileNamespaceCanCompileAlias;
+void compiledInference;
+void compiledInferenceAlias;
+void zgmlCompiledInference;
+void zgmlCompiledInferenceAlias;
+void compiledInferenceForward;
+void compiledInferenceStepTensor;
+void compiledInferenceInto;
+void compiledInferencePrepared;
 void compileNamespaceExplanation;
 void compileNamespaceTypedOutputShape;
 void compileNamespaceTypedOutputShapeAlias;

@@ -29,7 +29,7 @@ Legend:
 | Training helpers | yes | yes | partial | partial | Manual loops, `fitModule`, evaluate, predict, classifier helpers, train/eval mode, and evidence records exist; large-scale training is not the current performance claim. |
 | State dicts and checkpoints | yes | n/a | partial | n/a | Module, optimizer, and scheduler state dicts plus JSON-safe checkpoint save/load exist with preflight restore checks. |
 | Program compile support | partial | n/a | yes | yes | Compile support is explicit and inspectable; unsupported graphs should report why instead of silently falling back. |
-| Program/Session hot path | n/a | n/a | yes | yes | `compile -> Program -> bind -> Session -> step/executeInto` is the performance lane with runtime profile and buffer-layout evidence. |
+| Program/Session hot path | n/a | n/a | yes | yes | `compile.compileForInference` is the friendly handle; explicit `compile -> Program -> bind -> Session -> step/executeInto` remains available for inspection and deployment control. |
 | Node and Bun package use | yes | yes | yes | yes | Root, Node, Bun, adapter, runtime, and type smokes cover the emitted package surface. |
 | Browser/Wasm/WebGPU surface | partial | n/a | partial | partial | Browser/Wasm and WebGPU proofs exist for bounded runtime paths; broad frontend WebGPU eager execution is not a current claim. |
 | Safetensors/model-source interop | partial | n/a | partial | partial | Model-source helpers support safetensors header/data probing and LLaMA-family loading paths; general TS state export/import remains narrower than PyTorch. |

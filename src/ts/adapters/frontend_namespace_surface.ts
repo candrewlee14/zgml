@@ -791,6 +791,53 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     throw new Error("torch.compile.compile requires a module with compile() or a compile-capable lazy graph");
   }
 
+  function compiledInferenceHandle(program: Record<string, any>, session: Record<string, any>) {
+    let disposed = false;
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      session.dispose();
+      program.dispose();
+    };
+    return Object.freeze({
+      program,
+      session,
+      forward(input: unknown) {
+        return session.stepTensor(input);
+      },
+      stepTensor(input: unknown) {
+        return session.stepTensor(input);
+      },
+      into(output: Float32Array, input: unknown) {
+        return session.executeInto(output, { input });
+      },
+      prepareInto(output: Float32Array, input: unknown) {
+        return session.prepareExecuteInto(output, { input });
+      },
+      dispose,
+      free: dispose,
+    });
+  }
+
+  function compileForInference(target: unknown, compileOptions: CompileNamespaceOptions = {}, bindOptions?: unknown) {
+    if (Array.isArray(target)) {
+      throw new Error("compile.compileForInference requires a module; wrap layer lists in nn.Sequential");
+    }
+    const program = compile(target, compileOptions);
+    if (!program || typeof program !== "object") {
+      throw new Error("compile.compileForInference expected compile() to return a Program");
+    }
+    const bindModule = (program as Record<string, any>).bindModule;
+    if (typeof bindModule !== "function") {
+      throw new Error("compile.compileForInference expected a Program with bindModule()");
+    }
+    const session = bindModule.call(program, target, bindOptions);
+    if (!session || typeof session !== "object") {
+      throw new Error("compile.compileForInference expected bindModule() to return a Session");
+    }
+    return compiledInferenceHandle(program as Record<string, any>, session as Record<string, any>);
+  }
+
   return Object.freeze(Object.assign(compile, {
     compileManifest,
     trace,
@@ -844,6 +891,8 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     matches_program_compile_evidence_signature,
     programCompileEvidenceSignature,
     compile,
+    compileForInference,
+    compile_for_inference: compileForInference,
   }));
 }
 
@@ -1000,6 +1049,7 @@ export function createAdapterTorchTensorOps() {
 export function createAdapterTorchNamespace(options: AdapterTorchNamespaceOptions) {
   const tensorOps = createAdapterTorchTensorOps();
   const data = options.data;
+  const compileNamespace = options.compile as Record<string, unknown>;
   return Object.freeze({
     Tensor: options.Tensor,
     tensor: options.tensor,
@@ -1120,6 +1170,8 @@ export function createAdapterTorchNamespace(options: AdapterTorchNamespaceOption
     F: options.F,
     functional: options.F,
     compile: options.compile,
+    compileForInference: compileNamespace.compileForInference,
+    compile_for_inference: compileNamespace.compile_for_inference,
     lazy: options.lazy,
     optim: options.optim,
     data,

@@ -6626,6 +6626,8 @@ export type PublicTorchNamespace = Readonly<{
   F: NnFunctionalNamespace;
   functional: NnFunctionalNamespace;
   compile: PublicCompileNamespace;
+  compileForInference: PublicCompileNamespace["compileForInference"];
+  compile_for_inference: PublicCompileNamespace["compile_for_inference"];
   lazy: PublicLazyNamespace;
   optim: PublicOptimNamespace;
   data: PublicDataNamespace;
@@ -6690,6 +6692,16 @@ export type TinyMlpDesc = TinyLinearDesc & {
 export type ProgramHostBinding<Shape extends TensorShapeTuple = TensorShapeTuple> = TensorLike<Shape>;
 export type ProgramInputBinding<Shape extends TensorShapeTuple = TensorShapeTuple> = TensorLike<Shape> | Uint32Array | Int32Array;
 export type ProgramOutputBinding<Shape extends TensorShapeTuple = TensorShapeTuple> = Tensor<Shape> | Float32Array | NativeBuffer;
+export type CompiledInference<InputShape extends TensorShapeTuple = TensorShapeTuple, OutputShape extends TensorShapeTuple = TensorShapeTuple> = Readonly<{
+  program: Program<InputShape, OutputShape>;
+  session: Session<InputShape, OutputShape>;
+  forward(input: ProgramInputBinding<InputShape>): Tensor<OutputShape>;
+  stepTensor(input: ProgramInputBinding<InputShape>): Tensor<OutputShape>;
+  into(output: Float32Array, input: ProgramInputBinding<InputShape>): Float32Array;
+  prepareInto(output: Float32Array, input: ProgramInputBinding<InputShape>): () => Float32Array;
+  dispose(): void;
+  free(): void;
+}>;
 declare const moduleBindingsBrand: unique symbol;
 export type ProgramBindings<InputShape extends TensorShapeTuple = TensorShapeTuple, OutputShape extends TensorShapeTuple = TensorShapeTuple> = {
   weights?: ProgramHostBinding | NativeBuffer;

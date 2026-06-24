@@ -76,6 +76,7 @@ import {
   traceCompilerArtifacts as packageTraceCompilerArtifacts,
   type CompileAnalysis as PackageCompileAnalysis,
   type CompileMode as PackageCompileMode,
+  type CompiledInference as PackageCompiledInference,
   type CompileNamespace as PackageCompileNamespace,
   type CompileOptions as PackageCompileOptions,
   type CompileOptionsWithInputShape as PackageCompileOptionsWithInputShape,
@@ -596,8 +597,10 @@ type PackageCheckpointInspectionSchedulerEtaMinAlias = Expect<Equal<PackageCheck
 type PackageCheckpointInspectionEntry = Expect<Equal<PackageCheckpointInspection["modelParameters"][number], PackageCheckpointTensorInspection>>;
 type PackageCompilePath = Expect<Equal<typeof packageCompileManifest.runtimePath, "Trace -> TensorProgramIr -> KernelPlan -> Program">>;
 type PackageCompileNamespaceShape = Expect<PackageCompileNamespace extends { compile: unknown } ? true : false>;
+type PackageCompileNamespaceInferenceShape = Expect<PackageCompileNamespace extends { compileForInference: unknown; compile_for_inference: unknown } ? true : false>;
 type PackagePublicCompileNamespaceShape = Expect<PackagePublicCompileNamespace extends Readonly<PackageCompileNamespace> ? true : false>;
 type PackagePublicCompileNamespaceCallable = Expect<PackagePublicCompileNamespace extends (target: PackageNnCompilableModule, options?: PackageCompileOptions) => PackageProgram ? true : false>;
+type PackageCompiledInferenceShape = Expect<PackageCompiledInference<readonly [2], readonly [3]> extends { program: PackageProgram<readonly [2], readonly [3]>; forward(input: unknown): unknown; into(output: Float32Array, input: unknown): Float32Array } ? true : false>;
 type PackageCompileModeShape = Expect<Equal<PackageCompileMode, "auto" | "tiny" | "module">>;
 type PackageCompileOptionsShape = Expect<Equal<PackageCompileOptions["backend"], "auto" | "cpu" | "metal" | "webgpu" | undefined>>;
 type PackageCompileOptionsInputShape = Expect<PackageCompileOptionsWithInputShape<readonly [2]> extends { inputShape: readonly [2] } ? true : false>;

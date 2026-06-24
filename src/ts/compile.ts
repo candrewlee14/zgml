@@ -36,6 +36,7 @@ import {
 import type {
   CompileAnalysis,
   CompileMode,
+  CompiledInference,
   CompileOptions,
   CompileOptionsWithInputShape,
   EmbeddingCompileOptions,
@@ -60,6 +61,8 @@ import type {
   NnCompilableModule,
   NnModule,
   Program,
+  ProgramInputBinding,
+  Session,
   TensorShapeTuple,
 } from "./public_api.js";
 
@@ -122,6 +125,7 @@ export type { RawSequentialLayerListCompileDiagnostic };
 export type {
   CompileAnalysis,
   CompileMode,
+  CompiledInference,
   CompileNamespace,
   CompileOptions,
   CompileOptionsWithInputShape,
@@ -505,3 +509,68 @@ export function compile(target: unknown, options: CompileNamespaceOptions = {}) 
   if (!method) throw new Error("compile.compile requires a module with compile()");
   return method(options);
 }
+
+type CompiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShape extends TensorShapeTuple> = CompiledInference<InputShape, OutputShape>;
+
+function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShape extends TensorShapeTuple>(
+  program: Program<InputShape, OutputShape>,
+  session: Session<InputShape, OutputShape>,
+): CompiledInferenceHandle<InputShape, OutputShape> {
+  let disposed = false;
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    session.dispose();
+    program.dispose();
+  };
+  return Object.freeze({
+    program,
+    session,
+    forward(input: ProgramInputBinding<InputShape>) {
+      return session.stepTensor(input);
+    },
+    stepTensor(input: ProgramInputBinding<InputShape>) {
+      return session.stepTensor(input);
+    },
+    into(output: Float32Array, input: ProgramInputBinding<InputShape>) {
+      return session.executeInto(output, { input });
+    },
+    prepareInto(output: Float32Array, input: ProgramInputBinding<InputShape>) {
+      return session.prepareExecuteInto(output, { input });
+    },
+    dispose,
+    free: dispose,
+  });
+}
+
+export function compileForInference<const Target extends EmbeddingModule, const S extends TensorShapeTuple>(
+  target: Target,
+  options: EmbeddingCompileOptions<S>,
+  bindOptions?: ModuleParameterPlacementOptions,
+): CompiledInference<S, ModuleForwardShape<Target, S>>;
+export function compileForInference<const Target extends NnCompilableModule, const S extends TensorShapeTuple>(
+  target: Target,
+  options: CompileOptionsWithInputShape<S>,
+  bindOptions?: ModuleParameterPlacementOptions,
+): CompiledInference<S, ModuleForwardShape<Target, S>>;
+export function compileForInference(target: NnCompilableModule, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+export function compileForInference(target: unknown, options: CompileNamespaceOptions = {}, bindOptions?: ModuleParameterPlacementOptions): CompiledInference {
+  if (Array.isArray(target)) {
+    throw new Error("compile.compileForInference requires a module; wrap layer lists in nn.Sequential");
+  }
+  const program = compile(target, options);
+  if (!program || typeof program !== "object") {
+    throw new Error("compile.compileForInference expected compile() to return a Program");
+  }
+  const bindModule = (program as { bindModule?: unknown }).bindModule;
+  if (typeof bindModule !== "function") {
+    throw new Error("compile.compileForInference expected a Program with bindModule()");
+  }
+  const session = bindModule.call(program, target, bindOptions);
+  if (!session || typeof session !== "object") {
+    throw new Error("compile.compileForInference expected bindModule() to return a Session");
+  }
+  return compiledInferenceHandle(program as Program, session as Session);
+}
+
+export const compile_for_inference = compileForInference;
