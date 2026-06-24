@@ -20,6 +20,10 @@ const minTimingMs = Number(process.env.BENCH_NATIVE_EAGER_MIN_TIMING_MS || "8");
 if (!Number.isFinite(minTimingMs) || minTimingMs <= 0) {
   throw new Error(`BENCH_NATIVE_EAGER_MIN_TIMING_MS must be positive, got ${process.env.BENCH_NATIVE_EAGER_MIN_TIMING_MS}`);
 }
+const minNativeEagerSpeedup = Number(process.env.BENCH_NATIVE_EAGER_MIN_SPEEDUP || "1.0");
+if (!Number.isFinite(minNativeEagerSpeedup) || minNativeEagerSpeedup <= 0) {
+  throw new Error(`BENCH_NATIVE_EAGER_MIN_SPEEDUP must be positive, got ${process.env.BENCH_NATIVE_EAGER_MIN_SPEEDUP}`);
+}
 
 function values(length, scale) {
   return Array.from({ length }, (_, index) => ((index % 17) - 8) / scale);
@@ -91,12 +95,21 @@ function benchGap(spec) {
   const compiled = spec.compiled();
   try {
     const output = new Float32Array(spec.outputLen);
+    const nativeEagerOutput = new Float32Array(spec.outputLen);
     requireCompiledHotPath(spec.key, compiled.session, input, output);
     const eagerOutput = spec.eager(input);
     const eagerData = eagerOutput.data ?? eagerOutput;
+    const nativeEagerResult = typeof spec.nativeEager === "function" ? spec.nativeEager(nativeEagerOutput, input) : null;
+    if (nativeEagerResult && nativeEagerResult !== nativeEagerOutput) {
+      throw new Error(`${spec.key} expected native eager output to reuse caller output`);
+    }
     const compiledOutput = compiled.into(output, input);
     if (compiledOutput !== output) {
       throw new Error(`${spec.key} expected compiled output to reuse caller output`);
+    }
+    const nativeEagerDiff = nativeEagerResult ? maxAbsDiff(eagerData, nativeEagerOutput) : null;
+    if (nativeEagerDiff !== null && nativeEagerDiff > spec.tolerance) {
+      throw new Error(`${spec.key} native eager parity failed: max_abs_diff=${nativeEagerDiff}`);
     }
     const diff = maxAbsDiff(eagerData, output);
     if (diff > spec.tolerance) {
@@ -109,18 +122,30 @@ function benchGap(spec) {
     const preparedMs = bench(() => {
       compiled.into(output, input);
     }, spec.compiledIterations);
+    const nativeEagerMs = typeof spec.nativeEager === "function"
+      ? bench(() => {
+          spec.nativeEager(nativeEagerOutput, input);
+        }, spec.nativeEagerIterations ?? spec.compiledIterations)
+      : null;
+    if (nativeEagerMs !== null && eagerMs / nativeEagerMs < minNativeEagerSpeedup) {
+      throw new Error(`${spec.key} native eager speedup ${eagerMs / nativeEagerMs}x below ${minNativeEagerSpeedup}x`);
+    }
     const speedup = eagerMs / preparedMs;
-    return Object.freeze({
+    const row = {
       schema: "zgml.native-eager-gap.v1",
       key: spec.key,
       shape: Object.freeze(spec.shape),
       eagerMs: round(eagerMs),
+      nativeEagerIntoMs: nativeEagerMs === null ? null : round(nativeEagerMs),
+      nativeEagerSpeedup: nativeEagerMs === null ? null : round(eagerMs / nativeEagerMs),
       preparedExecuteIntoMs: round(preparedMs),
       nativeProgramSpeedup: round(speedup),
+      nativeEagerMaxAbsDiff: nativeEagerDiff === null ? null : round(nativeEagerDiff),
       maxAbsDiff: round(diff),
       status: "gap-measured",
       next: spec.next,
-    });
+    };
+    return Object.freeze(row);
   } finally {
     compiled.dispose();
   }
@@ -157,12 +182,14 @@ function compiledLazyHandle(graph, bindings, inputShape) {
 function linearBatchedModel() {
   return new zgml.nn.Sequential(
     new zgml.nn.Linear(64, 32, {
-      weights: values(64 * 32, 64),
-      bias: values(32, 32),
+      weights: linearWeights,
+      bias: linearBias,
     }),
   );
 }
 
+const linearWeights = values(64 * 32, 64);
+const linearBias = values(32, 32);
 const linearModel = linearBatchedModel();
 
 const gapSpecs = Object.freeze([
@@ -172,8 +199,12 @@ const gapSpecs = Object.freeze([
     outputLen: 128 * 32,
     input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
     eager: (input) => linearModel.forward(input),
+    nativeEager: (output, input) => zgml.nativeEager.linearInto(output, input, zgml.tensor(linearWeights, [64, 32]), {
+      bias: zgml.tensor(linearBias, [32]),
+    }),
     compiled: () => compiledInferenceHandle(linearBatchedModel(), [128, 64]),
     eagerIterations: 100,
+    nativeEagerIterations: 1000,
     compiledIterations: 1000,
     tolerance: 1e-5,
     next: "native_eager_linear_or_matmul_storage_slice",
@@ -212,5 +243,8 @@ const result = Object.freeze({
 });
 process.stdout.write(`NATIVE_EAGER_GAP_JSON ${JSON.stringify(result)}\n`);
 for (const row of rows) {
-  process.stdout.write(`native eager gap: ${row.key} eager=${row.eagerMs}ms prepared_execute_into=${row.preparedExecuteIntoMs}ms speedup=${row.nativeProgramSpeedup}x next=${row.next}\n`);
+  const nativeEager = row.nativeEagerIntoMs === null
+    ? "native_eager_into=n/a"
+    : `native_eager_into=${row.nativeEagerIntoMs}ms native_eager_speedup=${row.nativeEagerSpeedup}x`;
+  process.stdout.write(`native eager gap: ${row.key} eager=${row.eagerMs}ms ${nativeEager} prepared_execute_into=${row.preparedExecuteIntoMs}ms speedup=${row.nativeProgramSpeedup}x next=${row.next}\n`);
 }

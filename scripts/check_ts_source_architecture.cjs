@@ -543,12 +543,36 @@ function checkPackageExports(errors) {
     "native_eager_linear_or_matmul_storage_slice",
     "native_eager_fused_matmul_add_gelu_storage_slice",
     "NATIVE_EAGER_GAP_JSON",
+    "nativeEagerIntoMs",
+    "nativeEagerSpeedup",
+    "BENCH_NATIVE_EAGER_MIN_SPEEDUP",
     "preparedExecuteIntoMs",
     "nativeProgramSpeedup",
     "verifyFreshNativeLibrary",
   ]) {
     if (!nativeEagerGapSource.includes(required)) {
       errors.push(`scripts/check_native_eager_gap.cjs must keep native eager gap evidence: ${required}`);
+    }
+  }
+  const cApiSource = readSource(path.join("src", "c_api.zig"));
+  for (const required of [
+    "feature_native_eager_linear",
+    "zgml_eager_linear_f32",
+    "forward.blasSgemm",
+    "C ABI native eager linear writes caller output",
+  ]) {
+    if (!cApiSource.includes(required)) {
+      errors.push(`src/c_api.zig must keep native eager linear ABI evidence: ${required}`);
+    }
+  }
+  const publicApiSource = readSource(path.join("src", "ts", "public_api.ts"));
+  for (const required of [
+    "PublicNativeEagerNamespace",
+    "nativeEager: PublicNativeEagerNamespace",
+    "native_eager: PublicNativeEagerNamespace",
+  ]) {
+    if (!publicApiSource.includes(required)) {
+      errors.push(`src/ts/public_api.ts must keep native eager public type evidence: ${required}`);
     }
   }
   const moduleProgramBenchSource = readSource(path.join("scripts", "check_module_program_bench.cjs"));

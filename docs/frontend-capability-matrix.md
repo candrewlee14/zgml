@@ -67,6 +67,10 @@ PyTorch replacement:
   `dev:perf:native-eager-gap{,:run}` microscope now measures the first
   `linear_batched` and `lazy_matmul_add_gelu_batched` targets as eager TS tensor
   execution versus compiled allocation-free `executeInto`; the first native eager storage slices have executable baselines.
+  Node also exposes the first stateless native eager primitive:
+  `zgml.nativeEager.linearInto`, backed by the `zgml_eager_linear_f32` C ABI,
+  for caller-owned f32 `Linear` output. That primitive routes through the shared
+  native matmul substrate instead of a JS or ABI-local matmul loop.
 - Safetensors/model-source interop is strong for runtime paths, while ordinary
   TS module weights now have explicit state-dict/checkpoint save/load recipes;
   broader third-party weight-format adapters remain future work.

@@ -59,6 +59,7 @@ type AdapterTorchNamespaceOptions = Readonly<{
   Program: unknown;
   Session: unknown;
   NativeBuffer: unknown;
+  nativeEager?: unknown;
 }>;
 type AdapterDataNamespaceOptions<TTensor> = Readonly<{
   tensor: (data: unknown, shape?: unknown, options?: unknown) => TTensor;
@@ -1199,6 +1200,8 @@ export function createAdapterTorchNamespace(options: AdapterTorchNamespaceOption
     compile: options.compile,
     compileForInference: compileNamespace.compileForInference,
     compile_for_inference: compileNamespace.compile_for_inference,
+    nativeEager: options.nativeEager,
+    native_eager: options.nativeEager,
     lazy: options.lazy,
     optim: options.optim,
     data,

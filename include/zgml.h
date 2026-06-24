@@ -130,6 +130,7 @@ enum {
     ZGML_FEATURE_PROGRAM_BINDING_REQUIREMENTS = 1ull << 42,
     ZGML_FEATURE_SESSION_PERSISTENT_UPLOAD = 1ull << 43,
     ZGML_FEATURE_NATIVE_MODULE_ACTIVATION_CHAIN = 1ull << 44,
+    ZGML_FEATURE_NATIVE_EAGER_LINEAR = 1ull << 45,
 };
 
 enum {
@@ -637,6 +638,19 @@ ZGML_API zgml_status zgml_buffer_inspect(zgml_buffer *buffer, zgml_buffer_inspec
 ZGML_API zgml_status zgml_buffer_write(zgml_buffer *buffer, size_t byte_offset, const void *src, size_t byte_len);
 ZGML_API zgml_status zgml_buffer_read(zgml_buffer *buffer, size_t byte_offset, void *dst, size_t byte_len);
 ZGML_API void zgml_buffer_free(zgml_buffer *buffer);
+ZGML_API zgml_status zgml_eager_linear_f32(
+    const float *input,
+    size_t input_len,
+    const float *weights,
+    size_t weights_len,
+    const float *bias,
+    size_t bias_len,
+    float *output,
+    size_t output_len,
+    size_t batch,
+    size_t in_features,
+    size_t out_features
+);
 ZGML_API zgml_status zgml_model_create(const zgml_model_desc *desc, zgml_model **out_model);
 ZGML_API zgml_status zgml_model_load_path(const zgml_model_load_desc *desc, zgml_model **out_model);
 ZGML_API zgml_status zgml_model_load_safetensors_data(const zgml_safetensors_data_load_desc *desc, zgml_model **out_model);

@@ -41,6 +41,7 @@ export type NodeNativeSymbols = Readonly<{
   bufferWrite: NativeFunction;
   bufferRead: NativeFunction;
   bufferFree: NativeFunction;
+  eagerLinearF32: NativeFunction;
   sessionBind: NativeFunction;
   sessionBindModel: NativeFunction;
   sessionBindModelBuffers: NativeFunction;
@@ -115,6 +116,7 @@ export function bindNodeSymbols(nativeLibrary: unknown): NodeNativeSymbols {
     bufferWrite: lib.func("int zgml_buffer_write(void *buffer, size_t byte_offset, const void *src, size_t byte_len)"),
     bufferRead: lib.func("int zgml_buffer_read(void *buffer, size_t byte_offset, void *dst, size_t byte_len)"),
     bufferFree: lib.func("void zgml_buffer_free(void *buffer)"),
+    eagerLinearF32: lib.func("int zgml_eager_linear_f32(const float *input, size_t input_len, const float *weights, size_t weights_len, const float *bias, size_t bias_len, float *output, size_t output_len, size_t batch, size_t in_features, size_t out_features)"),
     sessionBind: lib.func("int zgml_session_bind(void *program, const zgml_bind_desc *desc, _Out_ void **out_session)"),
     sessionBindModel: lib.func("int zgml_session_bind_model(void *program, void *model, const zgml_bind_desc *desc, _Out_ void **out_session)"),
     sessionBindModelBuffers: lib.func("int zgml_session_bind_model_buffers(void *program, void *model, const zgml_buffer_bind_desc *desc, _Out_ void **out_session)"),

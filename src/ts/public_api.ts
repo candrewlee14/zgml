@@ -2117,6 +2117,18 @@ export declare function manual_seed(seed: number): number;
 export declare function initialSeed(): number | null;
 export declare function initial_seed(): number | null;
 export declare function seededRng(seed: number): () => number;
+export type NativeEagerLinearIntoOptions = Readonly<{
+  bias?: TensorLike | Float32Array | null;
+  batch?: number;
+  inFeatures?: number;
+  in_features?: number;
+  outFeatures?: number;
+  out_features?: number;
+}>;
+export type PublicNativeEagerNamespace = Readonly<{
+  linearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options?: NativeEagerLinearIntoOptions): Float32Array;
+  linear_into(output: Float32Array, input: TensorLike, weights: TensorLike, options?: NativeEagerLinearIntoOptions): Float32Array;
+}>;
 export declare function linspace<const S extends TensorShapeTuple>(shape: S, start: number, end: number, options?: TensorOptions): Tensor<S>;
 export declare function linspace<const Steps extends number>(start: number, end: number, steps: Steps, options?: TensorOptions): Tensor<readonly [Steps]>;
 export declare function linspace(start: number, end: number, steps: number, options?: TensorOptions): Tensor;
@@ -6628,6 +6640,8 @@ export type PublicTorchNamespace = Readonly<{
   compile: PublicCompileNamespace;
   compileForInference: PublicCompileNamespace["compileForInference"];
   compile_for_inference: PublicCompileNamespace["compile_for_inference"];
+  nativeEager: PublicNativeEagerNamespace;
+  native_eager: PublicNativeEagerNamespace;
   lazy: PublicLazyNamespace;
   optim: PublicOptimNamespace;
   data: PublicDataNamespace;
@@ -6940,6 +6954,7 @@ export type RuntimeFeatures = Readonly<{
   programBindingRequirements: boolean;
   sessionPersistentUpload: boolean;
   nativeModuleActivationChain: boolean;
+  nativeEagerLinear: boolean;
 }>;
 
 export type ModelInspection = Readonly<{

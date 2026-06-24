@@ -1061,6 +1061,88 @@ const {
   requireBindingPlanForModuleBindings,
 } = adapterFrontendModuleSurface.moduleFacadeHelpers;
 
+function nativeEagerTensorData(value, label) {
+  if (value instanceof Float32Array) return value;
+  if (value && typeof value === "object" && value.data instanceof Float32Array) return value.data;
+  return f32(value, label);
+}
+
+function nativeEagerShape(value) {
+  return value && typeof value === "object" && Array.isArray(value.shape) ? value.shape : null;
+}
+
+function nativeEagerPositiveInteger(value, label) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive integer, got ${value}`);
+  }
+  return parsed;
+}
+
+function nativeEagerLinearShape(input, weights, options = {}) {
+  const inputShape = nativeEagerShape(input);
+  const weightShape = nativeEagerShape(weights);
+  const inFeatures = options.inFeatures ?? options.in_features ?? (weightShape && weightShape.length === 2 ? weightShape[0] : null);
+  const outFeatures = options.outFeatures ?? options.out_features ?? (weightShape && weightShape.length === 2 ? weightShape[1] : null);
+  const batch = options.batch ?? (
+    inputShape && inputShape.length === 2
+      ? inputShape[0]
+      : inputShape && inputShape.length === 1
+        ? 1
+        : null
+  );
+  return Object.freeze({
+    batch: nativeEagerPositiveInteger(batch, "nativeEager.linearInto batch"),
+    inFeatures: nativeEagerPositiveInteger(inFeatures, "nativeEager.linearInto inFeatures"),
+    outFeatures: nativeEagerPositiveInteger(outFeatures, "nativeEager.linearInto outFeatures"),
+  });
+}
+
+const nativeEager = Object.freeze({
+  linearInto(output, input, weights, options = {}) {
+    if (!(output instanceof Float32Array)) {
+      throw new Error("nativeEager.linearInto output must be a Float32Array");
+    }
+    const inputData = nativeEagerTensorData(input, "nativeEager.linearInto input");
+    const weightData = nativeEagerTensorData(weights, "nativeEager.linearInto weights");
+    const biasValue = options.bias ?? null;
+    const biasData = biasValue == null ? null : nativeEagerTensorData(biasValue, "nativeEager.linearInto bias");
+    const shape = nativeEagerLinearShape(input, weights, options);
+    const expectedInput = shape.batch * shape.inFeatures;
+    const expectedWeights = shape.inFeatures * shape.outFeatures;
+    const expectedOutput = shape.batch * shape.outFeatures;
+    if (inputData.length !== expectedInput) {
+      throw new Error(`nativeEager.linearInto input length ${inputData.length} does not match ${shape.batch}x${shape.inFeatures}`);
+    }
+    if (weightData.length !== expectedWeights) {
+      throw new Error(`nativeEager.linearInto weights length ${weightData.length} does not match ${shape.inFeatures}x${shape.outFeatures}`);
+    }
+    if (biasData && biasData.length !== shape.outFeatures) {
+      throw new Error(`nativeEager.linearInto bias length ${biasData.length} does not match outFeatures ${shape.outFeatures}`);
+    }
+    if (output.length < expectedOutput) {
+      throw new Error(`nativeEager.linearInto output length ${output.length} is smaller than ${expectedOutput}`);
+    }
+    check(nodeSymbolGroups.nativeEager.eagerLinearF32(
+      inputData,
+      inputData.length,
+      weightData,
+      weightData.length,
+      biasData,
+      biasData ? biasData.length : 0,
+      output,
+      expectedOutput,
+      shape.batch,
+      shape.inFeatures,
+      shape.outFeatures,
+    ));
+    return output;
+  },
+  linear_into(output, input, weights, options) {
+    return this.linearInto(output, input, weights, options);
+  },
+});
+
 const publicNamespaces = createAdapterFrontendNamespaces({
   sharedFrontend,
   Tensor,
@@ -1262,6 +1344,7 @@ const torch = createAdapterTorchNamespace({
   Program,
   Session,
   NativeBuffer,
+  nativeEager,
 });
 const zgml = torch;
 
@@ -1469,6 +1552,7 @@ module.exports = createAdapterPublicRuntimeExports({
   save: torch.save,
   load: torch.load,
   compile,
+  nativeEager,
   TinyLinear: TinyLinearModel,
   TinyMlp: TinyMlpModel,
   TinyLlama: TinyLlamaModel,

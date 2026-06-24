@@ -85,6 +85,7 @@ const feature_native_module_program: u64 = 1 << 41;
 const feature_program_binding_requirements: u64 = 1 << 42;
 const feature_session_persistent_upload: u64 = 1 << 43;
 const feature_native_module_activation_chain: u64 = 1 << 44;
+const feature_native_eager_linear: u64 = 1 << 45;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -1114,6 +1115,7 @@ fn runtimeFeatureFlags() u64 {
         feature_program_binding_requirements |
         feature_session_persistent_upload |
         feature_native_module_activation_chain |
+        feature_native_eager_linear |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -1575,6 +1577,82 @@ export fn zgml_buffer_read(buffer: ?*zgml_buffer, byte_offset: usize, dst: ?*any
 export fn zgml_buffer_free(buffer: ?*zgml_buffer) void {
     const handle = bufferHandle(buffer) orelse return;
     handle.deinit(alloc);
+}
+
+fn checkedElementCount(a: usize, b: usize) ?usize {
+    return std.math.mul(usize, a, b) catch null;
+}
+
+fn addBiasRowsF32(
+    output: []f32,
+    bias: []const f32,
+    batch: usize,
+    out_features: usize,
+) void {
+    const V = 8;
+    const VecT = @Vector(V, f32);
+    for (0..batch) |row| {
+        const output_row = output[row * out_features ..][0..out_features];
+        var col: usize = 0;
+        while (col + V <= out_features) : (col += V) {
+            const out_v: VecT = output_row[col..][0..V].*;
+            const bias_v: VecT = bias[col..][0..V].*;
+            output_row[col..][0..V].* = out_v + bias_v;
+        }
+        while (col < out_features) : (col += 1) {
+            output_row[col] += bias[col];
+        }
+    }
+}
+
+export fn zgml_eager_linear_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    weights_ptr: ?[*]const f32,
+    weights_len: usize,
+    bias_ptr: ?[*]const f32,
+    bias_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    batch: usize,
+    in_features: usize,
+    out_features: usize,
+) c_int {
+    if (
+        input_ptr == null or
+        weights_ptr == null or
+        output_ptr == null or
+        batch == 0 or
+        in_features == 0 or
+        out_features == 0
+    ) return status(.invalid_argument);
+    if (checkedElementCount(batch, in_features) != input_len) return status(.shape_mismatch);
+    if (checkedElementCount(in_features, out_features) != weights_len) return status(.shape_mismatch);
+    if (bias_len != 0 and (bias_ptr == null or bias_len != out_features)) return status(.shape_mismatch);
+    if (checkedElementCount(batch, out_features) != output_len) return status(.shape_mismatch);
+
+    const input = input_ptr.?[0..input_len];
+    const weights = weights_ptr.?[0..weights_len];
+    const bias = if (bias_len == 0) null else bias_ptr.?[0..bias_len];
+    const output = output_ptr.?[0..output_len];
+    forward.blasSgemm(
+        output,
+        input,
+        weights,
+        batch,
+        out_features,
+        in_features,
+        in_features,
+        1,
+        out_features,
+        1,
+        0,
+        0,
+        0,
+        out_features,
+    );
+    if (bias) |b| addBiasRowsF32(output, b, batch, out_features);
+    return status(.ok);
 }
 
 fn clearModel(out: ?*?*zgml_model) void {
@@ -9302,6 +9380,48 @@ test "C ABI buffers can back tiny linear session bindings" {
     try std.testing.expectEqual(status(.ok), zgml_session_step(session, null, &result));
     try std.testing.expectEqual(status(.ok), zgml_buffer_read(output_buffer, 0, &output, @sizeOf(@TypeOf(output))));
     try std.testing.expectEqualSlices(f32, &.{ 2, 3 }, output[0..2]);
+}
+
+test "C ABI native eager linear writes caller output" {
+    const input = [_]f32{
+        1, 2, 3,
+        4, 5, 6,
+    };
+    const weights = [_]f32{
+        1, 10,
+        2, 20,
+        3, 30,
+    };
+    const bias = [_]f32{ 0.5, -1 };
+    var output = [_]f32{0} ** 4;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_linear_f32(
+        input[0..].ptr,
+        input.len,
+        weights[0..].ptr,
+        weights.len,
+        bias[0..].ptr,
+        bias.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        2,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 14.5, 139, 32.5, 319 }, &output);
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_linear_f32(
+        input[0..].ptr,
+        input.len,
+        weights[0..].ptr,
+        weights.len - 1,
+        null,
+        0,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        2,
+    ));
 }
 
 test "C ABI buffers can wrap caller-owned host memory" {

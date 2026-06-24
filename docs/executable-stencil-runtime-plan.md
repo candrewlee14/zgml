@@ -435,7 +435,12 @@ Current checked progress:
   The new `NATIVE_EAGER_GAP_JSON` microscope measures the first targets directly:
   `linear_batched` eager TS tensor execution and
   `lazy_matmul_add_gelu_batched` eager fused matmul work versus allocation-free
-  compiled `prepare/executeInto` for the same shape. Treat the reported
+  compiled `prepare/executeInto` for the same shape. It now also reports
+  `nativeEagerIntoMs` for `linear_batched`, backed by the stateless
+  `zgml_eager_linear_f32` C ABI and surfaced as `zgml.nativeEager.linearInto`.
+  That C ABI path uses the same shared native matmul substrate as compiled
+  Program execution, then applies bias into the caller-owned output buffer.
+  Treat the reported
   `nativeProgramSpeedup` rows as executable targets for the first native eager
   `Linear`/`matmul` and fused `matmul -> add -> GELU` storage slices, not as a
   claim that eager already runs natively.

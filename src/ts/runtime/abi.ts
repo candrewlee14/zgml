@@ -214,6 +214,7 @@ export const runtimeFeatureBits = Object.freeze({
   programBindingRequirements: 1n << 42n,
   sessionPersistentUpload: 1n << 43n,
   nativeModuleActivationChain: 1n << 44n,
+  nativeEagerLinear: 1n << 45n,
 });
 export type RuntimeFeatureName = keyof typeof runtimeFeatureBits;
 export type RuntimeFeatureMap = Readonly<Record<RuntimeFeatureName, boolean>>;
@@ -262,6 +263,7 @@ export const requiredRuntimeFeatureNames = Object.freeze([
   "programBindingRequirements",
   "sessionPersistentUpload",
   "nativeModuleActivationChain",
+  "nativeEagerLinear",
 ]);
 
 export const requiredRuntimeFeatureMask = requiredRuntimeFeatureNames.reduce(

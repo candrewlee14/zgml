@@ -573,10 +573,24 @@ function checkScripts() {
     "schema: \"zgml.native-eager-gap.v1\"",
     "NATIVE_EAGER_GAP_JSON",
     "lazy_matmul_add_gelu_batched",
+    "nativeEagerIntoMs",
+    "nativeEagerSpeedup",
+    "BENCH_NATIVE_EAGER_MIN_SPEEDUP",
     "preparedExecuteIntoMs",
     "nativeProgramSpeedup",
     "native_eager_linear_or_matmul_storage_slice",
     "native_eager_fused_matmul_add_gelu_storage_slice",
+  ]);
+  requireIncludes(read("src/c_api.zig"), "src/c_api.zig", "native eager linear C ABI", [
+    "feature_native_eager_linear",
+    "zgml_eager_linear_f32",
+    "forward.blasSgemm",
+    "C ABI native eager linear writes caller output",
+  ]);
+  requireIncludes(read("src/ts/public_api.ts"), "src/ts/public_api.ts", "native eager public API types", [
+    "PublicNativeEagerNamespace",
+    "nativeEager: PublicNativeEagerNamespace",
+    "native_eager: PublicNativeEagerNamespace",
   ]);
   if (scripts["dev:perf:q8-prompt:viable"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase,semantic node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json dev:perf:q8-prompt:viable must keep the incremental viable Q8 prompt microscope");
@@ -6031,6 +6045,10 @@ function checkDocs() {
     "execution policy is still open work.",
     "`NATIVE_EAGER_GAP_JSON` microscope measures the first targets directly",
     "`lazy_matmul_add_gelu_batched` eager fused matmul work",
+    "`nativeEagerIntoMs` for `linear_batched`",
+    "`zgml_eager_linear_f32` C ABI",
+    "`zgml.nativeEager.linearInto`",
+    "same shared native matmul substrate",
     "`nativeProgramSpeedup` rows as executable targets",
     "fused `matmul -> add -> GELU` storage slices",
     "native Program lowering for `argmax(dim)` and `argmin(dim)`",
@@ -6318,6 +6336,8 @@ function checkDocs() {
     "`dev:perf:native-eager-gap{,:run}` microscope",
     "`linear_batched` and `lazy_matmul_add_gelu_batched` targets",
     "first native eager storage slices have executable baselines",
+    "`zgml.nativeEager.linearInto`",
+    "`zgml_eager_linear_f32` C ABI",
     "explicit state-dict/checkpoint save/load recipes",
     "broader third-party weight-format adapters remain future work",
     "The root public API is still wider than the ideal first-contact surface",

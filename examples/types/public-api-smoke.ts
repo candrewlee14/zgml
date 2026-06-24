@@ -2412,6 +2412,8 @@ const zgmlCompiledInferenceAlias: CompiledInference<readonly [2], readonly [3]> 
 const compiledInferenceForward: Tensor<readonly [3]> = compiledInference.forward(linearInput);
 const compiledInferenceStepTensor: Tensor<readonly [3]> = compiledInference.stepTensor(linearInput);
 const compiledInferenceInto: Float32Array = compiledInference.into(new Float32Array(3), linearInput);
+const nativeEagerLinearInto: Float32Array = zgml.nativeEager.linearInto(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), { bias: tensor([0, 0, 0], [3] as const) });
+const nativeEagerLinearIntoAlias: Float32Array = zgml.native_eager.linear_into(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), { bias: tensor([0, 0, 0], [3] as const) });
 const compiledInferencePrepared: () => Float32Array = compiledInference.prepareInto(new Float32Array(3), linearInput);
 const compiledInferenceExplanation: ModuleCompileExplanation<readonly [2], readonly [3]> | ModuleCompileSupport<readonly [2], readonly [3]> = compiledInference.explain();
 const compiledInferencePreflight: ModuleCompileExplanation<readonly [2], readonly [3]> | ModuleCompileSupport<readonly [2], readonly [3]> = compiledInference.preflight();
@@ -6207,6 +6209,8 @@ void linearModuleAssertedCompilePlan;
 void linearModuleAssertedCompilePlanAlias;
 void linearModulePreflight;
 void compileNamespacePreflight;
+void nativeEagerLinearInto;
+void nativeEagerLinearIntoAlias;
 void sequentialPreflight;
 void sequentialMethodPreflight;
 void trainingDropoutPreflight;
