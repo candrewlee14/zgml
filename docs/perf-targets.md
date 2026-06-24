@@ -409,7 +409,7 @@ including throughput ratio plus dispatch/fallback shape, so a reader can tell
 whether the current full run is above the checked floor without opening JSON.
 The same status readback ends with a compact `perf-next:` line that ranks the
 current artifact-derived bottlenecks: weakest full-model ggml lane, PyTorch
-median misses, Q8 prompt semantic readiness, and qsemantic frontier target. The
+median misses when present, Q8 prompt semantic readiness, and qsemantic frontier target. The
 frontier segment prints both candidate speedup and candidate-vs-current-default
 speedup so a tiled diagnostic cannot look promotable merely because it beats the
 staged baseline. Use that line to choose the next focused microscope before

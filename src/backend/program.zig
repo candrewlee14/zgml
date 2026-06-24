@@ -5084,7 +5084,9 @@ fn findDenseProjectionChainCommand(
         else => return null,
     };
     if (start + 3 < ops.len and !commandRangeTouchesUsed(@intCast(start), 4, used)) {
-        if (matmulRepeatElementwiseBiasActivationCompatible(m, ops[start + 1], ops[start + 2], ops[start + 3])) {
+        if (matmulRepeatElementwiseBiasActivationCompatible(m, ops[start + 1], ops[start + 2], ops[start + 3]) or
+            matmulRepeatElementwiseBiasLogSoftmaxCompatible(m, ops[start + 1], ops[start + 2], ops[start + 3]))
+        {
             var command = ProgramCommand{
                 .kind = .dense_projection_chain,
                 .op_start = @intCast(start),
@@ -5968,6 +5970,27 @@ pub fn matmulRepeatElementwiseBiasActivationCompatible(
     if (activation.op != .relu and activation.op != .gelu and activation.op != .silu) return false;
     if (activation.n != bias.n) return false;
     return activation.src0 == bias.dst and activation.src0_offset == bias.dst_offset;
+}
+
+pub fn matmulRepeatElementwiseBiasLogSoftmaxCompatible(
+    m: anytype,
+    repeat_op: backend_mod.DeviceOp,
+    bias_op: backend_mod.DeviceOp,
+    logsoftmax_op: backend_mod.DeviceOp,
+) bool {
+    if (!matmulRepeatElementwiseBiasCompatible(m, repeat_op, bias_op)) return false;
+    const bias = switch (bias_op) {
+        .elementwise => |e| e,
+        else => return false,
+    };
+    const ls = switch (logsoftmax_op) {
+        .logsoftmax => |s| s,
+        else => return false,
+    };
+    const g = m.geom;
+    if (ls.rows != g.M or ls.cols != g.N) return false;
+    if (g.dst_row_stride != ls.cols) return false;
+    return ls.src == bias.dst and ls.src_offset == bias.dst_offset;
 }
 
 pub fn matmulFusedElementwiseSidecarCompatible(m: anytype, fe: anytype) bool {

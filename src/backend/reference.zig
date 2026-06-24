@@ -300,15 +300,17 @@ pub const ExecutionTape = struct {
                 const matmul_entry = self.entries[start];
                 const repeat_entry = self.entries[start + 1];
                 const bias_entry = self.entries[start + 2];
-                const activation_entry = self.entries[start + 3];
+                const tail_entry = self.entries[start + 3];
                 const matmul_index: usize = matmul_entry.op_index;
                 const repeat_index: usize = repeat_entry.op_index;
                 const bias_index: usize = bias_entry.op_index;
-                const activation_index: usize = activation_entry.op_index;
-                if (matmul_index >= ops.len or repeat_index >= ops.len or bias_index >= ops.len or activation_index >= ops.len) {
+                const tail_index: usize = tail_entry.op_index;
+                if (matmul_index >= ops.len or repeat_index >= ops.len or bias_index >= ops.len or tail_index >= ops.len) {
                     std.debug.panic("reference execution tape dense projection bias activation index out of range", .{});
                 }
-                if (ctx.denseProjectionBiasActivationChain(ops[matmul_index], ops[repeat_index], ops[bias_index], ops[activation_index])) {
+                const executed = ctx.denseProjectionBiasActivationChain(ops[matmul_index], ops[repeat_index], ops[bias_index], ops[tail_index]) or
+                    ctx.denseProjectionBiasLogSoftmaxChain(ops[matmul_index], ops[repeat_index], ops[bias_index], ops[tail_index]);
+                if (executed) {
                     if (runtime_profile) |profile| {
                         profile.recordProgramCommand(command.kind);
                         profile.recordProgramCommandDispatch(command.kind);
@@ -1551,6 +1553,102 @@ const Context = struct {
         return true;
     }
 
+    fn denseProjectionBiasLogSoftmaxChain(
+        self: Context,
+        matmul_op: backend_mod.DeviceOp,
+        repeat_op: backend_mod.DeviceOp,
+        bias_op: backend_mod.DeviceOp,
+        logsoftmax_op: backend_mod.DeviceOp,
+    ) bool {
+        const m = switch (matmul_op) {
+            .matmul => |m| m,
+            else => return false,
+        };
+        const rp = switch (repeat_op) {
+            .repeat => |rp| rp,
+            else => return false,
+        };
+        const ls = switch (logsoftmax_op) {
+            .logsoftmax => |s| s,
+            else => return false,
+        };
+        if (!program_mod.matmulRepeatElementwiseBiasLogSoftmaxCompatible(m, repeat_op, bias_op, logsoftmax_op)) return false;
+        forward.blasSgemm(
+            self.bufSlice(ls.dst),
+            self.bufSlice(m.a),
+            self.bufSlice(m.b),
+            m.geom.M,
+            m.geom.N,
+            m.geom.K,
+            m.geom.a_row_stride,
+            m.geom.a_col_stride,
+            m.geom.b_row_stride,
+            m.geom.b_col_stride,
+            m.geom.a_offset,
+            m.geom.b_offset,
+            ls.dst_offset,
+            m.geom.dst_row_stride,
+        );
+        addBiasLogSoftmaxRows(
+            self.bufF32(ls.dst),
+            self.bufF32(rp.src),
+            m.geom.M,
+            m.geom.N,
+            m.geom.dst_row_stride,
+            ls.dst_offset,
+            rp.src_offset,
+        );
+        return true;
+    }
+
+    fn addBiasLogSoftmaxRows(
+        dst: [*]f32,
+        bias: [*]const f32,
+        M: usize,
+        N: usize,
+        dst_row_stride: usize,
+        dst_offset: usize,
+        bias_offset: usize,
+    ) void {
+        const VecT = @Vector(V, f32);
+        for (0..M) |row| {
+            const dst_row = dst[dst_offset + row * dst_row_stride ..][0..N];
+            const bias_row = bias[bias_offset..][0..N];
+            var max_v: VecT = @splat(-std.math.inf(f32));
+            var i: usize = 0;
+            while (i + V <= N) : (i += V) {
+                const dst_v: VecT = dst_row[i..][0..V].*;
+                const bias_v: VecT = bias_row[i..][0..V].*;
+                const logits = dst_v + bias_v;
+                dst_row[i..][0..V].* = logits;
+                max_v = @max(max_v, logits);
+            }
+            var max_scalar: f32 = @reduce(.Max, max_v);
+            while (i < N) : (i += 1) {
+                const logits = dst_row[i] + bias_row[i];
+                dst_row[i] = logits;
+                max_scalar = @max(max_scalar, logits);
+            }
+
+            const max_vec: VecT = @splat(max_scalar);
+            var sum_v: VecT = @splat(0);
+            i = 0;
+            while (i + V <= N) : (i += V) {
+                sum_v += fastExpApproxVec(dst_row[i..][0..V].* - max_vec);
+            }
+            var sum: f32 = @reduce(.Add, sum_v);
+            while (i < N) : (i += 1) sum += @exp(dst_row[i] - max_scalar);
+
+            const log_denom_v: VecT = @splat(max_scalar + @log(sum));
+            i = 0;
+            while (i + V <= N) : (i += V) {
+                dst_row[i..][0..V].* = dst_row[i..][0..V].* - log_denom_v;
+            }
+            const log_denom = max_scalar + @log(sum);
+            while (i < N) : (i += 1) dst_row[i] -= log_denom;
+        }
+    }
+
     fn addBiasReluRows(
         dst: [*]f32,
         bias: [*]const f32,
@@ -1986,6 +2084,81 @@ test "reference executor matmul" {
     } });
 
     try std.testing.expectEqualSlices(f32, &.{ 58, 64, 139, 154 }, &dst);
+}
+
+test "reference execution tape fuses dense projection bias logsoftmax" {
+    var input = [_]f32{ 1, 2, 3, 4, 5, 6 };
+    var weight = [_]f32{0} ** 24;
+    var bias = [_]f32{0} ** 8;
+    for (&weight, 0..) |*w, i| w.* = @as(f32, @floatFromInt(@as(i32, @intCast(i % 7)) - 3)) / 8.0;
+    for (&bias, 0..) |*b, i| b.* = @as(f32, @floatFromInt(@as(i32, @intCast(i)) - 4)) / 16.0;
+    var repeated_bias = [_]f32{0} ** 16;
+    var logits = [_]f32{0} ** 16;
+    var output = [_]f32{0} ** 16;
+    const buffers = [_]Buffer{
+        .{ .ptr = &input, .len = input.len },
+        .{ .ptr = &weight, .len = weight.len },
+        .{ .ptr = &bias, .len = bias.len },
+        .{ .ptr = &repeated_bias, .len = repeated_bias.len },
+        .{ .ptr = &logits, .len = logits.len },
+        .{ .ptr = &output, .len = output.len },
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .matmul = .{
+            .dst = 4,
+            .a = 0,
+            .b = 1,
+            .geom = .{ .M = 2, .N = 8, .K = 3, .a_row_stride = 3, .a_col_stride = 1, .b_row_stride = 8, .b_col_stride = 1, .a_offset = 0, .b_offset = 0, .dst_offset = 0, .dst_row_stride = 8 },
+        } },
+        .{ .repeat = .{
+            .dst = 3,
+            .src = 2,
+            .n = 16,
+            .src_ne = .{ 8, 1, 1, 1 },
+            .dst_ne = .{ 8, 2, 1, 1 },
+            .src_strides = .{ 1, 1, 1, 1 },
+            .dst_strides = .{ 1, 8, 1, 1 },
+        } },
+        .{ .elementwise = .{ .op = .add, .dst = 3, .src0 = 4, .src1 = 3, .n = 16 } },
+        .{ .logsoftmax = .{ .dst = 5, .src = 3, .rows = 2, .cols = 8 } },
+    };
+
+    var tape = try ExecutionTape.init(std.testing.allocator, &ops);
+    defer tape.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), tape.commandLen());
+    tape.execute(&buffers, &.{}, &ops);
+
+    var expected_logits = [_]f32{0} ** 16;
+    forward.blasSgemm(
+        &expected_logits,
+        &input,
+        &weight,
+        2,
+        8,
+        3,
+        3,
+        1,
+        8,
+        1,
+        0,
+        0,
+        0,
+        8,
+    );
+    for (0..2) |row| {
+        const base = row * 8;
+        var max_value: f32 = -std.math.inf(f32);
+        for (0..8) |col| {
+            expected_logits[base + col] += bias[col];
+            max_value = @max(max_value, expected_logits[base + col]);
+        }
+        var denom: f32 = 0;
+        for (0..8) |col| denom += @exp(expected_logits[base + col] - max_value);
+        const log_denom = max_value + @log(denom);
+        for (0..8) |col| {
+            try std.testing.expectApproxEqAbs(expected_logits[base + col] - log_denom, output[base + col], 1e-4);
+        }
+    }
 }
 
 test "reference executor vector gelu stays within scalar tolerance" {

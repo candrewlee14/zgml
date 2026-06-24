@@ -1136,6 +1136,23 @@ instead of forcing that case through the BLAS-plus-row-normalization path. The
 `0.00755ms`; the lane remains a miss, but the direct path is no longer worse
 than the fallback on the local ReleaseFast evidence. Keep this as a small
 classifier-tail policy correction, not a parity claim.
+The next focused pass moved the winning fix one layer lower: the CPU execution
+tape now recognizes `matmul -> repeat(bias) -> add(bias) -> logsoftmax` as a
+single dense projection command and runs the classifier tail directly into the
+final output with vectorized bias+log-softmax normalization. The public
+KernelPlan remains `linear|logSoftmax`, but Program inspection for the focused
+classifier shape now reports one projection command instead of a projection
+command plus a row op. Fresh-native 150ms evidence against PyTorch `2.12.1`
+flipped the former soft spot from a miss to a stable win:
+`log_softmax_classifier_batched` selected at `1.48x` with
+`ratio_median=1.43x`, and the six-lane focused comparison now passes
+`lane_pass=6/6`, `median_lane_pass=6/6`, with worst selected lane
+`linear_batched:1.24x`. The broader ten-lane replacement comparison is also
+green on fresh-native 150ms evidence: `lane_pass=10/10`,
+`median_lane_pass=10/10`, worst selected lane `linear_batched:1.18x`, and
+`ratio_median=linear_batched:1.26x,lazy_matmul_add_gelu_batched:2.76x,lazy_mlp_batched:1.76x,lazy_rms_silu_ffn_batched:1.56x,max_pool2d_batched:8.14x,avg_pool2d_batched:5.00x,rms_gelu_linear_batched:3.07x,softmax_classifier_batched:1.15x,log_softmax_classifier_batched:1.54x,lazy_token_head_batched:1.70x`.
+The current PyTorch next item is therefore `none`; the next performance frontier
+moves back to Q8/ggml semantic throughput.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier
