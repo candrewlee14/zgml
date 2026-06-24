@@ -16,6 +16,18 @@ means the stable inference shape for that workflow can expose
 `compileForInference`, `compileSupport`, `kernelPlan`, or a Program/Session
 proof without silent fallback.
 
+The single command for this claim is:
+
+```sh
+npm run smoke:frontend-confidence
+```
+
+It rebuilds the package, runs the canonical zgml-first training and inference
+examples, runs the package smoke that contains the Conv2d and token-head native
+Program assertions, and checks this table still points at the runtime evidence.
+For a fast static guard while editing docs or smoke labels, use
+`npm run check:frontend-confidence`.
+
 | Workflow | User Story | Current Evidence | Remaining Gap |
 | --- | --- | --- | --- |
 | Linear regression | Train a small regression model with `nn.Linear`, `MSELoss`, `optim`, scheduler state, and checkpoints. | `examples/node_training/train_linear.cjs`; `train.fitModule`; checkpoint JSON round-trip; `src/ts/smokes/package_smoke_core.ts` fit/checkpoint assertions. | Native eager tensor storage is not yet the default for large tensors. |
