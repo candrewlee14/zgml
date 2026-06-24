@@ -18,6 +18,7 @@ const baselineArtifacts = [
   "benchmarks/baselines/smollm-stencil-p128.json",
 ];
 const fullRunArtifactPattern = /^smollm-\d{8}T\d{6}Z(?:-\d+)?-p128-g200-r3\.json$/;
+const ggmlSmokeArtifactPattern = /^smollm-\d{8}T\d{6}Z(?:-\d+)?-p128-g40-r1\.json$/;
 const pytorchArtifactPattern = /^pytorch-\d{8}T\d{6}Z-\d+\.json$/;
 const q8PromptArtifactPattern = /^q8-prompt-\d{8}T\d{6}Z-\d+\.json$/;
 const frontierArtifactPattern = /^frontier-qsemantic-\d{8}T\d{6}Z-\d+\.json$/;
@@ -87,6 +88,22 @@ function quarantinedFullRunArtifacts() {
     .filter((name) => fullRunArtifactPattern.test(name))
     .sort()
     .map((name) => join(dir, name));
+}
+
+function ggmlSmokeArtifacts() {
+  const dirs = ["bench-results", join("bench-results", "failed")];
+  const paths = [];
+  for (const dir of dirs) {
+    if (!existsSync(dir)) continue;
+    for (const name of readdirSync(dir)) {
+      if (ggmlSmokeArtifactPattern.test(name)) paths.push(join(dir, name));
+    }
+  }
+  return paths.sort((left, right) => compactName(left).localeCompare(compactName(right)));
+}
+
+function latestGgmlSmokeArtifact() {
+  return ggmlSmokeArtifacts().at(-1) ?? null;
 }
 
 function pytorchComparisonArtifacts() {
@@ -351,6 +368,38 @@ function qsemanticThroughputStatusLine(path) {
   const next = typeof data?.next === "string" ? data.next : "unknown";
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
   return `qsemantic-throughput-results: latest=${compactName(path)} status=${status} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill}:dispatches:${fullDispatches}:tile_groups:${fullTileGroups}:spilled_input:${fullSpilledInput}:output_spills:${fullOutputSpills} smollm_prompt=${smollmPrompt}:dispatches:${smollmDispatches}:tile_groups:${smollmTileGroups}:spilled_input:${smollmSpilledInput}:output_spills:${smollmOutputSpills} next=${next} source=${source}`;
+}
+
+function ggmlSmokeStatusLine(path) {
+  if (!path) {
+    return "ggml-smoke-results: no local p128/g40/r1 smoke artifact found; run npm run dev:perf:next:run after Q8 promotion";
+  }
+  let data;
+  try {
+    data = readJson(path);
+  } catch {
+    return `ggml-smoke-results: latest=${compactName(path)} unreadable`;
+  }
+  const q8Prompt = data?.summary?.gate_zgml?.q8_0?.prompt;
+  const q8Decode = data?.summary?.gate_zgml?.q8_0?.decode;
+  const q8PromptParity = data?.summary?.parity_gate_vs_llama_cpp_metal_q8_0?.prompt;
+  const q8DecodeParity = data?.summary?.parity_gate_vs_llama_cpp_metal_q8_0?.decode;
+  const required = data?.gates?.required_pass === true ? "required-pass" : "diagnostic";
+  const promptParity = formatPct(q8PromptParity?.parity);
+  const decodeParity = formatPct(q8DecodeParity?.parity);
+  const promptTokS = Number(q8Prompt?.tok_s);
+  const decodeTokS = Number(q8Decode?.tok_s);
+  const promptCommands = q8Prompt?.commands_per_call ?? "n/a";
+  const decodeCommands = q8Decode?.commands_per_call ?? "n/a";
+  const promptDispatches = q8Prompt?.dispatches_per_call ?? "n/a";
+  const decodeDispatches = q8Decode?.dispatches_per_call ?? "n/a";
+  const fallback = q8Prompt?.fallback_ops ?? "n/a";
+  const semantic = q8Prompt?.program_command_encoded_semantic_ffn_sublayer_per_call ?? 0;
+  const rowChains = q8Prompt?.program_command_encoded_projection_row_chain_per_call ?? 0;
+  const bridges = q8Prompt?.program_command_shape_projection_row_chain_semantic_residual_bridges ?? 0;
+  const cacheGroups = q8Prompt?.program_command_encoded_projection_cache_group_per_call ?? 0;
+  const promptLabel = typeof q8Prompt?.label === "string" ? q8Prompt.label.replace(/\s+/g, "_") : "unknown";
+  return `ggml-smoke-results: latest=${compactName(path)} status=${required} q8_prompt=${Number.isFinite(promptTokS) ? promptTokS.toFixed(2) : "n/a"}tok/s:${promptParity}:dispatch=${promptDispatches}:commands=${promptCommands}:semantic_ffn=${semantic}:projection_row_chain=${rowChains}:semantic_bridges=${bridges}:cache_groups=${cacheGroups}:fallback=${fallback}:lane=${promptLabel} q8_decode=${Number.isFinite(decodeTokS) ? decodeTokS.toFixed(2) : "n/a"}tok/s:${decodeParity}:dispatch=${decodeDispatches}:commands=${decodeCommands}`;
 }
 
 function qprojFrontierArtifacts() {
@@ -1433,6 +1482,7 @@ const latestFrontier = latestFrontierArtifact();
 const latestRawFrontier = latestRawFrontierArtifact();
 const latestQsemanticThroughput = latestQsemanticThroughputArtifact();
 const latestQprojFrontier = latestQprojFrontierArtifact();
+const latestGgmlSmoke = latestGgmlSmokeArtifact();
 process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8Prompt)}\n`);
 const q8PromptFreshness = q8PromptFreshnessStatusLine(latestQ8Prompt, latestRawQ8Prompt);
 if (q8PromptFreshness) process.stdout.write(`${q8PromptFreshness}\n`);
@@ -1441,6 +1491,7 @@ process.stdout.write(`${frontierStatusLine(latestFrontier, latestRawFrontier)}\n
 const frontierFreshness = frontierFreshnessStatusLine(latestFrontier, latestRawFrontier);
 if (frontierFreshness) process.stdout.write(`${frontierFreshness}\n`);
 process.stdout.write(`${qsemanticThroughputStatusLine(latestQsemanticThroughput)}\n`);
+process.stdout.write(`${ggmlSmokeStatusLine(latestGgmlSmoke)}\n`);
 process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, rawQ8Path: latestRawQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestQsemanticThroughput ?? latestRawFrontier })}\n`);
 const quarantined = quarantinedFullRunArtifacts();
 if (quarantined.length > 0) {
