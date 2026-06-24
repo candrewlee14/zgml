@@ -11,6 +11,7 @@ import {
   tensor,
   torch,
   train,
+  zgml,
   type SessionExecutionPlan,
   type SessionStepParamsCompatibility,
   type Tensor,
@@ -28,6 +29,33 @@ import {
   type SessionStepParamsCompatibility as BunSessionStepParamsCompatibility,
   type Tensor as BunTensor,
 } from "zgml/bun";
+
+const zgmlModel = new zgml.nn.Sequential(
+  new zgml.nn.Linear(2, 4),
+  new zgml.nn.ReLU(),
+  new zgml.nn.Linear(4, 1),
+);
+const zgmlOptimizer = new zgml.optim.AdamW(zgmlModel, { lr: 3e-2, weight_decay: 1e-3 });
+const zgmlScheduler = new zgml.optim.lr_scheduler.StepLR(zgmlOptimizer, { step_size: 20, gamma: 0.5 });
+const zgmlDataset = new zgml.utils.data.TensorDataset(
+  zgml.tensor([0, 0, 0, 1, 1, 0, 1, 1], [4, 2] as const),
+  zgml.tensor([0, 1, 1, 0], [4, 1] as const),
+);
+const zgmlLoader = new zgml.utils.data.DataLoader(zgmlDataset, { batch_size: 2, shuffle: true });
+const zgmlCriterion = new zgml.nn.MSELoss();
+const zgmlFit = zgml.train.fitModule(zgmlOptimizer, zgmlModel, zgmlLoader, zgmlCriterion, {
+  epochs: 1,
+  zero_grad: true,
+  clip_grad_norm: 1,
+  onStep() {
+    zgmlScheduler.step();
+  },
+});
+const zgmlSnapshot = zgml.checkpoint.create({ model: zgmlModel, optimizer: zgmlOptimizer, scheduler: zgmlScheduler, prefix: "zgml" });
+const zgmlProgram = zgml.compile(zgmlModel, { inputShape: [2] as const });
+void zgmlFit;
+void zgmlSnapshot;
+void zgmlProgram;
 
 const torchModel = new torch.nn.Sequential(
   new torch.nn.Linear(2, 4),

@@ -1263,6 +1263,7 @@ const torch = createAdapterTorchNamespace({
   Session,
   NativeBuffer,
 });
+const zgml = torch;
 
 const { readSafetensorsHeaderFile } = createAdapterSafetensorsFileHeaderHelpers(fs);
 
@@ -1349,6 +1350,7 @@ module.exports = createAdapterPublicRuntimeExports({
   enableGrad,
   enable_grad,
   gradMode,
+  zgml,
   torch,
   eq,
   ne,

@@ -428,6 +428,11 @@ prints the worst `zgml_vs_pytorch` ratio, while `bench:pytorch:parity` is the
 hard parity gate (`BENCH_PYTORCH_REQUIRE_PARITY=1`). That gate is now expected
 to be the proof target for checked CPU workloads. The current checked set is
 green for linear, MLP, fused GELU matmul, RMSNorm+SiLU FFN, and pooling lanes.
+The root Node/Bun native package now exposes `zgml` as the canonical friendly
+namespace and keeps `torch` as the compatibility alias to the same frozen object;
+`README.md` leads with `import { zgml } from "zgml"`, while runtime smokes assert
+`adapter.zgml === adapter.torch` so this naming correction does not create a
+second frontend implementation.
 Exploratory focused lanes still track softer micro-workloads such as
 classifier `LogSoftmax` tails and token-head paths, but those are microscopes
 for ranking optimization opportunities rather than promoted hard-gate misses.

@@ -6644,6 +6644,8 @@ export type PublicTorchNamespace = Readonly<{
   Session: typeof Session;
   NativeBuffer: typeof NativeBuffer;
 }>;
+export type PublicZgmlNamespace = PublicTorchNamespace;
+export declare const zgml: PublicZgmlNamespace;
 export declare const torch: PublicTorchNamespace;
 
 export type TinyLinearDesc = {

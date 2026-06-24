@@ -197,6 +197,7 @@ export const inference_mode = nativeBunRuntime.inference_mode;
 export const enableGrad = nativeBunRuntime.enableGrad;
 export const enable_grad = nativeBunRuntime.enable_grad;
 export const gradMode = nativeBunRuntime.gradMode;
+export const zgml = nativeBunRuntime.zgml;
 export const torch = nativeBunRuntime.torch;
 export const nn = nativeBunRuntime.nn;
 export const F = nativeBunRuntime.F;

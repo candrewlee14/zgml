@@ -228,6 +228,7 @@ export const requiredNativeGradModeExports = Object.freeze([
 
 export const requiredNativeFrontendNamespaceExports = Object.freeze([
   "gradMode",
+  "zgml",
   "torch",
   "nn",
   "F",

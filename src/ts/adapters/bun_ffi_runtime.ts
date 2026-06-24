@@ -2604,6 +2604,7 @@ export const torch = createAdapterTorchNamespace({
   Session,
   NativeBuffer,
 });
+export const zgml = torch;
 
 const {
   TinyLlamaModel,

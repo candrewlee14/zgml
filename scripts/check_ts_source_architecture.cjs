@@ -16960,8 +16960,6 @@ function checkDocsUseTsdownArtifactLanguage(errors) {
     }
   }
   const staleReadmeZigFrontendExamples = [
-    "zgml.nn.Linear",
-    "zgml.nn.sequential",
     "zig build example-train-linear",
     "checkpointing belong behind future training",
     "future traced compiler",

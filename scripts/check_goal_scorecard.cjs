@@ -2492,7 +2492,9 @@ function checkNativeWgpuRuntimeEvidence() {
 function checkZgmlFrontendSurface() {
   const readme = read("README.md");
   requireIncludes(readme, "README.md", "root checkpoint save/load quickstart", [
-    "const program = torch.compile(model, { inputShape: [2] as const })",
+    "import { zgml } from \"zgml\"",
+    "`torch` remains available as a PyTorch-compatible alias",
+    "const program = zgml.compile(model, { inputShape: [2] as const })",
     "import { F, checkpoint, compile, data, load, nn, optim, save, tensor, train } from \"zgml\"",
     "const text = save(snapshot, 2)",
     "const loaded = load(text)",

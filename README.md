@@ -16,25 +16,25 @@ and autograd vocabulary. Then compile the stable work into an explicit
 binding, and evidence.
 
 ```ts
-import { torch } from "zgml";
+import { zgml } from "zgml";
 import type { Tensor } from "zgml";
 
-const model = new torch.nn.Sequential(
-  new torch.nn.Linear(2, 4),
-  new torch.nn.ReLU(),
-  new torch.nn.Linear(4, 1),
+const model = new zgml.nn.Sequential(
+  new zgml.nn.Linear(2, 4),
+  new zgml.nn.ReLU(),
+  new zgml.nn.Linear(4, 1),
 );
 
-const optimizer = new torch.optim.AdamW(model, { lr: 3e-2, weight_decay: 1e-3 });
-const scheduler = new torch.optim.lr_scheduler.StepLR(optimizer, { step_size: 20, gamma: 0.5 });
-const criterion = new torch.nn.MSELoss();
-const dataset = new torch.utils.data.TensorDataset(
-  torch.tensor([0, 0, 0, 1, 1, 0, 1, 1], [4, 2]),
-  torch.tensor([0, 1, 1, 0], [4, 1]),
+const optimizer = new zgml.optim.AdamW(model, { lr: 3e-2, weight_decay: 1e-3 });
+const scheduler = new zgml.optim.lr_scheduler.StepLR(optimizer, { step_size: 20, gamma: 0.5 });
+const criterion = new zgml.nn.MSELoss();
+const dataset = new zgml.utils.data.TensorDataset(
+  zgml.tensor([0, 0, 0, 1, 1, 0, 1, 1], [4, 2]),
+  zgml.tensor([0, 1, 1, 0], [4, 1]),
 );
-const loader = new torch.utils.data.DataLoader(dataset, { batch_size: 2, shuffle: true });
+const loader = new zgml.utils.data.DataLoader(dataset, { batch_size: 2, shuffle: true });
 
-torch.train.fitModule(optimizer, model, loader, criterion, {
+zgml.train.fitModule(optimizer, model, loader, criterion, {
   epochs: 8,
   zero_grad: true,
   clip_grad_norm: 1,
@@ -43,15 +43,18 @@ torch.train.fitModule(optimizer, model, loader, criterion, {
   },
 });
 
-const snapshot = torch.checkpoint.create({ model, optimizer, scheduler, prefix: "xor" });
-const text = torch.checkpoint.stringify(snapshot, 2);
-const loaded = torch.checkpoint.parse(text);
-torch.checkpoint.restore(loaded, { model, optimizer, scheduler, prefix: "xor", strict: true });
+const snapshot = zgml.checkpoint.create({ model, optimizer, scheduler, prefix: "xor" });
+const text = zgml.checkpoint.stringify(snapshot, 2);
+const loaded = zgml.checkpoint.parse(text);
+zgml.checkpoint.restore(loaded, { model, optimizer, scheduler, prefix: "xor", strict: true });
 // Direct in-memory restore also works:
-torch.checkpoint.restore(snapshot, { model, optimizer, scheduler, prefix: "xor", strict: true });
+zgml.checkpoint.restore(snapshot, { model, optimizer, scheduler, prefix: "xor", strict: true });
 
-const program = torch.compile(model, { inputShape: [2] as const });
+const program = zgml.compile(model, { inputShape: [2] as const });
 ```
+
+`torch` remains available as a PyTorch-compatible alias for this same friendly
+namespace, but `zgml` is the canonical package identity.
 
 The same pieces remain available as small TS-first namespaces when you want a
 more explicit import surface:
@@ -99,11 +102,11 @@ write ordinary TS module code, train eagerly, then bind the trained state into a
 compiled Program/Session boundary when the hot path is stable.
 
 ```ts
-class Classifier extends torch.nn.Module<readonly [2], readonly [2]> {
-  readonly graph = new torch.nn.Sequential(
-    new torch.nn.Linear(2, 4),
-    new torch.nn.ReLU(),
-    new torch.nn.Linear(4, 2),
+class Classifier extends zgml.nn.Module<readonly [2], readonly [2]> {
+  readonly graph = new zgml.nn.Sequential(
+    new zgml.nn.Linear(2, 4),
+    new zgml.nn.ReLU(),
+    new zgml.nn.Linear(4, 2),
   );
 
   forward(input: Tensor<readonly [2]>): Tensor<readonly [2]>;
@@ -114,38 +117,38 @@ class Classifier extends torch.nn.Module<readonly [2], readonly [2]> {
 }
 
 const classifier = new Classifier();
-const criterion = new torch.nn.CrossEntropyLoss({ classes: 2 });
-const classifierOptimizer = new torch.optim.AdamW(classifier, { lr: 1e-2 });
-const classifierDataset = new torch.utils.data.TensorDataset(
-  torch.tensor([-1, -1, 1, -1], [2, 2]),
-  torch.tensor([0, 1], [2]),
+const criterion = new zgml.nn.CrossEntropyLoss({ classes: 2 });
+const classifierOptimizer = new zgml.optim.AdamW(classifier, { lr: 1e-2 });
+const classifierDataset = new zgml.utils.data.TensorDataset(
+  zgml.tensor([-1, -1, 1, -1], [2, 2]),
+  zgml.tensor([0, 1], [2]),
 );
-const classifierLoader = new torch.utils.data.DataLoader(classifierDataset, { batch_size: 1 });
+const classifierLoader = new zgml.utils.data.DataLoader(classifierDataset, { batch_size: 1 });
 
-torch.train.fitClassifier(classifierOptimizer, classifier, classifierLoader, criterion, {
+zgml.train.fitClassifier(classifierOptimizer, classifier, classifierLoader, criterion, {
   epochs: 4,
   zero_grad: true,
 });
 
 classifier.eval();
-torch.train.evaluate(classifierLoader, (batch) => {
+zgml.train.evaluate(classifierLoader, (batch) => {
   if (!batch.target) throw new Error("classifier eval batch requires targets");
   return criterion.forward(classifier.forward(batch.input), batch.target);
 });
-const predictions = torch.train.predictClassifier(classifier, classifierLoader);
+const predictions = zgml.train.predictClassifier(classifier, classifierLoader);
 
-const program = torch.compile.compile(classifier, { inputShape: [2] as const });
+const program = zgml.compile.compile(classifier, { inputShape: [2] as const });
 const session = program.bindModule(classifier);
-const input = torch.tensor([1, -1], [2] as const);
-const logits = torch.inference_mode(() => session.stepTensor(input));
+const input = zgml.tensor([1, -1], [2] as const);
+const logits = zgml.inference_mode(() => session.stepTensor(input));
 const output = new Float32Array(2);
 const hotParams = { input, output };
 session.requireHotStepParams(hotParams);
 session.hotPathPlan(hotParams);
-const logitsInto = torch.inference_mode(() => session.executeInto(output, { input }));
-const probabilities = torch.F.softmax(logits, -1);
-const classes = torch.train.predictClasses(logits, { classes: 2 });
-const classesInto = torch.train.predict_classes(logitsInto, { numClasses: 2 });
+const logitsInto = zgml.inference_mode(() => session.executeInto(output, { input }));
+const probabilities = zgml.F.softmax(logits, -1);
+const classes = zgml.train.predictClasses(logits, { classes: 2 });
+const classesInto = zgml.train.predict_classes(logitsInto, { numClasses: 2 });
 ```
 
 The composable namespace form is equivalent:

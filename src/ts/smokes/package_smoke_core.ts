@@ -3783,6 +3783,9 @@ function expectClassifierAndTokenHeadProgramEvidence(adapter: Record<string, any
 
 function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, label: string) {
   const torch = adapter.torch;
+  if (adapter.zgml !== torch) {
+    throw new Error(`${label} expected zgml to be the canonical alias for the torch-compatible namespace`);
+  }
   if (
     !torch ||
     typeof torch.tensor !== "function" ||
