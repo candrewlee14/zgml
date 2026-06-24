@@ -1079,11 +1079,32 @@ function fullModelNextTarget(latestPath) {
   }
 }
 
+function currentQ8SmokeNextTarget(path) {
+  if (!path) return "q8_current=missing_smoke";
+  try {
+    const data = readJson(path);
+    const row = data?.summary?.gate_zgml?.q8_0?.prompt;
+    const parityRow = parityRowFor(data, "q8_0", "prompt");
+    if (!row || typeof row !== "object" || !parityRow || typeof parityRow.parity !== "number" || !Number.isFinite(parityRow.parity)) {
+      return "q8_current=missing_prompt";
+    }
+    const required = data?.gates?.required_pass === true ? "required-pass" : "diagnostic";
+    const dispatches = row.dispatches_per_call;
+    const commands = row.commands_per_call;
+    const target = semanticPressureTarget(row);
+    return `q8_current=prompt:${formatPct(parityRow.parity)}:${required}:dispatch=${dispatches}:commands=${commands}:target=${target}:next=${semanticFrontierNextTarget(target)}`;
+  } catch {
+    return "q8_current=unreadable_smoke";
+  }
+}
+
 function perfNextStatusLine({ latestPath, pytorchPath, q8Path, rawQ8Path, frontierPath, rawFrontierPath }) {
   const qprojPath = latestQprojFrontierArtifact();
+  const q8SmokePath = latestGgmlSmokeArtifact();
   return [
     "perf-next:",
     fullModelNextTarget(latestPath),
+    currentQ8SmokeNextTarget(q8SmokePath),
     pytorchNextTarget(pytorchPath),
     q8PromptNextTarget(q8Path, rawQ8Path),
     qprojNextTargetLine(qprojPath),
@@ -1298,6 +1319,23 @@ function pressureReductionTarget(row) {
     .filter(([name]) => name.includes("projection_chain") || name.includes("projection_row_chain"))
     .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
   return targets.length ? `${targets[0][0]}:${targets[0][1]}` : "none";
+}
+
+function semanticPressureTarget(row) {
+  if (!row || typeof row !== "object") return "missing";
+  const semantic = row.program_command_dispatches_semantic_ffn_sublayer_per_call;
+  if (typeof semantic === "number" && Number.isFinite(semantic) && semantic > 0) {
+    return `semantic_ffn_sublayer:${semantic}`;
+  }
+  return pressureReductionTarget(row);
+}
+
+function semanticFrontierNextTarget(target) {
+  if (typeof target !== "string") return "inspect_command_pressure";
+  if (target.startsWith("semantic_ffn_sublayer:")) return "semantic_ffn_sublayer_throughput_kernel";
+  if (target.startsWith("projection_row_chain:")) return "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
+  if (target.startsWith("projection_chain:")) return "semantic_sublayer_or_quantized_projection_chain";
+  return "inspect_command_pressure";
 }
 
 function frontierNextTarget(weakest) {

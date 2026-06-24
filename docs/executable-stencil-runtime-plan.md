@@ -721,6 +721,14 @@ when it is faster than the staged baseline but slower than the current semantic
 command path. That keeps the next performance step evidence-led instead of
 plan-led: start with the line, run the focused microscope it points at, then
 only promote to full ggml/PyTorch gates after the bottleneck moves.
+`perf-next` keeps two Q8 full-model signals separate: `full_model=` remains the
+accepted long-run p128/g200 artifact used for baseline/trend evidence, while
+`q8_current=` reads the latest required-pass p128/g40 smoke so the promoted
+semantic command shape can steer local iteration. That prevents the next-action
+hint from pointing at stale `projection_chain:60` pressure after a newer
+semantic-default smoke has already reduced the Q8 prompt command shape to 151
+commands; the current smoke target is the semantic FFN sublayer throughput
+kernel.
 The PyTorch comparison microscope also accepts exploratory lanes such as
 `rms_gelu_linear_batched`, `softmax_classifier_batched`,
 `log_softmax_classifier_batched`, and `lazy_token_head_batched`, so optimization
