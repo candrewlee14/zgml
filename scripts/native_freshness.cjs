@@ -66,14 +66,16 @@ function benchmarkBinaryMetadata(options) {
   const root = options.root;
   const binaryPath = resolve(root, options.binary);
   const newestSource = newestNativeSourceMtimeMs([join(root, "build.zig"), join(root, "src"), join(root, "benchmarks")]);
+  const executedBuild = options.build === "1";
   const binaryExists = existsSync(binaryPath);
   const binaryStat = binaryExists ? statSync(binaryPath) : null;
-  const stale = binaryStat ? newestSource.mtimeMs > binaryStat.mtimeMs + 1 : true;
+  const stale = executedBuild ? false : binaryStat ? newestSource.mtimeMs > binaryStat.mtimeMs + 1 : true;
   const shortStatus = runGit(root, ["status", "--short"]);
   return Object.freeze({
     gitCommit: runGit(root, ["rev-parse", "HEAD"]),
     gitDirty: shortStatus === null ? null : shortStatus.length !== 0,
     build: options.build ?? null,
+    executedBuild,
     binaryPath,
     binaryExists,
     binaryMtimeMs: binaryStat ? binaryStat.mtimeMs : null,

@@ -1,7 +1,7 @@
 "use strict";
 
 const { spawnSync } = require("node:child_process");
-const { mkdirSync, writeFileSync } = require("node:fs");
+const { existsSync, mkdirSync, writeFileSync } = require("node:fs");
 const { join, resolve } = require("node:path");
 const os = require("node:os");
 const { benchmarkBinaryMetadata } = require("./native_freshness.cjs");
@@ -55,6 +55,9 @@ function runBench() {
   const args = build === "1" ? ["build", "-Doptimize=ReleaseFast", "bench-frontier"] : build === "0" ? [] : null;
   if (command === null || args === null) {
     throw new Error(`BENCH_FRONTIER_BUILD must be 0 or 1, got ${build}`);
+  }
+  if (build === "0" && !existsSync(resolve(root, frontierBinary))) {
+    throw new Error(`BENCH_FRONTIER_BUILD=0 requires ${frontierBinary}; run \`zig build -Doptimize=ReleaseFast bench-build\` first or use BENCH_FRONTIER_BUILD=1`);
   }
   const result = spawnSync(command, args, {
     encoding: "utf8",
