@@ -933,10 +933,14 @@ kernel yet: full-prefill reports `target_semantic_rows=128`,
 `target_semantic_hidden=512`, and
 `target_semantic_row_serial_dot_ops=786432`, while SmolLM prompt reports
 `target_semantic_rows=128`, `target_semantic_hidden=576`, and
-`target_semantic_row_serial_dot_ops=995328`. The command shape is ideal, but
-the implementation still performs a row-serial dot workload inside each
-threadgroup. A focused semantic-thread-width experiment rejected the obvious
-knobs: `SEMANTIC_FFN_THREADS=512` preserved correctness but left the target
+`target_semantic_row_serial_dot_ops=995328`. The qsemantic gate now also prints
+the total trapped row-serial work:
+`target_semantic_total_row_serial_dot_ops=100663296` for full-prefill and
+`target_semantic_total_row_serial_dot_ops=127401984` for the SmolLM prompt
+shape. The command shape is ideal, but the implementation still performs that
+row-serial dot workload inside one threadgroup per row. A focused
+semantic-thread-width experiment rejected the obvious knobs:
+`SEMANTIC_FFN_THREADS=512` preserved correctness but left the target
 diagnostic and did not beat the default throughput path, while
 `SEMANTIC_FFN_THREADS=128` made the semantic target slower, especially on the
 SmolLM prompt shape. Keep the current `QMATMUL_ROW_CHAIN_THREADS=256`
