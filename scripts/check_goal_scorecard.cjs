@@ -113,6 +113,19 @@ function spawnFailure(label, command, args, result) {
   return `${label} failed: ${commandLine(command, args)} status=${status}${signal}${error}\n${spawnOutput(result)}`;
 }
 
+function runNodeScript(label, scriptPath) {
+  const args = [scriptPath];
+  const result = spawnSync(process.execPath, args, {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== 0) {
+    errors.push(spawnFailure(label, process.execPath, args, result));
+  }
+  return result;
+}
+
 function parseScorecardChecks(value) {
   const raw = String(value ?? "all").trim();
   if (raw.length === 0 || raw === "all") return null;
@@ -206,6 +219,10 @@ function checkScripts() {
     "allowedStatuses",
     "frontend capability matrix ok:",
   ]);
+  requireIncludes(read("scripts/check_goal_scorecard.cjs"), "scripts/check_goal_scorecard.cjs", "frontend capability checker execution", [
+    "runNodeScript(\"frontend capability matrix\", \"scripts/check_frontend_capability_matrix.cjs\")",
+  ]);
+  runNodeScript("frontend capability matrix", "scripts/check_frontend_capability_matrix.cjs");
   if (scripts["bench:substrate"] !== "node scripts/bench_status.cjs --substrate-gate") {
     errors.push("package.json bench:substrate must remain the Program/Session substrate evidence gate");
   }
