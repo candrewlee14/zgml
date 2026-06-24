@@ -38,13 +38,26 @@ function perfNextLine() {
   return line;
 }
 
+function freshQsemanticThroughput(line) {
+  const match = line.match(/:fresh=source:[^, ]+,throughput=smollm:([0-9.]+)x,full:([0-9.]+)x/);
+  if (!match) return null;
+  const smollm = Number(match[1]);
+  const full = Number(match[2]);
+  if (!Number.isFinite(smollm) || !Number.isFinite(full)) return null;
+  return { smollm, full };
+}
+
 function chooseLane(line) {
   const forced = String(process.env.BENCH_NEXT_PERF_LANE ?? "").trim();
   if (forced) return forced;
   const steady = process.env.BENCH_NEXT_PERF_STEADY === "1";
-  const hasFreshQsemanticThroughput =
-    /frontier=semantic_ffn_sublayer_throughput_kernel:candidate=ready/.test(line) &&
-    /:fresh=source:[^, ]+,throughput=smollm:[0-9.]+x,full:[0-9.]+x/.test(line);
+  const hasSemanticThroughputFrontier = /frontier=semantic_ffn_sublayer_throughput_kernel:candidate=ready/.test(line);
+  const freshThroughput = freshQsemanticThroughput(line);
+  const hasFreshQsemanticThroughput = hasSemanticThroughputFrontier && freshThroughput !== null;
+  const qsemanticThroughputBelowDefault =
+    hasSemanticThroughputFrontier &&
+    (!freshThroughput || freshThroughput.smollm < 1 || freshThroughput.full < 1);
+  if (qsemanticThroughputBelowDefault) return "qsemantic_throughput";
   if (/q8_prompt=promoted_semantic_default/.test(line)) return "ggml";
   if (hasFreshQsemanticThroughput && /q8_prompt=semantic_throughput_kernel/.test(line)) return "q8_prompt";
   if (

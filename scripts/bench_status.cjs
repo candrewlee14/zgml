@@ -883,9 +883,15 @@ function frontierNextTargetLine(path, pressurePath = path) {
       data?.smollmPrompt?.targetRowSerialDotOpsPerTileGroup ??
       pressureData?.smollmPrompt?.targetRowSerialDotOpsPerTileGroup ??
       "n/a";
+    const freshThroughputGate =
+      pressureData?.kind === "qsemantic-throughput"
+        ? Number(pressureData?.smollmPrompt?.speedup) >= 1 && Number(pressureData?.fullPrefill?.speedup) >= 1
+          ? "ready"
+          : "below_default"
+        : "n/a";
     const fresh = hasFreshPressure
       ? pressureData?.kind === "qsemantic-throughput"
-        ? `:fresh=source:${typeof pressureData?.source?.label === "string" ? pressureData.source.label : "unknown"},throughput=smollm:${formatRatio(pressureData?.smollmPrompt?.speedup)},full:${formatRatio(pressureData?.fullPrefill?.speedup)},spilled_input=smollm:${pressureData?.smollmPrompt?.spilledInput ?? "n/a"},full:${pressureData?.fullPrefill?.spilledInput ?? "n/a"}`
+        ? `:fresh=source:${typeof pressureData?.source?.label === "string" ? pressureData.source.label : "unknown"},throughput=smollm:${formatRatio(pressureData?.smollmPrompt?.speedup)},full:${formatRatio(pressureData?.fullPrefill?.speedup)},gate=${freshThroughputGate},spilled_input=smollm:${pressureData?.smollmPrompt?.spilledInput ?? "n/a"},full:${pressureData?.fullPrefill?.spilledInput ?? "n/a"}`
         : `:fresh=source:${typeof pressureData?.source?.label === "string" ? pressureData.source.label : "unknown"},vs_default=smollm:${formatRatio(pressureData?.smollmPrompt?.throughputCandidateVsDefault)},full:${formatRatio(pressureData?.fullPrefill?.throughputCandidateVsDefault)}`
       : "";
     return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}:target_tiles=smollm:${smollmTargetTileGroups},full:${fullTargetTileGroups}:target_shape=smollm:${smollmTargetTileShape},full:${fullTargetTileShape}:candidate_tiles=smollm:${smollmCandidateTileGroups},full:${fullCandidateTileGroups}:candidate_finalize_groups=smollm:${smollmCandidateFinalizeTileGroups},full:${fullCandidateFinalizeTileGroups}:candidate_finalize_elements=smollm:${smollmCandidateFinalizeElements},full:${fullCandidateFinalizeElements}:tile_gap=smollm:${smollmTileGap},full:${fullTileGap}:target_serial_per_tile=smollm:${smollmTargetSerialPerTile},full:${fullTargetSerialPerTile}${fresh}`;
