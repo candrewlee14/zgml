@@ -622,6 +622,7 @@ npm run dev:perf:pytorch:logsoftmax:steady:native # native-only 150ms-window log
 npm run dev:perf:pytorch:logsoftmax:steady:run    # no-rebuild 150ms-window logSoftmax classifier microscope
 npm run dev:perf:competitive        # incremental PyTorch + qsemantic frontier + cheap ggml competitiveness loop
 npm run dev:perf:competitive:run    # no-rebuild rerun of selected competitiveness lanes
+npm run dev:perf:competitive:qsemantic # incremental qsemantic-only competitiveness loop
 npm run bench:module-program:focus
 npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
 npm run bench:pytorch:parity:run       # rebuild ReleaseFast native, then rerun hard PyTorch parity

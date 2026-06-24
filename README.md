@@ -896,6 +896,7 @@ npm run dev:perf:pytorch:logsoftmax:steady:native # native-only 150ms-window log
 npm run dev:perf:pytorch:logsoftmax:steady:run # no-rebuild 150ms-window logSoftmax classifier microscope
 npm run dev:perf:competitive # incremental PyTorch + qsemantic frontier + cheap ggml competitiveness loop
 npm run dev:perf:competitive:run # no-rebuild rerun of selected competitiveness lanes
+npm run dev:perf:competitive:qsemantic # incremental qsemantic-only competitiveness loop
 npm run dev:perf:q8-prompt # incremental ReleaseFast benchmark rebuild plus Q8 prompt candidate evidence
 npm run dev:perf:q8-prompt:run # rerun Q8 prompt candidate evidence against existing benchmark artifact
 npm run dev:perf:frontier:row-chain-region # incremental checked x7 row-chain region microscope

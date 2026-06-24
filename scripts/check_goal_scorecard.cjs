@@ -447,6 +447,12 @@ function checkScripts() {
   if (scripts["dev:perf:competitive:run"] !== "BENCH_COMPETITIVE_BUILD=0 node scripts/run_competitive_perf.cjs") {
     errors.push("package.json dev:perf:competitive:run must keep the no-rebuild lane-selectable competitiveness loop");
   }
+  if (scripts["dev:perf:competitive:qsemantic"] !== "BENCH_COMPETITIVE_LANES=qsemantic node scripts/run_competitive_perf.cjs") {
+    errors.push("package.json dev:perf:competitive:qsemantic must keep the one-command qsemantic competitiveness loop");
+  }
+  if (scripts["dev:perf:competitive:qsemantic:run"] !== "BENCH_COMPETITIVE_LANES=qsemantic BENCH_COMPETITIVE_BUILD=0 node scripts/run_competitive_perf.cjs") {
+    errors.push("package.json dev:perf:competitive:qsemantic:run must keep the no-rebuild qsemantic competitiveness loop");
+  }
   if (scripts["bench:competitive"] !== "node scripts/run_competitive_perf.cjs") {
     errors.push("package.json bench:competitive must keep the promoted PyTorch/frontier/ggml competitiveness gate");
   }
@@ -5487,6 +5493,7 @@ function checkDocs() {
     "goal progress: Program/Session substrate=85% floor=65%; zgml frontend surface=85% floor=60%",
     "npm run dev:perf:competitive",
     "npm run dev:perf:competitive:run",
+    "npm run dev:perf:competitive:qsemantic",
     "npm run bench:competitive",
     "BENCH_COMPETITIVE_LANES=pytorch,qsemantic,ggml",
     "BENCH_COMPETITIVE_BUILD=0",
@@ -5692,6 +5699,7 @@ function checkDocs() {
     "dev:perf:frontier:qsemantic",
     "dev:perf:competitive",
     "dev:perf:competitive:run",
+    "dev:perf:competitive:qsemantic",
     "bench:competitive",
     "BENCH_COMPETITIVE_LANES",
     "semantic FFN sublayer throughput kernel",
