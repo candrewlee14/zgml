@@ -1332,8 +1332,17 @@ kernel probe reduced the measured thread-slot footprint
 (`thread_slot_gap` roughly `1.80x -> 1.30x`) but made throughput worse
 (`smollm_prompt=0.67x`). A follow-up 384-thread mid-width probe preserved more
 parallelism and improved lane utilization to about `777/1000`, but still lost
-throughput (`smollm_prompt=0.69x`). The retained implementation stays on the
-512-thread kernel until the partitioning change also preserves enough parallelism. The
+throughput (`smollm_prompt=0.69x`). The retained implementation stayed on the
+512-thread kernel until the partitioning change also preserved enough
+parallelism. The retained fix is a four-way unroll of the semantic gate/up and
+down inner dot loops inside the 512-thread kernel. That keeps the one-dispatch
+shape, preserves the `thread_lane_utilization_x1000=1000/611` evidence for
+full-prefill/SmolLM, and moves the focused three-attempt throughput gate to
+`full_prefill=1.99x`, `smollm_prompt=1.04x`, `gate=ready`. A one-attempt full
+Q8 prompt viable rerun also promotes the semantic lane with
+`semantic_speedup=1.02x`, while keeping the 151-command shape and zero
+fallbacks; the accepted steady Q8 prompt evidence should be refreshed next
+before treating that as full-model steady-state proof. The
 qsemantic gate now reports
 `target_vs_default=full_prefill:...x,smollm_prompt:...x` so the dispatch
 reduction is always interpreted against the current throughput path; a fresh

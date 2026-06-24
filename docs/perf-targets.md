@@ -321,7 +321,12 @@ machine for both prompt/prefill and decode.
   throughput (`smollm_prompt=0.67x`). A 384-thread mid-width probe improved
   utilization to about `777/1000` but still lost throughput
   (`smollm_prompt=0.69x`), so a useful fix needs better partitioning or
-  vectorization without dropping too much parallelism.
+  vectorization without dropping too much parallelism. The retained unrolled
+  512-thread semantic kernel is the first such win: it preserves the one-dispatch
+  shape and lifts the three-attempt qsemantic throughput gate to
+  `full_prefill=1.99x`, `smollm_prompt=1.04x`, `gate=ready`. A one-attempt
+  Q8 prompt viable rerun also reports `semantic_speedup=1.02x`; refresh the
+  steady full-model artifact before promoting that evidence tier.
 - The frontier gate now also reports the paired row-chain diagnostic
   `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
   This compares four staged qmatmul+residual+RMSNorm-scale row chains against

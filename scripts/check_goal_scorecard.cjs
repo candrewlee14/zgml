@@ -1347,6 +1347,8 @@ function checkScripts() {
     "recordSemanticFfnSublayer(params.M, params.H, params.K, params.O, SEMANTIC_FFN_THREADS)",
     "kernel void qmatmul_row_chain_f32",
     "threadgroup float row_values[MAX_ROW_CHAIN_COLS]",
+    "for (; k + 3 < p.K; k += 4)",
+    "for (; h + 3 < p.H; h += 4)",
     "for (uint col = tid; col < p.N; col += QMATMUL_ROW_CHAIN_THREADS)",
     "for (uint k = 0; k < p.K; k++)",
     ".qmatmul_semantic_ffn_sublayer_f32, &buffers, params, 10, .{ .gx = gate.M }, SEMANTIC_FFN_THREADS",

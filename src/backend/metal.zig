@@ -1551,7 +1551,26 @@ const shader_source =
     \\    for (uint h = tid; h < p.H; h += SEMANTIC_FFN_THREADS) {
     \\        float gate_sum = 0.0f;
     \\        float up_sum = 0.0f;
-    \\        for (uint k = 0; k < p.K; k++) {
+    \\        uint k = 0;
+    \\        for (; k + 3 < p.K; k += 4) {
+    \\            uint w_idx0 = k * p.H + h;
+    \\            uint w_idx1 = w_idx0 + p.H;
+    \\            uint w_idx2 = w_idx1 + p.H;
+    \\            uint w_idx3 = w_idx2 + p.H;
+    \\            float x0 = input_values[k];
+    \\            float x1 = input_values[k + 1];
+    \\            float x2 = input_values[k + 2];
+    \\            float x3 = input_values[k + 3];
+    \\            gate_sum += x0 * float(gate_weight_data[w_idx0]) * gate_weight_scales[w_idx0 / p.gate_block_size];
+    \\            gate_sum += x1 * float(gate_weight_data[w_idx1]) * gate_weight_scales[w_idx1 / p.gate_block_size];
+    \\            gate_sum += x2 * float(gate_weight_data[w_idx2]) * gate_weight_scales[w_idx2 / p.gate_block_size];
+    \\            gate_sum += x3 * float(gate_weight_data[w_idx3]) * gate_weight_scales[w_idx3 / p.gate_block_size];
+    \\            up_sum += x0 * float(up_weight_data[w_idx0]) * up_weight_scales[w_idx0 / p.up_block_size];
+    \\            up_sum += x1 * float(up_weight_data[w_idx1]) * up_weight_scales[w_idx1 / p.up_block_size];
+    \\            up_sum += x2 * float(up_weight_data[w_idx2]) * up_weight_scales[w_idx2 / p.up_block_size];
+    \\            up_sum += x3 * float(up_weight_data[w_idx3]) * up_weight_scales[w_idx3 / p.up_block_size];
+    \\        }
+    \\        for (; k < p.K; k++) {
     \\            uint w_idx = k * p.H + h;
     \\            float x = input_values[k];
     \\            gate_sum += x * float(gate_weight_data[w_idx]) * gate_weight_scales[w_idx / p.gate_block_size];
@@ -1564,7 +1583,18 @@ const shader_source =
     \\    float ss = 0.0f;
     \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_THREADS) {
     \\        float sum = 0.0f;
-    \\        for (uint h = 0; h < p.H; h++) {
+    \\        uint h = 0;
+    \\        for (; h + 3 < p.H; h += 4) {
+    \\            uint w_idx0 = h * p.O + col;
+    \\            uint w_idx1 = w_idx0 + p.O;
+    \\            uint w_idx2 = w_idx1 + p.O;
+    \\            uint w_idx3 = w_idx2 + p.O;
+    \\            sum += product_values[h] * float(down_weight_data[w_idx0]) * down_weight_scales[w_idx0 / p.down_block_size];
+    \\            sum += product_values[h + 1] * float(down_weight_data[w_idx1]) * down_weight_scales[w_idx1 / p.down_block_size];
+    \\            sum += product_values[h + 2] * float(down_weight_data[w_idx2]) * down_weight_scales[w_idx2 / p.down_block_size];
+    \\            sum += product_values[h + 3] * float(down_weight_data[w_idx3]) * down_weight_scales[w_idx3 / p.down_block_size];
+    \\        }
+    \\        for (; h < p.H; h++) {
     \\            uint w_idx = h * p.O + col;
     \\            sum += product_values[h] * float(down_weight_data[w_idx]) * down_weight_scales[w_idx / p.down_block_size];
     \\        }
