@@ -20,6 +20,14 @@ const baselineArtifacts = [
 const fullRunArtifactPattern = /^smollm-\d{8}T\d{6}Z(?:-\d+)?-p128-g200-r3\.json$/;
 const pytorchArtifactPattern = /^pytorch-\d{8}T\d{6}Z-\d+\.json$/;
 const q8PromptArtifactPattern = /^q8-prompt-\d{8}T\d{6}Z-\d+\.json$/;
+const pytorchFocusKeys = [
+  "linear_batched",
+  "lazy_matmul_add_gelu_batched",
+  "lazy_rms_silu_ffn_batched",
+  "rms_gelu_linear_batched",
+  "log_softmax_classifier_batched",
+  "lazy_token_head_batched",
+];
 
 function latestFullRunArtifact() {
   const artifacts = fullRunArtifacts();
@@ -89,6 +97,22 @@ function pytorchComparisonArtifacts() {
 
 function latestPytorchComparisonArtifact() {
   return pytorchComparisonArtifacts().at(-1) ?? null;
+}
+
+function isPytorchFocusArtifact(path) {
+  try {
+    const data = readJson(path);
+    const keys = data?.config?.activeComparisonKeys;
+    return Array.isArray(keys) &&
+      keys.length === pytorchFocusKeys.length &&
+      pytorchFocusKeys.every((key, index) => keys[index] === key);
+  } catch {
+    return false;
+  }
+}
+
+function latestPytorchFocusArtifact() {
+  return pytorchComparisonArtifacts().filter(isPytorchFocusArtifact).at(-1) ?? null;
 }
 
 function q8PromptCandidateArtifacts() {
@@ -203,6 +227,11 @@ function pytorchComparisonStatusLine(path) {
   const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
   const timing = typeof data?.config?.zgmlTimingMetric === "string" ? data.config.zgmlTimingMetric : "unknown";
   return `pytorch-results: latest=${compactName(path)} status=${status} median=${medianStatus} worst=${worst} attempt=${selectedAttempt}/${attempts} native=${native} torch=${torch} timing=${timing} keys=${keys} ratio_median=${medians}`;
+}
+
+function pytorchFocusStatusLine(path, latestPath) {
+  if (!path || path === latestPath) return null;
+  return pytorchComparisonStatusLine(path).replace("pytorch-results: latest=", "pytorch-focus-results: latest=");
 }
 
 function q8PromptCandidateStatusLine(path) {
@@ -748,7 +777,10 @@ const result = spawnSync("python3", ["scripts/verify_bench_artifact.py", "--stat
 
 if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);
-process.stdout.write(`${pytorchComparisonStatusLine(latestPytorchComparisonArtifact())}\n`);
+const latestPytorch = latestPytorchComparisonArtifact();
+process.stdout.write(`${pytorchComparisonStatusLine(latestPytorch)}\n`);
+const focusPytorch = pytorchFocusStatusLine(latestPytorchFocusArtifact(), latestPytorch);
+if (focusPytorch) process.stdout.write(`${focusPytorch}\n`);
 process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8PromptCandidateArtifact())}\n`);
 const quarantined = quarantinedFullRunArtifacts();
 if (quarantined.length > 0) {

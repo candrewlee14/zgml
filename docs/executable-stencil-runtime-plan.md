@@ -569,7 +569,10 @@ PyTorch comparison artifact back out as a `pytorch-results:` line with status,
 median status, worst ratio, selected attempt, native freshness, Torch version,
 timing metric, active keys, and ratio medians, so PyTorch evidence is now both
 written and discoverable through the normal source-checkout benchmark status
-surface.
+surface. When the latest artifact is a narrow one-lane microscope,
+`bench:status` also prints the most recent six-lane focus artifact as
+`pytorch-focus-results:` so a local experiment cannot hide the broader CPU
+competitiveness signal.
 The PyTorch comparison microscope also accepts exploratory lanes such as
 `rms_gelu_linear_batched`, `softmax_classifier_batched`,
 `log_softmax_classifier_batched`, and `lazy_token_head_batched`, so optimization
