@@ -42,7 +42,8 @@ PyTorch replacement:
 - `dtype` and `device` are honest but narrow. The public tensor story is
   effectively f32 CPU eager plus explicit native Program placement.
 - Autograd coverage is broad enough for small model workflows, but the project
-  still needs an operation-by-operation backward coverage table tied to tests.
+  still needs deeper operation-by-operation numerical-gradient coverage beyond
+  the checked family-level runtime evidence in `docs/frontend-autograd-coverage.md`.
 - Native eager tensor storage is not the default. Large tensor performance
   claims should continue to go through compiled Programs/Sessions.
 - Safetensors/checkpoint interop is strong for model-source runtime paths, but

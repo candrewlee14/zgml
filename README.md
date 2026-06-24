@@ -580,7 +580,9 @@ The checked frontend capability matrix in
 keeps the PyTorch-like replacement claim honest by separating eager, autograd,
 TS shape-safety, native Program, package, browser/Wasm, and interop coverage
 from the remaining dtype/device, autograd-coverage, native-eager, and
-first-contact API gaps.
+first-contact API gaps. The matching
+[`docs/frontend-autograd-coverage.md`](docs/frontend-autograd-coverage.md)
+file maps the public autograd rows to executable package-smoke assertions.
 `nn.identity`, `nn.reshape`, `nn.view`, `nn.flatten`, `nn.squeeze`, `nn.unsqueeze`, `nn.broadcastTo`, `nn.expand`, `nn.transpose`, bounded `nn.narrow`,
 bounded `nn.select`, and bounded `nn.slice` now lower through native module
 Programs for rank-1/rank-2 shapes, plus rank-3 reshape-family,

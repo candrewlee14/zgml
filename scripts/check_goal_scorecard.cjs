@@ -181,6 +181,9 @@ function checkScripts() {
   if (scripts["check:goal-scorecard"] !== "node scripts/check_goal_scorecard.cjs") {
     errors.push("package.json check:goal-scorecard must remain the full goal scorecard");
   }
+  if (scripts["check:frontend-autograd-coverage"] !== "node scripts/check_frontend_autograd_coverage.cjs") {
+    errors.push("package.json check:frontend-autograd-coverage must remain the fast TS autograd trust-matrix check");
+  }
   if (scripts["check:goal-scorecard:q8"] !== "ZGML_SCORECARD_CHECKS=static,frontier,q8 node scripts/check_goal_scorecard.cjs") {
     errors.push("package.json check:goal-scorecard:q8 must remain the focused Q8 scorecard loop");
   }
@@ -5647,6 +5650,8 @@ function checkDocs() {
     "The checked frontend capability matrix in",
     "`docs/frontend-capability-matrix.md`",
     "keeps the PyTorch-like replacement claim honest",
+    "`docs/frontend-autograd-coverage.md`",
+    "maps the public autograd rows to executable package-smoke assertions",
     "LLM users go through model-source helpers such as `probeModel` / `loadModel`,",
   ]);
   const staleReadmeSurface = [
@@ -5920,12 +5925,30 @@ function checkDocs() {
     "## Replacement Gaps",
     "`dtype` and `device` are honest but narrow.",
     "Autograd coverage is broad enough for small model workflows",
+    "`docs/frontend-autograd-coverage.md`",
     "Native eager tensor storage is not the default.",
     "Safetensors/checkpoint interop is strong for model-source runtime paths",
     "The root public API is still wider than the ideal first-contact surface",
     "## Evidence Bar",
     "Raising the frontend replacement score should require one of these:",
     "Raising the performance substrate score should require benchmark artifacts, not",
+  ]);
+  const autogradCoverage = read("docs/frontend-autograd-coverage.md");
+  requireIncludes(autogradCoverage, "docs/frontend-autograd-coverage.md", "checked package-smoke-backed autograd coverage", [
+    "# Frontend Autograd Coverage",
+    "src/ts/smokes/package_smoke_core.ts",
+    "| Broadcasted binary math | checked |",
+    "Tensor.maskedFill value autograd backward",
+    "| Movement and view-style ops | checked |",
+    "Tensor.split autograd backward",
+    "| Scalar unary math | checked |",
+    "Tensor.rsqrt autograd backward",
+    "| Reductions | checked |",
+    "Tensor.cumsum autograd backward",
+    "| Linear algebra | checked |",
+    "Tensor.bmm rhs autograd backward",
+    "| Conv/pool modules | checked |",
+    "nn.MaxPool2d input grad",
   ]);
   if (plan.includes("remaining\nknown miss is the RMSNorm -> SiLU FFN lane") || plan.includes("remaining known miss is the RMSNorm -> SiLU FFN lane")) {
     errors.push("docs/executable-stencil-runtime-plan.md must not describe the old RMSNorm -> SiLU FFN PyTorch lane as a current known miss");

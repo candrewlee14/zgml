@@ -282,6 +282,7 @@
     "smoke:training": "npm run build:package && node examples/node_training/train_linear.cjs && node examples/node_training/manual_loop.cjs && node examples/node_training/train_mlp.cjs && node examples/node_training/train_classifier.cjs && node examples/node_training/torch_quickstart.cjs",
     "smoke:training:bun": "npm run build:package && bun examples/bun_training/train_linear.ts && bun examples/bun_training/manual_loop.ts && bun examples/bun_training/train_mlp.ts && bun examples/bun_training/train_classifier.ts",
     "check:package-artifact": "node scripts/check_package_artifact.cjs",
+    "check:frontend-autograd-coverage": "node scripts/check_frontend_autograd_coverage.cjs",
     "check:packed-install": "node scripts/check_packed_install.cjs",
     "test:ts-source": "npm run build:ts-source && npm run check:ts-source-architecture && npm run build:package && npm run smoke:ts-source && npm run check:package-artifact && npm run typecheck:dist && npm run smoke:dist && npm run smoke:frontend",
     "smoke": "node dist/smokes/node_package_smoke.cjs && node examples/node_training/train_linear.cjs && node examples/node_training/manual_loop.cjs && node examples/node_training/train_mlp.cjs && node examples/node_training/train_classifier.cjs && node examples/node_training/torch_quickstart.cjs && node examples/node_program_session/run_linear.cjs",
