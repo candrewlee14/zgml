@@ -83,6 +83,24 @@ zgml.checkpoint.restore(zgml.checkpoint.parse(text), {
 assertClose(scalar(restored.forward(probe)), scalar(model.forward(probe)), 1e-5, "restored prediction");
 
 const fast = zgml.compileForInference(restored, { backend: "cpu", inputShape: [2] });
+const support = fast.compileSupport();
+const explanation = fast.explain();
+const preflight = fast.preflight();
+const kernelPlan = fast.kernelPlan();
+const compilerSignatures = fast.compilerSignatures();
+if (
+  support.supported !== true ||
+  explanation.supported !== true ||
+  preflight.supported !== true ||
+  explanation.signature !== preflight.signature ||
+  fast.inputShape().join("x") !== "2" ||
+  fast.outputShape().join("x") !== "1" ||
+  kernelPlan?.ops.map((op) => op.op).join("|") !== "linear|linear" ||
+  kernelPlan.ops[0]?.nativeKernels?.join("|") !== "linear|relu" ||
+  compilerSignatures?.kernelPlan !== kernelPlan.signature
+) {
+  throw new Error(`expected compileForInference to expose executable proof: ${JSON.stringify({ support, explanation, preflight, kernelPlan, compilerSignatures })}`);
+}
 const compiled = fast.forward(probe);
 const output = new Float32Array(1);
 const hotParams = { input: probe, output };
