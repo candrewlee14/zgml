@@ -18,6 +18,7 @@ const laneMode = process.env.BENCH_Q8_PROMPT_LANES || "all";
 const rowChainLowering = "default_projection_chain_plus_row_chain_candidate_single_dispatch_tiled_row_chain";
 const commandLowering = "default_projection_chain_plus_row_chain_command_two_dispatch";
 const twoPhaseLowering = "default_projection_chain_plus_row_chain_candidate_two_phase_tiled_row_chain";
+const semanticLowering = "semantic_ffn_sublayer_command_plus_two_phase_tiled_row_chain_tail";
 const requiredNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
 const singleDispatchTrap = "serial_n_tile_loop_without_cross_threadgroup_row_reduce";
 const viableNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
@@ -29,6 +30,7 @@ const decodeNextTarget = "larger_semantic_sublayer_or_qmatvec_throughput_kernel"
 const defaultCommandFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_COMMAND_FLOOR || "241");
 const candidateCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || "181");
 const candidateProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_ROW_CHAIN_FLOOR || "60");
+const semanticProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_SEMANTIC_PROJECTION_ROW_CHAIN_FLOOR || "30");
 const defaultProjectionChainFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_PROJECTION_CHAIN_FLOOR || "60");
 const candidateProjectionChainCeil = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_CHAIN_CEIL || "0");
 const defaultProjectionPairFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_PROJECTION_PAIR_FLOOR || "30");
@@ -99,10 +101,10 @@ function parseLanes(value) {
       .map((part) => part.trim().toLowerCase().replace(/-/g, "_"))
       .filter(Boolean),
   );
-  if (names.size === 0 || names.has("all")) return new Set(["command", "single", "two_phase"]);
+  if (names.size === 0 || names.has("all")) return new Set(["command", "single", "two_phase", "semantic"]);
   for (const name of names) {
-    if (name !== "command" && name !== "single" && name !== "two_phase") {
-      console.error(`BENCH_Q8_PROMPT_LANES contains unsupported lane ${name}; use all, command, single, two_phase`);
+    if (name !== "command" && name !== "single" && name !== "two_phase" && name !== "semantic") {
+      console.error(`BENCH_Q8_PROMPT_LANES contains unsupported lane ${name}; use all, command, single, two_phase, semantic`);
       process.exit(1);
     }
   }
@@ -113,6 +115,7 @@ const measuredLanes = parseLanes(laneMode);
 const measureCommand = measuredLanes.has("command");
 const measureSingle = measuredLanes.has("single");
 const measureTwoPhase = measuredLanes.has("two_phase");
+const measureSemantic = measuredLanes.has("semantic");
 
 function emptyLane(index) {
   return {
@@ -186,6 +189,11 @@ function readProjectionLane(row, defaultTokS, index) {
   };
 }
 
+function keepsProjectionPairOrSemanticCommand(lane) {
+  return lane.projectionPairs >= candidateProjectionPairFloor ||
+    (lane.projectionPairs === 0 && lane.projectionRowChains >= semanticProjectionRowChainFloor);
+}
+
 if (!existsSync(resolve(root, model))) {
   console.error(`q8 prompt candidate gate: missing model ${model}`);
   console.error("Set ZGML_Q8_MODEL/ZGML_MODEL or run with BENCH_AUTO_DOWNLOAD through scripts/bench_vs_ggml.sh first.");
@@ -216,6 +224,9 @@ function measureAttempt(index) {
   const twoPhaseOutput = measureTwoPhase
     ? (progress(`attempt ${index}/${attempts} two-phase-candidate`), run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-two-phase-candidate"]))
     : null;
+  const semanticOutput = measureSemantic
+    ? (progress(`attempt ${index}/${attempts} semantic-throughput-candidate`), run(binary, [...baseArgs, "--metal-prompt-semantic-throughput-candidate"]))
+    : null;
   const defaultRow = rowFor(defaultOutput, "metal scheduled prefill");
   const defaultDecodeRow = rowFor(defaultOutput, "metal region decode");
 
@@ -228,6 +239,9 @@ function measureAttempt(index) {
     : emptyLane(index);
   const twoPhaseLane = measureTwoPhase
     ? readProjectionLane(rowFor(twoPhaseOutput, "metal scheduled prefill projection-row-chain two-phase candidate"), defaultTokS, index)
+    : emptyLane(index);
+  const semanticLane = measureSemantic
+    ? readProjectionLane(rowFor(semanticOutput, "metal scheduled prefill semantic throughput candidate"), defaultTokS, index)
     : emptyLane(index);
   const defaultDispatches = number(defaultRow, "dispatches_per_call");
   const defaultCommands = number(defaultRow, "commands_per_call");
@@ -269,9 +283,9 @@ function measureAttempt(index) {
     (commandLane.commands !== null &&
       commandLane.commands <= candidateCommandCeil &&
       commandLane.projectionChains <= candidateProjectionChainCeil &&
-      commandLane.projectionPairs >= candidateProjectionPairFloor &&
+      keepsProjectionPairOrSemanticCommand(commandLane) &&
       commandLane.projectionCacheGroups >= candidateProjectionPairFloor &&
-      commandLane.projectionRowChains >= candidateProjectionRowChainFloor);
+      commandLane.projectionRowChains >= semanticProjectionRowChainFloor);
   const commandDispatchShapeReady =
     !measureCommand ||
     (defaultDispatches !== null &&
@@ -318,20 +332,38 @@ function measureAttempt(index) {
       twoPhaseLane.projectionRowChainDispatchSplit !== null &&
       twoPhaseLane.projectionRowChainDispatchSplit <= 2.0);
   const twoPhaseStructuralReady = defaultFastPathReady && twoPhaseSemanticReady && twoPhaseDispatchShapeReady && twoPhaseLane.fallback === 0;
-  const fallbackOk = defaultFallback === 0 && commandLane.fallback === 0 && singleLane.fallback === 0 && twoPhaseLane.fallback === 0;
+  const semanticSemanticReady =
+    !measureSemantic ||
+    (semanticLane.commands !== null &&
+      semanticLane.commands <= candidateCommandCeil &&
+      semanticLane.projectionChains <= candidateProjectionChainCeil &&
+      keepsProjectionPairOrSemanticCommand(semanticLane) &&
+      semanticLane.projectionCacheGroups >= candidateProjectionPairFloor &&
+      semanticLane.projectionRowChains >= semanticProjectionRowChainFloor);
+  const semanticDispatchShapeReady =
+    !measureSemantic ||
+    (defaultDispatches !== null &&
+      semanticLane.dispatches !== null &&
+      semanticLane.dispatches <= defaultDispatches &&
+      semanticLane.projectionRowChainDispatchSplit !== null &&
+      semanticLane.projectionRowChainDispatchSplit <= 2.0);
+  const semanticStructuralReady = defaultFastPathReady && semanticSemanticReady && semanticDispatchShapeReady && semanticLane.fallback === 0;
+  const fallbackOk = defaultFallback === 0 && commandLane.fallback === 0 && singleLane.fallback === 0 && twoPhaseLane.fallback === 0 && semanticLane.fallback === 0;
   const commandStructuralReady = defaultFastPathReady && defaultDecodeFastPathReady && commandSemanticReady && commandDispatchShapeReady && fallbackOk;
   const structuralReady = defaultFastPathReady && defaultDecodeFastPathReady && commandStructuralReady && candidateSemanticReady && candidateMatchesCommandShape && candidateDispatchShapeReady && fallbackOk;
   const commandThroughputReady = commandLane.speedup !== null && commandLane.speedup >= commandSpeedupFloor;
   const throughputReady = singleLane.speedup !== null && singleLane.speedup >= speedupFloor;
   const progressLane = measureSingle
-    ? { name: "single", dispatches: singleLane.dispatches, commands: singleLane.commands, fallback: singleLane.fallback }
-    : measureTwoPhase
-      ? { name: "two_phase", dispatches: twoPhaseLane.dispatches, commands: twoPhaseLane.commands, fallback: twoPhaseLane.fallback }
-      : { name: "command", dispatches: commandLane.dispatches, commands: commandLane.commands, fallback: commandLane.fallback };
+      ? { name: "single", dispatches: singleLane.dispatches, commands: singleLane.commands, fallback: singleLane.fallback }
+      : measureTwoPhase
+        ? { name: "two_phase", dispatches: twoPhaseLane.dispatches, commands: twoPhaseLane.commands, fallback: twoPhaseLane.fallback }
+        : measureSemantic
+          ? { name: "semantic", dispatches: semanticLane.dispatches, commands: semanticLane.commands, fallback: semanticLane.fallback }
+          : { name: "command", dispatches: commandLane.dispatches, commands: commandLane.commands, fallback: commandLane.fallback };
   progress(
     `attempt ${index}/${attempts} result ` +
       `command=${format(commandLane.speedup)}x single=${format(singleLane.speedup)}x ` +
-      `two_phase=${format(twoPhaseLane.speedup)}x ` +
+      `two_phase=${format(twoPhaseLane.speedup)}x semantic=${format(semanticLane.speedup)}x ` +
       `active_lane=${progressLane.name} ` +
       `dispatch=${format(defaultDispatches, 0)}->${format(progressLane.dispatches, 0)} ` +
       `commands=${format(defaultCommands, 0)}->${format(progressLane.commands, 0)} ` +
@@ -343,38 +375,47 @@ function measureAttempt(index) {
     commandTokS: commandLane.tokS,
     candidateTokS: singleLane.tokS,
     twoPhaseTokS: twoPhaseLane.tokS,
+    semanticTokS: semanticLane.tokS,
     commandSpeedup: commandLane.speedup,
     speedup: singleLane.speedup,
     twoPhaseSpeedup: twoPhaseLane.speedup,
+    semanticSpeedup: semanticLane.speedup,
     defaultDispatches,
     commandDispatches: commandLane.dispatches,
     candidateDispatches: singleLane.dispatches,
     twoPhaseDispatches: twoPhaseLane.dispatches,
+    semanticDispatches: semanticLane.dispatches,
     defaultCommands,
     commandCommands: commandLane.commands,
     candidateCommands: singleLane.commands,
     twoPhaseCommands: twoPhaseLane.commands,
+    semanticCommands: semanticLane.commands,
     defaultProjectionRowChains,
     commandProjectionRowChains: commandLane.projectionRowChains,
     candidateProjectionRowChains: singleLane.projectionRowChains,
     twoPhaseProjectionRowChains: twoPhaseLane.projectionRowChains,
+    semanticProjectionRowChains: semanticLane.projectionRowChains,
     defaultProjectionChains,
     commandProjectionChains: commandLane.projectionChains,
     candidateProjectionChains: singleLane.projectionChains,
     twoPhaseProjectionChains: twoPhaseLane.projectionChains,
+    semanticProjectionChains: semanticLane.projectionChains,
     defaultProjectionPairs,
     commandProjectionPairs: commandLane.projectionPairs,
     candidateProjectionPairs: singleLane.projectionPairs,
     twoPhaseProjectionPairs: twoPhaseLane.projectionPairs,
+    semanticProjectionPairs: semanticLane.projectionPairs,
     defaultProjectionGroups,
     defaultProjectionChainRowChainFrontiers,
     commandProjectionGroups: commandLane.projectionGroups,
     candidateProjectionGroups: singleLane.projectionGroups,
     twoPhaseProjectionGroups: twoPhaseLane.projectionGroups,
+    semanticProjectionGroups: semanticLane.projectionGroups,
     defaultProjectionCacheGroups,
     commandProjectionCacheGroups: commandLane.projectionCacheGroups,
     candidateProjectionCacheGroups: singleLane.projectionCacheGroups,
     twoPhaseProjectionCacheGroups: twoPhaseLane.projectionCacheGroups,
+    semanticProjectionCacheGroups: semanticLane.projectionCacheGroups,
     defaultDecodeCommands,
     defaultDecodeProjectionChains,
     defaultDecodeProjectionPairs,
@@ -386,18 +427,22 @@ function measureAttempt(index) {
     commandProjectionPairDispatches: commandLane.projectionPairDispatches,
     candidateProjectionPairDispatches: singleLane.projectionPairDispatches,
     twoPhaseProjectionPairDispatches: twoPhaseLane.projectionPairDispatches,
+    semanticProjectionPairDispatches: semanticLane.projectionPairDispatches,
     defaultProjectionGroupDispatches: number(defaultRow, "program_command_dispatches_projection_group_per_call") ?? 0,
     commandProjectionGroupDispatches: commandLane.projectionGroupDispatches,
     candidateProjectionGroupDispatches: singleLane.projectionGroupDispatches,
     twoPhaseProjectionGroupDispatches: twoPhaseLane.projectionGroupDispatches,
+    semanticProjectionGroupDispatches: semanticLane.projectionGroupDispatches,
     defaultProjectionCacheGroupDispatches: number(defaultRow, "program_command_dispatches_projection_cache_group_per_call") ?? 0,
     commandProjectionCacheGroupDispatches: commandLane.projectionCacheGroupDispatches,
     candidateProjectionCacheGroupDispatches: singleLane.projectionCacheGroupDispatches,
     twoPhaseProjectionCacheGroupDispatches: twoPhaseLane.projectionCacheGroupDispatches,
+    semanticProjectionCacheGroupDispatches: semanticLane.projectionCacheGroupDispatches,
     defaultProjectionRowChainDispatches,
     commandProjectionRowChainDispatches: commandLane.projectionRowChainDispatches,
     candidateProjectionRowChainDispatches: singleLane.projectionRowChainDispatches,
     twoPhaseProjectionRowChainDispatches: twoPhaseLane.projectionRowChainDispatches,
+    semanticProjectionRowChainDispatches: semanticLane.projectionRowChainDispatches,
     candidateTiledCount: singleLane.tiledCount,
     candidateTiledRowTileGroups: singleLane.tiledRowTileGroups,
     candidateTiledNTiles: singleLane.tiledNTiles,
@@ -413,6 +458,14 @@ function measureAttempt(index) {
     twoPhaseTiledScratchCapacity: twoPhaseLane.tiledScratchCapacity,
     twoPhaseTiledSpills: twoPhaseLane.tiledSpills,
     twoPhaseTiledTwoPhaseCount: twoPhaseLane.tiledTwoPhaseCount,
+    semanticTiledCount: semanticLane.tiledCount,
+    semanticTiledRowTileGroups: semanticLane.tiledRowTileGroups,
+    semanticTiledNTiles: semanticLane.tiledNTiles,
+    semanticTiledSerialLoops: semanticLane.tiledSerialLoops,
+    semanticTiledPartialSlots: semanticLane.tiledPartialSlots,
+    semanticTiledScratchCapacity: semanticLane.tiledScratchCapacity,
+    semanticTiledSpills: semanticLane.tiledSpills,
+    semanticTiledTwoPhaseCount: semanticLane.tiledTwoPhaseCount,
     twoPhaseScratchReady,
     defaultProjectionRowChainDispatchSplit,
     commandProjectionRowChainDispatchSplit: commandLane.projectionRowChainDispatchSplit,
@@ -424,6 +477,7 @@ function measureAttempt(index) {
     commandFallback: commandLane.fallback,
     candidateFallback: singleLane.fallback,
     twoPhaseFallback: twoPhaseLane.fallback,
+    semanticFallback: semanticLane.fallback,
     commandStructuralReady,
     commandThroughputReady,
     candidateMatchesCommandShape,
@@ -432,6 +486,10 @@ function measureAttempt(index) {
     twoPhaseSemanticReady,
     twoPhaseDispatchShapeReady,
     twoPhaseStructuralReady,
+    semanticProjectionRowChainDispatchSplit: semanticLane.projectionRowChainDispatchSplit,
+    semanticSemanticReady,
+    semanticDispatchShapeReady,
+    semanticStructuralReady,
     structuralReady,
     throughputReady,
   };
@@ -445,12 +503,15 @@ for (let i = 0; i < attempts; i += 1) {
 const structuralReady = attemptRows.every((row) => row.structuralReady);
 const commandStructuralReady = attemptRows.every((row) => row.commandStructuralReady);
 const twoPhaseStructuralReady = attemptRows.every((row) => row.twoPhaseStructuralReady);
+const semanticStructuralReady = attemptRows.every((row) => row.semanticStructuralReady);
 const ranked = [...attemptRows].sort((left, right) => Number(right.speedup ?? -Infinity) - Number(left.speedup ?? -Infinity));
 const rankedAscending = [...attemptRows].sort((left, right) => Number(left.speedup ?? Infinity) - Number(right.speedup ?? Infinity));
 const commandRanked = [...attemptRows].sort((left, right) => Number(right.commandSpeedup ?? -Infinity) - Number(left.commandSpeedup ?? -Infinity));
 const commandRankedAscending = [...attemptRows].sort((left, right) => Number(left.commandSpeedup ?? Infinity) - Number(right.commandSpeedup ?? Infinity));
 const twoPhaseRanked = [...attemptRows].sort((left, right) => Number(right.twoPhaseSpeedup ?? -Infinity) - Number(left.twoPhaseSpeedup ?? -Infinity));
 const twoPhaseRankedAscending = [...attemptRows].sort((left, right) => Number(left.twoPhaseSpeedup ?? Infinity) - Number(right.twoPhaseSpeedup ?? Infinity));
+const semanticRanked = [...attemptRows].sort((left, right) => Number(right.semanticSpeedup ?? -Infinity) - Number(left.semanticSpeedup ?? -Infinity));
+const semanticRankedAscending = [...attemptRows].sort((left, right) => Number(left.semanticSpeedup ?? Infinity) - Number(right.semanticSpeedup ?? Infinity));
 const best = ranked[0];
 const median = rankedAscending[Math.floor(rankedAscending.length / 2)];
 const worst = rankedAscending[0];
@@ -460,6 +521,9 @@ const commandWorst = commandRankedAscending[0];
 const twoPhaseBest = twoPhaseRanked[0];
 const twoPhaseMedian = twoPhaseRankedAscending[Math.floor(twoPhaseRankedAscending.length / 2)];
 const twoPhaseWorst = twoPhaseRankedAscending[0];
+const semanticBest = semanticRanked[0];
+const semanticMedian = semanticRankedAscending[Math.floor(semanticRankedAscending.length / 2)];
+const semanticWorst = semanticRankedAscending[0];
 const throughputReady = structuralReady && median.speedup !== null && median.speedup >= speedupFloor;
 const commandThroughputReady = commandStructuralReady && commandMedian.commandSpeedup !== null && commandMedian.commandSpeedup >= commandSpeedupFloor;
 const commandReady = commandStructuralReady && commandThroughputReady;
@@ -467,6 +531,7 @@ const candidateReady = structuralReady && throughputReady;
 const noisyAttempts = attemptRows.filter((row) => row.speedup === null || row.speedup < speedupFloor).length;
 const commandNoisyAttempts = attemptRows.filter((row) => row.commandSpeedup === null || row.commandSpeedup < commandSpeedupFloor).length;
 const twoPhaseNoisyAttempts = attemptRows.filter((row) => row.twoPhaseSpeedup === null || row.twoPhaseSpeedup < commandSpeedupFloor).length;
+const semanticNoisyAttempts = attemptRows.filter((row) => row.semanticSpeedup === null || row.semanticSpeedup < commandSpeedupFloor).length;
 const dispatchOnlyTrap =
   median.speedup !== null &&
   median.speedup < speedupFloor &&
@@ -496,10 +561,18 @@ const commandThroughputStatus = measureCommand ? (commandThroughputReady ? "read
 const singleStructuralStatus = measureSingle ? (structuralReady ? "ready" : "off") : "skipped";
 const singleThroughputStatus = measureSingle ? (throughputReady ? "ready" : "off") : "skipped";
 const twoPhaseStructuralStatus = measureTwoPhase ? (twoPhaseStructuralReady ? "ready" : "off") : "skipped";
+const semanticStructuralStatus = measureSemantic ? (semanticStructuralReady ? "ready" : "off") : "skipped";
+const semanticThroughputStatus = measureSemantic
+  ? semanticStructuralReady && semanticMedian.semanticSpeedup !== null && semanticMedian.semanticSpeedup >= commandSpeedupFloor
+    ? "ready"
+    : "diagnostic"
+  : "skipped";
 const commandDispatchReduced =
   commandBest.defaultDispatches !== null && commandBest.commandDispatches !== null && commandBest.commandDispatches < commandBest.defaultDispatches;
 const twoPhaseDispatchReduced =
   twoPhaseBest.defaultDispatches !== null && twoPhaseBest.twoPhaseDispatches !== null && twoPhaseBest.twoPhaseDispatches < twoPhaseBest.defaultDispatches;
+const semanticDispatchReduced =
+  semanticBest.defaultDispatches !== null && semanticBest.semanticDispatches !== null && semanticBest.semanticDispatches < semanticBest.defaultDispatches;
 const singleDispatchReduced =
   best.defaultDispatches !== null && best.candidateDispatches !== null && best.candidateDispatches < best.defaultDispatches;
 const dispatchRealityTarget = "reduce_actual_dispatch_or_larger_semantic_sublayer";
@@ -515,7 +588,7 @@ console.log(
   `q8 prompt semantic row-chain gate: ${commandReady ? "command-ready" : candidateReady ? "ready" : "structural"}; ` +
     `command_structural=${commandStructuralStatus} command_throughput=${commandThroughputStatus} ` +
     `single_structural=${singleStructuralStatus} single_throughput=${singleThroughputStatus} ` +
-    `two_phase_structural=${twoPhaseStructuralStatus} reason=${reason}; ` +
+    `two_phase_structural=${twoPhaseStructuralStatus} semantic_structural=${semanticStructuralStatus} semantic_throughput=${semanticThroughputStatus} reason=${reason}; ` +
     `${singleAttemptSummary}; ` +
     `command_attempt=${commandBest.index}/${attempts} command_median_attempt=${commandMedian.index}/${attempts} command_noisy=${commandNoisyAttempts}; ` +
     `command_default=${format(commandBest.defaultTokS)} tok/s command_candidate=${format(commandBest.commandTokS)} tok/s command_speedup=${format(commandBest.commandSpeedup)}x command_floor=${format(commandSpeedupFloor)}x; ` +
@@ -558,6 +631,24 @@ console.log(
     `two_phase_projection_row_chain_dispatch=${format(twoPhaseBest.defaultProjectionRowChainDispatches, 0)}->${format(twoPhaseBest.twoPhaseProjectionRowChainDispatches, 0)} ` +
     `two_phase_split=${format(twoPhaseBest.defaultProjectionRowChainDispatchSplit)}->${format(twoPhaseBest.twoPhaseProjectionRowChainDispatchSplit)} ` +
     `two_phase_fallback=${format(twoPhaseBest.defaultFallback, 0)}->${format(twoPhaseBest.twoPhaseFallback, 0)} two_phase_lowering=${twoPhaseLowering}; ` +
+    `semantic_attempt=${semanticBest.index}/${attempts} semantic_median_attempt=${semanticMedian.index}/${attempts} semantic_noisy=${semanticNoisyAttempts}; ` +
+    `semantic_default=${format(semanticBest.defaultTokS)} tok/s semantic_candidate=${format(semanticBest.semanticTokS)} tok/s semantic_speedup=${format(semanticBest.semanticSpeedup)}x; ` +
+    `semantic_median_speedup=${format(semanticMedian.semanticSpeedup)}x semantic_worst_speedup=${format(semanticWorst.semanticSpeedup)}x semantic_best_speedup=${format(semanticBest.semanticSpeedup)}x; ` +
+    `semantic_dispatch=${format(semanticBest.defaultDispatches, 0)}->${format(semanticBest.semanticDispatches, 0)} semantic_command=${format(semanticBest.defaultCommands, 0)}->${format(semanticBest.semanticCommands, 0)} ` +
+    `semantic_dispatch_reduced=${semanticDispatchReduced ? "yes" : "no"} semantic_runtime_target=${dispatchRealityTarget} ` +
+    `semantic_count=${format(semanticBest.semanticTiledTwoPhaseCount, 0)} semantic_selected=${semanticBest.semanticTiledTwoPhaseCount > 0 ? "yes" : "off"} ` +
+    `semantic_tiled_work=${format(semanticBest.semanticTiledCount, 0)} chains row_groups=${format(semanticBest.semanticTiledRowTileGroups, 0)} n_tiles=${format(semanticBest.semanticTiledNTiles, 0)} serial_tile_loops=${format(semanticBest.semanticTiledSerialLoops, 0)} partial_slots=${format(semanticBest.semanticTiledPartialSlots, 0)} scratch_capacity=${format(semanticBest.semanticTiledScratchCapacity, 0)} spills=${format(semanticBest.semanticTiledSpills, 0)} ` +
+    `semantic_projection_chain=${format(semanticBest.defaultProjectionChains, 0)}->${format(semanticBest.semanticProjectionChains, 0)} ` +
+    `semantic_projection_pair=${format(semanticBest.defaultProjectionPairs, 0)}->${format(semanticBest.semanticProjectionPairs, 0)} ` +
+    `semantic_projection_pair_dispatch=${format(semanticBest.defaultProjectionPairDispatches, 0)}->${format(semanticBest.semanticProjectionPairDispatches, 0)} ` +
+    `semantic_projection_group=${format(semanticBest.defaultProjectionGroups, 0)}->${format(semanticBest.semanticProjectionGroups, 0)} ` +
+    `semantic_projection_group_dispatch=${format(semanticBest.defaultProjectionGroupDispatches, 0)}->${format(semanticBest.semanticProjectionGroupDispatches, 0)} ` +
+    `semantic_projection_cache_group=${format(semanticBest.defaultProjectionCacheGroups, 0)}->${format(semanticBest.semanticProjectionCacheGroups, 0)} ` +
+    `semantic_projection_cache_group_dispatch=${format(semanticBest.defaultProjectionCacheGroupDispatches, 0)}->${format(semanticBest.semanticProjectionCacheGroupDispatches, 0)} ` +
+    `semantic_projection_row_chain=${format(semanticBest.defaultProjectionRowChains, 0)}->${format(semanticBest.semanticProjectionRowChains, 0)} ` +
+    `semantic_projection_row_chain_dispatch=${format(semanticBest.defaultProjectionRowChainDispatches, 0)}->${format(semanticBest.semanticProjectionRowChainDispatches, 0)} ` +
+    `semantic_split=${format(semanticBest.defaultProjectionRowChainDispatchSplit)}->${format(semanticBest.semanticProjectionRowChainDispatchSplit)} ` +
+    `semantic_fallback=${format(semanticBest.defaultFallback, 0)}->${format(semanticBest.semanticFallback, 0)} semantic_lowering=${semanticLowering}; ` +
     `default=${format(best.defaultTokS)} tok/s candidate=${format(best.candidateTokS)} tok/s speedup=${format(best.speedup)}x floor=${format(speedupFloor)}x; ` +
     `median_speedup=${format(median.speedup)}x worst_speedup=${format(worst.speedup)}x best_speedup=${format(best.speedup)}x; ` +
     `dispatch=${format(best.defaultDispatches, 0)}->${format(best.candidateDispatches, 0)} command=${format(best.defaultCommands, 0)}->${format(best.candidateCommands, 0)} ` +
@@ -582,6 +673,6 @@ console.log(
     `next=${requiredNextTarget}`,
 );
 
-if (!commandStructuralReady || !structuralReady || !twoPhaseStructuralReady) {
+if (!commandStructuralReady || !structuralReady || !twoPhaseStructuralReady || !semanticStructuralReady) {
   process.exit(1);
 }

@@ -339,11 +339,11 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:q8-prompt-candidate:run"] !== "BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate:run must stay the no-rebuild source-checkout full-model Q8 prompt candidate rerun");
   }
-  if (packageJson.scripts?.["bench:q8-prompt-viable"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase node scripts/check_q8_prompt_candidate.cjs") {
-    errors.push("package.json bench:q8-prompt-viable must stay the rebuild-backed command/two-phase Q8 prompt microscope");
+  if (packageJson.scripts?.["bench:q8-prompt-viable"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase,semantic node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json bench:q8-prompt-viable must stay the rebuild-backed viable Q8 prompt microscope");
   }
-  if (packageJson.scripts?.["bench:q8-prompt-viable:run"] !== "BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase node scripts/check_q8_prompt_candidate.cjs") {
-    errors.push("package.json bench:q8-prompt-viable:run must stay the no-rebuild command/two-phase Q8 prompt microscope");
+  if (packageJson.scripts?.["bench:q8-prompt-viable:run"] !== "BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase,semantic node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json bench:q8-prompt-viable:run must stay the no-rebuild viable Q8 prompt microscope");
   }
   if (packageJson.scripts?.["build:native:release"] !== "zig build ffi-c -Doptimize=ReleaseFast") {
     errors.push("package.json build:native:release must stay the benchmark-grade native C ABI build");
@@ -776,9 +776,12 @@ function checkPackageExports(errors) {
   }
   for (const needle of [
     "--metal-prompt-projection-row-chain-candidate",
+    "--metal-prompt-semantic-throughput-candidate",
     "setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainSingleDispatchCandidate())",
     "setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainCommand())",
+    "setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate())",
     "metal scheduled prefill projection-row-chain candidate",
+    "metal scheduled prefill semantic throughput candidate",
   ]) {
     if (!llamaSmollmBenchSource.includes(needle)) {
       errors.push(`benchmarks/llama_smollm_bench.zig must keep full-model projection row-chain candidate evidence hook: ${needle}`);
@@ -803,6 +806,8 @@ function checkPackageExports(errors) {
     "const candidateCommandCeil = Number(process.env.BENCH_Q8_PROMPT_COMMAND_CEIL || \"181\")",
     "const defaultProjectionPairFloor = Number(process.env.BENCH_Q8_PROMPT_DEFAULT_PROJECTION_PAIR_FLOOR || \"30\")",
     "const candidateProjectionPairFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTION_PAIR_FLOOR || \"30\")",
+    "const semanticProjectionRowChainFloor = Number(process.env.BENCH_Q8_PROMPT_SEMANTIC_PROJECTION_ROW_CHAIN_FLOOR || \"30\")",
+    "function keepsProjectionPairOrSemanticCommand(lane)",
     "const decodeCommandCeil = Number(process.env.BENCH_Q8_DECODE_COMMAND_CEIL || \"211\")",
     "const decodeProjectionPairFloor = Number(process.env.BENCH_Q8_DECODE_PROJECTION_PAIR_FLOOR || \"30\")",
     "const decodeProjectionChainFloor = Number(process.env.BENCH_Q8_DECODE_PROJECTION_CHAIN_FLOOR || \"60\")",
@@ -812,6 +817,7 @@ function checkPackageExports(errors) {
     "const measureCommand = measuredLanes.has(\"command\")",
     "const measureSingle = measuredLanes.has(\"single\")",
     "const measureTwoPhase = measuredLanes.has(\"two_phase\")",
+    "const measureSemantic = measuredLanes.has(\"semantic\")",
     "defaultProjectionPairs >= defaultProjectionPairFloor",
     "defaultDecodeProjectionPairs >= decodeProjectionPairFloor",
     "defaultDecodeFastPathReady",
@@ -820,7 +826,7 @@ function checkPackageExports(errors) {
     "`decode_projection_cache_group=${format(commandBest.defaultDecodeProjectionCacheGroups, 0)} decode_fallback=${format(commandBest.defaultDecodeFallback, 0)} `",
     "decode_fast_path=${commandBest.defaultDecodeFastPathReady ? \"ready\" : \"off\"} decode_lowering=${decodeLowering}",
     "decode_row_chain_default=${decodeRowChainDefault} decode_next=${decodeNextTarget}",
-    "commandLane.projectionPairs >= candidateProjectionPairFloor",
+    "keepsProjectionPairOrSemanticCommand(commandLane)",
     "semantic_pair_path=",
     "semantic_pair_target=${semanticPairTarget}",
     "\"-Doptimize=ReleaseFast\"",
@@ -855,6 +861,11 @@ function checkPackageExports(errors) {
     "`${singleAttemptSummary}; `",
     "`command_attempt=${commandBest.index}/${attempts} command_median_attempt=${commandMedian.index}/${attempts} command_noisy=${commandNoisyAttempts}; `",
     "`two_phase_attempt=${twoPhaseBest.index}/${attempts} two_phase_median_attempt=${twoPhaseMedian.index}/${attempts} two_phase_noisy=${twoPhaseNoisyAttempts}; `",
+    "`semantic_attempt=${semanticBest.index}/${attempts} semantic_median_attempt=${semanticMedian.index}/${attempts} semantic_noisy=${semanticNoisyAttempts}; `",
+    "semantic_structural=${semanticStructuralStatus}",
+    "semantic_throughput=${semanticThroughputStatus}",
+    "const semanticLowering = \"semantic_ffn_sublayer_command_plus_two_phase_tiled_row_chain_tail\"",
+    "semantic_lowering=${semanticLowering}",
     "`two_phase_count=${format(twoPhaseBest.twoPhaseTiledTwoPhaseCount, 0)} two_phase_selected=${twoPhaseBest.twoPhaseTiledTwoPhaseCount > 0 ? \"yes\" : \"off\"} `",
     "`two_phase_tiled_work=${format(twoPhaseBest.twoPhaseTiledCount, 0)} chains row_groups=${format(twoPhaseBest.twoPhaseTiledRowTileGroups, 0)} n_tiles=${format(twoPhaseBest.twoPhaseTiledNTiles, 0)} serial_tile_loops=${format(twoPhaseBest.twoPhaseTiledSerialLoops, 0)} partial_slots=${format(twoPhaseBest.twoPhaseTiledPartialSlots, 0)} scratch_capacity=${format(twoPhaseBest.twoPhaseTiledScratchCapacity, 0)} spills=${format(twoPhaseBest.twoPhaseTiledSpills, 0)} `",
     "`command_projection_row_chain_dispatch=${format(commandBest.defaultProjectionRowChainDispatches, 0)}->${format(commandBest.commandProjectionRowChainDispatches, 0)} `",
@@ -864,6 +875,7 @@ function checkPackageExports(errors) {
     "dispatch_reduction_without_tiled_throughput",
     "const rowChainLowering = \"default_projection_chain_plus_row_chain_candidate_single_dispatch_tiled_row_chain\"",
     "const twoPhaseLowering = \"default_projection_chain_plus_row_chain_candidate_two_phase_tiled_row_chain\"",
+    "\"--metal-prompt-semantic-throughput-candidate\"",
     "\"--metal-prompt-projection-row-chain-two-phase-candidate\"",
     "qmatmul_row_chain_tiled_two_phase_count_per_call",
     "const requiredNextTarget = \"semantic_sublayer_or_two_phase_tile_parallel_row_chain\"",

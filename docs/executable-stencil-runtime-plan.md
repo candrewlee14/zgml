@@ -701,10 +701,22 @@ iterating on a kernel or runtime contract.
 For the remaining Q8 prompt frontier, the default all-lane
 `bench:q8-prompt-candidate` gate is still the release proof, but the fast
 kernel loop is now `dev:perf:q8-prompt:viable`: it sets
-`BENCH_Q8_PROMPT_LANES=command,two_phase` and defaults to one attempt, so the
+`BENCH_Q8_PROMPT_LANES=command,two_phase,semantic` and defaults to one attempt, so the
 known-bad single-dispatch diagnostic is skipped while the command and two-phase
-paths still prove structure, fallback, dispatch shape, decode fast-path shape,
-and throughput. A three-attempt no-rebuild proof ran in under a minute with
+paths plus the semantic-throughput candidate still prove structure, fallback,
+dispatch shape, decode fast-path shape, and throughput. The full-model gate now
+accepts either the older pair-fused `projection_pair>=30` shape or the larger
+semantic-command shape where projection pairs are consumed and at least 30
+semantic row-chain commands remain. A June 24, 2026 one-attempt no-rebuild
+Q8 viable run selected the semantic full-model lane successfully:
+`command_structural=ready`, `two_phase_structural=ready`,
+`semantic_structural=ready`, `semantic_selected=yes`,
+`command_command=241->151`, `semantic_command=241->151`,
+`semantic_projection_pair=30->0`, `semantic_projection_row_chain=0->30`,
+`semantic_speedup=1.00x`, and zero fallback. That is evidence that the
+larger semantic command is wired into the full model; it is not yet a broad
+promotion signal because throughput remains a thin/noisy lane. A three-attempt
+no-rebuild proof ran in under a minute with
 `command_structural=ready`, `single_structural=skipped`,
 `two_phase_structural=ready`,
 `attempt=skipped median_attempt=skipped noisy=skipped`,

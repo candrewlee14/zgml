@@ -192,9 +192,17 @@ machine for both prompt/prefill and decode.
   The viable next target is therefore either a larger semantic sublayer command or
   a two-phase tile-parallel row-chain, not another local serial-tail variant.
   For that viable target, `bench:q8-prompt-viable` and
-  `dev:perf:q8-prompt:viable` set `BENCH_Q8_PROMPT_LANES=command,two_phase`
-  and default to one attempt, so command/two-phase changes can be checked
-  without rerunning the known-bad single-dispatch diagnostic on every edit. The
+  `dev:perf:q8-prompt:viable` set `BENCH_Q8_PROMPT_LANES=command,two_phase,semantic`
+  and default to one attempt, so command, two-phase, and semantic-throughput
+  changes can be checked without rerunning the known-bad single-dispatch diagnostic on every edit. The
+  full-model gate accepts either the older pair-fused row-chain shape or the
+  larger semantic-command shape that consumes the FFN projection pair and leaves
+  30 semantic row-chain commands. A June 24, 2026 one-attempt viable run
+  selected that semantic lane (`semantic_selected=yes`) with
+  `semantic_command=241->151`, `semantic_projection_pair=30->0`,
+  `semantic_projection_row_chain=0->30`, `semantic_speedup=1.00x`, and zero
+  fallback, which proves wiring rather than promotion.
+  The
   full all-lane candidate gate remains the release proof before promotion.
   The two-phase partial kernel does not bind the scale buffer anymore; scale is
   only needed by the finalize pass. This keeps the candidate ABI shape smaller
