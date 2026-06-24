@@ -1291,6 +1291,8 @@ function checkScripts() {
   ]);
   requireIncludes(read("benchmarks/llama_smollm_bench.zig"), "benchmarks/llama_smollm_bench.zig", "promoted Q8 semantic prefill default", [
     "run_metal_prefill_device and model_is_gguf",
+    "run_metal_prompt_semantic_throughput_candidate",
+    "metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainCommand())",
     "metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate())",
   ]);
   requireIncludes(read("src/profile.zig"), "src/profile.zig", "semantic FFN sublayer profile evidence", [

@@ -1432,6 +1432,11 @@ semantic command becoming the Metal scheduled Q8 prompt default, not as ggml
 parity. The next bottleneck is the remaining model-width spill/work shape: absorb
 the residual user into a larger semantic command or replace the two-dispatch
 tail with a true throughput kernel.
+After the one-dispatch semantic throughput kernel became a real measured lane,
+the full-model default was kept on `promptProjectionRowChainCommand()` while
+`--metal-prompt-semantic-throughput-candidate` remains the explicit diagnostic
+flag. Do not couple those paths again until the one-dispatch kernel beats the
+semantic command default across repeated Q8 prompt and ggml evidence.
 The row-chain spill profile also tracks spilled input width. A source-current
 semantic quick probe reported `semantic_spill_input=17280` for `30` spills,
 so the average spilling row-chain is `K=576`. That identifies the materialized
