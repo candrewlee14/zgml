@@ -971,11 +971,22 @@ pytorch:0.0069ms`. Do not claim PyTorch broad parity yet; keep the fused
 small-direct row kernel because it improves the module prepared path, but the
 next move still needs a stronger classifier-tail kernel or a path that
 amortizes row normalization differently.
-Evidence tag: fused four-row small-direct `Linear -> LogSoftmax` classifier-tail
-kernel; latest fresh-native three-attempt PyTorch gap microscope; row
-log-softmax tail itself; `prepared_execute_into_ms=0.0082ms`;
-`ratio_median=linear_batched:1.22x,log_softmax_classifier_batched:0.95x`;
-`log_softmax_classifier_batched=zgml:0.0073ms pytorch:0.0069ms`.
+The PyTorch comparison workload now mirrors the zgml module-bench data scales
+for the tracked lanes instead of timing nearby-but-different tensors. The
+linear, MLP, RMS/SiLU FFN, softmax classifier, log-softmax classifier, and token
+head comparisons now use the same `values(length, scale)` shapes as their zgml
+counterparts before ratios are computed. That makes the comparison less likely
+to hide value-distribution-dependent softmax/log-softmax timing. Under the
+corrected comparison, the latest fresh-native broad sample remains 9/10:
+`ratio_median=linear_batched:1.23x,lazy_matmul_add_gelu_batched:2.81x,lazy_mlp_batched:1.76x,lazy_rms_silu_ffn_batched:1.63x,max_pool2d_batched:8.57x,avg_pool2d_batched:5.34x,rms_gelu_linear_batched:2.94x,softmax_classifier_batched:1.20x,log_softmax_classifier_batched:0.91x,lazy_token_head_batched:1.08x`.
+The refreshed six-lane focus sample is also honest rather than green:
+`lane_pass=5/6`, `ratio_median=linear_batched:1.23x,lazy_matmul_add_gelu_batched:2.83x,lazy_rms_silu_ffn_batched:1.63x,rms_gelu_linear_batched:2.95x,log_softmax_classifier_batched:0.91x,lazy_token_head_batched:1.09x`,
+with the best selected log-softmax attempt at
+`log_softmax_classifier_batched=zgml:0.0076ms pytorch:0.0074ms`. The attempted
+`K`-loop unroll for the fused four-row small-direct classifier-tail kernel did
+not move the corrected median and was not kept. The next PyTorch catch-up move
+is still a stronger classifier-tail kernel or a path that changes
+row-normalization amortization, not a timing-harness artifact.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier

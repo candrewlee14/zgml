@@ -166,12 +166,16 @@ def bench(fn, iterations=1000):
             if elapsed * 1000.0 >= min_timing_ms:
                 return elapsed * 1000.0 / total_iterations
 
-x128_64 = values((128, 64), 16.0)
+x128_64 = values((128, 64), 13.0)
 x512_64 = values((512, 64), 13.0)
-w32_64 = values((32, 64), 24.0)
+w32_64 = values((32, 64), 64.0)
 b32 = values((32,), 32.0)
-w64_64 = values((64, 64), 24.0)
-b64 = values((64,), 32.0)
+w64_64 = values((64, 64), 32.0)
+b64 = values((64,), 64.0)
+w64_64_mlp = values((64, 64), 32.0)
+b64_mlp = values((64,), 64.0)
+w32_64_mlp = values((32, 64), 48.0)
+b32_mlp = values((32,), 80.0)
 w32_64_softmax = values((32, 64), 64.0)
 b32_softmax = values((32,), 32.0)
 w16_32 = values((16, 32), 48.0)
@@ -182,7 +186,7 @@ w128_64 = values((128, 64), 48.0)
 b128 = values((128,), 80.0)
 w64_128 = values((64, 128), 64.0)
 b64_down = values((64,), 96.0)
-rms_weight = values((64,), 48.0) + 1.0
+rms_weight = values((64,), 32.0) + 1.0
 rms_weight_32 = values((64,), 32.0) + 1.0
 pool_x = values((2, 2, 128, 128), 10.0)
 token_ids = torch.tensor([i % 256 for i in range(128)], dtype=torch.long)
@@ -197,8 +201,8 @@ def lazy_matmul_add_gelu_batched():
     return torch.nn.functional.gelu(torch.matmul(x128_64, w64_64) + b64, approximate="tanh")
 
 def lazy_mlp_batched():
-    hidden = torch.relu(torch.nn.functional.linear(x128_64, w64_64, b64))
-    return torch.nn.functional.linear(hidden, w32_64, b32)
+    hidden = torch.relu(torch.nn.functional.linear(x128_64, w64_64_mlp, b64_mlp))
+    return torch.nn.functional.linear(hidden, w32_64_mlp, b32_mlp)
 
 def lazy_rms_silu_ffn_batched():
     ss = torch.mean(x128_64 * x128_64, dim=1, keepdim=True)
