@@ -90,6 +90,20 @@ function lazyMatmulAddGeluEager(input, weightValues, biasValues, batch, inFeatur
   return out;
 }
 
+function lazyMatmulAddReluEager(input, weightValues, biasValues, batch, inFeatures, outFeatures) {
+  const out = new Float32Array(batch * outFeatures);
+  for (let row = 0; row < batch; row += 1) {
+    for (let col = 0; col < outFeatures; col += 1) {
+      let sum = biasValues[col];
+      for (let feature = 0; feature < inFeatures; feature += 1) {
+        sum += input.data[row * inFeatures + feature] * weightValues[feature * outFeatures + col];
+      }
+      out[row * outFeatures + col] = sum > 0 ? sum : 0;
+    }
+  }
+  return out;
+}
+
 function requireCompiledHotPath(key, session, input, output) {
   const compatibility = session.requireHotStepParams({ input, output });
   const plan = session.hotPathPlan({ input, output });
@@ -228,6 +242,16 @@ function linearGeluBatchedModel() {
   );
 }
 
+function linearReluBatchedModel() {
+  return new zgml.nn.Sequential(
+    new zgml.nn.Linear(64, 64, {
+      weights: reluWeights,
+      bias: reluBias,
+    }),
+    new zgml.nn.ReLU(),
+  );
+}
+
 const linearWeights = values(64 * 32, 64);
 const linearBias = values(32, 32);
 const linearWeightTensor = zgml.tensor(linearWeights, [64, 32]);
@@ -238,6 +262,11 @@ const geluBias = values(64, 64);
 const geluWeightTensor = zgml.tensor(geluWeights, [64, 64]);
 const geluBiasTensor = zgml.tensor(geluBias, [64]);
 const linearGeluModel = linearGeluBatchedModel();
+const reluWeights = values(64 * 64, 48);
+const reluBias = values(64, 96);
+const reluWeightTensor = zgml.tensor(reluWeights, [64, 64]);
+const reluBiasTensor = zgml.tensor(reluBias, [64]);
+const linearReluModel = linearReluBatchedModel();
 
 const gapSpecs = Object.freeze([
   Object.freeze({
@@ -286,6 +315,35 @@ const gapSpecs = Object.freeze([
     compiledIterations: 1000,
     tolerance: 1e-4,
     next: "native_eager_fused_matmul_add_gelu_storage_slice",
+  }),
+  Object.freeze({
+    key: "lazy_matmul_add_relu_batched",
+    shape: Object.freeze({ batch: 128, inFeatures: 64, outFeatures: 64, fusedOps: "matmul_add_relu" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => lazyMatmulAddReluEager(input, reluWeights, reluBias, 128, 64, 64),
+    nativeEager: (output, input) => zgml.nativeEager.linearActivationInto(output, input, reluWeightTensor, {
+      bias: reluBiasTensor,
+      activation: "relu",
+    }),
+    nativeEagerModule: (input) => zgml.noGrad(() => linearReluModel.forward(input)),
+    compiled: () => compiledLazyHandle(
+      zgml.lazy.input([128, 64])
+        .matmul(zgml.lazy.parameter([64, 64], "w"))
+        .add(zgml.lazy.parameter([64], "b"))
+        .relu(),
+      {
+        weights: new Float32Array(reluWeights),
+        bias: new Float32Array(reluBias),
+      },
+      [128, 64],
+    ),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_fused_matmul_add_relu_storage_slice",
   }),
 ]);
 

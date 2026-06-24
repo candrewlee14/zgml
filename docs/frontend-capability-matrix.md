@@ -67,7 +67,8 @@ PyTorch replacement:
 - Native eager tensor storage is not the default. Large tensor performance
   claims should continue to go through compiled Programs/Sessions. The
   `dev:perf:native-eager-gap{,:run,:bun,:bun:run}` microscope now measures the first
-  `linear_batched` and `lazy_matmul_add_gelu_batched` targets as eager TS tensor
+  `linear_batched` and `lazy_matmul_add_gelu_batched` targets, plus the
+  adjacent `lazy_matmul_add_relu_batched` production-activation target, as eager TS tensor
   execution versus compiled allocation-free `executeInto`; the first native eager storage slices have executable baselines.
   Node and Bun also expose the first stateless native eager primitive:
   `zgml.nativeEager.linearInto`, backed by the `zgml_eager_linear_f32` C ABI,
@@ -84,7 +85,8 @@ PyTorch replacement:
   microscope has a caller-owned native eager path for
   `matmul -> add(bias) -> GELU` instead of only a compiled Program baseline.
   The same fused path is used by eligible no-grad
-  `nn.Sequential(Linear, GELU)` module calls, and the microscope records
+  `nn.Sequential(Linear, GELU)` and `nn.Sequential(Linear, ReLU)` module calls,
+  and the microscope records
   non-null fused-module `nativeEagerModuleForwardMs` rows on Node and Bun.
 - Safetensors/model-source interop is strong for runtime paths, while ordinary
   TS module weights now have explicit state-dict/checkpoint save/load recipes;
