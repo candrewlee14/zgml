@@ -1049,6 +1049,10 @@ function focusedSemanticMargin(current) {
 }
 
 function selectedSemanticAttemptSummary(attempt) {
+  const fullPrefillThroughputCandidateTileGroups =
+    attempt.fullPrefillThroughputCandidateRowTileGroups * attempt.fullPrefillThroughputCandidateNTiles;
+  const smollmPromptThroughputCandidateTileGroups =
+    attempt.smollmPromptThroughputCandidateRowTileGroups * attempt.smollmPromptThroughputCandidateNTiles;
   return {
     attempt: attempt.attempt,
     failures: attempt.failures,
@@ -1071,7 +1075,10 @@ function selectedSemanticAttemptSummary(attempt) {
       throughputCandidateVsDefault: roundMetric(attempt.fullPrefillThroughputCandidateSpeedup / attempt.fullPrefillSpeedup),
       throughputCandidateVsTwoPhase: roundMetric(attempt.fullPrefillThroughputCandidateVsTwoPhase),
       throughputCandidateRuntimeDispatches: attempt.fullPrefillThroughputCandidateRuntimeDispatches,
-      throughputCandidateTileParallelGroups: attempt.fullPrefillThroughputCandidateRowTileGroups * attempt.fullPrefillThroughputCandidateNTiles,
+      throughputCandidateTileParallelGroups: fullPrefillThroughputCandidateTileGroups,
+      tileParallelGroupGap: roundMetric(
+        attempt.fullPrefillTargetSemanticTileParallelGroups / fullPrefillThroughputCandidateTileGroups,
+      ),
     },
     smollmPrompt: {
       speedup: roundMetric(attempt.smollmPromptSpeedup),
@@ -1087,7 +1094,10 @@ function selectedSemanticAttemptSummary(attempt) {
       throughputCandidateVsDefault: roundMetric(attempt.smollmPromptThroughputCandidateSpeedup / attempt.smollmPromptSpeedup),
       throughputCandidateVsTwoPhase: roundMetric(attempt.smollmPromptThroughputCandidateVsTwoPhase),
       throughputCandidateRuntimeDispatches: attempt.smollmPromptThroughputCandidateRuntimeDispatches,
-      throughputCandidateTileParallelGroups: attempt.smollmPromptThroughputCandidateRowTileGroups * attempt.smollmPromptThroughputCandidateNTiles,
+      throughputCandidateTileParallelGroups: smollmPromptThroughputCandidateTileGroups,
+      tileParallelGroupGap: roundMetric(
+        attempt.smollmPromptTargetSemanticTileParallelGroups / smollmPromptThroughputCandidateTileGroups,
+      ),
     },
   };
 }

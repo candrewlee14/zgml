@@ -906,9 +906,9 @@ the one-dispatch target has `target_vs_default=full:0.28x,smollm:0.24x`, while
 the mixed throughput candidate is still below default at
 `candidate_vs_default=full:0.91x,smollm:0.93x`. The target exposes
 `target_tile_groups=full:192,smollm:216`, and the mixed candidate exposes
-`candidate_tile_groups=full:64,smollm:72`; tile-group count alone is therefore
-not the win. The blocker is still the serial dot-loop work inside the semantic
-row groups.
+`candidate_tile_groups=full:64,smollm:72`, so `perf-next` now reports the
+3.00x `tile_gap` directly. The blocker is still the serial dot-loop work inside
+the semantic row groups.
 The source-fresh rebuilt qsemantic pass on June 24, 2026 confirmed that this is
 not a promotion-ready candidate: the throughput candidate moved opposite
 directions across the two prompt shapes
