@@ -605,6 +605,8 @@ npm run dev:perf:pytorch:linear:native # native-only ReleaseFast microscope for 
 npm run dev:perf:pytorch:linear:run    # no-rebuild rerun for the linear_batched PyTorch miss
 npm run dev:perf:pytorch:logsoftmax:native # native-only ReleaseFast microscope for the logSoftmax classifier miss
 npm run dev:perf:pytorch:logsoftmax:run    # no-rebuild rerun for the logSoftmax classifier miss
+npm run dev:perf:pytorch:logsoftmax:steady:native # native-only 150ms-window logSoftmax classifier microscope
+npm run dev:perf:pytorch:logsoftmax:steady:run    # no-rebuild 150ms-window logSoftmax classifier microscope
 npm run bench:module-program:focus
 npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
 npm run bench:pytorch:parity:run       # rebuild ReleaseFast native, then rerun hard PyTorch parity

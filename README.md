@@ -890,6 +890,8 @@ npm run dev:perf:pytorch:focus:run # rerun focused PyTorch comparison against ex
 npm run dev:perf:pytorch:gaps # incremental ReleaseFast native rebuild, package build, and focused PyTorch-gap bench
 npm run dev:perf:pytorch:gaps:native # native-only focused PyTorch-gap loop after dist exists
 npm run dev:perf:pytorch:gaps:run # rerun focused PyTorch-gap bench against existing native/package artifacts
+npm run dev:perf:pytorch:logsoftmax:steady:native # native-only 150ms-window logSoftmax classifier microscope
+npm run dev:perf:pytorch:logsoftmax:steady:run # no-rebuild 150ms-window logSoftmax classifier microscope
 npm run dev:perf:q8-prompt # incremental ReleaseFast benchmark rebuild plus Q8 prompt candidate evidence
 npm run dev:perf:q8-prompt:run # rerun Q8 prompt candidate evidence against existing benchmark artifact
 npm run dev:perf:frontier:row-chain-region # incremental checked x7 row-chain region microscope

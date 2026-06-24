@@ -432,6 +432,12 @@ function checkScripts() {
   if (scripts["dev:perf:pytorch:gaps:native"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-1} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:gaps:native must keep the native-only PyTorch current-gap loop after dist exists");
   }
+  if (scripts["dev:perf:pytorch:logsoftmax:steady:native"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary none --error-style minimal && BENCH_PYTORCH_INSTALL=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=log_softmax_classifier_batched node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json dev:perf:pytorch:logsoftmax:steady:native must keep the steady native-only logSoftmax PyTorch microscope");
+  }
+  if (scripts["dev:perf:pytorch:logsoftmax:steady:run"] !== "BENCH_PYTORCH_INSTALL=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=log_softmax_classifier_batched node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json dev:perf:pytorch:logsoftmax:steady:run must keep the no-rebuild steady logSoftmax PyTorch microscope");
+  }
   if (scripts["bench:pytorch"] !== "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch must remain the ReleaseFast upstream PyTorch comparison evidence gate");
   }
