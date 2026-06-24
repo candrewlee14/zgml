@@ -322,8 +322,12 @@ machine for both prompt/prefill and decode.
   576-only 256-thread narrow-kernel probe reduced the slot footprint but hurt
   throughput (`smollm_prompt=0.67x`). A 384-thread mid-width probe improved
   utilization to about `777/1000` but still lost throughput
-  (`smollm_prompt=0.69x`), so a useful fix needs better partitioning or
-  vectorization without dropping too much parallelism. The retained unrolled
+  (`smollm_prompt=0.69x`). A 768-thread exact-width probe improved the new
+  SmolLM width-lane evidence from `562/1000` to `750/1000` and total lane
+  utilization to about `800/1000`, but still stayed below default
+  (`smollm_prompt=0.99x`) while regressing full-prefill (`full_prefill=1.12x`),
+  so a useful fix needs better partitioning or vectorization without dropping
+  too much useful parallelism. The retained unrolled
   512-thread semantic kernel is the first such win: it preserves the one-dispatch
   shape and lifts the three-attempt qsemantic throughput gate to
   `full_prefill=1.99x`, `smollm_prompt=1.04x`, `gate=ready`. The refreshed

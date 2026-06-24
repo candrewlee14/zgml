@@ -59,6 +59,12 @@ function runBench() {
   if (build === "0" && !existsSync(resolve(root, frontierBinary))) {
     throw new Error(`BENCH_FRONTIER_BUILD=0 requires ${frontierBinary}; run \`zig build -Doptimize=ReleaseFast bench-build\` first or use BENCH_FRONTIER_BUILD=1`);
   }
+  if (build === "0") {
+    const metadata = benchmarkBinaryMetadata({ root, binary: frontierBinary, build });
+    if (metadata.stale) {
+      throw new Error(`BENCH_FRONTIER_BUILD=0 found stale ${frontierBinary}; newest source is ${metadata.newestSourcePath}. Run \`zig build -Doptimize=ReleaseFast bench-build\` first or use BENCH_FRONTIER_BUILD=1`);
+    }
+  }
   const result = spawnSync(command, args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
