@@ -5629,6 +5629,50 @@ fn logSoftmaxRowsInPlaceBias32(values: []f32, bias: []const f32, M: usize) void 
     }
 }
 
+fn writeLogSoftmax32Row(output_row: []f32, v0: @Vector(16, f32), v1: @Vector(16, f32)) void {
+    const VecT = @Vector(16, f32);
+    const max_val = @max(@reduce(.Max, v0), @reduce(.Max, v1));
+    const max_broadcast: VecT = @splat(max_val);
+    const e0 = fastExpApproxVec(16, v0 - max_broadcast);
+    const e1 = fastExpApproxVec(16, v1 - max_broadcast);
+    const log_denom_vec: VecT = @splat(max_val + @log(@reduce(.Add, e0) + @reduce(.Add, e1)));
+    output_row[0..16].* = v0 - log_denom_vec;
+    output_row[16..32].* = v1 - log_denom_vec;
+}
+
+fn executeSmallDirectLinearBiasLogSoftmax32Rows(
+    comptime rows: usize,
+    linear: *const TinyLinearSessionHandle,
+    shape: DirectLinearLogSoftmaxStepShape,
+    input_slice: []const f32,
+    output_slice: []f32,
+    row_start: usize,
+    b0: @Vector(16, f32),
+    b1: @Vector(16, f32),
+) void {
+    const VecT = @Vector(16, f32);
+    var lo: [rows]VecT = undefined;
+    var hi: [rows]VecT = undefined;
+    inline for (0..rows) |r| {
+        lo[r] = b0;
+        hi[r] = b1;
+    }
+    for (0..shape.K) |k| {
+        const w0: VecT = linear.weights_buf[k * 32 ..][0..16].*;
+        const w1: VecT = linear.weights_buf[k * 32 + 16 ..][0..16].*;
+        inline for (0..rows) |r| {
+            const input_row = input_slice[(row_start + r) * shape.K ..][0..shape.K];
+            const x: VecT = @splat(input_row[k]);
+            lo[r] += x * w0;
+            hi[r] += x * w1;
+        }
+    }
+    inline for (0..rows) |r| {
+        const output_row = output_slice[(row_start + r) * 32 ..][0..32];
+        writeLogSoftmax32Row(output_row, lo[r], hi[r]);
+    }
+}
+
 fn executeSmallDirectLinearBiasLogSoftmax32(linear: *const TinyLinearSessionHandle, shape: DirectLinearLogSoftmaxStepShape, input: [*]const f32, output: [*]f32) void {
     const VecT = @Vector(16, f32);
     const input_slice = input[0..linear.input_len];
@@ -5636,119 +5680,17 @@ fn executeSmallDirectLinearBiasLogSoftmax32(linear: *const TinyLinearSessionHand
     const b0: VecT = linear.bias_buf[0..16].*;
     const b1: VecT = linear.bias_buf[16..32].*;
     var row: usize = 0;
+    while (row + 7 < shape.M) : (row += 8) {
+        executeSmallDirectLinearBiasLogSoftmax32Rows(8, linear, shape, input_slice, output_slice, row, b0, b1);
+    }
     while (row + 3 < shape.M) : (row += 4) {
-        const input_row0 = input_slice[row * shape.K ..][0..shape.K];
-        const input_row1 = input_slice[(row + 1) * shape.K ..][0..shape.K];
-        const input_row2 = input_slice[(row + 2) * shape.K ..][0..shape.K];
-        const input_row3 = input_slice[(row + 3) * shape.K ..][0..shape.K];
-        const output_row0 = output_slice[row * 32 ..][0..32];
-        const output_row1 = output_slice[(row + 1) * 32 ..][0..32];
-        const output_row2 = output_slice[(row + 2) * 32 ..][0..32];
-        const output_row3 = output_slice[(row + 3) * 32 ..][0..32];
-        var r0v0 = b0;
-        var r0v1 = b1;
-        var r1v0 = b0;
-        var r1v1 = b1;
-        var r2v0 = b0;
-        var r2v1 = b1;
-        var r3v0 = b0;
-        var r3v1 = b1;
-        for (0..shape.K) |k| {
-            const w0: VecT = linear.weights_buf[k * 32 ..][0..16].*;
-            const w1: VecT = linear.weights_buf[k * 32 + 16 ..][0..16].*;
-            const x0: VecT = @splat(input_row0[k]);
-            const x1: VecT = @splat(input_row1[k]);
-            const x2: VecT = @splat(input_row2[k]);
-            const x3: VecT = @splat(input_row3[k]);
-            r0v0 += x0 * w0;
-            r0v1 += x0 * w1;
-            r1v0 += x1 * w0;
-            r1v1 += x1 * w1;
-            r2v0 += x2 * w0;
-            r2v1 += x2 * w1;
-            r3v0 += x3 * w0;
-            r3v1 += x3 * w1;
-        }
-        const r0_max = @max(@reduce(.Max, r0v0), @reduce(.Max, r0v1));
-        const r1_max = @max(@reduce(.Max, r1v0), @reduce(.Max, r1v1));
-        const r2_max = @max(@reduce(.Max, r2v0), @reduce(.Max, r2v1));
-        const r3_max = @max(@reduce(.Max, r3v0), @reduce(.Max, r3v1));
-        const r0_max_broadcast: VecT = @splat(r0_max);
-        const r1_max_broadcast: VecT = @splat(r1_max);
-        const r2_max_broadcast: VecT = @splat(r2_max);
-        const r3_max_broadcast: VecT = @splat(r3_max);
-        const r0e0 = fastExpApproxVec(16, r0v0 - r0_max_broadcast);
-        const r0e1 = fastExpApproxVec(16, r0v1 - r0_max_broadcast);
-        const r1e0 = fastExpApproxVec(16, r1v0 - r1_max_broadcast);
-        const r1e1 = fastExpApproxVec(16, r1v1 - r1_max_broadcast);
-        const r2e0 = fastExpApproxVec(16, r2v0 - r2_max_broadcast);
-        const r2e1 = fastExpApproxVec(16, r2v1 - r2_max_broadcast);
-        const r3e0 = fastExpApproxVec(16, r3v0 - r3_max_broadcast);
-        const r3e1 = fastExpApproxVec(16, r3v1 - r3_max_broadcast);
-        const r0_log_denom: VecT = @splat(r0_max + @log(@reduce(.Add, r0e0) + @reduce(.Add, r0e1)));
-        const r1_log_denom: VecT = @splat(r1_max + @log(@reduce(.Add, r1e0) + @reduce(.Add, r1e1)));
-        const r2_log_denom: VecT = @splat(r2_max + @log(@reduce(.Add, r2e0) + @reduce(.Add, r2e1)));
-        const r3_log_denom: VecT = @splat(r3_max + @log(@reduce(.Add, r3e0) + @reduce(.Add, r3e1)));
-        output_row0[0..16].* = r0v0 - r0_log_denom;
-        output_row0[16..32].* = r0v1 - r0_log_denom;
-        output_row1[0..16].* = r1v0 - r1_log_denom;
-        output_row1[16..32].* = r1v1 - r1_log_denom;
-        output_row2[0..16].* = r2v0 - r2_log_denom;
-        output_row2[16..32].* = r2v1 - r2_log_denom;
-        output_row3[0..16].* = r3v0 - r3_log_denom;
-        output_row3[16..32].* = r3v1 - r3_log_denom;
+        executeSmallDirectLinearBiasLogSoftmax32Rows(4, linear, shape, input_slice, output_slice, row, b0, b1);
     }
     while (row + 1 < shape.M) : (row += 2) {
-        const input_row0 = input_slice[row * shape.K ..][0..shape.K];
-        const input_row1 = input_slice[(row + 1) * shape.K ..][0..shape.K];
-        const output_row0 = output_slice[row * 32 ..][0..32];
-        const output_row1 = output_slice[(row + 1) * 32 ..][0..32];
-        var r0v0 = b0;
-        var r0v1 = b1;
-        var r1v0 = b0;
-        var r1v1 = b1;
-        for (0..shape.K) |k| {
-            const w0: VecT = linear.weights_buf[k * 32 ..][0..16].*;
-            const w1: VecT = linear.weights_buf[k * 32 + 16 ..][0..16].*;
-            const x0: VecT = @splat(input_row0[k]);
-            const x1: VecT = @splat(input_row1[k]);
-            r0v0 += x0 * w0;
-            r0v1 += x0 * w1;
-            r1v0 += x1 * w0;
-            r1v1 += x1 * w1;
-        }
-        const r0_max = @max(@reduce(.Max, r0v0), @reduce(.Max, r0v1));
-        const r1_max = @max(@reduce(.Max, r1v0), @reduce(.Max, r1v1));
-        const r0_max_broadcast: VecT = @splat(r0_max);
-        const r1_max_broadcast: VecT = @splat(r1_max);
-        const r0e0 = fastExpApproxVec(16, r0v0 - r0_max_broadcast);
-        const r0e1 = fastExpApproxVec(16, r0v1 - r0_max_broadcast);
-        const r1e0 = fastExpApproxVec(16, r1v0 - r1_max_broadcast);
-        const r1e1 = fastExpApproxVec(16, r1v1 - r1_max_broadcast);
-        const r0_log_denom: VecT = @splat(r0_max + @log(@reduce(.Add, r0e0) + @reduce(.Add, r0e1)));
-        const r1_log_denom: VecT = @splat(r1_max + @log(@reduce(.Add, r1e0) + @reduce(.Add, r1e1)));
-        output_row0[0..16].* = r0v0 - r0_log_denom;
-        output_row0[16..32].* = r0v1 - r0_log_denom;
-        output_row1[0..16].* = r1v0 - r1_log_denom;
-        output_row1[16..32].* = r1v1 - r1_log_denom;
+        executeSmallDirectLinearBiasLogSoftmax32Rows(2, linear, shape, input_slice, output_slice, row, b0, b1);
     }
     while (row < shape.M) : (row += 1) {
-        const input_row = input_slice[row * shape.K ..][0..shape.K];
-        const output_row = output_slice[row * 32 ..][0..32];
-        var v0 = b0;
-        var v1 = b1;
-        for (0..shape.K) |k| {
-            const x: VecT = @splat(input_row[k]);
-            v0 += x * linear.weights_buf[k * 32 ..][0..16].*;
-            v1 += x * linear.weights_buf[k * 32 + 16 ..][0..16].*;
-        }
-        const max_val = @max(@reduce(.Max, v0), @reduce(.Max, v1));
-        const max_broadcast: VecT = @splat(max_val);
-        const e0 = fastExpApproxVec(16, v0 - max_broadcast);
-        const e1 = fastExpApproxVec(16, v1 - max_broadcast);
-        const log_denom_vec: VecT = @splat(max_val + @log(@reduce(.Add, e0) + @reduce(.Add, e1)));
-        output_row[0..16].* = v0 - log_denom_vec;
-        output_row[16..32].* = v1 - log_denom_vec;
+        executeSmallDirectLinearBiasLogSoftmax32Rows(1, linear, shape, input_slice, output_slice, row, b0, b1);
     }
 }
 
