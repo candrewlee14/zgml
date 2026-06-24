@@ -64,6 +64,7 @@ const workflows = Object.freeze([
     name: "Conv2d feature model",
     docNeedles: [
       "| Conv2d feature model |",
+      "`examples/node_training/train_conv2d.cjs`",
       "Conv2d eager, gradient, stateDict, compileSupport",
       "`docs/frontend-autograd-coverage.md` Conv/pool row",
     ],
@@ -73,6 +74,7 @@ const workflows = Object.freeze([
       "nn.Conv2d batched compiled output",
     ],
     commands: [
+      ["node", ["examples/node_training/train_conv2d.cjs"]],
       ["node", ["scripts/check_frontend_autograd_coverage.cjs"]],
     ],
   },
@@ -80,15 +82,18 @@ const workflows = Object.freeze([
     name: "Embedding/token classifier",
     docNeedles: [
       "| Embedding/token classifier |",
+      "`examples/node_training/train_token_classifier.cjs`",
       "Embedding/Linear/LogSoftmax token-head Program evidence",
-      "Canonical zgml-first token classifier example",
+      "checkpoint restore and allocation-free compiled logits",
     ],
     smokeNeedles: [
       "expected Embedding/Linear/LogSoftmax token-head Program evidence",
       "lazyEmbeddingGraph",
       "lazyEmbeddingModuleGraph",
     ],
-    commands: [],
+    commands: [
+      ["node", ["examples/node_training/train_token_classifier.cjs"]],
+    ],
   },
   {
     name: "Checkpointed compiled inference",

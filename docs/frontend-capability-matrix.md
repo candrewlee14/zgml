@@ -103,6 +103,7 @@ Raising the frontend replacement score should require one of these:
 - a focused runtime or module Program benchmark proving native lowering;
 - an autograd test proving backward behavior for a public op;
 - a README/tutorial example that exercises the full user workflow;
+- a runnable example script when the workflow is better shown as a smoke;
 - a scorecard check that keeps the capability from drifting.
 
 Workflow-level replacement confidence is tracked in

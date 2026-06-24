@@ -476,6 +476,13 @@ subset containing `Tensor`, `tensor`, `nn`, `F`, `data`, `loss`, `optim`,
 helpers. The `zgml/simple` subpath owns the matching manifest, so examples can
 opt into the small surface without hiding the advanced runtime SDK from users
 who need it.
+The frontend workflow evidence now uses that surface directly for the previously
+open Conv2d and token-classifier gaps: `examples/node_training/train_conv2d.cjs`
+trains, checkpoints, restores, and compiles a small Conv2d+ReLU feature model,
+while `examples/node_training/train_token_classifier.cjs` trains, checkpoints,
+restores, and compiles an `Embedding -> Linear -> LogSoftmax` classifier with
+allocation-free output. These are examples, not new performance claims, but
+they make the PyTorch-like first-contact workflow more concrete.
 
 PyTorch remains an important comparison target and useful compatibility
 vocabulary, but it is not the identity of the library. The primary product
