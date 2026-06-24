@@ -1333,6 +1333,7 @@ function checkScripts() {
   requireIncludes(JSON.stringify(packageJson.files ?? []), "package.json", "manual training examples in package artifact", [
     "examples/types/shape-safety-smoke.ts",
     "examples/types/browser-frontend-smoke.ts",
+    "examples/quickstart/zgml-first.cjs",
     "examples/node_training/manual_loop.cjs",
     "examples/node_training/train_classifier.cjs",
     "examples/node_training/torch_quickstart.cjs",
@@ -1345,6 +1346,8 @@ function checkScripts() {
     "examples/types/browser-frontend-smoke.ts",
   ]);
   requireOrdered(String(scripts["smoke:training"] ?? ""), "package.json", "Node training confidence gate", [
+    "node examples/quickstart/zgml-first.cjs",
+    "node examples/node_training/quickstart.cjs",
     "node examples/node_training/train_linear.cjs",
     "node examples/node_training/manual_loop.cjs",
     "node examples/node_training/train_mlp.cjs",
@@ -1359,6 +1362,8 @@ function checkScripts() {
   ]);
   requireOrdered(String(scripts["smoke:node"] ?? ""), "package.json", "Node public smoke gate", [
     "node dist/smokes/node_package_smoke.cjs",
+    "node examples/quickstart/zgml-first.cjs",
+    "node examples/node_training/quickstart.cjs",
     "node examples/node_training/train_linear.cjs",
     "node examples/node_training/manual_loop.cjs",
     "node examples/node_training/train_mlp.cjs",
@@ -2784,6 +2789,19 @@ function checkZgmlFrontendSurface() {
     "const compiledInto = fast.into(output, probe)",
     "fast.dispose()",
     "zgml quickstart ok",
+  ]);
+
+  const tutorialQuickstart = read("examples/quickstart/zgml-first.cjs");
+  requireIncludes(tutorialQuickstart, "examples/quickstart/zgml-first.cjs", "tutorial zgml-first train-checkpoint-compile path", [
+    "const { zgml } = require(\"../..\")",
+    "zgml.train.fit(model, loader, {",
+    "const snapshot = zgml.checkpoint.create({ model, optimizer, prefix: \"quickstart\" })",
+    "zgml.checkpoint.restore(snapshot, {",
+    "const fast = zgml.compileForInference(restored, { backend: \"cpu\", inputShape: [2] })",
+    "fast.into(output, probe)",
+    "const proof = fast.explain()",
+    "fast.dispose()",
+    "zgml quickstart:",
   ]);
 
   const smoke = read("examples/types/pytorch-training-smoke.ts");
@@ -5986,9 +6004,10 @@ function checkDocs() {
     "unsupported compile paths report canonical `compile.*` errors",
     "The adapter also reuses the canonical `compileSupportRejectionReason` helper",
     "instead of carrying a local rejection parser",
-    "The canonical runnable `examples/node_training/quickstart.cjs` now exercises the",
-    "`zgml.compileForInference(...)`, inspect `compileSupport()`, `explain()`,",
-    "allocation-free `into(...)`.",
+    "The canonical tutorial `examples/quickstart/zgml-first.cjs` now keeps the same",
+    "`zgml.compileForInference(...)`, run allocation-free `into(...)`,",
+    "The assertion-heavy contract smoke remains",
+    "`examples/node_training/quickstart.cjs`; it exercises `compileSupport()`,",
     "The top-level README and its typechecked quickstart smoke now teach that same",
     "leaving raw `Program`/`Session` binding as the explicit",
     "without adding",

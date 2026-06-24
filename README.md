@@ -15,10 +15,10 @@ and autograd vocabulary. Then compile the stable work into an explicit
 `Program`/`Session` handle when the hot path needs native speed, FFI-friendly
 binding, and evidence.
 
-For a runnable end-to-end version of this flow, see
-`examples/node_training/quickstart.cjs`. It trains a small model, checkpoint
-round-trips it, compiles an inference handle, inspects executable proof, and
-executes into caller-owned output.
+For a small runnable first-contact version of this flow, see
+`examples/quickstart/zgml-first.cjs`. It trains a model, restores a checkpoint,
+compiles an inference handle, and executes into caller-owned output. The
+assertion-heavy contract version lives at `examples/node_training/quickstart.cjs`.
 
 ```ts
 import { zgml } from "zgml";

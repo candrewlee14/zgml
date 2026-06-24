@@ -465,11 +465,13 @@ The adapter also reuses the canonical `compileSupportRejectionReason` helper
 instead of carrying a local rejection parser, shrinking one more duplicated
 piece of compile namespace behavior while the host-specific native compiler
 hooks remain injected.
-The canonical runnable `examples/node_training/quickstart.cjs` now exercises the
-same first-contact story end to end: train, checkpoint, restore,
-`zgml.compileForInference(...)`, inspect `compileSupport()`, `explain()`,
-`preflight()`, `kernelPlan()`, and `compilerSignatures()`, then run
-allocation-free `into(...)`.
+The canonical tutorial `examples/quickstart/zgml-first.cjs` now keeps the same
+first-contact story small: train, checkpoint, restore,
+`zgml.compileForInference(...)`, run allocation-free `into(...)`, and print a
+plain proof line. The assertion-heavy contract smoke remains
+`examples/node_training/quickstart.cjs`; it exercises `compileSupport()`,
+`explain()`, `preflight()`, `kernelPlan()`, and `compilerSignatures()` for drift
+protection without making those internals the tutorial's first screen.
 The top-level README and its typechecked quickstart smoke now teach that same
 friendly handle first, leaving raw `Program`/`Session` binding as the explicit
 advanced path.

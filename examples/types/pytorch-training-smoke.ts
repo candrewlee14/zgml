@@ -82,6 +82,7 @@ import {
   type TrainFitContext,
   type TrainFitEvidence,
   type TrainFitStepEvidence,
+  type TrainModelFitOptions,
   type TrainSupervisedCriterion,
   type ZgmlCheckpoint,
 } from "zgml";
@@ -621,6 +622,25 @@ const moduleFitEvidenceSnake: TrainFitEvidence<"adamw"> = train.fit_module(optim
   max_steps: 1,
   zero_grad: true,
 });
+const checkpointModel = nn.sequential([
+  nn.linear(2, 4),
+  nn.relu(),
+  nn.linear(4, 1),
+]);
+const checkpointOptimizer: Optimizer<"adam"> = optim.adam(checkpointModel, { lr: 0.01 });
+const tensorDatasetBatches = data.dataLoader(data.tensorDataset(
+  tensor([0, 0, 1, 1], [2, 2] as const),
+  tensor([0, 1], [2, 1] as const),
+), { batchSize: 1 });
+type ModelFirstFitBatch = ReturnType<typeof tensorDatasetBatches.__getitem__>;
+const modelFirstCriterion: TrainSupervisedCriterion<typeof checkpointModel, ModelFirstFitBatch> = new nn.MSELoss();
+const modelFirstFitOptions: TrainModelFitOptions<"adam", typeof checkpointModel, ModelFirstFitBatch> = {
+  optimizer: checkpointOptimizer,
+  loss: modelFirstCriterion,
+  maxSteps: 1,
+  zeroGrad: true,
+};
+const modelFirstFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpointModel, tensorDatasetBatches, modelFirstFitOptions);
 const evaluation: TrainEvaluateEvidence = train.evaluate(loader, (batch: TensorDatasetBatch) => {
   if (!batch.target) throw new Error("evaluation batch requires a target tensor");
   return loss.mse(model.forward(batch.input), batch.target);
