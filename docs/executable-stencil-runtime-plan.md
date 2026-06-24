@@ -1128,9 +1128,11 @@ the total trapped row-serial work:
 `target_semantic_total_row_serial_dot_ops=127401984` for the SmolLM prompt
 shape. The command shape is ideal, but the implementation still performs that
 row-serial dot workload inside one threadgroup per row. A focused
-semantic-thread-width experiment rejected the obvious knobs:
+semantic-thread-width experiment rejected the obvious knobs. Qsemantic target-thread experiments should not retune the row-serial semantic kernel width blindly:
 `SEMANTIC_FFN_THREADS=512` preserved correctness but left the target
-diagnostic and did not beat the default throughput path, while
+diagnostic and did not beat the default throughput path; a fresh focused
+rerun on June 24, 2026 still reported `target_vs_default=full_prefill:0.29x`
+and `smollm_prompt:0.26x`, with full-prefill target speed about `0.77x`.
 `SEMANTIC_FFN_THREADS=128` made the semantic target slower, especially on the
 SmolLM prompt shape. Keep the current `QMATMUL_ROW_CHAIN_THREADS=256`
 diagnostic until the implementation changes the work shape rather than merely

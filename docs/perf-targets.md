@@ -278,6 +278,11 @@ machine for both prompt/prefill and decode.
   `qproj_group_full_model_target=frontier_only_not_full_model_sibling_region`
   and `qproj_frontiers=60`, making the current full-model target explicit:
   row-chain frontier pressure, not a missed sibling qproj grouping pass.
+- Qsemantic target-thread experiments should not retune the row-serial semantic
+  kernel width blindly. A focused `SEMANTIC_FFN_THREADS=512` rerun preserved
+  correctness but stayed diagnostic (`target_vs_default` roughly
+  `full_prefill:0.29x,smollm_prompt:0.26x`), so the useful target remains
+  tiled/vectorized semantic dot work or a faster tiled row-chain leaf.
 - The frontier gate now also reports the paired row-chain diagnostic
   `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
   This compares four staged qmatmul+residual+RMSNorm-scale row chains against
