@@ -385,12 +385,14 @@ function frontierStatusLine(path) {
   const singleDispatch = typeof data?.singleDispatchThroughputStatus === "string" ? data.singleDispatchThroughputStatus : "unknown";
   const fullPrefill = formatRatio(data?.fullPrefill?.speedup);
   const fullPrefillCandidate = formatRatio(data?.fullPrefill?.throughputCandidateSpeedup);
+  const fullPrefillCandidateVsTwoPhase = formatRatio(data?.fullPrefill?.throughputCandidateVsTwoPhase);
   const smollmPrompt = formatRatio(data?.smollmPrompt?.speedup);
   const smollmPromptCandidate = formatRatio(data?.smollmPrompt?.throughputCandidateSpeedup);
+  const smollmPromptCandidateVsTwoPhase = formatRatio(data?.smollmPrompt?.throughputCandidateVsTwoPhase);
   const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
   const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
   const next = typeof data?.next === "string" ? data.next : "unknown";
-  return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} next=${next}`;
+  return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} vs_two_phase=full:${fullPrefillCandidateVsTwoPhase},smollm:${smollmPromptCandidateVsTwoPhase} next=${next}`;
 }
 
 function qprojFrontierStatusLine(path) {
@@ -464,6 +466,8 @@ function frontierNextTargetLine(path) {
     const fullCandidateValue = Number(data?.fullPrefill?.throughputCandidateSpeedup);
     const storedSmollmVsDefault = Number(data?.smollmPrompt?.throughputCandidateVsDefault);
     const storedFullVsDefault = Number(data?.fullPrefill?.throughputCandidateVsDefault);
+    const storedSmollmVsTwoPhase = Number(data?.smollmPrompt?.throughputCandidateVsTwoPhase);
+    const storedFullVsTwoPhase = Number(data?.fullPrefill?.throughputCandidateVsTwoPhase);
     const smollmCandidate = formatRatio(smollmCandidateValue);
     const fullCandidate = formatRatio(fullCandidateValue);
     const smollmVsDefault = Number.isFinite(storedSmollmVsDefault)
@@ -477,7 +481,7 @@ function frontierNextTargetLine(path) {
       ? formatRatio(fullCandidateValue / fullDefault)
       : "n/a";
     const throughputCandidate = typeof data?.throughputCandidateStatus === "string" ? data.throughputCandidateStatus : "unknown";
-    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}`;
+    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}`;
   } catch {
     return "frontier=unreadable_artifact";
   }

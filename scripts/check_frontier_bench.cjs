@@ -793,6 +793,8 @@ function scoreFocusedSemantic(output, attempt) {
     : "mixed_tiled_tail_diagnostic";
   const fullPrefillThroughputCandidateVsDefault = fullPrefillThroughputCandidateSpeedup / fullPrefillSpeedup;
   const smollmPromptThroughputCandidateVsDefault = smollmPromptThroughputCandidateSpeedup / smollmPromptSpeedup;
+  const fullPrefillThroughputCandidateVsTwoPhase = fullPrefillThroughputCandidateSpeedup / fullPrefillTwoPhaseSpeedup;
+  const smollmPromptThroughputCandidateVsTwoPhase = smollmPromptThroughputCandidateSpeedup / smollmPromptTwoPhaseSpeedup;
   const fullPrefillTargetVsDefault = fullPrefillTargetSpeedup / fullPrefillSpeedup;
   const smollmPromptTargetVsDefault = smollmPromptTargetSpeedup / smollmPromptSpeedup;
   const semanticCommandStatus =
@@ -884,6 +886,7 @@ function scoreFocusedSemantic(output, attempt) {
     `target_throughput_status=${targetThroughputStatus}`,
     `throughput_candidate_status=${throughputCandidateStatus}`,
     `throughput_candidate_vs_default=full_prefill:${fullPrefillThroughputCandidateVsDefault.toFixed(2)}x,smollm_prompt:${smollmPromptThroughputCandidateVsDefault.toFixed(2)}x`,
+    `throughput_candidate_vs_two_phase=full_prefill:${fullPrefillThroughputCandidateVsTwoPhase.toFixed(2)}x,smollm_prompt:${smollmPromptThroughputCandidateVsTwoPhase.toFixed(2)}x`,
     `target_vs_default=full_prefill:${fullPrefillTargetVsDefault.toFixed(2)}x,smollm_prompt:${smollmPromptTargetVsDefault.toFixed(2)}x`,
     semanticCommandStatus === "preserves_default_work_shape"
       ? semanticCommandStatusToken
@@ -934,6 +937,7 @@ function scoreFocusedSemantic(output, attempt) {
     fullPrefillThroughputCandidateRowTileGroups,
     fullPrefillThroughputCandidateNTiles,
     fullPrefillThroughputCandidateTwoPhase,
+    fullPrefillThroughputCandidateVsTwoPhase,
     fullPrefillTwoPhaseSpeedup,
     fullPrefillTwoPhaseMaxAbsDiff,
     fullPrefillTwoPhaseRuntimeDispatches,
@@ -986,6 +990,7 @@ function scoreFocusedSemantic(output, attempt) {
     smollmPromptThroughputCandidateRowTileGroups,
     smollmPromptThroughputCandidateNTiles,
     smollmPromptThroughputCandidateTwoPhase,
+    smollmPromptThroughputCandidateVsTwoPhase,
     smollmPromptTwoPhaseSpeedup,
     smollmPromptTwoPhaseMaxAbsDiff,
     smollmPromptTwoPhaseRuntimeDispatches,
@@ -1053,6 +1058,7 @@ function selectedSemanticAttemptSummary(attempt) {
       targetTileParallelGroups: attempt.fullPrefillTargetSemanticTileParallelGroups,
       throughputCandidateSpeedup: roundMetric(attempt.fullPrefillThroughputCandidateSpeedup),
       throughputCandidateVsDefault: roundMetric(attempt.fullPrefillThroughputCandidateSpeedup / attempt.fullPrefillSpeedup),
+      throughputCandidateVsTwoPhase: roundMetric(attempt.fullPrefillThroughputCandidateVsTwoPhase),
       throughputCandidateRuntimeDispatches: attempt.fullPrefillThroughputCandidateRuntimeDispatches,
       throughputCandidateTileParallelGroups: attempt.fullPrefillThroughputCandidateRowTileGroups * attempt.fullPrefillThroughputCandidateNTiles,
     },
@@ -1066,6 +1072,7 @@ function selectedSemanticAttemptSummary(attempt) {
       targetTileParallelGroups: attempt.smollmPromptTargetSemanticTileParallelGroups,
       throughputCandidateSpeedup: roundMetric(attempt.smollmPromptThroughputCandidateSpeedup),
       throughputCandidateVsDefault: roundMetric(attempt.smollmPromptThroughputCandidateSpeedup / attempt.smollmPromptSpeedup),
+      throughputCandidateVsTwoPhase: roundMetric(attempt.smollmPromptThroughputCandidateVsTwoPhase),
       throughputCandidateRuntimeDispatches: attempt.smollmPromptThroughputCandidateRuntimeDispatches,
       throughputCandidateTileParallelGroups: attempt.smollmPromptThroughputCandidateRowTileGroups * attempt.smollmPromptThroughputCandidateNTiles,
     },

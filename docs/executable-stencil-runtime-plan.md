@@ -1152,6 +1152,15 @@ not yet an automatic promotion signal: it needs repeated attempts and the full
 Q8 prompt candidate gate before it can replace the default semantic command
 path. It does, however, give the next Metal pass a checked semantic-command lane
 instead of only separate row-chain experiments.
+The qsemantic microscope now also prints
+`throughput_candidate_vs_two_phase=...`, which separates semantic-command
+overhead from the tiled row-chain tail itself. The latest three-attempt
+source-current rerun showed the throughput candidate roughly equal to the
+standalone two-phase tail (`full_prefill:1.00x`) and only slightly behind it on
+SmolLM (`0.98x`), while both remained below the default semantic command path.
+That points the next implementation work at the two-phase/tiled row-chain tail
+or a true semantic throughput kernel, not at removing wrapper overhead from the
+semantic command.
 A June 24, 2026 shape-gated policy experiment tried limiting the two-phase
 semantic throughput tail to the 512-wide full-prefill shape so the 576-wide
 SmolLM prompt shape would preserve the semantic command but skip the tiled tail.
