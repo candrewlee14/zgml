@@ -204,6 +204,7 @@ fn printCommandShape(
     commands: []const program_mod.ProgramCommand,
 ) !void {
     const shape = try program_mod.ProgramCommandStreamShape.fromOpsCommands(ops, commands);
+    try writeCommandShapeMetricJson(w, name, shape);
     try w.print(
         "  {s:<28} shape_commands={d}  shape_semantic_ffn_sublayers={d}  shape_projection_row_chains={d}  shape_projection_row_chain_semantic_residual_bridges={d}  shape_covered_ops={d}  shape_saved_dispatches={d}  shape_projection_groups={d}\n",
         .{
@@ -219,6 +220,43 @@ fn printCommandShape(
     );
 }
 
+fn writeMetricJsonPrefix(w: *std.Io.Writer, label: []const u8, row_kind: []const u8) !std.json.Stringify {
+    try w.writeAll("ZGML_FRONTIER_METRIC_JSON ");
+    var jw: std.json.Stringify = .{ .writer = w };
+    try jw.beginObject();
+    try jw.objectField("label");
+    try jw.write(label);
+    try jw.objectField("row_kind");
+    try jw.write(row_kind);
+    return jw;
+}
+
+fn writeMetricJsonField(jw: *std.json.Stringify, key: []const u8, value: anytype) !void {
+    try jw.objectField(key);
+    try jw.write(value);
+}
+
+fn finishMetricJson(w: *std.Io.Writer, jw: *std.json.Stringify) !void {
+    try jw.endObject();
+    try w.writeByte('\n');
+}
+
+fn writeCommandShapeMetricJson(
+    w: *std.Io.Writer,
+    name: []const u8,
+    shape: program_mod.ProgramCommandStreamShape,
+) !void {
+    var jw = try writeMetricJsonPrefix(w, name, "command_shape");
+    try writeMetricJsonField(&jw, "shape_commands", shape.command_count);
+    try writeMetricJsonField(&jw, "shape_semantic_ffn_sublayers", shape.semantic_ffn_sublayers);
+    try writeMetricJsonField(&jw, "shape_projection_row_chains", shape.projection_row_chains);
+    try writeMetricJsonField(&jw, "shape_projection_row_chain_semantic_residual_bridges", shape.projection_row_chain_semantic_residual_bridges);
+    try writeMetricJsonField(&jw, "shape_covered_ops", shape.covered_ops);
+    try writeMetricJsonField(&jw, "shape_saved_dispatches", shape.estimated_saved_dispatches);
+    try writeMetricJsonField(&jw, "shape_projection_groups", shape.projection_groups);
+    try finishMetricJson(w, &jw);
+}
+
 fn printProjectionRowChainRuntimeProfile(
     w: *std.Io.Writer,
     name: []const u8,
@@ -230,6 +268,7 @@ fn printProjectionRowChainRuntimeProfile(
     be.executeProgram(handle, &.{}, output_io);
     var rt = profile_mod.RuntimeProfile{};
     be.addRuntimeProfileTo(handle, &rt);
+    try writeProjectionRowChainRuntimeMetricJson(w, name, rt);
     try w.print(
         "  {s:<28} runtime_command_dispatches={d}  qmatmul_row_chain_tiled_two_phase_count={d}  qmatmul_row_chain_tiled_finalize_tile_groups={d}  qmatmul_row_chain_tiled_finalize_elements={d}  qmatmul_row_chain_tiled_spilled_elementwise={d}  qmatmul_row_chain_tiled_spilled_input={d}  qmatmul_row_chain_tiled_output_spills={d}\n",
         .{
@@ -245,6 +284,18 @@ fn printProjectionRowChainRuntimeProfile(
     );
 }
 
+fn writeProjectionRowChainRuntimeMetricJson(w: *std.Io.Writer, name: []const u8, rt: profile_mod.RuntimeProfile) !void {
+    var jw = try writeMetricJsonPrefix(w, name, "projection_row_chain_runtime");
+    try writeMetricJsonField(&jw, "runtime_command_dispatches", rt.backend_dispatch_count);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_two_phase_count", rt.qmatmul_row_chain_tiled_two_phase_count);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_finalize_tile_groups", rt.qmatmul_row_chain_tiled_finalize_tile_groups);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_finalize_elements", rt.qmatmul_row_chain_tiled_finalize_elements);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_spilled_elementwise", rt.qmatmul_row_chain_tiled_spilled_elementwise);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_spilled_input", rt.qmatmul_row_chain_tiled_spilled_input);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_output_spills", rt.qmatmul_row_chain_tiled_output_spills);
+    try finishMetricJson(w, &jw);
+}
+
 fn printProjectionGroupRuntimeProfile(
     w: *std.Io.Writer,
     name: []const u8,
@@ -256,6 +307,7 @@ fn printProjectionGroupRuntimeProfile(
     be.executeProgram(handle, &.{}, output_io);
     var rt = profile_mod.RuntimeProfile{};
     be.addRuntimeProfileTo(handle, &rt);
+    try writeProjectionGroupRuntimeMetricJson(w, name, rt);
     try w.print(
         "  {s:<28} runtime_backend_dispatches={d}  runtime_projection_group_dispatches={d}  runtime_projection_cache_group_dispatches={d}  runtime_projection_group_count={d}  runtime_projection_cache_group_count={d}\n",
         .{
@@ -267,6 +319,18 @@ fn printProjectionGroupRuntimeProfile(
             rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_cache_group)],
         },
     );
+}
+
+fn writeProjectionGroupRuntimeMetricJson(w: *std.Io.Writer, name: []const u8, rt: profile_mod.RuntimeProfile) !void {
+    const projection_group_idx = @intFromEnum(program_mod.ProgramCommandKind.projection_group);
+    const projection_cache_group_idx = @intFromEnum(program_mod.ProgramCommandKind.projection_cache_group);
+    var jw = try writeMetricJsonPrefix(w, name, "projection_group_runtime");
+    try writeMetricJsonField(&jw, "runtime_backend_dispatches", rt.backend_dispatch_count);
+    try writeMetricJsonField(&jw, "runtime_projection_group_dispatches", rt.program_command_dispatch_counts[projection_group_idx]);
+    try writeMetricJsonField(&jw, "runtime_projection_cache_group_dispatches", rt.program_command_dispatch_counts[projection_cache_group_idx]);
+    try writeMetricJsonField(&jw, "runtime_projection_group_count", rt.program_command_counts[projection_group_idx]);
+    try writeMetricJsonField(&jw, "runtime_projection_cache_group_count", rt.program_command_counts[projection_cache_group_idx]);
+    try finishMetricJson(w, &jw);
 }
 
 fn printSemanticSublayerRuntimeProfile(
@@ -285,6 +349,7 @@ fn printSemanticSublayerRuntimeProfile(
     const semantic_tile_groups = rt.semantic_ffn_sublayer_tile_parallel_groups;
     const semantic_row_serial_per_tile_group = if (semantic_tile_groups > 0) rt.semantic_ffn_sublayer_row_serial_dot_ops / semantic_tile_groups else 0;
     const semantic_total_row_serial_per_tile_group = if (semantic_tile_groups > 0) rt.semantic_ffn_sublayer_total_row_serial_dot_ops / semantic_tile_groups else 0;
+    try writeSemanticSublayerRuntimeMetricJson(w, name, rt, semantic_row_serial_per_tile_group, semantic_total_row_serial_per_tile_group);
     try w.print(
         "  {s:<28} runtime_backend_dispatches={d}  semantic_target_dispatches=1  runtime_projection_row_chain_dispatches={d}  runtime_projection_row_chain_attempts={d}  runtime_projection_row_chain_refused={d}  runtime_semantic_ffn_dispatches={d}  qmatmul_row_chain_tiled_count={d}  qmatmul_row_chain_tiled_row_tile_groups={d}  qmatmul_row_chain_tiled_n_tiles={d}  qmatmul_row_chain_tiled_serial_tile_loops={d}  qmatmul_row_chain_tiled_partial_slots={d}  qmatmul_row_chain_tiled_scratch_capacity={d}  qmatmul_row_chain_tiled_two_phase_count={d}  qmatmul_row_chain_tiled_finalize_tile_groups={d}  qmatmul_row_chain_tiled_finalize_elements={d}  qmatmul_row_chain_tiled_spilled_elementwise={d}  qmatmul_row_chain_tiled_spilled_input={d}  qmatmul_row_chain_tiled_output_spills={d}  semantic_ffn_sublayer_count={d}  semantic_ffn_sublayer_rows={d}  semantic_ffn_sublayer_hidden={d}  semantic_ffn_sublayer_input={d}  semantic_ffn_sublayer_output={d}  semantic_ffn_sublayer_row_serial_dot_ops={d}  semantic_ffn_sublayer_total_row_serial_dot_ops={d}  semantic_ffn_sublayer_tile_row_groups={d}  semantic_ffn_sublayer_tile_hidden_tiles={d}  semantic_ffn_sublayer_tile_output_tiles={d}  semantic_ffn_sublayer_tile_parallel_groups={d}  semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group={d}  semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group={d}\n",
         .{
@@ -321,6 +386,50 @@ fn printSemanticSublayerRuntimeProfile(
             semantic_total_row_serial_per_tile_group,
         },
     );
+}
+
+fn writeSemanticSublayerRuntimeMetricJson(
+    w: *std.Io.Writer,
+    name: []const u8,
+    rt: profile_mod.RuntimeProfile,
+    semantic_row_serial_per_tile_group: u64,
+    semantic_total_row_serial_per_tile_group: u64,
+) !void {
+    const projection_row_chain_idx = @intFromEnum(program_mod.ProgramCommandKind.projection_row_chain);
+    const semantic_idx = @intFromEnum(program_mod.ProgramCommandKind.semantic_ffn_sublayer);
+    var jw = try writeMetricJsonPrefix(w, name, "semantic_sublayer_runtime");
+    try writeMetricJsonField(&jw, "runtime_backend_dispatches", rt.backend_dispatch_count);
+    try writeMetricJsonField(&jw, "semantic_target_dispatches", 1);
+    try writeMetricJsonField(&jw, "runtime_projection_row_chain_dispatches", rt.program_command_dispatch_counts[projection_row_chain_idx]);
+    try writeMetricJsonField(&jw, "runtime_projection_row_chain_attempts", rt.program_command_attempt_counts[projection_row_chain_idx]);
+    try writeMetricJsonField(&jw, "runtime_projection_row_chain_refused", rt.program_command_failed_counts[projection_row_chain_idx]);
+    try writeMetricJsonField(&jw, "runtime_semantic_ffn_dispatches", rt.program_command_dispatch_counts[semantic_idx]);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_count", rt.qmatmul_row_chain_tiled_count);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_row_tile_groups", rt.qmatmul_row_chain_tiled_row_tile_groups);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_n_tiles", rt.qmatmul_row_chain_tiled_n_tiles);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_serial_tile_loops", rt.qmatmul_row_chain_tiled_serial_tile_loops);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_partial_slots", rt.qmatmul_row_chain_tiled_partial_slots);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_scratch_capacity", rt.qmatmul_row_chain_tiled_scratch_capacity);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_two_phase_count", rt.qmatmul_row_chain_tiled_two_phase_count);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_finalize_tile_groups", rt.qmatmul_row_chain_tiled_finalize_tile_groups);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_finalize_elements", rt.qmatmul_row_chain_tiled_finalize_elements);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_spilled_elementwise", rt.qmatmul_row_chain_tiled_spilled_elementwise);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_spilled_input", rt.qmatmul_row_chain_tiled_spilled_input);
+    try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_output_spills", rt.qmatmul_row_chain_tiled_output_spills);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_count", rt.semantic_ffn_sublayer_count);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_rows", rt.semantic_ffn_sublayer_rows);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_hidden", rt.semantic_ffn_sublayer_hidden);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_input", rt.semantic_ffn_sublayer_input);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_output", rt.semantic_ffn_sublayer_output);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_row_serial_dot_ops", rt.semantic_ffn_sublayer_row_serial_dot_ops);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_total_row_serial_dot_ops", rt.semantic_ffn_sublayer_total_row_serial_dot_ops);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_tile_row_groups", rt.semantic_ffn_sublayer_tile_row_groups);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_tile_hidden_tiles", rt.semantic_ffn_sublayer_tile_hidden_tiles);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_tile_output_tiles", rt.semantic_ffn_sublayer_tile_output_tiles);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_tile_parallel_groups", rt.semantic_ffn_sublayer_tile_parallel_groups);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group", semantic_row_serial_per_tile_group);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group", semantic_total_row_serial_per_tile_group);
+    try finishMetricJson(w, &jw);
 }
 
 const TensorComputeBench = struct {

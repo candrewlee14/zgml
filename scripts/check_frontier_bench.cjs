@@ -69,7 +69,43 @@ function runBench() {
   return output;
 }
 
+let cachedMetricOutput = null;
+let cachedMetricRows = null;
+
+function frontierMetricRows(output) {
+  if (cachedMetricOutput === output && cachedMetricRows !== null) return cachedMetricRows;
+  const prefix = "ZGML_FRONTIER_METRIC_JSON ";
+  const rows = [];
+  for (const line of output.split(/\r?\n/)) {
+    if (!line.startsWith(prefix)) continue;
+    const raw = line.slice(prefix.length);
+    try {
+      const row = JSON.parse(raw);
+      if (row && typeof row === "object" && typeof row.label === "string") {
+        rows.push(row);
+      }
+    } catch {
+      // Keep the human-readable text parser as the compatibility fallback.
+    }
+  }
+  cachedMetricOutput = output;
+  cachedMetricRows = rows;
+  return rows;
+}
+
+function jsonMetric(output, label, key) {
+  for (const row of frontierMetricRows(output)) {
+    if (row.label !== label || !(key in row)) continue;
+    const value = Number(row[key]);
+    if (Number.isFinite(value)) return value;
+    throw new Error(`frontier bench invalid JSON metric ${label} ${key}: ${row[key]}`);
+  }
+  return null;
+}
+
 function metric(output, label, key) {
+  const structured = jsonMetric(output, label, key);
+  if (structured !== null) return structured;
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = output.match(new RegExp(`${escaped}[^\\n]*${key}=\\s*([0-9]+(?:\\.[0-9]+)?)`));
   if (!match) {
@@ -91,6 +127,7 @@ function throughput(output, label, key) {
 }
 
 function hasMetric(output, label, key) {
+  if (jsonMetric(output, label, key) !== null) return true;
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`${escaped}[^\\n]*${key}=`).test(output);
 }
