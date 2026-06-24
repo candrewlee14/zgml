@@ -880,7 +880,11 @@ they prove the current 3-dispatch throughput boundary and the opt-in one-command
 target (`target_shape_commands=1`,
 `target_semantic_ffn_sublayers=1`,
 `target_runtime_backend_dispatches=1`) without requiring the full Q8 prompt
-artifact loop on every kernel edit.
+artifact loop on every kernel edit. It also prints
+`target_throughput_status=diagnostic_needs_throughput_kernel` when the
+one-dispatch semantic target is structurally correct but slower than the
+current throughput path, so dispatch-count evidence cannot be mistaken for a
+throughput promotion signal.
 Use it when changing projection-pair, row-chain, residual, RMSNorm, or
 semantic-sublayer scheduling, then escalate to `dev:perf:q8-prompt:viable` and
 the full Q8 prompt candidate gate before making a model-level speed claim. The

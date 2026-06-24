@@ -734,6 +734,8 @@ function checkScripts() {
     "function isFocusedSemanticFilter(filter)",
     "function scoreFocusedSemantic(output, attempt)",
     "frontier qsemantic gate:",
+    "target_throughput_status=",
+    "diagnostic_needs_throughput_kernel",
     "semantic_target_dispatches",
     "runtime_backend_dispatches",
     "target_shape_commands",
