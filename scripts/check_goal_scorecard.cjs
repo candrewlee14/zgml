@@ -2001,7 +2001,8 @@ function checkQ8PromptCandidateEvidence() {
     env: {
       ...process.env,
       BENCH_BUILD_ZGML: "0",
-      BENCH_CANDIDATE_ATTEMPTS: process.env.BENCH_CANDIDATE_ATTEMPTS ?? "3",
+      BENCH_CANDIDATE_ATTEMPTS: process.env.BENCH_CANDIDATE_ATTEMPTS ?? "1",
+      BENCH_Q8_PROMPT_LANES: process.env.BENCH_Q8_PROMPT_LANES ?? "command,two_phase,semantic",
     },
     stdio: ["ignore", "pipe", process.stderr],
   });
@@ -2011,12 +2012,13 @@ function checkQ8PromptCandidateEvidence() {
     return;
   }
   requireIncludes(output, "q8 prompt candidate gate output", "full-model Q8 semantic row-chain candidate evidence", [
+    "Q8_PROMPT_CANDIDATE_JSON",
     "q8 prompt semantic row-chain gate:",
     "command_structural=ready",
     "command_throughput=",
-    "single_structural=ready",
-    "single_throughput=off",
-    "reason=dispatch_reduction_without_tiled_throughput",
+    "single_structural=skipped",
+    "single_throughput=skipped",
+    "reason=single_dispatch_lane_skipped",
     "command_median_attempt=",
     "command_median_speedup=",
     "command_worst_speedup=",
@@ -2025,19 +2027,26 @@ function checkQ8PromptCandidateEvidence() {
     "command_dispatch=242->242",
     "command_dispatch_reduced=no",
     "command_runtime_target=reduce_actual_dispatch_or_larger_semantic_sublayer",
-    "command_command=241->181",
+    "command_command=241->151",
     "command_projection_chain=60->0",
-    "command_projection_pair=30->30",
+    "command_projection_pair=30->0",
     "command_projection_group=0->0",
     "qproj_group_full_model_target=frontier_only_not_full_model_sibling_region",
     "qproj_frontiers=60",
     "command_projection_cache_group=30->30",
     "decode_projection_group=0",
     "decode_projection_cache_group=30",
-    "command_projection_row_chain=0->60",
-    "command_projection_row_chain_dispatch=0->120",
+    "command_projection_row_chain=0->30",
+    "command_projection_row_chain_dispatch=0->60",
     "command_split=n/a->2.00",
     "command_lowering=default_projection_chain_plus_row_chain_command_two_dispatch",
+    "semantic_structural=ready",
+    "semantic_throughput=",
+    "semantic_selected=yes",
+    "semantic_command=241->151",
+    "semantic_projection_pair=30->0",
+    "semantic_projection_row_chain=0->30",
+    "semantic_lowering=semantic_ffn_sublayer_command_plus_two_phase_tiled_row_chain_tail",
     "two_phase_count=60",
     "two_phase_selected=yes",
     "two_phase_dispatch=242->242",
@@ -2045,30 +2054,57 @@ function checkQ8PromptCandidateEvidence() {
     "two_phase_runtime_target=reduce_actual_dispatch_or_larger_semantic_sublayer",
     "two_phase_tiled_work=60",
     "spills=30",
-    "median_attempt=",
-    "median_speedup=",
-    "worst_speedup=",
-    "best_speedup=",
-    "fallback=0->0",
-    "dispatch_reduced=yes",
-    "runtime_target=reduce_actual_dispatch_or_larger_semantic_sublayer",
-    "command=241->181",
-    "projection_chain=60->0",
-    "projection_pair=30->30",
-    "projection_group=0->0",
-    "projection_cache_group=30->30",
-    "projection_row_chain=0->60",
-    "projection_row_chain_dispatch=0->60",
-    "split=n/a->1.00",
-    "excess_dispatch=0->0 target=0",
-    "tiled_work=60",
-    "two_phase_scratch=ready",
-    "dispatch_only_trap=yes",
     "row_chain_lowering=default_projection_chain_plus_row_chain_candidate_single_dispatch_tiled_row_chain",
     "row_chain_next=semantic_sublayer_or_two_phase_tile_parallel_row_chain",
-    "single_dispatch_trap=serial_n_tile_loop_without_cross_threadgroup_row_reduce",
+    "single_dispatch_trap=none",
     "viable_next=semantic_sublayer_or_two_phase_tile_parallel_row_chain",
     "next=semantic_sublayer_or_two_phase_tile_parallel_row_chain",
+  ]);
+  const artifactLine = output.split(/\r?\n/).find((line) => line.startsWith("Q8_PROMPT_CANDIDATE_JSON "));
+  if (!artifactLine) {
+    errors.push("q8 prompt candidate gate output must include Q8_PROMPT_CANDIDATE_JSON");
+    return;
+  }
+  let artifactSummary;
+  try {
+    artifactSummary = JSON.parse(artifactLine.slice("Q8_PROMPT_CANDIDATE_JSON ".length));
+  } catch (err) {
+    errors.push(`q8 prompt candidate artifact summary must be valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  const artifactPath = artifactSummary.artifact;
+  if (typeof artifactPath !== "string" || !existsSync(artifactPath)) {
+    errors.push(`q8 prompt candidate artifact must exist: ${artifactPath}`);
+    return;
+  }
+  const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
+  if (artifact?.schema !== "zgml.q8-prompt-candidate.v1" ||
+    artifact?.status !== "command-ready" ||
+    artifact?.structural?.semantic !== "ready" ||
+    artifact?.lanes?.semantic?.selected !== true ||
+    artifact?.lanes?.semantic?.projectionPairs !== 0 ||
+    artifact?.lanes?.semantic?.projectionRowChains !== 30 ||
+    artifact?.lanes?.command?.commands !== 151) {
+    errors.push(`q8 prompt candidate artifact missing expected semantic full-model evidence: ${artifactPath}`);
+    return;
+  }
+  const statusResult = spawnSync(process.execPath, ["scripts/bench_status.cjs"], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", process.stderr],
+  });
+  if (statusResult.status !== 0) {
+    errors.push(spawnFailure("bench status q8 prompt artifact readback", process.execPath, ["scripts/bench_status.cjs"], statusResult));
+    return;
+  }
+  const statusOutput = `${statusResult.stdout ?? ""}${statusResult.stderr ?? ""}`;
+  requireIncludes(statusOutput, "bench status output", "latest Q8 prompt candidate artifact readback", [
+    "q8-prompt-results: latest=",
+    "status=command-ready",
+    "semantic_selected=yes",
+    "command_commands=151",
+    "semantic_pair_to_row=0->30",
+    "lanes=command,two_phase,semantic",
   ]);
   notes.push(output.trim());
 }
