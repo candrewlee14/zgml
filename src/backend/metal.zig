@@ -39,10 +39,11 @@ fn deviceOpAt(comptime tag: DeviceOpTag, ops: []const backend_mod.DeviceOp, idx:
 
 // ── Tile size for simdgroup kernel ────────────────────────────────
 
-// Shared simdgroup matmul tile. Do not retune this as a row-chain-only knob:
-// TILE=16 hurt full-model Q8 prompt throughput, and TILE=64 broke row-chain
-// correctness in the focused qrow-region probe.
 const TILE: u32 = 32; // output tile per threadgroup (TILE x TILE)
+// Row-chain tiled kernels have a separate tile so future qrow tuning cannot
+// perturb the normal qmatmul/matmul path. Shared TILE=16 hurt full-model Q8 prompt throughput,
+// and shared TILE=64 broke row-chain correctness in the focused qrow-region probe.
+const ROW_CHAIN_TILE: u32 = 32;
 const MAX_ROW_CHAIN_COLS: u32 = 4096;
 const MAX_ROW_CHAIN_K: u32 = 2048;
 const QMATMUL_ROW_CHAIN_THREADS: u32 = 256;
@@ -57,6 +58,7 @@ const shader_source =
     \\using namespace metal;
     \\
     \\constant uint TILE = 32;
+    \\constant uint ROW_CHAIN_TILE = 32;
     \\constant uint NSUB = 4; // 2x2 arrangement of 8x8 sub-tiles per simdgroup
     \\constant uint QMATVEC_DOT_THREADS = 64;
     \\constant uint QMATMUL_ROW_CHAIN_THREADS = 256;
@@ -1572,32 +1574,32 @@ const shader_source =
     \\    const uint sRow = (simd_idx / 2) * 16;
     \\    const uint sCol = (simd_idx % 2) * 16;
     \\
-    \\    threadgroup float row_sums[TILE];
-    \\    threadgroup float inv_rms[TILE];
-    \\    if (tid < TILE) {
+    \\    threadgroup float row_sums[ROW_CHAIN_TILE];
+    \\    threadgroup float inv_rms[ROW_CHAIN_TILE];
+    \\    if (tid < ROW_CHAIN_TILE) {
     \\        row_sums[tid] = 0.0f;
     \\        inv_rms[tid] = 0.0f;
     \\    }
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
-    \\    threadgroup float tI[TILE * 8];
-    \\    threadgroup float tW[8 * TILE];
-    \\    threadgroup float tC[TILE * TILE];
+    \\    threadgroup float tI[ROW_CHAIN_TILE * 8];
+    \\    threadgroup float tW[8 * ROW_CHAIN_TILE];
+    \\    threadgroup float tC[ROW_CHAIN_TILE * ROW_CHAIN_TILE];
     \\
-    \\    for (uint gCol = 0; gCol < p.N; gCol += TILE) {
+    \\    for (uint gCol = 0; gCol < p.N; gCol += ROW_CHAIN_TILE) {
     \\        simdgroup_float8x8 acc[4] = {
     \\            simdgroup_float8x8(0), simdgroup_float8x8(0),
     \\            simdgroup_float8x8(0), simdgroup_float8x8(0)
     \\        };
     \\
     \\        for (uint kt = 0; kt < p.K; kt += 8) {
-    \\            for (uint i = tid; i < TILE * 8; i += 128) {
+    \\            for (uint i = tid; i < ROW_CHAIN_TILE * 8; i += 128) {
     \\                uint r = i / 8, c = i % 8;
     \\                uint ir = gRow + r, ic = kt + c;
     \\                tI[i] = (ir < p.M && ic < p.K) ? input[p.input_offset + ir * p.input_row_stride + ic] : 0.0f;
     \\            }
-    \\            for (uint i = tid; i < 8 * TILE; i += 128) {
-    \\                uint r = i / TILE, c = i % TILE;
+    \\            for (uint i = tid; i < 8 * ROW_CHAIN_TILE; i += 128) {
+    \\                uint r = i / ROW_CHAIN_TILE, c = i % ROW_CHAIN_TILE;
     \\                uint kr = kt + r, nc = gCol + c;
     \\                if (kr < p.K && nc < p.N) {
     \\                    uint w_idx = kr * p.N + nc;
@@ -1611,8 +1613,8 @@ const shader_source =
     \\            simdgroup_float8x8 a0, a1, b0, b1;
     \\            simdgroup_load(a0, tI + (sRow + 0) * 8, 8);
     \\            simdgroup_load(a1, tI + (sRow + 8) * 8, 8);
-    \\            simdgroup_load(b0, tW + (sCol + 0), TILE);
-    \\            simdgroup_load(b1, tW + (sCol + 8), TILE);
+    \\            simdgroup_load(b0, tW + (sCol + 0), ROW_CHAIN_TILE);
+    \\            simdgroup_load(b1, tW + (sCol + 8), ROW_CHAIN_TILE);
     \\
     \\            simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
     \\            simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
@@ -1622,21 +1624,21 @@ const shader_source =
     \\            threadgroup_barrier(mem_flags::mem_threadgroup);
     \\        }
     \\
-    \\        simdgroup_store(acc[0], tC + (sRow + 0) * TILE + sCol + 0, TILE);
-    \\        simdgroup_store(acc[1], tC + (sRow + 0) * TILE + sCol + 8, TILE);
-    \\        simdgroup_store(acc[2], tC + (sRow + 8) * TILE + sCol + 0, TILE);
-    \\        simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
+    \\        simdgroup_store(acc[0], tC + (sRow + 0) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\        simdgroup_store(acc[1], tC + (sRow + 0) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\        simdgroup_store(acc[2], tC + (sRow + 8) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\        simdgroup_store(acc[3], tC + (sRow + 8) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
     \\        threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
-    \\        if (tid < TILE) {
+    \\        if (tid < ROW_CHAIN_TILE) {
     \\            uint r = tid;
     \\            uint cr = gRow + r;
     \\            if (cr < p.M) {
     \\                float ss = row_sums[r];
-    \\                for (uint c = 0; c < TILE; c += 1) {
+    \\                for (uint c = 0; c < ROW_CHAIN_TILE; c += 1) {
     \\                    uint cc = gCol + c;
     \\                    if (cc < p.N) {
-    \\                        float val = tC[r * TILE + c];
+    \\                        float val = tC[r * ROW_CHAIN_TILE + c];
     \\                        uint linear = cr * p.N + cc;
     \\                        float other = secondary[p.ew_secondary_offset + linear];
     \\                        float ew = val;
@@ -1653,13 +1655,13 @@ const shader_source =
     \\        threadgroup_barrier(mem_flags::mem_threadgroup);
     \\    }
     \\
-    \\    if (tid < TILE) {
+    \\    if (tid < ROW_CHAIN_TILE) {
     \\        uint cr = gRow + tid;
     \\        if (cr < p.M) inv_rms[tid] = 1.0f / sqrt(row_sums[tid] / float(p.N) + p.rms_eps);
     \\    }
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
-    \\    for (uint i = tid; i < TILE * p.N; i += 128) {
+    \\    for (uint i = tid; i < ROW_CHAIN_TILE * p.N; i += 128) {
     \\        uint r = i / p.N;
     \\        uint col = i - r * p.N;
     \\        uint cr = gRow + r;
@@ -1685,14 +1687,14 @@ const shader_source =
     \\    uint lane     [[thread_index_in_simdgroup]],
     \\    uint tid      [[thread_index_in_threadgroup]]
     \\) {
-    \\    const uint gRow = group.x * TILE;
-    \\    const uint gCol = group.y * TILE;
+    \\    const uint gRow = group.x * ROW_CHAIN_TILE;
+    \\    const uint gCol = group.y * ROW_CHAIN_TILE;
     \\    const uint sRow = (simd_idx / 2) * 16;
     \\    const uint sCol = (simd_idx % 2) * 16;
     \\
-    \\    threadgroup float tI[TILE * 8];
-    \\    threadgroup float tW[8 * TILE];
-    \\    threadgroup float tC[TILE * TILE];
+    \\    threadgroup float tI[ROW_CHAIN_TILE * 8];
+    \\    threadgroup float tW[8 * ROW_CHAIN_TILE];
+    \\    threadgroup float tC[ROW_CHAIN_TILE * ROW_CHAIN_TILE];
     \\
     \\    simdgroup_float8x8 acc[4] = {
     \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
@@ -1700,13 +1702,13 @@ const shader_source =
     \\    };
     \\
     \\    for (uint kt = 0; kt < p.K; kt += 8) {
-    \\        for (uint i = tid; i < TILE * 8; i += 128) {
+    \\        for (uint i = tid; i < ROW_CHAIN_TILE * 8; i += 128) {
     \\            uint r = i / 8, c = i % 8;
     \\            uint ir = gRow + r, ic = kt + c;
     \\            tI[i] = (ir < p.M && ic < p.K) ? input[p.input_offset + ir * p.input_row_stride + ic] : 0.0f;
     \\        }
-    \\        for (uint i = tid; i < 8 * TILE; i += 128) {
-    \\            uint r = i / TILE, c = i % TILE;
+    \\        for (uint i = tid; i < 8 * ROW_CHAIN_TILE; i += 128) {
+    \\            uint r = i / ROW_CHAIN_TILE, c = i % ROW_CHAIN_TILE;
     \\            uint kr = kt + r, nc = gCol + c;
     \\            if (kr < p.K && nc < p.N) {
     \\                uint w_idx = kr * p.N + nc;
@@ -1720,8 +1722,8 @@ const shader_source =
     \\        simdgroup_float8x8 a0, a1, b0, b1;
     \\        simdgroup_load(a0, tI + (sRow + 0) * 8, 8);
     \\        simdgroup_load(a1, tI + (sRow + 8) * 8, 8);
-    \\        simdgroup_load(b0, tW + (sCol + 0), TILE);
-    \\        simdgroup_load(b1, tW + (sCol + 8), TILE);
+    \\        simdgroup_load(b0, tW + (sCol + 0), ROW_CHAIN_TILE);
+    \\        simdgroup_load(b1, tW + (sCol + 8), ROW_CHAIN_TILE);
     \\
     \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
     \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
@@ -1730,21 +1732,21 @@ const shader_source =
     \\        threadgroup_barrier(mem_flags::mem_threadgroup);
     \\    }
     \\
-    \\    simdgroup_store(acc[0], tC + (sRow + 0) * TILE + sCol + 0, TILE);
-    \\    simdgroup_store(acc[1], tC + (sRow + 0) * TILE + sCol + 8, TILE);
-    \\    simdgroup_store(acc[2], tC + (sRow + 8) * TILE + sCol + 0, TILE);
-    \\    simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
+    \\    simdgroup_store(acc[0], tC + (sRow + 0) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[1], tC + (sRow + 0) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[2], tC + (sRow + 8) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[3], tC + (sRow + 8) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
-    \\    if (tid < TILE) {
+    \\    if (tid < ROW_CHAIN_TILE) {
     \\        uint r = tid;
     \\        uint cr = gRow + r;
     \\        if (cr < p.M) {
     \\            float ss = 0.0f;
-    \\            for (uint c = 0; c < TILE; c += 1) {
+    \\            for (uint c = 0; c < ROW_CHAIN_TILE; c += 1) {
     \\                uint cc = gCol + c;
     \\                if (cc < p.N) {
-    \\                    float val = tC[r * TILE + c];
+    \\                    float val = tC[r * ROW_CHAIN_TILE + c];
     \\                    uint linear = cr * p.N + cc;
     \\                    float other = secondary[p.ew_secondary_offset + linear];
     \\                    float ew = val;
@@ -1769,9 +1771,9 @@ const shader_source =
     \\    uint row_tile [[threadgroup_position_in_grid]],
     \\    uint tid [[thread_index_in_threadgroup]]
     \\) {
-    \\    const uint gRow = row_tile * TILE;
-    \\    threadgroup float inv_rms[TILE];
-    \\    if (tid < TILE) {
+    \\    const uint gRow = row_tile * ROW_CHAIN_TILE;
+    \\    threadgroup float inv_rms[ROW_CHAIN_TILE];
+    \\    if (tid < ROW_CHAIN_TILE) {
     \\        uint cr = gRow + tid;
     \\        if (cr < p.M) {
     \\            float ss = 0.0f;
@@ -1785,7 +1787,7 @@ const shader_source =
     \\    }
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
-    \\    for (uint i = tid; i < TILE * p.N; i += 128) {
+    \\    for (uint i = tid; i < ROW_CHAIN_TILE * p.N; i += 128) {
     \\        uint r = i / p.N;
     \\        uint col = i - r * p.N;
     \\        uint cr = gRow + r;
@@ -4135,6 +4137,7 @@ comptime {
     requireShaderUintConst("MAX_QMATVEC_BATCH", MAX_QMATVEC_BATCH);
     requireShaderUintConst("MAX_QMATVEC_ROPE_STORES", MAX_QMATVEC_ROPE_STORES);
     requireShaderUintConst("QMATVEC_DOT_THREADS", QMATVEC_DOT_THREADS);
+    requireShaderUintConst("ROW_CHAIN_TILE", ROW_CHAIN_TILE);
     requireShaderUintConst("QMATMUL_ROW_CHAIN_THREADS", QMATMUL_ROW_CHAIN_THREADS);
     requireShaderUintConst("MAX_ROW_CHAIN_COLS", MAX_ROW_CHAIN_COLS);
     requireShaderUintConst("MAX_ROW_CHAIN_K", MAX_ROW_CHAIN_K);
@@ -7334,7 +7337,7 @@ const CompiledProgram = struct {
     fn encodeQMatmulRowChainTwoPhaseTiled(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool) bool {
         if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
         if (q.M <= 1) return false;
-        const partial_cols = (q.N + TILE - 1) / TILE;
+        const partial_cols = (q.N + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE;
         const partial_len = @as(usize, q.M) * @as(usize, partial_cols);
         const partial_end = @as(usize, rn.dst_offset) + partial_len;
         if (partial_end * @sizeOf(f32) > view.device_bufs[rn.dst].size) return false;
@@ -7371,8 +7374,8 @@ const CompiledProgram = struct {
             .partial_dst_offset = rn.dst_offset,
             .partial_cols = partial_cols,
         };
-        exec.profile.recordQMatmulRowChainTwoPhaseTiled(q.M, q.N, TILE, write_ew_output);
-        exec.encodeKernel(.qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 7, .{ .gx = (q.M + TILE - 1) / TILE, .gy = partial_cols }, MATMUL_THREADS);
+        exec.profile.recordQMatmulRowChainTwoPhaseTiled(q.M, q.N, ROW_CHAIN_TILE, write_ew_output);
+        exec.encodeKernel(.qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = partial_cols }, MATMUL_THREADS);
 
         const ew_src = if (write_ew_output) view.device_bufs[e.dst] else view.device_bufs[out.dst];
         const finalize_buffers = [_]DeviceBuffer{
@@ -7381,7 +7384,7 @@ const CompiledProgram = struct {
             view.device_bufs[rp.src],
             view.device_bufs[out.dst],
         };
-        exec.encodeKernel(.qmatmul_row_chain_tiled_finalize_f32, &finalize_buffers, params, 4, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS);
+        exec.encodeKernel(.qmatmul_row_chain_tiled_finalize_f32, &finalize_buffers, params, 4, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE }, MATMUL_THREADS);
         return true;
     }
 
@@ -7418,10 +7421,10 @@ const CompiledProgram = struct {
             .scale_src_offset = rp.src_offset,
             .scaled_dst_offset = out.dst_offset,
             .partial_dst_offset = rn.dst_offset,
-            .partial_cols = (q.N + TILE - 1) / TILE,
+            .partial_cols = (q.N + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE,
         };
-        exec.profile.recordQMatmulRowChainTiled(q.M, q.N, TILE, write_ew_output);
-        exec.encodeKernel(.qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS);
+        exec.profile.recordQMatmulRowChainTiled(q.M, q.N, ROW_CHAIN_TILE, write_ew_output);
+        exec.encodeKernel(.qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE }, MATMUL_THREADS);
         return true;
     }
 

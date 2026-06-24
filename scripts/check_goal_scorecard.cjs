@@ -592,10 +592,12 @@ function checkScripts() {
     "q8 prompt semantic row-chain gate:",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "shared Metal tile rejection evidence", [
-    "Shared simdgroup matmul tile. Do not retune this as a row-chain-only knob",
+    "Row-chain tiled kernels have a separate tile so future qrow tuning cannot",
     "TILE=16 hurt full-model Q8 prompt throughput",
     "TILE=64 broke row-chain",
     "const TILE: u32 = 32;",
+    "const ROW_CHAIN_TILE: u32 = 32;",
+    "requireShaderUintConst(\"ROW_CHAIN_TILE\", ROW_CHAIN_TILE);",
   ]);
   requireIncludes(read("src/backend/program.zig"), "src/backend/program.zig", "prompt row-chain policy must not promote qmatvec decode trap", [
     "pub fn promptProjectionRowChainCommand() CommandStreamPolicy",
@@ -657,9 +659,9 @@ function checkScripts() {
     "kernel void qmatmul_row_chain_tiled_f32",
     "kernel void qmatmul_row_chain_tiled_partials_f32",
     "kernel void qmatmul_row_chain_tiled_finalize_f32",
-    ".qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS",
-    ".qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 7, .{ .gx = (q.M + TILE - 1) / TILE, .gy = partial_cols }, MATMUL_THREADS",
-    ".qmatmul_row_chain_tiled_finalize_f32, &finalize_buffers, params, 4, .{ .gx = (q.M + TILE - 1) / TILE }, MATMUL_THREADS",
+    ".qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE }, MATMUL_THREADS",
+    ".qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = partial_cols }, MATMUL_THREADS",
+    ".qmatmul_row_chain_tiled_finalize_f32, &finalize_buffers, params, 4, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE }, MATMUL_THREADS",
     "self.command_policy.fuse_projection_row_chain_single_dispatch",
     "self.command_policy.fuse_projection_row_chain_two_phase_candidate",
     "const write_primary = projectionRowChainPrimaryHasExternalUsers(ops, command);",
@@ -5424,6 +5426,8 @@ function checkDocs() {
     "`TILE=16` made one isolated qrow-region ratio",
     "`TILE=64` made the two-phase qrow-region path numerically wrong",
     "Keep the shared Metal matmul tile at `32`",
+    "`ROW_CHAIN_TILE=32`",
+    "row-chain-only tile experiments",
     "`projection_group=0->0`",
     "`projection_cache_group=30->30`",
     "`decode_projection_cache_group=30`",

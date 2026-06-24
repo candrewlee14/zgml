@@ -686,8 +686,10 @@ experiment rejected both sides: `TILE=16` made one isolated qrow-region ratio
 look less bad but cut full-model Q8 prompt throughput roughly in half, while
 `TILE=64` made the two-phase qrow-region path numerically wrong
 (`max_abs_diff` around `0.54`). Keep the shared Metal matmul tile at `32`
-unless a future change splits normal matmul tiling from row-chain tiling and
-proves correctness plus full-model absolute throughput.
+for normal matmul. Row-chain tiled kernels now use a separate
+`ROW_CHAIN_TILE=32`, which is behavior-preserving today and lets future
+row-chain-only tile experiments happen without perturbing the normal
+qmatmul/matmul path.
 The two-phase partial kernel now also drops the unused scale buffer binding;
 the finalize kernel still owns scale application, while the partial pass binds
 only weight, input, residual, elementwise output, partial scratch, and params.
