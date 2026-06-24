@@ -2703,6 +2703,16 @@ function checkZgmlFrontendSurface() {
     "const bunPredictedClassesInto: Uint32Array = bunTrain.predict_classes(bunLogitsInto, { numClasses: 2 })",
   ]);
 
+  const nodeQuickstart = read("examples/node_training/quickstart.cjs");
+  requireIncludes(nodeQuickstart, "examples/node_training/quickstart.cjs", "runnable zgml-first train-checkpoint-compile proof", [
+    "const fast = zgml.compileForInference(restored, { backend: \"cpu\", inputShape: [2] })",
+    "const compiled = fast.forward(probe)",
+    "const compatibility = fast.session.requireHotStepParams(hotParams)",
+    "const compiledInto = fast.into(output, probe)",
+    "fast.dispose()",
+    "zgml quickstart ok",
+  ]);
+
   const smoke = read("examples/types/pytorch-training-smoke.ts");
   requireIncludes(smoke, "examples/types/pytorch-training-smoke.ts", "PyTorch-like training surface", [
     "checkpoint,",

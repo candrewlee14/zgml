@@ -82,13 +82,12 @@ zgml.checkpoint.restore(zgml.checkpoint.parse(text), {
 });
 assertClose(scalar(restored.forward(probe)), scalar(model.forward(probe)), 1e-5, "restored prediction");
 
-const program = restored.compile({ backend: "cpu", inputShape: [2] });
-const session = program.bindModule(restored);
-const compiled = session.stepTensor(probe);
+const fast = zgml.compileForInference(restored, { backend: "cpu", inputShape: [2] });
+const compiled = fast.forward(probe);
 const output = new Float32Array(1);
 const hotParams = { input: probe, output };
-const compatibility = session.requireHotStepParams(hotParams);
-const compiledInto = session.executeInto(output, { input: probe });
+const compatibility = fast.session.requireHotStepParams(hotParams);
+const compiledInto = fast.into(output, probe);
 if (
   compiledInto !== output ||
   compatibility.hotPath !== true ||
@@ -100,7 +99,6 @@ if (
 assertClose(scalar(compiled), scalar(model.forward(probe)), 1e-5, "compiled prediction");
 assertClose(output[0], scalar(model.forward(probe)), 1e-5, "executeInto prediction");
 
-session.free();
-program.free();
+fast.dispose();
 
 console.log(`zgml quickstart ok: before=${before.toFixed(6)} after=${after.toFixed(6)} compiled=${output[0].toFixed(6)}`);
