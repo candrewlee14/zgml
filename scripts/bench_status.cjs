@@ -334,12 +334,13 @@ function q8PromptCandidateStatusLine(path) {
   const commandSpeedup = formatRatio(data?.lanes?.command?.speedup);
   const twoPhaseSpeedup = formatRatio(data?.lanes?.twoPhase?.speedup);
   const semanticSpeedup = formatRatio(data?.lanes?.semantic?.speedup);
-  const semanticSelected = data?.lanes?.semantic?.selected === true ? "yes" : "off";
   const semanticThroughput = typeof data?.throughput?.semantic === "string" ? data.throughput.semantic : "unknown";
+  const semanticStructuralSelected = (data?.lanes?.semantic?.structuralSelected ?? data?.lanes?.semantic?.selected) === true ? "yes" : "off";
+  const semanticThroughputReady = (data?.lanes?.semantic?.throughputReady ?? semanticThroughput === "ready") === true ? "yes" : "off";
   const semanticShape = `${data?.lanes?.semantic?.projectionPairs ?? "n/a"}->${data?.lanes?.semantic?.projectionRowChains ?? "n/a"}`;
   const commandShape = `${data?.lanes?.command?.commands ?? "n/a"}`;
   const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
-  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_selected=${semanticSelected} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} semantic_speedup=${semanticSpeedup} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} attempts=${attempts} lanes=${lanes}`;
+  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} semantic_speedup=${semanticSpeedup} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} attempts=${attempts} lanes=${lanes}`;
 }
 
 function frontierStatusLine(path) {

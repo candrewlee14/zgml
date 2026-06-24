@@ -578,6 +578,9 @@ const semanticThroughputStatus = measureSemantic
     ? "ready"
     : "diagnostic"
   : "skipped";
+const semanticStructuralSelected = semanticBest.semanticTiledTwoPhaseCount > 0;
+const semanticThroughputReady = semanticThroughputStatus === "ready";
+const twoPhaseStructuralSelected = twoPhaseBest.twoPhaseTiledTwoPhaseCount > 0;
 const commandDispatchReduced =
   commandBest.defaultDispatches !== null && commandBest.commandDispatches !== null && commandBest.commandDispatches < commandBest.defaultDispatches;
 const twoPhaseDispatchReduced =
@@ -676,14 +679,17 @@ if (writeArtifact) {
       single: laneArtifact(best, "candidate"),
       twoPhase: {
         ...laneArtifact(twoPhaseBest, "twoPhase"),
-        selected: twoPhaseBest.twoPhaseTiledTwoPhaseCount > 0,
+        selected: twoPhaseStructuralSelected,
+        structuralSelected: twoPhaseStructuralSelected,
         tiledTwoPhaseCount: twoPhaseBest.twoPhaseTiledTwoPhaseCount,
         tiledWork: twoPhaseBest.twoPhaseTiledCount,
         tiledSpills: twoPhaseBest.twoPhaseTiledSpills,
       },
       semantic: {
         ...laneArtifact(semanticBest, "semantic"),
-        selected: semanticBest.semanticTiledTwoPhaseCount > 0,
+        selected: semanticStructuralSelected,
+        structuralSelected: semanticStructuralSelected,
+        throughputReady: semanticThroughputReady,
         tiledTwoPhaseCount: semanticBest.semanticTiledTwoPhaseCount,
         tiledWork: semanticBest.semanticTiledCount,
         tiledSpills: semanticBest.semanticTiledSpills,
@@ -709,7 +715,9 @@ if (writeArtifact) {
     artifact: artifactPath,
     status: gateStatus,
     semantic: semanticThroughputStatus,
-    semanticSelected: semanticBest.semanticTiledTwoPhaseCount > 0,
+    semanticSelected: semanticStructuralSelected,
+    semanticStructuralSelected,
+    semanticThroughputReady,
     commandSpeedup: roundMetric(commandBest.commandSpeedup),
     semanticSpeedup: roundMetric(semanticBest.semanticSpeedup),
     attempts,
@@ -768,7 +776,7 @@ console.log(
     `semantic_median_speedup=${format(semanticMedian.semanticSpeedup)}x semantic_worst_speedup=${format(semanticWorst.semanticSpeedup)}x semantic_best_speedup=${format(semanticBest.semanticSpeedup)}x; ` +
     `semantic_dispatch=${format(semanticBest.defaultDispatches, 0)}->${format(semanticBest.semanticDispatches, 0)} semantic_command=${format(semanticBest.defaultCommands, 0)}->${format(semanticBest.semanticCommands, 0)} ` +
     `semantic_dispatch_reduced=${semanticDispatchReduced ? "yes" : "no"} semantic_runtime_target=${dispatchRealityTarget} ` +
-    `semantic_count=${format(semanticBest.semanticTiledTwoPhaseCount, 0)} semantic_selected=${semanticBest.semanticTiledTwoPhaseCount > 0 ? "yes" : "off"} ` +
+    `semantic_count=${format(semanticBest.semanticTiledTwoPhaseCount, 0)} semantic_structural_selected=${semanticStructuralSelected ? "yes" : "off"} semantic_throughput_ready=${semanticThroughputReady ? "yes" : "off"} semantic_selected=${semanticStructuralSelected ? "yes" : "off"} ` +
     `semantic_tiled_work=${format(semanticBest.semanticTiledCount, 0)} chains row_groups=${format(semanticBest.semanticTiledRowTileGroups, 0)} n_tiles=${format(semanticBest.semanticTiledNTiles, 0)} serial_tile_loops=${format(semanticBest.semanticTiledSerialLoops, 0)} partial_slots=${format(semanticBest.semanticTiledPartialSlots, 0)} scratch_capacity=${format(semanticBest.semanticTiledScratchCapacity, 0)} spills=${format(semanticBest.semanticTiledSpills, 0)} ` +
     `semantic_projection_chain=${format(semanticBest.defaultProjectionChains, 0)}->${format(semanticBest.semanticProjectionChains, 0)} ` +
     `semantic_projection_pair=${format(semanticBest.defaultProjectionPairs, 0)}->${format(semanticBest.semanticProjectionPairs, 0)} ` +

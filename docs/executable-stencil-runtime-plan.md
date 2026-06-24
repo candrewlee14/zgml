@@ -757,34 +757,38 @@ semantic-command shape where projection pairs are consumed and at least 30
 semantic row-chain commands remain. A June 24, 2026 fresh-native Q8 viable run
 selected the semantic full-model lane structurally while keeping throughput
 honest: `command_structural=ready`, `two_phase_structural=ready`,
-`semantic_structural=ready`, `semantic_selected=yes`,
-`command_command=241->151`, `command_speedup=1.00x`,
+`semantic_structural=ready`, `semantic_structural_selected=yes`,
+`semantic_throughput_ready=yes`,
+`command_command=241->151`, `command_speedup=1.00-1.01x`,
 `semantic_command=241->151`, `semantic_projection_pair=30->0`,
-`semantic_projection_row_chain=0->30`, `two_phase_speedup=0.95x`,
-`semantic_speedup=0.92x`, and zero fallback. That is evidence that the
-larger semantic command is wired into the full model and that the command lane
-is barely ready; it is not yet a semantic promotion signal because two-phase
-and semantic throughput remain diagnostic. The Q8 prompt
+`semantic_projection_row_chain=0->30`, `two_phase_speedup=0.95-0.96x`,
+`semantic_speedup=0.95-0.96x`, and zero fallback. That is evidence that the
+larger semantic command is wired into the full model and clears the focused
+viable semantic-throughput floor on the latest one-attempt microscope. It is
+not yet a release promotion signal; repeated all-lane candidate evidence still
+has to prove the semantic path is stable before replacing the default. The Q8 prompt
 candidate checker now writes an ignored JSON artifact by default under
 `bench-results/q8-prompt/` (`schema: "zgml.q8-prompt-candidate.v1"`) and prints
 a machine-readable `Q8_PROMPT_CANDIDATE_JSON` line. `bench:status` reads the
 latest artifact back as `q8-prompt-results:` with status, semantic throughput,
-semantic selection, lane speedups, command shape, and active lanes. Set
+semantic structural selection, semantic throughput readiness, lane speedups,
+command shape, and active lanes. Set
 `BENCH_Q8_PROMPT_WRITE_ARTIFACT=0` only for throwaway local diagnostics.
 A three-attempt no-rebuild proof remains useful as a noisier iteration lens,
 while the fresh-native one-attempt proof now reports
 `command_structural=ready`, `single_structural=skipped`,
 `two_phase_structural=ready`,
 `attempt=skipped median_attempt=skipped noisy=skipped`,
-`command_command=241->151`, `command_speedup=1.00x`,
+`command_command=241->151`, `command_speedup=1.00-1.01x`,
 `command_throughput=ready`, `command_projection_row_chain=0->30`,
 `command_projection_row_chain_dispatch=0->60`, `two_phase_count=60`,
-`two_phase_speedup=0.95x`, `two_phase_tiled_work=60`, and zero fallback. That
+`two_phase_speedup=0.95-0.96x`, `two_phase_tiled_work=60`,
+`semantic_speedup=0.95-0.96x`, `semantic_throughput_ready=yes`, and zero fallback. That
 is the intended iteration lens before spending time on the full all-lane gate:
 it proves the command shape and confirms that the two-dispatch
 projection-row-chain command path is model-level viable at the structural level,
-while keeping the two-phase and semantic candidates below promotion until they
-earn throughput.
+while keeping the semantic path below release promotion until repeated all-lane
+candidate evidence proves stable throughput.
 The fuller three-attempt all-lane Q8 scorecard keeps that line honest:
 `command_median_speedup=1.00x`, `command_worst_speedup=1.00x`,
 `single_throughput=off`, `dispatch=242->182`,

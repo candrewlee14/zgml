@@ -783,6 +783,10 @@ function checkScripts() {
     "`semantic_attempt=${semanticBest.index}/${attempts} semantic_median_attempt=${semanticMedian.index}/${attempts} semantic_noisy=${semanticNoisyAttempts}; `",
     "semantic_structural=${semanticStructuralStatus}",
     "semantic_throughput=${semanticThroughputStatus}",
+    "semanticStructuralSelected",
+    "semanticThroughputReady",
+    "structuralSelected: semanticStructuralSelected",
+    "throughputReady: semanticThroughputReady",
     "semantic_lowering=${semanticLowering}",
     "const dispatchRealityTarget = \"reduce_actual_dispatch_or_larger_semantic_sublayer\"",
     "command_dispatch_reduced=${commandDispatchReduced ? \"yes\" : \"no\"}",
@@ -2111,7 +2115,8 @@ function checkQ8PromptCandidateEvidence() {
     "command_lowering=default_projection_chain_plus_row_chain_command_two_dispatch",
     "semantic_structural=ready",
     "semantic_throughput=",
-    "semantic_selected=yes",
+    "semantic_structural_selected=yes",
+    "semantic_throughput_ready=",
     "semantic_command=241->151",
     "semantic_projection_pair=30->0",
     "semantic_projection_row_chain=0->30",
@@ -2151,6 +2156,8 @@ function checkQ8PromptCandidateEvidence() {
     artifact?.status !== "command-ready" ||
     artifact?.structural?.semantic !== "ready" ||
     artifact?.lanes?.semantic?.selected !== true ||
+    artifact?.lanes?.semantic?.structuralSelected !== true ||
+    typeof artifact?.lanes?.semantic?.throughputReady !== "boolean" ||
     artifact?.lanes?.semantic?.projectionPairs !== 0 ||
     artifact?.lanes?.semantic?.projectionRowChains !== 30 ||
     artifact?.lanes?.command?.commands !== 151) {
@@ -2170,7 +2177,8 @@ function checkQ8PromptCandidateEvidence() {
   requireIncludes(statusOutput, "bench status output", "latest Q8 prompt candidate artifact readback", [
     "q8-prompt-results: latest=",
     "status=command-ready",
-    "semantic_selected=yes",
+    "semantic_structural_selected=yes",
+    "semantic_throughput_ready=",
     "command_commands=151",
     "semantic_pair_to_row=0->30",
     "lanes=command,two_phase,semantic",
@@ -5838,14 +5846,14 @@ function checkDocs() {
     "`single_structural=skipped`",
     "`attempt=skipped median_attempt=skipped noisy=skipped`",
     "`command_command=241->151`",
-    "`command_speedup=1.00x`",
+    "`command_speedup=1.00-1.01x`",
     "`command_throughput=ready`",
     "`command_projection_row_chain=0->30`",
     "`command_projection_row_chain_dispatch=0->60`",
     "`two_phase_count=60`",
-    "`two_phase_speedup=0.95x`",
+    "`two_phase_speedup=0.95-0.96x`",
     "`two_phase_tiled_work=60`",
-    "`semantic_speedup=0.92x`",
+    "`semantic_speedup=0.95-0.96x`",
     "`command_median_speedup=1.00x`",
     "`command_worst_speedup=1.00x`",
     "`single_throughput=off`",

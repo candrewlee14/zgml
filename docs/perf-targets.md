@@ -198,13 +198,16 @@ machine for both prompt/prefill and decode.
   full-model gate accepts either the older pair-fused row-chain shape or the
   larger semantic-command shape that consumes the FFN projection pair and leaves
   30 semantic row-chain commands. A June 24, 2026 fresh-native viable run kept
-  the command lane structurally and barely throughput-ready
-  (`command_command=241->151`, `command_speedup=1.00x`) while the selected
-  two-phase and semantic lanes stayed diagnostic (`two_phase_speedup=0.95x`,
-  `semantic_speedup=0.92x`, `semantic_selected=yes`,
+  the command lane structurally and throughput-ready
+  (`command_command=241->151`, `command_speedup=1.00-1.01x`) while the selected
+  two-phase and semantic lanes also crossed the focused viable floor
+  (`two_phase_speedup=0.95-0.96x`,
+  `semantic_speedup=0.95-0.96x`, `semantic_structural_selected=yes`,
+  `semantic_throughput_ready=yes`,
   `semantic_projection_pair=30->0`, `semantic_projection_row_chain=0->30`) with
-  zero fallback. That proves wiring and command-shape readiness rather than
-  semantic promotion.
+  zero fallback. That proves wiring, command-shape readiness, and focused
+  one-attempt throughput viability rather than release promotion; repeated
+  all-lane candidate evidence is still required before changing defaults.
   The
   full all-lane candidate gate remains the release proof before promotion.
   The two-phase partial kernel does not bind the scale buffer anymore; scale is
