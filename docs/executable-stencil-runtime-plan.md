@@ -869,6 +869,14 @@ The final missing performance move is a semantic FFN sublayer throughput
 kernel, concretely replacing the scalar diagnostic with a
 true tiled/vectorized `semantic_ffn_sublayer_throughput_kernel`; this is not
 proof that full-model Q8 has been solved.
+The current fresh qsemantic microscope makes the shape of the miss precise:
+the one-dispatch target has `target_vs_default=full:0.28x,smollm:0.24x`, while
+the mixed throughput candidate is still below default at
+`candidate_vs_default=full:0.91x,smollm:0.93x`. The target exposes
+`target_tile_groups=full:192,smollm:216`, and the mixed candidate exposes
+`candidate_tile_groups=full:64,smollm:72`; tile-group count alone is therefore
+not the win. The blocker is still the serial dot-loop work inside the semantic
+row groups.
 Evidence tag: semantic FFN sublayer throughput kernel; Metal now executes that exact command as a bounded one-dispatch diagnostic kernel; the default throughput lane remains the faster projection-pair product, down-projection residual add, then RMSNorm scale path; target dispatches `1` backend kernel.
 It also names the hard performance fact directly: the structurally useful
 two-dispatch command path is dispatch-neutral in the full model
@@ -1266,7 +1274,9 @@ The qsemantic checker writes ignored JSON artifacts under
 back as `frontier-results:`. That makes the semantic frontier durable without
 promoting it to a throughput claim: the artifact records whether the selected
 attempt is still diagnostic, what the throughput-candidate status is, and the
-next target before any model-level speed claim is made.
+next target before any model-level speed claim is made. The status readback also
+prints target and candidate tile-group counts so the next kernel edit is pointed
+at reducing serial row-dot work, not merely reducing dispatch count.
 The next implementation target remains the
 `semantic_ffn_sublayer_throughput_kernel` or a faster tiled row-chain leaf, not
 another command policy toggle.

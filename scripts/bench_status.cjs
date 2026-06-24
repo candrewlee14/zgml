@@ -245,7 +245,11 @@ function frontierFreshnessStatusLine(selectedPath, rawPath) {
     const smollmPromptTargetVsDefault = formatRatio(data?.smollmPrompt?.targetSpeedup && data?.smollmPrompt?.speedup ? data.smollmPrompt.targetSpeedup / data.smollmPrompt.speedup : null);
     const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
     const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
-    latest = `target=${target} throughput_candidate=${throughputCandidate} candidate_vs_default=full:${fullPrefillCandidateVsDefault},smollm:${smollmPromptCandidateVsDefault} target_vs_default=full:${fullPrefillTargetVsDefault},smollm:${smollmPromptTargetVsDefault} attempts=${attempts} source=${source}`;
+    const fullTargetTileGroups = data?.fullPrefill?.targetTileParallelGroups ?? "n/a";
+    const smollmTargetTileGroups = data?.smollmPrompt?.targetTileParallelGroups ?? "n/a";
+    const fullCandidateTileGroups = data?.fullPrefill?.throughputCandidateTileParallelGroups ?? "n/a";
+    const smollmCandidateTileGroups = data?.smollmPrompt?.throughputCandidateTileParallelGroups ?? "n/a";
+    latest = `target=${target} throughput_candidate=${throughputCandidate} candidate_vs_default=full:${fullPrefillCandidateVsDefault},smollm:${smollmPromptCandidateVsDefault} target_vs_default=full:${fullPrefillTargetVsDefault},smollm:${smollmPromptTargetVsDefault} target_tile_groups=full:${fullTargetTileGroups},smollm:${smollmTargetTileGroups} candidate_tile_groups=full:${fullCandidateTileGroups},smollm:${smollmCandidateTileGroups} attempts=${attempts} source=${source}`;
   } catch {
     // Keep the freshness signal even if the newest artifact cannot be read.
   }
@@ -506,11 +510,15 @@ function frontierStatusLine(path) {
   const smollmPrompt = formatRatio(data?.smollmPrompt?.speedup);
   const smollmPromptCandidate = formatRatio(data?.smollmPrompt?.throughputCandidateSpeedup);
   const smollmPromptCandidateVsTwoPhase = formatRatio(data?.smollmPrompt?.throughputCandidateVsTwoPhase);
+  const fullTargetTileGroups = data?.fullPrefill?.targetTileParallelGroups ?? "n/a";
+  const smollmTargetTileGroups = data?.smollmPrompt?.targetTileParallelGroups ?? "n/a";
+  const fullCandidateTileGroups = data?.fullPrefill?.throughputCandidateTileParallelGroups ?? "n/a";
+  const smollmCandidateTileGroups = data?.smollmPrompt?.throughputCandidateTileParallelGroups ?? "n/a";
   const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
   const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
   const next = typeof data?.next === "string" ? data.next : "unknown";
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
-  return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} vs_two_phase=full:${fullPrefillCandidateVsTwoPhase},smollm:${smollmPromptCandidateVsTwoPhase} next=${next} source=${source}`;
+  return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} vs_two_phase=full:${fullPrefillCandidateVsTwoPhase},smollm:${smollmPromptCandidateVsTwoPhase} target_tile_groups=full:${fullTargetTileGroups},smollm:${smollmTargetTileGroups} candidate_tile_groups=full:${fullCandidateTileGroups},smollm:${smollmCandidateTileGroups} next=${next} source=${source}`;
 }
 
 function qprojFrontierStatusLine(path) {
@@ -601,7 +609,11 @@ function frontierNextTargetLine(path) {
       ? formatRatio(fullCandidateValue / fullDefault)
       : "n/a";
     const throughputCandidate = typeof data?.throughputCandidateStatus === "string" ? data.throughputCandidateStatus : "unknown";
-    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}`;
+    const fullTargetTileGroups = data?.fullPrefill?.targetTileParallelGroups ?? "n/a";
+    const smollmTargetTileGroups = data?.smollmPrompt?.targetTileParallelGroups ?? "n/a";
+    const fullCandidateTileGroups = data?.fullPrefill?.throughputCandidateTileParallelGroups ?? "n/a";
+    const smollmCandidateTileGroups = data?.smollmPrompt?.throughputCandidateTileParallelGroups ?? "n/a";
+    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}:target_tiles=smollm:${smollmTargetTileGroups},full:${fullTargetTileGroups}:candidate_tiles=smollm:${smollmCandidateTileGroups},full:${fullCandidateTileGroups}`;
   } catch {
     return "frontier=unreadable_artifact";
   }
