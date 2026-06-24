@@ -10,6 +10,7 @@ const nodeEntry = join(root, "dist", "node.cjs");
 const venvPython = join(root, ".venv", "bin", "python");
 const python = process.env.PYTHON || (existsSync(venvPython) ? venvPython : "python3");
 const requireParity = process.env.BENCH_PYTORCH_REQUIRE_PARITY === "1";
+const requireMedianParity = process.env.BENCH_PYTORCH_REQUIRE_MEDIAN_PARITY === "1";
 const installTorch = process.env.BENCH_PYTORCH_INSTALL === "1";
 const minRatio = Number(process.env.BENCH_PYTORCH_MIN_RATIO || "1.0");
 const zgmlTimingMetric = process.env.BENCH_PYTORCH_ZGML_TIMING || "prepared_execute_into_ms";
@@ -301,8 +302,10 @@ const ratioStats = activeComparisonKeys.map((key) => {
     max: sorted[sorted.length - 1],
   };
 });
+const medianParityReady = ratioStats.every((entry) => entry.median >= minRatio);
+const comparisonReady = requireMedianParity ? parityReady && medianParityReady : parityReady;
 const parts = [
-  `pytorch comparison: ${requireParity ? (parityReady ? "parity-pass" : "parity-miss") : "evidence"}`,
+  `pytorch comparison: ${requireParity ? (comparisonReady ? "parity-pass" : "parity-miss") : "evidence"}`,
   `python=${python}`,
   `pytorch=${pytorchVersion}`,
   `uv_install=${installTorch ? "enabled" : "disabled"}`,
@@ -310,18 +313,20 @@ const parts = [
   `zgml_timing=${zgmlTimingMetric}`,
   "gelu=approximate-tanh",
   `required=${requireParity ? "yes" : "no"}`,
+  `median_required=${requireMedianParity ? "yes" : "no"}`,
   `floor=${minRatio.toFixed(2)}x`,
   `attempt=${best.index}/${attempts}`,
   `noisy=${noisyAttempts}`,
   `worst=${worst.key}:${worst.ratio.toFixed(2)}x`,
   `ratio_range=${ratioStats.map((entry) => `${entry.key}:${entry.min.toFixed(2)}-${entry.max.toFixed(2)}x`).join(",")}`,
   `ratio_median=${ratioStats.map((entry) => `${entry.key}:${entry.median.toFixed(2)}x`).join(",")}`,
-  `parity=${parityReady ? "pass" : "miss"}`,
+  `median_parity=${medianParityReady ? "pass" : "miss"}`,
+  `parity=${comparisonReady ? "pass" : "miss"}`,
 ];
 for (const { key, zgmlMs, pytorchMs, ratio } of best.ratioEntries) {
   parts.push(`${key}=zgml:${zgmlMs.toFixed(4)}ms pytorch:${pytorchMs.toFixed(4)}ms zgml_vs_pytorch=${ratio.toFixed(2)}x`);
 }
 console.log(parts.join("; "));
-if (requireParity && !parityReady) {
+if (requireParity && !comparisonReady) {
   process.exit(1);
 }

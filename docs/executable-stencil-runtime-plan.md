@@ -528,6 +528,14 @@ parity. A June 22, 2026 three-attempt gap rerun reported
 `ratio_range=linear_batched:0.28-0.86x,log_softmax_classifier_batched:0.39-0.91x`
 and `ratio_median=linear_batched:0.73x,log_softmax_classifier_batched:0.82x`;
 those median numbers are the better guide for the next tiny-kernel pass.
+The PyTorch checker now has an explicit median-parity mode
+(`BENCH_PYTORCH_REQUIRE_MEDIAN_PARITY=1`) for hard claims. The default current-gap
+rerun stays fast, while `dev:perf:pytorch:gaps:steady:run` and
+`bench:pytorch:steady` use a 150ms timing window, three attempts, and exact
+`prepared_execute_into_ms` zgml timings. A hard median-parity claim must opt
+into `BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_REQUIRE_MEDIAN_PARITY=1`;
+the current steady evidence remains intentionally non-fatal because
+`log_softmax_classifier_batched` still has noisy sub-parity reruns.
 The PyTorch comparison gate now also refuses stale native evidence by default:
 before timing it checks the loaded `zig-out/lib/libzgml_c.*` timestamp against
 `build.zig` and Zig/Metal/C-header sources, prints `native=fresh` in accepted
@@ -610,10 +618,12 @@ npm run dev:perf:pytorch:logsoftmax:steady:run    # no-rebuild 150ms-window logS
 npm run bench:module-program:focus
 npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
 npm run bench:pytorch:parity:run       # rebuild ReleaseFast native, then rerun hard PyTorch parity
+npm run bench:pytorch:steady           # rebuild and measure steady PyTorch current-gap evidence
 npm run bench:pytorch:focus
 npm run bench:pytorch:focus:run        # rerun focused PyTorch comparison without rebuilding artifacts
 npm run bench:pytorch:gaps             # rebuild and measure current PyTorch soft spots
 npm run bench:pytorch:gaps:run         # rerun current PyTorch soft spots without rebuilding artifacts
+npm run dev:perf:pytorch:gaps:steady:run # no-rebuild steady PyTorch current-gap evidence
 npm run bench:frontier:gate            # rebuild ReleaseFast and measure scheduler/kernelizer frontier evidence
 npm run bench:frontier:gate:run        # rerun frontier evidence without rebuilding artifacts
 npm run bench:frontier:qproj           # rebuild ReleaseFast and gate only qproj projection-chain/group labels

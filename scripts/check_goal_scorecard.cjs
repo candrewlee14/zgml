@@ -432,6 +432,9 @@ function checkScripts() {
   if (scripts["dev:perf:pytorch:gaps:native"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-1} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:gaps:native must keep the native-only PyTorch current-gap loop after dist exists");
   }
+  if (scripts["dev:perf:pytorch:gaps:steady:run"] !== "BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json dev:perf:pytorch:gaps:steady:run must keep the no-rebuild steady PyTorch current-gap evidence loop");
+  }
   if (scripts["dev:perf:pytorch:logsoftmax:steady:native"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary none --error-style minimal && BENCH_PYTORCH_INSTALL=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=log_softmax_classifier_batched node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:logsoftmax:steady:native must keep the steady native-only logSoftmax PyTorch microscope");
   }
@@ -446,6 +449,9 @@ function checkScripts() {
   }
   if (scripts["bench:pytorch:parity:run"] !== "npm run build:native:release && BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:parity:run must rebuild ReleaseFast native before the hard PyTorch parity rerun");
+  }
+  if (scripts["bench:pytorch:steady"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_INSTALL=1 BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {
+    errors.push("package.json bench:pytorch:steady must remain the hard-build steady PyTorch current-gap evidence loop");
   }
   if (scripts["bench:pytorch:focus"] !== "npm run build:native:release && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:focus must remain the narrow PyTorch microscope for fast iteration");
@@ -467,6 +473,7 @@ function checkScripts() {
   }
   requireIncludes(read("scripts/check_pytorch_comparison.cjs"), "scripts/check_pytorch_comparison.cjs", "honest PyTorch parity evidence gate", [
     "BENCH_PYTORCH_REQUIRE_PARITY",
+    "BENCH_PYTORCH_REQUIRE_MEDIAN_PARITY",
     "BENCH_PYTORCH_INSTALL",
     "BENCH_PYTORCH_MIN_RATIO",
     "BENCH_PYTORCH_ZGML_TIMING",
@@ -497,10 +504,14 @@ function checkScripts() {
     "min_timing_ms = float(os.environ.get(\"BENCH_PYTORCH_MIN_TIMING_MS\", \"8\"))",
     "total_iterations += iterations",
     "const passing = attemptRows.filter((entry) => entry.parityReady)",
+    "const medianParityReady = ratioStats.every((entry) => entry.median >= minRatio)",
+    "const comparisonReady = requireMedianParity ? parityReady && medianParityReady : parityReady",
     "`attempt=${best.index}/${attempts}`",
     "`noisy=${noisyAttempts}`",
     "`ratio_range=${ratioStats.map((entry) => `${entry.key}:${entry.min.toFixed(2)}-${entry.max.toFixed(2)}x`).join(\",\")}`",
     "`ratio_median=${ratioStats.map((entry) => `${entry.key}:${entry.median.toFixed(2)}x`).join(\",\")}`",
+    "median_required=${requireMedianParity ? \"yes\" : \"no\"}",
+    "`median_parity=${medianParityReady ? \"pass\" : \"miss\"}`",
     "function installPythonTorchWithUv()",
     "uv_install=${installTorch ? \"enabled\" : \"disabled\"}",
     "set BENCH_PYTORCH_INSTALL=1 to bootstrap .venv with uv",
@@ -524,7 +535,7 @@ function checkScripts() {
     "\"rms_gelu_linear_batched\": 300",
     "active_keys = [key for key in os.environ[\"BENCH_PYTORCH_ACTIVE_KEYS\"].split(\",\") if key]",
     "print(json.dumps({key: bench(globals()[key], bench_iterations[key]) for key in active_keys}))",
-    "if (requireParity && !parityReady)",
+    "if (requireParity && !comparisonReady)",
   ]);
   forbidIncludes(read("scripts/check_pytorch_comparison.cjs"), "scripts/check_pytorch_comparison.cjs", "PyTorch comparison child module bench must always be filtered to active comparison keys", [
     "const moduleBenchEnv = process.env.BENCH_PYTORCH_KEYS",
