@@ -925,7 +925,13 @@ kernel yet: full-prefill reports `target_semantic_rows=128`,
 `target_semantic_rows=128`, `target_semantic_hidden=576`, and
 `target_semantic_row_serial_dot_ops=995328`. The command shape is ideal, but
 the implementation still performs a row-serial dot workload inside each
-threadgroup. The next implementation target remains the
+threadgroup. A focused semantic-thread-width experiment rejected the obvious
+knobs: `SEMANTIC_FFN_THREADS=512` preserved correctness but left the target
+diagnostic and did not beat the default throughput path, while
+`SEMANTIC_FFN_THREADS=128` made the semantic target slower, especially on the
+SmolLM prompt shape. Keep the current `QMATMUL_ROW_CHAIN_THREADS=256`
+diagnostic until the implementation changes the work shape rather than merely
+retuning threadgroup width. The next implementation target remains the
 `semantic_ffn_sublayer_throughput_kernel` or a faster tiled row-chain leaf, not
 another command policy toggle.
 Use it when changing projection-pair, row-chain, residual, RMSNorm, or
