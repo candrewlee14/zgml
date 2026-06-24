@@ -671,7 +671,7 @@ const semanticThroughputStatus = measureSemantic
       semanticMedian.semanticSpeedup !== null &&
       semanticMedian.semanticSpeedup >= semanticSpeedupFloor &&
       semanticWorst.semanticSpeedup !== null &&
-      semanticWorst.semanticSpeedup >= commandSpeedupFloor
+      semanticWorst.semanticSpeedup >= (bridgeAbsorbedLane(semanticMedian, "semantic") ? semanticSpeedupFloor : commandSpeedupFloor)
     ? "ready"
     : "diagnostic"
   : "skipped";

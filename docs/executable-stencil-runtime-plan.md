@@ -744,8 +744,12 @@ before any ggml smoke or promotion claim. When the Q8 prompt readback already
 selects a `semantic_bridge_candidate`, the router treats
 `next=steady_semantic_bridge_candidate` as a model-level proof request: it runs
 the Q8 prompt viability gate in steady paired-default mode even when
-`BENCH_NEXT_PERF_STEADY` is not set. Use the ggml smoke after the frontier
-bottleneck moves or when explicitly checking model-level promotion.
+`BENCH_NEXT_PERF_STEADY` is not set. That proof is strict for bridge candidates:
+median parity is not enough if the worst paired attempt is still below `1.0x`.
+In that case `perf-next:` reports `next=semantic_bridge_throughput_kernel` and
+the router returns to the semantic throughput microscope instead of repeating
+the same Q8 proof. Use the ggml smoke after the frontier bottleneck moves or
+when explicitly checking model-level promotion.
 The qsemantic-throughput readback follows the same stability rule as the other
 noisy perf lanes: `qsemantic-throughput-results:` prefers the latest
 three-attempt artifact, while `qsemantic-throughput-latest-results:` reports a

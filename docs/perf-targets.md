@@ -514,7 +514,10 @@ so model-level prompt viability is tested before ggml promotion. If
 `next=steady_semantic_bridge_candidate`, the router chooses `q8_prompt` and
 forces the steady paired-default settings for that proof run; this keeps a
 bridge candidate from looking promoted before its worst-case model-level
-evidence is stable.
+evidence is stable. Bridge readiness requires worst-case non-regression, not
+only median parity. If the bridge candidate still has `worst < 1.0x`,
+`perf-next:` reports `next=semantic_bridge_throughput_kernel` and
+`dev:perf:next` routes back to the semantic throughput microscope.
 For qsemantic kernel work, `BENCH_QSEMANTIC_VARIANTS=target` limits the raw
 frontier harness to the staged baseline plus the one-dispatch semantic target,
 while `BENCH_QSEMANTIC_VARIANTS=throughput_candidate` limits it to the staged
