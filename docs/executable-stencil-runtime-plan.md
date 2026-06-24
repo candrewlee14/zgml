@@ -665,6 +665,17 @@ focused Node microscope moved to about `0.0093ms -> 0.0089ms` for
 `linear_batched` and `0.0314ms -> 0.0292ms` for
 `log_softmax_classifier_batched`; Bun's no-rebuild dist smoke also passes. This
 is still incremental, but it is the right direction for host FFI granularity.
+The PyTorch comparison now names its zgml timing source with
+`zgml_timing=prepared_execute_into_ms` and consumes that exact JSON field by
+default, because repeated inference should compare against the prepared hot
+runner rather than the more defensive one-shot `executeInto` facade. The
+focused three-attempt rerun still shows the true remaining gap:
+`ratio_median=linear_batched:0.31x,log_softmax_classifier_batched:0.23x`, with
+best selected-attempt timings around `linear_batched=zgml:0.0090ms
+pytorch:0.0035ms` and `log_softmax_classifier_batched=zgml:0.0301ms
+pytorch:0.0072ms`. That confirms prepared host calls help but do not change the
+next target: the dense/log-softmax native kernels and dispatch granularity must
+get better.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier

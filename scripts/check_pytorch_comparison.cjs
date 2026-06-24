@@ -12,6 +12,11 @@ const python = process.env.PYTHON || (existsSync(venvPython) ? venvPython : "pyt
 const requireParity = process.env.BENCH_PYTORCH_REQUIRE_PARITY === "1";
 const installTorch = process.env.BENCH_PYTORCH_INSTALL === "1";
 const minRatio = Number(process.env.BENCH_PYTORCH_MIN_RATIO || "1.0");
+const zgmlTimingMetric = process.env.BENCH_PYTORCH_ZGML_TIMING || "prepared_execute_into_ms";
+const allowedZgmlTimingMetrics = new Set(["hot_execute_into_ms", "prepared_execute_into_ms"]);
+if (!allowedZgmlTimingMetrics.has(zgmlTimingMetric)) {
+  throw new Error(`BENCH_PYTORCH_ZGML_TIMING must be hot_execute_into_ms or prepared_execute_into_ms, got ${zgmlTimingMetric}`);
+}
 
 function positiveInt(value, name) {
   const parsed = Number(value);
@@ -94,13 +99,16 @@ function parseZgmlModuleBench(output, keys) {
     const timings = {};
     for (const key of keys) {
       const timing = row.timings?.[key];
-      const value = Number(timing?.hot_execute_into_ms);
+      const value = Number(timing?.[zgmlTimingMetric]);
       if (!Number.isFinite(value)) {
         throw new Error(`pytorch comparison could not find exact zgml timing for ${key}`);
       }
       timings[key] = value;
     }
     return timings;
+  }
+  if (zgmlTimingMetric !== "hot_execute_into_ms") {
+    throw new Error(`pytorch comparison requires exact ZGML_MODULE_BENCH_JSON for ${zgmlTimingMetric}`);
   }
   const timings = {};
   for (const key of keys) {
@@ -299,6 +307,7 @@ const parts = [
   `pytorch=${pytorchVersion}`,
   `uv_install=${installTorch ? "enabled" : "disabled"}`,
   `native=${nativeFreshness.label}`,
+  `zgml_timing=${zgmlTimingMetric}`,
   "gelu=approximate-tanh",
   `required=${requireParity ? "yes" : "no"}`,
   `floor=${minRatio.toFixed(2)}x`,
