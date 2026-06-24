@@ -683,6 +683,11 @@ is the intended iteration lens before spending time on the full all-lane gate:
 it proves the command shape and confirms that the default two-dispatch
 projection-row-chain command path is model-level viable, while keeping the
 two-phase tiled candidate below promotion until it earns throughput.
+The fuller three-attempt all-lane Q8 scorecard keeps that line honest:
+`command_median_speedup=1.00x`, `command_worst_speedup=1.00x`,
+`single_throughput=off`, `dispatch=242->182`,
+`single_dispatch_trap=serial_n_tile_loop_without_cross_threadgroup_row_reduce`,
+and `reason=dispatch_reduction_without_tiled_throughput`.
 The per-attempt progress line now reports `active_lane`, `dispatch`, and
 `commands` for the measured command/two-phase lane when the known-bad
 single-dispatch diagnostic is skipped, so the fast loop no longer prints
