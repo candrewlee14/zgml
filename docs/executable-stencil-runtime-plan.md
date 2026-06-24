@@ -795,6 +795,14 @@ line: `linear_batched` is ahead of PyTorch (`ratio_median=linear_batched:1.25x`)
 while `log_softmax_classifier_batched` remains a real soft spot around
 `0.91x` median (`zgml:0.0078ms`, `pytorch:0.0071ms`). The next useful cut is
 therefore the row log-softmax tail itself, not another host wrapper tweak.
+Two tempting row-tail shortcuts were measured and rejected: a bind-time scratch
+buffer plus macOS `vvexpf` batch for the `N=32` shifted exponentials produced
+no stable median improvement, and a range-reduced no-division fast-log
+approximation passed the focused correctness tolerance but did not improve the
+fresh-native PyTorch gap. The next attempt should avoid those isolated math
+swaps and instead change the whole row-tail shape: fewer row passes, a better
+native classifier-tail kernel, or a backend path that amortizes the row
+normalization differently.
 Evidence tag: current measured path now prefers the same BLAS-backed batched linear policy as `linear_batched`; then runs the measured `N=32` row; latest fresh-native three-attempt PyTorch gap microscope; row log-softmax tail itself.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
