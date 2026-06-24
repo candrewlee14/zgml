@@ -1059,6 +1059,13 @@ dev:perf:competitive` for the full-model Q8 prompt lane, or the matching
 `:run` commands after artifacts are already fresh. That keeps the daily
 competitiveness loop explicit without forcing every local qsemantic edit to pay
 the PyTorch, full-model Q8, and llama.cpp smoke cost.
+The qsemantic checker writes ignored JSON artifacts under
+`bench-results/frontier/frontier-qsemantic-*.json`, emits a
+`FRONTIER_BENCH_JSON` summary line, and `bench:status` reads the latest artifact
+back as `frontier-results:`. That makes the semantic frontier durable without
+promoting it to a throughput claim: the artifact records whether the selected
+attempt is still diagnostic, what the throughput-candidate status is, and the
+next target before any model-level speed claim is made.
 The next implementation target remains the
 `semantic_ffn_sublayer_throughput_kernel` or a faster tiled row-chain leaf, not
 another command policy toggle.

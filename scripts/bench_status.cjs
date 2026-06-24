@@ -20,6 +20,7 @@ const baselineArtifacts = [
 const fullRunArtifactPattern = /^smollm-\d{8}T\d{6}Z(?:-\d+)?-p128-g200-r3\.json$/;
 const pytorchArtifactPattern = /^pytorch-\d{8}T\d{6}Z-\d+\.json$/;
 const q8PromptArtifactPattern = /^q8-prompt-\d{8}T\d{6}Z-\d+\.json$/;
+const frontierArtifactPattern = /^frontier-qsemantic-\d{8}T\d{6}Z-\d+\.json$/;
 const pytorchFocusKeys = [
   "linear_batched",
   "lazy_matmul_add_gelu_batched",
@@ -139,6 +140,31 @@ function latestQ8PromptCandidateArtifact() {
   return q8PromptCandidateArtifacts().at(-1) ?? null;
 }
 
+function frontierArtifacts() {
+  const dir = join("bench-results", "frontier");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => frontierArtifactPattern.test(name))
+    .sort()
+    .map((name) => join(dir, name))
+    .filter((path) => {
+      try {
+        const data = readJson(path);
+        return data?.schema === "zgml.frontier-qsemantic.v1" &&
+          data?.kind === "qsemantic" &&
+          data?.config &&
+          data?.fullPrefill &&
+          data?.smollmPrompt;
+      } catch {
+        return false;
+      }
+    });
+}
+
+function latestFrontierArtifact() {
+  return frontierArtifacts().at(-1) ?? null;
+}
+
 const trendMetrics = [
   ["F16 pp", "prompt", "zgml_f16", "metal scheduled prefill", "prompt_tok_s"],
   ["F16 tg", "decode", "zgml_f16", "metal region decode", "decode_tok_s"],
@@ -255,6 +281,31 @@ function q8PromptCandidateStatusLine(path) {
   const commandShape = `${data?.lanes?.command?.commands ?? "n/a"}`;
   const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
   return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_selected=${semanticSelected} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} semantic_speedup=${semanticSpeedup} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} attempts=${attempts} lanes=${lanes}`;
+}
+
+function frontierStatusLine(path) {
+  if (!path) {
+    return "frontier-results: no local qsemantic artifact found; run npm run bench:frontier:qsemantic for Q8 semantic frontier evidence";
+  }
+  let data;
+  try {
+    data = readJson(path);
+  } catch {
+    return `frontier-results: latest=${compactName(path)} unreadable`;
+  }
+  const status = typeof data?.status === "string" ? data.status : "unknown";
+  const target = typeof data?.targetThroughputStatus === "string" ? data.targetThroughputStatus : "unknown";
+  const throughputCandidate = typeof data?.throughputCandidateStatus === "string" ? data.throughputCandidateStatus : "unknown";
+  const semanticCommand = typeof data?.semanticCommandStatus === "string" ? data.semanticCommandStatus : "unknown";
+  const singleDispatch = typeof data?.singleDispatchThroughputStatus === "string" ? data.singleDispatchThroughputStatus : "unknown";
+  const fullPrefill = formatRatio(data?.fullPrefill?.speedup);
+  const fullPrefillCandidate = formatRatio(data?.fullPrefill?.throughputCandidateSpeedup);
+  const smollmPrompt = formatRatio(data?.smollmPrompt?.speedup);
+  const smollmPromptCandidate = formatRatio(data?.smollmPrompt?.throughputCandidateSpeedup);
+  const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
+  const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
+  const next = typeof data?.next === "string" ? data.next : "unknown";
+  return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} next=${next}`;
 }
 
 function trendStatusLine(latestPath) {
@@ -782,6 +833,7 @@ process.stdout.write(`${pytorchComparisonStatusLine(latestPytorch)}\n`);
 const focusPytorch = pytorchFocusStatusLine(latestPytorchFocusArtifact(), latestPytorch);
 if (focusPytorch) process.stdout.write(`${focusPytorch}\n`);
 process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8PromptCandidateArtifact())}\n`);
+process.stdout.write(`${frontierStatusLine(latestFrontierArtifact())}\n`);
 const quarantined = quarantinedFullRunArtifacts();
 if (quarantined.length > 0) {
   process.stdout.write(`bench-results: ${quarantined.length} quarantined p128/g200/r3 artifact(s) ignored for accepted evidence; latest_failed=${compactName(quarantined.at(-1))}\n`);

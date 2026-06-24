@@ -1,6 +1,9 @@
 "use strict";
 
 const { spawnSync } = require("node:child_process");
+const { mkdirSync, writeFileSync } = require("node:fs");
+const { join, resolve } = require("node:path");
+const os = require("node:os");
 
 const maxAttempts = positiveInt(process.env.BENCH_FRONTIER_ATTEMPTS || "5", "BENCH_FRONTIER_ATTEMPTS");
 const largeChainSpeedupFloor = 2.95;
@@ -20,6 +23,8 @@ const projectionRowChainNextTarget = "semantic_sublayer_or_two_phase_tile_parall
 const semanticCommandStatusToken = "semantic_command_status=preserves_default_work_shape";
 const build = process.env.BENCH_FRONTIER_BUILD ?? "1";
 const frontierFilter = process.env.BENCH_FRONTIER_FILTER ?? "";
+const writeArtifact = process.env.BENCH_FRONTIER_WRITE_ARTIFACT !== "0";
+const artifactDir = process.env.BENCH_FRONTIER_ARTIFACT_DIR || join("bench-results", "frontier");
 
 function positiveInt(value, label) {
   const n = Number(value);
@@ -27,6 +32,14 @@ function positiveInt(value, label) {
     throw new Error(`${label} must be a positive integer, got ${value}`);
   }
   return n;
+}
+
+function timestampForArtifact(date = new Date()) {
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function roundMetric(value) {
+  return Number.isFinite(value) ? Number(value.toFixed(6)) : null;
 }
 
 function runBench() {
@@ -777,6 +790,17 @@ function scoreFocusedSemantic(output, attempt) {
     fullPrefillTargetSpeedup,
     fullPrefillTargetMaxAbsDiff,
     fullPrefillTargetRuntimeDispatches,
+    fullPrefillTargetSemanticTileParallelGroups,
+    fullPrefillThroughputCandidateSpeedup,
+    fullPrefillThroughputCandidateMaxAbsDiff,
+    fullPrefillThroughputCandidateShapeCommands,
+    fullPrefillThroughputCandidateShapeSemantic,
+    fullPrefillThroughputCandidateRuntimeDispatches,
+    fullPrefillThroughputCandidateRuntimeSemanticDispatches,
+    fullPrefillThroughputCandidateRuntimeRowChainTiled,
+    fullPrefillThroughputCandidateRowTileGroups,
+    fullPrefillThroughputCandidateNTiles,
+    fullPrefillThroughputCandidateTwoPhase,
     fullPrefillTwoPhaseSpeedup,
     fullPrefillTwoPhaseMaxAbsDiff,
     fullPrefillTwoPhaseRuntimeDispatches,
@@ -816,7 +840,19 @@ function scoreFocusedSemantic(output, attempt) {
     smollmPromptTargetSpeedup,
     smollmPromptTargetMaxAbsDiff,
     smollmPromptTargetRuntimeDispatches,
+    smollmPromptTargetSemanticTileParallelGroups,
     targetThroughputStatus,
+    throughputCandidateStatus,
+    smollmPromptThroughputCandidateSpeedup,
+    smollmPromptThroughputCandidateMaxAbsDiff,
+    smollmPromptThroughputCandidateShapeCommands,
+    smollmPromptThroughputCandidateShapeSemantic,
+    smollmPromptThroughputCandidateRuntimeDispatches,
+    smollmPromptThroughputCandidateRuntimeSemanticDispatches,
+    smollmPromptThroughputCandidateRuntimeRowChainTiled,
+    smollmPromptThroughputCandidateRowTileGroups,
+    smollmPromptThroughputCandidateNTiles,
+    smollmPromptThroughputCandidateTwoPhase,
     smollmPromptTwoPhaseSpeedup,
     smollmPromptTwoPhaseMaxAbsDiff,
     smollmPromptTwoPhaseRuntimeDispatches,
@@ -863,6 +899,88 @@ function focusedSemanticMargin(current) {
     current.smollmPromptSingleDispatchRuntimeDispatches === 2 ? 1 : 0,
     current.smollmPromptTargetRuntimeDispatches === 1 ? 1 : 0,
   ) + Math.min(current.fullPrefillSpeedup, current.smollmPromptSpeedup);
+}
+
+function selectedSemanticAttemptSummary(attempt) {
+  return {
+    attempt: attempt.attempt,
+    failures: attempt.failures,
+    targetThroughputStatus: attempt.targetThroughputStatus,
+    throughputCandidateStatus: attempt.throughputCandidateStatus,
+    semanticCommandStatus: attempt.semanticCommandStatus,
+    singleDispatchThroughputStatus: attempt.singleDispatchThroughputStatus,
+    singleDispatchRowChainDispatchReduced: attempt.singleDispatchReduced,
+    fullPrefill: {
+      speedup: roundMetric(attempt.fullPrefillSpeedup),
+      maxAbsDiff: roundMetric(attempt.fullPrefillMaxAbsDiff),
+      runtimeDispatches: attempt.fullPrefillRuntimeDispatches,
+      semanticRuntimeDispatches: attempt.fullPrefillRuntimeSemanticDispatches,
+      targetSpeedup: roundMetric(attempt.fullPrefillTargetSpeedup),
+      targetRuntimeDispatches: attempt.fullPrefillTargetRuntimeDispatches,
+      targetTileParallelGroups: attempt.fullPrefillTargetSemanticTileParallelGroups,
+      throughputCandidateSpeedup: roundMetric(attempt.fullPrefillThroughputCandidateSpeedup),
+      throughputCandidateRuntimeDispatches: attempt.fullPrefillThroughputCandidateRuntimeDispatches,
+      throughputCandidateTileParallelGroups: attempt.fullPrefillThroughputCandidateRowTileGroups * attempt.fullPrefillThroughputCandidateNTiles,
+    },
+    smollmPrompt: {
+      speedup: roundMetric(attempt.smollmPromptSpeedup),
+      maxAbsDiff: roundMetric(attempt.smollmPromptMaxAbsDiff),
+      runtimeDispatches: attempt.smollmPromptRuntimeDispatches,
+      semanticRuntimeDispatches: attempt.smollmPromptRuntimeSemanticDispatches,
+      targetSpeedup: roundMetric(attempt.smollmPromptTargetSpeedup),
+      targetRuntimeDispatches: attempt.smollmPromptTargetRuntimeDispatches,
+      targetTileParallelGroups: attempt.smollmPromptTargetSemanticTileParallelGroups,
+      throughputCandidateSpeedup: roundMetric(attempt.smollmPromptThroughputCandidateSpeedup),
+      throughputCandidateRuntimeDispatches: attempt.smollmPromptThroughputCandidateRuntimeDispatches,
+      throughputCandidateTileParallelGroups: attempt.smollmPromptThroughputCandidateRowTileGroups * attempt.smollmPromptThroughputCandidateNTiles,
+    },
+  };
+}
+
+function writeFocusedSemanticArtifact(best, attempts, aggregate, line) {
+  if (!writeArtifact) return null;
+  mkdirSync(artifactDir, { recursive: true });
+  const artifactPath = join(artifactDir, `frontier-qsemantic-${timestampForArtifact()}-${process.pid}.json`);
+  const bestSummary = selectedSemanticAttemptSummary(best);
+  const artifact = {
+    schema: "zgml.frontier-qsemantic.v1",
+    createdAt: new Date().toISOString(),
+    command: {
+      argv: process.argv,
+      cwd: process.cwd(),
+      build,
+      frontierFilter,
+    },
+    platform: {
+      node: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      cpus: os.cpus().length,
+    },
+    config: {
+      maxAttempts,
+      build,
+      frontierFilter,
+      projectionRowChainMaxAbsDiffCeil,
+    },
+    kind: "qsemantic",
+    status: aggregate.length === 0 ? "pass" : "fail",
+    selectedAttempt: best.attempt,
+    attempts: attempts.length,
+    aggregateFailures: aggregate,
+    targetThroughputStatus: best.targetThroughputStatus,
+    throughputCandidateStatus: best.throughputCandidateStatus,
+    semanticCommandStatus: best.semanticCommandStatus,
+    singleDispatchThroughputStatus: best.singleDispatchThroughputStatus,
+    singleDispatchRowChainDispatchReduced: best.singleDispatchReduced,
+    fullPrefill: bestSummary.fullPrefill,
+    smollmPrompt: bestSummary.smollmPrompt,
+    attemptSummaries: attempts.map(selectedSemanticAttemptSummary),
+    next: "semantic_ffn_sublayer_throughput_kernel",
+    line,
+  };
+  writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return resolve(artifactPath);
 }
 
 function runFocusedSemanticGate() {
@@ -959,6 +1077,19 @@ function runFocusedSemanticGate() {
   ])) aggregate.push("semantic smollm-prompt single-dispatch row-chain diagnostic did not match in any attempt");
 
   const line = aggregate.length === 0 ? best.line.replace("frontier qsemantic gate: fail", "frontier qsemantic gate: pass") : best.line;
+  const artifactPath = writeFocusedSemanticArtifact(best, attempts, aggregate, line);
+  if (artifactPath) {
+    process.stdout.write(`FRONTIER_BENCH_JSON ${JSON.stringify({
+      artifact: artifactPath,
+      status: aggregate.length === 0 ? "pass" : "fail",
+      kind: "qsemantic",
+      selectedAttempt: best.attempt,
+      attempts: attempts.length,
+      targetThroughputStatus: best.targetThroughputStatus,
+      throughputCandidateStatus: best.throughputCandidateStatus,
+      next: "semantic_ffn_sublayer_throughput_kernel",
+    })}\n`);
+  }
   process.stdout.write(`${line}\n`);
   if (aggregate.length === 0 && passing.length === 0) {
     process.stdout.write(`frontier qsemantic aggregate: pass across ${attempts.length} noisy attempts\n`);
