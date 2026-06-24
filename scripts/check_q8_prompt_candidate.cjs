@@ -1,8 +1,9 @@
 "use strict";
 
-const { existsSync } = require("node:fs");
+const { existsSync, mkdirSync, writeFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
-const { resolve } = require("node:path");
+const { join, resolve } = require("node:path");
+const os = require("node:os");
 
 const root = resolve(__dirname, "..");
 const model = process.env.ZGML_Q8_MODEL || process.env.ZGML_MODEL || "data/smollm/SmolLM-135M.Q8_0.gguf";
@@ -11,6 +12,8 @@ const genTokens = process.env.BENCH_CANDIDATE_GEN || "40";
 const repetitions = process.env.BENCH_CANDIDATE_REPS || "1";
 const build = process.env.BENCH_BUILD_ZGML ?? "1";
 const binary = "./zig-out/bin/bench-llama-smollm";
+const writeArtifact = process.env.BENCH_Q8_PROMPT_WRITE_ARTIFACT !== "0";
+const artifactDir = process.env.BENCH_Q8_PROMPT_ARTIFACT_DIR || join("bench-results", "q8-prompt");
 const speedupFloor = Number(process.env.BENCH_CANDIDATE_SPEEDUP_FLOOR || "1.05");
 const commandSpeedupFloor = Number(process.env.BENCH_COMMAND_CANDIDATE_SPEEDUP_FLOOR || "0.95");
 const attempts = positiveInt(process.env.BENCH_CANDIDATE_ATTEMPTS || "3", "BENCH_CANDIDATE_ATTEMPTS");
@@ -83,6 +86,14 @@ function number(row, key) {
 
 function format(value, digits = 2) {
   return value === null || value === undefined || !Number.isFinite(value) ? "n/a" : value.toFixed(digits);
+}
+
+function timestampForArtifact(date = new Date()) {
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function roundMetric(value) {
+  return Number.isFinite(value) ? Number(value.toFixed(6)) : null;
 }
 
 function positiveInt(value, label) {
@@ -583,9 +594,130 @@ const fullModelQprojTarget =
 const singleAttemptSummary = measureSingle
   ? `attempt=${best.index}/${attempts} median_attempt=${median.index}/${attempts} noisy=${noisyAttempts}`
   : "attempt=skipped median_attempt=skipped noisy=skipped";
+const gateStatus = commandReady ? "command-ready" : candidateReady ? "ready" : "structural";
+
+function laneArtifact(row, prefix) {
+  const speedupKey = prefix === "candidate" ? "speedup" : `${prefix}Speedup`;
+  return {
+    tokS: roundMetric(row[`${prefix}TokS`]),
+    speedup: roundMetric(row[speedupKey]),
+    dispatches: row[`${prefix}Dispatches`],
+    commands: row[`${prefix}Commands`],
+    projectionChains: row[`${prefix}ProjectionChains`],
+    projectionPairs: row[`${prefix}ProjectionPairs`],
+    projectionRowChains: row[`${prefix}ProjectionRowChains`],
+    projectionRowChainDispatches: row[`${prefix}ProjectionRowChainDispatches`],
+    fallback: row[`${prefix}Fallback`],
+  };
+}
+
+let artifactPath = null;
+if (writeArtifact) {
+  const resolvedArtifactDir = resolve(root, artifactDir);
+  mkdirSync(resolvedArtifactDir, { recursive: true });
+  artifactPath = join(resolvedArtifactDir, `q8-prompt-${timestampForArtifact()}-${process.pid}.json`);
+  const artifact = {
+    schema: "zgml.q8-prompt-candidate.v1",
+    createdAt: new Date().toISOString(),
+    command: "scripts/check_q8_prompt_candidate.cjs",
+    nodeVersion: process.version,
+    platform: {
+      type: os.type(),
+      platform: os.platform(),
+      arch: os.arch(),
+      release: os.release(),
+      cpus: os.cpus().length,
+    },
+    config: {
+      model,
+      promptTokens,
+      genTokens,
+      repetitions,
+      attempts,
+      laneMode,
+      measuredLanes: [...measuredLanes],
+      speedupFloor,
+      commandSpeedupFloor,
+      build,
+      lowerings: {
+        command: commandLowering,
+        twoPhase: twoPhaseLowering,
+        semantic: semanticLowering,
+        rowChain: rowChainLowering,
+      },
+    },
+    status: gateStatus,
+    structural: {
+      command: commandStructuralStatus,
+      single: singleStructuralStatus,
+      twoPhase: twoPhaseStructuralStatus,
+      semantic: semanticStructuralStatus,
+    },
+    throughput: {
+      command: commandThroughputStatus,
+      single: singleThroughputStatus,
+      semantic: semanticThroughputStatus,
+    },
+    reason,
+    selectedAttempts: {
+      command: commandBest.index,
+      single: best.index,
+      twoPhase: twoPhaseBest.index,
+      semantic: semanticBest.index,
+    },
+    noisyAttempts: {
+      command: commandNoisyAttempts,
+      single: noisyAttempts,
+      twoPhase: twoPhaseNoisyAttempts,
+      semantic: semanticNoisyAttempts,
+    },
+    lanes: {
+      command: laneArtifact(commandBest, "command"),
+      single: laneArtifact(best, "candidate"),
+      twoPhase: {
+        ...laneArtifact(twoPhaseBest, "twoPhase"),
+        selected: twoPhaseBest.twoPhaseTiledTwoPhaseCount > 0,
+        tiledTwoPhaseCount: twoPhaseBest.twoPhaseTiledTwoPhaseCount,
+        tiledWork: twoPhaseBest.twoPhaseTiledCount,
+        tiledSpills: twoPhaseBest.twoPhaseTiledSpills,
+      },
+      semantic: {
+        ...laneArtifact(semanticBest, "semantic"),
+        selected: semanticBest.semanticTiledTwoPhaseCount > 0,
+        tiledTwoPhaseCount: semanticBest.semanticTiledTwoPhaseCount,
+        tiledWork: semanticBest.semanticTiledCount,
+        tiledSpills: semanticBest.semanticTiledSpills,
+      },
+    },
+    attempts: attemptRows.map((row) => ({
+      index: row.index,
+      defaultTokS: roundMetric(row.defaultTokS),
+      commandSpeedup: roundMetric(row.commandSpeedup),
+      singleSpeedup: roundMetric(row.speedup),
+      twoPhaseSpeedup: roundMetric(row.twoPhaseSpeedup),
+      semanticSpeedup: roundMetric(row.semanticSpeedup),
+      commandCommands: row.commandCommands,
+      twoPhaseCommands: row.twoPhaseCommands,
+      semanticCommands: row.semanticCommands,
+      commandFallback: row.commandFallback,
+      twoPhaseFallback: row.twoPhaseFallback,
+      semanticFallback: row.semanticFallback,
+    })),
+  };
+  writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  console.log(`Q8_PROMPT_CANDIDATE_JSON ${JSON.stringify({
+    artifact: artifactPath,
+    status: gateStatus,
+    semantic: semanticThroughputStatus,
+    semanticSelected: semanticBest.semanticTiledTwoPhaseCount > 0,
+    commandSpeedup: roundMetric(commandBest.commandSpeedup),
+    semanticSpeedup: roundMetric(semanticBest.semanticSpeedup),
+    attempts,
+  })}`);
+}
 
 console.log(
-  `q8 prompt semantic row-chain gate: ${commandReady ? "command-ready" : candidateReady ? "ready" : "structural"}; ` +
+  `q8 prompt semantic row-chain gate: ${gateStatus}; ` +
     `command_structural=${commandStructuralStatus} command_throughput=${commandThroughputStatus} ` +
     `single_structural=${singleStructuralStatus} single_throughput=${singleThroughputStatus} ` +
     `two_phase_structural=${twoPhaseStructuralStatus} semantic_structural=${semanticStructuralStatus} semantic_throughput=${semanticThroughputStatus} reason=${reason}; ` +

@@ -19,6 +19,7 @@ const baselineArtifacts = [
 ];
 const fullRunArtifactPattern = /^smollm-\d{8}T\d{6}Z(?:-\d+)?-p128-g200-r3\.json$/;
 const pytorchArtifactPattern = /^pytorch-\d{8}T\d{6}Z-\d+\.json$/;
+const q8PromptArtifactPattern = /^q8-prompt-\d{8}T\d{6}Z-\d+\.json$/;
 
 function latestFullRunArtifact() {
   const artifacts = fullRunArtifacts();
@@ -88,6 +89,30 @@ function pytorchComparisonArtifacts() {
 
 function latestPytorchComparisonArtifact() {
   return pytorchComparisonArtifacts().at(-1) ?? null;
+}
+
+function q8PromptCandidateArtifacts() {
+  const dir = join("bench-results", "q8-prompt");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => q8PromptArtifactPattern.test(name))
+    .sort()
+    .map((name) => join(dir, name))
+    .filter((path) => {
+      try {
+        const data = readJson(path);
+        return data?.schema === "zgml.q8-prompt-candidate.v1" &&
+          data?.config &&
+          data?.lanes &&
+          data?.structural;
+      } catch {
+        return false;
+      }
+    });
+}
+
+function latestQ8PromptCandidateArtifact() {
+  return q8PromptCandidateArtifacts().at(-1) ?? null;
 }
 
 const trendMetrics = [
@@ -178,6 +203,29 @@ function pytorchComparisonStatusLine(path) {
   const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
   const timing = typeof data?.config?.zgmlTimingMetric === "string" ? data.config.zgmlTimingMetric : "unknown";
   return `pytorch-results: latest=${compactName(path)} status=${status} median=${medianStatus} worst=${worst} attempt=${selectedAttempt}/${attempts} native=${native} torch=${torch} timing=${timing} keys=${keys} ratio_median=${medians}`;
+}
+
+function q8PromptCandidateStatusLine(path) {
+  if (!path) {
+    return "q8-prompt-results: no local Q8 prompt candidate artifact found; run npm run bench:q8-prompt-viable for full-model Q8 evidence";
+  }
+  let data;
+  try {
+    data = readJson(path);
+  } catch {
+    return `q8-prompt-results: latest=${compactName(path)} unreadable`;
+  }
+  const lanes = Array.isArray(data?.config?.measuredLanes) ? data.config.measuredLanes.join(",") : "unknown";
+  const status = typeof data?.status === "string" ? data.status : "unknown";
+  const commandSpeedup = formatRatio(data?.lanes?.command?.speedup);
+  const twoPhaseSpeedup = formatRatio(data?.lanes?.twoPhase?.speedup);
+  const semanticSpeedup = formatRatio(data?.lanes?.semantic?.speedup);
+  const semanticSelected = data?.lanes?.semantic?.selected === true ? "yes" : "off";
+  const semanticThroughput = typeof data?.throughput?.semantic === "string" ? data.throughput.semantic : "unknown";
+  const semanticShape = `${data?.lanes?.semantic?.projectionPairs ?? "n/a"}->${data?.lanes?.semantic?.projectionRowChains ?? "n/a"}`;
+  const commandShape = `${data?.lanes?.command?.commands ?? "n/a"}`;
+  const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
+  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_selected=${semanticSelected} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} semantic_speedup=${semanticSpeedup} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} attempts=${attempts} lanes=${lanes}`;
 }
 
 function trendStatusLine(latestPath) {
@@ -701,6 +749,7 @@ const result = spawnSync("python3", ["scripts/verify_bench_artifact.py", "--stat
 if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);
 process.stdout.write(`${pytorchComparisonStatusLine(latestPytorchComparisonArtifact())}\n`);
+process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8PromptCandidateArtifact())}\n`);
 const quarantined = quarantinedFullRunArtifacts();
 if (quarantined.length > 0) {
   process.stdout.write(`bench-results: ${quarantined.length} quarantined p128/g200/r3 artifact(s) ignored for accepted evidence; latest_failed=${compactName(quarantined.at(-1))}\n`);

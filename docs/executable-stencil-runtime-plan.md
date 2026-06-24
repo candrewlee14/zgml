@@ -716,7 +716,14 @@ Q8 viable run selected the semantic full-model lane successfully:
 `semantic_projection_pair=30->0`, `semantic_projection_row_chain=0->30`,
 `semantic_speedup=1.00x`, and zero fallback. That is evidence that the
 larger semantic command is wired into the full model; it is not yet a broad
-promotion signal because throughput remains a thin/noisy lane. A three-attempt
+promotion signal because throughput remains a thin/noisy lane. The Q8 prompt
+candidate checker now writes an ignored JSON artifact by default under
+`bench-results/q8-prompt/` (`schema: "zgml.q8-prompt-candidate.v1"`) and prints
+a machine-readable `Q8_PROMPT_CANDIDATE_JSON` line. `bench:status` reads the
+latest artifact back as `q8-prompt-results:` with status, semantic throughput,
+semantic selection, lane speedups, command shape, and active lanes. Set
+`BENCH_Q8_PROMPT_WRITE_ARTIFACT=0` only for throwaway local diagnostics.
+A three-attempt
 no-rebuild proof ran in under a minute with
 `command_structural=ready`, `single_structural=skipped`,
 `two_phase_structural=ready`,
