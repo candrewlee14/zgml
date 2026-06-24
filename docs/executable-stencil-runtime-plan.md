@@ -675,11 +675,14 @@ and throughput. A three-attempt no-rebuild proof ran in under a minute with
 `command_structural=ready`, `single_structural=skipped`,
 `two_phase_structural=ready`,
 `attempt=skipped median_attempt=skipped noisy=skipped`,
-`command_command=241->181`, `command_best_speedup=1.02x`,
-`command_median_speedup=0.99x`, `two_phase_count=60`,
-`two_phase_median_speedup=0.95x`, `two_phase_tiled_work=60`, and zero fallback.
-That is the intended iteration lens before spending time on the full all-lane
-gate: it proves the command shape while keeping throughput readiness honest.
+`command_command=241->181`, `command_speedup=1.02x`,
+`command_throughput=ready`, `command_projection_row_chain=0->60`,
+`command_projection_row_chain_dispatch=0->120`, `two_phase_count=60`,
+`two_phase_speedup=0.96x`, `two_phase_tiled_work=60`, and zero fallback. That
+is the intended iteration lens before spending time on the full all-lane gate:
+it proves the command shape and confirms that the default two-dispatch
+projection-row-chain command path is model-level viable, while keeping the
+two-phase tiled candidate below promotion until it earns throughput.
 The per-attempt progress line now reports `active_lane`, `dispatch`, and
 `commands` for the measured command/two-phase lane when the known-bad
 single-dispatch diagnostic is skipped, so the fast loop no longer prints
