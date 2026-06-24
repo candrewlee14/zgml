@@ -548,6 +548,20 @@ median-parity claim must opt into
 `BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_REQUIRE_MEDIAN_PARITY=1`; the
 current steady evidence remains intentionally non-fatal because
 `log_softmax_classifier_batched` still has noisy sub-parity reruns.
+A June 24, 2026 three-attempt, 150ms-window six-lane focus artifact now passes
+both selected-attempt and median parity against PyTorch `2.12.1` with fresh
+native code:
+`ratio_median=linear_batched:1.21x,lazy_matmul_add_gelu_batched:2.83x,lazy_rms_silu_ffn_batched:1.71x,rms_gelu_linear_batched:3.58x,log_softmax_classifier_batched:1.05x,lazy_token_head_batched:1.22x`.
+The selected attempt's worst lane was `log_softmax_classifier_batched:1.05x`,
+so the current CPU Program/Session evidence is no longer merely a narrow
+linear/log-softmax microscope. It is still not a broad PyTorch replacement
+claim, but it does raise the checked compiled-hot-path CPU evidence from
+"plausible" to "currently passing on the six promoted focus lanes." A rejected
+follow-up native shortcut for `Embedding -> Linear -> LogSoftmax` is also useful
+negative evidence: a scalar per-token direct path regressed the token-head lane,
+so the next token-head win should come from a real fused/backend row kernel or
+better dispatch amortization, not from replacing BLAS-backed scheduled work with
+another hand-rolled loop.
 The PyTorch comparison gate now also refuses stale native evidence by default:
 before timing it checks the loaded `zig-out/lib/libzgml_c.*` timestamp against
 `build.zig` and Zig/Metal/C-header sources, prints `native=fresh` in accepted
