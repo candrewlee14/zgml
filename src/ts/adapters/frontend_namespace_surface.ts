@@ -17,6 +17,9 @@ import {
 import {
   compiledSequentialModuleSpecFromTrace,
 } from "../runtime/trace_compiler.js";
+import {
+  compileSupportRejectionReason,
+} from "../runtime/compile_support.js";
 
 type LossTrainHelpersOptions = Parameters<SharedFrontendRuntime["createLossTrainHelpers"]>[0];
 type OptimizerClassesOptions = Parameters<SharedFrontendRuntime["createOptimizerClasses"]>[0];
@@ -621,13 +624,6 @@ function looksLikeLazyTensor(target: unknown) {
     typeof record.compileSupport === "function";
 }
 
-function compileRejectionReason(value: unknown): string {
-  const evidence = compileObjectEvidence(value);
-  const diagnostic = compileObjectEvidence(evidence?.diagnostic);
-  const firstDiagnostic = Array.isArray(evidence?.diagnostics) ? compileObjectEvidence(evidence?.diagnostics[0]) : null;
-  return String(evidence?.reason ?? diagnostic?.message ?? firstDiagnostic?.message ?? "unsupported");
-}
-
 export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOptions) {
   function trace(target: unknown, compileOptions: CompileNamespaceOptions = {}) {
     const method = compileTargetMethod(target, "trace");
@@ -666,7 +662,7 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       throw new Error("compile.requireCompileSupport requires structured compileSupport evidence");
     }
     if (compileObjectEvidence(support)?.supported !== true) {
-      throw new Error(`compile.requireCompileSupport rejected unsupported target: ${compileRejectionReason(support)}`);
+      throw new Error(`compile.requireCompileSupport rejected unsupported target: ${compileSupportRejectionReason(support)}`);
     }
     return support;
   }
@@ -703,7 +699,7 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       throw new Error("compile.requireCompilePlan requires structured compile explanation evidence");
     }
     if (compileObjectEvidence(plan)?.supported !== true) {
-      throw new Error(`compile.requireCompilePlan rejected unsupported target: ${compileRejectionReason(plan)}`);
+      throw new Error(`compile.requireCompilePlan rejected unsupported target: ${compileSupportRejectionReason(plan)}`);
     }
     return plan;
   }
@@ -764,7 +760,7 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     if (lazySpec && options.compileModuleProgram) return options.compileModuleProgram(lazySpec, compileOptions);
     if (lazySpec) throw new Error("compile.compile requires a native module Program compiler for lazy graphs");
     if (requireLazyGraph) {
-      throw new Error(`lazy graph cannot compile to native Program: ${compileRejectionReason(support)}`);
+      throw new Error(`lazy graph cannot compile to native Program: ${compileSupportRejectionReason(support)}`);
     }
     return null;
   }

@@ -461,6 +461,10 @@ The shared adapter compile namespace now follows the same rule in diagnostics:
 unsupported compile paths report canonical `compile.*` errors, not
 `torch.compile.*`, even though the compatibility alias can still call the same
 functions.
+The adapter also reuses the canonical `compileSupportRejectionReason` helper
+instead of carrying a local rejection parser, shrinking one more duplicated
+piece of compile namespace behavior while the host-specific native compiler
+hooks remain injected.
 The canonical runnable `examples/node_training/quickstart.cjs` now exercises the
 same first-contact story end to end: train, checkpoint, restore,
 `zgml.compileForInference(...)`, inspect `compileSupport()`, `explain()`,

@@ -5917,6 +5917,7 @@ function checkDocs() {
 
   const frontendNamespaceSurface = read("src/ts/adapters/frontend_namespace_surface.ts");
   requireIncludes(frontendNamespaceSurface, "src/ts/adapters/frontend_namespace_surface.ts", "canonical zgml compile diagnostics", [
+    "import {\n  compileSupportRejectionReason,\n} from \"../runtime/compile_support.js\";",
     "compile.trace requires a module with trace() or a Sequential layer list",
     "compile.requireCompileSupport rejected unsupported target",
     "compile.requireCompilePlan rejected unsupported target",
@@ -5926,6 +5927,7 @@ function checkDocs() {
   ]);
   forbidIncludes(frontendNamespaceSurface, "src/ts/adapters/frontend_namespace_surface.ts", "torch compile diagnostics leak", [
     "torch.compile.",
+    "function compileRejectionReason",
   ]);
 
   const plan = read("docs/executable-stencil-runtime-plan.md");
@@ -5961,6 +5963,8 @@ function checkDocs() {
     "names `zgml` as the stable friendly root value",
     "compatibility slices such as `torch`",
     "unsupported compile paths report canonical `compile.*` errors",
+    "The adapter also reuses the canonical `compileSupportRejectionReason` helper",
+    "instead of carrying a local rejection parser",
     "The canonical runnable `examples/node_training/quickstart.cjs` now exercises the",
     "`zgml.compileForInference(...)`, inspect `compileSupport()`, `explain()`,",
     "allocation-free `into(...)`.",
