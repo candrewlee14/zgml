@@ -14,6 +14,7 @@ const goalProgress = Object.freeze({
   frontendPct: 100,
   frontendFloorPct: 60,
 });
+const requestedScorecardChecks = parseScorecardChecks(process.env.ZGML_SCORECARD_CHECKS);
 
 function read(relativePath) {
   return readFileSync(join(root, relativePath), "utf8");
@@ -112,7 +113,56 @@ function spawnFailure(label, command, args, result) {
   return `${label} failed: ${commandLine(command, args)} status=${status}${signal}${error}\n${spawnOutput(result)}`;
 }
 
+function parseScorecardChecks(value) {
+  const raw = String(value ?? "all").trim();
+  if (raw.length === 0 || raw === "all") return null;
+  const checks = new Set();
+  for (const part of raw.split(",")) {
+    const name = part.trim().toLowerCase().replace(/[\s_-]+/g, "-");
+    if (name.length > 0) checks.add(name);
+  }
+  return checks.size === 0 ? null : checks;
+}
+
+function scorecardCheckAliases(label) {
+  const normalized = label.toLowerCase().replace(/[\s_-]+/g, "-");
+  const aliases = new Set([normalized]);
+  if (normalized === "static-scripts") aliases.add("static");
+  if (normalized === "substrate-evidence") aliases.add("substrate");
+  if (normalized === "frontier-evidence") aliases.add("frontier");
+  if (normalized === "q8-prompt-candidate-evidence") {
+    aliases.add("q8");
+    aliases.add("q8-prompt");
+  }
+  if (normalized === "module-program-bench-evidence") {
+    aliases.add("module");
+    aliases.add("module-program");
+  }
+  if (normalized === "portable-wasm-runtime-evidence") {
+    aliases.add("wasm");
+    aliases.add("portable-wasm");
+  }
+  if (normalized === "native-webgpu-runtime-evidence") {
+    aliases.add("wgpu");
+    aliases.add("native-wgpu");
+  }
+  if (normalized === "zgml-frontend-surface") aliases.add("frontend");
+  return aliases;
+}
+
+function shouldRunScorecardCheck(label) {
+  if (requestedScorecardChecks === null) return true;
+  for (const alias of scorecardCheckAliases(label)) {
+    if (requestedScorecardChecks.has(alias)) return true;
+  }
+  return false;
+}
+
 function runScorecardCheck(label, fn) {
+  if (!shouldRunScorecardCheck(label)) {
+    process.stderr.write(`[scorecard] skip ${label}\n`);
+    return;
+  }
   process.stderr.write(`[scorecard] start ${label}\n`);
   const beforeErrorCount = errors.length;
   try {
@@ -128,6 +178,18 @@ function checkScripts() {
   const packageJson = JSON.parse(read("package.json"));
   const scripts = packageJson.scripts ?? {};
 
+  if (scripts["check:goal-scorecard"] !== "node scripts/check_goal_scorecard.cjs") {
+    errors.push("package.json check:goal-scorecard must remain the full goal scorecard");
+  }
+  if (scripts["check:goal-scorecard:q8"] !== "ZGML_SCORECARD_CHECKS=static,frontier,q8 node scripts/check_goal_scorecard.cjs") {
+    errors.push("package.json check:goal-scorecard:q8 must remain the focused Q8 scorecard loop");
+  }
+  requireIncludes(read("scripts/check_goal_scorecard.cjs"), "scripts/check_goal_scorecard.cjs", "focused scorecard selector", [
+    "const requestedScorecardChecks = parseScorecardChecks(process.env.ZGML_SCORECARD_CHECKS);",
+    "function shouldRunScorecardCheck(label)",
+    "aliases.add(\"q8\");",
+    "[scorecard] skip ${label}",
+  ]);
   if (scripts["bench:substrate"] !== "node scripts/bench_status.cjs --substrate-gate") {
     errors.push("package.json bench:substrate must remain the Program/Session substrate evidence gate");
   }

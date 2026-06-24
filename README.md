@@ -926,7 +926,9 @@ throughput problem rather than a shape-evidence guess. Frontier, q8 prompt
 candidate, and ggml comparison rebuild commands force ReleaseFast artifacts;
 the `:run` frontier and q8 prompt candidate scripts reuse the last
 `bench-build` artifact so kernel hypotheses can be repeated quickly after one
-benchmark-grade build.
+benchmark-grade build. `npm run check:goal-scorecard:q8` runs the static,
+frontier, and Q8 prompt candidate scorecard sections without paying for the long
+portable Wasm/browser evidence tail.
 
 For performance work, use the `dev:perf:*` scripts as the inner loop and the
 `bench:*` scripts as gates. `dev:perf:pytorch:gaps` uses Zig's incremental

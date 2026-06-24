@@ -321,6 +321,7 @@
     "bench:ggml:parity": "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json BENCH_REQUIRE_PARITY=1 ./scripts/bench_vs_ggml.sh 128 200 3",
     "bench:ggml:parity:run": "BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json BENCH_REQUIRE_PARITY=1 ./scripts/bench_vs_ggml.sh 128 200 3",
     "check:goal-scorecard": "node scripts/check_goal_scorecard.cjs",
+    "check:goal-scorecard:q8": "ZGML_SCORECARD_CHECKS=static,frontier,q8 node scripts/check_goal_scorecard.cjs",
     "typecheck": "npm run build:package && tsc -p tsconfig.types.json",
     "test": "npm run typecheck && npm run smoke:adapters",
     "test:adapters": "npm run typecheck && npm run smoke:adapters",

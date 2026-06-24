@@ -803,6 +803,12 @@ without turning noise into a false architecture signal. The frontier
 microscope uses `BENCH_FRONTIER_ATTEMPTS`
 (default `5`) so the row-chain and qproj kernel work can absorb local timing
 noise without falling back to the much slower full scorecard.
+The full goal scorecard is still the release proof, but Q8 work now also has a
+focused commit-boundary loop: `npm run check:goal-scorecard:q8` runs only the
+static, frontier, and Q8 prompt candidate scorecard sections via
+`ZGML_SCORECARD_CHECKS=static,frontier,q8`. That keeps the hot path on the
+current Q8 substrate frontier and avoids spending a kernel-iteration turn in the
+long portable Wasm/browser evidence tail unless the change actually touches it.
 The qproj group microscope now also prints command-shape and runtime-command
 profile evidence. Current local evidence is deliberately two-lane and honest:
 the compact x4 grouped shape is present (`shape_commands=1`,
