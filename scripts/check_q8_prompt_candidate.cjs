@@ -671,6 +671,7 @@ const semanticThroughputStatus = measureSemantic
   : "skipped";
 const semanticStructuralSelected = semanticBest.semanticTiledTwoPhaseCount > 0;
 const semanticThroughputReady = semanticThroughputStatus === "ready";
+const semanticBridgeCandidateSelected = bridgeAbsorbedLane(semanticBest);
 const reportedSemanticThroughputReady = promotedDefaultReady || semanticThroughputReady;
 const twoPhaseStructuralSelected = twoPhaseBest.twoPhaseTiledTwoPhaseCount > 0;
 const commandDispatchReduced =
@@ -690,7 +691,7 @@ const singleAttemptSummary = measureSingle
   ? `attempt=${best.index}/${attempts} median_attempt=${median.index}/${attempts} noisy=${noisyAttempts}`
   : "attempt=skipped median_attempt=skipped noisy=skipped";
 const gateStatus = promotedDefaultReady ? "promoted-default" : commandReady ? "command-ready" : candidateReady ? "ready" : "structural";
-const reportedSemanticThroughputStatus = promotedDefaultReady ? "promoted" : semanticThroughputStatus;
+const reportedSemanticThroughputStatus = semanticBridgeCandidateSelected ? semanticThroughputStatus : promotedDefaultReady ? "promoted" : semanticThroughputStatus;
 
 function laneArtifact(row, prefix) {
   const speedupKey = prefix === "candidate" ? "speedup" : `${prefix}Speedup`;
