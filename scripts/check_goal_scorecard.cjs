@@ -340,6 +340,12 @@ function checkScripts() {
   if (scripts["dev:perf:q8-prompt:viable:run"] !== "BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json dev:perf:q8-prompt:viable:run must keep the no-rebuild command/two-phase Q8 prompt microscope");
   }
+  if (scripts["dev:perf:ggml:q8-command-smoke"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_BUILD_ZGML=0 node scripts/check_ggml_q8_command_smoke.cjs") {
+    errors.push("package.json dev:perf:ggml:q8-command-smoke must keep the checked explicit Q8 command-path ggml smoke");
+  }
+  if (scripts["dev:perf:ggml:q8-command-smoke:run"] !== "BENCH_BUILD_ZGML=0 node scripts/check_ggml_q8_command_smoke.cjs") {
+    errors.push("package.json dev:perf:ggml:q8-command-smoke:run must keep the checked explicit Q8 command-path ggml smoke rerun");
+  }
   if (scripts["dev:perf:pytorch:focus"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:focus must keep the incremental native PyTorch focus loop");
   }
@@ -1215,6 +1221,17 @@ function checkScripts() {
     "row[\"command_pressure_top3_ratio\"] = pressure[\"ratio\"]",
     "row[\"projection_sidecar_pressure_per_call\"] = native_sidecar_pressure(native_aux_metrics(fmt, phase_name))",
     "annotate_command_pressure(gate)",
+  ]);
+  requireIncludes(read("scripts/check_ggml_q8_command_smoke.cjs"), "scripts/check_ggml_q8_command_smoke.cjs", "checked Q8 command ggml smoke", [
+    "ZGML_Q8_EXTRA_ARGS: \"--metal-prompt-projection-row-chain-command\"",
+    "Metal Q8_0 prompt | metal scheduled prefill projection-row-chain command",
+    "| q8_0 | prompt | metal scheduled prefill projection-row-chain command |",
+    "242/242 dispatch, 181/181 command",
+    "120/120 dispatched projection_row_chain",
+    "30/30 dispatched projection_pair_fused_elementwise_chain",
+    "30/30 dispatched projection_cache_group",
+    "BENCH_GGML_Q8_COMMAND_PROMPT_FLOOR",
+    "ggml q8 command smoke: pass",
   ]);
   requireIncludes(read("scripts/verify_bench_artifact.py"), "scripts/verify_bench_artifact.py", "benchmark artifact pressure-proof freshness checks", [
     "native_command_pressure,",

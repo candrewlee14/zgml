@@ -416,6 +416,12 @@ BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json ./script
 `bench_vs_ggml.sh` runs zgml F16 and Q8_0 lanes with
 `--metal-prefill-device --metal-decode-region --gate-only` by default, so the
 selected zgml rows are native backend-only prompt and decode evidence.
+The cheap `dev:perf:ggml:q8-command-smoke` loop wraps the same script with
+`scripts/check_ggml_q8_command_smoke.cjs`, requiring the Q8 prompt lane to be
+`metal scheduled prefill projection-row-chain command`, `242/242 dispatch,
+181/181 command`, `120/120 dispatched projection_row_chain`, and the existing
+projection-pair/cache-group command evidence before it prints
+`ggml q8 command smoke: pass` with the accepted artifact path.
 `verify_bench_artifact.py --status` prints the evidence class for checked
 artifacts: full benchmark runs are full-run evidence and explicitly report
 whether parity passed or missed, compact baselines are structural

@@ -802,7 +802,12 @@ clean `181`-command prompt shape; the older
 `--metal-prompt-projection-row-chain-command-candidate` flag remains an alias.
 The `dev:perf:ggml:q8-command-smoke` loop keeps this Q8 command path explicit
 for cheap artifact-producing microscope runs, not as a replacement for the hard
-ggml parity gate.
+ggml parity gate. That loop now runs `scripts/check_ggml_q8_command_smoke.cjs`,
+which requires the Q8 prompt lane to be
+`metal scheduled prefill projection-row-chain command`, keeps the `181`-command
+shape, proves `120` projection-row-chain dispatches plus the existing projection
+pair/cache-group commands, and prints a compact `ggml q8 command smoke: pass`
+line with the accepted artifact path.
 The frontier benchmark gate keeps the same floors but now evaluates them across
 its repeated noisy attempts instead of requiring every independent microbench
 lane to pass in one lucky attempt. If no single attempt clears all floors but
