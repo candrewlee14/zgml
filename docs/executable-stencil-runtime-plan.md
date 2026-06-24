@@ -695,9 +695,11 @@ the current runtime shape is still `2` commands covering `9` ops and saving `7`
 staged dispatches, and the current runtime still needs `3` backend dispatches.
 The opt-in target compiler policy now recognizes the same work as one
 `semantic_ffn_sublayer` command covering `9` ops and saving `8` staged
-dispatches, but Metal deliberately refuses exact execution for that command
-until the real native kernel exists. So this is the frontier microscope and
-compiler contract for `semantic_ffn_sublayer_kernel`, not proof that full-model
+dispatches. Metal now executes that exact command as a composed native path:
+projection-pair product, down-projection residual add, then RMSNorm scale. The
+target path is zero-diff and still dispatches `3` backend kernels, so the final
+missing performance move is replacing the composed internals with a true
+one-dispatch `semantic_ffn_sublayer_kernel`; this is not proof that full-model
 Q8 has been solved.
 It also names the hard performance fact directly: the structurally useful
 two-dispatch command path is dispatch-neutral in the full model
@@ -833,8 +835,9 @@ qsemantic scripts use `BENCH_FRONTIER_FILTER=qsemantic` and default the
 checked dev loop to one attempt because the profile assertions are the value:
 they prove the current 3-dispatch boundary and the opt-in one-command semantic
 target (`target_shape_commands=1`,
-`target_semantic_ffn_sublayers=1`) without requiring the full Q8 prompt artifact
-loop on every kernel edit.
+`target_semantic_ffn_sublayers=1`,
+`target_runtime_backend_dispatches=3`) without requiring the full Q8 prompt
+artifact loop on every kernel edit.
 Use it when changing projection-pair, row-chain, residual, RMSNorm, or
 semantic-sublayer scheduling, then escalate to `dev:perf:q8-prompt:viable` and
 the full Q8 prompt candidate gate before making a model-level speed claim. The

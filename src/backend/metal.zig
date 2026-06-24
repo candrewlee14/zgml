@@ -8918,6 +8918,36 @@ const CompiledProgram = struct {
         return self.encodeQMatmulPairFusedElementwiseChain(exec, view, gate, first, rp, second, up, product);
     }
 
+    fn tryEncodeSemanticFfnSublayerCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.op_count != 9) return false;
+        const start: usize = @intCast(command.op_start);
+        const gate = deviceOpAt(.qmatmul, ops, start) orelse return false;
+        const first = deviceOpAt(.elementwise, ops, start + 1) orelse return false;
+        const up = deviceOpAt(.qmatmul, ops, start + 2) orelse return false;
+        const product = deviceOpAt(.elementwise, ops, start + 3) orelse return false;
+        const down = deviceOpAt(.qmatmul, ops, start + 4) orelse return false;
+        const residual = deviceOpAt(.elementwise, ops, start + 5) orelse return false;
+        const rn = deviceOpAt(.rmsnorm, ops, start + 6) orelse return false;
+        const rp = deviceOpAt(.repeat, ops, start + 7) orelse return false;
+        const out = deviceOpAt(.elementwise, ops, start + 8) orelse return false;
+
+        if (!program_mod.projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) return false;
+        const steps = [_]backend_mod.FusedEwStep{.{ .op = first.op, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 }};
+        const fe = .{
+            .steps = steps[0..],
+            .n = first.n,
+            .dst = first.dst,
+            .src = first.src0,
+            .dst_offset = first.dst_offset,
+            .src_offset = first.src0_offset,
+        };
+        if (!self.encodeQMatmulPairSingleFusedElementwiseChain(exec, view, gate, fe, up, product)) return false;
+
+        const write_down_primary = view.outputReadsBuffer(down.dst);
+        if (!self.encodeQMatmulElementwise(exec, view, down, residual, write_down_primary)) return false;
+        return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, view.outputReadsBuffer(rn.dst) or view.outputReadsBuffer(rp.dst));
+    }
+
     fn projectionRowChainPrimaryHasExternalUsers(ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (command.anchor_count != 1 or command.sidecar_count < 1) return true;
         const q_idx = command.indices[0];
@@ -8994,7 +9024,7 @@ const CompiledProgram = struct {
             .projection_pair_elementwise_chain => self.tryEncodeProjectionPairElementwiseChainCommand(exec, view, ops, command),
             .projection_pair_fused_elementwise_chain => self.tryEncodeProjectionPairFusedElementwiseChainCommand(exec, view, ops, command),
             .dense_projection_pair_fused_elementwise_chain => self.tryEncodeDenseProjectionPairFusedElementwiseChainCommand(exec, view, ops, command),
-            .semantic_ffn_sublayer => false,
+            .semantic_ffn_sublayer => self.tryEncodeSemanticFfnSublayerCommand(exec, view, ops, command),
             .projection_row_chain => self.tryEncodeProjectionRowChainCommand(exec, view, ops, command),
             .dense_projection_row_chain => self.tryEncodeDenseProjectionRowChainCommand(exec, view, ops, command),
             .dense_projection_chain => self.tryEncodeDenseProjectionChainCommand(exec, view, ops, command),

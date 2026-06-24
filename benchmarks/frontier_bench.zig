@@ -1297,6 +1297,8 @@ fn benchSemanticSublayerMetalCase(
     defer alloc.free(command_out);
     const two_phase_out = try allocF32(alloc, elems, 912, 0.0);
     defer alloc.free(two_phase_out);
+    const target_out = try allocF32(alloc, elems, 919, 0.0);
+    defer alloc.free(target_out);
 
     const gate_qdata = try allocI8Weights(alloc, case.k * case.n, 913);
     defer alloc.free(gate_qdata);
@@ -1371,23 +1373,31 @@ fn benchSemanticSublayerMetalCase(
     const two_phase_policy = program_mod.CommandStreamPolicy.promptProjectionRowChainTwoPhaseCandidate();
     const two_phase_handle = metal.compileProgramWithCommandPolicy(program, two_phase_policy) orelse return error.CompileFailed;
     defer be.freeProgram(two_phase_handle);
+    const target_policy = program_mod.CommandStreamPolicy.promptSemanticFfnSublayerTarget();
+    const target_handle = metal.compileProgramWithCommandPolicy(program, target_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(target_handle);
 
     const staged_output_io = [_]backend_mod.ProgramIO{programIo(9, staged_out)};
     const command_output_io = [_]backend_mod.ProgramIO{programIo(9, command_out)};
     const two_phase_output_io = [_]backend_mod.ProgramIO{programIo(9, two_phase_out)};
+    const target_output_io = [_]backend_mod.ProgramIO{programIo(9, target_out)};
     var staged_bench = ProjectionRowChainMetalBench{ .be = be, .handle = staged_handle, .out = staged_out, .output_io = &staged_output_io };
     var command_bench = ProjectionRowChainMetalBench{ .be = be, .handle = command_handle, .out = command_out, .output_io = &command_output_io };
     var two_phase_bench = ProjectionRowChainMetalBench{ .be = be, .handle = two_phase_handle, .out = two_phase_out, .output_io = &two_phase_output_io };
+    var target_bench = ProjectionRowChainMetalBench{ .be = be, .handle = target_handle, .out = target_out, .output_io = &target_output_io };
 
     be.executeProgram(staged_handle, &.{}, &staged_output_io);
     be.executeProgram(command_handle, &.{}, &command_output_io);
     be.executeProgram(two_phase_handle, &.{}, &two_phase_output_io);
+    be.executeProgram(target_handle, &.{}, &target_output_io);
     const command_max_abs_diff = maxAbsDiff(staged_out, command_out);
     const two_phase_max_abs_diff = maxAbsDiff(staged_out, two_phase_out);
+    const target_max_abs_diff = maxAbsDiff(staged_out, target_out);
 
     const staged_stats = measure(io, &staged_bench);
     const command_stats = measure(io, &command_bench);
     const two_phase_stats = measure(io, &two_phase_bench);
+    const target_stats = measure(io, &target_bench);
     const approx_work = 2.0 * @as(f64, @floatFromInt(case.m * case.n * (case.k * 2 + case.n)));
 
     var staged_name_buf: [128]u8 = undefined;
@@ -1399,6 +1409,9 @@ fn benchSemanticSublayerMetalCase(
     var two_phase_name_buf: [144]u8 = undefined;
     const two_phase_name = try std.fmt.bufPrint(&two_phase_name_buf, "{s} semantic pair_row_chain_two_phase", .{case.name});
     try printStats(w, two_phase_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", two_phase_stats);
+    var target_name_buf: [128]u8 = undefined;
+    const target_name = try std.fmt.bufPrint(&target_name_buf, "{s} semantic target", .{case.name});
+    try printStats(w, target_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", target_stats);
 
     var command_ratio_name_buf: [128]u8 = undefined;
     const command_ratio_name = try std.fmt.bufPrint(&command_ratio_name_buf, "{s} semantic pair_row_chain", .{case.name});
@@ -1406,6 +1419,9 @@ fn benchSemanticSublayerMetalCase(
     var two_phase_ratio_name_buf: [144]u8 = undefined;
     const two_phase_ratio_name = try std.fmt.bufPrint(&two_phase_ratio_name_buf, "{s} semantic pair_row_chain_two_phase", .{case.name});
     try printRatio(w, two_phase_ratio_name, staged_stats, two_phase_stats, two_phase_max_abs_diff);
+    var target_ratio_name_buf: [128]u8 = undefined;
+    const target_ratio_name = try std.fmt.bufPrint(&target_ratio_name_buf, "{s} semantic target", .{case.name});
+    try printRatio(w, target_ratio_name, staged_stats, target_stats, target_max_abs_diff);
 
     const command_commands = try program_mod.buildProgramCommands(alloc, &ops, command_policy);
     defer alloc.free(command_commands);
@@ -1421,12 +1437,12 @@ fn benchSemanticSublayerMetalCase(
     try printCommandShape(w, two_phase_profile_name, two_phase_commands);
     try printSemanticSublayerRuntimeProfile(w, two_phase_profile_name, be, two_phase_handle, &two_phase_output_io);
 
-    const target_policy = program_mod.CommandStreamPolicy.promptSemanticFfnSublayerTarget();
     const target_commands = try program_mod.buildProgramCommands(alloc, &ops, target_policy);
     defer alloc.free(target_commands);
     var target_profile_name_buf: [160]u8 = undefined;
     const target_profile_name = try std.fmt.bufPrint(&target_profile_name_buf, "{s} semantic target dispatch_profile", .{case.name});
     try printCommandShape(w, target_profile_name, target_commands);
+    try printSemanticSublayerRuntimeProfile(w, target_profile_name, be, target_handle, &target_output_io);
 }
 
 fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer, filter: FrontierFilter) !void {
