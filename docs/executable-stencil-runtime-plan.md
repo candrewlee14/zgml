@@ -931,8 +931,13 @@ the local timing sample). A June 24, 2026 policy experiment that forced the
 `N=32` path through the small direct linear+bias kernel before the row
 log-softmax was also rejected: the module bench regressed
 `prepared_execute_into_ms` to about `0.0112ms`, and the three-attempt PyTorch
-comparison still missed median parity. Keep the BLAS-with-fused-bias row tail
-until a true classifier-tail kernel beats it.
+comparison still missed median parity. A follow-up 4th-degree vector-exp
+experiment for the `N=32` row tail also preserved correctness but failed to move
+the steady target: the module bench stayed around `prepared_execute_into_ms =
+0.0098ms`, and the three-attempt PyTorch lane still missed median parity
+(`ratio_median=0.94x`). Keep the BLAS-with-fused-bias row tail and the current
+5th-degree vector-exp approximation until a true classifier-tail kernel beats
+them.
 Evidence tag: current measured path now prefers the same BLAS-backed batched linear policy as `linear_batched`; then runs the measured `N=32` row; latest fresh-native three-attempt PyTorch gap microscope; row log-softmax tail itself; bias vector into the `N=32` row log-softmax normalization; `prepared_execute_into_ms=0.00759ms`; `vvlogf` over the 128 per-row denominators; `0.00765ms`; `ratio_median=0.89x`.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
