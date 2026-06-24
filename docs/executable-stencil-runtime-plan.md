@@ -1220,6 +1220,17 @@ qsemantic microscope stayed mixed (`full_prefill:0.97x`,
 `smollm_prompt:1.03x`). Treat that as another sign that the next win must change
 the work shape of the semantic FFN/down/residual/norm kernel, not polish the
 existing tiled row-chain tail.
+A June 24, 2026 quant-scale-index micro-kernel experiment tried replacing hot
+Metal dequant expressions such as `w_idx / block_size` with a uniform
+`block_size == 32 ? w_idx >> 5 : w_idx / block_size` helper across quantized
+matmul, row-chain, pair, and semantic kernels. It compiled and preserved
+correctness in the qsemantic microscope, but it did not improve the target:
+the fresh one-attempt qsemantic lane moved the throughput candidate to
+`full_prefill:0.91x,smollm_prompt:0.94x` versus default, while the
+one-dispatch semantic target remained around `0.28x/0.23x` versus default. The
+change was reverted. Do not retry scale-index arithmetic as the next Q8
+semantic move; the missing win is still tile-parallel semantic work or a faster
+row-chain leaf.
 The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic,
 full-model Q8 prompt viable, and cheap ggml smoke lanes behind
 `BENCH_COMPETITIVE_LANES`, so a kernel edit can run only
