@@ -56,6 +56,45 @@ function numericSnapshot(values: ArrayLike<number>): number[] {
   return Array.from(values, Number);
 }
 
+function expectNumericalGradient(
+  adapter: Record<string, any>,
+  values: readonly number[],
+  shape: readonly number[],
+  buildLoss: (input: any) => any,
+  label: string,
+  epsilon = 1e-3,
+  tolerance = 5e-3,
+) {
+  const analyticInput = adapter.tensor(values.slice(), shape).requiresGrad_();
+  const analyticLoss = buildLoss(analyticInput);
+  if (!analyticLoss || typeof analyticLoss.backward !== "function") {
+    throw new Error(`${label} expected differentiable scalar Tensor loss`);
+  }
+  if (!analyticLoss.data || analyticLoss.data.length !== 1) {
+    throw new Error(`${label} expected scalar Tensor loss, got length ${analyticLoss.data?.length ?? "missing"}`);
+  }
+  analyticLoss.backward();
+  const analyticGrad = numericSnapshot(analyticInput.grad ?? []);
+  if (analyticGrad.length !== values.length) {
+    throw new Error(`${label} analytic gradient length mismatch: ${analyticGrad.length} !== ${values.length}`);
+  }
+  for (let i = 0; i < values.length; i += 1) {
+    const plus = values.slice();
+    const minus = values.slice();
+    plus[i] += epsilon;
+    minus[i] -= epsilon;
+    const plusLoss = buildLoss(adapter.tensor(plus, shape));
+    const minusLoss = buildLoss(adapter.tensor(minus, shape));
+    if (!plusLoss?.data || !minusLoss?.data || plusLoss.data.length !== 1 || minusLoss.data.length !== 1) {
+      throw new Error(`${label} finite-difference probe must return scalar Tensor losses`);
+    }
+    const numericalGrad = (Number(plusLoss.data[0]) - Number(minusLoss.data[0])) / (2 * epsilon);
+    if (Math.abs(analyticGrad[i] - numericalGrad) > tolerance) {
+      throw new Error(`${label}[${i}] expected numerical grad ${numericalGrad}, got analytic grad ${analyticGrad[i]}`);
+    }
+  }
+}
+
 type PackageSmokeTensor = Readonly<{
   data: ArrayLike<number>;
   shape: readonly number[];
@@ -5068,6 +5107,13 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   expectClose(trigOutput.data, [0], `${label} Tensor.sin autograd forward`);
   trigOutput.backward();
   expectClose(trigInput.grad, [1], `${label} Tensor.sin autograd backward`);
+  expectNumericalGradient(
+    adapter,
+    [0.25, -0.75],
+    [2],
+    (input) => input.sin().sum(),
+    `${label} Tensor.sin numerical gradient`,
+  );
   const tanInput = adapter.tensor([0], [1]).requiresGrad_();
   const tanOutput = tanInput.tan();
   tanOutput.backward();
@@ -5077,6 +5123,13 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   expectClose(tanhOutput.data, [0], `${label} Tensor.tanh autograd forward`);
   tanhOutput.backward();
   expectClose(tanhInput.grad, [1], `${label} Tensor.tanh autograd backward`);
+  expectNumericalGradient(
+    adapter,
+    [-0.5, 0.75],
+    [2],
+    (input) => input.tanh().sum(),
+    `${label} Tensor.tanh numerical gradient`,
+  );
   expectClose(adapter.sum(nested, 1).data, [3, 7], `${label} sum root helper`);
   expectClose(adapter.prod(nested, 1).data, [2, 12], `${label} prod root helper`);
   expectClose(adapter.cumsum(nested, 1).data, [1, 3, 3, 7], `${label} cumsum root helper`);
@@ -5141,6 +5194,13 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   const logsumexpGradInput = adapter.tensor([1, 2], [2]).requiresGrad_();
   logsumexpGradInput.logsumexp().backward();
   expectClose(logsumexpGradInput.grad, [0.268941, 0.731059], `${label} Tensor.logsumexp autograd backward`);
+  expectNumericalGradient(
+    adapter,
+    [-0.5, 0.25, 1.25],
+    [3],
+    (input) => input.logsumexp(),
+    `${label} Tensor.logsumexp numerical gradient`,
+  );
   expectClose(adapter.matmul(nested, adapter.tensor([1, 2, 3, 4], [2, 2])).data, [7, 10, 15, 22], `${label} matmul root helper`);
   expectClose(adapter.mm(nested, adapter.tensor([1, 2, 3, 4], [2, 2])).data, [7, 10, 15, 22], `${label} mm root helper`);
   expectClose(adapter.dot(adapter.tensor([1, 2, 3], [3]), adapter.tensor([4, 5, 6], [3])).data, [32], `${label} dot root helper`);

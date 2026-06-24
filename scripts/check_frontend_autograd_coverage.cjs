@@ -31,7 +31,9 @@ const rows = Object.freeze([
       "Tensor.reciprocal autograd backward",
       "Tensor.rsqrt autograd backward",
       "Tensor.sin autograd backward",
+      "Tensor.sin numerical gradient",
       "Tensor.tanh autograd backward",
+      "Tensor.tanh numerical gradient",
     ],
   },
   {
@@ -55,6 +57,7 @@ const rows = Object.freeze([
     family: "Log-sum-exp family",
     labels: [
       "Tensor.logsumexp autograd backward",
+      "Tensor.logsumexp numerical gradient",
     ],
   },
   {
