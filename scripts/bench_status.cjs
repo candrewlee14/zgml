@@ -438,7 +438,23 @@ function pytorchBroadStatusLine(path, latestPath) {
 
 function pytorchFreshnessStatusLine(selectedPath, rawPath) {
   if (!selectedPath || !rawPath || selectedPath === rawPath) return null;
-  return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_focus_keyset`;
+  let data;
+  try {
+    data = readJson(rawPath);
+  } catch {
+    return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_focus_keyset unreadable`;
+  }
+  const status = data?.comparisonReady === true ? "pass" : "miss";
+  const medianStatus = data?.medianParityReady === true ? "pass" : "miss";
+  const worst = data?.worst?.key ? `${data.worst.key}:${formatRatio(data.worst.ratio)}` : "missing";
+  const medians = data?.ratioStats && typeof data.ratioStats === "object"
+    ? Object.entries(data.ratioStats).map(([key, stats]) => `${key}:${formatRatio(stats?.median)}`).join(",")
+    : "missing";
+  const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
+  const native = typeof data?.native?.label === "string" ? data.native.label : "unknown";
+  const timing = typeof data?.config?.zgmlTimingMetric === "string" ? data.config.zgmlTimingMetric : "unknown";
+  const keyCount = Array.isArray(data?.config?.activeComparisonKeys) ? data.config.activeComparisonKeys.length : "n/a";
+  return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_focus_keyset status=${status} median=${medianStatus} worst=${worst} attempts=${attempts} native=${native} timing=${timing} keys=${keyCount} ratio_median=${medians}`;
 }
 
 function q8PromptCandidateStatusLine(path) {

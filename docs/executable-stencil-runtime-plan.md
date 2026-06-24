@@ -610,10 +610,14 @@ selected/median miss lists, selected attempt, native freshness, Torch version,
 timing metric, active keys, and ratio medians. When a narrower microscope is
 newer than that selected focus artifact, it prints `pytorch-latest-results:` so
 freshness stays visible without letting a one-lane probe hijack the PyTorch
-replacement scoreboard. The same status readback also prints the most recent
-ten-lane broad artifact as `pytorch-broad-results:` when it differs. This keeps
-three different facts visible at once: the selected current-hot-path sample, the
-freshest local experiment, and the broad PyTorch-like replacement sample.
+replacement scoreboard. That latest line now includes status, median status,
+worst ratio, attempts, native freshness, timing metric, key count, and ratio
+medians; a fresh one-lane microscope can sharpen the next optimization target
+without pretending to prove broad PyTorch parity. The same status readback also
+prints the most recent ten-lane broad artifact as `pytorch-broad-results:` when
+it differs. This keeps three different facts visible at once: the selected
+current-hot-path sample, the freshest local experiment, and the broad
+PyTorch-like replacement sample.
 The same status readback now prints a compact `perf-next:` line that turns the
 current artifacts into an iteration target: weakest full-model ggml lane and
 distance-to-90%, PyTorch median misses, Q8 prompt semantic readiness, and the
