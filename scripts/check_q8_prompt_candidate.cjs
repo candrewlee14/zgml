@@ -487,6 +487,13 @@ const commandThroughputStatus = measureCommand ? (commandThroughputReady ? "read
 const singleStructuralStatus = measureSingle ? (structuralReady ? "ready" : "off") : "skipped";
 const singleThroughputStatus = measureSingle ? (throughputReady ? "ready" : "off") : "skipped";
 const twoPhaseStructuralStatus = measureTwoPhase ? (twoPhaseStructuralReady ? "ready" : "off") : "skipped";
+const commandDispatchReduced =
+  commandBest.defaultDispatches !== null && commandBest.commandDispatches !== null && commandBest.commandDispatches < commandBest.defaultDispatches;
+const twoPhaseDispatchReduced =
+  twoPhaseBest.defaultDispatches !== null && twoPhaseBest.twoPhaseDispatches !== null && twoPhaseBest.twoPhaseDispatches < twoPhaseBest.defaultDispatches;
+const singleDispatchReduced =
+  best.defaultDispatches !== null && best.candidateDispatches !== null && best.candidateDispatches < best.defaultDispatches;
+const dispatchRealityTarget = "reduce_actual_dispatch_or_larger_semantic_sublayer";
 const singleAttemptSummary = measureSingle
   ? `attempt=${best.index}/${attempts} median_attempt=${median.index}/${attempts} noisy=${noisyAttempts}`
   : "attempt=skipped median_attempt=skipped noisy=skipped";
@@ -501,6 +508,7 @@ console.log(
     `command_default=${format(commandBest.defaultTokS)} tok/s command_candidate=${format(commandBest.commandTokS)} tok/s command_speedup=${format(commandBest.commandSpeedup)}x command_floor=${format(commandSpeedupFloor)}x; ` +
     `command_median_speedup=${format(commandMedian.commandSpeedup)}x command_worst_speedup=${format(commandWorst.commandSpeedup)}x command_best_speedup=${format(commandBest.commandSpeedup)}x; ` +
     `command_dispatch=${format(commandBest.defaultDispatches, 0)}->${format(commandBest.commandDispatches, 0)} command_command=${format(commandBest.defaultCommands, 0)}->${format(commandBest.commandCommands, 0)} ` +
+    `command_dispatch_reduced=${commandDispatchReduced ? "yes" : "no"} command_runtime_target=${dispatchRealityTarget} ` +
     `command_projection_chain=${format(commandBest.defaultProjectionChains, 0)}->${format(commandBest.commandProjectionChains, 0)} ` +
     `command_projection_pair=${format(commandBest.defaultProjectionPairs, 0)}->${format(commandBest.commandProjectionPairs, 0)} ` +
     `command_projection_pair_dispatch=${format(commandBest.defaultProjectionPairDispatches, 0)}->${format(commandBest.commandProjectionPairDispatches, 0)} ` +
@@ -522,6 +530,7 @@ console.log(
     `two_phase_default=${format(twoPhaseBest.defaultTokS)} tok/s two_phase_candidate=${format(twoPhaseBest.twoPhaseTokS)} tok/s two_phase_speedup=${format(twoPhaseBest.twoPhaseSpeedup)}x; ` +
     `two_phase_median_speedup=${format(twoPhaseMedian.twoPhaseSpeedup)}x two_phase_worst_speedup=${format(twoPhaseWorst.twoPhaseSpeedup)}x two_phase_best_speedup=${format(twoPhaseBest.twoPhaseSpeedup)}x; ` +
     `two_phase_dispatch=${format(twoPhaseBest.defaultDispatches, 0)}->${format(twoPhaseBest.twoPhaseDispatches, 0)} two_phase_command=${format(twoPhaseBest.defaultCommands, 0)}->${format(twoPhaseBest.twoPhaseCommands, 0)} ` +
+    `two_phase_dispatch_reduced=${twoPhaseDispatchReduced ? "yes" : "no"} two_phase_runtime_target=${dispatchRealityTarget} ` +
     `two_phase_count=${format(twoPhaseBest.twoPhaseTiledTwoPhaseCount, 0)} two_phase_selected=${twoPhaseBest.twoPhaseTiledTwoPhaseCount > 0 ? "yes" : "off"} ` +
     `two_phase_tiled_work=${format(twoPhaseBest.twoPhaseTiledCount, 0)} chains row_groups=${format(twoPhaseBest.twoPhaseTiledRowTileGroups, 0)} n_tiles=${format(twoPhaseBest.twoPhaseTiledNTiles, 0)} serial_tile_loops=${format(twoPhaseBest.twoPhaseTiledSerialLoops, 0)} partial_slots=${format(twoPhaseBest.twoPhaseTiledPartialSlots, 0)} scratch_capacity=${format(twoPhaseBest.twoPhaseTiledScratchCapacity, 0)} spills=${format(twoPhaseBest.twoPhaseTiledSpills, 0)} ` +
     `two_phase_projection_chain=${format(twoPhaseBest.defaultProjectionChains, 0)}->${format(twoPhaseBest.twoPhaseProjectionChains, 0)} ` +
@@ -538,6 +547,7 @@ console.log(
     `default=${format(best.defaultTokS)} tok/s candidate=${format(best.candidateTokS)} tok/s speedup=${format(best.speedup)}x floor=${format(speedupFloor)}x; ` +
     `median_speedup=${format(median.speedup)}x worst_speedup=${format(worst.speedup)}x best_speedup=${format(best.speedup)}x; ` +
     `dispatch=${format(best.defaultDispatches, 0)}->${format(best.candidateDispatches, 0)} command=${format(best.defaultCommands, 0)}->${format(best.candidateCommands, 0)} ` +
+    `dispatch_reduced=${singleDispatchReduced ? "yes" : "no"} runtime_target=${dispatchRealityTarget} ` +
     `projection_chain=${format(best.defaultProjectionChains, 0)}->${format(best.candidateProjectionChains, 0)} ` +
     `projection_pair=${format(best.defaultProjectionPairs, 0)}->${format(best.candidateProjectionPairs, 0)} ` +
     `projection_pair_dispatch=${format(best.defaultProjectionPairDispatches, 0)}->${format(best.candidateProjectionPairDispatches, 0)} ` +

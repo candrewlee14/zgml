@@ -670,6 +670,17 @@ and throughput. A three-attempt no-rebuild proof ran in under a minute with
 `two_phase_median_speedup=0.95x`, `two_phase_tiled_work=60`, and zero fallback.
 That is the intended iteration lens before spending time on the full all-lane
 gate: it proves the command shape while keeping throughput readiness honest.
+It also names the hard performance fact directly: the structurally useful
+two-dispatch command path is dispatch-neutral in the full model
+(`command_dispatch=242->242`, `command_dispatch_reduced=no`), and the two-phase
+prototype is also dispatch-neutral at the model level
+(`two_phase_dispatch=242->242`, `two_phase_dispatch_reduced=no`) while adding
+partial/finalize work. The single-dispatch diagnostic can reduce actual
+dispatch count, but its tiled kernel is too slow. So the next target is not
+"more command lowering" by itself; it is
+`reduce_actual_dispatch_or_larger_semantic_sublayer`: either a real
+throughput-preserving dispatch reduction or a larger semantic sublayer that
+removes surrounding work instead of merely renaming it.
 The two-phase partial kernel now also drops the unused scale buffer binding;
 the finalize kernel still owns scale application, while the partial pass binds
 only weight, input, residual, elementwise output, partial scratch, and params.
