@@ -540,7 +540,9 @@ function q8PromptCandidateStatusLine(path) {
   const commandShape = `${data?.lanes?.command?.commands ?? "n/a"}`;
   const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
-  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} attempts=${attempts} lanes=${lanes} source=${source}`;
+  const pairDefaults = data?.config?.pairDefaults === true ? "yes" : "no";
+  const baselineNoise = formatRatio(data?.baselineNoise?.maxOverMin);
+  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} attempts=${attempts} lanes=${lanes} pair_defaults=${pairDefaults} baseline_noise=${baselineNoise} source=${source}`;
 }
 
 function frontierStatusLine(path, pressurePath = path) {

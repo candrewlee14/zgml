@@ -1388,6 +1388,13 @@ one-attempt viable run reported `semantic_throughput=ready` at
 hand off from qsemantic to the Q8 prompt gate once frontier says
 `candidate=ready`, but the default policy still needs either steadier full-model
 semantic evidence or the true semantic FFN throughput kernel before promotion.
+The Q8 prompt steady path now supports paired default baselines and
+`dev:perf:next:steady` enables them for this lane. With paired baselines, the
+selected three-attempt Q8 prompt evidence is less ambiguous:
+`pair_defaults=yes`, `baseline_noise=1.10x`, `semantic_best=1.01x`,
+`semantic_median=0.97x`, and `semantic_worst=0.95x`. That narrows the diagnosis:
+the semantic path is structurally right and roughly parity, but it is not hiding
+a stable throughput win behind the earlier unpaired measurement swing.
 A June 24, 2026 shape-gated policy experiment tried limiting the two-phase
 semantic throughput tail to the 512-wide full-prefill shape so the 576-wide
 SmolLM prompt shape would preserve the semantic command but skip the tiled tail.

@@ -112,6 +112,7 @@ function main() {
         BENCH_BUILD_ZGML: "0",
         BENCH_CANDIDATE_ATTEMPTS: steady ? "3" : "1",
         BENCH_Q8_PROMPT_LANES: "command,two_phase,semantic",
+        BENCH_Q8_PROMPT_PAIR_DEFAULTS: steady ? "1" : "0",
       }),
     );
     return;

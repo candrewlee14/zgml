@@ -20,6 +20,7 @@ const commandSpeedupFloor = Number(process.env.BENCH_COMMAND_CANDIDATE_SPEEDUP_F
 const semanticSpeedupFloor = Number(process.env.BENCH_SEMANTIC_CANDIDATE_SPEEDUP_FLOOR || "1.00");
 const attempts = positiveInt(process.env.BENCH_CANDIDATE_ATTEMPTS || "3", "BENCH_CANDIDATE_ATTEMPTS");
 const laneMode = process.env.BENCH_Q8_PROMPT_LANES || "all";
+const pairDefaults = process.env.BENCH_Q8_PROMPT_PAIR_DEFAULTS === "1";
 const rowChainLowering = "default_projection_chain_plus_row_chain_candidate_single_dispatch_tiled_row_chain";
 const commandLowering = "default_projection_chain_plus_row_chain_command_two_dispatch";
 const twoPhaseLowering = "default_projection_chain_plus_row_chain_candidate_two_phase_tiled_row_chain";
@@ -227,38 +228,52 @@ if (build === "1") {
 }
 
 const baseArgs = [model, promptTokens, genTokens, repetitions, "--metal-prefill-device", "--metal-decode-region", "--gate-only"];
-progress(`attempts=${attempts} lanes=${[...measuredLanes].join(",")} model=${model} prompt=${promptTokens} gen=${genTokens} reps=${repetitions}`);
+progress(`attempts=${attempts} lanes=${[...measuredLanes].join(",")} model=${model} prompt=${promptTokens} gen=${genTokens} reps=${repetitions} pair_defaults=${pairDefaults ? "yes" : "no"}`);
+
+function laneDefaultTokS(index, laneName, fallbackTokS) {
+  if (!pairDefaults) return fallbackTokS;
+  progress(`attempt ${index}/${attempts} ${laneName} default`);
+  const output = run(binary, baseArgs);
+  return number(rowFor(output, "metal scheduled prefill"), "prompt_tok_s");
+}
 
 function measureAttempt(index) {
   progress(`attempt ${index}/${attempts} default`);
   const defaultOutput = run(binary, baseArgs);
+  const defaultRow = rowFor(defaultOutput, "metal scheduled prefill");
+  const defaultDecodeRow = rowFor(defaultOutput, "metal region decode");
+  const defaultTokS = number(defaultRow, "prompt_tok_s");
+
+  const commandDefaultTokS = measureCommand ? laneDefaultTokS(index, "command", defaultTokS) : null;
   const commandOutput = measureCommand
     ? (progress(`attempt ${index}/${attempts} command`), run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-command"]))
     : null;
+  const commandLane = measureCommand
+    ? readProjectionLane(rowFor(commandOutput, "metal scheduled prefill projection-row-chain command"), commandDefaultTokS, index)
+    : emptyLane(index);
+
+  const singleDefaultTokS = measureSingle ? laneDefaultTokS(index, "single-dispatch-candidate", defaultTokS) : null;
   const candidateOutput = measureSingle
     ? (progress(`attempt ${index}/${attempts} single-dispatch-candidate`), run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-candidate"]))
     : null;
+  const singleLane = measureSingle
+    ? readProjectionLane(rowFor(candidateOutput, "metal scheduled prefill projection-row-chain candidate"), singleDefaultTokS, index)
+    : emptyLane(index);
+
+  const twoPhaseDefaultTokS = measureTwoPhase ? laneDefaultTokS(index, "two-phase-candidate", defaultTokS) : null;
   const twoPhaseOutput = measureTwoPhase
     ? (progress(`attempt ${index}/${attempts} two-phase-candidate`), run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-two-phase-candidate"]))
     : null;
+  const twoPhaseLane = measureTwoPhase
+    ? readProjectionLane(rowFor(twoPhaseOutput, "metal scheduled prefill projection-row-chain two-phase candidate"), twoPhaseDefaultTokS, index)
+    : emptyLane(index);
+
+  const semanticDefaultTokS = measureSemantic ? laneDefaultTokS(index, "semantic-throughput-candidate", defaultTokS) : null;
   const semanticOutput = measureSemantic
     ? (progress(`attempt ${index}/${attempts} semantic-throughput-candidate`), run(binary, [...baseArgs, "--metal-prompt-semantic-throughput-candidate"]))
     : null;
-  const defaultRow = rowFor(defaultOutput, "metal scheduled prefill");
-  const defaultDecodeRow = rowFor(defaultOutput, "metal region decode");
-
-  const defaultTokS = number(defaultRow, "prompt_tok_s");
-  const commandLane = measureCommand
-    ? readProjectionLane(rowFor(commandOutput, "metal scheduled prefill projection-row-chain command"), defaultTokS, index)
-    : emptyLane(index);
-  const singleLane = measureSingle
-    ? readProjectionLane(rowFor(candidateOutput, "metal scheduled prefill projection-row-chain candidate"), defaultTokS, index)
-    : emptyLane(index);
-  const twoPhaseLane = measureTwoPhase
-    ? readProjectionLane(rowFor(twoPhaseOutput, "metal scheduled prefill projection-row-chain two-phase candidate"), defaultTokS, index)
-    : emptyLane(index);
   const semanticLane = measureSemantic
-    ? readProjectionLane(rowFor(semanticOutput, "metal scheduled prefill semantic throughput candidate"), defaultTokS, index)
+    ? readProjectionLane(rowFor(semanticOutput, "metal scheduled prefill semantic throughput candidate"), semanticDefaultTokS, index)
     : emptyLane(index);
   const defaultDispatches = number(defaultRow, "dispatches_per_call");
   const defaultCommands = number(defaultRow, "commands_per_call");
@@ -389,6 +404,10 @@ function measureAttempt(index) {
   return {
     index,
     defaultTokS,
+    commandDefaultTokS,
+    singleDefaultTokS,
+    twoPhaseDefaultTokS,
+    semanticDefaultTokS,
     commandTokS: commandLane.tokS,
     candidateTokS: singleLane.tokS,
     twoPhaseTokS: twoPhaseLane.tokS,
@@ -640,6 +659,28 @@ function laneSpeedupStats(bestRow, medianRow, worstRow, prefix) {
   };
 }
 
+function baselineNoiseStats(rows) {
+  const values = [];
+  for (const row of rows) {
+    for (const key of ["defaultTokS", "commandDefaultTokS", "singleDefaultTokS", "twoPhaseDefaultTokS", "semanticDefaultTokS"]) {
+      const value = Number(row[key]);
+      if (Number.isFinite(value) && value > 0) values.push(value);
+    }
+  }
+  if (values.length === 0) return { samples: 0, min: null, median: null, max: null, maxOverMin: null };
+  values.sort((a, b) => a - b);
+  const min = values[0];
+  const medianValue = values[Math.floor(values.length / 2)];
+  const max = values[values.length - 1];
+  return {
+    samples: values.length,
+    min: roundMetric(min),
+    median: roundMetric(medianValue),
+    max: roundMetric(max),
+    maxOverMin: roundMetric(max / min),
+  };
+}
+
 let artifactPath = null;
 if (writeArtifact) {
   const resolvedArtifactDir = resolve(root, artifactDir);
@@ -670,6 +711,7 @@ if (writeArtifact) {
       commandSpeedupFloor,
       semanticSpeedupFloor,
       build,
+      pairDefaults,
       lowerings: {
         command: commandLowering,
         twoPhase: twoPhaseLowering,
@@ -702,6 +744,7 @@ if (writeArtifact) {
       twoPhase: twoPhaseNoisyAttempts,
       semantic: semanticNoisyAttempts,
     },
+    baselineNoise: baselineNoiseStats(attemptRows),
     lanes: {
       command: {
         ...laneArtifact(commandBest, "command"),
@@ -734,6 +777,10 @@ if (writeArtifact) {
     attempts: attemptRows.map((row) => ({
       index: row.index,
       defaultTokS: roundMetric(row.defaultTokS),
+      commandDefaultTokS: roundMetric(row.commandDefaultTokS),
+      singleDefaultTokS: roundMetric(row.singleDefaultTokS),
+      twoPhaseDefaultTokS: roundMetric(row.twoPhaseDefaultTokS),
+      semanticDefaultTokS: roundMetric(row.semanticDefaultTokS),
       commandSpeedup: roundMetric(row.commandSpeedup),
       singleSpeedup: roundMetric(row.speedup),
       twoPhaseSpeedup: roundMetric(row.twoPhaseSpeedup),
