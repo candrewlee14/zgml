@@ -334,6 +334,11 @@ function qsemanticThroughputArtifacts() {
 }
 
 function latestQsemanticThroughputArtifact() {
+  const artifacts = qsemanticThroughputArtifacts();
+  return artifacts.filter(isFrontierSteadyArtifact).at(-1) ?? artifacts.at(-1) ?? null;
+}
+
+function latestRawQsemanticThroughputArtifact() {
   return qsemanticThroughputArtifacts().at(-1) ?? null;
 }
 
@@ -443,6 +448,24 @@ function qsemanticThroughputStatusLine(path) {
   const next = typeof data?.next === "string" ? data.next : "unknown";
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
   return `qsemantic-throughput-results: latest=${compactName(path)} status=${status} gate=${gate} bottleneck=${bottleneck} serial_gap=${semanticSerialGap} width_slot_gap=${semanticWidthSlotGap} thread_slot_gap=${semanticThreadSlotGap} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill}:median:${fullPrefillMedian}:worst:${fullPrefillWorst}:dispatches:${fullDispatches}:semantic_count:${fullSemanticCount}:semantic_tile_groups:${fullSemanticTileGroups}:row_serial_per_group:${fullSemanticRowSerial}:total_row_serial_per_group:${fullSemanticTotalRowSerial}:width_lane_slots:${fullWidthLaneSlots}:width_lane_utilization_x1000:${fullWidthLaneUtilization}:thread_lane_slots:${fullThreadLaneSlots}:thread_lane_utilization_x1000:${fullThreadLaneUtilization}:spilled_input:${fullSpilledInput}:output_spills:${fullOutputSpills} smollm_prompt=${smollmPrompt}:median:${smollmPromptMedian}:worst:${smollmPromptWorst}:dispatches:${smollmDispatches}:semantic_count:${smollmSemanticCount}:semantic_tile_groups:${smollmSemanticTileGroups}:row_serial_per_group:${smollmSemanticRowSerial}:total_row_serial_per_group:${smollmSemanticTotalRowSerial}:width_lane_slots:${smollmWidthLaneSlots}:width_lane_utilization_x1000:${smollmWidthLaneUtilization}:thread_lane_slots:${smollmThreadLaneSlots}:thread_lane_utilization_x1000:${smollmThreadLaneUtilization}:spilled_input:${smollmSpilledInput}:output_spills:${smollmOutputSpills} next=${next} source=${source}`;
+}
+
+function qsemanticThroughputFreshnessStatusLine(selectedPath, rawPath) {
+  if (!selectedPath || !rawPath || selectedPath === rawPath) return null;
+  let data;
+  try {
+    data = readJson(rawPath);
+  } catch {
+    return `qsemantic-throughput-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts unreadable`;
+  }
+  const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
+  const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
+  const fullPrefill = formatRatio(data?.fullPrefill?.speedup);
+  const smollmPrompt = formatRatio(data?.smollmPrompt?.speedup);
+  const fullMedian = formatRatio(data?.speedupStats?.fullPrefill?.median);
+  const smollmMedian = formatRatio(data?.speedupStats?.smollmPrompt?.median);
+  const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
+  return `qsemantic-throughput-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill}:median:${fullMedian} smollm_prompt=${smollmPrompt}:median:${smollmMedian} source=${source}`;
 }
 
 function ggmlSmokeStatusLine(path) {
@@ -1665,6 +1688,7 @@ const latestRawQ8Prompt = latestRawQ8PromptCandidateArtifact();
 const latestFrontier = latestFrontierArtifact();
 const latestRawFrontier = latestRawFrontierArtifact();
 const latestQsemanticThroughput = latestQsemanticThroughputArtifact();
+const latestRawQsemanticThroughput = latestRawQsemanticThroughputArtifact();
 const latestQprojFrontier = latestQprojFrontierArtifact();
 const latestGgmlSmoke = latestGgmlSmokeArtifact();
 process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8Prompt)}\n`);
@@ -1675,8 +1699,10 @@ process.stdout.write(`${frontierStatusLine(latestFrontier, latestRawFrontier)}\n
 const frontierFreshness = frontierFreshnessStatusLine(latestFrontier, latestRawFrontier);
 if (frontierFreshness) process.stdout.write(`${frontierFreshness}\n`);
 process.stdout.write(`${qsemanticThroughputStatusLine(latestQsemanticThroughput)}\n`);
+const qsemanticThroughputFreshness = qsemanticThroughputFreshnessStatusLine(latestQsemanticThroughput, latestRawQsemanticThroughput);
+if (qsemanticThroughputFreshness) process.stdout.write(`${qsemanticThroughputFreshness}\n`);
 process.stdout.write(`${ggmlSmokeStatusLine(latestGgmlSmoke)}\n`);
-process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, rawQ8Path: latestRawQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestQsemanticThroughput ?? latestRawFrontier })}\n`);
+process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, rawQ8Path: latestRawQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestRawQsemanticThroughput ?? latestRawFrontier })}\n`);
 const quarantined = quarantinedFullRunArtifacts();
 if (quarantined.length > 0) {
   process.stdout.write(`bench-results: ${quarantined.length} quarantined p128/g200/r3 artifact(s) ignored for accepted evidence; latest_failed=${compactName(quarantined.at(-1))}\n`);
