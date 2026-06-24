@@ -413,7 +413,9 @@ paying for a full parity run.
 `npm run dev:perf:next` automates that choice: it reads `perf-next:` and runs
 the smallest no-rebuild microscope for the current bottleneck. Use
 `npm run dev:perf:next:build` when the native or benchmark artifact is stale,
-or set `BENCH_NEXT_PERF_LANE=pytorch|qsemantic|q8_prompt|ggml` to force a lane.
+`npm run dev:perf:next:steady` when a noisy lane needs repeated attempts or
+longer timing windows, or set
+`BENCH_NEXT_PERF_LANE=pytorch|qsemantic|q8_prompt|ggml` to force a lane.
 `bench:ggml` builds the benchmark binaries in ReleaseFast, writes a full
 `bench-results/*.json` artifact, and requires the checked M5 Pro baseline so a
 new local artifact cannot improve a ggml percentage by merely running both

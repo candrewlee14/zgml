@@ -918,6 +918,7 @@ npm run dev:perf:competitive # incremental PyTorch + qsemantic + full-model Q8 p
 npm run dev:perf:competitive:run # no-rebuild rerun of selected competitiveness lanes
 npm run dev:perf:next # read perf-next and run the smallest current bottleneck microscope
 npm run dev:perf:next:build # rebuild needed artifacts first, then run the current bottleneck microscope
+npm run dev:perf:next:steady # rerun the current bottleneck microscope with steadier attempts/windows
 npm run dev:perf:competitive:qsemantic # incremental qsemantic-only competitiveness loop
 npm run dev:perf:competitive:q8-prompt # incremental full-model Q8 prompt competitiveness loop
 npm run dev:perf:q8-prompt # incremental ReleaseFast benchmark rebuild plus Q8 prompt candidate evidence

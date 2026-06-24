@@ -58,8 +58,9 @@ function main() {
   const lane = chooseLane(line);
   validateLane(lane);
   const shouldBuild = process.env.BENCH_NEXT_PERF_BUILD === "1";
+  const steady = process.env.BENCH_NEXT_PERF_STEADY === "1";
   console.log(`[next-perf] ${line}`);
-  console.log(`[next-perf] lane=${lane} build=${shouldBuild ? "yes" : "no"}`);
+  console.log(`[next-perf] lane=${lane} build=${shouldBuild ? "yes" : "no"} steady=${steady ? "yes" : "no"}`);
 
   if (lane === "status") return;
 
@@ -77,7 +78,7 @@ function main() {
       ["scripts/check_frontier_bench.cjs"],
       envWithDefaults({
         BENCH_FRONTIER_BUILD: "0",
-        BENCH_FRONTIER_ATTEMPTS: "1",
+        BENCH_FRONTIER_ATTEMPTS: steady ? "3" : "1",
         BENCH_FRONTIER_FILTER: "qsemantic",
       }),
     );
@@ -91,7 +92,7 @@ function main() {
       ["scripts/check_q8_prompt_candidate.cjs"],
       envWithDefaults({
         BENCH_BUILD_ZGML: "0",
-        BENCH_CANDIDATE_ATTEMPTS: "1",
+        BENCH_CANDIDATE_ATTEMPTS: steady ? "3" : "1",
         BENCH_Q8_PROMPT_LANES: "command,two_phase,semantic",
       }),
     );
@@ -105,7 +106,9 @@ function main() {
       ["scripts/check_pytorch_comparison.cjs"],
       envWithDefaults({
         BENCH_PYTORCH_INSTALL: "1",
-        BENCH_PYTORCH_ATTEMPTS: "1",
+        BENCH_PYTORCH_ATTEMPTS: steady ? "3" : "1",
+        BENCH_PYTORCH_MIN_TIMING_MS: steady ? "150" : "8",
+        BENCH_MODULE_PROGRAM_MIN_TIMING_MS: steady ? "150" : "8",
         BENCH_PYTORCH_KEYS: "linear_batched,log_softmax_classifier_batched",
       }),
     );
