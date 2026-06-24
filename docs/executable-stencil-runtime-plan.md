@@ -1338,11 +1338,10 @@ parallelism. The retained fix is a four-way unroll of the semantic gate/up and
 down inner dot loops inside the 512-thread kernel. That keeps the one-dispatch
 shape, preserves the `thread_lane_utilization_x1000=1000/611` evidence for
 full-prefill/SmolLM, and moves the focused three-attempt throughput gate to
-`full_prefill=1.99x`, `smollm_prompt=1.04x`, `gate=ready`. A one-attempt full
-Q8 prompt viable rerun also promotes the semantic lane with
-`semantic_speedup=1.02x`, while keeping the 151-command shape and zero
-fallbacks; the accepted steady Q8 prompt evidence should be refreshed next
-before treating that as full-model steady-state proof. The
+`full_prefill=1.99x`, `smollm_prompt=1.04x`, `gate=ready`. A follow-up
+three-attempt Q8 prompt viable run refreshes the accepted steady prompt evidence:
+`semantic_speedup=1.18x`, `semantic_median=1.01x`, `semantic_worst=0.99x`,
+`semantic=promoted`, while keeping the 151-command shape and zero fallbacks. The
 qsemantic gate now reports
 `target_vs_default=full_prefill:...x,smollm_prompt:...x` so the dispatch
 reduction is always interpreted against the current throughput path; a fresh

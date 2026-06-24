@@ -324,9 +324,10 @@ machine for both prompt/prefill and decode.
   vectorization without dropping too much parallelism. The retained unrolled
   512-thread semantic kernel is the first such win: it preserves the one-dispatch
   shape and lifts the three-attempt qsemantic throughput gate to
-  `full_prefill=1.99x`, `smollm_prompt=1.04x`, `gate=ready`. A one-attempt
-  Q8 prompt viable rerun also reports `semantic_speedup=1.02x`; refresh the
-  steady full-model artifact before promoting that evidence tier.
+  `full_prefill=1.99x`, `smollm_prompt=1.04x`, `gate=ready`. The refreshed
+  three-attempt Q8 prompt viable run also promotes the semantic lane with
+  `semantic_speedup=1.18x`, `semantic_median=1.01x`, and
+  `semantic_worst=0.99x`.
 - The frontier gate now also reports the paired row-chain diagnostic
   `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
   This compares four staged qmatmul+residual+RMSNorm-scale row chains against
