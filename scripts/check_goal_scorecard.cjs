@@ -914,6 +914,8 @@ function checkScripts() {
     "target_throughput_status=",
     "throughput_candidate_status=",
     "throughput_candidate_vs_default=full_prefill:",
+    "throughputCandidateVsDefault: roundMetric(attempt.fullPrefillThroughputCandidateSpeedup / attempt.fullPrefillSpeedup)",
+    "throughputCandidateVsDefault: roundMetric(attempt.smollmPromptThroughputCandidateSpeedup / attempt.smollmPromptSpeedup)",
     "mixed_tiled_tail_diagnostic",
     "target_vs_default=full_prefill:",
     "diagnostic_needs_throughput_kernel",

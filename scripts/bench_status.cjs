@@ -413,12 +413,18 @@ function frontierNextTargetLine(path) {
     const smollmCandidateValue = Number(data?.smollmPrompt?.throughputCandidateSpeedup);
     const fullDefault = Number(data?.fullPrefill?.speedup);
     const fullCandidateValue = Number(data?.fullPrefill?.throughputCandidateSpeedup);
+    const storedSmollmVsDefault = Number(data?.smollmPrompt?.throughputCandidateVsDefault);
+    const storedFullVsDefault = Number(data?.fullPrefill?.throughputCandidateVsDefault);
     const smollmCandidate = formatRatio(smollmCandidateValue);
     const fullCandidate = formatRatio(fullCandidateValue);
-    const smollmVsDefault = Number.isFinite(smollmCandidateValue) && Number.isFinite(smollmDefault) && smollmDefault !== 0
+    const smollmVsDefault = Number.isFinite(storedSmollmVsDefault)
+      ? formatRatio(storedSmollmVsDefault)
+      : Number.isFinite(smollmCandidateValue) && Number.isFinite(smollmDefault) && smollmDefault !== 0
       ? formatRatio(smollmCandidateValue / smollmDefault)
       : "n/a";
-    const fullVsDefault = Number.isFinite(fullCandidateValue) && Number.isFinite(fullDefault) && fullDefault !== 0
+    const fullVsDefault = Number.isFinite(storedFullVsDefault)
+      ? formatRatio(storedFullVsDefault)
+      : Number.isFinite(fullCandidateValue) && Number.isFinite(fullDefault) && fullDefault !== 0
       ? formatRatio(fullCandidateValue / fullDefault)
       : "n/a";
     const throughputCandidate = typeof data?.throughputCandidateStatus === "string" ? data.throughputCandidateStatus : "unknown";
