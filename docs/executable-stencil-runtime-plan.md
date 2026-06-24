@@ -591,6 +591,8 @@ npm run bench:frontier:gate            # rebuild ReleaseFast and measure schedul
 npm run bench:frontier:gate:run        # rerun frontier evidence without rebuilding artifacts
 npm run bench:frontier:qproj           # rebuild ReleaseFast and gate only qproj projection-chain/group labels
 npm run bench:frontier:qproj:run       # rerun only qproj frontier evidence without rebuilding artifacts
+npm run dev:perf:frontier:qproj        # incremental checked qproj projection-chain/group microscope
+npm run dev:perf:frontier:qproj:run    # no-rebuild checked qproj projection-chain/group microscope
 npm run bench:frontier:row-chain       # rebuild ReleaseFast and run only row-chain frontier labels
 npm run bench:frontier:row-chain:run   # rerun only row-chain frontier labels without rebuilding artifacts
 npm run bench:frontier:row-chain-region      # rebuild ReleaseFast and run only x7 row-chain region labels
@@ -748,7 +750,12 @@ full-prefill and SmolLM-prompt rows while still failing only on correctness or
 profile drift. The frontier
 qproj scripts use `BENCH_FRONTIER_FILTER=qproj` so projection-chain/group work
 can check the current Q8 prompt frontier without paying for unrelated rows,
-norms, and matmuls. The frontier microscope uses `BENCH_FRONTIER_ATTEMPTS`
+(norms, row-chain candidates, and matmuls). The matching
+`dev:perf:frontier:qproj` loop adds the incremental ReleaseFast rebuild, so
+quantized projection-chain/layout changes can iterate against the checked
+qproj gate before escalating to the full frontier or ggml gates; it is the
+checked qproj gate in the fast dev loop. The frontier
+microscope uses `BENCH_FRONTIER_ATTEMPTS`
 (default `5`) so the row-chain and qproj kernel work can absorb local timing
 noise without falling back to the much slower full scorecard.
 The ggml script now also accepts per-format `ZGML_F16_EXTRA_ARGS` and

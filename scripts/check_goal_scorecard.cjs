@@ -198,6 +198,12 @@ function checkScripts() {
   if (scripts["dev:perf:frontier:row-chain-region:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=\"qrow region\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:row-chain-region:run must remain the no-rebuild checked x7 row-chain region microscope");
   }
+  if (scripts["dev:perf:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:qproj must remain the incremental checked qproj frontier microscope");
+  }
+  if (scripts["dev:perf:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:qproj:run must remain the no-rebuild checked qproj frontier microscope");
+  }
   if (scripts["bench:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:qproj must remain the ReleaseFast qproj-only frontier evidence gate");
   }
@@ -5364,6 +5370,9 @@ function checkDocs() {
     "source-current stencil shape gate",
     "bench:frontier:qproj",
     "bench:frontier:qproj:run",
+    "dev:perf:frontier:qproj",
+    "incremental ReleaseFast rebuild",
+    "checked qproj gate",
     "same anchored\nregion-command shape",
     "projection_row_chain_candidate=ready",
     "single_throughput=off",

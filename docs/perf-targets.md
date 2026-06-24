@@ -207,7 +207,10 @@ machine for both prompt/prefill and decode.
   meaningful Q8 prompt move should therefore be either
   a semantic sublayer command that removes real command depth, or quantized
   projection-chain layout/kernel work that improves throughput without hiding
-  extra dispatches behind a new command name.
+  extra dispatches behind a new command name. Use `dev:perf:frontier:qproj`
+  for that kernel/layout loop: it rebuilds the benchmark artifacts with
+  `-fincremental`, filters to qproj projection-chain/group lanes, and keeps the
+  checked correctness and speed floors from `check_frontier_bench.cjs`.
 - The frontier gate now measures prompt-shaped quantized projection-chain
   kernels independently of the full model:
   `qproj prompt m=32 n=512 k=512 projection_chain` tile must stay within 5% of
