@@ -338,7 +338,11 @@ Current checked progress:
   grouping lane is already live in the full model; the remaining Q8 prompt gap
   is the `projection_chain=60` row-chain/semantic-sublayer lane, while the
   frontier x7 qproj region remains the isolated executable proof for general
-  qmatmul-plus-sidecar projection groups.
+  qmatmul-plus-sidecar projection groups. The Q8 prompt gate now makes that
+  distinction explicit with
+  `qproj_group_full_model_target=frontier_only_not_full_model_sibling_region`
+  and `qproj_frontiers=60`, so a strong qproj frontier run does not get
+  mistaken for a missed full-model sibling-group scheduling opportunity.
   The next semantic-sublayer move should therefore build on the already-live
   pair-fused FFN path, or deliberately supersede it with a larger FFN sublayer
   command, before spending more time on the shallow row-chain tail.

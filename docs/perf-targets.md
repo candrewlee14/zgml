@@ -261,7 +261,10 @@ machine for both prompt/prefill and decode.
   already active in the full model. The remaining Q8 prompt work is the
   `projection_chain=60` row-chain/semantic-sublayer lane; the frontier x7 qproj
   region is the isolated executable proof for general qmatmul-plus-sidecar
-  projection groups.
+  projection groups. The Q8 prompt gate also prints
+  `qproj_group_full_model_target=frontier_only_not_full_model_sibling_region`
+  and `qproj_frontiers=60`, making the current full-model target explicit:
+  row-chain frontier pressure, not a missed sibling qproj grouping pass.
 - The frontier gate now also reports the paired row-chain diagnostic
   `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
   This compares four staged qmatmul+residual+RMSNorm-scale row chains against

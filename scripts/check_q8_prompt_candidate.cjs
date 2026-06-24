@@ -22,6 +22,7 @@ const requiredNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_cha
 const singleDispatchTrap = "serial_n_tile_loop_without_cross_threadgroup_row_reduce";
 const viableNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
 const semanticPairTarget = "projection_pair_fused_elementwise_or_larger_ffn_sublayer";
+const qprojGroupTarget = "frontier_only_not_full_model_sibling_region";
 const decodeLowering = "staged_qmatvec_projection_chain_plus_row_chain";
 const decodeRowChainDefault = "off";
 const decodeNextTarget = "larger_semantic_sublayer_or_qmatvec_throughput_kernel";
@@ -234,6 +235,7 @@ function measureAttempt(index) {
   const defaultProjectionChains = number(defaultRow, "program_command_encoded_projection_chain_per_call") ?? 0;
   const defaultProjectionPairs = number(defaultRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
   const defaultProjectionGroups = number(defaultRow, "program_command_encoded_projection_group_per_call") ?? 0;
+  const defaultProjectionChainRowChainFrontiers = number(defaultRow, "program_command_shape_projection_chain_row_chain_frontiers") ?? 0;
   const defaultProjectionCacheGroups = number(defaultRow, "program_command_encoded_projection_cache_group_per_call") ?? 0;
   const defaultDecodeCommands = number(defaultDecodeRow, "commands_per_call");
   const defaultDecodeProjectionChains = number(defaultDecodeRow, "program_command_encoded_projection_chain_per_call") ?? 0;
@@ -359,6 +361,7 @@ function measureAttempt(index) {
     candidateProjectionPairs: singleLane.projectionPairs,
     twoPhaseProjectionPairs: twoPhaseLane.projectionPairs,
     defaultProjectionGroups,
+    defaultProjectionChainRowChainFrontiers,
     commandProjectionGroups: commandLane.projectionGroups,
     candidateProjectionGroups: singleLane.projectionGroups,
     twoPhaseProjectionGroups: twoPhaseLane.projectionGroups,
@@ -494,6 +497,10 @@ const twoPhaseDispatchReduced =
 const singleDispatchReduced =
   best.defaultDispatches !== null && best.candidateDispatches !== null && best.candidateDispatches < best.defaultDispatches;
 const dispatchRealityTarget = "reduce_actual_dispatch_or_larger_semantic_sublayer";
+const fullModelQprojTarget =
+  commandBest.defaultProjectionGroups === 0 && commandBest.defaultProjectionChainRowChainFrontiers >= defaultProjectionChainFloor
+    ? qprojGroupTarget
+    : "inspect_projection_group_scheduler";
 const singleAttemptSummary = measureSingle
   ? `attempt=${best.index}/${attempts} median_attempt=${median.index}/${attempts} noisy=${noisyAttempts}`
   : "attempt=skipped median_attempt=skipped noisy=skipped";
@@ -514,6 +521,7 @@ console.log(
     `command_projection_pair_dispatch=${format(commandBest.defaultProjectionPairDispatches, 0)}->${format(commandBest.commandProjectionPairDispatches, 0)} ` +
     `command_projection_group=${format(commandBest.defaultProjectionGroups, 0)}->${format(commandBest.commandProjectionGroups, 0)} ` +
     `command_projection_group_dispatch=${format(commandBest.defaultProjectionGroupDispatches, 0)}->${format(commandBest.commandProjectionGroupDispatches, 0)} ` +
+    `qproj_group_full_model_target=${fullModelQprojTarget} qproj_frontiers=${format(commandBest.defaultProjectionChainRowChainFrontiers, 0)} ` +
     `command_projection_cache_group=${format(commandBest.defaultProjectionCacheGroups, 0)}->${format(commandBest.commandProjectionCacheGroups, 0)} ` +
     `command_projection_cache_group_dispatch=${format(commandBest.defaultProjectionCacheGroupDispatches, 0)}->${format(commandBest.commandProjectionCacheGroupDispatches, 0)} ` +
     `decode_command=${format(commandBest.defaultDecodeCommands, 0)} decode_projection_chain=${format(commandBest.defaultDecodeProjectionChains, 0)} ` +
