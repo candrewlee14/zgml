@@ -197,11 +197,14 @@ machine for both prompt/prefill and decode.
   changes can be checked without rerunning the known-bad single-dispatch diagnostic on every edit. The
   full-model gate accepts either the older pair-fused row-chain shape or the
   larger semantic-command shape that consumes the FFN projection pair and leaves
-  30 semantic row-chain commands. A June 24, 2026 one-attempt viable run
-  selected that semantic lane (`semantic_selected=yes`) with
-  `semantic_command=241->151`, `semantic_projection_pair=30->0`,
-  `semantic_projection_row_chain=0->30`, `semantic_speedup=1.00x`, and zero
-  fallback, which proves wiring rather than promotion.
+  30 semantic row-chain commands. A June 24, 2026 fresh-native viable run kept
+  the command lane structurally and barely throughput-ready
+  (`command_command=241->151`, `command_speedup=1.00x`) while the selected
+  two-phase and semantic lanes stayed diagnostic (`two_phase_speedup=0.95x`,
+  `semantic_speedup=0.92x`, `semantic_selected=yes`,
+  `semantic_projection_pair=30->0`, `semantic_projection_row_chain=0->30`) with
+  zero fallback. That proves wiring and command-shape readiness rather than
+  semantic promotion.
   The
   full all-lane candidate gate remains the release proof before promotion.
   The two-phase partial kernel does not bind the scale buffer anymore; scale is
