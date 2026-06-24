@@ -241,6 +241,26 @@ fn printProjectionGroupRuntimeProfile(
     );
 }
 
+fn printSemanticSublayerRuntimeProfile(
+    w: *std.Io.Writer,
+    name: []const u8,
+    be: backend_mod.Backend,
+    handle: backend_mod.Backend.CompiledHandle,
+    output_io: []const backend_mod.ProgramIO,
+) !void {
+    be.resetRuntimeProfile(handle);
+    be.executeProgram(handle, &.{}, output_io);
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try w.print(
+        "  {s:<28} runtime_backend_dispatches={d}  semantic_target_dispatches=1\n",
+        .{
+            name,
+            rt.backend_dispatch_count,
+        },
+    );
+}
+
 const TensorComputeBench = struct {
     out: *Tensor(f32),
 
@@ -1239,10 +1259,173 @@ fn benchProjectionRowChainGroupMetalCase(
     try printProjectionRowChainRuntimeProfile(w, two_phase_profile_name, be, two_phase_handle, &two_phase_outputs);
 }
 
+fn benchSemanticSublayerMetalCase(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    w: *std.Io.Writer,
+    metal: *internal.backend_metal.MetalBackend,
+    case: ProjectionRowChainCase,
+) !void {
+    const elems = case.m * case.n;
+    const input_len = case.m * case.k;
+    const block_size: usize = 32;
+    const gate_scale_len = (case.k * case.n + block_size - 1) / block_size;
+    const down_scale_len = (case.n * case.n + block_size - 1) / block_size;
+
+    const input = try allocF32(alloc, input_len, 901, 0.25);
+    defer alloc.free(input);
+    const shared_q = try allocF32(alloc, elems, 902, 0.0);
+    defer alloc.free(shared_q);
+    const silu_out = try allocF32(alloc, elems, 903, 0.0);
+    defer alloc.free(silu_out);
+    const product = try allocF32(alloc, elems, 904, 0.0);
+    defer alloc.free(product);
+    const down_q = try allocF32(alloc, elems, 905, 0.0);
+    defer alloc.free(down_q);
+    const residual = try allocF32(alloc, elems, 906, 0.20);
+    defer alloc.free(residual);
+    const norm = try allocF32(alloc, elems, 907, 0.0);
+    defer alloc.free(norm);
+    const scale = try allocF32(alloc, case.n, 908, 0.30);
+    defer alloc.free(scale);
+    const repeat = try allocF32(alloc, elems, 909, 0.0);
+    defer alloc.free(repeat);
+    const staged_out = try allocF32(alloc, elems, 910, 0.0);
+    defer alloc.free(staged_out);
+    const command_out = try allocF32(alloc, elems, 911, 0.0);
+    defer alloc.free(command_out);
+    const two_phase_out = try allocF32(alloc, elems, 912, 0.0);
+    defer alloc.free(two_phase_out);
+
+    const gate_qdata = try allocI8Weights(alloc, case.k * case.n, 913);
+    defer alloc.free(gate_qdata);
+    const up_qdata = try allocI8Weights(alloc, case.k * case.n, 914);
+    defer alloc.free(up_qdata);
+    const down_qdata = try allocI8Weights(alloc, case.n * case.n, 915);
+    defer alloc.free(down_qdata);
+    const gate_scales = try allocF32(alloc, gate_scale_len, 916, 0.02);
+    defer alloc.free(gate_scales);
+    const up_scales = try allocF32(alloc, gate_scale_len, 917, 0.02);
+    defer alloc.free(up_scales);
+    const down_scales = try allocF32(alloc, down_scale_len, 918, 0.02);
+    defer alloc.free(down_scales);
+    for (gate_scales) |*v| v.* = 0.02;
+    for (up_scales) |*v| v.* = 0.02;
+    for (down_scales) |*v| v.* = 0.02;
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = @intCast(case.m), .N = @intCast(case.n), .K = @intCast(case.k) } },
+        .{ .elementwise = .{ .op = .silu, .dst = 2, .src0 = 1, .src1 = 1, .n = @intCast(elems) } },
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 1, .M = @intCast(case.m), .N = @intCast(case.n), .K = @intCast(case.k) } },
+        .{ .elementwise = .{ .op = .mul, .dst = 3, .src0 = 2, .src1 = 1, .n = @intCast(elems) } },
+        .{ .qmatmul = .{ .dst = 4, .input = 3, .weight_idx = 2, .M = @intCast(case.m), .N = @intCast(case.n), .K = @intCast(case.n) } },
+        .{ .elementwise = .{ .op = .add, .dst = 5, .src0 = 4, .src1 = 5, .n = @intCast(elems) } },
+        .{ .rmsnorm = .{ .dst = 6, .src = 5, .rows = @intCast(case.m), .cols = @intCast(case.n), .eps = 1e-5 } },
+        .{ .repeat = .{
+            .dst = 8,
+            .src = 7,
+            .n = @intCast(elems),
+            .src_ne = .{ @intCast(case.n), 1, 1, 1 },
+            .dst_ne = .{ @intCast(case.n), @intCast(case.m), 1, 1 },
+            .src_strides = .{ 1, @intCast(case.n), @intCast(case.n), @intCast(case.n) },
+            .dst_strides = .{ 1, @intCast(case.n), @intCast(elems), @intCast(elems) },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 9, .src0 = 6, .src1 = 8, .n = @intCast(elems) } },
+    };
+    const buffer_sizes = [_]usize{ input_len, elems, elems, elems, elems, elems, elems, case.n, elems, elems };
+    const uploads = [_]backend_mod.ProgramIO{
+        programIo(0, input),
+        programIo(1, shared_q),
+        programIo(2, silu_out),
+        programIo(3, product),
+        programIo(4, down_q),
+        programIo(5, residual),
+        programIo(6, norm),
+        programIo(7, scale),
+        programIo(8, repeat),
+        programIo(9, staged_out),
+    };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{
+        .{ .data = gate_qdata, .scales = gate_scales, .rows = case.k, .cols = case.n, .block_size = block_size },
+        .{ .data = up_qdata, .scales = up_scales, .rows = case.k, .cols = case.n, .block_size = block_size },
+        .{ .data = down_qdata, .scales = down_scales, .rows = case.n, .cols = case.n, .block_size = block_size },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = buffer_sizes.len,
+        .buffer_sizes = &buffer_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const be = metal.backend();
+    var staged_policy = program_mod.CommandStreamPolicy.default();
+    staged_policy.fuse_projection_row_chain = false;
+    const staged_handle = metal.compileProgramWithCommandPolicy(program, staged_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(staged_handle);
+    var command_policy = program_mod.CommandStreamPolicy.default();
+    command_policy.fuse_projection_row_chain = true;
+    const command_handle = metal.compileProgramWithCommandPolicy(program, command_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(command_handle);
+    const two_phase_policy = program_mod.CommandStreamPolicy.promptProjectionRowChainTwoPhaseCandidate();
+    const two_phase_handle = metal.compileProgramWithCommandPolicy(program, two_phase_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(two_phase_handle);
+
+    const staged_output_io = [_]backend_mod.ProgramIO{programIo(9, staged_out)};
+    const command_output_io = [_]backend_mod.ProgramIO{programIo(9, command_out)};
+    const two_phase_output_io = [_]backend_mod.ProgramIO{programIo(9, two_phase_out)};
+    var staged_bench = ProjectionRowChainMetalBench{ .be = be, .handle = staged_handle, .out = staged_out, .output_io = &staged_output_io };
+    var command_bench = ProjectionRowChainMetalBench{ .be = be, .handle = command_handle, .out = command_out, .output_io = &command_output_io };
+    var two_phase_bench = ProjectionRowChainMetalBench{ .be = be, .handle = two_phase_handle, .out = two_phase_out, .output_io = &two_phase_output_io };
+
+    be.executeProgram(staged_handle, &.{}, &staged_output_io);
+    be.executeProgram(command_handle, &.{}, &command_output_io);
+    be.executeProgram(two_phase_handle, &.{}, &two_phase_output_io);
+    const command_max_abs_diff = maxAbsDiff(staged_out, command_out);
+    const two_phase_max_abs_diff = maxAbsDiff(staged_out, two_phase_out);
+
+    const staged_stats = measure(io, &staged_bench);
+    const command_stats = measure(io, &command_bench);
+    const two_phase_stats = measure(io, &two_phase_bench);
+    const approx_work = 2.0 * @as(f64, @floatFromInt(case.m * case.n * (case.k * 2 + case.n)));
+
+    var staged_name_buf: [128]u8 = undefined;
+    const staged_name = try std.fmt.bufPrint(&staged_name_buf, "{s} semantic staged", .{case.name});
+    try printStats(w, staged_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", staged_stats);
+    var command_name_buf: [128]u8 = undefined;
+    const command_name = try std.fmt.bufPrint(&command_name_buf, "{s} semantic pair_row_chain", .{case.name});
+    try printStats(w, command_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", command_stats);
+    var two_phase_name_buf: [144]u8 = undefined;
+    const two_phase_name = try std.fmt.bufPrint(&two_phase_name_buf, "{s} semantic pair_row_chain_two_phase", .{case.name});
+    try printStats(w, two_phase_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", two_phase_stats);
+
+    var command_ratio_name_buf: [128]u8 = undefined;
+    const command_ratio_name = try std.fmt.bufPrint(&command_ratio_name_buf, "{s} semantic pair_row_chain", .{case.name});
+    try printRatio(w, command_ratio_name, staged_stats, command_stats, command_max_abs_diff);
+    var two_phase_ratio_name_buf: [144]u8 = undefined;
+    const two_phase_ratio_name = try std.fmt.bufPrint(&two_phase_ratio_name_buf, "{s} semantic pair_row_chain_two_phase", .{case.name});
+    try printRatio(w, two_phase_ratio_name, staged_stats, two_phase_stats, two_phase_max_abs_diff);
+
+    const command_commands = try program_mod.buildProgramCommands(alloc, &ops, command_policy);
+    defer alloc.free(command_commands);
+    var profile_name_buf: [144]u8 = undefined;
+    const profile_name = try std.fmt.bufPrint(&profile_name_buf, "{s} semantic pair_row_chain dispatch_profile", .{case.name});
+    try printCommandShape(w, profile_name, command_commands);
+    try printSemanticSublayerRuntimeProfile(w, profile_name, be, command_handle, &command_output_io);
+
+    const two_phase_commands = try program_mod.buildProgramCommands(alloc, &ops, two_phase_policy);
+    defer alloc.free(two_phase_commands);
+    var two_phase_profile_name_buf: [160]u8 = undefined;
+    const two_phase_profile_name = try std.fmt.bufPrint(&two_phase_profile_name_buf, "{s} semantic pair_row_chain_two_phase dispatch_profile", .{case.name});
+    try printCommandShape(w, two_phase_profile_name, two_phase_commands);
+    try printSemanticSublayerRuntimeProfile(w, two_phase_profile_name, be, two_phase_handle, &two_phase_output_io);
+}
+
 fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer, filter: FrontierFilter) !void {
     if (!filter.matchesAny(&.{
         "Metal",
         "qproj",
+        "qsemantic",
         "qproj region",
         "qrow",
         "projection_chain",
@@ -1250,6 +1433,7 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
         "projection_group_region",
         "projection_row_chain",
         "qrow region",
+        "semantic pair_row_chain",
         "projection_row_chain_two_phase_group",
     })) return;
     try w.print("\nMetal Projection Row-Chain Command\n", .{});
@@ -1298,6 +1482,16 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
     for (projection_group_region_cases) |case| {
         if (filter.matchesAny(&.{ case.name, "qproj region", "projection_group_region" })) {
             try benchProjectionGroupMetalCase(7, io, alloc, w, &metal, case);
+        }
+    }
+
+    const semantic_sublayer_cases = [_]ProjectionRowChainCase{
+        .{ .name = "qsemantic full-prefill m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
+        .{ .name = "qsemantic smollm-prompt m=128 n=576 k=576", .m = 128, .n = 576, .k = 576 },
+    };
+    for (semantic_sublayer_cases) |case| {
+        if (filter.matchesAny(&.{ case.name, "qsemantic", "semantic pair_row_chain" })) {
+            try benchSemanticSublayerMetalCase(io, alloc, w, &metal, case);
         }
     }
 

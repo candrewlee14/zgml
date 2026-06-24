@@ -618,6 +618,10 @@ npm run bench:frontier:qproj           # rebuild ReleaseFast and gate only qproj
 npm run bench:frontier:qproj:run       # rerun only qproj frontier evidence without rebuilding artifacts
 npm run dev:perf:frontier:qproj        # incremental checked qproj projection-chain/group microscope
 npm run dev:perf:frontier:qproj:run    # no-rebuild checked qproj projection-chain/group microscope
+npm run bench:frontier:qsemantic       # rebuild ReleaseFast and gate the Q8 semantic FFN/residual/norm frontier
+npm run bench:frontier:qsemantic:run   # rerun only the Q8 semantic frontier without rebuilding artifacts
+npm run dev:perf:frontier:qsemantic    # incremental checked Q8 semantic FFN/residual/norm microscope
+npm run dev:perf:frontier:qsemantic:run # no-rebuild checked Q8 semantic frontier microscope
 npm run bench:frontier:row-chain       # rebuild ReleaseFast and run only row-chain frontier labels
 npm run bench:frontier:row-chain:run   # rerun only row-chain frontier labels without rebuilding artifacts
 npm run bench:frontier:row-chain-region      # rebuild ReleaseFast and run only x7 row-chain region labels
@@ -678,6 +682,19 @@ The per-attempt progress line now reports `active_lane`, `dispatch`, and
 `commands` for the measured command/two-phase lane when the known-bad
 single-dispatch diagnostic is skipped, so the fast loop no longer prints
 `242->n/a`/`241->n/a` while the useful lane evidence is present.
+The next focused microscope is `qsemantic`, which models the larger Q8 prompt
+shape the row-chain work keeps pointing at: projection-pair activation plus the
+following projection, residual add, RMSNorm, repeat-scale, and multiply. The
+subagent and local audits agreed that small row-chain tweaks are exhausted as a
+primary lever; the credible next win is a semantic FFN sublayer kernel that
+crosses the current `projection_pair_fused_elementwise_chain` and following
+projection/residual/norm boundary. Current local evidence is intentionally
+framed as a target gap: the full-prefill row was roughly `1.68x` faster than
+staged with zero diff, the SmolLM prompt row was roughly `0.99x` with zero diff,
+the command shape is `2` commands covering `9` ops and saving `7` staged
+dispatches, and the current runtime still needs `3` backend dispatches where
+the semantic target is `1`. So this is the frontier microscope for
+`semantic_ffn_sublayer_kernel`, not proof that full-model Q8 has been solved.
 It also names the hard performance fact directly: the structurally useful
 two-dispatch command path is dispatch-neutral in the full model
 (`command_dispatch=242->242`, `command_dispatch_reduced=no`), and the two-phase
@@ -808,6 +825,14 @@ attempts rather than one because the prompt-tile lane is noisy enough that a
 single roughly-three-second sample can fall below the `0.95x` floor while the
 x7 executable region proof remains healthy; three attempts keeps iteration fast
 without turning noise into a false architecture signal. The frontier
+qsemantic scripts use `BENCH_FRONTIER_FILTER=qsemantic` and default the
+checked dev loop to one attempt because the profile assertions are the value:
+they prove the current 3-dispatch boundary and the desired 1-dispatch semantic
+target without requiring the full Q8 prompt artifact loop on every kernel edit.
+Use it when changing projection-pair, row-chain, residual, RMSNorm, or
+semantic-sublayer scheduling, then escalate to `dev:perf:q8-prompt:viable` and
+the full Q8 prompt candidate gate before making a model-level speed claim. The
+frontier
 microscope uses `BENCH_FRONTIER_ATTEMPTS`
 (default `5`) so the row-chain and qproj kernel work can absorb local timing
 noise without falling back to the much slower full scorecard.

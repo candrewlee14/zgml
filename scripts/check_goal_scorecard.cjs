@@ -272,6 +272,18 @@ function checkScripts() {
   if (scripts["bench:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:qproj:run must remain the no-rebuild qproj-only frontier evidence rerun");
   }
+  if (scripts["dev:perf:frontier:qsemantic"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:qsemantic must remain the incremental checked Q8 semantic sublayer microscope");
+  }
+  if (scripts["dev:perf:frontier:qsemantic:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:qsemantic:run must remain the no-rebuild checked Q8 semantic sublayer microscope");
+  }
+  if (scripts["bench:frontier:qsemantic"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json bench:frontier:qsemantic must remain the ReleaseFast Q8 semantic sublayer evidence gate");
+  }
+  if (scripts["bench:frontier:qsemantic:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json bench:frontier:qsemantic:run must remain the no-rebuild Q8 semantic sublayer evidence rerun");
+  }
   if (scripts["bench:stencil:shape"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_STENCIL_BUILD=0 node scripts/check_stencil_shape.cjs") {
     errors.push("package.json bench:stencil:shape must remain the ReleaseFast current-source stencil shape gate");
   }
@@ -713,6 +725,14 @@ function checkScripts() {
     "function attemptDiagnostic(current)",
     "frontier bench attempt diagnostics:",
     "margin=${scoreMargin(current).toFixed(2)}x",
+    "function isFocusedSemanticFilter(filter)",
+    "function scoreFocusedSemantic(output, attempt)",
+    "frontier qsemantic gate:",
+    "semantic_target_dispatches",
+    "runtime_backend_dispatches",
+    "next=semantic_ffn_sublayer_kernel",
+    "semantic full-prefill profile must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 shape_saved_dispatches=7 runtime_backend_dispatches=3 semantic_target_dispatches=1",
+    "semantic smollm-prompt profile must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 shape_saved_dispatches=7 runtime_backend_dispatches=3 semantic_target_dispatches=1",
   ]);
   requireIncludes(read("benchmarks/frontier_bench.zig"), "benchmarks/frontier_bench.zig", "frontier benchmark must keep row-chain microscope filtering", [
     "BENCH_FRONTIER_FILTER",
@@ -721,6 +741,12 @@ function checkScripts() {
     "qrow region",
     "projection_row_chain_two_phase_group",
     "qmatmul_row_chain_tiled_spilled_elementwise",
+    "benchSemanticSublayerMetalCase",
+    "printSemanticSublayerRuntimeProfile",
+    "semantic_target_dispatches=1",
+    "qsemantic full-prefill",
+    "qsemantic smollm-prompt",
+    "semantic pair_row_chain",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "scalar qmatmul row-chain diagnosis until tiled replacement exists", [
     "if (q.M != 1) {",
@@ -5515,6 +5541,12 @@ function checkDocs() {
     "bench:frontier:qproj",
     "bench:frontier:qproj:run",
     "dev:perf:frontier:qproj",
+    "bench:frontier:qsemantic",
+    "bench:frontier:qsemantic:run",
+    "dev:perf:frontier:qsemantic",
+    "semantic FFN sublayer kernel",
+    "`semantic_ffn_sublayer_kernel`",
+    "the current runtime still needs `3` backend dispatches where\nthe semantic target is `1`",
     "incremental ReleaseFast rebuild",
     "checked qproj gate",
     "`shape_projection_groups=1`",
