@@ -234,7 +234,21 @@ function isFrontierSteadyArtifact(path) {
 
 function frontierFreshnessStatusLine(selectedPath, rawPath) {
   if (!selectedPath || !rawPath || selectedPath === rawPath) return null;
-  return `frontier-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts`;
+  let latest = "summary=unreadable";
+  try {
+    const data = readJson(rawPath);
+    const target = typeof data?.targetThroughputStatus === "string" ? data.targetThroughputStatus : "unknown";
+    const throughputCandidate = typeof data?.throughputCandidateStatus === "string" ? data.throughputCandidateStatus : "unknown";
+    const fullPrefillCandidateVsDefault = formatRatio(data?.fullPrefill?.throughputCandidateVsDefault);
+    const smollmPromptCandidateVsDefault = formatRatio(data?.smollmPrompt?.throughputCandidateVsDefault);
+    const fullPrefillTargetVsDefault = formatRatio(data?.fullPrefill?.targetSpeedup && data?.fullPrefill?.speedup ? data.fullPrefill.targetSpeedup / data.fullPrefill.speedup : null);
+    const smollmPromptTargetVsDefault = formatRatio(data?.smollmPrompt?.targetSpeedup && data?.smollmPrompt?.speedup ? data.smollmPrompt.targetSpeedup / data.smollmPrompt.speedup : null);
+    const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
+    latest = `target=${target} throughput_candidate=${throughputCandidate} candidate_vs_default=full:${fullPrefillCandidateVsDefault},smollm:${smollmPromptCandidateVsDefault} target_vs_default=full:${fullPrefillTargetVsDefault},smollm:${smollmPromptTargetVsDefault} attempts=${attempts}`;
+  } catch {
+    // Keep the freshness signal even if the newest artifact cannot be read.
+  }
+  return `frontier-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts ${latest}`;
 }
 
 function qprojFrontierArtifacts() {

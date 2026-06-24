@@ -809,9 +809,13 @@ only for throwaway local diagnostics.
 The qsemantic frontier selector now mirrors that stability rule: `bench:status`
 prefers the newest three-attempt qsemantic artifact for `frontier-results:` and
 `perf-next:`, while printing `frontier-latest-results:` when a newer one-attempt
-microscope exists. That matches the qsemantic warning below: single-attempt
-probes are useful for fast iteration, but not stable enough to steer the whole
-next-action line.
+microscope exists. The freshness line now includes the newest microscope's
+target status, throughput-candidate status, candidate-vs-default ratios,
+target-vs-default ratios, and attempt count, so kernel iteration can see the
+fresh local result without letting a single attempt rewrite the steady
+`frontier-results:` or `perf-next:` target. That matches the qsemantic warning
+below: single-attempt probes are useful for fast iteration, but not stable
+enough to steer the whole next-action line.
 A three-attempt no-rebuild proof remains useful as a noisier iteration lens,
 while the fresh-native one-attempt proof now reports
 `command_structural=ready`, `single_structural=skipped`,

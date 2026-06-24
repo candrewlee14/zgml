@@ -283,6 +283,8 @@ function checkScripts() {
     "frontier-results: latest=",
     "frontier-latest-results: newest=",
     "reason=prefer_steady_attempts",
+    "candidate_vs_default=full:",
+    "target_vs_default=full:",
     "frontier-results: no local qsemantic artifact found",
     "const latestFrontier = latestFrontierArtifact()",
     "const latestRawFrontier = latestRawFrontierArtifact()",
