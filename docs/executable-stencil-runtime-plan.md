@@ -803,7 +803,19 @@ fresh-native PyTorch gap. The next attempt should avoid those isolated math
 swaps and instead change the whole row-tail shape: fewer row passes, a better
 native classifier-tail kernel, or a backend path that amortizes the row
 normalization differently.
-Evidence tag: current measured path now prefers the same BLAS-backed batched linear policy as `linear_batched`; then runs the measured `N=32` row; latest fresh-native three-attempt PyTorch gap microscope; row log-softmax tail itself.
+The first whole-tail cut keeps the public two-op Program shape but removes a
+private row pass for the tracked `M=128,N=32,K=64` classifier: the direct CPU
+path now runs the BLAS-backed linear without bias, then folds the bias vector
+into the `N=32` row log-softmax normalization itself. The focused native module
+bench with a 100ms timing window measured
+`log_softmax_classifier_batched` at `prepared_execute_into_ms=0.00759ms`, but
+the fresh-native three-attempt PyTorch microscope remains a miss:
+`ratio_median=linear_batched:1.24x,log_softmax_classifier_batched:0.90x`, with
+the selected attempt at `log_softmax_classifier_batched=zgml:0.0076ms
+pytorch:0.0071ms`. This is a useful simplicity/perf direction because it
+removes a row pass without changing the frontend contract, but the remaining
+PyTorch gap is still real.
+Evidence tag: current measured path now prefers the same BLAS-backed batched linear policy as `linear_batched`; then runs the measured `N=32` row; latest fresh-native three-attempt PyTorch gap microscope; row log-softmax tail itself; bias vector into the `N=32` row log-softmax normalization; `prepared_execute_into_ms=0.00759ms`.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier

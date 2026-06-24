@@ -816,6 +816,8 @@ function checkScripts() {
     "fastExpApproxVec(lanes, v - max_broadcast)",
     "logSoftmaxRowsInPlaceLanes(16",
     "fn logSoftmaxRowsInPlace32",
+    "fn logSoftmaxRowsInPlaceBias32",
+    "if (shape.has_bias and shape.N == 32)",
     "if (N == 32) return logSoftmaxRowsInPlace32(values, M)",
     "logSoftmaxRowsInPlace",
     "}, input, output, true)",

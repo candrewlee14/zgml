@@ -5610,6 +5610,25 @@ fn logSoftmaxRowsInPlace32(values: []f32, M: usize) void {
     }
 }
 
+fn logSoftmaxRowsInPlaceBias32(values: []f32, bias: []const f32, M: usize) void {
+    const VecT = @Vector(16, f32);
+    const b0: VecT = bias[0..16].*;
+    const b1: VecT = bias[16..32].*;
+    for (0..M) |row| {
+        const out_row = values[row * 32 ..][0..32];
+        const v0: VecT = out_row[0..16].* + b0;
+        const v1: VecT = out_row[16..32].* + b1;
+        const max_val = @max(@reduce(.Max, v0), @reduce(.Max, v1));
+        const max_broadcast: VecT = @splat(max_val);
+        const e0 = fastExpApproxVec(16, v0 - max_broadcast);
+        const e1 = fastExpApproxVec(16, v1 - max_broadcast);
+        const sum_exp = @reduce(.Add, e0) + @reduce(.Add, e1);
+        const log_denom_vec: VecT = @splat(max_val + @log(sum_exp));
+        out_row[0..16].* = v0 - log_denom_vec;
+        out_row[16..32].* = v1 - log_denom_vec;
+    }
+}
+
 fn logSoftmaxRowsInPlace(values: []f32, M: usize, N: usize) void {
     if (N == 32) return logSoftmaxRowsInPlace32(values, M);
     if (N % 16 == 0) return logSoftmaxRowsInPlaceLanes(16, values, M, N);
@@ -5638,7 +5657,45 @@ test "direct log softmax n32 specialization matches stable row math" {
     }
 }
 
+test "direct log softmax n32 bias specialization matches stable row math" {
+    var values_buf: [64]f32 = undefined;
+    var expected_buf: [64]f32 = undefined;
+    var bias_buf: [32]f32 = undefined;
+    for (&values_buf, 0..) |*value, index| {
+        const centered: i32 = @as(i32, @intCast(index % 19)) - 9;
+        value.* = @as(f32, @floatFromInt(centered)) / 11.0;
+    }
+    for (&bias_buf, 0..) |*value, index| {
+        const centered: i32 = @as(i32, @intCast(index % 13)) - 6;
+        value.* = @as(f32, @floatFromInt(centered)) / 17.0;
+    }
+    @memcpy(expected_buf[0..], values_buf[0..]);
+    logSoftmaxRowsInPlaceBias32(values_buf[0..], bias_buf[0..], 2);
+    for (0..2) |row| {
+        const row_values = expected_buf[row * 32 ..][0..32];
+        var max_val = -std.math.inf(f32);
+        for (row_values, 0..) |value, col| max_val = @max(max_val, value + bias_buf[col]);
+        var sum_exp: f32 = 0;
+        for (row_values, 0..) |value, col| sum_exp += @exp(value + bias_buf[col] - max_val);
+        const log_denom = max_val + @log(sum_exp);
+        for (row_values, 0..) |value, col| {
+            try std.testing.expectApproxEqAbs(value + bias_buf[col] - log_denom, values_buf[row * 32 + col], 1e-4);
+        }
+    }
+}
+
 fn executeDirectLinearLogSoftmaxStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearLogSoftmaxStepShape, input: [*]const f32, output: [*]f32) void {
+    if (shape.has_bias and shape.N == 32) {
+        executeDirectLinearStep(linear, .{
+            .M = shape.M,
+            .N = shape.N,
+            .K = shape.K,
+            .has_bias = false,
+        }, input, output, true);
+        logSoftmaxRowsInPlaceBias32(output[0..linear.output_len], linear.bias_buf, shape.M);
+        return;
+    }
+
     executeDirectLinearStep(linear, .{
         .M = shape.M,
         .N = shape.N,
