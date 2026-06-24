@@ -894,9 +894,10 @@ npm run dev:perf:pytorch:gaps:native # native-only focused PyTorch-gap loop afte
 npm run dev:perf:pytorch:gaps:run # rerun focused PyTorch-gap bench against existing native/package artifacts
 npm run dev:perf:pytorch:logsoftmax:steady:native # native-only 150ms-window logSoftmax classifier microscope
 npm run dev:perf:pytorch:logsoftmax:steady:run # no-rebuild 150ms-window logSoftmax classifier microscope
-npm run dev:perf:competitive # incremental PyTorch + qsemantic frontier + cheap ggml competitiveness loop
+npm run dev:perf:competitive # incremental PyTorch + qsemantic + full-model Q8 prompt + cheap ggml competitiveness loop
 npm run dev:perf:competitive:run # no-rebuild rerun of selected competitiveness lanes
 npm run dev:perf:competitive:qsemantic # incremental qsemantic-only competitiveness loop
+npm run dev:perf:competitive:q8-prompt # incremental full-model Q8 prompt competitiveness loop
 npm run dev:perf:q8-prompt # incremental ReleaseFast benchmark rebuild plus Q8 prompt candidate evidence
 npm run dev:perf:q8-prompt:run # rerun Q8 prompt candidate evidence against existing benchmark artifact
 npm run dev:perf:frontier:row-chain-region # incremental checked x7 row-chain region microscope
@@ -943,7 +944,7 @@ For performance work, use the `dev:perf:*` scripts as the inner loop and the
 `bench:*` scripts as gates. `dev:perf:competitive` is the daily truth loop for
 iteration: it rebuilds only the artifacts needed by the selected lanes, then
 runs steady PyTorch current-gap evidence, qsemantic frontier evidence, and a
-cheap ggml smoke by default. Set `BENCH_COMPETITIVE_LANES=pytorch,qsemantic,ggml`
+cheap ggml smoke by default. Set `BENCH_COMPETITIVE_LANES=pytorch,qsemantic,q8_prompt,ggml`
 to choose lanes, or use `dev:perf:competitive:run` / `BENCH_COMPETITIVE_BUILD=0`
 to rerun against existing artifacts. `bench:competitive`
 promotes the same PyTorch/frontier/ggml shape to the gate lane through that

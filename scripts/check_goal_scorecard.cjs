@@ -462,6 +462,12 @@ function checkScripts() {
   if (scripts["dev:perf:competitive:qsemantic:run"] !== "BENCH_COMPETITIVE_LANES=qsemantic BENCH_COMPETITIVE_BUILD=0 node scripts/run_competitive_perf.cjs") {
     errors.push("package.json dev:perf:competitive:qsemantic:run must keep the no-rebuild qsemantic competitiveness loop");
   }
+  if (scripts["dev:perf:competitive:q8-prompt"] !== "BENCH_COMPETITIVE_LANES=q8_prompt node scripts/run_competitive_perf.cjs") {
+    errors.push("package.json dev:perf:competitive:q8-prompt must keep the one-command full-model Q8 prompt competitiveness loop");
+  }
+  if (scripts["dev:perf:competitive:q8-prompt:run"] !== "BENCH_COMPETITIVE_LANES=q8_prompt BENCH_COMPETITIVE_BUILD=0 node scripts/run_competitive_perf.cjs") {
+    errors.push("package.json dev:perf:competitive:q8-prompt:run must keep the no-rebuild full-model Q8 prompt competitiveness loop");
+  }
   if (scripts["bench:competitive"] !== "node scripts/run_competitive_perf.cjs") {
     errors.push("package.json bench:competitive must keep the promoted PyTorch/frontier/ggml competitiveness gate");
   }
@@ -470,6 +476,7 @@ function checkScripts() {
     "BENCH_COMPETITIVE_BUILD",
     "pytorch",
     "qsemantic",
+    "q8_prompt",
     "ggml",
     "zig",
     "ffi-c",
@@ -477,8 +484,10 @@ function checkScripts() {
     "build:package",
     "scripts/check_pytorch_comparison.cjs",
     "scripts/check_frontier_bench.cjs",
+    "scripts/check_q8_prompt_candidate.cjs",
     "scripts/bench_vs_ggml.sh",
     "BENCH_FRONTIER_FILTER: \"qsemantic\"",
+    "BENCH_Q8_PROMPT_LANES: \"command,two_phase,semantic\"",
     "BENCH_ALLOW_QUARANTINED: \"1\"",
   ]);
   if (scripts["bench:pytorch"] !== "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs") {
@@ -5535,8 +5544,9 @@ function checkDocs() {
     "npm run dev:perf:competitive",
     "npm run dev:perf:competitive:run",
     "npm run dev:perf:competitive:qsemantic",
+    "npm run dev:perf:competitive:q8-prompt",
     "npm run bench:competitive",
-    "BENCH_COMPETITIVE_LANES=pytorch,qsemantic,ggml",
+    "BENCH_COMPETITIVE_LANES=pytorch,qsemantic,q8_prompt,ggml",
     "BENCH_COMPETITIVE_BUILD=0",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",

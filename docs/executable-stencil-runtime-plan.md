@@ -634,9 +634,10 @@ npm run dev:perf:pytorch:logsoftmax:native # native-only ReleaseFast microscope 
 npm run dev:perf:pytorch:logsoftmax:run    # no-rebuild rerun for the logSoftmax classifier miss
 npm run dev:perf:pytorch:logsoftmax:steady:native # native-only 150ms-window logSoftmax classifier microscope
 npm run dev:perf:pytorch:logsoftmax:steady:run    # no-rebuild 150ms-window logSoftmax classifier microscope
-npm run dev:perf:competitive        # incremental PyTorch + qsemantic frontier + cheap ggml competitiveness loop
+npm run dev:perf:competitive        # incremental PyTorch + qsemantic + full-model Q8 prompt + cheap ggml competitiveness loop
 npm run dev:perf:competitive:run    # no-rebuild rerun of selected competitiveness lanes
 npm run dev:perf:competitive:qsemantic # incremental qsemantic-only competitiveness loop
+npm run dev:perf:competitive:q8-prompt # incremental full-model Q8 prompt competitiveness loop
 npm run bench:module-program:focus
 npm run bench:module-program:focus:run # rerun focused module benches without rebuilding artifacts
 npm run bench:pytorch:parity:run       # rebuild ReleaseFast native, then rerun hard PyTorch parity
@@ -1018,13 +1019,15 @@ not yet an automatic promotion signal: it needs repeated attempts and the full
 Q8 prompt candidate gate before it can replace the default semantic command
 path. It does, however, give the next Metal pass a checked semantic-command lane
 instead of only separate row-chain experiments.
-The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic, and
-cheap ggml smoke lanes behind `BENCH_COMPETITIVE_LANES`, so a kernel edit can
-run only `BENCH_COMPETITIVE_LANES=qsemantic npm run dev:perf:competitive` for a
-fresh benchmark artifact or `BENCH_COMPETITIVE_LANES=qsemantic npm run
-dev:perf:competitive:run` after the artifact is already fresh. That keeps the
-daily competitiveness loop explicit without forcing every local qsemantic edit
-to pay the PyTorch and llama.cpp smoke cost.
+The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic,
+full-model Q8 prompt viable, and cheap ggml smoke lanes behind
+`BENCH_COMPETITIVE_LANES`, so a kernel edit can run only
+`BENCH_COMPETITIVE_LANES=qsemantic npm run dev:perf:competitive` for a fresh
+frontier artifact, `BENCH_COMPETITIVE_LANES=q8_prompt npm run
+dev:perf:competitive` for the full-model Q8 prompt lane, or the matching
+`:run` commands after artifacts are already fresh. That keeps the daily
+competitiveness loop explicit without forcing every local qsemantic edit to pay
+the PyTorch, full-model Q8, and llama.cpp smoke cost.
 The next implementation target remains the
 `semantic_ffn_sublayer_throughput_kernel` or a faster tiled row-chain leaf, not
 another command policy toggle.

@@ -2,11 +2,11 @@
 
 const { spawnSync } = require("node:child_process");
 
-const knownLanes = new Set(["pytorch", "qsemantic", "ggml"]);
+const knownLanes = new Set(["pytorch", "qsemantic", "q8_prompt", "ggml"]);
 
 function parseLanes(value) {
-  const raw = String(value ?? "pytorch,qsemantic,ggml").trim();
-  if (raw.length === 0) return ["pytorch", "qsemantic", "ggml"];
+  const raw = String(value ?? "pytorch,qsemantic,q8_prompt,ggml").trim();
+  if (raw.length === 0) return ["pytorch", "qsemantic", "q8_prompt", "ggml"];
   const lanes = raw.split(",").map((part) => part.trim()).filter(Boolean);
   for (const lane of lanes) {
     if (!knownLanes.has(lane)) {
@@ -34,7 +34,7 @@ function main() {
   const lanes = parseLanes(process.env.BENCH_COMPETITIVE_LANES);
   const shouldBuild = process.env.BENCH_COMPETITIVE_BUILD !== "0";
   const needsNative = lanes.includes("pytorch");
-  const needsBench = lanes.includes("qsemantic") || lanes.includes("ggml");
+  const needsBench = lanes.includes("qsemantic") || lanes.includes("q8_prompt") || lanes.includes("ggml");
 
   console.log(`[competitive] lanes=${lanes.join(",")} build=${shouldBuild ? "yes" : "no"}`);
 
@@ -70,6 +70,19 @@ function main() {
         BENCH_FRONTIER_BUILD: "0",
         BENCH_FRONTIER_ATTEMPTS: "1",
         BENCH_FRONTIER_FILTER: "qsemantic",
+      }),
+    );
+  }
+
+  if (lanes.includes("q8_prompt")) {
+    run(
+      "q8 prompt viable full-model",
+      process.execPath,
+      ["scripts/check_q8_prompt_candidate.cjs"],
+      envWithDefaults({
+        BENCH_BUILD_ZGML: "0",
+        BENCH_CANDIDATE_ATTEMPTS: "1",
+        BENCH_Q8_PROMPT_LANES: "command,two_phase,semantic",
       }),
     );
   }

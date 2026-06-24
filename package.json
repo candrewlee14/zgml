@@ -244,6 +244,8 @@
     "dev:perf:competitive:run": "BENCH_COMPETITIVE_BUILD=0 node scripts/run_competitive_perf.cjs",
     "dev:perf:competitive:qsemantic": "BENCH_COMPETITIVE_LANES=qsemantic node scripts/run_competitive_perf.cjs",
     "dev:perf:competitive:qsemantic:run": "BENCH_COMPETITIVE_LANES=qsemantic BENCH_COMPETITIVE_BUILD=0 node scripts/run_competitive_perf.cjs",
+    "dev:perf:competitive:q8-prompt": "BENCH_COMPETITIVE_LANES=q8_prompt node scripts/run_competitive_perf.cjs",
+    "dev:perf:competitive:q8-prompt:run": "BENCH_COMPETITIVE_LANES=q8_prompt BENCH_COMPETITIVE_BUILD=0 node scripts/run_competitive_perf.cjs",
     "dev:perf:q8-prompt": "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs",
     "dev:perf:q8-prompt:run": "BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs",
     "dev:perf:q8-prompt:viable": "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase,semantic node scripts/check_q8_prompt_candidate.cjs",
