@@ -22,6 +22,7 @@ export const requiredNativePackageSpineExports = Object.freeze([
   "resolveNativeLibraryPath",
   "tensor",
   "gradMode",
+  "simple",
   "zgml",
   "torch",
   "nn",

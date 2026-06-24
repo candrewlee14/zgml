@@ -14,6 +14,7 @@ export * as tensorView from "./core/tensor_view.js";
 export * as token from "./core/token.js";
 
 export * as tensor from "./tensor.js";
+export * as simple from "./simple.js";
 
 export * as nn from "./nn.js";
 export * as nnEmbedding from "./nn/embedding_module.js";

@@ -194,6 +194,7 @@ export const inference_mode = nativeNodeRuntime.inference_mode;
 export const enableGrad = nativeNodeRuntime.enableGrad;
 export const enable_grad = nativeNodeRuntime.enable_grad;
 export const gradMode = nativeNodeRuntime.gradMode;
+export const simple = nativeNodeRuntime.simple;
 export const zgml = nativeNodeRuntime.zgml;
 export const torch = nativeNodeRuntime.torch;
 export const nn = nativeNodeRuntime.nn;

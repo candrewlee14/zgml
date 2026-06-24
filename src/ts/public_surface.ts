@@ -15,11 +15,13 @@ export const firstContactRootNamespaces = Object.freeze([
 ] as const);
 
 export const firstContactRootValues = Object.freeze([
+  "simple",
   "zgml",
   "F",
 ] as const);
 
 export const stableRootNamespaces = Object.freeze([
+  "simple",
   "tensor",
   "nn",
   "loss",
@@ -39,6 +41,7 @@ export const stableRootNamespaces = Object.freeze([
 ] as const);
 
 export const stableRootValues = Object.freeze([
+  "simple",
   "zgml",
   "F",
 ] as const);
@@ -113,6 +116,7 @@ export const legacyCompatibleRootValues = Object.freeze([
 export const rootSurfacePolicy = Object.freeze({
   stableFirst: true,
   canonicalFriendlyNamespace: "zgml",
+  simpleFriendlyNamespace: "simple",
   compatibilityFriendlyNamespace: "torch",
   firstContactSurfaceIsSmall: true,
   firstContactRuntimeHandle: "compile.compileForInference",
@@ -121,6 +125,7 @@ export const rootSurfacePolicy = Object.freeze({
   classificationCoversRootNamespaceExports: true,
   firstContactIsSubsetOfStableSurface: true,
   valueClassificationCoversFriendlyRootExports: true,
+  simpleSurfaceSubpath: "zgml/simple",
   newProductSurfaceGoesThroughStableNamespaces: true,
   runtimeEvidenceStaysInspectable: true,
 });

@@ -178,6 +178,11 @@
       "require": "./dist/session.cjs",
       "default": "./dist/session.cjs"
     },
+    "./simple": {
+      "types": "./dist/simple.d.cts",
+      "require": "./dist/simple.cjs",
+      "default": "./dist/simple.cjs"
+    },
     "./step_params": {
       "types": "./dist/step_params.d.cts",
       "require": "./dist/step_params.cjs",

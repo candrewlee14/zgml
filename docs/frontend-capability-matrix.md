@@ -17,8 +17,7 @@ The root package intentionally separates the small surface users should learn
 first from the wider inspectable runtime surface:
 
 ```text
-zgml
-F
+simple, zgml, F
 tensor, nn, loss, optim, train, data, checkpoint, lazy, compile
 compile.compileForInference(...)
 ```
@@ -28,6 +27,9 @@ inspection stay public and stable where they are needed, but they are the
 advanced control/evidence lane rather than the first tutorial vocabulary.
 `F` is the small functional root value for common neural-network/loss operations
 that read better as functions than modules.
+`simple` is the checked first-contact runtime subset for examples that should
+avoid advanced deployment/evidence names while still using the native-backed
+root package.
 
 ## User-Facing Capabilities
 

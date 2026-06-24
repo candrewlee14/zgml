@@ -415,6 +415,7 @@ const facadeRootEntries = Object.freeze(new Set([
   "compile",
   "index",
   "node",
+  "simple",
   "shared_frontend",
 ]));
 

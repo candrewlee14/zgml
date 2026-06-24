@@ -6689,6 +6689,28 @@ export type PublicTorchNamespace = Readonly<{
   NativeBuffer: typeof NativeBuffer;
 }>;
 export type PublicZgmlNamespace = PublicTorchNamespace;
+export type PublicSimpleNamespace = Readonly<Pick<PublicZgmlNamespace,
+  | "Tensor"
+  | "tensor"
+  | "nn"
+  | "F"
+  | "functional"
+  | "compile"
+  | "compileForInference"
+  | "lazy"
+  | "optim"
+  | "data"
+  | "loss"
+  | "train"
+  | "checkpoint"
+  | "save"
+  | "load"
+  | "noGrad"
+  | "no_grad"
+  | "inferenceMode"
+  | "inference_mode"
+>>;
+export declare const simple: PublicSimpleNamespace;
 export declare const zgml: PublicZgmlNamespace;
 export declare const torch: PublicTorchNamespace;
 

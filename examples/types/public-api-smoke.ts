@@ -112,6 +112,7 @@ import {
   runtimeInfo,
   set_grad_enabled,
   seededRng,
+  simple,
   sin,
   slice,
   sort,
@@ -295,6 +296,7 @@ import {
   type ProgramNamespace,
   type ProgramOutputBufferSlot,
   type PublicApiContractManifest,
+  type PublicSimpleNamespace,
   type ProgramBufferLayout,
   type ProgramBufferLayoutSlot,
   type ProgramExecutionCapabilities,
@@ -589,6 +591,9 @@ const lazyTrainingDropoutSupport = lazyTrainingDropoutModuleGraph.compileSupport
 const lazyModuleTrace: ModuleProgramTrace = lazy.traceModule(nn.linear(2, 1), { inputShape: [2] as const });
 const lazyModuleArtifacts = lazy.moduleArtifacts(nn.linear(2, 1), { inputShape: [2] as const });
 const lazyModuleSupport = lazy.moduleCompileSupport(nn.linear(2, 1), { inputShape: [2] as const });
+const simpleLinear = simple.nn.linear(2, 1);
+const simpleTensor = simple.tensor([1, 2] as const);
+const simpleSupport = simple.compile.compileSupport(simpleLinear, { inputShape: [2] as const });
 type LazyInputShape = Expect<Equal<typeof lazyInput.shape, readonly [2]>>;
 type LazyGraphShape = Expect<Equal<typeof lazyGraph.shape, readonly [1]>>;
 type LazyEmbeddingGraphShape = Expect<Equal<typeof lazyEmbeddingGraph.shape, readonly [2, 3]>>;
@@ -702,6 +707,12 @@ void lazyTrainingDropoutSupport;
 void lazyModuleTrace;
 void lazyModuleArtifacts;
 void lazyModuleSupport;
+void simpleLinear;
+void simpleTensor;
+void simpleSupport;
+type SimpleNamespaceShape = Expect<Equal<typeof simple, PublicSimpleNamespace>>;
+type SimpleTensorShape = Expect<Equal<typeof simpleTensor.shape, readonly [2]>>;
+type SimpleCompileSupportShape = Expect<Equal<typeof simpleSupport.inputShape, readonly [2] | undefined>>;
 type PublicApiContractKind = Expect<Equal<PublicApiContractManifest["kind"], "zgml-public-api-contract">>;
 type PublicApiContractOwner = Expect<Equal<PublicApiContractManifest["policyOwner"], "src/ts/public_api.ts">>;
 type PublicApiContractProductSourceOfTruth = Expect<Equal<PublicApiContractManifest["productSourceOfTruth"], "ts-only">>;

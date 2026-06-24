@@ -16,6 +16,7 @@ import {
   shape,
   shape as packageFrontendShape,
   session as packageFrontendSession,
+  simple as packageFrontendSimple,
   sessionFacade as packageSessionFacade,
   sessionValues,
   stepParamsFacade as packageFrontendStepParams,
@@ -103,6 +104,13 @@ import {
   type LazyTensor as PackageLazyTensor,
   type LazyCompileSupport as PackageLazyCompileSupport,
 } from "zgml/lazy";
+import {
+  compile as packageSimpleCompile,
+  nn as packageSimpleNn,
+  simpleManifest as packageSimpleManifest,
+  tensor as packageSimpleTensor,
+  type PublicSimpleNamespace as PackageSimpleNamespace,
+} from "zgml/simple";
 import {
   createDataNamespace as packageCreateDataNamespace,
   dataManifest as packageDataManifest,
@@ -575,6 +583,7 @@ type PackageFrontendOptimOwner = Expect<Equal<typeof packageFrontendOptim.optimM
 type PackageFrontendTrainOwner = Expect<Equal<typeof packageFrontendTrain.trainManifest.policyOwner, "src/ts/train.ts">>;
 type PackageFrontendTensorOwner = Expect<Equal<typeof packageFrontendTensor.tensorManifest.policyOwner, "src/ts/tensor.ts">>;
 type PackageFrontendNnOwner = Expect<Equal<typeof packageFrontendNn.nnManifest.policyOwner, "src/ts/nn.ts">>;
+type PackageFrontendSimpleOwner = Expect<Equal<typeof packageFrontendSimple.simpleManifest.policyOwner, "src/ts/simple.ts">>;
 type PackageFrontendTensorSourceOfTruth = Expect<Equal<typeof packageFrontendTensor.tensorManifest.productSourceOfTruth, "ts-only">>;
 type PackageFrontendNnNativeProductPolicy = Expect<Equal<typeof packageFrontendNn.nnManifest.nativeProductPolicy, "forbidden">>;
 type PackageFrontendLossNoMirrors = Expect<Equal<typeof packageFrontendLoss.lossManifest.handwrittenFrontendMirrors, false>>;
@@ -630,6 +639,13 @@ type PackageLazySubpathShape = Expect<Equal<typeof packageLazySubpathGraph.shape
 type PackageLazyTensorShape = Expect<PackageLazyTensor<readonly [2]> extends { shape: readonly [2] } ? true : false>;
 type PackageLazySupportShape = Expect<Equal<PackageLazyCompileSupport["nativePath"], "device-program">>;
 type PackageLazyPath = Expect<Equal<typeof packageLazyManifest.runtimePath, "LazyTensor -> Trace -> TensorProgramIr -> KernelPlan -> Program">>;
+type PackageSimpleOwner = Expect<Equal<typeof packageSimpleManifest.policyOwner, "src/ts/simple.ts">>;
+type PackageSimpleRootRuntime = Expect<Equal<typeof packageSimpleManifest.rootRuntimeValue, "simple">>;
+type PackageSimpleCompileHandle = Expect<Equal<typeof packageSimpleManifest.firstContactRuntimeHandle, "compile.compileForInference">>;
+type PackageSimpleNamespaceShape = Expect<PackageSimpleNamespace extends { compile: unknown; nn: unknown; tensor: unknown } ? true : false>;
+const packageSimpleTensorManifest = packageSimpleTensor.tensorManifest;
+const packageSimpleNnManifest = packageSimpleNn.nnManifest;
+const packageSimpleCompileManifest = packageSimpleCompile.compileManifest;
 void packageLazyGraph;
 void packageLazySubpathGraph;
 void packageLazyModuleGraph;
@@ -1227,6 +1243,9 @@ void [
   packageBunFSoftmax,
   packageNodeGradModeEnabled,
   packageBunGradModeEnabled,
+  packageSimpleTensorManifest,
+  packageSimpleNnManifest,
+  packageSimpleCompileManifest,
   packageFrontendShapeCount,
   packageSessionFacadeFactory,
   packageCheckpointFactory,

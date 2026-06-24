@@ -2660,6 +2660,27 @@ const torchCheckpointIo = createAdapterTorchCheckpointIo(checkpoint, {
 });
 export const save = torchCheckpointIo.save as typeof PublicApi.save;
 export const load = torchCheckpointIo.load as typeof PublicApi.load;
+export const simple = Object.freeze({
+  Tensor,
+  tensor,
+  nn,
+  F,
+  functional: F,
+  compile,
+  compileForInference: compile.compileForInference,
+  lazy: sharedFrontend.lazy,
+  optim,
+  data,
+  loss,
+  train,
+  checkpoint,
+  save,
+  load,
+  noGrad,
+  no_grad,
+  inferenceMode,
+  inference_mode,
+}) as unknown as PublicApi.PublicSimpleNamespace;
 export const torch = createAdapterTorchNamespace({
   Tensor,
   tensor,

@@ -462,14 +462,20 @@ Current checked progress:
   `nativeProgramSpeedup` rows as executable targets for the first native eager
   `Linear`/`matmul` and fused `matmul -> add -> GELU` storage slices, not as a
   claim that eager already runs natively.
-  The public-surface taxonomy now separates the small checked first-contact
-  surface (`zgml`, `tensor`, `nn`, `loss`, `optim`, `train`, `data`,
-  `checkpoint`, `lazy`, `compile`, and `compile.compileForInference`) from the
-  wider inspectable Program/Session/runtime evidence surface, so users learn the
-  brilliant path before the deployment controls. The remaining frontend jump is
-  native lowering, breadth, and first-contact simplicity, not proof that
-  `nn.Linear`, training, state dicts, data loaders, model math primitives, or
-  compile hooks exist.
+The public-surface taxonomy now separates the small checked first-contact
+surface (`simple`, `zgml`, `tensor`, `nn`, `loss`, `optim`, `train`, `data`,
+`checkpoint`, `lazy`, `compile`, and `compile.compileForInference`) from the
+wider inspectable Program/Session/runtime evidence surface, so users learn the
+brilliant path before the deployment controls. The remaining frontend jump is
+native lowering, breadth, and first-contact simplicity, not proof that
+`nn.Linear`, training, state dicts, data loaders, model math primitives, or
+compile hooks exist.
+The root runtime now also exports `simple`, a frozen native-backed first-contact
+subset containing `Tensor`, `tensor`, `nn`, `F`, `data`, `loss`, `optim`,
+`train`, `checkpoint`, `lazy`, `compile`, `compileForInference`, and grad-mode
+helpers. The `zgml/simple` subpath owns the matching manifest, so examples can
+opt into the small surface without hiding the advanced runtime SDK from users
+who need it.
 
 PyTorch remains an important comparison target and useful compatibility
 vocabulary, but it is not the identity of the library. The primary product

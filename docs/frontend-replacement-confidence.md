@@ -44,6 +44,7 @@ workflow row with comparable evidence. API breadth alone is not enough; each
 claim needs a user-visible path, a smoke or example, and an honest native
 compile/support story where performance is part of the claim.
 
-`zgml` remains the canonical first-contact namespace. `torch` compatibility
-smokes are useful evidence that PyTorch-shaped habits work, but they do not
-define the product identity.
+`zgml` remains the canonical first-contact namespace, and `simple` is the
+checked small runtime subset for examples that should avoid advanced deployment
+vocabulary. `torch` compatibility smokes are useful evidence that
+PyTorch-shaped habits work, but they do not define the product identity.

@@ -8,6 +8,7 @@ export * from "./adapters/bun_native_runtime.js";
 export {
   tensor,
   gradMode,
+  simple,
   zgml,
   torch,
   nn,
