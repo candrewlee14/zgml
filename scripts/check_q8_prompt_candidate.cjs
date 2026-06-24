@@ -16,6 +16,7 @@ const writeArtifact = process.env.BENCH_Q8_PROMPT_WRITE_ARTIFACT !== "0";
 const artifactDir = process.env.BENCH_Q8_PROMPT_ARTIFACT_DIR || join("bench-results", "q8-prompt");
 const speedupFloor = Number(process.env.BENCH_CANDIDATE_SPEEDUP_FLOOR || "1.05");
 const commandSpeedupFloor = Number(process.env.BENCH_COMMAND_CANDIDATE_SPEEDUP_FLOOR || "0.95");
+const semanticSpeedupFloor = Number(process.env.BENCH_SEMANTIC_CANDIDATE_SPEEDUP_FLOOR || "1.00");
 const attempts = positiveInt(process.env.BENCH_CANDIDATE_ATTEMPTS || "3", "BENCH_CANDIDATE_ATTEMPTS");
 const laneMode = process.env.BENCH_Q8_PROMPT_LANES || "all";
 const rowChainLowering = "default_projection_chain_plus_row_chain_candidate_single_dispatch_tiled_row_chain";
@@ -574,7 +575,11 @@ const singleThroughputStatus = measureSingle ? (throughputReady ? "ready" : "off
 const twoPhaseStructuralStatus = measureTwoPhase ? (twoPhaseStructuralReady ? "ready" : "off") : "skipped";
 const semanticStructuralStatus = measureSemantic ? (semanticStructuralReady ? "ready" : "off") : "skipped";
 const semanticThroughputStatus = measureSemantic
-  ? semanticStructuralReady && semanticMedian.semanticSpeedup !== null && semanticMedian.semanticSpeedup >= commandSpeedupFloor
+  ? semanticStructuralReady &&
+      semanticMedian.semanticSpeedup !== null &&
+      semanticMedian.semanticSpeedup >= semanticSpeedupFloor &&
+      semanticWorst.semanticSpeedup !== null &&
+      semanticWorst.semanticSpeedup >= commandSpeedupFloor
     ? "ready"
     : "diagnostic"
   : "skipped";
@@ -653,6 +658,7 @@ if (writeArtifact) {
       measuredLanes: [...measuredLanes],
       speedupFloor,
       commandSpeedupFloor,
+      semanticSpeedupFloor,
       build,
       lowerings: {
         command: commandLowering,
