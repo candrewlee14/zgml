@@ -1533,16 +1533,21 @@ remaining materialization is caused by command/liveness structure rather than
 logits or KV-cache output bindings. That makes the next perf move sharper:
 absorb the residual user into a larger semantic command or replace the
 two-dispatch tail with a true throughput kernel; do not spend another pass on
-output binding policy.
+output binding policy. The Q8 prompt artifact/status path now exposes
+`semantic_bridges`, derived from
+`program_command_shape_projection_row_chain_semantic_residual_bridges`, so that
+residual-bridge opportunity is measured directly before the next semantic
+command is designed.
 The latest selected three-attempt Q8 prompt artifact now records the promotion
 state directly: `status=promoted-default`, `semantic=promoted`,
 `default_policy=semantic-promoted`, `command_command=151->151`, zero fallback,
 and the same semantic row-chain pressure (`semantic_spills=30`,
-`semantic_spill_input=17280`, `semantic_output_spills=0`). Treat this as the
+`semantic_spill_input=17280`, `semantic_output_spills=0`, plus
+`semantic_bridges` readback for residual-bridge shape). Treat this as the
 semantic command becoming the Metal scheduled Q8 prompt default, not as ggml
 parity. The next bottleneck is the remaining model-width spill/work shape: absorb
-the residual user into a larger semantic command or replace the two-dispatch
-tail with a true throughput kernel.
+the residual user into a larger semantic command if bridge evidence exists, or
+replace the two-dispatch tail with a true throughput kernel.
 After the one-dispatch semantic throughput kernel became a real measured lane,
 the full-model default was kept on `promptProjectionRowChainCommand()` while
 `--metal-prompt-semantic-throughput-candidate` remains the explicit diagnostic

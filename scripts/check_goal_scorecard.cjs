@@ -1042,6 +1042,7 @@ function checkScripts() {
     "const commandLowering = \"default_projection_chain_plus_row_chain_command_two_dispatch\"",
     "const semanticLowering = \"semantic_ffn_sublayer_command_plus_two_phase_tiled_row_chain_tail\"",
     "program_command_encoded_projection_row_chain_per_call",
+    "program_command_shape_projection_row_chain_semantic_residual_bridges",
     "program_command_dispatches_projection_row_chain_per_call",
     "program_command_encoded_projection_pair_fused_elementwise_chain_per_call",
     "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call",
@@ -1083,6 +1084,9 @@ function checkScripts() {
     "\"-Doptimize=ReleaseFast\"",
     "ProjectionRowChainDispatchSplit",
     "ProjectionRowChainDispatchExcess",
+    "projectionRowChainSemanticResidualBridges",
+    "residualBridges: semanticBest.semanticProjectionRowChainSemanticResidualBridges",
+    "semantic_bridges=",
     "BENCH_CANDIDATE_ATTEMPTS",
     "const attempts = positiveInt(",
     "function progress(message)",
@@ -2576,6 +2580,7 @@ function checkQ8PromptCandidateEvidence() {
     "two_phase_worst=",
     "command_commands=151",
     "semantic_pair_to_row=",
+    "semantic_bridges=",
     "lanes=command,two_phase,semantic",
   ]);
   notes.push(output.trim());

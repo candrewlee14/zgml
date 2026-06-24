@@ -216,7 +216,11 @@ machine for both prompt/prefill and decode.
   candidate no longer scales an entire prompt row tile through only one
   threadgroup. Fresh promoted-default evidence keeps the semantic command shape
   as the baseline while still reporting `semantic_spills=30`,
-  `semantic_spill_input=17280`, and `semantic_output_spills=0`.
+  `semantic_spill_input=17280`, and `semantic_output_spills=0`. Q8 prompt
+  candidate artifacts and `bench:status` also expose `semantic_bridges`, derived
+  from `program_command_shape_projection_row_chain_semantic_residual_bridges`,
+  so the next pass can distinguish a bridgeable residual-use opportunity from
+  generic row-chain materialization pressure.
 - The current weakest checked lane is still Q8_0 prompt, but its command
   pressure has moved from the old `projection_chain:60` baseline to the
   promoted semantic-default shape: 151 ProgramCommands, 30 semantic row-chain
@@ -285,7 +289,10 @@ machine for both prompt/prefill and decode.
   `semantic_output_spills=0`, which rules out logits/KV-cache output bindings
   as the spill cause. The remaining spills are command/liveness pressure, so the
   next optimization should absorb the live residual user into a larger semantic
-  command or make the materialized tail fast enough to win.
+  command or make the materialized tail fast enough to win. It also reports
+  `semantic_bridges` from
+  `program_command_shape_projection_row_chain_semantic_residual_bridges`, making
+  the residual-bridge hypothesis an artifact field instead of a guess.
 - The selected three-attempt Q8 prompt artifact now exposes the same diagnosis:
   `semantic_spills=30`, `semantic_output_spills=0`,
   `semantic_median=0.98x`, `semantic_worst=0.94x`. Its two-phase lane is a

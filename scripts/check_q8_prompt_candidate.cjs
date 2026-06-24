@@ -139,6 +139,7 @@ function emptyLane(index) {
     dispatches: null,
     commands: null,
     projectionRowChains: 0,
+    projectionRowChainSemanticResidualBridges: 0,
     projectionChains: 0,
     projectionPairs: 0,
     projectionPairDispatches: 0,
@@ -170,6 +171,7 @@ function readProjectionLane(row, defaultTokS, index) {
   const dispatches = number(row, "dispatches_per_call");
   const commands = number(row, "commands_per_call");
   const projectionRowChains = number(row, "program_command_encoded_projection_row_chain_per_call") ?? 0;
+  const projectionRowChainSemanticResidualBridges = number(row, "program_command_shape_projection_row_chain_semantic_residual_bridges") ?? 0;
   const projectionChains = number(row, "program_command_encoded_projection_chain_per_call") ?? 0;
   const projectionPairs = number(row, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
   const projectionPairDispatches = number(row, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
@@ -185,6 +187,7 @@ function readProjectionLane(row, defaultTokS, index) {
     dispatches,
     commands,
     projectionRowChains,
+    projectionRowChainSemanticResidualBridges,
     projectionChains,
     projectionPairs,
     projectionPairDispatches,
@@ -282,6 +285,7 @@ function measureAttempt(index) {
   const defaultDispatches = number(defaultRow, "dispatches_per_call");
   const defaultCommands = number(defaultRow, "commands_per_call");
   const defaultProjectionRowChains = number(defaultRow, "program_command_encoded_projection_row_chain_per_call") ?? 0;
+  const defaultProjectionRowChainSemanticResidualBridges = number(defaultRow, "program_command_shape_projection_row_chain_semantic_residual_bridges") ?? 0;
   const defaultProjectionChains = number(defaultRow, "program_command_encoded_projection_chain_per_call") ?? 0;
   const defaultProjectionPairs = number(defaultRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
   const defaultProjectionGroups = number(defaultRow, "program_command_encoded_projection_group_per_call") ?? 0;
@@ -444,6 +448,11 @@ function measureAttempt(index) {
     candidateProjectionRowChains: singleLane.projectionRowChains,
     twoPhaseProjectionRowChains: twoPhaseLane.projectionRowChains,
     semanticProjectionRowChains: semanticLane.projectionRowChains,
+    defaultProjectionRowChainSemanticResidualBridges,
+    commandProjectionRowChainSemanticResidualBridges: commandLane.projectionRowChainSemanticResidualBridges,
+    candidateProjectionRowChainSemanticResidualBridges: singleLane.projectionRowChainSemanticResidualBridges,
+    twoPhaseProjectionRowChainSemanticResidualBridges: twoPhaseLane.projectionRowChainSemanticResidualBridges,
+    semanticProjectionRowChainSemanticResidualBridges: semanticLane.projectionRowChainSemanticResidualBridges,
     defaultProjectionChains,
     commandProjectionChains: commandLane.projectionChains,
     candidateProjectionChains: singleLane.projectionChains,
@@ -670,6 +679,7 @@ function laneArtifact(row, prefix) {
     projectionChains: row[`${prefix}ProjectionChains`],
     projectionPairs: row[`${prefix}ProjectionPairs`],
     projectionRowChains: row[`${prefix}ProjectionRowChains`],
+    projectionRowChainSemanticResidualBridges: row[`${prefix}ProjectionRowChainSemanticResidualBridges`],
     projectionRowChainDispatches: row[`${prefix}ProjectionRowChainDispatches`],
     fallback: row[`${prefix}Fallback`],
   };
@@ -804,6 +814,7 @@ if (writeArtifact) {
         tiledSpills: semanticBest.semanticTiledSpills,
         tiledSpillInput: semanticBest.semanticTiledSpillInput,
         tiledOutputSpills: semanticBest.semanticTiledOutputSpills,
+        residualBridges: semanticBest.semanticProjectionRowChainSemanticResidualBridges,
       },
     },
     attempts: attemptRows.map((row) => ({
@@ -910,6 +921,7 @@ console.log(
     `semantic_projection_cache_group=${format(semanticBest.defaultProjectionCacheGroups, 0)}->${format(semanticBest.semanticProjectionCacheGroups, 0)} ` +
     `semantic_projection_cache_group_dispatch=${format(semanticBest.defaultProjectionCacheGroupDispatches, 0)}->${format(semanticBest.semanticProjectionCacheGroupDispatches, 0)} ` +
     `semantic_projection_row_chain=${format(semanticBest.defaultProjectionRowChains, 0)}->${format(semanticBest.semanticProjectionRowChains, 0)} ` +
+    `semantic_bridges=${format(semanticBest.defaultProjectionRowChainSemanticResidualBridges, 0)}->${format(semanticBest.semanticProjectionRowChainSemanticResidualBridges, 0)} ` +
     `semantic_projection_row_chain_dispatch=${format(semanticBest.defaultProjectionRowChainDispatches, 0)}->${format(semanticBest.semanticProjectionRowChainDispatches, 0)} ` +
     `semantic_split=${format(semanticBest.defaultProjectionRowChainDispatchSplit)}->${format(semanticBest.semanticProjectionRowChainDispatchSplit)} ` +
     `semantic_fallback=${format(semanticBest.defaultFallback, 0)}->${format(semanticBest.semanticFallback, 0)} semantic_lowering=${semanticLowering}; ` +
