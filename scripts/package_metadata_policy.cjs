@@ -103,6 +103,7 @@ const expectedPackageFiles = Object.freeze([
   "examples/node_training/train_token_classifier.cjs",
   "examples/node_training/train_classifier.cjs",
   "examples/node_training/torch_quickstart.cjs",
+  "examples/node_program_session/run_descriptor_contract.cjs",
   "examples/node_program_session/run_linear.cjs",
   "examples/bun_training/manual_loop.ts",
   "examples/bun_training/train_linear.ts",
