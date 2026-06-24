@@ -651,6 +651,8 @@ function scoreFocusedSemantic(output, attempt) {
   const throughputCandidateStatus = smollmPromptThroughputCandidateSpeedup >= smollmPromptSpeedup && fullPrefillThroughputCandidateSpeedup >= fullPrefillSpeedup
     ? "ready"
     : "mixed_tiled_tail_diagnostic";
+  const fullPrefillThroughputCandidateVsDefault = fullPrefillThroughputCandidateSpeedup / fullPrefillSpeedup;
+  const smollmPromptThroughputCandidateVsDefault = smollmPromptThroughputCandidateSpeedup / smollmPromptSpeedup;
   const fullPrefillTargetVsDefault = fullPrefillTargetSpeedup / fullPrefillSpeedup;
   const smollmPromptTargetVsDefault = smollmPromptTargetSpeedup / smollmPromptSpeedup;
   const semanticCommandStatus =
@@ -735,6 +737,7 @@ function scoreFocusedSemantic(output, attempt) {
     `attempt=${attempt}/${maxAttempts}`,
     `target_throughput_status=${targetThroughputStatus}`,
     `throughput_candidate_status=${throughputCandidateStatus}`,
+    `throughput_candidate_vs_default=full_prefill:${fullPrefillThroughputCandidateVsDefault.toFixed(2)}x,smollm_prompt:${smollmPromptThroughputCandidateVsDefault.toFixed(2)}x`,
     `target_vs_default=full_prefill:${fullPrefillTargetVsDefault.toFixed(2)}x,smollm_prompt:${smollmPromptTargetVsDefault.toFixed(2)}x`,
     semanticCommandStatus === "preserves_default_work_shape"
       ? semanticCommandStatusToken

@@ -981,14 +981,17 @@ The named `promptSemanticFfnSublayerThroughputCandidate()` policy now keeps the
 same one-command semantic shape but swaps the down-projection/residual/RMSNorm
 tail to the existing two-phase tiled row-chain leaf. The qsemantic gate reports
 that as `throughput_candidate_status=...` with
+`throughput_candidate_vs_default=full_prefill:...x,smollm_prompt:...x`,
 `full_prefill_throughput_candidate=...x` and
 `smollm_prompt_throughput_candidate=...x`; fresh no-rebuild runs now show the
 candidate preserving correctness and tiled profile shape, with single-attempt
 throughput noisy enough to move between `mixed_tiled_tail_diagnostic` and
-`ready`. That is not yet an automatic promotion signal: it needs repeated
-attempts and the full Q8 prompt candidate gate before it can replace the
-default semantic command path. It does, however, give the next Metal pass a
-checked semantic-command lane instead of only separate row-chain experiments.
+`ready`. A three-attempt qsemantic rerun found the candidate beating SmolLM
+prompt on the best evidence attempt while still missing full-prefill, so it is
+not yet an automatic promotion signal: it needs repeated attempts and the full
+Q8 prompt candidate gate before it can replace the default semantic command
+path. It does, however, give the next Metal pass a checked semantic-command lane
+instead of only separate row-chain experiments.
 The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic, and
 cheap ggml smoke lanes behind `BENCH_COMPETITIVE_LANES`, so a kernel edit can
 run only `BENCH_COMPETITIVE_LANES=qsemantic npm run dev:perf:competitive` for a
