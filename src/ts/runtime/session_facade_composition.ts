@@ -150,6 +150,7 @@ export type GenericSessionFacadeOptions = {
   readonly valueShape?: BoundaryCallback<[value: unknown], readonly number[] | null>;
   readonly sessionTensorHelpers: SessionTensorHelpers;
   readonly stepSession: BoundaryCallback<[handle: NativeHandle, input: SessionStepValue, output: SessionStepValue, outputLen: number], number>;
+  readonly prepareStepSession?: BoundaryCallback<[handle: NativeHandle, input: SessionStepValue, output: SessionStepValue, outputLen: number], () => number>;
   readonly stepNoOutput: BoundaryCallback<[handle: NativeHandle, input: SessionStepValue], number>;
   readonly assertSessionAlive: BoundaryCallback<[handle: NativeHandle], void>;
   readonly sessionInspect: BoundaryCallback<[handle: NativeHandle], SessionInspectionEvidence>;
@@ -745,6 +746,7 @@ export function createGenericSessionFacadeHelpers(options: GenericSessionFacadeO
   const valueShape = typeof (options && options.valueShape) === "function" ? options.valueShape : () => null;
   const sessionTensorHelpers = options && options.sessionTensorHelpers;
   const stepSession = options && options.stepSession;
+  const prepareStepSession = typeof (options && options.prepareStepSession) === "function" ? options.prepareStepSession : undefined;
   const stepNoOutput = options && options.stepNoOutput;
   const assertSessionAlive = options && options.assertSessionAlive;
   const sessionInspect = options && options.sessionInspect;
@@ -975,6 +977,7 @@ export function createGenericSessionFacadeHelpers(options: GenericSessionFacadeO
       return validateHostValueShape(prepared as any, expectedShape, label, validateOptions);
     },
     stepSession,
+    prepareStepSession,
     stepNoOutput,
     stepContract,
   });

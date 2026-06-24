@@ -2321,6 +2321,14 @@ const genericCoreStepHelpers = sessionFacade.createGenericSessionCoreStepFacadeH
     if (output instanceof Float32Array) output.set([7, 8]);
     return 2;
   },
+  prepareStepSession(handle, input, output) {
+    genericCoreStepCalls.push({ kind: "prepare-step", handle, input, output });
+    return () => {
+      genericCoreStepCalls.push({ kind: "prepared-step", handle, input, output });
+      if (output instanceof Float32Array) output.set([9, 10]);
+      return 2;
+    };
+  },
   stepNoOutput(handle, input) {
     genericCoreStepCalls.push({ kind: "advance", handle, input });
     return 0;
@@ -2356,7 +2364,8 @@ expectSame(genericCoreStepIntoOutput, [7, 8], "generic core stepIntoCore writes 
 const genericCorePreparedOutput = new Float32Array(2);
 const genericCorePrepared = genericCoreStepHelpers.prepareExecuteIntoCore(genericCoreStepSession, genericCorePreparedOutput, [6, 7]);
 expectSame(genericCorePrepared(), genericCorePreparedOutput, "generic core prepared executeInto returns caller Float32Array");
-expectSame(genericCorePreparedOutput, [7, 8], "generic core prepared executeInto writes caller Float32Array");
+expectSame(genericCorePreparedOutput, [9, 10], "generic core prepared executeInto uses prepared native step");
+expectSame(genericCoreStepCalls.slice(-2).map((entry) => entry.kind), ["prepare-step", "prepared-step"], "generic core prepared executeInto native step path");
 try {
   genericCoreStepHelpers.stepIntoCore(genericCoreStepSession, new Float32Array(1), [5, 6]);
   throw new Error("generic core stepIntoCore small Float32Array did not throw");

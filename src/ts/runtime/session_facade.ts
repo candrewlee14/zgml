@@ -161,6 +161,7 @@ function inputOnlyExecuteIntoParam(params: unknown): unknown | typeof noFastExec
   return record.input;
 }
 type GenericStepSessionFn = (handle: unknown, input: unknown, output: unknown, outputLen: number) => number;
+type GenericPrepareStepSessionFn = (handle: unknown, input: unknown, output: unknown, outputLen: number) => () => number;
 type GenericStepNoOutputFn = (handle: unknown, input: unknown) => number;
 type GenericSessionOutputTensorForSessionFn = (
   desc: unknown,
@@ -307,6 +308,7 @@ export type GenericSessionCoreStepFacadeHelpersOptions<TSession extends AnyRecor
   readonly prepareHostValue: GenericPrepareHostValueFn;
   readonly validateHostValueShape: GenericValidateHostValueShapeFn;
   readonly stepSession: GenericStepSessionFn;
+  readonly prepareStepSession?: GenericPrepareStepSessionFn;
   readonly stepNoOutput: GenericStepNoOutputFn;
   readonly stepContract: StepContractFn<TSession>;
 }>;
@@ -1092,6 +1094,9 @@ export function createGenericSessionCoreStepFacadeHelpers<TSession extends AnyRe
   const prepareHostValue = options && options.prepareHostValue;
   const validateHostValueShape = options && options.validateHostValueShape;
   const stepSession = options && options.stepSession;
+  const prepareStepSession = typeof (options && options.prepareStepSession) === "function"
+    ? options.prepareStepSession
+    : null;
   const stepNoOutput = options && options.stepNoOutput;
   const stepContract = options && options.stepContract;
   if (
@@ -1177,8 +1182,11 @@ export function createGenericSessionCoreStepFacadeHelpers<TSession extends AnyRe
     const input = explicitInput(session, inputValues, "session.prepareExecuteInto input");
     const output = explicitStepIntoOutput(session, outputValues);
     const outputLen = session.desc.outputLen;
+    const preparedStep = prepareStepSession
+      ? prepareStepSession(session.handle, input, output, outputLen)
+      : null;
     return function preparedExecuteInto() {
-      const actualOutputLen = stepSession(session.handle, input, output, outputLen);
+      const actualOutputLen = preparedStep ? preparedStep() : stepSession(session.handle, input, output, outputLen);
       return actualOutputLen === output.length ? output : output.subarray(0, actualOutputLen);
     };
   }

@@ -332,6 +332,7 @@ const {
   sessionUploadPersistent,
   sessionUploadPersistentRange,
   stepSession,
+  prepareStepSession,
   stepNoOutput,
 } = createNodeSessionOps({
   symbols: nodeSymbolGroups.session,
@@ -354,6 +355,7 @@ const adapterSessionRuntimeSurface = createAdapterSessionRuntimeSurface({
   sessionFree: nativeLifecycleOps.sessionFree,
   nullSessionHandle: null,
   stepSession,
+  prepareStepSession,
   stepNoOutput,
 });
 const genericSessionFacade = adapterSessionRuntimeSurface.genericSessionFacade;

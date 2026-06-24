@@ -57,6 +57,16 @@ export function createBunSessionOps(options: BunSessionOpsOptions) {
     return outputLenFromStepResultWords(result);
   }
 
+  function prepareStepSession(handle: NativeHandle, input: SessionStepArrayLike | null, output: SessionStepArrayLike | null): () => number {
+    const result = new BigUint64Array(1);
+    const fields = sessionStepIoFields(input, output);
+    const desc = fields ? stepDesc(fields) : 0;
+    return function preparedStepSession() {
+      check(symbols.sessionStep(handle, desc, result));
+      return outputLenFromStepResultWords(result);
+    };
+  }
+
   function stepNoOutput(handle: NativeHandle, input: SessionStepArrayLike | null): number {
     const result = new BigUint64Array(1);
     const fields = sessionStepNoOutputFields(input);
@@ -68,6 +78,7 @@ export function createBunSessionOps(options: BunSessionOpsOptions) {
     sessionUploadPersistent,
     sessionUploadPersistentRange,
     stepSession,
+    prepareStepSession,
     stepNoOutput,
   });
 }

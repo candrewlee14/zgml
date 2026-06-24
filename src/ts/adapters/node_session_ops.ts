@@ -97,6 +97,28 @@ export function createNodeSessionOps(options: NodeSessionOpsOptions) {
     return outputLenFromStepResultRecord(result);
   }
 
+  function prepareStepSession(
+    handle: NativeHandle,
+    input: SessionStepArrayLike | null | undefined,
+    output: SessionStepArrayLike | null | undefined,
+    outputLen: number,
+  ): () => number {
+    if (input && output) {
+      const inputLen = input.length;
+      const directOutputLen = output.length;
+      return function preparedDirectStepSession() {
+        check(symbols.sessionStepDirect(handle, input, inputLen, output, directOutputLen));
+        return outputLen;
+      };
+    }
+    const result = resultRecord(handle);
+    const record = cachedStepRecord(input, output);
+    return function preparedRecordStepSession() {
+      check(symbols.sessionStep(handle, record, result));
+      return outputLenFromStepResultRecord(result);
+    };
+  }
+
   function stepNoOutput(handle: NativeHandle, input: SessionStepArrayLike | null | undefined): number {
     const result = resultRecord(handle);
     check(symbols.sessionStepNoOutput(handle, cachedStepNoOutputRecord(input), result));
@@ -107,6 +129,7 @@ export function createNodeSessionOps(options: NodeSessionOpsOptions) {
     sessionUploadPersistent,
     sessionUploadPersistentRange,
     stepSession,
+    prepareStepSession,
     stepNoOutput,
   });
 }

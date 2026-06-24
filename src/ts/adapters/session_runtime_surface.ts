@@ -21,6 +21,7 @@ export type AdapterSessionRuntimeSurfaceOptions<TNativeBuffer extends NativeBuff
   sessionFree: GenericSessionFacadeOptions["sessionFree"];
   nullSessionHandle: GenericSessionFacadeOptions["nullSessionHandle"];
   stepSession: GenericSessionFacadeOptions["stepSession"];
+  prepareStepSession?: GenericSessionFacadeOptions["prepareStepSession"];
   stepNoOutput: GenericSessionFacadeOptions["stepNoOutput"];
 }>;
 
@@ -43,6 +44,7 @@ export function createAdapterSessionRuntimeSurface<TNativeBuffer extends NativeB
     sessionFree: options.sessionFree,
     nullSessionHandle: options.nullSessionHandle,
     stepSession: options.stepSession,
+    prepareStepSession: options.prepareStepSession,
     stepNoOutput: options.stepNoOutput,
   });
 

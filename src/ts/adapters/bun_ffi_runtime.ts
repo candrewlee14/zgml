@@ -1151,6 +1151,7 @@ const {
   sessionUploadPersistent,
   sessionUploadPersistentRange,
   stepSession,
+  prepareStepSession,
   stepNoOutput,
 } = createBunSessionOps({
   symbols: bunSymbolGroups.session,
@@ -1185,6 +1186,7 @@ const adapterSessionRuntimeSurface = createAdapterSessionRuntimeSurface({
   sessionFree: nativeLifecycleOps.sessionFree,
   nullSessionHandle: 0,
   stepSession,
+  prepareStepSession,
   stepNoOutput,
 });
 const genericSessionFacade = adapterSessionRuntimeSurface.genericSessionFacade;

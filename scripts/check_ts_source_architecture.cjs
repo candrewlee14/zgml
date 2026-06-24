@@ -9018,6 +9018,8 @@ function checkConcreteFfiRuntimesAvoidLegacySharedFrontend(errors) {
     'sessionTensorHelpers: GenericSessionFacadeOptions["sessionTensorHelpers"];',
     "export function createAdapterSessionRuntimeSurface<TNativeBuffer extends NativeBufferLifetimeTarget = NativeBufferLifetimeTarget>",
     "options.sharedFrontend.createGenericSessionFacadeHelpers({",
+    'prepareStepSession?: GenericSessionFacadeOptions["prepareStepSession"];',
+    "prepareStepSession: options.prepareStepSession",
     "options.sharedFrontend.createProgramBindingSurface<TNativeBuffer>({",
     "createNativeBufferLifetimeHelpers: options.sharedFrontend.createNativeBufferLifetimeHelpers",
     "createProgramModuleBindingHelpers: options.sharedFrontend.createProgramModuleBindingHelpers",
@@ -11486,10 +11488,10 @@ function checkSessionOpsAreTsOwned(errors) {
   if (!helperSource.includes("export type BunSessionOpsOptions = Readonly<{") || !helperSource.includes("createBunSessionOps(options: BunSessionOpsOptions)")) {
     errors.push("bun_session_ops.ts must expose a named typed Bun generic Session helper Interface");
   }
-  if (!nodeHelperSource.includes("createNodeSessionOps") || !nodeHelperSource.includes("sessionUploadPersistentRange")) {
+  if (!nodeHelperSource.includes("createNodeSessionOps") || !nodeHelperSource.includes("sessionUploadPersistentRange") || !nodeHelperSource.includes("prepareStepSession")) {
     errors.push("node_session_ops.ts must own Node generic Session step/upload ABI policy");
   }
-  if (!helperSource.includes("createBunSessionOps") || !helperSource.includes("sessionUploadPersistentRange")) {
+  if (!helperSource.includes("createBunSessionOps") || !helperSource.includes("sessionUploadPersistentRange") || !helperSource.includes("prepareStepSession")) {
     errors.push("bun_session_ops.ts must own Bun generic Session step/upload ABI policy");
   }
   for (const needle of [

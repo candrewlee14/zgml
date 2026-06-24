@@ -657,6 +657,14 @@ PyTorch fix by itself (`linear_batched` moved only from about `0.0108ms` to
 `0.0428ms`). That evidence points the next PyTorch catch-up work below the StepParams facade:
 native kernel shape, FFI call granularity, and larger fused
 Programs matter more than further TS object parsing polish on these lanes.
+The prepared runner now reaches one layer lower than the facade when an adapter
+can help: Node and Bun Session ops expose `prepareStepSession`, so
+`prepareExecuteInto` can precompute direct FFI lengths/records and, on Bun,
+reuse ABI words and result storage instead of rebuilding them every call. The
+focused Node microscope moved to about `0.0093ms -> 0.0089ms` for
+`linear_batched` and `0.0314ms -> 0.0292ms` for
+`log_softmax_classifier_batched`; Bun's no-rebuild dist smoke also passes. This
+is still incremental, but it is the right direction for host FFI granularity.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier
