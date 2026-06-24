@@ -935,6 +935,10 @@ retuning threadgroup width. The qsemantic gate now reports
 `target_vs_default=full_prefill:...x,smollm_prompt:...x` so the dispatch
 reduction is always interpreted against the current throughput path; a fresh
 no-rebuild run printed `target_vs_default=full_prefill:0.28x,smollm_prompt:0.24x`.
+It also reports the tiled work shape the real throughput kernel must expose:
+full-prefill has `target_semantic_tile_parallel_groups=192` and SmolLM prompt
+has `target_semantic_tile_parallel_groups=216`, corresponding to four row
+groups and 16/18 hidden-output tiles at the 32-wide tile shape.
 The next implementation target remains the
 `semantic_ffn_sublayer_throughput_kernel` or a faster tiled row-chain leaf, not
 another command policy toggle.

@@ -87,6 +87,10 @@ pub const RuntimeProfile = struct {
     semantic_ffn_sublayer_input: u64 = 0,
     semantic_ffn_sublayer_output: u64 = 0,
     semantic_ffn_sublayer_row_serial_dot_ops: u64 = 0,
+    semantic_ffn_sublayer_tile_row_groups: u64 = 0,
+    semantic_ffn_sublayer_tile_hidden_tiles: u64 = 0,
+    semantic_ffn_sublayer_tile_output_tiles: u64 = 0,
+    semantic_ffn_sublayer_tile_parallel_groups: u64 = 0,
     call_count: u32 = 0,
 
     pub fn reset(self: *RuntimeProfile) void {
@@ -134,6 +138,10 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_sublayer_input +%= other.semantic_ffn_sublayer_input;
         self.semantic_ffn_sublayer_output +%= other.semantic_ffn_sublayer_output;
         self.semantic_ffn_sublayer_row_serial_dot_ops +%= other.semantic_ffn_sublayer_row_serial_dot_ops;
+        self.semantic_ffn_sublayer_tile_row_groups +%= other.semantic_ffn_sublayer_tile_row_groups;
+        self.semantic_ffn_sublayer_tile_hidden_tiles +%= other.semantic_ffn_sublayer_tile_hidden_tiles;
+        self.semantic_ffn_sublayer_tile_output_tiles +%= other.semantic_ffn_sublayer_tile_output_tiles;
+        self.semantic_ffn_sublayer_tile_parallel_groups +%= other.semantic_ffn_sublayer_tile_parallel_groups;
         self.call_count +%= other.call_count;
     }
 
@@ -235,12 +243,20 @@ pub const RuntimeProfile = struct {
         const hidden: u64 = h;
         const input: u64 = k;
         const output: u64 = o;
+        const tile: u64 = 32;
+        const row_groups = divCeilU64(m, tile);
+        const hidden_tiles = divCeilU64(h, tile);
+        const output_tiles = divCeilU64(o, tile);
         self.semantic_ffn_sublayer_count +%= 1;
         self.semantic_ffn_sublayer_rows +%= m;
         self.semantic_ffn_sublayer_hidden +%= hidden;
         self.semantic_ffn_sublayer_input +%= input;
         self.semantic_ffn_sublayer_output +%= output;
         self.semantic_ffn_sublayer_row_serial_dot_ops +%= (hidden *% input *% 2) +% (hidden *% output);
+        self.semantic_ffn_sublayer_tile_row_groups +%= row_groups;
+        self.semantic_ffn_sublayer_tile_hidden_tiles +%= hidden_tiles;
+        self.semantic_ffn_sublayer_tile_output_tiles +%= output_tiles;
+        self.semantic_ffn_sublayer_tile_parallel_groups +%= row_groups *% (hidden_tiles *% 2 +% output_tiles);
     }
 };
 
