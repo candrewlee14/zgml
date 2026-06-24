@@ -333,6 +333,12 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:q8-prompt-candidate:run"] !== "BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate:run must stay the no-rebuild source-checkout full-model Q8 prompt candidate rerun");
   }
+  if (packageJson.scripts?.["bench:q8-prompt-viable"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json bench:q8-prompt-viable must stay the rebuild-backed command/two-phase Q8 prompt microscope");
+  }
+  if (packageJson.scripts?.["bench:q8-prompt-viable:run"] !== "BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json bench:q8-prompt-viable:run must stay the no-rebuild command/two-phase Q8 prompt microscope");
+  }
   if (packageJson.scripts?.["build:native:release"] !== "zig build ffi-c -Doptimize=ReleaseFast") {
     errors.push("package.json build:native:release must stay the benchmark-grade native C ABI build");
   }
@@ -781,6 +787,12 @@ function checkPackageExports(errors) {
     "const decodeCommandCeil = Number(process.env.BENCH_Q8_DECODE_COMMAND_CEIL || \"211\")",
     "const decodeProjectionPairFloor = Number(process.env.BENCH_Q8_DECODE_PROJECTION_PAIR_FLOOR || \"30\")",
     "const decodeProjectionChainFloor = Number(process.env.BENCH_Q8_DECODE_PROJECTION_CHAIN_FLOOR || \"60\")",
+    "const laneMode = process.env.BENCH_Q8_PROMPT_LANES || \"all\"",
+    "function parseLanes(value)",
+    "BENCH_Q8_PROMPT_LANES contains unsupported lane",
+    "const measureCommand = measuredLanes.has(\"command\")",
+    "const measureSingle = measuredLanes.has(\"single\")",
+    "const measureTwoPhase = measuredLanes.has(\"two_phase\")",
     "defaultProjectionPairs >= defaultProjectionPairFloor",
     "defaultDecodeProjectionPairs >= decodeProjectionPairFloor",
     "defaultDecodeFastPathReady",
@@ -788,7 +800,7 @@ function checkPackageExports(errors) {
     "`decode_projection_pair=${format(commandBest.defaultDecodeProjectionPairs, 0)} decode_fallback=${format(commandBest.defaultDecodeFallback, 0)} `",
     "decode_fast_path=${commandBest.defaultDecodeFastPathReady ? \"ready\" : \"off\"} decode_lowering=${decodeLowering}",
     "decode_row_chain_default=${decodeRowChainDefault} decode_next=${decodeNextTarget}",
-    "commandProjectionPairs >= candidateProjectionPairFloor",
+    "commandLane.projectionPairs >= candidateProjectionPairFloor",
     "semantic_pair_path=",
     "semantic_pair_target=${semanticPairTarget}",
     "\"-Doptimize=ReleaseFast\"",
@@ -804,6 +816,7 @@ function checkPackageExports(errors) {
     "commandThroughputReady",
     "function progress(message)",
     "`[q8-prompt] ${message}\\n`",
+    "progress(`attempts=${attempts} lanes=${[...measuredLanes].join(\",\")}",
     "progress(`attempt ${index}/${attempts} command`)",
     "progress(`attempt ${index}/${attempts} single-dispatch-candidate`)",
     "`attempt ${index}/${attempts} result ` +",
@@ -847,7 +860,7 @@ function checkPackageExports(errors) {
       errors.push(`scripts/check_q8_prompt_candidate.cjs must keep full-model Q8 prompt candidate evidence: ${needle}`);
     }
   }
-  for (const sourceCheckoutBenchScript of ["bench:status", "bench:substrate", "bench:trend", "bench:frontier", "bench:frontier:gate", "bench:frontier:gate:run", "bench:q8-prompt-candidate", "bench:q8-prompt-candidate:run", "bench:pytorch", "bench:ggml", "bench:ggml:parity"]) {
+  for (const sourceCheckoutBenchScript of ["bench:status", "bench:substrate", "bench:trend", "bench:frontier", "bench:frontier:gate", "bench:frontier:gate:run", "bench:q8-prompt-candidate", "bench:q8-prompt-candidate:run", "bench:q8-prompt-viable", "bench:q8-prompt-viable:run", "bench:pytorch", "bench:ggml", "bench:ggml:parity"]) {
     if (publicPackageScripts.includes(sourceCheckoutBenchScript)) {
       errors.push(`scripts/package_metadata_policy.cjs publicPackageScripts must not expose ${sourceCheckoutBenchScript}; benchmark artifacts are source-checkout evidence, not packaged npm runtime API`);
     }

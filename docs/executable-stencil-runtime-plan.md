@@ -601,6 +601,10 @@ npm run bench:stencil:shape            # rebuild ReleaseFast and prove current s
 npm run bench:stencil:shape:run        # rerun current source stencil shape/hashes without rebuilding artifacts
 npm run bench:q8-prompt-candidate      # rebuild ReleaseFast and measure full-model Q8 prompt candidate evidence
 npm run bench:q8-prompt-candidate:run  # rerun Q8 prompt candidate evidence without rebuilding artifacts
+npm run bench:q8-prompt-viable         # rebuild ReleaseFast and measure only command/two-phase Q8 prompt viable lanes
+npm run bench:q8-prompt-viable:run     # rerun only command/two-phase Q8 prompt viable lanes without rebuilding artifacts
+npm run dev:perf:q8-prompt:viable      # incremental command/two-phase Q8 prompt microscope, skipping the known-bad single-dispatch lane
+npm run dev:perf:q8-prompt:viable:run  # no-rebuild command/two-phase Q8 prompt microscope rerun
 npm run bench:ggml:parity:run          # rerun hard ggml parity; bench script rebuilds ReleaseFast by default
 npm run dev:perf:ggml:q8-command-smoke # cheap ggml smoke with explicit Q8 projection-row-chain command path
 npm run dev:perf:ggml:q8-command-smoke:run # rerun explicit Q8 command-path ggml smoke without rebuilding artifacts
@@ -628,6 +632,17 @@ native ABI work, and only escalate to `dev:zig:bench`, focused PyTorch
 microscopes, and `check:goal-scorecard` after the local hypothesis is shaped.
 Watch variants of those commands are the preferred long-running loop when
 iterating on a kernel or runtime contract.
+For the remaining Q8 prompt frontier, the default all-lane
+`bench:q8-prompt-candidate` gate is still the release proof, but the fast
+kernel loop is now `dev:perf:q8-prompt:viable`: it sets
+`BENCH_Q8_PROMPT_LANES=command,two_phase` and defaults to one attempt, so the
+known-bad single-dispatch diagnostic is skipped while the command and two-phase
+paths still prove structure, fallback, dispatch shape, decode fast-path shape,
+and throughput. A local no-rebuild proof ran in about 20 seconds with
+`command_structural=ready`, `command_throughput=ready`,
+`single_structural=skipped`, `two_phase_structural=ready`,
+`command_command=241->181`, `two_phase_count=60`, and zero fallback; that is
+the intended iteration lens before spending time on the full all-lane gate.
 The direct `Linear -> LogSoftmax` CPU tail now shares the batched-linear BLAS
 preference for plain dense projection, while the fused classifier tail keeps a
 native row log-softmax path with a fast vector exp approximation and a measured

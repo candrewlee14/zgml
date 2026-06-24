@@ -14,6 +14,7 @@ const binary = "./zig-out/bin/bench-llama-smollm";
 const speedupFloor = Number(process.env.BENCH_CANDIDATE_SPEEDUP_FLOOR || "1.05");
 const commandSpeedupFloor = Number(process.env.BENCH_COMMAND_CANDIDATE_SPEEDUP_FLOOR || "0.95");
 const attempts = positiveInt(process.env.BENCH_CANDIDATE_ATTEMPTS || "3", "BENCH_CANDIDATE_ATTEMPTS");
+const laneMode = process.env.BENCH_Q8_PROMPT_LANES || "all";
 const rowChainLowering = "default_projection_chain_plus_row_chain_candidate_single_dispatch_tiled_row_chain";
 const commandLowering = "default_projection_chain_plus_row_chain_command_two_dispatch";
 const twoPhaseLowering = "default_projection_chain_plus_row_chain_candidate_two_phase_tiled_row_chain";
@@ -90,6 +91,92 @@ function positiveInt(value, label) {
   return n;
 }
 
+function parseLanes(value) {
+  const names = new Set(
+    String(value)
+      .split(",")
+      .map((part) => part.trim().toLowerCase().replace(/-/g, "_"))
+      .filter(Boolean),
+  );
+  if (names.size === 0 || names.has("all")) return new Set(["command", "single", "two_phase"]);
+  for (const name of names) {
+    if (name !== "command" && name !== "single" && name !== "two_phase") {
+      console.error(`BENCH_Q8_PROMPT_LANES contains unsupported lane ${name}; use all, command, single, two_phase`);
+      process.exit(1);
+    }
+  }
+  return names;
+}
+
+const measuredLanes = parseLanes(laneMode);
+const measureCommand = measuredLanes.has("command");
+const measureSingle = measuredLanes.has("single");
+const measureTwoPhase = measuredLanes.has("two_phase");
+
+function emptyLane(index) {
+  return {
+    index,
+    tokS: null,
+    speedup: null,
+    dispatches: null,
+    commands: null,
+    projectionRowChains: 0,
+    projectionChains: 0,
+    projectionPairs: 0,
+    projectionPairDispatches: 0,
+    projectionRowChainDispatches: 0,
+    projectionRowChainDispatchSplit: null,
+    projectionRowChainDispatchExcess: 0,
+    tiledCount: 0,
+    tiledRowTileGroups: 0,
+    tiledNTiles: 0,
+    tiledSerialLoops: 0,
+    tiledPartialSlots: 0,
+    tiledScratchCapacity: 0,
+    tiledSpills: 0,
+    tiledTwoPhaseCount: 0,
+    fallback: 0,
+  };
+}
+
+function projectionRowChainSplit(rowChains, dispatches) {
+  return rowChains > 0 ? dispatches / rowChains : null;
+}
+
+function readProjectionLane(row, defaultTokS, index) {
+  const tokS = number(row, "prompt_tok_s");
+  const dispatches = number(row, "dispatches_per_call");
+  const commands = number(row, "commands_per_call");
+  const projectionRowChains = number(row, "program_command_encoded_projection_row_chain_per_call") ?? 0;
+  const projectionChains = number(row, "program_command_encoded_projection_chain_per_call") ?? 0;
+  const projectionPairs = number(row, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const projectionPairDispatches = number(row, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const projectionRowChainDispatches = number(row, "program_command_dispatches_projection_row_chain_per_call") ?? 0;
+  return {
+    index,
+    tokS,
+    speedup: defaultTokS && tokS ? tokS / defaultTokS : null,
+    dispatches,
+    commands,
+    projectionRowChains,
+    projectionChains,
+    projectionPairs,
+    projectionPairDispatches,
+    projectionRowChainDispatches,
+    projectionRowChainDispatchSplit: projectionRowChainSplit(projectionRowChains, projectionRowChainDispatches),
+    projectionRowChainDispatchExcess: Math.max(0, projectionRowChainDispatches - projectionRowChains),
+    tiledCount: number(row, "qmatmul_row_chain_tiled_count_per_call") ?? 0,
+    tiledRowTileGroups: number(row, "qmatmul_row_chain_tiled_row_tile_groups_per_call") ?? 0,
+    tiledNTiles: number(row, "qmatmul_row_chain_tiled_n_tiles_per_call") ?? 0,
+    tiledSerialLoops: number(row, "qmatmul_row_chain_tiled_serial_tile_loops_per_call") ?? 0,
+    tiledPartialSlots: number(row, "qmatmul_row_chain_tiled_partial_slots_per_call") ?? 0,
+    tiledScratchCapacity: number(row, "qmatmul_row_chain_tiled_scratch_capacity_per_call") ?? 0,
+    tiledSpills: number(row, "qmatmul_row_chain_tiled_spilled_elementwise_per_call") ?? 0,
+    tiledTwoPhaseCount: number(row, "qmatmul_row_chain_tiled_two_phase_count_per_call") ?? 0,
+    fallback: number(row, "fallback_ops") ?? 0,
+  };
+}
+
 if (!existsSync(resolve(root, model))) {
   console.error(`q8 prompt candidate gate: missing model ${model}`);
   console.error("Set ZGML_Q8_MODEL/ZGML_MODEL or run with BENCH_AUTO_DOWNLOAD through scripts/bench_vs_ggml.sh first.");
@@ -106,80 +193,48 @@ if (build === "1") {
 }
 
 const baseArgs = [model, promptTokens, genTokens, repetitions, "--metal-prefill-device", "--metal-decode-region", "--gate-only"];
-progress(`attempts=${attempts} model=${model} prompt=${promptTokens} gen=${genTokens} reps=${repetitions}`);
+progress(`attempts=${attempts} lanes=${[...measuredLanes].join(",")} model=${model} prompt=${promptTokens} gen=${genTokens} reps=${repetitions}`);
 
 function measureAttempt(index) {
   progress(`attempt ${index}/${attempts} default`);
   const defaultOutput = run(binary, baseArgs);
-  progress(`attempt ${index}/${attempts} command`);
-  const commandOutput = run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-command"]);
-  progress(`attempt ${index}/${attempts} single-dispatch-candidate`);
-  const candidateOutput = run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-candidate"]);
-  progress(`attempt ${index}/${attempts} two-phase-candidate`);
-  const twoPhaseOutput = run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-two-phase-candidate"]);
+  const commandOutput = measureCommand
+    ? (progress(`attempt ${index}/${attempts} command`), run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-command"]))
+    : null;
+  const candidateOutput = measureSingle
+    ? (progress(`attempt ${index}/${attempts} single-dispatch-candidate`), run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-candidate"]))
+    : null;
+  const twoPhaseOutput = measureTwoPhase
+    ? (progress(`attempt ${index}/${attempts} two-phase-candidate`), run(binary, [...baseArgs, "--metal-prompt-projection-row-chain-two-phase-candidate"]))
+    : null;
   const defaultRow = rowFor(defaultOutput, "metal scheduled prefill");
   const defaultDecodeRow = rowFor(defaultOutput, "metal region decode");
-  const commandRow = rowFor(commandOutput, "metal scheduled prefill projection-row-chain command");
-  const candidateRow = rowFor(candidateOutput, "metal scheduled prefill projection-row-chain candidate");
-  const twoPhaseRow = rowFor(twoPhaseOutput, "metal scheduled prefill projection-row-chain two-phase candidate");
 
   const defaultTokS = number(defaultRow, "prompt_tok_s");
-  const commandTokS = number(commandRow, "prompt_tok_s");
-  const candidateTokS = number(candidateRow, "prompt_tok_s");
-  const twoPhaseTokS = number(twoPhaseRow, "prompt_tok_s");
-  const commandSpeedup = defaultTokS && commandTokS ? commandTokS / defaultTokS : null;
-  const speedup = defaultTokS && candidateTokS ? candidateTokS / defaultTokS : null;
-  const twoPhaseSpeedup = defaultTokS && twoPhaseTokS ? twoPhaseTokS / defaultTokS : null;
+  const commandLane = measureCommand
+    ? readProjectionLane(rowFor(commandOutput, "metal scheduled prefill projection-row-chain command"), defaultTokS, index)
+    : emptyLane(index);
+  const singleLane = measureSingle
+    ? readProjectionLane(rowFor(candidateOutput, "metal scheduled prefill projection-row-chain candidate"), defaultTokS, index)
+    : emptyLane(index);
+  const twoPhaseLane = measureTwoPhase
+    ? readProjectionLane(rowFor(twoPhaseOutput, "metal scheduled prefill projection-row-chain two-phase candidate"), defaultTokS, index)
+    : emptyLane(index);
   const defaultDispatches = number(defaultRow, "dispatches_per_call");
-  const commandDispatches = number(commandRow, "dispatches_per_call");
-  const candidateDispatches = number(candidateRow, "dispatches_per_call");
-  const twoPhaseDispatches = number(twoPhaseRow, "dispatches_per_call");
   const defaultCommands = number(defaultRow, "commands_per_call");
-  const commandCommands = number(commandRow, "commands_per_call");
-  const candidateCommands = number(candidateRow, "commands_per_call");
-  const twoPhaseCommands = number(twoPhaseRow, "commands_per_call");
   const defaultProjectionRowChains = number(defaultRow, "program_command_encoded_projection_row_chain_per_call") ?? 0;
-  const commandProjectionRowChains = number(commandRow, "program_command_encoded_projection_row_chain_per_call") ?? 0;
-  const candidateProjectionRowChains = number(candidateRow, "program_command_encoded_projection_row_chain_per_call") ?? 0;
-  const twoPhaseProjectionRowChains = number(twoPhaseRow, "program_command_encoded_projection_row_chain_per_call") ?? 0;
   const defaultProjectionChains = number(defaultRow, "program_command_encoded_projection_chain_per_call") ?? 0;
-  const commandProjectionChains = number(commandRow, "program_command_encoded_projection_chain_per_call") ?? 0;
-  const candidateProjectionChains = number(candidateRow, "program_command_encoded_projection_chain_per_call") ?? 0;
-  const twoPhaseProjectionChains = number(twoPhaseRow, "program_command_encoded_projection_chain_per_call") ?? 0;
   const defaultProjectionPairs = number(defaultRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
-  const commandProjectionPairs = number(commandRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
-  const candidateProjectionPairs = number(candidateRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
-  const twoPhaseProjectionPairs = number(twoPhaseRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
   const defaultDecodeCommands = number(defaultDecodeRow, "commands_per_call");
   const defaultDecodeProjectionChains = number(defaultDecodeRow, "program_command_encoded_projection_chain_per_call") ?? 0;
   const defaultDecodeProjectionPairs = number(defaultDecodeRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
   const defaultDecodeFallback = number(defaultDecodeRow, "fallback_ops") ?? 0;
   const defaultProjectionPairDispatches = number(defaultRow, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
-  const commandProjectionPairDispatches = number(commandRow, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
-  const candidateProjectionPairDispatches = number(candidateRow, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
-  const twoPhaseProjectionPairDispatches = number(twoPhaseRow, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
   const defaultProjectionRowChainDispatches = number(defaultRow, "program_command_dispatches_projection_row_chain_per_call") ?? 0;
-  const commandProjectionRowChainDispatches = number(commandRow, "program_command_dispatches_projection_row_chain_per_call") ?? 0;
-  const candidateProjectionRowChainDispatches = number(candidateRow, "program_command_dispatches_projection_row_chain_per_call") ?? 0;
-  const twoPhaseProjectionRowChainDispatches = number(twoPhaseRow, "program_command_dispatches_projection_row_chain_per_call") ?? 0;
-  const candidateTiledCount = number(candidateRow, "qmatmul_row_chain_tiled_count_per_call") ?? 0;
-  const candidateTiledRowTileGroups = number(candidateRow, "qmatmul_row_chain_tiled_row_tile_groups_per_call") ?? 0;
-  const candidateTiledNTiles = number(candidateRow, "qmatmul_row_chain_tiled_n_tiles_per_call") ?? 0;
-  const candidateTiledSerialLoops = number(candidateRow, "qmatmul_row_chain_tiled_serial_tile_loops_per_call") ?? 0;
-  const candidateTiledPartialSlots = number(candidateRow, "qmatmul_row_chain_tiled_partial_slots_per_call") ?? 0;
-  const candidateTiledScratchCapacity = number(candidateRow, "qmatmul_row_chain_tiled_scratch_capacity_per_call") ?? 0;
-  const candidateTiledSpills = number(candidateRow, "qmatmul_row_chain_tiled_spilled_elementwise_per_call") ?? 0;
-  const twoPhaseTiledTwoPhaseCount = number(twoPhaseRow, "qmatmul_row_chain_tiled_two_phase_count_per_call") ?? 0;
-  const twoPhaseScratchReady = candidateTiledPartialSlots > 0 && candidateTiledScratchCapacity >= candidateTiledPartialSlots;
+  const tiledEvidenceLane = measureSingle ? singleLane : twoPhaseLane;
+  const twoPhaseScratchReady = tiledEvidenceLane.tiledPartialSlots > 0 && tiledEvidenceLane.tiledScratchCapacity >= tiledEvidenceLane.tiledPartialSlots;
   const defaultProjectionRowChainDispatchSplit = defaultProjectionRowChains > 0 ? defaultProjectionRowChainDispatches / defaultProjectionRowChains : null;
-  const commandProjectionRowChainDispatchSplit = commandProjectionRowChains > 0 ? commandProjectionRowChainDispatches / commandProjectionRowChains : null;
-  const candidateProjectionRowChainDispatchSplit = candidateProjectionRowChains > 0 ? candidateProjectionRowChainDispatches / candidateProjectionRowChains : null;
   const defaultProjectionRowChainDispatchExcess = Math.max(0, defaultProjectionRowChainDispatches - defaultProjectionRowChains);
-  const commandProjectionRowChainDispatchExcess = Math.max(0, commandProjectionRowChainDispatches - commandProjectionRowChains);
-  const candidateProjectionRowChainDispatchExcess = Math.max(0, candidateProjectionRowChainDispatches - candidateProjectionRowChains);
-  const commandFallback = number(commandRow, "fallback_ops") ?? 0;
-  const candidateFallback = number(candidateRow, "fallback_ops") ?? 0;
-  const twoPhaseFallback = number(twoPhaseRow, "fallback_ops") ?? 0;
   const defaultFallback = number(defaultRow, "fallback_ops") ?? 0;
   const defaultFastPathReady =
     defaultCommands !== null &&
@@ -194,128 +249,134 @@ function measureAttempt(index) {
     defaultDecodeProjectionPairs >= decodeProjectionPairFloor &&
     defaultDecodeFallback === 0;
   const commandSemanticReady =
-    commandCommands !== null &&
-    commandCommands <= candidateCommandCeil &&
-    commandProjectionChains <= candidateProjectionChainCeil &&
-    commandProjectionPairs >= candidateProjectionPairFloor &&
-    commandProjectionRowChains >= candidateProjectionRowChainFloor;
+    !measureCommand ||
+    (commandLane.commands !== null &&
+      commandLane.commands <= candidateCommandCeil &&
+      commandLane.projectionChains <= candidateProjectionChainCeil &&
+      commandLane.projectionPairs >= candidateProjectionPairFloor &&
+      commandLane.projectionRowChains >= candidateProjectionRowChainFloor);
   const commandDispatchShapeReady =
-    defaultDispatches !== null &&
-    commandDispatches !== null &&
-    commandDispatches <= defaultDispatches &&
-    commandProjectionRowChainDispatches >= commandProjectionRowChains &&
-    commandProjectionRowChainDispatchSplit !== null &&
-    commandProjectionRowChainDispatchSplit <= 2.0;
+    !measureCommand ||
+    (defaultDispatches !== null &&
+      commandLane.dispatches !== null &&
+      commandLane.dispatches <= defaultDispatches &&
+      commandLane.projectionRowChainDispatches >= commandLane.projectionRowChains &&
+      commandLane.projectionRowChainDispatchSplit !== null &&
+      commandLane.projectionRowChainDispatchSplit <= 2.0);
   const candidateSemanticReady =
-    candidateCommands !== null &&
-    candidateCommands <= candidateCommandCeil &&
-    candidateProjectionChains <= candidateProjectionChainCeil &&
-    candidateProjectionPairs >= candidateProjectionPairFloor &&
-    candidateProjectionRowChains >= candidateProjectionRowChainFloor;
+    !measureSingle ||
+    (singleLane.commands !== null &&
+      singleLane.commands <= candidateCommandCeil &&
+      singleLane.projectionChains <= candidateProjectionChainCeil &&
+      singleLane.projectionPairs >= candidateProjectionPairFloor &&
+      singleLane.projectionRowChains >= candidateProjectionRowChainFloor);
   const candidateMatchesCommandShape =
-    candidateCommands !== null &&
-    candidateCommands <= candidateCommandCeil &&
-    candidateProjectionChains <= candidateProjectionChainCeil &&
-    candidateProjectionPairs >= candidateProjectionPairFloor &&
-    candidateProjectionRowChains >= candidateProjectionRowChainFloor;
+    !measureSingle ||
+    (singleLane.commands !== null &&
+      singleLane.commands <= candidateCommandCeil &&
+      singleLane.projectionChains <= candidateProjectionChainCeil &&
+      singleLane.projectionPairs >= candidateProjectionPairFloor &&
+      singleLane.projectionRowChains >= candidateProjectionRowChainFloor);
   const candidateDispatchShapeReady =
-    defaultDispatches !== null &&
-    candidateDispatches !== null &&
-    candidateDispatches < defaultDispatches &&
-    candidateProjectionRowChainDispatches <= candidateProjectionRowChains;
-  const twoPhaseProjectionRowChainDispatchSplit = twoPhaseProjectionRowChains > 0 ? twoPhaseProjectionRowChainDispatches / twoPhaseProjectionRowChains : null;
+    !measureSingle ||
+    (defaultDispatches !== null &&
+      singleLane.dispatches !== null &&
+      singleLane.dispatches < defaultDispatches &&
+      singleLane.projectionRowChainDispatches <= singleLane.projectionRowChains);
   const twoPhaseSemanticReady =
-    twoPhaseCommands !== null &&
-    twoPhaseCommands <= candidateCommandCeil &&
-    twoPhaseProjectionChains <= candidateProjectionChainCeil &&
-    twoPhaseProjectionPairs >= candidateProjectionPairFloor &&
-    twoPhaseProjectionRowChains >= candidateProjectionRowChainFloor;
+    !measureTwoPhase ||
+    (twoPhaseLane.commands !== null &&
+      twoPhaseLane.commands <= candidateCommandCeil &&
+      twoPhaseLane.projectionChains <= candidateProjectionChainCeil &&
+      twoPhaseLane.projectionPairs >= candidateProjectionPairFloor &&
+      twoPhaseLane.projectionRowChains >= candidateProjectionRowChainFloor);
   const twoPhaseDispatchShapeReady =
-    defaultDispatches !== null &&
-    twoPhaseDispatches !== null &&
-    twoPhaseDispatches <= defaultDispatches &&
-    twoPhaseProjectionRowChainDispatchSplit !== null &&
-    twoPhaseProjectionRowChainDispatchSplit <= 2.0;
-  const twoPhaseStructuralReady = defaultFastPathReady && twoPhaseSemanticReady && twoPhaseDispatchShapeReady && twoPhaseFallback === 0;
-  const fallbackOk = defaultFallback === 0 && commandFallback === 0 && candidateFallback === 0 && twoPhaseFallback === 0;
+    !measureTwoPhase ||
+    (defaultDispatches !== null &&
+      twoPhaseLane.dispatches !== null &&
+      twoPhaseLane.dispatches <= defaultDispatches &&
+      twoPhaseLane.projectionRowChainDispatchSplit !== null &&
+      twoPhaseLane.projectionRowChainDispatchSplit <= 2.0);
+  const twoPhaseStructuralReady = defaultFastPathReady && twoPhaseSemanticReady && twoPhaseDispatchShapeReady && twoPhaseLane.fallback === 0;
+  const fallbackOk = defaultFallback === 0 && commandLane.fallback === 0 && singleLane.fallback === 0 && twoPhaseLane.fallback === 0;
   const commandStructuralReady = defaultFastPathReady && defaultDecodeFastPathReady && commandSemanticReady && commandDispatchShapeReady && fallbackOk;
   const structuralReady = defaultFastPathReady && defaultDecodeFastPathReady && commandStructuralReady && candidateSemanticReady && candidateMatchesCommandShape && candidateDispatchShapeReady && fallbackOk;
-  const commandThroughputReady = commandSpeedup !== null && commandSpeedup >= commandSpeedupFloor;
-  const throughputReady = speedup !== null && speedup >= speedupFloor;
+  const commandThroughputReady = commandLane.speedup !== null && commandLane.speedup >= commandSpeedupFloor;
+  const throughputReady = singleLane.speedup !== null && singleLane.speedup >= speedupFloor;
   progress(
     `attempt ${index}/${attempts} result ` +
-      `command=${format(commandSpeedup)}x single=${format(speedup)}x ` +
-      `two_phase=${format(twoPhaseSpeedup)}x ` +
-      `dispatch=${format(defaultDispatches, 0)}->${format(candidateDispatches, 0)} ` +
-      `commands=${format(defaultCommands, 0)}->${format(candidateCommands, 0)} ` +
-      `fallback=${format(defaultFallback, 0)}->${format(candidateFallback, 0)}/${format(twoPhaseFallback, 0)}`,
+      `command=${format(commandLane.speedup)}x single=${format(singleLane.speedup)}x ` +
+      `two_phase=${format(twoPhaseLane.speedup)}x ` +
+      `dispatch=${format(defaultDispatches, 0)}->${format(singleLane.dispatches, 0)} ` +
+      `commands=${format(defaultCommands, 0)}->${format(singleLane.commands, 0)} ` +
+      `fallback=${format(defaultFallback, 0)}->${format(singleLane.fallback, 0)}/${format(twoPhaseLane.fallback, 0)}`,
   );
   return {
     index,
     defaultTokS,
-    commandTokS,
-    candidateTokS,
-    twoPhaseTokS,
-    commandSpeedup,
-    speedup,
-    twoPhaseSpeedup,
+    commandTokS: commandLane.tokS,
+    candidateTokS: singleLane.tokS,
+    twoPhaseTokS: twoPhaseLane.tokS,
+    commandSpeedup: commandLane.speedup,
+    speedup: singleLane.speedup,
+    twoPhaseSpeedup: twoPhaseLane.speedup,
     defaultDispatches,
-    commandDispatches,
-    candidateDispatches,
-    twoPhaseDispatches,
+    commandDispatches: commandLane.dispatches,
+    candidateDispatches: singleLane.dispatches,
+    twoPhaseDispatches: twoPhaseLane.dispatches,
     defaultCommands,
-    commandCommands,
-    candidateCommands,
-    twoPhaseCommands,
+    commandCommands: commandLane.commands,
+    candidateCommands: singleLane.commands,
+    twoPhaseCommands: twoPhaseLane.commands,
     defaultProjectionRowChains,
-    commandProjectionRowChains,
-    candidateProjectionRowChains,
-    twoPhaseProjectionRowChains,
+    commandProjectionRowChains: commandLane.projectionRowChains,
+    candidateProjectionRowChains: singleLane.projectionRowChains,
+    twoPhaseProjectionRowChains: twoPhaseLane.projectionRowChains,
     defaultProjectionChains,
-    commandProjectionChains,
-    candidateProjectionChains,
-    twoPhaseProjectionChains,
+    commandProjectionChains: commandLane.projectionChains,
+    candidateProjectionChains: singleLane.projectionChains,
+    twoPhaseProjectionChains: twoPhaseLane.projectionChains,
     defaultProjectionPairs,
-    commandProjectionPairs,
-    candidateProjectionPairs,
-    twoPhaseProjectionPairs,
+    commandProjectionPairs: commandLane.projectionPairs,
+    candidateProjectionPairs: singleLane.projectionPairs,
+    twoPhaseProjectionPairs: twoPhaseLane.projectionPairs,
     defaultDecodeCommands,
     defaultDecodeProjectionChains,
     defaultDecodeProjectionPairs,
     defaultDecodeFallback,
     defaultDecodeFastPathReady,
     defaultProjectionPairDispatches,
-    commandProjectionPairDispatches,
-    candidateProjectionPairDispatches,
-    twoPhaseProjectionPairDispatches,
+    commandProjectionPairDispatches: commandLane.projectionPairDispatches,
+    candidateProjectionPairDispatches: singleLane.projectionPairDispatches,
+    twoPhaseProjectionPairDispatches: twoPhaseLane.projectionPairDispatches,
     defaultProjectionRowChainDispatches,
-    commandProjectionRowChainDispatches,
-    candidateProjectionRowChainDispatches,
-    twoPhaseProjectionRowChainDispatches,
-    candidateTiledCount,
-    candidateTiledRowTileGroups,
-    candidateTiledNTiles,
-    candidateTiledSerialLoops,
-    candidateTiledPartialSlots,
-    candidateTiledScratchCapacity,
-    candidateTiledSpills,
-    twoPhaseTiledTwoPhaseCount,
+    commandProjectionRowChainDispatches: commandLane.projectionRowChainDispatches,
+    candidateProjectionRowChainDispatches: singleLane.projectionRowChainDispatches,
+    twoPhaseProjectionRowChainDispatches: twoPhaseLane.projectionRowChainDispatches,
+    candidateTiledCount: singleLane.tiledCount,
+    candidateTiledRowTileGroups: singleLane.tiledRowTileGroups,
+    candidateTiledNTiles: singleLane.tiledNTiles,
+    candidateTiledSerialLoops: singleLane.tiledSerialLoops,
+    candidateTiledPartialSlots: singleLane.tiledPartialSlots,
+    candidateTiledScratchCapacity: singleLane.tiledScratchCapacity,
+    candidateTiledSpills: singleLane.tiledSpills,
+    twoPhaseTiledTwoPhaseCount: twoPhaseLane.tiledTwoPhaseCount,
     twoPhaseScratchReady,
     defaultProjectionRowChainDispatchSplit,
-    commandProjectionRowChainDispatchSplit,
-    candidateProjectionRowChainDispatchSplit,
+    commandProjectionRowChainDispatchSplit: commandLane.projectionRowChainDispatchSplit,
+    candidateProjectionRowChainDispatchSplit: singleLane.projectionRowChainDispatchSplit,
     defaultProjectionRowChainDispatchExcess,
-    commandProjectionRowChainDispatchExcess,
-    candidateProjectionRowChainDispatchExcess,
+    commandProjectionRowChainDispatchExcess: commandLane.projectionRowChainDispatchExcess,
+    candidateProjectionRowChainDispatchExcess: singleLane.projectionRowChainDispatchExcess,
     defaultFallback,
-    commandFallback,
-    candidateFallback,
-    twoPhaseFallback,
+    commandFallback: commandLane.fallback,
+    candidateFallback: singleLane.fallback,
+    twoPhaseFallback: twoPhaseLane.fallback,
     commandStructuralReady,
     commandThroughputReady,
     candidateMatchesCommandShape,
     candidateDispatchShapeReady,
-    twoPhaseProjectionRowChainDispatchSplit,
+    twoPhaseProjectionRowChainDispatchSplit: twoPhaseLane.projectionRowChainDispatchSplit,
     twoPhaseSemanticReady,
     twoPhaseDispatchShapeReady,
     twoPhaseStructuralReady,
@@ -371,17 +432,24 @@ const semanticPairActive =
   ) > 0;
 const reason = candidateReady
   ? "projection_row_chain_candidate_meets_structure_and_speed"
-  : dispatchOnlyTrap
+  : !measureSingle
+    ? "single_dispatch_lane_skipped"
+    : dispatchOnlyTrap
     ? "dispatch_reduction_without_tiled_throughput"
     : !structuralReady
       ? "projection_row_chain_candidate_failed_structure_or_fallback"
       : "projection_row_chain_candidate_needs_throughput_kernel";
+const commandStructuralStatus = measureCommand ? (commandStructuralReady ? "ready" : "off") : "skipped";
+const commandThroughputStatus = measureCommand ? (commandThroughputReady ? "ready" : "off") : "skipped";
+const singleStructuralStatus = measureSingle ? (structuralReady ? "ready" : "off") : "skipped";
+const singleThroughputStatus = measureSingle ? (throughputReady ? "ready" : "off") : "skipped";
+const twoPhaseStructuralStatus = measureTwoPhase ? (twoPhaseStructuralReady ? "ready" : "off") : "skipped";
 
 console.log(
   `q8 prompt semantic row-chain gate: ${commandReady ? "command-ready" : candidateReady ? "ready" : "structural"}; ` +
-    `command_structural=${commandStructuralReady ? "ready" : "off"} command_throughput=${commandThroughputReady ? "ready" : "off"} ` +
-    `single_structural=${structuralReady ? "ready" : "off"} single_throughput=${throughputReady ? "ready" : "off"} ` +
-    `two_phase_structural=${twoPhaseStructuralReady ? "ready" : "off"} reason=${reason}; ` +
+    `command_structural=${commandStructuralStatus} command_throughput=${commandThroughputStatus} ` +
+    `single_structural=${singleStructuralStatus} single_throughput=${singleThroughputStatus} ` +
+    `two_phase_structural=${twoPhaseStructuralStatus} reason=${reason}; ` +
     `attempt=${best.index}/${attempts} median_attempt=${median.index}/${attempts} noisy=${noisyAttempts}; ` +
     `command_attempt=${commandBest.index}/${attempts} command_median_attempt=${commandMedian.index}/${attempts} command_noisy=${commandNoisyAttempts}; ` +
     `command_default=${format(commandBest.defaultTokS)} tok/s command_candidate=${format(commandBest.commandTokS)} tok/s command_speedup=${format(commandBest.commandSpeedup)}x command_floor=${format(commandSpeedupFloor)}x; ` +

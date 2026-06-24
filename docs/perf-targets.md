@@ -191,6 +191,11 @@ machine for both prompt/prefill and decode.
   `single_dispatch_trap=serial_n_tile_loop_without_cross_threadgroup_row_reduce`.
   The viable next target is therefore either a larger semantic sublayer command or
   a two-phase tile-parallel row-chain, not another local serial-tail variant.
+  For that viable target, `bench:q8-prompt-viable` and
+  `dev:perf:q8-prompt:viable` set `BENCH_Q8_PROMPT_LANES=command,two_phase`
+  and default to one attempt, so command/two-phase changes can be checked
+  without rerunning the known-bad single-dispatch diagnostic on every edit. The
+  full all-lane candidate gate remains the release proof before promotion.
 - The current weakest checked lane is Q8_0 prompt at roughly 30% of llama.cpp.
   Its pressure is not an obvious wrong-kernel issue: the remaining
   `projection_chain:60` work is prefill-shaped qmatmul plus add/mul sidecars,

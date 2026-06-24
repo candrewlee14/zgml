@@ -227,6 +227,12 @@ function checkScripts() {
   if (scripts["bench:q8-prompt-candidate:run"] !== "BENCH_BUILD_ZGML=0 node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json bench:q8-prompt-candidate:run must remain the no-rebuild full-model Q8 prompt candidate rerun");
   }
+  if (scripts["bench:q8-prompt-viable"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json bench:q8-prompt-viable must keep the rebuild-backed command/two-phase Q8 prompt microscope");
+  }
+  if (scripts["bench:q8-prompt-viable:run"] !== "BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json bench:q8-prompt-viable:run must keep the no-rebuild command/two-phase Q8 prompt microscope");
+  }
   if (scripts["bench:module-program"] !== "npm run build:package && node scripts/check_module_program_bench.cjs") {
     errors.push("package.json bench:module-program must remain the TS frontend module Program performance gate");
   }
@@ -321,6 +327,12 @@ function checkScripts() {
   }
   if (scripts["dev:perf:module-program:run"] !== "BENCH_MODULE_PROGRAM_KEYS=${BENCH_MODULE_PROGRAM_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched} node scripts/check_module_program_bench.cjs") {
     errors.push("package.json dev:perf:module-program:run must keep the no-rebuild module Program performance rerun");
+  }
+  if (scripts["dev:perf:q8-prompt:viable"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json dev:perf:q8-prompt:viable must keep the incremental command/two-phase Q8 prompt microscope");
+  }
+  if (scripts["dev:perf:q8-prompt:viable:run"] !== "BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json dev:perf:q8-prompt:viable:run must keep the no-rebuild command/two-phase Q8 prompt microscope");
   }
   if (scripts["dev:perf:pytorch:focus"] !== "zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && npm run build:package && BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:focus must keep the incremental native PyTorch focus loop");
@@ -456,6 +468,12 @@ function checkScripts() {
     "metal scheduled prefill projection-row-chain candidate",
     "--metal-prompt-projection-row-chain-candidate",
     "const commandSpeedupFloor = Number(process.env.BENCH_COMMAND_CANDIDATE_SPEEDUP_FLOOR || \"0.95\")",
+    "const laneMode = process.env.BENCH_Q8_PROMPT_LANES || \"all\"",
+    "function parseLanes(value)",
+    "BENCH_Q8_PROMPT_LANES contains unsupported lane",
+    "const measureCommand = measuredLanes.has(\"command\")",
+    "const measureSingle = measuredLanes.has(\"single\")",
+    "const measureTwoPhase = measuredLanes.has(\"two_phase\")",
     "const commandLowering = \"default_projection_chain_plus_row_chain_command_two_dispatch\"",
     "program_command_encoded_projection_row_chain_per_call",
     "program_command_dispatches_projection_row_chain_per_call",
@@ -480,7 +498,7 @@ function checkScripts() {
     "decode_fast_path=${commandBest.defaultDecodeFastPathReady ? \"ready\" : \"off\"} decode_lowering=${decodeLowering}",
     "decode_row_chain_default=${decodeRowChainDefault} decode_next=${decodeNextTarget}",
     "`decode_projection_pair=${format(commandBest.defaultDecodeProjectionPairs, 0)} decode_fallback=${format(commandBest.defaultDecodeFallback, 0)} `",
-    "commandProjectionPairs >= candidateProjectionPairFloor",
+    "commandLane.projectionPairs >= candidateProjectionPairFloor",
     "semantic_pair_path=",
     "semantic_pair_target=${semanticPairTarget}",
     "\"-Doptimize=ReleaseFast\"",
@@ -490,6 +508,7 @@ function checkScripts() {
     "const attempts = positiveInt(",
     "function progress(message)",
     "`[q8-prompt] ${message}\\n`",
+    "progress(`attempts=${attempts} lanes=${[...measuredLanes].join(\",\")}",
     "progress(`attempt ${index}/${attempts} command`)",
     "progress(`attempt ${index}/${attempts} single-dispatch-candidate`)",
     "progress(`attempt ${index}/${attempts} two-phase-candidate`)",
@@ -5326,6 +5345,12 @@ function checkDocs() {
     "BENCH_FRONTIER_FILTER=qproj",
     "bench:stencil:shape",
     "bench:stencil:shape:run",
+    "bench:q8-prompt-viable",
+    "dev:perf:q8-prompt:viable",
+    "BENCH_Q8_PROMPT_LANES=command,two_phase",
+    "`single_structural=skipped`",
+    "`command_command=241->181`",
+    "`two_phase_count=60`",
     "source-current stencil shape gate",
     "bench:frontier:qproj",
     "bench:frontier:qproj:run",
