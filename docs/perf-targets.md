@@ -318,8 +318,10 @@ machine for both prompt/prefill and decode.
   `thread_slot_gap=1.80x`. Treat that as the next kernel-design target: reduce
   the 576-wide lane-slot waste, not just the nominal row-serial math. A
   576-only 256-thread narrow-kernel probe reduced the slot footprint but hurt
-  throughput (`smollm_prompt=0.67x`), so a useful fix needs better partitioning
-  or vectorization without dropping too much parallelism.
+  throughput (`smollm_prompt=0.67x`). A 384-thread mid-width probe improved
+  utilization to about `777/1000` but still lost throughput
+  (`smollm_prompt=0.69x`), so a useful fix needs better partitioning or
+  vectorization without dropping too much parallelism.
 - The frontier gate now also reports the paired row-chain diagnostic
   `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
   This compares four staged qmatmul+residual+RMSNorm-scale row chains against

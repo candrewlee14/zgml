@@ -1330,8 +1330,10 @@ a 576-aware work-partitioning/vectorization change, not another blind
 `SEMANTIC_FFN_THREADS` probe. A 576-only `SEMANTIC_FFN_THREADS=256` narrow
 kernel probe reduced the measured thread-slot footprint
 (`thread_slot_gap` roughly `1.80x -> 1.30x`) but made throughput worse
-(`smollm_prompt=0.67x`), so the retained implementation stays on the 512-thread
-kernel until the partitioning change also preserves enough parallelism. The
+(`smollm_prompt=0.67x`). A follow-up 384-thread mid-width probe preserved more
+parallelism and improved lane utilization to about `777/1000`, but still lost
+throughput (`smollm_prompt=0.69x`). The retained implementation stays on the
+512-thread kernel until the partitioning change also preserves enough parallelism. The
 qsemantic gate now reports
 `target_vs_default=full_prefill:...x,smollm_prompt:...x` so the dispatch
 reduction is always interpreted against the current throughput path; a fresh
