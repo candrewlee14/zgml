@@ -46,7 +46,7 @@ requireText("30/30 dispatched projection_cache_group", "Q8 projection cache-grou
 requireText("Fallback", "fallback column");
 requireText("| pass |", "native evidence pass");
 
-const q8PromptMatch = output.match(/\| Metal Q8_0 prompt \| metal scheduled prefill projection-row-chain command [^|]+ \| [^|]+ \| [^|]+ \| [^|]+ \| ([0-9.]+)% \| 0\.000% \| miss \|/);
+const q8PromptMatch = output.match(/\| Metal Q8_0 prompt \| metal scheduled prefill projection-row-chain command [^|]+ \| [^|]+ \| [^|]+ \| [^|]+ \| ([0-9.]+)% \| 0\.000% \| (?:miss|pass) \|/);
 if (!q8PromptMatch) {
   process.stderr.write(output);
   process.stderr.write("\nmissing Q8 command prompt parity row with zero fallback\n");
