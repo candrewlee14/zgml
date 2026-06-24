@@ -651,6 +651,20 @@ ZGML_API zgml_status zgml_eager_linear_f32(
     size_t in_features,
     size_t out_features
 );
+ZGML_API zgml_status zgml_eager_linear_activation_f32(
+    const float *input,
+    size_t input_len,
+    const float *weights,
+    size_t weights_len,
+    const float *bias,
+    size_t bias_len,
+    float *output,
+    size_t output_len,
+    size_t batch,
+    size_t in_features,
+    size_t out_features,
+    uint32_t activation
+);
 ZGML_API zgml_status zgml_model_create(const zgml_model_desc *desc, zgml_model **out_model);
 ZGML_API zgml_status zgml_model_load_path(const zgml_model_load_desc *desc, zgml_model **out_model);
 ZGML_API zgml_status zgml_model_load_safetensors_data(const zgml_safetensors_data_load_desc *desc, zgml_model **out_model);

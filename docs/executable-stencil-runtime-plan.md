@@ -441,14 +441,21 @@ Current checked progress:
   compiled `prepare/executeInto` for the same shape. It now also reports
   `nativeEagerIntoMs` for `linear_batched`, backed by the stateless
   `zgml_eager_linear_f32` C ABI and surfaced on Node and Bun as
-  `zgml.nativeEager.linearInto`.
+  `zgml.nativeEager.linearInto`. It also reports `nativeEagerIntoMs` for
+  `lazy_matmul_add_gelu_batched` through the fused
+  `zgml_eager_linear_activation_f32` C ABI, surfaced as
+  `zgml.nativeEager.linearActivationInto` /
+  `zgml.native_eager.linear_activation_into`, so the first caller-owned
+  native eager epilogue path covers `matmul -> add(bias) -> GELU` directly
+  instead of only proving plain Linear.
   The same microscope reports `nativeEagerModuleForwardMs`,
   `nativeEagerModuleSpeedup`, and `nativeEagerModuleMaxAbsDiff` for
   `zgml.noGrad(() => linearModel.forward(input))`, proving the ordinary module
   surface can take the native eager lane without users calling the low-level
   primitive directly.
-  That C ABI path uses the same shared native matmul substrate as compiled
-  Program execution, then applies bias into the caller-owned output buffer.
+  These C ABI paths use the same shared native matmul substrate as compiled
+  Program execution, then apply bias and optional activation into the
+  caller-owned output buffer.
   Treat the reported
   `nativeProgramSpeedup` rows as executable targets for the first native eager
   `Linear`/`matmul` and fused `matmul -> add -> GELU` storage slices, not as a

@@ -79,6 +79,7 @@ export function createBunSymbolGroups(symbols: BunNativeSymbols) {
     }),
     nativeEager: Object.freeze({
       eagerLinearF32: symbols.zgml_eager_linear_f32,
+      eagerLinearActivationF32: symbols.zgml_eager_linear_activation_f32,
     }),
     programBind: Object.freeze({
       sessionBind: symbols.zgml_session_bind,

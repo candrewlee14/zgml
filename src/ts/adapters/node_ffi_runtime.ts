@@ -1103,6 +1103,18 @@ function nativeEagerLinearShape(input, weights, options = {}) {
   });
 }
 
+function nativeEagerActivationId(value, label) {
+  const normalized = String(value ?? "").trim();
+  switch (normalized) {
+    case "relu": return 1;
+    case "gelu": return 2;
+    case "silu": return 3;
+    case "sigmoid": return 4;
+    case "tanh": return 14;
+    default: throw new Error(`${label} activation must be relu, gelu, silu, sigmoid, or tanh, got ${value}`);
+  }
+}
+
 const nativeEager = Object.freeze({
   linearInto(output, input, weights, options = {}) {
     if (!(output instanceof Float32Array)) {
@@ -1145,6 +1157,50 @@ const nativeEager = Object.freeze({
   },
   linear_into(output, input, weights, options) {
     return this.linearInto(output, input, weights, options);
+  },
+  linearActivationInto(output, input, weights, options = {}) {
+    if (!(output instanceof Float32Array)) {
+      throw new Error("nativeEager.linearActivationInto output must be a Float32Array");
+    }
+    const inputData = nativeEagerTensorData(input, "nativeEager.linearActivationInto input");
+    const weightData = nativeEagerTensorData(weights, "nativeEager.linearActivationInto weights");
+    const biasValue = options.bias ?? null;
+    const biasData = biasValue == null ? null : nativeEagerTensorData(biasValue, "nativeEager.linearActivationInto bias");
+    const activation = nativeEagerActivationId(options.activation, "nativeEager.linearActivationInto");
+    const shape = nativeEagerLinearShape(input, weights, options);
+    const expectedInput = shape.batch * shape.inFeatures;
+    const expectedWeights = shape.inFeatures * shape.outFeatures;
+    const expectedOutput = shape.batch * shape.outFeatures;
+    if (inputData.length !== expectedInput) {
+      throw new Error(`nativeEager.linearActivationInto input length ${inputData.length} does not match ${shape.batch}x${shape.inFeatures}`);
+    }
+    if (weightData.length !== expectedWeights) {
+      throw new Error(`nativeEager.linearActivationInto weights length ${weightData.length} does not match ${shape.inFeatures}x${shape.outFeatures}`);
+    }
+    if (biasData && biasData.length !== shape.outFeatures) {
+      throw new Error(`nativeEager.linearActivationInto bias length ${biasData.length} does not match outFeatures ${shape.outFeatures}`);
+    }
+    if (output.length < expectedOutput) {
+      throw new Error(`nativeEager.linearActivationInto output length ${output.length} is smaller than ${expectedOutput}`);
+    }
+    check(nodeSymbolGroups.nativeEager.eagerLinearActivationF32(
+      inputData,
+      inputData.length,
+      weightData,
+      weightData.length,
+      biasData,
+      biasData ? biasData.length : 0,
+      output,
+      expectedOutput,
+      shape.batch,
+      shape.inFeatures,
+      shape.outFeatures,
+      activation,
+    ));
+    return output;
+  },
+  linear_activation_into(output, input, weights, options) {
+    return this.linearActivationInto(output, input, weights, options);
   },
 });
 

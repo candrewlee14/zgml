@@ -79,6 +79,20 @@ export type BunNativeSymbols = Readonly<{
     inFeatures: bigint,
     outFeatures: bigint,
   ): number;
+  zgml_eager_linear_activation_f32(
+    input: Float32Array,
+    inputLen: bigint,
+    weights: Float32Array,
+    weightsLen: bigint,
+    bias: Float32Array | null,
+    biasLen: bigint,
+    output: Float32Array,
+    outputLen: bigint,
+    batch: bigint,
+    inFeatures: bigint,
+    outFeatures: bigint,
+    activation: number,
+  ): number;
   zgml_session_free(session: BunNativeHandle): void;
   zgml_program_free(program: BunNativeHandle): void;
   zgml_model_free(model: BunNativeHandle): void;
@@ -331,6 +345,23 @@ export function bindBunSymbols(libPath: string): BunNativeSymbols {
         FFIType.u64,
         FFIType.u64,
         FFIType.u64,
+      ],
+      returns: FFIType.i32,
+    },
+    zgml_eager_linear_activation_f32: {
+      args: [
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.u64,
+        FFIType.u64,
+        FFIType.u64,
+        FFIType.u32,
       ],
       returns: FFIType.i32,
     },

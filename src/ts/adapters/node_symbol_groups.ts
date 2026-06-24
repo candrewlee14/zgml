@@ -80,6 +80,7 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
     }),
     nativeEager: Object.freeze({
       eagerLinearF32: symbols.eagerLinearF32,
+      eagerLinearActivationF32: symbols.eagerLinearActivationF32,
     }),
     programBind: Object.freeze({
       sessionBind: symbols.sessionBind,

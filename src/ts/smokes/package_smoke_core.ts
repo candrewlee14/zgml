@@ -332,8 +332,14 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (!nativeEager || typeof nativeEager.linearInto !== "function") {
     throw new Error(`${label} expected nativeEager.linearInto`);
   }
+  if (typeof nativeEager.linearActivationInto !== "function") {
+    throw new Error(`${label} expected nativeEager.linearActivationInto`);
+  }
   if (!nativeEagerAlias || typeof nativeEagerAlias.linear_into !== "function") {
     throw new Error(`${label} expected native_eager.linear_into alias`);
+  }
+  if (typeof nativeEagerAlias.linear_activation_into !== "function") {
+    throw new Error(`${label} expected native_eager.linear_activation_into alias`);
   }
   const input = adapter.tensor([1, 2, 3, 4], [2, 2]);
   const weights = adapter.tensor([1, 0, 0.5, 0, 1, -0.5], [2, 3]);
@@ -350,6 +356,18 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.linear_into to reuse caller output`);
   }
   expectClose(aliasOutput, Array.from(directOutput), `${label} native_eager.linear_into output`);
+  const geluOutput = new Float32Array(6);
+  const geluResult = nativeEager.linearActivationInto(geluOutput, input, weights, { bias, activation: "gelu" });
+  if (geluResult !== geluOutput) {
+    throw new Error(`${label} expected nativeEager.linearActivationInto to reuse caller output`);
+  }
+  expectClose(geluOutput, Array.from(directOutput, (value) => 0.5 * value * (1 + Math.tanh(Math.sqrt(2 / Math.PI) * (value + 0.044715 * value * value * value)))), `${label} nativeEager.linearActivationInto output`);
+  const geluAliasOutput = new Float32Array(6);
+  const geluAliasResult = nativeEagerAlias.linear_activation_into(geluAliasOutput, input, weights, { bias, activation: "gelu" });
+  if (geluAliasResult !== geluAliasOutput) {
+    throw new Error(`${label} expected native_eager.linear_activation_into to reuse caller output`);
+  }
+  expectClose(geluAliasOutput, Array.from(geluOutput), `${label} native_eager.linear_activation_into output`);
 
   const linear = adapter.nn.linear(2, 3, {
     weight: [1, 0, 0.5, 0, 1, -0.5],

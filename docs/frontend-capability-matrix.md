@@ -75,7 +75,12 @@ PyTorch replacement:
   that native eager hook as the normal module path; grad-enabled training keeps
   the TS/autograd graph path. The native eager gap microscope records
   `nativeEagerModuleForwardMs`, `nativeEagerModuleSpeedup`, and
-  `nativeEagerModuleMaxAbsDiff` for that no-grad module lane.
+  `nativeEagerModuleMaxAbsDiff` for that no-grad module lane. Node and Bun now
+  also expose `zgml.nativeEager.linearActivationInto` /
+  `zgml.native_eager.linear_activation_into`, backed by
+  `zgml_eager_linear_activation_f32`, so the `lazy_matmul_add_gelu_batched`
+  microscope has a caller-owned native eager path for
+  `matmul -> add(bias) -> GELU` instead of only a compiled Program baseline.
 - Safetensors/model-source interop is strong for runtime paths, while ordinary
   TS module weights now have explicit state-dict/checkpoint save/load recipes;
   broader third-party weight-format adapters remain future work.

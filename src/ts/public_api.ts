@@ -2125,9 +2125,14 @@ export type NativeEagerLinearIntoOptions = Readonly<{
   outFeatures?: number;
   out_features?: number;
 }>;
+export type NativeEagerLinearActivationIntoOptions = NativeEagerLinearIntoOptions & Readonly<{
+  activation: "relu" | "gelu" | "silu" | "sigmoid" | "tanh";
+}>;
 export type PublicNativeEagerNamespace = Readonly<{
   linearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options?: NativeEagerLinearIntoOptions): Float32Array;
   linear_into(output: Float32Array, input: TensorLike, weights: TensorLike, options?: NativeEagerLinearIntoOptions): Float32Array;
+  linearActivationInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerLinearActivationIntoOptions): Float32Array;
+  linear_activation_into(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerLinearActivationIntoOptions): Float32Array;
 }>;
 export declare function linspace<const S extends TensorShapeTuple>(shape: S, start: number, end: number, options?: TensorOptions): Tensor<S>;
 export declare function linspace<const Steps extends number>(start: number, end: number, steps: Steps, options?: TensorOptions): Tensor<readonly [Steps]>;
@@ -6955,6 +6960,7 @@ export type RuntimeFeatures = Readonly<{
   sessionPersistentUpload: boolean;
   nativeModuleActivationChain: boolean;
   nativeEagerLinear: boolean;
+  nativeEagerLinearActivation: boolean;
 }>;
 
 export type ModelInspection = Readonly<{

@@ -573,9 +573,12 @@ function checkPackageExports(errors) {
   const cApiSource = readSource(path.join("src", "c_api.zig"));
   for (const required of [
     "feature_native_eager_linear",
+    "feature_native_eager_linear_activation",
     "zgml_eager_linear_f32",
+    "zgml_eager_linear_activation_f32",
     "forward.blasSgemm",
     "C ABI native eager linear writes caller output",
+    "C ABI native eager linear activation writes caller output",
   ]) {
     if (!cApiSource.includes(required)) {
       errors.push(`src/c_api.zig must keep native eager linear ABI evidence: ${required}`);
@@ -584,6 +587,9 @@ function checkPackageExports(errors) {
   const publicApiSource = readSource(path.join("src", "ts", "public_api.ts"));
   for (const required of [
     "PublicNativeEagerNamespace",
+    "NativeEagerLinearActivationIntoOptions",
+    "linearActivationInto(output: Float32Array",
+    "linear_activation_into(output: Float32Array",
     "nativeEager: PublicNativeEagerNamespace",
     "native_eager: PublicNativeEagerNamespace",
   ]) {
@@ -614,6 +620,8 @@ function checkPackageExports(errors) {
     "adapter.native_eager ?? adapter.zgml?.native_eager ?? adapter.torch?.native_eager",
     "nativeEager.linearInto(directOutput, input, weights, { bias })",
     "nativeEagerAlias.linear_into(aliasOutput, input, weights, { bias })",
+    "nativeEager.linearActivationInto(geluOutput, input, weights, { bias, activation: \"gelu\" })",
+    "nativeEagerAlias.linear_activation_into(geluAliasOutput, input, weights, { bias, activation: \"gelu\" })",
     "adapter.noGrad(() => linear.forward(input))",
     "expectNativeEagerLinearEvidence(adapter, label);",
   ]) {
@@ -624,8 +632,10 @@ function checkPackageExports(errors) {
   const bunSymbolsSource = readSource(path.join("src", "ts", "adapters", "bun_symbols.ts"));
   for (const required of [
     "zgml_eager_linear_f32(",
+    "zgml_eager_linear_activation_f32(",
     "bias: Float32Array | null",
     "FFIType.u64",
+    "FFIType.u32",
     "returns: FFIType.i32",
   ]) {
     if (!bunSymbolsSource.includes(required)) {
@@ -636,6 +646,7 @@ function checkPackageExports(errors) {
   for (const required of [
     "nativeEager: Object.freeze({",
     "eagerLinearF32: symbols.zgml_eager_linear_f32",
+    "eagerLinearActivationF32: symbols.zgml_eager_linear_activation_f32",
   ]) {
     if (!bunSymbolGroupsSource.includes(required)) {
       errors.push(`src/ts/adapters/bun_symbol_groups.ts must group the Bun native eager Linear symbol: ${required}`);
@@ -648,8 +659,11 @@ function checkPackageExports(errors) {
     "export const nativeEager = Object.freeze({",
     "linearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: Record<string, unknown> = {})",
     "check(bunSymbolGroups.nativeEager.eagerLinearF32(",
+    "linearActivationInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: Record<string, unknown> = {})",
+    "check(bunSymbolGroups.nativeEager.eagerLinearActivationF32(",
     "BigInt(inputData.length)",
     "linear_into(output: Float32Array, input: TensorLike, weights: TensorLike, options?: Record<string, unknown>)",
+    "linear_activation_into(output: Float32Array, input: TensorLike, weights: TensorLike, options?: Record<string, unknown>)",
     "nativeEager,",
   ]) {
     if (!bunFfiRuntimeSource.includes(required)) {

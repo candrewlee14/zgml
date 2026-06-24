@@ -599,12 +599,18 @@ function checkScripts() {
   ]);
   requireIncludes(read("src/c_api.zig"), "src/c_api.zig", "native eager linear C ABI", [
     "feature_native_eager_linear",
+    "feature_native_eager_linear_activation",
     "zgml_eager_linear_f32",
+    "zgml_eager_linear_activation_f32",
     "forward.blasSgemm",
     "C ABI native eager linear writes caller output",
+    "C ABI native eager linear activation writes caller output",
   ]);
   requireIncludes(read("src/ts/public_api.ts"), "src/ts/public_api.ts", "native eager public API types", [
     "PublicNativeEagerNamespace",
+    "NativeEagerLinearActivationIntoOptions",
+    "linearActivationInto(output: Float32Array",
+    "linear_activation_into(output: Float32Array",
     "nativeEager: PublicNativeEagerNamespace",
     "native_eager: PublicNativeEagerNamespace",
   ]);

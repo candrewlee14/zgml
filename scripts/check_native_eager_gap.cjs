@@ -223,6 +223,10 @@ const linearBias = values(32, 32);
 const linearWeightTensor = zgml.tensor(linearWeights, [64, 32]);
 const linearBiasTensor = zgml.tensor(linearBias, [32]);
 const linearModel = linearBatchedModel();
+const geluWeights = values(64 * 64, 32);
+const geluBias = values(64, 64);
+const geluWeightTensor = zgml.tensor(geluWeights, [64, 64]);
+const geluBiasTensor = zgml.tensor(geluBias, [64]);
 
 const gapSpecs = Object.freeze([
   Object.freeze({
@@ -248,19 +252,24 @@ const gapSpecs = Object.freeze([
     shape: Object.freeze({ batch: 128, inFeatures: 64, outFeatures: 64, fusedOps: "matmul_add_gelu" }),
     outputLen: 128 * 64,
     input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
-    eager: (input) => lazyMatmulAddGeluEager(input, values(64 * 64, 32), values(64, 64), 128, 64, 64),
+    eager: (input) => lazyMatmulAddGeluEager(input, geluWeights, geluBias, 128, 64, 64),
+    nativeEager: (output, input) => zgml.nativeEager.linearActivationInto(output, input, geluWeightTensor, {
+      bias: geluBiasTensor,
+      activation: "gelu",
+    }),
     compiled: () => compiledLazyHandle(
       zgml.lazy.input([128, 64])
         .matmul(zgml.lazy.parameter([64, 64], "w"))
         .add(zgml.lazy.parameter([64], "b"))
         .gelu(),
       {
-        weights: new Float32Array(values(64 * 64, 32)),
-        bias: new Float32Array(values(64, 64)),
+        weights: new Float32Array(geluWeights),
+        bias: new Float32Array(geluBias),
       },
       [128, 64],
     ),
     eagerIterations: 100,
+    nativeEagerIterations: 1000,
     compiledIterations: 1000,
     tolerance: 1e-4,
     next: "native_eager_fused_matmul_add_gelu_storage_slice",

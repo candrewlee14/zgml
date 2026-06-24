@@ -86,6 +86,7 @@ const feature_program_binding_requirements: u64 = 1 << 42;
 const feature_session_persistent_upload: u64 = 1 << 43;
 const feature_native_module_activation_chain: u64 = 1 << 44;
 const feature_native_eager_linear: u64 = 1 << 45;
+const feature_native_eager_linear_activation: u64 = 1 << 46;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -1116,6 +1117,7 @@ fn runtimeFeatureFlags() u64 {
         feature_session_persistent_upload |
         feature_native_module_activation_chain |
         feature_native_eager_linear |
+        feature_native_eager_linear_activation |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -1605,6 +1607,26 @@ fn addBiasRowsF32(
     }
 }
 
+fn eagerActivationF32(value: f32, activation: u32) !f32 {
+    return switch (activation) {
+        0 => value,
+        module_activation_relu => if (value > 0) value else 0,
+        module_activation_gelu => blk: {
+            const inner = @as(f32, 0.7978845608028654) * value * (1.0 + @as(f32, 0.044715) * value * value);
+            break :blk 0.5 * value * (1.0 + std.math.tanh(inner));
+        },
+        module_activation_silu => value / (1.0 + @exp(-value)),
+        module_activation_sigmoid => 1.0 / (1.0 + @exp(-value)),
+        module_activation_tanh => std.math.tanh(value),
+        else => error.InvalidArgument,
+    };
+}
+
+fn applyActivationF32(output: []f32, activation: u32) !void {
+    if (activation == 0) return;
+    for (output) |*value| value.* = try eagerActivationF32(value.*, activation);
+}
+
 export fn zgml_eager_linear_f32(
     input_ptr: ?[*]const f32,
     input_len: usize,
@@ -1652,6 +1674,60 @@ export fn zgml_eager_linear_f32(
         out_features,
     );
     if (bias) |b| addBiasRowsF32(output, b, batch, out_features);
+    return status(.ok);
+}
+
+export fn zgml_eager_linear_activation_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    weights_ptr: ?[*]const f32,
+    weights_len: usize,
+    bias_ptr: ?[*]const f32,
+    bias_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    batch: usize,
+    in_features: usize,
+    out_features: usize,
+    activation: u32,
+) c_int {
+    if (
+        input_ptr == null or
+        weights_ptr == null or
+        output_ptr == null or
+        batch == 0 or
+        in_features == 0 or
+        out_features == 0
+    ) return status(.invalid_argument);
+    if (checkedElementCount(batch, in_features) != input_len) return status(.shape_mismatch);
+    if (checkedElementCount(in_features, out_features) != weights_len) return status(.shape_mismatch);
+    if (bias_len != 0 and (bias_ptr == null or bias_len != out_features)) return status(.shape_mismatch);
+    if (checkedElementCount(batch, out_features) != output_len) return status(.shape_mismatch);
+
+    const input = input_ptr.?[0..input_len];
+    const weights = weights_ptr.?[0..weights_len];
+    const bias = if (bias_len == 0) null else bias_ptr.?[0..bias_len];
+    const output = output_ptr.?[0..output_len];
+    forward.blasSgemm(
+        output,
+        input,
+        weights,
+        batch,
+        out_features,
+        in_features,
+        in_features,
+        1,
+        out_features,
+        1,
+        0,
+        0,
+        0,
+        out_features,
+    );
+    if (bias) |b| addBiasRowsF32(output, b, batch, out_features);
+    applyActivationF32(output, activation) catch |err| return switch (err) {
+        error.InvalidArgument => status(.invalid_argument),
+    };
     return status(.ok);
 }
 
@@ -9421,6 +9497,66 @@ test "C ABI native eager linear writes caller output" {
         2,
         3,
         2,
+    ));
+}
+
+test "C ABI native eager linear activation writes caller output" {
+    const input = [_]f32{
+        1, 2, 3,
+        4, 5, 6,
+    };
+    const weights = [_]f32{
+        1, -1,
+        0, 2,
+        -0.5, 0.25,
+    };
+    const bias = [_]f32{ 0.5, -1 };
+    var output = [_]f32{0} ** 4;
+    var linear = [_]f32{0} ** 4;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_linear_activation_f32(
+        input[0..].ptr,
+        input.len,
+        weights[0..].ptr,
+        weights.len,
+        bias[0..].ptr,
+        bias.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        2,
+        module_activation_gelu,
+    ));
+    try std.testing.expectEqual(status(.ok), zgml_eager_linear_f32(
+        input[0..].ptr,
+        input.len,
+        weights[0..].ptr,
+        weights.len,
+        bias[0..].ptr,
+        bias.len,
+        linear[0..].ptr,
+        linear.len,
+        2,
+        3,
+        2,
+    ));
+    for (linear, output) |plain, activated| {
+        try std.testing.expectApproxEqAbs(try eagerActivationF32(plain, module_activation_gelu), activated, 1e-6);
+    }
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_linear_activation_f32(
+        input[0..].ptr,
+        input.len,
+        weights[0..].ptr,
+        weights.len,
+        null,
+        0,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        2,
+        99,
     ));
 }
 
