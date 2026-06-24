@@ -156,6 +156,7 @@ import {
   zeros_like,
   onesLike,
   ones_like,
+  zgml,
   type CheckpointNamespace,
   type CheckpointCreateOptions,
   type CheckpointModuleState,
@@ -1310,6 +1311,7 @@ const initKaimingNormalParameter: NnParameter<readonly [2, 2]> = nn.init.kaiming
 const initKaimingNormalCamelParameter: NnParameter<readonly [2, 2]> = nn.init.kaimingNormal_(initWeightParameter, { mode: "fanOut", nonlinearity: "leaky_relu", negativeSlope: 0.2 });
 const einsumRootTensor: Tensor = einsum("ij,jk->ik", [tensor([1, 2, 3, 4], [2, 2] as const), tensor([5, 6, 7, 8], [2, 2] as const)]);
 const einsumStaticTensor: Tensor = Tensor.einsum("ii->", tensor([1, 2, 3, 4], [2, 2] as const));
+const einsumZgmlTensor: Tensor = zgml.einsum("ij,jk->ik", tensor([1, 2, 3, 4], [2, 2] as const), tensor([5, 6, 7, 8], [2, 2] as const));
 const einsumTorchTensor: Tensor = torch.einsum("ij,jk->ik", tensor([1, 2, 3, 4], [2, 2] as const), tensor([5, 6, 7, 8], [2, 2] as const));
 const einsumEllipsisTensor: Tensor = einsum("...ij,jk->...ik", tensor([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2] as const), tensor([1, 2, 3, 4], [2, 2] as const));
 const einsumImplicitEllipsisTensor: Tensor = Tensor.einsum("...i->...", tensor([1, 2, 3, 4, 5, 6], [2, 3] as const));

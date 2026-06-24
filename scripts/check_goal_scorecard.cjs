@@ -4272,6 +4272,8 @@ function checkZgmlFrontendSurface() {
   ]);
   requireIncludes(publicApi, "examples/types/public-api-smoke.ts", "root public PyTorch-like exports", [
     "Tensor,",
+    "zgml,",
+    "const einsumZgmlTensor: Tensor = zgml.einsum",
     "type ModuleBase,",
     "checkpoint,",
     "data,",
@@ -5728,8 +5730,10 @@ function checkDocs() {
     "The root-level",
     "product/API diet now has a checked internal non-breaking taxonomy:",
     "`src/ts/public_surface.ts` names the stable root namespaces users should learn",
+    "names `zgml` as the stable friendly root value",
+    "compatibility slices such as `torch`",
     "without adding",
-    "another public package subpath.",
+    "package subpath.",
     "Native eager",
     "execution policy is still open work.",
     "native Program lowering for `argmax(dim)` and `argmin(dim)`",
@@ -5964,6 +5968,7 @@ function checkDocs() {
     "Native eager tensor storage is not the default.",
     "Safetensors/checkpoint interop is strong for model-source runtime paths",
     "The root public API is still wider than the ideal first-contact surface",
+    "`zgml` is the canonical friendly namespace",
     "## Evidence Bar",
     "Raising the frontend replacement score should require one of these:",
     "Raising the performance substrate score should require benchmark artifacts, not",

@@ -21,6 +21,10 @@ export const stableRootNamespaces = Object.freeze([
   "inspection",
 ] as const);
 
+export const stableRootValues = Object.freeze([
+  "zgml",
+] as const);
+
 export const advancedRootNamespaces = Object.freeze([
   "abi",
   "compilerSignatures",
@@ -84,11 +88,18 @@ export const legacyCompatibleRootNamespaces = Object.freeze([
   "trainState",
 ] as const);
 
+export const legacyCompatibleRootValues = Object.freeze([
+  "torch",
+] as const);
+
 export const rootSurfacePolicy = Object.freeze({
   stableFirst: true,
+  canonicalFriendlyNamespace: "zgml",
+  compatibilityFriendlyNamespace: "torch",
   compatibilityExportsRemainPublic: true,
   internalPackagePolicyOnly: true,
   classificationCoversRootNamespaceExports: true,
+  valueClassificationCoversFriendlyRootExports: true,
   newProductSurfaceGoesThroughStableNamespaces: true,
   runtimeEvidenceStaysInspectable: true,
 });
@@ -98,7 +109,9 @@ export const publicSurfaceManifest = Object.freeze({
   ...tsProductManifestPolicy("src/ts/public_surface.ts"),
   rootEntry: "src/ts/index.ts",
   stableRootNamespaces,
+  stableRootValues,
   advancedRootNamespaces,
   legacyCompatibleRootNamespaces,
+  legacyCompatibleRootValues,
   rootSurfacePolicy,
 });

@@ -237,11 +237,14 @@ function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
   const stable = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "stableRootNamespaces", errors);
   const advanced = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "advancedRootNamespaces", errors);
   const legacy = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "legacyCompatibleRootNamespaces", errors);
+  const stableValues = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "stableRootValues", errors);
+  const legacyValues = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "legacyCompatibleRootValues", errors);
   const classified = [...stable, ...advanced, ...legacy].sort();
   const classifiedSet = new Set(classified);
   const duplicateClassifications = classified.filter((name, index) => classified.indexOf(name) !== index);
   const missing = rootNamespaceExports.filter((name) => !classifiedSet.has(name));
   const stale = classified.filter((name) => !rootNamespaceExports.includes(name));
+  const publicApiSource = fs.readFileSync(path.join(root, "src", "ts", "public_api.ts"), "utf8");
 
   if (indexSource.includes('from "./public_surface.js"')) {
     errors.push(`${indexPath} must not expose the internal root public-surface taxonomy as another user-facing root API`);
@@ -251,6 +254,27 @@ function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
   }
   if (!surfaceSource.includes("classificationCoversRootNamespaceExports: true")) {
     errors.push(`${surfacePath} must assert that the taxonomy covers root namespace exports`);
+  }
+  if (!surfaceSource.includes('canonicalFriendlyNamespace: "zgml"')) {
+    errors.push(`${surfacePath} must name zgml as the canonical friendly namespace`);
+  }
+  if (!surfaceSource.includes('compatibilityFriendlyNamespace: "torch"')) {
+    errors.push(`${surfacePath} must name torch as the compatibility friendly namespace`);
+  }
+  if (!surfaceSource.includes("valueClassificationCoversFriendlyRootExports: true")) {
+    errors.push(`${surfacePath} must assert that value taxonomy covers friendly root exports`);
+  }
+  if (!stableValues.includes("zgml")) {
+    errors.push(`${surfacePath} must classify zgml as a stable root value`);
+  }
+  if (!legacyValues.includes("torch")) {
+    errors.push(`${surfacePath} must classify torch as a legacy-compatible root value`);
+  }
+  if (!publicApiSource.includes("export declare const zgml: PublicZgmlNamespace;")) {
+    errors.push("src/ts/public_api.ts must expose zgml as the canonical friendly root namespace value");
+  }
+  if (!publicApiSource.includes("export declare const torch: PublicTorchNamespace;")) {
+    errors.push("src/ts/public_api.ts must keep torch as the compatibility friendly namespace value");
   }
   if (duplicateClassifications.length !== 0) {
     errors.push(`${surfacePath} must classify each root namespace once: duplicate ${[...new Set(duplicateClassifications)].join(", ")}`);

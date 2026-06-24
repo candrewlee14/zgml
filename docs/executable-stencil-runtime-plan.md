@@ -409,9 +409,10 @@ Current checked progress:
   compile/bind/session hooks through package and type smokes. The root-level
   product/API diet now has a checked internal non-breaking taxonomy:
   `src/ts/public_surface.ts` names the stable root namespaces users should learn
-  first, separates advanced runtime/evidence namespaces, and keeps legacy
-  compatibility slices explicit while preserving existing exports without adding
-  another public package subpath. Native eager execution policy is still open work.
+  first, names `zgml` as the stable friendly root value, separates advanced
+  runtime/evidence namespaces, and keeps compatibility slices such as `torch`
+  explicit while preserving existing exports without adding another public
+  package subpath. Native eager execution policy is still open work.
   The remaining frontend jump is native lowering, breadth, and first-contact
   simplicity, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or

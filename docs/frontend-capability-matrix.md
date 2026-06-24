@@ -50,7 +50,8 @@ PyTorch replacement:
   TS userland needs clearer import/export recipes for ordinary module weights.
 - The root public API is still wider than the ideal first-contact surface; users
   should learn stable namespaces first and reach for advanced runtime evidence
-  only when inspecting or deploying.
+  only when inspecting or deploying. `zgml` is the canonical friendly namespace;
+  `torch` remains a compatibility alias for PyTorch-shaped habits.
 
 ## Evidence Bar
 
