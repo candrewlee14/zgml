@@ -59,6 +59,7 @@ export type AdapterFrontendModuleSurfaceOptions = AdapterModuleCompileHooks & Ad
   zerosF32: LinearModuleOptions["zerosF32"] & EmbeddingModuleOptions["zerosF32"] & Conv2dModuleOptions["zerosF32"] & FeatureNormModuleOptions["zerosF32"];
   makeParameter: LinearModuleOptions["makeParameter"] & EmbeddingModuleOptions["makeParameter"] & Conv2dModuleOptions["makeParameter"] & FeatureNormModuleOptions["makeParameter"];
   parameterView: LinearModuleOptions["parameterView"] & EmbeddingModuleOptions["parameterView"] & Conv2dModuleOptions["parameterView"] & FeatureNormModuleOptions["parameterView"];
+  nativeEagerLinearInto?: LinearModuleOptions["nativeEagerLinearInto"];
   TinyLinearModel: LinearModuleOptions["TinyLinearModel"];
 }>;
 
@@ -101,6 +102,8 @@ export function createAdapterFrontendModuleSurface(options: AdapterFrontendModul
     zerosF32: options.zerosF32,
     makeParameter: options.makeParameter,
     parameterView: options.parameterView,
+    nativeEagerLinearInto: options.nativeEagerLinearInto,
+    isGradEnabled: options.isGradEnabled,
     parameterNames: options.parameterNames,
     parameterInfos: options.parameterInfos,
     parameterInfo: options.parameterInfo,

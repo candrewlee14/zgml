@@ -39,6 +39,7 @@ export type LinearTensor = {
   shape: readonly number[];
   length: number;
   rank: number;
+  requiresGrad?: boolean;
   reshape(shape: readonly number[]): LinearTensor;
   matmul(other: unknown, otherShape: unknown): LinearTensor;
   add(other: unknown): LinearTensor;
@@ -73,6 +74,17 @@ type DefaultedF32 = (
   fallback: (length: number) => Float32Array,
   shape?: readonly number[],
 ) => Float32Array;
+type NativeEagerLinearInto = (
+  output: Float32Array,
+  input: LinearTensor,
+  weights: unknown,
+  options?: Readonly<{
+    bias?: unknown;
+    batch?: number;
+    inFeatures?: number;
+    outFeatures?: number;
+  }>,
+) => Float32Array;
 type ParameterFactory = (name: string, values: Float32Array, shape: readonly number[], layout: string) => LinearParameter;
 type ParameterView = BivariantCallback<[prefix: string, parameter: LinearParameter], UnknownRecord>;
 type TinyLinearModelConstructor = {
@@ -91,6 +103,8 @@ export type LinearModuleClassOptions = Readonly<Record<string, unknown> & Sequen
   zerosF32: (length: number) => Float32Array;
   makeParameter: ParameterFactory;
   parameterView: ParameterView;
+  nativeEagerLinearInto?: NativeEagerLinearInto;
+  isGradEnabled?: () => boolean;
   TinyLinearModel: TinyLinearModelConstructor;
 }>;
 
@@ -102,6 +116,8 @@ export function createLinearModuleClass(options: LinearModuleClassOptions) {
   const zerosF32 = options.zerosF32;
   const makeParameter = options.makeParameter;
   const parameterView = options.parameterView;
+  const nativeEagerLinearInto = options.nativeEagerLinearInto;
+  const isGradEnabled = typeof options.isGradEnabled === "function" ? options.isGradEnabled : () => true;
   const stateHooks = createStatefulModuleStateHooks(options, "LinearModule");
   const TinyLinearModel = options.TinyLinearModel;
   const compileHooks = createSequentialProgramCompileHooks(options, "LinearModule", { requirePackParameters: false });
@@ -123,6 +139,12 @@ export function createLinearModuleClass(options: LinearModuleClassOptions) {
     if (config.bias === false) return null;
     const biasValues = config.biasValues ?? (config.bias === undefined || config.bias === true ? undefined : config.bias);
     return defaultedF32(biasValues, outFeatures, "linear bias", zerosF32, [outFeatures]);
+  }
+
+  function canUseNativeEagerLinear() {
+    if (typeof nativeEagerLinearInto !== "function") return false;
+    if (isGradEnabled()) return false;
+    return true;
   }
 
   class LinearModule {
@@ -154,6 +176,16 @@ export function createLinearModuleClass(options: LinearModuleClassOptions) {
         if (input.length !== this.inFeatures) {
           throw new Error(`linear input length must be ${this.inFeatures}, got ${input.length}`);
         }
+        if (canUseNativeEagerLinear()) {
+          const output = new Float32Array(this.outFeatures);
+          nativeEagerLinearInto!(output, input, this.weightParam.tensor, {
+            bias: this.biasParam?.tensor ?? null,
+            batch: 1,
+            inFeatures: this.inFeatures,
+            outFeatures: this.outFeatures,
+          });
+          return new TensorClass(output, [this.outFeatures]);
+        }
         let out = input.reshape([1, this.inFeatures]).matmul(this.weightParam.tensor as LinearTensor, undefined).reshape([this.outFeatures]);
         if (this.biasParam) out = out.add(this.biasParam.tensor);
         return out;
@@ -163,6 +195,16 @@ export function createLinearModuleClass(options: LinearModuleClassOptions) {
       }
       const leadingShape = input.shape.slice(0, -1);
       const rowCount = leadingShape.reduce((acc: number, dim: number) => acc * dim, 1);
+      if (canUseNativeEagerLinear()) {
+        const output = new Float32Array(rowCount * this.outFeatures);
+        nativeEagerLinearInto!(output, input, this.weightParam.tensor, {
+          bias: this.biasParam?.tensor ?? null,
+          batch: rowCount,
+          inFeatures: this.inFeatures,
+          outFeatures: this.outFeatures,
+        });
+        return new TensorClass(output, [...leadingShape, this.outFeatures]);
+      }
       let out = input.reshape([rowCount, this.inFeatures]).matmul(this.weightParam.tensor as LinearTensor, undefined);
       if (this.biasParam) out = out.add(this.biasParam.tensor);
       return out.reshape([...leadingShape, this.outFeatures]);

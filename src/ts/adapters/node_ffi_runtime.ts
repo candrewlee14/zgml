@@ -993,6 +993,10 @@ const {
   uninitializedMessage: "Node Module compiler surface is not initialized",
 });
 
+function nativeEagerLinearInto(output, input, weights, options) {
+  return nativeEager.linearInto(output, input, weights, options);
+}
+
 const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   sharedFrontend,
   Tensor,
@@ -1006,6 +1010,7 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   zerosF32,
   makeParameter,
   parameterView,
+  nativeEagerLinearInto,
   parameterNames,
   parameterInfos,
   parameterInfo,

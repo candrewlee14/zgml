@@ -545,6 +545,10 @@ function checkPackageExports(errors) {
     "NATIVE_EAGER_GAP_JSON",
     "nativeEagerIntoMs",
     "nativeEagerSpeedup",
+    "nativeEagerModuleForwardMs",
+    "nativeEagerModuleSpeedup",
+    "nativeEagerModuleMaxAbsDiff",
+    "zgml.noGrad(() => linearModel.forward(input))",
     "BENCH_NATIVE_EAGER_MIN_SPEEDUP",
     "preparedExecuteIntoMs",
     "nativeProgramSpeedup",
@@ -574,6 +578,22 @@ function checkPackageExports(errors) {
     if (!publicApiSource.includes(required)) {
       errors.push(`src/ts/public_api.ts must keep native eager public type evidence: ${required}`);
     }
+  }
+  const linearModuleSource = readSource(path.join("src", "ts", "nn", "linear_module.ts"));
+  for (const required of [
+    "nativeEagerLinearInto?: NativeEagerLinearInto",
+    "isGradEnabled?: () => boolean",
+    "function canUseNativeEagerLinear()",
+    "if (isGradEnabled()) return false;",
+    "nativeEagerLinearInto!(output, input, this.weightParam.tensor",
+  ]) {
+    if (!linearModuleSource.includes(required)) {
+      errors.push(`src/ts/nn/linear_module.ts must keep no-grad native eager Linear module evidence: ${required}`);
+    }
+  }
+  const frontendModuleSurfaceSource = readSource(path.join("src", "ts", "adapters", "frontend_module_surface.ts"));
+  if (!frontendModuleSurfaceSource.includes("nativeEagerLinearInto?: LinearModuleOptions[\"nativeEagerLinearInto\"]")) {
+    errors.push("src/ts/adapters/frontend_module_surface.ts must pass the native eager Linear hook through the module surface");
   }
   const moduleProgramBenchSource = readSource(path.join("scripts", "check_module_program_bench.cjs"));
   for (const required of [

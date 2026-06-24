@@ -165,6 +165,10 @@ requireIncludes(matrix, matrixPath, "Raising the performance substrate score sho
 requireIncludes(matrix, matrixPath, "README/example import/export recipes");
 requireIncludes(matrix, matrixPath, "ordinary TS module weights use state-dict/checkpoint save/load recipes");
 requireIncludes(matrix, matrixPath, "broader third-party weight-format adapters remain future work");
+requireIncludes(matrix, matrixPath, "`nn.Linear.forward` calls inside `zgml.noGrad(...)`");
+requireIncludes(matrix, matrixPath, "`nativeEagerModuleForwardMs`");
+requireIncludes(matrix, matrixPath, "`nativeEagerModuleSpeedup`");
+requireIncludes(matrix, matrixPath, "`nativeEagerModuleMaxAbsDiff`");
 
 const workflowRows = confidenceRows();
 const workflowNames = workflowRows.map((row) => row.workflow);

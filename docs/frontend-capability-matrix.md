@@ -70,7 +70,12 @@ PyTorch replacement:
   Node also exposes the first stateless native eager primitive:
   `zgml.nativeEager.linearInto`, backed by the `zgml_eager_linear_f32` C ABI,
   for caller-owned f32 `Linear` output. That primitive routes through the shared
-  native matmul substrate instead of a JS or ABI-local matmul loop.
+  native matmul substrate instead of a JS or ABI-local matmul loop. On Node,
+  eligible `nn.Linear.forward` calls inside `zgml.noGrad(...)` now route through
+  that native eager hook as the normal module path; grad-enabled training keeps
+  the TS/autograd graph path. The native eager gap microscope records
+  `nativeEagerModuleForwardMs`, `nativeEagerModuleSpeedup`, and
+  `nativeEagerModuleMaxAbsDiff` for that no-grad module lane.
 - Safetensors/model-source interop is strong for runtime paths, while ordinary
   TS module weights now have explicit state-dict/checkpoint save/load recipes;
   broader third-party weight-format adapters remain future work.

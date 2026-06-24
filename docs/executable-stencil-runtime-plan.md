@@ -431,13 +431,21 @@ Current checked progress:
   first, names `zgml` as the stable friendly root value, separates advanced
   runtime/evidence namespaces, and keeps compatibility slices such as `torch`
   explicit while preserving existing exports without adding another public
-  package subpath. Native eager execution policy is still open work.
+  package subpath. Native eager execution policy is still open work. The first
+  normal-module route now exists on Node: eligible `nn.Linear.forward`
+  calls inside `zgml.noGrad(...)` route through the native eager linear hook
+  while grad-enabled training keeps the TS/autograd graph path.
   The new `NATIVE_EAGER_GAP_JSON` microscope measures the first targets directly:
   `linear_batched` eager TS tensor execution and
   `lazy_matmul_add_gelu_batched` eager fused matmul work versus allocation-free
   compiled `prepare/executeInto` for the same shape. It now also reports
   `nativeEagerIntoMs` for `linear_batched`, backed by the stateless
   `zgml_eager_linear_f32` C ABI and surfaced as `zgml.nativeEager.linearInto`.
+  The same microscope reports `nativeEagerModuleForwardMs`,
+  `nativeEagerModuleSpeedup`, and `nativeEagerModuleMaxAbsDiff` for
+  `zgml.noGrad(() => linearModel.forward(input))`, proving the ordinary module
+  surface can take the native eager lane without users calling the low-level
+  primitive directly.
   That C ABI path uses the same shared native matmul substrate as compiled
   Program execution, then applies bias into the caller-owned output buffer.
   Treat the reported
