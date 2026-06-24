@@ -758,6 +758,15 @@ checked qproj gate in the fast dev loop. The frontier
 microscope uses `BENCH_FRONTIER_ATTEMPTS`
 (default `5`) so the row-chain and qproj kernel work can absorb local timing
 noise without falling back to the much slower full scorecard.
+The qproj group microscope now also prints command-shape and runtime-command
+profile evidence. Current local evidence is deliberately honest: the grouped
+shape is present (`shape_commands=1`, `shape_projection_groups=1`,
+`shape_covered_ops=8`, `shape_saved_dispatches=7`), but
+`runtime=off` with zero `runtime_projection_group_dispatches` and zero
+`runtime_projection_cache_group_dispatches`. That means qproj grouping is still
+a scheduler-shape diagnostic until the runtime actually dispatches a named
+projection group/cache-group command; do not count that lane as a solved
+executable-command throughput win.
 The ggml script now also accepts per-format `ZGML_F16_EXTRA_ARGS` and
 `ZGML_Q8_EXTRA_ARGS`, so Q8 prompt paths can be measured against llama.cpp
 without mutating the F16 evidence lane. Its Q8 comparison lane defaults to the

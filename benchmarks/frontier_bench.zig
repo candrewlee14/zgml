@@ -183,13 +183,14 @@ fn printCommandShape(
 ) !void {
     const shape = try program_mod.ProgramCommandStreamShape.fromCommands(commands);
     try w.print(
-        "  {s:<28} shape_commands={d}  shape_projection_row_chains={d}  shape_covered_ops={d}  shape_saved_dispatches={d}\n",
+        "  {s:<28} shape_commands={d}  shape_projection_row_chains={d}  shape_covered_ops={d}  shape_saved_dispatches={d}  shape_projection_groups={d}\n",
         .{
             name,
             shape.command_count,
             shape.projection_row_chains,
             shape.covered_ops,
             shape.estimated_saved_dispatches,
+            shape.projection_groups,
         },
     );
 }
@@ -211,6 +212,30 @@ fn printProjectionRowChainRuntimeProfile(
             name,
             rt.backend_dispatch_count,
             rt.qmatmul_row_chain_tiled_two_phase_count,
+        },
+    );
+}
+
+fn printProjectionGroupRuntimeProfile(
+    w: *std.Io.Writer,
+    name: []const u8,
+    be: backend_mod.Backend,
+    handle: backend_mod.Backend.CompiledHandle,
+    output_io: []const backend_mod.ProgramIO,
+) !void {
+    be.resetRuntimeProfile(handle);
+    be.executeProgram(handle, &.{}, output_io);
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try w.print(
+        "  {s:<28} runtime_backend_dispatches={d}  runtime_projection_group_dispatches={d}  runtime_projection_cache_group_dispatches={d}  runtime_projection_group_count={d}  runtime_projection_cache_group_count={d}\n",
+        .{
+            name,
+            rt.backend_dispatch_count,
+            rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_group)],
+            rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_cache_group)],
+            rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_group)],
+            rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_cache_group)],
         },
     );
 }
@@ -833,6 +858,13 @@ fn benchProjectionGroupMetalCase(
     var ratio_name_buf: [96]u8 = undefined;
     const ratio_name = try std.fmt.bufPrint(&ratio_name_buf, "{s} projection_group", .{case.name});
     try printRatio(w, ratio_name, staged_stats, grouped_stats, maxAbsDiff(staged_out, grouped_out));
+
+    const grouped_commands = try program_mod.buildProgramCommands(alloc, &ops, program_mod.CommandStreamPolicy.default());
+    defer alloc.free(grouped_commands);
+    var profile_name_buf: [112]u8 = undefined;
+    const profile_name = try std.fmt.bufPrint(&profile_name_buf, "{s} projection_group dispatch_profile", .{case.name});
+    try printCommandShape(w, profile_name, grouped_commands);
+    try printProjectionGroupRuntimeProfile(w, profile_name, be, grouped_handle, &grouped_outputs);
 }
 
 fn benchProjectionRowChainMetalCase(
