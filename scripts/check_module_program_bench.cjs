@@ -565,24 +565,31 @@ function runBenchSpec(spec) {
     const eager = () => typeof spec.eager === "function" ? spec.eager(input) : model.forward(input);
     const compiledTensor = () => session.stepTensor(input);
     const compiled = () => session.executeInto(output, { input });
+    const preparedExecuteInto = session.prepareExecuteInto(output, { input });
     const eagerOutput = eager();
     const compiledTensorOutput = compiledTensor();
     const compiledOutput = compiled();
+    const preparedOutput = preparedExecuteInto();
     if (compiledOutput !== output) throw new Error(`${spec.label} expected executeInto to reuse caller output`);
+    if (preparedOutput !== output) throw new Error(`${spec.label} expected prepared executeInto to reuse caller output`);
     const eagerData = eagerOutput.data ?? eagerOutput;
     const tensorError = maxAbsDiff(eagerData, compiledTensorOutput.data);
     if (tensorError > spec.tolerance) throw new Error(`${spec.label} eager/stepTensor mismatch ${tensorError}`);
     const error = maxAbsDiff(eagerData, compiledOutput);
     if (error > spec.tolerance) throw new Error(`${spec.label} eager/compiled mismatch ${error}`);
+    const preparedError = maxAbsDiff(eagerData, preparedOutput);
+    if (preparedError > spec.tolerance) throw new Error(`${spec.label} eager/prepared executeInto mismatch ${preparedError}`);
     session.resetSessionCallProfile();
     const eagerRuns = [];
     const compiledRuns = [];
+    const preparedRuns = [];
     let expectedCalls = 0;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       eagerRuns.push(bench(eager, spec.iterations).ms);
       const compiledRun = bench(compiled, spec.iterations);
       compiledRuns.push(compiledRun.ms);
       expectedCalls += compiledRun.calls;
+      preparedRuns.push(bench(preparedExecuteInto, spec.iterations).ms);
     }
     const profile = session.sessionCallProfile();
     if (profile.executeIntoCount !== expectedCalls) {
@@ -590,7 +597,8 @@ function runBenchSpec(spec) {
     }
     const eagerMs = median(eagerRuns);
     const compiledMs = median(compiledRuns);
-    return { eagerMs, compiledMs, speedup: eagerMs / compiledMs };
+    const preparedMs = median(preparedRuns);
+    return { eagerMs, compiledMs, preparedMs, speedup: eagerMs / compiledMs, preparedSpeedup: eagerMs / preparedMs };
   } finally {
     session.dispose();
     program.dispose();
@@ -2142,7 +2150,9 @@ function runAllSpecs(attempt) {
     timings: Object.fromEntries(results.map(({ spec, result }) => [spec.key, {
       eager_ms: result.eagerMs,
       hot_execute_into_ms: result.compiledMs,
+      prepared_execute_into_ms: result.preparedMs,
       speedup: result.speedup,
+      prepared_speedup: result.preparedSpeedup,
       floor: spec.floor,
     }])),
   };

@@ -21,6 +21,7 @@ export const sessionCallProfileFields = Object.freeze([
   "executeCount",
   "executeTensorCount",
   "executeIntoCount",
+  "prepareExecuteIntoCount",
   "prefillCount",
   "prefillTensorCount",
   "prefillIntoCount",

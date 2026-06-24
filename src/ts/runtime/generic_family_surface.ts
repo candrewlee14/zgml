@@ -350,6 +350,7 @@ export function createGenericFamilySurface(options: GenericFamilySurfaceOptions)
     execute(params = {}) { return genericSessionFacade.execute(this, params); }
     executeTensor(params = {}) { return genericSessionFacade.executeTensor(this, params); }
     executeInto(outputValues: unknown, params = {}) { return genericSessionFacade.executeInto(this, outputValues, params); }
+    prepareExecuteInto(outputValues: unknown, params = {}) { return genericSessionFacade.prepareExecuteInto(this, outputValues, params); }
     readOutputInto(outputValues: unknown, length = this.desc?.outputLen ?? 0, byteOffset = 0) { return genericSessionFacade.readOutputInto(this, outputValues, length, byteOffset); }
     readOutputTensor(optionsForRead = {}) { return genericSessionFacade.readOutputTensor(this, optionsForRead); }
     advance(inputValues: unknown) { return genericSessionFacade.advance(this, inputValues); }

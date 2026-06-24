@@ -2046,7 +2046,7 @@ expectSame(sessionCallFacadeHelpers.matches_session_call_profile_signature(sessi
 sessionCallFacadeHelpers.resetSessionCallProfile(sessionCallFacadeTarget);
 expectSame(sessionCallFacadeHelpers.sessionCallProfile(sessionCallFacadeTarget).stepCount, 0, "session call facade reset");
 sessionCallFacadeHelpers.reset_session_call_profile(sessionCallFacadeTarget);
-expectSame(sessionCallFacadeChecks.length, 9, "session call facade live checks");
+expectSame(sessionCallFacadeChecks.length, 7, "session call facade live checks");
 expectThrow(
   () => sessionCallFacadeHelpers.sessionCallProfile({ dead: true }),
   "session is dead",
@@ -2353,6 +2353,10 @@ expectSame(genericCoreStepHelpers.stepCore(genericCoreStepSession, undefined), [
 const genericCoreStepIntoOutput = new Float32Array(2);
 expectSame(genericCoreStepHelpers.stepIntoCore(genericCoreStepSession, genericCoreStepIntoOutput, [5, 6]), genericCoreStepIntoOutput, "generic core stepIntoCore returns caller Float32Array");
 expectSame(genericCoreStepIntoOutput, [7, 8], "generic core stepIntoCore writes caller Float32Array");
+const genericCorePreparedOutput = new Float32Array(2);
+const genericCorePrepared = genericCoreStepHelpers.prepareExecuteIntoCore(genericCoreStepSession, genericCorePreparedOutput, [6, 7]);
+expectSame(genericCorePrepared(), genericCorePreparedOutput, "generic core prepared executeInto returns caller Float32Array");
+expectSame(genericCorePreparedOutput, [7, 8], "generic core prepared executeInto writes caller Float32Array");
 try {
   genericCoreStepHelpers.stepIntoCore(genericCoreStepSession, new Float32Array(1), [5, 6]);
   throw new Error("generic core stepIntoCore small Float32Array did not throw");
@@ -2401,6 +2405,13 @@ const genericExecutionFacadeHelpers = sessionFacade.createGenericSessionExecutio
     outputValues.set([3, 4]);
     return outputValues;
   },
+  prepareExecuteIntoCore(session, outputValues, inputValues) {
+    return () => {
+      genericExecutionFacadeSteps.push({ handle: session.handle, inputValues, outputValues });
+      outputValues.set([3, 4]);
+      return outputValues;
+    };
+  },
   advanceCore(session, inputValues) {
     genericExecutionFacadeAdvances.push({ handle: session.handle, inputValues });
   },
@@ -2418,6 +2429,9 @@ expectSame(genericExecutionFacadeHelpers.execute(genericExecutionFacadeSession, 
 expectSame(genericExecutionFacadeHelpers.execute(genericExecutionFacadeSession, { input: [2, 3], output: false }), undefined, "generic execution facade execute no output");
 const genericExecutionIntoOutput = new Float32Array(2);
 expectSame(genericExecutionFacadeHelpers.executeInto(genericExecutionFacadeSession, genericExecutionIntoOutput, { input: [4, 5] }), [3, 4], "generic execution facade execute into");
+const genericExecutionPreparedOutput = new Float32Array(2);
+const genericExecutionPrepared = genericExecutionFacadeHelpers.prepareExecuteInto(genericExecutionFacadeSession, genericExecutionPreparedOutput, { input: [5, 6] });
+expectSame(genericExecutionPrepared(), [3, 4], "generic execution facade prepared execute into");
 const genericExecutionTensor = genericExecutionFacadeHelpers.executeTensor(genericExecutionFacadeSession, { input: [6, 7], shape: [2] });
 expectSame(genericExecutionTensor.values, [1, 2], "generic execution facade execute tensor values");
 expectSame(genericExecutionTensor.boundOutputShape, [1, 2], "generic execution facade execute tensor bound shape");
@@ -2426,10 +2440,11 @@ expectSame(genericExecutionFacadeBumps.map((entry) => entry.field), [
   "executeCount",
   "executeCount",
   "executeIntoCount",
+  "prepareExecuteIntoCount",
   "executeTensorCount",
   "advanceCount",
 ], "generic execution facade profile bumps");
-expectSame(genericExecutionFacadeSteps.length, 3, "generic execution facade step count");
+expectSame(genericExecutionFacadeSteps.length, 4, "generic execution facade step count");
 expectSame(genericExecutionFacadeAdvances, [
   { handle: 10, inputValues: [2, 3] },
   { handle: 10, inputValues: [8, 9] },
@@ -2446,7 +2461,7 @@ expectThrow(
 );
 expectThrow(
   () => sessionFacade.createGenericSessionExecutionFacadeHelpers({ bumpSessionCallProfile() {}, stepCore() {} }),
-  "createGenericSessionExecutionFacadeHelpers requires bumpSessionCallProfile, stepCore, stepIntoCore, advanceCore, and outputTensorForSession callbacks",
+  "createGenericSessionExecutionFacadeHelpers requires bumpSessionCallProfile, stepCore, stepIntoCore, prepareExecuteIntoCore, advanceCore, and outputTensorForSession callbacks",
   "generic execution facade requires callbacks",
 );
 const genericStepFacadeBumps = [];
@@ -3152,7 +3167,7 @@ expectSame(sessionStepIo.outputLenFromStepResultRecord({ output_len: 7 }), 7, "s
 expectSame(sessionStepIo.outputLenFromStepResultWords(BigUint64Array.of(8n)), 8, "session step word result output len");
 
 const sessionProfileTarget = {};
-expectSame(sessionProfile.sessionCallProfile(sessionProfileTarget).signature, "session-call-profile|stepCount=0|stepTensorCount=0|stepIntoCount=0|executeCount=0|executeTensorCount=0|executeIntoCount=0|prefillCount=0|prefillTensorCount=0|prefillIntoCount=0|readOutputIntoCount=0|readOutputTensorCount=0|advanceCount=0|resetCount=0|uploadParametersCount=0|uploadParameterCount=0|uploadParameterByNameCount=0|uploadParameterRangeCount=0", "session profile empty signature");
+expectSame(sessionProfile.sessionCallProfile(sessionProfileTarget).signature, "session-call-profile|stepCount=0|stepTensorCount=0|stepIntoCount=0|executeCount=0|executeTensorCount=0|executeIntoCount=0|prepareExecuteIntoCount=0|prefillCount=0|prefillTensorCount=0|prefillIntoCount=0|readOutputIntoCount=0|readOutputTensorCount=0|advanceCount=0|resetCount=0|uploadParametersCount=0|uploadParameterCount=0|uploadParameterByNameCount=0|uploadParameterRangeCount=0", "session profile empty signature");
 sessionProfile.bumpSessionCallProfile(sessionProfileTarget, "stepCount");
 sessionProfile.bumpSessionCallProfile(sessionProfileTarget, "readOutputTensorCount");
 const sessionProfileSnapshot = sessionProfile.sessionCallProfile(sessionProfileTarget);

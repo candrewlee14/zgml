@@ -139,6 +139,7 @@ type SessionActiveOutputValuesFn = (values: Float32Array, length: number) => Flo
 type SessionOutputTensorFn<TSession = unknown> = (session: TSession, values: Float32Array, options: TensorOutputOptions, target: AnyRecord) => unknown;
 type GenericSessionStepCoreFn<TSession = unknown> = (session: TSession, inputValues: unknown, outputValues?: unknown) => unknown;
 type GenericSessionStepIntoCoreFn<TSession = unknown> = (session: TSession, outputValues: unknown, inputValues?: unknown) => unknown;
+type GenericSessionPrepareExecuteIntoCoreFn<TSession = unknown> = (session: TSession, outputValues: unknown, inputValues?: unknown) => () => Float32Array;
 type GenericSessionAdvanceCoreFn<TSession = unknown> = (session: TSession, inputValues: unknown) => unknown;
 type GenericPrepareHostValueFn = (value: unknown) => { data: Float32Array; shape: number[] };
 type GenericValidateHostValueShapeFn = (
@@ -295,6 +296,7 @@ export type GenericSessionExecutionFacadeHelpersOptions<TSession extends AnyReco
   readonly bumpSessionCallProfile: BumpSessionCallProfileFn<TSession>;
   readonly stepCore: GenericSessionStepCoreFn<TSession>;
   readonly stepIntoCore: GenericSessionStepIntoCoreFn<TSession>;
+  readonly prepareExecuteIntoCore: GenericSessionPrepareExecuteIntoCoreFn<TSession>;
   readonly advanceCore: GenericSessionAdvanceCoreFn<TSession>;
   readonly outputTensorForSession: GenericSessionOutputTensorForSessionFn;
 }>;
@@ -998,16 +1000,18 @@ export function createGenericSessionExecutionFacadeHelpers<TSession extends AnyR
   const bumpSessionCallProfile = options && options.bumpSessionCallProfile;
   const stepCore = options && options.stepCore;
   const stepIntoCore = options && options.stepIntoCore;
+  const prepareExecuteIntoCore = options && options.prepareExecuteIntoCore;
   const advanceCore = options && options.advanceCore;
   const outputTensorForSession = options && options.outputTensorForSession;
   if (
     typeof bumpSessionCallProfile !== "function" ||
     typeof stepCore !== "function" ||
     typeof stepIntoCore !== "function" ||
+    typeof prepareExecuteIntoCore !== "function" ||
     typeof advanceCore !== "function" ||
     typeof outputTensorForSession !== "function"
   ) {
-    throw new Error("createGenericSessionExecutionFacadeHelpers requires bumpSessionCallProfile, stepCore, stepIntoCore, advanceCore, and outputTensorForSession callbacks");
+    throw new Error("createGenericSessionExecutionFacadeHelpers requires bumpSessionCallProfile, stepCore, stepIntoCore, prepareExecuteIntoCore, advanceCore, and outputTensorForSession callbacks");
   }
 
   function execute(session: TSession, params: SessionExecuteParams = {}) {
@@ -1049,6 +1053,24 @@ export function createGenericSessionExecutionFacadeHelpers<TSession extends AnyR
     return out;
   }
 
+  function prepareExecuteInto(session: TSession, outputValues: unknown, params?: SessionExecuteIntoParams) {
+    assertFloat32OutputBuffer(outputValues, "prepareExecuteInto");
+    let runner: () => Float32Array;
+    if (params === undefined || params === null) {
+      runner = prepareExecuteIntoCore(session, outputValues, undefined);
+    } else {
+      const fastInput = inputOnlyExecuteIntoParam(params);
+      if (fastInput !== noFastExecuteIntoInput) {
+        runner = prepareExecuteIntoCore(session, outputValues, fastInput);
+      } else {
+        const plan = genericSessionExecuteIntoPlan(params);
+        runner = prepareExecuteIntoCore(session, outputValues, plan.input);
+      }
+    }
+    bumpSessionCallProfile(session, "prepareExecuteIntoCount");
+    return runner;
+  }
+
   function advance(session: TSession, inputValues: unknown) {
     const out = advanceCore(session, inputValues);
     bumpSessionCallProfile(session, "advanceCount");
@@ -1059,6 +1081,7 @@ export function createGenericSessionExecutionFacadeHelpers<TSession extends AnyR
     execute,
     executeTensor,
     executeInto,
+    prepareExecuteInto,
     advance,
   });
 }
@@ -1149,6 +1172,17 @@ export function createGenericSessionCoreStepFacadeHelpers<TSession extends AnyRe
     return outputLen === output.length ? output : output.subarray(0, outputLen);
   }
 
+  function prepareExecuteIntoCore(session: TSession, outputValues: unknown, inputValues?: unknown) {
+    assertLiveSession(session);
+    const input = explicitInput(session, inputValues, "session.prepareExecuteInto input");
+    const output = explicitStepIntoOutput(session, outputValues);
+    const outputLen = session.desc.outputLen;
+    return function preparedExecuteInto() {
+      const actualOutputLen = stepSession(session.handle, input, output, outputLen);
+      return actualOutputLen === output.length ? output : output.subarray(0, actualOutputLen);
+    };
+  }
+
   function advanceCore(session: TSession, inputValues: unknown) {
     assertLiveSession(session);
     const input = explicitInput(session, inputValues, "session.advance input");
@@ -1172,6 +1206,7 @@ export function createGenericSessionCoreStepFacadeHelpers<TSession extends AnyRe
     explicitOutput,
     stepCore,
     stepIntoCore,
+    prepareExecuteIntoCore,
     advanceCore,
     stepParamsCompatibility,
   });

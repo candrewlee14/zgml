@@ -914,6 +914,7 @@ export type SessionCallProfile = Readonly<{
   executeCount: number;
   executeTensorCount: number;
   executeIntoCount: number;
+  prepareExecuteIntoCount: number;
   prefillCount: number;
   prefillTensorCount: number;
   prefillIntoCount: number;
@@ -7684,6 +7685,7 @@ export declare class Session<InputShape extends TensorShapeTuple = TensorShapeTu
   executeTensor(params?: SessionExecuteTensorParams<InputShape, OutputShape>): Tensor<OutputShape>;
   executeTensor(params?: SessionExecuteTensorParams<InputShape, OutputShape>): Tensor;
   executeInto(target: Float32Array, params?: SessionExecuteIntoParams<InputShape>): Float32Array;
+  prepareExecuteInto(target: Float32Array, params?: SessionExecuteIntoParams<InputShape>): () => Float32Array;
   readOutputInto(target: Float32Array, length?: number, byteOffset?: number): Float32Array;
   readOutputTensor<const S extends TensorShapeTuple>(options: { output: Tensor<S> }): Tensor<S>;
   readOutputTensor<const S extends TensorShape>(options: SessionReadOutputTensorOptions & { shape: S }): Tensor<TensorShapeOf<S>>;

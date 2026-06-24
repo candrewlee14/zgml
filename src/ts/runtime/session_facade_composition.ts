@@ -981,6 +981,7 @@ export function createGenericSessionFacadeHelpers(options: GenericSessionFacadeO
   const {
     stepCore,
     stepIntoCore,
+    prepareExecuteIntoCore,
     advanceCore,
     stepParamsCompatibility,
   } = coreStepFacade;
@@ -1071,6 +1072,7 @@ export function createGenericSessionFacadeHelpers(options: GenericSessionFacadeO
     bumpSessionCallProfile,
     stepCore,
     stepIntoCore,
+    prepareExecuteIntoCore,
     advanceCore,
     outputTensorForSession: sessionTensorHelpers.outputTensorForSession,
   });
@@ -1078,6 +1080,7 @@ export function createGenericSessionFacadeHelpers(options: GenericSessionFacadeO
     execute,
     executeTensor,
     executeInto,
+    prepareExecuteInto,
     advance,
   } = executionFacade;
 
@@ -1176,6 +1179,7 @@ export function createGenericSessionFacadeHelpers(options: GenericSessionFacadeO
     execute,
     executeTensor,
     executeInto,
+    prepareExecuteInto,
     readOutputInto,
     readOutputTensor,
     advance,

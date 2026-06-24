@@ -647,6 +647,16 @@ the reported PyTorch ratio by enough to obscure small real kernel changes. Both
 the zgml module bench and the embedded PyTorch comparison now also run each
 tiny lane until an 8ms minimum timing window is reached, so sub-0.01ms paths are
 not judged from a single too-short iteration batch.
+Generic Sessions now also expose `prepareExecuteInto(output, { input })`, which
+validates and binds the caller-owned buffers once, then returns a tiny runner
+for repeated hot-loop execution. The module bench emits
+`prepared_execute_into_ms` beside the normal `hot_execute_into_ms`; the focused
+June 23, 2026 microscope showed this is useful API shape but not the main
+PyTorch fix by itself (`linear_batched` moved only from about `0.0108ms` to
+`0.0104ms`, and `log_softmax_classifier_batched` from about `0.0433ms` to
+`0.0428ms`). That evidence points the next PyTorch catch-up work below the StepParams facade:
+native kernel shape, FFI call granularity, and larger fused
+Programs matter more than further TS object parsing polish on these lanes.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier
