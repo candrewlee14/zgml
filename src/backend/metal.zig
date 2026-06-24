@@ -7532,7 +7532,7 @@ const CompiledProgram = struct {
         return true;
     }
 
-    fn encodeQMatmulRowChainTwoPhaseTiled(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool) bool {
+    fn encodeQMatmulRowChainTwoPhaseTiled(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool, output_spill: bool) bool {
         if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
         if (q.M <= 1) return false;
         const partial_cols = (q.N + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE;
@@ -7572,7 +7572,7 @@ const CompiledProgram = struct {
             .partial_dst_offset = rn.dst_offset,
             .partial_cols = partial_cols,
         };
-        exec.profile.recordQMatmulRowChainTwoPhaseTiled(q.M, q.N, ROW_CHAIN_TILE, write_ew_output);
+        exec.profile.recordQMatmulRowChainTwoPhaseTiledSpill(q.M, q.N, ROW_CHAIN_TILE, write_ew_output, output_spill);
         exec.encodeKernel(.qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = partial_cols }, MATMUL_THREADS);
 
         const ew_src = if (write_ew_output) view.device_bufs[e.dst] else view.device_bufs[out.dst];
@@ -7593,7 +7593,7 @@ const CompiledProgram = struct {
         return true;
     }
 
-    fn encodeQMatmulRowChainTiledLeaf(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool) bool {
+    fn encodeQMatmulRowChainTiledLeaf(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool, output_spill: bool) bool {
         if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
         if (q.M <= 1) return false;
         const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
@@ -7628,7 +7628,7 @@ const CompiledProgram = struct {
             .partial_dst_offset = rn.dst_offset,
             .partial_cols = (q.N + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE,
         };
-        exec.profile.recordQMatmulRowChainTiled(q.M, q.N, ROW_CHAIN_TILE, write_ew_output);
+        exec.profile.recordQMatmulRowChainTiledSpill(q.M, q.N, ROW_CHAIN_TILE, write_ew_output, output_spill);
         exec.encodeKernel(.qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE }, MATMUL_THREADS);
         return true;
     }
@@ -8916,17 +8916,19 @@ const CompiledProgram = struct {
         const rn = deviceOpAt(.rmsnorm, ops, rn_idx) orelse return false;
         const rp = deviceOpAt(.repeat, ops, rp_idx) orelse return false;
         const out = deviceOpAt(.elementwise, ops, out_idx) orelse return false;
-        const write_ew_output = program_mod.projectionRowChainElementwiseHasExternalUsers(ops, command) or view.outputReadsSpan(e.dst, e.dst_offset, e.n);
+        const command_spill = program_mod.projectionRowChainElementwiseHasExternalUsers(ops, command);
+        const output_spill = view.outputReadsSpan(e.dst, e.dst_offset, e.n);
+        const write_ew_output = command_spill or output_spill;
         if (q.M != 1) {
             if (self.command_policy.fuse_projection_row_chain_two_phase_candidate and
                 !projectionRowChainScaleHasExternalUsers(ops, command) and
-                self.encodeQMatmulRowChainTwoPhaseTiled(exec, view, q, e, rn, rp, out, write_ew_output))
+                self.encodeQMatmulRowChainTwoPhaseTiled(exec, view, q, e, rn, rp, out, write_ew_output, output_spill))
             {
                 return true;
             }
             if (self.command_policy.fuse_projection_row_chain_single_dispatch and
                 !projectionRowChainScaleHasExternalUsers(ops, command) and
-                self.encodeQMatmulRowChainTiledLeaf(exec, view, q, e, rn, rp, out, write_ew_output))
+                self.encodeQMatmulRowChainTiledLeaf(exec, view, q, e, rn, rp, out, write_ew_output, output_spill))
             {
                 return true;
             }
@@ -9219,8 +9221,9 @@ const CompiledProgram = struct {
         };
         if (!self.encodeQMatmulPairSingleFusedElementwiseChain(exec, view, gate, fe, up, product)) return false;
 
+        const residual_output_spill = view.outputReadsSpan(residual.dst, residual.dst_offset, residual.n);
         if (self.command_policy.fuse_projection_row_chain_two_phase_candidate and
-            self.encodeQMatmulRowChainTwoPhaseTiled(exec, view, down, residual, rn, rp, out, view.outputReadsSpan(residual.dst, residual.dst_offset, residual.n)))
+            self.encodeQMatmulRowChainTwoPhaseTiled(exec, view, down, residual, rn, rp, out, residual_output_spill, residual_output_spill))
         {
             return true;
         }

@@ -280,6 +280,17 @@ machine for both prompt/prefill and decode.
   `semantic_median=1.00x`, `semantic_worst=0.92x`, and `spills=30`, so this
   narrows correctness/materialization policy but does not change the next perf
   target: larger semantic FFN throughput or live-residual absorption.
+- The Q8 prompt gate now also reports `semantic_output_spills`. A fresh
+  source-current semantic probe reported `semantic_spills=30` and
+  `semantic_output_spills=0`, which rules out logits/KV-cache output bindings
+  as the spill cause. The remaining spills are command/liveness pressure, so the
+  next optimization should absorb the live residual user into a larger semantic
+  command or make the materialized tail fast enough to win.
+- The selected three-attempt Q8 prompt artifact now exposes the same diagnosis:
+  `semantic_spills=30`, `semantic_output_spills=0`,
+  `semantic_median=0.98x`, `semantic_worst=0.94x`. Its two-phase lane is a
+  current candidate (`two_phase_median=1.06x`, `two_phase_worst=0.99x`,
+  `two_phase_output_spills=0`), but semantic FFN remains diagnostic.
 - The full-model Q8 prompt probe now distinguishes general projection groups
   from attention/cache projection groups. Its Q8 evidence reports
   `projection_group=0->0`, `projection_cache_group=30->30`, and

@@ -80,6 +80,7 @@ pub const RuntimeProfile = struct {
     qmatmul_row_chain_tiled_partial_slots: u64 = 0,
     qmatmul_row_chain_tiled_scratch_capacity: u64 = 0,
     qmatmul_row_chain_tiled_spilled_elementwise: u64 = 0,
+    qmatmul_row_chain_tiled_output_spills: u64 = 0,
     qmatmul_row_chain_tiled_two_phase_count: u64 = 0,
     qmatmul_row_chain_tiled_finalize_tile_groups: u64 = 0,
     qmatmul_row_chain_tiled_finalize_elements: u64 = 0,
@@ -134,6 +135,7 @@ pub const RuntimeProfile = struct {
         self.qmatmul_row_chain_tiled_partial_slots +%= other.qmatmul_row_chain_tiled_partial_slots;
         self.qmatmul_row_chain_tiled_scratch_capacity +%= other.qmatmul_row_chain_tiled_scratch_capacity;
         self.qmatmul_row_chain_tiled_spilled_elementwise +%= other.qmatmul_row_chain_tiled_spilled_elementwise;
+        self.qmatmul_row_chain_tiled_output_spills +%= other.qmatmul_row_chain_tiled_output_spills;
         self.qmatmul_row_chain_tiled_two_phase_count +%= other.qmatmul_row_chain_tiled_two_phase_count;
         self.qmatmul_row_chain_tiled_finalize_tile_groups +%= other.qmatmul_row_chain_tiled_finalize_tile_groups;
         self.qmatmul_row_chain_tiled_finalize_elements +%= other.qmatmul_row_chain_tiled_finalize_elements;
@@ -229,6 +231,10 @@ pub const RuntimeProfile = struct {
     }
 
     pub fn recordQMatmulRowChainTiled(self: *RuntimeProfile, m: u32, n: u32, tile: u32, write_elementwise_output: bool) void {
+        self.recordQMatmulRowChainTiledSpill(m, n, tile, write_elementwise_output, false);
+    }
+
+    pub fn recordQMatmulRowChainTiledSpill(self: *RuntimeProfile, m: u32, n: u32, tile: u32, write_elementwise_output: bool, output_spill: bool) void {
         const row_tiles = divCeilU64(m, tile);
         const n_tiles = divCeilU64(n, tile);
         self.qmatmul_row_chain_tiled_count +%= 1;
@@ -238,10 +244,15 @@ pub const RuntimeProfile = struct {
         self.qmatmul_row_chain_tiled_partial_slots +%= row_tiles *% @as(u64, tile) *% n_tiles;
         self.qmatmul_row_chain_tiled_scratch_capacity +%= @as(u64, m) *% @as(u64, n);
         if (write_elementwise_output) self.qmatmul_row_chain_tiled_spilled_elementwise +%= 1;
+        if (output_spill) self.qmatmul_row_chain_tiled_output_spills +%= 1;
     }
 
     pub fn recordQMatmulRowChainTwoPhaseTiled(self: *RuntimeProfile, m: u32, n: u32, tile: u32, write_elementwise_output: bool) void {
-        self.recordQMatmulRowChainTiled(m, n, tile, write_elementwise_output);
+        self.recordQMatmulRowChainTwoPhaseTiledSpill(m, n, tile, write_elementwise_output, false);
+    }
+
+    pub fn recordQMatmulRowChainTwoPhaseTiledSpill(self: *RuntimeProfile, m: u32, n: u32, tile: u32, write_elementwise_output: bool, output_spill: bool) void {
+        self.recordQMatmulRowChainTiledSpill(m, n, tile, write_elementwise_output, output_spill);
         self.qmatmul_row_chain_tiled_two_phase_count +%= 1;
         self.qmatmul_row_chain_tiled_finalize_tile_groups +%= divCeilU64(m, tile) *% divCeilU64(n, tile);
         self.qmatmul_row_chain_tiled_finalize_elements +%= @as(u64, m) *% @as(u64, n);
@@ -406,6 +417,7 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "partial_slots", rt.qmatmul_row_chain_tiled_partial_slots, calls_f);
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "scratch_capacity", rt.qmatmul_row_chain_tiled_scratch_capacity, calls_f);
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "spilled_elementwise", rt.qmatmul_row_chain_tiled_spilled_elementwise, calls_f);
+        try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "output_spills", rt.qmatmul_row_chain_tiled_output_spills, calls_f);
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "two_phase_count", rt.qmatmul_row_chain_tiled_two_phase_count, calls_f);
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "finalize_tile_groups", rt.qmatmul_row_chain_tiled_finalize_tile_groups, calls_f);
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "finalize_elements", rt.qmatmul_row_chain_tiled_finalize_elements, calls_f);
@@ -619,7 +631,7 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     rt.recordScheduleRegionAttempt(unit);
     rt.recordCachedRegionCommandPlan(3);
     rt.recordDynamicRegionCommandPlan();
-    rt.recordQMatmulRowChainTiled(128, 576, 32, true);
+    rt.recordQMatmulRowChainTiledSpill(128, 576, 32, true, true);
     rt.recordSemanticFfnSublayer(128, 576, 576, 576);
     rt.call_count = 2;
 
@@ -640,6 +652,7 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_partial_slots\":2304") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_scratch_capacity\":73728") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_spilled_elementwise\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_output_spills\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_two_phase_count\":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_finalize_tile_groups\":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_finalize_elements\":0") != null);
@@ -674,7 +687,7 @@ test "RuntimeProfile accumulates evidence windows" {
     window.runtime_patch_changed_count = 27;
     window.runtime_patch_invalid_count = 28;
     window.runtime_patch_shape = backend.RuntimePatchShape.actual(17, 24, 4242);
-    window.recordQMatmulRowChainTwoPhaseTiled(128, 576, 32, true);
+    window.recordQMatmulRowChainTwoPhaseTiledSpill(128, 576, 32, true, true);
     window.call_count = 37;
 
     total.add(window);
@@ -709,6 +722,7 @@ test "RuntimeProfile accumulates evidence windows" {
     try std.testing.expectEqual(@as(u64, 4608), total.qmatmul_row_chain_tiled_partial_slots);
     try std.testing.expectEqual(@as(u64, 147456), total.qmatmul_row_chain_tiled_scratch_capacity);
     try std.testing.expectEqual(@as(u64, 2), total.qmatmul_row_chain_tiled_spilled_elementwise);
+    try std.testing.expectEqual(@as(u64, 2), total.qmatmul_row_chain_tiled_output_spills);
     try std.testing.expectEqual(@as(u64, 2), total.qmatmul_row_chain_tiled_two_phase_count);
     try std.testing.expectEqual(@as(u64, 144), total.qmatmul_row_chain_tiled_finalize_tile_groups);
     try std.testing.expectEqual(@as(u64, 147456), total.qmatmul_row_chain_tiled_finalize_elements);

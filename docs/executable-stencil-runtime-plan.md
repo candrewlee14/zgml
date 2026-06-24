@@ -1404,6 +1404,21 @@ three-attempt Q8 prompt semantic gate still stayed diagnostic:
 throughput move. Keep the next target on a larger semantic FFN throughput kernel
 or on absorbing the live residual use, rather than promoting the current
 semantic tail path.
+The row-chain spill profile now separates total spills from Program-output
+driven spills. A source-current one-attempt Q8 prompt semantic probe reported
+`semantic_spills=30` and `semantic_output_spills=0`, confirming that the
+remaining materialization is caused by command/liveness structure rather than
+logits or KV-cache output bindings. That makes the next perf move sharper:
+absorb the residual user into a larger semantic command or replace the
+two-dispatch tail with a true throughput kernel; do not spend another pass on
+output binding policy.
+The latest selected three-attempt Q8 prompt artifact carries the same counter:
+`semantic_spills=30`, `semantic_output_spills=0`,
+`semantic_median=0.98x`, and `semantic_worst=0.94x`. It also reports a
+stronger current two-phase row-chain lane (`two_phase_median=1.06x`,
+`two_phase_worst=0.99x`) with `two_phase_output_spills=0`. Treat that as a
+useful current command/two-phase candidate, but not as proof that the semantic
+FFN path is ready for default promotion.
 A June 24, 2026 shape-gated policy experiment tried limiting the two-phase
 semantic throughput tail to the 512-wide full-prefill shape so the 576-wide
 SmolLM prompt shape would preserve the semantic command but skip the tiled tail.

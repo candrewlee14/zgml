@@ -152,6 +152,7 @@ function emptyLane(index) {
     tiledPartialSlots: 0,
     tiledScratchCapacity: 0,
     tiledSpills: 0,
+    tiledOutputSpills: 0,
     tiledTwoPhaseCount: 0,
     tiledFinalizeTileGroups: 0,
     tiledFinalizeElements: 0,
@@ -200,6 +201,7 @@ function readProjectionLane(row, defaultTokS, index) {
     tiledPartialSlots: number(row, "qmatmul_row_chain_tiled_partial_slots_per_call") ?? 0,
     tiledScratchCapacity: number(row, "qmatmul_row_chain_tiled_scratch_capacity_per_call") ?? 0,
     tiledSpills: number(row, "qmatmul_row_chain_tiled_spilled_elementwise_per_call") ?? 0,
+    tiledOutputSpills: number(row, "qmatmul_row_chain_tiled_output_spills_per_call") ?? 0,
     tiledTwoPhaseCount: number(row, "qmatmul_row_chain_tiled_two_phase_count_per_call") ?? 0,
     tiledFinalizeTileGroups: number(row, "qmatmul_row_chain_tiled_finalize_tile_groups_per_call") ?? 0,
     tiledFinalizeElements: number(row, "qmatmul_row_chain_tiled_finalize_elements_per_call") ?? 0,
@@ -486,6 +488,7 @@ function measureAttempt(index) {
     candidateTiledPartialSlots: singleLane.tiledPartialSlots,
     candidateTiledScratchCapacity: singleLane.tiledScratchCapacity,
     candidateTiledSpills: singleLane.tiledSpills,
+    candidateTiledOutputSpills: singleLane.tiledOutputSpills,
     twoPhaseTiledCount: twoPhaseLane.tiledCount,
     twoPhaseTiledRowTileGroups: twoPhaseLane.tiledRowTileGroups,
     twoPhaseTiledNTiles: twoPhaseLane.tiledNTiles,
@@ -493,6 +496,7 @@ function measureAttempt(index) {
     twoPhaseTiledPartialSlots: twoPhaseLane.tiledPartialSlots,
     twoPhaseTiledScratchCapacity: twoPhaseLane.tiledScratchCapacity,
     twoPhaseTiledSpills: twoPhaseLane.tiledSpills,
+    twoPhaseTiledOutputSpills: twoPhaseLane.tiledOutputSpills,
     twoPhaseTiledTwoPhaseCount: twoPhaseLane.tiledTwoPhaseCount,
     twoPhaseTiledFinalizeTileGroups: twoPhaseLane.tiledFinalizeTileGroups,
     twoPhaseTiledFinalizeElements: twoPhaseLane.tiledFinalizeElements,
@@ -503,6 +507,7 @@ function measureAttempt(index) {
     semanticTiledPartialSlots: semanticLane.tiledPartialSlots,
     semanticTiledScratchCapacity: semanticLane.tiledScratchCapacity,
     semanticTiledSpills: semanticLane.tiledSpills,
+    semanticTiledOutputSpills: semanticLane.tiledOutputSpills,
     semanticTiledTwoPhaseCount: semanticLane.tiledTwoPhaseCount,
     semanticTiledFinalizeTileGroups: semanticLane.tiledFinalizeTileGroups,
     semanticTiledFinalizeElements: semanticLane.tiledFinalizeElements,
@@ -762,6 +767,7 @@ if (writeArtifact) {
         tiledTwoPhaseCount: twoPhaseBest.twoPhaseTiledTwoPhaseCount,
         tiledWork: twoPhaseBest.twoPhaseTiledCount,
         tiledSpills: twoPhaseBest.twoPhaseTiledSpills,
+        tiledOutputSpills: twoPhaseBest.twoPhaseTiledOutputSpills,
       },
       semantic: {
         ...laneArtifact(semanticBest, "semantic"),
@@ -772,6 +778,7 @@ if (writeArtifact) {
         tiledTwoPhaseCount: semanticBest.semanticTiledTwoPhaseCount,
         tiledWork: semanticBest.semanticTiledCount,
         tiledSpills: semanticBest.semanticTiledSpills,
+        tiledOutputSpills: semanticBest.semanticTiledOutputSpills,
       },
     },
     attempts: attemptRows.map((row) => ({
@@ -845,6 +852,7 @@ console.log(
     `two_phase_dispatch_reduced=${twoPhaseDispatchReduced ? "yes" : "no"} two_phase_runtime_target=${dispatchRealityTarget} ` +
     `two_phase_count=${format(twoPhaseBest.twoPhaseTiledTwoPhaseCount, 0)} two_phase_selected=${twoPhaseBest.twoPhaseTiledTwoPhaseCount > 0 ? "yes" : "off"} ` +
     `two_phase_tiled_work=${format(twoPhaseBest.twoPhaseTiledCount, 0)} chains row_groups=${format(twoPhaseBest.twoPhaseTiledRowTileGroups, 0)} n_tiles=${format(twoPhaseBest.twoPhaseTiledNTiles, 0)} serial_tile_loops=${format(twoPhaseBest.twoPhaseTiledSerialLoops, 0)} partial_slots=${format(twoPhaseBest.twoPhaseTiledPartialSlots, 0)} scratch_capacity=${format(twoPhaseBest.twoPhaseTiledScratchCapacity, 0)} finalize_tile_groups=${format(twoPhaseBest.twoPhaseTiledFinalizeTileGroups, 0)} finalize_elements=${format(twoPhaseBest.twoPhaseTiledFinalizeElements, 0)} spills=${format(twoPhaseBest.twoPhaseTiledSpills, 0)} ` +
+    `two_phase_output_spills=${format(twoPhaseBest.twoPhaseTiledOutputSpills, 0)} ` +
     `two_phase_projection_chain=${format(twoPhaseBest.defaultProjectionChains, 0)}->${format(twoPhaseBest.twoPhaseProjectionChains, 0)} ` +
     `two_phase_projection_pair=${format(twoPhaseBest.defaultProjectionPairs, 0)}->${format(twoPhaseBest.twoPhaseProjectionPairs, 0)} ` +
     `two_phase_projection_pair_dispatch=${format(twoPhaseBest.defaultProjectionPairDispatches, 0)}->${format(twoPhaseBest.twoPhaseProjectionPairDispatches, 0)} ` +
@@ -863,6 +871,7 @@ console.log(
     `semantic_dispatch_reduced=${semanticDispatchReduced ? "yes" : "no"} semantic_runtime_target=${dispatchRealityTarget} ` +
     `semantic_count=${format(semanticBest.semanticTiledTwoPhaseCount, 0)} semantic_structural_selected=${semanticStructuralSelected ? "yes" : "off"} semantic_throughput_ready=${semanticThroughputReady ? "yes" : "off"} semantic_selected=${semanticStructuralSelected ? "yes" : "off"} ` +
     `semantic_tiled_work=${format(semanticBest.semanticTiledCount, 0)} chains row_groups=${format(semanticBest.semanticTiledRowTileGroups, 0)} n_tiles=${format(semanticBest.semanticTiledNTiles, 0)} serial_tile_loops=${format(semanticBest.semanticTiledSerialLoops, 0)} partial_slots=${format(semanticBest.semanticTiledPartialSlots, 0)} scratch_capacity=${format(semanticBest.semanticTiledScratchCapacity, 0)} finalize_tile_groups=${format(semanticBest.semanticTiledFinalizeTileGroups, 0)} finalize_elements=${format(semanticBest.semanticTiledFinalizeElements, 0)} spills=${format(semanticBest.semanticTiledSpills, 0)} ` +
+    `semantic_output_spills=${format(semanticBest.semanticTiledOutputSpills, 0)} ` +
     `semantic_projection_chain=${format(semanticBest.defaultProjectionChains, 0)}->${format(semanticBest.semanticProjectionChains, 0)} ` +
     `semantic_projection_pair=${format(semanticBest.defaultProjectionPairs, 0)}->${format(semanticBest.semanticProjectionPairs, 0)} ` +
     `semantic_projection_pair_dispatch=${format(semanticBest.defaultProjectionPairDispatches, 0)}->${format(semanticBest.semanticProjectionPairDispatches, 0)} ` +
@@ -891,6 +900,7 @@ console.log(
     `split=${format(best.defaultProjectionRowChainDispatchSplit)}->${format(best.candidateProjectionRowChainDispatchSplit)} ` +
     `excess_dispatch=${format(best.defaultProjectionRowChainDispatchExcess, 0)}->${format(best.candidateProjectionRowChainDispatchExcess, 0)} target=0 ` +
     `tiled_work=${format(best.candidateTiledCount, 0)} chains row_groups=${format(best.candidateTiledRowTileGroups, 0)} n_tiles=${format(best.candidateTiledNTiles, 0)} serial_tile_loops=${format(best.candidateTiledSerialLoops, 0)} partial_slots=${format(best.candidateTiledPartialSlots, 0)} scratch_capacity=${format(best.candidateTiledScratchCapacity, 0)} two_phase_scratch=${best.twoPhaseScratchReady ? "ready" : "off"} spills=${format(best.candidateTiledSpills, 0)} ` +
+    `output_spills=${format(best.candidateTiledOutputSpills, 0)} ` +
     `dispatch_only_trap=${dispatchOnlyTrap ? "yes" : "no"} ` +
     `fallback=${format(best.defaultFallback, 0)}->${format(best.candidateFallback, 0)} ` +
     `row_chain_lowering=${rowChainLowering} row_chain_next=${requiredNextTarget} ` +
