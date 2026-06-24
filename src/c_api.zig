@@ -5694,6 +5694,25 @@ fn executeSmallDirectLinearBiasLogSoftmax32(linear: *const TinyLinearSessionHand
     }
 }
 
+fn shouldUseSmallDirectLinearBiasLogSoftmax32(shape: DirectLinearLogSoftmaxStepShape) bool {
+    return shape.has_bias and shape.M < 64 and shape.N == 32 and shape.K <= 128;
+}
+
+test "direct linear logsoftmax n32 uses small fused path only for small batches" {
+    try std.testing.expect(shouldUseSmallDirectLinearBiasLogSoftmax32(.{
+        .M = 8,
+        .N = 32,
+        .K = 64,
+        .has_bias = true,
+    }));
+    try std.testing.expect(!shouldUseSmallDirectLinearBiasLogSoftmax32(.{
+        .M = 128,
+        .N = 32,
+        .K = 64,
+        .has_bias = true,
+    }));
+}
+
 fn logSoftmaxRowsInPlace(values: []f32, M: usize, N: usize) void {
     if (N == 32) return logSoftmaxRowsInPlace32(values, M);
     if (N % 16 == 0) return logSoftmaxRowsInPlaceLanes(16, values, M, N);
@@ -5750,7 +5769,7 @@ test "direct log softmax n32 bias specialization matches stable row math" {
 }
 
 fn executeDirectLinearLogSoftmaxStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearLogSoftmaxStepShape, input: [*]const f32, output: [*]f32) void {
-    if (shape.has_bias and shape.M <= 128 and shape.N == 32 and shape.K <= 128) {
+    if (shouldUseSmallDirectLinearBiasLogSoftmax32(shape)) {
         executeSmallDirectLinearBiasLogSoftmax32(linear, shape, input, output);
         return;
     }
