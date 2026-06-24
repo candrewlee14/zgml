@@ -676,18 +676,39 @@ function pytorchNextTarget(path) {
   }
 }
 
-function q8PromptNextTarget(path) {
+function q8PromptNextTarget(path, pressurePath = path) {
   if (!path) return "q8_prompt=missing_artifact";
   try {
     const data = readJson(path);
+    let pressureData = data;
+    let hasFreshPressure = false;
+    if (pressurePath && pressurePath !== path) {
+      try {
+        pressureData = readJson(pressurePath);
+        hasFreshPressure = true;
+      } catch {
+        pressureData = data;
+        hasFreshPressure = false;
+      }
+    }
     const semanticSpeedup = Number(data?.lanes?.semantic?.speedup);
     const semanticStats = q8LaneSpeedupStats(data, "semantic", "semanticSpeedup");
     const semanticThroughput = typeof data?.throughput?.semantic === "string" ? data.throughput.semantic : "unknown";
     const status = typeof data?.status === "string" ? data.status : "unknown";
+    const freshStats = q8LaneSpeedupStats(pressureData, "semantic", "semanticSpeedup");
+    const freshSpills = pressureData?.lanes?.semantic?.tiledSpills ?? "n/a";
+    const freshSpillInput = pressureData?.lanes?.semantic?.tiledSpillInput ?? "n/a";
+    const freshSpillK = Number(pressureData?.lanes?.semantic?.tiledSpills) > 0
+      ? Number(pressureData?.lanes?.semantic?.tiledSpillInput) / Number(pressureData.lanes.semantic.tiledSpills)
+      : NaN;
+    const freshOutputSpills = pressureData?.lanes?.semantic?.tiledOutputSpills ?? "n/a";
+    const fresh = hasFreshPressure
+      ? `:fresh=best:${formatRatio(pressureData?.lanes?.semantic?.speedup)},median:${formatRatio(freshStats?.median)},worst:${formatRatio(freshStats?.worst)},spills:${freshSpills},spill_k:${formatNumber(freshSpillK, 0)},spill_input:${freshSpillInput},output_spills:${freshOutputSpills}`
+      : "";
     if (semanticThroughput === "ready" && Number.isFinite(semanticSpeedup) && semanticSpeedup >= 1) {
-      return `q8_prompt=promote_semantic_candidate:${formatRatio(semanticSpeedup)}:median=${formatRatio(semanticStats?.median)}`;
+      return `q8_prompt=promote_semantic_candidate:${formatRatio(semanticSpeedup)}:median=${formatRatio(semanticStats?.median)}${fresh}`;
     }
-    return `q8_prompt=semantic_throughput_kernel:${status}:${semanticThroughput}:best=${formatRatio(semanticSpeedup)}:median=${formatRatio(semanticStats?.median)}:worst=${formatRatio(semanticStats?.worst)}`;
+    return `q8_prompt=semantic_throughput_kernel:${status}:${semanticThroughput}:best=${formatRatio(semanticSpeedup)}:median=${formatRatio(semanticStats?.median)}:worst=${formatRatio(semanticStats?.worst)}${fresh}`;
   } catch {
     return "q8_prompt=unreadable_artifact";
   }
@@ -802,13 +823,13 @@ function fullModelNextTarget(latestPath) {
   }
 }
 
-function perfNextStatusLine({ latestPath, pytorchPath, q8Path, frontierPath, rawFrontierPath }) {
+function perfNextStatusLine({ latestPath, pytorchPath, q8Path, rawQ8Path, frontierPath, rawFrontierPath }) {
   const qprojPath = latestQprojFrontierArtifact();
   return [
     "perf-next:",
     fullModelNextTarget(latestPath),
     pytorchNextTarget(pytorchPath),
-    q8PromptNextTarget(q8Path),
+    q8PromptNextTarget(q8Path, rawQ8Path),
     qprojNextTargetLine(qprojPath),
     frontierNextTargetLine(frontierPath, rawFrontierPath),
   ].join(" ");
@@ -1355,7 +1376,7 @@ process.stdout.write(`${qprojFrontierStatusLine(latestQprojFrontier)}\n`);
 process.stdout.write(`${frontierStatusLine(latestFrontier, latestRawFrontier)}\n`);
 const frontierFreshness = frontierFreshnessStatusLine(latestFrontier, latestRawFrontier);
 if (frontierFreshness) process.stdout.write(`${frontierFreshness}\n`);
-process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestRawFrontier })}\n`);
+process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, rawQ8Path: latestRawQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestRawFrontier })}\n`);
 const quarantined = quarantinedFullRunArtifacts();
 if (quarantined.length > 0) {
   process.stdout.write(`bench-results: ${quarantined.length} quarantined p128/g200/r3 artifact(s) ignored for accepted evidence; latest_failed=${compactName(quarantined.at(-1))}\n`);
