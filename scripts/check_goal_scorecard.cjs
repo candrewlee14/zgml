@@ -1312,6 +1312,8 @@ function checkScripts() {
     "semantic full-prefill target must expose count=1 rows=128 hidden=512 input=512 output=512 row_serial_dot_ops=786432 total_row_serial_dot_ops=100663296",
     "semantic smollm-prompt target must expose count=1 rows=128 hidden=576 input=576 output=576 row_serial_dot_ops=995328 total_row_serial_dot_ops=127401984",
     "next=semantic_ffn_sublayer_throughput_kernel",
+    "semantic_width_parallel_kernel",
+    "next: best.next",
     "semantic full-prefill command profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_projection_row_chains=0 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=3 runtime_semantic_ffn_dispatches=3 runtime_projection_row_chain_dispatches=0 runtime_projection_row_chain_attempts=0 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=0 semantic_ffn_sublayer_count=0 semantic_target_dispatches=1",
     "semantic full-prefill target profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=1",
     "semantic smollm-prompt command profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_projection_row_chains=0 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=3 runtime_semantic_ffn_dispatches=3 runtime_projection_row_chain_dispatches=0 runtime_projection_row_chain_attempts=0 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=0 semantic_ffn_sublayer_count=0 semantic_target_dispatches=1",

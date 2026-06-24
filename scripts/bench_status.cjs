@@ -1063,13 +1063,17 @@ function frontierNextTargetLine(path, pressurePath = path) {
     const pressureSmollmWidthUtilization = Number(pressureData?.smollmPrompt?.semanticWidthLaneUtilizationX1000);
     const pressureSmollmThreadUtilization = Number(pressureData?.smollmPrompt?.semanticThreadLaneUtilizationX1000);
     const pressureSmollmThroughput = Number(pressureData?.smollmPrompt?.speedup);
-    const frontierNext = pressureData?.kind === "qsemantic-throughput" &&
+    const computedFrontierNext = pressureData?.kind === "qsemantic-throughput" &&
       Number.isFinite(pressureSmollmThroughput) &&
       pressureSmollmThroughput < 1 &&
       ((Number.isFinite(pressureSmollmWidthUtilization) && pressureSmollmWidthUtilization < 800) ||
         (Number.isFinite(pressureSmollmThreadUtilization) && pressureSmollmThreadUtilization < 800))
       ? "semantic_width_parallel_kernel"
       : next;
+    const frontierNext =
+      pressureData?.kind === "qsemantic-throughput" && typeof pressureData?.next === "string"
+        ? pressureData.next
+        : computedFrontierNext;
     const freshStats =
       pressureData?.kind === "qsemantic-throughput"
         ? `,median=smollm:${formatRatio(pressureData?.speedupStats?.smollmPrompt?.median)},full:${formatRatio(pressureData?.speedupStats?.fullPrefill?.median)},worst=smollm:${formatRatio(pressureData?.speedupStats?.smollmPrompt?.worst)},full:${formatRatio(pressureData?.speedupStats?.fullPrefill?.worst)}`

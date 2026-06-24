@@ -1320,12 +1320,16 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
     failures.push("semantic throughput smollm-prompt profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 runtime_backend_dispatches=1 runtime_semantic_ffn_dispatches=1 qmatmul_row_chain_tiled_count=0 semantic_ffn_sublayer_count=1 semantic_tile_parallel_groups=216");
   }
 
+  const next = smollmPromptSpeedup < 1 &&
+    (smollmPromptSemanticWidthLaneUtilization < 800 || smollmPromptSemanticThreadLaneUtilization < 800)
+    ? "semantic_width_parallel_kernel"
+    : "semantic_ffn_sublayer_throughput_kernel";
   const line = [
     `frontier qsemantic throughput gate: ${failures.length === 0 ? "pass" : "fail"}`,
     `attempt=${attempt}/${maxAttempts}`,
     `full_prefill=${fullPrefillSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillRuntimeDispatches} semantic_ffn_sublayer_count=${fullPrefillSemanticCount} semantic_tile_parallel_groups=${fullPrefillSemanticTileGroups} semantic_row_serial_per_group=${fullPrefillSemanticRowSerialPerTileGroup} semantic_total_row_serial_per_group=${fullPrefillSemanticTotalRowSerialPerTileGroup} semantic_width_lane_slots=${fullPrefillSemanticWidthLaneSlots} semantic_active_width_lanes=${fullPrefillSemanticActiveWidthLanes} semantic_width_lane_utilization_x1000=${fullPrefillSemanticWidthLaneUtilization} semantic_thread_lane_slots=${fullPrefillSemanticThreadLaneSlots} semantic_active_thread_lanes=${fullPrefillSemanticActiveThreadLanes} semantic_thread_lane_utilization_x1000=${fullPrefillSemanticThreadLaneUtilization} qmatmul_row_chain_tiled_count=${fullPrefillRuntimeRowChainTiled} qmatmul_row_chain_tiled_spilled_input=${fullPrefillSpilledInput} qmatmul_row_chain_tiled_output_spills=${fullPrefillOutputSpills}`,
     `smollm_prompt=${smollmPromptSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${smollmPromptMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${smollmPromptRuntimeDispatches} semantic_ffn_sublayer_count=${smollmPromptSemanticCount} semantic_tile_parallel_groups=${smollmPromptSemanticTileGroups} semantic_row_serial_per_group=${smollmPromptSemanticRowSerialPerTileGroup} semantic_total_row_serial_per_group=${smollmPromptSemanticTotalRowSerialPerTileGroup} semantic_width_lane_slots=${smollmPromptSemanticWidthLaneSlots} semantic_active_width_lanes=${smollmPromptSemanticActiveWidthLanes} semantic_width_lane_utilization_x1000=${smollmPromptSemanticWidthLaneUtilization} semantic_thread_lane_slots=${smollmPromptSemanticThreadLaneSlots} semantic_active_thread_lanes=${smollmPromptSemanticActiveThreadLanes} semantic_thread_lane_utilization_x1000=${smollmPromptSemanticThreadLaneUtilization} qmatmul_row_chain_tiled_count=${smollmPromptRuntimeRowChainTiled} qmatmul_row_chain_tiled_spilled_input=${smollmPromptSpilledInput} qmatmul_row_chain_tiled_output_spills=${smollmPromptOutputSpills}`,
-    "next=semantic_ffn_sublayer_throughput_kernel",
+    `next=${next}`,
   ].join("; ");
 
   return {
@@ -1370,6 +1374,7 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
     smollmPromptSemanticThreadLaneUtilization,
     smollmPromptSpilledInput,
     smollmPromptOutputSpills,
+    next,
     failures,
     line,
   };
@@ -1476,7 +1481,7 @@ function writeFocusedSemanticThroughputArtifact(best, attempts, aggregate, line)
     fullPrefill: bestSummary.fullPrefill,
     smollmPrompt: bestSummary.smollmPrompt,
     attemptSummaries: attempts.map(selectedSemanticThroughputAttemptSummary),
-    next: "semantic_ffn_sublayer_throughput_kernel",
+    next: best.next,
     line,
   };
   writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
@@ -1535,7 +1540,7 @@ function runFocusedSemanticThroughputGate() {
       kind: "qsemantic-throughput",
       selectedAttempt: best.attempt,
       attempts: attempts.length,
-      next: "semantic_ffn_sublayer_throughput_kernel",
+      next: best.next,
     })}\n`);
   }
   process.stdout.write(`${line}\n`);
