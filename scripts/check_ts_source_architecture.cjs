@@ -4,11 +4,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const {
+  camelToSnake,
   nativeApiArrayNames,
   nativeApiContractArrays,
   nativeApiContractManifestPolicy,
   nativeApiDomainExports,
   stringArrayContract,
+  tsNativeDescriptorContracts,
+  zigNumericConstContract,
 } = require("./native_api_contract_policy.cjs");
 const {
   expectedPackageFiles,
@@ -47,6 +50,36 @@ function assertSameList(errors, label, actual, expected) {
   if (actual.length !== expected.length || actual.some((entry, index) => entry !== expected[index])) {
     errors.push(`${label} drifted: expected ${expected.join(", ")}, got ${actual.join(", ")}`);
   }
+}
+
+function assertSameNumericMap(errors, label, tsMap, zigConstants, zigNameForKey) {
+  for (const [key, tsValue] of Object.entries(tsMap)) {
+    const zigName = zigNameForKey(key);
+    if (!Object.hasOwn(zigConstants, zigName)) {
+      errors.push(`${label} missing native constant ${zigName} for TS key ${key}`);
+      continue;
+    }
+    const zigValue = zigConstants[zigName];
+    if (zigValue !== tsValue) {
+      errors.push(`${label} drifted for ${key}: TS=${tsValue}, native ${zigName}=${zigValue}`);
+    }
+  }
+}
+
+function nativeModelKindConstName(key) {
+  if (key === "smollm135m") return "smollm_135m_kind";
+  if (key === "tinyLlama2Layer") return "tiny_llama_2layer_kind";
+  return `${camelToSnake(key)}_kind`;
+}
+
+function nativeRuntimeFeatureConstName(key) {
+  const special = {
+    webGpuCompileOnly: "webgpu_compile_only",
+    nativeTopKSample: "native_topk_sample",
+    nativeWgpuExecution: "native_wgpu_execution",
+    experimentalLlamaWgpuExecution: "experimental_llama_wgpu_execution",
+  };
+  return `feature_${special[key] ?? camelToSnake(key)}`;
 }
 
 function checkSourceContract(errors, relativePath, source, label) {
@@ -16787,7 +16820,32 @@ function checkDistSmokeIsTsOwned(errors) {
   const nativePackageSpineSource = fs.existsSync(path.join(root, "src", "ts", "runtime", "native_package_spine_contract.ts"))
     ? fs.readFileSync(path.join(root, "src", "ts", "runtime", "native_package_spine_contract.ts"), "utf8")
     : "";
+  const tsAbiSource = fs.existsSync(path.join(root, "src", "ts", "runtime", "abi.ts"))
+    ? fs.readFileSync(path.join(root, "src", "ts", "runtime", "abi.ts"), "utf8")
+    : "";
+  const cApiSource = fs.existsSync(path.join(root, "src", "c_api.zig"))
+    ? fs.readFileSync(path.join(root, "src", "c_api.zig"), "utf8")
+    : "";
   const nativeApiArrays = nativeApiContractSource ? nativeApiContractArrays(nativeApiContractSource) : {};
+  if (tsAbiSource && cApiSource) {
+    const tsDescriptorContracts = tsNativeDescriptorContracts(tsAbiSource);
+    const zigDescriptorConstants = zigNumericConstContract(cApiSource);
+    if (zigDescriptorConstants.abi_version !== tsDescriptorContracts.expectedRuntimeAbiVersion) {
+      errors.push(`native descriptor ABI version drifted: TS=${tsDescriptorContracts.expectedRuntimeAbiVersion}, native abi_version=${zigDescriptorConstants.abi_version}`);
+    }
+    assertSameNumericMap(errors, "native descriptor modelKinds", tsDescriptorContracts.modelKinds, zigDescriptorConstants, nativeModelKindConstName);
+    assertSameNumericMap(errors, "native descriptor backendIds", tsDescriptorContracts.backendIds, zigDescriptorConstants, (key) => `backend_${camelToSnake(key)}`);
+    assertSameNumericMap(errors, "native descriptor bufferStorageIds", tsDescriptorContracts.bufferStorageIds, zigDescriptorConstants, (key) => `buffer_storage_${camelToSnake(key)}`);
+    assertSameNumericMap(errors, "native descriptor resourceAccessIds", tsDescriptorContracts.resourceAccessIds, zigDescriptorConstants, (key) => `resource_access_${key === "readwrite" ? "read_write" : camelToSnake(key)}`);
+    assertSameNumericMap(errors, "native descriptor programBufferKinds", tsDescriptorContracts.programBufferKinds, zigDescriptorConstants, (key) => `program_buffer_${key === "kv-k" ? "llama_k_cache" : key === "kv-v" ? "llama_v_cache" : camelToSnake(key)}`);
+    assertSameNumericMap(errors, "native descriptor abiStructKinds", tsDescriptorContracts.abiStructKinds, zigDescriptorConstants, (key) => `abi_struct_${camelToSnake(key)}`);
+    assertSameNumericMap(errors, "native descriptor moduleOpIds", tsDescriptorContracts.moduleOpIds, zigDescriptorConstants, (key) => `module_op_${camelToSnake(key)}`);
+    assertSameNumericMap(errors, "native descriptor moduleActivationIds", tsDescriptorContracts.moduleActivationIds, zigDescriptorConstants, (key) => `module_activation_${camelToSnake(key)}`);
+    assertSameNumericMap(errors, "native descriptor moduleFlags", tsDescriptorContracts.moduleFlags, zigDescriptorConstants, (key) => `module_flag_${camelToSnake(key)}`);
+    assertSameNumericMap(errors, "native descriptor runtimeFeatureBits", tsDescriptorContracts.runtimeFeatureBits, zigDescriptorConstants, nativeRuntimeFeatureConstName);
+  } else {
+    errors.push("src/ts/runtime/abi.ts and src/c_api.zig must both exist for TS/native descriptor drift checks");
+  }
   for (const needle of [
     'from "./native_package_spine_contract.js"',
     'import { frontendManifest } from "../frontend_manifest.js";',
@@ -16938,8 +16996,12 @@ function checkDistSmokeIsTsOwned(errors) {
     'nativeApiArrayNames,',
     'nativeApiDomainExports,',
     'stringArrayContract,',
+    'tsNativeDescriptorContracts,',
+    'zigNumericConstContract,',
     'const nativeApiSentinelExports = stringArrayContract(nativeContractSource, "requiredNativeApiSentinelExports");',
     "const nativeApiArrays = nativeApiContractSource ? nativeApiContractArrays(nativeApiContractSource) : {};",
+    "assertSameNumericMap(errors, \"native descriptor moduleOpIds\"",
+    "assertSameNumericMap(errors, \"native descriptor runtimeFeatureBits\"",
     "for (const name of nativeApiArrayNames)",
     ".map((name) => `export const ${name} = nativeNodeRuntime.${name};`)",
     ".map((name) => `export const ${name} = nativeBunRuntime.${name};`)",
@@ -16963,8 +17025,13 @@ function checkDistSmokeIsTsOwned(errors) {
     "function nativePackageSpineExports(arrays, runtimeOverrides)",
     "function frontendNamespaceExports(source)",
     "function nativeRootOverrideExports(nativeExports, frontendSource, rootAliases = [])",
+    "function normalizeNumericExpression(source, constants = {})",
+    "function tsNumericObjectContract(source, constName, seen = new Set())",
+    "function tsNativeDescriptorContracts(source)",
+    "function zigNumericConstContract(source)",
     "const requiredRootAliases = new Set(rootAliases)",
     "module.exports = {",
+    "camelToSnake",
     "frontendNamespaceExports",
     "nativeApiArrayNames",
     "nativeApiContractArrays",
@@ -16974,6 +17041,10 @@ function checkDistSmokeIsTsOwned(errors) {
     "nativePackageSpineExports",
     "nativeRootOverrideExports",
     "stringArrayContract",
+    "tsNativeDescriptorContracts",
+    "tsNumericConstContract",
+    "tsNumericObjectContract",
+    "zigNumericConstContract",
   ]) {
     if (!nativeContractPolicySource.includes(needle)) {
       errors.push(`scripts/native_api_contract_policy.cjs must own native contract array parsing for generators/checkers: ${needle}`);

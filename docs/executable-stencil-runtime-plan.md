@@ -80,6 +80,13 @@ product source of truth is `ts-only`, the product semantics owner is
 `forbidden`, and native alignment is `contract-tested-substrate`:
 Program/Session/ABI contracts, runtime evidence, and backend behavior tests.
 Handwritten frontend mirrors are not allowed.
+The same boundary now has a static numeric drift guard: `npm run
+check:ts-source-architecture` compares the TS ABI descriptor maps in
+`src/ts/runtime/abi.ts` with the native constants in `src/c_api.zig` for model
+kinds, backend ids, buffer/storage/access ids, Program buffer kinds, ABI struct
+kinds, module op ids, activation ids, module flags, runtime feature bits, and
+the C ABI version. That keeps `KernelPlan -> native descriptor -> Program`
+lowering from becoming a parallel, silently divergent compiler contract.
 
 The short rule is:
 
