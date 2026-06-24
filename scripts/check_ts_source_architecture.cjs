@@ -247,6 +247,7 @@ function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
   const missing = rootNamespaceExports.filter((name) => !classifiedSet.has(name));
   const stale = classified.filter((name) => !rootNamespaceExports.includes(name));
   const publicApiSource = fs.readFileSync(path.join(root, "src", "ts", "public_api.ts"), "utf8");
+  const readmeSource = fs.readFileSync(path.join(root, "README.md"), "utf8");
 
   if (indexSource.includes('from "./public_surface.js"')) {
     errors.push(`${indexPath} must not expose the internal root public-surface taxonomy as another user-facing root API`);
@@ -314,6 +315,21 @@ function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
   }
   if (!publicApiSource.includes("export declare const torch: PublicTorchNamespace;")) {
     errors.push("src/ts/public_api.ts must keep torch as the compatibility friendly namespace value");
+  }
+  if (!readmeSource.includes('import { zgml } from "zgml";')) {
+    errors.push("README.md must teach zgml as the canonical first-contact root value");
+  }
+  if (!readmeSource.includes("`torch` remains available as a PyTorch-compatible alias")) {
+    errors.push("README.md must present torch as a compatibility alias, not the canonical first-contact namespace");
+  }
+  if (!readmeSource.includes("`zgml` is the canonical package identity")) {
+    errors.push("README.md must present zgml as the canonical package identity");
+  }
+  if (!readmeSource.includes("zgml.compileForInference(model")) {
+    errors.push("README.md must teach zgml.compileForInference as the first-contact compiled inference handle");
+  }
+  if (!readmeSource.includes("compile.compileForInference(model")) {
+    errors.push("README.md must keep the explicit compile namespace path documented for users who avoid the friendly root value");
   }
   if (duplicateClassifications.length !== 0) {
     errors.push(`${surfacePath} must classify each root namespace once: duplicate ${[...new Set(duplicateClassifications)].join(", ")}`);
