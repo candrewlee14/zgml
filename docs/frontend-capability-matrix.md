@@ -11,6 +11,21 @@ Legend:
 - `partial`: supported for important shapes or workflows, with honest limits.
 - `no`: not a current claim.
 
+## First-Contact Surface
+
+The root package intentionally separates the small surface users should learn
+first from the wider inspectable runtime surface:
+
+```text
+zgml
+tensor, nn, loss, optim, train, data, checkpoint, lazy, compile
+compile.compileForInference(...)
+```
+
+`Program`, `Session`, native buffers, model-source helpers, and runtime
+inspection stay public and stable where they are needed, but they are the
+advanced control/evidence lane rather than the first tutorial vocabulary.
+
 ## User-Facing Capabilities
 
 | Capability | Eager | Autograd | TS Shape Safety | Native Program | Notes |
@@ -49,9 +64,10 @@ PyTorch replacement:
 - Safetensors/checkpoint interop is strong for model-source runtime paths, but
   TS userland needs clearer import/export recipes for ordinary module weights.
 - The root public API is still wider than the ideal first-contact surface; users
-  should learn stable namespaces first and reach for advanced runtime evidence
-  only when inspecting or deploying. `zgml` is the canonical friendly namespace;
-  `torch` remains a compatibility alias for PyTorch-shaped habits.
+  should learn the checked first-contact namespaces first and reach for advanced
+  runtime evidence only when inspecting or deploying. `zgml` is the canonical
+  friendly namespace; `torch` remains a compatibility alias for PyTorch-shaped
+  habits.
 
 ## Evidence Bar
 

@@ -228,6 +228,8 @@ const sourceContracts = Object.freeze({
   ]),
   "src/ts/public_surface.ts": Object.freeze([
     'import { tsProductManifestPolicy } from "./internal/product_manifest.js";',
+    "export const firstContactRootNamespaces = Object.freeze([",
+    "export const firstContactRootValues = Object.freeze([",
     "export const stableRootNamespaces = Object.freeze([",
     "export const advancedRootNamespaces = Object.freeze([",
     "export const legacyCompatibleRootNamespaces = Object.freeze([",
@@ -237,7 +239,10 @@ const sourceContracts = Object.freeze({
     '...tsProductManifestPolicy("src/ts/public_surface.ts")',
     'rootEntry: "src/ts/index.ts"',
     "internalPackagePolicyOnly: true",
+    "firstContactSurfaceIsSmall: true",
+    'firstContactRuntimeHandle: "compile.compileForInference"',
     "classificationCoversRootNamespaceExports: true",
+    "firstContactIsSubsetOfStableSurface: true",
     "newProductSurfaceGoesThroughStableNamespaces: true",
   ]),
   "src/ts/browser.ts": Object.freeze([

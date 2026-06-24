@@ -2,6 +2,22 @@
 
 import { tsProductManifestPolicy } from "./internal/product_manifest.js";
 
+export const firstContactRootNamespaces = Object.freeze([
+  "tensor",
+  "nn",
+  "loss",
+  "optim",
+  "train",
+  "data",
+  "checkpoint",
+  "lazy",
+  "compile",
+] as const);
+
+export const firstContactRootValues = Object.freeze([
+  "zgml",
+] as const);
+
 export const stableRootNamespaces = Object.freeze([
   "tensor",
   "nn",
@@ -96,9 +112,12 @@ export const rootSurfacePolicy = Object.freeze({
   stableFirst: true,
   canonicalFriendlyNamespace: "zgml",
   compatibilityFriendlyNamespace: "torch",
+  firstContactSurfaceIsSmall: true,
+  firstContactRuntimeHandle: "compile.compileForInference",
   compatibilityExportsRemainPublic: true,
   internalPackagePolicyOnly: true,
   classificationCoversRootNamespaceExports: true,
+  firstContactIsSubsetOfStableSurface: true,
   valueClassificationCoversFriendlyRootExports: true,
   newProductSurfaceGoesThroughStableNamespaces: true,
   runtimeEvidenceStaysInspectable: true,
@@ -108,6 +127,8 @@ export const publicSurfaceManifest = Object.freeze({
   kind: "zgml-public-surface",
   ...tsProductManifestPolicy("src/ts/public_surface.ts"),
   rootEntry: "src/ts/index.ts",
+  firstContactRootNamespaces,
+  firstContactRootValues,
   stableRootNamespaces,
   stableRootValues,
   advancedRootNamespaces,

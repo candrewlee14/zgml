@@ -6110,7 +6110,11 @@ function checkDocs() {
     "zig build ffi-wasm-browser-gpu-focused-smoke",
     "mode=gpu-buffer",
     "tiled quantized row-chain",
-    "The remaining frontend jump is native lowering, breadth, and first-contact",
+    "small checked first-contact",
+    "`zgml`, `tensor`, `nn`, `loss`, `optim`, `train`, `data`,",
+    "`checkpoint`, `lazy`, `compile`, and `compile.compileForInference`",
+    "brilliant path before the deployment controls. The remaining frontend jump",
+    "native lowering, breadth, and first-contact simplicity",
     "compile hooks exist.",
   ]);
   requireIncludes(plan, "docs/executable-stencil-runtime-plan.md", "frontend capability matrix reference", [
@@ -6123,6 +6127,10 @@ function checkDocs() {
   const frontendMatrix = read("docs/frontend-capability-matrix.md");
   requireIncludes(frontendMatrix, "docs/frontend-capability-matrix.md", "PyTorch-like replacement trust matrix", [
     "# Frontend Capability Matrix",
+    "## First-Contact Surface",
+    "tensor, nn, loss, optim, train, data, checkpoint, lazy, compile",
+    "compile.compileForInference(...)",
+    "advanced control/evidence lane",
     "| Capability | Eager | Autograd | TS Shape Safety | Native Program | Notes |",
     "| Tensor factories and metadata | yes | n/a | yes | partial |",
     "| Elementwise tensor math | yes | yes | partial | partial |",
@@ -6143,7 +6151,9 @@ function checkDocs() {
     "Native eager tensor storage is not the default.",
     "Safetensors/checkpoint interop is strong for model-source runtime paths",
     "The root public API is still wider than the ideal first-contact surface",
-    "`zgml` is the canonical friendly namespace",
+    "checked first-contact namespaces first",
+    "`zgml` is the canonical",
+    "friendly namespace; `torch` remains a compatibility alias",
     "## Evidence Bar",
     "Raising the frontend replacement score should require one of these:",
     "Raising the performance substrate score should require benchmark artifacts, not",

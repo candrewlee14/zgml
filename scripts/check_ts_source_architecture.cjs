@@ -234,9 +234,11 @@ function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
   const rootNamespaceExports = [...indexSource.matchAll(/^export \* as ([A-Za-z0-9_]+) from /gm)]
     .map((match) => match[1])
     .sort();
+  const firstContact = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "firstContactRootNamespaces", errors);
   const stable = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "stableRootNamespaces", errors);
   const advanced = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "advancedRootNamespaces", errors);
   const legacy = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "legacyCompatibleRootNamespaces", errors);
+  const firstContactValues = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "firstContactRootValues", errors);
   const stableValues = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "stableRootValues", errors);
   const legacyValues = stringLiteralsFromExportedConstArray(surfaceSource, surfacePath, "legacyCompatibleRootValues", errors);
   const classified = [...stable, ...advanced, ...legacy].sort();
@@ -258,6 +260,15 @@ function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
   if (!surfaceSource.includes('canonicalFriendlyNamespace: "zgml"')) {
     errors.push(`${surfacePath} must name zgml as the canonical friendly namespace`);
   }
+  if (!surfaceSource.includes("firstContactSurfaceIsSmall: true")) {
+    errors.push(`${surfacePath} must keep the ideal first-contact surface explicit and small`);
+  }
+  if (!surfaceSource.includes('firstContactRuntimeHandle: "compile.compileForInference"')) {
+    errors.push(`${surfacePath} must name compile.compileForInference as the first-contact runtime handle`);
+  }
+  if (!surfaceSource.includes("firstContactIsSubsetOfStableSurface: true")) {
+    errors.push(`${surfacePath} must assert that first-contact exports are a subset of the stable surface`);
+  }
   if (!surfaceSource.includes('compatibilityFriendlyNamespace: "torch"')) {
     errors.push(`${surfacePath} must name torch as the compatibility friendly namespace`);
   }
@@ -269,6 +280,28 @@ function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
   }
   if (!legacyValues.includes("torch")) {
     errors.push(`${surfacePath} must classify torch as a legacy-compatible root value`);
+  }
+  if (!firstContactValues.includes("zgml")) {
+    errors.push(`${surfacePath} must classify zgml as the first-contact root value`);
+  }
+  const stableSet = new Set(stable);
+  const firstContactOutsideStable = firstContact.filter((name) => !stableSet.has(name));
+  if (firstContactOutsideStable.length !== 0) {
+    errors.push(`${surfacePath} first-contact namespaces must stay inside stableRootNamespaces: ${firstContactOutsideStable.join(", ")}`);
+  }
+  const advancedFirstContact = firstContact.filter((name) => advanced.includes(name) || legacy.includes(name));
+  if (advancedFirstContact.length !== 0) {
+    errors.push(`${surfacePath} first-contact namespaces must not include advanced or legacy namespaces: ${advancedFirstContact.join(", ")}`);
+  }
+  for (const expected of ["tensor", "nn", "loss", "optim", "train", "checkpoint", "data", "lazy", "compile"]) {
+    if (!firstContact.includes(expected)) {
+      errors.push(`${surfacePath} first-contact namespaces must include ${expected}`);
+    }
+  }
+  for (const advancedName of ["program", "session", "nativeBuffer", "programDevice", "inspection", "modelSource"]) {
+    if (firstContact.includes(advancedName)) {
+      errors.push(`${surfacePath} first-contact namespaces must keep ${advancedName} in the inspectable advanced/stable layer, not first contact`);
+    }
   }
   if (!publicApiSource.includes("export declare const zgml: PublicZgmlNamespace;")) {
     errors.push("src/ts/public_api.ts must expose zgml as the canonical friendly root namespace value");

@@ -426,8 +426,12 @@ Current checked progress:
   runtime/evidence namespaces, and keeps compatibility slices such as `torch`
   explicit while preserving existing exports without adding another public
   package subpath. Native eager execution policy is still open work.
-  The remaining frontend jump is native lowering, breadth, and first-contact
-  simplicity, not proof that
+  The public-surface taxonomy now separates the small checked first-contact
+  surface (`zgml`, `tensor`, `nn`, `loss`, `optim`, `train`, `data`,
+  `checkpoint`, `lazy`, `compile`, and `compile.compileForInference`) from the
+  wider inspectable Program/Session/runtime evidence surface, so users learn the
+  brilliant path before the deployment controls. The remaining frontend jump is
+  native lowering, breadth, and first-contact simplicity, not proof that
   `nn.Linear`, training, state dicts, data loaders, model math primitives, or
   compile hooks exist.
 
