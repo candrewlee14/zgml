@@ -557,6 +557,7 @@ function scoreFocusedSemantic(output, attempt) {
     ? "ready"
     : "diagnostic_needs_throughput_kernel";
   const singleDispatchReduced = fullPrefillSingleDispatchRuntimeDispatches < fullPrefillRuntimeDispatches && smollmPromptSingleDispatchRuntimeDispatches < smollmPromptRuntimeDispatches;
+  const singleDispatchBlocker = singleDispatchReduced ? "none" : "metal_row_chain_leaf_encoder_declined_semantic_shape";
 
   const failures = [];
   for (const [label, value] of [
@@ -595,6 +596,7 @@ function scoreFocusedSemantic(output, attempt) {
     `attempt=${attempt}/${maxAttempts}`,
     `target_throughput_status=${targetThroughputStatus}`,
     `single_dispatch_row_chain_dispatch_reduced=${singleDispatchReduced ? "yes" : "no"}`,
+    `single_dispatch_row_chain_blocker=${singleDispatchBlocker}`,
     `full_prefill=${fullPrefillSpeedup.toFixed(2)}x max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} shape_commands=${fullPrefillShapeCommands} shape_covered_ops=${fullPrefillShapeCoveredOps} runtime_backend_dispatches=${fullPrefillRuntimeDispatches} semantic_target_dispatches=${fullPrefillTargetDispatches} target_speedup=${fullPrefillTargetSpeedup.toFixed(2)}x target_max_abs_diff=${fullPrefillTargetMaxAbsDiff.toFixed(6)} target_shape_commands=${fullPrefillTargetShapeCommands} target_semantic_ffn_sublayers=${fullPrefillTargetShapeSemantic} target_runtime_backend_dispatches=${fullPrefillTargetRuntimeDispatches}`,
     `full_prefill_two_phase=${fullPrefillTwoPhaseSpeedup.toFixed(2)}x max_abs_diff=${fullPrefillTwoPhaseMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillTwoPhaseRuntimeDispatches}`,
     `full_prefill_single_dispatch=${fullPrefillSingleDispatchSpeedup.toFixed(2)}x max_abs_diff=${fullPrefillSingleDispatchMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillSingleDispatchRuntimeDispatches}`,
@@ -656,6 +658,7 @@ function scoreFocusedSemantic(output, attempt) {
     smollmPromptSingleDispatchShapeCoveredOps,
     smollmPromptSingleDispatchRuntimeDispatches,
     singleDispatchReduced,
+    singleDispatchBlocker,
     failures,
     line,
   };

@@ -737,6 +737,8 @@ function checkScripts() {
     "target_throughput_status=",
     "diagnostic_needs_throughput_kernel",
     "single_dispatch_row_chain_dispatch_reduced=",
+    "single_dispatch_row_chain_blocker=",
+    "metal_row_chain_leaf_encoder_declined_semantic_shape",
     "semantic pair_row_chain_single_dispatch",
     "single-dispatch row-chain diagnostic must stay",
     "semantic_target_dispatches",
