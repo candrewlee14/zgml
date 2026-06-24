@@ -756,6 +756,7 @@ function checkScripts() {
     "frontier=semantic_ffn_sublayer_throughput_kernel",
     "const hasFreshQsemanticThroughput",
     ":fresh=source:[^, ]+,throughput=smollm:[0-9.]+x,full:[0-9.]+x",
+    "if (/q8_prompt=promoted_semantic_default/.test(line)) return \"ggml\"",
     "if (hasFreshQsemanticThroughput && /q8_prompt=semantic_throughput_kernel/.test(line)) return \"q8_prompt\"",
     "qsemantic_throughput",
     "q8_prompt=semantic_throughput_kernel",

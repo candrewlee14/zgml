@@ -45,6 +45,7 @@ function chooseLane(line) {
   const hasFreshQsemanticThroughput =
     /frontier=semantic_ffn_sublayer_throughput_kernel:candidate=ready/.test(line) &&
     /:fresh=source:[^, ]+,throughput=smollm:[0-9.]+x,full:[0-9.]+x/.test(line);
+  if (/q8_prompt=promoted_semantic_default/.test(line)) return "ggml";
   if (hasFreshQsemanticThroughput && /q8_prompt=semantic_throughput_kernel/.test(line)) return "q8_prompt";
   if (
     !steady &&
