@@ -247,6 +247,8 @@ function checkScripts() {
     "reason=prefer_focus_keyset",
     "status=${status}",
     "worst=${worst}",
+    "gap=${worstGap}",
+    "delta=${formatUs",
     "attempts=${attempts}",
     "native=${native}",
     "keys=${keyCount}",

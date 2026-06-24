@@ -310,6 +310,14 @@ function formatRatio(value) {
   return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(2)}x` : "n/a";
 }
 
+function formatMs(value) {
+  return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(4)}ms` : "n/a";
+}
+
+function formatUs(value) {
+  return typeof value === "number" && Number.isFinite(value) ? `${(value * 1000).toFixed(2)}us` : "n/a";
+}
+
 function attemptRatioStats(data, field) {
   if (!Array.isArray(data?.attempts)) return null;
   const values = data.attempts
@@ -410,6 +418,9 @@ function pytorchComparisonStatusLine(path) {
   const status = data?.comparisonReady === true ? "pass" : "miss";
   const medianStatus = data?.medianParityReady === true ? "pass" : "miss";
   const worst = data?.worst?.key ? `${data.worst.key}:${formatRatio(data.worst.ratio)}` : "missing";
+  const worstGap = data?.worst?.key
+    ? `${data.worst.key}:zgml=${formatMs(data.worst.zgmlMs)},pytorch=${formatMs(data.worst.pytorchMs)},delta=${formatUs(Number(data.worst.zgmlMs) - Number(data.worst.pytorchMs))}`
+    : "missing";
   const minRatio = Number(data?.config?.minRatio ?? 1);
   const selectedFallback = ratioPassSummary(data?.selectedRatios, minRatio);
   const medianFallback = ratioPassSummary(data?.ratioStats, minRatio);
@@ -430,7 +441,7 @@ function pytorchComparisonStatusLine(path) {
   const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
   const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
   const timing = typeof data?.config?.zgmlTimingMetric === "string" ? data.config.zgmlTimingMetric : "unknown";
-  return `pytorch-results: latest=${compactName(path)} status=${status} median=${medianStatus} worst=${worst} lane_pass=${selectedLanePass} median_lane_pass=${medianLanePass} lane_miss=${laneMiss} median_lane_miss=${medianLaneMiss} attempt=${selectedAttempt}/${attempts} native=${native} torch=${torch} timing=${timing} keys=${keys} ratio_median=${medians}`;
+  return `pytorch-results: latest=${compactName(path)} status=${status} median=${medianStatus} worst=${worst} gap=${worstGap} lane_pass=${selectedLanePass} median_lane_pass=${medianLanePass} lane_miss=${laneMiss} median_lane_miss=${medianLaneMiss} attempt=${selectedAttempt}/${attempts} native=${native} torch=${torch} timing=${timing} keys=${keys} ratio_median=${medians}`;
 }
 
 function pytorchFocusStatusLine(path, latestPath) {
@@ -454,6 +465,9 @@ function pytorchFreshnessStatusLine(selectedPath, rawPath) {
   const status = data?.comparisonReady === true ? "pass" : "miss";
   const medianStatus = data?.medianParityReady === true ? "pass" : "miss";
   const worst = data?.worst?.key ? `${data.worst.key}:${formatRatio(data.worst.ratio)}` : "missing";
+  const worstGap = data?.worst?.key
+    ? `${data.worst.key}:zgml=${formatMs(data.worst.zgmlMs)},pytorch=${formatMs(data.worst.pytorchMs)},delta=${formatUs(Number(data.worst.zgmlMs) - Number(data.worst.pytorchMs))}`
+    : "missing";
   const medians = data?.ratioStats && typeof data.ratioStats === "object"
     ? Object.entries(data.ratioStats).map(([key, stats]) => `${key}:${formatRatio(stats?.median)}`).join(",")
     : "missing";
@@ -461,7 +475,7 @@ function pytorchFreshnessStatusLine(selectedPath, rawPath) {
   const native = typeof data?.native?.label === "string" ? data.native.label : "unknown";
   const timing = typeof data?.config?.zgmlTimingMetric === "string" ? data.config.zgmlTimingMetric : "unknown";
   const keyCount = Array.isArray(data?.config?.activeComparisonKeys) ? data.config.activeComparisonKeys.length : "n/a";
-  return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_focus_keyset status=${status} median=${medianStatus} worst=${worst} attempts=${attempts} native=${native} timing=${timing} keys=${keyCount} ratio_median=${medians}`;
+  return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_focus_keyset status=${status} median=${medianStatus} worst=${worst} gap=${worstGap} attempts=${attempts} native=${native} timing=${timing} keys=${keyCount} ratio_median=${medians}`;
 }
 
 function q8PromptCandidateStatusLine(path) {
