@@ -60,6 +60,7 @@ function chooseLane(line) {
     hasSemanticThroughputFrontier &&
     (!freshThroughput || freshThroughput.smollm < 1 || freshThroughput.full < 1);
   if (qsemanticThroughputBelowDefault) return "qsemantic_throughput";
+  if (currentQ8NeedsSemanticThroughput && hasFreshQsemanticThroughput) return "q8_prompt";
   if (currentQ8NeedsSemanticThroughput && !steady) return "qsemantic_throughput";
   if (currentQ8NeedsSemanticThroughput && steady && hasSemanticThroughputFrontier) return "qsemantic_throughput";
   if (/q8_prompt=promoted_semantic_default/.test(line)) return "ggml";

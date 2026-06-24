@@ -851,6 +851,7 @@ function checkScripts() {
     ":fresh=source:[^, ]+,throughput=smollm:([0-9.]+)x,full:([0-9.]+)x",
     "const qsemanticThroughputBelowDefault",
     "if (qsemanticThroughputBelowDefault) return \"qsemantic_throughput\"",
+    "if (currentQ8NeedsSemanticThroughput && hasFreshQsemanticThroughput) return \"q8_prompt\"",
     "if (currentQ8NeedsSemanticThroughput && !steady) return \"qsemantic_throughput\"",
     "if (currentQ8NeedsSemanticThroughput && steady && hasSemanticThroughputFrontier) return \"qsemantic_throughput\"",
     "if (/q8_prompt=promoted_semantic_default/.test(line)) return \"ggml\"",

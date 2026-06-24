@@ -489,7 +489,11 @@ the smallest no-rebuild microscope for the current bottleneck. Use
 `npm run dev:perf:next:build` when the native or benchmark artifact is stale,
 `npm run dev:perf:next:steady` when a noisy lane needs repeated attempts or
 longer timing windows, or set
-`BENCH_NEXT_PERF_LANE=pytorch|qsemantic|q8_prompt|ggml` to force a lane.
+`BENCH_NEXT_PERF_LANE=pytorch|qsemantic|qsemantic_throughput|qproj|q8_prompt|ggml`
+to force a lane. The automatic qsemantic handoff is two-step: below-default or
+missing fresh throughput evidence keeps the loop on `qsemantic_throughput`,
+while fresh above-default qsemantic throughput advances the loop to `q8_prompt`
+so model-level prompt viability is tested before ggml promotion.
 For qsemantic kernel work, `BENCH_QSEMANTIC_VARIANTS=target` limits the raw
 frontier harness to the staged baseline plus the one-dispatch semantic target,
 while `BENCH_QSEMANTIC_VARIANTS=throughput_candidate` limits it to the staged

@@ -737,8 +737,11 @@ commands; the current smoke target is the semantic FFN sublayer throughput
 kernel.
 The `dev:perf:next` router follows that split: while `q8_current` points at
 `semantic_ffn_sublayer_throughput_kernel`, the default next lane is the
-qsemantic throughput microscope, not the ggml smoke. Use the ggml smoke after
-the frontier bottleneck moves or when explicitly checking model-level promotion.
+qsemantic throughput microscope until fresh qsemantic throughput is above the
+current default path. Once that happens, the router advances to the Q8 prompt
+viability gate so the microscope win has to prove itself at the model level
+before any ggml smoke or promotion claim. Use the ggml smoke after the frontier
+bottleneck moves or when explicitly checking model-level promotion.
 The qsemantic-throughput readback follows the same stability rule as the other
 noisy perf lanes: `qsemantic-throughput-results:` prefers the latest
 three-attempt artifact, while `qsemantic-throughput-latest-results:` reports a
