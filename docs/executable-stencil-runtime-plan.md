@@ -1007,10 +1007,17 @@ The next amortization idea was also measured and rejected: a bind-time scratch
 buffer plus macOS `vvlogf` over the 128 per-row denominators compiled and passed
 the focused correctness filter, but the 150ms local classifier microscope moved
 the prepared path to `0.00765ms`, worse than the simpler fused-bias row path.
+The June 24, 2026 fast-log polynomial shortcut was also rejected: dropping the
+`y9 / 9` term from `fastLogPositiveApprox` passed the focused direct
+log-softmax row correctness tests with a `2e-5` standalone log guard, but the
+fresh-native three-attempt PyTorch microscope stayed unchanged at
+`ratio_median=log_softmax_classifier_batched:0.91x` and
+`zgml:0.0076ms pytorch:0.0069ms`.
 That reinforces the current rule for this soft spot: isolated vForce swaps are
-not the missing move; the next credible improvement needs a more substantial
-classifier-tail kernel or a backend path that changes the row-normalization
-shape. A steadier 150ms-window, three-attempt PyTorch rerun of only the
+and shorter scalar approximations are not the missing move; the next credible
+improvement needs a more substantial classifier-tail kernel or a backend path
+that changes the row-normalization shape. A steadier 150ms-window,
+three-attempt PyTorch rerun of only the
 log-softmax classifier lane confirms the target: `ratio_median=0.89x` with the
 selected attempt at `zgml:0.0077ms` and `pytorch:0.0069ms`.
 The broad PyTorch replacement loop is now named explicitly as
