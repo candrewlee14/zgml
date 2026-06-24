@@ -45,12 +45,12 @@ that read better as functions than modules.
 | Losses | yes | yes | partial | partial | MSE, BCE variants, cross entropy, NLL, L1, Huber/SmoothL1 exist for training; native lowering depends on the compiled module shape. |
 | Optimizers and schedulers | yes | n/a | partial | n/a | SGD, Adam, AdamW, RMSprop, Adagrad, parameter groups, state snapshots, and common schedulers exist in TS. |
 | Training helpers | yes | yes | partial | partial | Manual loops, `fitModule`, evaluate, predict, classifier helpers, train/eval mode, and evidence records exist; large-scale training is not the current performance claim. |
-| State dicts and checkpoints | yes | n/a | partial | n/a | Module, optimizer, and scheduler state dicts plus JSON-safe checkpoint save/load exist with preflight restore checks. |
+| State dicts and checkpoints | yes | n/a | partial | n/a | Module, optimizer, and scheduler state dicts plus JSON-safe checkpoint save/load exist with preflight restore checks and README/example import/export recipes. |
 | Program compile support | partial | n/a | yes | yes | Compile support is explicit and inspectable; unsupported graphs should report why instead of silently falling back. |
 | Program/Session hot path | n/a | n/a | yes | yes | `compile.compileForInference` is the friendly handle; explicit `compile -> Program -> bind -> Session -> step/executeInto` remains available for inspection and deployment control. |
 | Node and Bun package use | yes | yes | yes | yes | Root, Node, Bun, adapter, runtime, and type smokes cover the emitted package surface. |
 | Browser/Wasm/WebGPU surface | partial | n/a | partial | partial | Browser/Wasm and WebGPU proofs exist for bounded runtime paths; broad frontend WebGPU eager execution is not a current claim. |
-| Safetensors/model-source interop | partial | n/a | partial | partial | Model-source helpers support safetensors header/data probing and LLaMA-family loading paths; general TS state export/import remains narrower than PyTorch. |
+| Safetensors/model-source interop | partial | n/a | partial | partial | Model-source helpers support safetensors header/data probing and LLaMA-family loading paths; ordinary TS module weights use state-dict/checkpoint save/load recipes. |
 
 ## Replacement Gaps
 
@@ -64,8 +64,9 @@ PyTorch replacement:
   the checked family-level runtime evidence in `docs/frontend-autograd-coverage.md`.
 - Native eager tensor storage is not the default. Large tensor performance
   claims should continue to go through compiled Programs/Sessions.
-- Safetensors/checkpoint interop is strong for model-source runtime paths, but
-  TS userland needs clearer import/export recipes for ordinary module weights.
+- Safetensors/model-source interop is strong for runtime paths, while ordinary
+  TS module weights now have explicit state-dict/checkpoint save/load recipes;
+  broader third-party weight-format adapters remain future work.
 - The root public API is still wider than the ideal first-contact surface; users
   should learn the checked first-contact namespaces first and reach for advanced
   runtime evidence only when inspecting or deploying. `zgml` is the canonical

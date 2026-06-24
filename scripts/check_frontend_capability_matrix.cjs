@@ -135,6 +135,9 @@ requireIncludes(matrix, matrixPath, "an autograd test proving backward behavior 
 requireIncludes(matrix, matrixPath, "a README/tutorial example that exercises the full user workflow");
 requireIncludes(matrix, matrixPath, "a scorecard check that keeps the capability from drifting");
 requireIncludes(matrix, matrixPath, "Raising the performance substrate score should require benchmark artifacts, not");
+requireIncludes(matrix, matrixPath, "README/example import/export recipes");
+requireIncludes(matrix, matrixPath, "ordinary TS module weights use state-dict/checkpoint save/load recipes");
+requireIncludes(matrix, matrixPath, "broader third-party weight-format adapters remain future work");
 
 if (errors.length > 0) {
   for (const error of errors) console.error(`- ${error}`);
