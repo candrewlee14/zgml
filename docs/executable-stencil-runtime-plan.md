@@ -716,6 +716,8 @@ npm run bench:frontier:qsemantic       # rebuild ReleaseFast and gate the Q8 sem
 npm run bench:frontier:qsemantic:run   # rerun only the Q8 semantic frontier without rebuilding artifacts
 npm run dev:perf:frontier:qsemantic    # incremental checked Q8 semantic FFN/residual/norm microscope
 npm run dev:perf:frontier:qsemantic:run # no-rebuild checked Q8 semantic frontier microscope
+npm run dev:perf:frontier:qsemantic:steady # incremental three-attempt Q8 semantic microscope
+npm run dev:perf:frontier:qsemantic:steady:run # no-rebuild three-attempt Q8 semantic microscope
 npm run bench:frontier:row-chain       # rebuild ReleaseFast and run only row-chain frontier labels
 npm run bench:frontier:row-chain:run   # rerun only row-chain frontier labels without rebuilding artifacts
 npm run bench:frontier:row-chain-region      # rebuild ReleaseFast and run only x7 row-chain region labels
@@ -1150,6 +1152,14 @@ not yet an automatic promotion signal: it needs repeated attempts and the full
 Q8 prompt candidate gate before it can replace the default semantic command
 path. It does, however, give the next Metal pass a checked semantic-command lane
 instead of only separate row-chain experiments.
+A June 24, 2026 shape-gated policy experiment tried limiting the two-phase
+semantic throughput tail to the 512-wide full-prefill shape so the 576-wide
+SmolLM prompt shape would preserve the semantic command but skip the tiled tail.
+That fixed the SmolLM candidate-vs-default ratio to about `1.00x`, but the
+three-attempt qsemantic microscope selected a full-prefill miss around `0.90x`.
+That experiment was rejected; use
+`dev:perf:frontier:qsemantic:steady{,:run}` before trusting any one-attempt
+qsemantic promotion signal.
 A June 24, 2026 tail-loop micro-kernel experiment also rejected the tempting
 local cleanup of replacing the final row-chain scale loop's flattened
 `i / N`/`i % N` indexing with nested row/column loops. It preserved correctness,
