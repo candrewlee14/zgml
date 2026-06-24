@@ -318,6 +318,14 @@ Current checked progress:
   claim the full-model semantic row-chain path. The ggml comparison's Q8 prompt
   lane now uses that command path by default, so formal artifacts can prove the
   cleaner command shape without mutating the F16 lane.
+  The Q8 prompt probe now separates generic projection groups from
+  attention/cache projection groups: full-model Q8 reports
+  `projection_group=0->0`, `projection_cache_group=30->30`, and
+  `decode_projection_cache_group=30`. That means the attention/cache projection
+  grouping lane is already live in the full model; the remaining Q8 prompt gap
+  is the `projection_chain=60` row-chain/semantic-sublayer lane, while the
+  frontier x7 qproj region remains the isolated executable proof for general
+  qmatmul-plus-sidecar projection groups.
   The next semantic-sublayer move should therefore build on the already-live
   pair-fused FFN path, or deliberately supersede it with a larger FFN sublayer
   command, before spending more time on the shallow row-chain tail.

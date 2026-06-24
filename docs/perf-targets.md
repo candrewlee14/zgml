@@ -244,6 +244,14 @@ machine for both prompt/prefill and decode.
   clear the focused `1.00x` speed floor. This keeps projection grouping visible
   as a real planner target without pretending the smaller x4 diagnostic already
   dispatches a named executable command.
+- The full-model Q8 prompt probe now distinguishes general projection groups
+  from attention/cache projection groups. Its Q8 evidence reports
+  `projection_group=0->0`, `projection_cache_group=30->30`, and
+  `decode_projection_cache_group=30`, so the attention/cache group path is
+  already active in the full model. The remaining Q8 prompt work is the
+  `projection_chain=60` row-chain/semantic-sublayer lane; the frontier x7 qproj
+  region is the isolated executable proof for general qmatmul-plus-sidecar
+  projection groups.
 - The frontier gate now also reports the paired row-chain diagnostic
   `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
   This compares four staged qmatmul+residual+RMSNorm-scale row chains against

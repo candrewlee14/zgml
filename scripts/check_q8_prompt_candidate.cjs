@@ -151,6 +151,10 @@ function readProjectionLane(row, defaultTokS, index) {
   const projectionChains = number(row, "program_command_encoded_projection_chain_per_call") ?? 0;
   const projectionPairs = number(row, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
   const projectionPairDispatches = number(row, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const projectionGroups = number(row, "program_command_encoded_projection_group_per_call") ?? 0;
+  const projectionGroupDispatches = number(row, "program_command_dispatches_projection_group_per_call") ?? 0;
+  const projectionCacheGroups = number(row, "program_command_encoded_projection_cache_group_per_call") ?? 0;
+  const projectionCacheGroupDispatches = number(row, "program_command_dispatches_projection_cache_group_per_call") ?? 0;
   const projectionRowChainDispatches = number(row, "program_command_dispatches_projection_row_chain_per_call") ?? 0;
   return {
     index,
@@ -162,6 +166,10 @@ function readProjectionLane(row, defaultTokS, index) {
     projectionChains,
     projectionPairs,
     projectionPairDispatches,
+    projectionGroups,
+    projectionGroupDispatches,
+    projectionCacheGroups,
+    projectionCacheGroupDispatches,
     projectionRowChainDispatches,
     projectionRowChainDispatchSplit: projectionRowChainSplit(projectionRowChains, projectionRowChainDispatches),
     projectionRowChainDispatchExcess: Math.max(0, projectionRowChainDispatches - projectionRowChains),
@@ -225,9 +233,13 @@ function measureAttempt(index) {
   const defaultProjectionRowChains = number(defaultRow, "program_command_encoded_projection_row_chain_per_call") ?? 0;
   const defaultProjectionChains = number(defaultRow, "program_command_encoded_projection_chain_per_call") ?? 0;
   const defaultProjectionPairs = number(defaultRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const defaultProjectionGroups = number(defaultRow, "program_command_encoded_projection_group_per_call") ?? 0;
+  const defaultProjectionCacheGroups = number(defaultRow, "program_command_encoded_projection_cache_group_per_call") ?? 0;
   const defaultDecodeCommands = number(defaultDecodeRow, "commands_per_call");
   const defaultDecodeProjectionChains = number(defaultDecodeRow, "program_command_encoded_projection_chain_per_call") ?? 0;
   const defaultDecodeProjectionPairs = number(defaultDecodeRow, "program_command_encoded_projection_pair_fused_elementwise_chain_per_call") ?? 0;
+  const defaultDecodeProjectionGroups = number(defaultDecodeRow, "program_command_encoded_projection_group_per_call") ?? 0;
+  const defaultDecodeProjectionCacheGroups = number(defaultDecodeRow, "program_command_encoded_projection_cache_group_per_call") ?? 0;
   const defaultDecodeFallback = number(defaultDecodeRow, "fallback_ops") ?? 0;
   const defaultProjectionPairDispatches = number(defaultRow, "program_command_dispatches_projection_pair_fused_elementwise_chain_per_call") ?? 0;
   const defaultProjectionRowChainDispatches = number(defaultRow, "program_command_dispatches_projection_row_chain_per_call") ?? 0;
@@ -241,12 +253,14 @@ function measureAttempt(index) {
     defaultCommands >= defaultCommandFloor &&
     defaultProjectionChains >= defaultProjectionChainFloor &&
     defaultProjectionPairs >= defaultProjectionPairFloor &&
+    defaultProjectionCacheGroups >= defaultProjectionPairFloor &&
     defaultProjectionRowChains === 0;
   const defaultDecodeFastPathReady =
     defaultDecodeCommands !== null &&
     defaultDecodeCommands <= decodeCommandCeil &&
     defaultDecodeProjectionChains >= decodeProjectionChainFloor &&
     defaultDecodeProjectionPairs >= decodeProjectionPairFloor &&
+    defaultDecodeProjectionCacheGroups >= decodeProjectionPairFloor &&
     defaultDecodeFallback === 0;
   const commandSemanticReady =
     !measureCommand ||
@@ -254,6 +268,7 @@ function measureAttempt(index) {
       commandLane.commands <= candidateCommandCeil &&
       commandLane.projectionChains <= candidateProjectionChainCeil &&
       commandLane.projectionPairs >= candidateProjectionPairFloor &&
+      commandLane.projectionCacheGroups >= candidateProjectionPairFloor &&
       commandLane.projectionRowChains >= candidateProjectionRowChainFloor);
   const commandDispatchShapeReady =
     !measureCommand ||
@@ -269,6 +284,7 @@ function measureAttempt(index) {
       singleLane.commands <= candidateCommandCeil &&
       singleLane.projectionChains <= candidateProjectionChainCeil &&
       singleLane.projectionPairs >= candidateProjectionPairFloor &&
+      singleLane.projectionCacheGroups >= candidateProjectionPairFloor &&
       singleLane.projectionRowChains >= candidateProjectionRowChainFloor);
   const candidateMatchesCommandShape =
     !measureSingle ||
@@ -276,6 +292,7 @@ function measureAttempt(index) {
       singleLane.commands <= candidateCommandCeil &&
       singleLane.projectionChains <= candidateProjectionChainCeil &&
       singleLane.projectionPairs >= candidateProjectionPairFloor &&
+      singleLane.projectionCacheGroups >= candidateProjectionPairFloor &&
       singleLane.projectionRowChains >= candidateProjectionRowChainFloor);
   const candidateDispatchShapeReady =
     !measureSingle ||
@@ -289,6 +306,7 @@ function measureAttempt(index) {
       twoPhaseLane.commands <= candidateCommandCeil &&
       twoPhaseLane.projectionChains <= candidateProjectionChainCeil &&
       twoPhaseLane.projectionPairs >= candidateProjectionPairFloor &&
+      twoPhaseLane.projectionCacheGroups >= candidateProjectionPairFloor &&
       twoPhaseLane.projectionRowChains >= candidateProjectionRowChainFloor);
   const twoPhaseDispatchShapeReady =
     !measureTwoPhase ||
@@ -340,15 +358,33 @@ function measureAttempt(index) {
     commandProjectionPairs: commandLane.projectionPairs,
     candidateProjectionPairs: singleLane.projectionPairs,
     twoPhaseProjectionPairs: twoPhaseLane.projectionPairs,
+    defaultProjectionGroups,
+    commandProjectionGroups: commandLane.projectionGroups,
+    candidateProjectionGroups: singleLane.projectionGroups,
+    twoPhaseProjectionGroups: twoPhaseLane.projectionGroups,
+    defaultProjectionCacheGroups,
+    commandProjectionCacheGroups: commandLane.projectionCacheGroups,
+    candidateProjectionCacheGroups: singleLane.projectionCacheGroups,
+    twoPhaseProjectionCacheGroups: twoPhaseLane.projectionCacheGroups,
     defaultDecodeCommands,
     defaultDecodeProjectionChains,
     defaultDecodeProjectionPairs,
+    defaultDecodeProjectionGroups,
+    defaultDecodeProjectionCacheGroups,
     defaultDecodeFallback,
     defaultDecodeFastPathReady,
     defaultProjectionPairDispatches,
     commandProjectionPairDispatches: commandLane.projectionPairDispatches,
     candidateProjectionPairDispatches: singleLane.projectionPairDispatches,
     twoPhaseProjectionPairDispatches: twoPhaseLane.projectionPairDispatches,
+    defaultProjectionGroupDispatches: number(defaultRow, "program_command_dispatches_projection_group_per_call") ?? 0,
+    commandProjectionGroupDispatches: commandLane.projectionGroupDispatches,
+    candidateProjectionGroupDispatches: singleLane.projectionGroupDispatches,
+    twoPhaseProjectionGroupDispatches: twoPhaseLane.projectionGroupDispatches,
+    defaultProjectionCacheGroupDispatches: number(defaultRow, "program_command_dispatches_projection_cache_group_per_call") ?? 0,
+    commandProjectionCacheGroupDispatches: commandLane.projectionCacheGroupDispatches,
+    candidateProjectionCacheGroupDispatches: singleLane.projectionCacheGroupDispatches,
+    twoPhaseProjectionCacheGroupDispatches: twoPhaseLane.projectionCacheGroupDispatches,
     defaultProjectionRowChainDispatches,
     commandProjectionRowChainDispatches: commandLane.projectionRowChainDispatches,
     candidateProjectionRowChainDispatches: singleLane.projectionRowChainDispatches,
@@ -468,8 +504,13 @@ console.log(
     `command_projection_chain=${format(commandBest.defaultProjectionChains, 0)}->${format(commandBest.commandProjectionChains, 0)} ` +
     `command_projection_pair=${format(commandBest.defaultProjectionPairs, 0)}->${format(commandBest.commandProjectionPairs, 0)} ` +
     `command_projection_pair_dispatch=${format(commandBest.defaultProjectionPairDispatches, 0)}->${format(commandBest.commandProjectionPairDispatches, 0)} ` +
+    `command_projection_group=${format(commandBest.defaultProjectionGroups, 0)}->${format(commandBest.commandProjectionGroups, 0)} ` +
+    `command_projection_group_dispatch=${format(commandBest.defaultProjectionGroupDispatches, 0)}->${format(commandBest.commandProjectionGroupDispatches, 0)} ` +
+    `command_projection_cache_group=${format(commandBest.defaultProjectionCacheGroups, 0)}->${format(commandBest.commandProjectionCacheGroups, 0)} ` +
+    `command_projection_cache_group_dispatch=${format(commandBest.defaultProjectionCacheGroupDispatches, 0)}->${format(commandBest.commandProjectionCacheGroupDispatches, 0)} ` +
     `decode_command=${format(commandBest.defaultDecodeCommands, 0)} decode_projection_chain=${format(commandBest.defaultDecodeProjectionChains, 0)} ` +
-    `decode_projection_pair=${format(commandBest.defaultDecodeProjectionPairs, 0)} decode_fallback=${format(commandBest.defaultDecodeFallback, 0)} ` +
+    `decode_projection_pair=${format(commandBest.defaultDecodeProjectionPairs, 0)} decode_projection_group=${format(commandBest.defaultDecodeProjectionGroups, 0)} ` +
+    `decode_projection_cache_group=${format(commandBest.defaultDecodeProjectionCacheGroups, 0)} decode_fallback=${format(commandBest.defaultDecodeFallback, 0)} ` +
     `decode_fast_path=${commandBest.defaultDecodeFastPathReady ? "ready" : "off"} decode_lowering=${decodeLowering} ` +
     `decode_row_chain_default=${decodeRowChainDefault} decode_next=${decodeNextTarget} ` +
     `command_projection_row_chain=${format(commandBest.defaultProjectionRowChains, 0)}->${format(commandBest.commandProjectionRowChains, 0)} ` +
@@ -486,6 +527,10 @@ console.log(
     `two_phase_projection_chain=${format(twoPhaseBest.defaultProjectionChains, 0)}->${format(twoPhaseBest.twoPhaseProjectionChains, 0)} ` +
     `two_phase_projection_pair=${format(twoPhaseBest.defaultProjectionPairs, 0)}->${format(twoPhaseBest.twoPhaseProjectionPairs, 0)} ` +
     `two_phase_projection_pair_dispatch=${format(twoPhaseBest.defaultProjectionPairDispatches, 0)}->${format(twoPhaseBest.twoPhaseProjectionPairDispatches, 0)} ` +
+    `two_phase_projection_group=${format(twoPhaseBest.defaultProjectionGroups, 0)}->${format(twoPhaseBest.twoPhaseProjectionGroups, 0)} ` +
+    `two_phase_projection_group_dispatch=${format(twoPhaseBest.defaultProjectionGroupDispatches, 0)}->${format(twoPhaseBest.twoPhaseProjectionGroupDispatches, 0)} ` +
+    `two_phase_projection_cache_group=${format(twoPhaseBest.defaultProjectionCacheGroups, 0)}->${format(twoPhaseBest.twoPhaseProjectionCacheGroups, 0)} ` +
+    `two_phase_projection_cache_group_dispatch=${format(twoPhaseBest.defaultProjectionCacheGroupDispatches, 0)}->${format(twoPhaseBest.twoPhaseProjectionCacheGroupDispatches, 0)} ` +
     `two_phase_projection_row_chain=${format(twoPhaseBest.defaultProjectionRowChains, 0)}->${format(twoPhaseBest.twoPhaseProjectionRowChains, 0)} ` +
     `two_phase_projection_row_chain_dispatch=${format(twoPhaseBest.defaultProjectionRowChainDispatches, 0)}->${format(twoPhaseBest.twoPhaseProjectionRowChainDispatches, 0)} ` +
     `two_phase_split=${format(twoPhaseBest.defaultProjectionRowChainDispatchSplit)}->${format(twoPhaseBest.twoPhaseProjectionRowChainDispatchSplit)} ` +
@@ -496,6 +541,10 @@ console.log(
     `projection_chain=${format(best.defaultProjectionChains, 0)}->${format(best.candidateProjectionChains, 0)} ` +
     `projection_pair=${format(best.defaultProjectionPairs, 0)}->${format(best.candidateProjectionPairs, 0)} ` +
     `projection_pair_dispatch=${format(best.defaultProjectionPairDispatches, 0)}->${format(best.candidateProjectionPairDispatches, 0)} ` +
+    `projection_group=${format(best.defaultProjectionGroups, 0)}->${format(best.candidateProjectionGroups, 0)} ` +
+    `projection_group_dispatch=${format(best.defaultProjectionGroupDispatches, 0)}->${format(best.candidateProjectionGroupDispatches, 0)} ` +
+    `projection_cache_group=${format(best.defaultProjectionCacheGroups, 0)}->${format(best.candidateProjectionCacheGroups, 0)} ` +
+    `projection_cache_group_dispatch=${format(best.defaultProjectionCacheGroupDispatches, 0)}->${format(best.candidateProjectionCacheGroupDispatches, 0)} ` +
     `semantic_pair_path=${semanticPairActive ? "active" : "absent"} semantic_pair_target=${semanticPairTarget} ` +
     `projection_row_chain=${format(best.defaultProjectionRowChains, 0)}->${format(best.candidateProjectionRowChains, 0)} ` +
     `projection_row_chain_dispatch=${format(best.defaultProjectionRowChainDispatches, 0)}->${format(best.candidateProjectionRowChainDispatches, 0)} ` +
