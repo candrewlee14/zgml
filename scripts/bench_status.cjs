@@ -249,7 +249,9 @@ function frontierFreshnessStatusLine(selectedPath, rawPath) {
     const smollmTargetTileGroups = data?.smollmPrompt?.targetTileParallelGroups ?? "n/a";
     const fullCandidateTileGroups = data?.fullPrefill?.throughputCandidateTileParallelGroups ?? "n/a";
     const smollmCandidateTileGroups = data?.smollmPrompt?.throughputCandidateTileParallelGroups ?? "n/a";
-    latest = `target=${target} throughput_candidate=${throughputCandidate} candidate_vs_default=full:${fullPrefillCandidateVsDefault},smollm:${smollmPromptCandidateVsDefault} target_vs_default=full:${fullPrefillTargetVsDefault},smollm:${smollmPromptTargetVsDefault} target_tile_groups=full:${fullTargetTileGroups},smollm:${smollmTargetTileGroups} candidate_tile_groups=full:${fullCandidateTileGroups},smollm:${smollmCandidateTileGroups} attempts=${attempts} source=${source}`;
+    const fullTargetSerialPerTile = data?.fullPrefill?.targetRowSerialDotOpsPerTileGroup ?? "n/a";
+    const smollmTargetSerialPerTile = data?.smollmPrompt?.targetRowSerialDotOpsPerTileGroup ?? "n/a";
+    latest = `target=${target} throughput_candidate=${throughputCandidate} candidate_vs_default=full:${fullPrefillCandidateVsDefault},smollm:${smollmPromptCandidateVsDefault} target_vs_default=full:${fullPrefillTargetVsDefault},smollm:${smollmPromptTargetVsDefault} target_tile_groups=full:${fullTargetTileGroups},smollm:${smollmTargetTileGroups} candidate_tile_groups=full:${fullCandidateTileGroups},smollm:${smollmCandidateTileGroups} target_serial_per_tile=full:${fullTargetSerialPerTile},smollm:${smollmTargetSerialPerTile} attempts=${attempts} source=${source}`;
   } catch {
     // Keep the freshness signal even if the newest artifact cannot be read.
   }
@@ -514,11 +516,13 @@ function frontierStatusLine(path) {
   const smollmTargetTileGroups = data?.smollmPrompt?.targetTileParallelGroups ?? "n/a";
   const fullCandidateTileGroups = data?.fullPrefill?.throughputCandidateTileParallelGroups ?? "n/a";
   const smollmCandidateTileGroups = data?.smollmPrompt?.throughputCandidateTileParallelGroups ?? "n/a";
+  const fullTargetSerialPerTile = data?.fullPrefill?.targetRowSerialDotOpsPerTileGroup ?? "n/a";
+  const smollmTargetSerialPerTile = data?.smollmPrompt?.targetRowSerialDotOpsPerTileGroup ?? "n/a";
   const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
   const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
   const next = typeof data?.next === "string" ? data.next : "unknown";
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
-  return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} vs_two_phase=full:${fullPrefillCandidateVsTwoPhase},smollm:${smollmPromptCandidateVsTwoPhase} target_tile_groups=full:${fullTargetTileGroups},smollm:${smollmTargetTileGroups} candidate_tile_groups=full:${fullCandidateTileGroups},smollm:${smollmCandidateTileGroups} next=${next} source=${source}`;
+  return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} vs_two_phase=full:${fullPrefillCandidateVsTwoPhase},smollm:${smollmPromptCandidateVsTwoPhase} target_tile_groups=full:${fullTargetTileGroups},smollm:${smollmTargetTileGroups} candidate_tile_groups=full:${fullCandidateTileGroups},smollm:${smollmCandidateTileGroups} target_serial_per_tile=full:${fullTargetSerialPerTile},smollm:${smollmTargetSerialPerTile} next=${next} source=${source}`;
 }
 
 function qprojFrontierStatusLine(path) {
@@ -583,10 +587,18 @@ function q8PromptNextTarget(path) {
   }
 }
 
-function frontierNextTargetLine(path) {
+function frontierNextTargetLine(path, pressurePath = path) {
   if (!path) return "frontier=missing_artifact";
   try {
     const data = readJson(path);
+    let pressureData = data;
+    if (pressurePath && pressurePath !== path) {
+      try {
+        pressureData = readJson(pressurePath);
+      } catch {
+        pressureData = data;
+      }
+    }
     const next = typeof data?.next === "string" ? data.next : "unknown";
     const smollmDefault = Number(data?.smollmPrompt?.speedup);
     const smollmCandidateValue = Number(data?.smollmPrompt?.throughputCandidateSpeedup);
@@ -613,7 +625,15 @@ function frontierNextTargetLine(path) {
     const smollmTargetTileGroups = data?.smollmPrompt?.targetTileParallelGroups ?? "n/a";
     const fullCandidateTileGroups = data?.fullPrefill?.throughputCandidateTileParallelGroups ?? "n/a";
     const smollmCandidateTileGroups = data?.smollmPrompt?.throughputCandidateTileParallelGroups ?? "n/a";
-    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}:target_tiles=smollm:${smollmTargetTileGroups},full:${fullTargetTileGroups}:candidate_tiles=smollm:${smollmCandidateTileGroups},full:${fullCandidateTileGroups}`;
+    const fullTargetSerialPerTile =
+      data?.fullPrefill?.targetRowSerialDotOpsPerTileGroup ??
+      pressureData?.fullPrefill?.targetRowSerialDotOpsPerTileGroup ??
+      "n/a";
+    const smollmTargetSerialPerTile =
+      data?.smollmPrompt?.targetRowSerialDotOpsPerTileGroup ??
+      pressureData?.smollmPrompt?.targetRowSerialDotOpsPerTileGroup ??
+      "n/a";
+    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}:target_tiles=smollm:${smollmTargetTileGroups},full:${fullTargetTileGroups}:candidate_tiles=smollm:${smollmCandidateTileGroups},full:${fullCandidateTileGroups}:target_serial_per_tile=smollm:${smollmTargetSerialPerTile},full:${fullTargetSerialPerTile}`;
   } catch {
     return "frontier=unreadable_artifact";
   }
@@ -662,7 +682,7 @@ function fullModelNextTarget(latestPath) {
   }
 }
 
-function perfNextStatusLine({ latestPath, pytorchPath, q8Path, frontierPath }) {
+function perfNextStatusLine({ latestPath, pytorchPath, q8Path, frontierPath, rawFrontierPath }) {
   const qprojPath = latestQprojFrontierArtifact();
   return [
     "perf-next:",
@@ -670,7 +690,7 @@ function perfNextStatusLine({ latestPath, pytorchPath, q8Path, frontierPath }) {
     pytorchNextTarget(pytorchPath),
     q8PromptNextTarget(q8Path),
     qprojNextTargetLine(qprojPath),
-    frontierNextTargetLine(frontierPath),
+    frontierNextTargetLine(frontierPath, rawFrontierPath),
   ].join(" ");
 }
 
@@ -1215,7 +1235,7 @@ process.stdout.write(`${qprojFrontierStatusLine(latestQprojFrontier)}\n`);
 process.stdout.write(`${frontierStatusLine(latestFrontier)}\n`);
 const frontierFreshness = frontierFreshnessStatusLine(latestFrontier, latestRawFrontier);
 if (frontierFreshness) process.stdout.write(`${frontierFreshness}\n`);
-process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, frontierPath: latestFrontier })}\n`);
+process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestRawFrontier })}\n`);
 const quarantined = quarantinedFullRunArtifacts();
 if (quarantined.length > 0) {
   process.stdout.write(`bench-results: ${quarantined.length} quarantined p128/g200/r3 artifact(s) ignored for accepted evidence; latest_failed=${compactName(quarantined.at(-1))}\n`);
