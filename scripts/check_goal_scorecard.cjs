@@ -350,6 +350,8 @@ function checkScripts() {
     "function latestQsemanticThroughputArtifact()",
     "function qsemanticThroughputStatusLine(path)",
     "qsemantic-throughput-results: latest=",
+    "gate=${gate}",
+    "bottleneck=${bottleneck}",
     "semanticFfnSublayerCount",
     "semanticTileParallelGroups",
     "semantic_tile_groups:",
