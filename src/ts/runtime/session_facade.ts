@@ -1185,6 +1185,12 @@ export function createGenericSessionCoreStepFacadeHelpers<TSession extends AnyRe
     const preparedStep = prepareStepSession
       ? prepareStepSession(session.handle, input, output, outputLen)
       : null;
+    if (preparedStep && output.length === outputLen) {
+      return function preparedExactExecuteInto() {
+        preparedStep();
+        return output;
+      };
+    }
     return function preparedExecuteInto() {
       const actualOutputLen = preparedStep ? preparedStep() : stepSession(session.handle, input, output, outputLen);
       return actualOutputLen === output.length ? output : output.subarray(0, actualOutputLen);

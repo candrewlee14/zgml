@@ -5685,6 +5685,18 @@ test "direct log softmax n32 bias specialization matches stable row math" {
 }
 
 fn executeDirectLinearLogSoftmaxStep(linear: *const TinyLinearSessionHandle, shape: DirectLinearLogSoftmaxStepShape, input: [*]const f32, output: [*]f32) void {
+    if (shape.has_bias and shape.M <= 128 and shape.N == 32 and shape.K <= 128) {
+        if (executeSmallDirectLinearBiasStep(linear, .{
+            .M = shape.M,
+            .N = shape.N,
+            .K = shape.K,
+            .has_bias = true,
+        }, input, output, false)) {
+            logSoftmaxRowsInPlace32(output[0..linear.output_len], shape.M);
+            return;
+        }
+    }
+
     if (shape.has_bias and shape.N == 32) {
         executeDirectLinearStep(linear, .{
             .M = shape.M,
