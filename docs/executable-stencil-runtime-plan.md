@@ -887,6 +887,16 @@ the mixed throughput candidate is still below default at
 `candidate_tile_groups=full:64,smollm:72`; tile-group count alone is therefore
 not the win. The blocker is still the serial dot-loop work inside the semantic
 row groups.
+The source-fresh rebuilt qsemantic pass on June 24, 2026 confirmed that this is
+not a promotion-ready candidate: the throughput candidate moved opposite
+directions across the two prompt shapes
+(`candidate_vs_default=full:1.20x,smollm:0.91x`), while the one-dispatch target
+remained much slower (`target_vs_default=full:0.36x,smollm:0.22x`). Treat that
+as proof that the current candidate is useful diagnostic scaffolding, not a
+default path. The next move still has to change the semantic FFN sublayer
+kernel's work partitioning or grow the semantic command to remove more
+surrounding work; merely selecting the existing throughput candidate would
+improve one frontier row and regress the SmolLM-shaped row.
 Evidence tag: semantic FFN sublayer throughput kernel; Metal now executes that exact command as a bounded one-dispatch diagnostic kernel; the default throughput lane remains the faster projection-pair product, down-projection residual add, then RMSNorm scale path; target dispatches `1` backend kernel.
 It also names the hard performance fact directly: the structurally useful
 two-dispatch command path is dispatch-neutral in the full model
