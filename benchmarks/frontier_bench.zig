@@ -50,6 +50,27 @@ const FrontierFilter = struct {
     }
 };
 
+const SemanticVariantFilter = struct {
+    query: ?[]const u8,
+
+    fn init() SemanticVariantFilter {
+        const raw = std.c.getenv("BENCH_QSEMANTIC_VARIANTS") orelse return .{ .query = null };
+        const query = std.mem.span(raw);
+        return .{ .query = if (query.len == 0) null else query };
+    }
+
+    fn enabled(self: SemanticVariantFilter, name: []const u8) bool {
+        const query = self.query orelse return true;
+        var parts = std.mem.splitScalar(u8, query, ',');
+        while (parts.next()) |part| {
+            const trimmed = std.mem.trim(u8, part, " \t\r\n");
+            if (trimmed.len == 0) continue;
+            if (std.mem.eql(u8, trimmed, name)) return true;
+        }
+        return false;
+    }
+};
+
 fn nowNs(io: std.Io) u64 {
     return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
 }
@@ -1441,17 +1462,40 @@ fn benchSemanticSublayerMetalCase(
     const throughput_max_abs_diff = maxAbsDiff(staged_out, throughput_out);
     const target_max_abs_diff = maxAbsDiff(staged_out, target_out);
 
+    const variant_filter = SemanticVariantFilter.init();
+    const target_only = variant_filter.enabled("target") and
+        !variant_filter.enabled("command") and
+        !variant_filter.enabled("two_phase") and
+        !variant_filter.enabled("single_dispatch") and
+        !variant_filter.enabled("throughput_candidate");
     const staged_stats = measure(io, &staged_bench);
-    const command_stats = measure(io, &command_bench);
-    const two_phase_stats = measure(io, &two_phase_bench);
-    const single_dispatch_stats = measure(io, &single_dispatch_bench);
-    const throughput_stats = measure(io, &throughput_bench);
-    const target_stats = measure(io, &target_bench);
     const approx_work = 2.0 * @as(f64, @floatFromInt(case.m * case.n * (case.k * 2 + case.n)));
 
     var staged_name_buf: [128]u8 = undefined;
     const staged_name = try std.fmt.bufPrint(&staged_name_buf, "{s} semantic staged", .{case.name});
     try printStats(w, staged_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", staged_stats);
+    if (target_only) {
+        const target_stats = measure(io, &target_bench);
+        var target_name_buf: [128]u8 = undefined;
+        const target_name = try std.fmt.bufPrint(&target_name_buf, "{s} semantic target", .{case.name});
+        try printStats(w, target_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", target_stats);
+        var target_ratio_name_buf: [128]u8 = undefined;
+        const target_ratio_name = try std.fmt.bufPrint(&target_ratio_name_buf, "{s} semantic target", .{case.name});
+        try printRatio(w, target_ratio_name, staged_stats, target_stats, target_max_abs_diff);
+        const target_commands = try program_mod.buildProgramCommands(alloc, &ops, target_policy);
+        defer alloc.free(target_commands);
+        var target_profile_name_buf: [160]u8 = undefined;
+        const target_profile_name = try std.fmt.bufPrint(&target_profile_name_buf, "{s} semantic target dispatch_profile", .{case.name});
+        try printCommandShape(w, target_profile_name, target_commands);
+        try printSemanticSublayerRuntimeProfile(w, target_profile_name, be, target_handle, &target_output_io);
+        return;
+    }
+
+    const command_stats = measure(io, &command_bench);
+    const two_phase_stats = measure(io, &two_phase_bench);
+    const single_dispatch_stats = measure(io, &single_dispatch_bench);
+    const throughput_stats = measure(io, &throughput_bench);
+    const target_stats = measure(io, &target_bench);
     var command_name_buf: [128]u8 = undefined;
     const command_name = try std.fmt.bufPrint(&command_name_buf, "{s} semantic command", .{case.name});
     try printStats(w, command_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", command_stats);

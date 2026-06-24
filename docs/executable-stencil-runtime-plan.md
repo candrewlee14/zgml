@@ -763,6 +763,8 @@ npm run dev:perf:frontier:qsemantic:steady # incremental three-attempt Q8 semant
 npm run dev:perf:frontier:qsemantic:steady:run # no-rebuild three-attempt Q8 semantic microscope
 npm run dev:perf:frontier:qsemantic:full:raw # incremental raw full-prefill qsemantic microscope
 npm run dev:perf:frontier:qsemantic:full:raw:run # no-rebuild raw full-prefill qsemantic microscope
+npm run dev:perf:frontier:qsemantic:target:raw # incremental target-only qsemantic kernel microscope
+npm run dev:perf:frontier:qsemantic:target:raw:run # no-rebuild target-only qsemantic kernel microscope
 npm run dev:perf:frontier:qsemantic:smollm:raw # incremental raw SmolLM qsemantic microscope
 npm run dev:perf:frontier:qsemantic:smollm:raw:run # no-rebuild raw SmolLM qsemantic microscope
 npm run bench:frontier:row-chain       # rebuild ReleaseFast and run only row-chain frontier labels
@@ -1339,6 +1341,9 @@ dev:perf:competitive` for the full-model Q8 prompt lane, or the matching
 `:run` commands after artifacts are already fresh. That keeps the daily
 competitiveness loop explicit without forcing every local qsemantic edit to pay
 the PyTorch, full-model Q8, and llama.cpp smoke cost.
+For tight semantic target kernel work, the raw target-only scripts set
+`BENCH_QSEMANTIC_VARIANTS=target` so the frontier harness times only the staged
+baseline and one-dispatch semantic target.
 The qsemantic checker writes ignored JSON artifacts under
 `bench-results/frontier/frontier-qsemantic-*.json`, emits a
 `FRONTIER_BENCH_JSON` summary line, and `bench:status` reads the latest artifact

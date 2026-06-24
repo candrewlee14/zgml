@@ -415,6 +415,12 @@ function checkScripts() {
   if (scripts["dev:perf:frontier:qsemantic:full:raw:run"] !== "BENCH_FRONTIER_FILTER=\"qsemantic full-prefill\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:full:raw:run must remain the no-rebuild raw full-prefill Q8 semantic microscope");
   }
+  if (scripts["dev:perf:frontier:qsemantic:target:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=target BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier") {
+    errors.push("package.json dev:perf:frontier:qsemantic:target:raw must remain the incremental target-only Q8 semantic kernel microscope");
+  }
+  if (scripts["dev:perf:frontier:qsemantic:target:raw:run"] !== "BENCH_QSEMANTIC_VARIANTS=target BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier") {
+    errors.push("package.json dev:perf:frontier:qsemantic:target:raw:run must remain the no-rebuild target-only Q8 semantic kernel microscope");
+  }
   if (scripts["dev:perf:frontier:qsemantic:smollm:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_FILTER=\"qsemantic smollm-prompt\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:smollm:raw must remain the incremental raw SmolLM Q8 semantic microscope");
   }
@@ -1097,6 +1103,9 @@ function checkScripts() {
   ]);
   requireIncludes(read("benchmarks/frontier_bench.zig"), "benchmarks/frontier_bench.zig", "frontier benchmark must keep row-chain microscope filtering", [
     "BENCH_FRONTIER_FILTER",
+    "const SemanticVariantFilter = struct",
+    "BENCH_QSEMANTIC_VARIANTS",
+    "variant_filter.enabled(\"target\")",
     "filter={s}",
     "filter.matchesAny",
     "qrow region",
@@ -6153,6 +6162,9 @@ function checkDocs() {
     "bench:frontier:qsemantic",
     "bench:frontier:qsemantic:run",
     "dev:perf:frontier:qsemantic",
+    "dev:perf:frontier:qsemantic:target:raw",
+    "dev:perf:frontier:qsemantic:target:raw:run",
+    "BENCH_QSEMANTIC_VARIANTS=target",
     "dev:perf:competitive",
     "dev:perf:competitive:run",
     "dev:perf:competitive:qsemantic",
