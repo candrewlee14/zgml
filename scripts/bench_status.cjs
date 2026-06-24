@@ -483,6 +483,23 @@ function frontierNextTargetLine(path) {
   }
 }
 
+function qprojNextTargetLine(path) {
+  if (!path) return "qproj=missing_artifact";
+  try {
+    const data = readJson(path);
+    const chainFull = Number(data?.selected?.projectionChain?.fullPrefill?.speedup);
+    const chainSmollm = Number(data?.selected?.projectionChain?.smollmPrompt?.speedup);
+    const chainReady = data?.selected?.projectionChain?.fullPrefill?.candidateReady === true ? "ready" : "off";
+    const regionFull = Number(data?.selected?.projectionGroupRegion?.fullPrefill?.speedup);
+    const regionSmollm = Number(data?.selected?.projectionGroupRegion?.smollmPrompt?.speedup);
+    const status = typeof data?.status === "string" ? data.status : "unknown";
+    const next = typeof data?.next === "string" ? data.next : "unknown";
+    return `qproj=${status}:chain=full:${formatRatio(chainFull)},smollm:${formatRatio(chainSmollm)},candidate:${chainReady}:region=full:${formatRatio(regionFull)},smollm:${formatRatio(regionSmollm)}:next=${next}`;
+  } catch {
+    return "qproj=unreadable_artifact";
+  }
+}
+
 function fullModelNextTarget(latestPath) {
   if (!latestPath) return "full_model=missing_artifact";
   try {
@@ -510,11 +527,13 @@ function fullModelNextTarget(latestPath) {
 }
 
 function perfNextStatusLine({ latestPath, pytorchPath, q8Path, frontierPath }) {
+  const qprojPath = latestQprojFrontierArtifact();
   return [
     "perf-next:",
     fullModelNextTarget(latestPath),
     pytorchNextTarget(pytorchPath),
     q8PromptNextTarget(q8Path),
+    qprojNextTargetLine(qprojPath),
     frontierNextTargetLine(frontierPath),
   ].join(" ");
 }

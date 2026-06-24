@@ -49,7 +49,7 @@ function chooseLane(line) {
 }
 
 function validateLane(lane) {
-  const known = new Set(["status", "pytorch", "qsemantic", "q8_prompt", "ggml"]);
+  const known = new Set(["status", "pytorch", "qsemantic", "qproj", "q8_prompt", "ggml"]);
   if (!known.has(lane)) throw new Error(`unknown BENCH_NEXT_PERF_LANE: ${lane}`);
 }
 
@@ -64,7 +64,7 @@ function main() {
 
   if (lane === "status") return;
 
-  if (shouldBuild && (lane === "qsemantic" || lane === "q8_prompt" || lane === "ggml")) {
+  if (shouldBuild && (lane === "qsemantic" || lane === "qproj" || lane === "q8_prompt" || lane === "ggml")) {
     runInherited("build benchmark artifacts", "zig", ["build", "-Doptimize=ReleaseFast", "bench-build", "-fincremental", "--summary", "failures"]);
   }
   if (shouldBuild && lane === "pytorch") {
@@ -80,6 +80,20 @@ function main() {
         BENCH_FRONTIER_BUILD: "0",
         BENCH_FRONTIER_ATTEMPTS: steady ? "3" : "1",
         BENCH_FRONTIER_FILTER: "qsemantic",
+      }),
+    );
+    return;
+  }
+
+  if (lane === "qproj") {
+    runInherited(
+      "qproj frontier",
+      process.execPath,
+      ["scripts/check_frontier_bench.cjs"],
+      envWithDefaults({
+        BENCH_FRONTIER_BUILD: "0",
+        BENCH_FRONTIER_ATTEMPTS: steady ? "3" : "1",
+        BENCH_FRONTIER_FILTER: "qproj",
       }),
     );
     return;
