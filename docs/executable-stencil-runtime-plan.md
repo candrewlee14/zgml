@@ -1327,7 +1327,12 @@ SmolLM prompt shape remained below default at `smollm_prompt=0.80x` with
 `serial_gap=1.13x`, but the fixed-thread lane footprint is
 `thread_slot_gap=1.80x`; the next semantic throughput pass should therefore be
 a 576-aware work-partitioning/vectorization change, not another blind
-`SEMANTIC_FFN_THREADS` probe. The qsemantic gate now reports
+`SEMANTIC_FFN_THREADS` probe. A 576-only `SEMANTIC_FFN_THREADS=256` narrow
+kernel probe reduced the measured thread-slot footprint
+(`thread_slot_gap` roughly `1.80x -> 1.30x`) but made throughput worse
+(`smollm_prompt=0.67x`), so the retained implementation stays on the 512-thread
+kernel until the partitioning change also preserves enough parallelism. The
+qsemantic gate now reports
 `target_vs_default=full_prefill:...x,smollm_prompt:...x` so the dispatch
 reduction is always interpreted against the current throughput path; a fresh
 no-rebuild run still prints both ratios, and the target remains diagnostic
