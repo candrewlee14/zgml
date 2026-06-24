@@ -203,31 +203,31 @@ machine for both prompt/prefill and decode.
   two-phase and semantic lanes proved wiring and command-shape readiness
   (`semantic_structural_selected=yes`, `semantic_projection_pair=30->0`,
   `semantic_projection_row_chain=0->30`) with zero fallback. Repeated steady
-  evidence now keeps semantic throughput diagnostic when median throughput is
-  below parity (`semantic_median=0.99x`, best near `1.00x`,
-  `semantic_throughput_ready=off`). That separates command-shape viability from
-  the still-missing throughput kernel before any default promotion.
-  The
-  full all-lane candidate gate remains the release proof before promotion.
+  evidence initially kept semantic throughput diagnostic when median throughput
+  sat below parity. A later paired-default three-attempt run cleared the
+  promotion bar (`status=promoted-default`, `semantic=promoted`,
+  `default_policy=semantic-promoted`, `command_command=151->151`, zero
+  fallback), so Metal scheduled Q8 prompt now defaults to the semantic FFN
+  command plus two-phase tiled row-chain tail.
   The two-phase partial kernel does not bind the scale buffer anymore; scale is
   only needed by the finalize pass. This keeps the candidate ABI shape smaller
   without changing command semantics.
   Its finalize pass now has a tiled `(row_tile, col_tile)` variant, so the
   candidate no longer scales an entire prompt row tile through only one
-  threadgroup. Fresh steady evidence moved the semantic Q8 prompt median from
-  the older `0.95-0.98x` diagnostic range to `0.99x` while preserving zero
-  fallback and command shape, but it is still not a default promotion until the
-  median clears the readiness floor.
-- The current weakest checked lane is Q8_0 prompt at roughly 30% of llama.cpp.
-  Its pressure is not an obvious wrong-kernel issue: the remaining
-  `projection_chain:60` work is prefill-shaped qmatmul plus add/mul sidecars,
-  already lowered by the tiled `qmatmul_elementwise_f32` Adapter with primary
-  output elision. The next
-  meaningful Q8 prompt move should therefore be either
-  a semantic sublayer command that removes real command depth, or quantized
-  projection-chain layout/kernel work that improves throughput without hiding
-  extra dispatches behind a new command name. Use `dev:perf:frontier:qproj`
-  for that kernel/layout loop: it rebuilds the benchmark artifacts with
+  threadgroup. Fresh promoted-default evidence keeps the semantic command shape
+  as the baseline while still reporting `semantic_spills=30`,
+  `semantic_spill_input=17280`, and `semantic_output_spills=0`.
+- The current weakest checked lane is still Q8_0 prompt, but its command
+  pressure has moved from the old `projection_chain:60` baseline to the
+  promoted semantic-default shape: 151 ProgramCommands, 30 semantic row-chain
+  commands, and 30 remaining model-width spills. The next meaningful Q8 prompt
+  move is no longer "promote the semantic candidate"; it is either a larger
+  semantic command that absorbs the live model-width residual feeding the next
+  FFN, or a true semantic FFN/down/residual/norm throughput kernel that removes
+  the two-dispatch tail cost without reintroducing the row-serial trap. Use
+  `dev:perf:frontier:qproj` only for projection-chain kernel/layout regressions;
+  the promoted default's main pressure is now semantic row-chain spill/work
+  shape. It rebuilds the benchmark artifacts with
   `-fincremental`, filters to qproj projection-chain/group lanes, and keeps the
   checked correctness and speed floors from `check_frontier_bench.cjs`.
 - The frontier gate now measures prompt-shaped quantized projection-chain

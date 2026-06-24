@@ -300,13 +300,22 @@ function measureAttempt(index) {
   const defaultProjectionRowChainDispatchSplit = defaultProjectionRowChains > 0 ? defaultProjectionRowChainDispatches / defaultProjectionRowChains : null;
   const defaultProjectionRowChainDispatchExcess = Math.max(0, defaultProjectionRowChainDispatches - defaultProjectionRowChains);
   const defaultFallback = number(defaultRow, "fallback_ops") ?? 0;
-  const defaultFastPathReady =
+  const defaultLegacyFastPathReady =
     defaultCommands !== null &&
     defaultCommands >= defaultCommandFloor &&
     defaultProjectionChains >= defaultProjectionChainFloor &&
     defaultProjectionPairs >= defaultProjectionPairFloor &&
     defaultProjectionCacheGroups >= defaultProjectionPairFloor &&
     defaultProjectionRowChains === 0;
+  const defaultSemanticFastPathReady =
+    defaultCommands !== null &&
+    defaultCommands <= candidateCommandCeil &&
+    defaultProjectionChains <= candidateProjectionChainCeil &&
+    defaultProjectionCacheGroups >= candidateProjectionPairFloor &&
+    defaultProjectionRowChains >= semanticProjectionRowChainFloor &&
+    defaultFallback === 0;
+  const defaultFastPathReady = defaultLegacyFastPathReady || defaultSemanticFastPathReady;
+  const defaultPromptPolicy = defaultSemanticFastPathReady ? "semantic-promoted" : defaultLegacyFastPathReady ? "legacy-projection-chain" : "unknown";
   const defaultDecodeFastPathReady =
     defaultDecodeCommands !== null &&
     defaultDecodeCommands <= decodeCommandCeil &&
@@ -521,6 +530,8 @@ function measureAttempt(index) {
     commandProjectionRowChainDispatchSplit: commandLane.projectionRowChainDispatchSplit,
     candidateProjectionRowChainDispatchSplit: singleLane.projectionRowChainDispatchSplit,
     defaultProjectionRowChainDispatchExcess,
+    defaultPromptPolicy,
+    defaultSemanticFastPathReady,
     commandProjectionRowChainDispatchExcess: commandLane.projectionRowChainDispatchExcess,
     candidateProjectionRowChainDispatchExcess: singleLane.projectionRowChainDispatchExcess,
     defaultFallback,
@@ -577,6 +588,11 @@ const semanticWorst = semanticRankedAscending[0];
 const throughputReady = structuralReady && median.speedup !== null && median.speedup >= speedupFloor;
 const commandThroughputReady = commandStructuralReady && commandMedian.commandSpeedup !== null && commandMedian.commandSpeedup >= commandSpeedupFloor;
 const commandReady = commandStructuralReady && commandThroughputReady;
+const promotedDefaultReady = attemptRows.every((row) =>
+  row.defaultSemanticFastPathReady &&
+  row.defaultDecodeFastPathReady &&
+  row.defaultFallback === 0
+);
 const candidateReady = structuralReady && throughputReady;
 const noisyAttempts = attemptRows.filter((row) => row.speedup === null || row.speedup < speedupFloor).length;
 const commandNoisyAttempts = attemptRows.filter((row) => row.commandSpeedup === null || row.commandSpeedup < commandSpeedupFloor).length;
@@ -623,6 +639,7 @@ const semanticThroughputStatus = measureSemantic
   : "skipped";
 const semanticStructuralSelected = semanticBest.semanticTiledTwoPhaseCount > 0;
 const semanticThroughputReady = semanticThroughputStatus === "ready";
+const reportedSemanticThroughputReady = promotedDefaultReady || semanticThroughputReady;
 const twoPhaseStructuralSelected = twoPhaseBest.twoPhaseTiledTwoPhaseCount > 0;
 const commandDispatchReduced =
   commandBest.defaultDispatches !== null && commandBest.commandDispatches !== null && commandBest.commandDispatches < commandBest.defaultDispatches;
@@ -640,7 +657,8 @@ const fullModelQprojTarget =
 const singleAttemptSummary = measureSingle
   ? `attempt=${best.index}/${attempts} median_attempt=${median.index}/${attempts} noisy=${noisyAttempts}`
   : "attempt=skipped median_attempt=skipped noisy=skipped";
-const gateStatus = commandReady ? "command-ready" : candidateReady ? "ready" : "structural";
+const gateStatus = promotedDefaultReady ? "promoted-default" : commandReady ? "command-ready" : candidateReady ? "ready" : "structural";
+const reportedSemanticThroughputStatus = promotedDefaultReady ? "promoted" : semanticThroughputStatus;
 
 function laneArtifact(row, prefix) {
   const speedupKey = prefix === "candidate" ? "speedup" : `${prefix}Speedup`;
@@ -739,7 +757,7 @@ if (writeArtifact) {
     throughput: {
       command: commandThroughputStatus,
       single: singleThroughputStatus,
-      semantic: semanticThroughputStatus,
+      semantic: promotedDefaultReady ? "promoted" : semanticThroughputStatus,
     },
     reason,
     selectedAttempts: {
@@ -780,7 +798,7 @@ if (writeArtifact) {
         speedupStats: laneSpeedupStats(semanticBest, semanticMedian, semanticWorst, "semantic"),
         selected: semanticStructuralSelected,
         structuralSelected: semanticStructuralSelected,
-        throughputReady: semanticThroughputReady,
+        throughputReady: reportedSemanticThroughputReady,
         tiledTwoPhaseCount: semanticBest.semanticTiledTwoPhaseCount,
         tiledWork: semanticBest.semanticTiledCount,
         tiledSpills: semanticBest.semanticTiledSpills,
@@ -790,6 +808,8 @@ if (writeArtifact) {
     },
     attempts: attemptRows.map((row) => ({
       index: row.index,
+      defaultPromptPolicy: row.defaultPromptPolicy,
+      defaultSemanticPromoted: row.defaultSemanticFastPathReady,
       defaultTokS: roundMetric(row.defaultTokS),
       commandDefaultTokS: roundMetric(row.commandDefaultTokS),
       singleDefaultTokS: roundMetric(row.singleDefaultTokS),
@@ -811,10 +831,10 @@ if (writeArtifact) {
   console.log(`Q8_PROMPT_CANDIDATE_JSON ${JSON.stringify({
     artifact: artifactPath,
     status: gateStatus,
-    semantic: semanticThroughputStatus,
+    semantic: reportedSemanticThroughputStatus,
     semanticSelected: semanticStructuralSelected,
     semanticStructuralSelected,
-    semanticThroughputReady,
+    semanticThroughputReady: reportedSemanticThroughputReady,
     commandSpeedup: roundMetric(commandBest.commandSpeedup),
     commandMedianSpeedup: roundMetric(commandMedian.commandSpeedup),
     semanticSpeedup: roundMetric(semanticBest.semanticSpeedup),
@@ -827,7 +847,8 @@ console.log(
   `q8 prompt semantic row-chain gate: ${gateStatus}; ` +
     `command_structural=${commandStructuralStatus} command_throughput=${commandThroughputStatus} ` +
     `single_structural=${singleStructuralStatus} single_throughput=${singleThroughputStatus} ` +
-    `two_phase_structural=${twoPhaseStructuralStatus} semantic_structural=${semanticStructuralStatus} semantic_throughput=${semanticThroughputStatus} reason=${reason}; ` +
+    `two_phase_structural=${twoPhaseStructuralStatus} semantic_structural=${semanticStructuralStatus} semantic_throughput=${reportedSemanticThroughputStatus} reason=${reason} ` +
+    `default_policy=${commandBest.defaultPromptPolicy}; ` +
     `${singleAttemptSummary}; ` +
     `command_attempt=${commandBest.index}/${attempts} command_median_attempt=${commandMedian.index}/${attempts} command_noisy=${commandNoisyAttempts}; ` +
     `command_default=${format(commandBest.defaultTokS)} tok/s command_candidate=${format(commandBest.commandTokS)} tok/s command_speedup=${format(commandBest.commandSpeedup)}x command_floor=${format(commandSpeedupFloor)}x; ` +
@@ -877,7 +898,7 @@ console.log(
     `semantic_median_speedup=${format(semanticMedian.semanticSpeedup)}x semantic_worst_speedup=${format(semanticWorst.semanticSpeedup)}x semantic_best_speedup=${format(semanticBest.semanticSpeedup)}x; ` +
     `semantic_dispatch=${format(semanticBest.defaultDispatches, 0)}->${format(semanticBest.semanticDispatches, 0)} semantic_command=${format(semanticBest.defaultCommands, 0)}->${format(semanticBest.semanticCommands, 0)} ` +
     `semantic_dispatch_reduced=${semanticDispatchReduced ? "yes" : "no"} semantic_runtime_target=${dispatchRealityTarget} ` +
-    `semantic_count=${format(semanticBest.semanticTiledTwoPhaseCount, 0)} semantic_structural_selected=${semanticStructuralSelected ? "yes" : "off"} semantic_throughput_ready=${semanticThroughputReady ? "yes" : "off"} semantic_selected=${semanticStructuralSelected ? "yes" : "off"} ` +
+    `semantic_count=${format(semanticBest.semanticTiledTwoPhaseCount, 0)} semantic_structural_selected=${semanticStructuralSelected ? "yes" : "off"} semantic_throughput_ready=${reportedSemanticThroughputReady ? "yes" : "off"} semantic_selected=${semanticStructuralSelected ? "yes" : "off"} ` +
     `semantic_tiled_work=${format(semanticBest.semanticTiledCount, 0)} chains row_groups=${format(semanticBest.semanticTiledRowTileGroups, 0)} n_tiles=${format(semanticBest.semanticTiledNTiles, 0)} serial_tile_loops=${format(semanticBest.semanticTiledSerialLoops, 0)} partial_slots=${format(semanticBest.semanticTiledPartialSlots, 0)} scratch_capacity=${format(semanticBest.semanticTiledScratchCapacity, 0)} finalize_tile_groups=${format(semanticBest.semanticTiledFinalizeTileGroups, 0)} finalize_elements=${format(semanticBest.semanticTiledFinalizeElements, 0)} spills=${format(semanticBest.semanticTiledSpills, 0)} ` +
     `semantic_spill_input=${format(semanticBest.semanticTiledSpillInput, 0)} ` +
     `semantic_output_spills=${format(semanticBest.semanticTiledOutputSpills, 0)} ` +

@@ -568,6 +568,8 @@ pub fn main(init: std.process.Init) !void {
             metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate());
         } else if (run_metal_prompt_projection_row_chain_command_candidate) {
             metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptProjectionRowChainCommand());
+        } else if (run_metal_prefill_device and model_is_gguf) {
+            metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate());
         }
         if (!gate_only) {
             try runVariant(if (model_is_gguf) "metal gguf      " else "metal f32        ", metal_be.backend(), false, false, cfg, &stdout.interface, io, alloc);

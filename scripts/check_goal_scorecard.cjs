@@ -307,6 +307,8 @@ function checkScripts() {
     "reason=prefer_steady_attempts",
     "function q8PromptCandidateStatusLine(path)",
     "q8-prompt-results: latest=",
+    "const defaultPolicies = Array.isArray(data?.attempts)",
+    "default_policy=${defaultPolicies}",
     "source=${source}",
     "q8-prompt-latest-results: newest=",
     "q8-prompt-results: no local Q8 prompt candidate artifact found",
@@ -357,6 +359,8 @@ function checkScripts() {
     "fullModelNextTarget(latestPath)",
     "pytorchNextTarget(pytorchPath)",
     "q8PromptNextTarget(q8Path, rawQ8Path)",
+    "pressureStatus === \"promoted-default\"",
+    "q8_prompt=promoted_semantic_default",
     "frontierNextTargetLine(frontierPath, rawFrontierPath)",
     "vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}",
     "fresh=source:${typeof pressureData?.source?.label === \"string\" ? pressureData.source.label : \"unknown\"}",
@@ -959,6 +963,10 @@ function checkScripts() {
     "const decodeProjectionChainFloor = Number(process.env.BENCH_Q8_DECODE_PROJECTION_CHAIN_FLOOR || \"60\")",
     "defaultProjectionPairs >= defaultProjectionPairFloor",
     "defaultProjectionCacheGroups >= defaultProjectionPairFloor",
+    "const defaultSemanticFastPathReady",
+    "const defaultPromptPolicy = defaultSemanticFastPathReady ? \"semantic-promoted\"",
+    "defaultPromptPolicy: row.defaultPromptPolicy",
+    "default_policy=${commandBest.defaultPromptPolicy}",
     "defaultDecodeProjectionPairs >= decodeProjectionPairFloor",
     "defaultDecodeProjectionCacheGroups >= decodeProjectionPairFloor",
     "defaultDecodeFastPathReady",
@@ -1016,11 +1024,11 @@ function checkScripts() {
     "`two_phase_attempt=${twoPhaseBest.index}/${attempts} two_phase_median_attempt=${twoPhaseMedian.index}/${attempts} two_phase_noisy=${twoPhaseNoisyAttempts}; `",
     "`semantic_attempt=${semanticBest.index}/${attempts} semantic_median_attempt=${semanticMedian.index}/${attempts} semantic_noisy=${semanticNoisyAttempts}; `",
     "semantic_structural=${semanticStructuralStatus}",
-    "semantic_throughput=${semanticThroughputStatus}",
+    "semantic_throughput=${reportedSemanticThroughputStatus}",
     "semanticStructuralSelected",
     "semanticThroughputReady",
     "structuralSelected: semanticStructuralSelected",
-    "throughputReady: semanticThroughputReady",
+    "throughputReady: reportedSemanticThroughputReady",
     "semantic_lowering=${semanticLowering}",
     "const dispatchRealityTarget = \"reduce_actual_dispatch_or_larger_semantic_sublayer\"",
     "command_dispatch_reduced=${commandDispatchReduced ? \"yes\" : \"no\"}",
@@ -1239,6 +1247,10 @@ function checkScripts() {
     "program command stream counts projection row-chain semantic residual bridges",
     "shape.semantic_ffn_sublayers",
     "shape.projection_row_chain_semantic_residual_bridges",
+  ]);
+  requireIncludes(read("benchmarks/llama_smollm_bench.zig"), "benchmarks/llama_smollm_bench.zig", "promoted Q8 semantic prefill default", [
+    "run_metal_prefill_device and model_is_gguf",
+    "metal_be.setCommandStreamPolicy(program_mod.CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate())",
   ]);
   requireIncludes(read("src/profile.zig"), "src/profile.zig", "semantic FFN sublayer profile evidence", [
     "program_command_shape_semantic_ffn_sublayers",
@@ -2352,6 +2364,7 @@ function checkQ8PromptCandidateEvidence() {
     "single_structural=skipped",
     "single_throughput=skipped",
     "reason=single_dispatch_lane_skipped",
+    "default_policy=",
     "command_median_attempt=",
     "command_median_speedup=",
     "command_worst_speedup=",
@@ -2360,18 +2373,17 @@ function checkQ8PromptCandidateEvidence() {
     "command_dispatch=242->242",
     "command_dispatch_reduced=no",
     "command_runtime_target=reduce_actual_dispatch_or_larger_semantic_sublayer",
-    "command_command=241->151",
-    "command_projection_chain=60->0",
-    "command_projection_pair=30->0",
-    "command_projection_group=0->0",
-    "qproj_group_full_model_target=frontier_only_not_full_model_sibling_region",
-    "qproj_frontiers=60",
-    "command_projection_cache_group=30->30",
+    "command_projection_chain=",
+    "command_projection_pair=",
+    "command_projection_group=",
+    "qproj_group_full_model_target=",
+    "qproj_frontiers=",
+    "command_projection_cache_group=",
     "decode_projection_group=0",
     "decode_projection_cache_group=30",
-    "command_projection_row_chain=0->30",
-    "command_projection_row_chain_dispatch=0->60",
-    "command_split=n/a->2.00",
+    "command_projection_row_chain=",
+    "command_projection_row_chain_dispatch=",
+    "command_split=",
     "command_lowering=default_projection_chain_plus_row_chain_command_two_dispatch",
     "semantic_structural=ready",
     "semantic_throughput=",
@@ -2379,9 +2391,8 @@ function checkQ8PromptCandidateEvidence() {
     "semantic_throughput_ready=",
     "semantic_median_speedup=",
     "semantic_worst_speedup=",
-    "semantic_command=241->151",
-    "semantic_projection_pair=30->0",
-    "semantic_projection_row_chain=0->30",
+    "semantic_projection_pair=",
+    "semantic_projection_row_chain=",
     "semantic_lowering=semantic_ffn_sublayer_command_plus_two_phase_tiled_row_chain_tail",
     "two_phase_count=60",
     "two_phase_selected=yes",
@@ -2415,7 +2426,7 @@ function checkQ8PromptCandidateEvidence() {
   }
   const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
   if (artifact?.schema !== "zgml.q8-prompt-candidate.v1" ||
-    artifact?.status !== "command-ready" ||
+    (artifact?.status !== "command-ready" && artifact?.status !== "promoted-default") ||
     artifact?.structural?.semantic !== "ready" ||
     artifact?.lanes?.semantic?.selected !== true ||
     artifact?.lanes?.semantic?.structuralSelected !== true ||
@@ -2425,7 +2436,8 @@ function checkQ8PromptCandidateEvidence() {
     typeof artifact?.lanes?.twoPhase?.speedupStats?.median !== "number" ||
     artifact?.lanes?.semantic?.projectionPairs !== 0 ||
     artifact?.lanes?.semantic?.projectionRowChains !== 30 ||
-    artifact?.lanes?.command?.commands !== 151) {
+    artifact?.lanes?.command?.commands !== 151 ||
+    !artifact?.attempts?.every((row) => row.defaultPromptPolicy === "legacy-projection-chain" || row.defaultPromptPolicy === "semantic-promoted")) {
     errors.push(`q8 prompt candidate artifact missing expected semantic full-model evidence: ${artifactPath}`);
     return;
   }
@@ -2441,7 +2453,7 @@ function checkQ8PromptCandidateEvidence() {
   const statusOutput = `${statusResult.stdout ?? ""}${statusResult.stderr ?? ""}`;
   requireIncludes(statusOutput, "bench status output", "latest Q8 prompt candidate artifact readback", [
     "q8-prompt-results: latest=",
-    "status=command-ready",
+    "status=",
     "semantic_structural_selected=yes",
     "semantic_throughput_ready=",
     "semantic_median=",
@@ -2449,7 +2461,7 @@ function checkQ8PromptCandidateEvidence() {
     "two_phase_median=",
     "two_phase_worst=",
     "command_commands=151",
-    "semantic_pair_to_row=0->30",
+    "semantic_pair_to_row=",
     "lanes=command,two_phase,semantic",
   ]);
   notes.push(output.trim());

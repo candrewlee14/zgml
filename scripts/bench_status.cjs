@@ -625,7 +625,10 @@ function q8PromptCandidateStatusLine(path) {
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
   const pairDefaults = data?.config?.pairDefaults === true ? "yes" : "no";
   const baselineNoise = formatRatio(data?.baselineNoise?.maxOverMin);
-  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} attempts=${attempts} lanes=${lanes} pair_defaults=${pairDefaults} baseline_noise=${baselineNoise} source=${source}`;
+  const defaultPolicies = Array.isArray(data?.attempts)
+    ? [...new Set(data.attempts.map((row) => row?.defaultPromptPolicy).filter((value) => typeof value === "string"))].join(",") || "unknown"
+    : "unknown";
+  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} attempts=${attempts} lanes=${lanes} pair_defaults=${pairDefaults} default_policy=${defaultPolicies} baseline_noise=${baselineNoise} source=${source}`;
 }
 
 function frontierStatusLine(path, pressurePath = path) {
@@ -748,6 +751,8 @@ function q8PromptNextTarget(path, pressurePath = path) {
     const semanticStats = q8LaneSpeedupStats(data, "semantic", "semanticSpeedup");
     const semanticThroughput = typeof data?.throughput?.semantic === "string" ? data.throughput.semantic : "unknown";
     const status = typeof data?.status === "string" ? data.status : "unknown";
+    const pressureStatus = typeof pressureData?.status === "string" ? pressureData.status : "unknown";
+    const pressureSemanticThroughput = typeof pressureData?.throughput?.semantic === "string" ? pressureData.throughput.semantic : "unknown";
     const freshStats = q8LaneSpeedupStats(pressureData, "semantic", "semanticSpeedup");
     const freshSpills = pressureData?.lanes?.semantic?.tiledSpills ?? "n/a";
     const freshSpillInput = pressureData?.lanes?.semantic?.tiledSpillInput ?? "n/a";
@@ -758,6 +763,9 @@ function q8PromptNextTarget(path, pressurePath = path) {
     const fresh = hasFreshPressure
       ? `:fresh=best:${formatRatio(pressureData?.lanes?.semantic?.speedup)},median:${formatRatio(freshStats?.median)},worst:${formatRatio(freshStats?.worst)},spills:${freshSpills},spill_k:${formatNumber(freshSpillK, 0)},spill_input:${freshSpillInput},output_spills:${freshOutputSpills}`
       : "";
+    if (pressureStatus === "promoted-default" || pressureSemanticThroughput === "promoted") {
+      return `q8_prompt=promoted_semantic_default:commands=${pressureData?.lanes?.semantic?.commands ?? "n/a"}:row_chains=${pressureData?.lanes?.semantic?.projectionRowChains ?? "n/a"}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}`;
+    }
     if (semanticThroughput === "ready" && Number.isFinite(semanticSpeedup) && semanticSpeedup >= 1) {
       return `q8_prompt=promote_semantic_candidate:${formatRatio(semanticSpeedup)}:median=${formatRatio(semanticStats?.median)}${fresh}`;
     }

@@ -1412,13 +1412,15 @@ logits or KV-cache output bindings. That makes the next perf move sharper:
 absorb the residual user into a larger semantic command or replace the
 two-dispatch tail with a true throughput kernel; do not spend another pass on
 output binding policy.
-The latest selected three-attempt Q8 prompt artifact carries the same counter:
-`semantic_spills=30`, `semantic_output_spills=0`,
-`semantic_median=0.98x`, and `semantic_worst=0.94x`. It also reports a
-stronger current two-phase row-chain lane (`two_phase_median=1.06x`,
-`two_phase_worst=0.99x`) with `two_phase_output_spills=0`. Treat that as a
-useful current command/two-phase candidate, but not as proof that the semantic
-FFN path is ready for default promotion.
+The latest selected three-attempt Q8 prompt artifact now records the promotion
+state directly: `status=promoted-default`, `semantic=promoted`,
+`default_policy=semantic-promoted`, `command_command=151->151`, zero fallback,
+and the same semantic row-chain pressure (`semantic_spills=30`,
+`semantic_spill_input=17280`, `semantic_output_spills=0`). Treat this as the
+semantic command becoming the Metal scheduled Q8 prompt default, not as ggml
+parity. The next bottleneck is the remaining model-width spill/work shape: absorb
+the residual user into a larger semantic command or replace the two-dispatch
+tail with a true throughput kernel.
 The row-chain spill profile also tracks spilled input width. A source-current
 semantic quick probe reported `semantic_spill_input=17280` for `30` spills,
 so the average spilling row-chain is `K=576`. That identifies the materialized
