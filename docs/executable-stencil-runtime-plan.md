@@ -1411,7 +1411,11 @@ only reaches `width_lane_utilization_x1000=562` and
 `width_slot_gap=2.00x` and `thread_slot_gap=1.80x`; the next semantic
 throughput pass should therefore be a 576-aware work-partitioning/vectorization
 change, not another blind
-`SEMANTIC_FFN_THREADS` probe. A 576-only `SEMANTIC_FFN_THREADS=256` narrow
+`SEMANTIC_FFN_THREADS` probe. The status router names that below-default
+shape `semantic_width_parallel_kernel` when fresh throughput evidence shows the
+SmolLM width/thread utilization gap; until that kernel exists, the route still
+runs the qsemantic throughput microscope. A 576-only
+`SEMANTIC_FFN_THREADS=256` narrow
 kernel probe reduced the measured thread-slot footprint
 (`thread_slot_gap` roughly `1.80x -> 1.30x`) but made throughput worse
 (`smollm_prompt=0.67x`). A follow-up 384-thread mid-width probe preserved more

@@ -51,7 +51,7 @@ function chooseLane(line) {
   const forced = String(process.env.BENCH_NEXT_PERF_LANE ?? "").trim();
   if (forced) return forced;
   const steady = process.env.BENCH_NEXT_PERF_STEADY === "1";
-  const hasSemanticThroughputFrontier = /frontier=semantic_ffn_sublayer_throughput_kernel:candidate=ready/.test(line);
+  const hasSemanticThroughputFrontier = /frontier=(?:semantic_ffn_sublayer_throughput_kernel|semantic_width_parallel_kernel):candidate=ready/.test(line);
   const q8PromptNeedsSteadySemanticBridge =
     /q8_prompt=semantic_bridge_candidate:[^ ]*:next=steady_semantic_bridge_candidate/.test(line);
   const q8PromptNeedsSemanticBridgeKernel =
@@ -73,14 +73,14 @@ function chooseLane(line) {
   if (hasFreshQsemanticThroughput && /q8_prompt=semantic_throughput_kernel/.test(line)) return "q8_prompt";
   if (
     !steady &&
-    /frontier=semantic_ffn_sublayer_throughput_kernel:candidate=ready/.test(line)
+    /frontier=(?:semantic_ffn_sublayer_throughput_kernel|semantic_width_parallel_kernel):candidate=ready/.test(line)
   ) return "qsemantic_throughput";
   if (
     steady &&
-    /frontier=semantic_ffn_sublayer_throughput_kernel:candidate=ready/.test(line) &&
+    /frontier=(?:semantic_ffn_sublayer_throughput_kernel|semantic_width_parallel_kernel):candidate=ready/.test(line) &&
     /q8_prompt=semantic_throughput_kernel/.test(line)
   ) return "q8_prompt";
-  if (/frontier=semantic_ffn_sublayer_throughput_kernel/.test(line)) return "qsemantic";
+  if (/frontier=(?:semantic_ffn_sublayer_throughput_kernel|semantic_width_parallel_kernel)/.test(line)) return "qsemantic";
   if (/q8_prompt=semantic_throughput_kernel/.test(line)) return "q8_prompt";
   if (/pytorch=(?!none\b)[^ ]+/.test(line)) return "pytorch";
   if (/full_model=/.test(line)) return "qsemantic";

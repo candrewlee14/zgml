@@ -334,7 +334,10 @@ machine for both prompt/prefill and decode.
   still about `562/1000` (`thread_lane_utilization_x1000=611`) with
   `width_slot_gap=2.00x` and `thread_slot_gap=1.80x`. Treat that as the next
   kernel-design target: reduce the 576-wide width-slot waste, not just the
-  nominal row-serial math. A
+  nominal row-serial math. Fresh below-default throughput evidence with that
+  utilization gap is reported as `semantic_width_parallel_kernel` in
+  `perf-next:`, while `dev:perf:next` still routes it to the qsemantic
+  throughput microscope until the kernel exists. A
   576-only 256-thread narrow-kernel probe reduced the slot footprint but hurt
   throughput (`smollm_prompt=0.67x`). A 384-thread mid-width probe improved
   utilization to about `777/1000` but still lost throughput

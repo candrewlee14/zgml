@@ -1060,6 +1060,16 @@ function frontierNextTargetLine(path, pressurePath = path) {
       pressureData?.kind === "qsemantic-throughput"
         ? `,width_util=smollm:${pressureData?.smollmPrompt?.semanticWidthLaneUtilizationX1000 ?? "n/a"},full:${pressureData?.fullPrefill?.semanticWidthLaneUtilizationX1000 ?? "n/a"}`
         : "";
+    const pressureSmollmWidthUtilization = Number(pressureData?.smollmPrompt?.semanticWidthLaneUtilizationX1000);
+    const pressureSmollmThreadUtilization = Number(pressureData?.smollmPrompt?.semanticThreadLaneUtilizationX1000);
+    const pressureSmollmThroughput = Number(pressureData?.smollmPrompt?.speedup);
+    const frontierNext = pressureData?.kind === "qsemantic-throughput" &&
+      Number.isFinite(pressureSmollmThroughput) &&
+      pressureSmollmThroughput < 1 &&
+      ((Number.isFinite(pressureSmollmWidthUtilization) && pressureSmollmWidthUtilization < 800) ||
+        (Number.isFinite(pressureSmollmThreadUtilization) && pressureSmollmThreadUtilization < 800))
+      ? "semantic_width_parallel_kernel"
+      : next;
     const freshStats =
       pressureData?.kind === "qsemantic-throughput"
         ? `,median=smollm:${formatRatio(pressureData?.speedupStats?.smollmPrompt?.median)},full:${formatRatio(pressureData?.speedupStats?.fullPrefill?.median)},worst=smollm:${formatRatio(pressureData?.speedupStats?.smollmPrompt?.worst)},full:${formatRatio(pressureData?.speedupStats?.fullPrefill?.worst)}`
@@ -1069,7 +1079,7 @@ function frontierNextTargetLine(path, pressurePath = path) {
         ? `:fresh=source:${typeof pressureData?.source?.label === "string" ? pressureData.source.label : "unknown"},throughput=smollm:${formatRatio(pressureData?.smollmPrompt?.speedup)},full:${formatRatio(pressureData?.fullPrefill?.speedup)},gate=${freshThroughputGate},spilled_input=smollm:${pressureData?.smollmPrompt?.spilledInput ?? "n/a"},full:${pressureData?.fullPrefill?.spilledInput ?? "n/a"}${freshWidth}${freshStats}`
         : `:fresh=source:${typeof pressureData?.source?.label === "string" ? pressureData.source.label : "unknown"},vs_default=smollm:${formatRatio(pressureData?.smollmPrompt?.throughputCandidateVsDefault)},full:${formatRatio(pressureData?.fullPrefill?.throughputCandidateVsDefault)}`
       : "";
-    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}:target_tiles=smollm:${smollmTargetTileGroups},full:${fullTargetTileGroups}:target_shape=smollm:${smollmTargetTileShape},full:${fullTargetTileShape}:candidate_tiles=smollm:${smollmCandidateTileGroups},full:${fullCandidateTileGroups}:candidate_finalize_groups=smollm:${smollmCandidateFinalizeTileGroups},full:${fullCandidateFinalizeTileGroups}:candidate_finalize_elements=smollm:${smollmCandidateFinalizeElements},full:${fullCandidateFinalizeElements}:tile_gap=smollm:${smollmTileGap},full:${fullTileGap}:target_serial_per_tile=smollm:${smollmTargetSerialPerTile},full:${fullTargetSerialPerTile}${fresh}`;
+    return `frontier=${frontierNext}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}:target_tiles=smollm:${smollmTargetTileGroups},full:${fullTargetTileGroups}:target_shape=smollm:${smollmTargetTileShape},full:${fullTargetTileShape}:candidate_tiles=smollm:${smollmCandidateTileGroups},full:${fullCandidateTileGroups}:candidate_finalize_groups=smollm:${smollmCandidateFinalizeTileGroups},full:${fullCandidateFinalizeTileGroups}:candidate_finalize_elements=smollm:${smollmCandidateFinalizeElements},full:${fullCandidateFinalizeElements}:tile_gap=smollm:${smollmTileGap},full:${fullTileGap}:target_serial_per_tile=smollm:${smollmTargetSerialPerTile},full:${fullTargetSerialPerTile}${fresh}`;
   } catch {
     return "frontier=unreadable_artifact";
   }
