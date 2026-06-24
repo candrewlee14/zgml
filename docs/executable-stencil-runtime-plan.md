@@ -954,22 +954,24 @@ the steady target: the module bench stayed around `prepared_execute_into_ms =
 0.0098ms`, and the three-attempt PyTorch lane still missed median parity
 (`ratio_median=0.94x`). A June 24 follow-up kept the public
 `linear|log-softmax` Program plan but replaced the private row-tail path with a
-fused two-row small-direct classifier kernel: it accumulates the `N=32` linear
-bias and weights into two 16-wide column vectors per row pair, computes the
-stable row max/exp sum, and writes log-softmax output directly. That removes
-the separate linear-output row pass while preserving the allocation-free direct
-Session path and C ABI coverage for the `M=128,N=32,K=64` comparison shape.
-The latest fresh-native three-attempt gap artifact after that change is narrower
-but still honest: `ratio_median=linear_batched:1.23x,log_softmax_classifier_batched:0.94x`,
-with the selected miss at `log_softmax_classifier_batched=zgml:0.0086ms
-pytorch:0.0083ms`. Do not claim PyTorch broad parity yet; keep the fused
-small-direct row kernel because it improves the module hot path and coverage,
-but the next move still needs a stronger classifier-tail kernel or a path that
+fused small-direct classifier kernel: it accumulates the `N=32` linear bias and
+weights into two 16-wide column vectors, computes the stable row max/exp sum,
+and writes log-softmax output directly. That removes the separate linear-output
+row pass while preserving the allocation-free direct Session path and C ABI coverage for the `M=128,N=32,K=64` comparison shape. A later four-row tile
+improved weight reuse for the same direct path without changing the public
+Program evidence. The latest fresh-native three-attempt gap artifact after that
+four-row tile is narrower but still honest:
+`ratio_median=linear_batched:1.22x,log_softmax_classifier_batched:0.95x`, with
+the selected miss at `log_softmax_classifier_batched=zgml:0.0073ms
+pytorch:0.0069ms`. Do not claim PyTorch broad parity yet; keep the fused
+small-direct row kernel because it improves the module prepared path, but the
+next move still needs a stronger classifier-tail kernel or a path that
 amortizes row normalization differently.
-Evidence tag: fused two-row small-direct `Linear -> LogSoftmax` classifier-tail
+Evidence tag: fused four-row small-direct `Linear -> LogSoftmax` classifier-tail
 kernel; latest fresh-native three-attempt PyTorch gap microscope; row
-log-softmax tail itself; `prepared_execute_into_ms=0.0079ms`; `ratio_median=linear_batched:1.23x,log_softmax_classifier_batched:0.94x`;
-`log_softmax_classifier_batched=zgml:0.0086ms pytorch:0.0083ms`.
+log-softmax tail itself; `prepared_execute_into_ms=0.0082ms`;
+`ratio_median=linear_batched:1.22x,log_softmax_classifier_batched:0.95x`;
+`log_softmax_classifier_batched=zgml:0.0073ms pytorch:0.0069ms`.
 The model-free stencil-only debug microscope now also prints both decode and
 prompt row-chain/projection-chain diagnostics before enforcing its p128 stencil
 hash contract, so a stale decode hash no longer hides the prompt-side frontier
