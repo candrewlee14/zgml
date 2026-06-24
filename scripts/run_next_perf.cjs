@@ -42,6 +42,10 @@ function chooseLane(line) {
   const forced = String(process.env.BENCH_NEXT_PERF_LANE ?? "").trim();
   if (forced) return forced;
   const steady = process.env.BENCH_NEXT_PERF_STEADY === "1";
+  const hasFreshQsemanticThroughput =
+    /frontier=semantic_ffn_sublayer_throughput_kernel:candidate=ready/.test(line) &&
+    /:fresh=source:[^, ]+,throughput=smollm:[0-9.]+x,full:[0-9.]+x/.test(line);
+  if (hasFreshQsemanticThroughput && /q8_prompt=semantic_throughput_kernel/.test(line)) return "q8_prompt";
   if (
     !steady &&
     /frontier=semantic_ffn_sublayer_throughput_kernel:candidate=ready/.test(line)
