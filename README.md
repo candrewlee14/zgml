@@ -17,8 +17,8 @@ binding, and evidence.
 
 For a runnable end-to-end version of this flow, see
 `examples/node_training/quickstart.cjs`. It trains a small model, checkpoint
-round-trips it, compiles it, binds a `Session`, and executes into caller-owned
-output.
+round-trips it, compiles an inference handle, inspects executable proof, and
+executes into caller-owned output.
 
 ```ts
 import { zgml } from "zgml";
@@ -57,7 +57,14 @@ zgml.checkpoint.restore(loaded, { model, optimizer, scheduler, prefix: "xor", st
 // Direct in-memory restore also works:
 zgml.checkpoint.restore(snapshot, { model, optimizer, scheduler, prefix: "xor", strict: true });
 
-const program = zgml.compile(model, { inputShape: [2] as const });
+const fast = zgml.compileForInference(model, { inputShape: [2] as const });
+const proof = fast.explain();
+const support = fast.compileSupport();
+const out = fast.into(new Float32Array(1), zgml.tensor([1, 0], [2] as const));
+fast.dispose();
+void proof;
+void support;
+void out;
 ```
 
 `torch` remains available as a PyTorch-compatible alias for this same friendly
@@ -100,10 +107,16 @@ const loaded = load(text);
 load(text, { model, optimizer, scheduler, prefix: "xor", strict: true });
 const savedPath = save(snapshot, "./xor.zgml", 2);
 load(savedPath, { model, optimizer, scheduler, prefix: "xor", strict: true });
-const program = compile(model, { inputShape: [2] as const });
+const fast = compile.compileForInference(model, { inputShape: [2] as const });
+const proof = fast.explain();
+const support = fast.compileSupport();
+const out = fast.into(new Float32Array(1), tensor([1, 0], [2] as const));
+fast.dispose();
 void F;
 void loaded;
-void program;
+void proof;
+void support;
+void out;
 ```
 
 Subclassed models keep the same typed path. This is the shape zgml optimizes for:

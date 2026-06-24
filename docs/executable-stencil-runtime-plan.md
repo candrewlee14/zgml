@@ -466,6 +466,9 @@ same first-contact story end to end: train, checkpoint, restore,
 `zgml.compileForInference(...)`, inspect `compileSupport()`, `explain()`,
 `preflight()`, `kernelPlan()`, and `compilerSignatures()`, then run
 allocation-free `into(...)`.
+The top-level README and its typechecked quickstart smoke now teach that same
+friendly handle first, leaving raw `Program`/`Session` binding as the explicit
+advanced path.
 Exploratory focused lanes still track softer micro-workloads such as
 classifier `LogSoftmax` tails and token-head paths, but those are microscopes
 for ranking optimization opportunities rather than promoted hard-gate misses.

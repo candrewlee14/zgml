@@ -54,10 +54,16 @@ const zgmlFit = zgml.train.fit(zgmlModel, zgmlLoader, {
   },
 });
 const zgmlSnapshot = zgml.checkpoint.create({ model: zgmlModel, optimizer: zgmlOptimizer, scheduler: zgmlScheduler, prefix: "zgml" });
-const zgmlProgram = zgml.compile(zgmlModel, { inputShape: [2] as const });
+const zgmlFast = zgml.compileForInference(zgmlModel, { inputShape: [2] as const });
+const zgmlFastProof = zgmlFast.explain();
+const zgmlFastSupport = zgmlFast.compileSupport();
+const zgmlFastOut = zgmlFast.into(new Float32Array(1), zgml.tensor([1, 0], [2] as const));
+zgmlFast.dispose();
 void zgmlFit;
 void zgmlSnapshot;
-void zgmlProgram;
+void zgmlFastProof;
+void zgmlFastSupport;
+void zgmlFastOut;
 
 const torchModel = new torch.nn.Sequential(
   new torch.nn.Linear(2, 4),
@@ -170,7 +176,11 @@ const text = save(snapshot, 2);
 const loaded = load(text);
 load(text, { model, optimizer, scheduler, prefix: "xor", strict: true });
 checkpoint.restore(snapshot, { model, optimizer, scheduler, prefix: "xor", strict: true });
-const readmeProgram = compile(model, { inputShape: [2] as const });
+const readmeFast = compile.compileForInference(model, { inputShape: [2] as const });
+const readmeFastProof = readmeFast.explain();
+const readmeFastSupport = readmeFast.compileSupport();
+const readmeFastOut = readmeFast.into(new Float32Array(1), tensor([1, 0], [2] as const));
+readmeFast.dispose();
 
 class Classifier extends nn.Module<readonly [2], readonly [2]> {
   readonly graph = nn.sequential([
@@ -283,7 +293,9 @@ void torchProbabilities;
 void torchPredictedClasses;
 void text;
 void loaded;
-void readmeProgram;
+void readmeFastProof;
+void readmeFastSupport;
+void readmeFastOut;
 void classifierFit;
 void classifierEvaluation;
 void classifierPrediction;
