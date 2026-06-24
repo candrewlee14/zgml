@@ -963,6 +963,17 @@ default path. The next move still has to change the semantic FFN sublayer
 kernel's work partitioning or grow the semantic command to remove more
 surrounding work; merely selecting the existing throughput candidate would
 improve one frontier row and regress the SmolLM-shaped row.
+A later June 24, 2026 pass tightened that diagnostic lane: the named
+`promptSemanticFfnSublayerThroughputCandidate()` now exercises the actual
+one-dispatch semantic FFN sublayer kernel instead of the older three-dispatch
+two-phase row-chain tail. The fresh rebuilt qsemantic throughput artifact
+passes shape/profile evidence with `runtime_backend_dispatches=1`,
+`semantic_ffn_sublayer_count=1`, and semantic tile groups
+`full:192,smollm:216`, with zero row-chain tiled tail. It is intentionally not
+a promotion: measured speed is still below the old path
+(`full_prefill:0.71x`, `smollm_prompt:0.56x`). That is a better frontier
+because it proves the exact kernel that must be optimized, rather than a
+faster fallback tail wearing the throughput-candidate name.
 A follow-up shape-selective probe tried using the two-phase tiled tail only for
 the `512`-wide full-prefill geometry while keeping the `576`-wide SmolLM shape
 on the default tail. It was not kept: a three-attempt no-rebuild qsemantic run
@@ -1335,10 +1346,10 @@ semantic lowering keeps the current default work shape. This is the useful
 near-term architecture: one semantic library command is now the promoted path,
 while the one-dispatch semantic target remains an explicit diagnostic until the
 true tiled semantic kernel exists.
-The named `promptSemanticFfnSublayerThroughputCandidate()` policy now keeps the
-same one-command semantic shape but swaps the down-projection/residual/RMSNorm
-tail to the existing two-phase tiled row-chain leaf. The qsemantic gate reports
-that as `throughput_candidate_status=...` with
+At that stage, the named `promptSemanticFfnSublayerThroughputCandidate()`
+policy kept the same one-command semantic shape but swapped the
+down-projection/residual/RMSNorm tail to the existing two-phase tiled row-chain
+leaf. The qsemantic gate reported that as `throughput_candidate_status=...` with
 `throughput_candidate_vs_default=full_prefill:...x,smollm_prompt:...x`,
 `full_prefill_throughput_candidate=...x` and
 `smollm_prompt_throughput_candidate=...x`; fresh no-rebuild runs now show the

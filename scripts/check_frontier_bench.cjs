@@ -1252,9 +1252,8 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
   const fullPrefillRuntimeDispatches = metric(output, fullPrefillProfileLabel, "runtime_backend_dispatches");
   const fullPrefillRuntimeSemanticDispatches = metric(output, fullPrefillProfileLabel, "runtime_semantic_ffn_dispatches");
   const fullPrefillRuntimeRowChainTiled = metric(output, fullPrefillProfileLabel, "qmatmul_row_chain_tiled_count");
-  const fullPrefillRowTileGroups = metric(output, fullPrefillProfileLabel, "qmatmul_row_chain_tiled_row_tile_groups");
-  const fullPrefillNTiles = metric(output, fullPrefillProfileLabel, "qmatmul_row_chain_tiled_n_tiles");
-  const fullPrefillTwoPhase = metric(output, fullPrefillProfileLabel, "qmatmul_row_chain_tiled_two_phase_count");
+  const fullPrefillSemanticCount = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_count");
+  const fullPrefillSemanticTileGroups = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_tile_parallel_groups");
   const fullPrefillSpilledInput = metric(output, fullPrefillProfileLabel, "qmatmul_row_chain_tiled_spilled_input");
   const fullPrefillOutputSpills = metric(output, fullPrefillProfileLabel, "qmatmul_row_chain_tiled_output_spills");
 
@@ -1266,27 +1265,26 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
   const smollmPromptRuntimeDispatches = metric(output, smollmPromptProfileLabel, "runtime_backend_dispatches");
   const smollmPromptRuntimeSemanticDispatches = metric(output, smollmPromptProfileLabel, "runtime_semantic_ffn_dispatches");
   const smollmPromptRuntimeRowChainTiled = metric(output, smollmPromptProfileLabel, "qmatmul_row_chain_tiled_count");
-  const smollmPromptRowTileGroups = metric(output, smollmPromptProfileLabel, "qmatmul_row_chain_tiled_row_tile_groups");
-  const smollmPromptNTiles = metric(output, smollmPromptProfileLabel, "qmatmul_row_chain_tiled_n_tiles");
-  const smollmPromptTwoPhase = metric(output, smollmPromptProfileLabel, "qmatmul_row_chain_tiled_two_phase_count");
+  const smollmPromptSemanticCount = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_count");
+  const smollmPromptSemanticTileGroups = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_tile_parallel_groups");
   const smollmPromptSpilledInput = metric(output, smollmPromptProfileLabel, "qmatmul_row_chain_tiled_spilled_input");
   const smollmPromptOutputSpills = metric(output, smollmPromptProfileLabel, "qmatmul_row_chain_tiled_output_spills");
 
   const failures = [];
   if (fullPrefillMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`semantic throughput full-prefill max_abs_diff ${fullPrefillMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (smollmPromptMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`semantic throughput smollm-prompt max_abs_diff ${smollmPromptMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
-  if (fullPrefillShapeCommands !== 1 || fullPrefillShapeSemantic !== 1 || fullPrefillShapeCoveredOps !== 9 || fullPrefillRuntimeDispatches !== 3 || fullPrefillRuntimeSemanticDispatches !== 3 || fullPrefillRuntimeRowChainTiled !== 1 || fullPrefillRowTileGroups !== 4 || fullPrefillNTiles !== 16 || fullPrefillTwoPhase !== 1) {
-    failures.push("semantic throughput full-prefill profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 runtime_backend_dispatches=3 runtime_semantic_ffn_dispatches=3 qmatmul_row_chain_tiled_count=1 row_tile_groups=4 n_tiles=16 two_phase_count=1");
+  if (fullPrefillShapeCommands !== 1 || fullPrefillShapeSemantic !== 1 || fullPrefillShapeCoveredOps !== 9 || fullPrefillRuntimeDispatches !== 1 || fullPrefillRuntimeSemanticDispatches !== 1 || fullPrefillRuntimeRowChainTiled !== 0 || fullPrefillSemanticCount !== 1 || fullPrefillSemanticTileGroups !== 192) {
+    failures.push("semantic throughput full-prefill profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 runtime_backend_dispatches=1 runtime_semantic_ffn_dispatches=1 qmatmul_row_chain_tiled_count=0 semantic_ffn_sublayer_count=1 semantic_tile_parallel_groups=192");
   }
-  if (smollmPromptShapeCommands !== 1 || smollmPromptShapeSemantic !== 1 || smollmPromptShapeCoveredOps !== 9 || smollmPromptRuntimeDispatches !== 3 || smollmPromptRuntimeSemanticDispatches !== 3 || smollmPromptRuntimeRowChainTiled !== 1 || smollmPromptRowTileGroups !== 4 || smollmPromptNTiles !== 18 || smollmPromptTwoPhase !== 1) {
-    failures.push("semantic throughput smollm-prompt profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 runtime_backend_dispatches=3 runtime_semantic_ffn_dispatches=3 qmatmul_row_chain_tiled_count=1 row_tile_groups=4 n_tiles=18 two_phase_count=1");
+  if (smollmPromptShapeCommands !== 1 || smollmPromptShapeSemantic !== 1 || smollmPromptShapeCoveredOps !== 9 || smollmPromptRuntimeDispatches !== 1 || smollmPromptRuntimeSemanticDispatches !== 1 || smollmPromptRuntimeRowChainTiled !== 0 || smollmPromptSemanticCount !== 1 || smollmPromptSemanticTileGroups !== 216) {
+    failures.push("semantic throughput smollm-prompt profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 runtime_backend_dispatches=1 runtime_semantic_ffn_dispatches=1 qmatmul_row_chain_tiled_count=0 semantic_ffn_sublayer_count=1 semantic_tile_parallel_groups=216");
   }
 
   const line = [
     `frontier qsemantic throughput gate: ${failures.length === 0 ? "pass" : "fail"}`,
     `attempt=${attempt}/${maxAttempts}`,
-    `full_prefill=${fullPrefillSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillRuntimeDispatches} qmatmul_row_chain_tiled_count=${fullPrefillRuntimeRowChainTiled} tile_groups=${fullPrefillRowTileGroups * fullPrefillNTiles} qmatmul_row_chain_tiled_spilled_input=${fullPrefillSpilledInput} qmatmul_row_chain_tiled_output_spills=${fullPrefillOutputSpills}`,
-    `smollm_prompt=${smollmPromptSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${smollmPromptMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${smollmPromptRuntimeDispatches} qmatmul_row_chain_tiled_count=${smollmPromptRuntimeRowChainTiled} tile_groups=${smollmPromptRowTileGroups * smollmPromptNTiles} qmatmul_row_chain_tiled_spilled_input=${smollmPromptSpilledInput} qmatmul_row_chain_tiled_output_spills=${smollmPromptOutputSpills}`,
+    `full_prefill=${fullPrefillSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillRuntimeDispatches} semantic_ffn_sublayer_count=${fullPrefillSemanticCount} semantic_tile_parallel_groups=${fullPrefillSemanticTileGroups} qmatmul_row_chain_tiled_count=${fullPrefillRuntimeRowChainTiled} qmatmul_row_chain_tiled_spilled_input=${fullPrefillSpilledInput} qmatmul_row_chain_tiled_output_spills=${fullPrefillOutputSpills}`,
+    `smollm_prompt=${smollmPromptSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${smollmPromptMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${smollmPromptRuntimeDispatches} semantic_ffn_sublayer_count=${smollmPromptSemanticCount} semantic_tile_parallel_groups=${smollmPromptSemanticTileGroups} qmatmul_row_chain_tiled_count=${smollmPromptRuntimeRowChainTiled} qmatmul_row_chain_tiled_spilled_input=${smollmPromptSpilledInput} qmatmul_row_chain_tiled_output_spills=${smollmPromptOutputSpills}`,
     "next=semantic_ffn_sublayer_throughput_kernel",
   ].join("; ");
 
@@ -1300,9 +1298,8 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
     fullPrefillRuntimeDispatches,
     fullPrefillRuntimeSemanticDispatches,
     fullPrefillRuntimeRowChainTiled,
-    fullPrefillRowTileGroups,
-    fullPrefillNTiles,
-    fullPrefillTwoPhase,
+    fullPrefillSemanticCount,
+    fullPrefillSemanticTileGroups,
     fullPrefillSpilledInput,
     fullPrefillOutputSpills,
     smollmPromptSpeedup,
@@ -1313,9 +1310,8 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
     smollmPromptRuntimeDispatches,
     smollmPromptRuntimeSemanticDispatches,
     smollmPromptRuntimeRowChainTiled,
-    smollmPromptRowTileGroups,
-    smollmPromptNTiles,
-    smollmPromptTwoPhase,
+    smollmPromptSemanticCount,
+    smollmPromptSemanticTileGroups,
     smollmPromptSpilledInput,
     smollmPromptOutputSpills,
     failures,
@@ -1328,11 +1324,13 @@ function focusedSemanticThroughputMargin(current) {
     projectionRowChainMaxAbsDiffCeil / Math.max(current.fullPrefillMaxAbsDiff, Number.EPSILON),
     projectionRowChainMaxAbsDiffCeil / Math.max(current.smollmPromptMaxAbsDiff, Number.EPSILON),
     current.fullPrefillShapeCommands === 1 ? 1 : 0,
-    current.fullPrefillRuntimeDispatches === 3 ? 1 : 0,
-    current.fullPrefillRuntimeRowChainTiled === 1 ? 1 : 0,
+    current.fullPrefillRuntimeDispatches === 1 ? 1 : 0,
+    current.fullPrefillSemanticCount === 1 ? 1 : 0,
+    current.fullPrefillSemanticTileGroups === 192 ? 1 : 0,
     current.smollmPromptShapeCommands === 1 ? 1 : 0,
-    current.smollmPromptRuntimeDispatches === 3 ? 1 : 0,
-    current.smollmPromptRuntimeRowChainTiled === 1 ? 1 : 0,
+    current.smollmPromptRuntimeDispatches === 1 ? 1 : 0,
+    current.smollmPromptSemanticCount === 1 ? 1 : 0,
+    current.smollmPromptSemanticTileGroups === 216 ? 1 : 0,
   ) + Math.min(current.fullPrefillSpeedup, current.smollmPromptSpeedup);
 }
 
@@ -1345,8 +1343,9 @@ function selectedSemanticThroughputAttemptSummary(attempt) {
       maxAbsDiff: roundMetric(attempt.fullPrefillMaxAbsDiff),
       runtimeDispatches: attempt.fullPrefillRuntimeDispatches,
       semanticRuntimeDispatches: attempt.fullPrefillRuntimeSemanticDispatches,
+      semanticFfnSublayerCount: attempt.fullPrefillSemanticCount,
+      semanticTileParallelGroups: attempt.fullPrefillSemanticTileGroups,
       qmatmulRowChainTiledCount: attempt.fullPrefillRuntimeRowChainTiled,
-      tileGroups: attempt.fullPrefillRowTileGroups * attempt.fullPrefillNTiles,
       spilledInput: attempt.fullPrefillSpilledInput,
       outputSpills: attempt.fullPrefillOutputSpills,
     },
@@ -1355,8 +1354,9 @@ function selectedSemanticThroughputAttemptSummary(attempt) {
       maxAbsDiff: roundMetric(attempt.smollmPromptMaxAbsDiff),
       runtimeDispatches: attempt.smollmPromptRuntimeDispatches,
       semanticRuntimeDispatches: attempt.smollmPromptRuntimeSemanticDispatches,
+      semanticFfnSublayerCount: attempt.smollmPromptSemanticCount,
+      semanticTileParallelGroups: attempt.smollmPromptSemanticTileGroups,
       qmatmulRowChainTiledCount: attempt.smollmPromptRuntimeRowChainTiled,
-      tileGroups: attempt.smollmPromptRowTileGroups * attempt.smollmPromptNTiles,
       spilledInput: attempt.smollmPromptSpilledInput,
       outputSpills: attempt.smollmPromptOutputSpills,
     },
@@ -1433,23 +1433,21 @@ function runFocusedSemanticThroughputGate() {
     ["fullPrefillShapeCommands", 1],
     ["fullPrefillShapeSemantic", 1],
     ["fullPrefillShapeCoveredOps", 9],
-    ["fullPrefillRuntimeDispatches", 3],
-    ["fullPrefillRuntimeSemanticDispatches", 3],
-    ["fullPrefillRuntimeRowChainTiled", 1],
-    ["fullPrefillRowTileGroups", 4],
-    ["fullPrefillNTiles", 16],
-    ["fullPrefillTwoPhase", 1],
+    ["fullPrefillRuntimeDispatches", 1],
+    ["fullPrefillRuntimeSemanticDispatches", 1],
+    ["fullPrefillRuntimeRowChainTiled", 0],
+    ["fullPrefillSemanticCount", 1],
+    ["fullPrefillSemanticTileGroups", 192],
   ])) aggregate.push("semantic throughput full-prefill profile did not match in any attempt");
   if (!anyEquals(attempts, [
     ["smollmPromptShapeCommands", 1],
     ["smollmPromptShapeSemantic", 1],
     ["smollmPromptShapeCoveredOps", 9],
-    ["smollmPromptRuntimeDispatches", 3],
-    ["smollmPromptRuntimeSemanticDispatches", 3],
-    ["smollmPromptRuntimeRowChainTiled", 1],
-    ["smollmPromptRowTileGroups", 4],
-    ["smollmPromptNTiles", 18],
-    ["smollmPromptTwoPhase", 1],
+    ["smollmPromptRuntimeDispatches", 1],
+    ["smollmPromptRuntimeSemanticDispatches", 1],
+    ["smollmPromptRuntimeRowChainTiled", 0],
+    ["smollmPromptSemanticCount", 1],
+    ["smollmPromptSemanticTileGroups", 216],
   ])) aggregate.push("semantic throughput smollm-prompt profile did not match in any attempt");
 
   const line = aggregate.length === 0 ? best.line.replace("frontier qsemantic throughput gate: fail", "frontier qsemantic throughput gate: pass") : best.line;

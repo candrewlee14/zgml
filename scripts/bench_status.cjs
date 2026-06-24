@@ -359,15 +359,17 @@ function qsemanticThroughputStatusLine(path) {
   const smollmPrompt = formatRatio(data?.smollmPrompt?.speedup);
   const fullDispatches = data?.fullPrefill?.runtimeDispatches ?? "n/a";
   const smollmDispatches = data?.smollmPrompt?.runtimeDispatches ?? "n/a";
-  const fullTileGroups = data?.fullPrefill?.tileGroups ?? "n/a";
-  const smollmTileGroups = data?.smollmPrompt?.tileGroups ?? "n/a";
+  const fullSemanticCount = data?.fullPrefill?.semanticFfnSublayerCount ?? "n/a";
+  const smollmSemanticCount = data?.smollmPrompt?.semanticFfnSublayerCount ?? "n/a";
+  const fullSemanticTileGroups = data?.fullPrefill?.semanticTileParallelGroups ?? data?.fullPrefill?.tileGroups ?? "n/a";
+  const smollmSemanticTileGroups = data?.smollmPrompt?.semanticTileParallelGroups ?? data?.smollmPrompt?.tileGroups ?? "n/a";
   const fullSpilledInput = data?.fullPrefill?.spilledInput ?? "n/a";
   const smollmSpilledInput = data?.smollmPrompt?.spilledInput ?? "n/a";
   const fullOutputSpills = data?.fullPrefill?.outputSpills ?? "n/a";
   const smollmOutputSpills = data?.smollmPrompt?.outputSpills ?? "n/a";
   const next = typeof data?.next === "string" ? data.next : "unknown";
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
-  return `qsemantic-throughput-results: latest=${compactName(path)} status=${status} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill}:dispatches:${fullDispatches}:tile_groups:${fullTileGroups}:spilled_input:${fullSpilledInput}:output_spills:${fullOutputSpills} smollm_prompt=${smollmPrompt}:dispatches:${smollmDispatches}:tile_groups:${smollmTileGroups}:spilled_input:${smollmSpilledInput}:output_spills:${smollmOutputSpills} next=${next} source=${source}`;
+  return `qsemantic-throughput-results: latest=${compactName(path)} status=${status} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill}:dispatches:${fullDispatches}:semantic_count:${fullSemanticCount}:semantic_tile_groups:${fullSemanticTileGroups}:spilled_input:${fullSpilledInput}:output_spills:${fullOutputSpills} smollm_prompt=${smollmPrompt}:dispatches:${smollmDispatches}:semantic_count:${smollmSemanticCount}:semantic_tile_groups:${smollmSemanticTileGroups}:spilled_input:${smollmSpilledInput}:output_spills:${smollmOutputSpills} next=${next} source=${source}`;
 }
 
 function ggmlSmokeStatusLine(path) {

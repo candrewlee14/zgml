@@ -1333,6 +1333,7 @@ pub const CommandStreamPolicy = struct {
     pub fn promptSemanticFfnSublayerThroughputCandidate() CommandStreamPolicy {
         var policy = CommandStreamPolicy.promptProjectionRowChainCommand();
         policy.fuse_projection_row_chain_two_phase_candidate = true;
+        policy.fuse_semantic_ffn_sublayer_single_dispatch = true;
         return policy;
     }
 
