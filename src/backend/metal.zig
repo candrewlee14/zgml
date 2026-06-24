@@ -47,6 +47,7 @@ const ROW_CHAIN_TILE: u32 = 32;
 const MAX_ROW_CHAIN_COLS: u32 = 4096;
 const MAX_ROW_CHAIN_K: u32 = 2048;
 const QMATMUL_ROW_CHAIN_THREADS: u32 = 256;
+const SEMANTIC_FFN_THREADS: u32 = 512;
 const SEMANTIC_FFN_MAX_DIM: u32 = 1024;
 // 4 simdgroups per threadgroup (128 threads), each handles 8x8 sub-tiles
 // Shared memory per K step: TILE*8 + 8*TILE = 512 floats = 2 KB
@@ -63,6 +64,7 @@ const shader_source =
     \\constant uint NSUB = 4; // 2x2 arrangement of 8x8 sub-tiles per simdgroup
     \\constant uint QMATVEC_DOT_THREADS = 64;
     \\constant uint QMATMUL_ROW_CHAIN_THREADS = 256;
+    \\constant uint SEMANTIC_FFN_THREADS = 512;
     \\constant uint MAX_ROW_CHAIN_COLS = 4096;
     \\constant uint MAX_ROW_CHAIN_K = 2048;
     \\constant uint SEMANTIC_FFN_MAX_DIM = 1024;
@@ -1536,17 +1538,17 @@ const shader_source =
     \\    uint tid [[thread_index_in_threadgroup]]
     \\) {
     \\    if (row >= p.M) return;
-    \\    threadgroup float partial[QMATMUL_ROW_CHAIN_THREADS];
+    \\    threadgroup float partial[SEMANTIC_FFN_THREADS];
     \\    threadgroup float input_values[SEMANTIC_FFN_MAX_DIM];
     \\    threadgroup float product_values[SEMANTIC_FFN_MAX_DIM];
     \\    threadgroup float residual_values[SEMANTIC_FFN_MAX_DIM];
     \\
-    \\    for (uint k = tid; k < p.K; k += QMATMUL_ROW_CHAIN_THREADS) {
+    \\    for (uint k = tid; k < p.K; k += SEMANTIC_FFN_THREADS) {
     \\        input_values[k] = input[p.input_offset + row * p.input_row_stride + k];
     \\    }
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
-    \\    for (uint h = tid; h < p.H; h += QMATMUL_ROW_CHAIN_THREADS) {
+    \\    for (uint h = tid; h < p.H; h += SEMANTIC_FFN_THREADS) {
     \\        float gate_sum = 0.0f;
     \\        float up_sum = 0.0f;
     \\        for (uint k = 0; k < p.K; k++) {
@@ -1560,7 +1562,7 @@ const shader_source =
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
     \\    float ss = 0.0f;
-    \\    for (uint col = tid; col < p.O; col += QMATMUL_ROW_CHAIN_THREADS) {
+    \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_THREADS) {
     \\        float sum = 0.0f;
     \\        for (uint h = 0; h < p.H; h++) {
     \\            uint w_idx = h * p.O + col;
@@ -1574,13 +1576,13 @@ const shader_source =
     \\
     \\    partial[tid] = ss;
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
-    \\    for (uint stride = QMATMUL_ROW_CHAIN_THREADS / 2; stride > 0; stride >>= 1) {
+    \\    for (uint stride = SEMANTIC_FFN_THREADS / 2; stride > 0; stride >>= 1) {
     \\        if (tid < stride) partial[tid] += partial[tid + stride];
     \\        threadgroup_barrier(mem_flags::mem_threadgroup);
     \\    }
     \\    float inv_rms = 1.0f / sqrt(partial[0] / float(p.O) + p.rms_eps);
     \\
-    \\    for (uint col = tid; col < p.O; col += QMATMUL_ROW_CHAIN_THREADS) {
+    \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_THREADS) {
     \\        uint linear = row * p.O + col;
     \\        scaled_dst[p.scaled_dst_offset + linear] = residual_values[col] * inv_rms * scale_src[p.scale_src_offset + col];
     \\    }
@@ -4262,6 +4264,7 @@ comptime {
     requireShaderUintConst("QMATVEC_DOT_THREADS", QMATVEC_DOT_THREADS);
     requireShaderUintConst("ROW_CHAIN_TILE", ROW_CHAIN_TILE);
     requireShaderUintConst("QMATMUL_ROW_CHAIN_THREADS", QMATMUL_ROW_CHAIN_THREADS);
+    requireShaderUintConst("SEMANTIC_FFN_THREADS", SEMANTIC_FFN_THREADS);
     requireShaderUintConst("MAX_ROW_CHAIN_COLS", MAX_ROW_CHAIN_COLS);
     requireShaderUintConst("MAX_ROW_CHAIN_K", MAX_ROW_CHAIN_K);
     requireShaderUintConst("SEMANTIC_FFN_MAX_DIM", SEMANTIC_FFN_MAX_DIM);
@@ -9189,7 +9192,7 @@ const CompiledProgram = struct {
             .scaled_dst_offset = out.dst_offset,
         };
         exec.profile.recordSemanticFfnSublayer(params.M, params.H, params.K, params.O);
-        exec.encodeKernel(.qmatmul_semantic_ffn_sublayer_f32, &buffers, params, 10, .{ .gx = gate.M }, QMATMUL_ROW_CHAIN_THREADS);
+        exec.encodeKernel(.qmatmul_semantic_ffn_sublayer_f32, &buffers, params, 10, .{ .gx = gate.M }, SEMANTIC_FFN_THREADS);
         return true;
     }
 

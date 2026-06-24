@@ -1257,11 +1257,14 @@ function checkPackageExports(errors) {
     "if (!self.encodeQMatmulElementwise(exec, view, q, e, write_primary)) return false;",
     "return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, projectionRowChainScaleHasExternalUsers(ops, command));",
     "const QMATMUL_ROW_CHAIN_THREADS: u32 = 256;",
+    "const SEMANTIC_FFN_THREADS: u32 = 512;",
     "\\\\constant uint QMATMUL_ROW_CHAIN_THREADS = 256;",
+    "\\\\constant uint SEMANTIC_FFN_THREADS = 512;",
     "kernel void qmatmul_row_chain_f32",
     "threadgroup float row_values[MAX_ROW_CHAIN_COLS]",
     "for (uint col = tid; col < p.N; col += QMATMUL_ROW_CHAIN_THREADS)",
     "for (uint k = 0; k < p.K; k++)",
+    ".qmatmul_semantic_ffn_sublayer_f32, &buffers, params, 10, .{ .gx = gate.M }, SEMANTIC_FFN_THREADS",
     ".qmatmul_row_chain_f32, &buffers, params, 7, .{ .gx = q.M }, QMATMUL_ROW_CHAIN_THREADS",
   ]) {
     if (!metalBackendSource.includes(needle)) {

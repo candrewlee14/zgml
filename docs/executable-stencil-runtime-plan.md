@@ -969,11 +969,12 @@ one-dispatch semantic FFN sublayer kernel instead of the older three-dispatch
 two-phase row-chain tail. The fresh rebuilt qsemantic throughput artifact
 passes shape/profile evidence with `runtime_backend_dispatches=1`,
 `semantic_ffn_sublayer_count=1`, and semantic tile groups
-`full:192,smollm:216`, with zero row-chain tiled tail. It is intentionally not
-a promotion: measured speed is still below the old path
-(`full_prefill:0.71x`, `smollm_prompt:0.56x`). That is a better frontier
-because it proves the exact kernel that must be optimized, rather than a
-faster fallback tail wearing the throughput-candidate name.
+`full:192,smollm:216`, with zero row-chain tiled tail. A retained
+`SEMANTIC_FFN_THREADS=512` tuning pass then moved the three-attempt focused
+throughput artifact to `full_prefill=0.95x` and `smollm_prompt=0.83x`. That is
+still not a promotion, but it is a better frontier because it proves and tunes
+the exact kernel that must be optimized, rather than a faster fallback tail
+wearing the throughput-candidate name.
 A follow-up shape-selective probe tried using the two-phase tiled tail only for
 the `512`-wide full-prefill geometry while keeping the `576`-wide SmolLM shape
 on the default tail. It was not kept: a three-attempt no-rebuild qsemantic run
@@ -1302,20 +1303,19 @@ the total trapped row-serial work:
 `target_semantic_total_row_serial_dot_ops=100663296` for full-prefill and
 `target_semantic_total_row_serial_dot_ops=127401984` for the SmolLM prompt
 shape. The command shape is ideal, but the implementation still performs that
-row-serial dot workload inside one threadgroup per row. A focused
-semantic-thread-width experiment rejected the obvious knobs. Qsemantic target-thread experiments should not retune the row-serial semantic kernel width blindly:
-`SEMANTIC_FFN_THREADS=512` preserved correctness but left the target
-diagnostic and did not beat the default throughput path; a fresh focused
-rerun on June 24, 2026 still reported `target_vs_default=full_prefill:0.29x`
-and `smollm_prompt:0.26x`, with full-prefill target speed about `0.77x`.
-`SEMANTIC_FFN_THREADS=128` made the semantic target slower, especially on the
-SmolLM prompt shape. A later `SEMANTIC_FFN_THREADS=1024` probe improved the raw
-target-only p50 samples (`full-prefill` near `0.96ms`, `smollm_prompt` near
-`1.15ms`) but did not survive the steady qsemantic artifact selection:
-`target_vs_default=full_prefill:0.27x,smollm_prompt:0.26x` with selected
-`target_speedup=0.74x/0.68x`. Keep the current `QMATMUL_ROW_CHAIN_THREADS=256`
-diagnostic until the implementation changes the work shape rather than merely
-retuning threadgroup width. The qsemantic gate now reports
+row-serial dot workload inside one threadgroup per row. A later throughput
+candidate pass split the semantic FFN kernel width away from the scalar
+row-chain diagnostic width: `QMATMUL_ROW_CHAIN_THREADS` stays `256`, while the
+semantic throughput kernel now uses `SEMANTIC_FFN_THREADS=512`. The rejected
+`SEMANTIC_FFN_THREADS=128` probe made the one-dispatch semantic kernel slower
+(`full_prefill:0.59x`, `smollm_prompt:0.44x`). The retained `512`-thread
+version keeps the one-dispatch shape and improves the focused three-attempt
+qsemantic throughput artifact to `full_prefill=0.95x` and
+`smollm_prompt=0.83x`, with `semantic_ffn_sublayer_count=1`,
+`semantic_tile_groups=192/216`, and zero row-chain tiled tail. This is still
+diagnostic, not a default promotion: it shows that width helps, but the next
+real win still needs to change the semantic kernel's work partitioning rather
+than only retune threadgroup size. The qsemantic gate now reports
 `target_vs_default=full_prefill:...x,smollm_prompt:...x` so the dispatch
 reduction is always interpreted against the current throughput path; a fresh
 no-rebuild run still prints both ratios, and the target remains diagnostic
