@@ -23,6 +23,8 @@ export type SequentialTensorConstructOptions = Readonly<Record<string, unknown>>
 export type SequentialTensor = {
   readonly data?: Float32Array;
   readonly shape?: readonly number[];
+  readonly rank?: number;
+  readonly length?: number;
 };
 export type SequentialLayer = NnModule & {
   forward(input: unknown): unknown;
@@ -45,6 +47,28 @@ type F32 = (values: unknown) => Float32Array;
 type FactoryCallback<Args extends readonly unknown[], Return> = {
   bivarianceHack(...args: Args): Return;
 }["bivarianceHack"];
+type NativeEagerLinearActivationInto = (
+  output: Float32Array,
+  input: SequentialTensor,
+  weights: unknown,
+  options: Readonly<{
+    bias?: unknown;
+    batch?: number;
+    inFeatures?: number;
+    outFeatures?: number;
+    activation: "relu" | "gelu" | "silu" | "sigmoid" | "tanh";
+  }>,
+) => Float32Array;
+type SequentialLinearLayer = SequentialLayer & Readonly<{
+  kind: "linear";
+  inFeatures: number;
+  outFeatures: number;
+  weightParam: { readonly tensor: unknown };
+  biasParam?: { readonly tensor: unknown } | null;
+}>;
+type SequentialActivationLayer = SequentialLayer & Readonly<{
+  kind: string;
+}>;
 
 function sequentialChildren(module: SequentialModuleRecord) {
   return Object.freeze((module.layers ?? []).slice());
@@ -139,10 +163,37 @@ function tinyLinearCompiledSpec(compiled: SequentialCompiledSpec): TinyLinearCom
   return compiled as TinyLinearCompiledSpec;
 }
 
+function sequentialActivationKind(layer: SequentialLayer): "relu" | "gelu" | "silu" | "sigmoid" | "tanh" | null {
+  const kind = String((layer as SequentialActivationLayer).kind ?? "");
+  switch (kind) {
+    case "relu":
+    case "gelu":
+    case "silu":
+    case "sigmoid":
+    case "tanh":
+      return kind;
+    default:
+      return null;
+  }
+}
+
+function isSequentialLinearLayer(layer: SequentialLayer): layer is SequentialLinearLayer {
+  const candidate = layer as Partial<SequentialLinearLayer>;
+  return (
+    candidate.kind === "linear" &&
+    Number.isSafeInteger(candidate.inFeatures) &&
+    Number.isSafeInteger(candidate.outFeatures) &&
+    candidate.weightParam !== null &&
+    typeof candidate.weightParam === "object"
+  );
+}
+
 export type SequentialModuleClassHooks = SequentialProgramCompileHooksInput & {
   Tensor: TensorConstructor;
   f32: F32;
   traceSequentialProgram: FactoryCallback<[layers: readonly NnModule[], options: ModuleTraceOptions], unknown>;
+  nativeEagerLinearActivationInto?: NativeEagerLinearActivationInto;
+  isGradEnabled?: () => boolean;
 };
 
 export type SequentialModuleClassOptions = Readonly<Record<string, unknown> & SequentialModuleClassHooks>;
@@ -155,12 +206,46 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
   });
   const traceSequentialProgram = options.traceSequentialProgram;
   const compileHooks = createSequentialProgramCompileHooks(options, "SequentialModule");
+  const nativeEagerLinearActivationInto = options.nativeEagerLinearActivationInto;
+  const isGradEnabled = typeof options.isGradEnabled === "function" ? options.isGradEnabled : () => true;
   if (
     typeof TensorClass !== "function" ||
     typeof f32 !== "function" ||
     typeof traceSequentialProgram !== "function"
   ) {
     throw new Error("SequentialModule factory requires tensor, state, trace, analysis, packing, placement, and compile hooks");
+  }
+
+  function canUseNativeEagerLinearActivation() {
+    if (typeof nativeEagerLinearActivationInto !== "function") return false;
+    if (isGradEnabled()) return false;
+    return true;
+  }
+
+  function tryNativeEagerLinearActivation(input: unknown, linear: SequentialLayer, activationLayer: SequentialLayer) {
+    if (!canUseNativeEagerLinearActivation()) return null;
+    if (!(input instanceof TensorClass)) return null;
+    if (!isSequentialLinearLayer(linear)) return null;
+    const activation = sequentialActivationKind(activationLayer);
+    if (activation === null) return null;
+    const tensor = input as SequentialTensor;
+    const shape = Array.isArray(tensor.shape) ? tensor.shape : null;
+    const rank = Number.isSafeInteger(tensor.rank) ? tensor.rank as number : shape ? shape.length : null;
+    if (rank === null || rank < 1 || !shape) return null;
+    if (shape[shape.length - 1] !== linear.inFeatures) return null;
+
+    const leadingShape = shape.slice(0, -1);
+    const rowCount = leadingShape.length === 0 ? 1 : leadingShape.reduce((acc, dim) => acc * dim, 1);
+    const output = new Float32Array(rowCount * linear.outFeatures);
+    nativeEagerLinearActivationInto!(output, tensor, linear.weightParam.tensor, {
+      bias: linear.biasParam?.tensor ?? null,
+      batch: rowCount,
+      inFeatures: linear.inFeatures,
+      outFeatures: linear.outFeatures,
+      activation,
+    });
+    const outputShape = rank === 1 ? [linear.outFeatures] : [...leadingShape, linear.outFeatures];
+    return new TensorClass(output, outputShape);
   }
 
   class SequentialModule {
@@ -255,7 +340,19 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
 
     forward(inputValues: unknown) {
       let out: unknown = inputValues instanceof TensorClass ? inputValues : f32(inputValues);
-      for (const layer of this.layers) out = layer.forward(out);
+      for (let index = 0; index < this.layers.length; index += 1) {
+        const layer = this.layers[index];
+        const nextLayer = this.layers[index + 1];
+        if (nextLayer) {
+          const fused = tryNativeEagerLinearActivation(out, layer, nextLayer);
+          if (fused !== null) {
+            out = fused;
+            index += 1;
+            continue;
+          }
+        }
+        out = layer.forward(out);
+      }
       return out;
     }
 

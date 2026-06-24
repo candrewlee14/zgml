@@ -997,6 +997,10 @@ function nativeEagerLinearInto(output, input, weights, options) {
   return nativeEager.linearInto(output, input, weights, options);
 }
 
+function nativeEagerLinearActivationInto(output, input, weights, options) {
+  return nativeEager.linearActivationInto(output, input, weights, options);
+}
+
 const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   sharedFrontend,
   Tensor,
@@ -1011,6 +1015,7 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   makeParameter,
   parameterView,
   nativeEagerLinearInto,
+  nativeEagerLinearActivationInto,
   parameterNames,
   parameterInfos,
   parameterInfo,

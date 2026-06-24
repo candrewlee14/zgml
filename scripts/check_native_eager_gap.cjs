@@ -218,6 +218,16 @@ function linearBatchedModel() {
   );
 }
 
+function linearGeluBatchedModel() {
+  return new zgml.nn.Sequential(
+    new zgml.nn.Linear(64, 64, {
+      weights: geluWeights,
+      bias: geluBias,
+    }),
+    new zgml.nn.GELU(),
+  );
+}
+
 const linearWeights = values(64 * 32, 64);
 const linearBias = values(32, 32);
 const linearWeightTensor = zgml.tensor(linearWeights, [64, 32]);
@@ -227,6 +237,7 @@ const geluWeights = values(64 * 64, 32);
 const geluBias = values(64, 64);
 const geluWeightTensor = zgml.tensor(geluWeights, [64, 64]);
 const geluBiasTensor = zgml.tensor(geluBias, [64]);
+const linearGeluModel = linearGeluBatchedModel();
 
 const gapSpecs = Object.freeze([
   Object.freeze({
@@ -257,6 +268,7 @@ const gapSpecs = Object.freeze([
       bias: geluBiasTensor,
       activation: "gelu",
     }),
+    nativeEagerModule: (input) => zgml.noGrad(() => linearGeluModel.forward(input)),
     compiled: () => compiledLazyHandle(
       zgml.lazy.input([128, 64])
         .matmul(zgml.lazy.parameter([64, 64], "w"))
@@ -270,6 +282,7 @@ const gapSpecs = Object.freeze([
     ),
     eagerIterations: 100,
     nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
     tolerance: 1e-4,
     next: "native_eager_fused_matmul_add_gelu_storage_slice",

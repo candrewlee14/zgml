@@ -591,6 +591,7 @@ function checkScripts() {
     "nativeEagerModuleSpeedup",
     "nativeEagerModuleMaxAbsDiff",
     "zgml.noGrad(() => linearModel.forward(input))",
+    "zgml.noGrad(() => linearGeluModel.forward(input))",
     "BENCH_NATIVE_EAGER_MIN_SPEEDUP",
     "preparedExecuteIntoMs",
     "nativeProgramSpeedup",

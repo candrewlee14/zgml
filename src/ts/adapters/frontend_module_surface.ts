@@ -60,6 +60,7 @@ export type AdapterFrontendModuleSurfaceOptions = AdapterModuleCompileHooks & Ad
   makeParameter: LinearModuleOptions["makeParameter"] & EmbeddingModuleOptions["makeParameter"] & Conv2dModuleOptions["makeParameter"] & FeatureNormModuleOptions["makeParameter"];
   parameterView: LinearModuleOptions["parameterView"] & EmbeddingModuleOptions["parameterView"] & Conv2dModuleOptions["parameterView"] & FeatureNormModuleOptions["parameterView"];
   nativeEagerLinearInto?: LinearModuleOptions["nativeEagerLinearInto"];
+  nativeEagerLinearActivationInto?: SequentialModuleOptions["nativeEagerLinearActivationInto"];
   TinyLinearModel: LinearModuleOptions["TinyLinearModel"];
 }>;
 
@@ -241,6 +242,8 @@ export function createAdapterFrontendModuleSurface(options: AdapterFrontendModul
   SequentialModule = options.sharedFrontend.createSequentialModuleClass({
     Tensor: options.Tensor,
     f32: options.f32,
+    isGradEnabled: options.isGradEnabled,
+    nativeEagerLinearActivationInto: options.nativeEagerLinearActivationInto,
     zeroGrad: options.zeroGrad,
     parameterNames: options.parameterNames,
     parameterInfos: options.parameterInfos,

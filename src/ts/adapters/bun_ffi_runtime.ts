@@ -2113,6 +2113,10 @@ function nativeEagerLinearInto(output: Float32Array, input: TensorLike, weights:
   return nativeEager.linearInto(output, input, weights, options);
 }
 
+function nativeEagerLinearActivationInto(output: Float32Array, input: unknown, weights: unknown, options: Record<string, unknown>) {
+  return nativeEager.linearActivationInto(output, input as TensorLike, weights as TensorLike, options);
+}
+
 const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   sharedFrontend,
   Tensor,
@@ -2127,6 +2131,7 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   makeParameter,
   parameterView,
   nativeEagerLinearInto,
+  nativeEagerLinearActivationInto,
   parameterNames,
   parameterInfos,
   parameterInfo,

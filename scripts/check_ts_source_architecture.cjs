@@ -561,6 +561,9 @@ function checkPackageExports(errors) {
     "nativeEagerModuleSpeedup",
     "nativeEagerModuleMaxAbsDiff",
     "zgml.noGrad(() => linearModel.forward(input))",
+    "function linearGeluBatchedModel()",
+    "const linearGeluModel = linearGeluBatchedModel();",
+    "zgml.noGrad(() => linearGeluModel.forward(input))",
     "BENCH_NATIVE_EAGER_MIN_SPEEDUP",
     "preparedExecuteIntoMs",
     "nativeProgramSpeedup",
@@ -613,6 +616,21 @@ function checkPackageExports(errors) {
   if (!frontendModuleSurfaceSource.includes("nativeEagerLinearInto?: LinearModuleOptions[\"nativeEagerLinearInto\"]")) {
     errors.push("src/ts/adapters/frontend_module_surface.ts must pass the native eager Linear hook through the module surface");
   }
+  if (!frontendModuleSurfaceSource.includes("nativeEagerLinearActivationInto?: SequentialModuleOptions[\"nativeEagerLinearActivationInto\"]")) {
+    errors.push("src/ts/adapters/frontend_module_surface.ts must pass the native eager Linear+activation hook through the Sequential module surface");
+  }
+  const sequentialModuleSource = readSource(path.join("src", "ts", "nn", "sequential_module.ts"));
+  for (const required of [
+    "nativeEagerLinearActivationInto?: NativeEagerLinearActivationInto",
+    "function sequentialActivationKind(layer: SequentialLayer)",
+    "function tryNativeEagerLinearActivation(input: unknown, linear: SequentialLayer, activationLayer: SequentialLayer)",
+    "nativeEagerLinearActivationInto!(output, tensor, linear.weightParam.tensor",
+    "if (fused !== null) {",
+  ]) {
+    if (!sequentialModuleSource.includes(required)) {
+      errors.push(`src/ts/nn/sequential_module.ts must keep no-grad native eager Sequential Linear+activation evidence: ${required}`);
+    }
+  }
   const packageSmokeCoreSource = readSource(path.join("src", "ts", "smokes", "package_smoke_core.ts"));
   for (const required of [
     "function expectNativeEagerLinearEvidence",
@@ -623,6 +641,9 @@ function checkPackageExports(errors) {
     "nativeEager.linearActivationInto(geluOutput, input, weights, { bias, activation: \"gelu\" })",
     "nativeEagerAlias.linear_activation_into(geluAliasOutput, input, weights, { bias, activation: \"gelu\" })",
     "adapter.noGrad(() => linear.forward(input))",
+    "new adapter.nn.Sequential(",
+    "new adapter.nn.GELU()",
+    "adapter.noGrad(() => fusedSequential.forward(input))",
     "expectNativeEagerLinearEvidence(adapter, label);",
   ]) {
     if (!packageSmokeCoreSource.includes(required)) {
@@ -655,7 +676,9 @@ function checkPackageExports(errors) {
   const bunFfiRuntimeSource = readSource(path.join("src", "ts", "adapters", "bun_ffi_runtime.ts"));
   for (const required of [
     "function nativeEagerLinearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options?: Record<string, unknown>)",
+    "function nativeEagerLinearActivationInto(output: Float32Array, input: unknown, weights: unknown, options: Record<string, unknown>)",
     "nativeEagerLinearInto,",
+    "nativeEagerLinearActivationInto,",
     "export const nativeEager = Object.freeze({",
     "linearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: Record<string, unknown> = {})",
     "check(bunSymbolGroups.nativeEager.eagerLinearF32(",
@@ -3383,7 +3406,7 @@ function checkSequentialProgramCompileSurfaceIsShared(errors) {
   if (
     !sharedFrontendSource.includes("type SequentialModuleClassHooks") ||
     !sharedFrontendSource.includes("export type SharedSequentialModuleClassOptions = Readonly<") ||
-    !sharedFrontendSource.includes('SequentialProgramCompileCoreHooksInput & Pick<SequentialModuleClassOptions, "Tensor" | "f32" | "traceSequentialProgram">')
+    !sharedFrontendSource.includes('SequentialProgramCompileCoreHooksInput & Pick<SequentialModuleClassOptions, "Tensor" | "f32" | "traceSequentialProgram" | "nativeEagerLinearActivationInto" | "isGradEnabled">')
   ) {
     errors.push("src/ts/shared_frontend.ts must re-use the authored SequentialModuleClassHooks contract while injecting placement in its wrapper");
   }

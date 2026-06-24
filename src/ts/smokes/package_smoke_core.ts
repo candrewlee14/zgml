@@ -376,6 +376,17 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const eager = linear.forward(input);
   const nativeModule = adapter.noGrad(() => linear.forward(input));
   expectClose(nativeModule.data, eager.data, `${label} noGrad nn.Linear native eager module output`);
+
+  const fusedSequential = new adapter.nn.Sequential(
+    new adapter.nn.Linear(2, 3, {
+      weight: [1, 0, 0.5, 0, 1, -0.5],
+      bias: [0.25, -0.25, 0.5],
+    }),
+    new adapter.nn.GELU(),
+  );
+  const eagerFusedSequential = fusedSequential.forward(input);
+  const nativeFusedSequential = adapter.noGrad(() => fusedSequential.forward(input));
+  expectClose(nativeFusedSequential.data, eagerFusedSequential.data, `${label} noGrad nn.Sequential Linear+GELU native eager module output`);
 }
 
 function expectLossAndAdamWEvidence(adapter: Record<string, any>, label: string) {

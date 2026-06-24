@@ -450,9 +450,11 @@ Current checked progress:
   instead of only proving plain Linear.
   The same microscope reports `nativeEagerModuleForwardMs`,
   `nativeEagerModuleSpeedup`, and `nativeEagerModuleMaxAbsDiff` for
-  `zgml.noGrad(() => linearModel.forward(input))`, proving the ordinary module
-  surface can take the native eager lane without users calling the low-level
-  primitive directly.
+  both `zgml.noGrad(() => linearModel.forward(input))` and
+  `zgml.noGrad(() => linearGeluModel.forward(input))`, proving ordinary
+  `nn.Linear` and adjacent `nn.Sequential(Linear, GELU)` module surfaces can
+  take the native eager lane without users calling the low-level primitive
+  directly.
   These C ABI paths use the same shared native matmul substrate as compiled
   Program execution, then apply bias and optional activation into the
   caller-owned output buffer.

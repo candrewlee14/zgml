@@ -81,6 +81,9 @@ PyTorch replacement:
   `zgml_eager_linear_activation_f32`, so the `lazy_matmul_add_gelu_batched`
   microscope has a caller-owned native eager path for
   `matmul -> add(bias) -> GELU` instead of only a compiled Program baseline.
+  The same fused path is used by eligible no-grad
+  `nn.Sequential(Linear, GELU)` module calls, and the microscope records
+  non-null fused-module `nativeEagerModuleForwardMs` rows on Node and Bun.
 - Safetensors/model-source interop is strong for runtime paths, while ordinary
   TS module weights now have explicit state-dict/checkpoint save/load recipes;
   broader third-party weight-format adapters remain future work.
