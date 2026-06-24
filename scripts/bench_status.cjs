@@ -634,11 +634,14 @@ function frontierNextTargetLine(path, pressurePath = path) {
   try {
     const data = readJson(path);
     let pressureData = data;
+    let hasFreshPressure = false;
     if (pressurePath && pressurePath !== path) {
       try {
         pressureData = readJson(pressurePath);
+        hasFreshPressure = true;
       } catch {
         pressureData = data;
+        hasFreshPressure = false;
       }
     }
     const next = typeof data?.next === "string" ? data.next : "unknown";
@@ -675,7 +678,10 @@ function frontierNextTargetLine(path, pressurePath = path) {
       data?.smollmPrompt?.targetRowSerialDotOpsPerTileGroup ??
       pressureData?.smollmPrompt?.targetRowSerialDotOpsPerTileGroup ??
       "n/a";
-    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}:target_tiles=smollm:${smollmTargetTileGroups},full:${fullTargetTileGroups}:candidate_tiles=smollm:${smollmCandidateTileGroups},full:${fullCandidateTileGroups}:target_serial_per_tile=smollm:${smollmTargetSerialPerTile},full:${fullTargetSerialPerTile}`;
+    const fresh = hasFreshPressure
+      ? `:fresh=source:${typeof pressureData?.source?.label === "string" ? pressureData.source.label : "unknown"},vs_default=smollm:${formatRatio(pressureData?.smollmPrompt?.throughputCandidateVsDefault)},full:${formatRatio(pressureData?.fullPrefill?.throughputCandidateVsDefault)}`
+      : "";
+    return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}:target_tiles=smollm:${smollmTargetTileGroups},full:${fullTargetTileGroups}:candidate_tiles=smollm:${smollmCandidateTileGroups},full:${fullCandidateTileGroups}:target_serial_per_tile=smollm:${smollmTargetSerialPerTile},full:${fullTargetSerialPerTile}${fresh}`;
   } catch {
     return "frontier=unreadable_artifact";
   }
