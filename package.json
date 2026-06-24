@@ -329,6 +329,8 @@
     "dev:perf:frontier:qsemantic:full:raw:run": "BENCH_FRONTIER_FILTER=\"qsemantic full-prefill\" ./zig-out/bin/bench-frontier",
     "dev:perf:frontier:qsemantic:target:raw": "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=target BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier",
     "dev:perf:frontier:qsemantic:target:raw:run": "BENCH_QSEMANTIC_VARIANTS=target BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier",
+    "dev:perf:frontier:qsemantic:throughput:raw": "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier",
+    "dev:perf:frontier:qsemantic:throughput:raw:run": "BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier",
     "dev:perf:frontier:qsemantic:smollm:raw": "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_FILTER=\"qsemantic smollm-prompt\" ./zig-out/bin/bench-frontier",
     "dev:perf:frontier:qsemantic:smollm:raw:run": "BENCH_FRONTIER_FILTER=\"qsemantic smollm-prompt\" ./zig-out/bin/bench-frontier",
     "bench:frontier:qsemantic": "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs",

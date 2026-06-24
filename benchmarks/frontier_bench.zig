@@ -1468,6 +1468,11 @@ fn benchSemanticSublayerMetalCase(
         !variant_filter.enabled("two_phase") and
         !variant_filter.enabled("single_dispatch") and
         !variant_filter.enabled("throughput_candidate");
+    const throughput_only = variant_filter.enabled("throughput_candidate") and
+        !variant_filter.enabled("command") and
+        !variant_filter.enabled("two_phase") and
+        !variant_filter.enabled("single_dispatch") and
+        !variant_filter.enabled("target");
     const staged_stats = measure(io, &staged_bench);
     const approx_work = 2.0 * @as(f64, @floatFromInt(case.m * case.n * (case.k * 2 + case.n)));
 
@@ -1488,6 +1493,22 @@ fn benchSemanticSublayerMetalCase(
         const target_profile_name = try std.fmt.bufPrint(&target_profile_name_buf, "{s} semantic target dispatch_profile", .{case.name});
         try printCommandShape(w, target_profile_name, target_commands);
         try printSemanticSublayerRuntimeProfile(w, target_profile_name, be, target_handle, &target_output_io);
+        return;
+    }
+    if (throughput_only) {
+        const throughput_stats = measure(io, &throughput_bench);
+        var throughput_name_buf: [160]u8 = undefined;
+        const throughput_name = try std.fmt.bufPrint(&throughput_name_buf, "{s} semantic throughput_candidate", .{case.name});
+        try printStats(w, throughput_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", throughput_stats);
+        var throughput_ratio_name_buf: [160]u8 = undefined;
+        const throughput_ratio_name = try std.fmt.bufPrint(&throughput_ratio_name_buf, "{s} semantic throughput_candidate", .{case.name});
+        try printRatio(w, throughput_ratio_name, staged_stats, throughput_stats, throughput_max_abs_diff);
+        const throughput_commands = try program_mod.buildProgramCommands(alloc, &ops, throughput_policy);
+        defer alloc.free(throughput_commands);
+        var throughput_profile_name_buf: [176]u8 = undefined;
+        const throughput_profile_name = try std.fmt.bufPrint(&throughput_profile_name_buf, "{s} semantic throughput_candidate dispatch_profile", .{case.name});
+        try printCommandShape(w, throughput_profile_name, throughput_commands);
+        try printSemanticSublayerRuntimeProfile(w, throughput_profile_name, be, throughput_handle, &throughput_output_io);
         return;
     }
 

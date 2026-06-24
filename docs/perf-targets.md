@@ -437,8 +437,11 @@ longer timing windows, or set
 `BENCH_NEXT_PERF_LANE=pytorch|qsemantic|q8_prompt|ggml` to force a lane.
 For qsemantic kernel work, `BENCH_QSEMANTIC_VARIANTS=target` limits the raw
 frontier harness to the staged baseline plus the one-dispatch semantic target,
-and `npm run dev:perf:frontier:qsemantic:target:raw{,:run}` wraps that faster
-loop.
+while `BENCH_QSEMANTIC_VARIANTS=throughput_candidate` limits it to the staged
+baseline plus the mixed tiled-tail throughput candidate. Use
+`npm run dev:perf:frontier:qsemantic:target:raw{,:run}` for row-serial target
+diagnostics and `npm run dev:perf:frontier:qsemantic:throughput:raw{,:run}` for
+the next semantic throughput-kernel loop.
 `bench:ggml` builds the benchmark binaries in ReleaseFast, writes a full
 `bench-results/*.json` artifact, and requires the checked M5 Pro baseline so a
 new local artifact cannot improve a ggml percentage by merely running both

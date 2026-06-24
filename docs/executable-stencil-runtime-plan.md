@@ -765,6 +765,8 @@ npm run dev:perf:frontier:qsemantic:full:raw # incremental raw full-prefill qsem
 npm run dev:perf:frontier:qsemantic:full:raw:run # no-rebuild raw full-prefill qsemantic microscope
 npm run dev:perf:frontier:qsemantic:target:raw # incremental target-only qsemantic kernel microscope
 npm run dev:perf:frontier:qsemantic:target:raw:run # no-rebuild target-only qsemantic kernel microscope
+npm run dev:perf:frontier:qsemantic:throughput:raw # incremental throughput-candidate-only qsemantic kernel microscope
+npm run dev:perf:frontier:qsemantic:throughput:raw:run # no-rebuild throughput-candidate-only qsemantic kernel microscope
 npm run dev:perf:frontier:qsemantic:smollm:raw # incremental raw SmolLM qsemantic microscope
 npm run dev:perf:frontier:qsemantic:smollm:raw:run # no-rebuild raw SmolLM qsemantic microscope
 npm run bench:frontier:row-chain       # rebuild ReleaseFast and run only row-chain frontier labels
@@ -1362,9 +1364,12 @@ dev:perf:competitive` for the full-model Q8 prompt lane, or the matching
 `:run` commands after artifacts are already fresh. That keeps the daily
 competitiveness loop explicit without forcing every local qsemantic edit to pay
 the PyTorch, full-model Q8, and llama.cpp smoke cost.
-For tight semantic target kernel work, the raw target-only scripts set
-`BENCH_QSEMANTIC_VARIANTS=target` so the frontier harness times only the staged
-baseline and one-dispatch semantic target.
+For tight semantic kernel work, the raw variant scripts set
+`BENCH_QSEMANTIC_VARIANTS=target` or
+`BENCH_QSEMANTIC_VARIANTS=throughput_candidate` so the frontier harness times
+only the staged baseline plus the selected semantic target. Use target-only for
+one-dispatch row-serial diagnostics and throughput-candidate-only for the mixed
+tiled-tail path that should feed the next Q8 throughput kernel.
 The qsemantic checker writes ignored JSON artifacts under
 `bench-results/frontier/frontier-qsemantic-*.json`, emits a
 `FRONTIER_BENCH_JSON` summary line, and `bench:status` reads the latest artifact
