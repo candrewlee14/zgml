@@ -578,6 +578,9 @@ function scoreFocusedSemantic(output, attempt) {
     : "diagnostic_needs_throughput_kernel";
   const singleDispatchReduced = fullPrefillSingleDispatchRuntimeDispatches < fullPrefillRuntimeDispatches && smollmPromptSingleDispatchRuntimeDispatches < smollmPromptRuntimeDispatches;
   const singleDispatchBlocker = singleDispatchReduced ? "none" : "metal_row_chain_leaf_encoder_declined_semantic_shape";
+  const singleDispatchThroughputStatus = singleDispatchReduced && fullPrefillSingleDispatchSpeedup >= fullPrefillSpeedup && smollmPromptSingleDispatchSpeedup >= smollmPromptSpeedup
+    ? "ready"
+    : "dispatch_reduced_but_throughput_diagnostic";
 
   const failures = [];
   for (const [label, value] of [
@@ -592,23 +595,23 @@ function scoreFocusedSemantic(output, attempt) {
   ]) {
     if (value > projectionRowChainMaxAbsDiffCeil) failures.push(`${label} max_abs_diff ${value.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   }
-  if (fullPrefillShapeCommands !== 2 || fullPrefillShapeRowChains !== 1 || fullPrefillShapeCoveredOps !== 9 || fullPrefillShapeSavedDispatches !== 7 || fullPrefillRuntimeDispatches !== 3 || fullPrefillRuntimeRowChainDispatches !== 0 || fullPrefillRuntimeRowChainAttempts !== 0 || fullPrefillRuntimeRowChainRefused !== 0 || fullPrefillRuntimeRowChainTiled !== 0 || fullPrefillTargetDispatches !== 1) {
-    failures.push("semantic full-prefill profile must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 shape_saved_dispatches=7 runtime_backend_dispatches=3 runtime_projection_row_chain_dispatches=0 runtime_projection_row_chain_attempts=0 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=0 semantic_target_dispatches=1");
+  if (fullPrefillShapeCommands !== 2 || fullPrefillShapeRowChains !== 1 || fullPrefillShapeCoveredOps !== 9 || fullPrefillShapeSavedDispatches !== 7 || fullPrefillRuntimeDispatches !== 3 || fullPrefillRuntimeRowChainDispatches !== 2 || fullPrefillRuntimeRowChainAttempts !== 1 || fullPrefillRuntimeRowChainRefused !== 0 || fullPrefillRuntimeRowChainTiled !== 0 || fullPrefillTargetDispatches !== 1) {
+    failures.push("semantic full-prefill profile must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 shape_saved_dispatches=7 runtime_backend_dispatches=3 runtime_projection_row_chain_dispatches=2 runtime_projection_row_chain_attempts=1 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=0 semantic_target_dispatches=1");
   }
   if (fullPrefillTargetShapeCommands !== 1 || fullPrefillTargetShapeSemantic !== 1 || fullPrefillTargetShapeCoveredOps !== 9 || fullPrefillTargetShapeSavedDispatches !== 8 || fullPrefillTargetRuntimeDispatches !== 1) {
     failures.push("semantic full-prefill target profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=1");
   }
-  if (fullPrefillSingleDispatchShapeCommands !== 2 || fullPrefillSingleDispatchShapeRowChains !== 1 || fullPrefillSingleDispatchShapeCoveredOps !== 9 || fullPrefillSingleDispatchRuntimeDispatches !== 3 || fullPrefillSingleDispatchRuntimeRowChainDispatches !== 0 || fullPrefillSingleDispatchRuntimeRowChainAttempts !== 0 || fullPrefillSingleDispatchRuntimeRowChainRefused !== 0 || fullPrefillSingleDispatchRuntimeRowChainTiled !== 0) {
-    failures.push("semantic full-prefill single-dispatch row-chain diagnostic must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 runtime_backend_dispatches=3 runtime_projection_row_chain_dispatches=0 runtime_projection_row_chain_attempts=0 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=0 until it genuinely reduces dispatches");
+  if (fullPrefillSingleDispatchShapeCommands !== 2 || fullPrefillSingleDispatchShapeRowChains !== 1 || fullPrefillSingleDispatchShapeCoveredOps !== 9 || fullPrefillSingleDispatchRuntimeDispatches !== 2 || fullPrefillSingleDispatchRuntimeRowChainDispatches !== 1 || fullPrefillSingleDispatchRuntimeRowChainAttempts !== 1 || fullPrefillSingleDispatchRuntimeRowChainRefused !== 0 || fullPrefillSingleDispatchRuntimeRowChainTiled !== 1) {
+    failures.push("semantic full-prefill single-dispatch row-chain diagnostic must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 runtime_backend_dispatches=2 runtime_projection_row_chain_dispatches=1 runtime_projection_row_chain_attempts=1 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=1 until throughput is ready");
   }
-  if (smollmPromptShapeCommands !== 2 || smollmPromptShapeRowChains !== 1 || smollmPromptShapeCoveredOps !== 9 || smollmPromptShapeSavedDispatches !== 7 || smollmPromptRuntimeDispatches !== 3 || smollmPromptRuntimeRowChainDispatches !== 0 || smollmPromptRuntimeRowChainAttempts !== 0 || smollmPromptRuntimeRowChainRefused !== 0 || smollmPromptRuntimeRowChainTiled !== 0 || smollmPromptTargetDispatches !== 1) {
-    failures.push("semantic smollm-prompt profile must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 shape_saved_dispatches=7 runtime_backend_dispatches=3 runtime_projection_row_chain_dispatches=0 runtime_projection_row_chain_attempts=0 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=0 semantic_target_dispatches=1");
+  if (smollmPromptShapeCommands !== 2 || smollmPromptShapeRowChains !== 1 || smollmPromptShapeCoveredOps !== 9 || smollmPromptShapeSavedDispatches !== 7 || smollmPromptRuntimeDispatches !== 3 || smollmPromptRuntimeRowChainDispatches !== 2 || smollmPromptRuntimeRowChainAttempts !== 1 || smollmPromptRuntimeRowChainRefused !== 0 || smollmPromptRuntimeRowChainTiled !== 0 || smollmPromptTargetDispatches !== 1) {
+    failures.push("semantic smollm-prompt profile must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 shape_saved_dispatches=7 runtime_backend_dispatches=3 runtime_projection_row_chain_dispatches=2 runtime_projection_row_chain_attempts=1 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=0 semantic_target_dispatches=1");
   }
   if (smollmPromptTargetShapeCommands !== 1 || smollmPromptTargetShapeSemantic !== 1 || smollmPromptTargetShapeCoveredOps !== 9 || smollmPromptTargetShapeSavedDispatches !== 8 || smollmPromptTargetRuntimeDispatches !== 1) {
     failures.push("semantic smollm-prompt target profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=1");
   }
-  if (smollmPromptSingleDispatchShapeCommands !== 2 || smollmPromptSingleDispatchShapeRowChains !== 1 || smollmPromptSingleDispatchShapeCoveredOps !== 9 || smollmPromptSingleDispatchRuntimeDispatches !== 3 || smollmPromptSingleDispatchRuntimeRowChainDispatches !== 0 || smollmPromptSingleDispatchRuntimeRowChainAttempts !== 0 || smollmPromptSingleDispatchRuntimeRowChainRefused !== 0 || smollmPromptSingleDispatchRuntimeRowChainTiled !== 0) {
-    failures.push("semantic smollm-prompt single-dispatch row-chain diagnostic must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 runtime_backend_dispatches=3 runtime_projection_row_chain_dispatches=0 runtime_projection_row_chain_attempts=0 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=0 until it genuinely reduces dispatches");
+  if (smollmPromptSingleDispatchShapeCommands !== 2 || smollmPromptSingleDispatchShapeRowChains !== 1 || smollmPromptSingleDispatchShapeCoveredOps !== 9 || smollmPromptSingleDispatchRuntimeDispatches !== 2 || smollmPromptSingleDispatchRuntimeRowChainDispatches !== 1 || smollmPromptSingleDispatchRuntimeRowChainAttempts !== 1 || smollmPromptSingleDispatchRuntimeRowChainRefused !== 0 || smollmPromptSingleDispatchRuntimeRowChainTiled !== 1) {
+    failures.push("semantic smollm-prompt single-dispatch row-chain diagnostic must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 runtime_backend_dispatches=2 runtime_projection_row_chain_dispatches=1 runtime_projection_row_chain_attempts=1 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=1 until throughput is ready");
   }
 
   const line = [
@@ -617,6 +620,7 @@ function scoreFocusedSemantic(output, attempt) {
     `target_throughput_status=${targetThroughputStatus}`,
     `single_dispatch_row_chain_dispatch_reduced=${singleDispatchReduced ? "yes" : "no"}`,
     `single_dispatch_row_chain_blocker=${singleDispatchBlocker}`,
+    `single_dispatch_throughput_status=${singleDispatchThroughputStatus}`,
     `full_prefill=${fullPrefillSpeedup.toFixed(2)}x max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} shape_commands=${fullPrefillShapeCommands} shape_covered_ops=${fullPrefillShapeCoveredOps} runtime_backend_dispatches=${fullPrefillRuntimeDispatches} runtime_projection_row_chain_dispatches=${fullPrefillRuntimeRowChainDispatches} runtime_projection_row_chain_attempts=${fullPrefillRuntimeRowChainAttempts} runtime_projection_row_chain_refused=${fullPrefillRuntimeRowChainRefused} qmatmul_row_chain_tiled_count=${fullPrefillRuntimeRowChainTiled} semantic_target_dispatches=${fullPrefillTargetDispatches} target_speedup=${fullPrefillTargetSpeedup.toFixed(2)}x target_max_abs_diff=${fullPrefillTargetMaxAbsDiff.toFixed(6)} target_shape_commands=${fullPrefillTargetShapeCommands} target_semantic_ffn_sublayers=${fullPrefillTargetShapeSemantic} target_runtime_backend_dispatches=${fullPrefillTargetRuntimeDispatches}`,
     `full_prefill_two_phase=${fullPrefillTwoPhaseSpeedup.toFixed(2)}x max_abs_diff=${fullPrefillTwoPhaseMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillTwoPhaseRuntimeDispatches} qmatmul_row_chain_tiled_count=${fullPrefillTwoPhaseRuntimeRowChainTiled} qmatmul_row_chain_tiled_two_phase_count=${fullPrefillTwoPhaseRuntimeRowChainTwoPhase}`,
     `full_prefill_single_dispatch=${fullPrefillSingleDispatchSpeedup.toFixed(2)}x max_abs_diff=${fullPrefillSingleDispatchMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillSingleDispatchRuntimeDispatches} runtime_projection_row_chain_dispatches=${fullPrefillSingleDispatchRuntimeRowChainDispatches} runtime_projection_row_chain_attempts=${fullPrefillSingleDispatchRuntimeRowChainAttempts} runtime_projection_row_chain_refused=${fullPrefillSingleDispatchRuntimeRowChainRefused} qmatmul_row_chain_tiled_count=${fullPrefillSingleDispatchRuntimeRowChainTiled}`,
@@ -662,6 +666,7 @@ function scoreFocusedSemantic(output, attempt) {
     fullPrefillSingleDispatchRuntimeRowChainAttempts,
     fullPrefillSingleDispatchRuntimeRowChainRefused,
     fullPrefillSingleDispatchRuntimeRowChainTiled,
+    singleDispatchThroughputStatus,
     smollmPromptSpeedup,
     smollmPromptMaxAbsDiff,
     smollmPromptShapeCommands,
@@ -757,8 +762,8 @@ function runFocusedSemanticGate() {
     ["fullPrefillShapeCoveredOps", 9],
     ["fullPrefillShapeSavedDispatches", 7],
     ["fullPrefillRuntimeDispatches", 3],
-    ["fullPrefillRuntimeRowChainDispatches", 0],
-    ["fullPrefillRuntimeRowChainAttempts", 0],
+    ["fullPrefillRuntimeRowChainDispatches", 2],
+    ["fullPrefillRuntimeRowChainAttempts", 1],
     ["fullPrefillRuntimeRowChainRefused", 0],
     ["fullPrefillRuntimeRowChainTiled", 0],
     ["fullPrefillTargetDispatches", 1],
@@ -774,11 +779,11 @@ function runFocusedSemanticGate() {
     ["fullPrefillSingleDispatchShapeCommands", 2],
     ["fullPrefillSingleDispatchShapeRowChains", 1],
     ["fullPrefillSingleDispatchShapeCoveredOps", 9],
-    ["fullPrefillSingleDispatchRuntimeDispatches", 3],
-    ["fullPrefillSingleDispatchRuntimeRowChainDispatches", 0],
-    ["fullPrefillSingleDispatchRuntimeRowChainAttempts", 0],
+    ["fullPrefillSingleDispatchRuntimeDispatches", 2],
+    ["fullPrefillSingleDispatchRuntimeRowChainDispatches", 1],
+    ["fullPrefillSingleDispatchRuntimeRowChainAttempts", 1],
     ["fullPrefillSingleDispatchRuntimeRowChainRefused", 0],
-    ["fullPrefillSingleDispatchRuntimeRowChainTiled", 0],
+    ["fullPrefillSingleDispatchRuntimeRowChainTiled", 1],
   ])) aggregate.push("semantic full-prefill single-dispatch row-chain diagnostic did not match in any attempt");
   if (!anyEquals(attempts, [
     ["smollmPromptShapeCommands", 2],
@@ -786,8 +791,8 @@ function runFocusedSemanticGate() {
     ["smollmPromptShapeCoveredOps", 9],
     ["smollmPromptShapeSavedDispatches", 7],
     ["smollmPromptRuntimeDispatches", 3],
-    ["smollmPromptRuntimeRowChainDispatches", 0],
-    ["smollmPromptRuntimeRowChainAttempts", 0],
+    ["smollmPromptRuntimeRowChainDispatches", 2],
+    ["smollmPromptRuntimeRowChainAttempts", 1],
     ["smollmPromptRuntimeRowChainRefused", 0],
     ["smollmPromptRuntimeRowChainTiled", 0],
     ["smollmPromptTargetDispatches", 1],
@@ -803,11 +808,11 @@ function runFocusedSemanticGate() {
     ["smollmPromptSingleDispatchShapeCommands", 2],
     ["smollmPromptSingleDispatchShapeRowChains", 1],
     ["smollmPromptSingleDispatchShapeCoveredOps", 9],
-    ["smollmPromptSingleDispatchRuntimeDispatches", 3],
-    ["smollmPromptSingleDispatchRuntimeRowChainDispatches", 0],
-    ["smollmPromptSingleDispatchRuntimeRowChainAttempts", 0],
+    ["smollmPromptSingleDispatchRuntimeDispatches", 2],
+    ["smollmPromptSingleDispatchRuntimeRowChainDispatches", 1],
+    ["smollmPromptSingleDispatchRuntimeRowChainAttempts", 1],
     ["smollmPromptSingleDispatchRuntimeRowChainRefused", 0],
-    ["smollmPromptSingleDispatchRuntimeRowChainTiled", 0],
+    ["smollmPromptSingleDispatchRuntimeRowChainTiled", 1],
   ])) aggregate.push("semantic smollm-prompt single-dispatch row-chain diagnostic did not match in any attempt");
 
   const line = aggregate.length === 0 ? best.line.replace("frontier qsemantic gate: fail", "frontier qsemantic gate: pass") : best.line;

@@ -886,18 +886,20 @@ one-dispatch semantic target is structurally correct but slower than the
 current throughput path, so dispatch-count evidence cannot be mistaken for a
 throughput promotion signal. The qsemantic microscope now also measures the
 middle policy shape, `semantic pair_row_chain_single_dispatch`: it preserves the
-same two-command semantic shape but still reports
-`single_dispatch_row_chain_dispatch_reduced=no` and
-`single_dispatch_row_chain_blocker=metal_row_chain_leaf_encoder_declined_semantic_shape`
-with `runtime_backend_dispatches=3`. The profile now also prints
-`runtime_projection_row_chain_dispatches=0`,
-`runtime_projection_row_chain_attempts=0`, and
-`qmatmul_row_chain_tiled_count=0` for the pair-row-chain and
-single-dispatch diagnostic lanes, proving that the current semantic runtime is
-not lighting up the tiled row-chain leaf at all. Flipping the existing
-row-chain single-dispatch candidate flag therefore does not create the missing
-two-dispatch semantic throughput path. The next implementation target is
-inside the Metal row-chain/semantic encoder or command-region attribution, not
+same two-command semantic shape and, after whole-command execution was enabled
+for projection row-chain command streams, now reports
+`single_dispatch_row_chain_dispatch_reduced=yes`,
+`single_dispatch_row_chain_blocker=none`, and
+`single_dispatch_throughput_status=dispatch_reduced_but_throughput_diagnostic`.
+The default pair-row-chain path now records the down-projection row-chain command
+as attempted and dispatched (`runtime_projection_row_chain_attempts=1`,
+`runtime_projection_row_chain_dispatches=2`) while keeping
+`runtime_backend_dispatches=3`; the single-dispatch diagnostic lights up the
+tiled leaf (`qmatmul_row_chain_tiled_count=1`) and drops to
+`runtime_backend_dispatches=2`. That is real executable-stencil progress, but
+it is not a default promotion yet because the tiled leaf still loses throughput
+on the SmolLM prompt shape. The next implementation target remains the
+`semantic_ffn_sublayer_throughput_kernel` or a faster tiled row-chain leaf, not
 another command policy toggle.
 Use it when changing projection-pair, row-chain, residual, RMSNorm, or
 semantic-sublayer scheduling, then escalate to `dev:perf:q8-prompt:viable` and

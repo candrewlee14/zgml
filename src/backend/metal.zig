@@ -5698,7 +5698,7 @@ const CompiledProgram = struct {
     }
 
     fn executeScheduled(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView) void {
-        if (self.tryEncodeWholeSemanticProgram(exec, view)) return;
+        if (self.tryEncodeWholeCommandProgram(exec, view)) return;
 
         if (self.backend.region_program_dispatch and self.plan.regions.len > 0) {
             self.executeRegionScheduled(exec, view);
@@ -5710,8 +5710,9 @@ const CompiledProgram = struct {
         }
     }
 
-    fn tryEncodeWholeSemanticProgram(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView) bool {
-        if (self.program_stencil.kernel_plan.command_shape.semantic_ffn_sublayers == 0) return false;
+    fn tryEncodeWholeCommandProgram(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView) bool {
+        const shape = self.program_stencil.kernel_plan.command_shape;
+        if (shape.semantic_ffn_sublayers == 0 and shape.projection_row_chains == 0) return false;
         const commands = self.program_stencil.kernel_plan.commands;
         if (commands.len == 0) return false;
         return self.tryEncodeRegionGpuCommands(exec, view, view.program_stencil.ops, commands);
