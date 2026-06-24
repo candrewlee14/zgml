@@ -939,6 +939,21 @@ It also reports the tiled work shape the real throughput kernel must expose:
 full-prefill has `target_semantic_tile_parallel_groups=192` and SmolLM prompt
 has `target_semantic_tile_parallel_groups=216`, corresponding to four row
 groups and 16/18 hidden-output tiles at the 32-wide tile shape.
+The qsemantic microscope now separates the semantic command surface from the
+one-dispatch diagnostic kernel. The `semantic throughput_candidate` lane keeps
+`shape_commands=1`, `shape_semantic_ffn_sublayers=1`,
+`shape_covered_ops=9`, and `shape_saved_dispatches=8`, but deliberately lowers
+through the current parallel pieces, so it reports
+`runtime_backend_dispatches=3`, `runtime_semantic_ffn_dispatches=3`, and
+`semantic_ffn_sublayer_count=0` instead of using the row-serial semantic
+kernel. The gate prints
+`throughput_candidate_status=preserves_default_work_shape` and
+`throughput_candidate_vs_default=full_prefill:...x,smollm_prompt:...x` when the
+one-command semantic lowering keeps the current default work shape; the numeric
+ratio stays visible because one qsemantic attempt can be noisy.
+This is the useful near-term architecture: one semantic library command can
+preserve the faster work decomposition until the true tiled semantic kernel
+exists.
 The next implementation target remains the
 `semantic_ffn_sublayer_throughput_kernel` or a faster tiled row-chain leaf, not
 another command policy toggle.

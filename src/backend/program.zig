@@ -1300,6 +1300,7 @@ pub const CommandStreamPolicy = struct {
     fuse_projection_row_chain_qmatvec: bool = false,
     fuse_projection_row_chain_single_dispatch: bool = false,
     fuse_projection_row_chain_two_phase_candidate: bool = false,
+    fuse_semantic_ffn_sublayer_single_dispatch: bool = true,
     fuse_dense_projection_row_chain: bool = false,
     min_projection_row_chain_rows: u32 = 8,
 
@@ -1323,6 +1324,12 @@ pub const CommandStreamPolicy = struct {
     pub fn promptSemanticFfnSublayerTarget() CommandStreamPolicy {
         var policy = CommandStreamPolicy.promptProjectionRowChainCommand();
         policy.fuse_semantic_ffn_sublayer = true;
+        return policy;
+    }
+
+    pub fn promptSemanticFfnSublayerThroughputCandidate() CommandStreamPolicy {
+        var policy = CommandStreamPolicy.promptSemanticFfnSublayerTarget();
+        policy.fuse_semantic_ffn_sublayer_single_dispatch = false;
         return policy;
     }
 

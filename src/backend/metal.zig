@@ -9108,7 +9108,8 @@ const CompiledProgram = struct {
         const rp = deviceOpAt(.repeat, ops, start + 7) orelse return false;
         const out = deviceOpAt(.elementwise, ops, start + 8) orelse return false;
 
-        if (self.encodeSemanticFfnSublayerSingleDispatch(exec, view, gate, first, up, product, down, residual, rn, rp, out)) return true;
+        if (self.command_policy.fuse_semantic_ffn_sublayer_single_dispatch and
+            self.encodeSemanticFfnSublayerSingleDispatch(exec, view, gate, first, up, product, down, residual, rn, rp, out)) return true;
 
         if (!program_mod.projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) return false;
         const steps = [_]backend_mod.FusedEwStep{.{ .op = first.op, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 }};
