@@ -18,6 +18,7 @@ const baselineArtifacts = [
   "benchmarks/baselines/smollm-stencil-p128.json",
 ];
 const fullRunArtifactPattern = /^smollm-\d{8}T\d{6}Z(?:-\d+)?-p128-g200-r3\.json$/;
+const pytorchArtifactPattern = /^pytorch-\d{8}T\d{6}Z-\d+\.json$/;
 
 function latestFullRunArtifact() {
   const artifacts = fullRunArtifacts();
@@ -64,6 +65,31 @@ function quarantinedFullRunArtifacts() {
     .map((name) => join(dir, name));
 }
 
+function pytorchComparisonArtifacts() {
+  const dir = join("bench-results", "pytorch");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => pytorchArtifactPattern.test(name))
+    .sort()
+    .map((name) => join(dir, name))
+    .filter((path) => {
+      try {
+        const data = readJson(path);
+        return data?.schema === "zgml.pytorch-comparison.v1" &&
+          data?.config &&
+          data?.worst &&
+          data?.ratioStats &&
+          Array.isArray(data?.config?.activeComparisonKeys);
+      } catch {
+        return false;
+      }
+    });
+}
+
+function latestPytorchComparisonArtifact() {
+  return pytorchComparisonArtifacts().at(-1) ?? null;
+}
+
 const trendMetrics = [
   ["F16 pp", "prompt", "zgml_f16", "metal scheduled prefill", "prompt_tok_s"],
   ["F16 tg", "decode", "zgml_f16", "metal region decode", "decode_tok_s"],
@@ -86,6 +112,10 @@ function formatPct(value) {
 
 function formatMultiplier(value) {
   return `${value.toFixed(1)}x`;
+}
+
+function formatRatio(value) {
+  return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(2)}x` : "n/a";
 }
 
 function trendEvidence(latestPath) {
@@ -123,6 +153,31 @@ function trendEvidence(latestPath) {
     });
   }
   return { latestPath, runs, rows };
+}
+
+function pytorchComparisonStatusLine(path) {
+  if (!path) {
+    return "pytorch-results: no local PyTorch comparison artifact found; run npm run bench:pytorch for CPU parity evidence";
+  }
+  let data;
+  try {
+    data = readJson(path);
+  } catch {
+    return `pytorch-results: latest=${compactName(path)} unreadable`;
+  }
+  const keys = Array.isArray(data?.config?.activeComparisonKeys) ? data.config.activeComparisonKeys.join(",") : "unknown";
+  const medians = data?.ratioStats && typeof data.ratioStats === "object"
+    ? Object.entries(data.ratioStats).map(([key, stats]) => `${key}:${formatRatio(stats?.median)}`).join(",")
+    : "missing";
+  const status = data?.comparisonReady === true ? "pass" : "miss";
+  const medianStatus = data?.medianParityReady === true ? "pass" : "miss";
+  const worst = data?.worst?.key ? `${data.worst.key}:${formatRatio(data.worst.ratio)}` : "missing";
+  const native = typeof data?.native?.label === "string" ? data.native.label : "unknown";
+  const torch = typeof data?.pytorchVersion === "string" ? data.pytorchVersion : "unknown";
+  const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
+  const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
+  const timing = typeof data?.config?.zgmlTimingMetric === "string" ? data.config.zgmlTimingMetric : "unknown";
+  return `pytorch-results: latest=${compactName(path)} status=${status} median=${medianStatus} worst=${worst} attempt=${selectedAttempt}/${attempts} native=${native} torch=${torch} timing=${timing} keys=${keys} ratio_median=${medians}`;
 }
 
 function trendStatusLine(latestPath) {
@@ -645,6 +700,7 @@ const result = spawnSync("python3", ["scripts/verify_bench_artifact.py", "--stat
 
 if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);
+process.stdout.write(`${pytorchComparisonStatusLine(latestPytorchComparisonArtifact())}\n`);
 const quarantined = quarantinedFullRunArtifacts();
 if (quarantined.length > 0) {
   process.stdout.write(`bench-results: ${quarantined.length} quarantined p128/g200/r3 artifact(s) ignored for accepted evidence; latest_failed=${compactName(quarantined.at(-1))}\n`);

@@ -557,7 +557,12 @@ attempt, native freshness, parity status, and worst ratio. Set
 keeps PyTorch competitiveness evidence closer to the ggml artifact model:
 checked claims should have preserved keys, attempts, medians, timing windows,
 Torch version, machine metadata, and native freshness, not just a console line
-or a dated sentence in this plan.
+or a dated sentence in this plan. `bench:status` reads the latest matching
+PyTorch comparison artifact back out as a `pytorch-results:` line with status,
+median status, worst ratio, selected attempt, native freshness, Torch version,
+timing metric, active keys, and ratio medians, so PyTorch evidence is now both
+written and discoverable through the normal source-checkout benchmark status
+surface.
 The PyTorch comparison microscope also accepts exploratory lanes such as
 `rms_gelu_linear_batched`, `softmax_classifier_batched`,
 `log_softmax_classifier_batched`, and `lazy_token_head_batched`, so optimization
