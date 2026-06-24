@@ -730,9 +730,13 @@ function checkScripts() {
     "frontier qsemantic gate:",
     "semantic_target_dispatches",
     "runtime_backend_dispatches",
+    "target_shape_commands",
+    "target_semantic_ffn_sublayers",
     "next=semantic_ffn_sublayer_kernel",
     "semantic full-prefill profile must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 shape_saved_dispatches=7 runtime_backend_dispatches=3 semantic_target_dispatches=1",
+    "semantic full-prefill target profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8",
     "semantic smollm-prompt profile must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 shape_saved_dispatches=7 runtime_backend_dispatches=3 semantic_target_dispatches=1",
+    "semantic smollm-prompt target profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8",
   ]);
   requireIncludes(read("benchmarks/frontier_bench.zig"), "benchmarks/frontier_bench.zig", "frontier benchmark must keep row-chain microscope filtering", [
     "BENCH_FRONTIER_FILTER",
@@ -744,9 +748,23 @@ function checkScripts() {
     "benchSemanticSublayerMetalCase",
     "printSemanticSublayerRuntimeProfile",
     "semantic_target_dispatches=1",
+    "promptSemanticFfnSublayerTarget",
+    "semantic target dispatch_profile",
     "qsemantic full-prefill",
     "qsemantic smollm-prompt",
     "semantic pair_row_chain",
+  ]);
+  requireIncludes(read("src/backend/program.zig"), "src/backend/program.zig", "semantic FFN sublayer target command shape", [
+    "semantic_ffn_sublayer",
+    "fuse_semantic_ffn_sublayer",
+    "promptSemanticFfnSublayerTarget",
+    "findSemanticFfnSublayerCommand",
+    "projectionPairSingleElementwiseChainCompatible(gate, first, up, product)",
+    "program command stream recognizes semantic FFN sublayer target",
+    "shape.semantic_ffn_sublayers",
+  ]);
+  requireIncludes(read("src/profile.zig"), "src/profile.zig", "semantic FFN sublayer profile evidence", [
+    "program_command_shape_semantic_ffn_sublayers",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "scalar qmatmul row-chain diagnosis until tiled replacement exists", [
     "if (q.M != 1) {",
@@ -760,6 +778,7 @@ function checkScripts() {
     ".qmatmul_row_chain_tiled_finalize_f32, &finalize_buffers, params, 4, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE }, MATMUL_THREADS",
     "self.command_policy.fuse_projection_row_chain_single_dispatch",
     "self.command_policy.fuse_projection_row_chain_two_phase_candidate",
+    ".semantic_ffn_sublayer => false",
     "const write_primary = projectionRowChainPrimaryHasExternalUsers(ops, command);",
     "if (!self.encodeQMatmulElementwise(exec, view, q, e, write_primary)) return false;",
     "return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, projectionRowChainScaleHasExternalUsers(ops, command));",
@@ -5546,7 +5565,11 @@ function checkDocs() {
     "dev:perf:frontier:qsemantic",
     "semantic FFN sublayer kernel",
     "`semantic_ffn_sublayer_kernel`",
-    "the current runtime still needs `3` backend dispatches where\nthe semantic target is `1`",
+    "The opt-in target compiler policy now recognizes the same work as one",
+    "`semantic_ffn_sublayer` command covering `9` ops and saving `8` staged",
+    "Metal deliberately refuses exact execution for that command",
+    "`target_shape_commands=1`",
+    "`target_semantic_ffn_sublayers=1`",
     "incremental ReleaseFast rebuild",
     "checked qproj gate",
     "`shape_projection_groups=1`",

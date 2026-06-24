@@ -183,10 +183,11 @@ fn printCommandShape(
 ) !void {
     const shape = try program_mod.ProgramCommandStreamShape.fromCommands(commands);
     try w.print(
-        "  {s:<28} shape_commands={d}  shape_projection_row_chains={d}  shape_covered_ops={d}  shape_saved_dispatches={d}  shape_projection_groups={d}\n",
+        "  {s:<28} shape_commands={d}  shape_semantic_ffn_sublayers={d}  shape_projection_row_chains={d}  shape_covered_ops={d}  shape_saved_dispatches={d}  shape_projection_groups={d}\n",
         .{
             name,
             shape.command_count,
+            shape.semantic_ffn_sublayers,
             shape.projection_row_chains,
             shape.covered_ops,
             shape.estimated_saved_dispatches,
@@ -1419,6 +1420,13 @@ fn benchSemanticSublayerMetalCase(
     const two_phase_profile_name = try std.fmt.bufPrint(&two_phase_profile_name_buf, "{s} semantic pair_row_chain_two_phase dispatch_profile", .{case.name});
     try printCommandShape(w, two_phase_profile_name, two_phase_commands);
     try printSemanticSublayerRuntimeProfile(w, two_phase_profile_name, be, two_phase_handle, &two_phase_output_io);
+
+    const target_policy = program_mod.CommandStreamPolicy.promptSemanticFfnSublayerTarget();
+    const target_commands = try program_mod.buildProgramCommands(alloc, &ops, target_policy);
+    defer alloc.free(target_commands);
+    var target_profile_name_buf: [160]u8 = undefined;
+    const target_profile_name = try std.fmt.bufPrint(&target_profile_name_buf, "{s} semantic target dispatch_profile", .{case.name});
+    try printCommandShape(w, target_profile_name, target_commands);
 }
 
 fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer, filter: FrontierFilter) !void {

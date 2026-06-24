@@ -1152,6 +1152,7 @@ pub const ProgramCommandKind = enum {
     projection_pair_elementwise_chain,
     projection_pair_fused_elementwise_chain,
     dense_projection_pair_fused_elementwise_chain,
+    semantic_ffn_sublayer,
     projection_row_chain,
     dense_projection_row_chain,
     dense_projection_chain,
@@ -1170,6 +1171,7 @@ pub const ProgramCommandKind = enum {
             .repeat_fused_elementwise_chain,
             .projection_pair_fused_elementwise_chain,
             .dense_projection_pair_fused_elementwise_chain,
+            .semantic_ffn_sublayer,
             => .{},
 
             .projection_pair_elementwise_chain,
@@ -1293,6 +1295,7 @@ pub const CommandStreamPolicy = struct {
     max_elementwise_batch: u32 = 8,
     fuse_repeat_fused_elementwise: bool = true,
     fuse_projection_chain: bool = true,
+    fuse_semantic_ffn_sublayer: bool = false,
     fuse_projection_row_chain: bool = false,
     fuse_projection_row_chain_qmatvec: bool = false,
     fuse_projection_row_chain_single_dispatch: bool = false,
@@ -1314,6 +1317,12 @@ pub const CommandStreamPolicy = struct {
         policy.fuse_projection_row_chain_qmatvec = false;
         policy.fuse_projection_row_chain_single_dispatch = false;
         policy.min_projection_row_chain_rows = 8;
+        return policy;
+    }
+
+    pub fn promptSemanticFfnSublayerTarget() CommandStreamPolicy {
+        var policy = CommandStreamPolicy.promptProjectionRowChainCommand();
+        policy.fuse_semantic_ffn_sublayer = true;
         return policy;
     }
 
@@ -1474,6 +1483,7 @@ pub const ProgramCommandStreamShape = struct {
     covered_ops: u32 = 0,
     estimated_saved_dispatches: u32 = 0,
     row_chains: u32 = 0,
+    semantic_ffn_sublayers: u32 = 0,
     projection_row_chains: u32 = 0,
     dense_projection_row_chains: u32 = 0,
     projection_chains: u32 = 0,
@@ -1504,6 +1514,7 @@ pub const ProgramCommandStreamShape = struct {
             .covered_ops = summary.covered_ops,
             .estimated_saved_dispatches = summary.estimated_saved_dispatches,
             .row_chains = summary.row_chains,
+            .semantic_ffn_sublayers = summary.semantic_ffn_sublayers,
             .projection_row_chains = summary.projection_row_chains,
             .dense_projection_row_chains = summary.dense_projection_row_chains,
             .projection_chains = summary.projection_chains,
@@ -1539,6 +1550,7 @@ pub const ProgramCommandStreamShape = struct {
             .covered_ops = @max(self.covered_ops, other.covered_ops),
             .estimated_saved_dispatches = @max(self.estimated_saved_dispatches, other.estimated_saved_dispatches),
             .row_chains = @max(self.row_chains, other.row_chains),
+            .semantic_ffn_sublayers = @max(self.semantic_ffn_sublayers, other.semantic_ffn_sublayers),
             .projection_row_chains = @max(self.projection_row_chains, other.projection_row_chains),
             .dense_projection_row_chains = @max(self.dense_projection_row_chains, other.dense_projection_row_chains),
             .projection_chains = @max(self.projection_chains, other.projection_chains),
@@ -1572,6 +1584,7 @@ pub const ProgramCommandStreamShape = struct {
                 .projection_pair_fused_elementwise_chain,
                 .projection_pair_elementwise_chain,
                 .dense_projection_pair_fused_elementwise_chain,
+                .semantic_ffn_sublayer,
                 .projection_row_chain,
                 .dense_projection_row_chain,
                 .dense_projection_chain,
@@ -2023,6 +2036,7 @@ const ProgramCommandSummary = struct {
     elementwise_batches: u32 = 0,
     elementwise_ops: u32 = 0,
     repeat_fused_elementwise_chains: u32 = 0,
+    semantic_ffn_sublayers: u32 = 0,
     projection_pair_fused_elementwise_chains: u32 = 0,
     projection_row_chains: u32 = 0,
     dense_projection_row_chains: u32 = 0,
@@ -2890,6 +2904,7 @@ const ProgramCommandFinderFeature = enum {
     elementwise_batch,
     repeat_fused_elementwise,
     projection_chain,
+    semantic_ffn_sublayer,
     projection_row_chain,
     rope_batch,
     movement_batch,
@@ -2903,6 +2918,7 @@ const ProgramCommandFinderFeature = enum {
             .elementwise_batch => policy.max_elementwise_batch >= 2,
             .repeat_fused_elementwise => policy.fuse_repeat_fused_elementwise,
             .projection_chain => policy.fuse_projection_chain,
+            .semantic_ffn_sublayer => policy.fuse_semantic_ffn_sublayer,
             .projection_row_chain => policy.fuse_projection_row_chain,
             .rope_batch => policy.max_rope_batch >= 2,
             .movement_batch => policy.max_movement_batch >= 2,
@@ -2934,6 +2950,7 @@ const ProgramCommandFinder = struct {
 };
 
 const program_command_finders = [_]ProgramCommandFinder{
+    .{ .start_tag = .qmatmul, .feature = .semantic_ffn_sublayer, .find = finderPolicyUsed(findSemanticFfnSublayerCommand) },
     .{ .start_tag = .qmatmul, .find = finderUsedOnly(findProjectionPairElementwiseChainCommand) },
     .{ .start_tag = .qmatmul, .find = finderUsedOnly(findProjectionPairFusedElementwiseChainCommand) },
     .{ .start_tag = .qmatmul, .feature = .projection_row_chain, .find = finderPolicyUsed(findProjectionRowChainCommand) },
@@ -3053,6 +3070,86 @@ fn finderUsedExecuted(comptime find: anytype) ProgramCommandFinderFn {
             return find(ops, start, used, executed);
         }
     }.run;
+}
+
+fn findSemanticFfnSublayerCommand(
+    ops: []const backend_mod.DeviceOp,
+    start: usize,
+    policy: CommandStreamPolicy,
+    used: ?[]const bool,
+) ?ProgramCommand {
+    if (!policy.fuse_semantic_ffn_sublayer) return null;
+    if (start + 8 >= ops.len) return null;
+    if (commandRangeTouchesUsed(@intCast(start), 9, used)) return null;
+
+    const gate = switch (ops[start]) {
+        .qmatmul => |q| q,
+        else => return null,
+    };
+    if (gate.M == 1) {
+        if (!policy.fuse_projection_row_chain_qmatvec) return null;
+    } else if (gate.M < policy.min_projection_row_chain_rows) return null;
+
+    const first = switch (ops[start + 1]) {
+        .elementwise => |e| e,
+        else => return null,
+    };
+    const up = switch (ops[start + 2]) {
+        .qmatmul => |q| q,
+        else => return null,
+    };
+    const product = switch (ops[start + 3]) {
+        .elementwise => |e| e,
+        else => return null,
+    };
+    const down = switch (ops[start + 4]) {
+        .qmatmul => |q| q,
+        else => return null,
+    };
+    const residual = switch (ops[start + 5]) {
+        .elementwise => |e| e,
+        else => return null,
+    };
+    const rn = switch (ops[start + 6]) {
+        .rmsnorm => |rn| rn,
+        else => return null,
+    };
+    const rp = switch (ops[start + 7]) {
+        .repeat => |rp| rp,
+        else => return null,
+    };
+    const out = switch (ops[start + 8]) {
+        .elementwise => |e| e,
+        else => return null,
+    };
+
+    if (!projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) return null;
+    if (down.M != gate.M or down.K != gate.N) return null;
+    if (down.input != product.dst or down.input_offset != product.dst_offset) return null;
+    if (qmatmulDstRowStride(down) != down.N) return null;
+    if (residual.op != .add or residual.n != down.M * down.N) return null;
+    const down_is_src0 = residual.src0 == down.dst and residual.src0_offset == down.dst_offset;
+    const down_is_src1 = residual.src1 == down.dst and residual.src1_offset == down.dst_offset;
+    if (!down_is_src0 and !down_is_src1) return null;
+    if (rn.src != residual.dst or rn.src_offset != residual.dst_offset) return null;
+    if (rn.rows != down.M or rn.cols != down.N) return null;
+    if (!isRmsnormScaleChain(ops[start + 6], ops[start + 7], ops[start + 8])) return null;
+    if (rp.n != out.n or out.n != down.M * down.N) return null;
+
+    const included_start = start + 1;
+    const included_end = start + 9;
+    if (spanHasExternalReadAfter(ops, start, included_start, included_end, bufferSpan(gate.dst, gate.dst_offset, gate.M * gate.N))) return null;
+    if (spanHasExternalReadAfter(ops, start + 1, included_start, included_end, bufferSpan(first.dst, first.dst_offset, first.n))) return null;
+    if (spanHasExternalReadAfter(ops, start + 2, included_start, included_end, bufferSpan(up.dst, up.dst_offset, up.M * up.N))) return null;
+    if (spanHasExternalReadAfter(ops, start + 3, included_start, included_end, bufferSpan(product.dst, product.dst_offset, product.n))) return null;
+    if (spanHasExternalReadAfter(ops, start + 4, included_start, included_end, bufferSpan(down.dst, down.dst_offset, down.M * down.N))) return null;
+    if (spanHasExternalReadAfter(ops, start + 5, included_start, included_end, bufferSpan(residual.dst, residual.dst_offset, residual.n))) return null;
+    if (spanHasExternalReadAfter(ops, start + 6, included_start, included_end, bufferSpan(rn.dst, rn.dst_offset, rn.rows * rn.cols))) return null;
+    if (spanHasExternalReadAfter(ops, start + 7, included_start, included_end, bufferSpan(rp.dst, rp.dst_offset, rp.n))) return null;
+
+    var command = ProgramCommand.contiguous(.semantic_ffn_sublayer, start, 9);
+    command.projection_kind = if (gate.M == 1) .qmatvec else .qmatmul;
+    return command;
 }
 
 fn findProjectionPairFusedElementwiseChainCommand(
@@ -5209,6 +5306,7 @@ fn summarizeProgramCommands(commands: []const ProgramCommand) ProgramCommandSumm
                 summary.elementwise_ops += command.anchor_count;
             },
             .repeat_fused_elementwise_chain => summary.repeat_fused_elementwise_chains += 1,
+            .semantic_ffn_sublayer => summary.semantic_ffn_sublayers += 1,
             .projection_pair_elementwise_chain,
             .dense_projection_pair_fused_elementwise_chain,
             .projection_pair_fused_elementwise_chain,
@@ -6644,6 +6742,7 @@ pub const ExecutionPlan = struct {
             shape.covered_ops = try std.math.add(u32, shape.covered_ops, summary.covered_ops);
             shape.estimated_saved_dispatches = try std.math.add(u32, shape.estimated_saved_dispatches, summary.estimated_saved_dispatches);
             shape.row_chains = try std.math.add(u32, shape.row_chains, summary.row_chains);
+            shape.semantic_ffn_sublayers = try std.math.add(u32, shape.semantic_ffn_sublayers, summary.semantic_ffn_sublayers);
             shape.projection_row_chains = try std.math.add(u32, shape.projection_row_chains, summary.projection_row_chains);
             shape.dense_projection_row_chains = try std.math.add(u32, shape.dense_projection_row_chains, summary.dense_projection_row_chains);
             shape.projection_chains = try std.math.add(u32, shape.projection_chains, summary.projection_chains);
@@ -9176,6 +9275,51 @@ test "program command stream fuses repeat feeding fused elementwise secondary" {
     try std.testing.expectEqual(@as(u32, 1), summary.estimated_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.estimated_saved_dispatches);
     try std.testing.expectEqual(@as(u32, 1), summary.repeat_fused_elementwise_chains);
+}
+
+test "program command stream recognizes semantic FFN sublayer target" {
+    const m: u32 = 8;
+    const model: u32 = 4;
+    const hidden: u32 = 16;
+    const hidden_elems = m * hidden;
+    const model_elems = m * model;
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = m, .N = hidden, .K = model } },
+        .{ .elementwise = .{ .op = .silu, .dst = 2, .src0 = 1, .src1 = 1, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 1, .M = m, .N = hidden, .K = model } },
+        .{ .elementwise = .{ .op = .mul, .dst = 3, .src0 = 2, .src1 = 1, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 4, .input = 3, .weight_idx = 2, .M = m, .N = model, .K = hidden } },
+        .{ .elementwise = .{ .op = .add, .dst = 5, .src0 = 4, .src1 = 5, .n = model_elems } },
+        .{ .rmsnorm = .{ .dst = 6, .src = 5, .rows = m, .cols = model } },
+        .{ .repeat = .{
+            .dst = 8,
+            .src = 7,
+            .n = model_elems,
+            .src_ne = .{ model, 1, 1, 1 },
+            .dst_ne = .{ model, m, 1, 1 },
+            .src_strides = .{ 1, model, model, model },
+            .dst_strides = .{ 1, model, model_elems, model_elems },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 9, .src0 = 6, .src1 = 8, .n = model_elems } },
+    };
+
+    const default_commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.promptProjectionRowChainCommand());
+    defer std.testing.allocator.free(default_commands);
+    try std.testing.expectEqual(@as(usize, 2), default_commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.projection_pair_fused_elementwise_chain, default_commands[0].kind);
+    try std.testing.expectEqual(ProgramCommandKind.projection_row_chain, default_commands[1].kind);
+
+    const target_commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.promptSemanticFfnSublayerTarget());
+    defer std.testing.allocator.free(target_commands);
+    try std.testing.expectEqual(@as(usize, 1), target_commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.semantic_ffn_sublayer, target_commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 9), target_commands[0].coveredOpCount());
+
+    const shape = try ProgramCommandStreamShape.fromCommands(target_commands);
+    try std.testing.expectEqual(@as(u32, 1), shape.command_count);
+    try std.testing.expectEqual(@as(u32, 1), shape.semantic_ffn_sublayers);
+    try std.testing.expectEqual(@as(u32, 9), shape.covered_ops);
+    try std.testing.expectEqual(@as(u32, 8), shape.estimated_saved_dispatches);
 }
 
 test "program command stream fuses paired projection activation product chain" {

@@ -8994,6 +8994,7 @@ const CompiledProgram = struct {
             .projection_pair_elementwise_chain => self.tryEncodeProjectionPairElementwiseChainCommand(exec, view, ops, command),
             .projection_pair_fused_elementwise_chain => self.tryEncodeProjectionPairFusedElementwiseChainCommand(exec, view, ops, command),
             .dense_projection_pair_fused_elementwise_chain => self.tryEncodeDenseProjectionPairFusedElementwiseChainCommand(exec, view, ops, command),
+            .semantic_ffn_sublayer => false,
             .projection_row_chain => self.tryEncodeProjectionRowChainCommand(exec, view, ops, command),
             .dense_projection_row_chain => self.tryEncodeDenseProjectionRowChainCommand(exec, view, ops, command),
             .dense_projection_chain => self.tryEncodeDenseProjectionChainCommand(exec, view, ops, command),

@@ -301,6 +301,7 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeJsonField(jw, "program_command_shape_covered_ops", command_shape.covered_ops);
         try writeJsonField(jw, "program_command_shape_estimated_saved_dispatches", command_shape.estimated_saved_dispatches);
         try writeJsonField(jw, "program_command_shape_row_chains", command_shape.row_chains);
+        try writeJsonField(jw, "program_command_shape_semantic_ffn_sublayers", command_shape.semantic_ffn_sublayers);
         try writeJsonField(jw, "program_command_shape_projection_row_chains", command_shape.projection_row_chains);
         try writeJsonField(jw, "program_command_shape_dense_projection_row_chains", command_shape.dense_projection_row_chains);
         try writeJsonField(jw, "program_command_shape_projection_chains", command_shape.projection_chains);

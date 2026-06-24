@@ -689,12 +689,16 @@ subagent and local audits agreed that small row-chain tweaks are exhausted as a
 primary lever; the credible next win is a semantic FFN sublayer kernel that
 crosses the current `projection_pair_fused_elementwise_chain` and following
 projection/residual/norm boundary. Current local evidence is intentionally
-framed as a target gap: the full-prefill row was roughly `1.68x` faster than
-staged with zero diff, the SmolLM prompt row was roughly `0.99x` with zero diff,
-the command shape is `2` commands covering `9` ops and saving `7` staged
-dispatches, and the current runtime still needs `3` backend dispatches where
-the semantic target is `1`. So this is the frontier microscope for
-`semantic_ffn_sublayer_kernel`, not proof that full-model Q8 has been solved.
+framed as a target gap: the full-prefill row is roughly `1.8x` faster than
+staged with zero diff, the SmolLM prompt row is roughly parity with zero diff,
+the current runtime shape is still `2` commands covering `9` ops and saving `7`
+staged dispatches, and the current runtime still needs `3` backend dispatches.
+The opt-in target compiler policy now recognizes the same work as one
+`semantic_ffn_sublayer` command covering `9` ops and saving `8` staged
+dispatches, but Metal deliberately refuses exact execution for that command
+until the real native kernel exists. So this is the frontier microscope and
+compiler contract for `semantic_ffn_sublayer_kernel`, not proof that full-model
+Q8 has been solved.
 It also names the hard performance fact directly: the structurally useful
 two-dispatch command path is dispatch-neutral in the full model
 (`command_dispatch=242->242`, `command_dispatch_reduced=no`), and the two-phase
@@ -827,8 +831,10 @@ x7 executable region proof remains healthy; three attempts keeps iteration fast
 without turning noise into a false architecture signal. The frontier
 qsemantic scripts use `BENCH_FRONTIER_FILTER=qsemantic` and default the
 checked dev loop to one attempt because the profile assertions are the value:
-they prove the current 3-dispatch boundary and the desired 1-dispatch semantic
-target without requiring the full Q8 prompt artifact loop on every kernel edit.
+they prove the current 3-dispatch boundary and the opt-in one-command semantic
+target (`target_shape_commands=1`,
+`target_semantic_ffn_sublayers=1`) without requiring the full Q8 prompt artifact
+loop on every kernel edit.
 Use it when changing projection-pair, row-chain, residual, RMSNorm, or
 semantic-sublayer scheduling, then escalate to `dev:perf:q8-prompt:viable` and
 the full Q8 prompt candidate gate before making a model-level speed claim. The
