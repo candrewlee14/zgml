@@ -52,12 +52,16 @@ function chooseLane(line) {
   if (forced) return forced;
   const steady = process.env.BENCH_NEXT_PERF_STEADY === "1";
   const hasSemanticThroughputFrontier = /frontier=semantic_ffn_sublayer_throughput_kernel:candidate=ready/.test(line);
+  const currentQ8NeedsSemanticThroughput =
+    /q8_current=prompt:[^ ]*:target=semantic_ffn_sublayer:[0-9]+:next=semantic_ffn_sublayer_throughput_kernel/.test(line);
   const freshThroughput = freshQsemanticThroughput(line);
   const hasFreshQsemanticThroughput = hasSemanticThroughputFrontier && freshThroughput !== null;
   const qsemanticThroughputBelowDefault =
     hasSemanticThroughputFrontier &&
     (!freshThroughput || freshThroughput.smollm < 1 || freshThroughput.full < 1);
   if (qsemanticThroughputBelowDefault) return "qsemantic_throughput";
+  if (currentQ8NeedsSemanticThroughput && !steady) return "qsemantic_throughput";
+  if (currentQ8NeedsSemanticThroughput && steady && hasSemanticThroughputFrontier) return "qsemantic_throughput";
   if (/q8_prompt=promoted_semantic_default/.test(line)) return "ggml";
   if (hasFreshQsemanticThroughput && /q8_prompt=semantic_throughput_kernel/.test(line)) return "q8_prompt";
   if (

@@ -729,6 +729,10 @@ hint from pointing at stale `projection_chain:60` pressure after a newer
 semantic-default smoke has already reduced the Q8 prompt command shape to 151
 commands; the current smoke target is the semantic FFN sublayer throughput
 kernel.
+The `dev:perf:next` router follows that split: while `q8_current` points at
+`semantic_ffn_sublayer_throughput_kernel`, the default next lane is the
+qsemantic throughput microscope, not the ggml smoke. Use the ggml smoke after
+the frontier bottleneck moves or when explicitly checking model-level promotion.
 The PyTorch comparison microscope also accepts exploratory lanes such as
 `rms_gelu_linear_batched`, `softmax_classifier_batched`,
 `log_softmax_classifier_batched`, and `lazy_token_head_batched`, so optimization
