@@ -539,7 +539,9 @@ function checkPackageExports(errors) {
   const nativeEagerGapSource = readSource(path.join("scripts", "check_native_eager_gap.cjs"));
   for (const required of [
     "schema: \"zgml.native-eager-gap.v1\"",
+    "lazy_matmul_add_gelu_batched",
     "native_eager_linear_or_matmul_storage_slice",
+    "native_eager_fused_matmul_add_gelu_storage_slice",
     "NATIVE_EAGER_GAP_JSON",
     "preparedExecuteIntoMs",
     "nativeProgramSpeedup",

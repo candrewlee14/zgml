@@ -572,9 +572,11 @@ function checkScripts() {
   requireIncludes(read("scripts/check_native_eager_gap.cjs"), "scripts/check_native_eager_gap.cjs", "native eager gap microscope", [
     "schema: \"zgml.native-eager-gap.v1\"",
     "NATIVE_EAGER_GAP_JSON",
+    "lazy_matmul_add_gelu_batched",
     "preparedExecuteIntoMs",
     "nativeProgramSpeedup",
     "native_eager_linear_or_matmul_storage_slice",
+    "native_eager_fused_matmul_add_gelu_storage_slice",
   ]);
   if (scripts["dev:perf:q8-prompt:viable"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase,semantic node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json dev:perf:q8-prompt:viable must keep the incremental viable Q8 prompt microscope");
@@ -6027,9 +6029,10 @@ function checkDocs() {
     "package subpath.",
     "Native eager",
     "execution policy is still open work.",
-    "`NATIVE_EAGER_GAP_JSON` microscope measures the first target directly",
-    "`nativeProgramSpeedup` as the executable target",
-    "`Linear`/`matmul` storage slice",
+    "`NATIVE_EAGER_GAP_JSON` microscope measures the first targets directly",
+    "`lazy_matmul_add_gelu_batched` eager fused matmul work",
+    "`nativeProgramSpeedup` rows as executable targets",
+    "fused `matmul -> add -> GELU` storage slices",
     "native Program lowering for `argmax(dim)` and `argmin(dim)`",
     "rank-1/rank-2/rank-3 PyTorch-style",
     "rank-1/rank-2/rank-3 `repeat`/`tile`",
@@ -6313,7 +6316,8 @@ function checkDocs() {
     "`docs/frontend-autograd-coverage.md`",
     "Native eager tensor storage is not the default.",
     "`dev:perf:native-eager-gap{,:run}` microscope",
-    "`linear_batched` target as eager TS tensor execution versus compiled",
+    "`linear_batched` and `lazy_matmul_add_gelu_batched` targets",
+    "first native eager storage slices have executable baselines",
     "explicit state-dict/checkpoint save/load recipes",
     "broader third-party weight-format adapters remain future work",
     "The root public API is still wider than the ideal first-contact surface",

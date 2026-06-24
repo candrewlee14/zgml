@@ -432,12 +432,13 @@ Current checked progress:
   runtime/evidence namespaces, and keeps compatibility slices such as `torch`
   explicit while preserving existing exports without adding another public
   package subpath. Native eager execution policy is still open work.
-  The new `NATIVE_EAGER_GAP_JSON` microscope measures the first target directly:
-  `linear_batched` eager TS tensor execution versus allocation-free compiled
-  `prepare/executeInto` for the same model. Treat the reported
-  `nativeProgramSpeedup` as the executable target for the first native eager
-  `Linear`/`matmul` storage slice, not as a claim that eager already runs
-  natively.
+  The new `NATIVE_EAGER_GAP_JSON` microscope measures the first targets directly:
+  `linear_batched` eager TS tensor execution and
+  `lazy_matmul_add_gelu_batched` eager fused matmul work versus allocation-free
+  compiled `prepare/executeInto` for the same shape. Treat the reported
+  `nativeProgramSpeedup` rows as executable targets for the first native eager
+  `Linear`/`matmul` and fused `matmul -> add -> GELU` storage slices, not as a
+  claim that eager already runs natively.
   The public-surface taxonomy now separates the small checked first-contact
   surface (`zgml`, `tensor`, `nn`, `loss`, `optim`, `train`, `data`,
   `checkpoint`, `lazy`, `compile`, and `compile.compileForInference`) from the
