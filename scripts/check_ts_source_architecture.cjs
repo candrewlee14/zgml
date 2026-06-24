@@ -15918,28 +15918,33 @@ function checkDistSmokeIsTsOwned(errors) {
       errors.push(`scripts/package_metadata_policy.cjs ${name} must stay the TS-owned package policy value: expected ${expected.join(", ")}`);
     }
   }
-  for (const expectedFile of ["src/", "dist/", "include/", "tsconfig.dist.json", "examples/types/package-spine-smoke.ts", "examples/types/readme-quickstart-smoke.ts", "examples/types/dist-package-smoke.cts", "examples/types/pytorch-training-smoke.ts", "examples/types/bun-training-smoke.ts", "examples/types/program-session-smoke.ts", "examples/quickstart/zgml-first.cjs", "examples/node_training/train_linear.cjs", "examples/node_training/train_mlp.cjs", "examples/node_program_session/run_linear.cjs", "examples/node_program_session/run_descriptor_contract.cjs", "examples/bun_training/train_linear.ts", "examples/bun_training/train_mlp.ts", "examples/bun_program_session/run_linear.ts", "scripts/frontend_manifest_policy.cjs", "scripts/check_frontend_capability_matrix.cjs", "scripts/generate_package_declarations.cjs", "scripts/package_metadata_policy.cjs", "tsdown.config.mjs"]) {
+  for (const expectedFile of ["src/", "dist/", "include/", "tsconfig.dist.json", "examples/types/package-spine-smoke.ts", "examples/types/readme-quickstart-smoke.ts", "examples/types/dist-package-smoke.cts", "examples/types/pytorch-training-smoke.ts", "examples/types/bun-training-smoke.ts", "examples/types/program-session-smoke.ts", "examples/quickstart/zgml-first.cjs", "examples/node_training/train_linear.cjs", "examples/node_training/train_mlp.cjs", "examples/node_program_session/run_linear.cjs", "examples/node_program_session/run_descriptor_contract.cjs", "examples/bun_training/train_linear.ts", "examples/bun_training/train_mlp.ts", "examples/bun_program_session/run_linear.ts", "examples/bun_program_session/run_descriptor_contract.ts", "scripts/frontend_manifest_policy.cjs", "scripts/check_frontend_capability_matrix.cjs", "scripts/generate_package_declarations.cjs", "scripts/package_metadata_policy.cjs", "tsdown.config.mjs"]) {
     if (!expectedPackageFiles.includes(expectedFile)) {
       errors.push(`scripts/package_metadata_policy.cjs expectedPackageFiles must keep TS/native package boundary file ${expectedFile}`);
     }
   }
-  const descriptorContractSource = fs.existsSync(path.join(root, "examples", "node_program_session", "run_descriptor_contract.cjs"))
-    ? fs.readFileSync(path.join(root, "examples", "node_program_session", "run_descriptor_contract.cjs"), "utf8")
-    : "";
-  for (const needle of [
-    "descriptorSignatures(plan)",
-    "model.compileSupport({ backend: \"cpu\", inputShape })",
-    "model.compile({ backend: \"cpu\", inputShape })",
-    "program.inspect()",
-    "evidence.kernelPlan.signature !== plan.signature",
-    "compiledPlan.signature !== plan.signature",
-    "Linear+GELU descriptor",
-    "Reshape+ReLU descriptor",
-    "Reduction descriptor",
-    "Embedding classifier descriptor",
+  for (const descriptorContractPath of [
+    "examples/node_program_session/run_descriptor_contract.cjs",
+    "examples/bun_program_session/run_descriptor_contract.ts",
   ]) {
-    if (!descriptorContractSource.includes(needle)) {
-      errors.push(`examples/node_program_session/run_descriptor_contract.cjs must prove TS KernelPlan -> native Program descriptor evidence: ${needle}`);
+    const descriptorContractSource = fs.existsSync(path.join(root, descriptorContractPath))
+      ? fs.readFileSync(path.join(root, descriptorContractPath), "utf8")
+      : "";
+    for (const needle of [
+      "descriptorSignatures(plan)",
+      "model.compileSupport({ backend: \"cpu\", inputShape })",
+      "model.compile({ backend: \"cpu\", inputShape })",
+      "program.inspect()",
+      "evidence.kernelPlan.signature !== plan.signature",
+      "compiledPlan.signature !== plan.signature",
+      "Linear+GELU descriptor",
+      "Reshape+ReLU descriptor",
+      "Reduction descriptor",
+      "Embedding classifier descriptor",
+    ]) {
+      if (!descriptorContractSource.includes(needle)) {
+        errors.push(`${descriptorContractPath} must prove TS KernelPlan -> native Program descriptor evidence: ${needle}`);
+      }
     }
   }
   for (const [examplePath, label] of [

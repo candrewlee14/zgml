@@ -109,6 +109,7 @@ const expectedPackageFiles = Object.freeze([
   "examples/bun_training/train_linear.ts",
   "examples/bun_training/train_mlp.ts",
   "examples/bun_training/train_classifier.ts",
+  "examples/bun_program_session/run_descriptor_contract.ts",
   "examples/bun_program_session/run_linear.ts",
   "scripts/frontend_manifest_policy.cjs",
   "scripts/check_frontend_capability_matrix.cjs",
