@@ -1254,6 +1254,8 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
   const fullPrefillRuntimeRowChainTiled = metric(output, fullPrefillProfileLabel, "qmatmul_row_chain_tiled_count");
   const fullPrefillSemanticCount = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_count");
   const fullPrefillSemanticTileGroups = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_tile_parallel_groups");
+  const fullPrefillSemanticRowSerialPerTileGroup = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group");
+  const fullPrefillSemanticTotalRowSerialPerTileGroup = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group");
   const fullPrefillSpilledInput = metric(output, fullPrefillProfileLabel, "qmatmul_row_chain_tiled_spilled_input");
   const fullPrefillOutputSpills = metric(output, fullPrefillProfileLabel, "qmatmul_row_chain_tiled_output_spills");
 
@@ -1267,6 +1269,8 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
   const smollmPromptRuntimeRowChainTiled = metric(output, smollmPromptProfileLabel, "qmatmul_row_chain_tiled_count");
   const smollmPromptSemanticCount = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_count");
   const smollmPromptSemanticTileGroups = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_tile_parallel_groups");
+  const smollmPromptSemanticRowSerialPerTileGroup = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_row_serial_dot_ops_per_tile_parallel_group");
+  const smollmPromptSemanticTotalRowSerialPerTileGroup = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group");
   const smollmPromptSpilledInput = metric(output, smollmPromptProfileLabel, "qmatmul_row_chain_tiled_spilled_input");
   const smollmPromptOutputSpills = metric(output, smollmPromptProfileLabel, "qmatmul_row_chain_tiled_output_spills");
 
@@ -1283,8 +1287,8 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
   const line = [
     `frontier qsemantic throughput gate: ${failures.length === 0 ? "pass" : "fail"}`,
     `attempt=${attempt}/${maxAttempts}`,
-    `full_prefill=${fullPrefillSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillRuntimeDispatches} semantic_ffn_sublayer_count=${fullPrefillSemanticCount} semantic_tile_parallel_groups=${fullPrefillSemanticTileGroups} qmatmul_row_chain_tiled_count=${fullPrefillRuntimeRowChainTiled} qmatmul_row_chain_tiled_spilled_input=${fullPrefillSpilledInput} qmatmul_row_chain_tiled_output_spills=${fullPrefillOutputSpills}`,
-    `smollm_prompt=${smollmPromptSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${smollmPromptMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${smollmPromptRuntimeDispatches} semantic_ffn_sublayer_count=${smollmPromptSemanticCount} semantic_tile_parallel_groups=${smollmPromptSemanticTileGroups} qmatmul_row_chain_tiled_count=${smollmPromptRuntimeRowChainTiled} qmatmul_row_chain_tiled_spilled_input=${smollmPromptSpilledInput} qmatmul_row_chain_tiled_output_spills=${smollmPromptOutputSpills}`,
+    `full_prefill=${fullPrefillSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillRuntimeDispatches} semantic_ffn_sublayer_count=${fullPrefillSemanticCount} semantic_tile_parallel_groups=${fullPrefillSemanticTileGroups} semantic_row_serial_per_group=${fullPrefillSemanticRowSerialPerTileGroup} semantic_total_row_serial_per_group=${fullPrefillSemanticTotalRowSerialPerTileGroup} qmatmul_row_chain_tiled_count=${fullPrefillRuntimeRowChainTiled} qmatmul_row_chain_tiled_spilled_input=${fullPrefillSpilledInput} qmatmul_row_chain_tiled_output_spills=${fullPrefillOutputSpills}`,
+    `smollm_prompt=${smollmPromptSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${smollmPromptMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${smollmPromptRuntimeDispatches} semantic_ffn_sublayer_count=${smollmPromptSemanticCount} semantic_tile_parallel_groups=${smollmPromptSemanticTileGroups} semantic_row_serial_per_group=${smollmPromptSemanticRowSerialPerTileGroup} semantic_total_row_serial_per_group=${smollmPromptSemanticTotalRowSerialPerTileGroup} qmatmul_row_chain_tiled_count=${smollmPromptRuntimeRowChainTiled} qmatmul_row_chain_tiled_spilled_input=${smollmPromptSpilledInput} qmatmul_row_chain_tiled_output_spills=${smollmPromptOutputSpills}`,
     "next=semantic_ffn_sublayer_throughput_kernel",
   ].join("; ");
 
@@ -1300,6 +1304,8 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
     fullPrefillRuntimeRowChainTiled,
     fullPrefillSemanticCount,
     fullPrefillSemanticTileGroups,
+    fullPrefillSemanticRowSerialPerTileGroup,
+    fullPrefillSemanticTotalRowSerialPerTileGroup,
     fullPrefillSpilledInput,
     fullPrefillOutputSpills,
     smollmPromptSpeedup,
@@ -1312,6 +1318,8 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
     smollmPromptRuntimeRowChainTiled,
     smollmPromptSemanticCount,
     smollmPromptSemanticTileGroups,
+    smollmPromptSemanticRowSerialPerTileGroup,
+    smollmPromptSemanticTotalRowSerialPerTileGroup,
     smollmPromptSpilledInput,
     smollmPromptOutputSpills,
     failures,
@@ -1345,6 +1353,8 @@ function selectedSemanticThroughputAttemptSummary(attempt) {
       semanticRuntimeDispatches: attempt.fullPrefillRuntimeSemanticDispatches,
       semanticFfnSublayerCount: attempt.fullPrefillSemanticCount,
       semanticTileParallelGroups: attempt.fullPrefillSemanticTileGroups,
+      semanticRowSerialDotOpsPerTileGroup: attempt.fullPrefillSemanticRowSerialPerTileGroup,
+      semanticTotalRowSerialDotOpsPerTileGroup: attempt.fullPrefillSemanticTotalRowSerialPerTileGroup,
       qmatmulRowChainTiledCount: attempt.fullPrefillRuntimeRowChainTiled,
       spilledInput: attempt.fullPrefillSpilledInput,
       outputSpills: attempt.fullPrefillOutputSpills,
@@ -1356,6 +1366,8 @@ function selectedSemanticThroughputAttemptSummary(attempt) {
       semanticRuntimeDispatches: attempt.smollmPromptRuntimeSemanticDispatches,
       semanticFfnSublayerCount: attempt.smollmPromptSemanticCount,
       semanticTileParallelGroups: attempt.smollmPromptSemanticTileGroups,
+      semanticRowSerialDotOpsPerTileGroup: attempt.smollmPromptSemanticRowSerialPerTileGroup,
+      semanticTotalRowSerialDotOpsPerTileGroup: attempt.smollmPromptSemanticTotalRowSerialPerTileGroup,
       qmatmulRowChainTiledCount: attempt.smollmPromptRuntimeRowChainTiled,
       spilledInput: attempt.smollmPromptSpilledInput,
       outputSpills: attempt.smollmPromptOutputSpills,
