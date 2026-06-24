@@ -215,13 +215,19 @@ function readProjectionLane(row, defaultTokS, index) {
   };
 }
 
-function bridgeAbsorbedLane(lane) {
-  return lane.commands !== null &&
-    lane.commands <= bridgeCommandCeil &&
-    lane.projectionChains <= candidateProjectionChainCeil &&
-    lane.projectionCacheGroups >= candidateProjectionPairFloor &&
-    lane.projectionRowChains === 0 &&
-    lane.projectionRowChainSemanticResidualBridges === 0;
+function bridgeAbsorbedLane(lane, prefix = "") {
+  const key = (name) => prefix ? `${prefix}${name[0].toUpperCase()}${name.slice(1)}` : name;
+  const commands = lane[key("commands")];
+  const projectionChains = lane[key("projectionChains")];
+  const projectionCacheGroups = lane[key("projectionCacheGroups")];
+  const projectionRowChains = lane[key("projectionRowChains")];
+  const projectionRowChainSemanticResidualBridges = lane[key("projectionRowChainSemanticResidualBridges")];
+  return commands !== null &&
+    commands <= bridgeCommandCeil &&
+    projectionChains <= candidateProjectionChainCeil &&
+    projectionCacheGroups >= candidateProjectionPairFloor &&
+    projectionRowChains === 0 &&
+    projectionRowChainSemanticResidualBridges === 0;
 }
 
 function keepsProjectionPairOrSemanticCommand(lane) {
@@ -671,8 +677,10 @@ const semanticThroughputStatus = measureSemantic
   : "skipped";
 const semanticStructuralSelected = semanticBest.semanticTiledTwoPhaseCount > 0;
 const semanticThroughputReady = semanticThroughputStatus === "ready";
-const semanticBridgeCandidateSelected = bridgeAbsorbedLane(semanticBest);
-const reportedSemanticThroughputReady = promotedDefaultReady || semanticThroughputReady;
+const semanticBridgeCandidateSelected = bridgeAbsorbedLane(semanticBest, "semantic");
+const reportedSemanticThroughputReady = semanticBridgeCandidateSelected
+  ? semanticThroughputReady
+  : promotedDefaultReady || semanticThroughputReady;
 const twoPhaseStructuralSelected = twoPhaseBest.twoPhaseTiledTwoPhaseCount > 0;
 const commandDispatchReduced =
   commandBest.defaultDispatches !== null && commandBest.commandDispatches !== null && commandBest.commandDispatches < commandBest.defaultDispatches;
@@ -791,7 +799,7 @@ if (writeArtifact) {
     throughput: {
       command: commandThroughputStatus,
       single: singleThroughputStatus,
-      semantic: promotedDefaultReady ? "promoted" : semanticThroughputStatus,
+      semantic: reportedSemanticThroughputStatus,
     },
     reason,
     selectedAttempts: {

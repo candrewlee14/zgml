@@ -740,7 +740,11 @@ The `dev:perf:next` router follows that split: while `q8_current` points at
 qsemantic throughput microscope until fresh qsemantic throughput is above the
 current default path. Once that happens, the router advances to the Q8 prompt
 viability gate so the microscope win has to prove itself at the model level
-before any ggml smoke or promotion claim. Use the ggml smoke after the frontier
+before any ggml smoke or promotion claim. When the Q8 prompt readback already
+selects a `semantic_bridge_candidate`, the router treats
+`next=steady_semantic_bridge_candidate` as a model-level proof request: it runs
+the Q8 prompt viability gate in steady paired-default mode even when
+`BENCH_NEXT_PERF_STEADY` is not set. Use the ggml smoke after the frontier
 bottleneck moves or when explicitly checking model-level promotion.
 The qsemantic-throughput readback follows the same stability rule as the other
 noisy perf lanes: `qsemantic-throughput-results:` prefers the latest

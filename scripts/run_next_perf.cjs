@@ -52,6 +52,8 @@ function chooseLane(line) {
   if (forced) return forced;
   const steady = process.env.BENCH_NEXT_PERF_STEADY === "1";
   const hasSemanticThroughputFrontier = /frontier=semantic_ffn_sublayer_throughput_kernel:candidate=ready/.test(line);
+  const q8PromptNeedsSteadySemanticBridge =
+    /q8_prompt=semantic_bridge_candidate:[^ ]*:next=steady_semantic_bridge_candidate/.test(line);
   const currentQ8NeedsSemanticThroughput =
     /q8_current=prompt:[^ ]*:target=semantic_ffn_sublayer:[0-9]+:next=semantic_ffn_sublayer_throughput_kernel/.test(line);
   const freshThroughput = freshQsemanticThroughput(line);
@@ -60,6 +62,7 @@ function chooseLane(line) {
     hasSemanticThroughputFrontier &&
     (!freshThroughput || freshThroughput.smollm < 1 || freshThroughput.full < 1);
   if (qsemanticThroughputBelowDefault) return "qsemantic_throughput";
+  if (q8PromptNeedsSteadySemanticBridge) return "q8_prompt";
   if (currentQ8NeedsSemanticThroughput && hasFreshQsemanticThroughput) return "q8_prompt";
   if (currentQ8NeedsSemanticThroughput && !steady) return "qsemantic_throughput";
   if (currentQ8NeedsSemanticThroughput && steady && hasSemanticThroughputFrontier) return "qsemantic_throughput";
@@ -91,7 +94,7 @@ function main() {
   const lane = chooseLane(line);
   validateLane(lane);
   const shouldBuild = process.env.BENCH_NEXT_PERF_BUILD === "1";
-  const steady = process.env.BENCH_NEXT_PERF_STEADY === "1";
+  const steady = process.env.BENCH_NEXT_PERF_STEADY === "1" || /q8_prompt=semantic_bridge_candidate:[^ ]*:next=steady_semantic_bridge_candidate/.test(line);
   console.log(`[next-perf] ${line}`);
   console.log(`[next-perf] lane=${lane} build=${shouldBuild ? "yes" : "no"} steady=${steady ? "yes" : "no"}`);
 

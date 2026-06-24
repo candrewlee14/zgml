@@ -509,7 +509,12 @@ longer timing windows, or set
 to force a lane. The automatic qsemantic handoff is two-step: below-default or
 missing fresh throughput evidence keeps the loop on `qsemantic_throughput`,
 while fresh above-default qsemantic throughput advances the loop to `q8_prompt`
-so model-level prompt viability is tested before ggml promotion.
+so model-level prompt viability is tested before ggml promotion. If
+`perf-next:` reports `q8_prompt=semantic_bridge_candidate` with
+`next=steady_semantic_bridge_candidate`, the router chooses `q8_prompt` and
+forces the steady paired-default settings for that proof run; this keeps a
+bridge candidate from looking promoted before its worst-case model-level
+evidence is stable.
 For qsemantic kernel work, `BENCH_QSEMANTIC_VARIANTS=target` limits the raw
 frontier harness to the staged baseline plus the one-dispatch semantic target,
 while `BENCH_QSEMANTIC_VARIANTS=throughput_candidate` limits it to the staged
