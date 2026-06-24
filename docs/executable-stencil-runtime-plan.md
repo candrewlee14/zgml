@@ -786,7 +786,11 @@ can check the current Q8 prompt frontier without paying for unrelated rows,
 `dev:perf:frontier:qproj` loop adds the incremental ReleaseFast rebuild, so
 quantized projection-chain/layout changes can iterate against the checked
 qproj gate before escalating to the full frontier or ggml gates; it is the
-checked qproj gate in the fast dev loop. The frontier
+checked qproj gate in the fast dev loop. That qproj dev loop defaults to three
+attempts rather than one because the prompt-tile lane is noisy enough that a
+single roughly-three-second sample can fall below the `0.95x` floor while the
+x7 executable region proof remains healthy; three attempts keeps iteration fast
+without turning noise into a false architecture signal. The frontier
 microscope uses `BENCH_FRONTIER_ATTEMPTS`
 (default `5`) so the row-chain and qproj kernel work can absorb local timing
 noise without falling back to the much slower full scorecard.

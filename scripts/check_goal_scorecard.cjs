@@ -198,11 +198,11 @@ function checkScripts() {
   if (scripts["dev:perf:frontier:row-chain-region:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=\"qrow region\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:row-chain-region:run must remain the no-rebuild checked x7 row-chain region microscope");
   }
-  if (scripts["dev:perf:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
-    errors.push("package.json dev:perf:frontier:qproj must remain the incremental checked qproj frontier microscope");
+  if (scripts["dev:perf:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:qproj must remain the incremental checked qproj frontier microscope with noise-aware attempts");
   }
-  if (scripts["dev:perf:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
-    errors.push("package.json dev:perf:frontier:qproj:run must remain the no-rebuild checked qproj frontier microscope");
+  if (scripts["dev:perf:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:qproj:run must remain the no-rebuild checked qproj frontier microscope with noise-aware attempts");
   }
   if (scripts["bench:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:qproj must remain the ReleaseFast qproj-only frontier evidence gate");
