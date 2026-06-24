@@ -95,6 +95,7 @@ const expectedPackageFiles = Object.freeze([
   "examples/types/bun-training-smoke.ts",
   "examples/types/program-session-smoke.ts",
   "examples/node_training/manual_loop.cjs",
+  "examples/node_training/quickstart.cjs",
   "examples/node_training/train_linear.cjs",
   "examples/node_training/train_mlp.cjs",
   "examples/node_training/train_classifier.cjs",

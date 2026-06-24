@@ -15,6 +15,11 @@ and autograd vocabulary. Then compile the stable work into an explicit
 `Program`/`Session` handle when the hot path needs native speed, FFI-friendly
 binding, and evidence.
 
+For a runnable end-to-end version of this flow, see
+`examples/node_training/quickstart.cjs`. It trains a small model, checkpoint
+round-trips it, compiles it, binds a `Session`, and executes into caller-owned
+output.
+
 ```ts
 import { zgml } from "zgml";
 import type { Tensor } from "zgml";
@@ -137,7 +142,7 @@ zgml.train.evaluate(classifierLoader, (batch) => {
 });
 const predictions = zgml.train.predictClassifier(classifier, classifierLoader);
 
-const program = zgml.compile.compile(classifier, { inputShape: [2] as const });
+const program = zgml.compile(classifier, { inputShape: [2] as const });
 const session = program.bindModule(classifier);
 const input = zgml.tensor([1, -1], [2] as const);
 const logits = zgml.inference_mode(() => session.stepTensor(input));
