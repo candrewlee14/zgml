@@ -1570,7 +1570,7 @@ const shader_source =
     \\    uint lane     [[thread_index_in_simdgroup]],
     \\    uint tid      [[thread_index_in_threadgroup]]
     \\) {
-    \\    const uint gRow = row_tile * TILE;
+    \\    const uint gRow = row_tile * ROW_CHAIN_TILE;
     \\    const uint sRow = (simd_idx / 2) * 16;
     \\    const uint sCol = (simd_idx % 2) * 16;
     \\

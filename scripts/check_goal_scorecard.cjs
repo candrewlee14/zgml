@@ -663,6 +663,7 @@ function checkScripts() {
     "const TILE: u32 = 32;",
     "const ROW_CHAIN_TILE: u32 = 32;",
     "requireShaderUintConst(\"ROW_CHAIN_TILE\", ROW_CHAIN_TILE);",
+    "const uint gRow = row_tile * ROW_CHAIN_TILE;",
   ]);
   requireIncludes(read("src/backend/program.zig"), "src/backend/program.zig", "prompt row-chain policy must not promote qmatvec decode trap", [
     "pub fn promptProjectionRowChainCommand() CommandStreamPolicy",
