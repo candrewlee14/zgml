@@ -1395,6 +1395,15 @@ selected three-attempt Q8 prompt evidence is less ambiguous:
 `semantic_median=0.97x`, and `semantic_worst=0.95x`. That narrows the diagnosis:
 the semantic path is structurally right and roughly parity, but it is not hiding
 a stable throughput win behind the earlier unpaired measurement swing.
+The Metal runtime now checks requested output byte spans, not just output buffer
+ids, before forcing semantic and row-chain intermediate materialization. That is
+the right ABI-level precision for arena-backed buffers, but the follow-up
+three-attempt Q8 prompt semantic gate still stayed diagnostic:
+`semantic_best=1.11x`, `semantic_median=1.00x`, `semantic_worst=0.92x`, and
+`spills=30`. So span-aware output reads are useful cleanup, not the missing
+throughput move. Keep the next target on a larger semantic FFN throughput kernel
+or on absorbing the live residual use, rather than promoting the current
+semantic tail path.
 A June 24, 2026 shape-gated policy experiment tried limiting the two-phase
 semantic throughput tail to the 512-wide full-prefill shape so the 576-wide
 SmolLM prompt shape would preserve the semantic command but skip the tiled tail.

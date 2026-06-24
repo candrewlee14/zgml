@@ -273,6 +273,13 @@ machine for both prompt/prefill and decode.
   `qmatmul_row_chain_tiled_spilled_elementwise=0` for the x7 full-prefill and
   SmolLM-prompt two-phase rows, but they still land at `0.80x` and `0.61x`;
   spill removal alone is not the missing default-performance move.
+- Metal output-read checks are now span-aware for semantic and row-chain
+  intermediate writes, so a Program output on the same arena buffer no longer
+  forces materialization unless its byte range overlaps the candidate write. A
+  source-current three-attempt Q8 prompt semantic run still reported
+  `semantic_median=1.00x`, `semantic_worst=0.92x`, and `spills=30`, so this
+  narrows correctness/materialization policy but does not change the next perf
+  target: larger semantic FFN throughput or live-residual absorption.
 - The full-model Q8 prompt probe now distinguishes general projection groups
   from attention/cache projection groups. Its Q8 evidence reports
   `projection_group=0->0`, `projection_cache_group=30->30`, and

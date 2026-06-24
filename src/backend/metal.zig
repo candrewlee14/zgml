@@ -5519,7 +5519,52 @@ const RuntimeView = struct {
         }
         return false;
     }
+
+    fn outputReadsSpan(self: RuntimeView, buf_idx: u16, element_offset: u32, element_count: u64) bool {
+        if (element_count == 0) return false;
+        const byte_start = @as(u64, element_offset) * @sizeOf(f32);
+        const byte_end = byte_start + element_count * @sizeOf(f32);
+        for (self.outputs) |output| {
+            if (output.buf_idx != buf_idx or output.size == 0) continue;
+            const output_start = @as(u64, output.offset);
+            const output_end = output_start + @as(u64, output.size);
+            if (byte_start < output_end and output_start < byte_end) return true;
+        }
+        return false;
+    }
+
+    fn outputReadsDenseSpan(self: RuntimeView, buf_idx: u16, element_offset: u32, rows: u32, cols: u32, row_stride: u32) bool {
+        if (rows == 0 or cols == 0) return false;
+        const stride = if (row_stride == 0) cols else row_stride;
+        const touched_elements = (@as(u64, rows) - 1) * @as(u64, stride) + @as(u64, cols);
+        return self.outputReadsSpan(buf_idx, element_offset, touched_elements);
+    }
 };
+
+test "RuntimeView output span checks byte overlap instead of whole buffer" {
+    var stencil: program_mod.ProgramStencil = undefined;
+    const outputs = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 2, .offset = 16, .size = 16 },
+        .{ .buf_idx = 3, .offset = 0, .size = 0 },
+    };
+    const view = RuntimeView{
+        .device_bufs = &.{},
+        .ref_buffers = &.{},
+        .qweight_views = &.{},
+        .ref_qweights = &.{},
+        .program_stencil = &stencil,
+        .outputs = &outputs,
+    };
+
+    try std.testing.expect(view.outputReadsBuffer(2));
+    try std.testing.expect(!view.outputReadsSpan(2, 0, 4));
+    try std.testing.expect(view.outputReadsSpan(2, 4, 1));
+    try std.testing.expect(view.outputReadsSpan(2, 7, 2));
+    try std.testing.expect(!view.outputReadsSpan(2, 8, 1));
+    try std.testing.expect(!view.outputReadsSpan(3, 0, 1));
+    try std.testing.expect(view.outputReadsDenseSpan(2, 0, 2, 2, 4));
+    try std.testing.expect(!view.outputReadsDenseSpan(2, 0, 1, 2, 4));
+}
 
 fn releaseDeviceBuffers(device_bufs: []const DeviceBuffer) void {
     for (device_bufs) |buf| c.mtl_release(buf.ptr);
@@ -8871,7 +8916,7 @@ const CompiledProgram = struct {
         const rn = deviceOpAt(.rmsnorm, ops, rn_idx) orelse return false;
         const rp = deviceOpAt(.repeat, ops, rp_idx) orelse return false;
         const out = deviceOpAt(.elementwise, ops, out_idx) orelse return false;
-        const write_ew_output = program_mod.projectionRowChainElementwiseHasExternalUsers(ops, command) or view.outputReadsBuffer(e.dst);
+        const write_ew_output = program_mod.projectionRowChainElementwiseHasExternalUsers(ops, command) or view.outputReadsSpan(e.dst, e.dst_offset, e.n);
         if (q.M != 1) {
             if (self.command_policy.fuse_projection_row_chain_two_phase_candidate and
                 !projectionRowChainScaleHasExternalUsers(ops, command) and
@@ -8905,7 +8950,7 @@ const CompiledProgram = struct {
         const rn = deviceOpAt(.rmsnorm, ops, rn_idx) orelse return false;
         const rp = deviceOpAt(.repeat, ops, rp_idx) orelse return false;
         const out = deviceOpAt(.elementwise, ops, out_idx) orelse return false;
-        const write_ew_output = program_mod.projectionRowChainElementwiseHasExternalUsers(ops, command) or view.outputReadsBuffer(e.dst);
+        const write_ew_output = program_mod.projectionRowChainElementwiseHasExternalUsers(ops, command) or view.outputReadsSpan(e.dst, e.dst_offset, e.n);
         return self.encodeMatmulRowChain(exec, view, m, e, rn, rp, out, write_ew_output);
     }
 
@@ -9090,10 +9135,14 @@ const CompiledProgram = struct {
         if (@as(usize, gate.weight_idx) >= view.qweight_views.len or
             @as(usize, up.weight_idx) >= view.qweight_views.len or
             @as(usize, down.weight_idx) >= view.qweight_views.len) return false;
-        if (view.outputReadsBuffer(gate.dst) or view.outputReadsBuffer(first.dst) or
-            view.outputReadsBuffer(up.dst) or view.outputReadsBuffer(product.dst) or
-            view.outputReadsBuffer(down.dst) or view.outputReadsBuffer(residual.dst) or
-            view.outputReadsBuffer(rn.dst) or view.outputReadsBuffer(rp.dst)) return false;
+        if (view.outputReadsDenseSpan(gate.dst, gate.dst_offset, gate.M, gate.N, gate.dst_row_stride) or
+            view.outputReadsSpan(first.dst, first.dst_offset, first.n) or
+            view.outputReadsDenseSpan(up.dst, up.dst_offset, up.M, up.N, up.dst_row_stride) or
+            view.outputReadsSpan(product.dst, product.dst_offset, product.n) or
+            view.outputReadsDenseSpan(down.dst, down.dst_offset, down.M, down.N, down.dst_row_stride) or
+            view.outputReadsSpan(residual.dst, residual.dst_offset, residual.n) or
+            view.outputReadsSpan(rn.dst, rn.dst_offset, @as(u64, rn.rows) * rn.cols) or
+            view.outputReadsSpan(rp.dst, rp.dst_offset, rp.n)) return false;
 
         const down_is_src0 = residual.src0 == down.dst and residual.src0_offset == down.dst_offset;
         const residual_secondary_buf = if (down_is_src0) residual.src1 else residual.src0;
@@ -9171,14 +9220,14 @@ const CompiledProgram = struct {
         if (!self.encodeQMatmulPairSingleFusedElementwiseChain(exec, view, gate, fe, up, product)) return false;
 
         if (self.command_policy.fuse_projection_row_chain_two_phase_candidate and
-            self.encodeQMatmulRowChainTwoPhaseTiled(exec, view, down, residual, rn, rp, out, view.outputReadsBuffer(residual.dst)))
+            self.encodeQMatmulRowChainTwoPhaseTiled(exec, view, down, residual, rn, rp, out, view.outputReadsSpan(residual.dst, residual.dst_offset, residual.n)))
         {
             return true;
         }
 
-        const write_down_primary = view.outputReadsBuffer(down.dst);
+        const write_down_primary = view.outputReadsDenseSpan(down.dst, down.dst_offset, down.M, down.N, down.dst_row_stride);
         if (!self.encodeQMatmulElementwise(exec, view, down, residual, write_down_primary)) return false;
-        return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, view.outputReadsBuffer(rn.dst) or view.outputReadsBuffer(rp.dst));
+        return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, view.outputReadsSpan(rn.dst, rn.dst_offset, @as(u64, rn.rows) * rn.cols) or view.outputReadsSpan(rp.dst, rp.dst_offset, rp.n));
     }
 
     fn projectionRowChainPrimaryHasExternalUsers(ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
