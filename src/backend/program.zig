@@ -1314,6 +1314,8 @@ pub const CommandStreamPolicy = struct {
 
     pub fn promptProjectionRowChainCommand() CommandStreamPolicy {
         var policy = CommandStreamPolicy.default();
+        policy.fuse_semantic_ffn_sublayer = true;
+        policy.fuse_semantic_ffn_sublayer_single_dispatch = false;
         policy.fuse_projection_row_chain = true;
         policy.fuse_projection_row_chain_qmatvec = false;
         policy.fuse_projection_row_chain_single_dispatch = false;
@@ -1324,13 +1326,12 @@ pub const CommandStreamPolicy = struct {
     pub fn promptSemanticFfnSublayerTarget() CommandStreamPolicy {
         var policy = CommandStreamPolicy.promptProjectionRowChainCommand();
         policy.fuse_semantic_ffn_sublayer = true;
+        policy.fuse_semantic_ffn_sublayer_single_dispatch = true;
         return policy;
     }
 
     pub fn promptSemanticFfnSublayerThroughputCandidate() CommandStreamPolicy {
-        var policy = CommandStreamPolicy.promptSemanticFfnSublayerTarget();
-        policy.fuse_semantic_ffn_sublayer_single_dispatch = false;
-        return policy;
+        return CommandStreamPolicy.promptProjectionRowChainCommand();
     }
 
     pub fn promptProjectionRowChainSingleDispatchCandidate() CommandStreamPolicy {
@@ -9312,9 +9313,9 @@ test "program command stream recognizes semantic FFN sublayer target" {
 
     const default_commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.promptProjectionRowChainCommand());
     defer std.testing.allocator.free(default_commands);
-    try std.testing.expectEqual(@as(usize, 2), default_commands.len);
-    try std.testing.expectEqual(ProgramCommandKind.projection_pair_fused_elementwise_chain, default_commands[0].kind);
-    try std.testing.expectEqual(ProgramCommandKind.projection_row_chain, default_commands[1].kind);
+    try std.testing.expectEqual(@as(usize, 1), default_commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.semantic_ffn_sublayer, default_commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 9), default_commands[0].coveredOpCount());
 
     const target_commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.promptSemanticFfnSublayerTarget());
     defer std.testing.allocator.free(target_commands);

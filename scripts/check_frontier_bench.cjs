@@ -17,7 +17,7 @@ const projectionRowChainMaxAbsDiffCeil = 0.02;
 const projectionRowChainLowering = "prompt_split_tiled_qmatmul_plus_rmsnorm";
 const projectionRowChainDiagnosticKernel = "single_dispatch_tiled_candidate";
 const projectionRowChainNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
-const semanticThroughputCandidateStatusToken = "throughput_candidate_status=preserves_default_work_shape";
+const semanticCommandStatusToken = "semantic_command_status=preserves_default_work_shape";
 const build = process.env.BENCH_FRONTIER_BUILD ?? "1";
 const frontierFilter = process.env.BENCH_FRONTIER_FILTER ?? "";
 
@@ -488,28 +488,25 @@ function runFocusedQrowRegionGate() {
 }
 
 function scoreFocusedSemantic(output, attempt) {
-  const fullPrefillLabel = "qsemantic full-prefill m=128 n=512 k=512 semantic pair_row_chain";
+  const fullPrefillLabel = "qsemantic full-prefill m=128 n=512 k=512 semantic command";
   const fullPrefillTwoPhaseLabel = "qsemantic full-prefill m=128 n=512 k=512 semantic pair_row_chain_two_phase";
   const fullPrefillSingleDispatchLabel = "qsemantic full-prefill m=128 n=512 k=512 semantic pair_row_chain_single_dispatch";
-  const fullPrefillThroughputCandidateLabel = "qsemantic full-prefill m=128 n=512 k=512 semantic throughput_candidate";
-  const smollmPromptLabel = "qsemantic smollm-prompt m=128 n=576 k=576 semantic pair_row_chain";
+  const smollmPromptLabel = "qsemantic smollm-prompt m=128 n=576 k=576 semantic command";
   const smollmPromptTwoPhaseLabel = "qsemantic smollm-prompt m=128 n=576 k=576 semantic pair_row_chain_two_phase";
   const smollmPromptSingleDispatchLabel = "qsemantic smollm-prompt m=128 n=576 k=576 semantic pair_row_chain_single_dispatch";
-  const smollmPromptThroughputCandidateLabel = "qsemantic smollm-prompt m=128 n=576 k=576 semantic throughput_candidate";
   const fullPrefillProfileLabel = `${fullPrefillLabel} dispatch_profile`;
   const fullPrefillTwoPhaseProfileLabel = `${fullPrefillTwoPhaseLabel} dispatch_profile`;
   const fullPrefillSingleDispatchProfileLabel = `${fullPrefillSingleDispatchLabel} dispatch_profile`;
-  const fullPrefillThroughputCandidateProfileLabel = `${fullPrefillThroughputCandidateLabel} dispatch_profile`;
   const fullPrefillTargetProfileLabel = "qsemantic full-prefill m=128 n=512 k=512 semantic target dispatch_profile";
   const smollmPromptProfileLabel = `${smollmPromptLabel} dispatch_profile`;
   const smollmPromptTwoPhaseProfileLabel = `${smollmPromptTwoPhaseLabel} dispatch_profile`;
   const smollmPromptSingleDispatchProfileLabel = `${smollmPromptSingleDispatchLabel} dispatch_profile`;
-  const smollmPromptThroughputCandidateProfileLabel = `${smollmPromptThroughputCandidateLabel} dispatch_profile`;
   const smollmPromptTargetProfileLabel = "qsemantic smollm-prompt m=128 n=576 k=576 semantic target dispatch_profile";
 
   const fullPrefillSpeedup = metric(output, fullPrefillLabel, "speedup");
   const fullPrefillMaxAbsDiff = metric(output, fullPrefillLabel, "max_abs_diff");
   const fullPrefillShapeCommands = metric(output, fullPrefillProfileLabel, "shape_commands");
+  const fullPrefillShapeSemantic = metric(output, fullPrefillProfileLabel, "shape_semantic_ffn_sublayers");
   const fullPrefillShapeRowChains = metric(output, fullPrefillProfileLabel, "shape_projection_row_chains");
   const fullPrefillShapeCoveredOps = metric(output, fullPrefillProfileLabel, "shape_covered_ops");
   const fullPrefillShapeSavedDispatches = metric(output, fullPrefillProfileLabel, "shape_saved_dispatches");
@@ -517,7 +514,9 @@ function scoreFocusedSemantic(output, attempt) {
   const fullPrefillRuntimeRowChainDispatches = metric(output, fullPrefillProfileLabel, "runtime_projection_row_chain_dispatches");
   const fullPrefillRuntimeRowChainAttempts = metric(output, fullPrefillProfileLabel, "runtime_projection_row_chain_attempts");
   const fullPrefillRuntimeRowChainRefused = metric(output, fullPrefillProfileLabel, "runtime_projection_row_chain_refused");
+  const fullPrefillRuntimeSemanticDispatches = metric(output, fullPrefillProfileLabel, "runtime_semantic_ffn_dispatches");
   const fullPrefillRuntimeRowChainTiled = metric(output, fullPrefillProfileLabel, "qmatmul_row_chain_tiled_count");
+  const fullPrefillSemanticRowSerialCount = metric(output, fullPrefillProfileLabel, "semantic_ffn_sublayer_count");
   const fullPrefillTargetDispatches = metric(output, fullPrefillProfileLabel, "semantic_target_dispatches");
   const fullPrefillTargetShapeCommands = metric(output, fullPrefillTargetProfileLabel, "shape_commands");
   const fullPrefillTargetShapeSemantic = metric(output, fullPrefillTargetProfileLabel, "shape_semantic_ffn_sublayers");
@@ -562,20 +561,10 @@ function scoreFocusedSemantic(output, attempt) {
   const fullPrefillSingleDispatchSerialLoops = metric(output, fullPrefillSingleDispatchProfileLabel, "qmatmul_row_chain_tiled_serial_tile_loops");
   const fullPrefillSingleDispatchPartialSlots = metric(output, fullPrefillSingleDispatchProfileLabel, "qmatmul_row_chain_tiled_partial_slots");
   const fullPrefillSingleDispatchScratchCapacity = metric(output, fullPrefillSingleDispatchProfileLabel, "qmatmul_row_chain_tiled_scratch_capacity");
-  const fullPrefillThroughputCandidateSpeedup = metric(output, fullPrefillThroughputCandidateLabel, "speedup");
-  const fullPrefillThroughputCandidateMaxAbsDiff = metric(output, fullPrefillThroughputCandidateLabel, "max_abs_diff");
-  const fullPrefillThroughputCandidateShapeCommands = metric(output, fullPrefillThroughputCandidateProfileLabel, "shape_commands");
-  const fullPrefillThroughputCandidateShapeSemantic = metric(output, fullPrefillThroughputCandidateProfileLabel, "shape_semantic_ffn_sublayers");
-  const fullPrefillThroughputCandidateShapeCoveredOps = metric(output, fullPrefillThroughputCandidateProfileLabel, "shape_covered_ops");
-  const fullPrefillThroughputCandidateShapeSavedDispatches = metric(output, fullPrefillThroughputCandidateProfileLabel, "shape_saved_dispatches");
-  const fullPrefillThroughputCandidateRuntimeDispatches = metric(output, fullPrefillThroughputCandidateProfileLabel, "runtime_backend_dispatches");
-  const fullPrefillThroughputCandidateSemanticDispatches = metric(output, fullPrefillThroughputCandidateProfileLabel, "runtime_semantic_ffn_dispatches");
-  const fullPrefillThroughputCandidateRowSerialCount = metric(output, fullPrefillThroughputCandidateProfileLabel, "semantic_ffn_sublayer_count");
-  const fullPrefillThroughputCandidateRowChainDispatches = metric(output, fullPrefillThroughputCandidateProfileLabel, "runtime_projection_row_chain_dispatches");
-
   const smollmPromptSpeedup = metric(output, smollmPromptLabel, "speedup");
   const smollmPromptMaxAbsDiff = metric(output, smollmPromptLabel, "max_abs_diff");
   const smollmPromptShapeCommands = metric(output, smollmPromptProfileLabel, "shape_commands");
+  const smollmPromptShapeSemantic = metric(output, smollmPromptProfileLabel, "shape_semantic_ffn_sublayers");
   const smollmPromptShapeRowChains = metric(output, smollmPromptProfileLabel, "shape_projection_row_chains");
   const smollmPromptShapeCoveredOps = metric(output, smollmPromptProfileLabel, "shape_covered_ops");
   const smollmPromptShapeSavedDispatches = metric(output, smollmPromptProfileLabel, "shape_saved_dispatches");
@@ -583,7 +572,9 @@ function scoreFocusedSemantic(output, attempt) {
   const smollmPromptRuntimeRowChainDispatches = metric(output, smollmPromptProfileLabel, "runtime_projection_row_chain_dispatches");
   const smollmPromptRuntimeRowChainAttempts = metric(output, smollmPromptProfileLabel, "runtime_projection_row_chain_attempts");
   const smollmPromptRuntimeRowChainRefused = metric(output, smollmPromptProfileLabel, "runtime_projection_row_chain_refused");
+  const smollmPromptRuntimeSemanticDispatches = metric(output, smollmPromptProfileLabel, "runtime_semantic_ffn_dispatches");
   const smollmPromptRuntimeRowChainTiled = metric(output, smollmPromptProfileLabel, "qmatmul_row_chain_tiled_count");
+  const smollmPromptSemanticRowSerialCount = metric(output, smollmPromptProfileLabel, "semantic_ffn_sublayer_count");
   const smollmPromptTargetDispatches = metric(output, smollmPromptProfileLabel, "semantic_target_dispatches");
   const smollmPromptTargetShapeCommands = metric(output, smollmPromptTargetProfileLabel, "shape_commands");
   const smollmPromptTargetShapeSemantic = metric(output, smollmPromptTargetProfileLabel, "shape_semantic_ffn_sublayers");
@@ -628,34 +619,22 @@ function scoreFocusedSemantic(output, attempt) {
   const smollmPromptSingleDispatchSerialLoops = metric(output, smollmPromptSingleDispatchProfileLabel, "qmatmul_row_chain_tiled_serial_tile_loops");
   const smollmPromptSingleDispatchPartialSlots = metric(output, smollmPromptSingleDispatchProfileLabel, "qmatmul_row_chain_tiled_partial_slots");
   const smollmPromptSingleDispatchScratchCapacity = metric(output, smollmPromptSingleDispatchProfileLabel, "qmatmul_row_chain_tiled_scratch_capacity");
-  const smollmPromptThroughputCandidateSpeedup = metric(output, smollmPromptThroughputCandidateLabel, "speedup");
-  const smollmPromptThroughputCandidateMaxAbsDiff = metric(output, smollmPromptThroughputCandidateLabel, "max_abs_diff");
-  const smollmPromptThroughputCandidateShapeCommands = metric(output, smollmPromptThroughputCandidateProfileLabel, "shape_commands");
-  const smollmPromptThroughputCandidateShapeSemantic = metric(output, smollmPromptThroughputCandidateProfileLabel, "shape_semantic_ffn_sublayers");
-  const smollmPromptThroughputCandidateShapeCoveredOps = metric(output, smollmPromptThroughputCandidateProfileLabel, "shape_covered_ops");
-  const smollmPromptThroughputCandidateShapeSavedDispatches = metric(output, smollmPromptThroughputCandidateProfileLabel, "shape_saved_dispatches");
-  const smollmPromptThroughputCandidateRuntimeDispatches = metric(output, smollmPromptThroughputCandidateProfileLabel, "runtime_backend_dispatches");
-  const smollmPromptThroughputCandidateSemanticDispatches = metric(output, smollmPromptThroughputCandidateProfileLabel, "runtime_semantic_ffn_dispatches");
-  const smollmPromptThroughputCandidateRowSerialCount = metric(output, smollmPromptThroughputCandidateProfileLabel, "semantic_ffn_sublayer_count");
-  const smollmPromptThroughputCandidateRowChainDispatches = metric(output, smollmPromptThroughputCandidateProfileLabel, "runtime_projection_row_chain_dispatches");
   const targetThroughputStatus = smollmPromptTargetSpeedup >= smollmPromptSpeedup && fullPrefillTargetSpeedup >= fullPrefillSpeedup
     ? "ready"
     : "diagnostic_needs_throughput_kernel";
   const fullPrefillTargetVsDefault = fullPrefillTargetSpeedup / fullPrefillSpeedup;
   const smollmPromptTargetVsDefault = smollmPromptTargetSpeedup / smollmPromptSpeedup;
-  const fullPrefillThroughputCandidateVsDefault = fullPrefillThroughputCandidateSpeedup / fullPrefillSpeedup;
-  const smollmPromptThroughputCandidateVsDefault = smollmPromptThroughputCandidateSpeedup / smollmPromptSpeedup;
-  const throughputCandidateStatus =
-    fullPrefillThroughputCandidateShapeCommands === 1 &&
-    fullPrefillThroughputCandidateShapeSemantic === 1 &&
-    fullPrefillThroughputCandidateRuntimeDispatches === 3 &&
-    fullPrefillThroughputCandidateSemanticDispatches === 3 &&
-    fullPrefillThroughputCandidateRowSerialCount === 0 &&
-    smollmPromptThroughputCandidateShapeCommands === 1 &&
-    smollmPromptThroughputCandidateShapeSemantic === 1 &&
-    smollmPromptThroughputCandidateRuntimeDispatches === 3 &&
-    smollmPromptThroughputCandidateSemanticDispatches === 3 &&
-    smollmPromptThroughputCandidateRowSerialCount === 0
+  const semanticCommandStatus =
+    fullPrefillShapeCommands === 1 &&
+    fullPrefillShapeSemantic === 1 &&
+    fullPrefillRuntimeDispatches === 3 &&
+    fullPrefillRuntimeSemanticDispatches === 3 &&
+    fullPrefillSemanticRowSerialCount === 0 &&
+    smollmPromptShapeCommands === 1 &&
+    smollmPromptShapeSemantic === 1 &&
+    smollmPromptRuntimeDispatches === 3 &&
+    smollmPromptRuntimeSemanticDispatches === 3 &&
+    smollmPromptSemanticRowSerialCount === 0
       ? "preserves_default_work_shape"
       : "diagnostic";
   const singleDispatchReduced = fullPrefillSingleDispatchRuntimeDispatches < fullPrefillRuntimeDispatches && smollmPromptSingleDispatchRuntimeDispatches < smollmPromptRuntimeDispatches;
@@ -669,18 +648,16 @@ function scoreFocusedSemantic(output, attempt) {
     ["semantic full-prefill", fullPrefillMaxAbsDiff],
     ["semantic full-prefill two-phase", fullPrefillTwoPhaseMaxAbsDiff],
     ["semantic full-prefill single-dispatch row-chain", fullPrefillSingleDispatchMaxAbsDiff],
-    ["semantic full-prefill throughput candidate", fullPrefillThroughputCandidateMaxAbsDiff],
     ["semantic full-prefill target", fullPrefillTargetMaxAbsDiff],
     ["semantic smollm-prompt", smollmPromptMaxAbsDiff],
     ["semantic smollm-prompt two-phase", smollmPromptTwoPhaseMaxAbsDiff],
     ["semantic smollm-prompt single-dispatch row-chain", smollmPromptSingleDispatchMaxAbsDiff],
-    ["semantic smollm-prompt throughput candidate", smollmPromptThroughputCandidateMaxAbsDiff],
     ["semantic smollm-prompt target", smollmPromptTargetMaxAbsDiff],
   ]) {
     if (value > projectionRowChainMaxAbsDiffCeil) failures.push(`${label} max_abs_diff ${value.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   }
-  if (fullPrefillShapeCommands !== 2 || fullPrefillShapeRowChains !== 1 || fullPrefillShapeCoveredOps !== 9 || fullPrefillShapeSavedDispatches !== 7 || fullPrefillRuntimeDispatches !== 3 || fullPrefillRuntimeRowChainDispatches !== 2 || fullPrefillRuntimeRowChainAttempts !== 1 || fullPrefillRuntimeRowChainRefused !== 0 || fullPrefillRuntimeRowChainTiled !== 0 || fullPrefillTargetDispatches !== 1) {
-    failures.push("semantic full-prefill profile must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 shape_saved_dispatches=7 runtime_backend_dispatches=3 runtime_projection_row_chain_dispatches=2 runtime_projection_row_chain_attempts=1 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=0 semantic_target_dispatches=1");
+  if (fullPrefillShapeCommands !== 1 || fullPrefillShapeSemantic !== 1 || fullPrefillShapeRowChains !== 0 || fullPrefillShapeCoveredOps !== 9 || fullPrefillShapeSavedDispatches !== 8 || fullPrefillRuntimeDispatches !== 3 || fullPrefillRuntimeSemanticDispatches !== 3 || fullPrefillRuntimeRowChainDispatches !== 0 || fullPrefillRuntimeRowChainAttempts !== 0 || fullPrefillRuntimeRowChainRefused !== 0 || fullPrefillRuntimeRowChainTiled !== 0 || fullPrefillSemanticRowSerialCount !== 0 || fullPrefillTargetDispatches !== 1) {
+    failures.push("semantic full-prefill command profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_projection_row_chains=0 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=3 runtime_semantic_ffn_dispatches=3 runtime_projection_row_chain_dispatches=0 runtime_projection_row_chain_attempts=0 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=0 semantic_ffn_sublayer_count=0 semantic_target_dispatches=1");
   }
   if (fullPrefillTargetShapeCommands !== 1 || fullPrefillTargetShapeSemantic !== 1 || fullPrefillTargetShapeCoveredOps !== 9 || fullPrefillTargetShapeSavedDispatches !== 8 || fullPrefillTargetRuntimeDispatches !== 1) {
     failures.push("semantic full-prefill target profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=1");
@@ -694,14 +671,11 @@ function scoreFocusedSemantic(output, attempt) {
   if (fullPrefillSingleDispatchShapeCommands !== 2 || fullPrefillSingleDispatchShapeRowChains !== 1 || fullPrefillSingleDispatchShapeCoveredOps !== 9 || fullPrefillSingleDispatchRuntimeDispatches !== 2 || fullPrefillSingleDispatchRuntimeRowChainDispatches !== 1 || fullPrefillSingleDispatchRuntimeRowChainAttempts !== 1 || fullPrefillSingleDispatchRuntimeRowChainRefused !== 0 || fullPrefillSingleDispatchRuntimeRowChainTiled !== 1) {
     failures.push("semantic full-prefill single-dispatch row-chain diagnostic must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 runtime_backend_dispatches=2 runtime_projection_row_chain_dispatches=1 runtime_projection_row_chain_attempts=1 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=1 until throughput is ready");
   }
-  if (fullPrefillThroughputCandidateShapeCommands !== 1 || fullPrefillThroughputCandidateShapeSemantic !== 1 || fullPrefillThroughputCandidateShapeCoveredOps !== 9 || fullPrefillThroughputCandidateShapeSavedDispatches !== 8 || fullPrefillThroughputCandidateRuntimeDispatches !== 3 || fullPrefillThroughputCandidateSemanticDispatches !== 3 || fullPrefillThroughputCandidateRowSerialCount !== 0 || fullPrefillThroughputCandidateRowChainDispatches !== 0) {
-    failures.push("semantic full-prefill throughput candidate must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=3 runtime_semantic_ffn_dispatches=3 semantic_ffn_sublayer_count=0 runtime_projection_row_chain_dispatches=0");
-  }
   if (fullPrefillTwoPhaseRowTileGroups !== 4 || fullPrefillTwoPhaseNTiles !== 16 || fullPrefillTwoPhaseSerialLoops !== 64 || fullPrefillTwoPhasePartialSlots !== 2048 || fullPrefillTwoPhaseScratchCapacity !== 65536 || fullPrefillSingleDispatchRowTileGroups !== 4 || fullPrefillSingleDispatchNTiles !== 16 || fullPrefillSingleDispatchSerialLoops !== 64 || fullPrefillSingleDispatchPartialSlots !== 2048 || fullPrefillSingleDispatchScratchCapacity !== 65536) {
     failures.push("semantic full-prefill tiled row-chain diagnostics must expose row_tile_groups=4 n_tiles=16 serial_tile_loops=64 partial_slots=2048 scratch_capacity=65536 for both two-phase and single-dispatch paths");
   }
-  if (smollmPromptShapeCommands !== 2 || smollmPromptShapeRowChains !== 1 || smollmPromptShapeCoveredOps !== 9 || smollmPromptShapeSavedDispatches !== 7 || smollmPromptRuntimeDispatches !== 3 || smollmPromptRuntimeRowChainDispatches !== 2 || smollmPromptRuntimeRowChainAttempts !== 1 || smollmPromptRuntimeRowChainRefused !== 0 || smollmPromptRuntimeRowChainTiled !== 0 || smollmPromptTargetDispatches !== 1) {
-    failures.push("semantic smollm-prompt profile must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 shape_saved_dispatches=7 runtime_backend_dispatches=3 runtime_projection_row_chain_dispatches=2 runtime_projection_row_chain_attempts=1 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=0 semantic_target_dispatches=1");
+  if (smollmPromptShapeCommands !== 1 || smollmPromptShapeSemantic !== 1 || smollmPromptShapeRowChains !== 0 || smollmPromptShapeCoveredOps !== 9 || smollmPromptShapeSavedDispatches !== 8 || smollmPromptRuntimeDispatches !== 3 || smollmPromptRuntimeSemanticDispatches !== 3 || smollmPromptRuntimeRowChainDispatches !== 0 || smollmPromptRuntimeRowChainAttempts !== 0 || smollmPromptRuntimeRowChainRefused !== 0 || smollmPromptRuntimeRowChainTiled !== 0 || smollmPromptSemanticRowSerialCount !== 0 || smollmPromptTargetDispatches !== 1) {
+    failures.push("semantic smollm-prompt command profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_projection_row_chains=0 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=3 runtime_semantic_ffn_dispatches=3 runtime_projection_row_chain_dispatches=0 runtime_projection_row_chain_attempts=0 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=0 semantic_ffn_sublayer_count=0 semantic_target_dispatches=1");
   }
   if (smollmPromptTargetShapeCommands !== 1 || smollmPromptTargetShapeSemantic !== 1 || smollmPromptTargetShapeCoveredOps !== 9 || smollmPromptTargetShapeSavedDispatches !== 8 || smollmPromptTargetRuntimeDispatches !== 1) {
     failures.push("semantic smollm-prompt target profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=1");
@@ -715,9 +689,6 @@ function scoreFocusedSemantic(output, attempt) {
   if (smollmPromptSingleDispatchShapeCommands !== 2 || smollmPromptSingleDispatchShapeRowChains !== 1 || smollmPromptSingleDispatchShapeCoveredOps !== 9 || smollmPromptSingleDispatchRuntimeDispatches !== 2 || smollmPromptSingleDispatchRuntimeRowChainDispatches !== 1 || smollmPromptSingleDispatchRuntimeRowChainAttempts !== 1 || smollmPromptSingleDispatchRuntimeRowChainRefused !== 0 || smollmPromptSingleDispatchRuntimeRowChainTiled !== 1) {
     failures.push("semantic smollm-prompt single-dispatch row-chain diagnostic must stay shape_commands=2 shape_projection_row_chains=1 shape_covered_ops=9 runtime_backend_dispatches=2 runtime_projection_row_chain_dispatches=1 runtime_projection_row_chain_attempts=1 runtime_projection_row_chain_refused=0 qmatmul_row_chain_tiled_count=1 until throughput is ready");
   }
-  if (smollmPromptThroughputCandidateShapeCommands !== 1 || smollmPromptThroughputCandidateShapeSemantic !== 1 || smollmPromptThroughputCandidateShapeCoveredOps !== 9 || smollmPromptThroughputCandidateShapeSavedDispatches !== 8 || smollmPromptThroughputCandidateRuntimeDispatches !== 3 || smollmPromptThroughputCandidateSemanticDispatches !== 3 || smollmPromptThroughputCandidateRowSerialCount !== 0 || smollmPromptThroughputCandidateRowChainDispatches !== 0) {
-    failures.push("semantic smollm-prompt throughput candidate must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8 runtime_backend_dispatches=3 runtime_semantic_ffn_dispatches=3 semantic_ffn_sublayer_count=0 runtime_projection_row_chain_dispatches=0");
-  }
   if (smollmPromptTwoPhaseRowTileGroups !== 4 || smollmPromptTwoPhaseNTiles !== 18 || smollmPromptTwoPhaseSerialLoops !== 72 || smollmPromptTwoPhasePartialSlots !== 2304 || smollmPromptTwoPhaseScratchCapacity !== 73728 || smollmPromptSingleDispatchRowTileGroups !== 4 || smollmPromptSingleDispatchNTiles !== 18 || smollmPromptSingleDispatchSerialLoops !== 72 || smollmPromptSingleDispatchPartialSlots !== 2304 || smollmPromptSingleDispatchScratchCapacity !== 73728) {
     failures.push("semantic smollm-prompt tiled row-chain diagnostics must expose row_tile_groups=4 n_tiles=18 serial_tile_loops=72 partial_slots=2304 scratch_capacity=73728 for both two-phase and single-dispatch paths");
   }
@@ -727,21 +698,18 @@ function scoreFocusedSemantic(output, attempt) {
     `attempt=${attempt}/${maxAttempts}`,
     `target_throughput_status=${targetThroughputStatus}`,
     `target_vs_default=full_prefill:${fullPrefillTargetVsDefault.toFixed(2)}x,smollm_prompt:${smollmPromptTargetVsDefault.toFixed(2)}x`,
-    throughputCandidateStatus === "preserves_default_work_shape"
-      ? semanticThroughputCandidateStatusToken
-      : `throughput_candidate_status=${throughputCandidateStatus}`,
-    `throughput_candidate_vs_default=full_prefill:${fullPrefillThroughputCandidateVsDefault.toFixed(2)}x,smollm_prompt:${smollmPromptThroughputCandidateVsDefault.toFixed(2)}x`,
+    semanticCommandStatus === "preserves_default_work_shape"
+      ? semanticCommandStatusToken
+      : `semantic_command_status=${semanticCommandStatus}`,
     `single_dispatch_row_chain_dispatch_reduced=${singleDispatchReduced ? "yes" : "no"}`,
     `single_dispatch_row_chain_blocker=${singleDispatchBlocker}`,
     `single_dispatch_throughput_status=${singleDispatchThroughputStatus}`,
-    `full_prefill=${fullPrefillSpeedup.toFixed(2)}x max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} shape_commands=${fullPrefillShapeCommands} shape_covered_ops=${fullPrefillShapeCoveredOps} runtime_backend_dispatches=${fullPrefillRuntimeDispatches} runtime_projection_row_chain_dispatches=${fullPrefillRuntimeRowChainDispatches} runtime_projection_row_chain_attempts=${fullPrefillRuntimeRowChainAttempts} runtime_projection_row_chain_refused=${fullPrefillRuntimeRowChainRefused} qmatmul_row_chain_tiled_count=${fullPrefillRuntimeRowChainTiled} semantic_target_dispatches=${fullPrefillTargetDispatches} target_speedup=${fullPrefillTargetSpeedup.toFixed(2)}x target_max_abs_diff=${fullPrefillTargetMaxAbsDiff.toFixed(6)} target_shape_commands=${fullPrefillTargetShapeCommands} target_semantic_ffn_sublayers=${fullPrefillTargetShapeSemantic} target_runtime_backend_dispatches=${fullPrefillTargetRuntimeDispatches} target_semantic_rows=${fullPrefillTargetSemanticRows} target_semantic_hidden=${fullPrefillTargetSemanticHidden} target_semantic_row_serial_dot_ops=${fullPrefillTargetSemanticRowSerialDotOps} target_semantic_tile_parallel_groups=${fullPrefillTargetSemanticTileParallelGroups}`,
+    `full_prefill=${fullPrefillSpeedup.toFixed(2)}x max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} shape_commands=${fullPrefillShapeCommands} shape_semantic_ffn_sublayers=${fullPrefillShapeSemantic} shape_covered_ops=${fullPrefillShapeCoveredOps} runtime_backend_dispatches=${fullPrefillRuntimeDispatches} runtime_semantic_ffn_dispatches=${fullPrefillRuntimeSemanticDispatches} runtime_projection_row_chain_dispatches=${fullPrefillRuntimeRowChainDispatches} runtime_projection_row_chain_attempts=${fullPrefillRuntimeRowChainAttempts} runtime_projection_row_chain_refused=${fullPrefillRuntimeRowChainRefused} qmatmul_row_chain_tiled_count=${fullPrefillRuntimeRowChainTiled} semantic_ffn_sublayer_count=${fullPrefillSemanticRowSerialCount} semantic_target_dispatches=${fullPrefillTargetDispatches} target_speedup=${fullPrefillTargetSpeedup.toFixed(2)}x target_max_abs_diff=${fullPrefillTargetMaxAbsDiff.toFixed(6)} target_shape_commands=${fullPrefillTargetShapeCommands} target_semantic_ffn_sublayers=${fullPrefillTargetShapeSemantic} target_runtime_backend_dispatches=${fullPrefillTargetRuntimeDispatches} target_semantic_rows=${fullPrefillTargetSemanticRows} target_semantic_hidden=${fullPrefillTargetSemanticHidden} target_semantic_row_serial_dot_ops=${fullPrefillTargetSemanticRowSerialDotOps} target_semantic_tile_parallel_groups=${fullPrefillTargetSemanticTileParallelGroups}`,
     `full_prefill_two_phase=${fullPrefillTwoPhaseSpeedup.toFixed(2)}x max_abs_diff=${fullPrefillTwoPhaseMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillTwoPhaseRuntimeDispatches} qmatmul_row_chain_tiled_count=${fullPrefillTwoPhaseRuntimeRowChainTiled} qmatmul_row_chain_tiled_row_tile_groups=${fullPrefillTwoPhaseRowTileGroups} qmatmul_row_chain_tiled_n_tiles=${fullPrefillTwoPhaseNTiles} qmatmul_row_chain_tiled_serial_tile_loops=${fullPrefillTwoPhaseSerialLoops} qmatmul_row_chain_tiled_partial_slots=${fullPrefillTwoPhasePartialSlots} qmatmul_row_chain_tiled_scratch_capacity=${fullPrefillTwoPhaseScratchCapacity} qmatmul_row_chain_tiled_two_phase_count=${fullPrefillTwoPhaseRuntimeRowChainTwoPhase}`,
     `full_prefill_single_dispatch=${fullPrefillSingleDispatchSpeedup.toFixed(2)}x max_abs_diff=${fullPrefillSingleDispatchMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${fullPrefillSingleDispatchRuntimeDispatches} runtime_projection_row_chain_dispatches=${fullPrefillSingleDispatchRuntimeRowChainDispatches} runtime_projection_row_chain_attempts=${fullPrefillSingleDispatchRuntimeRowChainAttempts} runtime_projection_row_chain_refused=${fullPrefillSingleDispatchRuntimeRowChainRefused} qmatmul_row_chain_tiled_count=${fullPrefillSingleDispatchRuntimeRowChainTiled} qmatmul_row_chain_tiled_row_tile_groups=${fullPrefillSingleDispatchRowTileGroups} qmatmul_row_chain_tiled_n_tiles=${fullPrefillSingleDispatchNTiles} qmatmul_row_chain_tiled_serial_tile_loops=${fullPrefillSingleDispatchSerialLoops} qmatmul_row_chain_tiled_partial_slots=${fullPrefillSingleDispatchPartialSlots} qmatmul_row_chain_tiled_scratch_capacity=${fullPrefillSingleDispatchScratchCapacity}`,
-    `full_prefill_throughput_candidate=${fullPrefillThroughputCandidateSpeedup.toFixed(2)}x max_abs_diff=${fullPrefillThroughputCandidateMaxAbsDiff.toFixed(6)} shape_commands=${fullPrefillThroughputCandidateShapeCommands} shape_semantic_ffn_sublayers=${fullPrefillThroughputCandidateShapeSemantic} runtime_backend_dispatches=${fullPrefillThroughputCandidateRuntimeDispatches} runtime_semantic_ffn_dispatches=${fullPrefillThroughputCandidateSemanticDispatches} semantic_ffn_sublayer_count=${fullPrefillThroughputCandidateRowSerialCount}`,
-    `smollm_prompt=${smollmPromptSpeedup.toFixed(2)}x max_abs_diff=${smollmPromptMaxAbsDiff.toFixed(6)} shape_commands=${smollmPromptShapeCommands} shape_covered_ops=${smollmPromptShapeCoveredOps} runtime_backend_dispatches=${smollmPromptRuntimeDispatches} runtime_projection_row_chain_dispatches=${smollmPromptRuntimeRowChainDispatches} runtime_projection_row_chain_attempts=${smollmPromptRuntimeRowChainAttempts} runtime_projection_row_chain_refused=${smollmPromptRuntimeRowChainRefused} qmatmul_row_chain_tiled_count=${smollmPromptRuntimeRowChainTiled} semantic_target_dispatches=${smollmPromptTargetDispatches} target_speedup=${smollmPromptTargetSpeedup.toFixed(2)}x target_max_abs_diff=${smollmPromptTargetMaxAbsDiff.toFixed(6)} target_shape_commands=${smollmPromptTargetShapeCommands} target_semantic_ffn_sublayers=${smollmPromptTargetShapeSemantic} target_runtime_backend_dispatches=${smollmPromptTargetRuntimeDispatches} target_semantic_rows=${smollmPromptTargetSemanticRows} target_semantic_hidden=${smollmPromptTargetSemanticHidden} target_semantic_row_serial_dot_ops=${smollmPromptTargetSemanticRowSerialDotOps} target_semantic_tile_parallel_groups=${smollmPromptTargetSemanticTileParallelGroups}`,
+    `smollm_prompt=${smollmPromptSpeedup.toFixed(2)}x max_abs_diff=${smollmPromptMaxAbsDiff.toFixed(6)} shape_commands=${smollmPromptShapeCommands} shape_semantic_ffn_sublayers=${smollmPromptShapeSemantic} shape_covered_ops=${smollmPromptShapeCoveredOps} runtime_backend_dispatches=${smollmPromptRuntimeDispatches} runtime_semantic_ffn_dispatches=${smollmPromptRuntimeSemanticDispatches} runtime_projection_row_chain_dispatches=${smollmPromptRuntimeRowChainDispatches} runtime_projection_row_chain_attempts=${smollmPromptRuntimeRowChainAttempts} runtime_projection_row_chain_refused=${smollmPromptRuntimeRowChainRefused} qmatmul_row_chain_tiled_count=${smollmPromptRuntimeRowChainTiled} semantic_ffn_sublayer_count=${smollmPromptSemanticRowSerialCount} semantic_target_dispatches=${smollmPromptTargetDispatches} target_speedup=${smollmPromptTargetSpeedup.toFixed(2)}x target_max_abs_diff=${smollmPromptTargetMaxAbsDiff.toFixed(6)} target_shape_commands=${smollmPromptTargetShapeCommands} target_semantic_ffn_sublayers=${smollmPromptTargetShapeSemantic} target_runtime_backend_dispatches=${smollmPromptTargetRuntimeDispatches} target_semantic_rows=${smollmPromptTargetSemanticRows} target_semantic_hidden=${smollmPromptTargetSemanticHidden} target_semantic_row_serial_dot_ops=${smollmPromptTargetSemanticRowSerialDotOps} target_semantic_tile_parallel_groups=${smollmPromptTargetSemanticTileParallelGroups}`,
     `smollm_prompt_two_phase=${smollmPromptTwoPhaseSpeedup.toFixed(2)}x max_abs_diff=${smollmPromptTwoPhaseMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${smollmPromptTwoPhaseRuntimeDispatches} qmatmul_row_chain_tiled_count=${smollmPromptTwoPhaseRuntimeRowChainTiled} qmatmul_row_chain_tiled_row_tile_groups=${smollmPromptTwoPhaseRowTileGroups} qmatmul_row_chain_tiled_n_tiles=${smollmPromptTwoPhaseNTiles} qmatmul_row_chain_tiled_serial_tile_loops=${smollmPromptTwoPhaseSerialLoops} qmatmul_row_chain_tiled_partial_slots=${smollmPromptTwoPhasePartialSlots} qmatmul_row_chain_tiled_scratch_capacity=${smollmPromptTwoPhaseScratchCapacity} qmatmul_row_chain_tiled_two_phase_count=${smollmPromptTwoPhaseRuntimeRowChainTwoPhase}`,
     `smollm_prompt_single_dispatch=${smollmPromptSingleDispatchSpeedup.toFixed(2)}x max_abs_diff=${smollmPromptSingleDispatchMaxAbsDiff.toFixed(6)} runtime_backend_dispatches=${smollmPromptSingleDispatchRuntimeDispatches} runtime_projection_row_chain_dispatches=${smollmPromptSingleDispatchRuntimeRowChainDispatches} runtime_projection_row_chain_attempts=${smollmPromptSingleDispatchRuntimeRowChainAttempts} runtime_projection_row_chain_refused=${smollmPromptSingleDispatchRuntimeRowChainRefused} qmatmul_row_chain_tiled_count=${smollmPromptSingleDispatchRuntimeRowChainTiled} qmatmul_row_chain_tiled_row_tile_groups=${smollmPromptSingleDispatchRowTileGroups} qmatmul_row_chain_tiled_n_tiles=${smollmPromptSingleDispatchNTiles} qmatmul_row_chain_tiled_serial_tile_loops=${smollmPromptSingleDispatchSerialLoops} qmatmul_row_chain_tiled_partial_slots=${smollmPromptSingleDispatchPartialSlots} qmatmul_row_chain_tiled_scratch_capacity=${smollmPromptSingleDispatchScratchCapacity}`,
-    `smollm_prompt_throughput_candidate=${smollmPromptThroughputCandidateSpeedup.toFixed(2)}x max_abs_diff=${smollmPromptThroughputCandidateMaxAbsDiff.toFixed(6)} shape_commands=${smollmPromptThroughputCandidateShapeCommands} shape_semantic_ffn_sublayers=${smollmPromptThroughputCandidateShapeSemantic} runtime_backend_dispatches=${smollmPromptThroughputCandidateRuntimeDispatches} runtime_semantic_ffn_dispatches=${smollmPromptThroughputCandidateSemanticDispatches} semantic_ffn_sublayer_count=${smollmPromptThroughputCandidateRowSerialCount}`,
     `next=semantic_ffn_sublayer_throughput_kernel`,
   ].join("; ");
 
@@ -782,14 +750,10 @@ function scoreFocusedSemantic(output, attempt) {
     fullPrefillSingleDispatchRuntimeRowChainRefused,
     fullPrefillSingleDispatchRuntimeRowChainTiled,
     singleDispatchThroughputStatus,
-    throughputCandidateStatus,
-    fullPrefillThroughputCandidateSpeedup,
-    fullPrefillThroughputCandidateMaxAbsDiff,
-    fullPrefillThroughputCandidateShapeCommands,
-    fullPrefillThroughputCandidateShapeSemantic,
-    fullPrefillThroughputCandidateShapeCoveredOps,
-    fullPrefillThroughputCandidateRuntimeDispatches,
-    fullPrefillThroughputCandidateSemanticDispatches,
+    semanticCommandStatus,
+    fullPrefillShapeSemantic,
+    fullPrefillRuntimeSemanticDispatches,
+    fullPrefillSemanticRowSerialCount,
     smollmPromptSpeedup,
     smollmPromptMaxAbsDiff,
     smollmPromptShapeCommands,
@@ -825,13 +789,9 @@ function scoreFocusedSemantic(output, attempt) {
     smollmPromptSingleDispatchRuntimeRowChainAttempts,
     smollmPromptSingleDispatchRuntimeRowChainRefused,
     smollmPromptSingleDispatchRuntimeRowChainTiled,
-    smollmPromptThroughputCandidateSpeedup,
-    smollmPromptThroughputCandidateMaxAbsDiff,
-    smollmPromptThroughputCandidateShapeCommands,
-    smollmPromptThroughputCandidateShapeSemantic,
-    smollmPromptThroughputCandidateShapeCoveredOps,
-    smollmPromptThroughputCandidateRuntimeDispatches,
-    smollmPromptThroughputCandidateSemanticDispatches,
+    smollmPromptShapeSemantic,
+    smollmPromptRuntimeSemanticDispatches,
+    smollmPromptSemanticRowSerialCount,
     singleDispatchReduced,
     singleDispatchBlocker,
     failures,
@@ -844,22 +804,20 @@ function focusedSemanticMargin(current) {
     projectionRowChainMaxAbsDiffCeil / Math.max(current.fullPrefillMaxAbsDiff, Number.EPSILON),
     projectionRowChainMaxAbsDiffCeil / Math.max(current.fullPrefillTwoPhaseMaxAbsDiff, Number.EPSILON),
     projectionRowChainMaxAbsDiffCeil / Math.max(current.fullPrefillSingleDispatchMaxAbsDiff, Number.EPSILON),
-    projectionRowChainMaxAbsDiffCeil / Math.max(current.fullPrefillThroughputCandidateMaxAbsDiff, Number.EPSILON),
     projectionRowChainMaxAbsDiffCeil / Math.max(current.fullPrefillTargetMaxAbsDiff, Number.EPSILON),
     projectionRowChainMaxAbsDiffCeil / Math.max(current.smollmPromptMaxAbsDiff, Number.EPSILON),
     projectionRowChainMaxAbsDiffCeil / Math.max(current.smollmPromptTwoPhaseMaxAbsDiff, Number.EPSILON),
     projectionRowChainMaxAbsDiffCeil / Math.max(current.smollmPromptSingleDispatchMaxAbsDiff, Number.EPSILON),
-    projectionRowChainMaxAbsDiffCeil / Math.max(current.smollmPromptThroughputCandidateMaxAbsDiff, Number.EPSILON),
     projectionRowChainMaxAbsDiffCeil / Math.max(current.smollmPromptTargetMaxAbsDiff, Number.EPSILON),
     current.fullPrefillRuntimeDispatches === 3 ? 1 : 0,
-    current.fullPrefillSingleDispatchRuntimeDispatches === 3 ? 1 : 0,
-    current.fullPrefillThroughputCandidateRuntimeDispatches === 3 ? 1 : 0,
-    current.fullPrefillThroughputCandidateSemanticDispatches === 3 ? 1 : 0,
+    current.fullPrefillRuntimeSemanticDispatches === 3 ? 1 : 0,
+    current.fullPrefillSemanticRowSerialCount === 0 ? 1 : 0,
+    current.fullPrefillSingleDispatchRuntimeDispatches === 2 ? 1 : 0,
     current.fullPrefillTargetRuntimeDispatches === 1 ? 1 : 0,
     current.smollmPromptRuntimeDispatches === 3 ? 1 : 0,
-    current.smollmPromptSingleDispatchRuntimeDispatches === 3 ? 1 : 0,
-    current.smollmPromptThroughputCandidateRuntimeDispatches === 3 ? 1 : 0,
-    current.smollmPromptThroughputCandidateSemanticDispatches === 3 ? 1 : 0,
+    current.smollmPromptRuntimeSemanticDispatches === 3 ? 1 : 0,
+    current.smollmPromptSemanticRowSerialCount === 0 ? 1 : 0,
+    current.smollmPromptSingleDispatchRuntimeDispatches === 2 ? 1 : 0,
     current.smollmPromptTargetRuntimeDispatches === 1 ? 1 : 0,
   ) + Math.min(current.fullPrefillSpeedup, current.smollmPromptSpeedup);
 }
@@ -893,17 +851,20 @@ function runFocusedSemanticGate() {
   diffAtMost("smollmPromptSingleDispatchMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "semantic smollm-prompt single-dispatch row-chain");
   diffAtMost("smollmPromptTargetMaxAbsDiff", projectionRowChainMaxAbsDiffCeil, "semantic smollm-prompt target");
   if (!anyEquals(attempts, [
-    ["fullPrefillShapeCommands", 2],
-    ["fullPrefillShapeRowChains", 1],
+    ["fullPrefillShapeCommands", 1],
+    ["fullPrefillShapeSemantic", 1],
+    ["fullPrefillShapeRowChains", 0],
     ["fullPrefillShapeCoveredOps", 9],
-    ["fullPrefillShapeSavedDispatches", 7],
+    ["fullPrefillShapeSavedDispatches", 8],
     ["fullPrefillRuntimeDispatches", 3],
-    ["fullPrefillRuntimeRowChainDispatches", 2],
-    ["fullPrefillRuntimeRowChainAttempts", 1],
+    ["fullPrefillRuntimeSemanticDispatches", 3],
+    ["fullPrefillRuntimeRowChainDispatches", 0],
+    ["fullPrefillRuntimeRowChainAttempts", 0],
     ["fullPrefillRuntimeRowChainRefused", 0],
     ["fullPrefillRuntimeRowChainTiled", 0],
+    ["fullPrefillSemanticRowSerialCount", 0],
     ["fullPrefillTargetDispatches", 1],
-  ])) aggregate.push("semantic full-prefill profile did not match in any attempt");
+  ])) aggregate.push("semantic full-prefill command profile did not match in any attempt");
   if (!anyEquals(attempts, [
     ["fullPrefillTargetShapeCommands", 1],
     ["fullPrefillTargetShapeSemantic", 1],
@@ -922,17 +883,20 @@ function runFocusedSemanticGate() {
     ["fullPrefillSingleDispatchRuntimeRowChainTiled", 1],
   ])) aggregate.push("semantic full-prefill single-dispatch row-chain diagnostic did not match in any attempt");
   if (!anyEquals(attempts, [
-    ["smollmPromptShapeCommands", 2],
-    ["smollmPromptShapeRowChains", 1],
+    ["smollmPromptShapeCommands", 1],
+    ["smollmPromptShapeSemantic", 1],
+    ["smollmPromptShapeRowChains", 0],
     ["smollmPromptShapeCoveredOps", 9],
-    ["smollmPromptShapeSavedDispatches", 7],
+    ["smollmPromptShapeSavedDispatches", 8],
     ["smollmPromptRuntimeDispatches", 3],
-    ["smollmPromptRuntimeRowChainDispatches", 2],
-    ["smollmPromptRuntimeRowChainAttempts", 1],
+    ["smollmPromptRuntimeSemanticDispatches", 3],
+    ["smollmPromptRuntimeRowChainDispatches", 0],
+    ["smollmPromptRuntimeRowChainAttempts", 0],
     ["smollmPromptRuntimeRowChainRefused", 0],
     ["smollmPromptRuntimeRowChainTiled", 0],
+    ["smollmPromptSemanticRowSerialCount", 0],
     ["smollmPromptTargetDispatches", 1],
-  ])) aggregate.push("semantic smollm-prompt profile did not match in any attempt");
+  ])) aggregate.push("semantic smollm-prompt command profile did not match in any attempt");
   if (!anyEquals(attempts, [
     ["smollmPromptTargetShapeCommands", 1],
     ["smollmPromptTargetShapeSemantic", 1],
