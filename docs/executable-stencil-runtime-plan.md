@@ -1231,6 +1231,18 @@ one-dispatch semantic target remained around `0.28x/0.23x` versus default. The
 change was reverted. Do not retry scale-index arithmetic as the next Q8
 semantic move; the missing win is still tile-parallel semantic work or a faster
 row-chain leaf.
+A narrower follow-up hoisted the `block_size == 32` branch only in the plain
+`qmatmul_f32` and `qmatmul_elementwise_f32` tile-load loops, so the Q8
+projection-chain path could use `w_idx >> 5` without the generic helper branch.
+The three-attempt qproj microscope still did not improve: the temporary run
+reported `projection_chain_full_prefill=0.99x`,
+`projection_chain_smollm_prompt=1.02x`, and region proof at
+`1.29x/1.24x`, while a post-revert source-current run returned to
+`projection_chain_full_prefill=1.00x`,
+`projection_chain_smollm_prompt=1.01x`, and region proof at `1.39x/1.30x`.
+That variant was reverted too. Treat scale-index specialization as exhausted
+for now; the qproj lane needs better quantized projection-chain structure, not
+a shift-vs-div rewrite.
 The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic,
 full-model Q8 prompt viable, and cheap ggml smoke lanes behind
 `BENCH_COMPETITIVE_LANES`, so a kernel edit can run only
