@@ -21,6 +21,7 @@ const fullRunArtifactPattern = /^smollm-\d{8}T\d{6}Z(?:-\d+)?-p128-g200-r3\.json
 const pytorchArtifactPattern = /^pytorch-\d{8}T\d{6}Z-\d+\.json$/;
 const q8PromptArtifactPattern = /^q8-prompt-\d{8}T\d{6}Z-\d+\.json$/;
 const frontierArtifactPattern = /^frontier-qsemantic-\d{8}T\d{6}Z-\d+\.json$/;
+const qsemanticThroughputArtifactPattern = /^frontier-qsemantic-throughput-\d{8}T\d{6}Z-\d+\.json$/;
 const qprojFrontierArtifactPattern = /^frontier-qproj-\d{8}T\d{6}Z-\d+\.json$/;
 const pytorchFocusKeys = [
   "linear_batched",
@@ -257,6 +258,30 @@ function latestRawFrontierArtifact() {
   return frontierArtifacts().at(-1) ?? null;
 }
 
+function qsemanticThroughputArtifacts() {
+  const dir = join("bench-results", "frontier");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => qsemanticThroughputArtifactPattern.test(name))
+    .sort()
+    .map((name) => join(dir, name))
+    .filter((path) => {
+      try {
+        const data = readJson(path);
+        return data?.schema === "zgml.frontier-qsemantic-throughput.v1" &&
+          data?.kind === "qsemantic-throughput" &&
+          data?.fullPrefill &&
+          data?.smollmPrompt;
+      } catch {
+        return false;
+      }
+    });
+}
+
+function latestQsemanticThroughputArtifact() {
+  return qsemanticThroughputArtifacts().at(-1) ?? null;
+}
+
 function isFrontierSteadyArtifact(path) {
   try {
     const data = readJson(path);
@@ -298,6 +323,34 @@ function frontierFreshnessStatusLine(selectedPath, rawPath) {
     // Keep the freshness signal even if the newest artifact cannot be read.
   }
   return `frontier-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts ${latest}`;
+}
+
+function qsemanticThroughputStatusLine(path) {
+  if (!path) {
+    return "qsemantic-throughput-results: no local throughput-only qsemantic artifact found; run npm run dev:perf:next:qsemantic-throughput:run";
+  }
+  let data;
+  try {
+    data = readJson(path);
+  } catch {
+    return `qsemantic-throughput-results: latest=${compactName(path)} unreadable`;
+  }
+  const status = typeof data?.status === "string" ? data.status : "unknown";
+  const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
+  const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
+  const fullPrefill = formatRatio(data?.fullPrefill?.speedup);
+  const smollmPrompt = formatRatio(data?.smollmPrompt?.speedup);
+  const fullDispatches = data?.fullPrefill?.runtimeDispatches ?? "n/a";
+  const smollmDispatches = data?.smollmPrompt?.runtimeDispatches ?? "n/a";
+  const fullTileGroups = data?.fullPrefill?.tileGroups ?? "n/a";
+  const smollmTileGroups = data?.smollmPrompt?.tileGroups ?? "n/a";
+  const fullSpilledInput = data?.fullPrefill?.spilledInput ?? "n/a";
+  const smollmSpilledInput = data?.smollmPrompt?.spilledInput ?? "n/a";
+  const fullOutputSpills = data?.fullPrefill?.outputSpills ?? "n/a";
+  const smollmOutputSpills = data?.smollmPrompt?.outputSpills ?? "n/a";
+  const next = typeof data?.next === "string" ? data.next : "unknown";
+  const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
+  return `qsemantic-throughput-results: latest=${compactName(path)} status=${status} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill}:dispatches:${fullDispatches}:tile_groups:${fullTileGroups}:spilled_input:${fullSpilledInput}:output_spills:${fullOutputSpills} smollm_prompt=${smollmPrompt}:dispatches:${smollmDispatches}:tile_groups:${smollmTileGroups}:spilled_input:${smollmSpilledInput}:output_spills:${smollmOutputSpills} next=${next} source=${source}`;
 }
 
 function qprojFrontierArtifacts() {
@@ -772,7 +825,9 @@ function frontierNextTargetLine(path, pressurePath = path) {
       pressureData?.smollmPrompt?.targetRowSerialDotOpsPerTileGroup ??
       "n/a";
     const fresh = hasFreshPressure
-      ? `:fresh=source:${typeof pressureData?.source?.label === "string" ? pressureData.source.label : "unknown"},vs_default=smollm:${formatRatio(pressureData?.smollmPrompt?.throughputCandidateVsDefault)},full:${formatRatio(pressureData?.fullPrefill?.throughputCandidateVsDefault)}`
+      ? pressureData?.kind === "qsemantic-throughput"
+        ? `:fresh=source:${typeof pressureData?.source?.label === "string" ? pressureData.source.label : "unknown"},throughput=smollm:${formatRatio(pressureData?.smollmPrompt?.speedup)},full:${formatRatio(pressureData?.fullPrefill?.speedup)},spilled_input=smollm:${pressureData?.smollmPrompt?.spilledInput ?? "n/a"},full:${pressureData?.fullPrefill?.spilledInput ?? "n/a"}`
+        : `:fresh=source:${typeof pressureData?.source?.label === "string" ? pressureData.source.label : "unknown"},vs_default=smollm:${formatRatio(pressureData?.smollmPrompt?.throughputCandidateVsDefault)},full:${formatRatio(pressureData?.fullPrefill?.throughputCandidateVsDefault)}`
       : "";
     return `frontier=${next}:candidate=${throughputCandidate}:smollm=${smollmCandidate}:full=${fullCandidate}:vs_default=smollm:${smollmVsDefault},full:${fullVsDefault}:vs_two_phase=smollm:${formatRatio(storedSmollmVsTwoPhase)},full:${formatRatio(storedFullVsTwoPhase)}:target_tiles=smollm:${smollmTargetTileGroups},full:${fullTargetTileGroups}:target_shape=smollm:${smollmTargetTileShape},full:${fullTargetTileShape}:candidate_tiles=smollm:${smollmCandidateTileGroups},full:${fullCandidateTileGroups}:candidate_finalize_groups=smollm:${smollmCandidateFinalizeTileGroups},full:${fullCandidateFinalizeTileGroups}:candidate_finalize_elements=smollm:${smollmCandidateFinalizeElements},full:${fullCandidateFinalizeElements}:tile_gap=smollm:${smollmTileGap},full:${fullTileGap}:target_serial_per_tile=smollm:${smollmTargetSerialPerTile},full:${fullTargetSerialPerTile}${fresh}`;
   } catch {
@@ -1368,6 +1423,7 @@ const latestQ8Prompt = latestQ8PromptCandidateArtifact();
 const latestRawQ8Prompt = latestRawQ8PromptCandidateArtifact();
 const latestFrontier = latestFrontierArtifact();
 const latestRawFrontier = latestRawFrontierArtifact();
+const latestQsemanticThroughput = latestQsemanticThroughputArtifact();
 const latestQprojFrontier = latestQprojFrontierArtifact();
 process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8Prompt)}\n`);
 const q8PromptFreshness = q8PromptFreshnessStatusLine(latestQ8Prompt, latestRawQ8Prompt);
@@ -1376,7 +1432,8 @@ process.stdout.write(`${qprojFrontierStatusLine(latestQprojFrontier)}\n`);
 process.stdout.write(`${frontierStatusLine(latestFrontier, latestRawFrontier)}\n`);
 const frontierFreshness = frontierFreshnessStatusLine(latestFrontier, latestRawFrontier);
 if (frontierFreshness) process.stdout.write(`${frontierFreshness}\n`);
-process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, rawQ8Path: latestRawQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestRawFrontier })}\n`);
+process.stdout.write(`${qsemanticThroughputStatusLine(latestQsemanticThroughput)}\n`);
+process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, rawQ8Path: latestRawQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestQsemanticThroughput ?? latestRawFrontier })}\n`);
 const quarantined = quarantinedFullRunArtifacts();
 if (quarantined.length > 0) {
   process.stdout.write(`bench-results: ${quarantined.length} quarantined p128/g200/r3 artifact(s) ignored for accepted evidence; latest_failed=${compactName(quarantined.at(-1))}\n`);
