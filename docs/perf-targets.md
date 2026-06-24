@@ -199,15 +199,14 @@ machine for both prompt/prefill and decode.
   larger semantic-command shape that consumes the FFN projection pair and leaves
   30 semantic row-chain commands. A June 24, 2026 fresh-native viable run kept
   the command lane structurally and throughput-ready
-  (`command_command=241->151`, `command_speedup=1.00-1.01x`) while the selected
-  two-phase and semantic lanes also crossed the focused viable floor
-  (`two_phase_speedup=0.95-0.96x`,
-  `semantic_speedup=0.95-0.96x`, `semantic_structural_selected=yes`,
-  `semantic_throughput_ready=yes`,
-  `semantic_projection_pair=30->0`, `semantic_projection_row_chain=0->30`) with
-  zero fallback. That proves wiring, command-shape readiness, and focused
-  one-attempt throughput viability rather than release promotion; repeated
-  all-lane candidate evidence is still required before changing defaults.
+  (`command_command=241->151`, `command_speedup=1.00-1.03x`) while the selected
+  two-phase and semantic lanes proved wiring and command-shape readiness
+  (`semantic_structural_selected=yes`, `semantic_projection_pair=30->0`,
+  `semantic_projection_row_chain=0->30`) with zero fallback. Repeated steady
+  evidence now keeps semantic throughput diagnostic when median throughput is
+  below parity (`semantic_median=0.95-0.98x`,
+  `semantic_throughput_ready=off`). That separates command-shape viability from
+  the still-missing throughput kernel before any default promotion.
   The
   full all-lane candidate gate remains the release proof before promotion.
   The two-phase partial kernel does not bind the scale buffer anymore; scale is
