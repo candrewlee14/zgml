@@ -350,6 +350,7 @@ function scoreFocusedQrowRegion(output, attempt) {
   const fullPrefillShapeSavedDispatches = metric(output, fullPrefillProfileLabel, "shape_saved_dispatches");
   const fullPrefillRuntimeCommandDispatches = metric(output, fullPrefillProfileLabel, "runtime_command_dispatches");
   const fullPrefillTwoPhaseCount = metric(output, fullPrefillProfileLabel, "qmatmul_row_chain_tiled_two_phase_count");
+  const fullPrefillSpilledElementwise = metric(output, fullPrefillProfileLabel, "qmatmul_row_chain_tiled_spilled_elementwise");
 
   const smollmPromptSpeedup = metric(output, smollmPromptLabel, "speedup");
   const smollmPromptMaxAbsDiff = metric(output, smollmPromptLabel, "max_abs_diff");
@@ -359,6 +360,7 @@ function scoreFocusedQrowRegion(output, attempt) {
   const smollmPromptShapeSavedDispatches = metric(output, smollmPromptProfileLabel, "shape_saved_dispatches");
   const smollmPromptRuntimeCommandDispatches = metric(output, smollmPromptProfileLabel, "runtime_command_dispatches");
   const smollmPromptTwoPhaseCount = metric(output, smollmPromptProfileLabel, "qmatmul_row_chain_tiled_two_phase_count");
+  const smollmPromptSpilledElementwise = metric(output, smollmPromptProfileLabel, "qmatmul_row_chain_tiled_spilled_elementwise");
 
   const failures = [];
   if (fullPrefillMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`qrow region full-prefill max_abs_diff ${fullPrefillMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
@@ -373,8 +375,8 @@ function scoreFocusedQrowRegion(output, attempt) {
   const line = [
     `frontier qrow region gate: ${failures.length === 0 ? "pass" : "fail"}`,
     `attempt=${attempt}/${maxAttempts}`,
-    `full_prefill=${fullPrefillSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)} shape_commands=${fullPrefillShapeCommands} runtime_command_dispatches=${fullPrefillRuntimeCommandDispatches} two_phase_count=${fullPrefillTwoPhaseCount}`,
-    `smollm_prompt=${smollmPromptSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${smollmPromptMaxAbsDiff.toFixed(6)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)} shape_commands=${smollmPromptShapeCommands} runtime_command_dispatches=${smollmPromptRuntimeCommandDispatches} two_phase_count=${smollmPromptTwoPhaseCount}`,
+    `full_prefill=${fullPrefillSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${fullPrefillMaxAbsDiff.toFixed(6)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)} shape_commands=${fullPrefillShapeCommands} runtime_command_dispatches=${fullPrefillRuntimeCommandDispatches} two_phase_count=${fullPrefillTwoPhaseCount} qmatmul_row_chain_tiled_spilled_elementwise=${fullPrefillSpilledElementwise}`,
+    `smollm_prompt=${smollmPromptSpeedup.toFixed(2)}x diagnostic_floor=not-yet max_abs_diff=${smollmPromptMaxAbsDiff.toFixed(6)} diff_ceil=${projectionRowChainMaxAbsDiffCeil.toFixed(6)} shape_commands=${smollmPromptShapeCommands} runtime_command_dispatches=${smollmPromptRuntimeCommandDispatches} two_phase_count=${smollmPromptTwoPhaseCount} qmatmul_row_chain_tiled_spilled_elementwise=${smollmPromptSpilledElementwise}`,
     `next=${projectionRowChainNextTarget}`,
   ].join("; ");
 
@@ -388,6 +390,7 @@ function scoreFocusedQrowRegion(output, attempt) {
     fullPrefillShapeSavedDispatches,
     fullPrefillRuntimeCommandDispatches,
     fullPrefillTwoPhaseCount,
+    fullPrefillSpilledElementwise,
     smollmPromptSpeedup,
     smollmPromptMaxAbsDiff,
     smollmPromptShapeCommands,
@@ -396,6 +399,7 @@ function scoreFocusedQrowRegion(output, attempt) {
     smollmPromptShapeSavedDispatches,
     smollmPromptRuntimeCommandDispatches,
     smollmPromptTwoPhaseCount,
+    smollmPromptSpilledElementwise,
     failures,
     line,
   };

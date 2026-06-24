@@ -207,11 +207,12 @@ fn printProjectionRowChainRuntimeProfile(
     var rt = profile_mod.RuntimeProfile{};
     be.addRuntimeProfileTo(handle, &rt);
     try w.print(
-        "  {s:<28} runtime_command_dispatches={d}  qmatmul_row_chain_tiled_two_phase_count={d}\n",
+        "  {s:<28} runtime_command_dispatches={d}  qmatmul_row_chain_tiled_two_phase_count={d}  qmatmul_row_chain_tiled_spilled_elementwise={d}\n",
         .{
             name,
             rt.backend_dispatch_count,
             rt.qmatmul_row_chain_tiled_two_phase_count,
+            rt.qmatmul_row_chain_tiled_spilled_elementwise,
         },
     );
 }

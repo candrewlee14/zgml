@@ -289,6 +289,19 @@ Current checked progress:
   path (`two_phase_count=7`) with zero observed diff for full-prefill and
   SmolLM-prompt shapes, while labeling it diagnostic because it still lands
   below the staged baseline in that isolated geometry.
+  The frontier row-chain runtime profile now also prints
+  `qmatmul_row_chain_tiled_spilled_elementwise`, so spill-free synthetic
+  row-chain measurements and full-model residual-liveness measurements no
+  longer get blurred together. The single-chain SmolLM-prompt microscope is a
+  spill-free diagnostic for raw kernel shape, while the full-model Q8 prompt
+  gate still reports `spills=30` because the residual stream remains live.
+  A fresh qrow-region gate reports `qmatmul_row_chain_tiled_spilled_elementwise=0`
+  for both x7 full-prefill and SmolLM-prompt rows, but the spill-free two-phase
+  region still lands at `0.80x` and `0.61x` respectively, so spill removal alone
+  is not the missing default-performance move.
+  That split keeps the next move honest: a larger semantic command has to
+  either consume that residual use inside the command or beat the staged path
+  while materializing it.
   The single-dispatch tiled kernel remains a diagnostic for the dispatch-only
   trap, not the design center for the next performance pass.
   The frontier and q8 prompt candidate gates now rebuild benchmark binaries with `-Doptimize=ReleaseFast` before any no-rebuild rerun evidence.

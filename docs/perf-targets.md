@@ -244,6 +244,16 @@ machine for both prompt/prefill and decode.
   clear the focused `1.00x` speed floor. This keeps projection grouping visible
   as a real planner target without pretending the smaller x4 diagnostic already
   dispatches a named executable command.
+- Row-chain frontier runtime profiles now report
+  `qmatmul_row_chain_tiled_spilled_elementwise`, separating spill-free synthetic
+  row-chain kernel measurements from full-model Q8 prompt measurements where
+  residual liveness still forces `spills=30`. Treat spill-free frontier rows as
+  raw kernel-shape diagnostics; a default Q8 prompt win must either absorb the
+  live residual use into a larger semantic command or beat the staged path while
+  materializing it. The focused qrow-region gate now reports
+  `qmatmul_row_chain_tiled_spilled_elementwise=0` for the x7 full-prefill and
+  SmolLM-prompt two-phase rows, but they still land at `0.80x` and `0.61x`;
+  spill removal alone is not the missing default-performance move.
 - The full-model Q8 prompt probe now distinguishes general projection groups
   from attention/cache projection groups. Its Q8 evidence reports
   `projection_group=0->0`, `projection_cache_group=30->30`, and

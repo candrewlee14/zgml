@@ -609,6 +609,7 @@ function checkScripts() {
     "function isFocusedQrowRegionFilter(filter)",
     "projection_row_chain two-phase group full-prefill region runtime profile must stay at 14 command dispatches with two_phase_count=7",
     "runtime_command_dispatches",
+    "qmatmul_row_chain_tiled_spilled_elementwise",
     "projection_row_chain prompt runtime profile must stay at 1 command dispatch",
     "projection_row_chain_single_dispatch prompt runtime profile must stay at 1 command dispatch",
     "projection_row_chain_lowering=${projectionRowChainLowering}",
@@ -628,6 +629,7 @@ function checkScripts() {
     "filter.matchesAny",
     "qrow region",
     "projection_row_chain_two_phase_group",
+    "qmatmul_row_chain_tiled_spilled_elementwise",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "scalar qmatmul row-chain diagnosis until tiled replacement exists", [
     "if (q.M != 1) {",
@@ -5379,6 +5381,11 @@ function checkDocs() {
     "`projection_cache_group=30->30`",
     "`decode_projection_cache_group=30`",
     "frontier x7 qproj region remains the isolated executable proof",
+    "`qmatmul_row_chain_tiled_spilled_elementwise`",
+    "`qmatmul_row_chain_tiled_spilled_elementwise=0`",
+    "`spills=30`",
+    "spill removal alone",
+    "larger semantic command",
     "drops the unused scale buffer binding",
     "the finalize kernel still owns scale application",
     "source-current stencil shape gate",
