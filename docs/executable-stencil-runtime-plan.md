@@ -806,6 +806,12 @@ command, two-phase, and semantic lanes) for the selected `q8-prompt-results:`
 and `perf-next:` readbacks, while printing `q8-prompt-latest-results:` when a
 newer one-attempt quick probe exists. Set `BENCH_Q8_PROMPT_WRITE_ARTIFACT=0`
 only for throwaway local diagnostics.
+The qsemantic frontier selector now mirrors that stability rule: `bench:status`
+prefers the newest three-attempt qsemantic artifact for `frontier-results:` and
+`perf-next:`, while printing `frontier-latest-results:` when a newer one-attempt
+microscope exists. That matches the qsemantic warning below: single-attempt
+probes are useful for fast iteration, but not stable enough to steer the whole
+next-action line.
 A three-attempt no-rebuild proof remains useful as a noisier iteration lens,
 while the fresh-native one-attempt proof now reports
 `command_structural=ready`, `single_structural=skipped`,

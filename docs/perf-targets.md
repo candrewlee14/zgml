@@ -419,6 +419,11 @@ viable run (`attempts >= 3` with command, two-phase, and semantic lanes) over a
 newer one-attempt quick probe, and prints `q8-prompt-latest-results:` when it
 does so. That keeps `q8-prompt-results:` and `perf-next:` tied to stable
 throughput evidence while still making freshness visible.
+For qsemantic frontier artifacts, `bench:status` follows the same stability
+policy: it prefers the newest artifact with at least three attempts and prints
+`frontier-latest-results:` when a newer one-attempt microscope exists. That keeps
+the semantic frontier useful for iteration without letting a noisy quick probe
+steer `perf-next:`.
 `npm run dev:perf:next` automates that choice: it reads `perf-next:` and runs
 the smallest no-rebuild microscope for the current bottleneck. Use
 `npm run dev:perf:next:build` when the native or benchmark artifact is stale,

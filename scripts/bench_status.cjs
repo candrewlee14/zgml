@@ -215,7 +215,26 @@ function frontierArtifacts() {
 }
 
 function latestFrontierArtifact() {
+  const artifacts = frontierArtifacts();
+  return artifacts.filter(isFrontierSteadyArtifact).at(-1) ?? artifacts.at(-1) ?? null;
+}
+
+function latestRawFrontierArtifact() {
   return frontierArtifacts().at(-1) ?? null;
+}
+
+function isFrontierSteadyArtifact(path) {
+  try {
+    const data = readJson(path);
+    return Number.isInteger(data?.attempts) && data.attempts >= 3;
+  } catch {
+    return false;
+  }
+}
+
+function frontierFreshnessStatusLine(selectedPath, rawPath) {
+  if (!selectedPath || !rawPath || selectedPath === rawPath) return null;
+  return `frontier-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts`;
 }
 
 function qprojFrontierArtifacts() {
@@ -1141,12 +1160,15 @@ if (pytorchFreshness) process.stdout.write(`${pytorchFreshness}\n`);
 const latestQ8Prompt = latestQ8PromptCandidateArtifact();
 const latestRawQ8Prompt = latestRawQ8PromptCandidateArtifact();
 const latestFrontier = latestFrontierArtifact();
+const latestRawFrontier = latestRawFrontierArtifact();
 const latestQprojFrontier = latestQprojFrontierArtifact();
 process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8Prompt)}\n`);
 const q8PromptFreshness = q8PromptFreshnessStatusLine(latestQ8Prompt, latestRawQ8Prompt);
 if (q8PromptFreshness) process.stdout.write(`${q8PromptFreshness}\n`);
 process.stdout.write(`${qprojFrontierStatusLine(latestQprojFrontier)}\n`);
 process.stdout.write(`${frontierStatusLine(latestFrontier)}\n`);
+const frontierFreshness = frontierFreshnessStatusLine(latestFrontier, latestRawFrontier);
+if (frontierFreshness) process.stdout.write(`${frontierFreshness}\n`);
 process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, frontierPath: latestFrontier })}\n`);
 const quarantined = quarantinedFullRunArtifacts();
 if (quarantined.length > 0) {
