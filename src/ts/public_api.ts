@@ -6695,6 +6695,13 @@ export type ProgramOutputBinding<Shape extends TensorShapeTuple = TensorShapeTup
 export type CompiledInference<InputShape extends TensorShapeTuple = TensorShapeTuple, OutputShape extends TensorShapeTuple = TensorShapeTuple> = Readonly<{
   program: Program<InputShape, OutputShape>;
   session: Session<InputShape, OutputShape>;
+  explain(): ModuleCompileExplanation<InputShape, OutputShape> | ModuleCompileSupport<InputShape, OutputShape>;
+  preflight(): ModuleCompileExplanation<InputShape, OutputShape> | ModuleCompileSupport<InputShape, OutputShape>;
+  compileSupport(): ModuleCompileSupport<InputShape, OutputShape>;
+  inputShape(): InputShape;
+  outputShape(): OutputShape;
+  kernelPlan(): ModuleKernelPlan | null;
+  compilerSignatures(): ModuleCompleteCompilerSignatures | null;
   forward(input: ProgramInputBinding<InputShape>): Tensor<OutputShape>;
   stepTensor(input: ProgramInputBinding<InputShape>): Tensor<OutputShape>;
   into(output: Float32Array, input: ProgramInputBinding<InputShape>): Float32Array;

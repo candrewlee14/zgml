@@ -162,12 +162,18 @@ The first-contact API should be the tiny executable handle:
 const fast = zgml.compileForInference(model, { inputShape: [2] as const });
 const y = fast.forward(input);
 const out = fast.into(new Float32Array(2), input);
+const proof = fast.explain();
 fast.dispose();
 ```
 
 That handle is intentionally not a second runtime abstraction. It owns a
 `Program` and bound `Session`, exposes them for evidence and advanced control,
 and gives ordinary inference users the short path they actually want.
+The handle now also exposes first-contact proof methods directly:
+`explain()`, `preflight()`, `compileSupport()`, `inputShape()`,
+`outputShape()`, `kernelPlan()`, and `compilerSignatures()`. That keeps the
+happy path tiny while still making the executable artifact inspectable without
+forcing users to know the lower-level `Program` API on day one.
 
 The refined compiler shape is:
 

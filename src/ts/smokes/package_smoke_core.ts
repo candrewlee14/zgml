@@ -4489,6 +4489,21 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     if (!Object.isFrozen(inference) || inference.program.inputLen() !== 2 || inference.session.outputLen() !== 1) {
       throw new Error(`${label} expected frozen compiled inference handle over Program/Session`);
     }
+    const inferenceSupport = inference.compileSupport();
+    const inferenceExplanation = inference.explain();
+    const inferencePreflight = inference.preflight();
+    if (
+      inferenceSupport.supported !== true ||
+      inferenceExplanation.supported !== true ||
+      inferencePreflight.supported !== true ||
+      inferenceExplanation.signature !== inferencePreflight.signature ||
+      inference.inputShape().join("x") !== "2" ||
+      inference.outputShape().join("x") !== "1" ||
+      inference.kernelPlan()?.ops.map((op: Record<string, any>) => op.op).join("|") !== "linear" ||
+      inference.compilerSignatures()?.kernelPlan !== inference.kernelPlan()?.signature
+    ) {
+      throw new Error(`${label} expected compileForInference handle to expose compile evidence`);
+    }
     expectClose(inference.forward(inferenceInput).data, [-0.5], `${label} compileForInference forward`);
     expectClose(inference.stepTensor(inferenceInput).data, [-0.5], `${label} compileForInference stepTensor alias`);
     const inferenceCarrier = new Float32Array(1);

@@ -515,6 +515,8 @@ type CompiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShape ex
 function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShape extends TensorShapeTuple>(
   program: Program<InputShape, OutputShape>,
   session: Session<InputShape, OutputShape>,
+  target: unknown,
+  options: CompileNamespaceOptions,
 ): CompiledInferenceHandle<InputShape, OutputShape> {
   let disposed = false;
   const dispose = () => {
@@ -526,6 +528,27 @@ function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShap
   return Object.freeze({
     program,
     session,
+    explain() {
+      return explain(target, options) as ModuleCompileExplanation<InputShape, OutputShape> | ModuleCompileSupport<InputShape, OutputShape>;
+    },
+    preflight() {
+      return explain(target, options) as ModuleCompileExplanation<InputShape, OutputShape> | ModuleCompileSupport<InputShape, OutputShape>;
+    },
+    compileSupport() {
+      return compileSupport(target, options) as ModuleCompileSupport<InputShape, OutputShape>;
+    },
+    inputShape() {
+      return program.inputShape();
+    },
+    outputShape() {
+      return program.outputShape();
+    },
+    kernelPlan() {
+      return program.kernelPlan();
+    },
+    compilerSignatures() {
+      return program.compilerSignatures();
+    },
     forward(input: ProgramInputBinding<InputShape>) {
       return session.stepTensor(input);
     },
@@ -570,7 +593,7 @@ export function compileForInference(target: unknown, options: CompileNamespaceOp
   if (!session || typeof session !== "object") {
     throw new Error("compile.compileForInference expected bindModule() to return a Session");
   }
-  return compiledInferenceHandle(program as Program, session as Session);
+  return compiledInferenceHandle(program as Program, session as Session, target, options);
 }
 
 export const compile_for_inference = compileForInference;

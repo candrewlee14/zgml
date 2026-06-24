@@ -791,7 +791,12 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     throw new Error("torch.compile.compile requires a module with compile() or a compile-capable lazy graph");
   }
 
-  function compiledInferenceHandle(program: Record<string, any>, session: Record<string, any>) {
+  function compiledInferenceHandle(
+    program: Record<string, any>,
+    session: Record<string, any>,
+    target: unknown,
+    compileOptions: CompileNamespaceOptions,
+  ) {
     let disposed = false;
     const dispose = () => {
       if (disposed) return;
@@ -814,6 +819,27 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       prepareInto(output: Float32Array, input: unknown) {
         return session.prepareExecuteInto(output, { input });
       },
+      explain() {
+        return explain(target, compileOptions);
+      },
+      preflight() {
+        return explain(target, compileOptions);
+      },
+      compileSupport() {
+        return compileSupport(target, compileOptions);
+      },
+      inputShape() {
+        return typeof program.inputShape === "function" ? program.inputShape() : null;
+      },
+      outputShape() {
+        return typeof program.outputShape === "function" ? program.outputShape() : null;
+      },
+      kernelPlan() {
+        return typeof program.kernelPlan === "function" ? program.kernelPlan() : null;
+      },
+      compilerSignatures() {
+        return typeof program.compilerSignatures === "function" ? program.compilerSignatures() : null;
+      },
       dispose,
       free: dispose,
     });
@@ -835,7 +861,12 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     if (!session || typeof session !== "object") {
       throw new Error("compile.compileForInference expected bindModule() to return a Session");
     }
-    return compiledInferenceHandle(program as Record<string, any>, session as Record<string, any>);
+    return compiledInferenceHandle(
+      program as Record<string, any>,
+      session as Record<string, any>,
+      target,
+      compileOptions,
+    );
   }
 
   return Object.freeze(Object.assign(compile, {
