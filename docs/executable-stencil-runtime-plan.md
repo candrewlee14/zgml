@@ -889,11 +889,16 @@ middle policy shape, `semantic pair_row_chain_single_dispatch`: it preserves the
 same two-command semantic shape but still reports
 `single_dispatch_row_chain_dispatch_reduced=no` and
 `single_dispatch_row_chain_blocker=metal_row_chain_leaf_encoder_declined_semantic_shape`
-with `runtime_backend_dispatches=3`, proving that flipping the existing
-row-chain single-dispatch candidate flag does not create the missing
+with `runtime_backend_dispatches=3`. The profile now also prints
+`runtime_projection_row_chain_dispatches=0`,
+`runtime_projection_row_chain_attempts=0`, and
+`qmatmul_row_chain_tiled_count=0` for the pair-row-chain and
+single-dispatch diagnostic lanes, proving that the current semantic runtime is
+not lighting up the tiled row-chain leaf at all. Flipping the existing
+row-chain single-dispatch candidate flag therefore does not create the missing
 two-dispatch semantic throughput path. The next implementation target is
-therefore inside the Metal row-chain/semantic encoder, not another command
-policy toggle.
+inside the Metal row-chain/semantic encoder or command-region attribution, not
+another command policy toggle.
 Use it when changing projection-pair, row-chain, residual, RMSNorm, or
 semantic-sublayer scheduling, then escalate to `dev:perf:q8-prompt:viable` and
 the full Q8 prompt candidate gate before making a model-level speed claim. The
