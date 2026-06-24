@@ -76,18 +76,28 @@ function capabilityRows() {
 const firstContactNamespaces = exportedConstArray(publicSurface, "firstContactRootNamespaces");
 const firstContactValues = exportedConstArray(publicSurface, "firstContactRootValues");
 const stableNamespaces = exportedConstArray(publicSurface, "stableRootNamespaces");
+const stableValues = exportedConstArray(publicSurface, "stableRootValues");
 const firstContactDoc = firstContactBlock();
-const docFirstContactNamespaces = firstContactDoc.filter((entry) => entry !== "zgml" && entry !== "compile.compileForInference(...)");
+const runtimeHandle = "compile.compileForInference(...)";
+const docFirstContactValues = firstContactDoc.filter((entry) => firstContactValues.includes(entry));
+const docFirstContactNamespaces = firstContactDoc.filter((entry) => !firstContactValues.includes(entry) && entry !== runtimeHandle);
 
 if (!firstContactValues.includes("zgml") || !firstContactDoc.includes("zgml")) {
   errors.push("first-contact surface must name zgml as the user-facing root value");
 }
-if (!firstContactDoc.includes("compile.compileForInference(...)")) {
-  errors.push("first-contact surface must name compile.compileForInference(...) as the friendly runtime handle");
+if (!firstContactDoc.includes(runtimeHandle)) {
+  errors.push(`first-contact surface must name ${runtimeHandle} as the friendly runtime handle`);
+}
+for (const name of firstContactValues) {
+  if (!docFirstContactValues.includes(name)) errors.push(`${matrixPath} first-contact block missing root value ${name}`);
+  if (!stableValues.includes(name)) errors.push(`${surfacePath} first-contact root value ${name} must also be stable`);
 }
 for (const name of firstContactNamespaces) {
   if (!docFirstContactNamespaces.includes(name)) errors.push(`${matrixPath} first-contact block missing namespace ${name}`);
   if (!stableNamespaces.includes(name)) errors.push(`${surfacePath} first-contact namespace ${name} must also be stable`);
+}
+for (const name of docFirstContactValues) {
+  if (!firstContactValues.includes(name)) errors.push(`${matrixPath} first-contact block has stale root value ${name}`);
 }
 for (const name of docFirstContactNamespaces) {
   if (!firstContactNamespaces.includes(name)) errors.push(`${matrixPath} first-contact block has stale namespace ${name}`);
@@ -131,4 +141,4 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
-console.log(`frontend capability matrix ok: ${rows.length} capabilities, ${firstContactNamespaces.length} first-contact namespaces`);
+console.log(`frontend capability matrix ok: ${rows.length} capabilities, ${firstContactNamespaces.length} first-contact namespaces, ${firstContactValues.length} first-contact root values`);

@@ -18,6 +18,7 @@ first from the wider inspectable runtime surface:
 
 ```text
 zgml
+F
 tensor, nn, loss, optim, train, data, checkpoint, lazy, compile
 compile.compileForInference(...)
 ```
@@ -25,6 +26,8 @@ compile.compileForInference(...)
 `Program`, `Session`, native buffers, model-source helpers, and runtime
 inspection stay public and stable where they are needed, but they are the
 advanced control/evidence lane rather than the first tutorial vocabulary.
+`F` is the small functional root value for common neural-network/loss operations
+that read better as functions than modules.
 
 ## User-Facing Capabilities
 

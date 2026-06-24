@@ -278,11 +278,17 @@ function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
   if (!stableValues.includes("zgml")) {
     errors.push(`${surfacePath} must classify zgml as a stable root value`);
   }
+  if (!stableValues.includes("F")) {
+    errors.push(`${surfacePath} must classify F as a stable functional root value`);
+  }
   if (!legacyValues.includes("torch")) {
     errors.push(`${surfacePath} must classify torch as a legacy-compatible root value`);
   }
   if (!firstContactValues.includes("zgml")) {
     errors.push(`${surfacePath} must classify zgml as the first-contact root value`);
+  }
+  if (!firstContactValues.includes("F")) {
+    errors.push(`${surfacePath} must classify F as a first-contact functional root value`);
   }
   const stableSet = new Set(stable);
   const firstContactOutsideStable = firstContact.filter((name) => !stableSet.has(name));

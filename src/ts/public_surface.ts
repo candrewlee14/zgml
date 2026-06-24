@@ -16,6 +16,7 @@ export const firstContactRootNamespaces = Object.freeze([
 
 export const firstContactRootValues = Object.freeze([
   "zgml",
+  "F",
 ] as const);
 
 export const stableRootNamespaces = Object.freeze([
@@ -39,6 +40,7 @@ export const stableRootNamespaces = Object.freeze([
 
 export const stableRootValues = Object.freeze([
   "zgml",
+  "F",
 ] as const);
 
 export const advancedRootNamespaces = Object.freeze([
