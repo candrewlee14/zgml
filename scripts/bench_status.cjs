@@ -20,6 +20,7 @@ const baselineArtifacts = [
 const fullRunArtifactPattern = /^smollm-\d{8}T\d{6}Z(?:-\d+)?-p128-g200-r3\.json$/;
 const ggmlSmokeArtifactPattern = /^smollm-\d{8}T\d{6}Z(?:-\d+)?-p128-g40-r1\.json$/;
 const pytorchArtifactPattern = /^pytorch-\d{8}T\d{6}Z-\d+\.json$/;
+const nativeEagerArtifactPattern = /^native-eager-\d{8}T\d{6}Z-\d+\.json$/;
 const q8PromptArtifactPattern = /^q8-prompt-\d{8}T\d{6}Z-\d+\.json$/;
 const frontierArtifactPattern = /^frontier-qsemantic-\d{8}T\d{6}Z-\d+\.json$/;
 const qsemanticThroughputArtifactPattern = /^frontier-qsemantic-throughput-\d{8}T\d{6}Z-\d+\.json$/;
@@ -133,6 +134,29 @@ function latestPytorchComparisonArtifact() {
 
 function latestRawPytorchComparisonArtifact() {
   return pytorchComparisonArtifacts().at(-1) ?? null;
+}
+
+function nativeEagerArtifacts() {
+  const dir = join("bench-results", "native-eager");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => nativeEagerArtifactPattern.test(name))
+    .sort()
+    .map((name) => join(dir, name))
+    .filter((path) => {
+      try {
+        const data = readJson(path);
+        return data?.schema === "zgml.native-eager-gap.v1" &&
+          data?.status === "gap-measured" &&
+          Array.isArray(data?.rows);
+      } catch {
+        return false;
+      }
+    });
+}
+
+function latestNativeEagerArtifact() {
+  return nativeEagerArtifacts().at(-1) ?? null;
 }
 
 function isPytorchFocusArtifact(path) {
@@ -677,6 +701,31 @@ function pytorchFreshnessStatusLine(selectedPath, rawPath) {
   const timing = typeof data?.config?.zgmlTimingMetric === "string" ? data.config.zgmlTimingMetric : "unknown";
   const keyCount = Array.isArray(data?.config?.activeComparisonKeys) ? data.config.activeComparisonKeys.length : "n/a";
   return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_focus_keyset status=${status} median=${medianStatus} worst=${worst} gap=${worstGap} attempts=${attempts} native=${native} timing=${timing} keys=${keyCount} ratio_median=${medians}`;
+}
+
+function nativeEagerStatusLine(path) {
+  if (!path) {
+    return "native-eager-results: no local native eager artifact found; run npm run dev:perf:native-eager-gap:run";
+  }
+  let data;
+  try {
+    data = readJson(path);
+  } catch {
+    return `native-eager-results: latest=${compactName(path)} unreadable`;
+  }
+  const rows = Array.isArray(data?.rows) ? data.rows : [];
+  const status = typeof data?.status === "string" ? data.status : "unknown";
+  const runtime = typeof data?.runtime === "string" ? data.runtime : "unknown";
+  const native = typeof data?.nativeFreshness?.label === "string" ? data.nativeFreshness.label : "unknown";
+  const minTiming = formatMs(Number(data?.config?.minTimingMs));
+  const rowSummary = rows.map((row) => {
+    const key = typeof row?.key === "string" ? row.key : "unknown";
+    const diff = typeof row?.nativeEagerModuleMaxAbsDiff === "number"
+      ? formatNumber(row.nativeEagerModuleMaxAbsDiff, 6)
+      : "n/a";
+    return `${key}:module=${formatRatio(row?.nativeEagerModuleSpeedup)}:into=${formatRatio(row?.nativeEagerSpeedup)}:diff=${diff}`;
+  }).join(",");
+  return `native-eager-results: latest=${compactName(path)} status=${status} runtime=${runtime} native=${native} timing=${minTiming} rows=${rowSummary || "none"}`;
 }
 
 function q8PromptCandidateStatusLine(path) {
@@ -1521,6 +1570,7 @@ if (result.stderr) process.stderr.write(result.stderr);
 const latestPytorch = latestPytorchComparisonArtifact();
 const latestRawPytorch = latestRawPytorchComparisonArtifact();
 process.stdout.write(`${pytorchComparisonStatusLine(latestPytorch)}\n`);
+process.stdout.write(`${nativeEagerStatusLine(latestNativeEagerArtifact())}\n`);
 const broadPytorch = pytorchBroadStatusLine(latestPytorchBroadArtifact(), latestPytorch);
 if (broadPytorch) process.stdout.write(`${broadPytorch}\n`);
 const focusPytorch = pytorchFocusStatusLine(latestPytorchFocusArtifact(), latestPytorch);

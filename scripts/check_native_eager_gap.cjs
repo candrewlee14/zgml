@@ -1,10 +1,17 @@
 "use strict";
 
-const { existsSync } = require("node:fs");
+const { existsSync, mkdirSync, writeFileSync } = require("node:fs");
 const { join, resolve } = require("node:path");
 const { verifyFreshNativeLibrary } = require("./native_freshness.cjs");
 
 const root = resolve(__dirname, "..");
+const artifactDir = process.env.BENCH_NATIVE_EAGER_ARTIFACT_DIR || join("bench-results", "native-eager");
+const writeArtifact = process.env.BENCH_NATIVE_EAGER_WRITE_ARTIFACT !== "0";
+
+function timestampForArtifact(date = new Date()) {
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
 function hostRuntime() {
   const requested = String(process.env.BENCH_NATIVE_EAGER_RUNTIME || "").trim().toLowerCase();
   if (requested.length > 0) {
@@ -384,10 +391,22 @@ const result = Object.freeze({
   runtime,
   entry: runtimeEntry,
   nativeFreshness,
+  config: Object.freeze({
+    minTimingMs,
+    minNativeEagerSpeedup,
+    rows: gapSpecs.map((spec) => spec.key),
+  }),
   status: "gap-measured",
   rows,
   next: "native_eager_linear_or_matmul_storage_slice",
 });
+let artifactPath = null;
+if (writeArtifact) {
+  const resolvedArtifactDir = resolve(root, artifactDir);
+  mkdirSync(resolvedArtifactDir, { recursive: true });
+  artifactPath = join(resolvedArtifactDir, `native-eager-${timestampForArtifact()}-${process.pid}.json`);
+  writeFileSync(artifactPath, `${JSON.stringify(result, null, 2)}\n`);
+}
 process.stdout.write(`NATIVE_EAGER_GAP_JSON ${JSON.stringify(result)}\n`);
 for (const row of rows) {
   const nativeEager = row.nativeEagerIntoMs === null
@@ -397,4 +416,7 @@ for (const row of rows) {
     ? "native_eager_module=n/a"
     : `native_eager_module=${row.nativeEagerModuleForwardMs}ms native_eager_module_speedup=${row.nativeEagerModuleSpeedup}x`;
   process.stdout.write(`native eager gap: runtime=${runtime} ${row.key} eager=${row.eagerMs}ms ${nativeEager} ${nativeEagerModule} prepared_execute_into=${row.preparedExecuteIntoMs}ms speedup=${row.nativeProgramSpeedup}x next=${row.next}\n`);
+}
+if (artifactPath) {
+  process.stdout.write(`native eager artifact: ${artifactPath}\n`);
 }
