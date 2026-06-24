@@ -735,6 +735,10 @@ npm run dev:perf:frontier:qsemantic    # incremental checked Q8 semantic FFN/res
 npm run dev:perf:frontier:qsemantic:run # no-rebuild checked Q8 semantic frontier microscope
 npm run dev:perf:frontier:qsemantic:steady # incremental three-attempt Q8 semantic microscope
 npm run dev:perf:frontier:qsemantic:steady:run # no-rebuild three-attempt Q8 semantic microscope
+npm run dev:perf:frontier:qsemantic:full:raw # incremental raw full-prefill qsemantic microscope
+npm run dev:perf:frontier:qsemantic:full:raw:run # no-rebuild raw full-prefill qsemantic microscope
+npm run dev:perf:frontier:qsemantic:smollm:raw # incremental raw SmolLM qsemantic microscope
+npm run dev:perf:frontier:qsemantic:smollm:raw:run # no-rebuild raw SmolLM qsemantic microscope
 npm run bench:frontier:row-chain       # rebuild ReleaseFast and run only row-chain frontier labels
 npm run bench:frontier:row-chain:run   # rerun only row-chain frontier labels without rebuilding artifacts
 npm run bench:frontier:row-chain-region      # rebuild ReleaseFast and run only x7 row-chain region labels

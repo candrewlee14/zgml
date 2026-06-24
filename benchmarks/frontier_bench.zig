@@ -1534,6 +1534,8 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
         "qrow region",
         "semantic command",
         "semantic pair_row_chain",
+        "qsemantic full-prefill",
+        "qsemantic smollm-prompt",
         "projection_row_chain_two_phase_group",
     })) return;
     try w.print("\nMetal Projection Row-Chain Command\n", .{});

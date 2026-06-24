@@ -370,6 +370,18 @@ function checkScripts() {
   if (scripts["dev:perf:frontier:qsemantic:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qsemantic:run must remain the no-rebuild checked Q8 semantic sublayer microscope");
   }
+  if (scripts["dev:perf:frontier:qsemantic:full:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_FILTER=\"qsemantic full-prefill\" ./zig-out/bin/bench-frontier") {
+    errors.push("package.json dev:perf:frontier:qsemantic:full:raw must remain the incremental raw full-prefill Q8 semantic microscope");
+  }
+  if (scripts["dev:perf:frontier:qsemantic:full:raw:run"] !== "BENCH_FRONTIER_FILTER=\"qsemantic full-prefill\" ./zig-out/bin/bench-frontier") {
+    errors.push("package.json dev:perf:frontier:qsemantic:full:raw:run must remain the no-rebuild raw full-prefill Q8 semantic microscope");
+  }
+  if (scripts["dev:perf:frontier:qsemantic:smollm:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_FILTER=\"qsemantic smollm-prompt\" ./zig-out/bin/bench-frontier") {
+    errors.push("package.json dev:perf:frontier:qsemantic:smollm:raw must remain the incremental raw SmolLM Q8 semantic microscope");
+  }
+  if (scripts["dev:perf:frontier:qsemantic:smollm:raw:run"] !== "BENCH_FRONTIER_FILTER=\"qsemantic smollm-prompt\" ./zig-out/bin/bench-frontier") {
+    errors.push("package.json dev:perf:frontier:qsemantic:smollm:raw:run must remain the no-rebuild raw SmolLM Q8 semantic microscope");
+  }
   if (scripts["bench:frontier:qsemantic"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:qsemantic must remain the ReleaseFast Q8 semantic sublayer evidence gate");
   }
