@@ -539,9 +539,10 @@ focus or one-lane microscopes still appear as `pytorch-focus-results:` or
 `pytorch-latest-results:`, so diagnostics stay visible without replacing the
 broader PyTorch-competitiveness scoreboard.
 The lane-selectable `dev:perf:competitive` runner uses that same ten-lane,
-three-attempt, 150ms-window PyTorch broad set by default, so the daily
-competitiveness loop proves the replacement scoreboard instead of only rerunning
-the older two-lane current-gap microscope.
+three-attempt, 150ms-window PyTorch broad set and includes the native eager gap
+lane by default, so the daily competitiveness loop proves both the compiled
+replacement scoreboard and the no-grad native module bridge instead of only
+rerunning the older two-lane current-gap microscope.
 For Q8 prompt candidate artifacts, `bench:status` prefers the newest steady
 viable run (`attempts >= 3` with command, two-phase, and semantic lanes) over a
 newer one-attempt quick probe, and prints `q8-prompt-latest-results:` when it

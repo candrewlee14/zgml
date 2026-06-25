@@ -282,6 +282,8 @@
     "dev:perf:promotion:run": "BENCH_PROMOTION_BUILD=0 node scripts/run_perf_promotion.cjs",
     "dev:perf:promotion:full": "BENCH_PROMOTION_FULL=1 node scripts/run_perf_promotion.cjs",
     "dev:perf:promotion:parity": "BENCH_PROMOTION_FULL=1 BENCH_PROMOTION_REQUIRE_PARITY=1 node scripts/run_perf_promotion.cjs",
+    "dev:perf:competitive:native-eager": "BENCH_COMPETITIVE_LANES=native_eager node scripts/run_competitive_perf.cjs",
+    "dev:perf:competitive:native-eager:run": "BENCH_COMPETITIVE_LANES=native_eager BENCH_COMPETITIVE_BUILD=0 node scripts/run_competitive_perf.cjs",
     "dev:perf:competitive:qsemantic": "BENCH_COMPETITIVE_LANES=qsemantic node scripts/run_competitive_perf.cjs",
     "dev:perf:competitive:qsemantic:run": "BENCH_COMPETITIVE_LANES=qsemantic BENCH_COMPETITIVE_BUILD=0 node scripts/run_competitive_perf.cjs",
     "dev:perf:competitive:q8-prompt": "BENCH_COMPETITIVE_LANES=q8_prompt node scripts/run_competitive_perf.cjs",

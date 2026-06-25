@@ -2,12 +2,12 @@
 
 const { spawnSync } = require("node:child_process");
 
-const knownLanes = new Set(["pytorch", "qsemantic", "q8_prompt", "ggml"]);
+const knownLanes = new Set(["pytorch", "native_eager", "qsemantic", "q8_prompt", "ggml"]);
 const broadPytorchKeys = "linear_batched,lazy_matmul_add_gelu_batched,lazy_mlp_batched,lazy_rms_silu_ffn_batched,max_pool2d_batched,avg_pool2d_batched,rms_gelu_linear_batched,softmax_classifier_batched,log_softmax_classifier_batched,lazy_token_head_batched";
 
 function parseLanes(value) {
-  const raw = String(value ?? "pytorch,qsemantic,q8_prompt,ggml").trim();
-  if (raw.length === 0) return ["pytorch", "qsemantic", "q8_prompt", "ggml"];
+  const raw = String(value ?? "pytorch,native_eager,qsemantic,q8_prompt,ggml").trim();
+  if (raw.length === 0) return ["pytorch", "native_eager", "qsemantic", "q8_prompt", "ggml"];
   const lanes = raw.split(",").map((part) => part.trim()).filter(Boolean);
   for (const lane of lanes) {
     if (!knownLanes.has(lane)) {
@@ -34,7 +34,7 @@ function run(label, command, args, env = process.env) {
 function main() {
   const lanes = parseLanes(process.env.BENCH_COMPETITIVE_LANES);
   const shouldBuild = process.env.BENCH_COMPETITIVE_BUILD !== "0";
-  const needsNative = lanes.includes("pytorch");
+  const needsNative = lanes.includes("pytorch") || lanes.includes("native_eager");
   const needsBench = lanes.includes("qsemantic") || lanes.includes("q8_prompt") || lanes.includes("ggml");
 
   console.log(`[competitive] lanes=${lanes.join(",")} build=${shouldBuild ? "yes" : "no"}`);
@@ -58,6 +58,17 @@ function main() {
         BENCH_PYTORCH_MIN_TIMING_MS: "150",
         BENCH_MODULE_PROGRAM_MIN_TIMING_MS: "150",
         BENCH_PYTORCH_KEYS: broadPytorchKeys,
+      }),
+    );
+  }
+
+  if (lanes.includes("native_eager")) {
+    run(
+      "native eager replacement gap",
+      process.execPath,
+      ["scripts/check_native_eager_gap.cjs"],
+      envWithDefaults({
+        BENCH_NATIVE_EAGER_RUNTIME: "node",
       }),
     );
   }

@@ -868,6 +868,12 @@ function checkScripts() {
   if (scripts["dev:perf:competitive:run"] !== "BENCH_COMPETITIVE_BUILD=0 node scripts/run_competitive_perf.cjs") {
     errors.push("package.json dev:perf:competitive:run must keep the no-rebuild lane-selectable competitiveness loop");
   }
+  if (scripts["dev:perf:competitive:native-eager"] !== "BENCH_COMPETITIVE_LANES=native_eager node scripts/run_competitive_perf.cjs") {
+    errors.push("package.json dev:perf:competitive:native-eager must keep the one-command native eager competitiveness loop");
+  }
+  if (scripts["dev:perf:competitive:native-eager:run"] !== "BENCH_COMPETITIVE_LANES=native_eager BENCH_COMPETITIVE_BUILD=0 node scripts/run_competitive_perf.cjs") {
+    errors.push("package.json dev:perf:competitive:native-eager:run must keep the no-rebuild native eager competitiveness loop");
+  }
   if (scripts["dev:perf:next"] !== "node scripts/run_next_perf.cjs") {
     errors.push("package.json dev:perf:next must keep the artifact-directed next bottleneck microscope");
   }
@@ -923,6 +929,7 @@ function checkScripts() {
     "BENCH_COMPETITIVE_LANES",
     "BENCH_COMPETITIVE_BUILD",
     "pytorch",
+    "native_eager",
     "qsemantic",
     "q8_prompt",
     "ggml",
@@ -931,11 +938,14 @@ function checkScripts() {
     "bench-build",
     "build:package",
     "scripts/check_pytorch_comparison.cjs",
+    "scripts/check_native_eager_gap.cjs",
     "scripts/check_frontier_bench.cjs",
     "scripts/check_q8_prompt_candidate.cjs",
     "scripts/bench_vs_ggml.sh",
     "const broadPytorchKeys = \"linear_batched,lazy_matmul_add_gelu_batched,lazy_mlp_batched,lazy_rms_silu_ffn_batched,max_pool2d_batched,avg_pool2d_batched,rms_gelu_linear_batched,softmax_classifier_batched,log_softmax_classifier_batched,lazy_token_head_batched\"",
     "pytorch steady broad replacement",
+    "native eager replacement gap",
+    "BENCH_NATIVE_EAGER_RUNTIME: \"node\"",
     "BENCH_PYTORCH_KEYS: broadPytorchKeys",
     "BENCH_FRONTIER_FILTER: \"qsemantic\"",
     "BENCH_Q8_PROMPT_LANES: \"command,two_phase,semantic\"",
@@ -6370,10 +6380,11 @@ function checkDocs() {
     "goal progress: Program/Session substrate=85% floor=65%; zgml frontend surface=85% floor=60%",
     "npm run dev:perf:competitive",
     "npm run dev:perf:competitive:run",
+    "npm run dev:perf:competitive:native-eager",
     "npm run dev:perf:competitive:qsemantic",
     "npm run dev:perf:competitive:q8-prompt",
     "npm run bench:competitive",
-    "BENCH_COMPETITIVE_LANES=pytorch,qsemantic,q8_prompt,ggml",
+    "BENCH_COMPETITIVE_LANES=pytorch,native_eager,qsemantic,q8_prompt,ggml",
     "BENCH_COMPETITIVE_BUILD=0",
     "manual `backward`/`step` loops",
     "optimizer parameter groups",
@@ -6670,6 +6681,7 @@ function checkDocs() {
     "BENCH_QSEMANTIC_VARIANTS=throughput_candidate",
     "dev:perf:competitive",
     "dev:perf:competitive:run",
+    "dev:perf:competitive:native-eager",
     "dev:perf:competitive:qsemantic",
     "bench:competitive",
     "BENCH_COMPETITIVE_LANES",

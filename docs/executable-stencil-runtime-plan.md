@@ -844,7 +844,7 @@ npm run dev:perf:pytorch:logsoftmax:native # native-only ReleaseFast microscope 
 npm run dev:perf:pytorch:logsoftmax:run    # no-rebuild rerun for the logSoftmax classifier miss
 npm run dev:perf:pytorch:logsoftmax:steady:native # native-only 150ms-window logSoftmax classifier microscope
 npm run dev:perf:pytorch:logsoftmax:steady:run    # no-rebuild 150ms-window logSoftmax classifier microscope
-npm run dev:perf:competitive        # incremental PyTorch + qsemantic + full-model Q8 prompt + cheap ggml competitiveness loop
+npm run dev:perf:competitive        # incremental PyTorch + native eager + qsemantic + full-model Q8 prompt + cheap ggml competitiveness loop
 npm run dev:perf:competitive:run    # no-rebuild rerun of selected competitiveness lanes
 npm run dev:perf:next               # read perf-next and run the smallest current bottleneck microscope
 npm run dev:perf:next:build         # rebuild needed artifacts first, then run that microscope
@@ -855,6 +855,7 @@ npm run dev:perf:promotion          # qsemantic throughput + Q8 prompt viable + 
 npm run dev:perf:promotion:run      # no-rebuild rerun of the promotion path
 npm run dev:perf:promotion:full     # escalate promotion to the baseline-gated p128/g200/r3 ggml artifact
 npm run dev:perf:promotion:parity   # same full artifact, but require the hard 90% ggml parity gate
+npm run dev:perf:competitive:native-eager # incremental native-eager-only competitiveness loop
 npm run dev:perf:competitive:qsemantic # incremental qsemantic-only competitiveness loop
 npm run dev:perf:competitive:q8-prompt # incremental full-model Q8 prompt competitiveness loop
 npm run bench:module-program:focus
@@ -1684,18 +1685,20 @@ lane to `2.13x` versus the retained `~2.31x` evidence and was reverted; the
 restored per-output-tile finalize path produced fresh checked bridge evidence at
 `3.04x`. Do not rechase this finalize spelling until a new design proves both
 bridge and full-model Q8 prompt stability.
-The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic,
-full-model Q8 prompt viable, and cheap ggml smoke lanes behind
+The broader `dev:perf:competitive` runner now wraps the PyTorch, native eager,
+qsemantic, full-model Q8 prompt viable, and cheap ggml smoke lanes behind
 `BENCH_COMPETITIVE_LANES`, so a kernel edit can run only
-`BENCH_COMPETITIVE_LANES=qsemantic npm run dev:perf:competitive` for a fresh
-frontier artifact, `BENCH_COMPETITIVE_LANES=q8_prompt npm run
-dev:perf:competitive` for the full-model Q8 prompt lane, or the matching
-`:run` commands after artifacts are already fresh. That keeps the daily
-competitiveness loop explicit without forcing every local qsemantic edit to pay
-the PyTorch, full-model Q8, and llama.cpp smoke cost. Its default PyTorch lane
-is now the ten-lane broad replacement set with three attempts and 150ms timing
-windows, matching the selected `bench:status` scoreboard instead of the older
-two-lane current-gap microscope.
+`BENCH_COMPETITIVE_LANES=native_eager npm run dev:perf:competitive` for the
+native eager bridge, `BENCH_COMPETITIVE_LANES=qsemantic npm run
+dev:perf:competitive` for a fresh frontier artifact,
+`BENCH_COMPETITIVE_LANES=q8_prompt npm run dev:perf:competitive` for the
+full-model Q8 prompt lane, or the matching `:run` commands after artifacts are
+already fresh. That keeps the daily competitiveness loop explicit without
+forcing every local native-eager or qsemantic edit to pay the PyTorch,
+full-model Q8, and llama.cpp smoke cost. Its default PyTorch lane is now the
+ten-lane broad replacement set with three attempts and 150ms timing windows,
+and its default native eager lane keeps the normal-module native bridge visible
+in the same product scoreboard.
 For tight semantic kernel work, the raw variant scripts set
 `BENCH_QSEMANTIC_VARIANTS=target` or
 `BENCH_QSEMANTIC_VARIANTS=throughput_candidate` so the frontier harness times
