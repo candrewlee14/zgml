@@ -9,6 +9,26 @@ const n_op_tags = op_fields.len;
 const n_program_command_kinds = @typeInfo(program_mod.ProgramCommandKind).@"enum".fields.len;
 const max_schedule_region_patterns = 16;
 
+pub const SemanticFfnSublayerSingleDispatchRefusalReason = enum {
+    pair_chain,
+    down_shape,
+    down_input,
+    residual_shape,
+    rms_source,
+    rms_shape,
+    rms_fuse,
+    dim,
+    qweight,
+    output_read,
+    block_size,
+    qparam_shape,
+    qparam_input,
+    down_param_shape,
+};
+
+const semantic_single_dispatch_refusal_fields = @typeInfo(SemanticFfnSublayerSingleDispatchRefusalReason).@"enum".fields;
+const n_semantic_single_dispatch_refusal_reasons = semantic_single_dispatch_refusal_fields.len;
+
 const ScheduleRegionStats = struct {
     attempted: u64 = 0,
     lowered: u64 = 0,
@@ -103,6 +123,7 @@ pub const RuntimeProfile = struct {
     semantic_ffn_sublayer_single_dispatch_attempts: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_output_read_refusals: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_block_size_refusals: u64 = 0,
+    semantic_ffn_sublayer_single_dispatch_refusal_reasons: [n_semantic_single_dispatch_refusal_reasons]u64 = [_]u64{0} ** n_semantic_single_dispatch_refusal_reasons,
     call_count: u32 = 0,
 
     pub fn reset(self: *RuntimeProfile) void {
@@ -166,6 +187,7 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_sublayer_single_dispatch_attempts +%= other.semantic_ffn_sublayer_single_dispatch_attempts;
         self.semantic_ffn_sublayer_single_dispatch_output_read_refusals +%= other.semantic_ffn_sublayer_single_dispatch_output_read_refusals;
         self.semantic_ffn_sublayer_single_dispatch_block_size_refusals +%= other.semantic_ffn_sublayer_single_dispatch_block_size_refusals;
+        for (&self.semantic_ffn_sublayer_single_dispatch_refusal_reasons, other.semantic_ffn_sublayer_single_dispatch_refusal_reasons) |*dst, value| dst.* +%= value;
         self.call_count +%= other.call_count;
     }
 
@@ -317,12 +339,18 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_sublayer_single_dispatch_attempts +%= 1;
     }
 
+    pub fn recordSemanticFfnSublayerSingleDispatchRefusal(self: *RuntimeProfile, reason: SemanticFfnSublayerSingleDispatchRefusalReason) void {
+        self.semantic_ffn_sublayer_single_dispatch_refusal_reasons[@intFromEnum(reason)] +%= 1;
+    }
+
     pub fn recordSemanticFfnSublayerSingleDispatchOutputReadRefusal(self: *RuntimeProfile) void {
         self.semantic_ffn_sublayer_single_dispatch_output_read_refusals +%= 1;
+        self.recordSemanticFfnSublayerSingleDispatchRefusal(.output_read);
     }
 
     pub fn recordSemanticFfnSublayerSingleDispatchBlockSizeRefusal(self: *RuntimeProfile) void {
         self.semantic_ffn_sublayer_single_dispatch_block_size_refusals +%= 1;
+        self.recordSemanticFfnSublayerSingleDispatchRefusal(.block_size);
     }
 };
 
@@ -516,6 +544,12 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_", "attempts", rt.semantic_ffn_sublayer_single_dispatch_attempts, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_", "output_read_refusals", rt.semantic_ffn_sublayer_single_dispatch_output_read_refusals, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_", "block_size_refusals", rt.semantic_ffn_sublayer_single_dispatch_block_size_refusals, calls_f);
+        inline for (semantic_single_dispatch_refusal_fields, 0..) |field, i| {
+            const count = rt.semantic_ffn_sublayer_single_dispatch_refusal_reasons[i];
+            if (count != 0) {
+                try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_refused_", field.name, count, calls_f);
+            }
+        }
     }
 }
 

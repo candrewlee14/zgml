@@ -1647,6 +1647,14 @@ blocked by requested intermediate outputs or Q8 block-size guards. The next
 useful target is the compatibility/shape refusal that prevents the one-dispatch
 semantic FFN kernel from replacing the two-phase row-chain tail in the full
 bridge lane.
+The follow-up refusal histogram made that specific: all `30` attempts refused
+on `dim`, because the full SmolLM FFN hidden width exceeds the current
+row-serial semantic kernel cap. Temporarily raising `SEMANTIC_FFN_MAX_DIM` from
+`1024` to `2048` proved the recognizer/encoder can select the single-dispatch
+path (`semantic_dispatch=242->182`, `semantic_single_dispatch_refusals=0`), but
+throughput fell to `0.62x`. That cap bump is rejected: the needed work is a
+tile-parallel semantic FFN/residual/norm throughput kernel, not enabling the
+larger row-serial single-dispatch kernel by default.
 The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic,
 full-model Q8 prompt viable, and cheap ggml smoke lanes behind
 `BENCH_COMPETITIVE_LANES`, so a kernel edit can run only

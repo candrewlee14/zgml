@@ -9160,17 +9160,45 @@ const CompiledProgram = struct {
 
     fn encodeSemanticFfnSublayerSingleDispatch(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, residual: anytype, rn: anytype, rp: anytype, out: anytype) bool {
         exec.profile.recordSemanticFfnSublayerSingleDispatchAttempt();
-        if (!program_mod.projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) return false;
-        if (down.M != gate.M or down.K != gate.N) return false;
-        if (down.input != product.dst or down.input_offset != product.dst_offset) return false;
-        if (residual.op != .add or residual.n != down.M * down.N) return false;
-        if (rn.src != residual.dst or rn.src_offset != residual.dst_offset) return false;
-        if (rn.rows != down.M or rn.cols != down.N) return false;
-        if (!canFuseRmsnormRepeatMul(rn, rp, out)) return false;
-        if (gate.K > SEMANTIC_FFN_MAX_DIM or gate.N > SEMANTIC_FFN_MAX_DIM or down.N > SEMANTIC_FFN_MAX_DIM) return false;
+        if (!program_mod.projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.pair_chain);
+            return false;
+        }
+        if (down.M != gate.M or down.K != gate.N) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.down_shape);
+            return false;
+        }
+        if (down.input != product.dst or down.input_offset != product.dst_offset) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.down_input);
+            return false;
+        }
+        if (residual.op != .add or residual.n != down.M * down.N) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.residual_shape);
+            return false;
+        }
+        if (rn.src != residual.dst or rn.src_offset != residual.dst_offset) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.rms_source);
+            return false;
+        }
+        if (rn.rows != down.M or rn.cols != down.N) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.rms_shape);
+            return false;
+        }
+        if (!canFuseRmsnormRepeatMul(rn, rp, out)) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.rms_fuse);
+            return false;
+        }
+        if (gate.K > SEMANTIC_FFN_MAX_DIM or gate.N > SEMANTIC_FFN_MAX_DIM or down.N > SEMANTIC_FFN_MAX_DIM) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.dim);
+            return false;
+        }
         if (@as(usize, gate.weight_idx) >= view.qweight_views.len or
             @as(usize, up.weight_idx) >= view.qweight_views.len or
-            @as(usize, down.weight_idx) >= view.qweight_views.len) return false;
+            @as(usize, down.weight_idx) >= view.qweight_views.len)
+        {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.qweight);
+            return false;
+        }
         if (view.outputReadsDenseSpan(gate.dst, gate.dst_offset, gate.M, gate.N, gate.dst_row_stride) or
             view.outputReadsSpan(first.dst, first.dst_offset, first.n) or
             view.outputReadsDenseSpan(up.dst, up.dst_offset, up.M, up.N, up.dst_row_stride) or
@@ -9198,9 +9226,18 @@ const CompiledProgram = struct {
             exec.profile.recordSemanticFfnSublayerSingleDispatchBlockSizeRefusal();
             return false;
         }
-        if (gate_params.M != up_params.M or gate_params.N != up_params.N or gate_params.K != up_params.K) return false;
-        if (gate_params.input_offset != up_params.input_offset or gate_params.input_row_stride != up_params.input_row_stride) return false;
-        if (down_params.M != gate_params.M or down_params.K != gate_params.N) return false;
+        if (gate_params.M != up_params.M or gate_params.N != up_params.N or gate_params.K != up_params.K) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.qparam_shape);
+            return false;
+        }
+        if (gate_params.input_offset != up_params.input_offset or gate_params.input_row_stride != up_params.input_row_stride) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.qparam_input);
+            return false;
+        }
+        if (down_params.M != gate_params.M or down_params.K != gate_params.N) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.down_param_shape);
+            return false;
+        }
 
         const buffers = [_]DeviceBuffer{
             gate_w.data,

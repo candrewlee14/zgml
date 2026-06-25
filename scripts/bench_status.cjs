@@ -45,6 +45,29 @@ const pytorchBroadKeys = [
   "log_softmax_classifier_batched",
   "lazy_token_head_batched",
 ];
+const semanticSingleDispatchRefusalReasons = [
+  "pair_chain",
+  "down_shape",
+  "down_input",
+  "residual_shape",
+  "rms_source",
+  "rms_shape",
+  "rms_fuse",
+  "dim",
+  "qweight",
+  "output_read",
+  "block_size",
+  "qparam_shape",
+  "qparam_input",
+  "down_param_shape",
+];
+
+function formatSemanticSingleDispatchRefusals(refusals) {
+  if (!refusals || typeof refusals !== "object") return "n/a";
+  return semanticSingleDispatchRefusalReasons
+    .map((reason) => `${reason}:${refusals[reason] ?? 0}`)
+    .join(",");
+}
 
 function latestFullRunArtifact() {
   const artifacts = fullRunArtifacts();
@@ -278,9 +301,10 @@ function q8PromptFreshnessStatusLine(selectedPath, rawPath) {
     const semanticSingleDispatchAttempts = data?.lanes?.semantic?.singleDispatchAttempts ?? "n/a";
     const semanticSingleDispatchOutputReadRefusals = data?.lanes?.semantic?.singleDispatchOutputReadRefusals ?? "n/a";
     const semanticSingleDispatchBlockSizeRefusals = data?.lanes?.semantic?.singleDispatchBlockSizeRefusals ?? "n/a";
+    const semanticSingleDispatchRefusals = formatSemanticSingleDispatchRefusals(data?.lanes?.semantic?.singleDispatchRefusals);
     const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
     const lanes = Array.isArray(data?.config?.measuredLanes) ? data.config.measuredLanes.join(",") : "unknown";
-    latest = `semantic=${semanticThroughput} semantic_speedup=${semanticSpeedup} semantic_median=${semanticMedian} semantic_worst=${semanticWorst} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} semantic_bridges=${semanticBridges} semantic_single_dispatch_attempts=${semanticSingleDispatchAttempts} semantic_single_dispatch_output_read_refusals=${semanticSingleDispatchOutputReadRefusals} semantic_single_dispatch_block_size_refusals=${semanticSingleDispatchBlockSizeRefusals} attempts=${attempts} lanes=${lanes}`;
+    latest = `semantic=${semanticThroughput} semantic_speedup=${semanticSpeedup} semantic_median=${semanticMedian} semantic_worst=${semanticWorst} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} semantic_bridges=${semanticBridges} semantic_single_dispatch_attempts=${semanticSingleDispatchAttempts} semantic_single_dispatch_output_read_refusals=${semanticSingleDispatchOutputReadRefusals} semantic_single_dispatch_block_size_refusals=${semanticSingleDispatchBlockSizeRefusals} semantic_single_dispatch_refusals=${semanticSingleDispatchRefusals} attempts=${attempts} lanes=${lanes}`;
   } catch {
     latest = "summary=unreadable";
   }
@@ -831,6 +855,7 @@ function q8PromptCandidateStatusLine(path) {
   const semanticSingleDispatchAttempts = data?.lanes?.semantic?.singleDispatchAttempts ?? "n/a";
   const semanticSingleDispatchOutputReadRefusals = data?.lanes?.semantic?.singleDispatchOutputReadRefusals ?? "n/a";
   const semanticSingleDispatchBlockSizeRefusals = data?.lanes?.semantic?.singleDispatchBlockSizeRefusals ?? "n/a";
+  const semanticSingleDispatchRefusals = formatSemanticSingleDispatchRefusals(data?.lanes?.semantic?.singleDispatchRefusals);
   const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
   const pairDefaults = data?.config?.pairDefaults === true ? "yes" : "no";
@@ -838,7 +863,7 @@ function q8PromptCandidateStatusLine(path) {
   const defaultPolicies = Array.isArray(data?.attempts)
     ? [...new Set(data.attempts.map((row) => row?.defaultPromptPolicy).filter((value) => typeof value === "string"))].join(",") || "unknown"
     : "unknown";
-  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} semantic_bridges=${semanticBridges} semantic_single_dispatch_attempts=${semanticSingleDispatchAttempts} semantic_single_dispatch_output_read_refusals=${semanticSingleDispatchOutputReadRefusals} semantic_single_dispatch_block_size_refusals=${semanticSingleDispatchBlockSizeRefusals} attempts=${attempts} lanes=${lanes} pair_defaults=${pairDefaults} default_policy=${defaultPolicies} baseline_noise=${baselineNoise} source=${source}`;
+  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} semantic_bridges=${semanticBridges} semantic_single_dispatch_attempts=${semanticSingleDispatchAttempts} semantic_single_dispatch_output_read_refusals=${semanticSingleDispatchOutputReadRefusals} semantic_single_dispatch_block_size_refusals=${semanticSingleDispatchBlockSizeRefusals} semantic_single_dispatch_refusals=${semanticSingleDispatchRefusals} attempts=${attempts} lanes=${lanes} pair_defaults=${pairDefaults} default_policy=${defaultPolicies} baseline_noise=${baselineNoise} source=${source}`;
 }
 
 function frontierStatusLine(path, pressurePath = path) {

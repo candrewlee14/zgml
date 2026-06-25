@@ -45,6 +45,22 @@ const candidateProjectionPairFloor = Number(process.env.BENCH_Q8_PROMPT_PROJECTI
 const decodeCommandCeil = Number(process.env.BENCH_Q8_DECODE_COMMAND_CEIL || "211");
 const decodeProjectionPairFloor = Number(process.env.BENCH_Q8_DECODE_PROJECTION_PAIR_FLOOR || "30");
 const decodeProjectionChainFloor = Number(process.env.BENCH_Q8_DECODE_PROJECTION_CHAIN_FLOOR || "60");
+const semanticSingleDispatchRefusalReasons = [
+  "pair_chain",
+  "down_shape",
+  "down_input",
+  "residual_shape",
+  "rms_source",
+  "rms_shape",
+  "rms_fuse",
+  "dim",
+  "qweight",
+  "output_read",
+  "block_size",
+  "qparam_shape",
+  "qparam_input",
+  "down_param_shape",
+];
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -100,6 +116,20 @@ function roundMetric(value) {
   return Number.isFinite(value) ? Number(value.toFixed(6)) : null;
 }
 
+function semanticSingleDispatchRefusals(row) {
+  const refusals = {};
+  for (const reason of semanticSingleDispatchRefusalReasons) {
+    refusals[reason] = number(row, `semantic_ffn_sublayer_single_dispatch_refused_${reason}_per_call`) ?? 0;
+  }
+  return refusals;
+}
+
+function formatRefusals(refusals) {
+  return semanticSingleDispatchRefusalReasons
+    .map((reason) => `${reason}:${format(refusals?.[reason] ?? 0, 0)}`)
+    .join(",");
+}
+
 function positiveInt(value, label) {
   const n = Number(value);
   if (!Number.isSafeInteger(n) || n <= 0) {
@@ -133,6 +163,9 @@ const measureTwoPhase = measuredLanes.has("two_phase");
 const measureSemantic = measuredLanes.has("semantic");
 
 function emptyLane(index) {
+  const emptySemanticSingleDispatchRefusals = Object.fromEntries(
+    semanticSingleDispatchRefusalReasons.map((reason) => [reason, 0]),
+  );
   return {
     index,
     tokS: null,
@@ -159,6 +192,10 @@ function emptyLane(index) {
     tiledTwoPhaseCount: 0,
     tiledFinalizeTileGroups: 0,
     tiledFinalizeElements: 0,
+    semanticSingleDispatchAttempts: 0,
+    semanticSingleDispatchOutputReadRefusals: 0,
+    semanticSingleDispatchBlockSizeRefusals: 0,
+    semanticSingleDispatchRefusals: emptySemanticSingleDispatchRefusals,
     fallback: 0,
   };
 }
@@ -214,6 +251,7 @@ function readProjectionLane(row, defaultTokS, index) {
     semanticSingleDispatchAttempts: number(row, "semantic_ffn_sublayer_single_dispatch_attempts_per_call") ?? 0,
     semanticSingleDispatchOutputReadRefusals: number(row, "semantic_ffn_sublayer_single_dispatch_output_read_refusals_per_call") ?? 0,
     semanticSingleDispatchBlockSizeRefusals: number(row, "semantic_ffn_sublayer_single_dispatch_block_size_refusals_per_call") ?? 0,
+    semanticSingleDispatchRefusals: semanticSingleDispatchRefusals(row),
     fallback: number(row, "fallback_ops") ?? 0,
   };
 }
@@ -568,6 +606,7 @@ function measureAttempt(index) {
     semanticSingleDispatchAttempts: semanticLane.semanticSingleDispatchAttempts,
     semanticSingleDispatchOutputReadRefusals: semanticLane.semanticSingleDispatchOutputReadRefusals,
     semanticSingleDispatchBlockSizeRefusals: semanticLane.semanticSingleDispatchBlockSizeRefusals,
+    semanticSingleDispatchRefusals: semanticLane.semanticSingleDispatchRefusals,
     twoPhaseScratchReady,
     defaultProjectionRowChainDispatchSplit,
     commandProjectionRowChainDispatchSplit: commandLane.projectionRowChainDispatchSplit,
@@ -856,6 +895,7 @@ if (writeArtifact) {
         singleDispatchAttempts: semanticBest.semanticSingleDispatchAttempts,
         singleDispatchOutputReadRefusals: semanticBest.semanticSingleDispatchOutputReadRefusals,
         singleDispatchBlockSizeRefusals: semanticBest.semanticSingleDispatchBlockSizeRefusals,
+        singleDispatchRefusals: semanticBest.semanticSingleDispatchRefusals,
       },
     },
     attempts: attemptRows.map((row) => ({
@@ -877,6 +917,7 @@ if (writeArtifact) {
       semanticSingleDispatchAttempts: row.semanticSingleDispatchAttempts,
       semanticSingleDispatchOutputReadRefusals: row.semanticSingleDispatchOutputReadRefusals,
       semanticSingleDispatchBlockSizeRefusals: row.semanticSingleDispatchBlockSizeRefusals,
+      semanticSingleDispatchRefusals: row.semanticSingleDispatchRefusals,
       commandFallback: row.commandFallback,
       twoPhaseFallback: row.twoPhaseFallback,
       semanticFallback: row.semanticFallback,
@@ -960,6 +1001,7 @@ console.log(
     `semantic_single_dispatch_attempts=${format(semanticBest.semanticSingleDispatchAttempts, 0)} ` +
     `semantic_single_dispatch_output_read_refusals=${format(semanticBest.semanticSingleDispatchOutputReadRefusals, 0)} ` +
     `semantic_single_dispatch_block_size_refusals=${format(semanticBest.semanticSingleDispatchBlockSizeRefusals, 0)} ` +
+    `semantic_single_dispatch_refusals=${formatRefusals(semanticBest.semanticSingleDispatchRefusals)} ` +
     `semantic_projection_chain=${format(semanticBest.defaultProjectionChains, 0)}->${format(semanticBest.semanticProjectionChains, 0)} ` +
     `semantic_projection_pair=${format(semanticBest.defaultProjectionPairs, 0)}->${format(semanticBest.semanticProjectionPairs, 0)} ` +
     `semantic_projection_pair_dispatch=${format(semanticBest.defaultProjectionPairDispatches, 0)}->${format(semanticBest.semanticProjectionPairDispatches, 0)} ` +
