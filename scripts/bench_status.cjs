@@ -543,7 +543,32 @@ function qsemanticThroughputFreshnessStatusLine(selectedPath, rawPath) {
   return `qsemantic-throughput-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill}:median:${fullMedian} smollm_prompt=${smollmPrompt}:median:${smollmMedian} source=${source}`;
 }
 
-function qsemanticBridgeStatusLine(path) {
+function q8PromptSemanticInputSplitFields(path) {
+  if (!path) return null;
+  try {
+    const data = readJson(path);
+    const semantic = data?.lanes?.semantic;
+    const absorbed = Number(semantic?.semanticFfnSublayersWithInputRowChain);
+    const absorbedDispatches = Number(semantic?.semanticFfnSublayerWithInputRowChainDispatches);
+    const fallbackDispatches = Number(semantic?.semanticFallbackDispatches);
+    if (!Number.isFinite(absorbed) || absorbed <= 0 || !Number.isFinite(absorbedDispatches) || !Number.isFinite(fallbackDispatches)) {
+      return null;
+    }
+    const inputDispatches = absorbedDispatches - fallbackDispatches;
+    return {
+      absorbed,
+      absorbedDispatches,
+      inputDispatches,
+      inputSplit: inputDispatches / absorbed,
+      fallbackDispatches,
+      fallbackSplit: fallbackDispatches / absorbed,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function qsemanticBridgeStatusLine(path, q8PressurePath = null) {
   if (!path) {
     return "qsemantic-bridge-results: no local exact bridge-shape qsemantic artifact found; run npm run dev:perf:frontier:qsemantic:bridge:run";
   }
@@ -564,7 +589,11 @@ function qsemanticBridgeStatusLine(path) {
   const gate = Number(bridge.speedup) >= 1 && Number(bridge.maxAbsDiff) <= 0.02 ? "ready" : "below_default";
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
   const next = typeof data?.next === "string" ? data.next : "unknown";
-  return `qsemantic-bridge-results: latest=${compactName(path)} status=${status} gate=${gate} attempt=${selectedAttempt}/${attempts} bridge_ffn=${speedup}:median:${median}:worst:${worst}:max_abs_diff:${maxAbsDiff}:dispatches:${bridge.runtimeDispatches ?? "n/a"}:semantic_dispatches:${bridge.semanticRuntimeDispatches ?? "n/a"}:semantic_split:${formatNumber(bridge.semanticDispatchSplit, 2)}:semantic_pair_dispatches:${bridge.semanticFallbackPairDispatches ?? "n/a"}:semantic_tail_dispatches:${bridge.semanticFallbackTailDispatches ?? "n/a"}:row_chain_tiled:${bridge.qmatmulRowChainTiledCount ?? "n/a"}:row_tile_groups:${bridge.qmatmulRowChainTiledRowTileGroups ?? "n/a"}:n_tiles:${bridge.qmatmulRowChainTiledNTiles ?? "n/a"}:two_phase:${bridge.qmatmulRowChainTiledTwoPhaseCount ?? "n/a"}:finalize_groups:${bridge.qmatmulRowChainTiledFinalizeTileGroups ?? "n/a"}:finalize_elements:${bridge.qmatmulRowChainTiledFinalizeElements ?? "n/a"}:spilled_input:${bridge.qmatmulRowChainTiledSpilledInput ?? "n/a"}:output_spills:${bridge.qmatmulRowChainTiledOutputSpills ?? "n/a"} next=${next} source=${source}`;
+  const q8 = q8PromptSemanticInputSplitFields(q8PressurePath);
+  const model = q8
+    ? `:model_absorbed=${q8.absorbed}:model_input_dispatch=${formatNumber(q8.inputDispatches, 0)}:model_input_split=${formatNumber(q8.inputSplit, 2)}:model_fallback_dispatch=${formatNumber(q8.fallbackDispatches, 0)}:model_fallback_split=${formatNumber(q8.fallbackSplit, 2)}`
+    : "";
+  return `qsemantic-bridge-results: latest=${compactName(path)} status=${status} gate=${gate} attempt=${selectedAttempt}/${attempts} bridge_ffn=${speedup}:median:${median}:worst:${worst}:max_abs_diff:${maxAbsDiff}:dispatches:${bridge.runtimeDispatches ?? "n/a"}:semantic_dispatches:${bridge.semanticRuntimeDispatches ?? "n/a"}:semantic_split:${formatNumber(bridge.semanticDispatchSplit, 2)}:semantic_pair_dispatches:${bridge.semanticFallbackPairDispatches ?? "n/a"}:semantic_tail_dispatches:${bridge.semanticFallbackTailDispatches ?? "n/a"}${model}:row_chain_tiled:${bridge.qmatmulRowChainTiledCount ?? "n/a"}:row_tile_groups:${bridge.qmatmulRowChainTiledRowTileGroups ?? "n/a"}:n_tiles:${bridge.qmatmulRowChainTiledNTiles ?? "n/a"}:two_phase:${bridge.qmatmulRowChainTiledTwoPhaseCount ?? "n/a"}:finalize_groups:${bridge.qmatmulRowChainTiledFinalizeTileGroups ?? "n/a"}:finalize_elements:${bridge.qmatmulRowChainTiledFinalizeElements ?? "n/a"}:spilled_input:${bridge.qmatmulRowChainTiledSpilledInput ?? "n/a"}:output_spills:${bridge.qmatmulRowChainTiledOutputSpills ?? "n/a"} next=${next} source=${source}`;
 }
 
 function ggmlSmokeStatusLine(path) {
@@ -1879,7 +1908,7 @@ if (frontierFreshness) process.stdout.write(`${frontierFreshness}\n`);
 process.stdout.write(`${qsemanticThroughputStatusLine(latestQsemanticThroughput)}\n`);
 const qsemanticThroughputFreshness = qsemanticThroughputFreshnessStatusLine(latestQsemanticThroughput, latestRawQsemanticThroughput);
 if (qsemanticThroughputFreshness) process.stdout.write(`${qsemanticThroughputFreshness}\n`);
-process.stdout.write(`${qsemanticBridgeStatusLine(latestQsemanticBridge)}\n`);
+process.stdout.write(`${qsemanticBridgeStatusLine(latestQsemanticBridge, latestRawQ8Prompt)}\n`);
 process.stdout.write(`${ggmlSmokeStatusLine(latestGgmlSmoke)}\n`);
 process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, rawQ8Path: latestRawQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestRawQsemanticThroughput ?? latestRawFrontier, qsemanticBridgePath: latestQsemanticBridge })}\n`);
 const quarantined = quarantinedFullRunArtifacts();
