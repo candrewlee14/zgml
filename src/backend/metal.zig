@@ -1561,20 +1561,20 @@ const shader_source =
     \\            float x1 = input_values[k + 1];
     \\            float x2 = input_values[k + 2];
     \\            float x3 = input_values[k + 3];
-    \\            gate_sum += x0 * float(gate_weight_data[w_idx0]) * gate_weight_scales[w_idx0 / p.gate_block_size];
-    \\            gate_sum += x1 * float(gate_weight_data[w_idx1]) * gate_weight_scales[w_idx1 / p.gate_block_size];
-    \\            gate_sum += x2 * float(gate_weight_data[w_idx2]) * gate_weight_scales[w_idx2 / p.gate_block_size];
-    \\            gate_sum += x3 * float(gate_weight_data[w_idx3]) * gate_weight_scales[w_idx3 / p.gate_block_size];
-    \\            up_sum += x0 * float(up_weight_data[w_idx0]) * up_weight_scales[w_idx0 / p.up_block_size];
-    \\            up_sum += x1 * float(up_weight_data[w_idx1]) * up_weight_scales[w_idx1 / p.up_block_size];
-    \\            up_sum += x2 * float(up_weight_data[w_idx2]) * up_weight_scales[w_idx2 / p.up_block_size];
-    \\            up_sum += x3 * float(up_weight_data[w_idx3]) * up_weight_scales[w_idx3 / p.up_block_size];
+    \\            gate_sum += x0 * float(gate_weight_data[w_idx0]) * gate_weight_scales[w_idx0 >> 5];
+    \\            gate_sum += x1 * float(gate_weight_data[w_idx1]) * gate_weight_scales[w_idx1 >> 5];
+    \\            gate_sum += x2 * float(gate_weight_data[w_idx2]) * gate_weight_scales[w_idx2 >> 5];
+    \\            gate_sum += x3 * float(gate_weight_data[w_idx3]) * gate_weight_scales[w_idx3 >> 5];
+    \\            up_sum += x0 * float(up_weight_data[w_idx0]) * up_weight_scales[w_idx0 >> 5];
+    \\            up_sum += x1 * float(up_weight_data[w_idx1]) * up_weight_scales[w_idx1 >> 5];
+    \\            up_sum += x2 * float(up_weight_data[w_idx2]) * up_weight_scales[w_idx2 >> 5];
+    \\            up_sum += x3 * float(up_weight_data[w_idx3]) * up_weight_scales[w_idx3 >> 5];
     \\        }
     \\        for (; k < p.K; k++) {
     \\            uint w_idx = k * p.H + h;
     \\            float x = input_values[k];
-    \\            gate_sum += x * float(gate_weight_data[w_idx]) * gate_weight_scales[w_idx / p.gate_block_size];
-    \\            up_sum += x * float(up_weight_data[w_idx]) * up_weight_scales[w_idx / p.up_block_size];
+    \\            gate_sum += x * float(gate_weight_data[w_idx]) * gate_weight_scales[w_idx >> 5];
+    \\            up_sum += x * float(up_weight_data[w_idx]) * up_weight_scales[w_idx >> 5];
     \\        }
     \\        product_values[h] = fused_unary(p.first_op, gate_sum) * up_sum;
     \\    }
@@ -1589,14 +1589,14 @@ const shader_source =
     \\            uint w_idx1 = w_idx0 + p.O;
     \\            uint w_idx2 = w_idx1 + p.O;
     \\            uint w_idx3 = w_idx2 + p.O;
-    \\            sum += product_values[h] * float(down_weight_data[w_idx0]) * down_weight_scales[w_idx0 / p.down_block_size];
-    \\            sum += product_values[h + 1] * float(down_weight_data[w_idx1]) * down_weight_scales[w_idx1 / p.down_block_size];
-    \\            sum += product_values[h + 2] * float(down_weight_data[w_idx2]) * down_weight_scales[w_idx2 / p.down_block_size];
-    \\            sum += product_values[h + 3] * float(down_weight_data[w_idx3]) * down_weight_scales[w_idx3 / p.down_block_size];
+    \\            sum += product_values[h] * float(down_weight_data[w_idx0]) * down_weight_scales[w_idx0 >> 5];
+    \\            sum += product_values[h + 1] * float(down_weight_data[w_idx1]) * down_weight_scales[w_idx1 >> 5];
+    \\            sum += product_values[h + 2] * float(down_weight_data[w_idx2]) * down_weight_scales[w_idx2 >> 5];
+    \\            sum += product_values[h + 3] * float(down_weight_data[w_idx3]) * down_weight_scales[w_idx3 >> 5];
     \\        }
     \\        for (; h < p.H; h++) {
     \\            uint w_idx = h * p.O + col;
-    \\            sum += product_values[h] * float(down_weight_data[w_idx]) * down_weight_scales[w_idx / p.down_block_size];
+    \\            sum += product_values[h] * float(down_weight_data[w_idx]) * down_weight_scales[w_idx >> 5];
     \\        }
     \\        uint linear = row * p.O + col;
     \\        float residual = sum + residual_secondary[p.residual_secondary_offset + linear];
@@ -9189,6 +9189,7 @@ const CompiledProgram = struct {
         const gate_params = qmatmulParams(gate, gate_w.block_size);
         const up_params = qmatmulParams(up, up_w.block_size);
         const down_params = qmatmulParams(down, down_w.block_size);
+        if (gate_params.block_size != 32 or up_params.block_size != 32 or down_params.block_size != 32) return false;
         if (gate_params.M != up_params.M or gate_params.N != up_params.N or gate_params.K != up_params.K) return false;
         if (gate_params.input_offset != up_params.input_offset or gate_params.input_row_stride != up_params.input_row_stride) return false;
         if (down_params.M != gate_params.M or down_params.K != gate_params.N) return false;

@@ -352,11 +352,16 @@ machine for both prompt/prefill and decode.
   `full_prefill=1.99x`, `smollm_prompt=1.04x`, `gate=ready`. The refreshed
   three-attempt Q8 prompt viable run also promotes the semantic lane with
   `semantic_speedup=1.18x`, `semantic_median=1.01x`, and
-  `semantic_worst=0.99x`. A later semantic-only scale-index shift probe
-  preserved correctness but regressed the focused qsemantic throughput lane to
-  `full_prefill=1.34x`, `smollm_prompt=1.03x`, so do not spend the next pass on
-  block-scale division/shift spelling; the missing win is still work
-  partitioning.
+  `semantic_worst=0.99x`. A later source-current semantic-only block-32 scale
+  specialization replaced hot semantic dequant divisions with `w_idx >> 5`
+  under an encoder guard requiring all three semantic qweight block sizes to be
+  `32`. That preserves correctness and lifts the focused qsemantic throughput
+  gate to `full_prefill=2.67x:median:2.66x:worst:2.65x` and
+  `smollm_prompt=2.60x:median:2.31x:worst:1.63x`. It also moves the full Q8
+  bridge lane from clear regression to near-promotion
+  (`semantic_best=1.16x`, `semantic_median=1.00x`, `semantic_worst=0.99x`).
+  The missing win is still work partitioning, but the semantic block-32 scale
+  specialization is retained as a real kernel improvement.
 - The frontier gate now also reports the paired row-chain diagnostic
   `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
   This compares four staged qmatmul+residual+RMSNorm-scale row chains against

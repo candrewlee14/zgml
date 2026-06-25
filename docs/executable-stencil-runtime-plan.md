@@ -1622,13 +1622,18 @@ That variant was reverted too. Treat scale-index specialization as exhausted
 for now; the qproj lane needs better quantized projection-chain structure, not
 a shift-vs-div rewrite.
 A semantic-only follow-up tried the same idea inside the one-dispatch
-`qmatmul_semantic_ffn_sublayer_f32` kernel by passing power-of-two block shifts
-and falling back to division for odd block sizes. It compiled, preserved
-correctness, and passed the qsemantic gate, but the fresh three-attempt focused
-throughput artifact regressed the full-prefill lane to `full_prefill=1.34x`
-while SmolLM stayed flat at `smollm_prompt=1.03x`; the source change was
-reverted. Treat scale-index shift hoisting as closed for both qproj and
-semantic FFN work until a profiler shows otherwise.
+`qmatmul_semantic_ffn_sublayer_f32` kernel, but kept it narrower than the broad
+qproj rewrite: the encoder now requires the gate/up/down qweight block sizes to
+be `32`, and the semantic shader uses `w_idx >> 5` for those scale lookups. It
+compiled, preserved correctness, and turned the qsemantic throughput lane from
+diagnostic into a real win:
+`full_prefill=2.67x:median:2.66x:worst:2.65x` and
+`smollm_prompt=2.60x:median:2.31x:worst:1.63x`. The full-model Q8 bridge path
+also improved to `semantic_best=1.16x`, `semantic_median=1.00x`, and
+`semantic_worst=0.99x`; the strict bridge gate correctly keeps it diagnostic
+until worst-case non-regression clears. Treat broad scale-index rewriting as
+closed, but keep the semantic block-32 specialization as a retained kernel
+improvement.
 The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic,
 full-model Q8 prompt viable, and cheap ggml smoke lanes behind
 `BENCH_COMPETITIVE_LANES`, so a kernel edit can run only
