@@ -47,6 +47,15 @@ const pytorchBroadKeys = [
   "log_softmax_classifier_batched",
   "lazy_token_head_batched",
 ];
+
+const nativeEagerExpectedKeys = [
+  "linear_batched",
+  "lazy_matmul_add_gelu_batched",
+  "lazy_matmul_add_relu_batched",
+  "lazy_matmul_add_silu_batched",
+  "lazy_matmul_add_sigmoid_batched",
+  "lazy_matmul_add_tanh_batched",
+];
 const semanticSingleDispatchRefusalReasons = [
   "pair_chain",
   "down_shape",
@@ -986,6 +995,8 @@ function nativeEagerStatusLine(path) {
     return `native-eager-results: latest=${compactName(path)} unreadable`;
   }
   const rows = Array.isArray(data?.rows) ? data.rows : [];
+  const rowKeys = new Set(rows.map((row) => typeof row?.key === "string" ? row.key : null).filter(Boolean));
+  const missingRows = nativeEagerExpectedKeys.filter((key) => !rowKeys.has(key));
   const status = typeof data?.status === "string" ? data.status : "unknown";
   const runtime = typeof data?.runtime === "string" ? data.runtime : "unknown";
   const native = typeof data?.nativeFreshness?.label === "string" ? data.nativeFreshness.label : "unknown";
@@ -997,7 +1008,7 @@ function nativeEagerStatusLine(path) {
       : "n/a";
     return `${key}:module=${formatRatio(row?.nativeEagerModuleSpeedup)}:into=${formatRatio(row?.nativeEagerSpeedup)}:diff=${diff}`;
   }).join(",");
-  return `native-eager-results: latest=${compactName(path)} status=${status} runtime=${runtime} native=${native} timing=${minTiming} rows=${rowSummary || "none"}`;
+  return `native-eager-results: latest=${compactName(path)} status=${status} runtime=${runtime} native=${native} timing=${minTiming} row_coverage=${nativeEagerExpectedKeys.length - missingRows.length}/${nativeEagerExpectedKeys.length} missing=${missingRows.join(",") || "none"} rows=${rowSummary || "none"}`;
 }
 
 function nativeEagerRuntimeStatusLine() {
@@ -1011,6 +1022,8 @@ function nativeEagerRuntimeStatusLine() {
       return `${runtime}=unreadable:${compactName(path)}`;
     }
     const rows = Array.isArray(data?.rows) ? data.rows : [];
+    const rowKeys = new Set(rows.map((row) => typeof row?.key === "string" ? row.key : null).filter(Boolean));
+    const missingRows = nativeEagerExpectedKeys.filter((key) => !rowKeys.has(key));
     const moduleSpeedups = rows
       .map((row) => row?.nativeEagerModuleSpeedup)
       .filter((value) => typeof value === "number" && Number.isFinite(value));
@@ -1025,7 +1038,7 @@ function nativeEagerRuntimeStatusLine() {
     const maxDiff = diffs.length > 0 ? Math.max(...diffs) : null;
     const native = typeof data?.nativeFreshness?.label === "string" ? data.nativeFreshness.label : "unknown";
     const status = typeof data?.status === "string" ? data.status : "unknown";
-    return `${runtime}=latest:${compactName(path)}:status=${status}:native=${native}:module_min=${formatRatio(minModule)}:into_min=${formatRatio(minInto)}:diff_max=${maxDiff === null ? "n/a" : formatNumber(maxDiff, 6)}`;
+    return `${runtime}=latest:${compactName(path)}:status=${status}:native=${native}:row_coverage=${nativeEagerExpectedKeys.length - missingRows.length}/${nativeEagerExpectedKeys.length}:missing=${missingRows.join(",") || "none"}:module_min=${formatRatio(minModule)}:into_min=${formatRatio(minInto)}:diff_max=${maxDiff === null ? "n/a" : formatNumber(maxDiff, 6)}`;
   });
   return `native-eager-runtime-results: ${parts.join(" ")}`;
 }

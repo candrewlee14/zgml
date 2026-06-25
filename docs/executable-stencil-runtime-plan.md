@@ -486,9 +486,11 @@ Current checked progress:
   `bench-results/native-eager/native-eager-*.json` artifacts, and
   `bench:status` reports both the latest native eager artifact and a
   `native-eager-runtime-results:` summary with separate Node and Bun
-  minimum module/native-into speedups plus max module diff. That keeps the
-  normal-module native eager proof close to PyTorch/ggml evidence instead of
-  hidden in transient console output.
+  row coverage, missing-row list, minimum module/native-into speedups, and max
+  module diff. That keeps the normal-module native eager proof close to
+  PyTorch/ggml evidence instead of hidden in transient console output, and it
+  prevents an older Node or Bun artifact from looking complete after the native
+  eager surface grows.
   These C ABI paths use the same shared native matmul substrate as compiled
   Program execution, then apply bias and optional activation into the
   caller-owned output buffer.
