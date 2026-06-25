@@ -1335,6 +1335,7 @@ function checkScripts() {
     "semantic smollm-prompt target must expose row-serial throughput gap row_serial_dot_ops_per_tile_parallel_group=4608 total_row_serial_dot_ops_per_tile_parallel_group=589824",
     "semantic full-prefill target must expose count=1 rows=128 hidden=512 input=512 output=512 row_serial_dot_ops=786432 total_row_serial_dot_ops=100663296",
     "semantic smollm-prompt target must expose count=1 rows=128 hidden=576 input=576 output=576 row_serial_dot_ops=995328 total_row_serial_dot_ops=127401984",
+    "const next = (smollmPromptSemanticWidthLaneUtilization < 800 || smollmPromptSemanticThreadLaneUtilization < 800)",
     "next=semantic_ffn_sublayer_throughput_kernel",
     "semantic_width_parallel_kernel",
     "next: best.next",

@@ -1320,8 +1320,7 @@ function scoreFocusedSemanticThroughputCandidate(output, attempt) {
     failures.push("semantic throughput smollm-prompt profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 runtime_backend_dispatches=1 runtime_semantic_ffn_dispatches=1 qmatmul_row_chain_tiled_count=0 semantic_ffn_sublayer_count=1 semantic_tile_parallel_groups=216");
   }
 
-  const next = smollmPromptSpeedup < 1 &&
-    (smollmPromptSemanticWidthLaneUtilization < 800 || smollmPromptSemanticThreadLaneUtilization < 800)
+  const next = (smollmPromptSemanticWidthLaneUtilization < 800 || smollmPromptSemanticThreadLaneUtilization < 800)
     ? "semantic_width_parallel_kernel"
     : "semantic_ffn_sublayer_throughput_kernel";
   const line = [
