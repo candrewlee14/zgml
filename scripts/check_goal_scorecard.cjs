@@ -830,6 +830,12 @@ function checkScripts() {
   if (scripts["dev:perf:next:qsemantic-throughput:run"] !== "BENCH_NEXT_PERF_LANE=qsemantic_throughput BENCH_NEXT_PERF_BUILD=0 node scripts/run_next_perf.cjs") {
     errors.push("package.json dev:perf:next:qsemantic-throughput:run must keep the no-rebuild qsemantic throughput microscope");
   }
+  if (scripts["dev:perf:next:qsemantic-bridge"] !== "BENCH_NEXT_PERF_LANE=qsemantic_bridge BENCH_NEXT_PERF_BUILD=1 node scripts/run_next_perf.cjs") {
+    errors.push("package.json dev:perf:next:qsemantic-bridge must keep the rebuild-backed exact bridge-shape qsemantic microscope");
+  }
+  if (scripts["dev:perf:next:qsemantic-bridge:run"] !== "BENCH_NEXT_PERF_LANE=qsemantic_bridge BENCH_NEXT_PERF_BUILD=0 node scripts/run_next_perf.cjs") {
+    errors.push("package.json dev:perf:next:qsemantic-bridge:run must keep the no-rebuild exact bridge-shape qsemantic microscope");
+  }
   if (scripts["dev:perf:next:build"] !== "BENCH_NEXT_PERF_BUILD=1 node scripts/run_next_perf.cjs") {
     errors.push("package.json dev:perf:next:build must keep the rebuild-backed artifact-directed next bottleneck microscope");
   }
@@ -902,6 +908,9 @@ function checkScripts() {
     "if (/q8_prompt=promoted_semantic_default/.test(line)) return \"ggml\"",
     "if (hasFreshQsemanticThroughput && /q8_prompt=semantic_throughput_kernel/.test(line)) return \"q8_prompt\"",
     "qsemantic_throughput",
+    "qsemantic_bridge",
+    "qsemantic bridge frontier",
+    "BENCH_FRONTIER_FILTER: \"qsemantic bridge\"",
     "q8_prompt=semantic_throughput_kernel",
     "scripts/check_frontier_bench.cjs",
     "scripts/check_q8_prompt_candidate.cjs",

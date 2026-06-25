@@ -548,7 +548,7 @@ the smallest no-rebuild microscope for the current bottleneck. Use
 `npm run dev:perf:next:build` when the native or benchmark artifact is stale,
 `npm run dev:perf:next:steady` when a noisy lane needs repeated attempts or
 longer timing windows, or set
-`BENCH_NEXT_PERF_LANE=pytorch|qsemantic|qsemantic_throughput|qproj|q8_prompt|ggml`
+`BENCH_NEXT_PERF_LANE=pytorch|qsemantic|qsemantic_throughput|qsemantic_bridge|qproj|q8_prompt|ggml`
 to force a lane. The automatic qsemantic handoff is two-step: below-default or
 missing fresh throughput evidence keeps the loop on `qsemantic_throughput`,
 while fresh above-default qsemantic throughput advances the loop to `q8_prompt`
@@ -567,6 +567,10 @@ is the actionable signal from the rejected `SEMANTIC_FFN_MAX_DIM=2048` probe:
 the next kernel must preserve width/tile parallelism for the larger hidden
 dimension, not merely enable the row-serial single-dispatch path. The
 `dev:perf:next` router sends this case back to `qsemantic_throughput`.
+For exact `576 x 1536 x 576` bridge-kernel edits, force
+`BENCH_NEXT_PERF_LANE=qsemantic_bridge npm run dev:perf:next{,:run}`; that
+routes through the checked `frontier-qsemantic-bridge-*.json` artifact instead
+of the broader qsemantic pair.
 For qsemantic kernel work, `BENCH_QSEMANTIC_VARIANTS=target` limits the raw
 frontier harness to the staged baseline plus the one-dispatch semantic target,
 while `BENCH_QSEMANTIC_VARIANTS=throughput_candidate` limits it to the staged

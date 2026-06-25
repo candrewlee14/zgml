@@ -849,6 +849,8 @@ npm run dev:perf:competitive:run    # no-rebuild rerun of selected competitivene
 npm run dev:perf:next               # read perf-next and run the smallest current bottleneck microscope
 npm run dev:perf:next:build         # rebuild needed artifacts first, then run that microscope
 npm run dev:perf:next:steady        # rerun that microscope with steadier attempts/windows
+npm run dev:perf:next:qsemantic-bridge # rebuild and run the exact 576x1536x576 bridge microscope
+npm run dev:perf:next:qsemantic-bridge:run # no-rebuild exact bridge microscope
 npm run dev:perf:promotion          # qsemantic throughput + Q8 prompt viable + ggml smoke promotion path
 npm run dev:perf:promotion:run      # no-rebuild rerun of the promotion path
 npm run dev:perf:promotion:full     # escalate promotion to the baseline-gated p128/g200/r3 ggml artifact
