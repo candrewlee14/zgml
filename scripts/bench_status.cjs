@@ -1034,7 +1034,7 @@ function pytorchNextTarget(path) {
   }
 }
 
-function q8PromptNextTarget(path, pressurePath = path) {
+function q8PromptNextTarget(path, pressurePath = path, bridgePath = null) {
   if (!path) return "q8_prompt=missing_artifact";
   try {
     const data = readJson(path);
@@ -1066,6 +1066,14 @@ function q8PromptNextTarget(path, pressurePath = path) {
     const freshSemanticAbsorbed = pressureData?.lanes?.semantic?.semanticFfnSublayersWithInputRowChain ?? "n/a";
     const freshSemanticAbsorbedDispatches = pressureData?.lanes?.semantic?.semanticFfnSublayerWithInputRowChainDispatches ?? "n/a";
     const freshSemanticAbsorbedSplit = formatNumber(pressureData?.lanes?.semantic?.semanticAbsorbedDispatchSplit, 2);
+    let bridgeSemanticSplit = "n/a";
+    if (bridgePath) {
+      try {
+        bridgeSemanticSplit = formatNumber(readJson(bridgePath)?.bridgeFfn?.semanticDispatchSplit, 2);
+      } catch {
+        bridgeSemanticSplit = "n/a";
+      }
+    }
     const freshSingleDispatchRefusals = pressureData?.lanes?.semantic?.singleDispatchRefusals;
     const freshDimRefusals = Number(freshSingleDispatchRefusals?.dim ?? 0);
     const freshRefusals = formatSemanticSingleDispatchRefusals(freshSingleDispatchRefusals);
@@ -1087,7 +1095,7 @@ function q8PromptNextTarget(path, pressurePath = path) {
         Number.isFinite(pressureSemanticWorstSpeedup) && pressureSemanticWorstSpeedup >= 1
           ? "steady_semantic_bridge_candidate"
           : "semantic_bridge_throughput_kernel";
-      return `q8_prompt=semantic_bridge_candidate:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:absorbed=${freshSemanticAbsorbed}:absorbed_dispatch=${freshSemanticAbsorbedDispatches}:absorbed_split=${freshSemanticAbsorbedSplit}:single_dispatch_refusals=${freshRefusals}:dim_refusal_shape=${freshDimRefusalShape}:best=${formatRatio(pressureSemanticBestSpeedup)}:median=${formatRatio(pressureSemanticSpeedup)}:worst=${formatRatio(pressureSemanticWorstSpeedup)}:speedup=${formatRatio(pressureSemanticSpeedup)}:next=${next}`;
+      return `q8_prompt=semantic_bridge_candidate:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:absorbed=${freshSemanticAbsorbed}:absorbed_dispatch=${freshSemanticAbsorbedDispatches}:absorbed_split=${freshSemanticAbsorbedSplit}:bridge_semantic_split=${bridgeSemanticSplit}:single_dispatch_refusals=${freshRefusals}:dim_refusal_shape=${freshDimRefusalShape}:best=${formatRatio(pressureSemanticBestSpeedup)}:median=${formatRatio(pressureSemanticSpeedup)}:worst=${formatRatio(pressureSemanticWorstSpeedup)}:speedup=${formatRatio(pressureSemanticSpeedup)}:next=${next}`;
     }
     if (pressureStatus === "promoted-default" || pressureSemanticThroughput === "promoted") {
       return `q8_prompt=promoted_semantic_default:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:absorbed=${freshSemanticAbsorbed}:absorbed_dispatch=${freshSemanticAbsorbedDispatches}:absorbed_split=${freshSemanticAbsorbedSplit}:next=${bridgeNext}`;
@@ -1259,7 +1267,7 @@ function currentQ8SmokeNextTarget(path) {
   }
 }
 
-function perfNextStatusLine({ latestPath, pytorchPath, q8Path, rawQ8Path, frontierPath, rawFrontierPath }) {
+function perfNextStatusLine({ latestPath, pytorchPath, q8Path, rawQ8Path, frontierPath, rawFrontierPath, qsemanticBridgePath }) {
   const qprojPath = latestQprojFrontierArtifact();
   const q8SmokePath = latestGgmlSmokeArtifact();
   return [
@@ -1267,7 +1275,7 @@ function perfNextStatusLine({ latestPath, pytorchPath, q8Path, rawQ8Path, fronti
     fullModelNextTarget(latestPath),
     currentQ8SmokeNextTarget(q8SmokePath),
     pytorchNextTarget(pytorchPath),
-    q8PromptNextTarget(q8Path, rawQ8Path),
+    q8PromptNextTarget(q8Path, rawQ8Path, qsemanticBridgePath),
     qprojNextTargetLine(qprojPath),
     frontierNextTargetLine(frontierPath, rawFrontierPath),
   ].join(" ");
@@ -1842,7 +1850,7 @@ const qsemanticThroughputFreshness = qsemanticThroughputFreshnessStatusLine(late
 if (qsemanticThroughputFreshness) process.stdout.write(`${qsemanticThroughputFreshness}\n`);
 process.stdout.write(`${qsemanticBridgeStatusLine(latestQsemanticBridge)}\n`);
 process.stdout.write(`${ggmlSmokeStatusLine(latestGgmlSmoke)}\n`);
-process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, rawQ8Path: latestRawQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestRawQsemanticThroughput ?? latestRawFrontier })}\n`);
+process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, rawQ8Path: latestRawQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestRawQsemanticThroughput ?? latestRawFrontier, qsemanticBridgePath: latestQsemanticBridge })}\n`);
 const quarantined = quarantinedFullRunArtifacts();
 if (quarantined.length > 0) {
   process.stdout.write(`bench-results: ${quarantined.length} quarantined p128/g200/r3 artifact(s) ignored for accepted evidence; latest_failed=${compactName(quarantined.at(-1))}\n`);
