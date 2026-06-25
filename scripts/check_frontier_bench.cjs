@@ -1572,6 +1572,7 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
   const runtimeDispatches = metric(output, bridgeProfileLabel, "runtime_backend_dispatches");
   const semanticTargetDispatches = metric(output, bridgeProfileLabel, "semantic_target_dispatches");
   const runtimeSemanticDispatches = metric(output, bridgeProfileLabel, "runtime_semantic_ffn_dispatches");
+  const semanticDispatchSplit = shapeSemantic > 0 ? runtimeSemanticDispatches / shapeSemantic : NaN;
   const rowChainTiledCount = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_count");
   const rowChainTiledRowTileGroups = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_row_tile_groups");
   const rowChainTiledNTiles = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_n_tiles");
@@ -1607,7 +1608,7 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
     `attempt=${attempt}/${maxAttempts}`,
     `bridge_ffn=${speedup.toFixed(2)}x floor=1.00 max_abs_diff=${maxAbsDiff.toFixed(6)}`,
     `shape_commands=${shapeCommands} shape_semantic_ffn_sublayers=${shapeSemantic} shape_covered_ops=${shapeCoveredOps} shape_saved_dispatches=${shapeSavedDispatches}`,
-    `runtime_backend_dispatches=${runtimeDispatches} semantic_target_dispatches=${semanticTargetDispatches} runtime_semantic_ffn_dispatches=${runtimeSemanticDispatches}`,
+    `runtime_backend_dispatches=${runtimeDispatches} semantic_target_dispatches=${semanticTargetDispatches} runtime_semantic_ffn_dispatches=${runtimeSemanticDispatches} semantic_dispatch_split=${Number.isFinite(semanticDispatchSplit) ? semanticDispatchSplit.toFixed(2) : "n/a"}`,
     `qmatmul_row_chain_tiled_count=${rowChainTiledCount} row_tile_groups=${rowChainTiledRowTileGroups} n_tiles=${rowChainTiledNTiles} serial_tile_loops=${rowChainTiledSerialTileLoops} partial_slots=${rowChainTiledPartialSlots} scratch_capacity=${rowChainTiledScratchCapacity} two_phase_count=${rowChainTiledTwoPhaseCount} finalize_tile_groups=${rowChainTiledFinalizeTileGroups} finalize_elements=${rowChainTiledFinalizeElements} spilled_elementwise=${rowChainTiledSpilledElementwise} spilled_input=${rowChainTiledSpilledInput} output_spills=${rowChainTiledOutputSpills}`,
     `next=${next}`,
   ].join("; ");
@@ -1623,6 +1624,7 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
     runtimeDispatches,
     semanticTargetDispatches,
     runtimeSemanticDispatches,
+    semanticDispatchSplit,
     rowChainTiledCount,
     rowChainTiledRowTileGroups,
     rowChainTiledNTiles,
@@ -1667,6 +1669,7 @@ function selectedSemanticBridgeAttemptSummary(attempt) {
       runtimeDispatches: attempt.runtimeDispatches,
       semanticTargetDispatches: attempt.semanticTargetDispatches,
       semanticRuntimeDispatches: attempt.runtimeSemanticDispatches,
+      semanticDispatchSplit: roundMetric(attempt.semanticDispatchSplit),
       qmatmulRowChainTiledCount: attempt.rowChainTiledCount,
       qmatmulRowChainTiledRowTileGroups: attempt.rowChainTiledRowTileGroups,
       qmatmulRowChainTiledNTiles: attempt.rowChainTiledNTiles,
