@@ -309,6 +309,9 @@ function q8PromptFreshnessStatusLine(selectedPath, rawPath) {
       : NaN;
     const semanticOutputSpills = data?.lanes?.semantic?.tiledOutputSpills ?? "n/a";
     const semanticBridges = data?.lanes?.semantic?.residualBridges ?? data?.lanes?.semantic?.projectionRowChainSemanticResidualBridges ?? "n/a";
+    const semanticAbsorbed = data?.lanes?.semantic?.semanticFfnSublayersWithInputRowChain ?? "n/a";
+    const semanticAbsorbedDispatches = data?.lanes?.semantic?.semanticFfnSublayerWithInputRowChainDispatches ?? "n/a";
+    const semanticAbsorbedSplit = formatNumber(data?.lanes?.semantic?.semanticAbsorbedDispatchSplit, 2);
     const semanticSingleDispatchAttempts = data?.lanes?.semantic?.singleDispatchAttempts ?? "n/a";
     const semanticSingleDispatchOutputReadRefusals = data?.lanes?.semantic?.singleDispatchOutputReadRefusals ?? "n/a";
     const semanticSingleDispatchBlockSizeRefusals = data?.lanes?.semantic?.singleDispatchBlockSizeRefusals ?? "n/a";
@@ -316,7 +319,7 @@ function q8PromptFreshnessStatusLine(selectedPath, rawPath) {
     const semanticSingleDispatchDimRefusalShape = formatSemanticSingleDispatchDimRefusalShape(data?.lanes?.semantic?.singleDispatchDimRefusalShape);
     const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
     const lanes = Array.isArray(data?.config?.measuredLanes) ? data.config.measuredLanes.join(",") : "unknown";
-    latest = `semantic=${semanticThroughput} semantic_speedup=${semanticSpeedup} semantic_median=${semanticMedian} semantic_worst=${semanticWorst} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} semantic_bridges=${semanticBridges} semantic_single_dispatch_attempts=${semanticSingleDispatchAttempts} semantic_single_dispatch_output_read_refusals=${semanticSingleDispatchOutputReadRefusals} semantic_single_dispatch_block_size_refusals=${semanticSingleDispatchBlockSizeRefusals} semantic_single_dispatch_refusals=${semanticSingleDispatchRefusals} semantic_single_dispatch_dim_refusal_shape=${semanticSingleDispatchDimRefusalShape} attempts=${attempts} lanes=${lanes}`;
+    latest = `semantic=${semanticThroughput} semantic_speedup=${semanticSpeedup} semantic_median=${semanticMedian} semantic_worst=${semanticWorst} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} semantic_bridges=${semanticBridges} semantic_absorbed=${semanticAbsorbed} semantic_absorbed_dispatch=${semanticAbsorbedDispatches} semantic_absorbed_split=${semanticAbsorbedSplit} semantic_single_dispatch_attempts=${semanticSingleDispatchAttempts} semantic_single_dispatch_output_read_refusals=${semanticSingleDispatchOutputReadRefusals} semantic_single_dispatch_block_size_refusals=${semanticSingleDispatchBlockSizeRefusals} semantic_single_dispatch_refusals=${semanticSingleDispatchRefusals} semantic_single_dispatch_dim_refusal_shape=${semanticSingleDispatchDimRefusalShape} attempts=${attempts} lanes=${lanes}`;
   } catch {
     latest = "summary=unreadable";
   }
@@ -912,6 +915,9 @@ function q8PromptCandidateStatusLine(path) {
     : NaN;
   const semanticOutputSpills = data?.lanes?.semantic?.tiledOutputSpills ?? "n/a";
   const semanticBridges = data?.lanes?.semantic?.residualBridges ?? data?.lanes?.semantic?.projectionRowChainSemanticResidualBridges ?? "n/a";
+  const semanticAbsorbed = data?.lanes?.semantic?.semanticFfnSublayersWithInputRowChain ?? "n/a";
+  const semanticAbsorbedDispatches = data?.lanes?.semantic?.semanticFfnSublayerWithInputRowChainDispatches ?? "n/a";
+  const semanticAbsorbedSplit = formatNumber(data?.lanes?.semantic?.semanticAbsorbedDispatchSplit, 2);
   const semanticSingleDispatchAttempts = data?.lanes?.semantic?.singleDispatchAttempts ?? "n/a";
   const semanticSingleDispatchOutputReadRefusals = data?.lanes?.semantic?.singleDispatchOutputReadRefusals ?? "n/a";
   const semanticSingleDispatchBlockSizeRefusals = data?.lanes?.semantic?.singleDispatchBlockSizeRefusals ?? "n/a";
@@ -924,7 +930,7 @@ function q8PromptCandidateStatusLine(path) {
   const defaultPolicies = Array.isArray(data?.attempts)
     ? [...new Set(data.attempts.map((row) => row?.defaultPromptPolicy).filter((value) => typeof value === "string"))].join(",") || "unknown"
     : "unknown";
-  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} semantic_bridges=${semanticBridges} semantic_single_dispatch_attempts=${semanticSingleDispatchAttempts} semantic_single_dispatch_output_read_refusals=${semanticSingleDispatchOutputReadRefusals} semantic_single_dispatch_block_size_refusals=${semanticSingleDispatchBlockSizeRefusals} semantic_single_dispatch_refusals=${semanticSingleDispatchRefusals} semantic_single_dispatch_dim_refusal_shape=${semanticSingleDispatchDimRefusalShape} attempts=${attempts} lanes=${lanes} pair_defaults=${pairDefaults} default_policy=${defaultPolicies} baseline_noise=${baselineNoise} source=${source}`;
+  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} semantic_bridges=${semanticBridges} semantic_absorbed=${semanticAbsorbed} semantic_absorbed_dispatch=${semanticAbsorbedDispatches} semantic_absorbed_split=${semanticAbsorbedSplit} semantic_single_dispatch_attempts=${semanticSingleDispatchAttempts} semantic_single_dispatch_output_read_refusals=${semanticSingleDispatchOutputReadRefusals} semantic_single_dispatch_block_size_refusals=${semanticSingleDispatchBlockSizeRefusals} semantic_single_dispatch_refusals=${semanticSingleDispatchRefusals} semantic_single_dispatch_dim_refusal_shape=${semanticSingleDispatchDimRefusalShape} attempts=${attempts} lanes=${lanes} pair_defaults=${pairDefaults} default_policy=${defaultPolicies} baseline_noise=${baselineNoise} source=${source}`;
 }
 
 function frontierStatusLine(path, pressurePath = path) {
@@ -1057,6 +1063,9 @@ function q8PromptNextTarget(path, pressurePath = path) {
       : NaN;
     const freshOutputSpills = pressureData?.lanes?.semantic?.tiledOutputSpills ?? "n/a";
     const freshBridges = pressureData?.lanes?.semantic?.residualBridges ?? pressureData?.lanes?.semantic?.projectionRowChainSemanticResidualBridges ?? "n/a";
+    const freshSemanticAbsorbed = pressureData?.lanes?.semantic?.semanticFfnSublayersWithInputRowChain ?? "n/a";
+    const freshSemanticAbsorbedDispatches = pressureData?.lanes?.semantic?.semanticFfnSublayerWithInputRowChainDispatches ?? "n/a";
+    const freshSemanticAbsorbedSplit = formatNumber(pressureData?.lanes?.semantic?.semanticAbsorbedDispatchSplit, 2);
     const freshSingleDispatchRefusals = pressureData?.lanes?.semantic?.singleDispatchRefusals;
     const freshDimRefusals = Number(freshSingleDispatchRefusals?.dim ?? 0);
     const freshRefusals = formatSemanticSingleDispatchRefusals(freshSingleDispatchRefusals);
@@ -1068,7 +1077,7 @@ function q8PromptNextTarget(path, pressurePath = path) {
     const pressureSemanticWorstSpeedup = Number(freshStats?.worst ?? pressureData?.lanes?.semantic?.speedup);
     const bridgeNext = Number(freshBridges) > 0 ? "semantic_residual_bridge_command" : "semantic_ffn_sublayer_throughput_kernel";
     const fresh = hasFreshPressure
-      ? `:fresh=best:${formatRatio(pressureData?.lanes?.semantic?.speedup)},median:${formatRatio(freshStats?.median)},worst:${formatRatio(freshStats?.worst)},spills:${freshSpills},spill_k:${formatNumber(freshSpillK, 0)},spill_input:${freshSpillInput},output_spills:${freshOutputSpills},bridges:${freshBridges},single_dispatch_refusals:${freshRefusals},dim_refusal_shape:${freshDimRefusalShape}`
+      ? `:fresh=best:${formatRatio(pressureData?.lanes?.semantic?.speedup)},median:${formatRatio(freshStats?.median)},worst:${formatRatio(freshStats?.worst)},spills:${freshSpills},spill_k:${formatNumber(freshSpillK, 0)},spill_input:${freshSpillInput},output_spills:${freshOutputSpills},bridges:${freshBridges},absorbed:${freshSemanticAbsorbed},absorbed_dispatch:${freshSemanticAbsorbedDispatches},absorbed_split:${freshSemanticAbsorbedSplit},single_dispatch_refusals:${freshRefusals},dim_refusal_shape:${freshDimRefusalShape}`
       : "";
     if (semanticBridgeCandidate) {
       const next = Number.isFinite(freshDimRefusals) && freshDimRefusals > 0
@@ -1077,10 +1086,10 @@ function q8PromptNextTarget(path, pressurePath = path) {
         Number.isFinite(pressureSemanticWorstSpeedup) && pressureSemanticWorstSpeedup >= 1
           ? "steady_semantic_bridge_candidate"
           : "semantic_bridge_throughput_kernel";
-      return `q8_prompt=semantic_bridge_candidate:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:single_dispatch_refusals=${freshRefusals}:dim_refusal_shape=${freshDimRefusalShape}:speedup=${formatRatio(pressureSemanticSpeedup)}:worst=${formatRatio(pressureSemanticWorstSpeedup)}:next=${next}`;
+      return `q8_prompt=semantic_bridge_candidate:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:absorbed=${freshSemanticAbsorbed}:absorbed_dispatch=${freshSemanticAbsorbedDispatches}:absorbed_split=${freshSemanticAbsorbedSplit}:single_dispatch_refusals=${freshRefusals}:dim_refusal_shape=${freshDimRefusalShape}:speedup=${formatRatio(pressureSemanticSpeedup)}:worst=${formatRatio(pressureSemanticWorstSpeedup)}:next=${next}`;
     }
     if (pressureStatus === "promoted-default" || pressureSemanticThroughput === "promoted") {
-      return `q8_prompt=promoted_semantic_default:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:next=${bridgeNext}`;
+      return `q8_prompt=promoted_semantic_default:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:absorbed=${freshSemanticAbsorbed}:absorbed_dispatch=${freshSemanticAbsorbedDispatches}:absorbed_split=${freshSemanticAbsorbedSplit}:next=${bridgeNext}`;
     }
     if (semanticThroughput === "ready" && Number.isFinite(semanticSpeedup) && semanticSpeedup >= 1) {
       return `q8_prompt=promote_semantic_candidate:${formatRatio(semanticSpeedup)}:median=${formatRatio(semanticStats?.median)}${fresh}`;

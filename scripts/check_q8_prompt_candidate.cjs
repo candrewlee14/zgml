@@ -232,6 +232,10 @@ function readProjectionLane(row, defaultTokS, index) {
   const projectionCacheGroups = number(row, "program_command_encoded_projection_cache_group_per_call") ?? 0;
   const projectionCacheGroupDispatches = number(row, "program_command_dispatches_projection_cache_group_per_call") ?? 0;
   const projectionRowChainDispatches = number(row, "program_command_dispatches_projection_row_chain_per_call") ?? 0;
+  const semanticFfnSublayers = number(row, "program_command_encoded_semantic_ffn_sublayer_per_call") ?? 0;
+  const semanticFfnSublayerDispatches = number(row, "program_command_dispatches_semantic_ffn_sublayer_per_call") ?? 0;
+  const semanticFfnSublayersWithInputRowChain = number(row, "program_command_encoded_semantic_ffn_sublayer_with_input_row_chain_per_call") ?? 0;
+  const semanticFfnSublayerWithInputRowChainDispatches = number(row, "program_command_dispatches_semantic_ffn_sublayer_with_input_row_chain_per_call") ?? 0;
   return {
     index,
     tokS,
@@ -250,6 +254,15 @@ function readProjectionLane(row, defaultTokS, index) {
     projectionRowChainDispatches,
     projectionRowChainDispatchSplit: projectionRowChainSplit(projectionRowChains, projectionRowChainDispatches),
     projectionRowChainDispatchExcess: Math.max(0, projectionRowChainDispatches - projectionRowChains),
+    semanticFfnSublayers,
+    semanticFfnSublayerDispatches,
+    semanticFfnSublayerDispatchSplit: projectionRowChainSplit(semanticFfnSublayers, semanticFfnSublayerDispatches),
+    semanticFfnSublayersWithInputRowChain,
+    semanticFfnSublayerWithInputRowChainDispatches,
+    semanticAbsorbedDispatchSplit: projectionRowChainSplit(
+      semanticFfnSublayersWithInputRowChain,
+      semanticFfnSublayerWithInputRowChainDispatches,
+    ),
     tiledCount: number(row, "qmatmul_row_chain_tiled_count_per_call") ?? 0,
     tiledRowTileGroups: number(row, "qmatmul_row_chain_tiled_row_tile_groups_per_call") ?? 0,
     tiledNTiles: number(row, "qmatmul_row_chain_tiled_n_tiles_per_call") ?? 0,
@@ -585,6 +598,30 @@ function measureAttempt(index) {
     candidateProjectionRowChainDispatches: singleLane.projectionRowChainDispatches,
     twoPhaseProjectionRowChainDispatches: twoPhaseLane.projectionRowChainDispatches,
     semanticProjectionRowChainDispatches: semanticLane.projectionRowChainDispatches,
+    commandSemanticFfnSublayers: commandLane.semanticFfnSublayers,
+    candidateSemanticFfnSublayers: singleLane.semanticFfnSublayers,
+    twoPhaseSemanticFfnSublayers: twoPhaseLane.semanticFfnSublayers,
+    semanticSemanticFfnSublayers: semanticLane.semanticFfnSublayers,
+    commandSemanticFfnSublayerDispatches: commandLane.semanticFfnSublayerDispatches,
+    candidateSemanticFfnSublayerDispatches: singleLane.semanticFfnSublayerDispatches,
+    twoPhaseSemanticFfnSublayerDispatches: twoPhaseLane.semanticFfnSublayerDispatches,
+    semanticSemanticFfnSublayerDispatches: semanticLane.semanticFfnSublayerDispatches,
+    commandSemanticFfnSublayerDispatchSplit: commandLane.semanticFfnSublayerDispatchSplit,
+    candidateSemanticFfnSublayerDispatchSplit: singleLane.semanticFfnSublayerDispatchSplit,
+    twoPhaseSemanticFfnSublayerDispatchSplit: twoPhaseLane.semanticFfnSublayerDispatchSplit,
+    semanticSemanticFfnSublayerDispatchSplit: semanticLane.semanticFfnSublayerDispatchSplit,
+    commandSemanticFfnSublayersWithInputRowChain: commandLane.semanticFfnSublayersWithInputRowChain,
+    candidateSemanticFfnSublayersWithInputRowChain: singleLane.semanticFfnSublayersWithInputRowChain,
+    twoPhaseSemanticFfnSublayersWithInputRowChain: twoPhaseLane.semanticFfnSublayersWithInputRowChain,
+    semanticSemanticFfnSublayersWithInputRowChain: semanticLane.semanticFfnSublayersWithInputRowChain,
+    commandSemanticFfnSublayerWithInputRowChainDispatches: commandLane.semanticFfnSublayerWithInputRowChainDispatches,
+    candidateSemanticFfnSublayerWithInputRowChainDispatches: singleLane.semanticFfnSublayerWithInputRowChainDispatches,
+    twoPhaseSemanticFfnSublayerWithInputRowChainDispatches: twoPhaseLane.semanticFfnSublayerWithInputRowChainDispatches,
+    semanticSemanticFfnSublayerWithInputRowChainDispatches: semanticLane.semanticFfnSublayerWithInputRowChainDispatches,
+    commandSemanticAbsorbedDispatchSplit: commandLane.semanticAbsorbedDispatchSplit,
+    candidateSemanticAbsorbedDispatchSplit: singleLane.semanticAbsorbedDispatchSplit,
+    twoPhaseSemanticAbsorbedDispatchSplit: twoPhaseLane.semanticAbsorbedDispatchSplit,
+    semanticSemanticAbsorbedDispatchSplit: semanticLane.semanticAbsorbedDispatchSplit,
     candidateTiledCount: singleLane.tiledCount,
     candidateTiledRowTileGroups: singleLane.tiledRowTileGroups,
     candidateTiledNTiles: singleLane.tiledNTiles,
@@ -774,6 +811,12 @@ function laneArtifact(row, prefix) {
     projectionRowChains: row[`${prefix}ProjectionRowChains`],
     projectionRowChainSemanticResidualBridges: row[`${prefix}ProjectionRowChainSemanticResidualBridges`],
     projectionRowChainDispatches: row[`${prefix}ProjectionRowChainDispatches`],
+    semanticFfnSublayers: row[`${prefix}SemanticFfnSublayers`],
+    semanticFfnSublayerDispatches: row[`${prefix}SemanticFfnSublayerDispatches`],
+    semanticFfnSublayerDispatchSplit: roundMetric(row[`${prefix}SemanticFfnSublayerDispatchSplit`]),
+    semanticFfnSublayersWithInputRowChain: row[`${prefix}SemanticFfnSublayersWithInputRowChain`],
+    semanticFfnSublayerWithInputRowChainDispatches: row[`${prefix}SemanticFfnSublayerWithInputRowChainDispatches`],
+    semanticAbsorbedDispatchSplit: roundMetric(row[`${prefix}SemanticAbsorbedDispatchSplit`]),
     fallback: row[`${prefix}Fallback`],
   };
 }
@@ -931,6 +974,12 @@ if (writeArtifact) {
       commandCommands: row.commandCommands,
       twoPhaseCommands: row.twoPhaseCommands,
       semanticCommands: row.semanticCommands,
+      semanticFfnSublayers: row.semanticSemanticFfnSublayers,
+      semanticFfnSublayerDispatches: row.semanticSemanticFfnSublayerDispatches,
+      semanticFfnSublayerDispatchSplit: roundMetric(row.semanticSemanticFfnSublayerDispatchSplit),
+      semanticFfnSublayersWithInputRowChain: row.semanticSemanticFfnSublayersWithInputRowChain,
+      semanticFfnSublayerWithInputRowChainDispatches: row.semanticSemanticFfnSublayerWithInputRowChainDispatches,
+      semanticAbsorbedDispatchSplit: roundMetric(row.semanticSemanticAbsorbedDispatchSplit),
       semanticSingleDispatchAttempts: row.semanticSingleDispatchAttempts,
       semanticSingleDispatchOutputReadRefusals: row.semanticSingleDispatchOutputReadRefusals,
       semanticSingleDispatchBlockSizeRefusals: row.semanticSingleDispatchBlockSizeRefusals,
@@ -1012,6 +1061,8 @@ console.log(
     `semantic_median_speedup=${format(semanticMedian.semanticSpeedup)}x semantic_worst_speedup=${format(semanticWorst.semanticSpeedup)}x semantic_best_speedup=${format(semanticBest.semanticSpeedup)}x; ` +
     `semantic_dispatch=${format(semanticBest.defaultDispatches, 0)}->${format(semanticBest.semanticDispatches, 0)} semantic_command=${format(semanticBest.defaultCommands, 0)}->${format(semanticBest.semanticCommands, 0)} ` +
     `semantic_dispatch_reduced=${semanticDispatchReduced ? "yes" : "no"} semantic_runtime_target=${dispatchRealityTarget} ` +
+    `semantic_ffn=${format(semanticBest.semanticSemanticFfnSublayers, 0)} semantic_ffn_dispatch=${format(semanticBest.semanticSemanticFfnSublayerDispatches, 0)} semantic_ffn_split=${format(semanticBest.semanticSemanticFfnSublayerDispatchSplit)} ` +
+    `semantic_absorbed=${format(semanticBest.semanticSemanticFfnSublayersWithInputRowChain, 0)} semantic_absorbed_dispatch=${format(semanticBest.semanticSemanticFfnSublayerWithInputRowChainDispatches, 0)} semantic_absorbed_split=${format(semanticBest.semanticSemanticAbsorbedDispatchSplit)} ` +
     `semantic_count=${format(semanticBest.semanticTiledTwoPhaseCount, 0)} semantic_structural_selected=${semanticStructuralSelected ? "yes" : "off"} semantic_throughput_ready=${reportedSemanticThroughputReady ? "yes" : "off"} semantic_selected=${semanticStructuralSelected ? "yes" : "off"} ` +
     `semantic_tiled_work=${format(semanticBest.semanticTiledCount, 0)} chains row_groups=${format(semanticBest.semanticTiledRowTileGroups, 0)} n_tiles=${format(semanticBest.semanticTiledNTiles, 0)} serial_tile_loops=${format(semanticBest.semanticTiledSerialLoops, 0)} partial_slots=${format(semanticBest.semanticTiledPartialSlots, 0)} scratch_capacity=${format(semanticBest.semanticTiledScratchCapacity, 0)} finalize_tile_groups=${format(semanticBest.semanticTiledFinalizeTileGroups, 0)} finalize_elements=${format(semanticBest.semanticTiledFinalizeElements, 0)} spills=${format(semanticBest.semanticTiledSpills, 0)} ` +
     `semantic_spill_input=${format(semanticBest.semanticTiledSpillInput, 0)} ` +
