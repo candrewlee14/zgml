@@ -451,6 +451,10 @@ function latestQsemanticBridgeArtifact() {
   return artifacts.filter(isFrontierSteadyArtifact).at(-1) ?? artifacts.at(-1) ?? null;
 }
 
+function latestRawQsemanticBridgeArtifact() {
+  return qsemanticBridgeArtifacts().at(-1) ?? null;
+}
+
 function qsemanticInputBridgeArtifacts() {
   const dir = join("bench-results", "frontier");
   if (!existsSync(dir)) return [];
@@ -657,6 +661,26 @@ function qsemanticBridgeStatusLine(path, q8PressurePath = null) {
     : "";
   const widthTarget = `rows:${bridge.semanticWidthTargetRows ?? "n/a"},hidden:${bridge.semanticWidthTargetHidden ?? "n/a"},input:${bridge.semanticWidthTargetInput ?? "n/a"},output:${bridge.semanticWidthTargetOutput ?? "n/a"},row_groups:${bridge.semanticWidthTargetRowGroups ?? "n/a"},hidden_tiles:${bridge.semanticWidthTargetHiddenTiles ?? "n/a"},output_tiles:${bridge.semanticWidthTargetOutputTiles ?? "n/a"},product_elements:${bridge.semanticWidthTargetProductElements ?? "n/a"},output_elements:${bridge.semanticWidthTargetOutputElements ?? "n/a"},gate_up_dot_ops:${bridge.semanticWidthTargetGateUpDotOps ?? "n/a"},down_dot_ops:${bridge.semanticWidthTargetDownDotOps ?? "n/a"},total_dot_ops:${bridge.semanticWidthTargetTotalDotOps ?? "n/a"}`;
   return `qsemantic-bridge-results: latest=${compactName(path)} status=${status} gate=${gate} attempt=${selectedAttempt}/${attempts} bridge_ffn=${speedup}:median:${median}:worst:${worst}:max_abs_diff:${maxAbsDiff}:dispatches:${bridge.runtimeDispatches ?? "n/a"}:semantic_dispatches:${bridge.semanticRuntimeDispatches ?? "n/a"}:semantic_split:${formatNumber(bridge.semanticDispatchSplit, 2)}:semantic_pair_dispatches:${bridge.semanticFallbackPairDispatches ?? "n/a"}:semantic_tail_dispatches:${bridge.semanticFallbackTailDispatches ?? "n/a"}${model}:row_chain_tiled:${bridge.qmatmulRowChainTiledCount ?? "n/a"}:row_tile_groups:${bridge.qmatmulRowChainTiledRowTileGroups ?? "n/a"}:n_tiles:${bridge.qmatmulRowChainTiledNTiles ?? "n/a"}:two_phase:${bridge.qmatmulRowChainTiledTwoPhaseCount ?? "n/a"}:finalize_groups:${bridge.qmatmulRowChainTiledFinalizeTileGroups ?? "n/a"}:finalize_elements:${bridge.qmatmulRowChainTiledFinalizeElements ?? "n/a"}:spilled_input:${bridge.qmatmulRowChainTiledSpilledInput ?? "n/a"}:output_spills:${bridge.qmatmulRowChainTiledOutputSpills ?? "n/a"} width_target=${widthTarget} next=${next} source=${source}`;
+}
+
+function qsemanticBridgeFreshnessStatusLine(selectedPath, rawPath) {
+  if (!selectedPath || !rawPath || selectedPath === rawPath) return null;
+  let data;
+  try {
+    data = readJson(rawPath);
+  } catch {
+    return `qsemantic-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts unreadable`;
+  }
+  const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
+  const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
+  const bridge = data?.bridgeFfn ?? {};
+  const speedup = formatRatio(bridge.speedup);
+  const median = formatRatio(data?.speedupStats?.bridgeFfn?.median);
+  const worst = formatRatio(data?.speedupStats?.bridgeFfn?.worst);
+  const semanticSplit = formatNumber(bridge.semanticDispatchSplit, 2);
+  const widthTarget = `rows:${bridge.semanticWidthTargetRows ?? "n/a"},hidden:${bridge.semanticWidthTargetHidden ?? "n/a"},input:${bridge.semanticWidthTargetInput ?? "n/a"},output:${bridge.semanticWidthTargetOutput ?? "n/a"}`;
+  const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
+  return `qsemantic-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts attempt=${selectedAttempt}/${attempts} bridge_ffn=${speedup}:median:${median}:worst:${worst}:semantic_split:${semanticSplit} width_target=${widthTarget} source=${source}`;
 }
 
 function qsemanticInputBridgeStatusLine(path) {
@@ -2045,6 +2069,7 @@ const latestRawFrontier = latestRawFrontierArtifact();
 const latestQsemanticThroughput = latestQsemanticThroughputArtifact();
 const latestRawQsemanticThroughput = latestRawQsemanticThroughputArtifact();
 const latestQsemanticBridge = latestQsemanticBridgeArtifact();
+const latestRawQsemanticBridge = latestRawQsemanticBridgeArtifact();
 const latestQsemanticInputBridge = latestQsemanticInputBridgeArtifact();
 const latestQprojFrontier = latestQprojFrontierArtifact();
 const latestGgmlSmoke = latestGgmlSmokeArtifact();
@@ -2060,6 +2085,8 @@ process.stdout.write(`${qsemanticThroughputStatusLine(latestQsemanticThroughput)
 const qsemanticThroughputFreshness = qsemanticThroughputFreshnessStatusLine(latestQsemanticThroughput, latestRawQsemanticThroughput);
 if (qsemanticThroughputFreshness) process.stdout.write(`${qsemanticThroughputFreshness}\n`);
 process.stdout.write(`${qsemanticBridgeStatusLine(latestQsemanticBridge, latestRawQ8Prompt)}\n`);
+const qsemanticBridgeFreshness = qsemanticBridgeFreshnessStatusLine(latestQsemanticBridge, latestRawQsemanticBridge);
+if (qsemanticBridgeFreshness) process.stdout.write(`${qsemanticBridgeFreshness}\n`);
 process.stdout.write(`${qsemanticInputBridgeStatusLine(latestQsemanticInputBridge)}\n`);
 process.stdout.write(`${ggmlSmokeStatusLine(latestGgmlSmoke)}\n`);
 process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, rawQ8Path: latestQ8PromptSemanticSteady ?? latestRawQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestRawQsemanticThroughput ?? latestRawFrontier, qsemanticBridgePath: latestQsemanticBridge })}\n`);
