@@ -177,7 +177,8 @@ function requireHotPath(label, session, input, output) {
 }
 
 function requireFirstContactInferencePath(spec, model, input) {
-  if (typeof spec.bindSession === "function") return false;
+  const bindOptions = typeof spec.bindOptions === "function" ? spec.bindOptions() : undefined;
+  if (typeof spec.bindSession === "function" && bindOptions === undefined) return false;
   const compileForInference = adapter.compile?.compileForInference;
   if (
     typeof compileForInference !== "function" ||
@@ -187,12 +188,12 @@ function requireFirstContactInferencePath(spec, model, input) {
     throw new Error(`${spec.label} expected zgml.compileInference to be the public compileForInference handle`);
   }
   const output = new Float32Array(spec.outputLen);
-  const handle = compileForInference(model, { inputShape: spec.inputShape, backend: "cpu" });
+  const handle = compileForInference(model, { inputShape: spec.inputShape, backend: "cpu" }, bindOptions);
   try {
     requireCompileEvidence(spec, handle.compileSupport());
     requireKernelPlan(spec, handle.kernelPlan());
     requireHotPath(`${spec.label} compileInference`, handle.session, input, output);
-    const eagerOutput = model.forward(input);
+    const eagerOutput = typeof model.forward === "function" ? model.forward(input) : spec.eager(input);
     const forwardOutput = handle.forward(input);
     const intoOutput = handle.into(output, input);
     if (intoOutput !== output) {
@@ -1772,6 +1773,10 @@ const benchSpecs = [
       .add(adapter.lazy.parameter([64], "b"))
       .gelu(),
     eager: (input) => lazyMatmulAddGeluEager(input, values(64 * 64, 32), values(64, 64), 128, 64, 64),
+    bindOptions: () => ({
+      weights: new Float32Array(values(64 * 64, 32)),
+      bias: new Float32Array(values(64, 64)),
+    }),
     bindSession: (program) => program.bind({
       weights: new Float32Array(values(64 * 64, 32)),
       bias: new Float32Array(values(64, 64)),
@@ -1824,6 +1829,10 @@ const benchSpecs = [
       64,
       32,
     ),
+    bindOptions: () => ({
+      weights: new Float32Array([...values(64 * 64, 32), ...values(64 * 32, 48)]),
+      bias: new Float32Array([...values(64, 64), ...values(32, 80)]),
+    }),
     bindSession: (program) => program.bind({
       weights: new Float32Array([...values(64 * 64, 32), ...values(64 * 32, 48)]),
       bias: new Float32Array([...values(64, 64), ...values(32, 80)]),
@@ -2034,6 +2043,14 @@ const benchSpecs = [
       128,
       64,
     ),
+    bindOptions: () => ({
+      weights: new Float32Array([
+        ...values(64, 32).map((value) => value + 1),
+        ...values(64 * 128, 48),
+        ...values(128 * 64, 64),
+      ]),
+      bias: new Float32Array([...values(128, 80), ...values(64, 96)]),
+    }),
     bindSession: (program) => program.bind({
       weights: new Float32Array([
         ...values(64, 32).map((value) => value + 1),
@@ -2147,6 +2164,10 @@ const benchSpecs = [
       64,
       32,
     ),
+    bindOptions: () => ({
+      weights: new Float32Array([...values(256 * 64, 32), ...values(64 * 32, 48)]),
+      bias: new Float32Array(values(32, 80)),
+    }),
     bindSession: (program) => program.bind({
       weights: new Float32Array([...values(256 * 64, 32), ...values(64 * 32, 48)]),
       bias: new Float32Array(values(32, 80)),

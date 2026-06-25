@@ -1197,6 +1197,10 @@ function checkScripts() {
     "eager_ms: result.eagerMs",
     "speedup: result.speedup",
     "prepared_speedup: result.preparedSpeedup",
+    "const bindOptions = typeof spec.bindOptions === \"function\" ? spec.bindOptions() : undefined",
+    "const handle = compileForInference(model, { inputShape: spec.inputShape, backend: \"cpu\" }, bindOptions)",
+    "const eagerOutput = typeof model.forward === \"function\" ? model.forward(input) : spec.eager(input)",
+    "bindOptions: () => ({",
     "session.prepareExecuteInto(output, { input })",
     "native: nativeFreshness.label",
   ]);
@@ -5971,6 +5975,8 @@ function checkZgmlFrontendSurface() {
     "const packageLazyGraph = packageLazyInputTensor.linear(3).relu().linear(1)",
     "const packageLazyModuleGraph = packageFrontendLazy.fromModule(",
     "const packageLazyModuleSupport = packageFrontendLazy.moduleCompileSupport(",
+    "const lazyCompiledInference: CompiledInference<readonly [2], readonly [3]> = compile.compileForInference(lazyMatmulBiasGraph",
+    "const lazyCompiledInferenceAlias: CompiledInference<readonly [2], readonly [3]> = compile.compile_for_inference(lazyMatmulBiasGraph",
     "type PackageLazyPath = Expect<Equal<typeof packageLazyManifest.runtimePath, \"LazyTensor -> Trace -> TensorProgramIr -> KernelPlan -> Program\">>",
     "type DataBatches as PackageDataBatches",
     "type DataBatchOptions as PackageDataBatchOptions",
@@ -6263,6 +6269,9 @@ function checkZgmlFrontendSurface() {
     "compileForInference forward",
     "expected compileForInference handle to expose compile evidence",
     "compileForInference prepareInto",
+    "adapter.compile.compileForInference(lazyInferenceGraph",
+    "expected lazy compileForInference handle over Program/Session",
+    "lazy compileForInference into",
     "package self-reference must execute through active host Tensor and nn helpers",
     "zgml/tensor must resolve through the TS-authored tensor package export",
     "zgml/nn must resolve through the TS-authored nn package export",
@@ -6514,6 +6523,19 @@ function checkDocs() {
     "compile.compile requires a native module Program compiler for lazy graphs",
     "compile.compile requires an nn module with compile(); wrap layer lists in nn.Sequential",
     "compile.compile requires a module with compile() or a compile-capable lazy graph",
+    "const bind = (program as Record<string, any>).bind",
+    "const targetCanPlaceModuleParameters = target != null && typeof target === \"object\" && typeof (target as Record<string, any>).placeParameters === \"function\"",
+    "bind.call(program, bindOptions)",
+    "compile.compileForInference expected bindModule() or explicit Program bindings to return a Session",
+  ]);
+  const compileNamespaceSource = read("src/ts/compile.ts");
+  requireIncludes(compileNamespaceSource, "src/ts/compile.ts", "canonical TS lazy compileForInference bindings", [
+    "target: LazyTensor<Shape>,",
+    "bindOptions: ProgramBindings<S, Shape>",
+    "const bind = (program as { bind?: unknown }).bind",
+    "const targetCanPlaceModuleParameters = target != null && typeof target === \"object\" && typeof (target as { placeParameters?: unknown }).placeParameters === \"function\"",
+    "bind.call(program, bindOptions)",
+    "compile.compileForInference expected bindModule() or explicit Program bindings to return a Session",
   ]);
   forbidIncludes(frontendNamespaceSurface, "src/ts/adapters/frontend_namespace_surface.ts", "torch compile diagnostics leak", [
     "torch.compile.",

@@ -1152,6 +1152,11 @@ The public `compile.compileForInference(model, { inputShape })` helper now wraps
 the same Program/Session path into a frozen handle with `forward`, `into`,
 `prepareInto`, `dispose`, and `free`, so the simple inference API and the
 allocation-conscious hot path are the same object.
+For module targets, that helper binds with `Program.bindModule(model)`. For lazy
+graph targets, the same helper can now accept explicit Program bindings as its
+third argument and bind with `Program.bind(bindings)`, so named-parameter lazy
+graphs can use the same first-contact handle instead of forcing users down to
+manual `compile -> bind -> Session` ceremony.
 The prepared runner now reaches one layer lower than the facade when an adapter
 can help: Node and Bun Session ops expose `prepareStepSession`, so
 `prepareExecuteInto` can precompute direct FFI lengths/records and, on Bun,

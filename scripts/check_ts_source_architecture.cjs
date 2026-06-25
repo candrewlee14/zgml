@@ -716,6 +716,9 @@ function checkPackageExports(errors) {
     "nativeEager.linearActivationInto(siluOutput, input, weights, { bias, activation: \"silu\" })",
     "nativeEager.linearActivationInto(sigmoidOutput, input, weights, { bias, activation: \"sigmoid\" })",
     "nativeEager.linearActivationInto(tanhOutput, input, weights, { bias, activation: \"tanh\" })",
+    "adapter.compile.compileForInference(lazyInferenceGraph",
+    "expected lazy compileForInference handle over Program/Session",
+    "lazy compileForInference into",
     "adapter.noGrad(() => linear.forward(input))",
     "new adapter.nn.Sequential(",
     "new adapter.nn.GELU()",
@@ -813,6 +816,10 @@ function checkPackageExports(errors) {
     "require(\"./native_freshness.cjs\")",
     "allowStaleEnv: \"BENCH_MODULE_PROGRAM_ALLOW_STALE_NATIVE\"",
     "native=${nativeFreshness.label}",
+    "const bindOptions = typeof spec.bindOptions === \"function\" ? spec.bindOptions() : undefined",
+    "const handle = compileForInference(model, { inputShape: spec.inputShape, backend: \"cpu\" }, bindOptions)",
+    "const eagerOutput = typeof model.forward === \"function\" ? model.forward(input) : spec.eager(input)",
+    "bindOptions: () => ({",
   ]) {
     if (!moduleProgramBenchSource.includes(required)) {
       errors.push(`scripts/check_module_program_bench.cjs must keep stale-native protection for module Program evidence: ${required}`);
@@ -8973,6 +8980,18 @@ function checkSessionStepParamsAssertionSurfaceIsChecked(errors) {
   }
   const publicApiSource = fs.readFileSync(path.join(root, "src", "ts", "public_api.ts"), "utf8");
   const compileSourceForNamespaceTypes = fs.readFileSync(path.join(root, "src", "ts", "compile.ts"), "utf8");
+  for (const needle of [
+    "target: LazyTensor<Shape>,",
+    "bindOptions: ProgramBindings<S, Shape>",
+    "const bind = (program as { bind?: unknown }).bind",
+    "const targetCanPlaceModuleParameters = target != null && typeof target === \"object\" && typeof (target as { placeParameters?: unknown }).placeParameters === \"function\"",
+    "bind.call(program, bindOptions)",
+    "compile.compileForInference expected bindModule() or explicit Program bindings to return a Session",
+  ]) {
+    if (!compileSourceForNamespaceTypes.includes(needle)) {
+      errors.push(`src/ts/compile.ts must keep canonical lazy compileForInference Program.bind support: ${needle}`);
+    }
+  }
   if (!publicApiSource.includes("kind: \"zgml.program.capabilities\";")) {
     errors.push("src/ts/public_api.ts must expose ProgramExecutionCapabilities.kind as a literal discriminant");
   }
@@ -9122,6 +9141,8 @@ function checkSessionStepParamsAssertionSurfaceIsChecked(errors) {
     "const llamaExecuteTokensAlias: Float32Array | undefined = tinyLlamaSession.execute_tokens([0, 1], { tokensLen: 1 })",
     "const llamaGeneratedSampleIntoAlias: TokenGenerateSampleResult = tinyLlamaSession.generate_tokens_sample_into([0], new Uint32Array(1), { topK: 1 })",
     "const llamaSampleTokenAlias: TokenSampleResult = tinyLlamaSession.sample_token(undefined, { topK: 1 })",
+    "const lazyCompiledInference: CompiledInference<readonly [2], readonly [3]> = compile.compileForInference(lazyMatmulBiasGraph",
+    "const lazyCompiledInferenceAlias: CompiledInference<readonly [2], readonly [3]> = compile.compile_for_inference(lazyMatmulBiasGraph",
   ]) {
     if (!publicTypeSmoke.includes(needle)) {
       errors.push(`examples/types/public-api-smoke.ts must typecheck LLaMA FFI-style Session aliases: ${needle}`);
@@ -9753,6 +9774,10 @@ function checkConcreteFfiRuntimesAvoidLegacySharedFrontend(errors) {
     "options.sharedFrontend.createOptimNamespace({",
     "options.sharedFrontend.createCheckpointHelpers({",
     "options.sharedFrontend.createDataNamespace({",
+    "const bind = (program as Record<string, any>).bind",
+    "const targetCanPlaceModuleParameters = target != null && typeof target === \"object\" && typeof (target as Record<string, any>).placeParameters === \"function\"",
+    "bind.call(program, bindOptions)",
+    "compile.compileForInference expected bindModule() or explicit Program bindings to return a Session",
   ]) {
     if (!namespaceSurfaceSource.includes(needle)) {
       errors.push(`frontend_namespace_surface.ts must compose public namespaces through the shared frontend runtime: ${needle}`);

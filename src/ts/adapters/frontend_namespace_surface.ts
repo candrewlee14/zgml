@@ -851,12 +851,15 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       throw new Error("compile.compileForInference expected compile() to return a Program");
     }
     const bindModule = (program as Record<string, any>).bindModule;
-    if (typeof bindModule !== "function") {
-      throw new Error("compile.compileForInference expected a Program with bindModule()");
-    }
-    const session = bindModule.call(program, target, bindOptions);
+    const bind = (program as Record<string, any>).bind;
+    const targetCanPlaceModuleParameters = target != null && typeof target === "object" && typeof (target as Record<string, any>).placeParameters === "function";
+    const session = typeof bindModule === "function" && targetCanPlaceModuleParameters
+      ? bindModule.call(program, target, bindOptions)
+      : typeof bind === "function" && bindOptions != null
+        ? bind.call(program, bindOptions)
+        : null;
     if (!session || typeof session !== "object") {
-      throw new Error("compile.compileForInference expected bindModule() to return a Session");
+      throw new Error("compile.compileForInference expected bindModule() or explicit Program bindings to return a Session");
     }
     return compiledInferenceHandle(
       program as Record<string, any>,

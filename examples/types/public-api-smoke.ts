@@ -560,6 +560,13 @@ const compileLazyMemoryLayout: ModuleKernelMemoryLayout | null = compile.memoryL
 const compileLazyMemoryLayoutSnake: ModuleKernelMemoryLayout | null = compile.memory_layout(lazyGraph);
 const compileLazyBufferLayout: ModuleKernelBufferLayout | null = compile.bufferLayout(lazyGraph);
 const compileLazyBufferLayoutSnake: ModuleKernelBufferLayout | null = compile.buffer_layout(lazyGraph);
+const lazyCompileForInferenceBindings: ProgramBindings<readonly [2], readonly [3]> = {
+  weights: new Float32Array([1, 0, 0, 1, 1, 1]),
+  bias: new Float32Array([0, 0, 0]),
+};
+const lazyCompiledInference: CompiledInference<readonly [2], readonly [3]> = compile.compileForInference(lazyMatmulBiasGraph, { backend: "cpu", inputShape: [2] as const }, lazyCompileForInferenceBindings);
+const lazyCompiledInferenceAlias: CompiledInference<readonly [2], readonly [3]> = compile.compile_for_inference(lazyMatmulBiasGraph, { backend: "cpu", inputShape: [2] as const }, lazyCompileForInferenceBindings);
+const lazyCompiledInferenceInto: Float32Array = lazyCompiledInference.into(new Float32Array(3), tensor([1, 2], [2] as const));
 const lazyModuleGraph = lazy.fromModule(nn.sequential([nn.linear(2, 3), nn.relu(), nn.linear(3, 1)]), { inputShape: [2] as const });
 const lazyShapeModuleGraph = lazy.fromModule(nn.sequential([
   nn.squeeze(0),
@@ -667,6 +674,10 @@ void compileLazyMemoryLayout;
 void compileLazyMemoryLayoutSnake;
 void compileLazyBufferLayout;
 void compileLazyBufferLayoutSnake;
+void lazyCompileForInferenceBindings;
+void lazyCompiledInference;
+void lazyCompiledInferenceAlias;
+void lazyCompiledInferenceInto;
 void lazyEmbeddingGraph;
 void lazyNamespaceEmbeddingGraph;
 void lazySnakeNamespaceEmbeddingGraph;

@@ -4697,6 +4697,33 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   } finally {
     inference.dispose();
   }
+  const lazyInferenceGraph = adapter.lazy.input([2])
+    .matmul(adapter.lazy.parameter([2, 1], "w"))
+    .add(adapter.lazy.parameter([1], "b"));
+  const lazyInference = adapter.compile.compileForInference(lazyInferenceGraph, { backend: "cpu", inputShape: [2] }, {
+    weights: new Float32Array([1, -1]),
+    bias: new Float32Array([0.5]),
+  });
+  try {
+    if (!Object.isFrozen(lazyInference) || lazyInference.program.inputLen() !== 2 || lazyInference.session.outputLen() !== 1) {
+      throw new Error(`${label} expected lazy compileForInference handle over Program/Session`);
+    }
+    if (
+      lazyInference.compileSupport().supported !== true ||
+      lazyInference.kernelPlan()?.ops.map((op: Record<string, any>) => op.op).join("|") !== "matmul" ||
+      lazyInference.inputShape().join("x") !== "2" ||
+      lazyInference.outputShape().join("x") !== "1"
+    ) {
+      throw new Error(`${label} expected lazy compileForInference handle to expose compile evidence`);
+    }
+    const lazyCarrier = new Float32Array(1);
+    if (lazyInference.into(lazyCarrier, inferenceInput) !== lazyCarrier) {
+      throw new Error(`${label} expected lazy compileForInference into to reuse caller output`);
+    }
+    expectClose(lazyCarrier, [-0.5], `${label} lazy compileForInference into`);
+  } finally {
+    lazyInference.dispose();
+  }
   const inferenceAlias = adapter.compile.compile_for_inference(inferenceModel, { backend: "cpu", inputShape: [2] });
   inferenceAlias.free();
   const nested = adapter.tensor([[1, 2], [3, 4]]);

@@ -61,6 +61,7 @@ import type {
   NnCompilableModule,
   NnModule,
   Program,
+  ProgramBindings,
   ProgramInputBinding,
   Session,
   TensorShapeTuple,
@@ -576,8 +577,18 @@ export function compileForInference<const Target extends NnCompilableModule, con
   options: CompileOptionsWithInputShape<S>,
   bindOptions?: ModuleParameterPlacementOptions,
 ): CompiledInference<S, ModuleForwardShape<Target, S>>;
+export function compileForInference<const Shape extends TensorShapeTuple, const S extends TensorShapeTuple>(
+  target: LazyTensor<Shape>,
+  options: CompileOptionsWithInputShape<S>,
+  bindOptions: ProgramBindings<S, Shape>,
+): CompiledInference<S, Shape>;
+export function compileForInference<const Shape extends TensorShapeTuple>(
+  target: LazyTensor<Shape>,
+  options: CompileOptions,
+  bindOptions: ProgramBindings<TensorShapeTuple, Shape>,
+): CompiledInference<TensorShapeTuple, Shape>;
 export function compileForInference(target: NnCompilableModule, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
-export function compileForInference(target: unknown, options: CompileNamespaceOptions = {}, bindOptions?: ModuleParameterPlacementOptions): CompiledInference {
+export function compileForInference(target: unknown, options: CompileNamespaceOptions = {}, bindOptions?: ModuleParameterPlacementOptions | ProgramBindings): CompiledInference {
   if (Array.isArray(target)) {
     throw new Error("compile.compileForInference requires a module; wrap layer lists in nn.Sequential");
   }
@@ -586,12 +597,15 @@ export function compileForInference(target: unknown, options: CompileNamespaceOp
     throw new Error("compile.compileForInference expected compile() to return a Program");
   }
   const bindModule = (program as { bindModule?: unknown }).bindModule;
-  if (typeof bindModule !== "function") {
-    throw new Error("compile.compileForInference expected a Program with bindModule()");
-  }
-  const session = bindModule.call(program, target, bindOptions);
+  const bind = (program as { bind?: unknown }).bind;
+  const targetCanPlaceModuleParameters = target != null && typeof target === "object" && typeof (target as { placeParameters?: unknown }).placeParameters === "function";
+  const session = typeof bindModule === "function" && targetCanPlaceModuleParameters
+    ? bindModule.call(program, target, bindOptions)
+    : typeof bind === "function" && bindOptions != null
+      ? bind.call(program, bindOptions)
+      : null;
   if (!session || typeof session !== "object") {
-    throw new Error("compile.compileForInference expected bindModule() to return a Session");
+    throw new Error("compile.compileForInference expected bindModule() or explicit Program bindings to return a Session");
   }
   return compiledInferenceHandle(program as Program, session as Session, target, options);
 }
