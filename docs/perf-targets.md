@@ -336,8 +336,9 @@ machine for both prompt/prefill and decode.
   kernel-design target: reduce the 576-wide width-slot waste, not just the
   nominal row-serial math. Fresh throughput evidence with that utilization gap
   is reported as `semantic_width_parallel_kernel` in
-  `perf-next:`, while `dev:perf:next` still routes it to the qsemantic
-  throughput microscope until the kernel exists. A
+  `perf-next:`, and `dev:perf:next` routes it to the exact qsemantic bridge
+  microscope so width-parallel kernel edits iterate on the `576 x 1536 x 576`
+  shape directly. A
   576-only 256-thread narrow-kernel probe reduced the slot footprint but hurt
   throughput (`smollm_prompt=0.67x`). A 384-thread mid-width probe improved
   utilization to about `777/1000` but still lost throughput
@@ -574,11 +575,10 @@ If the latest bridge evidence reports single-dispatch refusals concentrated on
 is the actionable signal from the rejected `SEMANTIC_FFN_MAX_DIM=2048` probe:
 the next kernel must preserve width/tile parallelism for the larger hidden
 dimension, not merely enable the row-serial single-dispatch path. The
-`dev:perf:next` router sends this case back to `qsemantic_throughput`.
-For exact `576 x 1536 x 576` bridge-kernel edits, force
-`BENCH_NEXT_PERF_LANE=qsemantic_bridge npm run dev:perf:next{,:run}`; that
-routes through the checked `frontier-qsemantic-bridge-*.json` artifact instead
-of the broader qsemantic pair.
+`dev:perf:next` router sends this case to `qsemantic_bridge`, which routes
+through the checked `frontier-qsemantic-bridge-*.json` artifact instead of the
+broader qsemantic pair. You can still force that lane explicitly with
+`BENCH_NEXT_PERF_LANE=qsemantic_bridge npm run dev:perf:next{,:run}`.
 For qsemantic kernel work, `BENCH_QSEMANTIC_VARIANTS=target` limits the raw
 frontier harness to the staged baseline plus the one-dispatch semantic target,
 while `BENCH_QSEMANTIC_VARIANTS=throughput_candidate` limits it to the staged

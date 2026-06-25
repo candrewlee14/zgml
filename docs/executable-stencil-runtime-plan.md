@@ -752,9 +752,9 @@ the same Q8 proof. If the latest bridge artifact reports single-dispatch
 refusals concentrated on `dim`, `perf-next:` names the sharper target as
 `next=semantic_width_parallel_kernel`; that means the bridge recognizer is
 ready, but the row-serial semantic kernel is too narrow or too slow for the
-full hidden width, so `dev:perf:next` routes back to the qsemantic throughput
-microscope. Use the ggml smoke after the frontier bottleneck moves or when
-explicitly checking model-level promotion.
+full hidden width, so `dev:perf:next` routes to the exact qsemantic bridge
+microscope for the `576 x 1536 x 576` shape. Use the ggml smoke after the
+frontier bottleneck moves or when explicitly checking model-level promotion.
 The qsemantic-throughput readback follows the same stability rule as the other
 noisy perf lanes: `qsemantic-throughput-results:` prefers the latest
 three-attempt artifact, while `qsemantic-throughput-latest-results:` reports a
