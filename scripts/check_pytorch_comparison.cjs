@@ -101,6 +101,7 @@ function parseZgmlModuleBench(output, keys) {
   if (jsonLine) {
     const row = JSON.parse(jsonLine.slice(prefix.length));
     const timings = {};
+    const firstContactInference = {};
     for (const key of keys) {
       const timing = row.timings?.[key];
       const value = Number(timing?.[zgmlTimingMetric]);
@@ -108,8 +109,9 @@ function parseZgmlModuleBench(output, keys) {
         throw new Error(`pytorch comparison could not find exact zgml timing for ${key}`);
       }
       timings[key] = value;
+      firstContactInference[key] = timing?.first_contact_inference === true;
     }
-    return timings;
+    return { timings, firstContactInference };
   }
   if (zgmlTimingMetric !== "hot_execute_into_ms") {
     throw new Error(`pytorch comparison requires exact ZGML_MODULE_BENCH_JSON for ${zgmlTimingMetric}`);
@@ -123,7 +125,7 @@ function parseZgmlModuleBench(output, keys) {
     }
     timings[key] = Number(match[1]);
   }
-  return timings;
+  return { timings, firstContactInference: Object.fromEntries(keys.map((key) => [key, null])) };
 }
 
 function timestampForArtifact(date = new Date()) {
@@ -276,7 +278,8 @@ function measureAttempt(index) {
     ...process.env,
     BENCH_MODULE_PROGRAM_KEYS: activeComparisonKeys.join(","),
   };
-  const zgmlTimings = parseZgmlModuleBench(run(process.execPath, ["scripts/check_module_program_bench.cjs"], { env: moduleBenchEnv }), activeComparisonKeys);
+  const zgmlBench = parseZgmlModuleBench(run(process.execPath, ["scripts/check_module_program_bench.cjs"], { env: moduleBenchEnv }), activeComparisonKeys);
+  const zgmlTimings = zgmlBench.timings;
   const pytorchEnv = {
     ...process.env,
     BENCH_PYTORCH_ACTIVE_KEYS: activeComparisonKeys.join(","),
@@ -286,7 +289,7 @@ function measureAttempt(index) {
   for (const [key, zgmlMs] of Object.entries(zgmlTimings)) {
     const pytorchMs = pytorchTimings[key];
     const ratio = pytorchMs / zgmlMs;
-    ratioEntries.push({ key, zgmlMs, pytorchMs, ratio });
+    ratioEntries.push({ key, zgmlMs, pytorchMs, ratio, firstContactInference: zgmlBench.firstContactInference[key] });
   }
   const worst = ratioEntries.reduce((current, entry) => (entry.ratio < current.ratio ? entry : current), ratioEntries[0]);
   const parityReady = ratioEntries.every((entry) => entry.ratio >= minRatio);
@@ -325,6 +328,9 @@ const medianLanePassCount = ratioStats.filter((entry) => entry.median >= minRati
 const medianLaneTotal = ratioStats.length;
 const medianLaneMisses = ratioStats.filter((entry) => entry.median < minRatio).map((entry) => entry.key);
 const comparisonReady = requireMedianParity ? parityReady && medianParityReady : parityReady;
+const firstContactInferenceEntries = Object.fromEntries(best.ratioEntries.map((entry) => [entry.key, entry.firstContactInference]));
+const firstContactInferenceReadyCount = Object.values(firstContactInferenceEntries).filter((value) => value === true).length;
+const firstContactInferenceKnownCount = Object.values(firstContactInferenceEntries).filter((value) => value !== null).length;
 const parts = [
   `pytorch comparison: ${requireParity ? (comparisonReady ? "parity-pass" : "parity-miss") : "evidence"}`,
   `python=${python}`,
@@ -343,6 +349,7 @@ const parts = [
   `median_lane_pass=${medianLanePassCount}/${medianLaneTotal}`,
   `lane_miss=${selectedLaneMisses.length === 0 ? "none" : selectedLaneMisses.join(",")}`,
   `median_lane_miss=${medianLaneMisses.length === 0 ? "none" : medianLaneMisses.join(",")}`,
+  `first_contact_inference=${firstContactInferenceReadyCount}/${firstContactInferenceKnownCount}`,
   `ratio_range=${ratioStats.map((entry) => `${entry.key}:${entry.min.toFixed(2)}-${entry.max.toFixed(2)}x`).join(",")}`,
   `ratio_median=${ratioStats.map((entry) => `${entry.key}:${entry.median.toFixed(2)}x`).join(",")}`,
   `median_parity=${medianParityReady ? "pass" : "miss"}`,
@@ -402,6 +409,7 @@ if (writeArtifact) {
       medianTotal: medianLaneTotal,
       medianMisses: medianLaneMisses,
     },
+    firstContactInference: firstContactInferenceEntries,
     ratioStats: Object.fromEntries(ratioStats.map((entry) => [entry.key, {
       min: roundMetric(entry.min),
       median: roundMetric(entry.median),

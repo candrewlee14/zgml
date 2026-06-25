@@ -835,6 +835,16 @@ function ratioPassSummary(entries, minRatio) {
   };
 }
 
+function firstContactInferenceSummary(data) {
+  const entries = data?.firstContactInference && typeof data.firstContactInference === "object"
+    ? Object.values(data.firstContactInference)
+    : [];
+  const known = entries.filter((value) => value !== null).length;
+  if (known === 0) return "n/a";
+  const ready = entries.filter((value) => value === true).length;
+  return `${ready}/${known}`;
+}
+
 function trendEvidence(latestPath) {
   const runs = fullRunArtifacts();
   if (!latestPath || runs.length === 0) return null;
@@ -907,12 +917,13 @@ function pytorchComparisonStatusLine(path) {
   const medianLaneMiss = Array.isArray(data?.lanePass?.medianMisses) && data.lanePass.medianMisses.length !== 0
     ? data.lanePass.medianMisses.join(",")
     : medianFallback && medianFallback.misses.length !== 0 ? medianFallback.misses.join(",") : "none";
+  const firstContactInference = firstContactInferenceSummary(data);
   const native = typeof data?.native?.label === "string" ? data.native.label : "unknown";
   const torch = typeof data?.pytorchVersion === "string" ? data.pytorchVersion : "unknown";
   const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
   const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
   const timing = typeof data?.config?.zgmlTimingMetric === "string" ? data.config.zgmlTimingMetric : "unknown";
-  return `pytorch-results: latest=${compactName(path)} status=${status} median=${medianStatus} worst=${worst} gap=${worstGap} lane_pass=${selectedLanePass} median_lane_pass=${medianLanePass} lane_miss=${laneMiss} median_lane_miss=${medianLaneMiss} attempt=${selectedAttempt}/${attempts} native=${native} torch=${torch} timing=${timing} keys=${keys} ratio_median=${medians}`;
+  return `pytorch-results: latest=${compactName(path)} status=${status} median=${medianStatus} worst=${worst} gap=${worstGap} lane_pass=${selectedLanePass} median_lane_pass=${medianLanePass} lane_miss=${laneMiss} median_lane_miss=${medianLaneMiss} first_contact_inference=${firstContactInference} attempt=${selectedAttempt}/${attempts} native=${native} torch=${torch} timing=${timing} keys=${keys} ratio_median=${medians}`;
 }
 
 function pytorchFocusStatusLine(path, latestPath) {
@@ -946,7 +957,8 @@ function pytorchFreshnessStatusLine(selectedPath, rawPath) {
   const native = typeof data?.native?.label === "string" ? data.native.label : "unknown";
   const timing = typeof data?.config?.zgmlTimingMetric === "string" ? data.config.zgmlTimingMetric : "unknown";
   const keyCount = Array.isArray(data?.config?.activeComparisonKeys) ? data.config.activeComparisonKeys.length : "n/a";
-  return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_broad_scoreboard status=${status} median=${medianStatus} worst=${worst} gap=${worstGap} attempts=${attempts} native=${native} timing=${timing} keys=${keyCount} ratio_median=${medians}`;
+  const firstContactInference = firstContactInferenceSummary(data);
+  return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_broad_scoreboard status=${status} median=${medianStatus} worst=${worst} gap=${worstGap} first_contact_inference=${firstContactInference} attempts=${attempts} native=${native} timing=${timing} keys=${keyCount} ratio_median=${medians}`;
 }
 
 function nativeEagerStatusLine(path) {

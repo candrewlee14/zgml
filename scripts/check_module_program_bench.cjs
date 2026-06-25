@@ -176,6 +176,52 @@ function requireHotPath(label, session, input, output) {
   }
 }
 
+function requireFirstContactInferencePath(spec, model, input) {
+  if (typeof spec.bindSession === "function") return false;
+  const compileForInference = adapter.compile?.compileForInference;
+  if (
+    typeof compileForInference !== "function" ||
+    adapter.compileInference !== compileForInference ||
+    adapter.zgml?.compileInference !== compileForInference
+  ) {
+    throw new Error(`${spec.label} expected zgml.compileInference to be the public compileForInference handle`);
+  }
+  const output = new Float32Array(spec.outputLen);
+  const handle = compileForInference(model, { inputShape: spec.inputShape, backend: "cpu" });
+  try {
+    requireCompileEvidence(spec, handle.compileSupport());
+    requireKernelPlan(spec, handle.kernelPlan());
+    requireHotPath(`${spec.label} compileInference`, handle.session, input, output);
+    const eagerOutput = model.forward(input);
+    const forwardOutput = handle.forward(input);
+    const intoOutput = handle.into(output, input);
+    if (intoOutput !== output) {
+      throw new Error(`${spec.label} expected compileInference.into to reuse caller output`);
+    }
+    const prepared = handle.prepareInto(output, input);
+    const preparedOutput = prepared();
+    if (preparedOutput !== output) {
+      throw new Error(`${spec.label} expected compileInference.prepareInto to reuse caller output`);
+    }
+    const eagerData = eagerOutput.data ?? eagerOutput;
+    const forwardError = maxAbsDiff(eagerData, forwardOutput.data);
+    if (forwardError > spec.tolerance) {
+      throw new Error(`${spec.label} eager/compileInference.forward mismatch ${forwardError}`);
+    }
+    const intoError = maxAbsDiff(eagerData, intoOutput);
+    if (intoError > spec.tolerance) {
+      throw new Error(`${spec.label} eager/compileInference.into mismatch ${intoError}`);
+    }
+    const preparedError = maxAbsDiff(eagerData, preparedOutput);
+    if (preparedError > spec.tolerance) {
+      throw new Error(`${spec.label} eager/compileInference.prepareInto mismatch ${preparedError}`);
+    }
+    return true;
+  } finally {
+    handle.dispose();
+  }
+}
+
 function requireCompileEvidence(spec, support) {
   const layerCount = support.layerCount ?? support.trace?.layerCount;
   const inputLen = support.inputLen ?? support.ir?.inputLen;
@@ -556,6 +602,7 @@ function runBenchSpec(spec) {
   const compileOptions = { inputShape: spec.inputShape, backend: "cpu" };
   const support = model.compileSupport(compileOptions);
   requireCompileEvidence(spec, support);
+  const firstContactInference = requireFirstContactInferencePath(spec, model, input);
   const program = model.compile({ inputShape: spec.inputShape, backend: "cpu" });
   const session = typeof spec.bindSession === "function" ? spec.bindSession(program) : program.bindModule(model);
   try {
@@ -598,7 +645,7 @@ function runBenchSpec(spec) {
     const eagerMs = median(eagerRuns);
     const compiledMs = median(compiledRuns);
     const preparedMs = median(preparedRuns);
-    return { eagerMs, compiledMs, preparedMs, speedup: eagerMs / compiledMs, preparedSpeedup: eagerMs / preparedMs };
+    return { eagerMs, compiledMs, preparedMs, speedup: eagerMs / compiledMs, preparedSpeedup: eagerMs / preparedMs, firstContactInference };
   } finally {
     session.dispose();
     program.dispose();
@@ -2153,6 +2200,7 @@ function runAllSpecs(attempt) {
       prepared_execute_into_ms: result.preparedMs,
       speedup: result.speedup,
       prepared_speedup: result.preparedSpeedup,
+      first_contact_inference: result.firstContactInference,
       floor: spec.floor,
     }])),
   };
