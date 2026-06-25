@@ -972,9 +972,11 @@ status, semantic throughput, semantic structural selection, semantic throughput
 readiness, lane speedups, median/worst throughput, command shape, active lanes,
 and source freshness when the artifact carries it. It now prefers the newest
 steady viable artifact (`attempts >= 3` with command, two-phase, and semantic
-lanes) for the selected `q8-prompt-results:` and `perf-next:` readbacks, while
-printing `q8-prompt-latest-results:` when a newer one-attempt quick probe
-exists. Set `BENCH_Q8_PROMPT_WRITE_ARTIFACT=0` only for throwaway local
+lanes) for the selected `q8-prompt-results:` broad scoreboard. The active
+semantic bottleneck also has `q8-prompt-semantic-steady-results:`; when present,
+`perf-next:` uses that newest steady semantic artifact as pressure evidence and
+still prints `q8-prompt-latest-results:` when a newer quick probe exists. Set
+`BENCH_Q8_PROMPT_WRITE_ARTIFACT=0` only for throwaway local
 diagnostics. New Q8 and frontier artifacts also stamp generic benchmark-binary
 metadata: git commit, dirty state, build mode, binary mtime, newest native
 source path/mtime, and a fresh/stale label. This makes `BENCH_BUILD_ZGML=0`

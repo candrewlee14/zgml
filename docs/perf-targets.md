@@ -569,8 +569,11 @@ rerunning the older two-lane current-gap microscope.
 For Q8 prompt candidate artifacts, `bench:status` prefers the newest steady
 viable run (`attempts >= 3` with command, two-phase, and semantic lanes) over a
 newer one-attempt quick probe, and prints `q8-prompt-latest-results:` when it
-does so. That keeps `q8-prompt-results:` and `perf-next:` tied to stable
-throughput evidence while still making freshness visible.
+does so. That keeps `q8-prompt-results:` tied to the broad all-lane scoreboard
+while still making freshness visible. The active semantic bottleneck has its
+own `q8-prompt-semantic-steady-results:` readback; when present, `perf-next:`
+uses that newest steady semantic artifact as pressure evidence instead of a
+newer one-attempt probe or an older all-lane artifact.
 For qsemantic frontier artifacts, `bench:status` follows the same stability
 policy: it prefers the newest artifact with at least three attempts and prints
 `frontier-latest-results:` when a newer one-attempt microscope exists. That keeps

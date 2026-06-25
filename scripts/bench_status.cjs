@@ -284,9 +284,27 @@ function isQ8PromptSteadyArtifact(path) {
   }
 }
 
+function isQ8PromptSemanticSteadyArtifact(path) {
+  try {
+    const data = readJson(path);
+    const attempts = Number(data?.config?.attempts);
+    const lanes = data?.config?.measuredLanes;
+    return Number.isInteger(attempts) &&
+      attempts >= 3 &&
+      Array.isArray(lanes) &&
+      lanes.includes("semantic");
+  } catch {
+    return false;
+  }
+}
+
 function latestQ8PromptCandidateArtifact() {
   const artifacts = q8PromptCandidateArtifacts();
   return artifacts.filter(isQ8PromptSteadyArtifact).at(-1) ?? artifacts.at(-1) ?? null;
+}
+
+function latestQ8PromptSemanticSteadyArtifact() {
+  return q8PromptCandidateArtifacts().filter(isQ8PromptSemanticSteadyArtifact).at(-1) ?? null;
 }
 
 function latestRawQ8PromptCandidateArtifact() {
@@ -991,12 +1009,13 @@ function q8PromptCandidateStatusLine(path) {
     return `q8-prompt-results: latest=${compactName(path)} unreadable`;
   }
   const lanes = Array.isArray(data?.config?.measuredLanes) ? data.config.measuredLanes.join(",") : "unknown";
+  const measuredLaneSet = new Set(Array.isArray(data?.config?.measuredLanes) ? data.config.measuredLanes : []);
   const status = typeof data?.status === "string" ? data.status : "unknown";
   const commandSpeedup = formatRatio(data?.lanes?.command?.speedup);
   const twoPhaseSpeedup = formatRatio(data?.lanes?.twoPhase?.speedup);
   const semanticSpeedup = formatRatio(data?.lanes?.semantic?.speedup);
-  const twoPhaseStats = q8LaneSpeedupStats(data, "twoPhase", "twoPhaseSpeedup");
-  const semanticStats = q8LaneSpeedupStats(data, "semantic", "semanticSpeedup");
+  const twoPhaseStats = measuredLaneSet.has("two_phase") ? q8LaneSpeedupStats(data, "twoPhase", "twoPhaseSpeedup") : null;
+  const semanticStats = measuredLaneSet.has("semantic") ? q8LaneSpeedupStats(data, "semantic", "semanticSpeedup") : null;
   const semanticThroughput = typeof data?.throughput?.semantic === "string" ? data.throughput.semantic : "unknown";
   const semanticStructuralSelected = (data?.lanes?.semantic?.structuralSelected ?? data?.lanes?.semantic?.selected) === true ? "yes" : "off";
   const semanticThroughputReady = (data?.lanes?.semantic?.throughputReady ?? semanticThroughput === "ready") === true ? "yes" : "off";
@@ -1039,6 +1058,12 @@ function q8PromptCandidateStatusLine(path) {
     ? [...new Set(data.attempts.map((row) => row?.defaultPromptPolicy).filter((value) => typeof value === "string"))].join(",") || "unknown"
     : "unknown";
   return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} semantic_bridges=${semanticBridges} semantic_absorbed=${semanticAbsorbed} semantic_absorbed_dispatch=${semanticAbsorbedDispatches} semantic_absorbed_split=${semanticAbsorbedSplit} semantic_direct=${semanticDirectCount} semantic_direct_rows=${semanticDirectRows} semantic_direct_row_threadgroups=${semanticDirectRowThreadgroups} semantic_direct_row_serial_dot_ops=${semanticDirectRowSerialDotOps} semantic_direct_total_row_serial_dot_ops=${semanticDirectTotalRowSerialDotOps} semantic_direct_per_row_threadgroup=${semanticDirectPerRowThreadgroup} semantic_input_dispatch=${formatNumber(semanticInputDispatches, 0)} semantic_input_split=${formatNumber(semanticInputSplit, 2)} semantic_fallback_pair_dispatch=${semanticFallbackPairDispatches} semantic_fallback_tail_dispatch=${semanticFallbackTailDispatches} semantic_fallback_dispatch=${semanticFallbackDispatches} semantic_fallback_split=${semanticFallbackSplit} semantic_single_dispatch_attempts=${semanticSingleDispatchAttempts} semantic_single_dispatch_output_read_refusals=${semanticSingleDispatchOutputReadRefusals} semantic_single_dispatch_block_size_refusals=${semanticSingleDispatchBlockSizeRefusals} semantic_single_dispatch_refusals=${semanticSingleDispatchRefusals} semantic_single_dispatch_dim_refusal_shape=${semanticSingleDispatchDimRefusalShape} attempts=${attempts} lanes=${lanes} pair_defaults=${pairDefaults} default_policy=${defaultPolicies} baseline_noise=${baselineNoise} source=${source}`;
+}
+
+function q8PromptSemanticSteadyStatusLine(path) {
+  if (!path) return "q8-prompt-semantic-steady-results: no local steady semantic-only Q8 prompt artifact found; run npm run dev:perf:q8-prompt:semantic-steady:run";
+  const line = q8PromptCandidateStatusLine(path);
+  return line.replace(/^q8-prompt-results:/, "q8-prompt-semantic-steady-results:");
 }
 
 function frontierStatusLine(path, pressurePath = path) {
@@ -1968,6 +1993,7 @@ if (focusPytorch) process.stdout.write(`${focusPytorch}\n`);
 const pytorchFreshness = pytorchFreshnessStatusLine(latestPytorch, latestRawPytorch);
 if (pytorchFreshness) process.stdout.write(`${pytorchFreshness}\n`);
 const latestQ8Prompt = latestQ8PromptCandidateArtifact();
+const latestQ8PromptSemanticSteady = latestQ8PromptSemanticSteadyArtifact();
 const latestRawQ8Prompt = latestRawQ8PromptCandidateArtifact();
 const latestFrontier = latestFrontierArtifact();
 const latestRawFrontier = latestRawFrontierArtifact();
@@ -1978,6 +2004,7 @@ const latestQsemanticInputBridge = latestQsemanticInputBridgeArtifact();
 const latestQprojFrontier = latestQprojFrontierArtifact();
 const latestGgmlSmoke = latestGgmlSmokeArtifact();
 process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8Prompt)}\n`);
+process.stdout.write(`${q8PromptSemanticSteadyStatusLine(latestQ8PromptSemanticSteady)}\n`);
 const q8PromptFreshness = q8PromptFreshnessStatusLine(latestQ8Prompt, latestRawQ8Prompt);
 if (q8PromptFreshness) process.stdout.write(`${q8PromptFreshness}\n`);
 process.stdout.write(`${qprojFrontierStatusLine(latestQprojFrontier)}\n`);
@@ -1990,7 +2017,7 @@ if (qsemanticThroughputFreshness) process.stdout.write(`${qsemanticThroughputFre
 process.stdout.write(`${qsemanticBridgeStatusLine(latestQsemanticBridge, latestRawQ8Prompt)}\n`);
 process.stdout.write(`${qsemanticInputBridgeStatusLine(latestQsemanticInputBridge)}\n`);
 process.stdout.write(`${ggmlSmokeStatusLine(latestGgmlSmoke)}\n`);
-process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, rawQ8Path: latestRawQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestRawQsemanticThroughput ?? latestRawFrontier, qsemanticBridgePath: latestQsemanticBridge })}\n`);
+process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, rawQ8Path: latestQ8PromptSemanticSteady ?? latestRawQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestRawQsemanticThroughput ?? latestRawFrontier, qsemanticBridgePath: latestQsemanticBridge })}\n`);
 const quarantined = quarantinedFullRunArtifacts();
 if (quarantined.length > 0) {
   process.stdout.write(`bench-results: ${quarantined.length} quarantined p128/g200/r3 artifact(s) ignored for accepted evidence; latest_failed=${compactName(quarantined.at(-1))}\n`);
