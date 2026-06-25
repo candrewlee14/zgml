@@ -1073,6 +1073,7 @@ function q8PromptNextTarget(path, pressurePath = path) {
     const semanticRowChains = pressureData?.lanes?.semantic?.projectionRowChains ?? "n/a";
     const semanticCommands = pressureData?.lanes?.semantic?.commands ?? "n/a";
     const semanticBridgeCandidate = Number(freshBridges) === 0 && Number(semanticRowChains) === 0 && Number(semanticCommands) <= 121;
+    const pressureSemanticBestSpeedup = Number(pressureData?.lanes?.semantic?.speedup);
     const pressureSemanticSpeedup = Number(freshStats?.median ?? pressureData?.lanes?.semantic?.speedup);
     const pressureSemanticWorstSpeedup = Number(freshStats?.worst ?? pressureData?.lanes?.semantic?.speedup);
     const bridgeNext = Number(freshBridges) > 0 ? "semantic_residual_bridge_command" : "semantic_ffn_sublayer_throughput_kernel";
@@ -1086,7 +1087,7 @@ function q8PromptNextTarget(path, pressurePath = path) {
         Number.isFinite(pressureSemanticWorstSpeedup) && pressureSemanticWorstSpeedup >= 1
           ? "steady_semantic_bridge_candidate"
           : "semantic_bridge_throughput_kernel";
-      return `q8_prompt=semantic_bridge_candidate:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:absorbed=${freshSemanticAbsorbed}:absorbed_dispatch=${freshSemanticAbsorbedDispatches}:absorbed_split=${freshSemanticAbsorbedSplit}:single_dispatch_refusals=${freshRefusals}:dim_refusal_shape=${freshDimRefusalShape}:speedup=${formatRatio(pressureSemanticSpeedup)}:worst=${formatRatio(pressureSemanticWorstSpeedup)}:next=${next}`;
+      return `q8_prompt=semantic_bridge_candidate:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:absorbed=${freshSemanticAbsorbed}:absorbed_dispatch=${freshSemanticAbsorbedDispatches}:absorbed_split=${freshSemanticAbsorbedSplit}:single_dispatch_refusals=${freshRefusals}:dim_refusal_shape=${freshDimRefusalShape}:best=${formatRatio(pressureSemanticBestSpeedup)}:median=${formatRatio(pressureSemanticSpeedup)}:worst=${formatRatio(pressureSemanticWorstSpeedup)}:speedup=${formatRatio(pressureSemanticSpeedup)}:next=${next}`;
     }
     if (pressureStatus === "promoted-default" || pressureSemanticThroughput === "promoted") {
       return `q8_prompt=promoted_semantic_default:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:absorbed=${freshSemanticAbsorbed}:absorbed_dispatch=${freshSemanticAbsorbedDispatches}:absorbed_split=${freshSemanticAbsorbedSplit}:next=${bridgeNext}`;

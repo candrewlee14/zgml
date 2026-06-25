@@ -422,6 +422,7 @@ function checkScripts() {
     "absorbed_split=${freshSemanticAbsorbedSplit}",
     "single_dispatch_refusals=${freshRefusals}",
     "dim_refusal_shape=${freshDimRefusalShape}",
+    "best=${formatRatio(pressureSemanticBestSpeedup)}:median=${formatRatio(pressureSemanticSpeedup)}:worst=${formatRatio(pressureSemanticWorstSpeedup)}:speedup=${formatRatio(pressureSemanticSpeedup)}",
     "steady_semantic_bridge_candidate",
     "semantic_bridge_throughput_kernel",
     "semantic_width_parallel_kernel",
