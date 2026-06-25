@@ -1605,6 +1605,12 @@ function checkScripts() {
     "shape.semantic_ffn_sublayers",
     "shape.projection_row_chain_semantic_residual_bridges",
   ]);
+  requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "semantic FFN width-parallel trap guard", [
+    "\\\\    threadgroup float product_values[SEMANTIC_FFN_MAX_DIM];",
+    "if (gate.K > SEMANTIC_FFN_MAX_DIM or gate.N > SEMANTIC_FFN_MAX_DIM or down.N > SEMANTIC_FFN_MAX_DIM)",
+    "\\\\    threadgroup float product_values[SEMANTIC_FFN_MAX_HIDDEN];",
+    "if (input_q.N > SEMANTIC_FFN_MAX_DIM or input_q.K > SEMANTIC_FFN_MAX_DIM or gate.N > SEMANTIC_FFN_MAX_HIDDEN or down.N > SEMANTIC_FFN_MAX_DIM) return false;",
+  ]);
   requireIncludes(read("benchmarks/llama_smollm_bench.zig"), "benchmarks/llama_smollm_bench.zig", "promoted Q8 semantic prefill default", [
     "run_metal_prefill_device and model_is_gguf",
     "run_metal_prompt_semantic_throughput_candidate",

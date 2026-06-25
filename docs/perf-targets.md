@@ -407,6 +407,15 @@ machine for both prompt/prefill and decode.
   semantic bridge fell to `0.62x`. Do not promote that cap bump. The next
   performance target is a tile-parallel semantic FFN/residual/norm kernel for
   the `576 x 1536 x 576` FFN shape, without the row-serial throughput loss.
+  A narrower hidden-only probe reached the same conclusion: changing the
+  non-input semantic FFN scratch from `SEMANTIC_FFN_MAX_DIM` to
+  `SEMANTIC_FFN_MAX_HIDDEN` made the exact `m=128,h=1536,k=576,o=576` bridge
+  structurally dispatch as one semantic kernel with `max_abs_diff=0.000001`, but
+  the fused kernel measured about `2.23ms` versus the existing tiled
+  pair-plus-tail control around `0.88ms`. Keep the non-input semantic
+  single-dispatch product scratch capped at `SEMANTIC_FFN_MAX_DIM`; only the
+  input-bridge direct kernel may use `SEMANTIC_FFN_MAX_HIDDEN` until the
+  replacement is genuinely tile/width parallel.
   That exact shape now has a checked frontier microscope:
   `npm run dev:perf:frontier:qsemantic:bridge{,:run}`, which writes
   `frontier-qsemantic-bridge-*.json` for `bench:status`; the raw terminal
