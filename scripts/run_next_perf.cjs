@@ -69,7 +69,7 @@ function chooseLane(line) {
     (!freshThroughput || freshThroughput.smollm < 1 || freshThroughput.full < 1);
   if (qsemanticThroughputBelowDefault) return "qsemantic_throughput";
   if (q8PromptNeedsInputBridgeWorkPartitioning) return "q8_prompt_semantic";
-  if (q8PromptNeedsWidthParallelKernel) return "qsemantic_throughput";
+  if (q8PromptNeedsWidthParallelKernel) return "qsemantic_bridge";
   if (q8PromptNeedsSemanticBridgeKernel) return "qsemantic_throughput";
   if (q8PromptNeedsSteadySemanticBridge) return "q8_prompt";
   if (currentQ8NeedsSemanticThroughput && hasFreshQsemanticThroughput) return "q8_prompt";

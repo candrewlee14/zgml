@@ -973,7 +973,7 @@ function checkScripts() {
     ":fresh=source:[^, ]+,throughput=smollm:([0-9.]+)x,full:([0-9.]+)x",
     "const qsemanticThroughputBelowDefault",
     "if (qsemanticThroughputBelowDefault) return \"qsemantic_throughput\"",
-    "if (q8PromptNeedsWidthParallelKernel) return \"qsemantic_throughput\"",
+    "if (q8PromptNeedsWidthParallelKernel) return \"qsemantic_bridge\"",
     "if (q8PromptNeedsSemanticBridgeKernel) return \"qsemantic_throughput\"",
     "if (q8PromptNeedsSteadySemanticBridge) return \"q8_prompt\"",
     "if (currentQ8NeedsSemanticThroughput && hasFreshQsemanticThroughput) return \"q8_prompt\"",
