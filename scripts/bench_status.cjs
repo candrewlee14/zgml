@@ -569,7 +569,11 @@ function qsemanticThroughputStatusLine(path) {
   const smollmSpilledInput = data?.smollmPrompt?.spilledInput ?? "n/a";
   const fullOutputSpills = data?.fullPrefill?.outputSpills ?? "n/a";
   const smollmOutputSpills = data?.smollmPrompt?.outputSpills ?? "n/a";
-  const next = typeof data?.next === "string" ? data.next : "unknown";
+  const smollmWidthUtilNumber = Number(smollmWidthLaneUtilization);
+  const smollmThreadUtilNumber = Number(smollmThreadLaneUtilization);
+  const next = Number.isFinite(smollmWidthUtilNumber) && Number.isFinite(smollmThreadUtilNumber)
+    ? (smollmWidthUtilNumber < 800 || smollmThreadUtilNumber < 800 ? "semantic_width_parallel_kernel" : "semantic_ffn_sublayer_throughput_kernel")
+    : (typeof data?.next === "string" ? data.next : "unknown");
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
   return `qsemantic-throughput-results: latest=${compactName(path)} status=${status} gate=${gate} bottleneck=${bottleneck} serial_gap=${semanticSerialGap} width_slot_gap=${semanticWidthSlotGap} thread_slot_gap=${semanticThreadSlotGap} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill}:median:${fullPrefillMedian}:worst:${fullPrefillWorst}:dispatches:${fullDispatches}:semantic_count:${fullSemanticCount}:semantic_tile_groups:${fullSemanticTileGroups}:row_serial_per_group:${fullSemanticRowSerial}:total_row_serial_per_group:${fullSemanticTotalRowSerial}:width_lane_slots:${fullWidthLaneSlots}:width_lane_utilization_x1000:${fullWidthLaneUtilization}:thread_lane_slots:${fullThreadLaneSlots}:thread_lane_utilization_x1000:${fullThreadLaneUtilization}:spilled_input:${fullSpilledInput}:output_spills:${fullOutputSpills} smollm_prompt=${smollmPrompt}:median:${smollmPromptMedian}:worst:${smollmPromptWorst}:dispatches:${smollmDispatches}:semantic_count:${smollmSemanticCount}:semantic_tile_groups:${smollmSemanticTileGroups}:row_serial_per_group:${smollmSemanticRowSerial}:total_row_serial_per_group:${smollmSemanticTotalRowSerial}:width_lane_slots:${smollmWidthLaneSlots}:width_lane_utilization_x1000:${smollmWidthLaneUtilization}:thread_lane_slots:${smollmThreadLaneSlots}:thread_lane_utilization_x1000:${smollmThreadLaneUtilization}:spilled_input:${smollmSpilledInput}:output_spills:${smollmOutputSpills} next=${next} source=${source}`;
 }
