@@ -346,6 +346,7 @@ fn printSemanticSublayerRuntimeProfile(
     be.addRuntimeProfileTo(handle, &rt);
     const projection_row_chain_idx = @intFromEnum(program_mod.ProgramCommandKind.projection_row_chain);
     const semantic_idx = @intFromEnum(program_mod.ProgramCommandKind.semantic_ffn_sublayer);
+    const semantic_with_input_idx = @intFromEnum(program_mod.ProgramCommandKind.semantic_ffn_sublayer_with_input_row_chain);
     const semantic_tile_groups = rt.semantic_ffn_sublayer_tile_parallel_groups;
     const semantic_row_serial_per_tile_group = if (semantic_tile_groups > 0) rt.semantic_ffn_sublayer_row_serial_dot_ops / semantic_tile_groups else 0;
     const semantic_total_row_serial_per_tile_group = if (semantic_tile_groups > 0) rt.semantic_ffn_sublayer_total_row_serial_dot_ops / semantic_tile_groups else 0;
@@ -353,7 +354,7 @@ fn printSemanticSublayerRuntimeProfile(
     const semantic_thread_lane_utilization_x1000 = if (rt.semantic_ffn_sublayer_thread_lane_slots > 0) rt.semantic_ffn_sublayer_active_thread_lanes * 1000 / rt.semantic_ffn_sublayer_thread_lane_slots else 0;
     try writeSemanticSublayerRuntimeMetricJson(w, name, rt, semantic_row_serial_per_tile_group, semantic_total_row_serial_per_tile_group);
     try w.print(
-        "  {s:<28} runtime_backend_dispatches={d}  semantic_target_dispatches=1  runtime_projection_row_chain_dispatches={d}  runtime_projection_row_chain_attempts={d}  runtime_projection_row_chain_refused={d}  runtime_semantic_ffn_dispatches={d}  semantic_ffn_sublayer_fallback_pair_dispatches={d}  semantic_ffn_sublayer_fallback_tail_dispatches={d}  qmatmul_row_chain_tiled_count={d}  qmatmul_row_chain_tiled_row_tile_groups={d}  qmatmul_row_chain_tiled_n_tiles={d}  qmatmul_row_chain_tiled_serial_tile_loops={d}  qmatmul_row_chain_tiled_partial_slots={d}  qmatmul_row_chain_tiled_scratch_capacity={d}  qmatmul_row_chain_tiled_two_phase_count={d}  qmatmul_row_chain_tiled_finalize_tile_groups={d}  qmatmul_row_chain_tiled_finalize_elements={d}  qmatmul_row_chain_tiled_spilled_elementwise={d}  qmatmul_row_chain_tiled_spilled_input={d}  qmatmul_row_chain_tiled_output_spills={d}\n",
+        "  {s:<28} runtime_backend_dispatches={d}  semantic_target_dispatches=1  runtime_projection_row_chain_dispatches={d}  runtime_projection_row_chain_attempts={d}  runtime_projection_row_chain_refused={d}  runtime_semantic_ffn_dispatches={d}  runtime_semantic_ffn_with_input_dispatches={d}  runtime_semantic_ffn_with_input_attempts={d}  runtime_semantic_ffn_with_input_refused={d}  semantic_ffn_sublayer_fallback_pair_dispatches={d}  semantic_ffn_sublayer_fallback_tail_dispatches={d}  qmatmul_row_chain_tiled_count={d}  qmatmul_row_chain_tiled_row_tile_groups={d}  qmatmul_row_chain_tiled_n_tiles={d}  qmatmul_row_chain_tiled_serial_tile_loops={d}  qmatmul_row_chain_tiled_partial_slots={d}  qmatmul_row_chain_tiled_scratch_capacity={d}  qmatmul_row_chain_tiled_two_phase_count={d}  qmatmul_row_chain_tiled_finalize_tile_groups={d}  qmatmul_row_chain_tiled_finalize_elements={d}  qmatmul_row_chain_tiled_spilled_elementwise={d}  qmatmul_row_chain_tiled_spilled_input={d}  qmatmul_row_chain_tiled_output_spills={d}\n",
         .{
             name,
             rt.backend_dispatch_count,
@@ -361,6 +362,9 @@ fn printSemanticSublayerRuntimeProfile(
             rt.program_command_attempt_counts[projection_row_chain_idx],
             rt.program_command_failed_counts[projection_row_chain_idx],
             rt.program_command_dispatch_counts[semantic_idx],
+            rt.program_command_dispatch_counts[semantic_with_input_idx],
+            rt.program_command_attempt_counts[semantic_with_input_idx],
+            rt.program_command_failed_counts[semantic_with_input_idx],
             rt.semantic_ffn_sublayer_fallback_pair_dispatches,
             rt.semantic_ffn_sublayer_fallback_tail_dispatches,
             rt.qmatmul_row_chain_tiled_count,
@@ -413,6 +417,7 @@ fn writeSemanticSublayerRuntimeMetricJson(
 ) !void {
     const projection_row_chain_idx = @intFromEnum(program_mod.ProgramCommandKind.projection_row_chain);
     const semantic_idx = @intFromEnum(program_mod.ProgramCommandKind.semantic_ffn_sublayer);
+    const semantic_with_input_idx = @intFromEnum(program_mod.ProgramCommandKind.semantic_ffn_sublayer_with_input_row_chain);
     var jw = try writeMetricJsonPrefix(w, name, "semantic_sublayer_runtime");
     try writeMetricJsonField(&jw, "runtime_backend_dispatches", rt.backend_dispatch_count);
     try writeMetricJsonField(&jw, "semantic_target_dispatches", 1);
@@ -420,6 +425,9 @@ fn writeSemanticSublayerRuntimeMetricJson(
     try writeMetricJsonField(&jw, "runtime_projection_row_chain_attempts", rt.program_command_attempt_counts[projection_row_chain_idx]);
     try writeMetricJsonField(&jw, "runtime_projection_row_chain_refused", rt.program_command_failed_counts[projection_row_chain_idx]);
     try writeMetricJsonField(&jw, "runtime_semantic_ffn_dispatches", rt.program_command_dispatch_counts[semantic_idx]);
+    try writeMetricJsonField(&jw, "runtime_semantic_ffn_with_input_dispatches", rt.program_command_dispatch_counts[semantic_with_input_idx]);
+    try writeMetricJsonField(&jw, "runtime_semantic_ffn_with_input_attempts", rt.program_command_attempt_counts[semantic_with_input_idx]);
+    try writeMetricJsonField(&jw, "runtime_semantic_ffn_with_input_refused", rt.program_command_failed_counts[semantic_with_input_idx]);
     try writeMetricJsonField(&jw, "semantic_ffn_sublayer_fallback_pair_dispatches", rt.semantic_ffn_sublayer_fallback_pair_dispatches);
     try writeMetricJsonField(&jw, "semantic_ffn_sublayer_fallback_tail_dispatches", rt.semantic_ffn_sublayer_fallback_tail_dispatches);
     try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_count", rt.qmatmul_row_chain_tiled_count);
@@ -1733,6 +1741,214 @@ fn benchSemanticSublayerMetalCase(
     try printSemanticSublayerRuntimeProfile(w, target_profile_name, be, target_handle, &target_output_io);
 }
 
+fn benchSemanticSublayerWithInputRowChainMetalCase(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    w: *std.Io.Writer,
+    metal: *internal.backend_metal.MetalBackend,
+    case: ProjectionRowChainCase,
+) !void {
+    const model = case.k;
+    const hidden = case.hidden orelse case.n;
+    const output = case.output orelse model;
+    const model_elems = case.m * model;
+    const hidden_elems = case.m * hidden;
+    const output_elems = case.m * output;
+    const block_size: usize = 32;
+    const input_scale_len = (model * model + block_size - 1) / block_size;
+    const gate_scale_len = (model * hidden + block_size - 1) / block_size;
+    const down_scale_len = (hidden * output + block_size - 1) / block_size;
+
+    const input = try allocF32(alloc, model_elems, 1001, 0.25);
+    defer alloc.free(input);
+    const input_q = try allocF32(alloc, model_elems, 1002, 0.0);
+    defer alloc.free(input_q);
+    const input_residual_out = try allocF32(alloc, model_elems, 1003, 0.0);
+    defer alloc.free(input_residual_out);
+    const input_norm = try allocF32(alloc, model_elems, 1004, 0.0);
+    defer alloc.free(input_norm);
+    const input_repeat = try allocF32(alloc, model_elems, 1005, 0.0);
+    defer alloc.free(input_repeat);
+    const ffn_input = try allocF32(alloc, model_elems, 1006, 0.0);
+    defer alloc.free(ffn_input);
+    const shared_q = try allocF32(alloc, hidden_elems, 1007, 0.0);
+    defer alloc.free(shared_q);
+    const silu_out = try allocF32(alloc, hidden_elems, 1008, 0.0);
+    defer alloc.free(silu_out);
+    const product = try allocF32(alloc, hidden_elems, 1009, 0.0);
+    defer alloc.free(product);
+    const down_q = try allocF32(alloc, output_elems, 1010, 0.0);
+    defer alloc.free(down_q);
+    const input_residual = try allocF32(alloc, model_elems, 1011, 0.20);
+    defer alloc.free(input_residual);
+    const input_scale = try allocF32(alloc, model, 1012, 0.30);
+    defer alloc.free(input_scale);
+    const ffn_residual_out = try allocF32(alloc, output_elems, 1013, 0.0);
+    defer alloc.free(ffn_residual_out);
+    const output_norm = try allocF32(alloc, output_elems, 1014, 0.0);
+    defer alloc.free(output_norm);
+    const output_repeat = try allocF32(alloc, output_elems, 1015, 0.0);
+    defer alloc.free(output_repeat);
+    const output_scale = try allocF32(alloc, output, 1016, 0.30);
+    defer alloc.free(output_scale);
+    const staged_out = try allocF32(alloc, output_elems, 1017, 0.0);
+    defer alloc.free(staged_out);
+    const command_out = try allocF32(alloc, output_elems, 1018, 0.0);
+    defer alloc.free(command_out);
+    const absorbed_out = try allocF32(alloc, output_elems, 1019, 0.0);
+    defer alloc.free(absorbed_out);
+
+    const input_qdata = try allocI8Weights(alloc, model * model, 1020);
+    defer alloc.free(input_qdata);
+    const gate_qdata = try allocI8Weights(alloc, model * hidden, 1021);
+    defer alloc.free(gate_qdata);
+    const up_qdata = try allocI8Weights(alloc, model * hidden, 1022);
+    defer alloc.free(up_qdata);
+    const down_qdata = try allocI8Weights(alloc, hidden * output, 1023);
+    defer alloc.free(down_qdata);
+    const input_scales = try allocF32(alloc, input_scale_len, 1024, 0.02);
+    defer alloc.free(input_scales);
+    const gate_scales = try allocF32(alloc, gate_scale_len, 1025, 0.02);
+    defer alloc.free(gate_scales);
+    const up_scales = try allocF32(alloc, gate_scale_len, 1026, 0.02);
+    defer alloc.free(up_scales);
+    const down_scales = try allocF32(alloc, down_scale_len, 1027, 0.02);
+    defer alloc.free(down_scales);
+    for (input_scales) |*v| v.* = 0.02;
+    for (gate_scales) |*v| v.* = 0.02;
+    for (up_scales) |*v| v.* = 0.02;
+    for (down_scales) |*v| v.* = 0.02;
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = @intCast(case.m), .N = @intCast(model), .K = @intCast(model) } },
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 10, .n = @intCast(model_elems) } },
+        .{ .rmsnorm = .{ .dst = 3, .src = 2, .rows = @intCast(case.m), .cols = @intCast(model), .eps = 1e-5 } },
+        .{ .repeat = .{
+            .dst = 4,
+            .src = 11,
+            .n = @intCast(model_elems),
+            .src_ne = .{ @intCast(model), 1, 1, 1 },
+            .dst_ne = .{ @intCast(model), @intCast(case.m), 1, 1 },
+            .src_strides = .{ 1, @intCast(model), @intCast(model), @intCast(model) },
+            .dst_strides = .{ 1, @intCast(model), @intCast(model_elems), @intCast(model_elems) },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 5, .src0 = 3, .src1 = 4, .n = @intCast(model_elems) } },
+        .{ .qmatmul = .{ .dst = 6, .input = 5, .weight_idx = 1, .M = @intCast(case.m), .N = @intCast(hidden), .K = @intCast(model) } },
+        .{ .elementwise = .{ .op = .silu, .dst = 7, .src0 = 6, .src1 = 6, .n = @intCast(hidden_elems) } },
+        .{ .qmatmul = .{ .dst = 6, .input = 5, .weight_idx = 2, .M = @intCast(case.m), .N = @intCast(hidden), .K = @intCast(model) } },
+        .{ .elementwise = .{ .op = .mul, .dst = 8, .src0 = 7, .src1 = 6, .n = @intCast(hidden_elems) } },
+        .{ .qmatmul = .{ .dst = 9, .input = 8, .weight_idx = 3, .M = @intCast(case.m), .N = @intCast(output), .K = @intCast(hidden) } },
+        .{ .elementwise = .{ .op = .add, .dst = 12, .src0 = 9, .src1 = 2, .n = @intCast(output_elems) } },
+        .{ .rmsnorm = .{ .dst = 13, .src = 12, .rows = @intCast(case.m), .cols = @intCast(output), .eps = 1e-5 } },
+        .{ .repeat = .{
+            .dst = 14,
+            .src = 15,
+            .n = @intCast(output_elems),
+            .src_ne = .{ @intCast(output), 1, 1, 1 },
+            .dst_ne = .{ @intCast(output), @intCast(case.m), 1, 1 },
+            .src_strides = .{ 1, @intCast(output), @intCast(output), @intCast(output) },
+            .dst_strides = .{ 1, @intCast(output), @intCast(output_elems), @intCast(output_elems) },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 16, .src0 = 13, .src1 = 14, .n = @intCast(output_elems) } },
+    };
+    const buffer_sizes = [_]usize{
+        model_elems, model_elems, model_elems, model_elems, model_elems, model_elems,
+        hidden_elems, hidden_elems, hidden_elems, output_elems, model_elems, model,
+        output_elems, output_elems, output_elems, output, output_elems,
+    };
+    const uploads = [_]backend_mod.ProgramIO{
+        programIo(0, input),
+        programIo(1, input_q),
+        programIo(2, input_residual_out),
+        programIo(3, input_norm),
+        programIo(4, input_repeat),
+        programIo(5, ffn_input),
+        programIo(6, shared_q),
+        programIo(7, silu_out),
+        programIo(8, product),
+        programIo(9, down_q),
+        programIo(10, input_residual),
+        programIo(11, input_scale),
+        programIo(12, ffn_residual_out),
+        programIo(13, output_norm),
+        programIo(14, output_repeat),
+        programIo(15, output_scale),
+        programIo(16, staged_out),
+    };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{
+        .{ .data = input_qdata, .scales = input_scales, .rows = model, .cols = model, .block_size = block_size },
+        .{ .data = gate_qdata, .scales = gate_scales, .rows = model, .cols = hidden, .block_size = block_size },
+        .{ .data = up_qdata, .scales = up_scales, .rows = model, .cols = hidden, .block_size = block_size },
+        .{ .data = down_qdata, .scales = down_scales, .rows = hidden, .cols = output, .block_size = block_size },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = buffer_sizes.len,
+        .buffer_sizes = &buffer_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const be = metal.backend();
+    var staged_policy = program_mod.CommandStreamPolicy.default();
+    staged_policy.fuse_projection_row_chain = false;
+    staged_policy.fuse_semantic_ffn_sublayer = false;
+    staged_policy.fuse_semantic_ffn_sublayer_input_row_chain = false;
+    const staged_handle = metal.compileProgramWithCommandPolicy(program, staged_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(staged_handle);
+    const command_policy = program_mod.CommandStreamPolicy.promptProjectionRowChainCommand();
+    const command_handle = metal.compileProgramWithCommandPolicy(program, command_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(command_handle);
+    const absorbed_policy = program_mod.CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate();
+    const absorbed_handle = metal.compileProgramWithCommandPolicy(program, absorbed_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(absorbed_handle);
+
+    const staged_output_io = [_]backend_mod.ProgramIO{programIo(16, staged_out)};
+    const command_output_io = [_]backend_mod.ProgramIO{programIo(16, command_out)};
+    const absorbed_output_io = [_]backend_mod.ProgramIO{programIo(16, absorbed_out)};
+    var staged_bench = ProjectionRowChainMetalBench{ .be = be, .handle = staged_handle, .out = staged_out, .output_io = &staged_output_io };
+    var command_bench = ProjectionRowChainMetalBench{ .be = be, .handle = command_handle, .out = command_out, .output_io = &command_output_io };
+    var absorbed_bench = ProjectionRowChainMetalBench{ .be = be, .handle = absorbed_handle, .out = absorbed_out, .output_io = &absorbed_output_io };
+
+    be.executeProgram(staged_handle, &.{}, &staged_output_io);
+    be.executeProgram(command_handle, &.{}, &command_output_io);
+    be.executeProgram(absorbed_handle, &.{}, &absorbed_output_io);
+    const command_max_abs_diff = maxAbsDiff(staged_out, command_out);
+    const absorbed_max_abs_diff = maxAbsDiff(staged_out, absorbed_out);
+
+    const staged_stats = measure(io, &staged_bench);
+    const command_stats = measure(io, &command_bench);
+    const absorbed_stats = measure(io, &absorbed_bench);
+    const approx_work = 2.0 * @as(f64, @floatFromInt(case.m * model * model + case.m * hidden * model * 2 + case.m * output * hidden));
+
+    var staged_name_buf: [160]u8 = undefined;
+    const staged_name = try std.fmt.bufPrint(&staged_name_buf, "{s} semantic input staged", .{case.name});
+    try printStats(w, staged_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", staged_stats);
+    var command_name_buf: [176]u8 = undefined;
+    const command_name = try std.fmt.bufPrint(&command_name_buf, "{s} semantic input command", .{case.name});
+    try printStats(w, command_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", command_stats);
+    var absorbed_name_buf: [176]u8 = undefined;
+    const absorbed_name = try std.fmt.bufPrint(&absorbed_name_buf, "{s} semantic input absorbed", .{case.name});
+    try printStats(w, absorbed_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", absorbed_stats);
+
+    try printRatio(w, command_name, staged_stats, command_stats, command_max_abs_diff);
+    try printRatio(w, absorbed_name, staged_stats, absorbed_stats, absorbed_max_abs_diff);
+
+    const command_commands = try program_mod.buildProgramCommands(alloc, &ops, command_policy);
+    defer alloc.free(command_commands);
+    var command_profile_name_buf: [192]u8 = undefined;
+    const command_profile_name = try std.fmt.bufPrint(&command_profile_name_buf, "{s} semantic input command dispatch_profile", .{case.name});
+    try printCommandShape(w, command_profile_name, &ops, command_commands);
+    try printSemanticSublayerRuntimeProfile(w, command_profile_name, be, command_handle, &command_output_io);
+
+    const absorbed_commands = try program_mod.buildProgramCommands(alloc, &ops, absorbed_policy);
+    defer alloc.free(absorbed_commands);
+    var absorbed_profile_name_buf: [192]u8 = undefined;
+    const absorbed_profile_name = try std.fmt.bufPrint(&absorbed_profile_name_buf, "{s} semantic input absorbed dispatch_profile", .{case.name});
+    try printCommandShape(w, absorbed_profile_name, &ops, absorbed_commands);
+    try printSemanticSublayerRuntimeProfile(w, absorbed_profile_name, be, absorbed_handle, &absorbed_output_io);
+}
+
 fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer, filter: FrontierFilter) !void {
     if (!filter.matchesAny(&.{
         "Metal",
@@ -1749,6 +1965,8 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
         "semantic pair_row_chain",
         "qsemantic bridge",
         "semantic bridge",
+        "qsemantic input bridge",
+        "semantic input",
         "qsemantic full-prefill",
         "qsemantic smollm-prompt",
         "projection_row_chain_two_phase_group",
@@ -1815,6 +2033,15 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
             filter.matchesAny(&.{ case.name, "qsemantic", "semantic command", "semantic pair_row_chain" });
         if (should_run) {
             try benchSemanticSublayerMetalCase(io, alloc, w, &metal, case);
+        }
+    }
+
+    const semantic_with_input_cases = [_]ProjectionRowChainCase{
+        .{ .name = "qsemantic input-bridge m=128 h=1536 k=576 o=576", .m = 128, .n = 1536, .k = 576, .output = 576 },
+    };
+    for (semantic_with_input_cases) |case| {
+        if (filter.matchesAny(&.{ case.name, "qsemantic input bridge", "semantic input" })) {
+            try benchSemanticSublayerWithInputRowChainMetalCase(io, alloc, w, &metal, case);
         }
     }
 

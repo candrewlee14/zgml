@@ -395,6 +395,15 @@ function checkScripts() {
     "model_input_dispatch=${formatNumber(q8.inputDispatches, 0)}",
     "model_input_split=${formatNumber(q8.inputSplit, 2)}",
     "model_fallback_split=${formatNumber(q8.fallbackSplit, 2)}",
+    "const qsemanticInputBridgeArtifactPattern = /^frontier-qsemantic-input-bridge-\\d{8}T\\d{6}Z-\\d+\\.json$/",
+    "function qsemanticInputBridgeArtifacts()",
+    "data?.schema === \"zgml.frontier-qsemantic-input-bridge.v1\"",
+    "function latestQsemanticInputBridgeArtifact()",
+    "function qsemanticInputBridgeStatusLine(path)",
+    "qsemantic-input-bridge-results: latest=",
+    "absorbed_split:${formatNumber(absorbed.absorbedDispatchSplit, 2)}",
+    "semantic_with_input_dispatches:${absorbed.runtimeSemanticFfnWithInputDispatches ?? \"n/a\"}",
+    "next=${next} source=${source}",
     "gate=${gate}",
     "bottleneck=${bottleneck}",
     "serial_gap=${semanticSerialGap}",
@@ -555,6 +564,18 @@ function checkScripts() {
   }
   if (scripts["dev:perf:frontier:qsemantic:bridge:raw:run"] !== "BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:bridge:raw:run must remain the no-rebuild exact bridge-shape Q8 semantic kernel microscope");
+  }
+  if (scripts["dev:perf:frontier:qsemantic:input-bridge"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:qsemantic:input-bridge must remain the checked absorbed input-row-chain Q8 semantic microscope");
+  }
+  if (scripts["dev:perf:frontier:qsemantic:input-bridge:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:qsemantic:input-bridge:run must remain the no-rebuild checked absorbed input-row-chain Q8 semantic microscope");
+  }
+  if (scripts["dev:perf:frontier:qsemantic:input-bridge:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" ./zig-out/bin/bench-frontier") {
+    errors.push("package.json dev:perf:frontier:qsemantic:input-bridge:raw must remain the incremental absorbed input-row-chain Q8 semantic kernel microscope");
+  }
+  if (scripts["dev:perf:frontier:qsemantic:input-bridge:raw:run"] !== "BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" ./zig-out/bin/bench-frontier") {
+    errors.push("package.json dev:perf:frontier:qsemantic:input-bridge:raw:run must remain the no-rebuild absorbed input-row-chain Q8 semantic kernel microscope");
   }
   if (scripts["dev:perf:frontier:qsemantic:smollm:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_FILTER=\"qsemantic smollm-prompt\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:smollm:raw must remain the incremental raw SmolLM Q8 semantic microscope");
@@ -1361,8 +1382,19 @@ function checkScripts() {
     "margin=${scoreMargin(current).toFixed(2)}x",
     "function isFocusedSemanticFilter(filter)",
     "function isFocusedSemanticBridgeFilter(filter)",
+    "function isFocusedSemanticInputBridgeFilter(filter)",
     "function scoreFocusedSemantic(output, attempt)",
     "function scoreFocusedSemanticBridgeCandidate(output, attempt)",
+    "function scoreFocusedSemanticInputBridgeCandidate(output, attempt)",
+    "runtime_semantic_ffn_with_input_dispatches",
+    "absorbed_split=${Number.isFinite(absorbedDispatchSplit) ? absorbedDispatchSplit.toFixed(2) : \"n/a\"}",
+    "semantic input absorbed runtime must expose current diagnostic 5-dispatch absorbed command",
+    "semantic input absorbed profile did not match in any attempt",
+    "schema: \"zgml.frontier-qsemantic-input-bridge.v1\"",
+    "frontier-qsemantic-input-bridge-",
+    "frontier qsemantic input bridge gate:",
+    "writeFocusedSemanticInputBridgeArtifact(best, attempts, aggregate, line)",
+    "semantic_with_input_width_parallel_kernel",
     "semantic_dispatch_split=${Number.isFinite(semanticDispatchSplit) ? semanticDispatchSplit.toFixed(2) : \"n/a\"}",
     "semantic_pair_dispatches=${semanticFallbackPairDispatches}",
     "semantic_tail_dispatches=${semanticFallbackTailDispatches}",
@@ -1463,12 +1495,16 @@ function checkScripts() {
     "semantic_ffn_sublayer_total_row_serial_dot_ops_per_tile_parallel_group",
     "semantic_ffn_sublayer_fallback_pair_dispatches",
     "semantic_ffn_sublayer_fallback_tail_dispatches",
+    "runtime_semantic_ffn_with_input_dispatches",
+    "runtime_semantic_ffn_with_input_attempts",
+    "runtime_semantic_ffn_with_input_refused",
     "semantic_ffn_sublayer_thread_lane_slots",
     "semantic_ffn_sublayer_active_thread_lanes",
     "semantic_ffn_sublayer_thread_lane_utilization_x1000",
     "semantic_ffn_sublayer_rows",
     "semantic_ffn_sublayer_hidden",
     "benchSemanticSublayerMetalCase",
+    "benchSemanticSublayerWithInputRowChainMetalCase",
     "printSemanticSublayerRuntimeProfile",
     "semantic_target_dispatches=1",
     "promptSemanticFfnSublayerTarget",
@@ -1478,6 +1514,9 @@ function checkScripts() {
     "semantic throughput_candidate",
     "qsemantic full-prefill",
     "qsemantic smollm-prompt",
+    "qsemantic input-bridge",
+    "semantic input absorbed",
+    "semantic input command",
     "semantic pair_row_chain",
   ]);
   requireIncludes(read("src/backend/program.zig"), "src/backend/program.zig", "semantic FFN sublayer target command shape", [

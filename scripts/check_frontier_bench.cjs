@@ -172,6 +172,10 @@ function isFocusedSemanticBridgeFilter(filter) {
   return /\bqsemantic bridge\b|bridge-ffn/.test(filter);
 }
 
+function isFocusedSemanticInputBridgeFilter(filter) {
+  return /\bqsemantic input bridge\b|input-bridge|semantic input/.test(filter);
+}
+
 function isQsemanticThroughputOnly() {
   return qsemanticVariants.length === 1 && qsemanticVariants[0] === "throughput_candidate";
 }
@@ -1808,7 +1812,312 @@ function runFocusedSemanticBridgeGate() {
   process.exit(0);
 }
 
+function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
+  const commandLabel = "qsemantic input-bridge m=128 h=1536 k=576 o=576 semantic input command";
+  const absorbedLabel = "qsemantic input-bridge m=128 h=1536 k=576 o=576 semantic input absorbed";
+  const commandProfileLabel = `${commandLabel} dispatch_profile`;
+  const absorbedProfileLabel = `${absorbedLabel} dispatch_profile`;
+  const commandSpeedup = metric(output, commandLabel, "speedup");
+  const absorbedSpeedup = metric(output, absorbedLabel, "speedup");
+  const commandMaxAbsDiff = metric(output, commandLabel, "max_abs_diff");
+  const absorbedMaxAbsDiff = metric(output, absorbedLabel, "max_abs_diff");
+  const commandShapeCommands = metric(output, commandProfileLabel, "shape_commands");
+  const commandShapeSemantic = metric(output, commandProfileLabel, "shape_semantic_ffn_sublayers");
+  const commandShapeRowChains = metric(output, commandProfileLabel, "shape_projection_row_chains");
+  const commandShapeBridges = metric(output, commandProfileLabel, "shape_projection_row_chain_semantic_residual_bridges");
+  const commandShapeCoveredOps = metric(output, commandProfileLabel, "shape_covered_ops");
+  const commandShapeSavedDispatches = metric(output, commandProfileLabel, "shape_saved_dispatches");
+  const commandRuntimeDispatches = metric(output, commandProfileLabel, "runtime_backend_dispatches");
+  const commandProjectionRowChainDispatches = metric(output, commandProfileLabel, "runtime_projection_row_chain_dispatches");
+  const commandSemanticDispatches = metric(output, commandProfileLabel, "runtime_semantic_ffn_dispatches");
+  const commandSemanticWithInputDispatches = metric(output, commandProfileLabel, "runtime_semantic_ffn_with_input_dispatches");
+  const commandFallbackPairDispatches = metric(output, commandProfileLabel, "semantic_ffn_sublayer_fallback_pair_dispatches");
+  const commandFallbackTailDispatches = metric(output, commandProfileLabel, "semantic_ffn_sublayer_fallback_tail_dispatches");
+  const absorbedShapeCommands = metric(output, absorbedProfileLabel, "shape_commands");
+  const absorbedShapeSemantic = metric(output, absorbedProfileLabel, "shape_semantic_ffn_sublayers");
+  const absorbedShapeRowChains = metric(output, absorbedProfileLabel, "shape_projection_row_chains");
+  const absorbedShapeBridges = metric(output, absorbedProfileLabel, "shape_projection_row_chain_semantic_residual_bridges");
+  const absorbedShapeCoveredOps = metric(output, absorbedProfileLabel, "shape_covered_ops");
+  const absorbedShapeSavedDispatches = metric(output, absorbedProfileLabel, "shape_saved_dispatches");
+  const absorbedRuntimeDispatches = metric(output, absorbedProfileLabel, "runtime_backend_dispatches");
+  const absorbedProjectionRowChainDispatches = metric(output, absorbedProfileLabel, "runtime_projection_row_chain_dispatches");
+  const absorbedSemanticDispatches = metric(output, absorbedProfileLabel, "runtime_semantic_ffn_dispatches");
+  const absorbedSemanticWithInputDispatches = metric(output, absorbedProfileLabel, "runtime_semantic_ffn_with_input_dispatches");
+  const absorbedSemanticWithInputAttempts = metric(output, absorbedProfileLabel, "runtime_semantic_ffn_with_input_attempts");
+  const absorbedSemanticWithInputRefused = metric(output, absorbedProfileLabel, "runtime_semantic_ffn_with_input_refused");
+  const absorbedFallbackPairDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_sublayer_fallback_pair_dispatches");
+  const absorbedFallbackTailDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_sublayer_fallback_tail_dispatches");
+  const absorbedRowChainTiledCount = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_count");
+  const absorbedRowChainTiledRowTileGroups = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_row_tile_groups");
+  const absorbedRowChainTiledNTiles = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_n_tiles");
+  const absorbedRowChainTiledSerialTileLoops = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_serial_tile_loops");
+  const absorbedRowChainTiledPartialSlots = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_partial_slots");
+  const absorbedRowChainTiledScratchCapacity = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_scratch_capacity");
+  const absorbedRowChainTiledTwoPhaseCount = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_two_phase_count");
+  const absorbedRowChainTiledFinalizeTileGroups = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_finalize_tile_groups");
+  const absorbedRowChainTiledFinalizeElements = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_finalize_elements");
+  const absorbedRowChainTiledSpilledElementwise = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_spilled_elementwise");
+  const absorbedRowChainTiledSpilledInput = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_spilled_input");
+  const absorbedRowChainTiledOutputSpills = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_output_spills");
+  const absorbedDispatchSplit = absorbedShapeSemantic > 0 ? absorbedRuntimeDispatches / absorbedShapeSemantic : NaN;
+
+  const failures = [];
+  if (commandSpeedup < 1.0) failures.push(`semantic input command ${commandSpeedup.toFixed(2)}x < 1.00x`);
+  if (absorbedSpeedup < 1.0) failures.push(`semantic input absorbed ${absorbedSpeedup.toFixed(2)}x < 1.00x`);
+  if (commandMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`semantic input command max_abs_diff ${commandMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (absorbedMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`semantic input absorbed max_abs_diff ${absorbedMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (commandShapeCommands !== 2 || commandShapeSemantic !== 1 || commandShapeRowChains !== 1 || commandShapeBridges !== 1 || commandShapeCoveredOps !== 14 || commandShapeSavedDispatches !== 12) {
+    failures.push("semantic input command profile must stay shape_commands=2 semantic=1 row_chains=1 bridges=1 covered_ops=14 saved=12");
+  }
+  if (absorbedShapeCommands !== 1 || absorbedShapeSemantic !== 1 || absorbedShapeRowChains !== 1 || absorbedShapeBridges !== 0 || absorbedShapeCoveredOps !== 14 || absorbedShapeSavedDispatches !== 13) {
+    failures.push("semantic input absorbed profile must stay shape_commands=1 semantic=1 row_chains=1 bridges=0 covered_ops=14 saved=13");
+  }
+  if (commandRuntimeDispatches !== 5 || commandProjectionRowChainDispatches !== 2 || commandSemanticDispatches !== 3 || commandSemanticWithInputDispatches !== 0) {
+    failures.push("semantic input command runtime must stay decomposed as row_chain=2 semantic=3 dispatches");
+  }
+  if (absorbedRuntimeDispatches !== 5 || absorbedProjectionRowChainDispatches !== 0 || absorbedSemanticDispatches !== 0 || absorbedSemanticWithInputDispatches !== 5 || absorbedSemanticWithInputAttempts !== 1 || absorbedSemanticWithInputRefused !== 0) {
+    failures.push("semantic input absorbed runtime must expose current diagnostic 5-dispatch absorbed command");
+  }
+  if (commandFallbackPairDispatches !== 1 || commandFallbackTailDispatches !== 2 || absorbedFallbackPairDispatches !== 1 || absorbedFallbackTailDispatches !== 2) {
+    failures.push("semantic input fallback split must stay pair=1 tail=2 for command and absorbed profiles");
+  }
+  if (absorbedRowChainTiledCount !== 2 || absorbedRowChainTiledRowTileGroups !== 8 || absorbedRowChainTiledNTiles !== 36 || absorbedRowChainTiledSerialTileLoops !== 144 || absorbedRowChainTiledTwoPhaseCount !== 2 || absorbedRowChainTiledFinalizeTileGroups !== 144 || absorbedRowChainTiledFinalizeElements !== 147456) {
+    failures.push("semantic input absorbed tiled profile must expose two two-phase row-chain leaves");
+  }
+  if (absorbedRowChainTiledSpilledElementwise !== 1 || absorbedRowChainTiledSpilledInput !== 576 || absorbedRowChainTiledOutputSpills !== 0) {
+    failures.push("semantic input absorbed spill profile must stay spilled_elementwise=1 spilled_input=576 output_spills=0");
+  }
+
+  const next = "semantic_with_input_width_parallel_kernel";
+  const line = [
+    `frontier qsemantic input bridge gate: ${failures.length === 0 ? "pass" : "fail"}`,
+    `attempt=${attempt}/${maxAttempts}`,
+    `command=${commandSpeedup.toFixed(2)}x max_abs_diff=${commandMaxAbsDiff.toFixed(6)} shape_commands=${commandShapeCommands} bridges=${commandShapeBridges} runtime_dispatches=${commandRuntimeDispatches} row_dispatches=${commandProjectionRowChainDispatches} semantic_dispatches=${commandSemanticDispatches}`,
+    `absorbed=${absorbedSpeedup.toFixed(2)}x max_abs_diff=${absorbedMaxAbsDiff.toFixed(6)} shape_commands=${absorbedShapeCommands} bridges=${absorbedShapeBridges} runtime_dispatches=${absorbedRuntimeDispatches} semantic_with_input_dispatches=${absorbedSemanticWithInputDispatches} absorbed_split=${Number.isFinite(absorbedDispatchSplit) ? absorbedDispatchSplit.toFixed(2) : "n/a"}`,
+    `fallback_pair_dispatches=${absorbedFallbackPairDispatches} fallback_tail_dispatches=${absorbedFallbackTailDispatches} tiled_count=${absorbedRowChainTiledCount} row_tile_groups=${absorbedRowChainTiledRowTileGroups} n_tiles=${absorbedRowChainTiledNTiles} two_phase_count=${absorbedRowChainTiledTwoPhaseCount} spilled_input=${absorbedRowChainTiledSpilledInput}`,
+    `next=${next}`,
+  ].join("; ");
+
+  return {
+    attempt,
+    commandSpeedup,
+    absorbedSpeedup,
+    commandMaxAbsDiff,
+    absorbedMaxAbsDiff,
+    commandShapeCommands,
+    commandShapeSemantic,
+    commandShapeRowChains,
+    commandShapeBridges,
+    commandShapeCoveredOps,
+    commandShapeSavedDispatches,
+    commandRuntimeDispatches,
+    commandProjectionRowChainDispatches,
+    commandSemanticDispatches,
+    commandSemanticWithInputDispatches,
+    commandFallbackPairDispatches,
+    commandFallbackTailDispatches,
+    absorbedShapeCommands,
+    absorbedShapeSemantic,
+    absorbedShapeRowChains,
+    absorbedShapeBridges,
+    absorbedShapeCoveredOps,
+    absorbedShapeSavedDispatches,
+    absorbedRuntimeDispatches,
+    absorbedProjectionRowChainDispatches,
+    absorbedSemanticDispatches,
+    absorbedSemanticWithInputDispatches,
+    absorbedSemanticWithInputAttempts,
+    absorbedSemanticWithInputRefused,
+    absorbedDispatchSplit,
+    absorbedFallbackPairDispatches,
+    absorbedFallbackTailDispatches,
+    absorbedRowChainTiledCount,
+    absorbedRowChainTiledRowTileGroups,
+    absorbedRowChainTiledNTiles,
+    absorbedRowChainTiledSerialTileLoops,
+    absorbedRowChainTiledPartialSlots,
+    absorbedRowChainTiledScratchCapacity,
+    absorbedRowChainTiledTwoPhaseCount,
+    absorbedRowChainTiledFinalizeTileGroups,
+    absorbedRowChainTiledFinalizeElements,
+    absorbedRowChainTiledSpilledElementwise,
+    absorbedRowChainTiledSpilledInput,
+    absorbedRowChainTiledOutputSpills,
+    next,
+    failures,
+    line,
+  };
+}
+
+function focusedSemanticInputBridgeMargin(current) {
+  return Math.min(
+    current.absorbedSpeedup,
+    projectionRowChainMaxAbsDiffCeil / Math.max(current.absorbedMaxAbsDiff, Number.EPSILON),
+    current.absorbedShapeCommands === 1 ? 1 : 0,
+    current.absorbedRuntimeDispatches === 5 ? 1 : 0,
+    current.absorbedSemanticWithInputDispatches === 5 ? 1 : 0,
+    current.absorbedRowChainTiledCount === 2 ? 1 : 0,
+  );
+}
+
+function selectedSemanticInputBridgeAttemptSummary(attempt) {
+  return {
+    attempt: attempt.attempt,
+    failures: attempt.failures,
+    command: {
+      speedup: roundMetric(attempt.commandSpeedup),
+      maxAbsDiff: roundMetric(attempt.commandMaxAbsDiff),
+      shapeCommands: attempt.commandShapeCommands,
+      shapeProjectionRowChainSemanticResidualBridges: attempt.commandShapeBridges,
+      runtimeDispatches: attempt.commandRuntimeDispatches,
+      runtimeProjectionRowChainDispatches: attempt.commandProjectionRowChainDispatches,
+      runtimeSemanticFfnDispatches: attempt.commandSemanticDispatches,
+    },
+    absorbed: {
+      speedup: roundMetric(attempt.absorbedSpeedup),
+      maxAbsDiff: roundMetric(attempt.absorbedMaxAbsDiff),
+      shapeCommands: attempt.absorbedShapeCommands,
+      shapeSemanticFfnSublayers: attempt.absorbedShapeSemantic,
+      shapeProjectionRowChains: attempt.absorbedShapeRowChains,
+      shapeProjectionRowChainSemanticResidualBridges: attempt.absorbedShapeBridges,
+      shapeCoveredOps: attempt.absorbedShapeCoveredOps,
+      shapeSavedDispatches: attempt.absorbedShapeSavedDispatches,
+      runtimeDispatches: attempt.absorbedRuntimeDispatches,
+      runtimeSemanticFfnWithInputDispatches: attempt.absorbedSemanticWithInputDispatches,
+      runtimeSemanticFfnWithInputAttempts: attempt.absorbedSemanticWithInputAttempts,
+      runtimeSemanticFfnWithInputRefused: attempt.absorbedSemanticWithInputRefused,
+      absorbedDispatchSplit: roundMetric(attempt.absorbedDispatchSplit),
+      semanticFallbackPairDispatches: attempt.absorbedFallbackPairDispatches,
+      semanticFallbackTailDispatches: attempt.absorbedFallbackTailDispatches,
+      qmatmulRowChainTiledCount: attempt.absorbedRowChainTiledCount,
+      qmatmulRowChainTiledRowTileGroups: attempt.absorbedRowChainTiledRowTileGroups,
+      qmatmulRowChainTiledNTiles: attempt.absorbedRowChainTiledNTiles,
+      qmatmulRowChainTiledSerialTileLoops: attempt.absorbedRowChainTiledSerialTileLoops,
+      qmatmulRowChainTiledPartialSlots: attempt.absorbedRowChainTiledPartialSlots,
+      qmatmulRowChainTiledScratchCapacity: attempt.absorbedRowChainTiledScratchCapacity,
+      qmatmulRowChainTiledTwoPhaseCount: attempt.absorbedRowChainTiledTwoPhaseCount,
+      qmatmulRowChainTiledFinalizeTileGroups: attempt.absorbedRowChainTiledFinalizeTileGroups,
+      qmatmulRowChainTiledFinalizeElements: attempt.absorbedRowChainTiledFinalizeElements,
+      qmatmulRowChainTiledSpilledElementwise: attempt.absorbedRowChainTiledSpilledElementwise,
+      qmatmulRowChainTiledSpilledInput: attempt.absorbedRowChainTiledSpilledInput,
+      qmatmulRowChainTiledOutputSpills: attempt.absorbedRowChainTiledOutputSpills,
+    },
+  };
+}
+
+function writeFocusedSemanticInputBridgeArtifact(best, attempts, aggregate, line) {
+  if (!writeArtifact) return null;
+  mkdirSync(artifactDir, { recursive: true });
+  const artifactPath = join(artifactDir, `frontier-qsemantic-input-bridge-${timestampForArtifact()}-${process.pid}.json`);
+  const bestSummary = selectedSemanticInputBridgeAttemptSummary(best);
+  const artifact = {
+    schema: "zgml.frontier-qsemantic-input-bridge.v1",
+    createdAt: new Date().toISOString(),
+    command: {
+      argv: process.argv,
+      cwd: process.cwd(),
+      build,
+      frontierFilter,
+      qsemanticVariants,
+    },
+    platform: {
+      node: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      cpus: os.cpus().length,
+    },
+    source: benchmarkBinaryMetadata({ root, binary: frontierBinary, build }),
+    config: {
+      maxAttempts,
+      build,
+      frontierFilter,
+      qsemanticVariants,
+      projectionRowChainMaxAbsDiffCeil,
+    },
+    kind: "qsemantic-input-bridge",
+    status: aggregate.length === 0 ? "pass" : "fail",
+    selectedAttempt: best.attempt,
+    attempts: attempts.length,
+    aggregateFailures: aggregate,
+    speedupStats: {
+      command: speedupStats(attempts, "commandSpeedup"),
+      absorbed: speedupStats(attempts, "absorbedSpeedup"),
+    },
+    command: bestSummary.command,
+    absorbed: bestSummary.absorbed,
+    attemptSummaries: attempts.map(selectedSemanticInputBridgeAttemptSummary),
+    next: best.next,
+    line,
+  };
+  writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return resolve(artifactPath);
+}
+
+function runFocusedSemanticInputBridgeGate() {
+  const attempts = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      attempts.push(scoreFocusedSemanticInputBridgeCandidate(runBench(), attempt));
+    } catch (err) {
+      process.stderr.write(`${err.output ?? err.message}\n`);
+      process.exit(1);
+    }
+  }
+  const passing = attempts.filter((current) => current.failures.length === 0);
+  const best = (passing.length > 0 ? passing : attempts).reduce((acc, current) => {
+    if (!acc) return current;
+    return focusedSemanticInputBridgeMargin(current) > focusedSemanticInputBridgeMargin(acc) ? current : acc;
+  }, null);
+  const aggregate = [];
+  const bestAbsorbedSpeedup = bestMax(attempts, "absorbedSpeedup");
+  const bestAbsorbedDiff = bestMin(attempts, "absorbedMaxAbsDiff");
+  if (!Number.isFinite(bestAbsorbedSpeedup) || bestAbsorbedSpeedup < 1.0) aggregate.push(`semantic input absorbed best ${Number.isFinite(bestAbsorbedSpeedup) ? bestAbsorbedSpeedup.toFixed(2) : "n/a"}x < 1.00x`);
+  if (!Number.isFinite(bestAbsorbedDiff) || bestAbsorbedDiff > projectionRowChainMaxAbsDiffCeil) aggregate.push(`semantic input absorbed best max_abs_diff ${Number.isFinite(bestAbsorbedDiff) ? bestAbsorbedDiff.toFixed(6) : "n/a"} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (!anyEquals(attempts, [
+    ["absorbedShapeCommands", 1],
+    ["absorbedShapeSemantic", 1],
+    ["absorbedShapeRowChains", 1],
+    ["absorbedShapeBridges", 0],
+    ["absorbedShapeCoveredOps", 14],
+    ["absorbedShapeSavedDispatches", 13],
+    ["absorbedRuntimeDispatches", 5],
+    ["absorbedSemanticWithInputDispatches", 5],
+    ["absorbedSemanticWithInputAttempts", 1],
+    ["absorbedSemanticWithInputRefused", 0],
+    ["absorbedFallbackPairDispatches", 1],
+    ["absorbedFallbackTailDispatches", 2],
+    ["absorbedRowChainTiledCount", 2],
+    ["absorbedRowChainTiledSpilledInput", 576],
+    ["absorbedRowChainTiledOutputSpills", 0],
+  ])) aggregate.push("semantic input absorbed profile did not match in any attempt");
+
+  const line = aggregate.length === 0 ? best.line.replace("frontier qsemantic input bridge gate: fail", "frontier qsemantic input bridge gate: pass") : best.line;
+  const artifactPath = writeFocusedSemanticInputBridgeArtifact(best, attempts, aggregate, line);
+  if (artifactPath) {
+    process.stdout.write(`FRONTIER_BENCH_JSON ${JSON.stringify({
+      artifact: artifactPath,
+      status: aggregate.length === 0 ? "pass" : "fail",
+      kind: "qsemantic-input-bridge",
+      selectedAttempt: best.attempt,
+      attempts: attempts.length,
+      next: best.next,
+    })}\n`);
+  }
+  process.stdout.write(`${line}\n`);
+  if (best.attempt > 1) {
+    process.stdout.write(`frontier qsemantic input bridge retries: ${best.attempt - 1} noisy attempt(s) below best evidence\n`);
+  }
+  if (aggregate.length !== 0) {
+    process.stderr.write(`${aggregate.join("; ")}\n`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
 function runFocusedSemanticGate() {
+  if (isQsemanticThroughputOnly() && isFocusedSemanticInputBridgeFilter(frontierFilter)) {
+    runFocusedSemanticInputBridgeGate();
+  }
   if (isQsemanticThroughputOnly() && isFocusedSemanticBridgeFilter(frontierFilter)) {
     runFocusedSemanticBridgeGate();
   }
