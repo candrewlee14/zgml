@@ -240,7 +240,7 @@ machine for both prompt/prefill and decode.
   `pair_dispatches=0`, `tail_dispatches=0`, and `spilled_input=0`. Treat this
   as an isolated width-parallel bridge proof, not a full-model parity claim.
   It also records the current partitioning limit explicitly:
-  `direct_rows=128`, `direct_row_threadgroups=128`, and
+  `direct_partition:row_serial`, `direct_rows=128`, `direct_row_threadgroups=128`, and
   `direct_per_row_threadgroup=2985984` row-serial dot ops in the focused
   bridge artifact.
   The full-model semantic throughput candidate now keeps the 14-op input-bridge
