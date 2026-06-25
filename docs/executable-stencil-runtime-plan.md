@@ -1741,7 +1741,15 @@ in the `1.82x-2.51x` range over staged execution with `max_abs_diff=0.000000`,
 kernel-shape evidence, not a full-model promotion. The checked bridge artifact
 now also prints a `width_target=` tuple for the future kernel:
 `rows:128,hidden:1536,input:576,output:576,row_groups:4,hidden_tiles:48,output_tiles:18`,
-plus product/output element counts and gate-up/down/total dot-work.
+plus product/output element counts and gate-up/down/total dot-work. A refreshed
+bridge artifact now makes the scratch contract explicit too: the obvious fully
+staged width-parallel down path needs `down_partial_elements=3538944`
+(`down_partial_bytes=14155776`), which is `48.00x` the output-sized
+`73728`-element buffer for this shape. The retained product buffer is only
+`product_elements=196608` (`786432` bytes). Therefore the next real kernel
+slice needs backend-owned down-partial scratch, an equivalent accumulation
+strategy, or a streamed hidden-tile design that proves it can avoid that
+`14.2 MB` partial surface without falling back to row-serial work.
 A finalize-path probe then tested replacing
 `qmatmul_row_chain_tiled_finalize_tiles_f32` with the coarser row-tile
 `qmatmul_row_chain_tiled_finalize_f32` so the RMS reduction would be computed

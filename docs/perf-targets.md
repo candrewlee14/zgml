@@ -437,7 +437,13 @@ machine for both prompt/prefill and decode.
   The bridge artifact/status line now also reports `width_target=` with the
   exact hidden-tile target: `rows:128,hidden:1536,input:576,output:576`,
   `row_groups:4`, `hidden_tiles:48`, `output_tiles:18`, plus product/output
-  element counts and gate-up/down/total dot-work.
+  element counts and gate-up/down/total dot-work. It now also reports the
+  staged-scratch pressure for the obvious width-parallel down design:
+  `down_partial_elements=3538944`, `down_partial_bytes=14155776`, and
+  `down_partial_to_output=48.00`. That is larger than the existing
+  output-sized residual/norm buffers, so the next semantic-width implementation
+  needs backend-owned down-partial scratch, an equivalent accumulation strategy,
+  or a streamed hidden-tile design that avoids materializing all partials.
   A follow-up finalize-path probe tried replacing
   `qmatmul_row_chain_tiled_finalize_tiles_f32` with the coarser row-tile
   `qmatmul_row_chain_tiled_finalize_f32` to avoid repeated RMS reductions

@@ -1587,6 +1587,12 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
   const targetTotalDotOps = targetGateUpDotOps + targetDownDotOps;
   const targetProductElements = targetRows * targetHidden;
   const targetOutputElements = targetRows * targetOutput;
+  const targetDownPartialElements = targetRows * targetOutput * targetHiddenTiles;
+  const targetProductBytes = targetProductElements * 4;
+  const targetDownPartialBytes = targetDownPartialElements * 4;
+  const targetOutputBytes = targetOutputElements * 4;
+  const targetDownPartialToOutput = targetDownPartialElements / targetOutputElements;
+  const targetScratchPlan = "requires_backend_owned_down_partial_scratch";
   const bridgeProfileLabel = `${bridgeLabel} dispatch_profile`;
   const speedup = metric(output, bridgeLabel, "speedup");
   const maxAbsDiff = metric(output, bridgeLabel, "max_abs_diff");
@@ -1640,7 +1646,7 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
     `shape_commands=${shapeCommands} shape_semantic_ffn_sublayers=${shapeSemantic} shape_covered_ops=${shapeCoveredOps} shape_saved_dispatches=${shapeSavedDispatches}`,
     `runtime_backend_dispatches=${runtimeDispatches} semantic_target_dispatches=${semanticTargetDispatches} runtime_semantic_ffn_dispatches=${runtimeSemanticDispatches} semantic_dispatch_split=${Number.isFinite(semanticDispatchSplit) ? semanticDispatchSplit.toFixed(2) : "n/a"} semantic_pair_dispatches=${semanticFallbackPairDispatches} semantic_tail_dispatches=${semanticFallbackTailDispatches}`,
     `qmatmul_row_chain_tiled_count=${rowChainTiledCount} row_tile_groups=${rowChainTiledRowTileGroups} n_tiles=${rowChainTiledNTiles} serial_tile_loops=${rowChainTiledSerialTileLoops} partial_slots=${rowChainTiledPartialSlots} scratch_capacity=${rowChainTiledScratchCapacity} two_phase_count=${rowChainTiledTwoPhaseCount} finalize_tile_groups=${rowChainTiledFinalizeTileGroups} finalize_elements=${rowChainTiledFinalizeElements} spilled_elementwise=${rowChainTiledSpilledElementwise} spilled_input=${rowChainTiledSpilledInput} output_spills=${rowChainTiledOutputSpills}`,
-    `width_target=rows:${targetRows},hidden:${targetHidden},input:${targetInput},output:${targetOutput},row_groups:${targetRowGroups},hidden_tiles:${targetHiddenTiles},output_tiles:${targetOutputTiles},product_elements:${targetProductElements},output_elements:${targetOutputElements},gate_up_dot_ops:${targetGateUpDotOps},down_dot_ops:${targetDownDotOps},total_dot_ops:${targetTotalDotOps}`,
+    `width_target=rows:${targetRows},hidden:${targetHidden},input:${targetInput},output:${targetOutput},row_groups:${targetRowGroups},hidden_tiles:${targetHiddenTiles},output_tiles:${targetOutputTiles},product_elements:${targetProductElements},output_elements:${targetOutputElements},down_partial_elements:${targetDownPartialElements},product_bytes:${targetProductBytes},down_partial_bytes:${targetDownPartialBytes},output_bytes:${targetOutputBytes},down_partial_to_output:${targetDownPartialToOutput.toFixed(2)},scratch_plan:${targetScratchPlan},gate_up_dot_ops:${targetGateUpDotOps},down_dot_ops:${targetDownDotOps},total_dot_ops:${targetTotalDotOps}`,
     `next=${next}`,
   ].join("; ");
 
@@ -1679,6 +1685,12 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
     targetOutputTiles,
     targetProductElements,
     targetOutputElements,
+    targetDownPartialElements,
+    targetProductBytes,
+    targetDownPartialBytes,
+    targetOutputBytes,
+    targetDownPartialToOutput,
+    targetScratchPlan,
     targetGateUpDotOps,
     targetDownDotOps,
     targetTotalDotOps,
@@ -1740,6 +1752,12 @@ function selectedSemanticBridgeAttemptSummary(attempt) {
       semanticWidthTargetOutputTiles: attempt.targetOutputTiles,
       semanticWidthTargetProductElements: attempt.targetProductElements,
       semanticWidthTargetOutputElements: attempt.targetOutputElements,
+      semanticWidthTargetDownPartialElements: attempt.targetDownPartialElements,
+      semanticWidthTargetProductBytes: attempt.targetProductBytes,
+      semanticWidthTargetDownPartialBytes: attempt.targetDownPartialBytes,
+      semanticWidthTargetOutputBytes: attempt.targetOutputBytes,
+      semanticWidthTargetDownPartialToOutput: roundMetric(attempt.targetDownPartialToOutput),
+      semanticWidthTargetScratchPlan: attempt.targetScratchPlan,
       semanticWidthTargetGateUpDotOps: attempt.targetGateUpDotOps,
       semanticWidthTargetDownDotOps: attempt.targetDownDotOps,
       semanticWidthTargetTotalDotOps: attempt.targetTotalDotOps,
