@@ -549,6 +549,12 @@ evidence is stable. Bridge readiness requires worst-case non-regression, not
 only median parity. If the bridge candidate still has `worst < 1.0x`,
 `perf-next:` reports `next=semantic_bridge_throughput_kernel` and
 `dev:perf:next` routes back to the semantic throughput microscope.
+If the latest bridge evidence reports single-dispatch refusals concentrated on
+`dim`, `perf-next:` reports `next=semantic_width_parallel_kernel` instead. That
+is the actionable signal from the rejected `SEMANTIC_FFN_MAX_DIM=2048` probe:
+the next kernel must preserve width/tile parallelism for the larger hidden
+dimension, not merely enable the row-serial single-dispatch path. The
+`dev:perf:next` router sends this case back to `qsemantic_throughput`.
 For qsemantic kernel work, `BENCH_QSEMANTIC_VARIANTS=target` limits the raw
 frontier harness to the staged baseline plus the one-dispatch semantic target,
 while `BENCH_QSEMANTIC_VARIANTS=throughput_candidate` limits it to the staged

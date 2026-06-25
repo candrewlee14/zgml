@@ -748,8 +748,13 @@ the Q8 prompt viability gate in steady paired-default mode even when
 median parity is not enough if the worst paired attempt is still below `1.0x`.
 In that case `perf-next:` reports `next=semantic_bridge_throughput_kernel` and
 the router returns to the semantic throughput microscope instead of repeating
-the same Q8 proof. Use the ggml smoke after the frontier bottleneck moves or
-when explicitly checking model-level promotion.
+the same Q8 proof. If the latest bridge artifact reports single-dispatch
+refusals concentrated on `dim`, `perf-next:` names the sharper target as
+`next=semantic_width_parallel_kernel`; that means the bridge recognizer is
+ready, but the row-serial semantic kernel is too narrow or too slow for the
+full hidden width, so `dev:perf:next` routes back to the qsemantic throughput
+microscope. Use the ggml smoke after the frontier bottleneck moves or when
+explicitly checking model-level promotion.
 The qsemantic-throughput readback follows the same stability rule as the other
 noisy perf lanes: `qsemantic-throughput-results:` prefers the latest
 three-attempt artifact, while `qsemantic-throughput-latest-results:` reports a
