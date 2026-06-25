@@ -416,6 +416,14 @@ machine for both prompt/prefill and decode.
   single-dispatch product scratch capped at `SEMANTIC_FFN_MAX_DIM`; only the
   input-bridge direct kernel may use `SEMANTIC_FFN_MAX_HIDDEN` until the
   replacement is genuinely tile/width parallel.
+  A June 25, 2026 follow-up also tried reducing `SEMANTIC_FFN_THREADS` from
+  `512` to `256` while allowing the non-input product scratch to span
+  `SEMANTIC_FFN_MAX_HIDDEN`. It compiled and preserved bridge correctness, but
+  the exact bridge microscope selected the one-dispatch row-serial kernel at
+  only about `1.00x`, below the retained mixed pair-plus-tiled-tail evidence
+  (`1.87x` steady, `2.23x` latest one-attempt). Do not retry threadgroup-width
+  tuning as the bridge fix; the missing work is a real tile/width-parallel
+  semantic FFN kernel, not a narrower row-serial group.
   That exact shape now has a checked frontier microscope:
   `npm run dev:perf:frontier:qsemantic:bridge{,:run}`, which writes
   `frontier-qsemantic-bridge-*.json` for `bench:status`; the raw terminal

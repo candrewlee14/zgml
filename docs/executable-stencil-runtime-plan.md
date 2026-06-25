@@ -1724,6 +1724,15 @@ now exists for that target:
 `npm run dev:perf:frontier:qsemantic:bridge{,:run}` writes
 `frontier-qsemantic-bridge-*.json` and feeds `bench:status`; the raw terminal
 microscope remains `npm run dev:perf:frontier:qsemantic:bridge:raw{,:run}`.
+The same conclusion held after a narrower June 25, 2026 row-serial tuning
+probe: reducing `SEMANTIC_FFN_THREADS` from `512` to `256` while widening the
+non-input product scratch to `SEMANTIC_FFN_MAX_HIDDEN` compiled and preserved
+bridge correctness, but the exact bridge microscope selected the one-dispatch
+path at only about `1.00x`. That is below both the retained three-attempt bridge
+scoreboard (`1.87x` selected, `1.97x` median) and the latest source-fresh
+one-attempt bridge evidence (`2.23x`). Do not retry threadgroup-width tuning as
+the SmolLM bridge fix; the missing implementation is still a tile/width-parallel
+semantic FFN kernel with explicit staged product/partial work.
 Its first
 ReleaseFast runs measured
 `qsemantic bridge-ffn m=128 h=1536 k=576 o=576 semantic throughput_candidate`
