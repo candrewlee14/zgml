@@ -373,6 +373,12 @@ function checkScripts() {
     "function qsemanticThroughputFreshnessStatusLine(selectedPath, rawPath)",
     "qsemantic-throughput-results: latest=",
     "qsemantic-throughput-latest-results: newest=",
+    "const qsemanticBridgeArtifactPattern = /^frontier-qsemantic-bridge-\\d{8}T\\d{6}Z-\\d+\\.json$/",
+    "function qsemanticBridgeArtifacts()",
+    "data?.schema === \"zgml.frontier-qsemantic-bridge.v1\"",
+    "function latestQsemanticBridgeArtifact()",
+    "function qsemanticBridgeStatusLine(path)",
+    "qsemantic-bridge-results: latest=",
     "gate=${gate}",
     "bottleneck=${bottleneck}",
     "serial_gap=${semanticSerialGap}",
@@ -508,6 +514,12 @@ function checkScripts() {
   }
   if (scripts["dev:perf:frontier:qsemantic:throughput:raw:run"] !== "BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:throughput:raw:run must remain the no-rebuild throughput-candidate-only Q8 semantic kernel microscope");
+  }
+  if (scripts["dev:perf:frontier:qsemantic:bridge"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:qsemantic:bridge must remain the checked exact bridge-shape Q8 semantic microscope");
+  }
+  if (scripts["dev:perf:frontier:qsemantic:bridge:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" node scripts/check_frontier_bench.cjs") {
+    errors.push("package.json dev:perf:frontier:qsemantic:bridge:run must remain the no-rebuild checked exact bridge-shape Q8 semantic microscope");
   }
   if (scripts["dev:perf:frontier:qsemantic:bridge:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:bridge:raw must remain the incremental exact bridge-shape Q8 semantic kernel microscope");
@@ -1286,7 +1298,13 @@ function checkScripts() {
     "frontier bench attempt diagnostics:",
     "margin=${scoreMargin(current).toFixed(2)}x",
     "function isFocusedSemanticFilter(filter)",
+    "function isFocusedSemanticBridgeFilter(filter)",
     "function scoreFocusedSemantic(output, attempt)",
+    "function scoreFocusedSemanticBridgeCandidate(output, attempt)",
+    "schema: \"zgml.frontier-qsemantic-bridge.v1\"",
+    "frontier-qsemantic-bridge-",
+    "frontier qsemantic bridge gate:",
+    "writeFocusedSemanticBridgeArtifact(best, attempts, aggregate, line)",
     "schema: \"zgml.frontier-qsemantic.v1\"",
     "FRONTIER_BENCH_JSON",
     "writeFocusedSemanticArtifact(best, attempts, aggregate, line)",

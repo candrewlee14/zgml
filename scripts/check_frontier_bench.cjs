@@ -168,6 +168,10 @@ function isFocusedSemanticFilter(filter) {
   return /\bqsemantic\b|semantic pair_row_chain/.test(filter);
 }
 
+function isFocusedSemanticBridgeFilter(filter) {
+  return /\bqsemantic bridge\b|bridge-ffn/.test(filter);
+}
+
 function isQsemanticThroughputOnly() {
   return qsemanticVariants.length === 1 && qsemanticVariants[0] === "throughput_candidate";
 }
@@ -1556,7 +1560,242 @@ function runFocusedSemanticThroughputGate() {
   process.exit(0);
 }
 
+function scoreFocusedSemanticBridgeCandidate(output, attempt) {
+  const bridgeLabel = "qsemantic bridge-ffn m=128 h=1536 k=576 o=576 semantic throughput_candidate";
+  const bridgeProfileLabel = `${bridgeLabel} dispatch_profile`;
+  const speedup = metric(output, bridgeLabel, "speedup");
+  const maxAbsDiff = metric(output, bridgeLabel, "max_abs_diff");
+  const shapeCommands = metric(output, bridgeProfileLabel, "shape_commands");
+  const shapeSemantic = metric(output, bridgeProfileLabel, "shape_semantic_ffn_sublayers");
+  const shapeCoveredOps = metric(output, bridgeProfileLabel, "shape_covered_ops");
+  const shapeSavedDispatches = metric(output, bridgeProfileLabel, "shape_saved_dispatches");
+  const runtimeDispatches = metric(output, bridgeProfileLabel, "runtime_backend_dispatches");
+  const semanticTargetDispatches = metric(output, bridgeProfileLabel, "semantic_target_dispatches");
+  const runtimeSemanticDispatches = metric(output, bridgeProfileLabel, "runtime_semantic_ffn_dispatches");
+  const rowChainTiledCount = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_count");
+  const rowChainTiledRowTileGroups = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_row_tile_groups");
+  const rowChainTiledNTiles = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_n_tiles");
+  const rowChainTiledSerialTileLoops = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_serial_tile_loops");
+  const rowChainTiledPartialSlots = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_partial_slots");
+  const rowChainTiledScratchCapacity = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_scratch_capacity");
+  const rowChainTiledTwoPhaseCount = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_two_phase_count");
+  const rowChainTiledFinalizeTileGroups = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_finalize_tile_groups");
+  const rowChainTiledFinalizeElements = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_finalize_elements");
+  const rowChainTiledSpilledElementwise = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_spilled_elementwise");
+  const rowChainTiledSpilledInput = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_spilled_input");
+  const rowChainTiledOutputSpills = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_output_spills");
+
+  const failures = [];
+  if (speedup < 1.0) failures.push(`semantic bridge ${speedup.toFixed(2)}x < 1.00x`);
+  if (maxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`semantic bridge max_abs_diff ${maxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (shapeCommands !== 1 || shapeSemantic !== 1 || shapeCoveredOps !== 9 || shapeSavedDispatches !== 8) {
+    failures.push("semantic bridge shape profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8");
+  }
+  if (runtimeDispatches !== 3 || semanticTargetDispatches !== 1 || runtimeSemanticDispatches !== 3 || rowChainTiledCount !== 1) {
+    failures.push("semantic bridge runtime profile must stay runtime_backend_dispatches=3 semantic_target_dispatches=1 runtime_semantic_ffn_dispatches=3 qmatmul_row_chain_tiled_count=1");
+  }
+  if (rowChainTiledRowTileGroups !== 4 || rowChainTiledNTiles !== 18 || rowChainTiledSerialTileLoops !== 72 || rowChainTiledTwoPhaseCount !== 1 || rowChainTiledFinalizeTileGroups !== 72 || rowChainTiledFinalizeElements !== 73728) {
+    failures.push("semantic bridge tiled tail profile must stay row_tile_groups=4 n_tiles=18 serial_tile_loops=72 two_phase_count=1 finalize_tile_groups=72 finalize_elements=73728");
+  }
+  if (rowChainTiledSpilledElementwise !== 0 || rowChainTiledSpilledInput !== 0 || rowChainTiledOutputSpills !== 0) {
+    failures.push("semantic bridge tiled tail must keep spilled_elementwise=0 spilled_input=0 output_spills=0");
+  }
+
+  const next = "semantic_width_parallel_kernel";
+  const line = [
+    `frontier qsemantic bridge gate: ${failures.length === 0 ? "pass" : "fail"}`,
+    `attempt=${attempt}/${maxAttempts}`,
+    `bridge_ffn=${speedup.toFixed(2)}x floor=1.00 max_abs_diff=${maxAbsDiff.toFixed(6)}`,
+    `shape_commands=${shapeCommands} shape_semantic_ffn_sublayers=${shapeSemantic} shape_covered_ops=${shapeCoveredOps} shape_saved_dispatches=${shapeSavedDispatches}`,
+    `runtime_backend_dispatches=${runtimeDispatches} semantic_target_dispatches=${semanticTargetDispatches} runtime_semantic_ffn_dispatches=${runtimeSemanticDispatches}`,
+    `qmatmul_row_chain_tiled_count=${rowChainTiledCount} row_tile_groups=${rowChainTiledRowTileGroups} n_tiles=${rowChainTiledNTiles} serial_tile_loops=${rowChainTiledSerialTileLoops} partial_slots=${rowChainTiledPartialSlots} scratch_capacity=${rowChainTiledScratchCapacity} two_phase_count=${rowChainTiledTwoPhaseCount} finalize_tile_groups=${rowChainTiledFinalizeTileGroups} finalize_elements=${rowChainTiledFinalizeElements} spilled_elementwise=${rowChainTiledSpilledElementwise} spilled_input=${rowChainTiledSpilledInput} output_spills=${rowChainTiledOutputSpills}`,
+    `next=${next}`,
+  ].join("; ");
+
+  return {
+    attempt,
+    speedup,
+    maxAbsDiff,
+    shapeCommands,
+    shapeSemantic,
+    shapeCoveredOps,
+    shapeSavedDispatches,
+    runtimeDispatches,
+    semanticTargetDispatches,
+    runtimeSemanticDispatches,
+    rowChainTiledCount,
+    rowChainTiledRowTileGroups,
+    rowChainTiledNTiles,
+    rowChainTiledSerialTileLoops,
+    rowChainTiledPartialSlots,
+    rowChainTiledScratchCapacity,
+    rowChainTiledTwoPhaseCount,
+    rowChainTiledFinalizeTileGroups,
+    rowChainTiledFinalizeElements,
+    rowChainTiledSpilledElementwise,
+    rowChainTiledSpilledInput,
+    rowChainTiledOutputSpills,
+    next,
+    failures,
+    line,
+  };
+}
+
+function focusedSemanticBridgeMargin(current) {
+  return Math.min(
+    current.speedup,
+    projectionRowChainMaxAbsDiffCeil / Math.max(current.maxAbsDiff, Number.EPSILON),
+    current.shapeCommands === 1 ? 1 : 0,
+    current.runtimeDispatches === 3 ? 1 : 0,
+    current.runtimeSemanticDispatches === 3 ? 1 : 0,
+    current.rowChainTiledCount === 1 ? 1 : 0,
+    current.rowChainTiledSpilledInput === 0 ? 1 : 0,
+  );
+}
+
+function selectedSemanticBridgeAttemptSummary(attempt) {
+  return {
+    attempt: attempt.attempt,
+    failures: attempt.failures,
+    bridgeFfn: {
+      speedup: roundMetric(attempt.speedup),
+      maxAbsDiff: roundMetric(attempt.maxAbsDiff),
+      shapeCommands: attempt.shapeCommands,
+      shapeSemanticFfnSublayers: attempt.shapeSemantic,
+      shapeCoveredOps: attempt.shapeCoveredOps,
+      shapeSavedDispatches: attempt.shapeSavedDispatches,
+      runtimeDispatches: attempt.runtimeDispatches,
+      semanticTargetDispatches: attempt.semanticTargetDispatches,
+      semanticRuntimeDispatches: attempt.runtimeSemanticDispatches,
+      qmatmulRowChainTiledCount: attempt.rowChainTiledCount,
+      qmatmulRowChainTiledRowTileGroups: attempt.rowChainTiledRowTileGroups,
+      qmatmulRowChainTiledNTiles: attempt.rowChainTiledNTiles,
+      qmatmulRowChainTiledSerialTileLoops: attempt.rowChainTiledSerialTileLoops,
+      qmatmulRowChainTiledPartialSlots: attempt.rowChainTiledPartialSlots,
+      qmatmulRowChainTiledScratchCapacity: attempt.rowChainTiledScratchCapacity,
+      qmatmulRowChainTiledTwoPhaseCount: attempt.rowChainTiledTwoPhaseCount,
+      qmatmulRowChainTiledFinalizeTileGroups: attempt.rowChainTiledFinalizeTileGroups,
+      qmatmulRowChainTiledFinalizeElements: attempt.rowChainTiledFinalizeElements,
+      qmatmulRowChainTiledSpilledElementwise: attempt.rowChainTiledSpilledElementwise,
+      qmatmulRowChainTiledSpilledInput: attempt.rowChainTiledSpilledInput,
+      qmatmulRowChainTiledOutputSpills: attempt.rowChainTiledOutputSpills,
+    },
+  };
+}
+
+function writeFocusedSemanticBridgeArtifact(best, attempts, aggregate, line) {
+  if (!writeArtifact) return null;
+  mkdirSync(artifactDir, { recursive: true });
+  const artifactPath = join(artifactDir, `frontier-qsemantic-bridge-${timestampForArtifact()}-${process.pid}.json`);
+  const bestSummary = selectedSemanticBridgeAttemptSummary(best);
+  const artifact = {
+    schema: "zgml.frontier-qsemantic-bridge.v1",
+    createdAt: new Date().toISOString(),
+    command: {
+      argv: process.argv,
+      cwd: process.cwd(),
+      build,
+      frontierFilter,
+      qsemanticVariants,
+    },
+    platform: {
+      node: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      cpus: os.cpus().length,
+    },
+    source: benchmarkBinaryMetadata({ root, binary: frontierBinary, build }),
+    config: {
+      maxAttempts,
+      build,
+      frontierFilter,
+      qsemanticVariants,
+      projectionRowChainMaxAbsDiffCeil,
+    },
+    kind: "qsemantic-bridge",
+    status: aggregate.length === 0 ? "pass" : "fail",
+    selectedAttempt: best.attempt,
+    attempts: attempts.length,
+    aggregateFailures: aggregate,
+    speedupStats: {
+      bridgeFfn: speedupStats(attempts, "speedup"),
+    },
+    bridgeFfn: bestSummary.bridgeFfn,
+    attemptSummaries: attempts.map(selectedSemanticBridgeAttemptSummary),
+    next: best.next,
+    line,
+  };
+  writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return resolve(artifactPath);
+}
+
+function runFocusedSemanticBridgeGate() {
+  const attempts = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      attempts.push(scoreFocusedSemanticBridgeCandidate(runBench(), attempt));
+    } catch (err) {
+      process.stderr.write(`${err.output ?? err.message}\n`);
+      process.exit(1);
+    }
+  }
+  const passing = attempts.filter((current) => current.failures.length === 0);
+  const best = (passing.length > 0 ? passing : attempts).reduce((acc, current) => {
+    if (!acc) return current;
+    return focusedSemanticBridgeMargin(current) > focusedSemanticBridgeMargin(acc) ? current : acc;
+  }, null);
+  const aggregate = [];
+  const bestSpeedup = bestMax(attempts, "speedup");
+  const bestDiff = bestMin(attempts, "maxAbsDiff");
+  if (!Number.isFinite(bestSpeedup) || bestSpeedup < 1.0) aggregate.push(`semantic bridge best ${Number.isFinite(bestSpeedup) ? bestSpeedup.toFixed(2) : "n/a"}x < 1.00x`);
+  if (!Number.isFinite(bestDiff) || bestDiff > projectionRowChainMaxAbsDiffCeil) aggregate.push(`semantic bridge best max_abs_diff ${Number.isFinite(bestDiff) ? bestDiff.toFixed(6) : "n/a"} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (!anyEquals(attempts, [
+    ["shapeCommands", 1],
+    ["shapeSemantic", 1],
+    ["shapeCoveredOps", 9],
+    ["shapeSavedDispatches", 8],
+    ["runtimeDispatches", 3],
+    ["semanticTargetDispatches", 1],
+    ["runtimeSemanticDispatches", 3],
+    ["rowChainTiledCount", 1],
+    ["rowChainTiledRowTileGroups", 4],
+    ["rowChainTiledNTiles", 18],
+    ["rowChainTiledSerialTileLoops", 72],
+    ["rowChainTiledTwoPhaseCount", 1],
+    ["rowChainTiledFinalizeTileGroups", 72],
+    ["rowChainTiledFinalizeElements", 73728],
+    ["rowChainTiledSpilledElementwise", 0],
+    ["rowChainTiledSpilledInput", 0],
+    ["rowChainTiledOutputSpills", 0],
+  ])) aggregate.push("semantic bridge profile did not match in any attempt");
+
+  const line = aggregate.length === 0 ? best.line.replace("frontier qsemantic bridge gate: fail", "frontier qsemantic bridge gate: pass") : best.line;
+  const artifactPath = writeFocusedSemanticBridgeArtifact(best, attempts, aggregate, line);
+  if (artifactPath) {
+    process.stdout.write(`FRONTIER_BENCH_JSON ${JSON.stringify({
+      artifact: artifactPath,
+      status: aggregate.length === 0 ? "pass" : "fail",
+      kind: "qsemantic-bridge",
+      selectedAttempt: best.attempt,
+      attempts: attempts.length,
+      next: best.next,
+    })}\n`);
+  }
+  process.stdout.write(`${line}\n`);
+  if (best.attempt > 1) {
+    process.stdout.write(`frontier qsemantic bridge retries: ${best.attempt - 1} noisy attempt(s) below best evidence\n`);
+  }
+  if (aggregate.length !== 0) {
+    process.stderr.write(`${aggregate.join("; ")}\n`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
 function runFocusedSemanticGate() {
+  if (isQsemanticThroughputOnly() && isFocusedSemanticBridgeFilter(frontierFilter)) {
+    runFocusedSemanticBridgeGate();
+  }
   if (isQsemanticThroughputOnly()) {
     runFocusedSemanticThroughputGate();
   }
