@@ -9318,6 +9318,9 @@ const CompiledProgram = struct {
     fn tryEncodeSemanticFfnSublayerWithInputRowChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (command.op_count != 14) return false;
         const start: usize = @intCast(command.op_start);
+        const before_dispatches = exec.profile.backend_dispatch_count;
+        const before_pair_dispatches = exec.profile.semantic_ffn_sublayer_fallback_pair_dispatches;
+        const before_tail_dispatches = exec.profile.semantic_ffn_sublayer_fallback_tail_dispatches;
         var row_command = program_mod.ProgramCommand{
             .kind = .projection_row_chain,
             .op_start = @intCast(start),
@@ -9343,7 +9346,13 @@ const CompiledProgram = struct {
             .projection_kind = command.projection_kind,
         };
         if (!self.tryEncodeProjectionRowChainCommand(exec, view, ops, row_command)) return false;
-        return self.tryEncodeSemanticFfnSublayerCommand(exec, view, ops, semantic_command);
+        if (!self.tryEncodeSemanticFfnSublayerCommand(exec, view, ops, semantic_command)) return false;
+        const dispatches = exec.profile.backend_dispatch_count -| before_dispatches;
+        const pair_dispatches = exec.profile.semantic_ffn_sublayer_fallback_pair_dispatches -| before_pair_dispatches;
+        const tail_dispatches = exec.profile.semantic_ffn_sublayer_fallback_tail_dispatches -| before_tail_dispatches;
+        const row_chain_dispatches = dispatches -| pair_dispatches -| tail_dispatches;
+        exec.profile.recordSemanticFfnWithInputDecomposed(dispatches, row_chain_dispatches, pair_dispatches, tail_dispatches);
+        return true;
     }
 
     fn projectionRowChainPrimaryHasExternalUsers(ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {

@@ -1577,6 +1577,11 @@ proved the desired command shape with zero fallback
 not the final performance answer (`semantic_speedup=0.96x` in that one-attempt
 probe). Keep the default on the 151-command semantic-promoted path until the
 bridge command owns a true throughput kernel.
+The qsemantic input-bridge microscope now makes that conservative encoder
+shape machine-readable: `semantic_ffn_with_input_decomposed_*` records the
+absorbed command as one structural command but five backend dispatches
+(`row_chain=2`, `pair=1`, `tail=2`). The next kernel must make those counters
+fall, not merely rename the command.
 After the one-dispatch semantic throughput kernel became a real measured lane,
 the full-model default was kept on `promptProjectionRowChainCommand()` while
 `--metal-prompt-semantic-throughput-candidate` remains the explicit diagnostic

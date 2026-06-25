@@ -122,6 +122,11 @@ pub const RuntimeProfile = struct {
     semantic_ffn_sublayer_active_thread_lanes: u64 = 0,
     semantic_ffn_sublayer_fallback_pair_dispatches: u64 = 0,
     semantic_ffn_sublayer_fallback_tail_dispatches: u64 = 0,
+    semantic_ffn_with_input_decomposed_count: u64 = 0,
+    semantic_ffn_with_input_decomposed_dispatches: u64 = 0,
+    semantic_ffn_with_input_decomposed_row_chain_dispatches: u64 = 0,
+    semantic_ffn_with_input_decomposed_pair_dispatches: u64 = 0,
+    semantic_ffn_with_input_decomposed_tail_dispatches: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_attempts: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_output_read_refusals: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_block_size_refusals: u64 = 0,
@@ -192,6 +197,11 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_sublayer_active_thread_lanes +%= other.semantic_ffn_sublayer_active_thread_lanes;
         self.semantic_ffn_sublayer_fallback_pair_dispatches +%= other.semantic_ffn_sublayer_fallback_pair_dispatches;
         self.semantic_ffn_sublayer_fallback_tail_dispatches +%= other.semantic_ffn_sublayer_fallback_tail_dispatches;
+        self.semantic_ffn_with_input_decomposed_count +%= other.semantic_ffn_with_input_decomposed_count;
+        self.semantic_ffn_with_input_decomposed_dispatches +%= other.semantic_ffn_with_input_decomposed_dispatches;
+        self.semantic_ffn_with_input_decomposed_row_chain_dispatches +%= other.semantic_ffn_with_input_decomposed_row_chain_dispatches;
+        self.semantic_ffn_with_input_decomposed_pair_dispatches +%= other.semantic_ffn_with_input_decomposed_pair_dispatches;
+        self.semantic_ffn_with_input_decomposed_tail_dispatches +%= other.semantic_ffn_with_input_decomposed_tail_dispatches;
         self.semantic_ffn_sublayer_single_dispatch_attempts +%= other.semantic_ffn_sublayer_single_dispatch_attempts;
         self.semantic_ffn_sublayer_single_dispatch_output_read_refusals +%= other.semantic_ffn_sublayer_single_dispatch_output_read_refusals;
         self.semantic_ffn_sublayer_single_dispatch_block_size_refusals +%= other.semantic_ffn_sublayer_single_dispatch_block_size_refusals;
@@ -354,6 +364,14 @@ pub const RuntimeProfile = struct {
     pub fn recordSemanticFfnSublayerFallbackDispatches(self: *RuntimeProfile, pair_dispatches: u64, tail_dispatches: u64) void {
         self.semantic_ffn_sublayer_fallback_pair_dispatches +%= pair_dispatches;
         self.semantic_ffn_sublayer_fallback_tail_dispatches +%= tail_dispatches;
+    }
+
+    pub fn recordSemanticFfnWithInputDecomposed(self: *RuntimeProfile, dispatches: u64, row_chain_dispatches: u64, pair_dispatches: u64, tail_dispatches: u64) void {
+        self.semantic_ffn_with_input_decomposed_count +%= 1;
+        self.semantic_ffn_with_input_decomposed_dispatches +%= dispatches;
+        self.semantic_ffn_with_input_decomposed_row_chain_dispatches +%= row_chain_dispatches;
+        self.semantic_ffn_with_input_decomposed_pair_dispatches +%= pair_dispatches;
+        self.semantic_ffn_with_input_decomposed_tail_dispatches +%= tail_dispatches;
     }
 
     pub fn recordSemanticFfnSublayerSingleDispatchRefusal(self: *RuntimeProfile, reason: SemanticFfnSublayerSingleDispatchRefusalReason) void {
@@ -569,6 +587,13 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_fallback_", "pair_dispatches", rt.semantic_ffn_sublayer_fallback_pair_dispatches, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_fallback_", "tail_dispatches", rt.semantic_ffn_sublayer_fallback_tail_dispatches, calls_f);
     }
+    if (rt.semantic_ffn_with_input_decomposed_count > 0) {
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_decomposed_", "count", rt.semantic_ffn_with_input_decomposed_count, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_decomposed_", "dispatches", rt.semantic_ffn_with_input_decomposed_dispatches, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_decomposed_", "row_chain_dispatches", rt.semantic_ffn_with_input_decomposed_row_chain_dispatches, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_decomposed_", "pair_dispatches", rt.semantic_ffn_with_input_decomposed_pair_dispatches, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_decomposed_", "tail_dispatches", rt.semantic_ffn_with_input_decomposed_tail_dispatches, calls_f);
+    }
     if (rt.semantic_ffn_sublayer_single_dispatch_attempts > 0) {
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_", "attempts", rt.semantic_ffn_sublayer_single_dispatch_attempts, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_", "output_read_refusals", rt.semantic_ffn_sublayer_single_dispatch_output_read_refusals, calls_f);
@@ -775,6 +800,7 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     rt.recordQMatmulRowChainTiledSpill(128, 576, 576, 32, true, true);
     rt.recordSemanticFfnSublayer(128, 576, 576, 576, 512);
     rt.recordSemanticFfnSublayerFallbackDispatches(1, 2);
+    rt.recordSemanticFfnWithInputDecomposed(5, 2, 1, 2);
     rt.recordSemanticFfnSublayerSingleDispatchAttempt();
     rt.recordSemanticFfnSublayerSingleDispatchDimRefusal(576, 1536, 576, 1024);
     rt.call_count = 2;
@@ -815,6 +841,11 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_thread_lane_utilization\":0.611111") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_fallback_pair_dispatches\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_fallback_tail_dispatches\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_dispatches\":5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_row_chain_dispatches\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_pair_dispatches\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_tail_dispatches\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_attempts\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_refused_dim\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k\":576") != null);
@@ -865,6 +896,7 @@ test "RuntimeProfile accumulates evidence windows" {
     window.runtime_patch_invalid_count = 28;
     window.runtime_patch_shape = backend.RuntimePatchShape.actual(17, 24, 4242);
     window.recordQMatmulRowChainTwoPhaseTiledSpill(128, 576, 576, 32, true, true);
+    window.recordSemanticFfnWithInputDecomposed(5, 2, 1, 2);
     window.call_count = 37;
 
     total.add(window);
@@ -904,6 +936,11 @@ test "RuntimeProfile accumulates evidence windows" {
     try std.testing.expectEqual(@as(u64, 2), total.qmatmul_row_chain_tiled_two_phase_count);
     try std.testing.expectEqual(@as(u64, 144), total.qmatmul_row_chain_tiled_finalize_tile_groups);
     try std.testing.expectEqual(@as(u64, 147456), total.qmatmul_row_chain_tiled_finalize_elements);
+    try std.testing.expectEqual(@as(u64, 2), total.semantic_ffn_with_input_decomposed_count);
+    try std.testing.expectEqual(@as(u64, 10), total.semantic_ffn_with_input_decomposed_dispatches);
+    try std.testing.expectEqual(@as(u64, 4), total.semantic_ffn_with_input_decomposed_row_chain_dispatches);
+    try std.testing.expectEqual(@as(u64, 2), total.semantic_ffn_with_input_decomposed_pair_dispatches);
+    try std.testing.expectEqual(@as(u64, 4), total.semantic_ffn_with_input_decomposed_tail_dispatches);
     try std.testing.expectEqual(@as(u32, 74), total.call_count);
 }
 

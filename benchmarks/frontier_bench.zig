@@ -430,6 +430,11 @@ fn writeSemanticSublayerRuntimeMetricJson(
     try writeMetricJsonField(&jw, "runtime_semantic_ffn_with_input_refused", rt.program_command_failed_counts[semantic_with_input_idx]);
     try writeMetricJsonField(&jw, "semantic_ffn_sublayer_fallback_pair_dispatches", rt.semantic_ffn_sublayer_fallback_pair_dispatches);
     try writeMetricJsonField(&jw, "semantic_ffn_sublayer_fallback_tail_dispatches", rt.semantic_ffn_sublayer_fallback_tail_dispatches);
+    try writeMetricJsonField(&jw, "semantic_ffn_with_input_decomposed_count", rt.semantic_ffn_with_input_decomposed_count);
+    try writeMetricJsonField(&jw, "semantic_ffn_with_input_decomposed_dispatches", rt.semantic_ffn_with_input_decomposed_dispatches);
+    try writeMetricJsonField(&jw, "semantic_ffn_with_input_decomposed_row_chain_dispatches", rt.semantic_ffn_with_input_decomposed_row_chain_dispatches);
+    try writeMetricJsonField(&jw, "semantic_ffn_with_input_decomposed_pair_dispatches", rt.semantic_ffn_with_input_decomposed_pair_dispatches);
+    try writeMetricJsonField(&jw, "semantic_ffn_with_input_decomposed_tail_dispatches", rt.semantic_ffn_with_input_decomposed_tail_dispatches);
     try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_count", rt.qmatmul_row_chain_tiled_count);
     try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_row_tile_groups", rt.qmatmul_row_chain_tiled_row_tile_groups);
     try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_n_tiles", rt.qmatmul_row_chain_tiled_n_tiles);
@@ -1852,9 +1857,9 @@ fn benchSemanticSublayerWithInputRowChainMetalCase(
         .{ .elementwise = .{ .op = .mul, .dst = 16, .src0 = 13, .src1 = 14, .n = @intCast(output_elems) } },
     };
     const buffer_sizes = [_]usize{
-        model_elems, model_elems, model_elems, model_elems, model_elems, model_elems,
-        hidden_elems, hidden_elems, hidden_elems, output_elems, model_elems, model,
-        output_elems, output_elems, output_elems, output, output_elems,
+        model_elems,  model_elems,  model_elems,  model_elems,  model_elems,  model_elems,
+        hidden_elems, hidden_elems, hidden_elems, output_elems, model_elems,  model,
+        output_elems, output_elems, output_elems, output,       output_elems,
     };
     const uploads = [_]backend_mod.ProgramIO{
         programIo(0, input),

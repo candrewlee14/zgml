@@ -1847,6 +1847,11 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const absorbedSemanticWithInputRefused = metric(output, absorbedProfileLabel, "runtime_semantic_ffn_with_input_refused");
   const absorbedFallbackPairDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_sublayer_fallback_pair_dispatches");
   const absorbedFallbackTailDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_sublayer_fallback_tail_dispatches");
+  const absorbedDecomposedCount = metric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_count");
+  const absorbedDecomposedDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_dispatches");
+  const absorbedDecomposedRowChainDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_row_chain_dispatches");
+  const absorbedDecomposedPairDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_pair_dispatches");
+  const absorbedDecomposedTailDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_tail_dispatches");
   const absorbedRowChainTiledCount = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_count");
   const absorbedRowChainTiledRowTileGroups = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_row_tile_groups");
   const absorbedRowChainTiledNTiles = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_n_tiles");
@@ -1881,6 +1886,9 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (commandFallbackPairDispatches !== 1 || commandFallbackTailDispatches !== 2 || absorbedFallbackPairDispatches !== 1 || absorbedFallbackTailDispatches !== 2) {
     failures.push("semantic input fallback split must stay pair=1 tail=2 for command and absorbed profiles");
   }
+  if (absorbedDecomposedCount !== 1 || absorbedDecomposedDispatches !== 5 || absorbedDecomposedRowChainDispatches !== 2 || absorbedDecomposedPairDispatches !== 1 || absorbedDecomposedTailDispatches !== 2) {
+    failures.push("semantic input absorbed decomposition must stay count=1 dispatches=5 row_chain=2 pair=1 tail=2 until the width-parallel kernel replaces it");
+  }
   if (absorbedRowChainTiledCount !== 2 || absorbedRowChainTiledRowTileGroups !== 8 || absorbedRowChainTiledNTiles !== 36 || absorbedRowChainTiledSerialTileLoops !== 144 || absorbedRowChainTiledTwoPhaseCount !== 2 || absorbedRowChainTiledFinalizeTileGroups !== 144 || absorbedRowChainTiledFinalizeElements !== 147456) {
     failures.push("semantic input absorbed tiled profile must expose two two-phase row-chain leaves");
   }
@@ -1894,6 +1902,7 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     `attempt=${attempt}/${maxAttempts}`,
     `command=${commandSpeedup.toFixed(2)}x max_abs_diff=${commandMaxAbsDiff.toFixed(6)} shape_commands=${commandShapeCommands} bridges=${commandShapeBridges} runtime_dispatches=${commandRuntimeDispatches} row_dispatches=${commandProjectionRowChainDispatches} semantic_dispatches=${commandSemanticDispatches}`,
     `absorbed=${absorbedSpeedup.toFixed(2)}x max_abs_diff=${absorbedMaxAbsDiff.toFixed(6)} shape_commands=${absorbedShapeCommands} bridges=${absorbedShapeBridges} runtime_dispatches=${absorbedRuntimeDispatches} semantic_with_input_dispatches=${absorbedSemanticWithInputDispatches} absorbed_split=${Number.isFinite(absorbedDispatchSplit) ? absorbedDispatchSplit.toFixed(2) : "n/a"}`,
+    `absorbed_decomposed=${absorbedDecomposedCount}:dispatches=${absorbedDecomposedDispatches}:row_chain=${absorbedDecomposedRowChainDispatches}:pair=${absorbedDecomposedPairDispatches}:tail=${absorbedDecomposedTailDispatches}`,
     `fallback_pair_dispatches=${absorbedFallbackPairDispatches} fallback_tail_dispatches=${absorbedFallbackTailDispatches} tiled_count=${absorbedRowChainTiledCount} row_tile_groups=${absorbedRowChainTiledRowTileGroups} n_tiles=${absorbedRowChainTiledNTiles} two_phase_count=${absorbedRowChainTiledTwoPhaseCount} spilled_input=${absorbedRowChainTiledSpilledInput}`,
     `next=${next}`,
   ].join("; ");
@@ -1931,6 +1940,11 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     absorbedDispatchSplit,
     absorbedFallbackPairDispatches,
     absorbedFallbackTailDispatches,
+    absorbedDecomposedCount,
+    absorbedDecomposedDispatches,
+    absorbedDecomposedRowChainDispatches,
+    absorbedDecomposedPairDispatches,
+    absorbedDecomposedTailDispatches,
     absorbedRowChainTiledCount,
     absorbedRowChainTiledRowTileGroups,
     absorbedRowChainTiledNTiles,
@@ -1989,6 +2003,11 @@ function selectedSemanticInputBridgeAttemptSummary(attempt) {
       absorbedDispatchSplit: roundMetric(attempt.absorbedDispatchSplit),
       semanticFallbackPairDispatches: attempt.absorbedFallbackPairDispatches,
       semanticFallbackTailDispatches: attempt.absorbedFallbackTailDispatches,
+      semanticWithInputDecomposedCount: attempt.absorbedDecomposedCount,
+      semanticWithInputDecomposedDispatches: attempt.absorbedDecomposedDispatches,
+      semanticWithInputDecomposedRowChainDispatches: attempt.absorbedDecomposedRowChainDispatches,
+      semanticWithInputDecomposedPairDispatches: attempt.absorbedDecomposedPairDispatches,
+      semanticWithInputDecomposedTailDispatches: attempt.absorbedDecomposedTailDispatches,
       qmatmulRowChainTiledCount: attempt.absorbedRowChainTiledCount,
       qmatmulRowChainTiledRowTileGroups: attempt.absorbedRowChainTiledRowTileGroups,
       qmatmulRowChainTiledNTiles: attempt.absorbedRowChainTiledNTiles,
