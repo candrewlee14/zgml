@@ -211,6 +211,9 @@ function readProjectionLane(row, defaultTokS, index) {
     tiledTwoPhaseCount: number(row, "qmatmul_row_chain_tiled_two_phase_count_per_call") ?? 0,
     tiledFinalizeTileGroups: number(row, "qmatmul_row_chain_tiled_finalize_tile_groups_per_call") ?? 0,
     tiledFinalizeElements: number(row, "qmatmul_row_chain_tiled_finalize_elements_per_call") ?? 0,
+    semanticSingleDispatchAttempts: number(row, "semantic_ffn_sublayer_single_dispatch_attempts_per_call") ?? 0,
+    semanticSingleDispatchOutputReadRefusals: number(row, "semantic_ffn_sublayer_single_dispatch_output_read_refusals_per_call") ?? 0,
+    semanticSingleDispatchBlockSizeRefusals: number(row, "semantic_ffn_sublayer_single_dispatch_block_size_refusals_per_call") ?? 0,
     fallback: number(row, "fallback_ops") ?? 0,
   };
 }
@@ -562,6 +565,9 @@ function measureAttempt(index) {
     semanticTiledTwoPhaseCount: semanticLane.tiledTwoPhaseCount,
     semanticTiledFinalizeTileGroups: semanticLane.tiledFinalizeTileGroups,
     semanticTiledFinalizeElements: semanticLane.tiledFinalizeElements,
+    semanticSingleDispatchAttempts: semanticLane.semanticSingleDispatchAttempts,
+    semanticSingleDispatchOutputReadRefusals: semanticLane.semanticSingleDispatchOutputReadRefusals,
+    semanticSingleDispatchBlockSizeRefusals: semanticLane.semanticSingleDispatchBlockSizeRefusals,
     twoPhaseScratchReady,
     defaultProjectionRowChainDispatchSplit,
     commandProjectionRowChainDispatchSplit: commandLane.projectionRowChainDispatchSplit,
@@ -847,6 +853,9 @@ if (writeArtifact) {
         tiledSpillInput: semanticBest.semanticTiledSpillInput,
         tiledOutputSpills: semanticBest.semanticTiledOutputSpills,
         residualBridges: semanticBest.semanticProjectionRowChainSemanticResidualBridges,
+        singleDispatchAttempts: semanticBest.semanticSingleDispatchAttempts,
+        singleDispatchOutputReadRefusals: semanticBest.semanticSingleDispatchOutputReadRefusals,
+        singleDispatchBlockSizeRefusals: semanticBest.semanticSingleDispatchBlockSizeRefusals,
       },
     },
     attempts: attemptRows.map((row) => ({
@@ -865,6 +874,9 @@ if (writeArtifact) {
       commandCommands: row.commandCommands,
       twoPhaseCommands: row.twoPhaseCommands,
       semanticCommands: row.semanticCommands,
+      semanticSingleDispatchAttempts: row.semanticSingleDispatchAttempts,
+      semanticSingleDispatchOutputReadRefusals: row.semanticSingleDispatchOutputReadRefusals,
+      semanticSingleDispatchBlockSizeRefusals: row.semanticSingleDispatchBlockSizeRefusals,
       commandFallback: row.commandFallback,
       twoPhaseFallback: row.twoPhaseFallback,
       semanticFallback: row.semanticFallback,
@@ -945,6 +957,9 @@ console.log(
     `semantic_tiled_work=${format(semanticBest.semanticTiledCount, 0)} chains row_groups=${format(semanticBest.semanticTiledRowTileGroups, 0)} n_tiles=${format(semanticBest.semanticTiledNTiles, 0)} serial_tile_loops=${format(semanticBest.semanticTiledSerialLoops, 0)} partial_slots=${format(semanticBest.semanticTiledPartialSlots, 0)} scratch_capacity=${format(semanticBest.semanticTiledScratchCapacity, 0)} finalize_tile_groups=${format(semanticBest.semanticTiledFinalizeTileGroups, 0)} finalize_elements=${format(semanticBest.semanticTiledFinalizeElements, 0)} spills=${format(semanticBest.semanticTiledSpills, 0)} ` +
     `semantic_spill_input=${format(semanticBest.semanticTiledSpillInput, 0)} ` +
     `semantic_output_spills=${format(semanticBest.semanticTiledOutputSpills, 0)} ` +
+    `semantic_single_dispatch_attempts=${format(semanticBest.semanticSingleDispatchAttempts, 0)} ` +
+    `semantic_single_dispatch_output_read_refusals=${format(semanticBest.semanticSingleDispatchOutputReadRefusals, 0)} ` +
+    `semantic_single_dispatch_block_size_refusals=${format(semanticBest.semanticSingleDispatchBlockSizeRefusals, 0)} ` +
     `semantic_projection_chain=${format(semanticBest.defaultProjectionChains, 0)}->${format(semanticBest.semanticProjectionChains, 0)} ` +
     `semantic_projection_pair=${format(semanticBest.defaultProjectionPairs, 0)}->${format(semanticBest.semanticProjectionPairs, 0)} ` +
     `semantic_projection_pair_dispatch=${format(semanticBest.defaultProjectionPairDispatches, 0)}->${format(semanticBest.semanticProjectionPairDispatches, 0)} ` +

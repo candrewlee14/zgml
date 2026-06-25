@@ -9159,6 +9159,7 @@ const CompiledProgram = struct {
     }
 
     fn encodeSemanticFfnSublayerSingleDispatch(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, residual: anytype, rn: anytype, rp: anytype, out: anytype) bool {
+        exec.profile.recordSemanticFfnSublayerSingleDispatchAttempt();
         if (!program_mod.projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) return false;
         if (down.M != gate.M or down.K != gate.N) return false;
         if (down.input != product.dst or down.input_offset != product.dst_offset) return false;
@@ -9177,7 +9178,11 @@ const CompiledProgram = struct {
             view.outputReadsDenseSpan(down.dst, down.dst_offset, down.M, down.N, down.dst_row_stride) or
             view.outputReadsSpan(residual.dst, residual.dst_offset, residual.n) or
             view.outputReadsSpan(rn.dst, rn.dst_offset, @as(u64, rn.rows) * rn.cols) or
-            view.outputReadsSpan(rp.dst, rp.dst_offset, rp.n)) return false;
+            view.outputReadsSpan(rp.dst, rp.dst_offset, rp.n))
+        {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchOutputReadRefusal();
+            return false;
+        }
 
         const down_is_src0 = residual.src0 == down.dst and residual.src0_offset == down.dst_offset;
         const residual_secondary_buf = if (down_is_src0) residual.src1 else residual.src0;
@@ -9189,7 +9194,10 @@ const CompiledProgram = struct {
         const gate_params = qmatmulParams(gate, gate_w.block_size);
         const up_params = qmatmulParams(up, up_w.block_size);
         const down_params = qmatmulParams(down, down_w.block_size);
-        if (gate_params.block_size != 32 or up_params.block_size != 32 or down_params.block_size != 32) return false;
+        if (gate_params.block_size != 32 or up_params.block_size != 32 or down_params.block_size != 32) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchBlockSizeRefusal();
+            return false;
+        }
         if (gate_params.M != up_params.M or gate_params.N != up_params.N or gate_params.K != up_params.K) return false;
         if (gate_params.input_offset != up_params.input_offset or gate_params.input_row_stride != up_params.input_row_stride) return false;
         if (down_params.M != gate_params.M or down_params.K != gate_params.N) return false;

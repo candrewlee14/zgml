@@ -362,6 +362,18 @@ machine for both prompt/prefill and decode.
   (`semantic_best=1.16x`, `semantic_median=1.00x`, `semantic_worst=0.99x`).
   The missing win is still work partitioning, but the semantic block-32 scale
   specialization is retained as a real kernel improvement.
+- A later row-chain tiled scale-index shift probe was rejected. Guarding the
+  tiled row-chain encoders to block size `32` and changing their scale lookup to
+  `w_idx >> 5` preserved compilation but worsened the paired Q8 semantic bridge
+  sample (`semantic_median=0.97x`, `semantic_worst=0.94x`), so do not chase that
+  spelling again. The Q8 candidate artifact now records semantic single-dispatch
+  diagnostics instead: a quick semantic-lane probe showed
+  `semantic_single_dispatch_attempts=30`,
+  `semantic_single_dispatch_output_read_refusals=0`, and
+  `semantic_single_dispatch_block_size_refusals=0`. That means the full bridge
+  path is not blocked by requested intermediate outputs or Q8 block-size guards;
+  the next useful target is the remaining compatibility/shape refusal before
+  the one-dispatch semantic FFN kernel can replace the two-phase row-chain tail.
 - The frontier gate now also reports the paired row-chain diagnostic
   `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
   This compares four staged qmatmul+residual+RMSNorm-scale row chains against

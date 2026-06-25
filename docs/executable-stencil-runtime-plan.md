@@ -1634,6 +1634,19 @@ also improved to `semantic_best=1.16x`, `semantic_median=1.00x`, and
 until worst-case non-regression clears. Treat broad scale-index rewriting as
 closed, but keep the semantic block-32 specialization as a retained kernel
 improvement.
+A row-chain tiled follow-up tried to apply the same `w_idx >> 5` spelling to
+the two-phase tiled row-chain kernels under a block-size-32 encoder guard. It
+compiled but worsened paired Q8 semantic bridge evidence
+(`semantic_median=0.97x`, `semantic_worst=0.94x`), so that path is rejected too.
+Instead, the Q8 candidate artifact now records semantic single-dispatch
+diagnostics. A quick semantic-lane probe showed
+`semantic_single_dispatch_attempts=30`,
+`semantic_single_dispatch_output_read_refusals=0`, and
+`semantic_single_dispatch_block_size_refusals=0`; the full bridge path is not
+blocked by requested intermediate outputs or Q8 block-size guards. The next
+useful target is the compatibility/shape refusal that prevents the one-dispatch
+semantic FFN kernel from replacing the two-phase row-chain tail in the full
+bridge lane.
 The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic,
 full-model Q8 prompt viable, and cheap ggml smoke lanes behind
 `BENCH_COMPETITIVE_LANES`, so a kernel edit can run only

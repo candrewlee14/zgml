@@ -100,6 +100,9 @@ pub const RuntimeProfile = struct {
     semantic_ffn_sublayer_active_width_lanes: u64 = 0,
     semantic_ffn_sublayer_thread_lane_slots: u64 = 0,
     semantic_ffn_sublayer_active_thread_lanes: u64 = 0,
+    semantic_ffn_sublayer_single_dispatch_attempts: u64 = 0,
+    semantic_ffn_sublayer_single_dispatch_output_read_refusals: u64 = 0,
+    semantic_ffn_sublayer_single_dispatch_block_size_refusals: u64 = 0,
     call_count: u32 = 0,
 
     pub fn reset(self: *RuntimeProfile) void {
@@ -160,6 +163,9 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_sublayer_active_width_lanes +%= other.semantic_ffn_sublayer_active_width_lanes;
         self.semantic_ffn_sublayer_thread_lane_slots +%= other.semantic_ffn_sublayer_thread_lane_slots;
         self.semantic_ffn_sublayer_active_thread_lanes +%= other.semantic_ffn_sublayer_active_thread_lanes;
+        self.semantic_ffn_sublayer_single_dispatch_attempts +%= other.semantic_ffn_sublayer_single_dispatch_attempts;
+        self.semantic_ffn_sublayer_single_dispatch_output_read_refusals +%= other.semantic_ffn_sublayer_single_dispatch_output_read_refusals;
+        self.semantic_ffn_sublayer_single_dispatch_block_size_refusals +%= other.semantic_ffn_sublayer_single_dispatch_block_size_refusals;
         self.call_count +%= other.call_count;
     }
 
@@ -305,6 +311,18 @@ pub const RuntimeProfile = struct {
             self.semantic_ffn_sublayer_active_thread_lanes +%= @as(u64, m) *% active_lanes_per_row;
             self.semantic_ffn_sublayer_thread_lane_slots +%= @as(u64, m) *% lane_slots_per_row;
         }
+    }
+
+    pub fn recordSemanticFfnSublayerSingleDispatchAttempt(self: *RuntimeProfile) void {
+        self.semantic_ffn_sublayer_single_dispatch_attempts +%= 1;
+    }
+
+    pub fn recordSemanticFfnSublayerSingleDispatchOutputReadRefusal(self: *RuntimeProfile) void {
+        self.semantic_ffn_sublayer_single_dispatch_output_read_refusals +%= 1;
+    }
+
+    pub fn recordSemanticFfnSublayerSingleDispatchBlockSizeRefusal(self: *RuntimeProfile) void {
+        self.semantic_ffn_sublayer_single_dispatch_block_size_refusals +%= 1;
     }
 };
 
@@ -493,6 +511,11 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
                 @as(f64, @floatFromInt(rt.semantic_ffn_sublayer_total_row_serial_dot_ops)) / @as(f64, @floatFromInt(rt.semantic_ffn_sublayer_tile_parallel_groups)),
             );
         }
+    }
+    if (rt.semantic_ffn_sublayer_single_dispatch_attempts > 0) {
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_", "attempts", rt.semantic_ffn_sublayer_single_dispatch_attempts, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_", "output_read_refusals", rt.semantic_ffn_sublayer_single_dispatch_output_read_refusals, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_", "block_size_refusals", rt.semantic_ffn_sublayer_single_dispatch_block_size_refusals, calls_f);
     }
 }
 
