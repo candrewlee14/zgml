@@ -49,6 +49,7 @@ const MAX_ROW_CHAIN_K: u32 = 2048;
 const QMATMUL_ROW_CHAIN_THREADS: u32 = 256;
 const SEMANTIC_FFN_THREADS: u32 = 512;
 const SEMANTIC_FFN_MAX_DIM: u32 = 1024;
+const SEMANTIC_FFN_MAX_HIDDEN: u32 = 1536;
 // 4 simdgroups per threadgroup (128 threads), each handles 8x8 sub-tiles
 // Shared memory per K step: TILE*8 + 8*TILE = 512 floats = 2 KB
 
@@ -68,6 +69,7 @@ const shader_source =
     \\constant uint MAX_ROW_CHAIN_COLS = 4096;
     \\constant uint MAX_ROW_CHAIN_K = 2048;
     \\constant uint SEMANTIC_FFN_MAX_DIM = 1024;
+    \\constant uint SEMANTIC_FFN_MAX_HIDDEN = 1536;
     \\
     \\struct MatMulParams {
     \\    uint M; uint N; uint K;
@@ -281,6 +283,24 @@ const shader_source =
     \\    float rms_eps;
     \\    uint scale_src_offset;
     \\    uint scaled_dst_offset;
+    \\};
+    \\
+    \\struct QMatmulSemanticFfnInputBridgeParams {
+    \\    uint M; uint H; uint K; uint O;
+    \\    uint input_projection_K;
+    \\    uint input_block_size;
+    \\    uint gate_block_size;
+    \\    uint up_block_size;
+    \\    uint down_block_size;
+    \\    uint source_input_offset;
+    \\    uint source_input_row_stride;
+    \\    uint input_residual_secondary_offset;
+    \\    float input_rms_eps;
+    \\    uint input_scale_src_offset;
+    \\    uint first_op;
+    \\    float output_rms_eps;
+    \\    uint output_scale_src_offset;
+    \\    uint output_dst_offset;
     \\};
     \\
     \\kernel void matmul_row_chain_f32(
@@ -1615,6 +1635,133 @@ const shader_source =
     \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_THREADS) {
     \\        uint linear = row * p.O + col;
     \\        scaled_dst[p.scaled_dst_offset + linear] = residual_values[col] * inv_rms * scale_src[p.scale_src_offset + col];
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_semantic_ffn_input_bridge_f32(
+    \\    device const char*  input_weight_data   [[buffer(0)]],
+    \\    device const float* input_weight_scales [[buffer(1)]],
+    \\    device const char*  gate_weight_data    [[buffer(2)]],
+    \\    device const float* gate_weight_scales  [[buffer(3)]],
+    \\    device const char*  up_weight_data      [[buffer(4)]],
+    \\    device const float* up_weight_scales    [[buffer(5)]],
+    \\    device const char*  down_weight_data    [[buffer(6)]],
+    \\    device const float* down_weight_scales  [[buffer(7)]],
+    \\    device const float* source_input        [[buffer(8)]],
+    \\    device const float* input_residual_secondary [[buffer(9)]],
+    \\    device const float* input_scale_src     [[buffer(10)]],
+    \\    device const float* output_scale_src    [[buffer(11)]],
+    \\    device float*       output_dst          [[buffer(12)]],
+    \\    constant QMatmulSemanticFfnInputBridgeParams& p [[buffer(13)]],
+    \\    uint row [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    if (row >= p.M) return;
+    \\    threadgroup float partial[SEMANTIC_FFN_THREADS];
+    \\    threadgroup float input_values[SEMANTIC_FFN_MAX_DIM];
+    \\    threadgroup float product_values[SEMANTIC_FFN_MAX_HIDDEN];
+    \\    threadgroup float residual_values[SEMANTIC_FFN_MAX_DIM];
+    \\
+    \\    float input_ss = 0.0f;
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_THREADS) {
+    \\        float sum = 0.0f;
+    \\        uint k = 0;
+    \\        for (; k + 3 < p.input_projection_K; k += 4) {
+    \\            uint w_idx0 = k * p.K + col;
+    \\            uint w_idx1 = w_idx0 + p.K;
+    \\            uint w_idx2 = w_idx1 + p.K;
+    \\            uint w_idx3 = w_idx2 + p.K;
+    \\            uint input_base = p.source_input_offset + row * p.source_input_row_stride + k;
+    \\            sum += source_input[input_base] * float(input_weight_data[w_idx0]) * input_weight_scales[w_idx0 >> 5];
+    \\            sum += source_input[input_base + 1] * float(input_weight_data[w_idx1]) * input_weight_scales[w_idx1 >> 5];
+    \\            sum += source_input[input_base + 2] * float(input_weight_data[w_idx2]) * input_weight_scales[w_idx2 >> 5];
+    \\            sum += source_input[input_base + 3] * float(input_weight_data[w_idx3]) * input_weight_scales[w_idx3 >> 5];
+    \\        }
+    \\        for (; k < p.input_projection_K; k++) {
+    \\            uint w_idx = k * p.K + col;
+    \\            sum += source_input[p.source_input_offset + row * p.source_input_row_stride + k] * float(input_weight_data[w_idx]) * input_weight_scales[w_idx >> 5];
+    \\        }
+    \\        uint linear = row * p.K + col;
+    \\        float residual = sum + input_residual_secondary[p.input_residual_secondary_offset + linear];
+    \\        residual_values[col] = residual;
+    \\        input_ss += residual * residual;
+    \\    }
+    \\    partial[tid] = input_ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = SEMANTIC_FFN_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float input_inv_rms = 1.0f / sqrt(partial[0] / float(p.K) + p.input_rms_eps);
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_THREADS) {
+    \\        input_values[col] = residual_values[col] * input_inv_rms * input_scale_src[p.input_scale_src_offset + col];
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint h = tid; h < p.H; h += SEMANTIC_FFN_THREADS) {
+    \\        float gate_sum = 0.0f;
+    \\        float up_sum = 0.0f;
+    \\        uint k = 0;
+    \\        for (; k + 3 < p.K; k += 4) {
+    \\            uint w_idx0 = k * p.H + h;
+    \\            uint w_idx1 = w_idx0 + p.H;
+    \\            uint w_idx2 = w_idx1 + p.H;
+    \\            uint w_idx3 = w_idx2 + p.H;
+    \\            float x0 = input_values[k];
+    \\            float x1 = input_values[k + 1];
+    \\            float x2 = input_values[k + 2];
+    \\            float x3 = input_values[k + 3];
+    \\            gate_sum += x0 * float(gate_weight_data[w_idx0]) * gate_weight_scales[w_idx0 >> 5];
+    \\            gate_sum += x1 * float(gate_weight_data[w_idx1]) * gate_weight_scales[w_idx1 >> 5];
+    \\            gate_sum += x2 * float(gate_weight_data[w_idx2]) * gate_weight_scales[w_idx2 >> 5];
+    \\            gate_sum += x3 * float(gate_weight_data[w_idx3]) * gate_weight_scales[w_idx3 >> 5];
+    \\            up_sum += x0 * float(up_weight_data[w_idx0]) * up_weight_scales[w_idx0 >> 5];
+    \\            up_sum += x1 * float(up_weight_data[w_idx1]) * up_weight_scales[w_idx1 >> 5];
+    \\            up_sum += x2 * float(up_weight_data[w_idx2]) * up_weight_scales[w_idx2 >> 5];
+    \\            up_sum += x3 * float(up_weight_data[w_idx3]) * up_weight_scales[w_idx3 >> 5];
+    \\        }
+    \\        for (; k < p.K; k++) {
+    \\            uint w_idx = k * p.H + h;
+    \\            float x = input_values[k];
+    \\            gate_sum += x * float(gate_weight_data[w_idx]) * gate_weight_scales[w_idx >> 5];
+    \\            up_sum += x * float(up_weight_data[w_idx]) * up_weight_scales[w_idx >> 5];
+    \\        }
+    \\        product_values[h] = fused_unary(p.first_op, gate_sum) * up_sum;
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    float output_ss = 0.0f;
+    \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_THREADS) {
+    \\        float sum = 0.0f;
+    \\        uint h = 0;
+    \\        for (; h + 3 < p.H; h += 4) {
+    \\            uint w_idx0 = h * p.O + col;
+    \\            uint w_idx1 = w_idx0 + p.O;
+    \\            uint w_idx2 = w_idx1 + p.O;
+    \\            uint w_idx3 = w_idx2 + p.O;
+    \\            sum += product_values[h] * float(down_weight_data[w_idx0]) * down_weight_scales[w_idx0 >> 5];
+    \\            sum += product_values[h + 1] * float(down_weight_data[w_idx1]) * down_weight_scales[w_idx1 >> 5];
+    \\            sum += product_values[h + 2] * float(down_weight_data[w_idx2]) * down_weight_scales[w_idx2 >> 5];
+    \\            sum += product_values[h + 3] * float(down_weight_data[w_idx3]) * down_weight_scales[w_idx3 >> 5];
+    \\        }
+    \\        for (; h < p.H; h++) {
+    \\            uint w_idx = h * p.O + col;
+    \\            sum += product_values[h] * float(down_weight_data[w_idx]) * down_weight_scales[w_idx >> 5];
+    \\        }
+    \\        float residual = sum + residual_values[col];
+    \\        residual_values[col] = residual;
+    \\        output_ss += residual * residual;
+    \\    }
+    \\    partial[tid] = output_ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = SEMANTIC_FFN_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float output_inv_rms = 1.0f / sqrt(partial[0] / float(p.O) + p.output_rms_eps);
+    \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_THREADS) {
+    \\        uint linear = row * p.O + col;
+    \\        output_dst[p.output_dst_offset + linear] = residual_values[col] * output_inv_rms * output_scale_src[p.output_scale_src_offset + col];
     \\    }
     \\}
     \\
@@ -4298,6 +4445,7 @@ comptime {
     requireShaderUintConst("MAX_ROW_CHAIN_COLS", MAX_ROW_CHAIN_COLS);
     requireShaderUintConst("MAX_ROW_CHAIN_K", MAX_ROW_CHAIN_K);
     requireShaderUintConst("SEMANTIC_FFN_MAX_DIM", SEMANTIC_FFN_MAX_DIM);
+    requireShaderUintConst("SEMANTIC_FFN_MAX_HIDDEN", SEMANTIC_FFN_MAX_HIDDEN);
     requireKernelBuffers(QMatvecBatchKernel, 24, "qmatvec_batch4_cols4_f32");
 }
 
@@ -4519,6 +4667,27 @@ const QMatmulSemanticFfnParams = extern struct {
     rms_eps: f32,
     scale_src_offset: u32,
     scaled_dst_offset: u32,
+};
+
+const QMatmulSemanticFfnInputBridgeParams = extern struct {
+    M: u32,
+    H: u32,
+    K: u32,
+    O: u32,
+    input_projection_K: u32,
+    input_block_size: u32,
+    gate_block_size: u32,
+    up_block_size: u32,
+    down_block_size: u32,
+    source_input_offset: u32,
+    source_input_row_stride: u32,
+    input_residual_secondary_offset: u32,
+    input_rms_eps: f32,
+    input_scale_src_offset: u32,
+    first_op: u32,
+    output_rms_eps: f32,
+    output_scale_src_offset: u32,
+    output_dst_offset: u32,
 };
 
 const MAX_SLICE_ASSIGN_BATCH: usize = 16;
@@ -5264,6 +5433,7 @@ const MetalKernel = enum(u8) {
     qmatmul_slice_assign_f32,
     qmatmul_elementwise_f32,
     qmatmul_semantic_ffn_sublayer_f32,
+    qmatmul_semantic_ffn_input_bridge_f32,
     qmatmul_row_chain_f32,
     qmatmul_row_chain_tiled_f32,
     qmatmul_row_chain_tiled_partials_f32,
@@ -9315,6 +9485,114 @@ const CompiledProgram = struct {
         return true;
     }
 
+    fn encodeSemanticFfnSublayerInputBridgeSingleDispatch(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, input_q: anytype, input_residual: anytype, input_rn: anytype, input_rp: anytype, input_out: anytype, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, output_residual: anytype, output_rn: anytype, output_rp: anytype, output_out: anytype) bool {
+        if (input_q.M != gate.M or input_q.N != gate.K) return false;
+        if (gate.input != input_out.dst or gate.input_offset != input_out.dst_offset) return false;
+        if (!canFuseRmsnormRepeatMul(input_rn, input_rp, input_out)) return false;
+        if (!program_mod.projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) return false;
+        if (down.M != gate.M or down.K != gate.N or down.N != input_q.N) return false;
+        if (down.input != product.dst or down.input_offset != product.dst_offset) return false;
+        if (input_residual.op != .add or input_residual.n != input_q.M * input_q.N) return false;
+        if (input_rn.src != input_residual.dst or input_rn.src_offset != input_residual.dst_offset) return false;
+        if (input_rn.rows != input_q.M or input_rn.cols != input_q.N) return false;
+        if (output_residual.op != .add or output_residual.n != down.M * down.N) return false;
+        if (output_rn.src != output_residual.dst or output_rn.src_offset != output_residual.dst_offset) return false;
+        if (output_rn.rows != down.M or output_rn.cols != down.N) return false;
+        if (!canFuseRmsnormRepeatMul(output_rn, output_rp, output_out)) return false;
+
+        const input_down_is_src0 = input_residual.src0 == input_q.dst and input_residual.src0_offset == input_q.dst_offset;
+        const input_down_is_src1 = input_residual.src1 == input_q.dst and input_residual.src1_offset == input_q.dst_offset;
+        if (!input_down_is_src0 and !input_down_is_src1) return false;
+        const input_secondary_buf = if (input_down_is_src0) input_residual.src1 else input_residual.src0;
+        const input_secondary_offset = if (input_down_is_src0) input_residual.src1_offset else input_residual.src0_offset;
+
+        const output_down_is_src0 = output_residual.src0 == down.dst and output_residual.src0_offset == down.dst_offset;
+        const output_down_is_src1 = output_residual.src1 == down.dst and output_residual.src1_offset == down.dst_offset;
+        if (!output_down_is_src0 and !output_down_is_src1) return false;
+        const output_secondary_buf = if (output_down_is_src0) output_residual.src1 else output_residual.src0;
+        const output_secondary_offset = if (output_down_is_src0) output_residual.src1_offset else output_residual.src0_offset;
+        if (output_secondary_buf != input_residual.dst or output_secondary_offset != input_residual.dst_offset) return false;
+
+        if (input_q.N > SEMANTIC_FFN_MAX_DIM or input_q.K > SEMANTIC_FFN_MAX_DIM or gate.N > SEMANTIC_FFN_MAX_HIDDEN or down.N > SEMANTIC_FFN_MAX_DIM) return false;
+        if (@as(usize, input_q.weight_idx) >= view.qweight_views.len or
+            @as(usize, gate.weight_idx) >= view.qweight_views.len or
+            @as(usize, up.weight_idx) >= view.qweight_views.len or
+            @as(usize, down.weight_idx) >= view.qweight_views.len)
+        {
+            return false;
+        }
+
+        if (view.outputReadsDenseSpan(input_q.dst, input_q.dst_offset, input_q.M, input_q.N, input_q.dst_row_stride) or
+            view.outputReadsSpan(input_residual.dst, input_residual.dst_offset, input_residual.n) or
+            view.outputReadsSpan(input_rn.dst, input_rn.dst_offset, @as(u64, input_rn.rows) * input_rn.cols) or
+            view.outputReadsSpan(input_rp.dst, input_rp.dst_offset, input_rp.n) or
+            view.outputReadsSpan(input_out.dst, input_out.dst_offset, input_out.n) or
+            view.outputReadsDenseSpan(gate.dst, gate.dst_offset, gate.M, gate.N, gate.dst_row_stride) or
+            view.outputReadsSpan(first.dst, first.dst_offset, first.n) or
+            view.outputReadsDenseSpan(up.dst, up.dst_offset, up.M, up.N, up.dst_row_stride) or
+            view.outputReadsSpan(product.dst, product.dst_offset, product.n) or
+            view.outputReadsDenseSpan(down.dst, down.dst_offset, down.M, down.N, down.dst_row_stride) or
+            view.outputReadsSpan(output_residual.dst, output_residual.dst_offset, output_residual.n) or
+            view.outputReadsSpan(output_rn.dst, output_rn.dst_offset, @as(u64, output_rn.rows) * output_rn.cols) or
+            view.outputReadsSpan(output_rp.dst, output_rp.dst_offset, output_rp.n))
+        {
+            return false;
+        }
+
+        const input_w = view.qweight_views[input_q.weight_idx];
+        const gate_w = view.qweight_views[gate.weight_idx];
+        const up_w = view.qweight_views[up.weight_idx];
+        const down_w = view.qweight_views[down.weight_idx];
+        const input_params = qmatmulParams(input_q, input_w.block_size);
+        const gate_params = qmatmulParams(gate, gate_w.block_size);
+        const up_params = qmatmulParams(up, up_w.block_size);
+        const down_params = qmatmulParams(down, down_w.block_size);
+        if (input_params.block_size != 32 or gate_params.block_size != 32 or up_params.block_size != 32 or down_params.block_size != 32) return false;
+        if (input_params.M != gate_params.M or input_params.N != gate_params.K) return false;
+        if (gate_params.M != up_params.M or gate_params.N != up_params.N or gate_params.K != up_params.K) return false;
+        if (gate_params.input_offset != input_out.dst_offset or up_params.input_offset != input_out.dst_offset or gate_params.input_row_stride != input_q.N or up_params.input_row_stride != input_q.N) return false;
+        if (down_params.M != gate_params.M or down_params.K != gate_params.N or down_params.N != input_params.N) return false;
+
+        const buffers = [_]DeviceBuffer{
+            input_w.data,
+            input_w.scales,
+            gate_w.data,
+            gate_w.scales,
+            up_w.data,
+            up_w.scales,
+            down_w.data,
+            down_w.scales,
+            view.device_bufs[input_q.input],
+            view.device_bufs[input_secondary_buf],
+            view.device_bufs[input_rp.src],
+            view.device_bufs[output_rp.src],
+            view.device_bufs[output_out.dst],
+        };
+        const params = QMatmulSemanticFfnInputBridgeParams{
+            .M = gate_params.M,
+            .H = gate_params.N,
+            .K = gate_params.K,
+            .O = down_params.N,
+            .input_projection_K = input_params.K,
+            .input_block_size = input_params.block_size,
+            .gate_block_size = gate_params.block_size,
+            .up_block_size = up_params.block_size,
+            .down_block_size = down_params.block_size,
+            .source_input_offset = input_params.input_offset,
+            .source_input_row_stride = input_params.input_row_stride,
+            .input_residual_secondary_offset = input_secondary_offset,
+            .input_rms_eps = input_rn.eps,
+            .input_scale_src_offset = input_rp.src_offset,
+            .first_op = @intFromEnum(first.op),
+            .output_rms_eps = output_rn.eps,
+            .output_scale_src_offset = output_rp.src_offset,
+            .output_dst_offset = output_out.dst_offset,
+        };
+        exec.profile.recordSemanticFfnSublayer(params.M, params.H, params.K, params.O, SEMANTIC_FFN_THREADS);
+        exec.encodeKernel(.qmatmul_semantic_ffn_input_bridge_f32, &buffers, params, 13, .{ .gx = gate.M }, SEMANTIC_FFN_THREADS);
+        return true;
+    }
+
     fn tryEncodeSemanticFfnSublayerWithInputRowChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (command.op_count != 14) return false;
         const start: usize = @intCast(command.op_start);
@@ -9345,6 +9623,25 @@ const CompiledProgram = struct {
             .op_count = 9,
             .projection_kind = command.projection_kind,
         };
+        const input_q = deviceOpAt(.qmatmul, ops, start) orelse return false;
+        const input_residual = deviceOpAt(.elementwise, ops, start + 1) orelse return false;
+        const input_rn = deviceOpAt(.rmsnorm, ops, start + 2) orelse return false;
+        const input_rp = deviceOpAt(.repeat, ops, start + 3) orelse return false;
+        const input_out = deviceOpAt(.elementwise, ops, start + 4) orelse return false;
+        const gate = deviceOpAt(.qmatmul, ops, start + 5) orelse return false;
+        const first = deviceOpAt(.elementwise, ops, start + 6) orelse return false;
+        const up = deviceOpAt(.qmatmul, ops, start + 7) orelse return false;
+        const product = deviceOpAt(.elementwise, ops, start + 8) orelse return false;
+        const down = deviceOpAt(.qmatmul, ops, start + 9) orelse return false;
+        const output_residual = deviceOpAt(.elementwise, ops, start + 10) orelse return false;
+        const output_rn = deviceOpAt(.rmsnorm, ops, start + 11) orelse return false;
+        const output_rp = deviceOpAt(.repeat, ops, start + 12) orelse return false;
+        const output_out = deviceOpAt(.elementwise, ops, start + 13) orelse return false;
+        if (self.command_policy.fuse_semantic_ffn_sublayer_single_dispatch and
+            self.encodeSemanticFfnSublayerInputBridgeSingleDispatch(exec, view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out))
+        {
+            return true;
+        }
         if (!self.tryEncodeProjectionRowChainCommand(exec, view, ops, row_command)) return false;
         if (!self.tryEncodeSemanticFfnSublayerCommand(exec, view, ops, semantic_command)) return false;
         const dispatches = exec.profile.backend_dispatch_count -| before_dispatches;

@@ -1577,11 +1577,17 @@ proved the desired command shape with zero fallback
 not the final performance answer (`semantic_speedup=0.96x` in that one-attempt
 probe). Keep the default on the 151-command semantic-promoted path until the
 bridge command owns a true throughput kernel.
-The qsemantic input-bridge microscope now makes that conservative encoder
-shape machine-readable: `semantic_ffn_with_input_decomposed_*` records the
-absorbed command as one structural command but five backend dispatches
-(`row_chain=2`, `pair=1`, `tail=2`). The next kernel must make those counters
-fall, not merely rename the command.
+The qsemantic input-bridge microscope now has the first real width-parallel
+replacement for that conservative encoder. The legacy absorbed command recorded
+one structural command but five backend dispatches (`row_chain=2`, `pair=1`,
+`tail=2`). The source-current `qmatmul_semantic_ffn_input_bridge_f32` path folds
+the input projection/residual/norm, gate/up/product, down/residual/norm, and
+final scale into one guarded dispatch for the SmolLM `576 x 1536 x 576` bridge
+shape. The focused artifact reports `absorbed=4.62x`,
+`runtime_dispatches=1`, `semantic_with_input_dispatches=1`,
+`decomposed_dispatches=0`, `pair_dispatches=0`, `tail_dispatches=0`, and
+`spilled_input=0`. Keep it as an isolated bridge proof until Q8 prompt and ggml
+evidence prove the promotion boundary.
 After the one-dispatch semantic throughput kernel became a real measured lane,
 the full-model default was kept on `promptProjectionRowChainCommand()` while
 `--metal-prompt-semantic-throughput-candidate` remains the explicit diagnostic

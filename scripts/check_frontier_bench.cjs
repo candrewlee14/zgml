@@ -142,6 +142,14 @@ function metric(output, label, key) {
   return value;
 }
 
+function optionalMetric(output, label, key) {
+  const structured = jsonMetric(output, label, key);
+  if (structured !== null) return structured;
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = output.match(new RegExp(`${escaped}[^\\n]*${key}=\\s*([0-9]+(?:\\.[0-9]+)?)`));
+  return match ? Number(match[1]) : null;
+}
+
 function p50(output, label) {
   return metric(output, label, "p50");
 }
@@ -1847,11 +1855,11 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const absorbedSemanticWithInputRefused = metric(output, absorbedProfileLabel, "runtime_semantic_ffn_with_input_refused");
   const absorbedFallbackPairDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_sublayer_fallback_pair_dispatches");
   const absorbedFallbackTailDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_sublayer_fallback_tail_dispatches");
-  const absorbedDecomposedCount = metric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_count");
-  const absorbedDecomposedDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_dispatches");
-  const absorbedDecomposedRowChainDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_row_chain_dispatches");
-  const absorbedDecomposedPairDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_pair_dispatches");
-  const absorbedDecomposedTailDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_tail_dispatches");
+  const absorbedDecomposedCount = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_count") ?? 0;
+  const absorbedDecomposedDispatches = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_dispatches") ?? 0;
+  const absorbedDecomposedRowChainDispatches = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_row_chain_dispatches") ?? 0;
+  const absorbedDecomposedPairDispatches = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_pair_dispatches") ?? 0;
+  const absorbedDecomposedTailDispatches = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_tail_dispatches") ?? 0;
   const absorbedRowChainTiledCount = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_count");
   const absorbedRowChainTiledRowTileGroups = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_row_tile_groups");
   const absorbedRowChainTiledNTiles = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_n_tiles");
@@ -1865,6 +1873,20 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const absorbedRowChainTiledSpilledInput = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_spilled_input");
   const absorbedRowChainTiledOutputSpills = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_output_spills");
   const absorbedDispatchSplit = absorbedShapeSemantic > 0 ? absorbedRuntimeDispatches / absorbedShapeSemantic : NaN;
+  const absorbedUsesDirectKernel =
+    absorbedRuntimeDispatches === 1 &&
+    absorbedProjectionRowChainDispatches === 0 &&
+    absorbedSemanticDispatches === 0 &&
+    absorbedSemanticWithInputDispatches === 1 &&
+    absorbedSemanticWithInputAttempts === 1 &&
+    absorbedSemanticWithInputRefused === 0;
+  const absorbedUsesDecomposedKernel =
+    absorbedRuntimeDispatches === 5 &&
+    absorbedProjectionRowChainDispatches === 0 &&
+    absorbedSemanticDispatches === 0 &&
+    absorbedSemanticWithInputDispatches === 5 &&
+    absorbedSemanticWithInputAttempts === 1 &&
+    absorbedSemanticWithInputRefused === 0;
 
   const failures = [];
   if (commandSpeedup < 1.0) failures.push(`semantic input command ${commandSpeedup.toFixed(2)}x < 1.00x`);
@@ -1880,19 +1902,31 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (commandRuntimeDispatches !== 5 || commandProjectionRowChainDispatches !== 2 || commandSemanticDispatches !== 3 || commandSemanticWithInputDispatches !== 0) {
     failures.push("semantic input command runtime must stay decomposed as row_chain=2 semantic=3 dispatches");
   }
-  if (absorbedRuntimeDispatches !== 5 || absorbedProjectionRowChainDispatches !== 0 || absorbedSemanticDispatches !== 0 || absorbedSemanticWithInputDispatches !== 5 || absorbedSemanticWithInputAttempts !== 1 || absorbedSemanticWithInputRefused !== 0) {
-    failures.push("semantic input absorbed runtime must expose current diagnostic 5-dispatch absorbed command");
+  if (!absorbedUsesDirectKernel && !absorbedUsesDecomposedKernel) {
+    failures.push("semantic input absorbed runtime must expose either the 1-dispatch width-parallel kernel or the legacy 5-dispatch decomposition");
   }
-  if (commandFallbackPairDispatches !== 1 || commandFallbackTailDispatches !== 2 || absorbedFallbackPairDispatches !== 1 || absorbedFallbackTailDispatches !== 2) {
-    failures.push("semantic input fallback split must stay pair=1 tail=2 for command and absorbed profiles");
+  if (commandFallbackPairDispatches !== 1 || commandFallbackTailDispatches !== 2) {
+    failures.push("semantic input command fallback split must stay pair=1 tail=2");
   }
-  if (absorbedDecomposedCount !== 1 || absorbedDecomposedDispatches !== 5 || absorbedDecomposedRowChainDispatches !== 2 || absorbedDecomposedPairDispatches !== 1 || absorbedDecomposedTailDispatches !== 2) {
+  if (absorbedUsesDecomposedKernel && (absorbedFallbackPairDispatches !== 1 || absorbedFallbackTailDispatches !== 2)) {
+    failures.push("semantic input decomposed absorbed fallback split must stay pair=1 tail=2");
+  }
+  if (absorbedUsesDirectKernel && (absorbedFallbackPairDispatches !== 0 || absorbedFallbackTailDispatches !== 0)) {
+    failures.push("semantic input direct absorbed kernel must not use fallback pair/tail dispatches");
+  }
+  if (absorbedUsesDecomposedKernel && (absorbedDecomposedCount !== 1 || absorbedDecomposedDispatches !== 5 || absorbedDecomposedRowChainDispatches !== 2 || absorbedDecomposedPairDispatches !== 1 || absorbedDecomposedTailDispatches !== 2)) {
     failures.push("semantic input absorbed decomposition must stay count=1 dispatches=5 row_chain=2 pair=1 tail=2 until the width-parallel kernel replaces it");
   }
-  if (absorbedRowChainTiledCount !== 2 || absorbedRowChainTiledRowTileGroups !== 8 || absorbedRowChainTiledNTiles !== 36 || absorbedRowChainTiledSerialTileLoops !== 144 || absorbedRowChainTiledTwoPhaseCount !== 2 || absorbedRowChainTiledFinalizeTileGroups !== 144 || absorbedRowChainTiledFinalizeElements !== 147456) {
+  if (absorbedUsesDirectKernel && (absorbedDecomposedCount !== 0 || absorbedDecomposedDispatches !== 0 || absorbedDecomposedRowChainDispatches !== 0 || absorbedDecomposedPairDispatches !== 0 || absorbedDecomposedTailDispatches !== 0)) {
+    failures.push("semantic input direct absorbed kernel must not report decomposed dispatch counters");
+  }
+  if (absorbedUsesDecomposedKernel && (absorbedRowChainTiledCount !== 2 || absorbedRowChainTiledRowTileGroups !== 8 || absorbedRowChainTiledNTiles !== 36 || absorbedRowChainTiledSerialTileLoops !== 144 || absorbedRowChainTiledTwoPhaseCount !== 2 || absorbedRowChainTiledFinalizeTileGroups !== 144 || absorbedRowChainTiledFinalizeElements !== 147456)) {
     failures.push("semantic input absorbed tiled profile must expose two two-phase row-chain leaves");
   }
-  if (absorbedRowChainTiledSpilledElementwise !== 1 || absorbedRowChainTiledSpilledInput !== 576 || absorbedRowChainTiledOutputSpills !== 0) {
+  if (absorbedUsesDirectKernel && (absorbedRowChainTiledCount !== 0 || absorbedRowChainTiledSpilledElementwise !== 0 || absorbedRowChainTiledSpilledInput !== 0 || absorbedRowChainTiledOutputSpills !== 0)) {
+    failures.push("semantic input direct absorbed kernel must not report row-chain tiled spills");
+  }
+  if (absorbedUsesDecomposedKernel && (absorbedRowChainTiledSpilledElementwise !== 1 || absorbedRowChainTiledSpilledInput !== 576 || absorbedRowChainTiledOutputSpills !== 0)) {
     failures.push("semantic input absorbed spill profile must stay spilled_elementwise=1 spilled_input=576 output_spills=0");
   }
 
@@ -2092,7 +2126,7 @@ function runFocusedSemanticInputBridgeGate() {
   const bestAbsorbedDiff = bestMin(attempts, "absorbedMaxAbsDiff");
   if (!Number.isFinite(bestAbsorbedSpeedup) || bestAbsorbedSpeedup < 1.0) aggregate.push(`semantic input absorbed best ${Number.isFinite(bestAbsorbedSpeedup) ? bestAbsorbedSpeedup.toFixed(2) : "n/a"}x < 1.00x`);
   if (!Number.isFinite(bestAbsorbedDiff) || bestAbsorbedDiff > projectionRowChainMaxAbsDiffCeil) aggregate.push(`semantic input absorbed best max_abs_diff ${Number.isFinite(bestAbsorbedDiff) ? bestAbsorbedDiff.toFixed(6) : "n/a"} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
-  if (!anyEquals(attempts, [
+  const hasDecomposedAbsorbedProfile = anyEquals(attempts, [
     ["absorbedShapeCommands", 1],
     ["absorbedShapeSemantic", 1],
     ["absorbedShapeRowChains", 1],
@@ -2108,7 +2142,25 @@ function runFocusedSemanticInputBridgeGate() {
     ["absorbedRowChainTiledCount", 2],
     ["absorbedRowChainTiledSpilledInput", 576],
     ["absorbedRowChainTiledOutputSpills", 0],
-  ])) aggregate.push("semantic input absorbed profile did not match in any attempt");
+  ]);
+  const hasDirectAbsorbedProfile = anyEquals(attempts, [
+    ["absorbedShapeCommands", 1],
+    ["absorbedShapeSemantic", 1],
+    ["absorbedShapeRowChains", 1],
+    ["absorbedShapeBridges", 0],
+    ["absorbedShapeCoveredOps", 14],
+    ["absorbedShapeSavedDispatches", 13],
+    ["absorbedRuntimeDispatches", 1],
+    ["absorbedSemanticWithInputDispatches", 1],
+    ["absorbedSemanticWithInputAttempts", 1],
+    ["absorbedSemanticWithInputRefused", 0],
+    ["absorbedFallbackPairDispatches", 0],
+    ["absorbedFallbackTailDispatches", 0],
+    ["absorbedRowChainTiledCount", 0],
+    ["absorbedRowChainTiledSpilledInput", 0],
+    ["absorbedRowChainTiledOutputSpills", 0],
+  ]);
+  if (!hasDecomposedAbsorbedProfile && !hasDirectAbsorbedProfile) aggregate.push("semantic input absorbed profile did not match in any attempt");
 
   const line = aggregate.length === 0 ? best.line.replace("frontier qsemantic input bridge gate: fail", "frontier qsemantic input bridge gate: pass") : best.line;
   const artifactPath = writeFocusedSemanticInputBridgeArtifact(best, attempts, aggregate, line);

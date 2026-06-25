@@ -230,12 +230,15 @@ machine for both prompt/prefill and decode.
   one-attempt probe reported `semantic_speedup=0.96x`, so the default stays on
   the known 151-command semantic-promoted path until the bridge command gets a
   real throughput kernel instead of just reusing the existing two-piece encoder.
-  The exact input-bridge microscope now serializes that limitation explicitly as
-  `semantic_ffn_with_input_decomposed_*`: one absorbed command still executes as
-  five backend dispatches, split into two input-row-chain dispatches, one
-  projection-pair dispatch, and two semantic tail dispatches. That is a
-  before/after contract for the future width-parallel kernel, not a parity
-  claim.
+  The exact input-bridge microscope now serializes that limitation explicitly.
+  The legacy absorbed command executed as five backend dispatches
+  (`row_chain=2`, `pair=1`, `tail=2`); the source-current input-bridge kernel
+  replaces that with one `semantic_ffn_sublayer_with_input_row_chain` dispatch
+  for the `m=128,h=1536,k=576,o=576` microscope. The latest focused artifact
+  reports `absorbed=4.62x`, `runtime_dispatches=1`,
+  `semantic_with_input_dispatches=1`, `decomposed_dispatches=0`,
+  `pair_dispatches=0`, `tail_dispatches=0`, and `spilled_input=0`. Treat this
+  as an isolated width-parallel bridge proof, not a full-model parity claim.
 - The current weakest checked lane is still Q8_0 prompt, but its command
   pressure has moved from the old `projection_chain:60` baseline to the
   promoted semantic-default shape: 151 ProgramCommands, 30 semantic row-chain
