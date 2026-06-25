@@ -13,7 +13,7 @@ user workflow -> eager/autograd proof -> checkpoint or state proof -> compiled i
 
 Compiled inference does not mean every eager training op lowers natively. It
 means the stable inference shape for that workflow can expose
-`compileForInference`, `compileSupport`, `kernelPlan`, or a Program/Session
+`compileInference`, `compileForInference`, `compileSupport`, `kernelPlan`, or a Program/Session
 proof without silent fallback.
 
 The single command for this claim is:
@@ -35,7 +35,7 @@ For a fast static guard while editing docs or smoke labels, use
 | Classifier with cross entropy | Train a classifier with `CrossEntropyLoss`, `fitClassifier`, evaluation/prediction helpers, checkpoint restore, and allocation-free compiled inference. | `examples/node_training/train_classifier.cjs`; README classifier section; `Linear -> LogSoftmax` package smoke Program evidence. | Broader native lowering for larger classifier heads and device/dtype choices. |
 | Conv2d feature model | Run Conv2d forward/backward, state dicts, and fixed native-subset compiled Conv2d/Conv2d+ReLU paths. | `examples/node_training/train_conv2d.cjs`; `src/ts/smokes/package_smoke_core.ts` Conv2d eager, gradient, stateDict, compileSupport, and compiled-output assertions; `docs/frontend-autograd-coverage.md` Conv/pool row. | Wider native Conv2d shapes. |
 | Embedding/token classifier | Express token models with `Embedding`, `Linear`, `LogSoftmax`, compile support, native Program binding, and eager/compiled parity. | `examples/node_training/train_token_classifier.cjs`; `src/ts/smokes/package_smoke_core.ts` Embedding/Linear/LogSoftmax token-head Program evidence; README token-head notes; checkpoint restore and allocation-free compiled logits. | Broader third-party weight-format import adapters. |
-| Checkpointed compiled inference | Train or restore a model, create a JSON-safe checkpoint, compile with the friendly handle, inspect proof, and run into caller-owned output. | README quickstart; `examples/quickstart/zgml-first.cjs`; `examples/node_training/quickstart.cjs` contract smoke; `compile.compileForInference` package smoke with `forward`, `stepTensor`, `into`, and `prepareInto`. | Browser/Wasm/WebGPU compiled frontend adapter remains partial. |
+| Checkpointed compiled inference | Train or restore a model, create a JSON-safe checkpoint, compile with the friendly handle, inspect proof, and run into caller-owned output. | README quickstart; `examples/quickstart/zgml-first.cjs`; `examples/node_training/quickstart.cjs` contract smoke; `zgml.compileInference` / `compile.compileForInference` package smoke with `forward`, `stepTensor`, `into`, and `prepareInto`. | Browser/Wasm/WebGPU compiled frontend adapter remains partial. |
 
 ## Product Rule
 

@@ -57,7 +57,7 @@ zgml.checkpoint.restore(loaded, { model, optimizer, scheduler, prefix: "xor", st
 // Direct in-memory restore also works:
 zgml.checkpoint.restore(snapshot, { model, optimizer, scheduler, prefix: "xor", strict: true });
 
-const fast = zgml.compileForInference(model, { inputShape: [2] as const });
+const fast = zgml.compileInference(model, { inputShape: [2] as const });
 const proof = fast.explain();
 const support = fast.compileSupport();
 const out = fast.into(new Float32Array(1), zgml.tensor([1, 0], [2] as const));
@@ -159,7 +159,7 @@ zgml.train.evaluate(classifierLoader, (batch) => {
 });
 const predictions = zgml.train.predictClassifier(classifier, classifierLoader);
 
-const fastClassifier = zgml.compileForInference(classifier, { inputShape: [2] as const });
+const fastClassifier = zgml.compileInference(classifier, { inputShape: [2] as const });
 const input = zgml.tensor([1, -1], [2] as const);
 const logits = zgml.inference_mode(() => fastClassifier.forward(input));
 const output = new Float32Array(2);

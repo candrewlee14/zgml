@@ -119,7 +119,7 @@ export const rootSurfacePolicy = Object.freeze({
   simpleFriendlyNamespace: "simple",
   compatibilityFriendlyNamespace: "torch",
   firstContactSurfaceIsSmall: true,
-  firstContactRuntimeHandle: "compile.compileForInference",
+  firstContactRuntimeHandle: "zgml.compileInference",
   compatibilityExportsRemainPublic: true,
   internalPackagePolicyOnly: true,
   classificationCoversRootNamespaceExports: true,

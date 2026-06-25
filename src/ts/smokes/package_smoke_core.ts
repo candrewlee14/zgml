@@ -3940,6 +3940,10 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     typeof torch.functional?.mse !== "function" ||
     typeof torch.compile !== "function" ||
     typeof torch.compile?.compile !== "function" ||
+    typeof torch.compileInference !== "function" ||
+    torch.compileInference !== torch.compile.compileForInference ||
+    typeof torch.compile_inference !== "function" ||
+    torch.compile_inference !== torch.compile.compileForInference ||
     typeof torch.compileForInference !== "function" ||
     torch.compileForInference !== torch.compile.compileForInference ||
     typeof torch.compile_for_inference !== "function" ||
@@ -4615,7 +4619,9 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     typeof adapter.compile.trace !== "function" ||
     typeof adapter.compile.compile !== "function" ||
     typeof adapter.compile.compileForInference !== "function" ||
-    typeof adapter.compile.compile_for_inference !== "function"
+    typeof adapter.compile.compile_for_inference !== "function" ||
+    typeof adapter.compileInference !== "function" ||
+    adapter.compileInference !== adapter.compile.compileForInference
   ) {
     throw new Error(`${label} adapter root must expose the TS-authored compile namespace`);
   }

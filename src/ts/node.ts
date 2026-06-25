@@ -21,4 +21,8 @@ export {
   save,
   load,
   compile,
+  compileInference,
+  compile_inference,
+  compileForInference,
+  compile_for_inference,
 } from "./adapters/node_native_runtime.js";

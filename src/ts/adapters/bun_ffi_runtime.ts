@@ -2558,6 +2558,7 @@ export const simple = Object.freeze({
   F,
   functional: F,
   compile,
+  compileInference: compile.compileForInference,
   compileForInference: compile.compileForInference,
   lazy: sharedFrontend.lazy,
   optim,
@@ -2672,6 +2673,10 @@ export const torch = createAdapterTorchNamespace({
   nativeEager,
 });
 export const zgml = torch;
+export const compileInference = compile.compileForInference;
+export const compile_inference = compile.compile_for_inference;
+export const compileForInference = compile.compileForInference;
+export const compile_for_inference = compile.compile_for_inference;
 
 const {
   TinyLlamaModel,

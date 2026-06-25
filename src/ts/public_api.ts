@@ -6643,6 +6643,8 @@ export type PublicTorchNamespace = Readonly<{
   F: NnFunctionalNamespace;
   functional: NnFunctionalNamespace;
   compile: PublicCompileNamespace;
+  compileInference: PublicCompileNamespace["compileForInference"];
+  compile_inference: PublicCompileNamespace["compile_for_inference"];
   compileForInference: PublicCompileNamespace["compileForInference"];
   compile_for_inference: PublicCompileNamespace["compile_for_inference"];
   nativeEager: PublicNativeEagerNamespace;
@@ -6696,6 +6698,7 @@ export type PublicSimpleNamespace = Readonly<Pick<PublicZgmlNamespace,
   | "F"
   | "functional"
   | "compile"
+  | "compileInference"
   | "compileForInference"
   | "lazy"
   | "optim"
@@ -6713,6 +6716,10 @@ export type PublicSimpleNamespace = Readonly<Pick<PublicZgmlNamespace,
 export declare const simple: PublicSimpleNamespace;
 export declare const zgml: PublicZgmlNamespace;
 export declare const torch: PublicTorchNamespace;
+export declare const compileInference: PublicCompileNamespace["compileForInference"];
+export declare const compile_inference: PublicCompileNamespace["compile_for_inference"];
+export declare const compileForInference: PublicCompileNamespace["compileForInference"];
+export declare const compile_for_inference: PublicCompileNamespace["compile_for_inference"];
 
 export type TinyLinearDesc = {
   inputLen: number;

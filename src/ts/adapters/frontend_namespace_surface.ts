@@ -1198,6 +1198,8 @@ export function createAdapterTorchNamespace(options: AdapterTorchNamespaceOption
     F: options.F,
     functional: options.F,
     compile: options.compile,
+    compileInference: compileNamespace.compileForInference,
+    compile_inference: compileNamespace.compileForInference,
     compileForInference: compileNamespace.compileForInference,
     compile_for_inference: compileNamespace.compile_for_inference,
     nativeEager: options.nativeEager,

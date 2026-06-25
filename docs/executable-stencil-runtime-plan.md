@@ -166,7 +166,7 @@ run hot loops through a tiny executable handle
 The first-contact API should be the tiny executable handle:
 
 ```ts
-const fast = zgml.compileForInference(model, { inputShape: [2] as const });
+const fast = zgml.compileInference(model, { inputShape: [2] as const });
 const y = fast.forward(input);
 const out = fast.into(new Float32Array(2), input);
 const proof = fast.explain();
@@ -539,7 +539,7 @@ piece of compile namespace behavior while the host-specific native compiler
 hooks remain injected.
 The canonical tutorial `examples/quickstart/zgml-first.cjs` now keeps the same
 first-contact story small: train, checkpoint, restore,
-`zgml.compileForInference(...)`, run allocation-free `into(...)`, and print a
+`zgml.compileInference(...)`, run allocation-free `into(...)`, and print a
 plain proof line. The assertion-heavy contract smoke remains
 `examples/node_training/quickstart.cjs`; it exercises `compileSupport()`,
 `explain()`, `preflight()`, `kernelPlan()`, and `compilerSignatures()` for drift

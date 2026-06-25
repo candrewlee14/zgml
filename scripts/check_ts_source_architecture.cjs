@@ -297,8 +297,8 @@ function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
   if (!surfaceSource.includes("firstContactSurfaceIsSmall: true")) {
     errors.push(`${surfacePath} must keep the ideal first-contact surface explicit and small`);
   }
-  if (!surfaceSource.includes('firstContactRuntimeHandle: "compile.compileForInference"')) {
-    errors.push(`${surfacePath} must name compile.compileForInference as the first-contact runtime handle`);
+  if (!surfaceSource.includes('firstContactRuntimeHandle: "zgml.compileInference"')) {
+    errors.push(`${surfacePath} must name zgml.compileInference as the first-contact runtime handle`);
   }
   if (!surfaceSource.includes("firstContactIsSubsetOfStableSurface: true")) {
     errors.push(`${surfacePath} must assert that first-contact exports are a subset of the stable surface`);
@@ -358,8 +358,8 @@ function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
   if (!readmeSource.includes("`zgml` is the canonical package identity")) {
     errors.push("README.md must present zgml as the canonical package identity");
   }
-  if (!readmeSource.includes("zgml.compileForInference(model")) {
-    errors.push("README.md must teach zgml.compileForInference as the first-contact compiled inference handle");
+  if (!readmeSource.includes("zgml.compileInference(model")) {
+    errors.push("README.md must teach zgml.compileInference as the first-contact compiled inference handle");
   }
   if (!readmeSource.includes("compile.compileForInference(model")) {
     errors.push("README.md must keep the explicit compile namespace path documented for users who avoid the friendly root value");

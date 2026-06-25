@@ -246,7 +246,7 @@ const sourceContracts = Object.freeze({
     'rootEntry: "src/ts/index.ts"',
     "internalPackagePolicyOnly: true",
     "firstContactSurfaceIsSmall: true",
-    'firstContactRuntimeHandle: "compile.compileForInference"',
+    'firstContactRuntimeHandle: "zgml.compileInference"',
     "classificationCoversRootNamespaceExports: true",
     "firstContactIsSubsetOfStableSurface: true",
     "newProductSurfaceGoesThroughStableNamespaces: true",
@@ -259,7 +259,7 @@ const sourceContracts = Object.freeze({
     "stableRootNamespaces",
     "allowedStatuses",
     "requiredCapabilities",
-    "compile.compileForInference(...)",
+    "zgml.compileInference(...)",
     "frontend capability matrix ok:",
   ]),
   "src/ts/browser.ts": Object.freeze([

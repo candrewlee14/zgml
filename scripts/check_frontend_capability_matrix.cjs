@@ -103,7 +103,7 @@ const firstContactValues = exportedConstArray(publicSurface, "firstContactRootVa
 const stableNamespaces = exportedConstArray(publicSurface, "stableRootNamespaces");
 const stableValues = exportedConstArray(publicSurface, "stableRootValues");
 const firstContactDoc = firstContactBlock();
-const runtimeHandle = "compile.compileForInference(...)";
+const runtimeHandle = "zgml.compileInference(...)";
 const docFirstContactValues = firstContactDoc.filter((entry) => firstContactValues.includes(entry));
 const docFirstContactNamespaces = firstContactDoc.filter((entry) => !firstContactValues.includes(entry) && entry !== runtimeHandle);
 
