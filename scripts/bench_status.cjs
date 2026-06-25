@@ -1066,14 +1066,21 @@ function q8PromptNextTarget(path, pressurePath = path, bridgePath = null) {
     const freshSemanticAbsorbed = pressureData?.lanes?.semantic?.semanticFfnSublayersWithInputRowChain ?? "n/a";
     const freshSemanticAbsorbedDispatches = pressureData?.lanes?.semantic?.semanticFfnSublayerWithInputRowChainDispatches ?? "n/a";
     const freshSemanticAbsorbedSplit = formatNumber(pressureData?.lanes?.semantic?.semanticAbsorbedDispatchSplit, 2);
+    const freshSemanticAbsorbedSplitValue = Number(pressureData?.lanes?.semantic?.semanticAbsorbedDispatchSplit);
     let bridgeSemanticSplit = "n/a";
+    let bridgeSemanticSplitValue = NaN;
     if (bridgePath) {
       try {
-        bridgeSemanticSplit = formatNumber(readJson(bridgePath)?.bridgeFfn?.semanticDispatchSplit, 2);
+        bridgeSemanticSplitValue = Number(readJson(bridgePath)?.bridgeFfn?.semanticDispatchSplit);
+        bridgeSemanticSplit = formatNumber(bridgeSemanticSplitValue, 2);
       } catch {
         bridgeSemanticSplit = "n/a";
+        bridgeSemanticSplitValue = NaN;
       }
     }
+    const bridgeInputSplitDelta = Number.isFinite(freshSemanticAbsorbedSplitValue) && Number.isFinite(bridgeSemanticSplitValue)
+      ? formatNumber(freshSemanticAbsorbedSplitValue - bridgeSemanticSplitValue, 2)
+      : "n/a";
     const freshSingleDispatchRefusals = pressureData?.lanes?.semantic?.singleDispatchRefusals;
     const freshDimRefusals = Number(freshSingleDispatchRefusals?.dim ?? 0);
     const freshRefusals = formatSemanticSingleDispatchRefusals(freshSingleDispatchRefusals);
@@ -1095,7 +1102,7 @@ function q8PromptNextTarget(path, pressurePath = path, bridgePath = null) {
         Number.isFinite(pressureSemanticWorstSpeedup) && pressureSemanticWorstSpeedup >= 1
           ? "steady_semantic_bridge_candidate"
           : "semantic_bridge_throughput_kernel";
-      return `q8_prompt=semantic_bridge_candidate:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:absorbed=${freshSemanticAbsorbed}:absorbed_dispatch=${freshSemanticAbsorbedDispatches}:absorbed_split=${freshSemanticAbsorbedSplit}:bridge_semantic_split=${bridgeSemanticSplit}:single_dispatch_refusals=${freshRefusals}:dim_refusal_shape=${freshDimRefusalShape}:best=${formatRatio(pressureSemanticBestSpeedup)}:median=${formatRatio(pressureSemanticSpeedup)}:worst=${formatRatio(pressureSemanticWorstSpeedup)}:speedup=${formatRatio(pressureSemanticSpeedup)}:next=${next}`;
+      return `q8_prompt=semantic_bridge_candidate:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:absorbed=${freshSemanticAbsorbed}:absorbed_dispatch=${freshSemanticAbsorbedDispatches}:absorbed_split=${freshSemanticAbsorbedSplit}:bridge_semantic_split=${bridgeSemanticSplit}:bridge_input_split_delta=${bridgeInputSplitDelta}:single_dispatch_refusals=${freshRefusals}:dim_refusal_shape=${freshDimRefusalShape}:best=${formatRatio(pressureSemanticBestSpeedup)}:median=${formatRatio(pressureSemanticSpeedup)}:worst=${formatRatio(pressureSemanticWorstSpeedup)}:speedup=${formatRatio(pressureSemanticSpeedup)}:next=${next}`;
     }
     if (pressureStatus === "promoted-default" || pressureSemanticThroughput === "promoted") {
       return `q8_prompt=promoted_semantic_default:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:absorbed=${freshSemanticAbsorbed}:absorbed_dispatch=${freshSemanticAbsorbedDispatches}:absorbed_split=${freshSemanticAbsorbedSplit}:next=${bridgeNext}`;
