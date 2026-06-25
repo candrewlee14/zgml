@@ -865,6 +865,12 @@ function checkScripts() {
   if (scripts["dev:perf:next:qsemantic-bridge:run"] !== "BENCH_NEXT_PERF_LANE=qsemantic_bridge BENCH_NEXT_PERF_BUILD=0 node scripts/run_next_perf.cjs") {
     errors.push("package.json dev:perf:next:qsemantic-bridge:run must keep the no-rebuild exact bridge-shape qsemantic microscope");
   }
+  if (scripts["dev:perf:next:q8-prompt-semantic"] !== "BENCH_NEXT_PERF_LANE=q8_prompt_semantic BENCH_NEXT_PERF_BUILD=1 node scripts/run_next_perf.cjs") {
+    errors.push("package.json dev:perf:next:q8-prompt-semantic must keep the rebuild-backed full-model Q8 semantic microscope");
+  }
+  if (scripts["dev:perf:next:q8-prompt-semantic:run"] !== "BENCH_NEXT_PERF_LANE=q8_prompt_semantic BENCH_NEXT_PERF_BUILD=0 node scripts/run_next_perf.cjs") {
+    errors.push("package.json dev:perf:next:q8-prompt-semantic:run must keep the no-rebuild full-model Q8 semantic microscope");
+  }
   if (scripts["dev:perf:next:build"] !== "BENCH_NEXT_PERF_BUILD=1 node scripts/run_next_perf.cjs") {
     errors.push("package.json dev:perf:next:build must keep the rebuild-backed artifact-directed next bottleneck microscope");
   }
@@ -928,7 +934,7 @@ function checkScripts() {
     ":fresh=source:[^, ]+,throughput=smollm:([0-9.]+)x,full:([0-9.]+)x",
     "const qsemanticThroughputBelowDefault",
     "if (qsemanticThroughputBelowDefault) return \"qsemantic_throughput\"",
-    "if (q8PromptNeedsWidthParallelKernel) return \"qsemantic_bridge\"",
+    "if (q8PromptNeedsWidthParallelKernel) return \"q8_prompt_semantic\"",
     "if (q8PromptNeedsSemanticBridgeKernel) return \"qsemantic_throughput\"",
     "if (q8PromptNeedsSteadySemanticBridge) return \"q8_prompt\"",
     "if (currentQ8NeedsSemanticThroughput && hasFreshQsemanticThroughput) return \"q8_prompt\"",
@@ -938,6 +944,7 @@ function checkScripts() {
     "if (hasFreshQsemanticThroughput && /q8_prompt=semantic_throughput_kernel/.test(line)) return \"q8_prompt\"",
     "qsemantic_throughput",
     "qsemantic_bridge",
+    "q8_prompt_semantic",
     "qsemantic bridge frontier",
     "BENCH_FRONTIER_FILTER: \"qsemantic bridge\"",
     "q8_prompt=semantic_throughput_kernel",
@@ -949,6 +956,9 @@ function checkScripts() {
     "BENCH_QSEMANTIC_VARIANTS: \"throughput_candidate\"",
     "BENCH_FRONTIER_ATTEMPTS: steady ? \"3\" : \"1\"",
     "BENCH_Q8_PROMPT_LANES: \"command,two_phase,semantic\"",
+    "q8 prompt semantic full-model",
+    "BENCH_Q8_PROMPT_LANES: \"semantic\"",
+    "BENCH_Q8_PROMPT_PAIR_DEFAULTS: \"1\"",
     "BENCH_CANDIDATE_ATTEMPTS: steady ? \"3\" : \"1\"",
     "BENCH_PYTORCH_ATTEMPTS: steady ? \"3\" : \"1\"",
     "BENCH_ALLOW_QUARANTINED: \"1\"",
