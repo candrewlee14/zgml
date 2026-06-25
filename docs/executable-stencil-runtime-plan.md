@@ -703,21 +703,21 @@ worst ratio. Set
 keeps PyTorch competitiveness evidence closer to the ggml artifact model:
 checked claims should have preserved keys, attempts, medians, timing windows,
 Torch version, machine metadata, and native freshness, not just a console line
-or a dated sentence in this plan. `bench:status` reads the newest six-lane focus
+or a dated sentence in this plan. `bench:status` reads the newest ten-lane broad
 artifact back out as the selected `pytorch-results:` line when one exists, with
 status, median status, worst ratio, selected/median lane pass counts,
 selected/median miss lists, selected attempt, native freshness, Torch version,
 timing metric, active keys, and ratio medians. When a narrower microscope is
-newer than that selected focus artifact, it prints `pytorch-latest-results:` so
+newer than that selected broad artifact, it prints `pytorch-latest-results:` so
 freshness stays visible without letting a one-lane probe hijack the PyTorch
 replacement scoreboard. That latest line now includes status, median status,
 worst ratio, attempts, native freshness, timing metric, key count, and ratio
 medians; a fresh one-lane microscope can sharpen the next optimization target
 without pretending to prove broad PyTorch parity. The same status readback also
-prints the most recent ten-lane broad artifact as `pytorch-broad-results:` when
+prints the most recent six-lane focus artifact as `pytorch-focus-results:` when
 it differs. This keeps three different facts visible at once: the selected
-current-hot-path sample, the freshest local experiment, and the broad
-PyTorch-like replacement sample.
+broad PyTorch-like replacement sample, the freshest local experiment, and the
+current-hot-path focus sample.
 The same status readback now prints a compact `perf-next:` line that turns the
 current artifacts into an iteration target: weakest full-model ggml lane and
 distance-to-90%, PyTorch median misses, Q8 prompt semantic readiness, and the
@@ -1217,10 +1217,10 @@ The broad PyTorch replacement loop is now named explicitly as
 `dev:perf:pytorch:broad*`. A fresh ten-lane sample showed nine lanes ahead of
 PyTorch while `log_softmax_classifier_batched` remained the only miss
 (`0.93x` one-attempt; steady focused median around `0.92x-0.97x` depending on
-the local timing sample). `bench:status` now preserves that broad sample as a
-separate `pytorch-broad-results:` line even when the newest artifact is a
-one-lane microscope, so iteration on a soft spot no longer erases the current
-replacement-level scoreboard. A June 24, 2026 policy experiment that forced the
+the local timing sample). `bench:status` now promotes broad steady evidence to
+the selected `pytorch-results:` scoreboard when present, while narrower focus
+and one-lane microscopes remain visible as diagnostic lines. A June 24, 2026
+policy experiment that forced the
 `N=32` path through the small direct linear+bias kernel before the row
 log-softmax was also rejected: the module bench regressed
 `prepared_execute_into_ms` to about `0.0112ms`, and the three-attempt PyTorch

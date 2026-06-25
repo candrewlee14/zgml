@@ -289,7 +289,7 @@ function checkScripts() {
     "native-eager-runtime-results:",
     "module_min=${formatRatio(minModule)}",
     "into_min=${formatRatio(minInto)}",
-    "reason=prefer_focus_keyset",
+    "reason=prefer_broad_scoreboard",
     "status=${status}",
     "worst=${worst}",
     "gap=${worstGap}",

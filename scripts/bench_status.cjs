@@ -129,7 +129,7 @@ function pytorchComparisonArtifacts() {
 }
 
 function latestPytorchComparisonArtifact() {
-  return latestPytorchFocusArtifact() ?? latestPytorchBroadArtifact() ?? pytorchComparisonArtifacts().at(-1) ?? null;
+  return latestPytorchBroadArtifact() ?? latestPytorchFocusArtifact() ?? pytorchComparisonArtifacts().at(-1) ?? null;
 }
 
 function latestRawPytorchComparisonArtifact() {
@@ -723,7 +723,7 @@ function pytorchFreshnessStatusLine(selectedPath, rawPath) {
   try {
     data = readJson(rawPath);
   } catch {
-    return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_focus_keyset unreadable`;
+    return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_broad_scoreboard unreadable`;
   }
   const status = data?.comparisonReady === true ? "pass" : "miss";
   const medianStatus = data?.medianParityReady === true ? "pass" : "miss";
@@ -738,7 +738,7 @@ function pytorchFreshnessStatusLine(selectedPath, rawPath) {
   const native = typeof data?.native?.label === "string" ? data.native.label : "unknown";
   const timing = typeof data?.config?.zgmlTimingMetric === "string" ? data.config.zgmlTimingMetric : "unknown";
   const keyCount = Array.isArray(data?.config?.activeComparisonKeys) ? data.config.activeComparisonKeys.length : "n/a";
-  return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_focus_keyset status=${status} median=${medianStatus} worst=${worst} gap=${worstGap} attempts=${attempts} native=${native} timing=${timing} keys=${keyCount} ratio_median=${medians}`;
+  return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_broad_scoreboard status=${status} median=${medianStatus} worst=${worst} gap=${worstGap} attempts=${attempts} native=${native} timing=${timing} keys=${keyCount} ratio_median=${medians}`;
 }
 
 function nativeEagerStatusLine(path) {
