@@ -1860,6 +1860,12 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const absorbedDecomposedRowChainDispatches = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_row_chain_dispatches") ?? 0;
   const absorbedDecomposedPairDispatches = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_pair_dispatches") ?? 0;
   const absorbedDecomposedTailDispatches = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_tail_dispatches") ?? 0;
+  const absorbedDirectCount = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_direct_count") ?? 0;
+  const absorbedDirectRows = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_direct_rows") ?? 0;
+  const absorbedDirectRowThreadgroups = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_direct_row_threadgroups") ?? 0;
+  const absorbedDirectRowSerialDotOps = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_direct_row_serial_dot_ops") ?? 0;
+  const absorbedDirectTotalRowSerialDotOps = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_direct_total_row_serial_dot_ops") ?? 0;
+  const absorbedDirectTotalRowSerialDotOpsPerRowThreadgroup = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_direct_total_row_serial_dot_ops_per_row_threadgroup") ?? 0;
   const absorbedRowChainTiledCount = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_count");
   const absorbedRowChainTiledRowTileGroups = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_row_tile_groups");
   const absorbedRowChainTiledNTiles = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_n_tiles");
@@ -1920,6 +1926,12 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (absorbedUsesDirectKernel && (absorbedDecomposedCount !== 0 || absorbedDecomposedDispatches !== 0 || absorbedDecomposedRowChainDispatches !== 0 || absorbedDecomposedPairDispatches !== 0 || absorbedDecomposedTailDispatches !== 0)) {
     failures.push("semantic input direct absorbed kernel must not report decomposed dispatch counters");
   }
+  if (absorbedUsesDirectKernel && (absorbedDirectCount !== 1 || absorbedDirectRows !== 128 || absorbedDirectRowThreadgroups !== 128 || absorbedDirectRowSerialDotOps !== 2985984 || absorbedDirectTotalRowSerialDotOps !== 382205952 || absorbedDirectTotalRowSerialDotOpsPerRowThreadgroup !== 2985984)) {
+    failures.push("semantic input direct absorbed profile must expose one row-owned threadgroup per prompt row and the expected row-serial dot work");
+  }
+  if (absorbedUsesDecomposedKernel && absorbedDirectCount !== 0) {
+    failures.push("semantic input decomposed absorbed profile must not report direct input bridge work counters");
+  }
   if (absorbedUsesDecomposedKernel && (absorbedRowChainTiledCount !== 2 || absorbedRowChainTiledRowTileGroups !== 8 || absorbedRowChainTiledNTiles !== 36 || absorbedRowChainTiledSerialTileLoops !== 144 || absorbedRowChainTiledTwoPhaseCount !== 2 || absorbedRowChainTiledFinalizeTileGroups !== 144 || absorbedRowChainTiledFinalizeElements !== 147456)) {
     failures.push("semantic input absorbed tiled profile must expose two two-phase row-chain leaves");
   }
@@ -1937,6 +1949,7 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     `command=${commandSpeedup.toFixed(2)}x max_abs_diff=${commandMaxAbsDiff.toFixed(6)} shape_commands=${commandShapeCommands} bridges=${commandShapeBridges} runtime_dispatches=${commandRuntimeDispatches} row_dispatches=${commandProjectionRowChainDispatches} semantic_dispatches=${commandSemanticDispatches}`,
     `absorbed=${absorbedSpeedup.toFixed(2)}x max_abs_diff=${absorbedMaxAbsDiff.toFixed(6)} shape_commands=${absorbedShapeCommands} bridges=${absorbedShapeBridges} runtime_dispatches=${absorbedRuntimeDispatches} semantic_with_input_dispatches=${absorbedSemanticWithInputDispatches} absorbed_split=${Number.isFinite(absorbedDispatchSplit) ? absorbedDispatchSplit.toFixed(2) : "n/a"}`,
     `absorbed_decomposed=${absorbedDecomposedCount}:dispatches=${absorbedDecomposedDispatches}:row_chain=${absorbedDecomposedRowChainDispatches}:pair=${absorbedDecomposedPairDispatches}:tail=${absorbedDecomposedTailDispatches}`,
+    `direct=${absorbedDirectCount}:rows=${absorbedDirectRows}:row_threadgroups=${absorbedDirectRowThreadgroups}:row_serial_dot_ops=${absorbedDirectRowSerialDotOps}:total_row_serial_dot_ops=${absorbedDirectTotalRowSerialDotOps}:per_row_threadgroup=${absorbedDirectTotalRowSerialDotOpsPerRowThreadgroup}`,
     `fallback_pair_dispatches=${absorbedFallbackPairDispatches} fallback_tail_dispatches=${absorbedFallbackTailDispatches} tiled_count=${absorbedRowChainTiledCount} row_tile_groups=${absorbedRowChainTiledRowTileGroups} n_tiles=${absorbedRowChainTiledNTiles} two_phase_count=${absorbedRowChainTiledTwoPhaseCount} spilled_input=${absorbedRowChainTiledSpilledInput}`,
     `next=${next}`,
   ].join("; ");
@@ -1979,6 +1992,12 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     absorbedDecomposedRowChainDispatches,
     absorbedDecomposedPairDispatches,
     absorbedDecomposedTailDispatches,
+    absorbedDirectCount,
+    absorbedDirectRows,
+    absorbedDirectRowThreadgroups,
+    absorbedDirectRowSerialDotOps,
+    absorbedDirectTotalRowSerialDotOps,
+    absorbedDirectTotalRowSerialDotOpsPerRowThreadgroup,
     absorbedRowChainTiledCount,
     absorbedRowChainTiledRowTileGroups,
     absorbedRowChainTiledNTiles,
@@ -2042,6 +2061,12 @@ function selectedSemanticInputBridgeAttemptSummary(attempt) {
       semanticWithInputDecomposedRowChainDispatches: attempt.absorbedDecomposedRowChainDispatches,
       semanticWithInputDecomposedPairDispatches: attempt.absorbedDecomposedPairDispatches,
       semanticWithInputDecomposedTailDispatches: attempt.absorbedDecomposedTailDispatches,
+      semanticWithInputDirectCount: attempt.absorbedDirectCount,
+      semanticWithInputDirectRows: attempt.absorbedDirectRows,
+      semanticWithInputDirectRowThreadgroups: attempt.absorbedDirectRowThreadgroups,
+      semanticWithInputDirectRowSerialDotOps: attempt.absorbedDirectRowSerialDotOps,
+      semanticWithInputDirectTotalRowSerialDotOps: attempt.absorbedDirectTotalRowSerialDotOps,
+      semanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup: attempt.absorbedDirectTotalRowSerialDotOpsPerRowThreadgroup,
       qmatmulRowChainTiledCount: attempt.absorbedRowChainTiledCount,
       qmatmulRowChainTiledRowTileGroups: attempt.absorbedRowChainTiledRowTileGroups,
       qmatmulRowChainTiledNTiles: attempt.absorbedRowChainTiledNTiles,

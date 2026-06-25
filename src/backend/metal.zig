@@ -9589,6 +9589,7 @@ const CompiledProgram = struct {
             .output_dst_offset = output_out.dst_offset,
         };
         exec.profile.recordSemanticFfnSublayer(params.M, params.H, params.K, params.O, SEMANTIC_FFN_THREADS);
+        exec.profile.recordSemanticFfnWithInputDirect(params.M, params.H, params.K, params.O, params.input_projection_K);
         exec.encodeKernel(.qmatmul_semantic_ffn_input_bridge_f32, &buffers, params, 13, .{ .gx = gate.M }, SEMANTIC_FFN_THREADS);
         return true;
     }

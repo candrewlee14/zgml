@@ -243,6 +243,12 @@ function readProjectionLane(row, defaultTokS, index) {
   const semanticFallbackPairDispatches = number(row, "semantic_ffn_sublayer_fallback_pair_dispatches_per_call") ?? 0;
   const semanticFallbackTailDispatches = number(row, "semantic_ffn_sublayer_fallback_tail_dispatches_per_call") ?? 0;
   const semanticFallbackDispatches = semanticFallbackPairDispatches + semanticFallbackTailDispatches;
+  const semanticWithInputDirectCount = number(row, "semantic_ffn_with_input_direct_count_per_call") ?? 0;
+  const semanticWithInputDirectRows = number(row, "semantic_ffn_with_input_direct_rows_per_call") ?? 0;
+  const semanticWithInputDirectRowThreadgroups = number(row, "semantic_ffn_with_input_direct_row_threadgroups_per_call") ?? 0;
+  const semanticWithInputDirectRowSerialDotOps = number(row, "semantic_ffn_with_input_direct_row_serial_dot_ops_per_call") ?? 0;
+  const semanticWithInputDirectTotalRowSerialDotOps = number(row, "semantic_ffn_with_input_direct_total_row_serial_dot_ops_per_call") ?? 0;
+  const semanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup = number(row, "semantic_ffn_with_input_direct_total_row_serial_dot_ops_per_row_threadgroup") ?? 0;
   return {
     index,
     tokS,
@@ -270,6 +276,12 @@ function readProjectionLane(row, defaultTokS, index) {
       semanticFfnSublayersWithInputRowChain,
       semanticFfnSublayerWithInputRowChainDispatches,
     ),
+    semanticWithInputDirectCount,
+    semanticWithInputDirectRows,
+    semanticWithInputDirectRowThreadgroups,
+    semanticWithInputDirectRowSerialDotOps,
+    semanticWithInputDirectTotalRowSerialDotOps,
+    semanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup,
     tiledCount: number(row, "qmatmul_row_chain_tiled_count_per_call") ?? 0,
     tiledRowTileGroups: number(row, "qmatmul_row_chain_tiled_row_tile_groups_per_call") ?? 0,
     tiledNTiles: number(row, "qmatmul_row_chain_tiled_n_tiles_per_call") ?? 0,
@@ -636,6 +648,30 @@ function measureAttempt(index) {
     candidateSemanticAbsorbedDispatchSplit: singleLane.semanticAbsorbedDispatchSplit,
     twoPhaseSemanticAbsorbedDispatchSplit: twoPhaseLane.semanticAbsorbedDispatchSplit,
     semanticSemanticAbsorbedDispatchSplit: semanticLane.semanticAbsorbedDispatchSplit,
+    commandSemanticWithInputDirectCount: commandLane.semanticWithInputDirectCount,
+    candidateSemanticWithInputDirectCount: singleLane.semanticWithInputDirectCount,
+    twoPhaseSemanticWithInputDirectCount: twoPhaseLane.semanticWithInputDirectCount,
+    semanticSemanticWithInputDirectCount: semanticLane.semanticWithInputDirectCount,
+    commandSemanticWithInputDirectRows: commandLane.semanticWithInputDirectRows,
+    candidateSemanticWithInputDirectRows: singleLane.semanticWithInputDirectRows,
+    twoPhaseSemanticWithInputDirectRows: twoPhaseLane.semanticWithInputDirectRows,
+    semanticSemanticWithInputDirectRows: semanticLane.semanticWithInputDirectRows,
+    commandSemanticWithInputDirectRowThreadgroups: commandLane.semanticWithInputDirectRowThreadgroups,
+    candidateSemanticWithInputDirectRowThreadgroups: singleLane.semanticWithInputDirectRowThreadgroups,
+    twoPhaseSemanticWithInputDirectRowThreadgroups: twoPhaseLane.semanticWithInputDirectRowThreadgroups,
+    semanticSemanticWithInputDirectRowThreadgroups: semanticLane.semanticWithInputDirectRowThreadgroups,
+    commandSemanticWithInputDirectRowSerialDotOps: commandLane.semanticWithInputDirectRowSerialDotOps,
+    candidateSemanticWithInputDirectRowSerialDotOps: singleLane.semanticWithInputDirectRowSerialDotOps,
+    twoPhaseSemanticWithInputDirectRowSerialDotOps: twoPhaseLane.semanticWithInputDirectRowSerialDotOps,
+    semanticSemanticWithInputDirectRowSerialDotOps: semanticLane.semanticWithInputDirectRowSerialDotOps,
+    commandSemanticWithInputDirectTotalRowSerialDotOps: commandLane.semanticWithInputDirectTotalRowSerialDotOps,
+    candidateSemanticWithInputDirectTotalRowSerialDotOps: singleLane.semanticWithInputDirectTotalRowSerialDotOps,
+    twoPhaseSemanticWithInputDirectTotalRowSerialDotOps: twoPhaseLane.semanticWithInputDirectTotalRowSerialDotOps,
+    semanticSemanticWithInputDirectTotalRowSerialDotOps: semanticLane.semanticWithInputDirectTotalRowSerialDotOps,
+    commandSemanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup: commandLane.semanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup,
+    candidateSemanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup: singleLane.semanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup,
+    twoPhaseSemanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup: twoPhaseLane.semanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup,
+    semanticSemanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup: semanticLane.semanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup,
     commandSemanticFallbackPairDispatches: commandLane.semanticFallbackPairDispatches,
     candidateSemanticFallbackPairDispatches: singleLane.semanticFallbackPairDispatches,
     twoPhaseSemanticFallbackPairDispatches: twoPhaseLane.semanticFallbackPairDispatches,
@@ -863,6 +899,12 @@ function laneArtifact(row, prefix) {
     semanticFfnSublayersWithInputRowChain: row[`${prefix}SemanticFfnSublayersWithInputRowChain`],
     semanticFfnSublayerWithInputRowChainDispatches: row[`${prefix}SemanticFfnSublayerWithInputRowChainDispatches`],
     semanticAbsorbedDispatchSplit: roundMetric(row[`${prefix}SemanticAbsorbedDispatchSplit`]),
+    semanticWithInputDirectCount: row[`${prefix}SemanticWithInputDirectCount`],
+    semanticWithInputDirectRows: row[`${prefix}SemanticWithInputDirectRows`],
+    semanticWithInputDirectRowThreadgroups: row[`${prefix}SemanticWithInputDirectRowThreadgroups`],
+    semanticWithInputDirectRowSerialDotOps: row[`${prefix}SemanticWithInputDirectRowSerialDotOps`],
+    semanticWithInputDirectTotalRowSerialDotOps: row[`${prefix}SemanticWithInputDirectTotalRowSerialDotOps`],
+    semanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup: row[`${prefix}SemanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup`],
     semanticFallbackPairDispatches: row[`${prefix}SemanticFallbackPairDispatches`],
     semanticFallbackTailDispatches: row[`${prefix}SemanticFallbackTailDispatches`],
     semanticFallbackDispatches: row[`${prefix}SemanticFallbackDispatches`],
@@ -1034,6 +1076,12 @@ if (writeArtifact) {
       semanticFfnSublayersWithInputRowChain: row.semanticSemanticFfnSublayersWithInputRowChain,
       semanticFfnSublayerWithInputRowChainDispatches: row.semanticSemanticFfnSublayerWithInputRowChainDispatches,
       semanticAbsorbedDispatchSplit: roundMetric(row.semanticSemanticAbsorbedDispatchSplit),
+      semanticWithInputDirectCount: row.semanticSemanticWithInputDirectCount,
+      semanticWithInputDirectRows: row.semanticSemanticWithInputDirectRows,
+      semanticWithInputDirectRowThreadgroups: row.semanticSemanticWithInputDirectRowThreadgroups,
+      semanticWithInputDirectRowSerialDotOps: row.semanticSemanticWithInputDirectRowSerialDotOps,
+      semanticWithInputDirectTotalRowSerialDotOps: row.semanticSemanticWithInputDirectTotalRowSerialDotOps,
+      semanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup: row.semanticSemanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup,
       semanticFallbackPairDispatches: row.semanticSemanticFallbackPairDispatches,
       semanticFallbackTailDispatches: row.semanticSemanticFallbackTailDispatches,
       semanticFallbackDispatches: row.semanticSemanticFallbackDispatches,
@@ -1121,6 +1169,7 @@ console.log(
     `semantic_dispatch_reduced=${semanticDispatchReduced ? "yes" : "no"} semantic_runtime_target=${dispatchRealityTarget} ` +
     `semantic_ffn=${format(semanticBest.semanticSemanticFfnSublayers, 0)} semantic_ffn_dispatch=${format(semanticBest.semanticSemanticFfnSublayerDispatches, 0)} semantic_ffn_split=${format(semanticBest.semanticSemanticFfnSublayerDispatchSplit)} ` +
     `semantic_absorbed=${format(semanticBest.semanticSemanticFfnSublayersWithInputRowChain, 0)} semantic_absorbed_dispatch=${format(semanticBest.semanticSemanticFfnSublayerWithInputRowChainDispatches, 0)} semantic_absorbed_split=${format(semanticBest.semanticSemanticAbsorbedDispatchSplit)} ` +
+    `semantic_direct=${format(semanticBest.semanticSemanticWithInputDirectCount, 0)} semantic_direct_rows=${format(semanticBest.semanticSemanticWithInputDirectRows, 0)} semantic_direct_row_threadgroups=${format(semanticBest.semanticSemanticWithInputDirectRowThreadgroups, 0)} semantic_direct_row_serial_dot_ops=${format(semanticBest.semanticSemanticWithInputDirectRowSerialDotOps, 0)} semantic_direct_total_row_serial_dot_ops=${format(semanticBest.semanticSemanticWithInputDirectTotalRowSerialDotOps, 0)} semantic_direct_per_row_threadgroup=${format(semanticBest.semanticSemanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup, 0)} ` +
     `semantic_fallback_pair_dispatch=${format(semanticBest.semanticSemanticFallbackPairDispatches, 0)} semantic_fallback_tail_dispatch=${format(semanticBest.semanticSemanticFallbackTailDispatches, 0)} semantic_fallback_dispatch=${format(semanticBest.semanticSemanticFallbackDispatches, 0)} semantic_fallback_split=${format(semanticBest.semanticSemanticFallbackDispatchSplit)} ` +
     `semantic_count=${format(semanticBest.semanticTiledTwoPhaseCount, 0)} semantic_structural_selected=${semanticStructuralSelected ? "yes" : "off"} semantic_throughput_ready=${reportedSemanticThroughputReady ? "yes" : "off"} semantic_selected=${semanticStructuralSelected ? "yes" : "off"} ` +
     `semantic_tiled_work=${format(semanticBest.semanticTiledCount, 0)} chains row_groups=${format(semanticBest.semanticTiledRowTileGroups, 0)} n_tiles=${format(semanticBest.semanticTiledNTiles, 0)} serial_tile_loops=${format(semanticBest.semanticTiledSerialLoops, 0)} partial_slots=${format(semanticBest.semanticTiledPartialSlots, 0)} scratch_capacity=${format(semanticBest.semanticTiledScratchCapacity, 0)} finalize_tile_groups=${format(semanticBest.semanticTiledFinalizeTileGroups, 0)} finalize_elements=${format(semanticBest.semanticTiledFinalizeElements, 0)} spills=${format(semanticBest.semanticTiledSpills, 0)} ` +

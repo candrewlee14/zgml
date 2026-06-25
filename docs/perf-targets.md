@@ -235,16 +235,23 @@ machine for both prompt/prefill and decode.
   (`row_chain=2`, `pair=1`, `tail=2`); the source-current input-bridge kernel
   replaces that with one `semantic_ffn_sublayer_with_input_row_chain` dispatch
   for the `m=128,h=1536,k=576,o=576` microscope. The latest focused artifact
-  reports `absorbed=4.62x`, `runtime_dispatches=1`,
+  reports `absorbed=1.57x`, `runtime_dispatches=1`,
   `semantic_with_input_dispatches=1`, `decomposed_dispatches=0`,
   `pair_dispatches=0`, `tail_dispatches=0`, and `spilled_input=0`. Treat this
   as an isolated width-parallel bridge proof, not a full-model parity claim.
+  It also records the current partitioning limit explicitly:
+  `direct_rows=128`, `direct_row_threadgroups=128`, and
+  `direct_per_row_threadgroup=2985984` row-serial dot ops in the focused
+  bridge artifact.
   The first full-model Q8 semantic rerun after that kernel proves the new
   boundary: it cuts the semantic candidate from `242->122` dispatches with
   `semantic_absorbed_dispatch=30`, `semantic_absorbed_split=1.00`, and zero
   fallback/spill counters, but throughput is still diagnostic
-  (`semantic_speedup=0.66x`). The next target is therefore work partitioning in
-  the full-model semantic input bridge, not another dispatch-count reduction.
+  (`semantic_speedup=0.59-0.60x` on fresh one-attempt runs). The q8 artifact now
+  exposes `semantic_direct=30`, `semantic_direct_row_threadgroups=3840`, and
+  `semantic_direct_total_row_serial_dot_ops=11466178560`, so the next target is
+  work partitioning in the full-model semantic input bridge, not another
+  dispatch-count reduction.
 - The current weakest checked lane is still Q8_0 prompt, but its command
   pressure has moved from the old `projection_chain:60` baseline to the
   promoted semantic-default shape: 151 ProgramCommands, 30 semantic row-chain

@@ -1583,18 +1583,25 @@ one structural command but five backend dispatches (`row_chain=2`, `pair=1`,
 `tail=2`). The source-current `qmatmul_semantic_ffn_input_bridge_f32` path folds
 the input projection/residual/norm, gate/up/product, down/residual/norm, and
 final scale into one guarded dispatch for the SmolLM `576 x 1536 x 576` bridge
-shape. The focused artifact reports `absorbed=4.62x`,
+shape. The latest focused artifact reports `absorbed=1.57x`,
 `runtime_dispatches=1`, `semantic_with_input_dispatches=1`,
 `decomposed_dispatches=0`, `pair_dispatches=0`, `tail_dispatches=0`, and
-`spilled_input=0`. Keep it as an isolated bridge proof until Q8 prompt and ggml
-evidence prove the promotion boundary.
+`spilled_input=0`. It now also exposes the work-partitioning trap directly:
+the direct bridge uses `128` row-owned threadgroups and
+`2,985,984` row-serial dot ops per row threadgroup. Keep it as an isolated
+bridge proof until Q8 prompt and ggml evidence prove the promotion boundary.
 The first full-model Q8 semantic rerun after that bridge kernel proves the next
 boundary: it cuts the semantic candidate from `242->122` dispatches and reports
 `semantic_absorbed_dispatch=30`, `semantic_absorbed_split=1.00`, and zero
 fallback/spill counters, but throughput remains diagnostic
-(`semantic_speedup=0.66x`). Route `perf-next` to the full-model semantic prompt
-lane for this state; the next useful implementation work is the direct
-input-bridge kernel's work partitioning, not more command-shape absorption.
+(`semantic_speedup=0.59-0.60x` on fresh one-attempt runs). The full-model
+artifact now reports `semantic_direct=30`, `semantic_direct_rows=3840`,
+`semantic_direct_row_threadgroups=3840`, and
+`semantic_direct_total_row_serial_dot_ops=11466178560`, which is the concrete
+reason this is a work-partitioning target rather than another dispatch-count
+target. Route `perf-next` to the full-model semantic prompt lane for this state;
+the next useful implementation work is the direct input-bridge kernel's work
+partitioning, not more command-shape absorption.
 After the one-dispatch semantic throughput kernel became a real measured lane,
 the full-model default was kept on `promptProjectionRowChainCommand()` while
 `--metal-prompt-semantic-throughput-candidate` remains the explicit diagnostic

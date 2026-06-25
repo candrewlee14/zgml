@@ -127,6 +127,18 @@ pub const RuntimeProfile = struct {
     semantic_ffn_with_input_decomposed_row_chain_dispatches: u64 = 0,
     semantic_ffn_with_input_decomposed_pair_dispatches: u64 = 0,
     semantic_ffn_with_input_decomposed_tail_dispatches: u64 = 0,
+    semantic_ffn_with_input_direct_count: u64 = 0,
+    semantic_ffn_with_input_direct_rows: u64 = 0,
+    semantic_ffn_with_input_direct_input_projection: u64 = 0,
+    semantic_ffn_with_input_direct_input: u64 = 0,
+    semantic_ffn_with_input_direct_hidden: u64 = 0,
+    semantic_ffn_with_input_direct_output: u64 = 0,
+    semantic_ffn_with_input_direct_input_projection_dot_ops: u64 = 0,
+    semantic_ffn_with_input_direct_gate_up_dot_ops: u64 = 0,
+    semantic_ffn_with_input_direct_down_dot_ops: u64 = 0,
+    semantic_ffn_with_input_direct_row_serial_dot_ops: u64 = 0,
+    semantic_ffn_with_input_direct_total_row_serial_dot_ops: u64 = 0,
+    semantic_ffn_with_input_direct_row_threadgroups: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_attempts: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_output_read_refusals: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_block_size_refusals: u64 = 0,
@@ -202,6 +214,18 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_with_input_decomposed_row_chain_dispatches +%= other.semantic_ffn_with_input_decomposed_row_chain_dispatches;
         self.semantic_ffn_with_input_decomposed_pair_dispatches +%= other.semantic_ffn_with_input_decomposed_pair_dispatches;
         self.semantic_ffn_with_input_decomposed_tail_dispatches +%= other.semantic_ffn_with_input_decomposed_tail_dispatches;
+        self.semantic_ffn_with_input_direct_count +%= other.semantic_ffn_with_input_direct_count;
+        self.semantic_ffn_with_input_direct_rows +%= other.semantic_ffn_with_input_direct_rows;
+        self.semantic_ffn_with_input_direct_input_projection +%= other.semantic_ffn_with_input_direct_input_projection;
+        self.semantic_ffn_with_input_direct_input +%= other.semantic_ffn_with_input_direct_input;
+        self.semantic_ffn_with_input_direct_hidden +%= other.semantic_ffn_with_input_direct_hidden;
+        self.semantic_ffn_with_input_direct_output +%= other.semantic_ffn_with_input_direct_output;
+        self.semantic_ffn_with_input_direct_input_projection_dot_ops +%= other.semantic_ffn_with_input_direct_input_projection_dot_ops;
+        self.semantic_ffn_with_input_direct_gate_up_dot_ops +%= other.semantic_ffn_with_input_direct_gate_up_dot_ops;
+        self.semantic_ffn_with_input_direct_down_dot_ops +%= other.semantic_ffn_with_input_direct_down_dot_ops;
+        self.semantic_ffn_with_input_direct_row_serial_dot_ops +%= other.semantic_ffn_with_input_direct_row_serial_dot_ops;
+        self.semantic_ffn_with_input_direct_total_row_serial_dot_ops +%= other.semantic_ffn_with_input_direct_total_row_serial_dot_ops;
+        self.semantic_ffn_with_input_direct_row_threadgroups +%= other.semantic_ffn_with_input_direct_row_threadgroups;
         self.semantic_ffn_sublayer_single_dispatch_attempts +%= other.semantic_ffn_sublayer_single_dispatch_attempts;
         self.semantic_ffn_sublayer_single_dispatch_output_read_refusals +%= other.semantic_ffn_sublayer_single_dispatch_output_read_refusals;
         self.semantic_ffn_sublayer_single_dispatch_block_size_refusals +%= other.semantic_ffn_sublayer_single_dispatch_block_size_refusals;
@@ -372,6 +396,30 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_with_input_decomposed_row_chain_dispatches +%= row_chain_dispatches;
         self.semantic_ffn_with_input_decomposed_pair_dispatches +%= pair_dispatches;
         self.semantic_ffn_with_input_decomposed_tail_dispatches +%= tail_dispatches;
+    }
+
+    pub fn recordSemanticFfnWithInputDirect(self: *RuntimeProfile, m: u32, h: u32, k: u32, o: u32, input_projection_k: u32) void {
+        const rows: u64 = m;
+        const hidden: u64 = h;
+        const input: u64 = k;
+        const output: u64 = o;
+        const input_projection: u64 = input_projection_k;
+        const input_projection_dot_ops = input_projection *% input;
+        const gate_up_dot_ops = hidden *% input *% 2;
+        const down_dot_ops = hidden *% output;
+        const row_serial_dot_ops = input_projection_dot_ops +% gate_up_dot_ops +% down_dot_ops;
+        self.semantic_ffn_with_input_direct_count +%= 1;
+        self.semantic_ffn_with_input_direct_rows +%= rows;
+        self.semantic_ffn_with_input_direct_input_projection +%= input_projection;
+        self.semantic_ffn_with_input_direct_input +%= input;
+        self.semantic_ffn_with_input_direct_hidden +%= hidden;
+        self.semantic_ffn_with_input_direct_output +%= output;
+        self.semantic_ffn_with_input_direct_input_projection_dot_ops +%= input_projection_dot_ops;
+        self.semantic_ffn_with_input_direct_gate_up_dot_ops +%= gate_up_dot_ops;
+        self.semantic_ffn_with_input_direct_down_dot_ops +%= down_dot_ops;
+        self.semantic_ffn_with_input_direct_row_serial_dot_ops +%= row_serial_dot_ops;
+        self.semantic_ffn_with_input_direct_total_row_serial_dot_ops +%= rows *% row_serial_dot_ops;
+        self.semantic_ffn_with_input_direct_row_threadgroups +%= rows;
     }
 
     pub fn recordSemanticFfnSublayerSingleDispatchRefusal(self: *RuntimeProfile, reason: SemanticFfnSublayerSingleDispatchRefusalReason) void {
@@ -594,6 +642,27 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeCountAndPerCall(jw, "semantic_ffn_with_input_decomposed_", "pair_dispatches", rt.semantic_ffn_with_input_decomposed_pair_dispatches, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_with_input_decomposed_", "tail_dispatches", rt.semantic_ffn_with_input_decomposed_tail_dispatches, calls_f);
     }
+    if (rt.semantic_ffn_with_input_direct_count > 0) {
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "count", rt.semantic_ffn_with_input_direct_count, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "rows", rt.semantic_ffn_with_input_direct_rows, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "input_projection", rt.semantic_ffn_with_input_direct_input_projection, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "input", rt.semantic_ffn_with_input_direct_input, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "hidden", rt.semantic_ffn_with_input_direct_hidden, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "output", rt.semantic_ffn_with_input_direct_output, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "input_projection_dot_ops", rt.semantic_ffn_with_input_direct_input_projection_dot_ops, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "gate_up_dot_ops", rt.semantic_ffn_with_input_direct_gate_up_dot_ops, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "down_dot_ops", rt.semantic_ffn_with_input_direct_down_dot_ops, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "row_serial_dot_ops", rt.semantic_ffn_with_input_direct_row_serial_dot_ops, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "total_row_serial_dot_ops", rt.semantic_ffn_with_input_direct_total_row_serial_dot_ops, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "row_threadgroups", rt.semantic_ffn_with_input_direct_row_threadgroups, calls_f);
+        if (rt.semantic_ffn_with_input_direct_row_threadgroups > 0) {
+            try writeJsonField(
+                jw,
+                "semantic_ffn_with_input_direct_total_row_serial_dot_ops_per_row_threadgroup",
+                @as(f64, @floatFromInt(rt.semantic_ffn_with_input_direct_total_row_serial_dot_ops)) / @as(f64, @floatFromInt(rt.semantic_ffn_with_input_direct_row_threadgroups)),
+            );
+        }
+    }
     if (rt.semantic_ffn_sublayer_single_dispatch_attempts > 0) {
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_", "attempts", rt.semantic_ffn_sublayer_single_dispatch_attempts, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_", "output_read_refusals", rt.semantic_ffn_sublayer_single_dispatch_output_read_refusals, calls_f);
@@ -801,6 +870,7 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     rt.recordSemanticFfnSublayer(128, 576, 576, 576, 512);
     rt.recordSemanticFfnSublayerFallbackDispatches(1, 2);
     rt.recordSemanticFfnWithInputDecomposed(5, 2, 1, 2);
+    rt.recordSemanticFfnWithInputDirect(128, 1536, 576, 576, 576);
     rt.recordSemanticFfnSublayerSingleDispatchAttempt();
     rt.recordSemanticFfnSublayerSingleDispatchDimRefusal(576, 1536, 576, 1024);
     rt.call_count = 2;
@@ -846,6 +916,15 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_row_chain_dispatches\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_pair_dispatches\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_tail_dispatches\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_rows\":128") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_input_projection_dot_ops\":331776") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_gate_up_dot_ops\":1769472") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_down_dot_ops\":884736") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_row_serial_dot_ops\":2985984") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_total_row_serial_dot_ops\":382205952") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_row_threadgroups\":128") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_total_row_serial_dot_ops_per_row_threadgroup\":2985984") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_attempts\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_refused_dim\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k\":576") != null);
