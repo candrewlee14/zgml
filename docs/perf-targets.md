@@ -393,6 +393,14 @@ machine for both prompt/prefill and decode.
   in the `1.82x-2.51x` range over the staged path with `max_abs_diff=0.000000`,
   `shape_semantic_ffn_sublayers=1`, and `runtime_backend_dispatches=3`. Treat
   this as an isolated kernel-work baseline, not a full-model promotion signal.
+  A follow-up finalize-path probe tried replacing
+  `qmatmul_row_chain_tiled_finalize_tiles_f32` with the coarser row-tile
+  `qmatmul_row_chain_tiled_finalize_f32` to avoid repeated RMS reductions
+  across output tiles. It was rejected: the exact bridge lane fell from the
+  retained `~2.31x` evidence to `2.13x`. The restored tiled finalize path then
+  produced a fresh checked bridge artifact at `3.04x`, so keep the per-output
+  tile finalize until a replacement proves both bridge and full-model Q8 prompt
+  stability.
 - The frontier gate now also reports the paired row-chain diagnostic
   `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
   This compares four staged qmatmul+residual+RMSNorm-scale row chains against

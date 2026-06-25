@@ -1676,6 +1676,14 @@ ReleaseFast runs measured
 in the `1.82x-2.51x` range over staged execution with `max_abs_diff=0.000000`,
 `shape_semantic_ffn_sublayers=1`, and `runtime_backend_dispatches=3`. This is
 kernel-shape evidence, not a full-model promotion.
+A finalize-path probe then tested replacing
+`qmatmul_row_chain_tiled_finalize_tiles_f32` with the coarser row-tile
+`qmatmul_row_chain_tiled_finalize_f32` so the RMS reduction would be computed
+once per row tile instead of once per output tile. It regressed the exact bridge
+lane to `2.13x` versus the retained `~2.31x` evidence and was reverted; the
+restored per-output-tile finalize path produced fresh checked bridge evidence at
+`3.04x`. Do not rechase this finalize spelling until a new design proves both
+bridge and full-model Q8 prompt stability.
 The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic,
 full-model Q8 prompt viable, and cheap ggml smoke lanes behind
 `BENCH_COMPETITIVE_LANES`, so a kernel edit can run only
