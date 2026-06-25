@@ -912,6 +912,9 @@ function checkScripts() {
   if (scripts["dev:perf:next:steady"] !== "BENCH_NEXT_PERF_STEADY=1 node scripts/run_next_perf.cjs") {
     errors.push("package.json dev:perf:next:steady must keep the steadier artifact-directed next bottleneck microscope");
   }
+  if (scripts["check:next-perf-routing"] !== "node scripts/check_run_next_perf_routing.cjs") {
+    errors.push("package.json check:next-perf-routing must keep the fast golden route check for artifact-directed perf iteration");
+  }
   if (scripts["dev:perf:competitive:qsemantic"] !== "BENCH_COMPETITIVE_LANES=qsemantic node scripts/run_competitive_perf.cjs") {
     errors.push("package.json dev:perf:competitive:qsemantic must keep the one-command qsemantic competitiveness loop");
   }
@@ -956,6 +959,8 @@ function checkScripts() {
   requireIncludes(read("scripts/run_next_perf.cjs"), "scripts/run_next_perf.cjs", "artifact-directed next performance runner", [
     "scripts/bench_status.cjs",
     "perf-next:",
+    "require.main === module",
+    "module.exports = { chooseLane, freshQsemanticThroughput, validateLane }",
     "BENCH_NEXT_PERF_LANE",
     "BENCH_NEXT_PERF_BUILD",
     "BENCH_NEXT_PERF_STEADY",
@@ -1004,6 +1009,19 @@ function checkScripts() {
     "BENCH_CANDIDATE_ATTEMPTS: steady ? \"3\" : \"1\"",
     "BENCH_PYTORCH_ATTEMPTS: steady ? \"3\" : \"1\"",
     "BENCH_ALLOW_QUARANTINED: \"1\"",
+  ]);
+  requireIncludes(read("scripts/check_run_next_perf_routing.cjs"), "scripts/check_run_next_perf_routing.cjs", "artifact-directed next performance routing golden checks", [
+    "chooseLane(widthParallelLine, {})",
+    "\"qsemantic_bridge\"",
+    "chooseLane(staleThroughputLine, {})",
+    "\"qsemantic_throughput\"",
+    "chooseLane(inputBridgeLine, {})",
+    "\"q8_prompt_semantic\"",
+    "chooseLane(promotedLine, {})",
+    "\"ggml\"",
+    "BENCH_NEXT_PERF_LANE",
+    "freshQsemanticThroughput(widthParallelLine)",
+    "next-perf routing gate: pass",
   ]);
   if (scripts["bench:pytorch"] !== "npm run build:native:release && npm run build:package && node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch must remain the ReleaseFast upstream PyTorch comparison evidence gate");

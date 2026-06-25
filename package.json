@@ -327,6 +327,7 @@
     "check:package-artifact": "node scripts/check_package_artifact.cjs",
     "check:frontend-autograd-coverage": "node scripts/check_frontend_autograd_coverage.cjs",
     "check:frontend-confidence": "ZGML_FRONTEND_CONFIDENCE_STATIC=1 node scripts/check_frontend_confidence.cjs",
+    "check:next-perf-routing": "node scripts/check_run_next_perf_routing.cjs",
     "smoke:frontend-confidence": "npm run build:package && node scripts/check_frontend_confidence.cjs",
     "check:packed-install": "node scripts/check_packed_install.cjs",
     "test:ts-source": "npm run build:ts-source && npm run check:ts-source-architecture && npm run build:package && npm run smoke:ts-source && npm run check:package-artifact && npm run typecheck:dist && npm run smoke:dist && npm run smoke:frontend",

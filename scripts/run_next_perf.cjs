@@ -47,10 +47,10 @@ function freshQsemanticThroughput(line) {
   return { smollm, full };
 }
 
-function chooseLane(line) {
-  const forced = String(process.env.BENCH_NEXT_PERF_LANE ?? "").trim();
+function chooseLane(line, env = process.env) {
+  const forced = String(env.BENCH_NEXT_PERF_LANE ?? "").trim();
   if (forced) return forced;
-  const steady = process.env.BENCH_NEXT_PERF_STEADY === "1";
+  const steady = env.BENCH_NEXT_PERF_STEADY === "1";
   const hasSemanticThroughputFrontier = /frontier=(?:semantic_ffn_sublayer_throughput_kernel|semantic_width_parallel_kernel):candidate=ready/.test(line);
   const q8PromptNeedsSteadySemanticBridge =
     /q8_prompt=semantic_bridge_candidate:[^ ]*:next=steady_semantic_bridge_candidate/.test(line);
@@ -253,10 +253,14 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (error) {
-  if (error && typeof error === "object" && "output" in error) process.stderr.write(String(error.output));
-  console.error(`[next-perf] ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    if (error && typeof error === "object" && "output" in error) process.stderr.write(String(error.output));
+    console.error(`[next-perf] ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
 }
+
+module.exports = { chooseLane, freshQsemanticThroughput, validateLane };
