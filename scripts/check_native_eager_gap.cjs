@@ -213,16 +213,14 @@ function compiledInferenceHandle(model, inputShape) {
 }
 
 function compiledLazyHandle(graph, bindings, inputShape) {
-  const program = graph.compile({ backend: "cpu", inputShape });
-  const session = program.bind(bindings);
+  const fast = zgml.compileForInference(graph, { backend: "cpu", inputShape }, bindings);
   return Object.freeze({
-    session,
+    session: fast.session,
     into(output, input) {
-      return session.executeInto(output, { input });
+      return fast.into(output, input);
     },
     dispose() {
-      session.dispose();
-      program.dispose();
+      fast.dispose();
     },
   });
 }

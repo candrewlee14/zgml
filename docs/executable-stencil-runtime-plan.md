@@ -682,13 +682,13 @@ current steady evidence remains intentionally non-fatal because
 A June 25, 2026 three-attempt, 150ms-window ten-lane broad artifact now carries
 that claim across the broader PyTorch scoreboard with fresh native code and
 PyTorch `2.12.1`: `lane_pass=10/10`, `median_lane_pass=10/10`, and
-`ratio_median=linear_batched:1.32x,lazy_matmul_add_gelu_batched:2.78x,lazy_mlp_batched:1.56x,lazy_rms_silu_ffn_batched:1.76x,max_pool2d_batched:10.08x,avg_pool2d_batched:5.44x,rms_gelu_linear_batched:3.09x,softmax_classifier_batched:1.20x,log_softmax_classifier_batched:1.64x,lazy_token_head_batched:2.34x`.
-The same artifact reports `first_contact_inference=6/10`: all module-backed
-broad lanes now prove the friendly `zgml.compileInference` /
+`first_contact_inference=10/10`, with
+`ratio_median=linear_batched:1.68x,lazy_matmul_add_gelu_batched:6.29x,lazy_mlp_batched:5.58x,lazy_rms_silu_ffn_batched:2.29x,max_pool2d_batched:8.43x,avg_pool2d_batched:5.67x,rms_gelu_linear_batched:6.50x,softmax_classifier_batched:1.78x,log_softmax_classifier_batched:2.78x,lazy_token_head_batched:5.30x`.
+All ten broad lanes now prove the friendly `zgml.compileInference` /
 `compile.compileForInference` handle reaches the same allocation-free prepared
-path, while the remaining four lanes are lazy-graph Program proofs rather than
-module-handle proofs. That makes the scoped "PyTorch-like compiled inference"
-claim stronger without pretending that broad eager PyTorch replacement is done.
+path, including named-parameter lazy graphs that bind through explicit Program
+bindings. That makes the scoped "PyTorch-like compiled inference" claim stronger
+without pretending that broad eager PyTorch replacement is done.
 A June 24, 2026 three-attempt, 150ms-window six-lane focus artifact now passes
 both selected-attempt and median parity against PyTorch `2.12.1` with fresh
 native code:

@@ -577,11 +577,11 @@ broader PyTorch-competitiveness scoreboard.
 The current selected broad artifact is a June 25, 2026 three-attempt,
 150ms-window run against PyTorch `2.12.1` with fresh native code:
 `lane_pass=10/10`, `median_lane_pass=10/10`,
-`first_contact_inference=6/10`, and
-`ratio_median=linear_batched:1.32x,lazy_matmul_add_gelu_batched:2.78x,lazy_mlp_batched:1.56x,lazy_rms_silu_ffn_batched:1.76x,max_pool2d_batched:10.08x,avg_pool2d_batched:5.44x,rms_gelu_linear_batched:3.09x,softmax_classifier_batched:1.20x,log_softmax_classifier_batched:1.64x,lazy_token_head_batched:2.34x`.
-The `first_contact_inference` count is intentionally lower than the lane count:
-module-backed lanes prove the friendly `zgml.compileInference` handle, while
-lazy-graph lanes prove the lower Program path.
+`first_contact_inference=10/10`, and
+`ratio_median=linear_batched:1.68x,lazy_matmul_add_gelu_batched:6.29x,lazy_mlp_batched:5.58x,lazy_rms_silu_ffn_batched:2.29x,max_pool2d_batched:8.43x,avg_pool2d_batched:5.67x,rms_gelu_linear_batched:6.50x,softmax_classifier_batched:1.78x,log_softmax_classifier_batched:2.78x,lazy_token_head_batched:5.30x`.
+Both module-backed lanes and named-parameter lazy-graph lanes now prove the
+friendly `zgml.compileInference` / `compile.compileForInference` handle reaches
+the allocation-free prepared Program path.
 The lane-selectable `dev:perf:competitive` runner uses that same ten-lane,
 three-attempt, 150ms-window PyTorch broad set and includes the native eager gap
 lane by default, so the daily competitiveness loop proves both the compiled

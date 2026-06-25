@@ -585,6 +585,8 @@ function checkPackageExports(errors) {
     "entry: runtimeEntry",
     "native eager gap: runtime=${runtime}",
     "lazy_matmul_add_gelu_batched",
+    "const fast = zgml.compileForInference(graph, { backend: \"cpu\", inputShape }, bindings)",
+    "session: fast.session",
     "lazy_matmul_add_relu_batched",
     "lazy_matmul_add_silu_batched",
     "lazy_matmul_add_sigmoid_batched",
