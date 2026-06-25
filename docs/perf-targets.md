@@ -574,6 +574,14 @@ broad artifact for `pytorch-results:` and `perf-next:` when one exists. Newer
 focus or one-lane microscopes still appear as `pytorch-focus-results:` or
 `pytorch-latest-results:`, so diagnostics stay visible without replacing the
 broader PyTorch-competitiveness scoreboard.
+The current selected broad artifact is a June 25, 2026 three-attempt,
+150ms-window run against PyTorch `2.12.1` with fresh native code:
+`lane_pass=10/10`, `median_lane_pass=10/10`,
+`first_contact_inference=6/10`, and
+`ratio_median=linear_batched:1.32x,lazy_matmul_add_gelu_batched:2.78x,lazy_mlp_batched:1.56x,lazy_rms_silu_ffn_batched:1.76x,max_pool2d_batched:10.08x,avg_pool2d_batched:5.44x,rms_gelu_linear_batched:3.09x,softmax_classifier_batched:1.20x,log_softmax_classifier_batched:1.64x,lazy_token_head_batched:2.34x`.
+The `first_contact_inference` count is intentionally lower than the lane count:
+module-backed lanes prove the friendly `zgml.compileInference` handle, while
+lazy-graph lanes prove the lower Program path.
 The lane-selectable `dev:perf:competitive` runner uses that same ten-lane,
 three-attempt, 150ms-window PyTorch broad set and includes the native eager gap
 lane by default, so the daily competitiveness loop proves both the compiled

@@ -672,6 +672,16 @@ median-parity claim must opt into
 `BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_REQUIRE_MEDIAN_PARITY=1`; the
 current steady evidence remains intentionally non-fatal because
 `log_softmax_classifier_batched` still has noisy sub-parity reruns.
+A June 25, 2026 three-attempt, 150ms-window ten-lane broad artifact now carries
+that claim across the broader PyTorch scoreboard with fresh native code and
+PyTorch `2.12.1`: `lane_pass=10/10`, `median_lane_pass=10/10`, and
+`ratio_median=linear_batched:1.32x,lazy_matmul_add_gelu_batched:2.78x,lazy_mlp_batched:1.56x,lazy_rms_silu_ffn_batched:1.76x,max_pool2d_batched:10.08x,avg_pool2d_batched:5.44x,rms_gelu_linear_batched:3.09x,softmax_classifier_batched:1.20x,log_softmax_classifier_batched:1.64x,lazy_token_head_batched:2.34x`.
+The same artifact reports `first_contact_inference=6/10`: all module-backed
+broad lanes now prove the friendly `zgml.compileInference` /
+`compile.compileForInference` handle reaches the same allocation-free prepared
+path, while the remaining four lanes are lazy-graph Program proofs rather than
+module-handle proofs. That makes the scoped "PyTorch-like compiled inference"
+claim stronger without pretending that broad eager PyTorch replacement is done.
 A June 24, 2026 three-attempt, 150ms-window six-lane focus artifact now passes
 both selected-attempt and median parity against PyTorch `2.12.1` with fresh
 native code:
@@ -711,12 +721,15 @@ timing metric, active keys, and ratio medians. When a narrower microscope is
 newer than that selected broad artifact, it prints `pytorch-latest-results:` so
 freshness stays visible without letting a one-lane probe hijack the PyTorch
 replacement scoreboard. That latest line now includes status, median status,
-worst ratio, attempts, native freshness, timing metric, key count, and ratio
-medians; a fresh one-lane microscope can sharpen the next optimization target
-without pretending to prove broad PyTorch parity. The same status readback also
-prints the most recent six-lane focus artifact as `pytorch-focus-results:` when
-it differs. This keeps three different facts visible at once: the selected
-broad PyTorch-like replacement sample, the freshest local experiment, and the
+worst ratio, first-contact inference coverage, attempts, native freshness,
+timing metric, key count, and ratio medians; a fresh one-lane microscope can
+sharpen the next optimization target without pretending to prove broad PyTorch
+parity. The selected PyTorch line also prints `first_contact_inference=N/M`
+when the artifact carries that field, so public-handle reachability is visible
+beside the raw prepared Program timing. The same status readback also prints
+the most recent six-lane focus artifact as `pytorch-focus-results:` when it
+differs. This keeps three different facts visible at once: the selected broad
+PyTorch-like replacement sample, the freshest local experiment, and the
 current-hot-path focus sample.
 The same status readback now prints a compact `perf-next:` line that turns the
 current artifacts into an iteration target: weakest full-model ggml lane and
