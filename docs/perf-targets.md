@@ -383,6 +383,13 @@ machine for both prompt/prefill and decode.
   semantic bridge fell to `0.62x`. Do not promote that cap bump. The next
   performance target is a tile-parallel semantic FFN/residual/norm kernel for
   the `576 x 1536 x 576` FFN shape, without the row-serial throughput loss.
+  That exact shape now has a raw frontier microscope:
+  `npm run dev:perf:frontier:qsemantic:bridge:raw{,:run}`. Its first
+  ReleaseFast runs measured
+  `qsemantic bridge-ffn m=128 h=1536 k=576 o=576 semantic throughput_candidate`
+  in the `1.82x-2.51x` range over the staged path with `max_abs_diff=0.000000`,
+  `shape_semantic_ffn_sublayers=1`, and `runtime_backend_dispatches=3`. Treat
+  this as an isolated kernel-work baseline, not a full-model promotion signal.
 - The frontier gate now also reports the paired row-chain diagnostic
   `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
   This compares four staged qmatmul+residual+RMSNorm-scale row chains against

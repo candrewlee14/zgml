@@ -1663,7 +1663,14 @@ recognizer/encoder can select the single-dispatch path
 throughput fell to `0.62x`. That cap bump is rejected: the needed work is a
 tile-parallel semantic FFN/residual/norm throughput kernel for the
 `576 x 1536 x 576` FFN shape, not enabling the larger row-serial
-single-dispatch kernel by default.
+single-dispatch kernel by default. A raw exact-shape frontier microscope now
+exists for that target:
+`npm run dev:perf:frontier:qsemantic:bridge:raw{,:run}`. Its first
+ReleaseFast runs measured
+`qsemantic bridge-ffn m=128 h=1536 k=576 o=576 semantic throughput_candidate`
+in the `1.82x-2.51x` range over staged execution with `max_abs_diff=0.000000`,
+`shape_semantic_ffn_sublayers=1`, and `runtime_backend_dispatches=3`. This is
+kernel-shape evidence, not a full-model promotion.
 The broader `dev:perf:competitive` runner now wraps the PyTorch, qsemantic,
 full-model Q8 prompt viable, and cheap ggml smoke lanes behind
 `BENCH_COMPETITIVE_LANES`, so a kernel edit can run only

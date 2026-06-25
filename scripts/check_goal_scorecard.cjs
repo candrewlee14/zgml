@@ -509,6 +509,12 @@ function checkScripts() {
   if (scripts["dev:perf:frontier:qsemantic:throughput:raw:run"] !== "BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:throughput:raw:run must remain the no-rebuild throughput-candidate-only Q8 semantic kernel microscope");
   }
+  if (scripts["dev:perf:frontier:qsemantic:bridge:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" ./zig-out/bin/bench-frontier") {
+    errors.push("package.json dev:perf:frontier:qsemantic:bridge:raw must remain the incremental exact bridge-shape Q8 semantic kernel microscope");
+  }
+  if (scripts["dev:perf:frontier:qsemantic:bridge:raw:run"] !== "BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" ./zig-out/bin/bench-frontier") {
+    errors.push("package.json dev:perf:frontier:qsemantic:bridge:raw:run must remain the no-rebuild exact bridge-shape Q8 semantic kernel microscope");
+  }
   if (scripts["dev:perf:frontier:qsemantic:smollm:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_FILTER=\"qsemantic smollm-prompt\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:smollm:raw must remain the incremental raw SmolLM Q8 semantic microscope");
   }

@@ -833,6 +833,8 @@ const ProjectionRowChainCase = struct {
     m: usize,
     n: usize,
     k: usize,
+    hidden: ?usize = null,
+    output: ?usize = null,
 };
 
 fn allocF32(alloc: std.mem.Allocator, n: usize, seed: u64, scale: f32) ![]f32 {
@@ -1457,48 +1459,51 @@ fn benchSemanticSublayerMetalCase(
     metal: *internal.backend_metal.MetalBackend,
     case: ProjectionRowChainCase,
 ) !void {
-    const elems = case.m * case.n;
+    const hidden = case.hidden orelse case.n;
+    const output = case.output orelse case.n;
+    const hidden_elems = case.m * hidden;
+    const output_elems = case.m * output;
     const input_len = case.m * case.k;
     const block_size: usize = 32;
-    const gate_scale_len = (case.k * case.n + block_size - 1) / block_size;
-    const down_scale_len = (case.n * case.n + block_size - 1) / block_size;
+    const gate_scale_len = (case.k * hidden + block_size - 1) / block_size;
+    const down_scale_len = (hidden * output + block_size - 1) / block_size;
 
     const input = try allocF32(alloc, input_len, 901, 0.25);
     defer alloc.free(input);
-    const shared_q = try allocF32(alloc, elems, 902, 0.0);
+    const shared_q = try allocF32(alloc, hidden_elems, 902, 0.0);
     defer alloc.free(shared_q);
-    const silu_out = try allocF32(alloc, elems, 903, 0.0);
+    const silu_out = try allocF32(alloc, hidden_elems, 903, 0.0);
     defer alloc.free(silu_out);
-    const product = try allocF32(alloc, elems, 904, 0.0);
+    const product = try allocF32(alloc, hidden_elems, 904, 0.0);
     defer alloc.free(product);
-    const down_q = try allocF32(alloc, elems, 905, 0.0);
+    const down_q = try allocF32(alloc, output_elems, 905, 0.0);
     defer alloc.free(down_q);
-    const residual = try allocF32(alloc, elems, 906, 0.20);
+    const residual = try allocF32(alloc, output_elems, 906, 0.20);
     defer alloc.free(residual);
-    const norm = try allocF32(alloc, elems, 907, 0.0);
+    const norm = try allocF32(alloc, output_elems, 907, 0.0);
     defer alloc.free(norm);
-    const scale = try allocF32(alloc, case.n, 908, 0.30);
+    const scale = try allocF32(alloc, output, 908, 0.30);
     defer alloc.free(scale);
-    const repeat = try allocF32(alloc, elems, 909, 0.0);
+    const repeat = try allocF32(alloc, output_elems, 909, 0.0);
     defer alloc.free(repeat);
-    const staged_out = try allocF32(alloc, elems, 910, 0.0);
+    const staged_out = try allocF32(alloc, output_elems, 910, 0.0);
     defer alloc.free(staged_out);
-    const command_out = try allocF32(alloc, elems, 911, 0.0);
+    const command_out = try allocF32(alloc, output_elems, 911, 0.0);
     defer alloc.free(command_out);
-    const two_phase_out = try allocF32(alloc, elems, 912, 0.0);
+    const two_phase_out = try allocF32(alloc, output_elems, 912, 0.0);
     defer alloc.free(two_phase_out);
-    const single_dispatch_out = try allocF32(alloc, elems, 920, 0.0);
+    const single_dispatch_out = try allocF32(alloc, output_elems, 920, 0.0);
     defer alloc.free(single_dispatch_out);
-    const throughput_out = try allocF32(alloc, elems, 921, 0.0);
+    const throughput_out = try allocF32(alloc, output_elems, 921, 0.0);
     defer alloc.free(throughput_out);
-    const target_out = try allocF32(alloc, elems, 919, 0.0);
+    const target_out = try allocF32(alloc, output_elems, 919, 0.0);
     defer alloc.free(target_out);
 
-    const gate_qdata = try allocI8Weights(alloc, case.k * case.n, 913);
+    const gate_qdata = try allocI8Weights(alloc, case.k * hidden, 913);
     defer alloc.free(gate_qdata);
-    const up_qdata = try allocI8Weights(alloc, case.k * case.n, 914);
+    const up_qdata = try allocI8Weights(alloc, case.k * hidden, 914);
     defer alloc.free(up_qdata);
-    const down_qdata = try allocI8Weights(alloc, case.n * case.n, 915);
+    const down_qdata = try allocI8Weights(alloc, hidden * output, 915);
     defer alloc.free(down_qdata);
     const gate_scales = try allocF32(alloc, gate_scale_len, 916, 0.02);
     defer alloc.free(gate_scales);
@@ -1511,25 +1516,25 @@ fn benchSemanticSublayerMetalCase(
     for (down_scales) |*v| v.* = 0.02;
 
     const ops = [_]backend_mod.DeviceOp{
-        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = @intCast(case.m), .N = @intCast(case.n), .K = @intCast(case.k) } },
-        .{ .elementwise = .{ .op = .silu, .dst = 2, .src0 = 1, .src1 = 1, .n = @intCast(elems) } },
-        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 1, .M = @intCast(case.m), .N = @intCast(case.n), .K = @intCast(case.k) } },
-        .{ .elementwise = .{ .op = .mul, .dst = 3, .src0 = 2, .src1 = 1, .n = @intCast(elems) } },
-        .{ .qmatmul = .{ .dst = 4, .input = 3, .weight_idx = 2, .M = @intCast(case.m), .N = @intCast(case.n), .K = @intCast(case.n) } },
-        .{ .elementwise = .{ .op = .add, .dst = 5, .src0 = 4, .src1 = 5, .n = @intCast(elems) } },
-        .{ .rmsnorm = .{ .dst = 6, .src = 5, .rows = @intCast(case.m), .cols = @intCast(case.n), .eps = 1e-5 } },
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = @intCast(case.m), .N = @intCast(hidden), .K = @intCast(case.k) } },
+        .{ .elementwise = .{ .op = .silu, .dst = 2, .src0 = 1, .src1 = 1, .n = @intCast(hidden_elems) } },
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 1, .M = @intCast(case.m), .N = @intCast(hidden), .K = @intCast(case.k) } },
+        .{ .elementwise = .{ .op = .mul, .dst = 3, .src0 = 2, .src1 = 1, .n = @intCast(hidden_elems) } },
+        .{ .qmatmul = .{ .dst = 4, .input = 3, .weight_idx = 2, .M = @intCast(case.m), .N = @intCast(output), .K = @intCast(hidden) } },
+        .{ .elementwise = .{ .op = .add, .dst = 5, .src0 = 4, .src1 = 5, .n = @intCast(output_elems) } },
+        .{ .rmsnorm = .{ .dst = 6, .src = 5, .rows = @intCast(case.m), .cols = @intCast(output), .eps = 1e-5 } },
         .{ .repeat = .{
             .dst = 8,
             .src = 7,
-            .n = @intCast(elems),
-            .src_ne = .{ @intCast(case.n), 1, 1, 1 },
-            .dst_ne = .{ @intCast(case.n), @intCast(case.m), 1, 1 },
-            .src_strides = .{ 1, @intCast(case.n), @intCast(case.n), @intCast(case.n) },
-            .dst_strides = .{ 1, @intCast(case.n), @intCast(elems), @intCast(elems) },
+            .n = @intCast(output_elems),
+            .src_ne = .{ @intCast(output), 1, 1, 1 },
+            .dst_ne = .{ @intCast(output), @intCast(case.m), 1, 1 },
+            .src_strides = .{ 1, @intCast(output), @intCast(output), @intCast(output) },
+            .dst_strides = .{ 1, @intCast(output), @intCast(output_elems), @intCast(output_elems) },
         } },
-        .{ .elementwise = .{ .op = .mul, .dst = 9, .src0 = 6, .src1 = 8, .n = @intCast(elems) } },
+        .{ .elementwise = .{ .op = .mul, .dst = 9, .src0 = 6, .src1 = 8, .n = @intCast(output_elems) } },
     };
-    const buffer_sizes = [_]usize{ input_len, elems, elems, elems, elems, elems, elems, case.n, elems, elems };
+    const buffer_sizes = [_]usize{ input_len, hidden_elems, hidden_elems, hidden_elems, output_elems, output_elems, output_elems, output, output_elems, output_elems };
     const uploads = [_]backend_mod.ProgramIO{
         programIo(0, input),
         programIo(1, shared_q),
@@ -1543,9 +1548,9 @@ fn benchSemanticSublayerMetalCase(
         programIo(9, staged_out),
     };
     const qweights = [_]backend_mod.QuantizedWeightUpload{
-        .{ .data = gate_qdata, .scales = gate_scales, .rows = case.k, .cols = case.n, .block_size = block_size },
-        .{ .data = up_qdata, .scales = up_scales, .rows = case.k, .cols = case.n, .block_size = block_size },
-        .{ .data = down_qdata, .scales = down_scales, .rows = case.n, .cols = case.n, .block_size = block_size },
+        .{ .data = gate_qdata, .scales = gate_scales, .rows = case.k, .cols = hidden, .block_size = block_size },
+        .{ .data = up_qdata, .scales = up_scales, .rows = case.k, .cols = hidden, .block_size = block_size },
+        .{ .data = down_qdata, .scales = down_scales, .rows = hidden, .cols = output, .block_size = block_size },
     };
     const program = backend_mod.DeviceProgram{
         .ops = &ops,
@@ -1613,7 +1618,7 @@ fn benchSemanticSublayerMetalCase(
         !variant_filter.enabled("single_dispatch") and
         !variant_filter.enabled("target");
     const staged_stats = measure(io, &staged_bench);
-    const approx_work = 2.0 * @as(f64, @floatFromInt(case.m * case.n * (case.k * 2 + case.n)));
+    const approx_work = 2.0 * @as(f64, @floatFromInt(case.m * hidden * case.k * 2 + case.m * output * hidden));
 
     var staged_name_buf: [128]u8 = undefined;
     const staged_name = try std.fmt.bufPrint(&staged_name_buf, "{s} semantic staged", .{case.name});
@@ -1738,6 +1743,8 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
         "qrow region",
         "semantic command",
         "semantic pair_row_chain",
+        "qsemantic bridge",
+        "semantic bridge",
         "qsemantic full-prefill",
         "qsemantic smollm-prompt",
         "projection_row_chain_two_phase_group",
@@ -1794,9 +1801,15 @@ fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io
     const semantic_sublayer_cases = [_]ProjectionRowChainCase{
         .{ .name = "qsemantic full-prefill m=128 n=512 k=512", .m = 128, .n = 512, .k = 512 },
         .{ .name = "qsemantic smollm-prompt m=128 n=576 k=576", .m = 128, .n = 576, .k = 576 },
+        .{ .name = "qsemantic bridge-ffn m=128 h=1536 k=576 o=576", .m = 128, .n = 1536, .k = 576, .output = 576 },
     };
     for (semantic_sublayer_cases) |case| {
-        if (filter.matchesAny(&.{ case.name, "qsemantic", "semantic command", "semantic pair_row_chain" })) {
+        const bridge_case = case.output != null;
+        const should_run = if (bridge_case)
+            filter.matchesAny(&.{ case.name, "qsemantic bridge", "semantic bridge" })
+        else
+            filter.matchesAny(&.{ case.name, "qsemantic", "semantic command", "semantic pair_row_chain" });
+        if (should_run) {
             try benchSemanticSublayerMetalCase(io, alloc, w, &metal, case);
         }
     }
