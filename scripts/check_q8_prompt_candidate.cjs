@@ -124,10 +124,23 @@ function semanticSingleDispatchRefusals(row) {
   return refusals;
 }
 
+function semanticSingleDispatchDimRefusalShape(row) {
+  const k = number(row, "semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k");
+  const h = number(row, "semantic_ffn_sublayer_single_dispatch_dim_refusal_max_h");
+  const o = number(row, "semantic_ffn_sublayer_single_dispatch_dim_refusal_max_o");
+  const cap = number(row, "semantic_ffn_sublayer_single_dispatch_dim_refusal_cap");
+  return { k, h, o, cap };
+}
+
 function formatRefusals(refusals) {
   return semanticSingleDispatchRefusalReasons
     .map((reason) => `${reason}:${format(refusals?.[reason] ?? 0, 0)}`)
     .join(",");
+}
+
+function formatDimRefusalShape(shape) {
+  if (!shape || !Number.isFinite(shape.k) || !Number.isFinite(shape.h) || !Number.isFinite(shape.o) || !Number.isFinite(shape.cap)) return "n/a";
+  return `k:${format(shape.k, 0)},h:${format(shape.h, 0)},o:${format(shape.o, 0)},cap:${format(shape.cap, 0)}`;
 }
 
 function positiveInt(value, label) {
@@ -196,6 +209,7 @@ function emptyLane(index) {
     semanticSingleDispatchOutputReadRefusals: 0,
     semanticSingleDispatchBlockSizeRefusals: 0,
     semanticSingleDispatchRefusals: emptySemanticSingleDispatchRefusals,
+    semanticSingleDispatchDimRefusalShape: { k: null, h: null, o: null, cap: null },
     fallback: 0,
   };
 }
@@ -252,6 +266,7 @@ function readProjectionLane(row, defaultTokS, index) {
     semanticSingleDispatchOutputReadRefusals: number(row, "semantic_ffn_sublayer_single_dispatch_output_read_refusals_per_call") ?? 0,
     semanticSingleDispatchBlockSizeRefusals: number(row, "semantic_ffn_sublayer_single_dispatch_block_size_refusals_per_call") ?? 0,
     semanticSingleDispatchRefusals: semanticSingleDispatchRefusals(row),
+    semanticSingleDispatchDimRefusalShape: semanticSingleDispatchDimRefusalShape(row),
     fallback: number(row, "fallback_ops") ?? 0,
   };
 }
@@ -607,6 +622,7 @@ function measureAttempt(index) {
     semanticSingleDispatchOutputReadRefusals: semanticLane.semanticSingleDispatchOutputReadRefusals,
     semanticSingleDispatchBlockSizeRefusals: semanticLane.semanticSingleDispatchBlockSizeRefusals,
     semanticSingleDispatchRefusals: semanticLane.semanticSingleDispatchRefusals,
+    semanticSingleDispatchDimRefusalShape: semanticLane.semanticSingleDispatchDimRefusalShape,
     twoPhaseScratchReady,
     defaultProjectionRowChainDispatchSplit,
     commandProjectionRowChainDispatchSplit: commandLane.projectionRowChainDispatchSplit,
@@ -896,6 +912,7 @@ if (writeArtifact) {
         singleDispatchOutputReadRefusals: semanticBest.semanticSingleDispatchOutputReadRefusals,
         singleDispatchBlockSizeRefusals: semanticBest.semanticSingleDispatchBlockSizeRefusals,
         singleDispatchRefusals: semanticBest.semanticSingleDispatchRefusals,
+        singleDispatchDimRefusalShape: semanticBest.semanticSingleDispatchDimRefusalShape,
       },
     },
     attempts: attemptRows.map((row) => ({
@@ -918,6 +935,7 @@ if (writeArtifact) {
       semanticSingleDispatchOutputReadRefusals: row.semanticSingleDispatchOutputReadRefusals,
       semanticSingleDispatchBlockSizeRefusals: row.semanticSingleDispatchBlockSizeRefusals,
       semanticSingleDispatchRefusals: row.semanticSingleDispatchRefusals,
+      semanticSingleDispatchDimRefusalShape: row.semanticSingleDispatchDimRefusalShape,
       commandFallback: row.commandFallback,
       twoPhaseFallback: row.twoPhaseFallback,
       semanticFallback: row.semanticFallback,
@@ -1002,6 +1020,7 @@ console.log(
     `semantic_single_dispatch_output_read_refusals=${format(semanticBest.semanticSingleDispatchOutputReadRefusals, 0)} ` +
     `semantic_single_dispatch_block_size_refusals=${format(semanticBest.semanticSingleDispatchBlockSizeRefusals, 0)} ` +
     `semantic_single_dispatch_refusals=${formatRefusals(semanticBest.semanticSingleDispatchRefusals)} ` +
+    `semantic_single_dispatch_dim_refusal_shape=${formatDimRefusalShape(semanticBest.semanticSingleDispatchDimRefusalShape)} ` +
     `semantic_projection_chain=${format(semanticBest.defaultProjectionChains, 0)}->${format(semanticBest.semanticProjectionChains, 0)} ` +
     `semantic_projection_pair=${format(semanticBest.defaultProjectionPairs, 0)}->${format(semanticBest.semanticProjectionPairs, 0)} ` +
     `semantic_projection_pair_dispatch=${format(semanticBest.defaultProjectionPairDispatches, 0)}->${format(semanticBest.semanticProjectionPairDispatches, 0)} ` +

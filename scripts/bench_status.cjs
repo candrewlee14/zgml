@@ -69,6 +69,16 @@ function formatSemanticSingleDispatchRefusals(refusals) {
     .join(",");
 }
 
+function formatSemanticSingleDispatchDimRefusalShape(shape) {
+  if (!shape || typeof shape !== "object") return "n/a";
+  const k = Number(shape.k);
+  const h = Number(shape.h);
+  const o = Number(shape.o);
+  const cap = Number(shape.cap);
+  if (!Number.isFinite(k) || !Number.isFinite(h) || !Number.isFinite(o) || !Number.isFinite(cap)) return "n/a";
+  return `k:${formatNumber(k, 0)},h:${formatNumber(h, 0)},o:${formatNumber(o, 0)},cap:${formatNumber(cap, 0)}`;
+}
+
 function latestFullRunArtifact() {
   const artifacts = fullRunArtifacts();
   return artifacts.at(-1) ?? null;
@@ -302,9 +312,10 @@ function q8PromptFreshnessStatusLine(selectedPath, rawPath) {
     const semanticSingleDispatchOutputReadRefusals = data?.lanes?.semantic?.singleDispatchOutputReadRefusals ?? "n/a";
     const semanticSingleDispatchBlockSizeRefusals = data?.lanes?.semantic?.singleDispatchBlockSizeRefusals ?? "n/a";
     const semanticSingleDispatchRefusals = formatSemanticSingleDispatchRefusals(data?.lanes?.semantic?.singleDispatchRefusals);
+    const semanticSingleDispatchDimRefusalShape = formatSemanticSingleDispatchDimRefusalShape(data?.lanes?.semantic?.singleDispatchDimRefusalShape);
     const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
     const lanes = Array.isArray(data?.config?.measuredLanes) ? data.config.measuredLanes.join(",") : "unknown";
-    latest = `semantic=${semanticThroughput} semantic_speedup=${semanticSpeedup} semantic_median=${semanticMedian} semantic_worst=${semanticWorst} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} semantic_bridges=${semanticBridges} semantic_single_dispatch_attempts=${semanticSingleDispatchAttempts} semantic_single_dispatch_output_read_refusals=${semanticSingleDispatchOutputReadRefusals} semantic_single_dispatch_block_size_refusals=${semanticSingleDispatchBlockSizeRefusals} semantic_single_dispatch_refusals=${semanticSingleDispatchRefusals} attempts=${attempts} lanes=${lanes}`;
+    latest = `semantic=${semanticThroughput} semantic_speedup=${semanticSpeedup} semantic_median=${semanticMedian} semantic_worst=${semanticWorst} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} semantic_bridges=${semanticBridges} semantic_single_dispatch_attempts=${semanticSingleDispatchAttempts} semantic_single_dispatch_output_read_refusals=${semanticSingleDispatchOutputReadRefusals} semantic_single_dispatch_block_size_refusals=${semanticSingleDispatchBlockSizeRefusals} semantic_single_dispatch_refusals=${semanticSingleDispatchRefusals} semantic_single_dispatch_dim_refusal_shape=${semanticSingleDispatchDimRefusalShape} attempts=${attempts} lanes=${lanes}`;
   } catch {
     latest = "summary=unreadable";
   }
@@ -856,6 +867,7 @@ function q8PromptCandidateStatusLine(path) {
   const semanticSingleDispatchOutputReadRefusals = data?.lanes?.semantic?.singleDispatchOutputReadRefusals ?? "n/a";
   const semanticSingleDispatchBlockSizeRefusals = data?.lanes?.semantic?.singleDispatchBlockSizeRefusals ?? "n/a";
   const semanticSingleDispatchRefusals = formatSemanticSingleDispatchRefusals(data?.lanes?.semantic?.singleDispatchRefusals);
+  const semanticSingleDispatchDimRefusalShape = formatSemanticSingleDispatchDimRefusalShape(data?.lanes?.semantic?.singleDispatchDimRefusalShape);
   const attempts = Number.isInteger(data?.config?.attempts) ? data.config.attempts : "n/a";
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
   const pairDefaults = data?.config?.pairDefaults === true ? "yes" : "no";
@@ -863,7 +875,7 @@ function q8PromptCandidateStatusLine(path) {
   const defaultPolicies = Array.isArray(data?.attempts)
     ? [...new Set(data.attempts.map((row) => row?.defaultPromptPolicy).filter((value) => typeof value === "string"))].join(",") || "unknown"
     : "unknown";
-  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} semantic_bridges=${semanticBridges} semantic_single_dispatch_attempts=${semanticSingleDispatchAttempts} semantic_single_dispatch_output_read_refusals=${semanticSingleDispatchOutputReadRefusals} semantic_single_dispatch_block_size_refusals=${semanticSingleDispatchBlockSizeRefusals} semantic_single_dispatch_refusals=${semanticSingleDispatchRefusals} attempts=${attempts} lanes=${lanes} pair_defaults=${pairDefaults} default_policy=${defaultPolicies} baseline_noise=${baselineNoise} source=${source}`;
+  return `q8-prompt-results: latest=${compactName(path)} status=${status} semantic=${semanticThroughput} semantic_structural_selected=${semanticStructuralSelected} semantic_throughput_ready=${semanticThroughputReady} command_speedup=${commandSpeedup} two_phase_speedup=${twoPhaseSpeedup} two_phase_median=${formatRatio(twoPhaseStats?.median)} two_phase_worst=${formatRatio(twoPhaseStats?.worst)} semantic_speedup=${semanticSpeedup} semantic_median=${formatRatio(semanticStats?.median)} semantic_worst=${formatRatio(semanticStats?.worst)} command_commands=${commandShape} semantic_pair_to_row=${semanticShape} semantic_spills=${semanticSpills} semantic_spill_input=${semanticSpillInput} semantic_spill_k=${formatNumber(semanticSpillK, 0)} semantic_output_spills=${semanticOutputSpills} semantic_bridges=${semanticBridges} semantic_single_dispatch_attempts=${semanticSingleDispatchAttempts} semantic_single_dispatch_output_read_refusals=${semanticSingleDispatchOutputReadRefusals} semantic_single_dispatch_block_size_refusals=${semanticSingleDispatchBlockSizeRefusals} semantic_single_dispatch_refusals=${semanticSingleDispatchRefusals} semantic_single_dispatch_dim_refusal_shape=${semanticSingleDispatchDimRefusalShape} attempts=${attempts} lanes=${lanes} pair_defaults=${pairDefaults} default_policy=${defaultPolicies} baseline_noise=${baselineNoise} source=${source}`;
 }
 
 function frontierStatusLine(path, pressurePath = path) {
@@ -999,6 +1011,7 @@ function q8PromptNextTarget(path, pressurePath = path) {
     const freshSingleDispatchRefusals = pressureData?.lanes?.semantic?.singleDispatchRefusals;
     const freshDimRefusals = Number(freshSingleDispatchRefusals?.dim ?? 0);
     const freshRefusals = formatSemanticSingleDispatchRefusals(freshSingleDispatchRefusals);
+    const freshDimRefusalShape = formatSemanticSingleDispatchDimRefusalShape(pressureData?.lanes?.semantic?.singleDispatchDimRefusalShape);
     const semanticRowChains = pressureData?.lanes?.semantic?.projectionRowChains ?? "n/a";
     const semanticCommands = pressureData?.lanes?.semantic?.commands ?? "n/a";
     const semanticBridgeCandidate = Number(freshBridges) === 0 && Number(semanticRowChains) === 0 && Number(semanticCommands) <= 121;
@@ -1006,7 +1019,7 @@ function q8PromptNextTarget(path, pressurePath = path) {
     const pressureSemanticWorstSpeedup = Number(freshStats?.worst ?? pressureData?.lanes?.semantic?.speedup);
     const bridgeNext = Number(freshBridges) > 0 ? "semantic_residual_bridge_command" : "semantic_ffn_sublayer_throughput_kernel";
     const fresh = hasFreshPressure
-      ? `:fresh=best:${formatRatio(pressureData?.lanes?.semantic?.speedup)},median:${formatRatio(freshStats?.median)},worst:${formatRatio(freshStats?.worst)},spills:${freshSpills},spill_k:${formatNumber(freshSpillK, 0)},spill_input:${freshSpillInput},output_spills:${freshOutputSpills},bridges:${freshBridges},single_dispatch_refusals:${freshRefusals}`
+      ? `:fresh=best:${formatRatio(pressureData?.lanes?.semantic?.speedup)},median:${formatRatio(freshStats?.median)},worst:${formatRatio(freshStats?.worst)},spills:${freshSpills},spill_k:${formatNumber(freshSpillK, 0)},spill_input:${freshSpillInput},output_spills:${freshOutputSpills},bridges:${freshBridges},single_dispatch_refusals:${freshRefusals},dim_refusal_shape:${freshDimRefusalShape}`
       : "";
     if (semanticBridgeCandidate) {
       const next = Number.isFinite(freshDimRefusals) && freshDimRefusals > 0
@@ -1015,7 +1028,7 @@ function q8PromptNextTarget(path, pressurePath = path) {
         Number.isFinite(pressureSemanticWorstSpeedup) && pressureSemanticWorstSpeedup >= 1
           ? "steady_semantic_bridge_candidate"
           : "semantic_bridge_throughput_kernel";
-      return `q8_prompt=semantic_bridge_candidate:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:single_dispatch_refusals=${freshRefusals}:speedup=${formatRatio(pressureSemanticSpeedup)}:worst=${formatRatio(pressureSemanticWorstSpeedup)}:next=${next}`;
+      return `q8_prompt=semantic_bridge_candidate:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:single_dispatch_refusals=${freshRefusals}:dim_refusal_shape=${freshDimRefusalShape}:speedup=${formatRatio(pressureSemanticSpeedup)}:worst=${formatRatio(pressureSemanticWorstSpeedup)}:next=${next}`;
     }
     if (pressureStatus === "promoted-default" || pressureSemanticThroughput === "promoted") {
       return `q8_prompt=promoted_semantic_default:commands=${semanticCommands}:row_chains=${semanticRowChains}:spills=${freshSpills}:spill_input=${freshSpillInput}:output_spills=${freshOutputSpills}:bridges=${freshBridges}:next=${bridgeNext}`;

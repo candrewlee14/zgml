@@ -9189,7 +9189,7 @@ const CompiledProgram = struct {
             return false;
         }
         if (gate.K > SEMANTIC_FFN_MAX_DIM or gate.N > SEMANTIC_FFN_MAX_DIM or down.N > SEMANTIC_FFN_MAX_DIM) {
-            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.dim);
+            exec.profile.recordSemanticFfnSublayerSingleDispatchDimRefusal(gate.K, gate.N, down.N, SEMANTIC_FFN_MAX_DIM);
             return false;
         }
         if (@as(usize, gate.weight_idx) >= view.qweight_views.len or

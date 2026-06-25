@@ -124,6 +124,10 @@ pub const RuntimeProfile = struct {
     semantic_ffn_sublayer_single_dispatch_output_read_refusals: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_block_size_refusals: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_refusal_reasons: [n_semantic_single_dispatch_refusal_reasons]u64 = [_]u64{0} ** n_semantic_single_dispatch_refusal_reasons,
+    semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k: u64 = 0,
+    semantic_ffn_sublayer_single_dispatch_dim_refusal_max_h: u64 = 0,
+    semantic_ffn_sublayer_single_dispatch_dim_refusal_max_o: u64 = 0,
+    semantic_ffn_sublayer_single_dispatch_dim_refusal_cap: u64 = 0,
     call_count: u32 = 0,
 
     pub fn reset(self: *RuntimeProfile) void {
@@ -188,6 +192,10 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_sublayer_single_dispatch_output_read_refusals +%= other.semantic_ffn_sublayer_single_dispatch_output_read_refusals;
         self.semantic_ffn_sublayer_single_dispatch_block_size_refusals +%= other.semantic_ffn_sublayer_single_dispatch_block_size_refusals;
         for (&self.semantic_ffn_sublayer_single_dispatch_refusal_reasons, other.semantic_ffn_sublayer_single_dispatch_refusal_reasons) |*dst, value| dst.* +%= value;
+        self.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k = @max(self.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k, other.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k);
+        self.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_h = @max(self.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_h, other.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_h);
+        self.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_o = @max(self.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_o, other.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_o);
+        self.semantic_ffn_sublayer_single_dispatch_dim_refusal_cap = @max(self.semantic_ffn_sublayer_single_dispatch_dim_refusal_cap, other.semantic_ffn_sublayer_single_dispatch_dim_refusal_cap);
         self.call_count +%= other.call_count;
     }
 
@@ -341,6 +349,14 @@ pub const RuntimeProfile = struct {
 
     pub fn recordSemanticFfnSublayerSingleDispatchRefusal(self: *RuntimeProfile, reason: SemanticFfnSublayerSingleDispatchRefusalReason) void {
         self.semantic_ffn_sublayer_single_dispatch_refusal_reasons[@intFromEnum(reason)] +%= 1;
+    }
+
+    pub fn recordSemanticFfnSublayerSingleDispatchDimRefusal(self: *RuntimeProfile, k: u32, h: u32, o: u32, cap: u32) void {
+        self.recordSemanticFfnSublayerSingleDispatchRefusal(.dim);
+        self.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k = @max(self.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k, k);
+        self.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_h = @max(self.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_h, h);
+        self.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_o = @max(self.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_o, o);
+        self.semantic_ffn_sublayer_single_dispatch_dim_refusal_cap = @max(self.semantic_ffn_sublayer_single_dispatch_dim_refusal_cap, cap);
     }
 
     pub fn recordSemanticFfnSublayerSingleDispatchOutputReadRefusal(self: *RuntimeProfile) void {
@@ -550,6 +566,12 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
                 try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_refused_", field.name, count, calls_f);
             }
         }
+        if (rt.semantic_ffn_sublayer_single_dispatch_refusal_reasons[@intFromEnum(SemanticFfnSublayerSingleDispatchRefusalReason.dim)] > 0) {
+            try writeJsonField(jw, "semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k", rt.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k);
+            try writeJsonField(jw, "semantic_ffn_sublayer_single_dispatch_dim_refusal_max_h", rt.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_h);
+            try writeJsonField(jw, "semantic_ffn_sublayer_single_dispatch_dim_refusal_max_o", rt.semantic_ffn_sublayer_single_dispatch_dim_refusal_max_o);
+            try writeJsonField(jw, "semantic_ffn_sublayer_single_dispatch_dim_refusal_cap", rt.semantic_ffn_sublayer_single_dispatch_dim_refusal_cap);
+        }
     }
 }
 
@@ -739,6 +761,8 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     rt.recordDynamicRegionCommandPlan();
     rt.recordQMatmulRowChainTiledSpill(128, 576, 576, 32, true, true);
     rt.recordSemanticFfnSublayer(128, 576, 576, 576, 512);
+    rt.recordSemanticFfnSublayerSingleDispatchAttempt();
+    rt.recordSemanticFfnSublayerSingleDispatchDimRefusal(576, 1536, 576, 1024);
     rt.call_count = 2;
 
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
@@ -775,6 +799,12 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_thread_lane_slots\":589824") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_active_thread_lanes\":360448") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_thread_lane_utilization\":0.611111") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_attempts\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_refused_dim\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k\":576") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_dim_refusal_max_h\":1536") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_dim_refusal_max_o\":576") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_dim_refusal_cap\":1024") != null);
 }
 
 test "RuntimeProfile accumulates evidence windows" {

@@ -375,12 +375,14 @@ machine for both prompt/prefill and decode.
   the next useful target is the remaining compatibility/shape refusal before
   the one-dispatch semantic FFN kernel can replace the two-phase row-chain tail.
   A compact refusal histogram then identified that remaining refusal as `dim`
-  for all `30` attempts. Temporarily lifting `SEMANTIC_FFN_MAX_DIM` from `1024`
-  to `2048` selected the single-dispatch path and reduced dispatches
-  `242->182`, but the full-model semantic bridge fell to `0.62x`. Do not promote
-  that cap bump. The next performance target is a tile-parallel semantic
-  FFN/residual/norm kernel that handles the larger hidden width without the
-  row-serial throughput loss.
+  for all `30` attempts. The Q8 prompt artifact/status path now records the
+  refused shape directly as
+  `semantic_single_dispatch_dim_refusal_shape=k:576,h:1536,o:576,cap:1024`.
+  Temporarily lifting `SEMANTIC_FFN_MAX_DIM` from `1024` to `2048` selected the
+  single-dispatch path and reduced dispatches `242->182`, but the full-model
+  semantic bridge fell to `0.62x`. Do not promote that cap bump. The next
+  performance target is a tile-parallel semantic FFN/residual/norm kernel for
+  the `576 x 1536 x 576` FFN shape, without the row-serial throughput loss.
 - The frontier gate now also reports the paired row-chain diagnostic
   `qrow group full-prefill x4 m=128 n=512 k=512 projection_row_chain_group`.
   This compares four staged qmatmul+residual+RMSNorm-scale row chains against
