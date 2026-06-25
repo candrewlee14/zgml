@@ -812,6 +812,12 @@ function checkScripts() {
   if (scripts["dev:perf:q8-prompt:viable:run"] !== "BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase,semantic node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json dev:perf:q8-prompt:viable:run must keep the no-rebuild viable Q8 prompt microscope");
   }
+  if (scripts["dev:perf:q8-prompt:semantic-steady"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-3} BENCH_Q8_PROMPT_LANES=semantic node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json dev:perf:q8-prompt:semantic-steady must keep the incremental steady semantic-only Q8 prompt microscope");
+  }
+  if (scripts["dev:perf:q8-prompt:semantic-steady:run"] !== "BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-3} BENCH_Q8_PROMPT_LANES=semantic node scripts/check_q8_prompt_candidate.cjs") {
+    errors.push("package.json dev:perf:q8-prompt:semantic-steady:run must keep the no-rebuild steady semantic-only Q8 prompt microscope");
+  }
   if (scripts["dev:perf:ggml:q8-command-smoke"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_BUILD_ZGML=0 node scripts/check_ggml_q8_command_smoke.cjs") {
     errors.push("package.json dev:perf:ggml:q8-command-smoke must keep the checked explicit Q8 command-path ggml smoke");
   }
