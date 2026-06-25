@@ -353,7 +353,7 @@ fn printSemanticSublayerRuntimeProfile(
     const semantic_thread_lane_utilization_x1000 = if (rt.semantic_ffn_sublayer_thread_lane_slots > 0) rt.semantic_ffn_sublayer_active_thread_lanes * 1000 / rt.semantic_ffn_sublayer_thread_lane_slots else 0;
     try writeSemanticSublayerRuntimeMetricJson(w, name, rt, semantic_row_serial_per_tile_group, semantic_total_row_serial_per_tile_group);
     try w.print(
-        "  {s:<28} runtime_backend_dispatches={d}  semantic_target_dispatches=1  runtime_projection_row_chain_dispatches={d}  runtime_projection_row_chain_attempts={d}  runtime_projection_row_chain_refused={d}  runtime_semantic_ffn_dispatches={d}  qmatmul_row_chain_tiled_count={d}  qmatmul_row_chain_tiled_row_tile_groups={d}  qmatmul_row_chain_tiled_n_tiles={d}  qmatmul_row_chain_tiled_serial_tile_loops={d}  qmatmul_row_chain_tiled_partial_slots={d}  qmatmul_row_chain_tiled_scratch_capacity={d}  qmatmul_row_chain_tiled_two_phase_count={d}  qmatmul_row_chain_tiled_finalize_tile_groups={d}  qmatmul_row_chain_tiled_finalize_elements={d}  qmatmul_row_chain_tiled_spilled_elementwise={d}  qmatmul_row_chain_tiled_spilled_input={d}  qmatmul_row_chain_tiled_output_spills={d}\n",
+        "  {s:<28} runtime_backend_dispatches={d}  semantic_target_dispatches=1  runtime_projection_row_chain_dispatches={d}  runtime_projection_row_chain_attempts={d}  runtime_projection_row_chain_refused={d}  runtime_semantic_ffn_dispatches={d}  semantic_ffn_sublayer_fallback_pair_dispatches={d}  semantic_ffn_sublayer_fallback_tail_dispatches={d}  qmatmul_row_chain_tiled_count={d}  qmatmul_row_chain_tiled_row_tile_groups={d}  qmatmul_row_chain_tiled_n_tiles={d}  qmatmul_row_chain_tiled_serial_tile_loops={d}  qmatmul_row_chain_tiled_partial_slots={d}  qmatmul_row_chain_tiled_scratch_capacity={d}  qmatmul_row_chain_tiled_two_phase_count={d}  qmatmul_row_chain_tiled_finalize_tile_groups={d}  qmatmul_row_chain_tiled_finalize_elements={d}  qmatmul_row_chain_tiled_spilled_elementwise={d}  qmatmul_row_chain_tiled_spilled_input={d}  qmatmul_row_chain_tiled_output_spills={d}\n",
         .{
             name,
             rt.backend_dispatch_count,
@@ -361,6 +361,8 @@ fn printSemanticSublayerRuntimeProfile(
             rt.program_command_attempt_counts[projection_row_chain_idx],
             rt.program_command_failed_counts[projection_row_chain_idx],
             rt.program_command_dispatch_counts[semantic_idx],
+            rt.semantic_ffn_sublayer_fallback_pair_dispatches,
+            rt.semantic_ffn_sublayer_fallback_tail_dispatches,
             rt.qmatmul_row_chain_tiled_count,
             rt.qmatmul_row_chain_tiled_row_tile_groups,
             rt.qmatmul_row_chain_tiled_n_tiles,
@@ -418,6 +420,8 @@ fn writeSemanticSublayerRuntimeMetricJson(
     try writeMetricJsonField(&jw, "runtime_projection_row_chain_attempts", rt.program_command_attempt_counts[projection_row_chain_idx]);
     try writeMetricJsonField(&jw, "runtime_projection_row_chain_refused", rt.program_command_failed_counts[projection_row_chain_idx]);
     try writeMetricJsonField(&jw, "runtime_semantic_ffn_dispatches", rt.program_command_dispatch_counts[semantic_idx]);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_fallback_pair_dispatches", rt.semantic_ffn_sublayer_fallback_pair_dispatches);
+    try writeMetricJsonField(&jw, "semantic_ffn_sublayer_fallback_tail_dispatches", rt.semantic_ffn_sublayer_fallback_tail_dispatches);
     try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_count", rt.qmatmul_row_chain_tiled_count);
     try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_row_tile_groups", rt.qmatmul_row_chain_tiled_row_tile_groups);
     try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_n_tiles", rt.qmatmul_row_chain_tiled_n_tiles);

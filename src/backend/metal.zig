@@ -9304,12 +9304,15 @@ const CompiledProgram = struct {
         if (self.command_policy.fuse_projection_row_chain_two_phase_candidate and
             self.encodeQMatmulRowChainTwoPhaseTiled(exec, view, down, residual, rn, rp, out, residual_output_spill, residual_output_spill))
         {
+            exec.profile.recordSemanticFfnSublayerFallbackDispatches(1, 2);
             return true;
         }
 
         const write_down_primary = view.outputReadsDenseSpan(down.dst, down.dst_offset, down.M, down.N, down.dst_row_stride);
         if (!self.encodeQMatmulElementwise(exec, view, down, residual, write_down_primary)) return false;
-        return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, view.outputReadsSpan(rn.dst, rn.dst_offset, @as(u64, rn.rows) * rn.cols) or view.outputReadsSpan(rp.dst, rp.dst_offset, rp.n));
+        if (!self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, view.outputReadsSpan(rn.dst, rn.dst_offset, @as(u64, rn.rows) * rn.cols) or view.outputReadsSpan(rp.dst, rp.dst_offset, rp.n))) return false;
+        exec.profile.recordSemanticFfnSublayerFallbackDispatches(1, 2);
+        return true;
     }
 
     fn tryEncodeSemanticFfnSublayerWithInputRowChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {

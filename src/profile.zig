@@ -120,6 +120,8 @@ pub const RuntimeProfile = struct {
     semantic_ffn_sublayer_active_width_lanes: u64 = 0,
     semantic_ffn_sublayer_thread_lane_slots: u64 = 0,
     semantic_ffn_sublayer_active_thread_lanes: u64 = 0,
+    semantic_ffn_sublayer_fallback_pair_dispatches: u64 = 0,
+    semantic_ffn_sublayer_fallback_tail_dispatches: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_attempts: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_output_read_refusals: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_block_size_refusals: u64 = 0,
@@ -188,6 +190,8 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_sublayer_active_width_lanes +%= other.semantic_ffn_sublayer_active_width_lanes;
         self.semantic_ffn_sublayer_thread_lane_slots +%= other.semantic_ffn_sublayer_thread_lane_slots;
         self.semantic_ffn_sublayer_active_thread_lanes +%= other.semantic_ffn_sublayer_active_thread_lanes;
+        self.semantic_ffn_sublayer_fallback_pair_dispatches +%= other.semantic_ffn_sublayer_fallback_pair_dispatches;
+        self.semantic_ffn_sublayer_fallback_tail_dispatches +%= other.semantic_ffn_sublayer_fallback_tail_dispatches;
         self.semantic_ffn_sublayer_single_dispatch_attempts +%= other.semantic_ffn_sublayer_single_dispatch_attempts;
         self.semantic_ffn_sublayer_single_dispatch_output_read_refusals +%= other.semantic_ffn_sublayer_single_dispatch_output_read_refusals;
         self.semantic_ffn_sublayer_single_dispatch_block_size_refusals +%= other.semantic_ffn_sublayer_single_dispatch_block_size_refusals;
@@ -345,6 +349,11 @@ pub const RuntimeProfile = struct {
 
     pub fn recordSemanticFfnSublayerSingleDispatchAttempt(self: *RuntimeProfile) void {
         self.semantic_ffn_sublayer_single_dispatch_attempts +%= 1;
+    }
+
+    pub fn recordSemanticFfnSublayerFallbackDispatches(self: *RuntimeProfile, pair_dispatches: u64, tail_dispatches: u64) void {
+        self.semantic_ffn_sublayer_fallback_pair_dispatches +%= pair_dispatches;
+        self.semantic_ffn_sublayer_fallback_tail_dispatches +%= tail_dispatches;
     }
 
     pub fn recordSemanticFfnSublayerSingleDispatchRefusal(self: *RuntimeProfile, reason: SemanticFfnSublayerSingleDispatchRefusalReason) void {
@@ -556,6 +565,10 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
             );
         }
     }
+    if (rt.semantic_ffn_sublayer_fallback_pair_dispatches > 0 or rt.semantic_ffn_sublayer_fallback_tail_dispatches > 0) {
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_fallback_", "pair_dispatches", rt.semantic_ffn_sublayer_fallback_pair_dispatches, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_sublayer_fallback_", "tail_dispatches", rt.semantic_ffn_sublayer_fallback_tail_dispatches, calls_f);
+    }
     if (rt.semantic_ffn_sublayer_single_dispatch_attempts > 0) {
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_", "attempts", rt.semantic_ffn_sublayer_single_dispatch_attempts, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_single_dispatch_", "output_read_refusals", rt.semantic_ffn_sublayer_single_dispatch_output_read_refusals, calls_f);
@@ -761,6 +774,7 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     rt.recordDynamicRegionCommandPlan();
     rt.recordQMatmulRowChainTiledSpill(128, 576, 576, 32, true, true);
     rt.recordSemanticFfnSublayer(128, 576, 576, 576, 512);
+    rt.recordSemanticFfnSublayerFallbackDispatches(1, 2);
     rt.recordSemanticFfnSublayerSingleDispatchAttempt();
     rt.recordSemanticFfnSublayerSingleDispatchDimRefusal(576, 1536, 576, 1024);
     rt.call_count = 2;
@@ -799,12 +813,32 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_thread_lane_slots\":589824") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_active_thread_lanes\":360448") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_thread_lane_utilization\":0.611111") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_fallback_pair_dispatches\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_fallback_tail_dispatches\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_attempts\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_refused_dim\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k\":576") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_dim_refusal_max_h\":1536") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_dim_refusal_max_o\":576") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_dim_refusal_cap\":1024") != null);
+}
+
+test "RuntimeProfile serializes semantic fallback dispatch evidence without semantic kernel count" {
+    var rt = RuntimeProfile{};
+    rt.recordSemanticFfnSublayerFallbackDispatches(1, 2);
+
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var jw: std.json.Stringify = .{ .writer = &aw.writer };
+
+    try jw.beginObject();
+    try writeRuntimeProfileJsonFields(rt, &jw);
+    try jw.endObject();
+    const out = aw.writer.buffer[0..aw.writer.end];
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_fallback_pair_dispatches\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_fallback_tail_dispatches\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_count\"") == null);
 }
 
 test "RuntimeProfile accumulates evidence windows" {
