@@ -272,6 +272,8 @@
     "dev:perf:next:qsemantic-throughput:run": "BENCH_NEXT_PERF_LANE=qsemantic_throughput BENCH_NEXT_PERF_BUILD=0 node scripts/run_next_perf.cjs",
     "dev:perf:next:qsemantic-bridge": "BENCH_NEXT_PERF_LANE=qsemantic_bridge BENCH_NEXT_PERF_BUILD=1 node scripts/run_next_perf.cjs",
     "dev:perf:next:qsemantic-bridge:run": "BENCH_NEXT_PERF_LANE=qsemantic_bridge BENCH_NEXT_PERF_BUILD=0 node scripts/run_next_perf.cjs",
+    "dev:perf:next:qsemantic-input-bridge": "BENCH_NEXT_PERF_LANE=qsemantic_input_bridge BENCH_NEXT_PERF_BUILD=1 node scripts/run_next_perf.cjs",
+    "dev:perf:next:qsemantic-input-bridge:run": "BENCH_NEXT_PERF_LANE=qsemantic_input_bridge BENCH_NEXT_PERF_BUILD=0 node scripts/run_next_perf.cjs",
     "dev:perf:next:q8-prompt-semantic": "BENCH_NEXT_PERF_LANE=q8_prompt_semantic BENCH_NEXT_PERF_BUILD=1 node scripts/run_next_perf.cjs",
     "dev:perf:next:q8-prompt-semantic:run": "BENCH_NEXT_PERF_LANE=q8_prompt_semantic BENCH_NEXT_PERF_BUILD=0 node scripts/run_next_perf.cjs",
     "dev:perf:next:build": "BENCH_NEXT_PERF_BUILD=1 node scripts/run_next_perf.cjs",

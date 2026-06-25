@@ -66,7 +66,7 @@ function chooseLane(line) {
     hasSemanticThroughputFrontier &&
     (!freshThroughput || freshThroughput.smollm < 1 || freshThroughput.full < 1);
   if (qsemanticThroughputBelowDefault) return "qsemantic_throughput";
-  if (q8PromptNeedsWidthParallelKernel) return "q8_prompt_semantic";
+  if (q8PromptNeedsWidthParallelKernel) return "qsemantic_input_bridge";
   if (q8PromptNeedsSemanticBridgeKernel) return "qsemantic_throughput";
   if (q8PromptNeedsSteadySemanticBridge) return "q8_prompt";
   if (currentQ8NeedsSemanticThroughput && hasFreshQsemanticThroughput) return "q8_prompt";
@@ -91,7 +91,7 @@ function chooseLane(line) {
 }
 
 function validateLane(lane) {
-  const known = new Set(["status", "pytorch", "qsemantic", "qsemantic_throughput", "qsemantic_bridge", "qproj", "q8_prompt", "q8_prompt_semantic", "ggml"]);
+  const known = new Set(["status", "pytorch", "qsemantic", "qsemantic_throughput", "qsemantic_bridge", "qsemantic_input_bridge", "qproj", "q8_prompt", "q8_prompt_semantic", "ggml"]);
   if (!known.has(lane)) throw new Error(`unknown BENCH_NEXT_PERF_LANE: ${lane}`);
 }
 
@@ -106,7 +106,7 @@ function main() {
 
   if (lane === "status") return;
 
-  if (shouldBuild && (lane === "qsemantic" || lane === "qsemantic_throughput" || lane === "qsemantic_bridge" || lane === "qproj" || lane === "q8_prompt" || lane === "q8_prompt_semantic" || lane === "ggml")) {
+  if (shouldBuild && (lane === "qsemantic" || lane === "qsemantic_throughput" || lane === "qsemantic_bridge" || lane === "qsemantic_input_bridge" || lane === "qproj" || lane === "q8_prompt" || lane === "q8_prompt_semantic" || lane === "ggml")) {
     runInherited("build benchmark artifacts", "zig", ["build", "-Doptimize=ReleaseFast", "bench-build", "-fincremental", "--summary", "failures"]);
   }
   if (shouldBuild && lane === "pytorch") {
@@ -152,6 +152,21 @@ function main() {
         BENCH_FRONTIER_ATTEMPTS: steady ? "3" : "1",
         BENCH_QSEMANTIC_VARIANTS: "throughput_candidate",
         BENCH_FRONTIER_FILTER: "qsemantic bridge",
+      }),
+    );
+    return;
+  }
+
+  if (lane === "qsemantic_input_bridge") {
+    runInherited(
+      "qsemantic input bridge frontier",
+      process.execPath,
+      ["scripts/check_frontier_bench.cjs"],
+      envWithDefaults({
+        BENCH_FRONTIER_BUILD: "0",
+        BENCH_FRONTIER_ATTEMPTS: steady ? "3" : "1",
+        BENCH_QSEMANTIC_VARIANTS: "throughput_candidate",
+        BENCH_FRONTIER_FILTER: "qsemantic input bridge",
       }),
     );
     return;

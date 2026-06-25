@@ -886,6 +886,12 @@ function checkScripts() {
   if (scripts["dev:perf:next:qsemantic-bridge:run"] !== "BENCH_NEXT_PERF_LANE=qsemantic_bridge BENCH_NEXT_PERF_BUILD=0 node scripts/run_next_perf.cjs") {
     errors.push("package.json dev:perf:next:qsemantic-bridge:run must keep the no-rebuild exact bridge-shape qsemantic microscope");
   }
+  if (scripts["dev:perf:next:qsemantic-input-bridge"] !== "BENCH_NEXT_PERF_LANE=qsemantic_input_bridge BENCH_NEXT_PERF_BUILD=1 node scripts/run_next_perf.cjs") {
+    errors.push("package.json dev:perf:next:qsemantic-input-bridge must keep the rebuild-backed absorbed input-row-chain qsemantic microscope");
+  }
+  if (scripts["dev:perf:next:qsemantic-input-bridge:run"] !== "BENCH_NEXT_PERF_LANE=qsemantic_input_bridge BENCH_NEXT_PERF_BUILD=0 node scripts/run_next_perf.cjs") {
+    errors.push("package.json dev:perf:next:qsemantic-input-bridge:run must keep the no-rebuild absorbed input-row-chain qsemantic microscope");
+  }
   if (scripts["dev:perf:next:q8-prompt-semantic"] !== "BENCH_NEXT_PERF_LANE=q8_prompt_semantic BENCH_NEXT_PERF_BUILD=1 node scripts/run_next_perf.cjs") {
     errors.push("package.json dev:perf:next:q8-prompt-semantic must keep the rebuild-backed full-model Q8 semantic microscope");
   }
@@ -955,7 +961,7 @@ function checkScripts() {
     ":fresh=source:[^, ]+,throughput=smollm:([0-9.]+)x,full:([0-9.]+)x",
     "const qsemanticThroughputBelowDefault",
     "if (qsemanticThroughputBelowDefault) return \"qsemantic_throughput\"",
-    "if (q8PromptNeedsWidthParallelKernel) return \"q8_prompt_semantic\"",
+    "if (q8PromptNeedsWidthParallelKernel) return \"qsemantic_input_bridge\"",
     "if (q8PromptNeedsSemanticBridgeKernel) return \"qsemantic_throughput\"",
     "if (q8PromptNeedsSteadySemanticBridge) return \"q8_prompt\"",
     "if (currentQ8NeedsSemanticThroughput && hasFreshQsemanticThroughput) return \"q8_prompt\"",
@@ -965,9 +971,12 @@ function checkScripts() {
     "if (hasFreshQsemanticThroughput && /q8_prompt=semantic_throughput_kernel/.test(line)) return \"q8_prompt\"",
     "qsemantic_throughput",
     "qsemantic_bridge",
+    "qsemantic_input_bridge",
     "q8_prompt_semantic",
     "qsemantic bridge frontier",
     "BENCH_FRONTIER_FILTER: \"qsemantic bridge\"",
+    "qsemantic input bridge frontier",
+    "BENCH_FRONTIER_FILTER: \"qsemantic input bridge\"",
     "q8_prompt=semantic_throughput_kernel",
     "scripts/check_frontier_bench.cjs",
     "scripts/check_q8_prompt_candidate.cjs",
