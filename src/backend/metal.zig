@@ -5703,6 +5703,30 @@ const QWeightShape = struct {
     block_size: usize,
 };
 
+const SemanticWidthScratchRequirement = struct {
+    candidates: u64 = 0,
+    rows: u32 = 0,
+    hidden: u32 = 0,
+    input: u32 = 0,
+    output: u32 = 0,
+    hidden_tiles: u64 = 0,
+    product_bytes: usize = 0,
+    down_partial_bytes: usize = 0,
+    output_bytes: usize = 0,
+
+    fn scratchBytes(self: SemanticWidthScratchRequirement) usize {
+        return self.down_partial_bytes;
+    }
+
+    fn merge(self: *SemanticWidthScratchRequirement, other: SemanticWidthScratchRequirement) void {
+        self.candidates +%= other.candidates;
+        if (other.scratchBytes() <= self.scratchBytes()) return;
+        const candidates = self.candidates;
+        self.* = other;
+        self.candidates = candidates;
+    }
+};
+
 const PreparedQWeights = struct {
     views: []DeviceQWeight,
     refs: []reference.QWeight,
@@ -5713,6 +5737,7 @@ const RuntimeView = struct {
     ref_buffers: []reference.Buffer,
     qweight_views: []DeviceQWeight,
     ref_qweights: []reference.QWeight,
+    semantic_width_scratch: ?DeviceBuffer = null,
     program_stencil: *program_mod.ProgramStencil,
     outputs: []const backend_mod.ProgramIO = &.{},
 
@@ -5773,11 +5798,91 @@ fn releaseDeviceBuffers(device_bufs: []const DeviceBuffer) void {
     for (device_bufs) |buf| c.mtl_release(buf.ptr);
 }
 
+fn releaseOptionalDeviceBuffer(device_buf: ?DeviceBuffer) void {
+    if (device_buf) |buf| c.mtl_release(buf.ptr);
+}
+
 fn releaseQWeightViews(qweight_views: []const DeviceQWeight) void {
     for (qweight_views) |qw| {
         c.mtl_release(qw.data.ptr);
         c.mtl_release(qw.scales.ptr);
     }
+}
+
+fn divCeilU64(n: u32, d: u32) u64 {
+    if (d == 0) return 0;
+    return (@as(u64, n) + @as(u64, d) - 1) / @as(u64, d);
+}
+
+fn checkedF32Bytes(elements: u64) ?usize {
+    const bytes = std.math.mul(u64, elements, @sizeOf(f32)) catch return null;
+    return std.math.cast(usize, bytes);
+}
+
+fn semanticScratchRequirementForShape(rows: u32, hidden: u32, input: u32, output: u32) ?SemanticWidthScratchRequirement {
+    if (rows == 0 or hidden == 0 or input == 0 or output == 0) return null;
+    if (input > SEMANTIC_FFN_MAX_DIM or hidden <= SEMANTIC_FFN_MAX_DIM or hidden > SEMANTIC_FFN_MAX_HIDDEN or output > SEMANTIC_FFN_MAX_DIM) return null;
+
+    const row_count: u64 = rows;
+    const hidden_count: u64 = hidden;
+    const output_count: u64 = output;
+    const hidden_tiles = divCeilU64(hidden, ROW_CHAIN_TILE);
+    const product_elements = std.math.mul(u64, row_count, hidden_count) catch return null;
+    const output_elements = std.math.mul(u64, row_count, output_count) catch return null;
+    const down_partial_elements = std.math.mul(u64, output_elements, hidden_tiles) catch return null;
+    return .{
+        .candidates = 1,
+        .rows = rows,
+        .hidden = hidden,
+        .input = input,
+        .output = output,
+        .hidden_tiles = hidden_tiles,
+        .product_bytes = checkedF32Bytes(product_elements) orelse return null,
+        .down_partial_bytes = checkedF32Bytes(down_partial_elements) orelse return null,
+        .output_bytes = checkedF32Bytes(output_elements) orelse return null,
+    };
+}
+
+fn semanticScratchRequirementForCommand(ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) ?SemanticWidthScratchRequirement {
+    if (command.kind == .semantic_ffn_sublayer) {
+        if (command.op_count != 9) return null;
+        const start: usize = @intCast(command.op_start);
+        const gate = deviceOpAt(.qmatmul, ops, start) orelse return null;
+        const product = deviceOpAt(.elementwise, ops, start + 3) orelse return null;
+        const down = deviceOpAt(.qmatmul, ops, start + 4) orelse return null;
+        if (down.M != gate.M or down.K != gate.N) return null;
+        if (down.input != product.dst or down.input_offset != product.dst_offset) return null;
+        return semanticScratchRequirementForShape(gate.M, gate.N, gate.K, down.N);
+    }
+    if (command.kind == .semantic_ffn_sublayer_with_input_row_chain) {
+        if (command.op_count != 14) return null;
+        const start: usize = @intCast(command.op_start);
+        const input_q = deviceOpAt(.qmatmul, ops, start) orelse return null;
+        const gate = deviceOpAt(.qmatmul, ops, start + 5) orelse return null;
+        const product = deviceOpAt(.elementwise, ops, start + 8) orelse return null;
+        const down = deviceOpAt(.qmatmul, ops, start + 9) orelse return null;
+        if (input_q.M != gate.M or input_q.N != gate.K) return null;
+        if (down.M != gate.M or down.K != gate.N) return null;
+        if (down.input != product.dst or down.input_offset != product.dst_offset) return null;
+        return semanticScratchRequirementForShape(gate.M, gate.N, gate.K, down.N);
+    }
+    return null;
+}
+
+fn semanticWidthScratchRequirement(stencil: *const program_mod.ProgramStencil) SemanticWidthScratchRequirement {
+    var requirement = SemanticWidthScratchRequirement{};
+    for (stencil.kernel_plan.commands) |command| {
+        const next = semanticScratchRequirementForCommand(stencil.ops, command) orelse continue;
+        requirement.merge(next);
+    }
+    return requirement;
+}
+
+fn allocateSemanticWidthScratch(device: *anyopaque, requirement: SemanticWidthScratchRequirement) !?DeviceBuffer {
+    const byte_size = requirement.scratchBytes();
+    if (byte_size == 0) return null;
+    const ptr = c.mtl_create_buffer(device, byte_size) orelse return error.OutOfMemory;
+    return .{ .ptr = ptr, .size = byte_size };
 }
 
 fn deinitPreparedQWeights(alloc: std.mem.Allocator, prepared: PreparedQWeights) void {
@@ -5892,6 +5997,8 @@ const CompiledProgram = struct {
     qweight_views: []DeviceQWeight,
     ref_qweights: []reference.QWeight,
     qweight_shapes: []QWeightShape,
+    semantic_width_scratch: ?DeviceBuffer = null,
+    semantic_width_scratch_requirement: SemanticWidthScratchRequirement = .{},
     program_stencil: program_mod.ProgramStencil,
     plan: program_mod.ExecutionPlan,
     command_policy: program_mod.CommandStreamPolicy,
@@ -5900,6 +6007,7 @@ const CompiledProgram = struct {
     profile_mutex: std.Io.Mutex = .init,
 
     fn deinit(self: *CompiledProgram) void {
+        releaseOptionalDeviceBuffer(self.semantic_width_scratch);
         releaseDeviceBuffers(self.device_bufs);
         deinitPreparedQWeights(self.alloc, .{ .views = self.qweight_views, .refs = self.ref_qweights });
         if (self.qweight_shapes.len > 0) self.alloc.free(self.qweight_shapes);
@@ -5964,6 +6072,7 @@ const CompiledProgram = struct {
             .ref_buffers = self.ref_buffers,
             .qweight_views = self.qweight_views,
             .ref_qweights = self.ref_qweights,
+            .semantic_width_scratch = self.semantic_width_scratch,
             .program_stencil = &self.program_stencil,
         };
     }
@@ -5975,6 +6084,7 @@ const CompiledProgram = struct {
             .ref_buffers = runtime.ref_buffers,
             .qweight_views = if (has_runtime_qweights) runtime.qweight_views else self.qweight_views,
             .ref_qweights = if (has_runtime_qweights) runtime.ref_qweights else self.ref_qweights,
+            .semantic_width_scratch = runtime.semantic_width_scratch orelse self.semantic_width_scratch,
             .program_stencil = &runtime.program_stencil,
         };
     }
@@ -9944,6 +10054,8 @@ const RuntimeBindings = struct {
     ref_buffers: []reference.Buffer,
     qweight_views: []DeviceQWeight = &.{},
     ref_qweights: []reference.QWeight = &.{},
+    semantic_width_scratch: ?DeviceBuffer = null,
+    semantic_width_scratch_requirement: SemanticWidthScratchRequirement = .{},
     program_stencil: program_mod.ProgramStencil,
     configured_persistent: []backend_mod.ProgramIO = &.{},
     configured_inputs: []backend_mod.ProgramIO = &.{},
@@ -9973,23 +10085,36 @@ const RuntimeBindings = struct {
             rb.* = .{ .ptr = @ptrCast(@alignCast(c.mtl_buffer_contents(buf.ptr))), .len = buf.size / @sizeOf(f32) };
         }
 
+        const semantic_width_scratch = try allocateSemanticWidthScratch(compiled.backend.device, compiled.semantic_width_scratch_requirement);
+        errdefer releaseOptionalDeviceBuffer(semantic_width_scratch);
+
         var program_stencil = try compiled.program_stencil.clone(alloc);
         errdefer program_stencil.deinit(alloc);
         const inspection = program_stencil.inspect();
         const command_shape = compiled.plan.executableCommandShape() catch inspection.command_shape;
+        var runtime_profile = profile_mod.RuntimeProfile{
+            .runtime_patch_shape = inspection.runtime_patch_shape,
+            .program_command_shape = command_shape,
+        };
+        runtime_profile.recordSemanticWidthScratch(
+            compiled.semantic_width_scratch_requirement.candidates,
+            @intCast(compiled.semantic_width_scratch_requirement.scratchBytes()),
+            @intCast(compiled.semantic_width_scratch_requirement.product_bytes),
+            @intCast(compiled.semantic_width_scratch_requirement.down_partial_bytes),
+            @intCast(compiled.semantic_width_scratch_requirement.output_bytes),
+        );
         return .{
             .device_bufs = device_bufs,
             .ref_buffers = ref_buffers,
             .qweight_views = &.{},
             .ref_qweights = &.{},
+            .semantic_width_scratch = semantic_width_scratch,
+            .semantic_width_scratch_requirement = compiled.semantic_width_scratch_requirement,
             .program_stencil = program_stencil,
             .configured_persistent = &.{},
             .configured_inputs = &.{},
             .configured_outputs = &.{},
-            .runtime_profile = .{
-                .runtime_patch_shape = inspection.runtime_patch_shape,
-                .program_command_shape = command_shape,
-            },
+            .runtime_profile = runtime_profile,
             .alloc = alloc,
         };
     }
@@ -10059,6 +10184,7 @@ const RuntimeBindings = struct {
         if (self.configured_inputs.len > 0) self.alloc.free(self.configured_inputs);
         if (self.configured_outputs.len > 0) self.alloc.free(self.configured_outputs);
         deinitPreparedQWeights(self.alloc, .{ .views = self.qweight_views, .refs = self.ref_qweights });
+        releaseOptionalDeviceBuffer(self.semantic_width_scratch);
         self.program_stencil.deinit(self.alloc);
         releaseDeviceBuffers(self.device_bufs);
         self.alloc.free(self.ref_buffers);
@@ -10119,6 +10245,22 @@ fn compileProgramInner(self: *MetalBackend, program: backend_mod.DeviceProgram, 
     errdefer plan.deinit(alloc);
     const command_shape = try plan.executableCommandShape();
 
+    const semantic_width_scratch_requirement = semanticWidthScratchRequirement(&program_stencil);
+    const semantic_width_scratch = try allocateSemanticWidthScratch(self.device, semantic_width_scratch_requirement);
+    errdefer releaseOptionalDeviceBuffer(semantic_width_scratch);
+
+    var runtime_profile = profile_mod.RuntimeProfile{
+        .runtime_patch_shape = inspection.runtime_patch_shape,
+        .program_command_shape = command_shape,
+    };
+    runtime_profile.recordSemanticWidthScratch(
+        semantic_width_scratch_requirement.candidates,
+        @intCast(semantic_width_scratch_requirement.scratchBytes()),
+        @intCast(semantic_width_scratch_requirement.product_bytes),
+        @intCast(semantic_width_scratch_requirement.down_partial_bytes),
+        @intCast(semantic_width_scratch_requirement.output_bytes),
+    );
+
     const compiled = try alloc.create(CompiledProgram);
     compiled.* = .{
         .backend = self,
@@ -10127,14 +10269,13 @@ fn compileProgramInner(self: *MetalBackend, program: backend_mod.DeviceProgram, 
         .qweight_views = prepared_qweights.views,
         .ref_qweights = prepared_qweights.refs,
         .qweight_shapes = qweight_shapes,
+        .semantic_width_scratch = semantic_width_scratch,
+        .semantic_width_scratch_requirement = semantic_width_scratch_requirement,
         .program_stencil = program_stencil,
         .plan = plan,
         .command_policy = kernelizer.command_policy,
         .alloc = alloc,
-        .runtime_profile = .{
-            .runtime_patch_shape = inspection.runtime_patch_shape,
-            .program_command_shape = command_shape,
-        },
+        .runtime_profile = runtime_profile,
     };
     return compiled;
 }

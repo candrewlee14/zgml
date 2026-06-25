@@ -1746,10 +1746,14 @@ bridge artifact now makes the scratch contract explicit too: the obvious fully
 staged width-parallel down path needs `down_partial_elements=3538944`
 (`down_partial_bytes=14155776`), which is `48.00x` the output-sized
 `73728`-element buffer for this shape. The retained product buffer is only
-`product_elements=196608` (`786432` bytes). Therefore the next real kernel
-slice needs backend-owned down-partial scratch, an equivalent accumulation
-strategy, or a streamed hidden-tile design that proves it can avoid that
-`14.2 MB` partial surface without falling back to row-serial work.
+`product_elements=196608` (`786432` bytes). The Metal runtime now allocates
+and profiles a reusable backend-owned down-partial scratch buffer for semantic
+commands with `hidden > SEMANTIC_FFN_MAX_DIM`; the refreshed bridge gate asserts
+`semantic_width_scratch=candidates:1,bytes:14155776,...,down_partial_to_output:48.00`.
+The remaining kernel slice is therefore to consume that scratch, prove an
+equivalent accumulation strategy, or implement a streamed hidden-tile design
+that avoids the `14.2 MB` partial surface without falling back to row-serial
+work.
 A finalize-path probe then tested replacing
 `qmatmul_row_chain_tiled_finalize_tiles_f32` with the coarser row-tile
 `qmatmul_row_chain_tiled_finalize_f32` so the RMS reduction would be computed

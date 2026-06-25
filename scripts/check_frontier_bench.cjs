@@ -1618,6 +1618,12 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
   const rowChainTiledSpilledElementwise = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_spilled_elementwise");
   const rowChainTiledSpilledInput = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_spilled_input");
   const rowChainTiledOutputSpills = metric(output, bridgeProfileLabel, "qmatmul_row_chain_tiled_output_spills");
+  const semanticWidthScratchCandidates = metric(output, bridgeProfileLabel, "semantic_width_scratch_candidates");
+  const semanticWidthScratchBytes = metric(output, bridgeProfileLabel, "semantic_width_scratch_bytes");
+  const semanticWidthScratchProductBytes = metric(output, bridgeProfileLabel, "semantic_width_scratch_product_bytes");
+  const semanticWidthScratchDownPartialBytes = metric(output, bridgeProfileLabel, "semantic_width_scratch_down_partial_bytes");
+  const semanticWidthScratchOutputBytes = metric(output, bridgeProfileLabel, "semantic_width_scratch_output_bytes");
+  const semanticWidthScratchDownPartialToOutputX1000 = metric(output, bridgeProfileLabel, "semantic_width_scratch_down_partial_to_output_x1000");
 
   const failures = [];
   if (speedup < 1.0) failures.push(`semantic bridge ${speedup.toFixed(2)}x < 1.00x`);
@@ -1637,6 +1643,16 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
   if (rowChainTiledSpilledElementwise !== 0 || rowChainTiledSpilledInput !== 0 || rowChainTiledOutputSpills !== 0) {
     failures.push("semantic bridge tiled tail must keep spilled_elementwise=0 spilled_input=0 output_spills=0");
   }
+  if (
+    semanticWidthScratchCandidates !== 1 ||
+    semanticWidthScratchBytes !== targetDownPartialBytes ||
+    semanticWidthScratchProductBytes !== targetProductBytes ||
+    semanticWidthScratchDownPartialBytes !== targetDownPartialBytes ||
+    semanticWidthScratchOutputBytes !== targetOutputBytes ||
+    semanticWidthScratchDownPartialToOutputX1000 !== targetDownPartialToOutput * 1000
+  ) {
+    failures.push(`semantic bridge must expose backend-owned width scratch candidates=1 bytes=${targetDownPartialBytes} product=${targetProductBytes} down_partial=${targetDownPartialBytes} output=${targetOutputBytes} ratio_x1000=${targetDownPartialToOutput * 1000}`);
+  }
 
   const next = "semantic_width_parallel_kernel";
   const line = [
@@ -1646,6 +1662,7 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
     `shape_commands=${shapeCommands} shape_semantic_ffn_sublayers=${shapeSemantic} shape_covered_ops=${shapeCoveredOps} shape_saved_dispatches=${shapeSavedDispatches}`,
     `runtime_backend_dispatches=${runtimeDispatches} semantic_target_dispatches=${semanticTargetDispatches} runtime_semantic_ffn_dispatches=${runtimeSemanticDispatches} semantic_dispatch_split=${Number.isFinite(semanticDispatchSplit) ? semanticDispatchSplit.toFixed(2) : "n/a"} semantic_pair_dispatches=${semanticFallbackPairDispatches} semantic_tail_dispatches=${semanticFallbackTailDispatches}`,
     `qmatmul_row_chain_tiled_count=${rowChainTiledCount} row_tile_groups=${rowChainTiledRowTileGroups} n_tiles=${rowChainTiledNTiles} serial_tile_loops=${rowChainTiledSerialTileLoops} partial_slots=${rowChainTiledPartialSlots} scratch_capacity=${rowChainTiledScratchCapacity} two_phase_count=${rowChainTiledTwoPhaseCount} finalize_tile_groups=${rowChainTiledFinalizeTileGroups} finalize_elements=${rowChainTiledFinalizeElements} spilled_elementwise=${rowChainTiledSpilledElementwise} spilled_input=${rowChainTiledSpilledInput} output_spills=${rowChainTiledOutputSpills}`,
+    `semantic_width_scratch=candidates:${semanticWidthScratchCandidates},bytes:${semanticWidthScratchBytes},product_bytes:${semanticWidthScratchProductBytes},down_partial_bytes:${semanticWidthScratchDownPartialBytes},output_bytes:${semanticWidthScratchOutputBytes},down_partial_to_output:${(semanticWidthScratchDownPartialToOutputX1000 / 1000).toFixed(2)}`,
     `width_target=rows:${targetRows},hidden:${targetHidden},input:${targetInput},output:${targetOutput},row_groups:${targetRowGroups},hidden_tiles:${targetHiddenTiles},output_tiles:${targetOutputTiles},product_elements:${targetProductElements},output_elements:${targetOutputElements},down_partial_elements:${targetDownPartialElements},product_bytes:${targetProductBytes},down_partial_bytes:${targetDownPartialBytes},output_bytes:${targetOutputBytes},down_partial_to_output:${targetDownPartialToOutput.toFixed(2)},scratch_plan:${targetScratchPlan},gate_up_dot_ops:${targetGateUpDotOps},down_dot_ops:${targetDownDotOps},total_dot_ops:${targetTotalDotOps}`,
     `next=${next}`,
   ].join("; ");
@@ -1676,6 +1693,12 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
     rowChainTiledSpilledElementwise,
     rowChainTiledSpilledInput,
     rowChainTiledOutputSpills,
+    semanticWidthScratchCandidates,
+    semanticWidthScratchBytes,
+    semanticWidthScratchProductBytes,
+    semanticWidthScratchDownPartialBytes,
+    semanticWidthScratchOutputBytes,
+    semanticWidthScratchDownPartialToOutputX1000,
     targetRows,
     targetHidden,
     targetInput,
@@ -1743,6 +1766,12 @@ function selectedSemanticBridgeAttemptSummary(attempt) {
       qmatmulRowChainTiledSpilledElementwise: attempt.rowChainTiledSpilledElementwise,
       qmatmulRowChainTiledSpilledInput: attempt.rowChainTiledSpilledInput,
       qmatmulRowChainTiledOutputSpills: attempt.rowChainTiledOutputSpills,
+      semanticWidthScratchCandidates: attempt.semanticWidthScratchCandidates,
+      semanticWidthScratchBytes: attempt.semanticWidthScratchBytes,
+      semanticWidthScratchProductBytes: attempt.semanticWidthScratchProductBytes,
+      semanticWidthScratchDownPartialBytes: attempt.semanticWidthScratchDownPartialBytes,
+      semanticWidthScratchOutputBytes: attempt.semanticWidthScratchOutputBytes,
+      semanticWidthScratchDownPartialToOutput: roundMetric(attempt.semanticWidthScratchDownPartialToOutputX1000 / 1000),
       semanticWidthTargetRows: attempt.targetRows,
       semanticWidthTargetHidden: attempt.targetHidden,
       semanticWidthTargetInput: attempt.targetInput,
