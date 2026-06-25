@@ -1574,6 +1574,19 @@ function runFocusedSemanticThroughputGate() {
 
 function scoreFocusedSemanticBridgeCandidate(output, attempt) {
   const bridgeLabel = "qsemantic bridge-ffn m=128 h=1536 k=576 o=576 semantic throughput_candidate";
+  const targetRows = 128;
+  const targetHidden = 1536;
+  const targetInput = 576;
+  const targetOutput = 576;
+  const targetTile = 32;
+  const targetRowGroups = Math.ceil(targetRows / targetTile);
+  const targetHiddenTiles = Math.ceil(targetHidden / targetTile);
+  const targetOutputTiles = Math.ceil(targetOutput / targetTile);
+  const targetGateUpDotOps = targetRows * targetHidden * targetInput * 2;
+  const targetDownDotOps = targetRows * targetHidden * targetOutput;
+  const targetTotalDotOps = targetGateUpDotOps + targetDownDotOps;
+  const targetProductElements = targetRows * targetHidden;
+  const targetOutputElements = targetRows * targetOutput;
   const bridgeProfileLabel = `${bridgeLabel} dispatch_profile`;
   const speedup = metric(output, bridgeLabel, "speedup");
   const maxAbsDiff = metric(output, bridgeLabel, "max_abs_diff");
@@ -1627,6 +1640,7 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
     `shape_commands=${shapeCommands} shape_semantic_ffn_sublayers=${shapeSemantic} shape_covered_ops=${shapeCoveredOps} shape_saved_dispatches=${shapeSavedDispatches}`,
     `runtime_backend_dispatches=${runtimeDispatches} semantic_target_dispatches=${semanticTargetDispatches} runtime_semantic_ffn_dispatches=${runtimeSemanticDispatches} semantic_dispatch_split=${Number.isFinite(semanticDispatchSplit) ? semanticDispatchSplit.toFixed(2) : "n/a"} semantic_pair_dispatches=${semanticFallbackPairDispatches} semantic_tail_dispatches=${semanticFallbackTailDispatches}`,
     `qmatmul_row_chain_tiled_count=${rowChainTiledCount} row_tile_groups=${rowChainTiledRowTileGroups} n_tiles=${rowChainTiledNTiles} serial_tile_loops=${rowChainTiledSerialTileLoops} partial_slots=${rowChainTiledPartialSlots} scratch_capacity=${rowChainTiledScratchCapacity} two_phase_count=${rowChainTiledTwoPhaseCount} finalize_tile_groups=${rowChainTiledFinalizeTileGroups} finalize_elements=${rowChainTiledFinalizeElements} spilled_elementwise=${rowChainTiledSpilledElementwise} spilled_input=${rowChainTiledSpilledInput} output_spills=${rowChainTiledOutputSpills}`,
+    `width_target=rows:${targetRows},hidden:${targetHidden},input:${targetInput},output:${targetOutput},row_groups:${targetRowGroups},hidden_tiles:${targetHiddenTiles},output_tiles:${targetOutputTiles},product_elements:${targetProductElements},output_elements:${targetOutputElements},gate_up_dot_ops:${targetGateUpDotOps},down_dot_ops:${targetDownDotOps},total_dot_ops:${targetTotalDotOps}`,
     `next=${next}`,
   ].join("; ");
 
@@ -1656,6 +1670,18 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
     rowChainTiledSpilledElementwise,
     rowChainTiledSpilledInput,
     rowChainTiledOutputSpills,
+    targetRows,
+    targetHidden,
+    targetInput,
+    targetOutput,
+    targetRowGroups,
+    targetHiddenTiles,
+    targetOutputTiles,
+    targetProductElements,
+    targetOutputElements,
+    targetGateUpDotOps,
+    targetDownDotOps,
+    targetTotalDotOps,
     next,
     failures,
     line,
@@ -1705,6 +1731,18 @@ function selectedSemanticBridgeAttemptSummary(attempt) {
       qmatmulRowChainTiledSpilledElementwise: attempt.rowChainTiledSpilledElementwise,
       qmatmulRowChainTiledSpilledInput: attempt.rowChainTiledSpilledInput,
       qmatmulRowChainTiledOutputSpills: attempt.rowChainTiledOutputSpills,
+      semanticWidthTargetRows: attempt.targetRows,
+      semanticWidthTargetHidden: attempt.targetHidden,
+      semanticWidthTargetInput: attempt.targetInput,
+      semanticWidthTargetOutput: attempt.targetOutput,
+      semanticWidthTargetRowGroups: attempt.targetRowGroups,
+      semanticWidthTargetHiddenTiles: attempt.targetHiddenTiles,
+      semanticWidthTargetOutputTiles: attempt.targetOutputTiles,
+      semanticWidthTargetProductElements: attempt.targetProductElements,
+      semanticWidthTargetOutputElements: attempt.targetOutputElements,
+      semanticWidthTargetGateUpDotOps: attempt.targetGateUpDotOps,
+      semanticWidthTargetDownDotOps: attempt.targetDownDotOps,
+      semanticWidthTargetTotalDotOps: attempt.targetTotalDotOps,
     },
   };
 }

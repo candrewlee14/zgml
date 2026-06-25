@@ -417,6 +417,10 @@ machine for both prompt/prefill and decode.
   in the `1.82x-2.51x` range over the staged path with `max_abs_diff=0.000000`,
   `shape_semantic_ffn_sublayers=1`, and `runtime_backend_dispatches=3`. Treat
   this as an isolated kernel-work baseline, not a full-model promotion signal.
+  The bridge artifact/status line now also reports `width_target=` with the
+  exact hidden-tile target: `rows:128,hidden:1536,input:576,output:576`,
+  `row_groups:4`, `hidden_tiles:48`, `output_tiles:18`, plus product/output
+  element counts and gate-up/down/total dot-work.
   A follow-up finalize-path probe tried replacing
   `qmatmul_row_chain_tiled_finalize_tiles_f32` with the coarser row-tile
   `qmatmul_row_chain_tiled_finalize_f32` to avoid repeated RMS reductions

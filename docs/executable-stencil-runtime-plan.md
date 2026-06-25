@@ -1704,7 +1704,10 @@ ReleaseFast runs measured
 `qsemantic bridge-ffn m=128 h=1536 k=576 o=576 semantic throughput_candidate`
 in the `1.82x-2.51x` range over staged execution with `max_abs_diff=0.000000`,
 `shape_semantic_ffn_sublayers=1`, and `runtime_backend_dispatches=3`. This is
-kernel-shape evidence, not a full-model promotion.
+kernel-shape evidence, not a full-model promotion. The checked bridge artifact
+now also prints a `width_target=` tuple for the future kernel:
+`rows:128,hidden:1536,input:576,output:576,row_groups:4,hidden_tiles:48,output_tiles:18`,
+plus product/output element counts and gate-up/down/total dot-work.
 A finalize-path probe then tested replacing
 `qmatmul_row_chain_tiled_finalize_tiles_f32` with the coarser row-tile
 `qmatmul_row_chain_tiled_finalize_f32` so the RMS reduction would be computed
