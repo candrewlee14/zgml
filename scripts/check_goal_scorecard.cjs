@@ -776,6 +776,8 @@ function checkScripts() {
     "lazy_matmul_add_gelu_batched",
     "lazy_matmul_add_relu_batched",
     "lazy_matmul_add_silu_batched",
+    "lazy_matmul_add_sigmoid_batched",
+    "lazy_matmul_add_tanh_batched",
     "nativeEagerIntoMs",
     "nativeEagerSpeedup",
     "nativeEagerModuleForwardMs",
@@ -785,6 +787,8 @@ function checkScripts() {
     "zgml.noGrad(() => linearGeluModel.forward(input))",
     "zgml.noGrad(() => linearReluModel.forward(input))",
     "zgml.noGrad(() => linearSiluModel.forward(input))",
+    "zgml.noGrad(() => linearSigmoidModel.forward(input))",
+    "zgml.noGrad(() => linearTanhModel.forward(input))",
     "BENCH_NATIVE_EAGER_MIN_SPEEDUP",
     "preparedExecuteIntoMs",
     "nativeProgramSpeedup",
@@ -792,6 +796,8 @@ function checkScripts() {
     "native_eager_fused_matmul_add_gelu_storage_slice",
     "native_eager_fused_matmul_add_relu_storage_slice",
     "native_eager_fused_matmul_add_silu_storage_slice",
+    "native_eager_fused_matmul_add_sigmoid_storage_slice",
+    "native_eager_fused_matmul_add_tanh_storage_slice",
   ]);
   requireIncludes(read("src/c_api.zig"), "src/c_api.zig", "native eager linear C ABI", [
     "feature_native_eager_linear",

@@ -88,6 +88,8 @@ function activationScalar(value, activation) {
     case "gelu": return geluScalar(value);
     case "relu": return value > 0 ? value : 0;
     case "silu": return value / (1 + Math.exp(-value));
+    case "sigmoid": return 1 / (1 + Math.exp(-value));
+    case "tanh": return Math.tanh(value);
     default: throw new Error(`unsupported native eager reference activation ${activation}`);
   }
 }
@@ -256,6 +258,14 @@ function linearSiluBatchedModel() {
   return linearActivationBatchedModel(siluWeights, siluBias, zgml.nn.SiLU);
 }
 
+function linearSigmoidBatchedModel() {
+  return linearActivationBatchedModel(sigmoidWeights, sigmoidBias, zgml.nn.Sigmoid);
+}
+
+function linearTanhBatchedModel() {
+  return linearActivationBatchedModel(tanhWeights, tanhBias, zgml.nn.Tanh);
+}
+
 const linearWeights = values(64 * 32, 64);
 const linearBias = values(32, 32);
 const linearWeightTensor = zgml.tensor(linearWeights, [64, 32]);
@@ -276,6 +286,16 @@ const siluBias = values(64, 80);
 const siluWeightTensor = zgml.tensor(siluWeights, [64, 64]);
 const siluBiasTensor = zgml.tensor(siluBias, [64]);
 const linearSiluModel = linearSiluBatchedModel();
+const sigmoidWeights = values(64 * 64, 56);
+const sigmoidBias = values(64, 112);
+const sigmoidWeightTensor = zgml.tensor(sigmoidWeights, [64, 64]);
+const sigmoidBiasTensor = zgml.tensor(sigmoidBias, [64]);
+const linearSigmoidModel = linearSigmoidBatchedModel();
+const tanhWeights = values(64 * 64, 72);
+const tanhBias = values(64, 144);
+const tanhWeightTensor = zgml.tensor(tanhWeights, [64, 64]);
+const tanhBiasTensor = zgml.tensor(tanhBias, [64]);
+const linearTanhModel = linearTanhBatchedModel();
 
 const gapSpecs = Object.freeze([
   Object.freeze({
@@ -382,6 +402,64 @@ const gapSpecs = Object.freeze([
     compiledIterations: 1000,
     tolerance: 1e-5,
     next: "native_eager_fused_matmul_add_silu_storage_slice",
+  }),
+  Object.freeze({
+    key: "lazy_matmul_add_sigmoid_batched",
+    shape: Object.freeze({ batch: 128, inFeatures: 64, outFeatures: 64, fusedOps: "matmul_add_sigmoid" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => lazyMatmulAddActivationEager(input, sigmoidWeights, sigmoidBias, 128, 64, 64, "sigmoid"),
+    nativeEager: (output, input) => zgml.nativeEager.linearActivationInto(output, input, sigmoidWeightTensor, {
+      bias: sigmoidBiasTensor,
+      activation: "sigmoid",
+    }),
+    nativeEagerModule: (input) => zgml.noGrad(() => linearSigmoidModel.forward(input)),
+    compiled: () => compiledLazyHandle(
+      zgml.lazy.input([128, 64])
+        .matmul(zgml.lazy.parameter([64, 64], "w"))
+        .add(zgml.lazy.parameter([64], "b"))
+        .sigmoid(),
+      {
+        weights: new Float32Array(sigmoidWeights),
+        bias: new Float32Array(sigmoidBias),
+      },
+      [128, 64],
+    ),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_fused_matmul_add_sigmoid_storage_slice",
+  }),
+  Object.freeze({
+    key: "lazy_matmul_add_tanh_batched",
+    shape: Object.freeze({ batch: 128, inFeatures: 64, outFeatures: 64, fusedOps: "matmul_add_tanh" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => lazyMatmulAddActivationEager(input, tanhWeights, tanhBias, 128, 64, 64, "tanh"),
+    nativeEager: (output, input) => zgml.nativeEager.linearActivationInto(output, input, tanhWeightTensor, {
+      bias: tanhBiasTensor,
+      activation: "tanh",
+    }),
+    nativeEagerModule: (input) => zgml.noGrad(() => linearTanhModel.forward(input)),
+    compiled: () => compiledLazyHandle(
+      zgml.lazy.input([128, 64])
+        .matmul(zgml.lazy.parameter([64, 64], "w"))
+        .add(zgml.lazy.parameter([64], "b"))
+        .tanh(),
+      {
+        weights: new Float32Array(tanhWeights),
+        bias: new Float32Array(tanhBias),
+      },
+      [128, 64],
+    ),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_fused_matmul_add_tanh_storage_slice",
   }),
 ]);
 

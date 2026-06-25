@@ -9544,6 +9544,40 @@ test "C ABI native eager linear activation writes caller output" {
     for (linear, output) |plain, activated| {
         try std.testing.expectApproxEqAbs(try eagerActivationF32(plain, module_activation_gelu), activated, 1e-6);
     }
+    try std.testing.expectEqual(status(.ok), zgml_eager_linear_activation_f32(
+        input[0..].ptr,
+        input.len,
+        weights[0..].ptr,
+        weights.len,
+        bias[0..].ptr,
+        bias.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        2,
+        module_activation_sigmoid,
+    ));
+    for (linear, output) |plain, activated| {
+        try std.testing.expectApproxEqAbs(try eagerActivationF32(plain, module_activation_sigmoid), activated, 1e-6);
+    }
+    try std.testing.expectEqual(status(.ok), zgml_eager_linear_activation_f32(
+        input[0..].ptr,
+        input.len,
+        weights[0..].ptr,
+        weights.len,
+        bias[0..].ptr,
+        bias.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        2,
+        module_activation_tanh,
+    ));
+    for (linear, output) |plain, activated| {
+        try std.testing.expectApproxEqAbs(try eagerActivationF32(plain, module_activation_tanh), activated, 1e-6);
+    }
     try std.testing.expectEqual(status(.invalid_argument), zgml_eager_linear_activation_f32(
         input[0..].ptr,
         input.len,

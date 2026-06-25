@@ -445,7 +445,8 @@ Current checked progress:
   The new Node/Bun-selectable `NATIVE_EAGER_GAP_JSON` microscope measures the first targets directly:
   `linear_batched` eager TS tensor execution,
   `lazy_matmul_add_gelu_batched` eager fused matmul work, and
-  `lazy_matmul_add_relu_batched` / `lazy_matmul_add_silu_batched` eager fused
+  `lazy_matmul_add_relu_batched` / `lazy_matmul_add_silu_batched` /
+  `lazy_matmul_add_sigmoid_batched` / `lazy_matmul_add_tanh_batched` eager fused
   matmul work versus allocation-free
   compiled `prepare/executeInto` for the same shape. It now also reports
   `nativeEagerIntoMs` for `linear_batched`, backed by the stateless
@@ -457,20 +458,24 @@ Current checked progress:
   `zgml.native_eager.linear_activation_into`, so the first caller-owned
   native eager epilogue path covers `matmul -> add(bias) -> GELU` directly
   instead of only proving plain Linear.
-  The same microscope now also covers `matmul -> add(bias) -> ReLU` and
-  `matmul -> add(bias) -> SiLU`, proving the activation hook for common
-  production and LLaMA-style epilogues instead of only GELU-shaped transformer
-  work.
+  The same microscope now also covers `matmul -> add(bias) -> ReLU`,
+  `matmul -> add(bias) -> SiLU`, `matmul -> add(bias) -> Sigmoid`, and
+  `matmul -> add(bias) -> Tanh`, proving the activation hook for common
+  production, recurrent/classical, and LLaMA-style epilogues instead of only
+  GELU-shaped transformer work.
   The same microscope reports `nativeEagerModuleForwardMs`,
   `nativeEagerModuleSpeedup`, and `nativeEagerModuleMaxAbsDiff` for
   both `zgml.noGrad(() => linearModel.forward(input))` and
   `zgml.noGrad(() => linearGeluModel.forward(input))`, plus
   `zgml.noGrad(() => linearReluModel.forward(input))` and
-  `zgml.noGrad(() => linearSiluModel.forward(input))`, proving ordinary
+  `zgml.noGrad(() => linearSiluModel.forward(input))`,
+  `zgml.noGrad(() => linearSigmoidModel.forward(input))`, and
+  `zgml.noGrad(() => linearTanhModel.forward(input))`, proving ordinary
   `nn.Linear`, adjacent `nn.Sequential(Linear, GELU)`, and adjacent
-  `nn.Sequential(Linear, ReLU)` / `nn.Sequential(Linear, SiLU)` module surfaces can
-  take the native eager lane without users calling the low-level primitive
-  directly.
+  `nn.Sequential(Linear, ReLU)` / `nn.Sequential(Linear, SiLU)` /
+  `nn.Sequential(Linear, Sigmoid)` / `nn.Sequential(Linear, Tanh)` module
+  surfaces can take the native eager lane without users calling the low-level
+  primitive directly.
   The native eager adapter policy now lives in
   `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
   shape inference, output validation, public aliases, and activation mapping,

@@ -380,6 +380,18 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected nativeEager.linearActivationInto SiLU to reuse caller output`);
   }
   expectClose(siluOutput, Array.from(directOutput, (value) => value / (1 + Math.exp(-value))), `${label} nativeEager.linearActivationInto SiLU output`);
+  const sigmoidOutput = new Float32Array(6);
+  const sigmoidResult = nativeEager.linearActivationInto(sigmoidOutput, input, weights, { bias, activation: "sigmoid" });
+  if (sigmoidResult !== sigmoidOutput) {
+    throw new Error(`${label} expected nativeEager.linearActivationInto Sigmoid to reuse caller output`);
+  }
+  expectClose(sigmoidOutput, Array.from(directOutput, (value) => 1 / (1 + Math.exp(-value))), `${label} nativeEager.linearActivationInto Sigmoid output`);
+  const tanhOutput = new Float32Array(6);
+  const tanhResult = nativeEager.linearActivationInto(tanhOutput, input, weights, { bias, activation: "tanh" });
+  if (tanhResult !== tanhOutput) {
+    throw new Error(`${label} expected nativeEager.linearActivationInto Tanh to reuse caller output`);
+  }
+  expectClose(tanhOutput, Array.from(directOutput, (value) => Math.tanh(value)), `${label} nativeEager.linearActivationInto Tanh output`);
 
   const linear = adapter.nn.linear(2, 3, {
     weight: [1, 0, 0.5, 0, 1, -0.5],
@@ -421,6 +433,28 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const eagerSiluSequential = siluSequential.forward(input);
   const nativeSiluSequential = adapter.noGrad(() => siluSequential.forward(input));
   expectClose(nativeSiluSequential.data, eagerSiluSequential.data, `${label} noGrad nn.Sequential Linear+SiLU native eager module output`);
+
+  const sigmoidSequential = new adapter.nn.Sequential(
+    new adapter.nn.Linear(2, 3, {
+      weight: [1, 0, 0.5, 0, 1, -0.5],
+      bias: [0.25, -0.25, 0.5],
+    }),
+    new adapter.nn.Sigmoid(),
+  );
+  const eagerSigmoidSequential = sigmoidSequential.forward(input);
+  const nativeSigmoidSequential = adapter.noGrad(() => sigmoidSequential.forward(input));
+  expectClose(nativeSigmoidSequential.data, eagerSigmoidSequential.data, `${label} noGrad nn.Sequential Linear+Sigmoid native eager module output`);
+
+  const tanhSequential = new adapter.nn.Sequential(
+    new adapter.nn.Linear(2, 3, {
+      weight: [1, 0, 0.5, 0, 1, -0.5],
+      bias: [0.25, -0.25, 0.5],
+    }),
+    new adapter.nn.Tanh(),
+  );
+  const eagerTanhSequential = tanhSequential.forward(input);
+  const nativeTanhSequential = adapter.noGrad(() => tanhSequential.forward(input));
+  expectClose(nativeTanhSequential.data, eagerTanhSequential.data, `${label} noGrad nn.Sequential Linear+Tanh native eager module output`);
 }
 
 function expectLossAndAdamWEvidence(adapter: Record<string, any>, label: string) {
