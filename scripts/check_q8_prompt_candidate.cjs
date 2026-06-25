@@ -210,6 +210,10 @@ function emptyLane(index) {
     semanticSingleDispatchBlockSizeRefusals: 0,
     semanticSingleDispatchRefusals: emptySemanticSingleDispatchRefusals,
     semanticSingleDispatchDimRefusalShape: { k: null, h: null, o: null, cap: null },
+    semanticFallbackPairDispatches: 0,
+    semanticFallbackTailDispatches: 0,
+    semanticFallbackDispatches: 0,
+    semanticFallbackDispatchSplit: null,
     fallback: 0,
   };
 }
@@ -236,6 +240,9 @@ function readProjectionLane(row, defaultTokS, index) {
   const semanticFfnSublayerDispatches = number(row, "program_command_dispatches_semantic_ffn_sublayer_per_call") ?? 0;
   const semanticFfnSublayersWithInputRowChain = number(row, "program_command_encoded_semantic_ffn_sublayer_with_input_row_chain_per_call") ?? 0;
   const semanticFfnSublayerWithInputRowChainDispatches = number(row, "program_command_dispatches_semantic_ffn_sublayer_with_input_row_chain_per_call") ?? 0;
+  const semanticFallbackPairDispatches = number(row, "semantic_ffn_sublayer_fallback_pair_dispatches_per_call") ?? 0;
+  const semanticFallbackTailDispatches = number(row, "semantic_ffn_sublayer_fallback_tail_dispatches_per_call") ?? 0;
+  const semanticFallbackDispatches = semanticFallbackPairDispatches + semanticFallbackTailDispatches;
   return {
     index,
     tokS,
@@ -280,6 +287,13 @@ function readProjectionLane(row, defaultTokS, index) {
     semanticSingleDispatchBlockSizeRefusals: number(row, "semantic_ffn_sublayer_single_dispatch_block_size_refusals_per_call") ?? 0,
     semanticSingleDispatchRefusals: semanticSingleDispatchRefusals(row),
     semanticSingleDispatchDimRefusalShape: semanticSingleDispatchDimRefusalShape(row),
+    semanticFallbackPairDispatches,
+    semanticFallbackTailDispatches,
+    semanticFallbackDispatches,
+    semanticFallbackDispatchSplit: projectionRowChainSplit(
+      semanticFfnSublayers + semanticFfnSublayersWithInputRowChain,
+      semanticFallbackDispatches,
+    ),
     fallback: number(row, "fallback_ops") ?? 0,
   };
 }
@@ -622,6 +636,22 @@ function measureAttempt(index) {
     candidateSemanticAbsorbedDispatchSplit: singleLane.semanticAbsorbedDispatchSplit,
     twoPhaseSemanticAbsorbedDispatchSplit: twoPhaseLane.semanticAbsorbedDispatchSplit,
     semanticSemanticAbsorbedDispatchSplit: semanticLane.semanticAbsorbedDispatchSplit,
+    commandSemanticFallbackPairDispatches: commandLane.semanticFallbackPairDispatches,
+    candidateSemanticFallbackPairDispatches: singleLane.semanticFallbackPairDispatches,
+    twoPhaseSemanticFallbackPairDispatches: twoPhaseLane.semanticFallbackPairDispatches,
+    semanticSemanticFallbackPairDispatches: semanticLane.semanticFallbackPairDispatches,
+    commandSemanticFallbackTailDispatches: commandLane.semanticFallbackTailDispatches,
+    candidateSemanticFallbackTailDispatches: singleLane.semanticFallbackTailDispatches,
+    twoPhaseSemanticFallbackTailDispatches: twoPhaseLane.semanticFallbackTailDispatches,
+    semanticSemanticFallbackTailDispatches: semanticLane.semanticFallbackTailDispatches,
+    commandSemanticFallbackDispatches: commandLane.semanticFallbackDispatches,
+    candidateSemanticFallbackDispatches: singleLane.semanticFallbackDispatches,
+    twoPhaseSemanticFallbackDispatches: twoPhaseLane.semanticFallbackDispatches,
+    semanticSemanticFallbackDispatches: semanticLane.semanticFallbackDispatches,
+    commandSemanticFallbackDispatchSplit: commandLane.semanticFallbackDispatchSplit,
+    candidateSemanticFallbackDispatchSplit: singleLane.semanticFallbackDispatchSplit,
+    twoPhaseSemanticFallbackDispatchSplit: twoPhaseLane.semanticFallbackDispatchSplit,
+    semanticSemanticFallbackDispatchSplit: semanticLane.semanticFallbackDispatchSplit,
     candidateTiledCount: singleLane.tiledCount,
     candidateTiledRowTileGroups: singleLane.tiledRowTileGroups,
     candidateTiledNTiles: singleLane.tiledNTiles,
@@ -660,6 +690,10 @@ function measureAttempt(index) {
     semanticSingleDispatchBlockSizeRefusals: semanticLane.semanticSingleDispatchBlockSizeRefusals,
     semanticSingleDispatchRefusals: semanticLane.semanticSingleDispatchRefusals,
     semanticSingleDispatchDimRefusalShape: semanticLane.semanticSingleDispatchDimRefusalShape,
+    semanticFallbackPairDispatches: semanticLane.semanticFallbackPairDispatches,
+    semanticFallbackTailDispatches: semanticLane.semanticFallbackTailDispatches,
+    semanticFallbackDispatches: semanticLane.semanticFallbackDispatches,
+    semanticFallbackDispatchSplit: semanticLane.semanticFallbackDispatchSplit,
     twoPhaseScratchReady,
     defaultProjectionRowChainDispatchSplit,
     commandProjectionRowChainDispatchSplit: commandLane.projectionRowChainDispatchSplit,
@@ -817,6 +851,10 @@ function laneArtifact(row, prefix) {
     semanticFfnSublayersWithInputRowChain: row[`${prefix}SemanticFfnSublayersWithInputRowChain`],
     semanticFfnSublayerWithInputRowChainDispatches: row[`${prefix}SemanticFfnSublayerWithInputRowChainDispatches`],
     semanticAbsorbedDispatchSplit: roundMetric(row[`${prefix}SemanticAbsorbedDispatchSplit`]),
+    semanticFallbackPairDispatches: row[`${prefix}SemanticFallbackPairDispatches`],
+    semanticFallbackTailDispatches: row[`${prefix}SemanticFallbackTailDispatches`],
+    semanticFallbackDispatches: row[`${prefix}SemanticFallbackDispatches`],
+    semanticFallbackDispatchSplit: roundMetric(row[`${prefix}SemanticFallbackDispatchSplit`]),
     fallback: row[`${prefix}Fallback`],
   };
 }
@@ -956,6 +994,10 @@ if (writeArtifact) {
         singleDispatchBlockSizeRefusals: semanticBest.semanticSingleDispatchBlockSizeRefusals,
         singleDispatchRefusals: semanticBest.semanticSingleDispatchRefusals,
         singleDispatchDimRefusalShape: semanticBest.semanticSingleDispatchDimRefusalShape,
+        fallbackPairDispatches: semanticBest.semanticSemanticFallbackPairDispatches,
+        fallbackTailDispatches: semanticBest.semanticSemanticFallbackTailDispatches,
+        fallbackDispatches: semanticBest.semanticSemanticFallbackDispatches,
+        fallbackDispatchSplit: roundMetric(semanticBest.semanticSemanticFallbackDispatchSplit),
       },
     },
     attempts: attemptRows.map((row) => ({
@@ -980,6 +1022,10 @@ if (writeArtifact) {
       semanticFfnSublayersWithInputRowChain: row.semanticSemanticFfnSublayersWithInputRowChain,
       semanticFfnSublayerWithInputRowChainDispatches: row.semanticSemanticFfnSublayerWithInputRowChainDispatches,
       semanticAbsorbedDispatchSplit: roundMetric(row.semanticSemanticAbsorbedDispatchSplit),
+      semanticFallbackPairDispatches: row.semanticSemanticFallbackPairDispatches,
+      semanticFallbackTailDispatches: row.semanticSemanticFallbackTailDispatches,
+      semanticFallbackDispatches: row.semanticSemanticFallbackDispatches,
+      semanticFallbackDispatchSplit: roundMetric(row.semanticSemanticFallbackDispatchSplit),
       semanticSingleDispatchAttempts: row.semanticSingleDispatchAttempts,
       semanticSingleDispatchOutputReadRefusals: row.semanticSingleDispatchOutputReadRefusals,
       semanticSingleDispatchBlockSizeRefusals: row.semanticSingleDispatchBlockSizeRefusals,
@@ -1063,6 +1109,7 @@ console.log(
     `semantic_dispatch_reduced=${semanticDispatchReduced ? "yes" : "no"} semantic_runtime_target=${dispatchRealityTarget} ` +
     `semantic_ffn=${format(semanticBest.semanticSemanticFfnSublayers, 0)} semantic_ffn_dispatch=${format(semanticBest.semanticSemanticFfnSublayerDispatches, 0)} semantic_ffn_split=${format(semanticBest.semanticSemanticFfnSublayerDispatchSplit)} ` +
     `semantic_absorbed=${format(semanticBest.semanticSemanticFfnSublayersWithInputRowChain, 0)} semantic_absorbed_dispatch=${format(semanticBest.semanticSemanticFfnSublayerWithInputRowChainDispatches, 0)} semantic_absorbed_split=${format(semanticBest.semanticSemanticAbsorbedDispatchSplit)} ` +
+    `semantic_fallback_pair_dispatch=${format(semanticBest.semanticSemanticFallbackPairDispatches, 0)} semantic_fallback_tail_dispatch=${format(semanticBest.semanticSemanticFallbackTailDispatches, 0)} semantic_fallback_dispatch=${format(semanticBest.semanticSemanticFallbackDispatches, 0)} semantic_fallback_split=${format(semanticBest.semanticSemanticFallbackDispatchSplit)} ` +
     `semantic_count=${format(semanticBest.semanticTiledTwoPhaseCount, 0)} semantic_structural_selected=${semanticStructuralSelected ? "yes" : "off"} semantic_throughput_ready=${reportedSemanticThroughputReady ? "yes" : "off"} semantic_selected=${semanticStructuralSelected ? "yes" : "off"} ` +
     `semantic_tiled_work=${format(semanticBest.semanticTiledCount, 0)} chains row_groups=${format(semanticBest.semanticTiledRowTileGroups, 0)} n_tiles=${format(semanticBest.semanticTiledNTiles, 0)} serial_tile_loops=${format(semanticBest.semanticTiledSerialLoops, 0)} partial_slots=${format(semanticBest.semanticTiledPartialSlots, 0)} scratch_capacity=${format(semanticBest.semanticTiledScratchCapacity, 0)} finalize_tile_groups=${format(semanticBest.semanticTiledFinalizeTileGroups, 0)} finalize_elements=${format(semanticBest.semanticTiledFinalizeElements, 0)} spills=${format(semanticBest.semanticTiledSpills, 0)} ` +
     `semantic_spill_input=${format(semanticBest.semanticTiledSpillInput, 0)} ` +
