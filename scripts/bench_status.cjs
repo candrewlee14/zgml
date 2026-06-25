@@ -773,6 +773,20 @@ function qsemanticTileGap(lane) {
   return Number.isFinite(target) && Number.isFinite(candidate) && candidate !== 0 ? target / candidate : null;
 }
 
+function qsemanticFrontierNextTarget(data) {
+  const stored = typeof data?.next === "string" ? data.next : "unknown";
+  const smollmGap = qsemanticTileGap(data?.smollmPrompt);
+  const fullGap = qsemanticTileGap(data?.fullPrefill);
+  if (
+    data?.throughputCandidateStatus === "ready" &&
+    ((Number.isFinite(smollmGap) && smollmGap > 1.5) ||
+      (Number.isFinite(fullGap) && fullGap > 1.5))
+  ) {
+    return "semantic_width_parallel_kernel";
+  }
+  return stored;
+}
+
 function qsemanticTargetTileShape(lane) {
   const rows = lane?.targetTileRowGroups;
   const hidden = lane?.targetTileHiddenTiles;
@@ -1135,7 +1149,7 @@ function frontierStatusLine(path, pressurePath = path) {
     "n/a";
   const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
   const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
-  const next = typeof data?.next === "string" ? data.next : "unknown";
+  const next = qsemanticFrontierNextTarget(data);
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
   return `frontier-results: latest=${compactName(path)} status=${status} kind=qsemantic target=${target} throughput_candidate=${throughputCandidate} semantic_command=${semanticCommand} single_dispatch=${singleDispatch} attempt=${selectedAttempt}/${attempts} full_prefill=${fullPrefill} full_prefill_candidate=${fullPrefillCandidate} smollm_prompt=${smollmPrompt} smollm_prompt_candidate=${smollmPromptCandidate} vs_two_phase=full:${fullPrefillCandidateVsTwoPhase},smollm:${smollmPromptCandidateVsTwoPhase} target_tile_groups=full:${fullTargetTileGroups},smollm:${smollmTargetTileGroups} target_tile_shape=full:${fullTargetTileShape},smollm:${smollmTargetTileShape} candidate_tile_groups=full:${fullCandidateTileGroups},smollm:${smollmCandidateTileGroups} candidate_finalize_groups=full:${fullCandidateFinalizeTileGroups},smollm:${smollmCandidateFinalizeTileGroups} candidate_finalize_elements=full:${fullCandidateFinalizeElements},smollm:${smollmCandidateFinalizeElements} tile_gap=full:${fullTileGap},smollm:${smollmTileGap} target_serial_per_tile=full:${fullTargetSerialPerTile},smollm:${smollmTargetSerialPerTile} next=${next} source=${source}`;
 }

@@ -362,6 +362,8 @@ function checkScripts() {
     "function frontierFreshnessStatusLine(selectedPath, rawPath)",
     "function frontierStatusLine(path, pressurePath = path)",
     "function qsemanticTileGap(lane)",
+    "function qsemanticFrontierNextTarget(data)",
+    "const next = qsemanticFrontierNextTarget(data)",
     "frontier-results: latest=",
     "source=${source}",
     "target_tile_groups=full:",
