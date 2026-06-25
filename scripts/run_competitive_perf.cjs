@@ -3,6 +3,7 @@
 const { spawnSync } = require("node:child_process");
 
 const knownLanes = new Set(["pytorch", "qsemantic", "q8_prompt", "ggml"]);
+const broadPytorchKeys = "linear_batched,lazy_matmul_add_gelu_batched,lazy_mlp_batched,lazy_rms_silu_ffn_batched,max_pool2d_batched,avg_pool2d_batched,rms_gelu_linear_batched,softmax_classifier_batched,log_softmax_classifier_batched,lazy_token_head_batched";
 
 function parseLanes(value) {
   const raw = String(value ?? "pytorch,qsemantic,q8_prompt,ggml").trim();
@@ -48,7 +49,7 @@ function main() {
 
   if (lanes.includes("pytorch")) {
     run(
-      "pytorch steady current gaps",
+      "pytorch steady broad replacement",
       process.execPath,
       ["scripts/check_pytorch_comparison.cjs"],
       envWithDefaults({
@@ -56,7 +57,7 @@ function main() {
         BENCH_PYTORCH_ATTEMPTS: "3",
         BENCH_PYTORCH_MIN_TIMING_MS: "150",
         BENCH_MODULE_PROGRAM_MIN_TIMING_MS: "150",
-        BENCH_PYTORCH_KEYS: "linear_batched,log_softmax_classifier_batched",
+        BENCH_PYTORCH_KEYS: broadPytorchKeys,
       }),
     );
   }

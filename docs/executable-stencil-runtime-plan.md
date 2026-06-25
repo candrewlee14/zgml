@@ -1642,7 +1642,10 @@ frontier artifact, `BENCH_COMPETITIVE_LANES=q8_prompt npm run
 dev:perf:competitive` for the full-model Q8 prompt lane, or the matching
 `:run` commands after artifacts are already fresh. That keeps the daily
 competitiveness loop explicit without forcing every local qsemantic edit to pay
-the PyTorch, full-model Q8, and llama.cpp smoke cost.
+the PyTorch, full-model Q8, and llama.cpp smoke cost. Its default PyTorch lane
+is now the ten-lane broad replacement set with three attempts and 150ms timing
+windows, matching the selected `bench:status` scoreboard instead of the older
+two-lane current-gap microscope.
 For tight semantic kernel work, the raw variant scripts set
 `BENCH_QSEMANTIC_VARIANTS=target` or
 `BENCH_QSEMANTIC_VARIANTS=throughput_candidate` so the frontier harness times
