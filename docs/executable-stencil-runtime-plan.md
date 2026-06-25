@@ -1583,25 +1583,26 @@ one structural command but five backend dispatches (`row_chain=2`, `pair=1`,
 `tail=2`). The source-current `qmatmul_semantic_ffn_input_bridge_f32` path folds
 the input projection/residual/norm, gate/up/product, down/residual/norm, and
 final scale into one guarded dispatch for the SmolLM `576 x 1536 x 576` bridge
-shape. The latest focused artifact reports `absorbed=1.57x`,
+shape. Fresh focused artifacts report `absorbed=1.17-1.57x`,
 `runtime_dispatches=1`, `semantic_with_input_dispatches=1`,
 `decomposed_dispatches=0`, `pair_dispatches=0`, `tail_dispatches=0`, and
 `spilled_input=0`. It now also exposes the work-partitioning trap directly:
 the direct bridge uses `128` row-owned threadgroups and
 `2,985,984` row-serial dot ops per row threadgroup. Keep it as an isolated
 bridge proof until Q8 prompt and ggml evidence prove the promotion boundary.
-The first full-model Q8 semantic rerun after that bridge kernel proves the next
-boundary: it cuts the semantic candidate from `242->122` dispatches and reports
-`semantic_absorbed_dispatch=30`, `semantic_absorbed_split=1.00`, and zero
-fallback/spill counters, but throughput remains diagnostic
-(`semantic_speedup=0.59-0.60x` on fresh one-attempt runs). The full-model
-artifact now reports `semantic_direct=30`, `semantic_direct_rows=3840`,
-`semantic_direct_row_threadgroups=3840`, and
-`semantic_direct_total_row_serial_dot_ops=11466178560`, which is the concrete
-reason this is a work-partitioning target rather than another dispatch-count
-target. Route `perf-next` to the full-model semantic prompt lane for this state;
-the next useful implementation work is the direct input-bridge kernel's work
-partitioning, not more command-shape absorption.
+The full-model semantic throughput candidate now deliberately splits the policy:
+it keeps the narrower `semantic_ffn_sublayer` single-dispatch width-kernel
+attempt enabled, but disables the 14-op input-bridge direct kernel until that
+bridge has real partitioning. That recovered the Q8 semantic candidate from the
+old direct-bridge `semantic_speedup=0.59-0.60x` diagnostic to a fresh
+`semantic_speedup=0.94x` one-attempt probe while preserving the 121-command
+shape and zero fallback. The resulting artifact reports
+`semantic_absorbed_dispatch=150`, `semantic_absorbed_split=5.00`,
+`semantic_direct=0`, and `semantic_fallback_dispatch=90`: the command-shape
+frontier is preserved, the slow row-owned bridge is fenced into the focused
+microscope, and `perf-next` correctly moves back to the semantic width/dim
+kernel target (`semantic_single_dispatch_refused_dim=30` for
+`k=576,h=1536,o=576,cap=1024`).
 After the one-dispatch semantic throughput kernel became a real measured lane,
 the full-model default was kept on `promptProjectionRowChainCommand()` while
 `--metal-prompt-semantic-throughput-candidate` remains the explicit diagnostic

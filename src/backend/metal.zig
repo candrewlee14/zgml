@@ -9638,7 +9638,7 @@ const CompiledProgram = struct {
         const output_rn = deviceOpAt(.rmsnorm, ops, start + 11) orelse return false;
         const output_rp = deviceOpAt(.repeat, ops, start + 12) orelse return false;
         const output_out = deviceOpAt(.elementwise, ops, start + 13) orelse return false;
-        if (self.command_policy.fuse_semantic_ffn_sublayer_single_dispatch and
+        if (self.command_policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch and
             self.encodeSemanticFfnSublayerInputBridgeSingleDispatch(exec, view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out))
         {
             return true;

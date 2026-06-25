@@ -1937,7 +1937,7 @@ fn benchSemanticSublayerWithInputRowChainMetalCase(
     const command_policy = program_mod.CommandStreamPolicy.promptProjectionRowChainCommand();
     const command_handle = metal.compileProgramWithCommandPolicy(program, command_policy) orelse return error.CompileFailed;
     defer be.freeProgram(command_handle);
-    const absorbed_policy = program_mod.CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate();
+    const absorbed_policy = program_mod.CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeCandidate();
     const absorbed_handle = metal.compileProgramWithCommandPolicy(program, absorbed_policy) orelse return error.CompileFailed;
     defer be.freeProgram(absorbed_handle);
 
