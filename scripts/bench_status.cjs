@@ -1200,7 +1200,15 @@ function q8PromptNextTarget(path, pressurePath = path, bridgePath = null) {
       ? `:fresh=best:${formatRatio(pressureData?.lanes?.semantic?.speedup)},median:${formatRatio(freshStats?.median)},worst:${formatRatio(freshStats?.worst)},spills:${freshSpills},spill_k:${formatNumber(freshSpillK, 0)},spill_input:${freshSpillInput},output_spills:${freshOutputSpills},bridges:${freshBridges},absorbed:${freshSemanticAbsorbed},absorbed_dispatch:${freshSemanticAbsorbedDispatches},absorbed_split:${freshSemanticAbsorbedSplit},input_dispatch:${formatNumber(freshSemanticInputDispatches, 0)},input_split:${formatNumber(freshSemanticInputSplit, 2)},fallback_pair_dispatch:${freshSemanticFallbackPairDispatches},fallback_tail_dispatch:${freshSemanticFallbackTailDispatches},fallback_dispatch:${freshSemanticFallbackDispatches},fallback_split:${freshSemanticFallbackSplit},single_dispatch_refusals:${freshRefusals},dim_refusal_shape:${freshDimRefusalShape}`
       : "";
     if (semanticBridgeCandidate) {
-      const next = Number.isFinite(freshDimRefusals) && freshDimRefusals > 0
+      const directInputBridgeReady =
+        Number.isFinite(freshSemanticInputSplit) &&
+        freshSemanticInputSplit <= 1 &&
+        Number(freshSemanticFallbackDispatches) === 0;
+      const next = directInputBridgeReady &&
+        Number.isFinite(pressureSemanticSpeedup) &&
+        pressureSemanticSpeedup < 1
+        ? "semantic_input_bridge_work_partitioning"
+        : Number.isFinite(freshDimRefusals) && freshDimRefusals > 0
         ? "semantic_width_parallel_kernel"
         : Number.isFinite(pressureSemanticSpeedup) && pressureSemanticSpeedup >= 1 &&
         Number.isFinite(pressureSemanticWorstSpeedup) && pressureSemanticWorstSpeedup >= 1

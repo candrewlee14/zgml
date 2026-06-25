@@ -783,8 +783,18 @@ const semanticPairActive =
     best.candidateProjectionPairs,
     best.twoPhaseProjectionPairs,
   ) > 0;
+const semanticInputBridgePartitioningTarget =
+  measureSemantic &&
+  bridgeAbsorbedLane(semanticBest, "semantic") &&
+  semanticBest.semanticSemanticAbsorbedDispatchSplit !== null &&
+  semanticBest.semanticSemanticAbsorbedDispatchSplit <= 1 &&
+  semanticBest.semanticSemanticFallbackDispatches === 0 &&
+  semanticBest.semanticSpeedup !== null &&
+  semanticBest.semanticSpeedup < semanticSpeedupFloor;
 const reason = candidateReady
   ? "projection_row_chain_candidate_meets_structure_and_speed"
+  : semanticInputBridgePartitioningTarget
+    ? "semantic_input_bridge_dispatch_reduced_without_throughput"
   : !measureSingle
     ? "single_dispatch_lane_skipped"
     : dispatchOnlyTrap
@@ -822,7 +832,9 @@ const semanticDispatchReduced =
   semanticBest.defaultDispatches !== null && semanticBest.semanticDispatches !== null && semanticBest.semanticDispatches < semanticBest.defaultDispatches;
 const singleDispatchReduced =
   best.defaultDispatches !== null && best.candidateDispatches !== null && best.candidateDispatches < best.defaultDispatches;
-const dispatchRealityTarget = "reduce_actual_dispatch_or_larger_semantic_sublayer";
+const dispatchRealityTarget = semanticInputBridgePartitioningTarget
+  ? "semantic_input_bridge_work_partitioning"
+  : "reduce_actual_dispatch_or_larger_semantic_sublayer";
 const fullModelQprojTarget =
   commandBest.defaultProjectionGroups === 0 && commandBest.defaultProjectionChainRowChainFrontiers >= defaultProjectionChainFloor
     ? qprojGroupTarget

@@ -58,6 +58,8 @@ function chooseLane(line) {
     /q8_prompt=semantic_bridge_candidate:[^ ]*:next=semantic_bridge_throughput_kernel/.test(line);
   const q8PromptNeedsWidthParallelKernel =
     /q8_prompt=semantic_bridge_candidate:[^ ]*:next=semantic_width_parallel_kernel/.test(line);
+  const q8PromptNeedsInputBridgeWorkPartitioning =
+    /q8_prompt=semantic_bridge_candidate:[^ ]*:next=semantic_input_bridge_work_partitioning/.test(line);
   const currentQ8NeedsSemanticThroughput =
     /q8_current=prompt:[^ ]*:target=semantic_ffn_sublayer:[0-9]+:next=semantic_ffn_sublayer_throughput_kernel/.test(line);
   const freshThroughput = freshQsemanticThroughput(line);
@@ -66,6 +68,7 @@ function chooseLane(line) {
     hasSemanticThroughputFrontier &&
     (!freshThroughput || freshThroughput.smollm < 1 || freshThroughput.full < 1);
   if (qsemanticThroughputBelowDefault) return "qsemantic_throughput";
+  if (q8PromptNeedsInputBridgeWorkPartitioning) return "q8_prompt_semantic";
   if (q8PromptNeedsWidthParallelKernel) return "qsemantic_input_bridge";
   if (q8PromptNeedsSemanticBridgeKernel) return "qsemantic_throughput";
   if (q8PromptNeedsSteadySemanticBridge) return "q8_prompt";

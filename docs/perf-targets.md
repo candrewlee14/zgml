@@ -239,6 +239,12 @@ machine for both prompt/prefill and decode.
   `semantic_with_input_dispatches=1`, `decomposed_dispatches=0`,
   `pair_dispatches=0`, `tail_dispatches=0`, and `spilled_input=0`. Treat this
   as an isolated width-parallel bridge proof, not a full-model parity claim.
+  The first full-model Q8 semantic rerun after that kernel proves the new
+  boundary: it cuts the semantic candidate from `242->122` dispatches with
+  `semantic_absorbed_dispatch=30`, `semantic_absorbed_split=1.00`, and zero
+  fallback/spill counters, but throughput is still diagnostic
+  (`semantic_speedup=0.66x`). The next target is therefore work partitioning in
+  the full-model semantic input bridge, not another dispatch-count reduction.
 - The current weakest checked lane is still Q8_0 prompt, but its command
   pressure has moved from the old `projection_chain:60` baseline to the
   promoted semantic-default shape: 151 ProgramCommands, 30 semantic row-chain

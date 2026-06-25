@@ -1588,6 +1588,13 @@ shape. The focused artifact reports `absorbed=4.62x`,
 `decomposed_dispatches=0`, `pair_dispatches=0`, `tail_dispatches=0`, and
 `spilled_input=0`. Keep it as an isolated bridge proof until Q8 prompt and ggml
 evidence prove the promotion boundary.
+The first full-model Q8 semantic rerun after that bridge kernel proves the next
+boundary: it cuts the semantic candidate from `242->122` dispatches and reports
+`semantic_absorbed_dispatch=30`, `semantic_absorbed_split=1.00`, and zero
+fallback/spill counters, but throughput remains diagnostic
+(`semantic_speedup=0.66x`). Route `perf-next` to the full-model semantic prompt
+lane for this state; the next useful implementation work is the direct
+input-bridge kernel's work partitioning, not more command-shape absorption.
 After the one-dispatch semantic throughput kernel became a real measured lane,
 the full-model default was kept on `promptProjectionRowChainCommand()` while
 `--metal-prompt-semantic-throughput-candidate` remains the explicit diagnostic
