@@ -1927,6 +1927,31 @@ export fn zgml_eager_elementwise_f32(
     return status(.ok);
 }
 
+export fn zgml_eager_where_f32(
+    condition_ptr: ?[*]const f32,
+    condition_len: usize,
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    other_ptr: ?[*]const f32,
+    other_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+) c_int {
+    if (condition_ptr == null or input_ptr == null or other_ptr == null or output_ptr == null or condition_len == 0) return status(.invalid_argument);
+    if (condition_len != output_len) return status(.shape_mismatch);
+    if (input_len != 1 and input_len != condition_len) return status(.shape_mismatch);
+    if (other_len != 1 and other_len != condition_len) return status(.shape_mismatch);
+
+    const condition = condition_ptr.?[0..condition_len];
+    const input = input_ptr.?[0..input_len];
+    const other = other_ptr.?[0..other_len];
+    const output = output_ptr.?[0..output_len];
+    for (condition, output, 0..) |cond, *out, i| {
+        out.* = if (cond != 0) input[if (input_len == 1) 0 else i] else other[if (other_len == 1) 0 else i];
+    }
+    return status(.ok);
+}
+
 export fn zgml_eager_reduce_f32(
     input_ptr: ?[*]const f32,
     input_len: usize,
@@ -11117,6 +11142,60 @@ test "C ABI native eager elementwise writes caller output" {
         output[0..].ptr,
         output.len,
         eager_elementwise_add,
+    ));
+}
+
+test "C ABI native eager where writes caller output" {
+    const condition = [_]f32{ 1, 0, -2, 0 };
+    const input = [_]f32{ 10, 20, 30, 40 };
+    const scalar_other = [_]f32{-1};
+    var output = [_]f32{0} ** condition.len;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_where_f32(
+        condition[0..].ptr,
+        condition.len,
+        input[0..].ptr,
+        input.len,
+        scalar_other[0..].ptr,
+        scalar_other.len,
+        output[0..].ptr,
+        output.len,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 10, -1, 30, -1 }, &output);
+
+    const other = [_]f32{ 5, 6, 7, 8 };
+    const scalar_input = [_]f32{99};
+    try std.testing.expectEqual(status(.ok), zgml_eager_where_f32(
+        condition[0..].ptr,
+        condition.len,
+        scalar_input[0..].ptr,
+        scalar_input.len,
+        other[0..].ptr,
+        other.len,
+        output[0..].ptr,
+        output.len,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 99, 6, 99, 8 }, &output);
+
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_where_f32(
+        null,
+        condition.len,
+        input[0..].ptr,
+        input.len,
+        scalar_other[0..].ptr,
+        scalar_other.len,
+        output[0..].ptr,
+        output.len,
+    ));
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_where_f32(
+        condition[0..].ptr,
+        condition.len,
+        input[0..].ptr,
+        input.len - 1,
+        scalar_other[0..].ptr,
+        scalar_other.len,
+        output[0..].ptr,
+        output.len,
     ));
 }
 

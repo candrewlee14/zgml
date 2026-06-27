@@ -510,6 +510,15 @@ Current checked progress:
   `zgml_eager_elementwise_f32` / `zgml_eager_reduce_f32` directly, and normal
   no-grad `Tensor.mul(2)` / `Tensor.sum()` calls use those Zig ABI hooks for
   large tensors while grad-enabled training keeps the TS/autograd path.
+  The same ordinary Tensor eager lane now covers more PyTorch-like control
+  primitives without changing the frontend shape: primitive comparisons
+  (`eq`/`ne`/`lt`/`le`/`gt`/`ge`) lower through the Zig elementwise ABI for
+  scalar and same-shape operands, no-grad `Tensor.clamp()` composes the native
+  maximum/minimum kernels, and `zgml.nativeEager.whereInto` /
+  no-grad `Tensor.where()` use a dedicated `zgml_eager_where_f32` ABI for
+  result-shaped conditions plus scalar or same-shape values. General broadcast
+  and autograd cases stay on the TS reference path until they have an equally
+  honest native contract.
   The same microscope now also covers `matmul -> add(bias) -> ReLU`,
   `matmul -> add(bias) -> SiLU`, `matmul -> add(bias) -> Sigmoid`, and
   `matmul -> add(bias) -> Tanh`, proving the activation hook for common

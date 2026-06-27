@@ -69,6 +69,12 @@ type NativeEagerElementwiseInto = (
   rhs: unknown,
   options: Readonly<{ op: string }>,
 ) => Float32Array;
+type NativeEagerWhereInto = (
+  output: Float32Array,
+  condition: unknown,
+  input: unknown,
+  other: unknown,
+) => Float32Array;
 type NativeEagerReduceInto = (
   output: Float32Array,
   input: unknown,
@@ -90,6 +96,7 @@ export type TensorMathHelpersOptions = Readonly<{
   nativeEagerMatmulInto?: NativeEagerMatmulInto;
   nativeEagerElementwiseInto?: NativeEagerElementwiseInto;
   nativeEagerElementwiseMinLength?: number;
+  nativeEagerWhereInto?: NativeEagerWhereInto;
   nativeEagerReduceInto?: NativeEagerReduceInto;
   nativeEagerReduceMinLength?: number;
   nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
@@ -104,6 +111,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   const scalarTensor = options.scalarTensor;
   const nativeEagerMatmulInto = options.nativeEagerMatmulInto;
   const nativeEagerElementwiseInto = options.nativeEagerElementwiseInto;
+  const nativeEagerWhereInto = options.nativeEagerWhereInto;
   const nativeEagerElementwiseMinLength = Number.isSafeInteger(options.nativeEagerElementwiseMinLength) && Number(options.nativeEagerElementwiseMinLength) >= 0
     ? Number(options.nativeEagerElementwiseMinLength)
     : 512;
@@ -172,6 +180,26 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function isNativeComparisonOp(label: string) {
     return label === "eq" || label === "ne" || label === "lt" || label === "le" || label === "gt" || label === "ge";
+  }
+
+  function nativeWhereInto(
+    output: Float32Array,
+    condition: TensorMathTensor,
+    inputTensor: TensorMathTensor | null,
+    inputData: Float32Array,
+    inputShape: readonly number[],
+    otherTensor: TensorMathTensor | null,
+    otherData: Float32Array,
+    otherShape: readonly number[],
+    resultShape: readonly number[],
+  ) {
+    if (typeof nativeEagerWhereInto !== "function") return false;
+    if (output.length < nativeEagerElementwiseMinLength) return false;
+    if (!sameShape(condition.shape, resultShape)) return false;
+    if (!sameShape(inputShape, resultShape) && inputData.length !== 1) return false;
+    if (!sameShape(otherShape, resultShape) && otherData.length !== 1) return false;
+    nativeEagerWhereInto(output, condition, inputTensor ?? inputData, otherTensor ?? otherData);
+    return true;
   }
 
   function nativeReduceScalar(tensor: TensorMathTensor, op: string) {
@@ -273,18 +301,24 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const inputData = f32(input);
     const inputShape = inputTensor ? inputTensor.shape : inferredOperandShape(inputData, condition.shape);
     const otherData = f32(other);
-    const valuePlan = broadcastPlan(inputShape, otherTensor ? otherTensor.shape : inferredOperandShape(otherData, inputShape), "where values");
+    const valueOtherShape = otherTensor ? otherTensor.shape : inferredOperandShape(otherData, inputShape);
+    const valuePlan = broadcastPlan(inputShape, valueOtherShape, "where values");
     const resultPlan = broadcastPlan(condition.shape, valuePlan.shape, "where condition");
     const conditionPlan = broadcastPlan(condition.shape, resultPlan.shape, "where condition");
     const inputPlan = broadcastPlan(inputShape, resultPlan.shape, "where input");
-    const otherPlan = broadcastPlan(otherTensor ? otherTensor.shape : inferredOperandShape(otherData, resultPlan.shape), resultPlan.shape, "where other");
+    const otherShape = otherTensor ? otherTensor.shape : inferredOperandShape(otherData, resultPlan.shape);
+    const otherPlan = broadcastPlan(otherShape, resultPlan.shape, "where other");
     const out = new Float32Array(shapeProduct(resultPlan.shape));
-    for (let i = 0; i < out.length; i += 1) {
-      out[i] = condition.data[conditionPlan.lhsIndex[i]] !== 0
-        ? inputData[inputPlan.lhsIndex[i]]
-        : otherData[otherPlan.lhsIndex[i]];
-    }
     const needsGrad = gradModeEnabled() && (Boolean(inputTensor && inputTensor.requiresGrad) || Boolean(otherTensor && otherTensor.requiresGrad));
+    if (!needsGrad && nativeWhereInto(out, condition, inputTensor, inputData, inputShape, otherTensor, otherData, otherShape, resultPlan.shape)) {
+      // Native eager where currently accepts result-shaped condition and scalar/same-shape values. General broadcasting stays in TS.
+    } else {
+      for (let i = 0; i < out.length; i += 1) {
+        out[i] = condition.data[conditionPlan.lhsIndex[i]] !== 0
+          ? inputData[inputPlan.lhsIndex[i]]
+          : otherData[otherPlan.lhsIndex[i]];
+      }
+    }
     const result = new TensorClass(out, resultPlan.shape, {
       requiresGrad: needsGrad,
       prev: needsGrad ? [ ...(inputTensor ? [inputTensor] : []), ...(otherTensor ? [otherTensor] : []) ] : [],

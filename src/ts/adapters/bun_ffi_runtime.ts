@@ -1155,6 +1155,7 @@ const {
   isGradEnabled: projectedIsGradEnabled,
   nativeEagerMatmulInto: (output, lhs, rhs, options) => nativeEager.matmulInto(output, lhs, rhs, options),
   nativeEagerElementwiseInto: (output, lhs, rhs, options) => nativeEager.elementwiseInto(output, lhs, rhs, options),
+  nativeEagerWhereInto: (output, condition, input, other) => nativeEager.whereInto(output, condition, input, other),
   nativeEagerReduceInto: (output, input, options) => nativeEager.reduceInto(output, input, options),
   nativeEagerSoftmaxInto: (output, input, options) => options && options.logSoftmax
     ? nativeEager.logSoftmaxInto(output, input, options)
@@ -2229,6 +2230,16 @@ export const { nativeEager } = createAdapterNativeEagerSurface({
     args.output,
     BigInt(args.expectedOutput),
     args.op,
+  ),
+  whereF32: (args) => bunSymbolGroups.nativeEager.eagerWhereF32(
+    args.conditionData,
+    BigInt(args.conditionData.length),
+    args.inputData,
+    BigInt(args.inputData.length),
+    args.otherData,
+    BigInt(args.otherData.length),
+    args.output,
+    BigInt(args.expectedOutput),
   ),
   reduceF32: (args) => bunSymbolGroups.nativeEager.eagerReduceF32(
     args.inputData,

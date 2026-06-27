@@ -194,6 +194,16 @@ export type BunNativeSymbols = Readonly<{
     outputLen: bigint,
     op: number,
   ): number;
+  zgml_eager_where_f32(
+    condition: Float32Array,
+    conditionLen: bigint,
+    input: Float32Array,
+    inputLen: bigint,
+    other: Float32Array,
+    otherLen: bigint,
+    output: Float32Array,
+    outputLen: bigint,
+  ): number;
   zgml_eager_reduce_f32(
     input: Float32Array,
     inputLen: bigint,
@@ -592,6 +602,19 @@ export function bindBunSymbols(libPath: string): BunNativeSymbols {
         FFIType.ptr,
         FFIType.u64,
         FFIType.u32,
+      ],
+      returns: FFIType.i32,
+    },
+    zgml_eager_where_f32: {
+      args: [
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
       ],
       returns: FFIType.i32,
     },

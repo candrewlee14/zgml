@@ -344,6 +344,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.elementwiseInto !== "function") {
     throw new Error(`${label} expected nativeEager.elementwiseInto`);
   }
+  if (typeof nativeEager.whereInto !== "function") {
+    throw new Error(`${label} expected nativeEager.whereInto`);
+  }
   if (typeof nativeEager.reduceInto !== "function") {
     throw new Error(`${label} expected nativeEager.reduceInto`);
   }
@@ -370,6 +373,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   if (typeof nativeEagerAlias.elementwise_into !== "function") {
     throw new Error(`${label} expected native_eager.elementwise_into alias`);
+  }
+  if (typeof nativeEagerAlias.where_into !== "function") {
+    throw new Error(`${label} expected native_eager.where_into alias`);
   }
   if (typeof nativeEagerAlias.reduce_into !== "function") {
     throw new Error(`${label} expected native_eager.reduce_into alias`);
@@ -422,6 +428,19 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.elementwise_into to reuse caller output`);
   }
   expectClose(elementwiseAliasOutput, Array.from(directOutput, (value) => value * value), `${label} native_eager.elementwise_into output`);
+  const whereOutput = new Float32Array(6);
+  const whereCondition = new Float32Array([1, 0, -1, 0, 2, 0]);
+  const whereResult = nativeEager.whereInto(whereOutput, whereCondition, directOutput, new Float32Array([-5]));
+  if (whereResult !== whereOutput) {
+    throw new Error(`${label} expected nativeEager.whereInto to reuse caller output`);
+  }
+  expectClose(whereOutput, [1.25, -5, 0, -5, 3.75, -5], `${label} nativeEager.whereInto output`);
+  const whereAliasOutput = new Float32Array(6);
+  const whereAliasResult = nativeEagerAlias.where_into(whereAliasOutput, whereCondition, new Float32Array([9]), directOutput);
+  if (whereAliasResult !== whereAliasOutput) {
+    throw new Error(`${label} expected native_eager.where_into to reuse caller output`);
+  }
+  expectClose(whereAliasOutput, [9, 1.75, 9, 3.25, 9, 0], `${label} native_eager.where_into output`);
   const reduceOutput = new Float32Array(1);
   const reduceResult = nativeEager.reduceInto(reduceOutput, directOutput, { op: "sum" });
   if (reduceResult !== reduceOutput) {

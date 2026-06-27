@@ -59,6 +59,14 @@ type NativeEagerElementwiseCall = (args: {
   op: number;
 }) => number;
 
+type NativeEagerWhereCall = (args: {
+  conditionData: Float32Array;
+  inputData: Float32Array;
+  otherData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+}) => number;
+
 type NativeEagerReduceCall = (args: {
   inputData: Float32Array;
   output: Float32Array;
@@ -119,6 +127,7 @@ type NativeEagerSurfaceOptions = {
   linearActivationF32: NativeEagerLinearActivationCall;
   activationF32?: NativeEagerActivationCall;
   elementwiseF32?: NativeEagerElementwiseCall;
+  whereF32?: NativeEagerWhereCall;
   reduceF32?: NativeEagerReduceCall;
   conv2dF32?: NativeEagerConv2dCall;
   pool2dF32?: NativeEagerPool2dCall;
@@ -405,6 +414,41 @@ function nativeEagerElementwiseInputs(
   };
 }
 
+function nativeEagerWhereInputs(
+  output: Float32Array,
+  condition: unknown,
+  input: unknown,
+  other: unknown,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.whereInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const conditionData = nativeEagerTensorData(condition, `${label} condition`, f32);
+  if (conditionData.length === 0) {
+    throw new Error(`${label} condition must be non-empty`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  const otherData = nativeEagerTensorData(other, `${label} other`, f32);
+  if (inputData.length !== 1 && inputData.length !== conditionData.length) {
+    throw new Error(`${label} input length ${inputData.length} must be 1 or match condition length ${conditionData.length}`);
+  }
+  if (otherData.length !== 1 && otherData.length !== conditionData.length) {
+    throw new Error(`${label} other length ${otherData.length} must be 1 or match condition length ${conditionData.length}`);
+  }
+  if (output.length < conditionData.length) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${conditionData.length}`);
+  }
+  return {
+    conditionData,
+    inputData,
+    otherData,
+    output,
+    expectedOutput: conditionData.length,
+  };
+}
+
 function nativeEagerReduceInputs(
   output: Float32Array,
   input: unknown,
@@ -632,6 +676,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     elementwise_into(output: Float32Array, lhs: unknown, rhs?: unknown, callOptions?: Record<string, unknown>) {
       return this.elementwiseInto(output, lhs, rhs, callOptions);
+    },
+    whereInto(output: Float32Array, condition: unknown, input: unknown, other: unknown) {
+      if (typeof options.whereF32 !== "function") {
+        throw new Error("nativeEager.whereInto is unavailable in this runtime");
+      }
+      const args = nativeEagerWhereInputs(output, condition, input, other, options.f32);
+      options.check(options.whereF32(args));
+      return output;
+    },
+    where_into(output: Float32Array, condition: unknown, input: unknown, other: unknown) {
+      return this.whereInto(output, condition, input, other);
     },
     reduceInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.reduceF32 !== "function") {
