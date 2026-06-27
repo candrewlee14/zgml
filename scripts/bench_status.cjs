@@ -802,11 +802,14 @@ function ggmlSmokeStatusLine(path) {
   const decodeDispatches = q8Decode?.dispatches_per_call ?? "n/a";
   const fallback = q8Prompt?.fallback_ops ?? "n/a";
   const semantic = q8Prompt?.program_command_encoded_semantic_ffn_sublayer_per_call ?? 0;
+  const semanticWithInput = q8Prompt?.program_command_encoded_semantic_ffn_sublayer_with_input_row_chain_per_call ?? 0;
+  const semanticWithInputDispatches = q8Prompt?.program_command_dispatches_semantic_ffn_sublayer_with_input_row_chain_per_call ?? 0;
+  const semanticWithInputExtra = q8Prompt?.semantic_ffn_with_input_decomposed_extra_dispatches_per_call ?? 0;
   const rowChains = q8Prompt?.program_command_encoded_projection_row_chain_per_call ?? 0;
   const bridges = q8Prompt?.program_command_shape_projection_row_chain_semantic_residual_bridges ?? 0;
   const cacheGroups = q8Prompt?.program_command_encoded_projection_cache_group_per_call ?? 0;
   const promptLabel = typeof q8Prompt?.label === "string" ? q8Prompt.label.replace(/\s+/g, "_") : "unknown";
-  return `ggml-smoke-results: latest=${compactName(path)} status=${required} q8_prompt=${Number.isFinite(promptTokS) ? promptTokS.toFixed(2) : "n/a"}tok/s:${promptParity}:dispatch=${promptDispatches}:commands=${promptCommands}:semantic_ffn=${semantic}:projection_row_chain=${rowChains}:semantic_bridges=${bridges}:cache_groups=${cacheGroups}:fallback=${fallback}:lane=${promptLabel} q8_decode=${Number.isFinite(decodeTokS) ? decodeTokS.toFixed(2) : "n/a"}tok/s:${decodeParity}:dispatch=${decodeDispatches}:commands=${decodeCommands}`;
+  return `ggml-smoke-results: latest=${compactName(path)} status=${required} q8_prompt=${Number.isFinite(promptTokS) ? promptTokS.toFixed(2) : "n/a"}tok/s:${promptParity}:dispatch=${promptDispatches}:commands=${promptCommands}:semantic_ffn=${semantic}:semantic_with_input=${semanticWithInput}:semantic_with_input_dispatch=${semanticWithInputDispatches}:semantic_with_input_extra=${semanticWithInputExtra}:projection_row_chain=${rowChains}:semantic_bridges=${bridges}:cache_groups=${cacheGroups}:fallback=${fallback}:lane=${promptLabel} q8_decode=${Number.isFinite(decodeTokS) ? decodeTokS.toFixed(2) : "n/a"}tok/s:${decodeParity}:dispatch=${decodeDispatches}:commands=${decodeCommands}`;
 }
 
 function qprojFrontierArtifacts() {
@@ -1793,6 +1796,10 @@ function pressureReductionTarget(row) {
 
 function semanticPressureTarget(row) {
   if (!row || typeof row !== "object") return "missing";
+  const semanticWithInput = row.program_command_dispatches_semantic_ffn_sublayer_with_input_row_chain_per_call;
+  if (typeof semanticWithInput === "number" && Number.isFinite(semanticWithInput) && semanticWithInput > 0) {
+    return `semantic_ffn_sublayer_with_input_row_chain:${semanticWithInput}`;
+  }
   const semantic = row.program_command_dispatches_semantic_ffn_sublayer_per_call;
   if (typeof semantic === "number" && Number.isFinite(semantic) && semantic > 0) {
     return `semantic_ffn_sublayer:${semantic}`;
@@ -1802,6 +1809,7 @@ function semanticPressureTarget(row) {
 
 function semanticFrontierNextTarget(target) {
   if (typeof target !== "string") return "inspect_command_pressure";
+  if (target.startsWith("semantic_ffn_sublayer_with_input_row_chain:")) return "semantic_with_input_width_parallel_kernel";
   if (target.startsWith("semantic_ffn_sublayer:")) return "semantic_ffn_sublayer_throughput_kernel";
   if (target.startsWith("projection_row_chain:")) return "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
   if (target.startsWith("projection_chain:")) return "semantic_sublayer_or_quantized_projection_chain";

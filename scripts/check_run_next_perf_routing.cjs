@@ -41,6 +41,12 @@ const inputBridgeOnlyWidthLine = lineWith(
   "frontier=semantic_width_parallel_kernel:candidate=ready:fresh=source:fresh,throughput=smollm:1.86x,full:2.24x",
 );
 
+const currentQ8InputBridgeLine = [
+  "perf-next:",
+  "q8_current=prompt:42.0%:required-pass:dispatch=242:commands=121:target=semantic_ffn_sublayer_with_input_row_chain:150:next=semantic_with_input_width_parallel_kernel",
+  "pytorch=none",
+].join(" ");
+
 const staleThroughputLine = lineWith(
   "q8_prompt=semantic_bridge_candidate:commands=121:next=semantic_width_parallel_kernel",
   "frontier=semantic_width_parallel_kernel:candidate=ready:fresh=source:fresh,throughput=smollm:0.99x,full:2.24x",
@@ -65,6 +71,7 @@ const pytorchLine = `${quietLine} pytorch=softmax_classifier_batched:1.03x`;
 expectEqual(chooseLane(widthParallelLine, {}), "qsemantic_bridge", "width-parallel Q8 prompt target routes to exact bridge microscope");
 expectEqual(chooseLane(widthParallelInputBridgeLine, {}), "qsemantic_bridge", "full Q8 prompt width target wins over adjacent input-bridge microscope");
 expectEqual(chooseLane(inputBridgeOnlyWidthLine, {}), "qsemantic_input_bridge", "input-bridge width-parallel target routes to exact input-bridge microscope when Q8 prompt has no width target");
+expectEqual(chooseLane(currentQ8InputBridgeLine, {}), "qsemantic_input_bridge", "current Q8 semantic input dispatch target routes to input-bridge microscope");
 expectEqual(chooseLane(staleThroughputLine, {}), "qsemantic_throughput", "stale width frontier refreshes qsemantic throughput before exact bridge");
 expectEqual(chooseLane(bridgeThroughputLine, {}), "qsemantic_throughput", "semantic bridge throughput target routes to qsemantic throughput");
 expectEqual(chooseLane(inputBridgeLine, {}), "q8_prompt_semantic", "input bridge partitioning routes to full-model semantic lane");

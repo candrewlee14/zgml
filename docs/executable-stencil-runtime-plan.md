@@ -8120,3 +8120,10 @@ shape without taking over the headline `ggml-smoke-results` status. The next
 real performance target is therefore not selecting the semantic lane; it is
 making that semantic-with-input command faster, especially the width-parallel
 kernel/storage model behind `semantic_width_parallel_kernel`.
+The status loop now exposes that active default bottleneck directly:
+`semantic_with_input=30`, `semantic_with_input_dispatch=150`, and
+`semantic_with_input_extra=120` in `ggml-smoke-results`, while `q8_current`
+targets `semantic_ffn_sublayer_with_input_row_chain:150` and routes the fallback
+current-smoke case to `semantic_with_input_width_parallel_kernel`. That keeps
+the next-perf loop from falling back to vague command-pressure inspection after
+the default lane has already moved to the 121-command semantic path.
