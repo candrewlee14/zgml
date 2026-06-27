@@ -483,6 +483,10 @@ function latestQsemanticInputBridgeArtifact() {
   return artifacts.filter(isFrontierSteadyArtifact).at(-1) ?? artifacts.at(-1) ?? null;
 }
 
+function latestRawQsemanticInputBridgeArtifact() {
+  return qsemanticInputBridgeArtifacts().at(-1) ?? null;
+}
+
 function isFrontierSteadyArtifact(path) {
   try {
     const data = readJson(path);
@@ -717,6 +721,31 @@ function qsemanticInputBridgeStatusLine(path) {
   const next = typeof data?.next === "string" ? data.next : "unknown";
   const directPartition = Number(directSerial.semanticWithInputDirectCount) > 0 ? "row_serial" : Number(absorbed.semanticWithInputDirectCount) > 0 ? "absorbed_direct" : "inactive";
   return `qsemantic-input-bridge-results: latest=${compactName(path)} status=${status} gate=${gate} attempt=${selectedAttempt}/${attempts} command=${commandSpeedup}:dispatches:${command.runtimeDispatches ?? "n/a"}:bridges:${command.shapeProjectionRowChainSemanticResidualBridges ?? "n/a"} absorbed=${absorbedSpeedup}:median:${absorbedMedian}:worst:${absorbedWorst}:max_abs_diff:${maxAbsDiff}:dispatches:${absorbed.runtimeDispatches ?? "n/a"}:semantic_with_input_dispatches:${absorbed.runtimeSemanticFfnWithInputDispatches ?? "n/a"}:absorbed_split:${formatNumber(absorbed.absorbedDispatchSplit, 2)}:decomposed:${absorbed.semanticWithInputDecomposedCount ?? "n/a"}:decomposed_dispatches:${absorbed.semanticWithInputDecomposedDispatches ?? "n/a"}:decomposed_row_chain:${absorbed.semanticWithInputDecomposedRowChainDispatches ?? "n/a"}:decomposed_pair:${absorbed.semanticWithInputDecomposedPairDispatches ?? "n/a"}:decomposed_tail:${absorbed.semanticWithInputDecomposedTailDispatches ?? "n/a"}:direct_partition:${directPartition}:direct:${absorbed.semanticWithInputDirectCount ?? "n/a"} direct_serial=${directSerialSpeedup}:median:${directSerialMedian}:dispatches:${directSerial.runtimeDispatches ?? "n/a"}:direct:${directSerial.semanticWithInputDirectCount ?? "n/a"}:rows:${directSerial.semanticWithInputDirectRows ?? "n/a"}:row_threadgroups:${directSerial.semanticWithInputDirectRowThreadgroups ?? "n/a"}:row_serial_dot_ops:${directSerial.semanticWithInputDirectRowSerialDotOps ?? "n/a"}:total_row_serial_dot_ops:${directSerial.semanticWithInputDirectTotalRowSerialDotOps ?? "n/a"}:per_row_threadgroup:${directSerial.semanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup ?? "n/a"}:fallback_pair:${directSerial.semanticFallbackPairDispatches ?? "n/a"}:fallback_tail:${directSerial.semanticFallbackTailDispatches ?? "n/a"}:tiled:${directSerial.qmatmulRowChainTiledCount ?? "n/a"} pair_dispatches=${absorbed.semanticFallbackPairDispatches ?? "n/a"}:tail_dispatches:${absorbed.semanticFallbackTailDispatches ?? "n/a"}:tiled:${absorbed.qmatmulRowChainTiledCount ?? "n/a"}:row_tile_groups:${absorbed.qmatmulRowChainTiledRowTileGroups ?? "n/a"}:n_tiles:${absorbed.qmatmulRowChainTiledNTiles ?? "n/a"}:two_phase:${absorbed.qmatmulRowChainTiledTwoPhaseCount ?? "n/a"}:spilled_input:${absorbed.qmatmulRowChainTiledSpilledInput ?? "n/a"}:output_spills:${absorbed.qmatmulRowChainTiledOutputSpills ?? "n/a"} next=${next} source=${source}`;
+}
+
+function qsemanticInputBridgeFreshnessStatusLine(selectedPath, rawPath) {
+  if (!selectedPath || !rawPath || selectedPath === rawPath) return null;
+  let data;
+  try {
+    data = readJson(rawPath);
+  } catch {
+    return `qsemantic-input-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts unreadable`;
+  }
+  const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
+  const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
+  const command = data?.command ?? {};
+  const absorbed = data?.absorbed ?? {};
+  const directSerial = data?.directSerial ?? {};
+  const absorbedSpeedup = formatRatio(absorbed.speedup);
+  const absorbedMedian = formatRatio(data?.speedupStats?.absorbed?.median);
+  const absorbedWorst = formatRatio(data?.speedupStats?.absorbed?.worst);
+  const commandSpeedup = formatRatio(command.speedup);
+  const directSerialSpeedup = formatRatio(directSerial.speedup);
+  const directSerialMedian = formatRatio(data?.speedupStats?.directSerial?.median);
+  const maxAbsDiff = formatNumber(absorbed.maxAbsDiff, 6);
+  const next = typeof data?.next === "string" ? data.next : "unknown";
+  const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
+  return `qsemantic-input-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts attempt=${selectedAttempt}/${attempts} command=${commandSpeedup}:dispatches:${command.runtimeDispatches ?? "n/a"} absorbed=${absorbedSpeedup}:median:${absorbedMedian}:worst:${absorbedWorst}:max_abs_diff:${maxAbsDiff}:dispatches:${absorbed.runtimeDispatches ?? "n/a"}:semantic_with_input_dispatches:${absorbed.runtimeSemanticFfnWithInputDispatches ?? "n/a"}:absorbed_split:${formatNumber(absorbed.absorbedDispatchSplit, 2)}:decomposed:${absorbed.semanticWithInputDecomposedCount ?? "n/a"}:decomposed_dispatches:${absorbed.semanticWithInputDecomposedDispatches ?? "n/a"} direct_serial=${directSerialSpeedup}:median:${directSerialMedian}:dispatches:${directSerial.runtimeDispatches ?? "n/a"}:direct:${directSerial.semanticWithInputDirectCount ?? "n/a"}:row_serial_dot_ops:${directSerial.semanticWithInputDirectRowSerialDotOps ?? "n/a"}:total_row_serial_dot_ops:${directSerial.semanticWithInputDirectTotalRowSerialDotOps ?? "n/a"} pair_dispatches=${absorbed.semanticFallbackPairDispatches ?? "n/a"}:tail_dispatches:${absorbed.semanticFallbackTailDispatches ?? "n/a"}:tiled:${absorbed.qmatmulRowChainTiledCount ?? "n/a"} next=${next} source=${source}`;
 }
 
 function qsemanticInputBridgeNextTargetLine(path) {
@@ -2096,6 +2125,7 @@ const latestRawQsemanticThroughput = latestRawQsemanticThroughputArtifact();
 const latestQsemanticBridge = latestQsemanticBridgeArtifact();
 const latestRawQsemanticBridge = latestRawQsemanticBridgeArtifact();
 const latestQsemanticInputBridge = latestQsemanticInputBridgeArtifact();
+const latestRawQsemanticInputBridge = latestRawQsemanticInputBridgeArtifact();
 const latestQprojFrontier = latestQprojFrontierArtifact();
 const latestGgmlSmoke = latestGgmlSmokeArtifact();
 process.stdout.write(`${q8PromptCandidateStatusLine(latestQ8Prompt)}\n`);
@@ -2113,6 +2143,8 @@ process.stdout.write(`${qsemanticBridgeStatusLine(latestQsemanticBridge, latestR
 const qsemanticBridgeFreshness = qsemanticBridgeFreshnessStatusLine(latestQsemanticBridge, latestRawQsemanticBridge);
 if (qsemanticBridgeFreshness) process.stdout.write(`${qsemanticBridgeFreshness}\n`);
 process.stdout.write(`${qsemanticInputBridgeStatusLine(latestQsemanticInputBridge)}\n`);
+const qsemanticInputBridgeFreshness = qsemanticInputBridgeFreshnessStatusLine(latestQsemanticInputBridge, latestRawQsemanticInputBridge);
+if (qsemanticInputBridgeFreshness) process.stdout.write(`${qsemanticInputBridgeFreshness}\n`);
 process.stdout.write(`${ggmlSmokeStatusLine(latestGgmlSmoke)}\n`);
 process.stdout.write(`${perfNextStatusLine({ latestPath: latest, pytorchPath: latestPytorch, q8Path: latestQ8Prompt, rawQ8Path: latestQ8PromptSemanticSteady ?? latestRawQ8Prompt, frontierPath: latestFrontier, rawFrontierPath: latestRawQsemanticThroughput ?? latestRawFrontier, qsemanticBridgePath: latestQsemanticBridge })}\n`);
 const quarantined = quarantinedFullRunArtifacts();

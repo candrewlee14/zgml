@@ -625,7 +625,7 @@ the smallest no-rebuild microscope for the current bottleneck. Use
 `npm run dev:perf:next:build` when the native or benchmark artifact is stale,
 `npm run dev:perf:next:steady` when a noisy lane needs repeated attempts or
 longer timing windows, or set
-`BENCH_NEXT_PERF_LANE=pytorch|qsemantic|qsemantic_throughput|qsemantic_bridge|qproj|q8_prompt|ggml`
+`BENCH_NEXT_PERF_LANE=pytorch|qsemantic|qsemantic_throughput|qsemantic_bridge|qsemantic_input_bridge|qproj|q8_prompt|ggml`
 to force a lane. The automatic qsemantic handoff is two-step: below-default or
 missing fresh throughput evidence keeps the loop on `qsemantic_throughput`,
 while fresh above-default qsemantic throughput advances the loop to `q8_prompt`
@@ -647,6 +647,13 @@ dimension, not merely enable the row-serial single-dispatch path. The
 through the checked `frontier-qsemantic-bridge-*.json` artifact instead of the
 broader qsemantic pair. You can still force that lane explicitly with
 `BENCH_NEXT_PERF_LANE=qsemantic_bridge npm run dev:perf:next{,:run}`.
+When an input-bridge artifact is available,
+`qsemantic-input-bridge-results:` remains the selected steady signal and
+`qsemantic-input-bridge-latest-results:` reports newer one-attempt probes. That
+keeps fresh `semantic_with_input_width_parallel_kernel` iteration visible
+without letting a quick probe replace the steadier `perf-next` target. Force
+that exact microscope with
+`BENCH_NEXT_PERF_LANE=qsemantic_input_bridge npm run dev:perf:next{,:run}`.
 For qsemantic kernel work, `BENCH_QSEMANTIC_VARIANTS=target` limits the raw
 frontier harness to the staged baseline plus the one-dispatch semantic target,
 while `BENCH_QSEMANTIC_VARIANTS=throughput_candidate` limits it to the staged

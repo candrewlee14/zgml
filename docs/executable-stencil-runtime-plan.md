@@ -842,12 +842,13 @@ microscope when that target is present. The generic
 `semantic_width_parallel_kernel` bridge microscope remains the fallback when no
 input-bridge artifact exists; once direct-serial versus absorbed evidence is
 available, the next loop should work on the input-bridge kernel directly.
-The qsemantic-throughput readback follows the same stability rule as the other
-noisy perf lanes: `qsemantic-throughput-results:` prefers the latest
-three-attempt artifact, while `qsemantic-throughput-latest-results:` reports a
-newer one-attempt probe when one exists. That keeps quick kernel iteration
-visible without letting a lucky or unlucky single attempt replace the selected
-semantic frontier proof.
+The qsemantic-throughput and qsemantic input-bridge readbacks follow the same
+stability rule as the other noisy perf lanes:
+`qsemantic-throughput-results:` and `qsemantic-input-bridge-results:` prefer the
+latest three-attempt artifact, while `qsemantic-throughput-latest-results:` and
+`qsemantic-input-bridge-latest-results:` report newer one-attempt probes when
+they exist. That keeps quick kernel iteration visible without letting a lucky or
+unlucky single attempt replace the selected semantic frontier proof.
 The PyTorch comparison microscope also accepts exploratory lanes such as
 `rms_gelu_linear_batched`, `softmax_classifier_batched`,
 `log_softmax_classifier_batched`, and `lazy_token_head_batched`, so optimization
