@@ -1038,6 +1038,10 @@ npm run dev:perf:frontier:qsemantic:throughput # incremental checked throughput-
 npm run dev:perf:frontier:qsemantic:throughput:run # no-rebuild checked throughput-candidate-only qsemantic microscope
 npm run dev:perf:frontier:qsemantic:throughput:raw # incremental throughput-candidate-only qsemantic kernel microscope
 npm run dev:perf:frontier:qsemantic:throughput:raw:run # no-rebuild throughput-candidate-only qsemantic kernel microscope
+npm run dev:perf:frontier:qsemantic:bridge # incremental exact 9-op semantic bridge microscope
+npm run dev:perf:frontier:qsemantic:bridge:run # no-rebuild exact 9-op semantic bridge microscope
+npm run dev:perf:frontier:qsemantic:input-bridge # incremental exact 14-op semantic input-bridge microscope
+npm run dev:perf:frontier:qsemantic:input-bridge:run # no-rebuild exact 14-op semantic input-bridge microscope
 npm run dev:perf:frontier:qsemantic:smollm:raw # incremental raw SmolLM qsemantic microscope
 npm run dev:perf:frontier:qsemantic:smollm:raw:run # no-rebuild raw SmolLM qsemantic microscope
 npm run bench:frontier:row-chain       # rebuild ReleaseFast and run only row-chain frontier labels
@@ -8127,3 +8131,11 @@ targets `semantic_ffn_sublayer_with_input_row_chain:150` and routes the fallback
 current-smoke case to `semantic_with_input_width_parallel_kernel`. That keeps
 the next-perf loop from falling back to vague command-pressure inspection after
 the default lane has already moved to the 121-command semantic path.
+A follow-up exact no-build microscope run kept the 9-op bridge healthy at
+`bridge_ffn=2.89x` with `runtime_backend_dispatches=3`, `width_parallel=1`,
+and `runtime_bytes=9216`. The exact 14-op input-bridge run stayed correct and
+selected `absorbed=2.51x`, but still reported the five-dispatch decomposition
+(`row_chain=2,pair=1,tail=2`, `decomposed_extra=4`, `spilled_input=576`).
+Those are the local numbers the next semantic-with-input kernel needs to beat;
+the rejected fewer-dispatch shape is not enough unless it also improves
+throughput.
