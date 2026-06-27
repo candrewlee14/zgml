@@ -115,6 +115,7 @@ const expectedPackageFiles = Object.freeze([
   "examples/bun_program_session/run_linear.ts",
   "scripts/frontend_manifest_policy.cjs",
   "scripts/check_frontend_capability_matrix.cjs",
+  "scripts/check_mnist_pytorch_comparison.cjs",
   "scripts/generate_package_declarations.cjs",
   "scripts/package_metadata_policy.cjs",
   "tsdown.config.mjs",
