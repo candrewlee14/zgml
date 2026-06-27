@@ -499,6 +499,13 @@ Current checked progress:
   Tensor. Rectangular nested arrays now preserve their batch shape too, so
   `noGrad(() => model.forward([[x0, x1], [y0, y1]]))` follows the same native
   Program route with a `[batch, features]` tensor boundary.
+  The ergonomic one-shot API now follows that same split without making users
+  touch the lower-level handle: `zgml.run(model, input, options)` compiles,
+  binds, executes, and disposes a native Program/Session, while
+  `zgml.runInto(output, model, input, options)` uses the allocation-aware
+  `Session.executeInto` path with caller-owned output. The hot-loop API remains
+  the reusable `zgml.native(...)` / `zgml.forInference(...)` handle, so
+  convenience does not move core math back into TS.
   The new Node/Bun-selectable `NATIVE_EAGER_GAP_JSON` microscope measures the first targets directly:
   `linear_batched` eager TS tensor execution,
   `lazy_matmul_add_gelu_batched` eager fused matmul work, and

@@ -1046,6 +1046,24 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     );
   }
 
+  function run(target: unknown, input: unknown, compileOptions: CompileNamespaceOptions = {}, bindOptions?: unknown) {
+    const inference = compileForInference(target, compileOptions, bindOptions) as { forward(input: unknown): unknown; dispose(): void };
+    try {
+      return inference.forward(input);
+    } finally {
+      inference.dispose();
+    }
+  }
+
+  function runInto(output: Float32Array, target: unknown, input: unknown, compileOptions: CompileNamespaceOptions = {}, bindOptions?: unknown) {
+    const inference = compileForInference(target, compileOptions, bindOptions) as { into(output: Float32Array, input: unknown): Float32Array; dispose(): void };
+    try {
+      return inference.into(output, input);
+    } finally {
+      inference.dispose();
+    }
+  }
+
   function trainingStep(model: unknown, optimizer: unknown, trainingOptions: UnknownRecord = {}) {
     if (typeof options.trainingStep !== "function") {
       throw new Error("compile.trainingStep requires a native training-step runtime");
@@ -1112,6 +1130,9 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     for_inference: compileForInference,
     native: compileForInference,
     inference: compileForInference,
+    run,
+    run_into: runInto,
+    runInto,
     trainingStep,
     training_step: trainingStep,
     compileForTraining: trainingStep,
@@ -1405,6 +1426,9 @@ export function createAdapterZgmlNamespace(options: AdapterZgmlNamespaceOptions)
     compile_for_inference: compileNamespace.compile_for_inference,
     forInference: compileNamespace.compileForInference,
     for_inference: compileNamespace.compile_for_inference,
+    run: compileNamespace.run,
+    runInto: compileNamespace.runInto,
+    run_into: compileNamespace.run_into,
     trainingStep: compileNamespace.trainingStep,
     training_step: compileNamespace.training_step,
     compileForTraining: compileNamespace.compileForTraining,

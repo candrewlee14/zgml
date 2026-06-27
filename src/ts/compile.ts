@@ -67,6 +67,7 @@ import type {
   ProgramExecutionPlan,
   ProgramInputBinding,
   Session,
+  Tensor,
   TensorShapeTuple,
 } from "./public_api.js";
 
@@ -638,6 +639,62 @@ export const forInference = compileForInference;
 export const for_inference = compileForInference;
 export const native = compileForInference;
 export const inference = compileForInference;
+
+export function run<const Target extends EmbeddingModule, const S extends TensorShapeTuple>(
+  target: Target,
+  input: ProgramInputBinding<S>,
+  options: EmbeddingCompileOptions<S>,
+  bindOptions?: ModuleParameterPlacementOptions,
+): Tensor<ModuleForwardShape<Target, S>>;
+export function run<const Target extends NnCompilableModule, const S extends TensorShapeTuple>(
+  target: Target,
+  input: ProgramInputBinding<S>,
+  options: CompileOptionsWithInputShape<S>,
+  bindOptions?: ModuleParameterPlacementOptions,
+): Tensor<ModuleForwardShape<Target, S>>;
+export function run(target: NnCompilableModule, input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Tensor;
+export function run(target: unknown, input: unknown, options: CompileNamespaceOptions = {}, bindOptions?: ModuleParameterPlacementOptions | ProgramBindings) {
+  const inferenceHandle = (compileForInference as (
+    target: unknown,
+    options?: CompileNamespaceOptions,
+    bindOptions?: ModuleParameterPlacementOptions | ProgramBindings,
+  ) => CompiledInference)(target, options, bindOptions);
+  try {
+    return inferenceHandle.forward(input as ProgramInputBinding);
+  } finally {
+    inferenceHandle.dispose();
+  }
+}
+
+export function runInto<const Target extends EmbeddingModule, const S extends TensorShapeTuple>(
+  output: Float32Array,
+  target: Target,
+  input: ProgramInputBinding<S>,
+  options: EmbeddingCompileOptions<S>,
+  bindOptions?: ModuleParameterPlacementOptions,
+): Float32Array;
+export function runInto<const Target extends NnCompilableModule, const S extends TensorShapeTuple>(
+  output: Float32Array,
+  target: Target,
+  input: ProgramInputBinding<S>,
+  options: CompileOptionsWithInputShape<S>,
+  bindOptions?: ModuleParameterPlacementOptions,
+): Float32Array;
+export function runInto(output: Float32Array, target: NnCompilableModule, input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
+export function runInto(output: Float32Array, target: unknown, input: unknown, options: CompileNamespaceOptions = {}, bindOptions?: ModuleParameterPlacementOptions | ProgramBindings) {
+  const inferenceHandle = (compileForInference as (
+    target: unknown,
+    options?: CompileNamespaceOptions,
+    bindOptions?: ModuleParameterPlacementOptions | ProgramBindings,
+  ) => CompiledInference)(target, options, bindOptions);
+  try {
+    return inferenceHandle.into(output, input as ProgramInputBinding);
+  } finally {
+    inferenceHandle.dispose();
+  }
+}
+
+export const run_into = runInto;
 
 export function trainingStep(_model: unknown, _optimizer: unknown, _options: Record<string, unknown> = {}): CompiledTrainingStep {
   throw new Error("compile.trainingStep requires a native Node or Bun runtime");

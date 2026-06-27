@@ -2568,6 +2568,8 @@ export const simple = Object.freeze({
   for_inference: compile.compile_for_inference,
   compileInference: compile.compileForInference,
   compileForInference: compile.compileForInference,
+  run: compile.run,
+  runInto: compile.runInto,
   trainingStep: compile.trainingStep,
   compileForTraining: compile.compileForTraining,
   nativeCore,
@@ -2694,6 +2696,9 @@ export const compileInference = compile.compileForInference;
 export const compile_inference = compile.compile_for_inference;
 export const compileForInference = compile.compileForInference;
 export const compile_for_inference = compile.compile_for_inference;
+export const run = compile.run;
+export const runInto = compile.runInto;
+export const run_into = compile.run_into;
 export const trainingStep = compile.trainingStep;
 export const training_step = compile.training_step;
 export const compileForTraining = compile.compileForTraining;

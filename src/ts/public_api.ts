@@ -6149,6 +6149,12 @@ export type PublicCompileNamespace = Readonly<CompileNamespace> & {
   forInference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   for_inference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
   for_inference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  run<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, input: ProgramInputBinding<S>, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): Tensor<ModuleTargetForwardShape<Target, S>>;
+  run(target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Tensor;
+  runInto<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(output: Float32Array, target: Target, input: ProgramInputBinding<S>, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
+  runInto(output: Float32Array, target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
+  run_into<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(output: Float32Array, target: Target, input: ProgramInputBinding<S>, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
+  run_into(output: Float32Array, target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
 };
 export type PublicProgramNamespace = Readonly<ProgramNamespace>;
 export type PublicSessionNamespace = Readonly<SessionNamespace>;
@@ -7062,6 +7068,9 @@ export type PublicTorchNamespace = Readonly<{
   compile_inference: PublicCompileNamespace["compile_for_inference"];
   compileForInference: PublicCompileNamespace["compileForInference"];
   compile_for_inference: PublicCompileNamespace["compile_for_inference"];
+  run: PublicCompileNamespace["run"];
+  runInto: PublicCompileNamespace["runInto"];
+  run_into: PublicCompileNamespace["run_into"];
   trainingStep: PublicCompileNamespace["trainingStep"];
   training_step: PublicCompileNamespace["training_step"];
   compileForTraining: PublicCompileNamespace["compileForTraining"];
@@ -7124,6 +7133,8 @@ export type PublicSimpleNamespace = Readonly<Pick<PublicZgmlNamespace,
   | "forInference"
   | "compileInference"
   | "compileForInference"
+  | "run"
+  | "runInto"
   | "trainingStep"
   | "compileForTraining"
   | "nativeCore"
@@ -7151,6 +7162,9 @@ export declare const compileInference: PublicCompileNamespace["compileForInferen
 export declare const compile_inference: PublicCompileNamespace["compile_for_inference"];
 export declare const compileForInference: PublicCompileNamespace["compileForInference"];
 export declare const compile_for_inference: PublicCompileNamespace["compile_for_inference"];
+export declare const run: PublicCompileNamespace["run"];
+export declare const runInto: PublicCompileNamespace["runInto"];
+export declare const run_into: PublicCompileNamespace["run_into"];
 export declare const trainingStep: PublicCompileNamespace["trainingStep"];
 export declare const training_step: PublicCompileNamespace["training_step"];
 export declare const compileForTraining: PublicCompileNamespace["compileForTraining"];
