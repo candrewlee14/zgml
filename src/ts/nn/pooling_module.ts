@@ -35,6 +35,7 @@ export type PoolGradTensor = PoolTensor & {
 };
 type TensorConstructor = new (values: Float32Array, shape?: readonly number[], options?: PoolTensorConstructOptions) => PoolTensor;
 type TensorGradAdder = (tensor: PoolGradTensor, grad: Float32Array) => void;
+export type NativeEagerPool2dInto = (output: Float32Array, input: PoolTensor, options: Readonly<Record<string, unknown>>) => Float32Array;
 
 function poolGradTensor(tensor: PoolTensor): PoolGradTensor {
   return tensor as PoolGradTensor;
@@ -65,6 +66,7 @@ export type PoolingModuleClassOptions = Readonly<Record<string, unknown> & {
   Tensor: TensorConstructor;
   addTensorGrad: TensorGradAdder;
   isGradEnabled?: () => boolean;
+  nativeEagerPool2dInto?: NativeEagerPool2dInto;
 } & SingleModuleCompileHooksInput>;
 
 export function createMaxPool2dModuleClass(options: PoolingModuleClassOptions) {
@@ -73,6 +75,7 @@ export function createMaxPool2dModuleClass(options: PoolingModuleClassOptions) {
   const gradModeEnabled = typeof options.isGradEnabled === "function"
     ? options.isGradEnabled as () => boolean
     : () => true;
+  const nativeEagerPool2dInto = typeof options.nativeEagerPool2dInto === "function" ? options.nativeEagerPool2dInto : null;
   const compileHooks = createSingleModuleCompileHooks(options, "MaxPool2dModule", { requirePackParameters: false });
   if (
     typeof TensorClass !== "function" ||
@@ -130,43 +133,68 @@ export function createMaxPool2dModuleClass(options: PoolingModuleClassOptions) {
       const [dh, dw] = this.dilation;
       const outShape = batched ? [batch, channels, outH, outW] : [channels, outH, outW];
       const out = new Float32Array(batch * channels * outH * outW);
-      const maxIndices = new Int32Array(out.length);
-      maxIndices.fill(-1);
-      for (let n = 0; n < batch; n += 1) {
-        for (let c = 0; c < channels; c += 1) {
-          for (let oh = 0; oh < outH; oh += 1) {
-            for (let ow = 0; ow < outW; ow += 1) {
-              let max = -Infinity;
-              let maxIndex = -1;
-              for (let ky = 0; ky < kh; ky += 1) {
-                const ih = oh * sh + ky * dh - ph;
-                if (ih < 0 || ih >= height) continue;
-                for (let kx = 0; kx < kw; kx += 1) {
-                  const iw = ow * sw + kx * dw - pw;
-                  if (iw < 0 || iw >= width) continue;
-                  const inputIndex = batched
-                    ? ((n * channels + c) * height + ih) * width + iw
-                    : (c * height + ih) * width + iw;
-                  const value = input.data[inputIndex]!;
-                  if (value > max) {
-                    max = value;
-                    maxIndex = inputIndex;
+      const gradEnabled = gradModeEnabled();
+      const needsGrad = gradEnabled && Boolean(input.requiresGrad || input.requires_grad);
+      let maxIndices: Int32Array | null = null;
+      if (!gradEnabled && nativeEagerPool2dInto) {
+        nativeEagerPool2dInto(out, input, {
+          op: "max",
+          batch,
+          channels,
+          height,
+          width,
+          kernelH: kh,
+          kernelW: kw,
+          strideH: sh,
+          strideW: sw,
+          paddingH: ph,
+          paddingW: pw,
+          dilationH: dh,
+          dilationW: dw,
+          outH,
+          outW,
+          ceilMode: this.ceilMode,
+          countIncludePad: true,
+        });
+      } else {
+        maxIndices = new Int32Array(out.length);
+        maxIndices.fill(-1);
+        for (let n = 0; n < batch; n += 1) {
+          for (let c = 0; c < channels; c += 1) {
+            for (let oh = 0; oh < outH; oh += 1) {
+              for (let ow = 0; ow < outW; ow += 1) {
+                let max = -Infinity;
+                let maxIndex = -1;
+                for (let ky = 0; ky < kh; ky += 1) {
+                  const ih = oh * sh + ky * dh - ph;
+                  if (ih < 0 || ih >= height) continue;
+                  for (let kx = 0; kx < kw; kx += 1) {
+                    const iw = ow * sw + kx * dw - pw;
+                    if (iw < 0 || iw >= width) continue;
+                    const inputIndex = batched
+                      ? ((n * channels + c) * height + ih) * width + iw
+                      : (c * height + ih) * width + iw;
+                    const value = input.data[inputIndex]!;
+                    if (value > max) {
+                      max = value;
+                      maxIndex = inputIndex;
+                    }
                   }
                 }
+                const outIndex = ((n * channels + c) * outH + oh) * outW + ow;
+                out[outIndex] = max;
+                maxIndices[outIndex] = maxIndex;
               }
-              const outIndex = ((n * channels + c) * outH + oh) * outW + ow;
-              out[outIndex] = max;
-              maxIndices[outIndex] = maxIndex;
             }
           }
         }
       }
-      const needsGrad = gradModeEnabled() && Boolean(input.requiresGrad || input.requires_grad);
       return new TensorClass(out, outShape, {
         requiresGrad: needsGrad,
         prev: needsGrad ? [input] : [],
         backward: (grad: Float32Array | null | undefined) => {
           if (!grad || !needsGrad) return;
+          if (!maxIndices) throw new Error("maxPool2d backward requires forward max indices");
           const inputGrad = new Float32Array(input.length);
           for (let i = 0; i < grad.length; i += 1) {
             const inputIndex = maxIndices[i]!;
@@ -225,6 +253,7 @@ export function createAvgPool2dModuleClass(options: PoolingModuleClassOptions) {
   const gradModeEnabled = typeof options.isGradEnabled === "function"
     ? options.isGradEnabled as () => boolean
     : () => true;
+  const nativeEagerPool2dInto = typeof options.nativeEagerPool2dInto === "function" ? options.nativeEagerPool2dInto : null;
   const compileHooks = createSingleModuleCompileHooks(options, "AvgPool2dModule", { requirePackParameters: false });
   if (
     typeof TensorClass !== "function" ||
@@ -280,39 +309,64 @@ export function createAvgPool2dModuleClass(options: PoolingModuleClassOptions) {
       const [ph, pw] = this.padding;
       const outShape = batched ? [batch, channels, outH, outW] : [channels, outH, outW];
       const out = new Float32Array(batch * channels * outH * outW);
-      const counts = new Float32Array(out.length);
-      for (let n = 0; n < batch; n += 1) {
-        for (let c = 0; c < channels; c += 1) {
-          for (let oh = 0; oh < outH; oh += 1) {
-            for (let ow = 0; ow < outW; ow += 1) {
-              let sum = 0;
-              let count = this.countIncludePad ? kh * kw : 0;
-              for (let ky = 0; ky < kh; ky += 1) {
-                const ih = oh * sh + ky - ph;
-                if (ih < 0 || ih >= height) continue;
-                for (let kx = 0; kx < kw; kx += 1) {
-                  const iw = ow * sw + kx - pw;
-                  if (iw < 0 || iw >= width) continue;
-                  const inputIndex = batched
-                    ? ((n * channels + c) * height + ih) * width + iw
-                    : (c * height + ih) * width + iw;
-                  sum += input.data[inputIndex]!;
-                  if (!this.countIncludePad) count += 1;
+      const gradEnabled = gradModeEnabled();
+      const needsGrad = gradEnabled && Boolean(input.requiresGrad || input.requires_grad);
+      let counts: Float32Array | null = null;
+      if (!gradEnabled && nativeEagerPool2dInto) {
+        nativeEagerPool2dInto(out, input, {
+          op: "avg",
+          batch,
+          channels,
+          height,
+          width,
+          kernelH: kh,
+          kernelW: kw,
+          strideH: sh,
+          strideW: sw,
+          paddingH: ph,
+          paddingW: pw,
+          dilationH: 1,
+          dilationW: 1,
+          outH,
+          outW,
+          ceilMode: this.ceilMode,
+          countIncludePad: this.countIncludePad,
+        });
+      } else {
+        counts = new Float32Array(out.length);
+        for (let n = 0; n < batch; n += 1) {
+          for (let c = 0; c < channels; c += 1) {
+            for (let oh = 0; oh < outH; oh += 1) {
+              for (let ow = 0; ow < outW; ow += 1) {
+                let sum = 0;
+                let count = this.countIncludePad ? kh * kw : 0;
+                for (let ky = 0; ky < kh; ky += 1) {
+                  const ih = oh * sh + ky - ph;
+                  if (ih < 0 || ih >= height) continue;
+                  for (let kx = 0; kx < kw; kx += 1) {
+                    const iw = ow * sw + kx - pw;
+                    if (iw < 0 || iw >= width) continue;
+                    const inputIndex = batched
+                      ? ((n * channels + c) * height + ih) * width + iw
+                      : (c * height + ih) * width + iw;
+                    sum += input.data[inputIndex]!;
+                    if (!this.countIncludePad) count += 1;
+                  }
                 }
+                const outIndex = ((n * channels + c) * outH + oh) * outW + ow;
+                counts[outIndex] = count;
+                out[outIndex] = count === 0 ? 0 : sum / count;
               }
-              const outIndex = ((n * channels + c) * outH + oh) * outW + ow;
-              counts[outIndex] = count;
-              out[outIndex] = count === 0 ? 0 : sum / count;
             }
           }
         }
       }
-      const needsGrad = gradModeEnabled() && Boolean(input.requiresGrad || input.requires_grad);
       return new TensorClass(out, outShape, {
         requiresGrad: needsGrad,
         prev: needsGrad ? [input] : [],
         backward: (grad: Float32Array | null | undefined) => {
           if (!grad || !needsGrad) return;
+          if (!counts) throw new Error("avgPool2d backward requires forward counts");
           const inputGrad = new Float32Array(input.length);
           for (let n = 0; n < batch; n += 1) {
             for (let c = 0; c < channels; c += 1) {

@@ -350,6 +350,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.conv2dInto !== "function") {
     throw new Error(`${label} expected nativeEager.conv2dInto`);
   }
+  if (typeof nativeEager.pool2dInto !== "function") {
+    throw new Error(`${label} expected nativeEager.pool2dInto`);
+  }
   if (typeof nativeEager.softmaxInto !== "function" || typeof nativeEager.logSoftmaxInto !== "function") {
     throw new Error(`${label} expected nativeEager softmax/logSoftmax into helpers`);
   }
@@ -373,6 +376,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   if (typeof nativeEagerAlias.conv2d_into !== "function") {
     throw new Error(`${label} expected native_eager.conv2d_into alias`);
+  }
+  if (typeof nativeEagerAlias.pool2d_into !== "function") {
+    throw new Error(`${label} expected native_eager.pool2d_into alias`);
   }
   if (typeof nativeEagerAlias.softmax_into !== "function" || typeof nativeEagerAlias.log_softmax_into !== "function") {
     throw new Error(`${label} expected native_eager softmax/log_softmax aliases`);
@@ -443,6 +449,19 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.conv2d_into to reuse caller output`);
   }
   expectClose(conv2dAliasOutput, Array.from(conv2dOutput), `${label} native_eager.conv2d_into output`);
+  const pool2dInput = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 3]);
+  const maxPool2dOutput = new Float32Array(4);
+  const maxPool2dResult = nativeEager.pool2dInto(maxPool2dOutput, pool2dInput, { op: "max", kernelH: 2, kernelW: 2, strideH: 1, strideW: 1, outH: 2, outW: 2 });
+  if (maxPool2dResult !== maxPool2dOutput) {
+    throw new Error(`${label} expected nativeEager.pool2dInto to reuse caller output`);
+  }
+  expectClose(maxPool2dOutput, [5, 6, 8, 9], `${label} nativeEager.pool2dInto max output`);
+  const avgPool2dOutput = new Float32Array(4);
+  const avgPool2dAliasResult = nativeEagerAlias.pool2d_into(avgPool2dOutput, pool2dInput, { op: "avg", kernel_h: 2, kernel_w: 2, stride_h: 1, stride_w: 1, out_h: 2, out_w: 2 });
+  if (avgPool2dAliasResult !== avgPool2dOutput) {
+    throw new Error(`${label} expected native_eager.pool2d_into to reuse caller output`);
+  }
+  expectClose(avgPool2dOutput, [3, 4, 6, 7], `${label} native_eager.pool2d_into avg output`);
   const tensorElementwiseLength = 1024;
   const tensorElementwiseInputData = Array.from({ length: tensorElementwiseLength }, (_value, index) => (index % 5) - 2);
   const tensorElementwiseBiasData = Array.from({ length: tensorElementwiseLength }, (_value, index) => (index % 7) + 0.5);
@@ -552,6 +571,16 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const nativeConv2d = adapter.noGrad(() => conv2d.forward(conv2dInput));
   expectClose(nativeConv2d.data, eagerConv2d.data, `${label} noGrad nn.Conv2d native eager module output`);
   expectClose(nativeConv2d.data, Array.from(conv2dOutput), `${label} noGrad nn.Conv2d native eager module direct output parity`);
+  const maxPool2d = adapter.nn.maxPool2d([2, 2], { stride: [1, 1] });
+  const eagerMaxPool2d = maxPool2d.forward(pool2dInput);
+  const nativeMaxPool2d = adapter.noGrad(() => maxPool2d.forward(pool2dInput));
+  expectClose(nativeMaxPool2d.data, eagerMaxPool2d.data, `${label} noGrad nn.MaxPool2d native eager module output`);
+  expectClose(nativeMaxPool2d.data, Array.from(maxPool2dOutput), `${label} noGrad nn.MaxPool2d native eager module direct output parity`);
+  const avgPool2d = adapter.nn.avgPool2d([2, 2], { stride: [1, 1] });
+  const eagerAvgPool2d = avgPool2d.forward(pool2dInput);
+  const nativeAvgPool2d = adapter.noGrad(() => avgPool2d.forward(pool2dInput));
+  expectClose(nativeAvgPool2d.data, eagerAvgPool2d.data, `${label} noGrad nn.AvgPool2d native eager module output`);
+  expectClose(nativeAvgPool2d.data, Array.from(avgPool2dOutput), `${label} noGrad nn.AvgPool2d native eager module direct output parity`);
 
   const fusedSequential = new adapter.nn.Sequential(
     new adapter.nn.Linear(2, 3, {

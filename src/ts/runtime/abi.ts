@@ -223,6 +223,7 @@ export const runtimeFeatureBits = Object.freeze({
   nativeEagerElementwise: 1n << 51n,
   nativeEagerReduce: 1n << 52n,
   nativeEagerConv2d: 1n << 53n,
+  nativeEagerPool2d: 1n << 54n,
 });
 export type RuntimeFeatureName = keyof typeof runtimeFeatureBits;
 export type RuntimeFeatureMap = Readonly<Record<RuntimeFeatureName, boolean>>;
@@ -280,6 +281,7 @@ export const requiredRuntimeFeatureNames = Object.freeze([
   "nativeEagerElementwise",
   "nativeEagerReduce",
   "nativeEagerConv2d",
+  "nativeEagerPool2d",
 ]);
 
 export const requiredRuntimeFeatureMask = requiredRuntimeFeatureNames.reduce(

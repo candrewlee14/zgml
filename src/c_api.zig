@@ -94,6 +94,7 @@ const feature_native_eager_activation: u64 = 1 << 50;
 const feature_native_eager_elementwise: u64 = 1 << 51;
 const feature_native_eager_reduce: u64 = 1 << 52;
 const feature_native_eager_conv2d: u64 = 1 << 53;
+const feature_native_eager_pool2d: u64 = 1 << 54;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -1132,6 +1133,7 @@ fn runtimeFeatureFlags() u64 {
         feature_native_eager_elementwise |
         feature_native_eager_reduce |
         feature_native_eager_conv2d |
+        feature_native_eager_pool2d |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -1660,6 +1662,8 @@ const eager_reduce_mean: u32 = 2;
 const eager_reduce_max: u32 = 3;
 const eager_reduce_min: u32 = 4;
 const eager_reduce_prod: u32 = 5;
+const eager_pool_max: u32 = 1;
+const eager_pool_avg: u32 = 2;
 
 fn eagerElementwiseUnaryF32(value: f32, op: u32) !f32 {
     return switch (op) {
@@ -2024,6 +2028,92 @@ export fn zgml_eager_conv2d_f32(
                         }
                     }
                     output[((n * out_channels + oc) * out_h + oh) * out_w + ow] = sum;
+                }
+            }
+        }
+    }
+    return status(.ok);
+}
+
+export fn zgml_eager_pool2d_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    batch: usize,
+    channels: usize,
+    height: usize,
+    width: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    stride_h: usize,
+    stride_w: usize,
+    padding_h: usize,
+    padding_w: usize,
+    dilation_h: usize,
+    dilation_w: usize,
+    out_h: usize,
+    out_w: usize,
+    op: u32,
+    ceil_mode: u32,
+    count_include_pad: u32,
+) c_int {
+    if (
+        input_ptr == null or
+        output_ptr == null or
+        batch == 0 or
+        channels == 0 or
+        height == 0 or
+        width == 0 or
+        kernel_h == 0 or
+        kernel_w == 0 or
+        stride_h == 0 or
+        stride_w == 0 or
+        dilation_h == 0 or
+        dilation_w == 0 or
+        out_h == 0 or
+        out_w == 0
+    ) return status(.invalid_argument);
+    if (op != eager_pool_max and op != eager_pool_avg) return status(.invalid_argument);
+    if (ceil_mode != 0 and ceil_mode != 1) return status(.invalid_argument);
+    if (count_include_pad != 0 and count_include_pad != 1) return status(.invalid_argument);
+    if (op == eager_pool_avg and (dilation_h != 1 or dilation_w != 1)) return status(.invalid_argument);
+
+    if (checkedElementCount4(batch, channels, height, width) != input_len) return status(.shape_mismatch);
+    if (checkedElementCount4(batch, channels, out_h, out_w) != output_len) return status(.shape_mismatch);
+
+    const input = input_ptr.?[0..input_len];
+    const output = output_ptr.?[0..output_len];
+    for (0..batch) |n| {
+        for (0..channels) |c| {
+            for (0..out_h) |oh| {
+                for (0..out_w) |ow| {
+                    var acc: f32 = if (op == eager_pool_max) -std.math.inf(f32) else 0;
+                    var count: usize = if (count_include_pad == 1) kernel_h * kernel_w else 0;
+                    for (0..kernel_h) |ky| {
+                        const raw_h = oh * stride_h + ky * dilation_h;
+                        if (raw_h < padding_h) continue;
+                        const ih = raw_h - padding_h;
+                        if (ih >= height) continue;
+                        for (0..kernel_w) |kx| {
+                            const raw_w = ow * stride_w + kx * dilation_w;
+                            if (raw_w < padding_w) continue;
+                            const iw = raw_w - padding_w;
+                            if (iw >= width) continue;
+                            const input_index = ((n * channels + c) * height + ih) * width + iw;
+                            if (op == eager_pool_max) {
+                                acc = @max(acc, input[input_index]);
+                            } else {
+                                acc += input[input_index];
+                                if (count_include_pad == 0) count += 1;
+                            }
+                        }
+                    }
+                    const out_index = ((n * channels + c) * out_h + oh) * out_w + ow;
+                    output[out_index] = if (op == eager_pool_avg)
+                        if (count == 0) 0 else acc / @as(f32, @floatFromInt(count))
+                    else
+                        acc;
                 }
             }
         }
@@ -7608,6 +7698,7 @@ test "C ABI runtime info reports compatible handle surface" {
     try std.testing.expect((info.feature_flags & feature_native_eager_elementwise) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_reduce) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_conv2d) != 0);
+    try std.testing.expect((info.feature_flags & feature_native_eager_pool2d) != 0);
     try std.testing.expectEqual(build_options.use_wgpu, (info.feature_flags & feature_native_wgpu_execution) != 0);
     try std.testing.expectEqual(build_options.use_wgpu and build_options.experimental_llama_wgpu_execution, (info.feature_flags & feature_experimental_llama_wgpu_execution) != 0);
     try std.testing.expect((info.feature_flags & feature_experimental_llama_wgpu_execution) == 0 or (info.feature_flags & feature_native_wgpu_execution) != 0);
@@ -10776,6 +10867,113 @@ test "C ABI native eager conv2d writes caller output" {
         1,
         2,
         2,
+    ));
+}
+
+test "C ABI native eager pool2d writes caller output" {
+    const input = [_]f32{
+        1, 2, 3,
+        4, 5, 6,
+        7, 8, 9,
+    };
+    var max_output = [_]f32{0} ** 4;
+    var avg_output = [_]f32{0} ** 4;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_pool2d_f32(
+        input[0..].ptr,
+        input.len,
+        max_output[0..].ptr,
+        max_output.len,
+        1,
+        1,
+        3,
+        3,
+        2,
+        2,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        2,
+        2,
+        eager_pool_max,
+        0,
+        1,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 5, 6, 8, 9 }, &max_output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_pool2d_f32(
+        input[0..].ptr,
+        input.len,
+        avg_output[0..].ptr,
+        avg_output.len,
+        1,
+        1,
+        3,
+        3,
+        2,
+        2,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        2,
+        2,
+        eager_pool_avg,
+        0,
+        1,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 3, 4, 6, 7 }, &avg_output);
+
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_pool2d_f32(
+        input[0..].ptr,
+        input.len - 1,
+        max_output[0..].ptr,
+        max_output.len,
+        1,
+        1,
+        3,
+        3,
+        2,
+        2,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        2,
+        2,
+        eager_pool_max,
+        0,
+        1,
+    ));
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_pool2d_f32(
+        input[0..].ptr,
+        input.len,
+        max_output[0..].ptr,
+        max_output.len,
+        1,
+        1,
+        3,
+        3,
+        2,
+        2,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        2,
+        2,
+        999,
+        0,
+        1,
     ));
 }
 

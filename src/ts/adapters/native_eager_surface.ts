@@ -89,6 +89,29 @@ type NativeEagerConv2dCall = (args: {
   outW: number;
 }) => number;
 
+type NativeEagerPool2dCall = (args: {
+  inputData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  batch: number;
+  channels: number;
+  height: number;
+  width: number;
+  kernelH: number;
+  kernelW: number;
+  strideH: number;
+  strideW: number;
+  paddingH: number;
+  paddingW: number;
+  dilationH: number;
+  dilationW: number;
+  outH: number;
+  outW: number;
+  op: number;
+  ceilMode: boolean;
+  countIncludePad: boolean;
+}) => number;
+
 type NativeEagerSurfaceOptions = {
   f32: NativeEagerTensorFactory;
   check: NativeEagerCheck;
@@ -98,6 +121,7 @@ type NativeEagerSurfaceOptions = {
   elementwiseF32?: NativeEagerElementwiseCall;
   reduceF32?: NativeEagerReduceCall;
   conv2dF32?: NativeEagerConv2dCall;
+  pool2dF32?: NativeEagerPool2dCall;
   matmulF32?: NativeEagerMatmulCall;
   softmaxF32: NativeEagerSoftmaxCall;
 };
@@ -131,6 +155,12 @@ function nativeEagerNonNegativeInteger(value: unknown, label: string): number {
     throw new Error(`${label} must be a non-negative integer, got ${value}`);
   }
   return parsed;
+}
+
+function nativeEagerBoolean(value: unknown, label: string, defaultValue: boolean): boolean {
+  if (value === undefined || value === null) return defaultValue;
+  if (typeof value === "boolean") return value;
+  throw new Error(`${label} must be a boolean`);
 }
 
 function nativeEagerLinearShape(input: unknown, weights: unknown, options: Record<string, unknown> = {}) {
@@ -198,6 +228,16 @@ function nativeEagerReduceOpId(value: unknown, label: string): number {
     case "min": return 4;
     case "prod": return 5;
     default: throw new Error(`${label} op must be sum, mean, max, min, or prod, got ${value}`);
+  }
+}
+
+function nativeEagerPool2dOpId(value: unknown, label: string): number {
+  const normalized = String(value ?? "").trim();
+  switch (normalized) {
+    case "max": return 1;
+    case "avg":
+    case "average": return 2;
+    default: throw new Error(`${label} op must be max, avg, or average, got ${value}`);
   }
 }
 
@@ -434,6 +474,57 @@ function nativeEagerConv2dInputs(
   return { inputData, weightData, biasData, output, expectedOutput, ...shape };
 }
 
+function nativeEagerPool2dInputs(
+  output: Float32Array,
+  input: unknown,
+  callOptions: Record<string, unknown>,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.pool2dInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  const inputShape = nativeEagerShape(input);
+  const batch = callOptions.batch ?? (inputShape && inputShape.length === 4 ? inputShape[0] : inputShape && inputShape.length === 3 ? 1 : null);
+  const channels = callOptions.channels ?? (inputShape && inputShape.length === 4 ? inputShape[1] : inputShape && inputShape.length === 3 ? inputShape[0] : null);
+  const height = callOptions.height ?? (inputShape && inputShape.length === 4 ? inputShape[2] : inputShape && inputShape.length === 3 ? inputShape[1] : null);
+  const width = callOptions.width ?? (inputShape && inputShape.length === 4 ? inputShape[3] : inputShape && inputShape.length === 3 ? inputShape[2] : null);
+  const shape = Object.freeze({
+    batch: nativeEagerPositiveInteger(batch, `${label} batch`),
+    channels: nativeEagerPositiveInteger(channels, `${label} channels`),
+    height: nativeEagerPositiveInteger(height, `${label} height`),
+    width: nativeEagerPositiveInteger(width, `${label} width`),
+    kernelH: nativeEagerPositiveInteger(callOptions.kernelH ?? callOptions.kernel_h, `${label} kernelH`),
+    kernelW: nativeEagerPositiveInteger(callOptions.kernelW ?? callOptions.kernel_w, `${label} kernelW`),
+    strideH: nativeEagerPositiveInteger(callOptions.strideH ?? callOptions.stride_h ?? 1, `${label} strideH`),
+    strideW: nativeEagerPositiveInteger(callOptions.strideW ?? callOptions.stride_w ?? 1, `${label} strideW`),
+    paddingH: nativeEagerNonNegativeInteger(callOptions.paddingH ?? callOptions.padding_h ?? 0, `${label} paddingH`),
+    paddingW: nativeEagerNonNegativeInteger(callOptions.paddingW ?? callOptions.padding_w ?? 0, `${label} paddingW`),
+    dilationH: nativeEagerPositiveInteger(callOptions.dilationH ?? callOptions.dilation_h ?? 1, `${label} dilationH`),
+    dilationW: nativeEagerPositiveInteger(callOptions.dilationW ?? callOptions.dilation_w ?? 1, `${label} dilationW`),
+    outH: nativeEagerPositiveInteger(callOptions.outH ?? callOptions.out_h, `${label} outH`),
+    outW: nativeEagerPositiveInteger(callOptions.outW ?? callOptions.out_w, `${label} outW`),
+  });
+  const expectedInput = shape.batch * shape.channels * shape.height * shape.width;
+  const expectedOutput = shape.batch * shape.channels * shape.outH * shape.outW;
+  if (inputData.length !== expectedInput) {
+    throw new Error(`${label} input length ${inputData.length} does not match ${shape.batch}x${shape.channels}x${shape.height}x${shape.width}`);
+  }
+  if (output.length < expectedOutput) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${expectedOutput}`);
+  }
+  return {
+    inputData,
+    output,
+    expectedOutput,
+    ...shape,
+    op: nativeEagerPool2dOpId(callOptions.op, label),
+    ceilMode: nativeEagerBoolean(callOptions.ceilMode ?? callOptions.ceil_mode, `${label} ceilMode`, false),
+    countIncludePad: nativeEagerBoolean(callOptions.countIncludePad ?? callOptions.count_include_pad, `${label} countIncludePad`, true),
+  };
+}
+
 function nativeEagerMatmulInputs(
   output: Float32Array,
   lhs: unknown,
@@ -551,6 +642,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     conv2d_into(output: Float32Array, input: unknown, weights: unknown, callOptions?: Record<string, unknown>) {
       return this.conv2dInto(output, input, weights, callOptions);
+    },
+    pool2dInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.pool2dF32 !== "function") {
+        throw new Error("nativeEager.pool2dInto is unavailable in this runtime");
+      }
+      const args = nativeEagerPool2dInputs(output, input, callOptions, options.f32);
+      options.check(options.pool2dF32(args));
+      return output;
+    },
+    pool2d_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
+      return this.pool2dInto(output, input, callOptions);
     },
     matmulInto(output: Float32Array, lhs: unknown, rhs: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.matmulF32 !== "function") {

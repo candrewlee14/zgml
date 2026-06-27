@@ -281,6 +281,14 @@ function conv2dBatchedModel() {
   );
 }
 
+function maxPool2dBatchedModel() {
+  return new zgml.nn.Sequential(new zgml.nn.MaxPool2d(2));
+}
+
+function avgPool2dBatchedModel() {
+  return new zgml.nn.Sequential(new zgml.nn.AvgPool2d(2));
+}
+
 const linearWeights = values(64 * 32, 64);
 const linearBias = values(32, 32);
 const linearWeightTensor = zgml.tensor(linearWeights, [64, 32]);
@@ -320,6 +328,8 @@ const conv2dBias = values(1, 32);
 const conv2dWeightTensor = zgml.tensor(conv2dWeights, [1, 1, 3, 3]);
 const conv2dBiasTensor = zgml.tensor(conv2dBias, [1]);
 const conv2dModel = conv2dBatchedModel();
+const maxPool2dModel = maxPool2dBatchedModel();
+const avgPool2dModel = avgPool2dBatchedModel();
 
 const gapSpecs = Object.freeze([
   Object.freeze({
@@ -558,6 +568,55 @@ const gapSpecs = Object.freeze([
     compiledIterations: 200,
     tolerance: 1e-4,
     next: "native_eager_conv2d_storage_slice",
+  }),
+  Object.freeze({
+    key: "max_pool2d_batched",
+    shape: Object.freeze({ batch: 2, channels: 2, height: 256, width: 256, kernel: 2 }),
+    outputLen: 2 * 2 * 128 * 128,
+    input: () => zgml.tensor(values(2 * 2 * 256 * 256, 13), [2, 2, 256, 256]),
+    eager: (input) => maxPool2dModel.forward(input),
+    nativeEager: (output, input) => zgml.nativeEager.pool2dInto(output, input, {
+      op: "max",
+      kernelH: 2,
+      kernelW: 2,
+      strideH: 2,
+      strideW: 2,
+      outH: 128,
+      outW: 128,
+    }),
+    nativeEagerModule: (input) => zgml.noGrad(() => maxPool2dModel.forward(input)),
+    compiled: () => compiledInferenceHandle(maxPool2dBatchedModel(), [2, 2, 256, 256]),
+    eagerIterations: 50,
+    nativeEagerIterations: 200,
+    nativeEagerModuleIterations: 200,
+    compiledIterations: 200,
+    tolerance: 1e-5,
+    next: "native_eager_max_pool2d_storage_slice",
+  }),
+  Object.freeze({
+    key: "avg_pool2d_batched",
+    shape: Object.freeze({ batch: 2, channels: 2, height: 256, width: 256, kernel: 2 }),
+    outputLen: 2 * 2 * 128 * 128,
+    input: () => zgml.tensor(values(2 * 2 * 256 * 256, 17), [2, 2, 256, 256]),
+    eager: (input) => avgPool2dModel.forward(input),
+    nativeEager: (output, input) => zgml.nativeEager.pool2dInto(output, input, {
+      op: "avg",
+      kernelH: 2,
+      kernelW: 2,
+      strideH: 2,
+      strideW: 2,
+      outH: 128,
+      outW: 128,
+      countIncludePad: true,
+    }),
+    nativeEagerModule: (input) => zgml.noGrad(() => avgPool2dModel.forward(input)),
+    compiled: () => compiledInferenceHandle(avgPool2dBatchedModel(), [2, 2, 256, 256]),
+    eagerIterations: 50,
+    nativeEagerIterations: 200,
+    nativeEagerModuleIterations: 200,
+    compiledIterations: 200,
+    tolerance: 1e-5,
+    next: "native_eager_avg_pool2d_storage_slice",
   }),
 ]);
 

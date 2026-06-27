@@ -526,10 +526,16 @@ Current checked progress:
   Conv2d kernel, and the native eager microscope compares direct native eager,
   normal module forward, and compiled Program execution on the same
   `conv2d_batched` workload.
+  That same no-grad native eager policy now covers parameterless pooling:
+  Node/Bun expose `zgml.nativeEager.pool2dInto`, ordinary
+  `zgml.noGrad(() => nn.MaxPool2d/AvgPool2d.forward(input))` routes through
+  the Zig pool2d kernel, and grad-enabled training keeps the TS path with
+  max-index/count bookkeeping for backward correctness.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=10/10` after adding direct
-  `matmul_batched` and native eager `conv2d_batched`, and fresh Node/Bun short runs show zero measured module
-  diff across the native eager rows.
+  as well: the expected row set is `row_coverage=12/12` after adding direct
+  `matmul_batched`, native eager `conv2d_batched`, and native eager
+  `max_pool2d_batched` / `avg_pool2d_batched`; fresh Node/Bun short runs show
+  zero measured module diff across the native eager rows.
   The native eager adapter policy now lives in
   `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
   shape inference, output validation, public aliases, and activation mapping,

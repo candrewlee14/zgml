@@ -1020,6 +1020,10 @@ function nativeEagerConv2dInto(output, input, weights, options) {
   return nativeEager.conv2dInto(output, input, weights, options);
 }
 
+function nativeEagerPool2dInto(output, input, options) {
+  return nativeEager.pool2dInto(output, input, options);
+}
+
 let compileTrainingStepHook = null;
 
 const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
@@ -1040,6 +1044,7 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   nativeEagerSoftmaxInto,
   nativeEagerLinearActivationInto,
   nativeEagerConv2dInto,
+  nativeEagerPool2dInto,
   parameterNames,
   parameterInfos,
   parameterInfo,
@@ -1189,6 +1194,29 @@ const { nativeEager } = createAdapterNativeEagerSurface({
     args.dilationW,
     args.outH,
     args.outW,
+  ),
+  pool2dF32: (args) => nodeSymbolGroups.nativeEager.eagerPool2dF32(
+    args.inputData,
+    args.inputData.length,
+    args.output,
+    args.expectedOutput,
+    args.batch,
+    args.channels,
+    args.height,
+    args.width,
+    args.kernelH,
+    args.kernelW,
+    args.strideH,
+    args.strideW,
+    args.paddingH,
+    args.paddingW,
+    args.dilationH,
+    args.dilationW,
+    args.outH,
+    args.outW,
+    args.op,
+    args.ceilMode ? 1 : 0,
+    args.countIncludePad ? 1 : 0,
   ),
   softmaxF32: (args) => nodeSymbolGroups.nativeEager.eagerSoftmaxF32(
     args.inputData,

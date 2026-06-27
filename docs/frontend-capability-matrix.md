@@ -71,8 +71,9 @@ PyTorch replacement:
   adjacent `lazy_matmul_add_relu_batched` and
   `lazy_matmul_add_silu_batched`, `lazy_matmul_add_sigmoid_batched`, and
   `lazy_matmul_add_tanh_batched` production-activation targets, row-wise
-  `softmax_batched` / `log_softmax_batched`, and `conv2d_batched`, as eager TS
-  tensor execution versus compiled allocation-free `executeInto`; the first native eager storage slices have executable baselines.
+  `softmax_batched` / `log_softmax_batched`, `conv2d_batched`, and
+  `max_pool2d_batched` / `avg_pool2d_batched`, as eager TS tensor execution
+  versus compiled allocation-free `executeInto`; the first native eager storage slices have executable baselines.
   Node and Bun also expose the first stateless native eager primitive:
   `zgml.nativeEager.linearInto`, backed by the `zgml_eager_linear_f32` C ABI,
   for caller-owned f32 `Linear` output. That primitive routes through the shared
@@ -97,6 +98,11 @@ PyTorch replacement:
   route through that Zig kernel, and the microscope includes the same
   `conv2d_batched` workload as direct native eager, normal module forward, and
   compiled Program execution evidence.
+  They now expose `zgml.nativeEager.pool2dInto`, backed by
+  `zgml_eager_pool2d_f32`, for max/avg pooling inference. Eligible no-grad
+  `nn.MaxPool2d.forward` and `nn.AvgPool2d.forward` calls use the Zig kernel;
+  grad-enabled training stays on the TS path so backward still has max-index
+  and count bookkeeping.
   `bench:status` selects the latest ignored native-eager artifact and also
   prints a per-runtime `native-eager-runtime-results:` line with row coverage
   and missing rows, so Node and Bun native eager proof cannot be accidentally

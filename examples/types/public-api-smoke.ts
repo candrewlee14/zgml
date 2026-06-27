@@ -213,6 +213,7 @@ import {
   type LossNamespace,
   type NativeEagerConv2dIntoOptions,
   type NativeEagerMatmulIntoOptions,
+  type NativeEagerPool2dIntoOptions,
   type PublicLossNamespace,
   type NnLossConstructorName,
   type NnLossConstructors,
@@ -778,6 +779,7 @@ const runtimeNativeEagerMatmulFeature: boolean = currentRuntimeFeatures.nativeEa
 const runtimeNativeEagerElementwiseFeature: boolean = currentRuntimeFeatures.nativeEagerElementwise;
 const runtimeNativeEagerReduceFeature: boolean = currentRuntimeFeatures.nativeEagerReduce;
 const runtimeNativeEagerConv2dFeature: boolean = currentRuntimeFeatures.nativeEagerConv2d;
+const runtimeNativeEagerPool2dFeature: boolean = currentRuntimeFeatures.nativeEagerPool2d;
 const coreShapeSubpathShape: CoreShapeSubpath = [2, 3];
 const coreShapeSubpathCount: number = coreShapeScalarCount(coreShapeSubpathShape);
 const runtimeKernelPlanSubpathSource: "ts" = runtimeKernelPlanManifest.source;
@@ -2490,6 +2492,17 @@ const nativeEagerConv2dIntoAlias: Float32Array = zgml.native_eager.conv2d_into(
   tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 3] as const),
   tensor([1, 0, 0, 1], [1, 1, 2, 2] as const),
   { out_h: 2, out_w: 2 },
+);
+const nativeEagerPool2dOptions: NativeEagerPool2dIntoOptions = { op: "max", kernelH: 2, kernelW: 2, strideH: 1, strideW: 1, outH: 2, outW: 2 };
+const nativeEagerPool2dInto: Float32Array = zgml.nativeEager.pool2dInto(
+  new Float32Array(4),
+  tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 3] as const),
+  nativeEagerPool2dOptions,
+);
+const nativeEagerPool2dIntoAlias: Float32Array = zgml.native_eager.pool2d_into(
+  new Float32Array(4),
+  tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 3] as const),
+  { op: "avg", kernel_h: 2, kernel_w: 2, stride_h: 1, stride_w: 1, out_h: 2, out_w: 2 },
 );
 const nativeEagerSoftmaxInto: Float32Array = zgml.nativeEager.softmaxInto(new Float32Array(3), linearInput, { dim: -1 });
 const nativeEagerLogSoftmaxIntoAlias: Float32Array = zgml.native_eager.log_softmax_into(new Float32Array(3), linearInput, { dim: -1 });
@@ -4784,6 +4797,7 @@ void runtimeNativeEagerMatmulFeature;
 void runtimeNativeEagerElementwiseFeature;
 void runtimeNativeEagerReduceFeature;
 void runtimeNativeEagerConv2dFeature;
+void runtimeNativeEagerPool2dFeature;
 void runtimeActivationChainFeature;
 void literalEqTensor;
 void literalNeTensor;
@@ -6322,6 +6336,9 @@ void nativeEagerReduceIntoAlias;
 void nativeEagerConv2dOptions;
 void nativeEagerConv2dInto;
 void nativeEagerConv2dIntoAlias;
+void nativeEagerPool2dOptions;
+void nativeEagerPool2dInto;
+void nativeEagerPool2dIntoAlias;
 void nativeEagerSoftmaxInto;
 void nativeEagerLogSoftmaxIntoAlias;
 void sequentialPreflight;

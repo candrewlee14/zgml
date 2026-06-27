@@ -60,6 +60,8 @@ const nativeEagerExpectedKeys = [
   "softmax_batched",
   "log_softmax_batched",
   "conv2d_batched",
+  "max_pool2d_batched",
+  "avg_pool2d_batched",
 ];
 const semanticSingleDispatchRefusalReasons = [
   "pair_chain",

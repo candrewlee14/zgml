@@ -65,6 +65,7 @@ export type AdapterFrontendModuleSurfaceOptions = AdapterModuleCompileHooks & Ad
   nativeEagerSoftmaxInto?: SoftmaxModuleOptions["nativeEagerSoftmaxInto"];
   nativeEagerLinearActivationInto?: SequentialModuleOptions["nativeEagerLinearActivationInto"];
   nativeEagerConv2dInto?: Conv2dModuleOptions["nativeEagerConv2dInto"];
+  nativeEagerPool2dInto?: AvgPool2dModuleOptions["nativeEagerPool2dInto"] & MaxPool2dModuleOptions["nativeEagerPool2dInto"];
   TinyLinearModel: LinearModuleOptions["TinyLinearModel"];
 }>;
 
@@ -187,6 +188,7 @@ export function createAdapterFrontendModuleSurface(options: AdapterFrontendModul
     moduleCompileSupport: options.moduleCompileSupport,
     packedSequentialProgramParameters: options.packedSequentialProgramParameters,
     compileModuleProgram: options.compileModuleProgram,
+    nativeEagerPool2dInto: options.nativeEagerPool2dInto,
   });
   const AvgPool2dModule = options.sharedFrontend.createAvgPool2dModuleClass({
     Tensor: options.Tensor,
@@ -196,6 +198,7 @@ export function createAdapterFrontendModuleSurface(options: AdapterFrontendModul
     moduleCompileSupport: options.moduleCompileSupport,
     packedSequentialProgramParameters: options.packedSequentialProgramParameters,
     compileModuleProgram: options.compileModuleProgram,
+    nativeEagerPool2dInto: options.nativeEagerPool2dInto,
   });
 
   const FeatureNormModule = options.sharedFrontend.createFeatureNormModuleClass({
