@@ -55,6 +55,8 @@ const nativeEagerExpectedKeys = [
   "lazy_matmul_add_silu_batched",
   "lazy_matmul_add_sigmoid_batched",
   "lazy_matmul_add_tanh_batched",
+  "softmax_batched",
+  "log_softmax_batched",
 ];
 const semanticSingleDispatchRefusalReasons = [
   "pair_chain",

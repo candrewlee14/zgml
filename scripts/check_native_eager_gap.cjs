@@ -264,6 +264,14 @@ function linearTanhBatchedModel() {
   return linearActivationBatchedModel(tanhWeights, tanhBias, zgml.nn.Tanh);
 }
 
+function softmaxBatchedModel() {
+  return new zgml.nn.Softmax(-1);
+}
+
+function logSoftmaxBatchedModel() {
+  return new zgml.nn.LogSoftmax(-1);
+}
+
 const linearWeights = values(64 * 32, 64);
 const linearBias = values(32, 32);
 const linearWeightTensor = zgml.tensor(linearWeights, [64, 32]);
@@ -294,6 +302,8 @@ const tanhBias = values(64, 144);
 const tanhWeightTensor = zgml.tensor(tanhWeights, [64, 64]);
 const tanhBiasTensor = zgml.tensor(tanhBias, [64]);
 const linearTanhModel = linearTanhBatchedModel();
+const softmaxModel = softmaxBatchedModel();
+const logSoftmaxModel = logSoftmaxBatchedModel();
 
 const gapSpecs = Object.freeze([
   Object.freeze({
@@ -458,6 +468,38 @@ const gapSpecs = Object.freeze([
     compiledIterations: 1000,
     tolerance: 1e-5,
     next: "native_eager_fused_matmul_add_tanh_storage_slice",
+  }),
+  Object.freeze({
+    key: "softmax_batched",
+    shape: Object.freeze({ batch: 128, features: 64, op: "softmax" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 19), [128, 64]),
+    eager: (input) => softmaxModel.forward(input),
+    nativeEager: (output, input) => zgml.nativeEager.softmaxInto(output, input, { dim: -1 }),
+    nativeEagerModule: (input) => zgml.noGrad(() => softmaxModel.forward(input)),
+    compiled: () => compiledInferenceHandle(softmaxBatchedModel(), [128, 64]),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_softmax_storage_slice",
+  }),
+  Object.freeze({
+    key: "log_softmax_batched",
+    shape: Object.freeze({ batch: 128, features: 64, op: "logSoftmax" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 19), [128, 64]),
+    eager: (input) => logSoftmaxModel.forward(input),
+    nativeEager: (output, input) => zgml.nativeEager.logSoftmaxInto(output, input, { dim: -1 }),
+    nativeEagerModule: (input) => zgml.noGrad(() => logSoftmaxModel.forward(input)),
+    compiled: () => compiledInferenceHandle(logSoftmaxBatchedModel(), [128, 64]),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_log_softmax_storage_slice",
   }),
 ]);
 

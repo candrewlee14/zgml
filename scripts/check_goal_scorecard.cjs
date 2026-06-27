@@ -791,6 +791,12 @@ function checkScripts() {
     "lazy_matmul_add_silu_batched",
     "lazy_matmul_add_sigmoid_batched",
     "lazy_matmul_add_tanh_batched",
+    "softmax_batched",
+    "log_softmax_batched",
+    "zgml.nativeEager.softmaxInto(output, input, { dim: -1 })",
+    "zgml.nativeEager.logSoftmaxInto(output, input, { dim: -1 })",
+    "zgml.noGrad(() => softmaxModel.forward(input))",
+    "zgml.noGrad(() => logSoftmaxModel.forward(input))",
     "nativeEagerIntoMs",
     "nativeEagerSpeedup",
     "nativeEagerModuleForwardMs",
@@ -811,6 +817,8 @@ function checkScripts() {
     "native_eager_fused_matmul_add_silu_storage_slice",
     "native_eager_fused_matmul_add_sigmoid_storage_slice",
     "native_eager_fused_matmul_add_tanh_storage_slice",
+    "native_eager_softmax_storage_slice",
+    "native_eager_log_softmax_storage_slice",
   ]);
   requireIncludes(read("src/c_api.zig"), "src/c_api.zig", "native eager linear C ABI", [
     "feature_native_eager_linear",

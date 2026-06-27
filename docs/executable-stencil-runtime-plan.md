@@ -463,7 +463,7 @@ Current checked progress:
   `lazy_matmul_add_gelu_batched` eager fused matmul work, and
   `lazy_matmul_add_relu_batched` / `lazy_matmul_add_silu_batched` /
   `lazy_matmul_add_sigmoid_batched` / `lazy_matmul_add_tanh_batched` eager fused
-  matmul work versus allocation-free
+  matmul work plus `softmax_batched` / `log_softmax_batched` row tails versus allocation-free
   compiled `prepare/executeInto` for the same shape. It now also reports
   `nativeEagerIntoMs` for `linear_batched`, backed by the stateless
   `zgml_eager_linear_f32` C ABI and surfaced on Node and Bun as
@@ -496,6 +496,11 @@ Current checked progress:
   `logSoftmaxInto`; Node and Bun package smokes prove both caller-owned-output
   helpers plus ordinary `zgml.noGrad(() => nn.Softmax/LogSoftmax.forward(x))`
   module calls route through the Zig row kernel for last-axis inference.
+  The native eager microscope now carries those rows as decision-grade evidence
+  as well: fresh Node and Bun artifacts report `row_coverage=8/8`, with
+  Node minimum module/native-into speedups of `6.52x`/`7.16x` and Bun minimum
+  module/native-into speedups of `4.15x`/`4.78x`, all with zero measured module
+  diff.
   The native eager adapter policy now lives in
   `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
   shape inference, output validation, public aliases, and activation mapping,
