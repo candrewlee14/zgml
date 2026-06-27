@@ -434,6 +434,8 @@ const noGradNativeElementwise = createTensorMathHelpers({
         case "add": output[i] = leftData[i] + rhsValue; break;
         case "mul": output[i] = leftData[i] * rhsValue; break;
         case "sqr": output[i] = leftData[i] * leftData[i]; break;
+        case "eq": output[i] = Object.is(leftData[i], rhsValue) || leftData[i] === rhsValue ? 1 : 0; break;
+        case "lt": output[i] = leftData[i] < rhsValue ? 1 : 0; break;
         default: throw new Error(`unexpected native elementwise op ${options.op}`);
       }
     }
@@ -451,8 +453,16 @@ expectSame(noGradNativeElementwise.add(
 expectSame(noGradNativeElementwise.sqr(
   new TensorDataSmokeTensor(Float32Array.of(1, -2, 3, -4), [2, 2]),
 ).data, [1, 4, 9, 16], "tensor math no-grad native unary sqr hook");
+expectSame(noGradNativeElementwise.lt(
+  new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4), [2, 2]),
+  3,
+).data, [1, 1, 0, 0], "tensor math native scalar lt hook");
+expectSame(noGradNativeElementwise.eq(
+  new TensorDataSmokeTensor(Float32Array.of(1, Number.NaN, -0, 4), [2, 2]),
+  new TensorDataSmokeTensor(Float32Array.of(1, Number.NaN, 0, 5), [2, 2]),
+).data, [1, 1, 1, 0], "tensor math native same-shape eq hook");
 expectSame(noGradNativeElementwise.add(math3d, mathTrailing).data.slice(0, 4), [11, 22, 33, 44], "tensor math no-grad broadcast fallback keeps TS path");
-expectSame(nativeElementwiseCalls, ["mul", "add", "sqr"], "tensor math no-grad native elementwise hook count");
+expectSame(nativeElementwiseCalls, ["mul", "add", "sqr", "lt", "eq"], "tensor math no-grad native elementwise hook count");
 const nativeReduceCalls: string[] = [];
 const noGradNativeReduce = createTensorMathHelpers({
   getTensorClass: () => TensorDataSmokeTensor,

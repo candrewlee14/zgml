@@ -215,7 +215,22 @@ function nativeEagerElementwiseOpId(value: unknown, label: string): number {
     case "max": return 12;
     case "minimum":
     case "min": return 13;
-    default: throw new Error(`${label} op must be add, sub, mul, div, neg, exp, log, sqr, recip, abs, sqrt, maximum, or minimum, got ${value}`);
+    case "eq":
+    case "equal": return 15;
+    case "ne":
+    case "not_equal":
+    case "notEqual": return 16;
+    case "lt":
+    case "less": return 17;
+    case "le":
+    case "less_equal":
+    case "lessEqual": return 18;
+    case "gt":
+    case "greater": return 19;
+    case "ge":
+    case "greater_equal":
+    case "greaterEqual": return 20;
+    default: throw new Error(`${label} op must be add, sub, mul, div, neg, exp, log, sqr, recip, abs, sqrt, maximum, minimum, eq, ne, lt, le, gt, or ge, got ${value}`);
   }
 }
 

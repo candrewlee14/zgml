@@ -153,6 +153,10 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     return true;
   }
 
+  function isNativeComparisonOp(label: string) {
+    return label === "eq" || label === "ne" || label === "lt" || label === "le" || label === "gt" || label === "ge";
+  }
+
   function nativeReduceScalar(tensor: TensorMathTensor, op: string) {
     if (typeof nativeEagerReduceInto !== "function") return null;
     if (tensor.length < nativeEagerReduceMinLength) return null;
@@ -224,8 +228,10 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const rhsShape = rhsTensor ? rhsTensor.shape : inferredOperandShape(rhs, tensor.shape);
     const plan = broadcastPlan(tensor.shape, rhsShape, label);
     const out = new Float32Array(shapeProduct(plan.shape));
-    for (let i = 0; i < out.length; i += 1) {
-      out[i] = op(tensor.data[plan.lhsIndex[i]], rhs[plan.rhsIndex[i]]) ? 1 : 0;
+    if (!isNativeComparisonOp(label) || !nativeElementwiseBinaryInto(out, tensor, rhsTensor, rhs, rhsShape, label)) {
+      for (let i = 0; i < out.length; i += 1) {
+        out[i] = op(tensor.data[plan.lhsIndex[i]], rhs[plan.rhsIndex[i]]) ? 1 : 0;
+      }
     }
     return new TensorClass(out, plan.shape);
   }

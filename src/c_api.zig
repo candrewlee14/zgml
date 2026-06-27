@@ -1658,6 +1658,12 @@ const eager_elementwise_abs: u32 = 10;
 const eager_elementwise_sqrt: u32 = 11;
 const eager_elementwise_maximum: u32 = 12;
 const eager_elementwise_minimum: u32 = 13;
+const eager_elementwise_eq: u32 = 15;
+const eager_elementwise_ne: u32 = 16;
+const eager_elementwise_lt: u32 = 17;
+const eager_elementwise_le: u32 = 18;
+const eager_elementwise_gt: u32 = 19;
+const eager_elementwise_ge: u32 = 20;
 const eager_reduce_sum: u32 = 1;
 const eager_reduce_mean: u32 = 2;
 const eager_reduce_max: u32 = 3;
@@ -1687,6 +1693,12 @@ fn eagerElementwiseBinaryF32(lhs: f32, rhs: f32, op: u32) !f32 {
         eager_elementwise_div => lhs / rhs,
         eager_elementwise_maximum => @max(lhs, rhs),
         eager_elementwise_minimum => @min(lhs, rhs),
+        eager_elementwise_eq => if (lhs == rhs or (std.math.isNan(lhs) and std.math.isNan(rhs))) 1.0 else 0.0,
+        eager_elementwise_ne => if (lhs == rhs or (std.math.isNan(lhs) and std.math.isNan(rhs))) 0.0 else 1.0,
+        eager_elementwise_lt => if (lhs < rhs) 1.0 else 0.0,
+        eager_elementwise_le => if (lhs <= rhs) 1.0 else 0.0,
+        eager_elementwise_gt => if (lhs > rhs) 1.0 else 0.0,
+        eager_elementwise_ge => if (lhs >= rhs) 1.0 else 0.0,
         else => error.InvalidArgument,
     };
 }
@@ -11062,6 +11074,31 @@ test "C ABI native eager elementwise writes caller output" {
         eager_elementwise_sqr,
     ));
     try std.testing.expectEqualSlices(f32, &.{ 4, 0.25, 0.25, 4 }, &output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+        eager_elementwise_lt,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 1, 1, 0, 0 }, &output);
+
+    const nan_lhs = [_]f32{ std.math.nan(f32), -0.0, 3 };
+    const nan_rhs = [_]f32{ std.math.nan(f32), 0.0, 4 };
+    var compare_output = [_]f32{0} ** nan_lhs.len;
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        nan_lhs[0..].ptr,
+        nan_lhs.len,
+        nan_rhs[0..].ptr,
+        nan_rhs.len,
+        compare_output[0..].ptr,
+        compare_output.len,
+        eager_elementwise_eq,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 1, 1, 0 }, &compare_output);
 
     try std.testing.expectEqual(status(.invalid_argument), zgml_eager_elementwise_f32(
         lhs[0..].ptr,
