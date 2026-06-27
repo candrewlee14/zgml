@@ -231,18 +231,17 @@ machine for both prompt/prefill and decode.
   the known 151-command semantic-promoted path until the bridge command gets a
   real throughput kernel instead of just reusing the existing two-piece encoder.
   The exact input-bridge microscope now serializes that limitation explicitly.
-  The legacy absorbed command executed as five backend dispatches
-  (`row_chain=2`, `pair=1`, `tail=2`); the source-current input-bridge kernel
-  replaces that with one `semantic_ffn_sublayer_with_input_row_chain` dispatch
-  for the `m=128,h=1536,k=576,o=576` microscope. The latest focused artifact
-  reports `absorbed=1.17-1.57x`, `runtime_dispatches=1`,
-  `semantic_with_input_dispatches=1`, `decomposed_dispatches=0`,
-  `pair_dispatches=0`, `tail_dispatches=0`, and `spilled_input=0`. Treat this
-  as an isolated width-parallel bridge proof, not a full-model parity claim.
-  It also records the current partitioning limit explicitly:
-  `direct_partition:row_serial`, `direct_rows=128`, `direct_row_threadgroups=128`, and
-  `direct_per_row_threadgroup=2985984` row-serial dot ops in the focused
-  bridge artifact.
+  The retained absorbed command still executes as five backend dispatches
+  (`row_chain=2`, `pair=1`, `tail=2`), because the one-dispatch diagnostic path
+  is row-owned/serial and slower than the decomposed lowering. The focused
+  artifact records that partitioning limit explicitly:
+  `direct_partition:row_serial`, `direct_rows=128`,
+  `direct_row_threadgroups=128`, and `direct_per_row_threadgroup=2985984`
+  row-serial dot ops. It now also reserves a separate direct width-parallel
+  readback (`direct_width_parallel`, `direct_width_lanes`,
+  `direct_width_tiles`, `direct_width_partial_slots`) so the future
+  `semantic_with_input_width_parallel_kernel` can prove it is the intended
+  tiled direct path instead of being mistaken for the row-serial diagnostic.
   The full-model semantic throughput candidate now keeps the 14-op input-bridge
   command shape but disables the direct input-bridge kernel until it is
   partitioned. A fresh one-attempt probe recovered the semantic candidate from

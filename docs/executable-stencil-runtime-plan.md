@@ -942,6 +942,14 @@ scratch is relative to the final output. A fresh one-attempt input-bridge
 microscope proves the readback on the retained decomposed path with
 `candidates:1`, `down_partial_bytes:14155776`, `runtime_capacity:9216`,
 `runtime_uses:628`, and `runtime_bytes:9216`.
+The input-bridge profiler now also has a separate direct width-parallel
+readback family (`semantic_ffn_with_input_direct_width_parallel_*`) and
+`bench:status` prints it as `direct_width_parallel`, `direct_width_lanes`,
+`direct_width_tiles`, and `direct_width_partial_slots`. Current retained
+artifacts keep those fields empty or zero; a real
+`semantic_with_input_width_parallel_kernel` must flip them on while eliminating
+the decomposed extra dispatches, so the artifact distinguishes the intended
+tiled direct kernel from the older row-serial one-dispatch diagnostic.
 The qsemantic-throughput and qsemantic input-bridge readbacks follow the same
 stability rule as the other noisy perf lanes:
 `qsemantic-throughput-results:` and `qsemantic-input-bridge-results:` prefer the

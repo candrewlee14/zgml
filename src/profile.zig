@@ -142,6 +142,12 @@ pub const RuntimeProfile = struct {
     semantic_ffn_with_input_direct_row_serial_dot_ops: u64 = 0,
     semantic_ffn_with_input_direct_total_row_serial_dot_ops: u64 = 0,
     semantic_ffn_with_input_direct_row_threadgroups: u64 = 0,
+    semantic_ffn_with_input_direct_width_parallel_count: u64 = 0,
+    semantic_ffn_with_input_direct_width_parallel_rows: u64 = 0,
+    semantic_ffn_with_input_direct_width_parallel_row_tile_groups: u64 = 0,
+    semantic_ffn_with_input_direct_width_parallel_output_tiles: u64 = 0,
+    semantic_ffn_with_input_direct_width_parallel_lanes: u64 = 0,
+    semantic_ffn_with_input_direct_width_parallel_partial_slots: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_attempts: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_output_read_refusals: u64 = 0,
     semantic_ffn_sublayer_single_dispatch_block_size_refusals: u64 = 0,
@@ -259,6 +265,12 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_with_input_direct_row_serial_dot_ops +%= other.semantic_ffn_with_input_direct_row_serial_dot_ops;
         self.semantic_ffn_with_input_direct_total_row_serial_dot_ops +%= other.semantic_ffn_with_input_direct_total_row_serial_dot_ops;
         self.semantic_ffn_with_input_direct_row_threadgroups +%= other.semantic_ffn_with_input_direct_row_threadgroups;
+        self.semantic_ffn_with_input_direct_width_parallel_count +%= other.semantic_ffn_with_input_direct_width_parallel_count;
+        self.semantic_ffn_with_input_direct_width_parallel_rows +%= other.semantic_ffn_with_input_direct_width_parallel_rows;
+        self.semantic_ffn_with_input_direct_width_parallel_row_tile_groups +%= other.semantic_ffn_with_input_direct_width_parallel_row_tile_groups;
+        self.semantic_ffn_with_input_direct_width_parallel_output_tiles +%= other.semantic_ffn_with_input_direct_width_parallel_output_tiles;
+        self.semantic_ffn_with_input_direct_width_parallel_lanes +%= other.semantic_ffn_with_input_direct_width_parallel_lanes;
+        self.semantic_ffn_with_input_direct_width_parallel_partial_slots +%= other.semantic_ffn_with_input_direct_width_parallel_partial_slots;
         self.semantic_ffn_sublayer_single_dispatch_attempts +%= other.semantic_ffn_sublayer_single_dispatch_attempts;
         self.semantic_ffn_sublayer_single_dispatch_output_read_refusals +%= other.semantic_ffn_sublayer_single_dispatch_output_read_refusals;
         self.semantic_ffn_sublayer_single_dispatch_block_size_refusals +%= other.semantic_ffn_sublayer_single_dispatch_block_size_refusals;
@@ -469,6 +481,17 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_with_input_direct_row_serial_dot_ops +%= row_serial_dot_ops;
         self.semantic_ffn_with_input_direct_total_row_serial_dot_ops +%= rows *% row_serial_dot_ops;
         self.semantic_ffn_with_input_direct_row_threadgroups +%= rows;
+    }
+
+    pub fn recordSemanticFfnWithInputDirectWidthParallel(self: *RuntimeProfile, rows: u32, row_tile: u32, output: u32, output_tile: u32, width_lanes: u32) void {
+        const row_groups = divCeilU64(rows, row_tile);
+        const output_tiles = divCeilU64(output, output_tile);
+        self.semantic_ffn_with_input_direct_width_parallel_count +%= 1;
+        self.semantic_ffn_with_input_direct_width_parallel_rows +%= rows;
+        self.semantic_ffn_with_input_direct_width_parallel_row_tile_groups +%= row_groups;
+        self.semantic_ffn_with_input_direct_width_parallel_output_tiles +%= output_tiles;
+        self.semantic_ffn_with_input_direct_width_parallel_lanes +%= width_lanes;
+        self.semantic_ffn_with_input_direct_width_parallel_partial_slots +%= @as(u64, rows) *% output_tiles;
     }
 
     pub fn recordSemanticFfnSublayerSingleDispatchRefusal(self: *RuntimeProfile, reason: SemanticFfnSublayerSingleDispatchRefusalReason) void {
@@ -727,6 +750,12 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "row_serial_dot_ops", rt.semantic_ffn_with_input_direct_row_serial_dot_ops, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "total_row_serial_dot_ops", rt.semantic_ffn_with_input_direct_total_row_serial_dot_ops, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_", "row_threadgroups", rt.semantic_ffn_with_input_direct_row_threadgroups, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_width_parallel_", "count", rt.semantic_ffn_with_input_direct_width_parallel_count, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_width_parallel_", "rows", rt.semantic_ffn_with_input_direct_width_parallel_rows, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_width_parallel_", "row_tile_groups", rt.semantic_ffn_with_input_direct_width_parallel_row_tile_groups, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_width_parallel_", "output_tiles", rt.semantic_ffn_with_input_direct_width_parallel_output_tiles, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_width_parallel_", "lanes", rt.semantic_ffn_with_input_direct_width_parallel_lanes, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_direct_width_parallel_", "partial_slots", rt.semantic_ffn_with_input_direct_width_parallel_partial_slots, calls_f);
         if (rt.semantic_ffn_with_input_direct_row_threadgroups > 0) {
             try writeJsonField(
                 jw,
@@ -954,6 +983,7 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     rt.recordSemanticFfnSublayerFallbackDispatches(1, 2);
     rt.recordSemanticFfnWithInputDecomposed(5, 2, 1, 2);
     rt.recordSemanticFfnWithInputDirect(128, 1536, 576, 576, 576);
+    rt.recordSemanticFfnWithInputDirectWidthParallel(128, 32, 576, 32, 4);
     rt.recordSemanticFfnSublayerSingleDispatchAttempt();
     rt.recordSemanticFfnSublayerSingleDispatchDimRefusal(576, 1536, 576, 1024);
     rt.recordSemanticWidthScratch(1, 14155776, 786432, 14155776, 294912, 9216);
@@ -1012,6 +1042,12 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_total_row_serial_dot_ops\":382205952") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_row_threadgroups\":128") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_total_row_serial_dot_ops_per_row_threadgroup\":2985984") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_width_parallel_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_width_parallel_rows\":128") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_width_parallel_row_tile_groups\":4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_width_parallel_output_tiles\":18") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_width_parallel_lanes\":4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_direct_width_parallel_partial_slots\":2304") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_attempts\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_refused_dim\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_dim_refusal_max_k\":576") != null);
@@ -1072,6 +1108,7 @@ test "RuntimeProfile accumulates evidence windows" {
     window.runtime_patch_shape = backend.RuntimePatchShape.actual(17, 24, 4242);
     window.recordQMatmulRowChainTwoPhaseTiledSpill(128, 576, 576, 32, true, true);
     window.recordSemanticFfnWithInputDecomposed(5, 2, 1, 2);
+    window.recordSemanticFfnWithInputDirectWidthParallel(128, 32, 576, 32, 4);
     window.recordSemanticWidthScratch(1, 14155776, 786432, 14155776, 294912, 9216);
     window.call_count = 37;
 
@@ -1120,6 +1157,12 @@ test "RuntimeProfile accumulates evidence windows" {
     try std.testing.expectEqual(@as(u64, 4), total.semantic_ffn_with_input_decomposed_row_chain_dispatches);
     try std.testing.expectEqual(@as(u64, 2), total.semantic_ffn_with_input_decomposed_pair_dispatches);
     try std.testing.expectEqual(@as(u64, 4), total.semantic_ffn_with_input_decomposed_tail_dispatches);
+    try std.testing.expectEqual(@as(u64, 2), total.semantic_ffn_with_input_direct_width_parallel_count);
+    try std.testing.expectEqual(@as(u64, 256), total.semantic_ffn_with_input_direct_width_parallel_rows);
+    try std.testing.expectEqual(@as(u64, 8), total.semantic_ffn_with_input_direct_width_parallel_row_tile_groups);
+    try std.testing.expectEqual(@as(u64, 36), total.semantic_ffn_with_input_direct_width_parallel_output_tiles);
+    try std.testing.expectEqual(@as(u64, 8), total.semantic_ffn_with_input_direct_width_parallel_lanes);
+    try std.testing.expectEqual(@as(u64, 4608), total.semantic_ffn_with_input_direct_width_parallel_partial_slots);
     try std.testing.expectEqual(@as(u64, 2), total.semantic_width_scratch_candidates);
     try std.testing.expectEqual(@as(u64, 14155776), total.semantic_width_scratch_bytes);
     try std.testing.expectEqual(@as(u64, 786432), total.semantic_width_scratch_product_bytes);
