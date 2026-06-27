@@ -84,6 +84,7 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
     }),
     nativeTraining: Object.freeze({
       trainMlpReluCrossEntropyAdamF32: symbols.trainMlpReluCrossEntropyAdamF32,
+      trainMlpReluCrossEntropyAdamWF32: symbols.trainMlpReluCrossEntropyAdamWF32,
     }),
     programBind: Object.freeze({
       sessionBind: symbols.sessionBind,

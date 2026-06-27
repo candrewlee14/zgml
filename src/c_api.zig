@@ -1745,14 +1745,16 @@ fn adamUpdateF32(
     beta2: f32,
     eps: f32,
     weight_decay: f32,
+    decoupled_weight_decay: bool,
 ) void {
-    const g = grad + weight_decay * param[index];
+    const g = if (decoupled_weight_decay) grad else grad + weight_decay * param[index];
     m[index] = beta1 * m[index] + (1.0 - beta1) * g;
     v[index] = beta2 * v[index] + (1.0 - beta2) * g * g;
     const bias_correction1 = 1.0 / (1.0 - std.math.pow(f32, beta1, @floatFromInt(t)));
     const bias_correction2 = 1.0 / (1.0 - std.math.pow(f32, beta2, @floatFromInt(t)));
     const m_hat = m[index] * bias_correction1;
     const v_hat = v[index] * bias_correction2;
+    if (decoupled_weight_decay and weight_decay != 0) param[index] -= lr * weight_decay * param[index];
     param[index] -= lr * m_hat / (@sqrt(v_hat) + eps);
 }
 
@@ -1769,7 +1771,7 @@ fn finiteAdamConfig(lr: f32, beta1: f32, beta2: f32, eps: f32, weight_decay: f32
         weight_decay >= 0;
 }
 
-export fn zgml_train_mlp_relu_cross_entropy_adam_f32(
+fn trainMlpReluCrossEntropyAdamLikeF32(
     input_ptr: ?[*]const f32,
     input_len: usize,
     target_ptr: ?[*]const u32,
@@ -1818,6 +1820,7 @@ export fn zgml_train_mlp_relu_cross_entropy_adam_f32(
     beta2: f32,
     eps: f32,
     weight_decay: f32,
+    decoupled_weight_decay: bool,
     out_loss: ?*f32,
     out_correct: ?*usize,
 ) c_int {
@@ -1915,29 +1918,243 @@ export fn zgml_train_mlp_relu_cross_entropy_adam_f32(
     for (0..hidden_features) |h| {
         const hidden_base = h * classes;
         for (0..classes) |c| {
-            adamUpdateF32(w2, mw2, vw2, hidden_base + c, grad_w2[hidden_base + c], t, lr, beta1, beta2, eps, weight_decay);
+            adamUpdateF32(w2, mw2, vw2, hidden_base + c, grad_w2[hidden_base + c], t, lr, beta1, beta2, eps, weight_decay, decoupled_weight_decay);
         }
     }
     for (0..classes) |c| {
         var grad: f32 = 0;
         for (0..batch) |row| grad += logits[row * classes + c];
-        adamUpdateF32(b2, mb2, vb2, c, grad, t, lr, beta1, beta2, eps, weight_decay);
+        adamUpdateF32(b2, mb2, vb2, c, grad, t, lr, beta1, beta2, eps, weight_decay, decoupled_weight_decay);
     }
 
     forward.blasSgemm(grad_w1, input, grad_hidden, in_features, hidden_features, batch, 1, in_features, hidden_features, 1, 0, 0, 0, hidden_features);
     for (0..in_features) |i| {
         const w1_base = i * hidden_features;
         for (0..hidden_features) |h| {
-            adamUpdateF32(w1, mw1, vw1, w1_base + h, grad_w1[w1_base + h], t, lr, beta1, beta2, eps, weight_decay);
+            adamUpdateF32(w1, mw1, vw1, w1_base + h, grad_w1[w1_base + h], t, lr, beta1, beta2, eps, weight_decay, decoupled_weight_decay);
         }
     }
     for (0..hidden_features) |h| {
         var grad: f32 = 0;
         for (0..batch) |row| grad += grad_hidden[row * hidden_features + h];
-        adamUpdateF32(b1, mb1, vb1, h, grad, t, lr, beta1, beta2, eps, weight_decay);
+        adamUpdateF32(b1, mb1, vb1, h, grad, t, lr, beta1, beta2, eps, weight_decay, decoupled_weight_decay);
     }
 
     return status(.ok);
+}
+
+export fn zgml_train_mlp_relu_cross_entropy_adam_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    target_ptr: ?[*]const u32,
+    target_len: usize,
+    w1_ptr: ?[*]f32,
+    w1_len: usize,
+    b1_ptr: ?[*]f32,
+    b1_len: usize,
+    w2_ptr: ?[*]f32,
+    w2_len: usize,
+    b2_ptr: ?[*]f32,
+    b2_len: usize,
+    mw1_ptr: ?[*]f32,
+    mw1_len: usize,
+    vw1_ptr: ?[*]f32,
+    vw1_len: usize,
+    mb1_ptr: ?[*]f32,
+    mb1_len: usize,
+    vb1_ptr: ?[*]f32,
+    vb1_len: usize,
+    mw2_ptr: ?[*]f32,
+    mw2_len: usize,
+    vw2_ptr: ?[*]f32,
+    vw2_len: usize,
+    mb2_ptr: ?[*]f32,
+    mb2_len: usize,
+    vb2_ptr: ?[*]f32,
+    vb2_len: usize,
+    hidden_ptr: ?[*]f32,
+    hidden_len: usize,
+    logits_ptr: ?[*]f32,
+    logits_len: usize,
+    grad_hidden_ptr: ?[*]f32,
+    grad_hidden_len: usize,
+    grad_w1_ptr: ?[*]f32,
+    grad_w1_len: usize,
+    grad_w2_ptr: ?[*]f32,
+    grad_w2_len: usize,
+    batch: usize,
+    in_features: usize,
+    hidden_features: usize,
+    classes: usize,
+    t: usize,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    weight_decay: f32,
+    out_loss: ?*f32,
+    out_correct: ?*usize,
+) c_int {
+    return trainMlpReluCrossEntropyAdamLikeF32(
+        input_ptr,
+        input_len,
+        target_ptr,
+        target_len,
+        w1_ptr,
+        w1_len,
+        b1_ptr,
+        b1_len,
+        w2_ptr,
+        w2_len,
+        b2_ptr,
+        b2_len,
+        mw1_ptr,
+        mw1_len,
+        vw1_ptr,
+        vw1_len,
+        mb1_ptr,
+        mb1_len,
+        vb1_ptr,
+        vb1_len,
+        mw2_ptr,
+        mw2_len,
+        vw2_ptr,
+        vw2_len,
+        mb2_ptr,
+        mb2_len,
+        vb2_ptr,
+        vb2_len,
+        hidden_ptr,
+        hidden_len,
+        logits_ptr,
+        logits_len,
+        grad_hidden_ptr,
+        grad_hidden_len,
+        grad_w1_ptr,
+        grad_w1_len,
+        grad_w2_ptr,
+        grad_w2_len,
+        batch,
+        in_features,
+        hidden_features,
+        classes,
+        t,
+        lr,
+        beta1,
+        beta2,
+        eps,
+        weight_decay,
+        false,
+        out_loss,
+        out_correct,
+    );
+}
+
+export fn zgml_train_mlp_relu_cross_entropy_adamw_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    target_ptr: ?[*]const u32,
+    target_len: usize,
+    w1_ptr: ?[*]f32,
+    w1_len: usize,
+    b1_ptr: ?[*]f32,
+    b1_len: usize,
+    w2_ptr: ?[*]f32,
+    w2_len: usize,
+    b2_ptr: ?[*]f32,
+    b2_len: usize,
+    mw1_ptr: ?[*]f32,
+    mw1_len: usize,
+    vw1_ptr: ?[*]f32,
+    vw1_len: usize,
+    mb1_ptr: ?[*]f32,
+    mb1_len: usize,
+    vb1_ptr: ?[*]f32,
+    vb1_len: usize,
+    mw2_ptr: ?[*]f32,
+    mw2_len: usize,
+    vw2_ptr: ?[*]f32,
+    vw2_len: usize,
+    mb2_ptr: ?[*]f32,
+    mb2_len: usize,
+    vb2_ptr: ?[*]f32,
+    vb2_len: usize,
+    hidden_ptr: ?[*]f32,
+    hidden_len: usize,
+    logits_ptr: ?[*]f32,
+    logits_len: usize,
+    grad_hidden_ptr: ?[*]f32,
+    grad_hidden_len: usize,
+    grad_w1_ptr: ?[*]f32,
+    grad_w1_len: usize,
+    grad_w2_ptr: ?[*]f32,
+    grad_w2_len: usize,
+    batch: usize,
+    in_features: usize,
+    hidden_features: usize,
+    classes: usize,
+    t: usize,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    weight_decay: f32,
+    out_loss: ?*f32,
+    out_correct: ?*usize,
+) c_int {
+    return trainMlpReluCrossEntropyAdamLikeF32(
+        input_ptr,
+        input_len,
+        target_ptr,
+        target_len,
+        w1_ptr,
+        w1_len,
+        b1_ptr,
+        b1_len,
+        w2_ptr,
+        w2_len,
+        b2_ptr,
+        b2_len,
+        mw1_ptr,
+        mw1_len,
+        vw1_ptr,
+        vw1_len,
+        mb1_ptr,
+        mb1_len,
+        vb1_ptr,
+        vb1_len,
+        mw2_ptr,
+        mw2_len,
+        vw2_ptr,
+        vw2_len,
+        mb2_ptr,
+        mb2_len,
+        vb2_ptr,
+        vb2_len,
+        hidden_ptr,
+        hidden_len,
+        logits_ptr,
+        logits_len,
+        grad_hidden_ptr,
+        grad_hidden_len,
+        grad_w1_ptr,
+        grad_w1_len,
+        grad_w2_ptr,
+        grad_w2_len,
+        batch,
+        in_features,
+        hidden_features,
+        classes,
+        t,
+        lr,
+        beta1,
+        beta2,
+        eps,
+        weight_decay,
+        true,
+        out_loss,
+        out_correct,
+    );
 }
 
 fn clearModel(out: ?*?*zgml_model) void {

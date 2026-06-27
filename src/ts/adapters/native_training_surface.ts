@@ -49,6 +49,7 @@ export type NativeTrainingSurfaceOptions = {
   indexValues: NativeTrainingIndexValues;
   check: NativeTrainingCheck;
   trainMlpReluCrossEntropyAdamF32: NativeTrainingMlpAdamCall;
+  trainMlpReluCrossEntropyAdamWF32: NativeTrainingMlpAdamCall;
 };
 
 function positiveInteger(value: unknown, label: string) {
@@ -111,24 +112,26 @@ function modelLayers(model: unknown) {
   return Object.freeze({ first, second });
 }
 
-function requireAdamOptimizer(optimizer: unknown, params: readonly Float32Array[]) {
+function requireAdamLikeOptimizer(optimizer: unknown, params: readonly Float32Array[]) {
   const opt = optimizer as AnyRecord | null;
-  if (!opt || opt.kind !== "adam") throw new Error("compile.trainingStep native path currently requires optim.adam");
+  if (!opt || (opt.kind !== "adam" && opt.kind !== "adamw")) {
+    throw new Error("compile.trainingStep native path currently requires optim.adam or optim.adamW");
+  }
   if (!Array.isArray(opt.params) || !Array.isArray(opt.m) || !Array.isArray(opt.v)) {
-    throw new Error("compile.trainingStep requires an Adam optimizer with live parameter state");
+    throw new Error("compile.trainingStep requires an Adam/AdamW optimizer with live parameter state");
   }
   if (opt.params.length !== params.length || opt.m.length !== params.length || opt.v.length !== params.length) {
-    throw new Error("compile.trainingStep Adam state does not match the model parameter count");
+    throw new Error("compile.trainingStep Adam/AdamW state does not match the model parameter count");
   }
   for (let i = 0; i < params.length; i += 1) {
     if (opt.params[i]?.data !== params[i]) {
-      throw new Error("compile.trainingStep Adam optimizer must be created from the same model instance");
+      throw new Error("compile.trainingStep Adam/AdamW optimizer must be created from the same model instance");
     }
     if (!(opt.m[i] instanceof Float32Array) || opt.m[i].length !== params[i].length) {
-      throw new Error(`compile.trainingStep Adam m.${i} state shape mismatch`);
+      throw new Error(`compile.trainingStep Adam/AdamW m.${i} state shape mismatch`);
     }
     if (!(opt.v[i] instanceof Float32Array) || opt.v[i].length !== params[i].length) {
-      throw new Error(`compile.trainingStep Adam v.${i} state shape mismatch`);
+      throw new Error(`compile.trainingStep Adam/AdamW v.${i} state shape mismatch`);
     }
   }
   return opt;
@@ -182,7 +185,10 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       throw new Error(`compile.trainingStep classes ${classes} must match model output ${layers.second.outFeatures}`);
     }
     const params = [layers.first.weight, layers.first.bias, layers.second.weight, layers.second.bias];
-    const adam = requireAdamOptimizer(optimizer, params);
+    const adam = requireAdamLikeOptimizer(optimizer, params);
+    const trainMlpReluCrossEntropy = adam.kind === "adamw"
+      ? options.trainMlpReluCrossEntropyAdamWF32
+      : options.trainMlpReluCrossEntropyAdamF32;
     const hidden = new Float32Array(batch * layers.first.outFeatures);
     const logits = new Float32Array(batch * classes);
     const gradHidden = new Float32Array(batch * layers.first.outFeatures);
@@ -199,7 +205,7 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       if (targets.length !== batch) {
         throw new Error(`compile.trainingStep target length ${targets.length} must equal batch ${batch}`);
       }
-      const result = options.trainMlpReluCrossEntropyAdamF32({
+      const result = trainMlpReluCrossEntropy({
         input: inputData,
         targets,
         w1: layers.first.weight,
@@ -224,11 +230,11 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
         hiddenFeatures: layers.first.outFeatures,
         classes,
         step: Number(adam.t) + 1,
-        lr: finiteNumber(adam.lr, "compile.trainingStep Adam lr"),
-        beta1: finiteNumber(adam.beta1, "compile.trainingStep Adam beta1"),
-        beta2: finiteNumber(adam.beta2, "compile.trainingStep Adam beta2"),
-        eps: finiteNumber(adam.eps, "compile.trainingStep Adam eps"),
-        weightDecay: finiteNumber(adam.weightDecay, "compile.trainingStep Adam weightDecay"),
+        lr: finiteNumber(adam.lr, "compile.trainingStep Adam/AdamW lr"),
+        beta1: finiteNumber(adam.beta1, "compile.trainingStep Adam/AdamW beta1"),
+        beta2: finiteNumber(adam.beta2, "compile.trainingStep Adam/AdamW beta2"),
+        eps: finiteNumber(adam.eps, "compile.trainingStep Adam/AdamW eps"),
+        weightDecay: finiteNumber(adam.weightDecay, "compile.trainingStep Adam/AdamW weightDecay"),
       });
       options.check(result.status);
       adam.t = Number(adam.t) + 1;
@@ -249,7 +255,7 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       native: true,
       backend: "cpu",
       modelKind: "sequential-mlp-relu",
-      optimizerKind: "adam",
+      optimizerKind: adam.kind,
       lossKind: "crossEntropy",
       inputShape: () => Object.freeze([batch, inFeatures] as const),
       outputShape: () => Object.freeze([batch, classes] as const),

@@ -436,9 +436,9 @@ Current checked progress:
   pass made the training loop follow the same split: `compile.compileForTraining`
   produces a native compiled trainer for the supported Sequential Linear/ReLU
   classifier shape, and `train.fit(trainer, loader, { epochs })` now keeps the
-  JS/TS side ergonomic while each batch's forward/backward/Adam update goes
-  through the Zig FFI training step. The Bun classifier smoke checks that path
-  learns and reports native `TrainFitEvidence`. The root-level
+  JS/TS side ergonomic while each batch's forward/backward/Adam or AdamW update
+  goes through the Zig FFI training step. The Bun classifier smoke checks the
+  AdamW path learns and reports native `TrainFitEvidence`. The root-level
   product/API diet now has a checked internal non-breaking taxonomy:
   `src/ts/public_surface.ts` names the stable root namespaces users should learn
   first, names `zgml` as the stable friendly root value, separates advanced

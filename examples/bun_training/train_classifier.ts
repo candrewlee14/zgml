@@ -140,7 +140,7 @@ if (!(highLevelAfter < highLevelBefore * 0.01) || highLevelClass !== 1) {
 }
 
 const nativeModel = createClassifierGraph();
-const nativeOptimizer = optim.adam(nativeModel, { lr: 0.05 });
+const nativeOptimizer = optim.adamW(nativeModel, { lr: 0.05, weightDecay: 0.0001 });
 const nativeLoader = data.dataLoader(samples, { batchSize: 2, shuffle: true, seed: 17 });
 const nativeBefore = scalar(loss.crossEntropy(nativeModel.forward(probeInput), probeTarget, { classes: 2 }));
 const nativeTrainer = compile.compileForTraining(nativeModel, nativeOptimizer, {
