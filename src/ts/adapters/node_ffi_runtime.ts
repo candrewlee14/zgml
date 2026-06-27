@@ -111,6 +111,9 @@ const {
   createAdapterNativeEagerSurface,
 } = require("./native_eager_surface.js");
 const {
+  createAdapterNativeCoreSurface,
+} = require("./native_core_surface.js");
+const {
   createAdapterNativeTrainingSurface,
 } = require("./native_training_surface.js");
 const {
@@ -1255,6 +1258,11 @@ const { nativeEager } = createAdapterNativeEagerSurface({
     args.logSoftmax ? 1 : 0,
   ),
 });
+const native_eager = nativeEager;
+const { nativeCore, native_core } = createAdapterNativeCoreSurface({
+  host: "node",
+  runtimeInfo,
+});
 
 function callNodeNativeMlpTraining(call, args) {
   const outLoss = new Float32Array(1);
@@ -1468,6 +1476,7 @@ const simple = Object.freeze({
   compileForInference: compile.compileForInference,
   trainingStep: compile.trainingStep,
   compileForTraining: compile.compileForTraining,
+  nativeCore,
   lazy: sharedFrontend.lazy,
   optim,
   data,
@@ -1591,6 +1600,8 @@ const zgml = createAdapterZgmlNamespace({
   Session,
   NativeBuffer,
   nativeEager,
+  nativeCore,
+  native_core,
 });
 const torch = zgml;
 
@@ -1812,6 +1823,9 @@ module.exports = createAdapterPublicRuntimeExports({
   compileForTraining: compile.compileForTraining,
   compile_for_training: compile.compile_for_training,
   nativeEager,
+  native_eager,
+  nativeCore,
+  native_core,
   TinyLinear: TinyLinearModel,
   TinyMlp: TinyMlpModel,
   TinyLlama: TinyLlamaModel,

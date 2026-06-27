@@ -147,6 +147,9 @@ import {
   createAdapterNativeEagerSurface,
 } from "./native_eager_surface.js";
 import {
+  createAdapterNativeCoreSurface,
+} from "./native_core_surface.js";
+import {
   createAdapterNativeTrainingSurface,
 } from "./native_training_surface.js";
 import {
@@ -2320,6 +2323,11 @@ export const { nativeEager } = createAdapterNativeEagerSurface({
     args.logSoftmax ? 1 : 0,
   ),
 });
+export const native_eager = nativeEager;
+export const { nativeCore, native_core } = createAdapterNativeCoreSurface({
+  host: "bun",
+  runtimeInfo,
+});
 
 function callBunNativeMlpTraining(call: (...args: any[]) => number, args: any) {
   const outLoss = new Float32Array(1);
@@ -2557,6 +2565,7 @@ export const simple = Object.freeze({
   compileForInference: compile.compileForInference,
   trainingStep: compile.trainingStep,
   compileForTraining: compile.compileForTraining,
+  nativeCore,
   lazy: sharedFrontend.lazy,
   optim,
   data,
@@ -2668,6 +2677,8 @@ export const zgml = createAdapterZgmlNamespace({
   Session,
   NativeBuffer,
   nativeEager,
+  nativeCore,
+  native_core,
 });
 export const torch = zgml;
 export const native = compile.compileForInference;

@@ -33,4 +33,8 @@ export {
   training_step,
   compileForTraining,
   compile_for_training,
+  nativeEager,
+  native_eager,
+  nativeCore,
+  native_core,
 } from "./adapters/bun_native_runtime.js";

@@ -2265,6 +2265,40 @@ export type PublicNativeEagerNamespace = Readonly<{
   logSoftmaxInto(output: Float32Array, input: TensorLike, options?: NativeEagerSoftmaxIntoOptions): Float32Array;
   log_softmax_into(output: Float32Array, input: TensorLike, options?: NativeEagerSoftmaxIntoOptions): Float32Array;
 }>;
+export type NativeCoreEvidence = Readonly<{
+  kind: "zgml.native-core";
+  host: "node" | "bun";
+  productApi: "typescript";
+  nativeCore: "zig-c-abi";
+  productSourceOfTruth: FrontendManifest["productSourceOfTruth"];
+  nativeProductPolicy: FrontendManifest["nativeProductPolicy"];
+  runtimePath: "JS/TS API -> Zig C ABI -> Program/Session kernels";
+  abiVersion: number;
+  featureFlags: bigint;
+  domains: Readonly<{
+    tensorStorage: boolean;
+    eagerKernels: boolean;
+    programSession: boolean;
+    trainingStep: boolean;
+    llmSession: boolean;
+    modelSource: boolean;
+    webgpuInterop: boolean;
+  }>;
+  eagerOps: Readonly<{
+    linear: boolean;
+    linearActivation: boolean;
+    matmul: boolean;
+    activation: boolean;
+    elementwise: boolean;
+    reduce: boolean;
+    softmax: boolean;
+    conv2d: boolean;
+    pool2d: boolean;
+  }>;
+  unsupportedHotPathPolicy: FrontendManifest["unsupportedHotPathPolicy"];
+  signature: string;
+}>;
+export type NativeCoreFunction = () => NativeCoreEvidence;
 export declare function linspace<const S extends TensorShapeTuple>(shape: S, start: number, end: number, options?: TensorOptions): Tensor<S>;
 export declare function linspace<const Steps extends number>(start: number, end: number, steps: Steps, options?: TensorOptions): Tensor<readonly [Steps]>;
 export declare function linspace(start: number, end: number, steps: number, options?: TensorOptions): Tensor;
@@ -6977,6 +7011,8 @@ export type PublicTorchNamespace = Readonly<{
   compile_for_training: PublicCompileNamespace["compile_for_training"];
   nativeEager: PublicNativeEagerNamespace;
   native_eager: PublicNativeEagerNamespace;
+  nativeCore: NativeCoreFunction;
+  native_core: NativeCoreFunction;
   lazy: PublicLazyNamespace;
   optim: PublicOptimNamespace;
   data: PublicDataNamespace;
@@ -7033,6 +7069,7 @@ export type PublicSimpleNamespace = Readonly<Pick<PublicZgmlNamespace,
   | "compileForInference"
   | "trainingStep"
   | "compileForTraining"
+  | "nativeCore"
   | "lazy"
   | "optim"
   | "data"
@@ -7061,6 +7098,10 @@ export declare const trainingStep: PublicCompileNamespace["trainingStep"];
 export declare const training_step: PublicCompileNamespace["training_step"];
 export declare const compileForTraining: PublicCompileNamespace["compileForTraining"];
 export declare const compile_for_training: PublicCompileNamespace["compile_for_training"];
+export declare const nativeEager: PublicNativeEagerNamespace;
+export declare const native_eager: PublicNativeEagerNamespace;
+export declare const nativeCore: NativeCoreFunction;
+export declare const native_core: NativeCoreFunction;
 
 export type TinyLinearDesc = {
   inputLen: number;

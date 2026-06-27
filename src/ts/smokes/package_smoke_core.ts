@@ -5225,6 +5225,26 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     throw new Error(`${label} adapter is missing native zgml exports: ${missingNativeExports.join(", ")}`);
   }
   if (
+    typeof adapter.nativeCore !== "function" ||
+    adapter.native_core !== adapter.nativeCore ||
+    adapter.zgml?.nativeCore !== adapter.nativeCore ||
+    adapter.zgml?.native_core !== adapter.nativeCore ||
+    adapter.simple?.nativeCore !== adapter.nativeCore
+  ) {
+    throw new Error(`${label} expected nativeCore/native_core to be the ergonomic Zig-core evidence hook`);
+  }
+  const nativeCoreEvidence = adapter.nativeCore();
+  if (
+    nativeCoreEvidence?.kind !== "zgml.native-core" ||
+    nativeCoreEvidence.productApi !== "typescript" ||
+    nativeCoreEvidence.nativeCore !== "zig-c-abi" ||
+    nativeCoreEvidence.runtimePath !== "JS/TS API -> Zig C ABI -> Program/Session kernels" ||
+    nativeCoreEvidence.domains?.programSession !== true ||
+    nativeCoreEvidence.eagerOps?.matmul !== true
+  ) {
+    throw new Error(`${label} nativeCore evidence did not prove the TS API -> Zig core split`);
+  }
+  if (
     adapter.compile?.compileManifest?.policyOwner !== "src/ts/compile.ts" ||
     typeof adapter.compile !== "function" ||
     typeof adapter.compile.trace !== "function" ||
@@ -7223,7 +7243,7 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       inputShape: [1, 2],
       loss: "mse",
     });
-    const moduleCompileBatch = shuffledBatches[0];
+    const moduleCompileBatch = shuffledBatchList[0];
     const moduleCompileStep = moduleCompiledTrainer.step(moduleCompileBatch.input, moduleCompileBatch.target);
     const moduleCompiledTrainerSnake = moduleCompileModel.compile_for_training(moduleCompileOptimizer, {
       input_shape: [1, 2],

@@ -253,6 +253,10 @@ export const requiredNativeFrontendNamespaceExports = Object.freeze([
   "training_step",
   "compileForTraining",
   "compile_for_training",
+  "nativeEager",
+  "native_eager",
+  "nativeCore",
+  "native_core",
 ] as const);
 
 export const requiredNativeExecutableRuntimeExports = Object.freeze([

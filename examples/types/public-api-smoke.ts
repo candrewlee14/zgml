@@ -85,6 +85,8 @@ import {
   neg,
   negative,
   native,
+  nativeCore,
+  native_core,
   nativeApiContract,
   no_grad,
   nn,
@@ -273,6 +275,7 @@ import {
   type ModuleTensorProgramIr,
   type NativeApiContractNamespace,
   type NativeApiContractSignatureParts,
+  type NativeCoreEvidence,
   type NnFunctionalNamespace,
   type NnNamespace,
   type OneHotShape,
@@ -809,6 +812,13 @@ const runtimeNativeEagerElementwiseFeature: boolean = currentRuntimeFeatures.nat
 const runtimeNativeEagerReduceFeature: boolean = currentRuntimeFeatures.nativeEagerReduce;
 const runtimeNativeEagerConv2dFeature: boolean = currentRuntimeFeatures.nativeEagerConv2d;
 const runtimeNativeEagerPool2dFeature: boolean = currentRuntimeFeatures.nativeEagerPool2d;
+const rootNativeCoreEvidence: NativeCoreEvidence = nativeCore();
+const rootNativeCoreAliasEvidence: NativeCoreEvidence = native_core();
+const namespaceNativeCoreEvidence: NativeCoreEvidence = zgml.nativeCore();
+const namespaceNativeCoreAliasEvidence: NativeCoreEvidence = zgml.native_core();
+const simpleNativeCoreEvidence: NativeCoreEvidence = simple.nativeCore();
+const nativeCoreProgramSessionDomain: boolean = namespaceNativeCoreEvidence.domains.programSession;
+const nativeCoreMatmulOp: boolean = namespaceNativeCoreEvidence.eagerOps.matmul;
 const coreShapeSubpathShape: CoreShapeSubpath = [2, 3];
 const coreShapeSubpathCount: number = coreShapeScalarCount(coreShapeSubpathShape);
 const runtimeKernelPlanSubpathSource: "ts" = runtimeKernelPlanManifest.source;
@@ -6413,6 +6423,13 @@ void nativeEagerPool2dInto;
 void nativeEagerPool2dIntoAlias;
 void nativeEagerSoftmaxInto;
 void nativeEagerLogSoftmaxIntoAlias;
+void rootNativeCoreEvidence;
+void rootNativeCoreAliasEvidence;
+void namespaceNativeCoreEvidence;
+void namespaceNativeCoreAliasEvidence;
+void simpleNativeCoreEvidence;
+void nativeCoreProgramSessionDomain;
+void nativeCoreMatmulOp;
 void sequentialPreflight;
 void sequentialMethodPreflight;
 void trainingDropoutPreflight;

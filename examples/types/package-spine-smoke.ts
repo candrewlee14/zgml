@@ -974,6 +974,7 @@ type PackageNativeRuntimeTensorShape = Expect<Equal<ReturnType<PackageNativeRunt
 type PackageNativeRuntimeNnShape = Expect<Equal<PackageNativeRuntime["nn"], PackagePublicNnNamespace>>;
 type PackageNativeRuntimeFShape = Expect<Equal<PackageNativeRuntime["F"], PackageNnFunctionalNamespace>>;
 type PackageNativeRuntimeGradModeShape = Expect<PackageNativeRuntime["gradMode"] extends { isGradEnabled: () => boolean; noGrad: <T>(fn: () => T) => T } ? true : false>;
+type PackageNativeRuntimeCoreShape = Expect<PackageNativeRuntime["nativeCore"] extends () => { kind: "zgml.native-core"; nativeCore: "zig-c-abi" } ? true : false>;
 type PackageNativeRuntimeDataShape = Expect<Equal<PackageNativeRuntime["data"], PackagePublicDataNamespace>>;
 type PackageNativeRuntimeTrainShape = Expect<Equal<PackageNativeRuntime["train"], PackagePublicTrainNamespace>>;
 type PackageNativeRuntimeProgramShape = Expect<PackageNativeRuntime["Program"] extends new (...args: never[]) => PackageProgram ? true : false>;

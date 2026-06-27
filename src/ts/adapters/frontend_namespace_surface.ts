@@ -60,6 +60,8 @@ type AdapterZgmlNamespaceOptions = Readonly<{
   Session: unknown;
   NativeBuffer: unknown;
   nativeEager?: unknown;
+  nativeCore?: unknown;
+  native_core?: unknown;
 }>;
 type AdapterDataNamespaceOptions<TTensor> = Readonly<{
   tensor: (data: unknown, shape?: unknown, options?: unknown) => TTensor;
@@ -1273,6 +1275,8 @@ export function createAdapterZgmlNamespace(options: AdapterZgmlNamespaceOptions)
     compile_for_training: compileNamespace.compile_for_training,
     nativeEager: options.nativeEager,
     native_eager: options.nativeEager,
+    nativeCore: options.nativeCore,
+    native_core: options.native_core ?? options.nativeCore,
     lazy: options.lazy,
     optim: options.optim,
     data,
