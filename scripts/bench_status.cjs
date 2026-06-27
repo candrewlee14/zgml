@@ -715,6 +715,20 @@ function qsemanticInputBridgeStatusLine(path) {
   return `qsemantic-input-bridge-results: latest=${compactName(path)} status=${status} gate=${gate} attempt=${selectedAttempt}/${attempts} command=${commandSpeedup}:dispatches:${command.runtimeDispatches ?? "n/a"}:bridges:${command.shapeProjectionRowChainSemanticResidualBridges ?? "n/a"} absorbed=${absorbedSpeedup}:median:${absorbedMedian}:worst:${absorbedWorst}:max_abs_diff:${maxAbsDiff}:dispatches:${absorbed.runtimeDispatches ?? "n/a"}:semantic_with_input_dispatches:${absorbed.runtimeSemanticFfnWithInputDispatches ?? "n/a"}:absorbed_split:${formatNumber(absorbed.absorbedDispatchSplit, 2)}:decomposed:${absorbed.semanticWithInputDecomposedCount ?? "n/a"}:decomposed_dispatches:${absorbed.semanticWithInputDecomposedDispatches ?? "n/a"}:decomposed_row_chain:${absorbed.semanticWithInputDecomposedRowChainDispatches ?? "n/a"}:decomposed_pair:${absorbed.semanticWithInputDecomposedPairDispatches ?? "n/a"}:decomposed_tail:${absorbed.semanticWithInputDecomposedTailDispatches ?? "n/a"}:direct_partition:${directPartition}:direct:${absorbed.semanticWithInputDirectCount ?? "n/a"} direct_serial=${directSerialSpeedup}:median:${directSerialMedian}:dispatches:${directSerial.runtimeDispatches ?? "n/a"}:direct:${directSerial.semanticWithInputDirectCount ?? "n/a"}:rows:${directSerial.semanticWithInputDirectRows ?? "n/a"}:row_threadgroups:${directSerial.semanticWithInputDirectRowThreadgroups ?? "n/a"}:row_serial_dot_ops:${directSerial.semanticWithInputDirectRowSerialDotOps ?? "n/a"}:total_row_serial_dot_ops:${directSerial.semanticWithInputDirectTotalRowSerialDotOps ?? "n/a"}:per_row_threadgroup:${directSerial.semanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup ?? "n/a"}:fallback_pair:${directSerial.semanticFallbackPairDispatches ?? "n/a"}:fallback_tail:${directSerial.semanticFallbackTailDispatches ?? "n/a"}:tiled:${directSerial.qmatmulRowChainTiledCount ?? "n/a"} pair_dispatches=${absorbed.semanticFallbackPairDispatches ?? "n/a"}:tail_dispatches:${absorbed.semanticFallbackTailDispatches ?? "n/a"}:tiled:${absorbed.qmatmulRowChainTiledCount ?? "n/a"}:row_tile_groups:${absorbed.qmatmulRowChainTiledRowTileGroups ?? "n/a"}:n_tiles:${absorbed.qmatmulRowChainTiledNTiles ?? "n/a"}:two_phase:${absorbed.qmatmulRowChainTiledTwoPhaseCount ?? "n/a"}:spilled_input:${absorbed.qmatmulRowChainTiledSpilledInput ?? "n/a"}:output_spills:${absorbed.qmatmulRowChainTiledOutputSpills ?? "n/a"} next=${next} source=${source}`;
 }
 
+function qsemanticInputBridgeNextTargetLine(path) {
+  if (!path) return "qsemantic_input_bridge=missing";
+  try {
+    const data = readJson(path);
+    const absorbed = data?.absorbed ?? {};
+    const directSerial = data?.directSerial ?? {};
+    const next = typeof data?.next === "string" ? data.next : "unknown";
+    const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
+    return `qsemantic_input_bridge=absorbed:${formatRatio(absorbed.speedup)}:median:${formatRatio(data?.speedupStats?.absorbed?.median)}:dispatches:${absorbed.runtimeDispatches ?? "n/a"}:direct_serial:${formatRatio(directSerial.speedup)}:direct_serial_median:${formatRatio(data?.speedupStats?.directSerial?.median)}:direct_serial_dispatches:${directSerial.runtimeDispatches ?? "n/a"}:row_serial_dot_ops:${directSerial.semanticWithInputDirectRowSerialDotOps ?? "n/a"}:total_row_serial_dot_ops:${directSerial.semanticWithInputDirectTotalRowSerialDotOps ?? "n/a"}:next=${next}:source=${source}`;
+  } catch {
+    return "qsemantic_input_bridge=unreadable";
+  }
+}
+
 function ggmlSmokeStatusLine(path) {
   if (!path) {
     return "ggml-smoke-results: no local p128/g40/r1 smoke artifact found; run npm run dev:perf:next:run after Q8 promotion";
@@ -1507,12 +1521,14 @@ function currentQ8SmokeNextTarget(path) {
 function perfNextStatusLine({ latestPath, pytorchPath, q8Path, rawQ8Path, frontierPath, rawFrontierPath, qsemanticBridgePath }) {
   const qprojPath = latestQprojFrontierArtifact();
   const q8SmokePath = latestGgmlSmokeArtifact();
+  const qsemanticInputBridgePath = latestQsemanticInputBridgeArtifact();
   return [
     "perf-next:",
     fullModelNextTarget(latestPath),
     currentQ8SmokeNextTarget(q8SmokePath),
     pytorchNextTarget(pytorchPath),
     q8PromptNextTarget(q8Path, rawQ8Path, qsemanticBridgePath),
+    qsemanticInputBridgeNextTargetLine(qsemanticInputBridgePath),
     qprojNextTargetLine(qprojPath),
     frontierNextTargetLine(frontierPath, rawFrontierPath),
   ].join(" ");

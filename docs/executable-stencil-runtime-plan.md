@@ -802,6 +802,13 @@ selected `3.09x`, median `2.56x`). That makes the next implementation target
 more precise: not "reduce dispatches at any cost", but
 `semantic_with_input_width_parallel_kernel`, carrying the width-parallel
 semantic FFN work into the residual input-bridge shape.
+`perf-next:` now carries that fact as a compact
+`qsemantic_input_bridge=...:next=semantic_with_input_width_parallel_kernel`
+field, and `dev:perf:next` routes to the exact qsemantic input-bridge
+microscope when that target is present. The generic
+`semantic_width_parallel_kernel` bridge microscope remains the fallback when no
+input-bridge artifact exists; once direct-serial versus absorbed evidence is
+available, the next loop should work on the input-bridge kernel directly.
 The qsemantic-throughput readback follows the same stability rule as the other
 noisy perf lanes: `qsemantic-throughput-results:` prefers the latest
 three-attempt artifact, while `qsemantic-throughput-latest-results:` reports a
