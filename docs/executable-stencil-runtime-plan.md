@@ -550,6 +550,12 @@ Current checked progress:
   `zgml.noGrad(() => nn.MaxPool2d/AvgPool2d.forward(input))` routes through
   the Zig pool2d kernel, and grad-enabled training keeps the TS path with
   max-index/count bookkeeping for backward correctness.
+  The direct Zig C ABI implementations now have unpadded, unit-dilation
+  conv2d/pool2d fast paths for the caller-owned-output lane. This keeps the
+  JS/TS surface ergonomic while making the hot inference loops native by
+  default for the common CNN case; optimized native eager microscope runs prove
+  direct `conv2dInto` and `pool2dInto` rows above the native-eager floor with
+  zero measured diff against the TS reference.
   The native eager microscope now carries those rows as decision-grade evidence
   as well: the expected row set is `row_coverage=14/14` after adding direct
   `matmul_batched`, `elementwise_mul_batched`, `reduce_sum_scalar_batched`,

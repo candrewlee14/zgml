@@ -2006,6 +2006,39 @@ export fn zgml_eager_conv2d_f32(
     const bias = if (bias_len == 0) null else bias_ptr.?[0..bias_len];
     const output = output_ptr.?[0..output_len];
 
+    if (padding_h == 0 and padding_w == 0 and dilation_h == 1 and dilation_w == 1 and height >= kernel_h and width >= kernel_w) {
+        const expected_out_h = (height - kernel_h) / stride_h + 1;
+        const expected_out_w = (width - kernel_w) / stride_w + 1;
+        if (out_h == expected_out_h and out_w == expected_out_w) {
+            for (0..batch) |n| {
+                for (0..out_channels) |oc| {
+                    const output_channel_base = (n * out_channels + oc) * out_h * out_w;
+                    for (0..out_h) |oh| {
+                        const input_h_base = oh * stride_h;
+                        const output_row_base = output_channel_base + oh * out_w;
+                        for (0..out_w) |ow| {
+                            var sum: f32 = if (bias) |b| b[oc] else 0;
+                            const input_w_base = ow * stride_w;
+                            for (0..in_channels) |ic| {
+                                const input_channel_base = (n * in_channels + ic) * height * width;
+                                const weight_channel_base = (oc * in_channels + ic) * kernel_h * kernel_w;
+                                for (0..kernel_h) |ky| {
+                                    const input_row_base = input_channel_base + (input_h_base + ky) * width + input_w_base;
+                                    const weight_row_base = weight_channel_base + ky * kernel_w;
+                                    for (0..kernel_w) |kx| {
+                                        sum += input[input_row_base + kx] * weights[weight_row_base + kx];
+                                    }
+                                }
+                            }
+                            output[output_row_base + ow] = sum;
+                        }
+                    }
+                }
+            }
+            return status(.ok);
+        }
+    }
+
     for (0..batch) |n| {
         for (0..out_channels) |oc| {
             for (0..out_h) |oh| {
@@ -2085,6 +2118,41 @@ export fn zgml_eager_pool2d_f32(
 
     const input = input_ptr.?[0..input_len];
     const output = output_ptr.?[0..output_len];
+    if (padding_h == 0 and padding_w == 0 and dilation_h == 1 and dilation_w == 1 and height >= kernel_h and width >= kernel_w) {
+        const expected_out_h = (height - kernel_h) / stride_h + 1;
+        const expected_out_w = (width - kernel_w) / stride_w + 1;
+        if (out_h == expected_out_h and out_w == expected_out_w) {
+            const avg_denominator: f32 = @floatFromInt(kernel_h * kernel_w);
+            for (0..batch) |n| {
+                for (0..channels) |c| {
+                    const input_channel_base = (n * channels + c) * height * width;
+                    const output_channel_base = (n * channels + c) * out_h * out_w;
+                    for (0..out_h) |oh| {
+                        const input_h_base = oh * stride_h;
+                        const output_row_base = output_channel_base + oh * out_w;
+                        for (0..out_w) |ow| {
+                            var acc: f32 = if (op == eager_pool_max) -std.math.inf(f32) else 0;
+                            const input_w_base = ow * stride_w;
+                            for (0..kernel_h) |ky| {
+                                const input_row_base = input_channel_base + (input_h_base + ky) * width + input_w_base;
+                                for (0..kernel_w) |kx| {
+                                    const value = input[input_row_base + kx];
+                                    if (op == eager_pool_max) {
+                                        acc = @max(acc, value);
+                                    } else {
+                                        acc += value;
+                                    }
+                                }
+                            }
+                            output[output_row_base + ow] = if (op == eager_pool_avg) acc / avg_denominator else acc;
+                        }
+                    }
+                }
+            }
+            return status(.ok);
+        }
+    }
+
     for (0..batch) |n| {
         for (0..channels) |c| {
             for (0..out_h) |oh| {
