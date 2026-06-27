@@ -569,14 +569,20 @@ Current checked progress:
   direct `conv2dInto` and `pool2dInto` rows above the native-eager floor with
   zero measured diff against the TS reference.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=17/17` after adding direct
+  as well: the expected row set is `row_coverage=19/19` after adding direct
   `matmul_batched`, `elementwise_mul_batched`, `reduce_sum_scalar_batched`,
-  `elementwise_lt_batched`, `clamp_batched`, `where_batched`, native eager
-  `conv2d_batched`, and native eager `max_pool2d_batched` /
+  `elementwise_lt_batched`, `clamp_batched`, `where_batched`,
+  standalone `activation_relu_batched` / `activation_sigmoid_batched`, native
+  eager `conv2d_batched`, and native eager `max_pool2d_batched` /
   `avg_pool2d_batched`; fresh Node/Bun short runs show zero measured module
   diff across the native eager rows, with per-row speedup floors recorded where
   the direct low-level ABI is evidence rather than the preferred high-level
-  route.
+  route. The standalone activation rows are intentionally diagnostic: direct
+  `nativeEager.activationInto` is numerically correct, but current raw FFI
+  timings are slower than the JS reference for ReLU and mixed for Sigmoid, so
+  normal high-level `Tensor.relu()` / `Tensor.sigmoid()` calls should not be
+  routed through that ABI until `native_eager_activation_vectorized_kernel`
+  proves a real win.
   The native eager adapter policy now lives in
   `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
   shape inference, output validation, public aliases, and activation mapping,
