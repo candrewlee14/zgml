@@ -297,8 +297,8 @@ function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
   if (!surfaceSource.includes("firstContactSurfaceIsSmall: true")) {
     errors.push(`${surfacePath} must keep the ideal first-contact surface explicit and small`);
   }
-  if (!surfaceSource.includes('firstContactRuntimeHandle: "zgml.compileInference"')) {
-    errors.push(`${surfacePath} must name zgml.compileInference as the first-contact runtime handle`);
+  if (!surfaceSource.includes('firstContactRuntimeHandle: "zgml.native"')) {
+    errors.push(`${surfacePath} must name zgml.native as the first-contact runtime handle`);
   }
   if (!surfaceSource.includes("firstContactIsSubsetOfStableSurface: true")) {
     errors.push(`${surfacePath} must assert that first-contact exports are a subset of the stable surface`);
@@ -358,8 +358,8 @@ function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
   if (!readmeSource.includes("`zgml` is the canonical package identity")) {
     errors.push("README.md must present zgml as the canonical package identity");
   }
-  if (!readmeSource.includes("zgml.compileInference(model")) {
-    errors.push("README.md must teach zgml.compileInference as the first-contact compiled inference handle");
+  if (!readmeSource.includes("zgml.native(model")) {
+    errors.push("README.md must teach zgml.native as the first-contact compiled inference handle");
   }
   if (!readmeSource.includes("compile.compileForInference(model")) {
     errors.push("README.md must keep the explicit compile namespace path documented for users who avoid the friendly root value");
@@ -585,7 +585,7 @@ function checkPackageExports(errors) {
     "entry: runtimeEntry",
     "native eager gap: runtime=${runtime}",
     "lazy_matmul_add_gelu_batched",
-    "const fast = zgml.compileForInference(graph, { backend: \"cpu\", inputShape }, bindings)",
+    "const fast = zgml.native(graph, { backend: \"cpu\", inputShape }, bindings)",
     "session: fast.session",
     "lazy_matmul_add_relu_batched",
     "lazy_matmul_add_silu_batched",

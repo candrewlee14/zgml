@@ -200,7 +200,7 @@ function benchGap(spec) {
 }
 
 function compiledInferenceHandle(model, inputShape) {
-  const fast = zgml.compileForInference(model, { backend: "cpu", inputShape });
+  const fast = zgml.native(model, { backend: "cpu", inputShape });
   return Object.freeze({
     session: fast.session,
     into(output, input) {
@@ -213,7 +213,7 @@ function compiledInferenceHandle(model, inputShape) {
 }
 
 function compiledLazyHandle(graph, bindings, inputShape) {
-  const fast = zgml.compileForInference(graph, { backend: "cpu", inputShape }, bindings);
+  const fast = zgml.native(graph, { backend: "cpu", inputShape }, bindings);
   return Object.freeze({
     session: fast.session,
     into(output, input) {

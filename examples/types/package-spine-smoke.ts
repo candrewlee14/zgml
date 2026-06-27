@@ -608,7 +608,7 @@ type PackageCheckpointInspectionSchedulerEtaMinAlias = Expect<Equal<PackageCheck
 type PackageCheckpointInspectionEntry = Expect<Equal<PackageCheckpointInspection["modelParameters"][number], PackageCheckpointTensorInspection>>;
 type PackageCompilePath = Expect<Equal<typeof packageCompileManifest.runtimePath, "Trace -> TensorProgramIr -> KernelPlan -> Program">>;
 type PackageCompileNamespaceShape = Expect<PackageCompileNamespace extends { compile: unknown } ? true : false>;
-type PackageCompileNamespaceInferenceShape = Expect<PackageCompileNamespace extends { compileForInference: unknown; compile_for_inference: unknown } ? true : false>;
+type PackageCompileNamespaceInferenceShape = Expect<PackageCompileNamespace extends { native: unknown; inference: unknown; compileForInference: unknown; compile_for_inference: unknown } ? true : false>;
 type PackageCompileNamespaceTrainingShape = Expect<PackageCompileNamespace extends { trainingStep: unknown; training_step: unknown; compileForTraining: unknown; compile_for_training: unknown } ? true : false>;
 type PackagePublicCompileNamespaceShape = Expect<PackagePublicCompileNamespace extends Readonly<PackageCompileNamespace> ? true : false>;
 type PackagePublicCompileNamespaceCallable = Expect<PackagePublicCompileNamespace extends (target: PackageNnCompilableModule, options?: PackageCompileOptions) => PackageProgram ? true : false>;
@@ -647,7 +647,7 @@ type PackageLazySupportShape = Expect<Equal<PackageLazyCompileSupport["nativePat
 type PackageLazyPath = Expect<Equal<typeof packageLazyManifest.runtimePath, "LazyTensor -> Trace -> TensorProgramIr -> KernelPlan -> Program">>;
 type PackageSimpleOwner = Expect<Equal<typeof packageSimpleManifest.policyOwner, "src/ts/simple.ts">>;
 type PackageSimpleRootRuntime = Expect<Equal<typeof packageSimpleManifest.rootRuntimeValue, "simple">>;
-type PackageSimpleCompileHandle = Expect<Equal<typeof packageSimpleManifest.firstContactRuntimeHandle, "zgml.compileInference">>;
+type PackageSimpleCompileHandle = Expect<Equal<typeof packageSimpleManifest.firstContactRuntimeHandle, "zgml.native">>;
 type PackageSimpleNamespaceShape = Expect<PackageSimpleNamespace extends { compile: unknown; nn: unknown; tensor: unknown } ? true : false>;
 const packageSimpleTensorManifest = packageSimpleTensor.tensorManifest;
 const packageSimpleNnManifest = packageSimpleNn.nnManifest;

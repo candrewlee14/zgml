@@ -21,6 +21,8 @@ export {
   save,
   load,
   compile,
+  native,
+  inference,
   compileInference,
   compile_inference,
   compileForInference,

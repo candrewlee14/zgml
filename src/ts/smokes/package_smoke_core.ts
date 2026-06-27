@@ -3974,6 +3974,10 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     typeof torch.functional?.mse !== "function" ||
     typeof torch.compile !== "function" ||
     typeof torch.compile?.compile !== "function" ||
+    typeof torch.native !== "function" ||
+    torch.native !== torch.compile.compileForInference ||
+    typeof torch.inference !== "function" ||
+    torch.inference !== torch.compile.compileForInference ||
     typeof torch.compileInference !== "function" ||
     torch.compileInference !== torch.compile.compileForInference ||
     typeof torch.compile_inference !== "function" ||
@@ -4652,8 +4656,14 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     typeof adapter.compile !== "function" ||
     typeof adapter.compile.trace !== "function" ||
     typeof adapter.compile.compile !== "function" ||
+    typeof adapter.compile.native !== "function" ||
+    adapter.compile.native !== adapter.compile.compileForInference ||
     typeof adapter.compile.compileForInference !== "function" ||
     typeof adapter.compile.compile_for_inference !== "function" ||
+    typeof adapter.native !== "function" ||
+    adapter.native !== adapter.compile.compileForInference ||
+    typeof adapter.zgml?.native !== "function" ||
+    adapter.zgml.native !== adapter.compile.compileForInference ||
     typeof adapter.compileInference !== "function" ||
     adapter.compileInference !== adapter.compile.compileForInference
   ) {

@@ -41,6 +41,7 @@ import {
   flip,
   floor,
   gradMode,
+  inference,
   inference_mode,
   fullLike,
   full_like,
@@ -81,6 +82,7 @@ import {
   narrow,
   neg,
   negative,
+  native,
   nativeApiContract,
   no_grad,
   nn,
@@ -2429,6 +2431,11 @@ const linearSessionParameterInfoByIndex: ModuleKernelParameterLayoutEntry | null
 const linearInput = tensor([1, 2], [2] as const);
 const compiledInference: CompiledInference<readonly [2], readonly [3]> = compile.compileForInference(linear, linearTypedCompileOptions);
 const compiledInferenceAlias: CompiledInference<readonly [2], readonly [3]> = compile.compile_for_inference(linear, linearTypedCompileOptions);
+const compiledInferenceNativeAlias: CompiledInference<readonly [2], readonly [3]> = compile.native(linear, linearTypedCompileOptions);
+const rootNativeInference: CompiledInference<readonly [2], readonly [3]> = native(linear, linearTypedCompileOptions);
+const rootInferenceAlias: CompiledInference<readonly [2], readonly [3]> = inference(linear, linearTypedCompileOptions);
+const zgmlNativeInference: CompiledInference<readonly [2], readonly [3]> = zgml.native(linear, linearTypedCompileOptions);
+const zgmlInferenceAlias: CompiledInference<readonly [2], readonly [3]> = zgml.inference(linear, linearTypedCompileOptions);
 const zgmlCompiledInference: CompiledInference<readonly [2], readonly [3]> = zgml.compileForInference(linear, linearTypedCompileOptions);
 const zgmlCompileInferenceAlias: CompiledInference<readonly [2], readonly [3]> = zgml.compileInference(linear, linearTypedCompileOptions);
 const zgmlCompiledInferenceAlias: CompiledInference<readonly [2], readonly [3]> = zgml.compile_for_inference(linear, linearTypedCompileOptions);
@@ -2455,6 +2462,11 @@ const compiledInferenceKernelPlan: ModuleKernelPlan | null = compiledInference.k
 const compiledInferenceCompilerSignatures: ModuleCompleteCompilerSignatures | null = compiledInference.compilerSignatures();
 compiledInference.dispose();
 compiledInferenceAlias.free();
+compiledInferenceNativeAlias.dispose();
+rootNativeInference.dispose();
+rootInferenceAlias.dispose();
+zgmlNativeInference.dispose();
+zgmlInferenceAlias.dispose();
 nnNativeInference.dispose();
 nnInferenceAlias.dispose();
 nnCompileInferenceAlias.dispose();
@@ -2462,6 +2474,7 @@ moduleNativeInference.dispose();
 moduleInferenceAlias.dispose();
 moduleCompileInferenceAlias.dispose();
 zgmlCompiledInference.dispose();
+zgmlCompileInferenceAlias.dispose();
 zgmlCompiledInferenceAlias.free();
 const placementKind: ProgramDeviceBufferKind = "input";
 const linearBufferPlacedSlot: ProgramBufferLayoutSlot | null = linearProgram.bufferSlot(placementKind);

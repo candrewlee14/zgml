@@ -183,9 +183,11 @@ function requireFirstContactInferencePath(spec, model, input) {
   if (
     typeof compileForInference !== "function" ||
     adapter.compileInference !== compileForInference ||
+    adapter.native !== compileForInference ||
+    adapter.zgml?.native !== compileForInference ||
     adapter.zgml?.compileInference !== compileForInference
   ) {
-    throw new Error(`${spec.label} expected zgml.compileInference to be the public compileForInference handle`);
+    throw new Error(`${spec.label} expected zgml.native to be the public compileForInference handle`);
   }
   const output = new Float32Array(spec.outputLen);
   const handle = compileForInference(model, { inputShape: spec.inputShape, backend: "cpu" }, bindOptions);

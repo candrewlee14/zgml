@@ -51,7 +51,7 @@ export const simpleManifest = Object.freeze({
   rootRuntimeValue: "simple",
   canonicalFriendlyNamespace: "zgml",
   functionalNamespace: "F",
-  firstContactRuntimeHandle: "zgml.compileInference",
+  firstContactRuntimeHandle: "zgml.native",
   namespaces: simpleFirstContactNamespaces,
   runtimeValues: simpleRuntimeValues,
   advancedRuntimeSurface: false,

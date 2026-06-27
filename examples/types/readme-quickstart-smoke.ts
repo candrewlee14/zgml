@@ -54,7 +54,7 @@ const zgmlFit = zgml.train.fit(zgmlModel, zgmlLoader, {
   },
 });
 const zgmlSnapshot = zgml.checkpoint.create({ model: zgmlModel, optimizer: zgmlOptimizer, scheduler: zgmlScheduler, prefix: "zgml" });
-const zgmlFast = zgml.compileForInference(zgmlModel, { inputShape: [2] as const });
+const zgmlFast = zgml.native(zgmlModel, { inputShape: [2] as const });
 const zgmlFastAlias = zgml.compileInference(zgmlModel, { inputShape: [2] as const });
 const zgmlFastProof = zgmlFast.explain();
 const zgmlFastSupport = zgmlFast.compileSupport();

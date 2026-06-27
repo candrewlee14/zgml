@@ -2675,6 +2675,8 @@ export const simple = Object.freeze({
   F,
   functional: F,
   compile,
+  native: compile.compileForInference,
+  inference: compile.compileForInference,
   compileInference: compile.compileForInference,
   compileForInference: compile.compileForInference,
   trainingStep: compile.trainingStep,
@@ -2792,6 +2794,8 @@ export const torch = createAdapterTorchNamespace({
   nativeEager,
 });
 export const zgml = torch;
+export const native = compile.compileForInference;
+export const inference = compile.compileForInference;
 export const compileInference = compile.compileForInference;
 export const compile_inference = compile.compile_for_inference;
 export const compileForInference = compile.compileForInference;

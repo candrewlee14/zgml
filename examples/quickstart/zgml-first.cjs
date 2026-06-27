@@ -74,7 +74,7 @@ zgml.checkpoint.restore(snapshot, {
   strict: true,
 });
 
-const fast = zgml.compileForInference(restored, { backend: "cpu", inputShape: [2] });
+const fast = zgml.native(restored, { backend: "cpu", inputShape: [2] });
 const output = new Float32Array(1);
 fast.into(output, probe);
 const proof = fast.explain();

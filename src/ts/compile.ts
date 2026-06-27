@@ -620,6 +620,8 @@ export function compileForInference(target: unknown, options: CompileNamespaceOp
 }
 
 export const compile_for_inference = compileForInference;
+export const native = compileForInference;
+export const inference = compileForInference;
 
 export function trainingStep(_model: unknown, _optimizer: unknown, _options: Record<string, unknown> = {}): CompiledTrainingStep {
   throw new Error("compile.trainingStep requires a native Node or Bun runtime");

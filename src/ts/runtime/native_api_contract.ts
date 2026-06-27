@@ -241,6 +241,8 @@ export const requiredNativeFrontendNamespaceExports = Object.freeze([
   "save",
   "load",
   "compile",
+  "native",
+  "inference",
   "compileInference",
   "compile_inference",
   "compileForInference",
