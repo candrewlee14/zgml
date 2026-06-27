@@ -37,6 +37,7 @@ import type {
   CompileAnalysis,
   CompileMode,
   CompiledInference,
+  CompiledTrainingStep,
   CompileOptions,
   CompileOptionsWithInputShape,
   EmbeddingCompileOptions,
@@ -127,6 +128,7 @@ export type {
   CompileAnalysis,
   CompileMode,
   CompiledInference,
+  CompiledTrainingStep,
   CompileNamespace,
   CompileOptions,
   CompileOptionsWithInputShape,
@@ -612,10 +614,10 @@ export function compileForInference(target: unknown, options: CompileNamespaceOp
 
 export const compile_for_inference = compileForInference;
 
-export function trainingStep(_model: unknown, _optimizer: unknown, _options: Record<string, unknown> = {}): never {
+export function trainingStep(_model: unknown, _optimizer: unknown, _options: Record<string, unknown> = {}): CompiledTrainingStep {
   throw new Error("compile.trainingStep requires a native Node or Bun runtime");
 }
 
 export const training_step = trainingStep;
-export const compileForTraining = trainingStep;
-export const compile_for_training = trainingStep;
+export const compileForTraining: typeof trainingStep = trainingStep;
+export const compile_for_training: typeof trainingStep = trainingStep;

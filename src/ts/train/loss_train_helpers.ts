@@ -204,6 +204,12 @@ type LossTrainOptimizer = {
   stateDict?(): LossTrainOptimizerSnapshot;
 };
 
+type CompiledTrainingStep = AnyRecord & {
+  step(input: unknown, target: unknown): unknown;
+  inputShape?: () => readonly number[];
+  outputShape?: () => readonly number[];
+};
+
 type LossTrainStepOptions = Omit<TrainStepOptions, "loss"> & {
   loss?: LossTrainTensor | null;
 };
@@ -1274,6 +1280,27 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     return indices;
   }
 
+  function isCompiledTrainingStep(value: unknown): value is CompiledTrainingStep {
+    if (!isRecord(value) || typeof value.step !== "function") return false;
+    return value.kind === "zgml.compiled-training-step" || value.native === true;
+  }
+
+  function compiledTrainingBatch(batch: unknown) {
+    const record = batch as AnyRecord;
+    if (!record || record.input === undefined || record.target === undefined) {
+      throw new Error("train.fit compiled training batch requires input and target");
+    }
+    return record;
+  }
+
+  function compiledTrainingLoss(result: unknown) {
+    const value = Number((result as AnyRecord | null)?.loss);
+    if (!Number.isFinite(value)) {
+      throw new Error(`train.fit compiled training step must return a finite loss, got ${value}`);
+    }
+    return value;
+  }
+
   function finiteLossScalar(lossValue: LossTrainTensor, label: string) {
     const value = tensorScalar(lossValue);
     if (value === null) throw new Error(`${label} loss must be scalar-like`);
@@ -1386,8 +1413,101 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     });
   }
 
+  function fitCompiledTrainingStep(compiled: CompiledTrainingStep, batches: unknown, fitOptions: TrainFitOptions = {}) {
+    if (!batches || typeof (batches as Iterable<unknown>)[Symbol.iterator] !== "function") {
+      throw new Error("train.fit compiled training requires an iterable of batches");
+    }
+    const epochs = positiveIntegerOption(fitOptions.epochs, "epochs", 1);
+    const maxStepsOption = fitOptions.maxSteps ?? fitOptions.max_steps;
+    const maxSteps = maxStepsOption === undefined ? null : positiveIntegerOption(maxStepsOption, "maxSteps", Number.MAX_SAFE_INTEGER);
+    const onStep = typeof fitOptions.onStep === "function" ? fitOptions.onStep : fitOptions.on_step;
+    const earlyStopping = fitEarlyStoppingOptions(fitOptions);
+    const batchCount = fitBatchCountEvidence(batches);
+    const sampleCount = fitSampleCountEvidence(batches);
+    const losses = [];
+    let bestLoss: number | null = null;
+    let bestStep: number | null = null;
+    let badSteps = 0;
+    let steps = 0;
+    let stopped = false;
+    let stopReason: "max-steps" | "early-stopping" | null = null;
+    for (let epoch = 0; epoch < epochs; epoch += 1) {
+      let batchIndex = 0;
+      for (const batch of batches as Iterable<unknown>) {
+        if (maxSteps !== null && steps >= maxSteps) {
+          stopped = true;
+          stopReason = "max-steps";
+          break;
+        }
+        const record = compiledTrainingBatch(batch);
+        const sampleIndices = fitBatchSampleIndicesEvidence(batch);
+        const result = compiled.step(record.input, record.target);
+        const latestLoss = compiledTrainingLoss(result);
+        losses.push(latestLoss);
+        steps += 1;
+        if (typeof onStep === "function") {
+          onStep(trainFitStepEvidence({
+            kind: "zgml.train.fit-step",
+            epoch,
+            batchIndex,
+            step: steps,
+            sampleIndices,
+            sample_indices: sampleIndices,
+            loss: latestLoss,
+            stepEvidence: null,
+          }));
+        }
+        if (earlyStopping) {
+          if (earlyStoppingImproved(latestLoss, bestLoss, earlyStopping.mode, earlyStopping.minDelta)) {
+            bestLoss = latestLoss;
+            bestStep = steps;
+            badSteps = 0;
+          } else {
+            badSteps += 1;
+            if (badSteps > earlyStopping.patience) {
+              stopped = true;
+              stopReason = "early-stopping";
+              break;
+            }
+          }
+        } else if (bestLoss === null || latestLoss < bestLoss) {
+          bestLoss = latestLoss;
+          bestStep = steps;
+        }
+        batchIndex += 1;
+      }
+      if (stopped) break;
+    }
+    return trainFitEvidence({
+      kind: "zgml.train.fit",
+      epochs,
+      steps,
+      stoppedEarly: stopped,
+      stopReason,
+      stop_reason: stopReason,
+      batchCount,
+      batch_count: batchCount,
+      sampleCount,
+      sample_count: sampleCount,
+      losses: Object.freeze(losses),
+      bestLoss,
+      best_loss: bestLoss,
+      bestStep,
+      best_step: bestStep,
+      finalLoss: losses.length === 0 ? null : losses[losses.length - 1],
+      lastStep: null,
+      lastLoss: null,
+      native: true,
+      backend: compiled.backend ?? "native",
+    });
+  }
+
   function fit(targetOrOptimizer: unknown, batches: unknown, lossFnOrOptions: unknown, fitOptions: TrainFitOptions = {}) {
     const maybeOptions = isRecord(lossFnOrOptions) ? lossFnOrOptions : null;
+    if (isCompiledTrainingStep(targetOrOptimizer)) {
+      const options = maybeOptions ? maybeOptions as TrainFitOptions : fitOptions;
+      return fitCompiledTrainingStep(targetOrOptimizer, batches, options);
+    }
     if (
       maybeOptions &&
       targetOrOptimizer &&

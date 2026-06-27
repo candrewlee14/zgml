@@ -4876,6 +4876,32 @@ export type TrainFitOptions<OptimizerKind extends OptimizerStateKind | null = Op
   on_step?: (evidence: TrainFitStepEvidence<OptimizerKind>) => void;
 } & TrainGradientClipOptions;
 
+export type CompiledTrainingStepEvidence = Readonly<{
+  kind: "zgml.native-training-step";
+  native: true;
+  backend: string;
+  loss: number;
+  correct?: number;
+  accuracy?: number;
+  batch?: number;
+  optimizerStep?: number;
+}>;
+
+export interface CompiledTrainingStep {
+  readonly kind: "zgml.compiled-training-step";
+  readonly native: true;
+  readonly backend: string;
+  readonly modelKind: string;
+  readonly optimizerKind: string;
+  readonly lossKind: string;
+  inputShape(): readonly number[];
+  outputShape(): readonly number[];
+  step(input: TensorLike, target: TensorLike | IndexLike): CompiledTrainingStepEvidence;
+  forward(input: TensorLike, target: TensorLike | IndexLike): CompiledTrainingStepEvidence;
+  dispose(): void;
+  free(): void;
+}
+
 export type TrainModelFitOptions<
   OptimizerKind extends OptimizerStateKind | null,
   Target extends NnModule,
@@ -4909,6 +4935,8 @@ export type TrainFitEvidence<OptimizerKind extends OptimizerStateKind | null = O
   finalLoss: number | null;
   lastStep: TrainStepEvidence<OptimizerKind> | null;
   lastLoss: Tensor | null;
+  native?: boolean;
+  backend?: string | null;
 }>;
 
 export type TrainEvaluateContext = Readonly<{
@@ -5385,6 +5413,11 @@ export interface TrainNamespace {
     lossFn: (batch: Batch, context: TrainFitContext) => Tensor,
     options?: TrainFitOptions<Kind>,
   ): TrainFitEvidence<Kind>;
+  fit<Batch extends { input: TensorLike; target: TensorLike | IndexLike }>(
+    compiled: CompiledTrainingStep,
+    batches: Iterable<Batch>,
+    options?: TrainFitOptions,
+  ): TrainFitEvidence;
   fit<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
     module: Target,
     batches: Iterable<TrainSupervisedBatch<Target, Batch>>,

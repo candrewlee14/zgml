@@ -432,7 +432,13 @@ Current checked progress:
   rank-3 `transpose` plus single-swap and cycle `permute`
   lowering through the native module Program ABI,
   rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering, and
-  compile/bind/session hooks through package and type smokes. The root-level
+  compile/bind/session hooks through package and type smokes. A June 27, 2026
+  pass made the training loop follow the same split: `compile.compileForTraining`
+  produces a native compiled trainer for the supported Sequential Linear/ReLU
+  classifier shape, and `train.fit(trainer, loader, { epochs })` now keeps the
+  JS/TS side ergonomic while each batch's forward/backward/Adam update goes
+  through the Zig FFI training step. The Bun classifier smoke checks that path
+  learns and reports native `TrainFitEvidence`. The root-level
   product/API diet now has a checked internal non-breaking taxonomy:
   `src/ts/public_surface.ts` names the stable root namespaces users should learn
   first, names `zgml` as the stable friendly root value, separates advanced
@@ -1750,6 +1756,11 @@ staged width-parallel down path needs `down_partial_elements=3538944`
 and profiles a reusable backend-owned down-partial scratch buffer for semantic
 commands with `hidden > SEMANTIC_FFN_MAX_DIM`; the refreshed bridge gate asserts
 `semantic_width_scratch=candidates:1,bytes:14155776,...,down_partial_to_output:48.00`.
+The current bridge path now also routes the tiled row-chain tail through that
+runtime-owned semantic scratch surface instead of the output buffer; the checked
+June 27, 2026 artifact reports `runtime_uses:314,runtime_bytes:9216`, where the
+use count is cumulative across benchmark repetitions and `9216` bytes is the
+per-dispatch partial surface for the `2304` row-chain partial slots.
 The remaining kernel slice is therefore to consume that scratch, prove an
 equivalent accumulation strategy, or implement a streamed hidden-tile design
 that avoids the `14.2 MB` partial surface without falling back to row-serial

@@ -7850,8 +7850,16 @@ const CompiledProgram = struct {
         if (q.M <= 1) return false;
         const partial_cols = (q.N + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE;
         const partial_len = @as(usize, q.M) * @as(usize, partial_cols);
-        const partial_end = @as(usize, rn.dst_offset) + partial_len;
-        if (partial_end * @sizeOf(f32) > view.device_bufs[rn.dst].size) return false;
+        const partial_bytes = partial_len * @sizeOf(f32);
+        const program_partial_end = @as(usize, rn.dst_offset) + partial_len;
+        const program_partial_fits = program_partial_end * @sizeOf(f32) <= view.device_bufs[rn.dst].size;
+        const scratch_partial = if (view.semantic_width_scratch) |scratch|
+            if (scratch.size >= partial_bytes) scratch else null
+        else
+            null;
+        if (scratch_partial == null and !program_partial_fits) return false;
+        const partial_buffer = scratch_partial orelse view.device_bufs[rn.dst];
+        const partial_dst_offset: u32 = if (scratch_partial != null) 0 else rn.dst_offset;
 
         const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
         const secondary_buf = if (q_is_src0) e.src1 else e.src0;
@@ -7865,7 +7873,7 @@ const CompiledProgram = struct {
             view.device_bufs[secondary_buf],
             view.device_bufs[out.dst],
             view.device_bufs[e.dst],
-            view.device_bufs[rn.dst],
+            partial_buffer,
         };
         const params = QMatmulRowChainParams{
             .M = qparams.M,
@@ -7882,16 +7890,17 @@ const CompiledProgram = struct {
             .rms_eps = rn.eps,
             .scale_src_offset = rp.src_offset,
             .scaled_dst_offset = out.dst_offset,
-            .partial_dst_offset = rn.dst_offset,
+            .partial_dst_offset = partial_dst_offset,
             .partial_cols = partial_cols,
         };
         exec.profile.recordQMatmulRowChainTwoPhaseTiledSpill(q.M, q.N, q.K, ROW_CHAIN_TILE, write_ew_output, output_spill);
+        if (scratch_partial != null) exec.profile.recordSemanticWidthScratchRuntimeUse(partial_bytes);
         exec.encodeKernel(.qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = partial_cols }, MATMUL_THREADS);
 
         const ew_src = if (write_ew_output) view.device_bufs[e.dst] else view.device_bufs[out.dst];
         const finalize_buffers = [_]DeviceBuffer{
             ew_src,
-            view.device_bufs[rn.dst],
+            partial_buffer,
             view.device_bufs[rp.src],
             view.device_bufs[out.dst],
         };

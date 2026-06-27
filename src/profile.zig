@@ -153,6 +153,8 @@ pub const RuntimeProfile = struct {
     semantic_width_scratch_down_partial_bytes: u64 = 0,
     semantic_width_scratch_output_bytes: u64 = 0,
     semantic_width_scratch_down_partial_to_output_x1000: u64 = 0,
+    semantic_width_scratch_runtime_uses: u64 = 0,
+    semantic_width_scratch_runtime_bytes: u64 = 0,
     call_count: u32 = 0,
 
     pub fn reset(self: *RuntimeProfile) void {
@@ -164,6 +166,8 @@ pub const RuntimeProfile = struct {
         const semantic_width_scratch_down_partial_bytes = self.semantic_width_scratch_down_partial_bytes;
         const semantic_width_scratch_output_bytes = self.semantic_width_scratch_output_bytes;
         const semantic_width_scratch_down_partial_to_output_x1000 = self.semantic_width_scratch_down_partial_to_output_x1000;
+        const semantic_width_scratch_runtime_uses = self.semantic_width_scratch_runtime_uses;
+        const semantic_width_scratch_runtime_bytes = self.semantic_width_scratch_runtime_bytes;
         self.* = .{
             .runtime_patch_shape = runtime_patch_shape,
             .program_command_shape = program_command_shape,
@@ -173,6 +177,8 @@ pub const RuntimeProfile = struct {
             .semantic_width_scratch_down_partial_bytes = semantic_width_scratch_down_partial_bytes,
             .semantic_width_scratch_output_bytes = semantic_width_scratch_output_bytes,
             .semantic_width_scratch_down_partial_to_output_x1000 = semantic_width_scratch_down_partial_to_output_x1000,
+            .semantic_width_scratch_runtime_uses = semantic_width_scratch_runtime_uses,
+            .semantic_width_scratch_runtime_bytes = semantic_width_scratch_runtime_bytes,
         };
     }
 
@@ -258,6 +264,8 @@ pub const RuntimeProfile = struct {
         self.semantic_width_scratch_down_partial_bytes = @max(self.semantic_width_scratch_down_partial_bytes, other.semantic_width_scratch_down_partial_bytes);
         self.semantic_width_scratch_output_bytes = @max(self.semantic_width_scratch_output_bytes, other.semantic_width_scratch_output_bytes);
         self.semantic_width_scratch_down_partial_to_output_x1000 = @max(self.semantic_width_scratch_down_partial_to_output_x1000, other.semantic_width_scratch_down_partial_to_output_x1000);
+        self.semantic_width_scratch_runtime_uses +%= other.semantic_width_scratch_runtime_uses;
+        self.semantic_width_scratch_runtime_bytes = @max(self.semantic_width_scratch_runtime_bytes, other.semantic_width_scratch_runtime_bytes);
         self.call_count +%= other.call_count;
     }
 
@@ -480,6 +488,11 @@ pub const RuntimeProfile = struct {
                 down_partial_bytes *% 1000 / output_bytes,
             );
         }
+    }
+
+    pub fn recordSemanticWidthScratchRuntimeUse(self: *RuntimeProfile, bytes: u64) void {
+        self.semantic_width_scratch_runtime_uses +%= 1;
+        self.semantic_width_scratch_runtime_bytes = @max(self.semantic_width_scratch_runtime_bytes, bytes);
     }
 };
 
@@ -725,6 +738,8 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeJsonField(jw, "semantic_width_scratch_down_partial_bytes", rt.semantic_width_scratch_down_partial_bytes);
         try writeJsonField(jw, "semantic_width_scratch_output_bytes", rt.semantic_width_scratch_output_bytes);
         try writeJsonField(jw, "semantic_width_scratch_down_partial_to_output", @as(f64, @floatFromInt(rt.semantic_width_scratch_down_partial_to_output_x1000)) / 1000.0);
+        try writeJsonField(jw, "semantic_width_scratch_runtime_uses", rt.semantic_width_scratch_runtime_uses);
+        try writeJsonField(jw, "semantic_width_scratch_runtime_bytes", rt.semantic_width_scratch_runtime_bytes);
     }
 }
 
@@ -984,6 +999,8 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_width_scratch_down_partial_bytes\":14155776") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_width_scratch_output_bytes\":294912") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_width_scratch_down_partial_to_output\":48") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_width_scratch_runtime_uses\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_width_scratch_runtime_bytes\":0") != null);
 }
 
 test "RuntimeProfile serializes semantic fallback dispatch evidence without semantic kernel count" {
@@ -1080,6 +1097,8 @@ test "RuntimeProfile accumulates evidence windows" {
     try std.testing.expectEqual(@as(u64, 14155776), total.semantic_width_scratch_down_partial_bytes);
     try std.testing.expectEqual(@as(u64, 294912), total.semantic_width_scratch_output_bytes);
     try std.testing.expectEqual(@as(u64, 48000), total.semantic_width_scratch_down_partial_to_output_x1000);
+    try std.testing.expectEqual(@as(u64, 0), total.semantic_width_scratch_runtime_uses);
+    try std.testing.expectEqual(@as(u64, 0), total.semantic_width_scratch_runtime_bytes);
     try std.testing.expectEqual(@as(u32, 74), total.call_count);
 }
 
