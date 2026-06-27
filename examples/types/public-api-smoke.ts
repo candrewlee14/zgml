@@ -4411,6 +4411,9 @@ const modelFirstNativeFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpoi
   maxSteps: 1,
   requireNative: true,
   inputShape: [1, 2] as const,
+  classes: 1,
+  numClasses: 1,
+  num_classes: 1,
 });
 const modelFirstNativeFitPlan: CompiledTrainingPlan | null | undefined = modelFirstNativeFitEvidence.compiledPlan;
 const fitDataLastStepOptimizerKind: "adam" | null = fitDataEvidenceTyped.lastStep?.optimizerKind ?? null;

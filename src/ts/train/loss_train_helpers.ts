@@ -1419,7 +1419,7 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     if (batch === null || features === null) return null;
     const out: AnyRecord = { inputShape: Object.freeze([batch, features]), loss };
     const lossRecord = criterion as AnyRecord | null;
-    const classes = config.classes ?? config.numClasses ?? lossRecord?.classes ?? lossRecord?.numClasses;
+    const classes = config.classes ?? config.numClasses ?? config.num_classes ?? lossRecord?.classes ?? lossRecord?.numClasses;
     if (classes !== undefined && classes !== null) out.classes = classes;
     return Object.freeze(out);
   }

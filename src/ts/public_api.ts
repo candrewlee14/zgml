@@ -5070,6 +5070,9 @@ export type TrainFitOptions<OptimizerKind extends OptimizerStateKind | null = Op
   input_shape?: readonly number[];
   batchSize?: number;
   batch_size?: number;
+  classes?: number;
+  numClasses?: number;
+  num_classes?: number;
   earlyStopping?: boolean | TrainEarlyStoppingOptions;
   early_stopping?: boolean | TrainEarlyStoppingOptions;
   earlyStoppingPatience?: number;
