@@ -36,6 +36,20 @@ type NativeTrainingCallArgs = {
   weightDecay: number;
 };
 
+type NativeTrainingLinearSgdCallArgs = {
+  input: Float32Array;
+  target: Float32Array;
+  weight: Float32Array;
+  bias: Float32Array;
+  output: Float32Array;
+  gradWeight: Float32Array;
+  batch: number;
+  inFeatures: number;
+  outFeatures: number;
+  lr: number;
+  weightDecay: number;
+};
+
 type NativeTrainingCallResult = {
   status: number;
   loss: number;
@@ -43,6 +57,7 @@ type NativeTrainingCallResult = {
 };
 
 type NativeTrainingMlpAdamCall = (args: NativeTrainingCallArgs) => NativeTrainingCallResult;
+type NativeTrainingLinearSgdCall = (args: NativeTrainingLinearSgdCallArgs) => NativeTrainingCallResult;
 
 export type NativeTrainingSurfaceOptions = {
   f32: NativeTrainingTensorFactory;
@@ -50,6 +65,7 @@ export type NativeTrainingSurfaceOptions = {
   check: NativeTrainingCheck;
   trainMlpReluCrossEntropyAdamF32: NativeTrainingMlpAdamCall;
   trainMlpReluCrossEntropyAdamWF32: NativeTrainingMlpAdamCall;
+  trainLinearMseSgdF32: NativeTrainingLinearSgdCall;
 };
 
 function positiveInteger(value: unknown, label: string) {
@@ -98,6 +114,18 @@ function requireLinearLayer(model: unknown, index: number) {
   return { layer, inFeatures, outFeatures, weight: layer.weight as Float32Array, bias: layer.bias as Float32Array };
 }
 
+function requireLinearModel(model: unknown) {
+  const layer = model as AnyRecord | null;
+  if (!layer || layer.kind !== "linear") {
+    throw new Error("compile.trainingStep MSE native path currently requires nn.Linear");
+  }
+  const inFeatures = positiveInteger(layer.inFeatures, "compile.trainingStep linear inFeatures");
+  const outFeatures = positiveInteger(layer.outFeatures, "compile.trainingStep linear outFeatures");
+  if (!(layer.weight instanceof Float32Array)) throw new Error("compile.trainingStep linear weight must be Float32Array-backed");
+  if (!(layer.bias instanceof Float32Array)) throw new Error("compile.trainingStep linear requires bias=true for the native MSE step");
+  return { layer, inFeatures, outFeatures, weight: layer.weight as Float32Array, bias: layer.bias as Float32Array };
+}
+
 function modelLayers(model: unknown) {
   const layers = (model as AnyRecord | null)?.layers;
   if (!Array.isArray(layers) || layers.length !== 3) {
@@ -137,6 +165,28 @@ function requireAdamLikeOptimizer(optimizer: unknown, params: readonly Float32Ar
   return opt;
 }
 
+function requirePlainSgdOptimizer(optimizer: unknown, params: readonly Float32Array[]) {
+  const opt = optimizer as AnyRecord | null;
+  if (!opt || opt.kind !== "sgd") {
+    throw new Error("compile.trainingStep MSE native path currently requires optim.sgd");
+  }
+  if (finiteNumber(opt.momentum, "compile.trainingStep SGD momentum") !== 0) {
+    throw new Error("compile.trainingStep MSE native path currently supports SGD momentum=0");
+  }
+  if (!Array.isArray(opt.params)) {
+    throw new Error("compile.trainingStep requires an SGD optimizer with live parameter state");
+  }
+  if (opt.params.length !== params.length) {
+    throw new Error("compile.trainingStep SGD state does not match the model parameter count");
+  }
+  for (let i = 0; i < params.length; i += 1) {
+    if (opt.params[i]?.data !== params[i]) {
+      throw new Error("compile.trainingStep SGD optimizer must be created from the same model instance");
+    }
+  }
+  return opt;
+}
+
 function inputBatchShape(input: unknown, inputData: Float32Array, inputShape: readonly number[]) {
   const shape = tensorShape(input) ?? inputShape;
   if (shape.length !== 2) throw new Error(`compile.trainingStep input must be rank-2 [batch, features], got [${shape.join(",")}]`);
@@ -146,6 +196,16 @@ function inputBatchShape(input: unknown, inputData: Float32Array, inputShape: re
     throw new Error(`compile.trainingStep input length ${inputData.length} does not match ${batch}x${inFeatures}`);
   }
   return { batch, inFeatures };
+}
+
+function targetBatchShape(target: unknown, targetData: Float32Array, batch: number, outFeatures: number) {
+  const shape = tensorShape(target) ?? [batch, outFeatures];
+  if (shape.length !== 2) throw new Error(`compile.trainingStep target must be rank-2 [batch, features], got [${shape.join(",")}]`);
+  const targetBatch = positiveInteger(shape[0], "compile.trainingStep target batch");
+  const targetFeatures = positiveInteger(shape[1], "compile.trainingStep target features");
+  if (targetBatch !== batch || targetFeatures !== outFeatures || targetData.length !== batch * outFeatures) {
+    throw new Error(`compile.trainingStep target shape [${targetBatch},${targetFeatures}] does not match [${batch},${outFeatures}]`);
+  }
 }
 
 function classTargets(value: unknown, indexValues: NativeTrainingIndexValues) {
@@ -164,8 +224,11 @@ function classTargets(value: unknown, indexValues: NativeTrainingIndexValues) {
 export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfaceOptions) {
   function trainingStep(model: unknown, optimizer: unknown, config: AnyRecord = {}) {
     const loss = config.loss ?? config.criterion ?? "crossEntropy";
+    if (loss === "mse" || loss === "meanSquaredError" || loss === "mean_squared_error") {
+      return linearMseSgdTrainingStep(model, optimizer, config);
+    }
     if (loss !== "crossEntropy" && loss !== "cross_entropy") {
-      throw new Error(`compile.trainingStep native MLP currently supports loss: "crossEntropy", got ${loss}`);
+      throw new Error(`compile.trainingStep native path currently supports loss: "crossEntropy" or "mse", got ${loss}`);
     }
     const inputShape = Array.isArray(config.inputShape ?? config.input_shape)
       ? (config.inputShape ?? config.input_shape) as readonly number[]
@@ -259,6 +322,76 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       lossKind: "crossEntropy",
       inputShape: () => Object.freeze([batch, inFeatures] as const),
       outputShape: () => Object.freeze([batch, classes] as const),
+      step,
+      forward: step,
+      dispose() {},
+      free() {},
+    });
+  }
+
+  function linearMseSgdTrainingStep(model: unknown, optimizer: unknown, config: AnyRecord = {}) {
+    const inputShape = Array.isArray(config.inputShape ?? config.input_shape)
+      ? (config.inputShape ?? config.input_shape) as readonly number[]
+      : null;
+    if (!inputShape || inputShape.length !== 2) {
+      throw new Error("compile.trainingStep requires inputShape: [batch, features]");
+    }
+    const fixedInputShape = inputShape;
+    const batch = positiveInteger(fixedInputShape[0], "compile.trainingStep inputShape batch");
+    const inFeatures = positiveInteger(fixedInputShape[1], "compile.trainingStep inputShape features");
+    const layer = requireLinearModel(model);
+    if (layer.inFeatures !== inFeatures) {
+      throw new Error(`compile.trainingStep input features ${inFeatures} must match model input ${layer.inFeatures}`);
+    }
+    const params = [layer.weight, layer.bias];
+    const sgd = requirePlainSgdOptimizer(optimizer, params);
+    const output = new Float32Array(batch * layer.outFeatures);
+    const gradWeight = new Float32Array(layer.weight.length);
+
+    function step(input: unknown, target: unknown) {
+      const inputData = tensorData(input, "compile.trainingStep input", options.f32);
+      const shape = inputBatchShape(input, inputData, fixedInputShape);
+      if (shape.batch !== batch || shape.inFeatures !== inFeatures) {
+        throw new Error(`compile.trainingStep expected input shape [${batch},${inFeatures}], got [${shape.batch},${shape.inFeatures}]`);
+      }
+      const targetData = tensorData(target, "compile.trainingStep target", options.f32);
+      targetBatchShape(target, targetData, batch, layer.outFeatures);
+      const result = options.trainLinearMseSgdF32({
+        input: inputData,
+        target: targetData,
+        weight: layer.weight,
+        bias: layer.bias,
+        output,
+        gradWeight,
+        batch,
+        inFeatures,
+        outFeatures: layer.outFeatures,
+        lr: finiteNumber(sgd.lr, "compile.trainingStep SGD lr"),
+        weightDecay: finiteNumber(sgd.weightDecay, "compile.trainingStep SGD weightDecay"),
+      });
+      options.check(result.status);
+      sgd.t = Number(sgd.t) + 1;
+      return Object.freeze({
+        kind: "zgml.native-training-step",
+        native: true,
+        backend: "cpu",
+        loss: result.loss,
+        correct: 0,
+        accuracy: 0,
+        batch,
+        optimizerStep: sgd.t,
+      });
+    }
+
+    return Object.freeze({
+      kind: "zgml.compiled-training-step",
+      native: true,
+      backend: "cpu",
+      modelKind: "linear",
+      optimizerKind: "sgd",
+      lossKind: "mse",
+      inputShape: () => Object.freeze([batch, inFeatures] as const),
+      outputShape: () => Object.freeze([batch, layer.outFeatures] as const),
       step,
       forward: step,
       dispose() {},

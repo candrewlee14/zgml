@@ -1171,6 +1171,30 @@ const nativeTraining = createAdapterNativeTrainingSurface({
   f32: (value, label) => f32(value, label),
   indexValues,
   check,
+  trainLinearMseSgdF32: (args) => {
+    const outLoss = new Float32Array(1);
+    const statusCode = nodeSymbolGroups.nativeTraining.trainLinearMseSgdF32(
+      args.input,
+      args.input.length,
+      args.target,
+      args.target.length,
+      args.weight,
+      args.weight.length,
+      args.bias,
+      args.bias.length,
+      args.output,
+      args.output.length,
+      args.gradWeight,
+      args.gradWeight.length,
+      args.batch,
+      args.inFeatures,
+      args.outFeatures,
+      args.lr,
+      args.weightDecay,
+      outLoss,
+    );
+    return { status: statusCode, loss: outLoss[0], correct: 0 };
+  },
   trainMlpReluCrossEntropyAdamF32: (args) => callNodeNativeMlpTraining(
     nodeSymbolGroups.nativeTraining.trainMlpReluCrossEntropyAdamF32,
     args,

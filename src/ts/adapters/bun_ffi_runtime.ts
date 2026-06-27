@@ -2500,6 +2500,30 @@ const nativeTraining = createAdapterNativeTrainingSurface({
   f32: (value) => f32(value as TensorLike),
   indexValues,
   check,
+  trainLinearMseSgdF32: (args) => {
+    const outLoss = new Float32Array(1);
+    const statusCode = bunSymbolGroups.nativeTraining.trainLinearMseSgdF32(
+      args.input,
+      BigInt(args.input.length),
+      args.target,
+      BigInt(args.target.length),
+      args.weight,
+      BigInt(args.weight.length),
+      args.bias,
+      BigInt(args.bias.length),
+      args.output,
+      BigInt(args.output.length),
+      args.gradWeight,
+      BigInt(args.gradWeight.length),
+      BigInt(args.batch),
+      BigInt(args.inFeatures),
+      BigInt(args.outFeatures),
+      args.lr,
+      args.weightDecay,
+      outLoss,
+    );
+    return { status: statusCode, loss: outLoss[0], correct: 0 };
+  },
   trainMlpReluCrossEntropyAdamF32: (args) => callBunNativeMlpTraining(
     bunSymbolGroups.nativeTraining.trainMlpReluCrossEntropyAdamF32,
     args,

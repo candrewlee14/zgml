@@ -1,6 +1,7 @@
 import {
   cat,
   checkpoint,
+  compile,
   data,
   initial_seed,
   loss,
@@ -114,6 +115,27 @@ if (!(highLevelAfter < highLevelBefore * 0.02)) {
   throw new Error(`expected train.fitModule to reduce held-out loss sharply; before=${highLevelBefore}, after=${highLevelAfter}`);
 }
 
+const nativeModel = nn.linear(2, 1, { weights: [0, 0], bias: [0] });
+const nativeOptimizer = optim.sgd(nativeModel, { lr: 0.04 });
+const nativeBatches = data.dataLoader(samples, { batchSize: 4, shuffle: false });
+const nativeBefore = scalar(loss.mse(nativeModel.forward(tensor([1, -1], [1, 2] as const)), tensor([2.5], [1, 1] as const)));
+const nativeTrainer = compile.compileForTraining(nativeModel, nativeOptimizer, {
+  inputShape: [4, 2] as const,
+  loss: "mse",
+});
+const nativeFit = train.fit(nativeTrainer, nativeBatches, { epochs: 80 });
+const nativeAfter = scalar(loss.mse(nativeModel.forward(tensor([1, -1], [1, 2] as const)), tensor([2.5], [1, 1] as const)));
+if (nativeFit.native !== true || nativeTrainer.native !== true || nativeTrainer.backend !== "cpu") {
+  throw new Error("train.fit compiled native linear trainer must return native fit evidence");
+}
+if (!train.isTrainFitEvidence(nativeFit) || nativeFit.steps !== 80 || nativeFit.losses.length !== 80) {
+  throw new Error("compiled native linear trainer must return signed fit evidence for every optimizer step");
+}
+if (!(nativeAfter < nativeBefore * 0.02)) {
+  throw new Error(`expected compiled native linear trainer to reduce held-out loss sharply; before=${nativeBefore}, after=${nativeAfter}`);
+}
+nativeTrainer.free();
+
 const schedulerState = scheduler.stateDict();
 if (schedulerState.step !== fit.steps || scheduler.getLastLr() !== optimizer.config().lr) {
   throw new Error(`unexpected scheduler evidence: ${JSON.stringify(schedulerState)} optimizer=${optimizer.config().lr}`);
@@ -147,4 +169,4 @@ if (restoredScheduler.stateDict().step !== schedulerState.step || restoredOptimi
 
 assertClose(scalar(restored.forward(tensor([1, -1], [2]))), 2.5, 0.03, "restored prediction");
 
-console.log(`zgml bun training smoke ok: before=${before.toFixed(6)} after=${after.toFixed(6)} fitModuleAfter=${highLevelAfter.toFixed(6)} steps=${fit.steps}`);
+console.log(`zgml bun training smoke ok: before=${before.toFixed(6)} after=${after.toFixed(6)} fitModuleAfter=${highLevelAfter.toFixed(6)} nativeAfter=${nativeAfter.toFixed(6)} steps=${fit.steps}`);

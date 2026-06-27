@@ -60,6 +60,27 @@ type BunTrainMlpReluCrossEntropyAdamF32 = (
   outCorrect: BigUint64Array,
 ) => number;
 
+type BunTrainLinearMseSgdF32 = (
+  input: Float32Array,
+  inputLen: bigint,
+  target: Float32Array,
+  targetLen: bigint,
+  weight: Float32Array,
+  weightLen: bigint,
+  bias: Float32Array,
+  biasLen: bigint,
+  output: Float32Array,
+  outputLen: bigint,
+  gradWeight: Float32Array,
+  gradWeightLen: bigint,
+  batch: bigint,
+  inFeatures: bigint,
+  outFeatures: bigint,
+  lr: number,
+  weightDecay: number,
+  outLoss: Float32Array,
+) => number;
+
 export type BunNativeSymbols = Readonly<{
   zgml_abi_struct_size(kind: number): bigint;
   zgml_get_runtime_info(outInfo: BigUint64Array): number;
@@ -146,6 +167,7 @@ export type BunNativeSymbols = Readonly<{
     outFeatures: bigint,
     activation: number,
   ): number;
+  zgml_train_linear_mse_sgd_f32: BunTrainLinearMseSgdF32;
   zgml_train_mlp_relu_cross_entropy_adam_f32: BunTrainMlpReluCrossEntropyAdamF32;
   zgml_train_mlp_relu_cross_entropy_adamw_f32: BunTrainMlpReluCrossEntropyAdamF32;
   zgml_session_free(session: BunNativeHandle): void;
@@ -443,6 +465,20 @@ export function bindBunSymbols(libPath: string): BunNativeSymbols {
         FFIType.u64,
         FFIType.u64,
         FFIType.u32,
+      ],
+      returns: FFIType.i32,
+    },
+    zgml_train_linear_mse_sgd_f32: {
+      args: [
+        FFIType.ptr, FFIType.u64,
+        FFIType.ptr, FFIType.u64,
+        FFIType.ptr, FFIType.u64,
+        FFIType.ptr, FFIType.u64,
+        FFIType.ptr, FFIType.u64,
+        FFIType.ptr, FFIType.u64,
+        FFIType.u64, FFIType.u64, FFIType.u64,
+        FFIType.float, FFIType.float,
+        FFIType.ptr,
       ],
       returns: FFIType.i32,
     },

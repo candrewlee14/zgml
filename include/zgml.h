@@ -677,6 +677,26 @@ ZGML_API zgml_status zgml_eager_linear_activation_f32(
     size_t out_features,
     uint32_t activation
 );
+ZGML_API zgml_status zgml_train_linear_mse_sgd_f32(
+    const float *input,
+    size_t input_len,
+    const float *target,
+    size_t target_len,
+    float *weight,
+    size_t weight_len,
+    float *bias,
+    size_t bias_len,
+    float *output,
+    size_t output_len,
+    float *grad_weight,
+    size_t grad_weight_len,
+    size_t batch,
+    size_t in_features,
+    size_t out_features,
+    float lr,
+    float weight_decay,
+    float *out_loss
+);
 ZGML_API zgml_status zgml_train_mlp_relu_cross_entropy_adam_f32(
     const float *input,
     size_t input_len,

@@ -434,11 +434,13 @@ Current checked progress:
   rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering, and
   compile/bind/session hooks through package and type smokes. A June 27, 2026
   pass made the training loop follow the same split: `compile.compileForTraining`
-  produces a native compiled trainer for the supported Sequential Linear/ReLU
-  classifier shape, and `train.fit(trainer, loader, { epochs })` now keeps the
-  JS/TS side ergonomic while each batch's forward/backward/Adam or AdamW update
-  goes through the Zig FFI training step. The Node and Bun classifier smokes
-  check the AdamW path learns and reports native `TrainFitEvidence`. The root-level
+  produces native compiled trainers for the supported Sequential Linear/ReLU
+  classifier shape and the direct Linear/MSE/plain-SGD regression shape, while
+  `train.fit(trainer, loader, { epochs })` keeps the JS/TS side ergonomic and
+  each batch's forward/backward/update goes through Zig FFI. The Node and Bun
+  classifier smokes check the AdamW path learns, and the Node and Bun linear
+  smokes check the compiled native MSE/SGD path learns, with native
+  `TrainFitEvidence` reported in both cases. The root-level
   product/API diet now has a checked internal non-breaking taxonomy:
   `src/ts/public_surface.ts` names the stable root namespaces users should learn
   first, names `zgml` as the stable friendly root value, separates advanced

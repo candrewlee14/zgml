@@ -1771,6 +1771,82 @@ fn finiteAdamConfig(lr: f32, beta1: f32, beta2: f32, eps: f32, weight_decay: f32
         weight_decay >= 0;
 }
 
+fn finiteSgdConfig(lr: f32, weight_decay: f32) bool {
+    return std.math.isFinite(lr) and
+        std.math.isFinite(weight_decay) and
+        lr > 0 and
+        weight_decay >= 0;
+}
+
+export fn zgml_train_linear_mse_sgd_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    target_ptr: ?[*]const f32,
+    target_len: usize,
+    weight_ptr: ?[*]f32,
+    weight_len: usize,
+    bias_ptr: ?[*]f32,
+    bias_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    grad_weight_ptr: ?[*]f32,
+    grad_weight_len: usize,
+    batch: usize,
+    in_features: usize,
+    out_features: usize,
+    lr: f32,
+    weight_decay: f32,
+    out_loss: ?*f32,
+) c_int {
+    if (
+        input_ptr == null or target_ptr == null or weight_ptr == null or bias_ptr == null or
+        output_ptr == null or grad_weight_ptr == null or out_loss == null or
+        batch == 0 or in_features == 0 or out_features == 0 or
+        !finiteSgdConfig(lr, weight_decay)
+    ) return status(.invalid_argument);
+
+    const input_count = checkedElementCount(batch, in_features) orelse return status(.shape_mismatch);
+    const output_count = checkedElementCount(batch, out_features) orelse return status(.shape_mismatch);
+    const weight_count = checkedElementCount(in_features, out_features) orelse return status(.shape_mismatch);
+    if (
+        input_len != input_count or target_len != output_count or
+        weight_len != weight_count or bias_len != out_features or
+        output_len != output_count or grad_weight_len != weight_count
+    ) return status(.shape_mismatch);
+
+    const input = input_ptr.?[0..input_len];
+    const target = target_ptr.?[0..target_len];
+    const weight = weight_ptr.?[0..weight_len];
+    const bias = bias_ptr.?[0..bias_len];
+    const output = output_ptr.?[0..output_len];
+    const grad_weight = grad_weight_ptr.?[0..grad_weight_len];
+
+    forward.blasSgemm(output, input, weight, batch, out_features, in_features, in_features, 1, out_features, 1, 0, 0, 0, out_features);
+    addBiasRowsF32(output, bias, batch, out_features);
+
+    var total_loss: f32 = 0;
+    const inv_count = 1.0 / @as(f32, @floatFromInt(output_count));
+    const grad_scale = 2.0 * inv_count;
+    for (output, 0..) |*value, i| {
+        const diff = value.* - target[i];
+        total_loss += diff * diff;
+        value.* = diff * grad_scale;
+    }
+    out_loss.?.* = total_loss * inv_count;
+
+    forward.blasSgemm(grad_weight, input, output, in_features, out_features, batch, 1, in_features, out_features, 1, 0, 0, 0, out_features);
+    for (weight, 0..) |*param, i| {
+        param.* -= lr * (grad_weight[i] + weight_decay * param.*);
+    }
+    for (0..out_features) |c| {
+        var grad: f32 = 0;
+        for (0..batch) |row| grad += output[row * out_features + c];
+        bias[c] -= lr * (grad + weight_decay * bias[c]);
+    }
+
+    return status(.ok);
+}
+
 fn trainMlpReluCrossEntropyAdamLikeF32(
     input_ptr: ?[*]const f32,
     input_len: usize,
@@ -9925,6 +10001,88 @@ test "C ABI native eager linear writes caller output" {
         3,
         2,
     ));
+}
+
+test "C ABI native linear MSE SGD training learns caller-owned weights" {
+    const input = [_]f32{
+        -1, -1,
+        -1, 1,
+        1, -1,
+        1, 1,
+    };
+    const target = [_]f32{
+        -0.5,
+        -2.5,
+        2.5,
+        0.5,
+    };
+    var weight = [_]f32{ 0, 0 };
+    var bias = [_]f32{0};
+    var output = [_]f32{0} ** 4;
+    var grad_weight = [_]f32{0} ** 2;
+    var train_loss: f32 = 0;
+
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_train_linear_mse_sgd_f32(
+        input[0..].ptr,
+        input.len,
+        target[0..].ptr,
+        target.len,
+        weight[0..].ptr,
+        weight.len - 1,
+        bias[0..].ptr,
+        bias.len,
+        output[0..].ptr,
+        output.len,
+        grad_weight[0..].ptr,
+        grad_weight.len,
+        4,
+        2,
+        1,
+        0.04,
+        0,
+        &train_loss,
+    ));
+
+    for (0..80) |_| {
+        try std.testing.expectEqual(status(.ok), zgml_train_linear_mse_sgd_f32(
+            input[0..].ptr,
+            input.len,
+            target[0..].ptr,
+            target.len,
+            weight[0..].ptr,
+            weight.len,
+            bias[0..].ptr,
+            bias.len,
+            output[0..].ptr,
+            output.len,
+            grad_weight[0..].ptr,
+            grad_weight.len,
+            4,
+            2,
+            1,
+            0.04,
+            0,
+            &train_loss,
+        ));
+    }
+
+    var heldout = [_]f32{0};
+    const heldout_input = [_]f32{ 1, -1 };
+    try std.testing.expectEqual(status(.ok), zgml_eager_linear_f32(
+        heldout_input[0..].ptr,
+        heldout_input.len,
+        weight[0..].ptr,
+        weight.len,
+        bias[0..].ptr,
+        bias.len,
+        heldout[0..].ptr,
+        heldout.len,
+        1,
+        2,
+        1,
+    ));
+    try std.testing.expectApproxEqAbs(@as(f32, 2.5), heldout[0], 0.02);
+    try std.testing.expect(train_loss < 0.001);
 }
 
 test "C ABI native eager linear activation writes caller output" {
