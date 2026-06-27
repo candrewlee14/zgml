@@ -1115,6 +1115,13 @@ const functionalFlattenRange: Tensor<readonly [1, 2]> = F.flatten(classLogits, 1
 const functionalLinear1d: Tensor<readonly [1]> = F.linear(sample, tensor([[0.5, -0.5]], [1, 2] as const), tensor([0], [1] as const));
 const functionalLinear2d: Tensor<readonly [1, 2]> = F.linear(classLogits, tensor([[1, 0], [0, 1]], [2, 2] as const), tensor([0, 0], [2] as const));
 const functionalLinear3d: Tensor<readonly [1, 2, 2]> = F.linear(tensor([1, 2, 3, 4], [1, 2, 2] as const), tensor([[1, 0], [0, 1]], [2, 2] as const), tensor([0, 0], [2] as const));
+const functionalConv2d: Tensor<readonly [1, number, number]> = F.conv2d(
+  tensor([1, 2, 3, 4], [1, 2, 2] as const),
+  tensor([1, 0, 0, 1], [1, 1, 2, 2] as const),
+  tensor([0], [1] as const),
+);
+const functionalMaxPool2d: Tensor<readonly [1, 2, 2]> = F.max_pool2d(tensor(Array.from({ length: 16 }, (_value, index) => index), [1, 4, 4] as const), 2, 2);
+const functionalAvgPool2d: Tensor<readonly [1, 2, 2]> = F.avgPool2d(tensor(Array.from({ length: 16 }, (_value, index) => index), [1, 4, 4] as const), 2, 2);
 const functionalNormalize: Tensor<readonly [1, 2]> = F.normalize(classLogits, 2, 1);
 const functionalOneHot: Tensor<readonly [1, 2]> = F.one_hot(tensor([1], [1] as const), 2);
 const functionalOneHotAlias: Tensor<readonly [1, 2]> = F.oneHot(tensor([1], [1] as const), 2);
@@ -1403,6 +1410,9 @@ void functionalFlattenRange;
 void functionalLinear1d;
 void functionalLinear2d;
 void functionalLinear3d;
+void functionalConv2d;
+void functionalMaxPool2d;
+void functionalAvgPool2d;
 void functionalNormalize;
 void functionalOneHot;
 void functionalOneHotAlias;

@@ -543,6 +543,79 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
     return bias === undefined || bias === null ? output : output.add(bias);
   }
 
+  function functionalConv2d(
+    input: unknown,
+    weight: unknown,
+    bias: unknown = null,
+    stride: unknown = 1,
+    padding: unknown = 0,
+    dilation: unknown = 1,
+    groups: unknown = 1,
+  ) {
+    const weightTensor = functionalTensor(weight);
+    if (weightTensor.shape.length !== 4) {
+      throw new Error(`nn.functional.conv2d weight must be rank-4 [out_channels,in_channels,kernel_h,kernel_w], got [${weightTensor.shape.join(",")}]`);
+    }
+    const [outChannels, inChannels, kernelH, kernelW] = weightTensor.shape;
+    if (
+      !Number.isSafeInteger(outChannels) || outChannels! <= 0 ||
+      !Number.isSafeInteger(inChannels) || inChannels! <= 0 ||
+      !Number.isSafeInteger(kernelH) || kernelH! <= 0 ||
+      !Number.isSafeInteger(kernelW) || kernelW! <= 0
+    ) {
+      throw new Error(`nn.functional.conv2d weight shape must use positive safe integer dimensions, got [${weightTensor.shape.join(",")}]`);
+    }
+    const module = (nnBase as {
+      conv2d(inChannels: number, outChannels: number, kernelSize: readonly [number, number], config?: UnknownRecord): { forward(input: unknown): unknown };
+    }).conv2d(inChannels!, outChannels!, [kernelH!, kernelW!], {
+      weight: weightTensor,
+      bias: bias === undefined || bias === null ? false : bias,
+      stride,
+      padding,
+      dilation,
+      groups,
+    });
+    return module.forward(functionalTensor(input));
+  }
+
+  function poolConfig(stride: unknown, padding: unknown, trailing: UnknownRecord = {}) {
+    return Object.freeze({
+      ...(stride !== undefined && stride !== null ? { stride } : {}),
+      ...(padding !== undefined && padding !== null ? { padding } : {}),
+      ...trailing,
+    });
+  }
+
+  function functionalMaxPool2d(
+    input: unknown,
+    kernelSize: unknown,
+    stride: unknown = null,
+    padding: unknown = 0,
+    dilation: unknown = 1,
+    ceilMode: unknown = false,
+  ) {
+    const config = poolConfig(stride, padding, { dilation, ceilMode });
+    const module = (nnBase as {
+      max_pool2d(kernelSize: unknown, config?: UnknownRecord): { forward(input: unknown): unknown };
+    }).max_pool2d(kernelSize, config);
+    return module.forward(functionalTensor(input));
+  }
+
+  function functionalAvgPool2d(
+    input: unknown,
+    kernelSize: unknown,
+    stride: unknown = null,
+    padding: unknown = 0,
+    ceilMode: unknown = false,
+    countIncludePad: unknown = true,
+  ) {
+    const config = poolConfig(stride, padding, { ceilMode, countIncludePad });
+    const module = (nnBase as {
+      avg_pool2d(kernelSize: unknown, config?: UnknownRecord): { forward(input: unknown): unknown };
+    }).avg_pool2d(kernelSize, config);
+    return module.forward(functionalTensor(input));
+  }
+
   function functionalNormalize(input: unknown, p = 2, dim = 1, eps = 1e-12) {
     if (!Number.isFinite(p) || p <= 0) throw new Error(`nn.functional.normalize p must be finite and positive, got ${p}`);
     if (!Number.isFinite(eps) || eps <= 0) throw new Error(`nn.functional.normalize eps must be finite and positive, got ${eps}`);
@@ -602,6 +675,11 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
     },
     flatten: (input: unknown, startDim = 0, endDim = -1) => functionalTensor(input).flatten(startDim, endDim),
     linear: functionalLinear,
+    conv2d: functionalConv2d,
+    maxPool2d: functionalMaxPool2d,
+    max_pool2d: functionalMaxPool2d,
+    avgPool2d: functionalAvgPool2d,
+    avg_pool2d: functionalAvgPool2d,
     normalize: functionalNormalize,
     oneHot: functionalOneHot,
     one_hot: functionalOneHot,

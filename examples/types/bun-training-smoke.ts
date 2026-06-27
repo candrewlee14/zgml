@@ -536,6 +536,13 @@ const bunFunctionalFlattenRange: Tensor<readonly [1, 2]> = bunF.flatten(bunClass
 const bunFunctionalLinear1d: Tensor<readonly [1]> = bunF.linear(bunSample, tensor([[0.5, -0.5]], [1, 2] as const), tensor([0], [1] as const));
 const bunFunctionalLinear2d: Tensor<readonly [1, 2]> = bunF.linear(bunClassLogits, tensor([[1, 0], [0, 1]], [2, 2] as const), tensor([0, 0], [2] as const));
 const bunFunctionalLinear3d: Tensor<readonly [1, 2, 2]> = bunF.linear(tensor([1, 2, 3, 4], [1, 2, 2] as const), tensor([[1, 0], [0, 1]], [2, 2] as const), tensor([0, 0], [2] as const));
+const bunFunctionalConv2d: Tensor<readonly [1, number, number]> = bunF.conv2d(
+  tensor([1, 2, 3, 4], [1, 2, 2] as const),
+  tensor([1, 0, 0, 1], [1, 1, 2, 2] as const),
+  tensor([0], [1] as const),
+);
+const bunFunctionalMaxPool2d: Tensor<readonly [1, 2, 2]> = bunF.max_pool2d(tensor(Array.from({ length: 16 }, (_value, index) => index), [1, 4, 4] as const), 2, 2);
+const bunFunctionalAvgPool2d: Tensor<readonly [1, 2, 2]> = bunF.avgPool2d(tensor(Array.from({ length: 16 }, (_value, index) => index), [1, 4, 4] as const), 2, 2);
 const bunFunctionalNormalize: Tensor<readonly [1, 2]> = bunF.normalize(bunClassLogits, 2, 1);
 const bunFunctionalOneHot: Tensor<readonly [1, 2]> = bunF.one_hot(tensor([1], [1] as const), 2);
 const bunFunctionalOneHotAlias: Tensor<readonly [1, 2]> = bunF.oneHot(tensor([1], [1] as const), 2);
@@ -805,6 +812,9 @@ void bunFunctionalFlattenRange;
 void bunFunctionalLinear1d;
 void bunFunctionalLinear2d;
 void bunFunctionalLinear3d;
+void bunFunctionalConv2d;
+void bunFunctionalMaxPool2d;
+void bunFunctionalAvgPool2d;
 void bunFunctionalNormalize;
 void bunFunctionalOneHot;
 void bunFunctionalOneHotAlias;

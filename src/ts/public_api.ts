@@ -6236,6 +6236,61 @@ export type NnFunctionalNamespace = Omit<LossNamespace, "mse_loss" | "l1_loss" |
     bias?: TensorLike<readonly [OutFeatures]> | null,
   ): Tensor<readonly [A, B, C, OutFeatures]>;
   linear(input: TensorLike, weight: TensorLike, bias?: TensorLike | null): Tensor;
+  conv2d<const InChannels extends number, const OutChannels extends number, const Kernel extends number>(
+    input: Tensor<readonly [InChannels, number, number]>,
+    weight: Tensor<readonly [OutChannels, InChannels, Kernel, Kernel]>,
+    bias?: TensorLike<readonly [OutChannels]> | null,
+    stride?: Kernel | number | readonly [number, number],
+    padding?: number | readonly [number, number],
+    dilation?: number | readonly [number, number],
+    groups?: number,
+  ): Tensor<Conv2dForwardShape<readonly [InChannels, number, number], OutChannels, Kernel, Kernel>>;
+  conv2d<const Batch extends number, const InChannels extends number, const OutChannels extends number, const Kernel extends number>(
+    input: Tensor<readonly [Batch, InChannels, number, number]>,
+    weight: Tensor<readonly [OutChannels, InChannels, Kernel, Kernel]>,
+    bias?: TensorLike<readonly [OutChannels]> | null,
+    stride?: Kernel | number | readonly [number, number],
+    padding?: number | readonly [number, number],
+    dilation?: number | readonly [number, number],
+    groups?: number,
+  ): Tensor<Conv2dForwardShape<readonly [Batch, InChannels, number, number], OutChannels, Kernel, Kernel>>;
+  conv2d(input: TensorLike, weight: TensorLike, bias?: TensorLike | null, stride?: number | readonly [number, number], padding?: number | readonly [number, number], dilation?: number | readonly [number, number], groups?: number): Tensor;
+  maxPool2d<const S extends readonly [number, number, number] | readonly [number, number, number, number], const Kernel extends number>(
+    input: Tensor<S>,
+    kernelSize: Kernel,
+    stride?: Kernel | number | readonly [number, number] | null,
+    padding?: number | readonly [number, number],
+    dilation?: number | readonly [number, number],
+    ceilMode?: boolean,
+  ): Tensor<MaxPool2dForwardShape<S, Kernel, Kernel>>;
+  maxPool2d(input: TensorLike, kernelSize: number | readonly [number, number], stride?: number | readonly [number, number] | null, padding?: number | readonly [number, number], dilation?: number | readonly [number, number], ceilMode?: boolean): Tensor;
+  max_pool2d<const S extends readonly [number, number, number] | readonly [number, number, number, number], const Kernel extends number>(
+    input: Tensor<S>,
+    kernelSize: Kernel,
+    stride?: Kernel | number | readonly [number, number] | null,
+    padding?: number | readonly [number, number],
+    dilation?: number | readonly [number, number],
+    ceilMode?: boolean,
+  ): Tensor<MaxPool2dForwardShape<S, Kernel, Kernel>>;
+  max_pool2d(input: TensorLike, kernelSize: number | readonly [number, number], stride?: number | readonly [number, number] | null, padding?: number | readonly [number, number], dilation?: number | readonly [number, number], ceilMode?: boolean): Tensor;
+  avgPool2d<const S extends readonly [number, number, number] | readonly [number, number, number, number], const Kernel extends number>(
+    input: Tensor<S>,
+    kernelSize: Kernel,
+    stride?: Kernel | number | readonly [number, number] | null,
+    padding?: number | readonly [number, number],
+    ceilMode?: boolean,
+    countIncludePad?: boolean,
+  ): Tensor<MaxPool2dForwardShape<S, Kernel, Kernel>>;
+  avgPool2d(input: TensorLike, kernelSize: number | readonly [number, number], stride?: number | readonly [number, number] | null, padding?: number | readonly [number, number], ceilMode?: boolean, countIncludePad?: boolean): Tensor;
+  avg_pool2d<const S extends readonly [number, number, number] | readonly [number, number, number, number], const Kernel extends number>(
+    input: Tensor<S>,
+    kernelSize: Kernel,
+    stride?: Kernel | number | readonly [number, number] | null,
+    padding?: number | readonly [number, number],
+    ceilMode?: boolean,
+    countIncludePad?: boolean,
+  ): Tensor<MaxPool2dForwardShape<S, Kernel, Kernel>>;
+  avg_pool2d(input: TensorLike, kernelSize: number | readonly [number, number], stride?: number | readonly [number, number] | null, padding?: number | readonly [number, number], ceilMode?: boolean, countIncludePad?: boolean): Tensor;
   normalize<const S extends TensorShapeTuple>(input: Tensor<S>, p?: number, dim?: number, eps?: number): Tensor<S>;
   normalize(input: TensorLike, p?: number, dim?: number, eps?: number): Tensor;
   oneHot<const S extends TensorShapeTuple, const NumClasses extends number>(input: Tensor<S>, numClasses: NumClasses): Tensor<OneHotShape<S, NumClasses>>;

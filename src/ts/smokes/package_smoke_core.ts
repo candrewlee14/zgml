@@ -768,6 +768,9 @@ function expectLossAndAdamWEvidence(adapter: Record<string, any>, label: string)
     adapter.nn.functional.linear(adapter.tensor([2, 4], [2]), adapter.tensor([[1, 0], [0, 1]], [2, 2]), adapter.tensor([1, -1], [2])).shape.join("x") !== "2" ||
     adapter.nn.functional.linear(adapter.tensor([[2, 4]], [1, 2]), adapter.tensor([[1, 0], [0, 1]], [2, 2]), adapter.tensor([1, -1], [2])).shape.join("x") !== "1x2" ||
     adapter.nn.functional.linear(adapter.tensor([2, 4, 6, 8], [1, 2, 2]), adapter.tensor([[1, 0], [0, 1]], [2, 2]), adapter.tensor([1, -1], [2])).shape.join("x") !== "1x2x2" ||
+    adapter.nn.functional.conv2d(adapter.tensor([1, 2, 3, 4], [1, 2, 2]), adapter.tensor([1, 0, 0, 1], [1, 1, 2, 2])).shape.join("x") !== "1x1x1" ||
+    adapter.nn.functional.max_pool2d(adapter.tensor([1, 2, 3, 4], [1, 2, 2]), 2).shape.join("x") !== "1x1x1" ||
+    adapter.nn.functional.avg_pool2d(adapter.tensor([1, 2, 3, 4], [1, 2, 2]), 2).shape.join("x") !== "1x1x1" ||
     adapter.nn.functional.normalize(adapter.tensor([[3, 4]], [1, 2]), 2, 1).shape.join("x") !== "1x2" ||
     adapter.nn.functional.one_hot(adapter.tensor([0, 2], [2]), 3).shape.join("x") !== "2x3" ||
     adapter.nn.functional.one_hot(adapter.tensor([0, 2], [1, 2]), 3).shape.join("x") !== "1x2x3" ||
@@ -802,6 +805,21 @@ function expectLossAndAdamWEvidence(adapter: Record<string, any>, label: string)
     adapter.tensor([[1, 3], [-2, 0.5]], [2, 2]),
     adapter.tensor([0.25, -0.75], [2]),
   )).data, [14.25, -2.75, 30.25, -8.75], `${label} nn.functional.linear no-grad native layout values`);
+  expectClose(adapter.noGrad(() => adapter.nn.functional.conv2d(
+    adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 3]),
+    adapter.tensor([1, 0, 0, 1], [1, 1, 2, 2]),
+    adapter.tensor([0.5], [1]),
+  )).data, [6.5, 8.5, 12.5, 14.5], `${label} nn.functional.conv2d no-grad native module values`);
+  expectClose(adapter.noGrad(() => adapter.nn.functional.max_pool2d(
+    adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 3]),
+    2,
+    1,
+  )).data, [5, 6, 8, 9], `${label} nn.functional.max_pool2d no-grad native module values`);
+  expectClose(adapter.noGrad(() => adapter.nn.functional.avgPool2d(
+    adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 3]),
+    2,
+    1,
+  )).data, [3, 4, 6, 7], `${label} nn.functional.avgPool2d no-grad native module values`);
   expectClose(adapter.nn.functional.normalize(adapter.tensor([[3, 4]], [1, 2]), 2, 1).data, [0.6, 0.8], `${label} nn.functional.normalize values`);
   expectClose(adapter.nn.functional.one_hot(adapter.tensor([0, 2], [2]), 3).data, [1, 0, 0, 0, 0, 1], `${label} nn.functional.one_hot values`);
   expectClose(adapter.nn.functional.one_hot(adapter.tensor([0, 2], [1, 2]), 3).data, [1, 0, 0, 0, 0, 1], `${label} nn.functional.one_hot grid values`);
