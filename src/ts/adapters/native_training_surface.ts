@@ -56,6 +56,23 @@ type NativeTrainingCallResult = {
   correct: number;
 };
 
+type NativeTrainingPlan = Readonly<{
+  kind: "zgml.native-training-plan";
+  native: true;
+  loweredBy: "zig-ffi";
+  runtimePath: "JS/TS module API -> Zig native training kernel";
+  backend: "cpu";
+  modelKind: string;
+  optimizerKind: string;
+  lossKind: string;
+  inputShape: readonly [number, number];
+  outputShape: readonly [number, number];
+  parameterCount: number;
+  parameterElements: number;
+  kernels: readonly string[];
+  workspace: Readonly<Record<string, number>>;
+}>;
+
 type NativeTrainingMlpAdamCall = (args: NativeTrainingCallArgs) => NativeTrainingCallResult;
 type NativeTrainingLinearSgdCall = (args: NativeTrainingLinearSgdCallArgs) => NativeTrainingCallResult;
 
@@ -93,6 +110,21 @@ function tensorShape(value: unknown): readonly number[] | null {
     return (value as { shape: readonly number[] }).shape;
   }
   return null;
+}
+
+function nativeTrainingPlan(fields: Omit<NativeTrainingPlan, "kind" | "native" | "loweredBy" | "runtimePath" | "backend">): NativeTrainingPlan {
+  return Object.freeze({
+    kind: "zgml.native-training-plan",
+    native: true,
+    loweredBy: "zig-ffi",
+    runtimePath: "JS/TS module API -> Zig native training kernel",
+    backend: "cpu",
+    ...fields,
+    inputShape: Object.freeze(fields.inputShape.slice()) as readonly [number, number],
+    outputShape: Object.freeze(fields.outputShape.slice()) as readonly [number, number],
+    kernels: Object.freeze(fields.kernels.slice()),
+    workspace: Object.freeze({ ...fields.workspace }),
+  });
 }
 
 function requireLayer(model: unknown, index: number, kind: string) {
@@ -257,6 +289,23 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
     const gradHidden = new Float32Array(batch * layers.first.outFeatures);
     const gradW1 = new Float32Array(layers.first.weight.length);
     const gradW2 = new Float32Array(layers.second.weight.length);
+    const plan = nativeTrainingPlan({
+      modelKind: "sequential-mlp-relu",
+      optimizerKind: adam.kind,
+      lossKind: "crossEntropy",
+      inputShape: [batch, inFeatures],
+      outputShape: [batch, classes],
+      parameterCount: params.length,
+      parameterElements: params.reduce((sum, param) => sum + param.length, 0),
+      kernels: [adam.kind === "adamw" ? "zgml_train_mlp_relu_cross_entropy_adamw_f32" : "zgml_train_mlp_relu_cross_entropy_adam_f32"],
+      workspace: {
+        hidden: hidden.length,
+        logits: logits.length,
+        gradHidden: gradHidden.length,
+        gradW1: gradW1.length,
+        gradW2: gradW2.length,
+      },
+    });
 
     function step(input: unknown, target: unknown) {
       const inputData = tensorData(input, "compile.trainingStep input", options.f32);
@@ -322,6 +371,9 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       lossKind: "crossEntropy",
       inputShape: () => Object.freeze([batch, inFeatures] as const),
       outputShape: () => Object.freeze([batch, classes] as const),
+      plan: () => plan,
+      compileEvidence: () => plan,
+      compile_evidence: () => plan,
       step,
       forward: step,
       dispose() {},
@@ -347,6 +399,20 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
     const sgd = requirePlainSgdOptimizer(optimizer, params);
     const output = new Float32Array(batch * layer.outFeatures);
     const gradWeight = new Float32Array(layer.weight.length);
+    const plan = nativeTrainingPlan({
+      modelKind: "linear",
+      optimizerKind: "sgd",
+      lossKind: "mse",
+      inputShape: [batch, inFeatures],
+      outputShape: [batch, layer.outFeatures],
+      parameterCount: params.length,
+      parameterElements: params.reduce((sum, param) => sum + param.length, 0),
+      kernels: ["zgml_train_linear_mse_sgd_f32"],
+      workspace: {
+        output: output.length,
+        gradWeight: gradWeight.length,
+      },
+    });
 
     function step(input: unknown, target: unknown) {
       const inputData = tensorData(input, "compile.trainingStep input", options.f32);
@@ -392,6 +458,9 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       lossKind: "mse",
       inputShape: () => Object.freeze([batch, inFeatures] as const),
       outputShape: () => Object.freeze([batch, layer.outFeatures] as const),
+      plan: () => plan,
+      compileEvidence: () => plan,
+      compile_evidence: () => plan,
       step,
       forward: step,
       dispose() {},

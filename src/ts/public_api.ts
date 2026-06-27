@@ -4976,6 +4976,23 @@ export type CompiledTrainingStepEvidence = Readonly<{
   optimizerStep?: number;
 }>;
 
+export type CompiledTrainingPlan = Readonly<{
+  kind: "zgml.native-training-plan";
+  native: true;
+  loweredBy: "zig-ffi";
+  runtimePath: string;
+  backend: string;
+  modelKind: string;
+  optimizerKind: string;
+  lossKind: string;
+  inputShape: readonly [number, number];
+  outputShape: readonly [number, number];
+  parameterCount: number;
+  parameterElements: number;
+  kernels: readonly string[];
+  workspace: Readonly<Record<string, number>>;
+}>;
+
 export interface CompiledTrainingStep {
   readonly kind: "zgml.compiled-training-step";
   readonly native: true;
@@ -4985,6 +5002,9 @@ export interface CompiledTrainingStep {
   readonly lossKind: string;
   inputShape(): readonly number[];
   outputShape(): readonly number[];
+  plan(): CompiledTrainingPlan;
+  compileEvidence(): CompiledTrainingPlan;
+  compile_evidence(): CompiledTrainingPlan;
   step(input: TensorLike, target: TensorLike | IndexLike): CompiledTrainingStepEvidence;
   forward(input: TensorLike, target: TensorLike | IndexLike): CompiledTrainingStepEvidence;
   dispose(): void;

@@ -78,6 +78,7 @@ import {
   type CompileAnalysis as PackageCompileAnalysis,
   type CompileMode as PackageCompileMode,
   type CompiledInference as PackageCompiledInference,
+  type CompiledTrainingPlan as PackageCompiledTrainingPlan,
   type CompiledTrainingStep as PackageCompiledTrainingStep,
   type CompileNamespace as PackageCompileNamespace,
   type CompileOptions as PackageCompileOptions,
@@ -614,7 +615,8 @@ type PackageCompileNamespaceTrainingShape = Expect<PackageCompileNamespace exten
 type PackagePublicCompileNamespaceShape = Expect<PackagePublicCompileNamespace extends Readonly<PackageCompileNamespace> ? true : false>;
 type PackagePublicCompileNamespaceCallable = Expect<PackagePublicCompileNamespace extends (target: PackageNnCompilableModule, options?: PackageCompileOptions) => PackageProgram ? true : false>;
 type PackageCompiledInferenceShape = Expect<PackageCompiledInference<readonly [2], readonly [3]> extends { native: true; program: PackageProgram<readonly [2], readonly [3]>; session: PackageSession<readonly [2], readonly [3]>; inputShape(): readonly [2]; outputShape(): readonly [3]; executionPlan(): unknown; requireExecutionPlan(): unknown; forward(input: unknown): unknown; into(output: Float32Array, input: unknown): Float32Array; prepareInto(output: Float32Array, input: unknown): () => Float32Array } ? true : false>;
-type PackageCompiledTrainingShape = Expect<PackageCompiledTrainingStep extends { native: true; step(input: unknown, target: unknown): unknown } ? true : false>;
+type PackageCompiledTrainingShape = Expect<PackageCompiledTrainingStep extends { native: true; plan(): PackageCompiledTrainingPlan; compileEvidence(): PackageCompiledTrainingPlan; step(input: unknown, target: unknown): unknown } ? true : false>;
+type PackageCompiledTrainingPlanShape = Expect<PackageCompiledTrainingPlan extends { native: true; loweredBy: "zig-ffi"; kernels: readonly string[]; workspace: Readonly<Record<string, number>> } ? true : false>;
 type PackageCompileTrainingOptionsShape = Expect<Equal<PackageCompileTrainingOptions["loss"], "crossEntropy" | "cross_entropy" | "mse" | "meanSquaredError" | "mean_squared_error" | undefined>>;
 type PackageLinearCompileTrainingShape = Expect<ReturnType<PackageLinearModule<2, 1>["compileForTraining"]> extends PackageCompiledTrainingStep ? true : false>;
 type PackageCompileModeShape = Expect<Equal<PackageCompileMode, "auto" | "tiny" | "module">>;

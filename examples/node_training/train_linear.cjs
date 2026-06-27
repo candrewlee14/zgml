@@ -125,6 +125,15 @@ const nativeTrainer = compile.compileForTraining(nativeModel, nativeOptimizer, {
   inputShape: [4, 2],
   loss: "mse",
 });
+const nativePlan = nativeTrainer.plan();
+if (
+  nativePlan.loweredBy !== "zig-ffi" ||
+  nativePlan.kernels[0] !== "zgml_train_linear_mse_sgd_f32" ||
+  nativePlan.inputShape.join("x") !== "4x2" ||
+  nativeTrainer.compileEvidence() !== nativePlan
+) {
+  throw new Error(`compiled native linear trainer must expose its Zig plan: ${JSON.stringify(nativePlan)}`);
+}
 const nativeFit = train.fit(nativeTrainer, nativeBatches, { epochs: 80 });
 const nativeAfter = scalar(loss.mse(nativeModel.forward(tensor([1, -1], [1, 2])), tensor([2.5], [1, 1])));
 if (nativeFit.native !== true || nativeTrainer.native !== true || nativeTrainer.backend !== "cpu") {

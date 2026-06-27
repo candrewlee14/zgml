@@ -147,6 +147,16 @@ const nativeTrainer = compile.compileForTraining(nativeModel, nativeOptimizer, {
   classes: 2,
   loss: "crossEntropy",
 });
+const nativePlan = nativeTrainer.plan();
+if (
+  nativePlan.loweredBy !== "zig-ffi" ||
+  nativePlan.kernels[0] !== "zgml_train_mlp_relu_cross_entropy_adamw_f32" ||
+  nativePlan.inputShape.join("x") !== "2x2" ||
+  nativePlan.outputShape.join("x") !== "2x2" ||
+  nativeTrainer.compileEvidence() !== nativePlan
+) {
+  throw new Error(`compiled native classifier trainer must expose its Zig plan: ${JSON.stringify(nativePlan)}`);
+}
 const nativeFit = train.fit(nativeTrainer, nativeLoader, {
   epochs: 80,
 });
