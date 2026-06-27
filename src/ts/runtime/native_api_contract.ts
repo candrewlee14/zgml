@@ -245,6 +245,10 @@ export const requiredNativeFrontendNamespaceExports = Object.freeze([
   "compile_inference",
   "compileForInference",
   "compile_for_inference",
+  "trainingStep",
+  "training_step",
+  "compileForTraining",
+  "compile_for_training",
 ] as const);
 
 export const requiredNativeExecutableRuntimeExports = Object.freeze([

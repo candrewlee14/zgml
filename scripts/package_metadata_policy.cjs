@@ -71,7 +71,6 @@ const publicPackageScripts = Object.freeze([
   "smoke:node",
   "smoke:bun",
   "smoke:training",
-  "smoke:training:mnist",
   "smoke:training:bun",
   "smoke:adapters",
   "test",

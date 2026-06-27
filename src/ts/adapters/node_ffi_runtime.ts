@@ -111,6 +111,9 @@ const {
   createAdapterNativeEagerSurface,
 } = require("./native_eager_surface.js");
 const {
+  createAdapterNativeTrainingSurface,
+} = require("./native_training_surface.js");
+const {
   createAdapterSafetensorsFileHeaderHelpers,
 } = require("./safetensors_file_header.js");
 const {
@@ -1106,6 +1109,69 @@ const { nativeEager } = createAdapterNativeEagerSurface({
   ),
 });
 
+const nativeTraining = createAdapterNativeTrainingSurface({
+  f32: (value, label) => f32(value, label),
+  indexValues,
+  check,
+  trainMlpReluCrossEntropyAdamF32: (args) => {
+    const outLoss = new Float32Array(1);
+    const outCorrect = [0];
+    const statusCode = nodeSymbolGroups.nativeTraining.trainMlpReluCrossEntropyAdamF32(
+      args.input,
+      args.input.length,
+      args.targets,
+      args.targets.length,
+      args.w1,
+      args.w1.length,
+      args.b1,
+      args.b1.length,
+      args.w2,
+      args.w2.length,
+      args.b2,
+      args.b2.length,
+      args.mw1,
+      args.mw1.length,
+      args.vw1,
+      args.vw1.length,
+      args.mb1,
+      args.mb1.length,
+      args.vb1,
+      args.vb1.length,
+      args.mw2,
+      args.mw2.length,
+      args.vw2,
+      args.vw2.length,
+      args.mb2,
+      args.mb2.length,
+      args.vb2,
+      args.vb2.length,
+      args.hidden,
+      args.hidden.length,
+      args.logits,
+      args.logits.length,
+      args.gradHidden,
+      args.gradHidden.length,
+      args.gradW1,
+      args.gradW1.length,
+      args.gradW2,
+      args.gradW2.length,
+      args.batch,
+      args.inFeatures,
+      args.hiddenFeatures,
+      args.classes,
+      args.step,
+      args.lr,
+      args.beta1,
+      args.beta2,
+      args.eps,
+      args.weightDecay,
+      outLoss,
+      outCorrect,
+    );
+    return { status: statusCode, loss: outLoss[0], correct: Number(outCorrect[0] ?? 0) };
+  },
+});
+
 const publicNamespaces = createAdapterFrontendNamespaces({
   sharedFrontend,
   Tensor,
@@ -1192,6 +1258,7 @@ const compile = createAdapterCompileNamespace({
   traceSequentialProgram,
   analyzeSequentialProgram,
   compileModuleProgram,
+  trainingStep: nativeTraining.trainingStep,
 });
 sharedFrontend.lazy.setLazyTensorProgramCompiler((lazyGraph, compileOptions) => compile.compile(lazyGraph, compileOptions));
 const torchCheckpointIo = createAdapterTorchCheckpointIo(checkpoint, {
@@ -1207,6 +1274,8 @@ const simple = Object.freeze({
   compile,
   compileInference: compile.compileForInference,
   compileForInference: compile.compileForInference,
+  trainingStep: compile.trainingStep,
+  compileForTraining: compile.compileForTraining,
   lazy: sharedFrontend.lazy,
   optim,
   data,
@@ -1542,6 +1611,10 @@ module.exports = createAdapterPublicRuntimeExports({
   compile_inference: compile.compile_for_inference,
   compileForInference: compile.compileForInference,
   compile_for_inference: compile.compile_for_inference,
+  trainingStep: compile.trainingStep,
+  training_step: compile.training_step,
+  compileForTraining: compile.compileForTraining,
+  compile_for_training: compile.compile_for_training,
   nativeEager,
   TinyLinear: TinyLinearModel,
   TinyMlp: TinyMlpModel,

@@ -81,6 +81,9 @@ export function createBunSymbolGroups(symbols: BunNativeSymbols) {
       eagerLinearF32: symbols.zgml_eager_linear_f32,
       eagerLinearActivationF32: symbols.zgml_eager_linear_activation_f32,
     }),
+    nativeTraining: Object.freeze({
+      trainMlpReluCrossEntropyAdamF32: symbols.zgml_train_mlp_relu_cross_entropy_adam_f32,
+    }),
     programBind: Object.freeze({
       sessionBind: symbols.zgml_session_bind,
       sessionBindBuffers: symbols.zgml_session_bind_buffers,

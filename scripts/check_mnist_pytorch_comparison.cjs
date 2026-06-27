@@ -228,6 +228,31 @@ function runZgml() {
   const eagerSingleForwardMs = bench(() => gradMode.inferenceMode(() => model.forward(sample)));
   const compiledSingleForwardMs = bench(() => program.into(compiledBuffer, sample));
   program.dispose();
+
+  const nativeModel = createModel();
+  const nativeOptimizer = optim.adam(nativeModel, { lr: 0.001 });
+  const nativeStep = compile.trainingStep(nativeModel, nativeOptimizer, {
+    inputShape: [batchSize, 784],
+    loss: "crossEntropy",
+    classes: 10,
+  });
+  const nativeBefore = evaluate(nativeModel, testLoader);
+  const nativeStart = performance.now();
+  let nativeSteps = 0;
+  let nativeLastLoss = 0;
+  let nativeLastAccuracy = 0;
+  for (let epoch = 0; epoch < epochs; epoch += 1) {
+    for (const batch of trainLoader) {
+      const step = nativeStep.step(batch.input, batch.target);
+      nativeLastLoss = step.loss;
+      nativeLastAccuracy = step.accuracy;
+      nativeSteps += 1;
+    }
+  }
+  const nativeTrainMs = performance.now() - nativeStart;
+  const nativeAfter = evaluate(nativeModel, testLoader);
+  nativeStep.dispose();
+
   return {
     before,
     after,
@@ -242,6 +267,16 @@ function runZgml() {
     compiledSample0Logits: Array.from(compiled),
     compiledMaxAbsDiff: maxAbsDiff(eager.data, compiled),
     crossEntropyProbe: loss.crossEntropy([1, 2, 3, 2, 0, -1], [2, 0], { classes: 3 }),
+    nativeTraining: {
+      before: nativeBefore,
+      after: nativeAfter,
+      steps: nativeSteps,
+      trainMs: nativeTrainMs,
+      trainMsPerStep: nativeTrainMs / nativeSteps,
+      lastBatchLoss: nativeLastLoss,
+      lastBatchAccuracy: nativeLastAccuracy,
+      speedupVsJs: trainMs / nativeTrainMs,
+    },
   };
 }
 
@@ -447,6 +482,9 @@ async function main() {
   const ratios = {
     trainZgmlVsPytorch: pytorch.trainMs / zgml.trainMs,
     trainStepZgmlVsPytorch: pytorch.trainMsPerStep / zgml.trainMsPerStep,
+    trainNativeZgmlVsPytorch: pytorch.trainMs / zgml.nativeTraining.trainMs,
+    trainStepNativeZgmlVsPytorch: pytorch.trainMsPerStep / zgml.nativeTraining.trainMsPerStep,
+    trainNativeZgmlVsJsZgml: zgml.trainMs / zgml.nativeTraining.trainMs,
     eagerInferenceZgmlVsPytorch: pytorch.eagerSingleForwardMs / zgml.eagerSingleForwardMs,
     compiledInferenceZgmlVsPytorchEager: pytorch.eagerSingleForwardMs / zgml.compiledSingleForwardMs,
   };
@@ -491,9 +529,13 @@ async function main() {
     `test=${testLimit}`,
     `epochs=${epochs}`,
     `zgml_train=${round(zgml.trainMs)}ms`,
+    `zgml_native_train=${round(zgml.nativeTraining.trainMs)}ms`,
     `pytorch_train=${round(pytorch.trainMs)}ms`,
     `zgml_vs_pytorch_train=${ratios.trainZgmlVsPytorch.toFixed(3)}x`,
+    `zgml_native_vs_pytorch_train=${ratios.trainNativeZgmlVsPytorch.toFixed(3)}x`,
+    `zgml_native_vs_js_train=${ratios.trainNativeZgmlVsJsZgml.toFixed(3)}x`,
     `zgml_acc=${(zgml.after.accuracy * 100).toFixed(2)}%`,
+    `zgml_native_acc=${(zgml.nativeTraining.after.accuracy * 100).toFixed(2)}%`,
     `pytorch_acc=${(pytorch.after.accuracy * 100).toFixed(2)}%`,
     `loss_delta=${numeric.afterLossDelta.toExponential(2)}`,
     `logits_max_abs=${numeric.sample0LogitsMaxAbsDiff.toExponential(2)}`,

@@ -1084,14 +1084,14 @@ function checkScripts() {
   if (scripts["bench:pytorch:gaps:run"] !== "BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,log_softmax_classifier_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json bench:pytorch:gaps:run must remain the no-rebuild PyTorch current-gap rerun");
   }
-  if (scripts["bench:mnist:pytorch"] !== "npm run build:package && BENCH_MNIST_PYTORCH_INSTALL=1 node scripts/check_mnist_pytorch_comparison.cjs") {
-    errors.push("package.json bench:mnist:pytorch must remain the standard MNIST training PyTorch comparison evidence gate");
+  if (scripts["bench:mnist:pytorch"] !== "npm run build:native:release && npm run build:package && BENCH_MNIST_PYTORCH_INSTALL=1 node scripts/check_mnist_pytorch_comparison.cjs") {
+    errors.push("package.json bench:mnist:pytorch must remain the ReleaseFast native MNIST training PyTorch comparison evidence gate");
   }
   if (scripts["bench:mnist:pytorch:run"] !== "node scripts/check_mnist_pytorch_comparison.cjs") {
     errors.push("package.json bench:mnist:pytorch:run must remain the no-rebuild MNIST PyTorch comparison rerun");
   }
-  if (scripts["bench:mnist:pytorch:parity"] !== "npm run build:package && BENCH_MNIST_PYTORCH_INSTALL=1 BENCH_MNIST_REQUIRE_TRAINING_PARITY=1 node scripts/check_mnist_pytorch_comparison.cjs") {
-    errors.push("package.json bench:mnist:pytorch:parity must remain the hard future MNIST training parity gate");
+  if (scripts["bench:mnist:pytorch:parity"] !== "npm run build:native:release && npm run build:package && BENCH_MNIST_PYTORCH_INSTALL=1 BENCH_MNIST_REQUIRE_TRAINING_PARITY=1 node scripts/check_mnist_pytorch_comparison.cjs") {
+    errors.push("package.json bench:mnist:pytorch:parity must remain the hard future ReleaseFast MNIST training parity gate");
   }
   if (scripts["bench:ggml:parity:run"] !== "BENCH_BASELINE_JSON=benchmarks/baselines/smollm-m5pro-p128-g200-r3.json BENCH_REQUIRE_PARITY=1 ./scripts/bench_vs_ggml.sh 128 200 3") {
     errors.push("package.json bench:ggml:parity:run must leave BENCH_BUILD_ZGML at the bench script default so hard ggml parity rebuilds ReleaseFast unless the caller opts into reuse");
@@ -1210,6 +1210,8 @@ function checkScripts() {
     "xavierWeights(128, 10, 2)",
     "torch.optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0)",
     "loss.crossEntropy(model.forward(batch.input), batch.target, { classes: 10 })",
+    "compile.trainingStep(nativeModel, nativeOptimizer",
+    "trainNativeZgmlVsJsZgml",
     "F.cross_entropy(model(train_x.index_select(0, idx)), train_y.index_select(0, idx), reduction=\"mean\")",
     "numericReady",
     "trainingParityReady",

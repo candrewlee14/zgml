@@ -25,4 +25,8 @@ export {
   compile_inference,
   compileForInference,
   compile_for_inference,
+  trainingStep,
+  training_step,
+  compileForTraining,
+  compile_for_training,
 } from "./adapters/bun_native_runtime.js";

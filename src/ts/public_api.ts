@@ -6647,6 +6647,10 @@ export type PublicTorchNamespace = Readonly<{
   compile_inference: PublicCompileNamespace["compile_for_inference"];
   compileForInference: PublicCompileNamespace["compileForInference"];
   compile_for_inference: PublicCompileNamespace["compile_for_inference"];
+  trainingStep: PublicCompileNamespace["trainingStep"];
+  training_step: PublicCompileNamespace["training_step"];
+  compileForTraining: PublicCompileNamespace["compileForTraining"];
+  compile_for_training: PublicCompileNamespace["compile_for_training"];
   nativeEager: PublicNativeEagerNamespace;
   native_eager: PublicNativeEagerNamespace;
   lazy: PublicLazyNamespace;
@@ -6700,6 +6704,8 @@ export type PublicSimpleNamespace = Readonly<Pick<PublicZgmlNamespace,
   | "compile"
   | "compileInference"
   | "compileForInference"
+  | "trainingStep"
+  | "compileForTraining"
   | "lazy"
   | "optim"
   | "data"
@@ -6720,6 +6726,10 @@ export declare const compileInference: PublicCompileNamespace["compileForInferen
 export declare const compile_inference: PublicCompileNamespace["compile_for_inference"];
 export declare const compileForInference: PublicCompileNamespace["compileForInference"];
 export declare const compile_for_inference: PublicCompileNamespace["compile_for_inference"];
+export declare const trainingStep: PublicCompileNamespace["trainingStep"];
+export declare const training_step: PublicCompileNamespace["training_step"];
+export declare const compileForTraining: PublicCompileNamespace["compileForTraining"];
+export declare const compile_for_training: PublicCompileNamespace["compile_for_training"];
 
 export type TinyLinearDesc = {
   inputLen: number;
@@ -6990,6 +7000,7 @@ export type RuntimeFeatures = Readonly<{
   nativeModuleActivationChain: boolean;
   nativeEagerLinear: boolean;
   nativeEagerLinearActivation: boolean;
+  nativeTrainingStep: boolean;
 }>;
 
 export type ModelInspection = Readonly<{

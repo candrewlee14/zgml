@@ -43,6 +43,7 @@ export type NodeNativeSymbols = Readonly<{
   bufferFree: NativeFunction;
   eagerLinearF32: NativeFunction;
   eagerLinearActivationF32: NativeFunction;
+  trainMlpReluCrossEntropyAdamF32: NativeFunction;
   sessionBind: NativeFunction;
   sessionBindModel: NativeFunction;
   sessionBindModelBuffers: NativeFunction;
@@ -119,6 +120,7 @@ export function bindNodeSymbols(nativeLibrary: unknown): NodeNativeSymbols {
     bufferFree: lib.func("void zgml_buffer_free(void *buffer)"),
     eagerLinearF32: lib.func("int zgml_eager_linear_f32(const float *input, size_t input_len, const float *weights, size_t weights_len, const float *bias, size_t bias_len, float *output, size_t output_len, size_t batch, size_t in_features, size_t out_features)"),
     eagerLinearActivationF32: lib.func("int zgml_eager_linear_activation_f32(const float *input, size_t input_len, const float *weights, size_t weights_len, const float *bias, size_t bias_len, float *output, size_t output_len, size_t batch, size_t in_features, size_t out_features, uint32_t activation)"),
+    trainMlpReluCrossEntropyAdamF32: lib.func("int zgml_train_mlp_relu_cross_entropy_adam_f32(const float *input, size_t input_len, const uint32_t *targets, size_t target_len, float *w1, size_t w1_len, float *b1, size_t b1_len, float *w2, size_t w2_len, float *b2, size_t b2_len, float *mw1, size_t mw1_len, float *vw1, size_t vw1_len, float *mb1, size_t mb1_len, float *vb1, size_t vb1_len, float *mw2, size_t mw2_len, float *vw2, size_t vw2_len, float *mb2, size_t mb2_len, float *vb2, size_t vb2_len, float *hidden, size_t hidden_len, float *logits, size_t logits_len, float *grad_hidden, size_t grad_hidden_len, float *grad_w1, size_t grad_w1_len, float *grad_w2, size_t grad_w2_len, size_t batch, size_t in_features, size_t hidden_features, size_t classes, size_t step, float lr, float beta1, float beta2, float eps, float weight_decay, float *out_loss, size_t *out_correct)"),
     sessionBind: lib.func("int zgml_session_bind(void *program, const zgml_bind_desc *desc, _Out_ void **out_session)"),
     sessionBindModel: lib.func("int zgml_session_bind_model(void *program, void *model, const zgml_bind_desc *desc, _Out_ void **out_session)"),
     sessionBindModelBuffers: lib.func("int zgml_session_bind_model_buffers(void *program, void *model, const zgml_buffer_bind_desc *desc, _Out_ void **out_session)"),

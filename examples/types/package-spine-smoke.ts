@@ -607,6 +607,7 @@ type PackageCheckpointInspectionEntry = Expect<Equal<PackageCheckpointInspection
 type PackageCompilePath = Expect<Equal<typeof packageCompileManifest.runtimePath, "Trace -> TensorProgramIr -> KernelPlan -> Program">>;
 type PackageCompileNamespaceShape = Expect<PackageCompileNamespace extends { compile: unknown } ? true : false>;
 type PackageCompileNamespaceInferenceShape = Expect<PackageCompileNamespace extends { compileForInference: unknown; compile_for_inference: unknown } ? true : false>;
+type PackageCompileNamespaceTrainingShape = Expect<PackageCompileNamespace extends { trainingStep: unknown; training_step: unknown; compileForTraining: unknown; compile_for_training: unknown } ? true : false>;
 type PackagePublicCompileNamespaceShape = Expect<PackagePublicCompileNamespace extends Readonly<PackageCompileNamespace> ? true : false>;
 type PackagePublicCompileNamespaceCallable = Expect<PackagePublicCompileNamespace extends (target: PackageNnCompilableModule, options?: PackageCompileOptions) => PackageProgram ? true : false>;
 type PackageCompiledInferenceShape = Expect<PackageCompiledInference<readonly [2], readonly [3]> extends { program: PackageProgram<readonly [2], readonly [3]>; forward(input: unknown): unknown; into(output: Float32Array, input: unknown): Float32Array } ? true : false>;

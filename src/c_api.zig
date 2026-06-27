@@ -87,6 +87,7 @@ const feature_session_persistent_upload: u64 = 1 << 43;
 const feature_native_module_activation_chain: u64 = 1 << 44;
 const feature_native_eager_linear: u64 = 1 << 45;
 const feature_native_eager_linear_activation: u64 = 1 << 46;
+const feature_native_training_step: u64 = 1 << 47;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -1118,6 +1119,7 @@ fn runtimeFeatureFlags() u64 {
         feature_native_module_activation_chain |
         feature_native_eager_linear |
         feature_native_eager_linear_activation |
+        feature_native_training_step |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -1728,6 +1730,213 @@ export fn zgml_eager_linear_activation_f32(
     applyActivationF32(output, activation) catch |err| return switch (err) {
         error.InvalidArgument => status(.invalid_argument),
     };
+    return status(.ok);
+}
+
+fn adamUpdateF32(
+    param: []f32,
+    m: []f32,
+    v: []f32,
+    index: usize,
+    grad: f32,
+    t: usize,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    weight_decay: f32,
+) void {
+    const g = grad + weight_decay * param[index];
+    m[index] = beta1 * m[index] + (1.0 - beta1) * g;
+    v[index] = beta2 * v[index] + (1.0 - beta2) * g * g;
+    const bias_correction1 = 1.0 / (1.0 - std.math.pow(f32, beta1, @floatFromInt(t)));
+    const bias_correction2 = 1.0 / (1.0 - std.math.pow(f32, beta2, @floatFromInt(t)));
+    const m_hat = m[index] * bias_correction1;
+    const v_hat = v[index] * bias_correction2;
+    param[index] -= lr * m_hat / (@sqrt(v_hat) + eps);
+}
+
+fn finiteAdamConfig(lr: f32, beta1: f32, beta2: f32, eps: f32, weight_decay: f32) bool {
+    return std.math.isFinite(lr) and
+        std.math.isFinite(beta1) and
+        std.math.isFinite(beta2) and
+        std.math.isFinite(eps) and
+        std.math.isFinite(weight_decay) and
+        lr > 0 and
+        beta1 >= 0 and beta1 < 1 and
+        beta2 >= 0 and beta2 < 1 and
+        eps > 0 and
+        weight_decay >= 0;
+}
+
+export fn zgml_train_mlp_relu_cross_entropy_adam_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    target_ptr: ?[*]const u32,
+    target_len: usize,
+    w1_ptr: ?[*]f32,
+    w1_len: usize,
+    b1_ptr: ?[*]f32,
+    b1_len: usize,
+    w2_ptr: ?[*]f32,
+    w2_len: usize,
+    b2_ptr: ?[*]f32,
+    b2_len: usize,
+    mw1_ptr: ?[*]f32,
+    mw1_len: usize,
+    vw1_ptr: ?[*]f32,
+    vw1_len: usize,
+    mb1_ptr: ?[*]f32,
+    mb1_len: usize,
+    vb1_ptr: ?[*]f32,
+    vb1_len: usize,
+    mw2_ptr: ?[*]f32,
+    mw2_len: usize,
+    vw2_ptr: ?[*]f32,
+    vw2_len: usize,
+    mb2_ptr: ?[*]f32,
+    mb2_len: usize,
+    vb2_ptr: ?[*]f32,
+    vb2_len: usize,
+    hidden_ptr: ?[*]f32,
+    hidden_len: usize,
+    logits_ptr: ?[*]f32,
+    logits_len: usize,
+    grad_hidden_ptr: ?[*]f32,
+    grad_hidden_len: usize,
+    grad_w1_ptr: ?[*]f32,
+    grad_w1_len: usize,
+    grad_w2_ptr: ?[*]f32,
+    grad_w2_len: usize,
+    batch: usize,
+    in_features: usize,
+    hidden_features: usize,
+    classes: usize,
+    t: usize,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    weight_decay: f32,
+    out_loss: ?*f32,
+    out_correct: ?*usize,
+) c_int {
+    if (
+        input_ptr == null or target_ptr == null or
+        w1_ptr == null or b1_ptr == null or w2_ptr == null or b2_ptr == null or
+        mw1_ptr == null or vw1_ptr == null or mb1_ptr == null or vb1_ptr == null or
+        mw2_ptr == null or vw2_ptr == null or mb2_ptr == null or vb2_ptr == null or
+        hidden_ptr == null or logits_ptr == null or grad_hidden_ptr == null or grad_w1_ptr == null or grad_w2_ptr == null or
+        out_loss == null or out_correct == null or
+        batch == 0 or in_features == 0 or hidden_features == 0 or classes == 0 or t == 0 or
+        !finiteAdamConfig(lr, beta1, beta2, eps, weight_decay)
+    ) return status(.invalid_argument);
+
+    const input_count = checkedElementCount(batch, in_features) orelse return status(.shape_mismatch);
+    const hidden_count = checkedElementCount(batch, hidden_features) orelse return status(.shape_mismatch);
+    const logits_count = checkedElementCount(batch, classes) orelse return status(.shape_mismatch);
+    const w1_count = checkedElementCount(in_features, hidden_features) orelse return status(.shape_mismatch);
+    const w2_count = checkedElementCount(hidden_features, classes) orelse return status(.shape_mismatch);
+    if (
+        input_len != input_count or target_len != batch or
+        w1_len != w1_count or b1_len != hidden_features or
+        w2_len != w2_count or b2_len != classes or
+        mw1_len != w1_count or vw1_len != w1_count or
+        mb1_len != hidden_features or vb1_len != hidden_features or
+        mw2_len != w2_count or vw2_len != w2_count or
+        mb2_len != classes or vb2_len != classes or
+        hidden_len != hidden_count or logits_len != logits_count or grad_hidden_len != hidden_count or
+        grad_w1_len != w1_count or grad_w2_len != w2_count
+    ) return status(.shape_mismatch);
+
+    const input = input_ptr.?[0..input_len];
+    const targets = target_ptr.?[0..target_len];
+    const w1 = w1_ptr.?[0..w1_len];
+    const b1 = b1_ptr.?[0..b1_len];
+    const w2 = w2_ptr.?[0..w2_len];
+    const b2 = b2_ptr.?[0..b2_len];
+    const mw1 = mw1_ptr.?[0..mw1_len];
+    const vw1 = vw1_ptr.?[0..vw1_len];
+    const mb1 = mb1_ptr.?[0..mb1_len];
+    const vb1 = vb1_ptr.?[0..vb1_len];
+    const mw2 = mw2_ptr.?[0..mw2_len];
+    const vw2 = vw2_ptr.?[0..vw2_len];
+    const mb2 = mb2_ptr.?[0..mb2_len];
+    const vb2 = vb2_ptr.?[0..vb2_len];
+    const hidden = hidden_ptr.?[0..hidden_len];
+    const logits = logits_ptr.?[0..logits_len];
+    const grad_hidden = grad_hidden_ptr.?[0..grad_hidden_len];
+    const grad_w1 = grad_w1_ptr.?[0..grad_w1_len];
+    const grad_w2 = grad_w2_ptr.?[0..grad_w2_len];
+
+    forward.blasSgemm(hidden, input, w1, batch, hidden_features, in_features, in_features, 1, hidden_features, 1, 0, 0, 0, hidden_features);
+    addBiasRowsF32(hidden, b1, batch, hidden_features);
+    applyActivationF32(hidden, module_activation_relu) catch unreachable;
+
+    forward.blasSgemm(logits, hidden, w2, batch, classes, hidden_features, hidden_features, 1, classes, 1, 0, 0, 0, classes);
+    addBiasRowsF32(logits, b2, batch, classes);
+
+    var total_loss: f32 = 0;
+    var correct: usize = 0;
+    const inv_batch = 1.0 / @as(f32, @floatFromInt(batch));
+    for (0..batch) |row| {
+        const target = targets[row];
+        if (target >= classes) return status(.shape_mismatch);
+        const target_index: usize = @intCast(target);
+        const logits_row = logits[row * classes ..][0..classes];
+        var max_logit = logits_row[0];
+        var predicted: usize = 0;
+        for (1..classes) |c| {
+            if (logits_row[c] > max_logit) {
+                max_logit = logits_row[c];
+                predicted = c;
+            }
+        }
+        if (predicted == target_index) correct += 1;
+        var denom: f32 = 0;
+        for (0..classes) |c| denom += @exp(logits_row[c] - max_logit);
+        total_loss += -(logits_row[target_index] - max_logit - @log(denom));
+        for (0..classes) |c| {
+            const prob = @exp(logits_row[c] - max_logit) / denom;
+            logits_row[c] = (prob - if (c == target_index) @as(f32, 1) else @as(f32, 0)) * inv_batch;
+        }
+    }
+    out_loss.?.* = total_loss * inv_batch;
+    out_correct.?.* = correct;
+
+    forward.blasSgemm(grad_hidden, logits, w2, batch, hidden_features, classes, classes, 1, 1, classes, 0, 0, 0, hidden_features);
+    for (0..batch) |row| {
+        const hidden_row = hidden[row * hidden_features ..][0..hidden_features];
+        const grad_hidden_row = grad_hidden[row * hidden_features ..][0..hidden_features];
+        for (0..hidden_features) |h| grad_hidden_row[h] = if (hidden_row[h] > 0) grad_hidden_row[h] else 0;
+    }
+
+    forward.blasSgemm(grad_w2, hidden, logits, hidden_features, classes, batch, 1, hidden_features, classes, 1, 0, 0, 0, classes);
+    for (0..hidden_features) |h| {
+        const hidden_base = h * classes;
+        for (0..classes) |c| {
+            adamUpdateF32(w2, mw2, vw2, hidden_base + c, grad_w2[hidden_base + c], t, lr, beta1, beta2, eps, weight_decay);
+        }
+    }
+    for (0..classes) |c| {
+        var grad: f32 = 0;
+        for (0..batch) |row| grad += logits[row * classes + c];
+        adamUpdateF32(b2, mb2, vb2, c, grad, t, lr, beta1, beta2, eps, weight_decay);
+    }
+
+    forward.blasSgemm(grad_w1, input, grad_hidden, in_features, hidden_features, batch, 1, in_features, hidden_features, 1, 0, 0, 0, hidden_features);
+    for (0..in_features) |i| {
+        const w1_base = i * hidden_features;
+        for (0..hidden_features) |h| {
+            adamUpdateF32(w1, mw1, vw1, w1_base + h, grad_w1[w1_base + h], t, lr, beta1, beta2, eps, weight_decay);
+        }
+    }
+    for (0..hidden_features) |h| {
+        var grad: f32 = 0;
+        for (0..batch) |row| grad += grad_hidden[row * hidden_features + h];
+        adamUpdateF32(b1, mb1, vb1, h, grad, t, lr, beta1, beta2, eps, weight_decay);
+    }
+
     return status(.ok);
 }
 
@@ -6785,6 +6994,7 @@ test "C ABI runtime info reports compatible handle surface" {
     try std.testing.expect((info.feature_flags & feature_program_binding_requirements) != 0);
     try std.testing.expect((info.feature_flags & feature_session_persistent_upload) != 0);
     try std.testing.expect((info.feature_flags & feature_native_module_activation_chain) != 0);
+    try std.testing.expect((info.feature_flags & feature_native_training_step) != 0);
     try std.testing.expectEqual(build_options.use_wgpu, (info.feature_flags & feature_native_wgpu_execution) != 0);
     try std.testing.expectEqual(build_options.use_wgpu and build_options.experimental_llama_wgpu_execution, (info.feature_flags & feature_experimental_llama_wgpu_execution) != 0);
     try std.testing.expect((info.feature_flags & feature_experimental_llama_wgpu_execution) == 0 or (info.feature_flags & feature_native_wgpu_execution) != 0);

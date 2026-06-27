@@ -82,6 +82,9 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
       eagerLinearF32: symbols.eagerLinearF32,
       eagerLinearActivationF32: symbols.eagerLinearActivationF32,
     }),
+    nativeTraining: Object.freeze({
+      trainMlpReluCrossEntropyAdamF32: symbols.trainMlpReluCrossEntropyAdamF32,
+    }),
     programBind: Object.freeze({
       sessionBind: symbols.sessionBind,
       sessionBindBuffers: symbols.sessionBindBuffers,

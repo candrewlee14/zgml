@@ -147,6 +147,9 @@ import {
   createAdapterNativeEagerSurface,
 } from "./native_eager_surface.js";
 import {
+  createAdapterNativeTrainingSurface,
+} from "./native_training_surface.js";
+import {
   adapterBufferStorageAliases,
   adapterModelKindAliases,
 } from "../runtime/native_abi_constants.js";
@@ -2435,6 +2438,69 @@ export const { nativeEager } = createAdapterNativeEagerSurface({
   ),
 });
 
+const nativeTraining = createAdapterNativeTrainingSurface({
+  f32: (value) => f32(value as TensorLike),
+  indexValues,
+  check,
+  trainMlpReluCrossEntropyAdamF32: (args) => {
+    const outLoss = new Float32Array(1);
+    const outCorrect = new BigUint64Array(1);
+    const statusCode = bunSymbolGroups.nativeTraining.trainMlpReluCrossEntropyAdamF32(
+      args.input,
+      BigInt(args.input.length),
+      args.targets,
+      BigInt(args.targets.length),
+      args.w1,
+      BigInt(args.w1.length),
+      args.b1,
+      BigInt(args.b1.length),
+      args.w2,
+      BigInt(args.w2.length),
+      args.b2,
+      BigInt(args.b2.length),
+      args.mw1,
+      BigInt(args.mw1.length),
+      args.vw1,
+      BigInt(args.vw1.length),
+      args.mb1,
+      BigInt(args.mb1.length),
+      args.vb1,
+      BigInt(args.vb1.length),
+      args.mw2,
+      BigInt(args.mw2.length),
+      args.vw2,
+      BigInt(args.vw2.length),
+      args.mb2,
+      BigInt(args.mb2.length),
+      args.vb2,
+      BigInt(args.vb2.length),
+      args.hidden,
+      BigInt(args.hidden.length),
+      args.logits,
+      BigInt(args.logits.length),
+      args.gradHidden,
+      BigInt(args.gradHidden.length),
+      args.gradW1,
+      BigInt(args.gradW1.length),
+      args.gradW2,
+      BigInt(args.gradW2.length),
+      BigInt(args.batch),
+      BigInt(args.inFeatures),
+      BigInt(args.hiddenFeatures),
+      BigInt(args.classes),
+      BigInt(args.step),
+      args.lr,
+      args.beta1,
+      args.beta2,
+      args.eps,
+      args.weightDecay,
+      outLoss,
+      outCorrect,
+    );
+    return { status: statusCode, loss: outLoss[0], correct: Number(outCorrect[0]) };
+  },
+});
+
 const publicNamespaces = createAdapterFrontendNamespaces({
   sharedFrontend,
   Tensor,
@@ -2537,6 +2603,7 @@ export const compile = createAdapterCompileNamespace({
   traceSequentialProgram,
   analyzeSequentialProgram,
   compileModuleProgram,
+  trainingStep: nativeTraining.trainingStep,
 });
 sharedFrontend.lazy.setLazyTensorProgramCompiler((lazyGraph, compileOptions) => compile.compile(lazyGraph, compileOptions) as any);
 export const optim = publicNamespaces.optim;
@@ -2560,6 +2627,8 @@ export const simple = Object.freeze({
   compile,
   compileInference: compile.compileForInference,
   compileForInference: compile.compileForInference,
+  trainingStep: compile.trainingStep,
+  compileForTraining: compile.compileForTraining,
   lazy: sharedFrontend.lazy,
   optim,
   data,
@@ -2677,6 +2746,10 @@ export const compileInference = compile.compileForInference;
 export const compile_inference = compile.compile_for_inference;
 export const compileForInference = compile.compileForInference;
 export const compile_for_inference = compile.compile_for_inference;
+export const trainingStep = compile.trainingStep;
+export const training_step = compile.training_step;
+export const compileForTraining = compile.compileForTraining;
+export const compile_for_training = compile.compile_for_training;
 
 const {
   TinyLlamaModel,

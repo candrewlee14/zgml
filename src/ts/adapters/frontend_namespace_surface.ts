@@ -183,6 +183,7 @@ type AdapterCompileNamespaceOptions = Readonly<{
   traceSequentialProgram: (...args: any[]) => unknown;
   analyzeSequentialProgram: (...args: any[]) => unknown;
   compileModuleProgram?: (spec: unknown, compileOptions?: unknown) => unknown;
+  trainingStep?: (model: unknown, optimizer: unknown, options?: UnknownRecord) => unknown;
 }>;
 
 const compileManifest = Object.freeze({
@@ -869,6 +870,13 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     );
   }
 
+  function trainingStep(model: unknown, optimizer: unknown, trainingOptions: UnknownRecord = {}) {
+    if (typeof options.trainingStep !== "function") {
+      throw new Error("compile.trainingStep requires a native training-step runtime");
+    }
+    return options.trainingStep(model, optimizer, trainingOptions);
+  }
+
   return Object.freeze(Object.assign(compile, {
     compileManifest,
     trace,
@@ -924,6 +932,10 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     compile,
     compileForInference,
     compile_for_inference: compileForInference,
+    trainingStep,
+    training_step: trainingStep,
+    compileForTraining: trainingStep,
+    compile_for_training: trainingStep,
   }));
 }
 
@@ -1205,6 +1217,10 @@ export function createAdapterTorchNamespace(options: AdapterTorchNamespaceOption
     compile_inference: compileNamespace.compileForInference,
     compileForInference: compileNamespace.compileForInference,
     compile_for_inference: compileNamespace.compile_for_inference,
+    trainingStep: compileNamespace.trainingStep,
+    training_step: compileNamespace.training_step,
+    compileForTraining: compileNamespace.compileForTraining,
+    compile_for_training: compileNamespace.compile_for_training,
     nativeEager: options.nativeEager,
     native_eager: options.nativeEager,
     lazy: options.lazy,

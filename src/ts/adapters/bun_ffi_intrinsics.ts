@@ -12,6 +12,7 @@ export type BunNativeHandle = number;
 export type BunPointerInput = ArrayBuffer | ArrayBufferView;
 export type BunFfiSymbolType =
   | "cstring"
+  | "float"
   | "i32"
   | "ptr"
   | "u32"
