@@ -2206,6 +2206,15 @@ export const { nativeEager } = createAdapterNativeEagerSurface({
     BigInt(args.expectedOutput),
     args.activation,
   ),
+  elementwiseF32: (args) => bunSymbolGroups.nativeEager.eagerElementwiseF32(
+    args.lhsData,
+    BigInt(args.lhsData.length),
+    args.rhsData,
+    BigInt(args.rhsData ? args.rhsData.length : 0),
+    args.output,
+    BigInt(args.expectedOutput),
+    args.op,
+  ),
   softmaxF32: (args) => bunSymbolGroups.nativeEager.eagerSoftmaxF32(
     args.inputData,
     BigInt(args.inputData.length),

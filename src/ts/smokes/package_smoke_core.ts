@@ -341,6 +341,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.matmulInto !== "function") {
     throw new Error(`${label} expected nativeEager.matmulInto`);
   }
+  if (typeof nativeEager.elementwiseInto !== "function") {
+    throw new Error(`${label} expected nativeEager.elementwiseInto`);
+  }
   if (typeof nativeEager.softmaxInto !== "function" || typeof nativeEager.logSoftmaxInto !== "function") {
     throw new Error(`${label} expected nativeEager softmax/logSoftmax into helpers`);
   }
@@ -355,6 +358,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   if (typeof nativeEagerAlias.matmul_into !== "function") {
     throw new Error(`${label} expected native_eager.matmul_into alias`);
+  }
+  if (typeof nativeEagerAlias.elementwise_into !== "function") {
+    throw new Error(`${label} expected native_eager.elementwise_into alias`);
   }
   if (typeof nativeEagerAlias.softmax_into !== "function" || typeof nativeEagerAlias.log_softmax_into !== "function") {
     throw new Error(`${label} expected native_eager softmax/log_softmax aliases`);
@@ -386,6 +392,18 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.matmul_into to reuse caller output`);
   }
   expectClose(matmulAliasOutput, Array.from(matmulOutput), `${label} native_eager.matmul_into output`);
+  const elementwiseOutput = new Float32Array(6);
+  const elementwiseResult = nativeEager.elementwiseInto(elementwiseOutput, directOutput, new Float32Array([2]), { op: "mul" });
+  if (elementwiseResult !== elementwiseOutput) {
+    throw new Error(`${label} expected nativeEager.elementwiseInto to reuse caller output`);
+  }
+  expectClose(elementwiseOutput, Array.from(directOutput, (value) => value * 2), `${label} nativeEager.elementwiseInto output`);
+  const elementwiseAliasOutput = new Float32Array(6);
+  const elementwiseAliasResult = nativeEagerAlias.elementwise_into(elementwiseAliasOutput, directOutput, null, { op: "sqr" });
+  if (elementwiseAliasResult !== elementwiseAliasOutput) {
+    throw new Error(`${label} expected native_eager.elementwise_into to reuse caller output`);
+  }
+  expectClose(elementwiseAliasOutput, Array.from(directOutput, (value) => value * value), `${label} native_eager.elementwise_into output`);
   const geluOutput = new Float32Array(6);
   const geluResult = nativeEager.linearActivationInto(geluOutput, input, weights, { bias, activation: "gelu" });
   if (geluResult !== geluOutput) {

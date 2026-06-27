@@ -2147,6 +2147,18 @@ export type NativeEagerLinearActivationIntoOptions = NativeEagerLinearIntoOption
 export type NativeEagerActivationIntoOptions = Readonly<{
   activation: "relu" | "gelu" | "silu" | "sigmoid" | "tanh";
 }>;
+export type NativeEagerElementwiseOp =
+  | "add" | "sub" | "mul" | "div"
+  | "neg" | "negative"
+  | "exp" | "log"
+  | "sqr" | "square"
+  | "recip" | "reciprocal"
+  | "abs" | "sqrt"
+  | "maximum" | "max"
+  | "minimum" | "min";
+export type NativeEagerElementwiseIntoOptions = Readonly<{
+  op: NativeEagerElementwiseOp;
+}>;
 export type NativeEagerSoftmaxIntoOptions = Readonly<{
   rows?: number;
   cols?: number;
@@ -2172,6 +2184,8 @@ export type PublicNativeEagerNamespace = Readonly<{
   linear_activation_into(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerLinearActivationIntoOptions): Float32Array;
   activationInto(output: Float32Array, input: TensorLike, options: NativeEagerActivationIntoOptions): Float32Array;
   activation_into(output: Float32Array, input: TensorLike, options: NativeEagerActivationIntoOptions): Float32Array;
+  elementwiseInto(output: Float32Array, lhs: TensorLike, rhs: TensorLike | Float32Array | number | null | undefined, options: NativeEagerElementwiseIntoOptions): Float32Array;
+  elementwise_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike | Float32Array | number | null | undefined, options: NativeEagerElementwiseIntoOptions): Float32Array;
   matmulInto(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerMatmulIntoOptions): Float32Array;
   matmul_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerMatmulIntoOptions): Float32Array;
   softmaxInto(output: Float32Array, input: TensorLike, options?: NativeEagerSoftmaxIntoOptions): Float32Array;
@@ -7166,6 +7180,7 @@ export type RuntimeFeatures = Readonly<{
   nativeTrainingStep: boolean;
   nativeEagerSoftmax: boolean;
   nativeEagerMatmul: boolean;
+  nativeEagerElementwise: boolean;
 }>;
 
 export type ModelInspection = Readonly<{

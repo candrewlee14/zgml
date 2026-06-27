@@ -51,12 +51,21 @@ type NativeEagerActivationCall = (args: {
   activation: number;
 }) => number;
 
+type NativeEagerElementwiseCall = (args: {
+  lhsData: Float32Array;
+  rhsData: Float32Array | null;
+  output: Float32Array;
+  expectedOutput: number;
+  op: number;
+}) => number;
+
 type NativeEagerSurfaceOptions = {
   f32: NativeEagerTensorFactory;
   check: NativeEagerCheck;
   linearF32: NativeEagerLinearCall;
   linearActivationF32: NativeEagerLinearActivationCall;
   activationF32?: NativeEagerActivationCall;
+  elementwiseF32?: NativeEagerElementwiseCall;
   matmulF32?: NativeEagerMatmulCall;
   softmaxF32: NativeEagerSoftmaxCall;
 };
@@ -112,6 +121,31 @@ function nativeEagerActivationId(value: unknown, label: string): number {
     case "sigmoid": return 4;
     case "tanh": return 14;
     default: throw new Error(`${label} activation must be relu, gelu, silu, sigmoid, or tanh, got ${value}`);
+  }
+}
+
+function nativeEagerElementwiseOpId(value: unknown, label: string): number {
+  const normalized = String(value ?? "").trim();
+  switch (normalized) {
+    case "add": return 1;
+    case "sub": return 2;
+    case "mul": return 3;
+    case "div": return 4;
+    case "neg":
+    case "negative": return 5;
+    case "exp": return 6;
+    case "log": return 7;
+    case "sqr":
+    case "square": return 8;
+    case "recip":
+    case "reciprocal": return 9;
+    case "abs": return 10;
+    case "sqrt": return 11;
+    case "maximum":
+    case "max": return 12;
+    case "minimum":
+    case "min": return 13;
+    default: throw new Error(`${label} op must be add, sub, mul, div, neg, exp, log, sqr, recip, abs, sqrt, maximum, or minimum, got ${value}`);
   }
 }
 
@@ -235,6 +269,35 @@ function nativeEagerActivationInputs(
   };
 }
 
+function nativeEagerElementwiseInputs(
+  output: Float32Array,
+  lhs: unknown,
+  rhs: unknown,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.elementwiseInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const lhsData = nativeEagerTensorData(lhs, `${label} lhs`, f32);
+  if (lhsData.length === 0) {
+    throw new Error(`${label} lhs must be non-empty`);
+  }
+  const rhsData = rhs == null ? null : nativeEagerTensorData(rhs, `${label} rhs`, f32);
+  if (rhsData !== null && rhsData.length !== 1 && rhsData.length !== lhsData.length) {
+    throw new Error(`${label} rhs length ${rhsData.length} must be 1 or match lhs length ${lhsData.length}`);
+  }
+  if (output.length < lhsData.length) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${lhsData.length}`);
+  }
+  return {
+    lhsData,
+    rhsData,
+    output,
+    expectedOutput: lhsData.length,
+  };
+}
+
 function nativeEagerMatmulInputs(
   output: Float32Array,
   lhs: unknown,
@@ -313,6 +376,20 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     activation_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
       return this.activationInto(output, input, callOptions);
+    },
+    elementwiseInto(output: Float32Array, lhs: unknown, rhs: unknown = null, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.elementwiseF32 !== "function") {
+        throw new Error("nativeEager.elementwiseInto is unavailable in this runtime");
+      }
+      const args = nativeEagerElementwiseInputs(output, lhs, rhs, options.f32);
+      options.check(options.elementwiseF32({
+        ...args,
+        op: nativeEagerElementwiseOpId(callOptions.op, "nativeEager.elementwiseInto"),
+      }));
+      return output;
+    },
+    elementwise_into(output: Float32Array, lhs: unknown, rhs?: unknown, callOptions?: Record<string, unknown>) {
+      return this.elementwiseInto(output, lhs, rhs, callOptions);
     },
     matmulInto(output: Float32Array, lhs: unknown, rhs: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.matmulF32 !== "function") {

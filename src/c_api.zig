@@ -91,6 +91,7 @@ const feature_native_training_step: u64 = 1 << 47;
 const feature_native_eager_softmax: u64 = 1 << 48;
 const feature_native_eager_matmul: u64 = 1 << 49;
 const feature_native_eager_activation: u64 = 1 << 50;
+const feature_native_eager_elementwise: u64 = 1 << 51;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -1126,6 +1127,7 @@ fn runtimeFeatureFlags() u64 {
         feature_native_eager_softmax |
         feature_native_eager_matmul |
         feature_native_eager_activation |
+        feature_native_eager_elementwise |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -1630,6 +1632,45 @@ fn eagerActivationF32(value: f32, activation: u32) !f32 {
     };
 }
 
+const eager_elementwise_add: u32 = 1;
+const eager_elementwise_sub: u32 = 2;
+const eager_elementwise_mul: u32 = 3;
+const eager_elementwise_div: u32 = 4;
+const eager_elementwise_neg: u32 = 5;
+const eager_elementwise_exp: u32 = 6;
+const eager_elementwise_log: u32 = 7;
+const eager_elementwise_sqr: u32 = 8;
+const eager_elementwise_recip: u32 = 9;
+const eager_elementwise_abs: u32 = 10;
+const eager_elementwise_sqrt: u32 = 11;
+const eager_elementwise_maximum: u32 = 12;
+const eager_elementwise_minimum: u32 = 13;
+
+fn eagerElementwiseUnaryF32(value: f32, op: u32) !f32 {
+    return switch (op) {
+        eager_elementwise_neg => -value,
+        eager_elementwise_exp => @exp(value),
+        eager_elementwise_log => @log(value),
+        eager_elementwise_sqr => value * value,
+        eager_elementwise_recip => 1.0 / value,
+        eager_elementwise_abs => @abs(value),
+        eager_elementwise_sqrt => @sqrt(value),
+        else => error.InvalidArgument,
+    };
+}
+
+fn eagerElementwiseBinaryF32(lhs: f32, rhs: f32, op: u32) !f32 {
+    return switch (op) {
+        eager_elementwise_add => lhs + rhs,
+        eager_elementwise_sub => lhs - rhs,
+        eager_elementwise_mul => lhs * rhs,
+        eager_elementwise_div => lhs / rhs,
+        eager_elementwise_maximum => @max(lhs, rhs),
+        eager_elementwise_minimum => @min(lhs, rhs),
+        else => error.InvalidArgument,
+    };
+}
+
 fn applyActivationF32(output: []f32, activation: u32) !void {
     if (activation == 0) return;
     for (output) |*value| value.* = try eagerActivationF32(value.*, activation);
@@ -1813,6 +1854,41 @@ export fn zgml_eager_activation_f32(
     const output = output_ptr.?[0..output_len];
     for (input, output) |value, *out| {
         out.* = eagerActivationF32(value, activation) catch |err| return switch (err) {
+            error.InvalidArgument => status(.invalid_argument),
+        };
+    }
+    return status(.ok);
+}
+
+export fn zgml_eager_elementwise_f32(
+    lhs_ptr: ?[*]const f32,
+    lhs_len: usize,
+    rhs_ptr: ?[*]const f32,
+    rhs_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    op: u32,
+) c_int {
+    if (lhs_ptr == null or output_ptr == null or lhs_len == 0) return status(.invalid_argument);
+    if (lhs_len != output_len) return status(.shape_mismatch);
+    const lhs = lhs_ptr.?[0..lhs_len];
+    const output = output_ptr.?[0..output_len];
+
+    if (rhs_len == 0) {
+        if (rhs_ptr != null) return status(.shape_mismatch);
+        for (lhs, output) |value, *out| {
+            out.* = eagerElementwiseUnaryF32(value, op) catch |err| return switch (err) {
+                error.InvalidArgument => status(.invalid_argument),
+            };
+        }
+        return status(.ok);
+    }
+
+    if (rhs_ptr == null) return status(.invalid_argument);
+    if (rhs_len != 1 and rhs_len != lhs_len) return status(.shape_mismatch);
+    const rhs = rhs_ptr.?[0..rhs_len];
+    for (lhs, output, 0..) |value, *out, i| {
+        out.* = eagerElementwiseBinaryF32(value, rhs[if (rhs_len == 1) 0 else i], op) catch |err| return switch (err) {
             error.InvalidArgument => status(.invalid_argument),
         };
     }
@@ -7393,6 +7469,7 @@ test "C ABI runtime info reports compatible handle surface" {
     try std.testing.expect((info.feature_flags & feature_native_module_activation_chain) != 0);
     try std.testing.expect((info.feature_flags & feature_native_training_step) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_activation) != 0);
+    try std.testing.expect((info.feature_flags & feature_native_eager_elementwise) != 0);
     try std.testing.expectEqual(build_options.use_wgpu, (info.feature_flags & feature_native_wgpu_execution) != 0);
     try std.testing.expectEqual(build_options.use_wgpu and build_options.experimental_llama_wgpu_execution, (info.feature_flags & feature_experimental_llama_wgpu_execution) != 0);
     try std.testing.expect((info.feature_flags & feature_experimental_llama_wgpu_execution) == 0 or (info.feature_flags & feature_native_wgpu_execution) != 0);
@@ -10358,6 +10435,65 @@ test "C ABI native eager activation writes caller output" {
         output[0..].ptr,
         output.len,
         99,
+    ));
+}
+
+test "C ABI native eager elementwise writes caller output" {
+    const lhs = [_]f32{ -2, -0.5, 0.5, 2 };
+    const rhs = [_]f32{ 2, 4, -1, 0.5 };
+    const scalar = [_]f32{2};
+    var output = [_]f32{0} ** lhs.len;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+        eager_elementwise_add,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 0, 3.5, -0.5, 2.5 }, &output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        scalar[0..].ptr,
+        scalar.len,
+        output[0..].ptr,
+        output.len,
+        eager_elementwise_mul,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ -4, -1, 1, 4 }, &output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        null,
+        0,
+        output[0..].ptr,
+        output.len,
+        eager_elementwise_sqr,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 4, 0.25, 0.25, 4 }, &output);
+
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_elementwise_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        null,
+        0,
+        output[0..].ptr,
+        output.len,
+        eager_elementwise_add,
+    ));
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_elementwise_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len - 1,
+        output[0..].ptr,
+        output.len,
+        eager_elementwise_add,
     ));
 }
 
