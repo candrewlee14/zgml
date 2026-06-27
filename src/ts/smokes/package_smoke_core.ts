@@ -7152,6 +7152,14 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   }
   const hasNativeTrainingSurface = Boolean(adapter.nativeEager && (adapter.compileForTraining || adapter.compile?.compileForTraining));
   if (hasNativeTrainingSurface) {
+    if (
+      fitModuleEvidence.native !== true ||
+      fitModuleEvidence.compiledPlan?.loweredBy !== "zig-ffi" ||
+      fitModelFirstEvidence.native !== true ||
+      fitModelFirstEvidence.compiledPlan?.loweredBy !== "zig-ffi"
+    ) {
+      throw new Error(`${label} expected fixed-shape train.fit/fitModule array batches to auto-select native Zig training`);
+    }
     const moduleCompileModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
     const moduleCompileOptimizer = adapter.optim.sgd(moduleCompileModel, { lr: 0.05 });
     const moduleCompiledTrainer = moduleCompileModel.compileForTraining(moduleCompileOptimizer, {

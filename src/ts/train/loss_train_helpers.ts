@@ -1352,15 +1352,43 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     const source = batches as AnyRecord | null;
     const config = fitOptions as AnyRecord;
     const batchSizeValue = config.batchSize ?? config.batch_size ?? source?.batchSize ?? source?.batch_size;
-    if (batchSizeValue === undefined || batchSizeValue === null) return null;
-    const batchSize = Number(batchSizeValue);
-    if (!Number.isSafeInteger(batchSize) || batchSize <= 0) return null;
-    const maxSteps = config.maxSteps ?? config.max_steps;
-    if (maxSteps !== undefined && Number(maxSteps) === 1) return batchSize;
-    const dropLast = source?.dropLast ?? source?.drop_last ?? config.dropLast ?? config.drop_last;
-    if (dropLast === true) return batchSize;
-    const sampleCount = fitSampleCountEvidence(batches);
-    if (sampleCount !== null && sampleCount % batchSize === 0) return batchSize;
+    if (batchSizeValue !== undefined && batchSizeValue !== null) {
+      const batchSize = Number(batchSizeValue);
+      if (!Number.isSafeInteger(batchSize) || batchSize <= 0) return null;
+      const maxSteps = config.maxSteps ?? config.max_steps;
+      if (maxSteps !== undefined && Number(maxSteps) === 1) return batchSize;
+      const dropLast = source?.dropLast ?? source?.drop_last ?? config.dropLast ?? config.drop_last;
+      if (dropLast === true) return batchSize;
+      const sampleCount = fitSampleCountEvidence(batches);
+      if (sampleCount !== null && sampleCount % batchSize === 0) return batchSize;
+    }
+    if (Array.isArray(batches)) {
+      const maxStepsValue = config.maxSteps ?? config.max_steps;
+      const inspected = maxStepsValue === undefined
+        ? batches.length
+        : Math.min(batches.length, positiveIntegerOption(maxStepsValue, "maxSteps", Number.MAX_SAFE_INTEGER));
+      let batchSize: number | null = null;
+      let features: number | null = null;
+      for (let i = 0; i < inspected; i += 1) {
+        const input = (batches[i] as AnyRecord | null)?.input;
+        if (!isTensor(input) || !Array.isArray(input.shape) || input.shape.length !== 2) return null;
+        const currentBatch = Number(input.shape[0]);
+        const currentFeatures = Number(input.shape[1]);
+        if (
+          !Number.isSafeInteger(currentBatch) ||
+          currentBatch <= 0 ||
+          !Number.isSafeInteger(currentFeatures) ||
+          currentFeatures <= 0
+        ) return null;
+        if (batchSize === null) {
+          batchSize = currentBatch;
+          features = currentFeatures;
+        } else if (currentBatch !== batchSize || currentFeatures !== features) {
+          return null;
+        }
+      }
+      if (batchSize !== null) return batchSize;
+    }
     return null;
   }
 
