@@ -6522,18 +6522,38 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     max_steps: 1,
     zero_grad: true,
   });
+  const fitModuleStepOk = fitModuleEvidence.lastStep?.gradientsCleared === true || fitModuleEvidence.native === true;
+  const fitModelFirstStepOk = fitModelFirstEvidence.lastStep?.gradientsCleared === true || fitModelFirstEvidence.native === true;
+  const fitModuleSnakeStepOk = fitModuleSnakeEvidence.lastStep?.gradientsCleared === true || fitModuleSnakeEvidence.native === true;
   if (
     fitModuleEvidence.kind !== "zgml.train.fit" ||
     fitModuleEvidence.steps !== 1 ||
-    fitModuleEvidence.lastStep?.gradientsCleared !== true ||
+    !fitModuleStepOk ||
     fitModelFirstEvidence.kind !== "zgml.train.fit" ||
     fitModelFirstEvidence.steps !== 1 ||
-    fitModelFirstEvidence.lastStep?.gradientsCleared !== true ||
+    !fitModelFirstStepOk ||
     fitModuleSnakeEvidence.kind !== "zgml.train.fit" ||
     fitModuleSnakeEvidence.steps !== 1 ||
-    fitModuleSnakeEvidence.lastStep?.gradientsCleared !== true
+    !fitModuleSnakeStepOk
   ) {
     throw new Error(`${label} expected train.fit model-first and fitModule/fit_module to train module+criterion batches`);
+  }
+  const hasNativeTrainingSurface = Boolean(adapter.nativeEager && (adapter.compileForTraining || adapter.compile?.compileForTraining));
+  if (hasNativeTrainingSurface) {
+    const nativeFitModuleModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
+    const nativeFitModuleOptimizer = adapter.optim.sgd(nativeFitModuleModel, { lr: 0.05 });
+    const nativeFitModuleEvidence = adapter.train.fitModule(nativeFitModuleOptimizer, nativeFitModuleModel, shuffledBatches, fitModuleCriterion, {
+      maxSteps: 1,
+      requireNative: true,
+    });
+    if (
+      nativeFitModuleEvidence.kind !== "zgml.train.fit" ||
+      nativeFitModuleEvidence.steps !== 1 ||
+      nativeFitModuleEvidence.native !== true ||
+      nativeFitModuleEvidence.backend !== "cpu"
+    ) {
+      throw new Error(`${label} expected train.fitModule requireNative to route supported Linear+MSE training through native Zig`);
+    }
   }
   if (
     !adapter.train.isTrainFitStepEvidence(fitSteps[0]) ||

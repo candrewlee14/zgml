@@ -4864,6 +4864,16 @@ export type TrainFitOptions<OptimizerKind extends OptimizerStateKind | null = Op
   zeroGradOptions?: ZeroGradOptions;
   zero_grad_options?: ZeroGradOptions;
   gradient?: TensorLike;
+  native?: boolean;
+  autoNative?: boolean;
+  auto_native?: boolean;
+  requireNative?: boolean;
+  require_native?: boolean;
+  compile?: boolean;
+  inputShape?: readonly number[];
+  input_shape?: readonly number[];
+  batchSize?: number;
+  batch_size?: number;
   earlyStopping?: boolean | TrainEarlyStoppingOptions;
   early_stopping?: boolean | TrainEarlyStoppingOptions;
   earlyStoppingPatience?: number;

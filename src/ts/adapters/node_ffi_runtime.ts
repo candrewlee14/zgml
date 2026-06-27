@@ -1205,6 +1205,7 @@ const nativeTraining = createAdapterNativeTrainingSurface({
   ),
 });
 
+let compileTrainingStepHook = null;
 const publicNamespaces = createAdapterFrontendNamespaces({
   sharedFrontend,
   Tensor,
@@ -1223,6 +1224,12 @@ const publicNamespaces = createAdapterFrontendNamespaces({
   optimizerStepFromState,
   loadOptimizerTensorState,
   rejectUnexpectedOptimizerState,
+  compileTrainingStep: (...args) => {
+    if (compileTrainingStepHook === null) {
+      throw new Error("zgml Node FFI train.fitModule native compile hook was called before compile namespace initialization");
+    }
+    return compileTrainingStepHook(...args);
+  },
   LinearModule,
   EmbeddingModule,
   Conv2dModule,
@@ -1293,6 +1300,7 @@ const compile = createAdapterCompileNamespace({
   compileModuleProgram,
   trainingStep: nativeTraining.trainingStep,
 });
+compileTrainingStepHook = compile.compileForTraining;
 sharedFrontend.lazy.setLazyTensorProgramCompiler((lazyGraph, compileOptions) => compile.compile(lazyGraph, compileOptions));
 const torchCheckpointIo = createAdapterTorchCheckpointIo(checkpoint, {
   readTextFile: (path) => readFileSync(path, "utf8"),

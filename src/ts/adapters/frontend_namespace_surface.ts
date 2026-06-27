@@ -215,6 +215,7 @@ export type AdapterFrontendNamespaceOptions<TTensor = unknown> =
     optimizerStepFromState: OptimizerClassesOptions["optimizerStepFromState"];
     loadOptimizerTensorState: OptimizerClassesOptions["loadOptimizerTensorState"];
     rejectUnexpectedOptimizerState: OptimizerClassesOptions["rejectUnexpectedOptimizerState"];
+    compileTrainingStep?: LossTrainHelpersOptions["compileTrainingStep"];
     geluScalar: NnNamespaceOptions["geluScalar"];
     siluScalar: NnNamespaceOptions["siluScalar"];
     stateDict: NnNamespaceOptions["stateDict"] & CheckpointHelpersOptions["moduleStateDict"];
@@ -231,6 +232,7 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
     isGradEnabled: options.isGradEnabled,
     zeroGrad: options.zeroGrad,
     resolveParameters: options.resolveParameters,
+    compileTrainingStep: options.compileTrainingStep,
   });
 
   const optimizerClasses = options.sharedFrontend.createOptimizerClasses({

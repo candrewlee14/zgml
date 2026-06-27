@@ -136,6 +136,32 @@ if (!(nativeAfter < nativeBefore * 0.02)) {
 }
 nativeTrainer.free();
 
+const ergonomicNativeModel = nn.linear(2, 1, { weights: [0, 0], bias: [0] });
+const ergonomicNativeOptimizer = optim.sgd(ergonomicNativeModel, { lr: 0.04 });
+const ergonomicNativeBatches = data.dataLoader(samples, { batchSize: 4, shuffle: false });
+const ergonomicNativeCriterion = loss.mseLoss();
+const ergonomicNativeBefore = scalar(loss.mse(ergonomicNativeModel.forward(tensor([1, -1], [1, 2] as const)), tensor([2.5], [1, 1] as const)));
+const ergonomicNativeFit = train.fitModule(
+  ergonomicNativeOptimizer,
+  ergonomicNativeModel,
+  ergonomicNativeBatches,
+  ergonomicNativeCriterion,
+  {
+    epochs: 80,
+    requireNative: true,
+  },
+);
+const ergonomicNativeAfter = scalar(loss.mse(ergonomicNativeModel.forward(tensor([1, -1], [1, 2] as const)), tensor([2.5], [1, 1] as const)));
+if (ergonomicNativeFit.native !== true || ergonomicNativeFit.backend !== "cpu") {
+  throw new Error("train.fitModule should automatically compile supported linear MSE training through the native Zig path");
+}
+if (!train.isTrainFitEvidence(ergonomicNativeFit) || ergonomicNativeFit.steps !== 80 || ergonomicNativeFit.losses.length !== 80) {
+  throw new Error("native train.fitModule must return signed fit evidence for every optimizer step");
+}
+if (!(ergonomicNativeAfter < ergonomicNativeBefore * 0.02)) {
+  throw new Error(`expected native train.fitModule to reduce held-out loss sharply; before=${ergonomicNativeBefore}, after=${ergonomicNativeAfter}`);
+}
+
 const schedulerState = scheduler.stateDict();
 if (schedulerState.step !== fit.steps || scheduler.getLastLr() !== optimizer.config().lr) {
   throw new Error(`unexpected scheduler evidence: ${JSON.stringify(schedulerState)} optimizer=${optimizer.config().lr}`);

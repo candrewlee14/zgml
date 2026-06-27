@@ -210,6 +210,12 @@ type CompiledTrainingStep = AnyRecord & {
   outputShape?: () => readonly number[];
 };
 
+type CompileTrainingStepHook = LossTrainHookCallback<[
+  model: unknown,
+  optimizer: unknown,
+  options?: LossTrainOptionsRecord,
+], unknown>;
+
 type LossTrainStepOptions = Omit<TrainStepOptions, "loss"> & {
   loss?: LossTrainTensor | null;
 };
@@ -240,6 +246,7 @@ export type LossTrainHelpersOptions = Readonly<{
   zeroGrad: LossTrainHookCallback<[paramsOrModule: unknown, options?: ZeroGradOptions], unknown>;
   resolveParameters: LossTrainHookCallback<[paramsOrModule: unknown], LossTrainParameter[]>;
   isGradEnabled?: LossTrainHookCallback<[], boolean>;
+  compileTrainingStep?: CompileTrainingStepHook;
 }>;
 
 function isRecord(value: unknown): value is AnyRecord {
@@ -254,6 +261,9 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
   const addTensorGrad = options.addTensorGrad;
   const zeroGrad = options.zeroGrad;
   const resolveParameters = options.resolveParameters;
+  const compileTrainingStep = typeof options.compileTrainingStep === "function"
+    ? options.compileTrainingStep
+    : null;
   const gradModeEnabled = typeof options.isGradEnabled === "function"
     ? options.isGradEnabled
     : () => true;
@@ -1301,6 +1311,100 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     return value;
   }
 
+  function modelInputFeatureCount(module: unknown) {
+    const target = module as AnyRecord | null;
+    if (!target) return null;
+    if (target.kind === "linear" && Number.isSafeInteger(target.inFeatures) && target.inFeatures > 0) {
+      return Number(target.inFeatures);
+    }
+    const layers = target.layers;
+    const first = Array.isArray(layers) ? layers[0] as AnyRecord | undefined : undefined;
+    if (first?.kind === "linear" && Number.isSafeInteger(first.inFeatures) && first.inFeatures > 0) {
+      return Number(first.inFeatures);
+    }
+    return null;
+  }
+
+  function nativeLossKind(criterion: unknown) {
+    const loss = criterion as AnyRecord | null;
+    if (!loss || loss.reduction === "sum") return null;
+    if (loss.kind === "mse-loss") return "mse";
+    if (loss.kind === "cross-entropy-loss") return "crossEntropy";
+    return null;
+  }
+
+  function stableNativeBatchSize(batches: unknown, fitOptions: TrainFitOptions) {
+    const source = batches as AnyRecord | null;
+    const config = fitOptions as AnyRecord;
+    const batchSizeValue = config.batchSize ?? config.batch_size ?? source?.batchSize ?? source?.batch_size;
+    if (batchSizeValue === undefined || batchSizeValue === null) return null;
+    const batchSize = Number(batchSizeValue);
+    if (!Number.isSafeInteger(batchSize) || batchSize <= 0) return null;
+    const maxSteps = config.maxSteps ?? config.max_steps;
+    if (maxSteps !== undefined && Number(maxSteps) === 1) return batchSize;
+    const dropLast = source?.dropLast ?? source?.drop_last ?? config.dropLast ?? config.drop_last;
+    if (dropLast === true) return batchSize;
+    const sampleCount = fitSampleCountEvidence(batches);
+    if (sampleCount !== null && sampleCount % batchSize === 0) return batchSize;
+    return null;
+  }
+
+  function nativeTrainingCompileOptions(module: unknown, batches: unknown, criterion: unknown, fitOptions: TrainFitOptions) {
+    const config = fitOptions as AnyRecord;
+    if (config.native === false || config.autoNative === false || config.auto_native === false || config.compile === false) return null;
+    if (
+      config.gradient !== undefined ||
+      config.clipGradNorm !== undefined ||
+      config.clip_grad_norm !== undefined ||
+      config.clipGradValue !== undefined ||
+      config.clip_grad_value !== undefined
+    ) {
+      return null;
+    }
+    const loss = nativeLossKind(criterion);
+    if (loss === null) return null;
+    const inputShapeOption = config.inputShape ?? config.input_shape;
+    if (Array.isArray(inputShapeOption)) {
+      if (inputShapeOption.length !== 2) return null;
+      const batch = Number(inputShapeOption[0]);
+      const features = Number(inputShapeOption[1]);
+      if (!Number.isSafeInteger(batch) || batch <= 0 || !Number.isSafeInteger(features) || features <= 0) return null;
+      return Object.freeze({ inputShape: Object.freeze([batch, features]), loss });
+    }
+    const batch = stableNativeBatchSize(batches, fitOptions);
+    const features = modelInputFeatureCount(module);
+    if (batch === null || features === null) return null;
+    const out: AnyRecord = { inputShape: Object.freeze([batch, features]), loss };
+    const lossRecord = criterion as AnyRecord | null;
+    const classes = config.classes ?? config.numClasses ?? lossRecord?.classes ?? lossRecord?.numClasses;
+    if (classes !== undefined && classes !== null) out.classes = classes;
+    return Object.freeze(out);
+  }
+
+  function maybeCompileNativeTrainingStep(optimizer: LossTrainOptimizer, module: unknown, batches: unknown, criterion: unknown, fitOptions: TrainFitOptions) {
+    const config = fitOptions as AnyRecord;
+    if (compileTrainingStep === null) {
+      if (config.requireNative === true || config.require_native === true) {
+        throw new Error("train.fitModule requireNative requested a native training compiler, but this frontend has no native compile hook");
+      }
+      return null;
+    }
+    const compileOptions = nativeTrainingCompileOptions(module, batches, criterion, fitOptions);
+    if (compileOptions === null) {
+      if (config.requireNative === true || config.require_native === true) {
+        throw new Error("train.fitModule requireNative could not derive a supported fixed-shape native training plan");
+      }
+      return null;
+    }
+    try {
+      const compiled = compileTrainingStep(module, optimizer, compileOptions);
+      return isCompiledTrainingStep(compiled) ? compiled : null;
+    } catch (error) {
+      if (config.requireNative === true || config.require_native === true) throw error;
+      return null;
+    }
+  }
+
   function finiteLossScalar(lossValue: LossTrainTensor, label: string) {
     const value = tensorScalar(lossValue);
     if (value === null) throw new Error(`${label} loss must be scalar-like`);
@@ -1531,6 +1635,8 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     const loss = criterion as AnyRecord;
     if (!target || typeof target.forward !== "function") throw new Error("train.fitModule requires a module with forward(input)");
     if (!loss || typeof loss.forward !== "function") throw new Error("train.fitModule requires a criterion with forward(prediction, target)");
+    const compiled = maybeCompileNativeTrainingStep(optimizer, module, batches, criterion, fitOptions);
+    if (compiled !== null) return fitCompiledTrainingStep(compiled, batches, fitOptions);
     return fitLoop(optimizer, batches, (batch: unknown, context: TrainFitContext) => {
       const record = batch as AnyRecord;
       if (!isTensor(record?.input)) throw new Error("train.fitModule batch.input must be a Tensor");

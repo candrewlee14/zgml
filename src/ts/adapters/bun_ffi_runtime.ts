@@ -2534,6 +2534,8 @@ const nativeTraining = createAdapterNativeTrainingSurface({
   ),
 });
 
+type CompileTrainingStepHook = (model: unknown, optimizer: unknown, options?: Record<string, unknown>) => unknown;
+let compileTrainingStepHook: CompileTrainingStepHook | null = null;
 const publicNamespaces = createAdapterFrontendNamespaces({
   sharedFrontend,
   Tensor,
@@ -2552,6 +2554,12 @@ const publicNamespaces = createAdapterFrontendNamespaces({
   optimizerStepFromState,
   loadOptimizerTensorState,
   rejectUnexpectedOptimizerState,
+  compileTrainingStep: (...args) => {
+    if (compileTrainingStepHook === null) {
+      throw new Error("zgml Bun FFI train.fitModule native compile hook was called before compile namespace initialization");
+    }
+    return compileTrainingStepHook(...args);
+  },
   LinearModule,
   EmbeddingModule,
   Conv2dModule,
@@ -2638,6 +2646,7 @@ export const compile = createAdapterCompileNamespace({
   compileModuleProgram,
   trainingStep: nativeTraining.trainingStep,
 });
+compileTrainingStepHook = compile.compileForTraining as CompileTrainingStepHook;
 sharedFrontend.lazy.setLazyTensorProgramCompiler((lazyGraph, compileOptions) => compile.compile(lazyGraph, compileOptions) as any);
 export const optim = publicNamespaces.optim;
 export const checkpoint: CheckpointNamespace = publicNamespaces.checkpoint as unknown as CheckpointNamespace;
