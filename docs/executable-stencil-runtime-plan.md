@@ -1131,6 +1131,14 @@ diagnostics. New Q8 and frontier artifacts also stamp generic benchmark-binary
 metadata: git commit, dirty state, build mode, binary mtime, newest native
 source path/mtime, and a fresh/stale label. This makes `BENCH_BUILD_ZGML=0`
 iteration fast without making stale binaries invisible.
+A June 27, 2026 no-rebuild `dev:perf:q8-prompt:semantic-steady:run` refreshed
+that pressure artifact after the next-perf routing fix: three semantic-only
+attempts held `semantic_median=1.15x`, `semantic_worst=1.11x`, and
+`semantic_throughput_ready=yes`, with the same `semantic_dispatch=242->242`
+and `semantic_command=151->121` shape. The proof is strong enough to keep the
+semantic candidate promoted as the full-model default, but it also confirms the
+remaining work is still the width-parallel kernel/storage model rather than
+more command-policy selection.
 The qsemantic frontier selector now mirrors that stability rule: `bench:status`
 prefers the newest three-attempt qsemantic artifact for `frontier-results:` and
 `perf-next:`, while printing `frontier-latest-results:` when a newer one-attempt

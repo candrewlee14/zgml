@@ -332,8 +332,16 @@ function latestRawQ8PromptCandidateArtifact() {
 function q8PromptFreshnessStatusLine(selectedPath, rawPath) {
   if (!selectedPath || !rawPath || selectedPath === rawPath) return null;
   let latest = "summary=unreadable";
+  let reason = "prefer_steady_attempts";
   try {
     const data = readJson(rawPath);
+    const selectedData = readJson(selectedPath);
+    const rawLanes = Array.isArray(data?.config?.measuredLanes) ? data.config.measuredLanes : [];
+    const selectedLanes = Array.isArray(selectedData?.config?.measuredLanes) ? selectedData.config.measuredLanes : [];
+    const rawIsSemanticOnlySteady = Number(data?.config?.attempts) >= 3 && rawLanes.length === 1 && rawLanes.includes("semantic");
+    const selectedIsBroadSteady = Number(selectedData?.config?.attempts) >= 3 &&
+      ["command", "two_phase", "semantic"].every((lane) => selectedLanes.includes(lane));
+    if (rawIsSemanticOnlySteady && selectedIsBroadSteady) reason = "prefer_broad_steady_scoreboard";
     const semanticThroughput = typeof data?.throughput?.semantic === "string" ? data.throughput.semantic : "unknown";
     const semanticStats = q8LaneSpeedupStats(data, "semantic", "semanticSpeedup");
     const semanticSpeedup = formatRatio(data?.lanes?.semantic?.speedup);
@@ -374,7 +382,7 @@ function q8PromptFreshnessStatusLine(selectedPath, rawPath) {
   } catch {
     latest = "summary=unreadable";
   }
-  return `q8-prompt-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts ${latest}`;
+  return `q8-prompt-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=${reason} ${latest}`;
 }
 
 function frontierArtifacts() {
