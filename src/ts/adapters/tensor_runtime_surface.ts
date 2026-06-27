@@ -30,6 +30,11 @@ type NativeEagerElementwiseInto = (
   rhs: unknown,
   options: Readonly<{ op: string }>,
 ) => Float32Array;
+type NativeEagerReduceInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{ op: string }>,
+) => Float32Array;
 
 export type AdapterTensorRuntimeSurfaceOptions<
   TTensor extends AdapterTensorInstance = AdapterTensorInstance,
@@ -41,6 +46,8 @@ export type AdapterTensorRuntimeSurfaceOptions<
   nativeEagerMatmulInto?: NativeEagerMatmulInto;
   nativeEagerElementwiseInto?: NativeEagerElementwiseInto;
   nativeEagerElementwiseMinLength?: number;
+  nativeEagerReduceInto?: NativeEagerReduceInto;
+  nativeEagerReduceMinLength?: number;
   meanSquaredError: (tensor: TTensor, target: unknown) => TTensor;
   dtype: TensorMetadataOpsOptions<TTensor>["dtype"];
   device: TensorMetadataOpsOptions<TTensor>["device"];
@@ -85,6 +92,8 @@ export function createAdapterTensorRuntimeSurface<
     nativeEagerMatmulInto: options.nativeEagerMatmulInto,
     nativeEagerElementwiseInto: options.nativeEagerElementwiseInto,
     nativeEagerElementwiseMinLength: options.nativeEagerElementwiseMinLength,
+    nativeEagerReduceInto: options.nativeEagerReduceInto,
+    nativeEagerReduceMinLength: options.nativeEagerReduceMinLength,
   });
   const tensorMathSurfaceHelpers = options.sharedFrontend.createTensorMathSurfaceHelpers({
     tensorMathHelpers,

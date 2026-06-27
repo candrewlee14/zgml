@@ -452,6 +452,37 @@ expectSame(noGradNativeElementwise.sqr(
 ).data, [1, 4, 9, 16], "tensor math no-grad native unary sqr hook");
 expectSame(noGradNativeElementwise.add(math3d, mathTrailing).data.slice(0, 4), [11, 22, 33, 44], "tensor math no-grad broadcast fallback keeps TS path");
 expectSame(nativeElementwiseCalls, ["mul", "add", "sqr"], "tensor math no-grad native elementwise hook count");
+const nativeReduceCalls: string[] = [];
+const noGradNativeReduce = createTensorMathHelpers({
+  getTensorClass: () => TensorDataSmokeTensor,
+  f32: tensorData.f32,
+  addTensorGrad: tensorData.addTensorGrad,
+  scalarTensor: (value, requiresGrad = false) =>
+    new TensorDataSmokeTensor(Float32Array.of(value), [1], { requiresGrad }),
+  isGradEnabled: () => false,
+  nativeEagerReduceMinLength: 0,
+  nativeEagerReduceInto(output, input, options) {
+    nativeReduceCalls.push(options.op);
+    const data = input.data;
+    switch (options.op) {
+      case "sum": output[0] = Array.from(data).reduce((acc, value) => acc + value, 0); break;
+      case "mean": output[0] = Array.from(data).reduce((acc, value) => acc + value, 0) / data.length; break;
+      case "max": output[0] = Math.max(...data); break;
+      case "min": output[0] = Math.min(...data); break;
+      case "prod": output[0] = Array.from(data).reduce((acc, value) => acc * value, 1); break;
+      default: throw new Error(`unexpected native reduce op ${options.op}`);
+    }
+    return output;
+  },
+});
+const reduceInput = new TensorDataSmokeTensor(Float32Array.of(-2, 4, 0.5, 3), [4]);
+expectSame(noGradNativeReduce.sum(reduceInput).data, [5.5], "tensor math no-grad native sum hook");
+expectSame(noGradNativeReduce.mean(reduceInput).data, [1.375], "tensor math no-grad native mean hook");
+expectSame(noGradNativeReduce.max(reduceInput).data, [4], "tensor math no-grad native max hook");
+expectSame(noGradNativeReduce.min(reduceInput).data, [-2], "tensor math no-grad native min hook");
+expectSame(noGradNativeReduce.prod(reduceInput).data, [-12], "tensor math no-grad native prod hook");
+expectSame(noGradNativeReduce.sumDim(new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4), [2, 2]), 1).data, [3, 7], "tensor math dim reduction keeps TS path");
+expectSame(nativeReduceCalls, ["sum", "mean", "max", "min", "prod"], "tensor math no-grad native reduce hook count");
 const red = new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4, 5, 6), [2, 3], { requiresGrad: true });
 const summed = tensorMath.sumDim(red, 1);
 expectSame({ data: summed.data, shape: summed.shape }, { data: [6, 15], shape: [2, 1] }, "tensor math sumDim");

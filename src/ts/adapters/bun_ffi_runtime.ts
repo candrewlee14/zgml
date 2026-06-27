@@ -1155,6 +1155,7 @@ const {
   isGradEnabled: projectedIsGradEnabled,
   nativeEagerMatmulInto: (output, lhs, rhs, options) => nativeEager.matmulInto(output, lhs, rhs, options),
   nativeEagerElementwiseInto: (output, lhs, rhs, options) => nativeEager.elementwiseInto(output, lhs, rhs, options),
+  nativeEagerReduceInto: (output, input, options) => nativeEager.reduceInto(output, input, options),
   meanSquaredError: (tensor: Tensor, target: unknown): Tensor => {
     const loss = meanSquaredError(tensor, target as TensorLike);
     if (!(loss instanceof Tensor)) throw new Error("adapter tensor meanSquaredError must return a Tensor loss");
@@ -2212,6 +2213,13 @@ export const { nativeEager } = createAdapterNativeEagerSurface({
     BigInt(args.lhsData.length),
     args.rhsData,
     BigInt(args.rhsData ? args.rhsData.length : 0),
+    args.output,
+    BigInt(args.expectedOutput),
+    args.op,
+  ),
+  reduceF32: (args) => bunSymbolGroups.nativeEager.eagerReduceF32(
+    args.inputData,
+    BigInt(args.inputData.length),
     args.output,
     BigInt(args.expectedOutput),
     args.op,

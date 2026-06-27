@@ -92,6 +92,7 @@ const feature_native_eager_softmax: u64 = 1 << 48;
 const feature_native_eager_matmul: u64 = 1 << 49;
 const feature_native_eager_activation: u64 = 1 << 50;
 const feature_native_eager_elementwise: u64 = 1 << 51;
+const feature_native_eager_reduce: u64 = 1 << 52;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -1128,6 +1129,7 @@ fn runtimeFeatureFlags() u64 {
         feature_native_eager_matmul |
         feature_native_eager_activation |
         feature_native_eager_elementwise |
+        feature_native_eager_reduce |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -1645,6 +1647,11 @@ const eager_elementwise_abs: u32 = 10;
 const eager_elementwise_sqrt: u32 = 11;
 const eager_elementwise_maximum: u32 = 12;
 const eager_elementwise_minimum: u32 = 13;
+const eager_reduce_sum: u32 = 1;
+const eager_reduce_mean: u32 = 2;
+const eager_reduce_max: u32 = 3;
+const eager_reduce_min: u32 = 4;
+const eager_reduce_prod: u32 = 5;
 
 fn eagerElementwiseUnaryF32(value: f32, op: u32) !f32 {
     return switch (op) {
@@ -1892,6 +1899,43 @@ export fn zgml_eager_elementwise_f32(
             error.InvalidArgument => status(.invalid_argument),
         };
     }
+    return status(.ok);
+}
+
+export fn zgml_eager_reduce_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    op: u32,
+) c_int {
+    if (input_ptr == null or output_ptr == null or input_len == 0) return status(.invalid_argument);
+    if (output_len != 1) return status(.shape_mismatch);
+    const input = input_ptr.?[0..input_len];
+    var acc: f32 = switch (op) {
+        eager_reduce_sum, eager_reduce_mean => 0,
+        eager_reduce_max => -std.math.inf(f32),
+        eager_reduce_min => std.math.inf(f32),
+        eager_reduce_prod => 1,
+        else => return status(.invalid_argument),
+    };
+    switch (op) {
+        eager_reduce_sum, eager_reduce_mean => {
+            for (input) |value| acc += value;
+            if (op == eager_reduce_mean) acc /= @as(f32, @floatFromInt(input_len));
+        },
+        eager_reduce_max => {
+            for (input) |value| acc = @max(acc, value);
+        },
+        eager_reduce_min => {
+            for (input) |value| acc = @min(acc, value);
+        },
+        eager_reduce_prod => {
+            for (input) |value| acc *= value;
+        },
+        else => unreachable,
+    }
+    output_ptr.?[0] = acc;
     return status(.ok);
 }
 
@@ -7470,6 +7514,7 @@ test "C ABI runtime info reports compatible handle surface" {
     try std.testing.expect((info.feature_flags & feature_native_training_step) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_activation) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_elementwise) != 0);
+    try std.testing.expect((info.feature_flags & feature_native_eager_reduce) != 0);
     try std.testing.expectEqual(build_options.use_wgpu, (info.feature_flags & feature_native_wgpu_execution) != 0);
     try std.testing.expectEqual(build_options.use_wgpu and build_options.experimental_llama_wgpu_execution, (info.feature_flags & feature_experimental_llama_wgpu_execution) != 0);
     try std.testing.expect((info.feature_flags & feature_experimental_llama_wgpu_execution) == 0 or (info.feature_flags & feature_native_wgpu_execution) != 0);
@@ -10494,6 +10539,78 @@ test "C ABI native eager elementwise writes caller output" {
         output[0..].ptr,
         output.len,
         eager_elementwise_add,
+    ));
+}
+
+test "C ABI native eager reduce writes scalar output" {
+    const input = [_]f32{ -2, 4, 0.5, 3 };
+    var output = [_]f32{0};
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_reduce_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        eager_reduce_sum,
+    ));
+    try std.testing.expectEqual(@as(f32, 5.5), output[0]);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_reduce_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        eager_reduce_mean,
+    ));
+    try std.testing.expectEqual(@as(f32, 1.375), output[0]);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_reduce_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        eager_reduce_max,
+    ));
+    try std.testing.expectEqual(@as(f32, 4), output[0]);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_reduce_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        eager_reduce_min,
+    ));
+    try std.testing.expectEqual(@as(f32, -2), output[0]);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_reduce_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        eager_reduce_prod,
+    ));
+    try std.testing.expectEqual(@as(f32, -12), output[0]);
+
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_reduce_f32(
+        input[0..].ptr,
+        0,
+        output[0..].ptr,
+        output.len,
+        eager_reduce_sum,
+    ));
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_reduce_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        0,
+        eager_reduce_sum,
+    ));
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_reduce_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        999,
     ));
 }
 

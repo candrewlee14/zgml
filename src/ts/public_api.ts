@@ -2159,6 +2159,10 @@ export type NativeEagerElementwiseOp =
 export type NativeEagerElementwiseIntoOptions = Readonly<{
   op: NativeEagerElementwiseOp;
 }>;
+export type NativeEagerReduceOp = "sum" | "mean" | "max" | "min" | "prod";
+export type NativeEagerReduceIntoOptions = Readonly<{
+  op: NativeEagerReduceOp;
+}>;
 export type NativeEagerSoftmaxIntoOptions = Readonly<{
   rows?: number;
   cols?: number;
@@ -2186,6 +2190,8 @@ export type PublicNativeEagerNamespace = Readonly<{
   activation_into(output: Float32Array, input: TensorLike, options: NativeEagerActivationIntoOptions): Float32Array;
   elementwiseInto(output: Float32Array, lhs: TensorLike, rhs: TensorLike | Float32Array | number | null | undefined, options: NativeEagerElementwiseIntoOptions): Float32Array;
   elementwise_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike | Float32Array | number | null | undefined, options: NativeEagerElementwiseIntoOptions): Float32Array;
+  reduceInto(output: Float32Array, input: TensorLike, options: NativeEagerReduceIntoOptions): Float32Array;
+  reduce_into(output: Float32Array, input: TensorLike, options: NativeEagerReduceIntoOptions): Float32Array;
   matmulInto(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerMatmulIntoOptions): Float32Array;
   matmul_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerMatmulIntoOptions): Float32Array;
   softmaxInto(output: Float32Array, input: TensorLike, options?: NativeEagerSoftmaxIntoOptions): Float32Array;
@@ -7181,6 +7187,7 @@ export type RuntimeFeatures = Readonly<{
   nativeEagerSoftmax: boolean;
   nativeEagerMatmul: boolean;
   nativeEagerElementwise: boolean;
+  nativeEagerReduce: boolean;
 }>;
 
 export type ModelInspection = Readonly<{

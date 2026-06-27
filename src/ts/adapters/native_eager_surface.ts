@@ -59,6 +59,13 @@ type NativeEagerElementwiseCall = (args: {
   op: number;
 }) => number;
 
+type NativeEagerReduceCall = (args: {
+  inputData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  op: number;
+}) => number;
+
 type NativeEagerSurfaceOptions = {
   f32: NativeEagerTensorFactory;
   check: NativeEagerCheck;
@@ -66,6 +73,7 @@ type NativeEagerSurfaceOptions = {
   linearActivationF32: NativeEagerLinearActivationCall;
   activationF32?: NativeEagerActivationCall;
   elementwiseF32?: NativeEagerElementwiseCall;
+  reduceF32?: NativeEagerReduceCall;
   matmulF32?: NativeEagerMatmulCall;
   softmaxF32: NativeEagerSoftmaxCall;
 };
@@ -146,6 +154,18 @@ function nativeEagerElementwiseOpId(value: unknown, label: string): number {
     case "minimum":
     case "min": return 13;
     default: throw new Error(`${label} op must be add, sub, mul, div, neg, exp, log, sqr, recip, abs, sqrt, maximum, or minimum, got ${value}`);
+  }
+}
+
+function nativeEagerReduceOpId(value: unknown, label: string): number {
+  const normalized = String(value ?? "").trim();
+  switch (normalized) {
+    case "sum": return 1;
+    case "mean": return 2;
+    case "max": return 3;
+    case "min": return 4;
+    case "prod": return 5;
+    default: throw new Error(`${label} op must be sum, mean, max, min, or prod, got ${value}`);
   }
 }
 
@@ -298,6 +318,29 @@ function nativeEagerElementwiseInputs(
   };
 }
 
+function nativeEagerReduceInputs(
+  output: Float32Array,
+  input: unknown,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.reduceInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  if (output.length < 1) {
+    throw new Error(`${label} output length ${output.length} is smaller than 1`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  if (inputData.length === 0) {
+    throw new Error(`${label} input must be non-empty`);
+  }
+  return {
+    inputData,
+    output,
+    expectedOutput: 1,
+  };
+}
+
 function nativeEagerMatmulInputs(
   output: Float32Array,
   lhs: unknown,
@@ -390,6 +433,20 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     elementwise_into(output: Float32Array, lhs: unknown, rhs?: unknown, callOptions?: Record<string, unknown>) {
       return this.elementwiseInto(output, lhs, rhs, callOptions);
+    },
+    reduceInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.reduceF32 !== "function") {
+        throw new Error("nativeEager.reduceInto is unavailable in this runtime");
+      }
+      const args = nativeEagerReduceInputs(output, input, options.f32);
+      options.check(options.reduceF32({
+        ...args,
+        op: nativeEagerReduceOpId(callOptions.op, "nativeEager.reduceInto"),
+      }));
+      return output;
+    },
+    reduce_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
+      return this.reduceInto(output, input, callOptions);
     },
     matmulInto(output: Float32Array, lhs: unknown, rhs: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.matmulF32 !== "function") {

@@ -69,6 +69,11 @@ type NativeEagerElementwiseInto = (
   rhs: unknown,
   options: Readonly<{ op: string }>,
 ) => Float32Array;
+type NativeEagerReduceInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{ op: string }>,
+) => Float32Array;
 
 export type TensorMathHelpersOptions = Readonly<{
   Tensor?: TensorConstructor;
@@ -80,6 +85,8 @@ export type TensorMathHelpersOptions = Readonly<{
   nativeEagerMatmulInto?: NativeEagerMatmulInto;
   nativeEagerElementwiseInto?: NativeEagerElementwiseInto;
   nativeEagerElementwiseMinLength?: number;
+  nativeEagerReduceInto?: NativeEagerReduceInto;
+  nativeEagerReduceMinLength?: number;
 }>;
 
 export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
@@ -93,6 +100,10 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   const nativeEagerElementwiseInto = options.nativeEagerElementwiseInto;
   const nativeEagerElementwiseMinLength = Number.isSafeInteger(options.nativeEagerElementwiseMinLength) && Number(options.nativeEagerElementwiseMinLength) >= 0
     ? Number(options.nativeEagerElementwiseMinLength)
+    : 512;
+  const nativeEagerReduceInto = options.nativeEagerReduceInto;
+  const nativeEagerReduceMinLength = Number.isSafeInteger(options.nativeEagerReduceMinLength) && Number(options.nativeEagerReduceMinLength) >= 0
+    ? Number(options.nativeEagerReduceMinLength)
     : 512;
   const gradModeEnabled = typeof options.isGradEnabled === "function"
     ? options.isGradEnabled
@@ -133,6 +144,14 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     if (output.length < nativeEagerElementwiseMinLength) return false;
     nativeEagerElementwiseInto(output, tensor, null, { op });
     return true;
+  }
+
+  function nativeReduceScalar(tensor: TensorMathTensor, op: string) {
+    if (typeof nativeEagerReduceInto !== "function") return null;
+    if (tensor.length < nativeEagerReduceMinLength) return null;
+    const output = new Float32Array(1);
+    nativeEagerReduceInto(output, tensor, { op });
+    return scalarTensor(output[0], false);
   }
 
   function binary(tensor: TensorMathTensor, other: unknown, op: BinaryOp, gradLeft: BinaryGrad, gradRight: BinaryGrad, label: string, nativeOp = label) {
@@ -1298,6 +1317,10 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function sum(tensor: TensorMathTensor, dim?: number) {
     if (dim !== undefined) return sumDim(tensor, dim);
+    if (!gradModeEnabled()) {
+      const native = nativeReduceScalar(tensor, "sum");
+      if (native !== null) return native;
+    }
     let acc = 0;
     for (const value of tensor.data) acc += value;
     const result = scalarTensor(acc, gradModeEnabled() && tensor.requiresGrad);
@@ -1315,6 +1338,10 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function max(tensor: TensorMathTensor, dim?: number) {
     if (dim !== undefined) return maxDim(tensor, dim);
+    if (!gradModeEnabled()) {
+      const native = nativeReduceScalar(tensor, "max");
+      if (native !== null) return native;
+    }
     let acc = -Infinity;
     for (const value of tensor.data) acc = Math.max(acc, value);
     const result = scalarTensor(acc, gradModeEnabled() && tensor.requiresGrad);
@@ -1336,6 +1363,10 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function min(tensor: TensorMathTensor, dim?: number) {
     if (dim !== undefined) return minDim(tensor, dim);
+    if (!gradModeEnabled()) {
+      const native = nativeReduceScalar(tensor, "min");
+      if (native !== null) return native;
+    }
     let acc = Infinity;
     for (const value of tensor.data) acc = Math.min(acc, value);
     const result = scalarTensor(acc, gradModeEnabled() && tensor.requiresGrad);
@@ -1373,6 +1404,10 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function mean(tensor: TensorMathTensor, dim?: number) {
     if (dim !== undefined) return meanDim(tensor, dim);
+    if (!gradModeEnabled()) {
+      const native = nativeReduceScalar(tensor, "mean");
+      if (native !== null) return native;
+    }
     const result = div(sum(tensor), scalarTensor(tensor.data.length));
     result.shape = Object.freeze([1]);
     return result;
@@ -1380,6 +1415,10 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function prod(tensor: TensorMathTensor, dim?: number) {
     if (dim !== undefined) return prodDim(tensor, dim);
+    if (!gradModeEnabled()) {
+      const native = nativeReduceScalar(tensor, "prod");
+      if (native !== null) return native;
+    }
     let acc = 1;
     let nonZeroProduct = 1;
     let zeroCount = 0;

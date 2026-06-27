@@ -84,6 +84,7 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
       eagerLinearActivationF32: symbols.eagerLinearActivationF32,
       eagerActivationF32: symbols.eagerActivationF32,
       eagerElementwiseF32: symbols.eagerElementwiseF32,
+      eagerReduceF32: symbols.eagerReduceF32,
       eagerSoftmaxF32: symbols.eagerSoftmaxF32,
     }),
     nativeTraining: Object.freeze({

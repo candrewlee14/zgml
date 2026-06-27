@@ -707,6 +707,13 @@ ZGML_API zgml_status zgml_eager_elementwise_f32(
     size_t output_len,
     uint32_t op
 );
+ZGML_API zgml_status zgml_eager_reduce_f32(
+    const float *input,
+    size_t input_len,
+    float *output,
+    size_t output_len,
+    uint32_t op
+);
 ZGML_API zgml_status zgml_eager_softmax_f32(
     const float *input,
     size_t input_len,

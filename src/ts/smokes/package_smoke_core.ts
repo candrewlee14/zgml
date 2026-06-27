@@ -344,6 +344,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.elementwiseInto !== "function") {
     throw new Error(`${label} expected nativeEager.elementwiseInto`);
   }
+  if (typeof nativeEager.reduceInto !== "function") {
+    throw new Error(`${label} expected nativeEager.reduceInto`);
+  }
   if (typeof nativeEager.softmaxInto !== "function" || typeof nativeEager.logSoftmaxInto !== "function") {
     throw new Error(`${label} expected nativeEager softmax/logSoftmax into helpers`);
   }
@@ -361,6 +364,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   if (typeof nativeEagerAlias.elementwise_into !== "function") {
     throw new Error(`${label} expected native_eager.elementwise_into alias`);
+  }
+  if (typeof nativeEagerAlias.reduce_into !== "function") {
+    throw new Error(`${label} expected native_eager.reduce_into alias`);
   }
   if (typeof nativeEagerAlias.softmax_into !== "function" || typeof nativeEagerAlias.log_softmax_into !== "function") {
     throw new Error(`${label} expected native_eager softmax/log_softmax aliases`);
@@ -404,6 +410,18 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.elementwise_into to reuse caller output`);
   }
   expectClose(elementwiseAliasOutput, Array.from(directOutput, (value) => value * value), `${label} native_eager.elementwise_into output`);
+  const reduceOutput = new Float32Array(1);
+  const reduceResult = nativeEager.reduceInto(reduceOutput, directOutput, { op: "sum" });
+  if (reduceResult !== reduceOutput) {
+    throw new Error(`${label} expected nativeEager.reduceInto to reuse caller output`);
+  }
+  expectClose(reduceOutput, [10], `${label} nativeEager.reduceInto output`);
+  const reduceAliasOutput = new Float32Array(1);
+  const reduceAliasResult = nativeEagerAlias.reduce_into(reduceAliasOutput, directOutput, { op: "max" });
+  if (reduceAliasResult !== reduceAliasOutput) {
+    throw new Error(`${label} expected native_eager.reduce_into to reuse caller output`);
+  }
+  expectClose(reduceAliasOutput, [3.75], `${label} native_eager.reduce_into output`);
   const tensorElementwiseLength = 1024;
   const tensorElementwiseInputData = Array.from({ length: tensorElementwiseLength }, (_value, index) => (index % 5) - 2);
   const tensorElementwiseBiasData = Array.from({ length: tensorElementwiseLength }, (_value, index) => (index % 7) + 0.5);
@@ -411,6 +429,12 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const tensorElementwiseBias = adapter.tensor(tensorElementwiseBiasData, [tensorElementwiseLength]);
   const tensorElementwise = adapter.noGrad(() => tensorElementwiseInput.mul(2).add(tensorElementwiseBias).sqr().sqrt());
   expectClose(tensorElementwise.data, tensorElementwiseInputData.map((value, index) => Math.abs(value * 2 + tensorElementwiseBiasData[index])), `${label} noGrad Tensor elementwise native eager output`);
+  const tensorReduce = adapter.noGrad(() => tensorElementwiseInput.sum().add(tensorElementwiseInput.mean()).add(tensorElementwiseInput.max()).add(tensorElementwiseInput.min()));
+  const tensorReduceExpected = tensorElementwiseInputData.reduce((acc, value) => acc + value, 0)
+    + tensorElementwiseInputData.reduce((acc, value) => acc + value, 0) / tensorElementwiseLength
+    + Math.max(...tensorElementwiseInputData)
+    + Math.min(...tensorElementwiseInputData);
+  expectClose(tensorReduce.data, [tensorReduceExpected], `${label} noGrad Tensor reduce native eager output`);
   const geluOutput = new Float32Array(6);
   const geluResult = nativeEager.linearActivationInto(geluOutput, input, weights, { bias, activation: "gelu" });
   if (geluResult !== geluOutput) {

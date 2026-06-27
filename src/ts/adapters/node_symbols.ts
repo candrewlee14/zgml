@@ -46,6 +46,7 @@ export type NodeNativeSymbols = Readonly<{
   eagerLinearActivationF32: NativeFunction;
   eagerActivationF32: NativeFunction;
   eagerElementwiseF32: NativeFunction;
+  eagerReduceF32: NativeFunction;
   eagerSoftmaxF32: NativeFunction;
   trainLinearMseSgdF32: NativeFunction;
   trainMlpReluCrossEntropyAdamF32: NativeFunction;
@@ -129,6 +130,7 @@ export function bindNodeSymbols(nativeLibrary: unknown): NodeNativeSymbols {
     eagerLinearActivationF32: lib.func("int zgml_eager_linear_activation_f32(const float *input, size_t input_len, const float *weights, size_t weights_len, const float *bias, size_t bias_len, float *output, size_t output_len, size_t batch, size_t in_features, size_t out_features, uint32_t activation)"),
     eagerActivationF32: lib.func("int zgml_eager_activation_f32(const float *input, size_t input_len, float *output, size_t output_len, uint32_t activation)"),
     eagerElementwiseF32: lib.func("int zgml_eager_elementwise_f32(const float *lhs, size_t lhs_len, const float *rhs, size_t rhs_len, float *output, size_t output_len, uint32_t op)"),
+    eagerReduceF32: lib.func("int zgml_eager_reduce_f32(const float *input, size_t input_len, float *output, size_t output_len, uint32_t op)"),
     eagerSoftmaxF32: lib.func("int zgml_eager_softmax_f32(const float *input, size_t input_len, float *output, size_t output_len, size_t rows, size_t cols, uint32_t log_softmax)"),
     trainLinearMseSgdF32: lib.func("int zgml_train_linear_mse_sgd_f32(const float *input, size_t input_len, const float *target, size_t target_len, float *weight, size_t weight_len, float *bias, size_t bias_len, float *output, size_t output_len, float *grad_weight, size_t grad_weight_len, size_t batch, size_t in_features, size_t out_features, float lr, float weight_decay, float *out_loss)"),
     trainMlpReluCrossEntropyAdamF32: lib.func("int zgml_train_mlp_relu_cross_entropy_adam_f32(const float *input, size_t input_len, const uint32_t *targets, size_t target_len, float *w1, size_t w1_len, float *b1, size_t b1_len, float *w2, size_t w2_len, float *b2, size_t b2_len, float *mw1, size_t mw1_len, float *vw1, size_t vw1_len, float *mb1, size_t mb1_len, float *vb1, size_t vb1_len, float *mw2, size_t mw2_len, float *vw2, size_t vw2_len, float *mb2, size_t mb2_len, float *vb2, size_t vb2_len, float *hidden, size_t hidden_len, float *logits, size_t logits_len, float *grad_hidden, size_t grad_hidden_len, float *grad_w1, size_t grad_w1_len, float *grad_w2, size_t grad_w2_len, size_t batch, size_t in_features, size_t hidden_features, size_t classes, size_t step, float lr, float beta1, float beta2, float eps, float weight_decay, float *out_loss, size_t *out_correct)"),
