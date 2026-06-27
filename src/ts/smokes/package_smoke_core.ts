@@ -797,6 +797,11 @@ function expectLossAndAdamWEvidence(adapter: Record<string, any>, label: string)
   expectClose(adapter.nn.functional.linear(adapter.tensor([2, 4, 6, 8], [1, 2, 2]), adapter.tensor([[1, 0], [0, 1]], [2, 2]), adapter.tensor([1, -1], [2])).data, [3, 3, 7, 7], `${label} nn.functional.linear rank-3 values`);
   expectClose(adapter.nn.functional.linear(adapter.tensor([2, 4, 6, 8], [1, 1, 2, 2]), adapter.tensor([[1, 0], [0, 1]], [2, 2]), adapter.tensor([1, -1], [2])).data, [3, 3, 7, 7], `${label} nn.functional.linear rank-4 values`);
   expectClose(adapter.nn.functional.linear(adapter.tensor([[2, 4]], [1, 2]), adapter.tensor([[0.5, -0.5]], [1, 2])).data, [-1], `${label} nn.functional.linear PyTorch weight layout`);
+  expectClose(adapter.noGrad(() => adapter.nn.functional.linear(
+    adapter.tensor([[2, 4], [6, 8]], [2, 2]),
+    adapter.tensor([[1, 3], [-2, 0.5]], [2, 2]),
+    adapter.tensor([0.25, -0.75], [2]),
+  )).data, [14.25, -2.75, 30.25, -8.75], `${label} nn.functional.linear no-grad native layout values`);
   expectClose(adapter.nn.functional.normalize(adapter.tensor([[3, 4]], [1, 2]), 2, 1).data, [0.6, 0.8], `${label} nn.functional.normalize values`);
   expectClose(adapter.nn.functional.one_hot(adapter.tensor([0, 2], [2]), 3).data, [1, 0, 0, 0, 0, 1], `${label} nn.functional.one_hot values`);
   expectClose(adapter.nn.functional.one_hot(adapter.tensor([0, 2], [1, 2]), 3).data, [1, 0, 0, 0, 0, 1], `${label} nn.functional.one_hot grid values`);

@@ -1384,6 +1384,7 @@ const publicNamespaces = createAdapterFrontendNamespaces({
     }
     return compileTrainingStepHook(...args);
   },
+  nativeEagerLinearInto,
   LinearModule,
   EmbeddingModule,
   Conv2dModule,

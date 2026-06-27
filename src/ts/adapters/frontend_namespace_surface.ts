@@ -88,6 +88,17 @@ type FunctionalTensor = Readonly<Record<string, unknown>> & {
   clamp(min?: number | null, max?: number | null): FunctionalTensor;
   div(other: unknown): unknown;
 };
+type NativeEagerLinearInto = (
+  output: Float32Array,
+  input: unknown,
+  weights: unknown,
+  options?: Readonly<{
+    bias?: unknown;
+    batch?: number;
+    inFeatures?: number;
+    outFeatures?: number;
+  }>,
+) => Float32Array;
 
 type NamespaceModuleConstructors = Pick<
   NnNamespaceOptions,
@@ -219,6 +230,7 @@ export type AdapterFrontendNamespaceOptions<TTensor = unknown> =
     loadOptimizerTensorState: OptimizerClassesOptions["loadOptimizerTensorState"];
     rejectUnexpectedOptimizerState: OptimizerClassesOptions["rejectUnexpectedOptimizerState"];
     compileTrainingStep?: LossTrainHelpersOptions["compileTrainingStep"];
+    nativeEagerLinearInto?: NativeEagerLinearInto;
     geluScalar: NnNamespaceOptions["geluScalar"];
     siluScalar: NnNamespaceOptions["siluScalar"];
     stateDict: NnNamespaceOptions["stateDict"] & CheckpointHelpersOptions["moduleStateDict"];
@@ -448,6 +460,45 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
     return module.forward(input);
   }
 
+  function functionalTensorElementCount(tensor: FunctionalTensor) {
+    return tensor.shape.reduce((total, dim) => total * dim, 1);
+  }
+
+  function functionalNativeLinear(
+    tensorInput: FunctionalTensor,
+    weightTensor: FunctionalTensor,
+    bias: unknown,
+    outFeatures: number,
+    inFeatures: number,
+  ) {
+    if (typeof options.nativeEagerLinearInto !== "function" || options.isGradEnabled()) return null;
+    const inputRank = tensorInput.shape.length;
+    const leadingShape = inputRank === 1 ? [] : tensorInput.shape.slice(0, -1);
+    const rowCount = leadingShape.length === 0
+      ? 1
+      : leadingShape.reduce((total, dim) => total * dim, 1);
+    const nativeInput = inputRank === 1
+      ? tensorInput.reshape([1, inFeatures])
+      : inputRank === 2
+        ? tensorInput
+        : tensorInput.reshape([rowCount, inFeatures]);
+    let nativeBias: unknown = null;
+    if (bias !== undefined && bias !== null) {
+      const biasTensor = functionalTensor(bias);
+      if (functionalTensorElementCount(biasTensor) !== outFeatures) return null;
+      nativeBias = biasTensor;
+    }
+    const outputData = new Float32Array(rowCount * outFeatures);
+    options.nativeEagerLinearInto(outputData, nativeInput, weightTensor.transpose(), {
+      bias: nativeBias,
+      batch: rowCount,
+      inFeatures,
+      outFeatures,
+    });
+    const outputShape = inputRank === 1 ? [outFeatures] : [...leadingShape, outFeatures];
+    return options.tensor(outputData, outputShape);
+  }
+
   function functionalLinear(input: unknown, weight: unknown, bias: unknown = null) {
     const tensorInput = functionalTensor(input);
     const weightTensor = functionalTensor(weight);
@@ -462,6 +513,8 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
       if (tensorInput.shape[0] !== inFeatures) {
         throw new Error(`nn.functional.linear input last dimension ${tensorInput.shape[0]} must match weight in_features ${inFeatures}`);
       }
+      const nativeOutput = functionalNativeLinear(tensorInput, weightTensor, bias, outFeatures!, inFeatures!);
+      if (nativeOutput !== null) return nativeOutput;
       const output = tensorInput
         .reshape([1, inFeatures!])
         .matmul(weightTensor.transpose())
@@ -475,6 +528,8 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
     if (lastDim !== inFeatures) {
       throw new Error(`nn.functional.linear input last dimension ${lastDim} must match weight in_features ${inFeatures}`);
     }
+    const nativeOutput = functionalNativeLinear(tensorInput, weightTensor, bias, outFeatures!, inFeatures!);
+    if (nativeOutput !== null) return nativeOutput;
     if (tensorInput.shape.length === 2) {
       const output = tensorInput.matmul(weightTensor.transpose());
       return bias === undefined || bias === null ? output : output.add(bias);
