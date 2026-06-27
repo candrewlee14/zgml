@@ -271,6 +271,7 @@ function checkScripts() {
     "function latestRawPytorchComparisonArtifact()",
     "const nativeEagerArtifactPattern = /^native-eager-\\d{8}T\\d{6}Z-\\d+\\.json$/",
     "const nativeEagerExpectedKeys = [",
+    "\"matmul_batched\"",
     "lazy_matmul_add_sigmoid_batched",
     "lazy_matmul_add_tanh_batched",
     "function nativeEagerArtifacts()",

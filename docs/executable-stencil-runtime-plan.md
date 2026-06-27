@@ -520,10 +520,9 @@ Current checked progress:
   helpers plus ordinary `zgml.noGrad(() => nn.Softmax/LogSoftmax.forward(x))`
   module calls route through the Zig row kernel for last-axis inference.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: fresh Node and Bun artifacts report `row_coverage=8/8`, with
-  Node minimum module/native-into speedups of `6.52x`/`7.16x` and Bun minimum
-  module/native-into speedups of `4.15x`/`4.78x`, all with zero measured module
-  diff.
+  as well: the expected row set is `row_coverage=9/9` after adding direct
+  `matmul_batched`, and fresh Node/Bun short runs show zero measured module
+  diff across the native eager rows.
   The native eager adapter policy now lives in
   `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
   shape inference, output validation, public aliases, and activation mapping,

@@ -956,6 +956,7 @@ function checkPackageExports(errors) {
     "const pytorchArtifactPattern = /^pytorch-\\d{8}T\\d{6}Z-\\d+\\.json$/",
     "const nativeEagerArtifactPattern = /^native-eager-\\d{8}T\\d{6}Z-\\d+\\.json$/",
     "const nativeEagerExpectedKeys = [",
+    "\"matmul_batched\"",
     "\"softmax_batched\"",
     "\"log_softmax_batched\"",
     "lazy_matmul_add_sigmoid_batched",
