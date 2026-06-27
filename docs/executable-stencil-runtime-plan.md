@@ -1859,6 +1859,15 @@ the three-attempt exact bridge gate selected `2.21x` and the input-bridge gate
 selected `2.46x`, below the refreshed four-lane `2.40x` and `2.63x` evidence.
 The current four-lane shape is therefore the local sweet spot until the kernel
 changes its storage model or fuses a dispatch.
+The row-serial semantic down loops now use an eight-hidden-value unroll instead
+of the older four-wide accumulation in both the plain semantic FFN and direct
+input-bridge kernels. A fresh three-attempt input-bridge microscope kept
+correctness (`max_abs_diff=0.000001`) and selected `absorbed=2.73x`
+(`median=2.77x`, `worst=2.73x`) while the one-dispatch direct diagnostic moved
+to `direct_serial=1.38x` (`median=1.38x`). This is useful cleanup for the
+diagnostic path, not the missing architectural move: the direct bridge still
+reports `2,985,984` row-serial dot ops per row threadgroup, so the next target
+remains `semantic_with_input_width_parallel_kernel`.
 A finalize-path probe then tested replacing
 `qmatmul_row_chain_tiled_finalize_tiles_f32` with the coarser row-tile
 `qmatmul_row_chain_tiled_finalize_f32` so the RMS reduction would be computed

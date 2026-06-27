@@ -384,6 +384,11 @@ machine for both prompt/prefill and decode.
   `smollm_prompt=2.60x:median:2.31x:worst:1.63x`. It also moves the full Q8
   bridge lane from clear regression to near-promotion
   (`semantic_best=1.16x`, `semantic_median=1.00x`, `semantic_worst=0.99x`).
+  A later eight-wide semantic down-loop unroll kept the focused input-bridge
+  microscope correct and selected `absorbed=2.73x` with
+  `direct_serial=1.38x`; however, the direct bridge still reports
+  `2,985,984` row-serial dot ops per row threadgroup, so this is diagnostic
+  cleanup rather than a replacement for the width-partitioned input bridge.
   The missing win is still work partitioning, but the semantic block-32 scale
   specialization is retained as a real kernel improvement.
 - A later row-chain tiled scale-index shift probe was rejected. Guarding the

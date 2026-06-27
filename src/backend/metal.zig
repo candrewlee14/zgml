@@ -1605,15 +1605,23 @@ const shader_source =
     \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_THREADS) {
     \\        float sum = 0.0f;
     \\        uint h = 0;
-    \\        for (; h + 3 < p.H; h += 4) {
+    \\        for (; h + 7 < p.H; h += 8) {
     \\            uint w_idx0 = h * p.O + col;
     \\            uint w_idx1 = w_idx0 + p.O;
     \\            uint w_idx2 = w_idx1 + p.O;
     \\            uint w_idx3 = w_idx2 + p.O;
+    \\            uint w_idx4 = w_idx3 + p.O;
+    \\            uint w_idx5 = w_idx4 + p.O;
+    \\            uint w_idx6 = w_idx5 + p.O;
+    \\            uint w_idx7 = w_idx6 + p.O;
     \\            sum += product_values[h] * float(down_weight_data[w_idx0]) * down_weight_scales[w_idx0 >> 5];
     \\            sum += product_values[h + 1] * float(down_weight_data[w_idx1]) * down_weight_scales[w_idx1 >> 5];
     \\            sum += product_values[h + 2] * float(down_weight_data[w_idx2]) * down_weight_scales[w_idx2 >> 5];
     \\            sum += product_values[h + 3] * float(down_weight_data[w_idx3]) * down_weight_scales[w_idx3 >> 5];
+    \\            sum += product_values[h + 4] * float(down_weight_data[w_idx4]) * down_weight_scales[w_idx4 >> 5];
+    \\            sum += product_values[h + 5] * float(down_weight_data[w_idx5]) * down_weight_scales[w_idx5 >> 5];
+    \\            sum += product_values[h + 6] * float(down_weight_data[w_idx6]) * down_weight_scales[w_idx6 >> 5];
+    \\            sum += product_values[h + 7] * float(down_weight_data[w_idx7]) * down_weight_scales[w_idx7 >> 5];
     \\        }
     \\        for (; h < p.H; h++) {
     \\            uint w_idx = h * p.O + col;
@@ -1735,15 +1743,23 @@ const shader_source =
     \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_THREADS) {
     \\        float sum = 0.0f;
     \\        uint h = 0;
-    \\        for (; h + 3 < p.H; h += 4) {
+    \\        for (; h + 7 < p.H; h += 8) {
     \\            uint w_idx0 = h * p.O + col;
     \\            uint w_idx1 = w_idx0 + p.O;
     \\            uint w_idx2 = w_idx1 + p.O;
     \\            uint w_idx3 = w_idx2 + p.O;
+    \\            uint w_idx4 = w_idx3 + p.O;
+    \\            uint w_idx5 = w_idx4 + p.O;
+    \\            uint w_idx6 = w_idx5 + p.O;
+    \\            uint w_idx7 = w_idx6 + p.O;
     \\            sum += product_values[h] * float(down_weight_data[w_idx0]) * down_weight_scales[w_idx0 >> 5];
     \\            sum += product_values[h + 1] * float(down_weight_data[w_idx1]) * down_weight_scales[w_idx1 >> 5];
     \\            sum += product_values[h + 2] * float(down_weight_data[w_idx2]) * down_weight_scales[w_idx2 >> 5];
     \\            sum += product_values[h + 3] * float(down_weight_data[w_idx3]) * down_weight_scales[w_idx3 >> 5];
+    \\            sum += product_values[h + 4] * float(down_weight_data[w_idx4]) * down_weight_scales[w_idx4 >> 5];
+    \\            sum += product_values[h + 5] * float(down_weight_data[w_idx5]) * down_weight_scales[w_idx5 >> 5];
+    \\            sum += product_values[h + 6] * float(down_weight_data[w_idx6]) * down_weight_scales[w_idx6 >> 5];
+    \\            sum += product_values[h + 7] * float(down_weight_data[w_idx7]) * down_weight_scales[w_idx7 >> 5];
     \\        }
     \\        for (; h < p.H; h++) {
     \\            uint w_idx = h * p.O + col;
