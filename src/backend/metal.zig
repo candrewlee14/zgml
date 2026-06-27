@@ -5713,17 +5713,25 @@ const SemanticWidthScratchRequirement = struct {
     product_bytes: usize = 0,
     down_partial_bytes: usize = 0,
     output_bytes: usize = 0,
+    runtime_capacity_bytes: usize = 0,
 
     fn scratchBytes(self: SemanticWidthScratchRequirement) usize {
         return self.down_partial_bytes;
     }
 
+    fn runtimeScratchBytes(self: SemanticWidthScratchRequirement) usize {
+        return self.runtime_capacity_bytes;
+    }
+
     fn merge(self: *SemanticWidthScratchRequirement, other: SemanticWidthScratchRequirement) void {
         self.candidates +%= other.candidates;
+        self.runtime_capacity_bytes = @max(self.runtime_capacity_bytes, other.runtime_capacity_bytes);
         if (other.scratchBytes() <= self.scratchBytes()) return;
         const candidates = self.candidates;
+        const runtime_capacity_bytes = self.runtime_capacity_bytes;
         self.* = other;
         self.candidates = candidates;
+        self.runtime_capacity_bytes = runtime_capacity_bytes;
     }
 };
 
@@ -5827,9 +5835,11 @@ fn semanticScratchRequirementForShape(rows: u32, hidden: u32, input: u32, output
     const hidden_count: u64 = hidden;
     const output_count: u64 = output;
     const hidden_tiles = divCeilU64(hidden, ROW_CHAIN_TILE);
+    const output_tiles = divCeilU64(output, ROW_CHAIN_TILE);
     const product_elements = std.math.mul(u64, row_count, hidden_count) catch return null;
     const output_elements = std.math.mul(u64, row_count, output_count) catch return null;
     const down_partial_elements = std.math.mul(u64, output_elements, hidden_tiles) catch return null;
+    const runtime_partial_elements = std.math.mul(u64, row_count, output_tiles) catch return null;
     return .{
         .candidates = 1,
         .rows = rows,
@@ -5840,6 +5850,7 @@ fn semanticScratchRequirementForShape(rows: u32, hidden: u32, input: u32, output
         .product_bytes = checkedF32Bytes(product_elements) orelse return null,
         .down_partial_bytes = checkedF32Bytes(down_partial_elements) orelse return null,
         .output_bytes = checkedF32Bytes(output_elements) orelse return null,
+        .runtime_capacity_bytes = checkedF32Bytes(runtime_partial_elements) orelse return null,
     };
 }
 
@@ -5879,7 +5890,7 @@ fn semanticWidthScratchRequirement(stencil: *const program_mod.ProgramStencil) S
 }
 
 fn allocateSemanticWidthScratch(device: *anyopaque, requirement: SemanticWidthScratchRequirement) !?DeviceBuffer {
-    const byte_size = requirement.scratchBytes();
+    const byte_size = requirement.runtimeScratchBytes();
     if (byte_size == 0) return null;
     const ptr = c.mtl_create_buffer(device, byte_size) orelse return error.OutOfMemory;
     return .{ .ptr = ptr, .size = byte_size };
@@ -10111,6 +10122,7 @@ const RuntimeBindings = struct {
             @intCast(compiled.semantic_width_scratch_requirement.product_bytes),
             @intCast(compiled.semantic_width_scratch_requirement.down_partial_bytes),
             @intCast(compiled.semantic_width_scratch_requirement.output_bytes),
+            @intCast(compiled.semantic_width_scratch_requirement.runtimeScratchBytes()),
         );
         return .{
             .device_bufs = device_bufs,
@@ -10268,6 +10280,7 @@ fn compileProgramInner(self: *MetalBackend, program: backend_mod.DeviceProgram, 
         @intCast(semantic_width_scratch_requirement.product_bytes),
         @intCast(semantic_width_scratch_requirement.down_partial_bytes),
         @intCast(semantic_width_scratch_requirement.output_bytes),
+        @intCast(semantic_width_scratch_requirement.runtimeScratchBytes()),
     );
 
     const compiled = try alloc.create(CompiledProgram);

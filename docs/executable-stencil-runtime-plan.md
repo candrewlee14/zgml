@@ -1758,11 +1758,13 @@ staged width-parallel down path needs `down_partial_elements=3538944`
 and profiles a reusable backend-owned down-partial scratch buffer for semantic
 commands with `hidden > SEMANTIC_FFN_MAX_DIM`; the refreshed bridge gate asserts
 `semantic_width_scratch=candidates:1,bytes:14155776,...,down_partial_to_output:48.00`.
-The current bridge path now also routes the tiled row-chain tail through that
-runtime-owned semantic scratch surface instead of the output buffer; the checked
-June 27, 2026 artifact reports `runtime_uses:314,runtime_bytes:9216`, where the
-use count is cumulative across benchmark repetitions and `9216` bytes is the
-per-dispatch partial surface for the `2304` row-chain partial slots.
+The runtime now keeps that future width target separate from the scratch it
+actually allocates for the current mixed bridge path: the tiled row-chain tail
+uses a precisely-sized `runtime_capacity:9216` byte surface instead of reserving
+the full `14155776` byte down-partial target. The checked bridge artifact reports
+`runtime_uses` cumulatively across benchmark repetitions and `runtime_bytes:9216`,
+where `9216` bytes is the per-dispatch partial surface for the `2304` row-chain
+partial slots.
 The remaining kernel slice is therefore to consume that scratch, prove an
 equivalent accumulation strategy, or implement a streamed hidden-tile design
 that avoids the `14.2 MB` partial surface without falling back to row-serial
