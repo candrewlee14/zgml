@@ -48,7 +48,15 @@ if (rootOnly.length !== 0 || distOnly.length !== 0) {
 
 const missingNative = missingExports(root, requiredNativeApiExports);
 if (missingNative.length !== 0) {
-  throw new Error(`zgml root is missing native PyTorch-like exports: ${missingNative.join(", ")}`);
+  throw new Error(`zgml root is missing native zgml exports: ${missingNative.join(", ")}`);
+}
+
+if (root.zgml !== distConcreteNode.zgml) {
+  throw new Error("zgml root namespace must be the concrete Node native runtime zgml namespace");
+}
+
+if (root.torch !== root.zgml || distConcreteNode.torch !== distConcreteNode.zgml) {
+  throw new Error("torch must remain an explicit compatibility alias of zgml, not the primary namespace");
 }
 
 for (const key of requiredNativeApiExports) {

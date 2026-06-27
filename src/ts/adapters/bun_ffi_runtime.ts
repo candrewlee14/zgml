@@ -137,8 +137,8 @@ import {
 import {
   createAdapterCompileNamespace,
   createAdapterFrontendNamespaces,
-  createAdapterTorchCheckpointIo,
-  createAdapterTorchNamespace,
+  createAdapterZgmlCheckpointIo,
+  createAdapterZgmlNamespace,
 } from "./frontend_namespace_surface.js";
 import {
   createAdapterFrontendModuleSurface,
@@ -2508,12 +2508,12 @@ const bunCheckpointFs = requireSharedFrontend("node:fs") as {
   readFileSync(path: string, encoding: "utf8"): string;
   writeFileSync(path: string, text: string, encoding: "utf8"): void;
 };
-const torchCheckpointIo = createAdapterTorchCheckpointIo(checkpoint, {
+const zgmlCheckpointIo = createAdapterZgmlCheckpointIo(checkpoint, {
   readTextFile: (path) => bunCheckpointFs.readFileSync(path, "utf8"),
   writeTextFile: (path, text) => bunCheckpointFs.writeFileSync(path, text, "utf8"),
 });
-export const save = torchCheckpointIo.save as typeof PublicApi.save;
-export const load = torchCheckpointIo.load as typeof PublicApi.load;
+export const save = zgmlCheckpointIo.save as typeof PublicApi.save;
+export const load = zgmlCheckpointIo.load as typeof PublicApi.load;
 export const simple = Object.freeze({
   Tensor,
   tensor,
@@ -2540,7 +2540,7 @@ export const simple = Object.freeze({
   inferenceMode,
   inference_mode,
 }) as unknown as PublicApi.PublicSimpleNamespace;
-export const torch = createAdapterTorchNamespace({
+export const zgml = createAdapterZgmlNamespace({
   Tensor,
   tensor,
   parameter,
@@ -2633,13 +2633,13 @@ export const torch = createAdapterTorchNamespace({
   loss,
   train,
   checkpoint,
-  checkpointIo: torchCheckpointIo,
+  checkpointIo: zgmlCheckpointIo,
   Program,
   Session,
   NativeBuffer,
   nativeEager,
 });
-export const zgml = torch;
+export const torch = zgml;
 export const native = compile.compileForInference;
 export const inference = compile.compileForInference;
 export const compileInference = compile.compileForInference;

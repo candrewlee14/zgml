@@ -4910,7 +4910,7 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   }
   const missingNativeExports = missingExports(adapter, requiredNativeApiExports);
   if (missingNativeExports.length !== 0) {
-    throw new Error(`${label} adapter is missing native PyTorch-like exports: ${missingNativeExports.join(", ")}`);
+    throw new Error(`${label} adapter is missing native zgml exports: ${missingNativeExports.join(", ")}`);
   }
   if (
     adapter.compile?.compileManifest?.policyOwner !== "src/ts/compile.ts" ||

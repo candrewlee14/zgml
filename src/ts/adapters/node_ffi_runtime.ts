@@ -101,8 +101,8 @@ const {
 const {
   createAdapterCompileNamespace,
   createAdapterFrontendNamespaces,
-  createAdapterTorchCheckpointIo,
-  createAdapterTorchNamespace,
+  createAdapterZgmlCheckpointIo,
+  createAdapterZgmlNamespace,
 } = require("./frontend_namespace_surface.js");
 const {
   createAdapterFrontendModuleSurface,
@@ -1422,7 +1422,7 @@ const compile = createAdapterCompileNamespace({
 });
 compileTrainingStepHook = compile.compileForTraining;
 sharedFrontend.lazy.setLazyTensorProgramCompiler((lazyGraph, compileOptions) => compile.compile(lazyGraph, compileOptions));
-const torchCheckpointIo = createAdapterTorchCheckpointIo(checkpoint, {
+const zgmlCheckpointIo = createAdapterZgmlCheckpointIo(checkpoint, {
   readTextFile: (path) => readFileSync(path, "utf8"),
   writeTextFile: (path, text) => writeFileSync(path, text, "utf8"),
 });
@@ -1445,8 +1445,8 @@ const simple = Object.freeze({
   loss,
   train,
   checkpoint,
-  save: torchCheckpointIo.save,
-  load: torchCheckpointIo.load,
+  save: zgmlCheckpointIo.save,
+  load: zgmlCheckpointIo.load,
   noGrad,
   no_grad,
   inferenceMode,
@@ -1464,7 +1464,7 @@ const gradMode = createAdapterGradModeSurface({
   enableGrad,
   enable_grad,
 });
-const torch = createAdapterTorchNamespace({
+const zgml = createAdapterZgmlNamespace({
   Tensor,
   tensor,
   parameter,
@@ -1557,13 +1557,13 @@ const torch = createAdapterTorchNamespace({
   loss,
   train,
   checkpoint,
-  checkpointIo: torchCheckpointIo,
+  checkpointIo: zgmlCheckpointIo,
   Program,
   Session,
   NativeBuffer,
   nativeEager,
 });
-const zgml = torch;
+const torch = zgml;
 
 const { readSafetensorsHeaderFile } = createAdapterSafetensorsFileHeaderHelpers(fs);
 
@@ -1767,8 +1767,8 @@ module.exports = createAdapterPublicRuntimeExports({
   optim,
   train,
   checkpoint,
-  save: torch.save,
-  load: torch.load,
+  save: zgml.save,
+  load: zgml.load,
   compile,
   native: compile.compileForInference,
   inference: compile.compileForInference,

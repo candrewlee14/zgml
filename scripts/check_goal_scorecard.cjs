@@ -2045,12 +2045,12 @@ function checkScripts() {
     "npm run check:packed-install",
     "npm run check:goal-scorecard",
   ]);
-  requireIncludes(read("scripts/check_ts_source_architecture.cjs"), "scripts/check_ts_source_architecture.cjs", "shared torch namespace architecture guard", [
-    "function checkAdapterTorchNamespaceIsShared(errors)",
-    "export function createAdapterTorchNamespace(options: AdapterTorchNamespaceOptions)",
-    "createAdapterTorchNamespace",
-    "must not hand-copy the torch namespace object",
-    "checkAdapterTorchNamespaceIsShared(errors)",
+  requireIncludes(read("scripts/check_ts_source_architecture.cjs"), "scripts/check_ts_source_architecture.cjs", "shared zgml namespace architecture guard", [
+    "function checkAdapterZgmlNamespaceIsShared(errors)",
+    "export function createAdapterZgmlNamespace(options: AdapterZgmlNamespaceOptions)",
+    "createAdapterZgmlNamespace",
+    "must not hand-copy the zgml namespace object",
+    "checkAdapterZgmlNamespaceIsShared(errors)",
   ]);
   requireIncludes(read("build.zig"), "build.zig", "portable C/Node/Bun/Wasm FFI smoke steps", [
     "const ffi_wasm_step = b.step(\"ffi-wasm\", \"Build the exported Wasm C ABI module\")",

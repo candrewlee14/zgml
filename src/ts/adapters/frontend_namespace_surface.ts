@@ -27,11 +27,11 @@ type NnNamespaceOptions = Parameters<SharedFrontendRuntime["createNnNamespace"]>
 type OptimNamespaceOptions = Parameters<SharedFrontendRuntime["createOptimNamespace"]>[0];
 type CheckpointHelpersOptions = Parameters<SharedFrontendRuntime["createCheckpointHelpers"]>[0];
 type CheckpointModuleState = ReturnType<CheckpointHelpersOptions["moduleStateDict"]>;
-type TorchCheckpointIoOptions = Readonly<{
+type ZgmlCheckpointIoOptions = Readonly<{
   readTextFile?: (path: string) => string;
   writeTextFile?: (path: string, text: string) => void;
 }>;
-type AdapterTorchNamespaceOptions = Readonly<{
+type AdapterZgmlNamespaceOptions = Readonly<{
   Tensor: LossTrainHelpersOptions["Tensor"];
   tensor: (...args: any[]) => any;
   parameter: (...args: any[]) => any;
@@ -971,13 +971,13 @@ function checkpointLooksLikeJson(value: string) {
   return trimmed.startsWith("{") || trimmed.startsWith("[");
 }
 
-export function createAdapterTorchCheckpointIo(checkpoint: CheckpointNamespaceLike, options: TorchCheckpointIoOptions = {}) {
+export function createAdapterZgmlCheckpointIo(checkpoint: CheckpointNamespaceLike, options: ZgmlCheckpointIoOptions = {}) {
   function save(snapshot: unknown, pathOrSpace?: string | number, space?: string | number) {
     const hasExplicitPath = space !== undefined;
     const hasImplicitPath = typeof pathOrSpace === "string" && checkpointLooksLikePath(pathOrSpace);
     if (hasExplicitPath || hasImplicitPath) {
-      if (typeof pathOrSpace !== "string" || pathOrSpace.length === 0) throw new Error("torch.save path must be a non-empty string");
-      if (typeof options.writeTextFile !== "function") throw new Error("torch.save path output is unavailable in this runtime");
+      if (typeof pathOrSpace !== "string" || pathOrSpace.length === 0) throw new Error("zgml.save path must be a non-empty string");
+      if (typeof options.writeTextFile !== "function") throw new Error("zgml.save path output is unavailable in this runtime");
       const text = checkpoint.stringify(snapshot, space);
       options.writeTextFile(pathOrSpace, text);
       return pathOrSpace;
@@ -1000,16 +1000,18 @@ export function createAdapterTorchCheckpointIo(checkpoint: CheckpointNamespaceLi
   });
 }
 
+export const createAdapterTorchCheckpointIo = createAdapterZgmlCheckpointIo;
+
 function requireTensorMethod(input: unknown, methodName: string) {
   const source = input as TensorMethodSource | null | undefined;
   const method = source && source[methodName];
   if (typeof method !== "function") {
-    throw new Error(`torch.${methodName} requires a Tensor with ${methodName}()`);
+    throw new Error(`zgml.${methodName} requires a Tensor with ${methodName}()`);
   }
   return method.bind(source) as (...args: unknown[]) => unknown;
 }
 
-export function createAdapterTorchTensorOps() {
+export function createAdapterZgmlTensorOps() {
   function call(input: unknown, methodName: string, ...args: unknown[]) {
     return requireTensorMethod(input, methodName)(...args);
   }
@@ -1110,8 +1112,10 @@ export function createAdapterTorchTensorOps() {
   });
 }
 
-export function createAdapterTorchNamespace(options: AdapterTorchNamespaceOptions) {
-  const tensorOps = createAdapterTorchTensorOps();
+export const createAdapterTorchTensorOps = createAdapterZgmlTensorOps;
+
+export function createAdapterZgmlNamespace(options: AdapterZgmlNamespaceOptions) {
+  const tensorOps = createAdapterZgmlTensorOps();
   const data = options.data;
   const compileNamespace = options.compile as Record<string, unknown>;
   return Object.freeze({
@@ -1286,3 +1290,5 @@ export function createAdapterTorchNamespace(options: AdapterTorchNamespaceOption
     NativeBuffer: options.NativeBuffer,
   });
 }
+
+export const createAdapterTorchNamespace = createAdapterZgmlNamespace;

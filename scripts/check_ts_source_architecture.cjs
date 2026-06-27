@@ -11200,19 +11200,20 @@ function checkAdapterGradModeSurfaceIsShared(errors) {
   }
 }
 
-function checkAdapterTorchNamespaceIsShared(errors) {
+function checkAdapterZgmlNamespaceIsShared(errors) {
   const helperPath = path.join(root, "src", "ts", "adapters", "frontend_namespace_surface.ts");
   const helperSource = fs.readFileSync(helperPath, "utf8");
   for (const needle of [
-    "type AdapterTorchNamespaceOptions = Readonly<{",
-    "export function createAdapterTorchNamespace(options: AdapterTorchNamespaceOptions)",
-    "const tensorOps = createAdapterTorchTensorOps();",
+    "type AdapterZgmlNamespaceOptions = Readonly<{",
+    "export function createAdapterZgmlNamespace(options: AdapterZgmlNamespaceOptions)",
+    "const tensorOps = createAdapterZgmlTensorOps();",
+    "export const createAdapterTorchNamespace = createAdapterZgmlNamespace;",
     "utils: Object.freeze({",
     "save: options.checkpointIo.save",
     "load: options.checkpointIo.load",
   ]) {
     if (!helperSource.includes(needle)) {
-      errors.push(`frontend_namespace_surface.ts must own shared torch namespace assembly: ${needle}`);
+      errors.push(`frontend_namespace_surface.ts must own shared zgml namespace assembly with torch compatibility aliases: ${needle}`);
     }
   }
   for (const relativePath of [
@@ -11220,14 +11221,17 @@ function checkAdapterTorchNamespaceIsShared(errors) {
     path.join("src", "ts", "adapters", "bun_ffi_runtime.ts"),
   ]) {
     const source = fs.readFileSync(path.join(root, relativePath), "utf8");
-    if (!source.includes("createAdapterTorchNamespace")) {
-      errors.push(`${relativePath} must consume shared createAdapterTorchNamespace instead of hand-assembling torch aliases`);
+    if (!source.includes("createAdapterZgmlNamespace")) {
+      errors.push(`${relativePath} must consume shared createAdapterZgmlNamespace instead of hand-assembling zgml aliases`);
     }
-    if (source.includes("const torchTensorOps = createAdapterTorchTensorOps()")) {
-      errors.push(`${relativePath} must not own torch tensor-op forwarding; use createAdapterTorchNamespace`);
+    if (source.includes("const zgmlTensorOps = createAdapterZgmlTensorOps()")) {
+      errors.push(`${relativePath} must not own zgml tensor-op forwarding; use createAdapterZgmlNamespace`);
     }
-    if (source.includes("torch = Object.freeze({") && source.includes("utils: Object.freeze({")) {
-      errors.push(`${relativePath} must not hand-copy the torch namespace object; use createAdapterTorchNamespace`);
+    if (source.includes("zgml = Object.freeze({") && source.includes("utils: Object.freeze({")) {
+      errors.push(`${relativePath} must not hand-copy the zgml namespace object; use createAdapterZgmlNamespace`);
+    }
+    if (!source.includes("const torch = zgml") && !source.includes("export const torch = zgml")) {
+      errors.push(`${relativePath} must keep torch as an explicit compatibility alias of zgml`);
     }
   }
 }
@@ -17837,7 +17841,7 @@ try {
   checkAdapterAbiConstantsAreTsOwned(errors);
   checkAdapterIndexValuesAreTsOwned(errors);
   checkAdapterGradModeSurfaceIsShared(errors);
-  checkAdapterTorchNamespaceIsShared(errors);
+  checkAdapterZgmlNamespaceIsShared(errors);
   checkNativeLibraryLoadInfoIsShared(errors);
   checkHostRuntimesAreTsOwned(errors);
   checkBunSymbolsAreTsOwned(errors);
