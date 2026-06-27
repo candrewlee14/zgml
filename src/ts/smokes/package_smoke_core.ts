@@ -7343,6 +7343,28 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     ) {
       throw new Error(`${label} expected train.fitModule requireNative to route supported Linear+MSE training through native Zig`);
     }
+    const trainFitNativeModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
+    const trainFitNativeOptimizer = adapter.optim.sgd(trainFitNativeModel, { lr: 0.05 });
+    const trainFitNativeEvidence = adapter.train.fitNative(trainFitNativeModel, shuffledBatches, {
+      optimizer: trainFitNativeOptimizer,
+      loss: fitModuleCriterion,
+      maxSteps: 1,
+    });
+    const rootFitNativeModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
+    const rootFitNativeOptimizer = adapter.optim.sgd(rootFitNativeModel, { lr: 0.05 });
+    const rootFitNativeEvidence = adapter.fitNative(rootFitNativeModel, shuffledBatches, {
+      optimizer: rootFitNativeOptimizer,
+      loss: fitModuleCriterion,
+      maxSteps: 1,
+    });
+    if (
+      trainFitNativeEvidence.native !== true ||
+      trainFitNativeEvidence.compiledPlan?.loweredBy !== "zig-ffi" ||
+      rootFitNativeEvidence.native !== true ||
+      rootFitNativeEvidence.compiledPlan?.loweredBy !== "zig-ffi"
+    ) {
+      throw new Error(`${label} expected train.fitNative and zgml.fitNative to require native Zig training`);
+    }
   }
   if (
     !adapter.train.isTrainFitStepEvidence(fitSteps[0]) ||

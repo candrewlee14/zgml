@@ -48,6 +48,7 @@ import {
   fullLike,
   full_like,
   flatten,
+  fitNative,
   gather,
   hasShape,
   hstack,
@@ -4449,6 +4450,27 @@ const modelFirstNativeFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpoi
   num_classes: 1,
 });
 const modelFirstNativeFitPlan: CompiledTrainingPlan | null | undefined = modelFirstNativeFitEvidence.compiledPlan;
+const modelFirstFitNativeEvidence: TrainFitEvidence<"adam"> = train.fitNative(checkpointModel, tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+const rootFitNativeEvidence: TrainFitEvidence<"adam"> = fitNative(checkpointModel, tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+const rootFitNativeAliasEvidence: TrainFitEvidence<"adam"> = zgml.fitNative(checkpointModel, tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+void modelFirstFitNativeEvidence;
+void rootFitNativeEvidence;
+void rootFitNativeAliasEvidence;
 const moduleMethodFitEvidence: TrainFitEvidence = checkpointModel.fit(tensorDatasetBatches, {
   optimizer: checkpointOptimizer,
   loss: new nn.MSELoss(),

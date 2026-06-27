@@ -1469,6 +1469,8 @@ export function createAdapterZgmlNamespace(options: AdapterZgmlNamespaceOptions)
     }),
     loss: options.loss,
     train: options.train,
+    fitNative: (options.train as Record<string, unknown>).fitNative,
+    fit_native: (options.train as Record<string, unknown>).fit_native,
     checkpoint: options.checkpoint,
     save: options.checkpointIo.save,
     load: options.checkpointIo.load,

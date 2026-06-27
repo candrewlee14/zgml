@@ -5729,6 +5729,36 @@ export interface TrainNamespace {
     batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
     options: TrainModelFitOptions<null, Target, Batch>,
   ): TrainFitEvidence;
+  fitNative<Batch extends { input: TensorLike; target: TensorLike | IndexLike }>(
+    compiled: CompiledTrainingStep,
+    batches: Iterable<Batch>,
+    options?: TrainFitOptions & { requireNative?: true; require_native?: true },
+  ): TrainFitEvidence;
+  fitNative<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    options: TrainModelFitOptions<Kind, Target, Batch> & { requireNative?: true; require_native?: true },
+  ): TrainFitEvidence<Kind>;
+  fitNative<Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    options: TrainModelFitOptions<null, Target, Batch> & { requireNative?: true; require_native?: true },
+  ): TrainFitEvidence;
+  fitNative<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    optimizer: Optimizer<Kind>,
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    criterion: TrainSupervisedCriterion<Target, Batch>,
+    options?: TrainFitOptions<Kind> & { requireNative?: true; require_native?: true },
+  ): TrainFitEvidence<Kind>;
+  fitNative<Target extends NnModule, Batch>(
+    optimizer: { step(): void; zeroGrad?(options?: ZeroGradOptions): void },
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    criterion: TrainSupervisedCriterion<Target, Batch>,
+    options?: TrainFitOptions & { requireNative?: true; require_native?: true },
+  ): TrainFitEvidence;
+  fit_native: TrainNamespace["fitNative"];
   fitModule<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
     optimizer: Optimizer<Kind>,
     module: Target,
@@ -7111,6 +7141,8 @@ export type PublicTorchNamespace = Readonly<{
   }>;
   loss: PublicLossNamespace;
   train: PublicTrainNamespace;
+  fitNative: PublicTrainNamespace["fitNative"];
+  fit_native: PublicTrainNamespace["fit_native"];
   checkpoint: PublicCheckpointNamespace;
   save(snapshot: ZgmlCheckpoint, space?: string | number): string;
   save(snapshot: ZgmlCheckpoint, path: string, space?: string | number): string;
@@ -7143,6 +7175,8 @@ export type PublicSimpleNamespace = Readonly<Pick<PublicZgmlNamespace,
   | "data"
   | "loss"
   | "train"
+  | "fitNative"
+  | "fit_native"
   | "checkpoint"
   | "save"
   | "load"
@@ -7169,6 +7203,8 @@ export declare const trainingStep: PublicCompileNamespace["trainingStep"];
 export declare const training_step: PublicCompileNamespace["training_step"];
 export declare const compileForTraining: PublicCompileNamespace["compileForTraining"];
 export declare const compile_for_training: PublicCompileNamespace["compile_for_training"];
+export declare const fitNative: PublicTrainNamespace["fitNative"];
+export declare const fit_native: PublicTrainNamespace["fit_native"];
 export declare const nativeEager: PublicNativeEagerNamespace;
 export declare const native_eager: PublicNativeEagerNamespace;
 export declare const nativeCore: NativeCoreFunction;

@@ -2578,6 +2578,8 @@ export const simple = Object.freeze({
   data,
   loss,
   train,
+  fitNative: train.fitNative,
+  fit_native: train.fit_native,
   checkpoint,
   save,
   load,
@@ -2703,6 +2705,8 @@ export const trainingStep = compile.trainingStep;
 export const training_step = compile.training_step;
 export const compileForTraining = compile.compileForTraining;
 export const compile_for_training = compile.compile_for_training;
+export const fitNative = train.fitNative;
+export const fit_native = train.fit_native;
 
 const {
   TinyLlamaModel,

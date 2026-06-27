@@ -1676,6 +1676,59 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     return fitLoop(targetOrOptimizer as LossTrainOptimizer, batches, lossFnOrOptions, fitOptions);
   }
 
+  function requireNativeFitOptions(fitOptions: TrainFitOptions = {}) {
+    return Object.freeze({
+      ...fitOptions,
+      native: true,
+      requireNative: true,
+      compile: true,
+    });
+  }
+
+  function fitNative(
+    targetOrOptimizer: unknown,
+    moduleOrBatches: unknown,
+    batchesOrOptions: unknown,
+    criterionOrOptions: unknown = {},
+    maybeFitOptions: TrainFitOptions = {},
+  ) {
+    if (isCompiledTrainingStep(targetOrOptimizer)) {
+      const options = isRecord(batchesOrOptions) ? batchesOrOptions as TrainFitOptions : {};
+      return fitCompiledTrainingStep(targetOrOptimizer, moduleOrBatches, requireNativeFitOptions(options));
+    }
+    if (
+      targetOrOptimizer &&
+      typeof (targetOrOptimizer as AnyRecord).forward === "function" &&
+      isRecord(batchesOrOptions) &&
+      (batchesOrOptions as AnyRecord).optimizer &&
+      ((batchesOrOptions as AnyRecord).loss || (batchesOrOptions as AnyRecord).criterion)
+    ) {
+      const options = batchesOrOptions as TrainFitOptions & AnyRecord;
+      return fitModule(
+        options.optimizer as LossTrainOptimizer,
+        targetOrOptimizer,
+        moduleOrBatches,
+        options.loss ?? options.criterion,
+        requireNativeFitOptions(options),
+      );
+    }
+    if (
+      targetOrOptimizer &&
+      typeof (targetOrOptimizer as LossTrainOptimizer).step === "function" &&
+      moduleOrBatches &&
+      typeof (moduleOrBatches as AnyRecord).forward === "function"
+    ) {
+      return fitModule(
+        targetOrOptimizer as LossTrainOptimizer,
+        moduleOrBatches,
+        batchesOrOptions,
+        criterionOrOptions,
+        requireNativeFitOptions(maybeFitOptions),
+      );
+    }
+    throw new Error("train.fitNative requires a compiled native training step or a module with { optimizer, loss } options");
+  }
+
   function fitModule(optimizer: LossTrainOptimizer, module: unknown, batches: unknown, criterion: unknown, fitOptions: TrainFitOptions = {}) {
     const target = module as AnyRecord;
     const loss = criterion as AnyRecord;
@@ -1875,6 +1928,8 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
       return lossValue;
     },
     fit,
+    fitNative,
+    fit_native: fitNative,
     fitModule,
     fit_module: fitModule,
     fitClassifier: fitModule,

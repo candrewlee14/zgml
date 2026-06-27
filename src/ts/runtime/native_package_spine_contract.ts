@@ -31,6 +31,8 @@ export const requiredNativePackageSpineExports = Object.freeze([
   "loss",
   "optim",
   "train",
+  "fitNative",
+  "fit_native",
   "checkpoint",
   "save",
   "load",
