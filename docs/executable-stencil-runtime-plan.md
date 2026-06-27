@@ -569,19 +569,21 @@ Current checked progress:
   direct `conv2dInto` and `pool2dInto` rows above the native-eager floor with
   zero measured diff against the TS reference.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=19/19` after adding direct
+  as well: the expected row set is `row_coverage=20/20` after adding direct
   `matmul_batched`, `elementwise_mul_batched`, `reduce_sum_scalar_batched`,
   `elementwise_lt_batched`, `clamp_batched`, `where_batched`,
-  standalone `activation_relu_batched` / `activation_sigmoid_batched`, native
-  eager `conv2d_batched`, and native eager `max_pool2d_batched` /
+  standalone `activation_relu_batched` / `activation_sigmoid_batched` /
+  `activation_silu_batched`, native eager `conv2d_batched`, and native eager
+  `max_pool2d_batched` /
   `avg_pool2d_batched`; fresh Node/Bun short runs show zero measured module
   diff across the native eager rows, with per-row speedup floors recorded where
   the direct low-level ABI is evidence rather than the preferred high-level
   route. The standalone activation rows now prove the promoted path too:
-  `zgml_eager_activation_f32` uses a vectorized Zig helper for ReLU/Sigmoid
+  `zgml_eager_activation_f32` uses a vectorized Zig helper for ReLU/Sigmoid/SiLU
   sized tensors, and normal no-grad high-level `Tensor.relu()` /
-  `Tensor.sigmoid()` calls route through `nativeEager.activationInto` once the
-  runtime threshold is met. Fresh Node/Bun runs show the public Tensor path
+  `Tensor.sigmoid()` / `Tensor.silu()` calls route through
+  `nativeEager.activationInto` once the runtime threshold is met. Fresh Node/Bun
+  runs show the public Tensor path
   above floor with zero measured diff, while grad-enabled activation calls and
   small tensors stay on the TS/autograd path.
   The native eager adapter policy now lives in

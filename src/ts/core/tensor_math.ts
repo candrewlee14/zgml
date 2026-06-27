@@ -801,7 +801,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function silu(tensor: TensorMathTensor) {
-    return unary(tensor, siluScalar, siluDerivativeScalar);
+    return unary(tensor, siluScalar, siluDerivativeScalar, undefined, "silu");
   }
 
   function sigmoid(tensor: TensorMathTensor) {
