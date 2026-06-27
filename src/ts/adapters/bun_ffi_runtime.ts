@@ -217,6 +217,13 @@ import type {
   LRSchedulerStateKind as PublicLRSchedulerStateKind,
   LRSchedulerStateSnapshot as PublicLRSchedulerStateSnapshot,
   ModelInspection as PublicModelInspection,
+  ActivationModule as PublicActivationModule,
+  Conv2dModule as PublicConv2dModule,
+  DropoutModule as PublicDropoutModule,
+  EmbeddingModule as PublicEmbeddingModule,
+  FeatureNormModule as PublicFeatureNormModule,
+  LinearModule as PublicLinearModule,
+  LogSoftmaxModule as PublicLogSoftmaxModule,
   ModuleCompileSupport as PublicModuleCompileSupport,
   ModuleKernelBufferLayout as PublicModuleKernelBufferLayout,
   ModuleKernelMemoryLayout as PublicModuleKernelMemoryLayout,
@@ -233,6 +240,10 @@ import type {
   ModuleTraversalEntry as PublicModuleTraversalEntry,
   NnBuffer as PublicNnBuffer,
   NnModule as PublicNnModule,
+  ReductionModule as PublicReductionModule,
+  SequentialModule as PublicSequentialModule,
+  ShapeModule as PublicShapeModule,
+  SoftmaxModule as PublicSoftmaxModule,
   NnConv2dConfig as PublicNnConv2dConfig,
   NnDropoutConfig as PublicNnDropoutConfig,
   NnEmbeddingConfig as PublicNnEmbeddingConfig,
@@ -1943,130 +1954,12 @@ const {
 
 const { indexValues } = createAdapterIndexValuesSurface({ Tensor });
 
-export interface ModuleMode {
-  readonly training: boolean;
-  children(): readonly NnModule[];
-  modules(): readonly NnModule[];
-  namedChildren(prefix?: string): readonly ModuleTraversalEntry[];
-  named_children(prefix?: string): readonly ModuleTraversalEntry[];
-  namedModules(prefix?: string): readonly ModuleTraversalEntry[];
-  named_modules(prefix?: string): readonly ModuleTraversalEntry[];
-  getSubmodule(name: string): NnModule | null;
-  get_submodule(name: string): NnModule | null;
-  apply(callback: (module: NnModule, entry: ModuleTraversalEntry) => void): this;
-  named_parameters(prefix?: string): NnParameter[];
-  getParameter(name: string): NnParameter | null;
-  get_parameter(name: string): NnParameter | null;
-  namedBuffers(prefix?: string): readonly unknown[];
-  named_buffers(prefix?: string): readonly unknown[];
-  getBuffer(name: string): unknown | null;
-  get_buffer(name: string): unknown | null;
-  zero_grad(options?: Record<string, unknown>): void;
-  requiresGrad_(requiresGrad?: boolean): this;
-  train(mode?: boolean): this;
-  eval(): this;
-  state_dict(prefix?: string): ModuleStateSnapshot;
-  load_state_dict(source: ModuleStateDict, options?: LoadStateDictOptions): this;
-}
-
-export interface LinearModule extends ModuleMode {
-  readonly kind: "linear";
-  readonly inFeatures: number;
-  readonly outFeatures: number;
-  readonly weight: Float32Array;
-  readonly bias: Float32Array | null;
-  forward(inputValues: TensorLike): Tensor;
-  parameters(prefix?: string): NnParameter[];
-  namedParameters(prefix?: string): NnParameter[];
-  parameterNames(prefix?: string): readonly string[];
-  parameterInfos(prefix?: string): readonly ModuleParameterInfo[];
-  parameterInfo(nameOrIndex: string | number, prefix?: string): ModuleParameterInfo | null;
-  zeroGrad(options?: Record<string, unknown>): void;
-  stateDict(prefix?: string): ModuleStateSnapshot;
-  loadStateDict(source: ModuleStateDict, options?: LoadStateDictOptions): this;
-  compileSupport(options?: CompileOptions): ModuleCompileSupport;
-  canCompile(options?: CompileOptions): boolean;
-  bindParameters(options?: CompileOptions): ModuleBindings;
-  placeParameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
-  compile(options?: CompileOptions): Program;
-}
-
-export interface EmbeddingModule extends ModuleMode {
-  readonly kind: "embedding";
-  readonly numEmbeddings: number;
-  readonly embeddingDim: number;
-  readonly weight: Float32Array;
-  forward(indexValuesInput: IndexLike): Tensor;
-  parameters(prefix?: string): NnParameter[];
-  namedParameters(prefix?: string): NnParameter[];
-  parameterNames(prefix?: string): readonly string[];
-  parameterInfos(prefix?: string): readonly ModuleParameterInfo[];
-  parameterInfo(nameOrIndex: string | number, prefix?: string): ModuleParameterInfo | null;
-  zeroGrad(options?: Record<string, unknown>): void;
-  stateDict(prefix?: string): ModuleStateSnapshot;
-  loadStateDict(source: ModuleStateDict, options?: LoadStateDictOptions): this;
-  compileSupport(options?: CompileOptions): ModuleCompileSupport;
-  canCompile(options?: CompileOptions): boolean;
-  bindParameters(options: EmbeddingCompileOptions): ModuleBindings;
-  placeParameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
-  compile(options: EmbeddingCompileOptions): Program;
-}
-
-export interface ActivationModule extends ModuleMode {
-  readonly kind: "gelu" | "relu" | "silu" | "sigmoid" | "tanh" | "exp" | "log" | "neg" | "recip" | "abs" | "sgn" | "step" | "sqrt" | "square";
-  forward(inputValues: TensorLike): Float32Array | Tensor;
-  parameters(): NnParameter[];
-  namedParameters(): NnParameter[];
-  parameterNames(): readonly string[];
-  parameterInfos(): readonly ModuleParameterInfo[];
-  parameterInfo(nameOrIndex: string | number): ModuleParameterInfo | null;
-  zeroGrad(options?: Record<string, unknown>): void;
-  stateDict(): ModuleStateSnapshot;
-  loadStateDict(source: ModuleStateDict, options?: LoadStateDictOptions): this;
-  compileSupport(options?: CompileOptions): ModuleCompileSupport;
-  canCompile(options?: CompileOptions): boolean;
-  bindParameters(options?: CompileOptions): ModuleBindings;
-  placeParameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
-  compile(options?: CompileOptions): Program;
-}
-
-export interface SoftmaxModule extends ModuleMode {
-  readonly kind: "softmax";
-  readonly dim: number;
-  forward(inputValues: TensorLike): Tensor;
-  parameters(): NnParameter[];
-  namedParameters(): NnParameter[];
-  parameterNames(): readonly string[];
-  parameterInfos(): readonly ModuleParameterInfo[];
-  parameterInfo(nameOrIndex: string | number): ModuleParameterInfo | null;
-  zeroGrad(options?: Record<string, unknown>): void;
-  stateDict(): ModuleStateSnapshot;
-  loadStateDict(source: ModuleStateDict, options?: LoadStateDictOptions): this;
-  compileSupport(options?: CompileOptions): ModuleCompileSupport;
-  canCompile(options?: CompileOptions): boolean;
-  bindParameters(options?: CompileOptions): ModuleBindings;
-  placeParameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
-  compile(options?: CompileOptions): Program;
-}
-
-export interface LogSoftmaxModule extends ModuleMode {
-  readonly kind: "logSoftmax";
-  readonly dim: number;
-  forward(inputValues: TensorLike): Tensor;
-  parameters(): NnParameter[];
-  namedParameters(): NnParameter[];
-  parameterNames(): readonly string[];
-  parameterInfos(): readonly ModuleParameterInfo[];
-  parameterInfo(nameOrIndex: string | number): ModuleParameterInfo | null;
-  zeroGrad(options?: Record<string, unknown>): void;
-  stateDict(): ModuleStateSnapshot;
-  loadStateDict(source: ModuleStateDict, options?: LoadStateDictOptions): this;
-  compileSupport(options?: CompileOptions): ModuleCompileSupport;
-  canCompile(options?: CompileOptions): boolean;
-  bindParameters(options?: CompileOptions): ModuleBindings;
-  placeParameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
-  compile(options?: CompileOptions): Program;
-}
+export type ModuleMode = PublicNnModule;
+export type LinearModule = PublicLinearModule;
+export type EmbeddingModule = PublicEmbeddingModule;
+export type ActivationModule = PublicActivationModule;
+export type SoftmaxModule = PublicSoftmaxModule;
+export type LogSoftmaxModule = PublicLogSoftmaxModule;
 
 type SequentialProgramAnalysis = {
   supported: boolean;
@@ -2181,124 +2074,14 @@ export const Conv2dModule = adapterFrontendModuleSurface.Conv2dModule as unknown
   new(inChannels: number, outChannels: number, kernelSize: unknown, config?: Record<string, unknown>): Conv2dModule;
 };
 
-export interface Conv2dModule extends ModuleMode {
-  readonly kind: "conv2d";
-  readonly inChannels: number;
-  readonly outChannels: number;
-  readonly kernelSize: readonly [number, number];
-  readonly stride: readonly [number, number];
-  readonly padding: readonly [number, number];
-  readonly dilation: readonly [number, number];
-  readonly groups: number;
-  readonly weight: Float32Array;
-  readonly bias: Float32Array | null;
-  forward(inputValues: TensorLike): Tensor;
-  parameters(prefix?: string): NnParameter[];
-  namedParameters(prefix?: string): NnParameter[];
-  parameterNames(prefix?: string): readonly string[];
-  parameterInfos(prefix?: string): readonly ModuleParameterInfo[];
-  parameterInfo(nameOrIndex: string | number, prefix?: string): ModuleParameterInfo | null;
-  zeroGrad(options?: Record<string, unknown>): void;
-  stateDict(prefix?: string): ModuleStateSnapshot;
-  loadStateDict(source: ModuleStateDict, options?: LoadStateDictOptions): this;
-  compileSupport(options?: CompileOptions): ModuleCompileSupport;
-  canCompile(options?: CompileOptions): boolean;
-}
-
-export interface FeatureNormModule extends ModuleMode {
-  readonly kind: "layerNorm" | "rmsNorm" | "batchNorm1d";
-  readonly features: number;
-  readonly eps: number;
-  readonly momentum: number;
-  readonly trackRunningStats: boolean;
-  readonly weight: Float32Array | null;
-  readonly bias: Float32Array | null;
-  readonly runningMean: NnBuffer | null;
-  readonly runningVar: NnBuffer | null;
-  readonly numBatchesTracked: NnBuffer | null;
-  forward(inputValues: TensorLike): Float32Array | Tensor;
-  parameters(prefix?: string): NnParameter[];
-  namedParameters(prefix?: string): NnParameter[];
-  parameterNames(prefix?: string): readonly string[];
-  parameterInfos(prefix?: string): readonly ModuleParameterInfo[];
-  parameterInfo(nameOrIndex: string | number, prefix?: string): ModuleParameterInfo | null;
-  zeroGrad(options?: Record<string, unknown>): void;
-  stateDict(prefix?: string): ModuleStateSnapshot;
-  loadStateDict(source: ModuleStateDict, options?: LoadStateDictOptions): this;
-  compileSupport(options?: CompileOptions): ModuleCompileSupport;
-  canCompile(options?: CompileOptions): boolean;
-  bindParameters(options?: CompileOptions): ModuleBindings;
-  placeParameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
-  compile(options?: CompileOptions): Program;
-}
-
-export interface ReductionModule extends ModuleMode {
-  readonly kind: "sum" | "mean" | "prod" | "max" | "min" | "argmax" | "argmin";
-  readonly dim: number;
-  forward(inputValues: TensorLike): Tensor;
-  parameters(): NnParameter[];
-  namedParameters(): NnParameter[];
-  parameterNames(): readonly string[];
-  parameterInfos(): readonly ModuleParameterInfo[];
-  parameterInfo(nameOrIndex: string | number): ModuleParameterInfo | null;
-  zeroGrad(options?: Record<string, unknown>): void;
-  stateDict(): ModuleStateSnapshot;
-  loadStateDict(source: ModuleStateDict, options?: LoadStateDictOptions): this;
-  compileSupport(options?: CompileOptions): ModuleCompileSupport;
-  canCompile(options?: CompileOptions): boolean;
-  bindParameters(options?: CompileOptions): ModuleBindings;
-  placeParameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
-  compile(options?: CompileOptions): Program;
-}
-
-export interface DropoutModule extends ModuleMode {
-  readonly kind: "dropout";
-  readonly p: number;
-  forward(inputValues: TensorLike): Float32Array | Tensor;
-  parameters(): NnParameter[];
-  namedParameters(): NnParameter[];
-  parameterNames(): readonly string[];
-  parameterInfos(): readonly ModuleParameterInfo[];
-  parameterInfo(nameOrIndex: string | number): ModuleParameterInfo | null;
-  zeroGrad(options?: Record<string, unknown>): void;
-  stateDict(): ModuleStateSnapshot;
-  loadStateDict(source: ModuleStateDict, options?: LoadStateDictOptions): this;
-  compileSupport(options?: CompileOptions): ModuleCompileSupport;
-  canCompile(options?: CompileOptions): boolean;
-}
+export type Conv2dModule = PublicConv2dModule;
+export type FeatureNormModule = PublicFeatureNormModule;
+export type ReductionModule = PublicReductionModule;
+export type DropoutModule = PublicDropoutModule;
 
 export const FeatureNormModule = adapterFrontendModuleSurface.FeatureNormModule as unknown as new(features: number, config?: NnNormConfig) => FeatureNormModule;
 
-export interface ShapeModule extends ModuleMode {
-  readonly kind: "identity" | "reshape" | "view" | "flatten" | "squeeze" | "unsqueeze" | "transpose" | "permute" | "broadcastTo" | "expand" | "narrow" | "select" | "slice";
-  readonly shape: readonly number[];
-  readonly dims: readonly number[];
-  readonly startDim: number;
-  readonly endDim: number;
-  readonly squeezeAll: boolean;
-  readonly dim: number;
-  readonly start: number;
-  readonly length: number;
-  readonly index: number;
-  readonly end: number | null;
-  readonly step: number;
-  readonly dim0: number;
-  readonly dim1: number;
-  forward(inputValues: TensorLike): Tensor;
-  parameters(): NnParameter[];
-  namedParameters(): NnParameter[];
-  parameterNames(): readonly string[];
-  parameterInfos(): readonly ModuleParameterInfo[];
-  parameterInfo(nameOrIndex: string | number): ModuleParameterInfo | null;
-  zeroGrad(options?: Record<string, unknown>): void;
-  stateDict(): ModuleStateSnapshot;
-  loadStateDict(source: ModuleStateDict, options?: LoadStateDictOptions): this;
-  compileSupport(options?: CompileOptions): ModuleCompileSupport;
-  canCompile(options?: CompileOptions): boolean;
-  bindParameters(options?: CompileOptions): ModuleBindings;
-  placeParameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
-  compile(options?: CompileOptions): Program;
-}
+export type ShapeModule = PublicShapeModule;
 
 export const ShapeModule = adapterFrontendModuleSurface.ShapeModule as unknown as new(kind: ShapeModule["kind"], config?: Record<string, unknown>) => ShapeModule;
 
@@ -2325,6 +2108,7 @@ type CompiledSequentialProgramSpec = {
 traceModuleCompilerSlot.bind(adapterFrontendModuleSurface.traceModuleCompiler as TraceModuleCompiler & HostTraceModuleCompiler);
 
 export type NnModule = PublicNnModule;
+export type SequentialModule = PublicSequentialModule;
 export type BunNnModule = LinearModule | EmbeddingModule | Conv2dModule | ActivationModule | SoftmaxModule | LogSoftmaxModule | ReductionModule | DropoutModule | FeatureNormModule | ShapeModule | SequentialModule;
 export type NnCompilableModule =
   | LinearModule
@@ -2336,57 +2120,6 @@ export type NnCompilableModule =
   | FeatureNormModule
   | ShapeModule
   | SequentialModule;
-
-export interface SequentialModule extends ModuleMode {
-  readonly layers: NnModule[];
-  readonly length: number;
-  len(): number;
-  __len__(): number;
-  size(): number;
-  at(index: number): NnModule;
-  get(index: number): NnModule;
-  __getitem__(index: number): NnModule;
-  __setitem__(index: number, module: NnModule): this;
-  __delitem__(index: number): this;
-  pop(index?: number): NnModule | undefined;
-  clear(): this;
-  append(module: NnModule): this;
-  insert(index: number, module: NnModule): this;
-  extend(modules: Iterable<NnModule>): this;
-  [Symbol.iterator](): IterableIterator<NnModule>;
-  call(inputValues: TensorLike): Float32Array | Tensor;
-  __call__(inputValues: TensorLike): Float32Array | Tensor;
-  forward(inputValues: TensorLike): Float32Array | Tensor;
-  parameters(): NnParameter[];
-  namedParameters(): NnParameter[];
-  named_parameters(): NnParameter[];
-  children(): readonly NnModule[];
-  modules(): readonly NnModule[];
-  namedChildren(prefix?: string): readonly ModuleTraversalEntry[];
-  named_children(prefix?: string): readonly ModuleTraversalEntry[];
-  namedModules(prefix?: string): readonly ModuleTraversalEntry[];
-  named_modules(prefix?: string): readonly ModuleTraversalEntry[];
-  getSubmodule(name: string): NnModule | null;
-  get_submodule(name: string): NnModule | null;
-  apply(callback: (module: NnModule, entry: ModuleTraversalEntry) => void): this;
-  parameterNames(): readonly string[];
-  parameterInfos(): readonly ModuleParameterInfo[];
-  parameterInfo(nameOrIndex: string | number): ModuleParameterInfo | null;
-  zeroGrad(options?: Record<string, unknown>): void;
-  zero_grad(options?: Record<string, unknown>): void;
-  train(mode?: boolean): this;
-  eval(): this;
-  stateDict(prefix?: string): ModuleStateSnapshot;
-  state_dict(prefix?: string): ModuleStateSnapshot;
-  loadStateDict(source: ModuleStateDict, options?: LoadStateDictOptions): this;
-  load_state_dict(source: ModuleStateDict, options?: LoadStateDictOptions): this;
-  trace(options?: ModuleTraceOptions): ModuleProgramTrace;
-  compileSupport(options?: CompileOptions): ModuleCompileSupport;
-  canCompile(options?: CompileOptions): boolean;
-  bindParameters(options?: CompileOptions): ModuleBindings;
-  placeParameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
-  compile(options?: CompileOptions): Program;
-}
 
 export const SequentialModule = adapterFrontendModuleSurface.SequentialModule as unknown as {
   new(): SequentialModule;
