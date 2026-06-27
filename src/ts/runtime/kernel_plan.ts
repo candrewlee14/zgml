@@ -1248,6 +1248,67 @@ function biasParameterValueForAddIrOp(addOp: any, values: any) {
   return parameter;
 }
 
+function weightParameterValueForMulIrOp(mulOp: any, values: any) {
+  if (!mulOp || mulOp.op !== "mul" || mulOp.parameterValueIds.length !== 1) return null;
+  const parameterValueId = mulOp.parameterValueIds[0];
+  const parameter = values && values[parameterValueId];
+  if (!parameter || parameter.role !== "parameter" || parameter.binding !== "weights") return null;
+  return parameter;
+}
+
+function canFuseMulAddIrOps(mulOp: any, addOp: any, values: any) {
+  if (!mulOp || !addOp) return false;
+  if (mulOp.op !== "mul" || addOp.op !== "add") return false;
+  const weight = weightParameterValueForMulIrOp(mulOp, values);
+  const bias = biasParameterValueForAddIrOp(addOp, values);
+  if (!weight || !bias) return false;
+  if (
+    addOp.inputValueIds.length !== 2 ||
+    addOp.inputValueIds[0] !== mulOp.outputValueId ||
+    !traceShapesEqual(mulOp.outputShape, addOp.inputShape) ||
+    !traceShapesEqual(mulOp.outputShape, addOp.outputShape)
+  ) {
+    return false;
+  }
+  const features = mulOp.attrs?.features;
+  if (!Number.isSafeInteger(features)) return false;
+  if (addOp.attrs?.features !== features) return false;
+  if (weight.scalarCount !== features || bias.scalarCount !== features) return false;
+  if (Array.isArray(weight.shape) && weight.shape.length !== 1) return false;
+  if (Array.isArray(bias.shape) && bias.shape.length !== 1) return false;
+  return true;
+}
+
+function fusedMulAddKernelPlanOp(mulOp: any, addOp: any, desc: any, values: any) {
+  return {
+    index: mulOp.index,
+    path: `${mulOp.path}..${addOp.path}`,
+    op: "affine",
+    kernel: "affine",
+    inputShape: mulOp.inputShape.slice(),
+    outputShape: addOp.outputShape.slice(),
+    inputLen: mulOp.inputLen,
+    outputLen: addOp.outputLen,
+    ...scalarEvidenceForIrOp(addOp, values),
+    inputValueIds: Object.freeze([
+      mulOp.inputValueIds[0],
+      mulOp.parameterValueIds[0],
+      addOp.parameterValueIds[0],
+    ]),
+    outputValueId: addOp.outputValueId,
+    parameterScalarCount: mulOp.parameterScalarCount + addOp.parameterScalarCount,
+    nativeDispatchCount: 1,
+    nativeDescriptorCount: 1,
+    nativeKernels: ["affine"],
+    nativeDescriptorSignatures: [nativeModuleDescSignature(desc)],
+    fusedOpCount: 2,
+    fusedOps: [mulOp.op, addOp.op],
+    fusedIndices: [mulOp.index, addOp.index],
+    fusedValueEdges: fusedValueEdgesForIrOps([mulOp, addOp]),
+    desc,
+  };
+}
+
 function canFuseMatmulAddActivationIrOps(matmulOp: any, addOp: any, activationOp: any, values: any) {
   if (!matmulOp || !addOp) return false;
   if (matmulOp.op !== "matmul" || addOp.op !== "add") return false;
@@ -1541,6 +1602,23 @@ function kernelizeTensorProgramIr(ir: any) {
       nativeOps.push(desc);
       ops.push(fusedActivationChainKernelPlanOp(activationChain, desc, ir.values));
       index += activationChain.length - 1;
+      continue;
+    }
+
+    if (canFuseMulAddIrOps(op, ir.ops[index + 1], ir.values)) {
+      const addOp = ir.ops[index + 1];
+      const desc = Object.freeze({
+        kind: moduleOpIds.featureAffine,
+        activation: 0,
+        flags: moduleFlags.weight | moduleFlags.bias,
+        a: op.attrs.features,
+        b: 0,
+        c: 0,
+        eps: 0,
+      });
+      nativeOps.push(desc);
+      ops.push(fusedMulAddKernelPlanOp(op, addOp, desc, ir.values));
+      index += 1;
       continue;
     }
 

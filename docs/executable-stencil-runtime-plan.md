@@ -420,8 +420,9 @@ Current checked progress:
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,
   checkpoints, eager debugging, eager/autograd `einsum` with ellipsis and
   broadcast semantics plus literal-equation shape inference, compile-aware lazy
-  parameter slots plus `matmul`/`mm`/parameterized `add`/`mul` lowering evidence
-  and direct `affine(scale, bias)` lowering to the native feature-affine Program,
+  parameter slots plus `matmul`/`mm`/parameterized `add`/`mul` lowering evidence,
+  direct `affine(scale, bias)` lowering, and natural
+  `mul(scale) -> add(bias)` coalescing to the native feature-affine Program,
   along with a
   benchmarked allocation-free lazy Linear+GELU,
   `matmul -> add -> relu/gelu`, Conv2d+ReLU, MLP,
@@ -429,7 +430,7 @@ Current checked progress:
   normalized transformer classifier, and token-head Session paths,
   `lazyGraph.compile()` and compatibility `torch.compile.compile(lazyGraph)`
   Program construction paths through Node/Bun
-  adapters, direct lazy affine execution through one native Program dispatch,
+  adapters, direct and natural chained lazy affine execution through one native Program dispatch,
   eval-mode `BatchNorm1d` lowering through a derived native affine Program while
   training-mode BatchNorm remains honestly stateful/eager,
   rank-3 `nn.Linear` eager/compiled parity by flattening leading dimensions

@@ -3260,7 +3260,12 @@ export type ModuleKernelPlanLinearOp = ModuleKernelPlanOpBase<"linear", "linear"
 export type ModuleKernelPlanMatmulOp = ModuleKernelPlanOpBase<"matmul", "matmul">;
 export type ModuleKernelPlanAddOp = ModuleKernelPlanOpBase<"add", "add">;
 export type ModuleKernelPlanMulOp = ModuleKernelPlanOpBase<"mul", "mul">;
-export type ModuleKernelPlanAffineOp = ModuleKernelPlanOpBase<"affine", "affine">;
+export type ModuleKernelPlanAffineOp = ModuleKernelPlanOpBase<"affine", "affine"> & Readonly<{
+  fusedOpCount?: number;
+  fusedOps?: readonly ("mul" | "add")[];
+  fusedIndices?: readonly number[];
+  fusedValueEdges?: readonly ModuleKernelPlanFusedValueEdge[];
+}>;
 export type ModuleKernelPlanEmbeddingOp = ModuleKernelPlanOpBase<"embedding", "embedding">;
 export type ModuleKernelPlanAvgPool2dOp = ModuleKernelPlanOpBase<"avgPool2d", "avg-pool2d">;
 export type ModuleKernelPlanMaxPool2dOp = ModuleKernelPlanOpBase<"maxPool2d", "max-pool2d">;
