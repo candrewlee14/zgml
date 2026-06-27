@@ -1826,6 +1826,14 @@ five dispatches to three, but the product bridge was still row-owned and dropped
 the focused Q8 absorbed result to `0.70x`. Do not add that kernel to the
 production encoder unless the input product side is rewritten with real
 width/K parallelism; fewer dispatches alone is not a valid promotion criterion.
+A June 27, 2026 source-current retry confirmed the same lesson in the current
+kernel stack: the fused input-pair plus width-tail prototype preserved
+correctness (`max_abs_diff=0.000002`) and reported the intended three-dispatch
+shape (`runtime_dispatches=3`, `decomposed_extra=2`, `pair=0`, `tail=2`), but
+only reached `absorbed=1.61x` while the restored decomposed input-bridge path
+was still around `2.70x`. That path was reverted. The next input-bridge
+implementation must make the input-product side tile/width-parallel instead of
+trading away throughput for a lower dispatch count.
 After the one-dispatch semantic throughput kernel became a real measured lane,
 the full-model default was kept on `promptProjectionRowChainCommand()` while
 `--metal-prompt-semantic-throughput-candidate` remains the explicit diagnostic
