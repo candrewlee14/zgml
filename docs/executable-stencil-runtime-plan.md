@@ -421,9 +421,9 @@ Current checked progress:
   checkpoints, eager debugging, eager/autograd `einsum` with ellipsis and
   broadcast semantics plus literal-equation shape inference, compile-aware lazy
   parameter slots plus `matmul`/`mm`/parameterized `add`/`mul` lowering evidence,
-  direct `affine(scale, bias)` lowering, and natural
-  `mul(scale) -> add(bias)` coalescing, with optional activation tails, to the
-  native feature-affine Program,
+  direct `affine(scale, bias)` lowering, parameterized `add`/`mul` activation-tail
+  folding, and natural `mul(scale) -> add(bias)` coalescing, with optional
+  activation tails, to the native feature-affine Program,
   along with a
   benchmarked allocation-free lazy Linear+GELU,
   `matmul -> add -> relu/gelu`, Conv2d+ReLU, MLP,

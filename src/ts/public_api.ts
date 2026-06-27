@@ -3258,8 +3258,16 @@ export type ModuleKernelPlanLinearOp = ModuleKernelPlanOpBase<"linear", "linear"
   fusedIndices?: readonly number[];
 }>;
 export type ModuleKernelPlanMatmulOp = ModuleKernelPlanOpBase<"matmul", "matmul">;
-export type ModuleKernelPlanAddOp = ModuleKernelPlanOpBase<"add", "add">;
-export type ModuleKernelPlanMulOp = ModuleKernelPlanOpBase<"mul", "mul">;
+export type ModuleKernelPlanAddOp = ModuleKernelPlanOpBase<"add", "add"> & Readonly<{
+  fusedOpCount?: number;
+  fusedOps?: readonly ("add" | "activation")[];
+  fusedIndices?: readonly number[];
+}>;
+export type ModuleKernelPlanMulOp = ModuleKernelPlanOpBase<"mul", "mul"> & Readonly<{
+  fusedOpCount?: number;
+  fusedOps?: readonly ("mul" | "activation")[];
+  fusedIndices?: readonly number[];
+}>;
 export type ModuleKernelPlanAffineOp = ModuleKernelPlanOpBase<"affine", "affine"> & Readonly<{
   fusedOpCount?: number;
   fusedOps?: readonly ("affine" | "mul" | "add" | "activation")[];
