@@ -1997,6 +1997,15 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const absorbedRowChainTiledOutputSpills = metric(output, absorbedProfileLabel, "qmatmul_row_chain_tiled_output_spills");
   const absorbedRowChainWidthParallelCount = metric(output, absorbedProfileLabel, "qmatmul_row_chain_width_parallel_count");
   const absorbedRowChainWidthParallelLanes = metric(output, absorbedProfileLabel, "qmatmul_row_chain_width_parallel_lanes");
+  const absorbedSemanticWidthScratchCandidates = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_candidates") ?? 0;
+  const absorbedSemanticWidthScratchBytes = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_bytes") ?? 0;
+  const absorbedSemanticWidthScratchProductBytes = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_product_bytes") ?? 0;
+  const absorbedSemanticWidthScratchDownPartialBytes = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_down_partial_bytes") ?? 0;
+  const absorbedSemanticWidthScratchOutputBytes = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_output_bytes") ?? 0;
+  const absorbedSemanticWidthScratchDownPartialToOutputX1000 = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_down_partial_to_output_x1000") ?? 0;
+  const absorbedSemanticWidthScratchRuntimeCapacityBytes = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_runtime_capacity_bytes") ?? 0;
+  const absorbedSemanticWidthScratchRuntimeUses = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_runtime_uses") ?? 0;
+  const absorbedSemanticWidthScratchRuntimeBytes = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_runtime_bytes") ?? 0;
   const directSerialShapeCommands = metric(output, directSerialProfileLabel, "shape_commands");
   const directSerialShapeSemantic = metric(output, directSerialProfileLabel, "shape_semantic_ffn_sublayers");
   const directSerialShapeRowChains = metric(output, directSerialProfileLabel, "shape_projection_row_chains");
@@ -2112,6 +2121,7 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     `absorbed_decomposed=${absorbedDecomposedCount}:dispatches=${absorbedDecomposedDispatches}:extra_dispatches=${absorbedDecomposedExtraDispatches}:row_chain=${absorbedDecomposedRowChainDispatches}:pair=${absorbedDecomposedPairDispatches}:tail=${absorbedDecomposedTailDispatches}`,
     `direct=${absorbedDirectCount}:rows=${absorbedDirectRows}:row_threadgroups=${absorbedDirectRowThreadgroups}:row_serial_dot_ops=${absorbedDirectRowSerialDotOps}:total_row_serial_dot_ops=${absorbedDirectTotalRowSerialDotOps}:per_row_threadgroup=${absorbedDirectTotalRowSerialDotOpsPerRowThreadgroup}`,
     `fallback_pair_dispatches=${absorbedFallbackPairDispatches} fallback_tail_dispatches=${absorbedFallbackTailDispatches} tiled_count=${absorbedRowChainTiledCount} row_tile_groups=${absorbedRowChainTiledRowTileGroups} n_tiles=${absorbedRowChainTiledNTiles} two_phase_count=${absorbedRowChainTiledTwoPhaseCount} width_parallel=${absorbedRowChainWidthParallelCount}:lanes:${absorbedRowChainWidthParallelLanes} spilled_input=${absorbedRowChainTiledSpilledInput}`,
+    `semantic_width_scratch=candidates:${absorbedSemanticWidthScratchCandidates},bytes:${absorbedSemanticWidthScratchBytes},product_bytes:${absorbedSemanticWidthScratchProductBytes},down_partial_bytes:${absorbedSemanticWidthScratchDownPartialBytes},output_bytes:${absorbedSemanticWidthScratchOutputBytes},down_partial_to_output:${(absorbedSemanticWidthScratchDownPartialToOutputX1000 / 1000).toFixed(2)},runtime_capacity:${absorbedSemanticWidthScratchRuntimeCapacityBytes},runtime_uses:${absorbedSemanticWidthScratchRuntimeUses},runtime_bytes:${absorbedSemanticWidthScratchRuntimeBytes}`,
     `next=${next}`,
   ].join("; ");
 
@@ -2176,6 +2186,15 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     absorbedRowChainTiledOutputSpills,
     absorbedRowChainWidthParallelCount,
     absorbedRowChainWidthParallelLanes,
+    absorbedSemanticWidthScratchCandidates,
+    absorbedSemanticWidthScratchBytes,
+    absorbedSemanticWidthScratchProductBytes,
+    absorbedSemanticWidthScratchDownPartialBytes,
+    absorbedSemanticWidthScratchOutputBytes,
+    absorbedSemanticWidthScratchDownPartialToOutputX1000,
+    absorbedSemanticWidthScratchRuntimeCapacityBytes,
+    absorbedSemanticWidthScratchRuntimeUses,
+    absorbedSemanticWidthScratchRuntimeBytes,
     directSerialShapeCommands,
     directSerialShapeSemantic,
     directSerialShapeRowChains,
@@ -2271,6 +2290,15 @@ function selectedSemanticInputBridgeAttemptSummary(attempt) {
       qmatmulRowChainTiledOutputSpills: attempt.absorbedRowChainTiledOutputSpills,
       qmatmulRowChainWidthParallelCount: attempt.absorbedRowChainWidthParallelCount,
       qmatmulRowChainWidthParallelLanes: attempt.absorbedRowChainWidthParallelLanes,
+      semanticWidthScratchCandidates: attempt.absorbedSemanticWidthScratchCandidates,
+      semanticWidthScratchBytes: attempt.absorbedSemanticWidthScratchBytes,
+      semanticWidthScratchProductBytes: attempt.absorbedSemanticWidthScratchProductBytes,
+      semanticWidthScratchDownPartialBytes: attempt.absorbedSemanticWidthScratchDownPartialBytes,
+      semanticWidthScratchOutputBytes: attempt.absorbedSemanticWidthScratchOutputBytes,
+      semanticWidthScratchDownPartialToOutput: roundMetric(attempt.absorbedSemanticWidthScratchDownPartialToOutputX1000 / 1000),
+      semanticWidthScratchRuntimeCapacityBytes: attempt.absorbedSemanticWidthScratchRuntimeCapacityBytes,
+      semanticWidthScratchRuntimeUses: attempt.absorbedSemanticWidthScratchRuntimeUses,
+      semanticWidthScratchRuntimeBytes: attempt.absorbedSemanticWidthScratchRuntimeBytes,
     },
     directSerial: {
       speedup: roundMetric(attempt.directSerialSpeedup),

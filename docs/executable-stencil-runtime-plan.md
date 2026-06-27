@@ -891,6 +891,15 @@ tiled row-chain counters. The input-bridge artifact also records
 `semantic_ffn_with_input_decomposed_extra_dispatches`: the retained absorbed
 path reports `4`, meaning the current correct production lowering is still four
 dispatches away from the intended single executable input-bridge artifact.
+The input-bridge artifact and `bench:status` readback now also carry the
+semantic-width scratch fields (`semantic_width_scratch=*`) for the absorbed
+lane. That keeps the exact bridge and input-bridge microscopes comparable:
+fresh artifacts show whether the width-parallel tail has backend-owned scratch
+capacity, whether runtime execution used it, and how large the down-partial
+scratch is relative to the final output. A fresh one-attempt input-bridge
+microscope proves the readback on the retained decomposed path with
+`candidates:1`, `down_partial_bytes:14155776`, `runtime_capacity:9216`,
+`runtime_uses:628`, and `runtime_bytes:9216`.
 The qsemantic-throughput and qsemantic input-bridge readbacks follow the same
 stability rule as the other noisy perf lanes:
 `qsemantic-throughput-results:` and `qsemantic-input-bridge-results:` prefer the
