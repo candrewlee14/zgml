@@ -53,7 +53,7 @@ const probe = zgml.tensor([1, -1], [2]);
 const target = zgml.tensor([2], [1]);
 
 const before = scalar(loss.forward(model.forward(probe), target));
-zgml.train.fit(model, loader, {
+model.fit(loader, {
   optimizer,
   loss,
   epochs: 80,

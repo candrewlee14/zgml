@@ -39,7 +39,7 @@ const dataset = new zgml.utils.data.TensorDataset(
 );
 const loader = new zgml.utils.data.DataLoader(dataset, { batch_size: 2, shuffle: true });
 
-zgml.train.fit(model, loader, {
+model.fit(loader, {
   optimizer,
   loss: criterion,
   epochs: 8,
@@ -90,7 +90,7 @@ const dataset = data.tensorDataset(
 );
 const loader = data.dataLoader(dataset, { batchSize: 2, shuffle: true });
 
-train.fit(model, loader, {
+model.fit(loader, {
   optimizer,
   loss: criterion,
   epochs: 8,

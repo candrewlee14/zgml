@@ -4416,6 +4416,17 @@ const modelFirstNativeFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpoi
   num_classes: 1,
 });
 const modelFirstNativeFitPlan: CompiledTrainingPlan | null | undefined = modelFirstNativeFitEvidence.compiledPlan;
+const moduleMethodFitEvidence: TrainFitEvidence = checkpointModel.fit(tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+});
+const moduleMethodEvalEvidence: TrainEvaluateEvidence = checkpointModel.evaluate(tensorDatasetBatches, new nn.MSELoss(), {
+  maxSteps: 1,
+});
+const moduleMethodPredictEvidence: TrainPredictEvidence = checkpointModel.predict(tensorDatasetBatches, {
+  maxSteps: 1,
+});
 const fitDataLastStepOptimizerKind: "adam" | null = fitDataEvidenceTyped.lastStep?.optimizerKind ?? null;
 const fitDataBatchCount: number | null = fitDataEvidence.batchCount;
 const fitDataBatchCountAlias: number | null = fitDataEvidence.batch_count;

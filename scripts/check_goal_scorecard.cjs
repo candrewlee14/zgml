@@ -3431,7 +3431,7 @@ function checkZgmlFrontendSurface() {
     "type SessionExecutionPlan as BunSessionExecutionPlan",
     "type SessionStepParamsCompatibility as BunSessionStepParamsCompatibility",
     "const regressionCriterion = new nn.MSELoss()",
-    "const fit = train.fit(model, loader, {",
+    "const fit = model.fit(loader, {",
     "optimizer,",
     "loss: regressionCriterion,",
     "const text = save(snapshot, 2)",
@@ -3511,7 +3511,7 @@ function checkZgmlFrontendSurface() {
   const tutorialQuickstart = read("examples/quickstart/zgml-first.cjs");
   requireIncludes(tutorialQuickstart, "examples/quickstart/zgml-first.cjs", "tutorial zgml-first train-checkpoint-compile path", [
     "const { zgml } = require(\"../..\")",
-    "zgml.train.fit(model, loader, {",
+    "model.fit(loader, {",
     "const snapshot = zgml.checkpoint.create({ model, optimizer, prefix: \"quickstart\" })",
     "zgml.checkpoint.restore(snapshot, {",
     "const fast = zgml.native(restored, { backend: \"cpu\", inputShape: [2] })",

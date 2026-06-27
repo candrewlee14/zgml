@@ -4,6 +4,9 @@ import type {
   ModuleStateDict,
   ModuleParameterPlacementOptions,
   ModuleTraceOptions,
+  TrainEvaluateOptions,
+  TrainFitOptions,
+  TrainPredictOptions,
 } from "../public_api.js";
 
 export type NnModulePrototype = {
@@ -77,6 +80,11 @@ export type NnModulePrototype = {
   bind_parameters?: (this: NnModulePrototype, bindOptions?: CompileOptions) => unknown;
   placeParameters?: (program: unknown, placementOptions?: ModuleParameterPlacementOptions) => unknown;
   place_parameters?: (this: NnModulePrototype, program: unknown, placementOptions?: ModuleParameterPlacementOptions) => unknown;
+  fit?: (this: NnModulePrototype, batches: unknown, fitOptions?: TrainFitOptions) => unknown;
+  evaluate?: (this: NnModulePrototype, batches: unknown, criterion: unknown, evaluateOptions?: TrainEvaluateOptions) => unknown;
+  evalModule?: (this: NnModulePrototype, batches: unknown, criterion: unknown, evaluateOptions?: TrainEvaluateOptions) => unknown;
+  eval_module?: (this: NnModulePrototype, batches: unknown, criterion: unknown, evaluateOptions?: TrainEvaluateOptions) => unknown;
+  predict?: (this: NnModulePrototype, batches: unknown, predictOptions?: TrainPredictOptions) => unknown;
 };
 
 export type NnModulePrototypeConstructor = Readonly<{
@@ -100,6 +108,9 @@ export type NnCompileEvidenceMethodHooks = Readonly<{
   requireCompilePlanForModule: (target: NnModulePrototype, compileOptions?: CompileOptions) => unknown;
   canCompileModule: (target: NnModulePrototype, compileOptions?: CompileOptions) => boolean;
   nativeInferenceForModule: (target: NnModulePrototype, compileOptions?: CompileOptions, bindOptions?: unknown) => unknown;
+  fitModule?: (target: NnModulePrototype, batches: unknown, fitOptions?: TrainFitOptions) => unknown;
+  evaluateModule?: (target: NnModulePrototype, batches: unknown, criterion: unknown, evaluateOptions?: TrainEvaluateOptions) => unknown;
+  predictModule?: (target: NnModulePrototype, batches: unknown, predictOptions?: TrainPredictOptions) => unknown;
 }>;
 
 export function installNnCompileEvidenceMethods(constructors: readonly NnModulePrototypeConstructor[], options: NnCompileEvidenceMethodHooks) {
@@ -119,6 +130,9 @@ export function installNnCompileEvidenceMethods(constructors: readonly NnModuleP
   const requireCompilePlanForModule = options.requireCompilePlanForModule;
   const canCompileModule = options.canCompileModule;
   const nativeInferenceForModule = options.nativeInferenceForModule;
+  const fitModule = options.fitModule;
+  const evaluateModule = options.evaluateModule;
+  const predictModule = options.predictModule;
   if (
     typeof traceSequentialProgram !== "function" ||
     typeof compileSupportForModule !== "function" ||
@@ -217,6 +231,20 @@ export function installNnCompileEvidenceMethods(constructors: readonly NnModuleP
     proto.inference = proto.native;
     proto.compileInference = proto.native;
     proto.compile_inference = proto.native;
+    proto.fit = function fit(this: NnModulePrototype, batches: unknown, fitOptions: TrainFitOptions = {}) {
+      if (typeof fitModule !== "function") throw new Error("nn.Module.fit requires a train.fit runtime");
+      return fitModule(this, batches, fitOptions);
+    };
+    proto.evaluate = function evaluate(this: NnModulePrototype, batches: unknown, criterion: unknown, evaluateOptions: TrainEvaluateOptions = {}) {
+      if (typeof evaluateModule !== "function") throw new Error("nn.Module.evaluate requires a train.evaluateModule runtime");
+      return evaluateModule(this, batches, criterion, evaluateOptions);
+    };
+    proto.evalModule = proto.evaluate;
+    proto.eval_module = proto.evaluate;
+    proto.predict = function predict(this: NnModulePrototype, batches: unknown, predictOptions: TrainPredictOptions = {}) {
+      if (typeof predictModule !== "function") throw new Error("nn.Module.predict requires a train.predictModule runtime");
+      return predictModule(this, batches, predictOptions);
+    };
   }
 }
 

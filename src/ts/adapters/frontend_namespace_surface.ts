@@ -235,6 +235,18 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
     resolveParameters: options.resolveParameters,
     compileTrainingStep: options.compileTrainingStep,
   });
+  const fitModuleFromTrain = lossTrainHelpers.train.fit as (target: unknown, batches: unknown, options?: unknown) => unknown;
+  const evaluateModuleFromTrain = lossTrainHelpers.train.evaluateModule as (
+    target: unknown,
+    batches: unknown,
+    criterion: unknown,
+    options?: unknown,
+  ) => unknown;
+  const predictModuleFromTrain = lossTrainHelpers.train.predictModule as (
+    target: unknown,
+    batches: unknown,
+    options?: unknown,
+  ) => unknown;
 
   const optimizerClasses = options.sharedFrontend.createOptimizerClasses({
     resolveParameters: options.resolveParameters,
@@ -303,6 +315,13 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
     placeModuleParameters: options.placeModuleParameters,
     bindingPlanForModuleBindings: options.bindingPlanForModuleBindings,
     requireBindingPlanForModuleBindings: options.requireBindingPlanForModuleBindings,
+    fitModule: (target: unknown, batches: unknown, fitOptions = {}) => fitModuleFromTrain(target, batches, fitOptions),
+    evaluateModule: (target: unknown, batches: unknown, criterion: unknown, evaluateOptions = {}) => (
+      evaluateModuleFromTrain(target, batches, criterion, evaluateOptions)
+    ),
+    predictModule: (target: unknown, batches: unknown, predictOptions = {}) => (
+      predictModuleFromTrain(target, batches, predictOptions)
+    ),
   });
 
   const optim = options.sharedFrontend.createOptimNamespace({

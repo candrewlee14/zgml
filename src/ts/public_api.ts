@@ -3767,6 +3767,15 @@ export interface NnModule {
   compileInference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   compile_inference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
   compile_inference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  fit(batches: Iterable<unknown>, options: TrainFitOptions & {
+    optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void };
+    loss?: unknown;
+    criterion?: unknown;
+  }): TrainFitEvidence;
+  evaluate(batches: Iterable<unknown>, criterion: unknown, options?: TrainEvaluateOptions): TrainEvaluateEvidence;
+  evalModule(batches: Iterable<unknown>, criterion: unknown, options?: TrainEvaluateOptions): TrainEvaluateEvidence;
+  eval_module(batches: Iterable<unknown>, criterion: unknown, options?: TrainEvaluateOptions): TrainEvaluateEvidence;
+  predict(batches: Iterable<unknown>, options?: TrainPredictOptions): TrainPredictEvidence;
 }
 
 export type NnModuleConfig<

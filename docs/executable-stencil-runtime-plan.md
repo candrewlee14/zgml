@@ -189,6 +189,14 @@ provides `nn.native(model, opts)` / `nn.inference(model, opts)`, and module
 instances expose `model.native(opts)`, all as TS-authored sugar over the same
 native Program/Session binding path. That is the desired split: ergonomic JS/TS
 API, Zig-owned execution core, no mirrored Zig product frontend.
+The same rule now applies to the training happy path: modules expose
+`model.fit(loader, { optimizer, loss, ... })`, `model.evaluate(...)`, and
+`model.predict(...)` as TS-authored convenience methods over the single
+`train.fit`/`train.evaluateModule`/`train.predictModule` policy. When the shape
+matches a supported native training plan, that path still lowers through
+`compileTrainingStep` to the Zig FFI kernel and returns `loweredBy: "zig-ffi"`
+evidence. The product API gets simpler without moving the hot training step
+back into JavaScript.
 
 The refined compiler shape is:
 

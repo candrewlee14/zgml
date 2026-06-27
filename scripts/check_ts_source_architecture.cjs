@@ -3718,7 +3718,7 @@ function checkNnNamespacePrototypeMethodsAreShared(errors) {
   }
   const helperSource = fs.readFileSync(helperPath, "utf8");
   for (const needle of [
-    'import type {\n  CompileOptions,\n  LoadStateDictOptions,\n  ModuleStateDict,\n  ModuleParameterPlacementOptions,\n  ModuleTraceOptions,\n} from "../public_api.js";',
+    'import type {\n  CompileOptions,\n  LoadStateDictOptions,\n  ModuleStateDict,\n  ModuleParameterPlacementOptions,\n  ModuleTraceOptions,\n  TrainEvaluateOptions,\n  TrainFitOptions,\n  TrainPredictOptions,\n} from "../public_api.js";',
     "export type NnModulePrototype = {",
     "call?: (this: NnModulePrototype, input: unknown) => unknown;",
     "__call__?: (this: NnModulePrototype, input: unknown) => unknown;",
@@ -17572,7 +17572,7 @@ function checkDocsUseTsdownArtifactLanguage(errors) {
     "const scheduler = optim.stepLR(optimizer, { stepSize: 20, gamma: 0.5 });",
     "const criterion = new nn.MSELoss();",
     "const loader = data.dataLoader(dataset, { batchSize: 2, shuffle: true });",
-    "train.fit(model, loader, {",
+    "model.fit(loader, {",
     "optimizer,",
     "loss: criterion,",
     "clipGradNorm: 1",

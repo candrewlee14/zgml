@@ -46,7 +46,7 @@ const zgmlDataset = new zgml.utils.data.TensorDataset(
 );
 const zgmlLoader = new zgml.utils.data.DataLoader(zgmlDataset, { batch_size: 2, shuffle: true });
 const zgmlCriterion = new zgml.nn.MSELoss();
-const zgmlFit = zgml.train.fit(zgmlModel, zgmlLoader, {
+const zgmlFit = zgmlModel.fit(zgmlLoader, {
   optimizer: zgmlOptimizer,
   loss: zgmlCriterion,
   epochs: 1,
@@ -174,7 +174,7 @@ const dataset = data.tensorDataset(
 );
 const loader = data.dataLoader(dataset, { batchSize: 2, shuffle: true });
 
-const fit = train.fit(model, loader, {
+const fit = model.fit(loader, {
   optimizer,
   loss: regressionCriterion,
   epochs: 8,

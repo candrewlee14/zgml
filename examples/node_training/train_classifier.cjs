@@ -142,7 +142,7 @@ const ergonomicNativeModel = createClassifierGraph();
 const ergonomicNativeOptimizer = optim.adamW(ergonomicNativeModel, { lr: 0.05, weightDecay: 0.0001 });
 const ergonomicNativeLoader = data.dataLoader(samples, { batchSize: 2, shuffle: true, seed: 17 });
 const ergonomicNativeBefore = scalar(loss.crossEntropy(ergonomicNativeModel.forward(probeInput), probeTarget, { classes: 2 }));
-const ergonomicNativeFit = train.fit(ergonomicNativeModel, ergonomicNativeLoader, {
+const ergonomicNativeFit = ergonomicNativeModel.fit(ergonomicNativeLoader, {
   optimizer: ergonomicNativeOptimizer,
   loss: criterion,
   epochs: 80,
@@ -162,7 +162,7 @@ if (
   ergonomicNativeFit.steps !== 240 ||
   ergonomicNativeFit.losses.length !== 240
 ) {
-  throw new Error(`ergonomic train.fit native path must prove Zig-backed training: ${JSON.stringify(ergonomicNativeFit)}`);
+  throw new Error(`ergonomic nn.Module.fit native path must prove Zig-backed training: ${JSON.stringify(ergonomicNativeFit)}`);
 }
 if (!(ergonomicNativeAfter < ergonomicNativeBefore * 0.01) || ergonomicNativeClass !== 1) {
   throw new Error(`expected ergonomic native trainer to learn class 1; before=${ergonomicNativeBefore}, after=${ergonomicNativeAfter}, logits=${Array.from(ergonomicNativeLogits.data)}`);

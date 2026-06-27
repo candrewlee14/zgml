@@ -31,6 +31,9 @@ import type {
   TensorToOptions,
   TensorToTarget,
   TensorShape,
+  TrainEvaluateOptions,
+  TrainFitOptions,
+  TrainPredictOptions,
   ZeroGradOptions,
 } from "../public_api.js";
 
@@ -187,6 +190,9 @@ export type NnNamespaceHooks = {
   placeModuleParameters: NnNamespaceHookCallback<[target: unknown, program: unknown, placement?: unknown], unknown>;
   bindingPlanForModuleBindings: NnNamespaceHookCallback<[target: unknown, bindings?: unknown], unknown>;
   requireBindingPlanForModuleBindings: NnNamespaceHookCallback<[target: unknown, bindings?: unknown], unknown>;
+  fitModule?: NnNamespaceHookCallback<[target: unknown, batches: unknown, options?: TrainFitOptions], unknown>;
+  evaluateModule?: NnNamespaceHookCallback<[target: unknown, batches: unknown, criterion: unknown, options?: TrainEvaluateOptions], unknown>;
+  predictModule?: NnNamespaceHookCallback<[target: unknown, batches: unknown, options?: TrainPredictOptions], unknown>;
 };
 
 export type NnNamespaceOptions = Readonly<Record<string, unknown> & NnNamespaceHooks>;
@@ -247,6 +253,9 @@ export function createNnNamespace(options: NnNamespaceOptions) {
   const placeModuleParameters = options.placeModuleParameters;
   const bindingPlanForModuleBindings = options.bindingPlanForModuleBindings;
   const requireBindingPlanForModuleBindings = options.requireBindingPlanForModuleBindings;
+  const fitModule = options.fitModule;
+  const evaluateModule = options.evaluateModule;
+  const predictModule = options.predictModule;
   if (
     typeof LinearModule !== "function" ||
     typeof EmbeddingModule !== "function" ||
@@ -2743,6 +2752,9 @@ export function createNnNamespace(options: NnNamespaceOptions) {
     requireCompilePlanForModule,
     canCompileModule,
     nativeInferenceForModule: moduleNativeInference,
+    fitModule,
+    evaluateModule,
+    predictModule,
   });
 
   const initNamespace = Object.freeze({
