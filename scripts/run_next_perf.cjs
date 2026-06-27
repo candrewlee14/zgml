@@ -163,7 +163,7 @@ function main() {
       ["scripts/check_frontier_bench.cjs"],
       envWithDefaults({
         BENCH_FRONTIER_BUILD: "0",
-        BENCH_FRONTIER_ATTEMPTS: steady ? "3" : "1",
+        BENCH_FRONTIER_ATTEMPTS: "3",
         BENCH_QSEMANTIC_VARIANTS: "throughput_candidate",
         BENCH_FRONTIER_FILTER: "qsemantic bridge",
       }),
@@ -178,7 +178,7 @@ function main() {
       ["scripts/check_frontier_bench.cjs"],
       envWithDefaults({
         BENCH_FRONTIER_BUILD: "0",
-        BENCH_FRONTIER_ATTEMPTS: steady ? "3" : "1",
+        BENCH_FRONTIER_ATTEMPTS: "3",
         BENCH_QSEMANTIC_VARIANTS: "throughput_candidate",
         BENCH_FRONTIER_FILTER: "qsemantic input bridge",
       }),

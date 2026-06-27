@@ -595,10 +595,10 @@ function checkScripts() {
   if (scripts["dev:perf:frontier:qsemantic:throughput:raw:run"] !== "BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:throughput:raw:run must remain the no-rebuild throughput-candidate-only Q8 semantic kernel microscope");
   }
-  if (scripts["dev:perf:frontier:qsemantic:bridge"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" node scripts/check_frontier_bench.cjs") {
+  if (scripts["dev:perf:frontier:qsemantic:bridge"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qsemantic:bridge must remain the checked exact bridge-shape Q8 semantic microscope");
   }
-  if (scripts["dev:perf:frontier:qsemantic:bridge:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" node scripts/check_frontier_bench.cjs") {
+  if (scripts["dev:perf:frontier:qsemantic:bridge:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qsemantic:bridge:run must remain the no-rebuild checked exact bridge-shape Q8 semantic microscope");
   }
   if (scripts["dev:perf:frontier:qsemantic:bridge:raw"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" ./zig-out/bin/bench-frontier") {
@@ -607,10 +607,10 @@ function checkScripts() {
   if (scripts["dev:perf:frontier:qsemantic:bridge:raw:run"] !== "BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:bridge:raw:run must remain the no-rebuild exact bridge-shape Q8 semantic kernel microscope");
   }
-  if (scripts["dev:perf:frontier:qsemantic:input-bridge"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" node scripts/check_frontier_bench.cjs") {
+  if (scripts["dev:perf:frontier:qsemantic:input-bridge"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qsemantic:input-bridge must remain the checked absorbed input-row-chain Q8 semantic microscope");
   }
-  if (scripts["dev:perf:frontier:qsemantic:input-bridge:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" node scripts/check_frontier_bench.cjs") {
+  if (scripts["dev:perf:frontier:qsemantic:input-bridge:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qsemantic:input-bridge:run must remain the no-rebuild checked absorbed input-row-chain Q8 semantic microscope");
   }
   if (scripts["dev:perf:frontier:qsemantic:input-bridge:raw"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" ./zig-out/bin/bench-frontier") {
@@ -1121,6 +1121,7 @@ function checkScripts() {
     "q8_prompt_semantic",
     "bench-frontier-build",
     "build frontier benchmark artifact",
+    "BENCH_FRONTIER_ATTEMPTS: \"3\"",
     "qsemantic bridge frontier",
     "BENCH_FRONTIER_FILTER: \"qsemantic bridge\"",
     "qsemantic input bridge frontier",

@@ -2030,6 +2030,11 @@ checks. The probe was reverted. The qsemantic bridge checker now carries a
 `BENCH_QSEMANTIC_BRIDGE_FLOOR` collapse floor, defaulting to `2.45x`, so
 correct-but-slower width-kernel probes fail before they overwrite useful
 bridge evidence.
+Because that bridge floor is now meaningful, the exact qsemantic bridge and
+input-bridge npm microscopes default to `BENCH_FRONTIER_ATTEMPTS=3`, and
+`dev:perf:next` uses the same three-attempt default for those two lanes. Keep
+one-attempt runs for raw terminal inspection or explicit overrides, not for the
+checked bridge evidence that steers `perf-next`.
 The broader `dev:perf:competitive` runner now wraps the PyTorch, native eager,
 qsemantic, full-model Q8 prompt viable, and cheap ggml smoke lanes behind
 `BENCH_COMPETITIVE_LANES`, so a kernel edit can run only
