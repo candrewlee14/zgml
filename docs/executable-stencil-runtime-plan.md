@@ -1772,9 +1772,20 @@ inside each row/output tile. A global down-partial prototype was rejected after
 measuring only `1.17x` on the bridge lane; it paid too much memory traffic for
 the `14.2 MB` partial surface. The kept kernel preserves the small
 `runtime_bytes:9216` scratch contract and a fresh three-attempt bridge artifact
-selected `2.81x` over staged execution with `max_abs_diff=0.000002`,
+selected `2.40x` over staged execution with `max_abs_diff=0.000002`,
 `runtime_backend_dispatches=3`, `semantic_pair_dispatches=1`, and
 `semantic_tail_dispatches=2`.
+Do not simply widen `ROW_CHAIN_WIDTH_LANES` to `8`: the resulting
+`qmatmul_row_chain_width_partials_f32` prototype needed `49152` bytes of
+threadgroup memory and Metal rejected pipeline creation against the `32768` byte
+limit. The next width-kernel move must reduce per-threadgroup storage, split the
+tile differently, or fuse dispatches without growing the tile-local arrays past
+the hardware limit.
+A narrower `ROW_CHAIN_WIDTH_LANES=2` / 256-thread probe compiled but also lost:
+the three-attempt exact bridge gate selected `2.21x` and the input-bridge gate
+selected `2.46x`, below the refreshed four-lane `2.40x` and `2.63x` evidence.
+The current four-lane shape is therefore the local sweet spot until the kernel
+changes its storage model or fuses a dispatch.
 A finalize-path probe then tested replacing
 `qmatmul_row_chain_tiled_finalize_tiles_f32` with the coarser row-tile
 `qmatmul_row_chain_tiled_finalize_f32` so the RMS reduction would be computed
