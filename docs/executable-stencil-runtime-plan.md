@@ -527,7 +527,11 @@ Current checked progress:
   `nn.Sequential(Linear, ReLU)` / `nn.Sequential(Linear, SiLU)` /
   `nn.Sequential(Linear, Sigmoid)` / `nn.Sequential(Linear, Tanh)` module
   surfaces can take the native eager lane without users calling the low-level
-  primitive directly.
+  primitive directly. Exact two-layer `Sequential(Linear, Activation)` no-grad
+  tensor inputs now prefer that fused native eager lane before falling through
+  to the broader cached Program route, so cheap activations such as ReLU, SiLU,
+  Sigmoid, and Tanh do not pay the heavier Program/session path for ordinary
+  eager inference.
   The native eager ABI now also exposes row-wise `softmaxInto` and
   `logSoftmaxInto`; Node and Bun package smokes prove both caller-owned-output
   helpers plus ordinary `zgml.noGrad(() => nn.Softmax/LogSoftmax.forward(x))`

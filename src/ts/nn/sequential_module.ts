@@ -468,6 +468,10 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
       const inputIsTensor = inputValues instanceof TensorClass;
       let out: unknown = inputValues;
       if (inputIsTensor) {
+        if (this.layers.length === 2) {
+          const fused = tryNativeEagerLinearActivation(out, this.layers[0], this.layers[1]);
+          if (fused !== null) return fused;
+        }
         const nativeOut = this.nativeForward(out as SequentialTensor);
         if (nativeOut !== null) return nativeOut;
       } else {
