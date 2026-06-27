@@ -463,7 +463,11 @@ Current checked progress:
   Program/Session in `noGrad`; the package smoke poisons the JS layer
   `forward()` methods and still proves the Linear/ReLU/Linear output, then
   mutates weights and proves the cached Program rebinds fresh packed parameters
-  instead of serving stale native state.
+  instead of serving stale native state. The same automatic native Program path
+  also accepts the PyTorch-like plain vector input shape for Linear-headed
+  Sequential models, so `noGrad(() => model.forward([x0, x1]))` reaches the
+  Zig Program/Session path without forcing users to pre-wrap the vector as a
+  Tensor.
   The new Node/Bun-selectable `NATIVE_EAGER_GAP_JSON` microscope measures the first targets directly:
   `linear_batched` eager TS tensor execution,
   `lazy_matmul_add_gelu_batched` eager fused matmul work, and

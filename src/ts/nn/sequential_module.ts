@@ -461,10 +461,17 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
     }
 
     forward(inputValues: unknown) {
-      let out: unknown = inputValues instanceof TensorClass ? inputValues : f32(inputValues);
-      if (out instanceof TensorClass) {
+      const inputIsTensor = inputValues instanceof TensorClass;
+      let out: unknown = inputIsTensor ? inputValues : f32(inputValues);
+      if (inputIsTensor) {
         const nativeOut = this.nativeForward(out as SequentialTensor);
         if (nativeOut !== null) return nativeOut;
+      } else {
+        const firstLayer = this.layers[0];
+        if (isSequentialLinearLayer(firstLayer) && out instanceof Float32Array && out.length === firstLayer.inFeatures) {
+          const nativeOut = this.nativeForward(new TensorClass(out, [firstLayer.inFeatures]));
+          if (nativeOut !== null) return nativeOut;
+        }
       }
       for (let index = 0; index < this.layers.length; index += 1) {
         const layer = this.layers[index];

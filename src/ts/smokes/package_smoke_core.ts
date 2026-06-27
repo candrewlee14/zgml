@@ -2472,6 +2472,25 @@ function expectSequentialProgramEvidence(adapter: Record<string, any>, label: st
     [2],
     `${label} noGrad nn.Sequential auto native Program forward`,
   );
+  const nativeForwardArraySequential = new adapter.nn.Sequential(
+    adapter.nn.linear(2, 2, { weights: [1, 0, 0, 1], bias: [0, 0] }),
+    adapter.nn.relu(),
+    adapter.nn.linear(2, 1, { weights: [1, -1], bias: [0] }),
+  );
+  nativeForwardArraySequential.at(0).forward = () => {
+    throw new Error("poisoned array first JS forward");
+  };
+  nativeForwardArraySequential.at(1).forward = () => {
+    throw new Error("poisoned array relu JS forward");
+  };
+  nativeForwardArraySequential.at(2).forward = () => {
+    throw new Error("poisoned array last JS forward");
+  };
+  expectClose(
+    adapter.noGrad(() => nativeForwardArraySequential.forward([2, -3])).data,
+    [2],
+    `${label} noGrad nn.Sequential auto native Program array forward`,
+  );
   nativeForwardLastLayer.weight[0] = 2;
   expectClose(
     adapter.noGrad(() => nativeForwardSequential.forward(adapter.tensor([2, -3], [2]))).data,
