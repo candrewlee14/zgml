@@ -168,6 +168,9 @@ requireIncludes(matrix, matrixPath, "broader third-party weight-format adapters 
 requireIncludes(matrix, matrixPath, "Node and Bun also expose the first stateless native eager primitive");
 requireIncludes(matrix, matrixPath, "On Node and Bun,");
 requireIncludes(matrix, matrixPath, "`nn.Linear.forward` calls inside `zgml.noGrad(...)`");
+requireIncludes(matrix, matrixPath, "`F.linear`, `F.conv2d`, `F.max_pool2d`, and `F.avgPool2d`");
+requireIncludes(matrix, matrixPath, "`nn.functional.conv2d` / `F.conv2d` delegates through that same module path");
+requireIncludes(matrix, matrixPath, "`nn.functional.max_pool2d`, `nn.functional.maxPool2d`");
 requireIncludes(matrix, matrixPath, "`nativeEagerModuleForwardMs`");
 requireIncludes(matrix, matrixPath, "`nativeEagerModuleSpeedup`");
 requireIncludes(matrix, matrixPath, "`nativeEagerModuleMaxAbsDiff`");

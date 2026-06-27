@@ -43,7 +43,7 @@ root package.
 | Matmul and linear algebra | yes | yes | yes | yes | `matmul`/`mm`, `nn.linear`, fused bias/activation paths, and selected batched shapes have PyTorch comparison evidence. |
 | `einsum` | yes | partial | partial | no | Eager/autograd `einsum` with ellipsis and literal-equation shape inference exists; native lowering is not a broad claim. |
 | Modules and containers | yes | yes | yes | partial | `Module`, `Sequential`, `ModuleList`, `ModuleDict`, `ParameterList`, `ParameterDict`, traversal, named parameters, and buffers exist. |
-| Common neural layers | yes | partial | yes | partial | Linear, Embedding, Conv2d, pooling, activations, normalization, Dropout, Softmax/LogSoftmax, and shape modules exist; native lowering is strongest for dense/module Program paths. |
+| Common neural layers | yes | partial | yes | partial | Linear, Embedding, Conv2d, pooling, activations, normalization, Dropout, Softmax/LogSoftmax, and shape modules exist; `F.linear`, `F.conv2d`, `F.max_pool2d`, and `F.avgPool2d` cover the common PyTorch-like functional forms; native lowering is strongest for dense/module Program paths. |
 | Losses | yes | yes | partial | partial | MSE, BCE variants, cross entropy, NLL, L1, Huber/SmoothL1 exist for training; native lowering depends on the compiled module shape. |
 | Optimizers and schedulers | yes | n/a | partial | n/a | SGD, Adam, AdamW, RMSprop, Adagrad, parameter groups, state snapshots, and common schedulers exist in TS. |
 | Training helpers | yes | yes | partial | partial | Manual loops, `fitModule`, evaluate, predict, classifier helpers, train/eval mode, and evidence records exist; large-scale training is not the current performance claim. |
@@ -99,12 +99,18 @@ PyTorch replacement:
   `zgml_eager_conv2d_f32`; eligible no-grad `nn.Conv2d.forward` calls now
   route through that Zig kernel, and the microscope includes the same
   `conv2d_batched` workload as direct native eager, normal module forward, and
-  compiled Program execution evidence.
+  compiled Program execution evidence. The PyTorch-like functional surface
+  `nn.functional.conv2d` / `F.conv2d` delegates through that same module path,
+  so no-grad functional Conv2d can reach the Zig kernel without teaching users
+  a lower-level native eager primitive.
   They now expose `zgml.nativeEager.pool2dInto`, backed by
   `zgml_eager_pool2d_f32`, for max/avg pooling inference. Eligible no-grad
   `nn.MaxPool2d.forward` and `nn.AvgPool2d.forward` calls use the Zig kernel;
   grad-enabled training stays on the TS path so backward still has max-index
-  and count bookkeeping.
+  and count bookkeeping. The functional aliases
+  `nn.functional.max_pool2d`, `nn.functional.maxPool2d`,
+  `nn.functional.avg_pool2d`, and `nn.functional.avgPool2d` reuse that module
+  boundary and are covered by emitted package smokes and type examples.
   `bench:status` selects the latest ignored native-eager artifact and also
   prints a per-runtime `native-eager-runtime-results:` line with row coverage
   and missing rows, so Node and Bun native eager proof cannot be accidentally
