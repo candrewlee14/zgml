@@ -606,10 +606,11 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   function unary(tensor: TensorMathTensor, fn: UnaryOp, derivative: UnaryOp) {
     const TensorClass = tensorClass();
     const out = new Float32Array(tensor.length);
+    const gradEnabled = gradModeEnabled();
     for (let i = 0; i < out.length; i += 1) out[i] = fn(tensor.data[i]);
     const result = new TensorClass(out, tensor.shape, {
-      requiresGrad: gradModeEnabled() && tensor.requiresGrad,
-      prev: gradModeEnabled() && tensor.requiresGrad ? [tensor] : [],
+      requiresGrad: gradEnabled && tensor.requiresGrad,
+      prev: gradEnabled && tensor.requiresGrad ? [tensor] : [],
     });
     result._backward = (grad: Float32Array | null) => {
       if (!grad) return;

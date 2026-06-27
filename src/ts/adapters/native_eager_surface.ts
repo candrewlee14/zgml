@@ -44,11 +44,19 @@ type NativeEagerSoftmaxCall = (args: {
   logSoftmax: boolean;
 }) => number;
 
+type NativeEagerActivationCall = (args: {
+  inputData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  activation: number;
+}) => number;
+
 type NativeEagerSurfaceOptions = {
   f32: NativeEagerTensorFactory;
   check: NativeEagerCheck;
   linearF32: NativeEagerLinearCall;
   linearActivationF32: NativeEagerLinearActivationCall;
+  activationF32?: NativeEagerActivationCall;
   matmulF32?: NativeEagerMatmulCall;
   softmaxF32: NativeEagerSoftmaxCall;
 };
@@ -204,6 +212,29 @@ function nativeEagerSoftmaxInputs(
   };
 }
 
+function nativeEagerActivationInputs(
+  output: Float32Array,
+  input: unknown,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.activationInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  if (inputData.length === 0) {
+    throw new Error(`${label} input must be non-empty`);
+  }
+  if (output.length < inputData.length) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${inputData.length}`);
+  }
+  return {
+    inputData,
+    output,
+    expectedOutput: inputData.length,
+  };
+}
+
 function nativeEagerMatmulInputs(
   output: Float32Array,
   lhs: unknown,
@@ -268,6 +299,20 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     linear_activation_into(output: Float32Array, input: unknown, weights: unknown, callOptions?: Record<string, unknown>) {
       return this.linearActivationInto(output, input, weights, callOptions);
+    },
+    activationInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.activationF32 !== "function") {
+        throw new Error("nativeEager.activationInto is unavailable in this runtime");
+      }
+      const args = nativeEagerActivationInputs(output, input, options.f32);
+      options.check(options.activationF32({
+        ...args,
+        activation: nativeEagerActivationId(callOptions.activation, "nativeEager.activationInto"),
+      }));
+      return output;
+    },
+    activation_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
+      return this.activationInto(output, input, callOptions);
     },
     matmulInto(output: Float32Array, lhs: unknown, rhs: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.matmulF32 !== "function") {

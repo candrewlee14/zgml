@@ -1135,6 +1135,13 @@ const { nativeEager } = createAdapterNativeEagerSurface({
     args.outFeatures,
     args.activation,
   ),
+  activationF32: (args) => nodeSymbolGroups.nativeEager.eagerActivationF32(
+    args.inputData,
+    args.inputData.length,
+    args.output,
+    args.expectedOutput,
+    args.activation,
+  ),
   softmaxF32: (args) => nodeSymbolGroups.nativeEager.eagerSoftmaxF32(
     args.inputData,
     args.inputData.length,

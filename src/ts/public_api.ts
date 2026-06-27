@@ -2144,6 +2144,9 @@ export type NativeEagerLinearIntoOptions = Readonly<{
 export type NativeEagerLinearActivationIntoOptions = NativeEagerLinearIntoOptions & Readonly<{
   activation: "relu" | "gelu" | "silu" | "sigmoid" | "tanh";
 }>;
+export type NativeEagerActivationIntoOptions = Readonly<{
+  activation: "relu" | "gelu" | "silu" | "sigmoid" | "tanh";
+}>;
 export type NativeEagerSoftmaxIntoOptions = Readonly<{
   rows?: number;
   cols?: number;
@@ -2167,6 +2170,8 @@ export type PublicNativeEagerNamespace = Readonly<{
   linear_into(output: Float32Array, input: TensorLike, weights: TensorLike, options?: NativeEagerLinearIntoOptions): Float32Array;
   linearActivationInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerLinearActivationIntoOptions): Float32Array;
   linear_activation_into(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerLinearActivationIntoOptions): Float32Array;
+  activationInto(output: Float32Array, input: TensorLike, options: NativeEagerActivationIntoOptions): Float32Array;
+  activation_into(output: Float32Array, input: TensorLike, options: NativeEagerActivationIntoOptions): Float32Array;
   matmulInto(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerMatmulIntoOptions): Float32Array;
   matmul_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerMatmulIntoOptions): Float32Array;
   softmaxInto(output: Float32Array, input: TensorLike, options?: NativeEagerSoftmaxIntoOptions): Float32Array;

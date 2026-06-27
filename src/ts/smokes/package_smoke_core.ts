@@ -335,6 +335,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.linearActivationInto !== "function") {
     throw new Error(`${label} expected nativeEager.linearActivationInto`);
   }
+  if (typeof nativeEager.activationInto !== "function") {
+    throw new Error(`${label} expected nativeEager.activationInto`);
+  }
   if (typeof nativeEager.matmulInto !== "function") {
     throw new Error(`${label} expected nativeEager.matmulInto`);
   }
@@ -346,6 +349,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   if (typeof nativeEagerAlias.linear_activation_into !== "function") {
     throw new Error(`${label} expected native_eager.linear_activation_into alias`);
+  }
+  if (typeof nativeEagerAlias.activation_into !== "function") {
+    throw new Error(`${label} expected native_eager.activation_into alias`);
   }
   if (typeof nativeEagerAlias.matmul_into !== "function") {
     throw new Error(`${label} expected native_eager.matmul_into alias`);
@@ -416,6 +422,19 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected nativeEager.linearActivationInto Tanh to reuse caller output`);
   }
   expectClose(tanhOutput, Array.from(directOutput, (value) => Math.tanh(value)), `${label} nativeEager.linearActivationInto Tanh output`);
+  const activationInput = adapter.tensor([-2, -0.5, 0, 0.5, 2], [5]);
+  const activationOutput = new Float32Array(5);
+  const activationResult = nativeEager.activationInto(activationOutput, activationInput, { activation: "relu" });
+  if (activationResult !== activationOutput) {
+    throw new Error(`${label} expected nativeEager.activationInto to reuse caller output`);
+  }
+  expectClose(activationOutput, [0, 0, 0, 0.5, 2], `${label} nativeEager.activationInto output`);
+  const activationAliasOutput = new Float32Array(5);
+  const activationAliasResult = nativeEagerAlias.activation_into(activationAliasOutput, activationInput, { activation: "tanh" });
+  if (activationAliasResult !== activationAliasOutput) {
+    throw new Error(`${label} expected native_eager.activation_into to reuse caller output`);
+  }
+  expectClose(activationAliasOutput, Array.from(activationInput.data as ArrayLike<number>, (value) => Math.tanh(value)), `${label} native_eager.activation_into output`);
   const softmaxOutput = new Float32Array(6);
   const softmaxResult = nativeEager.softmaxInto(softmaxOutput, directOutput, { rows: 2, cols: 3 });
   if (softmaxResult !== softmaxOutput) {

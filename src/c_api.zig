@@ -90,6 +90,7 @@ const feature_native_eager_linear_activation: u64 = 1 << 46;
 const feature_native_training_step: u64 = 1 << 47;
 const feature_native_eager_softmax: u64 = 1 << 48;
 const feature_native_eager_matmul: u64 = 1 << 49;
+const feature_native_eager_activation: u64 = 1 << 50;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -1124,6 +1125,7 @@ fn runtimeFeatureFlags() u64 {
         feature_native_training_step |
         feature_native_eager_softmax |
         feature_native_eager_matmul |
+        feature_native_eager_activation |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -1794,6 +1796,26 @@ export fn zgml_eager_linear_activation_f32(
     applyActivationF32(output, activation) catch |err| return switch (err) {
         error.InvalidArgument => status(.invalid_argument),
     };
+    return status(.ok);
+}
+
+export fn zgml_eager_activation_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    activation: u32,
+) c_int {
+    if (input_ptr == null or output_ptr == null or input_len == 0) return status(.invalid_argument);
+    if (input_len != output_len) return status(.shape_mismatch);
+
+    const input = input_ptr.?[0..input_len];
+    const output = output_ptr.?[0..output_len];
+    for (input, output) |value, *out| {
+        out.* = eagerActivationF32(value, activation) catch |err| return switch (err) {
+            error.InvalidArgument => status(.invalid_argument),
+        };
+    }
     return status(.ok);
 }
 
@@ -7370,6 +7392,7 @@ test "C ABI runtime info reports compatible handle surface" {
     try std.testing.expect((info.feature_flags & feature_session_persistent_upload) != 0);
     try std.testing.expect((info.feature_flags & feature_native_module_activation_chain) != 0);
     try std.testing.expect((info.feature_flags & feature_native_training_step) != 0);
+    try std.testing.expect((info.feature_flags & feature_native_eager_activation) != 0);
     try std.testing.expectEqual(build_options.use_wgpu, (info.feature_flags & feature_native_wgpu_execution) != 0);
     try std.testing.expectEqual(build_options.use_wgpu and build_options.experimental_llama_wgpu_execution, (info.feature_flags & feature_experimental_llama_wgpu_execution) != 0);
     try std.testing.expect((info.feature_flags & feature_experimental_llama_wgpu_execution) == 0 or (info.feature_flags & feature_native_wgpu_execution) != 0);
@@ -10294,6 +10317,46 @@ test "C ABI native eager linear activation writes caller output" {
         2,
         3,
         2,
+        99,
+    ));
+}
+
+test "C ABI native eager activation writes caller output" {
+    const input = [_]f32{ -2, -0.5, 0, 0.5, 2 };
+    var output = [_]f32{0} ** input.len;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_activation_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        module_activation_relu,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0, 0, 0.5, 2 }, &output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_activation_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        module_activation_tanh,
+    ));
+    for (input, output) |plain, activated| {
+        try std.testing.expectApproxEqAbs(try eagerActivationF32(plain, module_activation_tanh), activated, 1e-6);
+    }
+
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_activation_f32(
+        input[0..].ptr,
+        input.len - 1,
+        output[0..].ptr,
+        output.len,
+        module_activation_relu,
+    ));
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_activation_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
         99,
     ));
 }
