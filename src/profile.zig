@@ -105,6 +105,8 @@ pub const RuntimeProfile = struct {
     qmatmul_row_chain_tiled_two_phase_count: u64 = 0,
     qmatmul_row_chain_tiled_finalize_tile_groups: u64 = 0,
     qmatmul_row_chain_tiled_finalize_elements: u64 = 0,
+    qmatmul_row_chain_width_parallel_count: u64 = 0,
+    qmatmul_row_chain_width_parallel_lanes: u64 = 0,
     semantic_ffn_sublayer_count: u64 = 0,
     semantic_ffn_sublayer_rows: u64 = 0,
     semantic_ffn_sublayer_hidden: u64 = 0,
@@ -219,6 +221,8 @@ pub const RuntimeProfile = struct {
         self.qmatmul_row_chain_tiled_two_phase_count +%= other.qmatmul_row_chain_tiled_two_phase_count;
         self.qmatmul_row_chain_tiled_finalize_tile_groups +%= other.qmatmul_row_chain_tiled_finalize_tile_groups;
         self.qmatmul_row_chain_tiled_finalize_elements +%= other.qmatmul_row_chain_tiled_finalize_elements;
+        self.qmatmul_row_chain_width_parallel_count +%= other.qmatmul_row_chain_width_parallel_count;
+        self.qmatmul_row_chain_width_parallel_lanes +%= other.qmatmul_row_chain_width_parallel_lanes;
         self.semantic_ffn_sublayer_count +%= other.semantic_ffn_sublayer_count;
         self.semantic_ffn_sublayer_rows +%= other.semantic_ffn_sublayer_rows;
         self.semantic_ffn_sublayer_hidden +%= other.semantic_ffn_sublayer_hidden;
@@ -379,6 +383,12 @@ pub const RuntimeProfile = struct {
         self.qmatmul_row_chain_tiled_two_phase_count +%= 1;
         self.qmatmul_row_chain_tiled_finalize_tile_groups +%= divCeilU64(m, tile) *% divCeilU64(n, tile);
         self.qmatmul_row_chain_tiled_finalize_elements +%= @as(u64, m) *% @as(u64, n);
+    }
+
+    pub fn recordQMatmulRowChainWidthParallelTiledSpill(self: *RuntimeProfile, m: u32, n: u32, k: u32, tile: u32, width_lanes: u32, write_elementwise_output: bool, output_spill: bool) void {
+        self.recordQMatmulRowChainTwoPhaseTiledSpill(m, n, k, tile, write_elementwise_output, output_spill);
+        self.qmatmul_row_chain_width_parallel_count +%= 1;
+        self.qmatmul_row_chain_width_parallel_lanes +%= width_lanes;
     }
 
     pub fn recordSemanticFfnSublayer(self: *RuntimeProfile, m: u32, h: u32, k: u32, o: u32, thread_lanes: u32) void {
@@ -643,6 +653,8 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "two_phase_count", rt.qmatmul_row_chain_tiled_two_phase_count, calls_f);
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "finalize_tile_groups", rt.qmatmul_row_chain_tiled_finalize_tile_groups, calls_f);
         try writeCountAndPerCall(jw, "qmatmul_row_chain_tiled_", "finalize_elements", rt.qmatmul_row_chain_tiled_finalize_elements, calls_f);
+        try writeCountAndPerCall(jw, "qmatmul_row_chain_width_parallel_", "count", rt.qmatmul_row_chain_width_parallel_count, calls_f);
+        try writeCountAndPerCall(jw, "qmatmul_row_chain_width_parallel_", "lanes", rt.qmatmul_row_chain_width_parallel_lanes, calls_f);
     }
     if (rt.semantic_ffn_sublayer_count > 0) {
         try writeCountAndPerCall(jw, "semantic_ffn_sublayer_", "count", rt.semantic_ffn_sublayer_count, calls_f);
@@ -965,6 +977,8 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_two_phase_count\":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_finalize_tile_groups\":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_tiled_finalize_elements\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_width_parallel_count\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"qmatmul_row_chain_width_parallel_lanes\":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_count\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_row_serial_dot_ops\":995328") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_total_row_serial_dot_ops\":127401984") != null);
@@ -1093,6 +1107,8 @@ test "RuntimeProfile accumulates evidence windows" {
     try std.testing.expectEqual(@as(u64, 2), total.qmatmul_row_chain_tiled_two_phase_count);
     try std.testing.expectEqual(@as(u64, 144), total.qmatmul_row_chain_tiled_finalize_tile_groups);
     try std.testing.expectEqual(@as(u64, 147456), total.qmatmul_row_chain_tiled_finalize_elements);
+    try std.testing.expectEqual(@as(u64, 0), total.qmatmul_row_chain_width_parallel_count);
+    try std.testing.expectEqual(@as(u64, 0), total.qmatmul_row_chain_width_parallel_lanes);
     try std.testing.expectEqual(@as(u64, 2), total.semantic_ffn_with_input_decomposed_count);
     try std.testing.expectEqual(@as(u64, 10), total.semantic_ffn_with_input_decomposed_dispatches);
     try std.testing.expectEqual(@as(u64, 4), total.semantic_ffn_with_input_decomposed_row_chain_dispatches);
@@ -1108,6 +1124,17 @@ test "RuntimeProfile accumulates evidence windows" {
     try std.testing.expectEqual(@as(u64, 0), total.semantic_width_scratch_runtime_uses);
     try std.testing.expectEqual(@as(u64, 0), total.semantic_width_scratch_runtime_bytes);
     try std.testing.expectEqual(@as(u32, 74), total.call_count);
+}
+
+test "RuntimeProfile records qmatmul row-chain width-parallel lowering" {
+    var rt = RuntimeProfile{};
+    rt.recordQMatmulRowChainWidthParallelTiledSpill(128, 576, 1536, 32, 4, false, false);
+
+    try std.testing.expectEqual(@as(u64, 1), rt.qmatmul_row_chain_tiled_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.qmatmul_row_chain_tiled_two_phase_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.qmatmul_row_chain_width_parallel_count);
+    try std.testing.expectEqual(@as(u64, 4), rt.qmatmul_row_chain_width_parallel_lanes);
+    try std.testing.expectEqual(@as(u64, 0), rt.qmatmul_row_chain_tiled_spilled_input);
 }
 
 test "RuntimeProfile ignores out-of-range schedule region pattern counters" {

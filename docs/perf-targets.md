@@ -392,6 +392,10 @@ machine for both prompt/prefill and decode.
   direct bridge is therefore opt-in only on the named diagnostic policy; the
   normal input-bridge candidate keeps the faster absorbed/width-partitioned
   lowering while a future kernel removes its remaining dispatch split. The
+  frontier artifacts now expose `qmatmul_row_chain_width_parallel_count` and
+  lane totals, so the bridge and input-bridge gates can prove when the
+  width-partitioned Metal tail actually ran rather than relying on the broader
+  two-phase tiled counters. The
   checked input-bridge gate now treats that lane as a steady collapse guard:
   runs with at least three attempts must keep best absorbed speedup at or above
   `2.45x` by default, configurable with

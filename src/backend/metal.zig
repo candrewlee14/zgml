@@ -48,6 +48,7 @@ const MAX_ROW_CHAIN_COLS: u32 = 4096;
 const MAX_ROW_CHAIN_K: u32 = 2048;
 const QMATMUL_ROW_CHAIN_THREADS: u32 = 256;
 const SEMANTIC_FFN_THREADS: u32 = 512;
+const ROW_CHAIN_WIDTH_LANES: u32 = 4;
 const SEMANTIC_FFN_MAX_DIM: u32 = 1024;
 const SEMANTIC_FFN_MAX_HIDDEN: u32 = 1536;
 // 4 simdgroups per threadgroup (128 threads), each handles 8x8 sub-tiles
@@ -4558,6 +4559,7 @@ comptime {
     requireShaderUintConst("ROW_CHAIN_TILE", ROW_CHAIN_TILE);
     requireShaderUintConst("QMATMUL_ROW_CHAIN_THREADS", QMATMUL_ROW_CHAIN_THREADS);
     requireShaderUintConst("SEMANTIC_FFN_THREADS", SEMANTIC_FFN_THREADS);
+    requireShaderUintConst("ROW_CHAIN_WIDTH_LANES", ROW_CHAIN_WIDTH_LANES);
     requireShaderUintConst("MAX_ROW_CHAIN_COLS", MAX_ROW_CHAIN_COLS);
     requireShaderUintConst("MAX_ROW_CHAIN_K", MAX_ROW_CHAIN_K);
     requireShaderUintConst("SEMANTIC_FFN_MAX_DIM", SEMANTIC_FFN_MAX_DIM);
@@ -8128,7 +8130,7 @@ const CompiledProgram = struct {
             .partial_cols = output_tiles,
         };
 
-        exec.profile.recordQMatmulRowChainTwoPhaseTiledSpill(q.M, q.N, q.K, ROW_CHAIN_TILE, write_ew_output, output_spill);
+        exec.profile.recordQMatmulRowChainWidthParallelTiledSpill(q.M, q.N, q.K, ROW_CHAIN_TILE, ROW_CHAIN_WIDTH_LANES, write_ew_output, output_spill);
         if (scratch_partial != null) exec.profile.recordSemanticWidthScratchRuntimeUse(partial_bytes);
 
         const partial_buffers = [_]DeviceBuffer{

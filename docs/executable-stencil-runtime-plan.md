@@ -857,7 +857,11 @@ field, and `dev:perf:next` routes to the exact qsemantic input-bridge
 microscope when that target is present. The generic
 `semantic_width_parallel_kernel` bridge microscope remains the fallback when no
 input-bridge artifact exists; once direct-serial versus absorbed evidence is
-available, the next loop should work on the input-bridge kernel directly.
+available, the next loop should work on the input-bridge kernel directly. The
+frontier microscopes now also report `qmatmul_row_chain_width_parallel_count`
+and lane totals, so the benchmark artifact proves which physical row-chain tail
+used the width-partitioned Metal kernel instead of inferring it from generic
+tiled row-chain counters.
 The qsemantic-throughput and qsemantic input-bridge readbacks follow the same
 stability rule as the other noisy perf lanes:
 `qsemantic-throughput-results:` and `qsemantic-input-bridge-results:` prefer the
