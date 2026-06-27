@@ -1591,6 +1591,9 @@ function checkScripts() {
     "`next=${requiredNextTarget}`",
     "candidateReady",
     "q8 prompt semantic row-chain gate:",
+    "semantic_direct_width_parallel=${format(semanticBest.semanticSemanticWithInputDirectWidthParallelCount, 0)}",
+    "semantic_direct_width_tiles=${format(semanticBest.semanticSemanticWithInputDirectWidthParallelRowTileGroups, 0)}x${format(semanticBest.semanticSemanticWithInputDirectWidthParallelOutputTiles, 0)}",
+    "semantic_direct_width_partial_slots=${format(semanticBest.semanticSemanticWithInputDirectWidthParallelPartialSlots, 0)}",
   ]);
   requireIncludes(read("src/backend/metal.zig"), "src/backend/metal.zig", "shared Metal tile rejection evidence", [
     "Row-chain tiled kernels have a separate tile so future qrow tuning cannot",
@@ -3008,6 +3011,9 @@ function checkQ8PromptCandidateEvidence() {
     "command_best_speedup=",
     "command_fallback=0->0",
     "command_dispatch=242->242",
+    "semantic_direct_width_parallel=",
+    "semantic_direct_width_tiles=",
+    "semantic_direct_width_partial_slots=",
     "command_dispatch_reduced=no",
     "command_runtime_target=reduce_actual_dispatch_or_larger_semantic_sublayer",
     "command_projection_chain=",
