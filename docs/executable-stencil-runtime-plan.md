@@ -8255,6 +8255,11 @@ selects passing steady input-bridge artifacts before failed newest probes while
 still printing the newest raw probe as `qsemantic-input-bridge-latest-results`;
 that keeps rejected physical experiments visible without letting them steer
 `perf-next`.
+The exact qsemantic bridge selector follows the same rule at the stronger bridge
+gate: prefer `ready` steady bridge artifacts before noisy median/worst passes,
+while still printing the newest raw bridge probe as `qsemantic-bridge-latest-results`.
+That prevents one noisy-but-correct bridge run from replacing the last artifact
+whose selected, median, and worst attempts all clear the semantic bridge floor.
 A follow-up exact no-build microscope run kept the 9-op bridge healthy at
 `bridge_ffn=2.89x` with `runtime_backend_dispatches=3`, `width_parallel=1`,
 and `runtime_bytes=9216`. The exact 14-op input-bridge run stayed correct and

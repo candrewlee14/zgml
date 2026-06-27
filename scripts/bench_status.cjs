@@ -474,7 +474,15 @@ function qsemanticBridgeArtifacts() {
 
 function latestQsemanticBridgeArtifact() {
   const artifacts = qsemanticBridgeArtifacts();
-  return artifacts.filter(isFrontierSteadyArtifact).at(-1) ?? artifacts.at(-1) ?? null;
+  const ready = artifacts.filter(isReadyQsemanticBridgeArtifact);
+  const passing = artifacts.filter(isPassingFrontierArtifact);
+  return ready.filter(isFrontierSteadyArtifact).at(-1) ??
+    ready.at(-1) ??
+    passing.filter(isFrontierSteadyArtifact).at(-1) ??
+    passing.at(-1) ??
+    artifacts.filter(isFrontierSteadyArtifact).at(-1) ??
+    artifacts.at(-1) ??
+    null;
 }
 
 function latestRawQsemanticBridgeArtifact() {
@@ -526,6 +534,14 @@ function isFrontierSteadyArtifact(path) {
 function isPassingFrontierArtifact(path) {
   try {
     return readJson(path)?.status === "pass";
+  } catch {
+    return false;
+  }
+}
+
+function isReadyQsemanticBridgeArtifact(path) {
+  try {
+    return qsemanticBridgeArtifactGate(readJson(path)) === "ready";
   } catch {
     return false;
   }
@@ -729,7 +745,7 @@ function qsemanticBridgeFreshnessStatusLine(selectedPath, rawPath) {
   try {
     data = readJson(rawPath);
   } catch {
-    return `qsemantic-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts unreadable`;
+    return `qsemantic-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_ready_steady_attempts unreadable`;
   }
   const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
   const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
@@ -743,7 +759,7 @@ function qsemanticBridgeFreshnessStatusLine(selectedPath, rawPath) {
   const scratch = `scratch=candidates:${bridge.semanticWidthScratchCandidates ?? "n/a"},bytes:${bridge.semanticWidthScratchBytes ?? "n/a"},down_partial_bytes:${bridge.semanticWidthScratchDownPartialBytes ?? "n/a"},down_partial_to_output:${formatNumber(bridge.semanticWidthScratchDownPartialToOutput, 2)},runtime_capacity:${bridge.semanticWidthScratchRuntimeCapacityBytes ?? "n/a"},runtime_uses:${bridge.semanticWidthScratchRuntimeUses ?? "n/a"},runtime_bytes:${bridge.semanticWidthScratchRuntimeBytes ?? "n/a"}`;
   const widthTarget = `rows:${bridge.semanticWidthTargetRows ?? "n/a"},hidden:${bridge.semanticWidthTargetHidden ?? "n/a"},input:${bridge.semanticWidthTargetInput ?? "n/a"},output:${bridge.semanticWidthTargetOutput ?? "n/a"},down_partial_elements:${bridge.semanticWidthTargetDownPartialElements ?? "n/a"},down_partial_bytes:${bridge.semanticWidthTargetDownPartialBytes ?? "n/a"},down_partial_to_output:${formatNumber(bridge.semanticWidthTargetDownPartialToOutput, 2)},scratch_plan:${bridge.semanticWidthTargetScratchPlan ?? "n/a"}`;
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
-  return `qsemantic-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts gate=${gate} attempt=${selectedAttempt}/${attempts} bridge_ffn=${speedup}:median:${median}:worst:${worst}:floor:${floor}:semantic_split:${semanticSplit}:width_parallel:${bridge.qmatmulRowChainWidthParallelCount ?? "n/a"}:width_lanes:${bridge.qmatmulRowChainWidthParallelLanes ?? "n/a"} ${scratch} width_target=${widthTarget} source=${source}`;
+  return `qsemantic-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_ready_steady_attempts gate=${gate} attempt=${selectedAttempt}/${attempts} bridge_ffn=${speedup}:median:${median}:worst:${worst}:floor:${floor}:semantic_split:${semanticSplit}:width_parallel:${bridge.qmatmulRowChainWidthParallelCount ?? "n/a"}:width_lanes:${bridge.qmatmulRowChainWidthParallelLanes ?? "n/a"} ${scratch} width_target=${widthTarget} source=${source}`;
 }
 
 function qsemanticInputBridgeStatusLine(path) {
