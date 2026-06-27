@@ -1870,6 +1870,7 @@ function checkScripts() {
     "examples/quickstart/zgml-first.cjs",
     "examples/node_training/manual_loop.cjs",
     "examples/node_training/train_classifier.cjs",
+    "examples/node_training/train_mnist_mlp.cjs",
     "examples/node_training/torch_quickstart.cjs",
     "examples/bun_training/manual_loop.ts",
     "examples/bun_training/train_classifier.ts",
@@ -1888,6 +1889,9 @@ function checkScripts() {
     "node examples/node_training/train_classifier.cjs",
     "node examples/node_training/torch_quickstart.cjs",
   ]);
+  if (scripts["smoke:training:mnist"] !== "npm run build:package && node examples/node_training/train_mnist_mlp.cjs") {
+    errors.push("package.json smoke:training:mnist must keep the bounded MNIST MLP convergence and compile proof");
+  }
   requireOrdered(String(scripts["smoke:training:bun"] ?? ""), "package.json", "Bun training confidence gate", [
     "bun examples/bun_training/train_linear.ts",
     "bun examples/bun_training/manual_loop.ts",
@@ -4330,6 +4334,24 @@ function checkZgmlFrontendSurface() {
     "assertHotRuntimeProfile(restoredSession, \"restored MLP Session\")",
     "compiled restored MLP prediction",
     "executeInto restored MLP prediction",
+  ]);
+
+  const nodeMnistMlp = read("examples/node_training/train_mnist_mlp.cjs");
+  requireIncludes(nodeMnistMlp, "examples/node_training/train_mnist_mlp.cjs", "bounded MNIST MLP train-then-compile proof", [
+    "https://storage.googleapis.com/cvdf-datasets/mnist",
+    "ZGML_MNIST_TRAIN_LIMIT",
+    "ZGML_MNIST_TEST_LIMIT",
+    "ZGML_MNIST_ACCURACY_FLOOR",
+    "nn.linear(784, 128",
+    "xavierWeights(784, 128",
+    "loss.crossEntropy(model.forward(batch.input), batch.target, { classes: 10 })",
+    "after.meanLoss < before.meanLoss",
+    "after.accuracy >= accuracyFloor",
+    "checkpoint.restore(snapshot, { model: restored, optimizer: restoredOptimizer, prefix: \"mnist\", strict: true })",
+    "compile.compileForInference(model, { inputShape: [784], backend: \"cpu\" })",
+    "compiled MNIST logits",
+    "compiled MNIST class mismatch",
+    "zgml MNIST MLP smoke ok:",
   ]);
 
   const nodeClassifier = read("examples/node_training/train_classifier.cjs");

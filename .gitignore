@@ -21,6 +21,7 @@ zig-out/
 
 # Local package/cache artifacts.
 /zig-pkg/
+.cache/
 node_modules/
 .venv/
 

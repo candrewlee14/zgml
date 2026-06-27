@@ -45,6 +45,23 @@ const workflows = Object.freeze([
     ],
   },
   {
+    name: "MNIST MLP benchmark smoke",
+    docNeedles: [
+      "| MNIST MLP benchmark smoke |",
+      "`examples/node_training/train_mnist_mlp.cjs`",
+      "`smoke:training:mnist`",
+      "eager/restored/compiled logits parity",
+    ],
+    smokeNeedles: [
+      "compileForInference",
+      "compileForInference forward",
+      "compileForInference into",
+    ],
+    commands: [
+      ["node", ["examples/node_training/train_mnist_mlp.cjs"]],
+    ],
+  },
+  {
     name: "Classifier with cross entropy",
     docNeedles: [
       "| Classifier with cross entropy |",
