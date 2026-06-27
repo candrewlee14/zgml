@@ -928,6 +928,24 @@ function checkScripts() {
     "nativeEager: PublicNativeEagerNamespace",
     "native_eager: PublicNativeEagerNamespace",
   ]);
+  requireIncludes(read("src/ts/core/tensor_math.ts"), "src/ts/core/tensor_math.ts", "no-grad Tensor.bmm native eager matmul bridge", [
+    "const nativeBmmMinMultiplyAdds = 512",
+    "const useNative = !gradEnabled && typeof nativeEagerMatmulInto === \"function\"",
+    "lhsRows * lhsCols * rhsCols >= nativeBmmMinMultiplyAdds",
+    "out.subarray(outBatchOffset, outBatchOffset + lhsRows * rhsCols)",
+    "tensor.data.subarray(lhsBatchOffset, lhsBatchOffset + lhsRows * lhsCols)",
+    "rhs.subarray(rhsBatchOffset, rhsBatchOffset + rhsRows * rhsCols)",
+    "rows: lhsRows",
+    "shared: lhsCols",
+    "cols: rhsCols",
+  ]);
+  requireIncludes(read("src/ts/smokes/ts_source_smoke.ts"), "src/ts/smokes/ts_source_smoke.ts", "no-grad Tensor.bmm native eager smoke", [
+    "const nativeBmmValues = Float32Array.from({ length: 2 * 8 * 8 }",
+    "const nativeBmmIdentity = Float32Array.from({ length: 2 * 8 * 8 }",
+    "const nativeBmm = noGradNativeMatmul.bmm",
+    "\"tensor math no-grad native bmm hook\"",
+    "expectSame(nativeMatmulCalls, 3, \"tensor math no-grad native bmm hook count\")",
+  ]);
   if (scripts["dev:perf:q8-prompt:viable"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase,semantic node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json dev:perf:q8-prompt:viable must keep the incremental viable Q8 prompt microscope");
   }

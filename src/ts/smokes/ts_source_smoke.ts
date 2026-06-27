@@ -395,13 +395,21 @@ const noGradNativeMatmul = createTensorMathHelpers({
   isGradEnabled: () => false,
   nativeEagerMatmulInto(output, left, right, options) {
     nativeMatmulCalls += 1;
-    expectSame(options, { rows: 2, shared: 2, cols: 2 }, "tensor math native matmul options");
-    const leftData = left.data;
-    const rightData = right.data;
-    output[0] = leftData[0] * rightData[0] + leftData[1] * rightData[2];
-    output[1] = leftData[0] * rightData[1] + leftData[1] * rightData[3];
-    output[2] = leftData[2] * rightData[0] + leftData[3] * rightData[2];
-    output[3] = leftData[2] * rightData[1] + leftData[3] * rightData[3];
+    if (nativeMatmulCalls === 1) {
+      expectSame(options, { rows: 2, shared: 2, cols: 2 }, "tensor math native matmul options");
+    }
+    const leftData = left.data ?? left;
+    const rightData = right.data ?? right;
+    const rows = options.rows;
+    const shared = options.shared;
+    const cols = options.cols;
+    for (let r = 0; r < rows; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        let acc = 0;
+        for (let k = 0; k < shared; k += 1) acc += leftData[r * shared + k] * rightData[k * cols + c];
+        output[r * cols + c] = acc;
+      }
+    }
     return output;
   },
 });
@@ -415,6 +423,21 @@ expectSame({ data: nativeMm.data, shape: nativeMm.shape, requiresGrad: nativeMm.
   requiresGrad: false,
 }, "tensor math no-grad native matmul hook");
 expectSame(nativeMatmulCalls, 1, "tensor math no-grad native matmul hook count");
+const nativeBmmValues = Float32Array.from({ length: 2 * 8 * 8 }, (_value, index) => index % 11 - 5);
+const nativeBmmIdentity = Float32Array.from({ length: 2 * 8 * 8 }, (_value, index) => {
+  const matrixIndex = index % 64;
+  return Math.floor(matrixIndex / 8) === matrixIndex % 8 ? 1 : 0;
+});
+const nativeBmm = noGradNativeMatmul.bmm(
+  new TensorDataSmokeTensor(nativeBmmValues, [2, 8, 8]),
+  new TensorDataSmokeTensor(nativeBmmIdentity, [2, 8, 8]),
+);
+expectSame({ data: nativeBmm.data, shape: nativeBmm.shape, requiresGrad: nativeBmm.requiresGrad }, {
+  data: Array.from(nativeBmmValues),
+  shape: [2, 8, 8],
+  requiresGrad: false,
+}, "tensor math no-grad native bmm hook");
+expectSame(nativeMatmulCalls, 3, "tensor math no-grad native bmm hook count");
 const nativeElementwiseCalls: string[] = [];
 const nativeWhereCalls: string[] = [];
 const noGradNativeElementwise = createTensorMathHelpers({

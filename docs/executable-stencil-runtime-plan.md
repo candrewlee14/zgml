@@ -2792,7 +2792,10 @@ Current frontend slice:
   per-call `seed` options), and
   PyTorch-familiar construction helpers (`zeros`, `ones`, `full`, `rand`,
   `randn`, `linspace`, `arange`, `scalar`, `parameter`, `param`) on both the
-  module and `Tensor` class; eager batched
+  module and `Tensor` class. No-grad `Tensor.bmm` now routes each batch through
+  the same Zig native eager matmul bridge used by `Tensor.matmul`, keeping the
+  PyTorch-like API small while moving the inference/evaluation path into the
+  native substrate; eager batched
   `nn.linear`, `nn.embedding`, `nn.dropout`, `nn.sequential`,
   `gelu`/`relu`/`silu`/`sigmoid` activations, unary elementwise modules
   (`exp`, `log`, `neg`, `recip`, `abs`, `sqrt`, `square`/`sqr`, `sign`/`sgn`, `step`), traceable shape modules (`reshape`, `view`,

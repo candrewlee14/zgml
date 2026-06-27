@@ -745,21 +745,37 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
       throw new Error(`tensor bmm shape mismatch: [${batch},${lhsRows},${lhsCols}] cannot multiply [${rhsBatch},${rhsRows},${rhsCols}]`);
     }
     const out = new Float32Array(batch * lhsRows * rhsCols);
+    const gradEnabled = gradModeEnabled();
+    const nativeBmmMinMultiplyAdds = 512;
+    const useNative = !gradEnabled && typeof nativeEagerMatmulInto === "function" && lhsRows * lhsCols * rhsCols >= nativeBmmMinMultiplyAdds;
     for (let b = 0; b < batch; b += 1) {
       const lhsBatchOffset = b * lhsRows * lhsCols;
       const rhsBatchOffset = b * rhsRows * rhsCols;
       const outBatchOffset = b * lhsRows * rhsCols;
-      for (let r = 0; r < lhsRows; r += 1) {
-        for (let c = 0; c < rhsCols; c += 1) {
-          let acc = 0;
-          for (let k = 0; k < lhsCols; k += 1) {
-            acc += tensor.data[lhsBatchOffset + r * lhsCols + k] * rhs[rhsBatchOffset + k * rhsCols + c];
+      if (useNative) {
+        nativeEagerMatmulInto!(
+          out.subarray(outBatchOffset, outBatchOffset + lhsRows * rhsCols),
+          tensor.data.subarray(lhsBatchOffset, lhsBatchOffset + lhsRows * lhsCols),
+          rhs.subarray(rhsBatchOffset, rhsBatchOffset + rhsRows * rhsCols),
+          {
+            rows: lhsRows,
+            shared: lhsCols,
+            cols: rhsCols,
+          },
+        );
+      } else {
+        for (let r = 0; r < lhsRows; r += 1) {
+          for (let c = 0; c < rhsCols; c += 1) {
+            let acc = 0;
+            for (let k = 0; k < lhsCols; k += 1) {
+              acc += tensor.data[lhsBatchOffset + r * lhsCols + k] * rhs[rhsBatchOffset + k * rhsCols + c];
+            }
+            out[outBatchOffset + r * rhsCols + c] = acc;
           }
-          out[outBatchOffset + r * rhsCols + c] = acc;
         }
       }
     }
-    const needsGrad = gradModeEnabled() && (tensor.requiresGrad || Boolean(rhsTensor && rhsTensor.requiresGrad));
+    const needsGrad = gradEnabled && (tensor.requiresGrad || Boolean(rhsTensor && rhsTensor.requiresGrad));
     const result = new TensorClass(out, [batch, lhsRows, rhsCols], {
       requiresGrad: needsGrad,
       prev: needsGrad ? [tensor, ...(rhsTensor ? [rhsTensor] : [])] : [],
