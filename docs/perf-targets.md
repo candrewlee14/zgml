@@ -443,12 +443,13 @@ machine for both prompt/prefill and decode.
   `down_partial_to_output=48.00`. That is larger than the existing
   output-sized residual/norm buffers. The Metal runtime now allocates and
   profiles reusable backend-owned scratch for this contract, but keeps the
-  allocation precise for the current mixed path: the existing tiled row-chain
-  tail reserves only the `9216` byte partial surface it consumes while the
-  artifact still records the `14155776` byte future down-partial target. The next
-  semantic-width implementation needs to either consume that larger target,
-  prove an equivalent accumulation strategy, or use a streamed hidden-tile design
-  that avoids materializing all partials.
+  allocation policy-aware and precise for the current mixed path: default
+  semantic-command Programs reserve no semantic-width scratch, while the
+  throughput-candidate tiled row-chain tail reserves only the `9216` byte partial
+  surface it consumes and still records the `14155776` byte future down-partial
+  target. The next semantic-width implementation needs to either consume that
+  larger target, prove an equivalent accumulation strategy, or use a streamed
+  hidden-tile design that avoids materializing all partials.
   A follow-up finalize-path probe tried replacing
   `qmatmul_row_chain_tiled_finalize_tiles_f32` with the coarser row-tile
   `qmatmul_row_chain_tiled_finalize_f32` to avoid repeated RMS reductions

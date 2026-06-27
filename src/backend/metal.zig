@@ -5854,7 +5854,8 @@ fn semanticScratchRequirementForShape(rows: u32, hidden: u32, input: u32, output
     };
 }
 
-fn semanticScratchRequirementForCommand(ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) ?SemanticWidthScratchRequirement {
+fn semanticScratchRequirementForCommand(policy: program_mod.CommandStreamPolicy, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) ?SemanticWidthScratchRequirement {
+    if (!policy.fuse_projection_row_chain_two_phase_candidate) return null;
     if (command.kind == .semantic_ffn_sublayer) {
         if (command.op_count != 9) return null;
         const start: usize = @intCast(command.op_start);
@@ -5880,13 +5881,56 @@ fn semanticScratchRequirementForCommand(ops: []const backend_mod.DeviceOp, comma
     return null;
 }
 
-fn semanticWidthScratchRequirement(stencil: *const program_mod.ProgramStencil) SemanticWidthScratchRequirement {
+fn semanticWidthScratchRequirement(stencil: *const program_mod.ProgramStencil, policy: program_mod.CommandStreamPolicy) SemanticWidthScratchRequirement {
     var requirement = SemanticWidthScratchRequirement{};
     for (stencil.kernel_plan.commands) |command| {
-        const next = semanticScratchRequirementForCommand(stencil.ops, command) orelse continue;
+        const next = semanticScratchRequirementForCommand(policy, stencil.ops, command) orelse continue;
         requirement.merge(next);
     }
     return requirement;
+}
+
+test "semantic width scratch requirement follows executable policy" {
+    const rows: u32 = 128;
+    const input: u32 = 576;
+    const hidden: u32 = 1536;
+    const output: u32 = 576;
+    const hidden_elems = rows * hidden;
+    const output_elems = rows * output;
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = rows, .N = hidden, .K = input } },
+        .{ .elementwise = .{ .op = .silu, .dst = 2, .src0 = 1, .src1 = 1, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 1, .M = rows, .N = hidden, .K = input } },
+        .{ .elementwise = .{ .op = .mul, .dst = 3, .src0 = 2, .src1 = 1, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 4, .input = 3, .weight_idx = 2, .M = rows, .N = output, .K = hidden } },
+        .{ .elementwise = .{ .op = .add, .dst = 5, .src0 = 4, .src1 = 5, .n = output_elems } },
+        .{ .rmsnorm = .{ .dst = 6, .src = 5, .rows = rows, .cols = output } },
+        .{ .repeat = .{
+            .dst = 8,
+            .src = 7,
+            .n = output_elems,
+            .src_ne = .{ output, 1, 1, 1 },
+            .dst_ne = .{ output, rows, 1, 1 },
+            .src_strides = .{ 1, output, output, output },
+            .dst_strides = .{ 1, output, output_elems, output_elems },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 9, .src0 = 6, .src1 = 8, .n = output_elems } },
+    };
+    const command = program_mod.ProgramCommand.contiguous(.semantic_ffn_sublayer, 0, 9);
+
+    try std.testing.expect(semanticScratchRequirementForCommand(program_mod.CommandStreamPolicy.promptProjectionRowChainCommand(), &ops, command) == null);
+
+    const requirement = semanticScratchRequirementForCommand(program_mod.CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate(), &ops, command) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u64, 1), requirement.candidates);
+    try std.testing.expectEqual(@as(u32, rows), requirement.rows);
+    try std.testing.expectEqual(@as(u32, hidden), requirement.hidden);
+    try std.testing.expectEqual(@as(u32, input), requirement.input);
+    try std.testing.expectEqual(@as(u32, output), requirement.output);
+    try std.testing.expectEqual(@as(u64, 48), requirement.hidden_tiles);
+    try std.testing.expectEqual(@as(usize, 786432), requirement.product_bytes);
+    try std.testing.expectEqual(@as(usize, 14155776), requirement.down_partial_bytes);
+    try std.testing.expectEqual(@as(usize, 294912), requirement.output_bytes);
+    try std.testing.expectEqual(@as(usize, 9216), requirement.runtimeScratchBytes());
 }
 
 fn allocateSemanticWidthScratch(device: *anyopaque, requirement: SemanticWidthScratchRequirement) !?DeviceBuffer {
@@ -10266,7 +10310,7 @@ fn compileProgramInner(self: *MetalBackend, program: backend_mod.DeviceProgram, 
     errdefer plan.deinit(alloc);
     const command_shape = try plan.executableCommandShape();
 
-    const semantic_width_scratch_requirement = semanticWidthScratchRequirement(&program_stencil);
+    const semantic_width_scratch_requirement = semanticWidthScratchRequirement(&program_stencil, kernelizer.command_policy);
     const semantic_width_scratch = try allocateSemanticWidthScratch(self.device, semantic_width_scratch_requirement);
     errdefer releaseOptionalDeviceBuffer(semantic_width_scratch);
 
