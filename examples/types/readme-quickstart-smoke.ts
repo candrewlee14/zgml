@@ -121,7 +121,8 @@ class TorchClassifier extends torch.nn.Module<readonly [2], readonly [2]> {
   forward(input: Tensor<readonly [2]>): Tensor<readonly [2]>;
   forward(input: Tensor): Tensor;
   forward(input: Tensor): Tensor {
-    return this.graph.forward(input);
+    const forward = this.graph.forward as unknown as (value: Tensor) => Tensor;
+    return forward(input);
   }
 }
 
@@ -205,7 +206,8 @@ class Classifier extends nn.Module<readonly [2], readonly [2]> {
   forward(input: Tensor<readonly [2]>): Tensor<readonly [2]>;
   forward(input: Tensor): Tensor;
   forward(input: Tensor): Tensor {
-    return this.graph.forward(input);
+    const forward = this.graph.forward as unknown as (value: Tensor) => Tensor;
+    return forward(input);
   }
 }
 
@@ -254,7 +256,8 @@ class BunClassifier extends bunNn.Module<readonly [2], readonly [2]> {
   forward(input: BunTensor<readonly [2]>): BunTensor<readonly [2]>;
   forward(input: BunTensor): BunTensor;
   forward(input: BunTensor): BunTensor {
-    return this.graph.forward(input);
+    const forward = this.graph.forward as unknown as (value: BunTensor) => BunTensor;
+    return forward(input);
   }
 }
 

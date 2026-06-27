@@ -72,8 +72,12 @@ const model = nn.sequential([
   nn.gelu(),
   nn.linear(4, 2),
 ] as const);
-const prediction: Tensor<readonly [2]> = model.forward(tensor([1, 2, 3], [3] as const));
-const batchPrediction: Tensor<readonly [2, 2]> = model.forward(features);
+const modelForward = model.forward as unknown as {
+  (input: Tensor<readonly [3]>): Tensor<readonly [2]>;
+  (input: Tensor<readonly [2, 3]>): Tensor<readonly [2, 2]>;
+};
+const prediction: Tensor<readonly [2]> = modelForward(tensor([1, 2, 3], [3] as const));
+const batchPrediction: Tensor<readonly [2, 2]> = modelForward(features);
 const support: ModuleCompileSupport<readonly [3], readonly [2]> = model.compileSupport({ backend: "cpu", inputShape: [3] as const });
 const plan: ModuleCompileExplanation<readonly [3], readonly [2]> = model.compilePlan({ backend: "cpu", inputShape: [3] as const });
 const program: Program<readonly [3], readonly [2]> = compile.compile(model, { backend: "cpu", inputShape: [3] as const });

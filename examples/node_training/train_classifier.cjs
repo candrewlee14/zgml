@@ -138,6 +138,36 @@ if (!(highLevelAfter < highLevelBefore * 0.01) || highLevelClass !== 1) {
   throw new Error(`expected train.fitClassifier to learn class 1; before=${highLevelBefore}, after=${highLevelAfter}, logits=${Array.from(highLevelLogits.data)}`);
 }
 
+const ergonomicNativeModel = createClassifierGraph();
+const ergonomicNativeOptimizer = optim.adamW(ergonomicNativeModel, { lr: 0.05, weightDecay: 0.0001 });
+const ergonomicNativeLoader = data.dataLoader(samples, { batchSize: 2, shuffle: true, seed: 17 });
+const ergonomicNativeBefore = scalar(loss.crossEntropy(ergonomicNativeModel.forward(probeInput), probeTarget, { classes: 2 }));
+const ergonomicNativeFit = train.fit(ergonomicNativeModel, ergonomicNativeLoader, {
+  optimizer: ergonomicNativeOptimizer,
+  loss: criterion,
+  epochs: 80,
+  requireNative: true,
+});
+const ergonomicNativePlan = ergonomicNativeFit.compiledPlan;
+const ergonomicNativeLogits = ergonomicNativeModel.forward(probeInput);
+const ergonomicNativeAfter = scalar(loss.crossEntropy(ergonomicNativeLogits, probeTarget, { classes: 2 }));
+const ergonomicNativeClass = train.predictClasses(ergonomicNativeLogits, { classes: 2 })[0];
+if (
+  !train.isTrainFitEvidence(ergonomicNativeFit) ||
+  ergonomicNativeFit.native !== true ||
+  ergonomicNativeFit.backend !== "cpu" ||
+  ergonomicNativePlan?.loweredBy !== "zig-ffi" ||
+  ergonomicNativePlan?.runtimePath !== "JS/TS module API -> Zig native training kernel" ||
+  ergonomicNativePlan?.kernels[0] !== "zgml_train_mlp_relu_cross_entropy_adamw_f32" ||
+  ergonomicNativeFit.steps !== 240 ||
+  ergonomicNativeFit.losses.length !== 240
+) {
+  throw new Error(`ergonomic train.fit native path must prove Zig-backed training: ${JSON.stringify(ergonomicNativeFit)}`);
+}
+if (!(ergonomicNativeAfter < ergonomicNativeBefore * 0.01) || ergonomicNativeClass !== 1) {
+  throw new Error(`expected ergonomic native trainer to learn class 1; before=${ergonomicNativeBefore}, after=${ergonomicNativeAfter}, logits=${Array.from(ergonomicNativeLogits.data)}`);
+}
+
 const nativeModel = createClassifierGraph();
 const nativeOptimizer = optim.adamW(nativeModel, { lr: 0.05, weightDecay: 0.0001 });
 const nativeLoader = data.dataLoader(samples, { batchSize: 2, shuffle: true, seed: 17 });
@@ -284,4 +314,4 @@ assertClose(restoredCompiledLogitsInto[1], eagerLogits.data[1], 1e-5, "executeIn
 restoredSession.free();
 restoredProgram.free();
 
-console.log(`zgml classifier training smoke ok: before=${before.toFixed(6)} after=${after.toFixed(6)} steps=${fit.steps} nativeClass=${nativeClass} compiledClass=${compiledClass} restoredClass=${restoredCompiledClass}`);
+console.log(`zgml classifier training smoke ok: before=${before.toFixed(6)} after=${after.toFixed(6)} steps=${fit.steps} ergonomicNativeClass=${ergonomicNativeClass} nativeClass=${nativeClass} compiledClass=${compiledClass} restoredClass=${restoredCompiledClass}`);

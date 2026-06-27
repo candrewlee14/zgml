@@ -451,37 +451,37 @@ function checkPackageExports(errors) {
   if (packageJson.scripts?.["bench:trend"] !== "node scripts/bench_status.cjs --trend-gate") {
     errors.push("package.json bench:trend must stay the source-checkout latest-vs-best benchmark regression gate");
   }
-  if (packageJson.scripts?.["bench:frontier:gate"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
+  if (packageJson.scripts?.["bench:frontier:gate"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build && BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:gate must stay the rebuild-backed scheduler/kernelizer frontier evidence gate");
   }
   if (packageJson.scripts?.["bench:frontier:gate:run"] !== "BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:gate:run must stay the no-rebuild scheduler/kernelizer frontier rerun");
   }
-  if (packageJson.scripts?.["bench:frontier:row-chain"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_FILTER=qrow ./zig-out/bin/bench-frontier") {
+  if (packageJson.scripts?.["bench:frontier:row-chain"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build && BENCH_FRONTIER_FILTER=qrow ./zig-out/bin/bench-frontier") {
     errors.push("package.json bench:frontier:row-chain must stay the ReleaseFast row-chain-only frontier microscope");
   }
   if (packageJson.scripts?.["bench:frontier:row-chain:run"] !== "BENCH_FRONTIER_FILTER=qrow ./zig-out/bin/bench-frontier") {
     errors.push("package.json bench:frontier:row-chain:run must stay the no-rebuild row-chain-only frontier microscope");
   }
-  if (packageJson.scripts?.["bench:frontier:row-chain-region"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_FILTER=\"qrow region\" ./zig-out/bin/bench-frontier") {
+  if (packageJson.scripts?.["bench:frontier:row-chain-region"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build && BENCH_FRONTIER_FILTER=\"qrow region\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json bench:frontier:row-chain-region must stay the ReleaseFast x7 row-chain region microscope");
   }
   if (packageJson.scripts?.["bench:frontier:row-chain-region:run"] !== "BENCH_FRONTIER_FILTER=\"qrow region\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json bench:frontier:row-chain-region:run must stay the no-rebuild x7 row-chain region microscope");
   }
-  if (packageJson.scripts?.["dev:perf:frontier:row-chain-region"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=\"qrow region\" node scripts/check_frontier_bench.cjs") {
+  if (packageJson.scripts?.["dev:perf:frontier:row-chain-region"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=\"qrow region\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:row-chain-region must stay the incremental checked x7 row-chain region microscope");
   }
   if (packageJson.scripts?.["dev:perf:frontier:row-chain-region:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=\"qrow region\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:row-chain-region:run must stay the no-rebuild checked x7 row-chain region microscope");
   }
-  if (packageJson.scripts?.["dev:perf:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+  if (packageJson.scripts?.["dev:perf:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qproj must stay the incremental checked qproj frontier microscope");
   }
   if (packageJson.scripts?.["dev:perf:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qproj:run must stay the no-rebuild checked qproj frontier microscope");
   }
-  if (packageJson.scripts?.["bench:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+  if (packageJson.scripts?.["bench:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:qproj must stay the ReleaseFast qproj-only frontier evidence gate");
   }
   if (packageJson.scripts?.["bench:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {

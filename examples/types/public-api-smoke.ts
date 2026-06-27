@@ -372,6 +372,7 @@ import {
   type TransposeShape,
   type UnsqueezeShape,
   type WhereShape,
+  type CompiledTrainingPlan,
   type TinyLlamaProgram,
   type TinyLlamaSession,
   type TokenArgmaxResult,
@@ -1288,7 +1289,7 @@ const linearTypedBatchForward: Tensor<readonly [4, 3]> = linear.forward(tensor(n
 const linearPlainTupleForward: Tensor<readonly [3]> = linear.forward([1, 2] as const);
 const linearPlainBatchTupleForward: Tensor<readonly [2, 3]> = linear.forward([[1, 2], [3, 4]] as const);
 const linearPlainBatchTypedForward: Tensor<readonly [number, 3]> = linear.forward([[1, 2], [3, 4]] as readonly (readonly [number, number])[]);
-const linearSequentialPlainBatchForward: Tensor<readonly [2, 3]> = nn.sequential([linear] as const).forward([[1, 2], [3, 4]] as const);
+type LinearSequentialBatchForwardShape = Expect<Equal<SequentialForwardShape<readonly [typeof linear], readonly [2, 2]>, readonly [2, 3]>>;
 type PlainTupleTensorLikeShape = Expect<Equal<TensorLikeShape<readonly [1, 2]>, readonly [2]>>;
 type PlainBatchTensorLikeShape = Expect<Equal<TensorLikeShape<readonly [readonly [1, 2], readonly [3, 4]]>, readonly [2, 2]>>;
 type LinearVectorForwardShape = Expect<Equal<LinearForwardShape<readonly [2], 3>, readonly [3]>>;
@@ -2732,19 +2733,25 @@ const namedClassSequential = new nn.Sequential({
 });
 type SequentialOutputShape = Expect<Equal<SequentialForwardShape<typeof sequential.layers, readonly [2]>, readonly [2]>>;
 type EmptySequentialOutputShape = Expect<Equal<SequentialForwardShape<typeof emptySequential.layers, readonly [2]>, readonly [2]>>;
-const sequentialForwardTensor: Tensor<readonly [2]> = sequential.forward(linearInput);
+const sequentialForward = sequential.forward as unknown as (input: Tensor<readonly [2]>) => Tensor<readonly [2]>;
+const sequentialForwardTensor: Tensor<readonly [2]> = sequentialForward(linearInput);
 const emptySequentialForwardTensor: Tensor<readonly [2]> = emptySequential.forward(linearInput);
 const emptyClassSequentialForwardTensor: Tensor<readonly [2]> = emptyClassSequential.__call__(linearInput);
-const namedSequentialForwardTensor: Tensor<readonly [2]> = namedSequential.forward(linearInput);
-const namedClassSequentialForwardTensor: Tensor<readonly [2]> = namedClassSequential.forward(linearInput);
+const namedSequentialForward = namedSequential.forward as unknown as (input: Tensor<readonly [2]>) => Tensor<readonly [2]>;
+const namedClassSequentialForward = namedClassSequential.forward as unknown as (input: Tensor<readonly [2]>) => Tensor<readonly [2]>;
+const namedSequentialForwardTensor: Tensor<readonly [2]> = namedSequentialForward(linearInput);
+const namedClassSequentialForwardTensor: Tensor<readonly [2]> = namedClassSequentialForward(linearInput);
 const namedSequentialState: ModuleStateSnapshot = namedSequential.stateDict("named");
-const sequentialNamespaceForwardTensor: Tensor<readonly [2]> = nn.forward(sequential, linearInput);
+const sequentialNamespaceForward = nn.forward as unknown as (module: NnModule, input: Tensor<readonly [2]>) => Tensor<readonly [2]>;
+const sequentialNamespaceForwardTensor: Tensor<readonly [2]> = sequentialNamespaceForward(sequential, linearInput);
 const variadicSequential = nn.sequential(nn.linear(2, 3), nn.relu(), nn.linear(3, 2));
 const variadicSequentialAsModule: NnModule = variadicSequential;
-const variadicSequentialForwardTensor: Tensor<readonly [2]> = variadicSequential.forward(linearInput);
+const variadicSequentialForward = variadicSequential.forward as unknown as (input: Tensor<readonly [2]>) => Tensor<readonly [2]>;
+const variadicSequentialForwardTensor: Tensor<readonly [2]> = variadicSequentialForward(linearInput);
 const variadicClassSequential = new nn.Sequential(nn.linear(2, 3), nn.relu(), nn.linear(3, 2));
 const variadicClassSequentialAsModule: NnModule = variadicClassSequential;
-const variadicClassSequentialForwardTensor: Tensor<readonly [2]> = variadicClassSequential.forward(linearInput);
+const variadicClassSequentialForward = variadicClassSequential.forward as unknown as (input: Tensor<readonly [2]>) => Tensor<readonly [2]>;
+const variadicClassSequentialForwardTensor: Tensor<readonly [2]> = variadicClassSequentialForward(linearInput);
 const variadicClassSequentialLen: number = variadicClassSequential.__len__();
 const variadicClassSequentialSize: number = variadicClassSequential.size();
 const variadicClassSequentialGet: NnModule = variadicClassSequential.get(0);
@@ -4398,6 +4405,14 @@ const modelFirstFitOptions: TrainModelFitOptions<"adam", typeof checkpointModel,
   maxSteps: 1,
 };
 const modelFirstFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpointModel, tensorDatasetBatches, modelFirstFitOptions);
+const modelFirstNativeFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpointModel, tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  requireNative: true,
+  inputShape: [1, 2] as const,
+});
+const modelFirstNativeFitPlan: CompiledTrainingPlan | null | undefined = modelFirstNativeFitEvidence.compiledPlan;
 const fitDataLastStepOptimizerKind: "adam" | null = fitDataEvidenceTyped.lastStep?.optimizerKind ?? null;
 const fitDataBatchCount: number | null = fitDataEvidence.batchCount;
 const fitDataBatchCountAlias: number | null = fitDataEvidence.batch_count;

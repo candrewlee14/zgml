@@ -35,6 +35,7 @@ export type {
   TensorIndexSelectShape,
   TensorJSON,
   TensorLike,
+  TensorLikeShape,
   TensorNativeBufferOptions,
   TensorNestedArray,
   TensorOptions,
