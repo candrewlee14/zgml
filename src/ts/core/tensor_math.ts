@@ -63,6 +63,12 @@ type NativeEagerMatmulInto = (
   rhs: unknown,
   options?: Record<string, unknown>,
 ) => Float32Array;
+type NativeEagerElementwiseInto = (
+  output: Float32Array,
+  lhs: unknown,
+  rhs: unknown,
+  options: Readonly<{ op: string }>,
+) => Float32Array;
 
 export type TensorMathHelpersOptions = Readonly<{
   Tensor?: TensorConstructor;
@@ -72,6 +78,8 @@ export type TensorMathHelpersOptions = Readonly<{
   scalarTensor: ScalarTensorCallback;
   isGradEnabled?: () => boolean;
   nativeEagerMatmulInto?: NativeEagerMatmulInto;
+  nativeEagerElementwiseInto?: NativeEagerElementwiseInto;
+  nativeEagerElementwiseMinLength?: number;
 }>;
 
 export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
@@ -82,6 +90,10 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   const addTensorGrad = options.addTensorGrad;
   const scalarTensor = options.scalarTensor;
   const nativeEagerMatmulInto = options.nativeEagerMatmulInto;
+  const nativeEagerElementwiseInto = options.nativeEagerElementwiseInto;
+  const nativeEagerElementwiseMinLength = Number.isSafeInteger(options.nativeEagerElementwiseMinLength) && Number(options.nativeEagerElementwiseMinLength) >= 0
+    ? Number(options.nativeEagerElementwiseMinLength)
+    : 512;
   const gradModeEnabled = typeof options.isGradEnabled === "function"
     ? options.isGradEnabled
     : isGradEnabled;
@@ -97,15 +109,46 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     return TensorClass as TensorConstructor;
   }
 
-  function binary(tensor: TensorMathTensor, other: unknown, op: BinaryOp, gradLeft: BinaryGrad, gradRight: BinaryGrad, label: string) {
+  function sameShape(left: readonly number[], right: readonly number[]) {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  }
+
+  function nativeElementwiseBinaryInto(
+    output: Float32Array,
+    tensor: TensorMathTensor,
+    rhsTensor: TensorMathTensor | null,
+    rhs: Float32Array,
+    rhsShape: readonly number[],
+    op: string,
+  ) {
+    if (typeof nativeEagerElementwiseInto !== "function") return false;
+    if (output.length < nativeEagerElementwiseMinLength) return false;
+    if (!sameShape(tensor.shape, rhsShape) && rhs.length !== 1) return false;
+    nativeEagerElementwiseInto(output, tensor, rhsTensor ?? rhs, { op });
+    return true;
+  }
+
+  function nativeElementwiseUnaryInto(output: Float32Array, tensor: TensorMathTensor, op: string) {
+    if (typeof nativeEagerElementwiseInto !== "function") return false;
+    if (output.length < nativeEagerElementwiseMinLength) return false;
+    nativeEagerElementwiseInto(output, tensor, null, { op });
+    return true;
+  }
+
+  function binary(tensor: TensorMathTensor, other: unknown, op: BinaryOp, gradLeft: BinaryGrad, gradRight: BinaryGrad, label: string, nativeOp = label) {
     const TensorClass = tensorClass();
     const rhsTensor = other instanceof TensorClass ? other as TensorMathTensor : null;
     const rhs = f32(other);
     const rhsShape = rhsTensor ? rhsTensor.shape : inferredOperandShape(rhs, tensor.shape);
     const plan = broadcastPlan(tensor.shape, rhsShape, label);
     const out = new Float32Array(shapeProduct(plan.shape));
-    for (let i = 0; i < out.length; i += 1) out[i] = op(tensor.data[plan.lhsIndex[i]], rhs[plan.rhsIndex[i]]);
-    const needsGrad = gradModeEnabled() && (tensor.requiresGrad || Boolean(rhsTensor && rhsTensor.requiresGrad));
+    const gradEnabled = gradModeEnabled();
+    const needsGrad = gradEnabled && (tensor.requiresGrad || Boolean(rhsTensor && rhsTensor.requiresGrad));
+    if (!gradEnabled && nativeElementwiseBinaryInto(out, tensor, rhsTensor, rhs, rhsShape, nativeOp)) {
+      // Native eager elementwise currently accepts same-shape or scalar RHS. General broadcasting stays in TS.
+    } else {
+      for (let i = 0; i < out.length; i += 1) out[i] = op(tensor.data[plan.lhsIndex[i]], rhs[plan.rhsIndex[i]]);
+    }
     const result = new TensorClass(out, plan.shape, {
       requiresGrad: needsGrad,
       prev: needsGrad ? [tensor, ...(rhsTensor ? [rhsTensor] : [])] : [],
@@ -278,6 +321,11 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function sqr(tensor: TensorMathTensor) {
+    if (!gradModeEnabled()) {
+      const TensorClass = tensorClass();
+      const out = new Float32Array(tensor.length);
+      if (nativeElementwiseUnaryInto(out, tensor, "sqr")) return new TensorClass(out, tensor.shape);
+    }
     return mul(tensor, tensor);
   }
 
@@ -296,7 +344,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function recip(tensor: TensorMathTensor) {
-    return unary(tensor, (x) => 1 / x, (x) => -1 / (x * x));
+    return unary(tensor, (x) => 1 / x, (x) => -1 / (x * x), "recip");
   }
 
   function reciprocal(tensor: TensorMathTensor) {
@@ -304,7 +352,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function abs(tensor: TensorMathTensor) {
-    return unary(tensor, Math.abs, (x) => x < 0 ? -1 : x > 0 ? 1 : 0);
+    return unary(tensor, Math.abs, (x) => x < 0 ? -1 : x > 0 ? 1 : 0, "abs");
   }
 
   function sgn(tensor: TensorMathTensor) {
@@ -348,7 +396,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function sqrt(tensor: TensorMathTensor) {
-    return unary(tensor, Math.sqrt, (x) => 0.5 / Math.sqrt(x));
+    return unary(tensor, Math.sqrt, (x) => 0.5 / Math.sqrt(x), "sqrt");
   }
 
   function rsqrt(tensor: TensorMathTensor) {
@@ -603,11 +651,15 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     return new TensorClass(out, tensor.shape);
   }
 
-  function unary(tensor: TensorMathTensor, fn: UnaryOp, derivative: UnaryOp) {
+  function unary(tensor: TensorMathTensor, fn: UnaryOp, derivative: UnaryOp, nativeOp?: string) {
     const TensorClass = tensorClass();
     const out = new Float32Array(tensor.length);
     const gradEnabled = gradModeEnabled();
-    for (let i = 0; i < out.length; i += 1) out[i] = fn(tensor.data[i]);
+    if (!gradEnabled && nativeOp && nativeElementwiseUnaryInto(out, tensor, nativeOp)) {
+      // Native eager elementwise owns the no-grad tensor-sized path for supported unary ops.
+    } else {
+      for (let i = 0; i < out.length; i += 1) out[i] = fn(tensor.data[i]);
+    }
     const result = new TensorClass(out, tensor.shape, {
       requiresGrad: gradEnabled && tensor.requiresGrad,
       prev: gradEnabled && tensor.requiresGrad ? [tensor] : [],
@@ -660,7 +712,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function exp(tensor: TensorMathTensor) {
-    return unary(tensor, Math.exp, Math.exp);
+    return unary(tensor, Math.exp, Math.exp, "exp");
   }
 
   function expm1(tensor: TensorMathTensor) {
@@ -668,7 +720,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function log(tensor: TensorMathTensor) {
-    return unary(tensor, Math.log, (x) => 1 / x);
+    return unary(tensor, Math.log, (x) => 1 / x, "log");
   }
 
   function log1p(tensor: TensorMathTensor) {
@@ -676,7 +728,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function neg(tensor: TensorMathTensor) {
-    return unary(tensor, (x) => -x, () => -1);
+    return unary(tensor, (x) => -x, () => -1, "neg");
   }
 
   function negative(tensor: TensorMathTensor) {

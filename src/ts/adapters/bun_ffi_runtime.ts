@@ -1154,6 +1154,7 @@ const {
   Tensor,
   isGradEnabled: projectedIsGradEnabled,
   nativeEagerMatmulInto: (output, lhs, rhs, options) => nativeEager.matmulInto(output, lhs, rhs, options),
+  nativeEagerElementwiseInto: (output, lhs, rhs, options) => nativeEager.elementwiseInto(output, lhs, rhs, options),
   meanSquaredError: (tensor: Tensor, target: unknown): Tensor => {
     const loss = meanSquaredError(tensor, target as TensorLike);
     if (!(loss instanceof Tensor)) throw new Error("adapter tensor meanSquaredError must return a Tensor loss");

@@ -414,6 +414,44 @@ expectSame({ data: nativeMm.data, shape: nativeMm.shape, requiresGrad: nativeMm.
   requiresGrad: false,
 }, "tensor math no-grad native matmul hook");
 expectSame(nativeMatmulCalls, 1, "tensor math no-grad native matmul hook count");
+const nativeElementwiseCalls: string[] = [];
+const noGradNativeElementwise = createTensorMathHelpers({
+  getTensorClass: () => TensorDataSmokeTensor,
+  f32: tensorData.f32,
+  addTensorGrad: tensorData.addTensorGrad,
+  scalarTensor: (value, requiresGrad = false) =>
+    new TensorDataSmokeTensor(Float32Array.of(value), [1], { requiresGrad }),
+  isGradEnabled: () => false,
+  nativeEagerElementwiseMinLength: 0,
+  nativeEagerElementwiseInto(output, left, right, options) {
+    nativeElementwiseCalls.push(options.op);
+    const leftData = left.data;
+    const rightData = right === null ? null : right.data ?? right;
+    for (let i = 0; i < output.length; i += 1) {
+      const rhsValue = rightData === null ? 0 : rightData[rightData.length === 1 ? 0 : i];
+      switch (options.op) {
+        case "add": output[i] = leftData[i] + rhsValue; break;
+        case "mul": output[i] = leftData[i] * rhsValue; break;
+        case "sqr": output[i] = leftData[i] * leftData[i]; break;
+        default: throw new Error(`unexpected native elementwise op ${options.op}`);
+      }
+    }
+    return output;
+  },
+});
+expectSame(noGradNativeElementwise.mul(
+  new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4), [2, 2]),
+  2,
+).data, [2, 4, 6, 8], "tensor math no-grad native scalar mul hook");
+expectSame(noGradNativeElementwise.add(
+  new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4), [2, 2]),
+  new TensorDataSmokeTensor(Float32Array.of(10, 20, 30, 40), [2, 2]),
+).data, [11, 22, 33, 44], "tensor math no-grad native same-shape add hook");
+expectSame(noGradNativeElementwise.sqr(
+  new TensorDataSmokeTensor(Float32Array.of(1, -2, 3, -4), [2, 2]),
+).data, [1, 4, 9, 16], "tensor math no-grad native unary sqr hook");
+expectSame(noGradNativeElementwise.add(math3d, mathTrailing).data.slice(0, 4), [11, 22, 33, 44], "tensor math no-grad broadcast fallback keeps TS path");
+expectSame(nativeElementwiseCalls, ["mul", "add", "sqr"], "tensor math no-grad native elementwise hook count");
 const red = new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4, 5, 6), [2, 3], { requiresGrad: true });
 const summed = tensorMath.sumDim(red, 1);
 expectSame({ data: summed.data, shape: summed.shape }, { data: [6, 15], shape: [2, 1] }, "tensor math sumDim");

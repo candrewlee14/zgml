@@ -404,6 +404,13 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.elementwise_into to reuse caller output`);
   }
   expectClose(elementwiseAliasOutput, Array.from(directOutput, (value) => value * value), `${label} native_eager.elementwise_into output`);
+  const tensorElementwiseLength = 1024;
+  const tensorElementwiseInputData = Array.from({ length: tensorElementwiseLength }, (_value, index) => (index % 5) - 2);
+  const tensorElementwiseBiasData = Array.from({ length: tensorElementwiseLength }, (_value, index) => (index % 7) + 0.5);
+  const tensorElementwiseInput = adapter.tensor(tensorElementwiseInputData, [tensorElementwiseLength]);
+  const tensorElementwiseBias = adapter.tensor(tensorElementwiseBiasData, [tensorElementwiseLength]);
+  const tensorElementwise = adapter.noGrad(() => tensorElementwiseInput.mul(2).add(tensorElementwiseBias).sqr().sqrt());
+  expectClose(tensorElementwise.data, tensorElementwiseInputData.map((value, index) => Math.abs(value * 2 + tensorElementwiseBiasData[index])), `${label} noGrad Tensor elementwise native eager output`);
   const geluOutput = new Float32Array(6);
   const geluResult = nativeEager.linearActivationInto(geluOutput, input, weights, { bias, activation: "gelu" });
   if (geluResult !== geluOutput) {

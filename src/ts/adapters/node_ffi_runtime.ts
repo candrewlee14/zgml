@@ -322,6 +322,7 @@ const {
   Tensor,
   isGradEnabled,
   nativeEagerMatmulInto: (output, lhs, rhs, options) => nativeEager.matmulInto(output, lhs, rhs, options),
+  nativeEagerElementwiseInto: (output, lhs, rhs, options) => nativeEager.elementwiseInto(output, lhs, rhs, options),
   meanSquaredError: (tensor, target) => meanSquaredError(tensor, target),
   dtype: (tensor) => tensorPlacementHelpers.dtype(tensor),
   device: (tensor) => tensorPlacementHelpers.device(tensor),
