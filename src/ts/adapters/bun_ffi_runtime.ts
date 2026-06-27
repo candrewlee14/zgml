@@ -2184,7 +2184,9 @@ const {
 export const { nativeEager } = createAdapterNativeEagerSurface({
   f32: (value) => f32(value as TensorLike),
   check,
-  linearF32: (args) => bunSymbolGroups.nativeEager.eagerLinearF32(
+  linearF32: (args) => (args.transposedWeights
+    ? bunSymbolGroups.nativeEager.eagerLinearTransposedWeightsF32
+    : bunSymbolGroups.nativeEager.eagerLinearF32)(
     args.inputData,
     BigInt(args.inputData.length),
     args.weightData,
@@ -2208,7 +2210,9 @@ export const { nativeEager } = createAdapterNativeEagerSurface({
     BigInt(args.shared),
     BigInt(args.cols),
   ),
-  linearActivationF32: (args) => bunSymbolGroups.nativeEager.eagerLinearActivationF32(
+  linearActivationF32: (args) => (args.transposedWeights
+    ? bunSymbolGroups.nativeEager.eagerLinearActivationTransposedWeightsF32
+    : bunSymbolGroups.nativeEager.eagerLinearActivationF32)(
     args.inputData,
     BigInt(args.inputData.length),
     args.weightData,

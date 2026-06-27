@@ -511,7 +511,10 @@ Current checked progress:
   same shape. It now also reports
   `nativeEagerIntoMs` for `linear_batched`, backed by the stateless
   `zgml_eager_linear_f32` C ABI and surfaced on Node and Bun as
-  `zgml.nativeEager.linearInto`. It also reports `nativeEagerIntoMs` for
+  `zgml.nativeEager.linearInto`. The same surface now accepts
+  `weightLayout: "out-in"` through `zgml_eager_linear_transposed_weights_f32`,
+  letting PyTorch-shaped `F.linear` weights stay caller-owned and cross into Zig
+  without a TS materialized transpose. It also reports `nativeEagerIntoMs` for
   `lazy_matmul_add_gelu_batched` through the fused
   `zgml_eager_linear_activation_f32` C ABI, surfaced as
   `zgml.nativeEager.linearActivationInto` /

@@ -11,6 +11,7 @@ type NativeEagerLinearCall = (args: {
   batch: number;
   inFeatures: number;
   outFeatures: number;
+  transposedWeights: boolean;
 }) => number;
 
 type NativeEagerLinearActivationCall = (args: {
@@ -23,6 +24,7 @@ type NativeEagerLinearActivationCall = (args: {
   inFeatures: number;
   outFeatures: number;
   activation: number;
+  transposedWeights: boolean;
 }) => number;
 
 type NativeEagerMatmulCall = (args: {
@@ -186,8 +188,11 @@ function nativeEagerBoolean(value: unknown, label: string, defaultValue: boolean
 function nativeEagerLinearShape(input: unknown, weights: unknown, options: Record<string, unknown> = {}) {
   const inputShape = nativeEagerShape(input);
   const weightShape = nativeEagerShape(weights);
-  const inFeatures = options.inFeatures ?? options.in_features ?? (weightShape && weightShape.length === 2 ? weightShape[0] : null);
-  const outFeatures = options.outFeatures ?? options.out_features ?? (weightShape && weightShape.length === 2 ? weightShape[1] : null);
+  const transposedWeights = nativeEagerLinearTransposedWeights(options);
+  const inferredInFeatures = weightShape && weightShape.length === 2 ? weightShape[transposedWeights ? 1 : 0] : null;
+  const inferredOutFeatures = weightShape && weightShape.length === 2 ? weightShape[transposedWeights ? 0 : 1] : null;
+  const inFeatures = options.inFeatures ?? options.in_features ?? inferredInFeatures;
+  const outFeatures = options.outFeatures ?? options.out_features ?? inferredOutFeatures;
   const batch = options.batch ?? (
     inputShape && inputShape.length === 2
       ? inputShape[0]
@@ -199,7 +204,19 @@ function nativeEagerLinearShape(input: unknown, weights: unknown, options: Recor
     batch: nativeEagerPositiveInteger(batch, "nativeEager.linearInto batch"),
     inFeatures: nativeEagerPositiveInteger(inFeatures, "nativeEager.linearInto inFeatures"),
     outFeatures: nativeEagerPositiveInteger(outFeatures, "nativeEager.linearInto outFeatures"),
+    transposedWeights,
   });
+}
+
+function nativeEagerLinearTransposedWeights(options: Record<string, unknown>) {
+  const layout = options.weightLayout ?? options.weight_layout ?? options.weightsLayout ?? options.weights_layout ?? options.layout;
+  if (layout === undefined || layout === null || layout === false || layout === "in-out" || layout === "in_out" || layout === "io" || layout === "row-major:linear.weight[in_features,out_features]") {
+    return false;
+  }
+  if (layout === true || layout === "out-in" || layout === "out_in" || layout === "oi" || layout === "pytorch" || layout === "torch" || layout === "row-major:linear.weight[out_features,in_features]") {
+    return true;
+  }
+  throw new Error(`nativeEager.linearInto weightLayout must be in-out or out-in, got ${layout}`);
 }
 
 function nativeEagerActivationId(value: unknown, label: string): number {
@@ -316,6 +333,7 @@ function nativeEagerLinearInputs(
     batch: shape.batch,
     inFeatures: shape.inFeatures,
     outFeatures: shape.outFeatures,
+    transposedWeights: shape.transposedWeights,
   };
 }
 

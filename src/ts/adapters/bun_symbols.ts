@@ -153,6 +153,19 @@ export type BunNativeSymbols = Readonly<{
     inFeatures: bigint,
     outFeatures: bigint,
   ): number;
+  zgml_eager_linear_transposed_weights_f32(
+    input: Float32Array,
+    inputLen: bigint,
+    weights: Float32Array,
+    weightsLen: bigint,
+    bias: Float32Array | null,
+    biasLen: bigint,
+    output: Float32Array,
+    outputLen: bigint,
+    batch: bigint,
+    inFeatures: bigint,
+    outFeatures: bigint,
+  ): number;
   zgml_eager_matmul_f32(
     lhs: Float32Array,
     lhsLen: bigint,
@@ -165,6 +178,20 @@ export type BunNativeSymbols = Readonly<{
     cols: bigint,
   ): number;
   zgml_eager_linear_activation_f32(
+    input: Float32Array,
+    inputLen: bigint,
+    weights: Float32Array,
+    weightsLen: bigint,
+    bias: Float32Array | null,
+    biasLen: bigint,
+    output: Float32Array,
+    outputLen: bigint,
+    batch: bigint,
+    inFeatures: bigint,
+    outFeatures: bigint,
+    activation: number,
+  ): number;
+  zgml_eager_linear_activation_transposed_weights_f32(
     input: Float32Array,
     inputLen: bigint,
     weights: Float32Array,
@@ -562,6 +589,22 @@ export function bindBunSymbols(libPath: string): BunNativeSymbols {
       ],
       returns: FFIType.i32,
     },
+    zgml_eager_linear_transposed_weights_f32: {
+      args: [
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.u64,
+        FFIType.u64,
+        FFIType.u64,
+      ],
+      returns: FFIType.i32,
+    },
     zgml_eager_matmul_f32: {
       args: [
         FFIType.ptr,
@@ -577,6 +620,23 @@ export function bindBunSymbols(libPath: string): BunNativeSymbols {
       returns: FFIType.i32,
     },
     zgml_eager_linear_activation_f32: {
+      args: [
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.u64,
+        FFIType.u64,
+        FFIType.u64,
+        FFIType.u32,
+      ],
+      returns: FFIType.i32,
+    },
+    zgml_eager_linear_activation_transposed_weights_f32: {
       args: [
         FFIType.ptr,
         FFIType.u64,

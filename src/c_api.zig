@@ -1835,7 +1835,7 @@ fn writeSoftmaxRowsF32(input: []const f32, output: []f32, rows: usize, cols: usi
     }
 }
 
-export fn zgml_eager_linear_f32(
+fn eagerLinearF32(
     input_ptr: ?[*]const f32,
     input_len: usize,
     weights_ptr: ?[*]const f32,
@@ -1847,6 +1847,7 @@ export fn zgml_eager_linear_f32(
     batch: usize,
     in_features: usize,
     out_features: usize,
+    transposed_weights: bool,
 ) c_int {
     if (
         input_ptr == null or
@@ -1865,6 +1866,8 @@ export fn zgml_eager_linear_f32(
     const weights = weights_ptr.?[0..weights_len];
     const bias = if (bias_len == 0) null else bias_ptr.?[0..bias_len];
     const output = output_ptr.?[0..output_len];
+    const weight_row_stride: usize = if (transposed_weights) 1 else out_features;
+    const weight_col_stride: usize = if (transposed_weights) in_features else 1;
     forward.blasSgemm(
         output,
         input,
@@ -1874,8 +1877,8 @@ export fn zgml_eager_linear_f32(
         in_features,
         in_features,
         1,
-        out_features,
-        1,
+        weight_row_stride,
+        weight_col_stride,
         0,
         0,
         0,
@@ -1883,6 +1886,38 @@ export fn zgml_eager_linear_f32(
     );
     if (bias) |b| addBiasRowsF32(output, b, batch, out_features);
     return status(.ok);
+}
+
+export fn zgml_eager_linear_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    weights_ptr: ?[*]const f32,
+    weights_len: usize,
+    bias_ptr: ?[*]const f32,
+    bias_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    batch: usize,
+    in_features: usize,
+    out_features: usize,
+) c_int {
+    return eagerLinearF32(input_ptr, input_len, weights_ptr, weights_len, bias_ptr, bias_len, output_ptr, output_len, batch, in_features, out_features, false);
+}
+
+export fn zgml_eager_linear_transposed_weights_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    weights_ptr: ?[*]const f32,
+    weights_len: usize,
+    bias_ptr: ?[*]const f32,
+    bias_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    batch: usize,
+    in_features: usize,
+    out_features: usize,
+) c_int {
+    return eagerLinearF32(input_ptr, input_len, weights_ptr, weights_len, bias_ptr, bias_len, output_ptr, output_len, batch, in_features, out_features, true);
 }
 
 export fn zgml_eager_matmul_f32(
@@ -1927,7 +1962,7 @@ export fn zgml_eager_matmul_f32(
     return status(.ok);
 }
 
-export fn zgml_eager_linear_activation_f32(
+fn eagerLinearActivationF32(
     input_ptr: ?[*]const f32,
     input_len: usize,
     weights_ptr: ?[*]const f32,
@@ -1940,6 +1975,7 @@ export fn zgml_eager_linear_activation_f32(
     in_features: usize,
     out_features: usize,
     activation: u32,
+    transposed_weights: bool,
 ) c_int {
     if (
         input_ptr == null or
@@ -1958,6 +1994,8 @@ export fn zgml_eager_linear_activation_f32(
     const weights = weights_ptr.?[0..weights_len];
     const bias = if (bias_len == 0) null else bias_ptr.?[0..bias_len];
     const output = output_ptr.?[0..output_len];
+    const weight_row_stride: usize = if (transposed_weights) 1 else out_features;
+    const weight_col_stride: usize = if (transposed_weights) in_features else 1;
     forward.blasSgemm(
         output,
         input,
@@ -1967,8 +2005,8 @@ export fn zgml_eager_linear_activation_f32(
         in_features,
         in_features,
         1,
-        out_features,
-        1,
+        weight_row_stride,
+        weight_col_stride,
         0,
         0,
         0,
@@ -1979,6 +2017,40 @@ export fn zgml_eager_linear_activation_f32(
         error.InvalidArgument => status(.invalid_argument),
     };
     return status(.ok);
+}
+
+export fn zgml_eager_linear_activation_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    weights_ptr: ?[*]const f32,
+    weights_len: usize,
+    bias_ptr: ?[*]const f32,
+    bias_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    batch: usize,
+    in_features: usize,
+    out_features: usize,
+    activation: u32,
+) c_int {
+    return eagerLinearActivationF32(input_ptr, input_len, weights_ptr, weights_len, bias_ptr, bias_len, output_ptr, output_len, batch, in_features, out_features, activation, false);
+}
+
+export fn zgml_eager_linear_activation_transposed_weights_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    weights_ptr: ?[*]const f32,
+    weights_len: usize,
+    bias_ptr: ?[*]const f32,
+    bias_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    batch: usize,
+    in_features: usize,
+    out_features: usize,
+    activation: u32,
+) c_int {
+    return eagerLinearActivationF32(input_ptr, input_len, weights_ptr, weights_len, bias_ptr, bias_len, output_ptr, output_len, batch, in_features, out_features, activation, true);
 }
 
 export fn zgml_eager_activation_f32(
@@ -10950,6 +11022,51 @@ test "C ABI native eager linear writes caller output" {
         3,
         2,
     ));
+}
+
+test "C ABI native eager linear accepts transposed caller weights" {
+    const input = [_]f32{
+        1, 2, 3,
+        4, 5, 6,
+    };
+    const weights_out_in = [_]f32{
+        1, 2, 3,
+        10, 20, 30,
+    };
+    const bias = [_]f32{ 0.5, -1 };
+    var output = [_]f32{0} ** 4;
+    var activated = [_]f32{0} ** 4;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_linear_transposed_weights_f32(
+        input[0..].ptr,
+        input.len,
+        weights_out_in[0..].ptr,
+        weights_out_in.len,
+        bias[0..].ptr,
+        bias.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        2,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 14.5, 139, 32.5, 319 }, &output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_linear_activation_transposed_weights_f32(
+        input[0..].ptr,
+        input.len,
+        weights_out_in[0..].ptr,
+        weights_out_in.len,
+        bias[0..].ptr,
+        bias.len,
+        activated[0..].ptr,
+        activated.len,
+        2,
+        3,
+        2,
+        module_activation_relu,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 14.5, 139, 32.5, 319 }, &activated);
 }
 
 test "C ABI native eager matmul writes caller output" {

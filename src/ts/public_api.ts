@@ -2140,6 +2140,8 @@ export type NativeEagerLinearIntoOptions = Readonly<{
   in_features?: number;
   outFeatures?: number;
   out_features?: number;
+  weightLayout?: "in-out" | "out-in" | "pytorch" | "torch";
+  weight_layout?: "in-out" | "out-in" | "pytorch" | "torch";
 }>;
 export type NativeEagerLinearActivationIntoOptions = NativeEagerLinearIntoOptions & Readonly<{
   activation: "relu" | "gelu" | "silu" | "sigmoid" | "tanh";

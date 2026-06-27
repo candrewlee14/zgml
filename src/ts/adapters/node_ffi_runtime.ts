@@ -1119,7 +1119,9 @@ const {
 const { nativeEager } = createAdapterNativeEagerSurface({
   f32: (value, label) => f32(value, label),
   check,
-  linearF32: (args) => nodeSymbolGroups.nativeEager.eagerLinearF32(
+  linearF32: (args) => (args.transposedWeights
+    ? nodeSymbolGroups.nativeEager.eagerLinearTransposedWeightsF32
+    : nodeSymbolGroups.nativeEager.eagerLinearF32)(
     args.inputData,
     args.inputData.length,
     args.weightData,
@@ -1143,7 +1145,9 @@ const { nativeEager } = createAdapterNativeEagerSurface({
     args.shared,
     args.cols,
   ),
-  linearActivationF32: (args) => nodeSymbolGroups.nativeEager.eagerLinearActivationF32(
+  linearActivationF32: (args) => (args.transposedWeights
+    ? nodeSymbolGroups.nativeEager.eagerLinearActivationTransposedWeightsF32
+    : nodeSymbolGroups.nativeEager.eagerLinearActivationF32)(
     args.inputData,
     args.inputData.length,
     args.weightData,

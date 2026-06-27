@@ -97,6 +97,8 @@ type NativeEagerLinearInto = (
     batch?: number;
     inFeatures?: number;
     outFeatures?: number;
+    weightLayout?: "in-out" | "out-in" | string;
+    weight_layout?: "in-out" | "out-in" | string;
   }>,
 ) => Float32Array;
 
@@ -489,11 +491,12 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
       nativeBias = biasTensor;
     }
     const outputData = new Float32Array(rowCount * outFeatures);
-    options.nativeEagerLinearInto(outputData, nativeInput, weightTensor.transpose(), {
+    options.nativeEagerLinearInto(outputData, nativeInput, weightTensor, {
       bias: nativeBias,
       batch: rowCount,
       inFeatures,
       outFeatures,
+      weightLayout: "out-in",
     });
     const outputShape = inputRank === 1 ? [outFeatures] : [...leadingShape, outFeatures];
     return options.tensor(outputData, outputShape);

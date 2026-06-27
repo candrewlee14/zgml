@@ -671,6 +671,19 @@ ZGML_API zgml_status zgml_eager_linear_f32(
     size_t in_features,
     size_t out_features
 );
+ZGML_API zgml_status zgml_eager_linear_transposed_weights_f32(
+    const float *input,
+    size_t input_len,
+    const float *weights,
+    size_t weights_len,
+    const float *bias,
+    size_t bias_len,
+    float *output,
+    size_t output_len,
+    size_t batch,
+    size_t in_features,
+    size_t out_features
+);
 ZGML_API zgml_status zgml_eager_matmul_f32(
     const float *lhs,
     size_t lhs_len,
@@ -683,6 +696,20 @@ ZGML_API zgml_status zgml_eager_matmul_f32(
     size_t cols
 );
 ZGML_API zgml_status zgml_eager_linear_activation_f32(
+    const float *input,
+    size_t input_len,
+    const float *weights,
+    size_t weights_len,
+    const float *bias,
+    size_t bias_len,
+    float *output,
+    size_t output_len,
+    size_t batch,
+    size_t in_features,
+    size_t out_features,
+    uint32_t activation
+);
+ZGML_API zgml_status zgml_eager_linear_activation_transposed_weights_f32(
     const float *input,
     size_t input_len,
     const float *weights,

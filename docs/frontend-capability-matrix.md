@@ -79,7 +79,10 @@ PyTorch replacement:
   Node and Bun also expose the first stateless native eager primitive:
   `zgml.nativeEager.linearInto`, backed by the `zgml_eager_linear_f32` C ABI,
   for caller-owned f32 `Linear` output. That primitive routes through the shared
-  native matmul substrate instead of a JS or ABI-local matmul loop. On Node and Bun,
+  native matmul substrate instead of a JS or ABI-local matmul loop. The advanced
+  `weightLayout: "out-in"` option is backed by
+  `zgml_eager_linear_transposed_weights_f32`, so PyTorch-shaped `F.linear`
+  weights do not need a TS-side transpose before reaching Zig. On Node and Bun,
   eligible `nn.Linear.forward` calls inside `zgml.noGrad(...)` now route through
   that native eager hook as the normal module path; grad-enabled training keeps
   the TS/autograd graph path. The native eager gap microscope records

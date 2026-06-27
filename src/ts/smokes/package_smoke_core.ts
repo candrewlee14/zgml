@@ -404,6 +404,13 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected nativeEager.linearInto to reuse caller output`);
   }
   expectClose(directOutput, [1.25, 1.75, 0, 3.25, 3.75, 0], `${label} nativeEager.linearInto output`);
+  const transposedWeights = adapter.tensor([1, 0, 0, 1, 0.5, -0.5], [3, 2]);
+  const transposedOutput = new Float32Array(6);
+  const transposedResult = nativeEager.linearInto(transposedOutput, input, transposedWeights, { bias, weightLayout: "out-in" });
+  if (transposedResult !== transposedOutput) {
+    throw new Error(`${label} expected nativeEager.linearInto out-in weights to reuse caller output`);
+  }
+  expectClose(transposedOutput, Array.from(directOutput), `${label} nativeEager.linearInto out-in weight layout output`);
   const aliasOutput = new Float32Array(6);
   const aliasResult = nativeEagerAlias.linear_into(aliasOutput, input, weights, { bias });
   if (aliasResult !== aliasOutput) {
@@ -518,6 +525,12 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected nativeEager.linearActivationInto to reuse caller output`);
   }
   expectClose(geluOutput, Array.from(directOutput, (value) => 0.5 * value * (1 + Math.tanh(Math.sqrt(2 / Math.PI) * (value + 0.044715 * value * value * value)))), `${label} nativeEager.linearActivationInto output`);
+  const geluTransposedOutput = new Float32Array(6);
+  const geluTransposedResult = nativeEager.linearActivationInto(geluTransposedOutput, input, transposedWeights, { bias, activation: "gelu", weightLayout: "out-in" });
+  if (geluTransposedResult !== geluTransposedOutput) {
+    throw new Error(`${label} expected nativeEager.linearActivationInto out-in weights to reuse caller output`);
+  }
+  expectClose(geluTransposedOutput, Array.from(geluOutput), `${label} nativeEager.linearActivationInto out-in weight layout output`);
   const geluAliasOutput = new Float32Array(6);
   const geluAliasResult = nativeEagerAlias.linear_activation_into(geluAliasOutput, input, weights, { bias, activation: "gelu" });
   if (geluAliasResult !== geluAliasOutput) {
@@ -805,6 +818,11 @@ function expectLossAndAdamWEvidence(adapter: Record<string, any>, label: string)
     adapter.tensor([[1, 3], [-2, 0.5]], [2, 2]),
     adapter.tensor([0.25, -0.75], [2]),
   )).data, [14.25, -2.75, 30.25, -8.75], `${label} nn.functional.linear no-grad native layout values`);
+  expectClose(adapter.noGrad(() => adapter.F.linear(
+    adapter.tensor([1, 2, 3, 4], [2, 2]),
+    adapter.tensor([1, 0, 0, 1, 0.5, -0.5], [3, 2]),
+    adapter.tensor([0.25, -0.25, 0.5], [3]),
+  )).data, [1.25, 1.75, 0, 3.25, 3.75, 0], `${label} F.linear no-grad out-in native eager layout values`);
   expectClose(adapter.noGrad(() => adapter.nn.functional.conv2d(
     adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 3]),
     adapter.tensor([1, 0, 0, 1], [1, 1, 2, 2]),
