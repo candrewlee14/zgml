@@ -6082,6 +6082,14 @@ export type PublicCompileNamespace = Readonly<CompileNamespace> & {
   <const Target extends NnCompilableModule, const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>): Program<S, ModuleForwardShape<Target, S>>;
   <const Shape extends TensorShapeTuple>(target: LazyTensor<Shape>, options?: CompileOptions): Program<TensorShapeTuple, Shape>;
   (target: NnCompilableModule, options?: CompileOptions): Program;
+  compileForInference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
+  compileForInference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  compile_for_inference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
+  compile_for_inference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  native<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
+  native(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  inference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
+  inference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
 };
 export type PublicProgramNamespace = Readonly<ProgramNamespace>;
 export type PublicSessionNamespace = Readonly<SessionNamespace>;

@@ -5279,6 +5279,22 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   } finally {
     rawLayerNativeRun.dispose();
   }
+  const rawLayerCompileInferenceRun = adapter.compile.compileForInference([inferenceModel], { backend: "cpu", inputShape: [2] });
+  try {
+    const plan = rawLayerCompileInferenceRun.requireExecutionPlan();
+    if (
+      rawLayerCompileInferenceRun.native !== true ||
+      plan.canExecute !== true ||
+      plan.executionMode !== "executable" ||
+      rawLayerCompileInferenceRun.program.inputLen() !== 2 ||
+      rawLayerCompileInferenceRun.session.outputLen() !== 1
+    ) {
+      throw new Error(`${label} compileForInference raw layer list expected native executable Program/Session handle`);
+    }
+    expectClose(rawLayerCompileInferenceRun.forward(inferenceInput).data, [-0.5], `${label} compileForInference raw layer list forward`);
+  } finally {
+    rawLayerCompileInferenceRun.dispose();
+  }
   const nativeInference = adapter.nn.native(inferenceModel, { backend: "cpu", inputShape: [2] });
   try {
     expectClose(nativeInference.forward(inferenceInput).data, [-0.5], `${label} nn.native forward`);
