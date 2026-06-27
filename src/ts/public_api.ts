@@ -3941,6 +3941,10 @@ export interface LinearModule<InFeatures extends number = number, OutFeatures ex
   placeParameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
   place_parameters<const S extends TensorShapeTuple, const O extends TensorShapeTuple>(program: Program<S, O>, options?: ModuleParameterPlacementOptions): ModuleBindings<S, O>;
   place_parameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
+  compileForTraining(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  compile_for_training(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  trainingStep(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  training_step(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
 }
 
 export interface EmbeddingModule<NumEmbeddings extends number = number, EmbeddingDim extends number = number> extends NnModule {
@@ -4399,6 +4403,10 @@ export interface SequentialModule<Layers extends readonly NnModule[] = readonly 
   bindParameters(options?: CompileOptions): ModuleBindings;
   placeParameters<const S extends TensorShapeTuple, const O extends TensorShapeTuple>(program: Program<S, O>, options?: ModuleParameterPlacementOptions): ModuleBindings<S, O>;
   placeParameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
+  compileForTraining(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  compile_for_training(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  trainingStep(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  training_step(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
 }
 
 export type SequentialForwardShape<Layers extends readonly NnModule[], InputShape extends TensorShapeTuple> =
@@ -4885,6 +4893,18 @@ export type TrainFitOptions<OptimizerKind extends OptimizerStateKind | null = Op
   onStep?: (evidence: TrainFitStepEvidence<OptimizerKind>) => void;
   on_step?: (evidence: TrainFitStepEvidence<OptimizerKind>) => void;
 } & TrainGradientClipOptions;
+
+export type CompileTrainingOptions = Readonly<Record<string, unknown> & {
+  inputShape?: readonly number[];
+  input_shape?: readonly number[];
+  batchSize?: number;
+  batch_size?: number;
+  loss?: "crossEntropy" | "cross_entropy" | "mse" | "meanSquaredError" | "mean_squared_error";
+  criterion?: "crossEntropy" | "cross_entropy" | "mse" | "meanSquaredError" | "mean_squared_error";
+  classes?: number;
+  numClasses?: number;
+  num_classes?: number;
+}>;
 
 export type CompiledTrainingStepEvidence = Readonly<{
   kind: "zgml.native-training-step";

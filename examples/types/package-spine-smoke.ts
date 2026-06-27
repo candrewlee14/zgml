@@ -78,9 +78,11 @@ import {
   type CompileAnalysis as PackageCompileAnalysis,
   type CompileMode as PackageCompileMode,
   type CompiledInference as PackageCompiledInference,
+  type CompiledTrainingStep as PackageCompiledTrainingStep,
   type CompileNamespace as PackageCompileNamespace,
   type CompileOptions as PackageCompileOptions,
   type CompileOptionsWithInputShape as PackageCompileOptionsWithInputShape,
+  type CompileTrainingOptions as PackageCompileTrainingOptions,
   type PublicCompileNamespace as PackagePublicCompileNamespace,
   type ModuleCompileExplanation as PackageModuleCompileExplanation,
   type ModuleBindingPlan as PackageCompileModuleBindingPlan,
@@ -611,6 +613,9 @@ type PackageCompileNamespaceTrainingShape = Expect<PackageCompileNamespace exten
 type PackagePublicCompileNamespaceShape = Expect<PackagePublicCompileNamespace extends Readonly<PackageCompileNamespace> ? true : false>;
 type PackagePublicCompileNamespaceCallable = Expect<PackagePublicCompileNamespace extends (target: PackageNnCompilableModule, options?: PackageCompileOptions) => PackageProgram ? true : false>;
 type PackageCompiledInferenceShape = Expect<PackageCompiledInference<readonly [2], readonly [3]> extends { program: PackageProgram<readonly [2], readonly [3]>; forward(input: unknown): unknown; into(output: Float32Array, input: unknown): Float32Array } ? true : false>;
+type PackageCompiledTrainingShape = Expect<PackageCompiledTrainingStep extends { native: true; step(input: unknown, target: unknown): unknown } ? true : false>;
+type PackageCompileTrainingOptionsShape = Expect<Equal<PackageCompileTrainingOptions["loss"], "crossEntropy" | "cross_entropy" | "mse" | "meanSquaredError" | "mean_squared_error" | undefined>>;
+type PackageLinearCompileTrainingShape = Expect<ReturnType<PackageLinearModule<2, 1>["compileForTraining"]> extends PackageCompiledTrainingStep ? true : false>;
 type PackageCompileModeShape = Expect<Equal<PackageCompileMode, "auto" | "tiny" | "module">>;
 type PackageCompileOptionsShape = Expect<Equal<PackageCompileOptions["backend"], "auto" | "cpu" | "metal" | "webgpu" | undefined>>;
 type PackageCompileOptionsInputShape = Expect<PackageCompileOptionsWithInputShape<readonly [2]> extends { inputShape: readonly [2] } ? true : false>;

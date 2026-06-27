@@ -6540,6 +6540,30 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   }
   const hasNativeTrainingSurface = Boolean(adapter.nativeEager && (adapter.compileForTraining || adapter.compile?.compileForTraining));
   if (hasNativeTrainingSurface) {
+    const moduleCompileModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
+    const moduleCompileOptimizer = adapter.optim.sgd(moduleCompileModel, { lr: 0.05 });
+    const moduleCompiledTrainer = moduleCompileModel.compileForTraining(moduleCompileOptimizer, {
+      inputShape: [1, 2],
+      loss: "mse",
+    });
+    const moduleCompileBatch = shuffledBatches[0];
+    const moduleCompileStep = moduleCompiledTrainer.step(moduleCompileBatch.input, moduleCompileBatch.target);
+    const moduleCompiledTrainerSnake = moduleCompileModel.compile_for_training(moduleCompileOptimizer, {
+      input_shape: [1, 2],
+      criterion: "mse",
+    });
+    if (
+      moduleCompiledTrainer.kind !== "zgml.compiled-training-step" ||
+      moduleCompiledTrainer.native !== true ||
+      moduleCompiledTrainer.backend !== "cpu" ||
+      moduleCompiledTrainer.modelKind !== "linear" ||
+      moduleCompiledTrainer.lossKind !== "mse" ||
+      moduleCompileStep.kind !== "zgml.native-training-step" ||
+      moduleCompileStep.native !== true ||
+      moduleCompiledTrainerSnake.kind !== "zgml.compiled-training-step"
+    ) {
+      throw new Error(`${label} expected module.compileForTraining to produce a native Zig training handle`);
+    }
     const nativeFitModuleModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
     const nativeFitModuleOptimizer = adapter.optim.sgd(nativeFitModuleModel, { lr: 0.05 });
     const nativeFitModuleEvidence = adapter.train.fitModule(nativeFitModuleOptimizer, nativeFitModuleModel, shuffledBatches, fitModuleCriterion, {

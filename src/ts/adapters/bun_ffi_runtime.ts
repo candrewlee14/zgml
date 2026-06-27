@@ -186,6 +186,7 @@ import type {
   CheckpointTensorInspection as PublicCheckpointTensorInspection,
   CheckpointTensorEntry as PublicCheckpointTensorEntry,
   CollatedDataLoader as PublicCollatedDataLoader,
+  CompiledTrainingStep as PublicCompiledTrainingStep,
   CompileOptions as PublicCompileOptions,
   DataBatches as PublicDataBatches,
   DataBatchOptions as PublicDataBatchOptions,
@@ -2123,6 +2124,9 @@ function nativeEagerLinearActivationInto(output: Float32Array, input: unknown, w
   return nativeEager.linearActivationInto(output, input as TensorLike, weights as TensorLike, options);
 }
 
+type CompileTrainingStepHook = (model: unknown, optimizer: unknown, options?: Record<string, unknown>) => PublicCompiledTrainingStep;
+let compileTrainingStepHook: CompileTrainingStepHook | null = null;
+
 const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   sharedFrontend,
   Tensor,
@@ -2151,6 +2155,12 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   moduleCompileSupport,
   TinyLinearModel,
   compileModuleProgram,
+  compileTrainingStep: (...args) => {
+    if (compileTrainingStepHook === null) {
+      throw new Error("zgml Bun FFI module native training compile hook was called before compile namespace initialization");
+    }
+    return compileTrainingStepHook(...args);
+  },
   attachProgramCompileEvidence,
   packedSequentialProgramParameters,
   traceSequentialProgram,
@@ -2534,8 +2544,6 @@ const nativeTraining = createAdapterNativeTrainingSurface({
   ),
 });
 
-type CompileTrainingStepHook = (model: unknown, optimizer: unknown, options?: Record<string, unknown>) => unknown;
-let compileTrainingStepHook: CompileTrainingStepHook | null = null;
 const publicNamespaces = createAdapterFrontendNamespaces({
   sharedFrontend,
   Tensor,

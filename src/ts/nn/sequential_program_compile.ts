@@ -2,6 +2,7 @@ import { programCompileEvidenceFromCompiledSpec } from "../runtime/trace_compile
 import type { ModuleFacadeTarget } from "../runtime/module_facade.js";
 import type { SequentialCompiledProgramSpec } from "../runtime/module_compiler_policy.js";
 import type {
+  CompiledTrainingStep,
   CompileOptions,
   ModuleCompileSupport,
   ModuleParameterPlacementOptions,
@@ -51,6 +52,7 @@ export type SequentialProgramCompileCoreHooksInput = Readonly<Record<string, unk
   analyzeSequentialProgram: HookCallback<[layers: readonly ModuleRecord[], options: ModuleCompileOptions], SequentialProgramAnalysis>;
   moduleCompileSupport: HookCallback<[supported: boolean, reason: unknown, support?: UnknownRecord], unknown>;
   compileModuleProgram: HookCallback<[compiled: SequentialCompiledSpec, options: ModuleCompileOptions], unknown>;
+  compileTrainingStep?: HookCallback<[module: ModuleRecord, optimizer: unknown, options?: UnknownRecord], CompiledTrainingStep>;
   packedSequentialProgramParameters?: HookCallback<[compiled: SequentialCompiledSpec], unknown>;
   attachProgramCompileEvidence?: HookCallback<[program: unknown, evidence: unknown], unknown>;
 }>;
@@ -69,6 +71,7 @@ export type SequentialProgramCompileHooks = Readonly<{
   readonly moduleCompileSupport: (supported: boolean, reason: unknown, support?: UnknownRecord) => unknown;
   readonly compileModuleProgram: (compiled: SequentialCompiledSpec, options: ModuleCompileOptions) => unknown;
   readonly placeModuleParameterBindings: (module: ModuleRecord, program: unknown, options: ModulePlacementOptions) => unknown;
+  readonly compileTrainingStep?: (module: ModuleRecord, optimizer: unknown, options?: UnknownRecord) => CompiledTrainingStep;
   readonly attachProgramCompileEvidence?: (program: unknown, evidence: unknown) => unknown;
   readonly packParameters?: (compiled: SequentialCompiledSpec) => unknown;
 }>;
@@ -79,6 +82,10 @@ type SequentialCompilePrototype = {
   bindParameters?: (this: ModuleRecord, bindOptions?: ModuleCompileOptions) => unknown;
   placeParameters?: (this: ModuleRecord, program: unknown, placementOptions?: ModulePlacementOptions) => unknown;
   compile?: (this: ModuleRecord, compileOptions?: ModuleCompileOptions) => unknown;
+  compileForTraining?: (this: ModuleRecord, optimizer: unknown, compileOptions?: UnknownRecord) => CompiledTrainingStep;
+  compile_for_training?: (this: ModuleRecord, optimizer: unknown, compileOptions?: UnknownRecord) => CompiledTrainingStep;
+  trainingStep?: (this: ModuleRecord, optimizer: unknown, compileOptions?: UnknownRecord) => CompiledTrainingStep;
+  training_step?: (this: ModuleRecord, optimizer: unknown, compileOptions?: UnknownRecord) => CompiledTrainingStep;
 };
 
 export type SequentialProgramCompileInstallOptions<
@@ -104,6 +111,7 @@ export function createSequentialProgramCompileHooks(
   const moduleCompileSupport = options && options.moduleCompileSupport;
   const compileModuleProgram = options && options.compileModuleProgram;
   const placeModuleParameterBindings = options && options.placeModuleParameterBindings;
+  const compileTrainingStep = options && options.compileTrainingStep;
   const attachProgramCompileEvidence = options && options.attachProgramCompileEvidence;
   const packParameters = extra.packParameters ?? (options && options.packedSequentialProgramParameters);
   if (
@@ -122,6 +130,7 @@ export function createSequentialProgramCompileHooks(
     moduleCompileSupport,
     compileModuleProgram,
     placeModuleParameterBindings,
+    compileTrainingStep: typeof compileTrainingStep === "function" ? compileTrainingStep : undefined,
     attachProgramCompileEvidence,
     packParameters,
   });
@@ -227,4 +236,14 @@ export function installSequentialProgramCompileMethods(
   target.compile = function compile(this: ModuleRecord, compileOptions: ModuleCompileOptions = {}) {
     return sequentialProgramCompile(this, hooks, compileOptions, layersForModule, compileTinyLinear, options.fallbackReason);
   };
+  const compileForTraining = function compileForTraining(this: ModuleRecord, optimizer: unknown, compileOptions: UnknownRecord = {}) {
+    if (typeof hooks.compileTrainingStep !== "function") {
+      throw new Error("module.compileForTraining requires a native Node or Bun training runtime");
+    }
+    return hooks.compileTrainingStep(this, optimizer, compileOptions);
+  };
+  target.compileForTraining = compileForTraining;
+  target.compile_for_training = compileForTraining;
+  target.trainingStep = compileForTraining;
+  target.training_step = compileForTraining;
 }

@@ -132,6 +132,7 @@ export type {
   CompileNamespace,
   CompileOptions,
   CompileOptionsWithInputShape,
+  CompileTrainingOptions,
   EmbeddingCompileOptions,
   ModuleBindingPlan,
   ModuleBindings,

@@ -1007,6 +1007,8 @@ function nativeEagerLinearActivationInto(output, input, weights, options) {
   return nativeEager.linearActivationInto(output, input, weights, options);
 }
 
+let compileTrainingStepHook = null;
+
 const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   sharedFrontend,
   Tensor,
@@ -1035,6 +1037,12 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   moduleCompileSupport,
   TinyLinearModel,
   compileModuleProgram,
+  compileTrainingStep: (...args) => {
+    if (compileTrainingStepHook === null) {
+      throw new Error("zgml Node FFI module native training compile hook was called before compile namespace initialization");
+    }
+    return compileTrainingStepHook(...args);
+  },
   attachProgramCompileEvidence,
   packedSequentialProgramParameters,
   traceSequentialProgram,
@@ -1205,7 +1213,6 @@ const nativeTraining = createAdapterNativeTrainingSurface({
   ),
 });
 
-let compileTrainingStepHook = null;
 const publicNamespaces = createAdapterFrontendNamespaces({
   sharedFrontend,
   Tensor,

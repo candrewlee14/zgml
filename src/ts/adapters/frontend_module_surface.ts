@@ -30,6 +30,7 @@ type AdapterModuleCompileHooks = Readonly<{
   analyzeSingleModuleProgram: ActivationModuleOptions["analyzeSingleModuleProgram"] & EmbeddingModuleOptions["analyzeSingleModuleProgram"] & Conv2dModuleOptions["analyzeSingleModuleProgram"] & MaxPool2dModuleOptions["analyzeSingleModuleProgram"];
   moduleCompileSupport: ActivationModuleOptions["moduleCompileSupport"] & LinearModuleOptions["moduleCompileSupport"] & MaxPool2dModuleOptions["moduleCompileSupport"];
   compileModuleProgram: ActivationModuleOptions["compileModuleProgram"] & LinearModuleOptions["compileModuleProgram"] & Conv2dModuleOptions["compileModuleProgram"] & MaxPool2dModuleOptions["compileModuleProgram"];
+  compileTrainingStep?: LinearModuleOptions["compileTrainingStep"] & SequentialModuleOptions["compileTrainingStep"];
   attachProgramCompileEvidence: NonNullable<LinearModuleOptions["attachProgramCompileEvidence"]>;
   packedSequentialProgramParameters: NonNullable<EmbeddingModuleOptions["packedSequentialProgramParameters"] & MaxPool2dModuleOptions["packedSequentialProgramParameters"]>;
   traceSequentialProgram: EmbeddingModuleOptions["traceSequentialProgram"] & SequentialModuleOptions["traceSequentialProgram"] & ModuleFacadeHelpersOptions["traceSequentialProgram"];
@@ -116,6 +117,7 @@ export function createAdapterFrontendModuleSurface(options: AdapterFrontendModul
     moduleCompileSupport: options.moduleCompileSupport,
     TinyLinearModel: options.TinyLinearModel,
     compileModuleProgram: options.compileModuleProgram,
+    compileTrainingStep: options.compileTrainingStep,
     attachProgramCompileEvidence: options.attachProgramCompileEvidence,
   });
 
@@ -142,6 +144,7 @@ export function createAdapterFrontendModuleSurface(options: AdapterFrontendModul
     moduleCompileSupport: options.moduleCompileSupport,
     packedSequentialProgramParameters: options.packedSequentialProgramParameters,
     compileModuleProgram: options.compileModuleProgram,
+    compileTrainingStep: options.compileTrainingStep,
     attachProgramCompileEvidence: options.attachProgramCompileEvidence,
   });
 
