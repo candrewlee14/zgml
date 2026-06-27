@@ -461,7 +461,11 @@ Current checked progress:
   boundary now preserves rectangular nested-array shape too, so subclassed
   `nn.Module` models can accept plain batched production inputs and still enter
   the native eager Linear lane instead of flattening them into a single feature
-  vector. Supported
+  vector. The public TS API now mirrors that runtime path for literal and typed
+  nested arrays: `TensorLikeShape`, `Linear.forward(...)`, and
+  `Sequential.forward(...)` infer vector/batch output shapes from plain JS array
+  inputs instead of requiring users to pre-wrap every production batch as a
+  `Tensor`. Supported
   `nn.Sequential` inference also now keeps the ergonomic JS/TS
   `model.forward(input)` call shape while transparently caching a native
   Program/Session in `noGrad`; the package smoke poisons the JS layer
@@ -490,6 +494,9 @@ Current checked progress:
   `zgml.native_eager.linear_activation_into`, so the first caller-owned
   native eager epilogue path covers `matmul -> add(bias) -> GELU` directly
   instead of only proving plain Linear.
+  Native eager matmul is also now surfaced as `zgml_eager_matmul_f32` and
+  `zgml.nativeEager.matmulInto`, with Node/Bun `Tensor.matmul` dispatching
+  through that Zig path automatically when gradients are disabled.
   The same microscope now also covers `matmul -> add(bias) -> ReLU`,
   `matmul -> add(bias) -> SiLU`, `matmul -> add(bias) -> Sigmoid`, and
   `matmul -> add(bias) -> Tanh`, proving the activation hook for common

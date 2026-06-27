@@ -218,6 +218,7 @@ export const runtimeFeatureBits = Object.freeze({
   nativeEagerLinearActivation: 1n << 46n,
   nativeTrainingStep: 1n << 47n,
   nativeEagerSoftmax: 1n << 48n,
+  nativeEagerMatmul: 1n << 49n,
 });
 export type RuntimeFeatureName = keyof typeof runtimeFeatureBits;
 export type RuntimeFeatureMap = Readonly<Record<RuntimeFeatureName, boolean>>;
@@ -270,6 +271,7 @@ export const requiredRuntimeFeatureNames = Object.freeze([
   "nativeEagerLinearActivation",
   "nativeTrainingStep",
   "nativeEagerSoftmax",
+  "nativeEagerMatmul",
 ]);
 
 export const requiredRuntimeFeatureMask = requiredRuntimeFeatureNames.reduce(

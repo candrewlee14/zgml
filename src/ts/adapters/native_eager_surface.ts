@@ -25,6 +25,16 @@ type NativeEagerLinearActivationCall = (args: {
   activation: number;
 }) => number;
 
+type NativeEagerMatmulCall = (args: {
+  lhsData: Float32Array;
+  rhsData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  rows: number;
+  shared: number;
+  cols: number;
+}) => number;
+
 type NativeEagerSoftmaxCall = (args: {
   inputData: Float32Array;
   output: Float32Array;
@@ -39,6 +49,7 @@ type NativeEagerSurfaceOptions = {
   check: NativeEagerCheck;
   linearF32: NativeEagerLinearCall;
   linearActivationF32: NativeEagerLinearActivationCall;
+  matmulF32?: NativeEagerMatmulCall;
   softmaxF32: NativeEagerSoftmaxCall;
 };
 
@@ -193,6 +204,50 @@ function nativeEagerSoftmaxInputs(
   };
 }
 
+function nativeEagerMatmulInputs(
+  output: Float32Array,
+  lhs: unknown,
+  rhs: unknown,
+  callOptions: Record<string, unknown>,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.matmulInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const lhsData = nativeEagerTensorData(lhs, `${label} lhs`, f32);
+  const rhsData = nativeEagerTensorData(rhs, `${label} rhs`, f32);
+  const lhsShape = nativeEagerShape(lhs);
+  const rhsShape = nativeEagerShape(rhs);
+  const rows = callOptions.rows ?? callOptions.lhsRows ?? callOptions.lhs_rows ?? (lhsShape && lhsShape.length === 2 ? lhsShape[0] : null);
+  const shared = callOptions.shared ?? callOptions.lhsCols ?? callOptions.lhs_cols ?? callOptions.rhsRows ?? callOptions.rhs_rows ?? (
+    lhsShape && lhsShape.length === 2
+      ? lhsShape[1]
+      : rhsShape && rhsShape.length === 2
+        ? rhsShape[0]
+        : null
+  );
+  const cols = callOptions.cols ?? callOptions.rhsCols ?? callOptions.rhs_cols ?? (rhsShape && rhsShape.length === 2 ? rhsShape[1] : null);
+  const shape = Object.freeze({
+    rows: nativeEagerPositiveInteger(rows, `${label} rows`),
+    shared: nativeEagerPositiveInteger(shared, `${label} shared`),
+    cols: nativeEagerPositiveInteger(cols, `${label} cols`),
+  });
+  const expectedLhs = shape.rows * shape.shared;
+  const expectedRhs = shape.shared * shape.cols;
+  const expectedOutput = shape.rows * shape.cols;
+  if (lhsData.length !== expectedLhs) {
+    throw new Error(`${label} lhs length ${lhsData.length} does not match ${shape.rows}x${shape.shared}`);
+  }
+  if (rhsData.length !== expectedRhs) {
+    throw new Error(`${label} rhs length ${rhsData.length} does not match ${shape.shared}x${shape.cols}`);
+  }
+  if (output.length < expectedOutput) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${expectedOutput}`);
+  }
+  return { lhsData, rhsData, output, expectedOutput, ...shape };
+}
+
 export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptions) {
   const nativeEager = Object.freeze({
     linearInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {}) {
@@ -213,6 +268,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     linear_activation_into(output: Float32Array, input: unknown, weights: unknown, callOptions?: Record<string, unknown>) {
       return this.linearActivationInto(output, input, weights, callOptions);
+    },
+    matmulInto(output: Float32Array, lhs: unknown, rhs: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.matmulF32 !== "function") {
+        throw new Error("nativeEager.matmulInto is unavailable in this runtime");
+      }
+      const args = nativeEagerMatmulInputs(output, lhs, rhs, callOptions, options.f32);
+      options.check(options.matmulF32(args));
+      return output;
+    },
+    matmul_into(output: Float32Array, lhs: unknown, rhs: unknown, callOptions?: Record<string, unknown>) {
+      return this.matmulInto(output, lhs, rhs, callOptions);
     },
     softmaxInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
       const args = nativeEagerSoftmaxInputs("nativeEager.softmaxInto", output, input, callOptions, options.f32);

@@ -89,6 +89,7 @@ const feature_native_eager_linear: u64 = 1 << 45;
 const feature_native_eager_linear_activation: u64 = 1 << 46;
 const feature_native_training_step: u64 = 1 << 47;
 const feature_native_eager_softmax: u64 = 1 << 48;
+const feature_native_eager_matmul: u64 = 1 << 49;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -1122,6 +1123,7 @@ fn runtimeFeatureFlags() u64 {
         feature_native_eager_linear_activation |
         feature_native_training_step |
         feature_native_eager_softmax |
+        feature_native_eager_matmul |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -1696,6 +1698,48 @@ export fn zgml_eager_linear_f32(
         out_features,
     );
     if (bias) |b| addBiasRowsF32(output, b, batch, out_features);
+    return status(.ok);
+}
+
+export fn zgml_eager_matmul_f32(
+    lhs_ptr: ?[*]const f32,
+    lhs_len: usize,
+    rhs_ptr: ?[*]const f32,
+    rhs_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    rows: usize,
+    shared: usize,
+    cols: usize,
+) c_int {
+    if (
+        lhs_ptr == null or
+        rhs_ptr == null or
+        output_ptr == null or
+        rows == 0 or
+        shared == 0 or
+        cols == 0
+    ) return status(.invalid_argument);
+    if (checkedElementCount(rows, shared) != lhs_len) return status(.shape_mismatch);
+    if (checkedElementCount(shared, cols) != rhs_len) return status(.shape_mismatch);
+    if (checkedElementCount(rows, cols) != output_len) return status(.shape_mismatch);
+
+    forward.blasSgemm(
+        output_ptr.?[0..output_len],
+        lhs_ptr.?[0..lhs_len],
+        rhs_ptr.?[0..rhs_len],
+        rows,
+        cols,
+        shared,
+        shared,
+        1,
+        cols,
+        1,
+        0,
+        0,
+        0,
+        cols,
+    );
     return status(.ok);
 }
 
@@ -10033,6 +10077,43 @@ test "C ABI native eager linear writes caller output" {
         weights.len - 1,
         null,
         0,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        2,
+    ));
+}
+
+test "C ABI native eager matmul writes caller output" {
+    const lhs = [_]f32{
+        1, 2, 3,
+        4, 5, 6,
+    };
+    const rhs = [_]f32{
+        1, 2,
+        3, 4,
+        5, 6,
+    };
+    var output = [_]f32{0} ** 4;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_matmul_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        2,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 22, 28, 49, 64 }, &output);
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_matmul_f32(
+        lhs[0..].ptr,
+        lhs.len - 1,
+        rhs[0..].ptr,
+        rhs.len,
         output[0..].ptr,
         output.len,
         2,

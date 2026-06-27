@@ -335,6 +335,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.linearActivationInto !== "function") {
     throw new Error(`${label} expected nativeEager.linearActivationInto`);
   }
+  if (typeof nativeEager.matmulInto !== "function") {
+    throw new Error(`${label} expected nativeEager.matmulInto`);
+  }
   if (typeof nativeEager.softmaxInto !== "function" || typeof nativeEager.logSoftmaxInto !== "function") {
     throw new Error(`${label} expected nativeEager softmax/logSoftmax into helpers`);
   }
@@ -343,6 +346,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   if (typeof nativeEagerAlias.linear_activation_into !== "function") {
     throw new Error(`${label} expected native_eager.linear_activation_into alias`);
+  }
+  if (typeof nativeEagerAlias.matmul_into !== "function") {
+    throw new Error(`${label} expected native_eager.matmul_into alias`);
   }
   if (typeof nativeEagerAlias.softmax_into !== "function" || typeof nativeEagerAlias.log_softmax_into !== "function") {
     throw new Error(`${label} expected native_eager softmax/log_softmax aliases`);
@@ -362,6 +368,18 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.linear_into to reuse caller output`);
   }
   expectClose(aliasOutput, Array.from(directOutput), `${label} native_eager.linear_into output`);
+  const matmulOutput = new Float32Array(6);
+  const matmulResult = nativeEager.matmulInto(matmulOutput, input, weights);
+  if (matmulResult !== matmulOutput) {
+    throw new Error(`${label} expected nativeEager.matmulInto to reuse caller output`);
+  }
+  expectClose(matmulOutput, Array.from(directOutput, (value, index) => value - bias.data[index % 3]), `${label} nativeEager.matmulInto output`);
+  const matmulAliasOutput = new Float32Array(6);
+  const matmulAliasResult = nativeEagerAlias.matmul_into(matmulAliasOutput, input, weights);
+  if (matmulAliasResult !== matmulAliasOutput) {
+    throw new Error(`${label} expected native_eager.matmul_into to reuse caller output`);
+  }
+  expectClose(matmulAliasOutput, Array.from(matmulOutput), `${label} native_eager.matmul_into output`);
   const geluOutput = new Float32Array(6);
   const geluResult = nativeEager.linearActivationInto(geluOutput, input, weights, { bias, activation: "gelu" });
   if (geluResult !== geluOutput) {

@@ -211,6 +211,7 @@ import {
   type LlamaSessionStepContract,
   type LlamaStepParams,
   type LossNamespace,
+  type NativeEagerMatmulIntoOptions,
   type PublicLossNamespace,
   type NnLossConstructorName,
   type NnLossConstructors,
@@ -357,6 +358,7 @@ import {
   type TensorGatherShape,
   type TensorHStackShape,
   type TensorIndexSelectShape,
+  type TensorLikeShape,
   type TensorNestedArray,
   type TensorShapeTuple,
   type TensorShapeOf,
@@ -771,6 +773,7 @@ type ShapeAssertions = [
 
 const currentRuntimeFeatures: RuntimeFeatures = runtimeInfo().features;
 const runtimeActivationChainFeature: boolean = currentRuntimeFeatures.nativeModuleActivationChain;
+const runtimeNativeEagerMatmulFeature: boolean = currentRuntimeFeatures.nativeEagerMatmul;
 const coreShapeSubpathShape: CoreShapeSubpath = [2, 3];
 const coreShapeSubpathCount: number = coreShapeScalarCount(coreShapeSubpathShape);
 const runtimeKernelPlanSubpathSource: "ts" = runtimeKernelPlanManifest.source;
@@ -1258,6 +1261,12 @@ const linearLiteralInFeatures: 2 = linear.inFeatures;
 const linearLiteralOutFeatures: 3 = linear.outFeatures;
 const linearTypedForward: Tensor<readonly [3]> = linear.forward(tensor([1, 2], [2] as const));
 const linearTypedBatchForward: Tensor<readonly [4, 3]> = linear.forward(tensor(new Float32Array(8), [4, 2] as const));
+const linearPlainTupleForward: Tensor<readonly [3]> = linear.forward([1, 2] as const);
+const linearPlainBatchTupleForward: Tensor<readonly [2, 3]> = linear.forward([[1, 2], [3, 4]] as const);
+const linearPlainBatchTypedForward: Tensor<readonly [number, 3]> = linear.forward([[1, 2], [3, 4]] as readonly (readonly [number, number])[]);
+const linearSequentialPlainBatchForward: Tensor<readonly [2, 3]> = nn.sequential([linear] as const).forward([[1, 2], [3, 4]] as const);
+type PlainTupleTensorLikeShape = Expect<Equal<TensorLikeShape<readonly [1, 2]>, readonly [2]>>;
+type PlainBatchTensorLikeShape = Expect<Equal<TensorLikeShape<readonly [readonly [1, 2], readonly [3, 4]]>, readonly [2, 2]>>;
 type LinearVectorForwardShape = Expect<Equal<LinearForwardShape<readonly [2], 3>, readonly [3]>>;
 type LinearBatchForwardShape = Expect<Equal<LinearForwardShape<readonly [4, 2], 3>, readonly [4, 3]>>;
 const customChild = nn.linear(2, 1);
@@ -2458,6 +2467,9 @@ const moduleInferenceAlias: CompiledInference<readonly [2], TensorShapeTuple> = 
 const moduleCompileInferenceAlias: CompiledInference<readonly [2], TensorShapeTuple> = linear.compileInference(linearTypedCompileOptions);
 const nativeEagerLinearInto: Float32Array = zgml.nativeEager.linearInto(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), { bias: tensor([0, 0, 0], [3] as const) });
 const nativeEagerLinearIntoAlias: Float32Array = zgml.native_eager.linear_into(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), { bias: tensor([0, 0, 0], [3] as const) });
+const nativeEagerMatmulOptions: NativeEagerMatmulIntoOptions = { rows: 1, shared: 2, cols: 3 };
+const nativeEagerMatmulInto: Float32Array = zgml.nativeEager.matmulInto(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), nativeEagerMatmulOptions);
+const nativeEagerMatmulIntoAlias: Float32Array = zgml.native_eager.matmul_into(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), nativeEagerMatmulOptions);
 const nativeEagerSoftmaxInto: Float32Array = zgml.nativeEager.softmaxInto(new Float32Array(3), linearInput, { dim: -1 });
 const nativeEagerLogSoftmaxIntoAlias: Float32Array = zgml.native_eager.log_softmax_into(new Float32Array(3), linearInput, { dim: -1 });
 const compiledInferencePrepared: () => Float32Array = compiledInference.prepareInto(new Float32Array(3), linearInput);
@@ -4747,6 +4759,7 @@ void trainingDropoutOutputLen;
 void trainingDropoutInputShape;
 void trainingDropoutOutputShape;
 void currentRuntimeFeatures;
+void runtimeNativeEagerMatmulFeature;
 void runtimeActivationChainFeature;
 void literalEqTensor;
 void literalNeTensor;
@@ -6275,6 +6288,9 @@ void linearModulePreflight;
 void compileNamespacePreflight;
 void nativeEagerLinearInto;
 void nativeEagerLinearIntoAlias;
+void nativeEagerMatmulOptions;
+void nativeEagerMatmulInto;
+void nativeEagerMatmulIntoAlias;
 void nativeEagerSoftmaxInto;
 void nativeEagerLogSoftmaxIntoAlias;
 void sequentialPreflight;

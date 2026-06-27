@@ -134,6 +134,7 @@ enum {
     ZGML_FEATURE_NATIVE_EAGER_LINEAR_ACTIVATION = 1ull << 46,
     ZGML_FEATURE_NATIVE_TRAINING_STEP = 1ull << 47,
     ZGML_FEATURE_NATIVE_EAGER_SOFTMAX = 1ull << 48,
+    ZGML_FEATURE_NATIVE_EAGER_MATMUL = 1ull << 49,
 };
 
 enum {
@@ -663,6 +664,17 @@ ZGML_API zgml_status zgml_eager_linear_f32(
     size_t batch,
     size_t in_features,
     size_t out_features
+);
+ZGML_API zgml_status zgml_eager_matmul_f32(
+    const float *lhs,
+    size_t lhs_len,
+    const float *rhs,
+    size_t rhs_len,
+    float *output,
+    size_t output_len,
+    size_t rows,
+    size_t shared,
+    size_t cols
 );
 ZGML_API zgml_status zgml_eager_linear_activation_f32(
     const float *input,

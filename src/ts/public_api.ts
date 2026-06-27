@@ -24,6 +24,22 @@ export type TensorJSON = {
 };
 export type TensorShapeTuple = readonly number[];
 export type TensorLike<Shape extends TensorShapeTuple = TensorShapeTuple> = TensorData | Tensor<Shape>;
+export type TensorLikeShape<Input> =
+  Input extends Tensor<infer Shape extends TensorShapeTuple>
+    ? Shape
+    : Input extends number
+      ? readonly [1]
+      : Input extends Float32Array
+        ? readonly [number]
+        : Input extends readonly []
+          ? readonly [0]
+          : Input extends readonly (infer Element)[]
+            ? Element extends number
+              ? readonly [Input["length"]]
+              : Element extends readonly unknown[]
+                ? readonly [Input["length"], ...TensorLikeShape<Element>]
+                : TensorShapeTuple
+            : TensorShapeTuple;
 export type TensorSortResult<Shape extends TensorShapeTuple = TensorShapeTuple> = Readonly<{
   values: Tensor<Shape>;
   indices: Tensor<Shape>;
@@ -2133,11 +2149,26 @@ export type NativeEagerSoftmaxIntoOptions = Readonly<{
   cols?: number;
   dim?: number;
 }>;
+export type NativeEagerMatmulIntoOptions = Readonly<{
+  rows?: number;
+  shared?: number;
+  cols?: number;
+  lhsRows?: number;
+  lhs_rows?: number;
+  lhsCols?: number;
+  lhs_cols?: number;
+  rhsRows?: number;
+  rhs_rows?: number;
+  rhsCols?: number;
+  rhs_cols?: number;
+}>;
 export type PublicNativeEagerNamespace = Readonly<{
   linearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options?: NativeEagerLinearIntoOptions): Float32Array;
   linear_into(output: Float32Array, input: TensorLike, weights: TensorLike, options?: NativeEagerLinearIntoOptions): Float32Array;
   linearActivationInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerLinearActivationIntoOptions): Float32Array;
   linear_activation_into(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerLinearActivationIntoOptions): Float32Array;
+  matmulInto(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerMatmulIntoOptions): Float32Array;
+  matmul_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerMatmulIntoOptions): Float32Array;
   softmaxInto(output: Float32Array, input: TensorLike, options?: NativeEagerSoftmaxIntoOptions): Float32Array;
   softmax_into(output: Float32Array, input: TensorLike, options?: NativeEagerSoftmaxIntoOptions): Float32Array;
   logSoftmaxInto(output: Float32Array, input: TensorLike, options?: NativeEagerSoftmaxIntoOptions): Float32Array;
@@ -3930,10 +3961,13 @@ export interface LinearModule<InFeatures extends number = number, OutFeatures ex
   readonly outFeatures: OutFeatures;
   readonly weight: Float32Array;
   readonly bias: Float32Array | null;
+  call<const Input extends TensorLike>(input: Input): Tensor<LinearForwardShape<TensorLikeShape<Input>, OutFeatures>>;
   call<const InputShape extends readonly [InFeatures] | readonly [number, InFeatures]>(input: Tensor<InputShape>): Tensor<LinearForwardShape<InputShape, OutFeatures>>;
   call(input: TensorLike): Tensor;
+  __call__<const Input extends TensorLike>(input: Input): Tensor<LinearForwardShape<TensorLikeShape<Input>, OutFeatures>>;
   __call__<const InputShape extends readonly [InFeatures] | readonly [number, InFeatures]>(input: Tensor<InputShape>): Tensor<LinearForwardShape<InputShape, OutFeatures>>;
   __call__(input: TensorLike): Tensor;
+  forward<const Input extends TensorLike>(input: Input): Tensor<LinearForwardShape<TensorLikeShape<Input>, OutFeatures>>;
   forward<const InputShape extends readonly [InFeatures] | readonly [number, InFeatures]>(input: Tensor<InputShape>): Tensor<LinearForwardShape<InputShape, OutFeatures>>;
   forward(input: TensorLike): Tensor;
   compile<const S extends readonly [InFeatures] | readonly [number, InFeatures]>(options: CompileOptionsWithInputShape<S>): Program<S, LinearForwardShape<S, OutFeatures>>;
@@ -4396,10 +4430,13 @@ export interface SequentialModule<Layers extends readonly NnModule[] = readonly 
   insert(index: number, module: NnModule): this;
   extend(modules: Iterable<NnModule>): this;
   [Symbol.iterator](): IterableIterator<NnModule>;
+  call<const Input extends TensorLike>(input: Input): Tensor<SequentialForwardShape<Layers, TensorLikeShape<Input>>>;
   call<const S extends TensorShapeTuple>(input: Tensor<S>): Tensor<SequentialForwardShape<Layers, S>>;
   call(input: TensorLike): Tensor;
+  __call__<const Input extends TensorLike>(input: Input): Tensor<SequentialForwardShape<Layers, TensorLikeShape<Input>>>;
   __call__<const S extends TensorShapeTuple>(input: Tensor<S>): Tensor<SequentialForwardShape<Layers, S>>;
   __call__(input: TensorLike): Tensor;
+  forward<const Input extends TensorLike>(input: Input): Tensor<SequentialForwardShape<Layers, TensorLikeShape<Input>>>;
   forward<const S extends TensorShapeTuple>(input: Tensor<S>): Tensor<SequentialForwardShape<Layers, S>>;
   forward(input: TensorLike): Tensor;
   compile<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>): Program<S, SequentialForwardShape<Layers, S>>;
@@ -7101,6 +7138,7 @@ export type RuntimeFeatures = Readonly<{
   nativeEagerLinearActivation: boolean;
   nativeTrainingStep: boolean;
   nativeEagerSoftmax: boolean;
+  nativeEagerMatmul: boolean;
 }>;
 
 export type ModelInspection = Readonly<{

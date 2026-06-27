@@ -384,6 +384,36 @@ expectSame({ data: mm.data, shape: mm.shape }, { data: [19, 22, 43, 50], shape: 
 mm._backward(Float32Array.of(1, 1, 1, 1));
 expectSame(lhs.grad, [11, 15, 11, 15], "tensor math matmul lhs grad");
 expectSame(rhs.grad, [4, 4, 6, 6], "tensor math matmul rhs grad");
+let nativeMatmulCalls = 0;
+const noGradNativeMatmul = createTensorMathHelpers({
+  getTensorClass: () => TensorDataSmokeTensor,
+  f32: tensorData.f32,
+  addTensorGrad: tensorData.addTensorGrad,
+  scalarTensor: (value, requiresGrad = false) =>
+    new TensorDataSmokeTensor(Float32Array.of(value), [1], { requiresGrad }),
+  isGradEnabled: () => false,
+  nativeEagerMatmulInto(output, left, right, options) {
+    nativeMatmulCalls += 1;
+    expectSame(options, { rows: 2, shared: 2, cols: 2 }, "tensor math native matmul options");
+    const leftData = left.data;
+    const rightData = right.data;
+    output[0] = leftData[0] * rightData[0] + leftData[1] * rightData[2];
+    output[1] = leftData[0] * rightData[1] + leftData[1] * rightData[3];
+    output[2] = leftData[2] * rightData[0] + leftData[3] * rightData[2];
+    output[3] = leftData[2] * rightData[1] + leftData[3] * rightData[3];
+    return output;
+  },
+});
+const nativeMm = noGradNativeMatmul.matmul(
+  new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4), [2, 2]),
+  new TensorDataSmokeTensor(Float32Array.of(5, 6, 7, 8), [2, 2]),
+);
+expectSame({ data: nativeMm.data, shape: nativeMm.shape, requiresGrad: nativeMm.requiresGrad }, {
+  data: [19, 22, 43, 50],
+  shape: [2, 2],
+  requiresGrad: false,
+}, "tensor math no-grad native matmul hook");
+expectSame(nativeMatmulCalls, 1, "tensor math no-grad native matmul hook count");
 const red = new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4, 5, 6), [2, 3], { requiresGrad: true });
 const summed = tensorMath.sumDim(red, 1);
 expectSame({ data: summed.data, shape: summed.shape }, { data: [6, 15], shape: [2, 1] }, "tensor math sumDim");

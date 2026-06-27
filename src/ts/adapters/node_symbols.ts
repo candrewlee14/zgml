@@ -42,6 +42,7 @@ export type NodeNativeSymbols = Readonly<{
   bufferRead: NativeFunction;
   bufferFree: NativeFunction;
   eagerLinearF32: NativeFunction;
+  eagerMatmulF32: NativeFunction;
   eagerLinearActivationF32: NativeFunction;
   eagerSoftmaxF32: NativeFunction;
   trainLinearMseSgdF32: NativeFunction;
@@ -122,6 +123,7 @@ export function bindNodeSymbols(nativeLibrary: unknown): NodeNativeSymbols {
     bufferRead: lib.func("int zgml_buffer_read(void *buffer, size_t byte_offset, void *dst, size_t byte_len)"),
     bufferFree: lib.func("void zgml_buffer_free(void *buffer)"),
     eagerLinearF32: lib.func("int zgml_eager_linear_f32(const float *input, size_t input_len, const float *weights, size_t weights_len, const float *bias, size_t bias_len, float *output, size_t output_len, size_t batch, size_t in_features, size_t out_features)"),
+    eagerMatmulF32: lib.func("int zgml_eager_matmul_f32(const float *lhs, size_t lhs_len, const float *rhs, size_t rhs_len, float *output, size_t output_len, size_t rows, size_t shared, size_t cols)"),
     eagerLinearActivationF32: lib.func("int zgml_eager_linear_activation_f32(const float *input, size_t input_len, const float *weights, size_t weights_len, const float *bias, size_t bias_len, float *output, size_t output_len, size_t batch, size_t in_features, size_t out_features, uint32_t activation)"),
     eagerSoftmaxF32: lib.func("int zgml_eager_softmax_f32(const float *input, size_t input_len, float *output, size_t output_len, size_t rows, size_t cols, uint32_t log_softmax)"),
     trainLinearMseSgdF32: lib.func("int zgml_train_linear_mse_sgd_f32(const float *input, size_t input_len, const float *target, size_t target_len, float *weight, size_t weight_len, float *bias, size_t bias_len, float *output, size_t output_len, float *grad_weight, size_t grad_weight_len, size_t batch, size_t in_features, size_t out_features, float lr, float weight_decay, float *out_loss)"),

@@ -277,6 +277,8 @@ const linearBias = values(32, 32);
 const linearWeightTensor = zgml.tensor(linearWeights, [64, 32]);
 const linearBiasTensor = zgml.tensor(linearBias, [32]);
 const linearModel = linearBatchedModel();
+const matmulWeights = values(64 * 64, 36);
+const matmulWeightTensor = zgml.tensor(matmulWeights, [64, 64]);
 const geluWeights = values(64 * 64, 32);
 const geluBias = values(64, 64);
 const geluWeightTensor = zgml.tensor(geluWeights, [64, 64]);
@@ -317,6 +319,28 @@ const gapSpecs = Object.freeze([
     }),
     nativeEagerModule: (input) => zgml.noGrad(() => linearModel.forward(input)),
     compiled: () => compiledInferenceHandle(linearBatchedModel(), [128, 64]),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_linear_or_matmul_storage_slice",
+  }),
+  Object.freeze({
+    key: "matmul_batched",
+    shape: Object.freeze({ batch: 128, inFeatures: 64, outFeatures: 64 }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => input.matmul(matmulWeightTensor),
+    nativeEager: (output, input) => zgml.nativeEager.matmulInto(output, input, matmulWeightTensor),
+    nativeEagerModule: (input) => zgml.noGrad(() => input.matmul(matmulWeightTensor)),
+    compiled: () => compiledLazyHandle(
+      zgml.lazy.input([128, 64]).matmul(zgml.lazy.parameter([64, 64], "w")),
+      {
+        weights: new Float32Array(matmulWeights),
+      },
+      [128, 64],
+    ),
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,

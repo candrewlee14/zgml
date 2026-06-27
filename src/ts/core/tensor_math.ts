@@ -57,6 +57,12 @@ type IsCloseOptions = Readonly<{
 type F32Callback = (data: unknown) => Float32Array;
 type AddTensorGradCallback = BivariantCallback<[tensor: TensorMathTensor, grad: Float32Array], void>;
 type ScalarTensorCallback = (value: number, requiresGrad?: boolean) => TensorMathTensor;
+type NativeEagerMatmulInto = (
+  output: Float32Array,
+  lhs: unknown,
+  rhs: unknown,
+  options?: Record<string, unknown>,
+) => Float32Array;
 
 export type TensorMathHelpersOptions = Readonly<{
   Tensor?: TensorConstructor;
@@ -65,6 +71,7 @@ export type TensorMathHelpersOptions = Readonly<{
   addTensorGrad: AddTensorGradCallback;
   scalarTensor: ScalarTensorCallback;
   isGradEnabled?: () => boolean;
+  nativeEagerMatmulInto?: NativeEagerMatmulInto;
 }>;
 
 export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
@@ -74,6 +81,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   const f32 = options.f32;
   const addTensorGrad = options.addTensorGrad;
   const scalarTensor = options.scalarTensor;
+  const nativeEagerMatmulInto = options.nativeEagerMatmulInto;
   const gradModeEnabled = typeof options.isGradEnabled === "function"
     ? options.isGradEnabled
     : isGradEnabled;
@@ -383,16 +391,25 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
       throw new Error(`tensor matmul shape mismatch: ${lhsRows}x${lhsCols} cannot multiply ${rhsRows}x${rhsCols}`);
     }
     const out = new Float32Array(lhsRows * rhsCols);
-    for (let r = 0; r < lhsRows; r += 1) {
-      for (let c = 0; c < rhsCols; c += 1) {
-        let acc = 0;
-        for (let k = 0; k < lhsCols; k += 1) {
-          acc += tensor.data[r * lhsCols + k] * rhs[k * rhsCols + c];
+    const gradEnabled = gradModeEnabled();
+    const needsGrad = gradEnabled && (tensor.requiresGrad || Boolean(rhsTensor && rhsTensor.requiresGrad));
+    if (!gradEnabled && typeof nativeEagerMatmulInto === "function") {
+      nativeEagerMatmulInto(out, tensor, rhsTensor ?? rhs, {
+        rows: lhsRows,
+        shared: lhsCols,
+        cols: rhsCols,
+      });
+    } else {
+      for (let r = 0; r < lhsRows; r += 1) {
+        for (let c = 0; c < rhsCols; c += 1) {
+          let acc = 0;
+          for (let k = 0; k < lhsCols; k += 1) {
+            acc += tensor.data[r * lhsCols + k] * rhs[k * rhsCols + c];
+          }
+          out[r * rhsCols + c] = acc;
         }
-        out[r * rhsCols + c] = acc;
       }
     }
-    const needsGrad = gradModeEnabled() && (tensor.requiresGrad || Boolean(rhsTensor && rhsTensor.requiresGrad));
     const result = new TensorClass(out, [lhsRows, rhsCols], {
       requiresGrad: needsGrad,
       prev: needsGrad ? [tensor, ...(rhsTensor ? [rhsTensor] : [])] : [],

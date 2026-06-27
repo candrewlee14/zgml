@@ -18,6 +18,12 @@ type AdapterTensorConstructOptions<TTensor extends AdapterTensorInstance = Adapt
   }>;
 type AdapterTensorConstructor<TTensor extends AdapterTensorInstance = AdapterTensorInstance> =
   new(data: unknown, shape?: unknown, options?: AdapterTensorConstructOptions<TTensor>) => TTensor;
+type NativeEagerMatmulInto = (
+  output: Float32Array,
+  lhs: unknown,
+  rhs: unknown,
+  options?: Record<string, unknown>,
+) => Float32Array;
 
 export type AdapterTensorRuntimeSurfaceOptions<
   TTensor extends AdapterTensorInstance = AdapterTensorInstance,
@@ -26,6 +32,7 @@ export type AdapterTensorRuntimeSurfaceOptions<
   sharedFrontend: SharedFrontendRuntime;
   Tensor: AdapterTensorConstructor<TTensor>;
   isGradEnabled: TensorHostSurfaceOptions<TTensor, TNativeBuffer>["isGradEnabled"];
+  nativeEagerMatmulInto?: NativeEagerMatmulInto;
   meanSquaredError: (tensor: TTensor, target: unknown) => TTensor;
   dtype: TensorMetadataOpsOptions<TTensor>["dtype"];
   device: TensorMetadataOpsOptions<TTensor>["device"];
@@ -67,6 +74,7 @@ export function createAdapterTensorRuntimeSurface<
     addTensorGrad,
     scalarTensor,
     isGradEnabled: options.isGradEnabled,
+    nativeEagerMatmulInto: options.nativeEagerMatmulInto,
   });
   const tensorMathSurfaceHelpers = options.sharedFrontend.createTensorMathSurfaceHelpers({
     tensorMathHelpers,

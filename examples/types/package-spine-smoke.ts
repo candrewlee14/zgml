@@ -457,6 +457,7 @@ import {
   type TensorInspection as PackageTensorInspection,
   type TensorJSON as PackageTensorJSON,
   type TensorLike as PackageTensorLike,
+  type TensorLikeShape as PackageTensorLikeShape,
   type TensorNativeBufferOptions as PackageTensorNativeBufferOptions,
   type TensorNestedArray as PackageTensorNestedArray,
   type TensorOptions as PackageTensorOptions,
@@ -807,6 +808,8 @@ type PackageRandomIntTensorOptionsShape = Expect<Equal<PackageRandomIntTensorOpt
 type PackageAllCloseOptionsShape = Expect<Equal<PackageAllCloseOptions["rtol"], number | undefined>>;
 type PackageTensorJsonShape = Expect<Equal<PackageTensorJSON["dtype"], "f32">>;
 type PackageTensorDataShape = Expect<PackageTensorNestedArray extends PackageTensorData ? true : false>;
+type PackagePlainTupleTensorLikeShape = Expect<Equal<PackageTensorLikeShape<readonly [1, 2]>, readonly [2]>>;
+type PackagePlainBatchTensorLikeShape = Expect<Equal<PackageTensorLikeShape<readonly [readonly [1, 2], readonly [3, 4]]>, readonly [2, 2]>>;
 type PackageTensorDTypeShape = Expect<Equal<PackageTensorDType, "f32">>;
 type PackageTensorDTypeLikeShape = Expect<Equal<PackageTensorDTypeLike, "f32" | "float32">>;
 type PackageTensorDeviceShape = Expect<Equal<PackageTensorDevice, "cpu">>;
@@ -828,6 +831,8 @@ type PackageEmbeddingGridShape = Expect<Equal<PackageEmbeddingForwardShape<reado
 type PackageInferredShapeModuleForwardShape = Expect<Equal<PackageShapeModuleForwardShape<"reshape", readonly [3, -1], readonly [2, 3]>, readonly [3, 2]>>;
 type PackageLinearForwardShape = Expect<Equal<PackageModuleForwardShape<PackageLinearModule<2, 3>, readonly [2]>, readonly [3]>>;
 type PackageLinearBatchForwardShape = Expect<Equal<PackageModuleForwardShape<PackageLinearModule<2, 3>, readonly [5, 2]>, readonly [5, 3]>>;
+const packageLinearPlainTupleForward: PackageTensor<readonly [3]> = packageNodeNn.linear(2, 3).forward([1, 2] as const);
+const packageLinearPlainBatchTupleForward: PackageTensor<readonly [2, 3]> = packageNodeNn.linear(2, 3).forward([[1, 2], [3, 4]] as const);
 type PackageSequentialForwardShape = Expect<Equal<PackageModuleForwardShape<PackageSequentialModule<readonly [PackageLinearModule<2, 3>]>, readonly [2]>, readonly [3]>>;
 type PackageSequentialPopShape = Expect<Equal<ReturnType<PackageSequentialModule<readonly [PackageLinearModule<2, 3>]>["pop"]>, PackageNnModule | undefined>>;
 type PackageSequentialClearShape = Expect<Equal<ReturnType<PackageSequentialModule<readonly [PackageLinearModule<2, 3>]>["clear"]>, PackageSequentialModule<readonly [PackageLinearModule<2, 3>]>>>;
