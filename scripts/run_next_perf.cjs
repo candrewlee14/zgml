@@ -70,9 +70,9 @@ function chooseLane(line, env = process.env) {
     hasSemanticThroughputFrontier &&
     (!freshThroughput || freshThroughput.smollm < 1 || freshThroughput.full < 1);
   if (qsemanticThroughputBelowDefault) return "qsemantic_throughput";
-  if (qsemanticInputBridgeNeedsWidthParallelKernel) return "qsemantic_input_bridge";
   if (q8PromptNeedsInputBridgeWorkPartitioning) return "q8_prompt_semantic";
   if (q8PromptNeedsWidthParallelKernel) return "qsemantic_bridge";
+  if (qsemanticInputBridgeNeedsWidthParallelKernel) return "qsemantic_input_bridge";
   if (q8PromptNeedsSemanticBridgeKernel) return "qsemantic_throughput";
   if (q8PromptNeedsSteadySemanticBridge) return "q8_prompt";
   if (currentQ8NeedsSemanticThroughput && hasFreshQsemanticThroughput) return "q8_prompt";
@@ -106,11 +106,13 @@ function main() {
   const lane = chooseLane(line);
   validateLane(lane);
   const shouldBuild = process.env.BENCH_NEXT_PERF_BUILD === "1";
+  const dryRun = process.argv.includes("--dry-run") || process.env.BENCH_NEXT_PERF_DRY_RUN === "1";
   const steady = process.env.BENCH_NEXT_PERF_STEADY === "1" || /q8_prompt=semantic_bridge_candidate:[^ ]*:next=steady_semantic_bridge_candidate/.test(line);
   console.log(`[next-perf] ${line}`);
-  console.log(`[next-perf] lane=${lane} build=${shouldBuild ? "yes" : "no"} steady=${steady ? "yes" : "no"}`);
+  console.log(`[next-perf] lane=${lane} build=${shouldBuild ? "yes" : "no"} steady=${steady ? "yes" : "no"} dry_run=${dryRun ? "yes" : "no"}`);
 
   if (lane === "status") return;
+  if (dryRun) return;
 
   if (shouldBuild && (lane === "qsemantic" || lane === "qsemantic_throughput" || lane === "qsemantic_bridge" || lane === "qsemantic_input_bridge" || lane === "qproj" || lane === "q8_prompt" || lane === "q8_prompt_semantic" || lane === "ggml")) {
     runInherited("build benchmark artifacts", "zig", ["build", "-Doptimize=ReleaseFast", "bench-build", "-fincremental", "--summary", "failures"]);
