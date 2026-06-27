@@ -1305,7 +1305,7 @@ pub const CommandStreamPolicy = struct {
     fuse_projection_row_chain_two_phase_candidate: bool = false,
     fuse_semantic_ffn_sublayer_single_dispatch: bool = true,
     fuse_semantic_ffn_sublayer_width_parallel: bool = false,
-    fuse_semantic_ffn_sublayer_input_bridge_single_dispatch: bool = true,
+    fuse_semantic_ffn_sublayer_input_bridge_single_dispatch: bool = false,
     fuse_dense_projection_row_chain: bool = false,
     min_projection_row_chain_rows: u32 = 8,
 
@@ -9597,6 +9597,21 @@ test "program command stream absorbs projection row-chain semantic residual brid
     try std.testing.expectEqual(@as(usize, 1), direct_commands.len);
     try std.testing.expectEqual(ProgramCommandKind.semantic_ffn_sublayer_with_input_row_chain, direct_commands[0].kind);
     try std.testing.expectEqual(@as(u32, 14), direct_commands[0].coveredOpCount());
+}
+
+test "semantic input bridge direct serial lowering is diagnostic opt-in" {
+    const default_policy = CommandStreamPolicy.default();
+    try std.testing.expect(!default_policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch);
+
+    const throughput_policy = CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeCandidate();
+    try std.testing.expect(throughput_policy.fuse_semantic_ffn_sublayer_input_row_chain);
+    try std.testing.expect(throughput_policy.fuse_semantic_ffn_sublayer_width_parallel);
+    try std.testing.expect(!throughput_policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch);
+
+    const direct_serial_policy = CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeDirectSerialCandidate();
+    try std.testing.expect(direct_serial_policy.fuse_semantic_ffn_sublayer_input_row_chain);
+    try std.testing.expect(!direct_serial_policy.fuse_semantic_ffn_sublayer_width_parallel);
+    try std.testing.expect(direct_serial_policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch);
 }
 
 test "program command stream fuses paired projection activation product chain" {

@@ -847,7 +847,10 @@ path (`direct_serial` selected `1.42x`, median `1.23x`, versus absorbed
 selected `3.09x`, median `2.56x`). That makes the next implementation target
 more precise: not "reduce dispatches at any cost", but
 `semantic_with_input_width_parallel_kernel`, carrying the width-parallel
-semantic FFN work into the residual input-bridge shape.
+semantic FFN work into the residual input-bridge shape. The direct row-serial
+bridge is a named diagnostic opt-in policy rather than a raw-policy default:
+turning on input-bridge recognition should preserve the fastest physical
+lowering unless a benchmark explicitly asks for the one-dispatch microscope.
 `perf-next:` now carries that fact as a compact
 `qsemantic_input_bridge=...:next=semantic_with_input_width_parallel_kernel`
 field, and `dev:perf:next` routes to the exact qsemantic input-bridge

@@ -389,6 +389,9 @@ machine for both prompt/prefill and decode.
   `direct_serial=1.38x`; however, the direct bridge still reports
   `2,985,984` row-serial dot ops per row threadgroup, so this is diagnostic
   cleanup rather than a replacement for the width-partitioned input bridge. The
+  direct bridge is therefore opt-in only on the named diagnostic policy; the
+  normal input-bridge candidate keeps the faster absorbed/width-partitioned
+  lowering while a future kernel removes its remaining dispatch split. The
   checked input-bridge gate now treats that lane as a steady collapse guard:
   runs with at least three attempts must keep best absorbed speedup at or above
   `2.45x` by default, configurable with

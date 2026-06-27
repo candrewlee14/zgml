@@ -1722,6 +1722,7 @@ function checkScripts() {
     "fuse_semantic_ffn_sublayer",
     "fuse_semantic_ffn_sublayer_single_dispatch",
     "fuse_semantic_ffn_sublayer_input_bridge_single_dispatch",
+    "fuse_semantic_ffn_sublayer_input_bridge_single_dispatch: bool = false",
     "promptSemanticFfnSublayerTarget",
     "promptSemanticFfnSublayerThroughputCandidate",
     "promptSemanticFfnSublayerInputBridgeCandidate",
@@ -1735,6 +1736,7 @@ function checkScripts() {
     "program command stream recognizes semantic FFN sublayer target",
     "program command stream counts projection row-chain semantic residual bridges",
     "program command stream absorbs projection row-chain semantic residual bridge",
+    "semantic input bridge direct serial lowering is diagnostic opt-in",
     "shape.semantic_ffn_sublayers",
     "shape.projection_row_chain_semantic_residual_bridges",
   ]);
