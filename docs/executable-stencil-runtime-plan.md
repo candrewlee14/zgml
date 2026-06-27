@@ -1612,32 +1612,30 @@ proved the desired command shape with zero fallback
 not the final performance answer (`semantic_speedup=0.96x` in that one-attempt
 probe). Keep the default on the 151-command semantic-promoted path until the
 bridge command owns a true throughput kernel.
-The qsemantic input-bridge microscope now has the first real width-parallel
-replacement for that conservative encoder. The legacy absorbed command recorded
-one structural command but five backend dispatches (`row_chain=2`, `pair=1`,
-`tail=2`). The source-current `qmatmul_semantic_ffn_input_bridge_f32` path folds
-the input projection/residual/norm, gate/up/product, down/residual/norm, and
-final scale into one guarded dispatch for the SmolLM `576 x 1536 x 576` bridge
-shape. Fresh focused artifacts report `absorbed=1.17-1.57x`,
-`runtime_dispatches=1`, `semantic_with_input_dispatches=1`,
-`decomposed_dispatches=0`, `pair_dispatches=0`, `tail_dispatches=0`, and
-`spilled_input=0`. It now also exposes the work-partitioning trap directly:
-the direct bridge uses `128` row-owned threadgroups and
-`2,985,984` row-serial dot ops per row threadgroup. Keep it as an isolated
-bridge proof until Q8 prompt and ggml evidence prove the promotion boundary.
-The full-model semantic throughput candidate now deliberately splits the policy:
-it keeps the narrower `semantic_ffn_sublayer` single-dispatch width-kernel
-attempt enabled, but disables the 14-op input-bridge direct kernel until that
-bridge has real partitioning. That recovered the Q8 semantic candidate from the
-old direct-bridge `semantic_speedup=0.59-0.60x` diagnostic to a fresh
-`semantic_speedup=0.94x` one-attempt probe while preserving the 121-command
-shape and zero fallback. The resulting artifact reports
+The qsemantic input-bridge microscope now separates two meanings of
+"absorbed". The guarded one-dispatch
+`qmatmul_semantic_ffn_input_bridge_f32` path is still useful as a shape proof,
+but it is row-owned and serial over too much work: the focused profile exposes
+`128` row threadgroups and `2,985,984` row-serial dot ops per row threadgroup.
+It must not be preferred for the SmolLM `576 x 1536 x 576` bridge shape until it
+is rewritten as a real tiled/width-parallel kernel. The retained input-bridge
+candidate therefore uses the decomposed width-parallel path: input row-chain
+plus the streamed SIMD-width semantic tail. A fresh three-attempt focused
+artifact reports `absorbed=2.69x`, median `2.56x`, worst `2.52x`,
+`runtime_dispatches=5`, `semantic_with_input_dispatches=5`,
+`decomposed=1`, `decomposed_row_chain=2`, `decomposed_pair=1`,
+`decomposed_tail=2`, `direct=0`, and `max_abs_diff=0.000001`.
+The full-model semantic throughput candidate now deliberately fences off the
+row-owned direct bridge while preserving the 121-command shape and zero
+fallback. A fresh three-attempt Q8 semantic steady probe reports best
+`semantic_speedup=1.12x`, median `0.99x`, worst `0.99x`,
+`semantic_command=151->121`, `semantic_absorbed=30`,
 `semantic_absorbed_dispatch=150`, `semantic_absorbed_split=5.00`,
-`semantic_direct=0`, and `semantic_fallback_dispatch=90`: the command-shape
-frontier is preserved, the slow row-owned bridge is fenced into the focused
-microscope, and `perf-next` correctly moves back to the semantic width/dim
-kernel target (`semantic_single_dispatch_refused_dim=30` for
-`k=576,h=1536,o=576,cap=1024`).
+`semantic_direct=0`, and `semantic_fallback_dispatch=90`. That is a real
+structural improvement but still not a model-level throughput promotion:
+dispatch remains `242->242`. The next model-level win must either make the
+14-op input bridge a true tiled/width-parallel one-dispatch kernel, or otherwise
+reduce the five-dispatch absorbed bridge without returning to row-serial work.
 After the one-dispatch semantic throughput kernel became a real measured lane,
 the full-model default was kept on `promptProjectionRowChainCommand()` while
 `--metal-prompt-semantic-throughput-candidate` remains the explicit diagnostic

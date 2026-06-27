@@ -1346,9 +1346,7 @@ pub const CommandStreamPolicy = struct {
     }
 
     pub fn promptSemanticFfnSublayerInputBridgeCandidate() CommandStreamPolicy {
-        var policy = CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate();
-        policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch = true;
-        return policy;
+        return CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate();
     }
 
     pub fn promptProjectionRowChainSingleDispatchCandidate() CommandStreamPolicy {
