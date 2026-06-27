@@ -36,6 +36,7 @@ type LazyOpKind =
   | "linear"
   | "matmul"
   | "add"
+  | "mul"
   | "embedding"
   | "conv2d"
   | "maxPool2d"
@@ -183,6 +184,10 @@ export class LazyTensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
 
   add<const BiasShape extends TensorShapeTuple>(bias: LazyTensor<BiasShape>): LazyTensor<Shape> {
     return add(this, bias);
+  }
+
+  mul<const ScaleShape extends TensorShapeTuple>(scale: LazyTensor<ScaleShape>): LazyTensor<Shape> {
+    return mul(this, scale);
   }
 
   embedding<EmbeddingDim extends number>(numEmbeddings: number, embeddingDim: EmbeddingDim, options: Readonly<{ name?: string }> = {}): LazyTensor<LazyEmbeddingShape<Shape, EmbeddingDim>> {
@@ -922,6 +927,29 @@ export function add<const Shape extends TensorShapeTuple, const BiasShape extend
     op: "add",
     outputShape: tensor.shape,
     parameters: [lazyParameter(bias.source.name, biasShape, bias.source.layout)],
+    attrs: { features },
+  }, tensor.shape);
+}
+
+export function mul<const Shape extends TensorShapeTuple, const ScaleShape extends TensorShapeTuple>(
+  tensor: LazyTensor<Shape>,
+  scale: LazyTensor<ScaleShape>,
+): LazyTensor<Shape> {
+  if (scale.ops.length !== 0 || scale.source.role !== "parameter") {
+    throw new Error("lazy mul currently expects a lazy.parameter(...) rhs so the compiled Program can bind the scale explicitly");
+  }
+  const scaleShape = scale.shape;
+  if (scaleShape.length !== 1) {
+    throw new Error(`lazy mul expects rank-1 rhs parameter [features], got rank ${scaleShape.length}`);
+  }
+  const features = positiveInteger(tensor.shape[tensor.shape.length - 1], "lazy mul features");
+  if (scaleShape[0] !== features) {
+    throw new Error(`lazy mul lhs last dimension ${features} must match rhs dimension ${scaleShape[0]}`);
+  }
+  return appendOp(tensor, {
+    op: "mul",
+    outputShape: tensor.shape,
+    parameters: [lazyParameter(scale.source.name, scaleShape, scale.source.layout)],
     attrs: { features },
   }, tensor.shape);
 }

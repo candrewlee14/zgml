@@ -4674,11 +4674,15 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   const lazyNamespaceSigmoid = torch.lazy.sigmoid(torch.lazy.input([2]).linear(3)).linear(1);
   const lazyMatmulWeight = torch.lazy.parameter([2, 3], "head.weight", "row-major:matmul.weight[in_features,out_features]");
   const lazyMatmulBias = torch.lazy.parameter([3], "head.bias", "row-major:add.bias[features]");
+  const lazyMatmulScale = torch.lazy.parameter([3], "head.scale", "row-major:mul.scale[features]");
   const lazyMatmulGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).relu();
   const lazyMatmulBiasOnlyGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).add(lazyMatmulBias);
   const lazyMatmulBiasGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).add(lazyMatmulBias).relu();
+  const lazyMatmulScaleOnlyGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).mul(lazyMatmulScale);
+  const lazyMatmulScaleGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).mul(lazyMatmulScale).relu();
   const lazyNamespaceMatmulGraph = torch.lazy.relu(torch.lazy.matmul(torch.lazy.input([2]), lazyMatmulWeight));
   const lazyNamespaceMatmulBiasGraph = torch.lazy.relu(torch.lazy.add(torch.lazy.matmul(torch.lazy.input([2]), lazyMatmulWeight), lazyMatmulBias));
+  const lazyNamespaceMatmulScaleGraph = torch.lazy.relu(torch.lazy.mul(torch.lazy.matmul(torch.lazy.input([2]), lazyMatmulWeight), lazyMatmulScale));
   const lazyMmGraph = torch.lazy.input([1, 2]).mm(lazyMatmulWeight);
   const lazyActivationChain = torch.lazy.input([2]).exp().log().neg().recip().abs().sqrt().square().sgn().step();
   const lazyNamespaceActivationChain = torch.lazy.step(torch.lazy.sgn(torch.lazy.square(torch.lazy.sqrt(torch.lazy.abs(torch.lazy.recip(torch.lazy.neg(torch.lazy.log(torch.lazy.exp(torch.lazy.input([2]))))))))));
@@ -4723,6 +4727,8 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   const lazyMethodCompiledProgram = lazy.compile({ backend: "cpu" });
   const lazyMatmulBiasOnlyCompiledProgram = torch.compile.compile(lazyMatmulBiasOnlyGraph, { backend: "cpu" });
   const lazyMatmulBiasCompiledProgram = torch.compile.compile(lazyMatmulBiasGraph, { backend: "cpu" });
+  const lazyMatmulScaleOnlyCompiledProgram = torch.compile.compile(lazyMatmulScaleOnlyGraph, { backend: "cpu" });
+  const lazyMatmulScaleCompiledProgram = torch.compile.compile(lazyMatmulScaleGraph, { backend: "cpu" });
   const lazyMultiChannelConvReluProgram = lazyMultiChannelConvReluGraph.compile({ backend: "cpu" });
   if (
     lazy.compileSupport().supported !== true ||
@@ -4741,8 +4747,11 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyMatmulGraph.compileSupport().supported !== true ||
     lazyMatmulBiasOnlyGraph.compileSupport().supported !== true ||
     lazyMatmulBiasGraph.compileSupport().supported !== true ||
+    lazyMatmulScaleOnlyGraph.compileSupport().supported !== true ||
+    lazyMatmulScaleGraph.compileSupport().supported !== true ||
     lazyNamespaceMatmulGraph.compileSupport().supported !== true ||
     lazyNamespaceMatmulBiasGraph.compileSupport().supported !== true ||
+    lazyNamespaceMatmulScaleGraph.compileSupport().supported !== true ||
     lazyMmGraph.compileSupport().supported !== true ||
     lazyMatmulGraph.trace().ops[0]?.op !== "matmul" ||
     lazyMatmulGraph.tensorProgramIr()?.ops[0]?.op !== "matmul" ||
@@ -4759,6 +4768,18 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyMatmulBiasGraph.kernelPlan()?.ops[0]?.fusedOpCount !== 3 ||
     lazyMatmulBiasGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "linear|add|relu" ||
     lazyMatmulBiasGraph.kernelPlan()?.parameterLayout.parameters.map((param: Record<string, any>) => `${param.name}:${param.binding}`).join("|") !== "head.weight:weights|head.bias:bias" ||
+    lazyMatmulScaleOnlyGraph.trace().ops.map((op: Record<string, any>) => op.op).join("|") !== "matmul|mul" ||
+    lazyMatmulScaleOnlyGraph.tensorProgramIr()?.ops[1]?.op !== "mul" ||
+    lazyMatmulScaleOnlyGraph.kernelPlan()?.opCount !== 2 ||
+    lazyMatmulScaleOnlyGraph.kernelPlan()?.dispatchCount !== 2 ||
+    lazyMatmulScaleOnlyGraph.kernelPlan()?.ops.map((op: Record<string, any>) => op.nativeKernels.join("|")).join("|") !== "linear|mul" ||
+    lazyMatmulScaleOnlyGraph.kernelPlan()?.parameterLayout.parameters.map((param: Record<string, any>) => `${param.name}:${param.binding}`).join("|") !== "head.weight:weights|head.scale:weights" ||
+    lazyMatmulScaleGraph.trace().ops.map((op: Record<string, any>) => op.op).join("|") !== "matmul|mul|activation" ||
+    lazyMatmulScaleGraph.tensorProgramIr()?.ops[1]?.op !== "mul" ||
+    lazyMatmulScaleGraph.kernelPlan()?.opCount !== 3 ||
+    lazyMatmulScaleGraph.kernelPlan()?.dispatchCount !== 3 ||
+    lazyMatmulScaleGraph.kernelPlan()?.ops.map((op: Record<string, any>) => op.nativeKernels.join("|")).join("|") !== "linear|mul|relu" ||
+    lazyMatmulScaleGraph.kernelPlan()?.parameterLayout.parameters.map((param: Record<string, any>) => `${param.name}:${param.binding}`).join("|") !== "head.weight:weights|head.scale:weights" ||
     lazyActivationChain.compileSupport().supported !== true ||
     lazyNamespaceActivationChain.compileSupport().supported !== true ||
     lazySnakeSoftmaxGraph.compileSupport().supported !== true ||
@@ -4796,6 +4817,14 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyMatmulBiasCompiledProgram.outputShape().join("x") !== "3" ||
     lazyMatmulBiasCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.fusedOpCount !== 3 ||
     lazyMatmulBiasCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "linear|add|relu" ||
+    lazyMatmulScaleOnlyCompiledProgram.outputShape().join("x") !== "3" ||
+    lazyMatmulScaleOnlyCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 2 ||
+    lazyMatmulScaleOnlyCompiledProgram.compileEvidence()?.kernelPlan?.dispatchCount !== 2 ||
+    lazyMatmulScaleOnlyCompiledProgram.compileEvidence()?.kernelPlan?.ops.map((op: Record<string, any>) => op.nativeKernels.join("|")).join("|") !== "linear|mul" ||
+    lazyMatmulScaleCompiledProgram.outputShape().join("x") !== "3" ||
+    lazyMatmulScaleCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 3 ||
+    lazyMatmulScaleCompiledProgram.compileEvidence()?.kernelPlan?.dispatchCount !== 3 ||
+    lazyMatmulScaleCompiledProgram.compileEvidence()?.kernelPlan?.ops.map((op: Record<string, any>) => op.nativeKernels.join("|")).join("|") !== "linear|mul|relu" ||
     lazyMultiChannelConvReluProgram.outputShape().join("x") !== "2x2x2x2" ||
     lazyMultiChannelConvReluProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "conv2d|relu" ||
     lazyReductionChain.compileSupport().supported !== true ||
@@ -4852,10 +4881,28 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   } finally {
     lazyMultiChannelConvReluSession.dispose();
   }
+  const lazyMatmulScaleSession = lazyMatmulScaleOnlyCompiledProgram.bind({
+    weights: new Float32Array([
+      1, 0, 0,
+      0, 1, 1,
+      2, -1, 0.5,
+    ]),
+  });
+  try {
+    expectClose(
+      lazyMatmulScaleSession.stepTensor(torch.tensor([1, 2], [2])).data,
+      [2, -2, 1],
+      `${label} lazy matmul scale compiled output`,
+    );
+  } finally {
+    lazyMatmulScaleSession.dispose();
+  }
   lazyCompiledProgram.free();
   lazyMethodCompiledProgram.free();
   lazyMatmulBiasOnlyCompiledProgram.free();
   lazyMatmulBiasCompiledProgram.free();
+  lazyMatmulScaleOnlyCompiledProgram.free();
+  lazyMatmulScaleCompiledProgram.free();
   lazyMultiChannelConvReluProgram.free();
   expectThrowIncludes(() => lazyTrainingDropoutGraph.requireCompileSupport(), "lazy graph cannot compile", `${label} lazy requireCompileSupport unsupported graph`);
   expectThrowIncludes(() => lazyTrainingDropoutGraph.compile({ backend: "cpu" }), "lazy graph cannot compile", `${label} lazy compile rejects unsupported graph`);

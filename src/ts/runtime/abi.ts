@@ -46,6 +46,7 @@ export const moduleOpIds: NumericMap = Object.freeze({
   reduceArgmax: 24,
   reduceArgmin: 25,
   reduceProd: 26,
+  mul: 27,
   slice: 15,
   activationChain: 16,
   maxPool2d: 17,

@@ -694,6 +694,7 @@ function checkPackageExports(errors) {
     "ZGML_MODULE_OP_DIAGONAL = 23",
     "ZGML_MODULE_OP_REDUCE_ARGMAX = 24",
     "ZGML_MODULE_OP_REDUCE_ARGMIN = 25",
+    "ZGML_MODULE_OP_MUL = 27",
     "ZGML_MODULE_ACTIVATION_TANH = 14",
   ]) {
     if (!publicHeaderSource.includes(required)) {

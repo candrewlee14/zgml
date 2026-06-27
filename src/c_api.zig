@@ -174,6 +174,7 @@ const module_op_diagonal: u32 = 23;
 const module_op_reduce_argmax: u32 = 24;
 const module_op_reduce_argmin: u32 = 25;
 const module_op_reduce_prod: u32 = 26;
+const module_op_mul: u32 = 27;
 const module_op_slice: u32 = 15;
 const module_op_activation_chain: u32 = 16;
 const module_op_max_pool2d: u32 = 17;
@@ -3271,6 +3272,21 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
                     &bias_len,
                 );
                 current = current.add(bias.repeatLike(current));
+            },
+            module_op_mul => {
+                const features = op.a;
+                if (features == 0 or features != current_len) return error.ShapeMismatch;
+                if (op.activation != 0 or op.b != 0 or op.c != 0 or op.eps != 0) return error.InvalidArgument;
+                if (op.flags != module_flag_weight) return error.InvalidArgument;
+                const weight = try moduleAddParam(
+                    graph_alloc,
+                    &persistent_tensors_list,
+                    &persistent_params_list,
+                    .weights,
+                    &.{features},
+                    &weights_len,
+                );
+                current = current.mul(weight.repeatLike(current));
             },
             module_op_feature_affine => {
                 const features = op.a;
@@ -8391,6 +8407,56 @@ test "C ABI module program compiles traced sequential ops" {
         try std.testing.expectEqual(@as(usize, add_output.len), add_result.output_len);
         try std.testing.expectApproxEqAbs(@as(f32, 11.5), add_output[0], 1e-6);
         try std.testing.expectApproxEqAbs(@as(f32, 2), add_output[1], 1e-6);
+    }
+
+    {
+        const mul_ops = [_]zgml_module_op_desc{.{
+            .kind = module_op_mul,
+            .flags = module_flag_weight,
+            .a = 2,
+        }};
+        var mul_program: ?*zgml_program = null;
+        var mul_session: ?*zgml_session = null;
+        defer zgml_session_free(mul_session);
+        defer zgml_program_free(mul_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = input_shape[0..].ptr,
+            .input_rank = input_shape.len,
+            .ops = mul_ops[0..].ptr,
+            .op_count = mul_ops.len,
+        }, &.{ .backend = backend_cpu }, &mul_program));
+        try std.testing.expect(mul_program != null);
+
+        var mul_requirements = zgml_program_requirements{};
+        try std.testing.expectEqual(status(.ok), zgml_program_get_requirements(mul_program, &mul_requirements));
+        try std.testing.expectEqual(module_kind, mul_requirements.model_kind);
+        try std.testing.expectEqual(@as(usize, 2), mul_requirements.input_len);
+        try std.testing.expectEqual(@as(usize, 2), mul_requirements.output_len);
+        try std.testing.expectEqual(@as(usize, 2), mul_requirements.weights_len);
+        try std.testing.expectEqual(@as(usize, 0), mul_requirements.bias_len);
+
+        const mul_weights = [_]f32{ 3, -2 };
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(mul_program, &.{
+            .weights = mul_weights[0..].ptr,
+            .weights_len = mul_weights.len,
+            .bias = null,
+            .bias_len = 0,
+        }, &mul_session));
+        try std.testing.expect(mul_session != null);
+
+        const mul_input = [_]f32{ 1.5, 7 };
+        var mul_output = [_]f32{0} ** 2;
+        var mul_result = zgml_step_result{};
+        try std.testing.expectEqual(status(.ok), zgml_session_step(mul_session, &.{
+            .input = mul_input[0..].ptr,
+            .input_len = mul_input.len,
+            .output = mul_output[0..].ptr,
+            .output_len = mul_output.len,
+        }, &mul_result));
+        try std.testing.expectEqual(@as(usize, mul_output.len), mul_result.output_len);
+        try std.testing.expectApproxEqAbs(@as(f32, 4.5), mul_output[0], 1e-6);
+        try std.testing.expectApproxEqAbs(@as(f32, -14), mul_output[1], 1e-6);
     }
 
     const ops = [_]zgml_module_op_desc{

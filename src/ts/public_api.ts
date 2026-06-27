@@ -5874,6 +5874,7 @@ export interface LazyTensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
   matmul<const WeightShape extends TensorShapeTuple>(weight: LazyTensor<WeightShape>): LazyTensor<LazyMatmulShape<Shape, WeightShape>>;
   mm<const WeightShape extends TensorShapeTuple>(weight: LazyTensor<WeightShape>): LazyTensor<LazyMatmulShape<Shape, WeightShape>>;
   add<const BiasShape extends TensorShapeTuple>(bias: LazyTensor<BiasShape>): LazyTensor<Shape>;
+  mul<const ScaleShape extends TensorShapeTuple>(scale: LazyTensor<ScaleShape>): LazyTensor<Shape>;
   embedding<const EmbeddingDim extends number>(numEmbeddings: number, embeddingDim: EmbeddingDim, options?: Readonly<{ name?: string }>): LazyTensor<LazyEmbeddingShape<Shape, EmbeddingDim>>;
   layerNorm(features: number, options?: LazyNormOptions): LazyTensor<Shape>;
   layer_norm(features: number, options?: LazyNormOptions): LazyTensor<Shape>;
@@ -5960,6 +5961,7 @@ export interface LazyNamespace {
   matmul<const Shape extends TensorShapeTuple, const WeightShape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, weight: LazyTensor<WeightShape>): LazyTensor<LazyMatmulShape<Shape, WeightShape>>;
   mm<const Shape extends TensorShapeTuple, const WeightShape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, weight: LazyTensor<WeightShape>): LazyTensor<LazyMatmulShape<Shape, WeightShape>>;
   add<const Shape extends TensorShapeTuple, const BiasShape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, bias: LazyTensor<BiasShape>): LazyTensor<Shape>;
+  mul<const Shape extends TensorShapeTuple, const ScaleShape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, scale: LazyTensor<ScaleShape>): LazyTensor<Shape>;
   embedding<const Shape extends TensorShapeTuple, const EmbeddingDim extends number>(tensor: LazyTensor<Shape>, numEmbeddings: number, embeddingDim: EmbeddingDim, options?: Readonly<{ name?: string }>): LazyTensor<LazyEmbeddingShape<Shape, EmbeddingDim>>;
   layerNorm<const Shape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, features: number, options?: LazyNormOptions): LazyTensor<Shape>;
   layer_norm<const Shape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, features: number, options?: LazyNormOptions): LazyTensor<Shape>;

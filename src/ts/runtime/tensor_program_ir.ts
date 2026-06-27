@@ -127,6 +127,11 @@ function normalizedTraceOpAttrs(op: AnyRecord) {
         hasBias: parameterListHasName(op.parameters ?? [], "bias") ||
           (op.parameters ?? []).some((param: AnyRecord) => traceParameterIsAddBias(op, param)),
       };
+    case "mul":
+      return {
+        features: op.features,
+        hasWeight: true,
+      };
     case "embedding":
       return {
         numEmbeddings: op.numEmbeddings,
