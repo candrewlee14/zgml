@@ -1288,6 +1288,9 @@ const linearTypedForward: Tensor<readonly [3]> = linear.forward(tensor([1, 2], [
 const linearTypedBatchForward: Tensor<readonly [4, 3]> = linear.forward(tensor(new Float32Array(8), [4, 2] as const));
 const linearPlainTupleForward: Tensor<readonly [3]> = linear.forward([1, 2] as const);
 const linearPlainBatchTupleForward: Tensor<readonly [2, 3]> = linear.forward([[1, 2], [3, 4]] as const);
+const linearSequentialPlainBatchFactory = nn.sequential as unknown as (layers: readonly [typeof linear]) => { forward(input: readonly [readonly [1, 2], readonly [3, 4]]): Tensor<readonly [2, 3]> };
+const linearSequentialPlainBatch = linearSequentialPlainBatchFactory([linear] as const);
+const linearSequentialPlainBatchForward: Tensor<readonly [2, 3]> = linearSequentialPlainBatch.forward([[1, 2], [3, 4]] as const);
 const linearPlainBatchTypedForward: Tensor<readonly [number, 3]> = linear.forward([[1, 2], [3, 4]] as readonly (readonly [number, number])[]);
 type LinearSequentialBatchForwardShape = Expect<Equal<SequentialForwardShape<readonly [typeof linear], readonly [2, 2]>, readonly [2, 3]>>;
 type PlainTupleTensorLikeShape = Expect<Equal<TensorLikeShape<readonly [1, 2]>, readonly [2]>>;
