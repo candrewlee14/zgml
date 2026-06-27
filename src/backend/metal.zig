@@ -66,6 +66,7 @@ const shader_source =
     \\constant uint QMATVEC_DOT_THREADS = 64;
     \\constant uint QMATMUL_ROW_CHAIN_THREADS = 256;
     \\constant uint SEMANTIC_FFN_THREADS = 512;
+    \\constant uint ROW_CHAIN_WIDTH_LANES = 4;
     \\constant uint MAX_ROW_CHAIN_COLS = 4096;
     \\constant uint MAX_ROW_CHAIN_K = 2048;
     \\constant uint SEMANTIC_FFN_MAX_DIM = 1024;
@@ -2097,6 +2098,105 @@ const shader_source =
     \\            uint linear = cr * p.N + col;
     \\            float ew = ew_src[(p.write_ew_output != 0 ? p.ew_dst_offset : p.scaled_dst_offset) + linear];
     \\            scaled_dst[p.scaled_dst_offset + linear] = ew * inv_rms[r] * scale_src[p.scale_src_offset + col];
+    \\        }
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_row_chain_width_partials_f32(
+    \\    device const char*  weight_data   [[buffer(0)]],
+    \\    device const float* weight_scales [[buffer(1)]],
+    \\    device const float* input         [[buffer(2)]],
+    \\    device const float* secondary     [[buffer(3)]],
+    \\    device float*       scaled_dst    [[buffer(4)]],
+    \\    device float*       ew_output     [[buffer(5)]],
+    \\    device float*       partial_dst   [[buffer(6)]],
+    \\    constant QMatmulRowChainParams& p [[buffer(7)]],
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint simd_idx [[simdgroup_index_in_threadgroup]],
+    \\    uint lane     [[thread_index_in_simdgroup]],
+    \\    uint tid      [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = group.x * ROW_CHAIN_TILE;
+    \\    const uint gCol = group.y * ROW_CHAIN_TILE;
+    \\    const uint width_lane = simd_idx / NSUB;
+    \\    const uint quad = simd_idx - width_lane * NSUB;
+    \\    const uint lane_tid = tid - width_lane * 128;
+    \\    const uint sRow = (quad / 2) * 16;
+    \\    const uint sCol = (quad % 2) * 16;
+    \\
+    \\    threadgroup float tI[ROW_CHAIN_WIDTH_LANES * ROW_CHAIN_TILE * 8];
+    \\    threadgroup float tW[ROW_CHAIN_WIDTH_LANES * 8 * ROW_CHAIN_TILE];
+    \\    threadgroup float tC[ROW_CHAIN_WIDTH_LANES * ROW_CHAIN_TILE * ROW_CHAIN_TILE];
+    \\
+    \\    simdgroup_float8x8 acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\
+    \\    for (uint kt_base = 0; kt_base < p.K; kt_base += 8 * ROW_CHAIN_WIDTH_LANES) {
+    \\        const uint kt = kt_base + width_lane * 8;
+    \\        const uint input_base = width_lane * ROW_CHAIN_TILE * 8;
+    \\        const uint weight_base = width_lane * 8 * ROW_CHAIN_TILE;
+    \\        for (uint i = lane_tid; i < ROW_CHAIN_TILE * 8; i += 128) {
+    \\            uint r = i / 8, c = i % 8;
+    \\            uint ir = gRow + r, ic = kt + c;
+    \\            tI[input_base + i] = (ir < p.M && ic < p.K) ? input[p.input_offset + ir * p.input_row_stride + ic] : 0.0f;
+    \\        }
+    \\        for (uint i = lane_tid; i < 8 * ROW_CHAIN_TILE; i += 128) {
+    \\            uint r = i / ROW_CHAIN_TILE, c = i % ROW_CHAIN_TILE;
+    \\            uint kr = kt + r, nc = gCol + c;
+    \\            if (kr < p.K && nc < p.N) {
+    \\                uint w_idx = kr * p.N + nc;
+    \\                tW[weight_base + i] = float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
+    \\            } else {
+    \\                tW[weight_base + i] = 0.0f;
+    \\            }
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        simdgroup_float8x8 a0, a1, b0, b1;
+    \\        simdgroup_load(a0, tI + input_base + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tI + input_base + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(b0, tW + weight_base + (sCol + 0), ROW_CHAIN_TILE);
+    \\        simdgroup_load(b1, tW + weight_base + (sCol + 8), ROW_CHAIN_TILE);
+    \\
+    \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\
+    \\    const uint c_base = width_lane * ROW_CHAIN_TILE * ROW_CHAIN_TILE;
+    \\    simdgroup_store(acc[0], tC + c_base + (sRow + 0) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[1], tC + c_base + (sRow + 0) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[2], tC + c_base + (sRow + 8) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[3], tC + c_base + (sRow + 8) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    if (tid < ROW_CHAIN_TILE) {
+    \\        uint r = tid;
+    \\        uint cr = gRow + r;
+    \\        if (cr < p.M) {
+    \\            float ss = 0.0f;
+    \\            for (uint c = 0; c < ROW_CHAIN_TILE; c += 1) {
+    \\                uint cc = gCol + c;
+    \\                if (cc < p.N) {
+    \\                    float val = 0.0f;
+    \\                    for (uint wl = 0; wl < ROW_CHAIN_WIDTH_LANES; wl += 1) {
+    \\                        val += tC[wl * ROW_CHAIN_TILE * ROW_CHAIN_TILE + r * ROW_CHAIN_TILE + c];
+    \\                    }
+    \\                    uint linear = cr * p.N + cc;
+    \\                    float other = secondary[p.ew_secondary_offset + linear];
+    \\                    float ew = val;
+    \\                    if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
+    \\                    else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
+    \\                    if (p.write_ew_output != 0) ew_output[p.ew_dst_offset + linear] = ew;
+    \\                    else scaled_dst[p.scaled_dst_offset + linear] = ew;
+    \\                    ss += ew * ew;
+    \\                }
+    \\            }
+    \\            partial_dst[p.partial_dst_offset + cr * p.partial_cols + group.y] = ss;
     \\        }
     \\    }
     \\}
@@ -5439,6 +5539,7 @@ const MetalKernel = enum(u8) {
     qmatmul_row_chain_tiled_partials_f32,
     qmatmul_row_chain_tiled_finalize_f32,
     qmatmul_row_chain_tiled_finalize_tiles_f32,
+    qmatmul_row_chain_width_partials_f32,
     qmatmul_fused_elementwise_f32,
     qmatmul_pair_fused_elementwise_f32,
     qmatvec_pair_fused_elementwise_f32,
@@ -7970,6 +8071,86 @@ const CompiledProgram = struct {
         return true;
     }
 
+    fn encodeQMatmulRowChainWidthParallelTiled(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool, output_spill: bool) bool {
+        if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
+        if (q.M <= 1 or q.K <= SEMANTIC_FFN_MAX_DIM or q.K > SEMANTIC_FFN_MAX_HIDDEN) return false;
+
+        const output_tiles: u32 = (q.N + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE;
+        const partial_len = std.math.mul(usize, @as(usize, q.M), @as(usize, output_tiles)) catch return false;
+        const partial_bytes = std.math.mul(usize, partial_len, @sizeOf(f32)) catch return false;
+        const program_partial_end = @as(usize, rn.dst_offset) + partial_len;
+        const program_partial_fits = program_partial_end * @sizeOf(f32) <= view.device_bufs[rn.dst].size;
+        const scratch_partial = if (view.semantic_width_scratch) |scratch|
+            if (scratch.size >= partial_bytes) scratch else null
+        else
+            null;
+        if (scratch_partial == null and !program_partial_fits) return false;
+        const partial_buffer = scratch_partial orelse view.device_bufs[rn.dst];
+        const partial_dst_offset: u32 = if (scratch_partial != null) 0 else rn.dst_offset;
+
+        const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
+        const secondary_buf = if (q_is_src0) e.src1 else e.src0;
+        const secondary_offset = if (q_is_src0) e.src1_offset else e.src0_offset;
+        const w = view.qweight_views[q.weight_idx];
+        const qparams = qmatmulParams(q, w.block_size);
+        const params = QMatmulRowChainParams{
+            .M = qparams.M,
+            .N = qparams.N,
+            .K = qparams.K,
+            .block_size = qparams.block_size,
+            .input_offset = qparams.input_offset,
+            .input_row_stride = qparams.input_row_stride,
+            .ew_op = @intFromEnum(e.op),
+            .ew_is_swapped = if (q_is_src0) 0 else 1,
+            .ew_secondary_offset = secondary_offset,
+            .ew_dst_offset = e.dst_offset,
+            .write_ew_output = @intFromBool(write_ew_output),
+            .rms_eps = rn.eps,
+            .scale_src_offset = rp.src_offset,
+            .scaled_dst_offset = out.dst_offset,
+            .partial_dst_offset = partial_dst_offset,
+            .partial_cols = output_tiles,
+        };
+
+        exec.profile.recordQMatmulRowChainTwoPhaseTiledSpill(q.M, q.N, q.K, ROW_CHAIN_TILE, write_ew_output, output_spill);
+        if (scratch_partial != null) exec.profile.recordSemanticWidthScratchRuntimeUse(partial_bytes);
+
+        const partial_buffers = [_]DeviceBuffer{
+            w.data,
+            w.scales,
+            view.device_bufs[q.input],
+            view.device_bufs[secondary_buf],
+            view.device_bufs[out.dst],
+            view.device_bufs[e.dst],
+            partial_buffer,
+        };
+        exec.encodeKernel(
+            .qmatmul_row_chain_width_partials_f32,
+            &partial_buffers,
+            params,
+            7,
+            .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = output_tiles },
+            SEMANTIC_FFN_THREADS,
+        );
+
+        const ew_src = if (write_ew_output) view.device_bufs[e.dst] else view.device_bufs[out.dst];
+        const finalize_buffers = [_]DeviceBuffer{
+            ew_src,
+            partial_buffer,
+            view.device_bufs[rp.src],
+            view.device_bufs[out.dst],
+        };
+        exec.encodeKernel(
+            .qmatmul_row_chain_tiled_finalize_tiles_f32,
+            &finalize_buffers,
+            params,
+            4,
+            .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = output_tiles },
+            MATMUL_THREADS,
+        );
+        return true;
+    }
+
     fn encodeQMatmulRowChainTiledLeaf(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool, output_spill: bool) bool {
         if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
         if (q.M <= 1) return false;
@@ -9645,6 +9826,13 @@ const CompiledProgram = struct {
         if (!self.encodeQMatmulPairSingleFusedElementwiseChain(exec, view, gate, fe, up, product)) return false;
 
         const residual_output_spill = view.outputReadsSpan(residual.dst, residual.dst_offset, residual.n);
+        if (self.command_policy.fuse_semantic_ffn_sublayer_width_parallel and
+            self.encodeQMatmulRowChainWidthParallelTiled(exec, view, down, residual, rn, rp, out, residual_output_spill, residual_output_spill))
+        {
+            exec.profile.recordSemanticFfnSublayerFallbackDispatches(1, 2);
+            return true;
+        }
+
         if (self.command_policy.fuse_projection_row_chain_two_phase_candidate and
             self.encodeQMatmulRowChainTwoPhaseTiled(exec, view, down, residual, rn, rp, out, residual_output_spill, residual_output_spill))
         {

@@ -1767,10 +1767,16 @@ down-partial target. The checked bridge artifact reports `runtime_uses`
 cumulatively across benchmark repetitions and `runtime_bytes:9216`, where
 `9216` bytes is the per-dispatch partial surface for the `2304` row-chain
 partial slots.
-The remaining kernel slice is therefore to consume that scratch, prove an
-equivalent accumulation strategy, or implement a streamed hidden-tile design
-that avoids the `14.2 MB` partial surface without falling back to row-serial
-work.
+The first kept width-parallel slice is a streamed SIMD-width partial kernel:
+`qmatmul_row_chain_width_partials_f32` keeps the existing pair-plus-finalize
+shape, but splits the down-projection K loop across four simdgroup width lanes
+inside each row/output tile. A global down-partial prototype was rejected after
+measuring only `1.17x` on the bridge lane; it paid too much memory traffic for
+the `14.2 MB` partial surface. The kept kernel preserves the small
+`runtime_bytes:9216` scratch contract and a fresh three-attempt bridge artifact
+selected `2.81x` over staged execution with `max_abs_diff=0.000002`,
+`runtime_backend_dispatches=3`, `semantic_pair_dispatches=1`, and
+`semantic_tail_dispatches=2`.
 A finalize-path probe then tested replacing
 `qmatmul_row_chain_tiled_finalize_tiles_f32` with the coarser row-tile
 `qmatmul_row_chain_tiled_finalize_f32` so the RMS reduction would be computed

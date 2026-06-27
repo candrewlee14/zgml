@@ -1304,6 +1304,7 @@ pub const CommandStreamPolicy = struct {
     fuse_projection_row_chain_single_dispatch: bool = false,
     fuse_projection_row_chain_two_phase_candidate: bool = false,
     fuse_semantic_ffn_sublayer_single_dispatch: bool = true,
+    fuse_semantic_ffn_sublayer_width_parallel: bool = false,
     fuse_semantic_ffn_sublayer_input_bridge_single_dispatch: bool = true,
     fuse_dense_projection_row_chain: bool = false,
     min_projection_row_chain_rows: u32 = 8,
@@ -1339,6 +1340,7 @@ pub const CommandStreamPolicy = struct {
         policy.fuse_semantic_ffn_sublayer_input_row_chain = true;
         policy.fuse_projection_row_chain_two_phase_candidate = true;
         policy.fuse_semantic_ffn_sublayer_single_dispatch = true;
+        policy.fuse_semantic_ffn_sublayer_width_parallel = true;
         policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch = false;
         return policy;
     }
