@@ -910,9 +910,9 @@ function checkScripts() {
   if (scripts["dev:perf:pytorch:focus:steady:run"] !== "BENCH_PYTORCH_ATTEMPTS=${BENCH_PYTORCH_ATTEMPTS:-3} BENCH_PYTORCH_MIN_TIMING_MS=${BENCH_PYTORCH_MIN_TIMING_MS:-150} BENCH_MODULE_PROGRAM_MIN_TIMING_MS=${BENCH_MODULE_PROGRAM_MIN_TIMING_MS:-150} BENCH_PYTORCH_KEYS=${BENCH_PYTORCH_KEYS:-linear_batched,lazy_matmul_add_gelu_batched,lazy_rms_silu_ffn_batched,rms_gelu_linear_batched,log_softmax_classifier_batched,lazy_token_head_batched} node scripts/check_pytorch_comparison.cjs") {
     errors.push("package.json dev:perf:pytorch:focus:steady:run must keep the no-rebuild steady PyTorch focus evidence loop");
   }
-  const broadPytorchKeys = "linear_batched,lazy_matmul_add_gelu_batched,lazy_mlp_batched,lazy_rms_silu_ffn_batched,max_pool2d_batched,avg_pool2d_batched,rms_gelu_linear_batched,softmax_classifier_batched,log_softmax_classifier_batched,lazy_token_head_batched";
+  const broadPytorchKeys = "linear_batched,lazy_matmul_add_gelu_batched,lazy_mlp_batched,lazy_rms_silu_ffn_batched,lazy_conv2d_relu_batched,max_pool2d_batched,avg_pool2d_batched,rms_gelu_linear_batched,softmax_classifier_batched,log_softmax_classifier_batched,lazy_token_head_batched";
   if (scripts["dev:perf:pytorch:broad"] !== `zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && npm run build:package && BENCH_PYTORCH_KEYS=\${BENCH_PYTORCH_KEYS:-${broadPytorchKeys}} node scripts/check_pytorch_comparison.cjs`) {
-    errors.push("package.json dev:perf:pytorch:broad must keep the broad ten-lane PyTorch replacement evidence loop");
+    errors.push("package.json dev:perf:pytorch:broad must keep the broad eleven-lane PyTorch replacement evidence loop");
   }
   if (scripts["dev:perf:pytorch:broad:native"] !== `zig build ffi-c -Doptimize=ReleaseFast -fincremental --summary failures && BENCH_PYTORCH_KEYS=\${BENCH_PYTORCH_KEYS:-${broadPytorchKeys}} node scripts/check_pytorch_comparison.cjs`) {
     errors.push("package.json dev:perf:pytorch:broad:native must keep the native-only broad PyTorch replacement evidence loop after dist exists");
@@ -1024,7 +1024,7 @@ function checkScripts() {
     "scripts/check_frontier_bench.cjs",
     "scripts/check_q8_prompt_candidate.cjs",
     "scripts/bench_vs_ggml.sh",
-    "const broadPytorchKeys = \"linear_batched,lazy_matmul_add_gelu_batched,lazy_mlp_batched,lazy_rms_silu_ffn_batched,max_pool2d_batched,avg_pool2d_batched,rms_gelu_linear_batched,softmax_classifier_batched,log_softmax_classifier_batched,lazy_token_head_batched\"",
+    "const broadPytorchKeys = \"linear_batched,lazy_matmul_add_gelu_batched,lazy_mlp_batched,lazy_rms_silu_ffn_batched,lazy_conv2d_relu_batched,max_pool2d_batched,avg_pool2d_batched,rms_gelu_linear_batched,softmax_classifier_batched,log_softmax_classifier_batched,lazy_token_head_batched\"",
     "pytorch steady broad replacement",
     "native eager replacement gap",
     "BENCH_NATIVE_EAGER_RUNTIME: \"node\"",
@@ -6753,7 +6753,7 @@ function checkDocs() {
     "closes the previous",
     "`log_softmax_classifier_batched` softness with a direct CPU",
     "PyTorch comparison output now also prints `ratio_range` and `ratio_median`",
-    "`first_contact_inference=10/10`",
+    "`first_contact_inference=11/11`",
     "including named-parameter lazy graphs that bind through explicit Program",
     "ratio_median=linear_batched:0.73x,log_softmax_classifier_batched:0.82x",
     "bench:ggml:parity:run          # rerun hard ggml parity; bench script rebuilds ReleaseFast by default",
@@ -6808,7 +6808,7 @@ function checkDocs() {
     "stable row max/exp sum",
     "C ABI coverage for the `M=128,N=32,K=64` comparison shape",
     "PyTorch comparison workload now mirrors the zgml module-bench data scales",
-    "latest fresh-native broad sample remains 9/10",
+    "eleven-lane replacement comparison now includes",
     "ratio_median=linear_batched:1.23x,lazy_matmul_add_gelu_batched:2.81x,lazy_mlp_batched:1.76x,lazy_rms_silu_ffn_batched:1.63x,max_pool2d_batched:8.57x,avg_pool2d_batched:5.34x,rms_gelu_linear_batched:2.94x,softmax_classifier_batched:1.20x,log_softmax_classifier_batched:0.91x,lazy_token_head_batched:1.08x",
     "`lane_pass=5/6`",
     "ratio_median=linear_batched:1.23x,lazy_matmul_add_gelu_batched:2.83x,lazy_rms_silu_ffn_batched:1.63x,rms_gelu_linear_batched:2.95x,log_softmax_classifier_batched:0.91x,lazy_token_head_batched:1.09x",

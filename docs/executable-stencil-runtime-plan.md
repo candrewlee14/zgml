@@ -726,16 +726,18 @@ median-parity claim must opt into
 `BENCH_PYTORCH_REQUIRE_PARITY=1 BENCH_PYTORCH_REQUIRE_MEDIAN_PARITY=1`; the
 current steady evidence remains intentionally non-fatal because
 `log_softmax_classifier_batched` still has noisy sub-parity reruns.
-A June 25, 2026 three-attempt, 150ms-window ten-lane broad artifact now carries
-that claim across the broader PyTorch scoreboard with fresh native code and
-PyTorch `2.12.1`: `lane_pass=10/10`, `median_lane_pass=10/10`, and
-`first_contact_inference=10/10`, with
-`ratio_median=linear_batched:1.68x,lazy_matmul_add_gelu_batched:6.29x,lazy_mlp_batched:5.58x,lazy_rms_silu_ffn_batched:2.29x,max_pool2d_batched:8.43x,avg_pool2d_batched:5.67x,rms_gelu_linear_batched:6.50x,softmax_classifier_batched:1.78x,log_softmax_classifier_batched:2.78x,lazy_token_head_batched:5.30x`.
-All ten broad lanes now prove the friendly `zgml.compileInference` /
+A June 27, 2026 three-attempt, 80ms-window eleven-lane broad artifact now
+carries that claim across the broader PyTorch scoreboard with fresh native code
+and PyTorch `2.12.1`: `lane_pass=11/11`, `median_lane_pass=11/11`, and
+`first_contact_inference=11/11`, with
+`ratio_median=linear_batched:1.24x,lazy_matmul_add_gelu_batched:2.84x,lazy_mlp_batched:1.80x,lazy_rms_silu_ffn_batched:1.67x,lazy_conv2d_relu_batched:1.19x,max_pool2d_batched:8.70x,avg_pool2d_batched:4.98x,rms_gelu_linear_batched:2.73x,softmax_classifier_batched:1.16x,log_softmax_classifier_batched:1.43x,lazy_token_head_batched:1.65x`.
+All eleven broad lanes now prove the friendly `zgml.compileInference` /
 `compile.compileForInference` handle reaches the same allocation-free prepared
 path, including named-parameter lazy graphs that bind through explicit Program
-bindings. That makes the scoped "PyTorch-like compiled inference" claim stronger
-without pretending that broad eager PyTorch replacement is done.
+bindings. That includes the lazy `Conv2d -> ReLU` path, whose core loop is now
+owned by the Zig reference backend rather than by JS/TS. This makes the scoped
+"PyTorch-like compiled inference" claim stronger without pretending that broad
+eager PyTorch replacement is done.
 A June 24, 2026 three-attempt, 150ms-window six-lane focus artifact now passes
 both selected-attempt and median parity against PyTorch `2.12.1` with fresh
 native code:
@@ -767,7 +769,7 @@ worst ratio. Set
 keeps PyTorch competitiveness evidence closer to the ggml artifact model:
 checked claims should have preserved keys, attempts, medians, timing windows,
 Torch version, machine metadata, and native freshness, not just a console line
-or a dated sentence in this plan. `bench:status` reads the newest ten-lane broad
+or a dated sentence in this plan. `bench:status` reads the newest eleven-lane broad
 artifact back out as the selected `pytorch-results:` line when one exists, with
 status, median status, worst ratio, selected/median lane pass counts,
 selected/median miss lists, selected attempt, native freshness, Torch version,
@@ -916,11 +918,11 @@ npm run dev:perf:pytorch:focus:native # native-only focused PyTorch loop after d
 npm run dev:perf:pytorch:focus:run    # rerun focused PyTorch comparison without rebuilding artifacts
 npm run dev:perf:pytorch:focus:steady:native # native-only 150ms-window focused PyTorch comparison
 npm run dev:perf:pytorch:focus:steady:run # no-rebuild 150ms-window focused PyTorch comparison
-npm run dev:perf:pytorch:broad        # incremental ten-lane PyTorch replacement evidence loop
-npm run dev:perf:pytorch:broad:native # native-only ten-lane PyTorch loop after dist exists
-npm run dev:perf:pytorch:broad:run    # rerun ten-lane PyTorch comparison without rebuilding artifacts
-npm run dev:perf:pytorch:broad:steady:native # fresh-native 150ms-window ten-lane PyTorch replacement evidence
-npm run dev:perf:pytorch:broad:steady:run # no-rebuild 150ms-window ten-lane PyTorch replacement evidence
+npm run dev:perf:pytorch:broad        # incremental eleven-lane PyTorch replacement evidence loop
+npm run dev:perf:pytorch:broad:native # native-only eleven-lane PyTorch loop after dist exists
+npm run dev:perf:pytorch:broad:run    # rerun eleven-lane PyTorch comparison without rebuilding artifacts
+npm run dev:perf:pytorch:broad:steady:native # fresh-native 150ms-window eleven-lane PyTorch replacement evidence
+npm run dev:perf:pytorch:broad:steady:run # no-rebuild 150ms-window eleven-lane PyTorch replacement evidence
 npm run dev:perf:pytorch:gaps:native   # native-only current-gap loop after dist exists
 npm run dev:perf:pytorch:gaps:steady:native # fresh-native 150ms-window current-gap evidence
 npm run dev:perf:pytorch:linear:native # native-only ReleaseFast microscope for the linear_batched PyTorch miss
@@ -1318,8 +1320,8 @@ three-attempt PyTorch rerun of only the
 log-softmax classifier lane confirms the target: `ratio_median=0.89x` with the
 selected attempt at `zgml:0.0077ms` and `pytorch:0.0069ms`.
 The broad PyTorch replacement loop is now named explicitly as
-`dev:perf:pytorch:broad*`. A fresh ten-lane sample showed nine lanes ahead of
-PyTorch while `log_softmax_classifier_batched` remained the only miss
+`dev:perf:pytorch:broad*`. An earlier ten-lane sample showed nine lanes ahead
+of PyTorch while `log_softmax_classifier_batched` remained the only miss
 (`0.93x` one-attempt; steady focused median around `0.92x-0.97x` depending on
 the local timing sample). `bench:status` now promotes broad steady evidence to
 the selected `pytorch-results:` scoreboard when present, while narrower focus
@@ -1359,16 +1361,18 @@ linear, MLP, RMS/SiLU FFN, softmax classifier, log-softmax classifier, and token
 head comparisons now use the same `values(length, scale)` shapes as their zgml
 counterparts before ratios are computed. That makes the comparison less likely
 to hide value-distribution-dependent softmax/log-softmax timing. Under the
-corrected comparison, the latest fresh-native broad sample remains 9/10:
+corrected comparison, an earlier fresh-native broad sample remained 9/10:
 `ratio_median=linear_batched:1.23x,lazy_matmul_add_gelu_batched:2.81x,lazy_mlp_batched:1.76x,lazy_rms_silu_ffn_batched:1.63x,max_pool2d_batched:8.57x,avg_pool2d_batched:5.34x,rms_gelu_linear_batched:2.94x,softmax_classifier_batched:1.20x,log_softmax_classifier_batched:0.91x,lazy_token_head_batched:1.08x`.
-The refreshed six-lane focus sample is also honest rather than green:
+The refreshed six-lane focus sample from that stage was also honest rather than green:
 `lane_pass=5/6`, `ratio_median=linear_batched:1.23x,lazy_matmul_add_gelu_batched:2.83x,lazy_rms_silu_ffn_batched:1.63x,rms_gelu_linear_batched:2.95x,log_softmax_classifier_batched:0.91x,lazy_token_head_batched:1.09x`,
 with the best selected log-softmax attempt at
 `log_softmax_classifier_batched=zgml:0.0076ms pytorch:0.0074ms`. The attempted
 `K`-loop unroll for the fused four-row small-direct classifier-tail kernel did
 not move the corrected median and was not kept. The next PyTorch catch-up move
 is still a stronger classifier-tail kernel or a path that changes
-row-normalization amortization, not a timing-harness artifact.
+row-normalization amortization, not a timing-harness artifact. The current
+eleven-lane broad artifact supersedes this stage after the direct projection
+tail and Conv2d path work.
 A fresh exact-shape direct-tail recheck then let the fused native
 `M=128,N=32,K=64` classifier helper cover the focused PyTorch comparison shape
 instead of forcing that case through the BLAS-plus-row-normalization path. The
@@ -1388,10 +1392,11 @@ flipped the former soft spot from a miss to a stable win:
 `log_softmax_classifier_batched` selected at `1.48x` with
 `ratio_median=1.43x`, and the six-lane focused comparison now passes
 `lane_pass=6/6`, `median_lane_pass=6/6`, with worst selected lane
-`linear_batched:1.24x`. The broader ten-lane replacement comparison is also
-green on fresh-native 150ms evidence: `lane_pass=10/10`,
-`median_lane_pass=10/10`, worst selected lane `linear_batched:1.18x`, and
-`ratio_median=linear_batched:1.26x,lazy_matmul_add_gelu_batched:2.76x,lazy_mlp_batched:1.76x,lazy_rms_silu_ffn_batched:1.56x,max_pool2d_batched:8.14x,avg_pool2d_batched:5.00x,rms_gelu_linear_batched:3.07x,softmax_classifier_batched:1.15x,log_softmax_classifier_batched:1.54x,lazy_token_head_batched:1.70x`.
+`linear_batched:1.24x`. The eleven-lane replacement comparison now includes a
+lazy `Conv2d -> ReLU` lane and is green on fresh-native three-attempt 80ms
+evidence: `lane_pass=11/11`, `median_lane_pass=11/11`, worst selected lane
+`softmax_classifier_batched:1.16x`, and
+`ratio_median=linear_batched:1.24x,lazy_matmul_add_gelu_batched:2.84x,lazy_mlp_batched:1.80x,lazy_rms_silu_ffn_batched:1.67x,lazy_conv2d_relu_batched:1.19x,max_pool2d_batched:8.70x,avg_pool2d_batched:4.98x,rms_gelu_linear_batched:2.73x,softmax_classifier_batched:1.16x,log_softmax_classifier_batched:1.43x,lazy_token_head_batched:1.65x`.
 The current PyTorch next item is therefore `none`; the next performance frontier
 moves back to Q8/ggml semantic throughput.
 The model-free stencil-only debug microscope now also prints both decode and
@@ -1872,7 +1877,7 @@ full-model Q8 prompt lane, or the matching `:run` commands after artifacts are
 already fresh. That keeps the daily competitiveness loop explicit without
 forcing every local native-eager or qsemantic edit to pay the PyTorch,
 full-model Q8, and llama.cpp smoke cost. Its default PyTorch lane is now the
-ten-lane broad replacement set with three attempts and 150ms timing windows,
+eleven-lane broad replacement set with three attempts and 150ms timing windows,
 and its default native eager lane keeps the normal-module native bridge visible
 in the same product scoreboard.
 For tight semantic kernel work, the raw variant scripts set

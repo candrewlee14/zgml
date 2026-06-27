@@ -36,6 +36,7 @@ const defaultComparisonKeys = [
   "lazy_matmul_add_gelu_batched",
   "lazy_mlp_batched",
   "lazy_rms_silu_ffn_batched",
+  "lazy_conv2d_relu_batched",
   "max_pool2d_batched",
   "avg_pool2d_batched",
 ];
@@ -190,6 +191,9 @@ w64_128 = values((64, 128), 64.0)
 b64_down = values((64,), 96.0)
 rms_weight = values((64,), 32.0) + 1.0
 rms_weight_32 = values((64,), 32.0) + 1.0
+conv_x = values((2, 1, 64, 64), 11.0)
+conv_weight = values((1, 1, 3, 3), 24.0)
+conv_bias = values((1,), 32.0)
 pool_x = values((2, 2, 128, 128), 10.0)
 token_ids = torch.tensor([i % 256 for i in range(128)], dtype=torch.long)
 token_embedding = values((256, 64), 32.0)
@@ -211,6 +215,9 @@ def lazy_rms_silu_ffn_batched():
     normed = x128_64 * torch.rsqrt(ss + 1e-5) * rms_weight
     hidden = torch.nn.functional.silu(torch.matmul(normed, w128_64.T) + b128)
     return torch.matmul(hidden, w64_128.T) + b64_down
+
+def lazy_conv2d_relu_batched():
+    return torch.relu(torch.nn.functional.conv2d(conv_x, conv_weight, conv_bias))
 
 def max_pool2d_batched():
     return torch.nn.functional.max_pool2d(pool_x, 2)
@@ -239,6 +246,7 @@ bench_iterations = {
     "lazy_matmul_add_gelu_batched": 1000,
     "lazy_mlp_batched": 1000,
     "lazy_rms_silu_ffn_batched": 1000,
+    "lazy_conv2d_relu_batched": 300,
     "max_pool2d_batched": 300,
     "avg_pool2d_batched": 300,
     "rms_gelu_linear_batched": 300,

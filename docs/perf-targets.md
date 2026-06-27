@@ -589,20 +589,20 @@ frontier segment prints both candidate speedup and candidate-vs-current-default
 speedup so a tiled diagnostic cannot look promotable merely because it beats the
 staged baseline. Use that line to choose the next focused microscope before
 paying for a full parity run.
-For PyTorch comparison artifacts, `bench:status` prefers the newest ten-lane
+For PyTorch comparison artifacts, `bench:status` prefers the newest eleven-lane
 broad artifact for `pytorch-results:` and `perf-next:` when one exists. Newer
 focus or one-lane microscopes still appear as `pytorch-focus-results:` or
 `pytorch-latest-results:`, so diagnostics stay visible without replacing the
 broader PyTorch-competitiveness scoreboard.
-The current selected broad artifact is a June 25, 2026 three-attempt,
-150ms-window run against PyTorch `2.12.1` with fresh native code:
-`lane_pass=10/10`, `median_lane_pass=10/10`,
-`first_contact_inference=10/10`, and
-`ratio_median=linear_batched:1.68x,lazy_matmul_add_gelu_batched:6.29x,lazy_mlp_batched:5.58x,lazy_rms_silu_ffn_batched:2.29x,max_pool2d_batched:8.43x,avg_pool2d_batched:5.67x,rms_gelu_linear_batched:6.50x,softmax_classifier_batched:1.78x,log_softmax_classifier_batched:2.78x,lazy_token_head_batched:5.30x`.
+The current selected broad artifact is a June 27, 2026 three-attempt,
+80ms-window run against PyTorch `2.12.1` with fresh native code:
+`lane_pass=11/11`, `median_lane_pass=11/11`,
+`first_contact_inference=11/11`, and
+`ratio_median=linear_batched:1.24x,lazy_matmul_add_gelu_batched:2.84x,lazy_mlp_batched:1.80x,lazy_rms_silu_ffn_batched:1.67x,lazy_conv2d_relu_batched:1.19x,max_pool2d_batched:8.70x,avg_pool2d_batched:4.98x,rms_gelu_linear_batched:2.73x,softmax_classifier_batched:1.16x,log_softmax_classifier_batched:1.43x,lazy_token_head_batched:1.65x`.
 Both module-backed lanes and named-parameter lazy-graph lanes now prove the
 friendly `zgml.native` / `compile.compileForInference` handle reaches
 the allocation-free prepared Program path.
-The lane-selectable `dev:perf:competitive` runner uses that same ten-lane,
+The lane-selectable `dev:perf:competitive` runner uses that same eleven-lane,
 three-attempt, 150ms-window PyTorch broad set and includes the native eager gap
 lane by default, so the daily competitiveness loop proves both the compiled
 replacement scoreboard and the no-grad native module bridge instead of only

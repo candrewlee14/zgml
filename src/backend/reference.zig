@@ -1144,7 +1144,36 @@ const Context = struct {
                         const r1 = r0 + in_w;
                         const r2 = r1 + in_w;
                         const drow = dst_channel_base + oy * out_w;
-                        for (0..out_w) |ox| {
+                        var ox: usize = 0;
+                        while (ox + 1 < out_w) : (ox += 2) {
+                            const r0x0 = src[r0 + ox];
+                            const r0x1 = src[r0 + ox + 1];
+                            const r0x2 = src[r0 + ox + 2];
+                            const r0x3 = src[r0 + ox + 3];
+                            const r1x0 = src[r1 + ox];
+                            const r1x1 = src[r1 + ox + 1];
+                            const r1x2 = src[r1 + ox + 2];
+                            const r1x3 = src[r1 + ox + 3];
+                            const r2x0 = src[r2 + ox];
+                            const r2x1 = src[r2 + ox + 1];
+                            const r2x2 = src[r2 + ox + 2];
+                            const r2x3 = src[r2 + ox + 3];
+                            var sum0 =
+                                r0x0 * w0 + r0x1 * w1 + r0x2 * w2 +
+                                r1x0 * w3 + r1x1 * w4 + r1x2 * w5 +
+                                r2x0 * w6 + r2x1 * w7 + r2x2 * w8 + b;
+                            var sum1 =
+                                r0x1 * w0 + r0x2 * w1 + r0x3 * w2 +
+                                r1x1 * w3 + r1x2 * w4 + r1x3 * w5 +
+                                r2x1 * w6 + r2x2 * w7 + r2x3 * w8 + b;
+                            if (relu) {
+                                if (sum0 < 0) sum0 = 0;
+                                if (sum1 < 0) sum1 = 0;
+                            }
+                            dst[drow + ox] = sum0;
+                            dst[drow + ox + 1] = sum1;
+                        }
+                        if (ox < out_w) {
                             var sum =
                                 src[r0 + ox] * w0 + src[r0 + ox + 1] * w1 + src[r0 + ox + 2] * w2 +
                                 src[r1 + ox] * w3 + src[r1 + ox + 1] * w4 + src[r1 + ox + 2] * w5 +

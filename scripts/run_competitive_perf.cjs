@@ -3,7 +3,7 @@
 const { spawnSync } = require("node:child_process");
 
 const knownLanes = new Set(["pytorch", "native_eager", "qsemantic", "q8_prompt", "ggml"]);
-const broadPytorchKeys = "linear_batched,lazy_matmul_add_gelu_batched,lazy_mlp_batched,lazy_rms_silu_ffn_batched,max_pool2d_batched,avg_pool2d_batched,rms_gelu_linear_batched,softmax_classifier_batched,log_softmax_classifier_batched,lazy_token_head_batched";
+const broadPytorchKeys = "linear_batched,lazy_matmul_add_gelu_batched,lazy_mlp_batched,lazy_rms_silu_ffn_batched,lazy_conv2d_relu_batched,max_pool2d_batched,avg_pool2d_batched,rms_gelu_linear_batched,softmax_classifier_batched,log_softmax_classifier_batched,lazy_token_head_batched";
 
 function parseLanes(value) {
   const raw = String(value ?? "pytorch,native_eager,qsemantic,q8_prompt,ggml").trim();

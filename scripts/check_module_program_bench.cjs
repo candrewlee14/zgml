@@ -1432,6 +1432,10 @@ const benchSpecs = [
       .conv2d(1, 3, { name: "conv" })
       .relu(),
     eager: (input) => lazyConv2dReluBatchedEager(input, values(3 * 3, 24), values(1, 32), 2, 1, 64, 64, 1, 3),
+    bindOptions: () => ({
+      weights: new Float32Array(values(3 * 3, 24)),
+      bias: new Float32Array(values(1, 32)),
+    }),
     bindSession: (program) => program.bind({
       weights: new Float32Array(values(3 * 3, 24)),
       bias: new Float32Array(values(1, 32)),

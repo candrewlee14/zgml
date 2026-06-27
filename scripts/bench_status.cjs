@@ -40,6 +40,7 @@ const pytorchBroadKeys = [
   "lazy_matmul_add_gelu_batched",
   "lazy_mlp_batched",
   "lazy_rms_silu_ffn_batched",
+  "lazy_conv2d_relu_batched",
   "max_pool2d_batched",
   "avg_pool2d_batched",
   "rms_gelu_linear_batched",
