@@ -2073,12 +2073,12 @@ at reducing serial row-dot work, not merely reducing dispatch count.
 The next implementation target remains the
 `semantic_ffn_sublayer_throughput_kernel` or a faster tiled row-chain leaf, not
 another command policy toggle.
-`dev:perf:next{,:run}` now preserves that priority: when full Q8 prompt status
-names `semantic_width_parallel_kernel`, it routes to the exact qsemantic bridge
-microscope even if the adjacent input-bridge artifact also advertises
-`semantic_with_input_width_parallel_kernel`. Input-bridge still has an explicit
-lane, but it no longer steals the next-perf loop from the full-model prompt
-blocker.
+`dev:perf:next{,:run}` now preserves that priority while still preferring the
+sharpest known physical bottleneck: when an input-bridge artifact or current Q8
+smoke names `semantic_with_input_width_parallel_kernel`, it routes to the exact
+qsemantic input-bridge microscope. The generic
+`semantic_width_parallel_kernel` bridge lane remains the fallback when the
+residual/input bridge has not produced its own evidence yet.
 Use it when changing projection-pair, row-chain, residual, RMSNorm, or
 semantic-sublayer scheduling, then escalate to `dev:perf:q8-prompt:viable` and
 the full Q8 prompt candidate gate before making a model-level speed claim. The

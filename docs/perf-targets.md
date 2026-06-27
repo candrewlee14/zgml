@@ -662,9 +662,14 @@ If the latest bridge evidence reports single-dispatch refusals concentrated on
 is the actionable signal from the rejected `SEMANTIC_FFN_MAX_DIM=2048` probe:
 the next kernel must preserve width/tile parallelism for the larger hidden
 dimension, not merely enable the row-serial single-dispatch path. The
-`dev:perf:next` router sends this case to `qsemantic_bridge`, which routes
-through the checked `frontier-qsemantic-bridge-*.json` artifact instead of the
-broader qsemantic pair. You can still force that lane explicitly with
+`dev:perf:next` router sends this case to `qsemantic_bridge` while it is the
+sharpest known target, which routes through the checked
+`frontier-qsemantic-bridge-*.json` artifact instead of the broader qsemantic
+pair. If a fresher input-bridge artifact or the current Q8 smoke names
+`semantic_with_input_width_parallel_kernel`, the router prefers
+`qsemantic_input_bridge`; that keeps the loop on the exact residual/input
+bottleneck once it is visible. You can still force the generic bridge lane
+explicitly with
 `BENCH_NEXT_PERF_LANE=qsemantic_bridge npm run dev:perf:next{,:run}`.
 When an input-bridge artifact is available,
 `qsemantic-input-bridge-results:` remains the selected steady signal and

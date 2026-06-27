@@ -69,7 +69,7 @@ const promotedLine = `${quietLine} q8_prompt=promoted_semantic_default:commands=
 const pytorchLine = `${quietLine} pytorch=softmax_classifier_batched:1.03x`;
 
 expectEqual(chooseLane(widthParallelLine, {}), "qsemantic_bridge", "width-parallel Q8 prompt target routes to exact bridge microscope");
-expectEqual(chooseLane(widthParallelInputBridgeLine, {}), "qsemantic_bridge", "full Q8 prompt width target wins over adjacent input-bridge microscope");
+expectEqual(chooseLane(widthParallelInputBridgeLine, {}), "qsemantic_input_bridge", "input-bridge width target wins when both bridge microscopes are visible");
 expectEqual(chooseLane(inputBridgeOnlyWidthLine, {}), "qsemantic_input_bridge", "input-bridge width-parallel target routes to exact input-bridge microscope when Q8 prompt has no width target");
 expectEqual(chooseLane(currentQ8InputBridgeLine, {}), "qsemantic_input_bridge", "current Q8 semantic input dispatch target routes to input-bridge microscope");
 expectEqual(chooseLane(staleThroughputLine, {}), "qsemantic_throughput", "stale width frontier refreshes qsemantic throughput before exact bridge");
