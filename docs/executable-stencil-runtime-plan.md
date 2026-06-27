@@ -509,7 +509,11 @@ Current checked progress:
   `zgml.nativeEager.elementwiseInto` / `zgml.nativeEager.reduceInto` call
   `zgml_eager_elementwise_f32` / `zgml_eager_reduce_f32` directly, and normal
   no-grad `Tensor.mul(2)` / `Tensor.sum()` calls use those Zig ABI hooks for
-  large tensors while grad-enabled training keeps the TS/autograd path.
+  large tensors while grad-enabled training keeps the TS/autograd path. The
+  elementwise C ABI now uses a vectorized Zig binary helper for scalar and
+  same-shape arithmetic/comparison ops; fresh Node/Bun direct rows show
+  `elementwise_mul_batched` at `264.63x` / `262.06x` and the public Tensor path
+  still preserves the runtime-specific thresholds.
   The same ordinary Tensor eager lane now covers more PyTorch-like control
   primitives without changing the frontend shape: primitive comparisons
   (`eq`/`ne`/`lt`/`le`/`gt`/`ge`) lower through the Zig elementwise ABI for
@@ -525,8 +529,8 @@ Current checked progress:
   API pays for Zig work rather than JS planning when it is already in the native
   contract. Fresh Node/Bun native-eager rows prove
   `input.lt(0).where(input, 0)` through the public no-grad Tensor path at
-  `124.10x` / `92.43x` module speedups with zero measured diff and enforced
-  `20x` direct/module floors. General broadcast and autograd cases stay on the
+  `213.80x` / `189.48x` module speedups with zero measured diff and enforced
+  `50x` direct/module floors. General broadcast and autograd cases stay on the
   TS reference path until they have an equally honest native contract.
   The same microscope now also covers `matmul -> add(bias) -> ReLU`,
   `matmul -> add(bias) -> SiLU`, `matmul -> add(bias) -> Sigmoid`, and
@@ -597,8 +601,9 @@ Current checked progress:
   `12.36x` on Bun, max diff `0.000002`. Grad-enabled activation calls and
   small tensors stay on the TS/autograd path. The same artifact family now
   proves the no-grad `Tensor.where()` path after removing the pre-native
-  broadcast-plan tax: Node reports `where_batched` module speedup `124.10x`,
-  Bun reports `92.43x`, and both carry zero measured diff against the reference.
+  broadcast-plan tax and vectorizing the native comparison condition: Node
+  reports `where_batched` module speedup `213.80x`, Bun reports `189.48x`, and
+  both carry zero measured diff against the reference.
   The native eager adapter policy now lives in
   `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
   shape inference, output validation, public aliases, and activation mapping,

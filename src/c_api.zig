@@ -1757,6 +1757,58 @@ fn eagerElementwiseBinaryF32(lhs: f32, rhs: f32, op: u32) !f32 {
     };
 }
 
+fn eagerElementwiseBinaryVec8(lhs: @Vector(8, f32), rhs: @Vector(8, f32), op: u32) !@Vector(8, f32) {
+    const VecT = @Vector(8, f32);
+    const zero: VecT = @splat(0.0);
+    const one: VecT = @splat(1.0);
+    return switch (op) {
+        eager_elementwise_add => lhs + rhs,
+        eager_elementwise_sub => lhs - rhs,
+        eager_elementwise_mul => lhs * rhs,
+        eager_elementwise_div => lhs / rhs,
+        eager_elementwise_maximum => @max(lhs, rhs),
+        eager_elementwise_minimum => @min(lhs, rhs),
+        eager_elementwise_eq => blk: {
+            const both_nan = (lhs != lhs) & (rhs != rhs);
+            break :blk @select(f32, (lhs == rhs) | both_nan, one, zero);
+        },
+        eager_elementwise_ne => blk: {
+            const both_nan = (lhs != lhs) & (rhs != rhs);
+            break :blk @select(f32, (lhs == rhs) | both_nan, zero, one);
+        },
+        eager_elementwise_lt => @select(f32, lhs < rhs, one, zero),
+        eager_elementwise_le => @select(f32, lhs <= rhs, one, zero),
+        eager_elementwise_gt => @select(f32, lhs > rhs, one, zero),
+        eager_elementwise_ge => @select(f32, lhs >= rhs, one, zero),
+        else => error.InvalidArgument,
+    };
+}
+
+fn writeElementwiseBinaryF32(lhs: []const f32, rhs: []const f32, output: []f32, op: u32) !void {
+    if (lhs.len != output.len) return error.ShapeMismatch;
+    if (rhs.len != 1 and rhs.len != lhs.len) return error.ShapeMismatch;
+
+    const V = 8;
+    const VecT = @Vector(V, f32);
+    var i: usize = 0;
+    if (rhs.len == 1) {
+        const rhs_vec: VecT = @splat(rhs[0]);
+        while (i + V <= lhs.len) : (i += V) {
+            const lhs_vec: VecT = lhs[i..][0..V].*;
+            output[i..][0..V].* = try eagerElementwiseBinaryVec8(lhs_vec, rhs_vec, op);
+        }
+    } else {
+        while (i + V <= lhs.len) : (i += V) {
+            const lhs_vec: VecT = lhs[i..][0..V].*;
+            const rhs_vec: VecT = rhs[i..][0..V].*;
+            output[i..][0..V].* = try eagerElementwiseBinaryVec8(lhs_vec, rhs_vec, op);
+        }
+    }
+    while (i < lhs.len) : (i += 1) {
+        output[i] = try eagerElementwiseBinaryF32(lhs[i], rhs[if (rhs.len == 1) 0 else i], op);
+    }
+}
+
 fn applyActivationF32(output: []f32, activation: u32) !void {
     if (activation == 0) return;
     writeActivationF32(output, output, activation) catch |err| switch (err) {
@@ -1975,11 +2027,10 @@ export fn zgml_eager_elementwise_f32(
     if (rhs_ptr == null) return status(.invalid_argument);
     if (rhs_len != 1 and rhs_len != lhs_len) return status(.shape_mismatch);
     const rhs = rhs_ptr.?[0..rhs_len];
-    for (lhs, output, 0..) |value, *out, i| {
-        out.* = eagerElementwiseBinaryF32(value, rhs[if (rhs_len == 1) 0 else i], op) catch |err| return switch (err) {
-            error.InvalidArgument => status(.invalid_argument),
-        };
-    }
+    writeElementwiseBinaryF32(lhs, rhs, output, op) catch |err| return switch (err) {
+        error.InvalidArgument => status(.invalid_argument),
+        error.ShapeMismatch => status(.shape_mismatch),
+    };
     return status(.ok);
 }
 
@@ -11263,6 +11314,51 @@ test "C ABI native eager elementwise writes caller output" {
         output.len,
         eager_elementwise_add,
     ));
+}
+
+test "C ABI native eager elementwise vectorizes scalar and same-shape binary ops" {
+    const lhs = [_]f32{ -4, -3, -2, -1, -0.0, 0.0, 1, 2, 3, 4, std.math.nan(f32), 6, 7, 8, 9, 10 };
+    const rhs = [_]f32{ -5, -2, -2, 0, 0.0, -0.0, 2, 1, 3, 5, std.math.nan(f32), 6, 8, 7, 10, 9 };
+    const scalar = [_]f32{3};
+    var output = [_]f32{0} ** lhs.len;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        scalar[0..].ptr,
+        scalar.len,
+        output[0..].ptr,
+        output.len,
+        eager_elementwise_mul,
+    ));
+    for (lhs, output) |plain, scaled| {
+        if (std.math.isNan(plain)) try std.testing.expect(std.math.isNan(scaled)) else try std.testing.expectEqual(plain * 3, scaled);
+    }
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        scalar[0..].ptr,
+        scalar.len,
+        output[0..].ptr,
+        output.len,
+        eager_elementwise_lt,
+    ));
+    for (lhs, output) |plain, compared| try std.testing.expectEqual(if (plain < 3) @as(f32, 1) else 0, compared);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+        eager_elementwise_eq,
+    ));
+    for (lhs, rhs, output) |left, right, compared| {
+        const expected: f32 = if (left == right or (std.math.isNan(left) and std.math.isNan(right))) 1 else 0;
+        try std.testing.expectEqual(expected, compared);
+    }
 }
 
 test "C ABI native eager where writes caller output" {
