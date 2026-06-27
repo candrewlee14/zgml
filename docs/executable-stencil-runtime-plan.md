@@ -532,6 +532,9 @@ Current checked progress:
   `logSoftmaxInto`; Node and Bun package smokes prove both caller-owned-output
   helpers plus ordinary `zgml.noGrad(() => nn.Softmax/LogSoftmax.forward(x))`
   module calls route through the Zig row kernel for last-axis inference.
+  Normal no-grad `Tensor.softmax()` / `Tensor.logSoftmax()` calls now use the
+  same native eager row-softmax hook directly, while grad-enabled calls keep the
+  TS/autograd path.
   The same no-grad native eager policy now covers `nn.Conv2d.forward` for
   inference: Node/Bun expose `zgml.nativeEager.conv2dInto`, ordinary
   `zgml.noGrad(() => conv2dModel.forward(input))` routes through the Zig

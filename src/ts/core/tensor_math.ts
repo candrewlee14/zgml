@@ -74,6 +74,11 @@ type NativeEagerReduceInto = (
   input: unknown,
   options: Readonly<{ op: string }>,
 ) => Float32Array;
+type NativeEagerSoftmaxInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{ dim: number; logSoftmax?: boolean }>,
+) => Float32Array;
 
 export type TensorMathHelpersOptions = Readonly<{
   Tensor?: TensorConstructor;
@@ -87,6 +92,7 @@ export type TensorMathHelpersOptions = Readonly<{
   nativeEagerElementwiseMinLength?: number;
   nativeEagerReduceInto?: NativeEagerReduceInto;
   nativeEagerReduceMinLength?: number;
+  nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
 }>;
 
 export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
@@ -105,6 +111,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   const nativeEagerReduceMinLength = Number.isSafeInteger(options.nativeEagerReduceMinLength) && Number(options.nativeEagerReduceMinLength) >= 0
     ? Number(options.nativeEagerReduceMinLength)
     : 512;
+  const nativeEagerSoftmaxInto = options.nativeEagerSoftmaxInto;
   const gradModeEnabled = typeof options.isGradEnabled === "function"
     ? options.isGradEnabled
     : isGradEnabled;
@@ -152,6 +159,16 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const output = new Float32Array(1);
     nativeEagerReduceInto(output, tensor, { op });
     return scalarTensor(output[0], false);
+  }
+
+  function nativeSoftmaxDim(tensor: TensorMathTensor, dim: number, logSoftmaxFlag: boolean) {
+    if (typeof nativeEagerSoftmaxInto !== "function") return null;
+    const rank = tensor.shape.length;
+    const normalizedDim = normalizeDim(dim, rank, "softmaxDim");
+    if (normalizedDim !== rank - 1) return null;
+    const output = new Float32Array(tensor.length);
+    nativeEagerSoftmaxInto(output, tensor, { dim, logSoftmax: logSoftmaxFlag });
+    return new (tensorClass())(output, tensor.shape);
   }
 
   function binary(tensor: TensorMathTensor, other: unknown, op: BinaryOp, gradLeft: BinaryGrad, gradRight: BinaryGrad, label: string, nativeOp = label) {
@@ -980,6 +997,11 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   function softmaxDim(tensor: TensorMathTensor, dim: number) {
     const TensorClass = tensorClass();
     const plan = dimReductionPlan(tensor.shape, dim, "softmaxDim");
+    const gradEnabled = gradModeEnabled();
+    if (!gradEnabled) {
+      const native = nativeSoftmaxDim(tensor, dim, false);
+      if (native !== null) return native;
+    }
     const maxValues = new Float32Array(shapeProduct(plan.shape));
     const denom = new Float32Array(maxValues.length);
     maxValues.fill(-Infinity);
@@ -996,8 +1018,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     }
     for (let i = 0; i < tensor.length; i += 1) out[i] /= denom[plan.inToOut[i]];
     const result = new TensorClass(out, tensor.shape, {
-      requiresGrad: gradModeEnabled() && tensor.requiresGrad,
-      prev: gradModeEnabled() && tensor.requiresGrad ? [tensor] : [],
+      requiresGrad: gradEnabled && tensor.requiresGrad,
+      prev: gradEnabled && tensor.requiresGrad ? [tensor] : [],
     });
     result._backward = (grad: Float32Array | null) => {
       if (!grad) return;
@@ -1019,6 +1041,11 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   function logSoftmaxDim(tensor: TensorMathTensor, dim: number) {
     const TensorClass = tensorClass();
     const plan = dimReductionPlan(tensor.shape, dim, "logSoftmaxDim");
+    const gradEnabled = gradModeEnabled();
+    if (!gradEnabled) {
+      const native = nativeSoftmaxDim(tensor, dim, true);
+      if (native !== null) return native;
+    }
     const maxValues = new Float32Array(shapeProduct(plan.shape));
     const denom = new Float32Array(maxValues.length);
     maxValues.fill(-Infinity);
@@ -1039,8 +1066,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
       probs[i] = Math.exp(shifted) / denom[oi];
     }
     const result = new TensorClass(out, tensor.shape, {
-      requiresGrad: gradModeEnabled() && tensor.requiresGrad,
-      prev: gradModeEnabled() && tensor.requiresGrad ? [tensor] : [],
+      requiresGrad: gradEnabled && tensor.requiresGrad,
+      prev: gradEnabled && tensor.requiresGrad ? [tensor] : [],
     });
     result._backward = (grad: Float32Array | null) => {
       if (!grad) return;

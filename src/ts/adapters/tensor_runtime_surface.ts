@@ -35,6 +35,11 @@ type NativeEagerReduceInto = (
   input: unknown,
   options: Readonly<{ op: string }>,
 ) => Float32Array;
+type NativeEagerSoftmaxInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{ dim: number; logSoftmax?: boolean }>,
+) => Float32Array;
 
 export type AdapterTensorRuntimeSurfaceOptions<
   TTensor extends AdapterTensorInstance = AdapterTensorInstance,
@@ -48,6 +53,7 @@ export type AdapterTensorRuntimeSurfaceOptions<
   nativeEagerElementwiseMinLength?: number;
   nativeEagerReduceInto?: NativeEagerReduceInto;
   nativeEagerReduceMinLength?: number;
+  nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
   meanSquaredError: (tensor: TTensor, target: unknown) => TTensor;
   dtype: TensorMetadataOpsOptions<TTensor>["dtype"];
   device: TensorMetadataOpsOptions<TTensor>["device"];
@@ -94,6 +100,7 @@ export function createAdapterTensorRuntimeSurface<
     nativeEagerElementwiseMinLength: options.nativeEagerElementwiseMinLength,
     nativeEagerReduceInto: options.nativeEagerReduceInto,
     nativeEagerReduceMinLength: options.nativeEagerReduceMinLength,
+    nativeEagerSoftmaxInto: options.nativeEagerSoftmaxInto,
   });
   const tensorMathSurfaceHelpers = options.sharedFrontend.createTensorMathSurfaceHelpers({
     tensorMathHelpers,

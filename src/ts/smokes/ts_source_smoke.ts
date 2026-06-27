@@ -484,6 +484,49 @@ expectSame(noGradNativeReduce.min(reduceInput).data, [-2], "tensor math no-grad 
 expectSame(noGradNativeReduce.prod(reduceInput).data, [-12], "tensor math no-grad native prod hook");
 expectSame(noGradNativeReduce.sumDim(new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4), [2, 2]), 1).data, [3, 7], "tensor math dim reduction keeps TS path");
 expectSame(nativeReduceCalls, ["sum", "mean", "max", "min", "prod"], "tensor math no-grad native reduce hook count");
+const nativeSoftmaxCalls: string[] = [];
+const noGradNativeSoftmax = createTensorMathHelpers({
+  getTensorClass: () => TensorDataSmokeTensor,
+  f32: tensorData.f32,
+  addTensorGrad: tensorData.addTensorGrad,
+  scalarTensor: (value, requiresGrad = false) =>
+    new TensorDataSmokeTensor(Float32Array.of(value), [1], { requiresGrad }),
+  isGradEnabled: () => false,
+  nativeEagerSoftmaxInto(output, input, options) {
+    nativeSoftmaxCalls.push(options.logSoftmax ? "logSoftmax" : "softmax");
+    expectSame({ dim: options.dim, shape: input.shape }, { dim: -1, shape: [2, 3] }, "tensor math no-grad native softmax options");
+    const data = input.data;
+    for (let row = 0; row < 2; row += 1) {
+      const base = row * 3;
+      const max = Math.max(data[base], data[base + 1], data[base + 2]);
+      const e0 = Math.exp(data[base] - max);
+      const e1 = Math.exp(data[base + 1] - max);
+      const e2 = Math.exp(data[base + 2] - max);
+      const denom = e0 + e1 + e2;
+      if (options.logSoftmax) {
+        const logDenom = Math.log(denom);
+        output[base] = data[base] - max - logDenom;
+        output[base + 1] = data[base + 1] - max - logDenom;
+        output[base + 2] = data[base + 2] - max - logDenom;
+      } else {
+        output[base] = e0 / denom;
+        output[base + 1] = e1 / denom;
+        output[base + 2] = e2 / denom;
+      }
+    }
+    return output;
+  },
+});
+const softmaxInput = new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4, 5, 6), [2, 3]);
+Array.from(noGradNativeSoftmax.softmax(softmaxInput).data).forEach((value, index) => expectApprox(value, [
+  0.09003057, 0.24472847, 0.66524096,
+  0.09003057, 0.24472847, 0.66524096,
+][index], 1e-6, "tensor math no-grad native softmax hook"));
+Array.from(noGradNativeSoftmax.logSoftmax(softmaxInput).data).forEach((value, index) => expectApprox(value, [
+  -2.407606, -1.407606, -0.407606,
+  -2.407606, -1.407606, -0.407606,
+][index], 1e-6, "tensor math no-grad native logSoftmax hook"));
+expectSame(nativeSoftmaxCalls, ["softmax", "logSoftmax"], "tensor math no-grad native softmax hook count");
 const red = new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4, 5, 6), [2, 3], { requiresGrad: true });
 const summed = tensorMath.sumDim(red, 1);
 expectSame({ data: summed.data, shape: summed.shape }, { data: [6, 15], shape: [2, 1] }, "tensor math sumDim");

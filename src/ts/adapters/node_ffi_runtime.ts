@@ -324,6 +324,9 @@ const {
   nativeEagerMatmulInto: (output, lhs, rhs, options) => nativeEager.matmulInto(output, lhs, rhs, options),
   nativeEagerElementwiseInto: (output, lhs, rhs, options) => nativeEager.elementwiseInto(output, lhs, rhs, options),
   nativeEagerReduceInto: (output, input, options) => nativeEager.reduceInto(output, input, options),
+  nativeEagerSoftmaxInto: (output, input, options) => options && options.logSoftmax
+    ? nativeEager.logSoftmaxInto(output, input, options)
+    : nativeEager.softmaxInto(output, input, options),
   meanSquaredError: (tensor, target) => meanSquaredError(tensor, target),
   dtype: (tensor) => tensorPlacementHelpers.dtype(tensor),
   device: (tensor) => tensorPlacementHelpers.device(tensor),
