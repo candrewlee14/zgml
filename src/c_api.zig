@@ -1679,10 +1679,21 @@ fn writeActivationF32(input: []const f32, output: []f32, activation: u32) !void 
             }
             while (i < input.len) : (i += 1) output[i] = input[i] / (1.0 + @exp(-input[i]));
         },
-        module_activation_gelu,
-        module_activation_tanh,
-        => {
-            for (input, output) |value, *out| out.* = try eagerActivationF32(value, activation);
+        module_activation_gelu => {
+            var i: usize = 0;
+            while (i + V <= input.len) : (i += V) {
+                const x: VecT = input[i..][0..V].*;
+                output[i..][0..V].* = geluApproxVec8(x);
+            }
+            while (i < input.len) : (i += 1) output[i] = try eagerActivationF32(input[i], activation);
+        },
+        module_activation_tanh => {
+            var i: usize = 0;
+            while (i + V <= input.len) : (i += V) {
+                const x: VecT = input[i..][0..V].*;
+                output[i..][0..V].* = tanhApproxVec8(x);
+            }
+            while (i < input.len) : (i += 1) output[i] = std.math.tanh(input[i]);
         },
         else => return error.InvalidArgument,
     }
@@ -6697,8 +6708,15 @@ fn geluApproxVec8(x: @Vector(8, f32)) @Vector(8, f32) {
     const half: VecT = @splat(0.5);
     const one: VecT = @splat(1.0);
     const k = k0 * (x + k1 * x * x * x);
-    const e2k = fastExpApproxVec8(k + k);
-    return half * x * (one + (e2k - one) / (e2k + one));
+    return half * x * (one + tanhApproxVec8(k));
+}
+
+fn tanhApproxVec8(x: @Vector(8, f32)) @Vector(8, f32) {
+    const VecT = @Vector(8, f32);
+    const one: VecT = @splat(1.0);
+    const clamped = @min(@max(x, @as(VecT, @splat(-10.0))), @as(VecT, @splat(10.0)));
+    const e2x = fastExpApproxVec8(clamped + clamped);
+    return (e2x - one) / (e2x + one);
 }
 
 fn geluApproxScalar(x: f32) f32 {
@@ -11134,6 +11152,33 @@ test "C ABI native eager activation writes caller output" {
         output.len,
         99,
     ));
+}
+
+test "C ABI native eager activation vectorizes gelu and tanh" {
+    const input = [_]f32{ -2.0, -1.036, -0.5, -0.173, 0.0, 0.173, 0.5, 2.0 };
+    var output = [_]f32{0} ** input.len;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_activation_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        module_activation_gelu,
+    ));
+    for (input, output) |plain, activated| {
+        try std.testing.expectApproxEqAbs(try eagerActivationF32(plain, module_activation_gelu), activated, 2e-6);
+    }
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_activation_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        module_activation_tanh,
+    ));
+    for (input, output) |plain, activated| {
+        try std.testing.expectApproxEqAbs(try eagerActivationF32(plain, module_activation_tanh), activated, 2e-6);
+    }
 }
 
 test "C ABI native eager elementwise writes caller output" {

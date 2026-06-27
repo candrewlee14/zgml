@@ -580,13 +580,15 @@ Current checked progress:
   diff across the native eager rows, with per-row speedup floors recorded where
   the direct low-level ABI is evidence rather than the preferred high-level
   route. The standalone activation rows now prove the promoted path too:
-  `zgml_eager_activation_f32` uses a shared Zig helper for ReLU/GELU/SiLU/
+  `zgml_eager_activation_f32` uses a vectorized Zig helper for ReLU/GELU/SiLU/
   Sigmoid/Tanh sized tensors, and normal no-grad high-level `Tensor.relu()` /
   `Tensor.gelu()` / `Tensor.sigmoid()` / `Tensor.silu()` / `Tensor.tanh()`
   calls route through
   `nativeEager.activationInto` once the runtime threshold is met. Fresh Node/Bun
-  runs show the public Tensor path
-  above floor with zero measured diff, while grad-enabled activation calls and
+  runs show the public Tensor path above floor: standalone GELU/Tanh now carry
+  `4x` enforced direct and module floors after the Zig vector helper, with
+  measured no-grad module speedups of `12.50x` / `14.74x` on Node and `8.93x` /
+  `12.36x` on Bun, max diff `0.000002`. Grad-enabled activation calls and
   small tensors stay on the TS/autograd path.
   The native eager adapter policy now lives in
   `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
