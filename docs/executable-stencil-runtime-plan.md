@@ -966,6 +966,17 @@ scratch is relative to the final output. A fresh one-attempt input-bridge
 microscope proves the readback on the retained decomposed path with
 `candidates:1`, `down_partial_bytes:14155776`, `runtime_capacity:9216`,
 `runtime_uses:628`, and `runtime_bytes:9216`.
+Two June 27, 2026 shortcut probes are explicitly rejected. First, splitting the
+direct input-bridge down projection across spare row-threadgroup lanes required
+an extra barrier for correctness, then measured as noisy and slower than the
+retained path: best `direct_serial=1.56x` in one three-attempt run, but a
+five-attempt run selected `direct_serial=0.91x`. Second, widening the non-input
+semantic single-dispatch scratch from `SEMANTIC_FFN_MAX_DIM` to
+`SEMANTIC_FFN_MAX_HIDDEN` made the `576 x 1536 x 576` bridge numerically correct
+and one-dispatch, but failed the qsemantic bridge gate at `bridge_ffn=1.15x`
+against the `2.45x` floor. Both changes were reverted. Do not retry direct
+row-threadgroup work sharing or hidden-cap widening as promotion moves; the next
+valid implementation needs a true staged/tiled `semantic_with_input` width kernel.
 The input-bridge profiler now also has a separate direct width-parallel
 readback family (`semantic_ffn_with_input_direct_width_parallel_*`) and
 `bench:status` prints it as `direct_width_parallel`, `direct_width_lanes`,
