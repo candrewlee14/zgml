@@ -1432,7 +1432,7 @@ pub const ProgramCommand = struct {
         return command;
     }
 
-    fn contiguous(kind: ProgramCommandKind, start: usize, count: usize) ProgramCommand {
+    pub fn contiguous(kind: ProgramCommandKind, start: usize, count: usize) ProgramCommand {
         return .{
             .kind = kind,
             .op_start = @intCast(start),

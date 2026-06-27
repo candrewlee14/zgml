@@ -1666,6 +1666,12 @@ structural improvement but still not a model-level throughput promotion:
 dispatch remains `242->242`. The next model-level win must either make the
 14-op input bridge a true tiled/width-parallel one-dispatch kernel, or otherwise
 reduce the five-dispatch absorbed bridge without returning to row-serial work.
+A measured hybrid lane tried that second shape as
+`input_product + width_parallel_tail`: it reduced the absorbed input bridge from
+five dispatches to three, but the product bridge was still row-owned and dropped
+the focused Q8 absorbed result to `0.70x`. Do not add that kernel to the
+production encoder unless the input product side is rewritten with real
+width/K parallelism; fewer dispatches alone is not a valid promotion criterion.
 After the one-dispatch semantic throughput kernel became a real measured lane,
 the full-model default was kept on `promptProjectionRowChainCommand()` while
 `--metal-prompt-semantic-throughput-candidate` remains the explicit diagnostic
