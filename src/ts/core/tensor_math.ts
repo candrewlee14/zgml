@@ -74,6 +74,7 @@ type NativeEagerActivationInto = (
   input: unknown,
   options: Readonly<{ activation: string }>,
 ) => Float32Array;
+type NativeEagerActivationEnabled = (activation: string, outputLength: number) => boolean;
 type NativeEagerWhereInto = (
   output: Float32Array,
   condition: unknown,
@@ -108,6 +109,7 @@ export type TensorMathHelpersOptions = Readonly<{
   nativeEagerElementwiseMinLength?: number;
   nativeEagerActivationInto?: NativeEagerActivationInto;
   nativeEagerActivationMinLength?: number;
+  nativeEagerActivationEnabled?: NativeEagerActivationEnabled;
   nativeEagerWhereInto?: NativeEagerWhereInto;
   nativeEagerClampInto?: NativeEagerClampInto;
   nativeEagerReduceInto?: NativeEagerReduceInto;
@@ -125,6 +127,9 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   const nativeEagerMatmulInto = options.nativeEagerMatmulInto;
   const nativeEagerElementwiseInto = options.nativeEagerElementwiseInto;
   const nativeEagerActivationInto = options.nativeEagerActivationInto;
+  const nativeEagerActivationEnabled = typeof options.nativeEagerActivationEnabled === "function"
+    ? options.nativeEagerActivationEnabled
+    : () => true;
   const nativeEagerWhereInto = options.nativeEagerWhereInto;
   const nativeEagerClampInto = options.nativeEagerClampInto;
   const nativeEagerElementwiseMinLength = Number.isSafeInteger(options.nativeEagerElementwiseMinLength) && Number(options.nativeEagerElementwiseMinLength) >= 0
@@ -207,6 +212,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   function nativeActivationUnaryInto(output: Float32Array, tensor: TensorMathTensor, activation: string) {
     if (typeof nativeEagerActivationInto !== "function") return false;
     if (output.length < nativeEagerActivationMinLength) return false;
+    if (!nativeEagerActivationEnabled(activation, output.length)) return false;
     nativeEagerActivationInto(output, tensor, { activation });
     return true;
   }

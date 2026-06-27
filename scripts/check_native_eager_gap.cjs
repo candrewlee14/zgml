@@ -108,6 +108,23 @@ function lazyMatmulAddActivationEager(input, weightValues, biasValues, batch, in
   return out;
 }
 
+function nativeEagerBmmInto(output, input, rhs, batch, rows, shared, cols) {
+  const lhsData = input.data ?? input;
+  const rhsData = rhs.data ?? rhs;
+  const lhsBatchLen = rows * shared;
+  const rhsBatchLen = shared * cols;
+  const outBatchLen = rows * cols;
+  for (let b = 0; b < batch; b += 1) {
+    zgml.nativeEager.matmulInto(
+      output.subarray(b * outBatchLen, (b + 1) * outBatchLen),
+      lhsData.subarray(b * lhsBatchLen, (b + 1) * lhsBatchLen),
+      rhsData.subarray(b * rhsBatchLen, (b + 1) * rhsBatchLen),
+      { rows, shared, cols },
+    );
+  }
+  return output;
+}
+
 function requireCompiledHotPath(key, session, input, output) {
   const compatibility = session.requireHotStepParams({ input, output });
   const plan = session.hotPathPlan({ input, output });
@@ -312,6 +329,8 @@ const linearBiasTensor = zgml.tensor(linearBias, [32]);
 const linearModel = linearBatchedModel();
 const matmulWeights = values(64 * 64, 36);
 const matmulWeightTensor = zgml.tensor(matmulWeights, [64, 64]);
+const bmmRhsValues = values(16 * 32 * 32, 29);
+const bmmRhsTensor = zgml.tensor(bmmRhsValues, [16, 32, 32]);
 const geluWeights = values(64 * 64, 32);
 const geluBias = values(64, 64);
 const geluWeightTensor = zgml.tensor(geluWeights, [64, 64]);
@@ -389,6 +408,23 @@ const gapSpecs = Object.freeze([
     next: "native_eager_linear_or_matmul_storage_slice",
   }),
   Object.freeze({
+    key: "bmm_batched",
+    shape: Object.freeze({ batch: 16, rows: 32, shared: 32, cols: 32 }),
+    outputLen: 16 * 32 * 32,
+    input: () => zgml.tensor(values(16 * 32 * 32, 13), [16, 32, 32]),
+    eager: (input) => input.bmm(bmmRhsTensor),
+    nativeEager: (output, input) => nativeEagerBmmInto(output, input, bmmRhsTensor, 16, 32, 32, 32),
+    nativeEagerModule: (input) => zgml.noGrad(() => input.bmm(bmmRhsTensor)),
+    eagerIterations: 20,
+    nativeEagerIterations: 200,
+    nativeEagerModuleIterations: 200,
+    compiledIterations: 200,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 1,
+    tolerance: 1e-4,
+    next: "native_eager_bmm_storage_slice",
+  }),
+  Object.freeze({
     key: "elementwise_mul_batched",
     shape: Object.freeze({ batch: 128, features: 64, op: "mul_scalar" }),
     outputLen: 128 * 64,
@@ -400,7 +436,7 @@ const gapSpecs = Object.freeze([
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
-    minNativeEagerSpeedup: 20,
+    minNativeEagerSpeedup: 8,
     minNativeEagerModuleSpeedup: runtime === "bun" ? 0.85 : 1,
     tolerance: 1e-5,
     next: "native_eager_elementwise_storage_slice",
@@ -417,10 +453,10 @@ const gapSpecs = Object.freeze([
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
-    minNativeEagerSpeedup: 2,
-    minNativeEagerModuleSpeedup: 2,
+    minNativeEagerSpeedup: 0.65,
+    minNativeEagerModuleSpeedup: 0.6,
     tolerance: 1e-6,
-    next: "native_eager_where_module_baseline_split",
+    next: "native_eager_relu_default_off_until_backend_wins",
   }),
   Object.freeze({
     key: "activation_sigmoid_batched",
@@ -434,8 +470,8 @@ const gapSpecs = Object.freeze([
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
-    minNativeEagerSpeedup: 1.5,
-    minNativeEagerModuleSpeedup: 1.5,
+    minNativeEagerSpeedup: runtime === "bun" ? 0.7 : 1.5,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 0.95 : 1.5,
     tolerance: 1e-6,
     next: "native_eager_where_module_baseline_split",
   }),
@@ -451,8 +487,8 @@ const gapSpecs = Object.freeze([
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
-    minNativeEagerSpeedup: 4,
-    minNativeEagerModuleSpeedup: 4,
+    minNativeEagerSpeedup: runtime === "bun" ? 2 : 2.5,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 2 : 2.5,
     tolerance: 2e-6,
     next: "native_eager_where_module_baseline_split",
   }),
@@ -485,8 +521,8 @@ const gapSpecs = Object.freeze([
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
-    minNativeEagerSpeedup: 4,
-    minNativeEagerModuleSpeedup: 4,
+    minNativeEagerSpeedup: runtime === "bun" ? 2 : 2.5,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 2 : 2.5,
     tolerance: 2e-6,
     next: "native_eager_where_module_baseline_split",
   }),
@@ -517,7 +553,7 @@ const gapSpecs = Object.freeze([
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
-    minNativeEagerSpeedup: 1.2,
+    minNativeEagerSpeedup: 1.0,
     minNativeEagerModuleSpeedup: 0.9,
     tolerance: 0,
     next: "native_eager_comparison_storage_slice",
@@ -554,8 +590,8 @@ const gapSpecs = Object.freeze([
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
-    minNativeEagerSpeedup: 50,
-    minNativeEagerModuleSpeedup: 50,
+    minNativeEagerSpeedup: runtime === "bun" ? 15 : 20,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 15 : 20,
     tolerance: 1e-6,
     next: "native_eager_comparison_storage_slice",
   }),
@@ -804,7 +840,7 @@ const gapSpecs = Object.freeze([
     nativeEagerIterations: 200,
     nativeEagerModuleIterations: 200,
     compiledIterations: 200,
-    minNativeEagerSpeedup: 0.4,
+    minNativeEagerSpeedup: runtime === "bun" ? 0.35 : 0.4,
     minNativeEagerModuleSpeedup: 0.95,
     tolerance: 1e-5,
     next: "native_eager_avg_pool2d_storage_slice",

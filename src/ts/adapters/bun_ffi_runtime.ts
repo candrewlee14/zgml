@@ -1158,6 +1158,7 @@ const {
   nativeEagerElementwiseMinLength: 65536,
   nativeEagerActivationInto: (output, input, options) => nativeEager.activationInto(output, input, options),
   nativeEagerActivationMinLength: 65536,
+  nativeEagerActivationEnabled: (activation) => activation !== "relu" && activation !== "sigmoid",
   nativeEagerWhereInto: (output, condition, input, other) => nativeEager.whereInto(output, condition, input, other),
   nativeEagerReduceInto: (output, input, options) => nativeEager.reduceInto(output, input, options),
   nativeEagerSoftmaxInto: (output, input, options) => options && options.logSoftmax

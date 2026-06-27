@@ -272,6 +272,7 @@ function checkScripts() {
     "const nativeEagerArtifactPattern = /^native-eager-\\d{8}T\\d{6}Z-\\d+\\.json$/",
     "const nativeEagerExpectedKeys = [",
     "\"matmul_batched\"",
+    "\"bmm_batched\"",
     "\"elementwise_mul_batched\"",
     "\"reduce_sum_scalar_batched\"",
     "lazy_matmul_add_sigmoid_batched",
@@ -804,6 +805,7 @@ function checkScripts() {
     "session: fast.session",
     "lazy_matmul_add_gelu_batched",
     "matmul_batched",
+    "bmm_batched",
     "elementwise_mul_batched",
     "reduce_sum_scalar_batched",
     "compiledHotPath",
@@ -821,6 +823,9 @@ function checkScripts() {
     "zgml.nativeEager.reduceInto(output, input, { op: \"sum\" })",
     "zgml.nativeEager.pool2dInto(output, input",
     "zgml.nativeEager.matmulInto(output, input, matmulWeightTensor)",
+    "nativeEagerBmmInto(output, input, bmmRhsTensor, 16, 32, 32, 32)",
+    "zgml.noGrad(() => input.bmm(bmmRhsTensor))",
+    "native_eager_relu_default_off_until_backend_wins",
     "zgml.noGrad(() => softmaxModel.forward(input))",
     "zgml.noGrad(() => logSoftmaxModel.forward(input))",
     "zgml.noGrad(() => input.mul(2))",
@@ -930,6 +935,7 @@ function checkScripts() {
   ]);
   requireIncludes(read("src/ts/core/tensor_math.ts"), "src/ts/core/tensor_math.ts", "no-grad Tensor.bmm native eager matmul bridge", [
     "const nativeBmmMinMultiplyAdds = 512",
+    "nativeEagerActivationEnabled(activation, output.length)",
     "const useNative = !gradEnabled && typeof nativeEagerMatmulInto === \"function\"",
     "lhsRows * lhsCols * rhsCols >= nativeBmmMinMultiplyAdds",
     "out.subarray(outBatchOffset, outBatchOffset + lhsRows * rhsCols)",
@@ -938,6 +944,12 @@ function checkScripts() {
     "rows: lhsRows",
     "shared: lhsCols",
     "cols: rhsCols",
+  ]);
+  requireIncludes(read("src/ts/adapters/node_ffi_runtime.ts"), "src/ts/adapters/node_ffi_runtime.ts", "Node native eager activation dispatch policy", [
+    "nativeEagerActivationEnabled: (activation) => activation !== \"relu\"",
+  ]);
+  requireIncludes(read("src/ts/adapters/bun_ffi_runtime.ts"), "src/ts/adapters/bun_ffi_runtime.ts", "Bun native eager activation dispatch policy", [
+    "nativeEagerActivationEnabled: (activation) => activation !== \"relu\" && activation !== \"sigmoid\"",
   ]);
   requireIncludes(read("src/ts/smokes/ts_source_smoke.ts"), "src/ts/smokes/ts_source_smoke.ts", "no-grad Tensor.bmm native eager smoke", [
     "const nativeBmmValues = Float32Array.from({ length: 2 * 8 * 8 }",

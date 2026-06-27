@@ -35,6 +35,7 @@ type NativeEagerActivationInto = (
   input: unknown,
   options: Readonly<{ activation: string }>,
 ) => Float32Array;
+type NativeEagerActivationEnabled = (activation: string, outputLength: number) => boolean;
 type NativeEagerWhereInto = (
   output: Float32Array,
   condition: unknown,
@@ -69,6 +70,7 @@ export type AdapterTensorRuntimeSurfaceOptions<
   nativeEagerElementwiseMinLength?: number;
   nativeEagerActivationInto?: NativeEagerActivationInto;
   nativeEagerActivationMinLength?: number;
+  nativeEagerActivationEnabled?: NativeEagerActivationEnabled;
   nativeEagerWhereInto?: NativeEagerWhereInto;
   nativeEagerClampInto?: NativeEagerClampInto;
   nativeEagerReduceInto?: NativeEagerReduceInto;
@@ -120,6 +122,7 @@ export function createAdapterTensorRuntimeSurface<
     nativeEagerElementwiseMinLength: options.nativeEagerElementwiseMinLength,
     nativeEagerActivationInto: options.nativeEagerActivationInto,
     nativeEagerActivationMinLength: options.nativeEagerActivationMinLength,
+    nativeEagerActivationEnabled: options.nativeEagerActivationEnabled,
     nativeEagerWhereInto: options.nativeEagerWhereInto,
     nativeEagerClampInto: options.nativeEagerClampInto,
     nativeEagerReduceInto: options.nativeEagerReduceInto,

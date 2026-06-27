@@ -587,8 +587,8 @@ Current checked progress:
   direct `conv2dInto` and `pool2dInto` rows above the native-eager floor with
   zero measured diff against the TS reference.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=22/22` after adding direct
-  `matmul_batched`, `elementwise_mul_batched`, `reduce_sum_scalar_batched`,
+  as well: the expected row set is `row_coverage=23/23` after adding direct
+  `matmul_batched`, `bmm_batched`, `elementwise_mul_batched`, `reduce_sum_scalar_batched`,
   `elementwise_lt_batched`, `clamp_batched`, `where_batched`,
   standalone `activation_relu_batched` / `activation_sigmoid_batched` /
   `activation_gelu_batched` / `activation_silu_batched` /
@@ -599,15 +599,23 @@ Current checked progress:
   the direct low-level ABI is evidence rather than the preferred high-level
   route. The standalone activation rows now prove the promoted path too:
   `zgml_eager_activation_f32` uses a vectorized Zig helper for ReLU/GELU/SiLU/
-  Sigmoid/Tanh sized tensors, and normal no-grad high-level `Tensor.relu()` /
-  `Tensor.gelu()` / `Tensor.sigmoid()` / `Tensor.silu()` / `Tensor.tanh()`
-  calls route through
-  `nativeEager.activationInto` once the runtime threshold is met. Fresh Node/Bun
-  runs show the public Tensor path above floor: standalone GELU/Tanh now carry
-  `4x` enforced direct and module floors after the Zig vector helper, with
-  measured no-grad module speedups of `12.50x` / `14.74x` on Node and `8.93x` /
-  `12.36x` on Bun, max diff `0.000002`. Grad-enabled activation calls and
-  small tensors stay on the TS/autograd path. The same artifact family now
+  Sigmoid/Tanh sized tensors. Normal no-grad high-level activation calls go
+  through adapter-level dispatch policy once the runtime threshold is met:
+  Node routes the winning standalone GELU/SiLU/Sigmoid/Tanh paths through
+  `nativeEager.activationInto`, while Bun currently keeps standalone ReLU and
+  Sigmoid on the TS loop until that host path beats FFI overhead. Fused
+  Linear+activation and compiled lazy activation paths remain native where they
+  win. Fresh Node/Bun
+  runs show the public Tensor path above floor: standalone GELU/Tanh carry
+  Node `2.5x` and Bun `2x` enforced direct/module floors after the Zig vector
+  helper, with current no-grad module speedups of `2.94x` / `3.03x` on Node and
+  `2.05x` / `2.47x` on Bun, max diff `0.000002`. Grad-enabled activation calls
+  and small tensors stay on the TS/autograd path. No-grad `Tensor.bmm` is now
+  measured in the same family as `bmm_batched`: useful-sized batches route
+  through the Zig matmul bridge per batch, while tiny batches remain on the
+  lower-overhead TS loop. The current artifacts measure `bmm_batched` at
+  `27.67x` Node and `16.05x` Bun through the public no-grad Tensor path, with
+  zero measured diff. The same artifact family now
   proves the no-grad `Tensor.where()` path after removing the pre-native
   broadcast-plan tax and vectorizing the native comparison condition: Node
   reports `where_batched` module speedup `213.80x`, Bun reports `189.48x`, and
