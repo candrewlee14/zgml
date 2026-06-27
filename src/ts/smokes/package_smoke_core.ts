@@ -3292,6 +3292,7 @@ function expectSequentialProgramEvidence(adapter: Record<string, any>, label: st
       namespaceParameterLayoutAlias.signature !== linearKernelPlan.parameterLayout.signature ||
       adapter.compile.canCompile(linearModule, { inputShape: [2], backend: "cpu" }) !== true ||
       adapter.compile.can_compile(linearModule, { inputShape: [2], backend: "cpu" }) !== true ||
+      namespaceProgramEvidence.nativeCore !== "zig-tiny-linear" ||
       namespaceProgramEvidence.compilerSignatures.kernelPlan !== linearKernelPlan.signature ||
       adapter.program.isProgramCompileEvidence(namespaceProgramEvidence) !== true ||
       adapter.program.requireProgramCompileEvidence(namespaceProgramEvidence).signature !== namespaceProgramEvidence.signature ||
@@ -3465,9 +3466,11 @@ function expectSequentialProgramEvidence(adapter: Record<string, any>, label: st
   const program = sequential.compile({ inputShape: [2], backend: "cpu" });
   const programPlan = program.kernelPlan();
   const programIr = program.tensorProgramIr();
+  const programEvidence = program.compileEvidence();
   if (
     program.inputShape().join("x") !== "2" ||
     program.outputShape().join("x") !== "1" ||
+    programEvidence?.nativeCore !== "zig-module-program" ||
     !Object.isFrozen(programPlan) ||
     !Object.isFrozen(programIr) ||
     programPlan.signature !== kernelPlan.signature ||
@@ -5246,10 +5249,12 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const inferenceExplanation = inference.explain();
     const inferencePreflight = inference.preflight();
     const inferenceExecutionPlan = inference.requireExecutionPlan();
+    const inferenceCompileEvidence = inferenceExecutionPlan.compileEvidence;
     if (
       inference.native !== true ||
       inferenceExecutionPlan.canExecute !== true ||
       inferenceExecutionPlan.executionMode !== "executable" ||
+      inferenceCompileEvidence?.nativeCore !== "zig-module-program" ||
       inferenceSupport.supported !== true ||
       inferenceExplanation.supported !== true ||
       inferencePreflight.supported !== true ||
@@ -5323,6 +5328,7 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       rawLayerCompileInferenceRun.native !== true ||
       plan.canExecute !== true ||
       plan.executionMode !== "executable" ||
+      plan.compileEvidence?.nativeCore !== "zig-module-program" ||
       rawLayerCompileInferenceRun.program.inputLen() !== 2 ||
       rawLayerCompileInferenceRun.session.outputLen() !== 1
     ) {

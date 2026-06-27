@@ -2822,6 +2822,7 @@ export type ModuleCompileSupport<InputShape extends TensorShapeTuple = TensorSha
   reason: string | null;
   composable?: boolean;
   nativePath?: "tiny-linear" | "device-program";
+  nativeCore?: "zig-tiny-linear" | "zig-module-program";
   modelKind?: "tiny-linear" | "tiny-mlp" | "module";
   layerCount?: number;
   inputShape?: InputShape;
@@ -3466,6 +3467,7 @@ export type ProgramCompileEvidence = Readonly<{
   signature: string;
   kind: "tiny-linear";
   nativePath: "tiny-linear";
+  nativeCore: "zig-tiny-linear";
   modelKind: "tiny-linear";
   layerCount: number;
   inputLen: number;
@@ -3485,6 +3487,7 @@ export type ProgramCompileEvidence = Readonly<{
   signature: string;
   kind: "module";
   nativePath: "device-program";
+  nativeCore: "zig-module-program";
   modelKind: "module";
   layerCount: number;
   irSignature: string;

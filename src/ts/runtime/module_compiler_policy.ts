@@ -76,6 +76,7 @@ export type SequentialTinyLinearCompiledProgramSpec = Readonly<{
   readonly kind: "tiny-linear";
   readonly layer: SequentialTinyLinearLayerSpec;
   readonly nativePath: "tiny-linear";
+  readonly nativeCore?: "zig-tiny-linear";
   readonly modelKind: "tiny-linear";
   readonly layerCount: 1;
   readonly trace?: ModuleProgramTrace | null;
@@ -291,6 +292,7 @@ export function compiledSequentialLinearSpec(layers: readonly AnyRecord[], optio
     kind: "tiny-linear",
     layer: linearLayer,
     nativePath: "tiny-linear",
+    nativeCore: "zig-tiny-linear",
     modelKind: "tiny-linear",
     layerCount: 1,
   };

@@ -74,6 +74,7 @@ export type CompiledTinyLinearProgramSpec = Readonly<{
     readonly bias?: ArrayLike<number> | null;
   }>;
   readonly nativePath: "tiny-linear";
+  readonly nativeCore?: "zig-tiny-linear";
   readonly modelKind: "tiny-linear";
   readonly layerCount: 1;
   readonly trace?: ModuleProgramTrace | null;
@@ -92,6 +93,7 @@ export type TraceCompilerArtifacts = Readonly<{
 export type CompiledSequentialModuleSpec = Readonly<{
   readonly kind: "module";
   readonly nativePath: "device-program";
+  readonly nativeCore?: "zig-module-program";
   readonly modelKind: "module";
   readonly layerCount: number;
   readonly entries: readonly unknown[];
@@ -272,6 +274,7 @@ export function compiledSequentialModuleSpecFromTrace(entries: readonly unknown[
   return {
     kind: "module",
     nativePath: "device-program",
+    nativeCore: "zig-module-program",
     modelKind: "module",
     layerCount: entries.length,
     entries,
@@ -306,6 +309,7 @@ export function programCompileEvidenceFromCompiledSpec(spec: CompiledSequentialP
     const evidence: AnyRecord = {
       kind: "tiny-linear",
       nativePath: spec.nativePath,
+      nativeCore: "zig-tiny-linear",
       modelKind: spec.modelKind,
       layerCount: spec.layerCount,
       inputLen: spec.layer.inFeatures,
@@ -323,6 +327,7 @@ export function programCompileEvidenceFromCompiledSpec(spec: CompiledSequentialP
   return completeProgramCompileEvidence(Object.freeze({
     kind: "module",
     nativePath: spec.nativePath,
+    nativeCore: spec.nativeCore ?? "zig-module-program",
     modelKind: spec.modelKind,
     layerCount: spec.layerCount,
     ...compilerSignatureEvidence(spec.ir, spec.kernelPlan),

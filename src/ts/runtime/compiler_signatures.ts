@@ -40,6 +40,7 @@ export type KernelPlan = {
 export type CompileEvidence = {
   readonly kind?: unknown;
   readonly nativePath?: unknown;
+  readonly nativeCore?: unknown;
   readonly modelKind?: unknown;
   readonly layerCount?: unknown;
   readonly inputLen?: unknown;
@@ -154,6 +155,7 @@ export function programCompileEvidenceSignature(evidence: CompileEvidence | null
     "program-compile-evidence",
     `kind=${evidence?.kind ?? "null"}`,
     `nativePath=${evidence?.nativePath ?? "null"}`,
+    `nativeCore=${evidence?.nativeCore ?? "null"}`,
     `modelKind=${evidence?.modelKind ?? "null"}`,
     `layers=${isNonNegativeSafeInteger(evidence?.layerCount) ? evidence.layerCount : "null"}`,
     `input=${isNonNegativeSafeInteger(evidence?.inputLen) ? evidence.inputLen : "null"}`,
@@ -173,6 +175,7 @@ function isProgramCompileEvidenceShape(evidence: CompileEvidence | null | undefi
   if (evidence.kind === "tiny-linear") {
     return (
       evidence.nativePath === "tiny-linear" &&
+      evidence.nativeCore === "zig-tiny-linear" &&
       evidence.modelKind === "tiny-linear" &&
       isNonNegativeSafeInteger(evidence.layerCount) &&
       isNonNegativeSafeInteger(evidence.inputLen) &&
@@ -184,6 +187,7 @@ function isProgramCompileEvidenceShape(evidence: CompileEvidence | null | undefi
   if (evidence.kind === "module") {
     return (
       evidence.nativePath === "device-program" &&
+      evidence.nativeCore === "zig-module-program" &&
       evidence.modelKind === "module" &&
       isNonNegativeSafeInteger(evidence.layerCount)
     );
