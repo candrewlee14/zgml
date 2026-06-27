@@ -25,11 +25,21 @@ type NativeEagerLinearActivationCall = (args: {
   activation: number;
 }) => number;
 
+type NativeEagerSoftmaxCall = (args: {
+  inputData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  rows: number;
+  cols: number;
+  logSoftmax: boolean;
+}) => number;
+
 type NativeEagerSurfaceOptions = {
   f32: NativeEagerTensorFactory;
   check: NativeEagerCheck;
   linearF32: NativeEagerLinearCall;
   linearActivationF32: NativeEagerLinearActivationCall;
+  softmaxF32: NativeEagerSoftmaxCall;
 };
 
 function nativeEagerTensorData(value: unknown, label: string, f32: NativeEagerTensorFactory): Float32Array {
@@ -129,6 +139,60 @@ function nativeEagerLinearInputs(
   };
 }
 
+function nativeEagerSoftmaxShape(input: unknown, options: Record<string, unknown> = {}) {
+  const inputShape = nativeEagerShape(input);
+  if (options.rows !== undefined || options.cols !== undefined) {
+    return Object.freeze({
+      rows: nativeEagerPositiveInteger(options.rows, "nativeEager.softmaxInto rows"),
+      cols: nativeEagerPositiveInteger(options.cols, "nativeEager.softmaxInto cols"),
+    });
+  }
+  if (!inputShape || inputShape.length === 0) {
+    throw new Error("nativeEager.softmaxInto requires tensor shape or explicit rows/cols");
+  }
+  const dimValue = options.dim ?? -1;
+  const dim = Number(dimValue);
+  const rank = inputShape.length;
+  const normalizedDim = dim < 0 ? rank + dim : dim;
+  if (!Number.isSafeInteger(dim) || normalizedDim !== rank - 1) {
+    throw new Error(`nativeEager.softmaxInto currently supports the last dimension only, got dim ${dimValue}`);
+  }
+  const cols = nativeEagerPositiveInteger(inputShape[rank - 1], "nativeEager.softmaxInto cols");
+  const leading = inputShape.slice(0, -1);
+  const rows = leading.length === 0
+    ? 1
+    : leading.reduce((acc, value) => acc * nativeEagerPositiveInteger(value, "nativeEager.softmaxInto row shape"), 1);
+  return Object.freeze({ rows, cols });
+}
+
+function nativeEagerSoftmaxInputs(
+  label: "nativeEager.softmaxInto" | "nativeEager.logSoftmaxInto",
+  output: Float32Array,
+  input: unknown,
+  options: Record<string, unknown>,
+  f32: NativeEagerTensorFactory,
+) {
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  const shape = nativeEagerSoftmaxShape(input, options);
+  const expectedOutput = shape.rows * shape.cols;
+  if (inputData.length !== expectedOutput) {
+    throw new Error(`${label} input length ${inputData.length} does not match ${shape.rows}x${shape.cols}`);
+  }
+  if (output.length < expectedOutput) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${expectedOutput}`);
+  }
+  return {
+    inputData,
+    output,
+    expectedOutput,
+    rows: shape.rows,
+    cols: shape.cols,
+  };
+}
+
 export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptions) {
   const nativeEager = Object.freeze({
     linearInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {}) {
@@ -149,6 +213,22 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     linear_activation_into(output: Float32Array, input: unknown, weights: unknown, callOptions?: Record<string, unknown>) {
       return this.linearActivationInto(output, input, weights, callOptions);
+    },
+    softmaxInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
+      const args = nativeEagerSoftmaxInputs("nativeEager.softmaxInto", output, input, callOptions, options.f32);
+      options.check(options.softmaxF32({ ...args, logSoftmax: false }));
+      return output;
+    },
+    softmax_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
+      return this.softmaxInto(output, input, callOptions);
+    },
+    logSoftmaxInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
+      const args = nativeEagerSoftmaxInputs("nativeEager.logSoftmaxInto", output, input, callOptions, options.f32);
+      options.check(options.softmaxF32({ ...args, logSoftmax: true }));
+      return output;
+    },
+    log_softmax_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
+      return this.logSoftmaxInto(output, input, callOptions);
     },
   });
   return { nativeEager };

@@ -2017,6 +2017,12 @@ function nativeEagerLinearActivationInto(output: Float32Array, input: unknown, w
   return nativeEager.linearActivationInto(output, input as TensorLike, weights as TensorLike, options);
 }
 
+function nativeEagerSoftmaxInto(output: Float32Array, input: unknown, options: Record<string, unknown>) {
+  return options && options.logSoftmax
+    ? nativeEager.logSoftmaxInto(output, input as TensorLike, options)
+    : nativeEager.softmaxInto(output, input as TensorLike, options);
+}
+
 type CompileTrainingStepHook = (model: unknown, optimizer: unknown, options?: Record<string, unknown>) => PublicCompiledTrainingStep;
 let compileTrainingStepHook: CompileTrainingStepHook | null = null;
 
@@ -2034,6 +2040,7 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   makeParameter,
   parameterView,
   nativeEagerLinearInto,
+  nativeEagerSoftmaxInto,
   nativeEagerLinearActivationInto,
   parameterNames,
   parameterInfos,
@@ -2178,6 +2185,15 @@ export const { nativeEager } = createAdapterNativeEagerSurface({
     BigInt(args.inFeatures),
     BigInt(args.outFeatures),
     args.activation,
+  ),
+  softmaxF32: (args) => bunSymbolGroups.nativeEager.eagerSoftmaxF32(
+    args.inputData,
+    BigInt(args.inputData.length),
+    args.output,
+    BigInt(args.expectedOutput),
+    BigInt(args.rows),
+    BigInt(args.cols),
+    args.logSoftmax ? 1 : 0,
   ),
 });
 

@@ -81,6 +81,7 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
     nativeEager: Object.freeze({
       eagerLinearF32: symbols.eagerLinearF32,
       eagerLinearActivationF32: symbols.eagerLinearActivationF32,
+      eagerSoftmaxF32: symbols.eagerSoftmaxF32,
     }),
     nativeTraining: Object.freeze({
       trainLinearMseSgdF32: symbols.trainLinearMseSgdF32,

@@ -1007,6 +1007,12 @@ function nativeEagerLinearActivationInto(output, input, weights, options) {
   return nativeEager.linearActivationInto(output, input, weights, options);
 }
 
+function nativeEagerSoftmaxInto(output, input, options) {
+  return options && options.logSoftmax
+    ? nativeEager.logSoftmaxInto(output, input, options)
+    : nativeEager.softmaxInto(output, input, options);
+}
+
 let compileTrainingStepHook = null;
 
 const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
@@ -1023,6 +1029,7 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   makeParameter,
   parameterView,
   nativeEagerLinearInto,
+  nativeEagerSoftmaxInto,
   nativeEagerLinearActivationInto,
   parameterNames,
   parameterInfos,
@@ -1114,6 +1121,15 @@ const { nativeEager } = createAdapterNativeEagerSurface({
     args.inFeatures,
     args.outFeatures,
     args.activation,
+  ),
+  softmaxF32: (args) => nodeSymbolGroups.nativeEager.eagerSoftmaxF32(
+    args.inputData,
+    args.inputData.length,
+    args.output,
+    args.expectedOutput,
+    args.rows,
+    args.cols,
+    args.logSoftmax ? 1 : 0,
   ),
 });
 

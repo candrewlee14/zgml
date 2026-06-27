@@ -335,11 +335,17 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.linearActivationInto !== "function") {
     throw new Error(`${label} expected nativeEager.linearActivationInto`);
   }
+  if (typeof nativeEager.softmaxInto !== "function" || typeof nativeEager.logSoftmaxInto !== "function") {
+    throw new Error(`${label} expected nativeEager softmax/logSoftmax into helpers`);
+  }
   if (!nativeEagerAlias || typeof nativeEagerAlias.linear_into !== "function") {
     throw new Error(`${label} expected native_eager.linear_into alias`);
   }
   if (typeof nativeEagerAlias.linear_activation_into !== "function") {
     throw new Error(`${label} expected native_eager.linear_activation_into alias`);
+  }
+  if (typeof nativeEagerAlias.softmax_into !== "function" || typeof nativeEagerAlias.log_softmax_into !== "function") {
+    throw new Error(`${label} expected native_eager softmax/log_softmax aliases`);
   }
   const input = adapter.tensor([1, 2, 3, 4], [2, 2]);
   const weights = adapter.tensor([1, 0, 0.5, 0, 1, -0.5], [2, 3]);
@@ -392,6 +398,24 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected nativeEager.linearActivationInto Tanh to reuse caller output`);
   }
   expectClose(tanhOutput, Array.from(directOutput, (value) => Math.tanh(value)), `${label} nativeEager.linearActivationInto Tanh output`);
+  const softmaxOutput = new Float32Array(6);
+  const softmaxResult = nativeEager.softmaxInto(softmaxOutput, directOutput, { rows: 2, cols: 3 });
+  if (softmaxResult !== softmaxOutput) {
+    throw new Error(`${label} expected nativeEager.softmaxInto to reuse caller output`);
+  }
+  expectClose(softmaxOutput, adapter.tensor(Array.from(directOutput), [2, 3]).softmaxDim(-1).data, `${label} nativeEager.softmaxInto output`);
+  const logSoftmaxOutput = new Float32Array(6);
+  const logSoftmaxResult = nativeEager.logSoftmaxInto(logSoftmaxOutput, adapter.tensor(Array.from(directOutput), [2, 3]), { dim: -1 });
+  if (logSoftmaxResult !== logSoftmaxOutput) {
+    throw new Error(`${label} expected nativeEager.logSoftmaxInto to reuse caller output`);
+  }
+  expectClose(logSoftmaxOutput, adapter.tensor(Array.from(directOutput), [2, 3]).logSoftmaxDim(-1).data, `${label} nativeEager.logSoftmaxInto output`);
+  const logSoftmaxAliasOutput = new Float32Array(6);
+  const logSoftmaxAliasResult = nativeEagerAlias.log_softmax_into(logSoftmaxAliasOutput, adapter.tensor(Array.from(directOutput), [2, 3]), { dim: -1 });
+  if (logSoftmaxAliasResult !== logSoftmaxAliasOutput) {
+    throw new Error(`${label} expected native_eager.log_softmax_into to reuse caller output`);
+  }
+  expectClose(logSoftmaxAliasOutput, Array.from(logSoftmaxOutput), `${label} native_eager.log_softmax_into output`);
 
   const linear = adapter.nn.linear(2, 3, {
     weight: [1, 0, 0.5, 0, 1, -0.5],
@@ -455,6 +479,16 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const eagerTanhSequential = tanhSequential.forward(input);
   const nativeTanhSequential = adapter.noGrad(() => tanhSequential.forward(input));
   expectClose(nativeTanhSequential.data, eagerTanhSequential.data, `${label} noGrad nn.Sequential Linear+Tanh native eager module output`);
+
+  const logSoftmaxModule = adapter.nn.logSoftmax(-1);
+  const eagerLogSoftmax = logSoftmaxModule.forward(input);
+  const nativeLogSoftmax = adapter.noGrad(() => logSoftmaxModule.forward(input));
+  expectClose(nativeLogSoftmax.data, eagerLogSoftmax.data, `${label} noGrad nn.LogSoftmax native eager module output`);
+
+  const softmaxModule = adapter.nn.softmax(-1);
+  const eagerSoftmax = softmaxModule.forward(input);
+  const nativeSoftmax = adapter.noGrad(() => softmaxModule.forward(input));
+  expectClose(nativeSoftmax.data, eagerSoftmax.data, `${label} noGrad nn.Softmax native eager module output`);
 }
 
 function expectLossAndAdamWEvidence(adapter: Record<string, any>, label: string) {

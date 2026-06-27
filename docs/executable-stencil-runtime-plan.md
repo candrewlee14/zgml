@@ -492,6 +492,10 @@ Current checked progress:
   `nn.Sequential(Linear, Sigmoid)` / `nn.Sequential(Linear, Tanh)` module
   surfaces can take the native eager lane without users calling the low-level
   primitive directly.
+  The native eager ABI now also exposes row-wise `softmaxInto` and
+  `logSoftmaxInto`; Node and Bun package smokes prove both caller-owned-output
+  helpers plus ordinary `zgml.noGrad(() => nn.Softmax/LogSoftmax.forward(x))`
+  module calls route through the Zig row kernel for last-axis inference.
   The native eager adapter policy now lives in
   `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
   shape inference, output validation, public aliases, and activation mapping,

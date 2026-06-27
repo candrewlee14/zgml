@@ -2458,6 +2458,8 @@ const moduleInferenceAlias: CompiledInference<readonly [2], TensorShapeTuple> = 
 const moduleCompileInferenceAlias: CompiledInference<readonly [2], TensorShapeTuple> = linear.compileInference(linearTypedCompileOptions);
 const nativeEagerLinearInto: Float32Array = zgml.nativeEager.linearInto(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), { bias: tensor([0, 0, 0], [3] as const) });
 const nativeEagerLinearIntoAlias: Float32Array = zgml.native_eager.linear_into(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), { bias: tensor([0, 0, 0], [3] as const) });
+const nativeEagerSoftmaxInto: Float32Array = zgml.nativeEager.softmaxInto(new Float32Array(3), linearInput, { dim: -1 });
+const nativeEagerLogSoftmaxIntoAlias: Float32Array = zgml.native_eager.log_softmax_into(new Float32Array(3), linearInput, { dim: -1 });
 const compiledInferencePrepared: () => Float32Array = compiledInference.prepareInto(new Float32Array(3), linearInput);
 const compiledInferenceExplanation: ModuleCompileExplanation<readonly [2], readonly [3]> | ModuleCompileSupport<readonly [2], readonly [3]> = compiledInference.explain();
 const compiledInferencePreflight: ModuleCompileExplanation<readonly [2], readonly [3]> | ModuleCompileSupport<readonly [2], readonly [3]> = compiledInference.preflight();
@@ -6273,6 +6275,8 @@ void linearModulePreflight;
 void compileNamespacePreflight;
 void nativeEagerLinearInto;
 void nativeEagerLinearIntoAlias;
+void nativeEagerSoftmaxInto;
+void nativeEagerLogSoftmaxIntoAlias;
 void sequentialPreflight;
 void sequentialMethodPreflight;
 void trainingDropoutPreflight;

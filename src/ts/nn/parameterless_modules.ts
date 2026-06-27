@@ -52,6 +52,16 @@ type TensorConstructor = new (values: Float32Array, shape?: readonly number[], o
 type F32 = (values: unknown) => Float32Array;
 type TensorGradAdder = (tensor: ParameterlessTensor, grad: Float32Array) => void;
 type GradModeEnabled = () => boolean;
+type NativeEagerSoftmaxInto = (
+  output: Float32Array,
+  input: ParameterlessTensor,
+  options: Readonly<{
+    rows?: number;
+    cols?: number;
+    dim?: number;
+    logSoftmax?: boolean;
+  }>,
+) => Float32Array;
 type ParameterlessMethodHooks = ParameterlessStateHooks & SingleModuleCompileHooks;
 type ParameterlessMethodPrototype = ParameterlessStatePrototype & SingleModuleCompilePrototype;
 type ParameterlessParameterLabel = (module: ParameterlessStateModule & SingleModuleRecord) => unknown;
@@ -81,7 +91,10 @@ export type DropoutModuleClassExtras = {
 
 export type ActivationModuleClassOptions = Readonly<Record<string, unknown> & ParameterlessModuleClassHooks>;
 
-export type SoftmaxModuleClassOptions = Readonly<Record<string, unknown> & ParameterlessModuleClassHooks & SoftmaxModuleClassExtras>;
+export type SoftmaxModuleClassOptions = Readonly<Record<string, unknown> & ParameterlessModuleClassHooks & SoftmaxModuleClassExtras & {
+  nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
+  isGradEnabled?: GradModeEnabled;
+}>;
 
 export type ReductionModuleClassOptions = Readonly<Record<string, unknown> & ParameterlessModuleClassHooks>;
 
@@ -157,8 +170,33 @@ export function createSoftmaxModuleClass(options: SoftmaxModuleClassOptions) {
   const kind = options.kind;
   const tensorMethod = options.tensorMethod;
   const parameterLabel = options.parameterLabel || kind;
+  const nativeEagerSoftmaxInto = options.nativeEagerSoftmaxInto;
+  const isGradEnabled = typeof options.isGradEnabled === "function" ? options.isGradEnabled : () => true;
   if ((kind !== "softmax" && kind !== "logSoftmax") || typeof tensorMethod !== "string") {
     throw new Error("SoftmaxModule factory requires kind and tensorMethod");
+  }
+
+  function tryNativeEagerSoftmax(input: ParameterlessTensor, dimValue: unknown) {
+    if (typeof nativeEagerSoftmaxInto !== "function") return null;
+    if (isGradEnabled()) return null;
+    const shape = Array.isArray(input.shape) ? input.shape : null;
+    if (!shape || shape.length === 0) return null;
+    const dim = Number(dimValue ?? -1);
+    const rank = shape.length;
+    const normalizedDim = dim < 0 ? rank + dim : dim;
+    if (!Number.isSafeInteger(dim) || normalizedDim !== rank - 1) return null;
+    const cols = Number(shape[rank - 1]);
+    if (!Number.isSafeInteger(cols) || cols <= 0) return null;
+    const rows = shape.slice(0, -1).reduce((acc, value) => acc * Number(value), 1) || 1;
+    if (!Number.isSafeInteger(rows) || rows <= 0) return null;
+    const output = new Float32Array(rows * cols);
+    nativeEagerSoftmaxInto(output, input, {
+      rows,
+      cols,
+      dim,
+      logSoftmax: kind === "logSoftmax",
+    });
+    return new hooks.TensorClass(output, input.shape);
   }
 
   class SoftmaxLikeModule {
@@ -174,6 +212,8 @@ export function createSoftmaxModuleClass(options: SoftmaxModuleClassOptions) {
 
     forward(inputValues: unknown) {
       const input = inputValues instanceof hooks.TensorClass ? inputValues : new hooks.TensorClass(hooks.f32(inputValues));
+      const native = tryNativeEagerSoftmax(input, this.dim);
+      if (native !== null) return native;
       const method = input[tensorMethod];
       if (typeof method !== "function") throw new Error(`tensor method ${tensorMethod} is unavailable`);
       return method.call(input, this.dim);

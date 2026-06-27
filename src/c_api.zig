@@ -88,6 +88,7 @@ const feature_native_module_activation_chain: u64 = 1 << 44;
 const feature_native_eager_linear: u64 = 1 << 45;
 const feature_native_eager_linear_activation: u64 = 1 << 46;
 const feature_native_training_step: u64 = 1 << 47;
+const feature_native_eager_softmax: u64 = 1 << 48;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -1120,6 +1121,7 @@ fn runtimeFeatureFlags() u64 {
         feature_native_eager_linear |
         feature_native_eager_linear_activation |
         feature_native_training_step |
+        feature_native_eager_softmax |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -1629,6 +1631,24 @@ fn applyActivationF32(output: []f32, activation: u32) !void {
     for (output) |*value| value.* = try eagerActivationF32(value.*, activation);
 }
 
+fn writeSoftmaxRowsF32(input: []const f32, output: []f32, rows: usize, cols: usize, log_softmax: bool) void {
+    for (0..rows) |row| {
+        const input_row = input[row * cols ..][0..cols];
+        const output_row = output[row * cols ..][0..cols];
+        var max_val = -std.math.inf(f32);
+        for (input_row) |value| max_val = @max(max_val, value);
+        var sum_exp: f32 = 0;
+        for (input_row) |value| sum_exp += @exp(value - max_val);
+        if (log_softmax) {
+            const log_denom = max_val + @log(sum_exp);
+            for (input_row, 0..) |value, col| output_row[col] = value - log_denom;
+        } else {
+            const inv_sum = 1.0 / sum_exp;
+            for (input_row, 0..) |value, col| output_row[col] = @exp(value - max_val) * inv_sum;
+        }
+    }
+}
+
 export fn zgml_eager_linear_f32(
     input_ptr: ?[*]const f32,
     input_len: usize,
@@ -1730,6 +1750,24 @@ export fn zgml_eager_linear_activation_f32(
     applyActivationF32(output, activation) catch |err| return switch (err) {
         error.InvalidArgument => status(.invalid_argument),
     };
+    return status(.ok);
+}
+
+export fn zgml_eager_softmax_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    rows: usize,
+    cols: usize,
+    log_softmax: u32,
+) c_int {
+    if (input_ptr == null or output_ptr == null or rows == 0 or cols == 0) return status(.invalid_argument);
+    if (log_softmax != 0 and log_softmax != 1) return status(.invalid_argument);
+    const expected = checkedElementCount(rows, cols);
+    if (expected != input_len or expected != output_len) return status(.shape_mismatch);
+
+    writeSoftmaxRowsF32(input_ptr.?[0..input_len], output_ptr.?[0..output_len], rows, cols, log_softmax != 0);
     return status(.ok);
 }
 
@@ -10176,6 +10214,65 @@ test "C ABI native eager linear activation writes caller output" {
         3,
         2,
         99,
+    ));
+}
+
+test "C ABI native eager row softmax writes caller output" {
+    const input = [_]f32{
+        1, 2, 3,
+        3, 1, -1,
+    };
+    var softmax_output = [_]f32{0} ** 6;
+    var log_softmax_output = [_]f32{0} ** 6;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_softmax_f32(
+        input[0..].ptr,
+        input.len,
+        softmax_output[0..].ptr,
+        softmax_output.len,
+        2,
+        3,
+        0,
+    ));
+    try std.testing.expectEqual(status(.ok), zgml_eager_softmax_f32(
+        input[0..].ptr,
+        input.len,
+        log_softmax_output[0..].ptr,
+        log_softmax_output.len,
+        2,
+        3,
+        1,
+    ));
+
+    for (0..2) |row| {
+        const input_row = input[row * 3 ..][0..3];
+        var max_val = -std.math.inf(f32);
+        for (input_row) |value| max_val = @max(max_val, value);
+        var sum_exp: f32 = 0;
+        for (input_row) |value| sum_exp += @exp(value - max_val);
+        const log_denom = max_val + @log(sum_exp);
+        for (input_row, 0..) |value, col| {
+            try std.testing.expectApproxEqAbs(@exp(value - max_val) / sum_exp, softmax_output[row * 3 + col], 1e-6);
+            try std.testing.expectApproxEqAbs(value - log_denom, log_softmax_output[row * 3 + col], 1e-6);
+        }
+    }
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_softmax_f32(
+        input[0..].ptr,
+        input.len - 1,
+        softmax_output[0..].ptr,
+        softmax_output.len,
+        2,
+        3,
+        0,
+    ));
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_softmax_f32(
+        input[0..].ptr,
+        input.len,
+        softmax_output[0..].ptr,
+        softmax_output.len,
+        2,
+        3,
+        2,
     ));
 }
 

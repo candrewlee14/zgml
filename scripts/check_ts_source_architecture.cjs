@@ -632,11 +632,14 @@ function checkPackageExports(errors) {
   for (const required of [
     "feature_native_eager_linear",
     "feature_native_eager_linear_activation",
+    "feature_native_eager_softmax",
     "zgml_eager_linear_f32",
     "zgml_eager_linear_activation_f32",
+    "zgml_eager_softmax_f32",
     "forward.blasSgemm",
     "C ABI native eager linear writes caller output",
     "C ABI native eager linear activation writes caller output",
+    "C ABI native eager row softmax writes caller output",
   ]) {
     if (!cApiSource.includes(required)) {
       errors.push(`src/c_api.zig must keep native eager linear ABI evidence: ${required}`);
@@ -646,6 +649,7 @@ function checkPackageExports(errors) {
   for (const required of [
     "ZGML_FEATURE_NATIVE_EAGER_LINEAR = 1ull << 45",
     "ZGML_FEATURE_NATIVE_EAGER_LINEAR_ACTIVATION = 1ull << 46",
+    "ZGML_FEATURE_NATIVE_EAGER_SOFTMAX = 1ull << 48",
     "ZGML_MODULE_OP_MAX_POOL2D = 17",
     "ZGML_MODULE_OP_AVG_POOL2D = 18",
     "ZGML_MODULE_OP_CONV2D = 19",
@@ -665,8 +669,11 @@ function checkPackageExports(errors) {
   for (const required of [
     "PublicNativeEagerNamespace",
     "NativeEagerLinearActivationIntoOptions",
+    "NativeEagerSoftmaxIntoOptions",
     "linearActivationInto(output: Float32Array",
     "linear_activation_into(output: Float32Array",
+    "softmaxInto(output: Float32Array",
+    "logSoftmaxInto(output: Float32Array",
     "nativeEager: PublicNativeEagerNamespace",
     "native_eager: PublicNativeEagerNamespace",
   ]) {
@@ -693,6 +700,20 @@ function checkPackageExports(errors) {
   if (!frontendModuleSurfaceSource.includes("nativeEagerLinearActivationInto?: SequentialModuleOptions[\"nativeEagerLinearActivationInto\"]")) {
     errors.push("src/ts/adapters/frontend_module_surface.ts must pass the native eager Linear+activation hook through the Sequential module surface");
   }
+  if (!frontendModuleSurfaceSource.includes("nativeEagerSoftmaxInto?: SoftmaxModuleOptions[\"nativeEagerSoftmaxInto\"]")) {
+    errors.push("src/ts/adapters/frontend_module_surface.ts must pass the native eager Softmax hook through the module surface");
+  }
+  const parameterlessModuleSource = readSource(path.join("src", "ts", "nn", "parameterless_modules.ts"));
+  for (const required of [
+    "nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto",
+    "function tryNativeEagerSoftmax(input: ParameterlessTensor, dimValue: unknown)",
+    "if (isGradEnabled()) return null;",
+    "nativeEagerSoftmaxInto(output, input, {",
+  ]) {
+    if (!parameterlessModuleSource.includes(required)) {
+      errors.push(`src/ts/nn/parameterless_modules.ts must keep no-grad native eager Softmax module evidence: ${required}`);
+    }
+  }
   const sequentialModuleSource = readSource(path.join("src", "ts", "nn", "sequential_module.ts"));
   for (const required of [
     "nativeEagerLinearActivationInto?: NativeEagerLinearActivationInto",
@@ -718,6 +739,10 @@ function checkPackageExports(errors) {
     "nativeEager.linearActivationInto(siluOutput, input, weights, { bias, activation: \"silu\" })",
     "nativeEager.linearActivationInto(sigmoidOutput, input, weights, { bias, activation: \"sigmoid\" })",
     "nativeEager.linearActivationInto(tanhOutput, input, weights, { bias, activation: \"tanh\" })",
+    "nativeEager.softmaxInto(softmaxOutput, directOutput, { rows: 2, cols: 3 })",
+    "nativeEager.logSoftmaxInto(logSoftmaxOutput",
+    "adapter.noGrad(() => logSoftmaxModule.forward(input))",
+    "adapter.noGrad(() => softmaxModule.forward(input))",
     "adapter.compile.compileForInference(lazyInferenceGraph",
     "expected lazy compileForInference handle over Program/Session",
     "lazy compileForInference into",
@@ -743,6 +768,7 @@ function checkPackageExports(errors) {
   for (const required of [
     "zgml_eager_linear_f32(",
     "zgml_eager_linear_activation_f32(",
+    "zgml_eager_softmax_f32(",
     "bias: Float32Array | null",
     "FFIType.u64",
     "FFIType.u32",
@@ -757,6 +783,7 @@ function checkPackageExports(errors) {
     "nativeEager: Object.freeze({",
     "eagerLinearF32: symbols.zgml_eager_linear_f32",
     "eagerLinearActivationF32: symbols.zgml_eager_linear_activation_f32",
+    "eagerSoftmaxF32: symbols.zgml_eager_softmax_f32",
   ]) {
     if (!bunSymbolGroupsSource.includes(required)) {
       errors.push(`src/ts/adapters/bun_symbol_groups.ts must group the Bun native eager Linear symbol: ${required}`);
@@ -769,10 +796,13 @@ function checkPackageExports(errors) {
     "export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptions)",
     "function nativeEagerTensorData(value: unknown, label: string, f32: NativeEagerTensorFactory): Float32Array",
     "function nativeEagerLinearInputs(",
+    "function nativeEagerSoftmaxInputs(",
     "linearInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {})",
     "linear_into(output: Float32Array, input: unknown, weights: unknown, callOptions?: Record<string, unknown>)",
     "linearActivationInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {})",
     "linear_activation_into(output: Float32Array, input: unknown, weights: unknown, callOptions?: Record<string, unknown>)",
+    "softmaxInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {})",
+    "logSoftmaxInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {})",
     "nativeEagerActivationId(callOptions.activation, \"nativeEager.linearActivationInto\")",
     "activation must be relu, gelu, silu, sigmoid, or tanh",
   ]) {
@@ -787,6 +817,7 @@ function checkPackageExports(errors) {
     "linearF32: (args) => nodeSymbolGroups.nativeEager.eagerLinearF32(",
     "args.inputData.length",
     "linearActivationF32: (args) => nodeSymbolGroups.nativeEager.eagerLinearActivationF32(",
+    "softmaxF32: (args) => nodeSymbolGroups.nativeEager.eagerSoftmaxF32(",
     "args.activation",
     "nativeEager,",
   ]) {
@@ -797,7 +828,9 @@ function checkPackageExports(errors) {
   for (const required of [
     "function nativeEagerLinearInto(output: Float32Array, input: unknown, weights: unknown, options?: Record<string, unknown>)",
     "function nativeEagerLinearActivationInto(output: Float32Array, input: unknown, weights: unknown, options: Record<string, unknown>)",
+    "function nativeEagerSoftmaxInto(output: Float32Array, input: unknown, options: Record<string, unknown>)",
     "nativeEagerLinearInto,",
+    "nativeEagerSoftmaxInto,",
     "nativeEagerLinearActivationInto,",
     "createAdapterNativeEagerSurface",
     "export const { nativeEager } = createAdapterNativeEagerSurface({",
@@ -805,6 +838,7 @@ function checkPackageExports(errors) {
     "linearF32: (args) => bunSymbolGroups.nativeEager.eagerLinearF32(",
     "BigInt(args.inputData.length)",
     "linearActivationF32: (args) => bunSymbolGroups.nativeEager.eagerLinearActivationF32(",
+    "softmaxF32: (args) => bunSymbolGroups.nativeEager.eagerSoftmaxF32(",
     "args.activation",
     "nativeEager,",
   ]) {
@@ -3165,7 +3199,8 @@ function checkSingleModuleCompileSurfaceIsShared(errors) {
     "type ParameterlessMethodPrototype = ParameterlessStatePrototype & SingleModuleCompilePrototype;",
     "type DropoutModulePrototype = SingleModuleCompilePrototype & {",
     "export type ActivationModuleClassOptions = Readonly<Record<string, unknown> & ParameterlessModuleClassHooks>",
-    "export type SoftmaxModuleClassOptions = Readonly<Record<string, unknown> & ParameterlessModuleClassHooks & SoftmaxModuleClassExtras>",
+    "export type SoftmaxModuleClassOptions = Readonly<Record<string, unknown> & ParameterlessModuleClassHooks & SoftmaxModuleClassExtras & {",
+    "nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;",
     "export type ReductionModuleClassOptions = Readonly<Record<string, unknown> & ParameterlessModuleClassHooks>",
     "export type DropoutModuleClassOptions = Readonly<Record<string, unknown> & ParameterlessModuleClassHooks & DropoutModuleClassExtras>",
     "createActivationModuleClass(options: ActivationModuleClassOptions)",

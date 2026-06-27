@@ -815,15 +815,19 @@ function checkScripts() {
   requireIncludes(read("src/c_api.zig"), "src/c_api.zig", "native eager linear C ABI", [
     "feature_native_eager_linear",
     "feature_native_eager_linear_activation",
+    "feature_native_eager_softmax",
     "zgml_eager_linear_f32",
     "zgml_eager_linear_activation_f32",
+    "zgml_eager_softmax_f32",
     "forward.blasSgemm",
     "C ABI native eager linear writes caller output",
     "C ABI native eager linear activation writes caller output",
+    "C ABI native eager row softmax writes caller output",
   ]);
   requireIncludes(read("include/zgml.h"), "include/zgml.h", "public C ABI constants aligned with native/TS runtime", [
     "ZGML_FEATURE_NATIVE_EAGER_LINEAR = 1ull << 45",
     "ZGML_FEATURE_NATIVE_EAGER_LINEAR_ACTIVATION = 1ull << 46",
+    "ZGML_FEATURE_NATIVE_EAGER_SOFTMAX = 1ull << 48",
     "ZGML_MODULE_OP_MAX_POOL2D = 17",
     "ZGML_MODULE_OP_AVG_POOL2D = 18",
     "ZGML_MODULE_OP_CONV2D = 19",
@@ -838,8 +842,11 @@ function checkScripts() {
   requireIncludes(read("src/ts/public_api.ts"), "src/ts/public_api.ts", "native eager public API types", [
     "PublicNativeEagerNamespace",
     "NativeEagerLinearActivationIntoOptions",
+    "NativeEagerSoftmaxIntoOptions",
     "linearActivationInto(output: Float32Array",
     "linear_activation_into(output: Float32Array",
+    "softmaxInto(output: Float32Array",
+    "logSoftmaxInto(output: Float32Array",
     "nativeEager: PublicNativeEagerNamespace",
     "native_eager: PublicNativeEagerNamespace",
   ]);

@@ -61,6 +61,7 @@ export type AdapterFrontendModuleSurfaceOptions = AdapterModuleCompileHooks & Ad
   makeParameter: LinearModuleOptions["makeParameter"] & EmbeddingModuleOptions["makeParameter"] & Conv2dModuleOptions["makeParameter"] & FeatureNormModuleOptions["makeParameter"];
   parameterView: LinearModuleOptions["parameterView"] & EmbeddingModuleOptions["parameterView"] & Conv2dModuleOptions["parameterView"] & FeatureNormModuleOptions["parameterView"];
   nativeEagerLinearInto?: LinearModuleOptions["nativeEagerLinearInto"];
+  nativeEagerSoftmaxInto?: SoftmaxModuleOptions["nativeEagerSoftmaxInto"];
   nativeEagerLinearActivationInto?: SequentialModuleOptions["nativeEagerLinearActivationInto"];
   TinyLinearModel: LinearModuleOptions["TinyLinearModel"];
 }>;
@@ -83,12 +84,16 @@ export function createAdapterFrontendModuleSurface(options: AdapterFrontendModul
     kind: "softmax",
     tensorMethod: "softmaxDim",
     parameterLabel: "softmax",
+    nativeEagerSoftmaxInto: options.nativeEagerSoftmaxInto,
+    isGradEnabled: options.isGradEnabled,
   });
   const LogSoftmaxModule = options.sharedFrontend.createSoftmaxModuleClass({
     ...parameterlessModuleHooks,
     kind: "logSoftmax",
     tensorMethod: "logSoftmaxDim",
     parameterLabel: "logSoftmax",
+    nativeEagerSoftmaxInto: options.nativeEagerSoftmaxInto,
+    isGradEnabled: options.isGradEnabled,
   });
   const ReductionModule = options.sharedFrontend.createReductionModuleClass(parameterlessModuleHooks);
   const DropoutModule = options.sharedFrontend.createDropoutModuleClass({
