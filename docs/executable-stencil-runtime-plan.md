@@ -2035,6 +2035,12 @@ input-bridge npm microscopes default to `BENCH_FRONTIER_ATTEMPTS=3`, and
 `dev:perf:next` uses the same three-attempt default for those two lanes. Keep
 one-attempt runs for raw terminal inspection or explicit overrides, not for the
 checked bridge evidence that steers `perf-next`.
+`bench:status` now reports that distinction explicitly for the exact bridge:
+the checker can still pass on best-attempt evidence, but the dashboard marks
+three-attempt artifacts as `gate=noisy_median` or `gate=noisy_worst` when the
+median or worst run falls below the bridge floor. Treat `ready` as promotion
+evidence; treat noisy bridge evidence as the next kernel-work target, not a
+settled win.
 The broader `dev:perf:competitive` runner now wraps the PyTorch, native eager,
 qsemantic, full-model Q8 prompt viable, and cheap ggml smoke lanes behind
 `BENCH_COMPETITIVE_LANES`, so a kernel edit can run only

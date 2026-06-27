@@ -663,6 +663,21 @@ function q8PromptSemanticInputSplitFields(path) {
   }
 }
 
+function qsemanticBridgeArtifactGate(data) {
+  const bridge = data?.bridgeFfn ?? {};
+  const floor = Number(data?.config?.semanticBridgeSpeedupFloor ?? 1);
+  const best = Number(bridge.speedup);
+  const median = Number(data?.speedupStats?.bridgeFfn?.median);
+  const worst = Number(data?.speedupStats?.bridgeFfn?.worst);
+  const maxAbsDiff = Number(bridge.maxAbsDiff);
+  const attempts = Number(data?.attempts);
+  if (!Number.isFinite(maxAbsDiff) || maxAbsDiff > 0.02) return "below_accuracy";
+  if (!Number.isFinite(best) || best < floor) return "below_floor";
+  if (Number.isFinite(attempts) && attempts >= 3 && (!Number.isFinite(median) || median < floor)) return "noisy_median";
+  if (Number.isFinite(attempts) && attempts >= 3 && (!Number.isFinite(worst) || worst < floor)) return "noisy_worst";
+  return "ready";
+}
+
 function qsemanticBridgeStatusLine(path, q8PressurePath = null) {
   if (!path) {
     return "qsemantic-bridge-results: no local exact bridge-shape qsemantic artifact found; run npm run dev:perf:frontier:qsemantic:bridge:run";
@@ -680,8 +695,9 @@ function qsemanticBridgeStatusLine(path, q8PressurePath = null) {
   const speedup = formatRatio(bridge.speedup);
   const median = formatRatio(data?.speedupStats?.bridgeFfn?.median);
   const worst = formatRatio(data?.speedupStats?.bridgeFfn?.worst);
+  const floor = formatRatio(data?.config?.semanticBridgeSpeedupFloor);
   const maxAbsDiff = formatNumber(bridge.maxAbsDiff, 6);
-  const gate = Number(bridge.speedup) >= 1 && Number(bridge.maxAbsDiff) <= 0.02 ? "ready" : "below_default";
+  const gate = qsemanticBridgeArtifactGate(data);
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
   const next = typeof data?.next === "string" ? data.next : "unknown";
   const q8 = q8PromptSemanticInputSplitFields(q8PressurePath);
@@ -690,7 +706,7 @@ function qsemanticBridgeStatusLine(path, q8PressurePath = null) {
     : "";
   const scratch = `scratch=candidates:${bridge.semanticWidthScratchCandidates ?? "n/a"},bytes:${bridge.semanticWidthScratchBytes ?? "n/a"},product_bytes:${bridge.semanticWidthScratchProductBytes ?? "n/a"},down_partial_bytes:${bridge.semanticWidthScratchDownPartialBytes ?? "n/a"},output_bytes:${bridge.semanticWidthScratchOutputBytes ?? "n/a"},down_partial_to_output:${formatNumber(bridge.semanticWidthScratchDownPartialToOutput, 2)},runtime_capacity:${bridge.semanticWidthScratchRuntimeCapacityBytes ?? "n/a"},runtime_uses:${bridge.semanticWidthScratchRuntimeUses ?? "n/a"},runtime_bytes:${bridge.semanticWidthScratchRuntimeBytes ?? "n/a"}`;
   const widthTarget = `rows:${bridge.semanticWidthTargetRows ?? "n/a"},hidden:${bridge.semanticWidthTargetHidden ?? "n/a"},input:${bridge.semanticWidthTargetInput ?? "n/a"},output:${bridge.semanticWidthTargetOutput ?? "n/a"},row_groups:${bridge.semanticWidthTargetRowGroups ?? "n/a"},hidden_tiles:${bridge.semanticWidthTargetHiddenTiles ?? "n/a"},output_tiles:${bridge.semanticWidthTargetOutputTiles ?? "n/a"},product_elements:${bridge.semanticWidthTargetProductElements ?? "n/a"},output_elements:${bridge.semanticWidthTargetOutputElements ?? "n/a"},down_partial_elements:${bridge.semanticWidthTargetDownPartialElements ?? "n/a"},product_bytes:${bridge.semanticWidthTargetProductBytes ?? "n/a"},down_partial_bytes:${bridge.semanticWidthTargetDownPartialBytes ?? "n/a"},output_bytes:${bridge.semanticWidthTargetOutputBytes ?? "n/a"},down_partial_to_output:${formatNumber(bridge.semanticWidthTargetDownPartialToOutput, 2)},scratch_plan:${bridge.semanticWidthTargetScratchPlan ?? "n/a"},gate_up_dot_ops:${bridge.semanticWidthTargetGateUpDotOps ?? "n/a"},down_dot_ops:${bridge.semanticWidthTargetDownDotOps ?? "n/a"},total_dot_ops:${bridge.semanticWidthTargetTotalDotOps ?? "n/a"}`;
-  return `qsemantic-bridge-results: latest=${compactName(path)} status=${status} gate=${gate} attempt=${selectedAttempt}/${attempts} bridge_ffn=${speedup}:median:${median}:worst:${worst}:max_abs_diff:${maxAbsDiff}:dispatches:${bridge.runtimeDispatches ?? "n/a"}:semantic_dispatches:${bridge.semanticRuntimeDispatches ?? "n/a"}:semantic_split:${formatNumber(bridge.semanticDispatchSplit, 2)}:semantic_pair_dispatches:${bridge.semanticFallbackPairDispatches ?? "n/a"}:semantic_tail_dispatches:${bridge.semanticFallbackTailDispatches ?? "n/a"}${model}:row_chain_tiled:${bridge.qmatmulRowChainTiledCount ?? "n/a"}:row_tile_groups:${bridge.qmatmulRowChainTiledRowTileGroups ?? "n/a"}:n_tiles:${bridge.qmatmulRowChainTiledNTiles ?? "n/a"}:two_phase:${bridge.qmatmulRowChainTiledTwoPhaseCount ?? "n/a"}:width_parallel:${bridge.qmatmulRowChainWidthParallelCount ?? "n/a"}:width_lanes:${bridge.qmatmulRowChainWidthParallelLanes ?? "n/a"}:finalize_groups:${bridge.qmatmulRowChainTiledFinalizeTileGroups ?? "n/a"}:finalize_elements:${bridge.qmatmulRowChainTiledFinalizeElements ?? "n/a"}:spilled_input:${bridge.qmatmulRowChainTiledSpilledInput ?? "n/a"}:output_spills:${bridge.qmatmulRowChainTiledOutputSpills ?? "n/a"} ${scratch} width_target=${widthTarget} next=${next} source=${source}`;
+  return `qsemantic-bridge-results: latest=${compactName(path)} status=${status} gate=${gate} attempt=${selectedAttempt}/${attempts} bridge_ffn=${speedup}:median:${median}:worst:${worst}:floor:${floor}:max_abs_diff:${maxAbsDiff}:dispatches:${bridge.runtimeDispatches ?? "n/a"}:semantic_dispatches:${bridge.semanticRuntimeDispatches ?? "n/a"}:semantic_split:${formatNumber(bridge.semanticDispatchSplit, 2)}:semantic_pair_dispatches:${bridge.semanticFallbackPairDispatches ?? "n/a"}:semantic_tail_dispatches:${bridge.semanticFallbackTailDispatches ?? "n/a"}${model}:row_chain_tiled:${bridge.qmatmulRowChainTiledCount ?? "n/a"}:row_tile_groups:${bridge.qmatmulRowChainTiledRowTileGroups ?? "n/a"}:n_tiles:${bridge.qmatmulRowChainTiledNTiles ?? "n/a"}:two_phase:${bridge.qmatmulRowChainTiledTwoPhaseCount ?? "n/a"}:width_parallel:${bridge.qmatmulRowChainWidthParallelCount ?? "n/a"}:width_lanes:${bridge.qmatmulRowChainWidthParallelLanes ?? "n/a"}:finalize_groups:${bridge.qmatmulRowChainTiledFinalizeTileGroups ?? "n/a"}:finalize_elements:${bridge.qmatmulRowChainTiledFinalizeElements ?? "n/a"}:spilled_input:${bridge.qmatmulRowChainTiledSpilledInput ?? "n/a"}:output_spills:${bridge.qmatmulRowChainTiledOutputSpills ?? "n/a"} ${scratch} width_target=${widthTarget} next=${next} source=${source}`;
 }
 
 function qsemanticBridgeFreshnessStatusLine(selectedPath, rawPath) {
@@ -707,11 +723,13 @@ function qsemanticBridgeFreshnessStatusLine(selectedPath, rawPath) {
   const speedup = formatRatio(bridge.speedup);
   const median = formatRatio(data?.speedupStats?.bridgeFfn?.median);
   const worst = formatRatio(data?.speedupStats?.bridgeFfn?.worst);
+  const floor = formatRatio(data?.config?.semanticBridgeSpeedupFloor);
+  const gate = qsemanticBridgeArtifactGate(data);
   const semanticSplit = formatNumber(bridge.semanticDispatchSplit, 2);
   const scratch = `scratch=candidates:${bridge.semanticWidthScratchCandidates ?? "n/a"},bytes:${bridge.semanticWidthScratchBytes ?? "n/a"},down_partial_bytes:${bridge.semanticWidthScratchDownPartialBytes ?? "n/a"},down_partial_to_output:${formatNumber(bridge.semanticWidthScratchDownPartialToOutput, 2)},runtime_capacity:${bridge.semanticWidthScratchRuntimeCapacityBytes ?? "n/a"},runtime_uses:${bridge.semanticWidthScratchRuntimeUses ?? "n/a"},runtime_bytes:${bridge.semanticWidthScratchRuntimeBytes ?? "n/a"}`;
   const widthTarget = `rows:${bridge.semanticWidthTargetRows ?? "n/a"},hidden:${bridge.semanticWidthTargetHidden ?? "n/a"},input:${bridge.semanticWidthTargetInput ?? "n/a"},output:${bridge.semanticWidthTargetOutput ?? "n/a"},down_partial_elements:${bridge.semanticWidthTargetDownPartialElements ?? "n/a"},down_partial_bytes:${bridge.semanticWidthTargetDownPartialBytes ?? "n/a"},down_partial_to_output:${formatNumber(bridge.semanticWidthTargetDownPartialToOutput, 2)},scratch_plan:${bridge.semanticWidthTargetScratchPlan ?? "n/a"}`;
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
-  return `qsemantic-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts attempt=${selectedAttempt}/${attempts} bridge_ffn=${speedup}:median:${median}:worst:${worst}:semantic_split:${semanticSplit}:width_parallel:${bridge.qmatmulRowChainWidthParallelCount ?? "n/a"}:width_lanes:${bridge.qmatmulRowChainWidthParallelLanes ?? "n/a"} ${scratch} width_target=${widthTarget} source=${source}`;
+  return `qsemantic-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts gate=${gate} attempt=${selectedAttempt}/${attempts} bridge_ffn=${speedup}:median:${median}:worst:${worst}:floor:${floor}:semantic_split:${semanticSplit}:width_parallel:${bridge.qmatmulRowChainWidthParallelCount ?? "n/a"}:width_lanes:${bridge.qmatmulRowChainWidthParallelLanes ?? "n/a"} ${scratch} width_target=${widthTarget} source=${source}`;
 }
 
 function qsemanticInputBridgeStatusLine(path) {
