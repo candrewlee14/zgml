@@ -797,7 +797,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function gelu(tensor: TensorMathTensor) {
-    return unary(tensor, geluScalar, geluDerivativeScalar);
+    return unary(tensor, geluScalar, geluDerivativeScalar, undefined, "gelu");
   }
 
   function silu(tensor: TensorMathTensor) {
@@ -812,7 +812,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     return unary(tensor, Math.tanh, (x) => {
       const value = Math.tanh(x);
       return 1 - value * value;
-    });
+    }, undefined, "tanh");
   }
 
   function sin(tensor: TensorMathTensor) {
