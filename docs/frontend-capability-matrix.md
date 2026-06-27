@@ -71,9 +71,11 @@ PyTorch replacement:
   adjacent `lazy_matmul_add_relu_batched` and
   `lazy_matmul_add_silu_batched`, `lazy_matmul_add_sigmoid_batched`, and
   `lazy_matmul_add_tanh_batched` production-activation targets, row-wise
+  scalar `elementwise_mul_batched` / `reduce_sum_scalar_batched`,
   `softmax_batched` / `log_softmax_batched`, `conv2d_batched`, and
   `max_pool2d_batched` / `avg_pool2d_batched`, as eager TS tensor execution
-  versus compiled allocation-free `executeInto`; the first native eager storage slices have executable baselines.
+  versus the relevant Zig-backed native eager or compiled allocation-free path;
+  the first native eager storage slices have executable baselines.
   Node and Bun also expose the first stateless native eager primitive:
   `zgml.nativeEager.linearInto`, backed by the `zgml_eager_linear_f32` C ABI,
   for caller-owned f32 `Linear` output. That primitive routes through the shared

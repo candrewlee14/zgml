@@ -483,9 +483,11 @@ Current checked progress:
   `lazy_matmul_add_gelu_batched` eager fused matmul work, and
   `lazy_matmul_add_relu_batched` / `lazy_matmul_add_silu_batched` /
   `lazy_matmul_add_sigmoid_batched` / `lazy_matmul_add_tanh_batched` eager fused
-  matmul work plus `softmax_batched` / `log_softmax_batched` row tails and
-  `conv2d_batched` image-kernel work versus allocation-free
-  compiled `prepare/executeInto` for the same shape. It now also reports
+  matmul work plus scalar `elementwise_mul_batched` /
+  `reduce_sum_scalar_batched`, `softmax_batched` / `log_softmax_batched` row
+  tails, and `conv2d_batched` image-kernel work versus the relevant Zig-backed
+  native eager or allocation-free compiled `prepare/executeInto` path for the
+  same shape. It now also reports
   `nativeEagerIntoMs` for `linear_batched`, backed by the stateless
   `zgml_eager_linear_f32` C ABI and surfaced on Node and Bun as
   `zgml.nativeEager.linearInto`. It also reports `nativeEagerIntoMs` for
@@ -498,6 +500,11 @@ Current checked progress:
   Native eager matmul is also now surfaced as `zgml_eager_matmul_f32` and
   `zgml.nativeEager.matmulInto`, with Node/Bun `Tensor.matmul` dispatching
   through that Zig path automatically when gradients are disabled.
+  Scalar RHS elementwise and scalar reductions are now covered the same way:
+  `zgml.nativeEager.elementwiseInto` / `zgml.nativeEager.reduceInto` call
+  `zgml_eager_elementwise_f32` / `zgml_eager_reduce_f32` directly, and normal
+  no-grad `Tensor.mul(2)` / `Tensor.sum()` calls use those Zig ABI hooks for
+  large tensors while grad-enabled training keeps the TS/autograd path.
   The same microscope now also covers `matmul -> add(bias) -> ReLU`,
   `matmul -> add(bias) -> SiLU`, `matmul -> add(bias) -> Sigmoid`, and
   `matmul -> add(bias) -> Tanh`, proving the activation hook for common
@@ -532,10 +539,11 @@ Current checked progress:
   the Zig pool2d kernel, and grad-enabled training keeps the TS path with
   max-index/count bookkeeping for backward correctness.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=12/12` after adding direct
-  `matmul_batched`, native eager `conv2d_batched`, and native eager
-  `max_pool2d_batched` / `avg_pool2d_batched`; fresh Node/Bun short runs show
-  zero measured module diff across the native eager rows.
+  as well: the expected row set is `row_coverage=14/14` after adding direct
+  `matmul_batched`, `elementwise_mul_batched`, `reduce_sum_scalar_batched`,
+  native eager `conv2d_batched`, and native eager `max_pool2d_batched` /
+  `avg_pool2d_batched`; fresh Node/Bun short runs show zero measured module
+  diff across the native eager rows.
   The native eager adapter policy now lives in
   `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
   shape inference, output validation, public aliases, and activation mapping,

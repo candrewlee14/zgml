@@ -52,6 +52,8 @@ const pytorchBroadKeys = [
 const nativeEagerExpectedKeys = [
   "linear_batched",
   "matmul_batched",
+  "elementwise_mul_batched",
+  "reduce_sum_scalar_batched",
   "lazy_matmul_add_gelu_batched",
   "lazy_matmul_add_relu_batched",
   "lazy_matmul_add_silu_batched",

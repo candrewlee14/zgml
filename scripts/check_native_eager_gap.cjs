@@ -36,7 +36,7 @@ const nativeFreshness = verifyFreshNativeLibrary({
 
 const runtimeExports = require(runtimeEntry);
 const zgml = runtimeExports.zgml ?? runtimeExports.torch ?? runtimeExports;
-const minTimingMs = Number(process.env.BENCH_NATIVE_EAGER_MIN_TIMING_MS || "8");
+const minTimingMs = Number(process.env.BENCH_NATIVE_EAGER_MIN_TIMING_MS || "20");
 if (!Number.isFinite(minTimingMs) || minTimingMs <= 0) {
   throw new Error(`BENCH_NATIVE_EAGER_MIN_TIMING_MS must be positive, got ${process.env.BENCH_NATIVE_EAGER_MIN_TIMING_MS}`);
 }
@@ -123,11 +123,13 @@ function requireCompiledHotPath(key, session, input, output) {
 
 function benchGap(spec) {
   const input = spec.input();
-  const compiled = spec.compiled();
+  const compiled = typeof spec.compiled === "function" ? spec.compiled() : null;
   try {
     const output = new Float32Array(spec.outputLen);
     const nativeEagerOutput = new Float32Array(spec.outputLen);
-    requireCompiledHotPath(spec.key, compiled.session, input, output);
+    if (compiled) {
+      requireCompiledHotPath(spec.key, compiled.session, input, output);
+    }
     const eagerOutput = spec.eager(input);
     const eagerData = eagerOutput.data ?? eagerOutput;
     const nativeEagerResult = typeof spec.nativeEager === "function" ? spec.nativeEager(nativeEagerOutput, input) : null;
@@ -136,10 +138,6 @@ function benchGap(spec) {
     }
     const nativeEagerModuleOutput = typeof spec.nativeEagerModule === "function" ? spec.nativeEagerModule(input) : null;
     const nativeEagerModuleData = nativeEagerModuleOutput ? (nativeEagerModuleOutput.data ?? nativeEagerModuleOutput) : null;
-    const compiledOutput = compiled.into(output, input);
-    if (compiledOutput !== output) {
-      throw new Error(`${spec.key} expected compiled output to reuse caller output`);
-    }
     const nativeEagerDiff = nativeEagerResult ? maxAbsDiff(eagerData, nativeEagerOutput) : null;
     if (nativeEagerDiff !== null && nativeEagerDiff > spec.tolerance) {
       throw new Error(`${spec.key} native eager parity failed: max_abs_diff=${nativeEagerDiff}`);
@@ -148,17 +146,26 @@ function benchGap(spec) {
     if (nativeEagerModuleDiff !== null && nativeEagerModuleDiff > spec.tolerance) {
       throw new Error(`${spec.key} native eager module parity failed: max_abs_diff=${nativeEagerModuleDiff}`);
     }
-    const diff = maxAbsDiff(eagerData, output);
-    if (diff > spec.tolerance) {
-      throw new Error(`${spec.key} compiled parity failed: max_abs_diff=${diff}`);
+    let diff = null;
+    if (compiled) {
+      const compiledOutput = compiled.into(output, input);
+      if (compiledOutput !== output) {
+        throw new Error(`${spec.key} expected compiled output to reuse caller output`);
+      }
+      diff = maxAbsDiff(eagerData, output);
+      if (diff > spec.tolerance) {
+        throw new Error(`${spec.key} compiled parity failed: max_abs_diff=${diff}`);
+      }
     }
 
     const eagerMs = bench(() => {
       spec.eager(input);
     }, spec.eagerIterations);
-    const preparedMs = bench(() => {
-      compiled.into(output, input);
-    }, spec.compiledIterations);
+    const preparedMs = compiled
+      ? bench(() => {
+          compiled.into(output, input);
+        }, spec.compiledIterations)
+      : null;
     const nativeEagerMs = typeof spec.nativeEager === "function"
       ? bench(() => {
           spec.nativeEager(nativeEagerOutput, input);
@@ -175,27 +182,28 @@ function benchGap(spec) {
     if (nativeEagerModuleMs !== null && eagerMs / nativeEagerModuleMs < minNativeEagerSpeedup) {
       throw new Error(`${spec.key} native eager module speedup ${eagerMs / nativeEagerModuleMs}x below ${minNativeEagerSpeedup}x`);
     }
-    const speedup = eagerMs / preparedMs;
+    const speedup = preparedMs === null ? null : eagerMs / preparedMs;
     const row = {
       schema: "zgml.native-eager-gap.v1",
       key: spec.key,
       shape: Object.freeze(spec.shape),
+      compiledHotPath: compiled !== null,
       eagerMs: round(eagerMs),
       nativeEagerIntoMs: nativeEagerMs === null ? null : round(nativeEagerMs),
       nativeEagerSpeedup: nativeEagerMs === null ? null : round(eagerMs / nativeEagerMs),
       nativeEagerModuleForwardMs: nativeEagerModuleMs === null ? null : round(nativeEagerModuleMs),
       nativeEagerModuleSpeedup: nativeEagerModuleMs === null ? null : round(eagerMs / nativeEagerModuleMs),
-      preparedExecuteIntoMs: round(preparedMs),
-      nativeProgramSpeedup: round(speedup),
+      preparedExecuteIntoMs: preparedMs === null ? null : round(preparedMs),
+      nativeProgramSpeedup: speedup === null ? null : round(speedup),
       nativeEagerMaxAbsDiff: nativeEagerDiff === null ? null : round(nativeEagerDiff),
       nativeEagerModuleMaxAbsDiff: nativeEagerModuleDiff === null ? null : round(nativeEagerModuleDiff),
-      maxAbsDiff: round(diff),
-      status: "gap-measured",
+      maxAbsDiff: diff === null ? null : round(diff),
+      status: compiled ? "gap-measured" : "native-eager-measured",
       next: spec.next,
     };
     return Object.freeze(row);
   } finally {
-    compiled.dispose();
+    if (compiled) compiled.dispose();
   }
 }
 
@@ -371,6 +379,36 @@ const gapSpecs = Object.freeze([
     compiledIterations: 1000,
     tolerance: 1e-5,
     next: "native_eager_linear_or_matmul_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_mul_batched",
+    shape: Object.freeze({ batch: 128, features: 64, op: "mul_scalar" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => input.mul(2),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, new Float32Array([2]), { op: "mul" }),
+    nativeEagerModule: (input) => zgml.noGrad(() => input.mul(2)),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_elementwise_storage_slice",
+  }),
+  Object.freeze({
+    key: "reduce_sum_scalar_batched",
+    shape: Object.freeze({ batch: 128, features: 64, op: "sum" }),
+    outputLen: 1,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => input.sum(),
+    nativeEager: (output, input) => zgml.nativeEager.reduceInto(output, input, { op: "sum" }),
+    nativeEagerModule: (input) => zgml.noGrad(() => input.sum()),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-4,
+    next: "native_eager_reduce_storage_slice",
   }),
   Object.freeze({
     key: "lazy_matmul_add_gelu_batched",
@@ -650,7 +688,10 @@ for (const row of rows) {
   const nativeEagerModule = row.nativeEagerModuleForwardMs === null
     ? "native_eager_module=n/a"
     : `native_eager_module=${row.nativeEagerModuleForwardMs}ms native_eager_module_speedup=${row.nativeEagerModuleSpeedup}x`;
-  process.stdout.write(`native eager gap: runtime=${runtime} ${row.key} eager=${row.eagerMs}ms ${nativeEager} ${nativeEagerModule} prepared_execute_into=${row.preparedExecuteIntoMs}ms speedup=${row.nativeProgramSpeedup}x next=${row.next}\n`);
+  const compiled = row.compiledHotPath
+    ? `prepared_execute_into=${row.preparedExecuteIntoMs}ms speedup=${row.nativeProgramSpeedup}x`
+    : "prepared_execute_into=n/a speedup=n/a";
+  process.stdout.write(`native eager gap: runtime=${runtime} ${row.key} eager=${row.eagerMs}ms ${nativeEager} ${nativeEagerModule} ${compiled} next=${row.next}\n`);
 }
 if (artifactPath) {
   process.stdout.write(`native eager artifact: ${artifactPath}\n`);
