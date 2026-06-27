@@ -126,6 +126,7 @@ pub const RuntimeProfile = struct {
     semantic_ffn_sublayer_fallback_tail_dispatches: u64 = 0,
     semantic_ffn_with_input_decomposed_count: u64 = 0,
     semantic_ffn_with_input_decomposed_dispatches: u64 = 0,
+    semantic_ffn_with_input_decomposed_extra_dispatches: u64 = 0,
     semantic_ffn_with_input_decomposed_row_chain_dispatches: u64 = 0,
     semantic_ffn_with_input_decomposed_pair_dispatches: u64 = 0,
     semantic_ffn_with_input_decomposed_tail_dispatches: u64 = 0,
@@ -242,6 +243,7 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_sublayer_fallback_tail_dispatches +%= other.semantic_ffn_sublayer_fallback_tail_dispatches;
         self.semantic_ffn_with_input_decomposed_count +%= other.semantic_ffn_with_input_decomposed_count;
         self.semantic_ffn_with_input_decomposed_dispatches +%= other.semantic_ffn_with_input_decomposed_dispatches;
+        self.semantic_ffn_with_input_decomposed_extra_dispatches +%= other.semantic_ffn_with_input_decomposed_extra_dispatches;
         self.semantic_ffn_with_input_decomposed_row_chain_dispatches +%= other.semantic_ffn_with_input_decomposed_row_chain_dispatches;
         self.semantic_ffn_with_input_decomposed_pair_dispatches +%= other.semantic_ffn_with_input_decomposed_pair_dispatches;
         self.semantic_ffn_with_input_decomposed_tail_dispatches +%= other.semantic_ffn_with_input_decomposed_tail_dispatches;
@@ -439,6 +441,7 @@ pub const RuntimeProfile = struct {
     pub fn recordSemanticFfnWithInputDecomposed(self: *RuntimeProfile, dispatches: u64, row_chain_dispatches: u64, pair_dispatches: u64, tail_dispatches: u64) void {
         self.semantic_ffn_with_input_decomposed_count +%= 1;
         self.semantic_ffn_with_input_decomposed_dispatches +%= dispatches;
+        self.semantic_ffn_with_input_decomposed_extra_dispatches +%= dispatches -| 1;
         self.semantic_ffn_with_input_decomposed_row_chain_dispatches +%= row_chain_dispatches;
         self.semantic_ffn_with_input_decomposed_pair_dispatches +%= pair_dispatches;
         self.semantic_ffn_with_input_decomposed_tail_dispatches +%= tail_dispatches;
@@ -706,6 +709,7 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
     if (rt.semantic_ffn_with_input_decomposed_count > 0) {
         try writeCountAndPerCall(jw, "semantic_ffn_with_input_decomposed_", "count", rt.semantic_ffn_with_input_decomposed_count, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_with_input_decomposed_", "dispatches", rt.semantic_ffn_with_input_decomposed_dispatches, calls_f);
+        try writeCountAndPerCall(jw, "semantic_ffn_with_input_decomposed_", "extra_dispatches", rt.semantic_ffn_with_input_decomposed_extra_dispatches, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_with_input_decomposed_", "row_chain_dispatches", rt.semantic_ffn_with_input_decomposed_row_chain_dispatches, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_with_input_decomposed_", "pair_dispatches", rt.semantic_ffn_with_input_decomposed_pair_dispatches, calls_f);
         try writeCountAndPerCall(jw, "semantic_ffn_with_input_decomposed_", "tail_dispatches", rt.semantic_ffn_with_input_decomposed_tail_dispatches, calls_f);
@@ -995,6 +999,7 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_fallback_tail_dispatches\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_count\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_dispatches\":5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_extra_dispatches\":4") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_row_chain_dispatches\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_pair_dispatches\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_with_input_decomposed_tail_dispatches\":2") != null);
@@ -1111,6 +1116,7 @@ test "RuntimeProfile accumulates evidence windows" {
     try std.testing.expectEqual(@as(u64, 0), total.qmatmul_row_chain_width_parallel_lanes);
     try std.testing.expectEqual(@as(u64, 2), total.semantic_ffn_with_input_decomposed_count);
     try std.testing.expectEqual(@as(u64, 10), total.semantic_ffn_with_input_decomposed_dispatches);
+    try std.testing.expectEqual(@as(u64, 8), total.semantic_ffn_with_input_decomposed_extra_dispatches);
     try std.testing.expectEqual(@as(u64, 4), total.semantic_ffn_with_input_decomposed_row_chain_dispatches);
     try std.testing.expectEqual(@as(u64, 2), total.semantic_ffn_with_input_decomposed_pair_dispatches);
     try std.testing.expectEqual(@as(u64, 4), total.semantic_ffn_with_input_decomposed_tail_dispatches);

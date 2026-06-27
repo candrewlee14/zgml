@@ -861,7 +861,10 @@ available, the next loop should work on the input-bridge kernel directly. The
 frontier microscopes now also report `qmatmul_row_chain_width_parallel_count`
 and lane totals, so the benchmark artifact proves which physical row-chain tail
 used the width-partitioned Metal kernel instead of inferring it from generic
-tiled row-chain counters.
+tiled row-chain counters. The input-bridge artifact also records
+`semantic_ffn_with_input_decomposed_extra_dispatches`: the retained absorbed
+path reports `4`, meaning the current correct production lowering is still four
+dispatches away from the intended single executable input-bridge artifact.
 The qsemantic-throughput and qsemantic input-bridge readbacks follow the same
 stability rule as the other noisy perf lanes:
 `qsemantic-throughput-results:` and `qsemantic-input-bridge-results:` prefer the
@@ -1714,8 +1717,9 @@ candidate therefore uses the decomposed width-parallel path: input row-chain
 plus the streamed SIMD-width semantic tail. A fresh three-attempt focused
 artifact reports `absorbed=2.69x`, median `2.56x`, worst `2.52x`,
 `runtime_dispatches=5`, `semantic_with_input_dispatches=5`,
-`decomposed=1`, `decomposed_row_chain=2`, `decomposed_pair=1`,
-`decomposed_tail=2`, `direct=0`, and `max_abs_diff=0.000001`.
+`decomposed=1`, `decomposed_dispatches=5`, `decomposed_extra_dispatches=4`,
+`decomposed_row_chain=2`, `decomposed_pair=1`, `decomposed_tail=2`,
+`direct=0`, and `max_abs_diff=0.000001`.
 The full-model semantic throughput candidate now deliberately fences off the
 row-owned direct bridge while preserving the 121-command shape and zero
 fallback. A fresh three-attempt Q8 semantic steady probe reports best

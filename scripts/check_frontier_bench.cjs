@@ -1973,6 +1973,7 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const absorbedFallbackTailDispatches = metric(output, absorbedProfileLabel, "semantic_ffn_sublayer_fallback_tail_dispatches");
   const absorbedDecomposedCount = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_count") ?? 0;
   const absorbedDecomposedDispatches = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_dispatches") ?? 0;
+  const absorbedDecomposedExtraDispatches = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_extra_dispatches") ?? 0;
   const absorbedDecomposedRowChainDispatches = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_row_chain_dispatches") ?? 0;
   const absorbedDecomposedPairDispatches = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_pair_dispatches") ?? 0;
   const absorbedDecomposedTailDispatches = optionalMetric(output, absorbedProfileLabel, "semantic_ffn_with_input_decomposed_tail_dispatches") ?? 0;
@@ -2070,10 +2071,10 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (directSerialFallbackPairDispatches !== 0 || directSerialFallbackTailDispatches !== 0) {
     failures.push("semantic input direct_serial kernel must not use fallback pair/tail dispatches");
   }
-  if (absorbedUsesDecomposedKernel && (absorbedDecomposedCount !== 1 || absorbedDecomposedDispatches !== 5 || absorbedDecomposedRowChainDispatches !== 2 || absorbedDecomposedPairDispatches !== 1 || absorbedDecomposedTailDispatches !== 2)) {
-    failures.push("semantic input absorbed decomposition must stay count=1 dispatches=5 row_chain=2 pair=1 tail=2 until the width-parallel kernel replaces it");
+  if (absorbedUsesDecomposedKernel && (absorbedDecomposedCount !== 1 || absorbedDecomposedDispatches !== 5 || absorbedDecomposedExtraDispatches !== 4 || absorbedDecomposedRowChainDispatches !== 2 || absorbedDecomposedPairDispatches !== 1 || absorbedDecomposedTailDispatches !== 2)) {
+    failures.push("semantic input absorbed decomposition must stay count=1 dispatches=5 extra_dispatches=4 row_chain=2 pair=1 tail=2 until the width-parallel kernel replaces it");
   }
-  if (absorbedUsesDirectKernel && (absorbedDecomposedCount !== 0 || absorbedDecomposedDispatches !== 0 || absorbedDecomposedRowChainDispatches !== 0 || absorbedDecomposedPairDispatches !== 0 || absorbedDecomposedTailDispatches !== 0)) {
+  if (absorbedUsesDirectKernel && (absorbedDecomposedCount !== 0 || absorbedDecomposedDispatches !== 0 || absorbedDecomposedExtraDispatches !== 0 || absorbedDecomposedRowChainDispatches !== 0 || absorbedDecomposedPairDispatches !== 0 || absorbedDecomposedTailDispatches !== 0)) {
     failures.push("semantic input direct absorbed kernel must not report decomposed dispatch counters");
   }
   if (absorbedUsesDirectKernel && (absorbedDirectCount !== 1 || absorbedDirectRows !== 128 || absorbedDirectRowThreadgroups !== 128 || absorbedDirectRowSerialDotOps !== 2985984 || absorbedDirectTotalRowSerialDotOps !== 382205952 || absorbedDirectTotalRowSerialDotOpsPerRowThreadgroup !== 2985984)) {
@@ -2108,7 +2109,7 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     `command=${commandSpeedup.toFixed(2)}x max_abs_diff=${commandMaxAbsDiff.toFixed(6)} shape_commands=${commandShapeCommands} bridges=${commandShapeBridges} runtime_dispatches=${commandRuntimeDispatches} row_dispatches=${commandProjectionRowChainDispatches} semantic_dispatches=${commandSemanticDispatches}`,
     `absorbed=${absorbedSpeedup.toFixed(2)}x max_abs_diff=${absorbedMaxAbsDiff.toFixed(6)} shape_commands=${absorbedShapeCommands} bridges=${absorbedShapeBridges} runtime_dispatches=${absorbedRuntimeDispatches} semantic_with_input_dispatches=${absorbedSemanticWithInputDispatches} absorbed_split=${Number.isFinite(absorbedDispatchSplit) ? absorbedDispatchSplit.toFixed(2) : "n/a"}`,
     `direct_serial=${directSerialSpeedup.toFixed(2)}x max_abs_diff=${directSerialMaxAbsDiff.toFixed(6)} runtime_dispatches=${directSerialRuntimeDispatches} row_serial_dot_ops=${directSerialDirectRowSerialDotOps} total_row_serial_dot_ops=${directSerialDirectTotalRowSerialDotOps}`,
-    `absorbed_decomposed=${absorbedDecomposedCount}:dispatches=${absorbedDecomposedDispatches}:row_chain=${absorbedDecomposedRowChainDispatches}:pair=${absorbedDecomposedPairDispatches}:tail=${absorbedDecomposedTailDispatches}`,
+    `absorbed_decomposed=${absorbedDecomposedCount}:dispatches=${absorbedDecomposedDispatches}:extra_dispatches=${absorbedDecomposedExtraDispatches}:row_chain=${absorbedDecomposedRowChainDispatches}:pair=${absorbedDecomposedPairDispatches}:tail=${absorbedDecomposedTailDispatches}`,
     `direct=${absorbedDirectCount}:rows=${absorbedDirectRows}:row_threadgroups=${absorbedDirectRowThreadgroups}:row_serial_dot_ops=${absorbedDirectRowSerialDotOps}:total_row_serial_dot_ops=${absorbedDirectTotalRowSerialDotOps}:per_row_threadgroup=${absorbedDirectTotalRowSerialDotOpsPerRowThreadgroup}`,
     `fallback_pair_dispatches=${absorbedFallbackPairDispatches} fallback_tail_dispatches=${absorbedFallbackTailDispatches} tiled_count=${absorbedRowChainTiledCount} row_tile_groups=${absorbedRowChainTiledRowTileGroups} n_tiles=${absorbedRowChainTiledNTiles} two_phase_count=${absorbedRowChainTiledTwoPhaseCount} width_parallel=${absorbedRowChainWidthParallelCount}:lanes:${absorbedRowChainWidthParallelLanes} spilled_input=${absorbedRowChainTiledSpilledInput}`,
     `next=${next}`,
@@ -2151,6 +2152,7 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     absorbedFallbackTailDispatches,
     absorbedDecomposedCount,
     absorbedDecomposedDispatches,
+    absorbedDecomposedExtraDispatches,
     absorbedDecomposedRowChainDispatches,
     absorbedDecomposedPairDispatches,
     absorbedDecomposedTailDispatches,
@@ -2245,6 +2247,7 @@ function selectedSemanticInputBridgeAttemptSummary(attempt) {
       semanticFallbackTailDispatches: attempt.absorbedFallbackTailDispatches,
       semanticWithInputDecomposedCount: attempt.absorbedDecomposedCount,
       semanticWithInputDecomposedDispatches: attempt.absorbedDecomposedDispatches,
+      semanticWithInputDecomposedExtraDispatches: attempt.absorbedDecomposedExtraDispatches,
       semanticWithInputDecomposedRowChainDispatches: attempt.absorbedDecomposedRowChainDispatches,
       semanticWithInputDecomposedPairDispatches: attempt.absorbedDecomposedPairDispatches,
       semanticWithInputDecomposedTailDispatches: attempt.absorbedDecomposedTailDispatches,
@@ -2385,6 +2388,7 @@ function runFocusedSemanticInputBridgeGate() {
     ["absorbedSemanticWithInputRefused", 0],
     ["absorbedFallbackPairDispatches", 1],
     ["absorbedFallbackTailDispatches", 2],
+    ["absorbedDecomposedExtraDispatches", 4],
     ["absorbedRowChainTiledCount", 2],
     ["absorbedRowChainWidthParallelCount", 1],
     ["absorbedRowChainWidthParallelLanes", 4],
@@ -2404,6 +2408,7 @@ function runFocusedSemanticInputBridgeGate() {
     ["absorbedSemanticWithInputRefused", 0],
     ["absorbedFallbackPairDispatches", 0],
     ["absorbedFallbackTailDispatches", 0],
+    ["absorbedDecomposedExtraDispatches", 0],
     ["absorbedRowChainTiledCount", 0],
     ["absorbedRowChainWidthParallelCount", 0],
     ["absorbedRowChainWidthParallelLanes", 0],

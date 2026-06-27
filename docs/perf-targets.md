@@ -395,7 +395,10 @@ machine for both prompt/prefill and decode.
   frontier artifacts now expose `qmatmul_row_chain_width_parallel_count` and
   lane totals, so the bridge and input-bridge gates can prove when the
   width-partitioned Metal tail actually ran rather than relying on the broader
-  two-phase tiled counters. The
+  two-phase tiled counters. Input-bridge artifacts also expose
+  `semantic_ffn_with_input_decomposed_extra_dispatches`; the retained absorbed
+  lowering reports `4`, making the remaining dispatch-collapse target visible
+  in both focused artifacts and `perf-next`. The
   checked input-bridge gate now treats that lane as a steady collapse guard:
   runs with at least three attempts must keep best absorbed speedup at or above
   `2.45x` by default, configurable with
@@ -670,7 +673,10 @@ keeps fresh `semantic_with_input_width_parallel_kernel` iteration visible
 without letting a quick probe replace the steadier `perf-next` target. The
 checked gate also fails three-attempt input-bridge runs when the best absorbed
 speedup falls below the collapse floor (`2.45x` by default), so
-correct but weaker kernel probes do not become invisible regressions. Force that
+correct but weaker kernel probes do not become invisible regressions. Its
+compact status line now also includes `decomposed_extra`, so a passing legacy
+artifact still advertises how far it is from the intended one-dispatch
+input-bridge kernel. Force that
 exact microscope with
 `BENCH_NEXT_PERF_LANE=qsemantic_input_bridge npm run dev:perf:next{,:run}`.
 For qsemantic kernel work, `BENCH_QSEMANTIC_VARIANTS=target` limits the raw

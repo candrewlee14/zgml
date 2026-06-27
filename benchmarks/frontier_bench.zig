@@ -413,9 +413,15 @@ fn printSemanticSublayerRuntimeProfile(
     );
     const direct_row_serial_per_threadgroup = if (rt.semantic_ffn_with_input_direct_row_threadgroups > 0) rt.semantic_ffn_with_input_direct_total_row_serial_dot_ops / rt.semantic_ffn_with_input_direct_row_threadgroups else 0;
     try w.print(
-        "  {s:<28} semantic_ffn_with_input_direct_count={d}  semantic_ffn_with_input_direct_rows={d}  semantic_ffn_with_input_direct_input_projection={d}  semantic_ffn_with_input_direct_input={d}  semantic_ffn_with_input_direct_hidden={d}  semantic_ffn_with_input_direct_output={d}  semantic_ffn_with_input_direct_input_projection_dot_ops={d}  semantic_ffn_with_input_direct_gate_up_dot_ops={d}  semantic_ffn_with_input_direct_down_dot_ops={d}  semantic_ffn_with_input_direct_row_serial_dot_ops={d}  semantic_ffn_with_input_direct_total_row_serial_dot_ops={d}  semantic_ffn_with_input_direct_row_threadgroups={d}  semantic_ffn_with_input_direct_total_row_serial_dot_ops_per_row_threadgroup={d}\n",
+        "  {s:<28} semantic_ffn_with_input_decomposed_count={d}  semantic_ffn_with_input_decomposed_dispatches={d}  semantic_ffn_with_input_decomposed_extra_dispatches={d}  semantic_ffn_with_input_decomposed_row_chain_dispatches={d}  semantic_ffn_with_input_decomposed_pair_dispatches={d}  semantic_ffn_with_input_decomposed_tail_dispatches={d}  semantic_ffn_with_input_direct_count={d}  semantic_ffn_with_input_direct_rows={d}  semantic_ffn_with_input_direct_input_projection={d}  semantic_ffn_with_input_direct_input={d}  semantic_ffn_with_input_direct_hidden={d}  semantic_ffn_with_input_direct_output={d}  semantic_ffn_with_input_direct_input_projection_dot_ops={d}  semantic_ffn_with_input_direct_gate_up_dot_ops={d}  semantic_ffn_with_input_direct_down_dot_ops={d}  semantic_ffn_with_input_direct_row_serial_dot_ops={d}  semantic_ffn_with_input_direct_total_row_serial_dot_ops={d}  semantic_ffn_with_input_direct_row_threadgroups={d}  semantic_ffn_with_input_direct_total_row_serial_dot_ops_per_row_threadgroup={d}\n",
         .{
             name,
+            rt.semantic_ffn_with_input_decomposed_count,
+            rt.semantic_ffn_with_input_decomposed_dispatches,
+            rt.semantic_ffn_with_input_decomposed_extra_dispatches,
+            rt.semantic_ffn_with_input_decomposed_row_chain_dispatches,
+            rt.semantic_ffn_with_input_decomposed_pair_dispatches,
+            rt.semantic_ffn_with_input_decomposed_tail_dispatches,
             rt.semantic_ffn_with_input_direct_count,
             rt.semantic_ffn_with_input_direct_rows,
             rt.semantic_ffn_with_input_direct_input_projection,
@@ -457,6 +463,7 @@ fn writeSemanticSublayerRuntimeMetricJson(
     try writeMetricJsonField(&jw, "semantic_ffn_sublayer_fallback_tail_dispatches", rt.semantic_ffn_sublayer_fallback_tail_dispatches);
     try writeMetricJsonField(&jw, "semantic_ffn_with_input_decomposed_count", rt.semantic_ffn_with_input_decomposed_count);
     try writeMetricJsonField(&jw, "semantic_ffn_with_input_decomposed_dispatches", rt.semantic_ffn_with_input_decomposed_dispatches);
+    try writeMetricJsonField(&jw, "semantic_ffn_with_input_decomposed_extra_dispatches", rt.semantic_ffn_with_input_decomposed_extra_dispatches);
     try writeMetricJsonField(&jw, "semantic_ffn_with_input_decomposed_row_chain_dispatches", rt.semantic_ffn_with_input_decomposed_row_chain_dispatches);
     try writeMetricJsonField(&jw, "semantic_ffn_with_input_decomposed_pair_dispatches", rt.semantic_ffn_with_input_decomposed_pair_dispatches);
     try writeMetricJsonField(&jw, "semantic_ffn_with_input_decomposed_tail_dispatches", rt.semantic_ffn_with_input_decomposed_tail_dispatches);
