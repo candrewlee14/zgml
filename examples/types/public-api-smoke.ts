@@ -493,6 +493,10 @@ type FrontendManifestNativeProductPolicy = Expect<Equal<typeof frontendManifest.
 type FrontendManifestSync = Expect<Equal<typeof frontendManifest.frontendSync, "none">>;
 type FrontendManifestHandwrittenMirrors = Expect<Equal<typeof frontendManifest.handwrittenFrontendMirrors, false>>;
 type FrontendManifestNativeContractBoundary = Expect<Equal<typeof frontendManifest.nativeContractBoundary, "JS/TS API -> Zig C ABI -> Program/Session kernels">>;
+type FrontendManifestEagerHotPathCore = Expect<Equal<typeof frontendManifest.eagerHotPathCore, "zig-native-eager-when-profitable">>;
+type FrontendManifestInferenceHotPathCore = Expect<Equal<typeof frontendManifest.inferenceHotPathCore, "zig-program-session-required">>;
+type FrontendManifestTrainingHotPathCore = Expect<Equal<typeof frontendManifest.trainingHotPathCore, "zig-ffi-compiled-step-when-supported">>;
+type FrontendManifestUnsupportedHotPathPolicy = Expect<Equal<typeof frontendManifest.unsupportedHotPathPolicy, "explicit-evidence-no-silent-performance-claim">>;
 
 const lazyInput = lazy.input([2] as const);
 const lazyGraph = lazyInput.linear(3).relu().linear(1);
@@ -784,6 +788,10 @@ type ShapeAssertions = [
   FrontendManifestSync,
   FrontendManifestHandwrittenMirrors,
   FrontendManifestNativeContractBoundary,
+  FrontendManifestEagerHotPathCore,
+  FrontendManifestInferenceHotPathCore,
+  FrontendManifestTrainingHotPathCore,
+  FrontendManifestUnsupportedHotPathPolicy,
   PublicApiContractKind,
   PublicApiContractOwner,
   PublicApiContractProductSourceOfTruth,

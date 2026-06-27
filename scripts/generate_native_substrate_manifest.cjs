@@ -34,6 +34,10 @@ pub const native_substrate_manifest = .{
     .native_alignment = ${zigString(manifest.nativeAlignment)},
     .native_product_policy = ${zigString(manifest.nativeProductPolicy)},
     .native_contract_boundary = ${zigString(manifest.nativeContractBoundary)},
+    .eager_hot_path_core = ${zigString(manifest.eagerHotPathCore)},
+    .inference_hot_path_core = ${zigString(manifest.inferenceHotPathCore)},
+    .training_hot_path_core = ${zigString(manifest.trainingHotPathCore)},
+    .unsupported_hot_path_policy = ${zigString(manifest.unsupportedHotPathPolicy)},
 };
 `;
 }

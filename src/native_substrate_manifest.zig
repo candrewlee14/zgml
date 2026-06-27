@@ -14,4 +14,8 @@ pub const native_substrate_manifest = .{
     .native_alignment = "zig-core-contract-tested",
     .native_product_policy = "required-core",
     .native_contract_boundary = "JS/TS API -> Zig C ABI -> Program/Session kernels",
+    .eager_hot_path_core = "zig-native-eager-when-profitable",
+    .inference_hot_path_core = "zig-program-session-required",
+    .training_hot_path_core = "zig-ffi-compiled-step-when-supported",
+    .unsupported_hot_path_policy = "explicit-evidence-no-silent-performance-claim",
 };

@@ -13,6 +13,10 @@ const requiredStringFields = Object.freeze([
   "adapterRole",
   "frontendSync",
   "nativeContractBoundary",
+  "eagerHotPathCore",
+  "inferenceHotPathCore",
+  "trainingHotPathCore",
+  "unsupportedHotPathPolicy",
 ]);
 
 const requiredBooleanFields = Object.freeze([

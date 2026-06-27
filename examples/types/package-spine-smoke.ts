@@ -561,6 +561,10 @@ type PackageFrontendNativeProductPolicy = Expect<Equal<typeof packageFrontendMan
 type PackageFrontendSync = Expect<Equal<typeof packageFrontendManifest.frontendSync, "none">>;
 type PackageFrontendHandwrittenMirrors = Expect<Equal<typeof packageFrontendManifest.handwrittenFrontendMirrors, false>>;
 type PackageFrontendNativeContractBoundary = Expect<Equal<typeof packageFrontendManifest.nativeContractBoundary, "JS/TS API -> Zig C ABI -> Program/Session kernels">>;
+type PackageFrontendEagerHotPathCore = Expect<Equal<typeof packageFrontendManifest.eagerHotPathCore, "zig-native-eager-when-profitable">>;
+type PackageFrontendInferenceHotPathCore = Expect<Equal<typeof packageFrontendManifest.inferenceHotPathCore, "zig-program-session-required">>;
+type PackageFrontendTrainingHotPathCore = Expect<Equal<typeof packageFrontendManifest.trainingHotPathCore, "zig-ffi-compiled-step-when-supported">>;
+type PackageFrontendUnsupportedHotPathPolicy = Expect<Equal<typeof packageFrontendManifest.unsupportedHotPathPolicy, "explicit-evidence-no-silent-performance-claim">>;
 type PackageFrontendRuntimePath = Expect<
   Equal<typeof packageFrontendManifest.runtimePath, "Program -> Session -> StepParams">
 >;

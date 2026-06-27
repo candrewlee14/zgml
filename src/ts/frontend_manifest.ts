@@ -17,4 +17,8 @@ export const frontendManifest = Object.freeze({
   frontendSync: "none",
   handwrittenFrontendMirrors: false,
   nativeContractBoundary: "JS/TS API -> Zig C ABI -> Program/Session kernels",
+  eagerHotPathCore: "zig-native-eager-when-profitable",
+  inferenceHotPathCore: "zig-program-session-required",
+  trainingHotPathCore: "zig-ffi-compiled-step-when-supported",
+  unsupportedHotPathPolicy: "explicit-evidence-no-silent-performance-claim",
 });

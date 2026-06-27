@@ -80,6 +80,14 @@ product source of truth is `ts-api-zig-core`, the product semantics owner is
 `required-core`, and native alignment is `zig-core-contract-tested`:
 JS/TS API -> Zig C ABI -> Program/Session kernels, runtime evidence, and backend behavior tests.
 Handwritten frontend mirrors are not allowed.
+The manifest now also names the hot-path split directly:
+`eagerHotPathCore = "zig-native-eager-when-profitable"`,
+`inferenceHotPathCore = "zig-program-session-required"`,
+`trainingHotPathCore = "zig-ffi-compiled-step-when-supported"`, and
+`unsupportedHotPathPolicy = "explicit-evidence-no-silent-performance-claim"`.
+Those fields flow into the generated Zig native substrate manifest, so JS/TS
+ergonomics remain the product surface while Zig remains the checked execution
+core rather than an aspirational implementation detail.
 The same boundary now has a static numeric drift guard: `npm run
 check:ts-source-architecture` compares the TS ABI descriptor maps in
 `src/ts/runtime/abi.ts` with the native constants in `src/c_api.zig` for model

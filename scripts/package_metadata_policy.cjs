@@ -174,6 +174,10 @@ const nativeContractBoundary = frontendManifestPolicy.nativeContractBoundary;
 const nativeRuntimeRole = frontendManifestPolicy.nativeRole;
 const nativeAlignment = frontendManifestPolicy.nativeAlignment;
 const nativeProductPolicy = frontendManifestPolicy.nativeProductPolicy;
+const eagerHotPathCore = frontendManifestPolicy.eagerHotPathCore;
+const inferenceHotPathCore = frontendManifestPolicy.inferenceHotPathCore;
+const trainingHotPathCore = frontendManifestPolicy.trainingHotPathCore;
+const unsupportedHotPathPolicy = frontendManifestPolicy.unsupportedHotPathPolicy;
 const nativeHelperRole = "native-helper-substrate";
 const packageMetadataPolicyManifest = Object.freeze({
   kind: "zgml-package-metadata-policy",
@@ -230,6 +234,10 @@ const sourceContracts = Object.freeze({
     `frontendSync: "${frontendSync}"`,
     `handwrittenFrontendMirrors: ${handwrittenFrontendMirrors}`,
     `nativeContractBoundary: "${nativeContractBoundary}"`,
+    `eagerHotPathCore: "${eagerHotPathCore}"`,
+    `inferenceHotPathCore: "${inferenceHotPathCore}"`,
+    `trainingHotPathCore: "${trainingHotPathCore}"`,
+    `unsupportedHotPathPolicy: "${unsupportedHotPathPolicy}"`,
   ]),
   "src/ts/index.ts": Object.freeze([
     'export { frontendManifest } from "./frontend_manifest.js";',
@@ -326,6 +334,10 @@ const sourceContracts = Object.freeze({
     `.native_alignment = "${nativeAlignment}"`,
     `.native_product_policy = "${nativeProductPolicy}"`,
     `.native_contract_boundary = "${nativeContractBoundary}"`,
+    `.eager_hot_path_core = "${eagerHotPathCore}"`,
+    `.inference_hot_path_core = "${inferenceHotPathCore}"`,
+    `.training_hot_path_core = "${trainingHotPathCore}"`,
+    `.unsupported_hot_path_policy = "${unsupportedHotPathPolicy}"`,
   ]),
   ...nativeHelperSourceContracts,
 });
@@ -549,6 +561,8 @@ module.exports = {
   packageRootTypes,
   packageRuntimeEntries,
   packageTypes,
+  eagerHotPathCore,
+  inferenceHotPathCore,
   nativeContractBoundary,
   nativeHelperDomains,
   nativeHelperRole,
@@ -560,6 +574,8 @@ module.exports = {
   productLanguage,
   productSource,
   productSourceOfTruth,
+  trainingHotPathCore,
+  unsupportedHotPathPolicy,
   publicAdapterSubpaths,
   publicPackageScripts,
   publicWildcardDirectories,
