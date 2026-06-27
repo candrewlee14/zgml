@@ -122,6 +122,14 @@ NATIVE_EXECUTION_COMMAND_SHAPES = {
     },
 }
 
+Q8_PROMPT_SEMANTIC_INPUT_COMMAND_SHAPE = {
+    "row_chain": 1,
+    "rope_store_group": 30,
+    "rope_attention_store_group": 30,
+    "semantic_ffn_sublayer_with_input_row_chain": 30,
+    "projection_cache_group": 30,
+}
+
 NATIVE_EXECUTION_COMMAND_DISPATCH_SHAPES = {
     "q8_0": {
         "prompt": {
@@ -133,6 +141,14 @@ NATIVE_EXECUTION_COMMAND_DISPATCH_SHAPES = {
             "projection_cache_group": 30,
         },
     },
+}
+
+Q8_PROMPT_SEMANTIC_INPUT_COMMAND_DISPATCH_SHAPE = {
+    "row_chain": 1,
+    "rope_store_group": 30,
+    "rope_attention_store_group": 30,
+    "semantic_ffn_sublayer_with_input_row_chain": 150,
+    "projection_cache_group": 30,
 }
 
 NATIVE_EXECUTION_EXTRA_DISPATCHES = {
@@ -409,6 +425,29 @@ def native_command_dispatch_shape(fmt, phase):
     return NATIVE_EXECUTION_COMMAND_DISPATCH_SHAPES.get(fmt, {}).get(phase, NATIVE_EXECUTION_COMMAND_SHAPES[fmt][phase])
 
 
+def uses_q8_prompt_semantic_input_shape(row, fmt, phase):
+    return (
+        fmt == "q8_0"
+        and phase == "prompt"
+        and (
+            (row or {}).get("program_command_encoded_semantic_ffn_sublayer_with_input_row_chain_per_call", 0) > 0
+            or "semantic throughput candidate" in ((row or {}).get("label") or "")
+        )
+    )
+
+
+def native_command_shape_for_row(row, fmt, phase):
+    if uses_q8_prompt_semantic_input_shape(row, fmt, phase):
+        return Q8_PROMPT_SEMANTIC_INPUT_COMMAND_SHAPE
+    return NATIVE_EXECUTION_COMMAND_SHAPES[fmt][phase]
+
+
+def native_command_dispatch_shape_for_row(row, fmt, phase):
+    if uses_q8_prompt_semantic_input_shape(row, fmt, phase):
+        return Q8_PROMPT_SEMANTIC_INPUT_COMMAND_DISPATCH_SHAPE
+    return native_command_dispatch_shape(fmt, phase)
+
+
 def command_shape_metrics(shape, dispatch_shape=None):
     dispatch_shape = shape if dispatch_shape is None else dispatch_shape
     return {
@@ -456,11 +495,11 @@ def extra_aux_metrics(row, expected):
     )
 
 
-def native_command_budget(fmt, phase):
+def native_command_budget(fmt, phase, row=None):
     return command_budget_with_extra_dispatch(
-        NATIVE_EXECUTION_COMMAND_SHAPES[fmt][phase],
+        native_command_shape_for_row(row, fmt, phase),
         NATIVE_EXECUTION_EXTRA_DISPATCHES[fmt][phase],
-        native_command_dispatch_shape(fmt, phase),
+        native_command_dispatch_shape_for_row(row, fmt, phase),
     )
 
 
@@ -521,6 +560,10 @@ def native_lane_fields(fmt, phase):
     fields |= set(command_shape_metrics(NATIVE_EXECUTION_COMMAND_SHAPES[fmt][phase]))
     fields |= set(command_shape_metrics(NATIVE_EXECUTION_COMMAND_SHAPES[fmt][phase], native_command_dispatch_shape(fmt, phase)))
     fields |= set(command_attempt_metrics(NATIVE_EXECUTION_COMMAND_SHAPES[fmt][phase]))
+    if fmt == "q8_0" and phase == "prompt":
+        fields |= set(command_shape_metrics(Q8_PROMPT_SEMANTIC_INPUT_COMMAND_SHAPE))
+        fields |= set(command_shape_metrics(Q8_PROMPT_SEMANTIC_INPUT_COMMAND_SHAPE, Q8_PROMPT_SEMANTIC_INPUT_COMMAND_DISPATCH_SHAPE))
+        fields |= set(command_attempt_metrics(Q8_PROMPT_SEMANTIC_INPUT_COMMAND_SHAPE))
     fields |= set(native_aux_metrics(fmt, phase))
     fields |= set(PROJECTION_CHAIN_SPLIT_FIELDS)
     if phase == "decode":
@@ -645,13 +688,13 @@ def native_lane_evidence(row, fmt, phase, prompt_tokens, require_runtime_patch_s
     return gate_evidence(
         row,
         phase,
-        native_command_budget(fmt, phase),
-        NATIVE_EXECUTION_COMMAND_SHAPES[fmt][phase],
+        native_command_budget(fmt, phase, row),
+        native_command_shape_for_row(row, fmt, phase),
         prompt_tokens,
         require_runtime_patch_holes=True,
         require_runtime_patch_stencil_hash=require_runtime_patch_stencil_hash,
         aux_metrics=native_aux_metrics(fmt, phase),
-        command_dispatch_shape=native_command_dispatch_shape(fmt, phase),
+        command_dispatch_shape=native_command_dispatch_shape_for_row(row, fmt, phase),
     )
 
 

@@ -2401,7 +2401,9 @@ function checkScripts() {
     "command_total = sum(shape.values())",
     "dispatch_total = sum((dispatch_shape or shape).values())",
     "return {\"dispatches_per_call\": dispatch_total + extra_dispatches, \"commands_per_call\": command_total}",
-    "native_command_dispatch_shape(fmt, phase),",
+    "def native_command_shape_for_row(row, fmt, phase):",
+    "def native_command_dispatch_shape_for_row(row, fmt, phase):",
+    "native_command_dispatch_shape_for_row(row, fmt, phase),",
     "def native_command_pressure(shape, limit=3):",
     "def native_sidecar_pressure(aux_metrics):",
     "\"command_pressure_top3_per_call\"",
@@ -2423,6 +2425,7 @@ function checkScripts() {
   ]);
   requireIncludes(read("scripts/check_ggml_q8_command_smoke.cjs"), "scripts/check_ggml_q8_command_smoke.cjs", "checked Q8 command ggml smoke", [
     "ZGML_Q8_EXTRA_ARGS: \"--metal-prompt-projection-row-chain-command\"",
+    "OUT_DIR: process.env.BENCH_GGML_Q8_COMMAND_OUT_DIR ?? \"bench-results/q8-command-smoke\"",
     "Metal Q8_0 prompt | metal scheduled prefill projection-row-chain command",
     "| q8_0 | prompt | metal scheduled prefill projection-row-chain command |",
     "242/242 dispatch, 151/151 command",

@@ -27,7 +27,7 @@ ZGML_Q8_MODEL="${ZGML_Q8_MODEL:-${ZGML_MODEL:-$GGUF_Q8}}"
 ZGML_DEFAULT_EXTRA_ARGS="${ZGML_DEFAULT_EXTRA_ARGS:---metal-prefill-device --metal-decode-region --gate-only}"
 ZGML_EXTRA_ARGS="${ZGML_EXTRA_ARGS-$ZGML_DEFAULT_EXTRA_ARGS}"
 ZGML_F16_EXTRA_ARGS="${ZGML_F16_EXTRA_ARGS:-}"
-ZGML_Q8_EXTRA_ARGS="${ZGML_Q8_EXTRA_ARGS:---metal-prompt-projection-row-chain-command}"
+ZGML_Q8_EXTRA_ARGS="${ZGML_Q8_EXTRA_ARGS:---metal-prompt-semantic-throughput-candidate}"
 HF_GGUF_REPO="${HF_GGUF_REPO:-mradermacher/SmolLM-135M-GGUF}"
 BENCH_AUTO_DOWNLOAD="${BENCH_AUTO_DOWNLOAD:-1}"
 BENCH_BASELINE_JSON="${BENCH_BASELINE_JSON:-}"
@@ -365,8 +365,9 @@ from scripts.bench_contract import (
     gate_evidence,
     native_aux_metrics,
     native_command_budget,
-    native_command_dispatch_shape,
+    native_command_dispatch_shape_for_row,
     native_command_pressure,
+    native_command_shape_for_row,
     native_lane_evidence,
     native_sidecar_pressure,
     require_gate_lanes,
@@ -498,7 +499,7 @@ def annotate_command_pressure(gate):
             row = gate.get(fmt, {}).get(phase_name)
             if not isinstance(row, dict):
                 continue
-            pressure = native_command_pressure(NATIVE_EXECUTION_COMMAND_SHAPES[fmt][phase_name])
+            pressure = native_command_pressure(native_command_shape_for_row(row, fmt, phase_name))
             if pressure is not None:
                 row["command_pressure_top3_per_call"] = pressure["top"]
                 row["command_pressure_total_per_call"] = pressure["total"]
@@ -507,20 +508,24 @@ def annotate_command_pressure(gate):
 
 def summarize(parsed, prompt, gen, reps):
     pp, tg = str(prompt), str(gen)
-    f16_prompt_label = PROMPT_LABEL
-    q8_prompt_label = PROMPT_LABEL
     f16_extra = os.environ.get("ZGML_F16_EXTRA_ARGS", "")
     q8_extra = os.environ.get("ZGML_Q8_EXTRA_ARGS", "")
     def has_extra_arg(raw, flag):
         return flag in raw.split()
-    if has_extra_arg(f16_extra, "--metal-prompt-projection-row-chain-command"):
-        f16_prompt_label = "metal scheduled prefill projection-row-chain command"
-    elif has_extra_arg(f16_extra, "--metal-prompt-projection-row-chain-command-candidate"):
-        f16_prompt_label = "metal scheduled prefill projection-row-chain command candidate"
-    if has_extra_arg(q8_extra, "--metal-prompt-projection-row-chain-command"):
-        q8_prompt_label = "metal scheduled prefill projection-row-chain command"
-    elif has_extra_arg(q8_extra, "--metal-prompt-projection-row-chain-command-candidate"):
-        q8_prompt_label = "metal scheduled prefill projection-row-chain command candidate"
+    def prompt_label_for_extra(raw):
+        if has_extra_arg(raw, "--metal-prompt-projection-row-chain-candidate"):
+            return "metal scheduled prefill projection-row-chain candidate"
+        if has_extra_arg(raw, "--metal-prompt-projection-row-chain-two-phase-candidate"):
+            return "metal scheduled prefill projection-row-chain two-phase candidate"
+        if has_extra_arg(raw, "--metal-prompt-semantic-throughput-candidate"):
+            return "metal scheduled prefill semantic throughput candidate"
+        if has_extra_arg(raw, "--metal-prompt-projection-row-chain-command"):
+            return "metal scheduled prefill projection-row-chain command"
+        if has_extra_arg(raw, "--metal-prompt-projection-row-chain-command-candidate"):
+            return "metal scheduled prefill projection-row-chain command candidate"
+        return PROMPT_LABEL
+    f16_prompt_label = prompt_label_for_extra(f16_extra)
+    q8_prompt_label = prompt_label_for_extra(q8_extra)
     gate = {}
     for fmt, key, prompt_label in (("f16", "zgml_f16", f16_prompt_label), ("q8_0", "zgml_q8_0", q8_prompt_label)):
         gate[fmt] = {
@@ -630,9 +635,9 @@ for fmt in ("f16", "q8_0"):
     for phase_name in ("prompt", "decode"):
         row = summary["gate_zgml"][fmt][phase_name] or {}
         expected = row.get("expected_profile_calls")
-        command_shape = NATIVE_EXECUTION_COMMAND_SHAPES[fmt][phase_name]
-        command_dispatch_shape = native_command_dispatch_shape(fmt, phase_name)
-        budget = native_command_budget(fmt, phase_name)
+        command_shape = native_command_shape_for_row(row, fmt, phase_name)
+        command_dispatch_shape = native_command_dispatch_shape_for_row(row, fmt, phase_name)
+        budget = native_command_budget(fmt, phase_name, row)
         prompt_tokens = int(os.environ["PROMPT"])
         aux_metrics = native_aux_metrics(fmt, phase_name)
         evidence = native_lane_evidence(row, fmt, phase_name, prompt_tokens)

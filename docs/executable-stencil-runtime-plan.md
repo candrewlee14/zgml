@@ -8108,3 +8108,15 @@ LLaMA-family browser WebGPU execution and checkpoint-family coverage beyond the
 	and realistic-head proofs compute real outputs
 while preserving the same evidence, no-allocation hot path, and
 no-fake-fallback contract.
+
+June 27, 2026 follow-up: the default ggml smoke now measures the promoted
+Q8 semantic throughput prefill lane instead of the older projection-row-chain
+command lane. The latest accepted smoke records Q8 prompt at `4119.59 tok/s`,
+`42.0%` of llama.cpp in the quick local run, `242` dispatches, `121` commands,
+and zero fallback on `metal scheduled prefill semantic throughput candidate`.
+The explicit Q8 projection-row-chain command smoke remains available and writes
+to `bench-results/q8-command-smoke/`, so it can keep proving the legacy command
+shape without taking over the headline `ggml-smoke-results` status. The next
+real performance target is therefore not selecting the semantic lane; it is
+making that semantic-with-input command faster, especially the width-parallel
+kernel/storage model behind `semantic_width_parallel_kernel`.

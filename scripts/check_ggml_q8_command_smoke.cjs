@@ -13,6 +13,7 @@ const env = {
   BENCH_BUILD_ZGML: process.env.BENCH_BUILD_ZGML ?? "0",
   BENCH_ALLOW_QUARANTINED: process.env.BENCH_ALLOW_QUARANTINED ?? "1",
   BENCH_ZGML_SAMPLES: process.env.BENCH_ZGML_SAMPLES ?? "1",
+  OUT_DIR: process.env.BENCH_GGML_Q8_COMMAND_OUT_DIR ?? "bench-results/q8-command-smoke",
   ZGML_Q8_EXTRA_ARGS: "--metal-prompt-projection-row-chain-command",
 };
 
