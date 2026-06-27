@@ -950,6 +950,17 @@ artifacts keep those fields empty or zero; a real
 `semantic_with_input_width_parallel_kernel` must flip them on while eliminating
 the decomposed extra dispatches, so the artifact distinguishes the intended
 tiled direct kernel from the older row-serial one-dispatch diagnostic.
+A staged prefix-kernel probe then fused input projection, input residual/RMS,
+and gate/up product into one dispatch before reusing the existing
+width-parallel down tail. It compiled and stayed correct
+(`max_abs_diff=0.000002`) and reduced the absorbed path from five dispatches to
+three (`decomposed_extra=2`, `pair=0`, `tail=2`), but throughput regressed to
+`absorbed=1.63x` versus the retained decomposed path's recent `~2.70x`
+evidence. The probe was not retained as a default lowering. The checker still
+recognizes that three-dispatch shape as a diagnostic profile so future staged
+experiments are classified accurately, but the next production target remains a
+truly faster direct width-parallel input-bridge kernel rather than this
+row-owned prefix staging.
 The qsemantic-throughput and qsemantic input-bridge readbacks follow the same
 stability rule as the other noisy perf lanes:
 `qsemantic-throughput-results:` and `qsemantic-input-bridge-results:` prefer the

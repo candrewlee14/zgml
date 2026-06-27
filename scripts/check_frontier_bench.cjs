@@ -2055,6 +2055,13 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     absorbedSemanticWithInputDispatches === 5 &&
     absorbedSemanticWithInputAttempts === 1 &&
     absorbedSemanticWithInputRefused === 0;
+  const absorbedUsesStagedWidthKernel =
+    absorbedRuntimeDispatches === 3 &&
+    absorbedProjectionRowChainDispatches === 0 &&
+    absorbedSemanticDispatches === 0 &&
+    absorbedSemanticWithInputDispatches === 3 &&
+    absorbedSemanticWithInputAttempts === 1 &&
+    absorbedSemanticWithInputRefused === 0;
 
   const failures = [];
   if (commandSpeedup < 1.0) failures.push(`semantic input command ${commandSpeedup.toFixed(2)}x < 1.00x`);
@@ -2074,8 +2081,8 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (commandRuntimeDispatches !== 5 || commandProjectionRowChainDispatches !== 2 || commandSemanticDispatches !== 3 || commandSemanticWithInputDispatches !== 0) {
     failures.push("semantic input command runtime must stay decomposed as row_chain=2 semantic=3 dispatches");
   }
-  if (!absorbedUsesDirectKernel && !absorbedUsesDecomposedKernel) {
-    failures.push("semantic input absorbed runtime must expose either the 1-dispatch width-parallel kernel or the legacy 5-dispatch decomposition");
+  if (!absorbedUsesDirectKernel && !absorbedUsesStagedWidthKernel && !absorbedUsesDecomposedKernel) {
+    failures.push("semantic input absorbed runtime must expose the 1-dispatch width-parallel kernel, staged 3-dispatch width path, or legacy 5-dispatch decomposition");
   }
   if (directSerialRuntimeDispatches !== 1 || directSerialSemanticDispatches !== 0 || directSerialSemanticWithInputDispatches !== 1 || directSerialSemanticWithInputAttempts !== 1 || directSerialSemanticWithInputRefused !== 0) {
     failures.push("semantic input direct_serial runtime must expose the one-dispatch row-serial diagnostic kernel");
@@ -2086,6 +2093,9 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (absorbedUsesDecomposedKernel && (absorbedFallbackPairDispatches !== 1 || absorbedFallbackTailDispatches !== 2)) {
     failures.push("semantic input decomposed absorbed fallback split must stay pair=1 tail=2");
   }
+  if (absorbedUsesStagedWidthKernel && (absorbedFallbackPairDispatches !== 0 || absorbedFallbackTailDispatches !== 2)) {
+    failures.push("semantic input staged width absorbed fallback split must stay pair=0 tail=2");
+  }
   if (absorbedUsesDirectKernel && (absorbedFallbackPairDispatches !== 0 || absorbedFallbackTailDispatches !== 0)) {
     failures.push("semantic input direct absorbed kernel must not use fallback pair/tail dispatches");
   }
@@ -2094,6 +2104,9 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   }
   if (absorbedUsesDecomposedKernel && (absorbedDecomposedCount !== 1 || absorbedDecomposedDispatches !== 5 || absorbedDecomposedExtraDispatches !== 4 || absorbedDecomposedRowChainDispatches !== 2 || absorbedDecomposedPairDispatches !== 1 || absorbedDecomposedTailDispatches !== 2)) {
     failures.push("semantic input absorbed decomposition must stay count=1 dispatches=5 extra_dispatches=4 row_chain=2 pair=1 tail=2 until the width-parallel kernel replaces it");
+  }
+  if (absorbedUsesStagedWidthKernel && (absorbedDecomposedCount !== 1 || absorbedDecomposedDispatches !== 3 || absorbedDecomposedExtraDispatches !== 2 || absorbedDecomposedRowChainDispatches !== 1 || absorbedDecomposedPairDispatches !== 0 || absorbedDecomposedTailDispatches !== 2)) {
+    failures.push("semantic input staged width absorbed decomposition must report count=1 dispatches=3 extra_dispatches=2 row_chain=1 pair=0 tail=2");
   }
   if (absorbedUsesDirectKernel && (absorbedDecomposedCount !== 0 || absorbedDecomposedDispatches !== 0 || absorbedDecomposedExtraDispatches !== 0 || absorbedDecomposedRowChainDispatches !== 0 || absorbedDecomposedPairDispatches !== 0 || absorbedDecomposedTailDispatches !== 0)) {
     failures.push("semantic input direct absorbed kernel must not report decomposed dispatch counters");
@@ -2107,6 +2120,9 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (absorbedUsesDecomposedKernel && absorbedDirectCount !== 0) {
     failures.push("semantic input decomposed absorbed profile must not report direct input bridge work counters");
   }
+  if (absorbedUsesStagedWidthKernel && absorbedDirectCount !== 0) {
+    failures.push("semantic input staged width absorbed profile must not report direct input bridge work counters");
+  }
   if (directSerialDirectCount !== 1 || directSerialDirectRows !== 128 || directSerialDirectRowThreadgroups !== 128 || directSerialDirectRowSerialDotOps !== 2985984 || directSerialDirectTotalRowSerialDotOps !== 382205952 || directSerialDirectTotalRowSerialDotOpsPerRowThreadgroup !== 2985984) {
     failures.push("semantic input direct_serial profile must expose one row-owned threadgroup per prompt row and the expected row-serial dot work");
   }
@@ -2116,8 +2132,14 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (absorbedUsesDecomposedKernel && (absorbedRowChainTiledCount !== 2 || absorbedRowChainTiledRowTileGroups !== 8 || absorbedRowChainTiledNTiles !== 36 || absorbedRowChainTiledSerialTileLoops !== 144 || absorbedRowChainTiledTwoPhaseCount !== 2 || absorbedRowChainTiledFinalizeTileGroups !== 144 || absorbedRowChainTiledFinalizeElements !== 147456)) {
     failures.push("semantic input absorbed tiled profile must expose two two-phase row-chain leaves");
   }
+  if (absorbedUsesStagedWidthKernel && (absorbedRowChainTiledCount !== 1 || absorbedRowChainTiledRowTileGroups !== 4 || absorbedRowChainTiledNTiles !== 18 || absorbedRowChainTiledSerialTileLoops !== 72 || absorbedRowChainTiledTwoPhaseCount !== 1 || absorbedRowChainTiledFinalizeTileGroups !== 72 || absorbedRowChainTiledFinalizeElements !== 73728)) {
+    failures.push("semantic input staged width absorbed tiled profile must expose one width-parallel row-chain tail");
+  }
   if (absorbedUsesDecomposedKernel && (absorbedRowChainWidthParallelCount !== 1 || absorbedRowChainWidthParallelLanes !== 4)) {
     failures.push("semantic input absorbed tiled profile must prove one width-parallel row-chain leaf with four lanes");
+  }
+  if (absorbedUsesStagedWidthKernel && (absorbedRowChainWidthParallelCount !== 1 || absorbedRowChainWidthParallelLanes !== 4)) {
+    failures.push("semantic input staged width absorbed tiled profile must prove one width-parallel row-chain tail with four lanes");
   }
   if (absorbedUsesDirectKernel && (absorbedRowChainTiledCount !== 0 || absorbedRowChainTiledSpilledElementwise !== 0 || absorbedRowChainTiledSpilledInput !== 0 || absorbedRowChainTiledOutputSpills !== 0)) {
     failures.push("semantic input direct absorbed kernel must not report row-chain tiled spills");
@@ -2127,6 +2149,9 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   }
   if (absorbedUsesDecomposedKernel && (absorbedRowChainTiledSpilledElementwise !== 1 || absorbedRowChainTiledSpilledInput !== 576 || absorbedRowChainTiledOutputSpills !== 0)) {
     failures.push("semantic input absorbed spill profile must stay spilled_elementwise=1 spilled_input=576 output_spills=0");
+  }
+  if (absorbedUsesStagedWidthKernel && (absorbedRowChainTiledSpilledElementwise !== 0 || absorbedRowChainTiledSpilledInput !== 0 || absorbedRowChainTiledOutputSpills !== 0)) {
+    failures.push("semantic input staged width spill profile must stay spill-free for the retained tail");
   }
 
   const next = "semantic_with_input_width_parallel_kernel";
@@ -2258,11 +2283,17 @@ function focusedSemanticInputBridgeMargin(current) {
     current.absorbedSemanticWithInputDispatches === 1 &&
     current.absorbedDirectWidthParallelCount === 1 &&
     current.absorbedDirectWidthParallelLanes >= 4;
+  const stagedWidthReady =
+    current.absorbedRuntimeDispatches === 3 &&
+    current.absorbedSemanticWithInputDispatches === 3 &&
+    current.absorbedDecomposedExtraDispatches === 2 &&
+    current.absorbedRowChainTiledCount === 1 &&
+    current.absorbedRowChainWidthParallelCount === 1;
   return Math.min(
     current.absorbedSpeedup,
     projectionRowChainMaxAbsDiffCeil / Math.max(current.absorbedMaxAbsDiff, Number.EPSILON),
     current.absorbedShapeCommands === 1 ? 1 : 0,
-    legacyDecomposedReady || directWidthReady ? 1 : 0,
+    legacyDecomposedReady || stagedWidthReady || directWidthReady ? 1 : 0,
   );
 }
 

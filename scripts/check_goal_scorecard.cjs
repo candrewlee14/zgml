@@ -1616,7 +1616,7 @@ function checkScripts() {
     "absorbedRowChainWidthParallelCount",
     "width_parallel=${absorbedRowChainWidthParallelCount}:lanes:${absorbedRowChainWidthParallelLanes}",
     "direct=${absorbedDirectCount}:rows=${absorbedDirectRows}:row_threadgroups=${absorbedDirectRowThreadgroups}:row_serial_dot_ops=${absorbedDirectRowSerialDotOps}:total_row_serial_dot_ops=${absorbedDirectTotalRowSerialDotOps}:per_row_threadgroup=${absorbedDirectTotalRowSerialDotOpsPerRowThreadgroup}",
-    "semantic input absorbed runtime must expose either the 1-dispatch width-parallel kernel or the legacy 5-dispatch decomposition",
+    "semantic input absorbed runtime must expose the 1-dispatch width-parallel kernel, staged 3-dispatch width path, or legacy 5-dispatch decomposition",
     "semantic input direct absorbed kernel must not use fallback pair/tail dispatches",
     "semantic input direct absorbed kernel must not report row-chain tiled spills",
     "semantic input absorbed decomposition must stay count=1 dispatches=5 extra_dispatches=4 row_chain=2 pair=1 tail=2 until the width-parallel kernel replaces it",
