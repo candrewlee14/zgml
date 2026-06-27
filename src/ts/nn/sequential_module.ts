@@ -65,6 +65,7 @@ type TinyLinearCompiledSpec = SequentialCompiledSpec & Readonly<{
 }>;
 type TensorConstructor = new (values: Float32Array, shape?: readonly number[], options?: SequentialTensorConstructOptions) => SequentialTensor;
 type F32 = (values: unknown) => Float32Array;
+type PrepareF32 = (values: unknown) => { readonly data: Float32Array; readonly shape: readonly number[] };
 type FactoryCallback<Args extends readonly unknown[], Return> = {
   bivarianceHack(...args: Args): Return;
 }["bivarianceHack"];
@@ -233,6 +234,7 @@ function samePackedBindings(left: Record<string, unknown>, right: Record<string,
 export type SequentialModuleClassHooks = SequentialProgramCompileHooksInput & {
   Tensor: TensorConstructor;
   f32: F32;
+  prepareF32?: PrepareF32;
   traceSequentialProgram: FactoryCallback<[layers: readonly NnModule[], options: ModuleTraceOptions], unknown>;
   nativeEagerLinearActivationInto?: NativeEagerLinearActivationInto;
   isGradEnabled?: () => boolean;
@@ -243,6 +245,7 @@ export type SequentialModuleClassOptions = Readonly<Record<string, unknown> & Se
 export function createSequentialModuleClass(options: SequentialModuleClassOptions) {
   const TensorClass = options.Tensor;
   const f32 = options.f32;
+  const prepareF32 = typeof options.prepareF32 === "function" ? options.prepareF32 : null;
   const stateHooks = createStatefulModuleStateHooks(options, "SequentialModule", {
     trainModule: setChildModuleTraining,
   });
@@ -462,15 +465,31 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
 
     forward(inputValues: unknown) {
       const inputIsTensor = inputValues instanceof TensorClass;
-      let out: unknown = inputIsTensor ? inputValues : f32(inputValues);
+      let out: unknown = inputValues;
       if (inputIsTensor) {
         const nativeOut = this.nativeForward(out as SequentialTensor);
         if (nativeOut !== null) return nativeOut;
       } else {
         const firstLayer = this.layers[0];
-        if (isSequentialLinearLayer(firstLayer) && out instanceof Float32Array && out.length === firstLayer.inFeatures) {
-          const nativeOut = this.nativeForward(new TensorClass(out, [firstLayer.inFeatures]));
-          if (nativeOut !== null) return nativeOut;
+        if (isSequentialLinearLayer(firstLayer)) {
+          const preparedInput = prepareF32 ? prepareF32(inputValues) : null;
+          const data = preparedInput ? preparedInput.data : f32(inputValues);
+          out = data;
+          const prepared = preparedInput ?? { data, shape: [firstLayer.inFeatures] };
+          if (
+            prepared.data instanceof Float32Array &&
+            prepared.data.length % firstLayer.inFeatures === 0 &&
+            (
+              (prepared.shape.length === 1 && prepared.shape[0] === firstLayer.inFeatures) ||
+              (prepared.shape.length >= 2 && prepared.shape[prepared.shape.length - 1] === firstLayer.inFeatures)
+            )
+          ) {
+            const nativeOut = this.nativeForward(new TensorClass(prepared.data, prepared.shape));
+            if (nativeOut !== null) return nativeOut;
+          }
+          out = prepared.data;
+        } else {
+          out = f32(inputValues);
         }
       }
       for (let index = 0; index < this.layers.length; index += 1) {

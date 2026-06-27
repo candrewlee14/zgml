@@ -467,7 +467,9 @@ Current checked progress:
   also accepts the PyTorch-like plain vector input shape for Linear-headed
   Sequential models, so `noGrad(() => model.forward([x0, x1]))` reaches the
   Zig Program/Session path without forcing users to pre-wrap the vector as a
-  Tensor.
+  Tensor. Rectangular nested arrays now preserve their batch shape too, so
+  `noGrad(() => model.forward([[x0, x1], [y0, y1]]))` follows the same native
+  Program route with a `[batch, features]` tensor boundary.
   The new Node/Bun-selectable `NATIVE_EAGER_GAP_JSON` microscope measures the first targets directly:
   `linear_batched` eager TS tensor execution,
   `lazy_matmul_add_gelu_batched` eager fused matmul work, and

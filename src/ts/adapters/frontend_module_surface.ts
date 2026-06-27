@@ -51,6 +51,7 @@ export type AdapterFrontendModuleSurfaceOptions = AdapterModuleCompileHooks & Ad
   sharedFrontend: SharedFrontendRuntime;
   Tensor: AdapterTensorConstructor;
   f32: ActivationModuleOptions["f32"] & FeatureNormModuleOptions["f32"] & ShapeModuleOptions["f32"] & SequentialModuleOptions["f32"];
+  prepareF32: NonNullable<SequentialModuleOptions["prepareF32"]>;
   f32WithLength: LinearModuleOptions["f32WithLength"];
   indexValues: EmbeddingModuleOptions["indexValues"];
   addTensorGrad: DropoutModuleOptions["addTensorGrad"] & EmbeddingModuleOptions["addTensorGrad"] & Conv2dModuleOptions["addTensorGrad"] & AvgPool2dModuleOptions["addTensorGrad"] & MaxPool2dModuleOptions["addTensorGrad"] & FeatureNormModuleOptions["addTensorGrad"];
@@ -250,6 +251,7 @@ export function createAdapterFrontendModuleSurface(options: AdapterFrontendModul
   SequentialModule = options.sharedFrontend.createSequentialModuleClass({
     Tensor: options.Tensor,
     f32: options.f32,
+    prepareF32: options.prepareF32,
     isGradEnabled: options.isGradEnabled,
     nativeEagerLinearActivationInto: options.nativeEagerLinearActivationInto,
     zeroGrad: options.zeroGrad,

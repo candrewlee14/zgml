@@ -3631,7 +3631,7 @@ function checkSequentialProgramCompileSurfaceIsShared(errors) {
   if (
     !sharedFrontendSource.includes("type SequentialModuleClassHooks") ||
     !sharedFrontendSource.includes("export type SharedSequentialModuleClassOptions = Readonly<") ||
-    !sharedFrontendSource.includes('SequentialProgramCompileCoreHooksInput & Pick<SequentialModuleClassOptions, "Tensor" | "f32" | "traceSequentialProgram" | "nativeEagerLinearActivationInto" | "isGradEnabled">')
+    !sharedFrontendSource.includes('SequentialProgramCompileCoreHooksInput & Pick<SequentialModuleClassOptions, "Tensor" | "f32" | "prepareF32" | "traceSequentialProgram" | "nativeEagerLinearActivationInto" | "isGradEnabled">')
   ) {
     errors.push("src/ts/shared_frontend.ts must re-use the authored SequentialModuleClassHooks contract while injecting placement in its wrapper");
   }

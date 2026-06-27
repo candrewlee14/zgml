@@ -1019,6 +1019,7 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   sharedFrontend,
   Tensor,
   f32,
+  prepareF32,
   f32WithLength,
   indexValues,
   addTensorGrad,

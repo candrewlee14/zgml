@@ -577,7 +577,7 @@ export function createAvgPool2dModuleClass(options: SharedMaxPool2dModuleClassOp
 }
 
 export type SharedSequentialModuleClassOptions = Readonly<
-  SequentialProgramCompileCoreHooksInput & Pick<SequentialModuleClassOptions, "Tensor" | "f32" | "traceSequentialProgram" | "nativeEagerLinearActivationInto" | "isGradEnabled">
+  SequentialProgramCompileCoreHooksInput & Pick<SequentialModuleClassOptions, "Tensor" | "f32" | "prepareF32" | "traceSequentialProgram" | "nativeEagerLinearActivationInto" | "isGradEnabled">
 >;
 
 export function createSequentialModuleClass(options: SharedSequentialModuleClassOptions) {

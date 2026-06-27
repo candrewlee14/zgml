@@ -2491,6 +2491,29 @@ function expectSequentialProgramEvidence(adapter: Record<string, any>, label: st
     [2],
     `${label} noGrad nn.Sequential auto native Program array forward`,
   );
+  const nativeForwardBatchArraySequential = new adapter.nn.Sequential(
+    adapter.nn.linear(2, 2, { weights: [1, 0, 0, 1], bias: [0, 0] }),
+    adapter.nn.relu(),
+    adapter.nn.linear(2, 1, { weights: [1, -1], bias: [0] }),
+  );
+  nativeForwardBatchArraySequential.at(0).forward = () => {
+    throw new Error("poisoned batch array first JS forward");
+  };
+  nativeForwardBatchArraySequential.at(1).forward = () => {
+    throw new Error("poisoned batch array relu JS forward");
+  };
+  nativeForwardBatchArraySequential.at(2).forward = () => {
+    throw new Error("poisoned batch array last JS forward");
+  };
+  const nativeBatchArray = adapter.noGrad(() => nativeForwardBatchArraySequential.forward([[2, -3], [4, 1]]));
+  expectClose(
+    nativeBatchArray.data,
+    [2, 3],
+    `${label} noGrad nn.Sequential auto native Program batch array forward`,
+  );
+  if (nativeBatchArray.shape.join("x") !== "2x1") {
+    throw new Error(`${label} expected noGrad nn.Sequential auto native Program batch array shape [2,1], got [${nativeBatchArray.shape.join(",")}]`);
+  }
   nativeForwardLastLayer.weight[0] = 2;
   expectClose(
     adapter.noGrad(() => nativeForwardSequential.forward(adapter.tensor([2, -3], [2]))).data,
