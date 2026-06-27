@@ -2,6 +2,7 @@
 
 import type {
   OptimizerStateKind,
+  CompiledTrainingPlan,
   TrainEvaluateContext,
   TrainEvaluateOptions,
   TrainPredictContext,
@@ -208,6 +209,9 @@ type CompiledTrainingStep = AnyRecord & {
   step(input: unknown, target: unknown): unknown;
   inputShape?: () => readonly number[];
   outputShape?: () => readonly number[];
+  plan?: () => CompiledTrainingPlan;
+  compileEvidence?: () => CompiledTrainingPlan;
+  compile_evidence?: () => CompiledTrainingPlan;
 };
 
 type CompileTrainingStepHook = LossTrainHookCallback<[
@@ -1311,6 +1315,17 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     return value;
   }
 
+  function compiledTrainingPlan(compiled: CompiledTrainingStep): CompiledTrainingPlan | null {
+    const plan = typeof compiled.plan === "function"
+      ? compiled.plan()
+      : typeof compiled.compileEvidence === "function"
+        ? compiled.compileEvidence()
+        : typeof compiled.compile_evidence === "function"
+          ? compiled.compile_evidence()
+          : null;
+    return plan && typeof plan === "object" ? plan : null;
+  }
+
   function modelInputFeatureCount(module: unknown) {
     const target = module as AnyRecord | null;
     if (!target) return null;
@@ -1528,6 +1543,7 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     const earlyStopping = fitEarlyStoppingOptions(fitOptions);
     const batchCount = fitBatchCountEvidence(batches);
     const sampleCount = fitSampleCountEvidence(batches);
+    const plan = compiledTrainingPlan(compiled);
     const losses = [];
     let bestLoss: number | null = null;
     let bestStep: number | null = null;
@@ -1603,6 +1619,8 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
       lastLoss: null,
       native: true,
       backend: compiled.backend ?? "native",
+      compiledPlan: plan,
+      compiled_plan: plan,
     });
   }
 

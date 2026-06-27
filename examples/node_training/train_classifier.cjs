@@ -167,6 +167,8 @@ if (
   !train.isTrainFitEvidence(nativeFit) ||
   nativeFit.native !== true ||
   nativeFit.backend !== "cpu" ||
+  nativeFit.compiledPlan !== nativePlan ||
+  nativeFit.compiled_plan !== nativePlan ||
   nativeFit.steps !== 240 ||
   nativeFit.losses.length !== 240
 ) {

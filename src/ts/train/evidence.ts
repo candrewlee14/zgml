@@ -32,6 +32,49 @@ function nullableFiniteNumber(value: unknown) {
   return value === null || (typeof value === "number" && Number.isFinite(value));
 }
 
+type CompiledTrainingPlanEvidence = AnyRecord & {
+  kind: "zgml.native-training-plan";
+  native: true;
+  loweredBy: "zig-ffi";
+  runtimePath: string;
+  backend: string;
+  modelKind: string;
+  optimizerKind: string;
+  lossKind: string;
+  inputShape: readonly number[];
+  outputShape: readonly number[];
+  parameterCount: number;
+  parameterElements: number;
+  kernels: readonly string[];
+  workspace: AnyRecord;
+};
+
+function isCompiledTrainingPlan(value: unknown): value is CompiledTrainingPlanEvidence {
+  if (!isRecord(value) || !Object.isFrozen(value)) return false;
+  if (value.kind !== "zgml.native-training-plan" || value.native !== true || value.loweredBy !== "zig-ffi") return false;
+  if (typeof value.runtimePath !== "string" || typeof value.backend !== "string") return false;
+  if (typeof value.modelKind !== "string" || typeof value.optimizerKind !== "string" || typeof value.lossKind !== "string") return false;
+  if (!Array.isArray(value.inputShape) || !Object.isFrozen(value.inputShape) || value.inputShape.length !== 2) return false;
+  if (!Array.isArray(value.outputShape) || !Object.isFrozen(value.outputShape) || value.outputShape.length !== 2) return false;
+  if (!value.inputShape.every(isNonNegativeSafeInteger) || !value.outputShape.every(isNonNegativeSafeInteger)) return false;
+  if (!isNonNegativeSafeInteger(value.parameterCount) || !isNonNegativeSafeInteger(value.parameterElements)) return false;
+  if (!Array.isArray(value.kernels) || !Object.isFrozen(value.kernels) || !value.kernels.every((kernel: unknown) => typeof kernel === "string")) return false;
+  if (!isRecord(value.workspace) || !Object.isFrozen(value.workspace)) return false;
+  return Object.values(value.workspace).every((entry) => isNonNegativeSafeInteger(entry));
+}
+
+function compiledTrainingPlanSignature(plan: unknown) {
+  if (!isCompiledTrainingPlan(plan)) return "null";
+  return [
+    plan.modelKind,
+    plan.optimizerKind,
+    plan.lossKind,
+    plan.inputShape.join("x"),
+    plan.outputShape.join("x"),
+    plan.kernels.join("+"),
+  ].join(":");
+}
+
 export function trainStepEvidenceSignature(evidence: AnyRecord) {
   return [
     "train-step",
@@ -79,6 +122,9 @@ export function trainFitEvidenceSignature(evidence: AnyRecord) {
     `finalLoss=${scalarSignature(evidence.finalLoss)}`,
     `lastStep=${evidence.lastStep?.signature ?? "null"}`,
     `lastLoss=${evidence.lastLoss ? 1 : 0}`,
+    `native=${evidence.native === true ? 1 : 0}`,
+    `backend=${evidence.backend ?? "null"}`,
+    `compiledPlan=${compiledTrainingPlanSignature(evidence.compiledPlan ?? null)}`,
   ].join("|");
 }
 
@@ -278,6 +324,8 @@ export function isTrainFitEvidence(evidence: unknown): evidence is TrainFitEvide
   if (!nullableNonNegativeSafeInteger(evidence.bestStep) || evidence.best_step !== evidence.bestStep) return false;
   if (!nullableFiniteNumber(evidence.finalLoss)) return false;
   if (evidence.lastStep !== null && !isTrainStepEvidence(evidence.lastStep)) return false;
+  if (evidence.compiledPlan !== undefined && evidence.compiledPlan !== null && !isCompiledTrainingPlan(evidence.compiledPlan)) return false;
+  if (evidence.compiled_plan !== undefined && evidence.compiled_plan !== evidence.compiledPlan) return false;
   return evidence.signature === trainFitEvidenceSignature(evidence);
 }
 

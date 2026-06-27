@@ -139,6 +139,13 @@ const nativeAfter = scalar(loss.mse(nativeModel.forward(tensor([1, -1], [1, 2]))
 if (nativeFit.native !== true || nativeTrainer.native !== true || nativeTrainer.backend !== "cpu") {
   throw new Error("train.fit compiled native linear trainer must return native fit evidence");
 }
+if (
+  nativeFit.compiledPlan !== nativePlan ||
+  nativeFit.compiled_plan !== nativePlan ||
+  nativeFit.compiledPlan.kernels[0] !== "zgml_train_linear_mse_sgd_f32"
+) {
+  throw new Error(`compiled native linear fit evidence must retain the Zig plan: ${JSON.stringify(nativeFit.compiledPlan)}`);
+}
 if (!train.isTrainFitEvidence(nativeFit) || nativeFit.steps !== 80 || nativeFit.losses.length !== 80) {
   throw new Error("compiled native linear trainer must return signed fit evidence for every optimizer step");
 }
@@ -165,6 +172,13 @@ const ergonomicNativeFit = train.fitModule(
 const ergonomicNativeAfter = scalar(loss.mse(ergonomicNativeModel.forward(tensor([1, -1], [1, 2])), tensor([2.5], [1, 1])));
 if (ergonomicNativeFit.native !== true || ergonomicNativeFit.backend !== "cpu") {
   throw new Error("train.fitModule should automatically compile supported linear MSE training through the native Zig path");
+}
+if (
+  ergonomicNativeFit.compiledPlan?.loweredBy !== "zig-ffi" ||
+  ergonomicNativeFit.compiledPlan.kernels[0] !== "zgml_train_linear_mse_sgd_f32" ||
+  ergonomicNativeFit.compiled_plan !== ergonomicNativeFit.compiledPlan
+) {
+  throw new Error(`ergonomic native fit evidence must expose its Zig plan: ${JSON.stringify(ergonomicNativeFit.compiledPlan)}`);
 }
 if (!train.isTrainFitEvidence(ergonomicNativeFit) || ergonomicNativeFit.steps !== 80 || ergonomicNativeFit.losses.length !== 80) {
   throw new Error("native train.fitModule must return signed fit evidence for every optimizer step");
