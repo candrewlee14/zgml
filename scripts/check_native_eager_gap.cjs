@@ -552,9 +552,10 @@ const gapSpecs = Object.freeze([
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
-    minNativeEagerModuleSpeedup: 0.95,
+    minNativeEagerSpeedup: 20,
+    minNativeEagerModuleSpeedup: 20,
     tolerance: 1e-6,
-    next: "native_eager_where_storage_slice",
+    next: "native_eager_comparison_storage_slice",
   }),
   Object.freeze({
     key: "lazy_matmul_add_gelu_batched",

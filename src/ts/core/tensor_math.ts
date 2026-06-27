@@ -179,6 +179,31 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     return true;
   }
 
+  function nativeElementwiseBinaryShape(
+    tensor: TensorMathTensor,
+    rhs: Float32Array,
+    rhsShape: readonly number[],
+  ) {
+    if (rhs.length === 1 || sameShape(tensor.shape, rhsShape)) return tensor.shape;
+    return null;
+  }
+
+  function nativeElementwiseBinaryTensor(
+    TensorClass: TensorConstructor,
+    tensor: TensorMathTensor,
+    rhsTensor: TensorMathTensor | null,
+    rhs: Float32Array,
+    rhsShape: readonly number[],
+    op: string,
+  ) {
+    const resultShape = nativeElementwiseBinaryShape(tensor, rhs, rhsShape);
+    if (!resultShape) return null;
+    const output = new Float32Array(tensor.length);
+    return nativeElementwiseBinaryInto(output, tensor, rhsTensor, rhs, rhsShape, op)
+      ? new TensorClass(output, resultShape)
+      : null;
+  }
+
   function nativeActivationUnaryInto(output: Float32Array, tensor: TensorMathTensor, activation: string) {
     if (typeof nativeEagerActivationInto !== "function") return false;
     if (output.length < nativeEagerActivationMinLength) return false;
@@ -246,9 +271,13 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const rhsTensor = other instanceof TensorClass ? other as TensorMathTensor : null;
     const rhs = f32(other);
     const rhsShape = rhsTensor ? rhsTensor.shape : inferredOperandShape(rhs, tensor.shape);
+    const gradEnabled = gradModeEnabled();
+    if (!gradEnabled) {
+      const nativeResult = nativeElementwiseBinaryTensor(TensorClass, tensor, rhsTensor, rhs, rhsShape, nativeOp);
+      if (nativeResult) return nativeResult;
+    }
     const plan = broadcastPlan(tensor.shape, rhsShape, label);
     const out = new Float32Array(shapeProduct(plan.shape));
-    const gradEnabled = gradModeEnabled();
     const needsGrad = gradEnabled && (tensor.requiresGrad || Boolean(rhsTensor && rhsTensor.requiresGrad));
     if (!gradEnabled && nativeElementwiseBinaryInto(out, tensor, rhsTensor, rhs, rhsShape, nativeOp)) {
       // Native eager elementwise currently accepts same-shape or scalar RHS. General broadcasting stays in TS.
@@ -292,6 +321,10 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const rhsTensor = other instanceof TensorClass ? other as TensorMathTensor : null;
     const rhs = f32(other);
     const rhsShape = rhsTensor ? rhsTensor.shape : inferredOperandShape(rhs, tensor.shape);
+    if (isNativeComparisonOp(label)) {
+      const nativeResult = nativeElementwiseBinaryTensor(TensorClass, tensor, rhsTensor, rhs, rhsShape, label);
+      if (nativeResult) return nativeResult;
+    }
     const plan = broadcastPlan(tensor.shape, rhsShape, label);
     const out = new Float32Array(shapeProduct(plan.shape));
     if (!isNativeComparisonOp(label) || !nativeElementwiseBinaryInto(out, tensor, rhsTensor, rhs, rhsShape, label)) {
@@ -322,6 +355,18 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const inputData = f32(input);
     const inputShape = inputTensor ? inputTensor.shape : inferredOperandShape(inputData, condition.shape);
     const otherData = f32(other);
+    const gradEnabled = gradModeEnabled();
+    const otherShapeForNative = otherTensor ? otherTensor.shape : inferredOperandShape(otherData, condition.shape);
+    if (
+      !gradEnabled &&
+      (inputData.length === 1 || sameShape(inputShape, condition.shape)) &&
+      (otherData.length === 1 || sameShape(otherShapeForNative, condition.shape))
+    ) {
+      const out = new Float32Array(condition.length);
+      if (nativeWhereInto(out, condition, inputTensor, inputData, inputShape, otherTensor, otherData, otherShapeForNative, condition.shape)) {
+        return new TensorClass(out, condition.shape);
+      }
+    }
     const valueOtherShape = otherTensor ? otherTensor.shape : inferredOperandShape(otherData, inputShape);
     const valuePlan = broadcastPlan(inputShape, valueOtherShape, "where values");
     const resultPlan = broadcastPlan(condition.shape, valuePlan.shape, "where condition");
@@ -330,7 +375,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const otherShape = otherTensor ? otherTensor.shape : inferredOperandShape(otherData, resultPlan.shape);
     const otherPlan = broadcastPlan(otherShape, resultPlan.shape, "where other");
     const out = new Float32Array(shapeProduct(resultPlan.shape));
-    const needsGrad = gradModeEnabled() && (Boolean(inputTensor && inputTensor.requiresGrad) || Boolean(otherTensor && otherTensor.requiresGrad));
+    const needsGrad = gradEnabled && (Boolean(inputTensor && inputTensor.requiresGrad) || Boolean(otherTensor && otherTensor.requiresGrad));
     if (!needsGrad && nativeWhereInto(out, condition, inputTensor, inputData, inputShape, otherTensor, otherData, otherShape, resultPlan.shape)) {
       // Native eager where currently accepts result-shaped condition and scalar/same-shape values. General broadcasting stays in TS.
     } else {

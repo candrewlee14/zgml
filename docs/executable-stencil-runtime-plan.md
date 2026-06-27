@@ -519,9 +519,15 @@ Current checked progress:
   high-level clamp on its faster JS loop for now while still exposing the raw
   Zig clamp ABI for explicit measurement. `zgml.nativeEager.whereInto` /
   no-grad `Tensor.where()` use a dedicated `zgml_eager_where_f32` ABI for
-  result-shaped conditions plus scalar or same-shape values. General broadcast
-  and autograd cases stay on the TS reference path until they have an equally
-  honest native contract.
+  result-shaped conditions plus scalar or same-shape values. The scalar/
+  same-shape no-grad binary, comparison, and where paths now skip full TS
+  broadcast index planning before calling native eager, so the ergonomic Tensor
+  API pays for Zig work rather than JS planning when it is already in the native
+  contract. Fresh Node/Bun native-eager rows prove
+  `input.lt(0).where(input, 0)` through the public no-grad Tensor path at
+  `124.10x` / `92.43x` module speedups with zero measured diff and enforced
+  `20x` direct/module floors. General broadcast and autograd cases stay on the
+  TS reference path until they have an equally honest native contract.
   The same microscope now also covers `matmul -> add(bias) -> ReLU`,
   `matmul -> add(bias) -> SiLU`, `matmul -> add(bias) -> Sigmoid`, and
   `matmul -> add(bias) -> Tanh`, proving the activation hook for common
@@ -589,7 +595,10 @@ Current checked progress:
   `4x` enforced direct and module floors after the Zig vector helper, with
   measured no-grad module speedups of `12.50x` / `14.74x` on Node and `8.93x` /
   `12.36x` on Bun, max diff `0.000002`. Grad-enabled activation calls and
-  small tensors stay on the TS/autograd path.
+  small tensors stay on the TS/autograd path. The same artifact family now
+  proves the no-grad `Tensor.where()` path after removing the pre-native
+  broadcast-plan tax: Node reports `where_batched` module speedup `124.10x`,
+  Bun reports `92.43x`, and both carry zero measured diff against the reference.
   The native eager adapter policy now lives in
   `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
   shape inference, output validation, public aliases, and activation mapping,
