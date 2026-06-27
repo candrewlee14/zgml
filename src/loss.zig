@@ -9,9 +9,9 @@ pub const native_helper_manifest = .{
     .domain = "loss",
     .product_frontend = false,
     .product_owner = "src/ts/**",
-    .product_policy = "forbidden",
+    .product_policy = "required-core",
     .role = "native-helper-substrate",
-    .alignment_boundary = "Program/Session/ABI contracts",
+    .alignment_boundary = "JS/TS API -> Zig C ABI -> Program/Session kernels",
 };
 
 /// Mean squared error reduced to a scalar loss.
@@ -63,9 +63,9 @@ test "loss native helper surface stays curated" {
     try testing.expectEqualStrings("loss", native_helper_manifest.domain);
     try testing.expectEqual(false, native_helper_manifest.product_frontend);
     try testing.expectEqualStrings("src/ts/**", native_helper_manifest.product_owner);
-    try testing.expectEqualStrings("forbidden", native_helper_manifest.product_policy);
+    try testing.expectEqualStrings("required-core", native_helper_manifest.product_policy);
     try testing.expectEqualStrings("native-helper-substrate", native_helper_manifest.role);
-    try testing.expectEqualStrings("Program/Session/ABI contracts", native_helper_manifest.alignment_boundary);
+    try testing.expectEqualStrings("JS/TS API -> Zig C ABI -> Program/Session kernels", native_helper_manifest.alignment_boundary);
 }
 
 test "mse alias composes differentiable tensor primitives" {

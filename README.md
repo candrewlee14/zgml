@@ -842,8 +842,9 @@ The graph IR is deliberately small:
   ABI structs are the execution substrate, not a second frontend to keep in
   sync.
 - The Zig root exposes `native_substrate_manifest` with the same boundary:
-  TypeScript is the product language, `tsdown` fans out package artifacts, and
-  Zig aligns only through Program/Session/ABI contracts.
+  TypeScript owns the ergonomic API, `tsdown` fans out package artifacts, and
+  Zig owns the required core through JS/TS API -> Zig C ABI -> Program/Session
+  kernels.
 - Higher-level TS tensor and module conveniences lower to primitive/composite
   IR ops or compose them; new primitives should be rare.
 - Optimizer and training policy stays host/product-level until there is a

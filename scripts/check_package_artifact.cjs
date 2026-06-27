@@ -65,7 +65,7 @@ const expectedExports = expectedMetadata.exports;
 if (
   packageMetadataPolicyManifest.source !== "ts-package-policy" ||
   packageMetadataPolicyManifest.policyOwner !== "scripts/package_metadata_policy.cjs" ||
-  packageMetadataPolicyManifest.productSourceOfTruth !== "ts-only" ||
+  packageMetadataPolicyManifest.productSourceOfTruth !== "ts-api-zig-core" ||
   packageMetadataPolicyManifest.packageFanout !== "tsdown" ||
   packageMetadataPolicyManifest.frontendSync !== "none" ||
   packageMetadataPolicyManifest.packageRuntimeRoot !== expectedMetadata.main ||

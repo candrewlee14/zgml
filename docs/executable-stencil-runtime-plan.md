@@ -31,7 +31,7 @@ substrate: kernels, buffers, executable Programs, Sessions, backend hooks, and
 ABI-stable native handles. Cross-language alignment should happen at runtime
 contracts and evidence, not by re-authoring the product API twice.
 The executable contract now names that explicitly: `productSourceOfTruth` is
-`ts-only`, and native product policy is `forbidden`.
+`ts-api-zig-core`, and native product policy is `required-core`.
 
 Current goal, stated without the old sync trap:
 
@@ -70,15 +70,15 @@ direction is to either move that policy into `src/ts/**` or lower the TS feature
 through a stable Program/Session/ABI contract.
 Native helper modules can keep substrate conveniences, fixtures, and ABI
 evidence, but they are not allowed to become product-policy owners. Their
-manifest role is `native-helper-substrate`, with `product_policy = "forbidden"`.
+manifest role is `native-helper-substrate`, with `product_policy = "required-core"`.
 
 The Zig root module exposes `native_substrate_manifest` for the same reason the
 TS package exposes `frontendManifest`: it makes the boundary executable. Zig's
-role is `runtime-kernel-abi-substrate`, the product language is TypeScript, the
-product source of truth is `ts-only`, the product semantics owner is
-`src/ts/**`, the package fan-out is `tsdown`, native product policy is
-`forbidden`, and native alignment is `contract-tested-substrate`:
-Program/Session/ABI contracts, runtime evidence, and backend behavior tests.
+role is `core-kernel-runtime`, the product language is TypeScript, the
+product source of truth is `ts-api-zig-core`, the product semantics owner is
+`src/ts/** + src/**/*.zig`, the package fan-out is `tsdown`, native product policy is
+`required-core`, and native alignment is `zig-core-contract-tested`:
+JS/TS API -> Zig C ABI -> Program/Session kernels, runtime evidence, and backend behavior tests.
 Handwritten frontend mirrors are not allowed.
 The same boundary now has a static numeric drift guard: `npm run
 check:ts-source-architecture` compares the TS ABI descriptor maps in
@@ -2159,8 +2159,8 @@ frontends pretending to be one API.
 
 Pinned decision: do not build a sync system. Build one TS library; the future JS FFI package should be written in the same TS product surface; keep a single editable product language, not many source-level frontends pretending to be one API.
 
-The rule is stronger than "prefer TS." The package product is TS-only at the
-source level. `tsdown` is the fan-out mechanism for Node, Bun, browser-safe
+The rule is stronger than "prefer TS." The package API is TS-authored, while
+the core runtime is Zig-owned. `tsdown` is the fan-out mechanism for Node, Bun, browser-safe
 frontend entries, declarations, smoke artifacts, and future JS FFI shims. Zig
 compatibility means stable native contracts, ABI records, kernels, buffers, and
 Program/Session behavior. It does not mean every tensor, module, optimizer,
@@ -2169,9 +2169,9 @@ If two things need to stay aligned, align the executable contract and prove it
 with tests; do not create a second frontend and then spend architecture budget
 keeping both frontends synchronized.
 The runtime manifests should encode this as data, not vibes:
-`productSourceOfTruth: "ts-only"` on the TS frontend/native contract and
-`.product_source_of_truth = "ts-only"` plus `.native_product_policy =
-"forbidden"` on the Zig native substrate.
+`productSourceOfTruth: "ts-api-zig-core"` on the TS frontend/native contract and
+`.product_source_of_truth = "ts-api-zig-core"` plus `.native_product_policy =
+"required-core"` on the Zig native substrate.
 Public TS product namespaces should not repeat those fields by hand. They use
 the shared `tsProductManifestPolicy(...)` helper in
 `src/ts/internal/product_manifest.ts`, making product ownership a deep Module:

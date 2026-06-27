@@ -739,7 +739,7 @@ const browser = require("zgml/browser");
 
 if (
   browser.frontendManifest?.source !== "ts" ||
-  browser.frontendManifest?.productSourceOfTruth !== "ts-only" ||
+  browser.frontendManifest?.productSourceOfTruth !== "ts-api-zig-core" ||
   browser.frontendManifest?.runtimePath !== "Program -> Session -> StepParams"
 ) {
   throw new Error(\`consumer browser frontend manifest drifted: \${JSON.stringify(browser.frontendManifest)}\`);
@@ -1072,8 +1072,8 @@ const bunExecuteIntoHotCompatibility: BunSessionStepParamsCompatibility = bunSes
 const bunExecuteIntoHotPlan: BunSessionExecutionPlan<readonly [2], readonly [1]> = bunSession.hotPathPlan(bunExecuteIntoHotParams);
 const bunExecuteIntoResult: Float32Array = bunGradMode.inferenceMode(() => bunSession.executeInto(bunExecuteIntoOutput, { input: bunTensor([1, 2], [2] as const) }));
 const typedBrowserFrontendSource: "ts" = browserFrontendManifest.source;
-const typedBrowserProductSourceOfTruth: "ts-only" = browserFrontendManifest.productSourceOfTruth;
-const typedBrowserNativeProductPolicy: "forbidden" = browserEntryManifest.nativeProductPolicy;
+const typedBrowserProductSourceOfTruth: "ts-api-zig-core" = browserFrontendManifest.productSourceOfTruth;
+const typedBrowserNativeProductPolicy: "required-core" = browserEntryManifest.nativeProductPolicy;
 const typedBrowserNativeLoader: false = browserEntryManifest.nativeLoader;
 const typedBrowserAdapterRole: "browser-safe-frontend" = browserEntryManifest.adapterRole;
 const typedBrowserNativeApiContract: typeof browserNativeApiContract = browserNativeApiContract;

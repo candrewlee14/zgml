@@ -9420,9 +9420,9 @@ expectSame(sharedFrontend.sharedFrontendManifest, {
   kind: "zgml-shared-frontend",
   source: "ts",
   policyOwner: "src/ts/shared_frontend.ts",
-  productSourceOfTruth: "ts-only",
-  productSemanticsOwner: "src/ts/**",
-  nativeProductPolicy: "forbidden",
+  productSourceOfTruth: "ts-api-zig-core",
+  productSemanticsOwner: "src/ts/** + src/**/*.zig",
+  nativeProductPolicy: "required-core",
   handwrittenFrontendMirrors: false,
   genericSessionComposition: "ts",
   llamaSessionComposition: "ts",
@@ -9512,9 +9512,9 @@ expectSame(concreteRuntimeLoader.concreteRuntimeLoaderEvidence(), {
   kind: "zgml-concrete-runtime-loader-evidence",
   source: "ts",
   policyOwner: "src/ts/adapters/concrete_runtime_loader.ts",
-  productSemanticsOwner: "src/ts/**",
+  productSemanticsOwner: "src/ts/** + src/**/*.zig",
   productLanguage: "typescript",
-  nativeAlignment: "contract-tested-substrate",
+  nativeAlignment: "zig-core-contract-tested",
   handwrittenFrontendMirrors: false,
   checkedContract: nativeApiContract.nativeApiContractSignature(),
   runtimeType: "NativeRuntime",
@@ -9559,8 +9559,8 @@ expectSame(tsNode.nodeAdapterEvidence, {
   kind: "native-adapter",
   host: "node",
   frontendSource: "ts",
-  productSemanticsOwner: "src/ts/**",
-  nativeAlignment: "contract-tested-substrate",
+  productSemanticsOwner: "src/ts/** + src/**/*.zig",
+  nativeAlignment: "zig-core-contract-tested",
   ownsFrontendPolicy: false,
   ownsNativeLoading: true,
   capabilities: [
@@ -9577,8 +9577,8 @@ expectSame(tsNode.nodeAdapterManifest.adapterEvidence, tsNode.nodeAdapterEvidenc
 expectSame(tsNode.nodeAdapterManifest.concreteRuntime.runtimeLoad, runtimeLoadCandidates.runtimeLoadCandidateEvidence("node-ffi-runtime"), "TS Node adapter manifest carries concrete runtime load evidence");
 expectSame(tsNode.adapterOwnsFrontendPolicy(tsNode.nodeAdapterEvidence), false, "TS Node adapter does not own frontend policy");
 expectSame(tsBun.bunAdapterEvidence.host, "bun", "TS Bun adapter evidence host");
-expectSame(tsBun.bunAdapterEvidence.productSemanticsOwner, "src/ts/**", "TS Bun adapter evidence product owner");
-expectSame(tsBun.bunAdapterEvidence.nativeAlignment, "contract-tested-substrate", "TS Bun adapter evidence native alignment");
+expectSame(tsBun.bunAdapterEvidence.productSemanticsOwner, "src/ts/** + src/**/*.zig", "TS Bun adapter evidence product owner");
+expectSame(tsBun.bunAdapterEvidence.nativeAlignment, "zig-core-contract-tested", "TS Bun adapter evidence native alignment");
 expectSame(tsBun.bunAdapterEvidence.signature, "bun:ts-frontend:native-loader:loadLibrary+bindAbi+readFile+pathJoin+ffiCall", "TS Bun adapter evidence signature");
 expectSame(tsBun.bunAdapterManifest.kind, "zgml-bun-adapter", "TS Bun adapter manifest kind");
 expectSame(tsBun.bunAdapterManifest.adapterEvidence, tsBun.bunAdapterEvidence, "TS Bun adapter manifest carries adapter evidence");

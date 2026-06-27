@@ -20,7 +20,7 @@ function main(argv = process.argv) {
   const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
   const expected = expectedPackageMetadata();
   if (
-    packageMetadataPolicyManifest.productSourceOfTruth !== "ts-only" ||
+    packageMetadataPolicyManifest.productSourceOfTruth !== "ts-api-zig-core" ||
     packageMetadataPolicyManifest.packageFanout !== "tsdown" ||
     packageMetadataPolicyManifest.packageRuntimeRoot !== expected.main ||
     packageMetadataPolicyManifest.packageTypesRoot !== expected.types ||

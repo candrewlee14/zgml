@@ -794,7 +794,7 @@ export const torch = zgml;
 export const browserFrontendRuntimeManifest = Object.freeze({
   kind: "zgml-browser-frontend-runtime",
   source: "ts",
-  productSourceOfTruth: "ts-only",
+  productSourceOfTruth: "ts-api-zig-core",
   runtimePath: "Tensor -> nn/loss/optim/train -> honest compile support",
   nativeLoader: false,
   nativeProgramAvailable: false,

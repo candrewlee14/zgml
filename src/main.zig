@@ -54,17 +54,17 @@ test "native root surface stays curated" {
     }
 
     try testing.expectEqualStrings("zgml-native-substrate", native_substrate_manifest.kind);
-    try testing.expectEqualStrings("runtime-kernel-abi-substrate", native_substrate_manifest.role);
+    try testing.expectEqualStrings("core-kernel-runtime", native_substrate_manifest.role);
     try testing.expectEqualStrings("typescript", native_substrate_manifest.product_language);
     try testing.expectEqualStrings("src/ts/**", native_substrate_manifest.product_source);
-    try testing.expectEqualStrings("ts-only", native_substrate_manifest.product_source_of_truth);
-    try testing.expectEqualStrings("src/ts/**", native_substrate_manifest.product_semantics_owner);
+    try testing.expectEqualStrings("ts-api-zig-core", native_substrate_manifest.product_source_of_truth);
+    try testing.expectEqualStrings("src/ts/** + src/**/*.zig", native_substrate_manifest.product_semantics_owner);
     try testing.expectEqualStrings("tsdown", native_substrate_manifest.package_fanout);
     try testing.expectEqualStrings("none", native_substrate_manifest.frontend_sync);
     try testing.expect(!native_substrate_manifest.handwritten_frontend_mirrors);
-    try testing.expectEqualStrings("contract-tested-substrate", native_substrate_manifest.native_alignment);
-    try testing.expectEqualStrings("forbidden", native_substrate_manifest.native_product_policy);
-    try testing.expectEqualStrings("Program/Session/ABI contracts", native_substrate_manifest.native_contract_boundary);
+    try testing.expectEqualStrings("zig-core-contract-tested", native_substrate_manifest.native_alignment);
+    try testing.expectEqualStrings("required-core", native_substrate_manifest.native_product_policy);
+    try testing.expectEqualStrings("JS/TS API -> Zig C ABI -> Program/Session kernels", native_substrate_manifest.native_contract_boundary);
 }
 
 test "ref all decls" {

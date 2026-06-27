@@ -11,11 +11,11 @@ it is not a second package frontend that must be kept in sync with TypeScript.
 Contract compatibility matters at the native boundary, but source-level product
 sync is architectural debt: align ABI/runtime behavior with tests, not by
 mirroring tensor/module/training APIs in two languages.
-Short form: TS is the product language, `tsdown` is the artifact fan-out, Zig
-is the native execution substrate, and contracts/tests keep that boundary
-honest. Runtime manifests make the rule explicit: `productSourceOfTruth` is
-`ts-only`, native product policy is `forbidden`, and Zig helper modules are
-substrate conveniences rather than package-policy owners.
+Short form: TS is the ergonomic product API, `tsdown` is the artifact fan-out,
+Zig is the required core runtime, and contracts/tests keep that boundary honest.
+Runtime manifests make the rule explicit: `productSourceOfTruth` is
+`ts-api-zig-core`, native product policy is `required-core`, and Zig helper
+modules are runtime substrate rather than a second package frontend.
 Public TS product namespace manifests inherit those facts through
 `src/ts/internal/product_manifest.ts`, so `tensor`, `nn`, `loss`, `optim`,
 `train`, `compile`, `program`, `session`, and other package subpaths do not
