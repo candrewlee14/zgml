@@ -1952,6 +1952,36 @@ export fn zgml_eager_where_f32(
     return status(.ok);
 }
 
+export fn zgml_eager_clamp_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    min_value: f32,
+    max_value: f32,
+    has_min: u32,
+    has_max: u32,
+) c_int {
+    if (input_ptr == null or output_ptr == null or input_len == 0) return status(.invalid_argument);
+    if (input_len != output_len) return status(.shape_mismatch);
+    const use_min = has_min != 0;
+    const use_max = has_max != 0;
+    if (!use_min and !use_max) return status(.invalid_argument);
+    if (use_min and !std.math.isFinite(min_value)) return status(.invalid_argument);
+    if (use_max and !std.math.isFinite(max_value)) return status(.invalid_argument);
+    if (use_min and use_max and min_value > max_value) return status(.invalid_argument);
+
+    const input = input_ptr.?[0..input_len];
+    const output = output_ptr.?[0..output_len];
+    for (input, output) |value, *out| {
+        var result = value;
+        if (use_min) result = @max(result, min_value);
+        if (use_max) result = @min(result, max_value);
+        out.* = result;
+    }
+    return status(.ok);
+}
+
 export fn zgml_eager_reduce_f32(
     input_ptr: ?[*]const f32,
     input_len: usize,
@@ -11196,6 +11226,56 @@ test "C ABI native eager where writes caller output" {
         scalar_other.len,
         output[0..].ptr,
         output.len,
+    ));
+}
+
+test "C ABI native eager clamp writes caller output" {
+    const input = [_]f32{ -2, -0.5, 0.5, 2 };
+    var output = [_]f32{0} ** input.len;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_clamp_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        -1,
+        1,
+        1,
+        1,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ -1, -0.5, 0.5, 1 }, &output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_clamp_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        0,
+        0,
+        1,
+        0,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0, 0.5, 2 }, &output);
+
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_clamp_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        0,
+        1,
+        0,
+        0,
+    ));
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_clamp_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        1,
+        1,
+        1,
     ));
 }
 

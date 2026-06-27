@@ -324,6 +324,7 @@ const {
   nativeEagerMatmulInto: (output, lhs, rhs, options) => nativeEager.matmulInto(output, lhs, rhs, options),
   nativeEagerElementwiseInto: (output, lhs, rhs, options) => nativeEager.elementwiseInto(output, lhs, rhs, options),
   nativeEagerWhereInto: (output, condition, input, other) => nativeEager.whereInto(output, condition, input, other),
+  nativeEagerClampInto: (output, input, options) => nativeEager.clampInto(output, input, options),
   nativeEagerReduceInto: (output, input, options) => nativeEager.reduceInto(output, input, options),
   nativeEagerSoftmaxInto: (output, input, options) => options && options.logSoftmax
     ? nativeEager.logSoftmaxInto(output, input, options)
@@ -1176,6 +1177,16 @@ const { nativeEager } = createAdapterNativeEagerSurface({
     args.otherData.length,
     args.output,
     args.expectedOutput,
+  ),
+  clampF32: (args) => nodeSymbolGroups.nativeEager.eagerClampF32(
+    args.inputData,
+    args.inputData.length,
+    args.output,
+    args.expectedOutput,
+    args.min,
+    args.max,
+    args.hasMin ? 1 : 0,
+    args.hasMax ? 1 : 0,
   ),
   reduceF32: (args) => nodeSymbolGroups.nativeEager.eagerReduceF32(
     args.inputData,

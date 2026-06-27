@@ -67,6 +67,16 @@ type NativeEagerWhereCall = (args: {
   expectedOutput: number;
 }) => number;
 
+type NativeEagerClampCall = (args: {
+  inputData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  min: number;
+  max: number;
+  hasMin: boolean;
+  hasMax: boolean;
+}) => number;
+
 type NativeEagerReduceCall = (args: {
   inputData: Float32Array;
   output: Float32Array;
@@ -128,6 +138,7 @@ type NativeEagerSurfaceOptions = {
   activationF32?: NativeEagerActivationCall;
   elementwiseF32?: NativeEagerElementwiseCall;
   whereF32?: NativeEagerWhereCall;
+  clampF32?: NativeEagerClampCall;
   reduceF32?: NativeEagerReduceCall;
   conv2dF32?: NativeEagerConv2dCall;
   pool2dF32?: NativeEagerPool2dCall;
@@ -449,6 +460,46 @@ function nativeEagerWhereInputs(
   };
 }
 
+function nativeEagerClampInputs(
+  output: Float32Array,
+  input: unknown,
+  callOptions: Record<string, unknown>,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.clampInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  if (inputData.length === 0) {
+    throw new Error(`${label} input must be non-empty`);
+  }
+  if (output.length < inputData.length) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${inputData.length}`);
+  }
+  const rawMin = callOptions.min ?? callOptions.minimum;
+  const rawMax = callOptions.max ?? callOptions.maximum;
+  const hasMin = rawMin !== undefined && rawMin !== null;
+  const hasMax = rawMax !== undefined && rawMax !== null;
+  if (!hasMin && !hasMax) {
+    throw new Error(`${label} requires min, max, or both`);
+  }
+  const min = hasMin ? Number(rawMin) : 0;
+  const max = hasMax ? Number(rawMax) : 0;
+  if (hasMin && !Number.isFinite(min)) throw new Error(`${label} min must be finite, got ${rawMin}`);
+  if (hasMax && !Number.isFinite(max)) throw new Error(`${label} max must be finite, got ${rawMax}`);
+  if (hasMin && hasMax && min > max) throw new Error(`${label} min ${min} must be <= max ${max}`);
+  return {
+    inputData,
+    output,
+    expectedOutput: inputData.length,
+    min,
+    max,
+    hasMin,
+    hasMax,
+  };
+}
+
 function nativeEagerReduceInputs(
   output: Float32Array,
   input: unknown,
@@ -687,6 +738,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     where_into(output: Float32Array, condition: unknown, input: unknown, other: unknown) {
       return this.whereInto(output, condition, input, other);
+    },
+    clampInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.clampF32 !== "function") {
+        throw new Error("nativeEager.clampInto is unavailable in this runtime");
+      }
+      const args = nativeEagerClampInputs(output, input, callOptions, options.f32);
+      options.check(options.clampF32(args));
+      return output;
+    },
+    clamp_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
+      return this.clampInto(output, input, callOptions);
     },
     reduceInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.reduceF32 !== "function") {

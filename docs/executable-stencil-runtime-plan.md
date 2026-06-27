@@ -513,8 +513,11 @@ Current checked progress:
   The same ordinary Tensor eager lane now covers more PyTorch-like control
   primitives without changing the frontend shape: primitive comparisons
   (`eq`/`ne`/`lt`/`le`/`gt`/`ge`) lower through the Zig elementwise ABI for
-  scalar and same-shape operands, no-grad `Tensor.clamp()` composes the native
-  maximum/minimum kernels, and `zgml.nativeEager.whereInto` /
+  scalar and same-shape operands, `zgml.nativeEager.clampInto` exposes the
+  single-pass `zgml_eager_clamp_f32` ABI, and Node no-grad `Tensor.clamp()`
+  uses that hook where the benchmark proves it is at least parity. Bun keeps
+  high-level clamp on its faster JS loop for now while still exposing the raw
+  Zig clamp ABI for explicit measurement. `zgml.nativeEager.whereInto` /
   no-grad `Tensor.where()` use a dedicated `zgml_eager_where_f32` ABI for
   result-shaped conditions plus scalar or same-shape values. General broadcast
   and autograd cases stay on the TS reference path until they have an equally
@@ -566,11 +569,14 @@ Current checked progress:
   direct `conv2dInto` and `pool2dInto` rows above the native-eager floor with
   zero measured diff against the TS reference.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=14/14` after adding direct
+  as well: the expected row set is `row_coverage=17/17` after adding direct
   `matmul_batched`, `elementwise_mul_batched`, `reduce_sum_scalar_batched`,
-  native eager `conv2d_batched`, and native eager `max_pool2d_batched` /
+  `elementwise_lt_batched`, `clamp_batched`, `where_batched`, native eager
+  `conv2d_batched`, and native eager `max_pool2d_batched` /
   `avg_pool2d_batched`; fresh Node/Bun short runs show zero measured module
-  diff across the native eager rows.
+  diff across the native eager rows, with per-row speedup floors recorded where
+  the direct low-level ABI is evidence rather than the preferred high-level
+  route.
   The native eager adapter policy now lives in
   `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
   shape inference, output validation, public aliases, and activation mapping,

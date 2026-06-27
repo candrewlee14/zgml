@@ -347,6 +347,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.whereInto !== "function") {
     throw new Error(`${label} expected nativeEager.whereInto`);
   }
+  if (typeof nativeEager.clampInto !== "function") {
+    throw new Error(`${label} expected nativeEager.clampInto`);
+  }
   if (typeof nativeEager.reduceInto !== "function") {
     throw new Error(`${label} expected nativeEager.reduceInto`);
   }
@@ -376,6 +379,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   if (typeof nativeEagerAlias.where_into !== "function") {
     throw new Error(`${label} expected native_eager.where_into alias`);
+  }
+  if (typeof nativeEagerAlias.clamp_into !== "function") {
+    throw new Error(`${label} expected native_eager.clamp_into alias`);
   }
   if (typeof nativeEagerAlias.reduce_into !== "function") {
     throw new Error(`${label} expected native_eager.reduce_into alias`);
@@ -441,6 +447,18 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.where_into to reuse caller output`);
   }
   expectClose(whereAliasOutput, [9, 1.75, 9, 3.25, 9, 0], `${label} native_eager.where_into output`);
+  const clampOutput = new Float32Array(6);
+  const clampResult = nativeEager.clampInto(clampOutput, directOutput, { min: 1, max: 3 });
+  if (clampResult !== clampOutput) {
+    throw new Error(`${label} expected nativeEager.clampInto to reuse caller output`);
+  }
+  expectClose(clampOutput, [1.25, 1.75, 1, 3, 3, 1], `${label} nativeEager.clampInto output`);
+  const clampAliasOutput = new Float32Array(6);
+  const clampAliasResult = nativeEagerAlias.clamp_into(clampAliasOutput, directOutput, { max: 2 });
+  if (clampAliasResult !== clampAliasOutput) {
+    throw new Error(`${label} expected native_eager.clamp_into to reuse caller output`);
+  }
+  expectClose(clampAliasOutput, [1.25, 1.75, 0, 2, 2, 0], `${label} native_eager.clamp_into output`);
   const reduceOutput = new Float32Array(1);
   const reduceResult = nativeEager.reduceInto(reduceOutput, directOutput, { op: "sum" });
   if (reduceResult !== reduceOutput) {

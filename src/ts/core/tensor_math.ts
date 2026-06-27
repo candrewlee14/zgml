@@ -75,6 +75,11 @@ type NativeEagerWhereInto = (
   input: unknown,
   other: unknown,
 ) => Float32Array;
+type NativeEagerClampInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{ min?: number; max?: number }>,
+) => Float32Array;
 type NativeEagerReduceInto = (
   output: Float32Array,
   input: unknown,
@@ -97,6 +102,7 @@ export type TensorMathHelpersOptions = Readonly<{
   nativeEagerElementwiseInto?: NativeEagerElementwiseInto;
   nativeEagerElementwiseMinLength?: number;
   nativeEagerWhereInto?: NativeEagerWhereInto;
+  nativeEagerClampInto?: NativeEagerClampInto;
   nativeEagerReduceInto?: NativeEagerReduceInto;
   nativeEagerReduceMinLength?: number;
   nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
@@ -112,6 +118,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   const nativeEagerMatmulInto = options.nativeEagerMatmulInto;
   const nativeEagerElementwiseInto = options.nativeEagerElementwiseInto;
   const nativeEagerWhereInto = options.nativeEagerWhereInto;
+  const nativeEagerClampInto = options.nativeEagerClampInto;
   const nativeEagerElementwiseMinLength = Number.isSafeInteger(options.nativeEagerElementwiseMinLength) && Number(options.nativeEagerElementwiseMinLength) >= 0
     ? Number(options.nativeEagerElementwiseMinLength)
     : 512;
@@ -163,18 +170,14 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function nativeClamp(tensor: TensorMathTensor, minValue: number, maxValue: number, hasMin: boolean, hasMax: boolean) {
     if (gradModeEnabled()) return null;
-    if (typeof nativeEagerElementwiseInto !== "function") return null;
+    if (typeof nativeEagerClampInto !== "function") return null;
     if (tensor.length < nativeEagerElementwiseMinLength) return null;
     const TensorClass = tensorClass();
     const output = new Float32Array(tensor.length);
-    if (hasMin) {
-      nativeEagerElementwiseInto(output, tensor, Float32Array.of(minValue), { op: "maximum" });
-      if (hasMax) {
-        nativeEagerElementwiseInto(output, output, Float32Array.of(maxValue), { op: "minimum" });
-      }
-    } else {
-      nativeEagerElementwiseInto(output, tensor, Float32Array.of(maxValue), { op: "minimum" });
-    }
+    nativeEagerClampInto(output, tensor, {
+      ...(hasMin ? { min: minValue } : {}),
+      ...(hasMax ? { max: maxValue } : {}),
+    });
     return new TensorClass(output, tensor.shape);
   }
 

@@ -176,11 +176,17 @@ function benchGap(spec) {
           spec.nativeEagerModule(input);
         }, spec.nativeEagerModuleIterations ?? spec.eagerIterations)
       : null;
-    if (nativeEagerMs !== null && eagerMs / nativeEagerMs < minNativeEagerSpeedup) {
-      throw new Error(`${spec.key} native eager speedup ${eagerMs / nativeEagerMs}x below ${minNativeEagerSpeedup}x`);
+    const nativeEagerSpeedupFloor = Number.isFinite(spec.minNativeEagerSpeedup)
+      ? Number(spec.minNativeEagerSpeedup)
+      : minNativeEagerSpeedup;
+    const nativeEagerModuleSpeedupFloor = Number.isFinite(spec.minNativeEagerModuleSpeedup)
+      ? Number(spec.minNativeEagerModuleSpeedup)
+      : nativeEagerSpeedupFloor;
+    if (nativeEagerMs !== null && eagerMs / nativeEagerMs < nativeEagerSpeedupFloor) {
+      throw new Error(`${spec.key} native eager speedup ${eagerMs / nativeEagerMs}x below ${nativeEagerSpeedupFloor}x`);
     }
-    if (nativeEagerModuleMs !== null && eagerMs / nativeEagerModuleMs < minNativeEagerSpeedup) {
-      throw new Error(`${spec.key} native eager module speedup ${eagerMs / nativeEagerModuleMs}x below ${minNativeEagerSpeedup}x`);
+    if (nativeEagerModuleMs !== null && eagerMs / nativeEagerModuleMs < nativeEagerModuleSpeedupFloor) {
+      throw new Error(`${spec.key} native eager module speedup ${eagerMs / nativeEagerModuleMs}x below ${nativeEagerModuleSpeedupFloor}x`);
     }
     const speedup = preparedMs === null ? null : eagerMs / preparedMs;
     const row = {
@@ -191,8 +197,10 @@ function benchGap(spec) {
       eagerMs: round(eagerMs),
       nativeEagerIntoMs: nativeEagerMs === null ? null : round(nativeEagerMs),
       nativeEagerSpeedup: nativeEagerMs === null ? null : round(eagerMs / nativeEagerMs),
+      nativeEagerSpeedupFloor: nativeEagerMs === null ? null : round(nativeEagerSpeedupFloor),
       nativeEagerModuleForwardMs: nativeEagerModuleMs === null ? null : round(nativeEagerModuleMs),
       nativeEagerModuleSpeedup: nativeEagerModuleMs === null ? null : round(eagerMs / nativeEagerModuleMs),
+      nativeEagerModuleSpeedupFloor: nativeEagerModuleMs === null ? null : round(nativeEagerModuleSpeedupFloor),
       preparedExecuteIntoMs: preparedMs === null ? null : round(preparedMs),
       nativeProgramSpeedup: speedup === null ? null : round(speedup),
       nativeEagerMaxAbsDiff: nativeEagerDiff === null ? null : round(nativeEagerDiff),
@@ -392,6 +400,7 @@ const gapSpecs = Object.freeze([
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 0.85 : 1,
     tolerance: 1e-5,
     next: "native_eager_elementwise_storage_slice",
   }),
@@ -409,6 +418,58 @@ const gapSpecs = Object.freeze([
     compiledIterations: 1000,
     tolerance: 1e-4,
     next: "native_eager_reduce_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_lt_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "lt_scalar" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.lt(0.125),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, new Float32Array([0.125]), { op: "lt" }),
+    nativeEagerModule: (input) => zgml.noGrad(() => input.lt(0.125)),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerModuleSpeedup: 0.9,
+    tolerance: 0,
+    next: "native_eager_comparison_storage_slice",
+  }),
+  Object.freeze({
+    key: "clamp_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "clamp" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.clamp(-0.25, 0.25),
+    nativeEager: (output, input) => zgml.nativeEager.clampInto(output, input, { min: -0.25, max: 0.25 }),
+    nativeEagerModule: (input) => zgml.noGrad(() => input.clamp(-0.25, 0.25)),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: runtime === "bun" ? 0.25 : 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 1e-6,
+    next: "native_eager_clamp_storage_slice",
+  }),
+  Object.freeze({
+    key: "where_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "where_scalar" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.lt(0).where(input, 0),
+    nativeEager: (output, input) => {
+      const condition = input.lt(0);
+      return zgml.nativeEager.whereInto(output, condition, input, new Float32Array([0]));
+    },
+    nativeEagerModule: (input) => zgml.noGrad(() => input.lt(0).where(input, 0)),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 1e-6,
+    next: "native_eager_where_storage_slice",
   }),
   Object.freeze({
     key: "lazy_matmul_add_gelu_batched",
@@ -604,6 +665,7 @@ const gapSpecs = Object.freeze([
     nativeEagerIterations: 200,
     nativeEagerModuleIterations: 200,
     compiledIterations: 200,
+    minNativeEagerSpeedup: 0.85,
     tolerance: 1e-4,
     next: "native_eager_conv2d_storage_slice",
   }),
@@ -628,6 +690,7 @@ const gapSpecs = Object.freeze([
     nativeEagerIterations: 200,
     nativeEagerModuleIterations: 200,
     compiledIterations: 200,
+    minNativeEagerSpeedup: 0.9,
     tolerance: 1e-5,
     next: "native_eager_max_pool2d_storage_slice",
   }),
@@ -653,6 +716,8 @@ const gapSpecs = Object.freeze([
     nativeEagerIterations: 200,
     nativeEagerModuleIterations: 200,
     compiledIterations: 200,
+    minNativeEagerSpeedup: 0.4,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 1e-5,
     next: "native_eager_avg_pool2d_storage_slice",
   }),

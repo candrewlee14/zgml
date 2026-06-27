@@ -456,6 +456,19 @@ const noGradNativeElementwise = createTensorMathHelpers({
     }
     return output;
   },
+  nativeEagerClampInto(output, input, options) {
+    nativeElementwiseCalls.push("clamp");
+    const inputData = input.data ?? input;
+    const hasMin = options.min !== undefined;
+    const hasMax = options.max !== undefined;
+    for (let i = 0; i < output.length; i += 1) {
+      let value = inputData[i];
+      if (hasMin) value = Math.max(value, options.min);
+      if (hasMax) value = Math.min(value, options.max);
+      output[i] = value;
+    }
+    return output;
+  },
 });
 expectSame(noGradNativeElementwise.mul(
   new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4), [2, 2]),
@@ -487,7 +500,7 @@ expectSame(noGradNativeElementwise.where(
   -5,
 ).data, [10, -5, 30, -5], "tensor math native where hook");
 expectSame(noGradNativeElementwise.add(math3d, mathTrailing).data.slice(0, 4), [11, 22, 33, 44], "tensor math no-grad broadcast fallback keeps TS path");
-expectSame(nativeElementwiseCalls, ["mul", "add", "sqr", "lt", "eq", "maximum", "minimum"], "tensor math no-grad native elementwise hook count");
+expectSame(nativeElementwiseCalls, ["mul", "add", "sqr", "lt", "eq", "clamp"], "tensor math no-grad native elementwise hook count");
 expectSame(nativeWhereCalls, ["where"], "tensor math no-grad native where hook count");
 const nativeReduceCalls: string[] = [];
 const noGradNativeReduce = createTensorMathHelpers({
