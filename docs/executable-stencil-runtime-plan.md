@@ -457,7 +457,13 @@ Current checked progress:
   package subpath. Native eager execution policy is still open work. The first
   normal-module route now exists on Node and Bun: eligible `nn.Linear.forward`
   calls inside `zgml.noGrad(...)` route through the native eager linear hook
-  while grad-enabled training keeps the TS/autograd graph path.
+  while grad-enabled training keeps the TS/autograd graph path. Supported
+  `nn.Sequential` inference also now keeps the ergonomic JS/TS
+  `model.forward(input)` call shape while transparently caching a native
+  Program/Session in `noGrad`; the package smoke poisons the JS layer
+  `forward()` methods and still proves the Linear/ReLU/Linear output, then
+  mutates weights and proves the cached Program rebinds fresh packed parameters
+  instead of serving stale native state.
   The new Node/Bun-selectable `NATIVE_EAGER_GAP_JSON` microscope measures the first targets directly:
   `linear_batched` eager TS tensor execution,
   `lazy_matmul_add_gelu_batched` eager fused matmul work, and

@@ -2450,6 +2450,34 @@ function expectSequentialProgramEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected nn.Sequential to expose PyTorch-style len/get/item/setitem aliases`);
   }
   expectClose(variadicClassSequential.forward(adapter.tensor([2, -3], [2])).data, [2], `${label} variadic class Sequential forward`);
+  const nativeForwardSequential = new adapter.nn.Sequential(
+    adapter.nn.linear(2, 2, { weights: [1, 0, 0, 1], bias: [0, 0] }),
+    adapter.nn.relu(),
+    adapter.nn.linear(2, 1, { weights: [1, -1], bias: [0] }),
+  );
+  const nativeForwardFirstLayer = nativeForwardSequential.at(0);
+  const nativeForwardReluLayer = nativeForwardSequential.at(1);
+  const nativeForwardLastLayer = nativeForwardSequential.at(2);
+  nativeForwardFirstLayer.forward = () => {
+    throw new Error("poisoned first JS forward");
+  };
+  nativeForwardReluLayer.forward = () => {
+    throw new Error("poisoned relu JS forward");
+  };
+  nativeForwardLastLayer.forward = () => {
+    throw new Error("poisoned last JS forward");
+  };
+  expectClose(
+    adapter.noGrad(() => nativeForwardSequential.forward(adapter.tensor([2, -3], [2]))).data,
+    [2],
+    `${label} noGrad nn.Sequential auto native Program forward`,
+  );
+  nativeForwardLastLayer.weight[0] = 2;
+  expectClose(
+    adapter.noGrad(() => nativeForwardSequential.forward(adapter.tensor([2, -3], [2]))).data,
+    [4],
+    `${label} noGrad nn.Sequential auto native Program refreshes packed parameters`,
+  );
   if (
     variadicClassSequential.__setitem__(1, adapter.nn.tanh()) !== variadicClassSequential ||
     variadicClassSequential.__getitem__(1).kind !== "tanh"

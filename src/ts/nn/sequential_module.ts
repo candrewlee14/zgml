@@ -35,6 +35,27 @@ type SequentialLayerInput = readonly NnModule[] | NamedSequentialLayers | NnModu
 type SequentialBindingAnnotationTarget = SequentialModuleRecord & {
   readonly compileSupport?: (options: ModuleCompileOptions) => unknown;
 };
+type SequentialNativeForwardProgram = {
+  bind?: (bindings: unknown) => SequentialNativeForwardSession;
+  dispose?: () => void;
+};
+type SequentialNativeForwardSession = {
+  stepTensor(input: unknown): unknown;
+  uploadParameters?: () => unknown;
+  dispose?: () => void;
+};
+type SequentialNativeForwardCache = {
+  readonly key: string;
+  readonly program: SequentialNativeForwardProgram;
+  session: SequentialNativeForwardSession;
+  bindings: Record<string, unknown>;
+  readonly disabled?: false;
+};
+type SequentialNativeForwardDisabledCache = {
+  readonly key: string;
+  readonly disabled: true;
+};
+type SequentialNativeForwardCacheState = SequentialNativeForwardCache | SequentialNativeForwardDisabledCache | null;
 type SequentialLayerNameRecord = SequentialModuleRecord & {
   readonly layerNames?: readonly string[];
 };
@@ -188,6 +209,27 @@ function isSequentialLinearLayer(layer: SequentialLayer): layer is SequentialLin
   );
 }
 
+function tensorShapeSignature(input: SequentialTensor) {
+  const shape = input.shape;
+  if (!Array.isArray(shape) || shape.length === 0) return null;
+  if (!shape.every((dim) => Number.isSafeInteger(dim) && dim > 0)) return null;
+  return shape.join("x");
+}
+
+function samePackedBinding(left: unknown, right: unknown) {
+  if (left === undefined || right === undefined) return left === right;
+  if (!(left instanceof Float32Array) || !(right instanceof Float32Array)) return left === right;
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
+function samePackedBindings(left: Record<string, unknown>, right: Record<string, unknown>) {
+  return samePackedBinding(left.weights, right.weights) && samePackedBinding(left.bias, right.bias);
+}
+
 export type SequentialModuleClassHooks = SequentialProgramCompileHooksInput & {
   Tensor: TensorConstructor;
   f32: F32;
@@ -251,6 +293,7 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
   class SequentialModule {
     layers: SequentialLayer[];
     layerNames: string[];
+    nativeForwardCache: SequentialNativeForwardCacheState;
     training?: boolean;
 
     constructor(first?: SequentialLayerInput, ...rest: readonly NnModule[]) {
@@ -258,6 +301,7 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
       initializeModuleMode(this);
       this.layers = layers.map((layer) => sequentialLayer(layer, "nn.Sequential")) as SequentialLayer[];
       this.layerNames = names.slice();
+      this.nativeForwardCache = null;
     }
 
     get length() {
@@ -277,11 +321,13 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
     }
 
     __setitem__(index: number, layer: NnModule) {
+      this.disposeNativeForwardCache();
       this.layers[sequentialIndex(index, this.layers.length)] = sequentialLayer(layer, "nn.Sequential.__setitem__");
       return this;
     }
 
     __delitem__(index: number) {
+      this.disposeNativeForwardCache();
       const resolved = sequentialIndex(index, this.layers.length);
       this.layers.splice(resolved, 1);
       this.layerNames.splice(resolved, 1);
@@ -289,6 +335,7 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
     }
 
     pop(index = -1) {
+      this.disposeNativeForwardCache();
       const resolved = sequentialIndex(index, this.layers.length);
       const [layer] = this.layers.splice(resolved, 1);
       this.layerNames.splice(resolved, 1);
@@ -296,18 +343,21 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
     }
 
     clear() {
+      this.disposeNativeForwardCache();
       this.layers.length = 0;
       this.layerNames.length = 0;
       return this;
     }
 
     append(layer: NnModule) {
+      this.disposeNativeForwardCache();
       this.layers.push(sequentialLayer(layer, "nn.Sequential.append"));
       this.layerNames.push(String(this.layerNames.length));
       return this;
     }
 
     insert(index: number, layer: NnModule) {
+      this.disposeNativeForwardCache();
       const resolved = sequentialInsertIndex(index, this.layers.length);
       this.layers.splice(resolved, 0, sequentialLayer(layer, "nn.Sequential.insert"));
       this.layerNames.splice(resolved, 0, String(resolved));
@@ -338,8 +388,84 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
       return this.children()[Symbol.iterator]();
     }
 
+    disposeNativeForwardCache() {
+      const cache = this.nativeForwardCache;
+      this.nativeForwardCache = null;
+      if (!cache || cache.disabled) return;
+      if (typeof cache.session.dispose === "function") cache.session.dispose();
+      if (typeof cache.program.dispose === "function") cache.program.dispose();
+    }
+
+    refreshNativeForwardBindings(cache: SequentialNativeForwardCache, key: string) {
+      const bindParameters = (this as SequentialModuleRecord).bindParameters;
+      if (typeof bindParameters !== "function") return false;
+      const latest = bindParameters.call(this, { inputShape: key.split("x").map(Number) }) as Record<string, unknown>;
+      if (samePackedBindings(cache.bindings, latest)) return true;
+      if (typeof cache.session.dispose === "function") cache.session.dispose();
+      if (typeof cache.program.bind !== "function") return false;
+      const session = cache.program.bind(latest);
+      if (!session || typeof session.stepTensor !== "function") return false;
+      cache.bindings = latest;
+      cache.session = session;
+      return true;
+    }
+
+    nativeForward(input: SequentialTensor) {
+      if (isGradEnabled()) return null;
+      const key = tensorShapeSignature(input);
+      if (key === null) return null;
+      const cached = this.nativeForwardCache;
+      if (cached && cached.key === key) {
+        if (cached.disabled) return null;
+        try {
+          return this.refreshNativeForwardBindings(cached, key) ? cached.session.stepTensor(input) : null;
+        } catch {
+          this.disposeNativeForwardCache();
+          this.nativeForwardCache = { key, disabled: true };
+          return null;
+        }
+      }
+      this.disposeNativeForwardCache();
+      const compileSelf = this as SequentialModuleRecord & {
+        compile?: (options?: ModuleCompileOptions) => SequentialNativeForwardProgram;
+        bindParameters?: (options?: ModuleCompileOptions) => Record<string, unknown>;
+      };
+      if (typeof compileSelf.compile !== "function" || typeof compileSelf.bindParameters !== "function") {
+        this.nativeForwardCache = { key, disabled: true };
+        return null;
+      }
+      let program: SequentialNativeForwardProgram | null = null;
+      try {
+        const compileOptions = { inputShape: key.split("x").map(Number) };
+        program = compileSelf.compile(compileOptions);
+        if (!program || typeof program.bind !== "function") {
+          if (program && typeof program.dispose === "function") program.dispose();
+          this.nativeForwardCache = { key, disabled: true };
+          return null;
+        }
+        const bindings = compileSelf.bindParameters(compileOptions);
+        const session = program.bind(bindings);
+        if (!session || typeof session.stepTensor !== "function") {
+          if (typeof program.dispose === "function") program.dispose();
+          this.nativeForwardCache = { key, disabled: true };
+          return null;
+        }
+        const nextCache = { key, program, session, bindings } as SequentialNativeForwardCache;
+        this.nativeForwardCache = nextCache;
+        return session.stepTensor(input);
+      } catch {
+        if (program && typeof program.dispose === "function") program.dispose();
+        this.nativeForwardCache = { key, disabled: true };
+        return null;
+      }
+    }
+
     forward(inputValues: unknown) {
       let out: unknown = inputValues instanceof TensorClass ? inputValues : f32(inputValues);
+      if (out instanceof TensorClass) {
+        const nativeOut = this.nativeForward(out as SequentialTensor);
+        if (nativeOut !== null) return nativeOut;
+      }
       for (let index = 0; index < this.layers.length; index += 1) {
         const layer = this.layers[index];
         const nextLayer = this.layers[index + 1];
