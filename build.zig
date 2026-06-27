@@ -655,6 +655,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(runTests(b, optimize, target, build_opts, c_api.tests));
 
     const bench_build_step = b.step("bench-build", "Build zgml benchmarks");
+    const bench_frontier_build_step = b.step("bench-frontier-build", "Build the frontier benchmark only");
     const baseline_check_step = b.step("bench-baseline-check", "Verify checked benchmark baseline artifacts");
     if (pathExists("scripts/verify_bench_artifact.py") and
         pathExists("benchmarks/baselines/smollm-m5pro-p128-g200-r3.json") and
@@ -689,6 +690,7 @@ pub fn build(b: *std.Build) void {
         if (!pathExists(cfg.src)) continue;
         const added = addExe(b, target, optimize, build_opts, cfg);
         if (cfg.include_in_bench_build) bench_build_step.dependOn(added.install_step);
+        if (std.mem.eql(u8, cfg.name, "bench-frontier")) bench_frontier_build_step.dependOn(added.install_step);
         if (cfg.include_in_check) check_step.dependOn(added.run_step);
     }
 

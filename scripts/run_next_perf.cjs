@@ -117,7 +117,10 @@ function main() {
   if (lane === "status") return;
   if (dryRun) return;
 
-  if (shouldBuild && (lane === "qsemantic" || lane === "qsemantic_throughput" || lane === "qsemantic_bridge" || lane === "qsemantic_input_bridge" || lane === "qproj" || lane === "q8_prompt" || lane === "q8_prompt_semantic" || lane === "ggml")) {
+  if (shouldBuild && (lane === "qsemantic" || lane === "qsemantic_throughput" || lane === "qsemantic_bridge" || lane === "qsemantic_input_bridge" || lane === "qproj")) {
+    runInherited("build frontier benchmark artifact", "zig", ["build", "-Doptimize=ReleaseFast", "bench-frontier-build", "-fincremental", "--summary", "failures"]);
+  }
+  if (shouldBuild && (lane === "q8_prompt" || lane === "q8_prompt_semantic" || lane === "ggml")) {
     runInherited("build benchmark artifacts", "zig", ["build", "-Doptimize=ReleaseFast", "bench-build", "-fincremental", "--summary", "failures"]);
   }
   if (shouldBuild && lane === "pytorch") {

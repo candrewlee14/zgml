@@ -535,97 +535,97 @@ function checkScripts() {
   if (scripts["bench:trend"] !== "node scripts/bench_status.cjs --trend-gate") {
     errors.push("package.json bench:trend must remain the local benchmark regression gate");
   }
-  if (scripts["bench:frontier:gate"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
+  if (scripts["bench:frontier:gate"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build && BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:gate must remain the rebuild-backed scheduler/kernelizer frontier evidence gate");
   }
   if (scripts["bench:frontier:gate:run"] !== "BENCH_FRONTIER_BUILD=0 node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:gate:run must remain the no-rebuild scheduler/kernelizer frontier rerun");
   }
-  if (scripts["bench:frontier:row-chain"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_FILTER=qrow ./zig-out/bin/bench-frontier") {
+  if (scripts["bench:frontier:row-chain"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build && BENCH_FRONTIER_FILTER=qrow ./zig-out/bin/bench-frontier") {
     errors.push("package.json bench:frontier:row-chain must remain the ReleaseFast row-chain-only frontier microscope");
   }
   if (scripts["bench:frontier:row-chain:run"] !== "BENCH_FRONTIER_FILTER=qrow ./zig-out/bin/bench-frontier") {
     errors.push("package.json bench:frontier:row-chain:run must remain the no-rebuild row-chain-only frontier microscope");
   }
-  if (scripts["bench:frontier:row-chain-region"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_FILTER=\"qrow region\" ./zig-out/bin/bench-frontier") {
+  if (scripts["bench:frontier:row-chain-region"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build && BENCH_FRONTIER_FILTER=\"qrow region\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json bench:frontier:row-chain-region must remain the ReleaseFast x7 row-chain region microscope");
   }
   if (scripts["bench:frontier:row-chain-region:run"] !== "BENCH_FRONTIER_FILTER=\"qrow region\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json bench:frontier:row-chain-region:run must remain the no-rebuild x7 row-chain region microscope");
   }
-  if (scripts["dev:perf:frontier:row-chain-region"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=\"qrow region\" node scripts/check_frontier_bench.cjs") {
+  if (scripts["dev:perf:frontier:row-chain-region"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=\"qrow region\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:row-chain-region must remain the incremental checked x7 row-chain region microscope");
   }
   if (scripts["dev:perf:frontier:row-chain-region:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=\"qrow region\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:row-chain-region:run must remain the no-rebuild checked x7 row-chain region microscope");
   }
-  if (scripts["dev:perf:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+  if (scripts["dev:perf:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qproj must remain the incremental checked qproj frontier microscope with noise-aware attempts");
   }
   if (scripts["dev:perf:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-3} BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qproj:run must remain the no-rebuild checked qproj frontier microscope with noise-aware attempts");
   }
-  if (scripts["bench:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
+  if (scripts["bench:frontier:qproj"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:qproj must remain the ReleaseFast qproj-only frontier evidence gate");
   }
   if (scripts["bench:frontier:qproj:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qproj node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:qproj:run must remain the no-rebuild qproj-only frontier evidence rerun");
   }
-  if (scripts["dev:perf:frontier:qsemantic"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs") {
+  if (scripts["dev:perf:frontier:qsemantic"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qsemantic must remain the incremental checked Q8 semantic sublayer microscope");
   }
   if (scripts["dev:perf:frontier:qsemantic:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qsemantic:run must remain the no-rebuild checked Q8 semantic sublayer microscope");
   }
-  if (scripts["dev:perf:frontier:qsemantic:full:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_FILTER=\"qsemantic full-prefill\" ./zig-out/bin/bench-frontier") {
+  if (scripts["dev:perf:frontier:qsemantic:full:raw"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_FRONTIER_FILTER=\"qsemantic full-prefill\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:full:raw must remain the incremental raw full-prefill Q8 semantic microscope");
   }
   if (scripts["dev:perf:frontier:qsemantic:full:raw:run"] !== "BENCH_FRONTIER_FILTER=\"qsemantic full-prefill\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:full:raw:run must remain the no-rebuild raw full-prefill Q8 semantic microscope");
   }
-  if (scripts["dev:perf:frontier:qsemantic:target:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=target BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier") {
+  if (scripts["dev:perf:frontier:qsemantic:target:raw"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=target BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:target:raw must remain the incremental target-only Q8 semantic kernel microscope");
   }
   if (scripts["dev:perf:frontier:qsemantic:target:raw:run"] !== "BENCH_QSEMANTIC_VARIANTS=target BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:target:raw:run must remain the no-rebuild target-only Q8 semantic kernel microscope");
   }
-  if (scripts["dev:perf:frontier:qsemantic:throughput:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier") {
+  if (scripts["dev:perf:frontier:qsemantic:throughput:raw"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:throughput:raw must remain the incremental throughput-candidate-only Q8 semantic kernel microscope");
   }
   if (scripts["dev:perf:frontier:qsemantic:throughput:raw:run"] !== "BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=qsemantic ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:throughput:raw:run must remain the no-rebuild throughput-candidate-only Q8 semantic kernel microscope");
   }
-  if (scripts["dev:perf:frontier:qsemantic:bridge"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" node scripts/check_frontier_bench.cjs") {
+  if (scripts["dev:perf:frontier:qsemantic:bridge"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qsemantic:bridge must remain the checked exact bridge-shape Q8 semantic microscope");
   }
   if (scripts["dev:perf:frontier:qsemantic:bridge:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qsemantic:bridge:run must remain the no-rebuild checked exact bridge-shape Q8 semantic microscope");
   }
-  if (scripts["dev:perf:frontier:qsemantic:bridge:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" ./zig-out/bin/bench-frontier") {
+  if (scripts["dev:perf:frontier:qsemantic:bridge:raw"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:bridge:raw must remain the incremental exact bridge-shape Q8 semantic kernel microscope");
   }
   if (scripts["dev:perf:frontier:qsemantic:bridge:raw:run"] !== "BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic bridge\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:bridge:raw:run must remain the no-rebuild exact bridge-shape Q8 semantic kernel microscope");
   }
-  if (scripts["dev:perf:frontier:qsemantic:input-bridge"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" node scripts/check_frontier_bench.cjs") {
+  if (scripts["dev:perf:frontier:qsemantic:input-bridge"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qsemantic:input-bridge must remain the checked absorbed input-row-chain Q8 semantic microscope");
   }
   if (scripts["dev:perf:frontier:qsemantic:input-bridge:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_ATTEMPTS=${BENCH_FRONTIER_ATTEMPTS:-1} BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" node scripts/check_frontier_bench.cjs") {
     errors.push("package.json dev:perf:frontier:qsemantic:input-bridge:run must remain the no-rebuild checked absorbed input-row-chain Q8 semantic microscope");
   }
-  if (scripts["dev:perf:frontier:qsemantic:input-bridge:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" ./zig-out/bin/bench-frontier") {
+  if (scripts["dev:perf:frontier:qsemantic:input-bridge:raw"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:input-bridge:raw must remain the incremental absorbed input-row-chain Q8 semantic kernel microscope");
   }
   if (scripts["dev:perf:frontier:qsemantic:input-bridge:raw:run"] !== "BENCH_QSEMANTIC_VARIANTS=throughput_candidate BENCH_FRONTIER_FILTER=\"qsemantic input bridge\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:input-bridge:raw:run must remain the no-rebuild absorbed input-row-chain Q8 semantic kernel microscope");
   }
-  if (scripts["dev:perf:frontier:qsemantic:smollm:raw"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_FRONTIER_FILTER=\"qsemantic smollm-prompt\" ./zig-out/bin/bench-frontier") {
+  if (scripts["dev:perf:frontier:qsemantic:smollm:raw"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build -fincremental --summary failures && BENCH_FRONTIER_FILTER=\"qsemantic smollm-prompt\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:smollm:raw must remain the incremental raw SmolLM Q8 semantic microscope");
   }
   if (scripts["dev:perf:frontier:qsemantic:smollm:raw:run"] !== "BENCH_FRONTIER_FILTER=\"qsemantic smollm-prompt\" ./zig-out/bin/bench-frontier") {
     errors.push("package.json dev:perf:frontier:qsemantic:smollm:raw:run must remain the no-rebuild raw SmolLM Q8 semantic microscope");
   }
-  if (scripts["bench:frontier:qsemantic"] !== "zig build -Doptimize=ReleaseFast bench-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs") {
+  if (scripts["bench:frontier:qsemantic"] !== "zig build -Doptimize=ReleaseFast bench-frontier-build && BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs") {
     errors.push("package.json bench:frontier:qsemantic must remain the ReleaseFast Q8 semantic sublayer evidence gate");
   }
   if (scripts["bench:frontier:qsemantic:run"] !== "BENCH_FRONTIER_BUILD=0 BENCH_FRONTIER_FILTER=qsemantic node scripts/check_frontier_bench.cjs") {
@@ -1119,6 +1119,8 @@ function checkScripts() {
     "qsemantic_bridge",
     "qsemantic_input_bridge",
     "q8_prompt_semantic",
+    "bench-frontier-build",
+    "build frontier benchmark artifact",
     "qsemantic bridge frontier",
     "BENCH_FRONTIER_FILTER: \"qsemantic bridge\"",
     "qsemantic input bridge frontier",

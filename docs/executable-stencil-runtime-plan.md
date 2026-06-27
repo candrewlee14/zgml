@@ -1109,6 +1109,11 @@ npm run smoke:portable-ffi:browser-gpu-llama-families:run # rerun representative
 zig build -Doptimize=ReleaseFast bench-build && ./zig-out/bin/bench-llama-smollm ignored 128 1 1 --stencil-only --debug-row-chain
 ```
 
+The frontier/qsemantic rebuild-backed scripts intentionally use
+`bench-frontier-build`, not the broad `bench-build`, so kernel iteration does
+not rebuild unrelated SmolLM benchmark binaries. Keep `bench-build` for release,
+ggml, q8-prompt, and stencil evidence that needs the wider benchmark set.
+
 These are not substitutes for `bench:pytorch:parity`, `bench:ggml:parity`, or
 `check:goal-scorecard`; they are the tight microscope loop for forming and
 discarding performance hypotheses quickly. The full gates remain the release
