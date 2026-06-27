@@ -1240,6 +1240,44 @@ function fusedLinearActivationKernelPlanOp(linearOp: any, activationOp: any, des
   };
 }
 
+function canFuseAffineActivationIrOps(affineOp: any, activationOp: any) {
+  if (!affineOp || !activationOp) return false;
+  if (affineOp.op !== "affine" || activationOp.op !== "activation") return false;
+  const activation = moduleActivationIds[activationOp.attrs?.activation];
+  if (!activation) return false;
+  return activationOp.inputValueIds.length === 1 &&
+    activationOp.parameterValueIds.length === 0 &&
+    activationOp.inputValueIds[0] === affineOp.outputValueId &&
+    traceShapesEqual(affineOp.outputShape, activationOp.inputShape) &&
+    traceShapesEqual(activationOp.inputShape, activationOp.outputShape);
+}
+
+function fusedAffineActivationKernelPlanOp(affineOp: any, activationOp: any, desc: any, values: any) {
+  return {
+    index: affineOp.index,
+    path: `${affineOp.path}..${activationOp.path}`,
+    op: "affine",
+    kernel: "affine",
+    inputShape: affineOp.inputShape.slice(),
+    outputShape: activationOp.outputShape.slice(),
+    inputLen: affineOp.inputLen,
+    outputLen: activationOp.outputLen,
+    ...scalarEvidenceForIrOp(activationOp, values),
+    inputValueIds: affineOp.inputValueIds.slice(),
+    outputValueId: activationOp.outputValueId,
+    parameterScalarCount: affineOp.parameterScalarCount,
+    nativeDispatchCount: 1,
+    nativeDescriptorCount: 1,
+    nativeKernels: ["affine", kernelNameForIrOp(activationOp)],
+    nativeDescriptorSignatures: [nativeModuleDescSignature(desc)],
+    fusedOpCount: 2,
+    fusedOps: [affineOp.op, activationOp.op],
+    fusedIndices: [affineOp.index, activationOp.index],
+    fusedValueEdges: fusedValueEdgesForIrOps([affineOp, activationOp]),
+    desc,
+  };
+}
+
 function biasParameterValueForAddIrOp(addOp: any, values: any) {
   if (!addOp || addOp.op !== "add" || addOp.parameterValueIds.length !== 1) return null;
   const parameterValueId = addOp.parameterValueIds[0];
@@ -1256,7 +1294,7 @@ function weightParameterValueForMulIrOp(mulOp: any, values: any) {
   return parameter;
 }
 
-function canFuseMulAddIrOps(mulOp: any, addOp: any, values: any) {
+function canFuseMulAddIrOps(mulOp: any, addOp: any, values: any, activationOp: any = null) {
   if (!mulOp || !addOp) return false;
   if (mulOp.op !== "mul" || addOp.op !== "add") return false;
   const weight = weightParameterValueForMulIrOp(mulOp, values);
@@ -1276,35 +1314,45 @@ function canFuseMulAddIrOps(mulOp: any, addOp: any, values: any) {
   if (weight.scalarCount !== features || bias.scalarCount !== features) return false;
   if (Array.isArray(weight.shape) && weight.shape.length !== 1) return false;
   if (Array.isArray(bias.shape) && bias.shape.length !== 1) return false;
-  return true;
+  if (!activationOp) return true;
+  const activation = moduleActivationIds[activationOp.attrs?.activation];
+  if (!activation) return false;
+  return activationOp.op === "activation" &&
+    activationOp.inputValueIds.length === 1 &&
+    activationOp.parameterValueIds.length === 0 &&
+    activationOp.inputValueIds[0] === addOp.outputValueId &&
+    traceShapesEqual(addOp.outputShape, activationOp.inputShape) &&
+    traceShapesEqual(activationOp.inputShape, activationOp.outputShape);
 }
 
-function fusedMulAddKernelPlanOp(mulOp: any, addOp: any, desc: any, values: any) {
+function fusedMulAddKernelPlanOp(mulOp: any, addOp: any, activationOp: any | null, desc: any, values: any) {
+  const fusedOps = activationOp ? [mulOp, addOp, activationOp] : [mulOp, addOp];
+  const last = fusedOps[fusedOps.length - 1];
   return {
     index: mulOp.index,
-    path: `${mulOp.path}..${addOp.path}`,
+    path: `${mulOp.path}..${last.path}`,
     op: "affine",
     kernel: "affine",
     inputShape: mulOp.inputShape.slice(),
-    outputShape: addOp.outputShape.slice(),
+    outputShape: last.outputShape.slice(),
     inputLen: mulOp.inputLen,
-    outputLen: addOp.outputLen,
-    ...scalarEvidenceForIrOp(addOp, values),
+    outputLen: last.outputLen,
+    ...scalarEvidenceForIrOp(last, values),
     inputValueIds: Object.freeze([
       mulOp.inputValueIds[0],
       mulOp.parameterValueIds[0],
       addOp.parameterValueIds[0],
     ]),
-    outputValueId: addOp.outputValueId,
+    outputValueId: last.outputValueId,
     parameterScalarCount: mulOp.parameterScalarCount + addOp.parameterScalarCount,
     nativeDispatchCount: 1,
     nativeDescriptorCount: 1,
-    nativeKernels: ["affine"],
+    nativeKernels: activationOp ? ["affine", kernelNameForIrOp(activationOp)] : ["affine"],
     nativeDescriptorSignatures: [nativeModuleDescSignature(desc)],
-    fusedOpCount: 2,
-    fusedOps: [mulOp.op, addOp.op],
-    fusedIndices: [mulOp.index, addOp.index],
-    fusedValueEdges: fusedValueEdgesForIrOps([mulOp, addOp]),
+    fusedOpCount: fusedOps.length,
+    fusedOps: fusedOps.map((op: any) => op.op),
+    fusedIndices: fusedOps.map((op: any) => op.index),
+    fusedValueEdges: fusedValueEdgesForIrOps(fusedOps),
     desc,
   };
 }
@@ -1605,6 +1653,24 @@ function kernelizeTensorProgramIr(ir: any) {
       continue;
     }
 
+    if (ir.ops[index + 2] && canFuseMulAddIrOps(op, ir.ops[index + 1], ir.values, ir.ops[index + 2])) {
+      const addOp = ir.ops[index + 1];
+      const activationOp = ir.ops[index + 2];
+      const desc = Object.freeze({
+        kind: moduleOpIds.featureAffine,
+        activation: moduleActivationIds[activationOp.attrs.activation],
+        flags: moduleFlags.weight | moduleFlags.bias,
+        a: op.attrs.features,
+        b: 0,
+        c: 0,
+        eps: 0,
+      });
+      nativeOps.push(desc);
+      ops.push(fusedMulAddKernelPlanOp(op, addOp, activationOp, desc, ir.values));
+      index += 2;
+      continue;
+    }
+
     if (canFuseMulAddIrOps(op, ir.ops[index + 1], ir.values)) {
       const addOp = ir.ops[index + 1];
       const desc = Object.freeze({
@@ -1617,7 +1683,7 @@ function kernelizeTensorProgramIr(ir: any) {
         eps: 0,
       });
       nativeOps.push(desc);
-      ops.push(fusedMulAddKernelPlanOp(op, addOp, desc, ir.values));
+      ops.push(fusedMulAddKernelPlanOp(op, addOp, null, desc, ir.values));
       index += 1;
       continue;
     }
@@ -1677,6 +1743,25 @@ function kernelizeTensorProgramIr(ir: any) {
       });
       nativeOps.push(fusedDesc);
       ops.push(fusedLinearActivationKernelPlanOp(op, activationOp, fusedDesc, ir.values));
+      index += 1;
+      continue;
+    }
+
+    if (canFuseAffineActivationIrOps(op, ir.ops[index + 1])) {
+      const activationOp = ir.ops[index + 1];
+      const desc = moduleOpDescForIrOp(op);
+      if (!desc) {
+        return {
+          kernelPlan: null,
+          diagnostic: kernelizerDiagnosticForIrOp(op),
+        };
+      }
+      const fusedDesc = Object.freeze({
+        ...desc,
+        activation: moduleActivationIds[activationOp.attrs.activation],
+      });
+      nativeOps.push(fusedDesc);
+      ops.push(fusedAffineActivationKernelPlanOp(op, activationOp, fusedDesc, ir.values));
       index += 1;
       continue;
     }

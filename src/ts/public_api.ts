@@ -3262,7 +3262,7 @@ export type ModuleKernelPlanAddOp = ModuleKernelPlanOpBase<"add", "add">;
 export type ModuleKernelPlanMulOp = ModuleKernelPlanOpBase<"mul", "mul">;
 export type ModuleKernelPlanAffineOp = ModuleKernelPlanOpBase<"affine", "affine"> & Readonly<{
   fusedOpCount?: number;
-  fusedOps?: readonly ("mul" | "add")[];
+  fusedOps?: readonly ("affine" | "mul" | "add" | "activation")[];
   fusedIndices?: readonly number[];
   fusedValueEdges?: readonly ModuleKernelPlanFusedValueEdge[];
 }>;

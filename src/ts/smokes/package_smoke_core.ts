@@ -4682,6 +4682,7 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   const lazyMatmulScaleOnlyGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).mul(lazyMatmulScale);
   const lazyMatmulScaleGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).mul(lazyMatmulScale).relu();
   const lazyAffineGraph = torch.lazy.input([2, 3]).affine(lazyMatmulScale, lazyMatmulShift);
+  const lazyAffineReluGraph = torch.lazy.input([2, 3]).affine(lazyMatmulScale, lazyMatmulShift).relu();
   const lazyMatmulAffineGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).affine(lazyMatmulScale, lazyMatmulShift).relu();
   const lazyNaturalAffineGraph = torch.lazy.input([2, 3]).mul(lazyMatmulScale).add(lazyMatmulShift);
   const lazyMatmulNaturalAffineGraph = torch.lazy.input([2]).matmul(lazyMatmulWeight).mul(lazyMatmulScale).add(lazyMatmulShift).relu();
@@ -4737,6 +4738,7 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   const lazyMatmulScaleOnlyCompiledProgram = torch.compile.compile(lazyMatmulScaleOnlyGraph, { backend: "cpu" });
   const lazyMatmulScaleCompiledProgram = torch.compile.compile(lazyMatmulScaleGraph, { backend: "cpu" });
   const lazyAffineCompiledProgram = torch.compile.compile(lazyAffineGraph, { backend: "cpu" });
+  const lazyAffineReluCompiledProgram = torch.compile.compile(lazyAffineReluGraph, { backend: "cpu" });
   const lazyMatmulAffineCompiledProgram = torch.compile.compile(lazyMatmulAffineGraph, { backend: "cpu" });
   const lazyNaturalAffineCompiledProgram = torch.compile.compile(lazyNaturalAffineGraph, { backend: "cpu" });
   const lazyMatmulNaturalAffineCompiledProgram = torch.compile.compile(lazyMatmulNaturalAffineGraph, { backend: "cpu" });
@@ -4761,6 +4763,7 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyMatmulScaleOnlyGraph.compileSupport().supported !== true ||
     lazyMatmulScaleGraph.compileSupport().supported !== true ||
     lazyAffineGraph.compileSupport().supported !== true ||
+    lazyAffineReluGraph.compileSupport().supported !== true ||
     lazyMatmulAffineGraph.compileSupport().supported !== true ||
     lazyNaturalAffineGraph.compileSupport().supported !== true ||
     lazyMatmulNaturalAffineGraph.compileSupport().supported !== true ||
@@ -4802,11 +4805,17 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyAffineGraph.kernelPlan()?.opCount !== 1 ||
     lazyAffineGraph.kernelPlan()?.dispatchCount !== 1 ||
     lazyAffineGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "affine" ||
+    lazyAffineReluGraph.trace().ops.map((op: Record<string, any>) => op.op).join("|") !== "affine|activation" ||
+    lazyAffineReluGraph.kernelPlan()?.opCount !== 2 ||
+    lazyAffineReluGraph.kernelPlan()?.dispatchCount !== 1 ||
+    lazyAffineReluGraph.kernelPlan()?.ops.length !== 1 ||
+    lazyAffineReluGraph.kernelPlan()?.ops[0]?.fusedOpCount !== 2 ||
+    lazyAffineReluGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "affine|relu" ||
     lazyAffineGraph.kernelPlan()?.parameterLayout.parameters.map((param: Record<string, any>) => `${param.name}:${param.binding}`).join("|") !== "head.scale:weights|head.shift:bias" ||
     lazyMatmulAffineGraph.trace().ops.map((op: Record<string, any>) => op.op).join("|") !== "matmul|affine|activation" ||
     lazyMatmulAffineGraph.tensorProgramIr()?.ops[1]?.op !== "affine" ||
     lazyMatmulAffineGraph.kernelPlan()?.opCount !== 3 ||
-    lazyMatmulAffineGraph.kernelPlan()?.dispatchCount !== 3 ||
+    lazyMatmulAffineGraph.kernelPlan()?.dispatchCount !== 2 ||
     lazyMatmulAffineGraph.kernelPlan()?.ops.map((op: Record<string, any>) => op.nativeKernels.join("|")).join("|") !== "linear|affine|relu" ||
     lazyMatmulAffineGraph.kernelPlan()?.parameterLayout.parameters.map((param: Record<string, any>) => `${param.name}:${param.binding}`).join("|") !== "head.weight:weights|head.scale:weights|head.shift:bias" ||
     lazyNaturalAffineGraph.trace().ops.map((op: Record<string, any>) => op.op).join("|") !== "mul|add" ||
@@ -4820,9 +4829,10 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyNaturalAffineGraph.kernelPlan()?.parameterLayout.parameters.map((param: Record<string, any>) => `${param.name}:${param.binding}`).join("|") !== "head.scale:weights|head.shift:bias" ||
     lazyMatmulNaturalAffineGraph.trace().ops.map((op: Record<string, any>) => op.op).join("|") !== "matmul|mul|add|activation" ||
     lazyMatmulNaturalAffineGraph.kernelPlan()?.opCount !== 4 ||
-    lazyMatmulNaturalAffineGraph.kernelPlan()?.dispatchCount !== 3 ||
-    lazyMatmulNaturalAffineGraph.kernelPlan()?.ops.length !== 3 ||
+    lazyMatmulNaturalAffineGraph.kernelPlan()?.dispatchCount !== 2 ||
+    lazyMatmulNaturalAffineGraph.kernelPlan()?.ops.length !== 2 ||
     lazyMatmulNaturalAffineGraph.kernelPlan()?.ops.map((op: Record<string, any>) => op.nativeKernels.join("|")).join("|") !== "linear|affine|relu" ||
+    lazyMatmulNaturalAffineGraph.kernelPlan()?.ops[1]?.fusedOpCount !== 3 ||
     lazyMatmulNaturalAffineGraph.kernelPlan()?.parameterLayout.parameters.map((param: Record<string, any>) => `${param.name}:${param.binding}`).join("|") !== "head.weight:weights|head.scale:weights|head.shift:bias" ||
     lazyActivationChain.compileSupport().supported !== true ||
     lazyNamespaceActivationChain.compileSupport().supported !== true ||
@@ -4872,8 +4882,15 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyAffineCompiledProgram.outputShape().join("x") !== "2x3" ||
     lazyAffineCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 1 ||
     lazyAffineCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "affine" ||
+    lazyAffineReluCompiledProgram.outputShape().join("x") !== "2x3" ||
+    lazyAffineReluCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 2 ||
+    lazyAffineReluCompiledProgram.compileEvidence()?.kernelPlan?.dispatchCount !== 1 ||
+    lazyAffineReluCompiledProgram.compileEvidence()?.kernelPlan?.ops.length !== 1 ||
+    lazyAffineReluCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.fusedOpCount !== 2 ||
+    lazyAffineReluCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "affine|relu" ||
     lazyMatmulAffineCompiledProgram.outputShape().join("x") !== "3" ||
     lazyMatmulAffineCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 3 ||
+    lazyMatmulAffineCompiledProgram.compileEvidence()?.kernelPlan?.dispatchCount !== 2 ||
     lazyMatmulAffineCompiledProgram.compileEvidence()?.kernelPlan?.ops.map((op: Record<string, any>) => op.nativeKernels.join("|")).join("|") !== "linear|affine|relu" ||
     lazyNaturalAffineCompiledProgram.outputShape().join("x") !== "2x3" ||
     lazyNaturalAffineCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 2 ||
@@ -4883,8 +4900,8 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyNaturalAffineCompiledProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "affine" ||
     lazyMatmulNaturalAffineCompiledProgram.outputShape().join("x") !== "3" ||
     lazyMatmulNaturalAffineCompiledProgram.compileEvidence()?.kernelPlan?.opCount !== 4 ||
-    lazyMatmulNaturalAffineCompiledProgram.compileEvidence()?.kernelPlan?.dispatchCount !== 3 ||
-    lazyMatmulNaturalAffineCompiledProgram.compileEvidence()?.kernelPlan?.ops.length !== 3 ||
+    lazyMatmulNaturalAffineCompiledProgram.compileEvidence()?.kernelPlan?.dispatchCount !== 2 ||
+    lazyMatmulNaturalAffineCompiledProgram.compileEvidence()?.kernelPlan?.ops.length !== 2 ||
     lazyMatmulNaturalAffineCompiledProgram.compileEvidence()?.kernelPlan?.ops.map((op: Record<string, any>) => op.nativeKernels.join("|")).join("|") !== "linear|affine|relu" ||
     lazyMultiChannelConvReluProgram.outputShape().join("x") !== "2x2x2x2" ||
     lazyMultiChannelConvReluProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "conv2d|relu" ||
@@ -4971,6 +4988,19 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   } finally {
     lazyAffineSession.dispose();
   }
+  const lazyAffineReluSession = lazyAffineReluCompiledProgram.bind({
+    weights: new Float32Array([2, -1, 0.5]),
+    bias: new Float32Array([1, 10, -2]),
+  });
+  try {
+    expectClose(
+      lazyAffineReluSession.stepTensor(torch.tensor([1, 2, 3, 4, 5, 6], [2, 3])).data,
+      [3, 8, 0, 9, 5, 1],
+      `${label} lazy affine relu compiled output`,
+    );
+  } finally {
+    lazyAffineReluSession.dispose();
+  }
   const lazyNaturalAffineSession = lazyNaturalAffineCompiledProgram.bind({
     weights: new Float32Array([2, -1, 0.5]),
     bias: new Float32Array([1, 10, -2]),
@@ -4991,6 +5021,7 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   lazyMatmulScaleOnlyCompiledProgram.free();
   lazyMatmulScaleCompiledProgram.free();
   lazyAffineCompiledProgram.free();
+  lazyAffineReluCompiledProgram.free();
   lazyMatmulAffineCompiledProgram.free();
   lazyNaturalAffineCompiledProgram.free();
   lazyMatmulNaturalAffineCompiledProgram.free();

@@ -3291,7 +3291,7 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
             module_op_feature_affine => {
                 const features = op.a;
                 if (features == 0 or features != current_len) return error.ShapeMismatch;
-                if (op.activation != 0 or op.b != 0 or op.c != 0 or op.eps != 0) return error.InvalidArgument;
+                if (op.b != 0 or op.c != 0 or op.eps != 0) return error.InvalidArgument;
                 if (op.flags != (module_flag_weight | module_flag_bias)) return error.InvalidArgument;
                 const weight = try moduleAddParam(
                     graph_alloc,
@@ -3310,6 +3310,9 @@ fn compileModuleProgram(desc: *const zgml_module_desc, backend: llm_mod.LlamaBac
                     &bias_len,
                 );
                 current = current.mul(weight.repeatLike(current)).add(bias.repeatLike(current));
+                if (op.activation != 0) {
+                    current = try moduleActivate(current, op.activation);
+                }
             },
             module_op_activation => {
                 if (op.flags != 0 or op.a != 0 or op.b != 0 or op.c != 0) return error.InvalidArgument;
@@ -9118,6 +9121,46 @@ test "C ABI module program compiles traced sequential ops" {
         }, &result));
         try std.testing.expectEqual(@as(usize, 6), result.output_len);
         try std.testing.expectEqualSlices(f32, &.{ 2.5, 5, 13, 8.5, 14, 25 }, &feature_affine_output);
+
+        const feature_affine_relu_ops = [_]zgml_module_op_desc{.{
+            .kind = module_op_feature_affine,
+            .activation = module_activation_relu,
+            .flags = module_flag_weight | module_flag_bias,
+            .a = 3,
+        }};
+        var feature_affine_relu_program: ?*zgml_program = null;
+        var feature_affine_relu_session: ?*zgml_session = null;
+        defer zgml_session_free(feature_affine_relu_session);
+        defer zgml_program_free(feature_affine_relu_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = reduce_input_shape[0..].ptr,
+            .input_rank = reduce_input_shape.len,
+            .ops = feature_affine_relu_ops[0..].ptr,
+            .op_count = feature_affine_relu_ops.len,
+        }, &.{ .backend = backend_cpu }, &feature_affine_relu_program));
+        try std.testing.expect(feature_affine_relu_program != null);
+
+        const feature_affine_relu_weights = [_]f32{ 2, -1, 0.5 };
+        const feature_affine_relu_bias = [_]f32{ 1, 10, -2 };
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(feature_affine_relu_program, &.{
+            .weights = feature_affine_relu_weights[0..].ptr,
+            .weights_len = feature_affine_relu_weights.len,
+            .bias = feature_affine_relu_bias[0..].ptr,
+            .bias_len = feature_affine_relu_bias.len,
+        }, &feature_affine_relu_session));
+        try std.testing.expect(feature_affine_relu_session != null);
+
+        var feature_affine_relu_output = [_]f32{0} ** 6;
+        result = .{};
+        try std.testing.expectEqual(status(.ok), zgml_session_step(feature_affine_relu_session, &.{
+            .input = reduce_input[0..].ptr,
+            .input_len = reduce_input.len,
+            .output = feature_affine_relu_output[0..].ptr,
+            .output_len = feature_affine_relu_output.len,
+        }, &result));
+        try std.testing.expectEqual(@as(usize, 6), result.output_len);
+        try std.testing.expectEqualSlices(f32, &.{ 3, 8, 0, 9, 5, 1 }, &feature_affine_relu_output);
 
         const batch_reduce_max_ops = [_]zgml_module_op_desc{
             .{

@@ -513,6 +513,7 @@ const lazyMatmulGraph = lazyInput.matmul(lazyMatmulWeight).relu();
 const lazyMatmulBiasGraph = lazyInput.matmul(lazyMatmulWeight).add(lazyMatmulBias).relu();
 const lazyMatmulScaleGraph = lazyInput.matmul(lazyMatmulWeight).mul(lazyMatmulScale).relu();
 const lazyMatmulAffineGraph = lazyInput.matmul(lazyMatmulWeight).affine(lazyMatmulScale, lazyMatmulShift).relu();
+const lazyAffineReluGraph = lazy.input([2, 3] as const).affine(lazyMatmulScale, lazyMatmulShift).relu();
 const lazyNaturalAffineGraph = lazy.input([2, 3] as const).mul(lazyMatmulScale).add(lazyMatmulShift);
 const lazyMatmulNaturalAffineGraph = lazyInput.matmul(lazyMatmulWeight).mul(lazyMatmulScale).add(lazyMatmulShift).relu();
 const lazyNamespaceMatmulGraph = lazy.relu(lazy.matmul(lazyInput, lazyMatmulWeight));
