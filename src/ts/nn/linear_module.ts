@@ -65,6 +65,7 @@ type TensorConstructor = new (
   shape?: readonly number[],
   options?: LinearTensorConstructOptions,
 ) => LinearTensor;
+type PrepareF32 = (values: unknown) => { readonly data: Float32Array; readonly shape: readonly number[] };
 type F32WithLength = (values: unknown, length: number, label: string) => Float32Array;
 type RequirePositiveInteger = BivariantCallback<[value: unknown, label: string], number>;
 type DefaultedF32 = (
@@ -97,6 +98,7 @@ function linearSequentialModule(module: SequentialModuleRecord): LinearSequentia
 
 export type LinearModuleClassOptions = Readonly<Record<string, unknown> & SequentialProgramCompileHooksInput & {
   Tensor: TensorConstructor;
+  prepareF32?: PrepareF32;
   f32WithLength: F32WithLength;
   requirePositiveInteger: RequirePositiveInteger;
   defaultedF32: DefaultedF32;
@@ -110,6 +112,7 @@ export type LinearModuleClassOptions = Readonly<Record<string, unknown> & Sequen
 
 export function createLinearModuleClass(options: LinearModuleClassOptions) {
   const TensorClass = options.Tensor;
+  const prepareF32 = typeof options.prepareF32 === "function" ? options.prepareF32 : null;
   const f32WithLength = options.f32WithLength;
   const requirePositiveInteger = options.requirePositiveInteger;
   const defaultedF32 = options.defaultedF32;
@@ -147,6 +150,15 @@ export function createLinearModuleClass(options: LinearModuleClassOptions) {
     return true;
   }
 
+  function inputTensor(inputValues: unknown, inFeatures: number) {
+    if (inputValues instanceof TensorClass) return inputValues as LinearTensor;
+    if (prepareF32) {
+      const prepared = prepareF32(inputValues);
+      return new TensorClass(prepared.data, prepared.shape);
+    }
+    return new TensorClass(f32WithLength(inputValues, inFeatures, "linear input"), [inFeatures]);
+  }
+
   class LinearModule {
     kind: "linear";
     inFeatures: number;
@@ -169,9 +181,7 @@ export function createLinearModuleClass(options: LinearModuleClassOptions) {
     }
 
     forward(inputValues: unknown) {
-      const input = inputValues instanceof TensorClass
-        ? inputValues as LinearTensor
-        : new TensorClass(f32WithLength(inputValues, this.inFeatures, "linear input"), [this.inFeatures]);
+      const input = inputTensor(inputValues, this.inFeatures);
       if (input.rank === 1) {
         if (input.length !== this.inFeatures) {
           throw new Error(`linear input length must be ${this.inFeatures}, got ${input.length}`);

@@ -199,7 +199,8 @@ function sequentialActivationKind(layer: SequentialLayer): "relu" | "gelu" | "si
   }
 }
 
-function isSequentialLinearLayer(layer: SequentialLayer): layer is SequentialLinearLayer {
+function isSequentialLinearLayer(layer: unknown): layer is SequentialLinearLayer {
+  if (!layer || typeof layer !== "object") return false;
   const candidate = layer as Partial<SequentialLinearLayer>;
   return (
     candidate.kind === "linear" &&

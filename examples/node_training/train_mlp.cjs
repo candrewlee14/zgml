@@ -3,6 +3,7 @@
 const {
   checkpoint,
   data,
+  gradMode,
   loss,
   nn,
   optim,
@@ -126,6 +127,16 @@ const restored = createModel();
 const restoredOptimizer = optim.adamW(restored, { lr: 0.04, weightDecay: 0.0001 });
 checkpoint.restore(snapshot, { model: restored, optimizer: restoredOptimizer, prefix: "mlp", strict: true });
 assertClose(scalar(restored.forward(probeInput)), scalar(model.forward(probeInput)), 1e-5, "restored MLP eager prediction");
+
+const productionBatchInput = [[1, -1], [-1, 1]];
+const productionBatchTensor = tensor([1, -1, -1, 1], [2, 2]);
+const productionBatch = gradMode.noGrad(() => model.forward(productionBatchInput));
+const explicitProductionBatch = gradMode.noGrad(() => model.forward(productionBatchTensor));
+if (productionBatch.shape.join("x") !== "2x1") {
+  throw new Error(`expected nested production batch output shape [2,1], got [${productionBatch.shape.join(",")}]`);
+}
+assertClose(productionBatch.data[0], explicitProductionBatch.data[0], 1e-5, "nested production batch output 0");
+assertClose(productionBatch.data[1], explicitProductionBatch.data[1], 1e-5, "nested production batch output 1");
 
 const support = model.compileSupport({ inputShape: [2, 2] });
 if (!support || support.supported !== true) {

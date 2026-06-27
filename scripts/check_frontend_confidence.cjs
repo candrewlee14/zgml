@@ -33,6 +33,7 @@ const workflows = Object.freeze([
     docNeedles: [
       "| MLP classifier/regressor |",
       "`examples/node_training/train_mlp.cjs`",
+      "batched plain-array production input parity",
       "compiled/restored output parity against eager",
     ],
     smokeNeedles: [
@@ -42,6 +43,12 @@ const workflows = Object.freeze([
     ],
     commands: [
       ["node", ["examples/node_training/train_mlp.cjs"]],
+    ],
+    exampleNeedles: [
+      "const productionBatchInput = [[1, -1], [-1, 1]];",
+      "gradMode.noGrad(() => model.forward(productionBatchInput))",
+      "nested production batch output 0",
+      "nested production batch output 1",
     ],
   },
   {
@@ -151,6 +158,9 @@ for (const workflow of workflows) {
   }
   for (const needle of workflow.smokeNeedles) {
     requireIncludes(smoke, "src/ts/smokes/package_smoke_core.ts", needle, workflow.name);
+  }
+  for (const needle of workflow.exampleNeedles ?? []) {
+    requireIncludes(readFileSync(join(root, "examples", "node_training", "train_mlp.cjs"), "utf8"), "examples/node_training/train_mlp.cjs", needle, workflow.name);
   }
 }
 

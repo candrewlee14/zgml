@@ -457,7 +457,11 @@ Current checked progress:
   package subpath. Native eager execution policy is still open work. The first
   normal-module route now exists on Node and Bun: eligible `nn.Linear.forward`
   calls inside `zgml.noGrad(...)` route through the native eager linear hook
-  while grad-enabled training keeps the TS/autograd graph path. Supported
+  while grad-enabled training keeps the TS/autograd graph path. That Linear
+  boundary now preserves rectangular nested-array shape too, so subclassed
+  `nn.Module` models can accept plain batched production inputs and still enter
+  the native eager Linear lane instead of flattening them into a single feature
+  vector. Supported
   `nn.Sequential` inference also now keeps the ergonomic JS/TS
   `model.forward(input)` call shape while transparently caching a native
   Program/Session in `noGrad`; the package smoke poisons the JS layer

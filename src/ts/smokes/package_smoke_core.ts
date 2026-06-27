@@ -424,6 +424,19 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const eager = linear.forward(input);
   const nativeModule = adapter.noGrad(() => linear.forward(input));
   expectClose(nativeModule.data, eager.data, `${label} noGrad nn.Linear native eager module output`);
+  const originalMatmul = adapter.Tensor.prototype.matmul;
+  try {
+    adapter.Tensor.prototype.matmul = () => {
+      throw new Error(`${label} poisoned Tensor.matmul fallback`);
+    };
+    const nativeNestedModule = adapter.noGrad(() => linear.forward([[1, 2], [3, 4]]));
+    expectClose(nativeNestedModule.data, Array.from(directOutput), `${label} noGrad nn.Linear nested array native eager module output`);
+    if (nativeNestedModule.shape.join("x") !== "2x3") {
+      throw new Error(`${label} expected noGrad nn.Linear nested array shape [2,3], got [${nativeNestedModule.shape.join(",")}]`);
+    }
+  } finally {
+    adapter.Tensor.prototype.matmul = originalMatmul;
+  }
 
   const fusedSequential = new adapter.nn.Sequential(
     new adapter.nn.Linear(2, 3, {

@@ -104,6 +104,7 @@ export function createAdapterFrontendModuleSurface(options: AdapterFrontendModul
 
   const LinearModule = options.sharedFrontend.createLinearModuleClass({
     Tensor: options.Tensor,
+    prepareF32: options.prepareF32,
     f32WithLength: options.f32WithLength,
     requirePositiveInteger: options.requirePositiveInteger,
     defaultedF32: options.defaultedF32,

@@ -7514,6 +7514,7 @@ const linearPrograms = [];
 const linearPlacements = [];
 const LinearModule = nnLinearModule.createLinearModuleClass({
   Tensor: LinearSmokeTensor,
+  prepareF32: tensorData.prepareF32,
   f32WithLength: linearF32WithLength,
   requirePositiveInteger: tensorData.requirePositiveInteger,
   defaultedF32: tensorData.defaultedF32,
@@ -7599,6 +7600,8 @@ expectSame({
   training: true,
 }, "nn linear initializes");
 expectSame(linearModule.forward([2, 3]).data, [14.5, 18.5, 25], "nn linear vector forward");
+expectSame(linearModule.forward([[1, 2], [3, 4]]).shape, [2, 3], "nn linear nested array preserves batch shape");
+expectSame(linearModule.forward([[1, 2], [3, 4]]).data, [9.5, 11.5, 16, 19.5, 25.5, 34], "nn linear nested array batch forward");
 expectSame(linearModule.forward(new LinearSmokeTensor(Float32Array.of(1, 2, 3, 4), [2, 2])).data, [9.5, 11.5, 16, 19.5, 25.5, 34], "nn linear batch forward");
 const traceableLinearModule = tsNode.nn.sequential([
   tsNode.nn.linear(2, 3, {

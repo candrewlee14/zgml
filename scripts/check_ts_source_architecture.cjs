@@ -3523,6 +3523,7 @@ function checkSequentialProgramCompileSurfaceIsShared(errors) {
     "export type LinearTensor = {",
     "export type LinearParameter = Readonly<{",
     "type LinearSequentialModuleRecord = SequentialModuleRecord & Readonly<{",
+    "type PrepareF32 = (values: unknown) => { readonly data: Float32Array; readonly shape: readonly number[] };",
     "readonly compileSupport?: (options: ModuleCompileOptions) => unknown;",
     "readonly inFeatures: number;",
     "function linearSequentialModule(module: SequentialModuleRecord): LinearSequentialModuleRecord",
@@ -3530,7 +3531,9 @@ function checkSequentialProgramCompileSurfaceIsShared(errors) {
     "SequentialProgramCompileHooksInput",
     "type SequentialModuleRecord,",
     "Tensor: TensorConstructor",
+    "prepareF32?: PrepareF32",
     "TinyLinearModel: TinyLinearModelConstructor",
+    "function inputTensor(inputValues: unknown, inFeatures: number)",
     "create(desc: { readonly inputLen: number; readonly outputLen: number }): { compile(options?: CompileOptions): unknown };",
     "createLinearModuleClass(options: LinearModuleClassOptions)",
     "layersForModule: (module: SequentialModuleRecord) => [module]",
@@ -3566,7 +3569,8 @@ function checkSequentialProgramCompileSurfaceIsShared(errors) {
     !sharedFrontendSource.includes("type LinearModuleClassOptions") ||
     !sharedFrontendSource.includes("SequentialProgramCompileCoreHooksInput") ||
     !sharedFrontendSource.includes("export type SharedLinearModuleClassOptions = Readonly<") ||
-    !sharedFrontendSource.includes("SequentialProgramCompileCoreHooksInput & Pick<")
+    !sharedFrontendSource.includes("SequentialProgramCompileCoreHooksInput & Pick<") ||
+    !sharedFrontendSource.includes('"Tensor" | "prepareF32" | "f32WithLength"')
   ) {
     errors.push("src/ts/shared_frontend.ts must re-use the authored Linear module contract while injecting placement in its wrapper");
   }
