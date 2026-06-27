@@ -153,6 +153,23 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     return true;
   }
 
+  function nativeClamp(tensor: TensorMathTensor, minValue: number, maxValue: number, hasMin: boolean, hasMax: boolean) {
+    if (gradModeEnabled()) return null;
+    if (typeof nativeEagerElementwiseInto !== "function") return null;
+    if (tensor.length < nativeEagerElementwiseMinLength) return null;
+    const TensorClass = tensorClass();
+    const output = new Float32Array(tensor.length);
+    if (hasMin) {
+      nativeEagerElementwiseInto(output, tensor, Float32Array.of(minValue), { op: "maximum" });
+      if (hasMax) {
+        nativeEagerElementwiseInto(output, output, Float32Array.of(maxValue), { op: "minimum" });
+      }
+    } else {
+      nativeEagerElementwiseInto(output, tensor, Float32Array.of(maxValue), { op: "minimum" });
+    }
+    return new TensorClass(output, tensor.shape);
+  }
+
   function isNativeComparisonOp(label: string) {
     return label === "eq" || label === "ne" || label === "lt" || label === "le" || label === "gt" || label === "ge";
   }
@@ -454,6 +471,9 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     if (!Number.isFinite(minValue) && hasMin) throw new Error(`Tensor.clamp min must be finite, got ${min}`);
     if (!Number.isFinite(maxValue) && hasMax) throw new Error(`Tensor.clamp max must be finite, got ${max}`);
     if (minValue > maxValue) throw new Error(`Tensor.clamp min ${minValue} must be <= max ${maxValue}`);
+
+    const nativeResult = nativeClamp(tensor, minValue, maxValue, hasMin, hasMax);
+    if (nativeResult) return nativeResult;
 
     return unary(
       tensor,

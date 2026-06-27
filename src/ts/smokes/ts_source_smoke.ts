@@ -426,7 +426,7 @@ const noGradNativeElementwise = createTensorMathHelpers({
   nativeEagerElementwiseMinLength: 0,
   nativeEagerElementwiseInto(output, left, right, options) {
     nativeElementwiseCalls.push(options.op);
-    const leftData = left.data;
+    const leftData = left.data ?? left;
     const rightData = right === null ? null : right.data ?? right;
     for (let i = 0; i < output.length; i += 1) {
       const rhsValue = rightData === null ? 0 : rightData[rightData.length === 1 ? 0 : i];
@@ -436,6 +436,8 @@ const noGradNativeElementwise = createTensorMathHelpers({
         case "sqr": output[i] = leftData[i] * leftData[i]; break;
         case "eq": output[i] = Object.is(leftData[i], rhsValue) || leftData[i] === rhsValue ? 1 : 0; break;
         case "lt": output[i] = leftData[i] < rhsValue ? 1 : 0; break;
+        case "maximum": output[i] = Math.max(leftData[i], rhsValue); break;
+        case "minimum": output[i] = Math.min(leftData[i], rhsValue); break;
         default: throw new Error(`unexpected native elementwise op ${options.op}`);
       }
     }
@@ -461,8 +463,13 @@ expectSame(noGradNativeElementwise.eq(
   new TensorDataSmokeTensor(Float32Array.of(1, Number.NaN, -0, 4), [2, 2]),
   new TensorDataSmokeTensor(Float32Array.of(1, Number.NaN, 0, 5), [2, 2]),
 ).data, [1, 1, 1, 0], "tensor math native same-shape eq hook");
+expectSame(noGradNativeElementwise.clamp(
+  new TensorDataSmokeTensor(Float32Array.of(-2, -1, 0, 3), [2, 2]),
+  -1,
+  2,
+).data, [-1, -1, 0, 2], "tensor math native clamp hook");
 expectSame(noGradNativeElementwise.add(math3d, mathTrailing).data.slice(0, 4), [11, 22, 33, 44], "tensor math no-grad broadcast fallback keeps TS path");
-expectSame(nativeElementwiseCalls, ["mul", "add", "sqr", "lt", "eq"], "tensor math no-grad native elementwise hook count");
+expectSame(nativeElementwiseCalls, ["mul", "add", "sqr", "lt", "eq", "maximum", "minimum"], "tensor math no-grad native elementwise hook count");
 const nativeReduceCalls: string[] = [];
 const noGradNativeReduce = createTensorMathHelpers({
   getTensorClass: () => TensorDataSmokeTensor,
