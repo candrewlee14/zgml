@@ -791,6 +791,17 @@ ready, but the row-serial semantic kernel is too narrow or too slow for the
 full hidden width, so `dev:perf:next` routes to the exact qsemantic bridge
 microscope for the `576 x 1536 x 576` shape. Use the ggml smoke after the
 frontier bottleneck moves or when explicitly checking model-level promotion.
+The absorbed input-bridge microscope now also separates the old "one dispatch"
+temptation from the real throughput target. A fresh three-attempt run adds a
+`direct_serial` lane to the `qsemantic input bridge` artifact: it proves the
+existing direct bridge kernel is correct and dispatches once, but it remains
+row-owned/serial (`row_serial_dot_ops=2985984`,
+`total_row_serial_dot_ops=382205952`) and is slower than the decomposed absorbed
+path (`direct_serial` selected `1.42x`, median `1.23x`, versus absorbed
+selected `3.09x`, median `2.56x`). That makes the next implementation target
+more precise: not "reduce dispatches at any cost", but
+`semantic_with_input_width_parallel_kernel`, carrying the width-parallel
+semantic FFN work into the residual input-bridge shape.
 The qsemantic-throughput readback follows the same stability rule as the other
 noisy perf lanes: `qsemantic-throughput-results:` prefers the latest
 three-attempt artifact, while `qsemantic-throughput-latest-results:` reports a

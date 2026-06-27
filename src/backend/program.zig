@@ -1349,6 +1349,16 @@ pub const CommandStreamPolicy = struct {
         return CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate();
     }
 
+    pub fn promptSemanticFfnSublayerInputBridgeDirectSerialCandidate() CommandStreamPolicy {
+        var policy = CommandStreamPolicy.promptProjectionRowChainCommand();
+        policy.fuse_semantic_ffn_sublayer_input_row_chain = true;
+        policy.fuse_projection_row_chain_two_phase_candidate = false;
+        policy.fuse_semantic_ffn_sublayer_single_dispatch = false;
+        policy.fuse_semantic_ffn_sublayer_width_parallel = false;
+        policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch = true;
+        return policy;
+    }
+
     pub fn promptProjectionRowChainSingleDispatchCandidate() CommandStreamPolicy {
         var policy = CommandStreamPolicy.default();
         policy.fuse_projection_row_chain = true;
@@ -9581,6 +9591,12 @@ test "program command stream absorbs projection row-chain semantic residual brid
     try std.testing.expectEqual(@as(u32, 0), shape.projection_row_chain_semantic_residual_bridges);
     try std.testing.expectEqual(@as(u32, 14), shape.covered_ops);
     try std.testing.expectEqual(@as(u32, 13), shape.estimated_saved_dispatches);
+
+    const direct_commands = try buildProgramCommands(std.testing.allocator, &ops, CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeDirectSerialCandidate());
+    defer std.testing.allocator.free(direct_commands);
+    try std.testing.expectEqual(@as(usize, 1), direct_commands.len);
+    try std.testing.expectEqual(ProgramCommandKind.semantic_ffn_sublayer_with_input_row_chain, direct_commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 14), direct_commands[0].coveredOpCount());
 }
 
 test "program command stream fuses paired projection activation product chain" {

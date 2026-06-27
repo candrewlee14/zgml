@@ -1847,6 +1847,8 @@ fn benchSemanticSublayerWithInputRowChainMetalCase(
     defer alloc.free(command_out);
     const absorbed_out = try allocF32(alloc, output_elems, 1019, 0.0);
     defer alloc.free(absorbed_out);
+    const direct_serial_out = try allocF32(alloc, output_elems, 1028, 0.0);
+    defer alloc.free(direct_serial_out);
 
     const input_qdata = try allocI8Weights(alloc, model * model, 1020);
     defer alloc.free(input_qdata);
@@ -1952,23 +1954,31 @@ fn benchSemanticSublayerWithInputRowChainMetalCase(
     const absorbed_policy = program_mod.CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeCandidate();
     const absorbed_handle = metal.compileProgramWithCommandPolicy(program, absorbed_policy) orelse return error.CompileFailed;
     defer be.freeProgram(absorbed_handle);
+    const direct_serial_policy = program_mod.CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeDirectSerialCandidate();
+    const direct_serial_handle = metal.compileProgramWithCommandPolicy(program, direct_serial_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(direct_serial_handle);
 
     const staged_output_io = [_]backend_mod.ProgramIO{programIo(16, staged_out)};
     const command_output_io = [_]backend_mod.ProgramIO{programIo(16, command_out)};
     const absorbed_output_io = [_]backend_mod.ProgramIO{programIo(16, absorbed_out)};
+    const direct_serial_output_io = [_]backend_mod.ProgramIO{programIo(16, direct_serial_out)};
     var staged_bench = ProjectionRowChainMetalBench{ .be = be, .handle = staged_handle, .out = staged_out, .output_io = &staged_output_io };
     var command_bench = ProjectionRowChainMetalBench{ .be = be, .handle = command_handle, .out = command_out, .output_io = &command_output_io };
     var absorbed_bench = ProjectionRowChainMetalBench{ .be = be, .handle = absorbed_handle, .out = absorbed_out, .output_io = &absorbed_output_io };
+    var direct_serial_bench = ProjectionRowChainMetalBench{ .be = be, .handle = direct_serial_handle, .out = direct_serial_out, .output_io = &direct_serial_output_io };
 
     be.executeProgram(staged_handle, &.{}, &staged_output_io);
     be.executeProgram(command_handle, &.{}, &command_output_io);
     be.executeProgram(absorbed_handle, &.{}, &absorbed_output_io);
+    be.executeProgram(direct_serial_handle, &.{}, &direct_serial_output_io);
     const command_max_abs_diff = maxAbsDiff(staged_out, command_out);
     const absorbed_max_abs_diff = maxAbsDiff(staged_out, absorbed_out);
+    const direct_serial_max_abs_diff = maxAbsDiff(staged_out, direct_serial_out);
 
     const staged_stats = measure(io, &staged_bench);
     const command_stats = measure(io, &command_bench);
     const absorbed_stats = measure(io, &absorbed_bench);
+    const direct_serial_stats = measure(io, &direct_serial_bench);
     const approx_work = 2.0 * @as(f64, @floatFromInt(case.m * model * model + case.m * hidden * model * 2 + case.m * output * hidden));
 
     var staged_name_buf: [160]u8 = undefined;
@@ -1980,9 +1990,13 @@ fn benchSemanticSublayerWithInputRowChainMetalCase(
     var absorbed_name_buf: [176]u8 = undefined;
     const absorbed_name = try std.fmt.bufPrint(&absorbed_name_buf, "{s} semantic input absorbed", .{case.name});
     try printStats(w, absorbed_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", absorbed_stats);
+    var direct_serial_name_buf: [192]u8 = undefined;
+    const direct_serial_name = try std.fmt.bufPrint(&direct_serial_name_buf, "{s} semantic input direct_serial", .{case.name});
+    try printStats(w, direct_serial_name, "throughput", approx_work / 1_000_000_000.0, "GFLOP", direct_serial_stats);
 
     try printRatio(w, command_name, staged_stats, command_stats, command_max_abs_diff);
     try printRatio(w, absorbed_name, staged_stats, absorbed_stats, absorbed_max_abs_diff);
+    try printRatio(w, direct_serial_name, staged_stats, direct_serial_stats, direct_serial_max_abs_diff);
 
     const command_commands = try program_mod.buildProgramCommands(alloc, &ops, command_policy);
     defer alloc.free(command_commands);
@@ -1997,6 +2011,13 @@ fn benchSemanticSublayerWithInputRowChainMetalCase(
     const absorbed_profile_name = try std.fmt.bufPrint(&absorbed_profile_name_buf, "{s} semantic input absorbed dispatch_profile", .{case.name});
     try printCommandShape(w, absorbed_profile_name, &ops, absorbed_commands);
     try printSemanticSublayerRuntimeProfile(w, absorbed_profile_name, be, absorbed_handle, &absorbed_output_io);
+
+    const direct_serial_commands = try program_mod.buildProgramCommands(alloc, &ops, direct_serial_policy);
+    defer alloc.free(direct_serial_commands);
+    var direct_serial_profile_name_buf: [208]u8 = undefined;
+    const direct_serial_profile_name = try std.fmt.bufPrint(&direct_serial_profile_name_buf, "{s} semantic input direct_serial dispatch_profile", .{case.name});
+    try printCommandShape(w, direct_serial_profile_name, &ops, direct_serial_commands);
+    try printSemanticSublayerRuntimeProfile(w, direct_serial_profile_name, be, direct_serial_handle, &direct_serial_output_io);
 }
 
 fn benchProjectionRowChainMetal(io: std.Io, alloc: std.mem.Allocator, w: *std.Io.Writer, filter: FrontierFilter) !void {
