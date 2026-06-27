@@ -1156,6 +1156,8 @@ const {
   nativeEagerMatmulInto: (output, lhs, rhs, options) => nativeEager.matmulInto(output, lhs, rhs, options),
   nativeEagerElementwiseInto: (output, lhs, rhs, options) => nativeEager.elementwiseInto(output, lhs, rhs, options),
   nativeEagerElementwiseMinLength: 65536,
+  nativeEagerActivationInto: (output, input, options) => nativeEager.activationInto(output, input, options),
+  nativeEagerActivationMinLength: 65536,
   nativeEagerWhereInto: (output, condition, input, other) => nativeEager.whereInto(output, condition, input, other),
   nativeEagerReduceInto: (output, input, options) => nativeEager.reduceInto(output, input, options),
   nativeEagerSoftmaxInto: (output, input, options) => options && options.logSoftmax

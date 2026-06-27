@@ -30,6 +30,11 @@ type NativeEagerElementwiseInto = (
   rhs: unknown,
   options: Readonly<{ op: string }>,
 ) => Float32Array;
+type NativeEagerActivationInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{ activation: string }>,
+) => Float32Array;
 type NativeEagerWhereInto = (
   output: Float32Array,
   condition: unknown,
@@ -62,6 +67,8 @@ export type AdapterTensorRuntimeSurfaceOptions<
   nativeEagerMatmulInto?: NativeEagerMatmulInto;
   nativeEagerElementwiseInto?: NativeEagerElementwiseInto;
   nativeEagerElementwiseMinLength?: number;
+  nativeEagerActivationInto?: NativeEagerActivationInto;
+  nativeEagerActivationMinLength?: number;
   nativeEagerWhereInto?: NativeEagerWhereInto;
   nativeEagerClampInto?: NativeEagerClampInto;
   nativeEagerReduceInto?: NativeEagerReduceInto;
@@ -111,6 +118,8 @@ export function createAdapterTensorRuntimeSurface<
     nativeEagerMatmulInto: options.nativeEagerMatmulInto,
     nativeEagerElementwiseInto: options.nativeEagerElementwiseInto,
     nativeEagerElementwiseMinLength: options.nativeEagerElementwiseMinLength,
+    nativeEagerActivationInto: options.nativeEagerActivationInto,
+    nativeEagerActivationMinLength: options.nativeEagerActivationMinLength,
     nativeEagerWhereInto: options.nativeEagerWhereInto,
     nativeEagerClampInto: options.nativeEagerClampInto,
     nativeEagerReduceInto: options.nativeEagerReduceInto,

@@ -69,6 +69,11 @@ type NativeEagerElementwiseInto = (
   rhs: unknown,
   options: Readonly<{ op: string }>,
 ) => Float32Array;
+type NativeEagerActivationInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{ activation: string }>,
+) => Float32Array;
 type NativeEagerWhereInto = (
   output: Float32Array,
   condition: unknown,
@@ -101,6 +106,8 @@ export type TensorMathHelpersOptions = Readonly<{
   nativeEagerMatmulInto?: NativeEagerMatmulInto;
   nativeEagerElementwiseInto?: NativeEagerElementwiseInto;
   nativeEagerElementwiseMinLength?: number;
+  nativeEagerActivationInto?: NativeEagerActivationInto;
+  nativeEagerActivationMinLength?: number;
   nativeEagerWhereInto?: NativeEagerWhereInto;
   nativeEagerClampInto?: NativeEagerClampInto;
   nativeEagerReduceInto?: NativeEagerReduceInto;
@@ -117,11 +124,15 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   const scalarTensor = options.scalarTensor;
   const nativeEagerMatmulInto = options.nativeEagerMatmulInto;
   const nativeEagerElementwiseInto = options.nativeEagerElementwiseInto;
+  const nativeEagerActivationInto = options.nativeEagerActivationInto;
   const nativeEagerWhereInto = options.nativeEagerWhereInto;
   const nativeEagerClampInto = options.nativeEagerClampInto;
   const nativeEagerElementwiseMinLength = Number.isSafeInteger(options.nativeEagerElementwiseMinLength) && Number(options.nativeEagerElementwiseMinLength) >= 0
     ? Number(options.nativeEagerElementwiseMinLength)
     : 512;
+  const nativeEagerActivationMinLength = Number.isSafeInteger(options.nativeEagerActivationMinLength) && Number(options.nativeEagerActivationMinLength) >= 0
+    ? Number(options.nativeEagerActivationMinLength)
+    : nativeEagerElementwiseMinLength;
   const nativeEagerReduceInto = options.nativeEagerReduceInto;
   const nativeEagerReduceMinLength = Number.isSafeInteger(options.nativeEagerReduceMinLength) && Number(options.nativeEagerReduceMinLength) >= 0
     ? Number(options.nativeEagerReduceMinLength)
@@ -165,6 +176,13 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     if (typeof nativeEagerElementwiseInto !== "function") return false;
     if (output.length < nativeEagerElementwiseMinLength) return false;
     nativeEagerElementwiseInto(output, tensor, null, { op });
+    return true;
+  }
+
+  function nativeActivationUnaryInto(output: Float32Array, tensor: TensorMathTensor, activation: string) {
+    if (typeof nativeEagerActivationInto !== "function") return false;
+    if (output.length < nativeEagerActivationMinLength) return false;
+    nativeEagerActivationInto(output, tensor, { activation });
     return true;
   }
 
@@ -750,11 +768,13 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     return new TensorClass(out, tensor.shape);
   }
 
-  function unary(tensor: TensorMathTensor, fn: UnaryOp, derivative: UnaryOp, nativeOp?: string) {
+  function unary(tensor: TensorMathTensor, fn: UnaryOp, derivative: UnaryOp, nativeOp?: string, nativeActivation?: string) {
     const TensorClass = tensorClass();
     const out = new Float32Array(tensor.length);
     const gradEnabled = gradModeEnabled();
-    if (!gradEnabled && nativeOp && nativeElementwiseUnaryInto(out, tensor, nativeOp)) {
+    if (!gradEnabled && nativeActivation && nativeActivationUnaryInto(out, tensor, nativeActivation)) {
+      // Native eager activation owns proved no-grad tensor-sized activation paths.
+    } else if (!gradEnabled && nativeOp && nativeElementwiseUnaryInto(out, tensor, nativeOp)) {
       // Native eager elementwise owns the no-grad tensor-sized path for supported unary ops.
     } else {
       for (let i = 0; i < out.length; i += 1) out[i] = fn(tensor.data[i]);
@@ -773,7 +793,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function relu(tensor: TensorMathTensor) {
-    return unary(tensor, (x) => Math.max(0, x), (x) => x > 0 ? 1 : 0);
+    return unary(tensor, (x) => Math.max(0, x), (x) => x > 0 ? 1 : 0, undefined, "relu");
   }
 
   function gelu(tensor: TensorMathTensor) {
@@ -785,7 +805,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function sigmoid(tensor: TensorMathTensor) {
-    return unary(tensor, sigmoidScalar, sigmoidDerivativeScalar);
+    return unary(tensor, sigmoidScalar, sigmoidDerivativeScalar, undefined, "sigmoid");
   }
 
   function tanh(tensor: TensorMathTensor) {

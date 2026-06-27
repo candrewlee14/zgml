@@ -577,12 +577,13 @@ Current checked progress:
   `avg_pool2d_batched`; fresh Node/Bun short runs show zero measured module
   diff across the native eager rows, with per-row speedup floors recorded where
   the direct low-level ABI is evidence rather than the preferred high-level
-  route. The standalone activation rows are intentionally diagnostic: direct
-  `nativeEager.activationInto` is numerically correct, but current raw FFI
-  timings are slower than the JS reference for ReLU and mixed for Sigmoid, so
-  normal high-level `Tensor.relu()` / `Tensor.sigmoid()` calls should not be
-  routed through that ABI until `native_eager_activation_vectorized_kernel`
-  proves a real win.
+  route. The standalone activation rows now prove the promoted path too:
+  `zgml_eager_activation_f32` uses a vectorized Zig helper for ReLU/Sigmoid
+  sized tensors, and normal no-grad high-level `Tensor.relu()` /
+  `Tensor.sigmoid()` calls route through `nativeEager.activationInto` once the
+  runtime threshold is met. Fresh Node/Bun runs show the public Tensor path
+  above floor with zero measured diff, while grad-enabled activation calls and
+  small tensors stay on the TS/autograd path.
   The native eager adapter policy now lives in
   `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
   shape inference, output validation, public aliases, and activation mapping,

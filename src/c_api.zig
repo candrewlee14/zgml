@@ -1645,6 +1645,49 @@ fn eagerActivationF32(value: f32, activation: u32) !f32 {
     };
 }
 
+fn writeActivationF32(input: []const f32, output: []f32, activation: u32) !void {
+    if (input.len != output.len) return error.ShapeMismatch;
+    const V = 8;
+    const VecT = @Vector(V, f32);
+    const zero: VecT = @splat(0);
+    const one: VecT = @splat(1);
+    switch (activation) {
+        0 => {
+            if (input.ptr != output.ptr) @memcpy(output, input);
+        },
+        module_activation_relu => {
+            var i: usize = 0;
+            while (i + V <= input.len) : (i += V) {
+                const x: VecT = input[i..][0..V].*;
+                output[i..][0..V].* = @max(x, zero);
+            }
+            while (i < input.len) : (i += 1) output[i] = if (input[i] > 0) input[i] else 0;
+        },
+        module_activation_sigmoid => {
+            var i: usize = 0;
+            while (i + V <= input.len) : (i += V) {
+                const x: VecT = input[i..][0..V].*;
+                output[i..][0..V].* = one / (one + @exp(-x));
+            }
+            while (i < input.len) : (i += 1) output[i] = 1.0 / (1.0 + @exp(-input[i]));
+        },
+        module_activation_silu => {
+            var i: usize = 0;
+            while (i + V <= input.len) : (i += V) {
+                const x: VecT = input[i..][0..V].*;
+                output[i..][0..V].* = x * (one / (one + @exp(-x)));
+            }
+            while (i < input.len) : (i += 1) output[i] = input[i] / (1.0 + @exp(-input[i]));
+        },
+        module_activation_gelu,
+        module_activation_tanh,
+        => {
+            for (input, output) |value, *out| out.* = try eagerActivationF32(value, activation);
+        },
+        else => return error.InvalidArgument,
+    }
+}
+
 const eager_elementwise_add: u32 = 1;
 const eager_elementwise_sub: u32 = 2;
 const eager_elementwise_mul: u32 = 3;
@@ -1705,7 +1748,10 @@ fn eagerElementwiseBinaryF32(lhs: f32, rhs: f32, op: u32) !f32 {
 
 fn applyActivationF32(output: []f32, activation: u32) !void {
     if (activation == 0) return;
-    for (output) |*value| value.* = try eagerActivationF32(value.*, activation);
+    writeActivationF32(output, output, activation) catch |err| switch (err) {
+        error.InvalidArgument => return error.InvalidArgument,
+        error.ShapeMismatch => unreachable,
+    };
 }
 
 fn writeSoftmaxRowsF32(input: []const f32, output: []f32, rows: usize, cols: usize, log_softmax: bool) void {
@@ -1884,11 +1930,10 @@ export fn zgml_eager_activation_f32(
 
     const input = input_ptr.?[0..input_len];
     const output = output_ptr.?[0..output_len];
-    for (input, output) |value, *out| {
-        out.* = eagerActivationF32(value, activation) catch |err| return switch (err) {
-            error.InvalidArgument => status(.invalid_argument),
-        };
-    }
+    writeActivationF32(input, output, activation) catch |err| return switch (err) {
+        error.InvalidArgument => status(.invalid_argument),
+        error.ShapeMismatch => status(.shape_mismatch),
+    };
     return status(.ok);
 }
 
