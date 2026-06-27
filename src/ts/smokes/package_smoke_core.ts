@@ -4697,6 +4697,8 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   const lazyActivationChain = torch.lazy.input([2]).exp().log().neg().recip().abs().sqrt().square().sgn().step();
   const lazyNamespaceActivationChain = torch.lazy.step(torch.lazy.sgn(torch.lazy.square(torch.lazy.sqrt(torch.lazy.abs(torch.lazy.recip(torch.lazy.neg(torch.lazy.log(torch.lazy.exp(torch.lazy.input([2]))))))))));
   const lazySnakeSoftmaxGraph = torch.lazy.input([2, 3]).log_softmax(1);
+  const lazyBatchSoftmaxGraph = torch.lazy.input([2, 3]).softmax(0);
+  const lazyBatchLogSoftmaxGraph = torch.lazy.input([2, 3]).logSoftmax(0);
   const lazyDropoutGraph = torch.lazy.input([2]).dropout(0.5, { training: false }).relu();
   const lazyNamespaceDropoutGraph = torch.lazy.dropout(torch.lazy.input([2]), 0.5, { training: false }).relu();
   const lazyTrainingDropoutGraph = torch.lazy.input([2]).dropout(0.5, { training: true });
@@ -4747,6 +4749,8 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   const lazyNaturalAffineCompiledProgram = torch.compile.compile(lazyNaturalAffineGraph, { backend: "cpu" });
   const lazyMatmulNaturalAffineCompiledProgram = torch.compile.compile(lazyMatmulNaturalAffineGraph, { backend: "cpu" });
   const lazyMultiChannelConvReluProgram = lazyMultiChannelConvReluGraph.compile({ backend: "cpu" });
+  const lazyBatchSoftmaxProgram = lazyBatchSoftmaxGraph.compile({ backend: "cpu" });
+  const lazyBatchLogSoftmaxProgram = lazyBatchLogSoftmaxGraph.compile({ backend: "cpu" });
   if (
     lazy.compileSupport().supported !== true ||
     lazyEmbeddingGraph.compileSupport().supported !== true ||
@@ -4857,6 +4861,12 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyActivationChain.compileSupport().supported !== true ||
     lazyNamespaceActivationChain.compileSupport().supported !== true ||
     lazySnakeSoftmaxGraph.compileSupport().supported !== true ||
+    lazyBatchSoftmaxGraph.compileSupport().supported !== true ||
+    lazyBatchSoftmaxGraph.kernelPlan()?.dispatchCount !== 3 ||
+    lazyBatchSoftmaxGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "transpose|softmax|transpose" ||
+    lazyBatchLogSoftmaxGraph.compileSupport().supported !== true ||
+    lazyBatchLogSoftmaxGraph.kernelPlan()?.dispatchCount !== 3 ||
+    lazyBatchLogSoftmaxGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "transpose|log-softmax|transpose" ||
     lazyDropoutGraph.compileSupport().supported !== true ||
     lazyNamespaceDropoutGraph.compileSupport().supported !== true ||
     lazyTrainingDropoutGraph.compileSupport().supported !== false ||
@@ -4935,6 +4945,8 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyMatmulNaturalAffineCompiledProgram.compileEvidence()?.kernelPlan?.ops.map((op: Record<string, any>) => op.nativeKernels.join("|")).join("|") !== "linear|affine|relu" ||
     lazyMultiChannelConvReluProgram.outputShape().join("x") !== "2x2x2x2" ||
     lazyMultiChannelConvReluProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "conv2d|relu" ||
+    lazyBatchSoftmaxProgram.compileEvidence()?.kernelPlan?.dispatchCount !== 3 ||
+    lazyBatchLogSoftmaxProgram.compileEvidence()?.kernelPlan?.dispatchCount !== 3 ||
     lazyReductionChain.compileSupport().supported !== true ||
     lazyNamespaceReduction.compileSupport().supported !== true ||
     lazyShapeChain.compileSupport().supported !== true ||
@@ -4988,6 +5000,27 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     );
   } finally {
     lazyMultiChannelConvReluSession.dispose();
+  }
+  const lazyBatchInput = torch.tensor([1, 3, 2, 4, 0, -1], [2, 3]);
+  const lazyBatchSoftmaxSession = lazyBatchSoftmaxProgram.bind({});
+  try {
+    expectClose(
+      lazyBatchSoftmaxSession.stepTensor(lazyBatchInput).data,
+      torch.softmax(lazyBatchInput, 0).data,
+      `${label} lazy batch-axis softmax compiled output`,
+    );
+  } finally {
+    lazyBatchSoftmaxSession.dispose();
+  }
+  const lazyBatchLogSoftmaxSession = lazyBatchLogSoftmaxProgram.bind({});
+  try {
+    expectClose(
+      lazyBatchLogSoftmaxSession.stepTensor(lazyBatchInput).data,
+      torch.logSoftmax(lazyBatchInput, 0).data,
+      `${label} lazy batch-axis logSoftmax compiled output`,
+    );
+  } finally {
+    lazyBatchLogSoftmaxSession.dispose();
   }
   const lazyMatmulScaleSession = lazyMatmulScaleOnlyCompiledProgram.bind({
     weights: new Float32Array([
@@ -5082,6 +5115,8 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
   lazyNaturalAffineCompiledProgram.free();
   lazyMatmulNaturalAffineCompiledProgram.free();
   lazyMultiChannelConvReluProgram.free();
+  lazyBatchSoftmaxProgram.free();
+  lazyBatchLogSoftmaxProgram.free();
   expectThrowIncludes(() => lazyTrainingDropoutGraph.requireCompileSupport(), "lazy graph cannot compile", `${label} lazy requireCompileSupport unsupported graph`);
   expectThrowIncludes(() => lazyTrainingDropoutGraph.compile({ backend: "cpu" }), "lazy graph cannot compile", `${label} lazy compile rejects unsupported graph`);
   expectThrowIncludes(() => torch.lazy.require_compile_support(lazyTrainingDropoutGraph), "lazy graph cannot compile", `${label} lazy namespace require_compile_support unsupported graph`);

@@ -3717,10 +3717,11 @@ Current frontend slice:
 	  IR does not collapse back to shape-only or aggregate-only evidence at the
 	  Kernelizer boundary. The package smoke now proves same-shape `narrow` graphs
 	  with different descriptor offsets produce different IR and KernelPlan
-	  signatures before module binding, and it proves a single frontend
-	  `softmax(0)` op that lowers to transpose + softmax + transpose carries
-	  enough public KernelPlan descriptor-signature evidence to derive the same
-	  canonical compiler signatures without private native descriptors. Module
+	  signatures before module binding, and it proves frontend `softmax(0)` and
+	  `logSoftmax(0)` ops keep explicit transpose + row-softmax + transpose
+	  descriptor evidence until the backend grows true strided/grouped softmax,
+	  while still deriving canonical compiler signatures without private native
+	  descriptors. Module
 	  `min(dim)` now has the same single-op KernelPlan contract as sum/mean/max
 	  on the native reduction axis, with batch-axis lowering kept to
 	  transpose + min + transpose instead of transpose + neg + max + neg +

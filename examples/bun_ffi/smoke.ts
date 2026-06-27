@@ -2621,7 +2621,9 @@ try {
       !batchSoftmaxSupport.kernelPlan ||
       batchSoftmaxSupport.kernelPlan.ops[0].op !== "softmax" ||
       batchSoftmaxSupport.kernelPlan.ops[0].kernel !== "softmax" ||
-      batchSoftmaxSupport.kernelPlan.dispatchCount !== 3
+      batchSoftmaxSupport.kernelPlan.ops[0].nativeKernels.join(",") !== "transpose,softmax,transpose" ||
+      batchSoftmaxSupport.kernelPlan.dispatchCount !== 3 ||
+      batchSoftmaxSupport.kernelPlan.descriptorCount !== 3
     ) {
       throw new Error(`unexpected TS batch-axis softmax compiler evidence: ${json(batchSoftmaxSupport)}`);
     }
@@ -2680,7 +2682,9 @@ try {
       !batchLogSoftmaxSupport.kernelPlan ||
       batchLogSoftmaxSupport.kernelPlan.ops[0].op !== "logSoftmax" ||
       batchLogSoftmaxSupport.kernelPlan.ops[0].kernel !== "log-softmax" ||
-      batchLogSoftmaxSupport.kernelPlan.dispatchCount !== 3
+      batchLogSoftmaxSupport.kernelPlan.ops[0].nativeKernels.join(",") !== "transpose,log-softmax,transpose" ||
+      batchLogSoftmaxSupport.kernelPlan.dispatchCount !== 3 ||
+      batchLogSoftmaxSupport.kernelPlan.descriptorCount !== 3
     ) {
       throw new Error(`unexpected TS batch-axis logSoftmax compiler evidence: ${json(batchLogSoftmaxSupport)}`);
     }
