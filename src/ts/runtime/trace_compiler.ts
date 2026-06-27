@@ -169,6 +169,7 @@ const kernelizerRankCheckedOps = new Set([
   "linear",
   "add",
   "mul",
+  "affine",
   "reshape",
   "view",
   "flatten",

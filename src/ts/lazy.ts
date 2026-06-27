@@ -37,6 +37,7 @@ type LazyOpKind =
   | "matmul"
   | "add"
   | "mul"
+  | "affine"
   | "embedding"
   | "conv2d"
   | "maxPool2d"
@@ -188,6 +189,13 @@ export class LazyTensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
 
   mul<const ScaleShape extends TensorShapeTuple>(scale: LazyTensor<ScaleShape>): LazyTensor<Shape> {
     return mul(this, scale);
+  }
+
+  affine<const ScaleShape extends TensorShapeTuple, const BiasShape extends TensorShapeTuple>(
+    scale: LazyTensor<ScaleShape>,
+    bias: LazyTensor<BiasShape>,
+  ): LazyTensor<Shape> {
+    return affine(this, scale, bias);
   }
 
   embedding<EmbeddingDim extends number>(numEmbeddings: number, embeddingDim: EmbeddingDim, options: Readonly<{ name?: string }> = {}): LazyTensor<LazyEmbeddingShape<Shape, EmbeddingDim>> {
@@ -950,6 +958,43 @@ export function mul<const Shape extends TensorShapeTuple, const ScaleShape exten
     op: "mul",
     outputShape: tensor.shape,
     parameters: [lazyParameter(scale.source.name, scaleShape, scale.source.layout)],
+    attrs: { features },
+  }, tensor.shape);
+}
+
+export function affine<const Shape extends TensorShapeTuple, const ScaleShape extends TensorShapeTuple, const BiasShape extends TensorShapeTuple>(
+  tensor: LazyTensor<Shape>,
+  scale: LazyTensor<ScaleShape>,
+  bias: LazyTensor<BiasShape>,
+): LazyTensor<Shape> {
+  if (scale.ops.length !== 0 || scale.source.role !== "parameter") {
+    throw new Error("lazy affine currently expects a lazy.parameter(...) scale so the compiled Program can bind weights explicitly");
+  }
+  if (bias.ops.length !== 0 || bias.source.role !== "parameter") {
+    throw new Error("lazy affine currently expects a lazy.parameter(...) bias so the compiled Program can bind bias explicitly");
+  }
+  const scaleShape = scale.shape;
+  const biasShape = bias.shape;
+  if (scaleShape.length !== 1) {
+    throw new Error(`lazy affine expects rank-1 scale parameter [features], got rank ${scaleShape.length}`);
+  }
+  if (biasShape.length !== 1) {
+    throw new Error(`lazy affine expects rank-1 bias parameter [features], got rank ${biasShape.length}`);
+  }
+  const features = positiveInteger(tensor.shape[tensor.shape.length - 1], "lazy affine features");
+  if (scaleShape[0] !== features) {
+    throw new Error(`lazy affine lhs last dimension ${features} must match scale dimension ${scaleShape[0]}`);
+  }
+  if (biasShape[0] !== features) {
+    throw new Error(`lazy affine lhs last dimension ${features} must match bias dimension ${biasShape[0]}`);
+  }
+  return appendOp(tensor, {
+    op: "affine",
+    outputShape: tensor.shape,
+    parameters: [
+      lazyParameter(scale.source.name, scaleShape, scale.source.layout),
+      lazyParameter(bias.source.name, biasShape, bias.source.layout),
+    ],
     attrs: { features },
   }, tensor.shape);
 }

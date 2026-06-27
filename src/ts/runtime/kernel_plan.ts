@@ -525,6 +525,18 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
         c: 0,
         eps: 0,
       };
+    case "affine":
+      if (!op.inputShape || op.inputShape[op.inputShape.length - 1] !== attrs.features) return null;
+      if (attrs.hasWeight !== true || attrs.hasBias !== true) return null;
+      return {
+        kind: moduleOpIds.featureAffine,
+        activation: 0,
+        flags: moduleFlags.weight | moduleFlags.bias,
+        a: attrs.features,
+        b: 0,
+        c: 0,
+        eps: 0,
+      };
     case "activation": {
       const activation = moduleActivationIds[attrs.activation];
       if (!activation) return null;
@@ -890,6 +902,7 @@ function kernelNameForIrOp(op: any) {
     case "matmul": return "matmul";
     case "add": return "add";
     case "mul": return "mul";
+    case "affine": return "affine";
     case "activation": return attrs.activation;
     case "softmax": return "softmax";
     case "logSoftmax": return "log-softmax";

@@ -2680,6 +2680,8 @@ export type ModuleTraceOpKind =
   | "linear"
   | "matmul"
   | "add"
+  | "mul"
+  | "affine"
   | "embedding"
   | "conv2d"
   | "avgPool2d"
@@ -2698,6 +2700,8 @@ export type ModuleTensorProgramIrOpKind =
   | "linear"
   | "matmul"
   | "add"
+  | "mul"
+  | "affine"
   | "embedding"
   | "conv2d"
   | "avgPool2d"
@@ -2717,6 +2721,8 @@ export type ModuleKernelPlanOpKind =
   | "linear"
   | "matmul"
   | "add"
+  | "mul"
+  | "affine"
   | "embedding"
   | "avgPool2d"
   | "maxPool2d"
@@ -2735,6 +2741,7 @@ export type ModuleKernelName =
   | "linear"
   | "matmul"
   | "add"
+  | "mul"
   | "activation-chain"
   | ModuleActivationKind
   | "softmax"
@@ -2907,6 +2914,12 @@ export type ModuleMatmulTraceOp = ModuleTraceOpBase<"matmul"> & Readonly<{
 export type ModuleAddTraceOp = ModuleTraceOpBase<"add"> & Readonly<{
   features: number;
 }>;
+export type ModuleMulTraceOp = ModuleTraceOpBase<"mul"> & Readonly<{
+  features: number;
+}>;
+export type ModuleAffineTraceOp = ModuleTraceOpBase<"affine"> & Readonly<{
+  features: number;
+}>;
 export type ModuleEmbeddingTraceOp = ModuleTraceOpBase<"embedding"> & Readonly<{
   numEmbeddings: number;
   embeddingDim: number;
@@ -3001,6 +3014,8 @@ export type ModuleTraceOp =
   | ModuleLinearTraceOp
   | ModuleMatmulTraceOp
   | ModuleAddTraceOp
+  | ModuleMulTraceOp
+  | ModuleAffineTraceOp
   | ModuleEmbeddingTraceOp
   | ModuleConv2dTraceOp
   | ModuleAvgPool2dTraceOp
@@ -3050,6 +3065,15 @@ export type ModuleTensorProgramIrLinearAttrs = Readonly<{
 }>;
 export type ModuleTensorProgramIrAddAttrs = Readonly<{
   features: number;
+  hasBias: boolean;
+}>;
+export type ModuleTensorProgramIrMulAttrs = Readonly<{
+  features: number;
+  hasWeight: boolean;
+}>;
+export type ModuleTensorProgramIrAffineAttrs = Readonly<{
+  features: number;
+  hasWeight: boolean;
   hasBias: boolean;
 }>;
 export type ModuleTensorProgramIrEmbeddingAttrs = Readonly<{
@@ -3163,6 +3187,8 @@ export type ModuleTensorProgramIrOp =
   | ModuleTensorProgramIrOpBase<"linear", ModuleTensorProgramIrLinearAttrs>
   | ModuleTensorProgramIrOpBase<"matmul", ModuleTensorProgramIrLinearAttrs>
   | ModuleTensorProgramIrOpBase<"add", ModuleTensorProgramIrAddAttrs>
+  | ModuleTensorProgramIrOpBase<"mul", ModuleTensorProgramIrMulAttrs>
+  | ModuleTensorProgramIrOpBase<"affine", ModuleTensorProgramIrAffineAttrs>
   | ModuleTensorProgramIrOpBase<"embedding", ModuleTensorProgramIrEmbeddingAttrs>
   | ModuleTensorProgramIrOpBase<"conv2d", ModuleTensorProgramIrConv2dAttrs>
   | ModuleTensorProgramIrOpBase<"avgPool2d", ModuleTensorProgramIrAvgPool2dAttrs>
@@ -3233,6 +3259,8 @@ export type ModuleKernelPlanLinearOp = ModuleKernelPlanOpBase<"linear", "linear"
 }>;
 export type ModuleKernelPlanMatmulOp = ModuleKernelPlanOpBase<"matmul", "matmul">;
 export type ModuleKernelPlanAddOp = ModuleKernelPlanOpBase<"add", "add">;
+export type ModuleKernelPlanMulOp = ModuleKernelPlanOpBase<"mul", "mul">;
+export type ModuleKernelPlanAffineOp = ModuleKernelPlanOpBase<"affine", "affine">;
 export type ModuleKernelPlanEmbeddingOp = ModuleKernelPlanOpBase<"embedding", "embedding">;
 export type ModuleKernelPlanAvgPool2dOp = ModuleKernelPlanOpBase<"avgPool2d", "avg-pool2d">;
 export type ModuleKernelPlanMaxPool2dOp = ModuleKernelPlanOpBase<"maxPool2d", "max-pool2d">;
@@ -3267,6 +3295,8 @@ export type ModuleKernelPlanOp =
   | ModuleKernelPlanLinearOp
   | ModuleKernelPlanMatmulOp
   | ModuleKernelPlanAddOp
+  | ModuleKernelPlanMulOp
+  | ModuleKernelPlanAffineOp
   | ModuleKernelPlanEmbeddingOp
   | ModuleKernelPlanAvgPool2dOp
   | ModuleKernelPlanMaxPool2dOp
@@ -5875,6 +5905,7 @@ export interface LazyTensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
   mm<const WeightShape extends TensorShapeTuple>(weight: LazyTensor<WeightShape>): LazyTensor<LazyMatmulShape<Shape, WeightShape>>;
   add<const BiasShape extends TensorShapeTuple>(bias: LazyTensor<BiasShape>): LazyTensor<Shape>;
   mul<const ScaleShape extends TensorShapeTuple>(scale: LazyTensor<ScaleShape>): LazyTensor<Shape>;
+  affine<const ScaleShape extends TensorShapeTuple, const BiasShape extends TensorShapeTuple>(scale: LazyTensor<ScaleShape>, bias: LazyTensor<BiasShape>): LazyTensor<Shape>;
   embedding<const EmbeddingDim extends number>(numEmbeddings: number, embeddingDim: EmbeddingDim, options?: Readonly<{ name?: string }>): LazyTensor<LazyEmbeddingShape<Shape, EmbeddingDim>>;
   layerNorm(features: number, options?: LazyNormOptions): LazyTensor<Shape>;
   layer_norm(features: number, options?: LazyNormOptions): LazyTensor<Shape>;
@@ -5962,6 +5993,7 @@ export interface LazyNamespace {
   mm<const Shape extends TensorShapeTuple, const WeightShape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, weight: LazyTensor<WeightShape>): LazyTensor<LazyMatmulShape<Shape, WeightShape>>;
   add<const Shape extends TensorShapeTuple, const BiasShape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, bias: LazyTensor<BiasShape>): LazyTensor<Shape>;
   mul<const Shape extends TensorShapeTuple, const ScaleShape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, scale: LazyTensor<ScaleShape>): LazyTensor<Shape>;
+  affine<const Shape extends TensorShapeTuple, const ScaleShape extends TensorShapeTuple, const BiasShape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, scale: LazyTensor<ScaleShape>, bias: LazyTensor<BiasShape>): LazyTensor<Shape>;
   embedding<const Shape extends TensorShapeTuple, const EmbeddingDim extends number>(tensor: LazyTensor<Shape>, numEmbeddings: number, embeddingDim: EmbeddingDim, options?: Readonly<{ name?: string }>): LazyTensor<LazyEmbeddingShape<Shape, EmbeddingDim>>;
   layerNorm<const Shape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, features: number, options?: LazyNormOptions): LazyTensor<Shape>;
   layer_norm<const Shape extends TensorShapeTuple>(tensor: LazyTensor<Shape>, features: number, options?: LazyNormOptions): LazyTensor<Shape>;

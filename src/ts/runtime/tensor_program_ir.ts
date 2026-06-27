@@ -83,7 +83,8 @@ function traceParameterIsAddBias(op: AnyRecord, param: AnyRecord) {
   return Number.isSafeInteger(features) && param.shape[0] === features;
 }
 
-function parameterBindingForTraceParameter(param: AnyRecord, op: AnyRecord) {
+function parameterBindingForTraceParameter(param: AnyRecord, op: AnyRecord, parameterIndex: number) {
+  if (op.op === "affine" && parameterIndex === 1) return "bias";
   if (traceParameterIsAddBias(op, param)) return "bias";
   return param.name.endsWith(".bias") || param.name === "bias" ? "bias" : "weights";
 }
@@ -131,6 +132,12 @@ function normalizedTraceOpAttrs(op: AnyRecord) {
       return {
         features: op.features,
         hasWeight: true,
+      };
+    case "affine":
+      return {
+        features: op.features,
+        hasWeight: true,
+        hasBias: true,
       };
     case "embedding":
       return {
@@ -280,9 +287,9 @@ export function buildTensorProgramIrForTrace(trace: TensorProgramTraceInput): Te
     const inputValueIds = [currentValueId];
     const parameterValueIds = [];
     let parameterScalarCount = 0;
-    for (const param of op.parameters ?? []) {
+    for (const [parameterIndex, param] of (op.parameters ?? []).entries()) {
       const id = values.length;
-      const binding = parameterBindingForTraceParameter(param, op);
+      const binding = parameterBindingForTraceParameter(param, op, parameterIndex);
       parameterScalarCount += param.scalarCount;
       values.push(tensorProgramIrValue({
         id,
