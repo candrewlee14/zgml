@@ -2,6 +2,7 @@
 
 const {
   checkpoint,
+  compile,
   data,
   gradMode,
   loss,
@@ -137,6 +138,35 @@ if (!(highLevelAfter < highLevelBefore * 0.01) || highLevelClass !== 1) {
   throw new Error(`expected train.fitClassifier to learn class 1; before=${highLevelBefore}, after=${highLevelAfter}, logits=${Array.from(highLevelLogits.data)}`);
 }
 
+const nativeModel = createClassifierGraph();
+const nativeOptimizer = optim.adamW(nativeModel, { lr: 0.05, weightDecay: 0.0001 });
+const nativeLoader = data.dataLoader(samples, { batchSize: 2, shuffle: true, seed: 17 });
+const nativeBefore = scalar(loss.crossEntropy(nativeModel.forward(probeInput), probeTarget, { classes: 2 }));
+const nativeTrainer = compile.compileForTraining(nativeModel, nativeOptimizer, {
+  inputShape: [2, 2],
+  classes: 2,
+  loss: "crossEntropy",
+});
+const nativeFit = train.fit(nativeTrainer, nativeLoader, {
+  epochs: 80,
+});
+const nativeLogits = nativeModel.forward(probeInput);
+const nativeAfter = scalar(loss.crossEntropy(nativeLogits, probeTarget, { classes: 2 }));
+const nativeClass = train.predictClasses(nativeLogits, { classes: 2 })[0];
+if (
+  !train.isTrainFitEvidence(nativeFit) ||
+  nativeFit.native !== true ||
+  nativeFit.backend !== "cpu" ||
+  nativeFit.steps !== 240 ||
+  nativeFit.losses.length !== 240
+) {
+  throw new Error(`train.fit compiled native trainer must return native fit evidence: ${JSON.stringify(nativeFit)}`);
+}
+if (!(nativeAfter < nativeBefore * 0.01) || nativeClass !== 1) {
+  throw new Error(`expected compiled native trainer to learn class 1; before=${nativeBefore}, after=${nativeAfter}, logits=${Array.from(nativeLogits.data)}`);
+}
+nativeTrainer.free();
+
 model.eval();
 const evalLoader = data.dataLoader(samples, { batchSize: 2, shuffle: false });
 if (!gradMode.isGradEnabled()) {
@@ -242,4 +272,4 @@ assertClose(restoredCompiledLogitsInto[1], eagerLogits.data[1], 1e-5, "executeIn
 restoredSession.free();
 restoredProgram.free();
 
-console.log(`zgml classifier training smoke ok: before=${before.toFixed(6)} after=${after.toFixed(6)} steps=${fit.steps} compiledClass=${compiledClass} restoredClass=${restoredCompiledClass}`);
+console.log(`zgml classifier training smoke ok: before=${before.toFixed(6)} after=${after.toFixed(6)} steps=${fit.steps} nativeClass=${nativeClass} compiledClass=${compiledClass} restoredClass=${restoredCompiledClass}`);
