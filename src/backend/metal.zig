@@ -48,6 +48,7 @@ const MAX_ROW_CHAIN_COLS: u32 = 4096;
 const MAX_ROW_CHAIN_K: u32 = 2048;
 const QMATMUL_ROW_CHAIN_THREADS: u32 = 256;
 const SEMANTIC_FFN_THREADS: u32 = 512;
+const SEMANTIC_FFN_INPUT_BRIDGE_THREADS: u32 = 1024;
 const ROW_CHAIN_WIDTH_LANES: u32 = 4;
 const SEMANTIC_FFN_MAX_DIM: u32 = 1024;
 const SEMANTIC_FFN_MAX_HIDDEN: u32 = 1536;
@@ -67,6 +68,7 @@ const shader_source =
     \\constant uint QMATVEC_DOT_THREADS = 64;
     \\constant uint QMATMUL_ROW_CHAIN_THREADS = 256;
     \\constant uint SEMANTIC_FFN_THREADS = 512;
+    \\constant uint SEMANTIC_FFN_INPUT_BRIDGE_THREADS = 1024;
     \\constant uint ROW_CHAIN_WIDTH_LANES = 4;
     \\constant uint MAX_ROW_CHAIN_COLS = 4096;
     \\constant uint MAX_ROW_CHAIN_K = 2048;
@@ -1667,13 +1669,13 @@ const shader_source =
     \\    uint tid [[thread_index_in_threadgroup]]
     \\) {
     \\    if (row >= p.M) return;
-    \\    threadgroup float partial[SEMANTIC_FFN_THREADS];
+    \\    threadgroup float partial[SEMANTIC_FFN_INPUT_BRIDGE_THREADS];
     \\    threadgroup float input_values[SEMANTIC_FFN_MAX_DIM];
     \\    threadgroup float product_values[SEMANTIC_FFN_MAX_HIDDEN];
     \\    threadgroup float residual_values[SEMANTIC_FFN_MAX_DIM];
     \\
     \\    float input_ss = 0.0f;
-    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_THREADS) {
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
     \\        float sum = 0.0f;
     \\        uint k = 0;
     \\        for (; k + 3 < p.input_projection_K; k += 4) {
@@ -1698,17 +1700,17 @@ const shader_source =
     \\    }
     \\    partial[tid] = input_ss;
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
-    \\    for (uint stride = SEMANTIC_FFN_THREADS / 2; stride > 0; stride >>= 1) {
+    \\    for (uint stride = SEMANTIC_FFN_INPUT_BRIDGE_THREADS / 2; stride > 0; stride >>= 1) {
     \\        if (tid < stride) partial[tid] += partial[tid + stride];
     \\        threadgroup_barrier(mem_flags::mem_threadgroup);
     \\    }
     \\    float input_inv_rms = 1.0f / sqrt(partial[0] / float(p.K) + p.input_rms_eps);
-    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_THREADS) {
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
     \\        input_values[col] = residual_values[col] * input_inv_rms * input_scale_src[p.input_scale_src_offset + col];
     \\    }
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
-    \\    for (uint h = tid; h < p.H; h += SEMANTIC_FFN_THREADS) {
+    \\    for (uint h = tid; h < p.H; h += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
     \\        float gate_sum = 0.0f;
     \\        float up_sum = 0.0f;
     \\        uint k = 0;
@@ -1741,7 +1743,7 @@ const shader_source =
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
     \\    float output_ss = 0.0f;
-    \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_THREADS) {
+    \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
     \\        float sum = 0.0f;
     \\        uint h = 0;
     \\        for (; h + 7 < p.H; h += 8) {
@@ -1772,12 +1774,12 @@ const shader_source =
     \\    }
     \\    partial[tid] = output_ss;
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
-    \\    for (uint stride = SEMANTIC_FFN_THREADS / 2; stride > 0; stride >>= 1) {
+    \\    for (uint stride = SEMANTIC_FFN_INPUT_BRIDGE_THREADS / 2; stride > 0; stride >>= 1) {
     \\        if (tid < stride) partial[tid] += partial[tid + stride];
     \\        threadgroup_barrier(mem_flags::mem_threadgroup);
     \\    }
     \\    float output_inv_rms = 1.0f / sqrt(partial[0] / float(p.O) + p.output_rms_eps);
-    \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_THREADS) {
+    \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
     \\        uint linear = row * p.O + col;
     \\        output_dst[p.output_dst_offset + linear] = residual_values[col] * output_inv_rms * output_scale_src[p.output_scale_src_offset + col];
     \\    }
@@ -4559,6 +4561,7 @@ comptime {
     requireShaderUintConst("ROW_CHAIN_TILE", ROW_CHAIN_TILE);
     requireShaderUintConst("QMATMUL_ROW_CHAIN_THREADS", QMATMUL_ROW_CHAIN_THREADS);
     requireShaderUintConst("SEMANTIC_FFN_THREADS", SEMANTIC_FFN_THREADS);
+    requireShaderUintConst("SEMANTIC_FFN_INPUT_BRIDGE_THREADS", SEMANTIC_FFN_INPUT_BRIDGE_THREADS);
     requireShaderUintConst("ROW_CHAIN_WIDTH_LANES", ROW_CHAIN_WIDTH_LANES);
     requireShaderUintConst("MAX_ROW_CHAIN_COLS", MAX_ROW_CHAIN_COLS);
     requireShaderUintConst("MAX_ROW_CHAIN_K", MAX_ROW_CHAIN_K);
@@ -9968,9 +9971,9 @@ const CompiledProgram = struct {
             .output_scale_src_offset = output_rp.src_offset,
             .output_dst_offset = output_out.dst_offset,
         };
-        exec.profile.recordSemanticFfnSublayer(params.M, params.H, params.K, params.O, SEMANTIC_FFN_THREADS);
+        exec.profile.recordSemanticFfnSublayer(params.M, params.H, params.K, params.O, SEMANTIC_FFN_INPUT_BRIDGE_THREADS);
         exec.profile.recordSemanticFfnWithInputDirect(params.M, params.H, params.K, params.O, params.input_projection_K);
-        exec.encodeKernel(.qmatmul_semantic_ffn_input_bridge_f32, &buffers, params, 13, .{ .gx = gate.M }, SEMANTIC_FFN_THREADS);
+        exec.encodeKernel(.qmatmul_semantic_ffn_input_bridge_f32, &buffers, params, 13, .{ .gx = gate.M }, SEMANTIC_FFN_INPUT_BRIDGE_THREADS);
         return true;
     }
 
