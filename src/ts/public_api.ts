@@ -2181,6 +2181,36 @@ export type NativeEagerMatmulIntoOptions = Readonly<{
   rhsCols?: number;
   rhs_cols?: number;
 }>;
+export type NativeEagerConv2dIntoOptions = Readonly<{
+  bias?: TensorLike | Float32Array | null;
+  batch?: number;
+  inChannels?: number;
+  in_channels?: number;
+  height?: number;
+  width?: number;
+  outChannels?: number;
+  out_channels?: number;
+  kernelH?: number;
+  kernel_h?: number;
+  kernelW?: number;
+  kernel_w?: number;
+  strideH?: number;
+  stride_h?: number;
+  strideW?: number;
+  stride_w?: number;
+  paddingH?: number;
+  padding_h?: number;
+  paddingW?: number;
+  padding_w?: number;
+  dilationH?: number;
+  dilation_h?: number;
+  dilationW?: number;
+  dilation_w?: number;
+  outH?: number;
+  out_h?: number;
+  outW?: number;
+  out_w?: number;
+}>;
 export type PublicNativeEagerNamespace = Readonly<{
   linearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options?: NativeEagerLinearIntoOptions): Float32Array;
   linear_into(output: Float32Array, input: TensorLike, weights: TensorLike, options?: NativeEagerLinearIntoOptions): Float32Array;
@@ -2192,6 +2222,8 @@ export type PublicNativeEagerNamespace = Readonly<{
   elementwise_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike | Float32Array | number | null | undefined, options: NativeEagerElementwiseIntoOptions): Float32Array;
   reduceInto(output: Float32Array, input: TensorLike, options: NativeEagerReduceIntoOptions): Float32Array;
   reduce_into(output: Float32Array, input: TensorLike, options: NativeEagerReduceIntoOptions): Float32Array;
+  conv2dInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerConv2dIntoOptions): Float32Array;
+  conv2d_into(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerConv2dIntoOptions): Float32Array;
   matmulInto(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerMatmulIntoOptions): Float32Array;
   matmul_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerMatmulIntoOptions): Float32Array;
   softmaxInto(output: Float32Array, input: TensorLike, options?: NativeEagerSoftmaxIntoOptions): Float32Array;
@@ -7188,6 +7220,7 @@ export type RuntimeFeatures = Readonly<{
   nativeEagerMatmul: boolean;
   nativeEagerElementwise: boolean;
   nativeEagerReduce: boolean;
+  nativeEagerConv2d: boolean;
 }>;
 
 export type ModelInspection = Readonly<{

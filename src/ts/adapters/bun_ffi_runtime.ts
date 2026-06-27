@@ -2026,6 +2026,10 @@ function nativeEagerSoftmaxInto(output: Float32Array, input: unknown, options: R
     : nativeEager.softmaxInto(output, input as TensorLike, options);
 }
 
+function nativeEagerConv2dInto(output: Float32Array, input: unknown, weights: unknown, options: Record<string, unknown>) {
+  return nativeEager.conv2dInto(output, input as TensorLike, weights as TensorLike, options);
+}
+
 type CompileTrainingStepHook = (model: unknown, optimizer: unknown, options?: Record<string, unknown>) => PublicCompiledTrainingStep;
 let compileTrainingStepHook: CompileTrainingStepHook | null = null;
 
@@ -2046,6 +2050,7 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   nativeEagerLinearInto,
   nativeEagerSoftmaxInto,
   nativeEagerLinearActivationInto,
+  nativeEagerConv2dInto,
   parameterNames,
   parameterInfos,
   parameterInfo,
@@ -2223,6 +2228,31 @@ export const { nativeEager } = createAdapterNativeEagerSurface({
     args.output,
     BigInt(args.expectedOutput),
     args.op,
+  ),
+  conv2dF32: (args) => bunSymbolGroups.nativeEager.eagerConv2dF32(
+    args.inputData,
+    BigInt(args.inputData.length),
+    args.weightData,
+    BigInt(args.weightData.length),
+    args.biasData,
+    BigInt(args.biasData ? args.biasData.length : 0),
+    args.output,
+    BigInt(args.expectedOutput),
+    BigInt(args.batch),
+    BigInt(args.inChannels),
+    BigInt(args.height),
+    BigInt(args.width),
+    BigInt(args.outChannels),
+    BigInt(args.kernelH),
+    BigInt(args.kernelW),
+    BigInt(args.strideH),
+    BigInt(args.strideW),
+    BigInt(args.paddingH),
+    BigInt(args.paddingW),
+    BigInt(args.dilationH),
+    BigInt(args.dilationW),
+    BigInt(args.outH),
+    BigInt(args.outW),
   ),
   softmaxF32: (args) => bunSymbolGroups.nativeEager.eagerSoftmaxF32(
     args.inputData,

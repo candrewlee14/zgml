@@ -136,6 +136,9 @@ enum {
     ZGML_FEATURE_NATIVE_EAGER_SOFTMAX = 1ull << 48,
     ZGML_FEATURE_NATIVE_EAGER_MATMUL = 1ull << 49,
     ZGML_FEATURE_NATIVE_EAGER_ACTIVATION = 1ull << 50,
+    ZGML_FEATURE_NATIVE_EAGER_ELEMENTWISE = 1ull << 51,
+    ZGML_FEATURE_NATIVE_EAGER_REDUCE = 1ull << 52,
+    ZGML_FEATURE_NATIVE_EAGER_CONV2D = 1ull << 53,
 };
 
 enum {
@@ -713,6 +716,31 @@ ZGML_API zgml_status zgml_eager_reduce_f32(
     float *output,
     size_t output_len,
     uint32_t op
+);
+ZGML_API zgml_status zgml_eager_conv2d_f32(
+    const float *input,
+    size_t input_len,
+    const float *weights,
+    size_t weights_len,
+    const float *bias,
+    size_t bias_len,
+    float *output,
+    size_t output_len,
+    size_t batch,
+    size_t in_channels,
+    size_t height,
+    size_t width,
+    size_t out_channels,
+    size_t kernel_h,
+    size_t kernel_w,
+    size_t stride_h,
+    size_t stride_w,
+    size_t padding_h,
+    size_t padding_w,
+    size_t dilation_h,
+    size_t dilation_w,
+    size_t out_h,
+    size_t out_w
 );
 ZGML_API zgml_status zgml_eager_softmax_f32(
     const float *input,

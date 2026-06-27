@@ -66,6 +66,29 @@ type NativeEagerReduceCall = (args: {
   op: number;
 }) => number;
 
+type NativeEagerConv2dCall = (args: {
+  inputData: Float32Array;
+  weightData: Float32Array;
+  biasData: Float32Array | null;
+  output: Float32Array;
+  expectedOutput: number;
+  batch: number;
+  inChannels: number;
+  height: number;
+  width: number;
+  outChannels: number;
+  kernelH: number;
+  kernelW: number;
+  strideH: number;
+  strideW: number;
+  paddingH: number;
+  paddingW: number;
+  dilationH: number;
+  dilationW: number;
+  outH: number;
+  outW: number;
+}) => number;
+
 type NativeEagerSurfaceOptions = {
   f32: NativeEagerTensorFactory;
   check: NativeEagerCheck;
@@ -74,6 +97,7 @@ type NativeEagerSurfaceOptions = {
   activationF32?: NativeEagerActivationCall;
   elementwiseF32?: NativeEagerElementwiseCall;
   reduceF32?: NativeEagerReduceCall;
+  conv2dF32?: NativeEagerConv2dCall;
   matmulF32?: NativeEagerMatmulCall;
   softmaxF32: NativeEagerSoftmaxCall;
 };
@@ -97,6 +121,14 @@ function nativeEagerPositiveInteger(value: unknown, label: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new Error(`${label} must be a positive integer, got ${value}`);
+  }
+  return parsed;
+}
+
+function nativeEagerNonNegativeInteger(value: unknown, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`${label} must be a non-negative integer, got ${value}`);
   }
   return parsed;
 }
@@ -341,6 +373,67 @@ function nativeEagerReduceInputs(
   };
 }
 
+function nativeEagerConv2dInputs(
+  output: Float32Array,
+  input: unknown,
+  weights: unknown,
+  callOptions: Record<string, unknown>,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.conv2dInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  const weightData = nativeEagerTensorData(weights, `${label} weights`, f32);
+  const biasValue = callOptions.bias ?? null;
+  const biasData = biasValue == null ? null : nativeEagerTensorData(biasValue, `${label} bias`, f32);
+  const inputShape = nativeEagerShape(input);
+  const weightShape = nativeEagerShape(weights);
+  const batch = callOptions.batch ?? (inputShape && inputShape.length === 4 ? inputShape[0] : inputShape && inputShape.length === 3 ? 1 : null);
+  const inChannels = callOptions.inChannels ?? callOptions.in_channels ?? (
+    inputShape && inputShape.length === 4 ? inputShape[1] : inputShape && inputShape.length === 3 ? inputShape[0] : null
+  );
+  const height = callOptions.height ?? (inputShape && inputShape.length === 4 ? inputShape[2] : inputShape && inputShape.length === 3 ? inputShape[1] : null);
+  const width = callOptions.width ?? (inputShape && inputShape.length === 4 ? inputShape[3] : inputShape && inputShape.length === 3 ? inputShape[2] : null);
+  const outChannels = callOptions.outChannels ?? callOptions.out_channels ?? (weightShape && weightShape.length === 4 ? weightShape[0] : null);
+  const kernelH = callOptions.kernelH ?? callOptions.kernel_h ?? (weightShape && weightShape.length === 4 ? weightShape[2] : null);
+  const kernelW = callOptions.kernelW ?? callOptions.kernel_w ?? (weightShape && weightShape.length === 4 ? weightShape[3] : null);
+  const shape = Object.freeze({
+    batch: nativeEagerPositiveInteger(batch, `${label} batch`),
+    inChannels: nativeEagerPositiveInteger(inChannels, `${label} inChannels`),
+    height: nativeEagerPositiveInteger(height, `${label} height`),
+    width: nativeEagerPositiveInteger(width, `${label} width`),
+    outChannels: nativeEagerPositiveInteger(outChannels, `${label} outChannels`),
+    kernelH: nativeEagerPositiveInteger(kernelH, `${label} kernelH`),
+    kernelW: nativeEagerPositiveInteger(kernelW, `${label} kernelW`),
+    strideH: nativeEagerPositiveInteger(callOptions.strideH ?? callOptions.stride_h ?? 1, `${label} strideH`),
+    strideW: nativeEagerPositiveInteger(callOptions.strideW ?? callOptions.stride_w ?? 1, `${label} strideW`),
+    paddingH: nativeEagerNonNegativeInteger(callOptions.paddingH ?? callOptions.padding_h ?? 0, `${label} paddingH`),
+    paddingW: nativeEagerNonNegativeInteger(callOptions.paddingW ?? callOptions.padding_w ?? 0, `${label} paddingW`),
+    dilationH: nativeEagerPositiveInteger(callOptions.dilationH ?? callOptions.dilation_h ?? 1, `${label} dilationH`),
+    dilationW: nativeEagerPositiveInteger(callOptions.dilationW ?? callOptions.dilation_w ?? 1, `${label} dilationW`),
+    outH: nativeEagerPositiveInteger(callOptions.outH ?? callOptions.out_h, `${label} outH`),
+    outW: nativeEagerPositiveInteger(callOptions.outW ?? callOptions.out_w, `${label} outW`),
+  });
+  const expectedInput = shape.batch * shape.inChannels * shape.height * shape.width;
+  const expectedWeights = shape.outChannels * shape.inChannels * shape.kernelH * shape.kernelW;
+  const expectedOutput = shape.batch * shape.outChannels * shape.outH * shape.outW;
+  if (inputData.length !== expectedInput) {
+    throw new Error(`${label} input length ${inputData.length} does not match ${shape.batch}x${shape.inChannels}x${shape.height}x${shape.width}`);
+  }
+  if (weightData.length !== expectedWeights) {
+    throw new Error(`${label} weights length ${weightData.length} does not match ${shape.outChannels}x${shape.inChannels}x${shape.kernelH}x${shape.kernelW}`);
+  }
+  if (biasData && biasData.length !== shape.outChannels) {
+    throw new Error(`${label} bias length ${biasData.length} does not match outChannels ${shape.outChannels}`);
+  }
+  if (output.length < expectedOutput) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${expectedOutput}`);
+  }
+  return { inputData, weightData, biasData, output, expectedOutput, ...shape };
+}
+
 function nativeEagerMatmulInputs(
   output: Float32Array,
   lhs: unknown,
@@ -447,6 +540,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     reduce_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
       return this.reduceInto(output, input, callOptions);
+    },
+    conv2dInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.conv2dF32 !== "function") {
+        throw new Error("nativeEager.conv2dInto is unavailable in this runtime");
+      }
+      const args = nativeEagerConv2dInputs(output, input, weights, callOptions, options.f32);
+      options.check(options.conv2dF32(args));
+      return output;
+    },
+    conv2d_into(output: Float32Array, input: unknown, weights: unknown, callOptions?: Record<string, unknown>) {
+      return this.conv2dInto(output, input, weights, callOptions);
     },
     matmulInto(output: Float32Array, lhs: unknown, rhs: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.matmulF32 !== "function") {

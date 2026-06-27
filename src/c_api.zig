@@ -93,6 +93,7 @@ const feature_native_eager_matmul: u64 = 1 << 49;
 const feature_native_eager_activation: u64 = 1 << 50;
 const feature_native_eager_elementwise: u64 = 1 << 51;
 const feature_native_eager_reduce: u64 = 1 << 52;
+const feature_native_eager_conv2d: u64 = 1 << 53;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -1130,6 +1131,7 @@ fn runtimeFeatureFlags() u64 {
         feature_native_eager_activation |
         feature_native_eager_elementwise |
         feature_native_eager_reduce |
+        feature_native_eager_conv2d |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -1597,6 +1599,12 @@ fn checkedElementCount(a: usize, b: usize) ?usize {
     return std.math.mul(usize, a, b) catch null;
 }
 
+fn checkedElementCount4(a: usize, b: usize, c: usize, d: usize) ?usize {
+    const ab = checkedElementCount(a, b) orelse return null;
+    const abc = checkedElementCount(ab, c) orelse return null;
+    return checkedElementCount(abc, d);
+}
+
 fn addBiasRowsF32(
     output: []f32,
     bias: []const f32,
@@ -1936,6 +1944,90 @@ export fn zgml_eager_reduce_f32(
         else => unreachable,
     }
     output_ptr.?[0] = acc;
+    return status(.ok);
+}
+
+export fn zgml_eager_conv2d_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    weights_ptr: ?[*]const f32,
+    weights_len: usize,
+    bias_ptr: ?[*]const f32,
+    bias_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    batch: usize,
+    in_channels: usize,
+    height: usize,
+    width: usize,
+    out_channels: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    stride_h: usize,
+    stride_w: usize,
+    padding_h: usize,
+    padding_w: usize,
+    dilation_h: usize,
+    dilation_w: usize,
+    out_h: usize,
+    out_w: usize,
+) c_int {
+    if (
+        input_ptr == null or
+        weights_ptr == null or
+        output_ptr == null or
+        batch == 0 or
+        in_channels == 0 or
+        height == 0 or
+        width == 0 or
+        out_channels == 0 or
+        kernel_h == 0 or
+        kernel_w == 0 or
+        stride_h == 0 or
+        stride_w == 0 or
+        dilation_h == 0 or
+        dilation_w == 0 or
+        out_h == 0 or
+        out_w == 0
+    ) return status(.invalid_argument);
+
+    if (checkedElementCount4(batch, in_channels, height, width) != input_len) return status(.shape_mismatch);
+    if (checkedElementCount4(out_channels, in_channels, kernel_h, kernel_w) != weights_len) return status(.shape_mismatch);
+    if (bias_len != 0 and (bias_ptr == null or bias_len != out_channels)) return status(.shape_mismatch);
+    if (checkedElementCount4(batch, out_channels, out_h, out_w) != output_len) return status(.shape_mismatch);
+
+    const input = input_ptr.?[0..input_len];
+    const weights = weights_ptr.?[0..weights_len];
+    const bias = if (bias_len == 0) null else bias_ptr.?[0..bias_len];
+    const output = output_ptr.?[0..output_len];
+
+    for (0..batch) |n| {
+        for (0..out_channels) |oc| {
+            for (0..out_h) |oh| {
+                for (0..out_w) |ow| {
+                    var sum: f32 = if (bias) |b| b[oc] else 0;
+                    for (0..in_channels) |ic| {
+                        for (0..kernel_h) |ky| {
+                            const raw_h = oh * stride_h + ky * dilation_h;
+                            if (raw_h < padding_h) continue;
+                            const ih = raw_h - padding_h;
+                            if (ih >= height) continue;
+                            for (0..kernel_w) |kx| {
+                                const raw_w = ow * stride_w + kx * dilation_w;
+                                if (raw_w < padding_w) continue;
+                                const iw = raw_w - padding_w;
+                                if (iw >= width) continue;
+                                const input_index = ((n * in_channels + ic) * height + ih) * width + iw;
+                                const weight_index = ((oc * in_channels + ic) * kernel_h + ky) * kernel_w + kx;
+                                sum += input[input_index] * weights[weight_index];
+                            }
+                        }
+                    }
+                    output[((n * out_channels + oc) * out_h + oh) * out_w + ow] = sum;
+                }
+            }
+        }
+    }
     return status(.ok);
 }
 
@@ -7515,6 +7607,7 @@ test "C ABI runtime info reports compatible handle surface" {
     try std.testing.expect((info.feature_flags & feature_native_eager_activation) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_elementwise) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_reduce) != 0);
+    try std.testing.expect((info.feature_flags & feature_native_eager_conv2d) != 0);
     try std.testing.expectEqual(build_options.use_wgpu, (info.feature_flags & feature_native_wgpu_execution) != 0);
     try std.testing.expectEqual(build_options.use_wgpu and build_options.experimental_llama_wgpu_execution, (info.feature_flags & feature_experimental_llama_wgpu_execution) != 0);
     try std.testing.expect((info.feature_flags & feature_experimental_llama_wgpu_execution) == 0 or (info.feature_flags & feature_native_wgpu_execution) != 0);
@@ -10611,6 +10704,78 @@ test "C ABI native eager reduce writes scalar output" {
         output[0..].ptr,
         output.len,
         999,
+    ));
+}
+
+test "C ABI native eager conv2d writes caller output" {
+    const input = [_]f32{
+        1, 2, 3,
+        4, 5, 6,
+        7, 8, 9,
+        10, 11, 12,
+        13, 14, 15,
+        16, 17, 18,
+    };
+    const weights = [_]f32{
+        1, 0,
+        0, 1,
+        -1, 1,
+        1, -1,
+    };
+    const bias = [_]f32{0.5};
+    var output = [_]f32{0} ** 4;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_conv2d_f32(
+        input[0..].ptr,
+        input.len,
+        weights[0..].ptr,
+        weights.len,
+        bias[0..].ptr,
+        bias.len,
+        output[0..].ptr,
+        output.len,
+        1,
+        2,
+        3,
+        3,
+        1,
+        2,
+        2,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        2,
+        2,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 6.5, 8.5, 12.5, 14.5 }, &output);
+
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_conv2d_f32(
+        input[0..].ptr,
+        input.len - 1,
+        weights[0..].ptr,
+        weights.len,
+        null,
+        0,
+        output[0..].ptr,
+        output.len,
+        1,
+        2,
+        3,
+        3,
+        1,
+        2,
+        2,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        2,
+        2,
     ));
 }
 

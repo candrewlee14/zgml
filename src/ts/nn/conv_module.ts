@@ -60,6 +60,29 @@ type RequirePositiveInteger = BivariantCallback<[value: unknown, label: string],
 type DefaultedF32 = (values: unknown, length: number, label: string, fallback: (length: number) => Float32Array, shape?: readonly number[]) => Float32Array;
 type ParameterFactory = (name: string, values: Float32Array, shape: readonly number[], layout: string) => ConvParameter;
 type ParameterView = BivariantCallback<[prefix: string, parameter: ConvParameter], ConvParameter>;
+type NativeEagerConv2dInto = (
+  output: Float32Array,
+  input: ConvTensor,
+  weights: ConvTensor,
+  options: Readonly<{
+    bias?: ConvTensor | null;
+    batch: number;
+    inChannels: number;
+    height: number;
+    width: number;
+    outChannels: number;
+    kernelH: number;
+    kernelW: number;
+    strideH: number;
+    strideW: number;
+    paddingH: number;
+    paddingW: number;
+    dilationH: number;
+    dilationW: number;
+    outH: number;
+    outW: number;
+  }>,
+) => Float32Array;
 
 function convGradTensor(tensor: ConvTensor): ConvGradTensor {
   return tensor as ConvGradTensor;
@@ -94,6 +117,7 @@ export type Conv2dModuleClassOptions = Readonly<Record<string, unknown> & {
   zerosF32: (length: number) => Float32Array;
   makeParameter: ParameterFactory;
   parameterView: ParameterView;
+  nativeEagerConv2dInto?: NativeEagerConv2dInto;
 } & SingleModuleCompileHooksInput>;
 
 export function createConv2dModuleClass(options: Conv2dModuleClassOptions) {
@@ -107,6 +131,7 @@ export function createConv2dModuleClass(options: Conv2dModuleClassOptions) {
   const zerosF32 = options.zerosF32;
   const makeParameter = options.makeParameter;
   const parameterView = options.parameterView;
+  const nativeEagerConv2dInto = options.nativeEagerConv2dInto;
   const compileHooks = createSingleModuleCompileHooks(options, "Conv2dModule", { requirePackParameters: false });
   const stateHooks = createStatefulModuleStateHooks(options, "Conv2dModule");
   if (
@@ -198,27 +223,48 @@ export function createConv2dModuleClass(options: Conv2dModuleClassOptions) {
       const [dh, dw] = this.dilation;
       const outShape = batched ? [batch, this.outChannels, outH, outW] : [this.outChannels, outH, outW];
       const out = new Float32Array(batch * this.outChannels * outH * outW);
-      for (let n = 0; n < batch; n += 1) {
-        for (let oc = 0; oc < this.outChannels; oc += 1) {
-          for (let oh = 0; oh < outH; oh += 1) {
-            for (let ow = 0; ow < outW; ow += 1) {
-              let sum = this.bias ? this.bias[oc]! : 0;
-              for (let ic = 0; ic < this.inChannels; ic += 1) {
-                for (let ky = 0; ky < kh; ky += 1) {
-                  const ih = oh * sh + ky * dh - ph;
-                  if (ih < 0 || ih >= height) continue;
-                  for (let kx = 0; kx < kw; kx += 1) {
-                    const iw = ow * sw + kx * dw - pw;
-                    if (iw < 0 || iw >= width) continue;
-                    const inputIndex = batched
-                      ? ((n * this.inChannels + ic) * height + ih) * width + iw
-                      : (ic * height + ih) * width + iw;
-                    const weightIndex = ((oc * this.inChannels + ic) * kh + ky) * kw + kx;
-                    sum += input.data[inputIndex]! * this.weight[weightIndex]!;
+      if (!gradModeEnabled() && typeof nativeEagerConv2dInto === "function") {
+        nativeEagerConv2dInto(out, input, this.weightParam.tensor, {
+          bias: this.biasParam?.tensor ?? null,
+          batch,
+          inChannels: this.inChannels,
+          height,
+          width,
+          outChannels: this.outChannels,
+          kernelH: kh,
+          kernelW: kw,
+          strideH: sh,
+          strideW: sw,
+          paddingH: ph,
+          paddingW: pw,
+          dilationH: dh,
+          dilationW: dw,
+          outH,
+          outW,
+        });
+      } else {
+        for (let n = 0; n < batch; n += 1) {
+          for (let oc = 0; oc < this.outChannels; oc += 1) {
+            for (let oh = 0; oh < outH; oh += 1) {
+              for (let ow = 0; ow < outW; ow += 1) {
+                let sum = this.bias ? this.bias[oc]! : 0;
+                for (let ic = 0; ic < this.inChannels; ic += 1) {
+                  for (let ky = 0; ky < kh; ky += 1) {
+                    const ih = oh * sh + ky * dh - ph;
+                    if (ih < 0 || ih >= height) continue;
+                    for (let kx = 0; kx < kw; kx += 1) {
+                      const iw = ow * sw + kx * dw - pw;
+                      if (iw < 0 || iw >= width) continue;
+                      const inputIndex = batched
+                        ? ((n * this.inChannels + ic) * height + ih) * width + iw
+                        : (ic * height + ih) * width + iw;
+                      const weightIndex = ((oc * this.inChannels + ic) * kh + ky) * kw + kx;
+                      sum += input.data[inputIndex]! * this.weight[weightIndex]!;
+                    }
                   }
                 }
+                out[((n * this.outChannels + oc) * outH + oh) * outW + ow] = sum;
               }
-              out[((n * this.outChannels + oc) * outH + oh) * outW + ow] = sum;
             }
           }
         }

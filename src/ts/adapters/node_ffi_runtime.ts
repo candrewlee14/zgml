@@ -1016,6 +1016,10 @@ function nativeEagerSoftmaxInto(output, input, options) {
     : nativeEager.softmaxInto(output, input, options);
 }
 
+function nativeEagerConv2dInto(output, input, weights, options) {
+  return nativeEager.conv2dInto(output, input, weights, options);
+}
+
 let compileTrainingStepHook = null;
 
 const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
@@ -1035,6 +1039,7 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   nativeEagerLinearInto,
   nativeEagerSoftmaxInto,
   nativeEagerLinearActivationInto,
+  nativeEagerConv2dInto,
   parameterNames,
   parameterInfos,
   parameterInfo,
@@ -1159,6 +1164,31 @@ const { nativeEager } = createAdapterNativeEagerSurface({
     args.output,
     args.expectedOutput,
     args.op,
+  ),
+  conv2dF32: (args) => nodeSymbolGroups.nativeEager.eagerConv2dF32(
+    args.inputData,
+    args.inputData.length,
+    args.weightData,
+    args.weightData.length,
+    args.biasData,
+    args.biasData ? args.biasData.length : 0,
+    args.output,
+    args.expectedOutput,
+    args.batch,
+    args.inChannels,
+    args.height,
+    args.width,
+    args.outChannels,
+    args.kernelH,
+    args.kernelW,
+    args.strideH,
+    args.strideW,
+    args.paddingH,
+    args.paddingW,
+    args.dilationH,
+    args.dilationW,
+    args.outH,
+    args.outW,
   ),
   softmaxF32: (args) => nodeSymbolGroups.nativeEager.eagerSoftmaxF32(
     args.inputData,

@@ -71,6 +71,7 @@ const nnShapeModule = require(["..", "nn", "shape_module.cjs"].join("/"));
 const nnParameterlessModules = require(["..", "nn", "parameterless_modules.cjs"].join("/"));
 const nnLinearModule = require(["..", "nn", "linear_module.cjs"].join("/"));
 const nnEmbeddingModule = require(["..", "nn", "embedding_module.cjs"].join("/"));
+const nnConvModule = require(["..", "nn", "conv_module.cjs"].join("/"));
 const nnPoolingModule = require(["..", "nn", "pooling_module.cjs"].join("/"));
 const nnSequentialModule = require(["..", "nn", "sequential_module.cjs"].join("/"));
 const nnFeatureNormModule = require(["..", "nn", "feature_norm_module.cjs"].join("/"));
@@ -7679,6 +7680,72 @@ const LinearModule = nnLinearModule.createLinearModuleClass({
     return { placed: module.kind };
   },
 });
+let conv2dGradEnabled = false;
+const nativeConv2dCalls = [];
+const Conv2dModule = nnConvModule.createConv2dModuleClass({
+  Tensor: LinearSmokeTensor,
+  addTensorGrad: (tensor, grad) => {
+    if (!tensor.grad) tensor.grad = new Float32Array(tensor.length);
+    for (let i = 0; i < grad.length; i += 1) tensor.grad[i] += grad[i];
+  },
+  isGradEnabled: () => conv2dGradEnabled,
+  requirePositiveInteger: tensorData.requirePositiveInteger,
+  defaultedF32: tensorData.defaultedF32,
+  zerosF32: tensorData.zerosF32,
+  makeParameter: linearStateHelpers.makeParameter,
+  parameterView: linearStateHelpers.parameterView,
+  nativeEagerConv2dInto: (output, input, weights, options) => {
+    nativeConv2dCalls.push({ inputShape: input.shape, weightShape: weights.shape, options });
+    output.fill(42);
+    return output;
+  },
+  parameterNames: linearStateHelpers.parameterNames,
+  parameterInfos: linearStateHelpers.parameterInfos,
+  parameterInfo: linearStateHelpers.parameterInfo,
+  zeroGrad: linearStateHelpers.zeroGrad,
+  setRequiresGrad: linearStateHelpers.setRequiresGrad,
+  stateDict: linearStateHelpers.stateDict,
+  loadStateDict: linearStateHelpers.loadStateDict,
+  moduleCompileSupport: linearStateHelpers.moduleCompileSupport,
+  analyzeSingleModuleProgram: () => ({
+    supported: true,
+    reason: null,
+    support: { nativePath: "device-program" },
+    compiled: { kind: "module", moduleKind: "conv2d" },
+  }),
+  compileModuleProgram: (compiled) => ({ kind: "module-program", moduleKind: compiled.moduleKind }),
+  placeModuleParameterBindings: (module) => ({ placed: module.kind }),
+  packedSequentialProgramParameters: () => ({ weights: [], bias: [] }),
+});
+const conv2dModule = new Conv2dModule(1, 1, [2, 2], {
+  weight: [1, 0, 0, 1],
+  bias: [0.5],
+});
+const conv2dInput = new LinearSmokeTensor(Float32Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9), [1, 3, 3]);
+expectSame(conv2dModule.forward(conv2dInput).data, [42, 42, 42, 42], "nn conv2d no-grad routes through native eager hook");
+expectSame(nativeConv2dCalls.length, 1, "nn conv2d native eager hook is called once in no-grad");
+expectSame(nativeConv2dCalls[0].options, {
+  bias: conv2dModule.biasParam.tensor,
+  batch: 1,
+  inChannels: 1,
+  height: 3,
+  width: 3,
+  outChannels: 1,
+  kernelH: 2,
+  kernelW: 2,
+  strideH: 1,
+  strideW: 1,
+  paddingH: 0,
+  paddingW: 0,
+  dilationH: 1,
+  dilationW: 1,
+  outH: 2,
+  outW: 2,
+}, "nn conv2d native eager hook receives shape contract");
+conv2dGradEnabled = true;
+expectSame(conv2dModule.forward(conv2dInput).data, [6.5, 8.5, 12.5, 14.5], "nn conv2d grad-enabled forward stays on TS autograd path");
+expectSame(nativeConv2dCalls.length, 1, "nn conv2d does not route grad-enabled forward through native eager hook");
+conv2dGradEnabled = false;
 const linearModule = new LinearModule(2, 3, {
   weights: [1, 2, 3, 4, 5, 6],
   bias: [0.5, -0.5, 1],

@@ -211,6 +211,7 @@ import {
   type LlamaSessionStepContract,
   type LlamaStepParams,
   type LossNamespace,
+  type NativeEagerConv2dIntoOptions,
   type NativeEagerMatmulIntoOptions,
   type PublicLossNamespace,
   type NnLossConstructorName,
@@ -776,6 +777,7 @@ const runtimeActivationChainFeature: boolean = currentRuntimeFeatures.nativeModu
 const runtimeNativeEagerMatmulFeature: boolean = currentRuntimeFeatures.nativeEagerMatmul;
 const runtimeNativeEagerElementwiseFeature: boolean = currentRuntimeFeatures.nativeEagerElementwise;
 const runtimeNativeEagerReduceFeature: boolean = currentRuntimeFeatures.nativeEagerReduce;
+const runtimeNativeEagerConv2dFeature: boolean = currentRuntimeFeatures.nativeEagerConv2d;
 const coreShapeSubpathShape: CoreShapeSubpath = [2, 3];
 const coreShapeSubpathCount: number = coreShapeScalarCount(coreShapeSubpathShape);
 const runtimeKernelPlanSubpathSource: "ts" = runtimeKernelPlanManifest.source;
@@ -2476,6 +2478,19 @@ const nativeEagerElementwiseInto: Float32Array = zgml.nativeEager.elementwiseInt
 const nativeEagerElementwiseIntoAlias: Float32Array = zgml.native_eager.elementwise_into(new Float32Array(2), linearInput, null, { op: "sqr" });
 const nativeEagerReduceInto: Float32Array = zgml.nativeEager.reduceInto(new Float32Array(1), linearInput, { op: "sum" });
 const nativeEagerReduceIntoAlias: Float32Array = zgml.native_eager.reduce_into(new Float32Array(1), linearInput, { op: "max" });
+const nativeEagerConv2dOptions: NativeEagerConv2dIntoOptions = { outH: 2, outW: 2 };
+const nativeEagerConv2dInto: Float32Array = zgml.nativeEager.conv2dInto(
+  new Float32Array(4),
+  tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 3] as const),
+  tensor([1, 0, 0, 1], [1, 1, 2, 2] as const),
+  nativeEagerConv2dOptions,
+);
+const nativeEagerConv2dIntoAlias: Float32Array = zgml.native_eager.conv2d_into(
+  new Float32Array(4),
+  tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 3] as const),
+  tensor([1, 0, 0, 1], [1, 1, 2, 2] as const),
+  { out_h: 2, out_w: 2 },
+);
 const nativeEagerSoftmaxInto: Float32Array = zgml.nativeEager.softmaxInto(new Float32Array(3), linearInput, { dim: -1 });
 const nativeEagerLogSoftmaxIntoAlias: Float32Array = zgml.native_eager.log_softmax_into(new Float32Array(3), linearInput, { dim: -1 });
 const compiledInferencePrepared: () => Float32Array = compiledInference.prepareInto(new Float32Array(3), linearInput);
@@ -4768,6 +4783,7 @@ void currentRuntimeFeatures;
 void runtimeNativeEagerMatmulFeature;
 void runtimeNativeEagerElementwiseFeature;
 void runtimeNativeEagerReduceFeature;
+void runtimeNativeEagerConv2dFeature;
 void runtimeActivationChainFeature;
 void literalEqTensor;
 void literalNeTensor;
@@ -6303,6 +6319,9 @@ void nativeEagerElementwiseInto;
 void nativeEagerElementwiseIntoAlias;
 void nativeEagerReduceInto;
 void nativeEagerReduceIntoAlias;
+void nativeEagerConv2dOptions;
+void nativeEagerConv2dInto;
+void nativeEagerConv2dIntoAlias;
 void nativeEagerSoftmaxInto;
 void nativeEagerLogSoftmaxIntoAlias;
 void sequentialPreflight;

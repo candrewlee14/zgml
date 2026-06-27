@@ -347,6 +347,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.reduceInto !== "function") {
     throw new Error(`${label} expected nativeEager.reduceInto`);
   }
+  if (typeof nativeEager.conv2dInto !== "function") {
+    throw new Error(`${label} expected nativeEager.conv2dInto`);
+  }
   if (typeof nativeEager.softmaxInto !== "function" || typeof nativeEager.logSoftmaxInto !== "function") {
     throw new Error(`${label} expected nativeEager softmax/logSoftmax into helpers`);
   }
@@ -367,6 +370,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   if (typeof nativeEagerAlias.reduce_into !== "function") {
     throw new Error(`${label} expected native_eager.reduce_into alias`);
+  }
+  if (typeof nativeEagerAlias.conv2d_into !== "function") {
+    throw new Error(`${label} expected native_eager.conv2d_into alias`);
   }
   if (typeof nativeEagerAlias.softmax_into !== "function" || typeof nativeEagerAlias.log_softmax_into !== "function") {
     throw new Error(`${label} expected native_eager softmax/log_softmax aliases`);
@@ -422,6 +428,21 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.reduce_into to reuse caller output`);
   }
   expectClose(reduceAliasOutput, [3.75], `${label} native_eager.reduce_into output`);
+  const conv2dInput = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 3]);
+  const conv2dWeights = adapter.tensor([1, 0, 0, 1], [1, 1, 2, 2]);
+  const conv2dBias = adapter.tensor([0.5], [1]);
+  const conv2dOutput = new Float32Array(4);
+  const conv2dResult = nativeEager.conv2dInto(conv2dOutput, conv2dInput, conv2dWeights, { bias: conv2dBias, outH: 2, outW: 2 });
+  if (conv2dResult !== conv2dOutput) {
+    throw new Error(`${label} expected nativeEager.conv2dInto to reuse caller output`);
+  }
+  expectClose(conv2dOutput, [6.5, 8.5, 12.5, 14.5], `${label} nativeEager.conv2dInto output`);
+  const conv2dAliasOutput = new Float32Array(4);
+  const conv2dAliasResult = nativeEagerAlias.conv2d_into(conv2dAliasOutput, conv2dInput, conv2dWeights, { bias: conv2dBias, out_h: 2, out_w: 2 });
+  if (conv2dAliasResult !== conv2dAliasOutput) {
+    throw new Error(`${label} expected native_eager.conv2d_into to reuse caller output`);
+  }
+  expectClose(conv2dAliasOutput, Array.from(conv2dOutput), `${label} native_eager.conv2d_into output`);
   const tensorElementwiseLength = 1024;
   const tensorElementwiseInputData = Array.from({ length: tensorElementwiseLength }, (_value, index) => (index % 5) - 2);
   const tensorElementwiseBiasData = Array.from({ length: tensorElementwiseLength }, (_value, index) => (index % 7) + 0.5);
@@ -523,6 +544,14 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   } finally {
     adapter.Tensor.prototype.matmul = originalMatmul;
   }
+  const conv2d = adapter.nn.conv2d(1, 1, [2, 2], {
+    weight: [1, 0, 0, 1],
+    bias: [0.5],
+  });
+  const eagerConv2d = conv2d.forward(conv2dInput);
+  const nativeConv2d = adapter.noGrad(() => conv2d.forward(conv2dInput));
+  expectClose(nativeConv2d.data, eagerConv2d.data, `${label} noGrad nn.Conv2d native eager module output`);
+  expectClose(nativeConv2d.data, Array.from(conv2dOutput), `${label} noGrad nn.Conv2d native eager module direct output parity`);
 
   const fusedSequential = new adapter.nn.Sequential(
     new adapter.nn.Linear(2, 3, {
