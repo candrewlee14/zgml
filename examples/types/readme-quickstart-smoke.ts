@@ -57,8 +57,9 @@ const zgmlFit = zgmlModel.fit(zgmlLoader, {
   },
 });
 const zgmlSnapshot = zgml.checkpoint.create({ model: zgmlModel, optimizer: zgmlOptimizer, scheduler: zgmlScheduler, prefix: "zgml" });
-const zgmlFast = zgml.native(zgmlModel, { inputShape: [2] as const });
-const zgmlFastAlias = zgml.compileInference(zgmlModel, { inputShape: [2] as const });
+const zgmlFast = zgml.forInference(zgmlModel, { inputShape: [2] as const });
+const zgmlFastAlias = zgml.native(zgmlModel, { inputShape: [2] as const });
+const zgmlFastLongAlias = zgml.compileInference(zgmlModel, { inputShape: [2] as const });
 const zgmlFastTyped: CompiledInference<readonly [2], readonly [1]> = zgmlFast;
 const zgmlFastProgram: Program<readonly [2], readonly [1]> = zgmlFast.program;
 const zgmlFastSession: Session<readonly [2], readonly [1]> = zgmlFast.session;
@@ -68,6 +69,7 @@ const zgmlFastForward: Tensor<readonly [1]> = zgmlFast.forward(zgml.tensor([1, 0
 const zgmlFastOut = zgmlFast.into(new Float32Array(1), zgml.tensor([1, 0], [2] as const));
 zgmlFast.dispose();
 zgmlFastAlias.dispose();
+zgmlFastLongAlias.dispose();
 void zgmlFit;
 void zgmlSnapshot;
 void zgmlFastProof;
@@ -190,7 +192,7 @@ const text = save(snapshot, 2);
 const loaded = load(text);
 load(text, { model, optimizer, scheduler, prefix: "xor", strict: true });
 checkpoint.restore(snapshot, { model, optimizer, scheduler, prefix: "xor", strict: true });
-const readmeFast = compile.compileForInference(model, { inputShape: [2] as const });
+const readmeFast = compile.forInference(model, { inputShape: [2] as const });
 const readmeFastProof = readmeFast.explain();
 const readmeFastSupport = readmeFast.compileSupport();
 const readmeFastOut = readmeFast.into(new Float32Array(1), tensor([1, 0], [2] as const));

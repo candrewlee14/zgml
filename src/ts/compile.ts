@@ -634,6 +634,8 @@ export function compileForInference(target: unknown, options: CompileNamespaceOp
 }
 
 export const compile_for_inference = compileForInference;
+export const forInference = compileForInference;
+export const for_inference = compileForInference;
 export const native = compileForInference;
 export const inference = compileForInference;
 

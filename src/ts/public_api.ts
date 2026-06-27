@@ -3766,6 +3766,10 @@ export interface NnModule {
   native(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   inference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
   inference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  forInference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
+  forInference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  for_inference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
+  for_inference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   compileInference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
   compileInference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   compile_inference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
@@ -6105,6 +6109,10 @@ export type PublicCompileNamespace = Readonly<CompileNamespace> & {
   native(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   inference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
   inference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  forInference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
+  forInference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  for_inference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
+  for_inference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
 };
 export type PublicProgramNamespace = Readonly<ProgramNamespace>;
 export type PublicSessionNamespace = Readonly<SessionNamespace>;
@@ -6543,6 +6551,10 @@ export type NnNamespace = Readonly<{
   native(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   inference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
   inference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  forInference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
+  forInference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  for_inference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
+  for_inference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   compileInference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
   compileInference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   compile_inference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
@@ -6953,6 +6965,8 @@ export type PublicTorchNamespace = Readonly<{
   compile: PublicCompileNamespace;
   native: PublicCompileNamespace["compileForInference"];
   inference: PublicCompileNamespace["compileForInference"];
+  forInference: PublicCompileNamespace["compileForInference"];
+  for_inference: PublicCompileNamespace["compile_for_inference"];
   compileInference: PublicCompileNamespace["compileForInference"];
   compile_inference: PublicCompileNamespace["compile_for_inference"];
   compileForInference: PublicCompileNamespace["compileForInference"];
@@ -7014,6 +7028,7 @@ export type PublicSimpleNamespace = Readonly<Pick<PublicZgmlNamespace,
   | "compile"
   | "native"
   | "inference"
+  | "forInference"
   | "compileInference"
   | "compileForInference"
   | "trainingStep"
@@ -7036,6 +7051,8 @@ export declare const zgml: PublicZgmlNamespace;
 export declare const torch: PublicTorchNamespace;
 export declare const native: PublicCompileNamespace["compileForInference"];
 export declare const inference: PublicCompileNamespace["compileForInference"];
+export declare const forInference: PublicCompileNamespace["compileForInference"];
+export declare const for_inference: PublicCompileNamespace["compile_for_inference"];
 export declare const compileInference: PublicCompileNamespace["compileForInference"];
 export declare const compile_inference: PublicCompileNamespace["compile_for_inference"];
 export declare const compileForInference: PublicCompileNamespace["compileForInference"];

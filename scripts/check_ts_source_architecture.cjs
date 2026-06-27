@@ -358,11 +358,11 @@ function checkRootPublicSurfaceTaxonomyCoversRootNamespaceExports(errors) {
   if (!readmeSource.includes("`zgml` is the canonical package identity")) {
     errors.push("README.md must present zgml as the canonical package identity");
   }
-  if (!readmeSource.includes("zgml.native(model")) {
-    errors.push("README.md must teach zgml.native as the first-contact compiled inference handle");
+  if (!readmeSource.includes("zgml.forInference(model")) {
+    errors.push("README.md must teach zgml.forInference as the first-contact compiled inference handle");
   }
-  if (!readmeSource.includes("compile.compileForInference(model")) {
-    errors.push("README.md must keep the explicit compile namespace path documented for users who avoid the friendly root value");
+  if (!readmeSource.includes("compile.forInference(model")) {
+    errors.push("README.md must keep the explicit compile namespace forInference path documented for users who avoid the friendly root value");
   }
   if (duplicateClassifications.length !== 0) {
     errors.push(`${surfacePath} must classify each root namespace once: duplicate ${[...new Set(duplicateClassifications)].join(", ")}`);
@@ -9121,6 +9121,8 @@ function checkSessionStepParamsAssertionSurfaceIsChecked(errors) {
     "const bind = (program as { bind?: unknown }).bind",
     "const targetCanPlaceModuleParameters = target != null && typeof target === \"object\" && typeof (target as { placeParameters?: unknown }).placeParameters === \"function\"",
     "bind.call(program, bindOptions)",
+    "export const forInference = compileForInference",
+    "export const for_inference = compileForInference",
     "compile.compileForInference expected bindModule() or explicit Program bindings to return a Session",
   ]) {
     if (!compileSourceForNamespaceTypes.includes(needle)) {

@@ -174,7 +174,7 @@ run hot loops through a tiny executable handle
 The first-contact API should be the tiny executable handle:
 
 ```ts
-const fast = zgml.native(model, { inputShape: [2] as const });
+const fast = zgml.forInference(model, { inputShape: [2] as const });
 const y = fast.forward(input);
 const alsoY = fast.call(input);
 const out = fast.into(new Float32Array(2), input);
@@ -652,7 +652,7 @@ Current checked progress:
   claim that eager already runs natively.
 The public-surface taxonomy now separates the small checked first-contact
 surface (`simple`, `zgml`, `tensor`, `nn`, `loss`, `optim`, `train`, `data`,
-`checkpoint`, `lazy`, `compile`, and `compile.compileForInference`) from the
+`checkpoint`, `lazy`, `compile`, and `compile.forInference`) from the
 wider inspectable Program/Session/runtime evidence surface, so users learn the
 brilliant path before the deployment controls. The remaining frontend jump is
 native lowering, breadth, and first-contact simplicity, not proof that
@@ -660,7 +660,7 @@ native lowering, breadth, and first-contact simplicity, not proof that
 compile hooks exist.
 The root runtime now also exports `simple`, a frozen native-backed first-contact
 subset containing `Tensor`, `tensor`, `nn`, `F`, `data`, `loss`, `optim`,
-`train`, `checkpoint`, `lazy`, `compile`, `compileForInference`, and grad-mode
+`train`, `checkpoint`, `lazy`, `compile`, `forInference`, `compileForInference`, and grad-mode
 helpers. The `zgml/simple` subpath owns the matching manifest, so examples can
 opt into the small surface without hiding the advanced runtime SDK from users
 who need it.
@@ -698,7 +698,7 @@ piece of compile namespace behavior while the host-specific native compiler
 hooks remain injected.
 The canonical tutorial `examples/quickstart/zgml-first.cjs` now keeps the same
 first-contact story small: train, checkpoint, restore,
-`zgml.native(...)`, run allocation-free `into(...)`, and print a
+`zgml.forInference(...)`, run allocation-free `into(...)`, and print a
 plain proof line. The assertion-heavy contract smoke remains
 `examples/node_training/quickstart.cjs`; it exercises `compileSupport()`,
 `explain()`, `preflight()`, `kernelPlan()`, and `compilerSignatures()` for drift
@@ -836,8 +836,8 @@ carries that claim across the broader PyTorch scoreboard with fresh native code
 and PyTorch `2.12.1`: `lane_pass=11/11`, `median_lane_pass=11/11`, and
 `first_contact_inference=11/11`, with
 `ratio_median=linear_batched:1.24x,lazy_matmul_add_gelu_batched:2.84x,lazy_mlp_batched:1.80x,lazy_rms_silu_ffn_batched:1.67x,lazy_conv2d_relu_batched:1.19x,max_pool2d_batched:8.70x,avg_pool2d_batched:4.98x,rms_gelu_linear_batched:2.73x,softmax_classifier_batched:1.16x,log_softmax_classifier_batched:1.43x,lazy_token_head_batched:1.65x`.
-All eleven broad lanes now prove the friendly `zgml.compileInference` /
-`compile.compileForInference` handle reaches the same allocation-free prepared
+All eleven broad lanes now prove the friendly `zgml.forInference` /
+`compile.forInference` handle reaches the same allocation-free prepared
 path, including named-parameter lazy graphs that bind through explicit Program
 bindings. That includes the lazy `Conv2d -> ReLU` path, whose core loop is now
 owned by the Zig reference backend rather than by JS/TS. This makes the scoped
@@ -1391,7 +1391,7 @@ PyTorch fix by itself (`linear_batched` moved only from about `0.0108ms` to
 `0.0428ms`). That evidence points the next PyTorch catch-up work below the StepParams facade:
 native kernel shape, FFI call granularity, and larger fused
 Programs matter more than further TS object parsing polish on these lanes.
-The public `compile.compileForInference(model, { inputShape })` helper now wraps
+The public `compile.forInference(model, { inputShape })` helper now wraps
 the same Program/Session path into a frozen handle with `forward`, `call`,
 `__call__`, `into`, `prepareInto`, `dispose`, and `free`, so the simple
 inference API and the allocation-conscious hot path are the same object.

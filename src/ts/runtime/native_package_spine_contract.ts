@@ -37,6 +37,8 @@ export const requiredNativePackageSpineExports = Object.freeze([
   "compile",
   "native",
   "inference",
+  "forInference",
+  "for_inference",
   "compileInference",
   "compile_inference",
   "compileForInference",

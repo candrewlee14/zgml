@@ -24,6 +24,8 @@ export type NnModulePrototype = {
   compile_plan?: (this: NnModulePrototype, compileOptions?: CompileOptions) => unknown;
   native?: (this: NnModulePrototype, compileOptions?: CompileOptions, bindOptions?: unknown) => unknown;
   inference?: (this: NnModulePrototype, compileOptions?: CompileOptions, bindOptions?: unknown) => unknown;
+  forInference?: (this: NnModulePrototype, compileOptions?: CompileOptions, bindOptions?: unknown) => unknown;
+  for_inference?: (this: NnModulePrototype, compileOptions?: CompileOptions, bindOptions?: unknown) => unknown;
   compileInference?: (this: NnModulePrototype, compileOptions?: CompileOptions, bindOptions?: unknown) => unknown;
   compile_inference?: (this: NnModulePrototype, compileOptions?: CompileOptions, bindOptions?: unknown) => unknown;
   preflight?: (this: NnModulePrototype, compileOptions?: CompileOptions) => unknown;
@@ -229,6 +231,8 @@ export function installNnCompileEvidenceMethods(constructors: readonly NnModuleP
       return nativeInferenceForModule(this, compileOptions, bindOptions);
     };
     proto.inference = proto.native;
+    proto.forInference = proto.native;
+    proto.for_inference = proto.native;
     proto.compileInference = proto.native;
     proto.compile_inference = proto.native;
     proto.fit = function fit(this: NnModulePrototype, batches: unknown, fitOptions: TrainFitOptions = {}) {

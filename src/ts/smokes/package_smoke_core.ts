@@ -4279,6 +4279,10 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     torch.native !== torch.compile.compileForInference ||
     typeof torch.inference !== "function" ||
     torch.inference !== torch.compile.compileForInference ||
+    typeof torch.forInference !== "function" ||
+    torch.forInference !== torch.compile.compileForInference ||
+    typeof torch.for_inference !== "function" ||
+    torch.for_inference !== torch.compile.compile_for_inference ||
     typeof torch.compileInference !== "function" ||
     torch.compileInference !== torch.compile.compileForInference ||
     typeof torch.compile_inference !== "function" ||
@@ -5227,12 +5231,22 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     typeof adapter.compile.compile !== "function" ||
     typeof adapter.compile.native !== "function" ||
     adapter.compile.native !== adapter.compile.compileForInference ||
+    typeof adapter.compile.forInference !== "function" ||
+    adapter.compile.forInference !== adapter.compile.compileForInference ||
+    typeof adapter.compile.for_inference !== "function" ||
+    adapter.compile.for_inference !== adapter.compile.compile_for_inference ||
     typeof adapter.compile.compileForInference !== "function" ||
     typeof adapter.compile.compile_for_inference !== "function" ||
     typeof adapter.native !== "function" ||
     adapter.native !== adapter.compile.compileForInference ||
+    typeof adapter.forInference !== "function" ||
+    adapter.forInference !== adapter.compile.compileForInference ||
+    typeof adapter.for_inference !== "function" ||
+    adapter.for_inference !== adapter.compile.compile_for_inference ||
     typeof adapter.zgml?.native !== "function" ||
     adapter.zgml.native !== adapter.compile.compileForInference ||
+    typeof adapter.zgml?.forInference !== "function" ||
+    adapter.zgml.forInference !== adapter.compile.compileForInference ||
     typeof adapter.compileInference !== "function" ||
     adapter.compileInference !== adapter.compile.compileForInference
   ) {

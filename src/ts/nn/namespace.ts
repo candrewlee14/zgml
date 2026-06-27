@@ -2966,6 +2966,8 @@ export function createNnNamespace(options: NnNamespaceOptions) {
     compile: (target: unknown, options?: CompileOptions) => compileModule(moduleTarget(target), options),
     native: (target: unknown, options?: CompileOptions, bindOptions?: unknown) => moduleNativeInference(target, options, bindOptions),
     inference: (target: unknown, options?: CompileOptions, bindOptions?: unknown) => moduleNativeInference(target, options, bindOptions),
+    forInference: (target: unknown, options?: CompileOptions, bindOptions?: unknown) => moduleNativeInference(target, options, bindOptions),
+    for_inference: (target: unknown, options?: CompileOptions, bindOptions?: unknown) => moduleNativeInference(target, options, bindOptions),
     compileInference: (target: unknown, options?: CompileOptions, bindOptions?: unknown) => moduleNativeInference(target, options, bindOptions),
     compile_inference: (target: unknown, options?: CompileOptions, bindOptions?: unknown) => moduleNativeInference(target, options, bindOptions),
     bindParameters: (target: unknown, options?: CompileOptions) => bindModuleParameters(moduleTarget(target), options),

@@ -57,7 +57,7 @@ zgml.checkpoint.restore(loaded, { model, optimizer, scheduler, prefix: "xor", st
 // Direct in-memory restore also works:
 zgml.checkpoint.restore(snapshot, { model, optimizer, scheduler, prefix: "xor", strict: true });
 
-const fast = zgml.native(model, { inputShape: [2] as const });
+const fast = zgml.forInference(model, { inputShape: [2] as const });
 const proof = fast.explain();
 const support = fast.compileSupport();
 const out = fast.into(new Float32Array(1), zgml.tensor([1, 0], [2] as const));
@@ -67,8 +67,10 @@ void support;
 void out;
 ```
 
-`torch` remains available as a PyTorch-compatible alias for this same friendly
-namespace, but `zgml` is the canonical package identity.
+`zgml.forInference(...)` is the friendly TS entry into a native Zig-backed
+Program/Session. `zgml.native(...)` remains a short alias.
+`torch` remains available as a PyTorch-compatible alias for this same friendly namespace, but
+`zgml` is the canonical package identity.
 
 The same pieces remain available as small TS-first namespaces when you want a
 more explicit import surface:
@@ -107,7 +109,7 @@ const loaded = load(text);
 load(text, { model, optimizer, scheduler, prefix: "xor", strict: true });
 const savedPath = save(snapshot, "./xor.zgml", 2);
 load(savedPath, { model, optimizer, scheduler, prefix: "xor", strict: true });
-const fast = compile.compileForInference(model, { inputShape: [2] as const });
+const fast = compile.forInference(model, { inputShape: [2] as const });
 const proof = fast.explain();
 const support = fast.compileSupport();
 const out = fast.into(new Float32Array(1), tensor([1, 0], [2] as const));

@@ -40,6 +40,8 @@ import {
   float32,
   flip,
   floor,
+  forInference,
+  for_inference,
   gradMode,
   inference,
   inference_mode,
@@ -2476,14 +2478,20 @@ const linearSessionParameterInfoByIndex: ModuleKernelParameterLayoutEntry | null
 const linearInput = tensor([1, 2], [2] as const);
 const compiledInference: CompiledInference<readonly [2], readonly [3]> = compile.compileForInference(linear, linearTypedCompileOptions);
 const compiledInferenceAlias: CompiledInference<readonly [2], readonly [3]> = compile.compile_for_inference(linear, linearTypedCompileOptions);
+const compiledInferenceForAlias: CompiledInference<readonly [2], readonly [3]> = compile.forInference(linear, linearTypedCompileOptions);
+const compiledInferenceForSnakeAlias: CompiledInference<readonly [2], readonly [3]> = compile.for_inference(linear, linearTypedCompileOptions);
 const compiledInferenceNativeAlias: CompiledInference<readonly [2], readonly [3]> = compile.native(linear, linearTypedCompileOptions);
 const compiledInferenceLayerList: CompiledInference<readonly [2], readonly [3]> = compile.compileForInference([linear], linearTypedCompileOptions);
 const compiledInferenceLayerListAlias: CompiledInference<readonly [2], readonly [3]> = compile.native([linear], linearTypedCompileOptions);
 const rootNativeInference: CompiledInference<readonly [2], readonly [3]> = native(linear, linearTypedCompileOptions);
 const rootInferenceAlias: CompiledInference<readonly [2], readonly [3]> = inference(linear, linearTypedCompileOptions);
+const rootForInferenceAlias: CompiledInference<readonly [2], readonly [3]> = forInference(linear, linearTypedCompileOptions);
+const rootForInferenceSnakeAlias: CompiledInference<readonly [2], readonly [3]> = for_inference(linear, linearTypedCompileOptions);
 const zgmlNativeInference: CompiledInference<readonly [2], readonly [3]> = zgml.native(linear, linearTypedCompileOptions);
 const zgmlNativeLayerListInference: CompiledInference<readonly [2], readonly [3]> = zgml.native([linear], linearTypedCompileOptions);
 const zgmlInferenceAlias: CompiledInference<readonly [2], readonly [3]> = zgml.inference(linear, linearTypedCompileOptions);
+const zgmlForInferenceAlias: CompiledInference<readonly [2], readonly [3]> = zgml.forInference(linear, linearTypedCompileOptions);
+const zgmlForInferenceSnakeAlias: CompiledInference<readonly [2], readonly [3]> = zgml.for_inference(linear, linearTypedCompileOptions);
 const zgmlCompiledInference: CompiledInference<readonly [2], readonly [3]> = zgml.compileForInference(linear, linearTypedCompileOptions);
 const zgmlCompileInferenceAlias: CompiledInference<readonly [2], readonly [3]> = zgml.compileInference(linear, linearTypedCompileOptions);
 const zgmlCompiledInferenceAlias: CompiledInference<readonly [2], readonly [3]> = zgml.compile_for_inference(linear, linearTypedCompileOptions);
@@ -2499,9 +2507,13 @@ const compiledInferenceStepTensor: Tensor<readonly [3]> = compiledInference.step
 const compiledInferenceInto: Float32Array = compiledInference.into(new Float32Array(3), linearInput);
 const nnNativeInference: CompiledInference<readonly [2], readonly [3]> = nn.native(linear, linearTypedCompileOptions);
 const nnInferenceAlias: CompiledInference<readonly [2], readonly [3]> = nn.inference(linear, linearTypedCompileOptions);
+const nnForInferenceAlias: CompiledInference<readonly [2], readonly [3]> = nn.forInference(linear, linearTypedCompileOptions);
+const nnForInferenceSnakeAlias: CompiledInference<readonly [2], readonly [3]> = nn.for_inference(linear, linearTypedCompileOptions);
 const nnCompileInferenceAlias: CompiledInference<readonly [2], readonly [3]> = nn.compileInference(linear, linearTypedCompileOptions);
 const moduleNativeInference: CompiledInference<readonly [2], TensorShapeTuple> = linear.native(linearTypedCompileOptions);
 const moduleInferenceAlias: CompiledInference<readonly [2], TensorShapeTuple> = linear.inference(linearTypedCompileOptions);
+const moduleForInferenceAlias: CompiledInference<readonly [2], TensorShapeTuple> = linear.forInference(linearTypedCompileOptions);
+const moduleForInferenceSnakeAlias: CompiledInference<readonly [2], TensorShapeTuple> = linear.for_inference(linearTypedCompileOptions);
 const moduleCompileInferenceAlias: CompiledInference<readonly [2], TensorShapeTuple> = linear.compileInference(linearTypedCompileOptions);
 const nativeEagerLinearInto: Float32Array = zgml.nativeEager.linearInto(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), { bias: tensor([0, 0, 0], [3] as const) });
 const nativeEagerLinearIntoAlias: Float32Array = zgml.native_eager.linear_into(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), { bias: tensor([0, 0, 0], [3] as const) });

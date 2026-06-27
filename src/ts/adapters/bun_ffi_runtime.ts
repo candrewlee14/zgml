@@ -2551,6 +2551,8 @@ export const simple = Object.freeze({
   compile,
   native: compile.compileForInference,
   inference: compile.compileForInference,
+  forInference: compile.compileForInference,
+  for_inference: compile.compile_for_inference,
   compileInference: compile.compileForInference,
   compileForInference: compile.compileForInference,
   trainingStep: compile.trainingStep,
@@ -2670,6 +2672,8 @@ export const zgml = createAdapterZgmlNamespace({
 export const torch = zgml;
 export const native = compile.compileForInference;
 export const inference = compile.compileForInference;
+export const forInference = compile.compileForInference;
+export const for_inference = compile.compile_for_inference;
 export const compileInference = compile.compileForInference;
 export const compile_inference = compile.compile_for_inference;
 export const compileForInference = compile.compileForInference;
