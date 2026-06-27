@@ -272,6 +272,15 @@ function logSoftmaxBatchedModel() {
   return new zgml.nn.LogSoftmax(-1);
 }
 
+function conv2dBatchedModel() {
+  return new zgml.nn.Sequential(
+    new zgml.nn.Conv2d(1, 1, 3, {
+      weight: conv2dWeights,
+      bias: conv2dBias,
+    }),
+  );
+}
+
 const linearWeights = values(64 * 32, 64);
 const linearBias = values(32, 32);
 const linearWeightTensor = zgml.tensor(linearWeights, [64, 32]);
@@ -306,6 +315,11 @@ const tanhBiasTensor = zgml.tensor(tanhBias, [64]);
 const linearTanhModel = linearTanhBatchedModel();
 const softmaxModel = softmaxBatchedModel();
 const logSoftmaxModel = logSoftmaxBatchedModel();
+const conv2dWeights = values(3 * 3, 24);
+const conv2dBias = values(1, 32);
+const conv2dWeightTensor = zgml.tensor(conv2dWeights, [1, 1, 3, 3]);
+const conv2dBiasTensor = zgml.tensor(conv2dBias, [1]);
+const conv2dModel = conv2dBatchedModel();
 
 const gapSpecs = Object.freeze([
   Object.freeze({
@@ -524,6 +538,26 @@ const gapSpecs = Object.freeze([
     compiledIterations: 1000,
     tolerance: 1e-5,
     next: "native_eager_log_softmax_storage_slice",
+  }),
+  Object.freeze({
+    key: "conv2d_batched",
+    shape: Object.freeze({ batch: 2, inChannels: 1, height: 64, width: 64, outChannels: 1, kernel: 3 }),
+    outputLen: 2 * 1 * 62 * 62,
+    input: () => zgml.tensor(values(2 * 1 * 64 * 64, 11), [2, 1, 64, 64]),
+    eager: (input) => conv2dModel.forward(input),
+    nativeEager: (output, input) => zgml.nativeEager.conv2dInto(output, input, conv2dWeightTensor, {
+      bias: conv2dBiasTensor,
+      outH: 62,
+      outW: 62,
+    }),
+    nativeEagerModule: (input) => zgml.noGrad(() => conv2dModel.forward(input)),
+    compiled: () => compiledInferenceHandle(conv2dBatchedModel(), [2, 1, 64, 64]),
+    eagerIterations: 50,
+    nativeEagerIterations: 200,
+    nativeEagerModuleIterations: 200,
+    compiledIterations: 200,
+    tolerance: 1e-4,
+    next: "native_eager_conv2d_storage_slice",
   }),
 ]);
 

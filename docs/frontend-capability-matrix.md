@@ -70,7 +70,8 @@ PyTorch replacement:
   `linear_batched` and `lazy_matmul_add_gelu_batched` targets, plus the
   adjacent `lazy_matmul_add_relu_batched` and
   `lazy_matmul_add_silu_batched`, `lazy_matmul_add_sigmoid_batched`, and
-  `lazy_matmul_add_tanh_batched` production-activation targets, as eager TS
+  `lazy_matmul_add_tanh_batched` production-activation targets, row-wise
+  `softmax_batched` / `log_softmax_batched`, and `conv2d_batched`, as eager TS
   tensor execution versus compiled allocation-free `executeInto`; the first native eager storage slices have executable baselines.
   Node and Bun also expose the first stateless native eager primitive:
   `zgml.nativeEager.linearInto`, backed by the `zgml_eager_linear_f32` C ABI,
@@ -91,6 +92,11 @@ PyTorch replacement:
   `nn.Sequential(Linear, SiLU)`, `nn.Sequential(Linear, Sigmoid)`, and
   `nn.Sequential(Linear, Tanh)` module calls, and the microscope records
   non-null fused-module `nativeEagerModuleForwardMs` rows on Node and Bun.
+  Node and Bun also expose `zgml.nativeEager.conv2dInto`, backed by
+  `zgml_eager_conv2d_f32`; eligible no-grad `nn.Conv2d.forward` calls now
+  route through that Zig kernel, and the microscope includes the same
+  `conv2d_batched` workload as direct native eager, normal module forward, and
+  compiled Program execution evidence.
   `bench:status` selects the latest ignored native-eager artifact and also
   prints a per-runtime `native-eager-runtime-results:` line with row coverage
   and missing rows, so Node and Bun native eager proof cannot be accidentally

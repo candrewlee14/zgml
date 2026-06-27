@@ -483,7 +483,8 @@ Current checked progress:
   `lazy_matmul_add_gelu_batched` eager fused matmul work, and
   `lazy_matmul_add_relu_batched` / `lazy_matmul_add_silu_batched` /
   `lazy_matmul_add_sigmoid_batched` / `lazy_matmul_add_tanh_batched` eager fused
-  matmul work plus `softmax_batched` / `log_softmax_batched` row tails versus allocation-free
+  matmul work plus `softmax_batched` / `log_softmax_batched` row tails and
+  `conv2d_batched` image-kernel work versus allocation-free
   compiled `prepare/executeInto` for the same shape. It now also reports
   `nativeEagerIntoMs` for `linear_batched`, backed by the stateless
   `zgml_eager_linear_f32` C ABI and surfaced on Node and Bun as
@@ -519,9 +520,15 @@ Current checked progress:
   `logSoftmaxInto`; Node and Bun package smokes prove both caller-owned-output
   helpers plus ordinary `zgml.noGrad(() => nn.Softmax/LogSoftmax.forward(x))`
   module calls route through the Zig row kernel for last-axis inference.
+  The same no-grad native eager policy now covers `nn.Conv2d.forward` for
+  inference: Node/Bun expose `zgml.nativeEager.conv2dInto`, ordinary
+  `zgml.noGrad(() => conv2dModel.forward(input))` routes through the Zig
+  Conv2d kernel, and the native eager microscope compares direct native eager,
+  normal module forward, and compiled Program execution on the same
+  `conv2d_batched` workload.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=9/9` after adding direct
-  `matmul_batched`, and fresh Node/Bun short runs show zero measured module
+  as well: the expected row set is `row_coverage=10/10` after adding direct
+  `matmul_batched` and native eager `conv2d_batched`, and fresh Node/Bun short runs show zero measured module
   diff across the native eager rows.
   The native eager adapter policy now lives in
   `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
