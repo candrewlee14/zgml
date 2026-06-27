@@ -168,6 +168,7 @@ The first-contact API should be the tiny executable handle:
 ```ts
 const fast = zgml.compileInference(model, { inputShape: [2] as const });
 const y = fast.forward(input);
+const alsoY = fast.call(input);
 const out = fast.into(new Float32Array(2), input);
 const proof = fast.explain();
 fast.dispose();
@@ -181,6 +182,13 @@ The handle now also exposes first-contact proof methods directly:
 `outputShape()`, `kernelPlan()`, and `compilerSignatures()`. That keeps the
 happy path tiny while still making the executable artifact inspectable without
 forcing users to know the lower-level `Program` API on day one.
+The same handle is now deliberately module-shaped: it exposes `forward`,
+`call`, and `__call__`, so native inference feels like ordinary `nn` code while
+still owning a real `Program` and `Session` underneath. The `nn` namespace also
+provides `nn.native(model, opts)` / `nn.inference(model, opts)`, and module
+instances expose `model.native(opts)`, all as TS-authored sugar over the same
+native Program/Session binding path. That is the desired split: ergonomic JS/TS
+API, Zig-owned execution core, no mirrored Zig product frontend.
 
 The refined compiler shape is:
 
@@ -1157,14 +1165,18 @@ PyTorch fix by itself (`linear_batched` moved only from about `0.0108ms` to
 native kernel shape, FFI call granularity, and larger fused
 Programs matter more than further TS object parsing polish on these lanes.
 The public `compile.compileForInference(model, { inputShape })` helper now wraps
-the same Program/Session path into a frozen handle with `forward`, `into`,
-`prepareInto`, `dispose`, and `free`, so the simple inference API and the
-allocation-conscious hot path are the same object.
+the same Program/Session path into a frozen handle with `forward`, `call`,
+`__call__`, `into`, `prepareInto`, `dispose`, and `free`, so the simple
+inference API and the allocation-conscious hot path are the same object.
 For module targets, that helper binds with `Program.bindModule(model)`. For lazy
 graph targets, the same helper can now accept explicit Program bindings as its
 third argument and bind with `Program.bind(bindings)`, so named-parameter lazy
 graphs can use the same first-contact handle instead of forcing users down to
 manual `compile -> bind -> Session` ceremony.
+The module-shaped native inference sugar now sits one level above this helper:
+`nn.native(model, { inputShape, backend })`, `nn.inference(...)`, and
+`model.native(...)` compile and bind through the same Program/Session substrate
+but keep the first-contact JS/TS experience centered on ordinary model objects.
 The prepared runner now reaches one layer lower than the facade when an adapter
 can help: Node and Bun Session ops expose `prepareStepSession`, so
 `prepareExecuteInto` can precompute direct FFI lengths/records and, on Bun,

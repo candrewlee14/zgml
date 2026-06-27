@@ -4682,6 +4682,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       throw new Error(`${label} expected compileForInference handle to expose compile evidence`);
     }
     expectClose(inference.forward(inferenceInput).data, [-0.5], `${label} compileForInference forward`);
+    expectClose(inference.call(inferenceInput).data, [-0.5], `${label} compileForInference call`);
+    expectClose(inference.__call__(inferenceInput).data, [-0.5], `${label} compileForInference __call__`);
     expectClose(inference.stepTensor(inferenceInput).data, [-0.5], `${label} compileForInference stepTensor alias`);
     const inferenceCarrier = new Float32Array(1);
     if (inference.into(inferenceCarrier, inferenceInput) !== inferenceCarrier) {
@@ -4696,6 +4698,20 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     expectClose(preparedCarrier, [-0.5], `${label} compileForInference prepareInto`);
   } finally {
     inference.dispose();
+  }
+  const nativeInference = adapter.nn.native(inferenceModel, { backend: "cpu", inputShape: [2] });
+  try {
+    expectClose(nativeInference.forward(inferenceInput).data, [-0.5], `${label} nn.native forward`);
+    expectClose(nativeInference.call(inferenceInput).data, [-0.5], `${label} nn.native call`);
+    expectClose(nativeInference.__call__(inferenceInput).data, [-0.5], `${label} nn.native __call__`);
+    const nativeInferenceAlias = inferenceModel.native({ backend: "cpu", inputShape: [2] });
+    try {
+      expectClose(nativeInferenceAlias.forward(inferenceInput).data, [-0.5], `${label} module.native forward`);
+    } finally {
+      nativeInferenceAlias.dispose();
+    }
+  } finally {
+    nativeInference.dispose();
   }
   const lazyInferenceGraph = adapter.lazy.input([2])
     .matmul(adapter.lazy.parameter([2, 1], "w"))

@@ -795,7 +795,7 @@ function checkPackageExports(errors) {
     }
   }
   for (const required of [
-    "function nativeEagerLinearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options?: Record<string, unknown>)",
+    "function nativeEagerLinearInto(output: Float32Array, input: unknown, weights: unknown, options?: Record<string, unknown>)",
     "function nativeEagerLinearActivationInto(output: Float32Array, input: unknown, weights: unknown, options: Record<string, unknown>)",
     "nativeEagerLinearInto,",
     "nativeEagerLinearActivationInto,",

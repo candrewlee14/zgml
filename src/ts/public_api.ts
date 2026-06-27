@@ -3585,6 +3585,14 @@ export interface NnModule {
   assert_compile_plan(options?: CompileOptions): ModuleCompileExplanation;
   canCompile(options?: CompileOptions): boolean;
   can_compile(options?: CompileOptions): boolean;
+  native<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
+  native(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  inference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
+  inference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  compileInference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
+  compileInference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  compile_inference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
+  compile_inference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
 }
 
 export type NnModuleConfig<
@@ -6302,6 +6310,14 @@ export type NnNamespace = Readonly<{
   compile(target: NnCompilableModule, options?: CompileOptions): Program;
   compile<const Target extends readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>): Program<S, ModuleTargetForwardShape<Target, S>>;
   compile(target: readonly NnModule[], options?: CompileOptions): Program;
+  native<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
+  native(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  inference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
+  inference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  compileInference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
+  compileInference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  compile_inference<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleTargetForwardShape<Target, S>>;
+  compile_inference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   bindParameters<const Target extends EmbeddingModule, const S extends TensorShapeTuple>(target: Target, options: EmbeddingCompileOptions<S>): ModuleBindings<S, ModuleForwardShape<Target, S>>;
   bindParameters(target: EmbeddingModule, options: EmbeddingCompileOptions): ModuleBindings;
   bindParameters<const Target extends NnCompilableModule, const S extends TensorShapeTuple>(target: Target, options: CompileOptionsWithInputShape<S>): ModuleBindings<S, ModuleForwardShape<Target, S>>;
@@ -6824,6 +6840,8 @@ export type CompiledInference<InputShape extends TensorShapeTuple = TensorShapeT
   kernelPlan(): ModuleKernelPlan | null;
   compilerSignatures(): ModuleCompleteCompilerSignatures | null;
   forward(input: ProgramInputBinding<InputShape>): Tensor<OutputShape>;
+  call(input: ProgramInputBinding<InputShape>): Tensor<OutputShape>;
+  __call__(input: ProgramInputBinding<InputShape>): Tensor<OutputShape>;
   stepTensor(input: ProgramInputBinding<InputShape>): Tensor<OutputShape>;
   into(output: Float32Array, input: ProgramInputBinding<InputShape>): Float32Array;
   prepareInto(output: Float32Array, input: ProgramInputBinding<InputShape>): () => Float32Array;

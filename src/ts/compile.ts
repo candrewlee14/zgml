@@ -556,6 +556,12 @@ function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShap
     forward(input: ProgramInputBinding<InputShape>) {
       return session.stepTensor(input);
     },
+    call(input: ProgramInputBinding<InputShape>) {
+      return session.stepTensor(input);
+    },
+    __call__(input: ProgramInputBinding<InputShape>) {
+      return session.stepTensor(input);
+    },
     stepTensor(input: ProgramInputBinding<InputShape>) {
       return session.stepTensor(input);
     },

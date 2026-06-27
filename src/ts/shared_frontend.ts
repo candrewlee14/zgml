@@ -526,7 +526,7 @@ export function createDropoutModuleClass(options: SharedDropoutModuleClassOption
 export type SharedLinearModuleClassOptions = Readonly<
   SequentialProgramCompileCoreHooksInput & Pick<
     LinearModuleClassOptions,
-    "Tensor" | "f32WithLength" | "requirePositiveInteger" | "defaultedF32" | "zerosF32" | "makeParameter" | "parameterView" | "TinyLinearModel"
+    "Tensor" | "f32WithLength" | "requirePositiveInteger" | "defaultedF32" | "zerosF32" | "makeParameter" | "parameterView" | "nativeEagerLinearInto" | "isGradEnabled" | "TinyLinearModel"
   >
 >;
 

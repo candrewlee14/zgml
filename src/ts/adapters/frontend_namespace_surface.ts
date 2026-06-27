@@ -810,6 +810,12 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       forward(input: unknown) {
         return session.stepTensor(input);
       },
+      call(input: unknown) {
+        return session.stepTensor(input);
+      },
+      __call__(input: unknown) {
+        return session.stepTensor(input);
+      },
       stepTensor(input: unknown) {
         return session.stepTensor(input);
       },

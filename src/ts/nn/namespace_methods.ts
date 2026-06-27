@@ -19,6 +19,10 @@ export type NnModulePrototype = {
   compile_explanation?: (this: NnModulePrototype, compileOptions?: CompileOptions) => unknown;
   compilePlan?: (this: NnModulePrototype, compileOptions?: CompileOptions) => unknown;
   compile_plan?: (this: NnModulePrototype, compileOptions?: CompileOptions) => unknown;
+  native?: (this: NnModulePrototype, compileOptions?: CompileOptions, bindOptions?: unknown) => unknown;
+  inference?: (this: NnModulePrototype, compileOptions?: CompileOptions, bindOptions?: unknown) => unknown;
+  compileInference?: (this: NnModulePrototype, compileOptions?: CompileOptions, bindOptions?: unknown) => unknown;
+  compile_inference?: (this: NnModulePrototype, compileOptions?: CompileOptions, bindOptions?: unknown) => unknown;
   preflight?: (this: NnModulePrototype, compileOptions?: CompileOptions) => unknown;
   requireCompilePlan?: (this: NnModulePrototype, compileOptions?: CompileOptions) => unknown;
   require_compile_plan?: (this: NnModulePrototype, compileOptions?: CompileOptions) => unknown;
@@ -95,6 +99,7 @@ export type NnCompileEvidenceMethodHooks = Readonly<{
   explainModule: (target: NnModulePrototype, compileOptions?: CompileOptions) => unknown;
   requireCompilePlanForModule: (target: NnModulePrototype, compileOptions?: CompileOptions) => unknown;
   canCompileModule: (target: NnModulePrototype, compileOptions?: CompileOptions) => boolean;
+  nativeInferenceForModule: (target: NnModulePrototype, compileOptions?: CompileOptions, bindOptions?: unknown) => unknown;
 }>;
 
 export function installNnCompileEvidenceMethods(constructors: readonly NnModulePrototypeConstructor[], options: NnCompileEvidenceMethodHooks) {
@@ -113,6 +118,7 @@ export function installNnCompileEvidenceMethods(constructors: readonly NnModuleP
   const explainModule = options.explainModule;
   const requireCompilePlanForModule = options.requireCompilePlanForModule;
   const canCompileModule = options.canCompileModule;
+  const nativeInferenceForModule = options.nativeInferenceForModule;
   if (
     typeof traceSequentialProgram !== "function" ||
     typeof compileSupportForModule !== "function" ||
@@ -128,7 +134,8 @@ export function installNnCompileEvidenceMethods(constructors: readonly NnModuleP
     typeof parameterLayoutForModule !== "function" ||
     typeof explainModule !== "function" ||
     typeof requireCompilePlanForModule !== "function" ||
-    typeof canCompileModule !== "function"
+    typeof canCompileModule !== "function" ||
+    typeof nativeInferenceForModule !== "function"
   ) {
     throw new Error("nn compile evidence method installer requires trace and compile inspection helpers");
   }
@@ -204,6 +211,12 @@ export function installNnCompileEvidenceMethods(constructors: readonly NnModuleP
     proto.can_compile = function can_compile(this: NnModulePrototype, compileOptions: CompileOptions = {}) {
       return canCompileModule(this, compileOptions);
     };
+    proto.native = function native(this: NnModulePrototype, compileOptions: CompileOptions = {}, bindOptions?: unknown) {
+      return nativeInferenceForModule(this, compileOptions, bindOptions);
+    };
+    proto.inference = proto.native;
+    proto.compileInference = proto.native;
+    proto.compile_inference = proto.native;
   }
 }
 

@@ -2116,8 +2116,8 @@ const packedSequentialProgramParameters = bunModuleCompilerSurface.packedSequent
   spec: CompiledSequentialProgramSpec,
 ) => ModuleBindings;
 
-function nativeEagerLinearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options?: Record<string, unknown>) {
-  return nativeEager.linearInto(output, input, weights, options);
+function nativeEagerLinearInto(output: Float32Array, input: unknown, weights: unknown, options?: Record<string, unknown>) {
+  return nativeEager.linearInto(output, input as TensorLike, weights as TensorLike, options);
 }
 
 function nativeEagerLinearActivationInto(output: Float32Array, input: unknown, weights: unknown, options: Record<string, unknown>) {

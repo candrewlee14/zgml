@@ -76,6 +76,21 @@ type NnModuleTarget = Omit<ModuleFacadeTarget, "forward"> & Readonly<{
   namedModules?: unknown;
   apply?: unknown;
 }>;
+type NativeInferenceProgram = Record<string, unknown> & {
+  bindModule?: (target: unknown, options?: unknown) => unknown;
+  bind?: (bindings?: unknown) => unknown;
+  dispose?: () => void;
+  inputShape?: () => unknown;
+  outputShape?: () => unknown;
+  kernelPlan?: () => unknown;
+  compilerSignatures?: () => unknown;
+};
+type NativeInferenceSession = Record<string, unknown> & {
+  stepTensor(input: unknown): unknown;
+  executeInto(output: Float32Array, bindings: unknown): Float32Array;
+  prepareExecuteInto(output: Float32Array, bindings: unknown): unknown;
+  dispose?: () => void;
+};
 
 type LinearModuleConstructor = NnModulePrototypeConstructor & (new (inFeatures: number, outFeatures: number, config?: NnLinearConfig) => NnModuleTarget);
 type EmbeddingModuleConstructor = NnModulePrototypeConstructor & (new (numEmbeddings: number, embeddingDim: number, config?: NnEmbeddingConfig) => NnModuleTarget);
@@ -547,6 +562,75 @@ export function createNnNamespace(options: NnNamespaceOptions) {
     return Array.isArray(target) && target.length > 0 && target.every(isModuleLikeTarget)
       ? new SequentialModule(target)
       : target;
+  }
+
+  function moduleNativeInference(target: unknown, compileOptions: CompileOptions = {}, bindOptions?: unknown) {
+    const module = moduleTarget(target);
+    const program = compileModule(module, compileOptions) as NativeInferenceProgram;
+    if (!program || typeof program !== "object") {
+      throw new Error("nn.native expected compile() to return a Program");
+    }
+    const session = typeof program.bindModule === "function"
+      ? program.bindModule(module, bindOptions)
+      : typeof program.bind === "function" && bindOptions !== undefined
+        ? program.bind(bindOptions)
+        : null;
+    if (!session || typeof session !== "object" || typeof (session as Partial<NativeInferenceSession>).stepTensor !== "function") {
+      throw new Error("nn.native expected bindModule() or explicit Program bindings to return a Session");
+    }
+    const nativeSession = session as NativeInferenceSession;
+    let disposed = false;
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      if (typeof nativeSession.dispose === "function") nativeSession.dispose();
+      if (typeof program.dispose === "function") program.dispose();
+    };
+    return Object.freeze({
+      program,
+      session: nativeSession,
+      forward(input: unknown) {
+        return nativeSession.stepTensor(input);
+      },
+      call(input: unknown) {
+        return nativeSession.stepTensor(input);
+      },
+      __call__(input: unknown) {
+        return nativeSession.stepTensor(input);
+      },
+      stepTensor(input: unknown) {
+        return nativeSession.stepTensor(input);
+      },
+      into(output: Float32Array, input: unknown) {
+        return nativeSession.executeInto(output, { input });
+      },
+      prepareInto(output: Float32Array, input: unknown) {
+        return nativeSession.prepareExecuteInto(output, { input });
+      },
+      explain() {
+        return explainModule(module, compileOptions);
+      },
+      preflight() {
+        return explainModule(module, compileOptions);
+      },
+      compileSupport() {
+        return compileSupportForModule(module, compileOptions);
+      },
+      inputShape() {
+        return typeof program.inputShape === "function" ? program.inputShape() : inputShapeForModule(module, compileOptions);
+      },
+      outputShape() {
+        return typeof program.outputShape === "function" ? program.outputShape() : outputShapeForModule(module, compileOptions);
+      },
+      kernelPlan() {
+        return typeof program.kernelPlan === "function" ? program.kernelPlan() : kernelPlanForModule(module, compileOptions);
+      },
+      compilerSignatures() {
+        return typeof program.compilerSignatures === "function" ? program.compilerSignatures() : compilerSignaturesForModule(module, compileOptions);
+      },
+      dispose,
+      free: dispose,
+    });
   }
 
   function stateDictPrefix(prefixOrOptions: unknown = "") {
@@ -2658,6 +2742,7 @@ export function createNnNamespace(options: NnNamespaceOptions) {
     explainModule,
     requireCompilePlanForModule,
     canCompileModule,
+    nativeInferenceForModule: moduleNativeInference,
   });
 
   const initNamespace = Object.freeze({
@@ -2867,6 +2952,10 @@ export function createNnNamespace(options: NnNamespaceOptions) {
     canCompile: (target: unknown, options?: CompileOptions) => canCompileModule(moduleTarget(target), options),
     can_compile: (target: unknown, options?: CompileOptions) => canCompileModule(moduleTarget(target), options),
     compile: (target: unknown, options?: CompileOptions) => compileModule(moduleTarget(target), options),
+    native: (target: unknown, options?: CompileOptions, bindOptions?: unknown) => moduleNativeInference(target, options, bindOptions),
+    inference: (target: unknown, options?: CompileOptions, bindOptions?: unknown) => moduleNativeInference(target, options, bindOptions),
+    compileInference: (target: unknown, options?: CompileOptions, bindOptions?: unknown) => moduleNativeInference(target, options, bindOptions),
+    compile_inference: (target: unknown, options?: CompileOptions, bindOptions?: unknown) => moduleNativeInference(target, options, bindOptions),
     bindParameters: (target: unknown, options?: CompileOptions) => bindModuleParameters(moduleTarget(target), options),
     bind_parameters: (target: unknown, options?: CompileOptions) => bindModuleParameters(moduleTarget(target), options),
     placeParameters: (target: unknown, program: unknown, options?: unknown) => placeModuleParameters(moduleTarget(target), program, options),

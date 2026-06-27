@@ -749,6 +749,58 @@ ZGML_API zgml_status zgml_train_mlp_relu_cross_entropy_adam_f32(
     float *out_loss,
     size_t *out_correct
 );
+ZGML_API zgml_status zgml_train_mlp_relu_cross_entropy_adamw_f32(
+    const float *input,
+    size_t input_len,
+    const uint32_t *targets,
+    size_t target_len,
+    float *w1,
+    size_t w1_len,
+    float *b1,
+    size_t b1_len,
+    float *w2,
+    size_t w2_len,
+    float *b2,
+    size_t b2_len,
+    float *mw1,
+    size_t mw1_len,
+    float *vw1,
+    size_t vw1_len,
+    float *mb1,
+    size_t mb1_len,
+    float *vb1,
+    size_t vb1_len,
+    float *mw2,
+    size_t mw2_len,
+    float *vw2,
+    size_t vw2_len,
+    float *mb2,
+    size_t mb2_len,
+    float *vb2,
+    size_t vb2_len,
+    float *hidden,
+    size_t hidden_len,
+    float *logits,
+    size_t logits_len,
+    float *grad_hidden,
+    size_t grad_hidden_len,
+    float *grad_w1,
+    size_t grad_w1_len,
+    float *grad_w2,
+    size_t grad_w2_len,
+    size_t batch,
+    size_t in_features,
+    size_t hidden_features,
+    size_t classes,
+    size_t step,
+    float lr,
+    float beta1,
+    float beta2,
+    float eps,
+    float weight_decay,
+    float *out_loss,
+    size_t *out_correct
+);
 ZGML_API zgml_status zgml_model_create(const zgml_model_desc *desc, zgml_model **out_model);
 ZGML_API zgml_status zgml_model_load_path(const zgml_model_load_desc *desc, zgml_model **out_model);
 ZGML_API zgml_status zgml_model_load_safetensors_data(const zgml_safetensors_data_load_desc *desc, zgml_model **out_model);
@@ -781,6 +833,7 @@ ZGML_API zgml_status zgml_llama_session_bind_buffers(zgml_program *program, cons
 ZGML_API zgml_status zgml_session_upload_persistent(zgml_session *session);
 ZGML_API zgml_status zgml_session_upload_persistent_range(zgml_session *session, size_t first, size_t len);
 ZGML_API zgml_status zgml_session_step(zgml_session *session, const zgml_step_desc *desc, zgml_step_result *out_result);
+ZGML_API zgml_status zgml_session_step_direct(zgml_session *session, const float *input, size_t input_len, float *output, size_t output_len);
 ZGML_API zgml_status zgml_session_step_no_output(zgml_session *session, const zgml_step_desc *desc, zgml_step_result *out_result);
 ZGML_API zgml_status zgml_session_step_token(zgml_session *session, const zgml_token_step_desc *desc, zgml_step_result *out_result);
 ZGML_API zgml_status zgml_session_advance_token(zgml_session *session, const zgml_token_advance_desc *desc);
