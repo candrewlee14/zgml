@@ -5597,12 +5597,12 @@ fn opAccessSpans(op: backend_mod.DeviceOp) OpAccessSpans {
             access.addWrite(bufferSpan(c.dst, c.dst_offset, c.out_w * c.out_h * c.out_channels * c.batch));
         },
         .softmax => |s| {
-            access.addRead(bufferSpan(s.src, s.src_offset, s.rows * s.cols));
-            access.addWrite(bufferSpan(s.dst, s.dst_offset, s.rows * s.cols));
+            access.addRead(bufferSpan(s.src, s.src_offset, s.rows * s.cols * s.inner));
+            access.addWrite(bufferSpan(s.dst, s.dst_offset, s.rows * s.cols * s.inner));
         },
         .logsoftmax => |s| {
-            access.addRead(bufferSpan(s.src, s.src_offset, s.rows * s.cols));
-            access.addWrite(bufferSpan(s.dst, s.dst_offset, s.rows * s.cols));
+            access.addRead(bufferSpan(s.src, s.src_offset, s.rows * s.cols * s.inner));
+            access.addWrite(bufferSpan(s.dst, s.dst_offset, s.rows * s.cols * s.inner));
         },
         .layernorm => |l| {
             access.addRead(bufferSpan(l.src, l.src_offset, l.rows * l.cols));
@@ -6099,6 +6099,7 @@ pub fn matmulRepeatElementwiseBiasLogSoftmaxCompatible(
         else => return false,
     };
     const g = m.geom;
+    if (ls.inner != 1) return false;
     if (ls.rows != g.M or ls.cols != g.N) return false;
     if (g.dst_row_stride != ls.cols) return false;
     return ls.src == bias.dst and ls.src_offset == bias.dst_offset;

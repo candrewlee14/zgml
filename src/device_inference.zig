@@ -613,9 +613,13 @@ pub fn DeviceInference(comptime T: type) type {
                 if (inputs.len == 1) {
                     const src = ir.valueTensor(inputs[0]);
                     const dst = ir.opOutputTensor(ir_op);
-                    if (self.capabilities.logsoftmax and isCanonicalRowSoftmaxInput(dst, src)) {
-                        try self.ops.append(self.alloc, logsoftmaxDeviceOp(self.buffers, dst, src, self.buffers.idx(dst), self.buffers.idx(src)));
-                        return;
+                    if (self.capabilities.logsoftmax) {
+                        if (softmaxAxis(dst, src)) |axis| {
+                            if (axis == 0 or self.capabilities.strided_softmax) {
+                                try self.ops.append(self.alloc, logsoftmaxDeviceOp(self.buffers, dst, src, self.buffers.idx(dst), self.buffers.idx(src), axis));
+                                return;
+                            }
+                        }
                     }
                 }
                 for (ir.ops[log_softmax.op_start..][0..log_softmax.op_count]) |sub_op| {
@@ -663,8 +667,9 @@ pub fn DeviceInference(comptime T: type) type {
                     },
                     .softmax => {
                         const src = src0.?;
-                        if (!isCanonicalRowSoftmaxInput(dst, src)) return error.UnsupportedDeviceOp;
-                        try self.ops.append(self.alloc, softmaxDeviceOp(self.buffers, dst, src, dst_idx, src0_idx));
+                        const axis = softmaxAxis(dst, src) orelse return error.UnsupportedDeviceOp;
+                        if (axis != 0 and !self.capabilities.strided_softmax) return error.UnsupportedDeviceOp;
+                        try self.ops.append(self.alloc, softmaxDeviceOp(self.buffers, dst, src, dst_idx, src0_idx, axis));
                     },
                     .rmsnorm => {
                         const src = src0.?;
@@ -1430,6 +1435,42 @@ pub fn DeviceInference(comptime T: type) type {
             return true;
         }
 
+        fn softmaxAxis(node: *const Tensor, src: *const Tensor) ?usize {
+            if (!node.isSameShape(src)) return null;
+            if (!node.isDenseLayout() or !src.isDenseLayout()) return null;
+            var axis: ?usize = null;
+            var dim: usize = 0;
+            while (dim < src.n_dims) : (dim += 1) {
+                if (node.reduce_ne[dim] == 1 and src.ne[dim] > 1) {
+                    if (axis != null) return null;
+                    axis = dim;
+                } else if (node.reduce_ne[dim] != src.ne[dim]) {
+                    return null;
+                }
+            }
+            while (dim < @import("tensor.zig").max_dims) : (dim += 1) {
+                if (node.reduce_ne[dim] != 1) return null;
+            }
+            return axis orelse 0;
+        }
+
+        fn softmaxGeometry(src: *const Tensor, axis: usize) ?struct { rows: u32, cols: u32, inner: u32 } {
+            if (axis >= src.n_dims) return null;
+            var inner: usize = 1;
+            var dim: usize = 0;
+            while (dim < axis) : (dim += 1) {
+                inner = std.math.mul(usize, inner, src.ne[dim]) catch return null;
+            }
+            const cols = src.ne[axis];
+            const denom = std.math.mul(usize, inner, cols) catch return null;
+            if (denom == 0 or src.nElems() % denom != 0) return null;
+            return .{
+                .rows = std.math.cast(u32, src.nElems() / denom) orelse return null,
+                .cols = std.math.cast(u32, cols) orelse return null,
+                .inner = std.math.cast(u32, inner) orelse return null,
+            };
+        }
+
         fn shape4(tensor: *const Tensor) [4]u32 {
             return .{
                 @intCast(tensor.ne[0]),
@@ -1490,23 +1531,27 @@ pub fn DeviceInference(comptime T: type) type {
             } };
         }
 
-        fn softmaxDeviceOp(buffers: *const BufferMap, node: *Tensor, src: *const Tensor, dst_idx: u16, src_idx: u16) backend_mod.DeviceOp {
+        fn softmaxDeviceOp(buffers: *const BufferMap, node: *Tensor, src: *const Tensor, dst_idx: u16, src_idx: u16, axis: usize) backend_mod.DeviceOp {
+            const geometry = softmaxGeometry(src, axis) orelse unreachable;
             return .{ .softmax = .{
                 .dst = dst_idx,
                 .src = src_idx,
-                .rows = @intCast(src.nElems() / src.ne[0]),
-                .cols = @intCast(src.ne[0]),
+                .rows = geometry.rows,
+                .cols = geometry.cols,
+                .inner = geometry.inner,
                 .src_offset = @intCast(buffers.offset(src)),
                 .dst_offset = @intCast(buffers.offset(node)),
             } };
         }
 
-        fn logsoftmaxDeviceOp(buffers: *const BufferMap, node: *Tensor, src: *const Tensor, dst_idx: u16, src_idx: u16) backend_mod.DeviceOp {
+        fn logsoftmaxDeviceOp(buffers: *const BufferMap, node: *Tensor, src: *const Tensor, dst_idx: u16, src_idx: u16, axis: usize) backend_mod.DeviceOp {
+            const geometry = softmaxGeometry(src, axis) orelse unreachable;
             return .{ .logsoftmax = .{
                 .dst = dst_idx,
                 .src = src_idx,
-                .rows = @intCast(src.nElems() / src.ne[0]),
-                .cols = @intCast(src.ne[0]),
+                .rows = geometry.rows,
+                .cols = geometry.cols,
+                .inner = geometry.inner,
                 .src_offset = @intCast(buffers.offset(src)),
                 .dst_offset = @intCast(buffers.offset(node)),
             } };
@@ -1963,6 +2008,60 @@ test "DeviceInference lowers canonical softmax" {
     try testing.expectEqual(@as(u32, 4), ops[0].softmax.cols);
     try dev.executeStep(.{ .window = try backend_mod.RuntimeWindow.init(0, 0) });
     try testing.expectEqual(@as(usize, 1), state.patch_calls);
+}
+
+test "DeviceInference lowers strided softmax when backend capability is present" {
+    var graph = ComputeGraphF32.init(testing.allocator);
+    defer graph.deinit();
+    const a = graph.allocator();
+
+    const x = try TensorF32.init(a, &.{ 3, 2 });
+    x.setData(&.{ 1, 2, 3, 4, 0, -1 });
+    const y = x.softmaxDim(1);
+    try graph.infer(y);
+
+    var out = [_]f32{0} ** 6;
+    var state = TestBackendState{};
+    var dev = try DeviceInference(f32).init(.{
+        .graph = &graph,
+        .be = testBackend(&state),
+        .alloc = testing.allocator,
+        .input_tensors = &.{x},
+        .output_tensor = y,
+        .output_host_buf = &out,
+        .output_len = out.len,
+    });
+    defer dev.deinit();
+
+    const ops = state.compiled_ops;
+    try testing.expectEqual(@as(usize, 1), state.compile_calls);
+    try testing.expectEqual(@as(usize, 1), ops.len);
+    try testing.expectEqual(backend_mod.DeviceOp.softmax, std.meta.activeTag(ops[0]));
+    try testing.expectEqual(@as(u32, 1), ops[0].softmax.rows);
+    try testing.expectEqual(@as(u32, 2), ops[0].softmax.cols);
+    try testing.expectEqual(@as(u32, 3), ops[0].softmax.inner);
+}
+
+test "DeviceInference rejects strided softmax without backend capability" {
+    const DeviceF32 = DeviceInference(f32);
+    var graph = ComputeGraphF32.init(testing.allocator);
+    defer graph.deinit();
+    const a = graph.allocator();
+
+    const x = try TensorF32.init(a, &.{ 3, 2 });
+    x.setData(&.{ 1, 2, 3, 4, 0, -1 });
+    const y = x.softmaxDim(1);
+    try graph.infer(y);
+
+    var state = TestBackendState{};
+    try testing.expectError(error.UnsupportedDeviceOp, DeviceF32.Program.compile(.{
+        .graph = &graph,
+        .be = testBackendForDevice(&state, .metal),
+        .alloc = testing.allocator,
+        .input_tensors = &.{x},
+        .output_tensors = &.{y},
+    }));
+    try testing.expectEqual(@as(usize, 0), state.compile_calls);
 }
 
 test "DeviceInference inspection reports node-only TensorProgramIr shape" {

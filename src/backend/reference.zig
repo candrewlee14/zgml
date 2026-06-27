@@ -774,6 +774,33 @@ const Context = struct {
         const src = self.bufF32(s.src);
         const dst = self.bufF32(s.dst);
         const cols: usize = s.cols;
+        const inner: usize = s.inner;
+        if (inner != 1) {
+            for (0..@as(usize, s.rows)) |row| {
+                const row_base: usize = @as(usize, s.src_offset) + row * cols * inner;
+                const dst_base: usize = @as(usize, s.dst_offset) + row * cols * inner;
+                for (0..inner) |lane| {
+                    var max_v: f32 = -std.math.inf(f32);
+                    var col: usize = 0;
+                    while (col < cols) : (col += 1) {
+                        max_v = @max(max_v, src[row_base + col * inner + lane]);
+                    }
+                    var sum: f32 = 0;
+                    col = 0;
+                    while (col < cols) : (col += 1) {
+                        const value = @exp(src[row_base + col * inner + lane] - max_v);
+                        dst[dst_base + col * inner + lane] = value;
+                        sum += value;
+                    }
+                    const inv = if (sum > 0.0) 1.0 / sum else 0.0;
+                    col = 0;
+                    while (col < cols) : (col += 1) {
+                        dst[dst_base + col * inner + lane] *= inv;
+                    }
+                }
+            }
+            return;
+        }
         const VecT = @Vector(V, f32);
         for (0..@as(usize, s.rows)) |row| {
             const sb: usize = @as(usize, s.src_offset) + row * cols;
@@ -816,6 +843,31 @@ const Context = struct {
         const src = self.bufF32(s.src);
         const dst = self.bufF32(s.dst);
         const cols: usize = s.cols;
+        const inner: usize = s.inner;
+        if (inner != 1) {
+            for (0..@as(usize, s.rows)) |row| {
+                const row_base: usize = @as(usize, s.src_offset) + row * cols * inner;
+                const dst_base: usize = @as(usize, s.dst_offset) + row * cols * inner;
+                for (0..inner) |lane| {
+                    var max_v: f32 = -std.math.inf(f32);
+                    var col: usize = 0;
+                    while (col < cols) : (col += 1) {
+                        max_v = @max(max_v, src[row_base + col * inner + lane]);
+                    }
+                    var sum: f32 = 0;
+                    col = 0;
+                    while (col < cols) : (col += 1) {
+                        sum += @exp(src[row_base + col * inner + lane] - max_v);
+                    }
+                    const log_denom = max_v + @log(sum);
+                    col = 0;
+                    while (col < cols) : (col += 1) {
+                        dst[dst_base + col * inner + lane] = src[row_base + col * inner + lane] - log_denom;
+                    }
+                }
+            }
+            return;
+        }
         const VecT = @Vector(V, f32);
         for (0..@as(usize, s.rows)) |row| {
             const sb: usize = @as(usize, s.src_offset) + row * cols;
@@ -2092,6 +2144,44 @@ test "reference executor vector row softmax and logsoftmax handle full vector ch
             try std.testing.expectApproxEqAbs(src[base + col] - log_denom, logsoftmax_dst[base + col], 1e-6);
         }
         try std.testing.expectApproxEqAbs(@as(f32, 1.0), softmax_sum, 1e-6);
+    }
+}
+
+test "reference executor strided softmax and logsoftmax normalize inner lanes" {
+    var src = [_]f32{ 1, 2, 3, 4, 0, -1 };
+    var softmax_dst = [_]f32{9} ** 6;
+    var logsoftmax_dst = [_]f32{9} ** 6;
+    const buffers = [_]Buffer{
+        .{ .ptr = &src, .len = src.len },
+        .{ .ptr = &softmax_dst, .len = softmax_dst.len },
+        .{ .ptr = &logsoftmax_dst, .len = logsoftmax_dst.len },
+    };
+
+    executeOp(&buffers, &.{}, .{ .softmax = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 1,
+        .cols = 2,
+        .inner = 3,
+    } });
+    executeOp(&buffers, &.{}, .{ .logsoftmax = .{
+        .dst = 2,
+        .src = 0,
+        .rows = 1,
+        .cols = 2,
+        .inner = 3,
+    } });
+
+    for (0..3) |lane| {
+        const a = src[lane];
+        const b = src[3 + lane];
+        const max_value = @max(a, b);
+        const denom = @exp(a - max_value) + @exp(b - max_value);
+        const log_denom = max_value + @log(denom);
+        try std.testing.expectApproxEqAbs(@exp(a - max_value) / denom, softmax_dst[lane], 1e-6);
+        try std.testing.expectApproxEqAbs(@exp(b - max_value) / denom, softmax_dst[3 + lane], 1e-6);
+        try std.testing.expectApproxEqAbs(a - log_denom, logsoftmax_dst[lane], 1e-6);
+        try std.testing.expectApproxEqAbs(b - log_denom, logsoftmax_dst[3 + lane], 1e-6);
     }
 }
 

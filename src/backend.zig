@@ -20,6 +20,7 @@ pub const Capabilities = struct {
     runtime_qweights: bool = false,
     softmax: bool = false,
     logsoftmax: bool = false,
+    strided_softmax: bool = false,
     layernorm: bool = false,
     rmsnorm: bool = false,
     reduce: bool = false,
@@ -55,6 +56,7 @@ pub const Capabilities = struct {
         .runtime_qweights = true,
         .softmax = true,
         .logsoftmax = true,
+        .strided_softmax = true,
         .layernorm = true,
         .rmsnorm = true,
         .reduce = true,
@@ -134,8 +136,8 @@ pub const Capabilities = struct {
             .elementwise => |e| self.elementwise and self.supportsElementwiseOp(e.op),
             .matmul => self.dense_matmul_f32,
             .qmatmul => self.qmatmul,
-            .softmax => self.softmax,
-            .logsoftmax => self.logsoftmax,
+            .softmax => |s| self.softmax and (s.inner == 1 or self.strided_softmax),
+            .logsoftmax => |s| self.logsoftmax and (s.inner == 1 or self.strided_softmax),
             .layernorm => self.layernorm,
             .rmsnorm => self.rmsnorm,
             .repeat => self.repeat,
@@ -212,8 +214,8 @@ pub const DeviceOp = union(enum) {
         dst_offset: u32 = 0,
         dst_row_stride: u32 = 0,
     },
-    softmax: struct { dst: u16, src: u16, rows: u32, cols: u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
-    logsoftmax: struct { dst: u16, src: u16, rows: u32, cols: u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
+    softmax: struct { dst: u16, src: u16, rows: u32, cols: u32, inner: u32 = 1, src_offset: u32 = 0, dst_offset: u32 = 0 },
+    logsoftmax: struct { dst: u16, src: u16, rows: u32, cols: u32, inner: u32 = 1, src_offset: u32 = 0, dst_offset: u32 = 0 },
     layernorm: struct { dst: u16, src: u16, rows: u32, cols: u32, eps: f32 = 1e-5, src_offset: u32 = 0, dst_offset: u32 = 0 },
     rmsnorm: struct { dst: u16, src: u16, rows: u32, cols: u32, eps: f32 = 1e-5, src_offset: u32 = 0, dst_offset: u32 = 0 },
     reduce: struct { op: Op, dst: u16, src: u16, n_out: u32, reduce_size: u32, src_offset: u32 = 0, dst_offset: u32 = 0 },
@@ -552,12 +554,22 @@ pub const DeviceProgram = struct {
             .qmatmul => |q| self.hasBuffer(q.dst) and self.hasBuffer(q.input) and
                 self.strided2Fits(q.input, q.input_offset, @intCast(q.M), @intCast(q.K), if (q.input_row_stride != 0) @intCast(q.input_row_stride) else @intCast(q.K), 1) and
                 self.strided2Fits(q.dst, q.dst_offset, @intCast(q.M), @intCast(q.N), if (q.dst_row_stride != 0) @intCast(q.dst_row_stride) else @intCast(q.N), 1),
-            .softmax => |s| self.hasBuffer(s.dst) and self.hasBuffer(s.src) and
-                self.dense2Fits(s.src, s.src_offset, @intCast(s.rows), @intCast(s.cols)) and
-                self.dense2Fits(s.dst, s.dst_offset, @intCast(s.rows), @intCast(s.cols)),
-            .logsoftmax => |s| self.hasBuffer(s.dst) and self.hasBuffer(s.src) and
-                self.dense2Fits(s.src, s.src_offset, @intCast(s.rows), @intCast(s.cols)) and
-                self.dense2Fits(s.dst, s.dst_offset, @intCast(s.rows), @intCast(s.cols)),
+            .softmax => |s| blk: {
+                if (s.rows == 0 or s.cols == 0 or s.inner == 0) break :blk false;
+                const row_elems = std.math.mul(usize, @as(usize, s.cols), @as(usize, s.inner)) catch break :blk false;
+                const total = std.math.mul(usize, @as(usize, s.rows), row_elems) catch break :blk false;
+                break :blk self.hasBuffer(s.dst) and self.hasBuffer(s.src) and
+                    self.rangeFits(s.src, s.src_offset, total) and
+                    self.rangeFits(s.dst, s.dst_offset, total);
+            },
+            .logsoftmax => |s| blk: {
+                if (s.rows == 0 or s.cols == 0 or s.inner == 0) break :blk false;
+                const row_elems = std.math.mul(usize, @as(usize, s.cols), @as(usize, s.inner)) catch break :blk false;
+                const total = std.math.mul(usize, @as(usize, s.rows), row_elems) catch break :blk false;
+                break :blk self.hasBuffer(s.dst) and self.hasBuffer(s.src) and
+                    self.rangeFits(s.src, s.src_offset, total) and
+                    self.rangeFits(s.dst, s.dst_offset, total);
+            },
             .layernorm => |l| self.hasBuffer(l.dst) and self.hasBuffer(l.src) and
                 self.dense2Fits(l.src, l.src_offset, @intCast(l.rows), @intCast(l.cols)) and
                 self.dense2Fits(l.dst, l.dst_offset, @intCast(l.rows), @intCast(l.cols)),
@@ -994,6 +1006,22 @@ test "webgpu compile-only capabilities do not claim execution" {
     try std.testing.expect(Capabilities.webgpu_resource_plan.external_resources);
     try std.testing.expect(Capabilities.webgpu_resource_plan.qmatmul);
     try std.testing.expect(Capabilities.webgpu_resource_plan.attention.supported);
+}
+
+test "strided softmax capability is CPU-only until accelerator kernels exist" {
+    const row_softmax = DeviceOp{ .softmax = .{ .dst = 1, .src = 0, .rows = 1, .cols = 4 } };
+    const strided_softmax = DeviceOp{ .softmax = .{ .dst = 1, .src = 0, .rows = 1, .cols = 2, .inner = 3 } };
+    const strided_logsoftmax = DeviceOp{ .logsoftmax = .{ .dst = 1, .src = 0, .rows = 1, .cols = 2, .inner = 3 } };
+
+    try std.testing.expect(Capabilities.reference_cpu.supportsOp(row_softmax));
+    try std.testing.expect(Capabilities.reference_cpu.supportsOp(strided_softmax));
+    try std.testing.expect(Capabilities.reference_cpu.supportsOp(strided_logsoftmax));
+    try std.testing.expect(Capabilities.metal.supportsOp(row_softmax));
+    try std.testing.expect(Capabilities.webgpu.supportsOp(row_softmax));
+    try std.testing.expect(!Capabilities.metal.supportsOp(strided_softmax));
+    try std.testing.expect(!Capabilities.webgpu.supportsOp(strided_softmax));
+    try std.testing.expect(!Capabilities.metal.supportsOp(strided_logsoftmax));
+    try std.testing.expect(!Capabilities.webgpu.supportsOp(strided_logsoftmax));
 }
 
 test "program support validates capabilities and qweight descriptors" {

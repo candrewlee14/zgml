@@ -3719,9 +3719,13 @@ Current frontend slice:
 	  with different descriptor offsets produce different IR and KernelPlan
 	  signatures before module binding, and it proves frontend `softmax(0)` and
 	  `logSoftmax(0)` ops keep explicit transpose + row-softmax + transpose
-	  descriptor evidence until the backend grows true strided/grouped softmax,
-	  while still deriving canonical compiler signatures without private native
-	  descriptors. Module
+	  descriptor evidence until backend-aware planning can distinguish CPU
+	  strided/grouped softmax from row-only accelerator kernels, while still
+	  deriving canonical compiler signatures without private native descriptors.
+	  The native Program substrate now has a CPU/reference `inner` geometry for
+	  direct strided/grouped `softmax` and `logSoftmax` execution through the C
+	  ABI, and Metal/WebGPU capability plus dispatch-plan tests keep accelerator
+	  evidence row-only until matching kernels exist. Module
 	  `min(dim)` now has the same single-op KernelPlan contract as sum/mean/max
 	  on the native reduction axis, with batch-axis lowering kept to
 	  transpose + min + transpose instead of transpose + neg + max + neg +

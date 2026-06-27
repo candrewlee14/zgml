@@ -8838,6 +8838,102 @@ test "C ABI module program compiles traced sequential ops" {
     }
 
     {
+        const direct_batch_softmax_input_shape = [_]usize{ 2, 2 };
+        const direct_batch_softmax_ops = [_]zgml_module_op_desc{.{
+            .kind = module_op_softmax,
+            .a = 1,
+        }};
+        var direct_batch_softmax_program: ?*zgml_program = null;
+        var direct_batch_softmax_session: ?*zgml_session = null;
+        defer zgml_session_free(direct_batch_softmax_session);
+        defer zgml_program_free(direct_batch_softmax_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = direct_batch_softmax_input_shape[0..].ptr,
+            .input_rank = direct_batch_softmax_input_shape.len,
+            .ops = direct_batch_softmax_ops[0..].ptr,
+            .op_count = direct_batch_softmax_ops.len,
+        }, &.{ .backend = backend_cpu }, &direct_batch_softmax_program));
+        try std.testing.expect(direct_batch_softmax_program != null);
+
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(direct_batch_softmax_program, &.{
+            .weights = null,
+            .weights_len = 0,
+        }, &direct_batch_softmax_session));
+        try std.testing.expect(direct_batch_softmax_session != null);
+
+        const direct_batch_softmax_input = [_]f32{ 1, 2, 3, 1 };
+        var direct_batch_softmax_output = [_]f32{0} ** 4;
+        result = .{};
+        try std.testing.expectEqual(status(.ok), zgml_session_step(direct_batch_softmax_session, &.{
+            .input = direct_batch_softmax_input[0..].ptr,
+            .input_len = direct_batch_softmax_input.len,
+            .output = direct_batch_softmax_output[0..].ptr,
+            .output_len = direct_batch_softmax_output.len,
+        }, &result));
+        try std.testing.expectEqual(@as(usize, 4), result.output_len);
+        const col0_den = @exp(@as(f32, 1)) + @exp(@as(f32, 3));
+        const col1_den = @exp(@as(f32, 2)) + @exp(@as(f32, 1));
+        const direct_batch_softmax_expected = [_]f32{
+            @exp(@as(f32, 1)) / col0_den,
+            @exp(@as(f32, 2)) / col1_den,
+            @exp(@as(f32, 3)) / col0_den,
+            @exp(@as(f32, 1)) / col1_den,
+        };
+        for (direct_batch_softmax_output, direct_batch_softmax_expected) |actual, want| {
+            try std.testing.expectApproxEqAbs(want, actual, 1e-6);
+        }
+    }
+
+    {
+        const direct_batch_logsoftmax_input_shape = [_]usize{ 2, 2 };
+        const direct_batch_logsoftmax_ops = [_]zgml_module_op_desc{.{
+            .kind = module_op_log_softmax,
+            .a = 1,
+        }};
+        var direct_batch_logsoftmax_program: ?*zgml_program = null;
+        var direct_batch_logsoftmax_session: ?*zgml_session = null;
+        defer zgml_session_free(direct_batch_logsoftmax_session);
+        defer zgml_program_free(direct_batch_logsoftmax_program);
+
+        try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
+            .input_shape = direct_batch_logsoftmax_input_shape[0..].ptr,
+            .input_rank = direct_batch_logsoftmax_input_shape.len,
+            .ops = direct_batch_logsoftmax_ops[0..].ptr,
+            .op_count = direct_batch_logsoftmax_ops.len,
+        }, &.{ .backend = backend_cpu }, &direct_batch_logsoftmax_program));
+        try std.testing.expect(direct_batch_logsoftmax_program != null);
+
+        try std.testing.expectEqual(status(.ok), zgml_session_bind(direct_batch_logsoftmax_program, &.{
+            .weights = null,
+            .weights_len = 0,
+        }, &direct_batch_logsoftmax_session));
+        try std.testing.expect(direct_batch_logsoftmax_session != null);
+
+        const direct_batch_logsoftmax_input = [_]f32{ 1, 2, 3, 1 };
+        var direct_batch_logsoftmax_output = [_]f32{0} ** 4;
+        result = .{};
+        try std.testing.expectEqual(status(.ok), zgml_session_step(direct_batch_logsoftmax_session, &.{
+            .input = direct_batch_logsoftmax_input[0..].ptr,
+            .input_len = direct_batch_logsoftmax_input.len,
+            .output = direct_batch_logsoftmax_output[0..].ptr,
+            .output_len = direct_batch_logsoftmax_output.len,
+        }, &result));
+        try std.testing.expectEqual(@as(usize, 4), result.output_len);
+        const col0_log_den = @log(@exp(@as(f32, 1)) + @exp(@as(f32, 3)));
+        const col1_log_den = @log(@exp(@as(f32, 2)) + @exp(@as(f32, 1)));
+        const direct_batch_logsoftmax_expected = [_]f32{
+            @as(f32, 1) - col0_log_den,
+            @as(f32, 2) - col1_log_den,
+            @as(f32, 3) - col0_log_den,
+            @as(f32, 1) - col1_log_den,
+        };
+        for (direct_batch_logsoftmax_output, direct_batch_logsoftmax_expected) |actual, want| {
+            try std.testing.expectApproxEqAbs(want, actual, 1e-6);
+        }
+    }
+
+    {
         const narrow_input_shape = [_]usize{4};
         const narrow_ops = [_]zgml_module_op_desc{.{
             .kind = module_op_narrow,

@@ -6426,6 +6426,7 @@ fn detectSoftmax(program: backend_mod.DeviceProgram) ?SoftmaxShape {
         .softmax => |s| s,
         else => return null,
     };
+    if (soft.inner != 1) return null;
     if (soft.rows == 0 or soft.cols == 0) return null;
     _ = std.math.mul(u32, soft.rows, soft.cols) catch return null;
     _ = program.buffer_sizes[soft.src];
@@ -6446,6 +6447,7 @@ fn detectLogSoftmax(program: backend_mod.DeviceProgram) ?SoftmaxShape {
         .logsoftmax => |s| s,
         else => return null,
     };
+    if (soft.inner != 1) return null;
     if (soft.rows == 0 or soft.cols == 0) return null;
     _ = std.math.mul(u32, soft.rows, soft.cols) catch return null;
     _ = program.buffer_sizes[soft.src];
@@ -11569,6 +11571,21 @@ test "wgpu executable capabilities remain shape-aware" {
     };
     try std.testing.expect(be.supportsProgram(softmax_program));
 
+    const strided_softmax_ops = [_]backend_mod.DeviceOp{.{ .softmax = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 1,
+        .cols = 2,
+        .inner = 3,
+    } }};
+    const strided_softmax_program = backend_mod.DeviceProgram{
+        .ops = &strided_softmax_ops,
+        .n_buffers = 2,
+        .buffer_sizes = &.{ 6, 6 },
+        .initial_uploads = &.{},
+    };
+    try std.testing.expect(!be.supportsProgram(strided_softmax_program));
+
     const logsoftmax_ops = [_]backend_mod.DeviceOp{.{ .logsoftmax = .{
         .dst = 1,
         .src = 0,
@@ -11582,6 +11599,21 @@ test "wgpu executable capabilities remain shape-aware" {
         .initial_uploads = &.{},
     };
     try std.testing.expect(be.supportsProgram(logsoftmax_program));
+
+    const strided_logsoftmax_ops = [_]backend_mod.DeviceOp{.{ .logsoftmax = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 1,
+        .cols = 2,
+        .inner = 3,
+    } }};
+    const strided_logsoftmax_program = backend_mod.DeviceProgram{
+        .ops = &strided_logsoftmax_ops,
+        .n_buffers = 2,
+        .buffer_sizes = &.{ 6, 6 },
+        .initial_uploads = &.{},
+    };
+    try std.testing.expect(!be.supportsProgram(strided_logsoftmax_program));
 
     const reduce_ops = [_]backend_mod.DeviceOp{.{ .reduce = .{
         .op = .sum,

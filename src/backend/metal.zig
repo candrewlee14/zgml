@@ -5332,19 +5332,25 @@ fn computeDispatchSpec(op: backend_mod.DeviceOp) ?ComputeDispatchSpec {
                 .grid = .{ .gx = linearGrid(e.n) },
             };
         },
-        .softmax => |s| return .{
-            .params = rowComputeParams(compute_op_softmax, s.rows, s.cols, s.src_offset, s.dst_offset),
-            .src0 = s.src,
-            .src1 = s.src,
-            .dst = s.dst,
-            .grid = .{ .gx = linearGrid(s.rows) },
+        .softmax => |s| {
+            if (s.inner != 1) return null;
+            return .{
+                .params = rowComputeParams(compute_op_softmax, s.rows, s.cols, s.src_offset, s.dst_offset),
+                .src0 = s.src,
+                .src1 = s.src,
+                .dst = s.dst,
+                .grid = .{ .gx = linearGrid(s.rows) },
+            };
         },
-        .logsoftmax => |s| return .{
-            .params = rowComputeParams(compute_op_logsoftmax, s.rows, s.cols, s.src_offset, s.dst_offset),
-            .src0 = s.src,
-            .src1 = s.src,
-            .dst = s.dst,
-            .grid = .{ .gx = linearGrid(s.rows) },
+        .logsoftmax => |s| {
+            if (s.inner != 1) return null;
+            return .{
+                .params = rowComputeParams(compute_op_logsoftmax, s.rows, s.cols, s.src_offset, s.dst_offset),
+                .src0 = s.src,
+                .src1 = s.src,
+                .dst = s.dst,
+                .grid = .{ .gx = linearGrid(s.rows) },
+            };
         },
         .layernorm => |l| return .{
             .params = epsilonRowComputeParams(compute_op_layernorm, l.rows, l.cols, l.eps, l.src_offset, l.dst_offset),
