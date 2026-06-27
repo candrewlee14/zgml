@@ -88,7 +88,11 @@ const explanation = fast.explain();
 const preflight = fast.preflight();
 const kernelPlan = fast.kernelPlan();
 const compilerSignatures = fast.compilerSignatures();
+const executionPlan = fast.requireExecutionPlan();
 if (
+  fast.native !== true ||
+  executionPlan.canExecute !== true ||
+  executionPlan.executionMode !== "executable" ||
   support.supported !== true ||
   explanation.supported !== true ||
   preflight.supported !== true ||
@@ -99,7 +103,7 @@ if (
   kernelPlan.ops[0]?.nativeKernels?.join("|") !== "linear|relu" ||
   compilerSignatures?.kernelPlan !== kernelPlan.signature
 ) {
-  throw new Error(`expected compileForInference to expose executable proof: ${JSON.stringify({ support, explanation, preflight, kernelPlan, compilerSignatures })}`);
+  throw new Error(`expected compileForInference to expose native executable proof: ${JSON.stringify({ executionPlan, support, explanation, preflight, kernelPlan, compilerSignatures })}`);
 }
 const compiled = fast.forward(probe);
 const output = new Float32Array(1);

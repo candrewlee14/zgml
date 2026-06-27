@@ -182,6 +182,7 @@ type TensorMethodSource = Readonly<Record<string, unknown>>;
 type AdapterCompileNamespaceOptions = Readonly<{
   traceSequentialProgram: (...args: any[]) => unknown;
   analyzeSequentialProgram: (...args: any[]) => unknown;
+  SequentialModule?: new (first?: readonly unknown[] | unknown, ...rest: readonly unknown[]) => unknown;
   compileModuleProgram?: (spec: unknown, compileOptions?: unknown) => unknown;
   trainingStep?: (model: unknown, optimizer: unknown, options?: UnknownRecord) => unknown;
 }>;
@@ -629,6 +630,14 @@ function looksLikeLazyTensor(target: unknown) {
 }
 
 export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOptions) {
+  function moduleTarget(target: unknown, name: string) {
+    if (!Array.isArray(target)) return target;
+    if (typeof options.SequentialModule !== "function") {
+      throw new Error(`compile.${name} requires nn.Sequential for raw layer lists`);
+    }
+    return new options.SequentialModule(target);
+  }
+
   function trace(target: unknown, compileOptions: CompileNamespaceOptions = {}) {
     const method = compileTargetMethod(target, "trace");
     if (method) return method(compileOptions);
@@ -771,14 +780,7 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
 
   function compile(target: unknown, compileOptions: CompileNamespaceOptions = {}) {
     if (Array.isArray(target)) {
-      return Object.freeze({
-        supported: false,
-        reason: "layer-list-compile-requires-nn.Sequential",
-        diagnostic: Object.freeze({
-          code: "layer-list-compile-requires-sequential",
-          message: "compile.compile requires an nn module with compile(); wrap layer lists in nn.Sequential",
-        }),
-      });
+      return compile(moduleTarget(target, "compile"), compileOptions);
     }
     if (looksLikeLazyTensor(target)) {
       const compiled = compileLazyTarget(target, compileOptions, true);
@@ -804,9 +806,17 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       session.dispose();
       program.dispose();
     };
+    const executionPlan = program.requireExecutionPlan();
     return Object.freeze({
+      native: true,
       program,
       session,
+      executionPlan() {
+        return executionPlan;
+      },
+      requireExecutionPlan() {
+        return executionPlan;
+      },
       forward(input: unknown) {
         return session.stepTensor(input);
       },
@@ -852,18 +862,19 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
   }
 
   function compileForInference(target: unknown, compileOptions: CompileNamespaceOptions = {}, bindOptions?: unknown) {
-    if (Array.isArray(target)) {
-      throw new Error("compile.compileForInference requires a module; wrap layer lists in nn.Sequential");
-    }
-    const program = compile(target, compileOptions);
+    const module = moduleTarget(target, "compileForInference");
+    const program = compile(module, compileOptions);
     if (!program || typeof program !== "object") {
       throw new Error("compile.compileForInference expected compile() to return a Program");
     }
+    if (typeof (program as Record<string, any>).requireExecutionPlan !== "function") {
+      throw new Error("compile.compileForInference requires a native executable Program; use compile.explain for diagnostics-only targets");
+    }
     const bindModule = (program as Record<string, any>).bindModule;
     const bind = (program as Record<string, any>).bind;
-    const targetCanPlaceModuleParameters = target != null && typeof target === "object" && typeof (target as Record<string, any>).placeParameters === "function";
+    const targetCanPlaceModuleParameters = module != null && typeof module === "object" && typeof (module as Record<string, any>).placeParameters === "function";
     const session = typeof bindModule === "function" && targetCanPlaceModuleParameters
-      ? bindModule.call(program, target, bindOptions)
+      ? bindModule.call(program, module, bindOptions)
       : typeof bind === "function" && bindOptions != null
         ? bind.call(program, bindOptions)
         : null;
@@ -873,7 +884,7 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     return compiledInferenceHandle(
       program as Record<string, any>,
       session as Record<string, any>,
-      target,
+      module,
       compileOptions,
     );
   }

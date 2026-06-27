@@ -2651,6 +2651,7 @@ export const F = publicNamespaces.nn.F;
 export const compile = createAdapterCompileNamespace({
   traceSequentialProgram,
   analyzeSequentialProgram,
+  SequentialModule,
   compileModuleProgram,
   trainingStep: nativeTraining.trainingStep,
 });

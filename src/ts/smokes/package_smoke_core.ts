@@ -4679,7 +4679,11 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const inferenceSupport = inference.compileSupport();
     const inferenceExplanation = inference.explain();
     const inferencePreflight = inference.preflight();
+    const inferenceExecutionPlan = inference.requireExecutionPlan();
     if (
+      inference.native !== true ||
+      inferenceExecutionPlan.canExecute !== true ||
+      inferenceExecutionPlan.executionMode !== "executable" ||
       inferenceSupport.supported !== true ||
       inferenceExplanation.supported !== true ||
       inferencePreflight.supported !== true ||
@@ -4708,6 +4712,43 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     expectClose(preparedCarrier, [-0.5], `${label} compileForInference prepareInto`);
   } finally {
     inference.dispose();
+  }
+  const zgmlNativeRun = adapter.zgml.native(inferenceModel, { backend: "cpu", inputShape: [2] });
+  try {
+    const plan = zgmlNativeRun.requireExecutionPlan();
+    if (
+      zgmlNativeRun.native !== true ||
+      plan.canExecute !== true ||
+      plan.executionMode !== "executable" ||
+      zgmlNativeRun.program.inputLen() !== 2 ||
+      zgmlNativeRun.session.outputLen() !== 1
+    ) {
+      throw new Error(`${label} zgml.native expected native executable Program/Session handle`);
+    }
+    expectClose(zgmlNativeRun.forward(inferenceInput).data, [-0.5], `${label} zgml.native forward`);
+    const zgmlNativeCarrier = new Float32Array(1);
+    if (zgmlNativeRun.into(zgmlNativeCarrier, inferenceInput) !== zgmlNativeCarrier) {
+      throw new Error(`${label} zgml.native expected into to reuse caller output`);
+    }
+    expectClose(zgmlNativeCarrier, [-0.5], `${label} zgml.native into`);
+  } finally {
+    zgmlNativeRun.dispose();
+  }
+  const rawLayerNativeRun = adapter.zgml.native([inferenceModel], { backend: "cpu", inputShape: [2] });
+  try {
+    const plan = rawLayerNativeRun.requireExecutionPlan();
+    if (
+      rawLayerNativeRun.native !== true ||
+      plan.canExecute !== true ||
+      plan.executionMode !== "executable" ||
+      rawLayerNativeRun.program.inputLen() !== 2 ||
+      rawLayerNativeRun.session.outputLen() !== 1
+    ) {
+      throw new Error(`${label} zgml.native raw layer list expected native executable Program/Session handle`);
+    }
+    expectClose(rawLayerNativeRun.forward(inferenceInput).data, [-0.5], `${label} zgml.native raw layer list forward`);
+  } finally {
+    rawLayerNativeRun.dispose();
   }
   const nativeInference = adapter.nn.native(inferenceModel, { backend: "cpu", inputShape: [2] });
   try {

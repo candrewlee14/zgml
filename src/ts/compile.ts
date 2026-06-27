@@ -63,6 +63,7 @@ import type {
   NnModule,
   Program,
   ProgramBindings,
+  ProgramExecutionPlan,
   ProgramInputBinding,
   Session,
   TensorShapeTuple,
@@ -529,9 +530,17 @@ function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShap
     session.dispose();
     program.dispose();
   };
+  const executionPlan = program.requireExecutionPlan() as ProgramExecutionPlan<InputShape, OutputShape>;
   return Object.freeze({
+    native: true,
     program,
     session,
+    executionPlan() {
+      return executionPlan;
+    },
+    requireExecutionPlan() {
+      return executionPlan;
+    },
     explain() {
       return explain(target, options) as ModuleCompileExplanation<InputShape, OutputShape> | ModuleCompileSupport<InputShape, OutputShape>;
     },
@@ -604,6 +613,9 @@ export function compileForInference(target: unknown, options: CompileNamespaceOp
   const program = compile(target, options);
   if (!program || typeof program !== "object") {
     throw new Error("compile.compileForInference expected compile() to return a Program");
+  }
+  if (typeof (program as { requireExecutionPlan?: unknown }).requireExecutionPlan !== "function") {
+    throw new Error("compile.compileForInference requires a native executable Program; use compile.explain for diagnostics-only targets");
   }
   const bindModule = (program as { bindModule?: unknown }).bindModule;
   const bind = (program as { bind?: unknown }).bind;

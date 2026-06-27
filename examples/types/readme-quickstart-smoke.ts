@@ -12,8 +12,11 @@ import {
   torch,
   train,
   zgml,
+  type CompiledInference,
+  type Program,
   type SessionExecutionPlan,
   type SessionStepParamsCompatibility,
+  type Session,
   type Tensor,
 } from "zgml";
 import {
@@ -56,8 +59,12 @@ const zgmlFit = zgml.train.fit(zgmlModel, zgmlLoader, {
 const zgmlSnapshot = zgml.checkpoint.create({ model: zgmlModel, optimizer: zgmlOptimizer, scheduler: zgmlScheduler, prefix: "zgml" });
 const zgmlFast = zgml.native(zgmlModel, { inputShape: [2] as const });
 const zgmlFastAlias = zgml.compileInference(zgmlModel, { inputShape: [2] as const });
+const zgmlFastTyped: CompiledInference<readonly [2], readonly [1]> = zgmlFast;
+const zgmlFastProgram: Program<readonly [2], readonly [1]> = zgmlFast.program;
+const zgmlFastSession: Session<readonly [2], readonly [1]> = zgmlFast.session;
 const zgmlFastProof = zgmlFast.explain();
 const zgmlFastSupport = zgmlFast.compileSupport();
+const zgmlFastForward: Tensor<readonly [1]> = zgmlFast.forward(zgml.tensor([1, 0], [2] as const));
 const zgmlFastOut = zgmlFast.into(new Float32Array(1), zgml.tensor([1, 0], [2] as const));
 zgmlFast.dispose();
 zgmlFastAlias.dispose();
@@ -65,6 +72,10 @@ void zgmlFit;
 void zgmlSnapshot;
 void zgmlFastProof;
 void zgmlFastSupport;
+void zgmlFastTyped;
+void zgmlFastProgram;
+void zgmlFastSession;
+void zgmlFastForward;
 void zgmlFastOut;
 
 const torchModel = new torch.nn.Sequential(

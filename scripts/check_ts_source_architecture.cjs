@@ -9776,8 +9776,11 @@ function checkConcreteFfiRuntimesAvoidLegacySharedFrontend(errors) {
     "options.sharedFrontend.createOptimNamespace({",
     "options.sharedFrontend.createCheckpointHelpers({",
     "options.sharedFrontend.createDataNamespace({",
+    "SequentialModule?: new (first?: readonly unknown[] | unknown, ...rest: readonly unknown[]) => unknown;",
+    "function moduleTarget(target: unknown, name: string)",
+    "return new options.SequentialModule(target);",
     "const bind = (program as Record<string, any>).bind",
-    "const targetCanPlaceModuleParameters = target != null && typeof target === \"object\" && typeof (target as Record<string, any>).placeParameters === \"function\"",
+    "const targetCanPlaceModuleParameters = module != null && typeof module === \"object\" && typeof (module as Record<string, any>).placeParameters === \"function\"",
     "bind.call(program, bindOptions)",
     "compile.compileForInference expected bindModule() or explicit Program bindings to return a Session",
   ]) {

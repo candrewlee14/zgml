@@ -6836,8 +6836,11 @@ export type ProgramHostBinding<Shape extends TensorShapeTuple = TensorShapeTuple
 export type ProgramInputBinding<Shape extends TensorShapeTuple = TensorShapeTuple> = TensorLike<Shape> | Uint32Array | Int32Array;
 export type ProgramOutputBinding<Shape extends TensorShapeTuple = TensorShapeTuple> = Tensor<Shape> | Float32Array | NativeBuffer;
 export type CompiledInference<InputShape extends TensorShapeTuple = TensorShapeTuple, OutputShape extends TensorShapeTuple = TensorShapeTuple> = Readonly<{
+  native: true;
   program: Program<InputShape, OutputShape>;
   session: Session<InputShape, OutputShape>;
+  executionPlan(): ProgramExecutionPlan<InputShape, OutputShape>;
+  requireExecutionPlan(): ProgramExecutionPlan<InputShape, OutputShape>;
   explain(): ModuleCompileExplanation<InputShape, OutputShape> | ModuleCompileSupport<InputShape, OutputShape>;
   preflight(): ModuleCompileExplanation<InputShape, OutputShape> | ModuleCompileSupport<InputShape, OutputShape>;
   compileSupport(): ModuleCompileSupport<InputShape, OutputShape>;

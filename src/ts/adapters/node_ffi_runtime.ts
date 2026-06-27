@@ -1304,6 +1304,7 @@ const F = nn.F;
 const compile = createAdapterCompileNamespace({
   traceSequentialProgram,
   analyzeSequentialProgram,
+  SequentialModule,
   compileModuleProgram,
   trainingStep: nativeTraining.trainingStep,
 });
