@@ -2019,6 +2019,17 @@ lane to `2.13x` versus the retained `~2.31x` evidence and was reverted; the
 restored per-output-tile finalize path produced fresh checked bridge evidence at
 `3.04x`. Do not rechase this finalize spelling until a new design proves both
 bridge and full-model Q8 prompt stability.
+A June 27, 2026 width-partial postprocess probe then tried adding a
+`ROW_CHAIN_TILE * ROW_CHAIN_TILE` threadgroup `tSS` array so all 512 threads
+could participate in the post-MMA elementwise/RMS partial pass instead of
+leaving that tile pass to the first 32 threads. It compiled and kept
+input-bridge correctness, and the input-bridge absorbed lane briefly improved
+to `2.91x`, but the exact 9-op semantic bridge lane is the current full-model
+blocker and regressed to `2.41x` and then `2.18x` in steady three-attempt
+checks. The probe was reverted. The qsemantic bridge checker now carries a
+`BENCH_QSEMANTIC_BRIDGE_FLOOR` collapse floor, defaulting to `2.45x`, so
+correct-but-slower width-kernel probes fail before they overwrite useful
+bridge evidence.
 The broader `dev:perf:competitive` runner now wraps the PyTorch, native eager,
 qsemantic, full-model Q8 prompt viable, and cheap ggml smoke lanes behind
 `BENCH_COMPETITIVE_LANES`, so a kernel edit can run only

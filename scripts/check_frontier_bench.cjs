@@ -21,6 +21,7 @@ const projectionGroupRegionSpeedupFloor = 1.00;
 const projectionSmollmPromptSpeedupFloor = 0.90;
 const projectionRowChainDefaultSpeedupFloor = 1.10;
 const projectionRowChainMaxAbsDiffCeil = 0.02;
+const semanticBridgeSpeedupFloor = Number(process.env.BENCH_QSEMANTIC_BRIDGE_FLOOR || "2.45");
 const semanticInputBridgeSteadyAbsorbedSpeedupFloor = Number(process.env.BENCH_QSEMANTIC_INPUT_BRIDGE_STEADY_ABSORBED_FLOOR || "2.45");
 const projectionRowChainLowering = "prompt_split_tiled_qmatmul_plus_rmsnorm";
 const projectionRowChainDiagnosticKernel = "single_dispatch_tiled_candidate";
@@ -37,6 +38,9 @@ const artifactDir = process.env.BENCH_FRONTIER_ARTIFACT_DIR || join("bench-resul
 
 if (!Number.isFinite(semanticInputBridgeSteadyAbsorbedSpeedupFloor) || semanticInputBridgeSteadyAbsorbedSpeedupFloor < 1.0) {
   throw new Error(`BENCH_QSEMANTIC_INPUT_BRIDGE_STEADY_ABSORBED_FLOOR must be a finite number >= 1.0, got ${process.env.BENCH_QSEMANTIC_INPUT_BRIDGE_STEADY_ABSORBED_FLOOR}`);
+}
+if (!Number.isFinite(semanticBridgeSpeedupFloor) || semanticBridgeSpeedupFloor < 1.0) {
+  throw new Error(`BENCH_QSEMANTIC_BRIDGE_FLOOR must be a finite number >= 1.0, got ${process.env.BENCH_QSEMANTIC_BRIDGE_FLOOR}`);
 }
 
 function positiveInt(value, label) {
@@ -1636,7 +1640,7 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
   const semanticWidthScratchRuntimeBytes = metric(output, bridgeProfileLabel, "semantic_width_scratch_runtime_bytes");
 
   const failures = [];
-  if (speedup < 1.0) failures.push(`semantic bridge ${speedup.toFixed(2)}x < 1.00x`);
+  if (speedup < semanticBridgeSpeedupFloor) failures.push(`semantic bridge ${speedup.toFixed(2)}x < ${semanticBridgeSpeedupFloor.toFixed(2)}x`);
   if (maxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`semantic bridge max_abs_diff ${maxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (shapeCommands !== 1 || shapeSemantic !== 1 || shapeCoveredOps !== 9 || shapeSavedDispatches !== 8) {
     failures.push("semantic bridge shape profile must stay shape_commands=1 shape_semantic_ffn_sublayers=1 shape_covered_ops=9 shape_saved_dispatches=8");
@@ -1674,7 +1678,7 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
   const line = [
     `frontier qsemantic bridge gate: ${failures.length === 0 ? "pass" : "fail"}`,
     `attempt=${attempt}/${maxAttempts}`,
-    `bridge_ffn=${speedup.toFixed(2)}x floor=1.00 max_abs_diff=${maxAbsDiff.toFixed(6)}`,
+    `bridge_ffn=${speedup.toFixed(2)}x floor=${semanticBridgeSpeedupFloor.toFixed(2)} max_abs_diff=${maxAbsDiff.toFixed(6)}`,
     `shape_commands=${shapeCommands} shape_semantic_ffn_sublayers=${shapeSemantic} shape_covered_ops=${shapeCoveredOps} shape_saved_dispatches=${shapeSavedDispatches}`,
     `runtime_backend_dispatches=${runtimeDispatches} semantic_target_dispatches=${semanticTargetDispatches} runtime_semantic_ffn_dispatches=${runtimeSemanticDispatches} semantic_dispatch_split=${Number.isFinite(semanticDispatchSplit) ? semanticDispatchSplit.toFixed(2) : "n/a"} semantic_pair_dispatches=${semanticFallbackPairDispatches} semantic_tail_dispatches=${semanticFallbackTailDispatches}`,
     `qmatmul_row_chain_tiled_count=${rowChainTiledCount} row_tile_groups=${rowChainTiledRowTileGroups} n_tiles=${rowChainTiledNTiles} serial_tile_loops=${rowChainTiledSerialTileLoops} partial_slots=${rowChainTiledPartialSlots} scratch_capacity=${rowChainTiledScratchCapacity} two_phase_count=${rowChainTiledTwoPhaseCount} finalize_tile_groups=${rowChainTiledFinalizeTileGroups} finalize_elements=${rowChainTiledFinalizeElements} spilled_elementwise=${rowChainTiledSpilledElementwise} spilled_input=${rowChainTiledSpilledInput} output_spills=${rowChainTiledOutputSpills} width_parallel=${rowChainWidthParallelCount}:lanes:${rowChainWidthParallelLanes}`,
@@ -1849,6 +1853,7 @@ function writeFocusedSemanticBridgeArtifact(best, attempts, aggregate, line) {
       frontierFilter,
       qsemanticVariants,
       projectionRowChainMaxAbsDiffCeil,
+      semanticBridgeSpeedupFloor,
     },
     kind: "qsemantic-bridge",
     status: aggregate.length === 0 ? "pass" : "fail",
@@ -1885,7 +1890,7 @@ function runFocusedSemanticBridgeGate() {
   const aggregate = [];
   const bestSpeedup = bestMax(attempts, "speedup");
   const bestDiff = bestMin(attempts, "maxAbsDiff");
-  if (!Number.isFinite(bestSpeedup) || bestSpeedup < 1.0) aggregate.push(`semantic bridge best ${Number.isFinite(bestSpeedup) ? bestSpeedup.toFixed(2) : "n/a"}x < 1.00x`);
+  if (!Number.isFinite(bestSpeedup) || bestSpeedup < semanticBridgeSpeedupFloor) aggregate.push(`semantic bridge best ${Number.isFinite(bestSpeedup) ? bestSpeedup.toFixed(2) : "n/a"}x < ${semanticBridgeSpeedupFloor.toFixed(2)}x`);
   if (!Number.isFinite(bestDiff) || bestDiff > projectionRowChainMaxAbsDiffCeil) aggregate.push(`semantic bridge best max_abs_diff ${Number.isFinite(bestDiff) ? bestDiff.toFixed(6) : "n/a"} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (!anyEquals(attempts, [
     ["shapeCommands", 1],
