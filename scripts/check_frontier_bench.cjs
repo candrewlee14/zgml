@@ -21,6 +21,7 @@ const projectionGroupRegionSpeedupFloor = 1.00;
 const projectionSmollmPromptSpeedupFloor = 0.90;
 const projectionRowChainDefaultSpeedupFloor = 1.10;
 const projectionRowChainMaxAbsDiffCeil = 0.02;
+const semanticInputBridgeSteadyAbsorbedSpeedupFloor = Number(process.env.BENCH_QSEMANTIC_INPUT_BRIDGE_STEADY_ABSORBED_FLOOR || "2.45");
 const projectionRowChainLowering = "prompt_split_tiled_qmatmul_plus_rmsnorm";
 const projectionRowChainDiagnosticKernel = "single_dispatch_tiled_candidate";
 const projectionRowChainNextTarget = "semantic_sublayer_or_two_phase_tile_parallel_row_chain";
@@ -33,6 +34,10 @@ const qsemanticVariants = (process.env.BENCH_QSEMANTIC_VARIANTS ?? "")
   .filter(Boolean);
 const writeArtifact = process.env.BENCH_FRONTIER_WRITE_ARTIFACT !== "0";
 const artifactDir = process.env.BENCH_FRONTIER_ARTIFACT_DIR || join("bench-results", "frontier");
+
+if (!Number.isFinite(semanticInputBridgeSteadyAbsorbedSpeedupFloor) || semanticInputBridgeSteadyAbsorbedSpeedupFloor < 1.0) {
+  throw new Error(`BENCH_QSEMANTIC_INPUT_BRIDGE_STEADY_ABSORBED_FLOOR must be a finite number >= 1.0, got ${process.env.BENCH_QSEMANTIC_INPUT_BRIDGE_STEADY_ABSORBED_FLOOR}`);
+}
 
 function positiveInt(value, label) {
   const n = Number(value);
@@ -2295,6 +2300,7 @@ function writeFocusedSemanticInputBridgeArtifact(best, attempts, aggregate, line
       frontierFilter,
       qsemanticVariants,
       projectionRowChainMaxAbsDiffCeil,
+      semanticInputBridgeSteadyAbsorbedSpeedupFloor,
     },
     kind: "qsemantic-input-bridge",
     status: aggregate.length === 0 ? "pass" : "fail",
@@ -2336,6 +2342,9 @@ function runFocusedSemanticInputBridgeGate() {
   const bestAbsorbedSpeedup = bestMax(attempts, "absorbedSpeedup");
   const bestAbsorbedDiff = bestMin(attempts, "absorbedMaxAbsDiff");
   if (!Number.isFinite(bestAbsorbedSpeedup) || bestAbsorbedSpeedup < 1.0) aggregate.push(`semantic input absorbed best ${Number.isFinite(bestAbsorbedSpeedup) ? bestAbsorbedSpeedup.toFixed(2) : "n/a"}x < 1.00x`);
+  if (maxAttempts >= 3 && (!Number.isFinite(bestAbsorbedSpeedup) || bestAbsorbedSpeedup < semanticInputBridgeSteadyAbsorbedSpeedupFloor)) {
+    aggregate.push(`semantic input absorbed steady best ${Number.isFinite(bestAbsorbedSpeedup) ? bestAbsorbedSpeedup.toFixed(2) : "n/a"}x < ${semanticInputBridgeSteadyAbsorbedSpeedupFloor.toFixed(2)}x`);
+  }
   if (!Number.isFinite(bestAbsorbedDiff) || bestAbsorbedDiff > projectionRowChainMaxAbsDiffCeil) aggregate.push(`semantic input absorbed best max_abs_diff ${Number.isFinite(bestAbsorbedDiff) ? bestAbsorbedDiff.toFixed(6) : "n/a"} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   const hasDecomposedAbsorbedProfile = anyEquals(attempts, [
     ["absorbedShapeCommands", 1],

@@ -388,7 +388,11 @@ machine for both prompt/prefill and decode.
   microscope correct and selected `absorbed=2.73x` with
   `direct_serial=1.38x`; however, the direct bridge still reports
   `2,985,984` row-serial dot ops per row threadgroup, so this is diagnostic
-  cleanup rather than a replacement for the width-partitioned input bridge.
+  cleanup rather than a replacement for the width-partitioned input bridge. The
+  checked input-bridge gate now treats that lane as a steady collapse guard:
+  runs with at least three attempts must keep best absorbed speedup at or above
+  `2.45x` by default, configurable with
+  `BENCH_QSEMANTIC_INPUT_BRIDGE_STEADY_ABSORBED_FLOOR`.
   The missing win is still work partitioning, but the semantic block-32 scale
   specialization is retained as a real kernel improvement.
 - A later row-chain tiled scale-index shift probe was rejected. Guarding the
@@ -656,8 +660,11 @@ When an input-bridge artifact is available,
 `qsemantic-input-bridge-results:` remains the selected steady signal and
 `qsemantic-input-bridge-latest-results:` reports newer one-attempt probes. That
 keeps fresh `semantic_with_input_width_parallel_kernel` iteration visible
-without letting a quick probe replace the steadier `perf-next` target. Force
-that exact microscope with
+without letting a quick probe replace the steadier `perf-next` target. The
+checked gate also fails three-attempt input-bridge runs when the best absorbed
+speedup falls below the collapse floor (`2.45x` by default), so
+correct but weaker kernel probes do not become invisible regressions. Force that
+exact microscope with
 `BENCH_NEXT_PERF_LANE=qsemantic_input_bridge npm run dev:perf:next{,:run}`.
 For qsemantic kernel work, `BENCH_QSEMANTIC_VARIANTS=target` limits the raw
 frontier harness to the staged baseline plus the one-dispatch semantic target,

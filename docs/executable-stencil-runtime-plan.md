@@ -848,7 +848,11 @@ stability rule as the other noisy perf lanes:
 latest three-attempt artifact, while `qsemantic-throughput-latest-results:` and
 `qsemantic-input-bridge-latest-results:` report newer one-attempt probes when
 they exist. That keeps quick kernel iteration visible without letting a lucky or
-unlucky single attempt replace the selected semantic frontier proof.
+unlucky single attempt replace the selected semantic frontier proof. The checked
+input-bridge gate now adds a collapse floor for steady runs too:
+`BENCH_FRONTIER_ATTEMPTS>=3` requires best absorbed speedup to stay at or above
+`2.45x` by default, configurable with
+`BENCH_QSEMANTIC_INPUT_BRIDGE_STEADY_ABSORBED_FLOOR`.
 The PyTorch comparison microscope also accepts exploratory lanes such as
 `rms_gelu_linear_batched`, `softmax_classifier_batched`,
 `log_softmax_classifier_batched`, and `lazy_token_head_batched`, so optimization
@@ -1859,6 +1863,19 @@ the three-attempt exact bridge gate selected `2.21x` and the input-bridge gate
 selected `2.46x`, below the refreshed four-lane `2.40x` and `2.63x` evidence.
 The current four-lane shape is therefore the local sweet spot until the kernel
 changes its storage model or fuses a dispatch.
+A June 27, 2026 semantic input-bridge probe tried reusing that same four-lane
+width-partial row-chain for the model-width input projection (`K=576`) inside
+the 14-op bridge command instead of reserving it only for the hidden-width
+semantic tail (`K=1536`). It compiled and preserved correctness, but the
+three-attempt input-bridge gate regressed to `absorbed=2.65x` versus the
+retained `2.73x` evidence, with the same five-dispatch bridge shape
+(`row_chain=2,pair=1,tail=2`). That path is rejected too: simply swapping the
+first row-chain partial kernel to the SIMD-width spelling does not reduce
+dispatches and does not improve the bridge. The next input-bridge move still
+needs a true fused or differently staged width-parallel input kernel, not the
+existing tail kernel applied to the model-width projection. The focused
+input-bridge gate now fails steady attempts below the `2.45x` absorbed collapse
+floor so severe correct-but-weaker probes are caught automatically.
 The row-serial semantic down loops now use an eight-hidden-value unroll instead
 of the older four-wide accumulation in both the plain semantic FFN and direct
 input-bridge kernels. A fresh three-attempt input-bridge microscope kept
