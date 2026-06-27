@@ -502,7 +502,12 @@ function qsemanticInputBridgeArtifacts() {
 
 function latestQsemanticInputBridgeArtifact() {
   const artifacts = qsemanticInputBridgeArtifacts();
-  return artifacts.filter(isFrontierSteadyArtifact).at(-1) ?? artifacts.at(-1) ?? null;
+  const passing = artifacts.filter(isPassingFrontierArtifact);
+  return passing.filter(isFrontierSteadyArtifact).at(-1) ??
+    passing.at(-1) ??
+    artifacts.filter(isFrontierSteadyArtifact).at(-1) ??
+    artifacts.at(-1) ??
+    null;
 }
 
 function latestRawQsemanticInputBridgeArtifact() {
@@ -513,6 +518,14 @@ function isFrontierSteadyArtifact(path) {
   try {
     const data = readJson(path);
     return Number.isInteger(data?.attempts) && data.attempts >= 3;
+  } catch {
+    return false;
+  }
+}
+
+function isPassingFrontierArtifact(path) {
+  try {
+    return readJson(path)?.status === "pass";
   } catch {
     return false;
   }
@@ -777,7 +790,7 @@ function qsemanticInputBridgeFreshnessStatusLine(selectedPath, rawPath) {
   try {
     data = readJson(rawPath);
   } catch {
-    return `qsemantic-input-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts unreadable`;
+    return `qsemantic-input-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_passing_steady_attempts unreadable`;
   }
   const attempts = Number.isInteger(data?.attempts) ? data.attempts : "n/a";
   const selectedAttempt = Number.isInteger(data?.selectedAttempt) ? data.selectedAttempt : "n/a";
@@ -794,7 +807,7 @@ function qsemanticInputBridgeFreshnessStatusLine(selectedPath, rawPath) {
   const next = typeof data?.next === "string" ? data.next : "unknown";
   const source = typeof data?.source?.label === "string" ? data.source.label : "unknown";
   const scratch = `scratch=candidates:${absorbed.semanticWidthScratchCandidates ?? "n/a"},bytes:${absorbed.semanticWidthScratchBytes ?? "n/a"},down_partial_bytes:${absorbed.semanticWidthScratchDownPartialBytes ?? "n/a"},down_partial_to_output:${formatNumber(absorbed.semanticWidthScratchDownPartialToOutput, 2)},runtime_capacity:${absorbed.semanticWidthScratchRuntimeCapacityBytes ?? "n/a"},runtime_uses:${absorbed.semanticWidthScratchRuntimeUses ?? "n/a"},runtime_bytes:${absorbed.semanticWidthScratchRuntimeBytes ?? "n/a"}`;
-  return `qsemantic-input-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_steady_attempts attempt=${selectedAttempt}/${attempts} command=${commandSpeedup}:dispatches:${command.runtimeDispatches ?? "n/a"} absorbed=${absorbedSpeedup}:median:${absorbedMedian}:worst:${absorbedWorst}:max_abs_diff:${maxAbsDiff}:dispatches:${absorbed.runtimeDispatches ?? "n/a"}:semantic_with_input_dispatches:${absorbed.runtimeSemanticFfnWithInputDispatches ?? "n/a"}:absorbed_split:${formatNumber(absorbed.absorbedDispatchSplit, 2)}:decomposed:${absorbed.semanticWithInputDecomposedCount ?? "n/a"}:decomposed_dispatches:${absorbed.semanticWithInputDecomposedDispatches ?? "n/a"}:decomposed_extra:${absorbed.semanticWithInputDecomposedExtraDispatches ?? "n/a"}:direct_width_parallel:${absorbed.semanticWithInputDirectWidthParallelCount ?? "n/a"}:direct_width_lanes:${absorbed.semanticWithInputDirectWidthParallelLanes ?? "n/a"} direct_serial=${directSerialSpeedup}:median:${directSerialMedian}:dispatches:${directSerial.runtimeDispatches ?? "n/a"}:direct:${directSerial.semanticWithInputDirectCount ?? "n/a"}:row_serial_dot_ops:${directSerial.semanticWithInputDirectRowSerialDotOps ?? "n/a"}:total_row_serial_dot_ops:${directSerial.semanticWithInputDirectTotalRowSerialDotOps ?? "n/a"} pair_dispatches=${absorbed.semanticFallbackPairDispatches ?? "n/a"}:tail_dispatches:${absorbed.semanticFallbackTailDispatches ?? "n/a"}:tiled:${absorbed.qmatmulRowChainTiledCount ?? "n/a"}:width_parallel:${absorbed.qmatmulRowChainWidthParallelCount ?? "n/a"}:width_lanes:${absorbed.qmatmulRowChainWidthParallelLanes ?? "n/a"} ${scratch} next=${next} source=${source}`;
+  return `qsemantic-input-bridge-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_passing_steady_attempts attempt=${selectedAttempt}/${attempts} command=${commandSpeedup}:dispatches:${command.runtimeDispatches ?? "n/a"} absorbed=${absorbedSpeedup}:median:${absorbedMedian}:worst:${absorbedWorst}:max_abs_diff:${maxAbsDiff}:dispatches:${absorbed.runtimeDispatches ?? "n/a"}:semantic_with_input_dispatches:${absorbed.runtimeSemanticFfnWithInputDispatches ?? "n/a"}:absorbed_split:${formatNumber(absorbed.absorbedDispatchSplit, 2)}:decomposed:${absorbed.semanticWithInputDecomposedCount ?? "n/a"}:decomposed_dispatches:${absorbed.semanticWithInputDecomposedDispatches ?? "n/a"}:decomposed_extra:${absorbed.semanticWithInputDecomposedExtraDispatches ?? "n/a"}:direct_width_parallel:${absorbed.semanticWithInputDirectWidthParallelCount ?? "n/a"}:direct_width_lanes:${absorbed.semanticWithInputDirectWidthParallelLanes ?? "n/a"} direct_serial=${directSerialSpeedup}:median:${directSerialMedian}:dispatches:${directSerial.runtimeDispatches ?? "n/a"}:direct:${directSerial.semanticWithInputDirectCount ?? "n/a"}:row_serial_dot_ops:${directSerial.semanticWithInputDirectRowSerialDotOps ?? "n/a"}:total_row_serial_dot_ops:${directSerial.semanticWithInputDirectTotalRowSerialDotOps ?? "n/a"} pair_dispatches=${absorbed.semanticFallbackPairDispatches ?? "n/a"}:tail_dispatches:${absorbed.semanticFallbackTailDispatches ?? "n/a"}:tiled:${absorbed.qmatmulRowChainTiledCount ?? "n/a"}:width_parallel:${absorbed.qmatmulRowChainWidthParallelCount ?? "n/a"}:width_lanes:${absorbed.qmatmulRowChainWidthParallelLanes ?? "n/a"} ${scratch} next=${next} source=${source}`;
 }
 
 function qsemanticInputBridgeNextTargetLine(path) {

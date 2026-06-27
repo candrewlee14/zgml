@@ -8246,6 +8246,15 @@ targets `semantic_ffn_sublayer_with_input_row_chain:150` and routes the fallback
 current-smoke case to `semantic_with_input_width_parallel_kernel`. That keeps
 the next-perf loop from falling back to vague command-pressure inspection after
 the default lane has already moved to the 121-command semantic path.
+A checked June 27, 2026 input-bridge probe tried reducing the retained absorbed
+path from five dispatches to four by forcing the input projection row-chain onto
+the single-dispatch tiled leaf before the semantic FFN tail. It preserved
+correctness but collapsed the absorbed lane to about `0.95x`, versus the retained
+`~2.7x` absorbed evidence, so it was rejected and reverted. `bench:status` now
+selects passing steady input-bridge artifacts before failed newest probes while
+still printing the newest raw probe as `qsemantic-input-bridge-latest-results`;
+that keeps rejected physical experiments visible without letting them steer
+`perf-next`.
 A follow-up exact no-build microscope run kept the 9-op bridge healthy at
 `bridge_ffn=2.89x` with `runtime_backend_dispatches=3`, `width_parallel=1`,
 and `runtime_bytes=9216`. The exact 14-op input-bridge run stayed correct and
