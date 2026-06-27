@@ -3717,15 +3717,14 @@ Current frontend slice:
 	  IR does not collapse back to shape-only or aggregate-only evidence at the
 	  Kernelizer boundary. The package smoke now proves same-shape `narrow` graphs
 	  with different descriptor offsets produce different IR and KernelPlan
-	  signatures before module binding, and it proves frontend `softmax(0)` and
-	  `logSoftmax(0)` ops keep explicit transpose + row-softmax + transpose
-	  descriptor evidence until backend-aware planning can distinguish CPU
-	  strided/grouped softmax from row-only accelerator kernels, while still
-	  deriving canonical compiler signatures without private native descriptors.
-	  The native Program substrate now has a CPU/reference `inner` geometry for
-	  direct strided/grouped `softmax` and `logSoftmax` execution through the C
-	  ABI, and Metal/WebGPU capability plus dispatch-plan tests keep accelerator
-	  evidence row-only until matching kernels exist. Module
+	  signatures before module binding. Backend-neutral and WebGPU `softmax(0)`
+	  / `logSoftmax(0)` evidence still keeps the explicit
+	  transpose + row-softmax + transpose descriptors, while CPU compile planning
+	  now emits the direct native axis descriptor after proving the native Program
+	  substrate has CPU/reference `inner` geometry for strided/grouped `softmax`
+	  and `logSoftmax` execution through the C ABI. Metal/WebGPU capability plus
+	  dispatch-plan tests keep accelerator evidence row-only until matching
+	  kernels exist. Module
 	  `min(dim)` now has the same single-op KernelPlan contract as sum/mean/max
 	  on the native reduction axis, with batch-axis lowering kept to
 	  transpose + min + transpose instead of transpose + neg + max + neg +

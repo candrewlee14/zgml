@@ -50,6 +50,7 @@ import {
   programMemoryLayoutFromKernelPlan,
   programParameterLayoutFromKernelPlan,
   type KernelPlan,
+  type KernelizerOptions,
   type InternalKernelPlan,
 } from "./kernel_plan.js";
 import type {
@@ -63,6 +64,7 @@ import type { CompileDiagnostic } from "./compile_diagnostics.js";
 type AnyRecord = Record<string, any>;
 type UnknownRecord = Record<string, unknown>;
 type TraceCompilerTraceInput = ModuleProgramTrace | AnyRecord;
+export type TraceCompilerOptions = KernelizerOptions;
 export type CompiledTinyLinearProgramSpec = Readonly<{
   readonly kind: "tiny-linear";
   readonly layer: Readonly<{
@@ -240,7 +242,7 @@ export function tensorProgramIrForTrace(trace: TraceCompilerTraceInput): TraceCo
   return { ir: buildTensorProgramIrForTrace(trace), diagnostic: null };
 }
 
-export function traceCompilerArtifacts(trace: TraceCompilerTraceInput): TraceCompilerArtifacts {
+export function traceCompilerArtifacts(trace: TraceCompilerTraceInput, options: TraceCompilerOptions = {}): TraceCompilerArtifacts {
   const { ir, diagnostic: irDiagnostic } = tensorProgramIrForTrace(trace);
   if (irDiagnostic) {
     return { ir: null, kernelPlan: null, diagnostic: irDiagnostic };
@@ -254,7 +256,7 @@ export function traceCompilerArtifacts(trace: TraceCompilerTraceInput): TraceCom
       }),
     };
   }
-  const { kernelPlan, diagnostic: kernelDiagnostic } = kernelizeTensorProgramIr(ir);
+  const { kernelPlan, diagnostic: kernelDiagnostic } = kernelizeTensorProgramIr(ir, options);
   return {
     ir,
     kernelPlan: kernelPlan ?? null,
@@ -262,8 +264,8 @@ export function traceCompilerArtifacts(trace: TraceCompilerTraceInput): TraceCom
   };
 }
 
-export function compiledSequentialModuleSpecFromTrace(entries: readonly unknown[], trace: TraceCompilerTraceInput, artifacts: TraceCompilerArtifacts | null = null): CompiledSequentialModuleSpec | null {
-  const compilerArtifacts = artifacts ?? traceCompilerArtifacts(trace);
+export function compiledSequentialModuleSpecFromTrace(entries: readonly unknown[], trace: TraceCompilerTraceInput, artifacts: TraceCompilerArtifacts | null = null, options: TraceCompilerOptions = {}): CompiledSequentialModuleSpec | null {
+  const compilerArtifacts = artifacts ?? traceCompilerArtifacts(trace, options);
   const { ir, kernelPlan } = compilerArtifacts;
   if (!ir || !kernelPlan) return null;
 

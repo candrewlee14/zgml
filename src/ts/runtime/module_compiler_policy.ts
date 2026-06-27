@@ -906,7 +906,7 @@ export function compiledSequentialModuleSpec(entries: readonly SequentialTraceEn
   if (!inputShape) return null;
 
   const trace = freezeSequentialTrace(traceSequentialEntries(entries, options, { inputShape }));
-  return compiledSequentialModuleSpecFromTrace(entries, trace) as SequentialCompiledProgramSpec | null;
+  return compiledSequentialModuleSpecFromTrace(entries, trace, null, options) as SequentialCompiledProgramSpec | null;
 }
 
 export function traceSequentialProgram(layers: readonly AnyRecord[], options: AnyRecord, traceOptions?: SequentialTraceOptions): ModuleProgramTrace {
@@ -933,7 +933,7 @@ export function analyzeSequentialProgram(layers: readonly AnyRecord[], options: 
       compatibility = compiledSequentialProgramSpecForNormalizedLayers(normalizedLayers, options);
     }
     trace = freezeSequentialTrace(traceSequentialEntries(entries, options, traceInputShape ? { inputShape: traceInputShape } : undefined));
-    traceArtifacts = traceCompilerArtifacts(trace);
+    traceArtifacts = traceCompilerArtifacts(trace, options);
     if (compatibility && compatibility.kind === "tiny-linear") {
       compatibility = {
         ...compatibility,

@@ -406,40 +406,40 @@ export class LazyTensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
     return tensorProgramIr(this);
   }
 
-  kernelPlan(): ModuleKernelPlan | null {
-    return kernelPlan(this);
+  kernelPlan(options?: CompileOptions): ModuleKernelPlan | null {
+    return kernelPlan(this, options);
   }
 
-  kernel_plan(): ModuleKernelPlan | null {
-    return kernelPlan(this);
+  kernel_plan(options?: CompileOptions): ModuleKernelPlan | null {
+    return kernelPlan(this, options);
   }
 
-  artifacts(): LazyCompilerArtifacts {
-    return artifacts(this);
+  artifacts(options?: CompileOptions): LazyCompilerArtifacts {
+    return artifacts(this, options);
   }
 
-  compileSupport(): LazyCompileSupport {
-    return compileSupport(this);
+  compileSupport(options?: CompileOptions): LazyCompileSupport {
+    return compileSupport(this, options);
   }
 
-  compile_support(): LazyCompileSupport {
-    return compileSupport(this);
+  compile_support(options?: CompileOptions): LazyCompileSupport {
+    return compileSupport(this, options);
   }
 
-  canCompile(): boolean {
-    return canCompile(this);
+  canCompile(options?: CompileOptions): boolean {
+    return canCompile(this, options);
   }
 
-  can_compile(): boolean {
-    return canCompile(this);
+  can_compile(options?: CompileOptions): boolean {
+    return canCompile(this, options);
   }
 
-  requireCompileSupport(): LazyCompileSupport {
-    return requireCompileSupport(this);
+  requireCompileSupport(options?: CompileOptions): LazyCompileSupport {
+    return requireCompileSupport(this, options);
   }
 
-  require_compile_support(): LazyCompileSupport {
-    return requireCompileSupport(this);
+  require_compile_support(options?: CompileOptions): LazyCompileSupport {
+    return requireCompileSupport(this, options);
   }
 
   compile(options?: CompileOptions): Program<TensorShapeTuple, Shape> {
@@ -1581,9 +1581,9 @@ export function trace(tensor: LazyTensor): ModuleProgramTrace {
   }) as ModuleProgramTrace;
 }
 
-export function artifacts(tensor: LazyTensor): LazyCompilerArtifacts {
+export function artifacts(tensor: LazyTensor, options: CompileOptions = {}): LazyCompilerArtifacts {
   const traced = trace(tensor);
-  const compilerArtifacts = traceCompilerArtifacts(traced);
+  const compilerArtifacts = traceCompilerArtifacts(traced, options);
   return Object.freeze({
     trace: traced,
     ir: compilerArtifacts.ir,
@@ -1596,12 +1596,12 @@ export function tensorProgramIr(tensor: LazyTensor): ModuleTensorProgramIr | nul
   return artifacts(tensor).ir;
 }
 
-export function kernelPlan(tensor: LazyTensor): ModuleKernelPlan | null {
-  return artifacts(tensor).kernelPlan;
+export function kernelPlan(tensor: LazyTensor, options: CompileOptions = {}): ModuleKernelPlan | null {
+  return artifacts(tensor, options).kernelPlan;
 }
 
-export function compileSupport(tensor: LazyTensor): LazyCompileSupport {
-  const result = artifacts(tensor);
+export function compileSupport(tensor: LazyTensor, options: CompileOptions = {}): LazyCompileSupport {
+  const result = artifacts(tensor, options);
   return Object.freeze({
     supported: Boolean(result.ir && result.kernelPlan && !result.diagnostic),
     reason: result.diagnostic ? result.diagnostic.message : null,
@@ -1613,22 +1613,22 @@ export function compileSupport(tensor: LazyTensor): LazyCompileSupport {
   });
 }
 
-export function canCompile(tensor: LazyTensor): boolean {
-  return compileSupport(tensor).supported;
+export function canCompile(tensor: LazyTensor, options: CompileOptions = {}): boolean {
+  return compileSupport(tensor, options).supported;
 }
 
-export function can_compile(tensor: LazyTensor): boolean {
-  return canCompile(tensor);
+export function can_compile(tensor: LazyTensor, options: CompileOptions = {}): boolean {
+  return canCompile(tensor, options);
 }
 
-export function requireCompileSupport(tensor: LazyTensor): LazyCompileSupport {
-  const support = compileSupport(tensor);
+export function requireCompileSupport(tensor: LazyTensor, options: CompileOptions = {}): LazyCompileSupport {
+  const support = compileSupport(tensor, options);
   if (support.supported) return support;
   throw new Error(`lazy graph cannot compile to native Program: ${support.reason ?? "unsupported graph"}`);
 }
 
-export function require_compile_support(tensor: LazyTensor): LazyCompileSupport {
-  return requireCompileSupport(tensor);
+export function require_compile_support(tensor: LazyTensor, options: CompileOptions = {}): LazyCompileSupport {
+  return requireCompileSupport(tensor, options);
 }
 
 export const lazyManifest = Object.freeze({

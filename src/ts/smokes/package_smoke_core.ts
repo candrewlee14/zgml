@@ -4864,9 +4864,15 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyBatchSoftmaxGraph.compileSupport().supported !== true ||
     lazyBatchSoftmaxGraph.kernelPlan()?.dispatchCount !== 3 ||
     lazyBatchSoftmaxGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "transpose|softmax|transpose" ||
+    lazyBatchSoftmaxGraph.kernelPlan({ backend: "cpu" })?.dispatchCount !== 1 ||
+    lazyBatchSoftmaxGraph.kernelPlan({ backend: "cpu" })?.ops[0]?.nativeKernels.join("|") !== "softmax" ||
+    lazyBatchSoftmaxGraph.kernelPlan({ backend: "webgpu" })?.dispatchCount !== 3 ||
     lazyBatchLogSoftmaxGraph.compileSupport().supported !== true ||
     lazyBatchLogSoftmaxGraph.kernelPlan()?.dispatchCount !== 3 ||
     lazyBatchLogSoftmaxGraph.kernelPlan()?.ops[0]?.nativeKernels.join("|") !== "transpose|log-softmax|transpose" ||
+    lazyBatchLogSoftmaxGraph.kernelPlan({ backend: "cpu" })?.dispatchCount !== 1 ||
+    lazyBatchLogSoftmaxGraph.kernelPlan({ backend: "cpu" })?.ops[0]?.nativeKernels.join("|") !== "log-softmax" ||
+    lazyBatchLogSoftmaxGraph.kernelPlan({ backend: "webgpu" })?.dispatchCount !== 3 ||
     lazyDropoutGraph.compileSupport().supported !== true ||
     lazyNamespaceDropoutGraph.compileSupport().supported !== true ||
     lazyTrainingDropoutGraph.compileSupport().supported !== false ||
@@ -4945,8 +4951,10 @@ function expectTorchNamespaceEndToEndEvidence(adapter: Record<string, any>, labe
     lazyMatmulNaturalAffineCompiledProgram.compileEvidence()?.kernelPlan?.ops.map((op: Record<string, any>) => op.nativeKernels.join("|")).join("|") !== "linear|affine|relu" ||
     lazyMultiChannelConvReluProgram.outputShape().join("x") !== "2x2x2x2" ||
     lazyMultiChannelConvReluProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "conv2d|relu" ||
-    lazyBatchSoftmaxProgram.compileEvidence()?.kernelPlan?.dispatchCount !== 3 ||
-    lazyBatchLogSoftmaxProgram.compileEvidence()?.kernelPlan?.dispatchCount !== 3 ||
+    lazyBatchSoftmaxProgram.compileEvidence()?.kernelPlan?.dispatchCount !== 1 ||
+    lazyBatchSoftmaxProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "softmax" ||
+    lazyBatchLogSoftmaxProgram.compileEvidence()?.kernelPlan?.dispatchCount !== 1 ||
+    lazyBatchLogSoftmaxProgram.compileEvidence()?.kernelPlan?.ops[0]?.nativeKernels.join("|") !== "log-softmax" ||
     lazyReductionChain.compileSupport().supported !== true ||
     lazyNamespaceReduction.compileSupport().supported !== true ||
     lazyShapeChain.compileSupport().supported !== true ||

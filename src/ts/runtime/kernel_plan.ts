@@ -46,6 +46,9 @@ type KernelPlanEvidenceFreezeOptions = Readonly<{
   publicOnly?: boolean;
   elided?: boolean;
 }>;
+export type KernelizerOptions = Readonly<{
+  backend?: "auto" | "cpu" | "metal" | "webgpu" | string;
+}>;
 
 const maxActivationChainLength = 4;
 
@@ -482,7 +485,11 @@ function conv2dDescForIrOp(op: any): NativeModuleOpDesc | null {
   };
 }
 
-function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
+function kernelizerSupportsStridedSoftmax(options: KernelizerOptions = {}): boolean {
+  return options.backend === "cpu" || options.backend === "auto";
+}
+
+function moduleOpDescForIrOp(op: any, options: KernelizerOptions = {}): NativeModuleOpDesc | null {
   const attrs = op.attrs ?? {};
   switch (op.op) {
     case "linear":
@@ -546,14 +553,16 @@ function moduleOpDescForIrOp(op: any): NativeModuleOpDesc | null {
       const rank = op.inputShape ? op.inputShape.length : 0;
       const axis = frontendAxisForRank(attrs.dim, rank);
       const nativeAxis = nativeAxisForFrontendAxis(axis, rank);
-      if (axis < 0 || axis >= rank || nativeAxis !== 0) return null;
+      if (axis < 0 || axis >= rank) return null;
+      if (nativeAxis !== 0 && !(rank === 2 && nativeAxis === 1 && kernelizerSupportsStridedSoftmax(options))) return null;
       return { kind: moduleOpIds.softmax, activation: 0, flags: 0, a: nativeAxis, b: 0, c: 0, eps: 0 };
     }
     case "logSoftmax": {
       const rank = op.inputShape ? op.inputShape.length : 0;
       const axis = frontendAxisForRank(attrs.dim, rank);
       const nativeAxis = nativeAxisForFrontendAxis(axis, rank);
-      if (axis < 0 || axis >= rank || nativeAxis !== 0) return null;
+      if (axis < 0 || axis >= rank) return null;
+      if (nativeAxis !== 0 && !(rank === 2 && nativeAxis === 1 && kernelizerSupportsStridedSoftmax(options))) return null;
       return { kind: moduleOpIds.logSoftmax, activation: 0, flags: 0, a: nativeAxis, b: 0, c: 0, eps: 0 };
     }
     case "sum":
@@ -846,18 +855,18 @@ function reduceDimModuleOpDescs(op: any, attrs: any): readonly NativeModuleOpDes
   return null;
 }
 
-function moduleOpDescsForIrOp(op: any): readonly NativeModuleOpDesc[] | null {
+function moduleOpDescsForIrOp(op: any, options: KernelizerOptions = {}): readonly NativeModuleOpDesc[] | null {
   const attrs = op.attrs ?? {};
   if (op.op === "permute") return permuteDescsForIrOp(op);
 
   if (op.op === "sum" || op.op === "mean" || op.op === "prod" || op.op === "max" || op.op === "min" || op.op === "argmax" || op.op === "argmin") {
-    const desc = moduleOpDescForIrOp(op);
+    const desc = moduleOpDescForIrOp(op, options);
     if (desc) return [desc];
     return reduceDimModuleOpDescs(op, attrs);
   }
 
   if (op.op === "softmax" || op.op === "logSoftmax") {
-    const desc = moduleOpDescForIrOp(op);
+    const desc = moduleOpDescForIrOp(op, options);
     if (desc) return [desc];
     const rank = op.inputShape ? op.inputShape.length : 0;
     const axis = frontendAxisForRank(attrs.dim, rank);
@@ -878,7 +887,7 @@ function moduleOpDescsForIrOp(op: any): readonly NativeModuleOpDesc[] | null {
   }
 
   if (op.op !== "select") {
-    const desc = moduleOpDescForIrOp(op);
+    const desc = moduleOpDescForIrOp(op, options);
     return desc ? [desc] : null;
   }
 
@@ -1654,7 +1663,7 @@ function kernelizerDiagnosticForIrOp(op: any) {
   return diagnosticForKernelizerOp(op, "unsupported-op", `native module Program compiler cannot lower ${op.op}`);
 }
 
-function kernelizeTensorProgramIr(ir: any) {
+function kernelizeTensorProgramIr(ir: any, options: KernelizerOptions = {}) {
   const nativeOps = [];
   const ops = [];
   const elidedOps = [];
@@ -1667,7 +1676,7 @@ function kernelizeTensorProgramIr(ir: any) {
         shapeOps.push(ir.ops[index]);
       }
       const finalShapeOp = shapeOps[shapeOps.length - 1];
-      const desc = moduleOpDescForIrOp(finalShapeOp);
+      const desc = moduleOpDescForIrOp(finalShapeOp, options);
       if (!desc) {
         return {
           kernelPlan: null,
@@ -1730,7 +1739,7 @@ function kernelizeTensorProgramIr(ir: any) {
     if (ir.ops[index + 2] && canFuseMatmulAddActivationIrOps(op, ir.ops[index + 1], ir.ops[index + 2], ir.values)) {
       const addOp = ir.ops[index + 1];
       const activationOp = ir.ops[index + 2];
-      const desc = moduleOpDescForIrOp(op);
+      const desc = moduleOpDescForIrOp(op, options);
       if (!desc) {
         return {
           kernelPlan: null,
@@ -1750,7 +1759,7 @@ function kernelizeTensorProgramIr(ir: any) {
 
     if (canFuseMatmulAddActivationIrOps(op, ir.ops[index + 1], null, ir.values)) {
       const addOp = ir.ops[index + 1];
-      const desc = moduleOpDescForIrOp(op);
+      const desc = moduleOpDescForIrOp(op, options);
       if (!desc) {
         return {
           kernelPlan: null,
@@ -1769,7 +1778,7 @@ function kernelizeTensorProgramIr(ir: any) {
 
     if (canFuseLinearActivationIrOps(op, ir.ops[index + 1])) {
       const activationOp = ir.ops[index + 1];
-      const desc = moduleOpDescForIrOp(op);
+      const desc = moduleOpDescForIrOp(op, options);
       if (!desc) {
         return {
           kernelPlan: null,
@@ -1788,7 +1797,7 @@ function kernelizeTensorProgramIr(ir: any) {
 
     if (canFuseAffineActivationIrOps(op, ir.ops[index + 1])) {
       const activationOp = ir.ops[index + 1];
-      const desc = moduleOpDescForIrOp(op);
+      const desc = moduleOpDescForIrOp(op, options);
       if (!desc) {
         return {
           kernelPlan: null,
@@ -1807,7 +1816,7 @@ function kernelizeTensorProgramIr(ir: any) {
 
     if (canFuseFeatureElementwiseActivationIrOps(op, ir.ops[index + 1])) {
       const activationOp = ir.ops[index + 1];
-      const desc = moduleOpDescForIrOp(op);
+      const desc = moduleOpDescForIrOp(op, options);
       if (!desc) {
         return {
           kernelPlan: null,
@@ -1826,7 +1835,7 @@ function kernelizeTensorProgramIr(ir: any) {
 
     if (canFuseConv2dActivationIrOps(op, ir.ops[index + 1])) {
       const activationOp = ir.ops[index + 1];
-      const desc = moduleOpDescForIrOp(op);
+      const desc = moduleOpDescForIrOp(op, options);
       if (!desc) {
         return {
           kernelPlan: null,
@@ -1845,7 +1854,7 @@ function kernelizeTensorProgramIr(ir: any) {
 
     if (canFuseFeatureNormActivationIrOps(op, ir.ops[index + 1])) {
       const activationOp = ir.ops[index + 1];
-      const desc = moduleOpDescForIrOp(op);
+      const desc = moduleOpDescForIrOp(op, options);
       if (!desc) {
         return {
           kernelPlan: null,
@@ -1862,7 +1871,7 @@ function kernelizeTensorProgramIr(ir: any) {
       continue;
     }
 
-    const descs = moduleOpDescsForIrOp(op);
+    const descs = moduleOpDescsForIrOp(op, options);
     if (!descs) {
       return {
         kernelPlan: null,

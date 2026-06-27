@@ -5975,15 +5975,15 @@ export interface LazyTensor<Shape extends TensorShapeTuple = TensorShapeTuple> {
   trace(): ModuleProgramTrace;
   tensorProgramIr(): ModuleTensorProgramIr | null;
   tensor_program_ir(): ModuleTensorProgramIr | null;
-  kernelPlan(): ModuleKernelPlan | null;
-  kernel_plan(): ModuleKernelPlan | null;
-  artifacts(): LazyCompilerArtifacts;
-  compileSupport(): LazyCompileSupport;
-  compile_support(): LazyCompileSupport;
-  canCompile(): boolean;
-  can_compile(): boolean;
-  requireCompileSupport(): LazyCompileSupport;
-  require_compile_support(): LazyCompileSupport;
+  kernelPlan(options?: CompileOptions): ModuleKernelPlan | null;
+  kernel_plan(options?: CompileOptions): ModuleKernelPlan | null;
+  artifacts(options?: CompileOptions): LazyCompilerArtifacts;
+  compileSupport(options?: CompileOptions): LazyCompileSupport;
+  compile_support(options?: CompileOptions): LazyCompileSupport;
+  canCompile(options?: CompileOptions): boolean;
+  can_compile(options?: CompileOptions): boolean;
+  requireCompileSupport(options?: CompileOptions): LazyCompileSupport;
+  require_compile_support(options?: CompileOptions): LazyCompileSupport;
   compile(options?: CompileOptions): Program<TensorShapeTuple, Shape>;
 }
 export type LazyModuleTarget = NnModule | readonly NnModule[];
@@ -6066,14 +6066,14 @@ export interface LazyNamespace {
   moduleArtifacts<const Shape extends TensorShapeTuple>(target: LazyModuleTarget, options: LazyModuleTraceOptions<Shape>): LazyCompilerArtifacts;
   moduleCompileSupport<const Shape extends TensorShapeTuple>(target: LazyModuleTarget, options: LazyModuleTraceOptions<Shape>): LazyCompileSupport;
   trace(tensor: LazyTensor): ModuleProgramTrace;
-  artifacts(tensor: LazyTensor): LazyCompilerArtifacts;
+  artifacts(tensor: LazyTensor, options?: CompileOptions): LazyCompilerArtifacts;
   tensorProgramIr(tensor: LazyTensor): ModuleTensorProgramIr | null;
-  kernelPlan(tensor: LazyTensor): ModuleKernelPlan | null;
-  compileSupport(tensor: LazyTensor): LazyCompileSupport;
-  canCompile(tensor: LazyTensor): boolean;
-  can_compile(tensor: LazyTensor): boolean;
-  requireCompileSupport(tensor: LazyTensor): LazyCompileSupport;
-  require_compile_support(tensor: LazyTensor): LazyCompileSupport;
+  kernelPlan(tensor: LazyTensor, options?: CompileOptions): ModuleKernelPlan | null;
+  compileSupport(tensor: LazyTensor, options?: CompileOptions): LazyCompileSupport;
+  canCompile(tensor: LazyTensor, options?: CompileOptions): boolean;
+  can_compile(tensor: LazyTensor, options?: CompileOptions): boolean;
+  requireCompileSupport(tensor: LazyTensor, options?: CompileOptions): LazyCompileSupport;
+  require_compile_support(tensor: LazyTensor, options?: CompileOptions): LazyCompileSupport;
 }
 export type PublicLazyNamespace = Readonly<LazyNamespace>;
 export type PublicDataNamespace = Readonly<DataNamespace>;
