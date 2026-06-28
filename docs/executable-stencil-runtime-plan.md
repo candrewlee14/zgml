@@ -2142,6 +2142,13 @@ at `absorbed=3.00x`, median/worst `2.81x`, while proving
 `width_parallel=2:lanes:8`. The focused input-bridge gate still fails steady
 attempts below the `2.45x` absorbed floor, so future correct-but-weaker probes
 remain caught automatically.
+An attempted eight-lane row-chain width-partial variant failed before it could
+be benchmarked: the Metal pipeline rejected the shader because its threadgroup
+memory requirement was `49,152` bytes, above the observed `32,768` byte device
+budget. The backend now has a compile-time guard that derives this footprint
+from `ROW_CHAIN_WIDTH_LANES` and `ROW_CHAIN_TILE`, so lane-count experiments
+must first change the storage model rather than accidentally exceeding the
+current Metal budget.
 The row-serial semantic down loops now use an eight-hidden-value unroll instead
 of the older four-wide accumulation in both the plain semantic FFN and direct
 input-bridge kernels. A fresh three-attempt input-bridge microscope kept

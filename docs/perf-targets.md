@@ -393,7 +393,10 @@ machine for both prompt/prefill and decode.
   encoder to both the model-width input projection and the hidden-width down
   tail. A fresh three-attempt gate passes with `absorbed=3.00x`, median/worst
   `2.81x`, `max_abs_diff=0.000002`, and `width_parallel=2:lanes:8`, while a
-  future kernel still needs to remove the remaining five-dispatch split. The
+  future kernel still needs to remove the remaining five-dispatch split. An
+  eight-lane variant exceeded the current Metal threadgroup memory budget
+  (`49,152` bytes required versus `32,768` allowed), so the backend now guards
+  the derived row-chain width-partial footprint at compile time. The
   frontier artifacts now expose `qmatmul_row_chain_width_parallel_count` and
   lane totals, so the bridge and input-bridge gates can prove when the
   width-partitioned Metal leaves actually ran rather than relying on the broader

@@ -50,6 +50,16 @@ const QMATMUL_ROW_CHAIN_THREADS: u32 = 256;
 const SEMANTIC_FFN_THREADS: u32 = 512;
 const SEMANTIC_FFN_INPUT_BRIDGE_THREADS: u32 = 1024;
 const ROW_CHAIN_WIDTH_LANES: u32 = 4;
+const ROW_CHAIN_WIDTH_THREADGROUP_MEMORY_LIMIT_BYTES: usize = 32 * 1024;
+const ROW_CHAIN_WIDTH_THREADGROUP_FLOATS: usize =
+    @as(usize, ROW_CHAIN_WIDTH_LANES) * @as(usize, ROW_CHAIN_TILE) * 8 * 2 +
+    @as(usize, ROW_CHAIN_WIDTH_LANES) * @as(usize, ROW_CHAIN_TILE) * @as(usize, ROW_CHAIN_TILE);
+const ROW_CHAIN_WIDTH_THREADGROUP_BYTES: usize = ROW_CHAIN_WIDTH_THREADGROUP_FLOATS * @sizeOf(f32);
+comptime {
+    if (ROW_CHAIN_WIDTH_THREADGROUP_BYTES > ROW_CHAIN_WIDTH_THREADGROUP_MEMORY_LIMIT_BYTES) {
+        @compileError("row-chain width-partial threadgroup memory exceeds the current Metal device budget");
+    }
+}
 const SEMANTIC_FFN_MAX_DIM: u32 = 1024;
 const SEMANTIC_FFN_MAX_HIDDEN: u32 = 1536;
 // 4 simdgroups per threadgroup (128 threads), each handles 8x8 sub-tiles
