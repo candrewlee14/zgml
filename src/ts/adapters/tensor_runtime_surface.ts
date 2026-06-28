@@ -111,6 +111,8 @@ export type AdapterTensorRuntimeSurfaceOptions<
   nativeEagerReduceMinLength?: number;
   nativeEagerDotInto?: NativeEagerDotInto;
   nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
+  nativeFullF32?: (output: Float32Array, value: number) => void;
+  nativeArangeF32?: (output: Float32Array, start: number, step: number) => void;
   meanSquaredError: (tensor: TTensor, target: unknown) => TTensor;
   dtype: TensorMetadataOpsOptions<TTensor>["dtype"];
   device: TensorMetadataOpsOptions<TTensor>["device"];
@@ -197,6 +199,8 @@ export function createAdapterTensorRuntimeSurface<
     isTensor: (value: unknown): value is TTensor => value instanceof options.Tensor,
     isNativeBuffer: options.isNativeBuffer,
     nativeBufferFromFloat32: options.nativeBufferFromFloat32,
+    nativeFullF32: options.nativeFullF32,
+    nativeArangeF32: options.nativeArangeF32,
     createTensorFactoryHelpers: options.sharedFrontend.createTensorFactoryHelpers,
     createTensorViewHelpers: options.sharedFrontend.createTensorViewHelpers,
     createTensorViewSurfaceHelpers: options.sharedFrontend.createTensorViewSurfaceHelpers,

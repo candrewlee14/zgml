@@ -352,6 +352,12 @@ const {
   nativeEagerSoftmaxInto: (output, input, options) => options && options.logSoftmax
     ? nativeEager.logSoftmaxInto(output, input, options)
     : nativeEager.softmaxInto(output, input, options),
+  nativeFullF32: (output, value) => {
+    check(nodeSymbolGroups.nativeEager.eagerFullF32(output, output.length, value));
+  },
+  nativeArangeF32: (output, start, step) => {
+    check(nodeSymbolGroups.nativeEager.eagerArangeF32(output, output.length, start, step));
+  },
   meanSquaredError: (tensor, target) => meanSquaredError(tensor, target),
   dtype: (tensor) => tensorPlacementHelpers.dtype(tensor),
   device: (tensor) => tensorPlacementHelpers.device(tensor),

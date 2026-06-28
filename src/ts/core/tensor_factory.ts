@@ -24,6 +24,8 @@ type TensorConstructor = new (
 
 export type TensorFactoryHelpersOptions = Readonly<{
   Tensor?: TensorConstructor;
+  nativeFullF32?: (output: Float32Array, value: number) => void;
+  nativeArangeF32?: (output: Float32Array, start: number, step: number) => void;
 }>;
 
 let defaultSeededRng: (() => number) | null = null;
@@ -79,12 +81,23 @@ export function createTensorFactoryHelpers(options: TensorFactoryHelpersOptions 
     throw new Error("tensor factory helpers require a Tensor constructor");
   }
   const TensorCtor = TensorClass as TensorConstructor;
+  const nativeFullF32 = typeof options.nativeFullF32 === "function" ? options.nativeFullF32 : null;
+  const nativeArangeF32 = typeof options.nativeArangeF32 === "function" ? options.nativeArangeF32 : null;
+
+  function fillRange(data: Float32Array, start: number, step: number) {
+    if (nativeArangeF32 !== null) {
+      nativeArangeF32(data, start, step);
+      return;
+    }
+    for (let i = 0; i < data.length; i += 1) data[i] = start + step * i;
+  }
 
   function full(shape: number | Shape, value: number, tensorOptions: TensorOptions = {}) {
     if (!Number.isFinite(value)) throw new Error(`full tensor value must be finite, got ${value}`);
     const spec = normalizeFactoryShape(shape);
     const data = new Float32Array(spec.length);
-    data.fill(value);
+    if (nativeFullF32 !== null) nativeFullF32(data, value);
+    else data.fill(value);
     return new TensorCtor(data, spec.shape, tensorOptions);
   }
 
@@ -235,7 +248,7 @@ export function createTensorFactoryHelpers(options: TensorFactoryHelpersOptions 
     const spec = normalizeFactoryShape(shape, "linspace shape");
     const data = new Float32Array(spec.length);
     const step = (end - start) / spec.length;
-    for (let i = 0; i < data.length; i += 1) data[i] = start + step * i;
+    fillRange(data, start, step);
     return new TensorCtor(data, spec.shape, tensorOptions);
   }
 
@@ -256,14 +269,16 @@ export function createTensorFactoryHelpers(options: TensorFactoryHelpersOptions 
     if (!Number.isFinite(begin) || !Number.isFinite(finish) || !Number.isFinite(step) || step === 0) {
       throw new Error("arange start, end, and step must be finite numbers with non-zero step");
     }
-    const values = [];
+    let length = 0;
     if (step > 0) {
-      for (let value = begin; value < finish; value += step) values.push(value);
+      for (let value = begin; value < finish; value += step) length += 1;
     } else {
-      for (let value = begin; value > finish; value += step) values.push(value);
+      for (let value = begin; value > finish; value += step) length += 1;
     }
-    if (values.length === 0) throw new Error("arange produced an empty tensor");
-    return new TensorCtor(Float32Array.from(values), [values.length], tensorOptions);
+    if (!Number.isSafeInteger(length) || length <= 0) throw new Error("arange produced an empty tensor");
+    const data = new Float32Array(length);
+    fillRange(data, begin, step);
+    return new TensorCtor(data, [length], tensorOptions);
   }
 
   return {

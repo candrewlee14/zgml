@@ -85,6 +85,8 @@ export type TensorHostSurfaceOptions<TTensor extends TensorHostValueTarget, TNat
   readonly isTensor: (value: unknown) => value is TTensor;
   readonly isNativeBuffer: (value: unknown) => value is TNativeBuffer;
   readonly nativeBufferFromFloat32: (data: Float32Array) => TNativeBuffer;
+  readonly nativeFullF32?: (output: Float32Array, value: number) => void;
+  readonly nativeArangeF32?: (output: Float32Array, start: number, step: number) => void;
   readonly createTensorFactoryHelpers: typeof createTensorFactoryHelpers;
   readonly createTensorViewHelpers: typeof createTensorViewHelpers;
   readonly createTensorViewSurfaceHelpers: typeof createTensorViewSurfaceHelpers;
@@ -116,7 +118,11 @@ export type TensorHostSurface<TTensor extends TensorHostValueTarget> = Readonly<
 export function createTensorHostSurface<TTensor extends TensorHostValueTarget, TNativeBuffer = unknown>(
   options: TensorHostSurfaceOptions<TTensor, TNativeBuffer>,
 ): TensorHostSurface<TTensor> {
-  const tensorFactoryHelpers = options.createTensorFactoryHelpers({ Tensor: options.Tensor });
+  const tensorFactoryHelpers = options.createTensorFactoryHelpers({
+    Tensor: options.Tensor,
+    nativeFullF32: options.nativeFullF32,
+    nativeArangeF32: options.nativeArangeF32,
+  });
   const tensorViewHelpers = options.createTensorViewHelpers({
     Tensor: options.Tensor,
     addTensorGrad: options.addTensorGrad,

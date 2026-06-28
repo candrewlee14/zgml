@@ -1189,6 +1189,12 @@ const {
   nativeEagerSoftmaxInto: (output, input, options) => options && options.logSoftmax
     ? nativeEager.logSoftmaxInto(output, input, options)
     : nativeEager.softmaxInto(output, input, options),
+  nativeFullF32: (output, value) => {
+    check(bunSymbolGroups.nativeEager.eagerFullF32(output, BigInt(output.length), value));
+  },
+  nativeArangeF32: (output, start, step) => {
+    check(bunSymbolGroups.nativeEager.eagerArangeF32(output, BigInt(output.length), start, step));
+  },
   meanSquaredError: (tensor: Tensor, target: unknown): Tensor => {
     const loss = meanSquaredError(tensor, target as TensorLike);
     if (!(loss instanceof Tensor)) throw new Error("adapter tensor meanSquaredError must return a Tensor loss");

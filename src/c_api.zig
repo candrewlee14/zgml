@@ -2007,6 +2007,35 @@ fn writeSoftmaxRowsF32(input: []const f32, output: []f32, rows: usize, cols: usi
     }
 }
 
+export fn zgml_eager_full_f32(
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    value: f32,
+) c_int {
+    if (output_ptr == null or output_len == 0 or !std.math.isFinite(value)) return status(.invalid_argument);
+    const output = output_ptr.?[0..output_len];
+    @memset(output, value);
+    return status(.ok);
+}
+
+export fn zgml_eager_arange_f32(
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    start: f32,
+    step: f32,
+) c_int {
+    if (output_ptr == null or output_len == 0 or !std.math.isFinite(start) or !std.math.isFinite(step) or step == 0) {
+        return status(.invalid_argument);
+    }
+    const output = output_ptr.?[0..output_len];
+    var value = start;
+    for (output) |*slot| {
+        slot.* = value;
+        value += step;
+    }
+    return status(.ok);
+}
+
 fn eagerLinearF32(
     input_ptr: ?[*]const f32,
     input_len: usize,
@@ -13563,6 +13592,42 @@ test "C ABI native eager dot writes scalar output" {
         rhs[0..].ptr,
         rhs.len,
         output[0..].ptr,
+        0,
+    ));
+}
+
+test "C ABI native eager tensor factories fill caller output" {
+    var full_output = [_]f32{0} ** 5;
+    try std.testing.expectEqual(status(.ok), zgml_eager_full_f32(
+        full_output[0..].ptr,
+        full_output.len,
+        -2.5,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ -2.5, -2.5, -2.5, -2.5, -2.5 }, &full_output);
+
+    var range_output = [_]f32{0} ** 4;
+    try std.testing.expectEqual(status(.ok), zgml_eager_arange_f32(
+        range_output[0..].ptr,
+        range_output.len,
+        1.5,
+        0.25,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 1.5, 1.75, 2.0, 2.25 }, &range_output);
+
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_full_f32(
+        null,
+        full_output.len,
+        1,
+    ));
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_full_f32(
+        full_output[0..].ptr,
+        0,
+        1,
+    ));
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_arange_f32(
+        range_output[0..].ptr,
+        range_output.len,
+        0,
         0,
     ));
 }
