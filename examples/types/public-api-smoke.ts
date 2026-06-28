@@ -237,6 +237,7 @@ import {
   type NativeEagerConv2dIntoOptions,
   type NativeEagerMatmulIntoOptions,
   type NativeEagerPool2dIntoOptions,
+  type NativeEagerReduceDimIntoOptions,
   type NativeEagerRoutingPolicy,
   type PublicLossNamespace,
   type NnLossConstructorName,
@@ -2607,6 +2608,9 @@ const nativeEagerElementwiseInto: Float32Array = zgml.nativeEager.elementwiseInt
 const nativeEagerElementwiseIntoAlias: Float32Array = zgml.native_eager.elementwise_into(new Float32Array(2), linearInput, null, { op: "sqr" });
 const nativeEagerReduceInto: Float32Array = zgml.nativeEager.reduceInto(new Float32Array(1), linearInput, { op: "sum" });
 const nativeEagerReduceIntoAlias: Float32Array = zgml.native_eager.reduce_into(new Float32Array(1), linearInput, { op: "max" });
+const nativeEagerReduceDimOptions: NativeEagerReduceDimIntoOptions = { op: "sum", outer: 2, reduce: 3, inner: 1 };
+const nativeEagerReduceDimInto: Float32Array = zgml.nativeEager.reduceDimInto(new Float32Array(2), tensor([1, 2, 3, 4, 5, 6], [2, 3] as const), nativeEagerReduceDimOptions);
+const nativeEagerReduceDimIntoAlias: Float32Array = zgml.native_eager.reduce_dim_into(new Float32Array(2), tensor([1, 2, 3, 4, 5, 6], [2, 3] as const), { op: "max", outer: 2, reduce: 3, inner: 1 });
 const nativeEagerConv2dOptions: NativeEagerConv2dIntoOptions = { outH: 2, outW: 2 };
 const nativeEagerConv2dInto: Float32Array = zgml.nativeEager.conv2dInto(
   new Float32Array(4),
@@ -6706,6 +6710,9 @@ void nativeEagerElementwiseInto;
 void nativeEagerElementwiseIntoAlias;
 void nativeEagerReduceInto;
 void nativeEagerReduceIntoAlias;
+void nativeEagerReduceDimOptions;
+void nativeEagerReduceDimInto;
+void nativeEagerReduceDimIntoAlias;
 void nativeEagerConv2dOptions;
 void nativeEagerConv2dInto;
 void nativeEagerConv2dIntoAlias;
