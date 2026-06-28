@@ -66,7 +66,7 @@ export const nodeNativeEagerRoutingPolicy = routingPolicy("node", {
 export const bunNativeEagerRoutingPolicy = routingPolicy("bun", {
   matmul: "native",
   softmax: "native",
-  elementwiseMinLength: 65536,
+  elementwiseMinLength: 512,
   activationMinLength: 65536,
   reduceMinLength: 512,
   disabledActivations: [],

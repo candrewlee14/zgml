@@ -630,9 +630,13 @@ Current checked progress:
   arithmetic/comparison ops; fresh Node/Bun
   direct rows show `elementwise_mul_batched` at `264.63x` / `262.06x`, and the
   direct Node dot row shows `dot_batched` at `38.63x` with no product
-  allocation. The public Tensor path still preserves the runtime-specific
-  thresholds. Bias-style row broadcasts flatten the leading dimensions and use
-  the last dimension as `cols`, so `[batch, features] + [features]`,
+  allocation. Bun now uses the same 512-element no-grad native eager
+  elementwise threshold as Node while keeping its activation threshold
+  conservative; a June 28, 2026 Bun artifact measured ordinary public
+  `zgml.noGrad(() => input.mul(2))` at `86.44x` versus eager JS, with direct
+  `nativeEager.elementwiseInto` at `248.06x`. Bias-style row broadcasts flatten
+  the leading dimensions and use the last dimension as `cols`, so
+  `[batch, features] + [features]`,
   `[features] + [batch, features]`, and rank-N trailing bias adds cross into
   Zig without a TypeScript broadcast loop. The fresh Node row for
   `elementwise_add_row_broadcast_batched` measured direct native eager at

@@ -1027,7 +1027,8 @@ function checkScripts() {
     "nodeNativeEagerRoutingPolicy",
     "bunNativeEagerRoutingPolicy",
     "nativeEagerRoutingActivationEnabled",
-    "elementwiseMinLength: 65536",
+    "elementwiseMinLength: 512",
+    "activationMinLength: 65536",
     "disabledActivations: []",
   ]);
   requireIncludes(read("src/ts/adapters/node_ffi_runtime.ts"), "src/ts/adapters/node_ffi_runtime.ts", "Node native eager activation dispatch policy", [

@@ -908,7 +908,8 @@ function checkPackageExports(errors) {
     "nodeNativeEagerRoutingPolicy",
     "bunNativeEagerRoutingPolicy",
     "nativeEagerRoutingActivationEnabled",
-    "elementwiseMinLength: 65536",
+    "elementwiseMinLength: 512",
+    "activationMinLength: 65536",
     "disabledActivations: []",
   ]) {
     if (!nativeEagerRoutingPolicySource.includes(required)) {

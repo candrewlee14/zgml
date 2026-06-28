@@ -407,7 +407,8 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const routingPolicy = nativeEager.routingPolicy;
   const routingPolicyAlias = nativeEagerAlias.routing_policy;
   const expectedRuntime = label.includes("bun") ? "bun" : "node";
-  const expectedElementwiseMinLength = expectedRuntime === "bun" ? 65536 : 512;
+  const expectedElementwiseMinLength = 512;
+  const expectedActivationMinLength = expectedRuntime === "bun" ? 65536 : 512;
   const expectedDisabledActivations = "";
   if (
     !Object.isFrozen(routingPolicy) ||
@@ -418,11 +419,12 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     routingPolicy.tensorMath.matmul !== "native" ||
     routingPolicy.tensorMath.softmax !== "native" ||
     routingPolicy.tensorMath.elementwiseMinLength !== expectedElementwiseMinLength ||
-    routingPolicy.tensorMath.activationMinLength !== expectedElementwiseMinLength ||
+    routingPolicy.tensorMath.activationMinLength !== expectedActivationMinLength ||
     routingPolicy.tensorMath.reduceMinLength !== 512 ||
     routingPolicy.tensorMath.disabledActivations.join("|") !== expectedDisabledActivations ||
     !routingPolicy.signature.includes(`runtime=${expectedRuntime}`) ||
     !routingPolicy.signature.includes(`elementwiseMin=${expectedElementwiseMinLength}`) ||
+    !routingPolicy.signature.includes(`activationMin=${expectedActivationMinLength}`) ||
     !routingPolicy.signature.includes("disabledActivations=none")
   ) {
     throw new Error(`${label} expected nativeEager routing policy evidence`);
