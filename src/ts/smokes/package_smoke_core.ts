@@ -7390,6 +7390,39 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     ) {
       throw new Error(`${label} expected train.fitNative, zgml.fitNative, and module.fitNative to require native Zig training`);
     }
+    const dropLastBulkModel = new adapter.nn.Sequential([
+      adapter.nn.linear(2, 4, {
+        weights: [0.2, -0.1, 0.05, 0.1, -0.2, 0.15, 0.03, -0.04],
+        bias: [0, 0, 0, 0],
+      }),
+      adapter.nn.relu(),
+      adapter.nn.linear(4, 2, {
+        weights: [0.1, -0.2, 0.2, 0.1, -0.05, 0.03, 0.07, -0.08],
+        bias: [0, 0],
+      }),
+    ]);
+    const dropLastBulkOptimizer = adapter.optim.adam(dropLastBulkModel, { lr: 0.01 });
+    const dropLastBulkDataset = adapter.data.tensorDataset(
+      adapter.tensor([0, 0, 1, 0, 0, 1], [3, 2]),
+      adapter.tensor([0, 1, 0], [3]),
+    );
+    const dropLastBulkLoader = adapter.data.dataLoader(dropLastBulkDataset, { batch_size: 2, drop_last: true });
+    const dropLastBulkFit = dropLastBulkModel.fit(dropLastBulkLoader, {
+      optimizer: dropLastBulkOptimizer,
+      loss: adapter.loss.crossEntropyLoss({ classes: 2 }),
+      epochs: 1,
+    });
+    if (
+      dropLastBulkFit.native !== true ||
+      dropLastBulkFit.nativeBulk !== true ||
+      dropLastBulkFit.compiledPlan?.loweredBy !== "zig-ffi" ||
+      dropLastBulkFit.steps !== 1 ||
+      dropLastBulkFit.sampleCount !== 3 ||
+      dropLastBulkFit.bulkResult?.sampleCount !== 2 ||
+      dropLastBulkFit.bulkResult?.datasetSampleCount !== 3
+    ) {
+      throw new Error(`${label} expected drop_last tensor DataLoader to keep fixed-shape model.fit on the native Zig bulk trainer`);
+    }
   }
   if (
     !adapter.train.isTrainFitStepEvidence(fitSteps[0]) ||

@@ -3041,9 +3041,11 @@ fn trainMlpReluCrossEntropyAdamLikeBulkF32(
         in_features == 0 or hidden_features == 0 or classes == 0 or epochs == 0 or
         !finiteAdamConfig(lr, beta1, beta2, eps, weight_decay)) return status(.invalid_argument);
 
-    const dataset_input_count = checkedElementCount(sample_count, in_features) orelse return status(.shape_mismatch);
+    // sample_count is the number of indexed rows to train; dataset_count bounds the backing tensors.
+    const dataset_count = dataset_target_len;
+    const dataset_input_count = checkedElementCount(dataset_count, in_features) orelse return status(.shape_mismatch);
     const batch_input_count = checkedElementCount(batch, in_features) orelse return status(.shape_mismatch);
-    if (dataset_input_len != dataset_input_count or dataset_target_len != sample_count or
+    if (dataset_input_len != dataset_input_count or dataset_count == 0 or
         indices_len != sample_count or batch_input_len != batch_input_count or
         batch_target_len != batch or sample_count % batch != 0) return status(.shape_mismatch);
 
@@ -3064,7 +3066,7 @@ fn trainMlpReluCrossEntropyAdamLikeBulkF32(
             for (0..batch) |row| {
                 const raw_index = indices[batch_base + row];
                 const sample_index: usize = @intCast(raw_index);
-                if (sample_index >= sample_count) return status(.shape_mismatch);
+                if (sample_index >= dataset_count) return status(.shape_mismatch);
                 const src = dataset_input[sample_index * in_features ..][0..in_features];
                 const dst = batch_input[row * in_features ..][0..in_features];
                 @memcpy(dst, src);

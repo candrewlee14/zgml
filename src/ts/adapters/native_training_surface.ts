@@ -278,7 +278,6 @@ function tensorDatasetBulkSource(batches: unknown, batch: number, inFeatures: nu
     loader.collateFn !== null ||
     loader.collate_fn !== null ||
     loader.batchSize !== batch ||
-    loader.dropLast === true ||
     typeof loader.batchRows !== "function"
   ) return null;
   const input = dataset.input as AnyRecord | null;
@@ -299,12 +298,14 @@ function tensorDatasetBulkSource(batches: unknown, batch: number, inFeatures: nu
       flat.push(row);
     }
   }
-  if (flat.length !== sampleCount || flat.length % batch !== 0) return null;
+  if (flat.length === 0 || flat.length % batch !== 0) return null;
+  if (loader.dropLast !== true && flat.length !== sampleCount) return null;
   return Object.freeze({
     datasetInput: input.data as Float32Array,
     datasetTargets: targetData,
     indices: new Uint32Array(flat),
-    sampleCount,
+    sampleCount: flat.length,
+    datasetSampleCount: sampleCount,
   });
 }
 
@@ -508,6 +509,8 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
           batch,
           sampleCount: source.sampleCount,
           sample_count: source.sampleCount,
+          datasetSampleCount: source.datasetSampleCount,
+          dataset_sample_count: source.datasetSampleCount,
           epochs,
           steps: result.steps,
           optimizerStep: adam.t,

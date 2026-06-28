@@ -221,7 +221,11 @@ weight updates moved it again to `2.715x` while the small bounded run reaches
 `7.848x`. This is the right "TS API, Zig execution" architecture: the ergonomic
 API remains `model.fit(...)`, and the hot path is now native enough that the
 next large performance move should focus on broader model coverage and matmul
-throughput rather than JS callback overhead.
+throughput rather than JS callback overhead. Fixed-shape tensor `DataLoader`
+training also keeps the same native bulk lane when `drop_last` is enabled: the
+Zig kernel now receives the consumed row count separately from the backing
+dataset row count, so the common "drop the partial final batch" API shape does
+not force a JavaScript fallback.
 
 The refined compiler shape is:
 
