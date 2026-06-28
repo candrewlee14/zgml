@@ -395,6 +395,29 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEagerAlias.softmax_into !== "function" || typeof nativeEagerAlias.log_softmax_into !== "function") {
     throw new Error(`${label} expected native_eager softmax/log_softmax aliases`);
   }
+  const routingPolicy = nativeEager.routingPolicy;
+  const routingPolicyAlias = nativeEagerAlias.routing_policy;
+  const expectedRuntime = label.includes("bun") ? "bun" : "node";
+  const expectedElementwiseMinLength = expectedRuntime === "bun" ? 65536 : 512;
+  const expectedDisabledActivations = expectedRuntime === "bun" ? "relu|sigmoid" : "relu";
+  if (
+    !Object.isFrozen(routingPolicy) ||
+    routingPolicyAlias !== routingPolicy ||
+    routingPolicy.kind !== "zgml.native-eager-routing-policy" ||
+    routingPolicy.runtime !== expectedRuntime ||
+    routingPolicy.nativeCore !== "zig-c-abi" ||
+    routingPolicy.tensorMath.matmul !== "native" ||
+    routingPolicy.tensorMath.softmax !== "native" ||
+    routingPolicy.tensorMath.elementwiseMinLength !== expectedElementwiseMinLength ||
+    routingPolicy.tensorMath.activationMinLength !== expectedElementwiseMinLength ||
+    routingPolicy.tensorMath.reduceMinLength !== 512 ||
+    routingPolicy.tensorMath.disabledActivations.join("|") !== expectedDisabledActivations ||
+    !routingPolicy.signature.includes(`runtime=${expectedRuntime}`) ||
+    !routingPolicy.signature.includes(`elementwiseMin=${expectedElementwiseMinLength}`) ||
+    !routingPolicy.signature.includes(`disabledActivations=${routingPolicy.tensorMath.disabledActivations.join(",")}`)
+  ) {
+    throw new Error(`${label} expected nativeEager routing policy evidence`);
+  }
   const input = adapter.tensor([1, 2, 3, 4], [2, 2]);
   const weights = adapter.tensor([1, 0, 0.5, 0, 1, -0.5], [2, 3]);
   const bias = adapter.tensor([0.25, -0.25, 0.5], [3]);

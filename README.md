@@ -501,6 +501,9 @@ constructors, view helpers, parameter views, shape/layout-aware state
 dictionaries, loss functions, tiny training helpers, optimizer config parsing,
 optimizer snapshot validation, and `zeroGrad`, so Node and Bun cannot drift on
 tensor, model, loss, training, or optimizer checkpoint semantics.
+Node and Bun also expose `nativeEager.routingPolicy`, a frozen contract that
+names which ergonomic tensor calls route through the Zig C ABI and which small or
+runtime-sensitive cases intentionally stay in the JS/TS fallback.
 JS/TS declarations call the shared bind object `ModuleBindings` at the module
 seam and `ProgramBindings` at the Program seam. `ModuleBindings` is branded
 read-only evidence produced by module helpers, while `ProgramBindings` remains

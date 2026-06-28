@@ -233,6 +233,7 @@ import {
   type NativeEagerConv2dIntoOptions,
   type NativeEagerMatmulIntoOptions,
   type NativeEagerPool2dIntoOptions,
+  type NativeEagerRoutingPolicy,
   type PublicLossNamespace,
   type NnLossConstructorName,
   type NnLossConstructors,
@@ -2576,6 +2577,10 @@ const moduleForInferenceSnakeAlias: CompiledInference<readonly [2], TensorShapeT
 const moduleCompileInferenceAlias: CompiledInference<readonly [2], TensorShapeTuple> = linear.compileInference(linearTypedCompileOptions);
 const nativeEagerLinearInto: Float32Array = zgml.nativeEager.linearInto(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), { bias: tensor([0, 0, 0], [3] as const) });
 const nativeEagerLinearIntoAlias: Float32Array = zgml.native_eager.linear_into(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), { bias: tensor([0, 0, 0], [3] as const) });
+const nativeEagerRoutingPolicy: NativeEagerRoutingPolicy = zgml.nativeEager.routingPolicy;
+const nativeEagerRoutingPolicyAlias: NativeEagerRoutingPolicy = zgml.native_eager.routing_policy;
+const nativeEagerRoutingCore: "zig-c-abi" = nativeEagerRoutingPolicy.nativeCore;
+const nativeEagerRoutingMatmul: "native" = nativeEagerRoutingPolicy.tensorMath.matmul;
 const nativeEagerMatmulOptions: NativeEagerMatmulIntoOptions = { rows: 1, shared: 2, cols: 3 };
 const nativeEagerMatmulInto: Float32Array = zgml.nativeEager.matmulInto(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), nativeEagerMatmulOptions);
 const nativeEagerMatmulIntoAlias: Float32Array = zgml.native_eager.matmul_into(new Float32Array(3), linearInput, tensor([1, 0, 0, 1, 1, 1], [2, 3] as const), nativeEagerMatmulOptions);
@@ -6588,6 +6593,10 @@ void linearModulePreflight;
 void compileNamespacePreflight;
 void nativeEagerLinearInto;
 void nativeEagerLinearIntoAlias;
+void nativeEagerRoutingPolicy;
+void nativeEagerRoutingPolicyAlias;
+void nativeEagerRoutingCore;
+void nativeEagerRoutingMatmul;
 void nativeEagerMatmulOptions;
 void nativeEagerMatmulInto;
 void nativeEagerMatmulIntoAlias;

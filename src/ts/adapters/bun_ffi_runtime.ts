@@ -147,6 +147,10 @@ import {
   createAdapterNativeEagerSurface,
 } from "./native_eager_surface.js";
 import {
+  bunNativeEagerRoutingPolicy,
+  nativeEagerRoutingActivationEnabled,
+} from "./native_eager_routing_policy.js";
+import {
   createAdapterNativeCoreSurface,
 } from "./native_core_surface.js";
 import {
@@ -1160,12 +1164,13 @@ const {
   isGradEnabled: projectedIsGradEnabled,
   nativeEagerMatmulInto: (output, lhs, rhs, options) => nativeEager.matmulInto(output, lhs, rhs, options),
   nativeEagerElementwiseInto: (output, lhs, rhs, options) => nativeEager.elementwiseInto(output, lhs, rhs, options),
-  nativeEagerElementwiseMinLength: 65536,
+  nativeEagerElementwiseMinLength: bunNativeEagerRoutingPolicy.tensorMath.elementwiseMinLength,
   nativeEagerActivationInto: (output, input, options) => nativeEager.activationInto(output, input, options),
-  nativeEagerActivationMinLength: 65536,
-  nativeEagerActivationEnabled: (activation) => activation !== "relu" && activation !== "sigmoid",
+  nativeEagerActivationMinLength: bunNativeEagerRoutingPolicy.tensorMath.activationMinLength,
+  nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(bunNativeEagerRoutingPolicy, activation),
   nativeEagerWhereInto: (output, condition, input, other) => nativeEager.whereInto(output, condition, input, other),
   nativeEagerReduceInto: (output, input, options) => nativeEager.reduceInto(output, input, options),
+  nativeEagerReduceMinLength: bunNativeEagerRoutingPolicy.tensorMath.reduceMinLength,
   nativeEagerSoftmaxInto: (output, input, options) => options && options.logSoftmax
     ? nativeEager.logSoftmaxInto(output, input, options)
     : nativeEager.softmaxInto(output, input, options),
@@ -2183,7 +2188,7 @@ const {
   requireBindingPlanForModuleBindings,
 } = adapterFrontendModuleSurface.moduleFacadeHelpers;
 
-export const { nativeEager } = createAdapterNativeEagerSurface({
+const nativeEagerSurface = createAdapterNativeEagerSurface({
   f32: (value) => f32(value as TensorLike),
   check,
   linearF32: (args) => (args.transposedWeights
@@ -2328,6 +2333,11 @@ export const { nativeEager } = createAdapterNativeEagerSurface({
     BigInt(args.cols),
     args.logSoftmax ? 1 : 0,
   ),
+});
+export const nativeEager = Object.freeze({
+  ...nativeEagerSurface.nativeEager,
+  routingPolicy: bunNativeEagerRoutingPolicy,
+  routing_policy: bunNativeEagerRoutingPolicy,
 });
 export const native_eager = nativeEager;
 export const { nativeCore, native_core } = createAdapterNativeCoreSurface({

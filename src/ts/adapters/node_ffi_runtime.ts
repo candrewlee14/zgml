@@ -111,6 +111,10 @@ const {
   createAdapterNativeEagerSurface,
 } = require("./native_eager_surface.js");
 const {
+  nativeEagerRoutingActivationEnabled,
+  nodeNativeEagerRoutingPolicy,
+} = require("./native_eager_routing_policy.js");
+const {
   createAdapterNativeCoreSurface,
 } = require("./native_core_surface.js");
 const {
@@ -326,11 +330,14 @@ const {
   isGradEnabled,
   nativeEagerMatmulInto: (output, lhs, rhs, options) => nativeEager.matmulInto(output, lhs, rhs, options),
   nativeEagerElementwiseInto: (output, lhs, rhs, options) => nativeEager.elementwiseInto(output, lhs, rhs, options),
+  nativeEagerElementwiseMinLength: nodeNativeEagerRoutingPolicy.tensorMath.elementwiseMinLength,
   nativeEagerActivationInto: (output, input, options) => nativeEager.activationInto(output, input, options),
-  nativeEagerActivationEnabled: (activation) => activation !== "relu",
+  nativeEagerActivationMinLength: nodeNativeEagerRoutingPolicy.tensorMath.activationMinLength,
+  nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(nodeNativeEagerRoutingPolicy, activation),
   nativeEagerWhereInto: (output, condition, input, other) => nativeEager.whereInto(output, condition, input, other),
   nativeEagerClampInto: (output, input, options) => nativeEager.clampInto(output, input, options),
   nativeEagerReduceInto: (output, input, options) => nativeEager.reduceInto(output, input, options),
+  nativeEagerReduceMinLength: nodeNativeEagerRoutingPolicy.tensorMath.reduceMinLength,
   nativeEagerSoftmaxInto: (output, input, options) => options && options.logSoftmax
     ? nativeEager.logSoftmaxInto(output, input, options)
     : nativeEager.softmaxInto(output, input, options),
@@ -1118,7 +1125,7 @@ const {
   requireBindingPlanForModuleBindings,
 } = adapterFrontendModuleSurface.moduleFacadeHelpers;
 
-const { nativeEager } = createAdapterNativeEagerSurface({
+const nativeEagerSurface = createAdapterNativeEagerSurface({
   f32: (value, label) => f32(value, label),
   check,
   linearF32: (args) => (args.transposedWeights
@@ -1263,6 +1270,11 @@ const { nativeEager } = createAdapterNativeEagerSurface({
     args.cols,
     args.logSoftmax ? 1 : 0,
   ),
+});
+const nativeEager = Object.freeze({
+  ...nativeEagerSurface.nativeEager,
+  routingPolicy: nodeNativeEagerRoutingPolicy,
+  routing_policy: nodeNativeEagerRoutingPolicy,
 });
 const native_eager = nativeEager;
 const { nativeCore, native_core } = createAdapterNativeCoreSurface({

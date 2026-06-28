@@ -2249,7 +2249,25 @@ export type NativeEagerPool2dIntoOptions = Readonly<{
   countIncludePad?: boolean;
   count_include_pad?: boolean;
 }>;
+export type NativeEagerRoutingActivation = "relu" | "gelu" | "silu" | "sigmoid" | "tanh";
+export type NativeEagerRoutingPolicy = Readonly<{
+  kind: "zgml.native-eager-routing-policy";
+  runtime: "node" | "bun";
+  source: "src/ts/adapters/native_eager_routing_policy.ts";
+  nativeCore: "zig-c-abi";
+  tensorMath: Readonly<{
+    matmul: "native";
+    softmax: "native";
+    elementwiseMinLength: number;
+    activationMinLength: number;
+    reduceMinLength: number;
+    disabledActivations: readonly NativeEagerRoutingActivation[];
+  }>;
+  signature: string;
+}>;
 export type PublicNativeEagerNamespace = Readonly<{
+  routingPolicy: NativeEagerRoutingPolicy;
+  routing_policy: NativeEagerRoutingPolicy;
   linearInto(output: Float32Array, input: TensorLike, weights: TensorLike, options?: NativeEagerLinearIntoOptions): Float32Array;
   linear_into(output: Float32Array, input: TensorLike, weights: TensorLike, options?: NativeEagerLinearIntoOptions): Float32Array;
   linearActivationInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerLinearActivationIntoOptions): Float32Array;

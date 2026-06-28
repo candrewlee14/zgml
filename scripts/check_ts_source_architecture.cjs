@@ -856,6 +856,19 @@ function checkPackageExports(errors) {
   const bunFfiRuntimeSource = readSource(path.join("src", "ts", "adapters", "bun_ffi_runtime.ts"));
   const nodeFfiRuntimeSource = readSource(path.join("src", "ts", "adapters", "node_ffi_runtime.ts"));
   const nativeEagerSurfaceSource = readSource(path.join("src", "ts", "adapters", "native_eager_surface.ts"));
+  const nativeEagerRoutingPolicySource = readSource(path.join("src", "ts", "adapters", "native_eager_routing_policy.ts"));
+  for (const required of [
+    "export type NativeEagerRoutingPolicy",
+    "nodeNativeEagerRoutingPolicy",
+    "bunNativeEagerRoutingPolicy",
+    "nativeEagerRoutingActivationEnabled",
+    "elementwiseMinLength: 65536",
+    "disabledActivations: [\"relu\", \"sigmoid\"]",
+  ]) {
+    if (!nativeEagerRoutingPolicySource.includes(required)) {
+      errors.push(`src/ts/adapters/native_eager_routing_policy.ts must keep inspectable Node/Bun native eager routing policy: ${required}`);
+    }
+  }
   for (const required of [
     "export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptions)",
     "function nativeEagerTensorData(value: unknown, label: string, f32: NativeEagerTensorFactory): Float32Array",
@@ -890,8 +903,12 @@ function checkPackageExports(errors) {
   }
   for (const required of [
     "createAdapterNativeEagerSurface",
-    "const { nativeEager } = createAdapterNativeEagerSurface({",
+    "nodeNativeEagerRoutingPolicy",
+    "const nativeEagerSurface = createAdapterNativeEagerSurface({",
     "f32: (value, label) => f32(value, label)",
+    "nativeEagerElementwiseMinLength: nodeNativeEagerRoutingPolicy.tensorMath.elementwiseMinLength",
+    "nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(nodeNativeEagerRoutingPolicy, activation)",
+    "routingPolicy: nodeNativeEagerRoutingPolicy",
     "args.transposedWeights",
     "? nodeSymbolGroups.nativeEager.eagerLinearTransposedWeightsF32",
     ": nodeSymbolGroups.nativeEager.eagerLinearF32)",
@@ -920,8 +937,12 @@ function checkPackageExports(errors) {
     "nativeEagerLinearActivationInto,",
     "nativeEagerConv2dInto,",
     "createAdapterNativeEagerSurface",
-    "export const { nativeEager } = createAdapterNativeEagerSurface({",
+    "bunNativeEagerRoutingPolicy",
+    "const nativeEagerSurface = createAdapterNativeEagerSurface({",
     "f32: (value) => f32(value as TensorLike)",
+    "nativeEagerElementwiseMinLength: bunNativeEagerRoutingPolicy.tensorMath.elementwiseMinLength",
+    "nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(bunNativeEagerRoutingPolicy, activation)",
+    "routingPolicy: bunNativeEagerRoutingPolicy",
     "args.transposedWeights",
     "? bunSymbolGroups.nativeEager.eagerLinearTransposedWeightsF32",
     ": bunSymbolGroups.nativeEager.eagerLinearF32)",

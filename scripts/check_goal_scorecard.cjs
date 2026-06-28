@@ -957,6 +957,9 @@ function checkScripts() {
     "NativeEagerMatmulIntoOptions",
     "NativeEagerPool2dIntoOptions",
     "NativeEagerSoftmaxIntoOptions",
+    "NativeEagerRoutingPolicy",
+    "routingPolicy: NativeEagerRoutingPolicy",
+    "routing_policy: NativeEagerRoutingPolicy",
     "linearActivationInto(output: Float32Array",
     "linear_activation_into(output: Float32Array",
     "activationInto(output: Float32Array",
@@ -982,11 +985,21 @@ function checkScripts() {
     "shared: lhsCols",
     "cols: rhsCols",
   ]);
+  requireIncludes(read("src/ts/adapters/native_eager_routing_policy.ts"), "src/ts/adapters/native_eager_routing_policy.ts", "native eager routing policy", [
+    "export type NativeEagerRoutingPolicy",
+    "nodeNativeEagerRoutingPolicy",
+    "bunNativeEagerRoutingPolicy",
+    "nativeEagerRoutingActivationEnabled",
+    "elementwiseMinLength: 65536",
+    "disabledActivations: [\"relu\", \"sigmoid\"]",
+  ]);
   requireIncludes(read("src/ts/adapters/node_ffi_runtime.ts"), "src/ts/adapters/node_ffi_runtime.ts", "Node native eager activation dispatch policy", [
-    "nativeEagerActivationEnabled: (activation) => activation !== \"relu\"",
+    "nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(nodeNativeEagerRoutingPolicy, activation)",
+    "routingPolicy: nodeNativeEagerRoutingPolicy",
   ]);
   requireIncludes(read("src/ts/adapters/bun_ffi_runtime.ts"), "src/ts/adapters/bun_ffi_runtime.ts", "Bun native eager activation dispatch policy", [
-    "nativeEagerActivationEnabled: (activation) => activation !== \"relu\" && activation !== \"sigmoid\"",
+    "nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(bunNativeEagerRoutingPolicy, activation)",
+    "routingPolicy: bunNativeEagerRoutingPolicy",
   ]);
   requireIncludes(read("src/ts/smokes/ts_source_smoke.ts"), "src/ts/smokes/ts_source_smoke.ts", "no-grad Tensor.bmm native eager smoke", [
     "const nativeBmmValues = Float32Array.from({ length: 2 * 8 * 8 }",
