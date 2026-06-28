@@ -24,6 +24,12 @@ import {
   type RawSequentialLayerListCompileDiagnostic,
 } from "./runtime/compile_support.js";
 import {
+  moduleBindingPlan as moduleBindingPlanForBindings,
+} from "./runtime/module_bindings.js";
+import {
+  programModuleBindingMetadata,
+} from "./runtime/program_module_binding.js";
+import {
   kernelPlanInputShape,
   kernelPlanOutputShape,
   programParameterLayoutFromKernelPlan,
@@ -64,6 +70,7 @@ import type {
   NnModule,
   Program,
   ProgramBindings,
+  ProgramBindingPlan,
   ProgramBufferLayout,
   ProgramBufferLayoutSlot,
   ProgramCompileEvidence,
@@ -532,6 +539,7 @@ function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShap
   session: Session<InputShape, OutputShape>,
   target: unknown,
   options: CompileNamespaceOptions,
+  bindOptions?: ModuleParameterPlacementOptions | ProgramBindings,
 ): CompiledInferenceHandle<InputShape, OutputShape> {
   let disposed = false;
   const dispose = () => {
@@ -541,6 +549,12 @@ function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShap
     program.dispose();
   };
   const executionPlan = program.requireExecutionPlan() as ProgramExecutionPlan<InputShape, OutputShape>;
+  const moduleBindingMetadata = programModuleBindingMetadata(session);
+  const inferenceBindings = moduleBindingMetadata?.bindings ?? bindOptions ?? {};
+  const parameterBindingPlan = moduleBindingMetadata
+    ? moduleBindingPlanForBindings(moduleBindingMetadata.bindings) as ModuleBindingPlan<InputShape, OutputShape>
+    : null;
+  const programBindingPlan = program.bindingPlan(inferenceBindings as ProgramBindings<InputShape, OutputShape>) as ProgramBindingPlan<InputShape, OutputShape>;
   return Object.freeze({
     native: true,
     program,
@@ -562,6 +576,18 @@ function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShap
     },
     compileEvidence() {
       return program.compileEvidence() as ProgramCompileEvidence | null;
+    },
+    parameterBindingPlan() {
+      return parameterBindingPlan;
+    },
+    parameter_binding_plan() {
+      return parameterBindingPlan;
+    },
+    programBindingPlan() {
+      return programBindingPlan;
+    },
+    program_binding_plan() {
+      return programBindingPlan;
     },
     requirements() {
       return program.requirements() as ProgramRequirements;
@@ -668,7 +694,7 @@ export function compileForInference(target: unknown, options: CompileNamespaceOp
   if (!session || typeof session !== "object") {
     throw new Error("compile.compileForInference expected bindModule() or explicit Program bindings to return a Session");
   }
-  return compiledInferenceHandle(program as Program, session as Session, target, options);
+  return compiledInferenceHandle(program as Program, session as Session, target, options, bindOptions);
 }
 
 export const compile_for_inference = compileForInference;

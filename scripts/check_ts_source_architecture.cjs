@@ -13947,7 +13947,11 @@ function checkProgramBindingSurfaceIsShared(errors) {
     "const moduleRecord = module as ProgramModuleBindingModule | null | undefined;",
     "const compatibility = programRecord.moduleCompatibility(module, options);",
     "const bindings = moduleRecord.placeParameters(program, options);",
-    "return programRecord.bind(bindings)._ownBuffers(ownedBuffers);",
+    "export const programModuleBindingsSymbol = Symbol.for(\"zgml.programModuleBindings\");",
+    "export function programModuleBindingMetadata(session: unknown): ProgramModuleBindingMetadata | null",
+    "return annotateProgramModuleBindingSession(",
+    "programRecord.bind(bindings)._ownBuffers(ownedBuffers),",
+    "{ module, options, bindings },",
   ]) {
     if (!programModuleBindingSource.includes(needle)) {
       errors.push(`src/ts/runtime/program_module_binding.ts must expose typed Program module binding helpers for TS-owned Program binding composition: ${needle}`);

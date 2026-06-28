@@ -15,6 +15,12 @@ import {
   requireModuleBindingPlan,
   requireModuleCompilePlan,
 } from "../runtime/execution_plan.js";
+import {
+  moduleBindingPlan as moduleBindingPlanForBindings,
+} from "../runtime/module_bindings.js";
+import {
+  programModuleBindingMetadata,
+} from "../runtime/program_module_binding.js";
 import type { ModuleFacadeTarget } from "../runtime/module_facade.js";
 import type {
   ActivationKind,
@@ -93,6 +99,7 @@ type NativeInferenceProgram = Record<string, unknown> & {
   outputShape?: () => unknown;
   kernelPlan?: () => unknown;
   compilerSignatures?: () => unknown;
+  bindingPlan?: (bindings?: unknown) => unknown;
 };
 type NativeInferenceSession = Record<string, unknown> & {
   stepTensor(input: unknown): unknown;
@@ -619,6 +626,7 @@ export function createNnNamespace(options: NnNamespaceOptions) {
     const outputShape = requireProgramMethod("outputShape");
     const kernelPlan = requireProgramMethod("kernelPlan");
     const compilerSignatures = requireProgramMethod("compilerSignatures");
+    const bindingPlan = requireProgramMethod("bindingPlan");
     const nativeSession = session as NativeInferenceSession;
     const requireSessionMethod = (method: keyof NativeInferenceSession & string) => {
       const fn = nativeSession[method];
@@ -633,6 +641,12 @@ export function createNnNamespace(options: NnNamespaceOptions) {
     const stepContract = requireSessionMethod("stepContract");
     const hotPathPlan = requireSessionMethod("hotPathPlan");
     const executionPlan = program.requireExecutionPlan();
+    const moduleBindingMetadata = programModuleBindingMetadata(nativeSession);
+    const inferenceBindings = moduleBindingMetadata?.bindings ?? bindOptions ?? {};
+    const parameterBindingPlan = moduleBindingMetadata
+      ? moduleBindingPlanForBindings(moduleBindingMetadata.bindings)
+      : null;
+    const programBindingPlan = bindingPlan(inferenceBindings);
     let disposed = false;
     const dispose = () => {
       if (disposed) return;
@@ -679,6 +693,18 @@ export function createNnNamespace(options: NnNamespaceOptions) {
       },
       compileEvidence() {
         return compileEvidence();
+      },
+      parameterBindingPlan() {
+        return parameterBindingPlan;
+      },
+      parameter_binding_plan() {
+        return parameterBindingPlan;
+      },
+      programBindingPlan() {
+        return programBindingPlan;
+      },
+      program_binding_plan() {
+        return programBindingPlan;
       },
       requirements() {
         return requirements();

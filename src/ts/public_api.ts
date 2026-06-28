@@ -7363,6 +7363,10 @@ export type CompiledInference<InputShape extends TensorShapeTuple = TensorShapeT
   preflight(): ModuleCompileExplanation<InputShape, OutputShape> | ModuleCompileSupport<InputShape, OutputShape>;
   compileSupport(): ModuleCompileSupport<InputShape, OutputShape>;
   compileEvidence(): ProgramCompileEvidence | null;
+  parameterBindingPlan(): ModuleBindingPlan<InputShape, OutputShape> | null;
+  parameter_binding_plan(): ModuleBindingPlan<InputShape, OutputShape> | null;
+  programBindingPlan(): ProgramBindingPlan<InputShape, OutputShape>;
+  program_binding_plan(): ProgramBindingPlan<InputShape, OutputShape>;
   requirements(): ProgramRequirements;
   bufferLayout(): ProgramBufferLayout;
   bufferSlotNames(): readonly string[];

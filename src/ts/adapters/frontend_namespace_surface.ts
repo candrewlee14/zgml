@@ -20,6 +20,12 @@ import {
 import {
   compileSupportRejectionReason,
 } from "../runtime/compile_support.js";
+import {
+  moduleBindingPlan as moduleBindingPlanForBindings,
+} from "../runtime/module_bindings.js";
+import {
+  programModuleBindingMetadata,
+} from "../runtime/program_module_binding.js";
 
 type LossTrainHelpersOptions = Parameters<SharedFrontendRuntime["createLossTrainHelpers"]>[0];
 type OptimizerClassesOptions = Parameters<SharedFrontendRuntime["createOptimizerClasses"]>[0];
@@ -973,6 +979,7 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     session: Record<string, any>,
     target: unknown,
     compileOptions: CompileNamespaceOptions,
+    bindOptions?: unknown,
   ) {
     let disposed = false;
     const compileEvidence = requireNativeProgramMethod(program, "compileEvidence");
@@ -984,6 +991,7 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     const outputShape = requireNativeProgramMethod(program, "outputShape");
     const kernelPlan = requireNativeProgramMethod(program, "kernelPlan");
     const compilerSignatures = requireNativeProgramMethod(program, "compilerSignatures");
+    const bindingPlan = requireNativeProgramMethod(program, "bindingPlan");
     const sessionBufferLayout = requireNativeSessionMethod(session, "bufferLayout");
     const sessionBufferSlotNames = requireNativeSessionMethod(session, "bufferSlotNames");
     const sessionBufferSlot = requireNativeSessionMethod(session, "bufferSlot");
@@ -996,6 +1004,12 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       program.dispose();
     };
     const executionPlan = program.requireExecutionPlan();
+    const moduleBindingMetadata = programModuleBindingMetadata(session);
+    const inferenceBindings = moduleBindingMetadata?.bindings ?? bindOptions ?? {};
+    const parameterBindingPlan = moduleBindingMetadata
+      ? moduleBindingPlanForBindings(moduleBindingMetadata.bindings)
+      : null;
+    const programBindingPlan = bindingPlan(inferenceBindings);
     return Object.freeze({
       native: true,
       program,
@@ -1035,6 +1049,18 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       },
       compileEvidence() {
         return compileEvidence();
+      },
+      parameterBindingPlan() {
+        return parameterBindingPlan;
+      },
+      parameter_binding_plan() {
+        return parameterBindingPlan;
+      },
+      programBindingPlan() {
+        return programBindingPlan;
+      },
+      program_binding_plan() {
+        return programBindingPlan;
       },
       requirements() {
         return requirements();
@@ -1105,6 +1131,7 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       session as Record<string, any>,
       module,
       compileOptions,
+      bindOptions,
     );
   }
 

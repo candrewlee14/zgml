@@ -5422,6 +5422,10 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const inferenceExecutionPlan = inference.requireExecutionPlan();
     const inferenceCompileEvidence = inferenceExecutionPlan.compileEvidence;
     const inferenceHandleEvidence = inference.compileEvidence();
+    const inferenceParameterBindingPlan = inference.parameterBindingPlan();
+    const inferenceParameterBindingPlanAlias = inference.parameter_binding_plan();
+    const inferenceProgramBindingPlan = inference.programBindingPlan();
+    const inferenceProgramBindingPlanAlias = inference.program_binding_plan();
     const inferenceRequirements = inference.requirements();
     const inferenceBufferLayout = inference.bufferLayout();
     const inferenceSlotNames = inference.bufferSlotNames();
@@ -5438,6 +5442,13 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       inferenceCompileEvidence?.nativeCore !== "zig-module-program" ||
       inferenceHandleEvidence !== inference.program.compileEvidence() ||
       inferenceHandleEvidence !== inferenceCompileEvidence ||
+      inferenceParameterBindingPlan?.placementMode !== "native" ||
+      inferenceParameterBindingPlanAlias?.signature !== inferenceParameterBindingPlan.signature ||
+      inferenceParameterBindingPlan.usesNativeBuffers !== true ||
+      inferenceParameterBindingPlan.nativeSlots.join("|") !== "weights|bias" ||
+      inferenceProgramBindingPlan.mode !== "native" ||
+      inferenceProgramBindingPlanAlias.signature !== inferenceProgramBindingPlan.signature ||
+      inferenceProgramBindingPlan.usesNativeBuffers !== true ||
       inferenceCompileEvidence.nativeRequirementsSource !== "zig-module-program" ||
       inferenceCompileEvidence.nativeCompilerAuthority !== "zig-module-program" ||
       inferenceCompileEvidence.nativeProgramInspectionSource !== "zig-program-inspection" ||
@@ -5686,6 +5697,10 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     if (
       lazyInference.compileSupport().supported !== true ||
       lazyInference.compileEvidence() !== lazyInference.program.compileEvidence() ||
+      lazyInference.parameterBindingPlan() !== null ||
+      lazyInference.parameter_binding_plan() !== null ||
+      lazyInference.programBindingPlan().mode !== "host" ||
+      lazyInference.program_binding_plan().signature !== lazyInference.programBindingPlan().signature ||
       lazyInference.requirements().signature !== lazyInference.program.requirements().signature ||
       lazyInference.bufferLayout().signature !== lazyInference.program.bufferLayout().signature ||
       lazyInference.bufferSlot("output")?.byteLength !== lazyInference.program.bufferSlot("output")?.byteLength ||
