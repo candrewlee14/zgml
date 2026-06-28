@@ -2012,6 +2012,45 @@ const shader_source =
     \\    }
     \\}
     \\
+    \\kernel void qmatmul_semantic_ffn_input_bridge_finalize_row_tiles_f32(
+    \\    device const float* output_scratch [[buffer(0)]],
+    \\    device const float* partial_src    [[buffer(1)]],
+    \\    device const float* output_scale   [[buffer(2)]],
+    \\    device float*       output_dst     [[buffer(3)]],
+    \\    constant QMatmulSemanticFfnInputBridgeParams& p [[buffer(4)]],
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = group.x * ROW_CHAIN_TILE;
+    \\    const uint gCol = group.y * ROW_CHAIN_TILE;
+    \\    threadgroup float inv_rms[ROW_CHAIN_TILE];
+    \\    if (tid < ROW_CHAIN_TILE) {
+    \\        uint cr = gRow + tid;
+    \\        if (cr < p.M) {
+    \\            float ss = 0.0f;
+    \\            for (uint t = 0; t < p.partial_cols; t += 1) {
+    \\                ss += partial_src[p.partial_dst_offset + cr * p.partial_cols + t];
+    \\            }
+    \\            inv_rms[tid] = 1.0f / sqrt(ss / float(p.O) + p.output_rms_eps);
+    \\        } else {
+    \\            inv_rms[tid] = 0.0f;
+    \\        }
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < ROW_CHAIN_TILE * ROW_CHAIN_TILE; i += SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS) {
+    \\        uint r = i / ROW_CHAIN_TILE;
+    \\        uint c = i - r * ROW_CHAIN_TILE;
+    \\        uint cr = gRow + r;
+    \\        uint col = gCol + c;
+    \\        if (cr < p.M && col < p.O) {
+    \\            uint linear = cr * p.O + col;
+    \\            output_dst[p.output_dst_offset + linear] =
+    \\                output_scratch[p.output_scratch_offset + linear] * inv_rms[r] * output_scale[p.output_scale_src_offset + col];
+    \\        }
+    \\    }
+    \\}
+    \\
     \\kernel void qmatmul_row_chain_f32(
     \\    device const char*  weight_data   [[buffer(0)]],
     \\    device const float* weight_scales [[buffer(1)]],
@@ -5963,6 +6002,7 @@ const MetalKernel = enum(u8) {
     qmatmul_semantic_ffn_input_bridge_product_f32,
     qmatmul_semantic_ffn_input_bridge_width_partials_f32,
     qmatmul_semantic_ffn_input_bridge_finalize_tiles_f32,
+    qmatmul_semantic_ffn_input_bridge_finalize_row_tiles_f32,
     qmatmul_row_chain_f32,
     qmatmul_row_chain_tiled_f32,
     qmatmul_row_chain_tiled_partials_f32,
@@ -10629,11 +10669,11 @@ const CompiledProgram = struct {
             view.device_bufs[output_out.dst],
         };
         exec.encodeKernel(
-            .qmatmul_semantic_ffn_input_bridge_finalize_tiles_f32,
+            .qmatmul_semantic_ffn_input_bridge_finalize_row_tiles_f32,
             &finalize_buffers,
             params,
             4,
-            .{ .gx = params.M, .gy = output_tiles },
+            .{ .gx = std.math.divCeil(u32, params.M, ROW_CHAIN_TILE) catch return false, .gy = output_tiles },
             SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS,
         );
         return true;

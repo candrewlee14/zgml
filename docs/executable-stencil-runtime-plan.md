@@ -1196,8 +1196,20 @@ three-dispatch staged structure. Fresh evidence stays correct and moves
 `direct_width` to `1.39x` (`max_abs_diff=0.000002`,
 `runtime_dispatches=3`, `fallback=staged`). This is still diagnostic rather
 than promotable because the retained decomposed absorbed path remains faster at
-`absorbed=2.68x`, but the remaining gap is now product/gate-up staging plus
-finalize overhead instead of an obviously scalar down tile.
+`absorbed=2.68x`, but the remaining gap is no longer an obviously scalar down
+tile.
+A row-tiled finalize pass then removed the matching tiny finalize launch shape
+from that same staged diagnostic. The finalize stage now computes row RMS for a
+32-row tile and writes a 32-column output tile, reducing the prompt shape from
+2,304 row/output-tile finalize groups to 72 row/output-tile groups while
+preserving the same three-dispatch staged structure and exact
+`semantic_with_input_width_parallel_kernel` target counters. Fresh five-attempt
+evidence stays correct (`max_abs_diff=0.000002`) and moves the diagnostic to
+`direct_width=1.50x` (`median=1.47x`, `runtime_dispatches=3`,
+`fallback=staged`) while the retained decomposed absorbed path remains faster
+at `absorbed=2.77x` (`median=2.65x`, worst `2.61x`). The remaining direct-width
+gap is now product/gate-up staging plus the scratch partial architecture, not
+per-row finalize launch overhead.
 With that proof surface in place, the absorbed decomposed bridge now uses the
 same width-partial row-chain encoder for the model-width input projection as
 well as the hidden-width down tail. The guard is deliberately narrow: it only
