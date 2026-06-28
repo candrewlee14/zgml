@@ -99,6 +99,15 @@ type NativeEagerGatherInto = (
     axisLen: number;
   }>,
 ) => Float32Array;
+type NativeEagerFlipInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{
+    shape: Uint32Array;
+    strides: Uint32Array;
+    axes: Uint32Array;
+  }>,
+) => Float32Array;
 
 export type AdapterTensorRuntimeSurfaceOptions<
   TTensor extends AdapterTensorInstance = AdapterTensorInstance,
@@ -146,6 +155,7 @@ export type AdapterTensorRuntimeSurfaceOptions<
   nativeEagerTakeInto?: NativeEagerTakeInto;
   nativeEagerIndexSelectInto?: NativeEagerIndexSelectInto;
   nativeEagerGatherInto?: NativeEagerGatherInto;
+  nativeEagerFlipInto?: NativeEagerFlipInto;
   nativeFullF32?: (output: Float32Array, value: number) => void;
   nativeArangeF32?: (output: Float32Array, start: number, step: number) => void;
   meanSquaredError: (tensor: TTensor, target: unknown) => TTensor;
@@ -240,6 +250,7 @@ export function createAdapterTensorRuntimeSurface<
     nativeTakeF32: options.nativeEagerTakeInto,
     nativeIndexSelectF32: options.nativeEagerIndexSelectInto,
     nativeGatherF32: options.nativeEagerGatherInto,
+    nativeFlipF32: options.nativeEagerFlipInto,
     createTensorFactoryHelpers: options.sharedFrontend.createTensorFactoryHelpers,
     createTensorViewHelpers: options.sharedFrontend.createTensorViewHelpers,
     createTensorViewSurfaceHelpers: options.sharedFrontend.createTensorViewSurfaceHelpers,

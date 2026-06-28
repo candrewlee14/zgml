@@ -2254,6 +2254,74 @@ export fn zgml_eager_gather_f32(
     return status(.ok);
 }
 
+export fn zgml_eager_flip_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    shape_ptr: ?[*]const u32,
+    strides_ptr: ?[*]const u32,
+    axes_ptr: ?[*]const u32,
+    rank: usize,
+    axes_len: usize,
+) c_int {
+    const max_rank = 16;
+    if (input_ptr == null or
+        output_ptr == null or
+        shape_ptr == null or
+        strides_ptr == null or
+        axes_ptr == null or
+        input_len == 0 or
+        output_len == 0 or
+        rank == 0 or
+        rank > max_rank or
+        axes_len == 0 or
+        axes_len > rank) return status(.invalid_argument);
+
+    const shape = shape_ptr.?[0..rank];
+    const strides = strides_ptr.?[0..rank];
+    const axes = axes_ptr.?[0..axes_len];
+    var flipped = [_]bool{false} ** max_rank;
+    for (axes) |axis| {
+        if (axis >= rank or flipped[axis]) return status(.shape_mismatch);
+        flipped[axis] = true;
+    }
+
+    var out_strides: [max_rank]usize = undefined;
+    var expected_output: usize = 1;
+    for (shape) |dim| {
+        if (dim == 0) return status(.invalid_argument);
+        expected_output = std.math.mul(usize, expected_output, @as(usize, dim)) catch return status(.shape_mismatch);
+    }
+    if (expected_output != output_len or output_len != input_len) return status(.shape_mismatch);
+
+    var stride: usize = 1;
+    var reverse_index = rank;
+    while (reverse_index > 0) {
+        reverse_index -= 1;
+        out_strides[reverse_index] = stride;
+        stride = std.math.mul(usize, stride, @as(usize, shape[reverse_index])) catch return status(.shape_mismatch);
+    }
+
+    const input = input_ptr.?[0..input_len];
+    const output = output_ptr.?[0..output_len];
+    for (0..output_len) |flat| {
+        var input_index: usize = 0;
+        for (0..rank) |dim| {
+            const coord = flat / out_strides[dim] % @as(usize, shape[dim]);
+            const input_coord = if (flipped[dim]) @as(usize, shape[dim]) - 1 - coord else coord;
+            input_index = std.math.add(
+                usize,
+                input_index,
+                std.math.mul(usize, input_coord, @as(usize, strides[dim])) catch return status(.shape_mismatch),
+            ) catch return status(.shape_mismatch);
+        }
+        if (input_index >= input_len) return status(.shape_mismatch);
+        output[flat] = input[input_index];
+    }
+    return status(.ok);
+}
+
 fn eagerLinearF32(
     input_ptr: ?[*]const f32,
     input_len: usize,
@@ -14023,6 +14091,55 @@ test "C ABI native eager gather writes caller output" {
         2,
         1,
         3,
+    ));
+}
+
+test "C ABI native eager flip writes caller output" {
+    const input = [_]f32{
+        1,  2,
+        3,  4,
+        5,  6,
+
+        7,  8,
+        9,  10,
+        11, 12,
+    };
+    const shape = [_]u32{ 2, 3, 2 };
+    const strides = [_]u32{ 6, 2, 1 };
+    const axes = [_]u32{ 0, 2 };
+    var output = [_]f32{0} ** 12;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_flip_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        shape[0..].ptr,
+        strides[0..].ptr,
+        axes[0..].ptr,
+        shape.len,
+        axes.len,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{
+        8,  7,
+        10, 9,
+        12, 11,
+        2,  1,
+        4,  3,
+        6,  5,
+    }, &output);
+
+    const duplicate_axes = [_]u32{ 1, 1 };
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_flip_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        shape[0..].ptr,
+        strides[0..].ptr,
+        duplicate_axes[0..].ptr,
+        shape.len,
+        duplicate_axes.len,
     ));
 }
 

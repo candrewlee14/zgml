@@ -1650,6 +1650,7 @@ const nativePermuteCalls = [];
 const nativeTakeCalls = [];
 const nativeIndexSelectCalls = [];
 const nativeGatherCalls = [];
+const nativeFlipCalls = [];
 const nativePermuteView = createTensorViewHelpers({
   Tensor: TensorDataSmokeTensor,
   addTensorGrad: tensorData.addTensorGrad,
@@ -1727,6 +1728,27 @@ const nativePermuteView = createTensorViewHelpers({
     }
     return output;
   },
+  nativeFlipInto(output, input, options) {
+    nativeFlipCalls.push({
+      shape: Array.from(options.shape),
+      strides: Array.from(options.strides),
+      axes: Array.from(options.axes),
+    });
+    const data = input.data ?? input;
+    const tensorShape = Array.from(options.shape);
+    const strides = Array.from(options.strides);
+    const axes = new Set(Array.from(options.axes));
+    for (let flat = 0; flat < output.length; flat += 1) {
+      let inputIndex = 0;
+      for (let dim = 0; dim < tensorShape.length; dim += 1) {
+        const coord = Math.floor(flat / strides[dim]) % tensorShape[dim];
+        const inputCoord = axes.has(dim) ? tensorShape[dim] - 1 - coord : coord;
+        inputIndex += inputCoord * strides[dim];
+      }
+      output[flat] = data[inputIndex];
+    }
+    return output;
+  },
 });
 const nativePermuteInput = new TensorDataSmokeTensor(Float32Array.from({ length: 24 }, (_value, index) => index + 1), [2, 3, 4]);
 expectSame(nativePermuteView.permute(nativePermuteInput, [1, 2, 0]).data, [
@@ -1764,6 +1786,19 @@ expectSame(nativeGatherCalls, [{
   axis: 1,
   axisLen: 3,
 }], "tensor view native gather hook calls");
+expectSame(nativePermuteView.flip(nativePermuteInput, [0, -1]).data, [
+  16, 15, 14, 13,
+  20, 19, 18, 17,
+  24, 23, 22, 21,
+  4, 3, 2, 1,
+  8, 7, 6, 5,
+  12, 11, 10, 9,
+], "tensor view native flip output");
+expectSame(nativeFlipCalls, [{
+  shape: [2, 3, 4],
+  strides: [12, 4, 1],
+  axes: [0, 2],
+}], "tensor view native flip hook calls");
 
 const tensorIndex = createTensorIndexHelpers();
 const indexTensor = { data: Float32Array.of(1, 2, 3, 4, 5, 6), shape: [2, 3] };

@@ -185,6 +185,17 @@ type NativeEagerGatherCall = (args: {
   axisLen: number;
 }) => number;
 
+type NativeEagerFlipCall = (args: {
+  inputData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  shape: Uint32Array;
+  strides: Uint32Array;
+  axes: Uint32Array;
+  rank: number;
+  axesLen: number;
+}) => number;
+
 type NativeEagerConv2dCall = (args: {
   inputData: Float32Array;
   weightData: Float32Array;
@@ -252,6 +263,7 @@ type NativeEagerSurfaceOptions = {
   takeF32?: NativeEagerTakeCall;
   indexSelectF32?: NativeEagerIndexSelectCall;
   gatherF32?: NativeEagerGatherCall;
+  flipF32?: NativeEagerFlipCall;
   conv2dF32?: NativeEagerConv2dCall;
   pool2dF32?: NativeEagerPool2dCall;
   matmulF32?: NativeEagerMatmulCall;
@@ -1083,6 +1095,54 @@ function nativeEagerGatherInputs(
   };
 }
 
+function nativeEagerFlipInputs(
+  output: Float32Array,
+  input: unknown,
+  callOptions: Record<string, unknown>,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.flipInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  if (inputData.length === 0) {
+    throw new Error(`${label} input must be non-empty`);
+  }
+  const shape = callOptions.shape;
+  const strides = callOptions.strides;
+  const axes = callOptions.axes;
+  if (!(shape instanceof Uint32Array) || !(strides instanceof Uint32Array) || !(axes instanceof Uint32Array)) {
+    throw new Error(`${label} requires Uint32Array shape, strides, and axes`);
+  }
+  const rank = shape.length;
+  if (rank === 0 || strides.length !== rank || axes.length === 0 || axes.length > rank) {
+    throw new Error(`${label} shape and strides must have the same non-empty rank and axes must be non-empty`);
+  }
+  let expectedOutput = 1;
+  for (let i = 0; i < shape.length; i += 1) {
+    const dim = shape[i];
+    if (!Number.isSafeInteger(dim) || dim <= 0) throw new Error(`${label} shape entries must be positive uint32 values`);
+    expectedOutput *= dim;
+  }
+  if (inputData.length < expectedOutput) {
+    throw new Error(`${label} input length ${inputData.length} is smaller than ${expectedOutput}`);
+  }
+  if (output.length < expectedOutput) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${expectedOutput}`);
+  }
+  return {
+    inputData,
+    output,
+    expectedOutput,
+    shape,
+    strides,
+    axes,
+    rank,
+    axesLen: axes.length,
+  };
+}
+
 function nativeEagerConv2dInputs(
   output: Float32Array,
   input: unknown,
@@ -1508,6 +1568,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     gather_into(output: Float32Array, input: unknown, index: unknown, callOptions?: Record<string, unknown>) {
       return this.gatherInto(output, input, index, callOptions);
+    },
+    flipInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.flipF32 !== "function") {
+        throw new Error("nativeEager.flipInto is unavailable in this runtime");
+      }
+      const args = nativeEagerFlipInputs(output, input, callOptions, options.f32);
+      options.check(options.flipF32(args));
+      return output;
+    },
+    flip_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
+      return this.flipInto(output, input, callOptions);
     },
     conv2dInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.conv2dF32 !== "function") {

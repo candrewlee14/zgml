@@ -383,6 +383,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.gatherInto !== "function") {
     throw new Error(`${label} expected nativeEager.gatherInto`);
   }
+  if (typeof nativeEager.flipInto !== "function") {
+    throw new Error(`${label} expected nativeEager.flipInto`);
+  }
   if (typeof nativeEager.bmmInto !== "function") {
     throw new Error(`${label} expected nativeEager.bmmInto`);
   }
@@ -430,6 +433,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   if (typeof nativeEagerAlias.gather_into !== "function") {
     throw new Error(`${label} expected native_eager.gather_into alias`);
+  }
+  if (typeof nativeEagerAlias.flip_into !== "function") {
+    throw new Error(`${label} expected native_eager.flip_into alias`);
   }
   if (typeof nativeEagerAlias.conv2d_into !== "function") {
     throw new Error(`${label} expected native_eager.conv2d_into alias`);
@@ -657,6 +663,27 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.gather_into to reuse caller output`);
   }
   expectClose(gatherAliasOutput, [3, 4, 1, 2], `${label} native_eager.gather_into output`);
+  const flipInput = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 3, 2]);
+  const flipOutput = new Float32Array(12);
+  const flipResult = nativeEager.flipInto(flipOutput, flipInput, {
+    shape: new Uint32Array([2, 3, 2]),
+    strides: new Uint32Array([6, 2, 1]),
+    axes: new Uint32Array([0, 2]),
+  });
+  if (flipResult !== flipOutput) {
+    throw new Error(`${label} expected nativeEager.flipInto to reuse caller output`);
+  }
+  expectClose(flipOutput, [8, 7, 10, 9, 12, 11, 2, 1, 4, 3, 6, 5], `${label} nativeEager.flipInto output`);
+  const flipAliasOutput = new Float32Array(4);
+  const flipAliasResult = nativeEagerAlias.flip_into(flipAliasOutput, adapter.tensor([1, 2, 3, 4], [2, 2]), {
+    shape: new Uint32Array([2, 2]),
+    strides: new Uint32Array([2, 1]),
+    axes: new Uint32Array([1]),
+  });
+  if (flipAliasResult !== flipAliasOutput) {
+    throw new Error(`${label} expected native_eager.flip_into to reuse caller output`);
+  }
+  expectClose(flipAliasOutput, [2, 1, 4, 3], `${label} native_eager.flip_into output`);
   const bmmLhs = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2]);
   const bmmRhs = adapter.tensor([1, 0, 0, 1, 2, 0, 0, 2], [2, 2, 2]);
   const bmmOutput = new Float32Array(8);

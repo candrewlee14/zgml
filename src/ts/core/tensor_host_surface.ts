@@ -91,6 +91,7 @@ export type TensorHostSurfaceOptions<TTensor extends TensorHostValueTarget, TNat
   readonly nativeTakeF32?: Parameters<typeof createTensorViewHelpers>[0]["nativeTakeInto"];
   readonly nativeIndexSelectF32?: Parameters<typeof createTensorViewHelpers>[0]["nativeIndexSelectInto"];
   readonly nativeGatherF32?: Parameters<typeof createTensorViewHelpers>[0]["nativeGatherInto"];
+  readonly nativeFlipF32?: Parameters<typeof createTensorViewHelpers>[0]["nativeFlipInto"];
   readonly createTensorFactoryHelpers: typeof createTensorFactoryHelpers;
   readonly createTensorViewHelpers: typeof createTensorViewHelpers;
   readonly createTensorViewSurfaceHelpers: typeof createTensorViewSurfaceHelpers;
@@ -135,6 +136,7 @@ export function createTensorHostSurface<TTensor extends TensorHostValueTarget, T
     nativeTakeInto: options.nativeTakeF32,
     nativeIndexSelectInto: options.nativeIndexSelectF32,
     nativeGatherInto: options.nativeGatherF32,
+    nativeFlipInto: options.nativeFlipF32,
   });
   const tensorViewSurfaceHelpers = options.createTensorViewSurfaceHelpers({ tensorViewHelpers });
   const tensorPlacementHelpers = options.createTensorPlacementHelpers({

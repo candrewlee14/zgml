@@ -65,6 +65,15 @@ type NativeGatherInto = (
     axisLen: number;
   }>,
 ) => Float32Array;
+type NativeFlipInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{
+    shape: Uint32Array;
+    strides: Uint32Array;
+    axes: Uint32Array;
+  }>,
+) => Float32Array;
 
 export type TensorViewHelpersOptions = Readonly<{
   Tensor: TensorConstructor;
@@ -74,6 +83,7 @@ export type TensorViewHelpersOptions = Readonly<{
   nativeTakeInto?: NativeTakeInto;
   nativeIndexSelectInto?: NativeIndexSelectInto;
   nativeGatherInto?: NativeGatherInto;
+  nativeFlipInto?: NativeFlipInto;
 }>;
 
 export type TensorViewSurfaceHelpersOptions = Readonly<{
@@ -90,6 +100,7 @@ export function createTensorViewHelpers(options: TensorViewHelpersOptions) {
   const nativeTakeInto = typeof options.nativeTakeInto === "function" ? options.nativeTakeInto : null;
   const nativeIndexSelectInto = typeof options.nativeIndexSelectInto === "function" ? options.nativeIndexSelectInto : null;
   const nativeGatherInto = typeof options.nativeGatherInto === "function" ? options.nativeGatherInto : null;
+  const nativeFlipInto = typeof options.nativeFlipInto === "function" ? options.nativeFlipInto : null;
   if (typeof TensorClass !== "function" || typeof addTensorGrad !== "function") {
     throw new Error("tensor view helpers require Tensor and addTensorGrad");
   }
@@ -432,25 +443,34 @@ export function createTensorViewHelpers(options: TensorViewHelpersOptions) {
     }
     const inStrides = rowMajorStrides(tensor.shape);
     const outData = new Float32Array(tensor.length);
-    const outToIn = new Uint32Array(tensor.length);
+    const needsGrad = gradModeEnabled() && tensor.requiresGrad;
+    const outToIn = needsGrad ? new Uint32Array(tensor.length) : null;
 
-    for (let flat = 0; flat < outData.length; flat += 1) {
-      let inIndex = 0;
-      for (let dim = 0; dim < rank; dim += 1) {
-        const coord = Math.floor(flat / inStrides[dim]) % tensor.shape[dim];
-        const inputCoord = axes.has(dim) ? tensor.shape[dim] - 1 - coord : coord;
-        inIndex += inputCoord * inStrides[dim];
+    if (!needsGrad && nativeFlipInto !== null) {
+      nativeFlipInto(outData, tensor, {
+        shape: u32Array(tensor.shape, "flip shape"),
+        strides: u32Array(inStrides, "flip strides"),
+        axes: u32Array(Array.from(axes), "flip axes"),
+      });
+    } else {
+      for (let flat = 0; flat < outData.length; flat += 1) {
+        let inIndex = 0;
+        for (let dim = 0; dim < rank; dim += 1) {
+          const coord = Math.floor(flat / inStrides[dim]) % tensor.shape[dim];
+          const inputCoord = axes.has(dim) ? tensor.shape[dim] - 1 - coord : coord;
+          inIndex += inputCoord * inStrides[dim];
+        }
+        if (outToIn !== null) outToIn[flat] = inIndex;
+        outData[flat] = tensor.data[inIndex];
       }
-      outToIn[flat] = inIndex;
-      outData[flat] = tensor.data[inIndex];
     }
 
     const out = new TensorCtor(outData, tensor.shape, {
-      requiresGrad: gradModeEnabled() && tensor.requiresGrad,
-      prev: gradModeEnabled() && tensor.requiresGrad ? [tensor] : [],
+      requiresGrad: needsGrad,
+      prev: needsGrad ? [tensor] : [],
     });
     out._backward = (grad: Float32Array | null) => {
-      if (!grad) return;
+      if (!grad || outToIn === null) return;
       const inGrad = new Float32Array(tensor.length);
       for (let i = 0; i < grad.length; i += 1) inGrad[outToIn[i]] += grad[i];
       addTensorGrad(tensor, inGrad);

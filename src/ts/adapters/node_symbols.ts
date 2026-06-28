@@ -66,6 +66,7 @@ export type NodeNativeSymbols = Readonly<{
   eagerTakeF32: NativeFunction;
   eagerIndexSelectF32: NativeFunction;
   eagerGatherF32: NativeFunction;
+  eagerFlipF32: NativeFunction;
   eagerConv2dF32: NativeFunction;
   eagerPool2dF32: NativeFunction;
   eagerSoftmaxF32: NativeFunction;
@@ -175,6 +176,7 @@ export function bindNodeSymbols(nativeLibrary: unknown): NodeNativeSymbols {
     eagerTakeF32: lib.func("int zgml_eager_take_f32(const float *input, size_t input_len, const uint32_t *indices, size_t indices_len, float *output, size_t output_len)"),
     eagerIndexSelectF32: lib.func("int zgml_eager_index_select_f32(const float *input, size_t input_len, const uint32_t *indices, size_t indices_len, float *output, size_t output_len, size_t outer, size_t axis_len, size_t inner)"),
     eagerGatherF32: lib.func("int zgml_eager_gather_f32(const float *input, size_t input_len, const uint32_t *indices, size_t indices_len, float *output, size_t output_len, const uint32_t *output_shape, const uint32_t *input_strides, size_t rank, size_t axis, size_t axis_len)"),
+    eagerFlipF32: lib.func("int zgml_eager_flip_f32(const float *input, size_t input_len, float *output, size_t output_len, const uint32_t *shape, const uint32_t *strides, const uint32_t *axes, size_t rank, size_t axes_len)"),
     eagerConv2dF32: lib.func("int zgml_eager_conv2d_f32(const float *input, size_t input_len, const float *weights, size_t weights_len, const float *bias, size_t bias_len, float *output, size_t output_len, size_t batch, size_t in_channels, size_t height, size_t width, size_t out_channels, size_t kernel_h, size_t kernel_w, size_t stride_h, size_t stride_w, size_t padding_h, size_t padding_w, size_t dilation_h, size_t dilation_w, size_t out_h, size_t out_w)"),
     eagerPool2dF32: lib.func("int zgml_eager_pool2d_f32(const float *input, size_t input_len, float *output, size_t output_len, size_t batch, size_t channels, size_t height, size_t width, size_t kernel_h, size_t kernel_w, size_t stride_h, size_t stride_w, size_t padding_h, size_t padding_w, size_t dilation_h, size_t dilation_w, size_t out_h, size_t out_w, uint32_t op, uint32_t ceil_mode, uint32_t count_include_pad)"),
     eagerSoftmaxF32: lib.func("int zgml_eager_softmax_f32(const float *input, size_t input_len, float *output, size_t output_len, size_t rows, size_t cols, uint32_t log_softmax)"),
