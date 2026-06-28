@@ -158,6 +158,7 @@ pub const RuntimeProfile = struct {
     semantic_ffn_sublayer_single_dispatch_dim_refusal_cap: u64 = 0,
     semantic_width_scratch_candidates: u64 = 0,
     semantic_width_scratch_bytes: u64 = 0,
+    semantic_width_scratch_input_bytes: u64 = 0,
     semantic_width_scratch_product_bytes: u64 = 0,
     semantic_width_scratch_down_partial_bytes: u64 = 0,
     semantic_width_scratch_output_bytes: u64 = 0,
@@ -173,6 +174,7 @@ pub const RuntimeProfile = struct {
         const program_command_shape = self.program_command_shape;
         const semantic_width_scratch_candidates = self.semantic_width_scratch_candidates;
         const semantic_width_scratch_bytes = self.semantic_width_scratch_bytes;
+        const semantic_width_scratch_input_bytes = self.semantic_width_scratch_input_bytes;
         const semantic_width_scratch_product_bytes = self.semantic_width_scratch_product_bytes;
         const semantic_width_scratch_down_partial_bytes = self.semantic_width_scratch_down_partial_bytes;
         const semantic_width_scratch_output_bytes = self.semantic_width_scratch_output_bytes;
@@ -186,6 +188,7 @@ pub const RuntimeProfile = struct {
             .program_command_shape = program_command_shape,
             .semantic_width_scratch_candidates = semantic_width_scratch_candidates,
             .semantic_width_scratch_bytes = semantic_width_scratch_bytes,
+            .semantic_width_scratch_input_bytes = semantic_width_scratch_input_bytes,
             .semantic_width_scratch_product_bytes = semantic_width_scratch_product_bytes,
             .semantic_width_scratch_down_partial_bytes = semantic_width_scratch_down_partial_bytes,
             .semantic_width_scratch_output_bytes = semantic_width_scratch_output_bytes,
@@ -284,6 +287,7 @@ pub const RuntimeProfile = struct {
         self.semantic_ffn_sublayer_single_dispatch_dim_refusal_cap = @max(self.semantic_ffn_sublayer_single_dispatch_dim_refusal_cap, other.semantic_ffn_sublayer_single_dispatch_dim_refusal_cap);
         self.semantic_width_scratch_candidates +%= other.semantic_width_scratch_candidates;
         self.semantic_width_scratch_bytes = @max(self.semantic_width_scratch_bytes, other.semantic_width_scratch_bytes);
+        self.semantic_width_scratch_input_bytes = @max(self.semantic_width_scratch_input_bytes, other.semantic_width_scratch_input_bytes);
         self.semantic_width_scratch_product_bytes = @max(self.semantic_width_scratch_product_bytes, other.semantic_width_scratch_product_bytes);
         self.semantic_width_scratch_down_partial_bytes = @max(self.semantic_width_scratch_down_partial_bytes, other.semantic_width_scratch_down_partial_bytes);
         self.semantic_width_scratch_output_bytes = @max(self.semantic_width_scratch_output_bytes, other.semantic_width_scratch_output_bytes);
@@ -520,9 +524,10 @@ pub const RuntimeProfile = struct {
         self.recordSemanticFfnSublayerSingleDispatchRefusal(.block_size);
     }
 
-    pub fn recordSemanticWidthScratch(self: *RuntimeProfile, candidates: u64, scratch_bytes: u64, product_bytes: u64, down_partial_bytes: u64, output_bytes: u64, runtime_capacity_bytes: u64) void {
+    pub fn recordSemanticWidthScratch(self: *RuntimeProfile, candidates: u64, scratch_bytes: u64, input_bytes: u64, product_bytes: u64, down_partial_bytes: u64, output_bytes: u64, runtime_capacity_bytes: u64) void {
         self.semantic_width_scratch_candidates +%= candidates;
         self.semantic_width_scratch_bytes = @max(self.semantic_width_scratch_bytes, scratch_bytes);
+        self.semantic_width_scratch_input_bytes = @max(self.semantic_width_scratch_input_bytes, input_bytes);
         self.semantic_width_scratch_product_bytes = @max(self.semantic_width_scratch_product_bytes, product_bytes);
         self.semantic_width_scratch_down_partial_bytes = @max(self.semantic_width_scratch_down_partial_bytes, down_partial_bytes);
         self.semantic_width_scratch_output_bytes = @max(self.semantic_width_scratch_output_bytes, output_bytes);
@@ -792,6 +797,7 @@ pub fn writeRuntimeProfileJsonFields(rt: RuntimeProfile, jw: *std.json.Stringify
     if (rt.semantic_width_scratch_bytes > 0) {
         try writeJsonField(jw, "semantic_width_scratch_candidates", rt.semantic_width_scratch_candidates);
         try writeJsonField(jw, "semantic_width_scratch_bytes", rt.semantic_width_scratch_bytes);
+        try writeJsonField(jw, "semantic_width_scratch_input_bytes", rt.semantic_width_scratch_input_bytes);
         try writeJsonField(jw, "semantic_width_scratch_product_bytes", rt.semantic_width_scratch_product_bytes);
         try writeJsonField(jw, "semantic_width_scratch_down_partial_bytes", rt.semantic_width_scratch_down_partial_bytes);
         try writeJsonField(jw, "semantic_width_scratch_output_bytes", rt.semantic_width_scratch_output_bytes);
@@ -995,7 +1001,7 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     rt.recordSemanticFfnWithInputDirectWidthParallel(128, 32, 576, 32, 4);
     rt.recordSemanticFfnSublayerSingleDispatchAttempt();
     rt.recordSemanticFfnSublayerSingleDispatchDimRefusal(576, 1536, 576, 1024);
-    rt.recordSemanticWidthScratch(1, 14155776, 786432, 14155776, 294912, 9216);
+    rt.recordSemanticWidthScratch(1, 14155776, 0, 786432, 14155776, 294912, 9216);
     rt.recordSemanticWidthScratchAllocation(14155776);
     rt.call_count = 2;
 
@@ -1066,6 +1072,7 @@ test "RuntimeProfile serializes dynamic command-plan evidence from counters" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_ffn_sublayer_single_dispatch_dim_refusal_cap\":1024") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_width_scratch_candidates\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_width_scratch_bytes\":14155776") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_width_scratch_input_bytes\":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_width_scratch_product_bytes\":786432") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_width_scratch_down_partial_bytes\":14155776") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semantic_width_scratch_output_bytes\":294912") != null);
@@ -1120,7 +1127,7 @@ test "RuntimeProfile accumulates evidence windows" {
     window.recordQMatmulRowChainTwoPhaseTiledSpill(128, 576, 576, 32, true, true);
     window.recordSemanticFfnWithInputDecomposed(5, 2, 1, 2);
     window.recordSemanticFfnWithInputDirectWidthParallel(128, 32, 576, 32, 4);
-    window.recordSemanticWidthScratch(1, 14155776, 786432, 14155776, 294912, 9216);
+    window.recordSemanticWidthScratch(1, 14155776, 0, 786432, 14155776, 294912, 9216);
     window.recordSemanticWidthScratchAllocation(14155776);
     window.call_count = 37;
 
@@ -1177,6 +1184,7 @@ test "RuntimeProfile accumulates evidence windows" {
     try std.testing.expectEqual(@as(u64, 4608), total.semantic_ffn_with_input_direct_width_parallel_partial_slots);
     try std.testing.expectEqual(@as(u64, 2), total.semantic_width_scratch_candidates);
     try std.testing.expectEqual(@as(u64, 14155776), total.semantic_width_scratch_bytes);
+    try std.testing.expectEqual(@as(u64, 0), total.semantic_width_scratch_input_bytes);
     try std.testing.expectEqual(@as(u64, 786432), total.semantic_width_scratch_product_bytes);
     try std.testing.expectEqual(@as(u64, 14155776), total.semantic_width_scratch_down_partial_bytes);
     try std.testing.expectEqual(@as(u64, 294912), total.semantic_width_scratch_output_bytes);

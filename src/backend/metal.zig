@@ -6341,6 +6341,7 @@ const SemanticWidthScratchRequirement = struct {
     output: u32 = 0,
     hidden_tiles: u64 = 0,
     scratch_bytes: usize = 0,
+    input_bytes: usize = 0,
     product_bytes: usize = 0,
     down_partial_bytes: usize = 0,
     output_bytes: usize = 0,
@@ -6498,6 +6499,7 @@ fn semanticInputBridgeStagedScratchRequirementForShape(rows: u32, hidden: u32, i
     const input_and_product = std.math.add(usize, input_bytes, requirement.product_bytes) catch return null;
     const staged_scratch = std.math.add(usize, input_and_product, requirement.output_bytes) catch return null;
     requirement.scratch_bytes = std.math.add(usize, staged_scratch, requirement.runtime_capacity_bytes) catch return null;
+    requirement.input_bytes = input_bytes;
     requirement.down_partial_bytes = requirement.runtime_capacity_bytes;
     return requirement;
 }
@@ -10673,7 +10675,7 @@ const CompiledProgram = struct {
         const partial_elements = std.math.cast(u32, partial_elements_u64) orelse return false;
         const partial_offset = std.math.add(u32, plan.scratch_layout.output_element_offset, plan.scratch_layout.output_elements) catch return false;
         if (@as(u64, partial_offset) + @as(u64, partial_elements) > @as(u64, plan.scratch_layout.down_partial_elements)) return false;
-        const staged_scratch_bytes = checkedF32Bytes(@as(u64, plan.scratch_layout.product_elements) + @as(u64, plan.scratch_layout.output_elements) + @as(u64, partial_elements)) orelse return false;
+        const staged_scratch_bytes = checkedF32Bytes(@as(u64, plan.scratch_layout.input_elements) + @as(u64, plan.scratch_layout.product_elements) + @as(u64, plan.scratch_layout.output_elements) + @as(u64, partial_elements)) orelse return false;
 
         const params = QMatmulSemanticFfnInputBridgeParams{
             .M = plan.gate_params.M,
@@ -11185,6 +11187,7 @@ const RuntimeBindings = struct {
         runtime_profile.recordSemanticWidthScratch(
             compiled.semantic_width_scratch_requirement.candidates,
             @intCast(compiled.semantic_width_scratch_requirement.scratchBytes()),
+            @intCast(compiled.semantic_width_scratch_requirement.input_bytes),
             @intCast(compiled.semantic_width_scratch_requirement.product_bytes),
             @intCast(compiled.semantic_width_scratch_requirement.down_partial_bytes),
             @intCast(compiled.semantic_width_scratch_requirement.output_bytes),
@@ -11344,6 +11347,7 @@ fn compileProgramInner(self: *MetalBackend, program: backend_mod.DeviceProgram, 
     runtime_profile.recordSemanticWidthScratch(
         semantic_width_scratch_requirement.candidates,
         @intCast(semantic_width_scratch_requirement.scratchBytes()),
+        @intCast(semantic_width_scratch_requirement.input_bytes),
         @intCast(semantic_width_scratch_requirement.product_bytes),
         @intCast(semantic_width_scratch_requirement.down_partial_bytes),
         @intCast(semantic_width_scratch_requirement.output_bytes),
