@@ -4,6 +4,7 @@ declare const require: (path: string) => unknown;
 
 import type {
   CompileOptions,
+  ModuleBindingPlacementMode,
   ModuleBindingPlan,
   ModuleCompileDiagnostic,
   ModuleCompileSupport,
@@ -173,8 +174,65 @@ function shapeSignature(shape: readonly number[] | null) {
   return shape ? shape.join("x") : "null";
 }
 
+type ModuleBindingPlacementSlots = Readonly<{
+  placementMode: ModuleBindingPlacementMode;
+  usesNativeBuffers: boolean;
+  nativeSlots: readonly string[];
+  hostSlots: readonly string[];
+}>;
+
+function isNativeBufferSlot(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const record = value as AnyRecord;
+  return typeof record.inspect === "function" &&
+    typeof record.readFloat32 === "function" &&
+    typeof record.writeFloat32 === "function" &&
+    typeof record.free === "function";
+}
+
+function isHostParameterSlot(value: unknown): boolean {
+  return Array.isArray(value) || ArrayBuffer.isView(value);
+}
+
+function moduleBindingPlacementSlots(bindings: unknown, moduleBindings: boolean): ModuleBindingPlacementSlots {
+  if (!moduleBindings || !bindings || typeof bindings !== "object") {
+    return Object.freeze({
+      placementMode: "raw",
+      usesNativeBuffers: false,
+      nativeSlots: Object.freeze([]),
+      hostSlots: Object.freeze([]),
+    });
+  }
+  const nativeSlots: string[] = [];
+  const hostSlots: string[] = [];
+  const record = bindings as AnyRecord;
+  for (const slot of Object.keys(record)) {
+    if (slot === "inputShape" || slot === "outputShape") continue;
+    const value = record[slot];
+    if (isNativeBufferSlot(value)) {
+      nativeSlots.push(slot);
+    } else if (isHostParameterSlot(value)) {
+      hostSlots.push(slot);
+    }
+  }
+  const placementMode: ModuleBindingPlacementMode = nativeSlots.length > 0
+    ? "native"
+    : hostSlots.length > 0
+      ? "host"
+      : "empty";
+  return Object.freeze({
+    placementMode,
+    usesNativeBuffers: nativeSlots.length > 0,
+    nativeSlots: Object.freeze(nativeSlots),
+    hostSlots: Object.freeze(hostSlots),
+  });
+}
+
 function moduleBindingPlanSignature(fields: {
   readonly moduleBindings: boolean;
+  readonly placementMode: ModuleBindingPlacementMode;
+  readonly nativeSlots: readonly string[];
+  readonly hostSlots: readonly string[];
   readonly supported: boolean | null;
   readonly inputShape: readonly number[] | null;
   readonly outputShape: readonly number[] | null;
@@ -194,6 +252,9 @@ function moduleBindingPlanSignature(fields: {
     `parameters=${fields.parameterNames.join(",")}`,
     `parameterInfos=${parameterSignature}`,
     `diagnostics=${fields.diagnostics.map((diagnostic) => diagnostic.code).join(",")}`,
+    `placement=${fields.placementMode}`,
+    `nativeSlots=${fields.nativeSlots.join(",")}`,
+    `hostSlots=${fields.hostSlots.join(",")}`,
   ].join("|");
 }
 
@@ -203,10 +264,14 @@ export function moduleBindingPlan(bindings: unknown): ModuleBindingPlan {
     const diagnostics = Object.freeze([]);
     const parameterNames = Object.freeze([]);
     const parameterInfos = Object.freeze([]);
+    const placement = moduleBindingPlacementSlots(bindings, false);
     return Object.freeze({
       kind: "zgml.nn.module-bindings-plan",
       signature: moduleBindingPlanSignature({
         moduleBindings: false,
+        placementMode: placement.placementMode,
+        nativeSlots: placement.nativeSlots,
+        hostSlots: placement.hostSlots,
         supported: null,
         inputShape: null,
         outputShape: null,
@@ -215,6 +280,10 @@ export function moduleBindingPlan(bindings: unknown): ModuleBindingPlan {
         diagnostics,
       }),
       moduleBindings: false,
+      placementMode: placement.placementMode,
+      usesNativeBuffers: placement.usesNativeBuffers,
+      nativeSlots: placement.nativeSlots,
+      hostSlots: placement.hostSlots,
       options: Object.freeze({}),
       support: null,
       supported: null,
@@ -234,10 +303,14 @@ export function moduleBindingPlan(bindings: unknown): ModuleBindingPlan {
   const parameterNames = bindingParameterNames(metadata.module);
   const parameterInfos = bindingParameterInfos(metadata.module);
   const diagnostics = Object.freeze(Array.from(support?.diagnostics ?? [], (diagnostic) => diagnostic as ModuleCompileDiagnostic));
+  const placement = moduleBindingPlacementSlots(bindings, true);
   return Object.freeze({
     kind: "zgml.nn.module-bindings-plan",
     signature: moduleBindingPlanSignature({
       moduleBindings: true,
+      placementMode: placement.placementMode,
+      nativeSlots: placement.nativeSlots,
+      hostSlots: placement.hostSlots,
       supported,
       inputShape,
       outputShape,
@@ -246,6 +319,10 @@ export function moduleBindingPlan(bindings: unknown): ModuleBindingPlan {
       diagnostics,
     }),
     moduleBindings: true,
+    placementMode: placement.placementMode,
+    usesNativeBuffers: placement.usesNativeBuffers,
+    nativeSlots: placement.nativeSlots,
+    hostSlots: placement.hostSlots,
     options: metadata.options,
     support,
     supported,

@@ -2059,6 +2059,8 @@ function expectProgramModuleCompatibilityEvidence(compiledProgram: Record<string
     !Object.isFrozen(bindingPlan.parameterInfos) ||
     !Object.isFrozen(bindingPlan.parameterInfos[0]) ||
     !Object.isFrozen(bindingPlan.diagnostics) ||
+    !Object.isFrozen(bindingPlan.nativeSlots) ||
+    !Object.isFrozen(bindingPlan.hostSlots) ||
     bindingPlan.kind !== "zgml.nn.module-bindings-plan" ||
     typeof bindingPlan.signature !== "string" ||
     !bindingPlan.signature.startsWith("module-bindings-plan|moduleBindings=1|supported=1|") ||
@@ -2066,6 +2068,10 @@ function expectProgramModuleCompatibilityEvidence(compiledProgram: Record<string
     requiredBindingPlan.signature !== bindingPlan.signature ||
     requiredBindingPlanAlias.signature !== bindingPlan.signature ||
     bindingPlan.moduleBindings !== true ||
+    bindingPlan.placementMode !== "host" ||
+    bindingPlan.usesNativeBuffers !== false ||
+    bindingPlan.nativeSlots.length !== 0 ||
+    bindingPlan.hostSlots.join("|") !== (compiledProgram.biasLen() > 0 ? "weights|bias" : "weights") ||
     bindingPlan.supported !== true ||
     bindingPlan.inputShape.join("x") !== compiledProgram.inputShape().join("x") ||
     bindingPlan.outputShape.join("x") !== compiledProgram.outputShape().join("x") ||
@@ -2076,12 +2082,20 @@ function expectProgramModuleCompatibilityEvidence(compiledProgram: Record<string
     typeof rawBindingPlan.signature !== "string" ||
     !rawBindingPlan.signature.startsWith("module-bindings-plan|moduleBindings=0|supported=null|") ||
     rawBindingPlan.moduleBindings !== false ||
+    rawBindingPlan.placementMode !== "raw" ||
+    rawBindingPlan.usesNativeBuffers !== false ||
+    rawBindingPlan.nativeSlots.length !== 0 ||
+    rawBindingPlan.hostSlots.length !== 0 ||
     rawBindingPlan.support !== null ||
     rawBindingPlan.supported !== null ||
     rawBindingPlan.parameterNames.length !== 0 ||
     placedBindingPlan.moduleBindings !== true ||
     placedBindingPlanAlias.signature !== placedBindingPlan.signature ||
     placedBindingPlan.supported !== true ||
+    placedBindingPlan.placementMode !== "native" ||
+    placedBindingPlan.usesNativeBuffers !== true ||
+    placedBindingPlan.nativeSlots.join("|") !== bindingPlan.hostSlots.join("|") ||
+    placedBindingPlan.hostSlots.length !== 0 ||
     !placedBindingPlan.signature.startsWith("module-bindings-plan|moduleBindings=1|supported=1|") ||
     placedBindingPlan.parameterNames.join("|") !== bindingPlan.parameterNames.join("|") ||
     !Object.isFrozen(programBindingPlan) ||

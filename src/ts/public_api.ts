@@ -7425,10 +7425,15 @@ export type ProgramBindingPlan<InputShape extends TensorShapeTuple = TensorShape
   hasOutput: boolean;
   usesNativeBuffers: boolean;
 }>;
+export type ModuleBindingPlacementMode = "raw" | "empty" | "host" | "native";
 export type ModuleBindingPlan<InputShape extends TensorShapeTuple = TensorShapeTuple, OutputShape extends TensorShapeTuple = TensorShapeTuple> = Readonly<{
   kind: "zgml.nn.module-bindings-plan";
   signature: string;
   moduleBindings: boolean;
+  placementMode: ModuleBindingPlacementMode;
+  usesNativeBuffers: boolean;
+  nativeSlots: readonly string[];
+  hostSlots: readonly string[];
   options: Readonly<CompileOptions>;
   support: ModuleCompileSupport | null;
   supported: boolean | null;

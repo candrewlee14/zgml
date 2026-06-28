@@ -256,6 +256,7 @@ import {
   type TensorShapeTail,
   type ModuleCompleteCompilerSignatures,
   type ModuleBindings,
+  type ModuleBindingPlacementMode,
   type ModuleBindingPlan,
   type ModuleCompileExplanation,
   type ModuleCompileDiagnostic,
@@ -1985,6 +1986,8 @@ const typedLinearModuleBindingPlanAlias: ModuleBindingPlan<readonly [2], readonl
 const typedLinearModuleRequiredBindingPlan: ModuleBindingPlan<readonly [2], readonly [3]> = nn.requireBindingPlan(typedLinearNamespaceBindings);
 const typedLinearModuleBindingPlanInputShape: readonly [2] | null = typedLinearModuleBindingPlan.inputShape;
 const typedLinearModuleBindingPlanOutputShape: readonly [3] | null = typedLinearModuleBindingPlan.outputShape;
+const typedLinearModuleBindingPlanPlacementMode: ModuleBindingPlacementMode = typedLinearModuleBindingPlan.placementMode;
+const typedLinearModuleBindingPlanNativeSlots: readonly string[] = typedLinearModuleBindingPlan.nativeSlots;
 const typedLinearProgramBindingPlan: ProgramBindingPlan<readonly [2], readonly [3]> =
   typedLinearProgram.bindingPlan(typedLinearModuleBindings);
 const typedLinearProgramBindingPlanAlias: ProgramBindingPlan<readonly [2], readonly [3]> =
@@ -2228,12 +2231,17 @@ const linearInspectionMatchedEvidenceCompilePlan: boolean = inspection.matchesMo
 const linearBindingPlanKind: "zgml.nn.module-bindings-plan" = linearBindingPlan.kind;
 const linearBindingPlanSignature: string = linearBindingPlan.signature;
 const linearBindingPlanIsModuleBindings: boolean = linearBindingPlan.moduleBindings;
+const linearBindingPlanPlacementMode: ModuleBindingPlacementMode = linearBindingPlan.placementMode;
+const linearBindingPlanUsesNativeBuffers: boolean = linearBindingPlan.usesNativeBuffers;
+const linearBindingPlanNativeSlots: readonly string[] = linearBindingPlan.nativeSlots;
+const linearBindingPlanHostSlots: readonly string[] = linearBindingPlan.hostSlots;
 const linearBindingPlanSupport: ModuleCompileSupport | null = linearBindingPlan.support;
 const linearBindingPlanParameterNames: readonly string[] = linearBindingPlan.parameterNames;
 const linearBindingPlanParameterInfos: readonly ModuleParameterInfo[] = linearBindingPlan.parameterInfos;
 const rawLinearProgramBindings: ProgramBindings = { weights: new Float32Array(6), bias: new Float32Array(3) };
 const rawLinearBindingPlan: ModuleBindingPlan = nn.bindingPlan(rawLinearProgramBindings);
 const rawLinearBindingPlanSignature: string = rawLinearBindingPlan.signature;
+const rawLinearBindingPlanPlacementMode: ModuleBindingPlacementMode = rawLinearBindingPlan.placementMode;
 const rawLinearProgramBindingPlan: ProgramBindingPlan = linearProgram.bindingPlan(rawLinearProgramBindings);
 const rawLinearProgramBindingPlanSignature: string = rawLinearProgramBindingPlan.signature;
 const rawLinearBindingPlanSupport: ModuleCompileSupport | null = rawLinearBindingPlan.support;
@@ -2809,6 +2817,7 @@ const embeddingRootPlacedBindingsAlias: ModuleBindings = nn.place_parameters(emb
 const embeddingPlacedBindingPlan: ModuleBindingPlan = nn.bindingPlan(embeddingPlacedBindings);
 const embeddingRootPlacedBindingPlan: ModuleBindingPlan = nn.bindingPlan(embeddingRootPlacedBindings);
 const embeddingPlacedBindingPlanSignature: string = embeddingPlacedBindingPlan.signature;
+const embeddingPlacedBindingPlanPlacementMode: ModuleBindingPlacementMode = embeddingPlacedBindingPlan.placementMode;
 const embeddingCompatibility: ProgramModuleCompatibility = embeddingProgram.moduleCompatibility(embedding);
 const embeddingCompatibilitySignature: string = embeddingCompatibility.signature;
 const embeddingAccepted: boolean = embeddingProgram.acceptsModule(embedding);
