@@ -1958,9 +1958,12 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const targetProductElements = targetRows * targetHidden;
   const targetOutputElements = targetRows * targetOutput;
   const targetDownPartialElements = targetRows * targetOutput * targetHiddenTiles;
+  const targetDirectWidthPartialElements = targetRows * targetOutputTiles;
   const targetProductBytes = targetProductElements * 4;
   const targetDownPartialBytes = targetDownPartialElements * 4;
   const targetOutputBytes = targetOutputElements * 4;
+  const targetDirectWidthPartialBytes = targetDirectWidthPartialElements * 4;
+  const targetDirectWidthScratchBytes = targetProductBytes + targetOutputBytes + targetDirectWidthPartialBytes;
   const targetDownPartialToOutput = targetDownPartialElements / targetOutputElements;
   const targetInputProjectionDotOps = targetInput * targetInput;
   const targetGateUpDotOps = targetHidden * targetInput * 2;
@@ -2120,6 +2123,16 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const directWidthRowChainTiledCount = metric(output, directWidthProfileLabel, "qmatmul_row_chain_tiled_count");
   const directWidthRowChainWidthParallelCount = metric(output, directWidthProfileLabel, "qmatmul_row_chain_width_parallel_count");
   const directWidthRowChainWidthParallelLanes = metric(output, directWidthProfileLabel, "qmatmul_row_chain_width_parallel_lanes");
+  const directWidthSemanticWidthScratchCandidates = optionalMetric(output, directWidthProfileLabel, "semantic_width_scratch_candidates") ?? 0;
+  const directWidthSemanticWidthScratchBytes = optionalMetric(output, directWidthProfileLabel, "semantic_width_scratch_bytes") ?? 0;
+  const directWidthSemanticWidthScratchProductBytes = optionalMetric(output, directWidthProfileLabel, "semantic_width_scratch_product_bytes") ?? 0;
+  const directWidthSemanticWidthScratchDownPartialBytes = optionalMetric(output, directWidthProfileLabel, "semantic_width_scratch_down_partial_bytes") ?? 0;
+  const directWidthSemanticWidthScratchOutputBytes = optionalMetric(output, directWidthProfileLabel, "semantic_width_scratch_output_bytes") ?? 0;
+  const directWidthSemanticWidthScratchDownPartialToOutputX1000 = optionalMetric(output, directWidthProfileLabel, "semantic_width_scratch_down_partial_to_output_x1000") ?? 0;
+  const directWidthSemanticWidthScratchAllocatedBytes = optionalMetric(output, directWidthProfileLabel, "semantic_width_scratch_allocated_bytes") ?? 0;
+  const directWidthSemanticWidthScratchRuntimeCapacityBytes = optionalMetric(output, directWidthProfileLabel, "semantic_width_scratch_runtime_capacity_bytes") ?? 0;
+  const directWidthSemanticWidthScratchRuntimeUses = optionalMetric(output, directWidthProfileLabel, "semantic_width_scratch_runtime_uses") ?? 0;
+  const directWidthSemanticWidthScratchRuntimeBytes = optionalMetric(output, directWidthProfileLabel, "semantic_width_scratch_runtime_bytes") ?? 0;
   const absorbedDispatchSplit = absorbedShapeSemantic > 0 ? absorbedRuntimeDispatches / absorbedShapeSemantic : NaN;
   const absorbedUsesDirectKernel =
     absorbedRuntimeDispatches === 1 &&
@@ -2283,6 +2296,18 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (directWidthUsesDirectKernel && (directWidthRowChainTiledCount !== 0 || directWidthRowChainWidthParallelCount !== 0 || directWidthRowChainWidthParallelLanes !== 0)) {
     failures.push("semantic input direct_width kernel must report direct width work, not row-chain tiled work");
   }
+  if (directWidthUsesStagedWidthKernel && (
+    directWidthSemanticWidthScratchCandidates !== 1 ||
+    directWidthSemanticWidthScratchBytes !== targetDirectWidthScratchBytes ||
+    directWidthSemanticWidthScratchAllocatedBytes !== targetDirectWidthScratchBytes ||
+    directWidthSemanticWidthScratchProductBytes !== targetProductBytes ||
+    directWidthSemanticWidthScratchDownPartialBytes !== targetDirectWidthPartialBytes ||
+    directWidthSemanticWidthScratchOutputBytes !== targetOutputBytes ||
+    directWidthSemanticWidthScratchRuntimeCapacityBytes !== targetDirectWidthPartialBytes ||
+    directWidthSemanticWidthScratchRuntimeBytes !== targetDirectWidthScratchBytes
+  )) {
+    failures.push(`semantic input direct_width staged scratch must stay candidates=1 bytes=${targetDirectWidthScratchBytes} allocated=${targetDirectWidthScratchBytes} product=${targetProductBytes} partial=${targetDirectWidthPartialBytes} output=${targetOutputBytes}`);
+  }
   if (absorbedUsesDecomposedKernel && (absorbedRowChainTiledSpilledElementwise !== 1 || absorbedRowChainTiledSpilledInput !== 576 || absorbedRowChainTiledOutputSpills !== 0)) {
     failures.push("semantic input absorbed spill profile must stay spilled_elementwise=1 spilled_input=576 output_spills=0");
   }
@@ -2309,6 +2334,7 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     `absorbed=${absorbedSpeedup.toFixed(2)}x max_abs_diff=${absorbedMaxAbsDiff.toFixed(6)} shape_commands=${absorbedShapeCommands} bridges=${absorbedShapeBridges} runtime_dispatches=${absorbedRuntimeDispatches} semantic_with_input_dispatches=${absorbedSemanticWithInputDispatches} absorbed_split=${Number.isFinite(absorbedDispatchSplit) ? absorbedDispatchSplit.toFixed(2) : "n/a"}`,
     `direct_serial=${directSerialSpeedup.toFixed(2)}x max_abs_diff=${directSerialMaxAbsDiff.toFixed(6)} runtime_dispatches=${directSerialRuntimeDispatches} row_serial_dot_ops=${directSerialDirectRowSerialDotOps} total_row_serial_dot_ops=${directSerialDirectTotalRowSerialDotOps}`,
     `direct_width=${directWidthSpeedup.toFixed(2)}x max_abs_diff=${directWidthMaxAbsDiff.toFixed(6)} ready=${directWidthUsesDirectKernel ? "yes" : "no"} fallback=${directWidthUsesDecomposedKernel ? "decomposed" : directWidthUsesStagedWidthKernel ? "staged" : "none"} runtime_dispatches=${directWidthRuntimeDispatches} direct=${directWidthDirectCount}:width_parallel=${directWidthDirectWidthParallelCount}:width_lanes=${directWidthDirectWidthParallelLanes}:width_tiles=${directWidthDirectWidthParallelRowTileGroups}x${directWidthDirectWidthParallelOutputTiles}:partial_slots=${directWidthDirectWidthParallelPartialSlots}`,
+    `direct_width_scratch=candidates:${directWidthSemanticWidthScratchCandidates},bytes:${directWidthSemanticWidthScratchBytes},allocated:${directWidthSemanticWidthScratchAllocatedBytes},product_bytes:${directWidthSemanticWidthScratchProductBytes},partial_bytes:${directWidthSemanticWidthScratchDownPartialBytes},output_bytes:${directWidthSemanticWidthScratchOutputBytes},partial_to_output:${(directWidthSemanticWidthScratchDownPartialToOutputX1000 / 1000).toFixed(3)},runtime_capacity:${directWidthSemanticWidthScratchRuntimeCapacityBytes},runtime_uses:${directWidthSemanticWidthScratchRuntimeUses},runtime_bytes:${directWidthSemanticWidthScratchRuntimeBytes}`,
     `direct_serial_shape=input_projection:${directSerialDirectInputProjection},input:${directSerialDirectInput},hidden:${directSerialDirectHidden},output:${directSerialDirectOutput}:input_projection_dot_ops:${directSerialDirectInputProjectionDotOps}:gate_up_dot_ops:${directSerialDirectGateUpDotOps}:down_dot_ops:${directSerialDirectDownDotOps}`,
     `absorbed_decomposed=${absorbedDecomposedCount}:dispatches=${absorbedDecomposedDispatches}:extra_dispatches=${absorbedDecomposedExtraDispatches}:row_chain=${absorbedDecomposedRowChainDispatches}:pair=${absorbedDecomposedPairDispatches}:tail=${absorbedDecomposedTailDispatches}`,
     `direct=${absorbedDirectCount}:rows=${absorbedDirectRows}:row_threadgroups=${absorbedDirectRowThreadgroups}:row_serial_dot_ops=${absorbedDirectRowSerialDotOps}:total_row_serial_dot_ops=${absorbedDirectTotalRowSerialDotOps}:per_row_threadgroup=${absorbedDirectTotalRowSerialDotOpsPerRowThreadgroup}:width_parallel=${absorbedDirectWidthParallelCount}:width_lanes=${absorbedDirectWidthParallelLanes}:width_tiles=${absorbedDirectWidthParallelRowTileGroups}x${absorbedDirectWidthParallelOutputTiles}:partial_slots=${absorbedDirectWidthParallelPartialSlots}`,
@@ -2468,6 +2494,16 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     directWidthRowChainTiledCount,
     directWidthRowChainWidthParallelCount,
     directWidthRowChainWidthParallelLanes,
+    directWidthSemanticWidthScratchCandidates,
+    directWidthSemanticWidthScratchBytes,
+    directWidthSemanticWidthScratchProductBytes,
+    directWidthSemanticWidthScratchDownPartialBytes,
+    directWidthSemanticWidthScratchOutputBytes,
+    directWidthSemanticWidthScratchDownPartialToOutputX1000,
+    directWidthSemanticWidthScratchAllocatedBytes,
+    directWidthSemanticWidthScratchRuntimeCapacityBytes,
+    directWidthSemanticWidthScratchRuntimeUses,
+    directWidthSemanticWidthScratchRuntimeBytes,
     targetRows,
     targetInput,
     targetHidden,
@@ -2484,6 +2520,9 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     targetOutputBytes,
     targetDownPartialToOutput,
     targetDirectWidthPartialSlots,
+    targetDirectWidthPartialElements,
+    targetDirectWidthPartialBytes,
+    targetDirectWidthScratchBytes,
     targetInputProjectionDotOps,
     targetGateUpDotOps,
     targetDownDotOps,
@@ -2671,6 +2710,16 @@ function selectedSemanticInputBridgeAttemptSummary(attempt) {
       qmatmulRowChainTiledCount: attempt.directWidthRowChainTiledCount,
       qmatmulRowChainWidthParallelCount: attempt.directWidthRowChainWidthParallelCount,
       qmatmulRowChainWidthParallelLanes: attempt.directWidthRowChainWidthParallelLanes,
+      semanticWidthScratchCandidates: attempt.directWidthSemanticWidthScratchCandidates,
+      semanticWidthScratchBytes: attempt.directWidthSemanticWidthScratchBytes,
+      semanticWidthScratchAllocatedBytes: attempt.directWidthSemanticWidthScratchAllocatedBytes,
+      semanticWidthScratchProductBytes: attempt.directWidthSemanticWidthScratchProductBytes,
+      semanticWidthScratchDownPartialBytes: attempt.directWidthSemanticWidthScratchDownPartialBytes,
+      semanticWidthScratchOutputBytes: attempt.directWidthSemanticWidthScratchOutputBytes,
+      semanticWidthScratchDownPartialToOutput: roundMetric(attempt.directWidthSemanticWidthScratchDownPartialToOutputX1000 / 1000),
+      semanticWidthScratchRuntimeCapacityBytes: attempt.directWidthSemanticWidthScratchRuntimeCapacityBytes,
+      semanticWidthScratchRuntimeUses: attempt.directWidthSemanticWidthScratchRuntimeUses,
+      semanticWidthScratchRuntimeBytes: attempt.directWidthSemanticWidthScratchRuntimeBytes,
     },
     directTarget: {
       kernel: "semantic_with_input_width_parallel_kernel",
@@ -2690,6 +2739,9 @@ function selectedSemanticInputBridgeAttemptSummary(attempt) {
       downPartialBytes: attempt.targetDownPartialBytes,
       outputBytes: attempt.targetOutputBytes,
       downPartialToOutput: roundMetric(attempt.targetDownPartialToOutput),
+      directWidthPartialElements: attempt.targetDirectWidthPartialElements,
+      directWidthPartialBytes: attempt.targetDirectWidthPartialBytes,
+      directWidthScratchBytes: attempt.targetDirectWidthScratchBytes,
       inputProjectionDotOps: attempt.targetInputProjectionDotOps,
       gateUpDotOps: attempt.targetGateUpDotOps,
       downDotOps: attempt.targetDownDotOps,
