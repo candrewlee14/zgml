@@ -156,6 +156,7 @@ export type AdapterTensorRuntimeSurfaceOptions<
   nativeEagerIndexSelectInto?: NativeEagerIndexSelectInto;
   nativeEagerGatherInto?: NativeEagerGatherInto;
   nativeEagerFlipInto?: NativeEagerFlipInto;
+  nativeEagerOneHotInto?: (output: Float32Array, index: unknown, options: Readonly<{ classes: number }>) => Float32Array;
   nativeFullF32?: (output: Float32Array, value: number) => void;
   nativeArangeF32?: (output: Float32Array, start: number, step: number) => void;
   meanSquaredError: (tensor: TTensor, target: unknown) => TTensor;

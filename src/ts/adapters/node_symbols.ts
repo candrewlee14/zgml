@@ -62,6 +62,7 @@ export type NodeNativeSymbols = Readonly<{
   eagerDotF32: NativeFunction;
   eagerFullF32: NativeFunction;
   eagerArangeF32: NativeFunction;
+  eagerOneHotF32: NativeFunction;
   eagerPermuteF32: NativeFunction;
   eagerTakeF32: NativeFunction;
   eagerIndexSelectF32: NativeFunction;
@@ -172,6 +173,7 @@ export function bindNodeSymbols(nativeLibrary: unknown): NodeNativeSymbols {
     eagerDotF32: lib.func("int zgml_eager_dot_f32(const float *lhs, size_t lhs_len, const float *rhs, size_t rhs_len, float *output, size_t output_len)"),
     eagerFullF32: lib.func("int zgml_eager_full_f32(float *output, size_t output_len, float value)"),
     eagerArangeF32: lib.func("int zgml_eager_arange_f32(float *output, size_t output_len, float start, float step)"),
+    eagerOneHotF32: lib.func("int zgml_eager_one_hot_f32(const uint32_t *indices, size_t indices_len, float *output, size_t output_len, size_t classes)"),
     eagerPermuteF32: lib.func("int zgml_eager_permute_f32(const float *input, size_t input_len, float *output, size_t output_len, const uint32_t *output_shape, const uint32_t *input_strides, const uint32_t *axes, size_t rank)"),
     eagerTakeF32: lib.func("int zgml_eager_take_f32(const float *input, size_t input_len, const uint32_t *indices, size_t indices_len, float *output, size_t output_len)"),
     eagerIndexSelectF32: lib.func("int zgml_eager_index_select_f32(const float *input, size_t input_len, const uint32_t *indices, size_t indices_len, float *output, size_t output_len, size_t outer, size_t axis_len, size_t inner)"),

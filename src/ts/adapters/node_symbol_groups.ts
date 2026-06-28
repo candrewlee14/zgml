@@ -100,6 +100,7 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
       eagerDotF32: symbols.eagerDotF32,
       eagerFullF32: symbols.eagerFullF32,
       eagerArangeF32: symbols.eagerArangeF32,
+      eagerOneHotF32: symbols.eagerOneHotF32,
       eagerPermuteF32: symbols.eagerPermuteF32,
       eagerTakeF32: symbols.eagerTakeF32,
       eagerIndexSelectF32: symbols.eagerIndexSelectF32,

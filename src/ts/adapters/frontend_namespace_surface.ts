@@ -239,6 +239,7 @@ export type AdapterFrontendNamespaceOptions<TTensor = unknown> =
     rejectUnexpectedOptimizerState: OptimizerClassesOptions["rejectUnexpectedOptimizerState"];
     compileTrainingStep?: LossTrainHelpersOptions["compileTrainingStep"];
     nativeEagerLinearInto?: NativeEagerLinearInto;
+    nativeEagerOneHotInto?: (output: Float32Array, index: unknown, options: Readonly<{ classes: number }>) => Float32Array;
     geluScalar: NnNamespaceOptions["geluScalar"];
     siluScalar: NnNamespaceOptions["siluScalar"];
     stateDict: NnNamespaceOptions["stateDict"] & CheckpointHelpersOptions["moduleStateDict"];
@@ -651,6 +652,14 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
       throw new Error(`nn.functional.one_hot numClasses must be a positive safe integer or -1, got ${numClasses}`);
     }
     const data = new Float32Array(values.length * classes);
+    if (typeof options.nativeEagerOneHotInto === "function") {
+      try {
+        options.nativeEagerOneHotInto(data, values, { classes });
+        return options.tensor(data, [...inputShape, classes]);
+      } catch {
+        data.fill(0);
+      }
+    }
     for (let i = 0; i < values.length; i += 1) {
       const target = Number(values[i]);
       if (!Number.isSafeInteger(target) || target < 0 || target >= classes) {

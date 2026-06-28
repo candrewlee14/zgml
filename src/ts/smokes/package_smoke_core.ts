@@ -377,6 +377,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.takeInto !== "function") {
     throw new Error(`${label} expected nativeEager.takeInto`);
   }
+  if (typeof nativeEager.oneHotInto !== "function") {
+    throw new Error(`${label} expected nativeEager.oneHotInto`);
+  }
   if (typeof nativeEager.indexSelectInto !== "function") {
     throw new Error(`${label} expected nativeEager.indexSelectInto`);
   }
@@ -427,6 +430,12 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   if (typeof nativeEagerAlias.permute_into !== "function") {
     throw new Error(`${label} expected native_eager.permute_into alias`);
+  }
+  if (typeof nativeEagerAlias.take_into !== "function") {
+    throw new Error(`${label} expected native_eager.take_into alias`);
+  }
+  if (typeof nativeEagerAlias.one_hot_into !== "function") {
+    throw new Error(`${label} expected native_eager.one_hot_into alias`);
   }
   if (typeof nativeEagerAlias.index_select_into !== "function") {
     throw new Error(`${label} expected native_eager.index_select_into alias`);
@@ -620,6 +629,18 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.take_into to reuse caller output`);
   }
   expectClose(takeAliasOutput, [3, 2], `${label} native_eager.take_into Tensor index output`);
+  const oneHotOutput = new Float32Array(12);
+  const oneHotResult = nativeEager.oneHotInto(oneHotOutput, new Uint32Array([2, 0, 3]), { classes: 4 });
+  if (oneHotResult !== oneHotOutput) {
+    throw new Error(`${label} expected nativeEager.oneHotInto to reuse caller output`);
+  }
+  expectClose(oneHotOutput, [0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1], `${label} nativeEager.oneHotInto output`);
+  const oneHotAliasOutput = new Float32Array(6);
+  const oneHotAliasResult = nativeEagerAlias.one_hot_into(oneHotAliasOutput, adapter.tensor([1, 2], [2]), { classes: 3 });
+  if (oneHotAliasResult !== oneHotAliasOutput) {
+    throw new Error(`${label} expected native_eager.one_hot_into to reuse caller output`);
+  }
+  expectClose(oneHotAliasOutput, [0, 1, 0, 0, 0, 1], `${label} native_eager.one_hot_into Tensor index output`);
   const indexSelectInput = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 3, 2]);
   const indexSelectOutput = new Float32Array(12);
   const indexSelectResult = nativeEager.indexSelectInto(indexSelectOutput, indexSelectInput, new Uint32Array([2, 0, 2]), {

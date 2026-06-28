@@ -2036,6 +2036,32 @@ export fn zgml_eager_arange_f32(
     return status(.ok);
 }
 
+export fn zgml_eager_one_hot_f32(
+    indices_ptr: ?[*]const u32,
+    indices_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    classes: usize,
+) c_int {
+    if (indices_ptr == null or
+        output_ptr == null or
+        indices_len == 0 or
+        output_len == 0 or
+        classes == 0) return status(.invalid_argument);
+    const expected_output = std.math.mul(usize, indices_len, classes) catch return status(.shape_mismatch);
+    if (output_len != expected_output) return status(.shape_mismatch);
+
+    const indices = indices_ptr.?[0..indices_len];
+    const output = output_ptr.?[0..output_len];
+    @memset(output, 0);
+    for (indices, 0..) |raw_index, row| {
+        const class: usize = @intCast(raw_index);
+        if (class >= classes) return status(.shape_mismatch);
+        output[row * classes + class] = 1;
+    }
+    return status(.ok);
+}
+
 export fn zgml_eager_permute_f32(
     input_ptr: ?[*]const f32,
     input_len: usize,
@@ -13915,6 +13941,38 @@ test "C ABI native eager tensor factories fill caller output" {
         range_output.len,
         0,
         0,
+    ));
+
+    const classes: usize = 4;
+    const indices = [_]u32{ 2, 0, 3 };
+    var one_hot_output = [_]f32{99} ** (indices.len * classes);
+    try std.testing.expectEqual(status(.ok), zgml_eager_one_hot_f32(
+        indices[0..].ptr,
+        indices.len,
+        one_hot_output[0..].ptr,
+        one_hot_output.len,
+        classes,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{
+        0, 0, 1, 0,
+        1, 0, 0, 0,
+        0, 0, 0, 1,
+    }, &one_hot_output);
+
+    const bad_indices = [_]u32{4};
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_one_hot_f32(
+        bad_indices[0..].ptr,
+        bad_indices.len,
+        one_hot_output[0..].ptr,
+        classes,
+        classes,
+    ));
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_one_hot_f32(
+        indices[0..].ptr,
+        indices.len,
+        one_hot_output[0..].ptr,
+        one_hot_output.len - 1,
+        classes,
     ));
 }
 

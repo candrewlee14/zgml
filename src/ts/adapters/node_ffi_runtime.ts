@@ -357,6 +357,7 @@ const {
   nativeEagerIndexSelectInto: (output, input, index, options) => nativeEager.indexSelectInto(output, input, index, options),
   nativeEagerGatherInto: (output, input, index, options) => nativeEager.gatherInto(output, input, index, options),
   nativeEagerFlipInto: (output, input, options) => nativeEager.flipInto(output, input, options),
+  nativeEagerOneHotInto: (output, index, options) => nativeEager.oneHotInto(output, index, options),
   nativeFullF32: (output, value) => {
     check(nodeSymbolGroups.nativeEager.eagerFullF32(output, output.length, value));
   },
@@ -1360,6 +1361,13 @@ const nativeEagerSurface = createAdapterNativeEagerSurface({
     args.output,
     args.expectedOutput,
   ),
+  oneHotF32: (args) => nodeSymbolGroups.nativeEager.eagerOneHotF32(
+    args.indices,
+    args.indices.length,
+    args.output,
+    args.expectedOutput,
+    args.classes,
+  ),
   conv2dF32: (args) => nodeSymbolGroups.nativeEager.eagerConv2dF32(
     args.inputData,
     args.inputData.length,
@@ -1802,6 +1810,7 @@ const publicNamespaces = createAdapterFrontendNamespaces({
     return compileTrainingStepHook(...args);
   },
   nativeEagerLinearInto,
+  nativeEagerOneHotInto: (output, index, options) => nativeEager.oneHotInto(output, index, options),
   LinearModule,
   EmbeddingModule,
   Conv2dModule,

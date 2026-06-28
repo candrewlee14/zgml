@@ -99,6 +99,7 @@ export function createBunSymbolGroups(symbols: BunNativeSymbols) {
       eagerDotF32: symbols.zgml_eager_dot_f32,
       eagerFullF32: symbols.zgml_eager_full_f32,
       eagerArangeF32: symbols.zgml_eager_arange_f32,
+      eagerOneHotF32: symbols.zgml_eager_one_hot_f32,
       eagerPermuteF32: symbols.zgml_eager_permute_f32,
       eagerTakeF32: symbols.zgml_eager_take_f32,
       eagerIndexSelectF32: symbols.zgml_eager_index_select_f32,

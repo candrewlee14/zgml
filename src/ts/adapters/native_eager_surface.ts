@@ -146,6 +146,13 @@ type NativeEagerDotCall = (args: {
   expectedOutput: number;
 }) => number;
 
+type NativeEagerOneHotCall = (args: {
+  indices: Uint32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  classes: number;
+}) => number;
+
 type NativeEagerPermuteCall = (args: {
   inputData: Float32Array;
   output: Float32Array;
@@ -259,6 +266,7 @@ type NativeEagerSurfaceOptions = {
   cumsumF32?: NativeEagerCumsumCall;
   momentF32?: NativeEagerMomentCall;
   dotF32?: NativeEagerDotCall;
+  oneHotF32?: NativeEagerOneHotCall;
   permuteF32?: NativeEagerPermuteCall;
   takeF32?: NativeEagerTakeCall;
   indexSelectF32?: NativeEagerIndexSelectCall;
@@ -1005,6 +1013,29 @@ function nativeEagerTakeInputs(
   };
 }
 
+function nativeEagerOneHotInputs(
+  output: Float32Array,
+  index: unknown,
+  callOptions: Record<string, unknown>,
+) {
+  const label = "nativeEager.oneHotInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const classes = nativeEagerPositiveInteger(callOptions.classes ?? callOptions.numClasses ?? callOptions.num_classes, `${label} classes`);
+  const indices = nativeEagerIndexData(index, `${label} index`);
+  const expectedOutput = indices.length * classes;
+  if (output.length < expectedOutput) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${expectedOutput}`);
+  }
+  return {
+    indices,
+    output,
+    expectedOutput,
+    classes,
+  };
+}
+
 function nativeEagerIndexSelectInputs(
   output: Float32Array,
   input: unknown,
@@ -1546,6 +1577,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     take_into(output: Float32Array, input: unknown, index: unknown) {
       return this.takeInto(output, input, index);
+    },
+    oneHotInto(output: Float32Array, index: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.oneHotF32 !== "function") {
+        throw new Error("nativeEager.oneHotInto is unavailable in this runtime");
+      }
+      const args = nativeEagerOneHotInputs(output, index, callOptions);
+      options.check(options.oneHotF32(args));
+      return output;
+    },
+    one_hot_into(output: Float32Array, index: unknown, callOptions?: Record<string, unknown>) {
+      return this.oneHotInto(output, index, callOptions);
     },
     indexSelectInto(output: Float32Array, input: unknown, index: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.indexSelectF32 !== "function") {

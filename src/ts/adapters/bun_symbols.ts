@@ -395,6 +395,7 @@ export type BunNativeSymbols = Readonly<{
   ): number;
   zgml_eager_full_f32(output: Float32Array, outputLen: bigint, value: number): number;
   zgml_eager_arange_f32(output: Float32Array, outputLen: bigint, start: number, step: number): number;
+  zgml_eager_one_hot_f32(indices: Uint32Array, indicesLen: bigint, output: Float32Array, outputLen: bigint, classes: bigint): number;
   zgml_eager_permute_f32(
     input: Float32Array,
     inputLen: bigint,
@@ -1071,6 +1072,10 @@ export function bindBunSymbols(libPath: string): BunNativeSymbols {
     },
     zgml_eager_arange_f32: {
       args: [FFIType.ptr, FFIType.u64, FFIType.float, FFIType.float],
+      returns: FFIType.i32,
+    },
+    zgml_eager_one_hot_f32: {
+      args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64, FFIType.u64],
       returns: FFIType.i32,
     },
     zgml_eager_permute_f32: {
