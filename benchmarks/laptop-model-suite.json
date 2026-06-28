@@ -1,6 +1,6 @@
 {
   "schema": "zgml.laptop-model-suite.v1",
-  "purpose": "Standard mid-size laptop-grade model coverage for proving zgml beyond tiny synthetic and SmolLM-only benchmarks.",
+  "purpose": "Standard mid-size laptop-grade model coverage for proving zgml against PyTorch beyond tiny synthetic and SmolLM-only benchmarks.",
   "tiers": {
     "pr": {
       "description": "Cheap enough for routine PR evidence; must stay green before claiming the suite is healthy."
@@ -22,28 +22,30 @@
       "source": "https://huggingface.co/mradermacher/SmolLM-135M-GGUF",
       "localPath": "data/smollm/SmolLM-135M.Q8_0.gguf",
       "format": "gguf",
-      "reference": "llama.cpp",
-      "zgmlStatus": "ready",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "llama.cpp",
+      "zgmlStatus": "next",
       "benchmark": {
         "command": "BENCH_NEXT_PERF_LANE=ggml node scripts/run_next_perf.cjs",
-        "metric": "prompt/decode tok/s plus ggml percentage",
-        "gate": "required-pass smoke plus substrate trend gate"
+        "metric": "prompt/decode tok/s vs PyTorch Transformers, plus secondary llama.cpp percentage",
+        "gate": "executable today against llama.cpp; PyTorch reference harness required before suite-ready"
       },
-      "why": "Keeps the current executable-stencil LLM path honest and cheap."
+      "why": "Keeps the current executable-stencil LLM path cheap while making PyTorch the promotion target."
     },
     {
       "id": "llm.smollm2_360m.instruct.q8_0",
       "tier": "laptop_core",
       "domain": "llm",
       "architecture": "LLaMA-family decoder-only transformer",
-      "model": "SmolLM2-360M-Instruct Q8_0 or Q4_K_M GGUF",
+      "model": "SmolLM2-360M-Instruct",
       "source": "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct",
-      "format": "gguf",
-      "reference": "llama.cpp",
+      "format": "safetensors-primary, gguf-secondary",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "llama.cpp",
       "zgmlStatus": "next",
       "benchmark": {
-        "metric": "prompt/decode tok/s, memory peak, tokenizer-independent token-window correctness",
-        "gate": "must compile/load; perf target starts at 35% of llama.cpp and ratchets upward"
+        "metric": "prompt/decode tok/s, memory peak, logits/prediction agreement vs PyTorch",
+        "gate": "must compile/load from PyTorch-compatible weights; performance target starts at PyTorch parity"
       },
       "why": "First step above toy scale while still fast enough for frequent laptop runs."
     },
@@ -52,14 +54,15 @@
       "tier": "laptop_core",
       "domain": "llm",
       "architecture": "LLaMA-family decoder-only transformer",
-      "model": "SmolLM2-1.7B-Instruct Q4_K_M GGUF",
+      "model": "SmolLM2-1.7B-Instruct",
       "source": "https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct",
-      "format": "gguf",
-      "reference": "llama.cpp",
+      "format": "safetensors-primary, gguf-secondary",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "llama.cpp",
       "zgmlStatus": "next",
       "benchmark": {
-        "metric": "prompt/decode tok/s, KV-cache bytes, cold-load ms, hot session step ms",
-        "gate": "must compile/load; perf target starts at 30% of llama.cpp and ratchets upward"
+        "metric": "prompt/decode tok/s, KV-cache bytes, cold-load ms, hot session step ms, agreement vs PyTorch",
+        "gate": "must compile/load from PyTorch-compatible weights; performance target starts at PyTorch parity"
       },
       "why": "A real laptop-sized assistant model that should expose cache, allocator, and command-scheduling costs."
     },
@@ -68,14 +71,15 @@
       "tier": "laptop_core",
       "domain": "llm",
       "architecture": "Qwen3 decoder-only transformer with Q/K norm coverage",
-      "model": "Qwen3-0.6B Q4_K_M GGUF",
+      "model": "Qwen3-0.6B",
       "source": "https://huggingface.co/Qwen/Qwen3-0.6B",
-      "format": "gguf",
-      "reference": "llama.cpp",
+      "format": "safetensors-primary, gguf-secondary",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "llama.cpp",
       "zgmlStatus": "target",
       "benchmark": {
-        "metric": "prompt/decode tok/s plus architecture feature coverage",
-        "gate": "must probe architecture metadata before execution becomes required"
+        "metric": "prompt/decode tok/s, architecture feature coverage, agreement vs PyTorch",
+        "gate": "must probe architecture metadata and match PyTorch logits before execution becomes required"
       },
       "why": "Prevents overfitting the runtime to one LLaMA-family checkpoint shape."
     },
@@ -84,13 +88,14 @@
       "tier": "frontier",
       "domain": "llm",
       "architecture": "Qwen3 decoder-only transformer with Q/K norm coverage",
-      "model": "Qwen3-1.7B Q4_K_M GGUF",
+      "model": "Qwen3-1.7B",
       "source": "https://huggingface.co/Qwen/Qwen3-1.7B",
-      "format": "gguf",
-      "reference": "llama.cpp",
+      "format": "safetensors-primary, gguf-secondary",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "llama.cpp",
       "zgmlStatus": "target",
       "benchmark": {
-        "metric": "prompt/decode tok/s, memory peak, shape-specialization cache reuse",
+        "metric": "prompt/decode tok/s, memory peak, shape-specialization cache reuse, agreement vs PyTorch",
         "gate": "frontier until Qwen3 0.6B is green"
       },
       "why": "Mid-size architecture diversity at a scale where laptop memory pressure starts to matter."
@@ -100,13 +105,14 @@
       "tier": "frontier",
       "domain": "llm",
       "architecture": "Phi-3 decoder-only transformer",
-      "model": "Phi-3-mini-4k-instruct Q4 GGUF",
+      "model": "Phi-3-mini-4k-instruct",
       "source": "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct",
-      "format": "gguf",
-      "reference": "llama.cpp",
+      "format": "safetensors-primary, gguf-secondary",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "llama.cpp",
       "zgmlStatus": "unsupported-target",
       "benchmark": {
-        "metric": "loader/probe support first, then prompt/decode tok/s",
+        "metric": "loader/probe support first, then prompt/decode tok/s and agreement vs PyTorch",
         "gate": "not required until Phi architecture metadata and op coverage exist"
       },
       "why": "Useful negative/control target for proving the model loader generalizes beyond LLaMA/Qwen/SmolLM."
@@ -119,7 +125,8 @@
       "model": "DistilBERT SST-2 or equivalent ONNX/safetensors export",
       "source": "https://huggingface.co/distilbert/distilbert-base-uncased-finetuned-sst-2-english",
       "format": "onnx-or-safetensors",
-      "reference": "PyTorch or ONNX Runtime",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime",
       "zgmlStatus": "unsupported-target",
       "benchmark": {
         "metric": "sentences/s, p50/p95 ms, max_abs_diff vs reference logits",
@@ -135,7 +142,8 @@
       "model": "MobileNetV3 Small ONNX",
       "source": "https://pytorch.org/vision/stable/models/generated/torchvision.models.mobilenet_v3_small.html",
       "format": "onnx",
-      "reference": "PyTorch or ONNX Runtime",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime",
       "zgmlStatus": "unsupported-target",
       "benchmark": {
         "metric": "images/s, p50/p95 ms, top-1 agreement, max_abs_diff",
@@ -151,7 +159,8 @@
       "model": "CLIP ViT-B/32",
       "source": "https://huggingface.co/openai/clip-vit-base-patch32",
       "format": "onnx-or-safetensors",
-      "reference": "PyTorch or ONNX Runtime",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime",
       "zgmlStatus": "unsupported-target",
       "benchmark": {
         "metric": "image embeddings/s, text embeddings/s, cosine agreement",
@@ -167,7 +176,8 @@
       "model": "TAESD decoder",
       "source": "https://huggingface.co/madebyollin/taesd",
       "format": "safetensors-or-onnx",
-      "reference": "PyTorch or ONNX Runtime",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime",
       "zgmlStatus": "unsupported-target",
       "benchmark": {
         "metric": "latent-to-image ms, max_abs_diff or image metric vs reference",
@@ -183,7 +193,8 @@
       "model": "Stable Diffusion 1.5 UNet single denoise step",
       "source": "https://huggingface.co/runwayml/stable-diffusion-v1-5",
       "format": "safetensors-or-onnx",
-      "reference": "PyTorch, ONNX Runtime, or stable-diffusion.cpp",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime or stable-diffusion.cpp",
       "zgmlStatus": "unsupported-target",
       "benchmark": {
         "metric": "one denoise step ms at 512x512 latent size, memory peak, numeric/image agreement",
@@ -199,7 +210,8 @@
       "model": "Whisper tiny.en",
       "source": "https://huggingface.co/openai/whisper-tiny.en",
       "format": "onnx-or-safetensors",
-      "reference": "PyTorch, ONNX Runtime, or whisper.cpp",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime or whisper.cpp",
       "zgmlStatus": "unsupported-target",
       "benchmark": {
         "metric": "audio seconds/s, encoder ms, decoder token/s, transcript agreement",
@@ -215,7 +227,8 @@
       "model": "Whisper base.en",
       "source": "https://huggingface.co/openai/whisper-base.en",
       "format": "onnx-or-safetensors",
-      "reference": "PyTorch, ONNX Runtime, or whisper.cpp",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime or whisper.cpp",
       "zgmlStatus": "unsupported-target",
       "benchmark": {
         "metric": "audio seconds/s, memory peak, transcript agreement",
@@ -227,7 +240,7 @@
   "promotionPolicy": [
     "A model starts as unsupported-target until loader/probe evidence exists.",
     "A target moves to next when it can load, compile/probe, and produce a reference-comparable output shape.",
-    "A target moves to ready only after a checked benchmark artifact captures speed, memory, and numeric or task-level correctness.",
+    "A target moves to ready only after a checked PyTorch benchmark artifact captures speed, memory, and numeric or task-level correctness.",
     "Only ready models can become required PR gates; laptop_core models should become nightly or manual release gates first."
   ]
 }

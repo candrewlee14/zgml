@@ -38,15 +38,15 @@ if (!Array.isArray(manifest.models) || manifest.models.length === 0) {
 const ids = new Set();
 const domains = new Set();
 const tiers = new Set();
-let readyCount = 0;
 let laptopCoreCount = 0;
+let pytorchPrimaryCount = 0;
 
 for (const model of manifest.models || []) {
   if (!model || typeof model !== "object") {
     fail("model entry must be an object");
     continue;
   }
-  for (const field of ["id", "tier", "domain", "architecture", "model", "source", "format", "reference", "zgmlStatus", "benchmark", "why"]) {
+  for (const field of ["id", "tier", "domain", "architecture", "model", "source", "format", "primaryReference", "zgmlStatus", "benchmark", "why"]) {
     if (model[field] === undefined || model[field] === null || model[field] === "") {
       fail(`${model.id || "<unknown>"} missing ${field}`);
     }
@@ -57,7 +57,11 @@ for (const model of manifest.models || []) {
   tiers.add(model.tier);
   if (!requiredTiers.includes(model.tier)) fail(`${model.id} has unknown tier: ${model.tier}`);
   if (!allowedStatuses.has(model.zgmlStatus)) fail(`${model.id} has unknown zgmlStatus: ${model.zgmlStatus}`);
-  if (model.zgmlStatus === "ready") readyCount += 1;
+  if (model.primaryReference === "PyTorch") {
+    pytorchPrimaryCount += 1;
+  } else {
+    fail(`${model.id} primaryReference must be PyTorch`);
+  }
   if (model.tier === "laptop_core") laptopCoreCount += 1;
   if (!model.source.startsWith("https://")) fail(`${model.id} source must be an https URL`);
   if (!model.benchmark || typeof model.benchmark !== "object") {
@@ -75,7 +79,9 @@ for (const domain of requiredDomains) {
 for (const tier of requiredTiers) {
   if (!tiers.has(tier)) fail(`missing model for tier: ${tier}`);
 }
-if (readyCount < 1) fail("suite must keep at least one ready model");
+if (pytorchPrimaryCount !== (manifest.models || []).length) {
+  fail(`all models must use PyTorch as the primary reference, got ${pytorchPrimaryCount}/${(manifest.models || []).length}`);
+}
 if (laptopCoreCount < requiredDomains.length) {
   fail(`suite should have at least ${requiredDomains.length} laptop_core models, got ${laptopCoreCount}`);
 }
@@ -98,7 +104,7 @@ const byDomain = [...domains].sort().map((domain) => {
 console.log([
   "zgml laptop model suite ok:",
   `models=${manifest.models.length}`,
-  `ready=${readyCount}`,
+  `pytorch_primary=${pytorchPrimaryCount}/${manifest.models.length}`,
   `laptop_core=${laptopCoreCount}`,
   byDomain.join(" "),
 ].join(" "));

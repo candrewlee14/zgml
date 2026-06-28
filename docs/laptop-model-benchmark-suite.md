@@ -1,14 +1,19 @@
 # Laptop Model Benchmark Suite
 
-zgml needs a standing suite of real laptop-grade models, not only synthetic
-kernels, tiny training examples, and one SmolLM checkpoint. The suite is meant
-to answer four questions:
+zgml needs a standing suite of real laptop-grade models benched primarily
+against PyTorch, not only synthetic kernels, tiny training examples, and one
+SmolLM checkpoint. The suite is meant to answer four questions:
 
 - Can zgml load and execute the model family at all?
 - Does it produce reference-comparable outputs?
-- Is the hot path faster or at least competitive with the obvious native
-  reference?
+- Is the hot path faster or at least competitive with PyTorch?
 - Does the API still feel simple from JS/TS while Zig owns the execution work?
+
+PyTorch is the primary reference for every model in the suite. Secondary
+references such as llama.cpp, ONNX Runtime, whisper.cpp, or diffusion-specific
+runtimes are useful diagnostics, but they do not make a target suite-ready by
+themselves. For LLMs that means PyTorch-compatible weights are the promotion
+path; GGUF/llama.cpp comparisons remain secondary systems evidence.
 
 The manifest lives at `benchmarks/laptop-model-suite.json`. It is deliberately
 broader than the implementation today. `zgmlStatus` is the contract:
@@ -44,13 +49,17 @@ until they are stable and fast.
 
 ## Current Reality
 
-The only ready model in this suite today is the existing SmolLM-135M GGUF path.
-That is not enough to claim broad AI-library competitiveness. The next useful
-step is to graduate at least two larger LLMs and one non-LLM family:
+No larger model target is PyTorch-suite-ready today. The existing SmolLM-135M
+GGUF path is executable and useful, but it is only benchmarked against
+llama.cpp, so it is not enough to claim PyTorch-replacement competitiveness.
+The next useful step is to graduate at least two larger LLMs and one non-LLM
+family against PyTorch:
 
-1. SmolLM2-360M or SmolLM2-1.7B GGUF against llama.cpp.
-2. Qwen3-0.6B GGUF against llama.cpp.
-3. DistilBERT or MobileNetV3 against PyTorch/ONNX Runtime.
+1. SmolLM2-360M or SmolLM2-1.7B from PyTorch-compatible weights against
+   PyTorch Transformers.
+2. Qwen3-0.6B from PyTorch-compatible weights against PyTorch Transformers.
+3. DistilBERT or MobileNetV3 against PyTorch, with ONNX Runtime allowed only as
+   a secondary diagnostic.
 
 Diffusion and voice should stay explicit unsupported targets until the graph
 import, op coverage, and host preprocessing stories are real.
@@ -62,11 +71,13 @@ with:
 
 - model id, model source, local path, format, and checksum when available
 - backend, host, CPU/GPU details, thread count, and memory peak
-- reference runtime and version
+- PyTorch version and optional secondary reference runtime/version
 - cold load time, compile time, first-token/first-output time, and hot-path time
 - task metric: token/s, images/s, audio seconds/s, or denoise-step ms
 - correctness metric: max absolute diff, top-1 agreement, transcript agreement,
   cosine similarity, or task-level convergence
 
 The suite is not a marketing list. If a model is unsupported, the manifest says
-so. The point is to make the missing work obvious and measurable.
+so. If a model only has llama.cpp or ONNX Runtime evidence, the manifest says
+that too. The point is to make the missing PyTorch-competitive work obvious and
+measurable.
