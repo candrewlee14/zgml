@@ -13,7 +13,7 @@ autograd claim.
 | --- | --- | --- |
 | Broadcasted binary math | checked | `Tensor.maximum broadcast`, `where broadcast helper`, `Tensor.maskedFill value autograd backward` |
 | Movement and view-style ops | checked | `Tensor.flip autograd backward`, `Tensor.roll autograd backward`, `Tensor.split autograd backward` |
-| Scalar unary math | checked | `Tensor.reciprocal autograd backward`, `Tensor.rsqrt autograd backward`, `Tensor.sin autograd backward`, `Tensor.sin numerical gradient`, `Tensor.tanh autograd backward`, `Tensor.tanh numerical gradient` |
+| Scalar unary math | checked | `Tensor.reciprocal autograd backward`, `Tensor.rsqrt autograd backward`, `Tensor.sin autograd backward`, `Tensor.sin numerical gradient`, `Tensor.sigmoid numerical gradient`, `Tensor.silu numerical gradient`, `Tensor.gelu numerical gradient`, `Tensor.tanh autograd backward`, `Tensor.tanh numerical gradient` |
 | Zero-gradient integer-like ops | checked | `Tensor.floor zero gradient`, `Tensor.round zero gradient` |
 | Reductions | checked | `Tensor.variance autograd backward`, `Tensor.std autograd backward`, `Tensor.norm autograd backward`, `Tensor.prod autograd backward`, `Tensor.cumsum autograd backward` |
 | Log-sum-exp family | checked | `Tensor.logsumexp autograd backward`, `Tensor.logsumexp numerical gradient` |
@@ -25,8 +25,8 @@ autograd claim.
 ## Remaining Work
 
 - Continue adding numerical-gradient checks for nonlinear TS frontend paths that
-  still have exact-value smoke checks only; `sin`, `tanh`, and `logsumexp`
-  now have finite-difference package-smoke coverage.
+  still have exact-value smoke checks only; `sin`, `sigmoid`, `silu`, `gelu`,
+  `tanh`, and `logsumexp` now have finite-difference package-smoke coverage.
 - Split broad rows such as broadcasted binary math into operation-level rows if
   a new public API depends on a subtle gradient convention.
 - Add compile-support columns only when backward through compiled Programs

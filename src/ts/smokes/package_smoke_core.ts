@@ -6256,6 +6256,27 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   expectClose(roundProbe.grad, [0, 0], `${label} Tensor.round zero gradient`);
   expectClose(adapter.relu(adapter.tensor([-1, 0, 2], [3])).data, [0, 0, 2], `${label} relu root helper`);
   expectClose(adapter.Tensor.sigmoid(adapter.tensor([0], [1])).data, [0.5], `${label} Tensor.sigmoid static helper`);
+  expectNumericalGradient(
+    adapter,
+    [-1.25, 0.5],
+    [2],
+    (input) => input.sigmoid().sum(),
+    `${label} Tensor.sigmoid numerical gradient`,
+  );
+  expectNumericalGradient(
+    adapter,
+    [-0.75, 1.25],
+    [2],
+    (input) => input.silu().sum(),
+    `${label} Tensor.silu numerical gradient`,
+  );
+  expectNumericalGradient(
+    adapter,
+    [-0.5, 1.5],
+    [2],
+    (input) => input.gelu().sum(),
+    `${label} Tensor.gelu numerical gradient`,
+  );
   expectClose(adapter.tanh(adapter.tensor([0, 1], [2])).data, [0, Math.tanh(1)], `${label} tanh root helper`);
   expectClose(adapter.Tensor.tanh(adapter.tensor([0, 1], [2])).data, [0, Math.tanh(1)], `${label} Tensor.tanh static helper`);
   expectClose(adapter.sin(adapter.tensor([0, Math.PI / 2], [2])).data, [0, 1], `${label} sin root helper`);
