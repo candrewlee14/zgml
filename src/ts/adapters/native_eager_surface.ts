@@ -274,6 +274,10 @@ function nativeEagerElementwiseOpId(value: unknown, label: string): number {
     case "negative": return 5;
     case "exp": return 6;
     case "log": return 7;
+    case "expm1":
+    case "expMinusOne": return 30;
+    case "log1p":
+    case "logOnePlus": return 31;
     case "sqr":
     case "square": return 8;
     case "recip":
@@ -318,7 +322,7 @@ function nativeEagerElementwiseOpId(value: unknown, label: string): number {
     case "isInfinite": return 28;
     case "isfinite":
     case "isFinite": return 29;
-    default: throw new Error(`${label} op must be add, sub, mul, div, neg, exp, log, sqr, recip, abs, sqrt, rsqrt, maximum, minimum, eq, ne, lt, le, gt, ge, sign, step, floor, ceil, round, trunc, isnan, isinf, or isfinite, got ${value}`);
+    default: throw new Error(`${label} op must be add, sub, mul, div, neg, exp, log, expm1, log1p, sqr, recip, abs, sqrt, rsqrt, maximum, minimum, eq, ne, lt, le, gt, ge, sign, step, floor, ceil, round, trunc, isnan, isinf, or isfinite, got ${value}`);
   }
 }
 

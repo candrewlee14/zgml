@@ -2157,6 +2157,8 @@ export type NativeEagerElementwiseOp =
   | "add" | "sub" | "mul" | "div"
   | "neg" | "negative"
   | "exp" | "log"
+  | "expm1" | "expMinusOne"
+  | "log1p" | "logOnePlus"
   | "sqr" | "square"
   | "recip" | "reciprocal"
   | "abs" | "sqrt" | "rsqrt" | "reciprocal_sqrt" | "reciprocalSqrt"

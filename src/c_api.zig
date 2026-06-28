@@ -1734,6 +1734,8 @@ const eager_elementwise_trunc: u32 = 26;
 const eager_elementwise_isnan: u32 = 27;
 const eager_elementwise_isinf: u32 = 28;
 const eager_elementwise_isfinite: u32 = 29;
+const eager_elementwise_expm1: u32 = 30;
+const eager_elementwise_log1p: u32 = 31;
 const eager_reduce_sum: u32 = 1;
 const eager_reduce_mean: u32 = 2;
 const eager_reduce_max: u32 = 3;
@@ -1747,6 +1749,8 @@ fn eagerElementwiseUnaryF32(value: f32, op: u32) !f32 {
         eager_elementwise_neg => -value,
         eager_elementwise_exp => @exp(value),
         eager_elementwise_log => @log(value),
+        eager_elementwise_expm1 => std.math.expm1(value),
+        eager_elementwise_log1p => std.math.log1p(value),
         eager_elementwise_sqr => value * value,
         eager_elementwise_recip => 1.0 / value,
         eager_elementwise_abs => @abs(value),
@@ -1773,6 +1777,22 @@ fn eagerElementwiseUnaryVec8(value: @Vector(8, f32), op: u32) !@Vector(8, f32) {
         eager_elementwise_neg => -value,
         eager_elementwise_exp => @exp(value),
         eager_elementwise_log => @log(value),
+        eager_elementwise_expm1 => blk: {
+            const small = @abs(value) < @as(VecT, @splat(1.0e-4));
+            const x2 = value * value;
+            const x3 = x2 * value;
+            const x4 = x2 * x2;
+            const poly = value + @as(VecT, @splat(0.5)) * x2 + @as(VecT, @splat(1.0 / 6.0)) * x3 + @as(VecT, @splat(1.0 / 24.0)) * x4;
+            break :blk @select(f32, small, poly, @exp(value) - one);
+        },
+        eager_elementwise_log1p => blk: {
+            const small = @abs(value) < @as(VecT, @splat(1.0e-4));
+            const x2 = value * value;
+            const x3 = x2 * value;
+            const x4 = x2 * x2;
+            const poly = value - @as(VecT, @splat(0.5)) * x2 + @as(VecT, @splat(1.0 / 3.0)) * x3 - @as(VecT, @splat(0.25)) * x4;
+            break :blk @select(f32, small, poly, @log(one + value));
+        },
         eager_elementwise_sqr => value * value,
         eager_elementwise_recip => one / value,
         eager_elementwise_abs => @abs(value),
@@ -12344,6 +12364,62 @@ test "C ABI native eager elementwise writes caller output" {
     ));
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), unary_output[0], 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 2), unary_output[1], 1e-6);
+
+    const log_input = [_]f32{ 0, 1.0e-8, 0.25, 2 };
+    var log_output = [_]f32{0} ** log_input.len;
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        log_input[0..].ptr,
+        log_input.len,
+        null,
+        0,
+        log_output[0..].ptr,
+        log_output.len,
+        eager_elementwise_expm1,
+    ));
+    for (log_input, log_output) |plain, actual| {
+        try std.testing.expectApproxEqAbs(std.math.expm1(plain), actual, 1e-6);
+    }
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        log_input[0..].ptr,
+        log_input.len,
+        null,
+        0,
+        log_output[0..].ptr,
+        log_output.len,
+        eager_elementwise_log1p,
+    ));
+    for (log_input, log_output) |plain, actual| {
+        try std.testing.expectApproxEqAbs(std.math.log1p(plain), actual, 1e-6);
+    }
+
+    const log_vector_input = [_]f32{ 0, 1.0e-8, -1.0e-8, 1.0e-5, -1.0e-5, 0.25, 1, 2 };
+    var log_vector_output = [_]f32{0} ** log_vector_input.len;
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        log_vector_input[0..].ptr,
+        log_vector_input.len,
+        null,
+        0,
+        log_vector_output[0..].ptr,
+        log_vector_output.len,
+        eager_elementwise_expm1,
+    ));
+    for (log_vector_input, log_vector_output) |plain, actual| {
+        try std.testing.expectApproxEqAbs(std.math.expm1(plain), actual, 1e-6);
+    }
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        log_vector_input[0..].ptr,
+        log_vector_input.len,
+        null,
+        0,
+        log_vector_output[0..].ptr,
+        log_vector_output.len,
+        eager_elementwise_log1p,
+    ));
+    for (log_vector_input, log_vector_output) |plain, actual| {
+        try std.testing.expectApproxEqAbs(std.math.log1p(plain), actual, 1e-6);
+    }
 
     try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
         unary_input[0..].ptr,

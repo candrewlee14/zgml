@@ -1003,7 +1003,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function expm1(tensor: TensorMathTensor) {
-    return unary(tensor, Math.expm1, Math.exp);
+    return unary(tensor, Math.expm1, Math.exp, "expm1");
   }
 
   function log(tensor: TensorMathTensor) {
@@ -1011,7 +1011,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function log1p(tensor: TensorMathTensor) {
-    return unary(tensor, Math.log1p, (x) => 1 / (1 + x));
+    return unary(tensor, Math.log1p, (x) => 1 / (1 + x), "log1p");
   }
 
   function neg(tensor: TensorMathTensor) {

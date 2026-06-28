@@ -527,6 +527,8 @@ const noGradNativeElementwise = createTensorMathHelpers({
         case "add": output[i] = lhsValue + rhsValue; break;
         case "mul": output[i] = lhsValue * rhsValue; break;
         case "sqr": output[i] = lhsValue * lhsValue; break;
+        case "expm1": output[i] = Math.expm1(lhsValue); break;
+        case "log1p": output[i] = Math.log1p(lhsValue); break;
         case "recip": output[i] = 1 / lhsValue; break;
         case "sqrt": output[i] = Math.sqrt(lhsValue); break;
         case "rsqrt": output[i] = 1 / Math.sqrt(lhsValue); break;
@@ -600,6 +602,12 @@ expectSame(noGradNativeElementwise.add(
 expectSame(noGradNativeElementwise.sqr(
   new TensorDataSmokeTensor(Float32Array.of(1, -2, 3, -4), [2, 2]),
 ).data, [1, 4, 9, 16], "tensor math no-grad native unary sqr hook");
+expectSame(noGradNativeElementwise.expm1(
+  new TensorDataSmokeTensor(Float32Array.of(0, 1, 2, 3), [2, 2]),
+).data, Array.from(Float32Array.of(0, Math.expm1(1), Math.expm1(2), Math.expm1(3))), "tensor math no-grad native expm1 hook");
+expectSame(noGradNativeElementwise.log1p(
+  new TensorDataSmokeTensor(Float32Array.of(0, 1, 2, 3), [2, 2]),
+).data, Array.from(Float32Array.of(0, Math.log1p(1), Math.log1p(2), Math.log1p(3))), "tensor math no-grad native log1p hook");
 expectSame(noGradNativeElementwise.pow(
   new TensorDataSmokeTensor(Float32Array.of(1, -2, 3, -4), [2, 2]),
   2,
@@ -640,7 +648,7 @@ expectSame(noGradNativeElementwise.dot(
 ).data, [8.5], "tensor math no-grad native dot hook");
 expectSame(noGradNativeElementwise.add(math3d, mathTrailing).data.slice(0, 4), [11, 22, 33, 44], "tensor math no-grad native rank-3 row-broadcast hook");
 expectSame(noGradNativeElementwise.add(mathTrailing, math3d).data.slice(0, 4), [11, 22, 33, 44], "tensor math no-grad native rank-3 lhs row-broadcast hook");
-expectSame(nativeElementwiseCalls, ["mul", "add", "add:rhs:2x4", "add:lhs:2x4", "sqr", "sqr", "sqrt", "recip", "rsqrt", "lt", "eq", "clamp", "add:rhs:6x4", "add:lhs:6x4"], "tensor math no-grad native elementwise hook count");
+expectSame(nativeElementwiseCalls, ["mul", "add", "add:rhs:2x4", "add:lhs:2x4", "sqr", "expm1", "log1p", "sqr", "sqrt", "recip", "rsqrt", "lt", "eq", "clamp", "add:rhs:6x4", "add:lhs:6x4"], "tensor math no-grad native elementwise hook count");
 expectSame(nativeDotCalls, ["dot"], "tensor math no-grad native dot hook count");
 expectSame(nativeElementwiseReduceCalls, [], "tensor math no-grad native dot avoids composed reduce fallback");
 expectSame(nativeWhereCalls, ["where"], "tensor math no-grad native where hook count");

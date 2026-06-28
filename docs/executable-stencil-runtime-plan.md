@@ -717,12 +717,13 @@ Current checked progress:
   direct `conv2dInto` and `pool2dInto` rows above the native-eager floor with
   zero measured diff against the TS reference.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=38/38` after adding direct
+  as well: the expected row set is `row_coverage=40/40` after adding direct
   `matmul_batched`, `bmm_batched`, `elementwise_mul_batched`,
   `elementwise_div_batched`, `elementwise_minimum_batched`,
   `elementwise_maximum_batched`, `elementwise_neg_batched`,
   `elementwise_abs_batched`, `elementwise_sqrt_batched`,
   `elementwise_reciprocal_batched`, `elementwise_rsqrt_batched`,
+  `elementwise_expm1_batched`, `elementwise_log1p_batched`,
   `elementwise_pow_specialized_batched`, `elementwise_exp_batched`, `elementwise_log_batched`,
   `elementwise_isfinite_batched`,
   `elementwise_add_row_broadcast_batched`,

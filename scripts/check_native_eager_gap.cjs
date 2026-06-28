@@ -45,6 +45,16 @@ if (!Number.isFinite(minNativeEagerSpeedup) || minNativeEagerSpeedup <= 0) {
   throw new Error(`BENCH_NATIVE_EAGER_MIN_SPEEDUP must be positive, got ${process.env.BENCH_NATIVE_EAGER_MIN_SPEEDUP}`);
 }
 
+function requestedRows() {
+  const raw = String(process.env.BENCH_NATIVE_EAGER_ROWS || "").trim();
+  if (raw.length === 0) return null;
+  const rows = raw.split(",").map((row) => row.trim()).filter(Boolean);
+  if (rows.length === 0) {
+    throw new Error("BENCH_NATIVE_EAGER_ROWS must include at least one row key when set");
+  }
+  return new Set(rows);
+}
+
 function values(length, scale) {
   return Array.from({ length }, (_, index) => ((index % 17) - 8) / scale);
 }
@@ -588,6 +598,40 @@ const gapSpecs = Object.freeze([
     next: "native_eager_unary_storage_slice",
   }),
   Object.freeze({
+    key: "elementwise_expm1_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "expm1" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 31), [512, 256]),
+    eager: (input) => input.expm1(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "expm1" }),
+    nativeEagerModule: (input) => zgml.noGrad(() => input.expm1()),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 1,
+    tolerance: 2e-6,
+    next: "native_eager_unary_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_log1p_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "log1p" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(positiveValues(512 * 256, 37), [512, 256]),
+    eager: (input) => input.log1p(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "log1p" }),
+    nativeEagerModule: (input) => zgml.noGrad(() => input.log1p()),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 1,
+    tolerance: 2e-6,
+    next: "native_eager_unary_storage_slice",
+  }),
+  Object.freeze({
     key: "elementwise_pow_specialized_batched",
     shape: Object.freeze({ batch: 512, features: 256, op: "pow_specialized" }),
     outputLen: 512 * 256,
@@ -1112,7 +1156,19 @@ const gapSpecs = Object.freeze([
   }),
 ]);
 
-const rows = Object.freeze(gapSpecs.map(benchGap));
+const requestedRowKeys = requestedRows();
+const selectedGapSpecs = requestedRowKeys === null
+  ? gapSpecs
+  : Object.freeze(gapSpecs.filter((spec) => requestedRowKeys.has(spec.key)));
+if (requestedRowKeys !== null) {
+  const selectedKeys = new Set(selectedGapSpecs.map((spec) => spec.key));
+  const missingKeys = Array.from(requestedRowKeys).filter((key) => !selectedKeys.has(key));
+  if (missingKeys.length > 0) {
+    throw new Error(`BENCH_NATIVE_EAGER_ROWS contains unknown row keys: ${missingKeys.join(", ")}`);
+  }
+}
+
+const rows = Object.freeze(selectedGapSpecs.map(benchGap));
 const result = Object.freeze({
   schema: "zgml.native-eager-gap.v1",
   runtime,
@@ -1121,7 +1177,7 @@ const result = Object.freeze({
   config: Object.freeze({
     minTimingMs,
     minNativeEagerSpeedup,
-    rows: gapSpecs.map((spec) => spec.key),
+    rows: selectedGapSpecs.map((spec) => spec.key),
   }),
   status: "gap-measured",
   rows,
