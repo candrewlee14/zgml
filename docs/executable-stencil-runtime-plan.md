@@ -95,6 +95,14 @@ kinds, backend ids, buffer/storage/access ids, Program buffer kinds, ABI struct
 kinds, module op ids, activation ids, module flags, runtime feature bits, and
 the C ABI version. That keeps `KernelPlan -> native descriptor -> Program`
 lowering from becoming a parallel, silently divergent compiler contract.
+The module Program boundary now also has a native descriptor requirements probe:
+`zgml_module_program_get_requirements` accepts the same `zgml_module_desc` and
+`zgml_compile_desc` as `zgml_module_program_compile`, runs Zig's module compiler,
+and returns `zgml_program_requirements` without asking the TS side to re-derive
+native buffer lengths. The Node and Bun bridges expose that as an internal
+`moduleProgramRequirements` helper. This is the intended split in miniature:
+TypeScript packages an ergonomic `nn`/`compile` API and Zig remains the
+authority for executable Program requirements.
 
 The short rule is:
 

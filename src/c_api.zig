@@ -5415,6 +5415,17 @@ export fn zgml_module_program_compile(module_desc: ?*const zgml_module_desc, com
     return status(.ok);
 }
 
+export fn zgml_module_program_get_requirements(module_desc: ?*const zgml_module_desc, compile_desc: ?*const zgml_compile_desc, out_requirements: ?*zgml_program_requirements) c_int {
+    const desc = module_desc orelse return status(.invalid_argument);
+    const out = out_requirements orelse return status(.invalid_argument);
+    out.* = .{};
+    const backend = compileBackend(compile_desc) catch return status(.invalid_argument);
+    var module = compileModuleProgram(desc, backend) catch |err| return compileErrorStatus(err);
+    defer module.deinit();
+    fillModuleRequirements(out, &module);
+    return status(.ok);
+}
+
 fn fillTinyLinearRequirements(out: *zgml_program_requirements, linear: *TinyLinearProgramHandle) void {
     const weights_len = checkedWeightLen(linear.input_len, linear.output_len) orelse 0;
     const bias_len = linear.output_len;
@@ -9144,6 +9155,19 @@ test "C ABI module program compiles traced sequential ops" {
         defer zgml_session_free(mlp_session);
         defer zgml_program_free(mlp_program);
 
+        var probed_mlp_requirements = zgml_program_requirements{};
+        try std.testing.expectEqual(status(.ok), zgml_module_program_get_requirements(&.{
+            .input_shape = input_shape[0..].ptr,
+            .input_rank = input_shape.len,
+            .ops = mlp_ops[0..].ptr,
+            .op_count = mlp_ops.len,
+        }, &.{ .backend = backend_cpu }, &probed_mlp_requirements));
+        try std.testing.expectEqual(module_kind, probed_mlp_requirements.model_kind);
+        try std.testing.expectEqual(@as(usize, 2), probed_mlp_requirements.input_len);
+        try std.testing.expectEqual(@as(usize, 2), probed_mlp_requirements.output_len);
+        try std.testing.expectEqual(@as(usize, 12), probed_mlp_requirements.weights_len);
+        try std.testing.expectEqual(@as(usize, 5), probed_mlp_requirements.bias_len);
+
         try std.testing.expectEqual(status(.ok), zgml_module_program_compile(&.{
             .input_shape = input_shape[0..].ptr,
             .input_rank = input_shape.len,
@@ -9159,6 +9183,11 @@ test "C ABI module program compiles traced sequential ops" {
         try std.testing.expectEqual(@as(usize, 2), mlp_requirements.output_len);
         try std.testing.expectEqual(@as(usize, 12), mlp_requirements.weights_len);
         try std.testing.expectEqual(@as(usize, 5), mlp_requirements.bias_len);
+        try std.testing.expectEqual(probed_mlp_requirements.input_byte_len, mlp_requirements.input_byte_len);
+        try std.testing.expectEqual(probed_mlp_requirements.output_byte_len, mlp_requirements.output_byte_len);
+        try std.testing.expectEqual(probed_mlp_requirements.weights_byte_len, mlp_requirements.weights_byte_len);
+        try std.testing.expectEqual(probed_mlp_requirements.bias_byte_len, mlp_requirements.bias_byte_len);
+        try std.testing.expectEqual(probed_mlp_requirements.parameter_byte_len, mlp_requirements.parameter_byte_len);
 
         var mlp_inspection = zgml_program_inspection{};
         try std.testing.expectEqual(status(.ok), zgml_program_inspect(mlp_program, &mlp_inspection));

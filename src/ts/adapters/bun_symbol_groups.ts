@@ -44,6 +44,7 @@ export function createBunSymbolGroups(symbols: BunNativeSymbols) {
     }),
     moduleProgram: Object.freeze({
       moduleProgramCompile: symbols.zgml_module_program_compile,
+      moduleProgramGetRequirements: symbols.zgml_module_program_get_requirements,
     }),
     llamaToken: Object.freeze({
       sessionStepToken: symbols.zgml_session_step_token,

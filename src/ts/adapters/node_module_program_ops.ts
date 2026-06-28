@@ -10,6 +10,7 @@ import {
 } from "../runtime/module_program_desc.js";
 import type {
   ProgramCompileEvidence,
+  ProgramRequirements,
 } from "../public_api.js";
 import type {
   ProgramBindingDesc,
@@ -42,6 +43,7 @@ type ProgramNativeBufferBindFields = {
 
 type NodeModuleProgramSymbols = Readonly<{
   moduleProgramCompile(desc: Record<string, unknown>, compile: Record<string, unknown>, out: NativeOut): number;
+  moduleProgramGetRequirements(desc: Record<string, unknown>, compile: Record<string, unknown>, out: Record<string, unknown>): number;
 }>;
 
 export type NodeModuleProgramOpsOptions<TProgram> = Readonly<{
@@ -52,6 +54,7 @@ export type NodeModuleProgramOpsOptions<TProgram> = Readonly<{
   compileDesc(options: unknown): Record<string, unknown>;
   moduleProgramCompileArtifactsFromCompiledSpec(spec: unknown): ModuleProgramArtifacts;
   programNativeBufferBindFields(desc: ProgramBindingDesc, params: ProgramBindingsInput): ProgramNativeBufferBindFields;
+  programRequirementsFromAbiRecord(record: Record<string, unknown>): ProgramRequirements;
   createProgram(handle: NativeHandle, desc: Readonly<ModuleProgramDesc>, evidence: ProgramCompileEvidence | Readonly<Record<string, unknown>> | null): TProgram;
 }>;
 
@@ -64,6 +67,7 @@ export function createNodeModuleProgramOps<TProgram>(options: NodeModuleProgramO
     compileDesc,
     moduleProgramCompileArtifactsFromCompiledSpec,
     programNativeBufferBindFields,
+    programRequirementsFromAbiRecord,
     createProgram,
   } = options;
 
@@ -87,6 +91,14 @@ export function createNodeModuleProgramOps<TProgram>(options: NodeModuleProgramO
     return createProgram(readHandle(out, "program"), artifacts.desc, artifacts.evidence);
   }
 
+  function moduleProgramRequirements(spec: unknown, compileOptions: unknown = {}): ProgramRequirements {
+    const artifacts = moduleProgramCompileArtifactsFromCompiledSpec(spec);
+    const abiDesc = moduleProgramAbiDesc(artifacts.packed);
+    const out: Record<string, unknown> = {};
+    check(symbols.moduleProgramGetRequirements(abiDesc.desc, compileDesc(compileOptions), out));
+    return programRequirementsFromAbiRecord(out);
+  }
+
   function bufferBindDescForTinyLinear(desc: ProgramBindingDesc, params: ProgramBindingsInput): Record<string, unknown> {
     const fields = programNativeBufferBindFields(desc, params);
     return programBindDescriptorRecord(fields, (buffer) => buffer ? buffer.handle : null) as Record<string, unknown>;
@@ -94,6 +106,7 @@ export function createNodeModuleProgramOps<TProgram>(options: NodeModuleProgramO
 
   return Object.freeze({
     compileModuleProgram,
+    moduleProgramRequirements,
     attachProgramCompileEvidence,
     bufferBindDescForTinyLinear,
   });

@@ -100,6 +100,7 @@ export type BunNativeSymbols = Readonly<{
   zgml_model_inspect(model: BunNativeHandle, outInspection: BigUint64Array): number;
   zgml_program_compile(model: BunNativeHandle, desc: BunNativeHandle | BigUint64Array, outProgram: BigUint64Array): number;
   zgml_module_program_compile(moduleDesc: BigUint64Array, compileDesc: BunNativeHandle | BigUint64Array, outProgram: BigUint64Array): number;
+  zgml_module_program_get_requirements(moduleDesc: BigUint64Array, compileDesc: BunNativeHandle | BigUint64Array, outRequirements: BigUint64Array): number;
   zgml_program_get_requirements(program: BunNativeHandle, outRequirements: BigUint64Array): number;
   zgml_program_check_model_compatibility(program: BunNativeHandle, model: BunNativeHandle, outCompatibility: BigUint64Array): number;
   zgml_program_create_buffer(program: BunNativeHandle, kind: number, outBuffer: BigUint64Array): number;
@@ -399,6 +400,10 @@ export function bindBunSymbols(libPath: string): BunNativeSymbols {
       returns: FFIType.i32,
     },
     zgml_module_program_compile: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    zgml_module_program_get_requirements: {
       args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
       returns: FFIType.i32,
     },

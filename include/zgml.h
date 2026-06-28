@@ -938,6 +938,7 @@ ZGML_API zgml_status zgml_supported_checkpoint_inspect(size_t index, zgml_model_
 ZGML_API zgml_status zgml_model_inspect(zgml_model *model, zgml_model_inspection *out_inspection);
 ZGML_API zgml_status zgml_program_compile(zgml_model *model, const zgml_compile_desc *desc, zgml_program **out_program);
 ZGML_API zgml_status zgml_module_program_compile(const zgml_module_desc *module_desc, const zgml_compile_desc *compile_desc, zgml_program **out_program);
+ZGML_API zgml_status zgml_module_program_get_requirements(const zgml_module_desc *module_desc, const zgml_compile_desc *compile_desc, zgml_program_requirements *out_requirements);
 ZGML_API zgml_status zgml_program_get_requirements(zgml_program *program, zgml_program_requirements *out_requirements);
 ZGML_API zgml_status zgml_program_check_model_compatibility(zgml_program *program, zgml_model *model, zgml_program_model_compatibility *out_compatibility);
 ZGML_API zgml_status zgml_program_create_buffer(zgml_program *program, uint32_t kind, zgml_buffer **out_buffer);

@@ -11,6 +11,7 @@ import {
 } from "../runtime/module_program_desc.js";
 import type {
   ProgramCompileEvidence,
+  ProgramRequirements,
 } from "../public_api.js";
 
 type NativeHandle = number;
@@ -28,6 +29,7 @@ type ModuleProgramArtifacts = {
 
 type BunModuleProgramSymbols = Readonly<{
   moduleProgramCompile(moduleDesc: BigUint64Array, compileDesc: NativeHandle | BigUint64Array, outProgram: NativeOut): number;
+  moduleProgramGetRequirements(moduleDesc: BigUint64Array, compileDesc: NativeHandle | BigUint64Array, outRequirements: BigUint64Array): number;
 }>;
 
 export type BunModuleProgramOpsOptions<TProgram> = Readonly<{
@@ -38,6 +40,7 @@ export type BunModuleProgramOpsOptions<TProgram> = Readonly<{
   pointerFor(value: BigUint64Array): NativeHandle;
   compileDesc(options: unknown): NativeHandle | BigUint64Array;
   moduleProgramCompileArtifactsFromCompiledSpec(spec: unknown): ModuleProgramArtifacts;
+  programRequirementsFromAbiWords(out: BigUint64Array): ProgramRequirements;
   createProgram(handle: NativeHandle, desc: Readonly<ModuleProgramDesc>, evidence: ProgramCompileEvidence | Readonly<Record<string, unknown>> | null): TProgram;
 }>;
 
@@ -50,6 +53,7 @@ export function createBunModuleProgramOps<TProgram>(options: BunModuleProgramOps
     pointerFor,
     compileDesc,
     moduleProgramCompileArtifactsFromCompiledSpec,
+    programRequirementsFromAbiWords,
     createProgram,
   } = options;
 
@@ -71,8 +75,16 @@ export function createBunModuleProgramOps<TProgram>(options: BunModuleProgramOps
     return createProgram(readHandle(out), artifacts.desc, artifacts.evidence);
   }
 
+  function moduleProgramRequirements(spec: unknown, compileOptions: unknown = {}): ProgramRequirements {
+    const out = new BigUint64Array(16);
+    const artifacts = moduleProgramCompileArtifactsFromCompiledSpec(spec);
+    check(symbols.moduleProgramGetRequirements(moduleProgramAbiDesc(artifacts.packed), compileDesc(compileOptions), out));
+    return programRequirementsFromAbiWords(out);
+  }
+
   return Object.freeze({
     compileModuleProgram,
+    moduleProgramRequirements,
     attachProgramCompileEvidence,
   });
 }

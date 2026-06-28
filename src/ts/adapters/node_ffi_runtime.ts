@@ -773,6 +773,7 @@ const {
   compileDesc,
   moduleProgramCompileArtifactsFromCompiledSpec,
   programNativeBufferBindFields,
+  programRequirementsFromAbiRecord,
   createProgram: createAdapterProgramFactory({
     getProgramClass: () => Program,
   }),

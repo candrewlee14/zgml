@@ -44,6 +44,7 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
     }),
     moduleProgram: Object.freeze({
       moduleProgramCompile: symbols.moduleProgramCompile,
+      moduleProgramGetRequirements: symbols.moduleProgramGetRequirements,
     }),
     llamaToken: Object.freeze({
       sessionStepToken: symbols.sessionStepToken,

@@ -21,6 +21,7 @@ export type NodeNativeSymbols = Readonly<{
   modelInspect: NativeFunction;
   programCompile: NativeFunction;
   moduleProgramCompile: NativeFunction;
+  moduleProgramGetRequirements: NativeFunction;
   programGetRequirements: NativeFunction;
   programCheckModelCompatibility: NativeFunction;
   programCreateBuffer: NativeFunction;
@@ -114,6 +115,7 @@ export function bindNodeSymbols(nativeLibrary: unknown): NodeNativeSymbols {
     modelInspect: lib.func("int zgml_model_inspect(void *model, _Out_ zgml_model_inspection *out_inspection)"),
     programCompile: lib.func("int zgml_program_compile(void *model, const zgml_compile_desc *desc, _Out_ void **out_program)"),
     moduleProgramCompile: lib.func("int zgml_module_program_compile(const zgml_module_desc *module_desc, const zgml_compile_desc *compile_desc, _Out_ void **out_program)"),
+    moduleProgramGetRequirements: lib.func("int zgml_module_program_get_requirements(const zgml_module_desc *module_desc, const zgml_compile_desc *compile_desc, _Out_ zgml_program_requirements *out_requirements)"),
     programGetRequirements: lib.func("int zgml_program_get_requirements(void *program, _Out_ zgml_program_requirements *out_requirements)"),
     programCheckModelCompatibility: lib.func("int zgml_program_check_model_compatibility(void *program, void *model, _Out_ zgml_program_model_compatibility *out_compatibility)"),
     programCreateBuffer: lib.func("int zgml_program_create_buffer(void *program, uint32_t kind, _Out_ void **out_buffer)"),
