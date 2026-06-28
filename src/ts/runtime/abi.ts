@@ -167,6 +167,8 @@ export const abiStructKinds: NumericMap = Object.freeze({
   safetensorsDataLoadDesc: 39,
   moduleOpDesc: 40,
   moduleDesc: 41,
+  trainingPlanDesc: 42,
+  trainingPlan: 43,
 });
 
 export const runtimeFeatureBits = Object.freeze({
@@ -228,6 +230,7 @@ export const runtimeFeatureBits = Object.freeze({
   nativeEagerDot: 1n << 55n,
   nativeEagerBmm: 1n << 56n,
   nativeEagerElementwiseBroadcast: 1n << 57n,
+  nativeTrainingPlan: 1n << 58n,
 });
 export type RuntimeFeatureName = keyof typeof runtimeFeatureBits;
 export type RuntimeFeatureMap = Readonly<Record<RuntimeFeatureName, boolean>>;
@@ -289,6 +292,7 @@ export const requiredRuntimeFeatureNames = Object.freeze([
   "nativeEagerDot",
   "nativeEagerBmm",
   "nativeEagerElementwiseBroadcast",
+  "nativeTrainingPlan",
 ]);
 
 export const requiredRuntimeFeatureMask = requiredRuntimeFeatureNames.reduce(

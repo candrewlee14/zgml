@@ -94,6 +94,19 @@ type NativeTrainingPlan = Readonly<{
   workspace: Readonly<Record<string, number>>;
 }>;
 
+type NativeTrainingPlanRequest = Readonly<{
+  modelKind: "linear" | "sequential-mlp-relu";
+  optimizerKind: "sgd" | "adam" | "adamw";
+  lossKind: "mse" | "crossEntropy";
+  batch: number;
+  inFeatures: number;
+  hiddenFeatures: number;
+  outFeatures: number;
+}>;
+
+type NativeTrainingPlanFields = Omit<NativeTrainingPlan, "kind" | "native" | "loweredBy" | "runtimePath" | "backend">;
+type NativeTrainingPlanCompiler = (request: NativeTrainingPlanRequest) => NativeTrainingPlanFields;
+
 type NativeTrainingBulkFitPlan = Readonly<{
   kind: "zgml.native-training-bulk-fit-plan";
   supported: boolean;
@@ -135,6 +148,7 @@ export type NativeTrainingSurfaceOptions = {
   trainMlpReluCrossEntropyAdamWBulkF32?: NativeTrainingBulkMlpAdamCall;
   trainLinearMseSgdF32: NativeTrainingLinearSgdCall;
   trainLinearMseSgdBulkF32?: NativeTrainingBulkLinearSgdCall;
+  compileTrainingPlan?: NativeTrainingPlanCompiler;
 };
 
 function positiveInteger(value: unknown, label: string) {
@@ -177,6 +191,53 @@ function nativeTrainingPlan(fields: Omit<NativeTrainingPlan, "kind" | "native" |
     kernels: Object.freeze(fields.kernels.slice()),
     workspace: Object.freeze({ ...fields.workspace }),
   });
+}
+
+function defaultNativeTrainingPlan(request: NativeTrainingPlanRequest): NativeTrainingPlanFields {
+  if (request.modelKind === "linear" && request.optimizerKind === "sgd" && request.lossKind === "mse") {
+    return {
+      modelKind: "linear",
+      optimizerKind: "sgd",
+      lossKind: "mse",
+      inputShape: [request.batch, request.inFeatures],
+      outputShape: [request.batch, request.outFeatures],
+      parameterCount: 2,
+      parameterElements: request.inFeatures * request.outFeatures + request.outFeatures,
+      kernels: ["zgml_train_linear_mse_sgd_f32"],
+      workspace: {
+        output: request.batch * request.outFeatures,
+        gradWeight: request.inFeatures * request.outFeatures,
+        batchInput: request.batch * request.inFeatures,
+        batchTarget: request.batch * request.outFeatures,
+      },
+    };
+  }
+  if (request.modelKind === "sequential-mlp-relu" && request.lossKind === "crossEntropy") {
+    return {
+      modelKind: "sequential-mlp-relu",
+      optimizerKind: request.optimizerKind,
+      lossKind: "crossEntropy",
+      inputShape: [request.batch, request.inFeatures],
+      outputShape: [request.batch, request.outFeatures],
+      parameterCount: 4,
+      parameterElements:
+        request.inFeatures * request.hiddenFeatures +
+        request.hiddenFeatures +
+        request.hiddenFeatures * request.outFeatures +
+        request.outFeatures,
+      kernels: [request.optimizerKind === "adamw" ? "zgml_train_mlp_relu_cross_entropy_adamw_f32" : "zgml_train_mlp_relu_cross_entropy_adam_f32"],
+      workspace: {
+        hidden: request.batch * request.hiddenFeatures,
+        logits: request.batch * request.outFeatures,
+        gradHidden: request.batch * request.hiddenFeatures,
+        gradW1: request.inFeatures * request.hiddenFeatures,
+        gradW2: request.hiddenFeatures * request.outFeatures,
+        batchInput: request.batch * request.inFeatures,
+        batchTargets: request.batch,
+      },
+    };
+  }
+  throw new Error(`compile.trainingStep unsupported native training plan: ${request.modelKind}/${request.optimizerKind}/${request.lossKind}`);
 }
 
 function requireLayer(model: unknown, index: number, kind: string) {
@@ -532,6 +593,8 @@ function prepareNativeBulkFit<Source extends { indices: Uint32Array; sampleCount
 }
 
 export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfaceOptions) {
+  const compileTrainingPlan = options.compileTrainingPlan ?? defaultNativeTrainingPlan;
+
   function trainingStep(model: unknown, optimizer: unknown, config: AnyRecord = {}) {
     const loss = config.loss ?? config.criterion ?? "crossEntropy";
     if (loss === "mse" || loss === "meanSquaredError" || loss === "mean_squared_error") {
@@ -569,25 +632,15 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
     const gradW2 = new Float32Array(layers.second.weight.length);
     const batchInput = new Float32Array(batch * inFeatures);
     const batchTargets = new Uint32Array(batch);
-    const plan = nativeTrainingPlan({
+    const plan = nativeTrainingPlan(compileTrainingPlan({
       modelKind: "sequential-mlp-relu",
       optimizerKind: adam.kind,
       lossKind: "crossEntropy",
-      inputShape: [batch, inFeatures],
-      outputShape: [batch, classes],
-      parameterCount: params.length,
-      parameterElements: params.reduce((sum, param) => sum + param.length, 0),
-      kernels: [adam.kind === "adamw" ? "zgml_train_mlp_relu_cross_entropy_adamw_f32" : "zgml_train_mlp_relu_cross_entropy_adam_f32"],
-      workspace: {
-        hidden: hidden.length,
-        logits: logits.length,
-        gradHidden: gradHidden.length,
-        gradW1: gradW1.length,
-        gradW2: gradW2.length,
-        batchInput: batchInput.length,
-        batchTargets: batchTargets.length,
-      },
-    });
+      batch,
+      inFeatures,
+      hiddenFeatures: layers.first.outFeatures,
+      outFeatures: classes,
+    }));
     const bulkKernel = adam.kind === "adamw"
       ? options.trainMlpReluCrossEntropyAdamWBulkF32
       : options.trainMlpReluCrossEntropyAdamBulkF32;
@@ -803,22 +856,15 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
     const gradWeight = new Float32Array(layer.weight.length);
     const batchInput = new Float32Array(batch * inFeatures);
     const batchTarget = new Float32Array(batch * layer.outFeatures);
-    const plan = nativeTrainingPlan({
+    const plan = nativeTrainingPlan(compileTrainingPlan({
       modelKind: "linear",
       optimizerKind: "sgd",
       lossKind: "mse",
-      inputShape: [batch, inFeatures],
-      outputShape: [batch, layer.outFeatures],
-      parameterCount: params.length,
-      parameterElements: params.reduce((sum, param) => sum + param.length, 0),
-      kernels: ["zgml_train_linear_mse_sgd_f32"],
-      workspace: {
-        output: output.length,
-        gradWeight: gradWeight.length,
-        batchInput: batchInput.length,
-        batchTarget: batchTarget.length,
-      },
-    });
+      batch,
+      inFeatures,
+      hiddenFeatures: 0,
+      outFeatures: layer.outFeatures,
+    }));
     const bulkKernel = options.trainLinearMseSgdBulkF32;
 
     function step(input: unknown, target: unknown) {

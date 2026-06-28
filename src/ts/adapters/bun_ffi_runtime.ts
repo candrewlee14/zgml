@@ -10,6 +10,9 @@ import {
   bindBunSymbols,
 } from "./bun_symbols.js";
 import {
+  setUSize,
+} from "./bun_abi_words.js";
+import {
   createBunSymbolGroups,
 } from "./bun_symbol_groups.js";
 import {
@@ -2555,10 +2558,90 @@ function callBunNativeLinearBulkTraining(call: (...args: any[]) => number, args:
   return { status: statusCode, loss: outLoss[0], correct: 0, steps: steps > 0 ? steps : expectedSteps };
 }
 
+const nativeTrainingPlanIds = Object.freeze({
+  model: Object.freeze({ linear: 1, "sequential-mlp-relu": 2 }),
+  optimizer: Object.freeze({ sgd: 1, adam: 2, adamw: 3 }),
+  loss: Object.freeze({ mse: 1, crossEntropy: 2 }),
+});
+
+const nativeTrainingKernelNames = Object.freeze({
+  1: "zgml_train_linear_mse_sgd_f32",
+  2: "zgml_train_mlp_relu_cross_entropy_adam_f32",
+  3: "zgml_train_mlp_relu_cross_entropy_adamw_f32",
+});
+
+function requiredPlanId(table: Readonly<Record<string, number>>, key: string, label: string) {
+  const id = table[key];
+  if (!id) throw new Error(`compile.trainingStep unsupported ${label}: ${key}`);
+  return id;
+}
+
+function bunTrainingPlanDesc(request: any) {
+  const desc = new BigUint64Array(6);
+  const view = new DataView(desc.buffer);
+  view.setUint32(0, requiredPlanId(nativeTrainingPlanIds.model, request.modelKind, "model kind"), true);
+  view.setUint32(4, requiredPlanId(nativeTrainingPlanIds.optimizer, request.optimizerKind, "optimizer kind"), true);
+  view.setUint32(8, requiredPlanId(nativeTrainingPlanIds.loss, request.lossKind, "loss kind"), true);
+  view.setUint32(12, 0, true);
+  setUSize(view, 16, request.batch);
+  setUSize(view, 24, request.inFeatures);
+  setUSize(view, 32, request.hiddenFeatures);
+  setUSize(view, 40, request.outFeatures);
+  return desc;
+}
+
+function compileBunNativeTrainingPlan(request: any): any {
+  const out = new BigUint64Array(18);
+  const statusCode = bunSymbolGroups.nativeTraining.trainingPlanF32(bunTrainingPlanDesc(request), out);
+  check(statusCode);
+  const view = new DataView(out.buffer);
+  const supported = view.getUint32(0, true);
+  const modelKindId = view.getUint32(4, true);
+  const optimizerId = view.getUint32(8, true);
+  const lossId = view.getUint32(12, true);
+  const kernel = (nativeTrainingKernelNames as Readonly<Record<number, string>>)[view.getUint32(16, true)];
+  if (!kernel || supported !== 1) {
+    throw new Error("compile.trainingStep Zig planner returned unsupported training plan");
+  }
+  const workspace: Record<string, number> = {};
+  const workspaceFields = modelKindId === nativeTrainingPlanIds.model.linear
+    ? {
+      output: 14,
+      gradWeight: 15,
+      batchInput: 16,
+      batchTarget: 17,
+    }
+    : {
+      hidden: 9,
+      logits: 10,
+      gradHidden: 11,
+      gradW1: 12,
+      gradW2: 13,
+      batchInput: 16,
+      batchTargets: 17,
+    };
+  for (const [name, index] of Object.entries(workspaceFields)) {
+    const value = Number(out[index]);
+    if (value !== 0) workspace[name] = value;
+  }
+  return {
+    modelKind: modelKindId === nativeTrainingPlanIds.model.linear ? "linear" : "sequential-mlp-relu",
+    optimizerKind: optimizerId === nativeTrainingPlanIds.optimizer.sgd ? "sgd" : optimizerId === nativeTrainingPlanIds.optimizer.adamw ? "adamw" : "adam",
+    lossKind: lossId === nativeTrainingPlanIds.loss.mse ? "mse" : "crossEntropy",
+    inputShape: [Number(out[3]), Number(out[4])],
+    outputShape: [Number(out[3]), Number(out[6])],
+    parameterCount: Number(out[7]),
+    parameterElements: Number(out[8]),
+    kernels: [kernel],
+    workspace,
+  };
+}
+
 const nativeTraining = createAdapterNativeTrainingSurface({
   f32: (value) => f32(value as TensorLike),
   indexValues,
   check,
+  compileTrainingPlan: compileBunNativeTrainingPlan,
   trainLinearMseSgdF32: (args) => {
     const outLoss = new Float32Array(1);
     const statusCode = bunSymbolGroups.nativeTraining.trainLinearMseSgdF32(

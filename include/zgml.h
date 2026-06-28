@@ -143,6 +143,29 @@ enum {
     ZGML_FEATURE_NATIVE_EAGER_DOT = 1ull << 55,
     ZGML_FEATURE_NATIVE_EAGER_BMM = 1ull << 56,
     ZGML_FEATURE_NATIVE_EAGER_ELEMENTWISE_BROADCAST = 1ull << 57,
+    ZGML_FEATURE_NATIVE_TRAINING_PLAN = 1ull << 58,
+};
+
+enum {
+    ZGML_TRAINING_MODEL_LINEAR = 1,
+    ZGML_TRAINING_MODEL_SEQUENTIAL_MLP_RELU = 2,
+};
+
+enum {
+    ZGML_TRAINING_OPTIMIZER_SGD = 1,
+    ZGML_TRAINING_OPTIMIZER_ADAM = 2,
+    ZGML_TRAINING_OPTIMIZER_ADAMW = 3,
+};
+
+enum {
+    ZGML_TRAINING_LOSS_MSE = 1,
+    ZGML_TRAINING_LOSS_CROSS_ENTROPY = 2,
+};
+
+enum {
+    ZGML_TRAINING_KERNEL_LINEAR_MSE_SGD = 1,
+    ZGML_TRAINING_KERNEL_MLP_RELU_CROSS_ENTROPY_ADAM = 2,
+    ZGML_TRAINING_KERNEL_MLP_RELU_CROSS_ENTROPY_ADAMW = 3,
 };
 
 enum {
@@ -241,6 +264,8 @@ enum {
     ZGML_ABI_STRUCT_SAFETENSORS_DATA_LOAD_DESC = 39,
     ZGML_ABI_STRUCT_MODULE_OP_DESC = 40,
     ZGML_ABI_STRUCT_MODULE_DESC = 41,
+    ZGML_ABI_STRUCT_TRAINING_PLAN_DESC = 42,
+    ZGML_ABI_STRUCT_TRAINING_PLAN = 43,
 };
 
 enum {
@@ -306,6 +331,41 @@ typedef struct zgml_module_desc {
     const zgml_module_op_desc *ops;
     size_t op_count;
 } zgml_module_desc;
+
+typedef struct zgml_training_plan_desc {
+    uint32_t model_kind;
+    uint32_t optimizer_kind;
+    uint32_t loss_kind;
+    uint32_t reserved;
+    size_t batch;
+    size_t in_features;
+    size_t hidden_features;
+    size_t out_features;
+} zgml_training_plan_desc;
+
+typedef struct zgml_training_plan {
+    uint32_t supported;
+    uint32_t model_kind;
+    uint32_t optimizer_kind;
+    uint32_t loss_kind;
+    uint32_t kernel_kind;
+    uint32_t reserved;
+    uint64_t batch;
+    uint64_t in_features;
+    uint64_t hidden_features;
+    uint64_t out_features;
+    uint64_t parameter_count;
+    uint64_t parameter_elements;
+    uint64_t workspace_hidden;
+    uint64_t workspace_logits;
+    uint64_t workspace_grad_hidden;
+    uint64_t workspace_grad_w1;
+    uint64_t workspace_grad_w2;
+    uint64_t workspace_output;
+    uint64_t workspace_grad_weight;
+    uint64_t workspace_batch_input;
+    uint64_t workspace_batch_targets;
+} zgml_training_plan;
 
 typedef struct zgml_model_inspection {
     uint32_t model_kind;
@@ -847,6 +907,10 @@ ZGML_API zgml_status zgml_eager_softmax_f32(
     size_t rows,
     size_t cols,
     uint32_t log_softmax
+);
+ZGML_API zgml_status zgml_training_plan_f32(
+    const zgml_training_plan_desc *desc,
+    zgml_training_plan *out_plan
 );
 ZGML_API zgml_status zgml_train_linear_mse_sgd_f32(
     const float *input,

@@ -352,6 +352,7 @@ export type BunNativeSymbols = Readonly<{
     cols: bigint,
     logSoftmax: number,
   ): number;
+  zgml_training_plan_f32(desc: BigUint64Array, outPlan: BigUint64Array): number;
   zgml_train_linear_mse_sgd_f32: BunTrainLinearMseSgdF32;
   zgml_train_linear_mse_sgd_f32_bulk: BunTrainLinearMseSgdBulkF32;
   zgml_train_mlp_relu_cross_entropy_adam_f32: BunTrainMlpReluCrossEntropyAdamF32;
@@ -913,6 +914,10 @@ export function bindBunSymbols(libPath: string): BunNativeSymbols {
         FFIType.ptr,
         FFIType.ptr,
       ],
+      returns: FFIType.i32,
+    },
+    zgml_training_plan_f32: {
+      args: [FFIType.ptr, FFIType.ptr],
       returns: FFIType.i32,
     },
     zgml_train_mlp_relu_cross_entropy_adam_f32: {

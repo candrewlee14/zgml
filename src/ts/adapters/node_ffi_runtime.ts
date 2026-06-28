@@ -1491,10 +1491,90 @@ function callNodeNativeLinearBulkTraining(call, args) {
   return { status: statusCode, loss: outLoss[0], correct: 0, steps: steps > 0 ? steps : expectedSteps };
 }
 
+const nativeTrainingPlanIds = Object.freeze({
+  model: Object.freeze({ linear: 1, "sequential-mlp-relu": 2 }),
+  optimizer: Object.freeze({ sgd: 1, adam: 2, adamw: 3 }),
+  loss: Object.freeze({ mse: 1, crossEntropy: 2 }),
+});
+
+const nativeTrainingKernelNames = Object.freeze({
+  1: "zgml_train_linear_mse_sgd_f32",
+  2: "zgml_train_mlp_relu_cross_entropy_adam_f32",
+  3: "zgml_train_mlp_relu_cross_entropy_adamw_f32",
+});
+
+function requiredPlanId(table, key, label) {
+  const id = table[key];
+  if (!id) throw new Error(`compile.trainingStep unsupported ${label}: ${key}`);
+  return id;
+}
+
+function numberField(record, key) {
+  return Number(record[key] ?? 0);
+}
+
+function nativeTrainingPlanFields(record) {
+  const kernel = nativeTrainingKernelNames[numberField(record, "kernel_kind")];
+  if (!kernel || numberField(record, "supported") !== 1) {
+    throw new Error(`compile.trainingStep Zig planner returned unsupported training plan: ${JSON.stringify(record)}`);
+  }
+  const modelKindId = numberField(record, "model_kind");
+  const optimizerId = numberField(record, "optimizer_kind");
+  const workspace = {};
+  const workspaceFields = modelKindId === nativeTrainingPlanIds.model.linear
+    ? {
+      output: "workspace_output",
+      gradWeight: "workspace_grad_weight",
+      batchInput: "workspace_batch_input",
+      batchTarget: "workspace_batch_targets",
+    }
+    : {
+      hidden: "workspace_hidden",
+      logits: "workspace_logits",
+      gradHidden: "workspace_grad_hidden",
+      gradW1: "workspace_grad_w1",
+      gradW2: "workspace_grad_w2",
+      batchInput: "workspace_batch_input",
+      batchTargets: "workspace_batch_targets",
+    };
+  for (const [name, key] of Object.entries(workspaceFields)) {
+    const value = numberField(record, key);
+    if (value !== 0) workspace[name] = value;
+  }
+  return {
+    modelKind: modelKindId === nativeTrainingPlanIds.model.linear ? "linear" : "sequential-mlp-relu",
+    optimizerKind: optimizerId === nativeTrainingPlanIds.optimizer.sgd ? "sgd" : optimizerId === nativeTrainingPlanIds.optimizer.adamw ? "adamw" : "adam",
+    lossKind: numberField(record, "loss_kind") === nativeTrainingPlanIds.loss.mse ? "mse" : "crossEntropy",
+    inputShape: [numberField(record, "batch"), numberField(record, "in_features")],
+    outputShape: [numberField(record, "batch"), numberField(record, "out_features")],
+    parameterCount: numberField(record, "parameter_count"),
+    parameterElements: numberField(record, "parameter_elements"),
+    kernels: [kernel],
+    workspace,
+  };
+}
+
+function compileNodeNativeTrainingPlan(request) {
+  const out = {};
+  const statusCode = nodeSymbolGroups.nativeTraining.trainingPlanF32({
+    model_kind: requiredPlanId(nativeTrainingPlanIds.model, request.modelKind, "model kind"),
+    optimizer_kind: requiredPlanId(nativeTrainingPlanIds.optimizer, request.optimizerKind, "optimizer kind"),
+    loss_kind: requiredPlanId(nativeTrainingPlanIds.loss, request.lossKind, "loss kind"),
+    reserved: 0,
+    batch: request.batch,
+    in_features: request.inFeatures,
+    hidden_features: request.hiddenFeatures,
+    out_features: request.outFeatures,
+  }, out);
+  check(statusCode);
+  return nativeTrainingPlanFields(out);
+}
+
 const nativeTraining = createAdapterNativeTrainingSurface({
   f32: (value, label) => f32(value, label),
   indexValues,
   check,
+  compileTrainingPlan: compileNodeNativeTrainingPlan,
   trainLinearMseSgdF32: (args) => {
     const outLoss = new Float32Array(1);
     const statusCode = nodeSymbolGroups.nativeTraining.trainLinearMseSgdF32(

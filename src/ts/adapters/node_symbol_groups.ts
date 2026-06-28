@@ -99,6 +99,7 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
       eagerSoftmaxF32: symbols.eagerSoftmaxF32,
     }),
     nativeTraining: Object.freeze({
+      trainingPlanF32: symbols.trainingPlanF32,
       trainLinearMseSgdF32: symbols.trainLinearMseSgdF32,
       trainLinearMseSgdBulkF32: symbols.trainLinearMseSgdBulkF32,
       trainMlpReluCrossEntropyAdamF32: symbols.trainMlpReluCrossEntropyAdamF32,

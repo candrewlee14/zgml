@@ -98,6 +98,7 @@ const feature_native_eager_pool2d: u64 = 1 << 54;
 const feature_native_eager_dot: u64 = 1 << 55;
 const feature_native_eager_bmm: u64 = 1 << 56;
 const feature_native_eager_elementwise_broadcast: u64 = 1 << 57;
+const feature_native_training_plan: u64 = 1 << 58;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -157,6 +158,18 @@ const abi_struct_safetensors_header_probe_desc: u32 = 38;
 const abi_struct_safetensors_data_load_desc: u32 = 39;
 const abi_struct_module_op_desc: u32 = 40;
 const abi_struct_module_desc: u32 = 41;
+const abi_struct_training_plan_desc: u32 = 42;
+const abi_struct_training_plan: u32 = 43;
+const training_model_linear: u32 = 1;
+const training_model_sequential_mlp_relu: u32 = 2;
+const training_optimizer_sgd: u32 = 1;
+const training_optimizer_adam: u32 = 2;
+const training_optimizer_adamw: u32 = 3;
+const training_loss_mse: u32 = 1;
+const training_loss_cross_entropy: u32 = 2;
+const training_kernel_linear_mse_sgd: u32 = 1;
+const training_kernel_mlp_relu_cross_entropy_adam: u32 = 2;
+const training_kernel_mlp_relu_cross_entropy_adamw: u32 = 3;
 const module_op_linear: u32 = 1;
 const module_op_activation: u32 = 2;
 const module_op_softmax: u32 = 3;
@@ -306,6 +319,41 @@ pub const zgml_module_desc = extern struct {
     input_rank: usize,
     ops: ?[*]const zgml_module_op_desc,
     op_count: usize,
+};
+
+pub const zgml_training_plan_desc = extern struct {
+    model_kind: u32,
+    optimizer_kind: u32,
+    loss_kind: u32,
+    reserved: u32 = 0,
+    batch: usize,
+    in_features: usize,
+    hidden_features: usize = 0,
+    out_features: usize,
+};
+
+pub const zgml_training_plan = extern struct {
+    supported: u32 = 0,
+    model_kind: u32 = 0,
+    optimizer_kind: u32 = 0,
+    loss_kind: u32 = 0,
+    kernel_kind: u32 = 0,
+    reserved: u32 = 0,
+    batch: u64 = 0,
+    in_features: u64 = 0,
+    hidden_features: u64 = 0,
+    out_features: u64 = 0,
+    parameter_count: u64 = 0,
+    parameter_elements: u64 = 0,
+    workspace_hidden: u64 = 0,
+    workspace_logits: u64 = 0,
+    workspace_grad_hidden: u64 = 0,
+    workspace_grad_w1: u64 = 0,
+    workspace_grad_w2: u64 = 0,
+    workspace_output: u64 = 0,
+    workspace_grad_weight: u64 = 0,
+    workspace_batch_input: u64 = 0,
+    workspace_batch_targets: u64 = 0,
 };
 
 pub const zgml_model_inspection = extern struct {
@@ -1141,6 +1189,7 @@ fn runtimeFeatureFlags() u64 {
         feature_native_eager_dot |
         feature_native_eager_bmm |
         feature_native_eager_elementwise_broadcast |
+        feature_native_training_plan |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -1188,6 +1237,8 @@ export fn zgml_abi_struct_size(kind: u32) usize {
         abi_struct_safetensors_data_load_desc => @sizeOf(zgml_safetensors_data_load_desc),
         abi_struct_module_op_desc => @sizeOf(zgml_module_op_desc),
         abi_struct_module_desc => @sizeOf(zgml_module_desc),
+        abi_struct_training_plan_desc => @sizeOf(zgml_training_plan_desc),
+        abi_struct_training_plan => @sizeOf(zgml_training_plan),
         else => 0,
     };
 }
@@ -2770,6 +2821,113 @@ fn finiteSgdConfig(lr: f32, weight_decay: f32) bool {
         std.math.isFinite(weight_decay) and
         lr > 0 and
         weight_decay >= 0;
+}
+
+fn u64Count(value: usize) u64 {
+    return @intCast(value);
+}
+
+fn checkedAddCounts(a: usize, b: usize) ?usize {
+    return std.math.add(usize, a, b) catch null;
+}
+
+fn trainingPlanLinearMseSgd(desc: *const zgml_training_plan_desc, out: *zgml_training_plan) !void {
+    const batch = desc.batch;
+    const in_features = desc.in_features;
+    const out_features = desc.out_features;
+    if (batch == 0 or in_features == 0 or out_features == 0 or desc.hidden_features != 0) return error.InvalidArgument;
+
+    const weights = checkedElementCount(in_features, out_features) orelse return error.ShapeMismatch;
+    const bias = out_features;
+    const parameter_elements = checkedAddCounts(weights, bias) orelse return error.ShapeMismatch;
+    const output = checkedElementCount(batch, out_features) orelse return error.ShapeMismatch;
+    const batch_input = checkedElementCount(batch, in_features) orelse return error.ShapeMismatch;
+
+    out.* = .{
+        .supported = 1,
+        .model_kind = training_model_linear,
+        .optimizer_kind = training_optimizer_sgd,
+        .loss_kind = training_loss_mse,
+        .kernel_kind = training_kernel_linear_mse_sgd,
+        .batch = u64Count(batch),
+        .in_features = u64Count(in_features),
+        .out_features = u64Count(out_features),
+        .parameter_count = 2,
+        .parameter_elements = u64Count(parameter_elements),
+        .workspace_output = u64Count(output),
+        .workspace_grad_weight = u64Count(weights),
+        .workspace_batch_input = u64Count(batch_input),
+        .workspace_batch_targets = u64Count(output),
+    };
+}
+
+fn trainingPlanMlpReluCrossEntropyAdamLike(desc: *const zgml_training_plan_desc, out: *zgml_training_plan) !void {
+    const batch = desc.batch;
+    const in_features = desc.in_features;
+    const hidden_features = desc.hidden_features;
+    const classes = desc.out_features;
+    if (batch == 0 or in_features == 0 or hidden_features == 0 or classes == 0) return error.InvalidArgument;
+
+    const w1 = checkedElementCount(in_features, hidden_features) orelse return error.ShapeMismatch;
+    const w2 = checkedElementCount(hidden_features, classes) orelse return error.ShapeMismatch;
+    const hidden_and_b1 = checkedAddCounts(w1, hidden_features) orelse return error.ShapeMismatch;
+    const output_and_b2 = checkedAddCounts(w2, classes) orelse return error.ShapeMismatch;
+    const parameter_elements = checkedAddCounts(hidden_and_b1, output_and_b2) orelse return error.ShapeMismatch;
+    const hidden = checkedElementCount(batch, hidden_features) orelse return error.ShapeMismatch;
+    const logits = checkedElementCount(batch, classes) orelse return error.ShapeMismatch;
+    const batch_input = checkedElementCount(batch, in_features) orelse return error.ShapeMismatch;
+
+    out.* = .{
+        .supported = 1,
+        .model_kind = training_model_sequential_mlp_relu,
+        .optimizer_kind = desc.optimizer_kind,
+        .loss_kind = training_loss_cross_entropy,
+        .kernel_kind = if (desc.optimizer_kind == training_optimizer_adamw)
+            training_kernel_mlp_relu_cross_entropy_adamw
+        else
+            training_kernel_mlp_relu_cross_entropy_adam,
+        .batch = u64Count(batch),
+        .in_features = u64Count(in_features),
+        .hidden_features = u64Count(hidden_features),
+        .out_features = u64Count(classes),
+        .parameter_count = 4,
+        .parameter_elements = u64Count(parameter_elements),
+        .workspace_hidden = u64Count(hidden),
+        .workspace_logits = u64Count(logits),
+        .workspace_grad_hidden = u64Count(hidden),
+        .workspace_grad_w1 = u64Count(w1),
+        .workspace_grad_w2 = u64Count(w2),
+        .workspace_batch_input = u64Count(batch_input),
+        .workspace_batch_targets = u64Count(batch),
+    };
+}
+
+fn trainingPlanStatus(err: anyerror) c_int {
+    return switch (err) {
+        error.InvalidArgument => status(.invalid_argument),
+        error.ShapeMismatch => status(.shape_mismatch),
+        else => status(.compile_failed),
+    };
+}
+
+export fn zgml_training_plan_f32(desc_ptr: ?*const zgml_training_plan_desc, out_plan: ?*zgml_training_plan) c_int {
+    const desc = desc_ptr orelse return status(.invalid_argument);
+    const out = out_plan orelse return status(.invalid_argument);
+    out.* = .{};
+    if (desc.reserved != 0) return status(.invalid_argument);
+
+    if (desc.model_kind == training_model_linear and desc.optimizer_kind == training_optimizer_sgd and desc.loss_kind == training_loss_mse) {
+        trainingPlanLinearMseSgd(desc, out) catch |err| return trainingPlanStatus(err);
+        return status(.ok);
+    }
+    if (desc.model_kind == training_model_sequential_mlp_relu and
+        (desc.optimizer_kind == training_optimizer_adam or desc.optimizer_kind == training_optimizer_adamw) and
+        desc.loss_kind == training_loss_cross_entropy)
+    {
+        trainingPlanMlpReluCrossEntropyAdamLike(desc, out) catch |err| return trainingPlanStatus(err);
+        return status(.ok);
+    }
+    return status(.unsupported);
 }
 
 export fn zgml_train_linear_mse_sgd_f32(
@@ -8829,6 +8987,7 @@ test "C ABI runtime info reports compatible handle surface" {
     try std.testing.expect((info.feature_flags & feature_native_eager_dot) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_bmm) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_elementwise_broadcast) != 0);
+    try std.testing.expect((info.feature_flags & feature_native_training_plan) != 0);
     try std.testing.expectEqual(build_options.use_wgpu, (info.feature_flags & feature_native_wgpu_execution) != 0);
     try std.testing.expectEqual(build_options.use_wgpu and build_options.experimental_llama_wgpu_execution, (info.feature_flags & feature_experimental_llama_wgpu_execution) != 0);
     try std.testing.expect((info.feature_flags & feature_experimental_llama_wgpu_execution) == 0 or (info.feature_flags & feature_native_wgpu_execution) != 0);
@@ -8874,6 +9033,8 @@ test "C ABI runtime info reports compatible handle surface" {
     try std.testing.expectEqual(@sizeOf(zgml_safetensors_data_load_desc), zgml_abi_struct_size(abi_struct_safetensors_data_load_desc));
     try std.testing.expectEqual(@sizeOf(zgml_module_op_desc), zgml_abi_struct_size(abi_struct_module_op_desc));
     try std.testing.expectEqual(@sizeOf(zgml_module_desc), zgml_abi_struct_size(abi_struct_module_desc));
+    try std.testing.expectEqual(@sizeOf(zgml_training_plan_desc), zgml_abi_struct_size(abi_struct_training_plan_desc));
+    try std.testing.expectEqual(@sizeOf(zgml_training_plan), zgml_abi_struct_size(abi_struct_training_plan));
     try std.testing.expectEqual(@as(usize, 0), zgml_abi_struct_size(0));
     try std.testing.expectEqual(@as(usize, 0), zgml_abi_struct_size(9999));
 }
@@ -11962,6 +12123,59 @@ test "C ABI native eager bmm writes caller output" {
         2,
         2,
     ));
+}
+
+test "C ABI native training plan validates supported ergonomic training kernels" {
+    var linear = zgml_training_plan{};
+    try std.testing.expectEqual(status(.ok), zgml_training_plan_f32(&.{
+        .model_kind = training_model_linear,
+        .optimizer_kind = training_optimizer_sgd,
+        .loss_kind = training_loss_mse,
+        .batch = 4,
+        .in_features = 2,
+        .out_features = 1,
+    }, &linear));
+    try std.testing.expectEqual(@as(u32, 1), linear.supported);
+    try std.testing.expectEqual(training_kernel_linear_mse_sgd, linear.kernel_kind);
+    try std.testing.expectEqual(@as(u64, 2), linear.parameter_count);
+    try std.testing.expectEqual(@as(u64, 3), linear.parameter_elements);
+    try std.testing.expectEqual(@as(u64, 4), linear.workspace_output);
+    try std.testing.expectEqual(@as(u64, 2), linear.workspace_grad_weight);
+    try std.testing.expectEqual(@as(u64, 8), linear.workspace_batch_input);
+    try std.testing.expectEqual(@as(u64, 4), linear.workspace_batch_targets);
+
+    var mlp = zgml_training_plan{};
+    try std.testing.expectEqual(status(.ok), zgml_training_plan_f32(&.{
+        .model_kind = training_model_sequential_mlp_relu,
+        .optimizer_kind = training_optimizer_adamw,
+        .loss_kind = training_loss_cross_entropy,
+        .batch = 2,
+        .in_features = 3,
+        .hidden_features = 5,
+        .out_features = 4,
+    }, &mlp));
+    try std.testing.expectEqual(@as(u32, 1), mlp.supported);
+    try std.testing.expectEqual(training_kernel_mlp_relu_cross_entropy_adamw, mlp.kernel_kind);
+    try std.testing.expectEqual(@as(u64, 4), mlp.parameter_count);
+    try std.testing.expectEqual(@as(u64, 44), mlp.parameter_elements);
+    try std.testing.expectEqual(@as(u64, 10), mlp.workspace_hidden);
+    try std.testing.expectEqual(@as(u64, 8), mlp.workspace_logits);
+    try std.testing.expectEqual(@as(u64, 10), mlp.workspace_grad_hidden);
+    try std.testing.expectEqual(@as(u64, 15), mlp.workspace_grad_w1);
+    try std.testing.expectEqual(@as(u64, 20), mlp.workspace_grad_w2);
+    try std.testing.expectEqual(@as(u64, 6), mlp.workspace_batch_input);
+    try std.testing.expectEqual(@as(u64, 2), mlp.workspace_batch_targets);
+
+    var unsupported = zgml_training_plan{ .supported = 99 };
+    try std.testing.expectEqual(status(.unsupported), zgml_training_plan_f32(&.{
+        .model_kind = training_model_linear,
+        .optimizer_kind = training_optimizer_adam,
+        .loss_kind = training_loss_mse,
+        .batch = 4,
+        .in_features = 2,
+        .out_features = 1,
+    }, &unsupported));
+    try std.testing.expectEqual(@as(u32, 0), unsupported.supported);
 }
 
 test "C ABI native linear MSE SGD training learns caller-owned weights" {

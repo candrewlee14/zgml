@@ -98,6 +98,7 @@ export function createBunSymbolGroups(symbols: BunNativeSymbols) {
       eagerSoftmaxF32: symbols.zgml_eager_softmax_f32,
     }),
     nativeTraining: Object.freeze({
+      trainingPlanF32: symbols.zgml_training_plan_f32,
       trainLinearMseSgdF32: symbols.zgml_train_linear_mse_sgd_f32,
       trainLinearMseSgdBulkF32: symbols.zgml_train_linear_mse_sgd_f32_bulk,
       trainMlpReluCrossEntropyAdamF32: symbols.zgml_train_mlp_relu_cross_entropy_adam_f32,
