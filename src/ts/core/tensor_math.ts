@@ -262,6 +262,21 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     return scalarTensor(output[0], false);
   }
 
+  function nativeDotScalar(
+    tensor: TensorMathTensor,
+    rhsTensor: TensorMathTensor | null,
+    rhs: Float32Array,
+    rhsShape: readonly number[],
+  ) {
+    if (typeof nativeEagerReduceInto !== "function") return null;
+    if (tensor.length < nativeEagerReduceMinLength) return null;
+    const products = new Float32Array(tensor.length);
+    if (!nativeElementwiseBinaryInto(products, tensor, rhsTensor, rhs, rhsShape, "mul")) return null;
+    const output = new Float32Array(1);
+    nativeEagerReduceInto(output, products, { op: "sum" });
+    return output[0];
+  }
+
   function nativeSoftmaxDim(tensor: TensorMathTensor, dim: number, logSoftmaxFlag: boolean) {
     if (typeof nativeEagerSoftmaxInto !== "function") return null;
     const rank = tensor.shape.length;
@@ -668,9 +683,13 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     if (tensor.shape[0] !== rhsShape[0]) {
       throw new Error(`tensor dot shape mismatch: [${tensor.shape[0]}] cannot dot [${rhsShape[0]}]`);
     }
-    let acc = 0;
-    for (let i = 0; i < tensor.length; i += 1) acc += tensor.data[i] * rhs[i];
-    const needsGrad = gradModeEnabled() && (tensor.requiresGrad || Boolean(rhsTensor && rhsTensor.requiresGrad));
+    const gradEnabled = gradModeEnabled();
+    const needsGrad = gradEnabled && (tensor.requiresGrad || Boolean(rhsTensor && rhsTensor.requiresGrad));
+    let acc = !gradEnabled ? nativeDotScalar(tensor, rhsTensor, rhs, rhsShape) : null;
+    if (acc === null) {
+      acc = 0;
+      for (let i = 0; i < tensor.length; i += 1) acc += tensor.data[i] * rhs[i];
+    }
     const result = new TensorClass(Float32Array.of(acc), [1], {
       requiresGrad: needsGrad,
       prev: needsGrad ? [tensor, ...(rhsTensor ? [rhsTensor] : [])] : [],

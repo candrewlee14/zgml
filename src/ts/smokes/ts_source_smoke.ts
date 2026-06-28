@@ -471,6 +471,7 @@ expectApprox(nativeActivationTanh.data[0], 0, 1e-7, "tensor math no-grad native 
 expectApprox(nativeActivationTanh.data[1], Math.tanh(1), 1e-7, "tensor math no-grad native tanh hook 1");
 expectSame(nativeActivationCalls, ["relu", "tanh"], "tensor math no-grad native activation hook count");
 const nativeElementwiseCalls: string[] = [];
+const nativeElementwiseReduceCalls: string[] = [];
 const nativeWhereCalls: string[] = [];
 const noGradNativeElementwise = createTensorMathHelpers({
   getTensorClass: () => TensorDataSmokeTensor,
@@ -480,6 +481,7 @@ const noGradNativeElementwise = createTensorMathHelpers({
     new TensorDataSmokeTensor(Float32Array.of(value), [1], { requiresGrad }),
   isGradEnabled: () => false,
   nativeEagerElementwiseMinLength: 0,
+  nativeEagerReduceMinLength: 0,
   nativeEagerElementwiseInto(output, left, right, options) {
     nativeElementwiseCalls.push(options.op);
     const leftData = left.data ?? left;
@@ -496,6 +498,15 @@ const noGradNativeElementwise = createTensorMathHelpers({
         case "minimum": output[i] = Math.min(leftData[i], rhsValue); break;
         default: throw new Error(`unexpected native elementwise op ${options.op}`);
       }
+    }
+    return output;
+  },
+  nativeEagerReduceInto(output, input, options) {
+    nativeElementwiseReduceCalls.push(options.op);
+    const data = input.data ?? input;
+    switch (options.op) {
+      case "sum": output[0] = Array.from(data).reduce((acc, value) => acc + value, 0); break;
+      default: throw new Error(`unexpected native elementwise reduce op ${options.op}`);
     }
     return output;
   },
@@ -554,8 +565,13 @@ expectSame(noGradNativeElementwise.where(
   new TensorDataSmokeTensor(Float32Array.of(10, 20, 30, 40), [2, 2]),
   -5,
 ).data, [10, -5, 30, -5], "tensor math native where hook");
+expectSame(noGradNativeElementwise.dot(
+  new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4), [4]),
+  new TensorDataSmokeTensor(Float32Array.of(0.5, 1.5, -1, 2), [4]),
+).data, [8.5], "tensor math no-grad native dot hook");
 expectSame(noGradNativeElementwise.add(math3d, mathTrailing).data.slice(0, 4), [11, 22, 33, 44], "tensor math no-grad broadcast fallback keeps TS path");
-expectSame(nativeElementwiseCalls, ["mul", "add", "sqr", "lt", "eq", "clamp"], "tensor math no-grad native elementwise hook count");
+expectSame(nativeElementwiseCalls, ["mul", "add", "sqr", "lt", "eq", "clamp", "mul"], "tensor math no-grad native elementwise hook count");
+expectSame(nativeElementwiseReduceCalls, ["sum"], "tensor math no-grad native dot reduce hook count");
 expectSame(nativeWhereCalls, ["where"], "tensor math no-grad native where hook count");
 const nativeReduceCalls: string[] = [];
 const noGradNativeReduce = createTensorMathHelpers({

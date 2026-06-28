@@ -593,7 +593,7 @@ Current checked progress:
   `lazy_matmul_add_gelu_batched` eager fused matmul work, and
   `lazy_matmul_add_relu_batched` / `lazy_matmul_add_silu_batched` /
   `lazy_matmul_add_sigmoid_batched` / `lazy_matmul_add_tanh_batched` eager fused
-  matmul work plus scalar `elementwise_mul_batched` /
+  matmul work plus scalar `elementwise_mul_batched` / `dot_batched` /
   `reduce_sum_scalar_batched`, `softmax_batched` / `log_softmax_batched` row
   tails, and `conv2d_batched` image-kernel work versus the relevant Zig-backed
   native eager or allocation-free compiled `prepare/executeInto` path for the
@@ -616,8 +616,8 @@ Current checked progress:
   Scalar RHS elementwise and scalar reductions are now covered the same way:
   `zgml.nativeEager.elementwiseInto` / `zgml.nativeEager.reduceInto` call
   `zgml_eager_elementwise_f32` / `zgml_eager_reduce_f32` directly, and normal
-  no-grad `Tensor.mul(2)` / `Tensor.sum()` calls use those Zig ABI hooks for
-  large tensors while grad-enabled training keeps the TS/autograd path. The
+  no-grad `Tensor.mul(2)` / `Tensor.dot(...)` / `Tensor.sum()` calls compose
+  those Zig ABI hooks for large tensors while grad-enabled training keeps the TS/autograd path. The
   elementwise C ABI now uses a vectorized Zig binary helper for scalar and
   same-shape arithmetic/comparison ops; fresh Node/Bun direct rows show
   `elementwise_mul_batched` at `264.63x` / `262.06x` and the public Tensor path
@@ -687,8 +687,8 @@ Current checked progress:
   direct `conv2dInto` and `pool2dInto` rows above the native-eager floor with
   zero measured diff against the TS reference.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=23/23` after adding direct
-  `matmul_batched`, `bmm_batched`, `elementwise_mul_batched`, `reduce_sum_scalar_batched`,
+  as well: the expected row set is `row_coverage=24/24` after adding direct
+  `matmul_batched`, `bmm_batched`, `elementwise_mul_batched`, `dot_batched`, `reduce_sum_scalar_batched`,
   `elementwise_lt_batched`, `clamp_batched`, `where_batched`,
   standalone `activation_relu_batched` / `activation_sigmoid_batched` /
   `activation_gelu_batched` / `activation_silu_batched` /

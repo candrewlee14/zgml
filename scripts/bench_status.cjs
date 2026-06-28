@@ -55,6 +55,7 @@ const nativeEagerExpectedKeys = [
   "matmul_batched",
   "bmm_batched",
   "elementwise_mul_batched",
+  "dot_batched",
   "activation_relu_batched",
   "activation_sigmoid_batched",
   "activation_gelu_batched",

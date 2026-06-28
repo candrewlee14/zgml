@@ -125,6 +125,13 @@ function nativeEagerBmmInto(output, input, rhs, batch, rows, shared, cols) {
   return output;
 }
 
+function nativeEagerDotInto(output, input, rhs) {
+  const inputData = input.data ?? input;
+  const products = new Float32Array(inputData.length);
+  zgml.nativeEager.elementwiseInto(products, input, rhs, { op: "mul" });
+  return zgml.nativeEager.reduceInto(output, products, { op: "sum" });
+}
+
 function requireCompiledHotPath(key, session, input, output) {
   const compatibility = session.requireHotStepParams({ input, output });
   const plan = session.hotPathPlan({ input, output });
@@ -331,6 +338,8 @@ const matmulWeights = values(64 * 64, 36);
 const matmulWeightTensor = zgml.tensor(matmulWeights, [64, 64]);
 const bmmRhsValues = values(16 * 32 * 32, 29);
 const bmmRhsTensor = zgml.tensor(bmmRhsValues, [16, 32, 32]);
+const dotRhsValues = values(128 * 64, 23);
+const dotRhsTensor = zgml.tensor(dotRhsValues, [128 * 64]);
 const geluWeights = values(64 * 64, 32);
 const geluBias = values(64, 64);
 const geluWeightTensor = zgml.tensor(geluWeights, [64, 64]);
@@ -440,6 +449,23 @@ const gapSpecs = Object.freeze([
     minNativeEagerModuleSpeedup: runtime === "bun" ? 0.85 : 1,
     tolerance: 1e-5,
     next: "native_eager_elementwise_storage_slice",
+  }),
+  Object.freeze({
+    key: "dot_batched",
+    shape: Object.freeze({ length: 128 * 64, op: "dot" }),
+    outputLen: 1,
+    input: () => zgml.tensor(values(128 * 64, 13), [128 * 64]),
+    eager: (input) => input.dot(dotRhsTensor),
+    nativeEager: (output, input) => nativeEagerDotInto(output, input, dotRhsTensor),
+    nativeEagerModule: (input) => zgml.noGrad(() => input.dot(dotRhsTensor)),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 1,
+    tolerance: 5e-3,
+    next: "native_eager_dot_storage_slice",
   }),
   Object.freeze({
     key: "activation_relu_batched",

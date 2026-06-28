@@ -85,7 +85,8 @@ PyTorch replacement:
   adjacent `lazy_matmul_add_relu_batched` and
   `lazy_matmul_add_silu_batched`, `lazy_matmul_add_sigmoid_batched`, and
   `lazy_matmul_add_tanh_batched` production-activation targets, row-wise
-  scalar `elementwise_mul_batched` / `reduce_sum_scalar_batched`,
+  scalar `elementwise_mul_batched` / `dot_batched` /
+  `reduce_sum_scalar_batched`,
   `softmax_batched` / `log_softmax_batched`, `conv2d_batched`, and
   `max_pool2d_batched` / `avg_pool2d_batched`, as eager TS tensor execution
   versus the relevant Zig-backed native eager or compiled allocation-free path;
