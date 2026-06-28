@@ -136,7 +136,7 @@ export function createMaxPool2dModuleClass(options: PoolingModuleClassOptions) {
       const gradEnabled = gradModeEnabled();
       const needsGrad = gradEnabled && Boolean(input.requiresGrad || input.requires_grad);
       let maxIndices: Int32Array | null = null;
-      if (!gradEnabled && nativeEagerPool2dInto) {
+      if (!needsGrad && nativeEagerPool2dInto) {
         nativeEagerPool2dInto(out, input, {
           op: "max",
           batch,
@@ -312,7 +312,7 @@ export function createAvgPool2dModuleClass(options: PoolingModuleClassOptions) {
       const gradEnabled = gradModeEnabled();
       const needsGrad = gradEnabled && Boolean(input.requiresGrad || input.requires_grad);
       let counts: Float32Array | null = null;
-      if (!gradEnabled && nativeEagerPool2dInto) {
+      if (!needsGrad && nativeEagerPool2dInto) {
         nativeEagerPool2dInto(out, input, {
           op: "avg",
           batch,

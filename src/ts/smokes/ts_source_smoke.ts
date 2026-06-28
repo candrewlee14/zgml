@@ -7585,6 +7585,22 @@ expectSame(avgPoolInput.grad, [1, 1, 1, 1], "nn avgPool2d tensor grad");
 expectSame(new AvgPool2dModule(2, { padding: 1, stride: 1, count_include_pad: false }).forward(new ParameterlessModuleSmokeTensor(Float32Array.of(4), [1, 1, 1])).data, [4, 4, 4, 4], "nn avgPool2d excludes padding from divisor");
 expectSame(avgPool2d.compileSupport(), { supported: true, reason: null, nativePath: "device-program" }, "nn avgPool2d compile support is honest");
 expectSame(avgPool2d.compile({ inputShape: [1, 2, 2] }), { programKind: "avgPool2d" }, "nn avgPool2d direct compile");
+const nativePool2dCalls = [];
+const nativePoolHooks = {
+  ...parameterlessHooks,
+  nativeEagerPool2dInto: (output, input, options) => {
+    nativePool2dCalls.push({ inputShape: input.shape, options });
+    output.fill(options.op === "max" ? 77 : 33);
+    return output;
+  },
+};
+const NativeMaxPool2dModule = nnPoolingModule.createMaxPool2dModuleClass(nativePoolHooks);
+const NativeAvgPool2dModule = nnPoolingModule.createAvgPool2dModuleClass(nativePoolHooks);
+expectSame(new NativeMaxPool2dModule(2).forward(new ParameterlessModuleSmokeTensor(Float32Array.of(1, 2, 3, 4), [1, 2, 2])).data, [77], "nn maxPool2d grad-enabled non-grad input routes through native eager hook");
+expectSame(new NativeAvgPool2dModule(2).forward(new ParameterlessModuleSmokeTensor(Float32Array.of(1, 2, 3, 4), [1, 2, 2])).data, [33], "nn avgPool2d grad-enabled non-grad input routes through native eager hook");
+expectSame(nativePool2dCalls.map((call) => call.options.op), ["max", "avg"], "nn pool2d native eager hook records max and avg routes");
+expectSame(new NativeAvgPool2dModule(2).forward(new ParameterlessModuleSmokeTensor(Float32Array.of(1, 2, 3, 4), [1, 2, 2], { requiresGrad: true })).data, [2.5], "nn avgPool2d grad-needed input keeps TS backward metadata path");
+expectSame(nativePool2dCalls.length, 2, "nn pool2d native eager hook is skipped when backward metadata is required");
 const reluModule = new ActivationModule("relu", (value) => Math.max(0, value));
 expectSame({ kind: reluModule.kind, training: reluModule.training }, { kind: "relu", training: true }, "nn activation initializes");
 expectSame(reluModule.forward(Float32Array.of(-1, 2)), [0, 2], "nn activation host forward");
