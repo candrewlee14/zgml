@@ -259,6 +259,7 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
   });
   const fitModuleFromTrain = lossTrainHelpers.train.fit as (target: unknown, batches: unknown, options?: unknown) => unknown;
   const explainNativeModuleFromTrain = lossTrainHelpers.train.explainNative as (target: unknown, batches: unknown, options?: unknown) => unknown;
+  const canTrainNativeModuleFromTrain = lossTrainHelpers.train.canTrainNative as (target: unknown, batches: unknown, options?: unknown) => boolean;
   const fitNativeModuleFromTrain = lossTrainHelpers.train.fitNative as (target: unknown, batches: unknown, options?: unknown) => unknown;
   const evaluateModuleFromTrain = lossTrainHelpers.train.evaluateModule as (
     target: unknown,
@@ -341,6 +342,7 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
     requireBindingPlanForModuleBindings: options.requireBindingPlanForModuleBindings,
     fitModule: (target: unknown, batches: unknown, fitOptions = {}) => fitModuleFromTrain(target, batches, fitOptions),
     explainNativeModule: (target: unknown, batches: unknown, fitOptions = {}) => explainNativeModuleFromTrain(target, batches, fitOptions),
+    canTrainNativeModule: (target: unknown, batches: unknown, fitOptions = {}) => canTrainNativeModuleFromTrain(target, batches, fitOptions),
     fitNativeModule: (target: unknown, batches: unknown, fitOptions = {}) => fitNativeModuleFromTrain(target, batches, fitOptions),
     evaluateModule: (target: unknown, batches: unknown, criterion: unknown, evaluateOptions = {}) => (
       evaluateModuleFromTrain(target, batches, criterion, evaluateOptions)
@@ -1585,6 +1587,8 @@ export function createAdapterZgmlNamespace(options: AdapterZgmlNamespaceOptions)
     explain_native: (options.train as Record<string, unknown>).explain_native,
     nativeTrainingPlan: (options.train as Record<string, unknown>).nativePlan,
     native_training_plan: (options.train as Record<string, unknown>).native_plan,
+    canTrainNative: (options.train as Record<string, unknown>).canTrainNative,
+    can_train_native: (options.train as Record<string, unknown>).can_train_native,
     fitNative: (options.train as Record<string, unknown>).fitNative,
     fit_native: (options.train as Record<string, unknown>).fit_native,
     checkpoint: options.checkpoint,

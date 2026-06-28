@@ -53,6 +53,8 @@ import {
   fullLike,
   full_like,
   flatten,
+  canTrainNative,
+  can_train_native,
   explainNative,
   explain_native,
   fit,
@@ -4645,6 +4647,22 @@ const rootNativeTrainingSnakePlanAlias: NativeTrainingExplanation = native_train
   maxSteps: 1,
   inputShape: [1, 2] as const,
 });
+const modelFirstCanTrainNative: boolean = train.canTrainNative(checkpointModel, tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+const rootCanTrainNative: boolean = canTrainNative(checkpointModel, tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+const rootCanTrainNativeSnake: boolean = can_train_native(checkpointOptimizer, checkpointModel, tensorDatasetBatches, new nn.MSELoss(), {
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
 const moduleNativeTrainingExplanation: NativeTrainingExplanation = checkpointModel.explainTraining(tensorDatasetBatches, {
   optimizer: checkpointOptimizer,
   loss: new nn.MSELoss(),
@@ -4652,6 +4670,18 @@ const moduleNativeTrainingExplanation: NativeTrainingExplanation = checkpointMod
   inputShape: [1, 2] as const,
 });
 const moduleNativeTrainingSnakeExplanation: NativeTrainingExplanation = checkpointModel.explain_native_training(tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+const moduleCanTrainNative: boolean = checkpointModel.canTrainNative(tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+const moduleCanTrainNativeSnake: boolean = checkpointModel.can_train_native(tensorDatasetBatches, {
   optimizer: checkpointOptimizer,
   loss: new nn.MSELoss(),
   maxSteps: 1,
@@ -4671,8 +4701,13 @@ void rootNativeTrainingBulkKernel;
 void rootNativeTrainingNativeBulk;
 void rootNativeTrainingPlanAlias;
 void rootNativeTrainingSnakePlanAlias;
+void modelFirstCanTrainNative;
+void rootCanTrainNative;
+void rootCanTrainNativeSnake;
 void moduleNativeTrainingExplanation;
 void moduleNativeTrainingSnakeExplanation;
+void moduleCanTrainNative;
+void moduleCanTrainNativeSnake;
 void modelFirstNativeStringLossFitEvidence;
 void optimizerFirstNativeStringLossFitEvidence;
 void nativeClassificationLossName;

@@ -83,7 +83,8 @@ alias.
 `model.fit(...)` auto-selects supported Zig FFI training kernels for fixed-shape
 module batches; `model.forTraining(...)` / `zgml.forTraining(...)` expose the
 same compiled native training handle explicitly, and `model.fitNative(...)` is
-the fail-closed sibling when native training is required.
+the fail-closed sibling when native training is required. `model.canTrainNative(...)`
+and `zgml.canTrainNative(...)` are the fast preflight checks before a fit.
 `torch` remains available as a PyTorch-compatible alias for this same friendly namespace, but
 `zgml` is the canonical package identity.
 

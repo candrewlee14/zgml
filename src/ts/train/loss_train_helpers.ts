@@ -1625,6 +1625,22 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     return unsupportedNativeTrainingExplanation("train.explainNative requires a compiled native training step or a module with { optimizer, loss } options");
   }
 
+  function canTrainNative(
+    targetOrOptimizer: unknown,
+    moduleOrBatches: unknown,
+    batchesOrOptions: unknown,
+    criterionOrOptions: unknown = {},
+    maybeFitOptions: TrainFitOptions = {},
+  ) {
+    return (explainNative(
+      targetOrOptimizer,
+      moduleOrBatches,
+      batchesOrOptions,
+      criterionOrOptions,
+      maybeFitOptions,
+    ) as AnyRecord).supported === true;
+  }
+
   function finiteLossScalar(lossValue: LossTrainTensor, label: string) {
     const value = tensorScalar(lossValue);
     if (value === null) throw new Error(`${label} loss must be scalar-like`);
@@ -2180,6 +2196,8 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     explain_native: explainNative,
     nativePlan: explainNative,
     native_plan: explainNative,
+    canTrainNative,
+    can_train_native: canTrainNative,
     fitNative,
     fit_native: fitNative,
     fitModule,

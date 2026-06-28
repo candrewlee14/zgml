@@ -38,6 +38,8 @@ export const requiredNativePackageSpineExports = Object.freeze([
   "explain_native",
   "nativeTrainingPlan",
   "native_training_plan",
+  "canTrainNative",
+  "can_train_native",
   "fitNative",
   "fit_native",
   "checkpoint",

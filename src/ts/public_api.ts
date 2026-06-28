@@ -3941,6 +3941,12 @@ export interface NnModule {
   explain_training: NnModule["explainTraining"];
   explainNativeTraining: NnModule["explainTraining"];
   explain_native_training: NnModule["explainTraining"];
+  canTrainNative(batches: Iterable<unknown>, options: TrainFitOptions & {
+    optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void };
+    loss?: unknown;
+    criterion?: unknown;
+  }): boolean;
+  can_train_native: NnModule["canTrainNative"];
   fit(batches: Iterable<unknown>, options: TrainFitOptions & {
     optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void };
     loss?: unknown;
@@ -6019,6 +6025,54 @@ export interface TrainNamespace {
   explain_native: TrainNamespace["explainNative"];
   nativePlan: TrainNamespace["explainNative"];
   native_plan: TrainNamespace["explainNative"];
+  canTrainNative<Batch extends { input: TensorLike; target: TensorLike | IndexLike }>(
+    compiled: CompiledTrainingStep,
+    batches: Iterable<Batch>,
+    options?: TrainFitOptions,
+  ): boolean;
+  canTrainNative<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    options: TrainModelFitOptions<Kind, Target, Batch>,
+  ): boolean;
+  canTrainNative<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<Batch>,
+    options: TrainFitOptions<Kind> & {
+      optimizer: Optimizer<Kind>;
+      loss: TrainNativeLossName;
+      criterion?: TrainNativeLossName;
+    },
+  ): boolean;
+  canTrainNative<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<Batch>,
+    options: TrainFitOptions<Kind> & {
+      optimizer: Optimizer<Kind>;
+      criterion: TrainNativeLossName;
+      loss?: TrainNativeLossName;
+    },
+  ): boolean;
+  canTrainNative<Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    options: TrainModelFitOptions<null, Target, Batch>,
+  ): boolean;
+  canTrainNative<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    optimizer: Optimizer<Kind>,
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    criterion: TrainSupervisedCriterion<Target, Batch>,
+    options?: TrainFitOptions<Kind>,
+  ): boolean;
+  canTrainNative<Target extends NnModule, Batch>(
+    optimizer: { step(): void; zeroGrad?(options?: ZeroGradOptions): void },
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    criterion: TrainSupervisedCriterion<Target, Batch>,
+    options?: TrainFitOptions,
+  ): boolean;
+  can_train_native: TrainNamespace["canTrainNative"];
   fitNative<Batch extends { input: TensorLike; target: TensorLike | IndexLike }>(
     compiled: CompiledTrainingStep,
     batches: Iterable<Batch>,
@@ -7500,6 +7554,8 @@ export type PublicTorchNamespace = Readonly<{
   explain_native: PublicTrainNamespace["explain_native"];
   nativeTrainingPlan: PublicTrainNamespace["nativePlan"];
   native_training_plan: PublicTrainNamespace["native_plan"];
+  canTrainNative: PublicTrainNamespace["canTrainNative"];
+  can_train_native: PublicTrainNamespace["can_train_native"];
   fitNative: PublicTrainNamespace["fitNative"];
   fit_native: PublicTrainNamespace["fit_native"];
   checkpoint: PublicCheckpointNamespace;
@@ -7542,6 +7598,8 @@ export type PublicSimpleNamespace = Readonly<Pick<PublicZgmlNamespace,
   | "fit"
   | "fitModule"
   | "fit_module"
+  | "canTrainNative"
+  | "can_train_native"
   | "fitNative"
   | "fit_native"
   | "checkpoint"
@@ -7585,6 +7643,8 @@ export declare const explainNative: PublicTrainNamespace["explainNative"];
 export declare const explain_native: PublicTrainNamespace["explain_native"];
 export declare const nativeTrainingPlan: PublicTrainNamespace["nativePlan"];
 export declare const native_training_plan: PublicTrainNamespace["native_plan"];
+export declare const canTrainNative: PublicTrainNamespace["canTrainNative"];
+export declare const can_train_native: PublicTrainNamespace["can_train_native"];
 export declare const fitNative: PublicTrainNamespace["fitNative"];
 export declare const fit_native: PublicTrainNamespace["fit_native"];
 export declare const nativeEager: PublicNativeEagerNamespace;
