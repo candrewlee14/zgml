@@ -1646,6 +1646,47 @@ expectThrow(
   "slice step must be a positive safe integer, got 0",
   "tensor view slice rejects bad step",
 );
+const nativePermuteCalls = [];
+const nativePermuteView = createTensorViewHelpers({
+  Tensor: TensorDataSmokeTensor,
+  addTensorGrad: tensorData.addTensorGrad,
+  isGradEnabled: () => true,
+  nativePermuteInto(output, input, options) {
+    nativePermuteCalls.push({
+      outputShape: Array.from(options.outputShape),
+      inputStrides: Array.from(options.inputStrides),
+      axes: Array.from(options.axes),
+    });
+    const data = input.data ?? input;
+    const outputShape = Array.from(options.outputShape);
+    const inputStrides = Array.from(options.inputStrides);
+    const axes = Array.from(options.axes);
+    const outStrides = shape.rowMajorStrides(outputShape);
+    for (let flat = 0; flat < output.length; flat += 1) {
+      let inputIndex = 0;
+      for (let dim = 0; dim < outputShape.length; dim += 1) {
+        const coord = Math.floor(flat / outStrides[dim]) % outputShape[dim];
+        inputIndex += coord * inputStrides[axes[dim]];
+      }
+      output[flat] = data[inputIndex];
+    }
+    return output;
+  },
+});
+const nativePermuteInput = new TensorDataSmokeTensor(Float32Array.from({ length: 24 }, (_value, index) => index + 1), [2, 3, 4]);
+expectSame(nativePermuteView.permute(nativePermuteInput, [1, 2, 0]).data, [
+  1, 13, 2, 14, 3, 15, 4, 16,
+  5, 17, 6, 18, 7, 19, 8, 20,
+  9, 21, 10, 22, 11, 23, 12, 24,
+], "tensor view native permute rank3 output");
+expectSame(nativePermuteView.transpose(nativePermuteInput, 0, -1).data, [
+  1, 13, 5, 17, 9, 21, 2, 14, 6, 18, 10, 22,
+  3, 15, 7, 19, 11, 23, 4, 16, 8, 20, 12, 24,
+], "tensor view native transpose rank3 output");
+expectSame(nativePermuteCalls, [
+  { outputShape: [3, 4, 2], inputStrides: [12, 4, 1], axes: [1, 2, 0] },
+  { outputShape: [4, 3, 2], inputStrides: [12, 4, 1], axes: [2, 1, 0] },
+], "tensor view native rank-n permute hook calls");
 
 const tensorIndex = createTensorIndexHelpers();
 const indexTensor = { data: Float32Array.of(1, 2, 3, 4, 5, 6), shape: [2, 3] };

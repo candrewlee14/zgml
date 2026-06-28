@@ -87,15 +87,7 @@ export function createTensorViewHelpers(options: TensorViewHelpersOptions) {
     axes: readonly number[],
   ) {
     if (nativePermuteInto === null) return false;
-    if (
-      outputShape.length !== 2 ||
-      inputStrides.length !== 2 ||
-      axes.length !== 2 ||
-      axes[0] !== 1 ||
-      axes[1] !== 0 ||
-      inputStrides[1] !== 1 ||
-      inputStrides[0] !== outputShape[0]
-    ) return false;
+    if (outputShape.length !== inputStrides.length || outputShape.length !== axes.length) return false;
     nativePermuteInto(output, tensor, {
       outputShape: u32Array(outputShape, "native permute outputShape"),
       inputStrides: u32Array(inputStrides, "native permute inputStrides"),
