@@ -1188,6 +1188,16 @@ the diagnostic from `direct_width=0.12x` to `direct_width=1.22x`
 evidence: the retained decomposed absorbed path remains faster at
 `absorbed=2.67x` (`median=2.64x`), so the next move is to parallelize the
 staged down tile itself rather than merely staging the shared product.
+A row-tiled down-stage pass then replaced the staged diagnostic's scalar
+one-row-per-output-tile down kernel with the same 32-row by 32-output simdgroup
+shape used by the row-chain width-partial kernel. That reduces the down stage
+from 2,304 tiny row/tile groups to 72 matrix tile groups while preserving the
+three-dispatch staged structure. Fresh evidence stays correct and moves
+`direct_width` to `1.39x` (`max_abs_diff=0.000002`,
+`runtime_dispatches=3`, `fallback=staged`). This is still diagnostic rather
+than promotable because the retained decomposed absorbed path remains faster at
+`absorbed=2.68x`, but the remaining gap is now product/gate-up staging plus
+finalize overhead instead of an obviously scalar down tile.
 With that proof surface in place, the absorbed decomposed bridge now uses the
 same width-partial row-chain encoder for the model-width input projection as
 well as the hidden-width down tail. The guard is deliberately narrow: it only

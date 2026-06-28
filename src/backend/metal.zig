@@ -1897,53 +1897,87 @@ const shader_source =
     \\    device float*       partial_dst         [[buffer(3)]],
     \\    constant QMatmulSemanticFfnInputBridgeParams& p [[buffer(4)]],
     \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint simd_idx [[simdgroup_index_in_threadgroup]],
     \\    uint tid [[thread_index_in_threadgroup]]
     \\) {
-    \\    const uint row = group.x;
+    \\    const uint gRow = group.x * ROW_CHAIN_TILE;
     \\    const uint gCol = group.y * ROW_CHAIN_TILE;
-    \\    if (row >= p.M) return;
-    \\    threadgroup float partial[SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS];
+    \\    const uint width_lane = simd_idx / NSUB;
+    \\    const uint quad = simd_idx - width_lane * NSUB;
+    \\    const uint lane_tid = tid - width_lane * 128;
+    \\    const uint sRow = (quad / 2) * 16;
+    \\    const uint sCol = (quad % 2) * 16;
     \\
-    \\    float output_ss = 0.0f;
-    \\    for (uint col = gCol + tid; col < min(gCol + ROW_CHAIN_TILE, p.O); col += SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS) {
-    \\        float sum = 0.0f;
-    \\        uint h = 0;
-    \\        for (; h + 7 < p.H; h += 8) {
-    \\            uint w_idx0 = h * p.O + col;
-    \\            uint w_idx1 = w_idx0 + p.O;
-    \\            uint w_idx2 = w_idx1 + p.O;
-    \\            uint w_idx3 = w_idx2 + p.O;
-    \\            uint w_idx4 = w_idx3 + p.O;
-    \\            uint w_idx5 = w_idx4 + p.O;
-    \\            uint w_idx6 = w_idx5 + p.O;
-    \\            uint w_idx7 = w_idx6 + p.O;
-    \\            uint product_base = p.product_scratch_offset + row * p.H + h;
-    \\            sum += output_scratch[product_base] * float(down_weight_data[w_idx0]) * down_weight_scales[w_idx0 >> 5];
-    \\            sum += output_scratch[product_base + 1] * float(down_weight_data[w_idx1]) * down_weight_scales[w_idx1 >> 5];
-    \\            sum += output_scratch[product_base + 2] * float(down_weight_data[w_idx2]) * down_weight_scales[w_idx2 >> 5];
-    \\            sum += output_scratch[product_base + 3] * float(down_weight_data[w_idx3]) * down_weight_scales[w_idx3 >> 5];
-    \\            sum += output_scratch[product_base + 4] * float(down_weight_data[w_idx4]) * down_weight_scales[w_idx4 >> 5];
-    \\            sum += output_scratch[product_base + 5] * float(down_weight_data[w_idx5]) * down_weight_scales[w_idx5 >> 5];
-    \\            sum += output_scratch[product_base + 6] * float(down_weight_data[w_idx6]) * down_weight_scales[w_idx6 >> 5];
-    \\            sum += output_scratch[product_base + 7] * float(down_weight_data[w_idx7]) * down_weight_scales[w_idx7 >> 5];
+    \\    threadgroup float tI[ROW_CHAIN_WIDTH_LANES * ROW_CHAIN_TILE * 8];
+    \\    threadgroup float tW[ROW_CHAIN_WIDTH_LANES * 8 * ROW_CHAIN_TILE];
+    \\    threadgroup float tC[ROW_CHAIN_WIDTH_LANES * ROW_CHAIN_TILE * ROW_CHAIN_TILE];
+    \\
+    \\    simdgroup_float8x8 acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\
+    \\    for (uint kt_base = 0; kt_base < p.H; kt_base += 8 * ROW_CHAIN_WIDTH_LANES) {
+    \\        const uint kt = kt_base + width_lane * 8;
+    \\        const uint input_base = width_lane * ROW_CHAIN_TILE * 8;
+    \\        const uint weight_base = width_lane * 8 * ROW_CHAIN_TILE;
+    \\        for (uint i = lane_tid; i < ROW_CHAIN_TILE * 8; i += 128) {
+    \\            uint r = i / 8, c = i % 8;
+    \\            uint ir = gRow + r, ic = kt + c;
+    \\            tI[input_base + i] = (ir < p.M && ic < p.H) ? output_scratch[p.product_scratch_offset + ir * p.H + ic] : 0.0f;
     \\        }
-    \\        for (; h < p.H; h++) {
-    \\            uint w_idx = h * p.O + col;
-    \\            sum += output_scratch[p.product_scratch_offset + row * p.H + h] * float(down_weight_data[w_idx]) * down_weight_scales[w_idx >> 5];
+    \\        for (uint i = lane_tid; i < 8 * ROW_CHAIN_TILE; i += 128) {
+    \\            uint r = i / ROW_CHAIN_TILE, c = i % ROW_CHAIN_TILE;
+    \\            uint kr = kt + r, nc = gCol + c;
+    \\            if (kr < p.H && nc < p.O) {
+    \\                uint w_idx = kr * p.O + nc;
+    \\                tW[weight_base + i] = float(down_weight_data[w_idx]) * down_weight_scales[w_idx / p.down_block_size];
+    \\            } else {
+    \\                tW[weight_base + i] = 0.0f;
+    \\            }
     \\        }
-    \\        uint linear = row * p.O + col;
-    \\        float residual = sum + output_scratch[p.output_scratch_offset + linear];
-    \\        output_scratch[p.output_scratch_offset + linear] = residual;
-    \\        output_ss += residual * residual;
-    \\    }
-    \\    partial[tid] = output_ss;
-    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
-    \\    for (uint stride = SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS / 2; stride > 0; stride >>= 1) {
-    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        simdgroup_float8x8 a0, a1, b0, b1;
+    \\        simdgroup_load(a0, tI + input_base + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tI + input_base + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(b0, tW + weight_base + (sCol + 0), ROW_CHAIN_TILE);
+    \\        simdgroup_load(b1, tW + weight_base + (sCol + 8), ROW_CHAIN_TILE);
+    \\
+    \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
     \\        threadgroup_barrier(mem_flags::mem_threadgroup);
     \\    }
-    \\    if (tid == 0) {
-    \\        partial_dst[p.partial_dst_offset + row * p.partial_cols + group.y] = partial[0];
+    \\
+    \\    const uint c_base = width_lane * ROW_CHAIN_TILE * ROW_CHAIN_TILE;
+    \\    simdgroup_store(acc[0], tC + c_base + (sRow + 0) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[1], tC + c_base + (sRow + 0) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[2], tC + c_base + (sRow + 8) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[3], tC + c_base + (sRow + 8) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    if (tid < ROW_CHAIN_TILE) {
+    \\        uint r = tid;
+    \\        uint cr = gRow + r;
+    \\        if (cr < p.M) {
+    \\            float ss = 0.0f;
+    \\            for (uint c = 0; c < ROW_CHAIN_TILE; c += 1) {
+    \\                uint cc = gCol + c;
+    \\                if (cc < p.O) {
+    \\                    float val = 0.0f;
+    \\                    for (uint wl = 0; wl < ROW_CHAIN_WIDTH_LANES; wl += 1) {
+    \\                        val += tC[wl * ROW_CHAIN_TILE * ROW_CHAIN_TILE + r * ROW_CHAIN_TILE + c];
+    \\                    }
+    \\                    uint linear = cr * p.O + cc;
+    \\                    float residual = val + output_scratch[p.output_scratch_offset + linear];
+    \\                    output_scratch[p.output_scratch_offset + linear] = residual;
+    \\                    ss += residual * residual;
+    \\                }
+    \\            }
+    \\            partial_dst[p.partial_dst_offset + cr * p.partial_cols + group.y] = ss;
+    \\        }
     \\    }
     \\}
     \\
@@ -10584,8 +10618,8 @@ const CompiledProgram = struct {
             &partial_buffers,
             params,
             4,
-            .{ .gx = params.M, .gy = output_tiles },
-            SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS,
+            .{ .gx = std.math.divCeil(u32, params.M, ROW_CHAIN_TILE) catch return false, .gy = output_tiles },
+            SEMANTIC_FFN_THREADS,
         );
 
         const finalize_buffers = [_]DeviceBuffer{

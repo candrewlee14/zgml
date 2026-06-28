@@ -2023,6 +2023,8 @@ function checkScripts() {
     "SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS",
     "product_scratch_offset",
     "staged_scratch_bytes",
+    "simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);",
+    ".{ .gx = std.math.divCeil(u32, params.M, ROW_CHAIN_TILE) catch return false, .gy = output_tiles }",
   ]);
   requireIncludes(read("benchmarks/llama_smollm_bench.zig"), "benchmarks/llama_smollm_bench.zig", "promoted Q8 semantic prefill default", [
     "run_metal_prefill_device and model_is_gguf",
