@@ -208,6 +208,13 @@ lowers through `compileTrainingStep` to the Zig FFI kernel and returns
 caller wants this native route to fail closed instead of falling back to eager
 TS autograd. The product API gets simpler without moving the hot training step
 back into JavaScript.
+The MNIST/PyTorch comparison now treats ergonomic `model.fit(...)` as the
+primary zgml training lane and requires `native=true` / `loweredBy="zig-ffi"`.
+A June 27, 2026 default run passes numeric parity and reaches the same 87.70%
+accuracy as PyTorch, but full training remains `0.13x` PyTorch because the epoch
+still pays JS data-loader and per-batch FFI overhead. The next training
+performance move is therefore a native-owned fit/epoch loop or bulk batch
+schedule, not another JS callback wrapper.
 
 The refined compiler shape is:
 

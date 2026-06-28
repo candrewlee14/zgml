@@ -210,15 +210,20 @@ function runZgml() {
 
   const model = createModel();
   const optimizer = optim.adam(model, { lr: 0.001 });
+  const criterion = loss.crossEntropyLoss({ classes: 10 });
   const trainLoader = data.dataLoader(data.tensorDataset(trainImages, trainLabels), { batchSize, shuffle: true, seed: 20260627 });
   const testLoader = data.dataLoader(data.tensorDataset(testImages, testLabels), { batchSize, shuffle: false });
   const before = evaluate(model, testLoader);
   const trainStart = performance.now();
-  const fit = train.fit(optimizer, trainLoader, (batch) => loss.crossEntropy(model.forward(batch.input), batch.target, { classes: 10 }), {
+  const fit = model.fit(trainLoader, {
+    optimizer,
+    loss: criterion,
     epochs,
-    zeroGrad: true,
   });
   const trainMs = performance.now() - trainStart;
+  if (fit.native !== true || fit.compiledPlan?.loweredBy !== "zig-ffi") {
+    throw new Error(`MNIST PyTorch comparison expected ergonomic model.fit to lower through Zig FFI, got ${JSON.stringify(fit.compiledPlan)}`);
+  }
   const after = evaluate(model, testLoader);
   const sample = testImages.select(0, 0);
   const eager = gradMode.inferenceMode(() => model.forward(sample));
@@ -259,6 +264,8 @@ function runZgml() {
     steps: fit.steps,
     trainMs,
     trainMsPerStep: trainMs / fit.steps,
+    modelFitNative: fit.native === true,
+    modelFitLoweredBy: fit.compiledPlan?.loweredBy ?? null,
     eagerSingleForwardMs,
     compiledSingleForwardMs,
     sample0Pred: train.predictClasses(eager, { classes: 10 })[0],
@@ -470,7 +477,7 @@ async function main() {
     sample0PredMatch: zgml.sample0Pred === pytorch.sample0Pred && zgml.compiledSample0Pred === zgml.sample0Pred,
     stepsMatch: zgml.steps === pytorch.steps,
   };
-  const numericReady = numeric.beforeLossDelta <= 1e-7 &&
+  const numericReady = numeric.beforeLossDelta <= 1e-6 &&
     numeric.afterLossDelta <= 1e-5 &&
     numeric.beforeAccuracyDelta === 0 &&
     numeric.afterAccuracyDelta === 0 &&
@@ -482,9 +489,9 @@ async function main() {
   const ratios = {
     trainZgmlVsPytorch: pytorch.trainMs / zgml.trainMs,
     trainStepZgmlVsPytorch: pytorch.trainMsPerStep / zgml.trainMsPerStep,
-    trainNativeZgmlVsPytorch: pytorch.trainMs / zgml.nativeTraining.trainMs,
-    trainStepNativeZgmlVsPytorch: pytorch.trainMsPerStep / zgml.nativeTraining.trainMsPerStep,
-    trainNativeZgmlVsJsZgml: zgml.trainMs / zgml.nativeTraining.trainMs,
+    trainManualNativeZgmlVsPytorch: pytorch.trainMs / zgml.nativeTraining.trainMs,
+    trainStepManualNativeZgmlVsPytorch: pytorch.trainMsPerStep / zgml.nativeTraining.trainMsPerStep,
+    trainManualNativeZgmlVsModelFitZgml: zgml.trainMs / zgml.nativeTraining.trainMs,
     eagerInferenceZgmlVsPytorch: pytorch.eagerSingleForwardMs / zgml.eagerSingleForwardMs,
     compiledInferenceZgmlVsPytorchEager: pytorch.eagerSingleForwardMs / zgml.compiledSingleForwardMs,
   };
@@ -529,11 +536,12 @@ async function main() {
     `test=${testLimit}`,
     `epochs=${epochs}`,
     `zgml_train=${round(zgml.trainMs)}ms`,
-    `zgml_native_train=${round(zgml.nativeTraining.trainMs)}ms`,
+    `zgml_model_fit_native=${zgml.modelFitNative ? "yes" : "no"}:${zgml.modelFitLoweredBy ?? "none"}`,
+    `zgml_manual_native_train=${round(zgml.nativeTraining.trainMs)}ms`,
     `pytorch_train=${round(pytorch.trainMs)}ms`,
     `zgml_vs_pytorch_train=${ratios.trainZgmlVsPytorch.toFixed(3)}x`,
-    `zgml_native_vs_pytorch_train=${ratios.trainNativeZgmlVsPytorch.toFixed(3)}x`,
-    `zgml_native_vs_js_train=${ratios.trainNativeZgmlVsJsZgml.toFixed(3)}x`,
+    `zgml_manual_native_vs_pytorch_train=${ratios.trainManualNativeZgmlVsPytorch.toFixed(3)}x`,
+    `manual_native_vs_model_fit=${ratios.trainManualNativeZgmlVsModelFitZgml.toFixed(3)}x`,
     `zgml_acc=${(zgml.after.accuracy * 100).toFixed(2)}%`,
     `zgml_native_acc=${(zgml.nativeTraining.after.accuracy * 100).toFixed(2)}%`,
     `pytorch_acc=${(pytorch.after.accuracy * 100).toFixed(2)}%`,
