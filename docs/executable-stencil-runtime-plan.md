@@ -730,7 +730,7 @@ Current checked progress:
   direct `conv2dInto` and `pool2dInto` rows above the native-eager floor with
   zero measured diff against the TS reference.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=44/44` after adding direct
+  as well: the expected row set is `row_coverage=49/49` after adding direct
   `matmul_batched`, `bmm_batched`, `elementwise_mul_batched`,
   `elementwise_div_batched`, `elementwise_minimum_batched`,
   `elementwise_maximum_batched`, `elementwise_neg_batched`,
@@ -746,7 +746,10 @@ Current checked progress:
   `elementwise_lt_batched`, `clamp_batched`, `where_batched`,
   standalone `activation_relu_batched` / `activation_sigmoid_batched` /
   `activation_gelu_batched` / `activation_silu_batched` /
-  `activation_tanh_batched`, native eager `conv2d_batched`, and native eager
+  `activation_tanh_batched`, policy-sized
+  `activation_relu_policy` / `activation_sigmoid_policy` /
+  `activation_gelu_policy` / `activation_silu_policy` /
+  `activation_tanh_policy`, native eager `conv2d_batched`, and native eager
   `max_pool2d_batched` /
   `avg_pool2d_batched`; fresh Node/Bun short runs show zero measured module
   diff across the native eager rows, with per-row speedup floors recorded where
@@ -760,8 +763,10 @@ Current checked progress:
   than the already-native public route and slower than a plain TS typed-array
   loop. Node therefore records `disabledActivations=["relu"]` and leaves
   standalone `Tensor.relu()` on the TS loop by default, while the explicit C ABI
-  row remains measured as `node_relu_prefers_ts_loop_over_ffi_boundary`. Bun
-  keeps the higher activation threshold and no disabled activation list. Fused
+  row remains measured as `node_relu_prefers_ts_loop_over_ffi_boundary`. Bun now
+  uses a 1024-element standalone activation threshold, keeps ReLU disabled at
+  the public Tensor route, and proves GELU/SiLU/Sigmoid/Tanh policy-sized rows
+  against a manual JS scalar-loop baseline. Fused
   Linear+activation and compiled lazy activation paths remain native where they
   win, and standalone GELU/SiLU/Sigmoid/Tanh continue to use the adapter-level
   activation dispatch policy once the runtime threshold is met. Grad-enabled activation calls

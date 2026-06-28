@@ -162,6 +162,15 @@ function activationScalar(value, activation) {
   }
 }
 
+function activationManualEager(input, activation) {
+  const data = input.data ?? input;
+  const out = new Float32Array(data.length);
+  for (let i = 0; i < data.length; i += 1) {
+    out[i] = activationScalar(data[i], activation);
+  }
+  return out;
+}
+
 function lazyMatmulAddActivationEager(input, weightValues, biasValues, batch, inFeatures, outFeatures, activation) {
   const out = new Float32Array(batch * outFeatures);
   for (let row = 0; row < batch; row += 1) {
@@ -882,6 +891,96 @@ const gapSpecs = Object.freeze([
     minNativeEagerModuleSpeedup: 0.95,
     tolerance: 1e-6,
     next: runtime === "node" ? "node_relu_prefers_ts_loop_over_ffi_boundary" : "native_eager_activation_storage_slice",
+  }),
+  Object.freeze({
+    key: "activation_relu_policy",
+    shape: Object.freeze({ length: 1024, activation: "relu", policyMinLength: 1024 }),
+    outputLen: 1024,
+    input: () => zgml.tensor(values(1024, 13), [1024]),
+    eager: (input) => activationManualEager(input, "relu"),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "relu" }),
+    nativeEagerModule: (input) => input.relu(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 1000,
+    nativeEagerIterations: 5000,
+    nativeEagerModuleIterations: 5000,
+    compiledIterations: 5000,
+    minNativeEagerSpeedup: 0.8,
+    minNativeEagerModuleSpeedup: 0.5,
+    tolerance: 1e-6,
+    next: "relu_stays_disabled_at_public_native_eager_route",
+  }),
+  Object.freeze({
+    key: "activation_sigmoid_policy",
+    shape: Object.freeze({ length: 1024, activation: "sigmoid", policyMinLength: 1024 }),
+    outputLen: 1024,
+    input: () => zgml.tensor(values(1024, 13), [1024]),
+    eager: (input) => activationManualEager(input, "sigmoid"),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "sigmoid" }),
+    nativeEagerModule: (input) => input.sigmoid(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 1000,
+    nativeEagerIterations: 5000,
+    nativeEagerModuleIterations: 5000,
+    compiledIterations: 5000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 1 : 0.8,
+    tolerance: 1e-6,
+    next: "native_eager_activation_policy_floor",
+  }),
+  Object.freeze({
+    key: "activation_gelu_policy",
+    shape: Object.freeze({ length: 1024, activation: "gelu", policyMinLength: 1024 }),
+    outputLen: 1024,
+    input: () => zgml.tensor(values(1024, 19), [1024]),
+    eager: (input) => activationManualEager(input, "gelu"),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "gelu" }),
+    nativeEagerModule: (input) => input.gelu(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 1000,
+    nativeEagerIterations: 5000,
+    nativeEagerModuleIterations: 5000,
+    compiledIterations: 5000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 1 : 0.8,
+    tolerance: 2e-6,
+    next: "native_eager_activation_policy_floor",
+  }),
+  Object.freeze({
+    key: "activation_silu_policy",
+    shape: Object.freeze({ length: 1024, activation: "silu", policyMinLength: 1024 }),
+    outputLen: 1024,
+    input: () => zgml.tensor(values(1024, 17), [1024]),
+    eager: (input) => activationManualEager(input, "silu"),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "silu" }),
+    nativeEagerModule: (input) => input.silu(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 1000,
+    nativeEagerIterations: 5000,
+    nativeEagerModuleIterations: 5000,
+    compiledIterations: 5000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 1 : 0.8,
+    tolerance: 2e-6,
+    next: "native_eager_activation_policy_floor",
+  }),
+  Object.freeze({
+    key: "activation_tanh_policy",
+    shape: Object.freeze({ length: 1024, activation: "tanh", policyMinLength: 1024 }),
+    outputLen: 1024,
+    input: () => zgml.tensor(values(1024, 23), [1024]),
+    eager: (input) => activationManualEager(input, "tanh"),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "tanh" }),
+    nativeEagerModule: (input) => input.tanh(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 1000,
+    nativeEagerIterations: 5000,
+    nativeEagerModuleIterations: 5000,
+    compiledIterations: 5000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 1 : 0.8,
+    tolerance: 2e-6,
+    next: "native_eager_activation_policy_floor",
   }),
   Object.freeze({
     key: "activation_sigmoid_batched",
