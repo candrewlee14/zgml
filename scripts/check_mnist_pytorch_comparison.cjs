@@ -17,11 +17,17 @@ const python = process.env.PYTHON || (existsSync(venvPython) ? venvPython : "pyt
 const installTorch = process.env.BENCH_MNIST_PYTORCH_INSTALL === "1";
 const requireTrainingParity = process.env.BENCH_MNIST_REQUIRE_TRAINING_PARITY === "1";
 const writeArtifact = process.env.BENCH_MNIST_WRITE_ARTIFACT !== "0";
+const numericMode = process.env.BENCH_MNIST_NUMERIC_MODE || "strict";
+if (!["strict", "convergence"].includes(numericMode)) {
+  throw new Error(`BENCH_MNIST_NUMERIC_MODE must be strict or convergence, got ${numericMode}`);
+}
 const trainLimit = positiveInt(process.env.BENCH_MNIST_TRAIN_LIMIT || "2048", "BENCH_MNIST_TRAIN_LIMIT");
 const testLimit = positiveInt(process.env.BENCH_MNIST_TEST_LIMIT || "512", "BENCH_MNIST_TEST_LIMIT");
 const epochs = positiveInt(process.env.BENCH_MNIST_EPOCHS || "3", "BENCH_MNIST_EPOCHS");
 const batchSize = positiveInt(process.env.BENCH_MNIST_BATCH_SIZE || "64", "BENCH_MNIST_BATCH_SIZE");
 const trainParityFloor = Number(process.env.BENCH_MNIST_TRAINING_MIN_RATIO || "1.0");
+const convergenceLossDeltaCeil = Number(process.env.BENCH_MNIST_CONVERGENCE_LOSS_DELTA_CEIL || "0.01");
+const convergenceAccuracyDeltaCeil = Number(process.env.BENCH_MNIST_CONVERGENCE_ACCURACY_DELTA_CEIL || "0.005");
 const mnistBaseUrl = "https://storage.googleapis.com/cvdf-datasets/mnist";
 const mnistFiles = Object.freeze([
   "train-images-idx3-ubyte.gz",
@@ -482,7 +488,7 @@ async function main() {
     sample0PredMatch: zgml.sample0Pred === pytorch.sample0Pred && zgml.compiledSample0Pred === zgml.sample0Pred,
     stepsMatch: zgml.steps === pytorch.steps,
   };
-  const numericReady = numeric.beforeLossDelta <= 1e-6 &&
+  const strictNumericReady = numeric.beforeLossDelta <= 1e-6 &&
     numeric.afterLossDelta <= 1e-5 &&
     numeric.beforeAccuracyDelta === 0 &&
     numeric.afterAccuracyDelta === 0 &&
@@ -491,6 +497,15 @@ async function main() {
     numeric.compiledLogitsMaxAbsDiff <= 1e-6 &&
     numeric.sample0PredMatch &&
     numeric.stepsMatch;
+  const convergenceNumericReady = numeric.beforeLossDelta <= 1e-6 &&
+    numeric.afterLossDelta <= convergenceLossDeltaCeil &&
+    numeric.beforeAccuracyDelta <= convergenceAccuracyDeltaCeil &&
+    numeric.afterAccuracyDelta <= convergenceAccuracyDeltaCeil &&
+    numeric.crossEntropyDelta <= 1e-6 &&
+    numeric.compiledLogitsMaxAbsDiff <= 1e-6 &&
+    numeric.sample0PredMatch &&
+    numeric.stepsMatch;
+  const numericReady = numericMode === "strict" ? strictNumericReady : convergenceNumericReady;
   const ratios = {
     trainZgmlVsPytorch: pytorch.trainMs / zgml.trainMs,
     trainStepZgmlVsPytorch: pytorch.trainMsPerStep / zgml.trainMsPerStep,
@@ -515,9 +530,21 @@ async function main() {
       release: os.release(),
       cpus: os.cpus().length,
     },
-    config: { trainLimit, testLimit, epochs, batchSize, trainParityFloor, requireTrainingParity },
+    config: {
+      trainLimit,
+      testLimit,
+      epochs,
+      batchSize,
+      trainParityFloor,
+      requireTrainingParity,
+      numericMode,
+      convergenceLossDeltaCeil,
+      convergenceAccuracyDeltaCeil,
+    },
     status: {
       numericReady,
+      strictNumericReady,
+      convergenceNumericReady,
       trainingParityReady,
       comparisonReady: numericReady && (!requireTrainingParity || trainingParityReady),
     },
@@ -534,7 +561,10 @@ async function main() {
   }
   const parts = [
     `mnist pytorch comparison: ${artifact.status.comparisonReady ? "pass" : "miss"}`,
+    `numeric_mode=${numericMode}`,
     `numeric=${numericReady ? "pass" : "miss"}`,
+    `strict_numeric=${strictNumericReady ? "pass" : "miss"}`,
+    `convergence_numeric=${convergenceNumericReady ? "pass" : "miss"}`,
     `training_parity=${trainingParityReady ? "pass" : "miss"}`,
     `torch=${artifact.pytorchVersion}`,
     `train=${trainLimit}`,
@@ -559,7 +589,7 @@ async function main() {
     `artifact=${artifactPath ? artifactPath.replace(`${root}/`, "") : "disabled"}`,
   ];
   console.log(parts.join(" "));
-  if (!numericReady) throw new Error(`MNIST PyTorch numeric parity failed: ${JSON.stringify(numeric)}`);
+  if (!numericReady) throw new Error(`MNIST PyTorch ${numericMode} numeric parity failed: ${JSON.stringify(numeric)}`);
   if (requireTrainingParity && !trainingParityReady) {
     throw new Error(`MNIST training parity failed: zgml_vs_pytorch_train=${ratios.trainZgmlVsPytorch.toFixed(3)}x floor=${trainParityFloor.toFixed(3)}x`);
   }

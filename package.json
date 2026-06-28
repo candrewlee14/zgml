@@ -331,6 +331,8 @@
     "bench:mnist:pytorch": "npm run build:native:release && npm run build:package && BENCH_MNIST_PYTORCH_INSTALL=1 node scripts/check_mnist_pytorch_comparison.cjs",
     "bench:mnist:pytorch:run": "node scripts/check_mnist_pytorch_comparison.cjs",
     "bench:mnist:pytorch:parity": "npm run build:native:release && npm run build:package && BENCH_MNIST_PYTORCH_INSTALL=1 BENCH_MNIST_REQUIRE_TRAINING_PARITY=1 node scripts/check_mnist_pytorch_comparison.cjs",
+    "bench:mnist:pytorch:heavy": "npm run build:native:release && npm run build:package && BENCH_MNIST_PYTORCH_INSTALL=1 BENCH_MNIST_NUMERIC_MODE=convergence BENCH_MNIST_TRAIN_LIMIT=60000 BENCH_MNIST_TEST_LIMIT=10000 BENCH_MNIST_EPOCHS=5 BENCH_MNIST_BATCH_SIZE=100 BENCH_MNIST_REQUIRE_TRAINING_PARITY=1 node scripts/check_mnist_pytorch_comparison.cjs",
+    "bench:mnist:pytorch:heavy:run": "BENCH_MNIST_NUMERIC_MODE=convergence BENCH_MNIST_TRAIN_LIMIT=60000 BENCH_MNIST_TEST_LIMIT=10000 BENCH_MNIST_EPOCHS=5 BENCH_MNIST_BATCH_SIZE=100 BENCH_MNIST_REQUIRE_TRAINING_PARITY=1 node scripts/check_mnist_pytorch_comparison.cjs",
     "smoke:training:bun": "npm run build:package && bun examples/bun_training/train_linear.ts && bun examples/bun_training/manual_loop.ts && bun examples/bun_training/train_mlp.ts && bun examples/bun_training/train_classifier.ts",
     "check:package-artifact": "node scripts/check_package_artifact.cjs",
     "check:frontend-autograd-coverage": "node scripts/check_frontend_autograd_coverage.cjs",
