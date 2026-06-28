@@ -630,7 +630,10 @@ Current checked progress:
   arithmetic/comparison ops; common PyTorch-shaped no-grad unary helpers
   (`rsqrt`, `sgn`/`sign`, `step`, `floor`, `ceil`, `round`, and `trunc`) now
   keep their ergonomic Tensor API while crossing into the same Zig
-  `zgml_eager_elementwise_f32` ABI on large tensors. Fresh Node/Bun
+  `zgml_eager_elementwise_f32` ABI on large tensors. Predicate helpers
+  (`isnan`, `isinf`, and `isfinite`) share that route too, so no-grad
+  model/debug masks avoid TS map loops when the native eager threshold is met.
+  Fresh Node/Bun
   direct rows show `elementwise_mul_batched` at `264.63x` / `262.06x`, and the
   direct Node dot row shows `dot_batched` at `38.63x` with no product
   allocation. Bun now uses the same 512-element no-grad native eager
@@ -714,9 +717,9 @@ Current checked progress:
   direct `conv2dInto` and `pool2dInto` rows above the native-eager floor with
   zero measured diff against the TS reference.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=27/27` after adding direct
+  as well: the expected row set is `row_coverage=28/28` after adding direct
   `matmul_batched`, `bmm_batched`, `elementwise_mul_batched`,
-  `elementwise_rsqrt_batched`,
+  `elementwise_rsqrt_batched`, `elementwise_isfinite_batched`,
   `elementwise_add_row_broadcast_batched`,
   `elementwise_sub_lhs_row_broadcast_batched`, `dot_batched`, `reduce_sum_scalar_batched`,
   `elementwise_lt_batched`, `clamp_batched`, `where_batched`,

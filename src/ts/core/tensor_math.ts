@@ -602,15 +602,15 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function isnan(tensor: TensorMathTensor) {
-    return map(tensor, (x) => Number.isNaN(x) ? 1 : 0);
+    return unary(tensor, (x) => Number.isNaN(x) ? 1 : 0, () => 0, "isnan");
   }
 
   function isinf(tensor: TensorMathTensor) {
-    return map(tensor, (x) => x === Infinity || x === -Infinity ? 1 : 0);
+    return unary(tensor, (x) => x === Infinity || x === -Infinity ? 1 : 0, () => 0, "isinf");
   }
 
   function isfinite(tensor: TensorMathTensor) {
-    return map(tensor, (x) => Number.isFinite(x) ? 1 : 0);
+    return unary(tensor, (x) => Number.isFinite(x) ? 1 : 0, () => 0, "isfinite");
   }
 
   function floor(tensor: TensorMathTensor) {

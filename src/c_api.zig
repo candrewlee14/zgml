@@ -1731,6 +1731,9 @@ const eager_elementwise_floor: u32 = 23;
 const eager_elementwise_ceil: u32 = 24;
 const eager_elementwise_round: u32 = 25;
 const eager_elementwise_trunc: u32 = 26;
+const eager_elementwise_isnan: u32 = 27;
+const eager_elementwise_isinf: u32 = 28;
+const eager_elementwise_isfinite: u32 = 29;
 const eager_reduce_sum: u32 = 1;
 const eager_reduce_mean: u32 = 2;
 const eager_reduce_max: u32 = 3;
@@ -1755,6 +1758,9 @@ fn eagerElementwiseUnaryF32(value: f32, op: u32) !f32 {
         eager_elementwise_ceil => @ceil(value),
         eager_elementwise_round => @floor(value + 0.5),
         eager_elementwise_trunc => @trunc(value),
+        eager_elementwise_isnan => if (std.math.isNan(value)) 1.0 else 0.0,
+        eager_elementwise_isinf => if (std.math.isInf(value)) 1.0 else 0.0,
+        eager_elementwise_isfinite => if (std.math.isFinite(value)) 1.0 else 0.0,
         else => error.InvalidArgument,
     };
 }
@@ -1778,6 +1784,9 @@ fn eagerElementwiseUnaryVec8(value: @Vector(8, f32), op: u32) !@Vector(8, f32) {
         eager_elementwise_ceil => @ceil(value),
         eager_elementwise_round => @floor(value + @as(VecT, @splat(0.5))),
         eager_elementwise_trunc => @trunc(value),
+        eager_elementwise_isnan => @select(f32, value != value, one, zero),
+        eager_elementwise_isinf => @select(f32, (value == @as(VecT, @splat(std.math.inf(f32)))) | (value == @as(VecT, @splat(-std.math.inf(f32)))), one, zero),
+        eager_elementwise_isfinite => @select(f32, (value == value) & (value != @as(VecT, @splat(std.math.inf(f32)))) & (value != @as(VecT, @splat(-std.math.inf(f32)))), one, zero),
         else => error.InvalidArgument,
     };
 }
@@ -12401,6 +12410,41 @@ test "C ABI native eager elementwise writes caller output" {
         eager_elementwise_trunc,
     ));
     try std.testing.expectEqualSlices(f32, &.{ 4, 0, -1, 0, 0, 1, 1, 1, -2 }, &unary_output);
+
+    const predicate_input = [_]f32{ -std.math.inf(f32), -2, -0.0, 0.0, 3, std.math.inf(f32), std.math.nan(f32), 4, -5 };
+    var predicate_output = [_]f32{0} ** predicate_input.len;
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        predicate_input[0..].ptr,
+        predicate_input.len,
+        null,
+        0,
+        predicate_output[0..].ptr,
+        predicate_output.len,
+        eager_elementwise_isnan,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0, 0, 0, 0, 0, 1, 0, 0 }, &predicate_output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        predicate_input[0..].ptr,
+        predicate_input.len,
+        null,
+        0,
+        predicate_output[0..].ptr,
+        predicate_output.len,
+        eager_elementwise_isinf,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 1, 0, 0, 0, 0, 1, 0, 0, 0 }, &predicate_output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        predicate_input[0..].ptr,
+        predicate_input.len,
+        null,
+        0,
+        predicate_output[0..].ptr,
+        predicate_output.len,
+        eager_elementwise_isfinite,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 0, 1, 1, 1, 1, 0, 0, 1, 1 }, &predicate_output);
 
     try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
         lhs[0..].ptr,

@@ -53,6 +53,15 @@ function positiveValues(length, scale) {
   return Array.from({ length }, (_, index) => 0.25 + ((index % 17) + 1) / scale);
 }
 
+function specialValues(length, scale) {
+  return Array.from({ length }, (_, index) => {
+    if (index % 97 === 0) return Number.NaN;
+    if (index % 89 === 0) return Infinity;
+    if (index % 83 === 0) return -Infinity;
+    return ((index % 17) - 8) / scale;
+  });
+}
+
 function msNow() {
   return Number(process.hrtime.bigint()) / 1e6;
 }
@@ -458,6 +467,23 @@ const gapSpecs = Object.freeze([
     minNativeEagerModuleSpeedup: 1,
     tolerance: 2e-6,
     next: "native_eager_unary_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_isfinite_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "isfinite" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(specialValues(512 * 256, 23), [512, 256]),
+    eager: (input) => input.isfinite(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "isfinite" }),
+    nativeEagerModule: (input) => zgml.noGrad(() => input.isfinite()),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 1,
+    tolerance: 0,
+    next: "native_eager_unary_predicate_storage_slice",
   }),
   Object.freeze({
     key: "elementwise_add_row_broadcast_batched",

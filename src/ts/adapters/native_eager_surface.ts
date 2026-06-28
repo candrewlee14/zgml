@@ -310,7 +310,15 @@ function nativeEagerElementwiseOpId(value: unknown, label: string): number {
     case "round": return 25;
     case "trunc":
     case "truncate": return 26;
-    default: throw new Error(`${label} op must be add, sub, mul, div, neg, exp, log, sqr, recip, abs, sqrt, rsqrt, maximum, minimum, eq, ne, lt, le, gt, ge, sign, step, floor, ceil, round, or trunc, got ${value}`);
+    case "isnan":
+    case "isNaN": return 27;
+    case "isinf":
+    case "isInf":
+    case "is_infinite":
+    case "isInfinite": return 28;
+    case "isfinite":
+    case "isFinite": return 29;
+    default: throw new Error(`${label} op must be add, sub, mul, div, neg, exp, log, sqr, recip, abs, sqrt, rsqrt, maximum, minimum, eq, ne, lt, le, gt, ge, sign, step, floor, ceil, round, trunc, isnan, isinf, or isfinite, got ${value}`);
   }
 }
 
