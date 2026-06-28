@@ -2198,6 +2198,12 @@ export type NativeEagerArgReduceDimIntoOptions = Readonly<{
   reduce: number;
   inner: number;
 }>;
+export type NativeEagerCumsumIntoOptions = Readonly<{
+  outer: number;
+  axis: number;
+  inner: number;
+  reverse?: boolean;
+}>;
 export type NativeEagerSoftmaxIntoOptions = Readonly<{
   rows?: number;
   cols?: number;
@@ -2315,6 +2321,8 @@ export type PublicNativeEagerNamespace = Readonly<{
   reduce_dim_into(output: Float32Array, input: TensorLike, options: NativeEagerReduceDimIntoOptions): Float32Array;
   argReduceDimInto(output: Float32Array, input: TensorLike, options: NativeEagerArgReduceDimIntoOptions): Float32Array;
   arg_reduce_dim_into(output: Float32Array, input: TensorLike, options: NativeEagerArgReduceDimIntoOptions): Float32Array;
+  cumsumInto(output: Float32Array, input: TensorLike, options: NativeEagerCumsumIntoOptions): Float32Array;
+  cumsum_into(output: Float32Array, input: TensorLike, options: NativeEagerCumsumIntoOptions): Float32Array;
   dotInto(output: Float32Array, lhs: TensorLike, rhs: TensorLike): Float32Array;
   dot_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike): Float32Array;
   conv2dInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerConv2dIntoOptions): Float32Array;

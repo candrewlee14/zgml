@@ -103,6 +103,11 @@ type NativeEagerReduceDimInto = (
   options: Readonly<{ op: string; outer: number; reduce: number; inner: number }>,
 ) => Float32Array;
 type NativeEagerArgReduceDimInto = NativeEagerReduceDimInto;
+type NativeEagerCumsumInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{ outer: number; axis: number; inner: number; reverse?: boolean }>,
+) => Float32Array;
 type NativeEagerDotInto = (
   output: Float32Array,
   lhs: unknown,
@@ -133,6 +138,7 @@ export type TensorMathHelpersOptions = Readonly<{
   nativeEagerReduceInto?: NativeEagerReduceInto;
   nativeEagerReduceDimInto?: NativeEagerReduceDimInto;
   nativeEagerArgReduceDimInto?: NativeEagerArgReduceDimInto;
+  nativeEagerCumsumInto?: NativeEagerCumsumInto;
   nativeEagerReduceMinLength?: number;
   nativeEagerDotInto?: NativeEagerDotInto;
   nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
@@ -163,6 +169,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   const nativeEagerReduceInto = options.nativeEagerReduceInto;
   const nativeEagerReduceDimInto = options.nativeEagerReduceDimInto;
   const nativeEagerArgReduceDimInto = options.nativeEagerArgReduceDimInto;
+  const nativeEagerCumsumInto = options.nativeEagerCumsumInto;
   const nativeEagerDotInto = options.nativeEagerDotInto;
   const nativeEagerReduceMinLength = Number.isSafeInteger(options.nativeEagerReduceMinLength) && Number(options.nativeEagerReduceMinLength) >= 0
     ? Number(options.nativeEagerReduceMinLength)
@@ -357,6 +364,23 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
       inner,
     });
     return new (tensorClass())(output, plan.shape);
+  }
+
+  function nativeCumsumTensor(tensor: TensorMathTensor, axis: number) {
+    if (gradModeEnabled()) return null;
+    if (typeof nativeEagerCumsumInto !== "function") return null;
+    if (tensor.length < nativeEagerReduceMinLength) return null;
+    let outer = 1;
+    for (let i = 0; i < axis; i += 1) outer *= tensor.shape[i];
+    let inner = 1;
+    for (let i = axis + 1; i < tensor.shape.length; i += 1) inner *= tensor.shape[i];
+    const output = new Float32Array(tensor.length);
+    nativeEagerCumsumInto(output, tensor, {
+      outer,
+      axis: tensor.shape[axis],
+      inner,
+    });
+    return new (tensorClass())(output, tensor.shape);
   }
 
   function nativeDotScalar(
@@ -1132,6 +1156,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   function cumsum(tensor: TensorMathTensor, dim = -1) {
     const TensorClass = tensorClass();
     const axis = normalizeDim(dim, tensor.shape.length, "cumsum");
+    const nativeResult = nativeCumsumTensor(tensor, axis);
+    if (nativeResult) return nativeResult;
     const out = cumsumData(tensor.data, tensor.shape, axis, false);
     const result = new TensorClass(out, tensor.shape, {
       requiresGrad: gradModeEnabled() && tensor.requiresGrad,

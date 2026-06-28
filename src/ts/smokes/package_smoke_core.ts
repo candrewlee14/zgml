@@ -359,6 +359,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.argReduceDimInto !== "function") {
     throw new Error(`${label} expected nativeEager.argReduceDimInto`);
   }
+  if (typeof nativeEager.cumsumInto !== "function") {
+    throw new Error(`${label} expected nativeEager.cumsumInto`);
+  }
   if (typeof nativeEager.dotInto !== "function") {
     throw new Error(`${label} expected nativeEager.dotInto`);
   }
@@ -645,6 +648,20 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const tensorArgReduceDimInput = adapter.tensor([1, 5, 3, 4, 2, 6], [2, 3]);
   const tensorArgReduceDim = adapter.noGrad(() => tensorArgReduceDimInput.argmaxDim(1).add(tensorArgReduceDimInput.argminDim(1)));
   expectClose(tensorArgReduceDim.data, [1, 3], `${label} noGrad Tensor arg-dim-reduce native eager output`);
+  const cumsumOutput = new Float32Array(6);
+  const cumsumResult = nativeEager.cumsumInto(cumsumOutput, tensorReduceDimInput, { outer: 2, axis: 3, inner: 1 });
+  if (cumsumResult !== cumsumOutput) {
+    throw new Error(`${label} expected nativeEager.cumsumInto to reuse caller output`);
+  }
+  expectClose(cumsumOutput, [1, 3, 6, 4, 9, 15], `${label} nativeEager.cumsumInto output`);
+  const cumsumAliasOutput = new Float32Array(6);
+  const cumsumAliasResult = nativeEagerAlias.cumsum_into(cumsumAliasOutput, tensorReduceDimInput, { outer: 2, axis: 3, inner: 1, reverse: true });
+  if (cumsumAliasResult !== cumsumAliasOutput) {
+    throw new Error(`${label} expected native_eager.cumsum_into to reuse caller output`);
+  }
+  expectClose(cumsumAliasOutput, [6, 5, 3, 15, 11, 6], `${label} native_eager.cumsum_into output`);
+  const tensorCumsum = adapter.noGrad(() => tensorReduceDimInput.cumsum(1));
+  expectClose(tensorCumsum.data, [1, 3, 6, 4, 9, 15], `${label} noGrad Tensor cumsum native eager output`);
   const geluOutput = new Float32Array(6);
   const geluResult = nativeEager.linearActivationInto(geluOutput, input, weights, { bias, activation: "gelu" });
   if (geluResult !== geluOutput) {

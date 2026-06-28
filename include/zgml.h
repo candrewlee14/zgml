@@ -863,6 +863,16 @@ ZGML_API zgml_status zgml_eager_arg_reduce_dim_f32(
     size_t inner,
     uint32_t op
 );
+ZGML_API zgml_status zgml_eager_cumsum_f32(
+    const float *input,
+    size_t input_len,
+    float *output,
+    size_t output_len,
+    size_t outer,
+    size_t axis_len,
+    size_t inner,
+    uint32_t reverse
+);
 ZGML_API zgml_status zgml_eager_dot_f32(
     const float *lhs,
     size_t lhs_len,

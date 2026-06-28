@@ -118,6 +118,16 @@ type NativeEagerReduceDimCall = (args: {
 }) => number;
 type NativeEagerArgReduceDimCall = NativeEagerReduceDimCall;
 
+type NativeEagerCumsumCall = (args: {
+  inputData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  outer: number;
+  axisLen: number;
+  inner: number;
+  reverse: boolean;
+}) => number;
+
 type NativeEagerDotCall = (args: {
   lhsData: Float32Array;
   rhsData: Float32Array;
@@ -185,6 +195,7 @@ type NativeEagerSurfaceOptions = {
   reduceF32?: NativeEagerReduceCall;
   reduceDimF32?: NativeEagerReduceDimCall;
   argReduceDimF32?: NativeEagerArgReduceDimCall;
+  cumsumF32?: NativeEagerCumsumCall;
   dotF32?: NativeEagerDotCall;
   conv2dF32?: NativeEagerConv2dCall;
   pool2dF32?: NativeEagerPool2dCall;
@@ -727,6 +738,41 @@ function nativeEagerReduceDimInputs(
   };
 }
 
+function nativeEagerCumsumInputs(
+  output: Float32Array,
+  input: unknown,
+  callOptions: Record<string, unknown>,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.cumsumInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  if (inputData.length === 0) {
+    throw new Error(`${label} input must be non-empty`);
+  }
+  const outer = nativeEagerPositiveInteger(callOptions.outer, `${label} outer`);
+  const axisLen = nativeEagerPositiveInteger(callOptions.axis ?? callOptions.axisLen ?? callOptions.axis_len, `${label} axis`);
+  const inner = nativeEagerPositiveInteger(callOptions.inner, `${label} inner`);
+  const expectedOutput = outer * axisLen * inner;
+  if (inputData.length !== expectedOutput) {
+    throw new Error(`${label} input length ${inputData.length} must equal outer*axis*inner ${expectedOutput}`);
+  }
+  if (output.length < expectedOutput) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${expectedOutput}`);
+  }
+  return {
+    inputData,
+    output,
+    expectedOutput,
+    outer,
+    axisLen,
+    inner,
+    reverse: nativeEagerBoolean(callOptions.reverse, `${label} reverse`, false),
+  };
+}
+
 function nativeEagerDotInputs(
   output: Float32Array,
   lhs: unknown,
@@ -1093,6 +1139,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     arg_reduce_dim_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
       return this.argReduceDimInto(output, input, callOptions);
+    },
+    cumsumInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.cumsumF32 !== "function") {
+        throw new Error("nativeEager.cumsumInto is unavailable in this runtime");
+      }
+      const args = nativeEagerCumsumInputs(output, input, callOptions, options.f32);
+      options.check(options.cumsumF32(args));
+      return output;
+    },
+    cumsum_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
+      return this.cumsumInto(output, input, callOptions);
     },
     dotInto(output: Float32Array, lhs: unknown, rhs: unknown) {
       if (typeof options.dotF32 !== "function") {

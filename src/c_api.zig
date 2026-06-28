@@ -2558,6 +2558,37 @@ export fn zgml_eager_arg_reduce_dim_f32(
     return status(.ok);
 }
 
+export fn zgml_eager_cumsum_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    outer: usize,
+    axis_len: usize,
+    inner: usize,
+    reverse: u32,
+) c_int {
+    if (input_ptr == null or output_ptr == null or input_len == 0) return status(.invalid_argument);
+    if (outer == 0 or axis_len == 0 or inner == 0) return status(.invalid_argument);
+    const expected = std.math.mul(usize, std.math.mul(usize, outer, axis_len) catch return status(.invalid_argument), inner) catch return status(.invalid_argument);
+    if (input_len != expected or output_len != expected) return status(.shape_mismatch);
+
+    const input = input_ptr.?[0..input_len];
+    const output = output_ptr.?[0..output_len];
+    for (0..outer) |outer_idx| {
+        for (0..inner) |inner_idx| {
+            var acc: f32 = 0;
+            for (0..axis_len) |axis_offset| {
+                const axis_idx = if (reverse != 0) axis_len - 1 - axis_offset else axis_offset;
+                const index = (outer_idx * axis_len + axis_idx) * inner + inner_idx;
+                acc += input[index];
+                output[index] = acc;
+            }
+        }
+    }
+    return status(.ok);
+}
+
 export fn zgml_eager_dot_f32(
     lhs_ptr: ?[*]const f32,
     lhs_len: usize,
@@ -13329,6 +13360,56 @@ test "C ABI native eager arg reduce dim writes caller output" {
         3,
         1,
         eager_reduce_sum,
+    ));
+}
+
+test "C ABI native eager cumsum writes caller output" {
+    const input = [_]f32{ 1, 2, 3, 4, 5, 6 };
+    var output = [_]f32{0} ** 6;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_cumsum_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        1,
+        0,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 1, 3, 6, 4, 9, 15 }, &output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_cumsum_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        1,
+        1,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 6, 5, 3, 15, 11, 6 }, &output);
+
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_cumsum_f32(
+        input[0..].ptr,
+        input.len - 1,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        1,
+        0,
+    ));
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_cumsum_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        0,
+        1,
+        0,
     ));
 }
 

@@ -1177,6 +1177,7 @@ const {
   nativeEagerReduceInto: (output, input, options) => nativeEager.reduceInto(output, input, options),
   nativeEagerReduceDimInto: (output, input, options) => nativeEager.reduceDimInto(output, input, options),
   nativeEagerArgReduceDimInto: (output, input, options) => nativeEager.argReduceDimInto(output, input, options),
+  nativeEagerCumsumInto: (output, input, options) => nativeEager.cumsumInto(output, input, options),
   nativeEagerReduceMinLength: bunNativeEagerRoutingPolicy.tensorMath.reduceMinLength,
   nativeEagerDotInto: (output, lhs, rhs) => nativeEager.dotInto(output, lhs, rhs),
   nativeEagerSoftmaxInto: (output, input, options) => options && options.logSoftmax
@@ -2337,6 +2338,16 @@ const nativeEagerSurface = createAdapterNativeEagerSurface({
     BigInt(args.reduce),
     BigInt(args.inner),
     args.op,
+  ),
+  cumsumF32: (args) => bunSymbolGroups.nativeEager.eagerCumsumF32(
+    args.inputData,
+    BigInt(args.inputData.length),
+    args.output,
+    BigInt(args.expectedOutput),
+    BigInt(args.outer),
+    BigInt(args.axisLen),
+    BigInt(args.inner),
+    args.reverse ? 1 : 0,
   ),
   dotF32: (args) => bunSymbolGroups.nativeEager.eagerDotF32(
     args.lhsData,
