@@ -645,10 +645,11 @@ Current checked progress:
   primitives without changing the frontend shape: primitive comparisons
   (`eq`/`ne`/`lt`/`le`/`gt`/`ge`) lower through the Zig elementwise ABI for
   scalar and same-shape operands, `zgml.nativeEager.clampInto` exposes the
-  single-pass `zgml_eager_clamp_f32` ABI, and Node no-grad `Tensor.clamp()`
-  uses that hook where the benchmark proves it is at least parity. Bun keeps
-  high-level clamp on its faster JS loop for now while still exposing the raw
-  Zig clamp ABI for explicit measurement. `zgml.nativeEager.whereInto` /
+  single-pass `zgml_eager_clamp_f32` ABI, and Node/Bun no-grad
+  `Tensor.clamp()` use that hook where the benchmark proves it is above
+  parity. A June 28, 2026 Bun rerun moved public `clamp_batched` from its
+  barely-parity JS loop to `1.79x` through the same native eager route while
+  the direct ABI measured `2.24x`. `zgml.nativeEager.whereInto` /
   no-grad `Tensor.where()` use a dedicated `zgml_eager_where_f32` ABI for
   result-shaped conditions plus scalar or same-shape values. The scalar/
   same-shape no-grad binary, comparison, and where paths now skip full TS

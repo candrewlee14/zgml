@@ -619,7 +619,7 @@ const gapSpecs = Object.freeze([
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
     minNativeEagerSpeedup: runtime === "bun" ? 0.25 : 1,
-    minNativeEagerModuleSpeedup: 0.95,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 1.25 : 0.95,
     tolerance: 1e-6,
     next: "native_eager_clamp_storage_slice",
   }),

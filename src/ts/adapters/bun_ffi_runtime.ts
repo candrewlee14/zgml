@@ -1170,6 +1170,7 @@ const {
   nativeEagerActivationMinLength: bunNativeEagerRoutingPolicy.tensorMath.activationMinLength,
   nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(bunNativeEagerRoutingPolicy, activation),
   nativeEagerWhereInto: (output, condition, input, other) => nativeEager.whereInto(output, condition, input, other),
+  nativeEagerClampInto: (output, input, options) => nativeEager.clampInto(output, input, options),
   nativeEagerReduceInto: (output, input, options) => nativeEager.reduceInto(output, input, options),
   nativeEagerReduceMinLength: bunNativeEagerRoutingPolicy.tensorMath.reduceMinLength,
   nativeEagerDotInto: (output, lhs, rhs) => nativeEager.dotInto(output, lhs, rhs),

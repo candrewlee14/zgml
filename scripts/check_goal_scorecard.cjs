@@ -1036,6 +1036,7 @@ function checkScripts() {
   ]);
   requireIncludes(read("src/ts/adapters/bun_ffi_runtime.ts"), "src/ts/adapters/bun_ffi_runtime.ts", "Bun native eager activation dispatch policy", [
     "nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(bunNativeEagerRoutingPolicy, activation)",
+    "nativeEagerClampInto: (output, input, options) => nativeEager.clampInto(output, input, options)",
     "routingPolicy: bunNativeEagerRoutingPolicy",
   ]);
   requireIncludes(read("src/ts/smokes/ts_source_smoke.ts"), "src/ts/smokes/ts_source_smoke.ts", "no-grad Tensor.bmm native eager smoke", [

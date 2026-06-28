@@ -1001,6 +1001,7 @@ function checkPackageExports(errors) {
     "f32: (value) => f32(value as TensorLike)",
     "nativeEagerElementwiseMinLength: bunNativeEagerRoutingPolicy.tensorMath.elementwiseMinLength",
     "nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(bunNativeEagerRoutingPolicy, activation)",
+    "nativeEagerClampInto: (output, input, options) => nativeEager.clampInto(output, input, options)",
     "routingPolicy: bunNativeEagerRoutingPolicy",
     "args.transposedWeights",
     "? bunSymbolGroups.nativeEager.eagerLinearTransposedWeightsF32",
