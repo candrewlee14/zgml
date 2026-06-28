@@ -3307,6 +3307,7 @@ function checkModuleProgramBenchEvidence() {
 
 function checkPortableWasmRuntimeEvidence() {
   const nodeWasiArgs = ["build", "ffi-wasm-smoke"];
+  process.stderr.write(`[scorecard] child portable Wasm Node/WASI smoke: zig ${nodeWasiArgs.join(" ")}\n`);
   const nodeWasi = spawnSync("zig", nodeWasiArgs, {
     cwd: root,
     encoding: "utf8",
@@ -3329,6 +3330,7 @@ function checkPortableWasmRuntimeEvidence() {
   requirePattern(nodeWasiOutput, "portable Wasm Node/WASI smoke output", "exact packed LLaMA profile matrix", /zgml wasm ffi webgpu LLaMA packed proof ok: labels=49\b/);
 
   const browserArgs = ["build", "ffi-wasm-browser-llama-focused-smoke"];
+  process.stderr.write(`[scorecard] child portable browser Wasm smoke: zig ${browserArgs.join(" ")}\n`);
   const browser = spawnSync("zig", browserArgs, {
     cwd: root,
     encoding: "utf8",
@@ -3373,6 +3375,7 @@ function checkPortableWasmRuntimeEvidence() {
   requirePattern(browserOutput, "portable browser Wasm smoke output", "focused browser SmolLM3 GGUF LLaMA proof", /llamaProfileLabels=2\b/);
 
   const browserGpuFocusedArgs = ["build", "ffi-wasm-browser-gpu-focused-smoke"];
+  process.stderr.write(`[scorecard] child portable browser required-GPU focused smoke: zig ${browserGpuFocusedArgs.join(" ")}\n`);
   const browserGpuFocused = spawnSync("zig", browserGpuFocusedArgs, {
     cwd: root,
     encoding: "utf8",
@@ -3410,6 +3413,7 @@ function checkPortableWasmRuntimeEvidence() {
   }
 
   const browserGpuFamilyFocusedArgs = ["build", "ffi-wasm-browser-gpu-llama-family-focused-smoke"];
+  process.stderr.write(`[scorecard] child portable browser required-GPU family smoke: zig ${browserGpuFamilyFocusedArgs.join(" ")}\n`);
   const browserGpuFamilyFocused = spawnSync("zig", browserGpuFamilyFocusedArgs, {
     cwd: root,
     encoding: "utf8",
