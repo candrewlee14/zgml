@@ -4772,6 +4772,9 @@ export interface SequentialModule<Layers extends readonly NnModule[] = readonly 
   forward<const Input extends TensorLike>(input: Input): Tensor<SequentialForwardShape<Layers, TensorLikeShape<Input>>>;
   forward<const S extends TensorShapeTuple>(input: Tensor<S>): Tensor<SequentialForwardShape<Layers, S>>;
   forward(input: TensorLike): Tensor;
+  nativeForwardEvidence(): SequentialNativeForwardEvidence | null;
+  native_forward_evidence(): SequentialNativeForwardEvidence | null;
+  lastNativeForwardEvidence(): SequentialNativeForwardEvidence | null;
   compile<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>): Program<S, SequentialForwardShape<Layers, S>>;
   compile(options?: CompileOptions): Program;
   compileSupport<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>): ModuleCompileSupport<S, SequentialForwardShape<Layers, S>>;
@@ -4797,6 +4800,17 @@ export interface SequentialModule<Layers extends readonly NnModule[] = readonly 
   trainingStep(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
   training_step(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
 }
+
+export type SequentialNativeForwardEvidence = Readonly<{
+  kind: "zgml.sequential-native-forward";
+  native: boolean;
+  engine: "zig" | null;
+  path: "program-session" | "native-eager-linear-activation" | "fallback";
+  inputShape: readonly number[] | null;
+  outputShape: readonly number[] | null;
+  cache: "hit" | "miss" | "disabled" | "none";
+  reason?: string;
+}>;
 
 export type SequentialForwardShape<Layers extends readonly NnModule[], InputShape extends TensorShapeTuple> =
   Layers extends readonly [infer Head extends NnModule, ...infer Tail extends readonly NnModule[]]

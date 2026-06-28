@@ -56,6 +56,16 @@ type SequentialNativeForwardDisabledCache = {
   readonly disabled: true;
 };
 type SequentialNativeForwardCacheState = SequentialNativeForwardCache | SequentialNativeForwardDisabledCache | null;
+type SequentialNativeForwardEvidence = Readonly<{
+  kind: "zgml.sequential-native-forward";
+  native: boolean;
+  engine: "zig" | null;
+  path: "program-session" | "native-eager-linear-activation" | "fallback";
+  inputShape: readonly number[] | null;
+  outputShape: readonly number[] | null;
+  cache: "hit" | "miss" | "disabled" | "none";
+  reason?: string;
+}>;
 type SequentialLayerNameRecord = SequentialModuleRecord & {
   readonly layerNames?: readonly string[];
 };
@@ -218,6 +228,34 @@ function tensorShapeSignature(input: SequentialTensor) {
   return shape.join("x");
 }
 
+function tensorShape(input: SequentialTensor | null | undefined) {
+  const shape = input?.shape;
+  return Array.isArray(shape) ? Object.freeze(shape.slice()) : null;
+}
+
+function nativeForwardEvidence(
+  input: SequentialTensor | null,
+  output: SequentialTensor | null,
+  fields: Readonly<{
+    native: boolean;
+    engine?: "zig" | null;
+    path?: SequentialNativeForwardEvidence["path"];
+    cache?: SequentialNativeForwardEvidence["cache"];
+    reason?: string;
+  }>,
+): SequentialNativeForwardEvidence {
+  return Object.freeze({
+    kind: "zgml.sequential-native-forward",
+    native: fields.native,
+    engine: fields.engine === undefined ? (fields.native ? "zig" : null) : fields.engine,
+    path: fields.path ?? (fields.native ? "program-session" : "fallback"),
+    inputShape: tensorShape(input),
+    outputShape: tensorShape(output),
+    cache: fields.cache ?? "none",
+    ...(fields.reason ? { reason: fields.reason } : {}),
+  });
+}
+
 function samePackedBinding(left: unknown, right: unknown) {
   if (left === undefined || right === undefined) return left === right;
   if (!(left instanceof Float32Array) || !(right instanceof Float32Array)) return left === right;
@@ -298,6 +336,7 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
     layers: SequentialLayer[];
     layerNames: string[];
     nativeForwardCache: SequentialNativeForwardCacheState;
+    nativeForwardProof: SequentialNativeForwardEvidence | null;
     training?: boolean;
 
     constructor(first?: SequentialLayerInput, ...rest: readonly NnModule[]) {
@@ -306,6 +345,7 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
       this.layers = layers.map((layer) => sequentialLayer(layer, "nn.Sequential")) as SequentialLayer[];
       this.layerNames = names.slice();
       this.nativeForwardCache = null;
+      this.nativeForwardProof = null;
     }
 
     get length() {
@@ -415,17 +455,57 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
     }
 
     nativeForward(input: SequentialTensor) {
-      if (isGradEnabled()) return null;
+      if (isGradEnabled()) {
+        this.nativeForwardProof = nativeForwardEvidence(input, null, {
+          native: false,
+          cache: "none",
+          reason: "grad-enabled",
+        });
+        return null;
+      }
       const key = tensorShapeSignature(input);
-      if (key === null) return null;
+      if (key === null) {
+        this.nativeForwardProof = nativeForwardEvidence(input, null, {
+          native: false,
+          cache: "none",
+          reason: "unsupported-input-shape",
+        });
+        return null;
+      }
       const cached = this.nativeForwardCache;
       if (cached && cached.key === key) {
-        if (cached.disabled) return null;
+        if (cached.disabled) {
+          this.nativeForwardProof = nativeForwardEvidence(input, null, {
+            native: false,
+            cache: "disabled",
+            reason: "compile-disabled-for-shape",
+          });
+          return null;
+        }
         try {
-          return this.refreshNativeForwardBindings(cached, key) ? cached.session.stepTensor(input) : null;
-        } catch {
+          if (!this.refreshNativeForwardBindings(cached, key)) {
+            this.nativeForwardProof = nativeForwardEvidence(input, null, {
+              native: false,
+              cache: "hit",
+              reason: "parameter-refresh-failed",
+            });
+            return null;
+          }
+          const output = cached.session.stepTensor(input) as SequentialTensor;
+          this.nativeForwardProof = nativeForwardEvidence(input, output, {
+            native: true,
+            path: "program-session",
+            cache: "hit",
+          });
+          return output;
+        } catch (error) {
           this.disposeNativeForwardCache();
           this.nativeForwardCache = { key, disabled: true };
+          this.nativeForwardProof = nativeForwardEvidence(input, null, {
+            native: false,
+            cache: "disabled",
+            reason: error instanceof Error ? error.message : "native-forward-cache-failed",
+          });
           return null;
         }
       }
@@ -436,6 +516,11 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
       };
       if (typeof compileSelf.compile !== "function" || typeof compileSelf.bindParameters !== "function") {
         this.nativeForwardCache = { key, disabled: true };
+        this.nativeForwardProof = nativeForwardEvidence(input, null, {
+          native: false,
+          cache: "disabled",
+          reason: "compile-methods-missing",
+        });
         return null;
       }
       let program: SequentialNativeForwardProgram | null = null;
@@ -445,6 +530,11 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
         if (!program || typeof program.bind !== "function") {
           if (program && typeof program.dispose === "function") program.dispose();
           this.nativeForwardCache = { key, disabled: true };
+          this.nativeForwardProof = nativeForwardEvidence(input, null, {
+            native: false,
+            cache: "disabled",
+            reason: "compile-did-not-return-bindable-program",
+          });
           return null;
         }
         const bindings = compileSelf.bindParameters(compileOptions);
@@ -452,29 +542,52 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
         if (!session || typeof session.stepTensor !== "function") {
           if (typeof program.dispose === "function") program.dispose();
           this.nativeForwardCache = { key, disabled: true };
+          this.nativeForwardProof = nativeForwardEvidence(input, null, {
+            native: false,
+            cache: "disabled",
+            reason: "bind-did-not-return-step-session",
+          });
           return null;
         }
         const nextCache = { key, program, session, bindings } as SequentialNativeForwardCache;
         this.nativeForwardCache = nextCache;
-        return session.stepTensor(input);
-      } catch {
+        const output = session.stepTensor(input) as SequentialTensor;
+        this.nativeForwardProof = nativeForwardEvidence(input, output, {
+          native: true,
+          path: "program-session",
+          cache: "miss",
+        });
+        return output;
+      } catch (error) {
         if (program && typeof program.dispose === "function") program.dispose();
         this.nativeForwardCache = { key, disabled: true };
+        this.nativeForwardProof = nativeForwardEvidence(input, null, {
+          native: false,
+          cache: "disabled",
+          reason: error instanceof Error ? error.message : "native-forward-compile-failed",
+        });
         return null;
       }
     }
 
     forward(inputValues: unknown) {
-      if (this.layers.length === 1) return this.layers[0]!.forward(inputValues);
       const inputIsTensor = inputValues instanceof TensorClass;
       let out: unknown = inputValues;
       if (inputIsTensor) {
         if (this.layers.length === 2) {
           const fused = tryNativeEagerLinearActivation(out, this.layers[0], this.layers[1]);
-          if (fused !== null) return fused;
+          if (fused !== null) {
+            this.nativeForwardProof = nativeForwardEvidence(out as SequentialTensor, fused, {
+              native: true,
+              path: "native-eager-linear-activation",
+              cache: "none",
+            });
+            return fused;
+          }
         }
         const nativeOut = this.nativeForward(out as SequentialTensor);
         if (nativeOut !== null) return nativeOut;
+        if (this.layers.length === 1) return this.layers[0]!.forward(inputValues);
       } else {
         const firstLayer = this.layers[0];
         if (isSequentialLinearLayer(firstLayer)) {
@@ -490,12 +603,15 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
               (prepared.shape.length >= 2 && prepared.shape[prepared.shape.length - 1] === firstLayer.inFeatures)
             )
           ) {
-            const nativeOut = this.nativeForward(new TensorClass(prepared.data, prepared.shape));
+            const nativeInput = new TensorClass(prepared.data, prepared.shape);
+            const nativeOut = this.nativeForward(nativeInput);
             if (nativeOut !== null) return nativeOut;
+            if (this.layers.length === 1) return this.layers[0]!.forward(inputValues);
           }
           out = prepared.data;
         } else {
           out = f32(inputValues);
+          if (this.layers.length === 1) return this.layers[0]!.forward(out);
         }
       }
       for (let index = 0; index < this.layers.length; index += 1) {
@@ -504,6 +620,11 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
         if (nextLayer) {
           const fused = tryNativeEagerLinearActivation(out, layer, nextLayer);
           if (fused !== null) {
+            this.nativeForwardProof = nativeForwardEvidence(out as SequentialTensor, fused, {
+              native: true,
+              path: "native-eager-linear-activation",
+              cache: "none",
+            });
             out = fused;
             index += 1;
             continue;
@@ -512,6 +633,18 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
         out = layer.forward(out);
       }
       return out;
+    }
+
+    nativeForwardEvidence() {
+      return this.nativeForwardProof;
+    }
+
+    native_forward_evidence() {
+      return this.nativeForwardEvidence();
+    }
+
+    lastNativeForwardEvidence() {
+      return this.nativeForwardEvidence();
     }
 
     parameters(prefixOrOptions: unknown = "", options = {}) {

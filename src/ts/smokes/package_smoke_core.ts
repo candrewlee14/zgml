@@ -2936,6 +2936,38 @@ function expectSequentialProgramEvidence(adapter: Record<string, any>, label: st
     [2],
     `${label} noGrad nn.Sequential auto native Program forward`,
   );
+  const nativeForwardEvidence = nativeForwardSequential.nativeForwardEvidence();
+  if (
+    nativeForwardEvidence?.kind !== "zgml.sequential-native-forward" ||
+    nativeForwardEvidence.native !== true ||
+    nativeForwardEvidence.engine !== "zig" ||
+    nativeForwardEvidence.path !== "program-session" ||
+    nativeForwardEvidence.cache !== "miss" ||
+    nativeForwardEvidence.inputShape?.join("x") !== "2" ||
+    nativeForwardEvidence.outputShape?.join("x") !== "1"
+  ) {
+    throw new Error(`${label} expected noGrad nn.Sequential.forward to expose Zig Program/Session native-forward evidence`);
+  }
+  const singleLayerNativeForward = new adapter.nn.Sequential(
+    adapter.nn.linear(2, 1, { weights: [3, -1], bias: [0.5] }),
+  );
+  singleLayerNativeForward.at(0).forward = () => {
+    throw new Error("poisoned single-layer JS forward");
+  };
+  expectClose(
+    adapter.noGrad(() => singleLayerNativeForward.forward(adapter.tensor([2, -3], [2]))).data,
+    [9.5],
+    `${label} noGrad single-layer nn.Sequential auto native Program forward`,
+  );
+  const singleLayerNativeEvidence = singleLayerNativeForward.lastNativeForwardEvidence();
+  if (
+    singleLayerNativeEvidence?.native !== true ||
+    singleLayerNativeEvidence.path !== "program-session" ||
+    singleLayerNativeEvidence.engine !== "zig" ||
+    singleLayerNativeEvidence.outputShape?.join("x") !== "1"
+  ) {
+    throw new Error(`${label} expected noGrad single-layer nn.Sequential.forward to compile through Zig Program/Session`);
+  }
   const nativeForwardArraySequential = new adapter.nn.Sequential(
     adapter.nn.linear(2, 2, { weights: [1, 0, 0, 1], bias: [0, 0] }),
     adapter.nn.relu(),
@@ -2984,6 +3016,9 @@ function expectSequentialProgramEvidence(adapter: Record<string, any>, label: st
     [4],
     `${label} noGrad nn.Sequential auto native Program refreshes packed parameters`,
   );
+  if (nativeForwardSequential.native_forward_evidence()?.cache !== "hit") {
+    throw new Error(`${label} expected cached noGrad nn.Sequential.forward to report native Program cache hit`);
+  }
   if (
     variadicClassSequential.__setitem__(1, adapter.nn.tanh()) !== variadicClassSequential ||
     variadicClassSequential.__getitem__(1).kind !== "tanh"
