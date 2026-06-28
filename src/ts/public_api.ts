@@ -5243,10 +5243,38 @@ export type CompiledTrainingPlan = Readonly<{
   workspace: Readonly<Record<string, number>>;
 }>;
 
+export type NativeTrainingBulkFitPlan = Readonly<{
+  kind: "zgml.native-training-bulk-fit-plan";
+  supported: boolean;
+  native: boolean;
+  nativeBulk: boolean;
+  native_bulk: boolean;
+  backend: string | null;
+  reason: string | null;
+  kernel: string | null;
+  batch: number | null;
+  sampleCount: number | null;
+  sample_count: number | null;
+  trainedSampleCount: number | null;
+  trained_sample_count: number | null;
+  datasetSampleCount: number | null;
+  dataset_sample_count: number | null;
+  epochs: number | null;
+  steps: number | null;
+  plannedSteps: number | null;
+  planned_steps: number | null;
+  stoppedEarly: boolean;
+  stopped_early: boolean;
+  stopReason: "max-steps" | null;
+  stop_reason: "max-steps" | null;
+}>;
+
 export type NativeTrainingExplanation = Readonly<{
   kind: "zgml.train.native-training-explanation";
   supported: boolean;
   native: boolean;
+  nativeBulk: boolean;
+  native_bulk: boolean;
   loweredBy: "zig-ffi" | null;
   runtimePath: "JS/TS module API -> Zig native training kernel";
   backend: string | null;
@@ -5254,6 +5282,9 @@ export type NativeTrainingExplanation = Readonly<{
   compileOptions: Readonly<Record<string, unknown>> | null;
   compile_options: Readonly<Record<string, unknown>> | null;
   plan: CompiledTrainingPlan | null;
+  bulkPlan: NativeTrainingBulkFitPlan | null;
+  bulk_plan: NativeTrainingBulkFitPlan | null;
+  bulkKernel: string | null;
   kernels: readonly string[];
   signature: string;
 }>;
@@ -5272,6 +5303,8 @@ export interface CompiledTrainingStep {
   compile_evidence(): CompiledTrainingPlan;
   step(input: TensorLike, target: TensorLike | IndexLike): CompiledTrainingStepEvidence;
   forward(input: TensorLike, target: TensorLike | IndexLike): CompiledTrainingStepEvidence;
+  fitPlan?(batches: unknown, fitOptions?: TrainFitOptions): NativeTrainingBulkFitPlan | null;
+  fit_plan?(batches: unknown, fitOptions?: TrainFitOptions): NativeTrainingBulkFitPlan | null;
   dispose(): void;
   free(): void;
 }

@@ -151,6 +151,9 @@ const ergonomicNativePreflight = ergonomicNativeModel.explainNativeTraining(ergo
 if (
   ergonomicNativePreflight.supported !== true ||
   ergonomicNativePreflight.loweredBy !== "zig-ffi" ||
+  ergonomicNativePreflight.nativeBulk !== true ||
+  ergonomicNativePreflight.bulkKernel !== "zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk" ||
+  ergonomicNativePreflight.bulkPlan?.kernel !== "zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk" ||
   ergonomicNativePreflight.plan?.kernels[0] !== "zgml_train_mlp_relu_cross_entropy_adamw_f32"
 ) {
   throw new Error(`native classifier preflight must prove the Zig MLP trainer: ${JSON.stringify(ergonomicNativePreflight)}`);

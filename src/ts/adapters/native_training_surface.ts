@@ -94,6 +94,32 @@ type NativeTrainingPlan = Readonly<{
   workspace: Readonly<Record<string, number>>;
 }>;
 
+type NativeTrainingBulkFitPlan = Readonly<{
+  kind: "zgml.native-training-bulk-fit-plan";
+  supported: boolean;
+  native: boolean;
+  nativeBulk: boolean;
+  native_bulk: boolean;
+  backend: "cpu" | null;
+  reason: string | null;
+  kernel: string | null;
+  batch: number | null;
+  sampleCount: number | null;
+  sample_count: number | null;
+  trainedSampleCount: number | null;
+  trained_sample_count: number | null;
+  datasetSampleCount: number | null;
+  dataset_sample_count: number | null;
+  epochs: number | null;
+  steps: number | null;
+  plannedSteps: number | null;
+  planned_steps: number | null;
+  stoppedEarly: boolean;
+  stopped_early: boolean;
+  stopReason: "max-steps" | null;
+  stop_reason: "max-steps" | null;
+}>;
+
 type NativeTrainingMlpAdamCall = (args: NativeTrainingCallArgs) => NativeTrainingCallResult;
 type NativeTrainingBulkMlpAdamCall = (args: NativeTrainingBulkMlpAdamCallArgs) => NativeTrainingCallResult & { steps: number };
 type NativeTrainingLinearSgdCall = (args: NativeTrainingLinearSgdCallArgs) => NativeTrainingCallResult;
@@ -400,6 +426,111 @@ function boundedBulkIndices(source: { indices: Uint32Array; sampleCount: number 
   });
 }
 
+function unsupportedNativeBulkFitPlan(reason: string): NativeTrainingBulkFitPlan {
+  return Object.freeze({
+    kind: "zgml.native-training-bulk-fit-plan",
+    supported: false,
+    native: false,
+    nativeBulk: false,
+    native_bulk: false,
+    backend: null,
+    reason,
+    kernel: null,
+    batch: null,
+    sampleCount: null,
+    sample_count: null,
+    trainedSampleCount: null,
+    trained_sample_count: null,
+    datasetSampleCount: null,
+    dataset_sample_count: null,
+    epochs: null,
+    steps: null,
+    plannedSteps: null,
+    planned_steps: null,
+    stoppedEarly: false,
+    stopped_early: false,
+    stopReason: null,
+    stop_reason: null,
+  });
+}
+
+function nativeBulkFitPlan(fields: {
+  kernel: string;
+  batch: number;
+  sampleCount: number;
+  trainedSampleCount: number;
+  datasetSampleCount: number;
+  epochs: number;
+  steps: number;
+  plannedSteps: number;
+  stoppedEarly: boolean;
+  stopReason: "max-steps" | null;
+}): NativeTrainingBulkFitPlan {
+  return Object.freeze({
+    kind: "zgml.native-training-bulk-fit-plan",
+    supported: true,
+    native: true,
+    nativeBulk: true,
+    native_bulk: true,
+    backend: "cpu",
+    reason: null,
+    kernel: fields.kernel,
+    batch: fields.batch,
+    sampleCount: fields.sampleCount,
+    sample_count: fields.sampleCount,
+    trainedSampleCount: fields.trainedSampleCount,
+    trained_sample_count: fields.trainedSampleCount,
+    datasetSampleCount: fields.datasetSampleCount,
+    dataset_sample_count: fields.datasetSampleCount,
+    epochs: fields.epochs,
+    steps: fields.steps,
+    plannedSteps: fields.plannedSteps,
+    planned_steps: fields.plannedSteps,
+    stoppedEarly: fields.stoppedEarly,
+    stopped_early: fields.stoppedEarly,
+    stopReason: fields.stopReason,
+    stop_reason: fields.stopReason,
+  });
+}
+
+function unsupportedNativeBulkFitOptions(fitOptions: AnyRecord) {
+  if (fitOptions.onStep !== undefined || fitOptions.on_step !== undefined) {
+    return "native bulk training does not support onStep callbacks";
+  }
+  if (fitOptions.earlyStopping !== undefined || fitOptions.early_stopping !== undefined) {
+    return "native bulk training does not support early stopping";
+  }
+  return null;
+}
+
+function prepareNativeBulkFit<Source extends { indices: Uint32Array; sampleCount: number; datasetSampleCount: number }>(options: {
+  kernelInstalled: boolean;
+  missingKernelReason: string;
+  fitOptions: AnyRecord;
+  batch: number;
+  epochLabel: string;
+  maxStepsLabel: string;
+  sourceReason: string;
+  source: () => Source | null;
+}) {
+  if (!options.kernelInstalled) return Object.freeze({ supported: false as const, reason: options.missingKernelReason });
+  const blockedReason = unsupportedNativeBulkFitOptions(options.fitOptions);
+  if (blockedReason !== null) return Object.freeze({ supported: false as const, reason: blockedReason });
+  const epochs = positiveInteger(options.fitOptions.epochs ?? 1, options.epochLabel);
+  const maxStepsOption = options.fitOptions.maxSteps ?? options.fitOptions.max_steps;
+  const maxSteps = maxStepsOption === undefined
+    ? null
+    : positiveInteger(maxStepsOption, options.maxStepsLabel);
+  const source = options.source();
+  if (source === null) return Object.freeze({ supported: false as const, reason: options.sourceReason });
+  return Object.freeze({
+    supported: true as const,
+    epochs,
+    source,
+    bounded: boundedBulkIndices(source, options.batch, epochs, maxSteps),
+  });
+}
+
 export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfaceOptions) {
   function trainingStep(model: unknown, optimizer: unknown, config: AnyRecord = {}) {
     const loss = config.loss ?? config.criterion ?? "crossEntropy";
@@ -519,6 +650,32 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       });
     }
 
+    function fitPlan(batches: unknown, fitOptions: AnyRecord = {}) {
+      const prepared = prepareNativeBulkFit({
+        kernelInstalled: typeof bulkKernel === "function",
+        missingKernelReason: `native bulk training kernel ${bulkKernelName} is not installed`,
+        fitOptions,
+        batch,
+        epochLabel: "native bulk training epochs",
+        maxStepsLabel: "native bulk training maxSteps",
+        sourceReason: "native bulk training requires a fixed-shape tensor DataLoader with matching batch rows",
+        source: () => tensorDatasetBulkSource(batches, batch, inFeatures, options.indexValues),
+      });
+      if (!prepared.supported) return unsupportedNativeBulkFitPlan(prepared.reason);
+      return nativeBulkFitPlan({
+        kernel: bulkKernelName,
+        batch,
+        sampleCount: prepared.source.sampleCount,
+        trainedSampleCount: prepared.bounded.sampleCount,
+        datasetSampleCount: prepared.source.datasetSampleCount,
+        epochs: prepared.epochs,
+        steps: prepared.bounded.steps,
+        plannedSteps: prepared.bounded.steps,
+        stoppedEarly: prepared.bounded.stoppedEarly,
+        stopReason: prepared.bounded.stopReason,
+      });
+    }
+
     return Object.freeze({
       kind: "zgml.compiled-training-step",
       native: true,
@@ -533,22 +690,23 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       compile_evidence: () => plan,
       step,
       forward: step,
+      fitPlan,
+      fit_plan: fitPlan,
       fit(batches: unknown, fitOptions: AnyRecord = {}) {
         if (typeof bulkKernel !== "function") return null;
-        if (
-          fitOptions.onStep !== undefined ||
-          fitOptions.on_step !== undefined ||
-          fitOptions.earlyStopping !== undefined ||
-          fitOptions.early_stopping !== undefined
-        ) return null;
-        const epochs = positiveInteger(fitOptions.epochs ?? 1, "native bulk training epochs");
-        const maxStepsOption = fitOptions.maxSteps ?? fitOptions.max_steps;
-        const maxSteps = maxStepsOption === undefined
-          ? null
-          : positiveInteger(maxStepsOption, "native bulk training maxSteps");
-        const source = tensorDatasetBulkSource(batches, batch, inFeatures, options.indexValues);
-        if (source === null) return null;
-        const bounded = boundedBulkIndices(source, batch, epochs, maxSteps);
+        const prepared = prepareNativeBulkFit({
+          kernelInstalled: true,
+          missingKernelReason: `native bulk training kernel ${bulkKernelName} is not installed`,
+          fitOptions,
+          batch,
+          epochLabel: "native bulk training epochs",
+          maxStepsLabel: "native bulk training maxSteps",
+          sourceReason: "native bulk training requires a fixed-shape tensor DataLoader with matching batch rows",
+          source: () => tensorDatasetBulkSource(batches, batch, inFeatures, options.indexValues),
+        });
+        if (!prepared.supported) return null;
+        const source = prepared.source;
+        const bounded = prepared.bounded;
         const startStep = Number(adam.t);
         const result = bulkKernel({
           datasetInput: source.datasetInput,
@@ -607,7 +765,7 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
           trained_sample_count: bounded.sampleCount,
           datasetSampleCount: source.datasetSampleCount,
           dataset_sample_count: source.datasetSampleCount,
-          epochs,
+          epochs: prepared.epochs,
           steps: result.steps,
           plannedSteps: bounded.steps,
           planned_steps: bounded.steps,
@@ -698,6 +856,32 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       });
     }
 
+    function fitPlan(batches: unknown, fitOptions: AnyRecord = {}) {
+      const prepared = prepareNativeBulkFit({
+        kernelInstalled: typeof bulkKernel === "function",
+        missingKernelReason: "native bulk training kernel zgml_train_linear_mse_sgd_f32_bulk is not installed",
+        fitOptions,
+        batch,
+        epochLabel: "native bulk linear training epochs",
+        maxStepsLabel: "native bulk linear training maxSteps",
+        sourceReason: "native bulk linear training requires a fixed-shape tensor DataLoader with matching batch rows",
+        source: () => tensorDatasetRegressionBulkSource(batches, batch, inFeatures, layer.outFeatures),
+      });
+      if (!prepared.supported) return unsupportedNativeBulkFitPlan(prepared.reason);
+      return nativeBulkFitPlan({
+        kernel: "zgml_train_linear_mse_sgd_f32_bulk",
+        batch,
+        sampleCount: prepared.source.sampleCount,
+        trainedSampleCount: prepared.bounded.sampleCount,
+        datasetSampleCount: prepared.source.datasetSampleCount,
+        epochs: prepared.epochs,
+        steps: prepared.bounded.steps,
+        plannedSteps: prepared.bounded.steps,
+        stoppedEarly: prepared.bounded.stoppedEarly,
+        stopReason: prepared.bounded.stopReason,
+      });
+    }
+
     return Object.freeze({
       kind: "zgml.compiled-training-step",
       native: true,
@@ -712,22 +896,23 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       compile_evidence: () => plan,
       step,
       forward: step,
+      fitPlan,
+      fit_plan: fitPlan,
       fit(batches: unknown, fitOptions: AnyRecord = {}) {
         if (typeof bulkKernel !== "function") return null;
-        if (
-          fitOptions.onStep !== undefined ||
-          fitOptions.on_step !== undefined ||
-          fitOptions.earlyStopping !== undefined ||
-          fitOptions.early_stopping !== undefined
-        ) return null;
-        const epochs = positiveInteger(fitOptions.epochs ?? 1, "native bulk linear training epochs");
-        const maxStepsOption = fitOptions.maxSteps ?? fitOptions.max_steps;
-        const maxSteps = maxStepsOption === undefined
-          ? null
-          : positiveInteger(maxStepsOption, "native bulk linear training maxSteps");
-        const source = tensorDatasetRegressionBulkSource(batches, batch, inFeatures, layer.outFeatures);
-        if (source === null) return null;
-        const bounded = boundedBulkIndices(source, batch, epochs, maxSteps);
+        const prepared = prepareNativeBulkFit({
+          kernelInstalled: true,
+          missingKernelReason: "native bulk training kernel zgml_train_linear_mse_sgd_f32_bulk is not installed",
+          fitOptions,
+          batch,
+          epochLabel: "native bulk linear training epochs",
+          maxStepsLabel: "native bulk linear training maxSteps",
+          sourceReason: "native bulk linear training requires a fixed-shape tensor DataLoader with matching batch rows",
+          source: () => tensorDatasetRegressionBulkSource(batches, batch, inFeatures, layer.outFeatures),
+        });
+        if (!prepared.supported) return null;
+        const source = prepared.source;
+        const bounded = prepared.bounded;
         const result = bulkKernel({
           datasetInput: source.datasetInput,
           datasetTargets: source.datasetTargets,
@@ -766,7 +951,7 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
           trained_sample_count: bounded.sampleCount,
           datasetSampleCount: source.datasetSampleCount,
           dataset_sample_count: source.datasetSampleCount,
-          epochs,
+          epochs: prepared.epochs,
           steps: result.steps,
           plannedSteps: bounded.steps,
           planned_steps: bounded.steps,

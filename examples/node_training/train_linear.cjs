@@ -185,7 +185,10 @@ const ergonomicNativeModulePlan = ergonomicNativeModel.explainTraining(ergonomic
 if (
   ergonomicNativePlan.supported !== true ||
   ergonomicNativePlan.loweredBy !== "zig-ffi" ||
+  ergonomicNativePlan.nativeBulk !== true ||
   ergonomicNativePlan.plan?.kernels[0] !== "zgml_train_linear_mse_sgd_f32" ||
+  ergonomicNativePlan.bulkKernel !== "zgml_train_linear_mse_sgd_f32_bulk" ||
+  ergonomicNativePlan.bulkPlan?.kernel !== "zgml_train_linear_mse_sgd_f32_bulk" ||
   ergonomicNativeModulePlan.signature !== ergonomicNativePlan.signature
 ) {
   throw new Error(`native training preflight must prove the Zig linear trainer: ${JSON.stringify(ergonomicNativePlan)}`);

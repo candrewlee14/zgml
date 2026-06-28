@@ -3,6 +3,7 @@
 import type {
   OptimizerStateKind,
   CompiledTrainingPlan,
+  NativeTrainingBulkFitPlan,
   NativeTrainingExplanation,
   TrainEvaluateContext,
   TrainEvaluateOptions,
@@ -209,6 +210,8 @@ type LossTrainOptimizer = {
 type CompiledTrainingStep = AnyRecord & {
   step(input: unknown, target: unknown): unknown;
   fit?(batches: unknown, fitOptions?: TrainFitOptions): unknown;
+  fitPlan?(batches: unknown, fitOptions?: TrainFitOptions): NativeTrainingBulkFitPlan | null;
+  fit_plan?(batches: unknown, fitOptions?: TrainFitOptions): NativeTrainingBulkFitPlan | null;
   inputShape?: () => readonly number[];
   outputShape?: () => readonly number[];
   plan?: () => CompiledTrainingPlan;
@@ -1328,6 +1331,15 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     return plan && typeof plan === "object" ? plan : null;
   }
 
+  function compiledBulkFitPlan(compiled: CompiledTrainingStep, batches: unknown, fitOptions: TrainFitOptions = {}): NativeTrainingBulkFitPlan | null {
+    const plan = typeof compiled.fitPlan === "function"
+      ? compiled.fitPlan(batches, fitOptions)
+      : typeof compiled.fit_plan === "function"
+        ? compiled.fit_plan(batches, fitOptions)
+        : null;
+    return plan && typeof plan === "object" ? plan : null;
+  }
+
   function frozenNativeTrainingCompileOptions(compileOptions: LossTrainOptionsRecord | null) {
     if (compileOptions === null) return null;
     const out: AnyRecord = {};
@@ -1344,9 +1356,11 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
       `supported=${explanation.supported ? 1 : 0}`,
       `lowered=${explanation.loweredBy ?? "null"}`,
       `backend=${explanation.backend ?? "null"}`,
+      `nativeBulk=${explanation.nativeBulk ? 1 : 0}`,
       `reason=${explanation.reason ?? "null"}`,
       `input=${plan ? plan.inputShape.join("x") : "null"}`,
       `output=${plan ? plan.outputShape.join("x") : "null"}`,
+      `bulk=${explanation.bulkKernel ?? "null"}`,
       `kernels=${explanation.kernels.join("+")}`,
     ].join("|");
   }
@@ -1358,6 +1372,8 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
       ...fields,
       compileOptions: fields.compileOptions,
       compile_options: fields.compileOptions,
+      bulkPlan: fields.bulkPlan,
+      bulk_plan: fields.bulkPlan,
       kernels: Object.freeze(fields.kernels.slice()),
       signature: "",
     };
@@ -1370,27 +1386,42 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     return nativeTrainingExplanation({
       supported: false,
       native: false,
+      nativeBulk: false,
+      native_bulk: false,
       loweredBy: null,
       backend: null,
       reason,
       compileOptions: frozenOptions,
       compile_options: frozenOptions,
       plan: null,
+      bulkPlan: null,
+      bulk_plan: null,
+      bulkKernel: null,
       kernels: Object.freeze([]),
     });
   }
 
-  function supportedNativeTrainingExplanation(plan: CompiledTrainingPlan, compileOptions: LossTrainOptionsRecord | null): NativeTrainingExplanation {
+  function supportedNativeTrainingExplanation(
+    plan: CompiledTrainingPlan,
+    compileOptions: LossTrainOptionsRecord | null,
+    bulkPlan: NativeTrainingBulkFitPlan | null = null,
+  ): NativeTrainingExplanation {
     const frozenOptions = frozenNativeTrainingCompileOptions(compileOptions);
+    const nativeBulk = bulkPlan?.supported === true && bulkPlan.nativeBulk === true;
     return nativeTrainingExplanation({
       supported: true,
       native: true,
+      nativeBulk,
+      native_bulk: nativeBulk,
       loweredBy: "zig-ffi",
       backend: plan.backend,
       reason: null,
       compileOptions: frozenOptions,
       compile_options: frozenOptions,
       plan,
+      bulkPlan,
+      bulk_plan: bulkPlan,
+      bulkKernel: nativeBulk ? bulkPlan.kernel : null,
       kernels: plan.kernels,
     });
   }
@@ -1534,7 +1565,7 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
       if (plan === null) {
         return unsupportedNativeTrainingExplanation("compiled native training step did not expose a training plan", compileOptions);
       }
-      return supportedNativeTrainingExplanation(plan, compileOptions);
+      return supportedNativeTrainingExplanation(plan, compileOptions, compiledBulkFitPlan(compiled, batches, fitOptions));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return unsupportedNativeTrainingExplanation(message, compileOptions);
@@ -1550,9 +1581,14 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
   ) {
     if (isCompiledTrainingStep(targetOrOptimizer)) {
       const plan = compiledTrainingPlan(targetOrOptimizer);
+      const fitOptions = isRecord(batchesOrOptions) ? batchesOrOptions as TrainFitOptions & LossTrainOptionsRecord : {};
       return plan === null
         ? unsupportedNativeTrainingExplanation("compiled native training step did not expose a training plan")
-        : supportedNativeTrainingExplanation(plan, isRecord(batchesOrOptions) ? batchesOrOptions as LossTrainOptionsRecord : null);
+        : supportedNativeTrainingExplanation(
+          plan,
+          isRecord(batchesOrOptions) ? batchesOrOptions as LossTrainOptionsRecord : null,
+          compiledBulkFitPlan(targetOrOptimizer, moduleOrBatches, fitOptions),
+        );
     }
     if (
       targetOrOptimizer &&

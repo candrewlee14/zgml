@@ -401,6 +401,7 @@ import {
   type WhereShape,
   type CompiledTrainingPlan,
   type CompiledTrainingStep,
+  type NativeTrainingBulkFitPlan,
   type NativeTrainingExplanation,
   type TinyLlamaProgram,
   type TinyLlamaSession,
@@ -4613,9 +4614,17 @@ const moduleNativeTrainingSnakeExplanation: NativeTrainingExplanation = checkpoi
   maxSteps: 1,
   inputShape: [1, 2] as const,
 });
+const rootNativeTrainingBulkPlan: NativeTrainingBulkFitPlan | null = rootNativeTrainingExplanation.bulkPlan;
+const rootNativeTrainingSnakeBulkPlan: NativeTrainingBulkFitPlan | null = rootNativeTrainingExplanation.bulk_plan;
+const rootNativeTrainingBulkKernel: string | null = rootNativeTrainingExplanation.bulkKernel;
+const rootNativeTrainingNativeBulk: boolean = rootNativeTrainingExplanation.nativeBulk;
 void modelFirstNativeTrainingExplanation;
 void optimizerFirstNativeTrainingExplanation;
 void rootNativeTrainingExplanation;
+void rootNativeTrainingBulkPlan;
+void rootNativeTrainingSnakeBulkPlan;
+void rootNativeTrainingBulkKernel;
+void rootNativeTrainingNativeBulk;
 void rootNativeTrainingPlanAlias;
 void rootNativeTrainingSnakePlanAlias;
 void moduleNativeTrainingExplanation;
