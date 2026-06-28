@@ -309,6 +309,36 @@ function tensorDatasetBulkSource(batches: unknown, batch: number, inFeatures: nu
   });
 }
 
+function boundedBulkIndices(source: { indices: Uint32Array; sampleCount: number }, batch: number, epochs: number, maxSteps: number | null) {
+  const batchesPerEpoch = source.sampleCount / batch;
+  const plannedSteps = epochs * batchesPerEpoch;
+  const steps = maxSteps === null ? plannedSteps : Math.min(maxSteps, plannedSteps);
+  if (steps === plannedSteps) {
+    return Object.freeze({
+      indices: source.indices,
+      sampleCount: source.sampleCount,
+      epochs,
+      steps,
+      stoppedEarly: false,
+      stopReason: null,
+    });
+  }
+  const indices = new Uint32Array(steps * batch);
+  for (let stepIndex = 0; stepIndex < steps; stepIndex += 1) {
+    const batchIndex = stepIndex % batchesPerEpoch;
+    const batchStart = batchIndex * batch;
+    indices.set(source.indices.subarray(batchStart, batchStart + batch), stepIndex * batch);
+  }
+  return Object.freeze({
+    indices,
+    sampleCount: indices.length,
+    epochs: 1,
+    steps,
+    stoppedEarly: true,
+    stopReason: "max-steps" as const,
+  });
+}
+
 export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfaceOptions) {
   function trainingStep(model: unknown, optimizer: unknown, config: AnyRecord = {}) {
     const loss = config.loss ?? config.criterion ?? "crossEntropy";
@@ -445,21 +475,24 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       fit(batches: unknown, fitOptions: AnyRecord = {}) {
         if (typeof bulkKernel !== "function") return null;
         if (
-          fitOptions.maxSteps !== undefined ||
-          fitOptions.max_steps !== undefined ||
           fitOptions.onStep !== undefined ||
           fitOptions.on_step !== undefined ||
           fitOptions.earlyStopping !== undefined ||
           fitOptions.early_stopping !== undefined
         ) return null;
         const epochs = positiveInteger(fitOptions.epochs ?? 1, "native bulk training epochs");
+        const maxStepsOption = fitOptions.maxSteps ?? fitOptions.max_steps;
+        const maxSteps = maxStepsOption === undefined
+          ? null
+          : positiveInteger(maxStepsOption, "native bulk training maxSteps");
         const source = tensorDatasetBulkSource(batches, batch, inFeatures, options.indexValues);
         if (source === null) return null;
+        const bounded = boundedBulkIndices(source, batch, epochs, maxSteps);
         const startStep = Number(adam.t);
         const result = bulkKernel({
           datasetInput: source.datasetInput,
           datasetTargets: source.datasetTargets,
-          indices: source.indices,
+          indices: bounded.indices,
           batchInput,
           batchTargets,
           input: batchInput,
@@ -485,8 +518,8 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
           inFeatures,
           hiddenFeatures: layers.first.outFeatures,
           classes,
-          sampleCount: source.sampleCount,
-          epochs,
+          sampleCount: bounded.sampleCount,
+          epochs: bounded.epochs,
           startStep,
           step: startStep + 1,
           lr: finiteNumber(adam.lr, "compile.trainingStep Adam/AdamW lr"),
@@ -509,10 +542,18 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
           batch,
           sampleCount: source.sampleCount,
           sample_count: source.sampleCount,
+          trainedSampleCount: bounded.sampleCount,
+          trained_sample_count: bounded.sampleCount,
           datasetSampleCount: source.datasetSampleCount,
           dataset_sample_count: source.datasetSampleCount,
           epochs,
           steps: result.steps,
+          plannedSteps: bounded.steps,
+          planned_steps: bounded.steps,
+          stoppedEarly: bounded.stoppedEarly,
+          stopped_early: bounded.stoppedEarly,
+          stopReason: bounded.stopReason,
+          stop_reason: bounded.stopReason,
           optimizerStep: adam.t,
           optimizer_step: adam.t,
           kernel: bulkKernelName,

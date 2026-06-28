@@ -1579,13 +1579,15 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
         const result = bulkResult as AnyRecord;
         const latestLoss = compiledTrainingLoss(result);
         const steps = positiveIntegerOption(result.steps, "compiled native bulk training steps", Number.MAX_SAFE_INTEGER);
+        const stoppedEarly = result.stoppedEarly === true || result.stopped_early === true;
+        const stopReason = stoppedEarly ? ((result.stopReason ?? result.stop_reason ?? "max-steps") as "max-steps") : null;
         return trainFitEvidence({
           kind: "zgml.train.fit",
           epochs,
           steps,
-          stoppedEarly: false,
-          stopReason: null,
-          stop_reason: null,
+          stoppedEarly,
+          stopReason,
+          stop_reason: stopReason,
           batchCount,
           batch_count: batchCount,
           sampleCount,

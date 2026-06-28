@@ -7423,6 +7423,32 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     ) {
       throw new Error(`${label} expected drop_last tensor DataLoader to keep fixed-shape model.fit on the native Zig bulk trainer`);
     }
+    const boundedBulkDataset = adapter.data.tensorDataset(
+      adapter.tensor([0, 0, 1, 0, 0, 1, 1, 1], [4, 2]),
+      adapter.tensor([0, 1, 0, 1], [4]),
+    );
+    const boundedBulkLoader = adapter.data.dataLoader(boundedBulkDataset, { batch_size: 2, shuffle: false });
+    const boundedBulkFit = dropLastBulkModel.fit(boundedBulkLoader, {
+      optimizer: dropLastBulkOptimizer,
+      loss: adapter.loss.crossEntropyLoss({ classes: 2 }),
+      epochs: 2,
+      maxSteps: 3,
+    });
+    if (
+      boundedBulkFit.native !== true ||
+      boundedBulkFit.nativeBulk !== true ||
+      boundedBulkFit.stoppedEarly !== true ||
+      boundedBulkFit.stopReason !== "max-steps" ||
+      boundedBulkFit.steps !== 3 ||
+      boundedBulkFit.sampleCount !== 4 ||
+      boundedBulkFit.bulkResult?.sampleCount !== 4 ||
+      boundedBulkFit.bulkResult?.trainedSampleCount !== 6 ||
+      boundedBulkFit.bulkResult?.datasetSampleCount !== 4 ||
+      boundedBulkFit.bulkResult?.stoppedEarly !== true ||
+      boundedBulkFit.bulkResult?.stopReason !== "max-steps"
+    ) {
+      throw new Error(`${label} expected maxSteps tensor DataLoader fit to stay on the native Zig bulk trainer`);
+    }
   }
   if (
     !adapter.train.isTrainFitStepEvidence(fitSteps[0]) ||

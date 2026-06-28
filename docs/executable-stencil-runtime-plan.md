@@ -225,7 +225,10 @@ throughput rather than JS callback overhead. Fixed-shape tensor `DataLoader`
 training also keeps the same native bulk lane when `drop_last` is enabled: the
 Zig kernel now receives the consumed row count separately from the backing
 dataset row count, so the common "drop the partial final batch" API shape does
-not force a JavaScript fallback.
+not force a JavaScript fallback. Bounded `maxSteps` training on the same loader
+shape also stays native: TS constructs the bounded row-index stream, while the
+forward, loss, backward, and optimizer updates still run inside one Zig bulk
+training call.
 
 The refined compiler shape is:
 
