@@ -549,7 +549,6 @@ const Context = struct {
         const VecT = @Vector(V, f32);
         const zero: VecT = @splat(0.0);
         const one: VecT = @splat(1.0);
-        const two: VecT = @splat(2.0);
         return switch (op) {
             .neg => -v,
             .abs => @abs(v),
@@ -564,12 +563,9 @@ const Context = struct {
             .gelu => {
                 return geluApproxVec(v);
             },
-            .sigmoid => one / (one + @exp(-v)),
-            .silu => v / (one + @exp(-v)),
-            .tanh => {
-                const e2 = @exp(two * v);
-                return (e2 - one) / (e2 + one);
-            },
+            .sigmoid => one / (one + fastExpApproxVec(-v)),
+            .silu => v / (one + fastExpApproxVec(-v)),
+            .tanh => tanhApproxVec(v),
             else => unreachable,
         };
     }
@@ -1833,6 +1829,14 @@ const Context = struct {
         return poly * pow2;
     }
 
+    fn tanhApproxVec(x: @Vector(V, f32)) @Vector(V, f32) {
+        const VecT = @Vector(V, f32);
+        const one: VecT = @splat(1.0);
+        const clamped = @min(@max(x, @as(VecT, @splat(-10.0))), @as(VecT, @splat(10.0)));
+        const e2x = fastExpApproxVec(clamped + clamped);
+        return (e2x - one) / (e2x + one);
+    }
+
     fn geluApproxVec(x: @Vector(V, f32)) @Vector(V, f32) {
         const VecT = @Vector(V, f32);
         const k0: VecT = @splat(0.7978845608);
@@ -1840,8 +1844,7 @@ const Context = struct {
         const half: VecT = @splat(0.5);
         const one: VecT = @splat(1.0);
         const k = k0 * (x + k1 * x * x * x);
-        const e2k = fastExpApproxVec(k + k);
-        return half * x * (one + (e2k - one) / (e2k + one));
+        return half * x * (one + tanhApproxVec(k));
     }
 
     fn qmatmul(self: Context, q: anytype) void {
