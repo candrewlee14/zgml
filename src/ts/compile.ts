@@ -64,8 +64,10 @@ import type {
   NnModule,
   Program,
   ProgramBindings,
+  ProgramBufferLayout,
   ProgramExecutionPlan,
   ProgramInputBinding,
+  ProgramRequirements,
   Session,
   Tensor,
   TensorShapeTuple,
@@ -552,6 +554,12 @@ function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShap
     },
     compileSupport() {
       return compileSupport(target, options) as ModuleCompileSupport<InputShape, OutputShape>;
+    },
+    requirements() {
+      return program.requirements() as ProgramRequirements;
+    },
+    bufferLayout() {
+      return program.bufferLayout() as ProgramBufferLayout;
     },
     inputShape() {
       return program.inputShape();

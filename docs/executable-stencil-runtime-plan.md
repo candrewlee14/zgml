@@ -198,8 +198,11 @@ That handle is intentionally not a second runtime abstraction. It owns a
 and gives ordinary inference users the short path they actually want.
 The handle now also exposes first-contact proof methods directly:
 `explain()`, `preflight()`, `compileSupport()`, `inputShape()`,
-`outputShape()`, `kernelPlan()`, and `compilerSignatures()`. That keeps the
-happy path tiny while still making the executable artifact inspectable without
+`outputShape()`, `requirements()`, `bufferLayout()`, `kernelPlan()`, and
+`compilerSignatures()`. `requirements()` and `bufferLayout()` delegate to the
+native Program, so first-contact users can inspect the Zig-owned executable
+memory contract without dropping down to `fast.program`. That keeps the happy
+path tiny while still making the executable artifact inspectable without
 forcing users to know the lower-level `Program` API on day one.
 The same handle is now deliberately module-shaped: it exposes `forward`,
 `call`, and `__call__`, so native inference feels like ordinary `nn` code while

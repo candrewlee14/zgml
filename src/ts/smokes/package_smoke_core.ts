@@ -5363,6 +5363,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const inferencePreflight = inference.preflight();
     const inferenceExecutionPlan = inference.requireExecutionPlan();
     const inferenceCompileEvidence = inferenceExecutionPlan.compileEvidence;
+    const inferenceRequirements = inference.requirements();
+    const inferenceBufferLayout = inference.bufferLayout();
     if (
       inference.native !== true ||
       inferenceExecutionPlan.canExecute !== true ||
@@ -5372,6 +5374,11 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       inferenceCompileEvidence.nativeRequirements?.inputLen !== inference.program.inputLen() ||
       inferenceCompileEvidence.nativeRequirements?.outputLen !== inference.program.outputLen() ||
       inferenceCompileEvidence.nativeRequirementsSignature !== inferenceCompileEvidence.nativeRequirements?.signature ||
+      inferenceRequirements.signature !== inference.program.requirements().signature ||
+      inferenceRequirements.signature !== inferenceCompileEvidence.nativeRequirements?.signature ||
+      inferenceBufferLayout.signature !== inference.program.bufferLayout().signature ||
+      inferenceBufferLayout.input.elementCount !== inferenceRequirements.inputLen ||
+      inferenceBufferLayout.output.elementCount !== inferenceRequirements.outputLen ||
       inferenceSupport.supported !== true ||
       inferenceExplanation.supported !== true ||
       inferencePreflight.supported !== true ||

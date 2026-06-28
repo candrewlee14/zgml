@@ -1003,6 +1003,12 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       compileSupport() {
         return compileSupport(target, compileOptions);
       },
+      requirements() {
+        return typeof program.requirements === "function" ? program.requirements() : null;
+      },
+      bufferLayout() {
+        return typeof program.bufferLayout === "function" ? program.bufferLayout() : null;
+      },
       inputShape() {
         return typeof program.inputShape === "function" ? program.inputShape() : null;
       },
