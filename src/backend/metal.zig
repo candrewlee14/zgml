@@ -4841,6 +4841,15 @@ const SemanticFfnInputBridgeCompatibility = struct {
     }
 };
 
+const SemanticFfnInputBridgeEncodePlan = struct {
+    bridge: SemanticFfnInputBridgeCompatibility,
+    input_params: QMatMulParams,
+    gate_params: QMatMulParams,
+    up_params: QMatMulParams,
+    down_params: QMatMulParams,
+    scratch_bytes: usize,
+};
+
 fn semanticFfnInputBridgeCompatibility(input_q: anytype, input_residual: anytype, input_rn: anytype, input_rp: anytype, input_out: anytype, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, output_residual: anytype, output_rn: anytype, output_rp: anytype, output_out: anytype) ?SemanticFfnInputBridgeCompatibility {
     if (input_q.M != gate.M or input_q.N != gate.K) return null;
     if (gate.input != input_out.dst or gate.input_offset != input_out.dst_offset) return null;
@@ -4886,6 +4895,61 @@ fn semanticFfnInputBridgeCompatibility(input_q: anytype, input_residual: anytype
         .output_tiles = output_tiles,
         .direct_width_parallel_lanes = ROW_CHAIN_WIDTH_LANES,
         .direct_width_parallel_partial_slots = @as(u64, gate.M) * output_tiles,
+    };
+}
+
+fn semanticFfnInputBridgeIntermediatesExternallyObserved(view: RuntimeView, input_q: anytype, input_residual: anytype, input_rn: anytype, input_rp: anytype, input_out: anytype, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, output_residual: anytype, output_rn: anytype, output_rp: anytype) bool {
+    return view.outputReadsDenseSpan(input_q.dst, input_q.dst_offset, input_q.M, input_q.N, input_q.dst_row_stride) or
+        view.outputReadsSpan(input_residual.dst, input_residual.dst_offset, input_residual.n) or
+        view.outputReadsSpan(input_rn.dst, input_rn.dst_offset, @as(u64, input_rn.rows) * input_rn.cols) or
+        view.outputReadsSpan(input_rp.dst, input_rp.dst_offset, input_rp.n) or
+        view.outputReadsSpan(input_out.dst, input_out.dst_offset, input_out.n) or
+        view.outputReadsDenseSpan(gate.dst, gate.dst_offset, gate.M, gate.N, gate.dst_row_stride) or
+        view.outputReadsSpan(first.dst, first.dst_offset, first.n) or
+        view.outputReadsDenseSpan(up.dst, up.dst_offset, up.M, up.N, up.dst_row_stride) or
+        view.outputReadsSpan(product.dst, product.dst_offset, product.n) or
+        view.outputReadsDenseSpan(down.dst, down.dst_offset, down.M, down.N, down.dst_row_stride) or
+        view.outputReadsSpan(output_residual.dst, output_residual.dst_offset, output_residual.n) or
+        view.outputReadsSpan(output_rn.dst, output_rn.dst_offset, @as(u64, output_rn.rows) * output_rn.cols) or
+        view.outputReadsSpan(output_rp.dst, output_rp.dst_offset, output_rp.n);
+}
+
+fn semanticFfnInputBridgeEncodePlan(view: RuntimeView, input_q: anytype, input_residual: anytype, input_rn: anytype, input_rp: anytype, input_out: anytype, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, output_residual: anytype, output_rn: anytype, output_rp: anytype, output_out: anytype) ?SemanticFfnInputBridgeEncodePlan {
+    const bridge = semanticFfnInputBridgeCompatibility(input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out) orelse return null;
+    if (@as(usize, input_q.weight_idx) >= view.qweight_views.len or
+        @as(usize, gate.weight_idx) >= view.qweight_views.len or
+        @as(usize, up.weight_idx) >= view.qweight_views.len or
+        @as(usize, down.weight_idx) >= view.qweight_views.len)
+    {
+        return null;
+    }
+    if (semanticFfnInputBridgeIntermediatesExternallyObserved(view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp)) return null;
+
+    const input_w = view.qweight_views[input_q.weight_idx];
+    const gate_w = view.qweight_views[gate.weight_idx];
+    const up_w = view.qweight_views[up.weight_idx];
+    const down_w = view.qweight_views[down.weight_idx];
+    const input_params = qmatmulParams(input_q, input_w.block_size);
+    const gate_params = qmatmulParams(gate, gate_w.block_size);
+    const up_params = qmatmulParams(up, up_w.block_size);
+    const down_params = qmatmulParams(down, down_w.block_size);
+    if (input_params.block_size != 32 or gate_params.block_size != 32 or up_params.block_size != 32 or down_params.block_size != 32) return null;
+    if (input_params.M != gate_params.M or input_params.N != gate_params.K) return null;
+    if (gate_params.M != up_params.M or gate_params.N != up_params.N or gate_params.K != up_params.K) return null;
+    if (gate_params.input_offset != input_out.dst_offset or up_params.input_offset != input_out.dst_offset or gate_params.input_row_stride != input_q.N or up_params.input_row_stride != input_q.N) return null;
+    if (down_params.M != gate_params.M or down_params.K != gate_params.N or down_params.N != input_params.N) return null;
+
+    const scratch = bridge.scratchRequirement() orelse return null;
+    const scratch_buffer = view.semantic_width_scratch orelse return null;
+    const scratch_bytes = scratch.scratchBytes();
+    if (scratch_buffer.size < scratch_bytes) return null;
+    return .{
+        .bridge = bridge,
+        .input_params = input_params,
+        .gate_params = gate_params,
+        .up_params = up_params,
+        .down_params = down_params,
+        .scratch_bytes = scratch_bytes,
     };
 }
 
@@ -6155,6 +6219,57 @@ fn semanticInputBridgeCompatibilityForTest(ops: []const backend_mod.DeviceOp) ?S
     return semanticFfnInputBridgeCompatibility(input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out);
 }
 
+fn testDeviceBuffer(byte_size: usize) DeviceBuffer {
+    return .{ .ptr = undefined, .size = byte_size };
+}
+
+fn testSemanticInputBridgeView(qweight_block_size: usize, scratch_bytes: usize, outputs: []const backend_mod.ProgramIO) RuntimeView {
+    const stencil = std.testing.allocator.create(program_mod.ProgramStencil) catch unreachable;
+    stencil.* = undefined;
+    const qweight = DeviceQWeight{
+        .data = testDeviceBuffer(1),
+        .scales = testDeviceBuffer(1),
+        .block_size = qweight_block_size,
+    };
+    const qweights = std.testing.allocator.alloc(DeviceQWeight, 4) catch unreachable;
+    @memset(qweights, qweight);
+    const device_bufs = std.testing.allocator.alloc(DeviceBuffer, 32) catch unreachable;
+    @memset(device_bufs, testDeviceBuffer(32 * 1024 * 1024));
+    return .{
+        .device_bufs = device_bufs,
+        .ref_buffers = &.{},
+        .qweight_views = qweights,
+        .ref_qweights = &.{},
+        .semantic_width_scratch = testDeviceBuffer(scratch_bytes),
+        .program_stencil = stencil,
+        .outputs = outputs,
+    };
+}
+
+fn deinitTestSemanticInputBridgeView(view: RuntimeView) void {
+    std.testing.allocator.free(view.qweight_views);
+    std.testing.allocator.free(view.device_bufs);
+    std.testing.allocator.destroy(view.program_stencil);
+}
+
+fn semanticInputBridgeEncodePlanForTest(view: RuntimeView, ops: []const backend_mod.DeviceOp) ?SemanticFfnInputBridgeEncodePlan {
+    const input_q = deviceOpAt(.qmatmul, ops, 0) orelse return null;
+    const input_residual = deviceOpAt(.elementwise, ops, 1) orelse return null;
+    const input_rn = deviceOpAt(.rmsnorm, ops, 2) orelse return null;
+    const input_rp = deviceOpAt(.repeat, ops, 3) orelse return null;
+    const input_out = deviceOpAt(.elementwise, ops, 4) orelse return null;
+    const gate = deviceOpAt(.qmatmul, ops, 5) orelse return null;
+    const first = deviceOpAt(.elementwise, ops, 6) orelse return null;
+    const up = deviceOpAt(.qmatmul, ops, 7) orelse return null;
+    const product = deviceOpAt(.elementwise, ops, 8) orelse return null;
+    const down = deviceOpAt(.qmatmul, ops, 9) orelse return null;
+    const output_residual = deviceOpAt(.elementwise, ops, 10) orelse return null;
+    const output_rn = deviceOpAt(.rmsnorm, ops, 11) orelse return null;
+    const output_rp = deviceOpAt(.repeat, ops, 12) orelse return null;
+    const output_out = deviceOpAt(.elementwise, ops, 13) orelse return null;
+    return semanticFfnInputBridgeEncodePlan(view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out);
+}
+
 test "semantic input bridge compatibility proves exact direct width target shape" {
     const ops = testSemanticInputBridgeOps();
     const bridge = semanticInputBridgeCompatibilityForTest(&ops) orelse return error.TestExpectedEqual;
@@ -6180,6 +6295,36 @@ test "semantic input bridge compatibility rejects broken residual bridge" {
     var ops = testSemanticInputBridgeOps();
     ops[10].elementwise.src1 = 20;
     try std.testing.expect(semanticInputBridgeCompatibilityForTest(&ops) == null);
+}
+
+test "semantic input bridge encode plan requires native qweights and full width scratch" {
+    const ops = testSemanticInputBridgeOps();
+    const view = testSemanticInputBridgeView(32, 14155776, &.{});
+    defer deinitTestSemanticInputBridgeView(view);
+
+    const plan = semanticInputBridgeEncodePlanForTest(view, &ops) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u32, 128), plan.bridge.rows);
+    try std.testing.expectEqual(@as(u32, 576), plan.input_params.N);
+    try std.testing.expectEqual(@as(u32, 1536), plan.gate_params.N);
+    try std.testing.expectEqual(@as(u32, 1536), plan.up_params.N);
+    try std.testing.expectEqual(@as(u32, 576), plan.down_params.N);
+    try std.testing.expectEqual(@as(usize, 14155776), plan.scratch_bytes);
+
+    const wrong_block = testSemanticInputBridgeView(16, 14155776, &.{});
+    defer deinitTestSemanticInputBridgeView(wrong_block);
+    try std.testing.expect(semanticInputBridgeEncodePlanForTest(wrong_block, &ops) == null);
+
+    const too_little_scratch = testSemanticInputBridgeView(32, 9216, &.{});
+    defer deinitTestSemanticInputBridgeView(too_little_scratch);
+    try std.testing.expect(semanticInputBridgeEncodePlanForTest(too_little_scratch, &ops) == null);
+}
+
+test "semantic input bridge encode plan refuses externally observed intermediates" {
+    const ops = testSemanticInputBridgeOps();
+    const outputs = [_]backend_mod.ProgramIO{.{ .buf_idx = 7, .offset = 0, .size = 4 }};
+    const view = testSemanticInputBridgeView(32, 14155776, &outputs);
+    defer deinitTestSemanticInputBridgeView(view);
+    try std.testing.expect(semanticInputBridgeEncodePlanForTest(view, &ops) == null);
 }
 
 test "semantic width scratch requirement follows executable policy" {
@@ -10056,22 +10201,7 @@ const CompiledProgram = struct {
             return false;
         }
 
-        if (view.outputReadsDenseSpan(input_q.dst, input_q.dst_offset, input_q.M, input_q.N, input_q.dst_row_stride) or
-            view.outputReadsSpan(input_residual.dst, input_residual.dst_offset, input_residual.n) or
-            view.outputReadsSpan(input_rn.dst, input_rn.dst_offset, @as(u64, input_rn.rows) * input_rn.cols) or
-            view.outputReadsSpan(input_rp.dst, input_rp.dst_offset, input_rp.n) or
-            view.outputReadsSpan(input_out.dst, input_out.dst_offset, input_out.n) or
-            view.outputReadsDenseSpan(gate.dst, gate.dst_offset, gate.M, gate.N, gate.dst_row_stride) or
-            view.outputReadsSpan(first.dst, first.dst_offset, first.n) or
-            view.outputReadsDenseSpan(up.dst, up.dst_offset, up.M, up.N, up.dst_row_stride) or
-            view.outputReadsSpan(product.dst, product.dst_offset, product.n) or
-            view.outputReadsDenseSpan(down.dst, down.dst_offset, down.M, down.N, down.dst_row_stride) or
-            view.outputReadsSpan(output_residual.dst, output_residual.dst_offset, output_residual.n) or
-            view.outputReadsSpan(output_rn.dst, output_rn.dst_offset, @as(u64, output_rn.rows) * output_rn.cols) or
-            view.outputReadsSpan(output_rp.dst, output_rp.dst_offset, output_rp.n))
-        {
-            return false;
-        }
+        if (semanticFfnInputBridgeIntermediatesExternallyObserved(view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp)) return false;
 
         const input_w = view.qweight_views[input_q.weight_idx];
         const gate_w = view.qweight_views[gate.weight_idx];
