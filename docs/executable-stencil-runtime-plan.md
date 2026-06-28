@@ -218,7 +218,12 @@ default MNIST/PyTorch training ratio from about `0.13x` to `0.188x`; moving
 Adam bias-correction powers out of the per-parameter update loop then moved the
 same default gate to `1.530x` PyTorch, and vectorizing the contiguous Adam
 weight updates moved it again to `2.715x` while the small bounded run reaches
-`7.848x`. This is the right "TS API, Zig execution" architecture: the ergonomic
+`7.848x`. A fresh ReleaseFast `bench:mnist:pytorch` run now lands at `2.568x`
+PyTorch on the default 2048-example gate (`zgml_train=11.0993ms`,
+`pytorch_train=28.4976ms`) with the same 87.70% accuracy, `loss_delta=6.82e-7`,
+and `logits_max_abs=9.06e-6`; `bench:status` surfaces that artifact as
+`mnist-pytorch-results:` so training proof is visible beside inference proof.
+This is the right "TS API, Zig execution" architecture: the ergonomic
 API remains `model.fit(...)`, and the hot path is now native enough that the
 next large performance move should focus on broader model coverage and matmul
 throughput rather than JS callback overhead. Fixed-shape tensor `DataLoader`
@@ -1166,6 +1171,9 @@ npm run bench:pytorch:focus
 npm run bench:pytorch:focus:run        # rerun focused PyTorch comparison without rebuilding artifacts
 npm run bench:pytorch:gaps             # rebuild and measure current PyTorch soft spots
 npm run bench:pytorch:gaps:run         # rerun current PyTorch soft spots without rebuilding artifacts
+npm run bench:mnist:pytorch            # rebuild and compare ergonomic MNIST training against PyTorch
+npm run bench:mnist:pytorch:run        # rerun MNIST/PyTorch training comparison without rebuilding artifacts
+npm run bench:mnist:pytorch:parity     # require native MNIST training to match or beat PyTorch
 npm run dev:perf:pytorch:gaps:steady:run # no-rebuild steady PyTorch current-gap evidence
 npm run bench:competitive           # promoted PyTorch/frontier/ggml competitiveness gate
 npm run bench:frontier:gate            # rebuild ReleaseFast and measure scheduler/kernelizer frontier evidence

@@ -20,6 +20,7 @@ const baselineArtifacts = [
 const fullRunArtifactPattern = /^smollm-\d{8}T\d{6}Z(?:-\d+)?-p128-g200-r3\.json$/;
 const ggmlSmokeArtifactPattern = /^smollm-\d{8}T\d{6}Z(?:-\d+)?-p128-g40-r1\.json$/;
 const pytorchArtifactPattern = /^pytorch-\d{8}T\d{6}Z-\d+\.json$/;
+const mnistPytorchArtifactPattern = /^mnist-pytorch-\d{8}T\d{6}Z-\d+\.json$/;
 const nativeEagerArtifactPattern = /^native-eager-\d{8}T\d{6}Z-\d+\.json$/;
 const q8PromptArtifactPattern = /^q8-prompt-\d{8}T\d{6}Z-\d+\.json$/;
 const frontierArtifactPattern = /^frontier-qsemantic-\d{8}T\d{6}Z-\d+\.json$/;
@@ -196,6 +197,33 @@ function latestPytorchComparisonArtifact() {
 
 function latestRawPytorchComparisonArtifact() {
   return pytorchComparisonArtifacts().at(-1) ?? null;
+}
+
+function mnistPytorchArtifacts() {
+  const dir = join("bench-results", "mnist-pytorch");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => mnistPytorchArtifactPattern.test(name))
+    .sort()
+    .map((name) => join(dir, name))
+    .filter((path) => {
+      try {
+        const data = readJson(path);
+        return data?.schema === "zgml.mnist-pytorch-comparison.v1" &&
+          data?.config &&
+          data?.status &&
+          data?.numeric &&
+          data?.ratios &&
+          data?.zgml &&
+          data?.pytorch;
+      } catch {
+        return false;
+      }
+    });
+}
+
+function latestMnistPytorchArtifact() {
+  return mnistPytorchArtifacts().at(-1) ?? null;
 }
 
 function nativeEagerArtifacts() {
@@ -1164,6 +1192,45 @@ function pytorchFreshnessStatusLine(selectedPath, rawPath) {
   const keyCount = Array.isArray(data?.config?.activeComparisonKeys) ? data.config.activeComparisonKeys.length : "n/a";
   const firstContactInference = firstContactInferenceSummary(data);
   return `pytorch-latest-results: newest=${compactName(rawPath)} selected=${compactName(selectedPath)} reason=prefer_broad_scoreboard status=${status} median=${medianStatus} worst=${worst} gap=${worstGap} first_contact_inference=${firstContactInference} attempts=${attempts} native=${native} timing=${timing} keys=${keyCount} ratio_median=${medians}`;
+}
+
+function mnistPytorchStatusLine(path) {
+  if (!path) {
+    return "mnist-pytorch-results: no local MNIST PyTorch comparison artifact found; run npm run bench:mnist:pytorch";
+  }
+  let data;
+  try {
+    data = readJson(path);
+  } catch {
+    return `mnist-pytorch-results: latest=${compactName(path)} unreadable`;
+  }
+  const status = data?.status?.comparisonReady === true ? "pass" : "miss";
+  const numeric = data?.status?.numericReady === true ? "pass" : "miss";
+  const trainingParity = data?.status?.trainingParityReady === true ? "pass" : "miss";
+  const trainLimit = Number.isFinite(Number(data?.config?.trainLimit)) ? Number(data.config.trainLimit) : "n/a";
+  const testLimit = Number.isFinite(Number(data?.config?.testLimit)) ? Number(data.config.testLimit) : "n/a";
+  const epochs = Number.isFinite(Number(data?.config?.epochs)) ? Number(data.config.epochs) : "n/a";
+  const batch = Number.isFinite(Number(data?.config?.batchSize)) ? Number(data.config.batchSize) : "n/a";
+  const torch = typeof data?.pytorchVersion === "string" ? data.pytorchVersion : typeof data?.pytorch?.torchVersion === "string" ? data.pytorch.torchVersion : "unknown";
+  const modelFitNative = data?.zgml?.modelFitNative === true ? "yes" : "no";
+  const modelFitBulk = data?.zgml?.modelFitBulk === true ? "yes" : "no";
+  const loweredBy = typeof data?.zgml?.modelFitLoweredBy === "string" ? data.zgml.modelFitLoweredBy : "n/a";
+  const bulkKernel = typeof data?.zgml?.modelFitBulkKernel === "string" ? data.zgml.modelFitBulkKernel : "n/a";
+  const zgmlTrain = formatMs(data?.zgml?.trainMs);
+  const pytorchTrain = formatMs(data?.pytorch?.trainMs);
+  const manualTrain = formatMs(data?.zgml?.nativeTraining?.trainMs);
+  const trainRatio = formatRatio(data?.ratios?.trainZgmlVsPytorch);
+  const manualRatio = formatRatio(data?.ratios?.trainManualNativeZgmlVsPytorch);
+  const bulkVsManual = formatRatio(data?.ratios?.trainManualNativeZgmlVsModelFitZgml);
+  const zgmlAcc = formatPct(data?.zgml?.after?.accuracy);
+  const nativeAcc = formatPct(data?.zgml?.nativeTraining?.after?.accuracy);
+  const pytorchAcc = formatPct(data?.pytorch?.after?.accuracy);
+  const lossDelta = formatNumber(data?.numeric?.afterLossDelta, 8);
+  const logitsMaxAbs = formatNumber(data?.numeric?.sample0LogitsMaxAbsDiff, 8);
+  const compiledInfer = formatMs(data?.zgml?.compiledSingleForwardMs);
+  const pytorchInfer = formatMs(data?.pytorch?.eagerSingleForwardMs);
+  const compiledInferRatio = formatRatio(data?.ratios?.compiledInferenceZgmlVsPytorchEager);
+  return `mnist-pytorch-results: latest=${compactName(path)} status=${status} numeric=${numeric} training_parity=${trainingParity} torch=${torch} train=${trainLimit} test=${testLimit} epochs=${epochs} batch=${batch} model_fit_native=${modelFitNative}:${loweredBy} model_fit_bulk=${modelFitBulk}:${bulkKernel} zgml_train=${zgmlTrain} pytorch_train=${pytorchTrain} zgml_vs_pytorch_train=${trainRatio} manual_native_train=${manualTrain} manual_native_vs_pytorch=${manualRatio} manual_native_vs_model_fit=${bulkVsManual} accuracy=zgml:${zgmlAcc},native:${nativeAcc},pytorch:${pytorchAcc} loss_delta=${lossDelta} logits_max_abs=${logitsMaxAbs} compiled_infer=${compiledInfer} pytorch_infer=${pytorchInfer} compiled_infer_vs_pytorch=${compiledInferRatio}`;
 }
 
 function nativeEagerStatusLine(path) {
@@ -2230,6 +2297,7 @@ if (result.stderr) process.stderr.write(result.stderr);
 const latestPytorch = latestPytorchComparisonArtifact();
 const latestRawPytorch = latestRawPytorchComparisonArtifact();
 process.stdout.write(`${pytorchComparisonStatusLine(latestPytorch)}\n`);
+process.stdout.write(`${mnistPytorchStatusLine(latestMnistPytorchArtifact())}\n`);
 process.stdout.write(`${nativeEagerStatusLine(latestNativeEagerArtifact())}\n`);
 process.stdout.write(`${nativeEagerRuntimeStatusLine()}\n`);
 const broadPytorch = pytorchBroadStatusLine(latestPytorchBroadArtifact(), latestPytorch);
