@@ -174,6 +174,10 @@ const ergonomicNativeClass = train.predictClasses(ergonomicNativeLogits, { class
 if (
   !train.isTrainFitEvidence(ergonomicNativeFit) ||
   ergonomicNativeFit.native !== true ||
+  ergonomicNativeFit.loweredBy !== "zig-ffi" ||
+  ergonomicNativeFit.lowered_by !== "zig-ffi" ||
+  ergonomicNativeFit.runtimePath !== "JS/TS module API -> Zig native training kernel" ||
+  ergonomicNativeFit.runtime_path !== "JS/TS module API -> Zig native training kernel" ||
   ergonomicNativeFit.backend !== "cpu" ||
   ergonomicNativePlan?.loweredBy !== "zig-ffi" ||
   ergonomicNativePlan?.runtimePath !== "JS/TS module API -> Zig native training kernel" ||

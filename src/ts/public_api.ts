@@ -5382,6 +5382,10 @@ export type TrainFitEvidence<OptimizerKind extends OptimizerStateKind | null = O
   native?: boolean;
   nativeBulk?: boolean;
   native_bulk?: boolean;
+  loweredBy?: "zig-ffi" | null;
+  lowered_by?: "zig-ffi" | null;
+  runtimePath?: string | null;
+  runtime_path?: string | null;
   backend?: string | null;
   compiledPlan?: CompiledTrainingPlan | null;
   compiled_plan?: CompiledTrainingPlan | null;

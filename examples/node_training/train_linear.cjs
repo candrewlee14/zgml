@@ -5,7 +5,6 @@ const {
   checkpoint,
   compile,
   data,
-  fit: zgmlFit,
   initial_seed,
   loss,
   manualSeed,
@@ -194,21 +193,21 @@ if (
 ) {
   throw new Error(`native training preflight must prove the Zig linear trainer: ${JSON.stringify(ergonomicNativePlan)}`);
 }
-const ergonomicNativeFit = zgmlFit(
-  ergonomicNativeModel,
-  ergonomicNativeBatches,
-  {
-    optimizer: ergonomicNativeOptimizer,
-    loss: ergonomicNativeCriterion,
-    epochs: 80,
-    requireNative: true,
-  },
-);
+const ergonomicNativeFit = ergonomicNativeModel.fit(ergonomicNativeBatches, {
+  optimizer: ergonomicNativeOptimizer,
+  loss: ergonomicNativeCriterion,
+  epochs: 80,
+  requireNative: true,
+});
 const ergonomicNativeAfter = scalar(loss.mse(ergonomicNativeModel.forward(tensor([1, -1], [1, 2])), tensor([2.5], [1, 1])));
 if (ergonomicNativeFit.native !== true || ergonomicNativeFit.backend !== "cpu") {
-  throw new Error("root fit should automatically compile supported linear MSE training through the native Zig path");
+  throw new Error("nn.Module.fit should automatically compile supported linear MSE training through the native Zig path");
 }
 if (
+  ergonomicNativeFit.loweredBy !== "zig-ffi" ||
+  ergonomicNativeFit.lowered_by !== "zig-ffi" ||
+  ergonomicNativeFit.runtimePath !== "JS/TS module API -> Zig native training kernel" ||
+  ergonomicNativeFit.runtime_path !== "JS/TS module API -> Zig native training kernel" ||
   ergonomicNativeFit.compiledPlan?.loweredBy !== "zig-ffi" ||
   ergonomicNativeFit.compiledPlan.lossKind !== "mse" ||
   ergonomicNativeFit.compiledPlan.kernels[0] !== "zgml_train_linear_mse_sgd_f32" ||
@@ -223,10 +222,10 @@ if (
   ergonomicNativeFit.nativeBulk !== true ||
   ergonomicNativeFit.bulkResult?.kernel !== "zgml_train_linear_mse_sgd_f32_bulk"
 ) {
-  throw new Error("native root fit must return native bulk fit evidence");
+  throw new Error("native nn.Module.fit must return native bulk fit evidence");
 }
 if (!(ergonomicNativeAfter < ergonomicNativeBefore * 0.02)) {
-  throw new Error(`expected native train.fitModule to reduce held-out loss sharply; before=${ergonomicNativeBefore}, after=${ergonomicNativeAfter}`);
+  throw new Error(`expected native nn.Module.fit to reduce held-out loss sharply; before=${ergonomicNativeBefore}, after=${ergonomicNativeAfter}`);
 }
 
 const schedulerState = scheduler.stateDict();

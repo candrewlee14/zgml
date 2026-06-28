@@ -641,6 +641,22 @@ const modelFirstFitOptions: TrainModelFitOptions<"adam", typeof checkpointModel,
   zeroGrad: true,
 };
 const modelFirstFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpointModel, tensorDatasetBatches, modelFirstFitOptions);
+const nativeObjectFirstLinear = nn.linear(2, 1);
+const nativeObjectFirstOptimizer: Optimizer<"sgd"> = optim.sgd(nativeObjectFirstLinear, { lr: 0.01 });
+const nativeObjectFirstDataset = data.tensorDataset(
+  tensor([0, 0, 1, 1], [2, 2] as const),
+  tensor([0, 1], [2, 1] as const),
+);
+const nativeObjectFirstLoader = data.dataLoader(nativeObjectFirstDataset, { batchSize: 2, shuffle: false });
+const nativeObjectFirstFit: TrainFitEvidence = nativeObjectFirstLinear.fit(nativeObjectFirstLoader, {
+  optimizer: nativeObjectFirstOptimizer,
+  loss: "mse",
+  requireNative: true,
+});
+const nativeObjectFirstLoweredBy: "zig-ffi" | null | undefined = nativeObjectFirstFit.loweredBy;
+const nativeObjectFirstLoweredBySnake: "zig-ffi" | null | undefined = nativeObjectFirstFit.lowered_by;
+const nativeObjectFirstRuntimePath: string | null | undefined = nativeObjectFirstFit.runtimePath;
+const nativeObjectFirstRuntimePathSnake: string | null | undefined = nativeObjectFirstFit.runtime_path;
 const evaluation: TrainEvaluateEvidence = train.evaluate(loader, (batch: TensorDatasetBatch) => {
   if (!batch.target) throw new Error("evaluation batch requires a target tensor");
   return loss.mse(model.forward(batch.input), batch.target);
@@ -1388,6 +1404,11 @@ void typedClassifierPredictionSnake;
 void typedClassifierState;
 void typedClassifierInspection;
 void typedClassifierCompiledLogits;
+void nativeObjectFirstFit;
+void nativeObjectFirstLoweredBy;
+void nativeObjectFirstLoweredBySnake;
+void nativeObjectFirstRuntimePath;
+void nativeObjectFirstRuntimePathSnake;
 void restoredHotProfile;
 void restoredHotCompatibility;
 void restoredHotPlan;
