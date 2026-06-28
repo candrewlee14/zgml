@@ -2348,6 +2348,8 @@ export type PublicNativeEagerNamespace = Readonly<{
   std_into(output: Float32Array, input: TensorLike, options: NativeEagerMomentIntoOptions): Float32Array;
   takeInto(output: Float32Array, input: TensorLike, index: TensorLike | Uint32Array | readonly number[]): Float32Array;
   take_into(output: Float32Array, input: TensorLike, index: TensorLike | Uint32Array | readonly number[]): Float32Array;
+  indexSelectInto(output: Float32Array, input: TensorLike, index: TensorLike | Uint32Array | readonly number[], options: Readonly<{ outer: number; axisLen: number; inner: number }>): Float32Array;
+  index_select_into(output: Float32Array, input: TensorLike, index: TensorLike | Uint32Array | readonly number[], options: Readonly<{ outer: number; axisLen: number; inner: number }>): Float32Array;
   dotInto(output: Float32Array, lhs: TensorLike, rhs: TensorLike): Float32Array;
   dot_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike): Float32Array;
   conv2dInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerConv2dIntoOptions): Float32Array;

@@ -2143,6 +2143,48 @@ export fn zgml_eager_take_f32(
     return status(.ok);
 }
 
+export fn zgml_eager_index_select_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    indices_ptr: ?[*]const u32,
+    indices_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    outer: usize,
+    axis_len: usize,
+    inner: usize,
+) c_int {
+    if (input_ptr == null or
+        indices_ptr == null or
+        output_ptr == null or
+        input_len == 0 or
+        indices_len == 0 or
+        output_len == 0 or
+        outer == 0 or
+        axis_len == 0 or
+        inner == 0) return status(.invalid_argument);
+
+    const expected_input = std.math.mul(usize, std.math.mul(usize, outer, axis_len) catch return status(.shape_mismatch), inner) catch return status(.shape_mismatch);
+    const expected_output = std.math.mul(usize, std.math.mul(usize, outer, indices_len) catch return status(.shape_mismatch), inner) catch return status(.shape_mismatch);
+    if (input_len < expected_input or output_len < expected_output) return status(.shape_mismatch);
+
+    const input = input_ptr.?[0..input_len];
+    const indices = indices_ptr.?[0..indices_len];
+    const output = output_ptr.?[0..output_len];
+    for (0..outer) |outer_index| {
+        const input_outer_base = outer_index * axis_len * inner;
+        const output_outer_base = outer_index * indices_len * inner;
+        for (indices, 0..) |raw_index, selected_index| {
+            const axis_index: usize = @intCast(raw_index);
+            if (axis_index >= axis_len) return status(.shape_mismatch);
+            const input_base = input_outer_base + axis_index * inner;
+            const output_base = output_outer_base + selected_index * inner;
+            @memcpy(output[output_base..][0..inner], input[input_base..][0..inner]);
+        }
+    }
+    return status(.ok);
+}
+
 fn eagerLinearF32(
     input_ptr: ?[*]const f32,
     input_len: usize,
@@ -13817,6 +13859,54 @@ test "C ABI native eager take writes caller output" {
         bad_indices.len,
         output[0..].ptr,
         output.len,
+    ));
+}
+
+test "C ABI native eager index_select writes caller output" {
+    const input = [_]f32{
+        1,  2,
+        3,  4,
+        5,  6,
+
+        7,  8,
+        9,  10,
+        11, 12,
+    };
+    const indices = [_]u32{ 2, 0, 2 };
+    var output = [_]f32{0} ** 12;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_index_select_f32(
+        input[0..].ptr,
+        input.len,
+        indices[0..].ptr,
+        indices.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        2,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{
+        5,  6,
+        1,  2,
+        5,  6,
+
+        11, 12,
+        7,  8,
+        11, 12,
+    }, &output);
+
+    const bad_indices = [_]u32{ 0, 3 };
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_index_select_f32(
+        input[0..].ptr,
+        input.len,
+        bad_indices[0..].ptr,
+        bad_indices.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        2,
     ));
 }
 

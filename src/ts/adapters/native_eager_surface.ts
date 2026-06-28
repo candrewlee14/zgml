@@ -163,6 +163,16 @@ type NativeEagerTakeCall = (args: {
   expectedOutput: number;
 }) => number;
 
+type NativeEagerIndexSelectCall = (args: {
+  inputData: Float32Array;
+  indices: Uint32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  outer: number;
+  axisLen: number;
+  inner: number;
+}) => number;
+
 type NativeEagerConv2dCall = (args: {
   inputData: Float32Array;
   weightData: Float32Array;
@@ -228,6 +238,7 @@ type NativeEagerSurfaceOptions = {
   dotF32?: NativeEagerDotCall;
   permuteF32?: NativeEagerPermuteCall;
   takeF32?: NativeEagerTakeCall;
+  indexSelectF32?: NativeEagerIndexSelectCall;
   conv2dF32?: NativeEagerConv2dCall;
   pool2dF32?: NativeEagerPool2dCall;
   matmulF32?: NativeEagerMatmulCall;
@@ -969,6 +980,43 @@ function nativeEagerTakeInputs(
   };
 }
 
+function nativeEagerIndexSelectInputs(
+  output: Float32Array,
+  input: unknown,
+  index: unknown,
+  callOptions: Record<string, unknown>,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.indexSelectInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  if (inputData.length === 0) {
+    throw new Error(`${label} input must be non-empty`);
+  }
+  const indices = nativeEagerIndexData(index, `${label} index`);
+  const outer = nativeEagerPositiveInteger(callOptions.outer, `${label} outer`);
+  const axisLen = nativeEagerPositiveInteger(callOptions.axisLen ?? callOptions.axis_len, `${label} axisLen`);
+  const inner = nativeEagerPositiveInteger(callOptions.inner, `${label} inner`);
+  const expectedOutput = outer * indices.length * inner;
+  if (output.length < expectedOutput) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${expectedOutput}`);
+  }
+  if (inputData.length < outer * axisLen * inner) {
+    throw new Error(`${label} input length ${inputData.length} is smaller than ${outer * axisLen * inner}`);
+  }
+  return {
+    inputData,
+    indices,
+    output,
+    expectedOutput,
+    outer,
+    axisLen,
+    inner,
+  };
+}
+
 function nativeEagerConv2dInputs(
   output: Float32Array,
   input: unknown,
@@ -1372,6 +1420,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     take_into(output: Float32Array, input: unknown, index: unknown) {
       return this.takeInto(output, input, index);
+    },
+    indexSelectInto(output: Float32Array, input: unknown, index: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.indexSelectF32 !== "function") {
+        throw new Error("nativeEager.indexSelectInto is unavailable in this runtime");
+      }
+      const args = nativeEagerIndexSelectInputs(output, input, index, callOptions, options.f32);
+      options.check(options.indexSelectF32(args));
+      return output;
+    },
+    index_select_into(output: Float32Array, input: unknown, index: unknown, callOptions?: Record<string, unknown>) {
+      return this.indexSelectInto(output, input, index, callOptions);
     },
     conv2dInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.conv2dF32 !== "function") {

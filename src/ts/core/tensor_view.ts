@@ -48,6 +48,12 @@ type NativeTakeInto = (
   input: unknown,
   index: unknown,
 ) => Float32Array;
+type NativeIndexSelectInto = (
+  output: Float32Array,
+  input: unknown,
+  index: unknown,
+  options: Readonly<{ outer: number; axisLen: number; inner: number }>,
+) => Float32Array;
 
 export type TensorViewHelpersOptions = Readonly<{
   Tensor: TensorConstructor;
@@ -55,6 +61,7 @@ export type TensorViewHelpersOptions = Readonly<{
   isGradEnabled?: () => boolean;
   nativePermuteInto?: NativePermuteInto;
   nativeTakeInto?: NativeTakeInto;
+  nativeIndexSelectInto?: NativeIndexSelectInto;
 }>;
 
 export type TensorViewSurfaceHelpersOptions = Readonly<{
@@ -69,6 +76,7 @@ export function createTensorViewHelpers(options: TensorViewHelpersOptions) {
     : isGradEnabled;
   const nativePermuteInto = typeof options.nativePermuteInto === "function" ? options.nativePermuteInto : null;
   const nativeTakeInto = typeof options.nativeTakeInto === "function" ? options.nativeTakeInto : null;
+  const nativeIndexSelectInto = typeof options.nativeIndexSelectInto === "function" ? options.nativeIndexSelectInto : null;
   if (typeof TensorClass !== "function" || typeof addTensorGrad !== "function") {
     throw new Error("tensor view helpers require Tensor and addTensorGrad");
   }
@@ -543,6 +551,19 @@ export function createTensorViewHelpers(options: TensorViewHelpersOptions) {
         : null;
     if (!raw || raw.length === 0) throw new Error("indexSelect indices must be a non-empty 1D index array or Tensor");
     const positions = raw.map((value, index) => normalizeAxisIndex(value, tensor.shape[axis], `indexSelect index ${index}`));
+    const needsGrad = gradModeEnabled() && tensor.requiresGrad;
+    if (!needsGrad && nativeIndexSelectInto !== null) {
+      const outShape = tensor.shape.map((size: number, index: number) => index === axis ? positions.length : size);
+      const outData = new Float32Array(shapeProduct(outShape));
+      const outer = axis === 0 ? 1 : shapeProduct(tensor.shape.slice(0, axis));
+      const inner = axis === tensor.shape.length - 1 ? 1 : shapeProduct(tensor.shape.slice(axis + 1));
+      nativeIndexSelectInto(outData, tensor, u32Array(positions, "indexSelect index"), {
+        outer,
+        axisLen: tensor.shape[axis],
+        inner,
+      });
+      return new TensorCtor(outData, outShape);
+    }
     return gatherAxis(tensor, axis, positions, true, "indexSelect");
   }
 

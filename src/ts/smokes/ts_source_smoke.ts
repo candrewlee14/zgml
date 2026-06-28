@@ -1648,6 +1648,7 @@ expectThrow(
 );
 const nativePermuteCalls = [];
 const nativeTakeCalls = [];
+const nativeIndexSelectCalls = [];
 const nativePermuteView = createTensorViewHelpers({
   Tensor: TensorDataSmokeTensor,
   addTensorGrad: tensorData.addTensorGrad,
@@ -1680,6 +1681,26 @@ const nativePermuteView = createTensorViewHelpers({
     for (let i = 0; i < indices.length; i += 1) output[i] = data[indices[i]];
     return output;
   },
+  nativeIndexSelectInto(output, input, index, options) {
+    nativeIndexSelectCalls.push({
+      index: Array.from(index),
+      options,
+    });
+    const data = input.data ?? input;
+    const indices = Array.from(index);
+    for (let outer = 0; outer < options.outer; outer += 1) {
+      const inputOuterBase = outer * options.axisLen * options.inner;
+      const outputOuterBase = outer * indices.length * options.inner;
+      for (let selected = 0; selected < indices.length; selected += 1) {
+        const inputBase = inputOuterBase + indices[selected] * options.inner;
+        const outputBase = outputOuterBase + selected * options.inner;
+        for (let inner = 0; inner < options.inner; inner += 1) {
+          output[outputBase + inner] = data[inputBase + inner];
+        }
+      }
+    }
+    return output;
+  },
 });
 const nativePermuteInput = new TensorDataSmokeTensor(Float32Array.from({ length: 24 }, (_value, index) => index + 1), [2, 3, 4]);
 expectSame(nativePermuteView.permute(nativePermuteInput, [1, 2, 0]).data, [
@@ -1697,6 +1718,18 @@ expectSame(nativePermuteCalls, [
 ], "tensor view native rank-n permute hook calls");
 expectSame(nativePermuteView.take(nativePermuteInput, new Uint32Array([23, 0, 5, 5])).data, [24, 1, 6, 6], "tensor view native take output");
 expectSame(nativeTakeCalls, [[23, 0, 5, 5]], "tensor view native take hook calls");
+expectSame(nativePermuteView.indexSelect(nativePermuteInput, 1, new Uint32Array([2, 0, 2])).data, [
+  9, 10, 11, 12,
+  1, 2, 3, 4,
+  9, 10, 11, 12,
+  21, 22, 23, 24,
+  13, 14, 15, 16,
+  21, 22, 23, 24,
+], "tensor view native indexSelect output");
+expectSame(nativeIndexSelectCalls, [{
+  index: [2, 0, 2],
+  options: { outer: 2, axisLen: 3, inner: 4 },
+}], "tensor view native indexSelect hook calls");
 
 const tensorIndex = createTensorIndexHelpers();
 const indexTensor = { data: Float32Array.of(1, 2, 3, 4, 5, 6), shape: [2, 3] };
