@@ -1161,6 +1161,20 @@ absorbed input-bridge path only counts as the direct target if
 (`rows=128`, `row_tile_groups=4`, `output_tiles=18`, `lanes=4`,
 `partial_slots=2304`). The older one-dispatch row-serial bridge remains a
 diagnostic, not `semantic_with_input_width_parallel_kernel` proof.
+A June 28, 2026 microscope pass made that diagnostic target executable instead
+of aspirational. The benchmark now emits an explicit `direct_width` lane, the
+Metal planner reserves semantic-width scratch for both direct input-bridge
+policies, and the fresh artifact proves the two physical diagnostic kernels:
+`direct_serial=1.29x` with `runtime_dispatches=1`,
+`row_serial_dot_ops=2985984`, and `total_row_serial_dot_ops=382205952`; and
+`direct_width=0.12x` with `runtime_dispatches=2`, `ready=yes`,
+`width_lanes=4`, `width_tiles=4x18`, and `partial_slots=2304`. The
+direct-width result is numerically correct (`max_abs_diff=0.000001`) but far
+too slow to promote. The retained absorbed path stays decomposed and fast
+(`absorbed=2.61x`, `runtime_dispatches=5`, `decomposed_extra=4`). That means
+the next performance step is kernel tuning inside
+`semantic_with_input_width_parallel_kernel`, not more command-stream
+architecture or API reshaping.
 With that proof surface in place, the absorbed decomposed bridge now uses the
 same width-partial row-chain encoder for the model-width input projection as
 well as the hidden-width down tail. The guard is deliberately narrow: it only

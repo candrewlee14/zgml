@@ -6340,8 +6340,8 @@ fn semanticScratchRequirementForShape(rows: u32, hidden: u32, input: u32, output
 }
 
 fn semanticScratchRequirementForCommand(policy: program_mod.CommandStreamPolicy, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) ?SemanticWidthScratchRequirement {
-    if (!policy.fuse_projection_row_chain_two_phase_candidate) return null;
     if (command.kind == .semantic_ffn_sublayer) {
+        if (!policy.fuse_projection_row_chain_two_phase_candidate) return null;
         if (command.op_count != 9) return null;
         const start: usize = @intCast(command.op_start);
         const gate = deviceOpAt(.qmatmul, ops, start) orelse return null;
@@ -6352,6 +6352,11 @@ fn semanticScratchRequirementForCommand(policy: program_mod.CommandStreamPolicy,
         return semanticScratchRequirementForShape(gate.M, gate.N, gate.K, down.N);
     }
     if (command.kind == .semantic_ffn_sublayer_with_input_row_chain) {
+        const needs_scratch =
+            policy.fuse_projection_row_chain_two_phase_candidate or
+            policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch or
+            policy.fuse_semantic_ffn_sublayer_input_bridge_width_parallel;
+        if (!needs_scratch) return null;
         if (command.op_count != 14) return null;
         const start: usize = @intCast(command.op_start);
         const input_q = deviceOpAt(.qmatmul, ops, start) orelse return null;
@@ -6551,6 +6556,21 @@ test "semantic input bridge encode plan refuses externally observed intermediate
     const view = testSemanticInputBridgeView(32, 14155776, &outputs);
     defer deinitTestSemanticInputBridgeView(view);
     try std.testing.expect(semanticInputBridgeEncodePlanForTest(view, &ops) == null);
+}
+
+test "semantic input bridge policies reserve width scratch" {
+    const ops = testSemanticInputBridgeOps();
+    const command = program_mod.ProgramCommand.contiguous(.semantic_ffn_sublayer_with_input_row_chain, 0, 14);
+
+    try std.testing.expect(semanticScratchRequirementForCommand(program_mod.CommandStreamPolicy.promptProjectionRowChainCommand(), &ops, command) == null);
+
+    const direct_serial = semanticScratchRequirementForCommand(program_mod.CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeDirectSerialCandidate(), &ops, command) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 14155776), direct_serial.scratchBytes());
+    try std.testing.expectEqual(@as(usize, 9216), direct_serial.runtimeScratchBytes());
+
+    const direct_width = semanticScratchRequirementForCommand(program_mod.CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeDirectWidthCandidate(), &ops, command) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 14155776), direct_width.scratchBytes());
+    try std.testing.expectEqual(@as(usize, 9216), direct_width.runtimeScratchBytes());
 }
 
 test "semantic width scratch requirement follows executable policy" {

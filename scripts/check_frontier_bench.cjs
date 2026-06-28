@@ -1945,6 +1945,7 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const commandLabel = "qsemantic input-bridge m=128 h=1536 k=576 o=576 semantic input command";
   const absorbedLabel = "qsemantic input-bridge m=128 h=1536 k=576 o=576 semantic input absorbed";
   const directSerialLabel = "qsemantic input-bridge m=128 h=1536 k=576 o=576 semantic input direct_serial";
+  const directWidthLabel = "qsemantic input-bridge m=128 h=1536 k=576 o=576 semantic input direct_width";
   const targetRows = 128;
   const targetInput = 576;
   const targetHidden = 1536;
@@ -1970,12 +1971,15 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const commandProfileLabel = `${commandLabel} dispatch_profile`;
   const absorbedProfileLabel = `${absorbedLabel} dispatch_profile`;
   const directSerialProfileLabel = `${directSerialLabel} dispatch_profile`;
+  const directWidthProfileLabel = `${directWidthLabel} dispatch_profile`;
   const commandSpeedup = metric(output, commandLabel, "speedup");
   const absorbedSpeedup = metric(output, absorbedLabel, "speedup");
   const directSerialSpeedup = metric(output, directSerialLabel, "speedup");
+  const directWidthSpeedup = metric(output, directWidthLabel, "speedup");
   const commandMaxAbsDiff = metric(output, commandLabel, "max_abs_diff");
   const absorbedMaxAbsDiff = metric(output, absorbedLabel, "max_abs_diff");
   const directSerialMaxAbsDiff = metric(output, directSerialLabel, "max_abs_diff");
+  const directWidthMaxAbsDiff = metric(output, directWidthLabel, "max_abs_diff");
   const commandShapeCommands = metric(output, commandProfileLabel, "shape_commands");
   const commandShapeSemantic = metric(output, commandProfileLabel, "shape_semantic_ffn_sublayers");
   const commandShapeRowChains = metric(output, commandProfileLabel, "shape_projection_row_chains");
@@ -2081,6 +2085,41 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const directSerialRowChainTiledCount = metric(output, directSerialProfileLabel, "qmatmul_row_chain_tiled_count");
   const directSerialRowChainWidthParallelCount = metric(output, directSerialProfileLabel, "qmatmul_row_chain_width_parallel_count");
   const directSerialRowChainWidthParallelLanes = metric(output, directSerialProfileLabel, "qmatmul_row_chain_width_parallel_lanes");
+  const directWidthShapeCommands = metric(output, directWidthProfileLabel, "shape_commands");
+  const directWidthShapeSemantic = metric(output, directWidthProfileLabel, "shape_semantic_ffn_sublayers");
+  const directWidthShapeRowChains = metric(output, directWidthProfileLabel, "shape_projection_row_chains");
+  const directWidthShapeBridges = metric(output, directWidthProfileLabel, "shape_projection_row_chain_semantic_residual_bridges");
+  const directWidthShapeCoveredOps = metric(output, directWidthProfileLabel, "shape_covered_ops");
+  const directWidthShapeSavedDispatches = metric(output, directWidthProfileLabel, "shape_saved_dispatches");
+  const directWidthRuntimeDispatches = metric(output, directWidthProfileLabel, "runtime_backend_dispatches");
+  const directWidthSemanticDispatches = metric(output, directWidthProfileLabel, "runtime_semantic_ffn_dispatches");
+  const directWidthSemanticWithInputDispatches = metric(output, directWidthProfileLabel, "runtime_semantic_ffn_with_input_dispatches");
+  const directWidthSemanticWithInputAttempts = metric(output, directWidthProfileLabel, "runtime_semantic_ffn_with_input_attempts");
+  const directWidthSemanticWithInputRefused = metric(output, directWidthProfileLabel, "runtime_semantic_ffn_with_input_refused");
+  const directWidthFallbackPairDispatches = metric(output, directWidthProfileLabel, "semantic_ffn_sublayer_fallback_pair_dispatches");
+  const directWidthFallbackTailDispatches = metric(output, directWidthProfileLabel, "semantic_ffn_sublayer_fallback_tail_dispatches");
+  const directWidthDirectCount = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_count") ?? 0;
+  const directWidthDirectRows = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_rows") ?? 0;
+  const directWidthDirectInputProjection = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_input_projection") ?? 0;
+  const directWidthDirectInput = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_input") ?? 0;
+  const directWidthDirectHidden = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_hidden") ?? 0;
+  const directWidthDirectOutput = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_output") ?? 0;
+  const directWidthDirectInputProjectionDotOps = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_input_projection_dot_ops") ?? 0;
+  const directWidthDirectGateUpDotOps = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_gate_up_dot_ops") ?? 0;
+  const directWidthDirectDownDotOps = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_down_dot_ops") ?? 0;
+  const directWidthDirectRowThreadgroups = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_row_threadgroups") ?? 0;
+  const directWidthDirectRowSerialDotOps = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_row_serial_dot_ops") ?? 0;
+  const directWidthDirectTotalRowSerialDotOps = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_total_row_serial_dot_ops") ?? 0;
+  const directWidthDirectTotalRowSerialDotOpsPerRowThreadgroup = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_total_row_serial_dot_ops_per_row_threadgroup") ?? 0;
+  const directWidthDirectWidthParallelCount = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_width_parallel_count") ?? 0;
+  const directWidthDirectWidthParallelRows = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_width_parallel_rows") ?? 0;
+  const directWidthDirectWidthParallelRowTileGroups = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_width_parallel_row_tile_groups") ?? 0;
+  const directWidthDirectWidthParallelOutputTiles = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_width_parallel_output_tiles") ?? 0;
+  const directWidthDirectWidthParallelLanes = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_width_parallel_lanes") ?? 0;
+  const directWidthDirectWidthParallelPartialSlots = optionalMetric(output, directWidthProfileLabel, "semantic_ffn_with_input_direct_width_parallel_partial_slots") ?? 0;
+  const directWidthRowChainTiledCount = metric(output, directWidthProfileLabel, "qmatmul_row_chain_tiled_count");
+  const directWidthRowChainWidthParallelCount = metric(output, directWidthProfileLabel, "qmatmul_row_chain_width_parallel_count");
+  const directWidthRowChainWidthParallelLanes = metric(output, directWidthProfileLabel, "qmatmul_row_chain_width_parallel_lanes");
   const absorbedDispatchSplit = absorbedShapeSemantic > 0 ? absorbedRuntimeDispatches / absorbedShapeSemantic : NaN;
   const absorbedUsesDirectKernel =
     absorbedRuntimeDispatches === 1 &&
@@ -2103,6 +2142,25 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     absorbedSemanticWithInputDispatches === 3 &&
     absorbedSemanticWithInputAttempts === 1 &&
     absorbedSemanticWithInputRefused === 0;
+  const directWidthUsesDirectKernel =
+    directWidthRuntimeDispatches === 2 &&
+    directWidthSemanticDispatches === 0 &&
+    directWidthSemanticWithInputDispatches === 2 &&
+    directWidthSemanticWithInputAttempts === 1 &&
+    directWidthSemanticWithInputRefused === 0 &&
+    directWidthDirectWidthParallelCount === 1;
+  const directWidthUsesDecomposedKernel =
+    directWidthRuntimeDispatches === 5 &&
+    directWidthSemanticDispatches === 0 &&
+    directWidthSemanticWithInputDispatches === 5 &&
+    directWidthSemanticWithInputAttempts === 1 &&
+    directWidthSemanticWithInputRefused === 0;
+  const directWidthUsesStagedWidthKernel =
+    directWidthRuntimeDispatches === 3 &&
+    directWidthSemanticDispatches === 0 &&
+    directWidthSemanticWithInputDispatches === 3 &&
+    directWidthSemanticWithInputAttempts === 1 &&
+    directWidthSemanticWithInputRefused === 0;
 
   const failures = [];
   if (commandSpeedup < 1.0) failures.push(`semantic input command ${commandSpeedup.toFixed(2)}x < 1.00x`);
@@ -2113,6 +2171,7 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (commandMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`semantic input command max_abs_diff ${commandMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (absorbedMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`semantic input absorbed max_abs_diff ${absorbedMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (directSerialMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`semantic input direct_serial max_abs_diff ${directSerialMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (directWidthMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`semantic input direct_width max_abs_diff ${directWidthMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (commandShapeCommands !== 2 || commandShapeSemantic !== 1 || commandShapeRowChains !== 1 || commandShapeBridges !== 1 || commandShapeCoveredOps !== 14 || commandShapeSavedDispatches !== 12) {
     failures.push("semantic input command profile must stay shape_commands=2 semantic=1 row_chains=1 bridges=1 covered_ops=14 saved=12");
   }
@@ -2122,6 +2181,9 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (directSerialShapeCommands !== 1 || directSerialShapeSemantic !== 1 || directSerialShapeRowChains !== 1 || directSerialShapeBridges !== 0 || directSerialShapeCoveredOps !== 14 || directSerialShapeSavedDispatches !== 13) {
     failures.push("semantic input direct_serial profile must stay shape_commands=1 semantic=1 row_chains=1 bridges=0 covered_ops=14 saved=13");
   }
+  if (directWidthShapeCommands !== 1 || directWidthShapeSemantic !== 1 || directWidthShapeRowChains !== 1 || directWidthShapeBridges !== 0 || directWidthShapeCoveredOps !== 14 || directWidthShapeSavedDispatches !== 13) {
+    failures.push("semantic input direct_width profile must stay shape_commands=1 semantic=1 row_chains=1 bridges=0 covered_ops=14 saved=13");
+  }
   if (commandRuntimeDispatches !== 5 || commandProjectionRowChainDispatches !== 2 || commandSemanticDispatches !== 3 || commandSemanticWithInputDispatches !== 0) {
     failures.push("semantic input command runtime must stay decomposed as row_chain=2 semantic=3 dispatches");
   }
@@ -2130,6 +2192,9 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   }
   if (directSerialRuntimeDispatches !== 1 || directSerialSemanticDispatches !== 0 || directSerialSemanticWithInputDispatches !== 1 || directSerialSemanticWithInputAttempts !== 1 || directSerialSemanticWithInputRefused !== 0) {
     failures.push("semantic input direct_serial runtime must expose the one-dispatch row-serial diagnostic kernel");
+  }
+  if (!directWidthUsesDirectKernel && !directWidthUsesStagedWidthKernel && !directWidthUsesDecomposedKernel) {
+    failures.push("semantic input direct_width runtime must expose direct width, staged width, or decomposed diagnostic counters");
   }
   if (commandFallbackPairDispatches !== 1 || commandFallbackTailDispatches !== 2) {
     failures.push("semantic input command fallback split must stay pair=1 tail=2");
@@ -2145,6 +2210,9 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   }
   if (directSerialFallbackPairDispatches !== 0 || directSerialFallbackTailDispatches !== 0) {
     failures.push("semantic input direct_serial kernel must not use fallback pair/tail dispatches");
+  }
+  if (directWidthUsesDirectKernel && (directWidthFallbackPairDispatches !== 0 || directWidthFallbackTailDispatches !== 0)) {
+    failures.push("semantic input direct_width kernel must not use fallback pair/tail dispatches");
   }
   if (absorbedUsesDecomposedKernel && (absorbedDecomposedCount !== 1 || absorbedDecomposedDispatches !== 5 || absorbedDecomposedExtraDispatches !== 4 || absorbedDecomposedRowChainDispatches !== 2 || absorbedDecomposedPairDispatches !== 1 || absorbedDecomposedTailDispatches !== 2)) {
     failures.push("semantic input absorbed decomposition must stay count=1 dispatches=5 extra_dispatches=4 row_chain=2 pair=1 tail=2 until the width-parallel kernel replaces it");
@@ -2182,6 +2250,18 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (directSerialDirectWidthParallelCount !== 0) {
     failures.push("semantic input direct_serial diagnostic must not report width-parallel direct work");
   }
+  if (directWidthUsesDirectKernel && (directWidthDirectCount !== 1 || directWidthDirectRows !== 128 || directWidthDirectInputProjection !== targetInput || directWidthDirectInput !== targetInput || directWidthDirectHidden !== targetHidden || directWidthDirectOutput !== targetOutput)) {
+    failures.push("semantic input direct_width profile must expose the exact prompt bridge dimensions");
+  }
+  if (directWidthUsesDirectKernel && (directWidthDirectWidthParallelCount !== 1 || directWidthDirectWidthParallelRows !== 128 || directWidthDirectWidthParallelRowTileGroups !== 4 || directWidthDirectWidthParallelOutputTiles !== 18 || directWidthDirectWidthParallelLanes !== 4 || directWidthDirectWidthParallelPartialSlots !== 2304)) {
+    failures.push("semantic input direct_width profile must prove one 4-lane tiled direct output pass");
+  }
+  if (directWidthUsesDirectKernel && (directWidthDirectRowThreadgroups !== 128 || directWidthDirectRowSerialDotOps !== 2985984 || directWidthDirectTotalRowSerialDotOps !== 382205952 || directWidthDirectTotalRowSerialDotOpsPerRowThreadgroup !== 2985984)) {
+    failures.push("semantic input direct_width profile must still expose the row-serial dot work baseline until the kernel removes it");
+  }
+  if (directWidthUsesDirectKernel && (directWidthDirectInputProjectionDotOps !== targetInputProjectionDotOps || directWidthDirectGateUpDotOps !== targetGateUpDotOps || directWidthDirectDownDotOps !== targetDownDotOps)) {
+    failures.push("semantic input direct_width profile must expose the expected input/gate-up/down dot-work split");
+  }
   if (absorbedUsesDecomposedKernel && (absorbedRowChainTiledCount !== 2 || absorbedRowChainTiledRowTileGroups !== 8 || absorbedRowChainTiledNTiles !== 36 || absorbedRowChainTiledSerialTileLoops !== 144 || absorbedRowChainTiledTwoPhaseCount !== 2 || absorbedRowChainTiledFinalizeTileGroups !== 144 || absorbedRowChainTiledFinalizeElements !== 147456)) {
     failures.push("semantic input absorbed tiled profile must expose two two-phase row-chain leaves");
   }
@@ -2199,6 +2279,9 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   }
   if (directSerialRowChainTiledCount !== 0 || directSerialRowChainWidthParallelCount !== 0 || directSerialRowChainWidthParallelLanes !== 0) {
     failures.push("semantic input direct_serial kernel must not report row-chain tiled or width-parallel work");
+  }
+  if (directWidthUsesDirectKernel && (directWidthRowChainTiledCount !== 0 || directWidthRowChainWidthParallelCount !== 0 || directWidthRowChainWidthParallelLanes !== 0)) {
+    failures.push("semantic input direct_width kernel must report direct width work, not row-chain tiled work");
   }
   if (absorbedUsesDecomposedKernel && (absorbedRowChainTiledSpilledElementwise !== 1 || absorbedRowChainTiledSpilledInput !== 576 || absorbedRowChainTiledOutputSpills !== 0)) {
     failures.push("semantic input absorbed spill profile must stay spilled_elementwise=1 spilled_input=576 output_spills=0");
@@ -2225,6 +2308,7 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     `command=${commandSpeedup.toFixed(2)}x max_abs_diff=${commandMaxAbsDiff.toFixed(6)} shape_commands=${commandShapeCommands} bridges=${commandShapeBridges} runtime_dispatches=${commandRuntimeDispatches} row_dispatches=${commandProjectionRowChainDispatches} semantic_dispatches=${commandSemanticDispatches}`,
     `absorbed=${absorbedSpeedup.toFixed(2)}x max_abs_diff=${absorbedMaxAbsDiff.toFixed(6)} shape_commands=${absorbedShapeCommands} bridges=${absorbedShapeBridges} runtime_dispatches=${absorbedRuntimeDispatches} semantic_with_input_dispatches=${absorbedSemanticWithInputDispatches} absorbed_split=${Number.isFinite(absorbedDispatchSplit) ? absorbedDispatchSplit.toFixed(2) : "n/a"}`,
     `direct_serial=${directSerialSpeedup.toFixed(2)}x max_abs_diff=${directSerialMaxAbsDiff.toFixed(6)} runtime_dispatches=${directSerialRuntimeDispatches} row_serial_dot_ops=${directSerialDirectRowSerialDotOps} total_row_serial_dot_ops=${directSerialDirectTotalRowSerialDotOps}`,
+    `direct_width=${directWidthSpeedup.toFixed(2)}x max_abs_diff=${directWidthMaxAbsDiff.toFixed(6)} ready=${directWidthUsesDirectKernel ? "yes" : "no"} fallback=${directWidthUsesDecomposedKernel ? "decomposed" : directWidthUsesStagedWidthKernel ? "staged" : "none"} runtime_dispatches=${directWidthRuntimeDispatches} direct=${directWidthDirectCount}:width_parallel=${directWidthDirectWidthParallelCount}:width_lanes=${directWidthDirectWidthParallelLanes}:width_tiles=${directWidthDirectWidthParallelRowTileGroups}x${directWidthDirectWidthParallelOutputTiles}:partial_slots=${directWidthDirectWidthParallelPartialSlots}`,
     `direct_serial_shape=input_projection:${directSerialDirectInputProjection},input:${directSerialDirectInput},hidden:${directSerialDirectHidden},output:${directSerialDirectOutput}:input_projection_dot_ops:${directSerialDirectInputProjectionDotOps}:gate_up_dot_ops:${directSerialDirectGateUpDotOps}:down_dot_ops:${directSerialDirectDownDotOps}`,
     `absorbed_decomposed=${absorbedDecomposedCount}:dispatches=${absorbedDecomposedDispatches}:extra_dispatches=${absorbedDecomposedExtraDispatches}:row_chain=${absorbedDecomposedRowChainDispatches}:pair=${absorbedDecomposedPairDispatches}:tail=${absorbedDecomposedTailDispatches}`,
     `direct=${absorbedDirectCount}:rows=${absorbedDirectRows}:row_threadgroups=${absorbedDirectRowThreadgroups}:row_serial_dot_ops=${absorbedDirectRowSerialDotOps}:total_row_serial_dot_ops=${absorbedDirectTotalRowSerialDotOps}:per_row_threadgroup=${absorbedDirectTotalRowSerialDotOpsPerRowThreadgroup}:width_parallel=${absorbedDirectWidthParallelCount}:width_lanes=${absorbedDirectWidthParallelLanes}:width_tiles=${absorbedDirectWidthParallelRowTileGroups}x${absorbedDirectWidthParallelOutputTiles}:partial_slots=${absorbedDirectWidthParallelPartialSlots}`,
@@ -2239,9 +2323,11 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     commandSpeedup,
     absorbedSpeedup,
     directSerialSpeedup,
+    directWidthSpeedup,
     commandMaxAbsDiff,
     absorbedMaxAbsDiff,
     directSerialMaxAbsDiff,
+    directWidthMaxAbsDiff,
     commandShapeCommands,
     commandShapeSemantic,
     commandShapeRowChains,
@@ -2347,6 +2433,41 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     directSerialRowChainTiledCount,
     directSerialRowChainWidthParallelCount,
     directSerialRowChainWidthParallelLanes,
+    directWidthShapeCommands,
+    directWidthShapeSemantic,
+    directWidthShapeRowChains,
+    directWidthShapeBridges,
+    directWidthShapeCoveredOps,
+    directWidthShapeSavedDispatches,
+    directWidthRuntimeDispatches,
+    directWidthSemanticDispatches,
+    directWidthSemanticWithInputDispatches,
+    directWidthSemanticWithInputAttempts,
+    directWidthSemanticWithInputRefused,
+    directWidthFallbackPairDispatches,
+    directWidthFallbackTailDispatches,
+    directWidthDirectCount,
+    directWidthDirectRows,
+    directWidthDirectInputProjection,
+    directWidthDirectInput,
+    directWidthDirectHidden,
+    directWidthDirectOutput,
+    directWidthDirectInputProjectionDotOps,
+    directWidthDirectGateUpDotOps,
+    directWidthDirectDownDotOps,
+    directWidthDirectRowThreadgroups,
+    directWidthDirectRowSerialDotOps,
+    directWidthDirectTotalRowSerialDotOps,
+    directWidthDirectTotalRowSerialDotOpsPerRowThreadgroup,
+    directWidthDirectWidthParallelCount,
+    directWidthDirectWidthParallelRows,
+    directWidthDirectWidthParallelRowTileGroups,
+    directWidthDirectWidthParallelOutputTiles,
+    directWidthDirectWidthParallelLanes,
+    directWidthDirectWidthParallelPartialSlots,
+    directWidthRowChainTiledCount,
+    directWidthRowChainWidthParallelCount,
+    directWidthRowChainWidthParallelLanes,
     targetRows,
     targetInput,
     targetHidden,
@@ -2512,6 +2633,45 @@ function selectedSemanticInputBridgeAttemptSummary(attempt) {
       qmatmulRowChainWidthParallelCount: attempt.directSerialRowChainWidthParallelCount,
       qmatmulRowChainWidthParallelLanes: attempt.directSerialRowChainWidthParallelLanes,
     },
+    directWidth: {
+      speedup: roundMetric(attempt.directWidthSpeedup),
+      maxAbsDiff: roundMetric(attempt.directWidthMaxAbsDiff),
+      shapeCommands: attempt.directWidthShapeCommands,
+      shapeSemanticFfnSublayers: attempt.directWidthShapeSemantic,
+      shapeProjectionRowChains: attempt.directWidthShapeRowChains,
+      shapeProjectionRowChainSemanticResidualBridges: attempt.directWidthShapeBridges,
+      shapeCoveredOps: attempt.directWidthShapeCoveredOps,
+      shapeSavedDispatches: attempt.directWidthShapeSavedDispatches,
+      runtimeDispatches: attempt.directWidthRuntimeDispatches,
+      runtimeSemanticFfnDispatches: attempt.directWidthSemanticDispatches,
+      runtimeSemanticFfnWithInputDispatches: attempt.directWidthSemanticWithInputDispatches,
+      runtimeSemanticFfnWithInputAttempts: attempt.directWidthSemanticWithInputAttempts,
+      runtimeSemanticFfnWithInputRefused: attempt.directWidthSemanticWithInputRefused,
+      semanticFallbackPairDispatches: attempt.directWidthFallbackPairDispatches,
+      semanticFallbackTailDispatches: attempt.directWidthFallbackTailDispatches,
+      semanticWithInputDirectCount: attempt.directWidthDirectCount,
+      semanticWithInputDirectRows: attempt.directWidthDirectRows,
+      semanticWithInputDirectInputProjection: attempt.directWidthDirectInputProjection,
+      semanticWithInputDirectInput: attempt.directWidthDirectInput,
+      semanticWithInputDirectHidden: attempt.directWidthDirectHidden,
+      semanticWithInputDirectOutput: attempt.directWidthDirectOutput,
+      semanticWithInputDirectInputProjectionDotOps: attempt.directWidthDirectInputProjectionDotOps,
+      semanticWithInputDirectGateUpDotOps: attempt.directWidthDirectGateUpDotOps,
+      semanticWithInputDirectDownDotOps: attempt.directWidthDirectDownDotOps,
+      semanticWithInputDirectRowThreadgroups: attempt.directWidthDirectRowThreadgroups,
+      semanticWithInputDirectRowSerialDotOps: attempt.directWidthDirectRowSerialDotOps,
+      semanticWithInputDirectTotalRowSerialDotOps: attempt.directWidthDirectTotalRowSerialDotOps,
+      semanticWithInputDirectTotalRowSerialDotOpsPerRowThreadgroup: attempt.directWidthDirectTotalRowSerialDotOpsPerRowThreadgroup,
+      semanticWithInputDirectWidthParallelCount: attempt.directWidthDirectWidthParallelCount,
+      semanticWithInputDirectWidthParallelRows: attempt.directWidthDirectWidthParallelRows,
+      semanticWithInputDirectWidthParallelRowTileGroups: attempt.directWidthDirectWidthParallelRowTileGroups,
+      semanticWithInputDirectWidthParallelOutputTiles: attempt.directWidthDirectWidthParallelOutputTiles,
+      semanticWithInputDirectWidthParallelLanes: attempt.directWidthDirectWidthParallelLanes,
+      semanticWithInputDirectWidthParallelPartialSlots: attempt.directWidthDirectWidthParallelPartialSlots,
+      qmatmulRowChainTiledCount: attempt.directWidthRowChainTiledCount,
+      qmatmulRowChainWidthParallelCount: attempt.directWidthRowChainWidthParallelCount,
+      qmatmulRowChainWidthParallelLanes: attempt.directWidthRowChainWidthParallelLanes,
+    },
     directTarget: {
       kernel: "semantic_with_input_width_parallel_kernel",
       rows: attempt.targetRows,
@@ -2586,10 +2746,12 @@ function writeFocusedSemanticInputBridgeArtifact(best, attempts, aggregate, line
       command: speedupStats(attempts, "commandSpeedup"),
       absorbed: speedupStats(attempts, "absorbedSpeedup"),
       directSerial: speedupStats(attempts, "directSerialSpeedup"),
+      directWidth: speedupStats(attempts, "directWidthSpeedup"),
     },
     command: bestSummary.command,
     absorbed: bestSummary.absorbed,
     directSerial: bestSummary.directSerial,
+    directWidth: bestSummary.directWidth,
     directTarget: bestSummary.directTarget,
     attemptSummaries: attempts.map(selectedSemanticInputBridgeAttemptSummary),
     next: best.next,
