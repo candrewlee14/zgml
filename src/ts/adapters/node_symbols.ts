@@ -51,6 +51,7 @@ export type NodeNativeSymbols = Readonly<{
   eagerActivationF32: NativeFunction;
   eagerElementwiseF32: NativeFunction;
   eagerElementwiseBroadcastRhsF32: NativeFunction;
+  eagerElementwiseBroadcastLhsF32: NativeFunction;
   eagerWhereF32: NativeFunction;
   eagerClampF32: NativeFunction;
   eagerReduceF32: NativeFunction;
@@ -148,6 +149,7 @@ export function bindNodeSymbols(nativeLibrary: unknown): NodeNativeSymbols {
     eagerActivationF32: lib.func("int zgml_eager_activation_f32(const float *input, size_t input_len, float *output, size_t output_len, uint32_t activation)"),
     eagerElementwiseF32: lib.func("int zgml_eager_elementwise_f32(const float *lhs, size_t lhs_len, const float *rhs, size_t rhs_len, float *output, size_t output_len, uint32_t op)"),
     eagerElementwiseBroadcastRhsF32: lib.func("int zgml_eager_elementwise_broadcast_rhs_f32(const float *lhs, size_t lhs_len, const float *rhs, size_t rhs_len, float *output, size_t output_len, size_t rows, size_t cols, uint32_t op)"),
+    eagerElementwiseBroadcastLhsF32: lib.func("int zgml_eager_elementwise_broadcast_lhs_f32(const float *lhs, size_t lhs_len, const float *rhs, size_t rhs_len, float *output, size_t output_len, size_t rows, size_t cols, uint32_t op)"),
     eagerWhereF32: lib.func("int zgml_eager_where_f32(const float *condition, size_t condition_len, const float *input, size_t input_len, const float *other, size_t other_len, float *output, size_t output_len)"),
     eagerClampF32: lib.func("int zgml_eager_clamp_f32(const float *input, size_t input_len, float *output, size_t output_len, float min, float max, uint32_t has_min, uint32_t has_max)"),
     eagerReduceF32: lib.func("int zgml_eager_reduce_f32(const float *input, size_t input_len, float *output, size_t output_len, uint32_t op)"),

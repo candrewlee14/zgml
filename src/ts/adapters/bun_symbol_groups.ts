@@ -88,6 +88,7 @@ export function createBunSymbolGroups(symbols: BunNativeSymbols) {
       eagerActivationF32: symbols.zgml_eager_activation_f32,
       eagerElementwiseF32: symbols.zgml_eager_elementwise_f32,
       eagerElementwiseBroadcastRhsF32: symbols.zgml_eager_elementwise_broadcast_rhs_f32,
+      eagerElementwiseBroadcastLhsF32: symbols.zgml_eager_elementwise_broadcast_lhs_f32,
       eagerWhereF32: symbols.zgml_eager_where_f32,
       eagerClampF32: symbols.zgml_eager_clamp_f32,
       eagerReduceF32: symbols.zgml_eager_reduce_f32,

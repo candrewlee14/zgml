@@ -765,6 +765,17 @@ ZGML_API zgml_status zgml_eager_elementwise_broadcast_rhs_f32(
     size_t cols,
     uint32_t op
 );
+ZGML_API zgml_status zgml_eager_elementwise_broadcast_lhs_f32(
+    const float *lhs,
+    size_t lhs_len,
+    const float *rhs,
+    size_t rhs_len,
+    float *output,
+    size_t output_len,
+    size_t rows,
+    size_t cols,
+    uint32_t op
+);
 ZGML_API zgml_status zgml_eager_reduce_f32(
     const float *input,
     size_t input_len,

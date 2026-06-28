@@ -2274,6 +2274,17 @@ const nativeEagerSurface = createAdapterNativeEagerSurface({
     BigInt(args.cols),
     args.op,
   ),
+  elementwiseBroadcastLhsF32: (args) => bunSymbolGroups.nativeEager.eagerElementwiseBroadcastLhsF32(
+    args.lhsData,
+    BigInt(args.lhsData.length),
+    args.rhsData,
+    BigInt(args.rhsData.length),
+    args.output,
+    BigInt(args.expectedOutput),
+    BigInt(args.rows),
+    BigInt(args.cols),
+    args.op,
+  ),
   whereF32: (args) => bunSymbolGroups.nativeEager.eagerWhereF32(
     args.conditionData,
     BigInt(args.conditionData.length),

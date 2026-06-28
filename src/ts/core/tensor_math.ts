@@ -73,7 +73,7 @@ type NativeEagerElementwiseInto = (
   output: Float32Array,
   lhs: unknown,
   rhs: unknown,
-  options: Readonly<{ op: string; rows?: number; cols?: number }>,
+  options: Readonly<{ op: string; rows?: number; cols?: number; broadcast?: "lhs" | "rhs" }>,
 ) => Float32Array;
 type NativeEagerActivationInto = (
   output: Float32Array,
@@ -190,6 +190,19 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     return rows > 0 ? Object.freeze({ rows, cols }) : null;
   }
 
+  function nativeElementwiseBroadcastLhsShape(
+    tensor: TensorMathTensor,
+    rhs: Float32Array,
+    rhsShape: readonly number[],
+  ) {
+    if (tensor.shape.length !== 1 || rhsShape.length < 2) return null;
+    const cols = rhsShape[rhsShape.length - 1];
+    if (cols <= 0 || tensor.shape[0] !== cols || tensor.length !== cols) return null;
+    if (rhs.length % cols !== 0) return null;
+    const rows = rhs.length / cols;
+    return rows > 0 ? Object.freeze({ rows, cols }) : null;
+  }
+
   function nativeElementwiseBinaryInto(
     output: Float32Array,
     tensor: TensorMathTensor,
@@ -200,10 +213,13 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   ) {
     if (typeof nativeEagerElementwiseInto !== "function") return false;
     if (output.length < nativeEagerElementwiseMinLength) return false;
-    const broadcastShape = nativeElementwiseBroadcastRhsShape(tensor, rhs, rhsShape);
-    if (!sameShape(tensor.shape, rhsShape) && rhs.length !== 1 && !broadcastShape) return false;
-    nativeEagerElementwiseInto(output, tensor, rhsTensor ?? rhs, broadcastShape
-      ? { op, rows: broadcastShape.rows, cols: broadcastShape.cols }
+    const rhsBroadcastShape = nativeElementwiseBroadcastRhsShape(tensor, rhs, rhsShape);
+    const lhsBroadcastShape = nativeElementwiseBroadcastLhsShape(tensor, rhs, rhsShape);
+    if (!sameShape(tensor.shape, rhsShape) && rhs.length !== 1 && !rhsBroadcastShape && !lhsBroadcastShape) return false;
+    nativeEagerElementwiseInto(output, tensor, rhsTensor ?? rhs, rhsBroadcastShape
+      ? { op, rows: rhsBroadcastShape.rows, cols: rhsBroadcastShape.cols, broadcast: "rhs" }
+      : lhsBroadcastShape
+        ? { op, rows: lhsBroadcastShape.rows, cols: lhsBroadcastShape.cols, broadcast: "lhs" }
       : { op });
     return true;
   }
@@ -222,6 +238,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   ) {
     if (rhs.length === 1 || sameShape(tensor.shape, rhsShape)) return tensor.shape;
     if (nativeElementwiseBroadcastRhsShape(tensor, rhs, rhsShape)) return tensor.shape;
+    if (nativeElementwiseBroadcastLhsShape(tensor, rhs, rhsShape)) return rhsShape;
     return null;
   }
 
@@ -235,7 +252,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   ) {
     const resultShape = nativeElementwiseBinaryShape(tensor, rhs, rhsShape);
     if (!resultShape) return null;
-    const output = new Float32Array(tensor.length);
+    const output = new Float32Array(shapeProduct(resultShape));
     return nativeElementwiseBinaryInto(output, tensor, rhsTensor, rhs, rhsShape, op)
       ? new TensorClass(output, resultShape)
       : null;

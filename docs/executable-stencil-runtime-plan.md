@@ -617,8 +617,8 @@ Current checked progress:
   batched matmul now has the same one-call shape through
   `zgml_eager_bmm_f32` / `zgml.nativeEager.bmmInto`, so no-grad `Tensor.bmm`
   no longer loops in TS and crosses FFI once per batch.
-  Scalar RHS elementwise, last-dimension RHS row broadcasts, scalar reductions,
-  and vector dot products are now covered the same way:
+  Scalar RHS elementwise, symmetric last-dimension row broadcasts, scalar
+  reductions, and vector dot products are now covered the same way:
   `zgml.nativeEager.elementwiseInto`, `zgml.nativeEager.reduceInto`, and
   `zgml.nativeEager.dotInto` call `zgml_eager_elementwise_f32`,
   `zgml_eager_elementwise_broadcast_rhs_f32`, `zgml_eager_reduce_f32`, and
@@ -632,11 +632,15 @@ Current checked progress:
   direct Node dot row shows `dot_batched` at `38.63x` with no product
   allocation. The public Tensor path still preserves the runtime-specific
   thresholds. Bias-style row broadcasts flatten the leading dimensions and use
-  the last dimension as `cols`, so `[batch, features] + [features]` and rank-N
-  trailing bias adds cross into Zig without a TypeScript broadcast loop. The
-  fresh Node row for `elementwise_add_row_broadcast_batched` measured direct
-  native eager at `305.50x` and the ordinary public no-grad Tensor path at
-  `91.74x`, both with zero measured diff.
+  the last dimension as `cols`, so `[batch, features] + [features]`,
+  `[features] + [batch, features]`, and rank-N trailing bias adds cross into
+  Zig without a TypeScript broadcast loop. The fresh Node row for
+  `elementwise_add_row_broadcast_batched` measured direct native eager at
+  `305.50x` and the ordinary public no-grad Tensor path at `91.74x`, both with
+  zero measured diff; the LHS row-broadcast row now covers order-sensitive
+  `sub` as `elementwise_sub_lhs_row_broadcast_batched`, with the current Node
+  short run at `221.63x` direct native and `111.17x` through the public no-grad
+  Tensor path, again with zero measured diff.
   The same ordinary Tensor eager lane now covers more PyTorch-like control
   primitives without changing the frontend shape: primitive comparisons
   (`eq`/`ne`/`lt`/`le`/`gt`/`ge`) lower through the Zig elementwise ABI for
@@ -702,9 +706,10 @@ Current checked progress:
   direct `conv2dInto` and `pool2dInto` rows above the native-eager floor with
   zero measured diff against the TS reference.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=25/25` after adding direct
+  as well: the expected row set is `row_coverage=26/26` after adding direct
   `matmul_batched`, `bmm_batched`, `elementwise_mul_batched`,
-  `elementwise_add_row_broadcast_batched`, `dot_batched`, `reduce_sum_scalar_batched`,
+  `elementwise_add_row_broadcast_batched`,
+  `elementwise_sub_lhs_row_broadcast_batched`, `dot_batched`, `reduce_sum_scalar_batched`,
   `elementwise_lt_batched`, `clamp_batched`, `where_batched`,
   standalone `activation_relu_batched` / `activation_sigmoid_batched` /
   `activation_gelu_batched` / `activation_silu_batched` /

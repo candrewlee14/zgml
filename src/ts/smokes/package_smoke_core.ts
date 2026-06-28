@@ -475,6 +475,12 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected nativeEager.elementwiseInto row broadcast to reuse caller output`);
   }
   expectClose(rowBroadcastOutput, [11, 22, 33, 14, 25, 36], `${label} nativeEager.elementwiseInto row-broadcast output`);
+  const lhsRowBroadcastOutput = new Float32Array(6);
+  const lhsRowBroadcastResult = nativeEager.elementwiseInto(lhsRowBroadcastOutput, rowBroadcastBias, rowBroadcastInput, { op: "sub" });
+  if (lhsRowBroadcastResult !== lhsRowBroadcastOutput) {
+    throw new Error(`${label} expected nativeEager.elementwiseInto lhs row broadcast to reuse caller output`);
+  }
+  expectClose(lhsRowBroadcastOutput, [9, 18, 27, 6, 15, 24], `${label} nativeEager.elementwiseInto lhs row-broadcast output`);
   const elementwiseAliasOutput = new Float32Array(6);
   const elementwiseAliasResult = nativeEagerAlias.elementwise_into(elementwiseAliasOutput, directOutput, null, { op: "sqr" });
   if (elementwiseAliasResult !== elementwiseAliasOutput) {
@@ -584,6 +590,8 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const tensorRowBias = adapter.tensor(tensorRowBiasData, [256]);
   const tensorRowBroadcast = adapter.noGrad(() => tensorRowInput.add(tensorRowBias));
   expectClose(tensorRowBroadcast.data, tensorElementwiseInputData.map((value, index) => value + tensorRowBiasData[index % 256]), `${label} noGrad Tensor row-broadcast native eager output`);
+  const tensorLhsRowBroadcast = adapter.noGrad(() => tensorRowBias.sub(tensorRowInput));
+  expectClose(tensorLhsRowBroadcast.data, tensorElementwiseInputData.map((value, index) => tensorRowBiasData[index % 256] - value), `${label} noGrad Tensor lhs row-broadcast native eager output`);
   const tensorDot = adapter.noGrad(() => tensorElementwiseInput.dot(tensorElementwiseBias));
   const tensorDotExpected = tensorElementwiseInputData.reduce((acc, value, index) => acc + value * tensorElementwiseBiasData[index], 0);
   expectClose(tensorDot.data, [tensorDotExpected], `${label} noGrad Tensor dot native eager output`);

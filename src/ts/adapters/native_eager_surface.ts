@@ -80,6 +80,7 @@ type NativeEagerElementwiseBroadcastRhsCall = (args: {
   cols: number;
   op: number;
 }) => number;
+type NativeEagerElementwiseBroadcastLhsCall = NativeEagerElementwiseBroadcastRhsCall;
 
 type NativeEagerWhereCall = (args: {
   conditionData: Float32Array;
@@ -167,6 +168,7 @@ type NativeEagerSurfaceOptions = {
   activationF32?: NativeEagerActivationCall;
   elementwiseF32?: NativeEagerElementwiseCall;
   elementwiseBroadcastRhsF32?: NativeEagerElementwiseBroadcastRhsCall;
+  elementwiseBroadcastLhsF32?: NativeEagerElementwiseBroadcastLhsCall;
   whereF32?: NativeEagerWhereCall;
   clampF32?: NativeEagerClampCall;
   reduceF32?: NativeEagerReduceCall;
@@ -462,44 +464,87 @@ function nativeEagerElementwiseInputs(
   const rhsData = rhs == null ? null : nativeEagerTensorData(rhs, `${label} rhs`, f32);
   const lhsShape = nativeEagerShape(lhs);
   const rhsShape = rhs == null ? null : nativeEagerShape(rhs);
-  const inferredCols = lhsShape && lhsShape.length >= 2 ? lhsShape[lhsShape.length - 1] : null;
-  const inferredRows = inferredCols && inferredCols > 0 && lhsData.length % inferredCols === 0
-    ? lhsData.length / inferredCols
+  const explicitBroadcast = callOptions.broadcast ?? callOptions.broadcastSide ?? callOptions.broadcast_side;
+  const explicitBroadcastSide = explicitBroadcast === "lhs" || explicitBroadcast === "left"
+    ? "lhs"
+    : explicitBroadcast === "rhs" || explicitBroadcast === "right"
+      ? "rhs"
+      : null;
+  const inferredRhsCols = lhsShape && lhsShape.length >= 2 ? lhsShape[lhsShape.length - 1] : null;
+  const inferredRhsRows = inferredRhsCols && inferredRhsCols > 0 && lhsData.length % inferredRhsCols === 0
+    ? lhsData.length / inferredRhsCols
     : null;
   const rhsCanUseInferredCols = rhsData !== null &&
-    inferredRows !== null &&
-    inferredCols !== null &&
-    rhsData.length === inferredCols &&
+    inferredRhsRows !== null &&
+    inferredRhsCols !== null &&
+    rhsData.length === inferredRhsCols &&
     (
       !rhsShape ||
-      (rhsShape.length === 1 && rhsShape[0] === inferredCols)
+      (rhsShape.length === 1 && rhsShape[0] === inferredRhsCols)
     );
-  const rowsValue = callOptions.rows ?? callOptions.batch ?? (rhsCanUseInferredCols ? inferredRows : null);
-  const colsValue = callOptions.cols ?? callOptions.features ?? (rhsCanUseInferredCols ? inferredCols : null);
-  const canBroadcastRhs = rhsData !== null &&
+  const inferredLhsCols = rhsShape && rhsShape.length >= 2 ? rhsShape[rhsShape.length - 1] : null;
+  const inferredLhsRows = inferredLhsCols && inferredLhsCols > 0 && rhsData !== null && rhsData.length % inferredLhsCols === 0
+    ? rhsData.length / inferredLhsCols
+    : null;
+  const lhsCanUseInferredCols = rhsData !== null &&
+    inferredLhsRows !== null &&
+    inferredLhsCols !== null &&
+    lhsData.length === inferredLhsCols &&
+    (
+      !lhsShape ||
+      (lhsShape.length === 1 && lhsShape[0] === inferredLhsCols)
+    );
+  const inferredBroadcastSide = rhsCanUseInferredCols
+    ? "rhs"
+    : lhsCanUseInferredCols
+      ? "lhs"
+      : null;
+  const broadcastSide = explicitBroadcastSide ?? inferredBroadcastSide;
+  const rowsValue = callOptions.rows ?? callOptions.batch ?? (
+    broadcastSide === "rhs" ? inferredRhsRows : broadcastSide === "lhs" ? inferredLhsRows : null
+  );
+  const colsValue = callOptions.cols ?? callOptions.features ?? (
+    broadcastSide === "rhs" ? inferredRhsCols : broadcastSide === "lhs" ? inferredLhsCols : null
+  );
+  const canBroadcast = rhsData !== null &&
     rhsData.length !== 1 &&
     rhsData.length !== lhsData.length &&
+    broadcastSide !== null &&
     rowsValue != null &&
     colsValue != null;
-  const broadcastShape = canBroadcastRhs
+  const broadcastShape = canBroadcast
     ? Object.freeze({
+      side: broadcastSide,
       rows: nativeEagerPositiveInteger(rowsValue, `${label} rows`),
       cols: nativeEagerPositiveInteger(colsValue, `${label} cols`),
     })
     : null;
+  const expectedOutput = broadcastShape?.side === "lhs" && rhsData !== null
+    ? rhsData.length
+    : lhsData.length;
   if (rhsData !== null && rhsData.length !== 1 && rhsData.length !== lhsData.length) {
-    if (!broadcastShape || broadcastShape.rows * broadcastShape.cols !== lhsData.length || rhsData.length !== broadcastShape.cols) {
-      throw new Error(`${label} rhs length ${rhsData.length} must be 1, match lhs length ${lhsData.length}, or match row-broadcast cols`);
+    if (
+      !broadcastShape ||
+      (
+        broadcastShape.side === "rhs" &&
+        (broadcastShape.rows * broadcastShape.cols !== lhsData.length || rhsData.length !== broadcastShape.cols)
+      ) ||
+      (
+        broadcastShape.side === "lhs" &&
+        (broadcastShape.rows * broadcastShape.cols !== rhsData.length || lhsData.length !== broadcastShape.cols)
+      )
+    ) {
+      throw new Error(`${label} operand lengths must be scalar, same-shape, or last-dimension row-broadcast compatible`);
     }
   }
-  if (output.length < lhsData.length) {
-    throw new Error(`${label} output length ${output.length} is smaller than ${lhsData.length}`);
+  if (output.length < expectedOutput) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${expectedOutput}`);
   }
   return {
     lhsData,
     rhsData,
     output,
-    expectedOutput: lhsData.length,
+    expectedOutput,
     broadcastShape,
   };
 }
@@ -879,10 +924,16 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
       const args = nativeEagerElementwiseInputs(output, lhs, rhs, callOptions, options.f32);
       const op = nativeEagerElementwiseOpId(callOptions.op, "nativeEager.elementwiseInto");
       if (args.broadcastShape) {
-        if (typeof options.elementwiseBroadcastRhsF32 !== "function" || args.rhsData == null) {
+        if (args.rhsData == null) {
           throw new Error("nativeEager.elementwiseInto row broadcast is unavailable in this runtime");
         }
-        options.check(options.elementwiseBroadcastRhsF32({
+        const broadcastCall = args.broadcastShape.side === "lhs"
+          ? options.elementwiseBroadcastLhsF32
+          : options.elementwiseBroadcastRhsF32;
+        if (typeof broadcastCall !== "function") {
+          throw new Error("nativeEager.elementwiseInto row broadcast is unavailable in this runtime");
+        }
+        options.check(broadcastCall({
           lhsData: args.lhsData,
           rhsData: args.rhsData,
           output: args.output,

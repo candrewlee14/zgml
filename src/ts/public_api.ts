@@ -2166,6 +2166,7 @@ export type NativeEagerElementwiseIntoOptions = Readonly<{
   op: NativeEagerElementwiseOp;
   rows?: number;
   cols?: number;
+  broadcast?: "lhs" | "rhs";
 }>;
 export type NativeEagerReduceOp = "sum" | "mean" | "max" | "min" | "prod";
 export type NativeEagerReduceIntoOptions = Readonly<{

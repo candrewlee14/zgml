@@ -1824,6 +1824,15 @@ fn writeElementwiseBroadcastRhsF32(lhs: []const f32, rhs: []const f32, output: [
     }
 }
 
+fn writeElementwiseBroadcastLhsF32(lhs: []const f32, rhs: []const f32, output: []f32, rows: usize, cols: usize, op: u32) !void {
+    if (rows == 0 or cols == 0) return error.ShapeMismatch;
+    if (rhs.len != output.len or rhs.len != rows * cols or lhs.len != cols) return error.ShapeMismatch;
+    for (0..rows) |row| {
+        const offset = row * cols;
+        try writeElementwiseBinaryF32(lhs, rhs[offset..][0..cols], output[offset..][0..cols], op);
+    }
+}
+
 fn dotF32(lhs: []const f32, rhs: []const f32) f32 {
     const V = 8;
     const VecT = @Vector(V, f32);
@@ -2197,6 +2206,33 @@ export fn zgml_eager_elementwise_broadcast_rhs_f32(
     if (lhs_ptr == null or rhs_ptr == null or output_ptr == null or lhs_len == 0 or rows == 0 or cols == 0) return status(.invalid_argument);
     if (checkedElementCount(rows, cols) != lhs_len or lhs_len != output_len or rhs_len != cols) return status(.shape_mismatch);
     writeElementwiseBroadcastRhsF32(
+        lhs_ptr.?[0..lhs_len],
+        rhs_ptr.?[0..rhs_len],
+        output_ptr.?[0..output_len],
+        rows,
+        cols,
+        op,
+    ) catch |err| return switch (err) {
+        error.InvalidArgument => status(.invalid_argument),
+        error.ShapeMismatch => status(.shape_mismatch),
+    };
+    return status(.ok);
+}
+
+export fn zgml_eager_elementwise_broadcast_lhs_f32(
+    lhs_ptr: ?[*]const f32,
+    lhs_len: usize,
+    rhs_ptr: ?[*]const f32,
+    rhs_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    rows: usize,
+    cols: usize,
+    op: u32,
+) c_int {
+    if (lhs_ptr == null or rhs_ptr == null or output_ptr == null or rhs_len == 0 or rows == 0 or cols == 0) return status(.invalid_argument);
+    if (checkedElementCount(rows, cols) != rhs_len or rhs_len != output_len or lhs_len != cols) return status(.shape_mismatch);
+    writeElementwiseBroadcastLhsF32(
         lhs_ptr.?[0..lhs_len],
         rhs_ptr.?[0..rhs_len],
         output_ptr.?[0..output_len],
@@ -12331,6 +12367,64 @@ test "C ABI native eager elementwise broadcasts rhs across rows" {
         lhs.len,
         rhs[0..].ptr,
         rhs.len - 1,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        eager_elementwise_add,
+    ));
+}
+
+test "C ABI native eager elementwise broadcasts lhs across rows" {
+    const lhs = [_]f32{ 10, -1, 0.5 };
+    const rhs = [_]f32{
+        1, 2, 3,
+        4, 5, 6,
+    };
+    var output = [_]f32{0} ** rhs.len;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_broadcast_lhs_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        eager_elementwise_add,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 11, 1, 3.5, 14, 4, 6.5 }, &output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_broadcast_lhs_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        eager_elementwise_sub,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 9, -3, -2.5, 6, -6, -5.5 }, &output);
+
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_elementwise_broadcast_lhs_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        null,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        eager_elementwise_add,
+    ));
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_elementwise_broadcast_lhs_f32(
+        lhs[0..].ptr,
+        lhs.len - 1,
+        rhs[0..].ptr,
+        rhs.len,
         output[0..].ptr,
         output.len,
         2,
