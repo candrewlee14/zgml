@@ -1045,6 +1045,12 @@ artifacts keep those fields empty or zero; a real
 `semantic_with_input_width_parallel_kernel` must flip them on while eliminating
 the decomposed extra dispatches, so the artifact distinguishes the intended
 tiled direct kernel from the older row-serial one-dispatch diagnostic.
+The frontier microscope now emits the same direct-width family in both its
+human-readable dispatch profile and `ZGML_FRONTIER_METRIC_JSON` rows; the JS
+gate no longer has to infer zeros from missing metric fields. That makes the
+eventual absorbed-path proof crisp: nonzero direct-width counters must come from
+observed runtime profile data, not from a target-shape string or the existing
+row-chain width-parallel leaf.
 A staged prefix-kernel probe then fused input projection, input residual/RMS,
 and gate/up product into one dispatch before reusing the existing
 width-parallel down tail. It compiled and stayed correct

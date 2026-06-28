@@ -413,7 +413,7 @@ fn printSemanticSublayerRuntimeProfile(
     );
     const direct_row_serial_per_threadgroup = if (rt.semantic_ffn_with_input_direct_row_threadgroups > 0) rt.semantic_ffn_with_input_direct_total_row_serial_dot_ops / rt.semantic_ffn_with_input_direct_row_threadgroups else 0;
     try w.print(
-        "  {s:<28} semantic_ffn_with_input_decomposed_count={d}  semantic_ffn_with_input_decomposed_dispatches={d}  semantic_ffn_with_input_decomposed_extra_dispatches={d}  semantic_ffn_with_input_decomposed_row_chain_dispatches={d}  semantic_ffn_with_input_decomposed_pair_dispatches={d}  semantic_ffn_with_input_decomposed_tail_dispatches={d}  semantic_ffn_with_input_direct_count={d}  semantic_ffn_with_input_direct_rows={d}  semantic_ffn_with_input_direct_input_projection={d}  semantic_ffn_with_input_direct_input={d}  semantic_ffn_with_input_direct_hidden={d}  semantic_ffn_with_input_direct_output={d}  semantic_ffn_with_input_direct_input_projection_dot_ops={d}  semantic_ffn_with_input_direct_gate_up_dot_ops={d}  semantic_ffn_with_input_direct_down_dot_ops={d}  semantic_ffn_with_input_direct_row_serial_dot_ops={d}  semantic_ffn_with_input_direct_total_row_serial_dot_ops={d}  semantic_ffn_with_input_direct_row_threadgroups={d}  semantic_ffn_with_input_direct_total_row_serial_dot_ops_per_row_threadgroup={d}\n",
+        "  {s:<28} semantic_ffn_with_input_decomposed_count={d}  semantic_ffn_with_input_decomposed_dispatches={d}  semantic_ffn_with_input_decomposed_extra_dispatches={d}  semantic_ffn_with_input_decomposed_row_chain_dispatches={d}  semantic_ffn_with_input_decomposed_pair_dispatches={d}  semantic_ffn_with_input_decomposed_tail_dispatches={d}  semantic_ffn_with_input_direct_count={d}  semantic_ffn_with_input_direct_rows={d}  semantic_ffn_with_input_direct_input_projection={d}  semantic_ffn_with_input_direct_input={d}  semantic_ffn_with_input_direct_hidden={d}  semantic_ffn_with_input_direct_output={d}  semantic_ffn_with_input_direct_input_projection_dot_ops={d}  semantic_ffn_with_input_direct_gate_up_dot_ops={d}  semantic_ffn_with_input_direct_down_dot_ops={d}  semantic_ffn_with_input_direct_row_serial_dot_ops={d}  semantic_ffn_with_input_direct_total_row_serial_dot_ops={d}  semantic_ffn_with_input_direct_row_threadgroups={d}  semantic_ffn_with_input_direct_total_row_serial_dot_ops_per_row_threadgroup={d}  semantic_ffn_with_input_direct_width_parallel_count={d}  semantic_ffn_with_input_direct_width_parallel_rows={d}  semantic_ffn_with_input_direct_width_parallel_row_tile_groups={d}  semantic_ffn_with_input_direct_width_parallel_output_tiles={d}  semantic_ffn_with_input_direct_width_parallel_lanes={d}  semantic_ffn_with_input_direct_width_parallel_partial_slots={d}\n",
         .{
             name,
             rt.semantic_ffn_with_input_decomposed_count,
@@ -435,6 +435,12 @@ fn printSemanticSublayerRuntimeProfile(
             rt.semantic_ffn_with_input_direct_total_row_serial_dot_ops,
             rt.semantic_ffn_with_input_direct_row_threadgroups,
             direct_row_serial_per_threadgroup,
+            rt.semantic_ffn_with_input_direct_width_parallel_count,
+            rt.semantic_ffn_with_input_direct_width_parallel_rows,
+            rt.semantic_ffn_with_input_direct_width_parallel_row_tile_groups,
+            rt.semantic_ffn_with_input_direct_width_parallel_output_tiles,
+            rt.semantic_ffn_with_input_direct_width_parallel_lanes,
+            rt.semantic_ffn_with_input_direct_width_parallel_partial_slots,
         },
     );
 }
@@ -480,6 +486,12 @@ fn writeSemanticSublayerRuntimeMetricJson(
     try writeMetricJsonField(&jw, "semantic_ffn_with_input_direct_total_row_serial_dot_ops", rt.semantic_ffn_with_input_direct_total_row_serial_dot_ops);
     try writeMetricJsonField(&jw, "semantic_ffn_with_input_direct_row_threadgroups", rt.semantic_ffn_with_input_direct_row_threadgroups);
     try writeMetricJsonField(&jw, "semantic_ffn_with_input_direct_total_row_serial_dot_ops_per_row_threadgroup", if (rt.semantic_ffn_with_input_direct_row_threadgroups > 0) rt.semantic_ffn_with_input_direct_total_row_serial_dot_ops / rt.semantic_ffn_with_input_direct_row_threadgroups else 0);
+    try writeMetricJsonField(&jw, "semantic_ffn_with_input_direct_width_parallel_count", rt.semantic_ffn_with_input_direct_width_parallel_count);
+    try writeMetricJsonField(&jw, "semantic_ffn_with_input_direct_width_parallel_rows", rt.semantic_ffn_with_input_direct_width_parallel_rows);
+    try writeMetricJsonField(&jw, "semantic_ffn_with_input_direct_width_parallel_row_tile_groups", rt.semantic_ffn_with_input_direct_width_parallel_row_tile_groups);
+    try writeMetricJsonField(&jw, "semantic_ffn_with_input_direct_width_parallel_output_tiles", rt.semantic_ffn_with_input_direct_width_parallel_output_tiles);
+    try writeMetricJsonField(&jw, "semantic_ffn_with_input_direct_width_parallel_lanes", rt.semantic_ffn_with_input_direct_width_parallel_lanes);
+    try writeMetricJsonField(&jw, "semantic_ffn_with_input_direct_width_parallel_partial_slots", rt.semantic_ffn_with_input_direct_width_parallel_partial_slots);
     try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_count", rt.qmatmul_row_chain_tiled_count);
     try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_row_tile_groups", rt.qmatmul_row_chain_tiled_row_tile_groups);
     try writeMetricJsonField(&jw, "qmatmul_row_chain_tiled_n_tiles", rt.qmatmul_row_chain_tiled_n_tiles);
