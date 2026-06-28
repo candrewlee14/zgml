@@ -4821,6 +4821,74 @@ const QMatmulSemanticFfnInputBridgeParams = extern struct {
     output_dst_offset: u32,
 };
 
+const SemanticFfnInputBridgeCompatibility = struct {
+    rows: u32,
+    input_projection: u32,
+    input_width: u32,
+    hidden: u32,
+    output_width: u32,
+    input_secondary_buf: u16,
+    input_secondary_offset: u32,
+    output_secondary_buf: u16,
+    output_secondary_offset: u32,
+    row_tile_groups: u64,
+    output_tiles: u64,
+    direct_width_parallel_lanes: u32,
+    direct_width_parallel_partial_slots: u64,
+
+    fn scratchRequirement(self: SemanticFfnInputBridgeCompatibility) ?SemanticWidthScratchRequirement {
+        return semanticScratchRequirementForShape(self.rows, self.hidden, self.input_width, self.output_width);
+    }
+};
+
+fn semanticFfnInputBridgeCompatibility(input_q: anytype, input_residual: anytype, input_rn: anytype, input_rp: anytype, input_out: anytype, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, output_residual: anytype, output_rn: anytype, output_rp: anytype, output_out: anytype) ?SemanticFfnInputBridgeCompatibility {
+    if (input_q.M != gate.M or input_q.N != gate.K) return null;
+    if (gate.input != input_out.dst or gate.input_offset != input_out.dst_offset) return null;
+    if (!program_mod.isRmsnormScaleChain(.{ .rmsnorm = input_rn }, .{ .repeat = input_rp }, .{ .elementwise = input_out })) return null;
+    if (!program_mod.projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) return null;
+    if (down.M != gate.M or down.K != gate.N or down.N != input_q.N) return null;
+    if (down.input != product.dst or down.input_offset != product.dst_offset) return null;
+    if (input_residual.op != .add or input_residual.n != input_q.M * input_q.N) return null;
+    if (input_rn.src != input_residual.dst or input_rn.src_offset != input_residual.dst_offset) return null;
+    if (input_rn.rows != input_q.M or input_rn.cols != input_q.N) return null;
+    if (output_residual.op != .add or output_residual.n != down.M * down.N) return null;
+    if (output_rn.src != output_residual.dst or output_rn.src_offset != output_residual.dst_offset) return null;
+    if (output_rn.rows != down.M or output_rn.cols != down.N) return null;
+    if (!program_mod.isRmsnormScaleChain(.{ .rmsnorm = output_rn }, .{ .repeat = output_rp }, .{ .elementwise = output_out })) return null;
+
+    const input_down_is_src0 = input_residual.src0 == input_q.dst and input_residual.src0_offset == input_q.dst_offset;
+    const input_down_is_src1 = input_residual.src1 == input_q.dst and input_residual.src1_offset == input_q.dst_offset;
+    if (!input_down_is_src0 and !input_down_is_src1) return null;
+    const input_secondary_buf = if (input_down_is_src0) input_residual.src1 else input_residual.src0;
+    const input_secondary_offset = if (input_down_is_src0) input_residual.src1_offset else input_residual.src0_offset;
+
+    const output_down_is_src0 = output_residual.src0 == down.dst and output_residual.src0_offset == down.dst_offset;
+    const output_down_is_src1 = output_residual.src1 == down.dst and output_residual.src1_offset == down.dst_offset;
+    if (!output_down_is_src0 and !output_down_is_src1) return null;
+    const output_secondary_buf = if (output_down_is_src0) output_residual.src1 else output_residual.src0;
+    const output_secondary_offset = if (output_down_is_src0) output_residual.src1_offset else output_residual.src0_offset;
+    if (output_secondary_buf != input_residual.dst or output_secondary_offset != input_residual.dst_offset) return null;
+
+    if (input_q.N > SEMANTIC_FFN_MAX_DIM or input_q.K > SEMANTIC_FFN_MAX_DIM or gate.N > SEMANTIC_FFN_MAX_HIDDEN or down.N > SEMANTIC_FFN_MAX_DIM) return null;
+
+    const output_tiles = divCeilU64(down.N, ROW_CHAIN_TILE);
+    return .{
+        .rows = gate.M,
+        .input_projection = input_q.K,
+        .input_width = gate.K,
+        .hidden = gate.N,
+        .output_width = down.N,
+        .input_secondary_buf = input_secondary_buf,
+        .input_secondary_offset = input_secondary_offset,
+        .output_secondary_buf = output_secondary_buf,
+        .output_secondary_offset = output_secondary_offset,
+        .row_tile_groups = divCeilU64(gate.M, ROW_CHAIN_TILE),
+        .output_tiles = output_tiles,
+        .direct_width_parallel_lanes = ROW_CHAIN_WIDTH_LANES,
+        .direct_width_parallel_partial_slots = @as(u64, gate.M) * output_tiles,
+    };
+}
+
 const MAX_SLICE_ASSIGN_BATCH: usize = 16;
 
 const SliceAssignBatchParams = extern struct {
@@ -6026,6 +6094,92 @@ fn semanticWidthScratchRequirement(stencil: *const program_mod.ProgramStencil, p
         requirement.merge(next);
     }
     return requirement;
+}
+
+fn testSemanticInputBridgeOps() [14]backend_mod.DeviceOp {
+    const rows: u32 = 128;
+    const input_projection: u32 = 576;
+    const model: u32 = 576;
+    const hidden: u32 = 1536;
+    const model_elems = rows * model;
+    const hidden_elems = rows * hidden;
+    return .{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = rows, .N = model, .K = input_projection } },
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 20, .n = model_elems } },
+        .{ .rmsnorm = .{ .dst = 3, .src = 2, .rows = rows, .cols = model } },
+        .{ .repeat = .{
+            .dst = 4,
+            .src = 5,
+            .n = model_elems,
+            .src_ne = .{ model, 1, 1, 1 },
+            .dst_ne = .{ model, rows, 1, 1 },
+            .src_strides = .{ 1, model, model, model },
+            .dst_strides = .{ 1, model, model_elems, model_elems },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 6, .src0 = 3, .src1 = 4, .n = model_elems } },
+        .{ .qmatmul = .{ .dst = 7, .input = 6, .weight_idx = 1, .M = rows, .N = hidden, .K = model } },
+        .{ .elementwise = .{ .op = .silu, .dst = 8, .src0 = 7, .src1 = 7, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 9, .input = 6, .weight_idx = 2, .M = rows, .N = hidden, .K = model } },
+        .{ .elementwise = .{ .op = .mul, .dst = 10, .src0 = 8, .src1 = 9, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 11, .input = 10, .weight_idx = 3, .M = rows, .N = model, .K = hidden } },
+        .{ .elementwise = .{ .op = .add, .dst = 12, .src0 = 11, .src1 = 2, .n = model_elems } },
+        .{ .rmsnorm = .{ .dst = 13, .src = 12, .rows = rows, .cols = model } },
+        .{ .repeat = .{
+            .dst = 14,
+            .src = 15,
+            .n = model_elems,
+            .src_ne = .{ model, 1, 1, 1 },
+            .dst_ne = .{ model, rows, 1, 1 },
+            .src_strides = .{ 1, model, model, model },
+            .dst_strides = .{ 1, model, model_elems, model_elems },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 16, .src0 = 13, .src1 = 14, .n = model_elems } },
+    };
+}
+
+fn semanticInputBridgeCompatibilityForTest(ops: []const backend_mod.DeviceOp) ?SemanticFfnInputBridgeCompatibility {
+    const input_q = deviceOpAt(.qmatmul, ops, 0) orelse return null;
+    const input_residual = deviceOpAt(.elementwise, ops, 1) orelse return null;
+    const input_rn = deviceOpAt(.rmsnorm, ops, 2) orelse return null;
+    const input_rp = deviceOpAt(.repeat, ops, 3) orelse return null;
+    const input_out = deviceOpAt(.elementwise, ops, 4) orelse return null;
+    const gate = deviceOpAt(.qmatmul, ops, 5) orelse return null;
+    const first = deviceOpAt(.elementwise, ops, 6) orelse return null;
+    const up = deviceOpAt(.qmatmul, ops, 7) orelse return null;
+    const product = deviceOpAt(.elementwise, ops, 8) orelse return null;
+    const down = deviceOpAt(.qmatmul, ops, 9) orelse return null;
+    const output_residual = deviceOpAt(.elementwise, ops, 10) orelse return null;
+    const output_rn = deviceOpAt(.rmsnorm, ops, 11) orelse return null;
+    const output_rp = deviceOpAt(.repeat, ops, 12) orelse return null;
+    const output_out = deviceOpAt(.elementwise, ops, 13) orelse return null;
+    return semanticFfnInputBridgeCompatibility(input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out);
+}
+
+test "semantic input bridge compatibility proves exact direct width target shape" {
+    const ops = testSemanticInputBridgeOps();
+    const bridge = semanticInputBridgeCompatibilityForTest(&ops) orelse return error.TestExpectedEqual;
+
+    try std.testing.expectEqual(@as(u32, 128), bridge.rows);
+    try std.testing.expectEqual(@as(u32, 576), bridge.input_projection);
+    try std.testing.expectEqual(@as(u32, 576), bridge.input_width);
+    try std.testing.expectEqual(@as(u32, 1536), bridge.hidden);
+    try std.testing.expectEqual(@as(u32, 576), bridge.output_width);
+    try std.testing.expectEqual(@as(u16, 20), bridge.input_secondary_buf);
+    try std.testing.expectEqual(@as(u16, 2), bridge.output_secondary_buf);
+    try std.testing.expectEqual(@as(u64, 4), bridge.row_tile_groups);
+    try std.testing.expectEqual(@as(u64, 18), bridge.output_tiles);
+    try std.testing.expectEqual(@as(u32, 4), bridge.direct_width_parallel_lanes);
+    try std.testing.expectEqual(@as(u64, 2304), bridge.direct_width_parallel_partial_slots);
+
+    const scratch = bridge.scratchRequirement() orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 14155776), scratch.scratchBytes());
+    try std.testing.expectEqual(@as(usize, 9216), scratch.runtimeScratchBytes());
+}
+
+test "semantic input bridge compatibility rejects broken residual bridge" {
+    var ops = testSemanticInputBridgeOps();
+    ops[10].elementwise.src1 = 20;
+    try std.testing.expect(semanticInputBridgeCompatibilityForTest(&ops) == null);
 }
 
 test "semantic width scratch requirement follows executable policy" {
@@ -9892,34 +10046,8 @@ const CompiledProgram = struct {
     }
 
     fn encodeSemanticFfnSublayerInputBridgeSingleDispatch(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, input_q: anytype, input_residual: anytype, input_rn: anytype, input_rp: anytype, input_out: anytype, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, output_residual: anytype, output_rn: anytype, output_rp: anytype, output_out: anytype) bool {
-        if (input_q.M != gate.M or input_q.N != gate.K) return false;
-        if (gate.input != input_out.dst or gate.input_offset != input_out.dst_offset) return false;
-        if (!canFuseRmsnormRepeatMul(input_rn, input_rp, input_out)) return false;
-        if (!program_mod.projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) return false;
-        if (down.M != gate.M or down.K != gate.N or down.N != input_q.N) return false;
-        if (down.input != product.dst or down.input_offset != product.dst_offset) return false;
-        if (input_residual.op != .add or input_residual.n != input_q.M * input_q.N) return false;
-        if (input_rn.src != input_residual.dst or input_rn.src_offset != input_residual.dst_offset) return false;
-        if (input_rn.rows != input_q.M or input_rn.cols != input_q.N) return false;
-        if (output_residual.op != .add or output_residual.n != down.M * down.N) return false;
-        if (output_rn.src != output_residual.dst or output_rn.src_offset != output_residual.dst_offset) return false;
-        if (output_rn.rows != down.M or output_rn.cols != down.N) return false;
-        if (!canFuseRmsnormRepeatMul(output_rn, output_rp, output_out)) return false;
-
-        const input_down_is_src0 = input_residual.src0 == input_q.dst and input_residual.src0_offset == input_q.dst_offset;
-        const input_down_is_src1 = input_residual.src1 == input_q.dst and input_residual.src1_offset == input_q.dst_offset;
-        if (!input_down_is_src0 and !input_down_is_src1) return false;
-        const input_secondary_buf = if (input_down_is_src0) input_residual.src1 else input_residual.src0;
-        const input_secondary_offset = if (input_down_is_src0) input_residual.src1_offset else input_residual.src0_offset;
-
-        const output_down_is_src0 = output_residual.src0 == down.dst and output_residual.src0_offset == down.dst_offset;
-        const output_down_is_src1 = output_residual.src1 == down.dst and output_residual.src1_offset == down.dst_offset;
-        if (!output_down_is_src0 and !output_down_is_src1) return false;
-        const output_secondary_buf = if (output_down_is_src0) output_residual.src1 else output_residual.src0;
-        const output_secondary_offset = if (output_down_is_src0) output_residual.src1_offset else output_residual.src0_offset;
-        if (output_secondary_buf != input_residual.dst or output_secondary_offset != input_residual.dst_offset) return false;
-
         if (input_q.N > SEMANTIC_FFN_MAX_DIM or input_q.K > SEMANTIC_FFN_MAX_DIM or gate.N > SEMANTIC_FFN_MAX_HIDDEN or down.N > SEMANTIC_FFN_MAX_DIM) return false;
+        const bridge = semanticFfnInputBridgeCompatibility(input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out) orelse return false;
         if (@as(usize, input_q.weight_idx) >= view.qweight_views.len or
             @as(usize, gate.weight_idx) >= view.qweight_views.len or
             @as(usize, up.weight_idx) >= view.qweight_views.len or
@@ -9969,7 +10097,7 @@ const CompiledProgram = struct {
             down_w.data,
             down_w.scales,
             view.device_bufs[input_q.input],
-            view.device_bufs[input_secondary_buf],
+            view.device_bufs[bridge.input_secondary_buf],
             view.device_bufs[input_rp.src],
             view.device_bufs[output_rp.src],
             view.device_bufs[output_out.dst],
@@ -9986,7 +10114,7 @@ const CompiledProgram = struct {
             .down_block_size = down_params.block_size,
             .source_input_offset = input_params.input_offset,
             .source_input_row_stride = input_params.input_row_stride,
-            .input_residual_secondary_offset = input_secondary_offset,
+            .input_residual_secondary_offset = bridge.input_secondary_offset,
             .input_rms_eps = input_rn.eps,
             .input_scale_src_offset = input_rp.src_offset,
             .first_op = @intFromEnum(first.op),
