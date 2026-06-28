@@ -1101,6 +1101,7 @@ const {
   pointerFor: (value) => ptr(value),
   compileDesc,
   moduleProgramCompileArtifactsFromCompiledSpec,
+  inspectExecutableProgram,
   programRequirementsFromAbiWords,
   createProgram: createAdapterProgramFactory({
     getProgramClass: () => Program,

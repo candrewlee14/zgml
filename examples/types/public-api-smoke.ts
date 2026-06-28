@@ -320,6 +320,7 @@ import {
   type ProgramDeviceBufferKind,
   type ProgramNamespace,
   type ProgramOutputBufferSlot,
+  type ProgramInspection,
   type PublicApiContractManifest,
   type PublicSimpleNamespace,
   type ProgramBufferLayout,
@@ -3055,6 +3056,16 @@ const typedBatchedSequentialProgram: Program<readonly [4, 2], readonly [4, 2]> =
 const typedBatchedSequentialSupport: ModuleCompileSupport<readonly [4, 2], readonly [4, 2]> = sequential.compileSupport({ backend: "cpu", inputShape: [4, 2] as const });
 const typedBatchedSequentialPlan: ModuleCompileExplanation<readonly [4, 2], readonly [4, 2]> = sequential.compilePlan({ backend: "cpu", inputShape: [4, 2] as const });
 const sequentialEvidence: ProgramCompileEvidence | null = sequentialProgram.compileEvidence();
+const sequentialNativeProgramInspection: ProgramInspection | undefined =
+  sequentialEvidence?.kind === "module" ? sequentialEvidence.nativeProgramInspection : undefined;
+const sequentialNativeProgramInspectionSource: "zig-program-inspection" | undefined =
+  sequentialEvidence?.kind === "module" ? sequentialEvidence.nativeProgramInspectionSource : undefined;
+const sequentialNativeCompilerAuthority: "zig-module-program" | undefined =
+  sequentialEvidence?.kind === "module" ? sequentialEvidence.nativeCompilerAuthority : undefined;
+const sequentialNativeInspectionExecutionSupported: boolean | undefined =
+  sequentialEvidence?.kind === "module" ? sequentialEvidence.nativeExecutionSupported : undefined;
+const sequentialNativeCommandStencilHash: bigint | undefined =
+  sequentialEvidence?.kind === "module" ? sequentialEvidence.nativeCommandStencilHash : undefined;
 const sequentialProgramIr: ModuleTensorProgramIr | null = sequentialProgram.tensorProgramIr();
 const sequentialProgramIrSignature: string | undefined = sequentialProgramIr?.signature;
 const sequentialProgramKernelPlan: ModuleKernelPlan | null = sequentialProgram.kernelPlan();
@@ -4930,6 +4941,11 @@ void sequentialExplanationKernelPlanSignature;
 void sequentialExplanationParameterNames;
 void sequentialExplanationParameterInfos;
 void sequentialEvidence;
+void sequentialNativeProgramInspection;
+void sequentialNativeProgramInspectionSource;
+void sequentialNativeCompilerAuthority;
+void sequentialNativeInspectionExecutionSupported;
+void sequentialNativeCommandStencilHash;
 void sequentialProgramIr;
 void sequentialProgramIrSignature;
 void sequentialProgramKernelPlan;

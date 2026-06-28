@@ -44,6 +44,7 @@ export type BunModuleProgramOpsOptions<TProgram> = Readonly<{
   pointerFor(value: BigUint64Array): NativeHandle;
   compileDesc(options: unknown): NativeHandle | BigUint64Array;
   moduleProgramCompileArtifactsFromCompiledSpec(spec: unknown): ModuleProgramArtifacts;
+  inspectExecutableProgram(handle: NativeHandle): unknown;
   programRequirementsFromAbiWords(out: BigUint64Array): ProgramRequirements;
   createProgram(handle: NativeHandle, desc: Readonly<ModuleProgramDesc>, evidence: ProgramCompileEvidence | Readonly<Record<string, unknown>> | null): TProgram;
 }>;
@@ -57,6 +58,7 @@ export function createBunModuleProgramOps<TProgram>(options: BunModuleProgramOps
     pointerFor,
     compileDesc,
     moduleProgramCompileArtifactsFromCompiledSpec,
+    inspectExecutableProgram,
     programRequirementsFromAbiWords,
     createProgram,
   } = options;
@@ -95,11 +97,13 @@ export function createBunModuleProgramOps<TProgram>(options: BunModuleProgramOps
     const out = handleOut();
     const artifacts = moduleProgramCompileArtifactsFromCompiledSpec(spec);
     check(symbols.moduleProgramCompile(moduleProgramAbiDesc(artifacts.packed), compileDesc(compileOptions), out));
-    const program = createProgram(readHandle(out), artifacts.desc, artifacts.evidence);
+    const handle = readHandle(out);
+    const program = createProgram(handle, artifacts.desc, artifacts.evidence);
     const requirements = nativeRequirementsForProgram(program, artifacts, compileOptions);
+    const inspection = inspectExecutableProgram(handle);
     return attachProgramCompileEvidence(
       program,
-      moduleProgramEvidenceWithNativeRequirements(artifacts.evidence, requirements, artifacts.desc),
+      moduleProgramEvidenceWithNativeRequirements(artifacts.evidence, requirements, artifacts.desc, inspection),
     );
   }
 

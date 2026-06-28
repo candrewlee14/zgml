@@ -3540,6 +3540,12 @@ export type ProgramCompileEvidence = Readonly<{
   nativeRequirements?: ProgramRequirements;
   nativeRequirementsSignature?: string;
   nativeRequirementsSource?: "zig-module-program";
+  nativeCompilerAuthority?: "zig-module-program";
+  nativeProgramInspection?: ProgramInspection;
+  nativeProgramInspectionSignature?: string;
+  nativeProgramInspectionSource?: "zig-program-inspection";
+  nativeExecutionSupported?: boolean;
+  nativeCommandStencilHash?: bigint;
   irSignature: string;
   kernelPlanSignature: string;
   memoryLayoutSignature: string;

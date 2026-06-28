@@ -772,6 +772,7 @@ const {
   readHandle,
   compileDesc,
   moduleProgramCompileArtifactsFromCompiledSpec,
+  inspectExecutableProgram,
   programNativeBufferBindFields,
   programRequirementsFromAbiRecord,
   createProgram: createAdapterProgramFactory({

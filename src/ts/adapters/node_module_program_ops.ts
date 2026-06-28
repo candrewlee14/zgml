@@ -57,6 +57,7 @@ export type NodeModuleProgramOpsOptions<TProgram> = Readonly<{
   readHandle<T = NativeHandle>(out: readonly [T | null | undefined], name: string): T;
   compileDesc(options: unknown): Record<string, unknown>;
   moduleProgramCompileArtifactsFromCompiledSpec(spec: unknown): ModuleProgramArtifacts;
+  inspectExecutableProgram(handle: NativeHandle): unknown;
   programNativeBufferBindFields(desc: ProgramBindingDesc, params: ProgramBindingsInput): ProgramNativeBufferBindFields;
   programRequirementsFromAbiRecord(record: Record<string, unknown>): ProgramRequirements;
   createProgram(handle: NativeHandle, desc: Readonly<ModuleProgramDesc>, evidence: ProgramCompileEvidence | Readonly<Record<string, unknown>> | null): TProgram;
@@ -70,6 +71,7 @@ export function createNodeModuleProgramOps<TProgram>(options: NodeModuleProgramO
     readHandle,
     compileDesc,
     moduleProgramCompileArtifactsFromCompiledSpec,
+    inspectExecutableProgram,
     programNativeBufferBindFields,
     programRequirementsFromAbiRecord,
     createProgram,
@@ -112,11 +114,13 @@ export function createNodeModuleProgramOps<TProgram>(options: NodeModuleProgramO
     const artifacts = moduleProgramCompileArtifactsFromCompiledSpec(spec);
     const abiDesc = moduleProgramAbiDesc(artifacts.packed);
     check(symbols.moduleProgramCompile(abiDesc.desc, compileDesc(compileOptions), out));
-    const program = createProgram(readHandle(out, "program"), artifacts.desc, artifacts.evidence);
+    const handle = readHandle(out, "program");
+    const program = createProgram(handle, artifacts.desc, artifacts.evidence);
     const requirements = nativeRequirementsForProgram(program, artifacts, compileOptions);
+    const inspection = inspectExecutableProgram(handle);
     return attachProgramCompileEvidence(
       program,
-      moduleProgramEvidenceWithNativeRequirements(artifacts.evidence, requirements, artifacts.desc),
+      moduleProgramEvidenceWithNativeRequirements(artifacts.evidence, requirements, artifacts.desc, inspection),
     );
   }
 

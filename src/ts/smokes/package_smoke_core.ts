@@ -5386,6 +5386,13 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       inferenceHandleEvidence !== inference.program.compileEvidence() ||
       inferenceHandleEvidence !== inferenceCompileEvidence ||
       inferenceCompileEvidence.nativeRequirementsSource !== "zig-module-program" ||
+      inferenceCompileEvidence.nativeCompilerAuthority !== "zig-module-program" ||
+      inferenceCompileEvidence.nativeProgramInspectionSource !== "zig-program-inspection" ||
+      inferenceCompileEvidence.nativeProgramInspection?.kind !== "zgml.program.inspection" ||
+      inferenceCompileEvidence.nativeProgramInspectionSignature !== inferenceCompileEvidence.nativeProgramInspection?.signature ||
+      inferenceCompileEvidence.nativeProgramInspectionSignature !== inference.program.inspect().signature ||
+      inferenceCompileEvidence.nativeExecutionSupported !== inference.program.inspect().executionSupported ||
+      inferenceCompileEvidence.nativeCommandStencilHash !== inference.program.inspect().commandStencilHash ||
       inferenceCompileEvidence.nativeRequirements?.inputLen !== inference.program.inputLen() ||
       inferenceCompileEvidence.nativeRequirements?.outputLen !== inference.program.outputLen() ||
       inferenceCompileEvidence.nativeRequirementsSignature !== inferenceCompileEvidence.nativeRequirements?.signature ||
