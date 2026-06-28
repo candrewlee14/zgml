@@ -17,6 +17,10 @@ const prompt = process.env.BENCH_LAPTOP_PROMPT || "Explain why small fast local 
 const decodeTokens = positiveInt(process.env.BENCH_LAPTOP_DECODE_TOKENS || "16", "BENCH_LAPTOP_DECODE_TOKENS");
 const prefillIters = positiveInt(process.env.BENCH_LAPTOP_PREFILL_ITERS || "5", "BENCH_LAPTOP_PREFILL_ITERS");
 const torchThreads = positiveInt(process.env.BENCH_LAPTOP_PYTORCH_THREADS || "1", "BENCH_LAPTOP_PYTORCH_THREADS");
+const zgmlBackends = (process.env.BENCH_LAPTOP_ZGML_BACKENDS || (process.platform === "darwin" ? "cpu,metal" : "cpu"))
+  .split(",")
+  .map((backend) => backend.trim())
+  .filter(Boolean);
 
 function positiveInt(value, name) {
   const parsed = Number(value);
@@ -47,6 +51,10 @@ function timestampForArtifact(date = new Date()) {
 
 function round(value) {
   return Number.isFinite(value) ? Number(value.toFixed(6)) : null;
+}
+
+function artifactJson(value) {
+  return JSON.stringify(value, (_key, inner) => typeof inner === "bigint" ? `${inner}` : inner, 2);
 }
 
 const pytorchCode = String.raw`
@@ -169,13 +177,95 @@ function runPytorch() {
   return JSON.parse(jsonLine);
 }
 
+function runZgmlBackend(zgml, model, probe, probeMs, loadMs, backend, promptTokenIds) {
+  let program = null;
+  let session = null;
+  try {
+    const contextLength = Math.max(32, promptTokenIds.length + decodeTokens + 1);
+    const compileStarted = performance.now();
+    program = model.compile({ backend, contextLength });
+    const compileMs = performance.now() - compileStarted;
+    const executable = typeof program.inspectExecutable === "function" ? program.inspectExecutable() : null;
+    const bindStarted = performance.now();
+    session = program.bind({ output: true });
+    const bindMs = performance.now() - bindStarted;
+    const inspection = typeof session.inspect === "function" ? session.inspect() : null;
+    const warm = session.execute_tokens_argmax(promptTokenIds, { tokensLen: promptTokenIds.length });
+    session.reset();
+
+    const prefillStarted = performance.now();
+    let prefill = warm;
+    for (let i = 0; i < prefillIters; i += 1) {
+      prefill = session.execute_tokens_argmax(promptTokenIds, { tokensLen: promptTokenIds.length });
+      session.reset();
+    }
+    const prefillMs = (performance.now() - prefillStarted) / prefillIters;
+
+    let next = prefill.token;
+    const generated = [];
+    session.execute_tokens_argmax(promptTokenIds, { tokensLen: promptTokenIds.length });
+    const decodeStarted = performance.now();
+    for (let i = 0; i < decodeTokens; i += 1) {
+      const result = session.execute_tokens_argmax([next], { tokensLen: 1 });
+      next = result.token;
+      generated.push(next);
+    }
+    const decodeMsPerToken = (performance.now() - decodeStarted) / decodeTokens;
+
+    return {
+      supported: true,
+      probeReady: true,
+      executableReady: true,
+      stage: "execute",
+      backend,
+      probeMs,
+      loadMs,
+      compileMs,
+      bindMs,
+      contextLength,
+      prefillMs,
+      prefillTokS: promptTokenIds.length / (prefillMs / 1000.0),
+      decodeMsPerToken,
+      decodeTokS: 1000.0 / decodeMsPerToken,
+      firstToken: prefill.token,
+      generatedTokenIds: generated,
+      executable,
+      inspection,
+      probe,
+    };
+  } catch (error) {
+    return {
+      supported: false,
+      probeReady: true,
+      executableReady: false,
+      stage: program == null ? "compile" : session == null ? "bind" : "execute",
+      backend,
+      probeMs,
+      loadMs,
+      probe,
+      error: error && error.message ? error.message : String(error),
+    };
+  } finally {
+    if (session && typeof session.dispose === "function") session.dispose();
+    if (program && typeof program.dispose === "function") program.dispose();
+  }
+}
+
+function choosePrimaryZgmlResult(results) {
+  const ready = results.filter((result) => result.executableReady);
+  if (ready.length === 0) return results[0] || { supported: false, probeReady: false, executableReady: false, stage: "none", error: "no zgml backends requested" };
+  return ready.reduce((best, result) => {
+    if (!Number.isFinite(best.decodeTokS)) return result;
+    if (!Number.isFinite(result.decodeTokS)) return best;
+    return result.decodeTokS > best.decodeTokS ? result : best;
+  }, ready[0]);
+}
+
 function runZgmlProbe(modelPath, promptTokenIds) {
   if (!existsSync(nodeEntry)) {
     return { supported: false, stage: "load-runtime", error: "dist/node.cjs missing; run npm run build:package" };
   }
   let model = null;
-  let program = null;
-  let session = null;
   try {
     const zgml = require(nodeEntry);
     const started = performance.now();
@@ -185,66 +275,20 @@ function runZgmlProbe(modelPath, promptTokenIds) {
     try {
       model = zgml.loadModel(modelPath, { modelKind: "auto" });
       const loadMs = performance.now() - loadStarted;
-      const contextLength = Math.max(32, promptTokenIds.length + decodeTokens + 1);
-      const compileStarted = performance.now();
-      program = model.compile({ backend: "cpu", contextLength });
-      const compileMs = performance.now() - compileStarted;
-      const bindStarted = performance.now();
-      session = program.bind({ output: true });
-      const bindMs = performance.now() - bindStarted;
-      const warm = session.execute_tokens_argmax(promptTokenIds, { tokensLen: promptTokenIds.length });
-      session.reset();
-
-      const prefillStarted = performance.now();
-      let prefill = warm;
-      for (let i = 0; i < prefillIters; i += 1) {
-        prefill = session.execute_tokens_argmax(promptTokenIds, { tokensLen: promptTokenIds.length });
-        session.reset();
-      }
-      const prefillMs = (performance.now() - prefillStarted) / prefillIters;
-
-      let next = prefill.token;
-      const generated = [];
-      session.execute_tokens_argmax(promptTokenIds, { tokensLen: promptTokenIds.length });
-      const decodeStarted = performance.now();
-      for (let i = 0; i < decodeTokens; i += 1) {
-        const result = session.execute_tokens_argmax([next], { tokensLen: 1 });
-        next = result.token;
-        generated.push(next);
-      }
-      const decodeMsPerToken = (performance.now() - decodeStarted) / decodeTokens;
-
-      return {
-        supported: true,
-        probeReady: true,
-        executableReady: true,
-        stage: "execute",
-        probeMs,
-        loadMs,
-        compileMs,
-        bindMs,
-        contextLength,
-        prefillMs,
-        prefillTokS: promptTokenIds.length / (prefillMs / 1000.0),
-        decodeMsPerToken,
-        decodeTokS: 1000.0 / decodeMsPerToken,
-        firstToken: prefill.token,
-        generatedTokenIds: generated,
-        probe,
-      };
+      const backends = zgmlBackends.map((backend) => runZgmlBackend(zgml, model, probe, probeMs, loadMs, backend, promptTokenIds));
+      const primary = choosePrimaryZgmlResult(backends);
+      return { ...primary, backends };
     } catch (error) {
       return {
         supported: false,
         probeReady: true,
         executableReady: false,
-        stage: model == null ? "load" : program == null ? "compile" : session == null ? "bind" : "execute",
+        stage: model == null ? "load" : "backend",
         probeMs,
         probe,
         error: error && error.message ? error.message : String(error),
       };
     } finally {
-      if (session && typeof session.dispose === "function") session.dispose();
-      if (program && typeof program.dispose === "function") program.dispose();
       if (model && typeof model.dispose === "function") model.dispose();
     }
   } catch (error) {
@@ -289,7 +333,7 @@ let artifactPath = null;
 if (writeArtifact) {
   mkdirSync(artifactDir, { recursive: true });
   artifactPath = join(artifactDir, `laptop-llm-pytorch-${timestampForArtifact()}-${process.pid}.json`);
-  writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  writeFileSync(artifactPath, `${artifactJson(artifact)}\n`);
 }
 
 console.log([
@@ -306,11 +350,13 @@ console.log([
   `pytorch_rss_load_delta=${round(pytorch.rssLoadDeltaBytes / 1024 / 1024)}MiB`,
   `zgml=${zgml.executableReady ? "supported" : zgml.probeReady ? "probe-only" : "unsupported"}`,
   `zgml_stage=${zgml.stage}`,
+  `zgml_backend=${zgml.backend || "none"}`,
   `zgml_model=${zgml.probe && zgml.probe.modelKind ? zgml.probe.modelKind : "none"}`,
   `zgml_prefill=${round(zgml.prefillTokS)}tok/s`,
   `zgml_decode=${round(zgml.decodeTokS)}tok/s`,
   `zgml_load=${round(zgml.loadMs)}ms`,
   `zgml_compile=${round(zgml.compileMs)}ms`,
+  `zgml_backends=${Array.isArray(zgml.backends) ? zgml.backends.map((result) => `${result.backend}:${result.stage}:${round(result.prefillTokS)}/${round(result.decodeTokS)}`).join(",") : "none"}`,
   `zgml_error=${zgml.error ? JSON.stringify(zgml.error) : "none"}`,
   `artifact=${artifactPath ? artifactPath.replace(`${root}/`, "") : "disabled"}`,
 ].join(" "));

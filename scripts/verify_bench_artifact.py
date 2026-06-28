@@ -1056,6 +1056,26 @@ def verify_laptop_llm_pytorch_artifact(data, path):
     require(errors, isinstance(pytorch_tokens, list) and len(pytorch_tokens) == pytorch.get("decodeTokens"), f"{path}: pytorch.generatedTokenIds must match decodeTokens")
     require(errors, isinstance(zgml_tokens, list) and len(zgml_tokens) == pytorch.get("decodeTokens"), f"{path}: zgml.generatedTokenIds must match decodeTokens")
     require(errors, pytorch_tokens == zgml_tokens, f"{path}: generated token IDs must match PyTorch")
+    backend_rows = zgml.get("backends")
+    if backend_rows is not None:
+        require(errors, isinstance(backend_rows, list) and backend_rows, f"{path}: zgml.backends must be a non-empty list when present")
+        if isinstance(backend_rows, list):
+            seen_backends = set()
+            for i, row in enumerate(backend_rows):
+                prefix = f"{path}: zgml.backends[{i}]"
+                require(errors, isinstance(row, dict), f"{prefix} must be an object")
+                if not isinstance(row, dict):
+                    continue
+                backend = row.get("backend")
+                require(errors, backend in ("cpu", "metal", "webgpu"), f"{prefix}.backend must be a known backend")
+                if isinstance(backend, str):
+                    seen_backends.add(backend)
+                require(errors, row.get("stage") == "execute", f"{prefix}.stage must be execute")
+                require(errors, row.get("executableReady") is True, f"{prefix}.executableReady must be true")
+                for key in ("compileMs", "bindMs", "prefillTokS", "decodeTokS"):
+                    require(errors, positive_number(row.get(key)), f"{prefix}.{key} must be positive")
+                require(errors, row.get("generatedTokenIds") == pytorch_tokens, f"{prefix}.generatedTokenIds must match PyTorch")
+            require(errors, "cpu" in seen_backends, f"{path}: zgml.backends must include cpu")
     return errors
 
 

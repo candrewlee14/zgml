@@ -71,16 +71,21 @@ LLM artifact for `llm.smollm2_360m.instruct.q8_0`.
 
 Latest local result:
 
-| Model | PyTorch prefill | PyTorch decode | PyTorch load | zgml prefill | zgml decode | zgml load | zgml compile | zgml |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| SmolLM2-360M-Instruct | 378.86 tok/s | 68.84 tok/s | 238.71 ms | 81.26 tok/s | 80.51 tok/s | 2272.05 ms | 1978.65 ms | executable: `smollm2-360m`, generated IDs match PyTorch |
+| Model | Backend | PyTorch prefill | PyTorch decode | zgml prefill | zgml decode | zgml compile | zgml |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| SmolLM2-360M-Instruct | CPU | 399.14 tok/s | 63.26 tok/s | 76.22 tok/s | 70.63 tok/s | 13082.00 ms | executable: generated IDs match PyTorch |
+| SmolLM2-360M-Instruct | Metal | 399.14 tok/s | 63.26 tok/s | 68.11 tok/s | 63.13 tok/s | 12045.73 ms | executable: generated IDs match PyTorch |
 
 This is now an honest execution comparison, not a probe-only placeholder. The
 native model path recognizes the PyTorch-compatible BF16 safetensors checkpoint
 from its Hugging Face `config.json`, loads it into the compile-time specialized
-LLaMA execution path, compiles a CPU session, and generates matching token IDs
-for the benchmark prompt. Load/compile latency and prompt prefill throughput are
-still the obvious next optimization targets.
+LLaMA execution path, compiles CPU and Metal sessions, and generates matching
+token IDs for the benchmark prompt. The Metal path is correct but not yet fast:
+the artifact reports `dispatchPlanSupported=false`, `backendDispatchCount=0`,
+`externalResourcesSupported=false`, and host KV/output bindings, so this is
+backend-selected Metal execution rather than the optimized Metal dispatch plan
+used by the ggml/stencil lanes. Load/compile latency and prompt prefill
+throughput are still the obvious next optimization targets.
 
 ## Benchmark Output Contract
 
