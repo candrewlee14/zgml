@@ -203,6 +203,12 @@ The handle now also exposes first-contact proof methods directly:
 `compilerSignatures()`, plus bound-Session proof methods
 `sessionBufferLayout()`, `sessionBufferSlotNames()`,
 `sessionBufferSlot(nameOrKind)`, `stepContract()`, and `hotPathPlan(params)`.
+It also exposes the binding proof users actually need at first contact:
+`parameterBindingPlan()` reports whether module parameters were placed in host
+arrays or native slots, while `programBindingPlan()` reports whether the bound
+Program is running with host or native buffers. These delegate to the
+Session/Program binding evidence created by the native bind path instead of
+asking TS to reconstruct the binding after the fact.
 `compileEvidence()`, `requirements()`,
 `bufferLayout()`, and buffer-slot lookup delegate to the native Program, while
 the Session proof methods delegate to the bound native Session, so
