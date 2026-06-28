@@ -59,6 +59,46 @@ function roundMetric(value) {
   return Number.isFinite(value) ? Number(value.toFixed(6)) : null;
 }
 
+function roundRatio(numerator, denominator) {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return null;
+  return roundMetric(numerator / denominator);
+}
+
+function semanticInputBridgeAbsorbedProfile(attempt) {
+  if (
+    attempt.absorbedRuntimeDispatches === 1 &&
+    attempt.absorbedSemanticWithInputDispatches === 1 &&
+    attempt.absorbedDirectWidthParallelCount === 1
+  ) return "direct_width_promotable";
+  if (
+    attempt.absorbedRuntimeDispatches === 1 &&
+    attempt.absorbedSemanticWithInputDispatches === 1 &&
+    attempt.absorbedDirectCount === 1
+  ) return "direct_serial_absorbed";
+  if (
+    attempt.absorbedRuntimeDispatches === 3 &&
+    attempt.absorbedSemanticWithInputDispatches === 3 &&
+    attempt.absorbedDecomposedExtraDispatches === 2
+  ) return "staged_width_absorbed";
+  if (
+    attempt.absorbedRuntimeDispatches === 5 &&
+    attempt.absorbedSemanticWithInputDispatches === 5 &&
+    attempt.absorbedDecomposedExtraDispatches === 4
+  ) return "decomposed_absorbed";
+  return "unknown";
+}
+
+function semanticInputBridgeDirectWidthGate(attempt) {
+  const speedup = Number(attempt.directWidthSpeedup);
+  const absorbedSpeedup = Number(attempt.absorbedSpeedup);
+  const maxAbsDiff = Number(attempt.directWidthMaxAbsDiff);
+  if (!Number.isFinite(speedup) || !Number.isFinite(absorbedSpeedup)) return "missing";
+  if (!Number.isFinite(maxAbsDiff) || maxAbsDiff > projectionRowChainMaxAbsDiffCeil) return "diff_fail";
+  if (speedup >= absorbedSpeedup) return "ready";
+  if (speedup >= 1.0 && Number(attempt.directWidthDirectWidthParallelCount) > 0) return "diagnostic";
+  return "below_absorbed";
+}
+
 function speedupStats(attempts, field) {
   const values = attempts
     .map((attempt) => Number(attempt[field]))
@@ -2327,13 +2367,27 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   }
 
   const next = "semantic_with_input_width_parallel_kernel";
+  const absorbedProfile = semanticInputBridgeAbsorbedProfile({
+    absorbedRuntimeDispatches,
+    absorbedSemanticWithInputDispatches,
+    absorbedDirectCount,
+    absorbedDirectWidthParallelCount,
+    absorbedDecomposedExtraDispatches,
+  });
+  const directWidthGate = semanticInputBridgeDirectWidthGate({
+    directWidthSpeedup,
+    absorbedSpeedup,
+    directWidthMaxAbsDiff,
+    directWidthDirectWidthParallelCount,
+  });
+  const directWidthVsAbsorbed = roundRatio(directWidthSpeedup, absorbedSpeedup);
   const line = [
     `frontier qsemantic input bridge gate: ${failures.length === 0 ? "pass" : "fail"}`,
     `attempt=${attempt}/${maxAttempts}`,
     `command=${commandSpeedup.toFixed(2)}x max_abs_diff=${commandMaxAbsDiff.toFixed(6)} shape_commands=${commandShapeCommands} bridges=${commandShapeBridges} runtime_dispatches=${commandRuntimeDispatches} row_dispatches=${commandProjectionRowChainDispatches} semantic_dispatches=${commandSemanticDispatches}`,
-    `absorbed=${absorbedSpeedup.toFixed(2)}x max_abs_diff=${absorbedMaxAbsDiff.toFixed(6)} shape_commands=${absorbedShapeCommands} bridges=${absorbedShapeBridges} runtime_dispatches=${absorbedRuntimeDispatches} semantic_with_input_dispatches=${absorbedSemanticWithInputDispatches} absorbed_split=${Number.isFinite(absorbedDispatchSplit) ? absorbedDispatchSplit.toFixed(2) : "n/a"}`,
+    `absorbed=${absorbedSpeedup.toFixed(2)}x profile=${absorbedProfile} max_abs_diff=${absorbedMaxAbsDiff.toFixed(6)} shape_commands=${absorbedShapeCommands} bridges=${absorbedShapeBridges} runtime_dispatches=${absorbedRuntimeDispatches} semantic_with_input_dispatches=${absorbedSemanticWithInputDispatches} absorbed_split=${Number.isFinite(absorbedDispatchSplit) ? absorbedDispatchSplit.toFixed(2) : "n/a"}`,
     `direct_serial=${directSerialSpeedup.toFixed(2)}x max_abs_diff=${directSerialMaxAbsDiff.toFixed(6)} runtime_dispatches=${directSerialRuntimeDispatches} row_serial_dot_ops=${directSerialDirectRowSerialDotOps} total_row_serial_dot_ops=${directSerialDirectTotalRowSerialDotOps}`,
-    `direct_width=${directWidthSpeedup.toFixed(2)}x max_abs_diff=${directWidthMaxAbsDiff.toFixed(6)} ready=${directWidthUsesDirectKernel ? "yes" : "no"} fallback=${directWidthUsesDecomposedKernel ? "decomposed" : directWidthUsesStagedWidthKernel ? "staged" : "none"} runtime_dispatches=${directWidthRuntimeDispatches} direct=${directWidthDirectCount}:width_parallel=${directWidthDirectWidthParallelCount}:width_lanes=${directWidthDirectWidthParallelLanes}:width_tiles=${directWidthDirectWidthParallelRowTileGroups}x${directWidthDirectWidthParallelOutputTiles}:partial_slots=${directWidthDirectWidthParallelPartialSlots}`,
+    `direct_width=${directWidthSpeedup.toFixed(2)}x max_abs_diff=${directWidthMaxAbsDiff.toFixed(6)} ready=${directWidthUsesDirectKernel ? "yes" : "no"} gate=${directWidthGate} vs_absorbed=${directWidthVsAbsorbed === null ? "n/a" : directWidthVsAbsorbed.toFixed(2)} fallback=${directWidthUsesDecomposedKernel ? "decomposed" : directWidthUsesStagedWidthKernel ? "staged" : "none"} runtime_dispatches=${directWidthRuntimeDispatches} direct=${directWidthDirectCount}:width_parallel=${directWidthDirectWidthParallelCount}:width_lanes=${directWidthDirectWidthParallelLanes}:width_tiles=${directWidthDirectWidthParallelRowTileGroups}x${directWidthDirectWidthParallelOutputTiles}:partial_slots=${directWidthDirectWidthParallelPartialSlots}`,
     `direct_width_scratch=candidates:${directWidthSemanticWidthScratchCandidates},bytes:${directWidthSemanticWidthScratchBytes},allocated:${directWidthSemanticWidthScratchAllocatedBytes},product_bytes:${directWidthSemanticWidthScratchProductBytes},partial_bytes:${directWidthSemanticWidthScratchDownPartialBytes},output_bytes:${directWidthSemanticWidthScratchOutputBytes},partial_to_output:${(directWidthSemanticWidthScratchDownPartialToOutputX1000 / 1000).toFixed(3)},runtime_capacity:${directWidthSemanticWidthScratchRuntimeCapacityBytes},runtime_uses:${directWidthSemanticWidthScratchRuntimeUses},runtime_bytes:${directWidthSemanticWidthScratchRuntimeBytes}`,
     `direct_serial_shape=input_projection:${directSerialDirectInputProjection},input:${directSerialDirectInput},hidden:${directSerialDirectHidden},output:${directSerialDirectOutput}:input_projection_dot_ops:${directSerialDirectInputProjectionDotOps}:gate_up_dot_ops:${directSerialDirectGateUpDotOps}:down_dot_ops:${directSerialDirectDownDotOps}`,
     `absorbed_decomposed=${absorbedDecomposedCount}:dispatches=${absorbedDecomposedDispatches}:extra_dispatches=${absorbedDecomposedExtraDispatches}:row_chain=${absorbedDecomposedRowChainDispatches}:pair=${absorbedDecomposedPairDispatches}:tail=${absorbedDecomposedTailDispatches}`,
@@ -2350,6 +2404,9 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     absorbedSpeedup,
     directSerialSpeedup,
     directWidthSpeedup,
+    absorbedProfile,
+    directWidthGate,
+    directWidthVsAbsorbed,
     commandMaxAbsDiff,
     absorbedMaxAbsDiff,
     directSerialMaxAbsDiff,
@@ -2561,6 +2618,9 @@ function focusedSemanticInputBridgeMargin(current) {
 }
 
 function selectedSemanticInputBridgeAttemptSummary(attempt) {
+  const absorbedProfile = semanticInputBridgeAbsorbedProfile(attempt);
+  const directWidthGate = semanticInputBridgeDirectWidthGate(attempt);
+  const directWidthVsAbsorbed = roundRatio(attempt.directWidthSpeedup, attempt.absorbedSpeedup);
   return {
     attempt: attempt.attempt,
     failures: attempt.failures,
@@ -2574,6 +2634,7 @@ function selectedSemanticInputBridgeAttemptSummary(attempt) {
       runtimeSemanticFfnDispatches: attempt.commandSemanticDispatches,
     },
     absorbed: {
+      profile: absorbedProfile,
       speedup: roundMetric(attempt.absorbedSpeedup),
       maxAbsDiff: roundMetric(attempt.absorbedMaxAbsDiff),
       shapeCommands: attempt.absorbedShapeCommands,
@@ -2673,6 +2734,8 @@ function selectedSemanticInputBridgeAttemptSummary(attempt) {
       qmatmulRowChainWidthParallelLanes: attempt.directSerialRowChainWidthParallelLanes,
     },
     directWidth: {
+      gate: directWidthGate,
+      vsAbsorbed: directWidthVsAbsorbed,
       speedup: roundMetric(attempt.directWidthSpeedup),
       maxAbsDiff: roundMetric(attempt.directWidthMaxAbsDiff),
       shapeCommands: attempt.directWidthShapeCommands,
@@ -2794,6 +2857,9 @@ function writeFocusedSemanticInputBridgeArtifact(best, attempts, aggregate, line
     aggregateFailures: aggregate,
     absorbedFloor: roundMetric(semanticInputBridgeSteadyAbsorbedSpeedupFloor),
     absorbedGate,
+    absorbedProfile: bestSummary.absorbed.profile,
+    directWidthGate: bestSummary.directWidth.gate,
+    directWidthVsAbsorbed: bestSummary.directWidth.vsAbsorbed,
     speedupStats: {
       command: speedupStats(attempts, "commandSpeedup"),
       absorbed: speedupStats(attempts, "absorbedSpeedup"),
