@@ -1774,8 +1774,35 @@ expectSame(nativePermuteView.indexSelect(nativePermuteInput, 1, new Uint32Array(
   13, 14, 15, 16,
   21, 22, 23, 24,
 ], "tensor view native indexSelect output");
+expectSame(nativePermuteView.select(nativePermuteInput, 1, 2).data, [
+  9, 10, 11, 12,
+  21, 22, 23, 24,
+], "tensor view native select output");
+expectSame(nativePermuteView.narrow(nativePermuteInput, 2, 1, 2).data, [
+  2, 3,
+  6, 7,
+  10, 11,
+  14, 15,
+  18, 19,
+  22, 23,
+], "tensor view native narrow output");
+expectSame(nativePermuteView.slice(nativePermuteInput, 1, 0, null, 2).data, [
+  1, 2, 3, 4,
+  9, 10, 11, 12,
+  13, 14, 15, 16,
+  21, 22, 23, 24,
+], "tensor view native slice output");
 expectSame(nativeIndexSelectCalls, [{
   index: [2, 0, 2],
+  options: { outer: 2, axisLen: 3, inner: 4 },
+}, {
+  index: [2],
+  options: { outer: 2, axisLen: 3, inner: 4 },
+}, {
+  index: [1, 2],
+  options: { outer: 6, axisLen: 4, inner: 1 },
+}, {
+  index: [0, 2],
   options: { outer: 2, axisLen: 3, inner: 4 },
 }], "tensor view native indexSelect hook calls");
 expectSame(nativePermuteView.gather(new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4, 5, 6), [2, 3]), 1, new TensorDataSmokeTensor(Float32Array.of(2, 1, 0, 0), [2, 2])).data, [3, 2, 4, 4], "tensor view native gather output");
