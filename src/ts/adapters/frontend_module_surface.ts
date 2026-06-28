@@ -64,6 +64,7 @@ export type AdapterFrontendModuleSurfaceOptions = AdapterModuleCompileHooks & Ad
   nativeEagerLinearInto?: LinearModuleOptions["nativeEagerLinearInto"];
   nativeEagerSoftmaxInto?: SoftmaxModuleOptions["nativeEagerSoftmaxInto"];
   nativeEagerLinearActivationInto?: SequentialModuleOptions["nativeEagerLinearActivationInto"];
+  nativeEagerIndexSelectInto?: EmbeddingModuleOptions["nativeEagerIndexSelectInto"];
   nativeEagerConv2dInto?: Conv2dModuleOptions["nativeEagerConv2dInto"];
   nativeEagerPool2dInto?: AvgPool2dModuleOptions["nativeEagerPool2dInto"] & MaxPool2dModuleOptions["nativeEagerPool2dInto"];
   TinyLinearModel: LinearModuleOptions["TinyLinearModel"];
@@ -140,7 +141,7 @@ export function createAdapterFrontendModuleSurface(options: AdapterFrontendModul
     zerosF32: options.zerosF32,
     makeParameter: options.makeParameter,
     parameterView: options.parameterView,
-    nativeEagerConv2dInto: options.nativeEagerConv2dInto,
+    nativeEagerIndexSelectInto: options.nativeEagerIndexSelectInto,
     parameterNames: options.parameterNames,
     parameterInfos: options.parameterInfos,
     parameterInfo: options.parameterInfo,

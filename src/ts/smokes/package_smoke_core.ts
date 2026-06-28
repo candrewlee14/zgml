@@ -662,6 +662,14 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.index_select_into to reuse caller output`);
   }
   expectClose(indexSelectAliasOutput, [3, 4, 1, 2], `${label} native_eager.index_select_into Tensor index output`);
+  const nativeEmbedding = adapter.nn.embedding(4, 2, { weight: [0, 1, 10, 11, 20, 21, 30, 31] });
+  (nativeEmbedding as Record<string, unknown>).weight = {
+    subarray() {
+      throw new Error(`${label} poisoned embedding JS row-copy fallback`);
+    },
+  };
+  const nativeEmbeddingForward = nativeEmbedding.forward(adapter.tensor([1, 3, 1], [3]));
+  expectClose(nativeEmbeddingForward.data, [10, 11, 30, 31, 10, 11], `${label} nn.Embedding.forward native eager row-gather output`);
   const gatherOutput = new Float32Array(4);
   const gatherResult = nativeEager.gatherInto(gatherOutput, adapter.tensor([1, 2, 3, 4, 5, 6], [2, 3]), adapter.tensor([2, 1, 0, 0], [2, 2]), {
     outputShape: new Uint32Array([2, 2]),

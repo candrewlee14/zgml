@@ -541,7 +541,7 @@ export function createLinearModuleClass(options: SharedLinearModuleClassOptions)
 export type SharedEmbeddingModuleClassOptions = Readonly<
   SingleModuleCompileCoreHooksInput & Pick<
     EmbeddingModuleClassOptions,
-    "Tensor" | "indexValues" | "addTensorGrad" | "requirePositiveInteger" | "defaultedF32" | "zerosF32" | "makeParameter" | "parameterView" | "traceSequentialProgram" | "freezeSequentialTrace"
+    "Tensor" | "indexValues" | "addTensorGrad" | "requirePositiveInteger" | "defaultedF32" | "zerosF32" | "makeParameter" | "parameterView" | "traceSequentialProgram" | "freezeSequentialTrace" | "nativeEagerIndexSelectInto"
   >
 >;
 

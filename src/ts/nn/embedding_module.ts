@@ -56,6 +56,7 @@ type ParameterFactory = (name: string, values: Float32Array, shape: readonly num
 type ParameterView = BivariantCallback<[prefix: string, parameter: EmbeddingParameter], EmbeddingParameter>;
 type SequentialTraceFn = (layers: readonly NnModule[], options?: UnknownRecord) => UnknownRecord;
 type FreezeSequentialTraceFn = (trace: UnknownRecord) => unknown;
+type NativeEagerIndexSelectInto = (output: Float32Array, input: unknown, index: Uint32Array, options: Readonly<{ outer: number; axisLen: number; inner: number }>) => Float32Array;
 
 function embeddingGradTensor(tensor: EmbeddingTensor): EmbeddingGradTensor {
   return tensor as EmbeddingGradTensor;
@@ -72,6 +73,7 @@ export type EmbeddingModuleClassOptions = Readonly<Record<string, unknown> & Sin
   parameterView: ParameterView;
   traceSequentialProgram: SequentialTraceFn;
   freezeSequentialTrace: FreezeSequentialTraceFn;
+  nativeEagerIndexSelectInto?: NativeEagerIndexSelectInto;
 }>;
 
 export function createEmbeddingModuleClass(options: EmbeddingModuleClassOptions) {
@@ -86,6 +88,7 @@ export function createEmbeddingModuleClass(options: EmbeddingModuleClassOptions)
   const zerosF32 = options.zerosF32;
   const makeParameter = options.makeParameter;
   const parameterView = options.parameterView;
+  const nativeEagerIndexSelectInto = options.nativeEagerIndexSelectInto;
   const stateHooks = createStatefulModuleStateHooks(options, "EmbeddingModule");
   const traceSequentialProgram = options.traceSequentialProgram;
   const freezeSequentialTrace = options.freezeSequentialTrace;
@@ -125,15 +128,28 @@ export function createEmbeddingModuleClass(options: EmbeddingModuleClassOptions)
     forward(indexValuesInput: unknown) {
       const inputShape = indexValuesInput instanceof TensorClass ? indexValuesInput.shape : null;
       const indices = indexValues(indexValuesInput, "embedding indices");
-      const out = new Float32Array(indices.length * this.embeddingDim);
+      const nativeIndices = new Uint32Array(indices.length);
       for (let row = 0; row < indices.length; row += 1) {
         const index = indices[row];
         if (!Number.isSafeInteger(index) || index < 0 || index >= this.numEmbeddings) {
           throw new Error(`embedding index ${index} at position ${row} is out of range 0..${this.numEmbeddings - 1}`);
         }
-        const source = index * this.embeddingDim;
-        const dest = row * this.embeddingDim;
-        out.set(this.weight.subarray(source, source + this.embeddingDim), dest);
+        nativeIndices[row] = index;
+      }
+      const out = new Float32Array(indices.length * this.embeddingDim);
+      if (typeof nativeEagerIndexSelectInto === "function" && indices.length > 0) {
+        nativeEagerIndexSelectInto(out, this.weightParam.tensor, nativeIndices, {
+          outer: 1,
+          axisLen: this.numEmbeddings,
+          inner: this.embeddingDim,
+        });
+      } else {
+        for (let row = 0; row < indices.length; row += 1) {
+          const index = nativeIndices[row];
+          const source = index * this.embeddingDim;
+          const dest = row * this.embeddingDim;
+          out.set(this.weight.subarray(source, source + this.embeddingDim), dest);
+        }
       }
       const needsGrad = gradModeEnabled() && this.weightParam.tensor.requiresGrad;
       return new TensorClass(out, [...(inputShape ?? [indices.length]), this.embeddingDim], {

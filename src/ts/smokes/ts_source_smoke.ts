@@ -8648,6 +8648,7 @@ expectThrow(
 
 const embeddingPrograms = [];
 const embeddingPlacements = [];
+const embeddingNativeIndexSelectCalls = [];
 const embeddingTrace = { ops: [{ op: "embedding" }] };
 const EmbeddingModule = nnEmbeddingModule.createEmbeddingModuleClass({
   Tensor: LinearSmokeTensor,
@@ -8667,6 +8668,19 @@ const EmbeddingModule = nnEmbeddingModule.createEmbeddingModuleClass({
   zerosF32: tensorData.zerosF32,
   makeParameter: linearStateHelpers.makeParameter,
   parameterView: linearStateHelpers.parameterView,
+  nativeEagerIndexSelectInto: (output, input, index, options) => {
+    embeddingNativeIndexSelectCalls.push({
+      outputLength: output.length,
+      inputLength: input.data.length,
+      index: Array.from(index),
+      options,
+    });
+    for (let row = 0; row < index.length; row += 1) {
+      const source = index[row] * options.inner;
+      output.set(input.data.subarray(source, source + options.inner), row * options.inner);
+    }
+    return output;
+  },
   parameterNames: linearStateHelpers.parameterNames,
   parameterInfos: linearStateHelpers.parameterInfos,
   parameterInfo: linearStateHelpers.parameterInfo,
@@ -8724,11 +8738,23 @@ expectSame({ data: embeddingOut.data, shape: embeddingOut.shape, requiresGrad: e
   requiresGrad: true,
   prev: [embeddingModule.weightParam.tensor],
 }, "nn embedding forward");
+expectSame(embeddingNativeIndexSelectCalls[0], {
+  outputLength: 6,
+  inputLength: 8,
+  index: [1, 3, 1],
+  options: { outer: 1, axisLen: 4, inner: 2 },
+}, "nn embedding forward uses native eager row gather when available");
 const embeddingGridOut = embeddingModule.forward(new LinearSmokeTensor(Float32Array.of(1, 3, 1, 0, 2, 3), [2, 3]));
 expectSame({ data: embeddingGridOut.data, shape: embeddingGridOut.shape }, {
   data: [10, 11, 30, 31, 10, 11, 0, 1, 20, 21, 30, 31],
   shape: [2, 3, 2],
 }, "nn embedding forward preserves tensor index shape");
+expectSame(embeddingNativeIndexSelectCalls[1], {
+  outputLength: 12,
+  inputLength: 8,
+  index: [1, 3, 1, 0, 2, 3],
+  options: { outer: 1, axisLen: 4, inner: 2 },
+}, "nn embedding grid forward uses native eager row gather when available");
 embeddingOut._backward(Float32Array.of(1, 2, 3, 4, 5, 6));
 expectSame(embeddingModule.weightParam.tensor.grad, [0, 0, 6, 8, 0, 0, 3, 4], "nn embedding repeated index grad");
 expectSame(embeddingModule.parameterNames(), ["weight"], "nn embedding parameter names");

@@ -1127,6 +1127,7 @@ const adapterFrontendModuleSurface = createAdapterFrontendModuleSurface({
   nativeEagerLinearInto,
   nativeEagerSoftmaxInto,
   nativeEagerLinearActivationInto,
+  nativeEagerIndexSelectInto: (output, input, index, options) => nativeEager.indexSelectInto(output, input, index, options),
   nativeEagerConv2dInto,
   nativeEagerPool2dInto,
   parameterNames,
