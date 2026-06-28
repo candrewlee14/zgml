@@ -5366,6 +5366,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const inferenceHandleEvidence = inference.compileEvidence();
     const inferenceRequirements = inference.requirements();
     const inferenceBufferLayout = inference.bufferLayout();
+    const inferenceSlotNames = inference.bufferSlotNames();
+    const inferenceOutputSlot = inference.bufferSlot("output");
     if (
       inference.native !== true ||
       inferenceExecutionPlan.canExecute !== true ||
@@ -5382,6 +5384,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       inferenceBufferLayout.signature !== inference.program.bufferLayout().signature ||
       inferenceBufferLayout.input.elementCount !== inferenceRequirements.inputLen ||
       inferenceBufferLayout.output.elementCount !== inferenceRequirements.outputLen ||
+      inferenceSlotNames.join("|") !== inference.program.bufferSlotNames().join("|") ||
+      inferenceOutputSlot?.byteLength !== inference.program.bufferSlot("output")?.byteLength ||
       inferenceSupport.supported !== true ||
       inferenceExplanation.supported !== true ||
       inferencePreflight.supported !== true ||
@@ -5516,6 +5520,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const nativeInferenceEvidence = nativeInference.compileEvidence();
     const nativeInferenceRequirements = nativeInference.requirements();
     const nativeInferenceLayout = nativeInference.bufferLayout();
+    const nativeInferenceSlotNames = nativeInference.bufferSlotNames();
+    const nativeInferenceOutputSlot = nativeInference.bufferSlot("output");
     if (
       nativeInference.native !== true ||
       nativeInferencePlan.canExecute !== true ||
@@ -5524,6 +5530,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       nativeInferenceEvidence !== nativeInferencePlan.compileEvidence ||
       nativeInferenceRequirements.signature !== nativeInference.program.requirements().signature ||
       nativeInferenceLayout.signature !== nativeInference.program.bufferLayout().signature ||
+      nativeInferenceSlotNames.join("|") !== nativeInference.program.bufferSlotNames().join("|") ||
+      nativeInferenceOutputSlot?.byteLength !== nativeInference.program.bufferSlot("output")?.byteLength ||
       nativeInference.inputShape().join("x") !== "2" ||
       nativeInference.outputShape().join("x") !== "1"
     ) {

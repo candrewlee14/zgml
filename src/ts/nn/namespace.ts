@@ -87,6 +87,8 @@ type NativeInferenceProgram = Record<string, unknown> & {
   compileEvidence?: () => unknown;
   requirements?: () => unknown;
   bufferLayout?: () => unknown;
+  bufferSlotNames?: () => unknown;
+  bufferSlot?: (nameOrKind: unknown) => unknown;
   inputShape?: () => unknown;
   outputShape?: () => unknown;
   kernelPlan?: () => unknown;
@@ -650,6 +652,12 @@ export function createNnNamespace(options: NnNamespaceOptions) {
       },
       bufferLayout() {
         return typeof program.bufferLayout === "function" ? program.bufferLayout() : null;
+      },
+      bufferSlotNames() {
+        return typeof program.bufferSlotNames === "function" ? program.bufferSlotNames() : [];
+      },
+      bufferSlot(nameOrKind: unknown) {
+        return typeof program.bufferSlot === "function" ? program.bufferSlot(nameOrKind) : null;
       },
       inputShape() {
         return typeof program.inputShape === "function" ? program.inputShape() : inputShapeForModule(module, compileOptions);

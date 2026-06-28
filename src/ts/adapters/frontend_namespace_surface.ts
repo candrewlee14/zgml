@@ -1012,6 +1012,12 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       bufferLayout() {
         return typeof program.bufferLayout === "function" ? program.bufferLayout() : null;
       },
+      bufferSlotNames() {
+        return typeof program.bufferSlotNames === "function" ? program.bufferSlotNames() : [];
+      },
+      bufferSlot(nameOrKind: unknown) {
+        return typeof program.bufferSlot === "function" ? program.bufferSlot(nameOrKind) : null;
+      },
       inputShape() {
         return typeof program.inputShape === "function" ? program.inputShape() : null;
       },

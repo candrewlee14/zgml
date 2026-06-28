@@ -7328,6 +7328,8 @@ export type CompiledInference<InputShape extends TensorShapeTuple = TensorShapeT
   compileEvidence(): ProgramCompileEvidence | null;
   requirements(): ProgramRequirements;
   bufferLayout(): ProgramBufferLayout;
+  bufferSlotNames(): readonly string[];
+  bufferSlot(nameOrKind: ProgramDeviceBufferKind | string): ProgramBufferLayoutSlot | null;
   inputShape(): InputShape;
   outputShape(): OutputShape;
   kernelPlan(): ModuleKernelPlan | null;

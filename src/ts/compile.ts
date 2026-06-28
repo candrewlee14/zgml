@@ -65,7 +65,9 @@ import type {
   Program,
   ProgramBindings,
   ProgramBufferLayout,
+  ProgramBufferLayoutSlot,
   ProgramCompileEvidence,
+  ProgramDeviceBufferKind,
   ProgramExecutionPlan,
   ProgramInputBinding,
   ProgramRequirements,
@@ -564,6 +566,12 @@ function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShap
     },
     bufferLayout() {
       return program.bufferLayout() as ProgramBufferLayout;
+    },
+    bufferSlotNames() {
+      return program.bufferSlotNames();
+    },
+    bufferSlot(nameOrKind: ProgramDeviceBufferKind | string) {
+      return program.bufferSlot(nameOrKind) as ProgramBufferLayoutSlot | null;
     },
     inputShape() {
       return program.inputShape();
