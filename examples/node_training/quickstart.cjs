@@ -89,6 +89,10 @@ const preflight = fast.preflight();
 const kernelPlan = fast.kernelPlan();
 const compilerSignatures = fast.compilerSignatures();
 const executionPlan = fast.requireExecutionPlan();
+const parameterBindingPlan = fast.parameterBindingPlan();
+const parameterBindingPlanAlias = fast.parameter_binding_plan();
+const programBindingPlan = fast.programBindingPlan();
+const programBindingPlanAlias = fast.program_binding_plan();
 if (
   fast.native !== true ||
   executionPlan.canExecute !== true ||
@@ -101,9 +105,15 @@ if (
   fast.outputShape().join("x") !== "1" ||
   kernelPlan?.ops.map((op) => op.op).join("|") !== "linear|linear" ||
   kernelPlan.ops[0]?.nativeKernels?.join("|") !== "linear|relu" ||
-  compilerSignatures?.kernelPlan !== kernelPlan.signature
+  compilerSignatures?.kernelPlan !== kernelPlan.signature ||
+  parameterBindingPlan?.placementMode !== "native" ||
+  parameterBindingPlanAlias?.signature !== parameterBindingPlan.signature ||
+  parameterBindingPlan.nativeSlots.join("|") !== "weights|bias" ||
+  programBindingPlan.mode !== "native" ||
+  programBindingPlanAlias.signature !== programBindingPlan.signature ||
+  programBindingPlan.usesNativeBuffers !== true
 ) {
-  throw new Error(`expected compileForInference to expose native executable proof: ${JSON.stringify({ executionPlan, support, explanation, preflight, kernelPlan, compilerSignatures })}`);
+  throw new Error(`expected compileForInference to expose native executable proof: ${JSON.stringify({ executionPlan, support, explanation, preflight, kernelPlan, compilerSignatures, parameterBindingPlan, programBindingPlan })}`);
 }
 const compiled = fast.forward(probe);
 const output = new Float32Array(1);

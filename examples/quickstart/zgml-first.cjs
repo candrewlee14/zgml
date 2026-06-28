@@ -80,6 +80,8 @@ const fastTensor = fast.forward(probe);
 fast.into(output, probe);
 const proof = fast.explain();
 const executionPlan = fast.requireExecutionPlan();
+const parameterBindingPlan = fast.parameterBindingPlan();
+const programBindingPlan = fast.programBindingPlan();
 const contract = fast.session.stepContract();
 const inspection = fast.program.inspect();
 const eagerPrediction = scalar(restored.forward(probe));
@@ -90,12 +92,16 @@ if (
   proof.nativePath !== "device-program" ||
   executionPlan.canExecute !== true ||
   executionPlan.executionMode !== "executable" ||
+  parameterBindingPlan?.placementMode !== "native" ||
+  parameterBindingPlan.nativeSlots.join("|") !== "weights|bias" ||
+  programBindingPlan.mode !== "native" ||
+  programBindingPlan.usesNativeBuffers !== true ||
   inspection.executionSupported !== true ||
   inspection.backend !== "cpu" ||
   contract.inputShape.join("x") !== "2" ||
   contract.outputShape.join("x") !== "1"
 ) {
-  throw new Error(`zgml.native did not produce a native Program/Session path: ${JSON.stringify({ proof, executionPlan, inspection, contract })}`);
+  throw new Error(`zgml.native did not produce a native Program/Session path: ${JSON.stringify({ proof, executionPlan, parameterBindingPlan, programBindingPlan, inspection, contract })}`);
 }
 if (Math.abs(output[0] - eagerPrediction) > 1e-5 || Math.abs(scalar(fastTensor) - eagerPrediction) > 1e-5) {
   throw new Error(`compiled prediction drifted from eager output; eager=${eagerPrediction}, compiled=${output[0]}`);

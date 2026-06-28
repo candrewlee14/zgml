@@ -60,15 +60,21 @@ zgml.checkpoint.restore(snapshot, { model, optimizer, scheduler, prefix: "xor", 
 const fast = zgml.forInference(model, { inputShape: [2] as const });
 const proof = fast.explain();
 const support = fast.compileSupport();
+const parameters = fast.parameterBindingPlan();
+const binding = fast.programBindingPlan();
 const out = fast.into(new Float32Array(1), zgml.tensor([1, 0], [2] as const));
 fast.dispose();
 void proof;
 void support;
+void parameters;
+void binding;
 void out;
 ```
 
 `zgml.forInference(...)` is the friendly TS entry into a native Zig-backed
-Program/Session. `zgml.native(...)` remains a short alias.
+Program/Session. `parameterBindingPlan()` reports whether module state was
+placed in native slots, while `programBindingPlan()` reports whether the Program
+is bound in host or native mode. `zgml.native(...)` remains a short alias.
 `model.fit(...)` auto-selects supported Zig FFI training kernels for fixed-shape
 module batches; `model.forTraining(...)` / `zgml.forTraining(...)` expose the
 same compiled native training handle explicitly, and `model.fitNative(...)` is
@@ -116,12 +122,16 @@ load(savedPath, { model, optimizer, scheduler, prefix: "xor", strict: true });
 const fast = compile.forInference(model, { inputShape: [2] as const });
 const proof = fast.explain();
 const support = fast.compileSupport();
+const parameters = fast.parameterBindingPlan();
+const binding = fast.programBindingPlan();
 const out = fast.into(new Float32Array(1), tensor([1, 0], [2] as const));
 fast.dispose();
 void F;
 void loaded;
 void proof;
 void support;
+void parameters;
+void binding;
 void out;
 ```
 
@@ -248,6 +258,8 @@ small JS/TS models can start from ordinary tensor vocabulary and only opt into
 into compact native kernels:
 ```ts
 const fast = compile.compileForInference(model, { inputShape: [2] as const });
+const parameters = fast.parameterBindingPlan();
+const binding = fast.programBindingPlan();
 const y = fast.forward(tensor([1, 0], [2] as const));
 const out = fast.into(new Float32Array(2), tensor([1, 0], [2] as const));
 fast.dispose();
