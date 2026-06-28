@@ -1,6 +1,6 @@
 "use strict";
 
-const { chooseLane, freshQsemanticThroughput, validateLane } = require("./run_next_perf.cjs");
+const { chooseLane, freshQsemanticThroughput, laneBuildPlan, nextPerfBuildMode, validateLane } = require("./run_next_perf.cjs");
 
 const baseLine = [
   "perf-next:",
@@ -83,6 +83,24 @@ expectEqual(chooseLane(baseLine, { BENCH_NEXT_PERF_LANE: "qsemantic_bridge" }), 
 const throughput = freshQsemanticThroughput(widthParallelLine);
 expectEqual(throughput && throughput.smollm, 1.86, "fresh qsemantic smollm throughput parse");
 expectEqual(throughput && throughput.full, 2.24, "fresh qsemantic full throughput parse");
+
+expectEqual(nextPerfBuildMode({}), "auto", "unset BENCH_NEXT_PERF_BUILD uses auto build mode");
+expectEqual(nextPerfBuildMode({ BENCH_NEXT_PERF_BUILD: "" }), "auto", "empty BENCH_NEXT_PERF_BUILD uses auto build mode");
+expectEqual(nextPerfBuildMode({ BENCH_NEXT_PERF_BUILD: "0" }), "never", "BENCH_NEXT_PERF_BUILD=0 disables rebuilds");
+expectEqual(nextPerfBuildMode({ BENCH_NEXT_PERF_BUILD: "1" }), "force", "BENCH_NEXT_PERF_BUILD=1 forces rebuilds");
+
+expectEqual(laneBuildPlan("qsemantic_input_bridge", "force").frontier, true, "force build rebuilds frontier lane artifacts");
+expectEqual(laneBuildPlan("qsemantic_input_bridge", "never").frontier, false, "no-build mode leaves frontier freshness to the child gate");
+expectEqual(laneBuildPlan("q8_prompt", "force").fullModel, true, "force build rebuilds full-model benchmark artifacts");
+expectEqual(laneBuildPlan("pytorch", "force").nativeFfi, true, "force build rebuilds native ffi for PyTorch comparisons");
+
+let invalidBuildModeFailed = false;
+try {
+  nextPerfBuildMode({ BENCH_NEXT_PERF_BUILD: "maybe" });
+} catch {
+  invalidBuildModeFailed = true;
+}
+expectEqual(invalidBuildModeFailed, true, "invalid BENCH_NEXT_PERF_BUILD is rejected");
 
 for (const lane of ["status", "pytorch", "qsemantic", "qsemantic_throughput", "qsemantic_bridge", "qsemantic_input_bridge", "qproj", "q8_prompt", "q8_prompt_semantic", "ggml"]) {
   validateLane(lane);

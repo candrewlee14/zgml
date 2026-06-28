@@ -1,6 +1,13 @@
 "use strict";
 
 const { spawnSync } = require("node:child_process");
+const { existsSync, statSync } = require("node:fs");
+const { resolve } = require("node:path");
+const { benchmarkBinaryMetadata, nativeLibraryPath, newestNativeSourceMtimeMs } = require("./native_freshness.cjs");
+
+const root = resolve(__dirname, "..");
+const frontierBenchmarkBinary = "./zig-out/bin/bench-frontier";
+const fullModelBenchmarkBinary = "./zig-out/bin/bench-llama-smollm";
 
 function runCaptured(command, args, env = process.env) {
   const result = spawnSync(command, args, {
@@ -104,26 +111,71 @@ function validateLane(lane) {
   if (!known.has(lane)) throw new Error(`unknown BENCH_NEXT_PERF_LANE: ${lane}`);
 }
 
+function nextPerfBuildMode(env = process.env) {
+  const raw = env.BENCH_NEXT_PERF_BUILD;
+  if (raw === undefined || raw === "") return "auto";
+  if (raw === "0") return "never";
+  if (raw === "1") return "force";
+  throw new Error(`BENCH_NEXT_PERF_BUILD must be 0, 1, or unset for auto; got ${raw}`);
+}
+
+function benchmarkBinaryNeedsBuild(binary) {
+  const metadata = benchmarkBinaryMetadata({ root, binary, build: "0" });
+  return metadata.stale || !metadata.binaryExists;
+}
+
+function nativeLibraryNeedsBuild() {
+  const libPath = nativeLibraryPath(root);
+  if (!existsSync(libPath)) return true;
+  const libStat = statSync(libPath);
+  const newestSource = newestNativeSourceMtimeMs([resolve(root, "build.zig"), resolve(root, "src")]);
+  return newestSource.mtimeMs > libStat.mtimeMs + 1;
+}
+
+function laneUsesFrontierBenchmark(lane) {
+  return lane === "qsemantic" || lane === "qsemantic_throughput" || lane === "qsemantic_bridge" || lane === "qsemantic_input_bridge" || lane === "qproj";
+}
+
+function laneUsesFullModelBenchmark(lane) {
+  return lane === "q8_prompt" || lane === "q8_prompt_semantic" || lane === "ggml";
+}
+
+function laneBuildPlan(lane, mode = nextPerfBuildMode()) {
+  const frontier =
+    laneUsesFrontierBenchmark(lane) && (mode === "force" || (mode === "auto" && benchmarkBinaryNeedsBuild(frontierBenchmarkBinary)));
+  const fullModel =
+    laneUsesFullModelBenchmark(lane) && (mode === "force" || (mode === "auto" && benchmarkBinaryNeedsBuild(fullModelBenchmarkBinary)));
+  const nativeFfi = lane === "pytorch" && (mode === "force" || (mode === "auto" && nativeLibraryNeedsBuild()));
+  return { mode, frontier, fullModel, nativeFfi };
+}
+
+function buildPlanLabel(plan) {
+  if (plan.mode === "force") return "yes";
+  if (plan.mode === "never") return "no";
+  if (plan.frontier || plan.fullModel || plan.nativeFfi) return "auto:yes";
+  return "auto:fresh";
+}
+
 function main() {
   const line = perfNextLine();
   const lane = chooseLane(line);
   validateLane(lane);
-  const shouldBuild = process.env.BENCH_NEXT_PERF_BUILD === "1";
+  const buildPlan = laneBuildPlan(lane);
   const dryRun = process.argv.includes("--dry-run") || process.env.BENCH_NEXT_PERF_DRY_RUN === "1";
   const steady = process.env.BENCH_NEXT_PERF_STEADY === "1" || /q8_prompt=semantic_bridge_candidate:[^ ]*:next=steady_semantic_bridge_candidate/.test(line);
   console.log(`[next-perf] ${line}`);
-  console.log(`[next-perf] lane=${lane} build=${shouldBuild ? "yes" : "no"} steady=${steady ? "yes" : "no"} dry_run=${dryRun ? "yes" : "no"}`);
+  console.log(`[next-perf] lane=${lane} build=${buildPlanLabel(buildPlan)} steady=${steady ? "yes" : "no"} dry_run=${dryRun ? "yes" : "no"}`);
 
   if (lane === "status") return;
   if (dryRun) return;
 
-  if (shouldBuild && (lane === "qsemantic" || lane === "qsemantic_throughput" || lane === "qsemantic_bridge" || lane === "qsemantic_input_bridge" || lane === "qproj")) {
+  if (buildPlan.frontier) {
     runInherited("build frontier benchmark artifact", "zig", ["build", "-Doptimize=ReleaseFast", "bench-frontier-build", "-fincremental", "--summary", "failures"]);
   }
-  if (shouldBuild && (lane === "q8_prompt" || lane === "q8_prompt_semantic" || lane === "ggml")) {
+  if (buildPlan.fullModel) {
     runInherited("build benchmark artifacts", "zig", ["build", "-Doptimize=ReleaseFast", "bench-build", "-fincremental", "--summary", "failures"]);
   }
-  if (shouldBuild && lane === "pytorch") {
+  if (buildPlan.nativeFfi) {
     runInherited("build native ffi", "zig", ["build", "ffi-c", "-Doptimize=ReleaseFast", "-fincremental", "--summary", "failures"]);
   }
 
@@ -274,4 +326,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { chooseLane, freshQsemanticThroughput, validateLane };
+module.exports = { chooseLane, freshQsemanticThroughput, laneBuildPlan, nextPerfBuildMode, validateLane };
