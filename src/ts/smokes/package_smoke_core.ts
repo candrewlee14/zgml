@@ -2540,7 +2540,11 @@ function expectTensorNativeBufferEvidence(compiledProgram: Record<string, any>, 
     hostPlacement.shape.join("x") !== "2" ||
     hostPlacement.length !== 2 ||
     hostPlacement.byteLength !== 8 ||
-    hostPlacement.signature !== "tensor-native-placement|storage=host|buffer=none|device=cpu|shape=2|length=2|bytes=8" ||
+    hostPlacement.programCompileEvidenceSignature !== null ||
+    hostPlacement.nativeCompilerAuthority !== null ||
+    hostPlacement.nativeProgramInspectionSignature !== null ||
+    hostPlacement.nativeProgramInspectionSource !== null ||
+    hostPlacement.signature !== "tensor-native-placement|storage=host|buffer=none|device=cpu|shape=2|length=2|bytes=8|evidence=none|compiler=none|inspection=none" ||
     tensorInput.native_placement().signature !== hostPlacement.signature
   ) {
     throw new Error(`${label} expected Tensor.nativePlacement host evidence`);
@@ -2582,6 +2586,10 @@ function expectTensorNativeBufferEvidence(compiledProgram: Record<string, any>, 
   const placedInput = tensorInput.place(compiledProgram, "input");
   const optionPlacedInput = tensorInput.toNativeBuffer({ program: compiledProgram, kind: "input" });
   const programPlacement = tensorInput.nativePlacement({ program: compiledProgram, kind: "input" });
+  const placementCompileEvidence = compiledProgram.compileEvidence();
+  const expectedNativeCompilerAuthority = placementCompileEvidence.nativeCompilerAuthority ?? null;
+  const expectedNativeProgramInspectionSignature = placementCompileEvidence.nativeProgramInspectionSignature ?? null;
+  const expectedNativeProgramInspectionSource = placementCompileEvidence.nativeProgramInspectionSource ?? null;
   try {
     if (
       !Object.isFrozen(programPlacement) ||
@@ -2591,7 +2599,13 @@ function expectTensorNativeBufferEvidence(compiledProgram: Record<string, any>, 
       programPlacement.shape.join("x") !== "2" ||
       programPlacement.length !== 2 ||
       programPlacement.byteLength !== 8 ||
-      programPlacement.signature !== "tensor-native-placement|storage=program|buffer=input|device=program|shape=2|length=2|bytes=8"
+      programPlacement.programCompileEvidenceSignature !== placementCompileEvidence.signature ||
+      programPlacement.nativeCompilerAuthority !== expectedNativeCompilerAuthority ||
+      programPlacement.nativeProgramInspectionSignature !== expectedNativeProgramInspectionSignature ||
+      programPlacement.nativeProgramInspectionSource !== expectedNativeProgramInspectionSource ||
+      !programPlacement.signature.includes(`evidence=${placementCompileEvidence.signature}`) ||
+      !programPlacement.signature.includes(`compiler=${expectedNativeCompilerAuthority ?? "none"}`) ||
+      !programPlacement.signature.includes(`inspection=${expectedNativeProgramInspectionSignature ?? "none"}`)
     ) {
       throw new Error(`${label} expected Tensor.nativePlacement Program input evidence`);
     }

@@ -867,6 +867,10 @@ export type TensorNativePlacement = Readonly<{
   shape: readonly number[];
   length: number;
   byteLength: number;
+  programCompileEvidenceSignature: string | null;
+  nativeCompilerAuthority: "zig-module-program" | null;
+  nativeProgramInspectionSignature: string | null;
+  nativeProgramInspectionSource: "zig-program-inspection" | null;
   signature: string;
 }>;
 export type TensorDType = "f32";

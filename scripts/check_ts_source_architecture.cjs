@@ -5404,6 +5404,16 @@ function checkHostTensorNativeSurfacePolicyIsChecked(errors) {
     "export function createTensorFacadeHelpers(options: TensorFacadeHelpersOptions)",
     "function initialize(tensor: TensorFacadeTensor, data: unknown, shape: Shape | undefined, initOptions: TensorInitOptions = {})",
     "createTensorNativeSurfaceHelpers",
+    "const programCompileEvidenceSignature = typeof evidenceRecord?.signature === \"string\"",
+    "const nativeCompilerAuthority = evidenceRecord?.nativeCompilerAuthority === \"zig-module-program\"",
+    "const nativeProgramInspectionSource = evidenceRecord?.nativeProgramInspectionSource === \"zig-program-inspection\"",
+    "programCompileEvidenceSignature,",
+    "nativeCompilerAuthority,",
+    "nativeProgramInspectionSignature,",
+    "nativeProgramInspectionSource,",
+    "`evidence=${programCompileEvidenceSignature ?? \"none\"}`",
+    "`compiler=${nativeCompilerAuthority ?? \"none\"}`",
+    "`inspection=${nativeProgramInspectionSignature ?? \"none\"}`",
   ]) {
     if (!helperSource.includes(needle)) {
       errors.push(`src/ts/core/tensor_facade.ts must own checked Tensor facade/native edge policy: ${needle}`);

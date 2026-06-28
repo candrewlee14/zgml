@@ -72,6 +72,9 @@ PyTorch replacement:
 
 - `dtype` and `device` are honest but narrow. The public tensor story is
   effectively f32 CPU eager plus explicit native Program placement.
+  Program-backed `Tensor.nativePlacement(...)` carries the Program
+  compile-evidence signature and native compiler/inspection provenance, so
+  placement is inspectable boundary evidence rather than only a buffer helper.
 - Autograd coverage is broad enough for small model workflows, but the project
   still needs deeper operation-by-operation numerical-gradient coverage beyond
   the checked family-level runtime evidence in `docs/frontend-autograd-coverage.md`.

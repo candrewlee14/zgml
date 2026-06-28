@@ -197,6 +197,25 @@ export function createTensorFacadeHelpers(options: TensorFacadeHelpersOptions) {
     const opts = bufferOptions || {};
     const kind = opts.kind ?? "input";
     const placement = opts.placement ?? opts.backend ?? opts.device ?? null;
+    const program = opts.program && typeof opts.program === "object" ? opts.program as AnyRecord : null;
+    const compileEvidence = program && typeof program.compileEvidence === "function"
+      ? program.compileEvidence()
+      : null;
+    const evidenceRecord = compileEvidence && typeof compileEvidence === "object"
+      ? compileEvidence as AnyRecord
+      : null;
+    const programCompileEvidenceSignature = typeof evidenceRecord?.signature === "string"
+      ? evidenceRecord.signature
+      : null;
+    const nativeCompilerAuthority = evidenceRecord?.nativeCompilerAuthority === "zig-module-program"
+      ? "zig-module-program"
+      : null;
+    const nativeProgramInspectionSignature = typeof evidenceRecord?.nativeProgramInspectionSignature === "string"
+      ? evidenceRecord.nativeProgramInspectionSignature
+      : null;
+    const nativeProgramInspectionSource = evidenceRecord?.nativeProgramInspectionSource === "zig-program-inspection"
+      ? "zig-program-inspection"
+      : null;
     if (opts.program !== undefined) {
       tensorPlacement.validateProgramPlacement(tensorValue, opts.program, kind);
     }
@@ -210,6 +229,10 @@ export function createTensorFacadeHelpers(options: TensorFacadeHelpersOptions) {
       shape: Object.freeze(shape),
       length: tensorValue.data.length,
       byteLength: tensorValue.data.length * Float32Array.BYTES_PER_ELEMENT,
+      programCompileEvidenceSignature,
+      nativeCompilerAuthority,
+      nativeProgramInspectionSignature,
+      nativeProgramInspectionSource,
       signature: [
         "tensor-native-placement",
         `storage=${opts.program === undefined ? "host" : "program"}`,
@@ -218,6 +241,9 @@ export function createTensorFacadeHelpers(options: TensorFacadeHelpersOptions) {
         `shape=${shape.join("x")}`,
         `length=${tensorValue.data.length}`,
         `bytes=${tensorValue.data.length * Float32Array.BYTES_PER_ELEMENT}`,
+        `evidence=${programCompileEvidenceSignature ?? "none"}`,
+        `compiler=${nativeCompilerAuthority ?? "none"}`,
+        `inspection=${nativeProgramInspectionSignature ?? "none"}`,
       ].join("|"),
     });
   }

@@ -701,6 +701,8 @@ frozen slot lookup for the primary buffers those helpers target, and
 and retained input/output edge shapes before allocating a Program buffer. `program.inputLen()` /
 `program.outputLen()` and `program.inputByteLength()` / `program.outputByteLength()`
 expose the compiled scalar and byte edge lengths directly,
+Program-backed `Tensor.nativePlacement(...)` evidence carries the Program
+compile-evidence signature plus native compiler/inspection provenance,
 `program.weightsLen()` / `program.weightsByteLength()` and `program.biasLen()` /
 `program.biasByteLength()` expose persistent slot sizing, `program.parameterLen()` /
 `program.parameterByteLength()` expose aggregate persistent parameter sizing,

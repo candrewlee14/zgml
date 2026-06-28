@@ -181,6 +181,8 @@ requireIncludes(matrix, matrixPath, "`moduleCompilerCore: \"zig-module-program\"
 requireIncludes(matrix, matrixPath, "`nativeCompileEvidence: \"native-program-inspection\"`");
 requireIncludes(matrix, matrixPath, "`programInspectionCore: \"zig-program-inspection\"`");
 requireIncludes(matrix, matrixPath, "`native_substrate_manifest` carries the same fields");
+requireIncludes(matrix, matrixPath, "Program-backed `Tensor.nativePlacement(...)` carries the Program");
+requireIncludes(matrix, matrixPath, "compile-evidence signature and native compiler/inspection provenance");
 
 const workflowRows = confidenceRows();
 const workflowNames = workflowRows.map((row) => row.workflow);
