@@ -164,7 +164,7 @@ nativeTrainer.free();
 const ergonomicNativeModel = nn.linear(2, 1, { weights: [0, 0], bias: [0] });
 const ergonomicNativeOptimizer = optim.sgd(ergonomicNativeModel, { lr: 0.04 });
 const ergonomicNativeBatches = data.dataLoader(samples, { batchSize: 4, shuffle: false });
-const ergonomicNativeCriterion = loss.mseLoss();
+const ergonomicNativeCriterion = "mse";
 const ergonomicNativeBefore = scalar(loss.mse(ergonomicNativeModel.forward(tensor([1, -1], [1, 2])), tensor([2.5], [1, 1])));
 const ergonomicNativePlan = train.explainNative(
   ergonomicNativeModel,
@@ -186,6 +186,7 @@ if (
   ergonomicNativePlan.supported !== true ||
   ergonomicNativePlan.loweredBy !== "zig-ffi" ||
   ergonomicNativePlan.nativeBulk !== true ||
+  ergonomicNativePlan.compileOptions?.loss !== "mse" ||
   ergonomicNativePlan.plan?.kernels[0] !== "zgml_train_linear_mse_sgd_f32" ||
   ergonomicNativePlan.bulkKernel !== "zgml_train_linear_mse_sgd_f32_bulk" ||
   ergonomicNativePlan.bulkPlan?.kernel !== "zgml_train_linear_mse_sgd_f32_bulk" ||
@@ -209,6 +210,7 @@ if (ergonomicNativeFit.native !== true || ergonomicNativeFit.backend !== "cpu") 
 }
 if (
   ergonomicNativeFit.compiledPlan?.loweredBy !== "zig-ffi" ||
+  ergonomicNativeFit.compiledPlan.lossKind !== "mse" ||
   ergonomicNativeFit.compiledPlan.kernels[0] !== "zgml_train_linear_mse_sgd_f32" ||
   ergonomicNativeFit.compiled_plan !== ergonomicNativeFit.compiledPlan
 ) {

@@ -1441,6 +1441,8 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
   }
 
   function nativeLossKind(criterion: unknown) {
+    if (criterion === "mse" || criterion === "meanSquaredError" || criterion === "mean_squared_error") return "mse";
+    if (criterion === "crossEntropy" || criterion === "cross_entropy") return "crossEntropy";
     const loss = criterion as AnyRecord | null;
     if (!loss || loss.reduction === "sum") return null;
     if (loss.kind === "mse-loss") return "mse";
@@ -1969,9 +1971,11 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     const target = module as AnyRecord;
     const loss = criterion as AnyRecord;
     if (!target || typeof target.forward !== "function") throw new Error("train.fitModule requires a module with forward(input)");
-    if (!loss || typeof loss.forward !== "function") throw new Error("train.fitModule requires a criterion with forward(prediction, target)");
     const compiled = maybeCompileNativeTrainingStep(optimizer, module, batches, criterion, fitOptions);
     if (compiled !== null) return fitCompiledTrainingStep(compiled, batches, fitOptions);
+    if (!loss || typeof loss.forward !== "function") {
+      throw new Error("train.fitModule string losses require a supported native Zig training path; pass requireNative: true for diagnostics or provide a criterion with forward(prediction, target) for JS autograd fallback");
+    }
     return fitLoop(optimizer, batches, (batch: unknown, context: TrainFitContext) => {
       const record = batch as AnyRecord;
       if (!isTensor(record?.input)) throw new Error("train.fitModule batch.input must be a Tensor");

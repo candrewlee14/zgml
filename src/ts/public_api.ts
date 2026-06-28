@@ -4855,6 +4855,13 @@ export type TrainClassificationTargetShape<LogitsShape extends TensorShapeTuple>
 export type TrainClassificationBatch<Target extends NnModule, Batch> =
   TrainBatchTargetShape<Batch> extends TrainClassificationTargetShape<TrainModuleOutputShape<Target, Batch>> ? Batch : never;
 
+export type TrainNativeLossName =
+  | "crossEntropy"
+  | "cross_entropy"
+  | "mse"
+  | "meanSquaredError"
+  | "mean_squared_error";
+
 export type TrainSupervisedCriterion<Target extends NnModule, Batch> = {
   forward(
     prediction: Tensor<TrainModuleOutputShape<Target, Batch>>,
@@ -5236,8 +5243,8 @@ export type CompileTrainingOptions = Readonly<Record<string, unknown> & {
   input_shape?: readonly number[];
   batchSize?: number;
   batch_size?: number;
-  loss?: "crossEntropy" | "cross_entropy" | "mse" | "meanSquaredError" | "mean_squared_error";
-  criterion?: "crossEntropy" | "cross_entropy" | "mse" | "meanSquaredError" | "mean_squared_error";
+  loss?: TrainNativeLossName;
+  criterion?: TrainNativeLossName;
   classes?: number;
   numClasses?: number;
   num_classes?: number;
@@ -5348,6 +5355,8 @@ export type TrainModelFitOptions<
 } & (
   | { loss: TrainSupervisedCriterion<Target, Batch>; criterion?: TrainSupervisedCriterion<Target, Batch> }
   | { criterion: TrainSupervisedCriterion<Target, Batch>; loss?: TrainSupervisedCriterion<Target, Batch> }
+  | { loss: TrainNativeLossName; criterion?: TrainNativeLossName }
+  | { criterion: TrainNativeLossName; loss?: TrainNativeLossName }
 );
 
 export type TrainFitEvidence<OptimizerKind extends OptimizerStateKind | null = OptimizerStateKind | null> = Readonly<{
@@ -5868,6 +5877,24 @@ export interface TrainNamespace {
   ): TrainFitEvidence;
   fit<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
     module: Target,
+    batches: Iterable<Batch>,
+    options: TrainFitOptions<Kind> & {
+      optimizer: Optimizer<Kind>;
+      loss: TrainNativeLossName;
+      criterion?: TrainNativeLossName;
+    },
+  ): TrainFitEvidence<Kind>;
+  fit<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<Batch>,
+    options: TrainFitOptions<Kind> & {
+      optimizer: Optimizer<Kind>;
+      criterion: TrainNativeLossName;
+      loss?: TrainNativeLossName;
+    },
+  ): TrainFitEvidence<Kind>;
+  fit<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    module: Target,
     batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
     options: TrainModelFitOptions<Kind, Target, Batch>,
   ): TrainFitEvidence<Kind>;
@@ -5899,6 +5926,24 @@ export interface TrainNamespace {
     batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
     options: TrainModelFitOptions<Kind, Target, Batch>,
   ): NativeTrainingExplanation;
+  explainNative<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<Batch>,
+    options: TrainFitOptions<Kind> & {
+      optimizer: Optimizer<Kind>;
+      loss: TrainNativeLossName;
+      criterion?: TrainNativeLossName;
+    },
+  ): NativeTrainingExplanation;
+  explainNative<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<Batch>,
+    options: TrainFitOptions<Kind> & {
+      optimizer: Optimizer<Kind>;
+      criterion: TrainNativeLossName;
+      loss?: TrainNativeLossName;
+    },
+  ): NativeTrainingExplanation;
   explainNative<Target extends NnModule, Batch>(
     module: Target,
     batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
@@ -5926,6 +5971,28 @@ export interface TrainNamespace {
     batches: Iterable<Batch>,
     options?: TrainFitOptions & { requireNative?: true; require_native?: true },
   ): TrainFitEvidence;
+  fitNative<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<Batch>,
+    options: TrainFitOptions<Kind> & {
+      optimizer: Optimizer<Kind>;
+      loss: TrainNativeLossName;
+      criterion?: TrainNativeLossName;
+      requireNative?: true;
+      require_native?: true;
+    },
+  ): TrainFitEvidence<Kind>;
+  fitNative<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<Batch>,
+    options: TrainFitOptions<Kind> & {
+      optimizer: Optimizer<Kind>;
+      criterion: TrainNativeLossName;
+      loss?: TrainNativeLossName;
+      requireNative?: true;
+      require_native?: true;
+    },
+  ): TrainFitEvidence<Kind>;
   fitNative<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
     module: Target,
     batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
@@ -5958,6 +6025,13 @@ export interface TrainNamespace {
     criterion: TrainSupervisedCriterion<Target, Batch>,
     options?: TrainFitOptions<Kind>,
   ): TrainFitEvidence<Kind>;
+  fitModule<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    optimizer: Optimizer<Kind>,
+    module: Target,
+    batches: Iterable<Batch>,
+    criterion: TrainNativeLossName,
+    options?: TrainFitOptions<Kind>,
+  ): TrainFitEvidence<Kind>;
   fitModule<Target extends NnModule, Batch>(
     optimizer: { step(): void; zeroGrad?(options?: ZeroGradOptions): void },
     module: Target,
@@ -5984,6 +6058,13 @@ export interface TrainNamespace {
     module: Target,
     batches: Iterable<TrainClassificationBatch<Target, Batch>>,
     criterion: TrainClassificationCriterion<Target, Batch>,
+    options?: TrainFitOptions<Kind>,
+  ): TrainFitEvidence<Kind>;
+  fitClassifier<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    optimizer: Optimizer<Kind>,
+    module: Target,
+    batches: Iterable<Batch>,
+    criterion: TrainNativeLossName,
     options?: TrainFitOptions<Kind>,
   ): TrainFitEvidence<Kind>;
   fitClassifier<Target extends NnModule, Batch>(

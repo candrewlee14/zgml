@@ -427,6 +427,7 @@ import {
   type TrainFitStepEvidence,
   type TrainModelFitOptions,
   type TrainModuleOutputShape,
+  type TrainNativeLossName,
   type TrainSupervisedBatch,
   type TrainStepEvidence,
   type ZeroGradOptions,
@@ -4565,7 +4566,21 @@ const modelFirstNativeFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpoi
   num_classes: 1,
 });
 const modelFirstNativeFitPlan: CompiledTrainingPlan | null | undefined = modelFirstNativeFitEvidence.compiledPlan;
+const nativeRegressionLossName: TrainNativeLossName = "mse";
+const nativeClassificationLossName: TrainNativeLossName = "crossEntropy";
+const modelFirstNativeStringLossFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpointModel, tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: nativeRegressionLossName,
+  maxSteps: 1,
+  requireNative: true,
+  inputShape: [1, 2] as const,
+});
 const optimizerFirstNativeFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpointOptimizer, checkpointModel, tensorDatasetBatches, new nn.MSELoss(), {
+  maxSteps: 1,
+  requireNative: true,
+  inputShape: [1, 2] as const,
+});
+const optimizerFirstNativeStringLossFitEvidence: TrainFitEvidence<"adam"> = train.fitModule(checkpointOptimizer, checkpointModel, tensorDatasetBatches, nativeRegressionLossName, {
   maxSteps: 1,
   requireNative: true,
   inputShape: [1, 2] as const,
@@ -4574,6 +4589,12 @@ const optimizerFirstNativeFitPlan: CompiledTrainingPlan | null | undefined = opt
 const modelFirstNativeTrainingExplanation: NativeTrainingExplanation = train.explainNative(checkpointModel, tensorDatasetBatches, {
   optimizer: checkpointOptimizer,
   loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+const modelFirstNativeStringLossTrainingExplanation: NativeTrainingExplanation = train.explainNative(checkpointModel, tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  criterion: nativeRegressionLossName,
   maxSteps: 1,
   inputShape: [1, 2] as const,
 });
@@ -4619,6 +4640,7 @@ const rootNativeTrainingSnakeBulkPlan: NativeTrainingBulkFitPlan | null = rootNa
 const rootNativeTrainingBulkKernel: string | null = rootNativeTrainingExplanation.bulkKernel;
 const rootNativeTrainingNativeBulk: boolean = rootNativeTrainingExplanation.nativeBulk;
 void modelFirstNativeTrainingExplanation;
+void modelFirstNativeStringLossTrainingExplanation;
 void optimizerFirstNativeTrainingExplanation;
 void rootNativeTrainingExplanation;
 void rootNativeTrainingBulkPlan;
@@ -4629,6 +4651,9 @@ void rootNativeTrainingPlanAlias;
 void rootNativeTrainingSnakePlanAlias;
 void moduleNativeTrainingExplanation;
 void moduleNativeTrainingSnakeExplanation;
+void modelFirstNativeStringLossFitEvidence;
+void optimizerFirstNativeStringLossFitEvidence;
+void nativeClassificationLossName;
 const compiledTrainingForAlias: CompiledTrainingStep = compile.forTraining(checkpointModel, checkpointOptimizer, {
   inputShape: [1, 2] as const,
   loss: "mse",

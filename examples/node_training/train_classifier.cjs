@@ -144,7 +144,8 @@ const ergonomicNativeLoader = data.dataLoader(samples, { batchSize: 2, shuffle: 
 const ergonomicNativeBefore = scalar(loss.crossEntropy(ergonomicNativeModel.forward(probeInput), probeTarget, { classes: 2 }));
 const ergonomicNativePreflight = ergonomicNativeModel.explainNativeTraining(ergonomicNativeLoader, {
   optimizer: ergonomicNativeOptimizer,
-  loss: criterion,
+  loss: "crossEntropy",
+  classes: 2,
   epochs: 80,
   requireNative: true,
 });
@@ -152,6 +153,7 @@ if (
   ergonomicNativePreflight.supported !== true ||
   ergonomicNativePreflight.loweredBy !== "zig-ffi" ||
   ergonomicNativePreflight.nativeBulk !== true ||
+  ergonomicNativePreflight.compileOptions?.loss !== "crossEntropy" ||
   ergonomicNativePreflight.bulkKernel !== "zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk" ||
   ergonomicNativePreflight.bulkPlan?.kernel !== "zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk" ||
   ergonomicNativePreflight.plan?.kernels[0] !== "zgml_train_mlp_relu_cross_entropy_adamw_f32"
@@ -160,7 +162,8 @@ if (
 }
 const ergonomicNativeFit = ergonomicNativeModel.fit(ergonomicNativeLoader, {
   optimizer: ergonomicNativeOptimizer,
-  loss: criterion,
+  loss: "crossEntropy",
+  classes: 2,
   epochs: 80,
   requireNative: true,
 });
@@ -174,6 +177,7 @@ if (
   ergonomicNativeFit.backend !== "cpu" ||
   ergonomicNativePlan?.loweredBy !== "zig-ffi" ||
   ergonomicNativePlan?.runtimePath !== "JS/TS module API -> Zig native training kernel" ||
+  ergonomicNativePlan?.lossKind !== "crossEntropy" ||
   ergonomicNativePlan?.kernels[0] !== "zgml_train_mlp_relu_cross_entropy_adamw_f32" ||
   ergonomicNativeFit.steps !== 240 ||
   ergonomicNativeFit.losses.length !== 1 ||
