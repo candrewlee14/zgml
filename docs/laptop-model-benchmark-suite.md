@@ -64,6 +64,21 @@ family against PyTorch:
 Diffusion and voice should stay explicit unsupported targets until the graph
 import, op coverage, and host preprocessing stories are real.
 
+## First PyTorch LLM Baseline
+
+`npm run bench:laptop:llm:pytorch:run` records the first PyTorch-primary laptop
+LLM artifact for `llm.smollm2_360m.instruct.q8_0`.
+
+Latest local result:
+
+| Model | PyTorch prefill | PyTorch decode | PyTorch load | zgml |
+| --- | ---: | ---: | ---: | --- |
+| SmolLM2-360M-Instruct | 308.15 tok/s | 55.47 tok/s | 292.45 ms | unsupported at probe: `zgml unsupported (5)` |
+
+That is not a zgml loss on speed yet; it is a capability gap. The current
+native model path does not support this PyTorch-compatible safetensors
+checkpoint, so there is no honest speed ratio to report for this target.
+
 ## Benchmark Output Contract
 
 Each ready model should write an ignored JSON artifact under `bench-results/`

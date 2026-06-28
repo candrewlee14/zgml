@@ -44,6 +44,7 @@
       "secondaryReference": "llama.cpp",
       "zgmlStatus": "next",
       "benchmark": {
+        "command": "npm run bench:laptop:llm:pytorch:run",
         "metric": "prompt/decode tok/s, memory peak, logits/prediction agreement vs PyTorch",
         "gate": "must compile/load from PyTorch-compatible weights; performance target starts at PyTorch parity"
       },
