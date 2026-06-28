@@ -3856,6 +3856,14 @@ export interface NnModule {
   compile_inference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   forTraining(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
   for_training(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  explainTraining(batches: Iterable<unknown>, options: TrainFitOptions & {
+    optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void };
+    loss?: unknown;
+    criterion?: unknown;
+  }): NativeTrainingExplanation;
+  explain_training: NnModule["explainTraining"];
+  explainNativeTraining: NnModule["explainTraining"];
+  explain_native_training: NnModule["explainTraining"];
   fit(batches: Iterable<unknown>, options: TrainFitOptions & {
     optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void };
     loss?: unknown;
@@ -5235,6 +5243,21 @@ export type CompiledTrainingPlan = Readonly<{
   workspace: Readonly<Record<string, number>>;
 }>;
 
+export type NativeTrainingExplanation = Readonly<{
+  kind: "zgml.train.native-training-explanation";
+  supported: boolean;
+  native: boolean;
+  loweredBy: "zig-ffi" | null;
+  runtimePath: "JS/TS module API -> Zig native training kernel";
+  backend: string | null;
+  reason: string | null;
+  compileOptions: Readonly<Record<string, unknown>> | null;
+  compile_options: Readonly<Record<string, unknown>> | null;
+  plan: CompiledTrainingPlan | null;
+  kernels: readonly string[];
+  signature: string;
+}>;
+
 export interface CompiledTrainingStep {
   readonly kind: "zgml.compiled-training-step";
   readonly native: true;
@@ -5805,6 +5828,38 @@ export interface TrainNamespace {
     batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
     options: TrainModelFitOptions<null, Target, Batch>,
   ): TrainFitEvidence;
+  explainNative<Batch extends { input: TensorLike; target: TensorLike | IndexLike }>(
+    compiled: CompiledTrainingStep,
+    batches: Iterable<Batch>,
+    options?: TrainFitOptions,
+  ): NativeTrainingExplanation;
+  explainNative<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    options: TrainModelFitOptions<Kind, Target, Batch>,
+  ): NativeTrainingExplanation;
+  explainNative<Target extends NnModule, Batch>(
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    options: TrainModelFitOptions<null, Target, Batch>,
+  ): NativeTrainingExplanation;
+  explainNative<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    optimizer: Optimizer<Kind>,
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    criterion: TrainSupervisedCriterion<Target, Batch>,
+    options?: TrainFitOptions<Kind>,
+  ): NativeTrainingExplanation;
+  explainNative<Target extends NnModule, Batch>(
+    optimizer: { step(): void; zeroGrad?(options?: ZeroGradOptions): void },
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    criterion: TrainSupervisedCriterion<Target, Batch>,
+    options?: TrainFitOptions,
+  ): NativeTrainingExplanation;
+  explain_native: TrainNamespace["explainNative"];
+  nativePlan: TrainNamespace["explainNative"];
+  native_plan: TrainNamespace["explainNative"];
   fitNative<Batch extends { input: TensorLike; target: TensorLike | IndexLike }>(
     compiled: CompiledTrainingStep,
     batches: Iterable<Batch>,
@@ -7246,6 +7301,10 @@ export type PublicTorchNamespace = Readonly<{
   fit: PublicTrainNamespace["fit"];
   fitModule: PublicTrainNamespace["fitModule"];
   fit_module: PublicTrainNamespace["fit_module"];
+  explainNative: PublicTrainNamespace["explainNative"];
+  explain_native: PublicTrainNamespace["explain_native"];
+  nativeTrainingPlan: PublicTrainNamespace["nativePlan"];
+  native_training_plan: PublicTrainNamespace["native_plan"];
   fitNative: PublicTrainNamespace["fitNative"];
   fit_native: PublicTrainNamespace["fit_native"];
   checkpoint: PublicCheckpointNamespace;
@@ -7327,6 +7386,10 @@ export declare const for_training: PublicCompileNamespace["for_training"];
 export declare const fit: PublicTrainNamespace["fit"];
 export declare const fitModule: PublicTrainNamespace["fitModule"];
 export declare const fit_module: PublicTrainNamespace["fit_module"];
+export declare const explainNative: PublicTrainNamespace["explainNative"];
+export declare const explain_native: PublicTrainNamespace["explain_native"];
+export declare const nativeTrainingPlan: PublicTrainNamespace["nativePlan"];
+export declare const native_training_plan: PublicTrainNamespace["native_plan"];
 export declare const fitNative: PublicTrainNamespace["fitNative"];
 export declare const fit_native: PublicTrainNamespace["fit_native"];
 export declare const nativeEager: PublicNativeEagerNamespace;

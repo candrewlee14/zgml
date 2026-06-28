@@ -256,6 +256,7 @@ import {
   type TrainLossStepOptions as PackageTrainLossStepOptions,
   type TrainModuleOutputShape as PackageTrainModuleOutputShape,
   type TrainNamespace as PackageTrainNamespace,
+  type NativeTrainingExplanation as PackageNativeTrainingExplanation,
   type TrainPredictContext as PackageTrainPredictContext,
   type TrainPredictEvidence as PackageTrainPredictEvidence,
   type TrainPredictOptions as PackageTrainPredictOptions,
@@ -747,6 +748,8 @@ type PackageTrainClassificationCriterionProof = Expect<Parameters<PackageTrainCl
 type PackageTrainEvaluateContextShape = Expect<Equal<PackageTrainEvaluateContext["batchIndex"], number>>;
 type PackageTrainEvaluateOptionsCallbackShape = Expect<Equal<Parameters<NonNullable<PackageTrainEvaluateOptions["on_step"]>>[0]["kind"], "zgml.train.evaluate-step">>;
 type PackageTrainNamespaceEvaluateModuleShape = Expect<Equal<ReturnType<PackageTrainNamespace["evaluateModule"]>, PackageTrainEvaluateEvidence>>;
+type PackageTrainNamespaceExplainNativeShape = Expect<ReturnType<PackageTrainNamespace["explainNative"]> extends PackageNativeTrainingExplanation ? true : false>;
+type PackageNativeTrainingExplanationShape = Expect<Equal<PackageNativeTrainingExplanation["plan"], PackageCompiledTrainingPlan | null>>;
 type PackageTrainNamespaceFitNativeShape = Expect<Equal<ReturnType<PackageTrainNamespace["fitNative"]>, PackageTrainFitEvidence>>;
 type PackageTrainNamespaceFitNativeAliasShape = Expect<Equal<ReturnType<PackageTrainNamespace["fit_native"]>, PackageTrainFitEvidence>>;
 type PackageTrainNamespacePredictModuleShape = Expect<Equal<ReturnType<PackageTrainNamespace["predictModule"]>["kind"], "zgml.train.predict">>;

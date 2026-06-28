@@ -3,6 +3,7 @@
 import type {
   OptimizerStateKind,
   CompiledTrainingPlan,
+  NativeTrainingExplanation,
   TrainEvaluateContext,
   TrainEvaluateOptions,
   TrainPredictContext,
@@ -1327,6 +1328,73 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     return plan && typeof plan === "object" ? plan : null;
   }
 
+  function frozenNativeTrainingCompileOptions(compileOptions: LossTrainOptionsRecord | null) {
+    if (compileOptions === null) return null;
+    const out: AnyRecord = {};
+    for (const [key, value] of Object.entries(compileOptions)) {
+      out[key] = Array.isArray(value) ? Object.freeze(value.slice()) : value;
+    }
+    return Object.freeze(out);
+  }
+
+  function nativeTrainingExplanationSignature(explanation: Omit<NativeTrainingExplanation, "signature">) {
+    const plan = explanation.plan;
+    return [
+      "native-training",
+      `supported=${explanation.supported ? 1 : 0}`,
+      `lowered=${explanation.loweredBy ?? "null"}`,
+      `backend=${explanation.backend ?? "null"}`,
+      `reason=${explanation.reason ?? "null"}`,
+      `input=${plan ? plan.inputShape.join("x") : "null"}`,
+      `output=${plan ? plan.outputShape.join("x") : "null"}`,
+      `kernels=${explanation.kernels.join("+")}`,
+    ].join("|");
+  }
+
+  function nativeTrainingExplanation(fields: Omit<NativeTrainingExplanation, "kind" | "runtimePath" | "signature">): NativeTrainingExplanation {
+    const explanation = {
+      kind: "zgml.train.native-training-explanation" as const,
+      runtimePath: "JS/TS module API -> Zig native training kernel" as const,
+      ...fields,
+      compileOptions: fields.compileOptions,
+      compile_options: fields.compileOptions,
+      kernels: Object.freeze(fields.kernels.slice()),
+      signature: "",
+    };
+    explanation.signature = nativeTrainingExplanationSignature(explanation);
+    return Object.freeze(explanation) as NativeTrainingExplanation;
+  }
+
+  function unsupportedNativeTrainingExplanation(reason: string, compileOptions: LossTrainOptionsRecord | null = null): NativeTrainingExplanation {
+    const frozenOptions = frozenNativeTrainingCompileOptions(compileOptions);
+    return nativeTrainingExplanation({
+      supported: false,
+      native: false,
+      loweredBy: null,
+      backend: null,
+      reason,
+      compileOptions: frozenOptions,
+      compile_options: frozenOptions,
+      plan: null,
+      kernels: Object.freeze([]),
+    });
+  }
+
+  function supportedNativeTrainingExplanation(plan: CompiledTrainingPlan, compileOptions: LossTrainOptionsRecord | null): NativeTrainingExplanation {
+    const frozenOptions = frozenNativeTrainingCompileOptions(compileOptions);
+    return nativeTrainingExplanation({
+      supported: true,
+      native: true,
+      loweredBy: "zig-ffi",
+      backend: plan.backend,
+      reason: null,
+      compileOptions: frozenOptions,
+      compile_options: frozenOptions,
+      plan,
+      kernels: plan.kernels,
+    });
+  }
+
   function modelInputFeatureCount(module: unknown) {
     const target = module as AnyRecord | null;
     if (!target) return null;
@@ -1447,6 +1515,76 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
       if (config.requireNative === true || config.require_native === true) throw error;
       return null;
     }
+  }
+
+  function explainNativeModule(optimizer: LossTrainOptimizer, module: unknown, batches: unknown, criterion: unknown, fitOptions: TrainFitOptions = {}) {
+    if (compileTrainingStep === null) {
+      return unsupportedNativeTrainingExplanation("native training compiler is not installed");
+    }
+    const compileOptions = nativeTrainingCompileOptions(module, batches, criterion, fitOptions);
+    if (compileOptions === null) {
+      return unsupportedNativeTrainingExplanation("could not derive a supported fixed-shape native training plan");
+    }
+    try {
+      const compiled = compileTrainingStep(module, optimizer, compileOptions);
+      if (!isCompiledTrainingStep(compiled)) {
+        return unsupportedNativeTrainingExplanation("native training compiler did not return a compiled native training step", compileOptions);
+      }
+      const plan = compiledTrainingPlan(compiled);
+      if (plan === null) {
+        return unsupportedNativeTrainingExplanation("compiled native training step did not expose a training plan", compileOptions);
+      }
+      return supportedNativeTrainingExplanation(plan, compileOptions);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return unsupportedNativeTrainingExplanation(message, compileOptions);
+    }
+  }
+
+  function explainNative(
+    targetOrOptimizer: unknown,
+    moduleOrBatches: unknown,
+    batchesOrOptions: unknown,
+    criterionOrOptions: unknown = {},
+    maybeFitOptions: TrainFitOptions = {},
+  ) {
+    if (isCompiledTrainingStep(targetOrOptimizer)) {
+      const plan = compiledTrainingPlan(targetOrOptimizer);
+      return plan === null
+        ? unsupportedNativeTrainingExplanation("compiled native training step did not expose a training plan")
+        : supportedNativeTrainingExplanation(plan, isRecord(batchesOrOptions) ? batchesOrOptions as LossTrainOptionsRecord : null);
+    }
+    if (
+      targetOrOptimizer &&
+      typeof (targetOrOptimizer as AnyRecord).forward === "function" &&
+      isRecord(batchesOrOptions) &&
+      (batchesOrOptions as AnyRecord).optimizer &&
+      ((batchesOrOptions as AnyRecord).loss || (batchesOrOptions as AnyRecord).criterion)
+    ) {
+      const fitOptions = batchesOrOptions as TrainFitOptions & AnyRecord;
+      return explainNativeModule(
+        fitOptions.optimizer as LossTrainOptimizer,
+        targetOrOptimizer,
+        moduleOrBatches,
+        fitOptions.loss ?? fitOptions.criterion,
+        fitOptions,
+      );
+    }
+    if (
+      targetOrOptimizer &&
+      typeof (targetOrOptimizer as LossTrainOptimizer).step === "function" &&
+      moduleOrBatches &&
+      typeof (moduleOrBatches as AnyRecord).forward === "function"
+    ) {
+      return explainNativeModule(
+        targetOrOptimizer as LossTrainOptimizer,
+        moduleOrBatches,
+        batchesOrOptions,
+        criterionOrOptions,
+        maybeFitOptions,
+      );
+    }
+    return unsupportedNativeTrainingExplanation("train.explainNative requires a compiled native training step or a module with { optimizer, loss } options");
   }
 
   function finiteLossScalar(lossValue: LossTrainTensor, label: string) {
@@ -1990,6 +2128,10 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
       return lossValue;
     },
     fit,
+    explainNative,
+    explain_native: explainNative,
+    nativePlan: explainNative,
+    native_plan: explainNative,
     fitNative,
     fit_native: fitNative,
     fitModule,

@@ -209,6 +209,7 @@ export type NnNamespaceHooks = {
   bindingPlanForModuleBindings: NnNamespaceHookCallback<[target: unknown, bindings?: unknown], unknown>;
   requireBindingPlanForModuleBindings: NnNamespaceHookCallback<[target: unknown, bindings?: unknown], unknown>;
   fitModule?: NnNamespaceHookCallback<[target: unknown, batches: unknown, options?: TrainFitOptions], unknown>;
+  explainNativeModule?: NnNamespaceHookCallback<[target: unknown, batches: unknown, options?: TrainFitOptions], unknown>;
   fitNativeModule?: NnNamespaceHookCallback<[target: unknown, batches: unknown, options?: TrainFitOptions], unknown>;
   evaluateModule?: NnNamespaceHookCallback<[target: unknown, batches: unknown, criterion: unknown, options?: TrainEvaluateOptions], unknown>;
   predictModule?: NnNamespaceHookCallback<[target: unknown, batches: unknown, options?: TrainPredictOptions], unknown>;
@@ -273,6 +274,7 @@ export function createNnNamespace(options: NnNamespaceOptions) {
   const bindingPlanForModuleBindings = options.bindingPlanForModuleBindings;
   const requireBindingPlanForModuleBindings = options.requireBindingPlanForModuleBindings;
   const fitModule = options.fitModule;
+  const explainNativeModule = options.explainNativeModule;
   const fitNativeModule = options.fitNativeModule;
   const evaluateModule = options.evaluateModule;
   const predictModule = options.predictModule;
@@ -2861,6 +2863,7 @@ export function createNnNamespace(options: NnNamespaceOptions) {
     canCompileModule,
     nativeInferenceForModule: moduleNativeInference,
     fitModule,
+    explainNativeModule,
     fitNativeModule,
     evaluateModule,
     predictModule,

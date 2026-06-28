@@ -2718,6 +2718,10 @@ export const simple = Object.freeze({
   fit: train.fit,
   fitModule: train.fitModule,
   fit_module: train.fit_module,
+  explainNative: train.explainNative,
+  explain_native: train.explain_native,
+  nativeTrainingPlan: train.nativePlan,
+  native_training_plan: train.native_plan,
   fitNative: train.fitNative,
   fit_native: train.fit_native,
   checkpoint,
@@ -2856,6 +2860,10 @@ export const for_training = compile.for_training;
 export const fit = train.fit;
 export const fitModule = train.fitModule;
 export const fit_module = train.fit_module;
+export const explainNative = train.explainNative;
+export const explain_native = train.explain_native;
+export const nativeTrainingPlan = train.nativePlan;
+export const native_training_plan = train.native_plan;
 export const fitNative = train.fitNative;
 export const fit_native = train.fit_native;
 

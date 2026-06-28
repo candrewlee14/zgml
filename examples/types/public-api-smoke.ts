@@ -53,10 +53,14 @@ import {
   fullLike,
   full_like,
   flatten,
+  explainNative,
+  explain_native,
   fit,
   fitModule,
   fit_module,
   fitNative,
+  nativeTrainingPlan,
+  native_training_plan,
   gather,
   hasShape,
   hstack,
@@ -397,6 +401,7 @@ import {
   type WhereShape,
   type CompiledTrainingPlan,
   type CompiledTrainingStep,
+  type NativeTrainingExplanation,
   type TinyLlamaProgram,
   type TinyLlamaSession,
   type TokenArgmaxResult,
@@ -4565,6 +4570,56 @@ const optimizerFirstNativeFitEvidence: TrainFitEvidence<"adam"> = train.fit(chec
   inputShape: [1, 2] as const,
 });
 const optimizerFirstNativeFitPlan: CompiledTrainingPlan | null | undefined = optimizerFirstNativeFitEvidence.compiledPlan;
+const modelFirstNativeTrainingExplanation: NativeTrainingExplanation = train.explainNative(checkpointModel, tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+const optimizerFirstNativeTrainingExplanation: NativeTrainingExplanation = train.explain_native(
+  checkpointOptimizer,
+  checkpointModel,
+  tensorDatasetBatches,
+  new nn.MSELoss(),
+  { maxSteps: 1, inputShape: [1, 2] as const },
+);
+const rootNativeTrainingExplanation: NativeTrainingExplanation = explainNative(checkpointModel, tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+const rootNativeTrainingPlanAlias: NativeTrainingExplanation = nativeTrainingPlan(checkpointModel, tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+const rootNativeTrainingSnakePlanAlias: NativeTrainingExplanation = native_training_plan(checkpointModel, tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+const moduleNativeTrainingExplanation: NativeTrainingExplanation = checkpointModel.explainTraining(tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+const moduleNativeTrainingSnakeExplanation: NativeTrainingExplanation = checkpointModel.explain_native_training(tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+void modelFirstNativeTrainingExplanation;
+void optimizerFirstNativeTrainingExplanation;
+void rootNativeTrainingExplanation;
+void rootNativeTrainingPlanAlias;
+void rootNativeTrainingSnakePlanAlias;
+void moduleNativeTrainingExplanation;
+void moduleNativeTrainingSnakeExplanation;
 const compiledTrainingForAlias: CompiledTrainingStep = compile.forTraining(checkpointModel, checkpointOptimizer, {
   inputShape: [1, 2] as const,
   loss: "mse",

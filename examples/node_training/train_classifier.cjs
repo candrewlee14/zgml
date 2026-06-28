@@ -142,6 +142,19 @@ const ergonomicNativeModel = createClassifierGraph();
 const ergonomicNativeOptimizer = optim.adamW(ergonomicNativeModel, { lr: 0.05, weightDecay: 0.0001 });
 const ergonomicNativeLoader = data.dataLoader(samples, { batchSize: 2, shuffle: true, seed: 17 });
 const ergonomicNativeBefore = scalar(loss.crossEntropy(ergonomicNativeModel.forward(probeInput), probeTarget, { classes: 2 }));
+const ergonomicNativePreflight = ergonomicNativeModel.explainNativeTraining(ergonomicNativeLoader, {
+  optimizer: ergonomicNativeOptimizer,
+  loss: criterion,
+  epochs: 80,
+  requireNative: true,
+});
+if (
+  ergonomicNativePreflight.supported !== true ||
+  ergonomicNativePreflight.loweredBy !== "zig-ffi" ||
+  ergonomicNativePreflight.plan?.kernels[0] !== "zgml_train_mlp_relu_cross_entropy_adamw_f32"
+) {
+  throw new Error(`native classifier preflight must prove the Zig MLP trainer: ${JSON.stringify(ergonomicNativePreflight)}`);
+}
 const ergonomicNativeFit = ergonomicNativeModel.fit(ergonomicNativeLoader, {
   optimizer: ergonomicNativeOptimizer,
   loss: criterion,

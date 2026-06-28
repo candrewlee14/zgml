@@ -166,6 +166,30 @@ const ergonomicNativeOptimizer = optim.sgd(ergonomicNativeModel, { lr: 0.04 });
 const ergonomicNativeBatches = data.dataLoader(samples, { batchSize: 4, shuffle: false });
 const ergonomicNativeCriterion = loss.mseLoss();
 const ergonomicNativeBefore = scalar(loss.mse(ergonomicNativeModel.forward(tensor([1, -1], [1, 2])), tensor([2.5], [1, 1])));
+const ergonomicNativePlan = train.explainNative(
+  ergonomicNativeModel,
+  ergonomicNativeBatches,
+  {
+    optimizer: ergonomicNativeOptimizer,
+    loss: ergonomicNativeCriterion,
+    epochs: 80,
+    requireNative: true,
+  },
+);
+const ergonomicNativeModulePlan = ergonomicNativeModel.explainTraining(ergonomicNativeBatches, {
+  optimizer: ergonomicNativeOptimizer,
+  loss: ergonomicNativeCriterion,
+  epochs: 80,
+  requireNative: true,
+});
+if (
+  ergonomicNativePlan.supported !== true ||
+  ergonomicNativePlan.loweredBy !== "zig-ffi" ||
+  ergonomicNativePlan.plan?.kernels[0] !== "zgml_train_linear_mse_sgd_f32" ||
+  ergonomicNativeModulePlan.signature !== ergonomicNativePlan.signature
+) {
+  throw new Error(`native training preflight must prove the Zig linear trainer: ${JSON.stringify(ergonomicNativePlan)}`);
+}
 const ergonomicNativeFit = zgmlFit(
   ergonomicNativeModel,
   ergonomicNativeBatches,

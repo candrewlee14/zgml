@@ -242,6 +242,13 @@ lowers through `forTraining` / `compileTrainingStep` to the Zig FFI kernel and r
 caller wants this native route to fail closed instead of falling back to eager
 TS autograd. The product API gets simpler without moving the hot training step
 back into JavaScript.
+The same training route now has a zero-step proof path:
+`train.explainNative(...)`, `zgml.nativeTrainingPlan(...)`, and
+`model.explainTraining(...)` return a frozen native-training explanation with
+`supported`, `reason`, `loweredBy`, `plan`, and `kernels` before running an
+epoch. That keeps the JS/TS API ergonomic while letting users verify the hot
+loop will be Zig FFI, or see exactly why it cannot be, without trusting a
+silent fallback.
 The MNIST/PyTorch comparison now treats ergonomic `model.fit(...)` as the
 primary zgml training lane and requires `native=true` / `loweredBy="zig-ffi"`.
 A June 27, 2026 default run passes numeric parity and reaches the same 87.70%
