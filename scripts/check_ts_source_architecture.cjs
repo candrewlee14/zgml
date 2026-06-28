@@ -909,7 +909,7 @@ function checkPackageExports(errors) {
     "bunNativeEagerRoutingPolicy",
     "nativeEagerRoutingActivationEnabled",
     "elementwiseMinLength: 65536",
-    "disabledActivations: [\"relu\", \"sigmoid\"]",
+    "disabledActivations: []",
   ]) {
     if (!nativeEagerRoutingPolicySource.includes(required)) {
       errors.push(`src/ts/adapters/native_eager_routing_policy.ts must keep inspectable Node/Bun native eager routing policy: ${required}`);

@@ -408,7 +408,7 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const routingPolicyAlias = nativeEagerAlias.routing_policy;
   const expectedRuntime = label.includes("bun") ? "bun" : "node";
   const expectedElementwiseMinLength = expectedRuntime === "bun" ? 65536 : 512;
-  const expectedDisabledActivations = expectedRuntime === "bun" ? "relu|sigmoid" : "relu";
+  const expectedDisabledActivations = "";
   if (
     !Object.isFrozen(routingPolicy) ||
     routingPolicyAlias !== routingPolicy ||
@@ -423,7 +423,7 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     routingPolicy.tensorMath.disabledActivations.join("|") !== expectedDisabledActivations ||
     !routingPolicy.signature.includes(`runtime=${expectedRuntime}`) ||
     !routingPolicy.signature.includes(`elementwiseMin=${expectedElementwiseMinLength}`) ||
-    !routingPolicy.signature.includes(`disabledActivations=${routingPolicy.tensorMath.disabledActivations.join(",")}`)
+    !routingPolicy.signature.includes("disabledActivations=none")
   ) {
     throw new Error(`${label} expected nativeEager routing policy evidence`);
   }

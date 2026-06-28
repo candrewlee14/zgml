@@ -866,7 +866,7 @@ function checkScripts() {
     "zgml.nativeEager.matmulInto(output, input, matmulWeightTensor)",
     "nativeEagerBmmInto(output, input, bmmRhsTensor, 16, 32, 32, 32)",
     "zgml.noGrad(() => input.bmm(bmmRhsTensor))",
-    "native_eager_relu_default_off_until_backend_wins",
+    "native_eager_activation_storage_slice",
     "zgml.noGrad(() => softmaxModel.forward(input))",
     "zgml.noGrad(() => logSoftmaxModel.forward(input))",
     "zgml.noGrad(() => input.mul(2))",
@@ -1028,7 +1028,7 @@ function checkScripts() {
     "bunNativeEagerRoutingPolicy",
     "nativeEagerRoutingActivationEnabled",
     "elementwiseMinLength: 65536",
-    "disabledActivations: [\"relu\", \"sigmoid\"]",
+    "disabledActivations: []",
   ]);
   requireIncludes(read("src/ts/adapters/node_ffi_runtime.ts"), "src/ts/adapters/node_ffi_runtime.ts", "Node native eager activation dispatch policy", [
     "nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(nodeNativeEagerRoutingPolicy, activation)",

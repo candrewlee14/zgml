@@ -722,15 +722,18 @@ Current checked progress:
   `zgml_eager_activation_f32` uses a vectorized Zig helper for ReLU/GELU/SiLU/
   Sigmoid/Tanh sized tensors. Normal no-grad high-level activation calls go
   through adapter-level dispatch policy once the runtime threshold is met:
-  Node routes the winning standalone GELU/SiLU/Sigmoid/Tanh paths through
-  `nativeEager.activationInto`, while Bun currently keeps standalone ReLU and
-  Sigmoid on the TS loop until that host path beats FFI overhead. Fused
+  Node and Bun now route every supported standalone activation
+  (`ReLU`/`GELU`/`SiLU`/`Sigmoid`/`Tanh`) through `nativeEager.activationInto`
+  instead of preserving stale host-specific disabled lists. Fused
   Linear+activation and compiled lazy activation paths remain native where they
   win. Fresh Node/Bun
-  runs show the public Tensor path above floor: standalone GELU/Tanh carry
-  Node `2.5x` and Bun `2x` enforced direct/module floors after the Zig vector
-  helper, with current no-grad module speedups of `2.94x` / `3.03x` on Node and
-  `2.05x` / `2.47x` on Bun, max diff `0.000002`. Grad-enabled activation calls
+  runs show the public Tensor path above floor: the standalone activation rows
+  enforce direct/module floors after the Zig vector helper, including ReLU and
+  Bun Sigmoid, with zero measured diff except the expected bounded Tanh
+  approximation tolerance. A June 28, 2026 short native-eager microscope run
+  measured Node ReLU at `10.04x` direct / `4.29x` public no-grad and Bun ReLU
+  at `12.53x` direct / `5.69x` public no-grad; Bun Sigmoid moved from the
+  disabled route to `2.04x` direct / `1.93x` public no-grad. Grad-enabled activation calls
   and small tensors stay on the TS/autograd path. No-grad `Tensor.bmm` is now
   measured in the same family as `bmm_batched`: useful-sized batches route
   through one `zgml_eager_bmm_f32` call, while tiny batches remain on the
