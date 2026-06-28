@@ -2159,9 +2159,21 @@ export type NativeEagerElementwiseOp =
   | "exp" | "log"
   | "sqr" | "square"
   | "recip" | "reciprocal"
-  | "abs" | "sqrt"
+  | "abs" | "sqrt" | "rsqrt" | "reciprocal_sqrt" | "reciprocalSqrt"
   | "maximum" | "max"
-  | "minimum" | "min";
+  | "minimum" | "min"
+  | "eq" | "equal"
+  | "ne" | "not_equal" | "notEqual"
+  | "lt" | "less"
+  | "le" | "less_equal" | "lessEqual"
+  | "gt" | "greater"
+  | "ge" | "greater_equal" | "greaterEqual"
+  | "sign" | "sgn"
+  | "step"
+  | "floor" | "ceil" | "round" | "trunc" | "truncate"
+  | "isnan" | "isNaN"
+  | "isinf" | "isInf" | "is_infinite" | "isInfinite"
+  | "isfinite" | "isFinite";
 export type NativeEagerElementwiseIntoOptions = Readonly<{
   op: NativeEagerElementwiseOp;
   rows?: number;

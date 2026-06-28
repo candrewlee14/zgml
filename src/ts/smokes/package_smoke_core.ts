@@ -587,6 +587,12 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const tensorElementwiseBias = adapter.tensor(tensorElementwiseBiasData, [tensorElementwiseLength]);
   const tensorElementwise = adapter.noGrad(() => tensorElementwiseInput.mul(2).add(tensorElementwiseBias).sqr().sqrt());
   expectClose(tensorElementwise.data, tensorElementwiseInputData.map((value, index) => Math.abs(value * 2 + tensorElementwiseBiasData[index])), `${label} noGrad Tensor elementwise native eager output`);
+  const tensorUnaryElementwise = adapter.noGrad(() => tensorElementwiseInput.neg().abs().add(0.25).minimum(1.5).reciprocal());
+  expectClose(
+    tensorUnaryElementwise.data,
+    tensorElementwiseInputData.map((value) => 1 / Math.min(Math.abs(-value) + 0.25, 1.5)),
+    `${label} noGrad Tensor unary/minimum/reciprocal native eager output`,
+  );
   const tensorRowBiasData = Array.from({ length: 256 }, (_value, index) => (index % 11) - 5);
   const tensorRowInput = adapter.tensor(tensorElementwiseInputData, [4, 256]);
   const tensorRowBias = adapter.tensor(tensorRowBiasData, [256]);

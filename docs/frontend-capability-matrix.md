@@ -86,7 +86,9 @@ PyTorch replacement:
   `lazy_matmul_add_silu_batched`, `lazy_matmul_add_sigmoid_batched`, and
   `lazy_matmul_add_tanh_batched` production-activation targets, row-wise
   scalar `elementwise_mul_batched` / `elementwise_div_batched` /
-  `elementwise_maximum_batched` and unary `elementwise_sqrt_batched` /
+  `elementwise_minimum_batched` / `elementwise_maximum_batched` and unary
+  `elementwise_neg_batched` / `elementwise_abs_batched` /
+  `elementwise_sqrt_batched` / `elementwise_reciprocal_batched` /
   `elementwise_rsqrt_batched` / `elementwise_exp_batched` /
   `elementwise_log_batched` / `elementwise_isfinite_batched` /
   bias-style `elementwise_add_row_broadcast_batched` /
