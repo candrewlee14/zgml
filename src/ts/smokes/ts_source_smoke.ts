@@ -821,11 +821,27 @@ expectSame(noGradNativeReduce.minDim(reduceDimInput, 1).data, [1, 4], "tensor ma
 const argReduceDimInput = new TensorDataSmokeTensor(Float32Array.of(1, 5, 3, 4, 2, 6), [2, 3]);
 expectSame(noGradNativeReduce.argmaxDim(argReduceDimInput, 1).data, [1, 2], "tensor math no-grad native dim argmax hook");
 expectSame(noGradNativeReduce.argminDim(argReduceDimInput, 1).data, [0, 1], "tensor math no-grad native dim argmin hook");
-expectSame(noGradNativeReduce.cumsum(reduceDimInput, 1).data, [1, 3, 6, 4, 9, 15], "tensor math no-grad cumsum keeps TS route");
-expectCloseValues(noGradNativeReduce.variance(reduceDimInput, 1).data, [2 / 3, 2 / 3], "tensor math no-grad variance keeps TS route");
-expectCloseValues(noGradNativeReduce.std(reduceDimInput, 1, 1).data, [1, 1], "tensor math no-grad std keeps TS route");
-expectCloseValues(noGradNativeReduce.variance(reduceInput).data, [5.421875], "tensor math no-grad scalar variance keeps TS route");
-expectSame(nativeReduceCalls, ["sum", "mean", "max", "min", "prod", "dim:sum:2x3x1", "dim:mean:2x3x1", "dim:max:2x3x1", "dim:min:2x3x1", "arg:argmax:2x3x1", "arg:argmin:2x3x1"], "tensor math no-grad native reduce hook count");
+expectSame(noGradNativeReduce.cumsum(reduceDimInput, 1).data, [1, 3, 6, 4, 9, 15], "tensor math no-grad native cumsum hook");
+expectCloseValues(noGradNativeReduce.variance(reduceDimInput, 1).data, [2 / 3, 2 / 3], "tensor math no-grad native variance hook");
+expectCloseValues(noGradNativeReduce.std(reduceDimInput, 1, 1).data, [1, 1], "tensor math no-grad native std hook");
+expectCloseValues(noGradNativeReduce.variance(reduceInput).data, [5.421875], "tensor math no-grad native scalar variance hook");
+expectSame(nativeReduceCalls, [
+  "sum",
+  "mean",
+  "max",
+  "min",
+  "prod",
+  "dim:sum:2x3x1",
+  "dim:mean:2x3x1",
+  "dim:max:2x3x1",
+  "dim:min:2x3x1",
+  "arg:argmax:2x3x1",
+  "arg:argmin:2x3x1",
+  "cumsum:2x3x1:forward",
+  "moment:variance:2x3x1:correction=0",
+  "moment:std:2x3x1:correction=1",
+  "moment:variance:1x4x1:correction=0",
+], "tensor math no-grad native reduce hook count");
 const nativeSoftmaxCalls: string[] = [];
 const noGradNativeSoftmax = createTensorMathHelpers({
   getTensorClass: () => TensorDataSmokeTensor,

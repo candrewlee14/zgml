@@ -726,7 +726,7 @@ Current checked progress:
   direct `conv2dInto` and `pool2dInto` rows above the native-eager floor with
   zero measured diff against the TS reference.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=40/40` after adding direct
+  as well: the expected row set is `row_coverage=44/44` after adding direct
   `matmul_batched`, `bmm_batched`, `elementwise_mul_batched`,
   `elementwise_div_batched`, `elementwise_minimum_batched`,
   `elementwise_maximum_batched`, `elementwise_neg_batched`,
@@ -736,7 +736,9 @@ Current checked progress:
   `elementwise_pow_specialized_batched`, `elementwise_exp_batched`, `elementwise_log_batched`,
   `elementwise_isfinite_batched`,
   `elementwise_add_row_broadcast_batched`,
-  `elementwise_sub_lhs_row_broadcast_batched`, `dot_batched`, `reduce_sum_scalar_batched`,
+  `elementwise_sub_lhs_row_broadcast_batched`, `dot_batched`,
+  `reduce_sum_scalar_batched`, `reduce_sum_dim_batched`,
+  `argmax_dim_batched`, `cumsum_dim_batched`, `variance_dim_batched`,
   `elementwise_lt_batched`, `clamp_batched`, `where_batched`,
   standalone `activation_relu_batched` / `activation_sigmoid_batched` /
   `activation_gelu_batched` / `activation_silu_batched` /
@@ -760,17 +762,16 @@ Current checked progress:
   win, and standalone GELU/SiLU/Sigmoid/Tanh continue to use the adapter-level
   activation dispatch policy once the runtime threshold is met. Grad-enabled activation calls
   and small tensors stay on the TS/autograd path. The same evidence-first rule
-  applies to `Tensor.cumsum`: the C ABI keeps `nativeEager.cumsumInto` /
-  `native_eager.cumsum_into` for caller-owned-output experiments, but a fresh
-  Node native-eager sweep measured the direct cumsum row at about `0.27x`, so
-  ordinary no-grad `Tensor.cumsum(...)` stays on the TS typed-array route and
-  the benchmark records `native_eager_cumsum_explicit_abi_not_default`.
-  The same policy now applies to no-grad `Tensor.variance(...)` and
-  `Tensor.std(...)`: `nativeEager.varianceInto` / `nativeEager.stdInto` stay
-  exposed for caller-owned-output experiments and future kernel work, but the
-  public Tensor route keeps the TS loop until the measured module path reaches
-  parity. The native eager scorecard records this as
-  `native_eager_moment_explicit_abi_not_default`.
+  now moves `Tensor.cumsum`, `Tensor.variance`, and `Tensor.std` through the
+  native eager substrate for no-grad or non-`requiresGrad` tensors once the
+  tensor is large enough. A fresh Node native-eager sweep after enabling those
+  public routes reports `row_coverage=44/44`, `missing=none`, and zero measured
+  diff for the new rows: `cumsum_dim_batched` has direct native `1.21x` and
+  public module `1.01x`, while `variance_dim_batched` has direct native
+  `12.06x` and public module `1.00x`. Reduce-dim and argmax-dim also remain
+  native on the public route (`1.74x` and `1.34x` module speedups in the same
+  run). Training tensors that need a backward closure still use the TS/autograd
+  implementation for these reductions.
   Grad-compatible `Tensor.bmm` forward is now
   measured in the same family as `bmm_batched`: useful-sized batches route
   through one `zgml_eager_bmm_f32` call, while tiny batches remain on the

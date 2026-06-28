@@ -1021,7 +1021,7 @@ const gapSpecs = Object.freeze([
     minNativeEagerSpeedup: 0.25,
     minNativeEagerModuleSpeedup: 0.95,
     tolerance: 1e-5,
-    next: "native_eager_cumsum_explicit_abi_not_default",
+    next: "native_eager_cumsum_storage_slice",
   }),
   Object.freeze({
     key: "variance_dim_batched",
@@ -1038,7 +1038,7 @@ const gapSpecs = Object.freeze([
     compiledIterations: 1000,
     minNativeEagerModuleSpeedup: 0.95,
     tolerance: 1e-5,
-    next: "native_eager_moment_explicit_abi_not_default",
+    next: "native_eager_moment_storage_slice",
   }),
   Object.freeze({
     key: "elementwise_lt_batched",

@@ -374,12 +374,20 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function nativeCumsumTensor(tensor: TensorMathTensor, axis: number) {
-    // The current C ABI cumsum path is slower than the TS typed-array loop through
-    // Node FFI for the benchmarked row-major dim case. Keep the explicit
-    // nativeEager.cumsumInto primitive, but do not make Tensor.cumsum pay for it.
-    void tensor;
-    void axis;
-    return null;
+    if (gradModeEnabled() && tensor.requiresGrad) return null;
+    if (typeof nativeEagerCumsumInto !== "function") return null;
+    if (tensor.length < nativeEagerReduceMinLength) return null;
+    let outer = 1;
+    for (let i = 0; i < axis; i += 1) outer *= tensor.shape[i];
+    let inner = 1;
+    for (let i = axis + 1; i < tensor.shape.length; i += 1) inner *= tensor.shape[i];
+    const output = new Float32Array(tensor.length);
+    nativeEagerCumsumInto(output, tensor, {
+      outer,
+      axis: tensor.shape[axis],
+      inner,
+    });
+    return new (tensorClass())(output, tensor.shape);
   }
 
   function nativeMomentTensor(
@@ -389,16 +397,36 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     label: string,
     sqrtOutput: boolean,
   ) {
-    // The explicit nativeEager variance/std ABI supports caller-owned output,
-    // but the public Tensor route is slower than the TS loop on the measured
-    // Node dim-variance row. Keep the primitive exposed and avoid a default
-    // route that makes ergonomic code slower.
-    void tensor;
-    void dim;
-    void correction;
-    void label;
-    void sqrtOutput;
-    return null;
+    if (gradModeEnabled() && tensor.requiresGrad) return null;
+    if (typeof nativeEagerMomentInto !== "function") return null;
+    if (tensor.length < nativeEagerReduceMinLength) return null;
+    let outer: number;
+    let reduce: number;
+    let inner: number;
+    let outputShape: readonly number[];
+    if (dim === undefined) {
+      outer = 1;
+      reduce = tensor.length;
+      inner = 1;
+      outputShape = [1];
+    } else {
+      const plan = dimReductionPlan(tensor.shape, dim, label);
+      outer = 1;
+      for (let i = 0; i < plan.axis; i += 1) outer *= tensor.shape[i];
+      reduce = plan.reduceLen;
+      inner = 1;
+      for (let i = plan.axis + 1; i < tensor.shape.length; i += 1) inner *= tensor.shape[i];
+      outputShape = plan.shape;
+    }
+    const output = new Float32Array(shapeProduct(outputShape));
+    nativeEagerMomentInto(output, tensor, {
+      outer,
+      reduce,
+      inner,
+      correction,
+      sqrtOutput,
+    });
+    return new (tensorClass())(output, outputShape);
   }
 
   function nativeDotScalar(
