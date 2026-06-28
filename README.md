@@ -181,6 +181,7 @@ zgml.train.evaluate(classifierLoader, (batch) => {
 const predictions = zgml.train.predictClassifier(classifier, classifierLoader);
 
 const fastClassifier = classifier.inference({ inputShape: [2] as const });
+const nativeClassifier = zgml.native(classifier, { inputShape: [2] as const });
 const input = zgml.tensor([1, -1], [2] as const);
 const logits = zgml.inference_mode(() => fastClassifier.forward(input));
 const output = new Float32Array(2);
@@ -188,6 +189,7 @@ const logitsInto = zgml.inference_mode(() => fastClassifier.into(output, input))
 const probabilities = zgml.F.softmax(logits, -1);
 const classes = zgml.train.predictClasses(logits, { classes: 2 });
 const classesInto = zgml.train.predict_classes(logitsInto, { numClasses: 2 });
+nativeClassifier.dispose();
 fastClassifier.dispose();
 ```
 

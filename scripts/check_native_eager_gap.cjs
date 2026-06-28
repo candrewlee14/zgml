@@ -456,6 +456,26 @@ const conv2dModel = conv2dBatchedModel();
 const maxPool2dModel = maxPool2dBatchedModel();
 const avgPool2dModel = avgPool2dBatchedModel();
 
+const nativeEagerNoGradMicroscopeWorkloads = Object.freeze([
+  "zgml.noGrad(() => input.bmm(bmmRhsTensor))",
+  "zgml.noGrad(() => softmaxModel.forward(input))",
+  "zgml.noGrad(() => logSoftmaxModel.forward(input))",
+  "zgml.noGrad(() => input.mul(2))",
+  "zgml.noGrad(() => input.add(rowBroadcastBiasTensor))",
+  "zgml.noGrad(() => input.sub(rowBroadcastMatrixTensor))",
+  "zgml.noGrad(() => input.dot(dotRhsTensor))",
+  "zgml.noGrad(() => input.sum())",
+  "zgml.noGrad(() => input.sumDim(1))",
+  "zgml.noGrad(() => maxPool2dModel.forward(input))",
+  "zgml.noGrad(() => avgPool2dModel.forward(input))",
+  "zgml.noGrad(() => linearModel.forward(input))",
+  "zgml.noGrad(() => linearGeluModel.forward(input))",
+  "zgml.noGrad(() => linearReluModel.forward(input))",
+  "zgml.noGrad(() => linearSiluModel.forward(input))",
+  "zgml.noGrad(() => linearSigmoidModel.forward(input))",
+  "zgml.noGrad(() => linearTanhModel.forward(input))",
+]);
+
 const gapSpecs = Object.freeze([
   Object.freeze({
     key: "linear_batched",
@@ -1357,6 +1377,7 @@ const result = Object.freeze({
     measureAttempts,
     minNativeEagerSpeedup,
     rows: selectedGapSpecs.map((spec) => spec.key),
+    noGradMicroscopeWorkloads: nativeEagerNoGradMicroscopeWorkloads,
   }),
   status: "gap-measured",
   rows,
