@@ -1931,7 +1931,7 @@ const shader_source =
     \\            uint kr = kt + r, nc = gCol + c;
     \\            if (kr < p.H && nc < p.O) {
     \\                uint w_idx = kr * p.O + nc;
-    \\                tW[weight_base + i] = float(down_weight_data[w_idx]) * down_weight_scales[w_idx / p.down_block_size];
+    \\                tW[weight_base + i] = float(down_weight_data[w_idx]) * down_weight_scales[w_idx >> 5];
     \\            } else {
     \\                tW[weight_base + i] = 0.0f;
     \\            }
