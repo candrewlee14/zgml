@@ -73,11 +73,13 @@ Latest local result:
 
 | Model | PyTorch prefill | PyTorch decode | PyTorch load | zgml |
 | --- | ---: | ---: | ---: | --- |
-| SmolLM2-360M-Instruct | 308.15 tok/s | 55.47 tok/s | 292.45 ms | unsupported at probe: `zgml unsupported (5)` |
+| SmolLM2-360M-Instruct | 359.43 tok/s | 64.65 tok/s | 224.35 ms | probe-only: `llama-family`, load unsupported |
 
-That is not a zgml loss on speed yet; it is a capability gap. The current
-native model path does not support this PyTorch-compatible safetensors
-checkpoint, so there is no honest speed ratio to report for this target.
+That is not a zgml loss on speed yet; it is the execution gap made explicit.
+The native model path now recognizes the PyTorch-compatible BF16 safetensors
+checkpoint as a LLaMA-family model from its Hugging Face `config.json` and
+validates the tensor envelope in about 0.55 ms, but dynamic LLaMA-family
+load/compile is still pending before there is an honest speed ratio.
 
 ## Benchmark Output Contract
 

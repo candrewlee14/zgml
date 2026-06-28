@@ -144,12 +144,14 @@ pub const SafetensorsFile = struct {
             const dtype_key = "dtype";
             if (std.mem.indexOf(u8, json[obj_abs..], dtype_key)) |dt_start| {
                 const dt_abs = obj_abs + dt_start + dtype_key.len;
-                if (std.mem.indexOf(u8, json[dt_abs..], "F16") != null) {
-                    // Check it's before the next key
-                    const next_quote = std.mem.indexOf(u8, json[dt_abs..], "\"") orelse json.len - dt_abs;
-                    if (std.mem.indexOf(u8, json[dt_abs..][0..next_quote + 10], "F16") != null) {
-                        dtype = .f16;
-                    }
+                const next_quote = std.mem.indexOf(u8, json[dt_abs..], "\"") orelse json.len - dt_abs;
+                const dtype_window = json[dt_abs..][0..@min(next_quote + 10, json.len - dt_abs)];
+                if (std.mem.indexOf(u8, dtype_window, "BF16") != null) {
+                    dtype = .bf16;
+                } else if (std.mem.indexOf(u8, dtype_window, "F16") != null) {
+                    dtype = .f16;
+                } else if (std.mem.indexOf(u8, dtype_window, "F64") != null) {
+                    dtype = .f64;
                 }
             }
 

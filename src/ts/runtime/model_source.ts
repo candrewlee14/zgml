@@ -255,6 +255,7 @@ export function createModelSourceFacadeHelpers<Inspection = unknown, Model = unk
     if (isSafetensorsDataSource(source)) return probeSafetensorsDataFn(source, { kind });
     const path = requireModelPathSource(source);
     if (isSafetensorsPath(path)) {
+      if (kind === "auto") return probePathFn(path, kind);
       return probeSafetensorsHeaderFn(readSafetensorsHeaderFileFn(path), { kind });
     }
     return probePathFn(path, kind);

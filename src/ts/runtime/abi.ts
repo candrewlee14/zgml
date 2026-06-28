@@ -68,6 +68,7 @@ export const modelKinds: NumericMap = Object.freeze({
   tinyLlama2Layer: 4,
   tinyMlp: 5,
   module: 6,
+  llamaFamily: 7,
 });
 
 export function modelKindName(kind: unknown): string {
@@ -79,6 +80,7 @@ export function modelKindName(kind: unknown): string {
     case modelKinds.tinyLlama2Layer: return "tiny-llama-2layer";
     case modelKinds.smollm135m: return "smollm-135m";
     case modelKinds.module: return "module";
+    case modelKinds.llamaFamily: return "llama-family";
     default: return `unknown:${numeric}`;
   }
 }

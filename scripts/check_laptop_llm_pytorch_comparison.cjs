@@ -176,10 +176,28 @@ function runZgmlProbe(modelPath) {
     const started = performance.now();
     const probe = zgml.probeModel(modelPath, { modelKind: "auto" });
     const probeMs = performance.now() - started;
-    return { supported: true, stage: "probe", probeMs, probe };
+    const loadStarted = performance.now();
+    try {
+      const model = zgml.loadModel(modelPath, { modelKind: "auto" });
+      const loadMs = performance.now() - loadStarted;
+      if (model && typeof model.dispose === "function") model.dispose();
+      return { supported: true, probeReady: true, executableReady: true, stage: "load", probeMs, loadMs, probe };
+    } catch (error) {
+      return {
+        supported: false,
+        probeReady: true,
+        executableReady: false,
+        stage: "load",
+        probeMs,
+        probe,
+        error: error && error.message ? error.message : String(error),
+      };
+    }
   } catch (error) {
     return {
       supported: false,
+      probeReady: false,
+      executableReady: false,
       stage: "probe",
       error: error && error.message ? error.message : String(error),
     };
@@ -188,7 +206,7 @@ function runZgmlProbe(modelPath) {
 
 const pytorch = runPytorch();
 const zgml = runZgmlProbe(pytorch.modelPath);
-const comparisonReady = zgml.supported === true;
+const comparisonReady = zgml.executableReady === true;
 const artifact = {
   schema: "zgml.laptop-llm-pytorch-comparison.v1",
   createdAt: new Date().toISOString(),
@@ -205,7 +223,8 @@ const artifact = {
   },
   status: {
     pytorchReady: true,
-    zgmlReady: zgml.supported === true,
+    zgmlProbeReady: zgml.probeReady === true,
+    zgmlReady: zgml.executableReady === true,
     comparisonReady,
   },
   pytorch,
@@ -221,7 +240,7 @@ if (writeArtifact) {
 
 console.log([
   "laptop llm pytorch comparison:",
-  comparisonReady ? "pass" : "unsupported",
+  comparisonReady ? "pass" : zgml.probeReady ? "probe-only" : "unsupported",
   `suite=${suiteId}`,
   `model=${modelId}`,
   `torch=${pytorch.torchVersion}`,
@@ -231,8 +250,9 @@ console.log([
   `pytorch_decode=${round(pytorch.decodeTokS)}tok/s`,
   `pytorch_load=${round(pytorch.loadMs)}ms`,
   `pytorch_rss_load_delta=${round(pytorch.rssLoadDeltaBytes / 1024 / 1024)}MiB`,
-  `zgml=${zgml.supported ? "supported" : "unsupported"}`,
+  `zgml=${zgml.executableReady ? "supported" : zgml.probeReady ? "probe-only" : "unsupported"}`,
   `zgml_stage=${zgml.stage}`,
+  `zgml_model=${zgml.probe && zgml.probe.modelKind ? zgml.probe.modelKind : "none"}`,
   `zgml_error=${zgml.error ? JSON.stringify(zgml.error) : "none"}`,
   `artifact=${artifactPath ? artifactPath.replace(`${root}/`, "") : "disabled"}`,
 ].join(" "));

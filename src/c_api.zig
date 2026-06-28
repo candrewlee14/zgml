@@ -39,6 +39,7 @@ const smollm_135m_kind: u32 = 3;
 const tiny_llama_2layer_kind: u32 = 4;
 const tiny_mlp_kind: u32 = 5;
 const module_kind: u32 = 6;
+const llama_family_kind: u32 = 7;
 const abi_version: u32 = 6;
 const feature_buffer_handle: u64 = 1 << 0;
 const feature_model_auto: u64 = 1 << 1;
@@ -257,6 +258,25 @@ const SmolLM135MProgram = llm_mod.LlamaProgram(f32, smollm_135m_config);
 const SmolLM135MSession = llm_mod.LlamaSession(f32, smollm_135m_config);
 
 const LlamaFamilySpec = struct {
+    kind: u32,
+    config: llm_mod.LlamaConfig,
+};
+
+const HfLlamaConfigJson = struct {
+    model_type: []const u8 = "",
+    vocab_size: usize = 0,
+    hidden_size: usize = 0,
+    num_attention_heads: usize = 0,
+    num_key_value_heads: ?usize = null,
+    intermediate_size: usize = 0,
+    num_hidden_layers: usize = 0,
+    max_position_embeddings: usize = 0,
+    rope_theta: f64 = 10000.0,
+    rms_norm_eps: f64 = 1e-6,
+    tie_word_embeddings: bool = false,
+};
+
+const ProbeModelSelection = struct {
     kind: u32,
     config: llm_mod.LlamaConfig,
 };
@@ -1070,6 +1090,7 @@ const SessionHandle = struct {
 };
 
 const alloc = std.heap.page_allocator;
+var empty_safetensors_raw: [0]u8 align(4) = .{};
 
 fn status(s: Status) c_int {
     return @intFromEnum(s);
@@ -5704,10 +5725,70 @@ fn compatibleLlamaKindForConfig(config: llm_mod.LlamaConfig) ?u32 {
     return null;
 }
 
+fn executableLlamaSelection(kind: u32) ?ProbeModelSelection {
+    for (compatible_llama_families) |family| {
+        if (family.kind == kind) {
+            return .{ .kind = family.kind, .config = family.config };
+        }
+    }
+    return null;
+}
+
+fn supportedHfLlamaModelType(model_type: []const u8) bool {
+    return std.mem.eql(u8, model_type, "llama") or
+        std.mem.eql(u8, model_type, "mistral") or
+        std.mem.eql(u8, model_type, "qwen2") or
+        std.mem.eql(u8, model_type, "qwen3");
+}
+
+fn llamaConfigFromHfJson(json: []const u8) !llm_mod.LlamaConfig {
+    var parsed = try std.json.parseFromSlice(HfLlamaConfigJson, alloc, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const cfg = parsed.value;
+    if (!supportedHfLlamaModelType(cfg.model_type)) return error.UnsupportedModel;
+    if (cfg.vocab_size == 0 or
+        cfg.hidden_size == 0 or
+        cfg.num_attention_heads == 0 or
+        cfg.intermediate_size == 0 or
+        cfg.num_hidden_layers == 0 or
+        cfg.max_position_embeddings == 0)
+    {
+        return error.UnsupportedModel;
+    }
+    if (cfg.hidden_size % cfg.num_attention_heads != 0) return error.UnsupportedModel;
+    const n_kv_heads = cfg.num_key_value_heads orelse cfg.num_attention_heads;
+    if (n_kv_heads == 0) return error.UnsupportedModel;
+    return .{
+        .vocab_size = cfg.vocab_size,
+        .d_model = cfg.hidden_size,
+        .n_heads = cfg.num_attention_heads,
+        .n_kv_heads = n_kv_heads,
+        .d_ff = cfg.intermediate_size,
+        .n_layers = cfg.num_hidden_layers,
+        .max_seq_len = cfg.max_position_embeddings,
+        .rope_base = @floatCast(cfg.rope_theta),
+        .rms_norm_eps = @floatCast(cfg.rms_norm_eps),
+        .tied_lm_head = cfg.tie_word_embeddings,
+    };
+}
+
+fn hfConfigPathForSafetensorsPath(path: []const u8) ![]u8 {
+    const dir = std.fs.path.dirname(path) orelse ".";
+    return std.fs.path.join(alloc, &.{ dir, "config.json" });
+}
+
+fn llamaConfigFromSiblingHfConfig(path: []const u8) !llm_mod.LlamaConfig {
+    const config_path = try hfConfigPathForSafetensorsPath(path);
+    defer alloc.free(config_path);
+    const json = try std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), config_path, alloc, .limited(4 * 1024 * 1024));
+    defer alloc.free(json);
+    return llamaConfigFromHfJson(json);
+}
+
 fn safetensorsTensorShapeMatches(sf: *const safetensors_mod.SafetensorsFile, name: []const u8, expected: []const usize) bool {
     const meta = sf.findTensorMeta(name) orelse return false;
     switch (meta.dtype) {
-        .f32, .f16 => {},
+        .f32, .f16, .bf16 => {},
         else => return false,
     }
     if (meta.n_dims != expected.len) return false;
@@ -5768,6 +5849,38 @@ fn compatibleLlamaKindForSafetensorsHeader(header: []const u8) ?u32 {
     return compatibleLlamaKindForSafetensors(&sf);
 }
 
+fn safetensorsHeaderFromPath(path: []const u8) ![]u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    var header_len_buf: [8]u8 = undefined;
+    const len_read = try file.readPositionalAll(io, &header_len_buf, 0);
+    if (len_read != header_len_buf.len) return error.InvalidArgument;
+    const header_len = std.mem.readInt(u64, header_len_buf[0..8], .little);
+    const header_len_usize: usize = std.math.cast(usize, header_len) orelse return error.InvalidArgument;
+    const header = try alloc.alloc(u8, header_len_usize);
+    errdefer alloc.free(header);
+    const header_read = try file.readPositionalAll(io, header, 8);
+    if (header_read != header_len_usize) return error.InvalidArgument;
+    return header;
+}
+
+fn safetensorsHeaderView(header: []const u8) safetensors_mod.SafetensorsFile {
+    return .{
+        .alloc = alloc,
+        .raw_data = empty_safetensors_raw[0..],
+        .header_json = header,
+        .data_start = 0,
+    };
+}
+
+fn compatibleLlamaKindForSafetensorsPathHeader(path: []const u8) !?u32 {
+    const header = try safetensorsHeaderFromPath(path);
+    defer alloc.free(header);
+    var sf = safetensorsHeaderView(header);
+    return compatibleLlamaKindForSafetensors(&sf);
+}
+
 fn safetensorsHeaderFromData(data: []const u8) ![]const u8 {
     if (data.len < 8) return error.InvalidArgument;
     const header_len = std.mem.readInt(u64, data[0..8], .little);
@@ -5783,11 +5896,51 @@ fn selectAutoModelKind(path: []const u8) !u32 {
         return compatibleLlamaKindForConfig(gguf_loader.configFromGGUF(&gf)) orelse error.UnsupportedModel;
     }
     if (std.ascii.endsWithIgnoreCase(path, ".safetensors")) {
-        var sf = try safetensors_mod.SafetensorsFile.open(alloc, path, std.Io.Threaded.global_single_threaded.io());
-        defer sf.deinit();
-        return compatibleLlamaKindForSafetensors(&sf) orelse error.UnsupportedModel;
+        return (try compatibleLlamaKindForSafetensorsPathHeader(path)) orelse error.UnsupportedModel;
     }
     return error.UnsupportedModel;
+}
+
+fn genericLlamaProbeSelectionForSafetensorsPath(path: []const u8) !ProbeModelSelection {
+    const header = try safetensorsHeaderFromPath(path);
+    defer alloc.free(header);
+    var sf = safetensorsHeaderView(header);
+    const config = try llamaConfigFromSiblingHfConfig(path);
+    if (!safetensorsLlamaEnvelopeMatches(&sf, config)) return error.UnsupportedModel;
+    if (compatibleLlamaKindForConfig(config)) |kind| {
+        return executableLlamaSelection(kind).?;
+    }
+    return .{ .kind = llama_family_kind, .config = config };
+}
+
+fn selectAutoProbePathModel(path: []const u8) !ProbeModelSelection {
+    if (std.ascii.endsWithIgnoreCase(path, ".gguf")) {
+        var gf = try gguf_mod.GGUFFile.open(alloc, std.Io.Threaded.global_single_threaded.io(), path);
+        defer gf.deinit();
+        const config = gguf_loader.configFromGGUF(&gf);
+        const kind = compatibleLlamaKindForConfig(config) orelse return error.UnsupportedModel;
+        return executableLlamaSelection(kind).?;
+    }
+    if (std.ascii.endsWithIgnoreCase(path, ".safetensors")) {
+        if (try compatibleLlamaKindForSafetensorsPathHeader(path)) |kind| {
+            return executableLlamaSelection(kind).?;
+        }
+        return genericLlamaProbeSelectionForSafetensorsPath(path);
+    }
+    return error.UnsupportedModel;
+}
+
+fn selectProbePathModel(kind: u32, path: []const u8) !ProbeModelSelection {
+    return switch (kind) {
+        auto_kind => selectAutoProbePathModel(path),
+        tiny_llama_kind, tiny_llama_2layer_kind, smollm_135m_kind => blk: {
+            const selected = try selectAutoProbePathModel(path);
+            if (selected.kind != kind) return error.UnsupportedModel;
+            break :blk selected;
+        },
+        tiny_linear_kind, tiny_mlp_kind => error.UnsupportedModel,
+        else => error.InvalidArgument,
+    };
 }
 
 fn selectLoadPathModelKind(kind: u32, path: []const u8) !u32 {
@@ -6169,13 +6322,8 @@ export fn zgml_model_probe_path(desc_ptr: ?*const zgml_model_load_desc, out_insp
     const desc = desc_ptr orelse return status(.invalid_argument);
     if (desc.path == null or desc.path_len == 0) return status(.invalid_argument);
     const path = desc.path.?[0..desc.path_len];
-    const kind = selectLoadPathModelKind(desc.kind, path) catch |err| return modelLoadPathStatus(err);
-    switch (kind) {
-        tiny_llama_kind => fillLlamaModelInspection(out, tiny_llama_kind, tiny_llama_config),
-        tiny_llama_2layer_kind => fillLlamaModelInspection(out, tiny_llama_2layer_kind, tiny_llama_2layer_config),
-        smollm_135m_kind => fillLlamaModelInspection(out, smollm_135m_kind, smollm_135m_config),
-        else => return status(.unsupported),
-    }
+    const selected = selectProbePathModel(desc.kind, path) catch |err| return modelLoadPathStatus(err);
+    fillLlamaModelInspection(out, selected.kind, selected.config);
     return status(.ok);
 }
 
@@ -16991,6 +17139,35 @@ fn appendSmolLMSafetensorsLayerHeader(list: *std.ArrayList(u8), allocator: std.m
     }
 }
 
+fn appendRuntimeLlamaSafetensorsLayerHeader(list: *std.ArrayList(u8), allocator: std.mem.Allocator, first: *bool, config: llm_mod.LlamaConfig, layer: usize) !void {
+    const d_head = config.d_model / config.n_heads;
+    const kv_dim = config.n_kv_heads * d_head;
+    const q_shape = [_]usize{ config.d_model, config.d_model };
+    const kv_shape = [_]usize{ kv_dim, config.d_model };
+    const ff_shape = [_]usize{ config.d_ff, config.d_model };
+    const down_shape = [_]usize{ config.d_model, config.d_ff };
+    const norm_shape = [_]usize{config.d_model};
+    const specs = [_]struct {
+        suffix: []const u8,
+        shape: []const usize,
+    }{
+        .{ .suffix = "self_attn.q_proj.weight", .shape = &q_shape },
+        .{ .suffix = "self_attn.k_proj.weight", .shape = &kv_shape },
+        .{ .suffix = "self_attn.v_proj.weight", .shape = &kv_shape },
+        .{ .suffix = "self_attn.o_proj.weight", .shape = &q_shape },
+        .{ .suffix = "mlp.gate_proj.weight", .shape = &ff_shape },
+        .{ .suffix = "mlp.up_proj.weight", .shape = &ff_shape },
+        .{ .suffix = "mlp.down_proj.weight", .shape = &down_shape },
+        .{ .suffix = "input_layernorm.weight", .shape = &norm_shape },
+        .{ .suffix = "post_attention_layernorm.weight", .shape = &norm_shape },
+    };
+    for (specs) |spec| {
+        var name_buf: [128]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "model.layers.{d}.{s}", .{ layer, spec.suffix });
+        try appendSafetensorsTensorHeader(list, allocator, first, name, spec.shape);
+    }
+}
+
 fn buildSmolLMSafetensorsHeader(allocator: std.mem.Allocator) ![]u8 {
     var list = std.ArrayList(u8).empty;
     errdefer list.deinit(allocator);
@@ -17001,6 +17178,26 @@ fn buildSmolLMSafetensorsHeader(allocator: std.mem.Allocator) ![]u8 {
     try appendSafetensorsTensorHeader(&list, allocator, &first, "model.norm.weight", &.{smollm_135m_config.d_model});
     try appendSmolLMSafetensorsLayerHeader(&list, allocator, &first, 0);
     try appendSmolLMSafetensorsLayerHeader(&list, allocator, &first, smollm_135m_config.n_layers - 1);
+    try list.append(allocator, '}');
+    return list.toOwnedSlice(allocator);
+}
+
+fn buildRuntimeLlamaSafetensorsHeader(allocator: std.mem.Allocator, config: llm_mod.LlamaConfig) ![]u8 {
+    var list = std.ArrayList(u8).empty;
+    errdefer list.deinit(allocator);
+
+    try list.append(allocator, '{');
+    var first = true;
+    const embed_shape = [_]usize{ config.vocab_size, config.d_model };
+    const norm_shape = [_]usize{config.d_model};
+    const head_shape = [_]usize{ config.vocab_size, config.d_model };
+    try appendSafetensorsTensorHeader(&list, allocator, &first, "model.embed_tokens.weight", &embed_shape);
+    try appendSafetensorsTensorHeader(&list, allocator, &first, "model.norm.weight", &norm_shape);
+    if (!config.tied_lm_head) {
+        try appendSafetensorsTensorHeader(&list, allocator, &first, "lm_head.weight", &head_shape);
+    }
+    try appendRuntimeLlamaSafetensorsLayerHeader(&list, allocator, &first, config, 0);
+    try appendRuntimeLlamaSafetensorsLayerHeader(&list, allocator, &first, config, config.n_layers - 1);
     try list.append(allocator, '}');
     return list.toOwnedSlice(allocator);
 }
@@ -17220,6 +17417,73 @@ test "C ABI model path probe preflights compatible checkpoint envelope" {
         .path_len = path.len,
     }, &inspection));
     try std.testing.expectEqual(smollm_135m_kind, inspection.model_kind);
+
+    inspection = .{ .model_kind = 99 };
+    try std.testing.expectEqual(status(.unsupported), zgml_model_probe_path(&.{
+        .kind = tiny_llama_kind,
+        .path = path.ptr,
+        .path_len = path.len,
+    }, &inspection));
+    try std.testing.expectEqual(@as(u32, 0), inspection.model_kind);
+}
+
+test "C ABI model path probe derives generic LLaMA-family shape from sibling HF config" {
+    const generic_config = llm_mod.LlamaConfig{
+        .vocab_size = 128,
+        .d_model = 12,
+        .n_heads = 3,
+        .n_kv_heads = 1,
+        .d_ff = 20,
+        .n_layers = 3,
+        .max_seq_len = 64,
+        .rope_base = 50000.0,
+        .rms_norm_eps = 1e-5,
+        .tied_lm_head = true,
+    };
+    const header = try buildRuntimeLlamaSafetensorsHeader(std.testing.allocator, generic_config);
+    defer std.testing.allocator.free(header);
+    const file_bytes = try buildSafetensorsFileBytes(std.testing.allocator, header);
+    defer std.testing.allocator.free(file_bytes);
+    const config_json =
+        \\{
+        \\  "model_type": "llama",
+        \\  "vocab_size": 128,
+        \\  "hidden_size": 12,
+        \\  "num_attention_heads": 3,
+        \\  "num_key_value_heads": 1,
+        \\  "intermediate_size": 20,
+        \\  "num_hidden_layers": 3,
+        \\  "max_position_embeddings": 64,
+        \\  "rope_theta": 50000,
+        \\  "rms_norm_eps": 0.00001,
+        \\  "tie_word_embeddings": true
+        \\}
+    ;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try tmp.dir.writeFile(io, .{ .sub_path = "model.safetensors", .data = file_bytes });
+    try tmp.dir.writeFile(io, .{ .sub_path = "config.json", .data = config_json });
+
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}/model.safetensors", .{&tmp.sub_path});
+
+    var inspection = zgml_model_inspection{ .model_kind = 99 };
+    try std.testing.expectEqual(status(.ok), zgml_model_probe_path(&.{
+        .kind = auto_kind,
+        .path = path.ptr,
+        .path_len = path.len,
+    }, &inspection));
+    try std.testing.expectEqual(llama_family_kind, inspection.model_kind);
+    try std.testing.expectEqual(@as(u64, generic_config.vocab_size), inspection.vocab_size);
+    try std.testing.expectEqual(@as(u64, generic_config.max_seq_len), inspection.max_seq_len);
+    try std.testing.expectEqual(@as(u64, generic_config.d_model), inspection.d_model);
+    try std.testing.expectEqual(@as(u64, generic_config.n_layers), inspection.n_layers);
+    try std.testing.expectEqual(@as(u64, generic_config.n_heads), inspection.n_heads);
+    try std.testing.expectEqual(@as(u64, generic_config.n_kv_heads), inspection.n_kv_heads);
+    try std.testing.expectEqual(@as(u64, generic_config.d_ff), inspection.d_ff);
+    try std.testing.expectEqual(@as(u64, 1), inspection.tied_lm_head);
 
     inspection = .{ .model_kind = 99 };
     try std.testing.expectEqual(status(.unsupported), zgml_model_probe_path(&.{

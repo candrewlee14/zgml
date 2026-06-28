@@ -42,11 +42,11 @@
       "format": "safetensors-primary, gguf-secondary",
       "primaryReference": "PyTorch",
       "secondaryReference": "llama.cpp",
-      "zgmlStatus": "next",
+      "zgmlStatus": "target",
       "benchmark": {
         "command": "npm run bench:laptop:llm:pytorch:run",
-        "metric": "prompt/decode tok/s, memory peak, logits/prediction agreement vs PyTorch",
-        "gate": "must compile/load from PyTorch-compatible weights; performance target starts at PyTorch parity"
+        "metric": "probe coverage now; prompt/decode tok/s, memory peak, logits/prediction agreement vs PyTorch once executable",
+        "gate": "must move from LLaMA-family probe-only to load/compile from PyTorch-compatible weights; performance target starts at PyTorch parity"
       },
       "why": "First step above toy scale while still fast enough for frequent laptop runs."
     },
