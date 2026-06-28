@@ -97,6 +97,11 @@ type NativeEagerReduceInto = (
   input: unknown,
   options: Readonly<{ op: string }>,
 ) => Float32Array;
+type NativeEagerReduceDimInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{ op: string; outer: number; reduce: number; inner: number }>,
+) => Float32Array;
 type NativeEagerDotInto = (
   output: Float32Array,
   lhs: unknown,
@@ -125,6 +130,7 @@ export type TensorMathHelpersOptions = Readonly<{
   nativeEagerWhereInto?: NativeEagerWhereInto;
   nativeEagerClampInto?: NativeEagerClampInto;
   nativeEagerReduceInto?: NativeEagerReduceInto;
+  nativeEagerReduceDimInto?: NativeEagerReduceDimInto;
   nativeEagerReduceMinLength?: number;
   nativeEagerDotInto?: NativeEagerDotInto;
   nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
@@ -153,6 +159,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     ? Number(options.nativeEagerActivationMinLength)
     : nativeEagerElementwiseMinLength;
   const nativeEagerReduceInto = options.nativeEagerReduceInto;
+  const nativeEagerReduceDimInto = options.nativeEagerReduceDimInto;
   const nativeEagerDotInto = options.nativeEagerDotInto;
   const nativeEagerReduceMinLength = Number.isSafeInteger(options.nativeEagerReduceMinLength) && Number(options.nativeEagerReduceMinLength) >= 0
     ? Number(options.nativeEagerReduceMinLength)
@@ -309,6 +316,25 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const output = new Float32Array(1);
     nativeEagerReduceInto(output, tensor, { op });
     return scalarTensor(output[0], false);
+  }
+
+  function nativeReduceDimTensor(tensor: TensorMathTensor, dim: number, label: string, op: string) {
+    if (gradModeEnabled()) return null;
+    if (typeof nativeEagerReduceDimInto !== "function") return null;
+    if (tensor.length < nativeEagerReduceMinLength) return null;
+    const plan = dimReductionPlan(tensor.shape, dim, label);
+    let outer = 1;
+    for (let i = 0; i < plan.axis; i += 1) outer *= tensor.shape[i];
+    let inner = 1;
+    for (let i = plan.axis + 1; i < tensor.shape.length; i += 1) inner *= tensor.shape[i];
+    const output = new Float32Array(shapeProduct(plan.shape));
+    nativeEagerReduceDimInto(output, tensor, {
+      op,
+      outer,
+      reduce: plan.reduceLen,
+      inner,
+    });
+    return new (tensorClass())(output, plan.shape);
   }
 
   function nativeDotScalar(
@@ -1023,6 +1049,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function sumDim(tensor: TensorMathTensor, dim: number) {
+    const native = nativeReduceDimTensor(tensor, dim, "sumDim", "sum");
+    if (native !== null) return native;
     const TensorClass = tensorClass();
     const plan = dimReductionPlan(tensor.shape, dim, "sumDim");
     const out = new Float32Array(shapeProduct(plan.shape));
@@ -1041,6 +1069,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function meanDim(tensor: TensorMathTensor, dim: number) {
+    const native = nativeReduceDimTensor(tensor, dim, "meanDim", "mean");
+    if (native !== null) return native;
     return div(sumDim(tensor, dim), scalarTensor(dimReductionPlan(tensor.shape, dim, "meanDim").reduceLen));
   }
 
@@ -1121,6 +1151,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function maxDim(tensor: TensorMathTensor, dim: number) {
+    const native = nativeReduceDimTensor(tensor, dim, "maxDim", "max");
+    if (native !== null) return native;
     const TensorClass = tensorClass();
     const plan = dimReductionPlan(tensor.shape, dim, "maxDim");
     const out = new Float32Array(shapeProduct(plan.shape));
@@ -1153,6 +1185,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function minDim(tensor: TensorMathTensor, dim: number) {
+    const native = nativeReduceDimTensor(tensor, dim, "minDim", "min");
+    if (native !== null) return native;
     const TensorClass = tensorClass();
     const plan = dimReductionPlan(tensor.shape, dim, "minDim");
     const out = new Float32Array(shapeProduct(plan.shape));

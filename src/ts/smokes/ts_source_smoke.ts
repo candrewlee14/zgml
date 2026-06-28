@@ -674,6 +674,28 @@ const noGradNativeReduce = createTensorMathHelpers({
     }
     return output;
   },
+  nativeEagerReduceDimInto(output, input, options) {
+    nativeReduceCalls.push(`dim:${options.op}:${options.outer}x${options.reduce}x${options.inner}`);
+    const data = input.data;
+    for (let outer = 0; outer < options.outer; outer += 1) {
+      for (let inner = 0; inner < options.inner; inner += 1) {
+        let acc = options.op === "max" ? -Infinity : options.op === "min" ? Infinity : options.op === "prod" ? 1 : 0;
+        for (let reduce = 0; reduce < options.reduce; reduce += 1) {
+          const value = data[(outer * options.reduce + reduce) * options.inner + inner];
+          switch (options.op) {
+            case "sum":
+            case "mean": acc += value; break;
+            case "max": acc = Math.max(acc, value); break;
+            case "min": acc = Math.min(acc, value); break;
+            case "prod": acc *= value; break;
+            default: throw new Error(`unexpected native dim reduce op ${options.op}`);
+          }
+        }
+        output[outer * options.inner + inner] = options.op === "mean" ? acc / options.reduce : acc;
+      }
+    }
+    return output;
+  },
 });
 const reduceInput = new TensorDataSmokeTensor(Float32Array.of(-2, 4, 0.5, 3), [4]);
 expectSame(noGradNativeReduce.sum(reduceInput).data, [5.5], "tensor math no-grad native sum hook");
@@ -681,8 +703,12 @@ expectSame(noGradNativeReduce.mean(reduceInput).data, [1.375], "tensor math no-g
 expectSame(noGradNativeReduce.max(reduceInput).data, [4], "tensor math no-grad native max hook");
 expectSame(noGradNativeReduce.min(reduceInput).data, [-2], "tensor math no-grad native min hook");
 expectSame(noGradNativeReduce.prod(reduceInput).data, [-12], "tensor math no-grad native prod hook");
-expectSame(noGradNativeReduce.sumDim(new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4), [2, 2]), 1).data, [3, 7], "tensor math dim reduction keeps TS path");
-expectSame(nativeReduceCalls, ["sum", "mean", "max", "min", "prod"], "tensor math no-grad native reduce hook count");
+const reduceDimInput = new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4, 5, 6), [2, 3]);
+expectSame(noGradNativeReduce.sumDim(reduceDimInput, 1).data, [6, 15], "tensor math no-grad native dim sum hook");
+expectSame(noGradNativeReduce.meanDim(reduceDimInput, 1).data, [2, 5], "tensor math no-grad native dim mean hook");
+expectSame(noGradNativeReduce.maxDim(reduceDimInput, 1).data, [3, 6], "tensor math no-grad native dim max hook");
+expectSame(noGradNativeReduce.minDim(reduceDimInput, 1).data, [1, 4], "tensor math no-grad native dim min hook");
+expectSame(nativeReduceCalls, ["sum", "mean", "max", "min", "prod", "dim:sum:2x3x1", "dim:mean:2x3x1", "dim:max:2x3x1", "dim:min:2x3x1"], "tensor math no-grad native reduce hook count");
 const nativeSoftmaxCalls: string[] = [];
 const noGradNativeSoftmax = createTensorMathHelpers({
   getTensorClass: () => TensorDataSmokeTensor,
