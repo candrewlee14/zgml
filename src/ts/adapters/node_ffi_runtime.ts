@@ -353,6 +353,7 @@ const {
     ? nativeEager.logSoftmaxInto(output, input, options)
     : nativeEager.softmaxInto(output, input, options),
   nativeEagerPermuteInto: (output, input, options) => nativeEager.permuteInto(output, input, options),
+  nativeEagerTakeInto: (output, input, index) => nativeEager.takeInto(output, input, index),
   nativeFullF32: (output, value) => {
     check(nodeSymbolGroups.nativeEager.eagerFullF32(output, output.length, value));
   },
@@ -1422,6 +1423,14 @@ const nativeEagerSurface = createAdapterNativeEagerSurface({
     args.inputStrides,
     args.axes,
     args.rank,
+  ),
+  takeF32: (args) => nodeSymbolGroups.nativeEager.eagerTakeF32(
+    args.inputData,
+    args.inputData.length,
+    args.indices,
+    args.indices.length,
+    args.output,
+    args.expectedOutput,
   ),
 });
 const nativeEager = Object.freeze({

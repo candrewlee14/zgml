@@ -43,12 +43,18 @@ type NativePermuteInto = (
     axes: Uint32Array;
   }>,
 ) => Float32Array;
+type NativeTakeInto = (
+  output: Float32Array,
+  input: unknown,
+  index: unknown,
+) => Float32Array;
 
 export type TensorViewHelpersOptions = Readonly<{
   Tensor: TensorConstructor;
   addTensorGrad: AddTensorGradCallback;
   isGradEnabled?: () => boolean;
   nativePermuteInto?: NativePermuteInto;
+  nativeTakeInto?: NativeTakeInto;
 }>;
 
 export type TensorViewSurfaceHelpersOptions = Readonly<{
@@ -62,6 +68,7 @@ export function createTensorViewHelpers(options: TensorViewHelpersOptions) {
     ? options.isGradEnabled
     : isGradEnabled;
   const nativePermuteInto = typeof options.nativePermuteInto === "function" ? options.nativePermuteInto : null;
+  const nativeTakeInto = typeof options.nativeTakeInto === "function" ? options.nativeTakeInto : null;
   if (typeof TensorClass !== "function" || typeof addTensorGrad !== "function") {
     throw new Error("tensor view helpers require Tensor and addTensorGrad");
   }
@@ -620,19 +627,25 @@ export function createTensorViewHelpers(options: TensorViewHelpersOptions) {
     }
 
     const outData = new Float32Array(outLen);
-    const outToIn = new Uint32Array(outLen);
-    for (let flat = 0; flat < outLen; flat += 1) {
-      const inputIndex = normalizeAxisIndex(normalized.data[flat], tensor.length, `take index ${flat}`);
-      outToIn[flat] = inputIndex;
-      outData[flat] = tensor.data[inputIndex];
+    const needsGrad = gradModeEnabled() && tensor.requiresGrad;
+    const outToIn = needsGrad ? new Uint32Array(outLen) : null;
+    if (!needsGrad && nativeTakeInto !== null) {
+      for (let flat = 0; flat < outLen; flat += 1) normalizeAxisIndex(normalized.data[flat], tensor.length, `take index ${flat}`);
+      nativeTakeInto(outData, tensor, u32Array(normalized.data, "take index"));
+    } else {
+      for (let flat = 0; flat < outLen; flat += 1) {
+        const inputIndex = normalizeAxisIndex(normalized.data[flat], tensor.length, `take index ${flat}`);
+        if (outToIn !== null) outToIn[flat] = inputIndex;
+        outData[flat] = tensor.data[inputIndex];
+      }
     }
 
     const out = new TensorCtor(outData, outShape, {
-      requiresGrad: gradModeEnabled() && tensor.requiresGrad,
-      prev: gradModeEnabled() && tensor.requiresGrad ? [tensor] : [],
+      requiresGrad: needsGrad,
+      prev: needsGrad ? [tensor] : [],
     });
     out._backward = (grad: Float32Array | null) => {
-      if (!grad) return;
+      if (!grad || outToIn === null) return;
       const inGrad = new Float32Array(tensor.length);
       for (let i = 0; i < grad.length; i += 1) inGrad[outToIn[i]] += grad[i];
       addTensorGrad(tensor, inGrad);

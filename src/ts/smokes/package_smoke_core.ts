@@ -374,6 +374,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.permuteInto !== "function") {
     throw new Error(`${label} expected nativeEager.permuteInto`);
   }
+  if (typeof nativeEager.takeInto !== "function") {
+    throw new Error(`${label} expected nativeEager.takeInto`);
+  }
   if (typeof nativeEager.bmmInto !== "function") {
     throw new Error(`${label} expected nativeEager.bmmInto`);
   }
@@ -587,6 +590,18 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.permute_into to reuse caller output`);
   }
   expectClose(permuteAliasOutput, Array.from(permuteOutput), `${label} native_eager.permute_into output`);
+  const takeOutput = new Float32Array(4);
+  const takeResult = nativeEager.takeInto(takeOutput, permuteInput, new Uint32Array([5, 0, 3, 3]));
+  if (takeResult !== takeOutput) {
+    throw new Error(`${label} expected nativeEager.takeInto to reuse caller output`);
+  }
+  expectClose(takeOutput, [6, 1, 4, 4], `${label} nativeEager.takeInto output`);
+  const takeAliasOutput = new Float32Array(2);
+  const takeAliasResult = nativeEagerAlias.take_into(takeAliasOutput, permuteInput, adapter.tensor([2, 1], [2]));
+  if (takeAliasResult !== takeAliasOutput) {
+    throw new Error(`${label} expected native_eager.take_into to reuse caller output`);
+  }
+  expectClose(takeAliasOutput, [3, 2], `${label} native_eager.take_into Tensor index output`);
   const bmmLhs = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2]);
   const bmmRhs = adapter.tensor([1, 0, 0, 1, 2, 0, 0, 2], [2, 2, 2]);
   const bmmOutput = new Float32Array(8);

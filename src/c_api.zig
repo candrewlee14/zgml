@@ -2117,6 +2117,32 @@ export fn zgml_eager_permute_f32(
     return status(.ok);
 }
 
+export fn zgml_eager_take_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    indices_ptr: ?[*]const u32,
+    indices_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+) c_int {
+    if (input_ptr == null or
+        indices_ptr == null or
+        output_ptr == null or
+        input_len == 0 or
+        indices_len == 0 or
+        output_len < indices_len) return status(.invalid_argument);
+
+    const input = input_ptr.?[0..input_len];
+    const indices = indices_ptr.?[0..indices_len];
+    const output = output_ptr.?[0..output_len];
+    for (indices, 0..) |raw_index, output_index| {
+        const input_index: usize = @intCast(raw_index);
+        if (input_index >= input_len) return status(.shape_mismatch);
+        output[output_index] = input[input_index];
+    }
+    return status(.ok);
+}
+
 fn eagerLinearF32(
     input_ptr: ?[*]const f32,
     input_len: usize,
@@ -13756,6 +13782,41 @@ test "C ABI native eager permute writes caller output" {
         input_strides[0..].ptr,
         bad_axes[0..].ptr,
         2,
+    ));
+}
+
+test "C ABI native eager take writes caller output" {
+    const input = [_]f32{ 1, 2, 3, 4, 5, 6 };
+    const indices = [_]u32{ 5, 0, 3, 3 };
+    var output = [_]f32{0} ** 4;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_take_f32(
+        input[0..].ptr,
+        input.len,
+        indices[0..].ptr,
+        indices.len,
+        output[0..].ptr,
+        output.len,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 6, 1, 4, 4 }, &output);
+
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_take_f32(
+        input[0..].ptr,
+        input.len,
+        indices[0..].ptr,
+        indices.len,
+        output[0..].ptr,
+        output.len - 1,
+    ));
+
+    const bad_indices = [_]u32{ 0, 6 };
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_take_f32(
+        input[0..].ptr,
+        input.len,
+        bad_indices[0..].ptr,
+        bad_indices.len,
+        output[0..].ptr,
+        output.len,
     ));
 }
 

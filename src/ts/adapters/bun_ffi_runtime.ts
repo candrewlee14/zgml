@@ -1190,6 +1190,7 @@ const {
     ? nativeEager.logSoftmaxInto(output, input, options)
     : nativeEager.softmaxInto(output, input, options),
   nativeEagerPermuteInto: (output, input, options) => nativeEager.permuteInto(output, input, options),
+  nativeEagerTakeInto: (output, input, index) => nativeEager.takeInto(output, input, index),
   nativeFullF32: (output, value) => {
     check(bunSymbolGroups.nativeEager.eagerFullF32(output, BigInt(output.length), value));
   },
@@ -2492,6 +2493,14 @@ const nativeEagerSurface = createAdapterNativeEagerSurface({
     args.inputStrides,
     args.axes,
     BigInt(args.rank),
+  ),
+  takeF32: (args) => bunSymbolGroups.nativeEager.eagerTakeF32(
+    args.inputData,
+    BigInt(args.inputData.length),
+    args.indices,
+    BigInt(args.indices.length),
+    args.output,
+    BigInt(args.expectedOutput),
   ),
 });
 export const nativeEager = Object.freeze({

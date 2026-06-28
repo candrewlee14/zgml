@@ -77,6 +77,11 @@ type NativeEagerPermuteInto = (
     axes: Uint32Array;
   }>,
 ) => Float32Array;
+type NativeEagerTakeInto = (
+  output: Float32Array,
+  input: unknown,
+  index: unknown,
+) => Float32Array;
 
 export type AdapterTensorRuntimeSurfaceOptions<
   TTensor extends AdapterTensorInstance = AdapterTensorInstance,
@@ -121,6 +126,7 @@ export type AdapterTensorRuntimeSurfaceOptions<
   nativeEagerDotInto?: NativeEagerDotInto;
   nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
   nativeEagerPermuteInto?: NativeEagerPermuteInto;
+  nativeEagerTakeInto?: NativeEagerTakeInto;
   nativeFullF32?: (output: Float32Array, value: number) => void;
   nativeArangeF32?: (output: Float32Array, start: number, step: number) => void;
   meanSquaredError: (tensor: TTensor, target: unknown) => TTensor;
@@ -212,6 +218,7 @@ export function createAdapterTensorRuntimeSurface<
     nativeFullF32: options.nativeFullF32,
     nativeArangeF32: options.nativeArangeF32,
     nativePermuteF32: options.nativeEagerPermuteInto,
+    nativeTakeF32: options.nativeEagerTakeInto,
     createTensorFactoryHelpers: options.sharedFrontend.createTensorFactoryHelpers,
     createTensorViewHelpers: options.sharedFrontend.createTensorViewHelpers,
     createTensorViewSurfaceHelpers: options.sharedFrontend.createTensorViewSurfaceHelpers,

@@ -156,6 +156,13 @@ type NativeEagerPermuteCall = (args: {
   rank: number;
 }) => number;
 
+type NativeEagerTakeCall = (args: {
+  inputData: Float32Array;
+  indices: Uint32Array;
+  output: Float32Array;
+  expectedOutput: number;
+}) => number;
+
 type NativeEagerConv2dCall = (args: {
   inputData: Float32Array;
   weightData: Float32Array;
@@ -220,6 +227,7 @@ type NativeEagerSurfaceOptions = {
   momentF32?: NativeEagerMomentCall;
   dotF32?: NativeEagerDotCall;
   permuteF32?: NativeEagerPermuteCall;
+  takeF32?: NativeEagerTakeCall;
   conv2dF32?: NativeEagerConv2dCall;
   pool2dF32?: NativeEagerPool2dCall;
   matmulF32?: NativeEagerMatmulCall;
@@ -914,6 +922,53 @@ function nativeEagerPermuteInputs(
   };
 }
 
+function nativeEagerIndexData(value: unknown, label: string): Uint32Array {
+  const source = value && typeof value === "object" && "data" in value
+    ? (value as { data: unknown }).data
+    : value;
+  if (source instanceof Uint32Array) return source;
+  if (!Array.isArray(source) && !ArrayBuffer.isView(source)) {
+    throw new Error(`${label} must be a Tensor, array, or typed array of indices`);
+  }
+  const raw = Array.from(source as ArrayLike<number>, Number);
+  if (raw.length === 0) throw new Error(`${label} must be non-empty`);
+  const out = new Uint32Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) {
+    const index = raw[i];
+    if (!Number.isSafeInteger(index) || index < 0 || index > 0xffffffff) {
+      throw new Error(`${label} entry ${i} must be a uint32 index, got ${index}`);
+    }
+    out[i] = index;
+  }
+  return out;
+}
+
+function nativeEagerTakeInputs(
+  output: Float32Array,
+  input: unknown,
+  index: unknown,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.takeInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  if (inputData.length === 0) {
+    throw new Error(`${label} input must be non-empty`);
+  }
+  const indices = nativeEagerIndexData(index, `${label} index`);
+  if (output.length < indices.length) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${indices.length}`);
+  }
+  return {
+    inputData,
+    indices,
+    output,
+    expectedOutput: indices.length,
+  };
+}
+
 function nativeEagerConv2dInputs(
   output: Float32Array,
   input: unknown,
@@ -1306,6 +1361,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     permute_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
       return this.permuteInto(output, input, callOptions);
+    },
+    takeInto(output: Float32Array, input: unknown, index: unknown) {
+      if (typeof options.takeF32 !== "function") {
+        throw new Error("nativeEager.takeInto is unavailable in this runtime");
+      }
+      const args = nativeEagerTakeInputs(output, input, index, options.f32);
+      options.check(options.takeF32(args));
+      return output;
+    },
+    take_into(output: Float32Array, input: unknown, index: unknown) {
+      return this.takeInto(output, input, index);
     },
     conv2dInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.conv2dF32 !== "function") {
