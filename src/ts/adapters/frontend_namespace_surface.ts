@@ -1014,6 +1014,8 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     const programBindingPlan = bindingPlan(inferenceBindings);
     return Object.freeze({
       native: true,
+      engine: "zig",
+      runtime: "native",
       program,
       session,
       executionPlan() {

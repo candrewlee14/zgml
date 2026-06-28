@@ -658,6 +658,8 @@ export function createNnNamespace(options: NnNamespaceOptions) {
     };
     return Object.freeze({
       native: true,
+      engine: "zig",
+      runtime: "native",
       program,
       session: nativeSession,
       executionPlan() {

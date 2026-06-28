@@ -557,6 +557,8 @@ function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShap
   const programBindingPlan = program.bindingPlan(inferenceBindings as ProgramBindings<InputShape, OutputShape>) as ProgramBindingPlan<InputShape, OutputShape>;
   return Object.freeze({
     native: true,
+    engine: "zig",
+    runtime: "native",
     program,
     session,
     executionPlan() {

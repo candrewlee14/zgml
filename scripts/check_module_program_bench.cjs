@@ -192,6 +192,9 @@ function requireFirstContactInferencePath(spec, model, input) {
   const output = new Float32Array(spec.outputLen);
   const handle = compileForInference(model, { inputShape: spec.inputShape, backend: "cpu" }, bindOptions);
   try {
+    if (handle.native !== true || handle.engine !== "zig" || handle.runtime !== "native") {
+      throw new Error(`${spec.label} expected compileInference to return a Zig-native handle`);
+    }
     requireCompileEvidence(spec, handle.compileSupport());
     requireKernelPlan(spec, handle.kernelPlan());
     requireHotPath(`${spec.label} compileInference`, handle.session, input, output);
@@ -219,10 +222,31 @@ function requireFirstContactInferencePath(spec, model, input) {
     if (preparedError > spec.tolerance) {
       throw new Error(`${spec.label} eager/compileInference.prepareInto mismatch ${preparedError}`);
     }
-    return true;
   } finally {
     handle.dispose();
   }
+  if (typeof model.inference === "function") {
+    const moduleHandle = model.inference({ inputShape: spec.inputShape, backend: "cpu" }, bindOptions);
+    try {
+      if (moduleHandle.native !== true || moduleHandle.engine !== "zig" || moduleHandle.runtime !== "native") {
+        throw new Error(`${spec.label} expected model.inference to return a Zig-native handle`);
+      }
+      requireHotPath(`${spec.label} model.inference`, moduleHandle.session, input, output);
+      const moduleOutput = moduleHandle.into(output, input);
+      if (moduleOutput !== output) {
+        throw new Error(`${spec.label} expected model.inference.into to reuse caller output`);
+      }
+      const eagerOutput = typeof model.forward === "function" ? model.forward(input) : spec.eager(input);
+      const eagerData = eagerOutput.data ?? eagerOutput;
+      const moduleError = maxAbsDiff(eagerData, moduleOutput);
+      if (moduleError > spec.tolerance) {
+        throw new Error(`${spec.label} eager/model.inference.into mismatch ${moduleError}`);
+      }
+    } finally {
+      moduleHandle.dispose();
+    }
+  }
+  return true;
 }
 
 function requireCompileEvidence(spec, support) {

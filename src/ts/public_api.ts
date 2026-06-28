@@ -7598,6 +7598,8 @@ export type ProgramInputBinding<Shape extends TensorShapeTuple = TensorShapeTupl
 export type ProgramOutputBinding<Shape extends TensorShapeTuple = TensorShapeTuple> = Tensor<Shape> | Float32Array | NativeBuffer;
 export type CompiledInference<InputShape extends TensorShapeTuple = TensorShapeTuple, OutputShape extends TensorShapeTuple = TensorShapeTuple> = Readonly<{
   native: true;
+  engine: "zig";
+  runtime: "native";
   program: Program<InputShape, OutputShape>;
   session: Session<InputShape, OutputShape>;
   executionPlan(): ProgramExecutionPlan<InputShape, OutputShape>;

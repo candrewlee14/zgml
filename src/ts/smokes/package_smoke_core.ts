@@ -5577,6 +5577,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const inferenceHotPathPlan = inference.hotPathPlan(inferenceHotParams);
     if (
       inference.native !== true ||
+      inference.engine !== "zig" ||
+      inference.runtime !== "native" ||
       inferenceExecutionPlan.canExecute !== true ||
       inferenceExecutionPlan.executionMode !== "executable" ||
       inferenceCompileEvidence?.nativeCore !== "zig-module-program" ||
@@ -5696,6 +5698,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const outputSlot = zgmlNativeRun.bufferSlot("output");
     if (
       zgmlNativeRun.native !== true ||
+      zgmlNativeRun.engine !== "zig" ||
+      zgmlNativeRun.runtime !== "native" ||
       plan.canExecute !== true ||
       plan.executionMode !== "executable" ||
       zgmlNativeRun.compileEvidence() !== zgmlNativeRun.program.compileEvidence() ||
@@ -5724,6 +5728,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const outputSlot = rawLayerNativeRun.bufferSlot("output");
     if (
       rawLayerNativeRun.native !== true ||
+      rawLayerNativeRun.engine !== "zig" ||
+      rawLayerNativeRun.runtime !== "native" ||
       plan.canExecute !== true ||
       plan.executionMode !== "executable" ||
       rawLayerNativeRun.compileEvidence() !== rawLayerNativeRun.program.compileEvidence() ||
@@ -5747,6 +5753,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const outputSlot = rawLayerCompileInferenceRun.bufferSlot("output");
     if (
       rawLayerCompileInferenceRun.native !== true ||
+      rawLayerCompileInferenceRun.engine !== "zig" ||
+      rawLayerCompileInferenceRun.runtime !== "native" ||
       plan.canExecute !== true ||
       plan.executionMode !== "executable" ||
       plan.compileEvidence?.nativeCore !== "zig-module-program" ||
@@ -5778,6 +5786,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const nativeInferenceHotPathPlan = nativeInference.hotPathPlan(nativeInferenceHotParams);
     if (
       nativeInference.native !== true ||
+      nativeInference.engine !== "zig" ||
+      nativeInference.runtime !== "native" ||
       nativeInferencePlan.canExecute !== true ||
       nativeInferencePlan.executionMode !== "executable" ||
       nativeInferenceEvidence !== nativeInference.program.compileEvidence() ||
@@ -5819,6 +5829,26 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       expectClose(nativeInferenceAlias.forward(inferenceInput).data, [-0.5], `${label} module.native forward`);
     } finally {
       nativeInferenceAlias.dispose();
+    }
+    const moduleInferenceAlias = inferenceModel.inference({ backend: "cpu", inputShape: [2] });
+    try {
+      if (
+        moduleInferenceAlias.native !== true ||
+        moduleInferenceAlias.engine !== "zig" ||
+        moduleInferenceAlias.runtime !== "native" ||
+        moduleInferenceAlias.requireExecutionPlan().executionMode !== "executable" ||
+        moduleInferenceAlias.compileEvidence() !== moduleInferenceAlias.program.compileEvidence()
+      ) {
+        throw new Error(`${label} module.inference expected Zig-native executable Program/Session handle`);
+      }
+      expectClose(moduleInferenceAlias.forward(inferenceInput).data, [-0.5], `${label} module.inference forward`);
+      const moduleInferenceCarrier = new Float32Array(1);
+      if (moduleInferenceAlias.into(moduleInferenceCarrier, inferenceInput) !== moduleInferenceCarrier) {
+        throw new Error(`${label} module.inference expected into to reuse caller output`);
+      }
+      expectClose(moduleInferenceCarrier, [-0.5], `${label} module.inference into`);
+    } finally {
+      moduleInferenceAlias.dispose();
     }
   } finally {
     nativeInference.dispose();
