@@ -91,6 +91,11 @@ type NativeEagerReduceInto = (
   input: unknown,
   options: Readonly<{ op: string }>,
 ) => Float32Array;
+type NativeEagerDotInto = (
+  output: Float32Array,
+  lhs: unknown,
+  rhs: unknown,
+) => Float32Array;
 type NativeEagerSoftmaxInto = (
   output: Float32Array,
   input: unknown,
@@ -114,6 +119,7 @@ export type TensorMathHelpersOptions = Readonly<{
   nativeEagerClampInto?: NativeEagerClampInto;
   nativeEagerReduceInto?: NativeEagerReduceInto;
   nativeEagerReduceMinLength?: number;
+  nativeEagerDotInto?: NativeEagerDotInto;
   nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
 }>;
 
@@ -139,6 +145,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     ? Number(options.nativeEagerActivationMinLength)
     : nativeEagerElementwiseMinLength;
   const nativeEagerReduceInto = options.nativeEagerReduceInto;
+  const nativeEagerDotInto = options.nativeEagerDotInto;
   const nativeEagerReduceMinLength = Number.isSafeInteger(options.nativeEagerReduceMinLength) && Number(options.nativeEagerReduceMinLength) >= 0
     ? Number(options.nativeEagerReduceMinLength)
     : 512;
@@ -268,8 +275,13 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     rhs: Float32Array,
     rhsShape: readonly number[],
   ) {
-    if (typeof nativeEagerReduceInto !== "function") return null;
     if (tensor.length < nativeEagerReduceMinLength) return null;
+    if (typeof nativeEagerDotInto === "function") {
+      const output = new Float32Array(1);
+      nativeEagerDotInto(output, tensor, rhsTensor ?? rhs);
+      return output[0];
+    }
+    if (typeof nativeEagerReduceInto !== "function") return null;
     const products = new Float32Array(tensor.length);
     if (!nativeElementwiseBinaryInto(products, tensor, rhsTensor, rhs, rhsShape, "mul")) return null;
     const output = new Float32Array(1);

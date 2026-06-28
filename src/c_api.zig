@@ -95,6 +95,7 @@ const feature_native_eager_elementwise: u64 = 1 << 51;
 const feature_native_eager_reduce: u64 = 1 << 52;
 const feature_native_eager_conv2d: u64 = 1 << 53;
 const feature_native_eager_pool2d: u64 = 1 << 54;
+const feature_native_eager_dot: u64 = 1 << 55;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -1135,6 +1136,7 @@ fn runtimeFeatureFlags() u64 {
         feature_native_eager_reduce |
         feature_native_eager_conv2d |
         feature_native_eager_pool2d |
+        feature_native_eager_dot |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -1809,6 +1811,21 @@ fn writeElementwiseBinaryF32(lhs: []const f32, rhs: []const f32, output: []f32, 
     }
 }
 
+fn dotF32(lhs: []const f32, rhs: []const f32) f32 {
+    const V = 8;
+    const VecT = @Vector(V, f32);
+    var acc_vec: VecT = @splat(0.0);
+    var i: usize = 0;
+    while (i + V <= lhs.len) : (i += V) {
+        const lhs_vec: VecT = lhs[i..][0..V].*;
+        const rhs_vec: VecT = rhs[i..][0..V].*;
+        acc_vec += lhs_vec * rhs_vec;
+    }
+    var acc = @reduce(.Add, acc_vec);
+    while (i < lhs.len) : (i += 1) acc += lhs[i] * rhs[i];
+    return acc;
+}
+
 fn applyActivationF32(output: []f32, activation: u32) !void {
     if (activation == 0) return;
     writeActivationF32(output, output, activation) catch |err| switch (err) {
@@ -2189,6 +2206,20 @@ export fn zgml_eager_reduce_f32(
         else => unreachable,
     }
     output_ptr.?[0] = acc;
+    return status(.ok);
+}
+
+export fn zgml_eager_dot_f32(
+    lhs_ptr: ?[*]const f32,
+    lhs_len: usize,
+    rhs_ptr: ?[*]const f32,
+    rhs_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+) c_int {
+    if (lhs_ptr == null or rhs_ptr == null or output_ptr == null or lhs_len == 0) return status(.invalid_argument);
+    if (lhs_len != rhs_len or output_len != 1) return status(.shape_mismatch);
+    output_ptr.?[0] = dotF32(lhs_ptr.?[0..lhs_len], rhs_ptr.?[0..rhs_len]);
     return status(.ok);
 }
 
@@ -8587,6 +8618,7 @@ test "C ABI runtime info reports compatible handle surface" {
     try std.testing.expect((info.feature_flags & feature_native_eager_reduce) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_conv2d) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_pool2d) != 0);
+    try std.testing.expect((info.feature_flags & feature_native_eager_dot) != 0);
     try std.testing.expectEqual(build_options.use_wgpu, (info.feature_flags & feature_native_wgpu_execution) != 0);
     try std.testing.expectEqual(build_options.use_wgpu and build_options.experimental_llama_wgpu_execution, (info.feature_flags & feature_experimental_llama_wgpu_execution) != 0);
     try std.testing.expect((info.feature_flags & feature_experimental_llama_wgpu_execution) == 0 or (info.feature_flags & feature_native_wgpu_execution) != 0);
@@ -12316,6 +12348,47 @@ test "C ABI native eager reduce writes scalar output" {
         output[0..].ptr,
         output.len,
         999,
+    ));
+}
+
+test "C ABI native eager dot writes scalar output" {
+    const lhs = [_]f32{ -2, 4, 0.5, 3, 1, -1, 2, -3, 0.25 };
+    const rhs = [_]f32{ 2, -1, 4, 0.5, 3, 5, -2, -1, 8 };
+    var output = [_]f32{0};
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_dot_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+    ));
+    try std.testing.expectEqual(@as(f32, -5.5), output[0]);
+
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_dot_f32(
+        null,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+    ));
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_dot_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len - 1,
+        output[0..].ptr,
+        output.len,
+    ));
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_dot_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        0,
     ));
 }
 

@@ -2278,6 +2278,8 @@ export type PublicNativeEagerNamespace = Readonly<{
   elementwise_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike | Float32Array | number | null | undefined, options: NativeEagerElementwiseIntoOptions): Float32Array;
   reduceInto(output: Float32Array, input: TensorLike, options: NativeEagerReduceIntoOptions): Float32Array;
   reduce_into(output: Float32Array, input: TensorLike, options: NativeEagerReduceIntoOptions): Float32Array;
+  dotInto(output: Float32Array, lhs: TensorLike, rhs: TensorLike): Float32Array;
+  dot_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike): Float32Array;
   conv2dInto(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerConv2dIntoOptions): Float32Array;
   conv2d_into(output: Float32Array, input: TensorLike, weights: TensorLike, options: NativeEagerConv2dIntoOptions): Float32Array;
   pool2dInto(output: Float32Array, input: TensorLike, options: NativeEagerPool2dIntoOptions): Float32Array;
@@ -2324,6 +2326,7 @@ export type NativeCoreEvidence = Readonly<{
     activation: boolean;
     elementwise: boolean;
     reduce: boolean;
+    dot: boolean;
     softmax: boolean;
     conv2d: boolean;
     pool2d: boolean;
@@ -7728,6 +7731,7 @@ export type RuntimeFeatures = Readonly<{
   nativeEagerMatmul: boolean;
   nativeEagerElementwise: boolean;
   nativeEagerReduce: boolean;
+  nativeEagerDot: boolean;
   nativeEagerConv2d: boolean;
   nativeEagerPool2d: boolean;
 }>;

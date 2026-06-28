@@ -86,6 +86,13 @@ type NativeEagerReduceCall = (args: {
   op: number;
 }) => number;
 
+type NativeEagerDotCall = (args: {
+  lhsData: Float32Array;
+  rhsData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+}) => number;
+
 type NativeEagerConv2dCall = (args: {
   inputData: Float32Array;
   weightData: Float32Array;
@@ -142,6 +149,7 @@ type NativeEagerSurfaceOptions = {
   whereF32?: NativeEagerWhereCall;
   clampF32?: NativeEagerClampCall;
   reduceF32?: NativeEagerReduceCall;
+  dotF32?: NativeEagerDotCall;
   conv2dF32?: NativeEagerConv2dCall;
   pool2dF32?: NativeEagerPool2dCall;
   matmulF32?: NativeEagerMatmulCall;
@@ -541,6 +549,35 @@ function nativeEagerReduceInputs(
   };
 }
 
+function nativeEagerDotInputs(
+  output: Float32Array,
+  lhs: unknown,
+  rhs: unknown,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.dotInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  if (output.length < 1) {
+    throw new Error(`${label} output length ${output.length} is smaller than 1`);
+  }
+  const lhsData = nativeEagerTensorData(lhs, `${label} lhs`, f32);
+  const rhsData = nativeEagerTensorData(rhs, `${label} rhs`, f32);
+  if (lhsData.length === 0) {
+    throw new Error(`${label} lhs must be non-empty`);
+  }
+  if (lhsData.length !== rhsData.length) {
+    throw new Error(`${label} rhs length ${rhsData.length} must match lhs length ${lhsData.length}`);
+  }
+  return {
+    lhsData,
+    rhsData,
+    output,
+    expectedOutput: 1,
+  };
+}
+
 function nativeEagerConv2dInputs(
   output: Float32Array,
   input: unknown,
@@ -781,6 +818,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     reduce_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
       return this.reduceInto(output, input, callOptions);
+    },
+    dotInto(output: Float32Array, lhs: unknown, rhs: unknown) {
+      if (typeof options.dotF32 !== "function") {
+        throw new Error("nativeEager.dotInto is unavailable in this runtime");
+      }
+      const args = nativeEagerDotInputs(output, lhs, rhs, options.f32);
+      options.check(options.dotF32(args));
+      return output;
+    },
+    dot_into(output: Float32Array, lhs: unknown, rhs: unknown) {
+      return this.dotInto(output, lhs, rhs);
     },
     conv2dInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.conv2dF32 !== "function") {

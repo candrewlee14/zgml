@@ -90,6 +90,7 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
       eagerWhereF32: symbols.eagerWhereF32,
       eagerClampF32: symbols.eagerClampF32,
       eagerReduceF32: symbols.eagerReduceF32,
+      eagerDotF32: symbols.eagerDotF32,
       eagerConv2dF32: symbols.eagerConv2dF32,
       eagerPool2dF32: symbols.eagerPool2dF32,
       eagerSoftmaxF32: symbols.eagerSoftmaxF32,

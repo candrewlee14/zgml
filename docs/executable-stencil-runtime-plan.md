@@ -613,15 +613,19 @@ Current checked progress:
   Native eager matmul is also now surfaced as `zgml_eager_matmul_f32` and
   `zgml.nativeEager.matmulInto`, with Node/Bun `Tensor.matmul` dispatching
   through that Zig path automatically when gradients are disabled.
-  Scalar RHS elementwise and scalar reductions are now covered the same way:
-  `zgml.nativeEager.elementwiseInto` / `zgml.nativeEager.reduceInto` call
-  `zgml_eager_elementwise_f32` / `zgml_eager_reduce_f32` directly, and normal
-  no-grad `Tensor.mul(2)` / `Tensor.dot(...)` / `Tensor.sum()` calls compose
-  those Zig ABI hooks for large tensors while grad-enabled training keeps the TS/autograd path. The
-  elementwise C ABI now uses a vectorized Zig binary helper for scalar and
-  same-shape arithmetic/comparison ops; fresh Node/Bun direct rows show
-  `elementwise_mul_batched` at `264.63x` / `262.06x` and the public Tensor path
-  still preserves the runtime-specific thresholds.
+  Scalar RHS elementwise, scalar reductions, and vector dot products are now
+  covered the same way: `zgml.nativeEager.elementwiseInto`,
+  `zgml.nativeEager.reduceInto`, and `zgml.nativeEager.dotInto` call
+  `zgml_eager_elementwise_f32`, `zgml_eager_reduce_f32`, and
+  `zgml_eager_dot_f32` directly, and normal
+  no-grad `Tensor.mul(2)` / `Tensor.dot(...)` / `Tensor.sum()` calls use
+  those Zig ABI hooks for large tensors while grad-enabled training keeps the
+  TS/autograd path. The elementwise C ABI now uses a vectorized Zig binary
+  helper for scalar and same-shape arithmetic/comparison ops; fresh Node/Bun
+  direct rows show `elementwise_mul_batched` at `264.63x` / `262.06x`, and the
+  direct Node dot row shows `dot_batched` at `38.63x` with no product
+  allocation. The public Tensor path still preserves the runtime-specific
+  thresholds.
   The same ordinary Tensor eager lane now covers more PyTorch-like control
   primitives without changing the frontend shape: primitive comparisons
   (`eq`/`ne`/`lt`/`le`/`gt`/`ge`) lower through the Zig elementwise ABI for

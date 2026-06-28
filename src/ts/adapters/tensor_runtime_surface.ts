@@ -52,6 +52,11 @@ type NativeEagerReduceInto = (
   input: unknown,
   options: Readonly<{ op: string }>,
 ) => Float32Array;
+type NativeEagerDotInto = (
+  output: Float32Array,
+  lhs: unknown,
+  rhs: unknown,
+) => Float32Array;
 type NativeEagerSoftmaxInto = (
   output: Float32Array,
   input: unknown,
@@ -75,6 +80,7 @@ export type AdapterTensorRuntimeSurfaceOptions<
   nativeEagerClampInto?: NativeEagerClampInto;
   nativeEagerReduceInto?: NativeEagerReduceInto;
   nativeEagerReduceMinLength?: number;
+  nativeEagerDotInto?: NativeEagerDotInto;
   nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
   meanSquaredError: (tensor: TTensor, target: unknown) => TTensor;
   dtype: TensorMetadataOpsOptions<TTensor>["dtype"];
@@ -127,6 +133,7 @@ export function createAdapterTensorRuntimeSurface<
     nativeEagerClampInto: options.nativeEagerClampInto,
     nativeEagerReduceInto: options.nativeEagerReduceInto,
     nativeEagerReduceMinLength: options.nativeEagerReduceMinLength,
+    nativeEagerDotInto: options.nativeEagerDotInto,
     nativeEagerSoftmaxInto: options.nativeEagerSoftmaxInto,
   });
   const tensorMathSurfaceHelpers = options.sharedFrontend.createTensorMathSurfaceHelpers({

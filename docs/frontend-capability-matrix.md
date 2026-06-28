@@ -100,7 +100,11 @@ PyTorch replacement:
   weights do not need a TS-side transpose before reaching Zig. On Node and Bun,
   eligible `nn.Linear.forward` calls inside `zgml.noGrad(...)` now route through
   that native eager hook as the normal module path; grad-enabled training keeps
-  the TS/autograd graph path. The native eager gap microscope records
+  the TS/autograd graph path. The same caller-owned-output shape now covers
+  vector dot through `zgml.nativeEager.dotInto`, backed by
+  `zgml_eager_dot_f32`; Node no-grad `Tensor.dot(...)` uses that direct Zig path
+  for large vectors instead of materializing an intermediate product. The native
+  eager gap microscope records
   `nativeEagerModuleForwardMs`, `nativeEagerModuleSpeedup`, and
   `nativeEagerModuleMaxAbsDiff` for that no-grad module lane. Node and Bun now
   also expose `zgml.nativeEager.linearActivationInto` /

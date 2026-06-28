@@ -126,10 +126,7 @@ function nativeEagerBmmInto(output, input, rhs, batch, rows, shared, cols) {
 }
 
 function nativeEagerDotInto(output, input, rhs) {
-  const inputData = input.data ?? input;
-  const products = new Float32Array(inputData.length);
-  zgml.nativeEager.elementwiseInto(products, input, rhs, { op: "mul" });
-  return zgml.nativeEager.reduceInto(output, products, { op: "sum" });
+  return zgml.nativeEager.dotInto(output, input, rhs);
 }
 
 function requireCompiledHotPath(key, session, input, output) {

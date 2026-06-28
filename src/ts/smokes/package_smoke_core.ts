@@ -353,6 +353,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.reduceInto !== "function") {
     throw new Error(`${label} expected nativeEager.reduceInto`);
   }
+  if (typeof nativeEager.dotInto !== "function") {
+    throw new Error(`${label} expected nativeEager.dotInto`);
+  }
   if (typeof nativeEager.conv2dInto !== "function") {
     throw new Error(`${label} expected nativeEager.conv2dInto`);
   }
@@ -385,6 +388,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   if (typeof nativeEagerAlias.reduce_into !== "function") {
     throw new Error(`${label} expected native_eager.reduce_into alias`);
+  }
+  if (typeof nativeEagerAlias.dot_into !== "function") {
+    throw new Error(`${label} expected native_eager.dot_into alias`);
   }
   if (typeof nativeEagerAlias.conv2d_into !== "function") {
     throw new Error(`${label} expected native_eager.conv2d_into alias`);
@@ -501,6 +507,18 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.reduce_into to reuse caller output`);
   }
   expectClose(reduceAliasOutput, [3.75], `${label} native_eager.reduce_into output`);
+  const dotOutput = new Float32Array(1);
+  const dotResult = nativeEager.dotInto(dotOutput, directOutput, new Float32Array([1, 2, 3, 4, 5, 6]));
+  if (dotResult !== dotOutput) {
+    throw new Error(`${label} expected nativeEager.dotInto to reuse caller output`);
+  }
+  expectClose(dotOutput, [36.5], `${label} nativeEager.dotInto output`);
+  const dotAliasOutput = new Float32Array(1);
+  const dotAliasResult = nativeEagerAlias.dot_into(dotAliasOutput, directOutput, new Float32Array([6, 5, 4, 3, 2, 1]));
+  if (dotAliasResult !== dotAliasOutput) {
+    throw new Error(`${label} expected native_eager.dot_into to reuse caller output`);
+  }
+  expectClose(dotAliasOutput, [33.5], `${label} native_eager.dot_into output`);
   const conv2dInput = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 3]);
   const conv2dWeights = adapter.tensor([1, 0, 0, 1], [1, 1, 2, 2]);
   const conv2dBias = adapter.tensor([0.5], [1]);
