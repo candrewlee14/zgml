@@ -315,6 +315,9 @@ const shader_source =
     \\    float output_rms_eps;
     \\    uint output_scale_src_offset;
     \\    uint output_dst_offset;
+    \\    uint output_scratch_offset;
+    \\    uint partial_dst_offset;
+    \\    uint partial_cols;
     \\};
     \\
     \\kernel void matmul_row_chain_f32(
@@ -1792,6 +1795,173 @@ const shader_source =
     \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
     \\        uint linear = row * p.O + col;
     \\        output_dst[p.output_dst_offset + linear] = residual_values[col] * output_inv_rms * output_scale_src[p.output_scale_src_offset + col];
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_semantic_ffn_input_bridge_width_partials_f32(
+    \\    device const char*  input_weight_data   [[buffer(0)]],
+    \\    device const float* input_weight_scales [[buffer(1)]],
+    \\    device const char*  gate_weight_data    [[buffer(2)]],
+    \\    device const float* gate_weight_scales  [[buffer(3)]],
+    \\    device const char*  up_weight_data      [[buffer(4)]],
+    \\    device const float* up_weight_scales    [[buffer(5)]],
+    \\    device const char*  down_weight_data    [[buffer(6)]],
+    \\    device const float* down_weight_scales  [[buffer(7)]],
+    \\    device const float* source_input        [[buffer(8)]],
+    \\    device const float* input_residual_secondary [[buffer(9)]],
+    \\    device const float* input_scale_src     [[buffer(10)]],
+    \\    device float*       output_scratch      [[buffer(11)]],
+    \\    device float*       partial_dst         [[buffer(12)]],
+    \\    constant QMatmulSemanticFfnInputBridgeParams& p [[buffer(13)]],
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint row = group.x;
+    \\    const uint gCol = group.y * ROW_CHAIN_TILE;
+    \\    if (row >= p.M) return;
+    \\    threadgroup float partial[SEMANTIC_FFN_INPUT_BRIDGE_THREADS];
+    \\    threadgroup float input_values[SEMANTIC_FFN_MAX_DIM];
+    \\    threadgroup float product_values[SEMANTIC_FFN_MAX_HIDDEN];
+    \\    threadgroup float residual_values[SEMANTIC_FFN_MAX_DIM];
+    \\
+    \\    float input_ss = 0.0f;
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        float sum = 0.0f;
+    \\        uint k = 0;
+    \\        for (; k + 3 < p.input_projection_K; k += 4) {
+    \\            uint w_idx0 = k * p.K + col;
+    \\            uint w_idx1 = w_idx0 + p.K;
+    \\            uint w_idx2 = w_idx1 + p.K;
+    \\            uint w_idx3 = w_idx2 + p.K;
+    \\            uint input_base = p.source_input_offset + row * p.source_input_row_stride + k;
+    \\            sum += source_input[input_base] * float(input_weight_data[w_idx0]) * input_weight_scales[w_idx0 >> 5];
+    \\            sum += source_input[input_base + 1] * float(input_weight_data[w_idx1]) * input_weight_scales[w_idx1 >> 5];
+    \\            sum += source_input[input_base + 2] * float(input_weight_data[w_idx2]) * input_weight_scales[w_idx2 >> 5];
+    \\            sum += source_input[input_base + 3] * float(input_weight_data[w_idx3]) * input_weight_scales[w_idx3 >> 5];
+    \\        }
+    \\        for (; k < p.input_projection_K; k++) {
+    \\            uint w_idx = k * p.K + col;
+    \\            sum += source_input[p.source_input_offset + row * p.source_input_row_stride + k] * float(input_weight_data[w_idx]) * input_weight_scales[w_idx >> 5];
+    \\        }
+    \\        uint linear = row * p.K + col;
+    \\        float residual = sum + input_residual_secondary[p.input_residual_secondary_offset + linear];
+    \\        residual_values[col] = residual;
+    \\        input_ss += residual * residual;
+    \\    }
+    \\    partial[tid] = input_ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = SEMANTIC_FFN_INPUT_BRIDGE_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float input_inv_rms = 1.0f / sqrt(partial[0] / float(p.K) + p.input_rms_eps);
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        input_values[col] = residual_values[col] * input_inv_rms * input_scale_src[p.input_scale_src_offset + col];
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint h = tid; h < p.H; h += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        float gate_sum = 0.0f;
+    \\        float up_sum = 0.0f;
+    \\        uint k = 0;
+    \\        for (; k + 3 < p.K; k += 4) {
+    \\            uint w_idx0 = k * p.H + h;
+    \\            uint w_idx1 = w_idx0 + p.H;
+    \\            uint w_idx2 = w_idx1 + p.H;
+    \\            uint w_idx3 = w_idx2 + p.H;
+    \\            float x0 = input_values[k];
+    \\            float x1 = input_values[k + 1];
+    \\            float x2 = input_values[k + 2];
+    \\            float x3 = input_values[k + 3];
+    \\            gate_sum += x0 * float(gate_weight_data[w_idx0]) * gate_weight_scales[w_idx0 >> 5];
+    \\            gate_sum += x1 * float(gate_weight_data[w_idx1]) * gate_weight_scales[w_idx1 >> 5];
+    \\            gate_sum += x2 * float(gate_weight_data[w_idx2]) * gate_weight_scales[w_idx2 >> 5];
+    \\            gate_sum += x3 * float(gate_weight_data[w_idx3]) * gate_weight_scales[w_idx3 >> 5];
+    \\            up_sum += x0 * float(up_weight_data[w_idx0]) * up_weight_scales[w_idx0 >> 5];
+    \\            up_sum += x1 * float(up_weight_data[w_idx1]) * up_weight_scales[w_idx1 >> 5];
+    \\            up_sum += x2 * float(up_weight_data[w_idx2]) * up_weight_scales[w_idx2 >> 5];
+    \\            up_sum += x3 * float(up_weight_data[w_idx3]) * up_weight_scales[w_idx3 >> 5];
+    \\        }
+    \\        for (; k < p.K; k++) {
+    \\            uint w_idx = k * p.H + h;
+    \\            float x = input_values[k];
+    \\            gate_sum += x * float(gate_weight_data[w_idx]) * gate_weight_scales[w_idx >> 5];
+    \\            up_sum += x * float(up_weight_data[w_idx]) * up_weight_scales[w_idx >> 5];
+    \\        }
+    \\        product_values[h] = fused_unary(p.first_op, gate_sum) * up_sum;
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    float output_ss = 0.0f;
+    \\    for (uint col = gCol + tid; col < min(gCol + ROW_CHAIN_TILE, p.O); col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        float sum = 0.0f;
+    \\        uint h = 0;
+    \\        for (; h + 7 < p.H; h += 8) {
+    \\            uint w_idx0 = h * p.O + col;
+    \\            uint w_idx1 = w_idx0 + p.O;
+    \\            uint w_idx2 = w_idx1 + p.O;
+    \\            uint w_idx3 = w_idx2 + p.O;
+    \\            uint w_idx4 = w_idx3 + p.O;
+    \\            uint w_idx5 = w_idx4 + p.O;
+    \\            uint w_idx6 = w_idx5 + p.O;
+    \\            uint w_idx7 = w_idx6 + p.O;
+    \\            sum += product_values[h] * float(down_weight_data[w_idx0]) * down_weight_scales[w_idx0 >> 5];
+    \\            sum += product_values[h + 1] * float(down_weight_data[w_idx1]) * down_weight_scales[w_idx1 >> 5];
+    \\            sum += product_values[h + 2] * float(down_weight_data[w_idx2]) * down_weight_scales[w_idx2 >> 5];
+    \\            sum += product_values[h + 3] * float(down_weight_data[w_idx3]) * down_weight_scales[w_idx3 >> 5];
+    \\            sum += product_values[h + 4] * float(down_weight_data[w_idx4]) * down_weight_scales[w_idx4 >> 5];
+    \\            sum += product_values[h + 5] * float(down_weight_data[w_idx5]) * down_weight_scales[w_idx5 >> 5];
+    \\            sum += product_values[h + 6] * float(down_weight_data[w_idx6]) * down_weight_scales[w_idx6 >> 5];
+    \\            sum += product_values[h + 7] * float(down_weight_data[w_idx7]) * down_weight_scales[w_idx7 >> 5];
+    \\        }
+    \\        for (; h < p.H; h++) {
+    \\            uint w_idx = h * p.O + col;
+    \\            sum += product_values[h] * float(down_weight_data[w_idx]) * down_weight_scales[w_idx >> 5];
+    \\        }
+    \\        uint linear = row * p.O + col;
+    \\        float residual = sum + residual_values[col];
+    \\        output_scratch[p.output_scratch_offset + linear] = residual;
+    \\        output_ss += residual * residual;
+    \\    }
+    \\    partial[tid] = output_ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = SEMANTIC_FFN_INPUT_BRIDGE_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    if (tid == 0) {
+    \\        partial_dst[p.partial_dst_offset + row * p.partial_cols + group.y] = partial[0];
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_semantic_ffn_input_bridge_finalize_tiles_f32(
+    \\    device const float* output_scratch [[buffer(0)]],
+    \\    device const float* partial_src    [[buffer(1)]],
+    \\    device const float* output_scale   [[buffer(2)]],
+    \\    device float*       output_dst     [[buffer(3)]],
+    \\    constant QMatmulSemanticFfnInputBridgeParams& p [[buffer(4)]],
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint row = group.x;
+    \\    const uint gCol = group.y * ROW_CHAIN_TILE;
+    \\    if (row >= p.M) return;
+    \\    float ss = 0.0f;
+    \\    for (uint t = tid; t < p.partial_cols; t += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        ss += partial_src[p.partial_dst_offset + row * p.partial_cols + t];
+    \\    }
+    \\    threadgroup float partial[SEMANTIC_FFN_INPUT_BRIDGE_THREADS];
+    \\    partial[tid] = ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = SEMANTIC_FFN_INPUT_BRIDGE_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    const float inv_rms = 1.0f / sqrt(partial[0] / float(p.O) + p.output_rms_eps);
+    \\    for (uint col = gCol + tid; col < min(gCol + ROW_CHAIN_TILE, p.O); col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        uint linear = row * p.O + col;
+    \\        output_dst[p.output_dst_offset + linear] =
+    \\            output_scratch[p.output_scratch_offset + linear] * inv_rms * output_scale[p.output_scale_src_offset + col];
     \\    }
     \\}
     \\
@@ -4819,6 +4989,9 @@ const QMatmulSemanticFfnInputBridgeParams = extern struct {
     output_rms_eps: f32,
     output_scale_src_offset: u32,
     output_dst_offset: u32,
+    output_scratch_offset: u32,
+    partial_dst_offset: u32,
+    partial_cols: u32,
 };
 
 const SemanticFfnInputBridgeCompatibility = struct {
@@ -5738,6 +5911,8 @@ const MetalKernel = enum(u8) {
     qmatmul_elementwise_f32,
     qmatmul_semantic_ffn_sublayer_f32,
     qmatmul_semantic_ffn_input_bridge_f32,
+    qmatmul_semantic_ffn_input_bridge_width_partials_f32,
+    qmatmul_semantic_ffn_input_bridge_finalize_tiles_f32,
     qmatmul_row_chain_f32,
     qmatmul_row_chain_tiled_f32,
     qmatmul_row_chain_tiled_partials_f32,
@@ -10284,10 +10459,94 @@ const CompiledProgram = struct {
             .output_rms_eps = output_rn.eps,
             .output_scale_src_offset = output_rp.src_offset,
             .output_dst_offset = output_out.dst_offset,
+            .output_scratch_offset = 0,
+            .partial_dst_offset = 0,
+            .partial_cols = 0,
         };
         exec.profile.recordSemanticFfnSublayer(params.M, params.H, params.K, params.O, SEMANTIC_FFN_INPUT_BRIDGE_THREADS);
         exec.profile.recordSemanticFfnWithInputDirect(params.M, params.H, params.K, params.O, params.input_projection_K);
         exec.encodeKernel(.qmatmul_semantic_ffn_input_bridge_f32, &buffers, params, 13, .{ .gx = gate.M }, SEMANTIC_FFN_INPUT_BRIDGE_THREADS);
+        return true;
+    }
+
+    fn encodeSemanticFfnSublayerInputBridgeWidthParallel(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, input_q: anytype, input_residual: anytype, input_rn: anytype, input_rp: anytype, input_out: anytype, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, output_residual: anytype, output_rn: anytype, output_rp: anytype, output_out: anytype) bool {
+        const plan = semanticFfnInputBridgeEncodePlan(view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out) orelse return false;
+        const scratch_buffer = view.semantic_width_scratch orelse return false;
+        if (scratch_buffer.size < plan.scratch_layout.total_bytes) return false;
+        if (@as(u64, plan.scratch_layout.down_partial_elements) < @as(u64, plan.down_params.M) * plan.bridge.output_tiles) return false;
+
+        const input_w = view.qweight_views[input_q.weight_idx];
+        const gate_w = view.qweight_views[gate.weight_idx];
+        const up_w = view.qweight_views[up.weight_idx];
+        const down_w = view.qweight_views[down.weight_idx];
+        const output_tiles = std.math.cast(u32, plan.bridge.output_tiles) orelse return false;
+
+        const params = QMatmulSemanticFfnInputBridgeParams{
+            .M = plan.gate_params.M,
+            .H = plan.gate_params.N,
+            .K = plan.gate_params.K,
+            .O = plan.down_params.N,
+            .input_projection_K = plan.input_params.K,
+            .input_block_size = plan.input_params.block_size,
+            .gate_block_size = plan.gate_params.block_size,
+            .up_block_size = plan.up_params.block_size,
+            .down_block_size = plan.down_params.block_size,
+            .source_input_offset = plan.input_params.input_offset,
+            .source_input_row_stride = plan.input_params.input_row_stride,
+            .input_residual_secondary_offset = plan.bridge.input_secondary_offset,
+            .input_rms_eps = input_rn.eps,
+            .input_scale_src_offset = input_rp.src_offset,
+            .first_op = @intFromEnum(first.op),
+            .output_rms_eps = output_rn.eps,
+            .output_scale_src_offset = output_rp.src_offset,
+            .output_dst_offset = output_out.dst_offset,
+            .output_scratch_offset = output_out.dst_offset,
+            .partial_dst_offset = plan.scratch_layout.down_partial_element_offset,
+            .partial_cols = output_tiles,
+        };
+
+        const partial_buffers = [_]DeviceBuffer{
+            input_w.data,
+            input_w.scales,
+            gate_w.data,
+            gate_w.scales,
+            up_w.data,
+            up_w.scales,
+            down_w.data,
+            down_w.scales,
+            view.device_bufs[input_q.input],
+            view.device_bufs[plan.bridge.input_secondary_buf],
+            view.device_bufs[input_rp.src],
+            view.device_bufs[output_out.dst],
+            scratch_buffer,
+        };
+        exec.profile.recordSemanticFfnSublayer(params.M, params.H, params.K, params.O, SEMANTIC_FFN_INPUT_BRIDGE_THREADS);
+        exec.profile.recordSemanticFfnWithInputDirect(params.M, params.H, params.K, params.O, params.input_projection_K);
+        exec.profile.recordSemanticFfnWithInputDirectWidthParallel(params.M, ROW_CHAIN_TILE, params.O, ROW_CHAIN_TILE, ROW_CHAIN_WIDTH_LANES);
+        exec.profile.recordSemanticWidthScratchRuntimeUse(plan.scratch.runtimeScratchBytes());
+        exec.encodeKernel(
+            .qmatmul_semantic_ffn_input_bridge_width_partials_f32,
+            &partial_buffers,
+            params,
+            13,
+            .{ .gx = params.M, .gy = output_tiles },
+            SEMANTIC_FFN_INPUT_BRIDGE_THREADS,
+        );
+
+        const finalize_buffers = [_]DeviceBuffer{
+            view.device_bufs[output_out.dst],
+            scratch_buffer,
+            view.device_bufs[output_rp.src],
+            view.device_bufs[output_out.dst],
+        };
+        exec.encodeKernel(
+            .qmatmul_semantic_ffn_input_bridge_finalize_tiles_f32,
+            &finalize_buffers,
+            params,
+            4,
+            .{ .gx = params.M, .gy = output_tiles },
+            SEMANTIC_FFN_INPUT_BRIDGE_THREADS,
+        );
         return true;
     }
 
@@ -10335,6 +10594,11 @@ const CompiledProgram = struct {
         const output_rn = deviceOpAt(.rmsnorm, ops, start + 11) orelse return false;
         const output_rp = deviceOpAt(.repeat, ops, start + 12) orelse return false;
         const output_out = deviceOpAt(.elementwise, ops, start + 13) orelse return false;
+        if (self.command_policy.fuse_semantic_ffn_sublayer_input_bridge_width_parallel and
+            self.encodeSemanticFfnSublayerInputBridgeWidthParallel(exec, view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out))
+        {
+            return true;
+        }
         if (self.command_policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch and
             self.encodeSemanticFfnSublayerInputBridgeSingleDispatch(exec, view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out))
         {

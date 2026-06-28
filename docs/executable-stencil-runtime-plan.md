@@ -511,7 +511,14 @@ Current checked progress:
   baseline on the target `m=128 h=1536 k=576 o=576` shape. The checker now
   rejects that kind of dispatch-only shortcut unless a future staged-width path
   beats the command baseline, so the real next target remains
-  `semantic_with_input_width_parallel_kernel`.
+  `semantic_with_input_width_parallel_kernel`. A follow-up direct-width
+  diagnostic added an opt-in Metal bridge path that proves the intended
+  `128x576x1536x576` shape, `4x18` width tiles, four width lanes, and 2304
+  partial slots, but the focused gate measured it at only `0.12x` because it
+  duplicates input/gate/up work per output tile. The accepted throughput
+  candidate therefore keeps the decomposed five-dispatch path by default
+  (`absorbed=2.64x` in the fresh focused run), and the direct-width bridge
+  remains a diagnostic until a true non-duplicating kernel lands.
 - zgml frontend replacement feel: ~85%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,

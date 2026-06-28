@@ -1306,6 +1306,7 @@ pub const CommandStreamPolicy = struct {
     fuse_semantic_ffn_sublayer_single_dispatch: bool = true,
     fuse_semantic_ffn_sublayer_width_parallel: bool = false,
     fuse_semantic_ffn_sublayer_input_bridge_single_dispatch: bool = false,
+    fuse_semantic_ffn_sublayer_input_bridge_width_parallel: bool = false,
     fuse_dense_projection_row_chain: bool = false,
     min_projection_row_chain_rows: u32 = 8,
 
@@ -1356,6 +1357,13 @@ pub const CommandStreamPolicy = struct {
         policy.fuse_semantic_ffn_sublayer_single_dispatch = false;
         policy.fuse_semantic_ffn_sublayer_width_parallel = false;
         policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch = true;
+        return policy;
+    }
+
+    pub fn promptSemanticFfnSublayerInputBridgeDirectWidthCandidate() CommandStreamPolicy {
+        var policy = CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeDirectSerialCandidate();
+        policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch = false;
+        policy.fuse_semantic_ffn_sublayer_input_bridge_width_parallel = true;
         return policy;
     }
 
@@ -9608,11 +9616,18 @@ test "semantic input bridge direct serial lowering is diagnostic opt-in" {
     try std.testing.expect(throughput_policy.fuse_semantic_ffn_sublayer_input_row_chain);
     try std.testing.expect(throughput_policy.fuse_semantic_ffn_sublayer_width_parallel);
     try std.testing.expect(!throughput_policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch);
+    try std.testing.expect(!throughput_policy.fuse_semantic_ffn_sublayer_input_bridge_width_parallel);
 
     const direct_serial_policy = CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeDirectSerialCandidate();
     try std.testing.expect(direct_serial_policy.fuse_semantic_ffn_sublayer_input_row_chain);
     try std.testing.expect(!direct_serial_policy.fuse_semantic_ffn_sublayer_width_parallel);
     try std.testing.expect(direct_serial_policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch);
+    try std.testing.expect(!direct_serial_policy.fuse_semantic_ffn_sublayer_input_bridge_width_parallel);
+
+    const direct_width_policy = CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeDirectWidthCandidate();
+    try std.testing.expect(direct_width_policy.fuse_semantic_ffn_sublayer_input_row_chain);
+    try std.testing.expect(!direct_width_policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch);
+    try std.testing.expect(direct_width_policy.fuse_semantic_ffn_sublayer_input_bridge_width_parallel);
 }
 
 test "program command stream fuses paired projection activation product chain" {

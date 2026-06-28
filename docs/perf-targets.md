@@ -246,7 +246,13 @@ machine for both prompt/prefill and decode.
   input-bridge path only counts as the direct target when those direct-width
   counters prove the exact `128x576x1536x576` 4-lane tiled output pass
   (`row_groups=4`, `output_tiles=18`, `partial_slots=2304`). A row-serial
-  direct bridge remains diagnostic, even when it is one dispatch.
+  direct bridge remains diagnostic, even when it is one dispatch. A later
+  opt-in direct-width Metal bridge did prove those width counters with zero
+  fallback and zero meaningful numerical drift, but it ran at `0.12x` because
+  it duplicated input projection and gate/up work for each output tile. It is
+  therefore guarded behind its own diagnostic policy bit; the throughput
+  candidate keeps the decomposed five-dispatch path until the direct bridge can
+  preserve width parallelism without duplicating the expensive prefix.
   The full-model semantic throughput candidate now keeps the 14-op input-bridge
   command shape but disables the direct input-bridge kernel until it is
   partitioned. A fresh one-attempt probe recovered the semantic candidate from
