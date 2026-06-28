@@ -2161,6 +2161,9 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (absorbedUsesDirectKernel && (absorbedDirectInputProjection !== targetInput || absorbedDirectInput !== targetInput || absorbedDirectHidden !== targetHidden || absorbedDirectOutput !== targetOutput || absorbedDirectInputProjectionDotOps !== targetInputProjectionDotOps || absorbedDirectGateUpDotOps !== targetGateUpDotOps || absorbedDirectDownDotOps !== targetDownDotOps)) {
     failures.push("semantic input direct absorbed profile must expose the expected input/gate-up/down dot-work split");
   }
+  if (absorbedUsesDirectKernel && (absorbedDirectWidthParallelCount !== 1 || absorbedDirectWidthParallelRows !== 128 || absorbedDirectWidthParallelRowTileGroups !== 4 || absorbedDirectWidthParallelOutputTiles !== 18 || absorbedDirectWidthParallelLanes !== 4 || absorbedDirectWidthParallelPartialSlots !== 2304)) {
+    failures.push("semantic input direct absorbed kernel must prove the direct width-parallel 4-lane tiled output pass");
+  }
   if (absorbedDirectWidthParallelCount > 0 && (absorbedDirectWidthParallelCount !== 1 || absorbedDirectWidthParallelRows !== 128 || absorbedDirectWidthParallelRowTileGroups !== 4 || absorbedDirectWidthParallelOutputTiles !== 18 || absorbedDirectWidthParallelLanes !== 4 || absorbedDirectWidthParallelPartialSlots !== 2304)) {
     failures.push("semantic input direct absorbed width-parallel profile must expose one 4-lane tiled output pass for the prompt shape");
   }

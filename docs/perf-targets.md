@@ -242,6 +242,11 @@ machine for both prompt/prefill and decode.
   `direct_width_tiles`, `direct_width_partial_slots`) so the future
   `semantic_with_input_width_parallel_kernel` can prove it is the intended
   tiled direct path instead of being mistaken for the row-serial diagnostic.
+  The frontier gate now enforces that distinction: a one-dispatch absorbed
+  input-bridge path only counts as the direct target when those direct-width
+  counters prove the exact `128x576x1536x576` 4-lane tiled output pass
+  (`row_groups=4`, `output_tiles=18`, `partial_slots=2304`). A row-serial
+  direct bridge remains diagnostic, even when it is one dispatch.
   The full-model semantic throughput candidate now keeps the 14-op input-bridge
   command shape but disables the direct input-bridge kernel until it is
   partitioned. A fresh one-attempt probe recovered the semantic candidate from

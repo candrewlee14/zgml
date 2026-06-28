@@ -1138,6 +1138,12 @@ gate no longer has to infer zeros from missing metric fields. That makes the
 eventual absorbed-path proof crisp: nonzero direct-width counters must come from
 observed runtime profile data, not from a target-shape string or the existing
 row-chain width-parallel leaf.
+The frontier gate is also intentionally stricter than "one dispatch": an
+absorbed input-bridge path only counts as the direct target if
+`semantic_ffn_with_input_direct_width_parallel_*` proves the exact prompt shape
+(`rows=128`, `row_tile_groups=4`, `output_tiles=18`, `lanes=4`,
+`partial_slots=2304`). The older one-dispatch row-serial bridge remains a
+diagnostic, not `semantic_with_input_width_parallel_kernel` proof.
 With that proof surface in place, the absorbed decomposed bridge now uses the
 same width-partial row-chain encoder for the model-width input projection as
 well as the hidden-width down tail. The guard is deliberately narrow: it only
