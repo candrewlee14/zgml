@@ -1834,6 +1834,8 @@ function checkScripts() {
     "semantic input direct_width runtime must expose direct width, staged width, or decomposed diagnostic counters",
     "direct_width=${directWidthSpeedup.toFixed(2)}x max_abs_diff=${directWidthMaxAbsDiff.toFixed(6)} ready=${directWidthUsesDirectKernel ? \"yes\" : \"no\"}",
     "directWidth: speedupStats(attempts, \"directWidthSpeedup\")",
+    "semantic input direct_serial best max_abs_diff",
+    "semantic input direct_width best max_abs_diff",
     "semantic input absorbed decomposition must stay count=1 dispatches=5 extra_dispatches=4 row_chain=2 pair=1 tail=2 until the width-parallel kernel replaces it",
     "semanticWithInputDecomposedDispatches: attempt.absorbedDecomposedDispatches",
     "semanticWithInputDecomposedExtraDispatches: attempt.absorbedDecomposedExtraDispatches",

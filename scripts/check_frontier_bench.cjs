@@ -2778,12 +2778,18 @@ function runFocusedSemanticInputBridgeGate() {
   }, null);
   const aggregate = [];
   const bestAbsorbedSpeedup = bestMax(attempts, "absorbedSpeedup");
+  const bestCommandDiff = bestMin(attempts, "commandMaxAbsDiff");
   const bestAbsorbedDiff = bestMin(attempts, "absorbedMaxAbsDiff");
+  const bestDirectSerialDiff = bestMin(attempts, "directSerialMaxAbsDiff");
+  const bestDirectWidthDiff = bestMin(attempts, "directWidthMaxAbsDiff");
   if (!Number.isFinite(bestAbsorbedSpeedup) || bestAbsorbedSpeedup < 1.0) aggregate.push(`semantic input absorbed best ${Number.isFinite(bestAbsorbedSpeedup) ? bestAbsorbedSpeedup.toFixed(2) : "n/a"}x < 1.00x`);
   if (maxAttempts >= 3 && (!Number.isFinite(bestAbsorbedSpeedup) || bestAbsorbedSpeedup < semanticInputBridgeSteadyAbsorbedSpeedupFloor)) {
     aggregate.push(`semantic input absorbed steady best ${Number.isFinite(bestAbsorbedSpeedup) ? bestAbsorbedSpeedup.toFixed(2) : "n/a"}x < ${semanticInputBridgeSteadyAbsorbedSpeedupFloor.toFixed(2)}x`);
   }
+  if (!Number.isFinite(bestCommandDiff) || bestCommandDiff > projectionRowChainMaxAbsDiffCeil) aggregate.push(`semantic input command best max_abs_diff ${Number.isFinite(bestCommandDiff) ? bestCommandDiff.toFixed(6) : "n/a"} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (!Number.isFinite(bestAbsorbedDiff) || bestAbsorbedDiff > projectionRowChainMaxAbsDiffCeil) aggregate.push(`semantic input absorbed best max_abs_diff ${Number.isFinite(bestAbsorbedDiff) ? bestAbsorbedDiff.toFixed(6) : "n/a"} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (!Number.isFinite(bestDirectSerialDiff) || bestDirectSerialDiff > projectionRowChainMaxAbsDiffCeil) aggregate.push(`semantic input direct_serial best max_abs_diff ${Number.isFinite(bestDirectSerialDiff) ? bestDirectSerialDiff.toFixed(6) : "n/a"} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
+  if (!Number.isFinite(bestDirectWidthDiff) || bestDirectWidthDiff > projectionRowChainMaxAbsDiffCeil) aggregate.push(`semantic input direct_width best max_abs_diff ${Number.isFinite(bestDirectWidthDiff) ? bestDirectWidthDiff.toFixed(6) : "n/a"} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   const hasDecomposedAbsorbedProfile = anyEquals(attempts, [
     ["absorbedShapeCommands", 1],
     ["absorbedShapeSemantic", 1],
