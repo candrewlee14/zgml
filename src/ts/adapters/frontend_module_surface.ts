@@ -174,6 +174,7 @@ export function createAdapterFrontendModuleSurface(options: AdapterFrontendModul
     setRequiresGrad: options.setRequiresGrad,
     stateDict: options.stateDict,
     loadStateDict: options.loadStateDict,
+    nativeEagerConv2dInto: options.nativeEagerConv2dInto,
     moduleCompileSupport: options.moduleCompileSupport,
     analyzeSingleModuleProgram: options.analyzeSingleModuleProgram,
     compileModuleProgram: options.compileModuleProgram,

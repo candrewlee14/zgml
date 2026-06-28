@@ -8017,8 +8017,8 @@ expectSame(nativeConv2dCalls[0].options, {
   outW: 2,
 }, "nn conv2d native eager hook receives shape contract");
 conv2dGradEnabled = true;
-expectSame(conv2dModule.forward(conv2dInput).data, [6.5, 8.5, 12.5, 14.5], "nn conv2d grad-enabled forward stays on TS autograd path");
-expectSame(nativeConv2dCalls.length, 1, "nn conv2d does not route grad-enabled forward through native eager hook");
+expectSame(conv2dModule.forward(conv2dInput).data, [42, 42, 42, 42], "nn conv2d grad-enabled forward routes through native eager hook");
+expectSame(nativeConv2dCalls.length, 2, "nn conv2d native eager hook is called in grad-enabled forward");
 conv2dGradEnabled = false;
 const linearModule = new LinearModule(2, 3, {
   weights: [1, 2, 3, 4, 5, 6],

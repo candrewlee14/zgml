@@ -223,7 +223,7 @@ export function createConv2dModuleClass(options: Conv2dModuleClassOptions) {
       const [dh, dw] = this.dilation;
       const outShape = batched ? [batch, this.outChannels, outH, outW] : [this.outChannels, outH, outW];
       const out = new Float32Array(batch * this.outChannels * outH * outW);
-      if (!gradModeEnabled() && typeof nativeEagerConv2dInto === "function") {
+      if (typeof nativeEagerConv2dInto === "function") {
         nativeEagerConv2dInto(out, input, this.weightParam.tensor, {
           bias: this.biasParam?.tensor ?? null,
           batch,

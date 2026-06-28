@@ -10192,30 +10192,12 @@ const CompiledProgram = struct {
 
     fn encodeSemanticFfnSublayerInputBridgeSingleDispatch(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, input_q: anytype, input_residual: anytype, input_rn: anytype, input_rp: anytype, input_out: anytype, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, output_residual: anytype, output_rn: anytype, output_rp: anytype, output_out: anytype) bool {
         if (input_q.N > SEMANTIC_FFN_MAX_DIM or input_q.K > SEMANTIC_FFN_MAX_DIM or gate.N > SEMANTIC_FFN_MAX_HIDDEN or down.N > SEMANTIC_FFN_MAX_DIM) return false;
-        const bridge = semanticFfnInputBridgeCompatibility(input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out) orelse return false;
-        if (@as(usize, input_q.weight_idx) >= view.qweight_views.len or
-            @as(usize, gate.weight_idx) >= view.qweight_views.len or
-            @as(usize, up.weight_idx) >= view.qweight_views.len or
-            @as(usize, down.weight_idx) >= view.qweight_views.len)
-        {
-            return false;
-        }
-
-        if (semanticFfnInputBridgeIntermediatesExternallyObserved(view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp)) return false;
-
+        const plan = semanticFfnInputBridgeEncodePlan(view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out) orelse return false;
+        const bridge = plan.bridge;
         const input_w = view.qweight_views[input_q.weight_idx];
         const gate_w = view.qweight_views[gate.weight_idx];
         const up_w = view.qweight_views[up.weight_idx];
         const down_w = view.qweight_views[down.weight_idx];
-        const input_params = qmatmulParams(input_q, input_w.block_size);
-        const gate_params = qmatmulParams(gate, gate_w.block_size);
-        const up_params = qmatmulParams(up, up_w.block_size);
-        const down_params = qmatmulParams(down, down_w.block_size);
-        if (input_params.block_size != 32 or gate_params.block_size != 32 or up_params.block_size != 32 or down_params.block_size != 32) return false;
-        if (input_params.M != gate_params.M or input_params.N != gate_params.K) return false;
-        if (gate_params.M != up_params.M or gate_params.N != up_params.N or gate_params.K != up_params.K) return false;
-        if (gate_params.input_offset != input_out.dst_offset or up_params.input_offset != input_out.dst_offset or gate_params.input_row_stride != input_q.N or up_params.input_row_stride != input_q.N) return false;
-        if (down_params.M != gate_params.M or down_params.K != gate_params.N or down_params.N != input_params.N) return false;
 
         const buffers = [_]DeviceBuffer{
             input_w.data,
@@ -10233,17 +10215,17 @@ const CompiledProgram = struct {
             view.device_bufs[output_out.dst],
         };
         const params = QMatmulSemanticFfnInputBridgeParams{
-            .M = gate_params.M,
-            .H = gate_params.N,
-            .K = gate_params.K,
-            .O = down_params.N,
-            .input_projection_K = input_params.K,
-            .input_block_size = input_params.block_size,
-            .gate_block_size = gate_params.block_size,
-            .up_block_size = up_params.block_size,
-            .down_block_size = down_params.block_size,
-            .source_input_offset = input_params.input_offset,
-            .source_input_row_stride = input_params.input_row_stride,
+            .M = plan.gate_params.M,
+            .H = plan.gate_params.N,
+            .K = plan.gate_params.K,
+            .O = plan.down_params.N,
+            .input_projection_K = plan.input_params.K,
+            .input_block_size = plan.input_params.block_size,
+            .gate_block_size = plan.gate_params.block_size,
+            .up_block_size = plan.up_params.block_size,
+            .down_block_size = plan.down_params.block_size,
+            .source_input_offset = plan.input_params.input_offset,
+            .source_input_row_stride = plan.input_params.input_row_stride,
             .input_residual_secondary_offset = bridge.input_secondary_offset,
             .input_rms_eps = input_rn.eps,
             .input_scale_src_offset = input_rp.src_offset,
