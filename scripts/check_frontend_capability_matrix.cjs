@@ -177,6 +177,10 @@ requireIncludes(matrix, matrixPath, "`nn.functional.max_pool2d`, `nn.functional.
 requireIncludes(matrix, matrixPath, "`nativeEagerModuleForwardMs`");
 requireIncludes(matrix, matrixPath, "`nativeEagerModuleSpeedup`");
 requireIncludes(matrix, matrixPath, "`nativeEagerModuleMaxAbsDiff`");
+requireIncludes(matrix, matrixPath, "`moduleCompilerCore: \"zig-module-program\"`");
+requireIncludes(matrix, matrixPath, "`nativeCompileEvidence: \"native-program-inspection\"`");
+requireIncludes(matrix, matrixPath, "`programInspectionCore: \"zig-program-inspection\"`");
+requireIncludes(matrix, matrixPath, "`native_substrate_manifest` carries the same fields");
 
 const workflowRows = confidenceRows();
 const workflowNames = workflowRows.map((row) => row.workflow);

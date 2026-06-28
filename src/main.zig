@@ -65,6 +65,9 @@ test "native root surface stays curated" {
     try testing.expectEqualStrings("zig-core-contract-tested", native_substrate_manifest.native_alignment);
     try testing.expectEqualStrings("required-core", native_substrate_manifest.native_product_policy);
     try testing.expectEqualStrings("JS/TS API -> Zig C ABI -> Program/Session kernels", native_substrate_manifest.native_contract_boundary);
+    try testing.expectEqualStrings("zig-module-program", native_substrate_manifest.module_compiler_core);
+    try testing.expectEqualStrings("native-program-inspection", native_substrate_manifest.native_compile_evidence);
+    try testing.expectEqualStrings("zig-program-inspection", native_substrate_manifest.program_inspection_core);
 }
 
 test "ref all decls" {

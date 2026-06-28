@@ -174,6 +174,9 @@ const nativeContractBoundary = frontendManifestPolicy.nativeContractBoundary;
 const nativeRuntimeRole = frontendManifestPolicy.nativeRole;
 const nativeAlignment = frontendManifestPolicy.nativeAlignment;
 const nativeProductPolicy = frontendManifestPolicy.nativeProductPolicy;
+const moduleCompilerCore = frontendManifestPolicy.moduleCompilerCore;
+const nativeCompileEvidence = frontendManifestPolicy.nativeCompileEvidence;
+const programInspectionCore = frontendManifestPolicy.programInspectionCore;
 const eagerHotPathCore = frontendManifestPolicy.eagerHotPathCore;
 const inferenceHotPathCore = frontendManifestPolicy.inferenceHotPathCore;
 const trainingHotPathCore = frontendManifestPolicy.trainingHotPathCore;
@@ -234,6 +237,9 @@ const sourceContracts = Object.freeze({
     `frontendSync: "${frontendSync}"`,
     `handwrittenFrontendMirrors: ${handwrittenFrontendMirrors}`,
     `nativeContractBoundary: "${nativeContractBoundary}"`,
+    `moduleCompilerCore: "${moduleCompilerCore}"`,
+    `nativeCompileEvidence: "${nativeCompileEvidence}"`,
+    `programInspectionCore: "${programInspectionCore}"`,
     `eagerHotPathCore: "${eagerHotPathCore}"`,
     `inferenceHotPathCore: "${inferenceHotPathCore}"`,
     `trainingHotPathCore: "${trainingHotPathCore}"`,
@@ -345,6 +351,9 @@ const sourceContracts = Object.freeze({
     `.native_alignment = "${nativeAlignment}"`,
     `.native_product_policy = "${nativeProductPolicy}"`,
     `.native_contract_boundary = "${nativeContractBoundary}"`,
+    `.module_compiler_core = "${moduleCompilerCore}"`,
+    `.native_compile_evidence = "${nativeCompileEvidence}"`,
+    `.program_inspection_core = "${programInspectionCore}"`,
     `.eager_hot_path_core = "${eagerHotPathCore}"`,
     `.inference_hot_path_core = "${inferenceHotPathCore}"`,
     `.training_hot_path_core = "${trainingHotPathCore}"`,

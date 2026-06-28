@@ -6329,6 +6329,9 @@ function checkPublicTypeExamplesUsePackageExports(errors) {
     "type DistFrontendSync = Expect<Equal<typeof frontendManifest.frontendSync, \"none\">>",
     "type DistFrontendHandwrittenMirrors = Expect<Equal<typeof frontendManifest.handwrittenFrontendMirrors, false>>",
     "type DistFrontendNativeContractBoundary = Expect<Equal<typeof frontendManifest.nativeContractBoundary, \"JS/TS API -> Zig C ABI -> Program/Session kernels\">>",
+    "type DistFrontendModuleCompilerCore = Expect<Equal<typeof frontendManifest.moduleCompilerCore, \"zig-module-program\">>",
+    "type DistFrontendNativeCompileEvidence = Expect<Equal<typeof frontendManifest.nativeCompileEvidence, \"native-program-inspection\">>",
+    "type DistFrontendProgramInspectionCore = Expect<Equal<typeof frontendManifest.programInspectionCore, \"zig-program-inspection\">>",
     "type DistFrontendEagerHotPathCore = Expect<Equal<typeof frontendManifest.eagerHotPathCore, \"zig-native-eager-when-profitable\">>",
     "type DistFrontendInferenceHotPathCore = Expect<Equal<typeof frontendManifest.inferenceHotPathCore, \"zig-program-session-required\">>",
     "type DistFrontendTrainingHotPathCore = Expect<Equal<typeof frontendManifest.trainingHotPathCore, \"zig-ffi-compiled-step-when-supported\">>",
@@ -6487,6 +6490,9 @@ function checkPublicTypeExamplesUsePackageExports(errors) {
     "type FrontendManifestSync = Expect<Equal<typeof frontendManifest.frontendSync, \"none\">>",
     "type FrontendManifestHandwrittenMirrors = Expect<Equal<typeof frontendManifest.handwrittenFrontendMirrors, false>>",
     "type FrontendManifestNativeContractBoundary = Expect<Equal<typeof frontendManifest.nativeContractBoundary, \"JS/TS API -> Zig C ABI -> Program/Session kernels\">>",
+    "type FrontendManifestModuleCompilerCore = Expect<Equal<typeof frontendManifest.moduleCompilerCore, \"zig-module-program\">>",
+    "type FrontendManifestNativeCompileEvidence = Expect<Equal<typeof frontendManifest.nativeCompileEvidence, \"native-program-inspection\">>",
+    "type FrontendManifestProgramInspectionCore = Expect<Equal<typeof frontendManifest.programInspectionCore, \"zig-program-inspection\">>",
     "type FrontendManifestEagerHotPathCore = Expect<Equal<typeof frontendManifest.eagerHotPathCore, \"zig-native-eager-when-profitable\">>",
     "type FrontendManifestInferenceHotPathCore = Expect<Equal<typeof frontendManifest.inferenceHotPathCore, \"zig-program-session-required\">>",
     "type FrontendManifestTrainingHotPathCore = Expect<Equal<typeof frontendManifest.trainingHotPathCore, \"zig-ffi-compiled-step-when-supported\">>",
@@ -16122,6 +16128,9 @@ function checkDistSmokeIsTsOwned(errors) {
     "const nativeRuntimeRole = frontendManifestPolicy.nativeRole;",
     "const nativeAlignment = frontendManifestPolicy.nativeAlignment;",
     "const nativeProductPolicy = frontendManifestPolicy.nativeProductPolicy;",
+    "const moduleCompilerCore = frontendManifestPolicy.moduleCompilerCore;",
+    "const nativeCompileEvidence = frontendManifestPolicy.nativeCompileEvidence;",
+    "const programInspectionCore = frontendManifestPolicy.programInspectionCore;",
     "const eagerHotPathCore = frontendManifestPolicy.eagerHotPathCore;",
     "const inferenceHotPathCore = frontendManifestPolicy.inferenceHotPathCore;",
     "const trainingHotPathCore = frontendManifestPolicy.trainingHotPathCore;",
@@ -17681,6 +17690,9 @@ function checkZigRootClassifiesNativeSubstrate(errors) {
     "try testing.expectEqualStrings(\"none\", native_substrate_manifest.frontend_sync)",
     "try testing.expectEqualStrings(\"JS/TS API -> Zig C ABI -> Program/Session kernels\", native_substrate_manifest.native_contract_boundary)",
     "try testing.expectEqualStrings(\"required-core\", native_substrate_manifest.native_product_policy)",
+    "try testing.expectEqualStrings(\"zig-module-program\", native_substrate_manifest.module_compiler_core)",
+    "try testing.expectEqualStrings(\"native-program-inspection\", native_substrate_manifest.native_compile_evidence)",
+    "try testing.expectEqualStrings(\"zig-program-inspection\", native_substrate_manifest.program_inspection_core)",
   ]) {
     if (!source.includes(needle)) {
       errors.push(`src/main.zig must classify the Zig root as native substrate, not a mirrored package frontend: ${needle}`);
@@ -17711,6 +17723,9 @@ function checkNativeSubstrateManifestIsGenerated(errors) {
     ".native_alignment = \"zig-core-contract-tested\"",
     ".native_product_policy = \"required-core\"",
     ".native_contract_boundary = \"JS/TS API -> Zig C ABI -> Program/Session kernels\"",
+    ".module_compiler_core = \"zig-module-program\"",
+    ".native_compile_evidence = \"native-program-inspection\"",
+    ".program_inspection_core = \"zig-program-inspection\"",
   ]) {
     if (!generatedSource.includes(needle)) {
       errors.push(`src/native_substrate_manifest.zig must preserve the TS-generated native substrate manifest: ${needle}`);

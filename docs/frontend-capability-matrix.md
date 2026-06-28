@@ -35,6 +35,12 @@ API is TypeScript, tensor runtime and hot-path execution are Zig through the C
 ABI, module Programs compile through the Zig module compiler with native
 Program-inspection evidence, and supported fixed-shape training uses Zig FFI
 kernels.
+The shared `frontendManifest` names that native core explicitly with
+`moduleCompilerCore: "zig-module-program"`,
+`nativeCompileEvidence: "native-program-inspection"`, and
+`programInspectionCore: "zig-program-inspection"`, and the generated Zig
+`native_substrate_manifest` carries the same fields so the native root cannot
+drift into a mirrored frontend by accident.
 
 ## User-Facing Capabilities
 

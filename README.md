@@ -233,6 +233,12 @@ and backend dispatch for tensor-sized work.
 `boundary.moduleCompiler === "zig-module-program"`. Compiled module handles also
 carry Zig `Program` inspection evidence, so the TS API can prove which native
 command shape was actually built.
+The same contract is named in `frontendManifest` as
+`moduleCompilerCore: "zig-module-program"`,
+`nativeCompileEvidence: "native-program-inspection"`, and
+`programInspectionCore: "zig-program-inspection"`, then generated into Zig's
+`native_substrate_manifest` so product ergonomics stay TS-authored while the
+runtime core stays native.
 Graph-owned constructors use familiar names (`zeros`, `ones`, `full`,
 `arange`, `linspace`, `rand`, `randn`, `scalar`, `parameter`, `param`) so
 small JS/TS models can start from ordinary tensor vocabulary and only opt into

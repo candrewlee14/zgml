@@ -515,6 +515,9 @@ type FrontendManifestNativeProductPolicy = Expect<Equal<typeof frontendManifest.
 type FrontendManifestSync = Expect<Equal<typeof frontendManifest.frontendSync, "none">>;
 type FrontendManifestHandwrittenMirrors = Expect<Equal<typeof frontendManifest.handwrittenFrontendMirrors, false>>;
 type FrontendManifestNativeContractBoundary = Expect<Equal<typeof frontendManifest.nativeContractBoundary, "JS/TS API -> Zig C ABI -> Program/Session kernels">>;
+type FrontendManifestModuleCompilerCore = Expect<Equal<typeof frontendManifest.moduleCompilerCore, "zig-module-program">>;
+type FrontendManifestNativeCompileEvidence = Expect<Equal<typeof frontendManifest.nativeCompileEvidence, "native-program-inspection">>;
+type FrontendManifestProgramInspectionCore = Expect<Equal<typeof frontendManifest.programInspectionCore, "zig-program-inspection">>;
 type FrontendManifestEagerHotPathCore = Expect<Equal<typeof frontendManifest.eagerHotPathCore, "zig-native-eager-when-profitable">>;
 type FrontendManifestInferenceHotPathCore = Expect<Equal<typeof frontendManifest.inferenceHotPathCore, "zig-program-session-required">>;
 type FrontendManifestTrainingHotPathCore = Expect<Equal<typeof frontendManifest.trainingHotPathCore, "zig-ffi-compiled-step-when-supported">>;
@@ -810,6 +813,9 @@ type ShapeAssertions = [
   FrontendManifestSync,
   FrontendManifestHandwrittenMirrors,
   FrontendManifestNativeContractBoundary,
+  FrontendManifestModuleCompilerCore,
+  FrontendManifestNativeCompileEvidence,
+  FrontendManifestProgramInspectionCore,
   FrontendManifestEagerHotPathCore,
   FrontendManifestInferenceHotPathCore,
   FrontendManifestTrainingHotPathCore,

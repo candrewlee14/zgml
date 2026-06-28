@@ -18,8 +18,8 @@ export type NativeCoreEvidence = Readonly<{
     userApi: "typescript";
     tensorRuntime: "zig";
     ffi: "c-abi";
-    moduleCompiler: "zig-module-program";
-    compileEvidence: "native-program-inspection";
+    moduleCompiler: typeof frontendManifest.moduleCompilerCore;
+    compileEvidence: typeof frontendManifest.nativeCompileEvidence;
     hotPath: "program-session";
     training: "zig-ffi-kernels";
   }>;
@@ -94,8 +94,8 @@ export function createAdapterNativeCoreSurface(options: NativeCoreSurfaceOptions
         userApi: "typescript",
         tensorRuntime: "zig",
         ffi: "c-abi",
-        moduleCompiler: "zig-module-program",
-        compileEvidence: "native-program-inspection",
+        moduleCompiler: frontendManifest.moduleCompilerCore,
+        compileEvidence: frontendManifest.nativeCompileEvidence,
         hotPath: "program-session",
         training: "zig-ffi-kernels",
       }),

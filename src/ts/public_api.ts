@@ -2276,8 +2276,8 @@ export type NativeCoreEvidence = Readonly<{
     userApi: "typescript";
     tensorRuntime: "zig";
     ffi: "c-abi";
-    moduleCompiler: "zig-module-program";
-    compileEvidence: "native-program-inspection";
+    moduleCompiler: FrontendManifest["moduleCompilerCore"];
+    compileEvidence: FrontendManifest["nativeCompileEvidence"];
     hotPath: "program-session";
     training: "zig-ffi-kernels";
   }>;
