@@ -1051,6 +1051,17 @@ gate no longer has to infer zeros from missing metric fields. That makes the
 eventual absorbed-path proof crisp: nonzero direct-width counters must come from
 observed runtime profile data, not from a target-shape string or the existing
 row-chain width-parallel leaf.
+With that proof surface in place, the absorbed decomposed bridge now uses the
+same width-partial row-chain encoder for the model-width input projection as
+well as the hidden-width down tail. The guard is deliberately narrow: it only
+fires under the semantic-width policy and falls back to the older two-phase leaf
+otherwise. A fresh three-attempt input-bridge gate passes with `absorbed=3.00x`,
+median `2.81x`, worst `2.81x`, `max_abs_diff=0.000002`,
+`runtime_dispatches=5`, `decomposed_extra=4`, and
+`width_parallel=2:lanes:8`. That is a real throughput improvement over the
+previous retained `~2.7x` decomposed path, but it is not the final
+`semantic_with_input_width_parallel_kernel`: direct semantic-width counters
+remain zero, and the bridge still has the five-dispatch split.
 A staged prefix-kernel probe then fused input projection, input residual/RMS,
 and gate/up product into one dispatch before reusing the existing
 width-parallel down tail. It compiled and stayed correct
@@ -1936,12 +1947,13 @@ but it is row-owned and serial over too much work: the focused profile exposes
 It must not be preferred for the SmolLM `576 x 1536 x 576` bridge shape until it
 is rewritten as a real tiled/width-parallel kernel. The retained input-bridge
 candidate therefore uses the decomposed width-parallel path: input row-chain
-plus the streamed SIMD-width semantic tail. A fresh three-attempt focused
-artifact reports `absorbed=2.69x`, median `2.56x`, worst `2.52x`,
-`runtime_dispatches=5`, `semantic_with_input_dispatches=5`,
+plus the streamed SIMD-width semantic tail. The current retained version makes
+both row-chain leaves width-parallel, not only the hidden-width tail: a fresh
+three-attempt focused artifact reports `absorbed=3.00x`, median `2.81x`, worst
+`2.81x`, `runtime_dispatches=5`, `semantic_with_input_dispatches=5`,
 `decomposed=1`, `decomposed_dispatches=5`, `decomposed_extra_dispatches=4`,
 `decomposed_row_chain=2`, `decomposed_pair=1`, `decomposed_tail=2`,
-`direct=0`, and `max_abs_diff=0.000001`.
+`width_parallel=2:lanes:8`, `direct=0`, and `max_abs_diff=0.000002`.
 The full-model semantic throughput candidate now deliberately fences off the
 row-owned direct bridge while preserving the 121-command shape and zero
 fallback. A fresh three-attempt Q8 semantic steady probe reports best
@@ -2117,19 +2129,19 @@ the three-attempt exact bridge gate selected `2.21x` and the input-bridge gate
 selected `2.46x`, below the refreshed four-lane `2.40x` and `2.63x` evidence.
 The current four-lane shape is therefore the local sweet spot until the kernel
 changes its storage model or fuses a dispatch.
-A June 27, 2026 semantic input-bridge probe tried reusing that same four-lane
-width-partial row-chain for the model-width input projection (`K=576`) inside
-the 14-op bridge command instead of reserving it only for the hidden-width
-semantic tail (`K=1536`). It compiled and preserved correctness, but the
-three-attempt input-bridge gate regressed to `absorbed=2.65x` versus the
-retained `2.73x` evidence, with the same five-dispatch bridge shape
-(`row_chain=2,pair=1,tail=2`). That path is rejected too: simply swapping the
-first row-chain partial kernel to the SIMD-width spelling does not reduce
-dispatches and does not improve the bridge. The next input-bridge move still
-needs a true fused or differently staged width-parallel input kernel, not the
-existing tail kernel applied to the model-width projection. The focused
-input-bridge gate now fails steady attempts below the `2.45x` absorbed collapse
-floor so severe correct-but-weaker probes are caught automatically.
+An earlier June 27, 2026 semantic input-bridge probe tried reusing that same
+four-lane width-partial row-chain for the model-width input projection
+(`K=576`) inside the 14-op bridge command instead of reserving it only for the
+hidden-width semantic tail (`K=1536`). In that older kernel stack it compiled
+and preserved correctness, but the three-attempt input-bridge gate regressed to
+`absorbed=2.65x` versus the retained `2.73x` evidence, with the same
+five-dispatch bridge shape (`row_chain=2,pair=1,tail=2`). That historical path
+was rejected correctly. A later source-current retry after the direct-width
+metric cleanup and row-chain width-path guard now passes the same focused gate
+at `absorbed=3.00x`, median/worst `2.81x`, while proving
+`width_parallel=2:lanes:8`. The focused input-bridge gate still fails steady
+attempts below the `2.45x` absorbed floor, so future correct-but-weaker probes
+remain caught automatically.
 The row-serial semantic down loops now use an eight-hidden-value unroll instead
 of the older four-wide accumulation in both the plain semantic FFN and direct
 input-bridge kernels. A fresh three-attempt input-bridge microscope kept

@@ -1218,7 +1218,7 @@ function checkScripts() {
     "chooseLane(widthParallelLine, {})",
     "\"qsemantic_bridge\"",
     "chooseLane(widthParallelInputBridgeLine, {})",
-    "qsemantic_input_bridge=absorbed:2.71x:median:2.74x:gate:ready:floor:2.45x",
+    "qsemantic_input_bridge=absorbed:3.00x:median:2.81x:gate:ready:floor:2.45x",
     "\"qsemantic_input_bridge\"",
     "chooseLane(staleThroughputLine, {})",
     "\"qsemantic_throughput\"",

@@ -388,12 +388,15 @@ machine for both prompt/prefill and decode.
   `direct_serial=1.38x`; however, the direct bridge still reports
   `2,985,984` row-serial dot ops per row threadgroup, so this is diagnostic
   cleanup rather than a replacement for the width-partitioned input bridge. The
-  direct bridge is therefore opt-in only on the named diagnostic policy; the
-  normal input-bridge candidate keeps the faster absorbed/width-partitioned
-  lowering while a future kernel removes its remaining dispatch split. The
+  direct bridge is therefore opt-in only on the named diagnostic policy. The
+  current normal input-bridge candidate now applies the width-partial row-chain
+  encoder to both the model-width input projection and the hidden-width down
+  tail. A fresh three-attempt gate passes with `absorbed=3.00x`, median/worst
+  `2.81x`, `max_abs_diff=0.000002`, and `width_parallel=2:lanes:8`, while a
+  future kernel still needs to remove the remaining five-dispatch split. The
   frontier artifacts now expose `qmatmul_row_chain_width_parallel_count` and
   lane totals, so the bridge and input-bridge gates can prove when the
-  width-partitioned Metal tail actually ran rather than relying on the broader
+  width-partitioned Metal leaves actually ran rather than relying on the broader
   two-phase tiled counters. Input-bridge artifacts also expose
   `semantic_ffn_with_input_decomposed_extra_dispatches`; the retained absorbed
   lowering reports `4`, making the remaining dispatch-collapse target visible

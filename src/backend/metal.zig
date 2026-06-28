@@ -8101,7 +8101,7 @@ const CompiledProgram = struct {
 
     fn encodeQMatmulRowChainWidthParallelTiled(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool, output_spill: bool) bool {
         if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
-        if (q.M <= 1 or q.K <= SEMANTIC_FFN_MAX_DIM or q.K > SEMANTIC_FFN_MAX_HIDDEN) return false;
+        if (q.M <= 1 or q.K <= ROW_CHAIN_TILE or q.K > SEMANTIC_FFN_MAX_HIDDEN) return false;
 
         const output_tiles: u32 = (q.N + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE;
         const partial_len = std.math.mul(usize, @as(usize, q.M), @as(usize, output_tiles)) catch return false;
@@ -9506,6 +9506,12 @@ const CompiledProgram = struct {
         const output_spill = view.outputReadsSpan(e.dst, e.dst_offset, e.n);
         const write_ew_output = command_spill or output_spill;
         if (q.M != 1) {
+            if (self.command_policy.fuse_semantic_ffn_sublayer_width_parallel and
+                !projectionRowChainScaleHasExternalUsers(ops, command) and
+                self.encodeQMatmulRowChainWidthParallelTiled(exec, view, q, e, rn, rp, out, write_ew_output, output_spill))
+            {
+                return true;
+            }
             if (self.command_policy.fuse_projection_row_chain_two_phase_candidate and
                 !projectionRowChainScaleHasExternalUsers(ops, command) and
                 self.encodeQMatmulRowChainTwoPhaseTiled(exec, view, q, e, rn, rp, out, write_ew_output, output_spill))

@@ -2185,8 +2185,8 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (absorbedUsesStagedWidthKernel && (absorbedRowChainTiledCount !== 1 || absorbedRowChainTiledRowTileGroups !== 4 || absorbedRowChainTiledNTiles !== 18 || absorbedRowChainTiledSerialTileLoops !== 72 || absorbedRowChainTiledTwoPhaseCount !== 1 || absorbedRowChainTiledFinalizeTileGroups !== 72 || absorbedRowChainTiledFinalizeElements !== 73728)) {
     failures.push("semantic input staged width absorbed tiled profile must expose one width-parallel row-chain tail");
   }
-  if (absorbedUsesDecomposedKernel && (absorbedRowChainWidthParallelCount !== 1 || absorbedRowChainWidthParallelLanes !== 4)) {
-    failures.push("semantic input absorbed tiled profile must prove one width-parallel row-chain leaf with four lanes");
+  if (absorbedUsesDecomposedKernel && (absorbedRowChainWidthParallelCount !== 2 || absorbedRowChainWidthParallelLanes !== 8)) {
+    failures.push("semantic input absorbed tiled profile must prove input and tail width-parallel row-chain leaves with eight total lanes");
   }
   if (absorbedUsesStagedWidthKernel && (absorbedRowChainWidthParallelCount !== 1 || absorbedRowChainWidthParallelLanes !== 4)) {
     failures.push("semantic input staged width absorbed tiled profile must prove one width-parallel row-chain tail with four lanes");
@@ -2376,7 +2376,8 @@ function focusedSemanticInputBridgeMargin(current) {
     current.absorbedRuntimeDispatches === 5 &&
     current.absorbedSemanticWithInputDispatches === 5 &&
     current.absorbedRowChainTiledCount === 2 &&
-    current.absorbedRowChainWidthParallelCount === 1;
+    current.absorbedRowChainWidthParallelCount === 2 &&
+    current.absorbedRowChainWidthParallelLanes === 8;
   const directWidthReady =
     current.absorbedRuntimeDispatches === 1 &&
     current.absorbedSemanticWithInputDispatches === 1 &&
@@ -2633,8 +2634,8 @@ function runFocusedSemanticInputBridgeGate() {
     ["absorbedFallbackTailDispatches", 2],
     ["absorbedDecomposedExtraDispatches", 4],
     ["absorbedRowChainTiledCount", 2],
-    ["absorbedRowChainWidthParallelCount", 1],
-    ["absorbedRowChainWidthParallelLanes", 4],
+    ["absorbedRowChainWidthParallelCount", 2],
+    ["absorbedRowChainWidthParallelLanes", 8],
     ["absorbedRowChainTiledSpilledInput", 576],
     ["absorbedRowChainTiledOutputSpills", 0],
   ]);
