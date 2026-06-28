@@ -49,6 +49,10 @@ function values(length, scale) {
   return Array.from({ length }, (_, index) => ((index % 17) - 8) / scale);
 }
 
+function positiveValues(length, scale) {
+  return Array.from({ length }, (_, index) => 0.25 + ((index % 17) + 1) / scale);
+}
+
 function msNow() {
   return Number(process.hrtime.bigint()) / 1e6;
 }
@@ -437,6 +441,23 @@ const gapSpecs = Object.freeze([
     minNativeEagerModuleSpeedup: runtime === "bun" ? 8 : 1,
     tolerance: 1e-5,
     next: "native_eager_elementwise_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_rsqrt_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "rsqrt" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(positiveValues(512 * 256, 23), [512, 256]),
+    eager: (input) => input.rsqrt(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "rsqrt" }),
+    nativeEagerModule: (input) => zgml.noGrad(() => input.rsqrt()),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 1,
+    tolerance: 2e-6,
+    next: "native_eager_unary_storage_slice",
   }),
   Object.freeze({
     key: "elementwise_add_row_broadcast_batched",

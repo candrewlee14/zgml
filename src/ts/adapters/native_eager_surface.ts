@@ -284,6 +284,9 @@ function nativeEagerElementwiseOpId(value: unknown, label: string): number {
     case "max": return 12;
     case "minimum":
     case "min": return 13;
+    case "rsqrt":
+    case "reciprocal_sqrt":
+    case "reciprocalSqrt": return 14;
     case "eq":
     case "equal": return 15;
     case "ne":
@@ -299,7 +302,15 @@ function nativeEagerElementwiseOpId(value: unknown, label: string): number {
     case "ge":
     case "greater_equal":
     case "greaterEqual": return 20;
-    default: throw new Error(`${label} op must be add, sub, mul, div, neg, exp, log, sqr, recip, abs, sqrt, maximum, minimum, eq, ne, lt, le, gt, or ge, got ${value}`);
+    case "sign":
+    case "sgn": return 21;
+    case "step": return 22;
+    case "floor": return 23;
+    case "ceil": return 24;
+    case "round": return 25;
+    case "trunc":
+    case "truncate": return 26;
+    default: throw new Error(`${label} op must be add, sub, mul, div, neg, exp, log, sqr, recip, abs, sqrt, rsqrt, maximum, minimum, eq, ne, lt, le, gt, ge, sign, step, floor, ceil, round, or trunc, got ${value}`);
   }
 }
 

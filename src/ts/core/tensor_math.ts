@@ -590,7 +590,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function sgn(tensor: TensorMathTensor) {
-    return unary(tensor, (x) => x < 0 ? -1 : x > 0 ? 1 : 0, () => 0);
+    return unary(tensor, (x) => x < 0 ? -1 : x > 0 ? 1 : 0, () => 0, "sign");
   }
 
   function sign(tensor: TensorMathTensor) {
@@ -598,7 +598,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function step(tensor: TensorMathTensor) {
-    return unary(tensor, (x) => x > 0 ? 1 : 0, () => 0);
+    return unary(tensor, (x) => x > 0 ? 1 : 0, () => 0, "step");
   }
 
   function isnan(tensor: TensorMathTensor) {
@@ -614,19 +614,19 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function floor(tensor: TensorMathTensor) {
-    return unary(tensor, Math.floor, () => 0);
+    return unary(tensor, Math.floor, () => 0, "floor");
   }
 
   function ceil(tensor: TensorMathTensor) {
-    return unary(tensor, Math.ceil, () => 0);
+    return unary(tensor, Math.ceil, () => 0, "ceil");
   }
 
   function round(tensor: TensorMathTensor) {
-    return unary(tensor, Math.round, () => 0);
+    return unary(tensor, Math.round, () => 0, "round");
   }
 
   function trunc(tensor: TensorMathTensor) {
-    return unary(tensor, Math.trunc, () => 0);
+    return unary(tensor, Math.trunc, () => 0, "trunc");
   }
 
   function sqrt(tensor: TensorMathTensor) {
@@ -634,7 +634,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function rsqrt(tensor: TensorMathTensor) {
-    return unary(tensor, (x) => 1 / Math.sqrt(x), (x) => -0.5 / Math.pow(x, 1.5));
+    return unary(tensor, (x) => 1 / Math.sqrt(x), (x) => -0.5 / Math.pow(x, 1.5), "rsqrt");
   }
 
   function clamp(tensor: TensorMathTensor, min: number | null = null, max: number | null = null) {

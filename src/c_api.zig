@@ -1718,12 +1718,19 @@ const eager_elementwise_abs: u32 = 10;
 const eager_elementwise_sqrt: u32 = 11;
 const eager_elementwise_maximum: u32 = 12;
 const eager_elementwise_minimum: u32 = 13;
+const eager_elementwise_rsqrt: u32 = 14;
 const eager_elementwise_eq: u32 = 15;
 const eager_elementwise_ne: u32 = 16;
 const eager_elementwise_lt: u32 = 17;
 const eager_elementwise_le: u32 = 18;
 const eager_elementwise_gt: u32 = 19;
 const eager_elementwise_ge: u32 = 20;
+const eager_elementwise_sign: u32 = 21;
+const eager_elementwise_step: u32 = 22;
+const eager_elementwise_floor: u32 = 23;
+const eager_elementwise_ceil: u32 = 24;
+const eager_elementwise_round: u32 = 25;
+const eager_elementwise_trunc: u32 = 26;
 const eager_reduce_sum: u32 = 1;
 const eager_reduce_mean: u32 = 2;
 const eager_reduce_max: u32 = 3;
@@ -1741,8 +1748,52 @@ fn eagerElementwiseUnaryF32(value: f32, op: u32) !f32 {
         eager_elementwise_recip => 1.0 / value,
         eager_elementwise_abs => @abs(value),
         eager_elementwise_sqrt => @sqrt(value),
+        eager_elementwise_rsqrt => 1.0 / @sqrt(value),
+        eager_elementwise_sign => if (value < 0) -1.0 else if (value > 0) 1.0 else 0.0,
+        eager_elementwise_step => if (value > 0) 1.0 else 0.0,
+        eager_elementwise_floor => @floor(value),
+        eager_elementwise_ceil => @ceil(value),
+        eager_elementwise_round => @floor(value + 0.5),
+        eager_elementwise_trunc => @trunc(value),
         else => error.InvalidArgument,
     };
+}
+
+fn eagerElementwiseUnaryVec8(value: @Vector(8, f32), op: u32) !@Vector(8, f32) {
+    const VecT = @Vector(8, f32);
+    const zero: VecT = @splat(0.0);
+    const one: VecT = @splat(1.0);
+    return switch (op) {
+        eager_elementwise_neg => -value,
+        eager_elementwise_exp => @exp(value),
+        eager_elementwise_log => @log(value),
+        eager_elementwise_sqr => value * value,
+        eager_elementwise_recip => one / value,
+        eager_elementwise_abs => @abs(value),
+        eager_elementwise_sqrt => @sqrt(value),
+        eager_elementwise_rsqrt => one / @sqrt(value),
+        eager_elementwise_sign => @select(f32, value < zero, @as(VecT, @splat(-1.0)), @select(f32, value > zero, one, zero)),
+        eager_elementwise_step => @select(f32, value > zero, one, zero),
+        eager_elementwise_floor => @floor(value),
+        eager_elementwise_ceil => @ceil(value),
+        eager_elementwise_round => @floor(value + @as(VecT, @splat(0.5))),
+        eager_elementwise_trunc => @trunc(value),
+        else => error.InvalidArgument,
+    };
+}
+
+fn writeElementwiseUnaryF32(input: []const f32, output: []f32, op: u32) !void {
+    if (input.len != output.len) return error.ShapeMismatch;
+
+    const V = 8;
+    var i: usize = 0;
+    while (i + V <= input.len) : (i += V) {
+        const value: @Vector(V, f32) = input[i..][0..V].*;
+        output[i..][0..V].* = try eagerElementwiseUnaryVec8(value, op);
+    }
+    while (i < input.len) : (i += 1) {
+        output[i] = try eagerElementwiseUnaryF32(input[i], op);
+    }
 }
 
 fn eagerElementwiseBinaryF32(lhs: f32, rhs: f32, op: u32) !f32 {
@@ -2174,11 +2225,10 @@ export fn zgml_eager_elementwise_f32(
 
     if (rhs_len == 0) {
         if (rhs_ptr != null) return status(.shape_mismatch);
-        for (lhs, output) |value, *out| {
-            out.* = eagerElementwiseUnaryF32(value, op) catch |err| return switch (err) {
-                error.InvalidArgument => status(.invalid_argument),
-            };
-        }
+        writeElementwiseUnaryF32(lhs, output, op) catch |err| return switch (err) {
+            error.InvalidArgument => status(.invalid_argument),
+            error.ShapeMismatch => status(.shape_mismatch),
+        };
         return status(.ok);
     }
 
@@ -12271,6 +12321,86 @@ test "C ABI native eager elementwise writes caller output" {
         eager_elementwise_sqr,
     ));
     try std.testing.expectEqualSlices(f32, &.{ 4, 0.25, 0.25, 4 }, &output);
+
+    const unary_input = [_]f32{ 4, 0.25, -1.7, -0.2, 0, 1.2, 1.5, 1.8, -2.0 };
+    var unary_output = [_]f32{0} ** unary_input.len;
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        unary_input[0..].ptr,
+        unary_input.len,
+        null,
+        0,
+        unary_output[0..].ptr,
+        unary_output.len,
+        eager_elementwise_rsqrt,
+    ));
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), unary_output[0], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 2), unary_output[1], 1e-6);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        unary_input[0..].ptr,
+        unary_input.len,
+        null,
+        0,
+        unary_output[0..].ptr,
+        unary_output.len,
+        eager_elementwise_sign,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 1, 1, -1, -1, 0, 1, 1, 1, -1 }, &unary_output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        unary_input[0..].ptr,
+        unary_input.len,
+        null,
+        0,
+        unary_output[0..].ptr,
+        unary_output.len,
+        eager_elementwise_step,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 1, 1, 0, 0, 0, 1, 1, 1, 0 }, &unary_output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        unary_input[0..].ptr,
+        unary_input.len,
+        null,
+        0,
+        unary_output[0..].ptr,
+        unary_output.len,
+        eager_elementwise_floor,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 4, 0, -2, -1, 0, 1, 1, 1, -2 }, &unary_output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        unary_input[0..].ptr,
+        unary_input.len,
+        null,
+        0,
+        unary_output[0..].ptr,
+        unary_output.len,
+        eager_elementwise_ceil,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 4, 1, -1, 0, 0, 2, 2, 2, -2 }, &unary_output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        unary_input[0..].ptr,
+        unary_input.len,
+        null,
+        0,
+        unary_output[0..].ptr,
+        unary_output.len,
+        eager_elementwise_round,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 4, 0, -2, 0, 0, 1, 2, 2, -2 }, &unary_output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
+        unary_input[0..].ptr,
+        unary_input.len,
+        null,
+        0,
+        unary_output[0..].ptr,
+        unary_output.len,
+        eager_elementwise_trunc,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 4, 0, -1, 0, 0, 1, 1, 1, -2 }, &unary_output);
 
     try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_f32(
         lhs[0..].ptr,
