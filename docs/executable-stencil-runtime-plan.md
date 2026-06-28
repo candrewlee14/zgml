@@ -200,12 +200,16 @@ The handle now also exposes first-contact proof methods directly:
 `explain()`, `preflight()`, `compileSupport()`, `inputShape()`,
 `outputShape()`, `compileEvidence()`, `requirements()`, `bufferLayout()`,
 `bufferSlotNames()`, `bufferSlot(nameOrKind)`, `kernelPlan()`, and
-`compilerSignatures()`. `compileEvidence()`, `requirements()`,
-`bufferLayout()`, and buffer-slot lookup delegate to the native Program, so
+`compilerSignatures()`, plus bound-Session proof methods
+`sessionBufferLayout()`, `sessionBufferSlotNames()`,
+`sessionBufferSlot(nameOrKind)`, `stepContract()`, and `hotPathPlan(params)`.
+`compileEvidence()`, `requirements()`,
+`bufferLayout()`, and buffer-slot lookup delegate to the native Program, while
+the Session proof methods delegate to the bound native Session, so
 first-contact users can inspect the Zig-owned executable proof and memory
 contract without dropping down to `fast.program`. That keeps the happy path tiny
 while still making the executable artifact inspectable without forcing users to
-know the lower-level `Program` API on day one.
+know the lower-level `Program`/`Session` APIs on day one.
 Adapter-created native inference handles now fail closed when the Program proof
 surface is missing: compile evidence, requirements, buffer layout/slot lookup,
 shape, kernel-plan, and compiler-signature methods must come from the native

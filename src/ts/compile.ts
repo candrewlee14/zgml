@@ -72,6 +72,8 @@ import type {
   ProgramInputBinding,
   ProgramRequirements,
   Session,
+  SessionExecutionPlan,
+  SessionStepContract,
   Tensor,
   TensorShapeTuple,
 } from "./public_api.js";
@@ -572,6 +574,21 @@ function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShap
     },
     bufferSlot(nameOrKind: ProgramDeviceBufferKind | string) {
       return program.bufferSlot(nameOrKind) as ProgramBufferLayoutSlot | null;
+    },
+    sessionBufferLayout() {
+      return session.bufferLayout() as ProgramBufferLayout;
+    },
+    sessionBufferSlotNames() {
+      return session.bufferSlotNames();
+    },
+    sessionBufferSlot(nameOrKind: ProgramDeviceBufferKind | string) {
+      return session.bufferSlot(nameOrKind) as ProgramBufferLayoutSlot | null;
+    },
+    stepContract() {
+      return session.stepContract() as SessionStepContract;
+    },
+    hotPathPlan(params?: unknown) {
+      return session.hotPathPlan(params) as SessionExecutionPlan<InputShape, OutputShape>;
     },
     inputShape() {
       return program.inputShape();

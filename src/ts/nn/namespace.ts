@@ -98,6 +98,11 @@ type NativeInferenceSession = Record<string, unknown> & {
   stepTensor(input: unknown): unknown;
   executeInto(output: Float32Array, bindings: unknown): Float32Array;
   prepareExecuteInto(output: Float32Array, bindings: unknown): unknown;
+  bufferLayout?: () => unknown;
+  bufferSlotNames?: () => unknown;
+  bufferSlot?: (nameOrKind: unknown) => unknown;
+  stepContract?: () => unknown;
+  hotPathPlan?: (params?: unknown) => unknown;
   dispose?: () => void;
 };
 
@@ -615,6 +620,18 @@ export function createNnNamespace(options: NnNamespaceOptions) {
     const kernelPlan = requireProgramMethod("kernelPlan");
     const compilerSignatures = requireProgramMethod("compilerSignatures");
     const nativeSession = session as NativeInferenceSession;
+    const requireSessionMethod = (method: keyof NativeInferenceSession & string) => {
+      const fn = nativeSession[method];
+      if (typeof fn !== "function") {
+        throw new Error(`nn.native expected native Session.${method} proof method`);
+      }
+      return fn.bind(nativeSession) as (...args: readonly unknown[]) => unknown;
+    };
+    const sessionBufferLayout = requireSessionMethod("bufferLayout");
+    const sessionBufferSlotNames = requireSessionMethod("bufferSlotNames");
+    const sessionBufferSlot = requireSessionMethod("bufferSlot");
+    const stepContract = requireSessionMethod("stepContract");
+    const hotPathPlan = requireSessionMethod("hotPathPlan");
     const executionPlan = program.requireExecutionPlan();
     let disposed = false;
     const dispose = () => {
@@ -674,6 +691,21 @@ export function createNnNamespace(options: NnNamespaceOptions) {
       },
       bufferSlot(nameOrKind: unknown) {
         return bufferSlot(nameOrKind);
+      },
+      sessionBufferLayout() {
+        return sessionBufferLayout();
+      },
+      sessionBufferSlotNames() {
+        return sessionBufferSlotNames();
+      },
+      sessionBufferSlot(nameOrKind: unknown) {
+        return sessionBufferSlot(nameOrKind);
+      },
+      stepContract() {
+        return stepContract();
+      },
+      hotPathPlan(params?: unknown) {
+        return hotPathPlan(params);
       },
       inputShape() {
         return inputShape();

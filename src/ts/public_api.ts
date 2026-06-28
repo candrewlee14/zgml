@@ -7330,6 +7330,11 @@ export type CompiledInference<InputShape extends TensorShapeTuple = TensorShapeT
   bufferLayout(): ProgramBufferLayout;
   bufferSlotNames(): readonly string[];
   bufferSlot(nameOrKind: ProgramDeviceBufferKind | string): ProgramBufferLayoutSlot | null;
+  sessionBufferLayout(): ProgramBufferLayout;
+  sessionBufferSlotNames(): readonly string[];
+  sessionBufferSlot(nameOrKind: ProgramDeviceBufferKind | string): ProgramBufferLayoutSlot | null;
+  stepContract(): SessionStepContract;
+  hotPathPlan(params?: unknown): SessionExecutionPlan<InputShape, OutputShape>;
   inputShape(): InputShape;
   outputShape(): OutputShape;
   kernelPlan(): ModuleKernelPlan | null;

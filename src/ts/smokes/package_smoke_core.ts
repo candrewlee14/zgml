@@ -5368,6 +5368,11 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const inferenceBufferLayout = inference.bufferLayout();
     const inferenceSlotNames = inference.bufferSlotNames();
     const inferenceOutputSlot = inference.bufferSlot("output");
+    const inferenceHotParams = { input: inferenceInput, output: new Float32Array(1) };
+    const inferenceSessionLayout = inference.sessionBufferLayout();
+    const inferenceSessionSlotNames = inference.sessionBufferSlotNames();
+    const inferenceSessionOutputSlot = inference.sessionBufferSlot("output");
+    const inferenceHotPathPlan = inference.hotPathPlan(inferenceHotParams);
     if (
       inference.native !== true ||
       inferenceExecutionPlan.canExecute !== true ||
@@ -5386,6 +5391,13 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       inferenceBufferLayout.output.elementCount !== inferenceRequirements.outputLen ||
       inferenceSlotNames.join("|") !== inference.program.bufferSlotNames().join("|") ||
       inferenceOutputSlot?.byteLength !== inference.program.bufferSlot("output")?.byteLength ||
+      inferenceSessionLayout.signature !== inference.session.bufferLayout().signature ||
+      inferenceSessionSlotNames.join("|") !== inference.session.bufferSlotNames().join("|") ||
+      inferenceSessionOutputSlot?.byteLength !== inference.session.bufferSlot("output")?.byteLength ||
+      inference.stepContract().signature !== inference.session.stepContract().signature ||
+      inferenceHotPathPlan.signature !== inference.session.hotPathPlan(inferenceHotParams).signature ||
+      inferenceHotPathPlan.hotPath !== true ||
+      inferenceHotPathPlan.runtimeOutputAllocationFree !== true ||
       inferenceSupport.supported !== true ||
       inferenceExplanation.supported !== true ||
       inferencePreflight.supported !== true ||
@@ -5543,6 +5555,11 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const nativeInferenceLayout = nativeInference.bufferLayout();
     const nativeInferenceSlotNames = nativeInference.bufferSlotNames();
     const nativeInferenceOutputSlot = nativeInference.bufferSlot("output");
+    const nativeInferenceHotParams = { input: inferenceInput, output: new Float32Array(1) };
+    const nativeInferenceSessionLayout = nativeInference.sessionBufferLayout();
+    const nativeInferenceSessionSlotNames = nativeInference.sessionBufferSlotNames();
+    const nativeInferenceSessionOutputSlot = nativeInference.sessionBufferSlot("output");
+    const nativeInferenceHotPathPlan = nativeInference.hotPathPlan(nativeInferenceHotParams);
     if (
       nativeInference.native !== true ||
       nativeInferencePlan.canExecute !== true ||
@@ -5553,6 +5570,13 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       nativeInferenceLayout.signature !== nativeInference.program.bufferLayout().signature ||
       nativeInferenceSlotNames.join("|") !== nativeInference.program.bufferSlotNames().join("|") ||
       nativeInferenceOutputSlot?.byteLength !== nativeInference.program.bufferSlot("output")?.byteLength ||
+      nativeInferenceSessionLayout.signature !== nativeInference.session.bufferLayout().signature ||
+      nativeInferenceSessionSlotNames.join("|") !== nativeInference.session.bufferSlotNames().join("|") ||
+      nativeInferenceSessionOutputSlot?.byteLength !== nativeInference.session.bufferSlot("output")?.byteLength ||
+      nativeInference.stepContract().signature !== nativeInference.session.stepContract().signature ||
+      nativeInferenceHotPathPlan.signature !== nativeInference.session.hotPathPlan(nativeInferenceHotParams).signature ||
+      nativeInferenceHotPathPlan.hotPath !== true ||
+      nativeInferenceHotPathPlan.runtimeOutputAllocationFree !== true ||
       nativeInference.inputShape().join("x") !== "2" ||
       nativeInference.outputShape().join("x") !== "1"
     ) {

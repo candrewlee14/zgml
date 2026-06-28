@@ -960,6 +960,14 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     return fn.bind(program);
   }
 
+  function requireNativeSessionMethod(session: Record<string, any>, method: string) {
+    const fn = session[method];
+    if (typeof fn !== "function") {
+      throw new Error(`compile.compileForInference expected native Session.${method} proof method`);
+    }
+    return fn.bind(session);
+  }
+
   function compiledInferenceHandle(
     program: Record<string, any>,
     session: Record<string, any>,
@@ -976,6 +984,11 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     const outputShape = requireNativeProgramMethod(program, "outputShape");
     const kernelPlan = requireNativeProgramMethod(program, "kernelPlan");
     const compilerSignatures = requireNativeProgramMethod(program, "compilerSignatures");
+    const sessionBufferLayout = requireNativeSessionMethod(session, "bufferLayout");
+    const sessionBufferSlotNames = requireNativeSessionMethod(session, "bufferSlotNames");
+    const sessionBufferSlot = requireNativeSessionMethod(session, "bufferSlot");
+    const stepContract = requireNativeSessionMethod(session, "stepContract");
+    const hotPathPlan = requireNativeSessionMethod(session, "hotPathPlan");
     const dispose = () => {
       if (disposed) return;
       disposed = true;
@@ -1034,6 +1047,21 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       },
       bufferSlot(nameOrKind: unknown) {
         return bufferSlot(nameOrKind);
+      },
+      sessionBufferLayout() {
+        return sessionBufferLayout();
+      },
+      sessionBufferSlotNames() {
+        return sessionBufferSlotNames();
+      },
+      sessionBufferSlot(nameOrKind: unknown) {
+        return sessionBufferSlot(nameOrKind);
+      },
+      stepContract() {
+        return stepContract();
+      },
+      hotPathPlan(params?: unknown) {
+        return hotPathPlan(params);
       },
       inputShape() {
         return inputShape();
