@@ -216,8 +216,9 @@ accuracy as PyTorch. The ergonomic `model.fit(...)` lane now proves
 `zgml_train_mlp_relu_cross_entropy_adam_f32_bulk`. Bulk fit first improved the
 default MNIST/PyTorch training ratio from about `0.13x` to `0.188x`; moving
 Adam bias-correction powers out of the per-parameter update loop then moved the
-same default gate to `1.530x` PyTorch while the small bounded run reaches
-`6.435x`. This is the right "TS API, Zig execution" architecture: the ergonomic
+same default gate to `1.530x` PyTorch, and vectorizing the contiguous Adam
+weight updates moved it again to `2.715x` while the small bounded run reaches
+`7.848x`. This is the right "TS API, Zig execution" architecture: the ergonomic
 API remains `model.fit(...)`, and the hot path is now native enough that the
 next large performance move should focus on broader model coverage and matmul
 throughput rather than JS callback overhead.

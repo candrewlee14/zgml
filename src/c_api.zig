@@ -2468,6 +2468,51 @@ fn adamUpdateF32(
     param[index] -= lr * m_hat / (@sqrt(v_hat) + eps);
 }
 
+fn adamUpdateSliceF32(
+    param: []f32,
+    m: []f32,
+    v: []f32,
+    grad: []const f32,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    bias_correction1: f32,
+    bias_correction2: f32,
+    eps: f32,
+    weight_decay: f32,
+    decoupled_weight_decay: bool,
+) void {
+    const lanes = 8;
+    const V = @Vector(lanes, f32);
+    const lr_v: V = @splat(lr);
+    const beta1_v: V = @splat(beta1);
+    const one_minus_beta1_v: V = @splat(1.0 - beta1);
+    const beta2_v: V = @splat(beta2);
+    const one_minus_beta2_v: V = @splat(1.0 - beta2);
+    const bias1_v: V = @splat(bias_correction1);
+    const bias2_v: V = @splat(bias_correction2);
+    const eps_v: V = @splat(eps);
+    const weight_decay_v: V = @splat(weight_decay);
+
+    var i: usize = 0;
+    while (i + lanes <= param.len) : (i += lanes) {
+        var p: V = param[i..][0..lanes].*;
+        const grad_v: V = grad[i..][0..lanes].*;
+        const g: V = if (decoupled_weight_decay) grad_v else grad_v + weight_decay_v * p;
+        const next_m = beta1_v * m[i..][0..lanes].* + one_minus_beta1_v * g;
+        const next_v = beta2_v * v[i..][0..lanes].* + one_minus_beta2_v * g * g;
+        m[i..][0..lanes].* = next_m;
+        v[i..][0..lanes].* = next_v;
+        if (decoupled_weight_decay and weight_decay != 0) p -= lr_v * weight_decay_v * p;
+        p -= lr_v * (next_m * bias1_v) / (@sqrt(next_v * bias2_v) + eps_v);
+        param[i..][0..lanes].* = p;
+    }
+
+    while (i < param.len) : (i += 1) {
+        adamUpdateF32(param, m, v, i, grad[i], lr, beta1, beta2, bias_correction1, bias_correction2, eps, weight_decay, decoupled_weight_decay);
+    }
+}
+
 fn finiteAdamConfig(lr: f32, beta1: f32, beta2: f32, eps: f32, weight_decay: f32) bool {
     return std.math.isFinite(lr) and
         std.math.isFinite(beta1) and
@@ -2696,12 +2741,7 @@ fn trainMlpReluCrossEntropyAdamLikeF32(
     }
 
     forward.blasSgemm(grad_w2, hidden, logits, hidden_features, classes, batch, 1, hidden_features, classes, 1, 0, 0, 0, classes);
-    for (0..hidden_features) |h| {
-        const hidden_base = h * classes;
-        for (0..classes) |c| {
-            adamUpdateF32(w2, mw2, vw2, hidden_base + c, grad_w2[hidden_base + c], lr, beta1, beta2, bias_correction1, bias_correction2, eps, weight_decay, decoupled_weight_decay);
-        }
-    }
+    adamUpdateSliceF32(w2, mw2, vw2, grad_w2, lr, beta1, beta2, bias_correction1, bias_correction2, eps, weight_decay, decoupled_weight_decay);
     for (0..classes) |c| {
         var grad: f32 = 0;
         for (0..batch) |row| grad += logits[row * classes + c];
@@ -2709,12 +2749,7 @@ fn trainMlpReluCrossEntropyAdamLikeF32(
     }
 
     forward.blasSgemm(grad_w1, input, grad_hidden, in_features, hidden_features, batch, 1, in_features, hidden_features, 1, 0, 0, 0, hidden_features);
-    for (0..in_features) |i| {
-        const w1_base = i * hidden_features;
-        for (0..hidden_features) |h| {
-            adamUpdateF32(w1, mw1, vw1, w1_base + h, grad_w1[w1_base + h], lr, beta1, beta2, bias_correction1, bias_correction2, eps, weight_decay, decoupled_weight_decay);
-        }
-    }
+    adamUpdateSliceF32(w1, mw1, vw1, grad_w1, lr, beta1, beta2, bias_correction1, bias_correction2, eps, weight_decay, decoupled_weight_decay);
     for (0..hidden_features) |h| {
         var grad: f32 = 0;
         for (0..batch) |row| grad += grad_hidden[row * hidden_features + h];
