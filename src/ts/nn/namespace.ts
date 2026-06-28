@@ -83,6 +83,9 @@ type NativeInferenceProgram = Record<string, unknown> & {
   bindModule?: (target: unknown, options?: unknown) => unknown;
   bind?: (bindings?: unknown) => unknown;
   dispose?: () => void;
+  requireExecutionPlan?: () => unknown;
+  requirements?: () => unknown;
+  bufferLayout?: () => unknown;
   inputShape?: () => unknown;
   outputShape?: () => unknown;
   kernelPlan?: () => unknown;
@@ -589,7 +592,11 @@ export function createNnNamespace(options: NnNamespaceOptions) {
     if (!session || typeof session !== "object" || typeof (session as Partial<NativeInferenceSession>).stepTensor !== "function") {
       throw new Error("nn.native expected bindModule() or explicit Program bindings to return a Session");
     }
+    if (typeof program.requireExecutionPlan !== "function") {
+      throw new Error("nn.native requires a native executable Program; use nn.explain for diagnostics-only targets");
+    }
     const nativeSession = session as NativeInferenceSession;
+    const executionPlan = program.requireExecutionPlan();
     let disposed = false;
     const dispose = () => {
       if (disposed) return;
@@ -598,8 +605,15 @@ export function createNnNamespace(options: NnNamespaceOptions) {
       if (typeof program.dispose === "function") program.dispose();
     };
     return Object.freeze({
+      native: true,
       program,
       session: nativeSession,
+      executionPlan() {
+        return executionPlan;
+      },
+      requireExecutionPlan() {
+        return executionPlan;
+      },
       forward(input: unknown) {
         return nativeSession.stepTensor(input);
       },
@@ -626,6 +640,12 @@ export function createNnNamespace(options: NnNamespaceOptions) {
       },
       compileSupport() {
         return compileSupportForModule(module, compileOptions);
+      },
+      requirements() {
+        return typeof program.requirements === "function" ? program.requirements() : null;
+      },
+      bufferLayout() {
+        return typeof program.bufferLayout === "function" ? program.bufferLayout() : null;
       },
       inputShape() {
         return typeof program.inputShape === "function" ? program.inputShape() : inputShapeForModule(module, compileOptions);

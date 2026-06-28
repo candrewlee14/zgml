@@ -209,8 +209,12 @@ The same handle is now deliberately module-shaped: it exposes `forward`,
 still owning a real `Program` and `Session` underneath. The `nn` namespace also
 provides `nn.native(model, opts)` / `nn.inference(model, opts)`, and module
 instances expose `model.native(opts)`, all as TS-authored sugar over the same
-native Program/Session binding path. That is the desired split: ergonomic JS/TS
-API, Zig-owned execution core, no mirrored Zig product frontend.
+native Program/Session binding path. Those `nn` handles expose the same
+first-contact executable proof surface as `compile.forInference(...)`:
+`native`, `requireExecutionPlan()`, `requirements()`, `bufferLayout()`,
+shape/proof helpers, and allocation-free `into(...)`. That is the desired
+split: ergonomic JS/TS API, Zig-owned execution core, no mirrored Zig product
+frontend.
 The same rule now applies to the training happy path: modules expose
 `model.fit(loader, { optimizer, loss, ... })`, `model.evaluate(...)`, and
 `model.predict(...)` as TS-authored convenience methods over the single

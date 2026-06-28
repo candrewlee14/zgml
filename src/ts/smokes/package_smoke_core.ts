@@ -5509,6 +5509,20 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   }
   const nativeInference = adapter.nn.native(inferenceModel, { backend: "cpu", inputShape: [2] });
   try {
+    const nativeInferencePlan = nativeInference.requireExecutionPlan();
+    const nativeInferenceRequirements = nativeInference.requirements();
+    const nativeInferenceLayout = nativeInference.bufferLayout();
+    if (
+      nativeInference.native !== true ||
+      nativeInferencePlan.canExecute !== true ||
+      nativeInferencePlan.executionMode !== "executable" ||
+      nativeInferenceRequirements.signature !== nativeInference.program.requirements().signature ||
+      nativeInferenceLayout.signature !== nativeInference.program.bufferLayout().signature ||
+      nativeInference.inputShape().join("x") !== "2" ||
+      nativeInference.outputShape().join("x") !== "1"
+    ) {
+      throw new Error(`${label} nn.native expected first-contact compiled inference proof`);
+    }
     expectClose(nativeInference.forward(inferenceInput).data, [-0.5], `${label} nn.native forward`);
     expectClose(nativeInference.call(inferenceInput).data, [-0.5], `${label} nn.native call`);
     expectClose(nativeInference.__call__(inferenceInput).data, [-0.5], `${label} nn.native __call__`);
