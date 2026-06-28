@@ -467,6 +467,14 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected nativeEager.elementwiseInto to reuse caller output`);
   }
   expectClose(elementwiseOutput, Array.from(directOutput, (value) => value * 2), `${label} nativeEager.elementwiseInto output`);
+  const rowBroadcastInput = adapter.tensor([1, 2, 3, 4, 5, 6], [2, 3]);
+  const rowBroadcastBias = adapter.tensor([10, 20, 30], [3]);
+  const rowBroadcastOutput = new Float32Array(6);
+  const rowBroadcastResult = nativeEager.elementwiseInto(rowBroadcastOutput, rowBroadcastInput, rowBroadcastBias, { op: "add" });
+  if (rowBroadcastResult !== rowBroadcastOutput) {
+    throw new Error(`${label} expected nativeEager.elementwiseInto row broadcast to reuse caller output`);
+  }
+  expectClose(rowBroadcastOutput, [11, 22, 33, 14, 25, 36], `${label} nativeEager.elementwiseInto row-broadcast output`);
   const elementwiseAliasOutput = new Float32Array(6);
   const elementwiseAliasResult = nativeEagerAlias.elementwise_into(elementwiseAliasOutput, directOutput, null, { op: "sqr" });
   if (elementwiseAliasResult !== elementwiseAliasOutput) {
@@ -571,6 +579,11 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const tensorElementwiseBias = adapter.tensor(tensorElementwiseBiasData, [tensorElementwiseLength]);
   const tensorElementwise = adapter.noGrad(() => tensorElementwiseInput.mul(2).add(tensorElementwiseBias).sqr().sqrt());
   expectClose(tensorElementwise.data, tensorElementwiseInputData.map((value, index) => Math.abs(value * 2 + tensorElementwiseBiasData[index])), `${label} noGrad Tensor elementwise native eager output`);
+  const tensorRowBiasData = Array.from({ length: 256 }, (_value, index) => (index % 11) - 5);
+  const tensorRowInput = adapter.tensor(tensorElementwiseInputData, [4, 256]);
+  const tensorRowBias = adapter.tensor(tensorRowBiasData, [256]);
+  const tensorRowBroadcast = adapter.noGrad(() => tensorRowInput.add(tensorRowBias));
+  expectClose(tensorRowBroadcast.data, tensorElementwiseInputData.map((value, index) => value + tensorRowBiasData[index % 256]), `${label} noGrad Tensor row-broadcast native eager output`);
   const tensorDot = adapter.noGrad(() => tensorElementwiseInput.dot(tensorElementwiseBias));
   const tensorDotExpected = tensorElementwiseInputData.reduce((acc, value, index) => acc + value * tensorElementwiseBiasData[index], 0);
   expectClose(tensorDot.data, [tensorDotExpected], `${label} noGrad Tensor dot native eager output`);

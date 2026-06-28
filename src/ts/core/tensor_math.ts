@@ -73,7 +73,7 @@ type NativeEagerElementwiseInto = (
   output: Float32Array,
   lhs: unknown,
   rhs: unknown,
-  options: Readonly<{ op: string }>,
+  options: Readonly<{ op: string; rows?: number; cols?: number }>,
 ) => Float32Array;
 type NativeEagerActivationInto = (
   output: Float32Array,
@@ -177,6 +177,19 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     return left.length === right.length && left.every((value, index) => value === right[index]);
   }
 
+  function nativeElementwiseBroadcastRhsShape(
+    tensor: TensorMathTensor,
+    rhs: Float32Array,
+    rhsShape: readonly number[],
+  ) {
+    if (tensor.shape.length < 2 || rhsShape.length !== 1) return null;
+    const cols = tensor.shape[tensor.shape.length - 1];
+    if (cols <= 0 || rhsShape[0] !== cols || rhs.length !== cols) return null;
+    if (tensor.length % cols !== 0) return null;
+    const rows = tensor.length / cols;
+    return rows > 0 ? Object.freeze({ rows, cols }) : null;
+  }
+
   function nativeElementwiseBinaryInto(
     output: Float32Array,
     tensor: TensorMathTensor,
@@ -187,8 +200,11 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   ) {
     if (typeof nativeEagerElementwiseInto !== "function") return false;
     if (output.length < nativeEagerElementwiseMinLength) return false;
-    if (!sameShape(tensor.shape, rhsShape) && rhs.length !== 1) return false;
-    nativeEagerElementwiseInto(output, tensor, rhsTensor ?? rhs, { op });
+    const broadcastShape = nativeElementwiseBroadcastRhsShape(tensor, rhs, rhsShape);
+    if (!sameShape(tensor.shape, rhsShape) && rhs.length !== 1 && !broadcastShape) return false;
+    nativeEagerElementwiseInto(output, tensor, rhsTensor ?? rhs, broadcastShape
+      ? { op, rows: broadcastShape.rows, cols: broadcastShape.cols }
+      : { op });
     return true;
   }
 
@@ -205,6 +221,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     rhsShape: readonly number[],
   ) {
     if (rhs.length === 1 || sameShape(tensor.shape, rhsShape)) return tensor.shape;
+    if (nativeElementwiseBroadcastRhsShape(tensor, rhs, rhsShape)) return tensor.shape;
     return null;
   }
 

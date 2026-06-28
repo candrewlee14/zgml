@@ -142,6 +142,7 @@ enum {
     ZGML_FEATURE_NATIVE_EAGER_POOL2D = 1ull << 54,
     ZGML_FEATURE_NATIVE_EAGER_DOT = 1ull << 55,
     ZGML_FEATURE_NATIVE_EAGER_BMM = 1ull << 56,
+    ZGML_FEATURE_NATIVE_EAGER_ELEMENTWISE_BROADCAST = 1ull << 57,
 };
 
 enum {
@@ -751,6 +752,17 @@ ZGML_API zgml_status zgml_eager_elementwise_f32(
     size_t rhs_len,
     float *output,
     size_t output_len,
+    uint32_t op
+);
+ZGML_API zgml_status zgml_eager_elementwise_broadcast_rhs_f32(
+    const float *lhs,
+    size_t lhs_len,
+    const float *rhs,
+    size_t rhs_len,
+    float *output,
+    size_t output_len,
+    size_t rows,
+    size_t cols,
     uint32_t op
 );
 ZGML_API zgml_status zgml_eager_reduce_f32(

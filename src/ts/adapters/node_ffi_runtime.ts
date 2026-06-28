@@ -1200,6 +1200,17 @@ const nativeEagerSurface = createAdapterNativeEagerSurface({
     args.expectedOutput,
     args.op,
   ),
+  elementwiseBroadcastRhsF32: (args) => nodeSymbolGroups.nativeEager.eagerElementwiseBroadcastRhsF32(
+    args.lhsData,
+    args.lhsData.length,
+    args.rhsData,
+    args.rhsData.length,
+    args.output,
+    args.expectedOutput,
+    args.rows,
+    args.cols,
+    args.op,
+  ),
   whereF32: (args) => nodeSymbolGroups.nativeEager.eagerWhereF32(
     args.conditionData,
     args.conditionData.length,

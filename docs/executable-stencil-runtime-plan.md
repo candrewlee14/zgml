@@ -593,7 +593,8 @@ Current checked progress:
   `lazy_matmul_add_gelu_batched` eager fused matmul work, and
   `lazy_matmul_add_relu_batched` / `lazy_matmul_add_silu_batched` /
   `lazy_matmul_add_sigmoid_batched` / `lazy_matmul_add_tanh_batched` eager fused
-  matmul work plus scalar `elementwise_mul_batched` / `dot_batched` /
+  matmul work plus scalar `elementwise_mul_batched` /
+  bias-style `elementwise_add_row_broadcast_batched` / `dot_batched` /
   `reduce_sum_scalar_batched`, `softmax_batched` / `log_softmax_batched` row
   tails, and `conv2d_batched` image-kernel work versus the relevant Zig-backed
   native eager or allocation-free compiled `prepare/executeInto` path for the
@@ -616,19 +617,26 @@ Current checked progress:
   batched matmul now has the same one-call shape through
   `zgml_eager_bmm_f32` / `zgml.nativeEager.bmmInto`, so no-grad `Tensor.bmm`
   no longer loops in TS and crosses FFI once per batch.
-  Scalar RHS elementwise, scalar reductions, and vector dot products are now
-  covered the same way: `zgml.nativeEager.elementwiseInto`,
-  `zgml.nativeEager.reduceInto`, and `zgml.nativeEager.dotInto` call
-  `zgml_eager_elementwise_f32`, `zgml_eager_reduce_f32`, and
-  `zgml_eager_dot_f32` directly, and normal
-  no-grad `Tensor.mul(2)` / `Tensor.dot(...)` / `Tensor.sum()` calls use
-  those Zig ABI hooks for large tensors while grad-enabled training keeps the
-  TS/autograd path. The elementwise C ABI now uses a vectorized Zig binary
-  helper for scalar and same-shape arithmetic/comparison ops; fresh Node/Bun
+  Scalar RHS elementwise, last-dimension RHS row broadcasts, scalar reductions,
+  and vector dot products are now covered the same way:
+  `zgml.nativeEager.elementwiseInto`, `zgml.nativeEager.reduceInto`, and
+  `zgml.nativeEager.dotInto` call `zgml_eager_elementwise_f32`,
+  `zgml_eager_elementwise_broadcast_rhs_f32`, `zgml_eager_reduce_f32`, and
+  `zgml_eager_dot_f32` directly, and normal no-grad
+  `Tensor.mul(2)` / `Tensor.add(biasVector)` / `Tensor.dot(...)` /
+  `Tensor.sum()` calls use those Zig ABI hooks for large tensors while
+  grad-enabled training keeps the TS/autograd path. The elementwise C ABI now
+  uses a vectorized Zig binary helper for scalar and same-shape
+  arithmetic/comparison ops; fresh Node/Bun
   direct rows show `elementwise_mul_batched` at `264.63x` / `262.06x`, and the
   direct Node dot row shows `dot_batched` at `38.63x` with no product
   allocation. The public Tensor path still preserves the runtime-specific
-  thresholds.
+  thresholds. Bias-style row broadcasts flatten the leading dimensions and use
+  the last dimension as `cols`, so `[batch, features] + [features]` and rank-N
+  trailing bias adds cross into Zig without a TypeScript broadcast loop. The
+  fresh Node row for `elementwise_add_row_broadcast_batched` measured direct
+  native eager at `305.50x` and the ordinary public no-grad Tensor path at
+  `91.74x`, both with zero measured diff.
   The same ordinary Tensor eager lane now covers more PyTorch-like control
   primitives without changing the frontend shape: primitive comparisons
   (`eq`/`ne`/`lt`/`le`/`gt`/`ge`) lower through the Zig elementwise ABI for
@@ -645,8 +653,8 @@ Current checked progress:
   contract. Fresh Node/Bun native-eager rows prove
   `input.lt(0).where(input, 0)` through the public no-grad Tensor path at
   `213.80x` / `189.48x` module speedups with zero measured diff and enforced
-  `50x` direct/module floors. General broadcast and autograd cases stay on the
-  TS reference path until they have an equally honest native contract.
+  `50x` direct/module floors. General broadcast shapes and autograd cases stay
+  on the TS reference path until they have an equally honest native contract.
   The same microscope now also covers `matmul -> add(bias) -> ReLU`,
   `matmul -> add(bias) -> SiLU`, `matmul -> add(bias) -> Sigmoid`, and
   `matmul -> add(bias) -> Tanh`, proving the activation hook for common
@@ -694,8 +702,9 @@ Current checked progress:
   direct `conv2dInto` and `pool2dInto` rows above the native-eager floor with
   zero measured diff against the TS reference.
   The native eager microscope now carries those rows as decision-grade evidence
-  as well: the expected row set is `row_coverage=24/24` after adding direct
-  `matmul_batched`, `bmm_batched`, `elementwise_mul_batched`, `dot_batched`, `reduce_sum_scalar_batched`,
+  as well: the expected row set is `row_coverage=25/25` after adding direct
+  `matmul_batched`, `bmm_batched`, `elementwise_mul_batched`,
+  `elementwise_add_row_broadcast_batched`, `dot_batched`, `reduce_sum_scalar_batched`,
   `elementwise_lt_batched`, `clamp_batched`, `where_batched`,
   standalone `activation_relu_batched` / `activation_sigmoid_batched` /
   `activation_gelu_batched` / `activation_silu_batched` /

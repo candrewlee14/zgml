@@ -48,7 +48,7 @@ drift into a mirrored frontend by accident.
 | --- | --- | --- | --- | --- | --- |
 | Tensor factories and metadata | yes | n/a | yes | partial | Tensors expose `dtype: "f32"` and `device: "cpu"`; non-CPU placement is explicit through Program buffers. |
 | Elementwise tensor math | yes | yes | partial | partial | Common unary/binary ops are eager/autograd-capable; supported lazy chains lower through native activation/fused-elementwise descriptors. |
-| Broadcasting | yes | partial | partial | partial | Trailing-dimension broadcasting and broadcast-gradient reduction exist; broad PyTorch-style broadcast coverage should keep expanding through tests. |
+| Broadcasting | yes | partial | partial | partial | Trailing-dimension broadcasting and broadcast-gradient reduction exist; no-grad last-dimension bias broadcasts route through native eager for large tensors. |
 | Views and movement ops | yes | partial | yes | partial | Reshape/flatten/squeeze/unsqueeze, transpose/permute, repeat/tile, narrow/select/slice, gather/take/scatter-style helpers exist; native lowering is shape-bounded. |
 | Reductions | yes | partial | partial | partial | Dim-aware reductions and rank-3 last-axis native lowering exist for common model shapes. |
 | Matmul and linear algebra | yes | yes | yes | yes | `matmul`/`mm`, `nn.linear`, fused bias/activation paths, and selected batched shapes have PyTorch comparison evidence. |
@@ -85,7 +85,8 @@ PyTorch replacement:
   adjacent `lazy_matmul_add_relu_batched` and
   `lazy_matmul_add_silu_batched`, `lazy_matmul_add_sigmoid_batched`, and
   `lazy_matmul_add_tanh_batched` production-activation targets, row-wise
-  scalar `elementwise_mul_batched` / `dot_batched` /
+  scalar `elementwise_mul_batched` /
+  bias-style `elementwise_add_row_broadcast_batched` / `dot_batched` /
   `reduce_sum_scalar_batched`,
   `softmax_batched` / `log_softmax_batched`, `conv2d_batched`, and
   `max_pool2d_batched` / `avg_pool2d_batched`, as eager TS tensor execution

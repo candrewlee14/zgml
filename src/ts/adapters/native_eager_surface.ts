@@ -71,6 +71,15 @@ type NativeEagerElementwiseCall = (args: {
   expectedOutput: number;
   op: number;
 }) => number;
+type NativeEagerElementwiseBroadcastRhsCall = (args: {
+  lhsData: Float32Array;
+  rhsData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  rows: number;
+  cols: number;
+  op: number;
+}) => number;
 
 type NativeEagerWhereCall = (args: {
   conditionData: Float32Array;
@@ -157,6 +166,7 @@ type NativeEagerSurfaceOptions = {
   linearActivationF32: NativeEagerLinearActivationCall;
   activationF32?: NativeEagerActivationCall;
   elementwiseF32?: NativeEagerElementwiseCall;
+  elementwiseBroadcastRhsF32?: NativeEagerElementwiseBroadcastRhsCall;
   whereF32?: NativeEagerWhereCall;
   clampF32?: NativeEagerClampCall;
   reduceF32?: NativeEagerReduceCall;
@@ -438,6 +448,7 @@ function nativeEagerElementwiseInputs(
   output: Float32Array,
   lhs: unknown,
   rhs: unknown,
+  callOptions: Record<string, unknown>,
   f32: NativeEagerTensorFactory,
 ) {
   const label = "nativeEager.elementwiseInto";
@@ -449,8 +460,37 @@ function nativeEagerElementwiseInputs(
     throw new Error(`${label} lhs must be non-empty`);
   }
   const rhsData = rhs == null ? null : nativeEagerTensorData(rhs, `${label} rhs`, f32);
+  const lhsShape = nativeEagerShape(lhs);
+  const rhsShape = rhs == null ? null : nativeEagerShape(rhs);
+  const inferredCols = lhsShape && lhsShape.length >= 2 ? lhsShape[lhsShape.length - 1] : null;
+  const inferredRows = inferredCols && inferredCols > 0 && lhsData.length % inferredCols === 0
+    ? lhsData.length / inferredCols
+    : null;
+  const rhsCanUseInferredCols = rhsData !== null &&
+    inferredRows !== null &&
+    inferredCols !== null &&
+    rhsData.length === inferredCols &&
+    (
+      !rhsShape ||
+      (rhsShape.length === 1 && rhsShape[0] === inferredCols)
+    );
+  const rowsValue = callOptions.rows ?? callOptions.batch ?? (rhsCanUseInferredCols ? inferredRows : null);
+  const colsValue = callOptions.cols ?? callOptions.features ?? (rhsCanUseInferredCols ? inferredCols : null);
+  const canBroadcastRhs = rhsData !== null &&
+    rhsData.length !== 1 &&
+    rhsData.length !== lhsData.length &&
+    rowsValue != null &&
+    colsValue != null;
+  const broadcastShape = canBroadcastRhs
+    ? Object.freeze({
+      rows: nativeEagerPositiveInteger(rowsValue, `${label} rows`),
+      cols: nativeEagerPositiveInteger(colsValue, `${label} cols`),
+    })
+    : null;
   if (rhsData !== null && rhsData.length !== 1 && rhsData.length !== lhsData.length) {
-    throw new Error(`${label} rhs length ${rhsData.length} must be 1 or match lhs length ${lhsData.length}`);
+    if (!broadcastShape || broadcastShape.rows * broadcastShape.cols !== lhsData.length || rhsData.length !== broadcastShape.cols) {
+      throw new Error(`${label} rhs length ${rhsData.length} must be 1, match lhs length ${lhsData.length}, or match row-broadcast cols`);
+    }
   }
   if (output.length < lhsData.length) {
     throw new Error(`${label} output length ${output.length} is smaller than ${lhsData.length}`);
@@ -460,6 +500,7 @@ function nativeEagerElementwiseInputs(
     rhsData,
     output,
     expectedOutput: lhsData.length,
+    broadcastShape,
   };
 }
 
@@ -835,11 +876,24 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
       if (typeof options.elementwiseF32 !== "function") {
         throw new Error("nativeEager.elementwiseInto is unavailable in this runtime");
       }
-      const args = nativeEagerElementwiseInputs(output, lhs, rhs, options.f32);
-      options.check(options.elementwiseF32({
-        ...args,
-        op: nativeEagerElementwiseOpId(callOptions.op, "nativeEager.elementwiseInto"),
-      }));
+      const args = nativeEagerElementwiseInputs(output, lhs, rhs, callOptions, options.f32);
+      const op = nativeEagerElementwiseOpId(callOptions.op, "nativeEager.elementwiseInto");
+      if (args.broadcastShape) {
+        if (typeof options.elementwiseBroadcastRhsF32 !== "function" || args.rhsData == null) {
+          throw new Error("nativeEager.elementwiseInto row broadcast is unavailable in this runtime");
+        }
+        options.check(options.elementwiseBroadcastRhsF32({
+          lhsData: args.lhsData,
+          rhsData: args.rhsData,
+          output: args.output,
+          expectedOutput: args.expectedOutput,
+          rows: args.broadcastShape.rows,
+          cols: args.broadcastShape.cols,
+          op,
+        }));
+        return output;
+      }
+      options.check(options.elementwiseF32({ ...args, op }));
       return output;
     },
     elementwise_into(output: Float32Array, lhs: unknown, rhs?: unknown, callOptions?: Record<string, unknown>) {

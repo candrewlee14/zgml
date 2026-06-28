@@ -44,6 +44,7 @@ export type NativeCoreEvidence = Readonly<{
     bmm: boolean;
     activation: boolean;
     elementwise: boolean;
+    elementwiseBroadcast: boolean;
     reduce: boolean;
     dot: boolean;
     softmax: boolean;
@@ -74,6 +75,7 @@ export function createAdapterNativeCoreSurface(options: NativeCoreSurfaceOptions
       bmm: feature(features, "nativeEagerBmm"),
       activation: feature(features, "nativeEagerActivation"),
       elementwise: feature(features, "nativeEagerElementwise"),
+      elementwiseBroadcast: feature(features, "nativeEagerElementwiseBroadcast"),
       reduce: feature(features, "nativeEagerReduce"),
       dot: feature(features, "nativeEagerDot"),
       softmax: feature(features, "nativeEagerSoftmax"),

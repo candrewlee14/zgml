@@ -324,6 +324,8 @@ const bmmRhsValues = values(16 * 32 * 32, 29);
 const bmmRhsTensor = zgml.tensor(bmmRhsValues, [16, 32, 32]);
 const dotRhsValues = values(128 * 64, 23);
 const dotRhsTensor = zgml.tensor(dotRhsValues, [128 * 64]);
+const rowBroadcastBiasValues = values(256, 19);
+const rowBroadcastBiasTensor = zgml.tensor(rowBroadcastBiasValues, [256]);
 const geluWeights = values(64 * 64, 32);
 const geluBias = values(64, 64);
 const geluWeightTensor = zgml.tensor(geluWeights, [64, 64]);
@@ -433,6 +435,23 @@ const gapSpecs = Object.freeze([
     minNativeEagerModuleSpeedup: runtime === "bun" ? 0.85 : 1,
     tolerance: 1e-5,
     next: "native_eager_elementwise_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_add_row_broadcast_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "add_row_broadcast" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.add(rowBroadcastBiasTensor),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, rowBroadcastBiasTensor, { op: "add" }),
+    nativeEagerModule: (input) => zgml.noGrad(() => input.add(rowBroadcastBiasTensor)),
+    eagerIterations: 50,
+    nativeEagerIterations: 500,
+    nativeEagerModuleIterations: 500,
+    compiledIterations: 500,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 1,
+    tolerance: 1e-5,
+    next: "native_eager_row_broadcast_storage_slice",
   }),
   Object.freeze({
     key: "dot_batched",

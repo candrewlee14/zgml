@@ -2164,6 +2164,8 @@ export type NativeEagerElementwiseOp =
   | "minimum" | "min";
 export type NativeEagerElementwiseIntoOptions = Readonly<{
   op: NativeEagerElementwiseOp;
+  rows?: number;
+  cols?: number;
 }>;
 export type NativeEagerReduceOp = "sum" | "mean" | "max" | "min" | "prod";
 export type NativeEagerReduceIntoOptions = Readonly<{
@@ -2332,6 +2334,7 @@ export type NativeCoreEvidence = Readonly<{
     bmm: boolean;
     activation: boolean;
     elementwise: boolean;
+    elementwiseBroadcast: boolean;
     reduce: boolean;
     dot: boolean;
     softmax: boolean;
@@ -7738,6 +7741,7 @@ export type RuntimeFeatures = Readonly<{
   nativeEagerMatmul: boolean;
   nativeEagerBmm: boolean;
   nativeEagerElementwise: boolean;
+  nativeEagerElementwiseBroadcast: boolean;
   nativeEagerReduce: boolean;
   nativeEagerDot: boolean;
   nativeEagerConv2d: boolean;

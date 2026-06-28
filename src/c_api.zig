@@ -97,6 +97,7 @@ const feature_native_eager_conv2d: u64 = 1 << 53;
 const feature_native_eager_pool2d: u64 = 1 << 54;
 const feature_native_eager_dot: u64 = 1 << 55;
 const feature_native_eager_bmm: u64 = 1 << 56;
+const feature_native_eager_elementwise_broadcast: u64 = 1 << 57;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -1139,6 +1140,7 @@ fn runtimeFeatureFlags() u64 {
         feature_native_eager_pool2d |
         feature_native_eager_dot |
         feature_native_eager_bmm |
+        feature_native_eager_elementwise_broadcast |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -1813,6 +1815,15 @@ fn writeElementwiseBinaryF32(lhs: []const f32, rhs: []const f32, output: []f32, 
     }
 }
 
+fn writeElementwiseBroadcastRhsF32(lhs: []const f32, rhs: []const f32, output: []f32, rows: usize, cols: usize, op: u32) !void {
+    if (rows == 0 or cols == 0) return error.ShapeMismatch;
+    if (lhs.len != output.len or lhs.len != rows * cols or rhs.len != cols) return error.ShapeMismatch;
+    for (0..rows) |row| {
+        const offset = row * cols;
+        try writeElementwiseBinaryF32(lhs[offset..][0..cols], rhs, output[offset..][0..cols], op);
+    }
+}
+
 fn dotF32(lhs: []const f32, rhs: []const f32) f32 {
     const V = 8;
     const VecT = @Vector(V, f32);
@@ -2166,6 +2177,33 @@ export fn zgml_eager_elementwise_f32(
     if (rhs_len != 1 and rhs_len != lhs_len) return status(.shape_mismatch);
     const rhs = rhs_ptr.?[0..rhs_len];
     writeElementwiseBinaryF32(lhs, rhs, output, op) catch |err| return switch (err) {
+        error.InvalidArgument => status(.invalid_argument),
+        error.ShapeMismatch => status(.shape_mismatch),
+    };
+    return status(.ok);
+}
+
+export fn zgml_eager_elementwise_broadcast_rhs_f32(
+    lhs_ptr: ?[*]const f32,
+    lhs_len: usize,
+    rhs_ptr: ?[*]const f32,
+    rhs_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    rows: usize,
+    cols: usize,
+    op: u32,
+) c_int {
+    if (lhs_ptr == null or rhs_ptr == null or output_ptr == null or lhs_len == 0 or rows == 0 or cols == 0) return status(.invalid_argument);
+    if (checkedElementCount(rows, cols) != lhs_len or lhs_len != output_len or rhs_len != cols) return status(.shape_mismatch);
+    writeElementwiseBroadcastRhsF32(
+        lhs_ptr.?[0..lhs_len],
+        rhs_ptr.?[0..rhs_len],
+        output_ptr.?[0..output_len],
+        rows,
+        cols,
+        op,
+    ) catch |err| return switch (err) {
         error.InvalidArgument => status(.invalid_argument),
         error.ShapeMismatch => status(.shape_mismatch),
     };
@@ -8675,6 +8713,7 @@ test "C ABI runtime info reports compatible handle surface" {
     try std.testing.expect((info.feature_flags & feature_native_eager_pool2d) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_dot) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_bmm) != 0);
+    try std.testing.expect((info.feature_flags & feature_native_eager_elementwise_broadcast) != 0);
     try std.testing.expectEqual(build_options.use_wgpu, (info.feature_flags & feature_native_wgpu_execution) != 0);
     try std.testing.expectEqual(build_options.use_wgpu and build_options.experimental_llama_wgpu_execution, (info.feature_flags & feature_experimental_llama_wgpu_execution) != 0);
     try std.testing.expect((info.feature_flags & feature_experimental_llama_wgpu_execution) == 0 or (info.feature_flags & feature_native_wgpu_execution) != 0);
@@ -12238,6 +12277,64 @@ test "C ABI native eager elementwise writes caller output" {
         rhs.len - 1,
         output[0..].ptr,
         output.len,
+        eager_elementwise_add,
+    ));
+}
+
+test "C ABI native eager elementwise broadcasts rhs across rows" {
+    const lhs = [_]f32{
+        1, 2, 3,
+        4, 5, 6,
+    };
+    const rhs = [_]f32{ 10, -1, 0.5 };
+    var output = [_]f32{0} ** lhs.len;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_broadcast_rhs_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        eager_elementwise_add,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 11, 1, 3.5, 14, 4, 6.5 }, &output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_elementwise_broadcast_rhs_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        eager_elementwise_mul,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 10, -2, 1.5, 40, -5, 3 }, &output);
+
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_elementwise_broadcast_rhs_f32(
+        null,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        eager_elementwise_add,
+    ));
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_elementwise_broadcast_rhs_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len - 1,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
         eager_elementwise_add,
     ));
 }
